@@ -86,6 +86,18 @@ function serveGuiFile(pathname: string): Response | null {
   });
 }
 
+const ANTHROPIC_WIRE_MODELS: Record<string, Set<string>> = {
+  "opencode-go": new Set(["minimax-m2.5", "minimax-m2.7", "minimax-m3", "qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus"]),
+};
+
+function resolveWireProtocolOverride(providerName: string, modelId: string, providerConfig: OcxProviderConfig): OcxProviderConfig {
+  const overrideSet = ANTHROPIC_WIRE_MODELS[providerName];
+  if (overrideSet?.has(modelId) && providerConfig.adapter !== "anthropic") {
+    return { ...providerConfig, adapter: "anthropic" };
+  }
+  return providerConfig;
+}
+
 export function resolveAdapter(providerConfig: OcxProviderConfig) {
   switch (providerConfig.adapter) {
     case "openai-chat":
@@ -161,7 +173,8 @@ async function handleResponses(
     await describeImagesInPlace(parsed, visionPlan.forwardProvider, req.headers, visionPlan.settings, options.abortSignal);
   }
 
-  const adapter = resolveAdapter(route.provider);
+  const adapterProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
+  const adapter = resolveAdapter(adapterProvider);
 
   if ("passthrough" in adapter && adapter.passthrough) {
     const request = adapter.buildRequest(parsed, { headers: req.headers });
@@ -346,9 +359,11 @@ export function sanitizePassthroughHeaders(upstream: Headers): Headers {
   return out;
 }
 
+let _corsOrigin = "http://localhost:10100";
+function setCorsOrigin(port: number): void { _corsOrigin = `http://localhost:${port}`; }
 function corsHeaders(): Record<string, string> {
   return {
-    "Access-Control-Allow-Origin": `http://localhost:${config.port ?? 10100}`,
+    "Access-Control-Allow-Origin": _corsOrigin,
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
   };
@@ -563,6 +578,7 @@ export function startServer(port?: number) {
     saveConfig(config);
   }
   const listenPort = port ?? config.port ?? 10100;
+  setCorsOrigin(listenPort);
 
   const server = Bun.serve<WsData>({
     port: listenPort,
