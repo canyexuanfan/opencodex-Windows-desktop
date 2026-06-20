@@ -223,7 +223,7 @@ export function sendResponsesJsonAsEvents(
     ? response.status
     : "completed";
   sendJsonFrame(ws, {
-    type: finalStatus === "failed" ? "response.failed" : "response.completed",
+    type: `response.${finalStatus}` as "response.completed" | "response.failed" | "response.incomplete",
     response: { ...response, status: finalStatus },
   });
 }
