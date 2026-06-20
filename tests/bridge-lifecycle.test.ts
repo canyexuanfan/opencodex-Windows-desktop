@@ -30,14 +30,15 @@ async function collectEventNames(stream: ReadableStream<Uint8Array>): Promise<st
 }
 
 describe("bridge stream lifecycle (RC1 / RC2)", () => {
-  test("RC1: a stream that ends WITHOUT a done event still emits exactly one response.completed", async () => {
+  test("RC1: a stream that ends WITHOUT a done event emits response.incomplete (not completed)", async () => {
     const names = await collectEventNames(bridgeToResponsesSSE(replay([
       { type: "text_delta", text: "hello" },
       // no { type: "done" } — models anthropic returning on EOF after message_stop
     ]), "routed/model"));
-    expect(names.filter(n => n === "response.completed")).toHaveLength(1);
+    expect(names.filter(n => n === "response.incomplete")).toHaveLength(1);
     expect(names).toContain("response.output_text.delta");
     expect(names).not.toContain("response.failed");
+    expect(names).not.toContain("response.completed");
   });
 
   test("RC1: a normal done event yields exactly one response.completed (no double terminal)", async () => {

@@ -109,6 +109,17 @@ export function bridgeToResponsesSSE(
         if (closed) return;
         if (activity) { activity = false; stallTicks = 0; return; }
         if (++stallTicks >= maxStallTicks) {
+          if (currentMsg) closeCurrentMessage();
+          if (currentReasoning) closeCurrentReasoning();
+          if (currentRawReasoning) closeCurrentRawReasoning();
+          if (currentToolCall) closeCurrentToolCall();
+          emit("response.incomplete", {
+            response: {
+              ...responseSnapshot("incomplete", finishedItems),
+              incomplete_details: { reason: "upstream_stall_timeout" },
+            },
+          });
+          terminated = true;
           closed = true;
           clearInterval(beat!);
           beat = undefined;
@@ -366,8 +377,12 @@ export function bridgeToResponsesSSE(
         if (currentReasoning) closeCurrentReasoning();
         if (currentRawReasoning) closeCurrentRawReasoning();
         if (currentToolCall) closeCurrentToolCall();
-        emit("response.completed", {
-          response: { ...responseSnapshot("incomplete", finishedItems), usage: responsesUsage(undefined) },
+        emit("response.incomplete", {
+          response: {
+            ...responseSnapshot("incomplete", finishedItems),
+            usage: responsesUsage(undefined),
+            incomplete_details: { reason: "adapter_eof" },
+          },
         });
       }
 

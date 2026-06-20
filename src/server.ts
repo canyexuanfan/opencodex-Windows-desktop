@@ -213,6 +213,7 @@ async function handleResponses(
       incomingHeaders: req.headers,
       settings: wsPlan.settings,
       maxSearches: wsPlan.maxSearches,
+      forceEmptyResponseId: true,
       abortSignal: options.abortSignal,
     });
   }

@@ -95,6 +95,7 @@ export interface WebSearchLoopDeps {
   incomingHeaders: Headers;
   settings: SidecarSettings;
   maxSearches: number;
+  forceEmptyResponseId?: boolean;
   abortSignal?: AbortSignal;
 }
 
@@ -189,6 +190,10 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
     if (t.freeform) freeform.add(t.name);
     if (t.toolSearch) toolSearch.add(t.name);
   }
-  const sse = bridgeToResponsesSSE(replay(finalEvents), parsed.modelId, toolNsMap, freeform, toolSearch);
+  const sse = bridgeToResponsesSSE(
+    replay(finalEvents), parsed.modelId, toolNsMap, freeform, toolSearch,
+    undefined, undefined,
+    deps.forceEmptyResponseId ? { responseId: "" } : undefined,
+  );
   return new Response(sse, { headers: SSE_HEADERS });
 }
