@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { createAnthropicAdapter } from "./adapters/anthropic";
+import { createAnthropicSdkAdapter } from "./adapters/anthropic-sdk";
 import { createAzureAdapter } from "./adapters/azure";
 import { createGoogleAdapter } from "./adapters/google";
 import { createOpenAIChatAdapter } from "./adapters/openai-chat";
@@ -104,6 +105,8 @@ export function resolveAdapter(providerConfig: OcxProviderConfig) {
       return createOpenAIChatAdapter(providerConfig);
     case "anthropic":
       return createAnthropicAdapter(providerConfig);
+    case "anthropic-sdk":
+      return createAnthropicSdkAdapter(providerConfig);
     case "openai-responses":
       return createResponsesPassthroughAdapter(providerConfig);
     case "google":
@@ -218,19 +221,35 @@ async function handleResponses(
     });
   }
 
-  const request = adapter.buildRequest(parsed, { headers: req.headers });
-
-  // Abort the upstream fetch if the client (Codex) disconnects mid-stream, so a cancelled turn does
-  // not leak the upstream connection or keep draining tokens. The bridge's cancel() fires upstream.abort() (RC2).
   const upstream = new AbortController();
   linkAbortSignal(upstream, options.abortSignal);
+
+  if (parsed.stream && adapter.executeStream) {
+    const eventStream = adapter.executeStream(parsed, upstream.signal);
+    const toolNsMap = new Map<string, { namespace: string; name: string }>();
+    const freeformToolNames = new Set<string>();
+    const toolSearchToolNames = new Set<string>();
+    for (const t of parsed.context.tools ?? []) {
+      if (t.namespace) toolNsMap.set(namespacedToolName(t.namespace, t.name), { namespace: t.namespace, name: t.name });
+      if (t.freeform) freeformToolNames.add(t.name);
+      if (t.toolSearch) toolSearchToolNames.add(t.name);
+    }
+    const sseStream = bridgeToResponsesSSE(
+      eventStream, parsed.modelId, toolNsMap, freeformToolNames, toolSearchToolNames,
+      () => upstream.abort(), 2_000,
+      options.forceEmptyResponseId ? { responseId: "" } : undefined,
+    );
+    return new Response(sseStream, {
+      headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no" },
+    });
+  }
+
+  // Fallback: buildRequest → fetch → parseStream (used by all non-SDK adapters and web-search sidecar)
+  const request = adapter.buildRequest(parsed, { headers: req.headers });
   let upstreamResponse: Response;
   try {
     upstreamResponse = await fetch(request.url, {
-      method: request.method,
-      headers: request.headers,
-      body: request.body,
-      signal: upstream.signal,
+      method: request.method, headers: request.headers, body: request.body, signal: upstream.signal,
     });
   } catch (err) {
     return formatErrorResponse(502, "upstream_error", `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`);
@@ -243,8 +262,6 @@ async function handleResponses(
 
   if (parsed.stream) {
     const eventStream = adapter.parseStream(upstreamResponse);
-    // Map flattened MCP tool names back to {namespace, name} so the bridge can restore the
-    // namespace field Codex needs to route the call to the right MCP server.
     const toolNsMap = new Map<string, { namespace: string; name: string }>();
     const freeformToolNames = new Set<string>();
     const toolSearchToolNames = new Set<string>();
@@ -254,31 +271,19 @@ async function handleResponses(
       if (t.toolSearch) toolSearchToolNames.add(t.name);
     }
     const sseStream = bridgeToResponsesSSE(
-      eventStream,
-      parsed.modelId,
-      toolNsMap,
-      freeformToolNames,
-      toolSearchToolNames,
-      () => upstream.abort(),
-      2_000,
+      eventStream, parsed.modelId, toolNsMap, freeformToolNames, toolSearchToolNames,
+      () => upstream.abort(), 2_000,
       options.forceEmptyResponseId ? { responseId: "" } : undefined,
     );
     return new Response(sseStream, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "X-Accel-Buffering": "no",
-      },
+      headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no" },
     });
   }
 
   if (adapter.parseResponse) {
     const events = await adapter.parseResponse(upstreamResponse);
     const json = buildResponseJSON(events, parsed.modelId);
-    return new Response(JSON.stringify(json), {
-      headers: { "Content-Type": "application/json" },
-    });
+    return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
   }
 
   return formatErrorResponse(500, "internal_error", "Non-streaming not supported by this adapter");
