@@ -65,7 +65,7 @@ jobs:
         run: bun build scripts/release.ts --target=bun --outdir=.tmp/ci-release-script-check
 
       - name: GUI build
-        run: cd gui && bun run build
+        run: cd gui && bun install && bun run build
 
       - name: CLI help smoke
         run: bun run src/cli.ts help
