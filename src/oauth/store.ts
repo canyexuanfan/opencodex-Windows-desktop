@@ -18,8 +18,8 @@ export function loadAuthStore(): AuthStore {
 
 function persist(store: AuthStore): void {
   const dir = getConfigDir();
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(AUTH_PATH, JSON.stringify(store, null, 2) + "\n", "utf-8");
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(AUTH_PATH, JSON.stringify(store, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 });
 }
 
 export function getCredential(provider: string): OAuthCredentials | null {

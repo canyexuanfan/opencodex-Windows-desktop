@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { OcxConfig } from "./types";
@@ -10,7 +10,7 @@ let _atomicSeq = 0;
  */
 export function atomicWriteFile(path: string, content: string): void {
   const tmp = `${path}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
-  writeFileSync(tmp, content, "utf-8");
+  writeFileSync(tmp, content, { encoding: "utf-8", mode: 0o600 });
   renameSync(tmp, path);
 }
 
