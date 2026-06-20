@@ -1,9 +1,10 @@
-import { exec } from "node:child_process";
+import { spawn } from "node:child_process";
 
 export function openUrl(url: string): void {
   const cmd =
     process.platform === "darwin" ? "open"
-    : process.platform === "win32" ? 'start ""'
+    : process.platform === "win32" ? "cmd"
     : "xdg-open";
-  exec(`${cmd} ${JSON.stringify(url)}`);
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  spawn(cmd, args, { detached: true, stdio: "ignore", shell: false }).unref();
 }
