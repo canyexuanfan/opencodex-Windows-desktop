@@ -104,7 +104,7 @@ export function bridgeToResponsesSSE(
       // whenever a real event was emitted since the last tick, so it only fires on a genuine stall.
       const heartbeatFrame = encoder.encode('event: response.heartbeat\ndata: {"type":"response.heartbeat"}\n\n');
       let stallTicks = 0;
-      const stallSec = Math.max(10, options?.stallTimeoutSec ?? 90);
+      const stallSec = Math.max(1, options?.stallTimeoutSec ?? 90);
       const maxStallTicks = Math.ceil((stallSec * 1000) / heartbeatMs);
       beat = setInterval(() => {
         if (closed) return;

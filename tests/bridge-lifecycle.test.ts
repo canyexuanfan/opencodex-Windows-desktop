@@ -80,4 +80,24 @@ describe("bridge stream lifecycle (RC1 / RC2)", () => {
     await reader.cancel();
     expect(text).toContain("response.heartbeat");
   });
+
+  test("RC3: configurable stall timeout emits response.incomplete after deadline", async () => {
+    const stream = bridgeToResponsesSSE(
+      hangs(), "routed/model", undefined, undefined, undefined, undefined, 50,
+      { stallTimeoutSec: 1 },
+    );
+    const reader = stream.getReader();
+    const dec = new TextDecoder();
+    let text = "";
+    for (let i = 0; i < 100; i++) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) text += dec.decode(value, { stream: true });
+      if (text.includes("response.incomplete")) break;
+    }
+    await reader.cancel();
+    expect(text).toContain("response.incomplete");
+    expect(text).toContain("upstream_stall_timeout");
+    expect(text).not.toContain("response.completed");
+  });
 });

@@ -175,6 +175,36 @@ describe("WS endpoint re-framer (120/132)", () => {
     expect(JSON.parse(sent[2]).response.id).toBe("resp_json");
   });
 
+  test("JSON response with status 'incomplete' emits response.incomplete event type", () => {
+    const { ws, sent } = mockWs();
+    sendResponsesJsonAsEvents(ws, {
+      id: "resp_inc",
+      object: "response",
+      status: "incomplete",
+      output: [{ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [] }],
+      incomplete_details: { reason: "upstream_stall_timeout" },
+    });
+    const types = sent.map(f => JSON.parse(f).type);
+    expect(types).toContain("response.incomplete");
+    expect(types).not.toContain("response.completed");
+    expect(JSON.parse(sent[sent.length - 1]).response.status).toBe("incomplete");
+  });
+
+  test("JSON response with status 'failed' emits response.failed event type", () => {
+    const { ws, sent } = mockWs();
+    sendResponsesJsonAsEvents(ws, {
+      id: "resp_fail",
+      object: "response",
+      status: "failed",
+      output: [],
+      error: { code: "server_error", message: "upstream died" },
+    });
+    const types = sent.map(f => JSON.parse(f).type);
+    expect(types).toContain("response.failed");
+    expect(types).not.toContain("response.completed");
+    expect(types).not.toContain("response.incomplete");
+  });
+
   test("stores only allowlisted inbound headers and emits only safe response headers", () => {
     const inbound = new Headers({
       authorization: "Bearer secret",
