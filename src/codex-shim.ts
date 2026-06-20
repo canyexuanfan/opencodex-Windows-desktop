@@ -118,7 +118,7 @@ export function installCodexShim(): { installed: boolean; message: string } {
     return { installed: false, message: `Codex autostart shim already installed at ${existing.wrapperPath}.` };
   }
   if (existing && existsSync(existing.backupPath) && (!existsSync(existing.wrapperPath) || !isShim(existing.wrapperPath))) {
-    if (existsSync(existing.wrapperPath)) unlinkSync(existing.wrapperPath);
+    if (existsSync(existing.wrapperPath)) renameSync(existing.wrapperPath, existing.backupPath);
     writeShim(existing.wrapperPath, existing.backupPath);
     writeState({ ...existing, platform: process.platform });
     return {
