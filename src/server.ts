@@ -358,7 +358,18 @@ function jsonResponse(data: unknown, status = 200): Response {
   });
 }
 
+function isLocalOrigin(req: Request): boolean {
+  const origin = req.headers.get("Origin");
+  if (!origin) return true;
+  const localhostOrigin = _corsOrigin;
+  const loopbackOrigin = _corsOrigin.replace("localhost", "127.0.0.1");
+  return origin === localhostOrigin || origin === loopbackOrigin;
+}
+
 async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): Promise<Response | null> {
+  if ((req.method === "POST" || req.method === "PUT" || req.method === "DELETE") && !isLocalOrigin(req)) {
+    return jsonResponse({ error: "cross-origin request blocked" }, 403);
+  }
   async function refreshCodexCatalogBestEffort(): Promise<void> {
     try {
       const { refreshCodexModelCatalog } = await import("./codex-refresh");
