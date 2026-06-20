@@ -587,6 +587,9 @@ export function startServer(port?: number) {
       // Responses WebSocket (phase 120.2). Codex upgrades the same /v1/responses path; auth is
       // handshake-time only, so capture inbound headers and thread them into the pipeline.
       if (url.pathname === "/v1/responses" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+        if (!isLocalOrigin(req)) {
+          return formatErrorResponse(403, "origin_rejected", "WebSocket upgrade blocked: non-local Origin");
+        }
         if (server.upgrade(req, { data: { headers: selectForwardHeaders(req.headers) } })) return undefined as unknown as Response;
         return formatErrorResponse(426, "upgrade_required", "WebSocket upgrade failed");
       }
@@ -622,6 +625,9 @@ export function startServer(port?: number) {
       }
 
       if (url.pathname === "/v1/responses" && req.method === "POST") {
+        if (!isLocalOrigin(req)) {
+          return formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked");
+        }
         const start = Date.now();
         const logCtx = { model: "unknown", provider: "unknown" };
         const response = await handleResponses(req, config, logCtx);
