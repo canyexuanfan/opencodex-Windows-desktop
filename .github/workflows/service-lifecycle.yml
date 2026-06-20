@@ -132,3 +132,4 @@ jobs:
             exit 1
           }
           Write-Host "✅ Task removed"
+          exit 0
