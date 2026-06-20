@@ -348,7 +348,7 @@ export function sanitizePassthroughHeaders(upstream: Headers): Headers {
 
 function corsHeaders(): Record<string, string> {
   return {
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": `http://localhost:${config.port ?? 10100}`,
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
   };
@@ -566,6 +566,7 @@ export function startServer(port?: number) {
 
   const server = Bun.serve<WsData>({
     port: listenPort,
+    hostname: config.hostname ?? "127.0.0.1",
     idleTimeout: 255,
     async fetch(req) {
       const url = new URL(req.url);

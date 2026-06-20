@@ -1,6 +1,8 @@
 # 133.00 — WebSocket Default-On Release
 
-## Decision
+> **Superseded by e804ba5 (v1.9.2)**: WebSocket default was reverted to **off** (`config.websockets === true` required). Fresh config writes `"websockets": false`. The decision below was the original v1.9.1 intent but was reversed before v2.0.0.
+
+## Decision (original, now reversed)
 
 After Phase 132 hardened the Responses WebSocket bridge and the user verified local Codex behavior,
 WebSocket advertisement is restored to default-on for `1.9.1`.
