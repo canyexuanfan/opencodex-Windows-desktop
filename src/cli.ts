@@ -248,7 +248,7 @@ switch (command) {
   }
   case "update": {
     const { runUpdate } = await import("./update");
-    runUpdate();
+    await runUpdate();
     break;
   }
   case "help":

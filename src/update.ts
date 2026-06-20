@@ -32,7 +32,7 @@ function latestVersion(): string | null {
  * `ocx update` — self-update opencodex to the latest published version, using the same package
  * manager it was installed with (bun or npm global). A source checkout is told to `git pull` instead.
  */
-export function runUpdate(): void {
+export async function runUpdate(): Promise<void> {
   const installer = detectInstall();
   const current = currentVersion();
   console.log(`opencodex v${current} (installed via ${installer})`);
@@ -56,7 +56,17 @@ export function runUpdate(): void {
 
   const r = spawnSync(bin, cmdArgs, { stdio: "inherit", timeout: 180000, windowsHide: true });
   if (r.status === 0) {
-    console.log(`\n✅ Updated${latest ? ` to v${latest}` : ""}. Restart the proxy:  ocx stop && ocx start`);
+    console.log(`\n✅ Updated${latest ? ` to v${latest}` : ""}.`);
+    if (process.platform === "win32") {
+      try {
+        const { installCodexShim } = await import("./codex-shim");
+        const result = installCodexShim();
+        if (result.installed) console.log(`🔧 ${result.message}`);
+      } catch (e) {
+        console.warn(`⚠️  Shim repair skipped: ${e instanceof Error ? e.message : e}`);
+      }
+    }
+    console.log("Restart the proxy:  ocx stop && ocx start");
   } else {
     console.error(`\n⚠️  Update failed (${bin} exit ${r.status ?? "?"}). Try manually:  ${bin} ${cmdArgs.join(" ")}`);
     process.exit(1);
