@@ -214,6 +214,12 @@ bun x tsc --noEmit   # 类型检查
 
 参阅 **[贡献指南](https://lidge-jun.github.io/opencodex/zh-cn/contributing/)**。
 
+## 免责声明
+
+opencodex 是一个独立的社区维护项目，**与 OpenAI、Anthropic 或任何其他提供商无关，也未获得其认可。**
+
+某些提供商——尤其是 Anthropic (Claude)——可能会对通过第三方代理路由 API 流量的账户进行暂停或限制。**使用风险自负 (UAYOR)。** 在连接提供商之前，请查阅其服务条款以确认是否允许基于代理的访问。opencodex 维护者不对上游提供商采取的任何账户操作承担责任。
+
 ## 许可证
 
 MIT

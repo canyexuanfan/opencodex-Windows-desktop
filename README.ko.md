@@ -210,6 +210,12 @@ bun x tsc --noEmit   # 타입 체크
 
 **[기여하기](https://lidge-jun.github.io/opencodex/ko/contributing/)** 를 참고하세요.
 
+## 면책 조항
+
+opencodex는 독립적인 커뮤니티 프로젝트이며, **OpenAI, Anthropic 등 어떤 제공업체와도 제휴하거나 보증을 받지 않습니다.**
+
+일부 제공업체 — 특히 Anthropic (Claude) — 는 서드파티 프록시를 통한 API 트래픽 라우팅 시 계정을 정지하거나 제한할 수 있습니다. **사용에 따른 책임은 본인에게 있습니다 (UAYOR).** 제공업체를 연결하기 전에 해당 서비스 약관에서 프록시 기반 접근이 허용되는지 확인하세요. opencodex 유지보수자는 업스트림 제공업체의 계정 조치에 대해 책임을 지지 않습니다.
+
 ## 라이선스
 
 MIT

@@ -244,6 +244,12 @@ bun x tsc --noEmit   # typecheck
 
 See **[Contributing](https://lidge-jun.github.io/opencodex/contributing/)**.
 
+## Disclaimer
+
+opencodex is an independent, community-maintained project and is **not affiliated with or endorsed by OpenAI, Anthropic, or any other provider**.
+
+Some providers — notably Anthropic (Claude) — may suspend or restrict accounts that route API traffic through third-party proxies. **Use at your own risk (UAYOR).** Before connecting a provider, review its Terms of Service to confirm that proxy-based access is permitted. The opencodex maintainers are not responsible for any account actions taken by upstream providers.
+
 ## License
 
 MIT
