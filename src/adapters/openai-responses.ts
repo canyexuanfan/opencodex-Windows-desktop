@@ -60,7 +60,8 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
           if (v) headers[h] = v;                                        // …so forwarded auth always wins.
         }
       } else {
-        url = `${provider.baseUrl}/v1/responses`;
+        const base = provider.baseUrl.replace(/\/v1\/?$/, "");
+        url = `${base}/v1/responses`;
         if (provider.apiKey) headers["Authorization"] = `Bearer ${provider.apiKey}`;
         if (provider.headers) Object.assign(headers, provider.headers);
       }
