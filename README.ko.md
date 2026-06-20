@@ -130,9 +130,24 @@ ocx status                     # 프록시 실행 중인지 확인
 ocx login <xai|anthropic|kimi> # OAuth 로그인
 ocx logout <provider>          # 저장된 로그인 정보 삭제
 ocx gui                        # 웹 대시보드 열기
+ocx codex-shim install         # codex 실행 시 프록시 자동 시작
 ocx service <install|start|stop|status|uninstall>   # 백그라운드 서비스 (launchd/systemd/schtasks)
 ocx update                     # opencodex를 최신 버전으로 업데이트
 ```
+
+### 자동 시작: service vs shim
+
+opencodex에는 프록시를 자동 시작하는 두 가지 방법이 있습니다:
+
+| | `ocx service install` | `ocx codex-shim install` |
+|---|---|---|
+| **방식** | OS 서비스 관리자 (launchd / systemd / schtasks) | `codex` 바이너리를 래퍼 스크립트로 교체 |
+| **시점** | 로그인 후 항상 실행 | 온디맨드 — `codex` 실행 시에만 시작 |
+| **재시작** | 크래시 시 자동 재시작 | `codex` 호출마다 한 번 시작 |
+| **Codex 업데이트** | 영향 없음 | 자동 복구; 새 바이너리를 백업 |
+| **제거** | `ocx service uninstall` | `ocx codex-shim uninstall` |
+
+항상 프록시를 켜두려면 **service** (개발 머신 권장), 가볍게 온디맨드로 쓰려면 **shim**을 사용하세요.
 
 ## 설정
 

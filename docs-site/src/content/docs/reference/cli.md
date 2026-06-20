@@ -90,6 +90,31 @@ ocx service status
 ocx service uninstall
 ```
 
+### `ocx codex-shim <subcommand>`
+
+Replace the `codex` binary on PATH with a lightweight wrapper script that auto-starts the opencodex
+proxy whenever `codex` is launched. The original binary is backed up and restored on uninstall.
+
+If Codex is updated and overwrites the wrapper, the shim auto-repairs on the next `install` call —
+the new binary is backed up and a fresh wrapper is written.
+
+| Subcommand | Action |
+| --- | --- |
+| `install` | Install the shim (or repair if stale). |
+| `uninstall` | Remove the shim and restore the original Codex binary. |
+| `status` | Report shim state (installed / stale / missing). |
+
+```bash
+ocx codex-shim install
+ocx codex-shim status
+ocx codex-shim uninstall
+```
+
+:::tip[Service vs Shim]
+Use `ocx service` for an always-on background proxy (recommended). Use `ocx codex-shim` for
+lightweight, on-demand startup without a daemon — the proxy starts only when `codex` is launched.
+:::
+
 ## Updating
 
 ### `ocx update`

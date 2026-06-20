@@ -127,9 +127,24 @@ ocx status                     # 查看代理是否在运行
 ocx login <xai|anthropic|kimi> # OAuth 登录
 ocx logout <provider>          # 移除已保存的登录
 ocx gui                        # 打开 Web 仪表盘
+ocx codex-shim install         # 运行 codex 时自动启动代理
 ocx service <install|start|stop|status|uninstall>   # 后台服务（launchd/systemd/schtasks）
 ocx update                     # 更新到最新版
 ```
+
+### 自动启动：service vs shim
+
+opencodex 提供两种自动启动代理的方式：
+
+| | `ocx service install` | `ocx codex-shim install` |
+|---|---|---|
+| **方式** | OS 服务管理器（launchd / systemd / schtasks） | 将 `codex` 二进制替换为包装脚本 |
+| **时机** | 登录后始终运行 | 按需 — 仅在运行 `codex` 时启动 |
+| **重启** | 崩溃后自动重启 | 每次调用 `codex` 时启动一次 |
+| **Codex 更新** | 不受影响 | 自动修复；备份新版二进制 |
+| **移除** | `ocx service uninstall` | `ocx codex-shim uninstall` |
+
+如需常驻代理，使用 **service**（推荐开发环境）。轻量按需启动使用 **shim**。
 
 ## 配置
 

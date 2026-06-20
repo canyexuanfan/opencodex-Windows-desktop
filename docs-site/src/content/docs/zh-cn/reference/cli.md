@@ -80,6 +80,31 @@ ocx service status
 ocx service uninstall
 ```
 
+### `ocx codex-shim <subcommand>`
+
+将 PATH 上的 `codex` 二进制替换为轻量级包装脚本，在运行 `codex` 时自动启动 opencodex
+代理。原始二进制会被备份，卸载时自动恢复。
+
+如果 Codex 更新覆盖了包装脚本，下次调用 `install` 时会自动修复——新版二进制会被备份，
+然后写入新的包装脚本。
+
+| Subcommand | Action |
+| --- | --- |
+| `install` | 安装 shim（如果过期则自动修复）。 |
+| `uninstall` | 移除 shim 并恢复原始 Codex 二进制。 |
+| `status` | 报告 shim 状态（已安装 / 过期 / 缺失）。 |
+
+```bash
+ocx codex-shim install
+ocx codex-shim status
+ocx codex-shim uninstall
+```
+
+:::tip[Service vs Shim]
+如需常驻代理，请使用 `ocx service`（推荐）。如需无守护进程的轻量按需启动，
+请使用 `ocx codex-shim`——仅在运行 `codex` 时启动代理。
+:::
+
 ## 帮助
 
 `ocx help`、`ocx --help`、`ocx -h` —— 打印用法和示例。

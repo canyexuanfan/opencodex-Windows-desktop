@@ -90,6 +90,31 @@ ocx service status
 ocx service uninstall
 ```
 
+### `ocx codex-shim <subcommand>`
+
+PATH에 있는 `codex` 바이너리를 래퍼 스크립트로 교체하여, `codex` 실행 시 opencodex 프록시가
+자동으로 시작되도록 합니다. 원본 바이너리는 백업되며 제거 시 복원됩니다.
+
+Codex가 업데이트되어 래퍼를 덮어쓰면, 다음 `install` 호출 시 자동 복구됩니다 — 새 바이너리가
+백업되고 새 래퍼가 작성됩니다.
+
+| Subcommand | Action |
+| --- | --- |
+| `install` | shim을 설치합니다 (stale 상태면 자동 복구). |
+| `uninstall` | shim을 제거하고 원래 Codex 바이너리를 복원합니다. |
+| `status` | shim 상태를 보고합니다 (설치됨 / stale / 없음). |
+
+```bash
+ocx codex-shim install
+ocx codex-shim status
+ocx codex-shim uninstall
+```
+
+:::tip[Service vs Shim]
+항상 프록시를 켜두려면 `ocx service`를 사용하세요 (권장). 데몬 없이 가볍게 온디맨드로
+쓰려면 `ocx codex-shim`을 사용하세요 — `codex` 실행 시에만 프록시가 시작됩니다.
+:::
+
 ## 도움말
 
 `ocx help`, `ocx --help`, `ocx -h` — 사용법과 예제를 출력합니다.

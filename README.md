@@ -157,6 +157,21 @@ ocx service <install|start|stop|status|uninstall>   # background service (launch
 ocx update                     # update opencodex to the latest published version
 ```
 
+### Autostart: service vs shim
+
+opencodex has two ways to auto-start the proxy:
+
+| | `ocx service install` | `ocx codex-shim install` |
+|---|---|---|
+| **How** | OS service manager (launchd / systemd / schtasks) | Replaces the `codex` binary with a wrapper script |
+| **When** | Always running after login | On-demand — starts only when `codex` is launched |
+| **Restart** | Auto-restarts on crash | Starts once per `codex` invocation |
+| **Codex updates** | Unaffected | Shim auto-repairs; backs up the new binary |
+| **Remove** | `ocx service uninstall` | `ocx codex-shim uninstall` |
+
+Use the **service** for always-on proxy (recommended for development machines). Use the **shim** for
+lightweight, on-demand proxy startup without a background daemon.
+
 ## Configuration
 
 Config lives at `~/.opencodex/config.json`. Here's a typical multi-provider setup:
