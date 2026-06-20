@@ -123,7 +123,7 @@ function ensureStrictCatalogFields(entry: RawEntry): RawEntry {
   if (!entry.truncation_policy || typeof entry.truncation_policy !== "object" || Array.isArray(entry.truncation_policy)) {
     entry.truncation_policy = { mode: "tokens", limit: 10000 };
   }
-  if (typeof entry.supports_parallel_tool_calls !== "boolean") entry.supports_parallel_tool_calls = false;
+  entry.supports_parallel_tool_calls = false;
   if (typeof entry.supports_image_detail_original !== "boolean") entry.supports_image_detail_original = false;
   if (!Array.isArray(entry.experimental_supported_tools)) entry.experimental_supported_tools = [];
   if (!Array.isArray(entry.input_modalities)) entry.input_modalities = ["text"];
