@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { createAnthropicAdapter } from "./adapters/anthropic";
+import { createAnthropicSdkAdapter } from "./adapters/anthropic-sdk";
 import { createAzureAdapter } from "./adapters/azure";
 import { createGoogleAdapter } from "./adapters/google";
 import { createOpenAIChatAdapter } from "./adapters/openai-chat";
@@ -92,6 +93,8 @@ export function resolveAdapter(providerConfig: OcxProviderConfig) {
       return createOpenAIChatAdapter(providerConfig);
     case "anthropic":
       return createAnthropicAdapter(providerConfig);
+    case "anthropic-sdk":
+      return createAnthropicSdkAdapter(providerConfig);
     case "openai-responses":
       return createResponsesPassthroughAdapter(providerConfig);
     case "google":
