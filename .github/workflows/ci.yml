@@ -2,22 +2,24 @@ name: Cross-platform CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - "src/**"
       - "tests/**"
       - "scripts/**"
+      - "gui/**"
       - "package.json"
       - "bun.lock"
       - "tsconfig.json"
       - ".github/workflows/ci.yml"
       - ".github/workflows/release.yml"
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - "src/**"
       - "tests/**"
       - "scripts/**"
+      - "gui/**"
       - "package.json"
       - "bun.lock"
       - "tsconfig.json"
@@ -61,6 +63,9 @@ jobs:
 
       - name: Check release helper syntax
         run: bun build scripts/release.ts --target=bun --outdir=.tmp/ci-release-script-check
+
+      - name: GUI build
+        run: cd gui && bun run build
 
       - name: CLI help smoke
         run: bun run src/cli.ts help

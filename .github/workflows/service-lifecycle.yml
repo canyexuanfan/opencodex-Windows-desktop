@@ -65,7 +65,8 @@ jobs:
             if systemctl --user is-active opencodex-proxy 2>/dev/null; then
               echo "✅ Service restarted after crash"
             else
-              echo "⚠️  Service did not restart (may need lingering)"
+              echo "❌ Service did not restart after crash"
+              exit 1
             fi
           fi
 
