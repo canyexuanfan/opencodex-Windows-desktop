@@ -396,10 +396,7 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
   }
 
   if (url.pathname === "/api/config" && req.method === "PUT") {
-    const body = await req.json() as OcxConfig;
-    const { saveConfig: save } = await import("./config");
-    save(body);
-    return jsonResponse({ success: true });
+    return jsonResponse({ error: "Full config PUT is disabled. Use /api/providers POST for provider changes." }, 405);
   }
 
   if (url.pathname === "/api/logs" && req.method === "GET") {
