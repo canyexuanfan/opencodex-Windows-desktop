@@ -175,7 +175,8 @@ export function createAnthropicAdapter(provider: OcxProviderConfig): ProviderAda
         else if (typeof tc === "object" && "name" in tc) body.tool_choice = { type: "tool", name: isOAuth ? applyClaudeToolPrefix(tc.name) : tc.name };
       }
 
-      const url = `${provider.baseUrl}/v1/messages`;
+      const base = provider.baseUrl.replace(/\/v1\/?$/, "");
+      const url = `${base}/v1/messages`;
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
         "anthropic-version": "2023-06-01",
