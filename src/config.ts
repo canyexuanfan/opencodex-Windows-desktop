@@ -53,9 +53,9 @@ export function loadConfig(): OcxConfig {
 
 export function saveConfig(config: OcxConfig): void {
   if (!existsSync(OCX_DIR)) {
-    mkdirSync(OCX_DIR, { recursive: true });
+    mkdirSync(OCX_DIR, { recursive: true, mode: 0o700 });
   }
-  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf-8");
+  atomicWriteFile(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n");
 }
 
 export function websocketsEnabled(config: Pick<OcxConfig, "websockets">): boolean {
