@@ -249,7 +249,10 @@ async function handleResponses(
     const sseStream = bridgeToResponsesSSE(
       eventStream, parsed.modelId, toolNsMap, freeformToolNames, toolSearchToolNames,
       () => upstream.abort(), 2_000,
-      options.forceEmptyResponseId ? { responseId: "" } : undefined,
+      {
+        ...(options.forceEmptyResponseId ? { responseId: "" } : {}),
+        stallTimeoutSec: config.stallTimeoutSec,
+      },
     );
     return new Response(sseStream, {
       headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no" },

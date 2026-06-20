@@ -43,7 +43,7 @@ export function bridgeToResponsesSSE(
   toolSearchToolNames?: Set<string>,
   onCancel?: () => void,
   heartbeatMs = 2_000,
-  options?: { responseId?: string },
+  options?: { responseId?: string; stallTimeoutSec?: number },
 ): ReadableStream<Uint8Array> {
   // Freeform/custom tools (apply_patch) carry their body in `input`; the model is given a
   // function with `{input:string}`, so unwrap it here when relaying back as a custom_tool_call.
@@ -104,7 +104,8 @@ export function bridgeToResponsesSSE(
       // whenever a real event was emitted since the last tick, so it only fires on a genuine stall.
       const heartbeatFrame = encoder.encode('event: response.heartbeat\ndata: {"type":"response.heartbeat"}\n\n');
       let stallTicks = 0;
-      const maxStallTicks = 150; // 5 min at default 2 s interval
+      const stallSec = Math.max(10, options?.stallTimeoutSec ?? 90);
+      const maxStallTicks = Math.ceil((stallSec * 1000) / heartbeatMs);
       beat = setInterval(() => {
         if (closed) return;
         if (activity) { activity = false; stallTicks = 0; return; }
