@@ -166,7 +166,7 @@ opencodex has two ways to auto-start the proxy:
 | **How** | OS service manager (launchd / systemd / schtasks) | Replaces the `codex` binary with a wrapper script |
 | **When** | Always running after login | On-demand — starts only when `codex` is launched |
 | **Restart** | Auto-restarts on crash | Starts once per `codex` invocation |
-| **Codex updates** | Unaffected | Shim auto-repairs; backs up the new binary |
+| **Codex updates** | Unaffected | Repairs on next `ocx codex-shim install` or `ocx update` |
 | **Remove** | `ocx service uninstall` | `ocx codex-shim uninstall` |
 
 Use the **service** for always-on proxy (recommended for development machines). Use the **shim** for

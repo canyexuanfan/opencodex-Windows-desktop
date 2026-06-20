@@ -115,6 +115,15 @@ function writeShim(wrapperPath: string, realCodexPath: string): void {
 export function installCodexShim(): { installed: boolean; message: string } {
   const existing = readState();
   if (existing && existsSync(existing.wrapperPath) && existsSync(existing.backupPath) && isShim(existing.wrapperPath)) {
+    if (process.platform === "win32" && existing.originalPath && existsSync(existing.originalPath)) {
+      renameSync(existing.originalPath, existing.backupPath);
+      writeShim(existing.wrapperPath, existing.backupPath);
+      writeState({ ...existing, platform: process.platform });
+      return {
+        installed: true,
+        message: `Codex update detected. Backed up new binary and refreshed shim at ${existing.wrapperPath}.`,
+      };
+    }
     return { installed: false, message: `Codex autostart shim already installed at ${existing.wrapperPath}.` };
   }
   if (existing && existsSync(existing.backupPath) && (!existsSync(existing.wrapperPath) || !isShim(existing.wrapperPath))) {

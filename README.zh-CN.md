@@ -141,7 +141,7 @@ opencodex 提供两种自动启动代理的方式：
 | **方式** | OS 服务管理器（launchd / systemd / schtasks） | 将 `codex` 二进制替换为包装脚本 |
 | **时机** | 登录后始终运行 | 按需 — 仅在运行 `codex` 时启动 |
 | **重启** | 崩溃后自动重启 | 每次调用 `codex` 时启动一次 |
-| **Codex 更新** | 不受影响 | 自动修复；备份新版二进制 |
+| **Codex 更新** | 不受影响 | 下次运行 `ocx codex-shim install` 或 `ocx update` 时修复 |
 | **移除** | `ocx service uninstall` | `ocx codex-shim uninstall` |
 
 如需常驻代理，使用 **service**（推荐开发环境）。轻量按需启动使用 **shim**。
