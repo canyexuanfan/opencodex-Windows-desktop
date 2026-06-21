@@ -14,6 +14,7 @@ describe("Codex autostart shim", () => {
     expect(script).toContain("status");
     expect(script).toContain("OCX_SERVICE=1");
     expect(script).toContain("start");
+    expect(script).toContain("sync-cache");
     expect(script).toContain('exec "/usr/local/bin/codex-real" "$@"');
   });
 
@@ -23,6 +24,7 @@ describe("Codex autostart shim", () => {
     expect(script).toContain(SHIM_MARKER);
     expect(script).toContain("findstr");
     expect(script).toContain("OCX_SERVICE=1");
+    expect(script).toContain("sync-cache");
     expect(script).toContain('"C:\\Tools\\codex-real.exe" %*');
   });
 

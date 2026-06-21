@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { atomicWriteFile, websocketsEnabled } from "./config";
 import { restoreCodexCatalog } from "./codex-catalog";
+import { syncCodexHistoryProvider } from "./codex-history-provider";
 import { CODEX_CONFIG_PATH, CODEX_PROFILE_PATH, DEFAULT_CATALOG_PATH, parseTomlString, readRootTomlString, resolveCodexConfigPath, tomlString } from "./codex-paths";
 import type { OcxConfig } from "./types";
 
@@ -228,14 +229,19 @@ export async function injectCodexConfig(port: number, config?: OcxConfig, option
 
   writeFileSync(CODEX_CONFIG_PATH, content, "utf-8");
   writeFileSync(CODEX_PROFILE_PATH, buildProfileFile(port, catalogPath), "utf-8");
+  const history = syncCodexHistoryProvider("opencodex");
 
   const catalogMessage = catalogPath
     ? `  Codex model catalog: ${catalogPath}\n`
     : `  Codex model catalog not injected because no opencodex catalog file exists yet.\n`;
+  const historyMessage = history.rows > 0
+    ? `  Codex resume history: ${history.rows} thread(s) mapped to opencodex.\n`
+    : "";
   return {
     success: true,
     message: `Injected opencodex as default provider into Codex config.\n` +
       catalogMessage +
+      historyMessage +
       `  All models now route through opencodex proxy (like OpenRouter).\n` +
       `  OpenAI models (gpt-5.5, etc.) are passed through to OpenAI.\n` +
       `  Custom models route to their configured providers.\n` +
@@ -311,10 +317,12 @@ export function removeCodexConfig(): { success: boolean; message: string } {
 export function restoreNativeCodex(): { success: boolean; message: string } {
   const cfg = removeCodexConfig();
   const cat = restoreCodexCatalog();
+  const history = syncCodexHistoryProvider("openai");
   const msg = cat.removed > 0
     ? `${cfg.message} Catalog restored to ${cat.kept} native model(s) (dropped ${cat.removed} proxy-routed).`
     : cfg.message;
-  return { success: cfg.success, message: msg };
+  const historyMsg = history.rows > 0 ? ` Resume history restored to openai (${history.rows} thread(s)).` : "";
+  return { success: cfg.success, message: `${msg}${historyMsg}` };
 }
 
 export function getCodexConfigPath(): string {

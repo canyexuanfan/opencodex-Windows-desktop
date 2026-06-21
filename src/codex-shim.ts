@@ -66,6 +66,7 @@ if [ -z "$OCX_SHIM_BYPASS" ]; then
       i=$((i + 1))
     done
   fi
+  "${bunPath}" "${cliPath}" sync-cache >/dev/null 2>&1 || true
 fi
 exec "${realCodexPath}" "$@"
 `;
@@ -85,6 +86,7 @@ for /l %%i in (1,1,50) do (\r
   powershell -NoProfile -Command "Start-Sleep -Milliseconds 100" >nul 2>nul\r
 )\r
 :run_codex\r
+"${bunPath}" "${cliPath}" sync-cache >nul 2>nul\r
 "${realCodexPath}" %*\r
 `;
 }

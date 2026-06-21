@@ -20,6 +20,7 @@ Usage:
   ocx service <sub>           Run as a background service (install|start|stop|status|uninstall)
   ocx codex-shim <sub>        Auto-start proxy when \`codex\` launches (install|status|uninstall)
   ocx sync                    Fetch models from providers and inject into Codex config
+  ocx sync-cache              Refresh Codex's model cache from the active catalog
   ocx status                  Check proxy server status
   ocx login <provider>        OAuth login (xai) — opens browser, stores token in ~/.opencodex/auth.json
   ocx logout <provider>       Remove a stored OAuth login
@@ -199,6 +200,11 @@ switch (command) {
   }
   case "sync": {
     await syncModelsToCodex();
+    break;
+  }
+  case "sync-cache": {
+    const { invalidateCodexModelsCache } = await import("./codex-catalog");
+    invalidateCodexModelsCache();
     break;
   }
   case "gui": {
