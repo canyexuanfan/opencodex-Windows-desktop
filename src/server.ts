@@ -435,8 +435,7 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
       return jsonResponse({ error: "codexAutoStart boolean is required" }, 400);
     }
     config.codexAutoStart = body.codexAutoStart;
-    const { saveConfig: save } = await import("./config");
-    save(config);
+    saveConfig(config);
     return jsonResponse({ ok: true, codexAutoStart: codexAutoStartEnabled(config) });
   }
 

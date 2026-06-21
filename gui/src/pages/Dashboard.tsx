@@ -82,6 +82,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       setSettings(prev => prev ? { ...prev, codexAutoStart: data.codexAutoStart } : prev);
     } catch {
       setSettings(prev => prev ? { ...prev, codexAutoStart: !next } : prev);
+      setError(true);
     } finally {
       setSettingsSaving(false);
     }
