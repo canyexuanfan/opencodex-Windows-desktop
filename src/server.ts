@@ -252,6 +252,7 @@ async function handleResponses(
       {
         ...(options.forceEmptyResponseId ? { responseId: "" } : {}),
         stallTimeoutSec: config.stallTimeoutSec,
+        hideThinkingSummary: parsed.options.hideThinkingSummary,
       },
     );
     return new Response(sseStream, {
@@ -261,7 +262,14 @@ async function handleResponses(
 
   if (adapter.parseResponse) {
     const events = await adapter.parseResponse(upstreamResponse);
-    const json = buildResponseJSON(events, parsed.modelId);
+    const toolNsMap = new Map<string, { namespace: string; name: string }>();
+    for (const t of parsed.context.tools ?? []) {
+      if (t.namespace) toolNsMap.set(namespacedToolName(t.namespace, t.name), { namespace: t.namespace, name: t.name });
+    }
+    const json = buildResponseJSON(events, parsed.modelId, {
+      hideThinkingSummary: parsed.options.hideThinkingSummary,
+      toolNsMap,
+    });
     return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
   }
 

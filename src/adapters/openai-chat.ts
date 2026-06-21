@@ -182,6 +182,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         body.frequency_penalty = parsed.options.frequencyPenalty;
       }
 
+      if (tools) body.parallel_tool_calls = false;
       if (parsed.stream) {
         body.stream_options = { include_usage: true };
       }

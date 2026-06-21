@@ -177,15 +177,15 @@ function outputToToolResultContent(output: string | unknown[] | undefined): stri
   return parts;
 }
 
-function findToolNameById(messages: OcxMessage[], callId: string): string {
+function findToolById(messages: OcxMessage[], callId: string): { name: string; namespace?: string } {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m.role !== "assistant") continue;
     for (const part of m.content) {
-      if (part.type === "toolCall" && part.id === callId) return part.name;
+      if (part.type === "toolCall" && part.id === callId) return { name: part.name, namespace: part.namespace };
     }
   }
-  return "";
+  return { name: "" };
 }
 
 const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -327,9 +327,10 @@ export function parseRequest(body: unknown): OcxParsedRequest {
 
       if (effectiveType === "function_call_output") {
         const output = item as { call_id: string; output?: string | unknown[] };
+        const toolInfo = findToolById(messages, output.call_id);
         messages.push({
           role: "toolResult", toolCallId: output.call_id,
-          toolName: findToolNameById(messages, output.call_id),
+          toolName: toolInfo.name, toolNamespace: toolInfo.namespace,
           content: outputToToolResultContent(output.output), isError: false, timestamp: now,
         });
         continue;
@@ -337,9 +338,10 @@ export function parseRequest(body: unknown): OcxParsedRequest {
 
       if (effectiveType === "custom_tool_call_output") {
         const output = item as { call_id: string; output: string };
+        const toolInfo = findToolById(messages, output.call_id);
         messages.push({
           role: "toolResult", toolCallId: output.call_id,
-          toolName: findToolNameById(messages, output.call_id),
+          toolName: toolInfo.name, toolNamespace: toolInfo.namespace,
           content: output.output ?? "", isError: false, timestamp: now,
         });
       }

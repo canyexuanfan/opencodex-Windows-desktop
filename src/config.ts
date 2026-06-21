@@ -54,6 +54,8 @@ export function loadConfig(): OcxConfig {
 export function saveConfig(config: OcxConfig): void {
   if (!existsSync(OCX_DIR)) {
     mkdirSync(OCX_DIR, { recursive: true, mode: 0o700 });
+  } else {
+    try { chmodSync(OCX_DIR, 0o700); } catch { /* best-effort on existing dir */ }
   }
   atomicWriteFile(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n");
 }
@@ -90,7 +92,7 @@ export function resolveEnvValue(value: string | undefined): string | undefined {
 }
 
 export function writePid(pid: number): void {
-  if (!existsSync(OCX_DIR)) mkdirSync(OCX_DIR, { recursive: true });
+  if (!existsSync(OCX_DIR)) mkdirSync(OCX_DIR, { recursive: true, mode: 0o700 });
   writeFileSync(PID_PATH, String(pid), "utf-8");
 }
 

@@ -10,6 +10,7 @@ import type {
   OcxToolCall,
   OcxUsage,
 } from "../types";
+import { namespacedToolName } from "../types";
 import { contentPartsToText, parseDataUrl } from "./image";
 
 function messagesToGeminiFormat(parsed: OcxParsedRequest): { systemInstruction?: unknown; contents: unknown[] } {
@@ -46,7 +47,7 @@ function messagesToGeminiFormat(parsed: OcxParsedRequest): { systemInstruction?:
           if (p.type === "text") parts.push({ text: (p as OcxTextContent).text });
           else if (p.type === "toolCall") {
             const tc = p as OcxToolCall;
-            parts.push({ functionCall: { name: tc.name, args: tc.arguments } });
+            parts.push({ functionCall: { name: namespacedToolName(tc.namespace, tc.name), args: tc.arguments } });
           }
         }
         contents.push({ role: "model", parts });
@@ -55,7 +56,7 @@ function messagesToGeminiFormat(parsed: OcxParsedRequest): { systemInstruction?:
       case "toolResult": {
         contents.push({
           role: "user",
-          parts: [{ functionResponse: { name: msg.toolName, response: { result: contentPartsToText(msg.content) } } }],
+          parts: [{ functionResponse: { name: namespacedToolName(msg.toolNamespace, msg.toolName), response: { result: contentPartsToText(msg.content) } } }],
         });
         break;
       }
@@ -69,7 +70,7 @@ function toolsToGeminiFormat(parsed: OcxParsedRequest): unknown[] | undefined {
   if (!parsed.context.tools?.length) return undefined;
   return [{
     functionDeclarations: parsed.context.tools.map(t => ({
-      name: t.name,
+      name: namespacedToolName(t.namespace, t.name),
       description: t.description,
       parameters: t.parameters,
     })),

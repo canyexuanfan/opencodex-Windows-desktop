@@ -12,6 +12,7 @@ import type {
   OcxToolCall,
   OcxUsage,
 } from "../types";
+import { namespacedToolName } from "../types";
 import { ANTHROPIC_OAUTH_BETA, CLAUDE_CODE_SYSTEM_INSTRUCTION, applyClaudeToolPrefix, stripClaudeToolPrefix } from "../oauth/anthropic";
 import { parseDataUrl } from "./image";
 
@@ -85,7 +86,8 @@ function messagesToAnthropicFormat(parsed: OcxParsedRequest, isOAuth: boolean): 
             content.push({ type: "thinking", thinking: t.thinking, ...(t.signature ? { signature: t.signature } : {}) });
           } else if (part.type === "toolCall") {
             const tc = part as OcxToolCall;
-            content.push({ type: "tool_use", id: tc.id, name: isOAuth ? applyClaudeToolPrefix(tc.name) : tc.name, input: tc.arguments });
+            const flatName = namespacedToolName(tc.namespace, tc.name);
+            content.push({ type: "tool_use", id: tc.id, name: isOAuth ? applyClaudeToolPrefix(flatName) : flatName, input: tc.arguments });
           }
         }
         messages.push({ role: "assistant", content });
@@ -116,7 +118,7 @@ function messagesToAnthropicFormat(parsed: OcxParsedRequest, isOAuth: boolean): 
 function toolsToAnthropicFormat(parsed: OcxParsedRequest, isOAuth: boolean): unknown[] | undefined {
   if (!parsed.context.tools || parsed.context.tools.length === 0) return undefined;
   return parsed.context.tools.map(t => ({
-    name: isOAuth ? applyClaudeToolPrefix(t.name) : t.name,
+    name: isOAuth ? applyClaudeToolPrefix(namespacedToolName(t.namespace, t.name)) : namespacedToolName(t.namespace, t.name),
     description: t.description,
     input_schema: t.parameters,
   }));

@@ -54,6 +54,8 @@ export interface OcxToolResultMessage {
   role: "toolResult";
   toolCallId: string;
   toolName: string;
+  /** MCP namespace from the originating tool call, if any. */
+  toolNamespace?: string;
   /** Text, or content parts when a tool (e.g. Codex view_image) returns an image in its output. */
   content: string | OcxContentPart[];
   isError: boolean;

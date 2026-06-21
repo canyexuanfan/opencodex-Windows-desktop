@@ -43,7 +43,7 @@ export function bridgeToResponsesSSE(
   toolSearchToolNames?: Set<string>,
   onCancel?: () => void,
   heartbeatMs = 2_000,
-  options?: { responseId?: string; stallTimeoutSec?: number },
+  options?: { responseId?: string; stallTimeoutSec?: number; hideThinkingSummary?: boolean },
 ): ReadableStream<Uint8Array> {
   // Freeform/custom tools (apply_patch) carry their body in `input`; the model is given a
   // function with `{input:string}`, so unwrap it here when relaying back as a custom_tool_call.
@@ -257,6 +257,7 @@ export function bridgeToResponsesSSE(
               break;
             }
             case "thinking_delta": {
+              if (options?.hideThinkingSummary) break;
               if (currentMsg) closeCurrentMessage();
               if (currentRawReasoning) closeCurrentRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
@@ -407,6 +408,10 @@ export function bridgeToResponsesSSE(
 export function buildResponseJSON(
   events: AdapterEvent[],
   modelId: string,
+  options?: {
+    hideThinkingSummary?: boolean;
+    toolNsMap?: Map<string, { namespace: string; name: string }>;
+  },
 ): Record<string, unknown> {
   const responseId = `resp_${uuid()}`;
   const output: OutputItem[] = [];
@@ -414,13 +419,41 @@ export function buildResponseJSON(
   let summaryReasoning = "";
   let rawReasoning = "";
   let usage: OcxUsage | undefined;
+  let currentToolCallId = "";
+  let currentToolCallName = "";
+  let currentToolCallArgs = "";
+
+  const flushToolCall = () => {
+    if (!currentToolCallId) return;
+    const mapped = options?.toolNsMap?.get(currentToolCallName);
+    const realName = mapped?.name ?? currentToolCallName;
+    const ns = mapped?.namespace;
+    output.push({
+      type: "function_call", id: `fc_${uuid()}`,
+      call_id: currentToolCallId, name: realName,
+      arguments: currentToolCallArgs || "{}", status: "completed",
+      ...(ns ? { namespace: ns } : {}),
+    });
+    currentToolCallId = "";
+    currentToolCallName = "";
+    currentToolCallArgs = "";
+  };
 
   for (const e of events) {
     if (e.type === "text_delta") text += e.text;
     if (e.type === "thinking_delta") summaryReasoning += e.thinking;
     if (e.type === "reasoning_raw_delta") rawReasoning += e.text;
+    if (e.type === "tool_call_start") {
+      flushToolCall();
+      currentToolCallId = e.id;
+      currentToolCallName = e.name;
+      currentToolCallArgs = "";
+    }
+    if (e.type === "tool_call_delta") currentToolCallArgs += e.arguments;
+    if (e.type === "tool_call_end") flushToolCall();
     if (e.type === "done") usage = e.usage;
   }
+  flushToolCall();
 
   if (rawReasoning) {
     output.push({
@@ -429,7 +462,7 @@ export function buildResponseJSON(
     });
   }
 
-  if (summaryReasoning) {
+  if (summaryReasoning && !options?.hideThinkingSummary) {
     output.push({
       type: "reasoning", id: `rs_${uuid()}`,
       summary: [{ type: "summary_text", text: summaryReasoning }],
