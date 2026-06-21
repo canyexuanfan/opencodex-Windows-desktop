@@ -54,6 +54,7 @@ export function hardenExistingSecret(path: string): void {
 export function loadConfig(): OcxConfig {
   hardenConfigDir();
   hardenExistingSecret(CONFIG_PATH);
+  hardenExistingSecret(join(OCX_DIR, "auth.json"));
   if (!existsSync(CONFIG_PATH)) {
     return getDefaultConfig();
   }
