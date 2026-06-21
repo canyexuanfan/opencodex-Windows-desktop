@@ -512,6 +512,37 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
     return jsonResponse({ ok: true, codexAutoStart: codexAutoStartEnabled(config) });
   }
 
+  if (url.pathname === "/api/sidecar-settings" && req.method === "GET") {
+    const ws = config.webSearchSidecar ?? {};
+    const vs = config.visionSidecar ?? {};
+    return jsonResponse({
+      webSearch: { model: ws.model ?? "gpt-5.4-mini", reasoning: ws.reasoning ?? "low" },
+      vision: { model: vs.model ?? "gpt-5.4-mini" },
+    });
+  }
+
+  if (url.pathname === "/api/sidecar-settings" && req.method === "PUT") {
+    let body: { webSearch?: { model?: string; reasoning?: string }; vision?: { model?: string } };
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (body.webSearch) {
+      config.webSearchSidecar = { ...config.webSearchSidecar };
+      if (typeof body.webSearch.model === "string") config.webSearchSidecar.model = body.webSearch.model;
+      if (typeof body.webSearch.reasoning === "string") config.webSearchSidecar.reasoning = body.webSearch.reasoning;
+    }
+    if (body.vision) {
+      config.visionSidecar = { ...config.visionSidecar };
+      if (typeof body.vision.model === "string") config.visionSidecar.model = body.vision.model;
+    }
+    saveConfig(config);
+    const ws = config.webSearchSidecar ?? {};
+    const vs = config.visionSidecar ?? {};
+    return jsonResponse({
+      ok: true,
+      webSearch: { model: ws.model ?? "gpt-5.4-mini", reasoning: ws.reasoning ?? "low" },
+      vision: { model: vs.model ?? "gpt-5.4-mini" },
+    });
+  }
+
   if (url.pathname === "/api/logs" && req.method === "GET") {
     return jsonResponse(requestLog);
   }
