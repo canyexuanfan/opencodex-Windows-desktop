@@ -375,7 +375,8 @@ export function parseRequest(body: unknown): OcxParsedRequest {
   if (data.reasoning?.effort && REASONING_EFFORTS.has(data.reasoning.effort)) {
     options.reasoning = data.reasoning.effort;
   }
-  if (data.reasoning?.summary === "none") options.hideThinkingSummary = true;
+  const summaryMode = data.reasoning?.summary;
+  if (!summaryMode || summaryMode === "none") options.hideThinkingSummary = true;
   if (data.presence_penalty !== undefined) options.presencePenalty = data.presence_penalty;
   if (data.frequency_penalty !== undefined) options.frequencyPenalty = data.frequency_penalty;
 

@@ -123,7 +123,7 @@ function ensureStrictCatalogFields(entry: RawEntry): RawEntry {
   if (!entry.truncation_policy || typeof entry.truncation_policy !== "object" || Array.isArray(entry.truncation_policy)) {
     entry.truncation_policy = { mode: "tokens", limit: 10000 };
   }
-  entry.supports_parallel_tool_calls = false;
+  if (typeof entry.supports_parallel_tool_calls !== "boolean") entry.supports_parallel_tool_calls = true;
   if (typeof entry.supports_image_detail_original !== "boolean") entry.supports_image_detail_original = false;
   if (!Array.isArray(entry.experimental_supported_tools)) entry.experimental_supported_tools = [];
   if (!Array.isArray(entry.input_modalities)) entry.input_modalities = ["text"];
@@ -150,6 +150,7 @@ export function normalizeRoutedCatalogEntry(entry: RawEntry): RawEntry {
   // runs through native gpt-5.4-mini, so image search is available and verbalized for text-only models.
   entry.web_search_tool_type = "text_and_image";
   entry.supports_search_tool = true;
+  entry.supports_parallel_tool_calls = false;
   return ensureStrictCatalogFields(entry);
 }
 

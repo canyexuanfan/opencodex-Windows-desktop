@@ -183,16 +183,21 @@ async function handleResponses(
     // whose cancel() aborts the upstream — preventing leaked connections (RC2, passthrough path).
     const upstream = new AbortController();
     linkAbortSignal(upstream, options.abortSignal);
+    const connectMs = config.connectTimeoutMs ?? 30_000;
     let upstreamResponse: Response;
     try {
       upstreamResponse = await fetch(request.url, {
         method: request.method,
         headers: request.headers,
         body: request.body,
-        signal: upstream.signal,
+        signal: AbortSignal.any([upstream.signal, AbortSignal.timeout(connectMs)]),
       });
     } catch (err) {
-      return formatErrorResponse(502, "upstream_error", `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`);
+      upstream.abort();
+      const msg = err instanceof Error && err.name === "TimeoutError"
+        ? `Provider connect timeout after ${connectMs}ms`
+        : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
+      return formatErrorResponse(502, "upstream_error", msg);
     }
     return new Response(relayWithAbort(upstreamResponse.body, upstream), {
       status: upstreamResponse.status,
@@ -220,15 +225,21 @@ async function handleResponses(
 
   const upstream = new AbortController();
   linkAbortSignal(upstream, options.abortSignal);
+  const connectMs = config.connectTimeoutMs ?? 30_000;
 
   const request = adapter.buildRequest(parsed, { headers: req.headers });
   let upstreamResponse: Response;
   try {
     upstreamResponse = await fetch(request.url, {
-      method: request.method, headers: request.headers, body: request.body, signal: upstream.signal,
+      method: request.method, headers: request.headers, body: request.body,
+      signal: AbortSignal.any([upstream.signal, AbortSignal.timeout(connectMs)]),
     });
   } catch (err) {
-    return formatErrorResponse(502, "upstream_error", `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`);
+    upstream.abort();
+    const msg = err instanceof Error && err.name === "TimeoutError"
+      ? `Provider connect timeout after ${connectMs}ms`
+      : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
+    return formatErrorResponse(502, "upstream_error", msg);
   }
 
   if (!upstreamResponse.ok) {
