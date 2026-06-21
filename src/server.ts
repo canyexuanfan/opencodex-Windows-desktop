@@ -186,12 +186,11 @@ async function handleResponses(
     const connectMs = config.connectTimeoutMs ?? 30_000;
     let upstreamResponse: Response;
     try {
-      upstreamResponse = await fetch(request.url, {
+      upstreamResponse = await fetchWithHeaderTimeout(request.url, {
         method: request.method,
         headers: request.headers,
         body: request.body,
-        signal: AbortSignal.any([upstream.signal, AbortSignal.timeout(connectMs)]),
-      });
+      }, upstream.signal, connectMs);
     } catch (err) {
       upstream.abort();
       const msg = err instanceof Error && err.name === "TimeoutError"
@@ -235,10 +234,9 @@ async function handleResponses(
   const request = adapter.buildRequest(parsed, { headers: req.headers });
   let upstreamResponse: Response;
   try {
-    upstreamResponse = await fetch(request.url, {
+    upstreamResponse = await fetchWithHeaderTimeout(request.url, {
       method: request.method, headers: request.headers, body: request.body,
-      signal: AbortSignal.any([upstream.signal, AbortSignal.timeout(connectMs)]),
-    });
+    }, upstream.signal, connectMs);
   } catch (err) {
     upstream.abort();
     const msg = err instanceof Error && err.name === "TimeoutError"
@@ -305,6 +303,26 @@ export function linkAbortSignal(upstream: AbortController, signal?: AbortSignal)
     return;
   }
   signal.addEventListener("abort", () => upstream.abort(signal.reason), { once: true });
+}
+
+async function fetchWithHeaderTimeout(
+  url: string,
+  init: Omit<RequestInit, "signal">,
+  abortSignal: AbortSignal,
+  timeoutMs: number,
+): Promise<Response> {
+  const timeout = new AbortController();
+  const timer = setTimeout(() => {
+    if (!timeout.signal.aborted) timeout.abort(new DOMException("Timeout elapsed", "TimeoutError"));
+  }, timeoutMs);
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: AbortSignal.any([abortSignal, timeout.signal]),
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const requestLog: { timestamp: number; model: string; provider: string; status: number; durationMs: number }[] = [];
