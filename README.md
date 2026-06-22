@@ -243,6 +243,10 @@ Local models work too. Point opencodex at any OpenAI-compatible server running o
 
 WebSocket transport is off by default. Set `"websockets": true` only if you want Codex to advertise and use the Responses WebSocket path instead of HTTP/SSE.
 
+opencodex leaves existing Codex resume history untouched by default so Codex App project chats keep
+showing up under their original provider. If you explicitly want old OpenAI-backed threads to be
+remapped to the opencodex provider while the proxy is active, set `"syncResumeHistory": true`.
+
 See the **[Configuration reference](https://lidge-jun.github.io/opencodex/reference/configuration/)** for every field.
 
 ## Documentation

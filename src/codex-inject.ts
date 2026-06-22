@@ -229,7 +229,9 @@ export async function injectCodexConfig(port: number, config?: OcxConfig, option
 
   writeFileSync(CODEX_CONFIG_PATH, content, "utf-8");
   writeFileSync(CODEX_PROFILE_PATH, buildProfileFile(port, catalogPath), "utf-8");
-  const history = syncCodexHistoryProvider("opencodex");
+  const history = config?.syncResumeHistory === true
+    ? syncCodexHistoryProvider("opencodex")
+    : { rows: 0, files: 0 };
 
   const catalogMessage = catalogPath
     ? `  Codex model catalog: ${catalogPath}\n`
