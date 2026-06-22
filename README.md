@@ -132,6 +132,7 @@ Routed models also appear in the **Codex App** model picker with per-model reaso
 |---|---|---|
 | OpenAI (ChatGPT login) | `openai-responses` | forward (no key) |
 | OpenAI (API key) | `openai-responses` | key |
+| Umans AI Coding Plan | `anthropic` | key |
 | Anthropic Claude | `anthropic` | oauth / key |
 | xAI Grok | `openai-chat` | oauth / key |
 | Kimi (Moonshot) | `openai-chat` | oauth / key |

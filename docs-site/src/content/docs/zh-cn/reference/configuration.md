@@ -36,6 +36,7 @@ opencodex 通过 `~/.opencodex/config.json` 进行配置。它由 `ocx init` 和
 | `authMode?` | `"key" \| "forward" \| "oauth"` | 认证方式(默认 `key`)。见 [Providers](/opencodex/zh-cn/guides/providers/#auth-modes)。 |
 | `noReasoningModels?` | `string[]` | 会拒绝 reasoning/thinking 参数的模型 —— adapter 会为它们丢弃 `reasoning_effort`。 |
 | `noVisionModels?` | `string[]` | 纯文本模型 —— [视觉 sidecar](/opencodex/zh-cn/guides/sidecars/) 会为它们描述图像。匹配时可容忍 Ollama 的 `:size` 标签。 |
+| `escapeBuiltinToolNames?` | `boolean` | Umans 等 Anthropic 兼容网关可能要求在 wire 上转义工具名；opencodex 会在把 tool call 返回给 Codex 前移除前缀。 |
 
 ## Sidecars
 

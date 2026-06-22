@@ -38,6 +38,7 @@ opencodex는 `~/.opencodex/config.json`으로 설정됩니다. 이 파일은 `oc
 | `authMode?` | `"key" \| "forward" \| "oauth"` | 인증 방식 (기본 `key`). [프로바이더](/opencodex/ko/guides/providers/#auth-modes) 참조. |
 | `noReasoningModels?` | `string[]` | reasoning/thinking 파라미터를 거부하는 모델 — 어댑터가 이들에 대해 `reasoning_effort`를 제거함. |
 | `noVisionModels?` | `string[]` | 텍스트 전용 모델 — [비전 사이드카](/opencodex/ko/guides/sidecars/)가 이들을 위해 이미지를 설명함. 매칭 시 Ollama의 `:size` 태그를 허용함. |
+| `escapeBuiltinToolNames?` | `boolean` | Umans 같은 Anthropic 호환 게이트웨이가 wire에서 도구명 escape를 요구할 때 사용합니다. opencodex는 Codex에 tool call을 돌려주기 전에 prefix를 제거합니다. |
 
 ## 사이드카
 
