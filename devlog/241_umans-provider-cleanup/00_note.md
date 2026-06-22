@@ -18,4 +18,3 @@ During the PR #14/#19 local dev merge stop audit, an unrelated Umans provider WI
 - `bun test tests/umans-provider.test.ts tests/provider-registry-parity.test.ts`
 - `bun test tests`
 - `bun run build:gui`
-
