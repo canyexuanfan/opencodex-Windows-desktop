@@ -187,6 +187,12 @@ export interface OcxConfig {
   websockets?: boolean;
   /** Auto-start/sync the proxy from the Codex shim before launching Codex. Default true. */
   codexAutoStart?: boolean;
+  /**
+   * Compatibility mode: rewrite existing Codex resume-history threads from openai to opencodex
+   * while the proxy is active so Codex App can show old project chats under the active provider.
+   * Disabled by default because it mutates Codex's local thread index.
+   */
+  syncResumeHistory?: boolean;
   /** Freshness window (ms) for the per-provider live `/models` cache. Defaults to 5 min. */
   modelCacheTtlMs?: number;
   /** Web-search sidecar: route web_search for non-OpenAI models through a gpt-mini via ChatGPT passthrough. */
