@@ -60,6 +60,9 @@ function printSubcommandUsage(name: string | undefined): void {
     case "eject":
       console.log(`Usage: ocx ${name}\n\nRestore native Codex config without stopping the proxy.`);
       break;
+    case "recover-history":
+      console.log("Usage: ocx recover-history --legacy-openai\n\nExplicitly recover pre-backup syncResumeHistory rows.");
+      break;
     case "uninstall":
     case "remove":
       console.log(`Usage: ocx ${name}\n\nRemove service/shim/config and restore native Codex.`);
