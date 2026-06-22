@@ -9,6 +9,12 @@ Repository:
 
 - https://github.com/can1357/oh-my-pi
 
+Local reference clone:
+
+- `/Users/jun/Developer/new/700_projects/jawcode/devlog/_upstream_omp`
+- Checked at `cc0c67beb chore: bump version to 16.1.13`
+- `git status --short --branch`: `## main...origin/main`
+
 ## Summary
 
 Oh My Pi treats Umans as an **Anthropic Messages** provider.
@@ -37,6 +43,7 @@ not the `openai-chat` adapter.
 Source:
 
 - https://github.com/can1357/oh-my-pi/blob/main/packages/ai/src/registry/umans.ts
+- `/Users/jun/Developer/new/700_projects/jawcode/devlog/_upstream_omp/packages/ai/src/registry/umans.ts`
 
 Observed implementation:
 
@@ -74,6 +81,7 @@ Interpretation:
 Source:
 
 - https://github.com/can1357/oh-my-pi/blob/main/packages/ai/test/umans-login.test.ts
+- `/Users/jun/Developer/new/700_projects/jawcode/devlog/_upstream_omp/packages/ai/test/umans-login.test.ts`
 
 Observed assertions:
 
