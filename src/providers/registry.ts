@@ -14,6 +14,9 @@ export interface ProviderRegistryEntry {
   dashboardUrl?: string;
   defaultModel?: string;
   models?: string[];
+  contextWindow?: number;
+  modelContextWindows?: Record<string, number>;
+  modelInputModalities?: Record<string, string[]>;
   reasoningEfforts?: string[];
   modelReasoningEfforts?: Record<string, string[]>;
   reasoningEffortMap?: Record<string, string>;
@@ -35,6 +38,7 @@ export interface ProviderRegistryEntry {
 export type ProviderConfigSeed = Pick<
   OcxProviderConfig,
   "adapter" | "baseUrl" | "authMode" | "defaultModel" | "models"
+  | "contextWindow" | "modelContextWindows" | "modelInputModalities"
   | "reasoningEfforts" | "modelReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap"
   | "noVisionModels" | "noReasoningModels" | "noTemperatureModels" | "noTopPModels" | "noPenaltyModels"
   | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "escapeBuiltinToolNames"
@@ -80,6 +84,18 @@ const UMANS_GLM_REASONING_MAP: Record<string, string> = {
   max: "max",
 };
 const UMANS_TEXT_ONLY_MODELS = ["umans-glm-5.2", "umans-glm-5.1"];
+const UMANS_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  "umans-coder": 262_144,
+  "umans-kimi-k2.7": 262_144,
+  "umans-kimi-k2.6": 262_144,
+  "umans-flash": 262_144,
+  "umans-glm-5.2": 405_504,
+  "umans-glm-5.1": 202_752,
+  "umans-qwen3.6-35b-a3b": 262_144,
+};
+const UMANS_MODEL_INPUT_MODALITIES: Record<string, string[]> = Object.fromEntries(
+  UMANS_MODELS.map(id => [id, UMANS_TEXT_ONLY_MODELS.includes(id) ? ["text"] : ["text", "image"]]),
+);
 
 export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   {
@@ -151,6 +167,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     dashboardUrl: "https://app.umans.ai/billing",
     defaultModel: "umans-coder",
     models: UMANS_MODELS,
+    modelContextWindows: UMANS_MODEL_CONTEXT_WINDOWS,
+    modelInputModalities: UMANS_MODEL_INPUT_MODALITIES,
     note: "Coding plan via Anthropic Messages",
     modelReasoningEfforts: {
       "umans-coder": UMANS_REASONING_EFFORTS,

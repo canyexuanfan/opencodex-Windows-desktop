@@ -52,6 +52,10 @@ describe("provider registry parity", () => {
       escapeBuiltinToolNames: true,
     });
     expect(KEY_LOGIN_PROVIDERS.umans.noVisionModels).toContain("umans-glm-5.2");
+    expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-coder"]).toBe(262_144);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-glm-5.2"]).toBe(405_504);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelInputModalities?.["umans-coder"]).toEqual(["text", "image"]);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelInputModalities?.["umans-glm-5.2"]).toEqual(["text"]);
   });
 
   test("CLI init providers are derived from the registry", () => {
@@ -63,6 +67,7 @@ describe("provider registry parity", () => {
     expect(OAUTH_PROVIDERS.kimi.providerConfig.baseUrl).toBe("https://api.kimi.com/coding/v1");
     expect(OAUTH_PROVIDERS.anthropic.providerConfig.defaultModel).toBe("claude-sonnet-4-6");
     expect(OAUTH_PROVIDERS.xai.providerConfig.defaultModel).toBe("grok-4.3");
+    expect(OAUTH_PROVIDERS.xai.providerConfig.noVisionModels).toContain("grok-build-0.1");
   });
 
   test("GUI preset projection preserves current featured set plus key catalog and custom", () => {
@@ -83,6 +88,33 @@ describe("provider registry parity", () => {
       defaultModel: "umans-coder",
     });
     expect(presets.find(p => p.id === "azure-openai")?.adapter).toBe("azure-openai");
+  });
+
+  test("Umans registry metadata reaches routed Codex catalog entries", () => {
+    const entries = buildCatalogEntries(nativeTemplate(), [], [
+      {
+        provider: "umans",
+        id: "umans-coder",
+        contextWindow: KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-coder"],
+        inputModalities: KEY_LOGIN_PROVIDERS.umans.modelInputModalities?.["umans-coder"],
+        reasoningEfforts: KEY_LOGIN_PROVIDERS.umans.modelReasoningEfforts?.["umans-coder"],
+      },
+      {
+        provider: "umans",
+        id: "umans-glm-5.2",
+        contextWindow: KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-glm-5.2"],
+        inputModalities: KEY_LOGIN_PROVIDERS.umans.modelInputModalities?.["umans-glm-5.2"],
+        reasoningEfforts: KEY_LOGIN_PROVIDERS.umans.modelReasoningEfforts?.["umans-glm-5.2"],
+      },
+    ]);
+    const coder = entries.find(e => e.slug === "umans/umans-coder");
+    const glm = entries.find(e => e.slug === "umans/umans-glm-5.2");
+
+    expect(coder?.context_window).toBe(262_144);
+    expect(coder?.input_modalities).toEqual(["text", "image"]);
+    expect(glm?.context_window).toBe(405_504);
+    expect(glm?.input_modalities).toEqual(["text"]);
+    expect(glm?.default_reasoning_level).toBe("high");
   });
 
   test("jawcode metadata aliases are derived from the registry", () => {

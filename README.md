@@ -217,6 +217,12 @@ Config lives at `~/.opencodex/config.json`. Here's a typical multi-provider setu
 }
 ```
 
+Provider entries can also annotate routed catalog metadata. Use `contextWindow` for a provider-wide
+Codex-visible context cap, `modelContextWindows` for model-specific caps, and
+`modelInputModalities` for model-specific catalog input hints such as `["text"]` or
+`["text", "image"]`. Context values cap live `/models` metadata; they never raise a smaller live
+context window. See the configuration reference for the full field list.
+
 Local models work too. Point opencodex at any OpenAI-compatible server running on your machine:
 
 ```json

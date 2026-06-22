@@ -8,6 +8,9 @@ export interface DerivedKeyLoginProvider {
   dashboardUrl: string;
   models?: string[];
   defaultModel?: string;
+  contextWindow?: number;
+  modelContextWindows?: Record<string, number>;
+  modelInputModalities?: Record<string, string[]>;
   reasoningEfforts?: string[];
   modelReasoningEfforts?: Record<string, string[]>;
   reasoningEffortMap?: Record<string, string>;
@@ -63,6 +66,9 @@ export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderCon
     authMode: entry.authKind === "local" ? undefined : entry.authKind,
     ...(entry.defaultModel ? { defaultModel: entry.defaultModel } : {}),
     ...(entry.models ? { models: [...entry.models] } : {}),
+    ...(entry.contextWindow !== undefined ? { contextWindow: entry.contextWindow } : {}),
+    ...(entry.modelContextWindows ? { modelContextWindows: { ...entry.modelContextWindows } } : {}),
+    ...(entry.modelInputModalities ? { modelInputModalities: cloneRecordOfArrays(entry.modelInputModalities) } : {}),
     ...(entry.reasoningEfforts ? { reasoningEfforts: [...entry.reasoningEfforts] } : {}),
     ...(entry.modelReasoningEfforts ? { modelReasoningEfforts: cloneRecordOfArrays(entry.modelReasoningEfforts) } : {}),
     ...(entry.reasoningEffortMap ? { reasoningEffortMap: { ...entry.reasoningEffortMap } } : {}),
@@ -90,6 +96,9 @@ export function deriveKeyLoginMap(): Record<string, DerivedKeyLoginProvider> {
       dashboardUrl: entry.dashboardUrl,
       ...(entry.models ? { models: [...entry.models] } : {}),
       ...(entry.defaultModel ? { defaultModel: entry.defaultModel } : {}),
+      ...(entry.contextWindow !== undefined ? { contextWindow: entry.contextWindow } : {}),
+      ...(entry.modelContextWindows ? { modelContextWindows: { ...entry.modelContextWindows } } : {}),
+      ...(entry.modelInputModalities ? { modelInputModalities: cloneRecordOfArrays(entry.modelInputModalities) } : {}),
       ...(entry.reasoningEfforts ? { reasoningEfforts: [...entry.reasoningEfforts] } : {}),
       ...(entry.modelReasoningEfforts ? { modelReasoningEfforts: cloneRecordOfArrays(entry.modelReasoningEfforts) } : {}),
       ...(entry.reasoningEffortMap ? { reasoningEffortMap: { ...entry.reasoningEffortMap } } : {}),

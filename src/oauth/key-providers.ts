@@ -15,6 +15,9 @@ export interface KeyLoginProvider {
   dashboardUrl: string;
   models?: string[];
   defaultModel?: string;
+  contextWindow?: number;
+  modelContextWindows?: Record<string, number>;
+  modelInputModalities?: Record<string, string[]>;
   /**
    * Model ids that do NOT accept image input (the vision sidecar describes images for them) / do NOT
    * accept a reasoning param. Copied into the created provider config by `enrichProviderFromCatalog`,
@@ -47,6 +50,9 @@ export function enrichProviderFromCatalog(name: string, prov: OcxProviderConfig)
   if (!e) return;
   if (!prov.models && e.models) prov.models = [...e.models];
   if (!prov.defaultModel && e.defaultModel) prov.defaultModel = e.defaultModel;
+  if (prov.contextWindow === undefined && e.contextWindow !== undefined) prov.contextWindow = e.contextWindow;
+  if (!prov.modelContextWindows && e.modelContextWindows) prov.modelContextWindows = { ...e.modelContextWindows };
+  if (!prov.modelInputModalities && e.modelInputModalities) prov.modelInputModalities = cloneRecordOfArrays(e.modelInputModalities);
   if (!prov.reasoningEfforts && e.reasoningEfforts) prov.reasoningEfforts = [...e.reasoningEfforts];
   if (!prov.modelReasoningEfforts && e.modelReasoningEfforts) prov.modelReasoningEfforts = cloneRecordOfArrays(e.modelReasoningEfforts);
   if (!prov.reasoningEffortMap && e.reasoningEffortMap) prov.reasoningEffortMap = { ...e.reasoningEffortMap };

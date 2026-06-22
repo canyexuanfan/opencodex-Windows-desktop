@@ -55,6 +55,10 @@ describe("Umans provider", () => {
     expect(provider.defaultModel).toBe("umans-coder");
     expect(provider.models).toContain("umans-kimi-k2.7");
     expect(provider.noVisionModels).toContain("umans-glm-5.2");
+    expect(provider.modelContextWindows?.["umans-coder"]).toBe(262_144);
+    expect(provider.modelContextWindows?.["umans-glm-5.2"]).toBe(405_504);
+    expect(provider.modelInputModalities?.["umans-coder"]).toEqual(["text", "image"]);
+    expect(provider.modelInputModalities?.["umans-glm-5.2"]).toEqual(["text"]);
     expect(provider.escapeBuiltinToolNames).toBe(true);
   });
 
@@ -72,6 +76,9 @@ describe("Umans provider", () => {
     expect(provider.modelReasoningEfforts?.["umans-glm-5.2"]).toEqual(["high", "xhigh"]);
     expect(provider.modelReasoningEffortMap?.["umans-glm-5.2"]?.xhigh).toBe("max");
     expect(provider.noVisionModels).toContain("umans-glm-5.1");
+    expect(provider.modelContextWindows?.["umans-glm-5.1"]).toBe(202_752);
+    expect(provider.modelInputModalities?.["umans-glm-5.1"]).toEqual(["text"]);
+    expect(provider.modelInputModalities?.["umans-kimi-k2.7"]).toEqual(["text", "image"]);
   });
 
   test("Anthropic adapter posts Umans requests to /v1/messages with x-api-key", () => {

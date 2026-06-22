@@ -34,6 +34,9 @@ opencodex는 `~/.opencodex/config.json`으로 설정됩니다. 이 파일은 `oc
 | `apiKey?` | `string` | API 키, 또는 요청 시점에 해석되는 `${ENV_VAR}` / `$ENV_VAR` 참조. |
 | `defaultModel?` | `string` | 명시적인 모델 없이 이 프로바이더가 선택되었을 때 사용하는 모델. |
 | `models?` | `string[]` | 시드/폴백 모델 목록 (실시간 `/models`에 접근 가능하면 그쪽이 우선됨). |
+| `contextWindow?` | `number` | routed catalog entry에 표시할 프로바이더 전체 context-window cap. 실시간 metadata가 이보다 작으면 그대로 둡니다. |
+| `modelContextWindows?` | `Record<string,number>` | 모델별 context-window cap. 매칭되는 모델에서는 `contextWindow`보다 우선하며, 더 작은 실시간 metadata를 올리지 않습니다. |
+| `modelInputModalities?` | `Record<string,string[]>` | `["text"]` 또는 `["text", "image"]` 같은 모델별 catalog input hint. |
 | `headers?` | `Record<string,string>` | 업스트림으로 전송되는 추가 HTTP 헤더. |
 | `authMode?` | `"key" \| "forward" \| "oauth"` | 인증 방식 (기본 `key`). [프로바이더](/opencodex/ko/guides/providers/#auth-modes) 참조. |
 | `noReasoningModels?` | `string[]` | reasoning/thinking 파라미터를 거부하는 모델 — 어댑터가 이들에 대해 `reasoning_effort`를 제거함. |

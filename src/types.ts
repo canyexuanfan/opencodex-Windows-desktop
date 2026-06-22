@@ -230,6 +230,12 @@ export interface OcxProviderConfig {
   apiKey?: string;
   defaultModel?: string;
   models?: string[];
+  /** Provider-wide Codex-visible context-window cap for routed catalog entries. */
+  contextWindow?: number;
+  /** Model-specific Codex-visible context-window caps. Values cap live metadata, never raise it. */
+  modelContextWindows?: Record<string, number>;
+  /** Model-specific Codex catalog input modalities, e.g. ["text"] or ["text", "image"]. */
+  modelInputModalities?: Record<string, string[]>;
   headers?: Record<string, string>;
   /**
    * "key" (default): authenticate upstream with `apiKey`.

@@ -32,6 +32,9 @@ opencodex 通过 `~/.opencodex/config.json` 进行配置。它由 `ocx init` 和
 | `apiKey?` | `string` | API key,或在请求时解析的 `${ENV_VAR}` / `$ENV_VAR` 引用。 |
 | `defaultModel?` | `string` | 当选中该 provider 但未指定明确模型时使用的模型。 |
 | `models?` | `string[]` | 种子/回退模型列表(当实时 `/models` 可达时优先使用它)。 |
+| `contextWindow?` | `number` | 路由 catalog 条目的 provider 级上下文窗口上限。实时 metadata 小于该值时会保留实时值。 |
+| `modelContextWindows?` | `Record<string,number>` | 模型级上下文窗口上限。匹配模型时优先于 `contextWindow`,且不会抬高更小的实时 metadata。 |
+| `modelInputModalities?` | `Record<string,string[]>` | 模型级 catalog 输入提示,例如 `["text"]` 或 `["text", "image"]`。 |
 | `headers?` | `Record<string,string>` | 发送到上游的额外 HTTP 头。 |
 | `authMode?` | `"key" \| "forward" \| "oauth"` | 认证方式(默认 `key`)。见 [Providers](/opencodex/zh-cn/guides/providers/#auth-modes)。 |
 | `noReasoningModels?` | `string[]` | 会拒绝 reasoning/thinking 参数的模型 —— adapter 会为它们丢弃 `reasoning_effort`。 |
