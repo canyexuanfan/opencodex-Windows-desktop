@@ -159,7 +159,9 @@ async function handleEnsure() {
     return;
   }
   if (await proxyHealthy(config.port)) {
-    await syncModelsToCodex(config.port).catch(() => {});
+    await syncModelsToCodex(config.port).catch(e => {
+      console.error(`⚠️  Model sync skipped: ${e instanceof Error ? e.message : String(e)}`);
+    });
     console.log(`✅ Proxy running on port ${config.port}`);
     return;
   }
@@ -177,7 +179,9 @@ async function handleEnsure() {
     process.exit(1);
   }
   config = loadConfig();
-  await syncModelsToCodex(config.port ?? port).catch(() => {});
+  await syncModelsToCodex(config.port ?? port).catch(e => {
+    console.error(`⚠️  Model sync skipped: ${e instanceof Error ? e.message : String(e)}`);
+  });
   console.log(`✅ Proxy running on port ${config.port ?? port}`);
 }
 
