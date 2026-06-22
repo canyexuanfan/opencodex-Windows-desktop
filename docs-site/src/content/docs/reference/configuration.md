@@ -17,6 +17,7 @@ default (a single `openai` forward provider).
 | `subagentModels?` | `string[]` | — | Up to 5 `provider/model` ids featured first in Codex's subagent picker. |
 | `disabledModels?` | `string[]` | — | Routed `provider/model` ids hidden from Codex (excluded from the catalog and `/v1/models`). |
 | `websockets?` | `boolean` | `false` | Advertise `supports_websockets` so Codex uses the Responses WebSocket path. Omit or set `false` to keep HTTP/SSE. |
+| `syncResumeHistory?` | `boolean` | `false` | Reversible Codex App history compatibility mode. When enabled, opencodex backs up original Codex thread metadata, remaps old OpenAI interactive rows to `opencodex`, and temporarily promotes opencodex-created `exec` rows to an app-visible source. `ocx stop` / `ocx restore` restore only the backed-up rows. |
 | `modelCacheTtlMs?` | `number` | `300000` | Freshness window for the per-provider `/models` cache (5 min). |
 | `webSearchSidecar?` | `OcxWebSearchSidecarConfig` | on | Web-search sidecar options (see below). |
 | `visionSidecar?` | `OcxVisionSidecarConfig` | on | Vision sidecar options (see below). |

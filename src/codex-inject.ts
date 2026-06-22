@@ -237,8 +237,8 @@ export async function injectCodexConfig(port: number, config?: OcxConfig, option
     ? `  Codex model catalog: ${catalogPath}\n`
     : `  Codex model catalog not injected because no opencodex catalog file exists yet.\n`;
   const historyMessage = config?.syncResumeHistory === true
-    ? `  Codex resume history: ${history.rows} thread(s) mapped to opencodex.\n`
-    : `  Codex resume history: left unchanged. Existing OpenAI project chats may be hidden while opencodex is active; set syncResumeHistory=true to remap them.\n`;
+    ? `  Codex resume history: ${history.rows} thread(s) made visible for opencodex; originals backed up for restore.\n`
+    : `  Codex resume history: left unchanged. Existing OpenAI and opencodex exec project chats may be hidden while opencodex is active; set syncResumeHistory=true to enable the reversible compatibility remap.\n`;
   return {
     success: true,
     message: `Injected opencodex as default provider into Codex config.\n` +
@@ -323,7 +323,7 @@ export function restoreNativeCodex(): { success: boolean; message: string } {
   const msg = cat.removed > 0
     ? `${cfg.message} Catalog restored to ${cat.kept} native model(s) (dropped ${cat.removed} proxy-routed).`
     : cfg.message;
-  const historyMsg = history.rows > 0 ? ` Resume history restored to openai (${history.rows} thread(s)).` : "";
+  const historyMsg = history.rows > 0 ? ` Resume history restored from opencodex backup (${history.rows} thread(s)).` : "";
   return { success: cfg.success, message: `${msg}${historyMsg}` };
 }
 

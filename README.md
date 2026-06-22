@@ -245,9 +245,11 @@ WebSocket transport is off by default. Set `"websockets": true` only if you want
 
 opencodex leaves existing Codex resume history untouched by default. This avoids changing Codex's
 local thread index just because the proxy started, but Codex App may hide old OpenAI-backed project
-threads while `opencodex` is the active provider. If you want those existing chats to appear while
-the proxy is active, enable the compatibility remap with `"syncResumeHistory": true`. Restore still
-maps previously remapped `opencodex` rows back to `openai`.
+threads and opencodex-created `exec` threads while `opencodex` is the active provider. If you want
+those chats to appear while the proxy is active, enable the reversible compatibility remap with
+`"syncResumeHistory": true`. opencodex records the original provider/source metadata in
+`~/.opencodex/codex-history-backup.json` and `ocx stop` / `ocx restore` restore only those backed-up
+rows.
 
 See the **[Configuration reference](https://lidge-jun.github.io/opencodex/reference/configuration/)** for every field.
 

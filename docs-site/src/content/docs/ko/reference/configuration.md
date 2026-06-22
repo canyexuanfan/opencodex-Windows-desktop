@@ -17,6 +17,7 @@ opencodex는 `~/.opencodex/config.json`으로 설정됩니다. 이 파일은 `oc
 | `subagentModels?` | `string[]` | — | Codex의 서브에이전트 선택기에서 가장 먼저 노출되는 최대 5개의 `provider/model` id. |
 | `disabledModels?` | `string[]` | — | Codex에서 숨겨지는 라우팅된 `provider/model` id (카탈로그와 `/v1/models`에서 제외됨). |
 | `websockets?` | `boolean` | `false` | Codex가 Responses WebSocket 경로를 사용하도록 `supports_websockets`를 광고합니다. 생략하거나 `false`로 두면 HTTP/SSE를 유지합니다. |
+| `syncResumeHistory?` | `boolean` | `false` | Codex App 히스토리 호환 모드. 켜면 opencodex가 원래 Codex thread metadata를 백업하고, 기존 OpenAI interactive row를 `opencodex`로 remap하며, opencodex가 만든 `exec` row를 App에 보이는 source로 임시 승격합니다. `ocx stop` / `ocx restore`는 백업된 row만 원래 값으로 복원합니다. |
 | `modelCacheTtlMs?` | `number` | `300000` | 프로바이더별 `/models` 캐시의 유효 기간 (5분). |
 | `webSearchSidecar?` | `OcxWebSearchSidecarConfig` | on | 웹 검색 사이드카 옵션 (아래 참조). |
 | `visionSidecar?` | `OcxVisionSidecarConfig` | on | 비전 사이드카 옵션 (아래 참조). |

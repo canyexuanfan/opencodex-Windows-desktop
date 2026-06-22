@@ -188,9 +188,10 @@ export interface OcxConfig {
   /** Auto-start/sync the proxy from the Codex shim before launching Codex. Default true. */
   codexAutoStart?: boolean;
   /**
-   * Compatibility mode: rewrite existing Codex resume-history threads from openai to opencodex
-   * while the proxy is active so Codex App can show old project chats under the active provider.
-   * Disabled by default because it mutates Codex's local thread index.
+   * Compatibility mode: temporarily rewrite Codex resume-history metadata while the proxy is active
+   * so Codex App can show old OpenAI chats and opencodex-created exec chats under its default
+   * interactive-source/provider filters. Disabled by default because it mutates Codex's local
+   * thread index; originals are backed up and restored by `ocx stop` / `ocx restore`.
    */
   syncResumeHistory?: boolean;
   /** Freshness window (ms) for the per-provider live `/models` cache. Defaults to 5 min. */
