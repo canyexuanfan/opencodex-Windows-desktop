@@ -78,3 +78,18 @@ For `syncResumeHistory: true`:
 - on `ocx stop` / `ocx restore`, restore only rows recorded in the backup manifest.
 
 Default remains unchanged: no history mutation unless the user explicitly enables `syncResumeHistory`.
+
+## Legacy PR #13 upgrade edge
+
+There is one unsafe-to-automate edge case:
+
+1. A user enabled `syncResumeHistory: true` on a development build before backup support existed.
+2. That build remapped old `openai` interactive rows to `opencodex`.
+3. The user upgrades while those rows are still remapped.
+4. The new backup manifest does not exist, so `ocx stop` cannot know which `opencodex` interactive rows were originally OpenAI rows.
+
+The fix must not silently rewrite all `opencodex` `cli`/`vscode` rows to `openai`, because future or app-created rows can legitimately be opencodex-owned. Instead:
+
+- normal `ocx stop` detects and reports ambiguous unbacked rows;
+- it leaves them unchanged by default;
+- `ocx recover-history --legacy-openai` is the explicit manual recovery path for users who know those rows came from the old remap.

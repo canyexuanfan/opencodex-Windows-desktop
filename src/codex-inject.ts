@@ -323,7 +323,11 @@ export function restoreNativeCodex(): { success: boolean; message: string } {
   const msg = cat.removed > 0
     ? `${cfg.message} Catalog restored to ${cat.kept} native model(s) (dropped ${cat.removed} proxy-routed).`
     : cfg.message;
-  const historyMsg = history.rows > 0 ? ` Resume history restored from opencodex backup (${history.rows} thread(s)).` : "";
+  const historyMsg = history.rows > 0
+    ? ` Resume history restored from opencodex backup (${history.rows} thread(s)).`
+    : history.legacyRows
+      ? ` ${history.legacyRows} opencodex interactive thread(s) have no restore backup and were left unchanged; if these came from the old syncResumeHistory remap, run: ocx recover-history --legacy-openai`
+      : "";
   return { success: cfg.success, message: `${msg}${historyMsg}` };
 }
 

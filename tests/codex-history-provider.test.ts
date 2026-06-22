@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { syncCodexHistoryProvider } from "../src/codex-history-provider";
+import { restoreLegacyOpenaiHistory, syncCodexHistoryProvider } from "../src/codex-history-provider";
 
-function makeFixture({ includeExec = false } = {}) {
+function makeFixture({ includeExec = false, includeLegacy = false } = {}) {
   const dir = join(tmpdir(), `ocx-history-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   mkdirSync(dir, { recursive: true });
   const rollout = join(dir, "rollout.jsonl");
@@ -24,9 +24,18 @@ function makeFixture({ includeExec = false } = {}) {
     }),
     JSON.stringify({ type: "event_msg", timestamp: "2026-01-01T00:00:00.000Z", payload: { message: "y" } }),
   ].join("\n") + "\n");
+  const legacyRollout = join(dir, "legacy-rollout.jsonl");
+  writeFileSync(legacyRollout, [
+    JSON.stringify({
+      type: "session_meta",
+      payload: { id: "thread-3", model_provider: "opencodex", source: "cli", cwd: dir },
+    }),
+    JSON.stringify({ type: "event_msg", timestamp: "2026-01-01T00:00:00.000Z", payload: { message: "z" } }),
+  ].join("\n") + "\n");
   const mtime = new Date("2026-01-02T03:04:05.000Z");
   utimesSync(rollout, mtime, mtime);
   utimesSync(execRollout, mtime, mtime);
+  utimesSync(legacyRollout, mtime, mtime);
 
   const dbPath = join(dir, "state_5.sqlite");
   const backupPath = join(dir, "codex-history-backup.json");
@@ -51,8 +60,14 @@ function makeFixture({ includeExec = false } = {}) {
       VALUES ('thread-2', ?, 'opencodex', 'exec', 'hello from exec', 0)
     `, execRollout);
   }
+  if (includeLegacy) {
+    db.run(`
+      INSERT INTO threads (id, rollout_path, model_provider, source, first_user_message, has_user_event)
+      VALUES ('thread-3', ?, 'opencodex', 'cli', 'legacy remapped row', 1)
+    `, legacyRollout);
+  }
   db.close();
-  return { dbPath, backupPath, rollout, execRollout, mtime };
+  return { dbPath, backupPath, rollout, execRollout, legacyRollout, mtime };
 }
 
 describe("Codex history provider sync", () => {
@@ -115,5 +130,36 @@ describe("Codex history provider sync", () => {
     firstLine = readFileSync(execRollout, "utf8").split("\n")[0];
     expect(JSON.parse(firstLine).payload.source).toBe("exec");
     expect(existsSync(backupPath)).toBe(false);
+  });
+
+  test("leaves ambiguous legacy opencodex interactive rows untouched when no backup exists", () => {
+    const { dbPath, backupPath } = makeFixture({ includeLegacy: true });
+
+    const result = syncCodexHistoryProvider("openai", dbPath, backupPath);
+
+    expect(result).toEqual({ rows: 0, files: 0, legacyRows: 1 });
+    const db = new Database(dbPath);
+    expect(db.query("SELECT model_provider, source FROM threads WHERE id = 'thread-3'").get()).toEqual({
+      model_provider: "opencodex",
+      source: "cli",
+    });
+    db.close();
+    expect(existsSync(backupPath)).toBe(false);
+  });
+
+  test("explicitly recovers legacy opencodex interactive rows to openai", () => {
+    const { dbPath, legacyRollout } = makeFixture({ includeLegacy: true });
+
+    const result = restoreLegacyOpenaiHistory(dbPath);
+
+    expect(result).toEqual({ rows: 1, files: 1 });
+    const db = new Database(dbPath);
+    expect(db.query("SELECT model_provider, source FROM threads WHERE id = 'thread-3'").get()).toEqual({
+      model_provider: "openai",
+      source: "cli",
+    });
+    db.close();
+    const firstLine = readFileSync(legacyRollout, "utf8").split("\n")[0];
+    expect(JSON.parse(firstLine).payload.model_provider).toBe("openai");
   });
 });

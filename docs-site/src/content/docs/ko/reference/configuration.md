@@ -22,6 +22,12 @@ opencodex는 `~/.opencodex/config.json`으로 설정됩니다. 이 파일은 `oc
 | `webSearchSidecar?` | `OcxWebSearchSidecarConfig` | on | 웹 검색 사이드카 옵션 (아래 참조). |
 | `visionSidecar?` | `OcxVisionSidecarConfig` | on | 비전 사이드카 옵션 (아래 참조). |
 
+백업 지원 이전의 개발 빌드에서 이미 `syncResumeHistory`를 실행했다면, `ocx stop`이 백업 없는
+`opencodex` interactive row를 보고할 수 있습니다. opencodex는 이 row를 자동으로 바꾸지 않습니다.
+이전 mutation 이후에는 old OpenAI row와 진짜 opencodex-owned row를 안전하게 구분할 수 없기
+때문입니다. 해당 row가 예전 remap에서 온 것이 확실하면 `ocx recover-history --legacy-openai`로
+명시 복구하세요.
+
 ## 프로바이더 (`OcxProviderConfig`)
 
 | Field | Type | Meaning |

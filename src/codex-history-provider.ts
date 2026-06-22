@@ -10,6 +10,12 @@ const RESUMABLE_SOURCES = ["cli", "vscode"] as const;
 
 type CodexHistoryProvider = "openai" | "opencodex";
 
+export interface CodexHistorySyncResult {
+  rows: number;
+  files: number;
+  legacyRows?: number;
+}
+
 interface ThreadRow {
   id: string;
   rollout_path: string;
@@ -99,7 +105,7 @@ function updateSessionMeta(path: string, patch: { provider?: string; source?: st
   return true;
 }
 
-export function syncCodexHistoryProvider(provider: CodexHistoryProvider, stateDbPath = STATE_DB_PATH, backupPath = HISTORY_BACKUP_PATH): { rows: number; files: number } {
+export function syncCodexHistoryProvider(provider: CodexHistoryProvider, stateDbPath = STATE_DB_PATH, backupPath = HISTORY_BACKUP_PATH): CodexHistorySyncResult {
   if (!existsSync(stateDbPath)) return { rows: 0, files: 0 };
   if (provider === "openai") return restoreCodexHistoryProvider(stateDbPath, backupPath);
 
@@ -174,13 +180,29 @@ export function syncCodexHistoryProvider(provider: CodexHistoryProvider, stateDb
   }
 }
 
-function restoreCodexHistoryProvider(stateDbPath: string, backupPath: string): { rows: number; files: number } {
+function countAmbiguousOpencodexInteractiveRows(db: Database): number {
+  const placeholders = RESUMABLE_SOURCES.map(() => "?").join(",");
+  const row = db.query<{ n: number }, string[]>(`
+    SELECT COUNT(*) AS n
+    FROM threads
+    WHERE model_provider = 'opencodex'
+      AND source IN (${placeholders})
+      AND trim(coalesce(first_user_message, '')) != ''
+  `).get(...RESUMABLE_SOURCES);
+  return Number(row?.n ?? 0);
+}
+
+function restoreCodexHistoryProvider(stateDbPath: string, backupPath: string): CodexHistorySyncResult {
   const manifest = readBackup(backupPath);
   const entries = Object.values(manifest.entries);
-  if (entries.length === 0) return { rows: 0, files: 0 };
 
   const db = new Database(stateDbPath);
   try {
+    if (entries.length === 0) {
+      const legacyRows = countAmbiguousOpencodexInteractiveRows(db);
+      return legacyRows > 0 ? { rows: 0, files: 0, legacyRows } : { rows: 0, files: 0 };
+    }
+
     let files = 0;
     for (const entry of entries) {
       try {
@@ -205,6 +227,43 @@ function restoreCodexHistoryProvider(stateDbPath: string, backupPath: string): {
     restore();
     writeBackup(backupPath, { version: 1, entries: {} });
     return { rows: entries.length, files };
+  } finally {
+    db.close();
+  }
+}
+
+export function restoreLegacyOpenaiHistory(stateDbPath = STATE_DB_PATH): { rows: number; files: number } {
+  if (!existsSync(stateDbPath)) return { rows: 0, files: 0 };
+  const db = new Database(stateDbPath);
+  try {
+    const placeholders = RESUMABLE_SOURCES.map(() => "?").join(",");
+    const rows = db.query<ThreadRow, string[]>(`
+      SELECT id, rollout_path, model_provider, source, has_user_event
+      FROM threads
+      WHERE model_provider = 'opencodex'
+        AND source IN (${placeholders})
+        AND trim(coalesce(first_user_message, '')) != ''
+    `).all(...RESUMABLE_SOURCES);
+
+    let files = 0;
+    for (const row of rows) {
+      try {
+        if (updateSessionMeta(row.rollout_path, { provider: "openai" })) files++;
+      } catch {
+        /* explicit recovery should continue even if an old rollout is missing */
+      }
+    }
+
+    const restore = db.transaction(() => {
+      const update = db.query(`
+        UPDATE threads
+        SET model_provider = 'openai'
+        WHERE id = ?
+      `);
+      for (const row of rows) update.run(row.id);
+    });
+    restore();
+    return { rows: rows.length, files };
   } finally {
     db.close();
   }

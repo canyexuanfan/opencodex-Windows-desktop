@@ -2,6 +2,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { rmSync } from "node:fs";
 import { restoreNativeCodex } from "./codex-inject";
+import { restoreLegacyOpenaiHistory } from "./codex-history-provider";
 import { codexAutoStartEnabled, getConfigDir, loadConfig, readPid, removePid, saveConfig, writePid } from "./config";
 import { findAvailablePort } from "./ports";
 import { serviceCommand, stopServiceIfInstalled, uninstallServiceIfInstalled } from "./service";
@@ -19,6 +20,8 @@ Usage:
   ocx start [--port <port>]   Start the proxy server (auto-syncs models to Codex)
   ocx stop                    Stop the proxy AND restore native Codex (plain codex works again)
   ocx restore                 Restore native Codex without stopping (alias: eject)
+  ocx recover-history --legacy-openai
+                               Explicitly recover pre-backup syncResumeHistory rows
   ocx uninstall               Remove service/shim/config and restore native Codex
   ocx service <sub>           Run as a background service (install|start|stop|status|uninstall)
   ocx codex-shim <sub>        Auto-start proxy when \`codex\` launches (install|status|uninstall)
@@ -304,6 +307,16 @@ function handleStatus() {
   }
 }
 
+function handleRecoverHistory() {
+  if (args[1] !== "--legacy-openai") {
+    console.error("Usage: ocx recover-history --legacy-openai");
+    console.error("Only use this if an older syncResumeHistory build already remapped OpenAI Codex App history to opencodex before backup support existed.");
+    process.exit(1);
+  }
+  const r = restoreLegacyOpenaiHistory();
+  console.log(`Recovered ${r.rows} legacy thread(s) to openai (${r.files} rollout file(s) updated).`);
+}
+
 switch (command) {
   case "init": {
     const { runInit } = await import("./init");
@@ -323,6 +336,9 @@ switch (command) {
     console.log("Plain `codex` now runs natively (no proxy).");
     break;
   }
+  case "recover-history":
+    handleRecoverHistory();
+    break;
   case "uninstall":
   case "remove":
     await handleUninstall();

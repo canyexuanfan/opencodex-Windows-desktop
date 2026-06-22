@@ -251,6 +251,16 @@ those chats to appear while the proxy is active, enable the reversible compatibi
 `~/.opencodex/codex-history-backup.json` and `ocx stop` / `ocx restore` restore only those backed-up
 rows.
 
+If you tested an older development build where `syncResumeHistory` already remapped OpenAI history
+before backup support existed, `ocx stop` may report unbacked `opencodex` interactive rows and leave
+them unchanged. That is intentional: after the old mutation, opencodex cannot safely distinguish old
+OpenAI rows from genuinely opencodex-owned interactive rows. If you know those rows came from the old
+remap, recover them explicitly:
+
+```bash
+ocx recover-history --legacy-openai
+```
+
 See the **[Configuration reference](https://lidge-jun.github.io/opencodex/reference/configuration/)** for every field.
 
 ## Documentation

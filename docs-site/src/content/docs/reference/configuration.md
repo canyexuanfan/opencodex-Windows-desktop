@@ -22,6 +22,12 @@ default (a single `openai` forward provider).
 | `webSearchSidecar?` | `OcxWebSearchSidecarConfig` | on | Web-search sidecar options (see below). |
 | `visionSidecar?` | `OcxVisionSidecarConfig` | on | Vision sidecar options (see below). |
 
+If an older development build already ran `syncResumeHistory` before backup support existed,
+`ocx stop` may report unbacked `opencodex` interactive rows. opencodex leaves those rows unchanged
+because it cannot safely distinguish old OpenAI rows from genuinely opencodex-owned rows after the
+old mutation. If you know they came from the old remap, recover them explicitly with
+`ocx recover-history --legacy-openai`.
+
 ## Providers (`OcxProviderConfig`)
 
 | Field | Type | Meaning |
