@@ -236,9 +236,9 @@ export async function injectCodexConfig(port: number, config?: OcxConfig, option
   const catalogMessage = catalogPath
     ? `  Codex model catalog: ${catalogPath}\n`
     : `  Codex model catalog not injected because no opencodex catalog file exists yet.\n`;
-  const historyMessage = history.rows > 0
+  const historyMessage = config?.syncResumeHistory === true
     ? `  Codex resume history: ${history.rows} thread(s) mapped to opencodex.\n`
-    : "";
+    : `  Codex resume history: left unchanged. Existing OpenAI project chats may be hidden while opencodex is active; set syncResumeHistory=true to remap them.\n`;
   return {
     success: true,
     message: `Injected opencodex as default provider into Codex config.\n` +
