@@ -59,6 +59,11 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
           const v = incoming?.headers.get(h);
           if (v) headers[h] = v;                                        // …so forwarded auth always wins.
         }
+        const override = (provider as { _codexAccountOverride?: { accessToken: string; chatgptAccountId: string } })._codexAccountOverride;
+        if (override) {
+          headers["authorization"] = `Bearer ${override.accessToken}`;
+          headers["chatgpt-account-id"] = override.chatgptAccountId;
+        }
       } else {
         const base = provider.baseUrl.replace(/\/v1\/?$/, "");
         url = `${base}/v1/responses`;

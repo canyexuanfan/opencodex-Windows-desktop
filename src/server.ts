@@ -31,6 +31,22 @@ import { removeCredential } from "./oauth/store";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "./oauth/key-providers";
 import { deriveProviderPresets } from "./providers/derive";
 import type { OcxConfig, OcxProviderConfig } from "./types";
+import { getValidCodexToken } from "./codex-account-store";
+
+const threadAccountMap = new Map<string, string>();
+
+function resolveCodexAccountForThread(
+  threadId: string | null,
+  config: OcxConfig,
+): string | null {
+  if (threadId && threadAccountMap.has(threadId)) {
+    return threadAccountMap.get(threadId)!;
+  }
+  const active = config.activeCodexAccountId;
+  if (!active) return null;
+  if (threadId) threadAccountMap.set(threadId, active);
+  return active;
+}
 
 // Single source of truth = package.json (../ from src/), so /healthz + the GUI badge match the
 // installed npm version instead of a stale hardcode.
@@ -154,6 +170,20 @@ async function handleResponses(
   }
   logCtx.model = route.modelId;
   logCtx.provider = route.providerName;
+
+  // Multi-account: if a pool account is active, inject its token for forward-mode passthrough.
+  if (route.provider.authMode === "forward") {
+    const threadId = req.headers.get("x-codex-parent-thread-id");
+    const accountId = resolveCodexAccountForThread(threadId, config);
+    if (accountId) {
+      try {
+        const override = await getValidCodexToken(accountId);
+        route.provider = { ...route.provider, _codexAccountOverride: override } as typeof route.provider;
+      } catch {
+        // Account token failed — fall back to main passthrough
+      }
+    }
+  }
 
   // OAuth providers: swap in a fresh access token (auto-refreshed) as the Bearer key, so the
   // existing openai-chat / anthropic adapters authenticate with no change.
@@ -739,7 +769,13 @@ export function startServer(port?: number) {
         if (!isLocalOrigin(req)) {
           return formatErrorResponse(403, "origin_rejected", "WebSocket upgrade blocked: non-local Origin");
         }
-        if (server.upgrade(req, { data: { headers: selectForwardHeaders(req.headers) } })) return undefined as unknown as Response;
+        const wsThreadId = req.headers.get("x-codex-parent-thread-id");
+        const wsAccountId = resolveCodexAccountForThread(wsThreadId, config);
+        let wsOverride: { accessToken: string; chatgptAccountId: string } | undefined;
+        if (wsAccountId) {
+          try { wsOverride = await getValidCodexToken(wsAccountId); } catch { /* fallback to main */ }
+        }
+        if (server.upgrade(req, { data: { headers: selectForwardHeaders(req.headers, wsOverride) } })) return undefined as unknown as Response;
         return formatErrorResponse(426, "upgrade_required", "WebSocket upgrade failed");
       }
 

@@ -25,11 +25,18 @@ export class WsSendDroppedError extends Error {
   }
 }
 
-export function selectForwardHeaders(headers: Headers): Headers {
+export function selectForwardHeaders(
+  headers: Headers,
+  codexOverride?: { accessToken: string; chatgptAccountId: string },
+): Headers {
   const selected = new Headers();
   for (const name of FORWARD_HEADERS) {
     const value = headers.get(name);
     if (value) selected.set(name, value);
+  }
+  if (codexOverride) {
+    selected.set("authorization", `Bearer ${codexOverride.accessToken}`);
+    selected.set("chatgpt-account-id", codexOverride.chatgptAccountId);
   }
   return selected;
 }
