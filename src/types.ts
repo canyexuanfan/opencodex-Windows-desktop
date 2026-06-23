@@ -200,6 +200,12 @@ export interface OcxConfig {
   webSearchSidecar?: OcxWebSearchSidecarConfig;
   /** Vision sidecar: describe images via a gpt vision model so text-only models can "see" them. */
   visionSidecar?: OcxVisionSidecarConfig;
+  /** Codex multi-account pool. */
+  codexAccounts?: CodexAccount[];
+  /** Active pool account id for next session. undefined = main (passthrough as-is). */
+  activeCodexAccountId?: string;
+  /** Auto-switch threshold (0-100). Default 80. 0 = disabled. */
+  autoSwitchThreshold?: number;
 }
 
 export interface OcxVisionSidecarConfig {
@@ -284,4 +290,19 @@ export interface OcxProviderConfig {
    * attached images are described by a gpt vision model and replaced with text before the call.
    */
   noVisionModels?: string[];
+}
+
+export interface CodexAccount {
+  id: string;
+  email: string;
+  plan?: string;
+  chatgptAccountId?: string;
+  isMain: boolean;
+}
+
+export interface CodexAccountCredentials {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  chatgptAccountId: string;
 }
