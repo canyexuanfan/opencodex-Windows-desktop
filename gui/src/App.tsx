@@ -4,10 +4,11 @@ import Providers from "./pages/Providers";
 import Models from "./pages/Models";
 import Subagents from "./pages/Subagents";
 import Logs from "./pages/Logs";
-import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconGithub, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower } from "./icons";
+import CodexAuth from "./pages/CodexAuth";
+import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconKey, IconGithub, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower } from "./icons";
 import { useI18n, useT, LOCALES, type TKey } from "./i18n";
 
-type Page = "dashboard" | "providers" | "models" | "subagents" | "logs";
+type Page = "dashboard" | "providers" | "models" | "subagents" | "logs" | "codex-auth";
 type Theme = "light" | "dark" | "system";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
@@ -19,6 +20,7 @@ const NAV: { id: Page; tkey: TKey; Icon: typeof IconGrid }[] = [
   { id: "models", tkey: "nav.models", Icon: IconBoxes },
   { id: "subagents", tkey: "nav.subagents", Icon: IconBot },
   { id: "logs", tkey: "nav.logs", Icon: IconList },
+  { id: "codex-auth", tkey: "nav.codexAuth", Icon: IconKey },
 ];
 
 const THEME_ICON = { light: IconSun, dark: IconMoon, system: IconMonitor } as const;
@@ -126,6 +128,7 @@ export default function App() {
           {page === "models" && <Models apiBase={API_BASE} />}
           {page === "subagents" && <Subagents apiBase={API_BASE} />}
           {page === "logs" && <Logs apiBase={API_BASE} />}
+          {page === "codex-auth" && <CodexAuth apiBase={API_BASE} />}
         </div>
       </main>
     </div>
