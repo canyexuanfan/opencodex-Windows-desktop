@@ -724,6 +724,11 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
     return jsonResponse({ success: true, message: "Proxy stopping, native Codex restored." });
   }
 
+  if (url.pathname.startsWith("/api/codex-auth/")) {
+    const { handleCodexAuthAPI } = await import("./codex-auth-api");
+    return handleCodexAuthAPI(req, url, config);
+  }
+
   return null;
 }
 
