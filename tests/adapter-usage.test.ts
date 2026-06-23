@@ -211,3 +211,165 @@ describe("openai-chat tool history repair", () => {
     expect(body.messages[1]).toMatchObject({ role: "tool", tool_call_id: "call_1" });
   });
 });
+
+describe("anthropic tool result history repair", () => {
+  test("merges adjacent tool results after multiple tool uses into one user message", () => {
+    const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
+    const request = adapter.buildRequest({
+      modelId: "claude-sonnet",
+      context: {
+        messages: [
+          { role: "user", content: "start", timestamp: 0 },
+          {
+            role: "assistant",
+            content: [
+              { type: "toolCall", id: "call_1", name: "first_tool", arguments: {} },
+              { type: "toolCall", id: "call_2", name: "second_tool", arguments: {} },
+            ],
+            model: "claude-sonnet",
+            timestamp: 0,
+          },
+          { role: "toolResult", toolCallId: "call_1", toolName: "first_tool", content: "one", isError: false, timestamp: 0 },
+          { role: "toolResult", toolCallId: "call_2", toolName: "second_tool", content: "two", isError: false, timestamp: 0 },
+          { role: "user", content: "continue", timestamp: 0 },
+        ],
+      },
+      stream: true,
+      options: {},
+    });
+    const body = JSON.parse(request.body) as { messages: Array<{ role: string; content: any }> };
+
+    expect(body.messages).toHaveLength(4);
+    expect(body.messages[2].role).toBe("user");
+    expect(body.messages[2].content).toEqual([
+      { type: "tool_result", tool_use_id: "call_1", content: "one" },
+      { type: "tool_result", tool_use_id: "call_2", content: "two" },
+    ]);
+  });
+
+  test("adds an error tool result when history is missing a tool result", () => {
+    const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
+    const request = adapter.buildRequest({
+      modelId: "claude-sonnet",
+      context: {
+        messages: [{
+          role: "assistant",
+          content: [{ type: "toolCall", id: "call_1", name: "read_file", arguments: {} }],
+          model: "claude-sonnet",
+          timestamp: 0,
+        }],
+      },
+      stream: true,
+      options: {},
+    });
+    const body = JSON.parse(request.body) as { messages: Array<{ role: string; content: any }> };
+
+    expect(body.messages[1]).toEqual({
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "call_1",
+        content: "[opencodex: missing tool_result for this tool_use in Codex history]",
+        is_error: true,
+      }],
+    });
+  });
+
+  test("preserves orphan tool results as text instead of invalid Anthropic tool_result blocks", () => {
+    const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
+    const request = adapter.buildRequest({
+      modelId: "claude-sonnet",
+      context: {
+        messages: [{
+          role: "toolResult",
+          toolCallId: "orphan_call",
+          toolName: "lost_tool",
+          content: "orphan output",
+          isError: false,
+          timestamp: 0,
+        }],
+      },
+      stream: true,
+      options: {},
+    });
+    const body = JSON.parse(request.body) as { messages: Array<{ role: string; content: string }> };
+
+    expect(body.messages).toEqual([{
+      role: "user",
+      content: "[tool_result without adjacent tool_use: lost_tool (orphan_call)]\norphan output",
+    }]);
+  });
+
+  test("preserves duplicate adjacent tool results as text after the matching result", () => {
+    const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
+    const request = adapter.buildRequest({
+      modelId: "claude-sonnet",
+      context: {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "call_1", name: "read_file", arguments: {} }],
+            model: "claude-sonnet",
+            timestamp: 0,
+          },
+          { role: "toolResult", toolCallId: "call_1", toolName: "read_file", content: "first", isError: false, timestamp: 0 },
+          { role: "toolResult", toolCallId: "call_1", toolName: "read_file", content: "duplicate", isError: false, timestamp: 0 },
+        ],
+      },
+      stream: true,
+      options: {},
+    });
+    const body = JSON.parse(request.body) as { messages: Array<{ role: string; content: any }> };
+
+    expect(body.messages[1]).toEqual({
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: "call_1", content: "first" },
+        { type: "text", text: "[tool_result without adjacent tool_use: read_file (call_1)]\nduplicate" },
+      ],
+    });
+  });
+
+  test("maps non-string tool result content through Anthropic content blocks", () => {
+    const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
+    const request = adapter.buildRequest({
+      modelId: "claude-sonnet",
+      context: {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "call_1", name: "view_image", arguments: {} }],
+            model: "claude-sonnet",
+            timestamp: 0,
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_1",
+            toolName: "view_image",
+            content: [
+              { type: "text", text: "image attached" },
+              { type: "image", imageUrl: "data:image/png;base64,AAAA", detail: "high" },
+            ],
+            isError: false,
+            timestamp: 0,
+          },
+        ],
+      },
+      stream: true,
+      options: {},
+    });
+    const body = JSON.parse(request.body) as { messages: Array<{ role: string; content: any }> };
+
+    expect(body.messages[1]).toEqual({
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "call_1",
+        content: [
+          { type: "text", text: "image attached" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+        ],
+      }],
+    });
+  });
+});
