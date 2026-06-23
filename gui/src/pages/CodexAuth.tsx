@@ -67,22 +67,20 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
 
       {toast && <Notice tone="ok">{toast}</Notice>}
 
-      {main && (
-        <div className={`card ${!activeId ? "card-active" : ""}`}
-          onClick={() => activeId ? setConfirm({ ...main, id: "__main__" }) : undefined}
-          style={{ cursor: activeId ? "pointer" : "default" }}>
-          <div className="card-head">
-            <span className="dot dot-green" />
-            <strong>{t("codexAuth.mainAccount")}</strong>
-            <span className={`badge ${!activeId ? "badge-primary" : "badge-muted"}`}>
-              {!activeId ? t("codexAuth.nextSession") : t("codexAuth.current")}
-            </span>
-            <span className="card-right"><IconLock width={14} /> {t("codexAuth.appLogin")}</span>
-          </div>
-          <div className="card-sub">{main.email}{main.plan ? ` · ${main.plan}` : ""}</div>
-          <QuotaBars quota={main.quota} t={t} />
+      <div className={`card ${!activeId ? "card-active" : ""}`}
+        onClick={() => activeId ? setConfirm({ id: "__main__", email: main?.email ?? "Codex App", plan: main?.plan, isMain: true, hasCredential: true, quota: main?.quota ?? null }) : undefined}
+        style={{ cursor: activeId ? "pointer" : "default", marginBottom: 12 }}>
+        <div className="card-head">
+          <span className="dot dot-green" />
+          <strong>{t("codexAuth.mainAccount")}</strong>
+          <span className={`badge ${!activeId ? "badge-primary" : "badge-muted"}`}>
+            {!activeId ? t("codexAuth.nextSession") : t("codexAuth.current")}
+          </span>
+          <span className="card-right"><IconLock width={14} /> {t("codexAuth.appLogin")}</span>
         </div>
-      )}
+        <div className="card-sub">{main?.email ?? "Codex App login"}{main?.plan ? ` · ${main.plan}` : ""}</div>
+        {main?.quota && <QuotaBars quota={main.quota} t={t} />}
+      </div>
 
       <div className="section-sep">
         <span className="section-label">{t("codexAuth.accountPool")}</span>
@@ -96,7 +94,7 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
 
       {pool.map(a => (
         <div key={a.id} className={`card ${isNext(a.id) ? "card-active" : ""}`}
-          onClick={() => setConfirm(a)} style={{ cursor: "pointer" }}>
+          onClick={() => setConfirm(a)} style={{ cursor: "pointer", marginBottom: 8 }}>
           <div className="card-head">
             <span className={`dot ${isNext(a.id) ? "dot-blue" : "dot-muted"}`} />
             <strong>{a.email}</strong>
