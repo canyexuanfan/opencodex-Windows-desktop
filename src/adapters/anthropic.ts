@@ -68,7 +68,12 @@ function mergeAnthropicUsage(
   next: Record<string, number> | undefined,
 ): Record<string, number> | undefined {
   if (!next) return base;
-  return { ...(base ?? {}), ...next };
+  if (!base) return { ...next };
+  const merged = { ...base };
+  for (const [k, v] of Object.entries(next)) {
+    merged[k] = (merged[k] ?? 0) + v;
+  }
+  return merged;
 }
 
 function buildToolNameTransforms(provider: OcxProviderConfig): { toWire: (name: string) => string; fromWire: (name: string) => string } {
