@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { augmentRoutedModelsWithJawcodeMetadata, buildCatalogEntries, gatherRoutedModels, isMediaGenerationModelId, normalizeRoutedCatalogEntry } from "../src/codex-catalog";
 import { getJawcodeModelMetadata, resolveJawcodeProvider } from "../src/generated/jawcode-model-metadata";
-import { clearModelCache } from "../src/model-cache";
+import { clearModelCache, setCached } from "../src/model-cache";
 
 const originalFetch = globalThis.fetch;
 
@@ -141,6 +141,117 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.supports_search_tool).toBe(true);
   });
 
+  test("liveModels false uses configured provider models without fetching", async () => {
+    clearModelCache("static-provider");
+    const originalFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = (() => {
+      fetchCalls += 1;
+      throw new Error("fetch should not be called");
+    }) as typeof fetch;
+    try {
+      const models = await gatherRoutedModels({
+        providers: {
+          "static-provider": {
+            baseUrl: "https://example.invalid/v1",
+            adapter: "openai-chat",
+            authMode: "key",
+            liveModels: false,
+            models: ["alpha", "beta"],
+          },
+        },
+      });
+
+      expect(fetchCalls).toBe(0);
+      expect(models.map(m => `${m.provider}/${m.id}`)).toEqual([
+        "static-provider/alpha",
+        "static-provider/beta",
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      clearModelCache("static-provider");
+    }
+  });
+
+  test("liveModels false ignores a fresh live-model cache", async () => {
+    setCached("static-cache", [
+      { provider: "static-cache", id: "cached-live-model" },
+    ]);
+    try {
+      const models = await gatherRoutedModels({
+        providers: {
+          "static-cache": {
+            baseUrl: "https://example.invalid/v1",
+            adapter: "openai-chat",
+            authMode: "key",
+            liveModels: false,
+            models: ["configured-only"],
+          },
+        },
+      });
+
+      expect(models.map(m => `${m.provider}/${m.id}`)).toEqual([
+        "static-cache/configured-only",
+      ]);
+    } finally {
+      clearModelCache("static-cache");
+    }
+  });
+
+  test("liveModels false does not poison the live-model cache when toggled back on", async () => {
+    clearModelCache("static-toggle");
+    const originalFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      return new Response(JSON.stringify({
+        data: [{ id: "live-after-toggle", owned_by: "provider" }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    try {
+      const staticModels = await gatherRoutedModels({
+        providers: {
+          "static-toggle": {
+            baseUrl: "https://example.invalid/v1",
+            adapter: "openai-chat",
+            authMode: "key",
+            liveModels: false,
+            models: ["configured-only"],
+          },
+        },
+      });
+
+      expect(staticModels.map(m => `${m.provider}/${m.id}`)).toEqual([
+        "static-toggle/configured-only",
+      ]);
+      expect(fetchCalls).toBe(0);
+
+      const liveModels = await gatherRoutedModels({
+        providers: {
+          "static-toggle": {
+            baseUrl: "https://example.invalid/v1",
+            adapter: "openai-chat",
+            authMode: "key",
+            liveModels: true,
+            models: ["configured-only"],
+          },
+        },
+      });
+
+      expect(fetchCalls).toBe(1);
+      expect(new Set(liveModels.map(m => `${m.provider}/${m.id}`))).toEqual(new Set([
+        "static-toggle/live-after-toggle",
+        "static-toggle/configured-only",
+      ]));
+    } finally {
+      globalThis.fetch = originalFetch;
+      clearModelCache("static-toggle");
+    }
+  });
+
   test("routed entries receive exact jawcode context metadata", () => {
     const entries = buildCatalogEntries(nativeTemplate(), [], [
       { provider: "opencode-go", id: "deepseek-v4-pro" },
@@ -252,6 +363,38 @@ describe("Codex catalog routed normalization", () => {
     const entries = buildCatalogEntries(nativeTemplate(), [], models);
     const routed = entries.find(e => e.slug === "meta-static/static-model");
 
+    expect(routed?.context_window).toBe(321_000);
+    expect(routed?.max_context_window).toBe(321_000);
+    expect(routed?.auto_compact_token_limit).toBe(288_900);
+    expect(routed?.input_modalities).toEqual(["text", "image"]);
+  });
+
+  test("liveModels false preserves configured catalog metadata without live fetch", async () => {
+    let fetchCalls = 0;
+    globalThis.fetch = (() => {
+      fetchCalls += 1;
+      throw new Error("fetch should not be called");
+    }) as typeof fetch;
+
+    const models = await gatherRoutedModels({
+      port: 10100,
+      defaultProvider: "meta-static-allowlist",
+      providers: {
+        "meta-static-allowlist": {
+          adapter: "openai-chat",
+          baseUrl: "https://meta-static.test/v1",
+          apiKey: "sk-test",
+          liveModels: false,
+          models: ["static-model"],
+          modelContextWindows: { "static-model": 321_000 },
+          modelInputModalities: { "static-model": ["text", "image"] },
+        },
+      },
+    });
+    const entries = buildCatalogEntries(nativeTemplate(), [], models);
+    const routed = entries.find(e => e.slug === "meta-static-allowlist/static-model");
+
+    expect(fetchCalls).toBe(0);
     expect(routed?.context_window).toBe(321_000);
     expect(routed?.max_context_window).toBe(321_000);
     expect(routed?.auto_compact_token_limit).toBe(288_900);

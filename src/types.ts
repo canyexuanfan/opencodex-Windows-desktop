@@ -230,6 +230,12 @@ export interface OcxProviderConfig {
   apiKey?: string;
   defaultModel?: string;
   models?: string[];
+  /**
+   * Fetch the provider's live `/models` endpoint. Defaults to true.
+   * Set false when `models` is an intentional allowlist or a provider's live catalog is too large
+   * or too flaky for startup/catalog sync.
+   */
+  liveModels?: boolean;
   /** Provider-wide Codex-visible context-window cap for routed catalog entries. */
   contextWindow?: number;
   /** Model-specific Codex-visible context-window caps. Values cap live metadata, never raise it. */
