@@ -42,7 +42,7 @@ function readCodexTokens(): { access_token: string; account_id: string } | null 
 }
 
 let mainAccountCache: { email: string | null; plan: string | null; quota: { weeklyPercent: number; fiveHourPercent: number } | null; ts: number } | null = null;
-const MAIN_CACHE_TTL = 60_000;
+const MAIN_CACHE_TTL = 5 * 60_000;
 
 async function fetchMainAccountInfo(): Promise<{ email: string | null; plan: string | null; quota: { weeklyPercent: number; fiveHourPercent: number } | null }> {
   if (mainAccountCache && Date.now() - mainAccountCache.ts < MAIN_CACHE_TTL) {

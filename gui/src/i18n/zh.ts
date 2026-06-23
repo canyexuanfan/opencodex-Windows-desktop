@@ -156,4 +156,13 @@ export const zh: Record<TKey, string> = {
   "codexAuth.autoSwitchDesc": "新会话自动选择使用量最低的账号",
   "codexAuth.switched": "下次会话将使用 {email}",
   "codexAuth.removeConfirm": "删除 {id}？",
+  "codexAuth.addTitle": "添加 Codex 账号",
+  "codexAuth.addIdLabel": "账号 ID（标识符）",
+  "codexAuth.addJsonLabel": "auth.json 内容",
+  "codexAuth.addHelp": "从另一台机器的 ~/.codex/auth.json 复制，或使用 codex-auth export。",
+  "codexAuth.importBtn": "导入",
+  "codexAuth.importInvalidJson": "无效的 JSON",
+  "codexAuth.importMissingTokens": "JSON 中缺少 access_token 或 refresh_token",
+  "codexAuth.importMissingId": "请输入账号 ID",
+  "codexAuth.accountAdded": "账号已添加到池中",
 };

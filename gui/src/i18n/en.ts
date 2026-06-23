@@ -156,6 +156,15 @@ export const en = {
   "codexAuth.autoSwitchDesc": "New sessions auto-pick lowest usage account",
   "codexAuth.switched": "{email} will be used from next session",
   "codexAuth.removeConfirm": "Remove {id}?",
+  "codexAuth.addTitle": "Add Codex Account",
+  "codexAuth.addIdLabel": "Account ID (slug)",
+  "codexAuth.addJsonLabel": "auth.json content",
+  "codexAuth.addHelp": "Copy from another machine's ~/.codex/auth.json, or use codex-auth export.",
+  "codexAuth.importBtn": "Import",
+  "codexAuth.importInvalidJson": "Invalid JSON",
+  "codexAuth.importMissingTokens": "Missing access_token or refresh_token in JSON",
+  "codexAuth.importMissingId": "Account ID is required",
+  "codexAuth.accountAdded": "Account added to pool",
 } as const;
 
 export type TKey = keyof typeof en;

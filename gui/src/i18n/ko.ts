@@ -156,4 +156,13 @@ export const ko: Record<TKey, string> = {
   "codexAuth.autoSwitchDesc": "새 세션에서 사용량이 가장 적은 계정을 자동 선택",
   "codexAuth.switched": "다음 세션부터 {email}을(를) 사용합니다",
   "codexAuth.removeConfirm": "{id}을(를) 삭제하시겠습니까?",
+  "codexAuth.addTitle": "Codex 계정 추가",
+  "codexAuth.addIdLabel": "계정 ID (슬러그)",
+  "codexAuth.addJsonLabel": "auth.json 내용",
+  "codexAuth.addHelp": "다른 머신의 ~/.codex/auth.json을 복사하거나, codex-auth export를 사용하세요.",
+  "codexAuth.importBtn": "가져오기",
+  "codexAuth.importInvalidJson": "유효하지 않은 JSON",
+  "codexAuth.importMissingTokens": "JSON에 access_token 또는 refresh_token이 없습니다",
+  "codexAuth.importMissingId": "계정 ID를 입력하세요",
+  "codexAuth.accountAdded": "풀에 계정이 추가되었습니다",
 };

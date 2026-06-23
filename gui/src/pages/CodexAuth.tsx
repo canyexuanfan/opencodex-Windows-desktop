@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useT, type TFn } from "../i18n";
 import { IconLock, IconPlus, IconX, IconAlert } from "../icons";
 import { Notice } from "../ui";
+import AddCodexAccountModal from "../components/AddCodexAccountModal";
 
 interface AccountQuota { weeklyPercent: number; fiveHourPercent: number; updatedAt: number }
 interface AccountEntry {
@@ -15,6 +16,7 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [autoThreshold, setAutoThreshold] = useState(80);
   const [confirm, setConfirm] = useState<AccountEntry | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
   const [toast, setToast] = useState("");
 
   const load = async () => {
@@ -85,7 +87,7 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
       <div className="section-sep">
         <span className="section-label">{t("codexAuth.accountPool")}</span>
         <div className="sep-line" />
-        <button className="btn btn-sm btn-ghost" onClick={() => setToast("Import: paste auth.json via POST /api/codex-auth/accounts")}>
+        <button className="btn btn-sm btn-ghost" onClick={() => setShowAdd(true)}>
           <IconPlus width={14} /> {t("codexAuth.add")}
         </button>
       </div>
@@ -140,6 +142,14 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
             </div>
           </div>
         </div>
+      )}
+
+      {showAdd && (
+        <AddCodexAccountModal
+          apiBase={apiBase}
+          onClose={() => setShowAdd(false)}
+          onAdded={() => { load(); setToast(t("codexAuth.accountAdded")); setTimeout(() => setToast(""), 5000); }}
+        />
       )}
     </div>
   );
