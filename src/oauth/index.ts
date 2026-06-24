@@ -5,6 +5,7 @@ import { getCredential, saveCredential } from "./store";
 import { loginXai, refreshXaiToken } from "./xai";
 import { ANTHROPIC_OAUTH_BETA, loginAnthropic, refreshAnthropicToken } from "./anthropic";
 import { loginKimi, refreshKimiToken } from "./kimi";
+import { loginChatGPT, refreshChatGPTToken } from "./chatgpt";
 import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers/derive";
 
 const REFRESH_SKEW_MS = 60_000;
@@ -47,6 +48,12 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
     refresh: refreshKimiToken,
     providerConfig: oauthConfig("kimi"),
     defaultModel: oauthDefaultModel("kimi"),
+  },
+  chatgpt: {
+    login: loginChatGPT,
+    refresh: (rt) => refreshChatGPTToken(rt),
+    providerConfig: { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" as const },
+    defaultModel: "gpt-5.4",
   },
 };
 

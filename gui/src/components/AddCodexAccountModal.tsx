@@ -70,7 +70,14 @@ export default function AddCodexAccountModal({
             <h3 style={{ marginBottom: 4 }}>{t("codexAuth.addTitle")}</h3>
             <p className="modal-desc">{t("codexAuth.addPickDesc")}</p>
 
-            <button className="list-row" onClick={() => setStep("pick")} style={{ marginBottom: 8, opacity: 0.5, cursor: "default" }}>
+            <button className="list-row" onClick={async () => {
+              try {
+                const resp = await fetch(`${apiBase}/api/codex-auth/login`, { method: "POST" });
+                const data = await resp.json() as { url?: string; instructions?: string; error?: string };
+                if (data.url) window.open(data.url, "_blank");
+                if (data.error) setError(data.error);
+              } catch (e) { setError(String(e)); }
+            }} style={{ marginBottom: 8 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{ fontSize: 20 }}>🌐</span>
                 <div>
@@ -78,7 +85,6 @@ export default function AddCodexAccountModal({
                   <div className="sub">{t("codexAuth.oauthDesc")}</div>
                 </div>
               </div>
-              <span className="badge badge-muted">Soon</span>
             </button>
 
             <button className="list-row" onClick={() => setStep("import")} style={{ marginBottom: 16 }}>

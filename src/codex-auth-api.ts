@@ -175,5 +175,15 @@ export async function handleCodexAuthAPI(
     return jsonResponse({ quotas });
   }
 
+  if (url.pathname === "/api/codex-auth/login" && req.method === "POST") {
+    try {
+      const { startLoginFlow } = await import("./oauth/index");
+      const result = await startLoginFlow("chatgpt");
+      return jsonResponse({ ok: true, url: result.url, instructions: result.instructions });
+    } catch (e) {
+      return jsonResponse({ error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+  }
+
   return null;
 }
