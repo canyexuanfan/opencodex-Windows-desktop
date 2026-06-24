@@ -288,10 +288,11 @@ export async function handleCodexAuthAPI(
       const result = await startLoginFlow("chatgpt", { forceLogin: true });
 
       (async () => {
+        let completed = false;
         for (let i = 0; i < 150; i++) {
           await new Promise(r => setTimeout(r, 2000));
           const st = getLoginStatus("chatgpt");
-          if (st.loggedIn) {
+          if (st.done && st.loggedIn) {
             const { getCredential } = await import("./oauth/store");
             const cred = getCredential("chatgpt");
             if (cred) {
@@ -303,6 +304,7 @@ export async function handleCodexAuthAPI(
                   error: "Could not determine account identity from OAuth tokens. Try importing manually.",
                   doneAt: Date.now(),
                 });
+                completed = true;
                 break;
               }
               const collision = checkAccountIdCollision(oauthAccountId);
@@ -310,6 +312,7 @@ export async function handleCodexAuthAPI(
                 codexAuthLoginState.set(flowId, {
                   status: "error", error: collision.reason, doneAt: Date.now(),
                 });
+                completed = true;
                 break;
               }
 
@@ -344,14 +347,22 @@ export async function handleCodexAuthAPI(
                 saveConfig(config);
               }
               codexAuthLoginState.set(flowId, { status: "done", accountId, email, doneAt: Date.now() });
+              completed = true;
             }
             break;
           }
-          const errSt = getLoginStatus("chatgpt");
-          if (errSt.error) {
-            codexAuthLoginState.set(flowId, { status: "error", error: errSt.error, doneAt: Date.now() });
+          if (st.done && st.error) {
+            codexAuthLoginState.set(flowId, { status: "error", error: st.error, doneAt: Date.now() });
+            completed = true;
             break;
           }
+        }
+        if (!completed) {
+          codexAuthLoginState.set(flowId, {
+            status: "error",
+            error: "Login timed out before OAuth completed.",
+            doneAt: Date.now(),
+          });
         }
         // TTL: delete flow state 60s after completion
         setTimeout(() => codexAuthLoginState.delete(flowId), 60_000);

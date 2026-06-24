@@ -1,7 +1,12 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { resolveCodexAccountForThread, clearThreadAccountMap } from "../src/server";
 import { updateAccountQuota, clearAccountQuota } from "../src/codex-auth-api";
 import type { OcxConfig } from "../src/types";
+
+const TEST_DIR = join(import.meta.dir, ".tmp-session-affinity-test");
+let previousOpencodexHome: string | undefined;
 
 function makeConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
   return {
@@ -15,6 +20,10 @@ function makeConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
 
 describe("resolveCodexAccountForThread", () => {
   beforeEach(() => {
+    previousOpencodexHome = process.env.OPENCODEX_HOME;
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
     clearThreadAccountMap();
     clearAccountQuota();
   });
@@ -22,6 +31,9 @@ describe("resolveCodexAccountForThread", () => {
   afterEach(() => {
     clearAccountQuota();
     clearThreadAccountMap();
+    if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
+    else process.env.OPENCODEX_HOME = previousOpencodexHome;
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
   });
 
   test("returns null when no active account", () => {

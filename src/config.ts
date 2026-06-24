@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, chmodSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { OcxConfig } from "./types";
@@ -14,9 +14,17 @@ export function atomicWriteFile(path: string, content: string): void {
   renameSync(tmp, path);
 }
 
-const OCX_DIR = process.env["OPENCODEX_HOME"] || join(homedir(), ".opencodex");
-const CONFIG_PATH = join(OCX_DIR, "config.json");
-const PID_PATH = join(OCX_DIR, "ocx.pid");
+function resolveConfigDir(): string {
+  return process.env["OPENCODEX_HOME"] || join(homedir(), ".opencodex");
+}
+
+function resolveConfigPath(): string {
+  return join(resolveConfigDir(), "config.json");
+}
+
+function resolvePidPath(): string {
+  return join(resolveConfigDir(), "ocx.pid");
+}
 
 /**
  * Default featured subagent models (native GPT) seeded on a fresh install and when `subagentModels`
@@ -28,20 +36,21 @@ const PID_PATH = join(OCX_DIR, "ocx.pid");
 export const DEFAULT_SUBAGENT_MODELS = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"];
 
 export function getConfigDir(): string {
-  return OCX_DIR;
+  return resolveConfigDir();
 }
 
 export function getConfigPath(): string {
-  return CONFIG_PATH;
+  return resolveConfigPath();
 }
 
 export function getPidPath(): string {
-  return PID_PATH;
+  return resolvePidPath();
 }
 
 export function hardenConfigDir(): void {
-  if (existsSync(OCX_DIR)) {
-    try { chmodSync(OCX_DIR, 0o700); } catch { /* best-effort */ }
+  const dir = getConfigDir();
+  if (existsSync(dir)) {
+    try { chmodSync(dir, 0o700); } catch { /* best-effort */ }
   }
 }
 
@@ -52,14 +61,16 @@ export function hardenExistingSecret(path: string): void {
 }
 
 export function loadConfig(): OcxConfig {
+  const dir = getConfigDir();
+  const configPath = getConfigPath();
   hardenConfigDir();
-  hardenExistingSecret(CONFIG_PATH);
-  hardenExistingSecret(join(OCX_DIR, "auth.json"));
-  if (!existsSync(CONFIG_PATH)) {
+  hardenExistingSecret(configPath);
+  hardenExistingSecret(join(dir, "auth.json"));
+  if (!existsSync(configPath)) {
     return getDefaultConfig();
   }
   try {
-    const raw = readFileSync(CONFIG_PATH, "utf-8");
+    const raw = readFileSync(configPath, "utf-8");
     return JSON.parse(raw) as OcxConfig;
   } catch {
     return getDefaultConfig();
@@ -67,12 +78,13 @@ export function loadConfig(): OcxConfig {
 }
 
 export function saveConfig(config: OcxConfig): void {
-  if (!existsSync(OCX_DIR)) {
-    mkdirSync(OCX_DIR, { recursive: true, mode: 0o700 });
+  const dir = getConfigDir();
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
   } else {
-    try { chmodSync(OCX_DIR, 0o700); } catch { /* best-effort on existing dir */ }
+    try { chmodSync(dir, 0o700); } catch { /* best-effort on existing dir */ }
   }
-  atomicWriteFile(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n");
+  atomicWriteFile(getConfigPath(), JSON.stringify(config, null, 2) + "\n");
 }
 
 export function websocketsEnabled(config: Pick<OcxConfig, "websockets">): boolean {
@@ -112,18 +124,20 @@ export function resolveEnvValue(value: string | undefined): string | undefined {
 }
 
 export function writePid(pid: number): void {
-  if (!existsSync(OCX_DIR)) {
-    mkdirSync(OCX_DIR, { recursive: true, mode: 0o700 });
+  const dir = getConfigDir();
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
   } else {
     hardenConfigDir();
   }
-  writeFileSync(PID_PATH, String(pid), "utf-8");
+  writeFileSync(getPidPath(), String(pid), "utf-8");
 }
 
 export function readPid(): number | null {
-  if (!existsSync(PID_PATH)) return null;
+  const pidPath = getPidPath();
+  if (!existsSync(pidPath)) return null;
   try {
-    const raw = readFileSync(PID_PATH, "utf-8").trim();
+    const raw = readFileSync(pidPath, "utf-8").trim();
     const pid = parseInt(raw, 10);
     if (isNaN(pid)) return null;
     try {
@@ -140,7 +154,6 @@ export function readPid(): number | null {
 
 export function removePid(): void {
   try {
-    const { unlinkSync } = require("node:fs");
-    unlinkSync(PID_PATH);
+    unlinkSync(getPidPath());
   } catch { /* ignore */ }
 }

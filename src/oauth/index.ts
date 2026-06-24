@@ -205,10 +205,10 @@ export async function runLogin(provider: string, ctrl: OAuthController, opts?: L
  */
 const loginState = new Map<string, { error?: string; done: boolean }>();
 
-export function getLoginStatus(provider: string): { loggedIn: boolean; email?: string; error?: string } {
+export function getLoginStatus(provider: string): { loggedIn: boolean; email?: string; error?: string; done: boolean } {
   const cred = getCredential(provider);
   const st = loginState.get(provider);
-  return { loggedIn: !!cred, email: cred?.email, error: st?.error };
+  return { loggedIn: !!cred, email: cred?.email, error: st?.error, done: st?.done ?? false };
 }
 
 export function clearLoginState(provider: string): void {

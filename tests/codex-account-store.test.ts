@@ -21,6 +21,7 @@ describe("codex-account-store CRUD", () => {
     const { saveCodexAccountCredential, getCodexAccountCredential } = await import("../src/codex-account-store");
     const cred = { accessToken: "tk_a", refreshToken: "rf_a", expiresAt: Date.now() + 3600_000, chatgptAccountId: "acc_a" };
     saveCodexAccountCredential("work", cred);
+    expect(existsSync(ACCOUNTS_PATH)).toBe(true);
     const loaded = getCodexAccountCredential("work");
     expect(loaded).toEqual(cred);
   });

@@ -1,9 +1,35 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import {
   handleCodexAuthAPI, updateAccountQuota, getAccountQuota,
   checkAccountIdCollision, getMainChatgptAccountId,
-  markAccountNeedsReauth, isAccountNeedsReauth, clearAccountNeedsReauth,
+  markAccountNeedsReauth, isAccountNeedsReauth, clearAccountNeedsReauth, clearAccountQuota,
 } from "../src/codex-auth-api";
+
+const TEST_DIR = join(import.meta.dir, ".tmp-codex-auth-api-test");
+const TEST_CODEX_HOME = join(TEST_DIR, "codex");
+let previousOpencodexHome: string | undefined;
+let previousCodexHome: string | undefined;
+
+beforeEach(() => {
+  previousOpencodexHome = process.env.OPENCODEX_HOME;
+  previousCodexHome = process.env.CODEX_HOME;
+  if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+  mkdirSync(TEST_CODEX_HOME, { recursive: true });
+  process.env.OPENCODEX_HOME = TEST_DIR;
+  process.env.CODEX_HOME = TEST_CODEX_HOME;
+  clearAccountQuota();
+});
+
+afterEach(() => {
+  clearAccountQuota();
+  if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
+  else process.env.OPENCODEX_HOME = previousOpencodexHome;
+  if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+  else process.env.CODEX_HOME = previousCodexHome;
+  if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+});
 
 describe("codex-auth API", () => {
   test("GET /api/codex-auth/accounts returns array with main", async () => {
@@ -152,6 +178,12 @@ describe("codex-auth API", () => {
     const resp = await handleCodexAuthAPI(req, url, {} as any);
     const data = await resp!.json() as { status: string };
     expect(data.status).toBe("expired");
+  });
+
+  test("OAuth pool login waits for the current flow to finish, not stale credentials", async () => {
+    const source = await Bun.file("src/codex-auth-api.ts").text();
+    expect(source).toContain("st.done && st.loggedIn");
+    expect(source).toContain("Login timed out before OAuth completed.");
   });
 
   test("GET /api/codex-auth/accounts does not trigger token refresh (cached quota only)", async () => {

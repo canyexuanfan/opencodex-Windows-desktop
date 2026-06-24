@@ -4,15 +4,19 @@ import { join } from "node:path";
 import { getConfigDir, atomicWriteFile, hardenConfigDir, hardenExistingSecret } from "../config";
 import type { OAuthCredentials } from "./types";
 
-const AUTH_PATH = join(getConfigDir(), "auth.json");
 type AuthStore = Record<string, OAuthCredentials>;
 
+function authPath(): string {
+  return join(getConfigDir(), "auth.json");
+}
+
 export function loadAuthStore(): AuthStore {
+  const path = authPath();
   hardenConfigDir();
-  hardenExistingSecret(AUTH_PATH);
-  if (!existsSync(AUTH_PATH)) return {};
+  hardenExistingSecret(path);
+  if (!existsSync(path)) return {};
   try {
-    return JSON.parse(readFileSync(AUTH_PATH, "utf-8")) as AuthStore;
+    return JSON.parse(readFileSync(path, "utf-8")) as AuthStore;
   } catch {
     return {};
   }
@@ -25,7 +29,7 @@ function persist(store: AuthStore): void {
   } else {
     try { chmodSync(dir, 0o700); } catch { /* best-effort on existing dir */ }
   }
-  atomicWriteFile(AUTH_PATH, JSON.stringify(store, null, 2) + "\n");
+  atomicWriteFile(authPath(), JSON.stringify(store, null, 2) + "\n");
 }
 
 export function getCredential(provider: string): OAuthCredentials | null {
