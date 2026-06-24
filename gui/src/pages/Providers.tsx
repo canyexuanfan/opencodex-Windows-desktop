@@ -7,7 +7,7 @@ import { useT } from "../i18n";
 interface Config {
   port: number;
   defaultProvider: string;
-  providers: Record<string, { adapter: string; baseUrl: string; apiKey?: string; defaultModel?: string; authMode?: string }>;
+  providers: Record<string, { adapter: string; baseUrl: string; hasApiKey?: boolean; hasHeaders?: boolean; defaultModel?: string; authMode?: string }>;
 }
 
 interface OAuthStatus { loggedIn: boolean; email?: string; error?: string }
@@ -222,7 +222,8 @@ export default function Providers({ apiBase }: { apiBase: string }) {
                 <div className="muted" style={{ fontSize: 13 }}>
                   <code className="chip">{prov.adapter}</code> · {prov.baseUrl}
                   {prov.defaultModel && <> · {prov.defaultModel}</>}
-                  {prov.apiKey && <> · {prov.apiKey}</>}
+                  {prov.hasApiKey && <> · {t("prov.hasApiKey")}</>}
+                  {prov.hasHeaders && <> · {t("prov.hasHeaders")}</>}
                 </div>
               </div>
               <button className="btn btn-danger btn-sm" onClick={() => removeProvider(name)} aria-label={t("sub.removeAria", { m: name })} style={{ flexShrink: 0 }}><IconTrash />{t("common.remove")}</button>

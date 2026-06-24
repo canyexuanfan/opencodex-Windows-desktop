@@ -77,6 +77,8 @@ export const ko: Record<TKey, string> = {
   "prov.removeFail": "\"{name}\" 삭제에 실패했습니다.",
   "prov.added": "\"{name}\" 을(를) 추가했습니다. 지금 활성화됨 — Codex 모델 선택기에 표시하려면 {cmd} 를 실행하세요(또는 재시작).",
   "prov.removeConfirm": "프로바이더 \"{name}\" 을(를) 삭제할까요? 해당 모델이 Codex 선택기에서 사라집니다.",
+  "prov.hasApiKey": "API 키 설정됨",
+  "prov.hasHeaders": "커스텀 헤더 설정됨",
 
   // models
   "models.subtitle": "Codex가 보는 라우팅된 모델을 프로바이더별로 묶어 켜고 끕니다(헤더를 클릭하면 접힘). 비활성화된 모델은 카탈로그와 모델 선택기에서 숨겨집니다. 변경 사항은 다음 Codex 턴에 적용됩니다 — opencodex가 Codex의 5분 모델 캐시를 무효화하므로 재시작이 필요 없습니다.",

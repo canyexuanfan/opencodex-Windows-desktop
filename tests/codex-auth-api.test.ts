@@ -6,6 +6,7 @@ import {
   handleCodexAuthAPI, updateAccountQuota, getAccountQuota,
   checkAccountIdCollision, getMainChatgptAccountId,
   markAccountNeedsReauth, isAccountNeedsReauth, clearAccountNeedsReauth, clearAccountQuota,
+  maskEmail,
 } from "../src/codex-auth-api";
 import { getCodexAccountCredential, saveCodexAccountCredential } from "../src/codex-account-store";
 import {
@@ -67,6 +68,33 @@ describe("codex-auth API", () => {
     expect(Array.isArray(data.accounts)).toBe(true);
     const main = (data.accounts as { isMain: boolean }[]).find(a => a.isMain);
     expect(main).toBeTruthy();
+  });
+
+  test("maskEmail hides local account names", () => {
+    expect(maskEmail("a@example.test")).toBe("*@example.test");
+    expect(maskEmail("ab@example.test")).toBe("a*@example.test");
+    expect(maskEmail("abcd@example.test")).toBe("a***d@example.test");
+    expect(maskEmail("Codex App login")).toBe("Codex App login");
+    expect(maskEmail(null)).toBeNull();
+  });
+
+  test("GET /api/codex-auth/accounts masks pool account email", async () => {
+    const config = makeConfig({
+      codexAccounts: [{ id: "pool-mask", email: "person@example.test", isMain: false }],
+    });
+    saveCodexAccountCredential("pool-mask", {
+      accessToken: "access-mask",
+      refreshToken: "refresh-mask",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "acct-mask",
+    });
+    updateAccountQuota("pool-mask", 10, 20);
+
+    const req = new Request("http://localhost/api/codex-auth/accounts", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: { id: string; email: string }[] };
+
+    expect(data.accounts.find(a => a.id === "pool-mask")?.email).toBe("p***n@example.test");
   });
 
   test("POST /api/codex-auth/accounts rejects missing fields", async () => {

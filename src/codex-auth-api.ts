@@ -36,6 +36,18 @@ const ACCOUNT_ID_RE = /^[a-zA-Z0-9._-]{1,64}$/;
 
 const codexAuthLoginState = new Map<string, { status: string; accountId?: string; email?: string; error?: string; doneAt?: number }>();
 
+export function maskEmail(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const at = value.indexOf("@");
+  if (at <= 0) return value;
+  const local = value.slice(0, at);
+  const domain = value.slice(at + 1);
+  if (!domain) return value;
+  if (local.length === 1) return `*@${domain}`;
+  if (local.length === 2) return `${local[0]}*@${domain}`;
+  return `${local[0]}***${local[local.length - 1]}@${domain}`;
+}
+
 function expireCodexAuthFlow(flowId: string | null, error = "Login cancelled"): void {
   if (!flowId) return;
   codexAuthLoginState.set(flowId, { status: "error", error, doneAt: Date.now() });
@@ -162,6 +174,7 @@ export async function handleCodexAuthAPI(
         : { quota: null, needsReauth: true };
       return {
         ...a,
+        email: maskEmail(a.email) ?? a.email,
         quota: quotaResult.quota ? { ...quotaResult.quota } : null,
         needsReauth: !cred || quotaResult.needsReauth || isAccountNeedsReauth(a.id),
         hasCredential: !!cred,
@@ -169,7 +182,7 @@ export async function handleCodexAuthAPI(
     });
     const main = {
       id: "__main__",
-      email: mainInfo.email ?? "Codex App login",
+      email: maskEmail(mainInfo.email) ?? "Codex App login",
       plan: mainInfo.plan,
       isMain: true,
       hasCredential: true,

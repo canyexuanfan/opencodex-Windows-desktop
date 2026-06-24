@@ -77,6 +77,8 @@ export const zh: Record<TKey, string> = {
   "prov.removeFail": "移除 \"{name}\" 失败。",
   "prov.added": "已添加 \"{name}\"。现已生效 — 运行 {cmd}（或重启）以在 Codex 选择器中列出其模型。",
   "prov.removeConfirm": "移除提供方 \"{name}\"？其模型将从 Codex 选择器中消失。",
+  "prov.hasApiKey": "已配置 API 密钥",
+  "prov.hasHeaders": "已配置自定义请求头",
 
   // models
   "models.subtitle": "按提供方分组开关 Codex 可见的已路由模型（点击标题可折叠）。已禁用的模型会从目录和模型选择器中隐藏。更改在下一个 Codex 回合生效 — opencodex 会使 Codex 的 5 分钟模型缓存失效，因此无需重启。",

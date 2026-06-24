@@ -77,6 +77,8 @@ export const en = {
   "prov.removeFail": "Failed to remove \"{name}\".",
   "prov.added": "Added \"{name}\". Live now — run {cmd} (or restart) to list its models in Codex's picker.",
   "prov.removeConfirm": "Remove provider \"{name}\"? Its models disappear from Codex's picker.",
+  "prov.hasApiKey": "api key configured",
+  "prov.hasHeaders": "custom headers configured",
 
   // models
   "models.subtitle": "Toggle which routed models Codex sees, grouped by provider (click a header to collapse). Disabled models are hidden from the catalog + model picker. Changes apply on the next Codex turn — opencodex invalidates Codex's 5-min model cache so no restart is needed.",

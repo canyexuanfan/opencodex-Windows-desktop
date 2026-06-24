@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { timingSafeEqual } from "node:crypto";
 import { extname, join } from "node:path";
 import { createAnthropicAdapter } from "./adapters/anthropic";
 import { createAzureAdapter } from "./adapters/azure";
@@ -511,11 +512,11 @@ export function sanitizePassthroughHeaders(upstream: Headers): Headers {
 
 let _corsOrigin = "http://localhost:10100";
 function setCorsOrigin(port: number): void { _corsOrigin = `http://localhost:${port}`; }
-function corsHeaders(): Record<string, string> {
+export function corsHeaders(): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": _corsOrigin,
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-OpenCodex-API-Key",
   };
 }
 
@@ -534,6 +535,93 @@ function isLocalOrigin(req: Request): boolean {
   return origin === localhostOrigin || origin === loopbackOrigin;
 }
 
+function configuredApiAuthToken(_config: OcxConfig): string | undefined {
+  const token = process.env.OPENCODEX_API_AUTH_TOKEN?.trim();
+  return token || undefined;
+}
+
+export function isLoopbackHostname(hostname: string | undefined): boolean {
+  const normalized = (hostname ?? "127.0.0.1").trim().toLowerCase();
+  return normalized === "" || normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
+}
+
+export function isApiAuthRequired(config: OcxConfig): boolean {
+  return !isLoopbackHostname(config.hostname);
+}
+
+export function assertServerAuthConfig(config: OcxConfig): void {
+  if (isApiAuthRequired(config) && !configuredApiAuthToken(config)) {
+    throw new Error("OPENCODEX_API_AUTH_TOKEN is required when binding opencodex to a non-loopback hostname");
+  }
+}
+
+export function hasValidApiAuth(req: Request, config: OcxConfig): boolean {
+  if (!isApiAuthRequired(config)) return true;
+  const expected = configuredApiAuthToken(config);
+  const actual = req.headers.get("x-opencodex-api-key")?.trim();
+  if (!expected || !actual) return false;
+  const enc = new TextEncoder();
+  const expectedBytes = enc.encode(expected);
+  const actualBytes = enc.encode(actual);
+  return expectedBytes.length === actualBytes.length && timingSafeEqual(actualBytes, expectedBytes);
+}
+
+function requireApiAuth(req: Request, config: OcxConfig, kind: "management" | "data-plane"): Response | null {
+  if (hasValidApiAuth(req, config)) return null;
+  if (kind === "management") return jsonResponse({ error: "opencodex API key required" }, 401);
+  return formatErrorResponse(401, "authentication_error", "opencodex API key required");
+}
+
+function copyIfDefined<K extends keyof OcxProviderConfig>(
+  out: Record<string, unknown>,
+  provider: OcxProviderConfig,
+  key: K,
+): void {
+  const value = provider[key];
+  if (value !== undefined) out[key as string] = value as unknown;
+}
+
+export function safeConfigDTO(config: OcxConfig): unknown {
+  const providers: Record<string, Record<string, unknown>> = {};
+  for (const [name, provider] of Object.entries(config.providers)) {
+    const dto: Record<string, unknown> = {
+      adapter: provider.adapter,
+      baseUrl: provider.baseUrl,
+      hasApiKey: !!provider.apiKey,
+      hasHeaders: !!provider.headers && Object.keys(provider.headers).length > 0,
+    };
+    for (const key of [
+      "defaultModel",
+      "authMode",
+      "liveModels",
+      "models",
+      "contextWindow",
+      "modelContextWindows",
+      "reasoningEfforts",
+      "modelReasoningEfforts",
+      "noVisionModels",
+      "noReasoningModels",
+      "noTemperatureModels",
+      "noTopPModels",
+      "noPenaltyModels",
+      "autoToolChoiceOnlyModels",
+      "preserveReasoningContentModels",
+      "escapeBuiltinToolNames",
+    ] as const) {
+      copyIfDefined(dto, provider, key);
+    }
+    providers[name] = dto;
+  }
+  return {
+    port: config.port,
+    hostname: config.hostname ?? "127.0.0.1",
+    defaultProvider: config.defaultProvider,
+    codexAutoStart: codexAutoStartEnabled(config),
+    websockets: config.websockets,
+    providers,
+  };
+}
+
 async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): Promise<Response | null> {
   if ((req.method === "POST" || req.method === "PUT" || req.method === "DELETE") && !isLocalOrigin(req)) {
     return jsonResponse({ error: "cross-origin request blocked" }, 403);
@@ -548,12 +636,7 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
   }
 
   if (url.pathname === "/api/config" && req.method === "GET") {
-    const safeConfig = JSON.parse(JSON.stringify(config));
-    safeConfig.codexAutoStart = codexAutoStartEnabled(config);
-    for (const prov of Object.values(safeConfig.providers as Record<string, OcxProviderConfig>)) {
-      if (prov.apiKey) prov.apiKey = prov.apiKey.slice(0, 8) + "...";
-    }
-    return jsonResponse(safeConfig);
+    return jsonResponse(safeConfigDTO(config));
   }
 
   if (url.pathname === "/api/config" && req.method === "PUT") {
@@ -785,6 +868,7 @@ async function fetchAllModels(config: OcxConfig): Promise<CatalogModel[]> {
 
 export function startServer(port?: number) {
   const config = loadConfig();
+  assertServerAuthConfig(config);
   // Refresh OAuth provider presets (models/noReasoningModels) from the registry so a proxy update
   // adding/dropping models reaches existing configs on start — not just fresh installs.
   reconcileOAuthProviders(config);
@@ -818,6 +902,8 @@ export function startServer(port?: number) {
       // Responses WebSocket (phase 120.2). Codex upgrades the same /v1/responses path; auth is
       // handshake-time only, so capture inbound headers and thread them into the pipeline.
       if (url.pathname === "/v1/responses" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+        const apiAuthError = requireApiAuth(req, config, "data-plane");
+        if (apiAuthError) return apiAuthError;
         if (!isLocalOrigin(req)) {
           return formatErrorResponse(403, "origin_rejected", "WebSocket upgrade blocked: non-local Origin");
         }
@@ -846,6 +932,8 @@ export function startServer(port?: number) {
       }
 
       if (url.pathname.startsWith("/api/")) {
+        const apiAuthError = requireApiAuth(req, config, "management");
+        if (apiAuthError) return apiAuthError;
         const mgmtResponse = await handleManagementAPI(req, url, config);
         if (mgmtResponse) return mgmtResponse;
       }
@@ -872,6 +960,8 @@ export function startServer(port?: number) {
       }
 
       if (url.pathname === "/v1/responses" && req.method === "POST") {
+        const apiAuthError = requireApiAuth(req, config, "data-plane");
+        if (apiAuthError) return apiAuthError;
         if (!isLocalOrigin(req)) {
           return formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked");
         }
