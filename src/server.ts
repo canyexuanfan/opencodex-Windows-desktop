@@ -42,8 +42,30 @@ function resolveCodexAccountForThread(
   if (threadId && threadAccountMap.has(threadId)) {
     return threadAccountMap.get(threadId)!;
   }
-  const active = config.activeCodexAccountId;
+  let active = config.activeCodexAccountId;
   if (!active) return null;
+
+  const threshold = config.autoSwitchThreshold ?? 80;
+  if (threshold > 0) {
+    const { getAccountQuota } = require("./codex-auth-api") as typeof import("./codex-auth-api");
+    const quota = getAccountQuota(active);
+    if (quota && quota.weeklyPercent >= threshold) {
+      const pool = (config.codexAccounts ?? []).filter(a => !a.isMain && a.id !== active);
+      let best = active;
+      let bestUsage = quota.weeklyPercent;
+      for (const p of pool) {
+        const pq = getAccountQuota(p.id);
+        const usage = pq?.weeklyPercent ?? 0;
+        if (usage < bestUsage) { best = p.id; bestUsage = usage; }
+      }
+      if (best !== active) {
+        config.activeCodexAccountId = best;
+        saveConfig(config);
+        active = best;
+      }
+    }
+  }
+
   if (threadId) threadAccountMap.set(threadId, active);
   return active;
 }
@@ -228,6 +250,18 @@ async function handleResponses(
         : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
       return formatErrorResponse(502, "upstream_error", msg);
     }
+    // Capture quota from upstream response for multi-account tracking
+    const threadId = req.headers.get("x-codex-parent-thread-id");
+    const quotaAccountId = resolveCodexAccountForThread(threadId, config);
+    if (quotaAccountId) {
+      const weeklyRaw = upstreamResponse.headers.get("x-codex-secondary-used-percent");
+      const fiveHourRaw = upstreamResponse.headers.get("x-codex-primary-used-percent");
+      if (weeklyRaw || fiveHourRaw) {
+        const { updateAccountQuota } = await import("./codex-auth-api");
+        updateAccountQuota(quotaAccountId, parseFloat(weeklyRaw ?? "0"), parseFloat(fiveHourRaw ?? "0"));
+      }
+    }
+
     const headers = sanitizePassthroughHeaders(upstreamResponse.headers);
     const isEventStream = headers.get("content-type")?.toLowerCase().includes("text/event-stream") ?? false;
     const body = isEventStream
