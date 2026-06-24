@@ -10,7 +10,7 @@ import {
   listCodexAccountIds,
   TokenRefreshError,
 } from "./codex-account-store";
-import { extractAccountId, decodeJwtPayload } from "./oauth/chatgpt";
+import { extractAccountId, decodeJwtPayload, extractEmail } from "./oauth/chatgpt";
 import type { OcxConfig } from "./types";
 
 function jsonResponse(data: unknown, status = 200): Response {
@@ -114,15 +114,38 @@ export function getMainChatgptAccountId(): string | null {
   return extractAccountId(tokens.id_token, tokens.access_token) ?? (tokens.account_id || null);
 }
 
-// H2: shared collision check for import and OAuth paths
-export function checkAccountIdCollision(chatgptAccountId: string): { collision: true; reason: string } | { collision: false } {
+function getMainChatgptEmail(): string | null {
+  const tokens = readCodexTokens();
+  if (!tokens) return null;
+  return extractEmail(tokens.id_token, tokens.access_token) ?? null;
+}
+
+function normalizedEmail(email: string | undefined | null): string | null {
+  const trimmed = email?.trim().toLowerCase();
+  return trimmed || null;
+}
+
+function poolEmailForId(id: string): string | null {
+  const account = (loadConfig().codexAccounts ?? []).find(a => a.id === id);
+  return normalizedEmail(account?.email);
+}
+
+// H2: shared collision check for import and OAuth paths.
+// Business/Team members can share chatgpt_account_id, so require email match too.
+export function checkAccountIdCollision(
+  chatgptAccountId: string,
+  email?: string | null,
+): { collision: true; reason: string } | { collision: false } {
+  const candidateEmail = normalizedEmail(email);
   const mainId = getMainChatgptAccountId();
-  if (mainId && mainId === chatgptAccountId) {
+  const mainEmail = getMainChatgptEmail();
+  if (mainId && mainId === chatgptAccountId && (!candidateEmail || !mainEmail || mainEmail === candidateEmail)) {
     return { collision: true, reason: "This account is your main Codex login. Use a different account for the pool." };
   }
   for (const poolId of listCodexAccountIds()) {
     const cred = getCodexAccountCredential(poolId);
-    if (cred && cred.chatgptAccountId === chatgptAccountId) {
+    const poolEmail = poolEmailForId(poolId);
+    if (cred && cred.chatgptAccountId === chatgptAccountId && (!candidateEmail || !poolEmail || poolEmail === candidateEmail)) {
       return { collision: true, reason: `Account is already in the pool (${poolId}).` };
     }
   }
@@ -270,7 +293,7 @@ export async function handleCodexAuthAPI(
     }
     // 1.1: JWT-derived account ID is authoritative; collision check
     const derivedAccountId = extractAccountId(undefined, body.accessToken) ?? body.chatgptAccountId;
-    const collision = checkAccountIdCollision(derivedAccountId);
+    const collision = checkAccountIdCollision(derivedAccountId, body.email);
     if (collision.collision) {
       return jsonResponse({ error: collision.reason }, 400);
     }
@@ -380,7 +403,7 @@ export async function handleCodexAuthAPI(
                 completed = true;
                 break;
               }
-              const collision = checkAccountIdCollision(oauthAccountId);
+              const collision = checkAccountIdCollision(oauthAccountId, cred.email);
               if (collision.collision) {
                 codexAuthLoginState.set(flowId, {
                   status: "error", error: collision.reason, doneAt: Date.now(),
