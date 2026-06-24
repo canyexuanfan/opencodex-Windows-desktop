@@ -177,6 +177,8 @@ export const zh: Record<TKey, string> = {
   "codexAuth.back": "返回",
   "codexAuth.oauthAlreadyInProgress": "登录已在进行中。请在浏览器中完成。",
   "codexAuth.oauthWaiting": "等待浏览器中完成 ChatGPT 登录...",
+  "codexAuth.openLoginLink": "打开登录链接",
+  "codexAuth.oauthCancelled": "登录已取消。",
   "codexAuth.needsReauth": "重新登录",
   "codexAuth.tokenExpired": "令牌已过期 — 重新添加此账号以刷新",
   "codexAuth.emailCollision": "此账号与您的主 Codex 登录相同。请使用其他账号。",

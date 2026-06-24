@@ -204,6 +204,7 @@ export async function runLogin(provider: string, ctrl: OAuthController, opts?: L
  * error surfaced via getLoginStatus().
  */
 const loginState = new Map<string, { error?: string; done: boolean }>();
+const loginAbort = new Map<string, AbortController>();
 
 export function getLoginStatus(provider: string): { loggedIn: boolean; email?: string; error?: string; done: boolean } {
   const cred = getCredential(provider);
@@ -212,7 +213,19 @@ export function getLoginStatus(provider: string): { loggedIn: boolean; email?: s
 }
 
 export function clearLoginState(provider: string): void {
+  loginAbort.get(provider)?.abort("cleared");
+  loginAbort.delete(provider);
   loginState.delete(provider);
+}
+
+export function cancelLoginFlow(provider: string): boolean {
+  const ctrl = loginAbort.get(provider);
+  const existing = loginState.get(provider);
+  if (!ctrl && (!existing || existing.done)) return false;
+  ctrl?.abort("cancelled");
+  loginAbort.delete(provider);
+  loginState.set(provider, { done: true, error: "Login cancelled" });
+  return true;
 }
 
 export async function startLoginFlow(provider: string, opts?: LoginOpts): Promise<{ url: string; instructions?: string }> {
@@ -223,6 +236,8 @@ export async function startLoginFlow(provider: string, opts?: LoginOpts): Promis
     throw new Error(`A login for ${provider} is already in progress`);
   }
   loginState.set(provider, { done: false });
+  const abort = new AbortController();
+  loginAbort.set(provider, abort);
   return new Promise((resolve, reject) => {
     let urlResolved = false;
     const ctrl: OAuthController = {
@@ -231,16 +246,19 @@ export async function startLoginFlow(provider: string, opts?: LoginOpts): Promis
         resolve({ url, instructions });
       },
       onProgress: () => {},
+      signal: abort.signal,
     };
     // Background: runLogin persists the credential + upserts the provider entry to disk config.
     runLogin(provider, ctrl, opts)
       .then(() => {
+        loginAbort.delete(provider);
         loginState.set(provider, { done: true });
         // Local-token import (grok-cli / Claude Code keychain) completes WITHOUT firing onAuth —
         // resolve so the GUI call returns instead of hanging.
         if (!urlResolved) resolve({ url: "", instructions: "Logged in via an existing local CLI/keychain token — no browser needed." });
       })
       .catch((e: unknown) => {
+        loginAbort.delete(provider);
         const msg = e instanceof Error ? e.message : String(e);
         loginState.set(provider, { done: true, error: msg });
         if (!urlResolved) reject(e);

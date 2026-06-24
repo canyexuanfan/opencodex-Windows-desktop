@@ -329,6 +329,21 @@ describe("codex-auth API", () => {
     expect(data.status).toBe("expired");
   });
 
+  test("POST /api/codex-auth/login/cancel expires the pending flow", async () => {
+    const flowId = "flow-cancel-test";
+    const req = new Request("http://localhost/api/codex-auth/login/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ flowId }),
+    });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), {} as any);
+    expect(resp!.status).toBe(200);
+    const statusReq = new Request(`http://localhost/api/codex-auth/login-status?flowId=${flowId}`, { method: "GET" });
+    const statusResp = await handleCodexAuthAPI(statusReq, new URL(statusReq.url), {} as any);
+    const data = await statusResp!.json() as { status: string; error?: string };
+    expect(data).toMatchObject({ status: "error", error: "Login cancelled" });
+  });
+
   test("GET /api/codex-auth/login-status recovers done when a persisted account exists", async () => {
     const createReq = new Request("http://localhost/api/codex-auth/accounts", {
       method: "POST",

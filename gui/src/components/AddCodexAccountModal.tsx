@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { IconX } from "../icons";
+import { IconExternal, IconGlobe, IconKey, IconX } from "../icons";
 import { useT } from "../i18n";
 
 export default function AddCodexAccountModal({
@@ -12,22 +12,51 @@ export default function AddCodexAccountModal({
   const t = useT();
   const aliveRef = useRef(true);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flowRef = useRef<string | null>(null);
+  const popupRef = useRef<Window | null>(null);
   useEffect(() => () => {
     aliveRef.current = false;
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
   }, []);
 
   const [step, setStep] = useState<"pick" | "import" | "oauth-waiting">("pick");
   const [id, setId] = useState("");
   const [json, setJson] = useState("");
   const [error, setError] = useState("");
+  const [authUrl, setAuthUrl] = useState("");
   const [saving, setSaving] = useState(false);
 
+  const stopPolling = () => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
+  };
+
+  const cancelLogin = async () => {
+    const flowId = flowRef.current;
+    flowRef.current = null;
+    popupRef.current = null;
+    setAuthUrl("");
+    stopPolling();
+    if (!flowId) return;
+    await fetch(`${apiBase}/api/codex-auth/login/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ flowId }),
+    }).catch(() => {});
+  };
+
+  const closeModal = () => {
+    if (step === "oauth-waiting") void cancelLogin();
+    onClose();
+  };
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") closeModal(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  });
 
   const handleImport = async () => {
     setError("");
@@ -58,7 +87,7 @@ export default function AddCodexAccountModal({
         return;
       }
       onAdded();
-      onClose();
+      closeModal();
     } catch (e) {
       if (aliveRef.current) setError(String(e));
     } finally {
@@ -67,7 +96,7 @@ export default function AddCodexAccountModal({
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={closeModal}>
       <div className="modal-card" onClick={e => e.stopPropagation()} style={{ maxWidth: 440 }}>
         {step === "pick" && (
           <>
@@ -98,9 +127,12 @@ export default function AddCodexAccountModal({
                   return;
                 }
                 if (data.url) {
-                  window.open(data.url, "_blank");
+                  flowRef.current = data.flowId ?? null;
+                  setAuthUrl(data.url);
+                  popupRef.current = window.open(data.url, "_blank");
+                  if (popupRef.current) popupRef.current.opener = null;
                   setStep("oauth-waiting");
-                  if (pollRef.current) clearInterval(pollRef.current);
+                  stopPolling();
                   const fid = data.flowId ?? "";
                   const statusUrl = fid
                     ? `${apiBase}/api/codex-auth/login-status?flowId=${encodeURIComponent(fid)}${requestedId ? `&accountId=${encodeURIComponent(requestedId)}` : ""}`
@@ -109,19 +141,25 @@ export default function AddCodexAccountModal({
                     try {
                       const st = await fetch(statusUrl).then(r => r.json()) as { status: string; error?: string };
                       if (st.status === "done") {
-                        if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+                        stopPolling();
+                        flowRef.current = null;
+                        popupRef.current = null;
                         onAdded();
                         onClose();
                       } else if (st.status === "error" || st.status === "expired") {
-                        if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+                        stopPolling();
+                        flowRef.current = null;
+                        popupRef.current = null;
                         if (aliveRef.current) { setStep("pick"); setError(st.error ?? "Login failed"); }
+                      } else if (popupRef.current?.closed) {
+                        await cancelLogin();
+                        if (aliveRef.current) { setStep("pick"); setError(t("codexAuth.oauthCancelled")); }
                       }
                     } catch { /* ignore network errors during polling */ }
                   }, 2000);
-                  setTimeout(() => {
+                  timeoutRef.current = setTimeout(() => {
                     if (pollRef.current) {
-                      clearInterval(pollRef.current);
-                      pollRef.current = null;
+                      void cancelLogin();
                       if (aliveRef.current) { setStep("pick"); setError(t("modal.loginTimeout")); }
                     }
                   }, 300_000);
@@ -130,7 +168,7 @@ export default function AddCodexAccountModal({
               } catch (e) { setError(String(e)); }
             }} style={{ marginBottom: 8 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ fontSize: 20 }}>🌐</span>
+                <IconGlobe width={20} />
                 <div>
                   <div className="title">{t("codexAuth.oauthLogin")}</div>
                   <div className="sub">{t("codexAuth.oauthDesc")}</div>
@@ -140,7 +178,7 @@ export default function AddCodexAccountModal({
 
             <button className="list-row" onClick={() => setStep("import")} style={{ marginBottom: 16 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ fontSize: 20 }}>📄</span>
+                <IconKey width={20} />
                 <div>
                   <div className="title">{t("codexAuth.importAuthJson")}</div>
                   <div className="sub">{t("codexAuth.importAuthJsonDesc")}</div>
@@ -150,7 +188,7 @@ export default function AddCodexAccountModal({
 
             {error && <div className="notice notice-err" style={{ marginTop: 8 }}>{error}</div>}
 
-            <button className="btn btn-ghost" onClick={onClose} style={{ width: "100%" }}>
+            <button className="btn btn-ghost" onClick={closeModal} style={{ width: "100%" }}>
               {t("codexAuth.cancel")}
             </button>
           </>
@@ -160,7 +198,7 @@ export default function AddCodexAccountModal({
           <>
             <div className="modal-head">
               <h3>{t("codexAuth.importAuthJson")}</h3>
-              <button className="btn btn-icon btn-ghost" onClick={onClose}><IconX /></button>
+              <button className="btn btn-icon btn-ghost" onClick={closeModal}><IconX /></button>
             </div>
 
             <label className="field-label">{t("codexAuth.addIdLabel")}</label>
@@ -199,10 +237,15 @@ export default function AddCodexAccountModal({
           <>
             <h3 style={{ marginBottom: 4 }}>{t("codexAuth.oauthLogin")}</h3>
             <p className="modal-desc">{t("codexAuth.oauthWaiting")}</p>
+            {authUrl && (
+              <a className="btn btn-ghost" href={authUrl} target="_blank" rel="noreferrer" style={{ width: "100%", justifyContent: "center", marginTop: 12 }}>
+                <IconExternal width={14} /> {t("codexAuth.openLoginLink")}
+              </a>
+            )}
             <div style={{ textAlign: "center", padding: "24px 0" }}>
               <span className="spin" style={{ width: 24, height: 24 }} />
             </div>
-            <button className="btn btn-ghost" onClick={onClose} style={{ width: "100%" }}>
+            <button className="btn btn-ghost" onClick={closeModal} style={{ width: "100%" }}>
               {t("codexAuth.cancel")}
             </button>
           </>

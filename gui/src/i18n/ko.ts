@@ -177,6 +177,8 @@ export const ko: Record<TKey, string> = {
   "codexAuth.back": "뒤로",
   "codexAuth.oauthAlreadyInProgress": "로그인이 이미 진행 중입니다. 브라우저에서 완료하세요.",
   "codexAuth.oauthWaiting": "브라우저에서 ChatGPT 로그인 완료를 기다리는 중...",
+  "codexAuth.openLoginLink": "로그인 링크 열기",
+  "codexAuth.oauthCancelled": "로그인이 취소되었습니다.",
   "codexAuth.needsReauth": "재로그인",
   "codexAuth.tokenExpired": "토큰 만료 — 계정을 다시 추가하여 갱신하세요",
   "codexAuth.emailCollision": "이 계정은 메인 Codex 로그인과 동일합니다. 다른 계정을 사용하세요.",

@@ -65,6 +65,12 @@ export function markAccountNeedsReauth(id: string): void { reauthAccounts.add(id
 export function isAccountNeedsReauth(id: string): boolean { return reauthAccounts.has(id); }
 export function clearAccountNeedsReauth(id: string): void { reauthAccounts.delete(id); }
 
+function expireCodexAuthFlow(flowId: string | null, error = "Login cancelled"): void {
+  if (!flowId) return;
+  codexAuthLoginState.set(flowId, { status: "error", error, doneAt: Date.now() });
+  setTimeout(() => codexAuthLoginState.delete(flowId), 30_000);
+}
+
 // H1: read main Codex tokens including id_token for reliable account ID extraction
 function readCodexTokens(): { access_token: string; account_id: string; id_token?: string } | null {
   try {
@@ -412,6 +418,14 @@ export async function handleCodexAuthAPI(
       }
       return jsonResponse({ error: msg }, 500);
     }
+  }
+
+  if (url.pathname === "/api/codex-auth/login/cancel" && req.method === "POST") {
+    const body = (await req.json().catch(() => ({}))) as { flowId?: string };
+    const { cancelLoginFlow } = await import("./oauth/index");
+    const cancelled = cancelLoginFlow("chatgpt");
+    expireCodexAuthFlow(body.flowId ?? null);
+    return jsonResponse({ ok: true, cancelled });
   }
 
   if (url.pathname === "/api/codex-auth/login-status" && req.method === "GET") {
