@@ -1,4 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { saveCodexAccountCredential } from "../src/codex-account-store";
+import { clearAccountNeedsReauth } from "../src/codex-auth-api";
+import {
+  clearCodexUpstreamHealth,
+  clearThreadAccountMap,
+  getCodexUpstreamHealth,
+} from "../src/codex-routing";
+import { saveConfig } from "../src/config";
 import {
   assertServerAuthConfig,
   corsHeaders,
@@ -6,10 +16,13 @@ import {
   isApiAuthRequired,
   isLoopbackHostname,
   safeConfigDTO,
+  startServer,
 } from "../src/server";
 import type { OcxConfig } from "../src/types";
 
 const previousApiToken = process.env.OPENCODEX_API_AUTH_TOKEN;
+const previousOpencodexHome = process.env.OPENCODEX_HOME;
+const TEST_DIR = join(import.meta.dir, ".tmp-server-auth-test");
 
 function config(hostname?: string): OcxConfig {
   return {
@@ -31,6 +44,12 @@ function config(hostname?: string): OcxConfig {
 afterEach(() => {
   if (previousApiToken === undefined) delete process.env.OPENCODEX_API_AUTH_TOKEN;
   else process.env.OPENCODEX_API_AUTH_TOKEN = previousApiToken;
+  if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
+  else process.env.OPENCODEX_HOME = previousOpencodexHome;
+  clearCodexUpstreamHealth();
+  clearThreadAccountMap();
+  clearAccountNeedsReauth("pool-a");
+  if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
 });
 
 describe("server local API auth", () => {
@@ -90,5 +109,59 @@ describe("server local API auth", () => {
     });
     expect(dto.providers.openai).not.toHaveProperty("apiKey");
     expect(dto.providers.openai).not.toHaveProperty("headers");
+  });
+
+  test("passthrough connect failure records selected pool account health", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    clearCodexUpstreamHealth();
+    clearThreadAccountMap();
+    clearAccountNeedsReauth("pool-a");
+
+    saveConfig({
+      port: 0,
+      defaultProvider: "chatgpt",
+      providers: {
+        chatgpt: {
+          adapter: "openai-responses",
+          baseUrl: "http://127.0.0.1:9/backend-api/codex",
+          authMode: "forward",
+        },
+      },
+      codexAccounts: [
+        { id: "main", email: "main@example.test", isMain: true },
+        { id: "pool-a", email: "pool@example.test", isMain: false, chatgptAccountId: "acct-pool-a" },
+      ],
+      activeCodexAccountId: "pool-a",
+      upstreamFailoverThreshold: 3,
+      connectTimeoutMs: 200,
+    } as OcxConfig);
+    saveCodexAccountCredential("pool-a", {
+      accessToken: "pool-access-token",
+      refreshToken: "pool-refresh-token",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "acct-pool-a",
+    });
+
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/v1/responses", server.url), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer inbound-main-token",
+        },
+        body: JSON.stringify({ model: "gpt-test", input: "hello", stream: false }),
+      });
+
+      expect(response.status).toBe(502);
+      expect(getCodexUpstreamHealth("pool-a")).toMatchObject({
+        consecutiveFailures: 1,
+        lastFailureStatus: 0,
+      });
+    } finally {
+      await server.stop(true);
+    }
   });
 });

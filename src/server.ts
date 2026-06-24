@@ -238,7 +238,9 @@ async function handleResponses(
       }, upstream.signal, connectMs);
     } catch (err) {
       upstream.abort();
-      const msg = err instanceof Error && err.name === "TimeoutError"
+      const outcome = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "connect_error";
+      if (authCtx.kind === "pool") recordCodexUpstreamOutcome(config, authCtx.accountId, outcome);
+      const msg = outcome === "timeout"
         ? `Provider connect timeout after ${connectMs}ms`
         : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
       return formatErrorResponse(502, "upstream_error", msg);

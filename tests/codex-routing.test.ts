@@ -2,6 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
+  classifyCodexUpstreamOutcome,
   clearCodexUpstreamHealth,
   clearCodexUpstreamHealthForAccount,
   clearThreadAccountMap,
@@ -13,7 +14,14 @@ import {
   resolveCodexAccountForThread,
 } from "../src/codex-routing";
 import { removeCodexAccountCredential, saveCodexAccountCredential } from "../src/codex-account-store";
-import { clearAccountQuota, handleCodexAuthAPI, parseUsageQuota, updateAccountQuota } from "../src/codex-auth-api";
+import {
+  clearAccountNeedsReauth,
+  clearAccountQuota,
+  handleCodexAuthAPI,
+  isAccountNeedsReauth,
+  parseUsageQuota,
+  updateAccountQuota,
+} from "../src/codex-auth-api";
 import { CODEX_UNKNOWN_USAGE_SCORE } from "../src/codex-quota";
 import type { OcxConfig } from "../src/types";
 
@@ -52,6 +60,9 @@ describe("codex routing", () => {
     clearThreadAccountMap();
     clearCodexUpstreamHealth();
     clearAccountQuota();
+    clearAccountNeedsReauth("a");
+    clearAccountNeedsReauth("b");
+    clearAccountNeedsReauth("c");
     saveTestCredential("a");
     saveTestCredential("b");
   });
@@ -60,6 +71,9 @@ describe("codex routing", () => {
     clearAccountQuota();
     clearCodexUpstreamHealth();
     clearThreadAccountMap();
+    clearAccountNeedsReauth("a");
+    clearAccountNeedsReauth("b");
+    clearAccountNeedsReauth("c");
     if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
     else process.env.OPENCODEX_HOME = previousOpencodexHome;
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
@@ -102,7 +116,19 @@ describe("codex routing", () => {
     expect(pickLowestUsageCodexAccount(config)).toBe("b");
   });
 
-  test("three consecutive non-200 responses fail over future new threads", () => {
+  test("upstream outcome classifier separates caller, credential, and transient failures", () => {
+    expect(classifyCodexUpstreamOutcome(200)).toBe("success");
+    expect(classifyCodexUpstreamOutcome(401)).toBe("credential");
+    expect(classifyCodexUpstreamOutcome(403)).toBe("credential");
+    expect(classifyCodexUpstreamOutcome(429)).toBe("quota");
+    expect(classifyCodexUpstreamOutcome(422)).toBe("caller");
+    expect(classifyCodexUpstreamOutcome(503)).toBe("transient");
+    expect(classifyCodexUpstreamOutcome("connect_error")).toBe("transient");
+    expect(classifyCodexUpstreamOutcome("timeout")).toBe("transient");
+    expect(classifyCodexUpstreamOutcome(102)).toBe("unknown");
+  });
+
+  test("three consecutive transient failures fail over future new threads", () => {
     const config = makeConfig();
     updateAccountQuota("a", 10, 5);
     updateAccountQuota("b", 20, 10);
@@ -112,6 +138,54 @@ describe("codex routing", () => {
     recordCodexUpstreamOutcome(config, "a", 503);
     expect(resolveCodexAccountForThread("existing", config)).toBe("a");
     expect(resolveCodexAccountForThread("next", config)).toBe("b");
+  });
+
+  test("caller and model 4xx responses do not penalize account health", () => {
+    const config = makeConfig();
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 20, 10);
+    recordCodexUpstreamOutcome(config, "a", 400);
+    recordCodexUpstreamOutcome(config, "a", 404);
+    recordCodexUpstreamOutcome(config, "a", 422);
+    expect(getCodexUpstreamHealth("a")).toBeNull();
+    expect(resolveCodexAccountForThread("next", config)).toBe("a");
+  });
+
+  test("401 credential outcome quarantines the account for future threads", () => {
+    const config = makeConfig();
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 20, 10);
+    expect(resolveCodexAccountForThread("credential-existing", config)).toBe("a");
+
+    recordCodexUpstreamOutcome(config, "a", 401);
+
+    expect(isAccountNeedsReauth("a")).toBe(true);
+    expect(getCodexUpstreamHealth("a")).toMatchObject({ consecutiveFailures: 1, lastFailureStatus: 401 });
+    expect(resolveCodexAccountForThread("credential-existing", config)).toBe("b");
+    expect(resolveCodexAccountForThread("credential-next", config)).toBe("b");
+  });
+
+  test("403 credential outcome quarantines the account under the conservative policy", () => {
+    const config = makeConfig();
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 20, 10);
+
+    recordCodexUpstreamOutcome(config, "a", 403);
+
+    expect(isAccountNeedsReauth("a")).toBe(true);
+    expect(getCodexUpstreamHealth("a")).toMatchObject({ consecutiveFailures: 1, lastFailureStatus: 403 });
+    expect(resolveCodexAccountForThread("credential-403-next", config)).toBe("b");
+  });
+
+  test("connect failures contribute to transient failover", () => {
+    const config = makeConfig();
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 20, 10);
+    recordCodexUpstreamOutcome(config, "a", "connect_error");
+    recordCodexUpstreamOutcome(config, "a", "timeout");
+    recordCodexUpstreamOutcome(config, "a", "connect_error");
+    expect(getCodexUpstreamHealth("a")).toMatchObject({ consecutiveFailures: 3, lastFailureStatus: 0 });
+    expect(resolveCodexAccountForThread("connect-next", config)).toBe("b");
   });
 
   test("2xx responses reset the failure streak", () => {

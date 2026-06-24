@@ -7,6 +7,9 @@ import type { OcxConfig } from "./types";
 const threadAccountMap = new Map<string, string>();
 const upstreamHealth = new Map<string, { consecutiveFailures: number; lastFailureStatus?: number; lastFailureAt?: number }>();
 
+export type CodexUpstreamOutcome = number | "connect_error" | "timeout";
+export type CodexUpstreamOutcomeClass = "success" | "credential" | "quota" | "transient" | "caller" | "unknown";
+
 function hasConfiguredPoolAccount(config: OcxConfig, accountId: string): boolean {
   return (config.codexAccounts ?? []).some(account => !account.isMain && account.id === accountId);
 }
@@ -44,6 +47,17 @@ export function computeCodexUsageScore(quota: {
   const values = [quota.weeklyPercent, quota.fiveHourPercent, quota.monthlyPercent]
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   return values.length > 0 ? Math.max(...values) : CODEX_UNKNOWN_USAGE_SCORE;
+}
+
+export function classifyCodexUpstreamOutcome(outcome: CodexUpstreamOutcome): CodexUpstreamOutcomeClass {
+  if (outcome === "connect_error" || outcome === "timeout") return "transient";
+  if (!Number.isFinite(outcome)) return "unknown";
+  if (outcome >= 200 && outcome < 300) return "success";
+  if (outcome === 401 || outcome === 403) return "credential";
+  if (outcome === 429) return "quota";
+  if (outcome >= 400 && outcome < 500) return "caller";
+  if (outcome >= 500 && outcome < 600) return "transient";
+  return "unknown";
 }
 
 function getEligiblePoolAccounts(config: OcxConfig, excludeId?: string): string[] {
@@ -142,19 +156,33 @@ export function resolveCodexAccountForThread(
   return active;
 }
 
-export function recordCodexUpstreamOutcome(config: OcxConfig, accountId: string | null, status: number): void {
+export function recordCodexUpstreamOutcome(config: OcxConfig, accountId: string | null, outcome: CodexUpstreamOutcome): void {
   if (!accountId) return;
-  if (status >= 200 && status < 300) {
+  const outcomeClass = classifyCodexUpstreamOutcome(outcome);
+  if (outcomeClass === "success") {
     upstreamHealth.delete(accountId);
     return;
   }
+  if (outcomeClass === "caller") return;
+
+  const lastFailureStatus = typeof outcome === "number" ? outcome : 0;
+  if (outcomeClass === "credential") {
+    upstreamHealth.set(accountId, {
+      consecutiveFailures: 1,
+      lastFailureStatus,
+      lastFailureAt: Date.now(),
+    });
+    markAccountNeedsReauth(accountId);
+    clearThreadAccountMapForAccount(accountId);
+    return;
+  }
+
   const current = upstreamHealth.get(accountId);
   upstreamHealth.set(accountId, {
     consecutiveFailures: (current?.consecutiveFailures ?? 0) + 1,
-    lastFailureStatus: status,
+    lastFailureStatus,
     lastFailureAt: Date.now(),
   });
-  if (status === 401) markAccountNeedsReauth(accountId);
   if (config.activeCodexAccountId === accountId) applyFailureFailover(config, accountId);
 }
 
