@@ -118,6 +118,9 @@ export async function handleCodexAuthAPI(
     if (!body.id || !body.email || !body.accessToken || !body.refreshToken || !body.chatgptAccountId) {
       return jsonResponse({ error: "Missing required fields" }, 400);
     }
+    if (body.id.length > 64 || body.accessToken.length > 10_000 || body.refreshToken.length > 10_000) {
+      return jsonResponse({ error: "Input too large" }, 400);
+    }
     saveCodexAccountCredential(body.id, {
       accessToken: body.accessToken,
       refreshToken: body.refreshToken,

@@ -48,10 +48,13 @@ export function listCodexAccountIds(): string[] {
 const CHATGPT_TOKEN_URL = "https://auth0.openai.com/oauth/token";
 const CHATGPT_CLIENT_ID = "DRivsnm2Mu42T3KOpqdtwB3NYviHYzwD";
 
-export async function getValidCodexToken(id: string): Promise<{
-  accessToken: string;
-  chatgptAccountId: string;
-}> {
+type CodexTokenResult = { accessToken: string; chatgptAccountId: string };
+const refreshLocks = new Map<string, Promise<CodexTokenResult>>();
+
+export async function getValidCodexToken(id: string): Promise<CodexTokenResult> {
+  const existing = refreshLocks.get(id);
+  if (existing) return existing;
+
   const cred = getCodexAccountCredential(id);
   if (!cred) throw new Error(`Codex account not found: ${id}`);
 
@@ -59,24 +62,33 @@ export async function getValidCodexToken(id: string): Promise<{
     return { accessToken: cred.accessToken, chatgptAccountId: cred.chatgptAccountId };
   }
 
-  const res = await fetch(CHATGPT_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      grant_type: "refresh_token",
-      client_id: CHATGPT_CLIENT_ID,
-      refresh_token: cred.refreshToken,
-    }),
-  });
-  if (!res.ok) throw new Error(`Token refresh failed for ${id}: ${res.status}`);
-  const data = (await res.json()) as { access_token: string; refresh_token?: string; expires_in: number };
+  const refreshPromise = (async (): Promise<CodexTokenResult> => {
+    try {
+      const res = await fetch(CHATGPT_TOKEN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          grant_type: "refresh_token",
+          client_id: CHATGPT_CLIENT_ID,
+          refresh_token: cred.refreshToken,
+        }),
+      });
+      if (!res.ok) throw new Error(`Token refresh failed for ${id}: ${res.status}`);
+      const data = (await res.json()) as { access_token: string; refresh_token?: string; expires_in: number };
 
-  const updated: CodexAccountCredentials = {
-    accessToken: data.access_token,
-    refreshToken: data.refresh_token ?? cred.refreshToken,
-    expiresAt: Date.now() + data.expires_in * 1000,
-    chatgptAccountId: cred.chatgptAccountId,
-  };
-  saveCodexAccountCredential(id, updated);
-  return { accessToken: updated.accessToken, chatgptAccountId: updated.chatgptAccountId };
+      const updated: CodexAccountCredentials = {
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token ?? cred.refreshToken,
+        expiresAt: Date.now() + data.expires_in * 1000,
+        chatgptAccountId: cred.chatgptAccountId,
+      };
+      saveCodexAccountCredential(id, updated);
+      return { accessToken: updated.accessToken, chatgptAccountId: updated.chatgptAccountId };
+    } finally {
+      refreshLocks.delete(id);
+    }
+  })();
+
+  refreshLocks.set(id, refreshPromise);
+  return refreshPromise;
 }
