@@ -245,6 +245,28 @@ describe("codex-auth API", () => {
     expect(q!.fiveHourPercent).toBe(12);
   });
 
+  test("updateAccountQuota clamps finite out-of-range percentages", () => {
+    updateAccountQuota("clamp-acct", 120, -5, undefined, undefined, 40.4);
+    const q = getAccountQuota("clamp-acct");
+    expect(q).toMatchObject({
+      weeklyPercent: 100,
+      fiveHourPercent: 0,
+      monthlyPercent: 40.4,
+    });
+  });
+
+  test("updateAccountQuota ignores invalid-only updates", () => {
+    updateAccountQuota("invalid-only", Number.NaN, Number.POSITIVE_INFINITY, undefined, undefined, "not-a-number");
+    expect(getAccountQuota("invalid-only")).toBeNull();
+  });
+
+  test("updateAccountQuota does not overwrite valid quota with invalid later values", () => {
+    updateAccountQuota("preserve-valid", 45, 12, 100, 200);
+    const before = getAccountQuota("preserve-valid");
+    updateAccountQuota("preserve-valid", Number.NaN, Number.POSITIVE_INFINITY, 300, 400);
+    expect(getAccountQuota("preserve-valid")).toEqual(before);
+  });
+
   test("GET /api/codex-auth/quota returns stored quotas", async () => {
     updateAccountQuota("q-test", 30, 5);
     const req = new Request("http://localhost/api/codex-auth/quota", { method: "GET" });

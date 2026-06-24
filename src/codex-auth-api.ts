@@ -66,7 +66,7 @@ function expireCodexAuthFlow(flowId: string | null, error = "Login cancelled"): 
   setTimeout(() => codexAuthLoginState.delete(flowId), 30_000);
 }
 
-let mainAccountCache: { email: string | null; plan: string | null; quota: { weeklyPercent: number; fiveHourPercent: number } | null; ts: number } | null = null;
+let mainAccountCache: { email: string | null; plan: string | null; quota: Omit<StoredAccountQuota, "updatedAt"> | null; ts: number } | null = null;
 const MAIN_CACHE_TTL = 5 * 60_000;
 const POOL_CACHE_TTL = 5 * 60_000;
 const POOL_QUOTA_REFRESH_CONCURRENCY = 4;
@@ -105,7 +105,7 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-async function fetchMainAccountInfo(forceRefresh = false): Promise<{ email: string | null; plan: string | null; quota: { weeklyPercent: number; fiveHourPercent: number } | null }> {
+async function fetchMainAccountInfo(forceRefresh = false): Promise<{ email: string | null; plan: string | null; quota: Omit<StoredAccountQuota, "updatedAt"> | null }> {
   if (!forceRefresh && mainAccountCache && Date.now() - mainAccountCache.ts < MAIN_CACHE_TTL) {
     return mainAccountCache;
   }

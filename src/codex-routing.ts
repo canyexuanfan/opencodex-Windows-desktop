@@ -1,7 +1,7 @@
 import { saveConfig } from "./config";
 import { isCodexAccountUsable } from "./codex-account-usability";
 import { isAccountNeedsReauth, markAccountNeedsReauth } from "./codex-account-runtime-state";
-import { getAccountQuota } from "./codex-quota";
+import { CODEX_UNKNOWN_USAGE_SCORE, getAccountQuota } from "./codex-quota";
 import type { OcxConfig } from "./types";
 
 const threadAccountMap = new Map<string, string>();
@@ -36,12 +36,14 @@ export function getCodexUpstreamHealth(
 }
 
 export function computeCodexUsageScore(quota: {
-  weeklyPercent: number;
+  weeklyPercent?: number;
   fiveHourPercent?: number;
   monthlyPercent?: number;
 } | null): number {
-  if (!quota) return 0;
-  return Math.max(quota.weeklyPercent, quota.fiveHourPercent ?? 0, quota.monthlyPercent ?? 0);
+  if (!quota) return CODEX_UNKNOWN_USAGE_SCORE;
+  const values = [quota.weeklyPercent, quota.fiveHourPercent, quota.monthlyPercent]
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  return values.length > 0 ? Math.max(...values) : CODEX_UNKNOWN_USAGE_SCORE;
 }
 
 function getEligiblePoolAccounts(config: OcxConfig, excludeId?: string): string[] {
@@ -87,7 +89,6 @@ function applyQuotaAutoSwitch(config: OcxConfig, active: string): string {
   const threshold = config.autoSwitchThreshold ?? 80;
   if (threshold <= 0) return active;
   const quota = getAccountQuota(active);
-  if (!quota) return active;
   const activeUsage = computeCodexUsageScore(quota);
   if (activeUsage < threshold) return active;
   const best = pickLowerUsageAccount(config, active, activeUsage);

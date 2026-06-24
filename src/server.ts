@@ -255,12 +255,12 @@ async function handleResponses(
         const { updateAccountQuota } = await import("./codex-auth-api");
         updateAccountQuota(
           authCtx.accountId,
-          parseFloat(weeklyRaw ?? "0"),
-          parseFloat(fiveHourRaw ?? "0"),
-          weeklyResetRaw ? parseFloat(weeklyResetRaw) : undefined,
-          fiveHourResetRaw ? parseFloat(fiveHourResetRaw) : undefined,
-          monthlyRaw ? parseFloat(monthlyRaw) : undefined,
-          monthlyResetRaw ? parseFloat(monthlyResetRaw) : undefined,
+          weeklyRaw,
+          fiveHourRaw,
+          weeklyResetRaw,
+          fiveHourResetRaw,
+          monthlyRaw,
+          monthlyResetRaw,
         );
       }
       recordCodexUpstreamOutcome(config, authCtx.accountId, upstreamResponse.status);

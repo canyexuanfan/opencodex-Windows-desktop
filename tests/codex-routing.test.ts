@@ -8,11 +8,13 @@ import {
   clearThreadAccountMapForAccount,
   computeCodexUsageScore,
   getCodexUpstreamHealth,
+  pickLowestUsageCodexAccount,
   recordCodexUpstreamOutcome,
   resolveCodexAccountForThread,
 } from "../src/codex-routing";
 import { removeCodexAccountCredential, saveCodexAccountCredential } from "../src/codex-account-store";
 import { clearAccountQuota, handleCodexAuthAPI, parseUsageQuota, updateAccountQuota } from "../src/codex-auth-api";
+import { CODEX_UNKNOWN_USAGE_SCORE } from "../src/codex-quota";
 import type { OcxConfig } from "../src/types";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-routing-test");
@@ -69,11 +71,35 @@ describe("codex routing", () => {
     expect(computeCodexUsageScore({ weeklyPercent: 15 })).toBe(15);
   });
 
+  test("usage score treats unknown quota conservatively", () => {
+    expect(computeCodexUsageScore(null)).toBe(CODEX_UNKNOWN_USAGE_SCORE);
+    expect(computeCodexUsageScore({})).toBe(CODEX_UNKNOWN_USAGE_SCORE);
+  });
+
   test("5h threshold breach switches new threads even when weekly is low", () => {
     const config = makeConfig();
     updateAccountQuota("a", 10, 85);
     updateAccountQuota("b", 20, 5);
     expect(resolveCodexAccountForThread("new-thread", config)).toBe("b");
+  });
+
+  test("unknown active quota can switch to a known lower usage account", () => {
+    const config = makeConfig();
+    updateAccountQuota("b", 20, 5);
+    expect(resolveCodexAccountForThread("unknown-active", config)).toBe("b");
+  });
+
+  test("unknown quota does not beat known low quota during lowest-usage selection", () => {
+    const config = makeConfig({
+      codexAccounts: [
+        { id: "a", email: "a@test", isMain: false },
+        { id: "b", email: "b@test", isMain: false },
+        { id: "c", email: "c@test", isMain: false },
+      ],
+    });
+    saveTestCredential("c");
+    updateAccountQuota("b", 25, 10);
+    expect(pickLowestUsageCodexAccount(config)).toBe("b");
   });
 
   test("three consecutive non-200 responses fail over future new threads", () => {
@@ -159,6 +185,40 @@ describe("codex routing", () => {
       fiveHourResetAt: 1,
       weeklyResetAt: 2,
       monthlyResetAt: 3,
+    });
+  });
+
+  test("WHAM parser returns null when no valid quota window is present", () => {
+    expect(parseUsageQuota({ rate_limit: {} })).toBeNull();
+    expect(parseUsageQuota({
+      rate_limit: {
+        primary_window: { used_percent: Number.NaN },
+        secondary_window: { used_percent: Number.POSITIVE_INFINITY },
+      },
+    })).toBeNull();
+  });
+
+  test("WHAM parser does not fabricate missing windows as zero", () => {
+    const quota = parseUsageQuota({
+      rate_limit: {
+        tertiary_window: { used_percent: 30, reset_at: 3 },
+      },
+    });
+    expect(quota).toEqual({ monthlyPercent: 30, monthlyResetAt: 3 });
+  });
+
+  test("WHAM parser clamps finite out-of-range percentages and drops invalid windows", () => {
+    const quota = parseUsageQuota({
+      rate_limit: {
+        primary_window: { used_percent: Number.NaN, reset_at: 1 },
+        secondary_window: { used_percent: 150, reset_at: 2 },
+        tertiary_window: { used_percent: -5, reset_at: -3 },
+      },
+    });
+    expect(quota).toEqual({
+      weeklyPercent: 100,
+      monthlyPercent: 0,
+      weeklyResetAt: 2,
     });
   });
 });

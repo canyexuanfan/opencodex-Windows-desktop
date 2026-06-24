@@ -5,8 +5,8 @@ import { Notice } from "../ui";
 import AddCodexAccountModal from "../components/AddCodexAccountModal";
 
 interface AccountQuota {
-  weeklyPercent: number;
-  fiveHourPercent: number;
+  weeklyPercent?: number;
+  fiveHourPercent?: number;
   monthlyPercent?: number;
   weeklyResetAt?: number;
   fiveHourResetAt?: number;
@@ -193,26 +193,34 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
 
 function QuotaBars({ quota, threshold, t }: { quota: AccountQuota | null; threshold: number; t: TFn }) {
   if (!quota) return null;
+  const hasFiveHour = typeof quota.fiveHourPercent === "number";
+  const hasWeekly = typeof quota.weeklyPercent === "number";
+  const hasMonthly = typeof quota.monthlyPercent === "number";
+  if (!hasFiveHour && !hasWeekly && !hasMonthly) return null;
   return (
     <div className="quota-compact">
-      <QuotaRow
-        label={t("codexAuth.fiveHour")}
-        percent={quota.fiveHourPercent}
-        resetAt={quota.fiveHourResetAt}
-        threshold={threshold}
-        t={t}
-      />
-      <QuotaRow
-        label={t("codexAuth.weekly")}
-        percent={quota.weeklyPercent}
-        resetAt={quota.weeklyResetAt}
-        threshold={threshold}
-        t={t}
-      />
-      {typeof quota.monthlyPercent === "number" && (
+      {hasFiveHour && (
+        <QuotaRow
+          label={t("codexAuth.fiveHour")}
+          percent={quota.fiveHourPercent!}
+          resetAt={quota.fiveHourResetAt}
+          threshold={threshold}
+          t={t}
+        />
+      )}
+      {hasWeekly && (
+        <QuotaRow
+          label={t("codexAuth.weekly")}
+          percent={quota.weeklyPercent!}
+          resetAt={quota.weeklyResetAt}
+          threshold={threshold}
+          t={t}
+        />
+      )}
+      {hasMonthly && (
         <QuotaRow
           label={t("codexAuth.monthly")}
-          percent={quota.monthlyPercent}
+          percent={quota.monthlyPercent!}
           resetAt={quota.monthlyResetAt}
           threshold={threshold}
           t={t}
