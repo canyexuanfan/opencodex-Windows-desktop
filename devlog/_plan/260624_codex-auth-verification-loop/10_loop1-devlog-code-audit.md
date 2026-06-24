@@ -25,7 +25,7 @@ Scope: audit `devlog/270_codex-multi-account-auth/00` through `150` against curr
 | Tests/hardening | 50, 90, 100, 140, 150 | `tests/*codex*`, `tests/session-affinity.test.ts`, `tests/codex-routing.test.ts` | verified | Full `bun test tests` passed with 245 tests. |
 | OAuth implementation | 60, 95, 110, 130, 140 | `src/oauth/chatgpt.ts`, `src/oauth/index.ts`, `src/oauth/store.ts`, `src/codex-auth-collision.ts` | verified | OAuth constants, login flow, collision handling, token refresh, and cancel/recovery paths have regression coverage. |
 | Quota/autoswitch | 70, 140, 150 | `src/codex-quota.ts`, `src/codex-routing.ts`, `src/server.ts`, `gui/src/pages/CodexAuth.tsx` | verified | `usageScore=max(5h, weekly, 30d when present)`, optional 30d parsing/display, and non-200 failover threshold are implemented and tested. |
-| E2E verification | 80, 120, 150 | local proxy and browser probes | needs-probe | Static and unit/integration gates passed; live proxy/API/browser probes remain Loop 3 work. |
+| E2E verification | 80, 120, 150 | local proxy and browser probes | verified | Loop 3 restarted the proxy, verified redacted API state, and confirmed desktop/narrow Codex Auth quota geometry. |
 
 ## Contradictions Resolved
 
