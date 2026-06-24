@@ -336,20 +336,29 @@ Files:
 - `src/adapters/openai-responses.ts`
 - `src/ws-bridge.ts`
 - `src/codex-routing.ts`
+- `src/vision/index.ts`
+- `src/vision/describe.ts`
+- `src/web-search/index.ts`
+- `src/web-search/executor.ts`
+- `src/web-search/loop.ts`
 - `tests/passthrough-override.test.ts`
 - `tests/ws-endpoint.test.ts`
+- vision/web-search sidecar auth-context tests
 - new/updated auth-context tests
 
 Acceptance:
 
 - Pool token failure cannot use inbound/main credential.
 - HTTP and WebSocket behave consistently.
+- Vision and web-search sidecars cannot use inbound/main credential after pool selection.
 - Logs/quota/health reference actual auth context.
 
 ### Patch 2 - Account Lifecycle Transaction
 
 Files:
 
+- `src/types.ts`
+- `src/codex-account-runtime-state.ts`
 - `src/codex-auth-api.ts`
 - `src/codex-account-store.ts`
 - `src/codex-routing.ts`
@@ -360,6 +369,7 @@ Acceptance:
 
 - Delete purges all account-bound state.
 - Refresh after delete/replacement cannot resurrect stale credential.
+- Refresh CAS uses generation/version semantics and a grant-scoped cross-process-safe lock or equivalent transaction.
 - Affinity lookup validates account generation.
 
 ### Patch 3 - Local API Authentication And Safe DTOs
@@ -447,11 +457,12 @@ Additional focused tests:
 | --- | --- |
 | Fail-closed auth | HTTP and WebSocket pool token failure with inbound main auth never reaches upstream as main. |
 | Delete lifecycle | Delete purges affinity/quota/health/reauth; refresh completion after deletion is discarded. |
-| API auth | Non-loopback bind without auth rejected; missing Origin cannot bypass auth. |
-| Manual import | Duplicate alias/refresh/user identity cases covered; existing alias overwrite rejected before credential write. |
-| Outcome classifier | 400/401/429/5xx/connect timeout/SSE failed/incomplete each produce correct account health result. |
-| Quota | unknown/stale/fresh/NaN/out-of-range headers covered. |
-| Privacy | config/account DTO redaction snapshots and request-log assertions. |
+| Sidecar auth | Vision and web-search sidecars use the selected pool auth context or fail closed; no inbound/main fallback. |
+| API auth | Route-by-route `/api/*`, `/v1/responses`, and WebSocket missing/bad/correct secret tests; missing Origin cannot bypass auth. |
+| Manual import | Duplicate alias/refresh/user identity cases covered; same verified principal/workspace with different alias rejected before credential write. |
+| Outcome classifier | 400/404-or-422/401/403/429/5xx/fetch reject/connect timeout/SSE failed/incomplete/malformed each produce correct account health result. |
+| Quota | fresh/stale/unknown/error/NaN/Infinity/out-of-range headers covered. |
+| Privacy | config/account DTO redaction snapshots, mandatory Codex Auth masking render test, and request-log assertions. |
 
 ## Stop Criteria
 
