@@ -128,6 +128,8 @@ export default function AddCodexAccountModal({
               </div>
             </button>
 
+            {error && <div className="notice notice-err" style={{ marginTop: 8 }}>{error}</div>}
+
             <button className="btn btn-ghost" onClick={onClose} style={{ width: "100%" }}>
               {t("codexAuth.cancel")}
             </button>

@@ -62,7 +62,7 @@ export class ChatGPTOAuthFlow extends OAuthCallbackFlow {
   #verifier = "";
   forceLogin = false;
 
-  constructor(ctrl: OAuthController, opts?: { forceLogin?: boolean }) {
+  constructor(ctrl: OAuthController) {
     super(ctrl, {
       preferredPort: CALLBACK_PORT,
       callbackPath: CALLBACK_PATH,
@@ -115,7 +115,7 @@ export class ChatGPTOAuthFlow extends OAuthCallbackFlow {
 }
 
 export async function loginChatGPT(ctrl: OAuthController, opts?: { forceLogin?: boolean }): Promise<OAuthCredentials> {
-  const flow = new ChatGPTOAuthFlow(ctrl, opts);
+  const flow = new ChatGPTOAuthFlow(ctrl);
   if (opts?.forceLogin) flow.forceLogin = true;
   return flow.login();
 }
