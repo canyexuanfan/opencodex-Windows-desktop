@@ -110,6 +110,23 @@ let mainAccountCache: { email: string | null; plan: string | null; quota: { week
 const MAIN_CACHE_TTL = 5 * 60_000;
 const POOL_CACHE_TTL = 5 * 60_000;
 
+function isRuntimeConfig(config: OcxConfig): boolean {
+  return !!config && typeof config === "object" && !!config.providers;
+}
+
+function getRuntimeConfig(config: OcxConfig): OcxConfig {
+  return isRuntimeConfig(config) ? config : loadConfig();
+}
+
+function saveRuntimeConfig(sourceConfig: OcxConfig, nextConfig: OcxConfig): void {
+  saveConfig(nextConfig);
+  if (sourceConfig === nextConfig || !isRuntimeConfig(sourceConfig)) return;
+  for (const key of Object.keys(sourceConfig) as Array<keyof OcxConfig>) {
+    delete sourceConfig[key];
+  }
+  Object.assign(sourceConfig, nextConfig);
+}
+
 async function fetchMainAccountInfo(forceRefresh = false): Promise<{ email: string | null; plan: string | null; quota: { weeklyPercent: number; fiveHourPercent: number } | null }> {
   if (!forceRefresh && mainAccountCache && Date.now() - mainAccountCache.ts < MAIN_CACHE_TTL) {
     return mainAccountCache;
@@ -167,13 +184,13 @@ async function fetchPoolAccountQuota(accountId: string, forceRefresh = false): P
 export async function handleCodexAuthAPI(
   req: Request,
   url: URL,
-  _config: OcxConfig,
+  config: OcxConfig,
 ): Promise<Response | null> {
 
   if (url.pathname === "/api/codex-auth/accounts" && req.method === "GET") {
     const forceRefresh = url.searchParams.get("refresh") === "1" || url.searchParams.get("refresh") === "true";
-    const config = loadConfig();
-    const poolAccounts = (config.codexAccounts ?? []).filter(a => !a.isMain);
+    const runtimeConfig = getRuntimeConfig(config);
+    const poolAccounts = (runtimeConfig.codexAccounts ?? []).filter(a => !a.isMain);
     const mainInfo = await fetchMainAccountInfo(forceRefresh);
     const withQuota = await Promise.all(poolAccounts.map(async a => {
       const cred = getCodexAccountCredential(a.id);
@@ -226,12 +243,12 @@ export async function handleCodexAuthAPI(
       chatgptAccountId: derivedAccountId,
     });
     clearAccountNeedsReauth(body.id);
-    const config = loadConfig();
-    const accounts = config.codexAccounts ?? [];
+    const runtimeConfig = getRuntimeConfig(config);
+    const accounts = runtimeConfig.codexAccounts ?? [];
     if (!accounts.find(a => a.id === body.id)) {
       accounts.push({ id: body.id, email: body.email, plan: body.plan, isMain: false });
-      config.codexAccounts = accounts;
-      saveConfig(config);
+      runtimeConfig.codexAccounts = accounts;
+      saveRuntimeConfig(config, runtimeConfig);
     }
     return jsonResponse({ ok: true });
   }
@@ -240,31 +257,31 @@ export async function handleCodexAuthAPI(
     const id = url.searchParams.get("id");
     if (!id) return jsonResponse({ error: "Missing id" }, 400);
     removeCodexAccountCredential(id);
-    const config = loadConfig();
-    config.codexAccounts = (config.codexAccounts ?? []).filter(a => a.id !== id);
-    if (config.activeCodexAccountId === id) config.activeCodexAccountId = undefined;
-    saveConfig(config);
+    const runtimeConfig = getRuntimeConfig(config);
+    runtimeConfig.codexAccounts = (runtimeConfig.codexAccounts ?? []).filter(a => a.id !== id);
+    if (runtimeConfig.activeCodexAccountId === id) runtimeConfig.activeCodexAccountId = undefined;
+    saveRuntimeConfig(config, runtimeConfig);
     return jsonResponse({ ok: true });
   }
 
   if (url.pathname === "/api/codex-auth/active" && req.method === "PUT") {
     let body: { accountId: string | null };
     try { body = (await req.json()) as typeof body; } catch { return jsonResponse({ error: "Invalid JSON" }, 400); }
-    const config = loadConfig();
+    const runtimeConfig = getRuntimeConfig(config);
     if (body.accountId != null) {
-      const exists = (config.codexAccounts ?? []).some(a => a.id === body.accountId);
+      const exists = (runtimeConfig.codexAccounts ?? []).some(a => a.id === body.accountId);
       if (!exists) return jsonResponse({ error: "Account not found" }, 400);
     }
-    config.activeCodexAccountId = body.accountId ?? undefined;
-    saveConfig(config);
+    runtimeConfig.activeCodexAccountId = body.accountId ?? undefined;
+    saveRuntimeConfig(config, runtimeConfig);
     return jsonResponse({ ok: true, activeCodexAccountId: body.accountId });
   }
 
   if (url.pathname === "/api/codex-auth/active" && req.method === "GET") {
-    const config = loadConfig();
+    const runtimeConfig = getRuntimeConfig(config);
     return jsonResponse({
-      activeCodexAccountId: config.activeCodexAccountId ?? null,
-      autoSwitchThreshold: config.autoSwitchThreshold ?? 80,
+      activeCodexAccountId: runtimeConfig.activeCodexAccountId ?? null,
+      autoSwitchThreshold: runtimeConfig.autoSwitchThreshold ?? 80,
     });
   }
 
@@ -274,9 +291,9 @@ export async function handleCodexAuthAPI(
     if (typeof body.threshold !== "number" || !Number.isInteger(body.threshold) || body.threshold < 0 || body.threshold > 100) {
       return jsonResponse({ error: "Threshold must be an integer 0-100" }, 400);
     }
-    const config = loadConfig();
-    config.autoSwitchThreshold = body.threshold;
-    saveConfig(config);
+    const runtimeConfig = getRuntimeConfig(config);
+    runtimeConfig.autoSwitchThreshold = body.threshold;
+    saveRuntimeConfig(config, runtimeConfig);
     return jsonResponse({ ok: true });
   }
 
@@ -357,12 +374,12 @@ export async function handleCodexAuthAPI(
               clearAccountNeedsReauth(accountId);
               if (quota) updateAccountQuota(accountId, quota.weeklyPercent, quota.fiveHourPercent);
 
-              const latestConfig = loadConfig();
+              const latestConfig = getRuntimeConfig(config);
               const accounts = latestConfig.codexAccounts ?? [];
               if (!accounts.find(a => a.id === accountId)) {
                 accounts.push({ id: accountId, email, plan, isMain: false });
                 latestConfig.codexAccounts = accounts;
-                saveConfig(latestConfig);
+                saveRuntimeConfig(config, latestConfig);
               }
               codexAuthLoginState.set(flowId, { status: "done", accountId, email, doneAt: Date.now() });
               completed = true;

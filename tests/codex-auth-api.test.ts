@@ -6,11 +6,22 @@ import {
   checkAccountIdCollision, getMainChatgptAccountId,
   markAccountNeedsReauth, isAccountNeedsReauth, clearAccountNeedsReauth, clearAccountQuota,
 } from "../src/codex-auth-api";
+import type { OcxConfig } from "../src/types";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-auth-api-test");
 const TEST_CODEX_HOME = join(TEST_DIR, "codex");
 let previousOpencodexHome: string | undefined;
 let previousCodexHome: string | undefined;
+
+function makeConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
+  return {
+    port: 10100,
+    providers: {},
+    defaultProvider: "openai",
+    codexAccounts: [],
+    ...overrides,
+  };
+}
 
 beforeEach(() => {
   previousOpencodexHome = process.env.OPENCODEX_HOME;
@@ -80,6 +91,18 @@ describe("codex-auth API", () => {
     const data = await resp!.json() as Record<string, unknown>;
     expect("activeCodexAccountId" in data).toBe(true);
     expect(typeof data.autoSwitchThreshold).toBe("number");
+  });
+
+  test("GET /api/codex-auth/active reflects live runtime config", async () => {
+    const config = makeConfig({
+      activeCodexAccountId: "pool-live",
+      autoSwitchThreshold: 55,
+      codexAccounts: [{ id: "pool-live", email: "pool-live@example.test", isMain: false }],
+    });
+    const req = new Request("http://localhost/api/codex-auth/active", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { activeCodexAccountId: string | null; autoSwitchThreshold: number };
+    expect(data).toEqual({ activeCodexAccountId: "pool-live", autoSwitchThreshold: 55 });
   });
 
   test("updateAccountQuota stores and retrieves quota", () => {
@@ -250,6 +273,44 @@ describe("codex-auth API", () => {
       const resp = await handleCodexAuthAPI(req, url, {} as any);
       expect(resp!.status).toBe(200);
     }
+  });
+
+  test("PUT /api/codex-auth/active mutates live runtime config", async () => {
+    const config = makeConfig({
+      codexAccounts: [{ id: "pool-next", email: "pool-next@example.test", isMain: false }],
+    });
+    const req = new Request("http://localhost/api/codex-auth/active", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accountId: "pool-next" }),
+    });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    expect(resp!.status).toBe(200);
+    expect(config.activeCodexAccountId).toBe("pool-next");
+  });
+
+  test("PUT /api/codex-auth/auto-switch mutates live runtime config", async () => {
+    const config = makeConfig({ autoSwitchThreshold: 80 });
+    const req = new Request("http://localhost/api/codex-auth/auto-switch", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threshold: 40 }),
+    });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    expect(resp!.status).toBe(200);
+    expect(config.autoSwitchThreshold).toBe(40);
+  });
+
+  test("DELETE /api/codex-auth/accounts clears deleted active account from live runtime config", async () => {
+    const config = makeConfig({
+      activeCodexAccountId: "pool-delete",
+      codexAccounts: [{ id: "pool-delete", email: "pool-delete@example.test", isMain: false }],
+    });
+    const req = new Request("http://localhost/api/codex-auth/accounts?id=pool-delete", { method: "DELETE" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    expect(resp!.status).toBe(200);
+    expect(config.codexAccounts).toEqual([]);
+    expect(config.activeCodexAccountId).toBeUndefined();
   });
 
   test("GET /api/codex-auth/login-status returns idle by default", async () => {
