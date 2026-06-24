@@ -8,6 +8,7 @@ interface AccountQuota { weeklyPercent: number; fiveHourPercent: number; updated
 interface AccountEntry {
   id: string; email: string; plan?: string; isMain: boolean;
   hasCredential: boolean; quota: AccountQuota | null;
+  needsReauth?: boolean;
 }
 
 export default function CodexAuth({ apiBase }: { apiBase: string }) {
@@ -96,17 +97,20 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
 
       {pool.map(a => (
         <div key={a.id} className={`card ${isNext(a.id) ? "card-active" : ""}`}
-          onClick={() => setConfirm(a)} style={{ cursor: "pointer", marginBottom: 8 }}>
+          onClick={() => !a.needsReauth && setConfirm(a)} style={{ cursor: a.needsReauth ? "default" : "pointer", marginBottom: 8 }}>
           <div className="card-head">
-            <span className={`dot ${isNext(a.id) ? "dot-blue" : "dot-muted"}`} />
+            <span className={`dot ${a.needsReauth ? "dot-amber" : isNext(a.id) ? "dot-blue" : "dot-muted"}`} />
             <strong>{a.email}</strong>
             {a.plan && <span className="badge badge-green">{a.plan}</span>}
-            {isNext(a.id) && <span className="badge badge-primary">{t("codexAuth.nextSession")}</span>}
+            {a.needsReauth && <span className="badge badge-amber">{t("codexAuth.needsReauth")}</span>}
+            {isNext(a.id) && !a.needsReauth && <span className="badge badge-primary">{t("codexAuth.nextSession")}</span>}
             <button className="btn-icon card-right" onClick={e => { e.stopPropagation(); remove(a.id); }}>
               <IconX width={14} />
             </button>
           </div>
-          <QuotaBars quota={a.quota} t={t} />
+          {a.needsReauth
+            ? <div className="card-sub faint">{t("codexAuth.tokenExpired")}</div>
+            : <QuotaBars quota={a.quota} t={t} />}
         </div>
       ))}
 

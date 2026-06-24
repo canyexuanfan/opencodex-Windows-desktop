@@ -89,7 +89,7 @@ export default function AddCodexAccountModal({
                   // Poll for completion
                   const poll = setInterval(async () => {
                     try {
-                      const st = await fetch(`${apiBase}/api/codex-auth/login-status`).then(r => r.json()) as { status: string };
+                      const st = await fetch(`${apiBase}/api/codex-auth/login-status`).then(r => r.json()) as { status: string; error?: string };
                       if (st.status === "done") {
                         clearInterval(poll);
                         onAdded();
@@ -97,7 +97,7 @@ export default function AddCodexAccountModal({
                       } else if (st.status === "error") {
                         clearInterval(poll);
                         setStep("pick");
-                        setError("Login failed");
+                        setError(st.error ?? "Login failed");
                       }
                     } catch { /* ignore */ }
                   }, 2000);

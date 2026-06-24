@@ -266,6 +266,7 @@ select.input { appearance: none; }
 .badge-primary { background: var(--accent-soft); color: var(--accent-hover); }
 .dot-blue { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .dot-muted { background: var(--muted); }
+.dot-amber { background: var(--amber); box-shadow: 0 0 0 3px var(--amber-soft); }
 .section-sep { display: flex; align-items: center; gap: 10px; margin: 20px 0 12px; }
 .section-label { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
 .sep-line { flex: 1; height: 1px; background: var(--border); }

@@ -10,8 +10,10 @@ import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers
 
 const REFRESH_SKEW_MS = 60_000;
 
+export interface LoginOpts { forceLogin?: boolean }
+
 interface OAuthProviderDef {
-  login(ctrl: OAuthController): Promise<OAuthCredentials>;
+  login(ctrl: OAuthController, opts?: LoginOpts): Promise<OAuthCredentials>;
   refresh(refreshToken: string, signal?: AbortSignal): Promise<OAuthCredentials>;
   /** provider entry written into config.json on first login. */
   providerConfig: OcxProviderConfig;
@@ -185,10 +187,10 @@ export function upsertOAuthProvider(config: OcxConfig, provider: string): void {
 }
 
 /** Run the login flow, persist the credential + upsert the provider entry to disk, return cred. */
-export async function runLogin(provider: string, ctrl: OAuthController): Promise<OAuthCredentials> {
+export async function runLogin(provider: string, ctrl: OAuthController, opts?: LoginOpts): Promise<OAuthCredentials> {
   const def = OAUTH_PROVIDERS[provider];
   if (!def) throw new Error(`Unknown OAuth provider: ${provider}`);
-  const cred = await def.login(ctrl);
+  const cred = await def.login(ctrl, opts);
   saveCredential(provider, cred);
   const config = loadConfig();
   upsertOAuthProvider(config, provider);
@@ -213,7 +215,7 @@ export function clearLoginState(provider: string): void {
   loginState.delete(provider);
 }
 
-export async function startLoginFlow(provider: string): Promise<{ url: string; instructions?: string }> {
+export async function startLoginFlow(provider: string, opts?: LoginOpts): Promise<{ url: string; instructions?: string }> {
   const def = OAUTH_PROVIDERS[provider];
   if (!def) throw new Error(`Unknown OAuth provider: ${provider}`);
   const existing = loginState.get(provider);
@@ -231,7 +233,7 @@ export async function startLoginFlow(provider: string): Promise<{ url: string; i
       onProgress: () => {},
     };
     // Background: runLogin persists the credential + upserts the provider entry to disk config.
-    runLogin(provider, ctrl)
+    runLogin(provider, ctrl, opts)
       .then(() => {
         loginState.set(provider, { done: true });
         // Local-token import (grok-cli / Claude Code keychain) completes WITHOUT firing onAuth —

@@ -60,8 +60,9 @@ function credsFromToken(data: Record<string, unknown>): OAuthCredentials {
 
 export class ChatGPTOAuthFlow extends OAuthCallbackFlow {
   #verifier = "";
+  forceLogin = false;
 
-  constructor(ctrl: OAuthController) {
+  constructor(ctrl: OAuthController, opts?: { forceLogin?: boolean }) {
     super(ctrl, {
       preferredPort: CALLBACK_PORT,
       callbackPath: CALLBACK_PATH,
@@ -85,6 +86,7 @@ export class ChatGPTOAuthFlow extends OAuthCallbackFlow {
       codex_cli_simplified_flow: "true",
       originator: ORIGINATOR,
     });
+    if (this.forceLogin) params.set("prompt", "login");
     return {
       url: `${AUTH_URL}?${params}`,
       instructions: "Complete ChatGPT login in your browser.",
@@ -112,8 +114,9 @@ export class ChatGPTOAuthFlow extends OAuthCallbackFlow {
   }
 }
 
-export async function loginChatGPT(ctrl: OAuthController): Promise<OAuthCredentials> {
-  const flow = new ChatGPTOAuthFlow(ctrl);
+export async function loginChatGPT(ctrl: OAuthController, opts?: { forceLogin?: boolean }): Promise<OAuthCredentials> {
+  const flow = new ChatGPTOAuthFlow(ctrl, opts);
+  if (opts?.forceLogin) flow.forceLogin = true;
   return flow.login();
 }
 

@@ -48,6 +48,15 @@ export function listCodexAccountIds(): string[] {
 const CHATGPT_TOKEN_URL = "https://auth.openai.com/oauth/token";
 const CHATGPT_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 
+export class TokenRefreshError extends Error {
+  reason: "expired" | "revoked" | "unknown";
+  constructor(reason: "expired" | "revoked" | "unknown", message: string) {
+    super(message);
+    this.name = "TokenRefreshError";
+    this.reason = reason;
+  }
+}
+
 type CodexTokenResult = { accessToken: string; chatgptAccountId: string };
 const refreshLocks = new Map<string, Promise<CodexTokenResult>>();
 
@@ -75,7 +84,10 @@ export async function getValidCodexToken(id: string): Promise<CodexTokenResult> 
       });
       if (!res.ok) {
         const errBody = await res.text().catch(() => "");
-        throw new Error(`Token refresh failed for ${id}: ${res.status} ${errBody}`);
+        const reason = errBody.includes("invalidated") || errBody.includes("revoked") ? "revoked" as const
+          : errBody.includes("expired") ? "expired" as const
+          : "unknown" as const;
+        throw new TokenRefreshError(reason, `Token refresh failed for ${id}: ${res.status} ${errBody}`);
       }
       const data = (await res.json()) as { access_token: string; refresh_token?: string; expires_in: number };
 

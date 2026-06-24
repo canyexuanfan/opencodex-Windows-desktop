@@ -173,6 +173,9 @@ export const en = {
   "codexAuth.back": "Back",
   "codexAuth.oauthAlreadyInProgress": "Login already in progress. Complete it in your browser.",
   "codexAuth.oauthWaiting": "Waiting for ChatGPT login to complete in your browser...",
+  "codexAuth.needsReauth": "Re-login",
+  "codexAuth.tokenExpired": "Token expired — re-add this account to refresh",
+  "codexAuth.emailCollision": "This account matches your main Codex login. Use a different account.",
 } as const;
 
 export type TKey = keyof typeof en;
