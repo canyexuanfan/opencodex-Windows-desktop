@@ -140,7 +140,9 @@ Acceptance:
 
 - Request logs distinguish main from pool ordinals without exposing account IDs.
 - Active account selection is reflected in next-session routing state.
-- Auto-switch rule uses max weekly/5h usage and bounded quota refresh.
+- Quota auto-switch uses `usageScore = max(5h, weekly, 30d when present)` and the existing percent threshold, default 80.
+- Repeated non-200 upstream responses from the selected Codex account use a separate failure threshold, default 3 consecutive failures, and only affect next-session/new-thread routing.
+- Existing thread affinity is not cleared by token refresh failures, upstream non-200 responses, quota exhaustion, or failover decisions.
 - Redaction scan finds no raw token leakage or personal test fixtures introduced by this work.
 
 ### Loop 5 - Final synthesis
@@ -158,7 +160,7 @@ Acceptance:
 
 ## Diff-Level Plan
 
-### NEW
+### LOOP 0 CREATED
 
 `devlog/_plan/260624_codex-auth-verification-loop/00_goal-plan.md`
 
@@ -180,22 +182,68 @@ Loop 3 runtime/API/browser evidence.
 
 Loop 4 routing/safety evidence.
 
+Loop 0 has already created the `_plan/260624_codex-auth-verification-loop/00` through `40` documents. Later loops must update those stubs rather than create duplicate files.
+
+### NEW
+
 `devlog/270_codex-multi-account-auth/160_post-implementation-verification-results.md`
 
 Final verification synthesis.
 
-### MODIFY - only if verification finds defects
+`src/codex-routing.ts`
+
+Extract routing helpers out of oversized `src/server.ts` before adding failover logic:
+
+- `clearThreadAccountMap`
+- `resolveCodexAccountForThread`
+- `formatCodexProviderForLog`
+- `computeCodexUsageScore`
+- `pickLowestUsageCodexAccount`
+- `recordCodexUpstreamOutcome`
+- in-memory per-account upstream health map
+
+`tests/codex-routing.test.ts`
+
+Targeted tests for quota-window scoring, thread affinity, and non-200 failover:
+
+- `computeCodexUsageScore` returns `max(5h, weekly, monthly when present)`.
+- Missing 30d/monthly data is treated as 0.
+- Existing 5h-only breach still switches even when weekly is low.
+- Three consecutive non-200 responses on a selected account route the next new thread to the lowest-usage eligible account.
+- A 2xx response resets that account's failure streak.
+- `upstreamFailoverThreshold: 0` disables failure failover without disabling quota auto-switch.
+- Existing thread ids stay pinned after upstream failures and token refresh failures.
+
+### MODIFY - planned implementation surfaces
 
 Potential surfaces:
 
+- `src/types.ts`
+- `src/config.ts`
 - `src/codex-auth-api.ts`
 - `src/codex-auth-collision.ts`
 - `src/server.ts`
+- `src/ws-bridge.ts`
+- `gui/src/App.tsx`
 - `gui/src/pages/CodexAuth.tsx`
 - `gui/src/components/AddCodexAccountModal.tsx`
+- `gui/src/i18n/en.ts`
+- `gui/src/i18n/ko.ts`
+- `gui/src/i18n/zh.ts`
 - targeted tests under `tests/`
 
-No code modifications are planned unless a verification loop finds a concrete failing behavior.
+Planned implementation details:
+
+- Add `upstreamFailoverThreshold?: number` to `OcxConfig`; default to 3, validate as integer `0-20`, and keep it separate from `autoSwitchThreshold` percent validation.
+- Extend quota data with optional `monthlyPercent?: number` and `monthlyResetAt?: number`.
+- Parse WHAM `rate_limit.tertiary_window` into monthly quota when present; omit the 30d row when absent.
+- Capture optional tertiary headers only when present, without assuming live WHAM currently sends them.
+- Keep the existing quota auto-switch threshold semantic: `autoSwitchThreshold` is percent, default 80, disabled only when 0.
+- Change auto-switch UI copy to explain that the threshold applies to the hottest known quota window: 5h, Week, and 30d if present.
+- Render a third `30d` quota row only when monthly quota data exists; keep existing 5h/Week rows unchanged.
+- Add `data-page="codex-auth"` to the Codex Auth nav button so browser probes do not depend on English, Korean, or Chinese nav text.
+- Keep `src/server.ts` changes minimal: import routing helpers, record upstream outcome after HTTP upstream responses, remove affinity deletion on token refresh failure, and add WS hook only if the current WS path exposes an upstream status to count.
+- Do not add tests to `tests/codex-auth-api.test.ts` unless it is split first; it is already at the file-length guard edge.
 
 ### DELETE
 
@@ -215,9 +263,14 @@ bun run src/cli.ts ensure
 Runtime probes:
 
 ```bash
-curl -s http://localhost:10100/api/codex-auth/accounts?refresh=1
-curl -s http://localhost:10100/api/codex-auth/active
-curl -s http://localhost:10100/api/logs
+curl -s 'http://localhost:10100/api/codex-auth/active'
+curl -s 'http://localhost:10100/api/logs'
+```
+
+Never paste raw `/api/codex-auth/accounts` output into devlog because it contains email fields. Redact or summarize it:
+
+```bash
+bun -e 'const r=await fetch("http://localhost:10100/api/codex-auth/accounts?refresh=1"); const d=await r.json(); const a=Array.isArray(d.accounts)?d.accounts:[]; console.log(JSON.stringify({status:r.status, accountCount:a.length, mainCount:a.filter(x=>x.isMain).length, poolCount:a.filter(x=>!x.isMain).length, quotaRows:a.map(x=>({role:x.isMain?"main":"pool", hasWeeklyResetAt:typeof x.quota?.weeklyResetAt==="number", hasFiveHourResetAt:typeof x.quota?.fiveHourResetAt==="number", hasMonthly:typeof x.quota?.monthlyPercent==="number", hasMonthlyResetAt:typeof x.quota?.monthlyResetAt==="number"}))}, null, 2));'
 ```
 
 Browser probes:
@@ -225,10 +278,17 @@ Browser probes:
 ```bash
 cli-jaw browser start --agent
 cli-jaw browser new-tab http://localhost:10100
+cli-jaw browser resize 1280 900
 cli-jaw browser snapshot --interactive
-cli-jaw browser screenshot
-cli-jaw browser evaluate '<DOM quota alignment probe>'
+cli-jaw browser evaluate 'document.querySelector("[data-page=\"codex-auth\"]")?.click()'
+cli-jaw browser wait-for-selector '.quota-row' --timeout 10000
+cli-jaw browser evaluate 'Array.from(document.querySelectorAll(".quota-row")).map((el, row) => ({ row, cols: Array.from(el.children).map((child, i) => { const r = child.getBoundingClientRect(); return { i, cls: String(child.className), x: Math.round(r.x), w: Math.round(r.width) }; }) }))'
+cli-jaw browser resize 375 812
+cli-jaw browser wait-for-selector '.quota-row' --timeout 10000
+cli-jaw browser evaluate '({ overflow: document.documentElement.scrollWidth - window.innerWidth, rows: Array.from(document.querySelectorAll(".quota-row")).map((el, row) => ({ row, cols: Array.from(el.children).map((child, i) => { const r = child.getBoundingClientRect(); return { i, cls: String(child.className), x: Math.round(r.x), w: Math.round(r.width) }; }) })) })'
 ```
+
+If the redacted account summary reports zero quota-bearing accounts, record the DOM alignment probe as blocked by missing live quota precondition instead of pasting screenshots or raw account payloads.
 
 ## Risk Register
 
@@ -236,8 +296,11 @@ cli-jaw browser evaluate '<DOM quota alignment probe>'
 | --- | --- |
 | Browser OAuth flow requires live human account session. | Probe what can be automated; document manual-only parts explicitly. |
 | Private WHAM response shape can change. | Verify current shape via local API and guard with tests for known fields. |
+| 30d quota window is not confirmed in current local code or devlogs. | Treat 30d/monthly as optional forward-compatible data: parse/render/count it only when WHAM or headers provide it. |
 | Team/Business identity semantics are partially inferred from observed behavior. | Keep external Business seat/usage evidence separate from observed token/account-id evidence. |
 | Request routing verification can accidentally leak identifiers. | Use provider ordinal labels and masked/hashing diagnostics only. |
+| Non-200 failover can break thread affinity if applied mid-thread. | Count failures per selected account, switch only future new-thread routing, and cover existing-thread affinity with tests. |
+| `src/server.ts` is already over the file-length guard. | Extract routing helpers to `src/codex-routing.ts`; keep server edits to hook calls only. |
 | Devlog is ignored by git. | Force-add only intentional verification docs. |
 
 ## Completion Criteria
