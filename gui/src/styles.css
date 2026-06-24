@@ -262,6 +262,15 @@ select.input { appearance: none; }
 .card-sub { font-size: 12px; color: var(--muted); padding: 0 16px 10px; }
 .card-active { border-color: var(--accent-ring); }
 .card-right { margin-left: auto; display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--faint); }
+.btn-icon-danger.card-right {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--red);
+  cursor: pointer;
+  justify-content: center;
+}
+.btn-icon-danger.card-right:hover { background: var(--red-soft); border-color: var(--red-soft); color: var(--red); }
 .card-row { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; }
 .badge-primary { background: var(--accent-soft); color: var(--accent-hover); }
 .dot-blue { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }

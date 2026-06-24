@@ -104,7 +104,11 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
             {a.plan && <span className="badge badge-green">{a.plan}</span>}
             {a.needsReauth && <span className="badge badge-amber">{t("codexAuth.needsReauth")}</span>}
             {isNext(a.id) && !a.needsReauth && <span className="badge badge-primary">{t("codexAuth.nextSession")}</span>}
-            <button className="btn-icon card-right" onClick={e => { e.stopPropagation(); remove(a.id); }}>
+            <button
+              className="btn-icon btn-icon-danger card-right"
+              aria-label={t("common.remove")}
+              onClick={e => { e.stopPropagation(); remove(a.id); }}
+            >
               <IconX width={14} />
             </button>
           </div>
