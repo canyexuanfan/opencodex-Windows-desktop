@@ -787,6 +787,11 @@ export function startServer(port?: number) {
   // Refresh OAuth provider presets (models/noReasoningModels) from the registry so a proxy update
   // adding/dropping models reaches existing configs on start — not just fresh installs.
   reconcileOAuthProviders(config);
+  // Ensure the ChatGPT passthrough provider exists so gpt-* models route correctly.
+  if (!config.providers["chatgpt"]) {
+    upsertOAuthProvider(config, "chatgpt");
+    saveConfig(config);
+  }
   // Seed default featured subagent models on first run only (UNSET → defaults). A user-set list,
   // even [], is left alone so GUI removals persist.
   if (config.subagentModels === undefined) {

@@ -11,7 +11,7 @@ const MODEL_PROVIDER_PATTERNS: Record<string, string[]> = {
   anthropic: [
     "claude-", "claude-sonnet-", "claude-opus-", "claude-haiku-",
   ],
-  openai: [
+  chatgpt: [
     "gpt-", "o1-", "o3-", "o4-",
   ],
   groq: [
