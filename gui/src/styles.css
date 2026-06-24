@@ -157,7 +157,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .btn-danger { background: transparent; color: var(--red); border-color: rgba(248, 113, 113, 0.3); }
 .btn-danger:hover:not(:disabled) { background: var(--red-soft); }
 .btn-sm { padding: 4px 9px; font-size: 12px; border-radius: var(--radius-xs); }
-.btn-icon { padding: 5px; }
+.btn-icon { padding: 5px; color: var(--muted); border-radius: var(--radius-xs); transition: background 0.12s, color 0.12s; }
+.btn-icon:hover { background: var(--raised-hover); color: var(--text); }
 
 /* ---- cards / panels ---- */
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
