@@ -229,20 +229,20 @@ describe("codex-auth API", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        id: "pos090011",
-        email: "pos090011@example.com",
+        id: "pool-login-recovery",
+        email: "pool-login-recovery@example.com",
         accessToken: "tok",
         refreshToken: "ref",
-        chatgptAccountId: "acc-pos090011",
+        chatgptAccountId: "acc-pool-login-recovery",
       }),
     });
     const createResp = await handleCodexAuthAPI(createReq, new URL(createReq.url), {} as any);
     expect(createResp!.status).toBe(200);
 
-    const req = new Request("http://localhost/api/codex-auth/login-status?flowId=missing&accountId=pos090011", { method: "GET" });
+    const req = new Request("http://localhost/api/codex-auth/login-status?flowId=missing&accountId=pool-login-recovery", { method: "GET" });
     const resp = await handleCodexAuthAPI(req, new URL(req.url), {} as any);
     const data = await resp!.json() as { status: string; accountId?: string };
-    expect(data).toEqual({ status: "done", accountId: "pos090011" });
+    expect(data).toEqual({ status: "done", accountId: "pool-login-recovery" });
   });
 
   test("POST /api/codex-auth/login rejects invalid account id before OAuth starts", async () => {

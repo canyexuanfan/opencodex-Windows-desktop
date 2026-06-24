@@ -77,7 +77,7 @@ export default function AddCodexAccountModal({
             <label className="field-label">{t("codexAuth.addIdLabel")}</label>
             <input
               className="input"
-              placeholder="pos090011, work, personal..."
+              placeholder="codex-work, codex-alt, team..."
               value={id}
               onChange={e => setId(e.target.value)}
               style={{ marginBottom: 12 }}
@@ -166,7 +166,7 @@ export default function AddCodexAccountModal({
             <label className="field-label">{t("codexAuth.addIdLabel")}</label>
             <input
               className="input"
-              placeholder="work, personal, team..."
+              placeholder="codex-work, codex-alt, team..."
               value={id}
               onChange={e => setId(e.target.value)}
               style={{ marginBottom: 12 }}
