@@ -165,6 +165,12 @@ export const en = {
   "codexAuth.importMissingTokens": "Missing access_token or refresh_token in JSON",
   "codexAuth.importMissingId": "Account ID is required",
   "codexAuth.accountAdded": "Account added to pool",
+  "codexAuth.addPickDesc": "Login with another ChatGPT account to add it to the pool.",
+  "codexAuth.oauthLogin": "OAuth Login",
+  "codexAuth.oauthDesc": "Opens ChatGPT login in browser",
+  "codexAuth.importAuthJson": "Import auth.json",
+  "codexAuth.importAuthJsonDesc": "From another Codex install or codex-auth export",
+  "codexAuth.back": "Back",
 } as const;
 
 export type TKey = keyof typeof en;

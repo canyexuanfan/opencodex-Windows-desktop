@@ -165,4 +165,10 @@ export const ko: Record<TKey, string> = {
   "codexAuth.importMissingTokens": "JSON에 access_token 또는 refresh_token이 없습니다",
   "codexAuth.importMissingId": "계정 ID를 입력하세요",
   "codexAuth.accountAdded": "풀에 계정이 추가되었습니다",
+  "codexAuth.addPickDesc": "다른 ChatGPT 계정으로 로그인하여 풀에 추가하세요.",
+  "codexAuth.oauthLogin": "OAuth 로그인",
+  "codexAuth.oauthDesc": "브라우저에서 ChatGPT 로그인 열기",
+  "codexAuth.importAuthJson": "auth.json 가져오기",
+  "codexAuth.importAuthJsonDesc": "다른 Codex 설치 또는 codex-auth export에서",
+  "codexAuth.back": "뒤로",
 };
