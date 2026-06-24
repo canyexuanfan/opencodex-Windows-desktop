@@ -23,6 +23,14 @@ describe("passthrough token override", () => {
     expect(req.headers["chatgpt-account-id"]).toBe("pool_acc");
   });
 
+  test("buildRequest rejects pool-required provider before copying inbound auth", () => {
+    const provider = { ...forwardProvider, _codexAccountRequired: true } as typeof forwardProvider;
+    const adapter = createResponsesPassthroughAdapter(provider);
+    const headers = new Headers({ authorization: "Bearer original", "chatgpt-account-id": "main_acc" });
+    expect(() => adapter.buildRequest({ modelId: "gpt-5.3", input: [], _rawBody: {} }, { headers }))
+      .toThrow("Codex pool account auth is required");
+  });
+
   test("selectForwardHeaders works without override (backward compat)", () => {
     const headers = new Headers({ authorization: "Bearer test", "chatgpt-account-id": "acc" });
     const selected = selectForwardHeaders(headers);

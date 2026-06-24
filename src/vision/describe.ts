@@ -39,7 +39,7 @@ function validateImageUrl(url: string): string | null {
 
 /**
  * Describe ONE image via a gpt vision model through the ChatGPT forward backend — the path that has
- * native image input. Reuses the caller's forwarded OAuth headers. The user's own request text is
+ * native image input. Reuses selected forwarded OAuth headers. The user's own request text is
  * passed as context so the description is focused. Never throws — returns `{error}` on failure.
  */
 export async function describeImage(
@@ -47,7 +47,7 @@ export async function describeImage(
   detail: string | undefined,
   contextText: string,
   forwardProvider: OcxProviderConfig,
-  incomingHeaders: Headers,
+  selectedForwardHeaders: Headers,
   settings: VisionSettings,
   abortSignal?: AbortSignal,
 ): Promise<DescribeOutcome> {
@@ -57,7 +57,7 @@ export async function describeImage(
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (forwardProvider.headers) Object.assign(headers, forwardProvider.headers);
   for (const h of FORWARD_HEADERS) {
-    const v = incomingHeaders.get(h);
+    const v = selectedForwardHeaders.get(h);
     if (v) headers[h] = v;
   }
   const content: unknown[] = [];

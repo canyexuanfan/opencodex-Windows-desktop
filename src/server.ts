@@ -9,7 +9,7 @@ import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./
 import {
   buildWarmupCompletionFrames,
   buildWsErrorFrame,
-  selectForwardHeaders,
+  selectForwardHeadersForAuthContext,
   sendJsonFrame,
   sendResponseToWebSocket,
   sendTextFrame,
@@ -32,8 +32,14 @@ import { removeCredential } from "./oauth/store";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "./oauth/key-providers";
 import { deriveProviderPresets } from "./providers/derive";
 import type { OcxConfig, OcxProviderConfig } from "./types";
-import { getValidCodexToken } from "./codex-account-store";
-import { markAccountNeedsReauth } from "./codex-auth-api";
+import {
+  applyCodexAuthContextToProvider,
+  CodexAuthContextError,
+  headersForCodexAuthContext,
+  resolveCodexAuthContext,
+  stripCodexRuntimeProviderFields,
+  type CodexAuthContext,
+} from "./codex-auth-context";
 export {
   clearThreadAccountMap,
   formatCodexProviderForLog,
@@ -42,7 +48,6 @@ export {
 import {
   formatCodexProviderForLog,
   recordCodexUpstreamOutcome,
-  resolveCodexAccountForThread,
 } from "./codex-routing";
 
 // Single source of truth = package.json (../ from src/), so /healthz + the GUI badge match the
@@ -133,7 +138,12 @@ async function handleResponses(
   req: Request,
   config: OcxConfig,
   logCtx: { model: string; provider: string },
-  options: { forceEmptyResponseId?: boolean; abortSignal?: AbortSignal } = {},
+  options: {
+    forceEmptyResponseId?: boolean;
+    abortSignal?: AbortSignal;
+    authContext?: CodexAuthContext;
+    selectedForwardHeaders?: Headers;
+  } = {},
 ): Promise<Response> {
   let body: unknown;
   try {
@@ -168,23 +178,21 @@ async function handleResponses(
   logCtx.model = route.modelId;
   logCtx.provider = route.providerName;
 
-  // Multi-account: if a pool account is active, inject its token for forward-mode passthrough.
-  let selectedCodexAccountId: string | null = null;
-  if (route.provider.authMode === "forward") {
-    const threadId = req.headers.get("x-codex-parent-thread-id");
-    selectedCodexAccountId = resolveCodexAccountForThread(threadId, config);
-    if (selectedCodexAccountId) {
-      try {
-        const override = await getValidCodexToken(selectedCodexAccountId);
-        route.provider = { ...route.provider, _codexAccountOverride: override } as typeof route.provider;
-        logCtx.provider = formatCodexProviderForLog(route.providerName, selectedCodexAccountId, config);
-      } catch (e) {
-        console.error(`[codex-auth] Pool account ${selectedCodexAccountId} token failed:`, e instanceof Error ? e.message : e);
-        markAccountNeedsReauth(selectedCodexAccountId);
-        selectedCodexAccountId = null;
-      }
+  let authCtx: CodexAuthContext;
+  let selectedForwardHeaders: Headers;
+  try {
+    authCtx = options.authContext ?? await resolveCodexAuthContext(req.headers, config);
+    selectedForwardHeaders = options.selectedForwardHeaders ?? headersForCodexAuthContext(req.headers, authCtx);
+  } catch (err) {
+    if (err instanceof CodexAuthContextError) {
+      const safeAccountLabel = formatCodexProviderForLog(route.providerName, err.accountId, config);
+      console.error(`[codex-auth] Pool account ${safeAccountLabel} token failed; reauthentication required`);
+      return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
     }
+    throw err;
   }
+  route.provider = applyCodexAuthContextToProvider(route.provider, authCtx);
+  logCtx.provider = formatCodexProviderForLog(route.providerName, authCtx.kind === "pool" ? authCtx.accountId : null, config);
 
   // OAuth providers: swap in a fresh access token (auto-refreshed) as the Bearer key, so the
   // existing openai-chat / anthropic adapters authenticate with no change.
@@ -199,16 +207,16 @@ async function handleResponses(
   // Vision sidecar: the routed model can't see images (provider.noVisionModels). Give it "eyes" —
   // describe each attached image with a gpt vision model via the ChatGPT passthrough and replace it
   // with text BEFORE the main call, so the text-only model can reason about it.
-  const visionPlan = planVisionSidecar(config, route.provider, route.modelId, parsed, req.headers);
+  const visionPlan = planVisionSidecar(config, route.provider, route.modelId, parsed, selectedForwardHeaders, authCtx);
   if (visionPlan) {
-    await describeImagesInPlace(parsed, visionPlan.forwardProvider, req.headers, visionPlan.settings, options.abortSignal);
+    await describeImagesInPlace(parsed, visionPlan.forwardProvider, selectedForwardHeaders, visionPlan.settings, options.abortSignal);
   }
 
   const adapterProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
   const adapter = resolveAdapter(adapterProvider);
 
   if ("passthrough" in adapter && adapter.passthrough) {
-    const request = adapter.buildRequest(parsed, { headers: req.headers });
+    const request = adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
     // Abort the upstream if the client disconnects. A directly-relayed body does not propagate the
     // consumer's cancel to a signalled fetch, so we pass the signal and relay through relayWithAbort,
     // whose cancel() aborts the upstream — preventing leaked connections (RC2, passthrough path).
@@ -230,7 +238,7 @@ async function handleResponses(
       return formatErrorResponse(502, "upstream_error", msg);
     }
     // Capture quota from upstream response for multi-account tracking
-    if (selectedCodexAccountId) {
+    if (authCtx.kind === "pool") {
       const weeklyRaw = upstreamResponse.headers.get("x-codex-secondary-used-percent");
       const fiveHourRaw = upstreamResponse.headers.get("x-codex-primary-used-percent");
       const monthlyRaw = upstreamResponse.headers.get("x-codex-tertiary-used-percent");
@@ -240,7 +248,7 @@ async function handleResponses(
       if (weeklyRaw || fiveHourRaw || monthlyRaw) {
         const { updateAccountQuota } = await import("./codex-auth-api");
         updateAccountQuota(
-          selectedCodexAccountId,
+          authCtx.accountId,
           parseFloat(weeklyRaw ?? "0"),
           parseFloat(fiveHourRaw ?? "0"),
           weeklyResetRaw ? parseFloat(weeklyResetRaw) : undefined,
@@ -249,7 +257,7 @@ async function handleResponses(
           monthlyResetRaw ? parseFloat(monthlyResetRaw) : undefined,
         );
       }
-      recordCodexUpstreamOutcome(config, selectedCodexAccountId, upstreamResponse.status);
+      recordCodexUpstreamOutcome(config, authCtx.accountId, upstreamResponse.status);
     }
 
     const headers = sanitizePassthroughHeaders(upstreamResponse.headers);
@@ -266,14 +274,14 @@ async function handleResponses(
   // Web-search sidecar: Codex enabled web_search but this is a routed (non-OpenAI) model that can't
   // run it server-side. Expose web_search as a function tool and run searches via the gpt-mini sidecar
   // through the ChatGPT passthrough, looping until the model answers. Otherwise take the normal path.
-  const wsPlan = planWebSearch(config, parsed, false, req.headers, route.provider, route.modelId);
+  const wsPlan = planWebSearch(config, parsed, false, selectedForwardHeaders, route.provider, route.modelId, authCtx);
   if (wsPlan) {
     parsed.context.tools = [...(parsed.context.tools ?? []), buildWebSearchTool()];
     return runWithWebSearch({
       parsed, adapter,
       forwardProvider: wsPlan.forwardProvider,
       hostedTool: wsPlan.hostedTool,
-      incomingHeaders: req.headers,
+      selectedForwardHeaders,
       settings: wsPlan.settings,
       maxSearches: wsPlan.maxSearches,
       forceEmptyResponseId: true,
@@ -285,7 +293,7 @@ async function handleResponses(
   linkAbortSignal(upstream, options.abortSignal);
   const connectMs = config.connectTimeoutMs ?? 30_000;
 
-  const request = adapter.buildRequest(parsed, { headers: req.headers });
+  const request = adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
   let upstreamResponse: Response;
   try {
     upstreamResponse = await fetchWithHeaderTimeout(request.url, {
@@ -615,7 +623,7 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
     let body: { name?: string; provider?: OcxProviderConfig; setDefault?: boolean };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     const name = body.name?.trim();
-    const prov = body.provider;
+    const prov = body.provider ? stripCodexRuntimeProviderFields(body.provider) : undefined;
     if (!name || !prov?.adapter || !prov?.baseUrl) {
       return jsonResponse({ error: "name, provider.adapter and provider.baseUrl are required" }, 400);
     }
@@ -808,13 +816,23 @@ export function startServer(port?: number) {
         if (!isLocalOrigin(req)) {
           return formatErrorResponse(403, "origin_rejected", "WebSocket upgrade blocked: non-local Origin");
         }
-        const wsThreadId = req.headers.get("x-codex-parent-thread-id");
-        const wsAccountId = resolveCodexAccountForThread(wsThreadId, config);
-        let wsOverride: { accessToken: string; chatgptAccountId: string } | undefined;
-        if (wsAccountId) {
-          try { wsOverride = await getValidCodexToken(wsAccountId); } catch { /* fallback to main */ }
+        let authCtx: CodexAuthContext;
+        try {
+          authCtx = await resolveCodexAuthContext(req.headers, config);
+        } catch (err) {
+          if (err instanceof CodexAuthContextError) {
+            const safeAccountLabel = formatCodexProviderForLog("chatgpt", err.accountId, config);
+            console.error(`[codex-auth] Pool account ${safeAccountLabel} token failed during websocket upgrade; reauthentication required`);
+            return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
+          }
+          throw err;
         }
-        if (server.upgrade(req, { data: { headers: selectForwardHeaders(req.headers, wsOverride) } })) return undefined as unknown as Response;
+        if (server.upgrade(req, {
+          data: {
+            headers: selectForwardHeadersForAuthContext(req.headers, authCtx),
+            authContext: authCtx,
+          },
+        })) return undefined as unknown as Response;
         return formatErrorResponse(426, "upgrade_required", "WebSocket upgrade failed");
       }
 
@@ -918,6 +936,8 @@ export function startServer(port?: number) {
             const response = await handleResponses(req, config, logCtx, {
               forceEmptyResponseId: true,
               abortSignal: turnAbort.signal,
+              authContext: ws.data.authContext,
+              selectedForwardHeaders: ws.data.headers,
             });
             await sendResponseToWebSocket(ws, response, isCurrent);
           } catch (err) {

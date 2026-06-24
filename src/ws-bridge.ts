@@ -1,5 +1,7 @@
 import type { ServerWebSocket } from "bun";
 import { FORWARD_HEADERS } from "./adapters/openai-responses";
+import type { CodexAuthContext } from "./codex-auth-context";
+import { headersForCodexAuthContext } from "./codex-auth-context";
 
 const OPEN = 1;
 const TERMINAL_TYPES = new Set(["response.completed", "response.failed", "response.incomplete"]);
@@ -15,6 +17,7 @@ const SAFE_RESPONSE_HEADER_EXACT = new Set([
 
 export interface WsData {
   headers?: Headers; // selected inbound upgrade headers only; never store full cookies/handshake internals
+  authContext?: CodexAuthContext; // immutable account decision made at upgrade time
   cancel?: () => void; // cancels the in-flight stream reader/fetch
   turnId?: number; // monotonically increasing per socket; prevents stale frames after replacement turns
 }
@@ -39,6 +42,10 @@ export function selectForwardHeaders(
     selected.set("chatgpt-account-id", codexOverride.chatgptAccountId);
   }
   return selected;
+}
+
+export function selectForwardHeadersForAuthContext(headers: Headers, ctx: CodexAuthContext): Headers {
+  return headersForCodexAuthContext(headers, ctx);
 }
 
 export function safeResponseHeaders(headers: Headers): Record<string, string> {

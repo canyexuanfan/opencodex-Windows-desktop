@@ -1,6 +1,7 @@
 import type { OcxConfig, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTextContent } from "../types";
 import { modelInList } from "../types";
 import { describeImage, type VisionSettings } from "./describe";
+import type { CodexAuthContext } from "../codex-auth-context";
 
 export { describeImage } from "./describe";
 
@@ -66,12 +67,13 @@ export function planVisionSidecar(
   modelId: string,
   parsed: OcxParsedRequest,
   incomingHeaders: Headers,
+  authContext: CodexAuthContext = { kind: "main", accountId: null },
 ): VisionPlan | undefined {
   if (!modelInList(provider.noVisionModels, modelId)) return undefined;
   if (!messagesHaveImage(parsed)) return undefined;
   const cfg = config.visionSidecar ?? {};
   if (cfg.enabled === false) return undefined;
-  if (!incomingHeaders.get("authorization")) return undefined;
+  if (authContext.kind === "main" && !incomingHeaders.get("authorization")) return undefined;
   const forwardProvider = findForwardProvider(config);
   if (!forwardProvider) return undefined;
   return {
@@ -105,7 +107,7 @@ function renderDescription(out: { text: string; error?: string }): OcxTextConten
 export async function describeImagesInPlace(
   parsed: OcxParsedRequest,
   forwardProvider: OcxProviderConfig,
-  incomingHeaders: Headers,
+  selectedForwardHeaders: Headers,
   settings: VisionSettings,
   abortSignal?: AbortSignal,
 ): Promise<void> {
@@ -130,7 +132,7 @@ export async function describeImagesInPlace(
 
   // 2. Describe all images with bounded concurrency (order preserved).
   const outcomes = await runBounded(jobs, VISION_CONCURRENCY, j =>
-    describeImage(j.imageUrl, j.detail, j.contextText, forwardProvider, incomingHeaders, settings, abortSignal));
+    describeImage(j.imageUrl, j.detail, j.contextText, forwardProvider, selectedForwardHeaders, settings, abortSignal));
 
   // 3. Rebuild each message, replacing image parts with their descriptions in order.
   let oi = 0;

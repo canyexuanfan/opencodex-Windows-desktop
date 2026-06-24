@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { parseRequest } from "../src/responses/parser";
 import { planWebSearch } from "../src/web-search";
+import { headersForCodexAuthContext } from "../src/codex-auth-context";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 
 const routedProvider: OcxProviderConfig = {
@@ -62,6 +63,27 @@ describe("web-search sidecar planning", () => {
     expect(plan?.forwardProvider).toBe(forwardProvider);
     expect(plan?.hostedTool).toEqual(parsed._webSearch);
     expect(plan?.settings.model).toBe("gpt-5.4-mini");
+  });
+
+  test("planWebSearch activates for pool-selected headers even when raw inbound auth would be main", () => {
+    const parsed = parsedWithWebSearch();
+    const selectedHeaders = headersForCodexAuthContext(
+      new Headers({ authorization: "Bearer main-token", "chatgpt-account-id": "main_acc" }),
+      { kind: "pool", accountId: "pool-a", accessToken: "pool-token", chatgptAccountId: "pool_acc" },
+    );
+    const plan = planWebSearch(
+      config(),
+      parsed,
+      false,
+      selectedHeaders,
+      routedProvider,
+      "model",
+      { kind: "pool", accountId: "pool-a", accessToken: "pool-token", chatgptAccountId: "pool_acc" },
+    );
+
+    expect(plan).toBeDefined();
+    expect(selectedHeaders.get("authorization")).toBe("Bearer pool-token");
+    expect(selectedHeaders.get("chatgpt-account-id")).toBe("pool_acc");
   });
 
   test("planWebSearch suppresses sidecar predictably when prerequisites are absent", () => {

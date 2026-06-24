@@ -27,7 +27,7 @@ export type SidecarOutcome = WebSearchResult & { error?: string };
 
 /**
  * Execute ONE web search via the gpt-mini sidecar through the ChatGPT forward backend — the only path
- * with a real server-side web_search. Reuses the caller's forwarded OAuth headers (the forward adapter
+ * with a real server-side web_search. Reuses selected forwarded OAuth headers (the forward adapter
  * has no key of its own), replays the hosted web_search tool config verbatim, and runs the mini at
  * minimal reasoning. Never throws — returns `{error}` so the caller injects a graceful tool result.
  */
@@ -35,14 +35,14 @@ export async function runWebSearch(
   query: string,
   hostedTool: Record<string, unknown>,
   forwardProvider: OcxProviderConfig,
-  incomingHeaders: Headers,
+  selectedForwardHeaders: Headers,
   settings: SidecarSettings,
   abortSignal?: AbortSignal,
 ): Promise<SidecarOutcome> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (forwardProvider.headers) Object.assign(headers, forwardProvider.headers);
   for (const h of FORWARD_HEADERS) {
-    const v = incomingHeaders.get(h);
+    const v = selectedForwardHeaders.get(h);
     if (v) headers[h] = v;
   }
   const body = {

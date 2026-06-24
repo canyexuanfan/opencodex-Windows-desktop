@@ -1,6 +1,7 @@
 import type { OcxConfig, OcxParsedRequest, OcxProviderConfig } from "../types";
 import { modelInList } from "../types";
 import type { SidecarSettings } from "./executor";
+import type { CodexAuthContext } from "../codex-auth-context";
 
 export { runWithWebSearch } from "./loop";
 export { buildWebSearchTool, extractHostedWebSearch, WEB_SEARCH_TOOL_NAME } from "./synthetic-tool";
@@ -40,11 +41,12 @@ export function planWebSearch(
   incomingHeaders: Headers,
   provider: OcxProviderConfig,
   modelId: string,
+  authContext: CodexAuthContext = { kind: "main", accountId: null },
 ): SidecarPlan | undefined {
   if (!parsed._webSearch || isPassthrough) return undefined;
   const cfg = config.webSearchSidecar ?? {};
   if (cfg.enabled === false) return undefined;
-  if (!incomingHeaders.get("authorization")) return undefined; // not logged into ChatGPT → sidecar can't run
+  if (authContext.kind === "main" && !incomingHeaders.get("authorization")) return undefined; // not logged into ChatGPT → sidecar can't run
   const forwardProvider = findForwardProvider(config);
   if (!forwardProvider) return undefined;
   return {
