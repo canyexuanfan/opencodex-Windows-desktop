@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useT, type TFn } from "../i18n";
-import { IconLock, IconPlus, IconX, IconAlert } from "../icons";
+import { IconLock, IconPlus, IconX, IconAlert, IconRefresh } from "../icons";
 import { Notice } from "../ui";
 import AddCodexAccountModal from "../components/AddCodexAccountModal";
 
@@ -19,17 +19,21 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
   const [confirm, setConfirm] = useState<AccountEntry | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [toast, setToast] = useState("");
+  const [refreshingQuota, setRefreshingQuota] = useState(false);
 
-  const load = async () => {
+  const load = async (refreshQuota = false) => {
     try {
       const [accts, active] = await Promise.all([
-        fetch(`${apiBase}/api/codex-auth/accounts`).then(r => r.json()),
+        fetch(`${apiBase}/api/codex-auth/accounts${refreshQuota ? "?refresh=1" : ""}`).then(r => r.json()),
         fetch(`${apiBase}/api/codex-auth/active`).then(r => r.json()),
       ]);
       setAccounts(accts.accounts ?? []);
       setActiveId(active.activeCodexAccountId ?? null);
       setAutoThreshold(active.autoSwitchThreshold ?? 80);
-    } catch { /* ignore */ }
+      return true;
+    } catch {
+      return false;
+    }
   };
   useEffect(() => { load(); const iv = setInterval(load, 30_000); return () => clearInterval(iv); }, [apiBase]);
 
@@ -60,13 +64,29 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
     setAutoThreshold(next);
   };
 
+  const refreshQuotas = async () => {
+    setRefreshingQuota(true);
+    try {
+      const ok = await load(true);
+      setToast(t(ok ? "codexAuth.quotaRefreshed" : "codexAuth.quotaRefreshFailed"));
+      setTimeout(() => setToast(""), 5000);
+    } finally {
+      setRefreshingQuota(false);
+    }
+  };
+
   const main = accounts.find(a => a.isMain);
   const pool = accounts.filter(a => !a.isMain);
   const isNext = (id: string) => activeId === id;
 
   return (
     <div>
-      <h2 className="page-title">{t("nav.codexAuth")}</h2>
+      <div className="page-head">
+        <h2 className="page-title">{t("nav.codexAuth")}</h2>
+        <button className="btn btn-sm btn-ghost" onClick={refreshQuotas} disabled={refreshingQuota}>
+          <IconRefresh width={14} /> {refreshingQuota ? t("codexAuth.refreshingQuota") : t("codexAuth.refreshQuota")}
+        </button>
+      </div>
 
       {toast && <Notice tone="ok">{toast}</Notice>}
 

@@ -110,8 +110,8 @@ let mainAccountCache: { email: string | null; plan: string | null; quota: { week
 const MAIN_CACHE_TTL = 5 * 60_000;
 const POOL_CACHE_TTL = 5 * 60_000;
 
-async function fetchMainAccountInfo(): Promise<{ email: string | null; plan: string | null; quota: { weeklyPercent: number; fiveHourPercent: number } | null }> {
-  if (mainAccountCache && Date.now() - mainAccountCache.ts < MAIN_CACHE_TTL) {
+async function fetchMainAccountInfo(forceRefresh = false): Promise<{ email: string | null; plan: string | null; quota: { weeklyPercent: number; fiveHourPercent: number } | null }> {
+  if (!forceRefresh && mainAccountCache && Date.now() - mainAccountCache.ts < MAIN_CACHE_TTL) {
     return mainAccountCache;
   }
   const tokens = readCodexTokens();
@@ -141,9 +141,9 @@ interface PoolQuotaResult {
   needsReauth: boolean;
 }
 
-async function fetchPoolAccountQuota(accountId: string): Promise<PoolQuotaResult> {
+async function fetchPoolAccountQuota(accountId: string, forceRefresh = false): Promise<PoolQuotaResult> {
   const existing = accountQuota.get(accountId);
-  if (existing && Date.now() - existing.updatedAt < POOL_CACHE_TTL) {
+  if (!forceRefresh && existing && Date.now() - existing.updatedAt < POOL_CACHE_TTL) {
     return { quota: existing, needsReauth: false };
   }
   try {
@@ -171,13 +171,14 @@ export async function handleCodexAuthAPI(
 ): Promise<Response | null> {
 
   if (url.pathname === "/api/codex-auth/accounts" && req.method === "GET") {
+    const forceRefresh = url.searchParams.get("refresh") === "1" || url.searchParams.get("refresh") === "true";
     const config = loadConfig();
     const poolAccounts = (config.codexAccounts ?? []).filter(a => !a.isMain);
-    const mainInfo = await fetchMainAccountInfo();
+    const mainInfo = await fetchMainAccountInfo(forceRefresh);
     const withQuota = await Promise.all(poolAccounts.map(async a => {
       const cred = getCodexAccountCredential(a.id);
       const quotaResult = cred
-        ? await fetchPoolAccountQuota(a.id)
+        ? await fetchPoolAccountQuota(a.id, forceRefresh)
         : { quota: null, needsReauth: true };
       return {
         ...a,

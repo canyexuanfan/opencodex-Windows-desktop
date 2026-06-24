@@ -143,6 +143,50 @@ describe("codex-auth API", () => {
     }
   });
 
+  test("GET /api/codex-auth/accounts refresh=1 bypasses cached pool quota", async () => {
+    const createReq = new Request("http://localhost/api/codex-auth/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "pool-refresh",
+        email: "pool-refresh@example.com",
+        accessToken: "tok",
+        refreshToken: "ref",
+        chatgptAccountId: "acc-pool-refresh",
+      }),
+    });
+    const createResp = await handleCodexAuthAPI(createReq, new URL(createReq.url), {} as any);
+    expect(createResp!.status).toBe(200);
+    updateAccountQuota("pool-refresh", 72, 31);
+
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async (_input, init) => {
+      calls++;
+      const headers = new Headers(init?.headers);
+      expect(headers.get("Authorization")).toBe("Bearer tok");
+      expect(headers.get("ChatGPT-Account-Id")).toBe("acc-pool-refresh");
+      return new Response(JSON.stringify({
+        rate_limit: {
+          secondary_window: { used_percent: 6 },
+          primary_window: { used_percent: 2 },
+        },
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+      const resp = await handleCodexAuthAPI(req, new URL(req.url), {} as any);
+      expect(resp!.status).toBe(200);
+      const data = await resp!.json() as { accounts: { id: string; quota: unknown }[] };
+      const pool = data.accounts.find(a => a.id === "pool-refresh");
+      expect(pool?.quota).toMatchObject({ weeklyPercent: 6, fiveHourPercent: 2 });
+      expect(calls).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("unmatched route returns null", async () => {
     const req = new Request("http://localhost/api/codex-auth/unknown", { method: "GET" });
     const url = new URL(req.url);
