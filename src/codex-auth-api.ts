@@ -4,6 +4,7 @@ import os from "node:os";
 import { loadConfig, saveConfig } from "./config";
 import {
   getCodexAccountCredential,
+  getValidCodexToken,
   saveCodexAccountCredential,
   removeCodexAccountCredential,
 } from "./codex-account-store";
@@ -47,6 +48,7 @@ function readCodexTokens(): { access_token: string; account_id: string } | null 
 
 let mainAccountCache: { email: string | null; plan: string | null; quota: { weeklyPercent: number; fiveHourPercent: number } | null; ts: number } | null = null;
 const MAIN_CACHE_TTL = 5 * 60_000;
+const POOL_CACHE_TTL = 5 * 60_000;
 
 async function fetchMainAccountInfo(): Promise<{ email: string | null; plan: string | null; quota: { weeklyPercent: number; fiveHourPercent: number } | null }> {
   if (mainAccountCache && Date.now() - mainAccountCache.ts < MAIN_CACHE_TTL) {
@@ -84,6 +86,34 @@ async function fetchMainAccountInfo(): Promise<{ email: string | null; plan: str
   }
 }
 
+async function fetchPoolAccountQuota(accountId: string): Promise<{ weeklyPercent: number; fiveHourPercent: number } | null> {
+  const existing = accountQuota.get(accountId);
+  if (existing && Date.now() - existing.updatedAt < POOL_CACHE_TTL) {
+    return existing;
+  }
+  try {
+    const { accessToken, chatgptAccountId } = await getValidCodexToken(accountId);
+    const resp = await fetch("https://chatgpt.com/backend-api/wham/usage", {
+      headers: { Authorization: `Bearer ${accessToken}`, "ChatGPT-Account-Id": chatgptAccountId },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!resp.ok) return existing ?? null;
+    const data = (await resp.json()) as {
+      rate_limit?: {
+        primary_window?: { used_percent?: number };
+        secondary_window?: { used_percent?: number };
+      };
+    };
+    if (!data.rate_limit) return existing ?? null;
+    const weekly = data.rate_limit.secondary_window?.used_percent ?? 0;
+    const fiveHour = data.rate_limit.primary_window?.used_percent ?? 0;
+    updateAccountQuota(accountId, weekly, fiveHour);
+    return { weeklyPercent: weekly, fiveHourPercent: fiveHour };
+  } catch {
+    return existing ?? null;
+  }
+}
+
 export async function handleCodexAuthAPI(
   req: Request,
   url: URL,
@@ -93,12 +123,18 @@ export async function handleCodexAuthAPI(
   if (url.pathname === "/api/codex-auth/accounts" && req.method === "GET") {
     const config = loadConfig();
     const poolAccounts = (config.codexAccounts ?? []).filter(a => !a.isMain);
-    const withQuota = poolAccounts.map(a => ({
-      ...a,
-      quota: getAccountQuota(a.id),
-      hasCredential: !!getCodexAccountCredential(a.id),
-    }));
-    const mainInfo = await fetchMainAccountInfo();
+    const [mainInfo, ...poolQuotas] = await Promise.all([
+      fetchMainAccountInfo(),
+      ...poolAccounts.map(a => fetchPoolAccountQuota(a.id)),
+    ]);
+    const withQuota = poolAccounts.map((a, i) => {
+      const q = poolQuotas[i];
+      return {
+        ...a,
+        quota: q ? { ...q, updatedAt: accountQuota.get(a.id)?.updatedAt ?? Date.now() } : null,
+        hasCredential: !!getCodexAccountCredential(a.id),
+      };
+    });
     const main = {
       id: "__main__",
       email: mainInfo.email ?? "Codex App login",
