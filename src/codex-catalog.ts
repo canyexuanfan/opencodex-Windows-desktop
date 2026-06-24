@@ -596,7 +596,13 @@ export function invalidateCodexModelsCache(): void {
   try {
     const catalogPath = readCodexCatalogPath();
     if (!existsSync(catalogPath)) return;
-    const catalog = readFileSync(catalogPath, "utf8");
-    atomicWriteFile(CODEX_MODELS_CACHE_PATH, catalog.endsWith("\n") ? catalog : `${catalog}\n`);
+    const catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
+    const models = catalog.models ?? catalog;
+    const wrapper = {
+      fetched_at: "2000-01-01T00:00:00Z",
+      client_version: "0.0.0",
+      models,
+    };
+    atomicWriteFile(CODEX_MODELS_CACHE_PATH, JSON.stringify(wrapper, null, 2) + "\n");
   } catch { /* best-effort */ }
 }
