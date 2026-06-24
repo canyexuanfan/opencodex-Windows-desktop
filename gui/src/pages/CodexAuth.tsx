@@ -4,7 +4,13 @@ import { IconLock, IconPlus, IconX, IconAlert, IconRefresh } from "../icons";
 import { Notice } from "../ui";
 import AddCodexAccountModal from "../components/AddCodexAccountModal";
 
-interface AccountQuota { weeklyPercent: number; fiveHourPercent: number; updatedAt: number }
+interface AccountQuota {
+  weeklyPercent: number;
+  fiveHourPercent: number;
+  weeklyResetAt?: number;
+  fiveHourResetAt?: number;
+  updatedAt: number;
+}
 interface AccountEntry {
   id: string; email: string; plan?: string; isMain: boolean;
   hasCredential: boolean; quota: AccountQuota | null;
@@ -185,20 +191,53 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
 
 function QuotaBars({ quota, t }: { quota: AccountQuota | null; t: TFn }) {
   if (!quota) return null;
-  const wColor = quota.weeklyPercent >= 80 ? "bar-amber" : "bar-green";
-  const hColor = quota.fiveHourPercent >= 80 ? "bar-amber" : "bar-green";
   return (
-    <div className="quota-bars">
-      <div className="quota-row">
-        <span className="quota-label">{t("codexAuth.weekly")}</span>
-        <div className="bar"><div className={`bar-fill ${wColor}`} style={{ width: `${quota.weeklyPercent}%` }} /></div>
-        <span className="quota-val">{Math.round(quota.weeklyPercent)}%</span>
-      </div>
-      <div className="quota-row">
-        <span className="quota-label">{t("codexAuth.fiveHour")}</span>
-        <div className="bar"><div className={`bar-fill ${hColor}`} style={{ width: `${quota.fiveHourPercent}%` }} /></div>
-        <span className="quota-val">{Math.round(quota.fiveHourPercent)}%</span>
-      </div>
+    <div className="quota-compact">
+      <QuotaRow
+        label={t("codexAuth.fiveHour")}
+        percent={quota.fiveHourPercent}
+        resetAt={quota.fiveHourResetAt}
+        t={t}
+      />
+      <QuotaRow
+        label={t("codexAuth.weekly")}
+        percent={quota.weeklyPercent}
+        resetAt={quota.weeklyResetAt}
+        t={t}
+      />
     </div>
   );
+}
+
+function QuotaRow({ label, percent, resetAt, t }: { label: string; percent: number; resetAt?: number; t: TFn }) {
+  const color = percent >= 80 ? "bar-amber" : "bar-green";
+  const reset = formatResetAt(resetAt, t);
+  return (
+    <div className="quota-row">
+      <span className="quota-label">{label}</span>
+      <span className="quota-reset-label">{t("codexAuth.resets")}</span>
+      <span className="quota-reset-day">{reset.day}</span>
+      <span className="quota-reset-time">{reset.time}</span>
+      <div className="bar"><div className={`bar-fill ${color}`} style={{ width: `${clampPercent(percent)}%` }} /></div>
+      <span className="quota-val">{Math.round(percent)}%</span>
+    </div>
+  );
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function formatResetAt(resetAt: number | undefined, t: TFn): { day: string; time: string } {
+  if (typeof resetAt !== "number" || !Number.isFinite(resetAt)) return { day: "", time: "" };
+  const ms = resetAt < 10_000_000_000 ? resetAt * 1000 : resetAt;
+  const date = new Date(ms);
+  const now = new Date();
+  const time = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+  const isToday = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate();
+  if (isToday) return { day: t("codexAuth.today"), time };
+  const day = new Intl.DateTimeFormat(undefined, { month: "numeric", day: "numeric" }).format(date);
+  return { day, time };
 }

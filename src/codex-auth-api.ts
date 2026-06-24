@@ -23,6 +23,8 @@ function jsonResponse(data: unknown, status = 200): Response {
 type StoredAccountQuota = {
   weeklyPercent: number;
   fiveHourPercent: number;
+  weeklyResetAt?: number;
+  fiveHourResetAt?: number;
   updatedAt: number;
 };
 
@@ -30,8 +32,8 @@ type WhamUsageResponse = {
   email?: string | null;
   plan_type?: string | null;
   rate_limit?: {
-    primary_window?: { used_percent?: number };
-    secondary_window?: { used_percent?: number };
+    primary_window?: { used_percent?: number; reset_at?: number };
+    secondary_window?: { used_percent?: number; reset_at?: number };
   };
 };
 
@@ -39,8 +41,21 @@ const accountQuota = new Map<string, StoredAccountQuota>();
 
 const ACCOUNT_ID_RE = /^[a-zA-Z0-9._-]{1,64}$/;
 
-export function updateAccountQuota(accountId: string, weekly: number, fiveHour: number): void {
-  accountQuota.set(accountId, { weeklyPercent: weekly, fiveHourPercent: fiveHour, updatedAt: Date.now() });
+export function updateAccountQuota(
+  accountId: string,
+  weekly: number,
+  fiveHour: number,
+  weeklyResetAt?: number,
+  fiveHourResetAt?: number,
+): void {
+  const existing = accountQuota.get(accountId);
+  accountQuota.set(accountId, {
+    weeklyPercent: weekly,
+    fiveHourPercent: fiveHour,
+    weeklyResetAt: weeklyResetAt ?? existing?.weeklyResetAt,
+    fiveHourResetAt: fiveHourResetAt ?? existing?.fiveHourResetAt,
+    updatedAt: Date.now(),
+  });
 }
 
 export function getAccountQuota(accountId: string) {
@@ -54,6 +69,8 @@ function parseUsageQuota(data: WhamUsageResponse): Omit<StoredAccountQuota, "upd
   return {
     weeklyPercent: data.rate_limit.secondary_window?.used_percent ?? 0,
     fiveHourPercent: data.rate_limit.primary_window?.used_percent ?? 0,
+    weeklyResetAt: data.rate_limit.secondary_window?.reset_at,
+    fiveHourResetAt: data.rate_limit.primary_window?.reset_at,
   };
 }
 
@@ -197,7 +214,7 @@ async function fetchPoolAccountQuota(accountId: string, forceRefresh = false): P
     const data = (await resp.json()) as WhamUsageResponse;
     const quota = parseUsageQuota(data);
     if (!quota) return { quota: existing ?? null, needsReauth: false };
-    updateAccountQuota(accountId, quota.weeklyPercent, quota.fiveHourPercent);
+    updateAccountQuota(accountId, quota.weeklyPercent, quota.fiveHourPercent, quota.weeklyResetAt, quota.fiveHourResetAt);
     return { quota: accountQuota.get(accountId) ?? null, needsReauth: false };
   } catch (e) {
     if (e instanceof TokenRefreshError) return { quota: existing ?? null, needsReauth: true };
@@ -396,7 +413,7 @@ export async function handleCodexAuthAPI(
                 chatgptAccountId: oauthAccountId,
               });
               clearAccountNeedsReauth(accountId);
-              if (quota) updateAccountQuota(accountId, quota.weeklyPercent, quota.fiveHourPercent);
+              if (quota) updateAccountQuota(accountId, quota.weeklyPercent, quota.fiveHourPercent, quota.weeklyResetAt, quota.fiveHourResetAt);
 
               const latestConfig = getRuntimeConfig(config);
               const accounts = latestConfig.codexAccounts ?? [];

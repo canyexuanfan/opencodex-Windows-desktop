@@ -161,8 +161,8 @@ describe("codex-auth API", () => {
       expect(headers.get("ChatGPT-Account-Id")).toBe("acc-pool-visible");
       return new Response(JSON.stringify({
         rate_limit: {
-          secondary_window: { used_percent: 64 },
-          primary_window: { used_percent: 11 },
+          secondary_window: { used_percent: 64, reset_at: 1782628379 },
+          primary_window: { used_percent: 11, reset_at: 1782291794 },
         },
       }), { status: 200 });
     }) as typeof fetch;
@@ -173,7 +173,7 @@ describe("codex-auth API", () => {
       expect(resp!.status).toBe(200);
       const data = await resp!.json() as { accounts: { id: string; quota: unknown; needsReauth?: boolean }[] };
       const pool = data.accounts.find(a => a.id === "pool-visible");
-      expect(pool?.quota).toMatchObject({ weeklyPercent: 64, fiveHourPercent: 11 });
+      expect(pool?.quota).toMatchObject({ weeklyPercent: 64, fiveHourPercent: 11, weeklyResetAt: 1782628379, fiveHourResetAt: 1782291794 });
       expect(pool?.needsReauth).toBe(false);
       expect(calls).toBe(1);
     } finally {
@@ -206,8 +206,8 @@ describe("codex-auth API", () => {
       expect(headers.get("ChatGPT-Account-Id")).toBe("acc-pool-refresh");
       return new Response(JSON.stringify({
         rate_limit: {
-          secondary_window: { used_percent: 6 },
-          primary_window: { used_percent: 2 },
+          secondary_window: { used_percent: 6, reset_at: 1782628379 },
+          primary_window: { used_percent: 2, reset_at: 1782291794 },
         },
       }), { status: 200 });
     }) as typeof fetch;
@@ -218,7 +218,7 @@ describe("codex-auth API", () => {
       expect(resp!.status).toBe(200);
       const data = await resp!.json() as { accounts: { id: string; quota: unknown }[] };
       const pool = data.accounts.find(a => a.id === "pool-refresh");
-      expect(pool?.quota).toMatchObject({ weeklyPercent: 6, fiveHourPercent: 2 });
+      expect(pool?.quota).toMatchObject({ weeklyPercent: 6, fiveHourPercent: 2, weeklyResetAt: 1782628379, fiveHourResetAt: 1782291794 });
       expect(calls).toBe(1);
     } finally {
       globalThis.fetch = originalFetch;

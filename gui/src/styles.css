@@ -279,11 +279,15 @@ select.input { appearance: none; }
 .section-sep { display: flex; align-items: center; gap: 10px; margin: 20px 0 12px; }
 .section-label { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
 .sep-line { flex: 1; height: 1px; background: var(--border); }
-.quota-bars { padding: 4px 16px 12px; display: flex; gap: 14px; }
-.quota-row { flex: 1; display: flex; align-items: center; gap: 6px; }
-.quota-label { font-size: 11px; color: var(--muted); min-width: 40px; }
-.quota-val { font-size: 11px; font-family: var(--mono); color: var(--muted); min-width: 28px; text-align: right; }
-.bar { flex: 1; height: 5px; background: var(--raised); border-radius: 3px; overflow: hidden; }
+.quota-compact { padding: 2px 16px 12px; display: grid; gap: 4px; }
+.quota-row { display: grid; grid-template-columns: 36px 38px 44px 42px minmax(84px, 1fr) 40px; align-items: center; gap: 8px; min-width: 0; }
+.quota-label { font-size: 11px; color: var(--muted); font-weight: 600; }
+.quota-val { font-size: 11px; font-family: var(--mono); color: var(--text); text-align: right; }
+.quota-reset-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--faint); }
+.quota-reset-day,
+.quota-reset-time { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.quota-reset-time { font-family: var(--mono); }
+.bar { height: 5px; background: var(--raised); border-radius: 3px; overflow: hidden; min-width: 58px; }
 .bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
 .bar-green { background: var(--green); }
 .bar-amber { background: linear-gradient(90deg, var(--green), var(--amber)); }
