@@ -1,36 +1,93 @@
 # 30 - Loop 3 Runtime and Browser Results
 
-Status: planned.
+Status: verified.
 
-Runtime checks:
+Date: 2026-06-24
+
+## Runtime Checks
 
 ```bash
 bun run src/cli.ts stop
 bun run src/cli.ts ensure
-curl -s 'http://localhost:10100/api/codex-auth/active'
 ```
 
-Raw account API output contains emails. Record only redacted summaries in this file:
+Result:
 
-```bash
-bun -e 'const r=await fetch("http://localhost:10100/api/codex-auth/accounts?refresh=1"); const d=await r.json(); const a=Array.isArray(d.accounts)?d.accounts:[]; console.log(JSON.stringify({status:r.status, accountCount:a.length, mainCount:a.filter(x=>x.isMain).length, poolCount:a.filter(x=>!x.isMain).length, quotaRows:a.map(x=>({role:x.isMain?"main":"pool", hasWeeklyResetAt:typeof x.quota?.weeklyResetAt==="number", hasFiveHourResetAt:typeof x.quota?.fiveHourResetAt==="number", hasMonthly:typeof x.quota?.monthlyPercent==="number", hasMonthlyResetAt:typeof x.quota?.monthlyResetAt==="number"}))}, null, 2));'
+- Proxy stopped existing PID and restarted on port 10100.
+- `/healthz` returned status `ok`, version `2.1.8`, and positive uptime.
+
+Redacted account summary:
+
+```json
+{
+  "status": 200,
+  "accountCount": 5,
+  "mainCount": 1,
+  "poolCount": 4,
+  "quotaBearingCount": 5,
+  "quotaRows": [
+    { "role": "main", "hasWeeklyResetAt": true, "hasFiveHourResetAt": true, "hasMonthly": false, "hasMonthlyResetAt": false },
+    { "role": "pool", "hasWeeklyResetAt": true, "hasFiveHourResetAt": true, "hasMonthly": false, "hasMonthlyResetAt": false },
+    { "role": "pool", "hasWeeklyResetAt": true, "hasFiveHourResetAt": true, "hasMonthly": false, "hasMonthlyResetAt": false },
+    { "role": "pool", "hasWeeklyResetAt": true, "hasFiveHourResetAt": true, "hasMonthly": false, "hasMonthlyResetAt": false },
+    { "role": "pool", "hasWeeklyResetAt": true, "hasFiveHourResetAt": true, "hasMonthly": false, "hasMonthlyResetAt": false }
+  ]
+}
 ```
 
-Browser checks:
+Active state summary:
+
+```json
+{
+  "activeCodexAccountId": "redacted",
+  "autoSwitchThreshold": 80,
+  "upstreamFailoverThreshold": 3
+}
+```
+
+No raw account API output, emails, tokens, or account ids were recorded.
+
+## Browser Checks
+
+Commands:
 
 ```bash
 cli-jaw browser start --agent
 cli-jaw browser new-tab http://localhost:10100
 cli-jaw browser resize 1280 900
-cli-jaw browser snapshot --interactive
 cli-jaw browser evaluate 'document.querySelector("[data-page=\"codex-auth\"]")?.click()'
 cli-jaw browser wait-for-selector '.quota-row' --timeout 10000
-cli-jaw browser evaluate 'Array.from(document.querySelectorAll(".quota-row")).map((el, row) => ({ row, cols: Array.from(el.children).map((child, i) => { const r = child.getBoundingClientRect(); return { i, cls: String(child.className), x: Math.round(r.x), w: Math.round(r.width) }; }) }))'
+cli-jaw browser evaluate '<geometry-only quota row probe>'
 cli-jaw browser resize 375 812
 cli-jaw browser wait-for-selector '.quota-row' --timeout 10000
-cli-jaw browser evaluate '({ overflow: document.documentElement.scrollWidth - window.innerWidth, rows: Array.from(document.querySelectorAll(".quota-row")).map((el, row) => ({ row, cols: Array.from(el.children).map((child, i) => { const r = child.getBoundingClientRect(); return { i, cls: String(child.className), x: Math.round(r.x), w: Math.round(r.width) }; }) })) })'
+cli-jaw browser evaluate '<geometry-only quota row probe>'
 ```
 
-If no quota-bearing account is present, record the browser alignment probe as blocked by live-data precondition instead of committing screenshots or raw account payloads.
+Desktop result, `1280x900`:
 
-Results: pending.
+- `.quota-row` selector resolved.
+- 10 quota rows found.
+- All rows shared identical x positions per column:
+  - label: 319
+  - reset label: 363
+  - reset day: 409
+  - reset time: 461
+  - bar: 511
+  - percent: 1153
+
+Narrow result, `375x812`:
+
+- `.quota-row` selector resolved.
+- 10 quota rows found.
+- `document.documentElement.scrollWidth - window.innerWidth` was `-10`, so no horizontal overflow.
+- All rows shared identical x positions per column:
+  - label: 35
+  - reset label: 79
+  - reset day: 125
+  - reset time: 177
+  - bar: 227
+  - percent: 319
+
+## Verdict
+
+Runtime API, active state, redacted quota summary, and desktop/narrow browser geometry probes are verified.
