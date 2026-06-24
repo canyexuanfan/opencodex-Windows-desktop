@@ -418,6 +418,21 @@ describe("codex-auth API", () => {
     expect(data.error).toContain("Account id already exists");
   });
 
+  test("POST /api/codex-auth/login checks duplicate account ids against live runtime config", async () => {
+    const config = makeConfig({
+      codexAccounts: [{ id: "live-existing", email: "live-existing@example.test", isMain: false }],
+    });
+    const req = new Request("http://localhost/api/codex-auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "live-existing" }),
+    });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    expect(resp!.status).toBe(400);
+    const data = await resp!.json() as { error: string };
+    expect(data.error).toContain("Account id already exists");
+  });
+
   test("OAuth pool login waits for the current flow to finish, not stale credentials", async () => {
     const source = await Bun.file("src/codex-auth-api.ts").text();
     expect(source).toContain("st.done && st.loggedIn");

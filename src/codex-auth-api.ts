@@ -334,8 +334,8 @@ export async function handleCodexAuthAPI(
       return jsonResponse({ error: "Invalid account id format" }, 400);
     }
     const accountId = requestedAccountId || `chatgpt-${Date.now()}`;
-    const config = loadConfig();
-    if ((config.codexAccounts ?? []).some(a => a.id === accountId) || getCodexAccountCredential(accountId)) {
+    const runtimeConfig = getRuntimeConfig(config);
+    if ((runtimeConfig.codexAccounts ?? []).some(a => a.id === accountId) || getCodexAccountCredential(accountId)) {
       return jsonResponse({ error: `Account id already exists: ${accountId}` }, 400);
     }
     const flowId = `flow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
