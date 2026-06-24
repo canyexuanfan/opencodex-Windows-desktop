@@ -69,7 +69,7 @@ describe("web-search sidecar planning", () => {
     const parsed = parsedWithWebSearch();
     const selectedHeaders = headersForCodexAuthContext(
       new Headers({ authorization: "Bearer main-token", "chatgpt-account-id": "main_acc" }),
-      { kind: "pool", accountId: "pool-a", accessToken: "pool-token", chatgptAccountId: "pool_acc" },
+      { kind: "pool", accountId: "pool-a", generation: 1, accessToken: "pool-token", chatgptAccountId: "pool_acc" },
     );
     const plan = planWebSearch(
       config(),
@@ -78,7 +78,7 @@ describe("web-search sidecar planning", () => {
       selectedHeaders,
       routedProvider,
       "model",
-      { kind: "pool", accountId: "pool-a", accessToken: "pool-token", chatgptAccountId: "pool_acc" },
+      { kind: "pool", accountId: "pool-a", generation: 1, accessToken: "pool-token", chatgptAccountId: "pool_acc" },
     );
 
     expect(plan).toBeDefined();

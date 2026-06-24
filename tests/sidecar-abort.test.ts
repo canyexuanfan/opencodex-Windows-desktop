@@ -125,7 +125,7 @@ describe("sidecar abort propagation", () => {
     }) as typeof fetch;
     const selectedHeaders = headersForCodexAuthContext(
       new Headers({ authorization: "Bearer main-token", "chatgpt-account-id": "main_acc" }),
-      { kind: "pool", accountId: "pool-a", accessToken: "pool-token", chatgptAccountId: "pool_acc" },
+      { kind: "pool", accountId: "pool-a", generation: 1, accessToken: "pool-token", chatgptAccountId: "pool_acc" },
     );
 
     await runWebSearch(
@@ -151,7 +151,7 @@ describe("sidecar abort propagation", () => {
     }) as typeof fetch;
     const selectedHeaders = headersForCodexAuthContext(
       new Headers({ authorization: "Bearer main-token", "chatgpt-account-id": "main_acc" }),
-      { kind: "pool", accountId: "pool-a", accessToken: "pool-token", chatgptAccountId: "pool_acc" },
+      { kind: "pool", accountId: "pool-a", generation: 1, accessToken: "pool-token", chatgptAccountId: "pool_acc" },
     );
 
     await describeImage(

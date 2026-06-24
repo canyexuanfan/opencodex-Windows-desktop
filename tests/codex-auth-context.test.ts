@@ -6,9 +6,16 @@ import {
   headersForCodexAuthContext,
   isCodexAuthContextUsable,
   resolveCodexAuthContext,
+  shouldMarkAccountNeedsReauthForCodexAuthFailure,
   stripCodexRuntimeProviderFields,
 } from "../src/codex-auth-context";
-import { getCodexAccountCredential, removeCodexAccountCredential, saveCodexAccountCredential } from "../src/codex-account-store";
+import {
+  CodexCredentialGenerationConflictError,
+  CodexCredentialRefreshLockTimeoutError,
+  getCodexAccountCredential,
+  removeCodexAccountCredential,
+  saveCodexAccountCredential,
+} from "../src/codex-account-store";
 import { clearAccountNeedsReauth, isAccountNeedsReauth } from "../src/codex-auth-api";
 import { clearThreadAccountMap } from "../src/codex-routing";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
@@ -68,6 +75,7 @@ describe("Codex auth context", () => {
     expect(ctx).toMatchObject({
       kind: "pool",
       accountId: "pool-a",
+      generation: 1,
       accessToken: "pool_token",
       chatgptAccountId: "pool_acc",
     });
@@ -76,7 +84,7 @@ describe("Codex auth context", () => {
   test("selected pool headers replace inbound main auth", () => {
     const headers = headersForCodexAuthContext(
       new Headers({ authorization: "Bearer main_token", "chatgpt-account-id": "main_acc", "openai-beta": "responses=experimental" }),
-      { kind: "pool", accountId: "pool-a", accessToken: "pool_token", chatgptAccountId: "pool_acc" },
+      { kind: "pool", accountId: "pool-a", generation: 1, accessToken: "pool_token", chatgptAccountId: "pool_acc" },
     );
 
     expect(headers.get("authorization")).toBe("Bearer pool_token");
@@ -129,8 +137,14 @@ describe("Codex auth context", () => {
     }
   });
 
+  test("reauth marking is reserved for real token failures", () => {
+    expect(shouldMarkAccountNeedsReauthForCodexAuthFailure(new CodexCredentialGenerationConflictError())).toBe(false);
+    expect(shouldMarkAccountNeedsReauthForCodexAuthFailure(new CodexCredentialRefreshLockTimeoutError())).toBe(false);
+    expect(shouldMarkAccountNeedsReauthForCodexAuthFailure(new Error("bad token"))).toBe(true);
+  });
+
   test("runtime provider metadata is applied only to forward provider copies", () => {
-    const ctx = { kind: "pool" as const, accountId: "pool-a", accessToken: "pool_token", chatgptAccountId: "pool_acc" };
+    const ctx = { kind: "pool" as const, accountId: "pool-a", generation: 1, accessToken: "pool_token", chatgptAccountId: "pool_acc" };
     const runtimeForward = applyCodexAuthContextToProvider(forwardProvider, ctx);
     expect(runtimeForward).toMatchObject({
       _codexAccountRequired: true,
@@ -158,7 +172,7 @@ describe("Codex auth context", () => {
 
   test("auth context usability follows account lifecycle state", () => {
     const cfg = config();
-    const ctx = { kind: "pool" as const, accountId: "pool-a", accessToken: "pool_token", chatgptAccountId: "pool_acc" };
+    const ctx = { kind: "pool" as const, accountId: "pool-a", generation: 1, accessToken: "pool_token", chatgptAccountId: "pool_acc" };
 
     expect(isCodexAuthContextUsable({ kind: "main", accountId: null }, cfg)).toBe(true);
     expect(isCodexAuthContextUsable(ctx, cfg)).toBe(false);
@@ -171,8 +185,19 @@ describe("Codex auth context", () => {
     });
     expect(isCodexAuthContextUsable(ctx, cfg)).toBe(true);
 
-    removeCodexAccountCredential("pool-a");
+    saveCodexAccountCredential("pool-a", {
+      accessToken: "replacement_token",
+      refreshToken: "replacement_refresh",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "pool_acc",
+    });
     expect(isCodexAuthContextUsable(ctx, cfg)).toBe(false);
+
+    const replacementCtx = { ...ctx, generation: 2, accessToken: "replacement_token" };
+    expect(isCodexAuthContextUsable(replacementCtx, cfg)).toBe(true);
+
+    removeCodexAccountCredential("pool-a");
+    expect(isCodexAuthContextUsable(replacementCtx, cfg)).toBe(false);
 
     saveCodexAccountCredential("pool-a", {
       accessToken: "pool_token",
@@ -181,6 +206,6 @@ describe("Codex auth context", () => {
       chatgptAccountId: "pool_acc",
     });
     cfg.codexAccounts = cfg.codexAccounts?.filter(account => account.id !== "pool-a");
-    expect(isCodexAuthContextUsable(ctx, cfg)).toBe(false);
+    expect(isCodexAuthContextUsable({ ...ctx, generation: 4 }, cfg)).toBe(false);
   });
 });

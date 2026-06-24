@@ -1,9 +1,15 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, rmSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-accounts-test");
 const ACCOUNTS_PATH = join(TEST_DIR, "codex-accounts.json");
+
+function refreshLockPath(id: string): string {
+  const digest = createHash("sha256").update(id).digest("hex").slice(0, 32);
+  return join(TEST_DIR, `codex-refresh-${digest}.lock`);
+}
 
 describe("codex-account-store CRUD", () => {
   beforeEach(() => {
@@ -83,6 +89,7 @@ describe("codex-account-store CRUD", () => {
     const result = await getValidCodexToken("fresh");
     expect(result.accessToken).toBe("valid_tk");
     expect(result.chatgptAccountId).toBe("acc_id");
+    expect(result.generation).toBe(1);
   });
 
   test("getValidCodexToken throws when account not found", async () => {
@@ -107,6 +114,76 @@ describe("codex-account-store CRUD", () => {
     expect(readCodexAccountRecord("cas")!.generation).toBe(generation + 1);
     expect(saveCodexAccountCredentialIfGeneration("cas", generation, first)).toBe(false);
     expect(getCodexAccountCredential("cas")).toEqual(second);
+  });
+
+  test("successful refresh returns bumped generation and persists rotated refresh token", async () => {
+    const {
+      getCodexAccountCredential,
+      getValidCodexToken,
+      readCodexAccountRecord,
+      saveCodexAccountCredential,
+    } = await import("../src/codex-account-store");
+    saveCodexAccountCredential("refresh-success", { accessToken: "old", refreshToken: "old-r", expiresAt: 0, chatgptAccountId: "acc" });
+    const startGeneration = readCodexAccountRecord("refresh-success")!.generation;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      access_token: "new",
+      refresh_token: "new-r",
+      expires_in: 3600,
+    }), { status: 200 })) as typeof fetch;
+
+    try {
+      const result = await getValidCodexToken("refresh-success");
+      expect(result).toEqual({ accessToken: "new", chatgptAccountId: "acc", generation: startGeneration + 1 });
+      expect(getCodexAccountCredential("refresh-success")).toMatchObject({ accessToken: "new", refreshToken: "new-r" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("refresh waits behind file lock and reuses credential refreshed by another process", async () => {
+    const {
+      getValidCodexToken,
+      saveCodexAccountCredential,
+    } = await import("../src/codex-account-store");
+    saveCodexAccountCredential("refresh-wait", { accessToken: "old", refreshToken: "old-r", expiresAt: 0, chatgptAccountId: "acc" });
+    const lockPath = refreshLockPath("refresh-wait");
+    writeFileSync(lockPath, JSON.stringify({ acquiredAt: Date.now(), pid: 12345 }) + "\n");
+    const refreshed = { accessToken: "other-process", refreshToken: "other-r", expiresAt: Date.now() + 3600_000, chatgptAccountId: "acc" };
+    const release = setTimeout(() => {
+      saveCodexAccountCredential("refresh-wait", refreshed);
+      unlinkSync(lockPath);
+    }, 20);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new Error("fetch should not be called after another process refreshed");
+    }) as typeof fetch;
+
+    try {
+      const result = await getValidCodexToken("refresh-wait");
+      expect(result.accessToken).toBe("other-process");
+      expect(result.chatgptAccountId).toBe("acc");
+      expect(result.generation).toBe(2);
+    } finally {
+      clearTimeout(release);
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("stale refresh lock is reclaimed", async () => {
+    const { getValidCodexToken, saveCodexAccountCredential } = await import("../src/codex-account-store");
+    saveCodexAccountCredential("refresh-stale-lock", { accessToken: "old", refreshToken: "old-r", expiresAt: 0, chatgptAccountId: "acc" });
+    writeFileSync(refreshLockPath("refresh-stale-lock"), JSON.stringify({ acquiredAt: Date.now() - 61_000, pid: 12345 }) + "\n");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ access_token: "new", expires_in: 3600 }), { status: 200 })) as typeof fetch;
+
+    try {
+      const result = await getValidCodexToken("refresh-stale-lock");
+      expect(result.accessToken).toBe("new");
+      expect(result.generation).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   test("stale generation cannot overwrite replacement", async () => {

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import type { ServerWebSocket } from "bun";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -12,7 +13,13 @@ import {
   recordCodexUpstreamOutcome,
   resolveCodexAccountForThread,
 } from "../src/codex-routing";
+import {
+  clearCodexWebSocketRegistry,
+  getTrackedCodexWebSocketCountForAccount,
+  registerCodexWebSocket,
+} from "../src/codex-websocket-registry";
 import type { OcxConfig } from "../src/types";
+import type { WsData } from "../src/ws-bridge";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-auth-api-test");
 const TEST_CODEX_HOME = join(TEST_DIR, "codex");
@@ -37,10 +44,12 @@ beforeEach(() => {
   process.env.OPENCODEX_HOME = TEST_DIR;
   process.env.CODEX_HOME = TEST_CODEX_HOME;
   clearAccountQuota();
+  clearCodexWebSocketRegistry();
 });
 
 afterEach(() => {
   clearAccountQuota();
+  clearCodexWebSocketRegistry();
   if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousOpencodexHome;
   if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
@@ -338,6 +347,27 @@ describe("codex-auth API", () => {
     recordCodexUpstreamOutcome(config, "pool-delete", 500);
     expect(getCodexUpstreamHealth("pool-delete")).not.toBeNull();
     markAccountNeedsReauth("pool-delete");
+    const closed: { code?: number; reason?: string }[] = [];
+    let cancelled = false;
+    const ws = {
+      data: {
+        authContext: {
+          kind: "pool",
+          accountId: "pool-delete",
+          generation: 1,
+          accessToken: "access-delete",
+          chatgptAccountId: "acct-delete",
+        },
+        cancel: () => {
+          cancelled = true;
+        },
+      } as WsData,
+      close: (code?: number, reason?: string) => {
+        closed.push({ code, reason });
+      },
+    } as unknown as ServerWebSocket<WsData>;
+    registerCodexWebSocket(ws);
+    expect(getTrackedCodexWebSocketCountForAccount("pool-delete")).toBe(1);
 
     const req = new Request("http://localhost/api/codex-auth/accounts?id=pool-delete", { method: "DELETE" });
     const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
@@ -350,6 +380,9 @@ describe("codex-auth API", () => {
     expect(isAccountNeedsReauth("pool-delete")).toBe(false);
     expect(getCodexUpstreamHealth("pool-delete")).toBeNull();
     expect(resolveCodexAccountForThread("delete-thread", config)).toBeNull();
+    expect(cancelled).toBe(true);
+    expect(closed).toEqual([{ code: 4001, reason: "Codex account invalidated" }]);
+    expect(getTrackedCodexWebSocketCountForAccount("pool-delete")).toBe(0);
   });
 
   test("GET /api/codex-auth/login-status returns idle by default", async () => {

@@ -50,6 +50,7 @@ import {
   formatCodexProviderForLog,
   recordCodexUpstreamOutcome,
 } from "./codex-routing";
+import { registerCodexWebSocket, unregisterCodexWebSocket } from "./codex-websocket-registry";
 
 // Single source of truth = package.json (../ from src/), so /healthz + the GUI badge match the
 // installed npm version instead of a stale hardcode.
@@ -896,6 +897,9 @@ export function startServer(port?: number) {
       // Responses WebSocket data plane (phase 120.2). Re-frames the same SSE pipeline onto the
       // socket: parse response.create → run handleResponses unchanged → pump its SSE body as WS
       // Text frames. response.processed is a no-op ack. close() aborts the upstream (RC2 parity).
+      open(ws: ServerWebSocket<WsData>) {
+        registerCodexWebSocket(ws);
+      },
       message(ws: ServerWebSocket<WsData>, raw: string | Buffer) {
         let frame: Record<string, unknown>;
         try {
@@ -960,6 +964,7 @@ export function startServer(port?: number) {
         })();
       },
       close(ws: ServerWebSocket<WsData>) {
+        unregisterCodexWebSocket(ws);
         ws.data.cancel?.(); // RC2: abort the upstream when the client disconnects
       },
     },

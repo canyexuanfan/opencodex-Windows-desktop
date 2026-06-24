@@ -2,6 +2,7 @@ import { removeCodexAccountCredential } from "./codex-account-store";
 import { clearAccountNeedsReauth } from "./codex-account-runtime-state";
 import { clearAccountQuota } from "./codex-quota";
 import { clearCodexUpstreamHealthForAccount, clearThreadAccountMapForAccount } from "./codex-routing";
+import { invalidateCodexWebSocketsForAccount } from "./codex-websocket-registry";
 import type { OcxConfig } from "./types";
 
 export function purgeCodexAccountRuntimeState(accountId: string): void {
@@ -16,4 +17,5 @@ export function deleteCodexAccount(runtimeConfig: OcxConfig, accountId: string):
   runtimeConfig.codexAccounts = (runtimeConfig.codexAccounts ?? []).filter(account => account.id !== accountId);
   if (runtimeConfig.activeCodexAccountId === accountId) runtimeConfig.activeCodexAccountId = undefined;
   purgeCodexAccountRuntimeState(accountId);
+  invalidateCodexWebSocketsForAccount(accountId);
 }

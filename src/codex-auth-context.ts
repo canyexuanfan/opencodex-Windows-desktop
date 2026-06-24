@@ -1,4 +1,9 @@
-import { CodexCredentialGenerationConflictError, getValidCodexToken } from "./codex-account-store";
+import {
+  CodexCredentialGenerationConflictError,
+  CodexCredentialRefreshLockTimeoutError,
+  getValidCodexToken,
+  isCodexAccountGenerationLive,
+} from "./codex-account-store";
 import { markAccountNeedsReauth } from "./codex-account-runtime-state";
 import { isCodexAccountUsable } from "./codex-account-usability";
 import { resolveCodexAccountForThread } from "./codex-routing";
@@ -10,6 +15,7 @@ export type CodexAuthContext =
   | {
       kind: "pool";
       accountId: string;
+      generation: number;
       accessToken: string;
       chatgptAccountId: string;
     };
@@ -29,6 +35,10 @@ export class CodexAuthContextError extends Error {
   }
 }
 
+export function shouldMarkAccountNeedsReauthForCodexAuthFailure(cause: unknown): boolean {
+  return !(cause instanceof CodexCredentialGenerationConflictError) && !(cause instanceof CodexCredentialRefreshLockTimeoutError);
+}
+
 export async function resolveCodexAuthContext(headers: Headers, config: OcxConfig): Promise<CodexAuthContext> {
   const threadId = headers.get("x-codex-parent-thread-id");
   const accountId = resolveCodexAccountForThread(threadId, config);
@@ -39,11 +49,12 @@ export async function resolveCodexAuthContext(headers: Headers, config: OcxConfi
     return {
       kind: "pool",
       accountId,
+      generation: token.generation,
       accessToken: token.accessToken,
       chatgptAccountId: token.chatgptAccountId,
     };
   } catch (cause) {
-    if (!(cause instanceof CodexCredentialGenerationConflictError)) {
+    if (shouldMarkAccountNeedsReauthForCodexAuthFailure(cause)) {
       markAccountNeedsReauth(accountId);
     }
     throw new CodexAuthContextError(accountId, cause);
@@ -80,7 +91,7 @@ export function headersForCodexAuthContext(headers: Headers, ctx: CodexAuthConte
 
 export function isCodexAuthContextUsable(ctx: CodexAuthContext, config: OcxConfig): boolean {
   if (ctx.kind === "main") return true;
-  return isCodexAccountUsable(config, ctx.accountId);
+  return isCodexAccountUsable(config, ctx.accountId) && isCodexAccountGenerationLive(ctx.accountId, ctx.generation);
 }
 
 export function stripCodexRuntimeProviderFields(provider: OcxProviderConfig): OcxProviderConfig {
