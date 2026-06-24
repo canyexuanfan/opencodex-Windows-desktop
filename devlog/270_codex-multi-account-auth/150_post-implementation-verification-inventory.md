@@ -1,5 +1,7 @@
 # 150 - Post-Implementation Verification Inventory
 
+> Superseded security note (2026-06-25): This document predates the 280 security patch plan and Phase 10-60 hardening. Treat release-readiness, full-email UI, ordinal request-log labels, unauthenticated management API, fail-open fallback, and earlier account-boundary claims here as historical only. Current merge/deploy evidence is tracked under `devlog/280_codex-multi-auth-security-patch-plan/` and `devlog/_plan/260624_codex-multi-auth-security-implementation/`.
+
 Date: 2026-06-24
 
 Purpose: document the code-level fixes made during the Codex Auth hardening pass before entering a formal PABCD verification cycle.

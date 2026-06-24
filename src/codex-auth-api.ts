@@ -1,4 +1,5 @@
 import { loadConfig, saveConfig } from "./config";
+import { withCodexAccountLogLabel } from "./codex-account-label";
 import {
   getCodexAccountCredential,
   getValidCodexToken,
@@ -23,6 +24,8 @@ import {
 } from "./codex-quota";
 export { clearAccountQuota, getAccountQuota, parseUsageQuota, updateAccountQuota } from "./codex-quota";
 import { extractAccountId, decodeJwtPayload } from "./oauth/chatgpt";
+import { maskEmail } from "./privacy";
+export { maskEmail } from "./privacy";
 import type { OcxConfig } from "./types";
 
 function jsonResponse(data: unknown, status = 200): Response {
@@ -46,18 +49,6 @@ function manualImportDisabledResponse(): Response {
     error: "Manual Codex account import is disabled. Use OAuth login to add a pool account.",
     code: "manual_import_disabled",
   }, 403);
-}
-
-export function maskEmail(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const at = value.indexOf("@");
-  if (at <= 0) return value;
-  const local = value.slice(0, at);
-  const domain = value.slice(at + 1);
-  if (!domain) return value;
-  if (local.length === 1) return `*@${domain}`;
-  if (local.length === 2) return `${local[0]}*@${domain}`;
-  return `${local[0]}***${local[local.length - 1]}@${domain}`;
 }
 
 function expireCodexAuthFlow(flowId: string | null, error = "Login cancelled"): void {
@@ -238,7 +229,7 @@ export async function handleCodexAuthAPI(
       chatgptAccountId: derivedAccountId,
     });
     clearAccountNeedsReauth(body.id);
-    accounts.push({ id: body.id, email: body.email, plan: body.plan, isMain: false });
+    accounts.push(withCodexAccountLogLabel({ id: body.id, email: body.email, plan: body.plan, isMain: false }, accounts));
     runtimeConfig.codexAccounts = accounts;
     saveRuntimeConfig(config, runtimeConfig);
     return jsonResponse({ ok: true });
@@ -389,7 +380,7 @@ export async function handleCodexAuthAPI(
               const latestConfig = getRuntimeConfig(config);
               const accounts = latestConfig.codexAccounts ?? [];
               if (!accounts.find(a => a.id === accountId)) {
-                accounts.push({ id: accountId, email, plan, isMain: false });
+                accounts.push(withCodexAccountLogLabel({ id: accountId, email, plan, isMain: false }, accounts));
                 latestConfig.codexAccounts = accounts;
                 saveRuntimeConfig(config, latestConfig);
               }
@@ -442,11 +433,11 @@ export async function handleCodexAuthAPI(
       if (!st && accountId && getCodexAccountCredential(accountId)) {
         return jsonResponse({ status: "done", accountId });
       }
-      return jsonResponse(st ?? { status: "expired" });
+      return jsonResponse(st ? { ...st, email: maskEmail(st.email) ?? undefined } : { status: "expired" });
     }
     // Legacy fallback: return latest pending flow
     for (const [, st] of codexAuthLoginState) {
-      if (st.status === "pending") return jsonResponse(st);
+      if (st.status === "pending") return jsonResponse({ ...st, email: maskEmail(st.email) ?? undefined });
     }
     return jsonResponse({ status: "idle" });
   }

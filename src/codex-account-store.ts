@@ -234,7 +234,7 @@ async function withCodexRefreshFileLock<T>(id: string, fn: () => Promise<T>): Pr
 export async function getValidCodexToken(id: string): Promise<CodexTokenResult> {
   const record = readCodexAccountRecord(id);
   const cred = record?.deletedAt == null ? record?.credential : undefined;
-  if (!record || !cred) throw new Error(`Codex account not found: ${id}`);
+  if (!record || !cred) throw new Error("Codex account credential is unavailable; reauthenticate the account.");
 
   if (cred.expiresAt > Date.now() + REFRESH_SKEW_MS) {
     return { accessToken: cred.accessToken, chatgptAccountId: cred.chatgptAccountId, generation: record.generation };
@@ -275,7 +275,7 @@ export async function getValidCodexToken(id: string): Promise<CodexTokenResult> 
       const reason = errDesc.includes("invalidated") || errDesc.includes("revoked") ? "revoked" as const
         : errDesc.includes("expired") ? "expired" as const
         : "unknown" as const;
-      throw new TokenRefreshError(reason, `Token refresh failed for ${id}: ${errDesc}`);
+      throw new TokenRefreshError(reason, `Codex token refresh failed (${reason}); reauthenticate the account.`);
     }
     const data = (await res.json()) as { access_token: string; refresh_token?: string; expires_in: number };
 

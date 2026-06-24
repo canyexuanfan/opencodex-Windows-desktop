@@ -1,4 +1,5 @@
 import { saveConfig } from "./config";
+import { codexAccountLogLabel } from "./codex-account-label";
 import { isCodexAccountUsable } from "./codex-account-usability";
 import { isAccountNeedsReauth, markAccountNeedsReauth } from "./codex-account-runtime-state";
 import { CODEX_UNKNOWN_USAGE_SCORE, getAccountQuota } from "./codex-quota";
@@ -295,6 +296,6 @@ export function recordCodexUpstreamOutcome(
 
 export function formatCodexProviderForLog(providerName: string, accountId: string | null, config: OcxConfig): string {
   if (!accountId) return providerName;
-  const poolIndex = (config.codexAccounts ?? []).filter(a => !a.isMain).findIndex(a => a.id === accountId);
-  return poolIndex >= 0 ? `${providerName}-${poolIndex + 1}` : providerName;
+  const account = (config.codexAccounts ?? []).find(a => !a.isMain && a.id === accountId);
+  return account ? `${providerName}-${codexAccountLogLabel(account)}` : providerName;
 }

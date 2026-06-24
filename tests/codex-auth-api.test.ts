@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ServerWebSocket } from "bun";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { CODEX_ACCOUNT_LOG_LABEL_RE } from "../src/codex-account-label";
 import {
   handleCodexAuthAPI, updateAccountQuota, getAccountQuota,
   checkAccountIdCollision, getMainChatgptAccountId,
@@ -407,6 +408,7 @@ describe("codex-auth API", () => {
 
     expect(resp!.status).toBe(200);
     expect(config.codexAccounts?.map(a => a.id)).toEqual(["manual-enabled"]);
+    expect(config.codexAccounts?.[0]?.logLabel).toMatch(CODEX_ACCOUNT_LOG_LABEL_RE);
     expect(getCodexAccountCredential("manual-enabled")).toMatchObject({
       accessToken: "access-manual-test",
       refreshToken: "refresh-manual-test",
@@ -658,6 +660,17 @@ describe("codex-auth API", () => {
     const source = await Bun.file("src/codex-auth-api.ts").text();
     expect(source).toContain("st.done && st.loggedIn");
     expect(source).toContain("Login timed out before OAuth completed.");
+  });
+
+  test("OAuth pool login stores a privacy log label at the account creation call site", async () => {
+    const source = await Bun.file("src/codex-auth-api.ts").text();
+    expect(source).toContain("withCodexAccountLogLabel({ id: accountId, email, plan, isMain: false }, accounts)");
+  });
+
+  test("GET /api/codex-auth/login-status masks transient flow-state emails at response boundaries", async () => {
+    const source = await Bun.file("src/codex-auth-api.ts").text();
+    expect(source).toContain("st ? { ...st, email: maskEmail(st.email) ?? undefined } : { status: \"expired\" }");
+    expect(source).toContain("return jsonResponse({ ...st, email: maskEmail(st.email) ?? undefined });");
   });
 
   test("GET /api/codex-auth/accounts reuses cached pool quota without fetching usage", async () => {

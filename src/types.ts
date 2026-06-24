@@ -299,6 +299,7 @@ export interface CodexAccount {
   email: string;
   plan?: string;
   chatgptAccountId?: string;
+  logLabel?: string;
   isMain: boolean;
 }
 

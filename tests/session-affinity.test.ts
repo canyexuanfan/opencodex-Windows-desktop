@@ -2,6 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { resolveCodexAccountForThread, clearThreadAccountMap, formatCodexProviderForLog } from "../src/codex-routing";
+import { CODEX_ACCOUNT_LOG_LABEL_RE, fallbackCodexAccountLogLabel } from "../src/codex-account-label";
 import { updateAccountQuota, clearAccountQuota } from "../src/codex-auth-api";
 import { saveCodexAccountCredential } from "../src/codex-account-store";
 import type { OcxConfig } from "../src/types";
@@ -147,16 +148,44 @@ describe("formatCodexProviderForLog", () => {
     expect(formatCodexProviderForLog("chatgpt", null, config)).toBe("chatgpt");
   });
 
-  test("labels pool accounts by safe 1-based ordinal", () => {
+  test("labels pool accounts by stable non-PII labels", () => {
     const config = makeConfig({
       codexAccounts: [
         { id: "main", email: "main@example.test", isMain: true },
-        { id: "pool-a", email: "pool-a@example.test", isMain: false },
-        { id: "pool-b", email: "pool-b@example.test", isMain: false },
+        { id: "pool-a", email: "pool-a@example.test", isMain: false, logLabel: "pabc123" },
+        { id: "pool-b", email: "pool-b@example.test", isMain: false, logLabel: "pdef456" },
       ],
     });
-    expect(formatCodexProviderForLog("chatgpt", "pool-a", config)).toBe("chatgpt-1");
-    expect(formatCodexProviderForLog("chatgpt", "pool-b", config)).toBe("chatgpt-2");
+    expect(formatCodexProviderForLog("chatgpt", "pool-a", config)).toBe("chatgpt-pabc123");
+    expect(formatCodexProviderForLog("chatgpt", "pool-b", config)).toBe("chatgpt-pdef456");
+  });
+
+  test("stable pool log labels do not change when accounts are reordered", () => {
+    const config = makeConfig({
+      codexAccounts: [
+        { id: "pool-a", email: "pool-a@example.test", isMain: false, logLabel: "pabc123" },
+        { id: "pool-b", email: "pool-b@example.test", isMain: false, logLabel: "pdef456" },
+      ],
+    });
+    const reordered = makeConfig({
+      codexAccounts: [...(config.codexAccounts ?? [])].reverse(),
+    });
+
+    expect(formatCodexProviderForLog("chatgpt", "pool-a", config)).toBe("chatgpt-pabc123");
+    expect(formatCodexProviderForLog("chatgpt", "pool-a", reordered)).toBe("chatgpt-pabc123");
+  });
+
+  test("accounts without stored log labels use stable pseudonymous fallback labels", () => {
+    const config = makeConfig({
+      codexAccounts: [
+        { id: "raw-local-account-id", email: "raw@example.test", isMain: false },
+      ],
+    });
+    const label = formatCodexProviderForLog("chatgpt", "raw-local-account-id", config);
+
+    expect(label).toBe(`chatgpt-${fallbackCodexAccountLogLabel("raw-local-account-id")}`);
+    expect(label.replace("chatgpt-", "")).toMatch(CODEX_ACCOUNT_LOG_LABEL_RE);
+    expect(label).not.toContain("raw-local-account-id");
   });
 
   test("keeps base provider for unknown account ids", () => {

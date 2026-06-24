@@ -1,6 +1,7 @@
 import type { OAuthController, OAuthCredentials } from "./types";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 import { loadConfig, resolveEnvValue, saveConfig } from "../config";
+import { maskEmail } from "../privacy";
 import { getCredential, saveCredential } from "./store";
 import { loginXai, refreshXaiToken } from "./xai";
 import { ANTHROPIC_OAUTH_BETA, loginAnthropic, refreshAnthropicToken } from "./anthropic";
@@ -209,7 +210,7 @@ const loginAbort = new Map<string, AbortController>();
 export function getLoginStatus(provider: string): { loggedIn: boolean; email?: string; error?: string; done: boolean } {
   const cred = getCredential(provider);
   const st = loginState.get(provider);
-  return { loggedIn: !!cred, email: cred?.email, error: st?.error, done: st?.done ?? false };
+  return { loggedIn: !!cred, email: maskEmail(cred?.email) ?? undefined, error: st?.error, done: st?.done ?? false };
 }
 
 export function clearLoginState(provider: string): void {

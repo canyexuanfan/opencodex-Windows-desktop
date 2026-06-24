@@ -1,0 +1,39 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { getLoginStatus } from "../src/oauth/index";
+import { saveCredential } from "../src/oauth/store";
+
+const TEST_DIR = join(import.meta.dir, ".tmp-oauth-status-privacy-test");
+let previousOpencodexHome: string | undefined;
+
+describe("OAuth status privacy", () => {
+  beforeEach(() => {
+    previousOpencodexHome = process.env.OPENCODEX_HOME;
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+  });
+
+  afterEach(() => {
+    if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
+    else process.env.OPENCODEX_HOME = previousOpencodexHome;
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+  });
+
+  test("getLoginStatus returns a masked provider email", () => {
+    saveCredential("xai", {
+      access: "access-token",
+      refresh: "refresh-token",
+      expires: Date.now() + 60_000,
+      email: "person@example.test",
+      accountId: "acct-xai",
+    });
+
+    const status = getLoginStatus("xai");
+
+    expect(status.loggedIn).toBe(true);
+    expect(status.email).toBe("p***n@example.test");
+    expect(JSON.stringify(status)).not.toContain("person@example.test");
+  });
+});

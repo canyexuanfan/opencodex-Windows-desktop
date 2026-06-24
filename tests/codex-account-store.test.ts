@@ -94,7 +94,50 @@ describe("codex-account-store CRUD", () => {
 
   test("getValidCodexToken throws when account not found", async () => {
     const { getValidCodexToken } = await import("../src/codex-account-store");
-    expect(getValidCodexToken("nonexistent")).rejects.toThrow("not found");
+    try {
+      await getValidCodexToken("nonexistent-local-alias");
+      throw new Error("expected getValidCodexToken to reject");
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toContain("credential is unavailable");
+      expect((err as Error).message).not.toContain("nonexistent-local-alias");
+    }
+  });
+
+  test("refresh failure errors do not expose aliases or upstream descriptions", async () => {
+    const {
+      getValidCodexToken,
+      saveCodexAccountCredential,
+      TokenRefreshError,
+    } = await import("../src/codex-account-store");
+    saveCodexAccountCredential("sensitive-local-alias", {
+      accessToken: "sensitive-access-token",
+      refreshToken: "sensitive-refresh-token",
+      expiresAt: 0,
+      chatgptAccountId: "sensitive-account-id",
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      error: "invalid_grant",
+      error_description: "sensitive-refresh-token was revoked for sensitive-account-id",
+    }), { status: 400 })) as typeof fetch;
+
+    try {
+      await getValidCodexToken("sensitive-local-alias");
+      throw new Error("expected getValidCodexToken to reject");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TokenRefreshError);
+      const message = (err as Error).message;
+      expect(message).toContain("Codex token refresh failed");
+      expect(message).not.toContain("sensitive-local-alias");
+      expect(message).not.toContain("sensitive-access-token");
+      expect(message).not.toContain("sensitive-refresh-token");
+      expect(message).not.toContain("sensitive-account-id");
+      expect(message).not.toContain("invalid_grant");
+      expect(message).not.toContain("revoked for");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   test("generation CAS accepts only the current live generation", async () => {
