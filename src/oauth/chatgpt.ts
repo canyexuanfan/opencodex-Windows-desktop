@@ -6,8 +6,8 @@ const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTH_URL = "https://auth.openai.com/oauth/authorize";
 const TOKEN_URL = "https://auth.openai.com/oauth/token";
 const SCOPE = "openid profile email offline_access";
-const CALLBACK_PORT = 19191;
-const CALLBACK_PATH = "/callback";
+const CALLBACK_PORT = 1455;
+const CALLBACK_PATH = "/auth/callback";
 const ORIGINATOR = "opencodex";
 
 export function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
@@ -65,9 +65,9 @@ export class ChatGPTOAuthFlow extends OAuthCallbackFlow {
     super(ctrl, {
       preferredPort: CALLBACK_PORT,
       callbackPath: CALLBACK_PATH,
-      callbackHostname: "127.0.0.1",
+      callbackHostname: "localhost",
       callbackBindHostname: "127.0.0.1",
-      redirectUri: `http://127.0.0.1:${CALLBACK_PORT}${CALLBACK_PATH}`,
+      redirectUri: `http://localhost:${CALLBACK_PORT}${CALLBACK_PATH}`,
     });
   }
 
