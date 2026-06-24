@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { handleCodexAuthAPI } from "../src/codex-auth-api";
+import { saveCodexAccountCredential } from "../src/codex-account-store";
+import { checkAccountIdCollision } from "../src/codex-auth-api";
+import { saveConfig } from "../src/config";
+import type { OcxConfig } from "../src/types";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-auth-collision-test");
 const TEST_CODEX_HOME = join(TEST_DIR, "codex");
@@ -25,37 +28,39 @@ afterEach(() => {
   if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
 });
 
-async function addAccount(id: string, email: string, chatgptAccountId: string): Promise<Response> {
-  const req = new Request("http://localhost/api/codex-auth/accounts", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      id,
-      email,
-      accessToken: `access-${id}`,
-      refreshToken: `refresh-${id}`,
-      chatgptAccountId,
-    }),
+function seedAccount(id: string, email: string, chatgptAccountId: string): OcxConfig {
+  const config: OcxConfig = {
+    port: 10100,
+    providers: {},
+    defaultProvider: "openai",
+    codexAccounts: [{ id, email, isMain: false }],
+  };
+  saveConfig(config);
+  saveCodexAccountCredential(id, {
+    accessToken: `access-${id}`,
+    refreshToken: `refresh-${id}`,
+    expiresAt: Date.now() + 5 * 60_000,
+    chatgptAccountId,
   });
-  return (await handleCodexAuthAPI(req, new URL(req.url), {} as never))!;
+  return config;
 }
 
 describe("codex auth account collision", () => {
   test("allows different team members that share a ChatGPT account id", async () => {
-    const first = await addAccount("team-member-a", "member-a@example.test", "shared-team-account");
-    expect(first.status).toBe(200);
+    seedAccount("team-member-a", "member-a@example.test", "shared-team-account");
 
-    const second = await addAccount("team-member-b", "member-b@example.test", "shared-team-account");
-    expect(second.status).toBe(200);
+    expect(checkAccountIdCollision("shared-team-account", "member-b@example.test")).toEqual({
+      collision: false,
+    });
   });
 
   test("rejects the same team member added twice", async () => {
-    const first = await addAccount("team-member-a", "member-a@example.test", "shared-team-account");
-    expect(first.status).toBe(200);
+    seedAccount("team-member-a", "member-a@example.test", "shared-team-account");
 
-    const duplicate = await addAccount("team-member-a-copy", "MEMBER-A@example.test", "shared-team-account");
-    expect(duplicate.status).toBe(400);
-    const data = await duplicate.json() as { error: string };
-    expect(data.error).toContain("Account is already in the pool");
+    const result = checkAccountIdCollision("shared-team-account", "MEMBER-A@example.test");
+    expect(result.collision).toBe(true);
+    if (result.collision) {
+      expect(result.reason).toContain("Account is already in the pool");
+    }
   });
 });

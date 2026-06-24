@@ -24,8 +24,10 @@ import type { WsData } from "../src/ws-bridge";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-auth-api-test");
 const TEST_CODEX_HOME = join(TEST_DIR, "codex");
+const MANUAL_IMPORT_ENV = "OPENCODEX_ENABLE_UNVERIFIED_CODEX_IMPORT";
 let previousOpencodexHome: string | undefined;
 let previousCodexHome: string | undefined;
+let previousManualImportEnv: string | undefined;
 
 function makeConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
   return {
@@ -37,13 +39,54 @@ function makeConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
   };
 }
 
+function enableManualImport(): void {
+  process.env[MANUAL_IMPORT_ENV] = "1";
+}
+
+function manualImportBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "manual-test",
+    email: "manual-test@example.test",
+    accessToken: "access-manual-test",
+    refreshToken: "refresh-manual-test",
+    chatgptAccountId: "acct-manual-test",
+    ...overrides,
+  };
+}
+
+function seedPoolAccount(
+  config: OcxConfig,
+  account: {
+    id: string;
+    email: string;
+    plan?: string;
+    accessToken?: string;
+    refreshToken?: string;
+    chatgptAccountId?: string;
+    expiresAt?: number;
+  },
+): void {
+  config.codexAccounts = [
+    ...(config.codexAccounts ?? []),
+    { id: account.id, email: account.email, plan: account.plan, isMain: false },
+  ];
+  saveCodexAccountCredential(account.id, {
+    accessToken: account.accessToken ?? `access-${account.id}`,
+    refreshToken: account.refreshToken ?? `refresh-${account.id}`,
+    expiresAt: account.expiresAt ?? Date.now() + 5 * 60_000,
+    chatgptAccountId: account.chatgptAccountId ?? `acct-${account.id}`,
+  });
+}
+
 beforeEach(() => {
   previousOpencodexHome = process.env.OPENCODEX_HOME;
   previousCodexHome = process.env.CODEX_HOME;
+  previousManualImportEnv = process.env[MANUAL_IMPORT_ENV];
   if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
   mkdirSync(TEST_CODEX_HOME, { recursive: true });
   process.env.OPENCODEX_HOME = TEST_DIR;
   process.env.CODEX_HOME = TEST_CODEX_HOME;
+  delete process.env[MANUAL_IMPORT_ENV];
   clearAccountQuota();
   clearCodexWebSocketRegistry();
 });
@@ -55,6 +98,8 @@ afterEach(() => {
   else process.env.OPENCODEX_HOME = previousOpencodexHome;
   if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
   else process.env.CODEX_HOME = previousCodexHome;
+  if (previousManualImportEnv === undefined) delete process.env[MANUAL_IMPORT_ENV];
+  else process.env[MANUAL_IMPORT_ENV] = previousManualImportEnv;
   if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
 });
 
@@ -97,7 +142,35 @@ describe("codex-auth API", () => {
     expect(data.accounts.find(a => a.id === "pool-mask")?.email).toBe("p***n@example.test");
   });
 
-  test("POST /api/codex-auth/accounts rejects missing fields", async () => {
+  test("POST /api/codex-auth/accounts disables manual import by default before writing credentials", async () => {
+    const req = new Request("http://localhost/api/codex-auth/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(manualImportBody({ id: "manual-disabled" })),
+    });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), {} as any);
+    const body = await resp!.json() as { error: string; code: string };
+
+    expect(resp!.status).toBe(403);
+    expect(body.code).toBe("manual_import_disabled");
+    expect(getCodexAccountCredential("manual-disabled")).toBeNull();
+  });
+
+  test("POST /api/codex-auth/accounts returns manual-import disabled before parsing JSON", async () => {
+    const req = new Request("http://localhost/api/codex-auth/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "not json",
+    });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), {} as any);
+    const body = await resp!.json() as { code: string };
+
+    expect(resp!.status).toBe(403);
+    expect(body.code).toBe("manual_import_disabled");
+  });
+
+  test("POST /api/codex-auth/accounts rejects missing fields when manual import is explicitly enabled", async () => {
+    enableManualImport();
     const req = new Request("http://localhost/api/codex-auth/accounts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -108,7 +181,8 @@ describe("codex-auth API", () => {
     expect(resp!.status).toBe(400);
   });
 
-  test("POST /api/codex-auth/accounts rejects oversized input", async () => {
+  test("POST /api/codex-auth/accounts rejects oversized input when manual import is explicitly enabled", async () => {
+    enableManualImport();
     const req = new Request("http://localhost/api/codex-auth/accounts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -181,19 +255,14 @@ describe("codex-auth API", () => {
   });
 
   test("GET /api/codex-auth/accounts fetches pool quota when cache is empty", async () => {
-    const createReq = new Request("http://localhost/api/codex-auth/accounts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        id: "pool-visible",
-        email: "pool-visible@example.com",
-        accessToken: "tok",
-        refreshToken: "ref",
-        chatgptAccountId: "acc-pool-visible",
-      }),
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "pool-visible",
+      email: "pool-visible@example.com",
+      accessToken: "tok",
+      refreshToken: "ref",
+      chatgptAccountId: "acc-pool-visible",
     });
-    const createResp = await handleCodexAuthAPI(createReq, new URL(createReq.url), {} as any);
-    expect(createResp!.status).toBe(200);
 
     const originalFetch = globalThis.fetch;
     let calls = 0;
@@ -212,7 +281,7 @@ describe("codex-auth API", () => {
 
     try {
       const req = new Request("http://localhost/api/codex-auth/accounts", { method: "GET" });
-      const resp = await handleCodexAuthAPI(req, new URL(req.url), {} as any);
+      const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
       expect(resp!.status).toBe(200);
       const data = await resp!.json() as { accounts: { id: string; quota: unknown; needsReauth?: boolean }[] };
       const pool = data.accounts.find(a => a.id === "pool-visible");
@@ -225,19 +294,14 @@ describe("codex-auth API", () => {
   });
 
   test("GET /api/codex-auth/accounts refresh=1 bypasses cached pool quota", async () => {
-    const createReq = new Request("http://localhost/api/codex-auth/accounts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        id: "pool-refresh",
-        email: "pool-refresh@example.com",
-        accessToken: "tok",
-        refreshToken: "ref",
-        chatgptAccountId: "acc-pool-refresh",
-      }),
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "pool-refresh",
+      email: "pool-refresh@example.com",
+      accessToken: "tok",
+      refreshToken: "ref",
+      chatgptAccountId: "acc-pool-refresh",
     });
-    const createResp = await handleCodexAuthAPI(createReq, new URL(createReq.url), {} as any);
-    expect(createResp!.status).toBe(200);
     updateAccountQuota("pool-refresh", 72, 31);
 
     const originalFetch = globalThis.fetch;
@@ -257,7 +321,7 @@ describe("codex-auth API", () => {
 
     try {
       const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
-      const resp = await handleCodexAuthAPI(req, new URL(req.url), {} as any);
+      const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
       expect(resp!.status).toBe(200);
       const data = await resp!.json() as { accounts: { id: string; quota: unknown }[] };
       const pool = data.accounts.find(a => a.id === "pool-refresh");
@@ -275,7 +339,8 @@ describe("codex-auth API", () => {
     expect(resp).toBeNull();
   });
 
-  test("POST /api/codex-auth/accounts rejects invalid id format", async () => {
+  test("POST /api/codex-auth/accounts rejects invalid id format when manual import is explicitly enabled", async () => {
+    enableManualImport();
     const req = new Request("http://localhost/api/codex-auth/accounts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -294,7 +359,8 @@ describe("codex-auth API", () => {
     expect(body.error).toContain("Invalid account id");
   });
 
-  test("POST /api/codex-auth/accounts rejects invalid JSON", async () => {
+  test("POST /api/codex-auth/accounts rejects invalid JSON when manual import is explicitly enabled", async () => {
+    enableManualImport();
     const req = new Request("http://localhost/api/codex-auth/accounts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -305,6 +371,68 @@ describe("codex-auth API", () => {
     expect(resp!.status).toBe(400);
     const body = await resp!.json() as { error: string };
     expect(body.error).toBe("Invalid JSON");
+  });
+
+  test("POST /api/codex-auth/accounts imports only when manual import is explicitly enabled", async () => {
+    enableManualImport();
+    const config = makeConfig();
+    const req = new Request("http://localhost/api/codex-auth/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(manualImportBody({ id: "manual-enabled" })),
+    });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+
+    expect(resp!.status).toBe(200);
+    expect(config.codexAccounts?.map(a => a.id)).toEqual(["manual-enabled"]);
+    expect(getCodexAccountCredential("manual-enabled")).toMatchObject({
+      accessToken: "access-manual-test",
+      refreshToken: "refresh-manual-test",
+      chatgptAccountId: "acct-manual-test",
+    });
+  });
+
+  test("POST /api/codex-auth/accounts rejects duplicate runtime alias before writing credentials", async () => {
+    enableManualImport();
+    const config = makeConfig({
+      codexAccounts: [{ id: "manual-existing", email: "existing@example.test", isMain: false }],
+    });
+    const req = new Request("http://localhost/api/codex-auth/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(manualImportBody({ id: "manual-existing" })),
+    });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const body = await resp!.json() as { error: string };
+
+    expect(resp!.status).toBe(400);
+    expect(body.error).toBe("Account id already exists: manual-existing");
+    expect(getCodexAccountCredential("manual-existing")).toBeNull();
+  });
+
+  test("POST /api/codex-auth/accounts rejects duplicate credential alias before overwrite", async () => {
+    enableManualImport();
+    saveCodexAccountCredential("manual-existing", {
+      accessToken: "old-access",
+      refreshToken: "old-refresh",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "old-account",
+    });
+    const req = new Request("http://localhost/api/codex-auth/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(manualImportBody({ id: "manual-existing" })),
+    });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+    const body = await resp!.json() as { error: string };
+
+    expect(resp!.status).toBe(400);
+    expect(body.error).toBe("Account id already exists: manual-existing");
+    expect(getCodexAccountCredential("manual-existing")).toMatchObject({
+      accessToken: "old-access",
+      refreshToken: "old-refresh",
+      chatgptAccountId: "old-account",
+    });
   });
 
   test("PUT /api/codex-auth/auto-switch rejects invalid threshold", async () => {
@@ -445,19 +573,12 @@ describe("codex-auth API", () => {
   });
 
   test("GET /api/codex-auth/login-status recovers done when a persisted account exists", async () => {
-    const createReq = new Request("http://localhost/api/codex-auth/accounts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        id: "pool-login-recovery",
-        email: "pool-login-recovery@example.com",
-        accessToken: "tok",
-        refreshToken: "ref",
-        chatgptAccountId: "acc-pool-login-recovery",
-      }),
+    saveCodexAccountCredential("pool-login-recovery", {
+      accessToken: "tok",
+      refreshToken: "ref",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "acc-pool-login-recovery",
     });
-    const createResp = await handleCodexAuthAPI(createReq, new URL(createReq.url), {} as any);
-    expect(createResp!.status).toBe(200);
 
     const req = new Request("http://localhost/api/codex-auth/login-status?flowId=missing&accountId=pool-login-recovery", { method: "GET" });
     const resp = await handleCodexAuthAPI(req, new URL(req.url), {} as any);
@@ -478,19 +599,12 @@ describe("codex-auth API", () => {
   });
 
   test("POST /api/codex-auth/login rejects duplicate account id before OAuth starts", async () => {
-    const createReq = new Request("http://localhost/api/codex-auth/accounts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        id: "existing",
-        email: "existing@example.com",
-        accessToken: "tok",
-        refreshToken: "ref",
-        chatgptAccountId: "acc-existing",
-      }),
+    saveCodexAccountCredential("existing", {
+      accessToken: "tok",
+      refreshToken: "ref",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "acc-existing",
     });
-    const createResp = await handleCodexAuthAPI(createReq, new URL(createReq.url), {} as any);
-    expect(createResp!.status).toBe(200);
 
     const req = new Request("http://localhost/api/codex-auth/login", {
       method: "POST",
@@ -525,19 +639,14 @@ describe("codex-auth API", () => {
   });
 
   test("GET /api/codex-auth/accounts reuses cached pool quota without fetching usage", async () => {
-    const createReq = new Request("http://localhost/api/codex-auth/accounts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        id: "cached-test",
-        email: "cached-test@example.com",
-        accessToken: "tok",
-        refreshToken: "ref",
-        chatgptAccountId: "acc-cached-test",
-      }),
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "cached-test",
+      email: "cached-test@example.com",
+      accessToken: "tok",
+      refreshToken: "ref",
+      chatgptAccountId: "acc-cached-test",
     });
-    const createResp = await handleCodexAuthAPI(createReq, new URL(createReq.url), {} as any);
-    expect(createResp!.status).toBe(200);
     updateAccountQuota("cached-test", 25, 10);
 
     const originalFetch = globalThis.fetch;
@@ -550,7 +659,7 @@ describe("codex-auth API", () => {
     const req = new Request("http://localhost/api/codex-auth/accounts", { method: "GET" });
     const url = new URL(req.url);
     try {
-      const resp = await handleCodexAuthAPI(req, url, {} as any);
+      const resp = await handleCodexAuthAPI(req, url, config);
       expect(resp!.status).toBe(200);
       const data = await resp!.json() as { accounts: { id: string; quota: unknown }[] };
       const pool = data.accounts.find(a => a.id === "cached-test");

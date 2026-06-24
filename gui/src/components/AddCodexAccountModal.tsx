@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { IconGlobe, IconKey, IconLink, IconX } from "../icons";
+import { IconGlobe, IconLink } from "../icons";
 import { useT } from "../i18n";
 
 export default function AddCodexAccountModal({
@@ -21,13 +21,11 @@ export default function AddCodexAccountModal({
     if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
   }, []);
 
-  const [step, setStep] = useState<"pick" | "import" | "oauth-waiting">("pick");
+  const [step, setStep] = useState<"pick" | "oauth-waiting">("pick");
   const [id, setId] = useState("");
-  const [json, setJson] = useState("");
   const [error, setError] = useState("");
   const [authUrl, setAuthUrl] = useState("");
   const [copied, setCopied] = useState(false);
-  const [saving, setSaving] = useState(false);
 
   const stopPolling = () => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -80,43 +78,6 @@ export default function AddCodexAccountModal({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
-
-  const handleImport = async () => {
-    setError("");
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(json);
-    } catch {
-      setError(t("codexAuth.importInvalidJson"));
-      return;
-    }
-    const tokens = (parsed.tokens ?? parsed) as Record<string, unknown>;
-    const accessToken = (tokens.access_token ?? tokens.accessToken) as string | undefined;
-    const refreshToken = (tokens.refresh_token ?? tokens.refreshToken) as string | undefined;
-    const accountId = (tokens.account_id ?? tokens.accountId ?? "") as string;
-    if (!accessToken || !refreshToken) { setError(t("codexAuth.importMissingTokens")); return; }
-    if (!id.trim()) { setError(t("codexAuth.importMissingId")); return; }
-
-    setSaving(true);
-    try {
-      const resp = await fetch(`${apiBase}/api/codex-auth/accounts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: id.trim(), email: id.trim(), accessToken, refreshToken, chatgptAccountId: accountId }),
-      });
-      if (!resp.ok) {
-        const body = await resp.json().catch(() => ({})) as { error?: string };
-        setError(body.error ?? "Failed");
-        return;
-      }
-      onAdded();
-      closeModal();
-    } catch (e) {
-      if (aliveRef.current) setError(String(e));
-    } finally {
-      if (aliveRef.current) setSaving(false);
-    }
-  };
 
   return (
     <div className="modal-overlay" onClick={closeModal}>
@@ -199,60 +160,11 @@ export default function AddCodexAccountModal({
               </div>
             </button>
 
-            <button className="list-row" onClick={() => setStep("import")} style={{ marginBottom: 16 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <IconKey width={20} />
-                <div>
-                  <div className="title">{t("codexAuth.importAuthJson")}</div>
-                  <div className="sub">{t("codexAuth.importAuthJsonDesc")}</div>
-                </div>
-              </div>
-            </button>
-
             {error && <div className="notice notice-err" style={{ marginTop: 8 }}>{error}</div>}
 
             <button className="btn btn-ghost" onClick={closeModal} style={{ width: "100%" }}>
               {t("codexAuth.cancel")}
             </button>
-          </>
-        )}
-
-        {step === "import" && (
-          <>
-            <div className="modal-head">
-              <h3>{t("codexAuth.importAuthJson")}</h3>
-              <button className="btn btn-icon btn-ghost" onClick={closeModal}><IconX /></button>
-            </div>
-
-            <label className="field-label">{t("codexAuth.addIdLabel")}</label>
-            <input
-              className="input"
-              placeholder="codex-work, codex-alt, team..."
-              value={id}
-              onChange={e => setId(e.target.value)}
-              style={{ marginBottom: 12 }}
-            />
-
-            <label className="field-label">{t("codexAuth.addJsonLabel")}</label>
-            <textarea
-              className="input"
-              rows={7}
-              placeholder={'{\n  "tokens": {\n    "access_token": "...",\n    "refresh_token": "...",\n    "account_id": "..."\n  }\n}'}
-              value={json}
-              onChange={e => setJson(e.target.value)}
-              style={{ fontFamily: "var(--mono)", fontSize: 12, resize: "vertical", marginBottom: 12 }}
-            />
-
-            <p className="modal-desc">{t("codexAuth.addHelp")}</p>
-
-            {error && <div className="notice notice-err">{error}</div>}
-
-            <div className="modal-actions">
-              <button className="btn btn-ghost" onClick={() => { setStep("pick"); setError(""); }}>{t("codexAuth.back")}</button>
-              <button className="btn btn-primary" onClick={handleImport} disabled={saving || !id.trim() || !json.trim()}>
-                {saving ? "..." : t("codexAuth.importBtn")}
-              </button>
-            </div>
           </>
         )}
 

@@ -33,8 +33,20 @@ function jsonResponse(data: unknown, status = 200): Response {
 }
 
 const ACCOUNT_ID_RE = /^[a-zA-Z0-9._-]{1,64}$/;
+const MANUAL_IMPORT_ENV = "OPENCODEX_ENABLE_UNVERIFIED_CODEX_IMPORT";
 
 const codexAuthLoginState = new Map<string, { status: string; accountId?: string; email?: string; error?: string; doneAt?: number }>();
+
+export function isUnverifiedCodexImportEnabled(): boolean {
+  return process.env[MANUAL_IMPORT_ENV] === "1";
+}
+
+function manualImportDisabledResponse(): Response {
+  return jsonResponse({
+    error: "Manual Codex account import is disabled. Use OAuth login to add a pool account.",
+    code: "manual_import_disabled",
+  }, 403);
+}
 
 export function maskEmail(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -192,6 +204,8 @@ export async function handleCodexAuthAPI(
   }
 
   if (url.pathname === "/api/codex-auth/accounts" && req.method === "POST") {
+    if (!isUnverifiedCodexImportEnabled()) return manualImportDisabledResponse();
+
     let body: { id: string; email: string; plan?: string; accessToken: string; refreshToken: string; chatgptAccountId: string };
     try { body = (await req.json()) as typeof body; } catch { return jsonResponse({ error: "Invalid JSON" }, 400); }
     if (!body.id || !body.email || !body.accessToken || !body.refreshToken || !body.chatgptAccountId) {
@@ -202,6 +216,11 @@ export async function handleCodexAuthAPI(
     }
     if (body.accessToken.length > 10_000 || body.refreshToken.length > 10_000) {
       return jsonResponse({ error: "Input too large" }, 400);
+    }
+    const runtimeConfig = getRuntimeConfig(config);
+    const accounts = runtimeConfig.codexAccounts ?? [];
+    if (accounts.some(a => a.id === body.id) || getCodexAccountCredential(body.id)) {
+      return jsonResponse({ error: `Account id already exists: ${body.id}` }, 400);
     }
     // 1.1: JWT-derived account ID is authoritative; collision check
     const derivedAccountId = extractAccountId(undefined, body.accessToken) ?? body.chatgptAccountId;
@@ -219,13 +238,9 @@ export async function handleCodexAuthAPI(
       chatgptAccountId: derivedAccountId,
     });
     clearAccountNeedsReauth(body.id);
-    const runtimeConfig = getRuntimeConfig(config);
-    const accounts = runtimeConfig.codexAccounts ?? [];
-    if (!accounts.find(a => a.id === body.id)) {
-      accounts.push({ id: body.id, email: body.email, plan: body.plan, isMain: false });
-      runtimeConfig.codexAccounts = accounts;
-      saveRuntimeConfig(config, runtimeConfig);
-    }
+    accounts.push({ id: body.id, email: body.email, plan: body.plan, isMain: false });
+    runtimeConfig.codexAccounts = accounts;
+    saveRuntimeConfig(config, runtimeConfig);
     return jsonResponse({ ok: true });
   }
 
@@ -320,7 +335,7 @@ export async function handleCodexAuthAPI(
               if (!oauthAccountId) {
                 codexAuthLoginState.set(flowId, {
                   status: "error",
-                  error: "Could not determine account identity from OAuth tokens. Try importing manually.",
+                  error: "Could not determine account identity from OAuth tokens. Please retry OAuth login.",
                   doneAt: Date.now(),
                 });
                 completed = true;
