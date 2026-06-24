@@ -6,6 +6,12 @@ import {
   checkAccountIdCollision, getMainChatgptAccountId,
   markAccountNeedsReauth, isAccountNeedsReauth, clearAccountNeedsReauth, clearAccountQuota,
 } from "../src/codex-auth-api";
+import { getCodexAccountCredential, saveCodexAccountCredential } from "../src/codex-account-store";
+import {
+  getCodexUpstreamHealth,
+  recordCodexUpstreamOutcome,
+  resolveCodexAccountForThread,
+} from "../src/codex-routing";
 import type { OcxConfig } from "../src/types";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-auth-api-test");
@@ -321,11 +327,29 @@ describe("codex-auth API", () => {
       activeCodexAccountId: "pool-delete",
       codexAccounts: [{ id: "pool-delete", email: "pool-delete@example.test", isMain: false }],
     });
+    saveCodexAccountCredential("pool-delete", {
+      accessToken: "access-delete",
+      refreshToken: "refresh-delete",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "acct-delete",
+    });
+    updateAccountQuota("pool-delete", 70, 20);
+    expect(resolveCodexAccountForThread("delete-thread", config)).toBe("pool-delete");
+    recordCodexUpstreamOutcome(config, "pool-delete", 500);
+    expect(getCodexUpstreamHealth("pool-delete")).not.toBeNull();
+    markAccountNeedsReauth("pool-delete");
+
     const req = new Request("http://localhost/api/codex-auth/accounts?id=pool-delete", { method: "DELETE" });
     const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+
     expect(resp!.status).toBe(200);
     expect(config.codexAccounts).toEqual([]);
     expect(config.activeCodexAccountId).toBeUndefined();
+    expect(getCodexAccountCredential("pool-delete")).toBeNull();
+    expect(getAccountQuota("pool-delete")).toBeNull();
+    expect(isAccountNeedsReauth("pool-delete")).toBe(false);
+    expect(getCodexUpstreamHealth("pool-delete")).toBeNull();
+    expect(resolveCodexAccountForThread("delete-thread", config)).toBeNull();
   });
 
   test("GET /api/codex-auth/login-status returns idle by default", async () => {

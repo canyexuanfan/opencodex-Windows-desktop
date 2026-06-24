@@ -36,6 +36,7 @@ import {
   applyCodexAuthContextToProvider,
   CodexAuthContextError,
   headersForCodexAuthContext,
+  isCodexAuthContextUsable,
   resolveCodexAuthContext,
   stripCodexRuntimeProviderFields,
   type CodexAuthContext,
@@ -190,6 +191,9 @@ async function handleResponses(
       return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
     }
     throw err;
+  }
+  if (!isCodexAuthContextUsable(authCtx, config)) {
+    return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
   }
   route.provider = applyCodexAuthContextToProvider(route.provider, authCtx);
   logCtx.provider = formatCodexProviderForLog(route.providerName, authCtx.kind === "pool" ? authCtx.accountId : null, config);

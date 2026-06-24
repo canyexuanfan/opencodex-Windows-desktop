@@ -4,10 +4,11 @@ import {
   applyCodexAuthContextToProvider,
   CodexAuthContextError,
   headersForCodexAuthContext,
+  isCodexAuthContextUsable,
   resolveCodexAuthContext,
   stripCodexRuntimeProviderFields,
 } from "../src/codex-auth-context";
-import { saveCodexAccountCredential } from "../src/codex-account-store";
+import { removeCodexAccountCredential, saveCodexAccountCredential } from "../src/codex-account-store";
 import { clearAccountNeedsReauth, isAccountNeedsReauth } from "../src/codex-auth-api";
 import { clearThreadAccountMap } from "../src/codex-routing";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
@@ -124,5 +125,33 @@ describe("Codex auth context", () => {
     expect(stripped).not.toHaveProperty("_codexAccountRequired");
     expect(stripped).not.toHaveProperty("_codexAccountOverride");
     expect(stripped).toMatchObject(forwardProvider);
+  });
+
+  test("auth context usability follows account lifecycle state", () => {
+    const cfg = config();
+    const ctx = { kind: "pool" as const, accountId: "pool-a", accessToken: "pool_token", chatgptAccountId: "pool_acc" };
+
+    expect(isCodexAuthContextUsable({ kind: "main", accountId: null }, cfg)).toBe(true);
+    expect(isCodexAuthContextUsable(ctx, cfg)).toBe(false);
+
+    saveCodexAccountCredential("pool-a", {
+      accessToken: "pool_token",
+      refreshToken: "pool_refresh",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "pool_acc",
+    });
+    expect(isCodexAuthContextUsable(ctx, cfg)).toBe(true);
+
+    removeCodexAccountCredential("pool-a");
+    expect(isCodexAuthContextUsable(ctx, cfg)).toBe(false);
+
+    saveCodexAccountCredential("pool-a", {
+      accessToken: "pool_token",
+      refreshToken: "pool_refresh",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "pool_acc",
+    });
+    cfg.codexAccounts = cfg.codexAccounts?.filter(account => account.id !== "pool-a");
+    expect(isCodexAuthContextUsable(ctx, cfg)).toBe(false);
   });
 });

@@ -1,17 +1,38 @@
 import { saveConfig } from "./config";
-import { getCodexAccountCredential } from "./codex-account-store";
-import { getAccountQuota, isAccountNeedsReauth, markAccountNeedsReauth } from "./codex-auth-api";
+import { isCodexAccountUsable } from "./codex-account-usability";
+import { isAccountNeedsReauth, markAccountNeedsReauth } from "./codex-account-runtime-state";
+import { getAccountQuota } from "./codex-quota";
 import type { OcxConfig } from "./types";
 
 const threadAccountMap = new Map<string, string>();
 const upstreamHealth = new Map<string, { consecutiveFailures: number; lastFailureStatus?: number; lastFailureAt?: number }>();
 
+function hasConfiguredPoolAccount(config: OcxConfig, accountId: string): boolean {
+  return (config.codexAccounts ?? []).some(account => !account.isMain && account.id === accountId);
+}
+
 export function clearThreadAccountMap(): void {
   threadAccountMap.clear();
 }
 
+export function clearThreadAccountMapForAccount(accountId: string): void {
+  for (const [threadId, mappedAccountId] of threadAccountMap) {
+    if (mappedAccountId === accountId) threadAccountMap.delete(threadId);
+  }
+}
+
 export function clearCodexUpstreamHealth(): void {
   upstreamHealth.clear();
+}
+
+export function clearCodexUpstreamHealthForAccount(accountId: string): void {
+  upstreamHealth.delete(accountId);
+}
+
+export function getCodexUpstreamHealth(
+  accountId: string,
+): { consecutiveFailures: number; lastFailureStatus?: number; lastFailureAt?: number } | null {
+  return upstreamHealth.get(accountId) ?? null;
 }
 
 export function computeCodexUsageScore(quota: {
@@ -26,7 +47,7 @@ export function computeCodexUsageScore(quota: {
 function getEligiblePoolAccounts(config: OcxConfig, excludeId?: string): string[] {
   return (config.codexAccounts ?? [])
     .filter(account => !account.isMain && account.id !== excludeId && !isAccountNeedsReauth(account.id))
-    .filter(account => !!getCodexAccountCredential(account.id))
+    .filter(account => isCodexAccountUsable(config, account.id))
     .map(account => account.id);
 }
 
@@ -96,12 +117,26 @@ export function resolveCodexAccountForThread(
   config: OcxConfig,
 ): string | null {
   if (threadId && threadAccountMap.has(threadId)) {
-    return threadAccountMap.get(threadId)!;
+    const mapped = threadAccountMap.get(threadId)!;
+    if (isCodexAccountUsable(config, mapped)) return mapped;
+    threadAccountMap.delete(threadId);
   }
   let active = config.activeCodexAccountId;
   if (!active) return null;
+  if (!isCodexAccountUsable(config, active)) {
+    const fallback = pickLowestUsageCodexAccount(config, active);
+    if (fallback) {
+      setActiveCodexAccount(config, fallback);
+      active = fallback;
+    } else if (hasConfiguredPoolAccount(config, active)) {
+      return active;
+    } else {
+      return null;
+    }
+  }
   active = applyQuotaAutoSwitch(config, active);
   active = applyFailureFailover(config, active);
+  if (!isCodexAccountUsable(config, active)) return null;
   if (threadId) threadAccountMap.set(threadId, active);
   return active;
 }

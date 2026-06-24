@@ -3,11 +3,13 @@ import {
   getCodexAccountCredential,
   getValidCodexToken,
   saveCodexAccountCredential,
-  removeCodexAccountCredential,
   TokenRefreshError,
 } from "./codex-account-store";
+import { deleteCodexAccount } from "./codex-account-lifecycle";
 import { checkAccountIdCollision, readCodexTokens } from "./codex-auth-collision";
 export { checkAccountIdCollision, getMainChatgptAccountId } from "./codex-auth-collision";
+export { clearAccountNeedsReauth, isAccountNeedsReauth, markAccountNeedsReauth } from "./codex-account-runtime-state";
+import { clearAccountNeedsReauth, isAccountNeedsReauth } from "./codex-account-runtime-state";
 import {
   clearAccountQuota,
   getAccountQuota,
@@ -31,12 +33,6 @@ function jsonResponse(data: unknown, status = 200): Response {
 const ACCOUNT_ID_RE = /^[a-zA-Z0-9._-]{1,64}$/;
 
 const codexAuthLoginState = new Map<string, { status: string; accountId?: string; email?: string; error?: string; doneAt?: number }>();
-
-// H3: in-memory set of accounts needing re-auth (marked on refresh failure, cleared on successful save)
-const reauthAccounts = new Set<string>();
-export function markAccountNeedsReauth(id: string): void { reauthAccounts.add(id); }
-export function isAccountNeedsReauth(id: string): boolean { return reauthAccounts.has(id); }
-export function clearAccountNeedsReauth(id: string): void { reauthAccounts.delete(id); }
 
 function expireCodexAuthFlow(flowId: string | null, error = "Login cancelled"): void {
   if (!flowId) return;
@@ -220,10 +216,8 @@ export async function handleCodexAuthAPI(
   if (url.pathname === "/api/codex-auth/accounts" && req.method === "DELETE") {
     const id = url.searchParams.get("id");
     if (!id) return jsonResponse({ error: "Missing id" }, 400);
-    removeCodexAccountCredential(id);
     const runtimeConfig = getRuntimeConfig(config);
-    runtimeConfig.codexAccounts = (runtimeConfig.codexAccounts ?? []).filter(a => a.id !== id);
-    if (runtimeConfig.activeCodexAccountId === id) runtimeConfig.activeCodexAccountId = undefined;
+    deleteCodexAccount(runtimeConfig, id);
     saveRuntimeConfig(config, runtimeConfig);
     return jsonResponse({ ok: true });
   }

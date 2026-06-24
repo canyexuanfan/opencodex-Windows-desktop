@@ -23,8 +23,16 @@ function saveTestCredential(id: string): void {
   saveCodexAccountCredential(id, {
     accessToken: `access-${id}`,
     refreshToken: `refresh-${id}`,
-    expiresAt: Date.now() + 60_000,
+    expiresAt: Date.now() + 5 * 60_000,
     chatgptAccountId: `acct-${id}`,
+  });
+}
+
+function makeActivePoolConfig(active: string, ids: string[] = [active]): OcxConfig {
+  for (const id of ids) saveTestCredential(id);
+  return makeConfig({
+    activeCodexAccountId: active,
+    codexAccounts: ids.map(id => ({ id, email: `${id}@example.test`, isMain: false })),
   });
 }
 
@@ -52,26 +60,26 @@ describe("resolveCodexAccountForThread", () => {
   });
 
   test("returns active account for new thread", () => {
-    const config = makeConfig({ activeCodexAccountId: "work" });
+    const config = makeActivePoolConfig("work");
     expect(resolveCodexAccountForThread("t1", config)).toBe("work");
   });
 
   test("same thread-id returns same account (affinity)", () => {
-    const config = makeConfig({ activeCodexAccountId: "work" });
+    const config = makeActivePoolConfig("work", ["work", "personal"]);
     resolveCodexAccountForThread("t1", config);
     config.activeCodexAccountId = "personal";
     expect(resolveCodexAccountForThread("t1", config)).toBe("work");
   });
 
   test("different thread gets different account", () => {
-    const config = makeConfig({ activeCodexAccountId: "work" });
+    const config = makeActivePoolConfig("work", ["work", "personal"]);
     resolveCodexAccountForThread("t1", config);
     config.activeCodexAccountId = "personal";
     expect(resolveCodexAccountForThread("t2", config)).toBe("personal");
   });
 
   test("null thread-id does not cache", () => {
-    const config = makeConfig({ activeCodexAccountId: "work" });
+    const config = makeActivePoolConfig("work", ["work", "personal"]);
     resolveCodexAccountForThread(null, config);
     config.activeCodexAccountId = "personal";
     expect(resolveCodexAccountForThread(null, config)).toBe("personal");

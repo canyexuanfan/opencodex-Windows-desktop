@@ -1,5 +1,6 @@
 import { getValidCodexToken } from "./codex-account-store";
-import { markAccountNeedsReauth } from "./codex-auth-api";
+import { markAccountNeedsReauth } from "./codex-account-runtime-state";
+import { isCodexAccountUsable } from "./codex-account-usability";
 import { resolveCodexAccountForThread } from "./codex-routing";
 import type { OcxConfig, OcxProviderConfig } from "./types";
 import { FORWARD_HEADERS } from "./adapters/openai-responses";
@@ -73,6 +74,11 @@ export function headersForCodexAuthContext(headers: Headers, ctx: CodexAuthConte
     selected.set("chatgpt-account-id", ctx.chatgptAccountId);
   }
   return selected;
+}
+
+export function isCodexAuthContextUsable(ctx: CodexAuthContext, config: OcxConfig): boolean {
+  if (ctx.kind === "main") return true;
+  return isCodexAccountUsable(config, ctx.accountId);
 }
 
 export function stripCodexRuntimeProviderFields(provider: OcxProviderConfig): OcxProviderConfig {

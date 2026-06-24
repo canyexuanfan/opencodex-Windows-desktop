@@ -49,8 +49,9 @@ export function listAccountQuotas(): IterableIterator<[string, StoredAccountQuot
   return accountQuota.entries();
 }
 
-export function clearAccountQuota(): void {
-  accountQuota.clear();
+export function clearAccountQuota(accountId?: string): void {
+  if (accountId) accountQuota.delete(accountId);
+  else accountQuota.clear();
 }
 
 export function parseUsageQuota(data: WhamUsageResponse): Omit<StoredAccountQuota, "updatedAt"> | null {

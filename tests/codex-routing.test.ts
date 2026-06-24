@@ -3,12 +3,15 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   clearCodexUpstreamHealth,
+  clearCodexUpstreamHealthForAccount,
   clearThreadAccountMap,
+  clearThreadAccountMapForAccount,
   computeCodexUsageScore,
+  getCodexUpstreamHealth,
   recordCodexUpstreamOutcome,
   resolveCodexAccountForThread,
 } from "../src/codex-routing";
-import { saveCodexAccountCredential } from "../src/codex-account-store";
+import { removeCodexAccountCredential, saveCodexAccountCredential } from "../src/codex-account-store";
 import { clearAccountQuota, handleCodexAuthAPI, parseUsageQuota, updateAccountQuota } from "../src/codex-auth-api";
 import type { OcxConfig } from "../src/types";
 
@@ -33,7 +36,7 @@ function saveTestCredential(id: string): void {
   saveCodexAccountCredential(id, {
     accessToken: `access-${id}`,
     refreshToken: `refresh-${id}`,
-    expiresAt: Date.now() + 60_000,
+    expiresAt: Date.now() + 5 * 60_000,
     chatgptAccountId: `acct-${id}`,
   });
 }
@@ -100,6 +103,30 @@ describe("codex routing", () => {
     recordCodexUpstreamOutcome(config, "a", 503);
     recordCodexUpstreamOutcome(config, "a", 503);
     expect(resolveCodexAccountForThread("next", config)).toBe("a");
+  });
+
+  test("stale thread affinity is revalidated before reuse", () => {
+    const config = makeConfig();
+    expect(resolveCodexAccountForThread("stale-thread", config)).toBe("a");
+
+    config.codexAccounts = config.codexAccounts?.filter(account => account.id !== "a");
+    removeCodexAccountCredential("a");
+
+    expect(resolveCodexAccountForThread("stale-thread", config)).toBe("b");
+  });
+
+  test("account-specific cleanup clears affinity and upstream health", () => {
+    const config = makeConfig();
+    expect(resolveCodexAccountForThread("cleanup-thread", config)).toBe("a");
+    recordCodexUpstreamOutcome(config, "a", 503);
+    expect(getCodexUpstreamHealth("a")).not.toBeNull();
+
+    clearThreadAccountMapForAccount("a");
+    clearCodexUpstreamHealthForAccount("a");
+    config.activeCodexAccountId = "b";
+
+    expect(getCodexUpstreamHealth("a")).toBeNull();
+    expect(resolveCodexAccountForThread("cleanup-thread", config)).toBe("b");
   });
 
   test("failover threshold API validates and mutates runtime config", async () => {
