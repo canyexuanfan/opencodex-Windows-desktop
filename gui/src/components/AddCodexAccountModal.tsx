@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { IconExternal, IconGlobe, IconKey, IconX } from "../icons";
+import { IconGlobe, IconKey, IconLink, IconX } from "../icons";
 import { useT } from "../i18n";
 
 export default function AddCodexAccountModal({
@@ -26,6 +26,7 @@ export default function AddCodexAccountModal({
   const [json, setJson] = useState("");
   const [error, setError] = useState("");
   const [authUrl, setAuthUrl] = useState("");
+  const [copied, setCopied] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const stopPolling = () => {
@@ -50,6 +51,28 @@ export default function AddCodexAccountModal({
   const closeModal = () => {
     if (step === "oauth-waiting") void cancelLogin();
     onClose();
+  };
+
+  const copyLoginLink = async () => {
+    if (!authUrl) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(authUrl);
+      } else {
+        const input = document.createElement("textarea");
+        input.value = authUrl;
+        input.style.position = "fixed";
+        input.style.opacity = "0";
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        document.body.removeChild(input);
+      }
+      setCopied(true);
+      setTimeout(() => { if (aliveRef.current) setCopied(false); }, 2500);
+    } catch {
+      setError(t("codexAuth.loginLinkCopyFailed"));
+    }
   };
 
   useEffect(() => {
@@ -237,11 +260,10 @@ export default function AddCodexAccountModal({
           <>
             <h3 style={{ marginBottom: 4 }}>{t("codexAuth.oauthLogin")}</h3>
             <p className="modal-desc">{t("codexAuth.oauthWaiting")}</p>
-            {authUrl && (
-              <a className="btn btn-ghost" href={authUrl} target="_blank" rel="noreferrer" style={{ width: "100%", justifyContent: "center", marginTop: 12 }}>
-                <IconExternal width={14} /> {t("codexAuth.openLoginLink")}
-              </a>
-            )}
+            <button className="btn btn-ghost" onClick={copyLoginLink} disabled={!authUrl} style={{ width: "100%", justifyContent: "center", marginTop: 12 }}>
+              <IconLink width={14} /> {copied ? t("codexAuth.loginLinkCopied") : t("codexAuth.copyLoginLink")}
+            </button>
+            {error && <div className="notice notice-err" style={{ marginTop: 12 }}>{error}</div>}
             <div style={{ textAlign: "center", padding: "24px 0" }}>
               <span className="spin" style={{ width: 24, height: 24 }} />
             </div>
