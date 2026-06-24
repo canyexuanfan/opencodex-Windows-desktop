@@ -25,6 +25,7 @@ import {
   listOAuthProviders, reconcileOAuthProviders, startLoginFlow, upsertOAuthProvider,
 } from "./oauth/index";
 import type { CatalogModel } from "./codex-catalog";
+import { invalidateCodexModelsCache } from "./codex-catalog";
 import { buildWebSearchTool, planWebSearch, runWithWebSearch } from "./web-search";
 import { describeImagesInPlace, planVisionSidecar } from "./vision";
 import { removeCredential } from "./oauth/store";
@@ -798,6 +799,8 @@ export function startServer(port?: number) {
     config.subagentModels = [...DEFAULT_SUBAGENT_MODELS];
     saveConfig(config);
   }
+  invalidateCodexModelsCache();
+
   const listenPort = port ?? config.port ?? 10100;
   setCorsOrigin(listenPort);
 
