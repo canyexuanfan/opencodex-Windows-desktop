@@ -32,6 +32,7 @@ import { enrichProviderFromCatalog, listKeyLoginProviders } from "./oauth/key-pr
 import { deriveProviderPresets } from "./providers/derive";
 import type { OcxConfig, OcxProviderConfig } from "./types";
 import { getValidCodexToken } from "./codex-account-store";
+import { getAccountQuota } from "./codex-auth-api";
 
 const threadAccountMap = new Map<string, string>();
 
@@ -47,7 +48,6 @@ function resolveCodexAccountForThread(
 
   const threshold = config.autoSwitchThreshold ?? 80;
   if (threshold > 0) {
-    const { getAccountQuota } = require("./codex-auth-api") as typeof import("./codex-auth-api");
     const quota = getAccountQuota(active);
     if (quota && quota.weeklyPercent >= threshold) {
       const pool = (config.codexAccounts ?? []).filter(a => !a.isMain && a.id !== active);

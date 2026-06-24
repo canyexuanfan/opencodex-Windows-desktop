@@ -45,8 +45,8 @@ export function listCodexAccountIds(): string[] {
   return Object.keys(loadCodexAccountStore());
 }
 
-const CHATGPT_TOKEN_URL = "https://auth0.openai.com/oauth/token";
-const CHATGPT_CLIENT_ID = "DRivsnm2Mu42T3KOpqdtwB3NYviHYzwD";
+const CHATGPT_TOKEN_URL = "https://auth.openai.com/oauth/token";
+const CHATGPT_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 
 type CodexTokenResult = { accessToken: string; chatgptAccountId: string };
 const refreshLocks = new Map<string, Promise<CodexTokenResult>>();
@@ -66,14 +66,17 @@ export async function getValidCodexToken(id: string): Promise<CodexTokenResult> 
     try {
       const res = await fetch(CHATGPT_TOKEN_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
           grant_type: "refresh_token",
           client_id: CHATGPT_CLIENT_ID,
           refresh_token: cred.refreshToken,
-        }),
+        }).toString(),
       });
-      if (!res.ok) throw new Error(`Token refresh failed for ${id}: ${res.status}`);
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => "");
+        throw new Error(`Token refresh failed for ${id}: ${res.status} ${errBody}`);
+      }
       const data = (await res.json()) as { access_token: string; refresh_token?: string; expires_in: number };
 
       const updated: CodexAccountCredentials = {

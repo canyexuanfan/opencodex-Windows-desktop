@@ -211,7 +211,13 @@ export async function handleCodexAuthAPI(
                   email = data.email ?? email;
                   plan = data.plan_type ?? undefined;
                 }
-              } catch { /* best effort */ }
+              } catch (e) {
+                const whamErr = e instanceof Error ? e.message : String(e);
+                codexAuthLoginState.set("chatgpt", {
+                  status: "done", accountId, email,
+                  error: `Account info fetch failed (non-blocking): ${whamErr}`,
+                });
+              }
 
               // Save to codex-accounts store
               saveCodexAccountCredential(accountId, {
