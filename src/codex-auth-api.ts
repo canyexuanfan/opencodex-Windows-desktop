@@ -20,11 +20,22 @@ function jsonResponse(data: unknown, status = 200): Response {
   });
 }
 
-const accountQuota = new Map<string, {
+type StoredAccountQuota = {
   weeklyPercent: number;
   fiveHourPercent: number;
   updatedAt: number;
-}>();
+};
+
+type WhamUsageResponse = {
+  email?: string | null;
+  plan_type?: string | null;
+  rate_limit?: {
+    primary_window?: { used_percent?: number };
+    secondary_window?: { used_percent?: number };
+  };
+};
+
+const accountQuota = new Map<string, StoredAccountQuota>();
 
 const ACCOUNT_ID_RE = /^[a-zA-Z0-9._-]{1,64}$/;
 
@@ -37,6 +48,14 @@ export function getAccountQuota(accountId: string) {
 }
 
 export function clearAccountQuota(): void { accountQuota.clear(); }
+
+function parseUsageQuota(data: WhamUsageResponse): Omit<StoredAccountQuota, "updatedAt"> | null {
+  if (!data.rate_limit) return null;
+  return {
+    weeklyPercent: data.rate_limit.secondary_window?.used_percent ?? 0,
+    fiveHourPercent: data.rate_limit.primary_window?.used_percent ?? 0,
+  };
+}
 
 const codexAuthLoginState = new Map<string, { status: string; accountId?: string; email?: string; error?: string; doneAt?: number }>();
 
@@ -103,21 +122,11 @@ async function fetchMainAccountInfo(): Promise<{ email: string | null; plan: str
       signal: AbortSignal.timeout(8000),
     });
     if (!resp.ok) return { email: null, plan: null, quota: null };
-    const data = (await resp.json()) as {
-      email?: string | null;
-      plan_type?: string | null;
-      rate_limit?: {
-        primary_window?: { used_percent?: number };
-        secondary_window?: { used_percent?: number };
-      };
-    };
+    const data = (await resp.json()) as WhamUsageResponse;
     const result = {
       email: data.email ?? null,
       plan: data.plan_type ?? null,
-      quota: data.rate_limit ? {
-        weeklyPercent: data.rate_limit.secondary_window?.used_percent ?? 0,
-        fiveHourPercent: data.rate_limit.primary_window?.used_percent ?? 0,
-      } : null,
+      quota: parseUsageQuota(data),
       ts: Date.now(),
     };
     mainAccountCache = result;
@@ -128,7 +137,7 @@ async function fetchMainAccountInfo(): Promise<{ email: string | null; plan: str
 }
 
 interface PoolQuotaResult {
-  quota: { weeklyPercent: number; fiveHourPercent: number } | null;
+  quota: StoredAccountQuota | null;
   needsReauth: boolean;
 }
 
@@ -144,17 +153,11 @@ async function fetchPoolAccountQuota(accountId: string): Promise<PoolQuotaResult
       signal: AbortSignal.timeout(8000),
     });
     if (!resp.ok) return { quota: existing ?? null, needsReauth: resp.status === 401 };
-    const data = (await resp.json()) as {
-      rate_limit?: {
-        primary_window?: { used_percent?: number };
-        secondary_window?: { used_percent?: number };
-      };
-    };
-    if (!data.rate_limit) return { quota: existing ?? null, needsReauth: false };
-    const weekly = data.rate_limit.secondary_window?.used_percent ?? 0;
-    const fiveHour = data.rate_limit.primary_window?.used_percent ?? 0;
-    updateAccountQuota(accountId, weekly, fiveHour);
-    return { quota: { weeklyPercent: weekly, fiveHourPercent: fiveHour }, needsReauth: false };
+    const data = (await resp.json()) as WhamUsageResponse;
+    const quota = parseUsageQuota(data);
+    if (!quota) return { quota: existing ?? null, needsReauth: false };
+    updateAccountQuota(accountId, quota.weeklyPercent, quota.fiveHourPercent);
+    return { quota: accountQuota.get(accountId) ?? null, needsReauth: false };
   } catch (e) {
     if (e instanceof TokenRefreshError) return { quota: existing ?? null, needsReauth: true };
     return { quota: existing ?? null, needsReauth: false };
@@ -171,17 +174,18 @@ export async function handleCodexAuthAPI(
     const config = loadConfig();
     const poolAccounts = (config.codexAccounts ?? []).filter(a => !a.isMain);
     const mainInfo = await fetchMainAccountInfo();
-    const withQuota = poolAccounts.map(a => {
+    const withQuota = await Promise.all(poolAccounts.map(async a => {
       const cred = getCodexAccountCredential(a.id);
-      const cached = accountQuota.get(a.id);
-      const expired = !cred || cred.expiresAt < Date.now();
+      const quotaResult = cred
+        ? await fetchPoolAccountQuota(a.id)
+        : { quota: null, needsReauth: true };
       return {
         ...a,
-        quota: cached ? { ...cached } : null,
-        needsReauth: expired || isAccountNeedsReauth(a.id),
+        quota: quotaResult.quota ? { ...quotaResult.quota } : null,
+        needsReauth: !cred || quotaResult.needsReauth || isAccountNeedsReauth(a.id),
         hasCredential: !!cred,
       };
-    });
+    }));
     const main = {
       id: "__main__",
       email: mainInfo.email ?? "Codex App login",
@@ -328,6 +332,7 @@ export async function handleCodexAuthAPI(
 
               let email = cred.email || accountId;
               let plan: string | undefined;
+              let quota: Omit<StoredAccountQuota, "updatedAt"> | null = null;
               try {
                 const tokens = { access_token: cred.access, account_id: oauthAccountId };
                 const resp = await fetch("https://chatgpt.com/backend-api/wham/usage", {
@@ -335,9 +340,10 @@ export async function handleCodexAuthAPI(
                   signal: AbortSignal.timeout(8000),
                 });
                 if (resp.ok) {
-                  const data = (await resp.json()) as { email?: string; plan_type?: string };
+                  const data = (await resp.json()) as WhamUsageResponse;
                   email = data.email ?? email;
                   plan = data.plan_type ?? undefined;
+                  quota = parseUsageQuota(data);
                 }
               } catch { /* wham fetch is non-blocking */ }
 
@@ -348,6 +354,7 @@ export async function handleCodexAuthAPI(
                 chatgptAccountId: oauthAccountId,
               });
               clearAccountNeedsReauth(accountId);
+              if (quota) updateAccountQuota(accountId, quota.weeklyPercent, quota.fiveHourPercent);
 
               const latestConfig = loadConfig();
               const accounts = latestConfig.codexAccounts ?? [];

@@ -99,6 +99,50 @@ describe("codex-auth API", () => {
     expect(data.quotas["q-test"]).toBeTruthy();
   });
 
+  test("GET /api/codex-auth/accounts fetches pool quota when cache is empty", async () => {
+    const createReq = new Request("http://localhost/api/codex-auth/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "pool-visible",
+        email: "pool-visible@example.com",
+        accessToken: "tok",
+        refreshToken: "ref",
+        chatgptAccountId: "acc-pool-visible",
+      }),
+    });
+    const createResp = await handleCodexAuthAPI(createReq, new URL(createReq.url), {} as any);
+    expect(createResp!.status).toBe(200);
+
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async (_input, init) => {
+      calls++;
+      const headers = new Headers(init?.headers);
+      expect(headers.get("Authorization")).toBe("Bearer tok");
+      expect(headers.get("ChatGPT-Account-Id")).toBe("acc-pool-visible");
+      return new Response(JSON.stringify({
+        rate_limit: {
+          secondary_window: { used_percent: 64 },
+          primary_window: { used_percent: 11 },
+        },
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const req = new Request("http://localhost/api/codex-auth/accounts", { method: "GET" });
+      const resp = await handleCodexAuthAPI(req, new URL(req.url), {} as any);
+      expect(resp!.status).toBe(200);
+      const data = await resp!.json() as { accounts: { id: string; quota: unknown; needsReauth?: boolean }[] };
+      const pool = data.accounts.find(a => a.id === "pool-visible");
+      expect(pool?.quota).toMatchObject({ weeklyPercent: 64, fiveHourPercent: 11 });
+      expect(pool?.needsReauth).toBe(false);
+      expect(calls).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("unmatched route returns null", async () => {
     const req = new Request("http://localhost/api/codex-auth/unknown", { method: "GET" });
     const url = new URL(req.url);
@@ -245,12 +289,41 @@ describe("codex-auth API", () => {
     expect(source).toContain("Login timed out before OAuth completed.");
   });
 
-  test("GET /api/codex-auth/accounts does not trigger token refresh (cached quota only)", async () => {
+  test("GET /api/codex-auth/accounts reuses cached pool quota without fetching usage", async () => {
+    const createReq = new Request("http://localhost/api/codex-auth/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "cached-test",
+        email: "cached-test@example.com",
+        accessToken: "tok",
+        refreshToken: "ref",
+        chatgptAccountId: "acc-cached-test",
+      }),
+    });
+    const createResp = await handleCodexAuthAPI(createReq, new URL(createReq.url), {} as any);
+    expect(createResp!.status).toBe(200);
     updateAccountQuota("cached-test", 25, 10);
+
+    const originalFetch = globalThis.fetch;
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response("unexpected fetch", { status: 500 });
+    }) as typeof fetch;
+
     const req = new Request("http://localhost/api/codex-auth/accounts", { method: "GET" });
     const url = new URL(req.url);
-    const resp = await handleCodexAuthAPI(req, url, {} as any);
-    expect(resp!.status).toBe(200);
+    try {
+      const resp = await handleCodexAuthAPI(req, url, {} as any);
+      expect(resp!.status).toBe(200);
+      const data = await resp!.json() as { accounts: { id: string; quota: unknown }[] };
+      const pool = data.accounts.find(a => a.id === "cached-test");
+      expect(pool?.quota).toMatchObject({ weeklyPercent: 25, fiveHourPercent: 10 });
+      expect(called).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 
