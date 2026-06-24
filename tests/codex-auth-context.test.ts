@@ -5,6 +5,7 @@ import {
   assertCodexAuthContextNotCooled,
   CodexAccountCooldownError,
   CodexAuthContextError,
+  CodexThreadAffinityExpiredError,
   headersForCodexAuthContext,
   isCodexAuthContextUsable,
   resolveCodexAuthContext,
@@ -19,7 +20,12 @@ import {
   saveCodexAccountCredential,
 } from "../src/codex-account-store";
 import { clearAccountNeedsReauth, isAccountNeedsReauth } from "../src/codex-auth-api";
-import { clearCodexUpstreamHealth, clearThreadAccountMap, recordCodexUpstreamOutcome } from "../src/codex-routing";
+import {
+  CODEX_THREAD_AFFINITY_IDLE_TTL_MS,
+  clearCodexUpstreamHealth,
+  clearThreadAccountMap,
+  recordCodexUpstreamOutcome,
+} from "../src/codex-routing";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 
 const TEST_DIR = "/tmp/opencodex-codex-auth-context-test";
@@ -124,6 +130,34 @@ describe("Codex auth context", () => {
 
     await expect(resolveCodexAuthContext(new Headers({ authorization: "Bearer main_token" }), config()))
       .rejects.toBeInstanceOf(CodexAccountCooldownError);
+  });
+
+  test("expired thread affinity fails closed instead of falling back to main auth", async () => {
+    const now = 1_800_000_000_000;
+    saveCodexAccountCredential("pool-a", {
+      accessToken: "pool_token",
+      refreshToken: "pool_refresh",
+      expiresAt: now + 5 * 60_000,
+      chatgptAccountId: "pool_acc",
+    });
+    const originalNow = Date.now;
+    const headers = new Headers({
+      authorization: "Bearer main_token",
+      "x-codex-parent-thread-id": "expired-auth-context",
+    });
+    try {
+      Date.now = () => now;
+      await expect(resolveCodexAuthContext(headers, config())).resolves.toMatchObject({
+        kind: "pool",
+        accountId: "pool-a",
+      });
+
+      Date.now = () => now + CODEX_THREAD_AFFINITY_IDLE_TTL_MS + 1;
+      await expect(resolveCodexAuthContext(headers, config()))
+        .rejects.toBeInstanceOf(CodexThreadAffinityExpiredError);
+    } finally {
+      Date.now = originalNow;
+    }
   });
 
   test("cached pool auth context is rejected while cooled and accepted after expiry", () => {

@@ -313,6 +313,7 @@ export interface CodexAccountCredentials {
 export interface CodexAccountCredentialRecord {
   credential?: CodexAccountCredentials;
   generation: number;
+  refreshGrantFingerprint?: string;
   deletedAt?: number;
   replacedAt?: number;
 }

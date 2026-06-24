@@ -28,7 +28,7 @@ describe("Codex config injection", () => {
       'model = "gpt-5.5"',
       'model_context_window = 1000000',
       'model_auto_compact_token_limit = 900000',
-      'model_catalog_json = "/Users/jun/.codex/opencodex-catalog.json"',
+      'model_catalog_json = "/tmp/opencodex-catalog.json"',
       'model_provider = "opencodex"',
       "",
       "[features]",

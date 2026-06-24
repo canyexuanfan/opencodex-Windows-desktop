@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   CODEX_FAILURE_WINDOW_MS,
+  CODEX_THREAD_AFFINITY_IDLE_TTL_MS,
+  CODEX_THREAD_AFFINITY_MAX_ENTRIES,
   classifyCodexUpstreamOutcome,
   clearCodexUpstreamHealth,
   clearCodexUpstreamHealthForAccount,
@@ -16,6 +18,7 @@ import {
   parseRetryAfterMs,
   recordCodexUpstreamOutcome,
   resolveCodexAccountForThread,
+  resolveCodexAccountForThreadDetailed,
 } from "../src/codex-routing";
 import { removeCodexAccountCredential, saveCodexAccountCredential } from "../src/codex-account-store";
 import {
@@ -286,6 +289,60 @@ describe("codex routing", () => {
     removeCodexAccountCredential("a");
 
     expect(resolveCodexAccountForThread("stale-thread", config)).toBe("b");
+  });
+
+  test("expired thread affinity is not silently remapped", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    expect(resolveCodexAccountForThread("expired-thread", config, now)).toBe("a");
+
+    expect(resolveCodexAccountForThread(
+      "expired-thread",
+      config,
+      now + CODEX_THREAD_AFFINITY_IDLE_TTL_MS + 1,
+    )).toBeNull();
+  });
+
+  test("detailed resolver reports expired thread affinity", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    expect(resolveCodexAccountForThreadDetailed("expired-detailed", config, now))
+      .toEqual({ status: "selected", accountId: "a" });
+
+    expect(resolveCodexAccountForThreadDetailed(
+      "expired-detailed",
+      config,
+      now + CODEX_THREAD_AFFINITY_IDLE_TTL_MS + 1,
+    )).toEqual({ status: "expired", accountId: "a" });
+  });
+
+  test("thread affinity LRU cap evicts the oldest mapping", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    for (let i = 0; i < CODEX_THREAD_AFFINITY_MAX_ENTRIES + 1; i += 1) {
+      expect(resolveCodexAccountForThread(`lru-${i}`, config, now + i)).toBe("a");
+    }
+
+    config.activeCodexAccountId = "b";
+
+    expect(resolveCodexAccountForThread("lru-1", config, now + CODEX_THREAD_AFFINITY_MAX_ENTRIES + 1)).toBe("a");
+    expect(resolveCodexAccountForThread("lru-0", config, now + CODEX_THREAD_AFFINITY_MAX_ENTRIES + 2)).toBe("b");
+  });
+
+  test("generation mismatch invalidates a mapped thread before reuse", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    expect(resolveCodexAccountForThread("generation-thread", config, now)).toBe("a");
+
+    saveCodexAccountCredential("a", {
+      accessToken: "replacement-a",
+      refreshToken: "replacement-refresh-a",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "acct-a",
+    });
+    config.activeCodexAccountId = "b";
+
+    expect(resolveCodexAccountForThread("generation-thread", config, now + 1)).toBe("b");
   });
 
   test("account-specific cleanup clears affinity and upstream health", () => {

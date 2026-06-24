@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { saveCodexAccountCredential } from "../src/codex-account-store";
 import { clearAccountNeedsReauth } from "../src/codex-auth-api";
 import {
+  CODEX_THREAD_AFFINITY_IDLE_TTL_MS,
   clearCodexUpstreamHealth,
   clearThreadAccountMap,
   getCodexUpstreamHealth,
@@ -110,6 +111,94 @@ describe("server local API auth", () => {
     });
     expect(dto.providers.openai).not.toHaveProperty("apiKey");
     expect(dto.providers.openai).not.toHaveProperty("headers");
+  });
+
+  test("expired thread affinity returns 409 before HTTP or WebSocket passthrough", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    clearCodexUpstreamHealth();
+    clearThreadAccountMap();
+    clearAccountNeedsReauth("pool-a");
+
+    let upstreamRequests = 0;
+    const upstream = Bun.serve({
+      port: 0,
+      fetch() {
+        upstreamRequests += 1;
+        return Response.json({ id: "resp_test", object: "response", status: "completed", output: [] });
+      },
+    });
+    const now = 1_800_000_000_000;
+    saveConfig({
+      port: 0,
+      defaultProvider: "chatgpt",
+      providers: {
+        chatgpt: {
+          adapter: "openai-responses",
+          baseUrl: `${upstream.url}backend-api/codex`,
+          authMode: "forward",
+        },
+      },
+      codexAccounts: [
+        { id: "main", email: "main@example.test", isMain: true },
+        { id: "pool-a", email: "pool@example.test", isMain: false, chatgptAccountId: "acct-pool-a" },
+      ],
+      activeCodexAccountId: "pool-a",
+    } as OcxConfig);
+    saveCodexAccountCredential("pool-a", {
+      accessToken: "pool-access-token",
+      refreshToken: "pool-refresh-token",
+      expiresAt: now + CODEX_THREAD_AFFINITY_IDLE_TTL_MS + 60_000,
+      chatgptAccountId: "acct-pool-a",
+    });
+
+    const originalNow = Date.now;
+    const server = startServer(0);
+    try {
+      Date.now = () => now;
+      for (const threadId of ["expired-http", "expired-ws"]) {
+        const response = await fetch(new URL("/v1/responses", server.url), {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer inbound-main-token",
+            "x-codex-parent-thread-id": threadId,
+          },
+          body: JSON.stringify({ model: "gpt-test", input: "hello", stream: false }),
+        });
+        expect(response.status).toBe(200);
+      }
+      expect(upstreamRequests).toBe(2);
+
+      Date.now = () => now + CODEX_THREAD_AFFINITY_IDLE_TTL_MS + 1;
+      const httpResponse = await fetch(new URL("/v1/responses", server.url), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer inbound-main-token",
+          "x-codex-parent-thread-id": "expired-http",
+        },
+        body: JSON.stringify({ model: "gpt-test", input: "hello", stream: false }),
+      });
+      expect(httpResponse.status).toBe(409);
+
+      const wsResponse = await fetch(new URL("/v1/responses", server.url), {
+        method: "GET",
+        headers: {
+          authorization: "Bearer inbound-main-token",
+          connection: "Upgrade",
+          upgrade: "websocket",
+          "x-codex-parent-thread-id": "expired-ws",
+        },
+      });
+      expect(wsResponse.status).toBe(409);
+      expect(upstreamRequests).toBe(2);
+    } finally {
+      Date.now = originalNow;
+      await server.stop(true);
+      await upstream.stop(true);
+    }
   });
 
   test("passthrough connect failure records selected pool account health", async () => {

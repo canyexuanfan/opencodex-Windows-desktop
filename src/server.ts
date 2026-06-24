@@ -38,6 +38,7 @@ import {
   assertCodexAuthContextNotCooled,
   CodexAccountCooldownError,
   CodexAuthContextError,
+  CodexThreadAffinityExpiredError,
   headersForCodexAuthContext,
   isCodexAuthContextUsable,
   resolveCodexAuthContext,
@@ -216,6 +217,9 @@ async function handleResponses(
   } catch (err) {
     if (err instanceof CodexAccountCooldownError) {
       return formatErrorResponse(429, "rate_limit_error", "Selected Codex account is cooling down");
+    }
+    if (err instanceof CodexThreadAffinityExpiredError) {
+      return formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session");
     }
     if (err instanceof CodexAuthContextError) {
       const safeAccountLabel = formatCodexProviderForLog(route.providerName, err.accountId, config);
@@ -1033,6 +1037,9 @@ export function startServer(port?: number) {
         } catch (err) {
           if (err instanceof CodexAccountCooldownError) {
             return formatErrorResponse(429, "rate_limit_error", "Selected Codex account is cooling down");
+          }
+          if (err instanceof CodexThreadAffinityExpiredError) {
+            return formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session");
           }
           if (err instanceof CodexAuthContextError) {
             const safeAccountLabel = formatCodexProviderForLog("chatgpt", err.accountId, config);

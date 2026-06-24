@@ -22,6 +22,7 @@
     "start": "bun run src/cli.ts start",
     "test": "bun test tests",
     "typecheck": "bun x tsc --noEmit",
+    "privacy:scan": "bun scripts/privacy-scan.ts",
     "generate:jawcode-metadata": "bun scripts/generate-jawcode-metadata.ts",
     "build:gui": "cd gui && bun install && bun run build",
     "prepublishOnly": "bun run typecheck && bun run build:gui",

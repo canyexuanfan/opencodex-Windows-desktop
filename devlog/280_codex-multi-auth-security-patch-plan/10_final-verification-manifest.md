@@ -33,6 +33,26 @@ This manifest tracks the implementation evidence for the `280` multi-auth securi
 | Patch 5D - Cooldown/failure window | `56c9369` | 429 cooldown and transient failure windows are enforced. |
 | Patch 5E - Terminal stream outcomes | `e123339` | SSE/WS terminal failed/incomplete outcomes are recorded after stream completion. |
 | Patch 6 - Privacy labels and redaction | `e752fab` | Codex auth account labels, OAuth status, debug frames, and durable errors avoid raw account identifiers. |
+| Patch 7 - P1/P2 stop-audit closure | Pending commit | Thread affinity TTL/LRU/generation, grant-scoped refresh locks, CI privacy scan, and item-level manifest mapping. |
+
+## Item-Level 280 Requirement Matrix
+
+| Requirement | Evidence | Status |
+| --- | --- | --- |
+| Pool token failure cannot fall through to inbound/main auth. | `1f0813c`; `tests/codex-auth-context.test.ts`; `tests/passthrough-override.test.ts`; `tests/sidecar-abort.test.ts`. | Implemented. |
+| Account deletion purges account-bound runtime state and WebSocket bindings. | `0efb547`, `2204da8`; `tests/codex-auth-api.test.ts`; `tests/codex-websocket-registry.test.ts`. | Implemented. |
+| Refresh completion cannot recreate deleted/replaced credentials. | `278873a`; `tests/codex-account-store.test.ts`. | Implemented. |
+| Local API auth protects non-loopback management/data-plane routes. | `9490cfc`; `tests/server-auth.test.ts`. | Implemented. |
+| Config/account DTOs avoid secrets and default account PII exposure. | `9490cfc`, `e752fab`; `tests/server-auth.test.ts`; `tests/codex-auth-api.test.ts`; browser smoke recorded below. | Implemented. |
+| Manual import does not trust client-controlled identity by default. | `b9903be`; `tests/codex-auth-api.test.ts`. | Implemented as disabled-by-default; authoritative identity rework remains out of scope while disabled. |
+| HTTP/WebSocket auth context consistency. | `1f0813c`, Patch 7 pending commit; `tests/codex-auth-context.test.ts`; `tests/server-auth.test.ts`. | Implemented. |
+| Affinity lifecycle has TTL/LRU bounds and generation revalidation. | Patch 7 pending commit; `tests/codex-routing.test.ts`. | Implemented. |
+| Refresh coordination is generation-guarded and grant-scoped. | `278873a`, Patch 7 pending commit; `tests/codex-account-store.test.ts`. | Implemented. |
+| Outcome classifier separates caller, credential, quota, transient, sidecar, and terminal stream outcomes. | `35d28a0`, `cfc6e47`, `56c9369`, `e123339`; `tests/codex-routing.test.ts`; `tests/server-auth.test.ts`; `tests/sidecar-abort.test.ts`; `tests/ws-endpoint.test.ts`. | Implemented. |
+| Quota unknown/stale/malformed state does not attract traffic as zero usage. | `820fd8c`; `tests/codex-routing.test.ts`; `tests/codex-auth-api.test.ts`. | Implemented. |
+| Request labels and durable logs avoid raw account identifiers. | `e752fab`, Patch 7 pending commit; `tests/codex-account-label.test.ts`; `tests/debug.test.ts`; `bun run privacy:scan`. | Implemented. |
+| Historical 270 release-readiness docs are superseded. | `e752fab`; nine 270 docs contain supersession banners. | Implemented. |
+| Automated privacy scan covers source/docs/CI. | Patch 7 pending commit; `scripts/privacy-scan.ts`; `.github/workflows/ci.yml`; `bun run privacy:scan`. | Implemented. |
 
 ## Documentation Evidence
 
@@ -82,6 +102,17 @@ This manifest tracks the implementation evidence for the `280` multi-auth securi
 | Full tests | `bun test tests` passed with 344 pass, 0 fail. |
 | GUI build | `cd gui && bun run build` passed. |
 | Diff/status | `git diff --check` and `git diff --cached --check` passed; `git status --short` was clean immediately after the implementation commit and before this manifest append. |
+
+## Phase 70 Local Verification
+
+| Gate | Evidence |
+| --- | --- |
+| Typecheck | `bun run typecheck` passed. |
+| Focused P1/P2 tests | `bun test tests/codex-routing.test.ts tests/codex-auth-context.test.ts tests/server-auth.test.ts tests/codex-account-store.test.ts tests/codex-inject.test.ts` passed with 77 pass, 0 fail. |
+| Privacy scan | `bun run privacy:scan` passed. |
+| Full tests | `bun test tests` passed with 351 pass, 0 fail. |
+| GUI build | `cd gui && bun run build` passed. |
+| Diff check | `git diff --check` passed. |
 
 ## Deferred Cases
 

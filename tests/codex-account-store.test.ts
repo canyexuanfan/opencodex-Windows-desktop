@@ -6,8 +6,12 @@ import { join } from "node:path";
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-accounts-test");
 const ACCOUNTS_PATH = join(TEST_DIR, "codex-accounts.json");
 
-function refreshLockPath(id: string): string {
-  const digest = createHash("sha256").update(id).digest("hex").slice(0, 32);
+function refreshGrantFingerprint(refreshToken: string): string {
+  return createHash("sha256").update(`codex-refresh-grant:${refreshToken}`).digest("hex");
+}
+
+function refreshLockPathForToken(refreshToken: string): string {
+  const digest = createHash("sha256").update(refreshGrantFingerprint(refreshToken)).digest("hex").slice(0, 32);
   return join(TEST_DIR, `codex-refresh-${digest}.lock`);
 }
 
@@ -165,9 +169,11 @@ describe("codex-account-store CRUD", () => {
       getValidCodexToken,
       readCodexAccountRecord,
       saveCodexAccountCredential,
+      refreshGrantFingerprintForToken,
     } = await import("../src/codex-account-store");
     saveCodexAccountCredential("refresh-success", { accessToken: "old", refreshToken: "old-r", expiresAt: 0, chatgptAccountId: "acc" });
     const startGeneration = readCodexAccountRecord("refresh-success")!.generation;
+    const startFingerprint = readCodexAccountRecord("refresh-success")!.refreshGrantFingerprint;
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response(JSON.stringify({
       access_token: "new",
@@ -179,6 +185,8 @@ describe("codex-account-store CRUD", () => {
       const result = await getValidCodexToken("refresh-success");
       expect(result).toEqual({ accessToken: "new", chatgptAccountId: "acc", generation: startGeneration + 1 });
       expect(getCodexAccountCredential("refresh-success")).toMatchObject({ accessToken: "new", refreshToken: "new-r" });
+      expect(readCodexAccountRecord("refresh-success")!.refreshGrantFingerprint).toBe(startFingerprint);
+      expect(readCodexAccountRecord("refresh-success")!.refreshGrantFingerprint).toBe(refreshGrantFingerprintForToken("old-r"));
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -187,14 +195,17 @@ describe("codex-account-store CRUD", () => {
   test("refresh waits behind file lock and reuses credential refreshed by another process", async () => {
     const {
       getValidCodexToken,
+      readCodexAccountRecord,
       saveCodexAccountCredential,
+      saveCodexAccountCredentialIfGeneration,
     } = await import("../src/codex-account-store");
     saveCodexAccountCredential("refresh-wait", { accessToken: "old", refreshToken: "old-r", expiresAt: 0, chatgptAccountId: "acc" });
-    const lockPath = refreshLockPath("refresh-wait");
+    const generation = readCodexAccountRecord("refresh-wait")!.generation;
+    const lockPath = refreshLockPathForToken("old-r");
     writeFileSync(lockPath, JSON.stringify({ acquiredAt: Date.now(), pid: 12345 }) + "\n");
     const refreshed = { accessToken: "other-process", refreshToken: "other-r", expiresAt: Date.now() + 3600_000, chatgptAccountId: "acc" };
     const release = setTimeout(() => {
-      saveCodexAccountCredential("refresh-wait", refreshed);
+      saveCodexAccountCredentialIfGeneration("refresh-wait", generation, refreshed);
       unlinkSync(lockPath);
     }, 20);
     const originalFetch = globalThis.fetch;
@@ -216,7 +227,7 @@ describe("codex-account-store CRUD", () => {
   test("stale refresh lock is reclaimed", async () => {
     const { getValidCodexToken, saveCodexAccountCredential } = await import("../src/codex-account-store");
     saveCodexAccountCredential("refresh-stale-lock", { accessToken: "old", refreshToken: "old-r", expiresAt: 0, chatgptAccountId: "acc" });
-    writeFileSync(refreshLockPath("refresh-stale-lock"), JSON.stringify({ acquiredAt: Date.now() - 61_000, pid: 12345 }) + "\n");
+    writeFileSync(refreshLockPathForToken("old-r"), JSON.stringify({ acquiredAt: Date.now() - 61_000, pid: 12345 }) + "\n");
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response(JSON.stringify({ access_token: "new", expires_in: 3600 }), { status: 200 })) as typeof fetch;
 
@@ -224,6 +235,41 @@ describe("codex-account-store CRUD", () => {
       const result = await getValidCodexToken("refresh-stale-lock");
       expect(result.accessToken).toBe("new");
       expect(result.generation).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("duplicate aliases sharing a refresh grant use one in-process refresh", async () => {
+    const {
+      getCodexAccountCredential,
+      getValidCodexToken,
+      saveCodexAccountCredential,
+    } = await import("../src/codex-account-store");
+    saveCodexAccountCredential("alias-a", { accessToken: "old-a", refreshToken: "shared-r", expiresAt: 0, chatgptAccountId: "acc" });
+    saveCodexAccountCredential("alias-b", { accessToken: "old-b", refreshToken: "shared-r", expiresAt: 0, chatgptAccountId: "acc" });
+    let fetchCalls = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      await new Promise(resolve => setTimeout(resolve, 10));
+      return new Response(JSON.stringify({
+        access_token: "shared-new",
+        refresh_token: "shared-rotated",
+        expires_in: 3600,
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const [first, second] = await Promise.all([
+        getValidCodexToken("alias-a"),
+        getValidCodexToken("alias-b"),
+      ]);
+      expect(fetchCalls).toBe(1);
+      expect(first.accessToken).toBe("shared-new");
+      expect(second.accessToken).toBe("shared-new");
+      expect(getCodexAccountCredential("alias-a")).toMatchObject({ accessToken: "shared-new", refreshToken: "shared-rotated" });
+      expect(getCodexAccountCredential("alias-b")).toMatchObject({ accessToken: "shared-new", refreshToken: "shared-rotated" });
     } finally {
       globalThis.fetch = originalFetch;
     }

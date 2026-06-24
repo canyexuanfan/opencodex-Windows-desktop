@@ -1,11 +1,24 @@
 import { saveConfig } from "./config";
+import { isCodexAccountGenerationLive, readCodexAccountRecord } from "./codex-account-store";
 import { codexAccountLogLabel } from "./codex-account-label";
 import { isCodexAccountUsable } from "./codex-account-usability";
 import { isAccountNeedsReauth, markAccountNeedsReauth } from "./codex-account-runtime-state";
 import { CODEX_UNKNOWN_USAGE_SCORE, getAccountQuota } from "./codex-quota";
 import type { OcxConfig } from "./types";
 
-const threadAccountMap = new Map<string, string>();
+type ThreadAffinityEntry = {
+  accountId: string;
+  generation: number;
+  createdAt: number;
+  lastUsedAt: number;
+};
+
+export type CodexThreadResolution =
+  | { status: "selected"; accountId: string }
+  | { status: "none" }
+  | { status: "expired"; accountId: string };
+
+const threadAccountMap = new Map<string, ThreadAffinityEntry>();
 type CodexUpstreamHealth = {
   consecutiveFailures: number;
   lastFailureStatus?: number;
@@ -16,6 +29,8 @@ type CodexUpstreamHealth = {
 const CODEX_DEFAULT_QUOTA_COOLDOWN_MS = 60_000;
 const CODEX_MAX_QUOTA_COOLDOWN_MS = 24 * 60 * 60_000;
 export const CODEX_FAILURE_WINDOW_MS = 5 * 60_000;
+export const CODEX_THREAD_AFFINITY_IDLE_TTL_MS = 24 * 60 * 60_000;
+export const CODEX_THREAD_AFFINITY_MAX_ENTRIES = 2048;
 
 const upstreamHealth = new Map<string, CodexUpstreamHealth>();
 
@@ -36,8 +51,8 @@ export function clearThreadAccountMap(): void {
 }
 
 export function clearThreadAccountMapForAccount(accountId: string): void {
-  for (const [threadId, mappedAccountId] of threadAccountMap) {
-    if (mappedAccountId === accountId) threadAccountMap.delete(threadId);
+  for (const [threadId, entry] of threadAccountMap) {
+    if (entry.accountId === accountId) threadAccountMap.delete(threadId);
   }
 }
 
@@ -138,6 +153,49 @@ function isCodexAccountSelectable(config: OcxConfig, accountId: string, now: num
   return !isCodexAccountInCooldown(accountId, now) && isCodexAccountUsable(config, accountId);
 }
 
+function isThreadAffinityExpired(entry: ThreadAffinityEntry, now: number): boolean {
+  return now - entry.lastUsedAt > CODEX_THREAD_AFFINITY_IDLE_TTL_MS;
+}
+
+function isThreadAffinityGenerationLive(entry: ThreadAffinityEntry): boolean {
+  return isCodexAccountGenerationLive(entry.accountId, entry.generation);
+}
+
+function pruneExpiredThreadAffinities(now: number): void {
+  for (const [threadId, entry] of threadAccountMap) {
+    if (isThreadAffinityExpired(entry, now)) threadAccountMap.delete(threadId);
+  }
+}
+
+function pruneLruThreadAffinities(): void {
+  while (threadAccountMap.size > CODEX_THREAD_AFFINITY_MAX_ENTRIES) {
+    let oldestThreadId: string | null = null;
+    let oldestLastUsedAt = Number.POSITIVE_INFINITY;
+    for (const [threadId, entry] of threadAccountMap) {
+      if (entry.lastUsedAt < oldestLastUsedAt) {
+        oldestThreadId = threadId;
+        oldestLastUsedAt = entry.lastUsedAt;
+      }
+    }
+    if (!oldestThreadId) return;
+    threadAccountMap.delete(oldestThreadId);
+  }
+}
+
+function bindThreadAffinity(threadId: string, accountId: string, now: number): void {
+  const record = readCodexAccountRecord(accountId);
+  if (!record?.credential || record.deletedAt != null) return;
+  pruneExpiredThreadAffinities(now);
+  const previous = threadAccountMap.get(threadId);
+  threadAccountMap.set(threadId, {
+    accountId,
+    generation: record.generation,
+    createdAt: previous?.createdAt ?? now,
+    lastUsedAt: now,
+  });
+  pruneLruThreadAffinities();
+}
+
 function getEligiblePoolAccounts(config: OcxConfig, excludeId?: string, now = Date.now()): string[] {
   return (config.codexAccounts ?? [])
     .filter(account => !account.isMain && account.id !== excludeId && !isAccountNeedsReauth(account.id))
@@ -210,32 +268,55 @@ function applyFailureFailover(config: OcxConfig, active: string, now: number): s
 export function resolveCodexAccountForThread(
   threadId: string | null,
   config: OcxConfig,
+  now = Date.now(),
 ): string | null {
-  const now = Date.now();
+  const resolution = resolveCodexAccountForThreadDetailed(threadId, config, now);
+  return resolution.status === "selected" ? resolution.accountId : null;
+}
+
+export function resolveCodexAccountForThreadDetailed(
+  threadId: string | null,
+  config: OcxConfig,
+  now = Date.now(),
+): CodexThreadResolution {
   if (threadId && threadAccountMap.has(threadId)) {
-    const mapped = threadAccountMap.get(threadId)!;
-    if (isCodexAccountSelectable(config, mapped, now)) return mapped;
+    const entry = threadAccountMap.get(threadId)!;
+    if (isThreadAffinityExpired(entry, now)) {
+      threadAccountMap.delete(threadId);
+      return { status: "expired", accountId: entry.accountId };
+    }
+    if (
+      isThreadAffinityGenerationLive(entry)
+      && isCodexAccountSelectable(config, entry.accountId, now)
+    ) {
+      entry.lastUsedAt = now;
+      return { status: "selected", accountId: entry.accountId };
+    }
     threadAccountMap.delete(threadId);
   }
   let active = config.activeCodexAccountId;
-  if (!active) return null;
+  if (!active) return { status: "none" };
   if (!isCodexAccountSelectable(config, active, now)) {
     const fallback = pickLowestUsageCodexAccount(config, active, now);
     if (fallback) {
       setActiveCodexAccount(config, fallback);
       active = fallback;
     } else if (hasConfiguredPoolAccount(config, active)) {
-      return active;
+      return { status: "selected", accountId: active };
     } else {
-      return null;
+      return { status: "none" };
     }
   }
   active = applyQuotaAutoSwitch(config, active, now);
   active = applyFailureFailover(config, active, now);
-  if (!isCodexAccountUsable(config, active)) return hasConfiguredPoolAccount(config, active) ? active : null;
-  if (isCodexAccountInCooldown(active, now)) return hasConfiguredPoolAccount(config, active) ? active : null;
-  if (threadId) threadAccountMap.set(threadId, active);
-  return active;
+  if (!isCodexAccountUsable(config, active)) {
+    return hasConfiguredPoolAccount(config, active) ? { status: "selected", accountId: active } : { status: "none" };
+  }
+  if (isCodexAccountInCooldown(active, now)) {
+    return hasConfiguredPoolAccount(config, active) ? { status: "selected", accountId: active } : { status: "none" };
+  }
+  if (threadId) bindThreadAffinity(threadId, active, now);
+  return { status: "selected", accountId: active };
 }
 
 export function recordCodexUpstreamOutcome(

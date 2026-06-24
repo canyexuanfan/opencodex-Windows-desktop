@@ -6,7 +6,7 @@ import {
 } from "./codex-account-store";
 import { markAccountNeedsReauth } from "./codex-account-runtime-state";
 import { isCodexAccountUsable } from "./codex-account-usability";
-import { getCodexAccountCooldownUntil, resolveCodexAccountForThread } from "./codex-routing";
+import { getCodexAccountCooldownUntil, resolveCodexAccountForThreadDetailed } from "./codex-routing";
 import type { OcxConfig, OcxProviderConfig } from "./types";
 import { FORWARD_HEADERS } from "./adapters/openai-responses";
 
@@ -47,13 +47,25 @@ export class CodexAccountCooldownError extends Error {
   }
 }
 
+export class CodexThreadAffinityExpiredError extends Error {
+  accountId: string;
+
+  constructor(accountId: string) {
+    super("Codex thread account affinity expired");
+    this.name = "CodexThreadAffinityExpiredError";
+    this.accountId = accountId;
+  }
+}
+
 export function shouldMarkAccountNeedsReauthForCodexAuthFailure(cause: unknown): boolean {
   return !(cause instanceof CodexCredentialGenerationConflictError) && !(cause instanceof CodexCredentialRefreshLockTimeoutError);
 }
 
 export async function resolveCodexAuthContext(headers: Headers, config: OcxConfig): Promise<CodexAuthContext> {
   const threadId = headers.get("x-codex-parent-thread-id");
-  const accountId = resolveCodexAccountForThread(threadId, config);
+  const resolution = resolveCodexAccountForThreadDetailed(threadId, config);
+  if (resolution.status === "expired") throw new CodexThreadAffinityExpiredError(resolution.accountId);
+  const accountId = resolution.status === "selected" ? resolution.accountId : null;
   if (!accountId) return { kind: "main", accountId: null };
   const cooldownUntil = getCodexAccountCooldownUntil(accountId);
   if (cooldownUntil) throw new CodexAccountCooldownError(accountId, cooldownUntil);
