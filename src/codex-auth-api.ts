@@ -30,6 +30,8 @@ export function getAccountQuota(accountId: string) {
   return accountQuota.get(accountId) ?? null;
 }
 
+export function clearAccountQuota(): void { accountQuota.clear(); }
+
 const codexAuthLoginState = new Map<string, { status: string; accountId?: string; email?: string; error?: string }>();
 
 function readCodexTokens(): { access_token: string; account_id: string } | null {

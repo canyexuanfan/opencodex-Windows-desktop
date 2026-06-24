@@ -10,7 +10,7 @@ const CALLBACK_PORT = 19191;
 const CALLBACK_PATH = "/callback";
 const ORIGINATOR = "opencodex";
 
-function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
+export function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
   const parts = token.split(".");
   if (parts.length !== 3 || !parts[1]) return undefined;
   try {
@@ -20,7 +20,7 @@ function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
   }
 }
 
-function extractAccountId(idToken?: string, accessToken?: string): string | undefined {
+export function extractAccountId(idToken?: string, accessToken?: string): string | undefined {
   for (const token of [idToken, accessToken]) {
     if (!token) continue;
     const payload = decodeJwtPayload(token);
@@ -36,7 +36,7 @@ function extractAccountId(idToken?: string, accessToken?: string): string | unde
   return undefined;
 }
 
-function extractEmail(idToken?: string, accessToken?: string): string | undefined {
+export function extractEmail(idToken?: string, accessToken?: string): string | undefined {
   for (const token of [idToken, accessToken]) {
     if (!token) continue;
     const payload = decodeJwtPayload(token);

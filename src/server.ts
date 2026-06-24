@@ -36,7 +36,9 @@ import { getAccountQuota } from "./codex-auth-api";
 
 const threadAccountMap = new Map<string, string>();
 
-function resolveCodexAccountForThread(
+export function clearThreadAccountMap(): void { threadAccountMap.clear(); }
+
+export function resolveCodexAccountForThread(
   threadId: string | null,
   config: OcxConfig,
 ): string | null {
