@@ -33,7 +33,7 @@ This manifest tracks the implementation evidence for the `280` multi-auth securi
 | Patch 5D - Cooldown/failure window | `56c9369` | 429 cooldown and transient failure windows are enforced. |
 | Patch 5E - Terminal stream outcomes | `e123339` | SSE/WS terminal failed/incomplete outcomes are recorded after stream completion. |
 | Patch 6 - Privacy labels and redaction | `e752fab` | Codex auth account labels, OAuth status, debug frames, and durable errors avoid raw account identifiers. |
-| Patch 7 - P1/P2 stop-audit closure | Pending commit | Thread affinity TTL/LRU/generation, grant-scoped refresh locks, CI privacy scan, and item-level manifest mapping. |
+| Patch 7 - P1/P2 stop-audit closure | `d65877b`, `72d83d1` | Thread affinity TTL/LRU/generation, grant-scoped refresh locks, CI privacy scan, and item-level manifest mapping. |
 
 ## Item-Level 280 Requirement Matrix
 
@@ -45,14 +45,14 @@ This manifest tracks the implementation evidence for the `280` multi-auth securi
 | Local API auth protects non-loopback management/data-plane routes. | `9490cfc`; `tests/server-auth.test.ts`. | Implemented. |
 | Config/account DTOs avoid secrets and default account PII exposure. | `9490cfc`, `e752fab`; `tests/server-auth.test.ts`; `tests/codex-auth-api.test.ts`; browser smoke recorded below. | Implemented. |
 | Manual import does not trust client-controlled identity by default. | `b9903be`; `tests/codex-auth-api.test.ts`. | Implemented as disabled-by-default; authoritative identity rework remains out of scope while disabled. |
-| HTTP/WebSocket auth context consistency. | `1f0813c`, Patch 7 pending commit; `tests/codex-auth-context.test.ts`; `tests/server-auth.test.ts`. | Implemented. |
-| Affinity lifecycle has TTL/LRU bounds and generation revalidation. | Patch 7 pending commit; `tests/codex-routing.test.ts`. | Implemented. |
-| Refresh coordination is generation-guarded and grant-scoped. | `278873a`, Patch 7 pending commit; `tests/codex-account-store.test.ts`. | Implemented. |
+| HTTP/WebSocket auth context consistency. | `1f0813c`, `d65877b`; `tests/codex-auth-context.test.ts`; `tests/server-auth.test.ts`. | Implemented. |
+| Affinity lifecycle has TTL/LRU bounds and generation revalidation. | `d65877b`; `tests/codex-routing.test.ts`. | Implemented. |
+| Refresh coordination is generation-guarded and grant-scoped. | `278873a`, `d65877b`; `tests/codex-account-store.test.ts`. | Implemented. |
 | Outcome classifier separates caller, credential, quota, transient, sidecar, and terminal stream outcomes. | `35d28a0`, `cfc6e47`, `56c9369`, `e123339`; `tests/codex-routing.test.ts`; `tests/server-auth.test.ts`; `tests/sidecar-abort.test.ts`; `tests/ws-endpoint.test.ts`. | Implemented. |
 | Quota unknown/stale/malformed state does not attract traffic as zero usage. | `820fd8c`; `tests/codex-routing.test.ts`; `tests/codex-auth-api.test.ts`. | Implemented. |
-| Request labels and durable logs avoid raw account identifiers. | `e752fab`, Patch 7 pending commit; `tests/codex-account-label.test.ts`; `tests/debug.test.ts`; `bun run privacy:scan`. | Implemented. |
+| Request labels and durable logs avoid raw account identifiers. | `e752fab`, `d65877b`, `72d83d1`; `tests/codex-account-label.test.ts`; `tests/debug.test.ts`; `bun run privacy:scan`. | Implemented. |
 | Historical 270 release-readiness docs are superseded. | `e752fab`; nine 270 docs contain supersession banners. | Implemented. |
-| Automated privacy scan covers source/docs/CI. | Patch 7 pending commit; `scripts/privacy-scan.ts`; `.github/workflows/ci.yml`; `bun run privacy:scan`. | Implemented. |
+| Automated privacy scan covers source/docs/CI. | `d65877b`, `72d83d1`; `scripts/privacy-scan.ts`; `.github/workflows/ci.yml`; `bun run privacy:scan`. | Implemented. |
 
 ## Documentation Evidence
 
@@ -91,6 +91,14 @@ This manifest tracks the implementation evidence for the `280` multi-auth securi
 | Browser smoke | Disposable loopback proxy on port 10190 rendered Codex Auth. DOM check returned `hasRaw:false`, `hasMasked:true`, `title:"Codex Auth"` for the fixture raw email and masked email. |
 | Privacy scans | Changed-file scan found only `example.test` fixtures, existing placeholder token field names, and historical before/negative-test strings. Source-only scan for ordinal labels, old refresh-error strings, and payload-preview patterns returned no matches. |
 | Diff check | `git diff --check` passed. |
+
+## Phase 70 Post-Commit Evidence
+
+| Gate | Evidence |
+| --- | --- |
+| Commits | `d65877b` (`fix: bound codex affinity and refresh grants`); `72d83d1` (`fix: avoid privacy scan self-match`). |
+| Independent verifier | Backend verifier returned DONE after reading implementation and running `bun run typecheck`, focused Phase 70 tests, and `bun run privacy:scan` before the script was tracked. |
+| Post-commit privacy fix | After `d65877b`, tracked `scripts/privacy-scan.ts` self-matched its own `a@b.com` allowlist literal. `72d83d1` added the planned script-self fixture exception, and `bun run privacy:scan` passed afterward. |
 
 ## Phase 60 Post-Commit Evidence
 
