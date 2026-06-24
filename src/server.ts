@@ -642,6 +642,8 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
     config.providers[name] = prov;
     if (body.setDefault) config.defaultProvider = name;
     save(config);
+    const { clearModelCache } = await import("./model-cache");
+    clearModelCache(name);
     await refreshCodexCatalogBestEffort();
     return jsonResponse({ success: true, name });
   }
@@ -652,7 +654,8 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
     const { saveConfig: save } = await import("./config");
     delete config.providers[name];
     save(config);
-    // Drop its models from Codex's catalog immediately (re-sync + cache bust) so removal is live.
+    const { clearModelCache: clearCache } = await import("./model-cache");
+    clearCache(name);
     await refreshCodexCatalogBestEffort();
     return jsonResponse({ success: true });
   }
