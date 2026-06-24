@@ -6,7 +6,7 @@ import {
 } from "./codex-account-store";
 import { markAccountNeedsReauth } from "./codex-account-runtime-state";
 import { isCodexAccountUsable } from "./codex-account-usability";
-import { resolveCodexAccountForThread } from "./codex-routing";
+import { getCodexAccountCooldownUntil, resolveCodexAccountForThread } from "./codex-routing";
 import type { OcxConfig, OcxProviderConfig } from "./types";
 import { FORWARD_HEADERS } from "./adapters/openai-responses";
 
@@ -35,6 +35,18 @@ export class CodexAuthContextError extends Error {
   }
 }
 
+export class CodexAccountCooldownError extends Error {
+  accountId: string;
+  cooldownUntil: number;
+
+  constructor(accountId: string, cooldownUntil: number) {
+    super("Selected Codex account is cooling down");
+    this.name = "CodexAccountCooldownError";
+    this.accountId = accountId;
+    this.cooldownUntil = cooldownUntil;
+  }
+}
+
 export function shouldMarkAccountNeedsReauthForCodexAuthFailure(cause: unknown): boolean {
   return !(cause instanceof CodexCredentialGenerationConflictError) && !(cause instanceof CodexCredentialRefreshLockTimeoutError);
 }
@@ -43,6 +55,8 @@ export async function resolveCodexAuthContext(headers: Headers, config: OcxConfi
   const threadId = headers.get("x-codex-parent-thread-id");
   const accountId = resolveCodexAccountForThread(threadId, config);
   if (!accountId) return { kind: "main", accountId: null };
+  const cooldownUntil = getCodexAccountCooldownUntil(accountId);
+  if (cooldownUntil) throw new CodexAccountCooldownError(accountId, cooldownUntil);
 
   try {
     const token = await getValidCodexToken(accountId);
@@ -59,6 +73,12 @@ export async function resolveCodexAuthContext(headers: Headers, config: OcxConfi
     }
     throw new CodexAuthContextError(accountId, cause);
   }
+}
+
+export function assertCodexAuthContextNotCooled(ctx: CodexAuthContext | undefined): void {
+  if (ctx?.kind !== "pool") return;
+  const cooldownUntil = getCodexAccountCooldownUntil(ctx.accountId);
+  if (cooldownUntil) throw new CodexAccountCooldownError(ctx.accountId, cooldownUntil);
 }
 
 export function applyCodexAuthContextToProvider(

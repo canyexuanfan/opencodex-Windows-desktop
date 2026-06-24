@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import {
   applyCodexAuthContextToProvider,
+  assertCodexAuthContextNotCooled,
+  CodexAccountCooldownError,
   CodexAuthContextError,
   headersForCodexAuthContext,
   isCodexAuthContextUsable,
@@ -17,7 +19,7 @@ import {
   saveCodexAccountCredential,
 } from "../src/codex-account-store";
 import { clearAccountNeedsReauth, isAccountNeedsReauth } from "../src/codex-auth-api";
-import { clearThreadAccountMap } from "../src/codex-routing";
+import { clearCodexUpstreamHealth, clearThreadAccountMap, recordCodexUpstreamOutcome } from "../src/codex-routing";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 
 const TEST_DIR = "/tmp/opencodex-codex-auth-context-test";
@@ -28,12 +30,14 @@ beforeEach(() => {
   process.env.OPENCODEX_HOME = TEST_DIR;
   rmSync(TEST_DIR, { recursive: true, force: true });
   clearThreadAccountMap();
+  clearCodexUpstreamHealth();
   clearAccountNeedsReauth("pool-a");
 });
 
 afterEach(() => {
   rmSync(TEST_DIR, { recursive: true, force: true });
   clearThreadAccountMap();
+  clearCodexUpstreamHealth();
   clearAccountNeedsReauth("pool-a");
   if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousOpencodexHome;
@@ -105,6 +109,37 @@ describe("Codex auth context", () => {
     } catch (err) {
       expect(err).toBeInstanceOf(CodexAuthContextError);
       expect((err as Error).message).not.toContain("pool-a");
+    }
+  });
+
+  test("cooled single pool account fails closed instead of falling back to inbound main auth", async () => {
+    saveCodexAccountCredential("pool-a", {
+      accessToken: "pool_token",
+      refreshToken: "pool_refresh",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "pool_acc",
+    });
+    const now = 1_800_000_000_000;
+    recordCodexUpstreamOutcome(config(), "pool-a", 429, { retryAfter: "60", now });
+
+    await expect(resolveCodexAuthContext(new Headers({ authorization: "Bearer main_token" }), config()))
+      .rejects.toBeInstanceOf(CodexAccountCooldownError);
+  });
+
+  test("cached pool auth context is rejected while cooled and accepted after expiry", () => {
+    const originalNow = Date.now;
+    const now = 1_800_000_000_000;
+    const ctx = { kind: "pool" as const, accountId: "pool-a", generation: 1, accessToken: "pool_token", chatgptAccountId: "pool_acc" };
+    try {
+      recordCodexUpstreamOutcome(config(), "pool-a", 429, { retryAfter: "60", now });
+      Date.now = () => now + 1_000;
+      expect(() => assertCodexAuthContextNotCooled(ctx)).toThrow(CodexAccountCooldownError);
+
+      Date.now = () => now + 61_000;
+      expect(() => assertCodexAuthContextNotCooled(ctx)).not.toThrow();
+      expect(() => assertCodexAuthContextNotCooled({ kind: "main", accountId: null })).not.toThrow();
+    } finally {
+      Date.now = originalNow;
     }
   });
 

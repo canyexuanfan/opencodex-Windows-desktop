@@ -35,6 +35,8 @@ import { deriveProviderPresets } from "./providers/derive";
 import type { OcxConfig, OcxProviderConfig } from "./types";
 import {
   applyCodexAuthContextToProvider,
+  assertCodexAuthContextNotCooled,
+  CodexAccountCooldownError,
   CodexAuthContextError,
   headersForCodexAuthContext,
   isCodexAuthContextUsable,
@@ -194,6 +196,9 @@ async function handleResponses(
     authCtx = options.authContext ?? await resolveCodexAuthContext(req.headers, config);
     selectedForwardHeaders = options.selectedForwardHeaders ?? headersForCodexAuthContext(req.headers, authCtx);
   } catch (err) {
+    if (err instanceof CodexAccountCooldownError) {
+      return formatErrorResponse(429, "rate_limit_error", "Selected Codex account is cooling down");
+    }
     if (err instanceof CodexAuthContextError) {
       const safeAccountLabel = formatCodexProviderForLog(route.providerName, err.accountId, config);
       console.error(`[codex-auth] Pool account ${safeAccountLabel} token failed; reauthentication required`);
@@ -261,6 +266,7 @@ async function handleResponses(
       const weeklyResetRaw = upstreamResponse.headers.get("x-codex-secondary-reset-at");
       const fiveHourResetRaw = upstreamResponse.headers.get("x-codex-primary-reset-at");
       const monthlyResetRaw = upstreamResponse.headers.get("x-codex-tertiary-reset-at");
+      const retryAfterRaw = upstreamResponse.headers.get("retry-after");
       if (weeklyRaw || fiveHourRaw || monthlyRaw) {
         const { updateAccountQuota } = await import("./codex-auth-api");
         updateAccountQuota(
@@ -273,7 +279,10 @@ async function handleResponses(
           monthlyResetRaw,
         );
       }
-      recordCodexUpstreamOutcome(config, authCtx.accountId, upstreamResponse.status);
+      recordCodexUpstreamOutcome(config, authCtx.accountId, upstreamResponse.status, {
+        retryAfter: retryAfterRaw,
+        resetAt: [fiveHourResetRaw, weeklyResetRaw, monthlyResetRaw],
+      });
     }
 
     const headers = sanitizePassthroughHeaders(upstreamResponse.headers);
@@ -922,6 +931,9 @@ export function startServer(port?: number) {
         try {
           authCtx = await resolveCodexAuthContext(req.headers, config);
         } catch (err) {
+          if (err instanceof CodexAccountCooldownError) {
+            return formatErrorResponse(429, "rate_limit_error", "Selected Codex account is cooling down");
+          }
           if (err instanceof CodexAuthContextError) {
             const safeAccountLabel = formatCodexProviderForLog("chatgpt", err.accountId, config);
             console.error(`[codex-auth] Pool account ${safeAccountLabel} token failed during websocket upgrade; reauthentication required`);
@@ -1042,6 +1054,7 @@ export function startServer(port?: number) {
             body: JSON.stringify({ ...payload, stream: true }),
           });
           try {
+            assertCodexAuthContextNotCooled(ws.data.authContext);
             const response = await handleResponses(req, config, logCtx, {
               forceEmptyResponseId: true,
               abortSignal: turnAbort.signal,
@@ -1052,6 +1065,13 @@ export function startServer(port?: number) {
           } catch (err) {
             if (!isCurrent()) return;
             try {
+              if (err instanceof CodexAccountCooldownError) {
+                sendJsonFrame(ws, buildWsErrorFrame(429, {
+                  type: "rate_limit_error",
+                  message: "Selected Codex account is cooling down",
+                }));
+                return;
+              }
               sendJsonFrame(ws, buildWsErrorFrame(502, {
                 type: "proxy_error",
                 message: err instanceof Error ? err.message : String(err),

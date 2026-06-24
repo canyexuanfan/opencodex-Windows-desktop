@@ -2,14 +2,18 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
+  CODEX_FAILURE_WINDOW_MS,
   classifyCodexUpstreamOutcome,
   clearCodexUpstreamHealth,
   clearCodexUpstreamHealthForAccount,
   clearThreadAccountMap,
   clearThreadAccountMapForAccount,
   computeCodexUsageScore,
+  getCodexAccountCooldownUntil,
   getCodexUpstreamHealth,
+  isCodexAccountInCooldown,
   pickLowestUsageCodexAccount,
+  parseRetryAfterMs,
   recordCodexUpstreamOutcome,
   resolveCodexAccountForThread,
 } from "../src/codex-routing";
@@ -186,6 +190,75 @@ describe("codex routing", () => {
     recordCodexUpstreamOutcome(config, "a", "connect_error");
     expect(getCodexUpstreamHealth("a")).toMatchObject({ consecutiveFailures: 3, lastFailureStatus: 0 });
     expect(resolveCodexAccountForThread("connect-next", config)).toBe("b");
+  });
+
+  test("429 with Retry-After records an account cooldown", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+
+    recordCodexUpstreamOutcome(config, "a", 429, { retryAfter: "120", now });
+
+    expect(getCodexAccountCooldownUntil("a", now)).toBe(now + 120_000);
+    expect(isCodexAccountInCooldown("a", now + 119_999)).toBe(true);
+    expect(isCodexAccountInCooldown("a", now + 120_001)).toBe(false);
+  });
+
+  test("Retry-After HTTP date values are parsed as future cooldowns", () => {
+    const now = Date.UTC(2026, 5, 24, 12, 0, 0);
+    const retryAfter = new Date(now + 45_000).toUTCString();
+
+    expect(parseRetryAfterMs(retryAfter, now)).toBe(45_000);
+  });
+
+  test("429 uses Codex reset headers as cooldown fallback", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+
+    recordCodexUpstreamOutcome(config, "a", 429, {
+      now,
+      resetAt: [
+        String((now + 90_000) / 1000),
+        String((now + 240_000) / 1000),
+      ],
+    });
+
+    expect(getCodexAccountCooldownUntil("a", now)).toBe(now + 90_000);
+  });
+
+  test("429 on the active account clears affinity and switches new threads to an available pool account", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 20, 10);
+    expect(resolveCodexAccountForThread("quota-existing", config)).toBe("a");
+
+    recordCodexUpstreamOutcome(config, "a", 429, { retryAfter: "60", now });
+
+    expect(config.activeCodexAccountId).toBe("b");
+    expect(resolveCodexAccountForThread("quota-existing", config)).toBe("b");
+    expect(resolveCodexAccountForThread("quota-next", config)).toBe("b");
+  });
+
+  test("2xx responses clear transient failures without clearing an unexpired cooldown", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    recordCodexUpstreamOutcome(config, "a", 429, { retryAfter: "120", now });
+
+    recordCodexUpstreamOutcome(config, "a", 200, { now: now + 1_000 });
+
+    expect(getCodexAccountCooldownUntil("a", now + 1_000)).toBe(now + 120_000);
+    expect(getCodexUpstreamHealth("a")).toMatchObject({ consecutiveFailures: 0, cooldownUntil: now + 120_000 });
+  });
+
+  test("stale transient failure streaks expire before failover thresholding", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+
+    recordCodexUpstreamOutcome(config, "a", 503, { now });
+    recordCodexUpstreamOutcome(config, "a", 503, { now: now + CODEX_FAILURE_WINDOW_MS + 1 });
+
+    expect(getCodexUpstreamHealth("a")).toMatchObject({ consecutiveFailures: 1, lastFailureStatus: 503 });
+    expect(resolveCodexAccountForThread("stale-failure-next", config)).toBe("a");
   });
 
   test("2xx responses reset the failure streak", () => {
