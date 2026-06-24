@@ -2,7 +2,7 @@ import type { ProviderAdapter } from "../adapters/base";
 import type { AdapterEvent, OcxMessage, OcxParsedRequest, OcxProviderConfig } from "../types";
 import { namespacedToolName } from "../types";
 import { bridgeToResponsesSSE } from "../bridge";
-import { runWebSearch, type SidecarSettings } from "./executor";
+import { runWebSearch, type SidecarOutcomeRecorder, type SidecarSettings } from "./executor";
 import { formatWebSearchResult } from "./format-result";
 import { WEB_SEARCH_TOOL_NAME } from "./synthetic-tool";
 
@@ -97,6 +97,7 @@ export interface WebSearchLoopDeps {
   maxSearches: number;
   forceEmptyResponseId?: boolean;
   abortSignal?: AbortSignal;
+  recordSidecarOutcome?: SidecarOutcomeRecorder;
 }
 
 /**
@@ -106,7 +107,7 @@ export interface WebSearchLoopDeps {
  * streamed Responses SSE. web_search calls are executed internally and never relayed to Codex.
  */
 export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Response> {
-  const { parsed, adapter, selectedForwardHeaders, forwardProvider, hostedTool, settings, maxSearches, abortSignal } = deps;
+  const { parsed, adapter, selectedForwardHeaders, forwardProvider, hostedTool, settings, maxSearches, abortSignal, recordSidecarOutcome } = deps;
   if (!adapter.parseResponse) return jsonError(500, "web-search sidecar requires a non-streaming adapter");
 
   const messages: OcxMessage[] = [...parsed.context.messages];
@@ -166,7 +167,7 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
         outcome = { text: "", sources: [], error: "the model called web_search with an empty query" };
         searchesExecuted++;
       } else {
-        outcome = await runWebSearch(call.query, hostedTool, forwardProvider, selectedForwardHeaders, settings, abortSignal);
+        outcome = await runWebSearch(call.query, hostedTool, forwardProvider, selectedForwardHeaders, settings, abortSignal, recordSidecarOutcome);
         searchesExecuted++;
         if (outcome.error) failedQueries.add(normalizeQuery(call.query));
       }

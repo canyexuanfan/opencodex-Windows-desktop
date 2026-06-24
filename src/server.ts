@@ -50,6 +50,7 @@ export {
 import {
   formatCodexProviderForLog,
   recordCodexUpstreamOutcome,
+  type CodexUpstreamOutcome,
 } from "./codex-routing";
 import { registerCodexWebSocket, unregisterCodexWebSocket } from "./codex-websocket-registry";
 
@@ -137,6 +138,12 @@ export function resolveAdapter(providerConfig: OcxProviderConfig) {
   }
 }
 
+function sidecarOutcomeRecorder(config: OcxConfig, authCtx: CodexAuthContext): ((outcome: CodexUpstreamOutcome) => void) | undefined {
+  return authCtx.kind === "pool"
+    ? outcome => recordCodexUpstreamOutcome(config, authCtx.accountId, outcome)
+    : undefined;
+}
+
 async function handleResponses(
   req: Request,
   config: OcxConfig,
@@ -214,8 +221,9 @@ async function handleResponses(
   // describe each attached image with a gpt vision model via the ChatGPT passthrough and replace it
   // with text BEFORE the main call, so the text-only model can reason about it.
   const visionPlan = planVisionSidecar(config, route.provider, route.modelId, parsed, selectedForwardHeaders, authCtx);
+  const recordSidecarOutcome = sidecarOutcomeRecorder(config, authCtx);
   if (visionPlan) {
-    await describeImagesInPlace(parsed, visionPlan.forwardProvider, selectedForwardHeaders, visionPlan.settings, options.abortSignal);
+    await describeImagesInPlace(parsed, visionPlan.forwardProvider, selectedForwardHeaders, visionPlan.settings, options.abortSignal, recordSidecarOutcome);
   }
 
   const adapterProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
@@ -294,6 +302,7 @@ async function handleResponses(
       maxSearches: wsPlan.maxSearches,
       forceEmptyResponseId: true,
       abortSignal: options.abortSignal,
+      recordSidecarOutcome,
     });
   }
 

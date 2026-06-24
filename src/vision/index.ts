@@ -2,6 +2,7 @@ import type { OcxConfig, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProvid
 import { modelInList } from "../types";
 import { describeImage, type VisionSettings } from "./describe";
 import type { CodexAuthContext } from "../codex-auth-context";
+import type { SidecarOutcomeRecorder } from "../web-search/executor";
 
 export { describeImage } from "./describe";
 
@@ -110,6 +111,7 @@ export async function describeImagesInPlace(
   selectedForwardHeaders: Headers,
   settings: VisionSettings,
   abortSignal?: AbortSignal,
+  recordSidecarOutcome?: SidecarOutcomeRecorder,
 ): Promise<void> {
   // 1. Gather every image part across messages, each with its own message's text as context.
   const jobs: ImageJob[] = [];
@@ -132,7 +134,7 @@ export async function describeImagesInPlace(
 
   // 2. Describe all images with bounded concurrency (order preserved).
   const outcomes = await runBounded(jobs, VISION_CONCURRENCY, j =>
-    describeImage(j.imageUrl, j.detail, j.contextText, forwardProvider, selectedForwardHeaders, settings, abortSignal));
+    describeImage(j.imageUrl, j.detail, j.contextText, forwardProvider, selectedForwardHeaders, settings, abortSignal, recordSidecarOutcome));
 
   // 3. Rebuild each message, replacing image parts with their descriptions in order.
   let oi = 0;

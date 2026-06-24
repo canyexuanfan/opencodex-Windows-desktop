@@ -2,6 +2,7 @@ import type { OcxProviderConfig } from "../types";
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
 import { signalWithTimeout } from "../abort";
 import { parseSidecarSSE, type WebSearchResult } from "./parse";
+import type { CodexUpstreamOutcome } from "../codex-routing";
 
 export interface SidecarSettings {
   model: string;
@@ -24,6 +25,7 @@ const IMAGE_INSTRUCTION =
 
 /** A search result, or an `error` string when the search couldn't run (surfaced as a tool result). */
 export type SidecarOutcome = WebSearchResult & { error?: string };
+export type SidecarOutcomeRecorder = (outcome: CodexUpstreamOutcome) => void;
 
 /**
  * Execute ONE web search via the gpt-mini sidecar through the ChatGPT forward backend — the only path
@@ -38,6 +40,7 @@ export async function runWebSearch(
   selectedForwardHeaders: Headers,
   settings: SidecarSettings,
   abortSignal?: AbortSignal,
+  recordOutcome?: SidecarOutcomeRecorder,
 ): Promise<SidecarOutcome> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (forwardProvider.headers) Object.assign(headers, forwardProvider.headers);
@@ -67,12 +70,14 @@ export async function runWebSearch(
       body: JSON.stringify(body),
       signal: linkedSignal.signal,
     });
+    recordOutcome?.(res.status);
     if (!res.ok) {
       const t = await res.text().catch(() => "");
       return { text: "", sources: [], error: `sidecar HTTP ${res.status}: ${t.slice(0, 200)}` };
     }
     return await parseSidecarSSE(res);
   } catch (e) {
+    recordOutcome?.(e instanceof Error && e.name === "TimeoutError" ? "timeout" : "connect_error");
     return { text: "", sources: [], error: e instanceof Error ? e.message : String(e) };
   } finally {
     linkedSignal.cleanup();

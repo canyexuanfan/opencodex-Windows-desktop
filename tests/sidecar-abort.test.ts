@@ -94,6 +94,82 @@ describe("sidecar abort propagation", () => {
     expect((await outcome).error).toBe("aborted by turn");
   });
 
+  test("web-search sidecar records HTTP and connect outcomes", async () => {
+    const recorded: unknown[] = [];
+    globalThis.fetch = (() => Promise.resolve(new Response("expired", { status: 401 }))) as typeof fetch;
+
+    const httpOutcome = await runWebSearch(
+      "current docs",
+      { type: "web_search" },
+      forwardProvider,
+      new Headers({ authorization: "Bearer token" }),
+      { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      undefined,
+      outcome => recorded.push(outcome),
+    );
+
+    expect(httpOutcome.error).toBe("sidecar HTTP 401: expired");
+    expect(recorded).toEqual([401]);
+
+    globalThis.fetch = (() => Promise.reject(new Error("network down"))) as typeof fetch;
+    const connectOutcome = await runWebSearch(
+      "current docs",
+      { type: "web_search" },
+      forwardProvider,
+      new Headers({ authorization: "Bearer token" }),
+      { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      undefined,
+      outcome => recorded.push(outcome),
+    );
+
+    expect(connectOutcome.error).toBe("network down");
+    expect(recorded).toEqual([401, "connect_error"]);
+  });
+
+  test("web-search loop forwards sidecar outcomes", async () => {
+    const recorded: unknown[] = [];
+    globalThis.fetch = ((input, init) => {
+      const url = String(input);
+      if (url.startsWith("https://routed.test/")) {
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }
+      const headers = new Headers(init?.headers);
+      expect(headers.get("authorization")).toBe("Bearer token");
+      return Promise.resolve(new Response("expired", { status: 401 }));
+    }) as typeof fetch;
+    const adapter: ProviderAdapter = {
+      name: "mock",
+      buildRequest: () => ({ url: "https://routed.test/v1/chat/completions", method: "POST", headers: {}, body: "{}" }),
+      async *parseStream() { /* unused */ },
+      async parseResponse() {
+        return [
+          { type: "tool_call_start", id: "call_1", name: "web_search" },
+          { type: "tool_call_delta", id: "call_1", arguments: JSON.stringify({ query: "current docs" }) },
+          { type: "tool_call_end", id: "call_1" },
+        ];
+      },
+    };
+
+    const response = await runWithWebSearch({
+      parsed: parseRequest({
+        model: "routed/model",
+        input: "Search for current docs",
+        stream: true,
+        tools: [{ type: "web_search" }],
+      }),
+      adapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+      recordSidecarOutcome: outcome => recorded.push(outcome),
+    });
+
+    expect(response.status).toBe(200);
+    expect(recorded).toEqual([401]);
+  });
+
   test("vision sidecar fetch observes the WebSocket turn abort signal", async () => {
     const getSignal = installAbortAwareFetch();
     const turn = new AbortController();
@@ -112,6 +188,40 @@ describe("sidecar abort propagation", () => {
     turn.abort("replacement turn");
     expect(signal.aborted).toBe(true);
     expect((await outcome).error).toBe("aborted by turn");
+  });
+
+  test("vision sidecar records HTTP and connect outcomes", async () => {
+    const recorded: unknown[] = [];
+    globalThis.fetch = (() => Promise.resolve(new Response("denied", { status: 403 }))) as typeof fetch;
+
+    const httpOutcome = await describeImage(
+      "data:image/png;base64,iVBORw0KGgo=",
+      "high",
+      "inspect screenshot",
+      forwardProvider,
+      new Headers({ authorization: "Bearer token" }),
+      { model: "gpt-5.4-mini", timeoutMs: 30_000 },
+      undefined,
+      outcome => recorded.push(outcome),
+    );
+
+    expect(httpOutcome.error).toBe("vision sidecar HTTP 403: denied");
+    expect(recorded).toEqual([403]);
+
+    globalThis.fetch = (() => Promise.reject(new Error("vision network down"))) as typeof fetch;
+    const connectOutcome = await describeImage(
+      "data:image/png;base64,iVBORw0KGgo=",
+      "high",
+      "inspect screenshot",
+      forwardProvider,
+      new Headers({ authorization: "Bearer token" }),
+      { model: "gpt-5.4-mini", timeoutMs: 30_000 },
+      undefined,
+      outcome => recorded.push(outcome),
+    );
+
+    expect(connectOutcome.error).toBe("vision network down");
+    expect(recorded).toEqual([403, "connect_error"]);
   });
 
   test("web-search sidecar uses selected pool auth instead of inbound main auth", async () => {
