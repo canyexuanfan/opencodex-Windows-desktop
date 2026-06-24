@@ -11,6 +11,18 @@ function streamFromChunks(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
   });
 }
 
+async function readAll(stream: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = stream.getReader();
+  const dec = new TextDecoder();
+  let text = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += dec.decode(value, { stream: true });
+  }
+  return text;
+}
+
 describe("passthrough relayWithAbort (RC2, passthrough path)", () => {
   test("CASE B: relays body bytes verbatim and completes cleanly without aborting", async () => {
     const enc = new TextEncoder();
@@ -62,6 +74,93 @@ describe("passthrough relayWithAbort (RC2, passthrough path)", () => {
     await reader.cancel("client gone");
     expect(ac.signal.aborted).toBe(true);
     expect(ac.signal.reason).toBe("client gone");
+  });
+
+  test("SSE passthrough reports failed terminal payloads", async () => {
+    const enc = new TextEncoder();
+    const ac = new AbortController();
+    const terminals: string[] = [];
+    const relayed = relaySseWithHeartbeat(streamFromChunks([
+      enc.encode('event: response.failed\ndata: {"type":"response.failed","response":{"status":"failed"}}\n\n'),
+    ]), ac, 15_000, status => terminals.push(status))!;
+
+    expect(await readAll(relayed)).toContain("response.failed");
+    expect(terminals).toEqual(["failed"]);
+  });
+
+  test("SSE passthrough reports incomplete on EOF before a terminal payload", async () => {
+    const enc = new TextEncoder();
+    const ac = new AbortController();
+    const terminals: string[] = [];
+    const relayed = relaySseWithHeartbeat(streamFromChunks([
+      enc.encode('event: response.created\ndata: {"type":"response.created"}\n\n'),
+    ]), ac, 15_000, status => terminals.push(status))!;
+
+    await readAll(relayed);
+    expect(terminals).toEqual(["incomplete"]);
+  });
+
+  test("SSE passthrough does not report terminal status on client cancel", async () => {
+    const ac = new AbortController();
+    const terminals: string[] = [];
+    const body = new ReadableStream<Uint8Array>({ pull() { return new Promise<void>(() => {}); } });
+    const relayed = relaySseWithHeartbeat(body, ac, 15_000, status => terminals.push(status))!;
+    const reader = relayed.getReader();
+    const pending = reader.read();
+    await reader.cancel("client gone");
+
+    expect(ac.signal.aborted).toBe(true);
+    expect(terminals).toEqual([]);
+    await pending.catch(() => {});
+  });
+
+  test("SSE passthrough reports CRLF and multiline terminal payloads", async () => {
+    const enc = new TextEncoder();
+    const ac = new AbortController();
+    const terminals: string[] = [];
+    const relayed = relaySseWithHeartbeat(streamFromChunks([
+      enc.encode('event: response.completed\r\ndata: {"type":"response.completed",\r\ndata: "response":{"id":"r1"}}\r\n\r\n'),
+    ]), ac, 15_000, status => terminals.push(status))!;
+
+    await readAll(relayed);
+    expect(terminals).toEqual(["completed"]);
+  });
+
+  test("SSE passthrough reports split terminal frames", async () => {
+    const enc = new TextEncoder();
+    const ac = new AbortController();
+    const terminals: string[] = [];
+    const relayed = relaySseWithHeartbeat(streamFromChunks([
+      enc.encode('event: response.completed\ndata: {"type":"response.'),
+      enc.encode('completed","response":{"id":"r1"}}\n\n'),
+    ]), ac, 15_000, status => terminals.push(status))!;
+
+    await readAll(relayed);
+    expect(terminals).toEqual(["completed"]);
+  });
+
+  test("SSE passthrough treats DONE without a terminal as incomplete", async () => {
+    const enc = new TextEncoder();
+    const ac = new AbortController();
+    const terminals: string[] = [];
+    const relayed = relaySseWithHeartbeat(streamFromChunks([
+      enc.encode("data: [DONE]\n\n"),
+    ]), ac, 15_000, status => terminals.push(status))!;
+
+    await readAll(relayed);
+    expect(terminals).toEqual(["incomplete"]);
+  });
+
+  test("SSE passthrough treats invalid JSON without a terminal as incomplete", async () => {
+    const enc = new TextEncoder();
+    const ac = new AbortController();
+    const terminals: string[] = [];
+    const relayed = relaySseWithHeartbeat(streamFromChunks([
+      enc.encode("data: {not-json}\n\n"),
+    ]), ac, 15_000, status => terminals.push(status))!;
+
+    await readAll(relayed);
+    expect(terminals).toEqual(["incomplete"]);
   });
 
   test("turn-level abort signal aborts the upstream fetch before headers arrive", () => {

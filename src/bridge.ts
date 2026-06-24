@@ -35,6 +35,8 @@ interface OutputItem {
   [key: string]: unknown;
 }
 
+export type ResponsesTerminalStatus = "completed" | "failed" | "incomplete";
+
 export function bridgeToResponsesSSE(
   events: AsyncIterable<AdapterEvent>,
   modelId: string,
@@ -43,7 +45,12 @@ export function bridgeToResponsesSSE(
   toolSearchToolNames?: Set<string>,
   onCancel?: () => void,
   heartbeatMs = 2_000,
-  options?: { responseId?: string; stallTimeoutSec?: number; hideThinkingSummary?: boolean },
+  options?: {
+    responseId?: string;
+    stallTimeoutSec?: number;
+    hideThinkingSummary?: boolean;
+    onTerminal?: (status: ResponsesTerminalStatus) => void;
+  },
 ): ReadableStream<Uint8Array> {
   // Freeform/custom tools (apply_patch) carry their body in `input`; the model is given a
   // function with `{input:string}`, so unwrap it here when relaying back as a custom_tool_call.
@@ -62,6 +69,13 @@ export function bridgeToResponsesSSE(
   // never enqueue again and never throw a second time inside start() — the RC2 double-throw that
   // otherwise surfaced as proxy-side stream noise on every client disconnect.
   let closed = false;
+  let clientCancelled = false;
+  let terminalReported = false;
+  const reportTerminal = (status: ResponsesTerminalStatus) => {
+    if (terminalReported || clientCancelled || closed) return;
+    terminalReported = true;
+    options?.onTerminal?.(status);
+  };
   // RC3 keep-alive: Codex's idle timer is timeout(idle_timeout, stream.next()) over an
   // eventsource_stream; ANY received event re-arms it, while an unknown type is ignored
   // (responses.rs `_ => Ok(None)`). We emit a real, parser-ignored `response.heartbeat` only during
@@ -120,6 +134,7 @@ export function bridgeToResponsesSSE(
               incomplete_details: { reason: "upstream_stall_timeout" },
             },
           });
+          reportTerminal("incomplete");
           terminated = true;
           closed = true;
           clearInterval(beat!);
@@ -341,6 +356,7 @@ export function bridgeToResponsesSSE(
               emit("response.completed", {
                 response: { ...responseSnapshot("completed", finishedItems), usage: responsesUsage(event.usage) },
               });
+              reportTerminal("completed");
               terminated = true;
               break;
             }
@@ -356,6 +372,7 @@ export function bridgeToResponsesSSE(
                   last_error: responseError(502, "upstream_error", event.message),
                 },
               });
+              reportTerminal("failed");
               terminated = true;
               break;
             }
@@ -369,6 +386,7 @@ export function bridgeToResponsesSSE(
             last_error: responseError(500, "proxy_error", err instanceof Error ? err.message : String(err)),
           },
         });
+        reportTerminal("failed");
         terminated = true;
       }
 
@@ -388,6 +406,7 @@ export function bridgeToResponsesSSE(
             incomplete_details: { reason: "adapter_eof" },
           },
         });
+        reportTerminal("incomplete");
       }
 
       emitDone();
@@ -400,6 +419,7 @@ export function bridgeToResponsesSSE(
     cancel() {
       // Client (Codex) disconnected. Stop emitting and let the caller abort the upstream fetch so a
       // cancelled turn does not leak the upstream stream or keep draining tokens (RC2).
+      clientCancelled = true;
       closed = true;
       if (beat) clearInterval(beat);
       onCancel?.();

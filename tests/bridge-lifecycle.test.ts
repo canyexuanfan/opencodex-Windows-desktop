@@ -30,6 +30,62 @@ async function collectEventNames(stream: ReadableStream<Uint8Array>): Promise<st
 }
 
 describe("bridge stream lifecycle (RC1 / RC2)", () => {
+  test("terminal callback reports completed for a normal done event", async () => {
+    const terminals: string[] = [];
+    await collectEventNames(bridgeToResponsesSSE(replay([
+      { type: "text_delta", text: "hi" },
+      { type: "done" },
+    ]), "routed/model", undefined, undefined, undefined, undefined, 2_000, {
+      onTerminal: status => terminals.push(status),
+    }));
+    expect(terminals).toEqual(["completed"]);
+  });
+
+  test("terminal callback reports failed for adapter errors", async () => {
+    const terminals: string[] = [];
+    await collectEventNames(bridgeToResponsesSSE(replay([
+      { type: "error", message: "boom" },
+    ]), "routed/model", undefined, undefined, undefined, undefined, 2_000, {
+      onTerminal: status => terminals.push(status),
+    }));
+    expect(terminals).toEqual(["failed"]);
+  });
+
+  test("terminal callback reports incomplete for adapter EOF without terminal", async () => {
+    const terminals: string[] = [];
+    await collectEventNames(bridgeToResponsesSSE(replay([
+      { type: "text_delta", text: "partial" },
+    ]), "routed/model", undefined, undefined, undefined, undefined, 2_000, {
+      onTerminal: status => terminals.push(status),
+    }));
+    expect(terminals).toEqual(["incomplete"]);
+  });
+
+  test("terminal callback does not report after client cancellation", async () => {
+    let cancelled = false;
+    async function* abortsAfterCancel(): AsyncGenerator<AdapterEvent> {
+      yield { type: "text_delta", text: "partial" };
+      while (!cancelled) await new Promise(resolve => setTimeout(resolve, 0));
+      throw new Error("cancelled upstream");
+    }
+    const terminals: string[] = [];
+    const stream = bridgeToResponsesSSE(
+      abortsAfterCancel(),
+      "routed/model",
+      undefined,
+      undefined,
+      undefined,
+      () => { cancelled = true; },
+      10,
+      { onTerminal: status => terminals.push(status) },
+    );
+    const reader = stream.getReader();
+    await reader.read();
+    await reader.cancel();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(terminals).toEqual([]);
+  });
+
   test("RC1: a stream that ends WITHOUT a done event emits response.incomplete (not completed)", async () => {
     const names = await collectEventNames(bridgeToResponsesSSE(replay([
       { type: "text_delta", text: "hello" },

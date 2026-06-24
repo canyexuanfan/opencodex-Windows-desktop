@@ -7,6 +7,7 @@ import {
   clearCodexUpstreamHealth,
   clearThreadAccountMap,
   getCodexUpstreamHealth,
+  recordCodexUpstreamOutcome,
 } from "../src/codex-routing";
 import { saveConfig } from "../src/config";
 import {
@@ -162,6 +163,139 @@ describe("server local API auth", () => {
       });
     } finally {
       await server.stop(true);
+    }
+  });
+
+  test("passthrough SSE terminal failure is recorded without clearing health on initial 200", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    clearCodexUpstreamHealth();
+    clearThreadAccountMap();
+    clearAccountNeedsReauth("pool-a");
+
+    const upstream = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(
+          'event: response.failed\ndata: {"type":"response.failed","response":{"status":"failed"}}\n\n',
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      },
+    });
+    const cfg = {
+      port: 0,
+      defaultProvider: "chatgpt",
+      providers: {
+        chatgpt: {
+          adapter: "openai-responses",
+          baseUrl: `${upstream.url}backend-api/codex`,
+          authMode: "forward",
+        },
+      },
+      codexAccounts: [
+        { id: "main", email: "main@example.test", isMain: true },
+        { id: "pool-a", email: "pool@example.test", isMain: false, chatgptAccountId: "acct-pool-a" },
+      ],
+      activeCodexAccountId: "pool-a",
+      upstreamFailoverThreshold: 3,
+    } as OcxConfig;
+    saveConfig(cfg);
+    saveCodexAccountCredential("pool-a", {
+      accessToken: "pool-access-token",
+      refreshToken: "pool-refresh-token",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "acct-pool-a",
+    });
+    recordCodexUpstreamOutcome(cfg, "pool-a", 503);
+    recordCodexUpstreamOutcome(cfg, "pool-a", 503);
+
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/v1/responses", server.url), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer inbound-main-token",
+        },
+        body: JSON.stringify({ model: "gpt-test", input: "hello", stream: true }),
+      });
+
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(getCodexUpstreamHealth("pool-a")).toMatchObject({
+        consecutiveFailures: 3,
+        lastFailureStatus: 502,
+      });
+    } finally {
+      await server.stop(true);
+      await upstream.stop(true);
+    }
+  });
+
+  test("non-forward generated stream does not mutate active pool health", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    clearCodexUpstreamHealth();
+    clearThreadAccountMap();
+    clearAccountNeedsReauth("pool-a");
+
+    const upstream = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(
+          [
+            'data: {"choices":[{"delta":{"content":"par"}}]}\n\n',
+            'data: {"error":{"message":"upstream failed","code":"server_error"}}\n\n',
+          ].join(""),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      },
+    });
+    saveConfig({
+      port: 0,
+      defaultProvider: "openai",
+      providers: {
+        openai: {
+          adapter: "openai-chat",
+          baseUrl: `${upstream.url}v1`,
+          apiKey: "provider-key",
+          defaultModel: "gpt-test",
+        },
+      },
+      codexAccounts: [
+        { id: "main", email: "main@example.test", isMain: true },
+        { id: "pool-a", email: "pool@example.test", isMain: false, chatgptAccountId: "acct-pool-a" },
+      ],
+      activeCodexAccountId: "pool-a",
+      upstreamFailoverThreshold: 3,
+    } as OcxConfig);
+    saveCodexAccountCredential("pool-a", {
+      accessToken: "pool-access-token",
+      refreshToken: "pool-refresh-token",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "acct-pool-a",
+    });
+
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/v1/responses", server.url), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer inbound-main-token",
+        },
+        body: JSON.stringify({ model: "gpt-test", input: "hello", stream: true }),
+      });
+
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(text).toContain("response.failed");
+      expect(getCodexUpstreamHealth("pool-a")).toBeNull();
+    } finally {
+      await server.stop(true);
+      await upstream.stop(true);
     }
   });
 });

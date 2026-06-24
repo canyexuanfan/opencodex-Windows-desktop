@@ -2,9 +2,10 @@ import type { ServerWebSocket } from "bun";
 import { FORWARD_HEADERS } from "./adapters/openai-responses";
 import type { CodexAuthContext } from "./codex-auth-context";
 import { headersForCodexAuthContext } from "./codex-auth-context";
+import type { ResponsesTerminalStatus } from "./bridge";
 
 const OPEN = 1;
-const TERMINAL_TYPES = new Set(["response.completed", "response.failed", "response.incomplete"]);
+type ResponsesTerminalReporter = (status: ResponsesTerminalStatus) => void;
 const SAFE_RESPONSE_HEADER_EXACT = new Set([
   "retry-after",
   "x-request-id",
@@ -140,6 +141,19 @@ function payloadType(payload: string): string | null {
   }
 }
 
+function terminalStatusFromType(type: string): ResponsesTerminalStatus | null {
+  switch (type) {
+    case "response.completed":
+      return "completed";
+    case "response.failed":
+      return "failed";
+    case "response.incomplete":
+      return "incomplete";
+    default:
+      return null;
+  }
+}
+
 function protocolError(message: string): Record<string, unknown> {
   return {
     type: "protocol_error",
@@ -155,11 +169,19 @@ function sendProtocolError(ws: ServerWebSocket<WsData>, status: number, message:
 export async function pumpResponsesSseToWebSocket(
   ws: ServerWebSocket<WsData>,
   sseStream: ReadableStream<Uint8Array>,
-  options: { isCurrent?: () => boolean } = {},
+  options: { isCurrent?: () => boolean; onTerminal?: ResponsesTerminalReporter } = {},
 ): Promise<void> {
   const reader = sseStream.getReader();
   const isCurrent = options.isCurrent ?? (() => true);
+  let clientCancelled = false;
+  let terminalReported = false;
+  const reportTerminal = (status: ResponsesTerminalStatus) => {
+    if (terminalReported || clientCancelled || !isCurrent()) return;
+    terminalReported = true;
+    options.onTerminal?.(status);
+  };
   const cancel = () => {
+    clientCancelled = true;
     void reader.cancel().catch(() => {});
   };
   ws.data.cancel = cancel;
@@ -173,6 +195,7 @@ export async function pumpResponsesSseToWebSocket(
     if (payload === "[DONE]") return false;
     const type = payloadType(payload);
     if (!type) {
+      reportTerminal("incomplete");
       sendProtocolError(ws, 502, "Invalid JSON payload in upstream SSE frame");
       terminalSeen = true;
       void reader.cancel().catch(() => {});
@@ -180,7 +203,9 @@ export async function pumpResponsesSseToWebSocket(
     }
     if (terminalSeen) return true;
     sendTextFrame(ws, payload);
-    if (TERMINAL_TYPES.has(type)) {
+    const terminalStatus = terminalStatusFromType(type);
+    if (terminalStatus) {
+      reportTerminal(terminalStatus);
       terminalSeen = true;
       void reader.cancel().catch(() => {});
       return true;
@@ -205,11 +230,13 @@ export async function pumpResponsesSseToWebSocket(
       const payload = parseSseBlock(buffer);
       if (payload) handlePayload(payload);
     }
-    if (!terminalSeen && isCurrent()) {
+    if (!terminalSeen && isCurrent() && !clientCancelled) {
+      reportTerminal("incomplete");
       sendProtocolError(ws, 502, "Upstream stream ended before response terminal event");
     }
   } catch (err) {
     if (!terminalSeen && isCurrent() && ws.readyState === OPEN) {
+      if (!(err instanceof WsSendDroppedError)) reportTerminal("incomplete");
       sendProtocolError(ws, 502, err instanceof Error ? err.message : String(err));
     }
   } finally {
@@ -220,6 +247,7 @@ export async function pumpResponsesSseToWebSocket(
 export function sendResponsesJsonAsEvents(
   ws: ServerWebSocket<WsData>,
   response: Record<string, unknown>,
+  onTerminal?: ResponsesTerminalReporter,
 ): void {
   const output = Array.isArray(response.output) ? response.output : [];
   sendJsonFrame(ws, {
@@ -240,6 +268,7 @@ export function sendResponsesJsonAsEvents(
     type: `response.${finalStatus}` as "response.completed" | "response.failed" | "response.incomplete",
     response: { ...response, status: finalStatus },
   });
+  onTerminal?.(finalStatus);
 }
 
 function errorPayloadFromText(text: string): Record<string, unknown> {
@@ -261,6 +290,7 @@ export async function sendResponseToWebSocket(
   ws: ServerWebSocket<WsData>,
   response: Response,
   isCurrent: () => boolean,
+  options: { onTerminal?: ResponsesTerminalReporter } = {},
 ): Promise<void> {
   if (!isCurrent()) {
     await response.body?.cancel().catch(() => {});
@@ -276,6 +306,7 @@ export async function sendResponseToWebSocket(
 
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
   if (!response.body) {
+    options.onTerminal?.("incomplete");
     sendJsonFrame(ws, buildWsErrorFrame(502, {
       type: "protocol_error",
       code: "websocket_protocol_error",
@@ -285,7 +316,7 @@ export async function sendResponseToWebSocket(
   }
 
   if (contentType.includes("text/event-stream")) {
-    await pumpResponsesSseToWebSocket(ws, response.body, { isCurrent });
+    await pumpResponsesSseToWebSocket(ws, response.body, { isCurrent, onTerminal: options.onTerminal });
     return;
   }
 
@@ -293,7 +324,7 @@ export async function sendResponseToWebSocket(
     const text = await response.text();
     if (!isCurrent()) return;
     const json = JSON.parse(text) as Record<string, unknown>;
-    sendResponsesJsonAsEvents(ws, json);
+    sendResponsesJsonAsEvents(ws, json, options.onTerminal);
     return;
   }
 
@@ -303,7 +334,7 @@ export async function sendResponseToWebSocket(
     return;
   }
   if (looksLikeSse(prefix)) {
-    await pumpResponsesSseToWebSocket(ws, stream, { isCurrent });
+    await pumpResponsesSseToWebSocket(ws, stream, { isCurrent, onTerminal: options.onTerminal });
     return;
   }
 
@@ -312,10 +343,11 @@ export async function sendResponseToWebSocket(
   const trimmed = text.trim();
   if (trimmed.startsWith("{")) {
     const json = JSON.parse(trimmed) as Record<string, unknown>;
-    sendResponsesJsonAsEvents(ws, json);
+    sendResponsesJsonAsEvents(ws, json, options.onTerminal);
     return;
   }
 
+  options.onTerminal?.("incomplete");
   sendJsonFrame(ws, buildWsErrorFrame(502, {
     type: "protocol_error",
     code: "websocket_protocol_error",

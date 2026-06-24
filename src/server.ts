@@ -6,7 +6,7 @@ import { createAzureAdapter } from "./adapters/azure";
 import { createGoogleAdapter } from "./adapters/google";
 import { createOpenAIChatAdapter } from "./adapters/openai-chat";
 import { createResponsesPassthroughAdapter } from "./adapters/openai-responses";
-import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./bridge";
+import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse, type ResponsesTerminalStatus } from "./bridge";
 import {
   buildWarmupCompletionFrames,
   buildWsErrorFrame,
@@ -146,6 +146,22 @@ function sidecarOutcomeRecorder(config: OcxConfig, authCtx: CodexAuthContext): (
     : undefined;
 }
 
+function usesCodexForwardPoolAuth(
+  authCtx: CodexAuthContext,
+  provider: OcxProviderConfig,
+): authCtx is Extract<CodexAuthContext, { kind: "pool" }> {
+  return authCtx.kind === "pool" && provider.authMode === "forward" && provider.adapter === "openai-responses";
+}
+
+function codexForwardTerminalOutcomeRecorder(
+  config: OcxConfig,
+  authCtx: CodexAuthContext,
+  provider: OcxProviderConfig,
+): ((status: ResponsesTerminalStatus) => void) | undefined {
+  if (!usesCodexForwardPoolAuth(authCtx, provider)) return undefined;
+  return status => recordCodexUpstreamOutcome(config, authCtx.accountId, status === "completed" ? 200 : 502);
+}
+
 async function handleResponses(
   req: Request,
   config: OcxConfig,
@@ -155,6 +171,8 @@ async function handleResponses(
     abortSignal?: AbortSignal;
     authContext?: CodexAuthContext;
     selectedForwardHeaders?: Headers;
+    recordTerminalOutcomes?: boolean;
+    setTerminalOutcomeRecorder?: (recorder: ((status: ResponsesTerminalStatus) => void) | undefined) => void;
   } = {},
 ): Promise<Response> {
   let body: unknown;
@@ -233,6 +251,7 @@ async function handleResponses(
 
   const adapterProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
   const adapter = resolveAdapter(adapterProvider);
+  const recordTerminalOutcomes = options.recordTerminalOutcomes !== false;
 
   if ("passthrough" in adapter && adapter.passthrough) {
     const request = adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
@@ -252,14 +271,18 @@ async function handleResponses(
     } catch (err) {
       upstream.abort();
       const outcome = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "connect_error";
-      if (authCtx.kind === "pool") recordCodexUpstreamOutcome(config, authCtx.accountId, outcome);
+      if (usesCodexForwardPoolAuth(authCtx, route.provider)) recordCodexUpstreamOutcome(config, authCtx.accountId, outcome);
       const msg = outcome === "timeout"
         ? `Provider connect timeout after ${connectMs}ms`
         : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
       return formatErrorResponse(502, "upstream_error", msg);
     }
+    const headers = sanitizePassthroughHeaders(upstreamResponse.headers);
+    const isEventStream = headers.get("content-type")?.toLowerCase().includes("text/event-stream") ?? false;
+    const terminalRecorder = codexForwardTerminalOutcomeRecorder(config, authCtx, route.provider);
+    const terminalBodyWillRecord = !!terminalRecorder && upstreamResponse.ok && isEventStream;
     // Capture quota from upstream response for multi-account tracking
-    if (authCtx.kind === "pool") {
+    if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
       const weeklyRaw = upstreamResponse.headers.get("x-codex-secondary-used-percent");
       const fiveHourRaw = upstreamResponse.headers.get("x-codex-primary-used-percent");
       const monthlyRaw = upstreamResponse.headers.get("x-codex-tertiary-used-percent");
@@ -279,16 +302,23 @@ async function handleResponses(
           monthlyResetRaw,
         );
       }
-      recordCodexUpstreamOutcome(config, authCtx.accountId, upstreamResponse.status, {
-        retryAfter: retryAfterRaw,
-        resetAt: [fiveHourResetRaw, weeklyResetRaw, monthlyResetRaw],
-      });
+      if (terminalBodyWillRecord) {
+        options.setTerminalOutcomeRecorder?.(terminalRecorder);
+      } else {
+        recordCodexUpstreamOutcome(config, authCtx.accountId, upstreamResponse.status, {
+          retryAfter: retryAfterRaw,
+          resetAt: [fiveHourResetRaw, weeklyResetRaw, monthlyResetRaw],
+        });
+      }
     }
 
-    const headers = sanitizePassthroughHeaders(upstreamResponse.headers);
-    const isEventStream = headers.get("content-type")?.toLowerCase().includes("text/event-stream") ?? false;
     const body = isEventStream
-      ? relaySseWithHeartbeat(upstreamResponse.body, upstream)
+      ? relaySseWithHeartbeat(
+          upstreamResponse.body,
+          upstream,
+          15_000,
+          terminalBodyWillRecord && recordTerminalOutcomes ? terminalRecorder : undefined,
+        )
       : relayWithAbort(upstreamResponse.body, upstream);
     return new Response(body, {
       status: upstreamResponse.status,
@@ -454,16 +484,80 @@ export function relayWithAbort(
   });
 }
 
+function nextSseBlock(buffer: string): { block: string; rest: string } | null {
+  const match = buffer.match(/\r?\n\r?\n/);
+  if (!match || match.index === undefined) return null;
+  return {
+    block: buffer.slice(0, match.index),
+    rest: buffer.slice(match.index + match[0].length),
+  };
+}
+
+function sseDataPayload(block: string): string | null {
+  const data: string[] = [];
+  for (const line of block.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const value = line.slice(5);
+    data.push(value.startsWith(" ") ? value.slice(1) : value);
+  }
+  return data.length > 0 ? data.join("\n") : null;
+}
+
+function terminalStatusFromSsePayload(payload: string): ResponsesTerminalStatus | null {
+  if (payload === "[DONE]") return null;
+  try {
+    const json = JSON.parse(payload) as { type?: unknown };
+    switch (json.type) {
+      case "response.completed":
+        return "completed";
+      case "response.failed":
+        return "failed";
+      case "response.incomplete":
+        return "incomplete";
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
 export function relaySseWithHeartbeat(
   body: ReadableStream<Uint8Array> | null,
   upstream: AbortController,
   heartbeatMs = 15_000,
+  onTerminal?: (status: ResponsesTerminalStatus) => void,
 ): ReadableStream<Uint8Array> | null {
   if (!body) return null;
   const reader = body.getReader();
+  const decoder = new TextDecoder();
   const heartbeat = new TextEncoder().encode(": opencodex keepalive\n\n");
   let timer: ReturnType<typeof setInterval> | undefined;
   let closed = false;
+  let clientCancelled = false;
+  let terminalReported = false;
+  let buffer = "";
+
+  const reportTerminal = (status: ResponsesTerminalStatus) => {
+    if (terminalReported || clientCancelled || closed) return;
+    terminalReported = true;
+    onTerminal?.(status);
+  };
+
+  const inspectPayload = (payload: string | null) => {
+    if (!payload) return;
+    const status = terminalStatusFromSsePayload(payload);
+    if (status) reportTerminal(status);
+  };
+
+  const inspectChunk = (value: Uint8Array) => {
+    buffer += decoder.decode(value, { stream: true });
+    let next: { block: string; rest: string } | null;
+    while ((next = nextSseBlock(buffer))) {
+      buffer = next.rest;
+      inspectPayload(sseDataPayload(next.block));
+    }
+  };
 
   const cleanup = () => {
     closed = true;
@@ -486,17 +580,23 @@ export function relaySseWithHeartbeat(
       try {
         const { done, value } = await reader.read();
         if (done) {
+          buffer += decoder.decode();
+          if (buffer.trim()) inspectPayload(sseDataPayload(buffer));
+          if (!terminalReported && !clientCancelled) reportTerminal("incomplete");
           cleanup();
           controller.close();
           return;
         }
+        inspectChunk(value);
         controller.enqueue(value);
       } catch (err) {
+        if (!clientCancelled) reportTerminal("incomplete");
         cleanup();
         try { controller.error(err); } catch { /* already torn down */ }
       }
     },
     cancel(reason) {
+      clientCancelled = true;
       cleanup();
       upstream.abort(reason);
       reader.cancel(reason).catch(() => {});
@@ -1055,13 +1155,18 @@ export function startServer(port?: number) {
           });
           try {
             assertCodexAuthContextNotCooled(ws.data.authContext);
+            let terminalRecorder: ((status: ResponsesTerminalStatus) => void) | undefined;
             const response = await handleResponses(req, config, logCtx, {
               forceEmptyResponseId: true,
               abortSignal: turnAbort.signal,
               authContext: ws.data.authContext,
               selectedForwardHeaders: ws.data.headers,
+              recordTerminalOutcomes: false,
+              setTerminalOutcomeRecorder: recorder => {
+                terminalRecorder = recorder;
+              },
             });
-            await sendResponseToWebSocket(ws, response, isCurrent);
+            await sendResponseToWebSocket(ws, response, isCurrent, { onTerminal: terminalRecorder });
           } catch (err) {
             if (!isCurrent()) return;
             try {

@@ -70,6 +70,40 @@ describe("WS endpoint re-framer (120/132)", () => {
     expect(cancelled).toBe(true);
   });
 
+  test("reports failed terminal status exactly once while pumping SSE to WebSocket", async () => {
+    const { ws } = mockWs();
+    const terminals: string[] = [];
+    await pumpResponsesSseToWebSocket(ws, sseStream([
+      'event: response.created\ndata: {"type":"response.created"}\n\n',
+      'event: response.failed\ndata: {"type":"response.failed","response":{"status":"failed"}}\n\n',
+    ]), { onTerminal: status => terminals.push(status) });
+    expect(terminals).toEqual(["failed"]);
+  });
+
+  test("reports incomplete when SSE ends before a terminal event", async () => {
+    const { ws } = mockWs();
+    const terminals: string[] = [];
+    await pumpResponsesSseToWebSocket(ws, sseStream([
+      'event: response.created\ndata: {"type":"response.created"}\n\n',
+    ]), { onTerminal: status => terminals.push(status) });
+    expect(terminals).toEqual(["incomplete"]);
+  });
+
+  test("does not report terminal status when WebSocket pump is cancelled", async () => {
+    const { ws } = mockWs();
+    const terminals: string[] = [];
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start() { /* stays open until cancelled */ },
+      cancel() { cancelled = true; },
+    });
+    const pump = pumpResponsesSseToWebSocket(ws, stream, { onTerminal: status => terminals.push(status) });
+    ws.data.cancel!();
+    await pump;
+    expect(cancelled).toBe(true);
+    expect(terminals).toEqual([]);
+  });
+
   test("supports CRLF, multiline data, split chunks, and unterminated final events", async () => {
     const { ws, sent } = mockWs();
     await pumpResponsesSseToWebSocket(ws, sseStream([
@@ -122,13 +156,15 @@ describe("WS endpoint re-framer (120/132)", () => {
   test("does not emit stale frames after a replacement turn invalidates the pump", async () => {
     const { ws, sent } = mockWs();
     let current = true;
+    const terminals: string[] = [];
     const pump = pumpResponsesSseToWebSocket(ws, sseStream([
       'event: response.created\ndata: {"type":"response.created"}\n\n',
-    ]), { isCurrent: () => current });
+    ]), { isCurrent: () => current, onTerminal: status => terminals.push(status) });
     current = false;
     ws.data.cancel?.();
     await pump;
     expect(sent).toEqual([]);
+    expect(terminals).toEqual([]);
   });
 
   test("stale pump cleanup does not erase the replacement turn cancel hook", async () => {
@@ -192,17 +228,19 @@ describe("WS endpoint re-framer (120/132)", () => {
 
   test("JSON response with status 'failed' emits response.failed event type", () => {
     const { ws, sent } = mockWs();
+    const terminals: string[] = [];
     sendResponsesJsonAsEvents(ws, {
       id: "resp_fail",
       object: "response",
       status: "failed",
       output: [],
       error: { code: "server_error", message: "upstream died" },
-    });
+    }, status => terminals.push(status));
     const types = sent.map(f => JSON.parse(f).type);
     expect(types).toContain("response.failed");
     expect(types).not.toContain("response.completed");
     expect(types).not.toContain("response.incomplete");
+    expect(terminals).toEqual(["failed"]);
   });
 
   test("stores only allowlisted inbound headers and emits only safe response headers", () => {
@@ -290,17 +328,19 @@ describe("WS endpoint re-framer (120/132)", () => {
 
   test("converts application/json 200 responses into event sequence", async () => {
     const { ws, sent } = mockWs();
+    const terminals: string[] = [];
     await sendResponseToWebSocket(ws, Response.json({
       id: "json",
       object: "response",
       status: "completed",
       output: [{ type: "message", id: "msg", role: "assistant", status: "completed", content: [] }],
-    }), () => true);
+    }), () => true, { onTerminal: status => terminals.push(status) });
     expect(sent.map(f => JSON.parse(f).type)).toEqual([
       "response.created",
       "response.output_item.done",
       "response.completed",
     ]);
+    expect(terminals).toEqual(["completed"]);
   });
 
   test("unexpected successful HTML and empty 204 become standalone protocol errors", async () => {
