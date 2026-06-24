@@ -105,6 +105,21 @@ describe("codex-auth API", () => {
     expect(data).toEqual({ activeCodexAccountId: "pool-live", autoSwitchThreshold: 55 });
   });
 
+  test("GET /api/codex-auth/accounts returns large live pools without dropping entries", async () => {
+    const config = makeConfig({
+      codexAccounts: Array.from({ length: 30 }, (_, i) => ({
+        id: `pool-${i + 1}`,
+        email: `pool-${i + 1}@example.test`,
+        isMain: false,
+      })),
+    });
+    const req = new Request("http://localhost/api/codex-auth/accounts", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: { id: string; isMain: boolean }[] };
+    expect(data.accounts.filter(a => !a.isMain).map(a => a.id)).toHaveLength(30);
+    expect(data.accounts.at(-1)?.id).toBe("pool-30");
+  });
+
   test("updateAccountQuota stores and retrieves quota", () => {
     updateAccountQuota("test-acct", 45, 12);
     const q = getAccountQuota("test-acct");

@@ -115,6 +115,7 @@ export function checkAccountIdCollision(chatgptAccountId: string): { collision: 
 let mainAccountCache: { email: string | null; plan: string | null; quota: { weeklyPercent: number; fiveHourPercent: number } | null; ts: number } | null = null;
 const MAIN_CACHE_TTL = 5 * 60_000;
 const POOL_CACHE_TTL = 5 * 60_000;
+const POOL_QUOTA_REFRESH_CONCURRENCY = 4;
 
 function isRuntimeConfig(config: OcxConfig): boolean {
   return !!config && typeof config === "object" && !!config.providers;
@@ -131,6 +132,23 @@ function saveRuntimeConfig(sourceConfig: OcxConfig, nextConfig: OcxConfig): void
     delete sourceConfig[key];
   }
   Object.assign(sourceConfig, nextConfig);
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await mapper(items[index]!);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 async function fetchMainAccountInfo(forceRefresh = false): Promise<{ email: string | null; plan: string | null; quota: { weeklyPercent: number; fiveHourPercent: number } | null }> {
@@ -198,7 +216,7 @@ export async function handleCodexAuthAPI(
     const runtimeConfig = getRuntimeConfig(config);
     const poolAccounts = (runtimeConfig.codexAccounts ?? []).filter(a => !a.isMain);
     const mainInfo = await fetchMainAccountInfo(forceRefresh);
-    const withQuota = await Promise.all(poolAccounts.map(async a => {
+    const withQuota = await mapWithConcurrency(poolAccounts, POOL_QUOTA_REFRESH_CONCURRENCY, async a => {
       const cred = getCodexAccountCredential(a.id);
       const quotaResult = cred
         ? await fetchPoolAccountQuota(a.id, forceRefresh)
@@ -209,7 +227,7 @@ export async function handleCodexAuthAPI(
         needsReauth: !cred || quotaResult.needsReauth || isAccountNeedsReauth(a.id),
         hasCredential: !!cred,
       };
-    }));
+    });
     const main = {
       id: "__main__",
       email: mainInfo.email ?? "Codex App login",
