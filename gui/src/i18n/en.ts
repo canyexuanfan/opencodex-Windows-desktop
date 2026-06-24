@@ -171,6 +171,8 @@ export const en = {
   "codexAuth.importAuthJson": "Import auth.json",
   "codexAuth.importAuthJsonDesc": "From another Codex install or codex-auth export",
   "codexAuth.back": "Back",
+  "codexAuth.oauthAlreadyInProgress": "Login already in progress. Complete it in your browser.",
+  "codexAuth.oauthWaiting": "Waiting for ChatGPT login to complete in your browser...",
 } as const;
 
 export type TKey = keyof typeof en;

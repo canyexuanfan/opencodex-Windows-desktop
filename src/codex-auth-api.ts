@@ -30,6 +30,8 @@ export function getAccountQuota(accountId: string) {
   return accountQuota.get(accountId) ?? null;
 }
 
+const codexAuthLoginState = new Map<string, { status: string; accountId?: string; email?: string; error?: string }>();
+
 function readCodexTokens(): { access_token: string; account_id: string } | null {
   try {
     const codexHome = process.env["CODEX_HOME"] || join(os.homedir(), ".codex");
@@ -179,13 +181,80 @@ export async function handleCodexAuthAPI(
   }
 
   if (url.pathname === "/api/codex-auth/login" && req.method === "POST") {
+    const body = (await req.json().catch(() => ({}))) as { id?: string };
+    const accountId = body.id?.trim() || `chatgpt-${Date.now()}`;
     try {
-      const { startLoginFlow } = await import("./oauth/index");
+      const { startLoginFlow, getLoginStatus } = await import("./oauth/index");
       const result = await startLoginFlow("chatgpt");
+
+      // Background: when OAuth completes, register the account in codex-accounts pool
+      (async () => {
+        // Poll until the login flow completes (max 5 min)
+        for (let i = 0; i < 150; i++) {
+          await new Promise(r => setTimeout(r, 2000));
+          const st = getLoginStatus("chatgpt");
+          if (st.loggedIn) {
+            const { getCredential } = await import("./oauth/store");
+            const cred = getCredential("chatgpt");
+            if (cred) {
+              // Fetch account info
+              let email = cred.email || accountId;
+              let plan: string | undefined;
+              try {
+                const tokens = { access_token: cred.access, account_id: cred.accountId ?? "" };
+                const resp = await fetch("https://chatgpt.com/backend-api/wham/usage", {
+                  headers: { Authorization: `Bearer ${tokens.access_token}`, "ChatGPT-Account-Id": tokens.account_id },
+                  signal: AbortSignal.timeout(8000),
+                });
+                if (resp.ok) {
+                  const data = (await resp.json()) as { email?: string; plan_type?: string };
+                  email = data.email ?? email;
+                  plan = data.plan_type ?? undefined;
+                }
+              } catch { /* best effort */ }
+
+              // Save to codex-accounts store
+              saveCodexAccountCredential(accountId, {
+                accessToken: cred.access,
+                refreshToken: cred.refresh,
+                expiresAt: cred.expires,
+                chatgptAccountId: cred.accountId ?? "",
+              });
+
+              // Add to config
+              const config = loadConfig();
+              const accounts = config.codexAccounts ?? [];
+              if (!accounts.find(a => a.id === accountId)) {
+                accounts.push({ id: accountId, email, plan, isMain: false });
+                config.codexAccounts = accounts;
+                saveConfig(config);
+              }
+              codexAuthLoginState.set("chatgpt", { status: "done", accountId, email });
+            }
+            break;
+          }
+          const errSt = getLoginStatus("chatgpt");
+          if (errSt.error) {
+            codexAuthLoginState.set("chatgpt", { status: "error", error: errSt.error });
+            break;
+          }
+        }
+      })();
+
+      codexAuthLoginState.set("chatgpt", { status: "pending" });
       return jsonResponse({ ok: true, url: result.url, instructions: result.instructions });
     } catch (e) {
-      return jsonResponse({ error: e instanceof Error ? e.message : String(e) }, 500);
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("already in progress")) {
+        return jsonResponse({ error: msg, status: "pending" }, 409);
+      }
+      return jsonResponse({ error: msg }, 500);
     }
+  }
+
+  if (url.pathname === "/api/codex-auth/login-status" && req.method === "GET") {
+    const st = codexAuthLoginState.get("chatgpt");
+    return jsonResponse(st ?? { status: "idle" });
   }
 
   return null;

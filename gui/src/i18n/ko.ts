@@ -171,4 +171,6 @@ export const ko: Record<TKey, string> = {
   "codexAuth.importAuthJson": "auth.json 가져오기",
   "codexAuth.importAuthJsonDesc": "다른 Codex 설치 또는 codex-auth export에서",
   "codexAuth.back": "뒤로",
+  "codexAuth.oauthAlreadyInProgress": "로그인이 이미 진행 중입니다. 브라우저에서 완료하세요.",
+  "codexAuth.oauthWaiting": "브라우저에서 ChatGPT 로그인 완료를 기다리는 중...",
 };

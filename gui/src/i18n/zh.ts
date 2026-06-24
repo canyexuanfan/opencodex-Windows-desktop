@@ -171,4 +171,6 @@ export const zh: Record<TKey, string> = {
   "codexAuth.importAuthJson": "导入 auth.json",
   "codexAuth.importAuthJsonDesc": "从另一个 Codex 安装或 codex-auth 导出",
   "codexAuth.back": "返回",
+  "codexAuth.oauthAlreadyInProgress": "登录已在进行中。请在浏览器中完成。",
+  "codexAuth.oauthWaiting": "等待浏览器中完成 ChatGPT 登录...",
 };

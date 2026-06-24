@@ -13,7 +13,7 @@ export default function AddCodexAccountModal({
   const aliveRef = useRef(true);
   useEffect(() => () => { aliveRef.current = false; }, []);
 
-  const [step, setStep] = useState<"pick" | "import">("pick");
+  const [step, setStep] = useState<"pick" | "import" | "oauth-waiting">("pick");
   const [id, setId] = useState("");
   const [json, setJson] = useState("");
   const [error, setError] = useState("");
@@ -71,11 +71,42 @@ export default function AddCodexAccountModal({
             <p className="modal-desc">{t("codexAuth.addPickDesc")}</p>
 
             <button className="list-row" onClick={async () => {
+              setError("");
               try {
-                const resp = await fetch(`${apiBase}/api/codex-auth/login`, { method: "POST" });
-                const data = await resp.json() as { url?: string; instructions?: string; error?: string };
-                if (data.url) window.open(data.url, "_blank");
-                if (data.error) setError(data.error);
+                const resp = await fetch(`${apiBase}/api/codex-auth/login`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({}),
+                });
+                const data = await resp.json() as { url?: string; error?: string; status?: string };
+                if (resp.status === 409) {
+                  setError(t("codexAuth.oauthAlreadyInProgress"));
+                  return;
+                }
+                if (data.url) {
+                  window.open(data.url, "_blank");
+                  setStep("oauth-waiting");
+                  // Poll for completion
+                  const poll = setInterval(async () => {
+                    try {
+                      const st = await fetch(`${apiBase}/api/codex-auth/login-status`).then(r => r.json()) as { status: string };
+                      if (st.status === "done") {
+                        clearInterval(poll);
+                        onAdded();
+                        onClose();
+                      } else if (st.status === "error") {
+                        clearInterval(poll);
+                        setStep("pick");
+                        setError("Login failed");
+                      }
+                    } catch { /* ignore */ }
+                  }, 2000);
+                  // Cleanup on unmount
+                  const origCleanup = aliveRef.current;
+                  const cleanup = () => { clearInterval(poll); aliveRef.current = origCleanup; };
+                  setTimeout(cleanup, 300_000);
+                }
+                if (data.error && !data.url) setError(data.error);
               } catch (e) { setError(String(e)); }
             }} style={{ marginBottom: 8 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -139,6 +170,19 @@ export default function AddCodexAccountModal({
                 {saving ? "..." : t("codexAuth.importBtn")}
               </button>
             </div>
+          </>
+        )}
+
+        {step === "oauth-waiting" && (
+          <>
+            <h3 style={{ marginBottom: 4 }}>{t("codexAuth.oauthLogin")}</h3>
+            <p className="modal-desc">{t("codexAuth.oauthWaiting")}</p>
+            <div style={{ textAlign: "center", padding: "24px 0" }}>
+              <span className="spin" style={{ width: 24, height: 24 }} />
+            </div>
+            <button className="btn btn-ghost" onClick={onClose} style={{ width: "100%" }}>
+              {t("codexAuth.cancel")}
+            </button>
           </>
         )}
       </div>
