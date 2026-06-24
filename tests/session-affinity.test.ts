@@ -1,7 +1,7 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { resolveCodexAccountForThread, clearThreadAccountMap } from "../src/server";
+import { resolveCodexAccountForThread, clearThreadAccountMap, formatCodexProviderForLog } from "../src/server";
 import { updateAccountQuota, clearAccountQuota } from "../src/codex-auth-api";
 import type { OcxConfig } from "../src/types";
 
@@ -110,5 +110,37 @@ describe("resolveCodexAccountForThread", () => {
     updateAccountQuota("b", 10, 5);
     const result = resolveCodexAccountForThread("t1", config);
     expect(result).toBe("a");
+  });
+});
+
+describe("formatCodexProviderForLog", () => {
+  test("keeps base provider for main passthrough", () => {
+    const config = makeConfig({
+      codexAccounts: [
+        { id: "pool-a", email: "pool-a@example.test", isMain: false },
+      ],
+    });
+    expect(formatCodexProviderForLog("chatgpt", null, config)).toBe("chatgpt");
+  });
+
+  test("labels pool accounts by safe 1-based ordinal", () => {
+    const config = makeConfig({
+      codexAccounts: [
+        { id: "main", email: "main@example.test", isMain: true },
+        { id: "pool-a", email: "pool-a@example.test", isMain: false },
+        { id: "pool-b", email: "pool-b@example.test", isMain: false },
+      ],
+    });
+    expect(formatCodexProviderForLog("chatgpt", "pool-a", config)).toBe("chatgpt-1");
+    expect(formatCodexProviderForLog("chatgpt", "pool-b", config)).toBe("chatgpt-2");
+  });
+
+  test("keeps base provider for unknown account ids", () => {
+    const config = makeConfig({
+      codexAccounts: [
+        { id: "pool-a", email: "pool-a@example.test", isMain: false },
+      ],
+    });
+    expect(formatCodexProviderForLog("chatgpt", "missing", config)).toBe("chatgpt");
   });
 });

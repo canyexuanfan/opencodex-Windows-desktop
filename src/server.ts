@@ -74,6 +74,12 @@ export function resolveCodexAccountForThread(
   return active;
 }
 
+export function formatCodexProviderForLog(providerName: string, accountId: string | null, config: OcxConfig): string {
+  if (!accountId) return providerName;
+  const poolIndex = (config.codexAccounts ?? []).filter(a => !a.isMain).findIndex(a => a.id === accountId);
+  return poolIndex >= 0 ? `${providerName}-${poolIndex + 1}` : providerName;
+}
+
 // Single source of truth = package.json (../ from src/), so /healthz + the GUI badge match the
 // installed npm version instead of a stale hardcode.
 const VERSION = (() => {
@@ -206,6 +212,7 @@ async function handleResponses(
       try {
         const override = await getValidCodexToken(selectedCodexAccountId);
         route.provider = { ...route.provider, _codexAccountOverride: override } as typeof route.provider;
+        logCtx.provider = formatCodexProviderForLog(route.providerName, selectedCodexAccountId, config);
       } catch (e) {
         console.error(`[codex-auth] Pool account ${selectedCodexAccountId} token failed:`, e instanceof Error ? e.message : e);
         if (threadId) threadAccountMap.delete(threadId);
