@@ -161,7 +161,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .btn-icon:hover { background: var(--raised-hover); color: var(--text); }
 
 /* ---- cards / panels ---- */
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); min-width: 0; }
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; }
 .panel-accent { border-color: rgba(124, 92, 255, 0.28); background: linear-gradient(180deg, var(--accent-soft), transparent 120%), var(--surface); }
 
@@ -258,8 +258,9 @@ select.input { appearance: none; }
 .modal-head h3 { font-size: 16px; }
 
 /* ---- codex auth page ---- */
-.card-head { display: flex; align-items: center; gap: 8px; padding: 14px 16px 6px; flex-wrap: wrap; }
-.card-sub { font-size: 12px; color: var(--muted); padding: 0 16px 10px; }
+.card-head { display: flex; align-items: center; gap: 8px; padding: 14px 16px 6px; flex-wrap: wrap; min-width: 0; }
+.card-head strong { min-width: 0; overflow-wrap: anywhere; }
+.card-sub { font-size: 12px; color: var(--muted); padding: 0 16px 10px; min-width: 0; overflow-wrap: anywhere; }
 .card-active { border-color: var(--accent-ring); }
 .card-right { margin-left: auto; display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--faint); }
 .btn-icon-danger.card-right {
@@ -280,14 +281,14 @@ select.input { appearance: none; }
 .section-label { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
 .sep-line { flex: 1; height: 1px; background: var(--border); }
 .quota-compact { padding: 2px 16px 12px; display: grid; gap: 4px; }
-.quota-row { display: grid; grid-template-columns: minmax(36px, max-content) 38px 44px 42px minmax(84px, 1fr) 40px; align-items: center; gap: 8px; min-width: 0; }
+.quota-row { display: grid; grid-template-columns: minmax(34px, max-content) 34px minmax(34px, 44px) minmax(38px, 42px) minmax(58px, 1fr) minmax(30px, max-content); align-items: center; gap: 8px; min-width: 0; }
 .quota-label { font-size: 11px; color: var(--muted); font-weight: 600; }
 .quota-val { font-size: 11px; font-family: var(--mono); color: var(--text); text-align: right; }
 .quota-reset-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--faint); }
 .quota-reset-day,
 .quota-reset-time { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .quota-reset-time { font-family: var(--mono); }
-.bar { height: 5px; background: var(--raised); border-radius: 3px; overflow: hidden; min-width: 58px; }
+.bar { height: 5px; background: var(--raised); border-radius: 3px; overflow: hidden; min-width: 0; }
 .bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
 .bar-green { background: var(--green); }
 .bar-amber { background: linear-gradient(90deg, var(--green), var(--amber)); }
