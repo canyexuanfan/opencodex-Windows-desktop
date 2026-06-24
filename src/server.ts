@@ -32,7 +32,7 @@ import { enrichProviderFromCatalog, listKeyLoginProviders } from "./oauth/key-pr
 import { deriveProviderPresets } from "./providers/derive";
 import type { OcxConfig, OcxProviderConfig } from "./types";
 import { getValidCodexToken } from "./codex-account-store";
-import { getAccountQuota } from "./codex-auth-api";
+import { getAccountQuota, markAccountNeedsReauth } from "./codex-auth-api";
 
 const threadAccountMap = new Map<string, string>();
 
@@ -51,13 +51,14 @@ export function resolveCodexAccountForThread(
   const threshold = config.autoSwitchThreshold ?? 80;
   if (threshold > 0) {
     const quota = getAccountQuota(active);
-    if (quota && quota.weeklyPercent >= threshold) {
+    const activeUsage = quota ? Math.max(quota.weeklyPercent, quota.fiveHourPercent ?? 0) : 0;
+    if (quota && activeUsage >= threshold) {
       const pool = (config.codexAccounts ?? []).filter(a => !a.isMain && a.id !== active);
       let best = active;
-      let bestUsage = quota.weeklyPercent;
+      let bestUsage = activeUsage;
       for (const p of pool) {
         const pq = getAccountQuota(p.id);
-        const usage = pq?.weeklyPercent ?? 0;
+        const usage = pq ? Math.max(pq.weeklyPercent, pq.fiveHourPercent ?? 0) : 0;
         if (usage < bestUsage) { best = p.id; bestUsage = usage; }
       }
       if (best !== active) {
@@ -196,15 +197,19 @@ async function handleResponses(
   logCtx.provider = route.providerName;
 
   // Multi-account: if a pool account is active, inject its token for forward-mode passthrough.
+  let selectedCodexAccountId: string | null = null;
   if (route.provider.authMode === "forward") {
     const threadId = req.headers.get("x-codex-parent-thread-id");
-    const accountId = resolveCodexAccountForThread(threadId, config);
-    if (accountId) {
+    selectedCodexAccountId = resolveCodexAccountForThread(threadId, config);
+    if (selectedCodexAccountId) {
       try {
-        const override = await getValidCodexToken(accountId);
+        const override = await getValidCodexToken(selectedCodexAccountId);
         route.provider = { ...route.provider, _codexAccountOverride: override } as typeof route.provider;
-      } catch {
-        // Account token failed — fall back to main passthrough
+      } catch (e) {
+        console.error(`[codex-auth] Pool account ${selectedCodexAccountId} token failed:`, e instanceof Error ? e.message : e);
+        if (threadId) threadAccountMap.delete(threadId);
+        markAccountNeedsReauth(selectedCodexAccountId);
+        selectedCodexAccountId = null;
       }
     }
   }
@@ -253,14 +258,12 @@ async function handleResponses(
       return formatErrorResponse(502, "upstream_error", msg);
     }
     // Capture quota from upstream response for multi-account tracking
-    const threadId = req.headers.get("x-codex-parent-thread-id");
-    const quotaAccountId = resolveCodexAccountForThread(threadId, config);
-    if (quotaAccountId) {
+    if (selectedCodexAccountId) {
       const weeklyRaw = upstreamResponse.headers.get("x-codex-secondary-used-percent");
       const fiveHourRaw = upstreamResponse.headers.get("x-codex-primary-used-percent");
       if (weeklyRaw || fiveHourRaw) {
         const { updateAccountQuota } = await import("./codex-auth-api");
-        updateAccountQuota(quotaAccountId, parseFloat(weeklyRaw ?? "0"), parseFloat(fiveHourRaw ?? "0"));
+        updateAccountQuota(selectedCodexAccountId, parseFloat(weeklyRaw ?? "0"), parseFloat(fiveHourRaw ?? "0"));
       }
     }
 

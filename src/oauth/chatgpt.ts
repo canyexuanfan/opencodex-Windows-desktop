@@ -5,7 +5,7 @@ import { generatePKCE } from "./pkce";
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTH_URL = "https://auth.openai.com/oauth/authorize";
 const TOKEN_URL = "https://auth.openai.com/oauth/token";
-const SCOPE = "openid profile email offline_access";
+const SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke";
 const CALLBACK_PORT = 1455;
 const CALLBACK_PATH = "/auth/callback";
 const ORIGINATOR = "opencodex";
@@ -86,6 +86,7 @@ export class ChatGPTOAuthFlow extends OAuthCallbackFlow {
       codex_cli_simplified_flow: "true",
       originator: ORIGINATOR,
     });
+    params.set("id_token_add_organizations", "true");
     if (this.forceLogin) params.set("prompt", "login");
     return {
       url: `${AUTH_URL}?${params}`,
@@ -107,11 +108,20 @@ export class ChatGPTOAuthFlow extends OAuthCallbackFlow {
       }).toString(),
     });
     if (!resp.ok) {
-      const errBody = await resp.text().catch(() => "");
-      throw new Error(`ChatGPT token exchange failed: ${resp.status} ${errBody}`);
+      const errDesc = await safeErrorDescription(resp);
+      throw new Error(`ChatGPT token exchange failed: ${resp.status} ${errDesc}`);
     }
     return credsFromToken((await resp.json()) as Record<string, unknown>);
   }
+}
+
+function safeErrorDescription(resp: Response): Promise<string> {
+  return resp.text().catch(() => "").then(text => {
+    try {
+      const parsed = JSON.parse(text) as { error?: string; error_description?: string };
+      return [parsed.error, parsed.error_description].filter(Boolean).join(": ") || `HTTP ${resp.status}`;
+    } catch { return `HTTP ${resp.status}`; }
+  });
 }
 
 export async function loginChatGPT(ctrl: OAuthController, opts?: { forceLogin?: boolean }): Promise<OAuthCredentials> {
@@ -120,6 +130,8 @@ export async function loginChatGPT(ctrl: OAuthController, opts?: { forceLogin?: 
   return flow.login();
 }
 
+// Note: uses form-urlencoded per OAuth 2.0 spec (RFC 6749 §6).
+// Codex-rs uses JSON for refresh — intentional divergence; both accepted by auth.openai.com.
 export async function refreshChatGPTToken(refreshToken: string): Promise<OAuthCredentials> {
   const resp = await fetch(TOKEN_URL, {
     method: "POST",
@@ -131,8 +143,8 @@ export async function refreshChatGPTToken(refreshToken: string): Promise<OAuthCr
     }).toString(),
   });
   if (!resp.ok) {
-    const errBody = await resp.text().catch(() => "");
-    throw new Error(`ChatGPT refresh failed: ${resp.status} ${errBody}`);
+    const errDesc = await safeErrorDescription(resp);
+    throw new Error(`ChatGPT refresh failed: ${resp.status} ${errDesc}`);
   }
   return credsFromToken((await resp.json()) as Record<string, unknown>);
 }

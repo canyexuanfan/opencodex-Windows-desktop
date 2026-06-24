@@ -7,8 +7,10 @@ import {
   getValidCodexToken,
   saveCodexAccountCredential,
   removeCodexAccountCredential,
+  listCodexAccountIds,
   TokenRefreshError,
 } from "./codex-account-store";
+import { extractAccountId, decodeJwtPayload } from "./oauth/chatgpt";
 import type { OcxConfig } from "./types";
 
 function jsonResponse(data: unknown, status = 200): Response {
@@ -34,17 +36,53 @@ export function getAccountQuota(accountId: string) {
 
 export function clearAccountQuota(): void { accountQuota.clear(); }
 
-const codexAuthLoginState = new Map<string, { status: string; accountId?: string; email?: string; error?: string }>();
+const codexAuthLoginState = new Map<string, { status: string; accountId?: string; email?: string; error?: string; doneAt?: number }>();
 
-function readCodexTokens(): { access_token: string; account_id: string } | null {
+// H3: in-memory set of accounts needing re-auth (marked on refresh failure, cleared on successful save)
+const reauthAccounts = new Set<string>();
+export function markAccountNeedsReauth(id: string): void { reauthAccounts.add(id); }
+export function isAccountNeedsReauth(id: string): boolean { return reauthAccounts.has(id); }
+export function clearAccountNeedsReauth(id: string): void { reauthAccounts.delete(id); }
+
+// H1: read main Codex tokens including id_token for reliable account ID extraction
+function readCodexTokens(): { access_token: string; account_id: string; id_token?: string } | null {
   try {
     const codexHome = process.env["CODEX_HOME"] || join(os.homedir(), ".codex");
     const authPath = join(codexHome, "auth.json");
     if (!existsSync(authPath)) return null;
-    const j = JSON.parse(readFileSync(authPath, "utf-8")) as { tokens?: { access_token?: string; account_id?: string } };
-    if (j?.tokens?.access_token) return { access_token: j.tokens.access_token, account_id: j.tokens.account_id ?? "" };
+    const j = JSON.parse(readFileSync(authPath, "utf-8")) as {
+      tokens?: { access_token?: string; account_id?: string; id_token?: string };
+    };
+    if (j?.tokens?.access_token) {
+      return {
+        access_token: j.tokens.access_token,
+        account_id: j.tokens.account_id ?? "",
+        id_token: j.tokens.id_token,
+      };
+    }
   } catch { /* best effort */ }
   return null;
+}
+
+export function getMainChatgptAccountId(): string | null {
+  const tokens = readCodexTokens();
+  if (!tokens) return null;
+  return extractAccountId(tokens.id_token, tokens.access_token) ?? (tokens.account_id || null);
+}
+
+// H2: shared collision check for import and OAuth paths
+export function checkAccountIdCollision(chatgptAccountId: string): { collision: true; reason: string } | { collision: false } {
+  const mainId = getMainChatgptAccountId();
+  if (mainId && mainId === chatgptAccountId) {
+    return { collision: true, reason: "This account is your main Codex login. Use a different account for the pool." };
+  }
+  for (const poolId of listCodexAccountIds()) {
+    const cred = getCodexAccountCredential(poolId);
+    if (cred && cred.chatgptAccountId === chatgptAccountId) {
+      return { collision: true, reason: `Account is already in the pool (${poolId}).` };
+    }
+  }
+  return { collision: false };
 }
 
 let mainAccountCache: { email: string | null; plan: string | null; quota: { weeklyPercent: number; fiveHourPercent: number } | null; ts: number } | null = null;
@@ -130,17 +168,16 @@ export async function handleCodexAuthAPI(
   if (url.pathname === "/api/codex-auth/accounts" && req.method === "GET") {
     const config = loadConfig();
     const poolAccounts = (config.codexAccounts ?? []).filter(a => !a.isMain);
-    const [mainInfo, ...poolResults] = await Promise.all([
-      fetchMainAccountInfo(),
-      ...poolAccounts.map(a => fetchPoolAccountQuota(a.id)),
-    ]);
-    const withQuota = poolAccounts.map((a, i) => {
-      const r = poolResults[i];
+    const mainInfo = await fetchMainAccountInfo();
+    const withQuota = poolAccounts.map(a => {
+      const cred = getCodexAccountCredential(a.id);
+      const cached = accountQuota.get(a.id);
+      const expired = !cred || cred.expiresAt < Date.now();
       return {
         ...a,
-        quota: r.quota ? { ...r.quota, updatedAt: accountQuota.get(a.id)?.updatedAt ?? Date.now() } : null,
-        needsReauth: r.needsReauth,
-        hasCredential: !!getCodexAccountCredential(a.id),
+        quota: cached ? { ...cached } : null,
+        needsReauth: expired || isAccountNeedsReauth(a.id),
+        hasCredential: !!cred,
       };
     });
     const main = {
@@ -155,26 +192,33 @@ export async function handleCodexAuthAPI(
   }
 
   if (url.pathname === "/api/codex-auth/accounts" && req.method === "POST") {
-    const body = (await req.json()) as {
-      id: string;
-      email: string;
-      plan?: string;
-      accessToken: string;
-      refreshToken: string;
-      chatgptAccountId: string;
-    };
+    let body: { id: string; email: string; plan?: string; accessToken: string; refreshToken: string; chatgptAccountId: string };
+    try { body = (await req.json()) as typeof body; } catch { return jsonResponse({ error: "Invalid JSON" }, 400); }
     if (!body.id || !body.email || !body.accessToken || !body.refreshToken || !body.chatgptAccountId) {
       return jsonResponse({ error: "Missing required fields" }, 400);
     }
-    if (body.id.length > 64 || body.accessToken.length > 10_000 || body.refreshToken.length > 10_000) {
+    if (!/^[a-zA-Z0-9._-]{1,64}$/.test(body.id)) {
+      return jsonResponse({ error: "Invalid account id format" }, 400);
+    }
+    if (body.accessToken.length > 10_000 || body.refreshToken.length > 10_000) {
       return jsonResponse({ error: "Input too large" }, 400);
     }
+    // 1.1: JWT-derived account ID is authoritative; collision check
+    const derivedAccountId = extractAccountId(undefined, body.accessToken) ?? body.chatgptAccountId;
+    const collision = checkAccountIdCollision(derivedAccountId);
+    if (collision.collision) {
+      return jsonResponse({ error: collision.reason }, 400);
+    }
+    // 4.2: use JWT exp for expiresAt instead of hardcoded 1 hour
+    const payload = decodeJwtPayload(body.accessToken);
+    const exp = typeof payload?.exp === "number" ? payload.exp * 1000 : Date.now() + 3600_000;
     saveCodexAccountCredential(body.id, {
       accessToken: body.accessToken,
       refreshToken: body.refreshToken,
-      expiresAt: Date.now() + 3600_000,
-      chatgptAccountId: body.chatgptAccountId,
+      expiresAt: exp,
+      chatgptAccountId: derivedAccountId,
     });
+    clearAccountNeedsReauth(body.id);
     const config = loadConfig();
     const accounts = config.codexAccounts ?? [];
     if (!accounts.find(a => a.id === body.id)) {
@@ -197,8 +241,13 @@ export async function handleCodexAuthAPI(
   }
 
   if (url.pathname === "/api/codex-auth/active" && req.method === "PUT") {
-    const body = (await req.json()) as { accountId: string | null };
+    let body: { accountId: string | null };
+    try { body = (await req.json()) as typeof body; } catch { return jsonResponse({ error: "Invalid JSON" }, 400); }
     const config = loadConfig();
+    if (body.accountId != null) {
+      const exists = (config.codexAccounts ?? []).some(a => a.id === body.accountId);
+      if (!exists) return jsonResponse({ error: "Account not found" }, 400);
+    }
     config.activeCodexAccountId = body.accountId ?? undefined;
     saveConfig(config);
     return jsonResponse({ ok: true, activeCodexAccountId: body.accountId });
@@ -213,7 +262,11 @@ export async function handleCodexAuthAPI(
   }
 
   if (url.pathname === "/api/codex-auth/auto-switch" && req.method === "PUT") {
-    const body = (await req.json()) as { threshold: number };
+    let body: { threshold: number };
+    try { body = (await req.json()) as typeof body; } catch { return jsonResponse({ error: "Invalid JSON" }, 400); }
+    if (typeof body.threshold !== "number" || !Number.isInteger(body.threshold) || body.threshold < 0 || body.threshold > 100) {
+      return jsonResponse({ error: "Threshold must be an integer 0-100" }, 400);
+    }
     const config = loadConfig();
     config.autoSwitchThreshold = body.threshold;
     saveConfig(config);
@@ -229,13 +282,12 @@ export async function handleCodexAuthAPI(
   if (url.pathname === "/api/codex-auth/login" && req.method === "POST") {
     const body = (await req.json().catch(() => ({}))) as { id?: string };
     const accountId = body.id?.trim() || `chatgpt-${Date.now()}`;
+    const flowId = `flow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     try {
       const { startLoginFlow, getLoginStatus } = await import("./oauth/index");
       const result = await startLoginFlow("chatgpt", { forceLogin: true });
 
-      // Background: when OAuth completes, register the account in codex-accounts pool
       (async () => {
-        // Poll until the login flow completes (max 5 min)
         for (let i = 0; i < 150; i++) {
           await new Promise(r => setTimeout(r, 2000));
           const st = getLoginStatus("chatgpt");
@@ -243,10 +295,28 @@ export async function handleCodexAuthAPI(
             const { getCredential } = await import("./oauth/store");
             const cred = getCredential("chatgpt");
             if (cred) {
+              // 1.2: account-ID-based collision check (JWT-derived, not email)
+              const oauthAccountId = cred.accountId;
+              if (!oauthAccountId) {
+                codexAuthLoginState.set(flowId, {
+                  status: "error",
+                  error: "Could not determine account identity from OAuth tokens. Try importing manually.",
+                  doneAt: Date.now(),
+                });
+                break;
+              }
+              const collision = checkAccountIdCollision(oauthAccountId);
+              if (collision.collision) {
+                codexAuthLoginState.set(flowId, {
+                  status: "error", error: collision.reason, doneAt: Date.now(),
+                });
+                break;
+              }
+
               let email = cred.email || accountId;
               let plan: string | undefined;
               try {
-                const tokens = { access_token: cred.access, account_id: cred.accountId ?? "" };
+                const tokens = { access_token: cred.access, account_id: oauthAccountId };
                 const resp = await fetch("https://chatgpt.com/backend-api/wham/usage", {
                   headers: { Authorization: `Bearer ${tokens.access_token}`, "ChatGPT-Account-Id": tokens.account_id },
                   signal: AbortSignal.timeout(8000),
@@ -256,42 +326,15 @@ export async function handleCodexAuthAPI(
                   email = data.email ?? email;
                   plan = data.plan_type ?? undefined;
                 }
-              } catch (e) {
-                const whamErr = e instanceof Error ? e.message : String(e);
-                codexAuthLoginState.set("chatgpt", {
-                  status: "done", accountId, email,
-                  error: `Account info fetch failed (non-blocking): ${whamErr}`,
-                });
-              }
-
-              // Email collision check: reject if same as main account
-              const mainInfo = await fetchMainAccountInfo();
-              const normalizedEmail = email.toLowerCase();
-              const mainEmail = (mainInfo.email ?? "").toLowerCase();
-              if (mainEmail && normalizedEmail === mainEmail) {
-                codexAuthLoginState.set("chatgpt", {
-                  status: "error",
-                  error: `This account (${email}) is your main Codex login. Use a different account for the pool. Run "codex login" if your CLI session was affected.`,
-                });
-                break;
-              }
-              // Check against existing pool accounts
-              const existingConfig = loadConfig();
-              const dup = (existingConfig.codexAccounts ?? []).find(a => a.email.toLowerCase() === normalizedEmail);
-              if (dup) {
-                codexAuthLoginState.set("chatgpt", {
-                  status: "error",
-                  error: `Account ${email} is already in the pool (${dup.id}).`,
-                });
-                break;
-              }
+              } catch { /* wham fetch is non-blocking */ }
 
               saveCodexAccountCredential(accountId, {
                 accessToken: cred.access,
                 refreshToken: cred.refresh,
                 expiresAt: cred.expires,
-                chatgptAccountId: cred.accountId ?? "",
+                chatgptAccountId: oauthAccountId,
               });
+              clearAccountNeedsReauth(accountId);
 
               const config = loadConfig();
               const accounts = config.codexAccounts ?? [];
@@ -300,20 +343,22 @@ export async function handleCodexAuthAPI(
                 config.codexAccounts = accounts;
                 saveConfig(config);
               }
-              codexAuthLoginState.set("chatgpt", { status: "done", accountId, email });
+              codexAuthLoginState.set(flowId, { status: "done", accountId, email, doneAt: Date.now() });
             }
             break;
           }
           const errSt = getLoginStatus("chatgpt");
           if (errSt.error) {
-            codexAuthLoginState.set("chatgpt", { status: "error", error: errSt.error });
+            codexAuthLoginState.set(flowId, { status: "error", error: errSt.error, doneAt: Date.now() });
             break;
           }
         }
+        // TTL: delete flow state 60s after completion
+        setTimeout(() => codexAuthLoginState.delete(flowId), 60_000);
       })();
 
-      codexAuthLoginState.set("chatgpt", { status: "pending" });
-      return jsonResponse({ ok: true, url: result.url, instructions: result.instructions });
+      codexAuthLoginState.set(flowId, { status: "pending" });
+      return jsonResponse({ ok: true, flowId, url: result.url, instructions: result.instructions });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("already in progress")) {
@@ -324,8 +369,16 @@ export async function handleCodexAuthAPI(
   }
 
   if (url.pathname === "/api/codex-auth/login-status" && req.method === "GET") {
-    const st = codexAuthLoginState.get("chatgpt");
-    return jsonResponse(st ?? { status: "idle" });
+    const flowId = url.searchParams.get("flowId");
+    if (flowId) {
+      const st = codexAuthLoginState.get(flowId);
+      return jsonResponse(st ?? { status: "expired" });
+    }
+    // Legacy fallback: return latest pending flow
+    for (const [, st] of codexAuthLoginState) {
+      if (st.status === "pending") return jsonResponse(st);
+    }
+    return jsonResponse({ status: "idle" });
   }
 
   return null;

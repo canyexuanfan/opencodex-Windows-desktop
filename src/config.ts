@@ -14,7 +14,7 @@ export function atomicWriteFile(path: string, content: string): void {
   renameSync(tmp, path);
 }
 
-const OCX_DIR = join(homedir(), ".opencodex");
+const OCX_DIR = process.env["OPENCODEX_HOME"] || join(homedir(), ".opencodex");
 const CONFIG_PATH = join(OCX_DIR, "config.json");
 const PID_PATH = join(OCX_DIR, "ocx.pid");
 

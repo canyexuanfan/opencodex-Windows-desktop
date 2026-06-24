@@ -81,13 +81,19 @@ export async function getValidCodexToken(id: string): Promise<CodexTokenResult> 
           client_id: CHATGPT_CLIENT_ID,
           refresh_token: cred.refreshToken,
         }).toString(),
+        signal: AbortSignal.timeout(30_000),
       });
       if (!res.ok) {
-        const errBody = await res.text().catch(() => "");
-        const reason = errBody.includes("invalidated") || errBody.includes("revoked") ? "revoked" as const
-          : errBody.includes("expired") ? "expired" as const
+        const errText = await res.text().catch(() => "");
+        let errDesc: string;
+        try {
+          const parsed = JSON.parse(errText) as { error?: string; error_description?: string };
+          errDesc = [parsed.error, parsed.error_description].filter(Boolean).join(": ") || `HTTP ${res.status}`;
+        } catch { errDesc = `HTTP ${res.status}`; }
+        const reason = errDesc.includes("invalidated") || errDesc.includes("revoked") ? "revoked" as const
+          : errDesc.includes("expired") ? "expired" as const
           : "unknown" as const;
-        throw new TokenRefreshError(reason, `Token refresh failed for ${id}: ${res.status} ${errBody}`);
+        throw new TokenRefreshError(reason, `Token refresh failed for ${id}: ${errDesc}`);
       }
       const data = (await res.json()) as { access_token: string; refresh_token?: string; expires_in: number };
 

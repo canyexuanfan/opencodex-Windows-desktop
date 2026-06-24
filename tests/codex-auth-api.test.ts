@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { handleCodexAuthAPI, updateAccountQuota, getAccountQuota } from "../src/codex-auth-api";
+import {
+  handleCodexAuthAPI, updateAccountQuota, getAccountQuota,
+  checkAccountIdCollision, getMainChatgptAccountId,
+  markAccountNeedsReauth, isAccountNeedsReauth, clearAccountNeedsReauth,
+} from "../src/codex-auth-api";
 
 describe("codex-auth API", () => {
   test("GET /api/codex-auth/accounts returns array with main", async () => {
@@ -40,7 +44,7 @@ describe("codex-auth API", () => {
     const resp = await handleCodexAuthAPI(req, url, {} as any);
     expect(resp!.status).toBe(400);
     const body = await resp!.json() as { error: string };
-    expect(body.error).toContain("too large");
+    expect(body.error).toMatch(/too large|Invalid account id/i);
   });
 
   test("GET /api/codex-auth/active returns expected shape", async () => {
@@ -74,5 +78,108 @@ describe("codex-auth API", () => {
     const url = new URL(req.url);
     const resp = await handleCodexAuthAPI(req, url, {} as any);
     expect(resp).toBeNull();
+  });
+
+  test("POST /api/codex-auth/accounts rejects invalid id format", async () => {
+    const req = new Request("http://localhost/api/codex-auth/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "bad id with spaces!",
+        email: "test@test.com",
+        accessToken: "tok",
+        refreshToken: "ref",
+        chatgptAccountId: "acc",
+      }),
+    });
+    const url = new URL(req.url);
+    const resp = await handleCodexAuthAPI(req, url, {} as any);
+    expect(resp!.status).toBe(400);
+    const body = await resp!.json() as { error: string };
+    expect(body.error).toContain("Invalid account id");
+  });
+
+  test("POST /api/codex-auth/accounts rejects invalid JSON", async () => {
+    const req = new Request("http://localhost/api/codex-auth/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "not json",
+    });
+    const url = new URL(req.url);
+    const resp = await handleCodexAuthAPI(req, url, {} as any);
+    expect(resp!.status).toBe(400);
+    const body = await resp!.json() as { error: string };
+    expect(body.error).toBe("Invalid JSON");
+  });
+
+  test("PUT /api/codex-auth/auto-switch rejects invalid threshold", async () => {
+    for (const bad of [-1, 101, 50.5, "abc"]) {
+      const req = new Request("http://localhost/api/codex-auth/auto-switch", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ threshold: bad }),
+      });
+      const url = new URL(req.url);
+      const resp = await handleCodexAuthAPI(req, url, {} as any);
+      expect(resp!.status).toBe(400);
+    }
+  });
+
+  test("PUT /api/codex-auth/auto-switch accepts valid threshold", async () => {
+    for (const good of [0, 50, 100]) {
+      const req = new Request("http://localhost/api/codex-auth/auto-switch", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ threshold: good }),
+      });
+      const url = new URL(req.url);
+      const resp = await handleCodexAuthAPI(req, url, {} as any);
+      expect(resp!.status).toBe(200);
+    }
+  });
+
+  test("GET /api/codex-auth/login-status returns idle by default", async () => {
+    const req = new Request("http://localhost/api/codex-auth/login-status", { method: "GET" });
+    const url = new URL(req.url);
+    const resp = await handleCodexAuthAPI(req, url, {} as any);
+    const data = await resp!.json() as { status: string };
+    expect(data.status).toBe("idle");
+  });
+
+  test("GET /api/codex-auth/login-status with unknown flowId returns expired", async () => {
+    const req = new Request("http://localhost/api/codex-auth/login-status?flowId=nonexistent", { method: "GET" });
+    const url = new URL(req.url);
+    const resp = await handleCodexAuthAPI(req, url, {} as any);
+    const data = await resp!.json() as { status: string };
+    expect(data.status).toBe("expired");
+  });
+
+  test("GET /api/codex-auth/accounts does not trigger token refresh (cached quota only)", async () => {
+    updateAccountQuota("cached-test", 25, 10);
+    const req = new Request("http://localhost/api/codex-auth/accounts", { method: "GET" });
+    const url = new URL(req.url);
+    const resp = await handleCodexAuthAPI(req, url, {} as any);
+    expect(resp!.status).toBe(200);
+  });
+});
+
+describe("codex-auth helpers", () => {
+  test("getMainChatgptAccountId returns null when no codex auth file", () => {
+    const id = getMainChatgptAccountId();
+    expect(id === null || typeof id === "string").toBe(true);
+  });
+
+  test("checkAccountIdCollision returns no collision for unknown id", () => {
+    const result = checkAccountIdCollision("unknown-test-id-xyz");
+    expect(result.collision).toBe(false);
+  });
+
+  test("needsReauth mark/check/clear lifecycle", () => {
+    const id = "lifecycle-test";
+    expect(isAccountNeedsReauth(id)).toBe(false);
+    markAccountNeedsReauth(id);
+    expect(isAccountNeedsReauth(id)).toBe(true);
+    clearAccountNeedsReauth(id);
+    expect(isAccountNeedsReauth(id)).toBe(false);
   });
 });

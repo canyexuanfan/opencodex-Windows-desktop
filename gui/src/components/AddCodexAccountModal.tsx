@@ -11,7 +11,11 @@ export default function AddCodexAccountModal({
 }) {
   const t = useT();
   const aliveRef = useRef(true);
-  useEffect(() => () => { aliveRef.current = false; }, []);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => () => {
+    aliveRef.current = false;
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  }, []);
 
   const [step, setStep] = useState<"pick" | "import" | "oauth-waiting">("pick");
   const [id, setId] = useState("");
@@ -78,7 +82,7 @@ export default function AddCodexAccountModal({
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({}),
                 });
-                const data = await resp.json() as { url?: string; error?: string; status?: string };
+                const data = await resp.json() as { url?: string; flowId?: string; error?: string; status?: string };
                 if (resp.status === 409) {
                   setError(t("codexAuth.oauthAlreadyInProgress"));
                   return;
@@ -86,25 +90,27 @@ export default function AddCodexAccountModal({
                 if (data.url) {
                   window.open(data.url, "_blank");
                   setStep("oauth-waiting");
-                  // Poll for completion
-                  const poll = setInterval(async () => {
+                  if (pollRef.current) clearInterval(pollRef.current);
+                  const fid = data.flowId ?? "";
+                  const statusUrl = fid
+                    ? `${apiBase}/api/codex-auth/login-status?flowId=${encodeURIComponent(fid)}`
+                    : `${apiBase}/api/codex-auth/login-status`;
+                  pollRef.current = setInterval(async () => {
                     try {
-                      const st = await fetch(`${apiBase}/api/codex-auth/login-status`).then(r => r.json()) as { status: string; error?: string };
+                      const st = await fetch(statusUrl).then(r => r.json()) as { status: string; error?: string };
                       if (st.status === "done") {
-                        clearInterval(poll);
+                        if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
                         onAdded();
                         onClose();
-                      } else if (st.status === "error") {
-                        clearInterval(poll);
-                        setStep("pick");
-                        setError(st.error ?? "Login failed");
+                      } else if (st.status === "error" || st.status === "expired") {
+                        if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+                        if (aliveRef.current) { setStep("pick"); setError(st.error ?? "Login failed"); }
                       }
-                    } catch { /* ignore */ }
+                    } catch { /* ignore network errors during polling */ }
                   }, 2000);
-                  // Cleanup on unmount
-                  const origCleanup = aliveRef.current;
-                  const cleanup = () => { clearInterval(poll); aliveRef.current = origCleanup; };
-                  setTimeout(cleanup, 300_000);
+                  setTimeout(() => {
+                    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+                  }, 300_000);
                 }
                 if (data.error && !data.url) setError(data.error);
               } catch (e) { setError(String(e)); }
