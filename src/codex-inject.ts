@@ -244,16 +244,16 @@ export async function injectCodexConfig(port: number, config?: OcxConfig, option
 
   writeFileSync(CODEX_CONFIG_PATH, content, "utf-8");
   writeFileSync(CODEX_PROFILE_PATH, buildProfileFile(port, catalogPath), "utf-8");
-  const history = config?.syncResumeHistory === true
+  const history = config?.syncResumeHistory !== false
     ? syncCodexHistoryProvider("opencodex")
     : { rows: 0, files: 0 };
 
   const catalogMessage = catalogPath
     ? `  Codex model catalog: ${catalogPath}\n`
     : `  Codex model catalog not injected because no opencodex catalog file exists yet.\n`;
-  const historyMessage = config?.syncResumeHistory === true
+  const historyMessage = config?.syncResumeHistory !== false
     ? `  Codex resume history: ${history.rows} thread(s) made visible for opencodex; originals backed up for restore.\n`
-    : `  Codex resume history: left unchanged. Existing OpenAI and opencodex exec project chats may be hidden while opencodex is active; set syncResumeHistory=true to enable the reversible compatibility remap.\n`;
+    : `  Codex resume history: left unchanged (syncResumeHistory=false).\n`;
   return {
     success: true,
     message: `Injected opencodex as default provider into Codex config.\n` +

@@ -188,6 +188,17 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .badge-green { background: var(--green-soft); color: var(--green); }
 .badge-amber { background: var(--amber-soft); color: var(--amber); }
 .badge-muted { background: var(--raised); color: var(--muted); border: 1px solid var(--border); }
+.badge-clickable { cursor: pointer; transition: filter 0.12s; border: none; background: inherit; font: inherit; }
+.badge-clickable:hover { filter: brightness(1.1); }
+.badge-disabled { opacity: 0.5; cursor: default; }
+.confirm-icon { width: 44px; height: 44px; border-radius: 50%; background: var(--amber-soft); display: flex; align-items: center; justify-content: center; margin: 0 auto 12px; color: var(--amber); }
+.credit-list { display: flex; flex-direction: column; gap: 6px; }
+.credit-item { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--raised); transition: border-color 0.12s; }
+.credit-next { border-color: var(--amber); background: var(--amber-soft); }
+.credit-item-head { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 12px; font-weight: 600; margin-bottom: 3px; }
+.credit-item-head svg { color: var(--amber); flex-shrink: 0; }
+.credit-item-dates { display: flex; justify-content: space-between; font-size: 11px; font-family: var(--mono); color: var(--muted); }
+.credit-urgent { color: var(--red); font-weight: 600; }
 .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .dot-green { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
 .dot-red { background: var(--red); box-shadow: 0 0 0 3px var(--red-soft); }

@@ -77,18 +77,21 @@ describe("opencodex config defaults", () => {
     }
   });
 
-  test("backs up structurally invalid config before falling back to defaults", () => {
+  test("repairs structurally incomplete config by merging defaults instead of rejecting", () => {
     writeConfig({ port: 10100 });
     const errorSpy = spyOn(console, "error").mockImplementation(() => {});
 
     try {
       const loaded = loadConfig();
 
-      expect(loaded).toEqual(getDefaultConfig());
+      // Merge should fill in missing providers and defaultProvider from defaults
+      expect(loaded.port).toBe(10100);
+      expect(loaded.defaultProvider).toBe("openai");
+      expect(loaded.providers).toBeDefined();
+      // No backup created — config was repaired, not rejected
       const backups = backupNames();
-      expect(backups).toHaveLength(1);
-      expect(JSON.parse(readFileSync(join(testDir, backups[0]), "utf-8"))).toEqual({ port: 10100 });
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("providers"));
+      expect(backups).toHaveLength(0);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("repaired"));
     } finally {
       errorSpy.mockRestore();
     }

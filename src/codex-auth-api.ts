@@ -150,6 +150,7 @@ async function fetchPoolAccountQuota(accountId: string, forceRefresh = false): P
       quota.fiveHourResetAt,
       quota.monthlyPercent,
       quota.monthlyResetAt,
+      quota.resetCredits,
     );
     return { quota: getAccountQuota(accountId), needsReauth: false };
   } catch (e) {
@@ -296,6 +297,98 @@ export async function handleCodexAuthAPI(
     return jsonResponse({ quotas });
   }
 
+  if (url.pathname === "/api/codex-auth/reset-credits" && req.method === "GET") {
+    const accountId = url.searchParams.get("accountId");
+    if (!accountId) return jsonResponse({ error: "accountId required" }, 400);
+
+    const isMain = accountId === "__main__";
+    let accessToken: string;
+    let chatgptAccountId: string;
+
+    try {
+      if (isMain) {
+        const tokens = readCodexTokens();
+        if (!tokens) return jsonResponse({ error: "Main Codex account not logged in" }, 401);
+        accessToken = tokens.access_token;
+        chatgptAccountId = tokens.account_id;
+      } else {
+        const cred = await getValidCodexToken(accountId);
+        accessToken = cred.accessToken;
+        chatgptAccountId = cred.chatgptAccountId;
+      }
+
+      const resp = await fetch(
+        "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "ChatGPT-Account-Id": chatgptAccountId,
+          },
+          signal: AbortSignal.timeout(8000),
+        },
+      );
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        return jsonResponse({ error: `Upstream error ${resp.status}`, detail: text }, resp.status);
+      }
+      return jsonResponse(await resp.json());
+    } catch (e) {
+      return jsonResponse({ error: String(e) }, 500);
+    }
+  }
+
+  if (url.pathname === "/api/codex-auth/reset-credits/consume" && req.method === "POST") {
+    const body = (await req.json().catch(() => ({}))) as { accountId?: string };
+    if (!body.accountId) return jsonResponse({ error: "accountId required" }, 400);
+
+    const isMain = body.accountId === "__main__";
+    let accessToken: string;
+    let chatgptAccountId: string;
+
+    try {
+      if (isMain) {
+        const tokens = readCodexTokens();
+        if (!tokens) return jsonResponse({ error: "Main Codex account not logged in" }, 401);
+        accessToken = tokens.access_token;
+        chatgptAccountId = tokens.account_id;
+      } else {
+        const cred = await getValidCodexToken(body.accountId);
+        accessToken = cred.accessToken;
+        chatgptAccountId = cred.chatgptAccountId;
+      }
+
+      const idempotencyKey = crypto.randomUUID();
+      const resp = await fetch(
+        "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "ChatGPT-Account-Id": chatgptAccountId,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ redeem_request_id: idempotencyKey }),
+          signal: AbortSignal.timeout(10_000),
+        },
+      );
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        return jsonResponse({ error: `Upstream error ${resp.status}`, detail: text }, resp.status);
+      }
+      const result = (await resp.json()) as { code: string };
+      if (result.code === "reset") {
+        if (isMain) {
+          await fetchMainAccountInfo(true);
+        } else {
+          await fetchPoolAccountQuota(body.accountId, true);
+        }
+      }
+      return jsonResponse(result);
+    } catch (e) {
+      return jsonResponse({ error: String(e) }, 500);
+    }
+  }
+
   if (url.pathname === "/api/codex-auth/login" && req.method === "POST") {
     const body = (await req.json().catch(() => ({}))) as { id?: string };
     const requestedAccountId = body.id?.trim();
@@ -374,6 +467,7 @@ export async function handleCodexAuthAPI(
                   quota.fiveHourResetAt,
                   quota.monthlyPercent,
                   quota.monthlyResetAt,
+                  quota.resetCredits,
                 );
               }
 

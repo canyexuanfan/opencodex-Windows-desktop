@@ -37,7 +37,7 @@ const providerConfigSchema = z.object({
 const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
   providers: z.record(z.string(), providerConfigSchema),
-  defaultProvider: z.string().min(1),
+  defaultProvider: z.string().min(1).default("openai"),
 }).passthrough().superRefine((config, ctx) => {
   if (Object.keys(config.providers).length > 0 && !(config.defaultProvider in config.providers)) {
     ctx.addIssue({
@@ -93,7 +93,26 @@ export function loadConfig(): OcxConfig {
   }
   try {
     const raw = readFileSync(configPath, "utf-8");
-    return configSchema.parse(JSON.parse(raw)) as OcxConfig;
+    const parsed = JSON.parse(raw);
+    const result = configSchema.safeParse(parsed);
+    if (result.success) return result.data as OcxConfig;
+    // Schema validation failed — merge defaults into the raw object instead of
+    // discarding it entirely, so pool accounts and providers survive a missing
+    // field like defaultProvider.
+    const defaults = getDefaultConfig();
+    const merged = { ...defaults, ...parsed };
+    // Ensure providers from both sides survive
+    if (parsed.providers && defaults.providers) {
+      merged.providers = { ...defaults.providers, ...parsed.providers };
+    }
+    const retryResult = configSchema.safeParse(merged);
+    if (retryResult.success) {
+      warnConfigRepaired(configPath, result.error);
+      return retryResult.data as OcxConfig;
+    }
+    // Merge couldn't fix it — truly broken config
+    warnAndBackupInvalidConfig(configPath, result.error);
+    return getDefaultConfig();
   } catch (error) {
     warnAndBackupInvalidConfig(configPath, error);
     return getDefaultConfig();
@@ -179,6 +198,13 @@ export function removePid(): void {
   try {
     unlinkSync(getPidPath());
   } catch { /* ignore */ }
+}
+
+function warnConfigRepaired(configPath: string, error: z.ZodError): void {
+  if (warnedConfigFallbacks.has(configPath)) return;
+  warnedConfigFallbacks.add(configPath);
+  const fields = error.issues.map(i => i.path.join(".") || "config").join(", ");
+  console.error(`opencodex config at ${configPath}: repaired missing field(s) [${fields}] with defaults. Your providers and accounts are preserved.`);
 }
 
 function warnAndBackupInvalidConfig(configPath: string, error: unknown): void {
