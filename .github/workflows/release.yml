@@ -79,8 +79,29 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "::error::Release must run from main; got ${GITHUB_REF}"
+          case "$GITHUB_REF" in
+            refs/heads/main)
+              expected_tag="latest"
+              if [[ "${{ inputs.version }}" == *-* ]]; then
+                echo "::error::main releases must use a stable semver version; got ${{ inputs.version }}"
+                exit 1
+              fi
+              ;;
+            refs/heads/preview)
+              expected_tag="preview"
+              if [[ "${{ inputs.version }}" != *-preview.* ]]; then
+                echo "::error::preview releases must use a preview prerelease version; got ${{ inputs.version }}"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Release must run from main or preview; got ${GITHUB_REF}"
+              exit 1
+              ;;
+          esac
+
+          if [ "${{ inputs.tag }}" != "$expected_tag" ]; then
+            echo "::error::${GITHUB_REF#refs/heads/} releases must publish with npm dist-tag '${expected_tag}', got '${{ inputs.tag }}'"
             exit 1
           fi
 

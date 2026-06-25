@@ -106,7 +106,7 @@ function updateSessionMeta(path: string, patch: { provider?: string; source?: st
   }
   if (!changed) return false;
 
-  writeFileSync(path, `${JSON.stringify(record)}${rest}`, "utf8");
+  atomicWriteFile(path, `${JSON.stringify(record)}${rest}`);
   utimesSync(path, stat.atime, stat.mtime);
   return true;
 }
@@ -162,7 +162,31 @@ function ejectRemainingOpencodexHistory(db: Database): { rows: number; files: nu
   return { rows: rows.length, files };
 }
 
+function isRecoverableHistoryError(error: unknown): boolean {
+  const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : "";
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return code === "SQLITE_BUSY"
+    || code === "SQLITE_LOCKED"
+    || code === "EBUSY"
+    || code === "EPERM"
+    || code === "EACCES"
+    || message.includes("database is locked")
+    || message.includes("database is busy")
+    || message.includes("resource busy")
+    || message.includes("operation not permitted")
+    || message.includes("permission denied");
+}
+
 export function syncCodexHistoryProvider(provider: CodexHistoryProvider, stateDbPath = STATE_DB_PATH, backupPath = HISTORY_BACKUP_PATH): CodexHistorySyncResult {
+  try {
+    return syncCodexHistoryProviderUnsafe(provider, stateDbPath, backupPath);
+  } catch (error) {
+    if (isRecoverableHistoryError(error)) return { rows: 0, files: 0 };
+    throw error;
+  }
+}
+
+function syncCodexHistoryProviderUnsafe(provider: CodexHistoryProvider, stateDbPath: string, backupPath: string): CodexHistorySyncResult {
   if (!existsSync(stateDbPath)) return { rows: 0, files: 0 };
   if (provider === "openai") return restoreCodexHistoryProvider(stateDbPath, backupPath);
 
@@ -283,11 +307,16 @@ function restoreCodexHistoryProvider(stateDbPath: string, backupPath: string): C
 }
 
 export function restoreLegacyOpenaiHistory(stateDbPath = STATE_DB_PATH): { rows: number; files: number } {
-  if (!existsSync(stateDbPath)) return { rows: 0, files: 0 };
-  const db = new Database(stateDbPath);
   try {
-    return ejectRemainingOpencodexHistory(db);
-  } finally {
-    db.close();
+    if (!existsSync(stateDbPath)) return { rows: 0, files: 0 };
+    const db = new Database(stateDbPath);
+    try {
+      return ejectRemainingOpencodexHistory(db);
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    if (isRecoverableHistoryError(error)) return { rows: 0, files: 0 };
+    throw error;
   }
 }
