@@ -232,7 +232,11 @@ native Codex config/catalog/history, and deletes `~/.opencodex`.
 
 ## Configuration
 
-Config lives at `~/.opencodex/config.json`. Here's a typical multi-provider setup:
+Config lives at `~/.opencodex/config.json`. If the file cannot be parsed (e.g. truncated or
+manually broken JSON), opencodex backs it up to `config.json.invalid-<timestamp>`, prints a warning,
+and falls back to defaults — so your original file is never silently lost.
+
+Here's a typical multi-provider setup:
 
 ```json
 {
@@ -287,6 +291,26 @@ Local models work too. Point opencodex at any OpenAI-compatible server running o
 ```
 
 WebSocket transport is off by default. Set `"websockets": true` only if you want Codex to advertise and use the Responses WebSocket path instead of HTTP/SSE.
+
+### Remote access
+
+By default opencodex binds to `127.0.0.1` (loopback) and requires no extra authentication.
+If you set `"hostname": "0.0.0.0"` to expose the proxy on the LAN, opencodex requires a bearer token
+to protect both the management API (`/api/*`) and the data-plane (`/v1/responses`):
+
+```bash
+export OPENCODEX_API_AUTH_TOKEN="your-secret-token"
+ocx start
+```
+
+The proxy refuses to start without this variable when binding beyond loopback.
+Clients (scripts, remote machines) must include the token in every request:
+
+```
+x-opencodex-api-key: your-secret-token
+```
+
+The token is compared in constant time to prevent timing attacks.
 
 opencodex leaves existing Codex resume history untouched by default. This avoids changing Codex's
 local thread index just because the proxy started, but Codex App may hide old OpenAI-backed project

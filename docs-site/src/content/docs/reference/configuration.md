@@ -4,14 +4,17 @@ description: Every field in ~/.opencodex/config.json — top-level options, prov
 ---
 
 opencodex is configured by `~/.opencodex/config.json`. It's written by `ocx init` and the dashboard,
-but you can edit it directly; the proxy reloads it on start. Missing or invalid files fall back to a
-default (a single `openai` forward provider).
+but you can edit it directly; the proxy reloads it on start. If the file cannot be parsed (e.g.
+truncated or invalid JSON), opencodex backs it up to `config.json.invalid-<timestamp>`, prints a
+console warning, and starts with defaults. Missing files also fall back to a default (a single
+`openai` forward provider).
 
 ## Top level (`OcxConfig`)
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `port` | `number` | `10100` | Port the proxy listens on. |
+| `hostname?` | `string` | `"127.0.0.1"` | Bind address. Set `"0.0.0.0"` to expose on the LAN (requires `OPENCODEX_API_AUTH_TOKEN`; see [Remote access](#remote-access) below). |
 | `providers` | `Record<string, OcxProviderConfig>` | — | Map of provider name → config. |
 | `defaultProvider` | `string` | `"openai"` | Provider used when routing finds no better match. |
 | `subagentModels?` | `string[]` | — | Up to 5 `provider/model` ids featured first in Codex's subagent picker. |
@@ -34,6 +37,33 @@ Use the dashboard's **Codex Auth** page to add pool accounts and refresh quotas.
 non-secret account metadata only; access and refresh tokens are kept in the hardened Codex account
 credential store. Existing thread ids keep account affinity, while new sessions can auto-route based
 on quota, cooldown, and health.
+:::
+
+## Remote access
+
+By default opencodex binds to `127.0.0.1` (loopback only). When `hostname` is set to a non-loopback
+address such as `0.0.0.0`, opencodex enforces token authentication on **both** the management API
+(`/api/*`) and the data-plane (`/v1/responses`).
+
+Set the `OPENCODEX_API_AUTH_TOKEN` environment variable before starting:
+
+```bash
+export OPENCODEX_API_AUTH_TOKEN="your-secret-token"
+ocx start
+```
+
+The proxy refuses to start without this variable when binding beyond loopback. Clients must include
+the token in every request via the `x-opencodex-api-key` header:
+
+```
+x-opencodex-api-key: your-secret-token
+```
+
+The token is compared in constant time (`timingSafeEqual`) to prevent timing side-channels.
+
+:::caution[LAN exposure]
+Binding to `0.0.0.0` exposes your proxy — and all configured provider credentials — to the local
+network. Only do this on trusted networks, and always set a strong `OPENCODEX_API_AUTH_TOKEN`.
 :::
 
 ## Providers (`OcxProviderConfig`)

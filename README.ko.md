@@ -171,7 +171,11 @@ npm uninstall -g @bitkyc08/opencodex   # 또는: bun remove -g @bitkyc08/opencod
 
 ## 설정
 
-설정 파일은 `~/.opencodex/config.json`에 저장됩니다. 최소 설정 예시:
+설정 파일은 `~/.opencodex/config.json`에 저장됩니다. 파일이 깨진 경우(잘못된 JSON 등)
+opencodex는 `config.json.invalid-<timestamp>`로 백업하고 경고를 출력한 뒤 기본값으로 시작합니다.
+원본 파일이 조용히 사라지는 일은 없습니다.
+
+최소 설정 예시:
 
 ```json
 {
@@ -208,6 +212,25 @@ npm uninstall -g @bitkyc08/opencodex   # 또는: bun remove -g @bitkyc08/opencod
 ```
 
 WebSocket 전송은 기본적으로 꺼져 있습니다. Codex가 HTTP/SSE 대신 Responses WebSocket 경로를 사용하게 하려면 `"websockets": true`를 설정하세요.
+
+### 원격 접근
+
+기본적으로 opencodex는 `127.0.0.1`(루프백)에 바인딩되며 별도 인증이 필요 없습니다.
+`"hostname": "0.0.0.0"`으로 LAN에 노출할 경우, opencodex는 관리 API(`/api/*`)와 데이터 플레인(`/v1/responses`) 모두에 bearer 토큰을 요구합니다:
+
+```bash
+export OPENCODEX_API_AUTH_TOKEN="your-secret-token"
+ocx start
+```
+
+비루프백 바인딩 시 이 환경 변수가 없으면 프록시 시작이 거부됩니다.
+클라이언트(스크립트, 원격 머신)는 모든 요청에 토큰을 포함해야 합니다:
+
+```
+x-opencodex-api-key: your-secret-token
+```
+
+토큰은 타이밍 공격 방지를 위해 상수 시간으로 비교됩니다.
 
 모든 필드에 대한 자세한 내용은 **[설정 레퍼런스](https://lidge-jun.github.io/opencodex/ko/reference/configuration/)** 를 참고하세요.
 
