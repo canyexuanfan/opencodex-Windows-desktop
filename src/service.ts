@@ -5,7 +5,7 @@
  * Codex on a service-managed restart (the restarted instance re-injects); explicit stop/uninstall
  * restore it via the command.
  */
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -95,6 +95,19 @@ function sh(cmd: string): string {
   return execSync(cmd, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 
+function runFile(file: string, args: string[]): string {
+  return execFileSync(file, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true }).trim();
+}
+
+function windowsSchtasks(): string {
+  const candidate = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "schtasks.exe");
+  return existsSync(candidate) ? candidate : "schtasks.exe";
+}
+
+function schtasks(args: string[]): string {
+  return runFile(windowsSchtasks(), args);
+}
+
 function windowsBatchValue(value: string): string {
   return value.replace(/%/g, "%%").replace(/[\r\n]/g, "");
 }
@@ -124,6 +137,10 @@ export function buildWindowsServiceScript(): string {
   return `${lines.join("\r\n")}\r\n`;
 }
 
+export function buildWindowsSchtasksCreateArgs(script = windowsServiceScriptPath()): string[] {
+  return ["/create", "/tn", TASK, "/tr", `"${script}"`, "/sc", "onlogon", "/rl", "highest", "/f"];
+}
+
 // ── macOS (launchd) ──
 function installLaunchd(): void {
   const dir = join(homedir(), "Library", "LaunchAgents");
@@ -148,14 +165,14 @@ function installWindows(): void {
   if (!existsSync(getConfigDir())) mkdirSync(getConfigDir(), { recursive: true });
   const script = windowsServiceScriptPath();
   writeFileSync(script, buildWindowsServiceScript(), "utf8");
-  sh(`schtasks /create /tn ${TASK} /tr "\\"${script}\\"" /sc onlogon /rl highest /f`);
-  sh(`schtasks /run /tn ${TASK}`);
+  schtasks(buildWindowsSchtasksCreateArgs(script));
+  schtasks(["/run", "/tn", TASK]);
 }
-function startWindows(): void { sh(`schtasks /run /tn ${TASK}`); }
-function stopWindows(): void { try { sh(`schtasks /end /tn ${TASK}`); } catch { /* not running */ } }
-function statusWindows(): string { try { return sh(`schtasks /query /tn ${TASK}`); } catch { return ""; } }
+function startWindows(): void { schtasks(["/run", "/tn", TASK]); }
+function stopWindows(): void { try { schtasks(["/end", "/tn", TASK]); } catch { /* not running */ } }
+function statusWindows(): string { try { return schtasks(["/query", "/tn", TASK]); } catch { return ""; } }
 function uninstallWindows(): void {
-  try { sh(`schtasks /delete /tn ${TASK} /f`); } catch { /* absent */ }
+  try { schtasks(["/delete", "/tn", TASK, "/f"]); } catch { /* absent */ }
   if (existsSync(windowsServiceScriptPath())) unlinkSync(windowsServiceScriptPath());
 }
 
@@ -253,7 +270,7 @@ export function stopServiceIfInstalled(): boolean {
     }
   } else if (process.platform === "win32") {
     try {
-      const q = sh(`schtasks /query /tn ${TASK} 2>nul`);
+      const q = schtasks(["/query", "/tn", TASK]);
       if (q.includes(TASK)) { stopWindows(); return true; }
     } catch { /* task not found */ }
   } else if (process.platform === "linux" && isSystemd() && existsSync(unitPath())) {
@@ -274,7 +291,7 @@ export function uninstallServiceIfInstalled(): boolean {
     }
   } else if (process.platform === "win32") {
     try {
-      const q = sh(`schtasks /query /tn ${TASK} 2>nul`);
+      const q = schtasks(["/query", "/tn", TASK]);
       if (q.includes(TASK)) { uninstallWindows(); return true; }
     } catch { /* task not found */ }
   } else if (process.platform === "linux" && isSystemd() && existsSync(unitPath())) {

@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildUnixCodexShim, buildWindowsCodexShim } from "../src/codex-shim";
+import { buildUnixCodexShim, buildWindowsCodexShim, buildWindowsPowerShellCodexShim, installCodexShim, uninstallCodexShim } from "../src/codex-shim";
 
 const SHIM_MARKER = "opencodex codex autostart shim";
 
@@ -59,6 +59,12 @@ describe("Codex autostart shim", () => {
     expect(script).toContain("OCX_SHIM_BYPASS");
   });
 
+  test("PowerShell shim uses bypass env var to skip proxy start", () => {
+    const script = buildWindowsPowerShellCodexShim("C:\\codex-real.ps1", "C:\\bun.exe", "C:\\cli.ts");
+    expect(script).toContain("OCX_SHIM_BYPASS");
+    expect(script).toContain("& 'C:\\codex-real.ps1' @args");
+  });
+
   test("Unix shim skips ocx startup for Codex internal commands", () => {
     if (process.platform === "win32") return;
 
@@ -95,5 +101,53 @@ describe("Codex autostart shim", () => {
     expect(script).toContain('if /I "%~1"=="app-server" goto run_codex');
     expect(script).toContain('if /I "%~1"=="exec" goto run_codex');
     expect(script).toContain('if /I "%~1"=="--help" goto run_codex');
+  });
+
+  test("Windows install backs up cmd and ps1 npm launchers without touching the bare launcher", () => {
+    if (process.platform !== "win32") return;
+
+    const dir = mkdtempSync(join(tmpdir(), "ocx-shim-bin-"));
+    const home = mkdtempSync(join(tmpdir(), "ocx-shim-home-"));
+    const oldPath = process.env.PATH;
+    const oldHome = process.env.OPENCODEX_HOME;
+    const cmd = join(dir, "codex.cmd");
+    const ps1 = join(dir, "codex.ps1");
+    const bare = join(dir, "codex");
+    const cmdOriginal = "@echo off\r\necho real cmd %*\r\n";
+    const ps1Original = "Write-Output 'real ps1'\n";
+    const bareOriginal = "#!/bin/sh\necho bare\n";
+
+    try {
+      process.env.PATH = dir;
+      process.env.OPENCODEX_HOME = home;
+      writeFileSync(cmd, cmdOriginal, "utf8");
+      writeFileSync(ps1, ps1Original, "utf8");
+      writeFileSync(bare, bareOriginal, "utf8");
+
+      const installed = installCodexShim();
+
+      expect(installed.installed).toBe(true);
+      expect(readFileSync(cmd, "utf8")).toContain(SHIM_MARKER);
+      expect(readFileSync(ps1, "utf8")).toContain(SHIM_MARKER);
+      expect(readFileSync(bare, "utf8")).toBe(bareOriginal);
+      expect(readFileSync(join(dir, "codex.opencodex-real.cmd"), "utf8")).toBe(cmdOriginal);
+      expect(readFileSync(join(dir, "codex.opencodex-real.ps1"), "utf8")).toBe(ps1Original);
+
+      const state = JSON.parse(readFileSync(join(home, "codex-shim.json"), "utf8"));
+      expect(state.wrappers).toHaveLength(2);
+
+      const removed = uninstallCodexShim();
+
+      expect(removed.removed).toBe(true);
+      expect(readFileSync(cmd, "utf8")).toBe(cmdOriginal);
+      expect(readFileSync(ps1, "utf8")).toBe(ps1Original);
+      expect(readFileSync(bare, "utf8")).toBe(bareOriginal);
+    } finally {
+      process.env.PATH = oldPath;
+      if (oldHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = oldHome;
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
