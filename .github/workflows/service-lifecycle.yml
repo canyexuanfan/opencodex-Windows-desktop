@@ -80,6 +80,51 @@ jobs:
           fi
           echo "✅ Service uninstalled"
 
+  macos-launchd:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Write minimal config
+        run: |
+          mkdir -p ~/.opencodex
+          echo '{"port":10199,"providers":{}}' > ~/.opencodex/config.json
+
+      - name: Install service
+        run: |
+          bun run src/cli.ts service install
+          sleep 3
+
+      - name: Verify launchd agent loaded
+        run: |
+          if launchctl list | grep -q com.opencodex.proxy; then
+            echo "✅ LaunchAgent loaded"
+          else
+            echo "❌ LaunchAgent not found"
+            exit 1
+          fi
+
+      - name: ocx stop should unload the agent
+        run: |
+          bun run src/cli.ts stop
+          sleep 2
+          echo "✅ ocx stop completed"
+
+      - name: Uninstall service
+        run: |
+          bun run src/cli.ts service uninstall
+          sleep 1
+          if launchctl list | grep -q com.opencodex.proxy; then
+            echo "❌ LaunchAgent still loaded after uninstall"
+            exit 1
+          fi
+          echo "✅ LaunchAgent removed"
+
   windows-schtasks:
     runs-on: windows-latest
     steps:
