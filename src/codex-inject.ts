@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { atomicWriteFile, websocketsEnabled } from "./config";
+import { removeJournal } from "./codex-journal";
 import { restoreCodexCatalog } from "./codex-catalog";
 import { syncCodexHistoryProvider } from "./codex-history-provider";
 import { CODEX_CONFIG_PATH, CODEX_PROFILE_PATH, DEFAULT_CATALOG_PATH, parseTomlString, readRootTomlString, resolveCodexConfigPath, tomlString } from "./codex-paths";
@@ -336,6 +337,7 @@ export function restoreNativeCodex(): { success: boolean; message: string } {
   const cfg = removeCodexConfig();
   const cat = restoreCodexCatalog();
   const history = syncCodexHistoryProvider("openai");
+  removeJournal();
   const msg = cat.removed > 0
     ? `${cfg.message} Catalog restored to ${cat.kept} native model(s) (dropped ${cat.removed} proxy-routed).`
     : cfg.message;

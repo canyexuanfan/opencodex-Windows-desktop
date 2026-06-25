@@ -3,6 +3,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { rmSync } from "node:fs";
 import { restoreNativeCodex } from "./codex-inject";
 import { restoreLegacyOpenaiHistory } from "./codex-history-provider";
+import { writeJournal, reconcileJournal } from "./codex-journal";
 import { codexAutoStartEnabled, getConfigDir, getConfigPath, loadConfig, readPid, removePid, saveConfig, writePid } from "./config";
 import { findAvailablePort } from "./ports";
 import { serviceCommand, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "./service";
@@ -184,6 +185,7 @@ async function chooseListenPort(requestedPort?: number): Promise<number> {
 }
 
 async function handleStart(options: { block?: boolean } = {}) {
+  reconcileJournal();
   const existingPid = readPid();
   if (existingPid) {
     const config = loadConfig();
@@ -199,6 +201,7 @@ async function handleStart(options: { block?: boolean } = {}) {
 
   const server = startServer(port);
   writePid(process.pid);
+  writeJournal();
 
   const config = loadConfig();
 
@@ -232,6 +235,7 @@ async function handleStart(options: { block?: boolean } = {}) {
 }
 
 async function handleEnsure() {
+  reconcileJournal();
   let config = loadConfig();
   if (!codexAutoStartEnabled(config)) {
     console.log("Codex autostart is disabled.");
