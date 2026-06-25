@@ -206,4 +206,11 @@ export const ko: Record<TKey, string> = {
   "codexAuth.resetNothingToReset": "현재 초기화할 사용량 윈도우가 없습니다.",
   "codexAuth.resetNoCredit": "사용 가능한 리셋 크레딧이 없습니다.",
   "codexAuth.resetError": "리셋 크레딧 사용에 실패했습니다. 다시 시도해 주세요.",
+  "codexAuth.fifoNote": "가장 오래된 크레딧부터 사용됩니다.",
+  "codexAuth.confirmWhichCredit": "{date}에 획득한 크레딧이 사용됩니다.",
+  "codexAuth.creditNext": "다음 사용 대상",
+  "codexAuth.creditLabel": "크레딧 #{n}",
+  "codexAuth.creditNextBadge": "NEXT",
+  "codexAuth.creditGranted": "획득 {date}",
+  "codexAuth.creditExpires": "만료 {date} ({days}일 남음)",
 };

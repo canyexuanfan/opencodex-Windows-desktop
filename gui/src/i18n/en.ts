@@ -206,6 +206,13 @@ export const en = {
   "codexAuth.resetNothingToReset": "No rate-limit window needs resetting right now.",
   "codexAuth.resetNoCredit": "No reset credits available.",
   "codexAuth.resetError": "Failed to redeem reset credit. Please try again.",
+  "codexAuth.fifoNote": "The oldest credit is used first.",
+  "codexAuth.confirmWhichCredit": "Credit from {date} will be used.",
+  "codexAuth.creditNext": "Next to use",
+  "codexAuth.creditLabel": "Credit #{n}",
+  "codexAuth.creditNextBadge": "NEXT",
+  "codexAuth.creditGranted": "Granted {date}",
+  "codexAuth.creditExpires": "Expires {date} ({days}d left)",
 } as const;
 
 export type TKey = keyof typeof en;

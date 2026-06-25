@@ -206,4 +206,11 @@ export const zh: Record<TKey, string> = {
   "codexAuth.resetNothingToReset": "当前没有需要重置的使用窗口。",
   "codexAuth.resetNoCredit": "没有可用的重置额度。",
   "codexAuth.resetError": "重置额度使用失败，请重试。",
+  "codexAuth.fifoNote": "最早获得的额度优先使用。",
+  "codexAuth.confirmWhichCredit": "将使用 {date} 获得的额度。",
+  "codexAuth.creditNext": "即将使用",
+  "codexAuth.creditLabel": "额度 #{n}",
+  "codexAuth.creditNextBadge": "NEXT",
+  "codexAuth.creditGranted": "获得 {date}",
+  "codexAuth.creditExpires": "过期 {date}（剩余 {days} 天）",
 };

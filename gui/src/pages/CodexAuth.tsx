@@ -32,6 +32,8 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
   const [resetPopup, setResetPopup] = useState<AccountEntry | null>(null);
   const [resetConfirm, setResetConfirm] = useState(false);
   const [redeeming, setRedeeming] = useState(false);
+  const [creditDetails, setCreditDetails] = useState<{ granted_at: string; expires_at: string }[] | null>(null);
+  const [creditDetailsLoading, setCreditDetailsLoading] = useState(false);
 
   const load = async (refreshQuota = false) => {
     try {
@@ -87,6 +89,24 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
     }
   };
 
+  const openResetPopup = async (account: AccountEntry) => {
+    setResetPopup(account);
+    setResetConfirm(false);
+    setCreditDetails(null);
+    setCreditDetailsLoading(true);
+    try {
+      const resp = await fetch(`${apiBase}/api/codex-auth/reset-credits?accountId=${encodeURIComponent(account.id)}`);
+      if (resp.ok) {
+        const data = (await resp.json()) as { credits?: { granted_at: string; expires_at: string }[] };
+        const sorted = (data.credits ?? []).sort((a, b) =>
+          new Date(a.granted_at).getTime() - new Date(b.granted_at).getTime()
+        );
+        setCreditDetails(sorted);
+      }
+    } catch { /* detail fetch is non-blocking */ }
+    finally { setCreditDetailsLoading(false); }
+  };
+
   const handleRedeem = async (accountId: string) => {
     setRedeeming(true);
     try {
@@ -139,7 +159,7 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
         <div className="card-head">
           <span className="dot dot-green" />
           <strong>{t("codexAuth.mainAccount")}</strong>
-          {main && <TicketBadge account={{ ...main, id: "__main__" } as AccountEntry} onClick={() => !isWorkspaceAccount(main?.plan) && setResetPopup({ ...main, id: "__main__" } as AccountEntry)} />}
+          {main && <TicketBadge account={{ ...main, id: "__main__" } as AccountEntry} onClick={() => !isWorkspaceAccount(main?.plan) && openResetPopup({ ...main, id: "__main__" } as AccountEntry)} />}
           <span className={`badge ${!activeId ? "badge-primary" : "badge-muted"}`}>
             {!activeId ? t("codexAuth.nextSession") : t("codexAuth.current")}
           </span>
@@ -166,7 +186,7 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
             <span className={`dot ${a.needsReauth ? "dot-amber" : isNext(a.id) ? "dot-blue" : "dot-muted"}`} />
             <strong>{a.email}</strong>
             {a.plan && <span className="badge badge-green">{a.plan}</span>}
-            <TicketBadge account={a} onClick={() => !isWorkspaceAccount(a.plan) && setResetPopup(a)} />
+            <TicketBadge account={a} onClick={() => !isWorkspaceAccount(a.plan) && openResetPopup(a)} />
             {a.needsReauth && <span className="badge badge-amber">{t("codexAuth.needsReauth")}</span>}
             {isNext(a.id) && !a.needsReauth && <span className="badge badge-primary">{t("codexAuth.nextSession")}</span>}
             <button
@@ -218,7 +238,7 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
       )}
 
       {resetPopup && (
-        <div className="modal-overlay" onClick={() => { setResetPopup(null); setResetConfirm(false); }}>
+        <div className="modal-overlay" onClick={() => { setResetPopup(null); setResetConfirm(false); setCreditDetails(null); }}>
           <div className="modal-card" onClick={e => e.stopPropagation()}>
             {!resetConfirm ? (
               <>
@@ -227,12 +247,20 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
                 <div style={{ margin: "16px 0" }}>
                   {(resetPopup.quota?.resetCredits ?? 0) > 0 ? (
                     <>
-                      <p>{t("codexAuth.resetCreditsAvailable", { count: String(resetPopup.quota?.resetCredits ?? 0) })}</p>
-                      <p className="modal-desc">{t("codexAuth.resetCreditsDesc")}</p>
+                      <p style={{ marginBottom: 12 }}>{t("codexAuth.resetCreditsAvailable", { count: String(resetPopup.quota?.resetCredits ?? 0) })}</p>
+                      {creditDetailsLoading && <p className="faint" style={{ fontSize: 12 }}>Loading...</p>}
+                      {creditDetails && creditDetails.length > 0 && (
+                        <div className="credit-list">
+                          {creditDetails.map((c, i) => (
+                            <CreditItem key={i} index={i} grantedAt={c.granted_at} expiresAt={c.expires_at} isNext={i === 0} t={t} />
+                          ))}
+                        </div>
+                      )}
                       <button className="btn btn-primary" style={{ marginTop: 12, width: "100%" }}
                         onClick={() => setResetConfirm(true)} disabled={redeeming}>
                         {t("codexAuth.useOneCredit")}
                       </button>
+                      <p className="card-sub" style={{ fontSize: 11, marginTop: 8, textAlign: "center" }}>{t("codexAuth.fifoNote")}</p>
                     </>
                   ) : (
                     <>
@@ -241,7 +269,6 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
                     </>
                   )}
                 </div>
-                <p className="card-sub" style={{ fontSize: 11 }}>{t("codexAuth.creditsExpireNote")}</p>
               </>
             ) : (
               <>
@@ -249,6 +276,11 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
                   <div className="confirm-icon"><IconAlert width={22} /></div>
                   <h3>{t("codexAuth.confirmResetTitle")}</h3>
                   <p className="modal-desc">{t("codexAuth.confirmResetDesc", { count: String(resetPopup.quota?.resetCredits ?? 0) })}</p>
+                  {creditDetails && creditDetails[0] && (
+                    <p className="faint" style={{ fontSize: 12 }}>
+                      {t("codexAuth.confirmWhichCredit", { date: formatCreditDate(creditDetails[0].granted_at) })}
+                    </p>
+                  )}
                   <p className="faint" style={{ fontSize: 12 }}>{t("codexAuth.irreversible")}</p>
                 </div>
                 <div className="modal-actions">
@@ -324,6 +356,37 @@ function QuotaRow({ label, percent, resetAt, threshold, t }: { label: string; pe
       <span className="quota-reset-time">{reset.time}</span>
       <div className="bar"><div className={`bar-fill ${color}`} style={{ width: `${clampPercent(percent)}%` }} /></div>
       <span className="quota-val">{Math.round(percent)}%</span>
+    </div>
+  );
+}
+
+function formatCreditDate(iso: string): string {
+  const d = new Date(iso);
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(d);
+}
+
+function daysUntil(iso: string): number {
+  return Math.max(0, Math.ceil((new Date(iso).getTime() - Date.now()) / 86_400_000));
+}
+
+function CreditItem({ index, grantedAt, expiresAt, isNext, t }: {
+  index: number; grantedAt: string; expiresAt: string; isNext: boolean; t: TFn;
+}) {
+  const days = daysUntil(expiresAt);
+  const urgent = days <= 7;
+  return (
+    <div className={`credit-item${isNext ? " credit-next" : ""}`}>
+      <div className="credit-item-head">
+        <IconTicket width={13} />
+        <span className="credit-item-label">
+          {isNext ? t("codexAuth.creditNext") : t("codexAuth.creditLabel", { n: String(index + 1) })}
+        </span>
+        {isNext && <span className="badge badge-amber" style={{ fontSize: 10, padding: "1px 6px" }}>{t("codexAuth.creditNextBadge")}</span>}
+      </div>
+      <div className="credit-item-dates">
+        <span>{t("codexAuth.creditGranted", { date: formatCreditDate(grantedAt) })}</span>
+        <span className={urgent ? "credit-urgent" : ""}>{t("codexAuth.creditExpires", { date: formatCreditDate(expiresAt), days: String(days) })}</span>
+      </div>
     </div>
   );
 }
