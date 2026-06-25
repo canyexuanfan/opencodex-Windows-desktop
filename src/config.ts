@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -172,7 +173,7 @@ export function writePid(pid: number): void {
   } else {
     hardenConfigDir();
   }
-  writeFileSync(getPidPath(), String(pid), "utf-8");
+  atomicWriteFile(getPidPath(), String(pid));
 }
 
 export function readPid(): number | null {
@@ -180,13 +181,15 @@ export function readPid(): number | null {
   if (!existsSync(pidPath)) return null;
   try {
     const raw = readFileSync(pidPath, "utf-8").trim();
-    const pid = parseInt(raw, 10);
-    if (isNaN(pid)) return null;
+    const pid = parsePidFile(raw);
+    if (pid === null) return null;
     try {
       process.kill(pid, 0);
-      return pid;
+      return isLikelyOcxStartProcess(pid) ? pid : null;
     } catch (e: unknown) {
-      if ((e as NodeJS.ErrnoException).code === "EPERM") return pid;
+      if ((e as NodeJS.ErrnoException).code === "EPERM") {
+        return isLikelyOcxStartProcess(pid) ? pid : null;
+      }
       return null;
     }
   } catch {
@@ -194,7 +197,8 @@ export function readPid(): number | null {
   }
 }
 
-export function removePid(): void {
+export function removePid(expectedPid?: number): void {
+  if (expectedPid !== undefined && readPidFileValue() !== expectedPid) return;
   try {
     unlinkSync(getPidPath());
   } catch { /* ignore */ }
@@ -205,6 +209,56 @@ function warnConfigRepaired(configPath: string, error: z.ZodError): void {
   warnedConfigFallbacks.add(configPath);
   const fields = error.issues.map(i => i.path.join(".") || "config").join(", ");
   console.error(`opencodex config at ${configPath}: repaired missing field(s) [${fields}] with defaults. Your providers and accounts are preserved.`);
+}
+
+function readPidFileValue(): number | null {
+  try {
+    return parsePidFile(readFileSync(getPidPath(), "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+export function parsePidFile(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const pid = Number.parseInt(trimmed, 10);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+}
+
+export function isOcxStartCommandLine(commandLine: string): boolean {
+  const normalized = commandLine.toLowerCase().replace(/\\/g, "/");
+  const hasOcxEntrypoint = normalized.includes("src/cli.ts")
+    || normalized.includes("@bitkyc08/opencodex")
+    || /(?:^|[\s/"'])(?:ocx|opencodex)(?:\.cmd)?(?:$|[\s"'])/.test(normalized);
+  return hasOcxEntrypoint && /(?:^|[\s"'])start(?:$|[\s"'])/.test(normalized);
+}
+
+function isLikelyOcxStartProcess(pid: number): boolean {
+  const commandLine = readProcessCommandLine(pid);
+  if (commandLine === undefined) return true;
+  return isOcxStartCommandLine(commandLine);
+}
+
+function readProcessCommandLine(pid: number): string | undefined {
+  try {
+    if (process.platform === "win32") {
+      const output = execFileSync("powershell.exe", [
+        "-NoProfile",
+        "-Command",
+        `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CommandLine`,
+      ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000 });
+      return output.trim() || undefined;
+    }
+    const output = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 1000,
+    });
+    return output.trim() || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function warnAndBackupInvalidConfig(configPath: string, error: unknown): void {
