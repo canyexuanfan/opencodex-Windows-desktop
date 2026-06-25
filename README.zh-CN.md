@@ -27,12 +27,12 @@ Codex CLI / App / SDK ──/v1/responses──▶ opencodex ──▶ Any provi
 | Linux (x64 / arm64) | 完整支持 | systemd（用户级） |
 | Windows (x64) | 完整支持 | Task Scheduler |
 
-需要 [Bun](https://bun.sh) 1.1+。三个平台都原生运行（Windows 不需要 WSL）。
+需要 [Node](https://nodejs.org) 18+。Bun 运行时会在 `npm install` 时自动打包，无需单独安装。三个平台都原生运行（Windows 不需要 WSL）。
 
 ## 快速开始
 
 ```bash
-# 安装
+# 安装（自动打包 Bun 运行时 —— 只需 Node 18+）
 npm install -g @bitkyc08/opencodex      # 或者: bun install -g @bitkyc08/opencodex
 
 # 交互式初始化（写入配置 + 注入 Codex）
@@ -46,19 +46,15 @@ codex "Write a hello world in Rust"
 ```
 
 <details>
-<summary><b>还没装 <a href="https://bun.sh">bun</a>？</b> —— 先装一下（opencodex 跑在 bun 上）</summary>
+<summary><b>遇到 "bundled Bun runtime is missing" 错误？</b></summary>
 
 <br/>
 
+opencodex 把 Bun 运行时作为依赖打包，并通过 Node 启动器运行，所以你**不需要**自己安装 Bun。如果看到 "bundled Bun runtime is missing" 错误，说明安装时跳过了 lifecycle 脚本或 optional 依赖。请不带这些标志重新安装：
+
 ```bash
-# macOS / Linux / WSL
-curl -fsSL https://bun.sh/install | bash
-
-# Windows (PowerShell)
-powershell -c "irm bun.sh/install.ps1 | iex"
+npm install -g @bitkyc08/opencodex   # 不要加 --ignore-scripts、--omit=optional
 ```
-
-装完之后重新跑 `npm install -g @bitkyc08/opencodex`。（`ocx` 是 bun 原生二进制，所以 bun 必须在你的 `PATH` 里。）
 
 </details>
 

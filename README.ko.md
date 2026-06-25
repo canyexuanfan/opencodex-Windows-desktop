@@ -28,12 +28,12 @@ Codex CLI / App / SDK ──/v1/responses──▶ opencodex ──▶ Any provi
 | Linux (x64 / arm64) | 완전 지원 | systemd (user unit) |
 | Windows (x64) | 완전 지원 | Task Scheduler |
 
-[Bun](https://bun.sh) 1.1 이상이 필요합니다. 세 플랫폼 모두 네이티브로 동작합니다 (Windows에서도 WSL 없이 사용 가능합니다).
+[Node](https://nodejs.org) 18 이상이 필요합니다. Bun 런타임은 `npm install` 시 자동으로 번들되므로 따로 설치할 필요가 없습니다. 세 플랫폼 모두 네이티브로 동작합니다 (Windows에서도 WSL 없이 사용 가능합니다).
 
 ## 빠른 시작
 
 ```bash
-# 설치
+# 설치 (Bun 런타임이 자동으로 번들됩니다 — Node 18+ 만 있으면 됩니다)
 npm install -g @bitkyc08/opencodex      # 또는: bun install -g @bitkyc08/opencodex
 
 # 대화형 설정 (config 작성 + Codex 주입 + 자동 시작 shim 설치 선택)
@@ -50,19 +50,15 @@ codex "Write a hello world in Rust"
 ```
 
 <details>
-<summary><b><a href="https://bun.sh">bun</a>이 없으신가요?</b> — 먼저 설치해 주세요 (opencodex는 bun에서 실행됩니다)</summary>
+<summary><b>"bundled Bun runtime is missing" 오류가 나나요?</b></summary>
 
 <br/>
 
+opencodex는 Bun 런타임을 의존성으로 번들하고 Node 런처로 실행하므로 Bun을 직접 설치할 필요가 **없습니다**. "bundled Bun runtime is missing" 오류가 보이면 설치 과정에서 lifecycle 스크립트나 optional 의존성이 건너뛰어진 경우입니다. 해당 플래그 없이 다시 설치하세요:
+
 ```bash
-# macOS / Linux / WSL
-curl -fsSL https://bun.sh/install | bash
-
-# Windows (PowerShell)
-powershell -c "irm bun.sh/install.ps1 | iex"
+npm install -g @bitkyc08/opencodex   # --ignore-scripts, --omit=optional 없이
 ```
-
-설치 후 `npm install -g @bitkyc08/opencodex`를 다시 실행하세요. (`ocx` 바이너리는 bun 기반이므로 bun이 `PATH`에 있어야 합니다.)
 
 </details>
 

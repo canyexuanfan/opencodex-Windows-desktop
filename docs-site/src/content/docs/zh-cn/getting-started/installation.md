@@ -10,7 +10,7 @@ provider 之外,绝不会把你的流量发送到任何地方。
 
 | 要求 | 原因 |
 | --- | --- |
-| **[Bun](https://bun.sh) ≥ 1.1**(推荐)或 **Node ≥ 20** | `ocx` 运行在 Bun 运行时上;服务运行器会调用 `bun`。 |
+| **[Node](https://nodejs.org) ≥ 18** | `ocx` 运行在 Bun 运行时上，但运行时会在 `npm install` 时自动打包，你**无需**自己安装 Bun。 |
 | **[OpenAI Codex](https://openai.com/codex)**(CLI、App 或 SDK) | opencodex 所代理的客户端。opencodex 会写入 `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`）。 |
 | 一个 provider 账号或 API key | Anthropic、xAI、Kimi、Ollama Cloud、OpenRouter、一个 OpenAI 兼容端点,或你的 ChatGPT 登录凭据。 |
 

@@ -62,8 +62,8 @@ function resolveBun() {
   let bin = findBunBinary(bunDir);
   if (bin) return bin;
 
-  // Lazy fallback: --ignore-scripts (or a failed postinstall) leaves a 0-byte
-  // placeholder. Run the bun package's own installer once.
+  // Lazy fallback: --ignore-scripts (or a failed postinstall) leaves the
+  // ~450-byte placeholder stub. Run the bun package's own installer once.
   const installJs = join(bunDir, "install.js");
   if (existsSync(installJs)) {
     const r = spawnSync(process.execPath, [installJs], { stdio: "inherit" });

@@ -10,7 +10,7 @@ sends your traffic anywhere except the provider you configure.
 
 | Requirement | Why |
 | --- | --- |
-| **[Bun](https://bun.sh) ≥ 1.1** (recommended) or **Node ≥ 20** | `ocx` runs on the Bun runtime; the service runner invokes `bun`. |
+| **[Node](https://nodejs.org) ≥ 18** | `ocx` runs on the Bun runtime, but the runtime is bundled automatically on `npm install` — you do **not** need to install Bun yourself. |
 | **[OpenAI Codex](https://openai.com/codex)** (CLI, App, or SDK) | The client opencodex sits in front of. opencodex writes to `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`). |
 | A provider account or API key | Anthropic, xAI, Kimi, Ollama Cloud, OpenRouter, an OpenAI-compatible endpoint, or your ChatGPT login. |
 
