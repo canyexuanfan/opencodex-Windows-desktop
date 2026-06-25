@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   applyCodexAuthContextToProvider,
   assertCodexAuthContextNotCooled,
@@ -28,20 +30,20 @@ import {
 } from "../src/codex-routing";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 
-const TEST_DIR = "/tmp/opencodex-codex-auth-context-test";
+let testDir: string;
 let previousOpencodexHome: string | undefined;
 
 beforeEach(() => {
+  testDir = mkdtempSync(join(tmpdir(), "ocx-auth-ctx-"));
   previousOpencodexHome = process.env.OPENCODEX_HOME;
-  process.env.OPENCODEX_HOME = TEST_DIR;
-  rmSync(TEST_DIR, { recursive: true, force: true });
+  process.env.OPENCODEX_HOME = testDir;
   clearThreadAccountMap();
   clearCodexUpstreamHealth();
   clearAccountNeedsReauth("pool-a");
 });
 
 afterEach(() => {
-  rmSync(TEST_DIR, { recursive: true, force: true });
+  rmSync(testDir, { recursive: true, force: true });
   clearThreadAccountMap();
   clearCodexUpstreamHealth();
   clearAccountNeedsReauth("pool-a");
