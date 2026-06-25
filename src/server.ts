@@ -522,12 +522,56 @@ async function fetchWithHeaderTimeout(
   }
 }
 
-const requestLog: { timestamp: number; model: string; provider: string; status: number; durationMs: number }[] = [];
-const MAX_LOG_SIZE = 200;
+export interface RequestLogEntry {
+  requestId: string;
+  timestamp: number;
+  model: string;
+  provider: string;
+  status: number;
+  durationMs: number;
+  errorCode?: string;
+}
 
-function addRequestLog(entry: typeof requestLog[number]) {
+const requestLog: RequestLogEntry[] = [];
+const MAX_LOG_SIZE = 200;
+let requestLogSeq = 0;
+
+function addRequestLog(entry: RequestLogEntry) {
   requestLog.push(entry);
   if (requestLog.length > MAX_LOG_SIZE) requestLog.shift();
+}
+
+export function nextRequestLogId(timestamp = Date.now()): string {
+  requestLogSeq = (requestLogSeq % 1_000_000) + 1;
+  return `ocx-${timestamp.toString(36)}-${requestLogSeq.toString(36)}`;
+}
+
+export function requestLogErrorCode(status: number): string | undefined {
+  if (status >= 200 && status < 400) return undefined;
+  if (status === 400 || status === 409) return "invalid_request_error";
+  if (status === 401 || status === 403) return "invalid_api_key";
+  if (status === 429) return "rate_limit_exceeded";
+  if (status === 503) return "server_is_overloaded";
+  if (status >= 500) return "upstream_server_error";
+  return `http_${status}`;
+}
+
+export function filterRequestLogs(logs: RequestLogEntry[], params: URLSearchParams): RequestLogEntry[] {
+  let filtered = logs;
+  const provider = params.get("provider")?.trim();
+  if (provider) filtered = filtered.filter(entry => entry.provider === provider);
+  const status = params.get("status")?.trim().toLowerCase();
+  if (status) {
+    filtered = /^[1-5]xx$/.test(status)
+      ? filtered.filter(entry => Math.floor(entry.status / 100) === Number(status[0]))
+      : filtered.filter(entry => String(entry.status) === status);
+  }
+  const tailRaw = params.get("tail")?.trim();
+  if (tailRaw) {
+    const tail = Number.parseInt(tailRaw, 10);
+    if (Number.isFinite(tail) && tail > 0) filtered = filtered.slice(-Math.min(tail, MAX_LOG_SIZE));
+  }
+  return filtered;
 }
 
 /**
@@ -941,7 +985,7 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
   }
 
   if (url.pathname === "/api/logs" && req.method === "GET") {
-    return jsonResponse(requestLog);
+    return jsonResponse(filterRequestLogs(requestLog, url.searchParams));
   }
 
   if (url.pathname === "/api/providers" && req.method === "GET") {
@@ -1228,14 +1272,18 @@ export function startServer(port?: number) {
           return formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked");
         }
         const start = Date.now();
+        const requestId = nextRequestLogId(start);
         const logCtx = { model: "unknown", provider: "unknown" };
         const response = await handleResponses(req, config, logCtx);
+        const errorCode = requestLogErrorCode(response.status);
         addRequestLog({
+          requestId,
           timestamp: start,
           model: logCtx.model,
           provider: logCtx.provider,
           status: response.status,
           durationMs: Date.now() - start,
+          ...(errorCode ? { errorCode } : {}),
         });
         return response;
       }

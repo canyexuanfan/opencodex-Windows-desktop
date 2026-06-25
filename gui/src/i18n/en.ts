@@ -115,9 +115,11 @@ export const en = {
   "logs.autoRefresh": "Auto-refresh",
   "logs.noRequests": "No requests yet.",
   "logs.col.time": "Time",
+  "logs.col.request": "Request",
   "logs.col.model": "Model",
   "logs.col.provider": "Provider",
   "logs.col.status": "Status",
+  "logs.col.error": "Error",
   "logs.col.duration": "Duration",
 
   // add-provider modal

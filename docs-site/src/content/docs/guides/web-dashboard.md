@@ -65,6 +65,7 @@ The GUI is a thin client over the proxy's management API. Useful endpoints (all 
 | `PUT /api/codex-auth/auto-switch` | Set the quota threshold for automatic new-session account selection. |
 | `PUT /api/codex-auth/failover` | Set how many transient upstream failures trigger future-session failover. |
 | `POST /api/codex-auth/login` · `GET /api/codex-auth/login-status` | Add a pool account through the browser login flow. |
+| `GET /api/logs?tail=50&provider=…&status=5xx` | Read recent request metadata with optional tail, provider, and status filters. |
 | `GET` / `PUT /api/subagent-models` | Read / set the featured subagent models. |
 | `POST /api/stop` | Gracefully stop the proxy (and the background service if installed), restore native Codex, then exit. |
 

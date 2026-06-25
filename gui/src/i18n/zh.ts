@@ -115,9 +115,11 @@ export const zh: Record<TKey, string> = {
   "logs.autoRefresh": "自动刷新",
   "logs.noRequests": "暂无请求。",
   "logs.col.time": "时间",
+  "logs.col.request": "请求",
   "logs.col.model": "模型",
   "logs.col.provider": "提供方",
   "logs.col.status": "状态",
+  "logs.col.error": "错误",
   "logs.col.duration": "耗时",
 
   // add-provider modal
