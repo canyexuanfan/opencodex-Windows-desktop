@@ -183,6 +183,8 @@ export interface OcxConfig {
   stallTimeoutSec?: number;
   /** Connect timeout (ms) for upstream fetch — covers DNS, TCP, TLS, and response header. Default 30000. */
   connectTimeoutMs?: number;
+  /** Graceful shutdown drain timeout (ms). Active turns are aborted after this deadline. Default 5000. */
+  shutdownTimeoutMs?: number;
   /** Advertise supports_websockets so Codex opens the WS endpoint. Default false; set true to opt in. */
   websockets?: boolean;
   /** Auto-start/sync the proxy from the Codex shim before launching Codex. Default true. */
