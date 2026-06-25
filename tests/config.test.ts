@@ -70,6 +70,25 @@ describe("opencodex config defaults", () => {
     });
   });
 
+  test("loads UTF-8 BOM config files written by Windows tools", () => {
+    writeFileSync(
+      getConfigPath(),
+      `\uFEFF${JSON.stringify({
+        port: 23456,
+        providers: {
+          custom: { adapter: "openai-chat", baseUrl: "https://example.test/v1" },
+        },
+        defaultProvider: "custom",
+      })}`,
+      "utf-8",
+    );
+
+    expect(loadConfig()).toMatchObject({
+      port: 23456,
+      defaultProvider: "custom",
+    });
+  });
+
   test("backs up invalid JSON config before falling back to defaults", () => {
     writeConfig("{ invalid json");
     const errorSpy = spyOn(console, "error").mockImplementation(() => {});

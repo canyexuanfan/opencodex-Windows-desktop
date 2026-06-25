@@ -93,7 +93,7 @@ export function loadConfig(): OcxConfig {
     return getDefaultConfig();
   }
   try {
-    const raw = readFileSync(configPath, "utf-8");
+    const raw = readFileSync(configPath, "utf-8").replace(/^\uFEFF/, "");
     const parsed = JSON.parse(raw);
     const result = configSchema.safeParse(parsed);
     if (result.success) return result.data as OcxConfig;
@@ -236,7 +236,7 @@ export function isOcxStartCommandLine(commandLine: string): boolean {
 
 function isLikelyOcxStartProcess(pid: number): boolean {
   const commandLine = readProcessCommandLine(pid);
-  if (commandLine === undefined) return true;
+  if (commandLine === undefined) return false;
   return isOcxStartCommandLine(commandLine);
 }
 

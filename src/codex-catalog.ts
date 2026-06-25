@@ -1,7 +1,8 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { atomicWriteFile, websocketsEnabled } from "./config";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { delimiter, dirname, join, resolve } from "node:path";
+import { atomicWriteFile, getConfigDir, websocketsEnabled } from "./config";
 import { CODEX_CONFIG_PATH, CODEX_MODELS_CACHE_PATH, DEFAULT_CATALOG_PATH, readRootTomlString, resolveCodexConfigPath } from "./codex-paths";
 import { DEFAULT_MODEL_CACHE_TTL_MS, getFreshCached, getStaleCached, setCached } from "./model-cache";
 import { buildModelsRequest, resolveModelsAuthToken } from "./oauth/index";
@@ -10,8 +11,28 @@ import { CODEX_REASONING_LEVELS, configuredReasoningEfforts, modelRecordValue, s
 import { getJawcodeModelMetadata, getJawcodeModelMetadataCaseInsensitive, listJawcodeModelMetadata, resolveJawcodeProvider } from "./generated/jawcode-model-metadata";
 import { shouldCaseFoldMetadataModelId } from "./providers/derive";
 
-const OCX_DIR = join(homedir(), ".opencodex");
-const CATALOG_BACKUP_PATH = join(OCX_DIR, "catalog-backup.json");
+const BUNDLED_CATALOG_CACHE_MS = 60_000;
+let bundledCatalogCache: { expiresAt: number; value: RawCatalog | null } | null = null;
+
+function legacyCatalogBackupPath(): string {
+  return join(getConfigDir(), "catalog-backup.json");
+}
+
+function catalogBackupPathFor(catalogPath: string): string {
+  const normalized = process.platform === "win32" ? resolve(catalogPath).toLowerCase() : resolve(catalogPath);
+  const id = createHash("sha256").update(normalized).digest("hex").slice(0, 16);
+  return join(getConfigDir(), `catalog-backup-${id}.json`);
+}
+
+function samePath(a: string, b: string): boolean {
+  const left = resolve(a);
+  const right = resolve(b);
+  return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+function isDefaultCatalogPath(path: string): boolean {
+  return samePath(path, DEFAULT_CATALOG_PATH);
+}
 
 /**
  * Native OpenAI / Codex models served via ChatGPT OAuth passthrough — FALLBACK only. The ChatGPT
@@ -36,6 +57,7 @@ export function nativeOpenAiSlugs(): string[] {
 
 export interface CatalogModel { id: string; provider: string; owned_by?: string; reasoningEfforts?: string[]; contextWindow?: number; inputModalities?: string[]; }
 type RawEntry = Record<string, unknown>;
+type RawCatalog = { models?: RawEntry[]; [k: string]: unknown };
 const JAWCODE_CATALOG_AUGMENT_PROVIDERS = new Set(["opencode-go"]);
 
 /**
@@ -74,15 +96,21 @@ export function readCodexCatalogPath(): string {
   return DEFAULT_CATALOG_PATH;
 }
 
-function readCatalog(path: string): { models?: RawEntry[]; [k: string]: unknown } | null {
+function parseCatalogJson(raw: string): RawCatalog | null {
   try {
-    if (!existsSync(path)) return null;
-    const cat = JSON.parse(readFileSync(path, "utf-8"));
+    const cat = JSON.parse(raw);
     return (cat && Array.isArray(cat.models)) ? cat : null;
   } catch { return null; }
 }
 
-function findNativeTemplate(catalog: { models?: RawEntry[] } | null): RawEntry | null {
+function readCatalog(path: string): RawCatalog | null {
+  try {
+    if (!existsSync(path)) return null;
+    return parseCatalogJson(readFileSync(path, "utf-8"));
+  } catch { return null; }
+}
+
+function findNativeTemplate(catalog: RawCatalog | null): RawEntry | null {
   return catalog?.models?.find(
     m => typeof m.slug === "string" && !m.slug.includes("/") && "base_instructions" in m,
   ) ?? null;
@@ -179,14 +207,121 @@ function applyJawcodeCatalogMetadata(entry: RawEntry, slug: string): void {
   }
 }
 
-function loadCatalogForSync(path: string): { models?: RawEntry[]; [k: string]: unknown } | null {
-  const catalog = readCatalog(path);
-  if (catalog && findNativeTemplate(catalog)) return catalog;
-  return readCatalog(CATALOG_BACKUP_PATH) ?? readCatalog(CODEX_MODELS_CACHE_PATH) ?? catalog;
+type ExecFile = (
+  file: string,
+  args: string[],
+  options: {
+    encoding: "utf8";
+    stdio: ["ignore", "pipe", "ignore"];
+    timeout: number;
+    windowsHide: boolean;
+  },
+) => string;
+
+interface BundledCatalogDeps {
+  commandCandidates?: () => string[];
+  execFileSync?: ExecFile;
 }
 
-function readCurrentCatalogOrCache(): { models?: RawEntry[]; [k: string]: unknown } | null {
-  return readCatalog(readCodexCatalogPath()) ?? readCatalog(CODEX_MODELS_CACHE_PATH);
+function unique(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function codexCommandCandidates(): string[] {
+  const envPath = process.env.CODEX_CLI_PATH?.trim();
+  const candidates = envPath ? [envPath] : [];
+  candidates.push(...codexShimCommandCandidates());
+  if (process.platform === "win32") {
+    for (const dir of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
+      candidates.push(join(dir, "codex.exe"), join(dir, "codex.cmd"));
+    }
+  }
+  candidates.push("codex");
+  return unique(candidates);
+}
+
+function codexShimCommandCandidates(): string[] {
+  try {
+    const state = JSON.parse(readFileSync(join(getConfigDir(), "codex-shim.json"), "utf8")) as {
+      wrapperPath?: unknown;
+      originalPath?: unknown;
+      backupPath?: unknown;
+      wrappers?: Array<{ wrapperPath?: unknown; originalPath?: unknown; backupPath?: unknown }>;
+    };
+    const files = Array.isArray(state.wrappers) && state.wrappers.length > 0 ? state.wrappers : [state];
+    const out: string[] = [];
+    for (const file of files) {
+      for (const value of [file.backupPath, file.originalPath, file.wrapperPath]) {
+        if (typeof value !== "string" || value.length === 0) continue;
+        if (process.platform === "win32" && value.toLowerCase().endsWith(".ps1")) continue;
+        out.push(value);
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function runCodexDebugModels(command: string, execFile: ExecFile): string {
+  const args = ["debug", "models", "--bundled"];
+  return execFile(command, args, {
+    encoding: "utf8" as const,
+    stdio: ["ignore", "pipe", "ignore"] as ["ignore", "pipe", "ignore"],
+    timeout: 10_000,
+    windowsHide: true,
+  });
+}
+
+export function loadBundledCodexCatalog(deps: BundledCatalogDeps = {}): RawCatalog | null {
+  const useCache = !deps.commandCandidates && !deps.execFileSync;
+  if (useCache && bundledCatalogCache && bundledCatalogCache.expiresAt > Date.now()) {
+    return bundledCatalogCache.value;
+  }
+  const candidates = deps.commandCandidates?.() ?? codexCommandCandidates();
+  const execFile = deps.execFileSync ?? (execFileSync as unknown as ExecFile);
+  for (const command of candidates) {
+    try {
+      const catalog = parseCatalogJson(runCodexDebugModels(command, execFile));
+      if (catalog && findNativeTemplate(catalog)) {
+        if (useCache) bundledCatalogCache = { expiresAt: Date.now() + BUNDLED_CATALOG_CACHE_MS, value: catalog };
+        return catalog;
+      }
+    } catch { /* try next candidate */ }
+  }
+  if (useCache) bundledCatalogCache = { expiresAt: Date.now() + BUNDLED_CATALOG_CACHE_MS, value: null };
+  return null;
+}
+
+export function materializeBundledCodexCatalog(path: string, deps: BundledCatalogDeps = {}): RawCatalog | null {
+  const catalog = loadBundledCodexCatalog(deps);
+  if (!catalog) return null;
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    atomicWriteFile(path, JSON.stringify(catalog, null, 2) + "\n");
+  } catch {
+    return null;
+  }
+  return catalog;
+}
+
+function loadCatalogForSync(path: string): RawCatalog | null {
+  const bundled = isDefaultCatalogPath(path) ? loadBundledCodexCatalog() : null;
+  if (bundled) return bundled;
+  const catalog = readCatalog(path);
+  if (catalog && findNativeTemplate(catalog)) return catalog;
+  return readCatalog(catalogBackupPathFor(path))
+    ?? readCatalog(legacyCatalogBackupPath())
+    ?? readCatalog(CODEX_MODELS_CACHE_PATH)
+    ?? materializeBundledCodexCatalog(path)
+    ?? catalog;
+}
+
+function readCurrentCatalogOrCache(): RawCatalog | null {
+  const path = readCodexCatalogPath();
+  return (isDefaultCatalogPath(path) ? loadBundledCodexCatalog() : null)
+    ?? readCatalog(path)
+    ?? readCatalog(CODEX_MODELS_CACHE_PATH);
 }
 
 /**
@@ -195,9 +330,12 @@ function readCurrentCatalogOrCache(): { models?: RawEntry[]; [k: string]: unknow
  * Returns a deep copy, or null if no catalog/native entry exists.
  */
 export function loadCatalogTemplate(): RawEntry | null {
-  const native = findNativeTemplate(readCatalog(readCodexCatalogPath()))
-    ?? findNativeTemplate(readCatalog(CATALOG_BACKUP_PATH))
-    ?? findNativeTemplate(readCatalog(CODEX_MODELS_CACHE_PATH));
+  const catalogPath = readCodexCatalogPath();
+  const native = findNativeTemplate(readCatalog(catalogPath))
+    ?? findNativeTemplate(readCatalog(catalogBackupPathFor(catalogPath)))
+    ?? findNativeTemplate(readCatalog(legacyCatalogBackupPath()))
+    ?? findNativeTemplate(readCatalog(CODEX_MODELS_CACHE_PATH))
+    ?? findNativeTemplate(loadBundledCodexCatalog());
   return native ? JSON.parse(JSON.stringify(native)) : null;
 }
 
@@ -324,8 +462,35 @@ export function listCatalogNativeSlugs(): string[] {
  * a featured native gets its low rank, and un-featuring restores its original catalog priority
  * (rather than the modified value left in the live catalog by a previous sync).
  */
-function readNativeBaseline(): Map<string, number> {
-  const backup = readCatalog(CATALOG_BACKUP_PATH);
+function readCatalogBackup(catalogPath: string): RawCatalog | null {
+  return readCatalog(catalogBackupPathFor(catalogPath)) ?? readCatalog(legacyCatalogBackupPath());
+}
+
+function catalogHasRoutedEntries(catalog: RawCatalog | null): boolean {
+  return (catalog?.models ?? []).some(m => typeof m.slug === "string" && m.slug.includes("/"));
+}
+
+function writePristineCatalogBackup(backupPath: string, catalogPath: string, catalog: RawCatalog): void {
+  if (existsSync(backupPath)) return;
+  const onDisk = readCatalog(catalogPath);
+  if (onDisk && !catalogHasRoutedEntries(onDisk)) {
+    copyFileSync(catalogPath, backupPath);
+    return;
+  }
+  if (!catalogHasRoutedEntries(catalog)) {
+    atomicWriteFile(backupPath, JSON.stringify(catalog, null, 2) + "\n");
+  }
+}
+
+function ensureCatalogBackup(catalogPath: string, catalog: RawCatalog): void {
+  const dir = getConfigDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writePristineCatalogBackup(catalogBackupPathFor(catalogPath), catalogPath, catalog);
+  writePristineCatalogBackup(legacyCatalogBackupPath(), catalogPath, catalog);
+}
+
+function readNativeBaseline(catalogPath: string): Map<string, number> {
+  const backup = readCatalogBackup(catalogPath);
   const out = new Map<string, number>();
   for (const e of backup?.models ?? []) {
     if (typeof e.slug === "string" && !e.slug.includes("/") && typeof e.priority === "number") {
@@ -531,6 +696,11 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
 
   const goModels = await gatherRoutedModels(config);
   if (goModels.length === 0) return { added: 0, path: catalogPath };
+  try {
+    // Once-only: preserve the PRISTINE pre-opencodex catalog as the native-priority baseline
+    // (later syncs would otherwise overwrite it with featured-modified priorities).
+    ensureCatalogBackup(catalogPath, catalog);
+  } catch { /* backup best-effort */ }
 
   // Hide disabled models from Codex, then feature the chosen subagent models (native OR routed)
   // by giving them the lowest priority — see buildCatalogEntries for why priority, not array order.
@@ -543,7 +713,7 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
   // Keep genuine native entries (gpt-*, codex-*) with their real per-model fields, but drop bare
   // duplicates of routed models (replaced by namespaced entries) + any prior "/" entries. Re-derive
   // each native's priority from the pristine baseline so featuring a native is reversible.
-  const baseline = readNativeBaseline();
+  const baseline = readNativeBaseline(catalogPath);
   const goIds = new Set(enabledGo.map(m => m.id));
   const native = (catalog.models ?? [])
     .filter(m => typeof m.slug === "string" && !(m.slug as string).includes("/") && !goIds.has(m.slug as string))
@@ -563,12 +733,6 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
     return e;
   });
 
-  try {
-    if (!existsSync(OCX_DIR)) mkdirSync(OCX_DIR, { recursive: true });
-    // Once-only: preserve the PRISTINE pre-opencodex catalog as the native-priority baseline
-    // (later syncs would otherwise overwrite it with featured-modified priorities).
-    if (!existsSync(CATALOG_BACKUP_PATH)) copyFileSync(catalogPath, CATALOG_BACKUP_PATH);
-  } catch { /* backup best-effort */ }
   atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2) + "\n");
   return { added: goEntries.length, path: catalogPath };
 }
@@ -582,6 +746,12 @@ export function restoreCodexCatalog(): { removed: number; kept: number; path: st
   const catalogPath = readCodexCatalogPath();
   const catalog = readCatalog(catalogPath);
   if (!catalog || !Array.isArray(catalog.models)) return { removed: 0, kept: 0, path: catalogPath };
+  const exactBackup = readCatalog(catalogBackupPathFor(catalogPath));
+  if (exactBackup && Array.isArray(exactBackup.models)) {
+    const removed = Math.max(0, catalog.models.length - exactBackup.models.length);
+    atomicWriteFile(catalogPath, JSON.stringify(exactBackup, null, 2) + "\n");
+    return { removed, kept: exactBackup.models.length, path: catalogPath };
+  }
   const before = catalog.models.length;
   const native = catalog.models.filter(m => !(typeof m.slug === "string" && m.slug.includes("/")));
   const removed = before - native.length;

@@ -14,7 +14,7 @@ on:
       - ".github/workflows/ci.yml"
       - ".github/workflows/release.yml"
   push:
-    branches: [main, dev]
+    branches: [main, preview, dev]
     paths:
       - "src/**"
       - "tests/**"

@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { augmentRoutedModelsWithJawcodeMetadata, buildCatalogEntries, gatherRoutedModels, isMediaGenerationModelId, normalizeRoutedCatalogEntry } from "../src/codex-catalog";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { augmentRoutedModelsWithJawcodeMetadata, buildCatalogEntries, gatherRoutedModels, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, normalizeRoutedCatalogEntry } from "../src/codex-catalog";
 import { getJawcodeModelMetadata, resolveJawcodeProvider } from "../src/generated/jawcode-model-metadata";
 import { clearModelCache, setCached } from "../src/model-cache";
 
@@ -41,6 +44,32 @@ function nativeTemplate(): Record<string, unknown> {
 }
 
 describe("Codex catalog routed normalization", () => {
+  test("loads bundled Codex catalog from debug models output", () => {
+    const catalog = loadBundledCodexCatalog({
+      commandCandidates: () => ["codex"],
+      execFileSync: () => JSON.stringify({ models: [nativeTemplate()] }),
+    });
+
+    expect(catalog?.models?.[0]?.slug).toBe("gpt-5.5");
+  });
+
+  test("materializes bundled Codex catalog when no on-disk source exists", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-catalog-"));
+    const path = join(dir, "nested", "opencodex-catalog.json");
+    try {
+      const catalog = materializeBundledCodexCatalog(path, {
+        commandCandidates: () => ["codex"],
+        execFileSync: () => JSON.stringify({ models: [nativeTemplate()] }),
+      });
+
+      expect(catalog?.models?.[0]?.slug).toBe("gpt-5.5");
+      expect(existsSync(path)).toBe(true);
+      expect(JSON.parse(readFileSync(path, "utf8")).models[0].slug).toBe("gpt-5.5");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("normalizeRoutedCatalogEntry strips native-only routed selectors", () => {
     const entry = nativeTemplate();
 
