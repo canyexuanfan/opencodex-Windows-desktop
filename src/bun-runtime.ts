@@ -11,23 +11,28 @@
  * back to `process.execPath` (which is itself Bun when run via `bun src/cli.ts`).
  */
 import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const require = createRequire(import.meta.url);
 
+// The `bun` package leaves a tiny ASCII placeholder at bin/bun.exe until its
+// postinstall downloads the real ~60MB binary; reject the stub by size so we
+// never bake a non-executable path into durable artifacts.
+const REAL_BUN_MIN_BYTES = 1_000_000;
+
 /**
  * Absolute path to the bundled Bun binary, or null if the `bun` dependency is
- * not installed/resolvable. The npm `bun` package ships the binary as
- * `bin/bun.exe` on every platform; we also probe `bin/bun` for forward
- * compatibility.
+ * not installed/resolvable (or only the un-downloaded placeholder is present).
+ * The npm `bun` package ships the binary as `bin/bun.exe` on every platform;
+ * we also probe `bin/bun` for forward compatibility.
  */
 export function bundledBunPath(): string | null {
   try {
     const bunDir = dirname(require.resolve("bun/package.json"));
     for (const name of ["bun.exe", "bun"]) {
       const p = join(bunDir, "bin", name);
-      if (existsSync(p)) return p;
+      if (existsSync(p) && statSync(p).size >= REAL_BUN_MIN_BYTES) return p;
     }
     return null;
   } catch {

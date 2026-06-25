@@ -24,12 +24,18 @@ function bunBinDir() {
   return dirname(require.resolve("bun/package.json"));
 }
 
+// The `bun` package ships a tiny ASCII placeholder at bin/bun.exe until its
+// postinstall downloads the real ~60MB binary. --ignore-scripts / pnpm leave
+// the ~450-byte stub in place, which is NOT executable (ENOEXEC). A size gate
+// cleanly distinguishes the stub from a real binary on every platform.
+const REAL_BUN_MIN_BYTES = 1_000_000;
+
 function findBunBinary(bunDir) {
   // The npm `bun` package ships the binary as bin/bun.exe on every platform;
   // probe bin/bun too for forward compatibility.
   for (const name of ["bun.exe", "bun"]) {
     const p = join(bunDir, "bin", name);
-    if (existsSync(p) && statSync(p).size > 0) return p;
+    if (existsSync(p) && statSync(p).size >= REAL_BUN_MIN_BYTES) return p;
   }
   return null;
 }
