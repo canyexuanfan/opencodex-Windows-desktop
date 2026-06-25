@@ -5,6 +5,7 @@ export type StoredAccountQuota = {
   weeklyResetAt?: number;
   fiveHourResetAt?: number;
   monthlyResetAt?: number;
+  resetCredits?: number;
   updatedAt: number;
 };
 
@@ -16,6 +17,9 @@ export type WhamUsageResponse = {
     secondary_window?: { used_percent?: number; reset_at?: number };
     tertiary_window?: { used_percent?: number; reset_at?: number };
   };
+  rate_limit_reset_credits?: {
+    available_count: number;
+  } | null;
 };
 
 const accountQuota = new Map<string, StoredAccountQuota>();
@@ -55,12 +59,13 @@ export function updateAccountQuota(
   fiveHourResetAt?: unknown,
   monthly?: unknown,
   monthlyResetAt?: unknown,
+  resetCredits?: number,
 ): void {
   const existing = accountQuota.get(accountId);
   const nextWeekly = normalizeUsagePercent(weekly);
   const nextFiveHour = normalizeUsagePercent(fiveHour);
   const nextMonthly = normalizeUsagePercent(monthly);
-  if (nextWeekly === undefined && nextFiveHour === undefined && nextMonthly === undefined) return;
+  if (nextWeekly === undefined && nextFiveHour === undefined && nextMonthly === undefined && resetCredits === undefined) return;
 
   const quota: StoredAccountQuota = {
     ...(existing?.weeklyPercent !== undefined ? { weeklyPercent: existing.weeklyPercent } : {}),
@@ -69,6 +74,7 @@ export function updateAccountQuota(
     ...(existing?.weeklyResetAt !== undefined ? { weeklyResetAt: existing.weeklyResetAt } : {}),
     ...(existing?.fiveHourResetAt !== undefined ? { fiveHourResetAt: existing.fiveHourResetAt } : {}),
     ...(existing?.monthlyResetAt !== undefined ? { monthlyResetAt: existing.monthlyResetAt } : {}),
+    ...(existing?.resetCredits !== undefined ? { resetCredits: existing.resetCredits } : {}),
     updatedAt: Date.now(),
   };
 
@@ -87,6 +93,7 @@ export function updateAccountQuota(
     quota.monthlyPercent = nextMonthly;
     if (nextMonthlyResetAt !== undefined) quota.monthlyResetAt = nextMonthlyResetAt;
   }
+  if (resetCredits !== undefined) quota.resetCredits = resetCredits;
 
   accountQuota.set(accountId, quota);
 }
@@ -105,7 +112,14 @@ export function clearAccountQuota(accountId?: string): void {
 }
 
 export function parseUsageQuota(data: WhamUsageResponse): Omit<StoredAccountQuota, "updatedAt"> | null {
-  if (!data.rate_limit) return null;
+  const resetCredits = typeof data.rate_limit_reset_credits?.available_count === "number"
+    ? data.rate_limit_reset_credits.available_count
+    : undefined;
+
+  if (!data.rate_limit) {
+    return resetCredits !== undefined ? { resetCredits } : null;
+  }
+
   const quota: Omit<StoredAccountQuota, "updatedAt"> = {};
   const weeklyPercent = normalizeUsagePercent(data.rate_limit.secondary_window?.used_percent);
   const fiveHourPercent = normalizeUsagePercent(data.rate_limit.primary_window?.used_percent);
@@ -125,6 +139,7 @@ export function parseUsageQuota(data: WhamUsageResponse): Omit<StoredAccountQuot
     quota.monthlyPercent = monthlyPercent;
     if (monthlyResetAt !== undefined) quota.monthlyResetAt = monthlyResetAt;
   }
+  if (resetCredits !== undefined) quota.resetCredits = resetCredits;
 
-  return hasKnownQuotaValue(quota) ? quota : null;
+  return hasKnownQuotaValue(quota) || resetCredits !== undefined ? quota : null;
 }

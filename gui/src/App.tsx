@@ -11,6 +11,13 @@ import { useI18n, useT, LOCALES, type TKey } from "./i18n";
 type Page = "dashboard" | "providers" | "models" | "subagents" | "logs" | "codex-auth";
 type Theme = "light" | "dark" | "system";
 
+const VALID_PAGES = new Set<Page>(["dashboard", "providers", "models", "subagents", "logs", "codex-auth"]);
+
+function readPageFromHash(): Page {
+  const raw = location.hash.replace(/^#\/?/, "");
+  return VALID_PAGES.has(raw as Page) ? (raw as Page) : "dashboard";
+}
+
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 const THEME_KEY = "ocx-theme";
 
@@ -38,14 +45,19 @@ function readStoredTheme(): Theme {
 }
 
 export default function App() {
-  const [page, setPage] = useState<Page>("dashboard");
+  const [page, setPageState] = useState<Page>(readPageFromHash);
+  const setPage = (p: Page) => { location.hash = p; setPageState(p); };
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
   const [runtimeVersion, setRuntimeVersion] = useState<string | null>(null);
   const { locale, setLocale } = useI18n();
   const t = useT();
 
-  // Pin color-scheme via [data-theme]; "system" clears it so the OS preference applies (matches the
-  // FOWT guard in index.html). Persisted so the choice survives reloads.
+  useEffect(() => {
+    const onHash = () => setPageState(readPageFromHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
   useEffect(() => {
     const el = document.documentElement;
     if (theme === "system") { el.removeAttribute("data-theme"); localStorage.removeItem(THEME_KEY); }

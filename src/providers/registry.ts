@@ -45,6 +45,8 @@ export type ProviderConfigSeed = Pick<
 >;
 
 
+const OLLAMA_REASONING_MAP: Record<string, string> = { xhigh: "max" };
+
 const ZAI_GLM_52_MODELS = ["glm-5.2", "glm-5.2[1m]"];
 const ZAI_GLM_52_REASONING_EFFORTS = ["low", "medium", "high", "xhigh"];
 const ZAI_GLM_52_REASONING_MAP: Record<string, string> = {
@@ -244,7 +246,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   { id: "groq", label: "Groq", adapter: "openai-chat", baseUrl: "https://api.groq.com/openai/v1", authKind: "key", featured: true, dashboardUrl: "https://console.groq.com/keys" },
   { id: "google", label: "Google Gemini", adapter: "google", baseUrl: "https://generativelanguage.googleapis.com", authKind: "key", featured: true, dashboardUrl: "https://aistudio.google.com/apikey", defaultModel: "gemini-3-pro", jawcodeBundle: "google", extraMetadataAliases: ["gemini"] },
   { id: "azure-openai", label: "Azure OpenAI", adapter: "azure-openai", baseUrl: "https://{resource}.openai.azure.com/openai", authKind: "key", featured: true, dashboardUrl: "https://portal.azure.com" },
-  { id: "ollama", label: "Ollama (local)", adapter: "openai-chat", baseUrl: "http://localhost:11434/v1", authKind: "local", featured: true, note: "Local — key usually blank" },
+  { id: "ollama", label: "Ollama (local)", adapter: "openai-chat", baseUrl: "http://localhost:11434/v1", authKind: "local", featured: true, note: "Local — key usually blank", reasoningEffortMap: OLLAMA_REASONING_MAP },
   { id: "vllm", label: "vLLM (local)", adapter: "openai-chat", baseUrl: "http://localhost:8000/v1", authKind: "local", featured: true, note: "Local — key usually blank" },
   { id: "lm-studio", label: "LM Studio (local)", adapter: "openai-chat", baseUrl: "http://localhost:1234/v1", authKind: "local", featured: true, note: "Local — no key needed" },
   { id: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://platform.deepseek.com/api_keys", models: ["deepseek-chat", "deepseek-reasoner"], defaultModel: "deepseek-chat" },
@@ -292,6 +294,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     adapter: "openai-chat",
     authKind: "key",
     dashboardUrl: "https://ollama.com/settings/keys",
+    reasoningEffortMap: OLLAMA_REASONING_MAP,
     models: ["glm-5.2", "deepseek-v4-pro", "qwen3-coder", "gpt-oss:120b", "kimi-k2.6", "minimax-m3", "qwen3.5", "gemma4"],
     defaultModel: "glm-5.2",
     noVisionModels: [
