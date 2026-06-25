@@ -191,7 +191,7 @@ async function handleStart(options: { block?: boolean } = {}) {
       console.error(`⚠️  Proxy already running (PID ${existingPid}). Use 'ocx stop' first.`);
       process.exit(1);
     }
-    removePid();
+    removePid(existingPid);
   }
 
   const requestedPort = parsePortOption();
@@ -205,7 +205,7 @@ async function handleStart(options: { block?: boolean } = {}) {
     console.log("\n🛑 Shutting down opencodex proxy...");
     void (async () => {
       await drainAndShutdown(server, config.shutdownTimeoutMs ?? 5000);
-      removePid();
+      removePid(process.pid);
       if (!process.env.OCX_SERVICE) { try { restoreNativeCodex(); } catch { /* best-effort restore */ } }
       process.exit(0);
     })();
@@ -300,7 +300,7 @@ function handleStop() {
     try {
       killProxy(pid);
       console.log(`✅ Proxy (PID ${pid}) stopped.`);
-      removePid();
+      removePid(pid);
     } catch {
       stopFailed = true;
       console.error(`❌ Failed to stop proxy (PID ${pid}).`);
@@ -336,7 +336,7 @@ async function handleUninstall() {
     const pid = readPid();
     if (!pid) return false;
     killProxy(pid);
-    removePid();
+    removePid(pid);
     return true;
   });
 

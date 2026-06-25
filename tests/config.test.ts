@@ -2,7 +2,17 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { codexAutoStartEnabled, getConfigPath, getDefaultConfig, loadConfig } from "../src/config";
+import {
+  codexAutoStartEnabled,
+  getConfigPath,
+  getDefaultConfig,
+  getPidPath,
+  isOcxStartCommandLine,
+  loadConfig,
+  parsePidFile,
+  removePid,
+  writePid,
+} from "../src/config";
 
 let testDir = "";
 
@@ -132,5 +142,38 @@ describe("opencodex config defaults", () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+
+  test("parses pid files", () => {
+    expect(parsePidFile("12345")).toBe(12345);
+    expect(parsePidFile("0")).toBeNull();
+    expect(parsePidFile("12x")).toBeNull();
+    expect(parsePidFile("not-json")).toBeNull();
+  });
+
+  test("recognizes opencodex start command lines", () => {
+    expect(isOcxStartCommandLine('bun run src/cli.ts start')).toBe(true);
+    expect(isOcxStartCommandLine('"C:/tools/bun/bin/bun.exe" "run" "src/cli.ts" "start"')).toBe(true);
+    expect(isOcxStartCommandLine('bun C:/tools/bun/install/global/node_modules/@bitkyc08/opencodex/src/cli.ts start')).toBe(true);
+    expect(isOcxStartCommandLine("opencodex start")).toBe(true);
+
+    expect(isOcxStartCommandLine("bun run src/cli.ts status")).toBe(false);
+    expect(isOcxStartCommandLine("bun test C:/work/opencodex/tests/config.test.ts")).toBe(false);
+    expect(isOcxStartCommandLine("notepad.exe")).toBe(false);
+  });
+
+  test("writes pid file as a numeric pid", () => {
+    writePid(process.pid);
+
+    expect(readFileSync(getPidPath(), "utf-8")).toBe(String(process.pid));
+  });
+
+  test("removes pid file only when the expected pid still matches", () => {
+    writeFileSync(getPidPath(), "111", "utf-8");
+    removePid(222);
+    expect(existsSync(getPidPath())).toBe(true);
+
+    removePid(111);
+    expect(existsSync(getPidPath())).toBe(false);
   });
 });
