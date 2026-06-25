@@ -37,7 +37,7 @@ const providerConfigSchema = z.object({
 const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
   providers: z.record(z.string(), providerConfigSchema),
-  defaultProvider: z.string().min(1),
+  defaultProvider: z.string().min(1).default("openai"),
 }).passthrough().superRefine((config, ctx) => {
   if (Object.keys(config.providers).length > 0 && !(config.defaultProvider in config.providers)) {
     ctx.addIssue({
