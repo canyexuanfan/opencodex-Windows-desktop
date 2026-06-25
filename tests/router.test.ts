@@ -62,4 +62,46 @@ describe("routeModel registry effort defaults", () => {
     expect(route.provider.reasoningEffortMap).toBeUndefined();
     expect(route.provider.modelReasoningEffortMap).toBeUndefined();
   });
+
+  test("hydrates nested modelReasoningEffortMap for stale persisted configs", () => {
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "opencode-go",
+      providers: {
+        "opencode-go": {
+          adapter: "openai-chat",
+          baseUrl: "https://opencode.ai/zen/go/v1",
+          models: ["glm-5.2"],
+        },
+      },
+    };
+
+    const route = routeModel(config, "opencode-go/glm-5.2");
+
+    // The registry per-model map for glm-5.2 is layered in (xhigh -> max).
+    expect(route.provider.modelReasoningEffortMap?.["glm-5.2"]?.xhigh).toBe("max");
+    expect(mapReasoningEffort(route.provider, route.modelId, "xhigh")).toBe("max");
+  });
+
+  test("user per-model override wins while registry keys are preserved (nested merge)", () => {
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "opencode-go",
+      providers: {
+        "opencode-go": {
+          adapter: "openai-chat",
+          baseUrl: "https://opencode.ai/zen/go/v1",
+          models: ["glm-5.2"],
+          modelReasoningEffortMap: { "glm-5.2": { xhigh: "high" } },
+        },
+      },
+    };
+
+    const route = routeModel(config, "opencode-go/glm-5.2");
+
+    // User override wins for the key it sets...
+    expect(mapReasoningEffort(route.provider, route.modelId, "xhigh")).toBe("high");
+    // ...but registry keys the user did not set survive the nested merge.
+    expect(mapReasoningEffort(route.provider, route.modelId, "minimal")).toBe("none");
+  });
 });

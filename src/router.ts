@@ -101,11 +101,11 @@ export function routeModel(config: OcxConfig, modelId: string): RouteResult {
       );
       if (matchingProvider) {
         const [provName, prov] = matchingProvider;
-       return {
-         providerName: provName,
-         provider: routedProviderConfig(provName, prov),
-         modelId,
-       };
+        return {
+          providerName: provName,
+          provider: routedProviderConfig(provName, prov),
+          modelId,
+        };
       }
     }
   }
