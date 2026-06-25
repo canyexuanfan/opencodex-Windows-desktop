@@ -132,20 +132,35 @@ export type StoredAccountQuota = {
 };
 ```
 
-Update `parseUsageQuota()` to capture the new field:
+Update `parseUsageQuota()` to capture the new field.
+Parse `resetCredits` BEFORE the early `hasKnownQuotaValue` return,
+so credits-only responses (no `rate_limit` windows) are not dropped:
 
 ```typescript
-// AFTER existing parsing (around line 127)
+// Parse resetCredits early — before rate_limit check
+export function parseUsageQuota(data: WhamUsageResponse): Omit<StoredAccountQuota, "updatedAt"> | null {
   const resetCredits = typeof data.rate_limit_reset_credits?.available_count === "number"
     ? data.rate_limit_reset_credits.available_count
     : undefined;
+
+  if (!data.rate_limit) {
+    // Credits-only response: return quota with just resetCredits
+    return resetCredits !== undefined ? { resetCredits } : null;
+  }
+
+  const quota: Omit<StoredAccountQuota, "updatedAt"> = {};
+  // ... existing window parsing ...
   if (resetCredits !== undefined) quota.resetCredits = resetCredits;
+  return hasKnownQuotaValue(quota) || resetCredits !== undefined ? quota : null;
+}
 ```
 
-Update `updateAccountQuota()` signature to accept `resetCredits`:
+Update `updateAccountQuota()` signature to accept `resetCredits`,
+and preserve existing `resetCredits` when the param is omitted
+(important: `server.ts:358-367` calls this with header-only data):
 
 ```typescript
-// Add optional parameter + store it
+// Add optional parameter + preserve existing value when omitted
 export function updateAccountQuota(
   accountId: string,
   weekly: unknown,
@@ -156,7 +171,10 @@ export function updateAccountQuota(
   monthlyResetAt?: unknown,
   resetCredits?: number,          // NEW
 ): void {
-  // ... existing code ...
+  // ... existing merge code ...
+  // PRESERVE existing resetCredits when not provided (header-only updates)
+  ...(existing?.resetCredits !== undefined ? { resetCredits: existing.resetCredits } : {}),
+  // ... end of existing merge ...
   if (resetCredits !== undefined) quota.resetCredits = resetCredits;
   accountQuota.set(accountId, quota);
 }
@@ -164,8 +182,7 @@ export function updateAccountQuota(
 
 ### 1.2 MODIFY `src/codex-auth-api.ts`
 
-Update `fetchPoolAccountQuota()` and `fetchMainAccountInfo()` to pass
-`resetCredits` through:
+Update `fetchPoolAccountQuota()` to pass `resetCredits` through:
 
 ```typescript
 // In fetchPoolAccountQuota() (line ~143-153)
@@ -183,6 +200,23 @@ Update `fetchPoolAccountQuota()` and `fetchMainAccountInfo()` to pass
     );
 ```
 
+Update `fetchMainAccountInfo()` to include `resetCredits` in its return:
+
+```typescript
+// In fetchMainAccountInfo() — extend result object
+    const result = {
+      email: data.email ?? null,
+      plan: data.plan_type ?? null,
+      quota: parseUsageQuota(data),
+      resetCredits: data.rate_limit_reset_credits?.available_count ?? null,  // NEW
+      ts: Date.now(),
+    };
+```
+
+Update all callers of `updateAccountQuota` in `codex-auth-api.ts` (both
+`fetchPoolAccountQuota` and the OAuth login path at ~line 369-377) to pass
+the 8th `resetCredits` argument.
+
 Add new consume endpoint handler inside `handleCodexAuthAPI()`:
 
 ```typescript
@@ -191,8 +225,23 @@ if (url.pathname === "/api/codex-auth/reset-credits/consume" && req.method === "
   const body = await req.json() as { accountId: string };
   if (!body.accountId) return jsonResponse({ error: "accountId required" }, 400);
 
+  // Resolve credentials: __main__ uses readCodexTokens(), pool uses getValidCodexToken()
+  let accessToken: string;
+  let chatgptAccountId: string;
+  const isMain = body.accountId === "__main__";
+
   try {
-    const { accessToken, chatgptAccountId } = await getValidCodexToken(body.accountId);
+    if (isMain) {
+      const tokens = readCodexTokens();
+      if (!tokens) return jsonResponse({ error: "Main Codex account not logged in" }, 401);
+      accessToken = tokens.access_token;
+      chatgptAccountId = tokens.account_id;
+    } else {
+      const cred = await getValidCodexToken(body.accountId);
+      accessToken = cred.accessToken;
+      chatgptAccountId = cred.chatgptAccountId;
+    }
+
     const idempotencyKey = crypto.randomUUID();
     const resp = await fetch(
       "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume",
@@ -212,9 +261,13 @@ if (url.pathname === "/api/codex-auth/reset-credits/consume" && req.method === "
       return jsonResponse({ error: `Upstream error ${resp.status}`, detail: text }, resp.status);
     }
     const result = await resp.json();
-    // Refresh quota after successful consume
+    // Refresh quota after successful consume — use correct refresh path
     if (result.code === "reset") {
-      await fetchPoolAccountQuota(body.accountId, true);
+      if (isMain) {
+        await fetchMainAccountInfo(true);
+      } else {
+        await fetchPoolAccountQuota(body.accountId, true);
+      }
     }
     return jsonResponse(result);
   } catch (e) {
@@ -223,10 +276,11 @@ if (url.pathname === "/api/codex-auth/reset-credits/consume" && req.method === "
 }
 ```
 
-### 1.3 MODIFY `src/server.ts` (or `src/router.ts`)
+### 1.3 Routing note
 
-Route the new endpoint — confirm which file handles `/api/codex-auth/*` routing
-and add the path if not auto-dispatched by `handleCodexAuthAPI`.
+`server.ts:1100-1102` already forwards all `/api/codex-auth/*` to
+`handleCodexAuthAPI()`. No routing change needed. `router.ts` is
+provider model routing — NOT edited.
 
 ---
 
@@ -267,7 +321,20 @@ $ ocx reset-limit work
   ✗ No reset credits available for "work".
 ```
 
-Implementation: HTTP call to `POST /api/codex-auth/reset-credits/consume`.
+Implementation: HTTP call to `POST http://localhost:<port>/api/codex-auth/reset-credits/consume`.
+
+**Prerequisite**: opencodex server must be running (`ocx start`).
+Both `ocx usage` and `ocx reset-limit` resolve the port from config
+(`config.port`, default 10100) and fail fast with a clear message if
+the server is not reachable:
+
+```
+$ ocx reset-limit work
+  ✗ opencodex server is not running. Start it with: ocx start
+```
+
+This is the first CLI feature that depends on a live server. The pattern
+sets a precedent for future CLI-to-server commands.
 
 ---
 
@@ -275,23 +342,45 @@ Implementation: HTTP call to `POST /api/codex-auth/reset-credits/consume`.
 
 ### 3.1 MODIFY `gui/src/pages/CodexAuth.tsx`
 
-Add reset credits display to each account card:
+Extend `AccountQuota` interface (lines 7-15) with `resetCredits`:
 
 ```tsx
-// After existing QuotaRow components, before card footer
-{account.quota?.resetCredits != null && account.quota.resetCredits > 0 && (
+// ADD to existing AccountQuota interface
+resetCredits?: number;
+```
+
+Add reset credits display inside `QuotaBars` component (used by both
+main and pool account cards), after the existing QuotaRow entries:
+
+```tsx
+// Inside QuotaBars, after the three QuotaRow entries
+{quota.resetCredits != null && quota.resetCredits > 0 && (
   <div className="reset-credits-row">
     <span className="reset-credits-label">{t("codexAuth.resetCredits")}</span>
-    <span className="reset-credits-count">{account.quota.resetCredits}</span>
+    <span className="reset-credits-count">{quota.resetCredits}</span>
     <button
       className="reset-credits-btn"
-      onClick={() => handleRedeemResetCredit(account.id)}
-      disabled={redeemingAccount === account.id}
+      onClick={() => handleRedeemResetCredit(accountId)}
+      disabled={redeemingAccount === accountId}
     >
-      {redeemingAccount === account.id ? t("codexAuth.redeeming") : t("codexAuth.redeemReset")}
+      {redeemingAccount === accountId ? t("codexAuth.redeeming") : t("codexAuth.redeemReset")}
     </button>
   </div>
 )}
+```
+
+This renders in both the main account card (~line 113) and pool account
+cards (~line 194), since both use `QuotaBars`.
+
+Workspace exclusion: hide the redeem button when `plan` contains
+"team" or "enterprise" (matching codex-rs behavior):
+
+```tsx
+const isWorkspace = (plan?: string) =>
+  plan && /team|enterprise/i.test(plan);
+
+// In QuotaBars, guard the button:
+{!isWorkspace(account.plan) && quota.resetCredits > 0 && ( ... )}
 ```
 
 Add redeem handler:
@@ -310,8 +399,7 @@ async function handleRedeemResetCredit(accountId: string) {
     });
     const result = await resp.json();
     if (result.code === "reset") {
-      // Success — refresh accounts to update quota display
-      refreshAccounts();
+      load();  // Refresh accounts to update quota display
     } else {
       alert(t(`codexAuth.resetOutcome.${result.code}`));
     }
@@ -357,7 +445,7 @@ async function handleRedeemResetCredit(accountId: string) {
   font-size: 11px;
   border-radius: 4px;
   background: var(--accent);
-  color: var(--bg);
+  color: var(--accent-ink);
   border: none;
   cursor: pointer;
 }
@@ -394,6 +482,21 @@ Test cases:
 | MODIFY | `gui/src/styles.css` | Reset credits styling |
 | NEW    | `tests/rate-limit-reset-credits.test.ts` | Unit tests |
 
+## Audit Fixes Applied (from Backend employee audit)
+
+| # | Severity | Issue | Fix |
+|---|----------|-------|-----|
+| 1 | CRITICAL | Main account (`__main__`) consume path undefined | Added `readCodexTokens()` branch in consume handler |
+| 2 | CRITICAL | Post-consume refresh wrong for main | Added `fetchMainAccountInfo(true)` for main path |
+| 3 | MAJOR | `updateAccountQuota` merge drops `resetCredits` | Added preservation of `existing.resetCredits` |
+| 4 | MAJOR | `parseUsageQuota` drops credits-only responses | Parse `resetCredits` before `rate_limit` null check |
+| 5 | MAJOR | GUI misaligned with QuotaBars/AccountQuota | Fixed to extend `AccountQuota` interface, place inside `QuotaBars` |
+| 6 | MODERATE | Workspace exclusion not planned | Added `isWorkspace()` guard on redeem button |
+| 7 | MODERATE | CLI server dependency undocumented | Documented port resolution + fail-fast pattern |
+| 8 | MINOR | Phase 1.3 routing ambiguity | Clarified: only `server.ts` matters, `router.ts` not edited |
+| 9 | MINOR | CSS token mismatch | Fixed `var(--bg)` → `var(--accent-ink)` |
+| 10 | MINOR | OAuth login path not listed | Added note to update all `updateAccountQuota` callers |
+
 ## Risks & Notes
 
 1. **No actual credit consumed during development** — test with mocked responses only.
@@ -402,5 +505,6 @@ Test cases:
    backends or non-Pro accounts. All parsing is nullable/optional.
 3. **Idempotency** — UUID generated server-side per request. Retries use the same
    key only within the same HTTP request (no persistence needed).
-4. **Workspace accounts** — codex-rs excludes workspace accounts from reset UI.
-   opencodex should mirror this (check `plan_type` and skip if workspace).
+4. **Workspace accounts** — excluded from redeem button via `plan_type` regex guard.
+5. **CLI requires running server** — `ocx usage` and `ocx reset-limit` need `ocx start`.
+   Fail fast with clear message if server unreachable.
