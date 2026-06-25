@@ -22,6 +22,19 @@ const require = createRequire(import.meta.url);
 const REAL_BUN_MIN_BYTES = 1_000_000;
 
 /**
+ * True only for a real, downloaded Bun binary — not the ~450-byte ASCII
+ * placeholder stub left by `--ignore-scripts` / pnpm. A size gate cleanly
+ * separates the two on every platform (real binary is tens of MB).
+ */
+export function isRealBunBinary(path: string): boolean {
+  try {
+    return existsSync(path) && statSync(path).size >= REAL_BUN_MIN_BYTES;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Absolute path to the bundled Bun binary, or null if the `bun` dependency is
  * not installed/resolvable (or only the un-downloaded placeholder is present).
  * The npm `bun` package ships the binary as `bin/bun.exe` on every platform;
@@ -32,7 +45,7 @@ export function bundledBunPath(): string | null {
     const bunDir = dirname(require.resolve("bun/package.json"));
     for (const name of ["bun.exe", "bun"]) {
       const p = join(bunDir, "bin", name);
-      if (existsSync(p) && statSync(p).size >= REAL_BUN_MIN_BYTES) return p;
+      if (isRealBunBinary(p)) return p;
     }
     return null;
   } catch {
