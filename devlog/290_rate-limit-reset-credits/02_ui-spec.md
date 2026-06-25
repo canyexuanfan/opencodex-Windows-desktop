@@ -14,7 +14,8 @@ pub fn is_workspace_account(self) -> bool {
 ```
 
 Workspace plans: `team`, `business`, `enterprise`, `edu`, `self_serve_business_usage_based`, `enterprise_cbp_usage_based`
-Personal plans: `free`, `go`, `plus`, `pro`, `pro_lite`
+Workspace aliases (auth.rs): `hc` → enterprise, `education` → edu
+Personal plans: `free`, `go`, `plus`, `pro`, `prolite`
 
 **codex-rs TUI behavior** (`usage.rs:13-14`):
 - Workspace accounts → reset menu item **visible but disabled** + "No rate-limit resets available."
@@ -52,7 +53,8 @@ For workspace accounts:
 | `resetCredits > 0` + personal plan | amber bg, amber text, ticket icon + count | Yes → opens popup |
 | `resetCredits === 0` + personal plan | muted bg, muted text, ticket icon + "0" | Yes → opens popup (shows empty state) |
 | Workspace plan (any count) | muted bg, faint text, ticket icon + "–" | No (disabled) |
-| `resetCredits === undefined` (not fetched) | Hidden | — |
+| Workspace plan + `resetCredits === undefined` | muted bg, faint text, ticket icon + "–" | No (disabled) |
+| Personal plan + `resetCredits === undefined` | Hidden | — |
 
 ### Ticket List Popup (Modal)
 
@@ -190,7 +192,8 @@ interface AccountQuota {
 function isWorkspaceAccount(plan?: string): boolean {
   if (!plan) return false;
   const ws = ["team", "business", "enterprise", "edu",
-              "self_serve_business_usage_based", "enterprise_cbp_usage_based"];
+              "self_serve_business_usage_based", "enterprise_cbp_usage_based",
+              "hc", "education"];  // aliases from codex-rs auth.rs
   return ws.includes(plan.toLowerCase());
 }
 ```
@@ -210,39 +213,54 @@ Insert after plan badge, before NEXT SESSION badge:
 
 ### Ticket Badge in card-head (main card, line ~104-111)
 
-Insert after plan display, before CURRENT badge:
+Main card has NO plan badge in `card-head` (plan is in `card-sub` at line 112).
+Insert between `<strong>` (line 106) and CURRENT/NEXT badge (line 107):
 
 ```tsx
-{main && (
-  <TicketBadge
-    account={{ ...main, id: "__main__" } as AccountEntry}
-    onClick={() => !isWorkspaceAccount(main.plan) && setResetPopup({ ...main, id: "__main__" } as AccountEntry)}
-  />
-)}
+        <div className="card-head">
+          <span className="dot dot-green" />
+          <strong>{t("codexAuth.mainAccount")}</strong>
+          {/* INSERT TicketBadge HERE */}
+          {main && (
+            <TicketBadge
+              account={{ ...main, id: "__main__" } as AccountEntry}
+              onClick={() => !isWorkspaceAccount(main?.plan) && setResetPopup({ ...main, id: "__main__" } as AccountEntry)}
+            />
+          )}
+          <span className={`badge ${!activeId ? "badge-primary" : "badge-muted"}`}>
 ```
+
+Note: `__main__` consume path uses `readCodexTokens()` in the backend,
+not `getValidCodexToken()`. This is already handled in `00_plan.md` §1.2.
 
 ### TicketBadge Component
 
 ```tsx
 function TicketBadge({ account, onClick }: { account: AccountEntry; onClick: () => void }) {
   const credits = account.quota?.resetCredits;
-  if (credits === undefined) return null;
-
   const workspace = isWorkspaceAccount(account.plan);
-  const hasCredits = credits > 0 && !workspace;
+
+  // Workspace: always show disabled badge. Personal: hide if not fetched.
+  if (!workspace && credits === undefined) return null;
+
+  const hasCredits = typeof credits === "number" && credits > 0 && !workspace;
 
   return (
-    <span
+    <button
+      type="button"
       className={`badge ${hasCredits ? "badge-amber" : "badge-muted"} ${workspace ? "badge-disabled" : "badge-clickable"}`}
       onClick={workspace ? undefined : (e) => { e.stopPropagation(); onClick(); }}
-      title={workspace ? "Not available for workspace accounts" : `${credits} reset credit(s)`}
+      disabled={workspace}
+      aria-label={workspace ? "Not available for workspace accounts" : `${credits ?? 0} reset credit(s)`}
     >
       <IconTicket width={12} />
-      {workspace ? "–" : credits}
-    </span>
+      {workspace ? "–" : (credits ?? 0)}
+    </button>
   );
 }
 ```
+
+Uses `<button>` instead of `<span>` for accessibility (keyboard focus, screen reader).
 
 ### Reset Credit Popup (new modal, after existing confirm modal)
 
@@ -309,16 +327,27 @@ const handleRedeem = async (accountId: string) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ accountId }),
     });
+    if (!resp.ok) {
+      alert(t("codexAuth.resetError"));
+      return;
+    }
     const result = await resp.json();
     if (result.code === "reset" || result.code === "already_redeemed") {
+      const prevCredits = resetPopup?.quota?.resetCredits ?? 1;
       setResetPopup(null);
       setResetConfirm(false);
       await load(true);
-      const remaining = (resetPopup?.quota?.resetCredits ?? 1) - 1;
-      setToast(t("codexAuth.resetSuccess", { remaining: Math.max(0, remaining) }));
+      // Use prevCredits captured before clearing resetPopup (avoids stale closure)
+      setToast(t("codexAuth.resetSuccess", { remaining: Math.max(0, prevCredits - 1) }));
       setTimeout(() => setToast(""), 5000);
     } else {
-      alert(t(`codexAuth.resetOutcome.${result.code}`));
+      // Explicit key mapping instead of dynamic template (TKey type safety)
+      const msg = result.code === "nothing_to_reset"
+        ? t("codexAuth.resetNothingToReset")
+        : result.code === "no_credit"
+          ? t("codexAuth.resetNoCredit")
+          : t("codexAuth.resetError");
+      alert(msg);
     }
   } catch {
     alert(t("codexAuth.resetError"));
@@ -328,10 +357,10 @@ const handleRedeem = async (accountId: string) => {
 };
 ```
 
-### New i18n Keys
+### New i18n Keys (en.ts — 15 keys)
 
 ```typescript
-// Ticket badge
+// Ticket badge + popup
 "codexAuth.resetCreditsTitle": "Reset Credits",
 "codexAuth.resetCreditsAvailable": "You have {count} reset credit(s) available.",
 "codexAuth.resetCreditsDesc": "Each credit resets your current hourly and weekly usage limits instantly.",
@@ -347,12 +376,18 @@ const handleRedeem = async (accountId: string) => {
 "codexAuth.useCredit": "Use Credit",
 "codexAuth.redeeming": "Resetting...",
 
-// Outcomes
+// Outcomes (explicit keys, not dynamic template)
 "codexAuth.resetSuccess": "Rate limits reset! {remaining} credit(s) remaining.",
-"codexAuth.resetOutcome.nothing_to_reset": "No rate-limit window needs resetting right now.",
-"codexAuth.resetOutcome.no_credit": "No reset credits available.",
+"codexAuth.resetNothingToReset": "No rate-limit window needs resetting right now.",
+"codexAuth.resetNoCredit": "No reset credits available.",
 "codexAuth.resetError": "Failed to redeem reset credit. Please try again.",
 ```
+
+**Must also add same keys to `ko.ts` and `zh.ts`** — the i18n system
+uses `Record<TKey, string>` so missing keys cause TypeScript errors.
+
+Replace popup title emoji `🎫` with `<IconTicket width={16} />`
+to match existing UI pattern (icons, not emoji).
 
 ### New CSS
 
@@ -373,25 +408,41 @@ const handleRedeem = async (accountId: string) => {
 
 ### New Icon: IconTicket
 
+Must follow existing pattern in `icons.tsx` (arrow fn, `P` type, `S()` helper):
+
 ```tsx
-// Add to gui/src/icons.tsx
-export function IconTicket(props: { width?: number }) {
-  return (
-    <svg width={props.width ?? 16} height={props.width ?? 16} viewBox="0 0 24 24"
-      fill="none" stroke="currentColor" strokeWidth="2.2"
-      strokeLinecap="round" strokeLinejoin="round">
-      <path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z" />
-      <path d="M13 5v2" /><path d="M13 17v2" /><path d="M13 11v2" />
-    </svg>
-  );
-}
+// Add to gui/src/icons.tsx — same pattern as other icons
+export const IconTicket = (p: P) => (
+  <svg {...S(p)}>
+    <path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z" />
+    <path d="M13 5v2" /><path d="M13 17v2" /><path d="M13 11v2" />
+  </svg>
+);
 ```
+
+## Frontend Employee Review Fixes
+
+| # | Severity | Issue | Fix |
+|---|----------|-------|-----|
+| 1 | High | Main card insertion point wrong | Corrected: between `<strong>` and CURRENT badge |
+| 2 | High | Workspace + undefined = hidden, contradicts "always show" | Workspace always shows disabled badge regardless of `resetCredits` |
+| 3 | High | `__main__` consume path | Noted: backend handles via `readCodexTokens()` (see 00_plan.md §1.2) |
+| 4 | Medium | `handleRedeem` stale closure | Capture `prevCredits` before clearing `resetPopup` |
+| 5 | Medium | `ko.ts`/`zh.ts` missing | Added note: must add keys to all locale files |
+| 6 | Medium | IconTicket pattern mismatch | Changed to arrow fn + `P` type + `S()` helper |
+| 7 | Medium | Dynamic i18n key type violation | Changed to explicit `switch` mapping |
+| 8 | Low | `isWorkspaceAccount` missing aliases | Added `hc`, `education` |
+| 9 | Low | `resp.ok` check missing | Added `if (!resp.ok)` guard |
+| 10 | Low | Emoji in modal title | Changed to `<IconTicket>` |
+| 11 | Low | `<span>` for clickable badge | Changed to `<button>` with `aria-label` |
 
 ## File Change Summary (Phase 3 only)
 
 | Action | File | Change |
 |--------|------|--------|
 | MODIFY | `gui/src/pages/CodexAuth.tsx` | AccountQuota + TicketBadge + popup + redeem handler |
-| MODIFY | `gui/src/i18n/en.ts` | 14 translation keys |
+| MODIFY | `gui/src/i18n/en.ts` | 15 translation keys |
+| MODIFY | `gui/src/i18n/ko.ts` | 15 translation keys (Korean) |
+| MODIFY | `gui/src/i18n/zh.ts` | 15 translation keys (Chinese) |
 | MODIFY | `gui/src/styles.css` | badge-clickable, badge-disabled, confirm-icon |
-| MODIFY | `gui/src/icons.tsx` | IconTicket SVG |
+| MODIFY | `gui/src/icons.tsx` | IconTicket SVG (arrow fn + S() helper) |
