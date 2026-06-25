@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { atomicWriteFile, websocketsEnabled } from "./config";
 import { restoreCodexCatalog } from "./codex-catalog";
 import { syncCodexHistoryProvider } from "./codex-history-provider";
@@ -242,8 +242,8 @@ export async function injectCodexConfig(port: number, config?: OcxConfig, option
   // 2) Provider table appended at EOF (position-independent).
   content = content.trimEnd() + "\n" + buildProviderTableBlock(port, websocketsEnabled(config ?? {}));
 
-  writeFileSync(CODEX_CONFIG_PATH, content, "utf-8");
-  writeFileSync(CODEX_PROFILE_PATH, buildProfileFile(port, catalogPath), "utf-8");
+  atomicWriteFile(CODEX_CONFIG_PATH, content);
+  atomicWriteFile(CODEX_PROFILE_PATH, buildProfileFile(port, catalogPath));
   const history = config?.syncResumeHistory !== false
     ? syncCodexHistoryProvider("opencodex")
     : { rows: 0, files: 0 };
