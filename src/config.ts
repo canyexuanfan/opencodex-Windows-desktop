@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, chmodSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import * as z from "zod/v4";
 import type { OcxConfig } from "./types";
 
 let _atomicSeq = 0;
@@ -25,6 +26,27 @@ function resolveConfigPath(): string {
 function resolvePidPath(): string {
   return join(resolveConfigDir(), "ocx.pid");
 }
+
+const warnedConfigFallbacks = new Set<string>();
+
+const providerConfigSchema = z.object({
+  adapter: z.string().min(1),
+  baseUrl: z.string().min(1),
+}).passthrough();
+
+const configSchema = z.object({
+  port: z.number().int().min(0).max(65535).default(10100),
+  providers: z.record(z.string(), providerConfigSchema),
+  defaultProvider: z.string().min(1),
+}).passthrough().superRefine((config, ctx) => {
+  if (Object.keys(config.providers).length > 0 && !(config.defaultProvider in config.providers)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["defaultProvider"],
+      message: "defaultProvider must exist in providers",
+    });
+  }
+});
 
 /**
  * Default featured subagent models (native GPT) seeded on a fresh install and when `subagentModels`
@@ -71,8 +93,9 @@ export function loadConfig(): OcxConfig {
   }
   try {
     const raw = readFileSync(configPath, "utf-8");
-    return JSON.parse(raw) as OcxConfig;
-  } catch {
+    return configSchema.parse(JSON.parse(raw)) as OcxConfig;
+  } catch (error) {
+    warnAndBackupInvalidConfig(configPath, error);
     return getDefaultConfig();
   }
 }
@@ -156,4 +179,28 @@ export function removePid(): void {
   try {
     unlinkSync(getPidPath());
   } catch { /* ignore */ }
+}
+
+function warnAndBackupInvalidConfig(configPath: string, error: unknown): void {
+  if (warnedConfigFallbacks.has(configPath)) return;
+  warnedConfigFallbacks.add(configPath);
+
+  const backupPath = backupInvalidConfig(configPath);
+  const reason = error instanceof z.ZodError
+    ? error.issues.map(issue => `${issue.path.join(".") || "config"}: ${issue.message}`).join("; ")
+    : error instanceof Error ? error.message : String(error);
+  const backupNote = backupPath ? ` A backup was written to ${backupPath}.` : "";
+  console.error(`Could not load opencodex config at ${configPath}: ${reason}. Using default config.${backupNote}`);
+}
+
+function backupInvalidConfig(configPath: string): string | null {
+  if (!existsSync(configPath)) return null;
+  const backupPath = `${configPath}.invalid-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  try {
+    copyFileSync(configPath, backupPath);
+    try { chmodSync(backupPath, 0o600); } catch { /* best-effort */ }
+    return backupPath;
+  } catch {
+    return null;
+  }
 }
