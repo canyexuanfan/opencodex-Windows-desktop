@@ -182,12 +182,25 @@ if (!version || !/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version)) {
   console.error("Usage: bun scripts/release.ts <version> [--tag latest|preview] [--publish]\n       bun scripts/release.ts watch");
   process.exit(1);
 }
-const tag = args.includes("--tag") ? (args[args.indexOf("--tag") + 1] ?? "latest") : "latest";
 const dryRun = !args.includes("--publish");
 
 // 1. Preflight — must be on main or preview, and typecheck must pass.
 const branch = (await $`git rev-parse --abbrev-ref HEAD`.text()).trim();
 const allowedBranches = ["main", "preview"];
+const expectedTag = branch === "preview" ? "preview" : "latest";
+const tag = args.includes("--tag") ? (args[args.indexOf("--tag") + 1] ?? expectedTag) : expectedTag;
+if (tag !== expectedTag) {
+  console.error(`Release tag mismatch: ${branch} releases must use npm dist-tag '${expectedTag}' (got '${tag}').`);
+  process.exit(1);
+}
+if (branch === "preview" && !version.includes("-preview.")) {
+  console.error(`Preview releases must use a preview prerelease version (got ${version}).`);
+  process.exit(1);
+}
+if (branch === "main" && version.includes("-")) {
+  console.error(`Main releases must use a stable semver version (got ${version}).`);
+  process.exit(1);
+}
 if (!allowedBranches.includes(branch)) { console.error(`✗ must be on ${allowedBranches.join(" or ")} (currently ${branch}).`); process.exit(1); }
 if ((await $`git status --porcelain`.text()).trim()) { console.error("✗ working tree not clean — commit or stash first."); process.exit(1); }
 const packageName = await readPackageName();
