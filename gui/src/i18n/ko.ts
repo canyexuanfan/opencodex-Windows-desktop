@@ -115,9 +115,11 @@ export const ko: Record<TKey, string> = {
   "logs.autoRefresh": "자동 새로고침",
   "logs.noRequests": "아직 요청이 없습니다.",
   "logs.col.time": "시간",
+  "logs.col.request": "요청",
   "logs.col.model": "모델",
   "logs.col.provider": "프로바이더",
   "logs.col.status": "상태",
+  "logs.col.error": "오류",
   "logs.col.duration": "소요 시간",
 
   // add-provider modal
