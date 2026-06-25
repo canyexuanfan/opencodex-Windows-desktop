@@ -25,6 +25,10 @@ import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 이 프로토콜을 — 스트리밍, tool call, reasoning, 이미지를 포함해 양방향으로 — 프로바이더가 기대하는
 어떤 wire 포맷으로든 변환한 뒤, 응답을 다시 변환해 돌려줍니다.
 
+Codex의 네이티브 ChatGPT 인증 경로에는 **멀티 계정 풀**도 사용할 수 있습니다. 기존 thread는
+처음 선택된 계정을 계속 사용하므로 SSH, tmux, 모바일 연결로 이어지는 긴 세션이 중간에 다른 계정으로
+바뀌지 않습니다. 새 세션은 할당량을 조회한 뒤 사용량이 더 낮고 정상인 계정으로 자동 라우팅할 수 있습니다.
+
 ```
 Codex CLI / App / SDK ──/v1/responses──▶ opencodex ──▶ Any provider
                                               │
@@ -40,6 +44,10 @@ Codex CLI / App / SDK ──/v1/responses──▶ opencodex ──▶ Any provi
   <Card title="OAuth 또는 API 키" icon="approve-check">
     xAI, Anthropic, Kimi 계정으로 로그인하거나(OAuth, 자동 갱신), ChatGPT 로그인을
     포워딩하거나, API 키를 붙여넣으세요. 키는 `${ENV_VARS}`로 지정할 수 있습니다.
+  </Card>
+  <Card title="ChatGPT 계정 풀" icon="puzzle">
+    여러 Codex/ChatGPT 계정을 추가하고, 대시보드에서 5시간 / 주간 / 30일 할당량을 한 번에
+    다시 조회한 뒤, 새 세션을 사용량이 가장 낮은 정상 계정으로 자동 라우팅할 수 있습니다.
   </Card>
   <Card title="Codex에 바로 연결" icon="rocket">
     `ocx init`은 프로바이더를 `$CODEX_HOME/config.toml`(기본값 `~/.codex/config.toml`)에 주입하고,

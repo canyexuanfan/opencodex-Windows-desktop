@@ -17,11 +17,31 @@ Use Claude, Gemini, Grok, GLM, DeepSeek, Kimi, Qwen, Ollama, or any other LLM wi
 
 opencodex is a lightweight local proxy that translates Codex's Responses API into whatever your provider speaks. Streaming, tool calls, reasoning tokens, images — everything works, in both directions.
 
+It can also manage a **ChatGPT account pool** for Codex auth. Add multiple ChatGPT / Codex accounts,
+refresh their 5h / weekly / 30d quota in the dashboard, and let new sessions auto-route to the
+lowest-usage healthy account. Existing Codex threads stay pinned to the account that started them,
+so long SSH, tmux, or mobile-connected sessions do not jump accounts mid-conversation.
+
 ```
 Codex CLI / App / SDK ──/v1/responses──▶ opencodex ──▶ Any provider
                                               │
               Anthropic · Google · xAI · Kimi · Ollama Cloud · Groq
               OpenRouter · Azure · DeepSeek · GLM · …and OpenAI itself
+```
+
+```mermaid
+flowchart LR
+  codex[Codex session<br/>CLI, App, SSH, mobile] --> proxy[opencodex]
+  proxy --> existing{Existing thread?}
+  existing -->|yes| pinned[Keep the same<br/>ChatGPT account]
+  existing -->|new session| quota[Refresh quota<br/>5h, weekly, 30d]
+  quota --> pick[Pick lowest-usage<br/>healthy account]
+  pick --> upstream[ChatGPT / Codex backend]
+  pinned --> upstream
+  upstream --> outcomes[Quota / auth outcome]
+  outcomes -->|429| cooldown[Cooldown + failover]
+  outcomes -->|401 / 403| reauth[Mark reauth needed]
+  cooldown --> quota
 ```
 
 ## Supported platforms
@@ -115,9 +135,27 @@ Routed models also appear in the **Codex App** model picker with per-model reaso
   <img src="assets/codex-app-picker.png" alt="Codex App showing opencodex routed models with reasoning effort picker" width="480">
 </p>
 
+## ChatGPT account pool
+
+Open **Codex Auth** in the dashboard to add pool accounts and choose which account should handle the
+next Codex session. opencodex keeps two separate behaviors:
+
+- **Existing sessions keep affinity.** A thread id is bound to the selected account and reused on
+  later turns, so a long request or a mobile/SSH-attached session keeps using the same account.
+- **New sessions can auto-route.** When auto-switch is enabled, opencodex compares the hottest known
+  quota window across 5h, weekly, and 30d usage, then picks a lower-usage eligible account for new
+  sessions once the active account crosses the threshold.
+- **Quota lookup is built in.** The dashboard can refresh all account quotas in one click, and the
+  request log labels pool traffic with non-PII account ordinals.
+- **Failures fail closed.** Token failures mark reauthentication instead of falling back to another
+  credential silently; 429 quota responses put the account in cooldown and can fail over future work
+  to another eligible pool account.
+
 ## Highlights
 
 - **Use any LLM with Codex.** 5 protocol adapters cover Anthropic Messages, Google Gemini, Azure, OpenAI Responses passthrough, and every OpenAI-compatible Chat Completions endpoint — that's 40+ providers out of the box.
+- **Pool ChatGPT accounts safely.** Keep existing Codex threads on one account while new sessions
+  can auto-pick a lower-usage account from the pool, with quota refresh and non-PII request labels.
 - **Log in once, skip the API key.** OAuth support for xAI, Anthropic, and Kimi means you can authenticate with your existing account. Tokens auto-refresh. Or forward your `codex login`, paste an API key, or use `${ENV_VAR}` references — your call.
 - **Works everywhere Codex does.** Injects into Codex CLI, TUI, App, and SDK automatically. Routed models show up in Codex's model picker just like native ones.
 - **Delegate to the right model.** Feature up to five routed or native models in Codex's subagent picker from the dashboard or config — route complex tasks to a reasoning model, fast tasks to a cheap one.

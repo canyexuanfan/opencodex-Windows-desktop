@@ -18,12 +18,23 @@ default (a single `openai` forward provider).
 | `disabledModels?` | `string[]` | — | Routed `provider/model` ids hidden from Codex (excluded from the catalog and `/v1/models`). |
 | `websockets?` | `boolean` | `false` | Advertise `supports_websockets` so Codex uses the Responses WebSocket path. Omit or set `false` to keep HTTP/SSE. |
 | `syncResumeHistory?` | `boolean` | `false` | Reversible Codex App history compatibility mode. When enabled, opencodex backs up original Codex thread metadata, remaps old OpenAI interactive rows to `opencodex`, and temporarily promotes opencodex-created `exec` rows to an app-visible source. `ocx stop` / `ocx restore` restore backed-up OpenAI rows and eject remaining opencodex user threads to OpenAI so native Codex can resume them after the proxy is removed from `config.toml`. |
+| `codexAccounts?` | `CodexAccount[]` | `[]` | ChatGPT/Codex pool account metadata managed by the Codex Auth dashboard. Secrets live separately in `codex-accounts.json`. |
+| `activeCodexAccountId?` | `string` | — | Pool account used for the next new Codex thread. Existing thread affinities keep their original account. |
+| `autoSwitchThreshold?` | `number` | `80` | Usage percent threshold for new-session auto-switching. The score uses the hottest known 5h, weekly, or 30d quota window. Set `0` to disable quota auto-switching. |
+| `upstreamFailoverThreshold?` | `number` | `3` | Consecutive transient upstream failures before future new sessions fail over to another eligible pool account. Set `0` to disable failure failover. |
 | `modelCacheTtlMs?` | `number` | `300000` | Freshness window for the per-provider `/models` cache (5 min). |
 | `webSearchSidecar?` | `OcxWebSearchSidecarConfig` | on | Web-search sidecar options (see below). |
 | `visionSidecar?` | `OcxVisionSidecarConfig` | on | Vision sidecar options (see below). |
 
 If an older development build already ran `syncResumeHistory` before backup support existed, you can
 also force the same native-provider recovery with `ocx recover-history --legacy-openai`.
+
+:::note[Codex account pool]
+Use the dashboard's **Codex Auth** page to add pool accounts and refresh quotas. The config stores
+non-secret account metadata only; access and refresh tokens are kept in the hardened Codex account
+credential store. Existing thread ids keep account affinity, while new sessions can auto-route based
+on quota, cooldown, and health.
+:::
 
 ## Providers (`OcxProviderConfig`)
 

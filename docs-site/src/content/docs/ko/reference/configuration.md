@@ -18,12 +18,23 @@ opencodex는 `~/.opencodex/config.json`으로 설정됩니다. 이 파일은 `oc
 | `disabledModels?` | `string[]` | — | Codex에서 숨겨지는 라우팅된 `provider/model` id (카탈로그와 `/v1/models`에서 제외됨). |
 | `websockets?` | `boolean` | `false` | Codex가 Responses WebSocket 경로를 사용하도록 `supports_websockets`를 광고합니다. 생략하거나 `false`로 두면 HTTP/SSE를 유지합니다. |
 | `syncResumeHistory?` | `boolean` | `false` | Codex App 히스토리 호환 모드. 켜면 opencodex가 원래 Codex thread metadata를 백업하고, 기존 OpenAI interactive row를 `opencodex`로 remap하며, opencodex가 만든 `exec` row를 App에 보이는 source로 임시 승격합니다. `ocx stop` / `ocx restore`는 백업된 OpenAI row를 복원하고, 남은 opencodex user thread는 OpenAI로 eject해서 `config.toml`에서 프록시 provider가 제거된 뒤에도 native Codex가 resume할 수 있게 합니다. |
+| `codexAccounts?` | `CodexAccount[]` | `[]` | Codex Auth 대시보드가 관리하는 ChatGPT/Codex pool 계정 metadata. 시크릿은 별도의 `codex-accounts.json`에 저장됩니다. |
+| `activeCodexAccountId?` | `string` | — | 다음 새 Codex thread에 사용할 pool 계정. 기존 thread affinity는 처음 선택된 계정을 유지합니다. |
+| `autoSwitchThreshold?` | `number` | `80` | 새 세션 자동 전환에 사용할 사용률 임계값. 점수는 알려진 5시간, 주간, 30일 할당량 중 가장 높은 사용률을 사용합니다. `0`으로 설정하면 할당량 기반 auto-switch를 끕니다. |
+| `upstreamFailoverThreshold?` | `number` | `3` | 일시적 업스트림 실패가 연속으로 몇 번 발생하면 이후 새 세션을 다른 정상 pool 계정으로 failover할지 정합니다. `0`으로 설정하면 실패 기반 failover를 끕니다. |
 | `modelCacheTtlMs?` | `number` | `300000` | 프로바이더별 `/models` 캐시의 유효 기간 (5분). |
 | `webSearchSidecar?` | `OcxWebSearchSidecarConfig` | on | 웹 검색 사이드카 옵션 (아래 참조). |
 | `visionSidecar?` | `OcxVisionSidecarConfig` | on | 비전 사이드카 옵션 (아래 참조). |
 
 백업 지원 이전의 개발 빌드에서 이미 `syncResumeHistory`를 실행했다면,
 `ocx recover-history --legacy-openai`로 같은 native-provider 복구를 명시 실행할 수도 있습니다.
+
+:::note[Codex 계정 풀]
+pool 계정 추가와 할당량 재조회는 대시보드의 **Codex Auth** 페이지에서 처리하세요. config에는
+시크릿이 아닌 계정 metadata만 저장되고, access/refresh token은 강화된 Codex account credential
+store에 따로 저장됩니다. 기존 thread id는 계정 affinity를 유지하고, 새 세션은 할당량, cooldown,
+health를 기준으로 자동 라우팅할 수 있습니다.
+:::
 
 ## 프로바이더 (`OcxProviderConfig`)
 

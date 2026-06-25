@@ -28,6 +28,10 @@ and any LLM provider. Codex only speaks the **Responses API** (`/v1/responses`);
 that protocol — in both directions, including streaming, tool calls, reasoning, and images — into
 whatever wire format your provider expects, then translates the answer back.
 
+For Codex's native ChatGPT auth path, opencodex can also manage a **multi-account pool**. Existing
+threads keep the same selected account for reliable SSH, tmux, and mobile-attached sessions, while
+new sessions can automatically pick a lower-usage healthy account after quota refresh.
+
 ```
 Codex CLI / App / SDK ──/v1/responses──▶ opencodex ──▶ Any provider
                                               │
@@ -47,6 +51,10 @@ Codex CLI / App / SDK ──/v1/responses──▶ opencodex ──▶ Any provi
   <Card title="OAuth or API key" icon="approve-check">
     Log in with your xAI, Anthropic, or Kimi account (OAuth, auto-refreshed), forward your ChatGPT
     login, or paste an API key. Keys can be `${ENV_VARS}`.
+  </Card>
+  <Card title="ChatGPT account pool" icon="puzzle">
+    Add multiple Codex/ChatGPT accounts, refresh 5h / weekly / 30d quota from the dashboard, and let
+    new sessions auto-route to the lowest-usage eligible account without moving existing threads.
   </Card>
   <Card title="Drops into Codex" icon="rocket">
     `ocx init` injects a provider into `$CODEX_HOME/config.toml` (default
