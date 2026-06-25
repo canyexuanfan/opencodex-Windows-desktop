@@ -57,6 +57,66 @@ import {
 } from "./codex-routing";
 import { registerCodexWebSocket, unregisterCodexWebSocket } from "./codex-websocket-registry";
 
+// ---------------------------------------------------------------------------
+// Active turn tracking + graceful shutdown drain
+// ---------------------------------------------------------------------------
+
+const activeTurns = new Set<AbortController>();
+let draining = false;
+
+export function registerTurn(ac: AbortController): void { activeTurns.add(ac); }
+export function unregisterTurn(ac: AbortController): void { activeTurns.delete(ac); }
+export function isDraining(): boolean { return draining; }
+export function getActiveTurnCount(): number { return activeTurns.size; }
+
+export function trackStreamLifetime(
+  body: ReadableStream<Uint8Array>,
+  ac: AbortController,
+): ReadableStream<Uint8Array> {
+  registerTurn(ac);
+  const reader = body.getReader();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) { unregisterTurn(ac); controller.close(); return; }
+        controller.enqueue(value);
+      } catch (err) {
+        unregisterTurn(ac);
+        try { controller.error(err); } catch { /* already closed */ }
+      }
+    },
+    cancel(reason) {
+      unregisterTurn(ac);
+      ac.abort(reason);
+      reader.cancel(reason).catch(() => {});
+    },
+  });
+}
+
+let _serverRef: ReturnType<typeof Bun.serve> | undefined;
+
+export async function drainAndShutdown(
+  server: ReturnType<typeof Bun.serve> | undefined,
+  timeoutMs: number,
+): Promise<void> {
+  const s = server ?? _serverRef;
+  draining = true;
+  const deadline = Date.now() + timeoutMs;
+  while (activeTurns.size > 0 && Date.now() < deadline) {
+    await Bun.sleep(100);
+  }
+  if (activeTurns.size > 0) {
+    console.log(`⚠️  Aborting ${activeTurns.size} in-flight turn(s) after ${timeoutMs}ms deadline`);
+    for (const ac of activeTurns) {
+      ac.abort(new Error("server shutdown"));
+    }
+    activeTurns.clear();
+  }
+  s?.stop(true);
+  draining = false;
+}
+
 // Single source of truth = package.json (../ from src/), so /healthz + the GUI badge match the
 // installed npm version instead of a stale hardcode.
 const VERSION = (() => {
@@ -316,15 +376,28 @@ async function handleResponses(
       }
     }
 
-    const body = isEventStream
-      ? relaySseWithHeartbeat(
-          upstreamResponse.body,
-          upstream,
-          15_000,
-          terminalBodyWillRecord && recordTerminalOutcomes ? terminalRecorder : undefined,
-        )
-      : relayWithAbort(upstreamResponse.body, upstream);
-    return new Response(body, {
+    // Bun#32111 workaround: passthrough SSE uses tee()+native relay to avoid the
+    // async-pull segfault on Windows. Branch[0] goes directly to the Response (Bun
+    // native relay, never enters JS Sink.write); branch[1] is consumed in the
+    // background for terminal-outcome/quota inspection only.
+    if (isEventStream && upstreamResponse.body) {
+      const [nativeBody, inspectBody] = upstreamResponse.body.tee();
+      const turnAc = new AbortController();
+      const trackedNative = trackStreamLifetime(nativeBody, turnAc);
+      if (terminalBodyWillRecord && recordTerminalOutcomes && terminalRecorder) {
+        consumeForInspection(inspectBody, terminalRecorder);
+      } else {
+        inspectBody.cancel().catch(() => {});
+      }
+      return new Response(trackedNative, {
+        status: upstreamResponse.status,
+        headers,
+      });
+    }
+    const body = relayWithAbort(upstreamResponse.body, upstream);
+    const turnAc = new AbortController();
+    const tracked = body ? trackStreamLifetime(body, turnAc) : null;
+    return new Response(tracked, {
       status: upstreamResponse.status,
       headers,
     });
@@ -391,7 +464,9 @@ async function handleResponses(
         hideThinkingSummary: parsed.options.hideThinkingSummary,
       },
     );
-    return new Response(sseStream, {
+    const bridgeTurnAc = new AbortController();
+    const trackedSse = trackStreamLifetime(sseStream, bridgeTurnAc);
+    return new Response(trackedSse, {
       headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no" },
     });
   }
@@ -606,6 +681,54 @@ export function relaySseWithHeartbeat(
       reader.cancel(reason).catch(() => {});
     },
   });
+}
+
+/**
+ * Background-consume an SSE stream purely for terminal-outcome inspection (quota tracking).
+ * Does not produce output; safe to ignore errors (the client-facing stream is separate).
+ */
+function consumeForInspection(
+  body: ReadableStream<Uint8Array>,
+  onTerminal: (status: ResponsesTerminalStatus) => void,
+): void {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let reported = false;
+  const pump = async () => {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) {
+          buffer += decoder.decode();
+          if (buffer.trim() && !reported) {
+            const payload = sseDataPayload(buffer);
+            if (payload) {
+              const status = terminalStatusFromSsePayload(payload);
+              if (status) { reported = true; onTerminal(status); }
+            }
+          }
+          if (!reported) onTerminal("incomplete");
+          return;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        let next: { block: string; rest: string } | null;
+        while ((next = nextSseBlock(buffer))) {
+          buffer = next.rest;
+          if (!reported) {
+            const payload = sseDataPayload(next.block);
+            if (payload) {
+              const status = terminalStatusFromSsePayload(payload);
+              if (status) { reported = true; onTerminal(status); }
+            }
+          }
+        }
+      }
+    } catch {
+      if (!reported) onTerminal("incomplete");
+    }
+  };
+  pump();
 }
 
 /**
@@ -967,7 +1090,10 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
     const { stopServiceIfInstalled } = await import("./service");
     stopServiceIfInstalled();
     restoreNativeCodex();
-    setTimeout(() => process.exit(0), 200);
+    setTimeout(async () => {
+      await drainAndShutdown(undefined, config.shutdownTimeoutMs ?? 5000);
+      process.exit(0);
+    }, 200);
     return jsonResponse({ success: true, message: "Proxy stopping, native Codex restored." });
   }
 
@@ -1026,6 +1152,9 @@ export function startServer(port?: number) {
       // Responses WebSocket (phase 120.2). Codex upgrades the same /v1/responses path; auth is
       // handshake-time only, so capture inbound headers and thread them into the pipeline.
       if (url.pathname === "/v1/responses" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+        if (draining) {
+          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(), "Retry-After": "5" } });
+        }
         const apiAuthError = requireApiAuth(req, config, "data-plane");
         if (apiAuthError) return apiAuthError;
         if (!isLocalOrigin(req)) {
@@ -1090,6 +1219,9 @@ export function startServer(port?: number) {
       }
 
       if (url.pathname === "/v1/responses" && req.method === "POST") {
+        if (draining) {
+          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(), "Retry-After": "5" } });
+        }
         const apiAuthError = requireApiAuth(req, config, "data-plane");
         if (apiAuthError) return apiAuthError;
         if (!isLocalOrigin(req)) {
@@ -1151,6 +1283,8 @@ export function startServer(port?: number) {
 
         const payload: Record<string, unknown> = { ...frame };
         delete payload.type;
+        const wsTurnAc = new AbortController();
+        registerTurn(wsTurnAc);
         void (async () => {
           const logCtx = { model: "unknown", provider: "unknown" };
           const fwd = new Headers({ "content-type": "application/json" });
@@ -1192,6 +1326,7 @@ export function startServer(port?: number) {
               /* socket already gone or send dropped */
             }
           } finally {
+            unregisterTurn(wsTurnAc);
             if (ws.data.cancel === cancelTurn) ws.data.cancel = undefined;
           }
         })();
@@ -1202,6 +1337,8 @@ export function startServer(port?: number) {
       },
     },
   });
+
+  _serverRef = server;
 
   console.log(`🚀 opencodex proxy running on http://localhost:${listenPort}`);
   console.log(`   POST /v1/responses → provider translation`);

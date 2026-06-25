@@ -6,7 +6,7 @@ import { restoreLegacyOpenaiHistory } from "./codex-history-provider";
 import { codexAutoStartEnabled, getConfigDir, loadConfig, readPid, removePid, saveConfig, writePid } from "./config";
 import { findAvailablePort } from "./ports";
 import { serviceCommand, stopServiceIfInstalled, uninstallServiceIfInstalled } from "./service";
-import { startServer } from "./server";
+import { drainAndShutdown, startServer } from "./server";
 import { maybeShowStarPrompt } from "./star-prompt";
 
 const args = process.argv.slice(2);
@@ -200,14 +200,15 @@ async function handleStart(options: { block?: boolean } = {}) {
   const server = startServer(port);
   writePid(process.pid);
 
+  const config = loadConfig();
   const shutdown = () => {
     console.log("\n🛑 Shutting down opencodex proxy...");
-    server.stop(true);
-    removePid();
-    // Under the service (OCX_SERVICE), a restart re-injects on start — don't churn Codex config.
-    // `ocx service stop/uninstall` restore explicitly.
-    if (!process.env.OCX_SERVICE) { try { restoreNativeCodex(); } catch { /* best-effort restore */ } }
-    process.exit(0);
+    void (async () => {
+      await drainAndShutdown(server, config.shutdownTimeoutMs ?? 5000);
+      removePid();
+      if (!process.env.OCX_SERVICE) { try { restoreNativeCodex(); } catch { /* best-effort restore */ } }
+      process.exit(0);
+    })();
   };
 
   process.on("SIGINT", shutdown);
