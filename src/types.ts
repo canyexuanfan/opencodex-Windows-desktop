@@ -192,8 +192,8 @@ export interface OcxConfig {
   /**
    * Compatibility mode: temporarily rewrite Codex resume-history metadata while the proxy is active
    * so Codex App can show old OpenAI chats and opencodex-created exec chats under its default
-   * interactive-source/provider filters. Disabled by default because it mutates Codex's local
-   * thread index; originals are backed up and restored by `ocx stop` / `ocx restore`.
+   * interactive-source/provider filters. Default true; originals are backed up and restored by
+   * `ocx stop` / `ocx restore`. Set false to opt out of history remapping.
    */
   syncResumeHistory?: boolean;
   /** Freshness window (ms) for the per-provider live `/models` cache. Defaults to 5 min. */

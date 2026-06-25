@@ -312,11 +312,8 @@ x-opencodex-api-key: your-secret-token
 
 The token is compared in constant time to prevent timing attacks.
 
-opencodex leaves existing Codex resume history untouched by default. This avoids changing Codex's
-local thread index just because the proxy started, but Codex App may hide old OpenAI-backed project
-threads and opencodex-created `exec` threads while `opencodex` is the active provider. If you want
-those chats to appear while the proxy is active, enable the reversible compatibility remap with
-`"syncResumeHistory": true`. opencodex records the original provider/source metadata in
+opencodex automatically remaps Codex resume history so old OpenAI chats and opencodex-created project
+threads stay visible in Codex App while the proxy is active. opencodex records the original provider/source metadata in
 `~/.opencodex/codex-history-backup.json`. `ocx stop` / `ocx restore` restores backed-up OpenAI rows
 to OpenAI, and ejects any remaining opencodex user threads to OpenAI as well so native Codex does not
 try to resume a thread whose provider no longer exists in `config.toml`.
