@@ -189,6 +189,23 @@ export const en = {
   "codexAuth.needsReauth": "Re-login",
   "codexAuth.tokenExpired": "Token expired — re-add this account to refresh",
   "codexAuth.emailCollision": "This account matches your main Codex login. Use a different account.",
+
+  "codexAuth.resetCreditsTitle": "Reset Credits",
+  "codexAuth.resetCreditsAvailable": "You have {count} reset credit(s) available.",
+  "codexAuth.resetCreditsDesc": "Each credit resets your current hourly and weekly usage limits instantly.",
+  "codexAuth.noResetCredits": "You don't have any reset credits.",
+  "codexAuth.earnCreditsHint": "Credits are earned monthly and via the referral program.",
+  "codexAuth.creditsExpireNote": "Credits expire 30 days after earning.",
+  "codexAuth.useOneCredit": "Use 1 Credit",
+  "codexAuth.confirmResetTitle": "Use Reset Credit?",
+  "codexAuth.confirmResetDesc": "This will instantly reset your current rate limits. You have {count} credit(s) remaining.",
+  "codexAuth.irreversible": "This action cannot be undone.",
+  "codexAuth.useCredit": "Use Credit",
+  "codexAuth.redeeming": "Resetting...",
+  "codexAuth.resetSuccess": "Rate limits reset! {remaining} credit(s) remaining.",
+  "codexAuth.resetNothingToReset": "No rate-limit window needs resetting right now.",
+  "codexAuth.resetNoCredit": "No reset credits available.",
+  "codexAuth.resetError": "Failed to redeem reset credit. Please try again.",
 } as const;
 
 export type TKey = keyof typeof en;
