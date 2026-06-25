@@ -11,13 +11,16 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { getConfigDir } from "./config";
 import { restoreNativeCodex } from "./codex-inject";
+import { durableBunPath } from "./bun-runtime";
 
 const LABEL = "com.opencodex.proxy";
 const TASK = "opencodex-proxy";
 
 function cliEntry(): { bun: string; cli: string } {
-  // process.execPath = the bun binary; cli.ts sits next to this module.
-  return { bun: process.execPath, cli: join(import.meta.dir, "cli.ts") };
+  // Bake the bundled Bun (npm global prefix, survives `ocx update`) rather than
+  // a transient system Bun, so launchd/systemd/schtasks keep resolving even if a
+  // standalone Bun is later removed. cli.ts sits next to this module.
+  return { bun: durableBunPath(), cli: join(import.meta.dir, "cli.ts") };
 }
 
 function plistPath(): string {

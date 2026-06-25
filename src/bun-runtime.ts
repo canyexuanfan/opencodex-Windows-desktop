@@ -1,0 +1,46 @@
+/**
+ * Bundled Bun runtime resolution.
+ *
+ * opencodex ships the Bun runtime via the `bun` npm dependency (esbuild-style:
+ * a tiny main package + platform-specific `@oven/bun-*` optionalDependencies,
+ * finalized by the package's own postinstall `node install.js`). The npm `bin`
+ * launcher (bin/ocx.mjs) and the durable service/shim integrations both need a
+ * stable path to that binary. This module is the single source of truth.
+ *
+ * In a from-source dev checkout the `bun` dependency may be absent; callers fall
+ * back to `process.execPath` (which is itself Bun when run via `bun src/cli.ts`).
+ */
+import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+
+const require = createRequire(import.meta.url);
+
+/**
+ * Absolute path to the bundled Bun binary, or null if the `bun` dependency is
+ * not installed/resolvable. The npm `bun` package ships the binary as
+ * `bin/bun.exe` on every platform; we also probe `bin/bun` for forward
+ * compatibility.
+ */
+export function bundledBunPath(): string | null {
+  try {
+    const bunDir = dirname(require.resolve("bun/package.json"));
+    for (const name of ["bun.exe", "bun"]) {
+      const p = join(bunDir, "bin", name);
+      if (existsSync(p)) return p;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bun path to bake into durable artifacts (launchd/systemd/Task Scheduler and
+ * the Codex auto-start shim). Prefer the bundled binary — it lives under the
+ * npm global prefix and survives across `ocx update` — and fall back to the
+ * current runtime, which is Bun when launched normally.
+ */
+export function durableBunPath(): string {
+  return bundledBunPath() ?? process.execPath;
+}

@@ -1,6 +1,7 @@
 import { delimiter, dirname, extname, join } from "node:path";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { getConfigDir } from "./config";
+import { durableBunPath } from "./bun-runtime";
 
 const SHIM_MARKER = "opencodex codex autostart shim";
 const CODEX_INTERNAL_COMMANDS = [
@@ -43,7 +44,9 @@ interface ShimFileState {
 }
 
 function cliEntry(): { bun: string; cli: string } {
-  return { bun: process.execPath, cli: join(import.meta.dir, "cli.ts") };
+  // Bundled Bun path (survives `ocx update`); all three shim builders
+  // (Unix / Windows cmd / Windows PowerShell) receive it via this entry.
+  return { bun: durableBunPath(), cli: join(import.meta.dir, "cli.ts") };
 }
 
 function commandNames(name: string): string[] {
