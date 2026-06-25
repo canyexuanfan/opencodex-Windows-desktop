@@ -31,6 +31,8 @@ describe("request log metadata", () => {
     expect(requestLogErrorCode(429)).toBe("rate_limit_exceeded");
     expect(requestLogErrorCode(503)).toBe("server_is_overloaded");
     expect(requestLogErrorCode(502)).toBe("upstream_server_error");
+    expect(requestLogErrorCode(404)).toBe("http_404");
+    expect(requestLogErrorCode(418)).toBe("http_418");
   });
 
   test("filters logs by provider, status, and tail", () => {
@@ -45,5 +47,8 @@ describe("request log metadata", () => {
     expect(filterRequestLogs(logs, new URLSearchParams("status=5xx")).map(entry => entry.requestId)).toEqual(["c", "d"]);
     expect(filterRequestLogs(logs, new URLSearchParams("status=429")).map(entry => entry.requestId)).toEqual(["b"]);
     expect(filterRequestLogs(logs, new URLSearchParams("tail=2")).map(entry => entry.requestId)).toEqual(["c", "d"]);
+
+    const combined = filterRequestLogs(logs, new URLSearchParams("provider=umans&status=5xx&tail=1"));
+    expect(combined.map(entry => entry.requestId)).toEqual(["c"]);
   });
 });
