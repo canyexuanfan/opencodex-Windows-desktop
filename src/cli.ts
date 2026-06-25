@@ -248,6 +248,7 @@ async function handleEnsure() {
   const child = spawn(process.execPath, [process.argv[1], "start"], {
     detached: true,
     stdio: "ignore",
+    windowsHide: true,
     env: { ...process.env, OCX_SERVICE: "1" },
   });
   child.unref();
@@ -498,6 +499,7 @@ switch (command) {
       const child = spawn(process.execPath, [process.argv[1], "start"], {
         detached: true,
         stdio: "ignore",
+        windowsHide: true,
         env: process.env,
       });
       child.unref();
