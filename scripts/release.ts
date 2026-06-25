@@ -162,7 +162,7 @@ async function waitForSuccessfulCi(sha: string): Promise<GhRun> {
   process.exit(1);
 }
 
-async function remoteMainSha(): Promise<string> {
+async function _remoteMainSha(): Promise<string> {
   const out = (await $`git ls-remote origin refs/heads/main`.text()).trim();
   const [sha] = out.split(/\s+/);
   if (!sha) {
@@ -185,9 +185,10 @@ if (!version || !/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version)) {
 const tag = args.includes("--tag") ? (args[args.indexOf("--tag") + 1] ?? "latest") : "latest";
 const dryRun = !args.includes("--publish");
 
-// 1. Preflight — must be on a clean main, and typecheck must pass.
+// 1. Preflight — must be on main or preview, and typecheck must pass.
 const branch = (await $`git rev-parse --abbrev-ref HEAD`.text()).trim();
-if (branch !== "main") { console.error(`✗ must be on main (currently ${branch}).`); process.exit(1); }
+const allowedBranches = ["main", "preview"];
+if (!allowedBranches.includes(branch)) { console.error(`✗ must be on ${allowedBranches.join(" or ")} (currently ${branch}).`); process.exit(1); }
 if ((await $`git status --porcelain`.text()).trim()) { console.error("✗ working tree not clean — commit or stash first."); process.exit(1); }
 const packageName = await readPackageName();
 console.log(`→ release metadata preflight (${packageName}@${version})`);
@@ -203,21 +204,21 @@ await $`npm version ${version} --no-git-tag-version`;
 await $`git add package.json`;
 await $`git commit -m ${`release: v${version}`}`;
 const releaseSha = (await $`git rev-parse HEAD`.text()).trim();
-console.log("→ push origin main");
-await $`git push origin main`;
+console.log(`→ push origin ${branch}`);
+await $`git push origin ${branch}`;
 
 // 4. Wait for the pushed release commit to pass CI, then dispatch the Release workflow.
 console.log(`→ wait for Cross-platform CI (${releaseSha})`);
 await waitForSuccessfulCi(releaseSha);
 
-const originMain = await remoteMainSha();
-if (originMain !== releaseSha) {
-  console.error(`✗ origin/main moved while waiting for CI (${originMain} != ${releaseSha}); aborting release dispatch.`);
+const originSha = (await $`git rev-parse origin/${branch}`.text()).trim();
+if (originSha !== releaseSha) {
+  console.error(`✗ origin/${branch} moved while waiting for CI (${originSha} != ${releaseSha}); aborting release dispatch.`);
   process.exit(1);
 }
 
 console.log(`→ dispatch Release (tag=${tag}, dry-run=${dryRun})`);
-await $`gh workflow run release.yml --ref main -f version=${version} -f tag=${tag} -f dry-run=${String(dryRun)}`;
+await $`gh workflow run release.yml --ref ${branch} -f version=${version} -f tag=${tag} -f dry-run=${String(dryRun)}`;
 await Bun.sleep(4000);
 
 // 5. Watch it.
