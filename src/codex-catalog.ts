@@ -127,9 +127,14 @@ function ensureStrictCatalogFields(entry: RawEntry): RawEntry {
   if (typeof entry.supports_image_detail_original !== "boolean") entry.supports_image_detail_original = false;
   if (!Array.isArray(entry.experimental_supported_tools)) entry.experimental_supported_tools = [];
   if (!Array.isArray(entry.input_modalities)) entry.input_modalities = ["text"];
-  if (typeof entry.context_window !== "number" || entry.context_window <= 0) entry.context_window = 128000;
-  if (typeof entry.max_context_window !== "number" || entry.max_context_window <= 0) {
-    entry.max_context_window = entry.context_window;
+  const contextWindow = typeof entry.context_window === "number" && entry.context_window > 0 ? entry.context_window : 128000;
+  entry.context_window = contextWindow;
+  if (
+    typeof entry.max_context_window !== "number"
+    || entry.max_context_window <= 0
+    || entry.max_context_window > contextWindow
+  ) {
+    entry.max_context_window = contextWindow;
   }
   if (typeof entry.effective_context_window_percent !== "number") entry.effective_context_window_percent = 95;
   if (typeof entry.comp_hash !== "string") entry.comp_hash = "opencodex";

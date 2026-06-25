@@ -98,6 +98,20 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.auto_compact_token_limit).toBe(244_800);
   });
 
+  test("catalog entries cap stale max context to the active context window", () => {
+    const template = {
+      ...nativeTemplate(),
+      context_window: 272_000,
+      max_context_window: 1_000_000,
+    };
+    const entries = buildCatalogEntries(template, ["gpt-5.4"], []);
+    const native = entries.find(e => e.slug === "gpt-5.4");
+
+    expect(native?.context_window).toBe(272_000);
+    expect(native?.max_context_window).toBe(272_000);
+    expect(native?.auto_compact_token_limit).toBe(244_800);
+  });
+
   test("buildCatalogEntries preserves native bare GPT template fields", () => {
     const entries = buildCatalogEntries(nativeTemplate(), ["gpt-5.5"], []);
     const native = entries.find(e => e.slug === "gpt-5.5");

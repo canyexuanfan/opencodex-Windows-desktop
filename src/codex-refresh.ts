@@ -14,14 +14,12 @@ export interface CodexCatalogRefreshResult {
 interface RefreshDeps {
   syncCatalogModels: typeof syncCatalogModels;
   invalidateCodexModelsCache: typeof invalidateCodexModelsCache;
-  syncCodexModelsCacheFromCatalog: typeof syncCodexModelsCacheFromCatalog;
   existsSync: typeof existsSync;
 }
 
 const defaultDeps: RefreshDeps = {
   syncCatalogModels,
   invalidateCodexModelsCache,
-  syncCodexModelsCacheFromCatalog,
   existsSync,
 };
 
@@ -31,10 +29,10 @@ export function syncCodexModelsCacheFromCatalog(catalogPath: string): void {
 }
 
 /**
- * Rebuild Codex's on-disk model catalog and keep Codex's models cache aligned
- * when a catalog file exists. Codex Desktop can read models_cache.json directly,
- * so deleting a stale cache is not enough: the cache must be replaced with the
- * same catalog content the CLI debug path reads.
+ * Rebuild Codex's on-disk model catalog and force Codex's models cache stale
+ * when a catalog file exists. The cache must keep Codex's fetched_at/client_version
+ * wrapper shape; writing the raw catalog back here makes app-server/TUI refreshes
+ * inconsistent with the CLI models-manager cache path.
  */
 export async function refreshCodexModelCatalog(
   config: OcxConfig,
@@ -44,6 +42,5 @@ export async function refreshCodexModelCatalog(
   const catalogExists = deps.existsSync(result.path);
   if (!catalogExists) return { ...result, catalogExists, cacheSynced: false };
   deps.invalidateCodexModelsCache();
-  deps.syncCodexModelsCacheFromCatalog(result.path);
   return { ...result, catalogExists, cacheSynced: true };
 }
