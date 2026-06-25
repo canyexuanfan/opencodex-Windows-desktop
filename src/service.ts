@@ -303,6 +303,11 @@ export function uninstallServiceIfInstalled(): boolean {
   return false;
 }
 
+/** True if a background service (launchd/systemd/Task Scheduler) is installed. */
+export function isServiceInstalled(): boolean {
+  return serviceStatusSummary().startsWith("installed");
+}
+
 export function serviceStatusSummary(): string {
   if (process.platform === "darwin") {
     if (!existsSync(plistPath())) return "not installed";

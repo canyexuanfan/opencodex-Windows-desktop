@@ -57,15 +57,23 @@ export async function runUpdate(): Promise<void> {
   const r = spawnSync(bin, cmdArgs, { stdio: "inherit", timeout: 180000, windowsHide: true });
   if (r.status === 0) {
     console.log(`\n✅ Updated${latest ? ` to v${latest}` : ""}.`);
-    if (process.platform === "win32") {
-      try {
-        const { installCodexShim } = await import("./codex-shim");
+    // Re-bake the bundled Bun path into the Codex autostart shim on every
+    // platform when one is installed (refresh-only; never installs fresh).
+    try {
+      const { isCodexShimInstalled, installCodexShim } = await import("./codex-shim");
+      if (isCodexShimInstalled()) {
         const result = installCodexShim();
         if (result.installed) console.log(`🔧 ${result.message}`);
-      } catch (e) {
-        console.warn(`⚠️  Shim repair skipped: ${e instanceof Error ? e.message : e}`);
       }
+    } catch (e) {
+      console.warn(`⚠️  Shim repair skipped: ${e instanceof Error ? e.message : e}`);
     }
+    // The launchd/systemd/Task Scheduler service bakes an absolute Bun path;
+    // advise refreshing it (reinstall is heavier, so we don't auto-run it).
+    try {
+      const { isServiceInstalled } = await import("./service");
+      if (isServiceInstalled()) console.log("Service detected — refresh its baked path:  ocx service install");
+    } catch { /* best-effort advisory */ }
     console.log("Restart the proxy:  ocx stop && ocx start");
   } else {
     console.error(`\n⚠️  Update failed (${bin} exit ${r.status ?? "?"}). Try manually:  ${bin} ${cmdArgs.join(" ")}`);

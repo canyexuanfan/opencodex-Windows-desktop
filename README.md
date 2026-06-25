@@ -52,12 +52,12 @@ flowchart LR
 | Linux (x64 / arm64) | Fully supported | systemd (user unit) |
 | Windows (x64) | Fully supported | Task Scheduler |
 
-Requires [Bun](https://bun.sh) 1.1+. All three platforms work natively (no WSL needed on Windows).
+Requires [Node](https://nodejs.org) 18+. The Bun runtime is bundled automatically on `npm install` — no separate Bun install needed. All three platforms work natively (no WSL needed on Windows).
 
 ## Quick start
 
 ```bash
-# Install
+# Install (bundles the Bun runtime automatically — only Node 18+ required)
 npm install -g @bitkyc08/opencodex      # or: bun install -g @bitkyc08/opencodex
 
 # Interactive setup (writes config, injects into Codex, and offers autostart shim install)
@@ -74,19 +74,18 @@ codex "Write a hello world in Rust"
 ```
 
 <details>
-<summary><b>Don't have <a href="https://bun.sh">bun</a>?</b> — install it first (opencodex runs on bun)</summary>
+<summary><b>"bundled Bun runtime is missing" error?</b></summary>
 
 <br/>
 
+opencodex bundles the Bun runtime as a dependency and runs it via a Node
+launcher, so you do **not** need to install Bun yourself. If you see a
+"bundled Bun runtime is missing" error, the install skipped lifecycle scripts
+or optional dependencies. Reinstall without those flags:
+
 ```bash
-# macOS / Linux / WSL
-curl -fsSL https://bun.sh/install | bash
-
-# Windows (PowerShell)
-powershell -c "irm bun.sh/install.ps1 | iex"
+npm install -g @bitkyc08/opencodex   # no --ignore-scripts, no --omit=optional
 ```
-
-Then re-run `npm install -g @bitkyc08/opencodex`. (The `ocx` binary is bun-native, so bun must be on your `PATH`.)
 
 </details>
 

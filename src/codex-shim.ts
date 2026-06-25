@@ -294,6 +294,11 @@ export function uninstallCodexShim(): { removed: boolean; message: string } {
   return { removed: true, message: `Codex autostart shim removed. Restored ${files.map(f => f.originalPath).join(", ")}.` };
 }
 
+/** True if a Codex autostart shim is currently installed (state file present). */
+export function isCodexShimInstalled(): boolean {
+  return readState() !== null;
+}
+
 export function codexShimStatus(): string {
   const state = readState();
   if (!state) return "Codex autostart shim is not installed.";

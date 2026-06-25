@@ -5,6 +5,7 @@ on:
     branches: [main, dev]
     paths:
       - "src/**"
+      - "bin/**"
       - "tests/**"
       - "scripts/**"
       - "gui/**"
@@ -17,6 +18,7 @@ on:
     branches: [main, preview, dev]
     paths:
       - "src/**"
+      - "bin/**"
       - "tests/**"
       - "scripts/**"
       - "gui/**"
@@ -72,3 +74,32 @@ jobs:
 
       - name: CLI help smoke
         run: bun run src/cli.ts help
+
+  npm-global-smoke:
+    name: npm-global ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Deliberately NO setup-bun: prove `npm install -g` works without a
+      # separately-installed Bun. The launcher uses the bundled `bun` dependency.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Pack
+        run: npm pack
+
+      - name: Install globally (downloads bundled bun)
+        shell: bash
+        run: npm install -g ./bitkyc08-opencodex-*.tgz
+
+      - name: ocx help via bundled bun
+        run: ocx help
