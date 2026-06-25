@@ -370,8 +370,8 @@ type HealthCheck = {
   label: string;
 };
 
-async function checkProxyHealth(port: number): Promise<HealthCheck> {
-  const url = `http://127.0.0.1:${port}/healthz`;
+async function checkProxyHealth(port: number, hostname?: string): Promise<HealthCheck> {
+  const url = `http://${healthHost(hostname)}:${port}/healthz`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 800);
   try {
@@ -393,7 +393,7 @@ async function handleStatus() {
   const config = loadConfig();
   const port = config.port ?? 10100;
   const pid = readPid();
-  const health = await checkProxyHealth(port);
+  const health = await checkProxyHealth(port, config.hostname);
   const proxyLabel = pid && health.ok
     ? `running (PID ${pid})`
     : pid
