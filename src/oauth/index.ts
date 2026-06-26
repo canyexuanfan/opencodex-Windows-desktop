@@ -9,6 +9,7 @@ import { loginKimi, refreshKimiToken } from "./kimi";
 import { loginKiro, readKiroCliSqlite, refreshKiroToken } from "./kiro";
 import { loginChatGPT, refreshChatGPTToken } from "./chatgpt";
 import { loginAntigravity, refreshAntigravityToken } from "./google-antigravity";
+import { loginCursor, refreshCursorToken } from "./cursor";
 import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers/derive";
 
 const REFRESH_SKEW_MS = 60_000;
@@ -66,6 +67,12 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
     refresh: refreshAntigravityToken,
     providerConfig: oauthConfig("google-antigravity"),
     defaultModel: oauthDefaultModel("google-antigravity"),
+  },
+  cursor: {
+    login: (ctrl) => loginCursor(ctrl),
+    refresh: refreshCursorToken,
+    providerConfig: oauthConfig("cursor"),
+    defaultModel: oauthDefaultModel("cursor"),
   },
   chatgpt: {
     login: loginChatGPT,

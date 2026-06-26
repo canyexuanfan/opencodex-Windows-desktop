@@ -67,13 +67,13 @@ describe("provider registry parity", () => {
     expect(buildInitProviders().find(p => p.id === "azure-openai")?.adapter).toBe("azure-openai");
   });
 
-  test("Cursor registry exposure is dashboard/local with live native exec", () => {
+  test("Cursor registry exposure is dashboard/oauth with live native exec", () => {
     const cursor = PROVIDER_REGISTRY.find(entry => entry.id === "cursor");
 
     expect(cursor).toMatchObject({
       id: "cursor",
       adapter: "cursor",
-      authKind: "local",
+      authKind: "oauth",
       featured: false,
       dashboardPreset: true,
       defaultModel: "auto",
@@ -91,7 +91,7 @@ describe("provider registry parity", () => {
     expect(deriveProviderPresets().find(preset => preset.id === "cursor")).toMatchObject({
       id: "cursor",
       adapter: "cursor",
-      auth: "local",
+      auth: "oauth",
       defaultModel: "auto",
     });
     const seed = providerConfigSeed(cursor!);
@@ -123,7 +123,7 @@ describe("provider registry parity", () => {
     expect(initCursor).toMatchObject({
       id: "cursor",
       adapter: "cursor",
-      kind: "local",
+      kind: "oauth",
       defaultModel: "auto",
     });
     expect(initCursor?.label.toLowerCase()).toContain("experimental");
@@ -157,7 +157,7 @@ describe("provider registry parity", () => {
     expect(presets.at(-1)?.id).toBe("custom");
     expect(presets.find(p => p.id === "cursor")).toMatchObject({
       adapter: "cursor",
-      auth: "local",
+      auth: "oauth",
       defaultModel: "auto",
     });
     expect(presets.find(p => p.id === "kimi")?.baseUrl).toBe("https://api.kimi.com/coding/v1");
