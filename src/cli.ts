@@ -355,6 +355,11 @@ async function handleStatus() {
       console.log(`      Suggested: ${status.json.codexPlugins.suggestedRepair}`);
     }
   }
+  const { oauthLoginSummary } = await import("./oauth/index");
+  console.log(`   OAuth logins:`);
+  for (const e of oauthLoginSummary()) {
+    console.log(`     ${e.provider.padEnd(10)} ${e.loggedIn ? `✓ logged in${e.email ? ` (${e.email})` : ""}` : "✗ not logged in"}`);
+  }
 }
 
 function handleRecoverHistory() {
