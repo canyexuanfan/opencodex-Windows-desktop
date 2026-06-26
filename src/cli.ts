@@ -5,7 +5,7 @@ import { restoreNativeCodex } from "./codex-inject";
 import { restoreLegacyOpenaiHistory } from "./codex-history-provider";
 import { writeJournal, reconcileJournal } from "./codex-journal";
 import { codexAutoStartEnabled, getConfigDir, getConfigPath, loadConfig, readPid, removePid, saveConfig, writePid } from "./config";
-import { findAvailablePort } from "./ports";
+import { findAvailablePort, shouldPersistSelectedPort } from "./ports";
 import { serviceCommand, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "./service";
 import { drainAndShutdown, startServer } from "./server";
 import { maybeShowStarPrompt } from "./star-prompt";
@@ -177,7 +177,7 @@ async function chooseListenPort(requestedPort?: number): Promise<number> {
   if (selected !== preferred) {
     console.log(`⚠️  Port ${preferred} is busy; starting opencodex on ${selected}.`);
   }
-  if (config.port !== selected) {
+  if (shouldPersistSelectedPort(config.port, selected, preferred)) {
     config.port = selected;
     saveConfig(config);
   }

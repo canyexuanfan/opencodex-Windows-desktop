@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createServer, type Server } from "node:net";
-import { findAvailablePort, isPortAvailable } from "../src/ports";
+import { findAvailablePort, isPortAvailable, shouldPersistSelectedPort } from "../src/ports";
 
 const servers: Server[] = [];
 
@@ -46,5 +46,11 @@ describe("port selection", () => {
     const selected = await findAvailablePort(port);
     expect(selected).not.toBe(port);
     expect(await isPortAvailable(selected)).toBe(true);
+  });
+
+  test("persists only the preferred port, not a transient fallback", () => {
+    expect(shouldPersistSelectedPort(58195, 10100, 10100)).toBe(true);
+    expect(shouldPersistSelectedPort(10100, 58195, 10100)).toBe(false);
+    expect(shouldPersistSelectedPort(10100, 10100, 10100)).toBe(false);
   });
 });

@@ -28,3 +28,10 @@ export async function findAvailablePort(preferredPort: number, hostname = "127.0
   });
 }
 
+export function shouldPersistSelectedPort(
+  configPort: number | undefined,
+  selectedPort: number,
+  preferredPort: number,
+): boolean {
+  return selectedPort === preferredPort && configPort !== selectedPort;
+}
