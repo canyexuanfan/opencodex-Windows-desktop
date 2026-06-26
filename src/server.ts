@@ -144,17 +144,16 @@ function findGuiDist(): string | null {
   return null;
 }
 
-const GUI_DIST = findGuiDist();
-
 function serveGuiFile(pathname: string): Response | null {
-  if (!GUI_DIST) return null;
+  const guiDist = findGuiDist();
+  if (!guiDist) return null;
   const filePath = pathname === "/" || pathname === ""
-    ? join(GUI_DIST, "index.html")
-    : join(GUI_DIST, pathname);
+    ? join(guiDist, "index.html")
+    : join(guiDist, pathname);
 
   if (!existsSync(filePath)) {
     if (!extname(pathname)) {
-      const indexPath = join(GUI_DIST, "index.html");
+      const indexPath = join(guiDist, "index.html");
       if (existsSync(indexPath)) {
         return new Response(Bun.file(indexPath), {
           headers: { "Content-Type": "text/html" },
@@ -169,6 +168,24 @@ function serveGuiFile(pathname: string): Response | null {
   return new Response(Bun.file(filePath), {
     headers: { "Content-Type": contentType },
   });
+}
+
+export function rootFallbackPayload() {
+  return {
+    status: "ok",
+    service: "opencodex",
+    version: VERSION,
+    dashboard: {
+      available: false,
+      reason: "GUI build not found. Run `bun run build:gui` from the opencodex repo, or use `ocx gui` from a packaged install.",
+    },
+    endpoints: {
+      health: "/healthz",
+      models: "/v1/models",
+      responses: "/v1/responses",
+      management: "/api/*",
+    },
+  };
 }
 
 const ANTHROPIC_WIRE_MODELS: Record<string, Set<string>> = {
@@ -1290,6 +1307,9 @@ export function startServer(port?: number) {
 
       const guiFile = serveGuiFile(url.pathname);
       if (guiFile) return guiFile;
+      if (url.pathname === "/" && req.method === "GET") {
+        return jsonResponse(rootFallbackPayload());
+      }
 
       return formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`);
     },

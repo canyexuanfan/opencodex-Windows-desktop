@@ -17,6 +17,7 @@ import {
   hasValidApiAuth,
   isApiAuthRequired,
   isLoopbackHostname,
+  rootFallbackPayload,
   safeConfigDTO,
   startServer,
 } from "../src/server";
@@ -111,6 +112,20 @@ describe("server local API auth", () => {
     });
     expect(dto.providers.openai).not.toHaveProperty("apiKey");
     expect(dto.providers.openai).not.toHaveProperty("headers");
+  });
+
+  test("root fallback explains missing dashboard build", () => {
+    expect(rootFallbackPayload()).toMatchObject({
+      status: "ok",
+      service: "opencodex",
+      dashboard: { available: false },
+      endpoints: {
+        health: "/healthz",
+        models: "/v1/models",
+        responses: "/v1/responses",
+        management: "/api/*",
+      },
+    });
   });
 
   test("expired thread affinity returns 409 before HTTP or WebSocket passthrough", async () => {
