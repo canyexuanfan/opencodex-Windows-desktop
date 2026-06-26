@@ -1,5 +1,6 @@
 import { createAnthropicAdapter } from "../adapters/anthropic";
 import { createAzureAdapter } from "../adapters/azure";
+import { createCursorAdapter } from "../adapters/cursor";
 import { createGoogleAdapter } from "../adapters/google";
 import { createKiroAdapter } from "../adapters/kiro";
 import { createOpenAIChatAdapter } from "../adapters/openai-chat";
@@ -37,6 +38,8 @@ export function resolveAdapter(providerConfig: OcxProviderConfig) {
     case "azure":
     case "azure-openai":
       return createAzureAdapter(providerConfig);
+    case "cursor":
+      return createCursorAdapter(providerConfig);
     default:
       throw new Error(`Unknown adapter: ${providerConfig.adapter}`);
   }
