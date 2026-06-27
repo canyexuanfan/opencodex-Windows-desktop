@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { linkAbortSignal, relaySseWithHeartbeat, relayWithAbort } from "../src/server";
 
+const root = new URL("../", import.meta.url);
+
+async function readSource(path: string): Promise<string> {
+  return await Bun.file(new URL(path, root)).text();
+}
+
 function streamFromChunks(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
   let i = 0;
   return new ReadableStream<Uint8Array>({
@@ -24,6 +30,26 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<string> {
 }
 
 describe("passthrough relayWithAbort (RC2, passthrough path)", () => {
+  test("native passthrough SSE response body avoids async-pull client wrappers", async () => {
+    const source = await readSource("src/server.ts");
+    const sseBranch = source.slice(
+      source.indexOf("if (isEventStream && upstreamResponse.body)"),
+      source.indexOf("const body = relayWithAbort(upstreamResponse.body, upstream);"),
+    );
+    const logWrapper = source.slice(
+      source.indexOf("function responseWithDeferredRequestLog"),
+      source.indexOf("export function relaySseWithHeartbeat"),
+    );
+
+    expect(sseBranch).toContain("upstreamResponse.body.tee()");
+    expect(sseBranch).toContain("new Response(nativeBody");
+    expect(sseBranch).toContain("markNativePassthroughSseResponse");
+    expect(sseBranch).not.toContain("relaySseWithHeartbeat(");
+    expect(sseBranch).not.toContain("trackStreamLifetime(");
+    expect(logWrapper.indexOf("isNativePassthroughSseResponse(response)")).toBeGreaterThanOrEqual(0);
+    expect(logWrapper.indexOf("isNativePassthroughSseResponse(response)")).toBeLessThan(logWrapper.indexOf("trackSseForRequestLog("));
+  });
+
   test("CASE B: relays body bytes verbatim and completes cleanly without aborting", async () => {
     const enc = new TextEncoder();
     const ac = new AbortController();

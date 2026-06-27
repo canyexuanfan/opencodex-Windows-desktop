@@ -72,6 +72,7 @@ import { registerCodexWebSocket, unregisterCodexWebSocket, updateCodexWebSocketA
 const activeTurns = new Set<AbortController>();
 let draining = false;
 const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
+const nativePassthroughSseResponses = new WeakSet<Response>();
 
 export function registerTurn(ac: AbortController): void { activeTurns.add(ac); }
 export function unregisterTurn(ac: AbortController): void { activeTurns.delete(ac); }
@@ -294,6 +295,8 @@ async function handleResponses(
     selectedForwardHeaders?: Headers;
     recordTerminalOutcomes?: boolean;
     setTerminalOutcomeRecorder?: (recorder: ((status: ResponsesTerminalStatus) => void) | undefined) => void;
+    onNativePassthroughTerminal?: (status: ResponsesTerminalStatus) => void;
+    onNativePassthroughCancel?: () => void;
   } = {},
 ): Promise<Response> {
   let body: unknown;
@@ -434,7 +437,10 @@ async function handleResponses(
         );
       }
       if (terminalBodyWillRecord) {
-        options.setTerminalOutcomeRecorder?.(terminalRecorder);
+        options.setTerminalOutcomeRecorder?.(status => {
+          terminalRecorder(status);
+          options.onNativePassthroughTerminal?.(status);
+        });
       } else {
         recordCodexUpstreamOutcome(config, authCtx.accountId, upstreamResponse.status, {
           retryAfter: retryAfterRaw,
@@ -451,19 +457,25 @@ async function handleResponses(
       const [nativeBody, inspectBody] = upstreamResponse.body.tee();
       const turnAc = new AbortController();
       linkAbortSignal(upstream, turnAc.signal);
-      const trackedNative = relaySseWithHeartbeat(nativeBody, upstream, 15_000, undefined, {
-        onStart: () => registerTurn(turnAc),
-        onDone: () => unregisterTurn(turnAc),
-      });
-      if (terminalBodyWillRecord && recordTerminalOutcomes && terminalRecorder) {
-        consumeForInspection(inspectBody, terminalRecorder, turnAc.signal);
+      registerTurn(turnAc);
+      if (terminalBodyWillRecord && recordTerminalOutcomes) {
+        const recordTerminal = terminalRecorder;
+        const reportNativeTerminal = (status: ResponsesTerminalStatus) => {
+          if (options.abortSignal?.aborted) {
+            options.onNativePassthroughCancel?.();
+            return;
+          }
+          recordTerminal(status);
+          options.onNativePassthroughTerminal?.(status);
+        };
+        consumeForInspection(inspectBody, reportNativeTerminal, turnAc.signal, () => unregisterTurn(turnAc));
       } else {
-        inspectBody.cancel().catch(() => {});
+        inspectBody.cancel().finally(() => unregisterTurn(turnAc)).catch(() => {});
       }
-      return new Response(trackedNative, {
+      return markNativePassthroughSseResponse(new Response(nativeBody, {
         status: upstreamResponse.status,
         headers,
-      });
+      }));
     }
     const body = relayWithAbort(upstreamResponse.body, upstream);
     const turnAc = new AbortController();
@@ -826,6 +838,9 @@ function responseWithDeferredRequestLog(
   logCtx: { model: string; provider: string },
 ): Response {
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (isNativePassthroughSseResponse(response)) {
+    return response;
+  }
   if (!response.body || !contentType.includes("text/event-stream")) {
     addFinalRequestLog(requestId, start, logCtx, response.status, { closeReason: "non_stream" });
     return response;
@@ -853,6 +868,15 @@ function responseWithDeferredRequestLog(
     statusText: response.statusText,
     headers: response.headers,
   });
+}
+
+function markNativePassthroughSseResponse(response: Response): Response {
+  nativePassthroughSseResponses.add(response);
+  return response;
+}
+
+function isNativePassthroughSseResponse(response: Response): boolean {
+  return nativePassthroughSseResponses.has(response);
 }
 
 export function relaySseWithHeartbeat(
@@ -949,6 +973,7 @@ function consumeForInspection(
   body: ReadableStream<Uint8Array>,
   onTerminal: (status: ResponsesTerminalStatus) => void,
   signal?: AbortSignal,
+  onDone?: () => void,
 ): void {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -997,6 +1022,8 @@ function consumeForInspection(
       }
     } catch {
       if (!reported && !cancelled) onTerminal("incomplete");
+    } finally {
+      onDone?.();
     }
   };
   pump();
@@ -1615,7 +1642,27 @@ export function startServer(port?: number) {
         const start = Date.now();
         const requestId = nextRequestLogId(start);
         const logCtx = { model: "unknown", provider: "unknown" };
-        const response = await handleResponses(req, config, logCtx);
+        let logged = false;
+        const finalizeNativePassthroughLog = (
+          status: number,
+          meta: { terminalStatus?: ResponsesTerminalStatus; closeReason: "terminal" | "client_cancel" },
+        ) => {
+          if (logged) return;
+          logged = true;
+          addFinalRequestLog(requestId, start, logCtx, status, meta);
+        };
+        const response = await handleResponses(req, config, logCtx, {
+          abortSignal: req.signal,
+          onNativePassthroughTerminal: status => {
+            finalizeNativePassthroughLog(httpStatusForTerminalStatus(status), {
+              terminalStatus: status,
+              closeReason: "terminal",
+            });
+          },
+          onNativePassthroughCancel: () => {
+            finalizeNativePassthroughLog(499, { closeReason: "client_cancel" });
+          },
+        });
         return withCors(responseWithDeferredRequestLog(response, requestId, start, logCtx), req, config);
       }
 
