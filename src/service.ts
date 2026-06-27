@@ -379,7 +379,7 @@ function installWindows(): void {
   writeServiceApiTokenFile();
   const script = windowsServiceScriptPath();
   writeFileSync(script, buildWindowsServiceScript(), "utf8");
-  writeFileSync(windowsTaskXmlPath(), buildWindowsTaskXml(script), "utf16le");
+  writeFileSync(windowsTaskXmlPath(), `\uFEFF${buildWindowsTaskXml(script)}`, "utf16le");
   try { stopWindows(); } catch { /* not running */ }
   schtasks(buildWindowsSchtasksCreateArgs(script));
   schtasks(["/run", "/tn", TASK]);

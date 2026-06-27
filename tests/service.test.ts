@@ -149,6 +149,12 @@ describe("Windows service task", () => {
     expect(xml).toContain("<Command>C:\\Users\\a&amp;b\\.opencodex\\opencodex-service.cmd</Command>");
   });
 
+  test("writes Task Scheduler XML with a UTF-16 BOM for schtasks", async () => {
+    const service = await Bun.file(new URL("../src/service.ts", import.meta.url)).text();
+
+    expect(service).toContain('writeFileSync(windowsTaskXmlPath(), `\\uFEFF${buildWindowsTaskXml(script)}`, "utf16le")');
+  });
+
   test("escapes environment values that would break out of set quotes", () => {
     const oldPath = process.env.PATH;
     const oldOpenCodexHome = process.env.OPENCODEX_HOME;

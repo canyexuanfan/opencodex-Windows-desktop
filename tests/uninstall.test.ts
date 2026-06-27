@@ -10,7 +10,7 @@ describe("full uninstall command", () => {
   test("CLI exposes a one-shot local state cleanup command", async () => {
     const cli = await readText("src/cli.ts");
 
-    expect(cli).toContain("ocx uninstall");
+    expect(cli).toContain('case "uninstall"');
     expect(cli).toContain("async function handleUninstall()");
     expect(cli).toContain("uninstallServiceIfInstalled");
     expect(cli).toContain("uninstallCodexShim");
