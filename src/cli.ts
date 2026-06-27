@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { spawn } from "node:child_process";
 import { rmSync } from "node:fs";
+import { durableBunPath } from "./bun-runtime";
 import { restoreNativeCodex } from "./codex-inject";
 import { restoreLegacyOpenaiHistory } from "./codex-history-provider";
 import { writeJournal, reconcileJournal } from "./codex-journal";
@@ -393,6 +394,7 @@ async function handleStatus() {
   console.log(`   Health: ${health.label}`);
   console.log(`   Dashboard: http://localhost:${port}/`);
   console.log(`   Config: ${getConfigPath()}`);
+  console.log(`   Runtime: ${durableBunPath()}`);
   console.log(`   Default provider: ${config.defaultProvider}`);
   console.log(`   Codex autostart: ${codexAutoStartEnabled(config) ? "enabled" : "disabled"}`);
   console.log(`   Service: ${serviceStatusSummary()}`);
