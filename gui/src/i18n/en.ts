@@ -119,8 +119,13 @@ export const en = {
   "logs.col.model": "Model",
   "logs.col.provider": "Provider",
   "logs.col.status": "Status",
+  "logs.col.tokens": "Tokens",
   "logs.col.error": "Error",
   "logs.col.duration": "Duration",
+  "logs.tokens.reported": "reported",
+  "logs.tokens.unreported": "unreported",
+  "logs.tokens.unsupported": "unsupported",
+  "logs.tokens.estimated": "estimated",
 
   // add-provider modal
   "modal.addNamed": "Add: {label}",

@@ -119,8 +119,13 @@ export const ko: Record<TKey, string> = {
   "logs.col.model": "모델",
   "logs.col.provider": "프로바이더",
   "logs.col.status": "상태",
+  "logs.col.tokens": "토큰",
   "logs.col.error": "오류",
   "logs.col.duration": "소요 시간",
+  "logs.tokens.reported": "측정됨",
+  "logs.tokens.unreported": "미보고",
+  "logs.tokens.unsupported": "미지원",
+  "logs.tokens.estimated": "추정",
 
   // add-provider modal
   "modal.addNamed": "추가: {label}",

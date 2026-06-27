@@ -119,8 +119,13 @@ export const zh: Record<TKey, string> = {
   "logs.col.model": "模型",
   "logs.col.provider": "提供方",
   "logs.col.status": "状态",
+  "logs.col.tokens": "Token 数",
   "logs.col.error": "错误",
   "logs.col.duration": "耗时",
+  "logs.tokens.reported": "已上报",
+  "logs.tokens.unreported": "未上报",
+  "logs.tokens.unsupported": "不支持",
+  "logs.tokens.estimated": "估算",
 
   // add-provider modal
   "modal.addNamed": "添加：{label}",

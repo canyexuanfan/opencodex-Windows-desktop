@@ -1,6 +1,15 @@
 import { useEffect, useState } from "react";
 import { useI18n, LOCALES } from "../i18n";
 
+interface UsageBreakdown {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens?: number;
+  reasoningOutputTokens?: number;
+}
+
+type LogUsageStatus = "reported" | "unreported" | "unsupported" | "estimated";
+
 interface LogEntry {
   requestId?: string;
   timestamp: number;
@@ -16,6 +25,25 @@ interface LogEntry {
   status: number;
   durationMs: number;
   errorCode?: string;
+  usageStatus?: LogUsageStatus;
+  usage?: UsageBreakdown;
+  totalTokens?: number;
+}
+
+function formatTokens(n: number): string {
+  if (n < 10_000) return String(n);
+  return `${(n / 1000).toFixed(1)}K`;
+}
+
+function tokensTitle(log: LogEntry): string | undefined {
+  if (!log.usage) return undefined;
+  const parts = [
+    `in=${log.usage.inputTokens}`,
+    `out=${log.usage.outputTokens}`,
+  ];
+  if (typeof log.usage.cachedInputTokens === "number") parts.push(`cached=${log.usage.cachedInputTokens}`);
+  if (typeof log.usage.reasoningOutputTokens === "number") parts.push(`reasoning=${log.usage.reasoningOutputTokens}`);
+  return parts.join(" · ");
 }
 
 function speedLabel(log: LogEntry): string | undefined {
@@ -80,6 +108,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                 <th>{t("logs.col.model")}</th>
                 <th>{t("logs.col.provider")}</th>
                 <th>{t("logs.col.status")}</th>
+                <th className="num">{t("logs.col.tokens")}</th>
                 <th>{t("logs.col.error")}</th>
                 <th className="num">{t("logs.col.duration")}</th>
               </tr>
@@ -98,6 +127,11 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                   <td className="muted">{log.provider}</td>
                   <td>
                     <span className="mono" style={{ color: statusColor(log.status), fontWeight: 600 }}>{log.status}</span>
+                  </td>
+                  <td className="num mono" title={tokensTitle(log)}>
+                    {log.usageStatus === "reported" && typeof log.totalTokens === "number"
+                      ? formatTokens(log.totalTokens)
+                      : <span className="muted">{t(`logs.tokens.${log.usageStatus ?? "unreported"}`)}</span>}
                   </td>
                   <td className="muted mono">{log.errorCode ?? "-"}</td>
                   <td className="num">{log.durationMs}ms</td>
