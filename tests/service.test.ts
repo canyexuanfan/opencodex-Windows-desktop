@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, buildPlist, buildUnit, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript } from "../src/service";
+import { serviceApiTokenFilePath } from "../src/service-secrets";
 import type { OcxConfig } from "../src/types";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-service-test");
@@ -26,6 +27,14 @@ async function readText(path: string): Promise<string> {
   return await Bun.file(new URL(path, root)).text();
 }
 
+function pathVariants(path: string): string[] {
+  return [...new Set([path, path.replace(/\\/g, "\\\\")])];
+}
+
+function expectTextToContainPath(text: string, path: string): void {
+  expect(pathVariants(path).some(candidate => text.includes(candidate))).toBe(true);
+}
+
 describe("systemd service unit", () => {
   test("uses unquoted append targets for service logs", () => {
     const unit = buildUnit();
@@ -47,7 +56,7 @@ describe("systemd service unit", () => {
       const unit = buildUnit();
       expect(unit).toContain('Environment="CODEX_HOME=/tmp/codex-home"');
       expect(unit).toContain('Environment="OPENCODEX_HOME=/tmp/opencodex-home"');
-      expect(unit).toContain("/tmp/opencodex-home/service-api-token");
+      expectTextToContainPath(unit, serviceApiTokenFilePath());
       expect(unit).not.toContain("local-secret");
       expect(unit).not.toContain("Environment=\"OPENCODEX_API_AUTH_TOKEN=");
     } finally {
@@ -171,7 +180,7 @@ describe("launchd service plist", () => {
       const plist = buildPlist();
       expect(plist).toContain("<key>CODEX_HOME</key><string>/tmp/codex-home</string>");
       expect(plist).toContain("<key>OPENCODEX_HOME</key><string>/tmp/opencodex-home</string>");
-      expect(plist).toContain("/tmp/opencodex-home/service-api-token");
+      expectTextToContainPath(plist, serviceApiTokenFilePath());
       expect(plist).not.toContain("local-secret");
       expect(plist).not.toContain("<key>OPENCODEX_API_AUTH_TOKEN</key>");
     } finally {

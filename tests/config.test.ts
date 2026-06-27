@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   codexAutoStartEnabled,
   getConfigPath,
@@ -78,12 +78,13 @@ describe("opencodex config defaults", () => {
       process.env.OPENCODEX_HOME = "relative-home";
       process.chdir(parent);
       const firstPath = getConfigPath();
+      const expectedConfigDir = resolve("relative-home");
 
       process.chdir(tmpdir());
 
-      expect(firstPath).toBe(join(parent, "relative-home", "config.json"));
+      expect(firstPath).toBe(join(expectedConfigDir, "config.json"));
       expect(getConfigPath()).toBe(firstPath);
-      expect(getPidPath()).toBe(join(parent, "relative-home", "ocx.pid"));
+      expect(getPidPath()).toBe(join(expectedConfigDir, "ocx.pid"));
     } finally {
       process.chdir(oldCwd);
       rmSync(parent, { recursive: true, force: true });

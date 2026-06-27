@@ -1,12 +1,19 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
+
+function backupPathForTestCatalog(codexHome: string, opencodexHome: string, catalogName: string): string {
+  const catalogPath = join(realpathSync.native(codexHome), catalogName);
+  const normalized = process.platform === "win32" ? resolve(catalogPath).toLowerCase() : resolve(catalogPath);
+  const backupId = createHash("sha256").update(normalized).digest("hex").slice(0, 16);
+  return join(opencodexHome, `catalog-backup-${backupId}.json`);
+}
 
 function runScript(codexHome: string, opencodexHome: string, script: string): { stdout: string; status: number } {
   const result = spawnSync(process.execPath, ["--eval", script], {
@@ -56,9 +63,7 @@ describe("Codex catalog restore", () => {
 
   test("uses pristine backup while preserving native entries added after sync", () => {
     const catalogPath = join(codexHome, "catalog.json");
-    const normalizedCatalogPath = process.platform === "win32" ? resolve(catalogPath).toLowerCase() : resolve(catalogPath);
-    const backupId = createHash("sha256").update(normalizedCatalogPath).digest("hex").slice(0, 16);
-    const backupPath = join(opencodexHome, `catalog-backup-${backupId}.json`);
+    const backupPath = backupPathForTestCatalog(codexHome, opencodexHome, "catalog.json");
     writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
     writeFileSync(backupPath, JSON.stringify({
       models: [

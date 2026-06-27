@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const root = new URL("../", import.meta.url);
+const repoRoot = fileURLToPath(root);
 
 async function readText(path: string): Promise<string> {
   return await Bun.file(new URL(path, root)).text();
@@ -36,7 +38,7 @@ describe("install scripts", () => {
       "-e",
       "import('./bin/package-main.mjs').then(m => { if (m.cliCommand !== 'ocx') process.exit(2); })",
     ], {
-      cwd: new URL("..", import.meta.url).pathname,
+      cwd: repoRoot,
       encoding: "utf8",
     });
 
