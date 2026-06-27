@@ -213,7 +213,7 @@ interface PoolQuotaResult {
   needsReauth: boolean;
 }
 
-async function fetchPoolAccountQuota(accountId: string, forceRefresh = false): Promise<PoolQuotaResult> {
+async function fetchPoolAccountQuota(accountId: string, forceRefresh = false, configuredPlan?: string): Promise<PoolQuotaResult> {
   const existing = getAccountQuota(accountId);
   if (!forceRefresh && existing && Date.now() - existing.updatedAt < POOL_CACHE_TTL) {
     return { quota: existing, needsReauth: false };
@@ -226,7 +226,7 @@ async function fetchPoolAccountQuota(accountId: string, forceRefresh = false): P
     });
     if (!resp.ok) return { quota: existing ?? null, needsReauth: resp.status === 401 };
     const data = (await resp.json()) as WhamUsageResponse;
-    const quota = parseUsageQuota(data);
+    const quota = parseUsageQuota({ ...data, plan_type: data.plan_type ?? configuredPlan });
     if (!quota) return { quota: existing ?? null, needsReauth: false };
     updateAccountQuota(
       accountId,
@@ -260,7 +260,7 @@ export async function handleCodexAuthAPI(
     const withQuota = await mapWithConcurrency(poolAccounts, POOL_QUOTA_REFRESH_CONCURRENCY, async a => {
       const cred = getCodexAccountCredential(a.id);
       const quotaResult = cred
-        ? await fetchPoolAccountQuota(a.id, forceRefresh)
+        ? await fetchPoolAccountQuota(a.id, forceRefresh, a.plan)
         : { quota: null, needsReauth: true };
       return poolAccountDto(a, quotaResult, !!cred);
     });
@@ -436,7 +436,8 @@ export async function handleCodexAuthAPI(
         if (auth.isMain) {
           await fetchMainAccountInfo(true);
         } else {
-          await fetchPoolAccountQuota(body.accountId, true);
+          const account = configuredPoolAccount(getRuntimeConfig(config), body.accountId);
+          await fetchPoolAccountQuota(body.accountId, true, account?.plan);
         }
       }
       return jsonResponse(result);

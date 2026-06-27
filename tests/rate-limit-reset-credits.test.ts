@@ -88,6 +88,25 @@ describe("rate-limit reset credits", () => {
       expect(quota!.fiveHourPercent).toBe(12);
       expect(quota!.weeklyPercent).toBe(34);
     });
+
+    it("maps Go and Free primary_window usage to 30d quota", () => {
+      for (const plan_type of ["go", "free"]) {
+        const quota = parseUsageQuota({
+          plan_type,
+          rate_limit: {
+            primary_window: { used_percent: 27, reset_at: 1700200000 },
+            secondary_window: { used_percent: 99, reset_at: 1700100000 },
+          },
+          rate_limit_reset_credits: { available_count: 1 },
+        });
+
+        expect(quota).toEqual({
+          monthlyPercent: 27,
+          monthlyResetAt: 1700200000,
+          resetCredits: 1,
+        });
+      }
+    });
   });
 
   describe("CodexAuth reset credit UI", () => {

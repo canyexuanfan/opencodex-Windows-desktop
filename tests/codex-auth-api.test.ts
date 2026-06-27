@@ -174,6 +174,43 @@ describe("codex-auth API", () => {
     }
   });
 
+  test("GET /api/codex-auth/accounts maps go primary quota response to 30d display quota", async () => {
+    const config = makeConfig({
+      codexAccounts: [{ id: "pool-go-primary", email: "go-primary@example.test", plan: "go", isMain: false }],
+    });
+    saveCodexAccountCredential("pool-go-primary", {
+      accessToken: "access-go-primary",
+      refreshToken: "refresh-go-primary",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "acct-go-primary",
+    });
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async (input: RequestInfo | URL) => {
+        if (String(input).includes("/backend-api/wham/usage")) {
+          return new Response(JSON.stringify({
+            rate_limit: {
+              primary_window: { used_percent: 42, reset_at: 1783000000 },
+              secondary_window: { used_percent: 99, reset_at: 1782000000 },
+            },
+            rate_limit_reset_credits: { available_count: 1 },
+          }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        return originalFetch(input);
+      };
+
+      const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+      const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+      const data = await resp!.json() as { accounts: Array<{ id: string; quota?: Record<string, unknown> }> };
+      const quota = data.accounts.find(a => a.id === "pool-go-primary")?.quota;
+      expect(quota).toMatchObject({ monthlyPercent: 42, monthlyResetAt: 1783000000, resetCredits: 1 });
+      expect(quota).not.toHaveProperty("fiveHourPercent");
+      expect(quota).not.toHaveProperty("weeklyPercent");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("GET /api/codex-auth/accounts whitelists pool account response fields", async () => {
     const config = makeConfig({
       codexAccounts: [{

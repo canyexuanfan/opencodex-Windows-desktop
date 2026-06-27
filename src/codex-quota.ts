@@ -121,21 +121,29 @@ export function parseUsageQuota(data: WhamUsageResponse): Omit<StoredAccountQuot
   }
 
   const quota: Omit<StoredAccountQuota, "updatedAt"> = {};
+  const thirtyDayOnly = data.plan_type?.trim().toLowerCase() === "go" || data.plan_type?.trim().toLowerCase() === "free";
   const weeklyPercent = normalizeUsagePercent(data.rate_limit.secondary_window?.used_percent);
   const fiveHourPercent = normalizeUsagePercent(data.rate_limit.primary_window?.used_percent);
   const monthlyPercent = normalizeUsagePercent(data.rate_limit.tertiary_window?.used_percent);
   const weeklyResetAt = normalizeResetAt(data.rate_limit.secondary_window?.reset_at);
   const fiveHourResetAt = normalizeResetAt(data.rate_limit.primary_window?.reset_at);
   const monthlyResetAt = normalizeResetAt(data.rate_limit.tertiary_window?.reset_at);
-  if (weeklyPercent !== undefined) {
+  if (thirtyDayOnly) {
+    const goMonthlyPercent = monthlyPercent ?? fiveHourPercent;
+    const goMonthlyResetAt = monthlyResetAt ?? fiveHourResetAt;
+    if (goMonthlyPercent !== undefined) {
+      quota.monthlyPercent = goMonthlyPercent;
+      if (goMonthlyResetAt !== undefined) quota.monthlyResetAt = goMonthlyResetAt;
+    }
+  } else if (weeklyPercent !== undefined) {
     quota.weeklyPercent = weeklyPercent;
     if (weeklyResetAt !== undefined) quota.weeklyResetAt = weeklyResetAt;
   }
-  if (fiveHourPercent !== undefined) {
+  if (!thirtyDayOnly && fiveHourPercent !== undefined) {
     quota.fiveHourPercent = fiveHourPercent;
     if (fiveHourResetAt !== undefined) quota.fiveHourResetAt = fiveHourResetAt;
   }
-  if (monthlyPercent !== undefined) {
+  if (!thirtyDayOnly && monthlyPercent !== undefined) {
     quota.monthlyPercent = monthlyPercent;
     if (monthlyResetAt !== undefined) quota.monthlyResetAt = monthlyResetAt;
   }
