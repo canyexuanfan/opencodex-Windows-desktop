@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
-import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, buildPlist, buildUnit, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript } from "../src/service";
+import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, buildPlist, buildUnit, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, serviceLogPath } from "../src/service";
 import { serviceApiTokenFilePath } from "../src/service-secrets";
 import type { OcxConfig } from "../src/types";
 
@@ -165,6 +165,41 @@ describe("Windows service task", () => {
     expect(script).toContain('set "OCX_CLI=C:\\OpenCodex&Dir\\cli.ts"');
     expect(script).toContain('"%OCX_BUN%" "%OCX_CLI%" start');
     expect(script).not.toContain('"C:\\Bun&Dir\\100%bun^\\bun.exe"');
+  });
+
+  test("writes token-safe startup identity and child output to the service log", () => {
+    const oldCodexHome = process.env.CODEX_HOME;
+    const oldOpenCodexHome = process.env.OPENCODEX_HOME;
+    const oldApiAuthToken = process.env.OPENCODEX_API_AUTH_TOKEN;
+    try {
+      process.env.CODEX_HOME = "C:\\codex-home";
+      process.env.OPENCODEX_HOME = TEST_DIR;
+      process.env.OPENCODEX_API_AUTH_TOKEN = "local-secret";
+      const script = buildWindowsServiceScript({
+        bun: "C:\\OpenCodex\\bun.exe",
+        cli: "C:\\OpenCodex\\cli.ts",
+      });
+
+      expectTextToContainPath(script, serviceLogPath());
+      expect(script).toContain('set "OCX_SERVICE_LOG=');
+      expect(script).toContain("opencodex service wrapper start");
+      expect(script).toContain('echo bun="%OCX_BUN%"');
+      expect(script).toContain('echo cli="%OCX_CLI%"');
+      expect(script).toContain('echo opencodex_home="%OPENCODEX_HOME%"');
+      expect(script).toContain('echo codex_home="%CODEX_HOME%"');
+      expect(script).toContain('echo token_file="%OCX_API_TOKEN_FILE%"');
+      expect(script).toContain('"%OCX_BUN%" "%OCX_CLI%" start >>"%OCX_SERVICE_LOG%" 2>&1');
+      expect(script).toContain("child exited with code %ERRORLEVEL%");
+      expect(script).not.toContain("local-secret");
+      expect(script).not.toContain('set "OPENCODEX_API_AUTH_TOKEN=');
+    } finally {
+      if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = oldCodexHome;
+      if (oldOpenCodexHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = oldOpenCodexHome;
+      if (oldApiAuthToken === undefined) delete process.env.OPENCODEX_API_AUTH_TOKEN;
+      else process.env.OPENCODEX_API_AUTH_TOKEN = oldApiAuthToken;
+    }
   });
 });
 

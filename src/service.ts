@@ -34,6 +34,10 @@ function logPath(): string {
   return join(getConfigDir(), "service.log");
 }
 
+export function serviceLogPath(): string {
+  return logPath();
+}
+
 function windowsServiceScriptPath(): string {
   return join(getConfigDir(), "opencodex-service.cmd");
 }
@@ -260,14 +264,22 @@ export function buildWindowsServiceScript(entry = cliEntry()): string {
     windowsBatchSet("CODEX_HOME", process.env.CODEX_HOME?.trim()),
     windowsBatchSet("OPENCODEX_HOME", process.env.OPENCODEX_HOME?.trim()),
     windowsBatchSet("OCX_API_TOKEN_FILE", serviceApiTokenFilePath()),
+    windowsBatchSet("OCX_SERVICE_LOG", serviceLogPath()),
     windowsBatchSet("OCX_BUN", bun),
     windowsBatchSet("OCX_CLI", cli),
     'if exist "%OCX_API_TOKEN_FILE%" (',
     '  set /p OPENCODEX_API_AUTH_TOKEN=<"%OCX_API_TOKEN_FILE%"',
     ")",
     ":loop",
-    '"%OCX_BUN%" "%OCX_CLI%" start',
+    '>>"%OCX_SERVICE_LOG%" echo [%DATE% %TIME%] opencodex service wrapper start',
+    '>>"%OCX_SERVICE_LOG%" echo bun="%OCX_BUN%"',
+    '>>"%OCX_SERVICE_LOG%" echo cli="%OCX_CLI%"',
+    '>>"%OCX_SERVICE_LOG%" echo opencodex_home="%OPENCODEX_HOME%"',
+    '>>"%OCX_SERVICE_LOG%" echo codex_home="%CODEX_HOME%"',
+    '>>"%OCX_SERVICE_LOG%" echo token_file="%OCX_API_TOKEN_FILE%"',
+    '"%OCX_BUN%" "%OCX_CLI%" start >>"%OCX_SERVICE_LOG%" 2>&1',
     "if %ERRORLEVEL% NEQ 0 (",
+    '  >>"%OCX_SERVICE_LOG%" echo [%DATE% %TIME%] child exited with code %ERRORLEVEL%; restarting in 5s',
     "  timeout /t 5 /nobreak >nul",
     "  goto loop",
     ")",
