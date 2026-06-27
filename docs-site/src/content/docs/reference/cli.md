@@ -3,7 +3,9 @@ title: CLI Reference
 description: Every ocx command and flag.
 ---
 
-The opencodex CLI is `ocx`. Run `ocx help` (or `--help` / `-h`) for usage.
+The opencodex CLI is `ocx`. Run `ocx help` (or `--help` / `-h`) for top-level usage.
+Run `ocx help <command>` for command-specific help. Help and version commands are read-only and do
+not start, stop, install, uninstall, or rewrite Codex/opencodex state.
 
 ## Setup & lifecycle
 
@@ -83,7 +85,8 @@ Windows **Task Scheduler**) that auto-starts on login and auto-restarts on crash
 | `start` | Start an installed service. |
 | `stop` | Stop the service and restore native Codex. |
 | `status` | Report whether the service is running. |
-| `uninstall` | Remove the service and restore native Codex. (alias: `remove`) |
+| `uninstall` | Remove the service and restore native Codex. |
+| `remove` | Alias of `uninstall`. |
 
 ```bash
 ocx service install
@@ -103,6 +106,7 @@ the new binary is backed up and a fresh wrapper is written.
 | --- | --- |
 | `install` | Install the shim (or repair if stale). |
 | `uninstall` | Remove the shim and restore the original Codex binary. |
+| `remove` | Alias of `uninstall`. |
 | `status` | Report shim state (installed / stale / missing). |
 
 ```bash
@@ -135,8 +139,13 @@ publishes them to npm.
 
 ## Help
 
-`ocx help`, `ocx --help`, `ocx -h` — print usage and examples.
+`ocx help`, `ocx --help`, `ocx -h` — print top-level usage and examples.
 
-:::note
-`ocx gui` works but is omitted from the short `ocx help` listing.
-:::
+`ocx help <command>`, `ocx <command> --help`, `ocx <command> -h` — print command-specific usage.
+
+Unknown commands remain errors even when a help flag is present, so scripts can rely on the exit
+code instead of scraping text.
+
+## Version
+
+`ocx --version`, `ocx -v`, `ocx version` — print a single script-friendly version line and exit.

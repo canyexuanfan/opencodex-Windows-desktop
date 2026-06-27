@@ -7,8 +7,51 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const cliPath = join(repoRoot, "src", "cli.ts");
+const binPath = join(repoRoot, "bin", "ocx.mjs");
+
+function runCli(args: string[], env: NodeJS.ProcessEnv = {}) {
+  return spawnSync(process.execPath, [cliPath, ...args], {
+    cwd: repoRoot,
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+  });
+}
 
 describe("CLI subcommand help", () => {
+  test("version commands print a single script-friendly line", () => {
+    for (const args of [["--version"], ["-v"], ["version"]]) {
+      const result = runCli(args);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout.trim()).toMatch(/^opencodex \d+\.\d+\.\d+/);
+      expect(result.stdout.trim().split("\n")).toHaveLength(1);
+    }
+
+    const binResult = spawnSync(process.execPath, [binPath, "--version"], {
+      cwd: repoRoot,
+      env: process.env,
+      encoding: "utf8",
+    });
+    expect(binResult.status).toBe(0);
+    expect(binResult.stdout.trim()).toMatch(/^opencodex \d+\.\d+\.\d+/);
+    expect(binResult.stdout.trim().split("\n")).toHaveLength(1);
+  });
+
+  test("help command routes to subcommand help", () => {
+    const result = runCli(["help", "start"]);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Usage: ocx start [--port <port>]");
+    expect(result.stdout).toContain("Start the proxy server and sync models to Codex.");
+  });
+
+  test("unknown command with help flag remains an error", () => {
+    const result = runCli(["restart", "--help"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Unknown command: restart");
+    expect(result.stdout).toContain("opencodex (ocx)");
+  });
+
   test("status prints diagnostics without starting the proxy", () => {
     const opencodexHome = mkdtempSync(join(tmpdir(), "ocx-status-"));
     try {
@@ -75,6 +118,39 @@ describe("CLI subcommand help", () => {
       expect(result.stdout).not.toContain("Plain `codex` now runs natively");
       expect(readFileSync(configPath, "utf8")).toBe(before);
     } finally {
+      rmSync(codexHome, { recursive: true, force: true });
+    }
+  });
+
+  test("mutating command help exits before local state changes", () => {
+    const opencodexHome = mkdtempSync(join(tmpdir(), "ocx-help-state-"));
+    const codexHome = mkdtempSync(join(tmpdir(), "ocx-help-codex-"));
+    try {
+      const configPath = join(codexHome, "config.toml");
+      const markerPath = join(opencodexHome, "service-state.json");
+      const before = 'model_provider = "opencodex"\n';
+      writeFileSync(configPath, before, "utf8");
+      writeFileSync(markerPath, '{"installed":true}', "utf8");
+
+      const cases = [
+        { args: ["stop", "--help"], expected: "Usage: ocx stop" },
+        { args: ["uninstall", "--help"], expected: "Usage: ocx uninstall" },
+        { args: ["service", "uninstall", "--help"], expected: "Usage: ocx service" },
+        { args: ["codex-shim", "uninstall", "--help"], expected: "Usage: ocx codex-shim" },
+      ];
+
+      for (const testCase of cases) {
+        const result = runCli(testCase.args, {
+          CODEX_HOME: codexHome,
+          OPENCODEX_HOME: opencodexHome,
+        });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain(testCase.expected);
+        expect(readFileSync(configPath, "utf8")).toBe(before);
+        expect(readFileSync(markerPath, "utf8")).toBe('{"installed":true}');
+      }
+    } finally {
+      rmSync(opencodexHome, { recursive: true, force: true });
       rmSync(codexHome, { recursive: true, force: true });
     }
   });
