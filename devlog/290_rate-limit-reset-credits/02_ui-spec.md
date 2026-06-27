@@ -1,6 +1,12 @@
 # 290-02 Rate-Limit Reset Credits — UI Specification
 
-## Design Decision: Workspace Account Behavior
+## Design Decision: Account Plan Behavior
+
+**Correction (2026-06-27): do not exclude workspace/team plans from reset-credit lookup.**
+Live WHAM probes showed `team` accounts can return `rate_limit_reset_credits.available_count`
+and can be queried through the same reset-credit endpoint as personal accounts. The UI must
+therefore treat the upstream `resetCredits` value as authoritative instead of disabling the
+ticket badge from `plan_type`.
 
 Per codex-rs source (`protocol/src/account.rs:50-59`):
 
@@ -13,18 +19,15 @@ pub fn is_workspace_account(self) -> bool {
 }
 ```
 
-Workspace plans: `team`, `business`, `enterprise`, `edu`, `self_serve_business_usage_based`, `enterprise_cbp_usage_based`
-Workspace aliases (auth.rs): `hc` → enterprise, `education` → edu
-Personal plans: `free`, `go`, `plus`, `pro`, `prolite`
+The old codex-rs-derived assumption was:
+- Workspace accounts always have no reset credits.
+- Workspace accounts should show a disabled reset menu.
 
-**codex-rs TUI behavior** (`usage.rs:13-14`):
-- Workspace accounts → reset menu item **visible but disabled** + "No rate-limit resets available."
-- Personal accounts → reset menu item enabled
-
-**opencodex decision**: Match codex-rs — show ticket badge on ALL accounts,
-but workspace accounts show `0` count with disabled/grayed styling.
-Server-side, workspace accounts return `available_count: 0` (or null),
-so this naturally resolves.
+That assumption is not true for current ChatGPT team accounts. Current opencodex behavior:
+- If `resetCredits` is a number, show a clickable ticket badge for any plan.
+- If `resetCredits > 0`, use the amber badge.
+- If `resetCredits === 0`, use the muted badge and allow the empty-state popup.
+- If `resetCredits === undefined`, hide the badge because the value has not been fetched.
 
 ## Component Architecture
 
@@ -38,11 +41,11 @@ Placement: between plan badge and NEXT SESSION badge.
 └──────────────────────────────────────────────────────────┘
 ```
 
-For workspace accounts:
+For team accounts with credits:
 ```
 ┌─ card-head ──────────────────────────────────────────────┐
-│ ● p***1@gmail.com  [team]  [🎫 0]                    [×] │
-│                     ↑ grayed out, no click                │
+│ ● p***1@gmail.com  [team]  [🎫 1]                    [×] │
+│                     ↑ clickable; opens ticket popup       │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -50,11 +53,9 @@ For workspace accounts:
 
 | Condition | Style | Clickable |
 |-----------|-------|-----------|
-| `resetCredits > 0` + personal plan | amber bg, amber text, ticket icon + count | Yes → opens popup |
-| `resetCredits === 0` + personal plan | muted bg, muted text, ticket icon + "0" | Yes → opens popup (shows empty state) |
-| Workspace plan (any count) | muted bg, faint text, ticket icon + "–" | No (disabled) |
-| Workspace plan + `resetCredits === undefined` | muted bg, faint text, ticket icon + "–" | No (disabled) |
-| Personal plan + `resetCredits === undefined` | Hidden | — |
+| `resetCredits > 0` | amber bg, amber text, ticket icon + count | Yes → opens popup |
+| `resetCredits === 0` | muted bg, muted text, ticket icon + "0" | Yes → opens popup (shows empty state) |
+| `resetCredits === undefined` | Hidden | — |
 
 ### Ticket List Popup (Modal)
 
@@ -186,18 +187,6 @@ interface AccountQuota {
 }
 ```
 
-### isWorkspaceAccount Helper
-
-```tsx
-function isWorkspaceAccount(plan?: string): boolean {
-  if (!plan) return false;
-  const ws = ["team", "business", "enterprise", "edu",
-              "self_serve_business_usage_based", "enterprise_cbp_usage_based",
-              "hc", "education"];  // aliases from codex-rs auth.rs
-  return ws.includes(plan.toLowerCase());
-}
-```
-
 ### Ticket Badge in card-head (pool cards, line ~129-134)
 
 Insert after plan badge, before NEXT SESSION badge:
@@ -206,7 +195,7 @@ Insert after plan badge, before NEXT SESSION badge:
 {/* After: {a.plan && <span className="badge badge-green">{a.plan}</span>} */}
 <TicketBadge
   account={a}
-  onClick={() => !isWorkspaceAccount(a.plan) && setResetPopup(a)}
+  onClick={() => setResetPopup(a)}
 />
 {/* Before: {isNext(a.id) && ... NEXT SESSION ...} */}
 ```
@@ -224,7 +213,7 @@ Insert between `<strong>` (line 106) and CURRENT/NEXT badge (line 107):
           {main && (
             <TicketBadge
               account={{ ...main, id: "__main__" } as AccountEntry}
-              onClick={() => !isWorkspaceAccount(main?.plan) && setResetPopup({ ...main, id: "__main__" } as AccountEntry)}
+              onClick={() => setResetPopup({ ...main, id: "__main__" } as AccountEntry)}
             />
           )}
           <span className={`badge ${!activeId ? "badge-primary" : "badge-muted"}`}>
@@ -238,23 +227,19 @@ not `getValidCodexToken()`. This is already handled in `00_plan.md` §1.2.
 ```tsx
 function TicketBadge({ account, onClick }: { account: AccountEntry; onClick: () => void }) {
   const credits = account.quota?.resetCredits;
-  const workspace = isWorkspaceAccount(account.plan);
+  if (credits === undefined) return null;
 
-  // Workspace: always show disabled badge. Personal: hide if not fetched.
-  if (!workspace && credits === undefined) return null;
-
-  const hasCredits = typeof credits === "number" && credits > 0 && !workspace;
+  const hasCredits = typeof credits === "number" && credits > 0;
 
   return (
     <button
       type="button"
-      className={`badge ${hasCredits ? "badge-amber" : "badge-muted"} ${workspace ? "badge-disabled" : "badge-clickable"}`}
-      onClick={workspace ? undefined : (e) => { e.stopPropagation(); onClick(); }}
-      disabled={workspace}
-      aria-label={workspace ? "Not available for workspace accounts" : `${credits ?? 0} reset credit(s)`}
+      className={`badge ${hasCredits ? "badge-amber" : "badge-muted"} badge-clickable`}
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      aria-label={`${credits} reset credit(s)`}
     >
       <IconTicket width={12} />
-      {workspace ? "–" : (credits ?? 0)}
+      {credits}
     </button>
   );
 }
@@ -425,13 +410,13 @@ export const IconTicket = (p: P) => (
 | # | Severity | Issue | Fix |
 |---|----------|-------|-----|
 | 1 | High | Main card insertion point wrong | Corrected: between `<strong>` and CURRENT badge |
-| 2 | High | Workspace + undefined = hidden, contradicts "always show" | Workspace always shows disabled badge regardless of `resetCredits` |
+| 2 | High | Workspace disabled assumption contradicted live team credits | Plan no longer gates reset-credit badge; upstream `resetCredits` is authoritative |
 | 3 | High | `__main__` consume path | Noted: backend handles via `readCodexTokens()` (see 00_plan.md §1.2) |
 | 4 | Medium | `handleRedeem` stale closure | Capture `prevCredits` before clearing `resetPopup` |
 | 5 | Medium | `ko.ts`/`zh.ts` missing | Added note: must add keys to all locale files |
 | 6 | Medium | IconTicket pattern mismatch | Changed to arrow fn + `P` type + `S()` helper |
 | 7 | Medium | Dynamic i18n key type violation | Changed to explicit `switch` mapping |
-| 8 | Low | `isWorkspaceAccount` missing aliases | Added `hc`, `education` |
+| 8 | Low | `isWorkspaceAccount` missing aliases | Obsolete: removed workspace gating entirely |
 | 9 | Low | `resp.ok` check missing | Added `if (!resp.ok)` guard |
 | 10 | Low | Emoji in modal title | Changed to `<IconTicket>` |
 | 11 | Low | `<span>` for clickable badge | Changed to `<button>` with `aria-label` |

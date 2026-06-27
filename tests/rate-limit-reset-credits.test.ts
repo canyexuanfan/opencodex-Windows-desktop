@@ -72,6 +72,32 @@ describe("rate-limit reset credits", () => {
       expect(quota).not.toBeNull();
       expect(quota!.resetCredits).toBe(0);
     });
+
+    it("keeps reset credits for team plans", () => {
+      const data: WhamUsageResponse = {
+        plan_type: "team",
+        rate_limit: {
+          primary_window: { used_percent: 12, reset_at: 1700000000 },
+          secondary_window: { used_percent: 34, reset_at: 1700100000 },
+        },
+        rate_limit_reset_credits: { available_count: 1 },
+      };
+      const quota = parseUsageQuota(data);
+      expect(quota).not.toBeNull();
+      expect(quota!.resetCredits).toBe(1);
+      expect(quota!.fiveHourPercent).toBe(12);
+      expect(quota!.weeklyPercent).toBe(34);
+    });
+  });
+
+  describe("CodexAuth reset credit UI", () => {
+    it("does not exclude team or workspace plans from ticket badges", async () => {
+      const source = await Bun.file("gui/src/pages/CodexAuth.tsx").text();
+      expect(source).not.toContain("isWorkspaceAccount");
+      expect(source).not.toContain("Not available for workspace accounts");
+      expect(source).toContain("if (credits === undefined) return null;");
+      expect(source).toContain("className={`badge ${hasCredits ? \"badge-amber\" : \"badge-muted\"} badge-clickable`}");
+    });
   });
 
   describe("updateAccountQuota resetCredits", () => {

@@ -159,7 +159,7 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
         <div className="card-head">
           <span className="dot dot-green" />
           <strong>{t("codexAuth.mainAccount")}</strong>
-          {main && <TicketBadge account={{ ...main, id: "__main__" } as AccountEntry} onClick={() => !isWorkspaceAccount(main?.plan) && openResetPopup({ ...main, id: "__main__" } as AccountEntry)} />}
+          {main && <TicketBadge account={{ ...main, id: "__main__" } as AccountEntry} onClick={() => openResetPopup({ ...main, id: "__main__" } as AccountEntry)} />}
           <span className={`badge ${!activeId ? "badge-primary" : "badge-muted"}`}>
             {!activeId ? t("codexAuth.nextSession") : t("codexAuth.current")}
           </span>
@@ -186,7 +186,7 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
             <span className={`dot ${a.needsReauth ? "dot-amber" : isNext(a.id) ? "dot-blue" : "dot-muted"}`} />
             <strong>{a.email}</strong>
             {a.plan && <span className="badge badge-green">{a.plan}</span>}
-            <TicketBadge account={a} onClick={() => !isWorkspaceAccount(a.plan) && openResetPopup(a)} />
+            <TicketBadge account={a} onClick={() => openResetPopup(a)} />
             {a.needsReauth && <span className="badge badge-amber">{t("codexAuth.needsReauth")}</span>}
             {isNext(a.id) && !a.needsReauth && <span className="badge badge-primary">{t("codexAuth.nextSession")}</span>}
             <button
@@ -391,27 +391,18 @@ function CreditItem({ index, grantedAt, expiresAt, isNext, t }: {
   );
 }
 
-function isWorkspaceAccount(plan?: string): boolean {
-  if (!plan) return false;
-  return ["team", "business", "enterprise", "edu",
-    "self_serve_business_usage_based", "enterprise_cbp_usage_based",
-    "hc", "education"].includes(plan.toLowerCase());
-}
-
 function TicketBadge({ account, onClick }: { account: AccountEntry; onClick: () => void }) {
   const credits = account.quota?.resetCredits;
-  const workspace = isWorkspaceAccount(account.plan);
-  if (!workspace && credits === undefined) return null;
-  const hasCredits = typeof credits === "number" && credits > 0 && !workspace;
+  if (credits === undefined) return null;
+  const hasCredits = typeof credits === "number" && credits > 0;
   return (
     <button type="button"
-      className={`badge ${hasCredits ? "badge-amber" : "badge-muted"} ${workspace ? "badge-disabled" : "badge-clickable"}`}
-      onClick={workspace ? undefined : (e) => { e.stopPropagation(); onClick(); }}
-      disabled={workspace}
-      aria-label={workspace ? "Not available for workspace accounts" : `${credits ?? 0} reset credit(s)`}
+      className={`badge ${hasCredits ? "badge-amber" : "badge-muted"} badge-clickable`}
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      aria-label={`${credits} reset credit(s)`}
     >
       <IconTicket width={12} />
-      {workspace ? "–" : (credits ?? 0)}
+      {credits}
     </button>
   );
 }
