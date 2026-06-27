@@ -76,6 +76,35 @@ describe("passthrough relayWithAbort (RC2, passthrough path)", () => {
     expect(ac.signal.reason).toBe("client gone");
   });
 
+  test("SSE passthrough lifecycle callbacks run once on EOF and cancel", async () => {
+    const enc = new TextEncoder();
+    const lifecycle: string[] = [];
+    const completed = relaySseWithHeartbeat(streamFromChunks([
+      enc.encode('event: response.completed\ndata: {"type":"response.completed","response":{"id":"r1"}}\n\n'),
+    ]), new AbortController(), 15_000, undefined, {
+      onStart: () => lifecycle.push("complete-start"),
+      onDone: () => lifecycle.push("complete-done"),
+    })!;
+
+    await readAll(completed);
+    expect(lifecycle).toEqual(["complete-start", "complete-done"]);
+
+    const cancelAc = new AbortController();
+    const cancelledLifecycle: string[] = [];
+    const pendingBody = new ReadableStream<Uint8Array>({ pull() { return new Promise<void>(() => {}); } });
+    const cancelled = relaySseWithHeartbeat(pendingBody, cancelAc, 15_000, undefined, {
+      onStart: () => cancelledLifecycle.push("cancel-start"),
+      onDone: () => cancelledLifecycle.push("cancel-done"),
+    })!;
+    const reader = cancelled.getReader();
+    const pending = reader.read();
+    await reader.cancel("client gone");
+
+    expect(cancelAc.signal.aborted).toBe(true);
+    expect(cancelledLifecycle).toEqual(["cancel-start", "cancel-done"]);
+    await pending.catch(() => {});
+  });
+
   test("SSE passthrough reports failed terminal payloads", async () => {
     const enc = new TextEncoder();
     const ac = new AbortController();

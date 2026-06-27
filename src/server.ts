@@ -451,7 +451,10 @@ async function handleResponses(
       const [nativeBody, inspectBody] = upstreamResponse.body.tee();
       const turnAc = new AbortController();
       linkAbortSignal(upstream, turnAc.signal);
-      const trackedNative = trackStreamLifetime(nativeBody, turnAc);
+      const trackedNative = relaySseWithHeartbeat(nativeBody, upstream, 15_000, undefined, {
+        onStart: () => registerTurn(turnAc),
+        onDone: () => unregisterTurn(turnAc),
+      });
       if (terminalBodyWillRecord && recordTerminalOutcomes && terminalRecorder) {
         consumeForInspection(inspectBody, terminalRecorder, turnAc.signal);
       } else {
@@ -846,6 +849,7 @@ export function relaySseWithHeartbeat(
   upstream: AbortController,
   heartbeatMs = 15_000,
   onTerminal?: (status: ResponsesTerminalStatus) => void,
+  options?: { onStart?: () => void; onDone?: () => void },
 ): ReadableStream<Uint8Array> | null {
   if (!body) return null;
   const reader = body.getReader();
@@ -879,13 +883,16 @@ export function relaySseWithHeartbeat(
   };
 
   const cleanup = () => {
+    if (closed) return;
     closed = true;
     if (timer) clearInterval(timer);
     timer = undefined;
+    options?.onDone?.();
   };
 
   return new ReadableStream<Uint8Array>({
     start(controller) {
+      options?.onStart?.();
       timer = setInterval(() => {
         if (closed) return;
         try {
