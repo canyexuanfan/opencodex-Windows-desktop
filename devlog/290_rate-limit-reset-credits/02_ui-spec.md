@@ -246,6 +246,8 @@ function TicketBadge({ account, onClick }: { account: AccountEntry; onClick: () 
 ```
 
 Uses `<button>` instead of `<span>` for accessibility (keyboard focus, screen reader).
+The `badge-clickable` class must not override `background`, `border`, or `font`;
+the visual badge variant (`badge-amber`, `badge-muted`, `badge-primary`) owns those styles.
 
 ### Reset Credit Popup (new modal, after existing confirm modal)
 

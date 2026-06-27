@@ -183,12 +183,12 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .model-card .id { font-family: var(--mono); font-weight: 600; font-size: 13px; letter-spacing: -0.01em; color: var(--text); }
 
 /* ---- badges / status dot ---- */
-.badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; font-family: var(--mono); letter-spacing: 0.01em; }
+.badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; border: 1px solid transparent; font-family: var(--mono); letter-spacing: 0.01em; }
 .badge-accent { background: var(--accent-soft); color: var(--accent-hover); }
 .badge-green { background: var(--green-soft); color: var(--green); }
 .badge-amber { background: var(--amber-soft); color: var(--amber); }
 .badge-muted { background: var(--raised); color: var(--muted); border: 1px solid var(--border); }
-.badge-clickable { cursor: pointer; transition: filter 0.12s; border: none; background: inherit; font: inherit; }
+.badge-clickable { cursor: pointer; transition: filter 0.12s; appearance: none; }
 .badge-clickable:hover { filter: brightness(1.1); }
 .badge-disabled { opacity: 0.5; cursor: default; }
 .confirm-icon { width: 44px; height: 44px; border-radius: 50%; background: var(--amber-soft); display: flex; align-items: center; justify-content: center; margin: 0 auto 12px; color: var(--amber); }

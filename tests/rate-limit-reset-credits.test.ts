@@ -98,6 +98,15 @@ describe("rate-limit reset credits", () => {
       expect(source).toContain("if (credits === undefined) return null;");
       expect(source).toContain("className={`badge ${hasCredits ? \"badge-amber\" : \"badge-muted\"} badge-clickable`}");
     });
+
+    it("keeps clickable ticket badges from overriding visual badge colors", async () => {
+      const styles = await Bun.file("gui/src/styles.css").text();
+      const match = styles.match(/\.badge-clickable\s*\{([^}]*)\}/);
+      expect(match).not.toBeNull();
+      expect(match![1]).not.toContain("background:");
+      expect(match![1]).not.toContain("border: none");
+      expect(styles).toContain("border: 1px solid transparent");
+    });
   });
 
   describe("updateAccountQuota resetCredits", () => {
