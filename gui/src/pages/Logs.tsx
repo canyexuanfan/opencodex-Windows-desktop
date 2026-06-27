@@ -6,9 +6,34 @@ interface LogEntry {
   timestamp: number;
   model: string;
   provider: string;
+  requestedServiceTier?: string;
+  requestedSpeedLabel?: string;
+  configuredServiceTier?: string;
+  configuredSpeedLabel?: string;
+  responseServiceTier?: string;
+  resolvedModel?: string;
+  modelSupportsServiceTier?: boolean;
   status: number;
   durationMs: number;
   errorCode?: string;
+}
+
+function speedLabel(log: LogEntry): string | undefined {
+  if (log.requestedSpeedLabel) return log.requestedSpeedLabel;
+  if (log.modelSupportsServiceTier && log.configuredSpeedLabel) return log.configuredSpeedLabel;
+  return undefined;
+}
+
+function modelTitle(log: LogEntry): string {
+  const details = [
+    `model=${log.model}`,
+    log.resolvedModel ? `resolved=${log.resolvedModel}` : undefined,
+    log.requestedServiceTier ? `requestedTier=${log.requestedServiceTier}` : undefined,
+    log.configuredServiceTier ? `configuredTier=${log.configuredServiceTier}` : undefined,
+    log.responseServiceTier ? `responseTier=${log.responseServiceTier}` : undefined,
+    log.modelSupportsServiceTier !== undefined ? `supportsTier=${log.modelSupportsServiceTier}` : undefined,
+  ].filter(Boolean);
+  return details.join(" · ");
 }
 
 export default function Logs({ apiBase }: { apiBase: string }) {
@@ -64,7 +89,12 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                 <tr key={log.requestId ?? `${log.timestamp}-${i}`}>
                   <td className="muted mono">{new Date(log.timestamp).toLocaleTimeString(localeTag)}</td>
                   <td className="muted mono">{log.requestId ?? "-"}</td>
-                  <td className="mono">{log.model}</td>
+                  <td className="mono" title={modelTitle(log)}>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <span>{log.resolvedModel ?? log.model}</span>
+                      {speedLabel(log) && <span className="badge badge-amber">{speedLabel(log)}</span>}
+                    </span>
+                  </td>
                   <td className="muted">{log.provider}</td>
                   <td>
                     <span className="mono" style={{ color: statusColor(log.status), fontWeight: 600 }}>{log.status}</span>
