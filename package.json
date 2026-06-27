@@ -33,6 +33,8 @@
   ],
   "scripts": {
     "dev": "bun run src/cli.ts start",
+    "dev:proxy": "bun run src/cli.ts start",
+    "dev:gui": "cd gui && bun run dev",
     "start": "bun run src/cli.ts start",
     "test": "bun test tests",
     "typecheck": "bun x tsc --noEmit",

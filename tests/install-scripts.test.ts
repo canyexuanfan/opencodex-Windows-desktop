@@ -26,6 +26,9 @@ describe("install scripts", () => {
     expect(pkg.dependencies?.zod).toBe("4.4.3");
     expect(pkg.devDependencies?.typescript).toBe("5.9.3");
     expect(pkg.devDependencies?.["@types/bun"]).toBe("1.3.14");
+    expect(pkg.scripts?.dev).toBe("bun run src/cli.ts start");
+    expect(pkg.scripts?.["dev:proxy"]).toBe("bun run src/cli.ts start");
+    expect(pkg.scripts?.["dev:gui"]).toBe("cd gui && bun run dev");
     expect(pkg.scripts?.["prepare:package"]).toBe("bun scripts/prepare-package.ts");
     expect(pkg.scripts?.prepack).toBe("bun run prepare:package");
     expect(pkg.files).toContain("assets/banner.png");
@@ -48,9 +51,14 @@ describe("install scripts", () => {
   test("npmignore keeps GUI development docs out of the package", async () => {
     const npmignore = await readText(".npmignore");
     const guiNpmignore = await readText("gui/.npmignore");
+    const guiReadme = await readText("gui/README.md");
 
     expect(npmignore).toContain("gui/README.md");
     expect(guiNpmignore).toContain("README.md");
+    expect(guiReadme).toContain("opencodex dashboard");
+    expect(guiReadme).toContain("bun run dev:proxy");
+    expect(guiReadme).toContain("bun run dev:gui");
+    expect(guiReadme).not.toContain("This template provides a minimal setup");
   });
 
   test("POSIX installer matches the Node launcher prerequisite", async () => {

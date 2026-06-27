@@ -340,18 +340,18 @@ Maintainer source-of-truth notes live under [`structure/`](./structure). Histori
 git clone https://github.com/lidge-jun/opencodex.git
 cd opencodex
 bun install
-bun run dev          # start the proxy in dev mode
+bun run dev:proxy    # start the proxy API in dev mode
+bun run dev:gui      # start the dashboard dev server in another terminal
 bun x tsc --noEmit   # typecheck
 ```
 
-`bun run dev` starts the proxy API only (`/healthz`, `/v1/responses`, `/api/*`). It does not
-serve the packaged dashboard at `/`. For the dashboard, use an installed `ocx gui`, or run the
-frontend separately while hacking on it:
+`bun run dev` remains an alias for `bun run dev:proxy` for compatibility. In a source checkout,
+the proxy API exposes `/healthz`, `/v1/responses`, and `/api/*`; `GET /` serves the packaged
+dashboard only after `bun run build:gui` has produced `gui/dist`. While hacking on the dashboard,
+run the frontend separately:
 
 ```bash
-cd gui
-bun install
-bun dev
+bun run dev:gui
 ```
 
 See **[Contributing](https://lidge-jun.github.io/opencodex/contributing/)**.
