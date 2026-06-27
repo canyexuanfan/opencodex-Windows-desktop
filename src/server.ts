@@ -17,13 +17,13 @@ import {
   type WsData,
 } from "./ws-bridge";
 import type { ServerWebSocket } from "bun";
-import { DEFAULT_SUBAGENT_MODELS, codexAutoStartEnabled, loadConfig, saveConfig, websocketsEnabled } from "./config";
+import { DEFAULT_SUBAGENT_MODELS, codexAutoStartEnabled, getConfigPath, loadConfig, saveConfig, websocketsEnabled } from "./config";
 import { parseRequest } from "./responses/parser";
 import { routeModel } from "./router";
 import { namespacedToolName } from "./types";
 import {
   clearLoginState, getLoginStatus, getValidAccessToken, isOAuthProvider,
-  listOAuthProviders, reconcileOAuthProviders, startLoginFlow, upsertOAuthProvider,
+  listOAuthProviders, reconcileOAuthProviders, startLoginFlow, UnsupportedOAuthProviderError, upsertOAuthProvider,
 } from "./oauth/index";
 import type { CatalogModel } from "./codex-catalog";
 import { invalidateCodexModelsCache } from "./codex-catalog";
@@ -317,6 +317,13 @@ async function handleResponses(
     try {
       route.provider = { ...route.provider, apiKey: await getValidAccessToken(route.providerName) };
     } catch (err) {
+      if (err instanceof UnsupportedOAuthProviderError) {
+        return formatErrorResponse(
+          400,
+          "invalid_request_error",
+          `${err.message}. Remove or reconfigure provider '${route.providerName}' in ${getConfigPath()}.`,
+        );
+      }
       return formatErrorResponse(401, "authentication_error", err instanceof Error ? err.message : String(err));
     }
   }

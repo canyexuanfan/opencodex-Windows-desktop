@@ -69,12 +69,26 @@ export function listOAuthProviders(): string[] {
   return Object.keys(OAUTH_PROVIDERS);
 }
 
+export class UnsupportedOAuthProviderError extends Error {
+  constructor(provider: string) {
+    super(`Unsupported OAuth provider in config: ${provider}`);
+    this.name = "UnsupportedOAuthProviderError";
+  }
+}
+
+export class OAuthLoginRequiredError extends Error {
+  constructor(provider: string) {
+    super(`Not logged in to ${provider}. Run: ocx login ${provider}`);
+    this.name = "OAuthLoginRequiredError";
+  }
+}
+
 /** Return a valid access token, refreshing + persisting if expired. Throws if not logged in. */
 export async function getValidAccessToken(provider: string): Promise<string> {
   const def = OAUTH_PROVIDERS[provider];
-  if (!def) throw new Error(`Unknown OAuth provider: ${provider}`);
+  if (!def) throw new UnsupportedOAuthProviderError(provider);
   const cred = getCredential(provider);
-  if (!cred) throw new Error(`Not logged in to ${provider}. Run: ocx login ${provider}`);
+  if (!cred) throw new OAuthLoginRequiredError(provider);
   if (cred.expires > Date.now() + REFRESH_SKEW_MS) return cred.access;
   const fresh = await def.refresh(cred.refresh);
   saveCredential(provider, fresh);
@@ -190,7 +204,7 @@ export function upsertOAuthProvider(config: OcxConfig, provider: string): void {
 /** Run the login flow, persist the credential + upsert the provider entry to disk, return cred. */
 export async function runLogin(provider: string, ctrl: OAuthController, opts?: LoginOpts): Promise<OAuthCredentials> {
   const def = OAUTH_PROVIDERS[provider];
-  if (!def) throw new Error(`Unknown OAuth provider: ${provider}`);
+  if (!def) throw new UnsupportedOAuthProviderError(provider);
   const cred = await def.login(ctrl, opts);
   saveCredential(provider, cred);
   const config = loadConfig();
@@ -231,7 +245,7 @@ export function cancelLoginFlow(provider: string): boolean {
 
 export async function startLoginFlow(provider: string, opts?: LoginOpts): Promise<{ url: string; instructions?: string }> {
   const def = OAUTH_PROVIDERS[provider];
-  if (!def) throw new Error(`Unknown OAuth provider: ${provider}`);
+  if (!def) throw new UnsupportedOAuthProviderError(provider);
   const existing = loginState.get(provider);
   if (existing && !existing.done) {
     throw new Error(`A login for ${provider} is already in progress`);
