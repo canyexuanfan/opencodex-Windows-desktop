@@ -248,6 +248,16 @@ bun run dev          # dev 모드로 프록시 시작
 bun x tsc --noEmit   # 타입 체크
 ```
 
+`bun run dev`는 프록시 API(`/healthz`, `/v1/responses`, `/api/*`)만 시작합니다. 패키징된
+대시보드 `/`를 함께 서빙하지 않습니다. 대시보드는 설치된 `ocx gui`를 쓰거나, 프론트엔드를
+수정할 때는 별도로 실행하세요:
+
+```bash
+cd gui
+bun install
+bun dev
+```
+
 **[기여하기](https://lidge-jun.github.io/opencodex/ko/contributing/)** 를 참고하세요.
 
 ## 면책 조항

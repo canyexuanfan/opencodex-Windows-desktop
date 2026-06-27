@@ -37,6 +37,9 @@ bun install
 bun run dev      # starts the proxy in dev mode (src/cli.ts start)
 ```
 
+`bun run dev` starts the proxy API only (`/healthz`, `/v1/responses`, `/api/*`). It does not
+serve the packaged dashboard at `/`.
+
 The web dashboard lives in `gui/` and runs separately:
 
 ```bash

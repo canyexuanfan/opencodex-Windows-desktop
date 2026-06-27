@@ -344,6 +344,16 @@ bun run dev          # start the proxy in dev mode
 bun x tsc --noEmit   # typecheck
 ```
 
+`bun run dev` starts the proxy API only (`/healthz`, `/v1/responses`, `/api/*`). It does not
+serve the packaged dashboard at `/`. For the dashboard, use an installed `ocx gui`, or run the
+frontend separately while hacking on it:
+
+```bash
+cd gui
+bun install
+bun dev
+```
+
 See **[Contributing](https://lidge-jun.github.io/opencodex/contributing/)**.
 
 ## Disclaimer

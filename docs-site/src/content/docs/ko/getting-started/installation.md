@@ -37,6 +37,9 @@ bun install
 bun run dev      # starts the proxy in dev mode (src/cli.ts start)
 ```
 
+`bun run dev`는 프록시 API(`/healthz`, `/v1/responses`, `/api/*`)만 시작합니다. 패키징된
+대시보드 `/`를 함께 서빙하지 않습니다.
+
 웹 대시보드는 `gui/`에 있으며 별도로 실행됩니다:
 
 ```bash

@@ -209,6 +209,15 @@ bun run dev          # 以开发模式启动代理
 bun x tsc --noEmit   # 类型检查
 ```
 
+`bun run dev` 只启动代理 API（`/healthz`、`/v1/responses`、`/api/*`）。它不会同时在 `/`
+提供打包后的仪表盘。要打开仪表盘，请使用已安装的 `ocx gui`；如果要开发前端，请单独运行：
+
+```bash
+cd gui
+bun install
+bun dev
+```
+
 参阅 **[贡献指南](https://lidge-jun.github.io/opencodex/zh-cn/contributing/)**。
 
 ## 免责声明
