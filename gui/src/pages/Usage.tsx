@@ -89,29 +89,46 @@ interface HeatmapCell {
   dayOfWeek: number;
 }
 
-function buildHeatmap(days: UsageDay[]): { weeks: HeatmapCell[][]; buckets: number[] } {
+function buildHeatmap(days: UsageDay[]): { weeks: HeatmapCell[][]; months: { label: string; col: number }[]; buckets: number[] } {
   const buckets = quantileBuckets(days.map(d => d.requests));
-  const cells: HeatmapCell[] = days.map(d => {
-    const dt = new Date(`${d.date}T00:00:00`);
-    return {
-      date: d.date,
-      requests: d.requests,
-      totalTokens: d.totalTokens,
-      level: bucketLevel(d.requests, buckets),
-      dayOfWeek: dt.getDay(),
-    };
-  });
-  if (cells.length === 0) return { weeks: [], buckets };
+  const dayMap = new Map(days.map(d => [d.date, d]));
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const start = new Date(today);
+  start.setDate(start.getDate() - 364);
+  // Align to Sunday
+  start.setDate(start.getDate() - start.getDay());
+
   const weeks: HeatmapCell[][] = [];
-  let week: HeatmapCell[] = new Array(cells[0].dayOfWeek).fill(null).map(() => ({
-    date: "", requests: 0, totalTokens: 0, level: 0, dayOfWeek: 0,
-  }));
-  for (const cell of cells) {
-    week.push(cell);
-    if (cell.dayOfWeek === 6) {
+  const months: { label: string; col: number }[] = [];
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  let lastMonthCol = -4;
+  let prevMonthIdx = -1;
+  let week: HeatmapCell[] = [];
+  const cursor = new Date(start);
+
+  while (cursor <= today) {
+    const iso = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}-${String(cursor.getDate()).padStart(2, "0")}`;
+    const m = cursor.getMonth();
+    if (cursor.getDay() === 0 && m !== prevMonthIdx && weeks.length - lastMonthCol >= 4) {
+      months.push({ label: monthNames[m], col: weeks.length });
+      lastMonthCol = weeks.length;
+      prevMonthIdx = m;
+    }
+    const d = dayMap.get(iso);
+    week.push({
+      date: iso,
+      requests: d?.requests ?? 0,
+      totalTokens: d?.totalTokens ?? 0,
+      level: d ? bucketLevel(d.requests, buckets) : 0,
+      dayOfWeek: cursor.getDay(),
+    });
+    if (cursor.getDay() === 6) {
       weeks.push(week);
       week = [];
     }
+    cursor.setDate(cursor.getDate() + 1);
   }
   if (week.length > 0) {
     while (week.length < 7) {
@@ -119,7 +136,7 @@ function buildHeatmap(days: UsageDay[]): { weeks: HeatmapCell[][]; buckets: numb
     }
     weeks.push(week);
   }
-  return { weeks, buckets };
+  return { weeks, months, buckets };
 }
 
 export default function Usage({ apiBase }: { apiBase: string }) {
@@ -194,16 +211,27 @@ export default function Usage({ apiBase }: { apiBase: string }) {
           <section className="panel" style={{ marginTop: 16 }}>
             <h3 className="panel-title">{t("usage.section.heatmap")}</h3>
             <div className="heatmap">
-              <div className="heatmap-grid" style={{ gridTemplateColumns: `repeat(${heatmap.weeks.length}, 12px)` }}>
-                {heatmap.weeks.map((week, wi) => (
-                  <div key={wi} className="heatmap-week">
-                    {week.map((cell, di) => (
-                      <div key={`${wi}-${di}`}
-                        className={`heatmap-cell heatmap-cell-${cell.level}`}
-                        title={cell.date ? `${cell.date}: ${cell.requests} req · ${formatTokens(cell.totalTokens)} tokens` : ""} />
-                    ))}
-                  </div>
+              <div className="heatmap-months" style={{ gridTemplateColumns: `28px repeat(${heatmap.weeks.length}, 1fr)` }}>
+                <span className="heatmap-day-spacer" />
+                {heatmap.months.map((m, i) => (
+                  <span key={i} className="heatmap-month" style={{ gridColumn: m.col + 2 }}>{m.label}</span>
                 ))}
+              </div>
+              <div className="heatmap-body">
+                <div className="heatmap-days">
+                  <span /><span>Mon</span><span /><span>Wed</span><span /><span>Fri</span><span />
+                </div>
+                <div className="heatmap-grid" style={{ gridTemplateColumns: `repeat(${heatmap.weeks.length}, 1fr)` }}>
+                  {heatmap.weeks.map((week, wi) => (
+                    <div key={wi} className="heatmap-week">
+                      {week.map((cell, di) => (
+                        <div key={`${wi}-${di}`}
+                          className={`heatmap-cell heatmap-cell-${cell.level}`}
+                          title={cell.date ? `${cell.date}: ${cell.requests} req · ${formatTokens(cell.totalTokens)} tokens` : ""} />
+                      ))}
+                    </div>
+                  ))}
+                </div>
               </div>
               <div className="heatmap-legend muted">
                 <span>{t("usage.heatmap.less")}</span>
