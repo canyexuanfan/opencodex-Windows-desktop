@@ -44,3 +44,9 @@ grid, model and provider breakdowns, and `reported / unreported / unsupported / 
 Missing usage is never treated as zero. The dashboard Usage tab renders the same shape, and the
 main Dashboard surfaces a 30d token / coverage summary. The in-memory `requestLog` is capped at
 200 entries and is **not** the source of truth for aggregation — the JSONL on disk is.
+
+For diagnosing upstream-shape issues set `OPENCODEX_USAGE_DEBUG=1`; the proxy then writes a
+rolling debug record per finalized request to `~/.opencodex/usage-debug.jsonl` (mode `0o600`,
+auto-trimmed to the most-recent 100 lines once it exceeds 200) with the upstream content-type,
+body kind (`sse / json / other / none`), a 2KB body sample, and the extracted usage. The flag
+is off by default and the hot path is guarded so production stays untouched.
