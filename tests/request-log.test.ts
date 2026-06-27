@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import {
   filterRequestLogs,
   nextRequestLogId,
+  responseWithDeferredRequestLog,
   requestLogErrorCode,
+  requestLogSpeedLabel,
   type RequestLogEntry,
 } from "../src/server";
 
@@ -36,11 +38,19 @@ describe("request log metadata", () => {
     expect(requestLogErrorCode(418)).toBe("http_418");
   });
 
+  test("maps Codex fast service tier spellings to a display speed label", () => {
+    expect(requestLogSpeedLabel("priority")).toBe("fast");
+    expect(requestLogSpeedLabel("fast")).toBe("fast");
+    expect(requestLogSpeedLabel(" PRIORITY ")).toBe("fast");
+    expect(requestLogSpeedLabel("auto")).toBeUndefined();
+    expect(requestLogSpeedLabel(undefined)).toBeUndefined();
+  });
+
   test("filters logs by provider, status, and tail", () => {
     const logs = [
       log({ requestId: "a", provider: "openai", status: 200 }),
       log({ requestId: "b", provider: "umans", status: 429 }),
-      log({ requestId: "c", provider: "umans", status: 502 }),
+      log({ requestId: "c", provider: "umans", status: 502, requestedServiceTier: "priority", requestedSpeedLabel: "fast" }),
       log({ requestId: "d", provider: "opencode-go", status: 500 }),
     ];
 
@@ -51,5 +61,37 @@ describe("request log metadata", () => {
 
     const combined = filterRequestLogs(logs, new URLSearchParams("provider=umans&status=5xx&tail=1"));
     expect(combined.map(entry => entry.requestId)).toEqual(["c"]);
+  });
+
+  test("deferred JSON logging preserves response service tier before final log", async () => {
+    const entries: RequestLogEntry[] = [];
+    const logCtx = {
+      model: "gpt-5.5",
+      provider: "chatgpt-p000001",
+      requestedModel: "gpt-5.5",
+      requestedServiceTier: "priority",
+      requestedSpeedLabel: requestLogSpeedLabel("priority"),
+    };
+    const response = responseWithDeferredRequestLog(
+      new Response(JSON.stringify({
+        model: "gpt-5.5",
+        service_tier: "auto",
+        status: "completed",
+      }), { status: 200, headers: { "content-type": "application/json" } }),
+      "ocx-test-json",
+      Date.now(),
+      logCtx,
+      entry => entries.push(entry),
+    );
+
+    expect(await response.json()).toMatchObject({ model: "gpt-5.5", service_tier: "auto" });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      requestedModel: "gpt-5.5",
+      requestedServiceTier: "priority",
+      requestedSpeedLabel: "fast",
+      responseServiceTier: "auto",
+      resolvedModel: "gpt-5.5",
+    });
   });
 });

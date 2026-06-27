@@ -45,4 +45,15 @@ describe("Responses parser", () => {
     expect(parsed._webSearch).toEqual({ type: "web_search", search_context_size: "medium" });
     expect(parsed.options.toolChoice).toEqual({ allowedTools: ["web_search"], mode: "required" });
   });
+
+  test("preserves requested service_tier for request logging", () => {
+    const parsed = parseRequest({
+      model: "gpt-5.5",
+      input: "fast check",
+      stream: true,
+      service_tier: "priority",
+    });
+
+    expect(parsed.options.serviceTier).toBe("priority");
+  });
 });

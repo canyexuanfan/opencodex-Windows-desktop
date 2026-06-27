@@ -75,6 +75,16 @@ const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
 const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
 const nativePassthroughSseResponses = new WeakSet<Response>();
 
+export interface RequestLogContext {
+  model: string;
+  provider: string;
+  requestedModel?: string;
+  requestedServiceTier?: string;
+  requestedSpeedLabel?: string;
+  responseServiceTier?: string;
+  resolvedModel?: string;
+}
+
 export function registerTurn(ac: AbortController): void { activeTurns.add(ac); }
 export function unregisterTurn(ac: AbortController): void { activeTurns.delete(ac); }
 export function isDraining(): boolean { return draining; }
@@ -288,7 +298,7 @@ function codexForwardTerminalOutcomeRecorder(
 async function handleResponses(
   req: Request,
   config: OcxConfig,
-  logCtx: { model: string; provider: string },
+  logCtx: RequestLogContext,
   options: {
     forceEmptyResponseId?: boolean;
     abortSignal?: AbortSignal;
@@ -313,6 +323,9 @@ async function handleResponses(
   } catch (err) {
     return formatErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
+  logCtx.requestedModel = parsed.modelId;
+  logCtx.requestedServiceTier = parsed.options.serviceTier;
+  logCtx.requestedSpeedLabel = requestLogSpeedLabel(parsed.options.serviceTier);
 
   let route;
   try {
@@ -413,6 +426,8 @@ async function handleResponses(
       return formatErrorResponse(502, "upstream_error", msg);
     }
     const headers = sanitizePassthroughHeaders(upstreamResponse.headers);
+    const resolvedModel = headers.get("openai-model")?.trim();
+    if (resolvedModel) logCtx.resolvedModel = resolvedModel;
     const isEventStream = headers.get("content-type")?.toLowerCase().includes("text/event-stream") ?? false;
     const terminalRecorder = codexForwardTerminalOutcomeRecorder(config, authCtx, route.provider);
     const terminalBodyWillRecord = !!terminalRecorder && upstreamResponse.ok && isEventStream;
@@ -469,14 +484,23 @@ async function handleResponses(
           recordTerminal(status);
           options.onNativePassthroughTerminal?.(status);
         };
-        consumeForInspection(inspectBody, reportNativeTerminal, turnAc.signal, () => unregisterTurn(turnAc));
+        consumeForInspection(inspectBody, reportNativeTerminal, turnAc.signal, () => unregisterTurn(turnAc), logCtx);
       } else {
-        inspectBody.cancel().finally(() => unregisterTurn(turnAc)).catch(() => {});
+        consumeForResponseLogMetadata(inspectBody, logCtx, turnAc.signal, () => unregisterTurn(turnAc));
       }
       return markNativePassthroughSseResponse(new Response(nativeBody, {
         status: upstreamResponse.status,
         headers,
       }));
+    }
+    if (headers.get("content-type")?.toLowerCase().includes("application/json")) {
+      const text = await upstreamResponse.text();
+      inspectResponseLogJson(logCtx, text);
+      return new Response(text, {
+        status: upstreamResponse.status,
+        statusText: upstreamResponse.statusText,
+        headers,
+      });
     }
     const body = relayWithAbort(upstreamResponse.body, upstream);
     const turnAc = new AbortController();
@@ -630,6 +654,11 @@ export interface RequestLogEntry {
   timestamp: number;
   model: string;
   provider: string;
+  requestedModel?: string;
+  requestedServiceTier?: string;
+  requestedSpeedLabel?: string;
+  responseServiceTier?: string;
+  resolvedModel?: string;
   status: number;
   durationMs: number;
   errorCode?: string;
@@ -662,6 +691,37 @@ export function requestLogErrorCode(status: number): string | undefined {
   return `http_${status}`;
 }
 
+export function requestLogSpeedLabel(serviceTier: string | undefined): string | undefined {
+  const normalized = serviceTier?.trim().toLowerCase();
+  if (normalized === "priority" || normalized === "fast") return "fast";
+  return undefined;
+}
+
+function applyResponseLogMetadata(logCtx: RequestLogContext, payload: unknown): void {
+  if (!payload || typeof payload !== "object") return;
+  const source = "response" in payload && typeof (payload as { response?: unknown }).response === "object"
+    ? (payload as { response?: unknown }).response
+    : payload;
+  if (!source || typeof source !== "object") return;
+  const model = (source as { model?: unknown }).model;
+  if (typeof model === "string" && model.trim()) logCtx.resolvedModel = model;
+  const serviceTier = (source as { service_tier?: unknown }).service_tier;
+  if (typeof serviceTier === "string" && serviceTier.trim()) logCtx.responseServiceTier = serviceTier;
+}
+
+function inspectResponseLogJson(logCtx: RequestLogContext, text: string): void {
+  try {
+    applyResponseLogMetadata(logCtx, JSON.parse(text));
+  } catch {
+    /* body may not be JSON; request log metadata is best-effort only */
+  }
+}
+
+function inspectResponseLogSsePayload(logCtx: RequestLogContext, payload: string | null): void {
+  if (!payload || payload.trim() === "[DONE]") return;
+  inspectResponseLogJson(logCtx, payload);
+}
+
 function httpStatusForTerminalStatus(status: ResponsesTerminalStatus): number {
   return status === "completed" ? 200 : 502;
 }
@@ -669,16 +729,22 @@ function httpStatusForTerminalStatus(status: ResponsesTerminalStatus): number {
 function addFinalRequestLog(
   requestId: string,
   start: number,
-  logCtx: { model: string; provider: string },
+  logCtx: RequestLogContext,
   status: number,
   meta?: Pick<RequestLogEntry, "terminalStatus" | "closeReason">,
+  addLog: (entry: RequestLogEntry) => void = addRequestLog,
 ): void {
   const errorCode = requestLogErrorCode(status);
-  addRequestLog({
+  addLog({
     requestId,
     timestamp: start,
     model: logCtx.model,
     provider: logCtx.provider,
+    ...(logCtx.requestedModel ? { requestedModel: logCtx.requestedModel } : {}),
+    ...(logCtx.requestedServiceTier ? { requestedServiceTier: logCtx.requestedServiceTier } : {}),
+    ...(logCtx.requestedSpeedLabel ? { requestedSpeedLabel: logCtx.requestedSpeedLabel } : {}),
+    ...(logCtx.responseServiceTier ? { responseServiceTier: logCtx.responseServiceTier } : {}),
+    ...(logCtx.resolvedModel ? { resolvedModel: logCtx.resolvedModel } : {}),
     status,
     durationMs: Date.now() - start,
     ...(errorCode ? { errorCode } : {}),
@@ -780,6 +846,7 @@ function trackSseForRequestLog(
   body: ReadableStream<Uint8Array>,
   onTerminal: (status: ResponsesTerminalStatus) => void,
   onCancel: () => void,
+  logCtx?: RequestLogContext,
 ): ReadableStream<Uint8Array> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -794,6 +861,7 @@ function trackSseForRequestLog(
 
   const inspectPayload = (payload: string | null) => {
     if (!payload) return;
+    if (logCtx) inspectResponseLogSsePayload(logCtx, payload);
     const status = terminalStatusFromSsePayload(payload);
     if (status) reportTerminal(status);
   };
@@ -832,18 +900,43 @@ function trackSseForRequestLog(
   });
 }
 
-function responseWithDeferredRequestLog(
+export function responseWithDeferredRequestLog(
   response: Response,
   requestId: string,
   start: number,
-  logCtx: { model: string; provider: string },
+  logCtx: RequestLogContext,
+  addLog: (entry: RequestLogEntry) => void = addRequestLog,
 ): Response {
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
   if (isNativePassthroughSseResponse(response)) {
     return response;
   }
   if (!response.body || !contentType.includes("text/event-stream")) {
-    addFinalRequestLog(requestId, start, logCtx, response.status, { closeReason: "non_stream" });
+    if (response.body && contentType.includes("application/json")) {
+      const finalizeJsonLog = async () => {
+        const text = await response.text();
+        inspectResponseLogJson(logCtx, text);
+        addFinalRequestLog(requestId, start, logCtx, response.status, { closeReason: "non_stream" }, addLog);
+        return text;
+      };
+      const body = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          try {
+            controller.enqueue(new TextEncoder().encode(await finalizeJsonLog()));
+            controller.close();
+          } catch (err) {
+            addFinalRequestLog(requestId, start, logCtx, 502, { closeReason: "non_stream" }, addLog);
+            try { controller.error(err); } catch { /* already torn down */ }
+          }
+        },
+      });
+      return new Response(body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    }
+    addFinalRequestLog(requestId, start, logCtx, response.status, { closeReason: "non_stream" }, addLog);
     return response;
   }
 
@@ -856,13 +949,14 @@ function responseWithDeferredRequestLog(
       addFinalRequestLog(requestId, start, logCtx, httpStatusForTerminalStatus(status), {
         terminalStatus: status,
         closeReason: "terminal",
-      });
+      }, addLog);
     },
     () => {
       if (logged) return;
       logged = true;
-      addFinalRequestLog(requestId, start, logCtx, 499, { closeReason: "client_cancel" });
+      addFinalRequestLog(requestId, start, logCtx, 499, { closeReason: "client_cancel" }, addLog);
     },
+    logCtx,
   );
   return new Response(body, {
     status: response.status,
@@ -975,6 +1069,7 @@ function consumeForInspection(
   onTerminal: (status: ResponsesTerminalStatus) => void,
   signal?: AbortSignal,
   onDone?: () => void,
+  logCtx?: RequestLogContext,
 ): void {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -1000,6 +1095,7 @@ function consumeForInspection(
           buffer += decoder.decode();
           if (buffer.trim() && !reported) {
             const payload = sseDataPayload(buffer);
+            if (logCtx) inspectResponseLogSsePayload(logCtx, payload);
             if (payload) {
               const status = terminalStatusFromSsePayload(payload);
               if (status) { reported = true; onTerminal(status); }
@@ -1014,6 +1110,7 @@ function consumeForInspection(
           buffer = next.rest;
           if (!reported) {
             const payload = sseDataPayload(next.block);
+            if (logCtx) inspectResponseLogSsePayload(logCtx, payload);
             if (payload) {
               const status = terminalStatusFromSsePayload(payload);
               if (status) { reported = true; onTerminal(status); }
@@ -1023,6 +1120,50 @@ function consumeForInspection(
       }
     } catch {
       if (!reported && !cancelled) onTerminal("incomplete");
+    } finally {
+      onDone?.();
+    }
+  };
+  pump();
+}
+
+function consumeForResponseLogMetadata(
+  body: ReadableStream<Uint8Array>,
+  logCtx: RequestLogContext,
+  signal?: AbortSignal,
+  onDone?: () => void,
+): void {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  if (signal) {
+    if (signal.aborted) {
+      reader.cancel(signal.reason).catch(() => {});
+      onDone?.();
+      return;
+    }
+    signal.addEventListener("abort", () => {
+      reader.cancel(signal.reason).catch(() => {});
+    }, { once: true });
+  }
+  const pump = async () => {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) {
+          buffer += decoder.decode();
+          if (buffer.trim()) inspectResponseLogSsePayload(logCtx, sseDataPayload(buffer));
+          return;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        let next: { block: string; rest: string } | null;
+        while ((next = nextSseBlock(buffer))) {
+          buffer = next.rest;
+          inspectResponseLogSsePayload(logCtx, sseDataPayload(next.block));
+        }
+      }
+    } catch {
+      /* metadata inspection must not affect the client-facing stream */
     } finally {
       onDone?.();
     }
