@@ -39,6 +39,7 @@ providers are routed by explicit `provider/model`, provider model lists, or the 
 | `~/.opencodex/config.json` | opencodex | Main config written by `ocx init` and the dashboard. |
 | `~/.opencodex/auth.json` | opencodex | OAuth tokens; not committed. |
 | `~/.opencodex/catalog-backup.json` | opencodex | One-time pristine Codex catalog backup for restore. |
+| `~/.opencodex/usage.jsonl` | opencodex | Append-only request usage log (0o600); request metadata + token counts only, never prompts or auth. |
 | `$CODEX_HOME/config.toml` | Codex, edited by opencodex | Active provider and provider table. |
 | `$CODEX_HOME/opencodex.config.toml` | opencodex | Optional profile for explicit Codex opt-in. |
 | `$CODEX_HOME/opencodex-catalog.json` | opencodex | Shared native+routed model catalog. |
