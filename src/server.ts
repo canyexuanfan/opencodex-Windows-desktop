@@ -46,10 +46,12 @@ import type { AdapterEvent, OcxConfig, OcxProviderConfig } from "./types";
 import type { OcxUsage } from "./types";
 import {
   appendUsageEntry,
+  readUsageEntries,
   usageStatusForFinalLog,
   usageTotalTokens,
   type UsageStatus,
 } from "./usage-log";
+import { parseRange, summarizeUsage } from "./usage-summary";
 import {
   applyCodexAuthContextToProvider,
   CodexAccountCooldownError,
@@ -1584,6 +1586,37 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
 
   if (url.pathname === "/api/logs" && req.method === "GET") {
     return jsonResponse(filterRequestLogs(requestLog, url.searchParams));
+  }
+
+  if (url.pathname === "/api/usage" && req.method === "GET") {
+    const range = parseRange(url.searchParams.get("range"));
+    const now = Date.now();
+    try {
+      return jsonResponse(summarizeUsage(readUsageEntries(), range, now));
+    } catch {
+      return jsonResponse({
+        range,
+        since: null,
+        generatedAt: now,
+        summary: {
+          requests: 0,
+          reportedRequests: 0,
+          unreportedRequests: 0,
+          unsupportedRequests: 0,
+          estimatedRequests: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedInputTokens: 0,
+          reasoningOutputTokens: 0,
+          totalTokens: 0,
+          coverageRatio: 0,
+        },
+        days: [],
+        models: [],
+        providers: [],
+        error: "read_failed",
+      });
+    }
   }
 
   if (url.pathname === "/api/providers" && req.method === "GET") {
