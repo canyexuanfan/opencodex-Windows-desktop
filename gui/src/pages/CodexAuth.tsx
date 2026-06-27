@@ -168,7 +168,7 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
           <span className="card-right"><IconLock width={14} /> {t("codexAuth.appLogin")}</span>
         </div>
         <div className="card-sub">{main?.email ?? "Codex App login"}{main?.plan ? ` · ${main.plan}` : ""}</div>
-        {main?.quota && <QuotaBars quota={main.quota} threshold={autoThreshold} t={t} />}
+        {main?.quota && <QuotaBars quota={main.quota} plan={main.plan} threshold={autoThreshold} t={t} />}
       </div>
 
       <div className="section-sep">
@@ -203,7 +203,7 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
           </div>
           {a.needsReauth
             ? <div className="card-sub faint">{t("codexAuth.tokenExpired")}</div>
-            : <QuotaBars quota={a.quota} threshold={autoThreshold} t={t} />}
+            : <QuotaBars quota={a.quota} plan={a.plan} threshold={autoThreshold} t={t} />}
         </div>
       ))}
 
@@ -310,19 +310,35 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
   );
 }
 
-function QuotaBars({ quota, threshold, t }: { quota: AccountQuota | null; threshold: number; t: TFn }) {
-  if (!quota) return null;
-  const hasFiveHour = typeof quota.fiveHourPercent === "number";
-  const hasWeekly = typeof quota.weeklyPercent === "number";
-  const hasMonthly = typeof quota.monthlyPercent === "number";
+export function isThirtyDayOnlyPlan(plan: string | null | undefined): boolean {
+  const normalized = plan?.trim().toLowerCase();
+  return normalized === "go" || normalized === "free";
+}
+
+export function normalizeQuotaForPlan(quota: AccountQuota | null, plan: string | null | undefined): AccountQuota | null {
+  if (!quota || !isThirtyDayOnlyPlan(plan)) return quota;
+  return {
+    ...(quota.monthlyPercent !== undefined ? { monthlyPercent: quota.monthlyPercent } : {}),
+    ...(quota.monthlyResetAt !== undefined ? { monthlyResetAt: quota.monthlyResetAt } : {}),
+    ...(quota.resetCredits !== undefined ? { resetCredits: quota.resetCredits } : {}),
+    updatedAt: quota.updatedAt,
+  };
+}
+
+function QuotaBars({ quota, plan, threshold, t }: { quota: AccountQuota | null; plan?: string; threshold: number; t: TFn }) {
+  const displayQuota = normalizeQuotaForPlan(quota, plan);
+  if (!displayQuota) return null;
+  const hasFiveHour = typeof displayQuota.fiveHourPercent === "number";
+  const hasWeekly = typeof displayQuota.weeklyPercent === "number";
+  const hasMonthly = typeof displayQuota.monthlyPercent === "number";
   if (!hasFiveHour && !hasWeekly && !hasMonthly) return null;
   return (
     <div className="quota-compact">
       {hasFiveHour && (
         <QuotaRow
           label={t("codexAuth.fiveHour")}
-          percent={quota.fiveHourPercent!}
-          resetAt={quota.fiveHourResetAt}
+          percent={displayQuota.fiveHourPercent!}
+          resetAt={displayQuota.fiveHourResetAt}
           threshold={threshold}
           t={t}
         />
@@ -330,8 +346,8 @@ function QuotaBars({ quota, threshold, t }: { quota: AccountQuota | null; thresh
       {hasWeekly && (
         <QuotaRow
           label={t("codexAuth.weekly")}
-          percent={quota.weeklyPercent!}
-          resetAt={quota.weeklyResetAt}
+          percent={displayQuota.weeklyPercent!}
+          resetAt={displayQuota.weeklyResetAt}
           threshold={threshold}
           t={t}
         />
@@ -339,8 +355,8 @@ function QuotaBars({ quota, threshold, t }: { quota: AccountQuota | null; thresh
       {hasMonthly && (
         <QuotaRow
           label={t("codexAuth.monthly")}
-          percent={quota.monthlyPercent!}
-          resetAt={quota.monthlyResetAt}
+          percent={displayQuota.monthlyPercent!}
+          resetAt={displayQuota.monthlyResetAt}
           threshold={threshold}
           t={t}
         />

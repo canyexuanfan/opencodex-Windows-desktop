@@ -164,7 +164,7 @@ export const en = {
   "codexAuth.switchBack": "Switch back to Main?",
   "codexAuth.switchBackDesc": "Next Codex session will use your App login account again.",
   "codexAuth.autoSwitch": "Auto-switch at 80%",
-  "codexAuth.autoSwitchDesc": "New sessions switch when 5h, Week, or 30d usage reaches the threshold",
+  "codexAuth.autoSwitchDesc": "New sessions switch when the relevant quota window reaches the threshold; Go/Free use 30d only",
   "codexAuth.switched": "{email} will be used from next session",
   "codexAuth.removeConfirm": "Remove {id}?",
   "codexAuth.addTitle": "Add Codex Account",

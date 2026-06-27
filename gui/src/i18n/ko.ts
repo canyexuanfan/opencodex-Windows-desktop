@@ -164,7 +164,7 @@ export const ko: Record<TKey, string> = {
   "codexAuth.switchBack": "메인 계정으로 돌아가시겠습니까?",
   "codexAuth.switchBackDesc": "다음 Codex 세션에서 앱 로그인 계정을 사용합니다.",
   "codexAuth.autoSwitch": "80% 초과 시 자동 전환",
-  "codexAuth.autoSwitchDesc": "새 세션은 5h, 주간, 30일 중 하나가 기준에 도달하면 전환합니다",
+  "codexAuth.autoSwitchDesc": "새 세션은 해당 플랜의 기준 창이 임계값에 도달하면 전환합니다. Go/Free는 30일만 봅니다",
   "codexAuth.switched": "다음 세션부터 {email}을(를) 사용합니다",
   "codexAuth.removeConfirm": "{id}을(를) 삭제하시겠습니까?",
   "codexAuth.addTitle": "Codex 계정 추가",

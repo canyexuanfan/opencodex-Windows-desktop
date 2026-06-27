@@ -164,7 +164,7 @@ export const zh: Record<TKey, string> = {
   "codexAuth.switchBack": "切换回主账号？",
   "codexAuth.switchBackDesc": "下次 Codex 会话将使用应用登录账号。",
   "codexAuth.autoSwitch": "超过 80% 时自动切换",
-  "codexAuth.autoSwitchDesc": "新会话会在 5h、每周或 30天用量达到阈值时切换",
+  "codexAuth.autoSwitchDesc": "新会话会在相关额度窗口达到阈值时切换；Go/Free 只使用 30天",
   "codexAuth.switched": "下次会话将使用 {email}",
   "codexAuth.removeConfirm": "删除 {id}？",
   "codexAuth.addTitle": "添加 Codex 账号",

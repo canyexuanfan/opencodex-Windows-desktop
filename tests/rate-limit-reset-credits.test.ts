@@ -91,6 +91,34 @@ describe("rate-limit reset credits", () => {
   });
 
   describe("CodexAuth reset credit UI", () => {
+    it("normalizes Go and Free quota displays to 30d only", async () => {
+      const { normalizeQuotaForPlan } = await import("../gui/src/pages/CodexAuth");
+      const quota = {
+        fiveHourPercent: 99,
+        weeklyPercent: 98,
+        monthlyPercent: 12,
+        fiveHourResetAt: 111,
+        weeklyResetAt: 222,
+        monthlyResetAt: 333,
+        resetCredits: 2,
+        updatedAt: 444,
+      };
+
+      expect(normalizeQuotaForPlan(quota, "go")).toEqual({
+        monthlyPercent: 12,
+        monthlyResetAt: 333,
+        resetCredits: 2,
+        updatedAt: 444,
+      });
+      expect(normalizeQuotaForPlan(quota, " free ")).toEqual({
+        monthlyPercent: 12,
+        monthlyResetAt: 333,
+        resetCredits: 2,
+        updatedAt: 444,
+      });
+      expect(normalizeQuotaForPlan(quota, "pro")).toBe(quota);
+    });
+
     it("does not exclude team or workspace plans from ticket badges", async () => {
       const source = await Bun.file("gui/src/pages/CodexAuth.tsx").text();
       expect(source).not.toContain("isWorkspaceAccount");
