@@ -53,6 +53,13 @@ import {
 } from "./usage-log";
 import { parseRange, summarizeUsage } from "./usage-summary";
 import {
+  appendUsageDebug,
+  isUsageDebugEnabled,
+  truncateForDebug,
+  USAGE_DEBUG_BODY_SAMPLE_BYTES,
+  type UsageDebugBodyKind,
+} from "./usage-debug";
+import {
   applyCodexAuthContextToProvider,
   CodexAccountCooldownError,
   CodexAuthContextError,
@@ -97,6 +104,9 @@ export interface RequestLogContext {
   responseServiceTier?: string;
   resolvedModel?: string;
   usage?: OcxUsage;
+  usageDebugBodyKind?: UsageDebugBodyKind;
+  usageDebugBodySample?: string;
+  usageDebugContentType?: string;
 }
 
 export function registerTurn(ac: AbortController): void { activeTurns.add(ac); }
@@ -448,6 +458,10 @@ async function handleResponses(
     const headers = sanitizePassthroughHeaders(upstreamResponse.headers);
     const resolvedModel = headers.get("openai-model")?.trim();
     if (resolvedModel) logCtx.resolvedModel = resolvedModel;
+    if (isUsageDebugEnabled()) {
+      const upstreamContentType = upstreamResponse.headers.get("content-type");
+      if (upstreamContentType) logCtx.usageDebugContentType = upstreamContentType;
+    }
     const isEventStream = headers.get("content-type")?.toLowerCase().includes("text/event-stream") ?? false;
     const terminalRecorder = codexForwardTerminalOutcomeRecorder(config, authCtx, route.provider);
     const terminalBodyWillRecord = !!terminalRecorder && upstreamResponse.ok && isEventStream;
@@ -812,11 +826,31 @@ function inspectResponseLogJson(logCtx: RequestLogContext, text: string): void {
   } catch {
     /* body may not be JSON; request log metadata is best-effort only */
   }
+  if (isUsageDebugEnabled() && logCtx.usageDebugBodyKind === undefined) {
+    logCtx.usageDebugBodyKind = "json";
+    logCtx.usageDebugBodySample = truncateForDebug(text);
+  }
 }
 
 function inspectResponseLogSsePayload(logCtx: RequestLogContext, payload: string | null): void {
   if (!payload || payload.trim() === "[DONE]") return;
-  inspectResponseLogJson(logCtx, payload);
+  const debugEnabled = isUsageDebugEnabled();
+  const sseAlreadyMarked = logCtx.usageDebugBodyKind === "sse";
+  try {
+    applyResponseLogMetadata(logCtx, JSON.parse(payload));
+  } catch {
+    /* SSE block payload may not be JSON; metadata inspection is best-effort */
+  }
+  if (debugEnabled) {
+    if (!sseAlreadyMarked) {
+      logCtx.usageDebugBodyKind = "sse";
+      logCtx.usageDebugBodySample = truncateForDebug(payload);
+    } else if (typeof logCtx.usageDebugBodySample === "string"
+      && logCtx.usageDebugBodySample.length < USAGE_DEBUG_BODY_SAMPLE_BYTES) {
+      const combined = `${logCtx.usageDebugBodySample}\n${payload}`;
+      logCtx.usageDebugBodySample = truncateForDebug(combined);
+    }
+  }
 }
 
 function httpStatusForTerminalStatus(status: ResponsesTerminalStatus): number {
@@ -856,6 +890,19 @@ function addFinalRequestLog(
     ...(logCtx.usage ? { usage: logCtx.usage } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
   });
+  if (isUsageDebugEnabled()) {
+    appendUsageDebug({
+      ts: Date.now(),
+      requestId,
+      provider: logCtx.provider,
+      model: logCtx.model,
+      upstreamContentType: logCtx.usageDebugContentType ?? null,
+      upstreamStatus: status,
+      bodyKind: logCtx.usageDebugBodyKind ?? "none",
+      bodySample: logCtx.usageDebugBodySample ?? "",
+      extractedUsage: logCtx.usage ?? null,
+    });
+  }
 }
 
 export function filterRequestLogs(logs: RequestLogEntry[], params: URLSearchParams): RequestLogEntry[] {
@@ -1013,6 +1060,9 @@ export function responseWithDeferredRequestLog(
   addLog: (entry: RequestLogEntry) => void = addRequestLog,
 ): Response {
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (isUsageDebugEnabled() && !logCtx.usageDebugContentType && contentType) {
+    logCtx.usageDebugContentType = contentType;
+  }
   if (isNativePassthroughSseResponse(response)) {
     return response;
   }
@@ -1040,6 +1090,9 @@ export function responseWithDeferredRequestLog(
         statusText: response.statusText,
         headers: response.headers,
       });
+    }
+    if (isUsageDebugEnabled() && logCtx.usageDebugBodyKind === undefined) {
+      logCtx.usageDebugBodyKind = response.body ? "other" : "none";
     }
     addFinalRequestLog(requestId, start, logCtx, response.status, { closeReason: "non_stream" }, addLog);
     return response;
