@@ -191,6 +191,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .badge-clickable { cursor: pointer; transition: filter 0.12s; appearance: none; }
 .badge-clickable:hover { filter: brightness(1.1); }
 .badge-disabled { opacity: 0.5; cursor: default; }
+.card-badges { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.card-badges .badge { flex-shrink: 0; }
 .confirm-icon { width: 44px; height: 44px; border-radius: 50%; background: var(--amber-soft); display: flex; align-items: center; justify-content: center; margin: 0 auto 12px; color: var(--amber); }
 .credit-list { display: flex; flex-direction: column; gap: 6px; }
 .credit-item { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--raised); transition: border-color 0.12s; }

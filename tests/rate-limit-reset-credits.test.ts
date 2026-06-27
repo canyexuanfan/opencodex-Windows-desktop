@@ -107,6 +107,16 @@ describe("rate-limit reset credits", () => {
       expect(match![1]).not.toContain("border: none");
       expect(styles).toContain("border: 1px solid transparent");
     });
+
+    it("renders reset tickets beside next-session badges instead of replacing them", async () => {
+      const source = await Bun.file("gui/src/pages/CodexAuth.tsx").text();
+      expect(source).toContain("className=\"card-badges\"");
+      expect(source).toContain("<TicketBadge account={a} onClick={() => openResetPopup(a)} />");
+      expect(source).toContain("{isNext(a.id) && !a.needsReauth && <span className=\"badge badge-primary\">{t(\"codexAuth.nextSession\")}</span>}");
+      const styles = await Bun.file("gui/src/styles.css").text();
+      expect(styles).toContain(".card-badges { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }");
+      expect(styles).toContain(".card-badges .badge { flex-shrink: 0; }");
+    });
   });
 
   describe("updateAccountQuota resetCredits", () => {

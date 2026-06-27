@@ -159,9 +159,11 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
         <div className="card-head">
           <span className="dot dot-green" />
           <strong>{t("codexAuth.mainAccount")}</strong>
-          {main && <TicketBadge account={{ ...main, id: "__main__" } as AccountEntry} onClick={() => openResetPopup({ ...main, id: "__main__" } as AccountEntry)} />}
-          <span className={`badge ${!activeId ? "badge-primary" : "badge-muted"}`}>
-            {!activeId ? t("codexAuth.nextSession") : t("codexAuth.current")}
+          <span className="card-badges">
+            {main && <TicketBadge account={{ ...main, id: "__main__" } as AccountEntry} onClick={() => openResetPopup({ ...main, id: "__main__" } as AccountEntry)} />}
+            <span className={`badge ${!activeId ? "badge-primary" : "badge-muted"}`}>
+              {!activeId ? t("codexAuth.nextSession") : t("codexAuth.current")}
+            </span>
           </span>
           <span className="card-right"><IconLock width={14} /> {t("codexAuth.appLogin")}</span>
         </div>
@@ -185,10 +187,12 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
           <div className="card-head">
             <span className={`dot ${a.needsReauth ? "dot-amber" : isNext(a.id) ? "dot-blue" : "dot-muted"}`} />
             <strong>{a.email}</strong>
-            {a.plan && <span className="badge badge-green">{a.plan}</span>}
-            <TicketBadge account={a} onClick={() => openResetPopup(a)} />
-            {a.needsReauth && <span className="badge badge-amber">{t("codexAuth.needsReauth")}</span>}
-            {isNext(a.id) && !a.needsReauth && <span className="badge badge-primary">{t("codexAuth.nextSession")}</span>}
+            <span className="card-badges">
+              {a.plan && <span className="badge badge-green">{a.plan}</span>}
+              <TicketBadge account={a} onClick={() => openResetPopup(a)} />
+              {a.needsReauth && <span className="badge badge-amber">{t("codexAuth.needsReauth")}</span>}
+              {isNext(a.id) && !a.needsReauth && <span className="badge badge-primary">{t("codexAuth.nextSession")}</span>}
+            </span>
             <button
               className="btn-icon btn-icon-danger card-right"
               aria-label={t("common.remove")}

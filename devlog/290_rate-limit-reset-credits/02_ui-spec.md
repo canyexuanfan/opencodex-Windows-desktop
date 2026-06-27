@@ -248,6 +248,8 @@ function TicketBadge({ account, onClick }: { account: AccountEntry; onClick: () 
 Uses `<button>` instead of `<span>` for accessibility (keyboard focus, screen reader).
 The `badge-clickable` class must not override `background`, `border`, or `font`;
 the visual badge variant (`badge-amber`, `badge-muted`, `badge-primary`) owns those styles.
+Ticket, plan, and session-state badges must render inside the same `card-badges`
+inline-flex group, so a reset ticket never replaces or overlaps `NEXT SESSION`.
 
 ### Reset Credit Popup (new modal, after existing confirm modal)
 
