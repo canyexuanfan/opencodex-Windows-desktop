@@ -101,7 +101,10 @@ In `/Users/jun/Developer/new/700_projects/opencodex/src/cli.ts` `gui` case:
 
 - read PID and runtime metadata;
 - if PID/runtime metadata exists, open `http://localhost:<runtime port>`;
-- otherwise keep current behavior: start if not running and open config port after the short wait.
+- otherwise keep current behavior: start if not running;
+- after `gui` self-starts the proxy, re-read PID/runtime metadata before choosing the URL;
+- if current metadata appears during the wait, open `http://localhost:<runtime port>`;
+- only fall back to config port when no current metadata is available after the wait.
 
 This keeps `gui` aligned with status without changing service or start behavior.
 
@@ -116,9 +119,11 @@ In `/Users/jun/Developer/new/700_projects/opencodex/tests/config.test.ts`:
 
 In `/Users/jun/Developer/new/700_projects/opencodex/tests/cli-status-json.test.ts`:
 
-- config has `port: 10100`, pid file points to current process, runtime-port metadata says `port: 58195`;
-- `status --json` should use `http://127.0.0.1:58195/healthz`, `dashboard.url` should be `http://localhost:58195/`, and `listen.source` should be `runtime`;
-- stale runtime metadata for a different pid should be ignored and `listen.source` should be `config`.
+- add a pure helper seam in `cli-status.ts`, for example `selectListenTarget(config, pid, runtimePortState)`, so status port selection can be tested without faking an `ocx start` process command line;
+- unit-test the helper with config `port: 10100`, pid `123`, runtime-port metadata `{ pid: 123, port: 58195 }`;
+- the helper should choose `http://127.0.0.1:58195/healthz`, `dashboard.url` should be `http://localhost:58195/`, and `listen.source` should be `runtime`;
+- stale runtime metadata for a different pid should be ignored and `listen.source` should be `config`;
+- keep CLI smoke for normal `status --json`, but do not require `bun test` to fake `readPid()` with the current test process PID because `readPid()` correctly rejects non-`ocx start` processes.
 
 ## Acceptance Criteria
 
