@@ -16,6 +16,7 @@ function log(overrides: Partial<RequestLogEntry>): RequestLogEntry {
     provider: "openai",
     status: 200,
     durationMs: 10,
+    usageStatus: "unreported",
     ...overrides,
   };
 }
@@ -98,6 +99,68 @@ describe("request log metadata", () => {
       modelSupportsServiceTier: true,
       responseServiceTier: "auto",
       resolvedModel: "gpt-5.5",
+      usageStatus: "unreported",
+    });
+  });
+
+  test("deferred JSON logging captures reported usage", async () => {
+    const entries: RequestLogEntry[] = [];
+    const response = responseWithDeferredRequestLog(
+      new Response(JSON.stringify({
+        model: "gpt-5.5",
+        status: "completed",
+        usage: {
+          input_tokens: 100,
+          output_tokens: 23,
+          input_tokens_details: { cached_tokens: 7 },
+          output_tokens_details: { reasoning_tokens: 5 },
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } }),
+      "ocx-test-json-usage",
+      Date.now(),
+      { model: "gpt-5.5", provider: "openai" },
+      entry => entries.push(entry),
+    );
+
+    await response.text();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      usageStatus: "reported",
+      totalTokens: 123,
+      usage: {
+        inputTokens: 100,
+        outputTokens: 23,
+        cachedInputTokens: 7,
+        reasoningOutputTokens: 5,
+      },
+    });
+  });
+
+  test("deferred SSE logging captures terminal reported usage", async () => {
+    const entries: RequestLogEntry[] = [];
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-5.5\",\"usage\":{\"input_tokens\":9,\"output_tokens\":4}}}\n\n",
+        ));
+        controller.close();
+      },
+    });
+    const response = responseWithDeferredRequestLog(
+      new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }),
+      "ocx-test-sse-usage",
+      Date.now(),
+      { model: "gpt-5.5", provider: "openai" },
+      entry => entries.push(entry),
+    );
+
+    await response.text();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      terminalStatus: "completed",
+      usageStatus: "reported",
+      totalTokens: 13,
+      usage: { inputTokens: 9, outputTokens: 4 },
     });
   });
 });

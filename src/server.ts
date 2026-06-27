@@ -43,6 +43,13 @@ import { removeCredential } from "./oauth/store";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "./oauth/key-providers";
 import { deriveProviderPresets } from "./providers/derive";
 import type { AdapterEvent, OcxConfig, OcxProviderConfig } from "./types";
+import type { OcxUsage } from "./types";
+import {
+  appendUsageEntry,
+  usageStatusForFinalLog,
+  usageTotalTokens,
+  type UsageStatus,
+} from "./usage-log";
 import {
   applyCodexAuthContextToProvider,
   CodexAccountCooldownError,
@@ -87,6 +94,7 @@ export interface RequestLogContext {
   modelSupportsServiceTier?: boolean;
   responseServiceTier?: string;
   resolvedModel?: string;
+  usage?: OcxUsage;
 }
 
 export function registerTurn(ac: AbortController): void { activeTurns.add(ac); }
@@ -677,6 +685,9 @@ export interface RequestLogEntry {
   errorCode?: string;
   terminalStatus?: ResponsesTerminalStatus;
   closeReason?: "terminal" | "client_cancel" | "non_stream";
+  usageStatus: UsageStatus;
+  usage?: OcxUsage;
+  totalTokens?: number;
 }
 
 const requestLog: RequestLogEntry[] = [];
@@ -686,6 +697,22 @@ let requestLogSeq = 0;
 function addRequestLog(entry: RequestLogEntry) {
   requestLog.push(entry);
   if (requestLog.length > MAX_LOG_SIZE) requestLog.shift();
+  try {
+    appendUsageEntry({
+      requestId: entry.requestId,
+      timestamp: entry.timestamp,
+      provider: entry.provider,
+      model: entry.model,
+      ...(entry.resolvedModel ? { resolvedModel: entry.resolvedModel } : {}),
+      status: entry.status,
+      durationMs: entry.durationMs,
+      usageStatus: entry.usageStatus,
+      ...(entry.usage ? { usage: entry.usage } : {}),
+      ...(entry.totalTokens !== undefined ? { totalTokens: entry.totalTokens } : {}),
+    });
+  } catch {
+    /* request logging must never fail a user request */
+  }
 }
 
 export function nextRequestLogId(timestamp = Date.now()): string {
@@ -752,6 +779,29 @@ function applyResponseLogMetadata(logCtx: RequestLogContext, payload: unknown): 
   if (typeof model === "string" && model.trim()) logCtx.resolvedModel = model;
   const serviceTier = (source as { service_tier?: unknown }).service_tier;
   if (typeof serviceTier === "string" && serviceTier.trim()) logCtx.responseServiceTier = serviceTier;
+  const usage = usageFromResponsesPayload((source as { usage?: unknown }).usage);
+  if (usage) logCtx.usage = usage;
+}
+
+function usageFromResponsesPayload(usage: unknown): OcxUsage | undefined {
+  if (!usage || typeof usage !== "object") return undefined;
+  const raw = usage as {
+    input_tokens?: unknown;
+    output_tokens?: unknown;
+    input_tokens_details?: { cached_tokens?: unknown };
+    output_tokens_details?: { reasoning_tokens?: unknown };
+  };
+  if (typeof raw.input_tokens !== "number" || typeof raw.output_tokens !== "number") return undefined;
+  return {
+    inputTokens: raw.input_tokens,
+    outputTokens: raw.output_tokens,
+    ...(typeof raw.input_tokens_details?.cached_tokens === "number"
+      ? { cachedInputTokens: raw.input_tokens_details.cached_tokens }
+      : {}),
+    ...(typeof raw.output_tokens_details?.reasoning_tokens === "number"
+      ? { reasoningOutputTokens: raw.output_tokens_details.reasoning_tokens }
+      : {}),
+  };
 }
 
 function inspectResponseLogJson(logCtx: RequestLogContext, text: string): void {
@@ -780,6 +830,8 @@ function addFinalRequestLog(
   addLog: (entry: RequestLogEntry) => void = addRequestLog,
 ): void {
   const errorCode = requestLogErrorCode(status);
+  const usageStatus = usageStatusForFinalLog(logCtx.usage);
+  const totalTokens = usageTotalTokens(logCtx.usage);
   addLog({
     requestId,
     timestamp: start,
@@ -798,6 +850,9 @@ function addFinalRequestLog(
     ...(errorCode ? { errorCode } : {}),
     ...(meta?.terminalStatus ? { terminalStatus: meta.terminalStatus } : {}),
     ...(meta?.closeReason ? { closeReason: meta.closeReason } : {}),
+    usageStatus,
+    ...(logCtx.usage ? { usage: logCtx.usage } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
   });
 }
 
