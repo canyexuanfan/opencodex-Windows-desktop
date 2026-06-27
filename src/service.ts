@@ -9,9 +9,10 @@ import { execFileSync, execSync } from "node:child_process";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getConfigDir } from "./config";
+import { getConfigDir, readPid, removePid } from "./config";
 import { restoreNativeCodex } from "./codex-inject";
 import { durableBunPath } from "./bun-runtime";
+import { killProxy } from "./process-control";
 
 const LABEL = "com.opencodex.proxy";
 const TASK = "opencodex-proxy";
@@ -262,6 +263,23 @@ function platformOps(): ServiceOps | null {
   return null;
 }
 
+function stopTrackedProxyIfRunning(): boolean {
+  const pid = readPid();
+  if (!pid) return false;
+  killProxy(pid);
+  removePid(pid);
+  return true;
+}
+
+function stopTrackedProxyForServiceCommand(): boolean {
+  try {
+    return stopTrackedProxyIfRunning();
+  } catch (err) {
+    console.error(`⚠️  Failed to stop proxy: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
 /**
  * If a service is installed, stop it so the process manager doesn't respawn after `ocx stop`.
  * Returns true if a service was found and stopped.
@@ -346,6 +364,7 @@ export function serviceCommand(sub?: string): void {
       break;
     case "stop":
       ops.stop();
+      stopTrackedProxyForServiceCommand();
       restoreNativeCodex();
       console.log("✅ service stopped + native Codex restored.");
       break;
@@ -356,6 +375,8 @@ export function serviceCommand(sub?: string): void {
     }
     case "uninstall":
     case "remove":
+      ops.stop();
+      stopTrackedProxyForServiceCommand();
       ops.uninstall();
       restoreNativeCodex();
       console.log("✅ service uninstalled + native Codex restored.");
