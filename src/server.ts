@@ -351,7 +351,10 @@ async function handleResponses(
   }
   logCtx.model = route.modelId;
   logCtx.provider = route.providerName;
-  logCtx.modelSupportsServiceTier = catalogModelSupportsServiceTier(route.modelId, logCtx.configuredServiceTier);
+  logCtx.modelSupportsServiceTier = catalogModelSupportsServiceTier(
+    route.modelId,
+    logCtx.requestedServiceTier ?? logCtx.configuredServiceTier,
+  );
 
   let authCtx: CodexAuthContext;
   let selectedForwardHeaders: Headers;
