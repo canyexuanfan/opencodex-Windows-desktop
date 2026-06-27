@@ -579,6 +579,16 @@ export function linkAbortSignal(upstream: AbortController, signal?: AbortSignal)
   return () => signal.removeEventListener("abort", onAbort);
 }
 
+export function disableResponsesRequestTimeout(req: Request, server: Pick<Server<WsData>, "timeout"> | undefined): boolean {
+  if (!server) return false;
+  try {
+    server.timeout(req, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function fetchWithHeaderTimeout(
   url: string,
   init: Omit<RequestInit, "signal">,
@@ -1490,7 +1500,7 @@ export function startServer(port?: number) {
     port: listenPort,
     hostname: config.hostname ?? "127.0.0.1",
     idleTimeout: 255,
-    async fetch(req): Promise<Response> {
+    async fetch(req, requestServer): Promise<Response> {
       const url = new URL(req.url);
 
       if (req.method === "OPTIONS") {
@@ -1575,6 +1585,7 @@ export function startServer(port?: number) {
       }
 
       if (url.pathname === "/v1/responses" && req.method === "POST") {
+        disableResponsesRequestTimeout(req, requestServer);
         if (draining) {
           return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
         }

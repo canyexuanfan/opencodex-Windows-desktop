@@ -14,6 +14,7 @@ import { saveConfig } from "../src/config";
 import {
   assertServerAuthConfig,
   corsHeaders,
+  disableResponsesRequestTimeout,
   hasValidApiAuth,
   isApiAuthRequired,
   isLoopbackHostname,
@@ -57,6 +58,30 @@ afterEach(() => {
 });
 
 describe("server local API auth", () => {
+  test("responses timeout helper disables Bun request timeout when available", () => {
+    const req = new Request("http://localhost/v1/responses", { method: "POST" });
+    const calls: Array<[Request, number]> = [];
+    const server = {
+      timeout(request: Request, seconds: number) {
+        calls.push([request, seconds]);
+      },
+    };
+
+    expect(disableResponsesRequestTimeout(req, server)).toBe(true);
+    expect(calls).toEqual([[req, 0]]);
+  });
+
+  test("responses timeout helper is safe when the runtime hook is unavailable", () => {
+    const req = new Request("http://localhost/v1/responses", { method: "POST" });
+
+    expect(disableResponsesRequestTimeout(req, undefined)).toBe(false);
+    expect(disableResponsesRequestTimeout(req, {
+      timeout() {
+        throw new Error("unsupported");
+      },
+    })).toBe(false);
+  });
+
   test("loopback hostnames do not require opencodex API auth", () => {
     expect(isLoopbackHostname(undefined)).toBe(true);
     expect(isLoopbackHostname("")).toBe(true);
