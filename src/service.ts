@@ -13,7 +13,7 @@ import { getConfigDir, readPid, removePid } from "./config";
 import { loadConfig } from "./config";
 import { restoreNativeCodex } from "./codex-inject";
 import { durableBunPath, durableBunRuntime } from "./bun-runtime";
-import { killProxy } from "./process-control";
+import { isProcessAlive, killProxy } from "./process-control";
 import { serviceApiTokenFilePath } from "./service-secrets";
 
 const LABEL = "com.opencodex.proxy";
@@ -487,20 +487,26 @@ function platformOps(): ServiceOps | null {
   return null;
 }
 
-function stopTrackedProxyIfRunning(): boolean {
+type TrackedProxyCleanupResult = "none" | "stale" | "stopped";
+
+function stopTrackedProxyIfRunning(): TrackedProxyCleanupResult {
   const pid = readPid();
-  if (!pid) return false;
+  if (!pid) return "none";
+  if (!isProcessAlive(pid)) {
+    removePid(pid);
+    return "stale";
+  }
   killProxy(pid);
   removePid(pid);
-  return true;
+  return "stopped";
 }
 
-function stopTrackedProxyForServiceCommand(): boolean {
+function stopTrackedProxyForServiceCommand(): TrackedProxyCleanupResult {
   try {
     return stopTrackedProxyIfRunning();
   } catch (err) {
     console.error(`⚠️  Failed to stop proxy: ${err instanceof Error ? err.message : String(err)}`);
-    return false;
+    return "none";
   }
 }
 

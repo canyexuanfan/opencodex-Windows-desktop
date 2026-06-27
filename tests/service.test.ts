@@ -288,20 +288,24 @@ describe("service lifecycle cleanup ordering", () => {
     const service = await readText("src/service.ts");
 
     expect(service).toContain('import { getConfigDir, readPid, removePid } from "./config";');
-    expect(service).toContain('import { killProxy } from "./process-control";');
-    expect(service).toContain("function stopTrackedProxyIfRunning(): boolean");
-    expect(service).toContain("if (!pid) return false;");
+    expect(service).toContain('import { isProcessAlive, killProxy } from "./process-control";');
+    expect(service).toContain('type TrackedProxyCleanupResult = "none" | "stale" | "stopped";');
+    expect(service).toContain("function stopTrackedProxyIfRunning(): TrackedProxyCleanupResult");
+    expect(service).toContain('if (!pid) return "none";');
+    expect(service).toContain("if (!isProcessAlive(pid))");
+    expect(service).toContain('return "stale";');
     expect(service).toContain("killProxy(pid);");
     expect(service).toContain("removePid(pid);");
+    expect(service).toContain('return "stopped";');
   });
 
   test("service command cleanup logs kill failures without skipping restore/delete", async () => {
     const service = await readText("src/service.ts");
 
-    expect(service).toContain("function stopTrackedProxyForServiceCommand(): boolean");
+    expect(service).toContain("function stopTrackedProxyForServiceCommand(): TrackedProxyCleanupResult");
     expect(service).toContain("catch (err)");
     expect(service).toContain("Failed to stop proxy");
-    expect(service).toContain("return false;");
+    expect(service).toContain('return "none";');
   });
 });
 
