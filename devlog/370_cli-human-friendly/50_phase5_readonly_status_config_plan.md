@@ -64,7 +64,13 @@ Behavior:
 - never calls `saveConfig()` or `backupInvalidConfig()`;
 - if config file is missing, returns default config with `source: "default"` and `error: null`;
 - if config file parses and validates, returns parsed config with `source: "file"`;
-- if config file is invalid JSON or schema-invalid after the same safe default merge attempt used by `loadConfig()`, returns default config with `source: "fallback"` and a redacted, non-secret parse/validation summary in `error`.
+- if config file is invalid JSON or schema-invalid after the same safe default merge attempt used by `loadConfig()`, returns default config with `source: "fallback"` and a bounded, non-secret summary in `error`.
+- `error` must never reuse raw `Error.message`, raw config text, or zod messages that might include user-provided values. It must use fixed categories and safe field paths only, for example:
+
+```text
+invalid_json
+schema_invalid: defaultProvider, providers.cursor
+```
 
 ### 2. Route status through diagnostics reader
 
@@ -93,6 +99,7 @@ In `/Users/jun/Developer/new/700_projects/opencodex/tests/cli-status-json.test.t
 - no `config.json.invalid-*` backup is created;
 - directory file list is unchanged;
 - JSON contains `config.source === "fallback"` and a string `config.error`.
+- JSON error summary does not include raw malformed config content or secret-looking values.
 
 In `/Users/jun/Developer/new/700_projects/opencodex/tests/config.test.ts` add direct unit coverage:
 
@@ -106,6 +113,7 @@ In `/Users/jun/Developer/new/700_projects/opencodex/tests/config.test.ts` add di
 - `ocx status --json` writes no stderr on malformed config.
 - `ocx status --json` creates no `config.json.invalid-*` file.
 - `status` diagnostics do not chmod/harden as part of config reading; tests prove no backup/files are created, and implementation proves no harden helper calls in diagnostics reader.
+- `config.error` uses only fixed categories plus safe field paths; raw parser messages, raw config content, and secret-looking values are not exposed.
 - Existing `loadConfig()` mutating repair/backup behavior remains unchanged and covered by existing config tests.
 
 ## Verification
