@@ -54,13 +54,11 @@ describe("codex auth account collision", () => {
     });
   });
 
-  test("rejects the same team member added twice", async () => {
+  test("allows the same email and account id because personal and business subscriptions can coexist", async () => {
     seedAccount("team-member-a", "member-a@example.test", "shared-team-account");
 
-    const result = checkAccountIdCollision("shared-team-account", "MEMBER-A@example.test");
-    expect(result.collision).toBe(true);
-    if (result.collision) {
-      expect(result.reason).toContain("Account is already in the pool");
-    }
+    expect(checkAccountIdCollision("shared-team-account", "MEMBER-A@example.test")).toEqual({
+      collision: false,
+    });
   });
 });
