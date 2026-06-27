@@ -107,33 +107,27 @@ Do not copy:
 
 ## Proposed Work-Phase Map
 
-### Phase 1 - Help and Version Foundation
+### Phase 1 - Broad `--help` Surface Research
 
-Low-risk implementation pass.
+Documentation-only investigation pass.
 
-- Add `ocx --version`, `ocx -v`, and `ocx version`.
-- Replace ad hoc top-level usage with a structured help renderer.
-- Add grouped sections:
-  - Quick start
-  - Daily commands
-  - Diagnostics and recovery
-  - Auth and providers
-  - Services and autostart
-  - Global options
-- Add tests proving help/version do not mutate Codex state.
+- Enumerate every current `ocx` top-level command and nested `service` / `codex-shim` command.
+- Capture `--help`, `-h`, and `ocx help <command>` behavior.
+- Explicitly probe missing or empty candidate commands such as `restart`, `doctor`, `logs`, `commands`, `--json`, and `--version`.
+- Compare actual behavior against README, docs-site, and `structure/` documentation.
+- Produce a command matrix before any implementation patch.
 
-### Phase 2 - Subcommand Help Consistency
+### Phase 2 - Help/Version Patch Plan
 
-Medium-risk parser cleanup pass.
+Implementation planning pass after Phase 1 evidence exists.
 
-- Normalize `ocx <command> --help` for all top-level commands and nested `service` / `codex-shim`.
-- Add examples to subcommand help.
-- Keep command execution behavior unchanged.
-- Add tests for representative nested help paths.
+- Decide the first low-risk implementation slice from the Phase 1 matrix.
+- Likely candidates: version output, top-level grouped help, or side-effect-free help aliases.
+- Write a diff-level PABCD plan before touching `src/cli.ts`.
 
 ### Phase 3 - Agent-Friendly Diagnostics Contract
 
-Higher-risk public contract pass.
+Public contract planning pass.
 
 - Add `ocx status --json`.
 - Consider `ocx doctor` as a read-only aggregate diagnostic command.
@@ -146,4 +140,3 @@ Higher-risk public contract pass.
 - Should all commands eventually support `--json`, or only read-only diagnostics?
 - Should help output use color when TTY is present, or stay plain for copy/paste and CI logs?
 - Should `ocx help <command>` be an alias for `ocx <command> --help`?
-
