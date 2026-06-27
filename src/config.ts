@@ -34,6 +34,10 @@ function resolvePidPath(): string {
   return join(resolveConfigDir(), "ocx.pid");
 }
 
+function resolveRuntimePortPath(): string {
+  return join(resolveConfigDir(), "runtime-port.json");
+}
+
 const warnedConfigFallbacks = new Set<string>();
 
 const providerConfigSchema = z.object({
@@ -97,6 +101,10 @@ export function getConfigPath(): string {
 
 export function getPidPath(): string {
   return resolvePidPath();
+}
+
+export function getRuntimePortPath(): string {
+  return resolveRuntimePortPath();
 }
 
 export function hardenConfigDir(): void {
@@ -256,6 +264,34 @@ export function writePid(pid: number): void {
   atomicWriteFile(getPidPath(), String(pid));
 }
 
+export type RuntimePortState = {
+  pid: number;
+  port: number;
+  hostname?: string;
+};
+
+function isValidRuntimePortState(value: unknown): value is RuntimePortState {
+  if (!value || typeof value !== "object") return false;
+  const state = value as Record<string, unknown>;
+  const hostnameOk = state.hostname === undefined || typeof state.hostname === "string";
+  return Number.isSafeInteger(state.pid)
+    && Number(state.pid) > 0
+    && Number.isInteger(state.port)
+    && Number(state.port) > 0
+    && Number(state.port) <= 65535
+    && hostnameOk;
+}
+
+export function writeRuntimePort(state: RuntimePortState): void {
+  const dir = getConfigDir();
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+  } else {
+    hardenConfigDir();
+  }
+  atomicWriteFile(getRuntimePortPath(), JSON.stringify(state, null, 2) + "\n");
+}
+
 export function readPid(): number | null {
   const pidPath = getPidPath();
   if (!existsSync(pidPath)) return null;
@@ -272,6 +308,17 @@ export function readPid(): number | null {
       }
       return null;
     }
+  } catch {
+    return null;
+  }
+}
+
+export function readRuntimePort(expectedPid?: number): RuntimePortState | null {
+  try {
+    const parsed = JSON.parse(readFileSync(getRuntimePortPath(), "utf-8"));
+    if (!isValidRuntimePortState(parsed)) return null;
+    if (expectedPid !== undefined && parsed.pid !== expectedPid) return null;
+    return parsed;
   } catch {
     return null;
   }
@@ -297,6 +344,13 @@ function readPidFileValue(): number | null {
   } catch {
     return null;
   }
+}
+
+export function removeRuntimePort(expectedPid?: number): void {
+  if (expectedPid !== undefined && readRuntimePort(expectedPid) === null) return;
+  try {
+    unlinkSync(getRuntimePortPath());
+  } catch { /* ignore */ }
 }
 
 export function parsePidFile(raw: string): number | null {

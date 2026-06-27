@@ -4,7 +4,18 @@ import { rmSync } from "node:fs";
 import { restoreNativeCodex } from "./codex-inject";
 import { restoreLegacyOpenaiHistory } from "./codex-history-provider";
 import { writeJournal, reconcileJournal } from "./codex-journal";
-import { codexAutoStartEnabled, getConfigDir, loadConfig, readPid, removePid, saveConfig, writePid } from "./config";
+import {
+  codexAutoStartEnabled,
+  getConfigDir,
+  loadConfig,
+  readPid,
+  readRuntimePort,
+  removePid,
+  removeRuntimePort,
+  saveConfig,
+  writePid,
+  writeRuntimePort,
+} from "./config";
 import { collectStatus } from "./cli-status";
 import { hasHelpFlag, printSubcommandUsage, printUsage, printVersion } from "./cli-help";
 import { findAvailablePort, shouldPersistSelectedPort } from "./ports";
@@ -126,15 +137,17 @@ async function handleStart(options: { block?: boolean } = {}) {
 
   const server = startServer(port);
   writePid(process.pid);
-  writeJournal();
 
   const config = loadConfig();
+  writeRuntimePort({ pid: process.pid, port, hostname: config.hostname });
+  writeJournal();
 
   let cleaned = false;
   const syncCleanup = () => {
     if (cleaned) return;
     cleaned = true;
     removePid(process.pid);
+    removeRuntimePort(process.pid);
     if (!process.env.OCX_SERVICE) { try { restoreNativeCodex(); } catch { /* best-effort restore */ } }
   };
 
@@ -205,6 +218,7 @@ function handleStop() {
       killProxy(pid);
       console.log(`✅ Proxy (PID ${pid}) stopped.`);
       removePid(pid);
+      removeRuntimePort(pid);
     } catch {
       stopFailed = true;
       console.error(`❌ Failed to stop proxy (PID ${pid}).`);
@@ -238,6 +252,7 @@ async function handleUninstall() {
     if (!pid) return false;
     killProxy(pid);
     removePid(pid);
+    removeRuntimePort(pid);
     return true;
   });
 
@@ -369,8 +384,8 @@ switch (command) {
   case "gui": {
     const cfg = await import("./config");
     const config = cfg.loadConfig();
-    const guiUrl = `http://localhost:${config.port}`;
-    if (!cfg.readPid()) {
+    let pid = cfg.readPid();
+    if (!pid) {
       console.log("Proxy not running. Starting...");
       const child = spawn(process.execPath, [process.argv[1], "start"], {
         detached: true,
@@ -380,7 +395,11 @@ switch (command) {
       });
       child.unref();
       await new Promise(r => setTimeout(r, 1000));
+      pid = cfg.readPid();
     }
+    const runtimePort = pid ? cfg.readRuntimePort(pid) : null;
+    const guiPort = runtimePort?.port ?? config.port;
+    const guiUrl = `http://localhost:${guiPort}`;
     console.log(`Opening ${guiUrl}`);
     const { openUrl } = await import("./open-url");
     openUrl(guiUrl);

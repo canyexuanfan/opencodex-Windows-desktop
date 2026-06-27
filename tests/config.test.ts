@@ -7,12 +7,16 @@ import {
   getConfigPath,
   getDefaultConfig,
   getPidPath,
+  getRuntimePortPath,
   isValidProviderName,
   isOcxStartCommandLine,
   loadConfig,
   parsePidFile,
   readConfigDiagnostics,
+  readRuntimePort,
   removePid,
+  removeRuntimePort,
+  writeRuntimePort,
   writePid,
 } from "../src/config";
 
@@ -300,5 +304,29 @@ describe("opencodex config defaults", () => {
 
     removePid(111);
     expect(existsSync(getPidPath())).toBe(false);
+  });
+
+  test("runtime port metadata round-trips and validates expected pid", () => {
+    writeRuntimePort({ pid: 1234, port: 58195, hostname: "0.0.0.0" });
+
+    expect(readRuntimePort()).toEqual({ pid: 1234, port: 58195, hostname: "0.0.0.0" });
+    expect(readRuntimePort(1234)).toEqual({ pid: 1234, port: 58195, hostname: "0.0.0.0" });
+    expect(readRuntimePort(9999)).toBeNull();
+  });
+
+  test("runtime port metadata removal preserves newer pid state", () => {
+    writeRuntimePort({ pid: 1234, port: 58195 });
+
+    removeRuntimePort(9999);
+    expect(existsSync(getRuntimePortPath())).toBe(true);
+
+    removeRuntimePort(1234);
+    expect(existsSync(getRuntimePortPath())).toBe(false);
+  });
+
+  test("invalid runtime port metadata returns null", () => {
+    writeFileSync(getRuntimePortPath(), JSON.stringify({ pid: 1234, port: 99999 }), "utf-8");
+
+    expect(readRuntimePort()).toBeNull();
   });
 });

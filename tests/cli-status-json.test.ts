@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { selectListenTarget } from "../src/cli-status";
 
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const cliPath = join(repoRoot, "src", "cli.ts");
@@ -48,6 +49,7 @@ describe("CLI status JSON", () => {
         schemaVersion?: unknown;
         proxy?: { running?: unknown; pid?: unknown; health?: { ok?: unknown; url?: unknown; message?: unknown } };
         dashboard?: { url?: unknown };
+        listen?: { port?: unknown; source?: unknown };
         paths?: { config?: unknown; pid?: unknown; runtime?: unknown };
         runtime?: { source?: unknown };
         codexAutostart?: unknown;
@@ -64,6 +66,8 @@ describe("CLI status JSON", () => {
       expect(parsed.proxy?.health?.url).toBe("http://127.0.0.1:9/healthz");
       expect(typeof parsed.proxy?.health?.message).toBe("string");
       expect(parsed.dashboard?.url).toBe("http://localhost:9/");
+      expect(parsed.listen?.port).toBe(9);
+      expect(parsed.listen?.source).toBe("config");
       expect(parsed.paths?.config).toBe(configPath);
       expect(parsed.paths?.pid).toBe(join(opencodexHome, "ocx.pid"));
       expect(typeof parsed.paths?.runtime).toBe("string");
@@ -159,5 +163,31 @@ describe("CLI status JSON", () => {
     } finally {
       rmSync(opencodexHome, { recursive: true, force: true });
     }
+  });
+
+  test("listen target prefers current runtime port metadata", () => {
+    const target = selectListenTarget(
+      { port: 10100, hostname: "0.0.0.0" },
+      123,
+      { pid: 123, port: 58195, hostname: "0.0.0.0" },
+    );
+
+    expect(target.source).toBe("runtime");
+    expect(target.port).toBe(58195);
+    expect(target.healthUrl).toBe("http://127.0.0.1:58195/healthz");
+    expect(target.dashboardUrl).toBe("http://localhost:58195/");
+  });
+
+  test("listen target ignores stale runtime port metadata", () => {
+    const target = selectListenTarget(
+      { port: 10100, hostname: "127.0.0.1" },
+      123,
+      { pid: 999, port: 58195 },
+    );
+
+    expect(target.source).toBe("config");
+    expect(target.port).toBe(10100);
+    expect(target.healthUrl).toBe("http://127.0.0.1:10100/healthz");
+    expect(target.dashboardUrl).toBe("http://localhost:10100/");
   });
 });

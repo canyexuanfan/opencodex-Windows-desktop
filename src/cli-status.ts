@@ -1,5 +1,6 @@
 import { durableBunRuntime } from "./bun-runtime";
-import { codexAutoStartEnabled, getConfigPath, getPidPath, readConfigDiagnostics, readPid } from "./config";
+import { codexAutoStartEnabled, getConfigPath, getPidPath, readConfigDiagnostics, readPid, readRuntimePort, type RuntimePortState } from "./config";
+import type { OcxConfig } from "./types";
 import { serviceStatusSummary } from "./service";
 
 type HealthCheck = {
@@ -21,6 +22,11 @@ export type CliStatusJson = {
     };
   };
   dashboard: { url: string };
+  listen: {
+    port: number;
+    hostname: string | null;
+    source: "runtime" | "config";
+  };
   paths: {
     config: string;
     pid: string;
@@ -50,8 +56,33 @@ function healthHost(hostname?: string): string {
   return !hostname || hostname === "0.0.0.0" || hostname === "::" ? "127.0.0.1" : hostname;
 }
 
-async function checkProxyHealth(port: number, hostname?: string): Promise<HealthCheck> {
-  const url = `http://${healthHost(hostname)}:${port}/healthz`;
+export type ListenTarget = {
+  port: number;
+  hostname?: string;
+  source: "runtime" | "config";
+  healthUrl: string;
+  dashboardUrl: string;
+};
+
+export function selectListenTarget(
+  config: Pick<OcxConfig, "port" | "hostname">,
+  pid: number | null,
+  runtimePort: RuntimePortState | null,
+): ListenTarget {
+  const currentRuntimePort = pid && runtimePort?.pid === pid ? runtimePort : null;
+  const port = currentRuntimePort ? currentRuntimePort.port : config.port ?? 10100;
+  const hostname = currentRuntimePort ? currentRuntimePort.hostname : config.hostname;
+  return {
+    port,
+    hostname,
+    source: currentRuntimePort ? "runtime" : "config",
+    healthUrl: `http://${healthHost(hostname)}:${port}/healthz`,
+    dashboardUrl: `http://localhost:${port}/`,
+  };
+}
+
+async function checkProxyHealth(target: ListenTarget): Promise<HealthCheck> {
+  const url = target.healthUrl;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 800);
   try {
@@ -76,9 +107,9 @@ async function checkProxyHealth(port: number, hostname?: string): Promise<Health
 export async function collectStatus(): Promise<CliStatusView> {
   const configDiagnostics = readConfigDiagnostics();
   const config = configDiagnostics.config;
-  const port = config.port ?? 10100;
   const pid = readPid();
-  const health = await checkProxyHealth(port, config.hostname);
+  const listen = selectListenTarget(config, pid, pid ? readRuntimePort(pid) : null);
+  const health = await checkProxyHealth(listen);
   const bunRuntime = durableBunRuntime();
   const serviceSummary = serviceStatusSummary();
   const { codexShimStatus } = await import("./codex-shim");
@@ -105,7 +136,12 @@ export async function collectStatus(): Promise<CliStatusView> {
           message: health.message,
         },
       },
-      dashboard: { url: `http://localhost:${port}/` },
+      dashboard: { url: listen.dashboardUrl },
+      listen: {
+        port: listen.port,
+        hostname: listen.hostname ?? null,
+        source: listen.source,
+      },
       paths: {
         config: getConfigPath(),
         pid: getPidPath(),
