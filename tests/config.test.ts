@@ -11,6 +11,7 @@ import {
   isOcxStartCommandLine,
   loadConfig,
   parsePidFile,
+  readConfigDiagnostics,
   removePid,
   writePid,
 } from "../src/config";
@@ -69,6 +70,56 @@ describe("opencodex config defaults", () => {
       },
       codexAutoStart: false,
     });
+  });
+
+  test("reads valid config diagnostics without mutation", () => {
+    writeConfig({
+      port: 12345,
+      providers: {
+        custom: { adapter: "openai-chat", baseUrl: "https://example.test/v1" },
+      },
+      defaultProvider: "custom",
+      codexAutoStart: false,
+    });
+
+    const diagnostics = readConfigDiagnostics();
+
+    expect(diagnostics.source).toBe("file");
+    expect(diagnostics.error).toBeNull();
+    expect(diagnostics.config).toMatchObject({
+      port: 12345,
+      defaultProvider: "custom",
+      codexAutoStart: false,
+    });
+    expect(backupNames()).toHaveLength(0);
+  });
+
+  test("missing config diagnostics use defaults without creating files", () => {
+    const beforeFiles = readdirSync(testDir).sort();
+    const diagnostics = readConfigDiagnostics();
+    const afterFiles = readdirSync(testDir).sort();
+
+    expect(diagnostics).toEqual({
+      config: getDefaultConfig(),
+      source: "default",
+      error: null,
+    });
+    expect(afterFiles).toEqual(beforeFiles);
+  });
+
+  test("malformed config diagnostics fall back without backup or raw content", () => {
+    writeConfig('{ "apiKey": "sk-secret-leak", invalid json');
+    const beforeFiles = readdirSync(testDir).sort();
+
+    const diagnostics = readConfigDiagnostics();
+    const afterFiles = readdirSync(testDir).sort();
+
+    expect(diagnostics.config).toEqual(getDefaultConfig());
+    expect(diagnostics.source).toBe("fallback");
+    expect(diagnostics.error).toBe("invalid_json");
+    expect(JSON.stringify(diagnostics)).not.toContain("sk-secret-leak");
+    expect(afterFiles).toEqual(beforeFiles);
+    expect(backupNames()).toHaveLength(0);
   });
 
   test("resolves relative OPENCODEX_HOME once to an absolute config directory", () => {

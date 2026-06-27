@@ -149,6 +149,57 @@ export function loadConfig(): OcxConfig {
   }
 }
 
+export type ConfigDiagnostics = {
+  config: OcxConfig;
+  source: "default" | "file" | "fallback";
+  error: string | null;
+};
+
+function mergeConfigDefaults(parsed: unknown): unknown {
+  if (!parsed || typeof parsed !== "object") return parsed;
+  const defaults = getDefaultConfig();
+  const raw = parsed as Record<string, unknown>;
+  const merged: Record<string, unknown> = { ...defaults, ...raw };
+  if (raw.providers && typeof raw.providers === "object" && defaults.providers) {
+    merged.providers = { ...defaults.providers, ...(raw.providers as Record<string, unknown>) };
+  }
+  return merged;
+}
+
+function configIssuePaths(error: z.ZodError): string[] {
+  const paths = error.issues.map(issue => issue.path.join(".") || "config");
+  return [...new Set(paths)].sort();
+}
+
+function schemaDiagnosticsError(error: z.ZodError): string {
+  const paths = configIssuePaths(error);
+  return paths.length > 0 ? `schema_invalid: ${paths.join(", ")}` : "schema_invalid";
+}
+
+export function readConfigDiagnostics(): ConfigDiagnostics {
+  const configPath = getConfigPath();
+  if (!existsSync(configPath)) {
+    return { config: getDefaultConfig(), source: "default", error: null };
+  }
+  try {
+    const raw = readFileSync(configPath, "utf-8").replace(/^\uFEFF/, "");
+    const parsed = JSON.parse(raw);
+    const result = configSchema.safeParse(parsed);
+    if (result.success) {
+      return { config: result.data as OcxConfig, source: "file", error: null };
+    }
+
+    const retryResult = configSchema.safeParse(mergeConfigDefaults(parsed));
+    if (retryResult.success) {
+      return { config: retryResult.data as OcxConfig, source: "file", error: null };
+    }
+
+    return { config: getDefaultConfig(), source: "fallback", error: schemaDiagnosticsError(result.error) };
+  } catch {
+    return { config: getDefaultConfig(), source: "fallback", error: "invalid_json" };
+  }
+}
+
 export function saveConfig(config: OcxConfig): void {
   const dir = getConfigDir();
   if (!existsSync(dir)) {

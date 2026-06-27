@@ -1,5 +1,5 @@
 import { durableBunRuntime } from "./bun-runtime";
-import { codexAutoStartEnabled, getConfigPath, getPidPath, loadConfig, readPid } from "./config";
+import { codexAutoStartEnabled, getConfigPath, getPidPath, readConfigDiagnostics, readPid } from "./config";
 import { serviceStatusSummary } from "./service";
 
 type HealthCheck = {
@@ -32,6 +32,10 @@ export type CliStatusJson = {
   };
   codexAutostart: boolean;
   defaultProvider: string | null;
+  config: {
+    source: "default" | "file" | "fallback";
+    error: string | null;
+  };
   service: { summary: string };
   codexShim: { summary: string };
 };
@@ -70,7 +74,8 @@ async function checkProxyHealth(port: number, hostname?: string): Promise<Health
 }
 
 export async function collectStatus(): Promise<CliStatusView> {
-  const config = loadConfig();
+  const configDiagnostics = readConfigDiagnostics();
+  const config = configDiagnostics.config;
   const port = config.port ?? 10100;
   const pid = readPid();
   const health = await checkProxyHealth(port, config.hostname);
@@ -112,6 +117,10 @@ export async function collectStatus(): Promise<CliStatusView> {
       },
       codexAutostart: codexAutoStartEnabled(config),
       defaultProvider: typeof config.defaultProvider === "string" ? config.defaultProvider : null,
+      config: {
+        source: configDiagnostics.source,
+        error: configDiagnostics.error,
+      },
       service: { summary: serviceSummary },
       codexShim: { summary: codexShimSummary },
     },

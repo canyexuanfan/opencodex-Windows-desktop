@@ -52,6 +52,7 @@ describe("CLI status JSON", () => {
         runtime?: { source?: unknown };
         codexAutostart?: unknown;
         defaultProvider?: unknown;
+        config?: { source?: unknown; error?: unknown };
         service?: { summary?: unknown };
         codexShim?: { summary?: unknown };
       };
@@ -69,6 +70,8 @@ describe("CLI status JSON", () => {
       expect(typeof parsed.runtime?.source).toBe("string");
       expect(parsed.codexAutostart).toBe(false);
       expect(parsed.defaultProvider).toBe("openai");
+      expect(parsed.config?.source).toBe("file");
+      expect(parsed.config?.error).toBeNull();
       expect(typeof parsed.service?.summary).toBe("string");
       expect(typeof parsed.codexShim?.summary).toBe("string");
 
@@ -122,6 +125,37 @@ describe("CLI status JSON", () => {
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("Usage: ocx status [--json]");
       expect(result.stdout).toBe("");
+    } finally {
+      rmSync(opencodexHome, { recursive: true, force: true });
+    }
+  });
+
+  test("status --json on malformed config remains read-only and secret-safe", () => {
+    const opencodexHome = mkdtempSync(join(tmpdir(), "ocx-status-json-"));
+    try {
+      const configPath = join(opencodexHome, "config.json");
+      writeFileSync(configPath, '{ "apiKey": "sk-status-secret", invalid json', "utf8");
+      const beforeFiles = readdirSync(opencodexHome).sort();
+
+      const result = runStatusJson(opencodexHome);
+      const afterFiles = readdirSync(opencodexHome).sort();
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(afterFiles).toEqual(beforeFiles);
+      expect(afterFiles.some(name => name.startsWith("config.json.invalid-"))).toBe(false);
+
+      const parsed = JSON.parse(result.stdout) as {
+        config?: { source?: unknown; error?: unknown };
+        paths?: { config?: unknown };
+      };
+      expect(parsed.paths?.config).toBe(configPath);
+      expect(parsed.config?.source).toBe("fallback");
+      expect(parsed.config?.error).toBe("invalid_json");
+
+      const serialized = JSON.stringify(parsed);
+      expect(serialized).not.toContain("sk-status-secret");
+      expect(serialized).not.toContain("apiKey");
     } finally {
       rmSync(opencodexHome, { recursive: true, force: true });
     }
