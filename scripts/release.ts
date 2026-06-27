@@ -6,11 +6,12 @@
  *   bun scripts/release.ts <version> [--tag latest|preview] [--publish]
  *       Preflight (clean tree on main + typecheck) → bump package.json → commit → push →
  *       wait for Cross-platform CI → dispatch the Release workflow → watch it.
- *       Dry-run by default; pass --publish to publish.
+ *       The version bump commit/push is real; the Release workflow publish step is dry-run by default.
+ *       Pass --publish to publish.
  *   bun scripts/release.ts watch
  *       Watch the most recent Release run.
  *
- * Example:  bun scripts/release.ts 0.1.0            # dry-run release of 0.1.0
+ * Example:  bun scripts/release.ts 0.1.0            # commit/push bump, workflow dry-run publish
  *           bun scripts/release.ts 0.1.0 --publish  # actually publish 0.1.0
  *
  * Requires: gh CLI (authed). Publishing is tokenless via Trusted Publishing (OIDC) — no NPM_TOKEN.
@@ -20,6 +21,7 @@ import { $ } from "bun";
 const args = process.argv.slice(2);
 interface GhRun {
   conclusion: string | null;
+  createdAt?: string;
   databaseId: number;
   headSha: string;
   status: string;
@@ -123,8 +125,34 @@ async function assertUnusedReleaseVersion(packageName: string, version: string):
 async function watchLatest(): Promise<void> {
   const id = (await $`gh run list --workflow release.yml --limit 1 --json databaseId -q '.[0].databaseId'`.text()).trim();
   if (!id) { console.error("No Release runs found yet."); process.exit(1); }
+  await watchRun(id);
+}
+
+async function watchRun(id: string | number): Promise<void> {
   console.log(`→ watching Release run ${id}`);
-  await $`gh run watch ${id} --exit-status --interval 10`;
+  await $`gh run watch ${String(id)} --exit-status --interval 10`;
+}
+
+async function waitForReleaseWorkflowRun(sha: string, branch: string, createdAfterIso: string): Promise<GhRun> {
+  const deadline = Date.now() + 2 * 60 * 1000;
+  let attempt = 1;
+  while (Date.now() < deadline) {
+    const raw = await $`gh run list --workflow release.yml --branch ${branch} --commit ${sha} --limit 20 --json createdAt,databaseId,headSha,status,url`.text();
+    const runs = (JSON.parse(raw) as GhRun[])
+      .filter(run => run.headSha === sha)
+      .filter(run => !run.createdAt || run.createdAt >= createdAfterIso)
+      .sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
+    const run = runs[0];
+    if (run) {
+      console.log(`→ Release workflow run found: ${run.url}`);
+      return run;
+    }
+    console.log(`→ waiting for dispatched Release run (${sha.slice(0, 7)}) attempt ${attempt}`);
+    attempt += 1;
+    await Bun.sleep(5_000);
+  }
+  console.error(`✗ timed out waiting for dispatched Release workflow run on ${sha}`);
+  process.exit(1);
 }
 
 async function listCiRuns(sha: string): Promise<GhRun[]> {
@@ -231,11 +259,12 @@ if (originSha !== releaseSha) {
 }
 
 console.log(`→ dispatch Release (tag=${tag}, dry-run=${dryRun})`);
+const dispatchStartedAt = new Date(Date.now() - 5_000).toISOString();
 await $`gh workflow run release.yml --ref ${branch} -f version=${version} -f tag=${tag} -f dry-run=${String(dryRun)}`;
-await Bun.sleep(4000);
 
 // 5. Watch it.
-await watchLatest();
+const releaseRun = await waitForReleaseWorkflowRun(releaseSha, branch, dispatchStartedAt);
+await watchRun(releaseRun.databaseId);
 console.log(dryRun
   ? "\n✓ Dry run complete. Re-run with --publish to publish for real."
   : "\n✓ Published. Try:  npm install -g @bitkyc08/opencodex");

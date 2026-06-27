@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import {
   codexAutoStartEnabled,
   getConfigPath,
   getDefaultConfig,
   getPidPath,
+  isValidProviderName,
   isOcxStartCommandLine,
   loadConfig,
   parsePidFile,
@@ -68,6 +69,33 @@ describe("opencodex config defaults", () => {
       },
       codexAutoStart: false,
     });
+  });
+
+  test("resolves relative OPENCODEX_HOME once to an absolute config directory", () => {
+    const parent = mkdtempSync(join(tmpdir(), "ocx-config-parent-"));
+    const oldCwd = process.cwd();
+    try {
+      process.env.OPENCODEX_HOME = "relative-home";
+      process.chdir(parent);
+      const firstPath = getConfigPath();
+      const expectedConfigDir = resolve("relative-home");
+
+      process.chdir(tmpdir());
+
+      expect(firstPath).toBe(join(expectedConfigDir, "config.json"));
+      expect(getConfigPath()).toBe(firstPath);
+      expect(getPidPath()).toBe(join(expectedConfigDir, "ocx.pid"));
+    } finally {
+      process.chdir(oldCwd);
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  test("uses the default home when OPENCODEX_HOME is unset", () => {
+    delete process.env.OPENCODEX_HOME;
+
+    expect(getConfigPath()).toBe(join(homedir(), ".opencodex", "config.json"));
+    expect(getPidPath()).toBe(join(homedir(), ".opencodex", "ocx.pid"));
   });
 
   test("loads UTF-8 BOM config files written by Windows tools", () => {
@@ -142,6 +170,33 @@ describe("opencodex config defaults", () => {
       expect(loaded).toEqual(getDefaultConfig());
       const backups = backupNames();
       expect(backups).toHaveLength(1);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("defaultProvider must exist in providers"));
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test("provider names reject namespace-breaking and reserved object keys", () => {
+    expect(isValidProviderName("openrouter")).toBe(true);
+    expect(isValidProviderName("ollama-cloud")).toBe(true);
+    expect(isValidProviderName("openrouter/custom")).toBe(false);
+    expect(isValidProviderName("__proto__")).toBe(false);
+    expect(isValidProviderName("constructor")).toBe(false);
+  });
+
+  test("backs up config when defaultProvider only exists on Object prototype", () => {
+    writeConfig({
+      port: 10100,
+      providers: {},
+      defaultProvider: "constructor",
+    });
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const loaded = loadConfig();
+
+      expect(loaded).toEqual(getDefaultConfig());
+      expect(backupNames()).toHaveLength(1);
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("defaultProvider must exist in providers"));
     } finally {
       errorSpy.mockRestore();

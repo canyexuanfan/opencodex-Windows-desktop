@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, rmSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-accounts-test");
@@ -44,6 +44,22 @@ describe("codex-account-store CRUD", () => {
     expect(getCodexAccountCredential("legacy")).toEqual(cred);
     expect(loadCodexAccountStore()).toEqual({ legacy: cred });
     expect(readCodexAccountRecord("legacy")).toMatchObject({ credential: cred, generation: 0 });
+  });
+
+  test("malformed credential store is backed up before a new save overwrites it", async () => {
+    const { saveCodexAccountCredential } = await import("../src/codex-account-store");
+    writeFileSync(ACCOUNTS_PATH, "{not valid json", "utf8");
+
+    saveCodexAccountCredential("fresh", {
+      accessToken: "new-access",
+      refreshToken: "new-refresh",
+      expiresAt: Date.now() + 3600_000,
+      chatgptAccountId: "new-account",
+    });
+
+    const backups = readdirSync(TEST_DIR).filter(name => name.startsWith("codex-accounts.json.invalid-"));
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(join(TEST_DIR, backups[0]), "utf8")).toBe("{not valid json");
   });
 
   test("new saves write generation wrapper records", async () => {
@@ -185,8 +201,8 @@ describe("codex-account-store CRUD", () => {
       const result = await getValidCodexToken("refresh-success");
       expect(result).toEqual({ accessToken: "new", chatgptAccountId: "acc", generation: startGeneration + 1 });
       expect(getCodexAccountCredential("refresh-success")).toMatchObject({ accessToken: "new", refreshToken: "new-r" });
-      expect(readCodexAccountRecord("refresh-success")!.refreshGrantFingerprint).toBe(startFingerprint);
-      expect(readCodexAccountRecord("refresh-success")!.refreshGrantFingerprint).toBe(refreshGrantFingerprintForToken("old-r"));
+      expect(readCodexAccountRecord("refresh-success")!.refreshGrantFingerprint).not.toBe(startFingerprint);
+      expect(readCodexAccountRecord("refresh-success")!.refreshGrantFingerprint).toBe(refreshGrantFingerprintForToken("new-r"));
     } finally {
       globalThis.fetch = originalFetch;
     }

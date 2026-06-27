@@ -3,7 +3,14 @@
   "version": "2.5.6",
   "description": "Universal provider proxy for OpenAI Codex — use any LLM with Codex CLI/App/SDK",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "./bin/package-main.mjs",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "default": "./bin/package-main.mjs"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
     "opencodex": "./bin/ocx.mjs",
     "ocx": "./bin/ocx.mjs"
@@ -12,6 +19,9 @@
     "bin",
     "src",
     "gui/dist",
+    "assets/banner.png",
+    "assets/architecture.png",
+    "assets/codex-app-picker.png",
     "README.md",
     "LICENSE"
   ],
@@ -28,18 +38,20 @@
     "typecheck": "bun x tsc --noEmit",
     "privacy:scan": "bun scripts/privacy-scan.ts",
     "generate:jawcode-metadata": "bun scripts/generate-jawcode-metadata.ts",
-    "build:gui": "cd gui && bun install && bun run build",
+    "build:gui": "cd gui && bun install --frozen-lockfile && bun run build && cd .. && bun run prepare:package",
+    "prepare:package": "bun scripts/prepare-package.ts",
+    "prepack": "bun run prepare:package",
     "prepublishOnly": "bun run typecheck && bun run build:gui",
     "release": "bun scripts/release.ts",
     "release:watch": "bun scripts/release.ts watch"
   },
   "dependencies": {
     "bun": "1.3.14",
-    "zod": "^4.0.0"
+    "zod": "4.4.3"
   },
   "devDependencies": {
-    "@types/bun": "latest",
-    "typescript": "^5.8.0"
+    "@types/bun": "1.3.14",
+    "typescript": "5.9.3"
   },
   "keywords": [
     "codex",

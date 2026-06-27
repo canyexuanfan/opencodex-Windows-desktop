@@ -52,8 +52,10 @@ export OPENCODEX_API_AUTH_TOKEN="your-secret-token"
 ocx start
 ```
 
-비루프백 바인딩 시 이 변수가 없으면 프록시 시작이 거부됩니다. 클라이언트는 모든 요청에
-`x-opencodex-api-key` 헤더로 토큰을 포함해야 합니다:
+비루프백 바인딩 시 이 변수가 없으면 프록시 시작이 거부됩니다. LAN 접근용 백그라운드 서비스를
+설치할 때도 같은 변수를 먼저 export한 뒤 `ocx service install`을 실행해야 launchd, systemd,
+Task Scheduler에 토큰이 전달됩니다. 클라이언트는 모든 요청에 `x-opencodex-api-key` 헤더로
+토큰을 포함해야 합니다:
 
 ```
 x-opencodex-api-key: your-secret-token

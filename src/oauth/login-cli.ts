@@ -5,6 +5,13 @@ import { OAUTH_PROVIDERS, runLogin } from "./index";
 import { KEY_LOGIN_PROVIDERS, isKeyLoginProvider, validateApiKey, type KeyLoginProvider } from "./key-providers";
 import type { OcxProviderConfig } from "../types";
 
+export function runningProxyUpdateHeaders(): Headers {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  const apiToken = process.env.OPENCODEX_API_AUTH_TOKEN?.trim();
+  if (apiToken) headers.set("X-OpenCodex-API-Key", apiToken);
+  return headers;
+}
+
 /** Push the new provider into a running proxy's live config so it routes without a restart. */
 async function notifyRunningProxy(name: string, provider: unknown): Promise<void> {
   if (!readPid()) return;
@@ -12,7 +19,7 @@ async function notifyRunningProxy(name: string, provider: unknown): Promise<void
   try {
     await fetch(`http://localhost:${cfg.port}/api/providers`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: runningProxyUpdateHeaders(),
       body: JSON.stringify({ name, provider }),
     });
   } catch {

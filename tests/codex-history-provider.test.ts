@@ -101,6 +101,20 @@ describe("Codex history provider sync", () => {
     expect(existsSync(backupPath)).toBe(false);
   });
 
+  test("does not consume a history backup written for a different Codex state DB", () => {
+    const first = makeFixture();
+    const second = makeFixture();
+    syncCodexHistoryProvider("opencodex", first.dbPath, first.backupPath);
+
+    const result = syncCodexHistoryProvider("openai", second.dbPath, first.backupPath);
+
+    expect(result).toEqual({ rows: 0, files: 0 });
+    expect(existsSync(first.backupPath)).toBe(true);
+    const db = new Database(second.dbPath);
+    expect(db.query("SELECT model_provider FROM threads WHERE id = 'thread-1'").get()).toEqual({ model_provider: "openai" });
+    db.close();
+  });
+
   test("promotes opencodex exec threads to app-visible cli source and restores from backup", () => {
     const { dbPath, backupPath, execRollout } = makeFixture({ includeExec: true });
 

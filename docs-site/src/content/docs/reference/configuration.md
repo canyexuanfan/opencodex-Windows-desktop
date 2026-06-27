@@ -52,8 +52,10 @@ export OPENCODEX_API_AUTH_TOKEN="your-secret-token"
 ocx start
 ```
 
-The proxy refuses to start without this variable when binding beyond loopback. Clients must include
-the token in every request via the `x-opencodex-api-key` header:
+The proxy refuses to start without this variable when binding beyond loopback. If you install a
+background service for LAN access, export the same variable before `ocx service install` so launchd,
+systemd, or Task Scheduler receives it. Clients must include the token in every request via the
+`x-opencodex-api-key` header:
 
 ```
 x-opencodex-api-key: your-secret-token

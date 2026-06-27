@@ -132,6 +132,127 @@ describe("codex-journal", () => {
     expect(JSON.parse(r.stdout).exists).toBe(false);
   });
 
+  test("restoreNativeCodex uses journal snapshot for normal stop without losing custom defaults", () => {
+    const originalConfig = [
+      'model = "openrouter/foo"',
+      'model_provider = "proxy"',
+      "",
+      "[model_providers.proxy]",
+      'name = "Existing Proxy"',
+      'base_url = "https://proxy.example.test/v1"',
+      'wire_api = "responses"',
+      "",
+    ].join("\n");
+    const originalProfile = [
+      'model = "gpt-5.5"',
+      'model_provider = "openai"',
+      "",
+    ].join("\n");
+    writeFileSync(join(testDir, "config.toml"), originalConfig, "utf8");
+    writeFileSync(join(testDir, "opencodex.config.toml"), originalProfile, "utf8");
+
+    const r = runScript(testDir, `
+      const fs = require("fs");
+      const path = require("path");
+      const { writeJournal } = require("./src/codex-journal");
+      const { restoreNativeCodex } = require("./src/codex-inject");
+      writeJournal();
+      fs.writeFileSync(path.join(process.env.CODEX_HOME, "config.toml"), [
+        'model_provider = "opencodex"',
+        'model = "opencode-go/glm-5.2"',
+        '',
+        '[model_providers.opencodex]',
+        'name = "OpenCodex Proxy"',
+        'base_url = "http://localhost:10100/v1"',
+        ''
+      ].join("\\n"), "utf8");
+      fs.writeFileSync(path.join(process.env.CODEX_HOME, "opencodex.config.toml"), 'model_provider = "opencodex"\\n', "utf8");
+      const result = restoreNativeCodex();
+      console.log(JSON.stringify({ success: result.success, message: result.message }));
+    `);
+
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout).success).toBe(true);
+    expect(readFileSync(join(testDir, "config.toml"), "utf8")).toBe(originalConfig);
+    expect(readFileSync(join(testDir, "opencodex.config.toml"), "utf8")).toBe(originalProfile);
+    expect(existsSync(join(testDir, "opencodex-journal.json"))).toBe(false);
+  });
+
+  test("injectCodexConfig creates a restorable journal for direct sync/init paths", () => {
+    const originalConfig = [
+      'model = "openrouter/foo"',
+      'model_provider = "proxy"',
+      "",
+      "[model_providers.proxy]",
+      'name = "Existing Proxy"',
+      'base_url = "https://proxy.example.test/v1"',
+      'wire_api = "responses"',
+      "",
+    ].join("\n");
+    writeFileSync(join(testDir, "config.toml"), originalConfig, "utf8");
+
+    const r = runScript(testDir, `
+      const { injectCodexConfig, restoreNativeCodex } = require("./src/codex-inject");
+      (async () => {
+        await injectCodexConfig(10100, { port: 10100, providers: {}, defaultProvider: "openai" }, { catalogPath: null });
+        const result = restoreNativeCodex();
+        console.log(JSON.stringify({ success: result.success }));
+      })();
+    `);
+
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout).success).toBe(true);
+    expect(readFileSync(join(testDir, "config.toml"), "utf8")).toBe(originalConfig);
+  });
+
+  test("restoreNativeCodex does not clobber user config edits made after injection", () => {
+    const originalConfig = "# original config\nmodel_provider = \"openai\"\n";
+    writeFileSync(join(testDir, "config.toml"), originalConfig, "utf8");
+
+    const r = runScript(testDir, `
+      const fs = require("fs");
+      const path = require("path");
+      const { injectCodexConfig, restoreNativeCodex } = require("./src/codex-inject");
+      (async () => {
+        await injectCodexConfig(10100, { port: 10100, providers: {}, defaultProvider: "openai" }, { catalogPath: null });
+        fs.appendFileSync(path.join(process.env.CODEX_HOME, "config.toml"), "\\n[tools]\\nweb_search = true\\n", "utf8");
+        const result = restoreNativeCodex();
+        console.log(JSON.stringify({ success: result.success, message: result.message }));
+      })();
+    `);
+
+    expect(r.status).toBe(0);
+    const restored = readFileSync(join(testDir, "config.toml"), "utf8");
+    expect(restored).toContain("[tools]");
+    expect(restored).toContain("web_search = true");
+    expect(restored).not.toContain("[model_providers.opencodex]");
+    expect(existsSync(join(testDir, "opencodex-journal.json"))).toBe(true);
+  });
+
+  test("restoreNativeCodex restores unchanged profile even when config was edited after injection", () => {
+    const originalConfig = "# original config\nmodel_provider = \"openai\"\n";
+    const originalProfile = "model_provider = \"openai\"\nmodel = \"gpt-5.5\"\n";
+    writeFileSync(join(testDir, "config.toml"), originalConfig, "utf8");
+    writeFileSync(join(testDir, "opencodex.config.toml"), originalProfile, "utf8");
+
+    const r = runScript(testDir, `
+      const fs = require("fs");
+      const path = require("path");
+      const { injectCodexConfig, restoreNativeCodex } = require("./src/codex-inject");
+      (async () => {
+        await injectCodexConfig(10100, { port: 10100, providers: {}, defaultProvider: "openai" }, { catalogPath: null });
+        fs.appendFileSync(path.join(process.env.CODEX_HOME, "config.toml"), "\\n[tools]\\nweb_search = true\\n", "utf8");
+        const result = restoreNativeCodex();
+        console.log(JSON.stringify({ success: result.success, message: result.message }));
+      })();
+    `);
+
+    expect(r.status).toBe(0);
+    expect(readFileSync(join(testDir, "config.toml"), "utf8")).toContain("[tools]");
+    expect(readFileSync(join(testDir, "opencodex.config.toml"), "utf8")).toBe(originalProfile);
+    expect(existsSync(join(testDir, "opencodex-journal.json"))).toBe(true);
+  });
+
   test("full lifecycle: write → crash → reconcile restores", () => {
     const r = runScript(testDir, `
       const { writeJournal } = require("./src/codex-journal");

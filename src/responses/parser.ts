@@ -12,7 +12,7 @@ import type {
 } from "../types";
 import { namespacedToolName } from "../types";
 import { responsesRequestSchema } from "./schema";
-import { extractHostedWebSearch } from "../web-search/synthetic-tool";
+import { extractHostedWebSearch, WEB_SEARCH_TOOL_NAME } from "../web-search/synthetic-tool";
 
 function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -73,8 +73,24 @@ function mapToolChoice(value: unknown): OcxRequestOptions["toolChoice"] {
     if ((t === "function" || t === "custom") && "name" in value) {
       return { name: (value as { name: string }).name };
     }
+    if (t === "allowed_tools" && Array.isArray(value.tools)) {
+      const names = value.tools
+        .map(allowedToolName)
+        .filter((name): name is string => Boolean(name));
+      return names.length > 0
+        ? { allowedTools: [...new Set(names)], mode: value.mode === "required" ? "required" : "auto" }
+        : "none";
+    }
     return "auto";
   }
+  return undefined;
+}
+
+function allowedToolName(tool: unknown): string | undefined {
+  if (!isObj(tool)) return undefined;
+  if (typeof tool.name === "string" && tool.name.length > 0) return tool.name;
+  if (tool.type === "web_search" || tool.type === "web_search_preview") return WEB_SEARCH_TOOL_NAME;
+  if (tool.type === "tool_search") return "tool_search";
   return undefined;
 }
 

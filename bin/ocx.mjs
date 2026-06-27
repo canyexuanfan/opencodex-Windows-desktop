@@ -10,13 +10,95 @@
  */
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { existsSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const PKG = "@bitkyc08/opencodex";
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
 const cliPath = join(here, "..", "src", "cli.ts");
+
+function isNodeModulesInstall() {
+  return here.split(/[\\/]/).includes("node_modules");
+}
+
+function isBunGlobalInstall() {
+  return /[\\/]\.bun[\\/]/.test(here);
+}
+
+function npmBin() {
+  return process.platform === "win32" ? "npm.cmd" : "npm";
+}
+
+function currentPackageVersion() {
+  try {
+    return JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8")).version ?? "?";
+  } catch {
+    return "?";
+  }
+}
+
+function updateTag(currentVersion) {
+  const tagIndex = process.argv.indexOf("--tag");
+  if (tagIndex !== -1 && process.argv[tagIndex + 1]) return process.argv[tagIndex + 1];
+  return String(currentVersion).includes("-preview.") ? "preview" : "latest";
+}
+
+function configDir() {
+  return resolve(process.env.OPENCODEX_HOME?.trim() || join(homedir(), ".opencodex"));
+}
+
+function shouldRepairCodexShim() {
+  return existsSync(join(configDir(), "codex-shim.json"));
+}
+
+function repairCodexShimIfNeeded() {
+  if (!shouldRepairCodexShim()) return;
+  const launcher = fileURLToPath(import.meta.url);
+  const res = spawnSync(process.execPath, [launcher, "codex-shim", "install"], {
+    stdio: "inherit",
+    windowsHide: true,
+  });
+  if (res.status !== 0) {
+    console.warn(`opencodex: Codex shim repair failed (${res.status ?? "unknown exit"}). Try: ocx codex-shim install`);
+  }
+}
+
+function runNpmSelfUpdate() {
+  const current = currentPackageVersion();
+  const tag = updateTag(current);
+  const npm = npmBin();
+  const latestResult = spawnSync(npm, ["view", `${PKG}@${tag}`, "version"], {
+    encoding: "utf8",
+    timeout: 12000,
+    windowsHide: true,
+  });
+  const latest = latestResult.status === 0 ? latestResult.stdout.trim() : "";
+
+  console.log(`opencodex v${current} (installed via npm, tag ${tag})`);
+  if (latest && latest === current) {
+    console.log(`Already on the latest ${tag} version (v${latest}).`);
+    process.exit(0);
+  }
+
+  console.log(`Updating${latest ? ` to v${latest}` : ""}...\n$ ${npm} install -g ${PKG}@${tag}`);
+  const res = spawnSync(npm, ["install", "-g", `${PKG}@${tag}`], {
+    stdio: "inherit",
+    timeout: 180000,
+    windowsHide: true,
+  });
+  if (res.status === 0) {
+    console.log(`\nUpdated${latest ? ` to v${latest}` : ""}.`);
+    repairCodexShimIfNeeded();
+    console.log("Restart the proxy:  ocx stop && ocx start");
+    console.log("If a background service is installed, refresh its baked path:  ocx service install");
+    process.exit(0);
+  }
+  console.error(`\nUpdate failed (${npm} exit ${res.status ?? "?"}). Try manually:  ${npm} install -g ${PKG}@${tag}`);
+  process.exit(1);
+}
 
 function bunBinDir() {
   // Resolve the `bun` dependency's directory without hardcoding the platform
@@ -71,6 +153,10 @@ function resolveBun() {
   }
   if (!bin) fail("Bun binary missing after install attempt.");
   return bin;
+}
+
+if (process.argv[2] === "update" && isNodeModulesInstall() && !isBunGlobalInstall()) {
+  runNpmSelfUpdate();
 }
 
 const bun = resolveBun();

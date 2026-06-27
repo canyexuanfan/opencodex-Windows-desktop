@@ -1,7 +1,7 @@
 /** OAuth token store at ~/.opencodex/auth.json, keyed by provider name. */
 import { existsSync, mkdirSync, readFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
-import { getConfigDir, atomicWriteFile, hardenConfigDir, hardenExistingSecret } from "../config";
+import { getConfigDir, atomicWriteFile, backupInvalidConfig, hardenConfigDir, hardenExistingSecret } from "../config";
 import type { OAuthCredentials } from "./types";
 
 type AuthStore = Record<string, OAuthCredentials>;
@@ -18,6 +18,7 @@ export function loadAuthStore(): AuthStore {
   try {
     return JSON.parse(readFileSync(path, "utf-8")) as AuthStore;
   } catch {
+    backupInvalidConfig(path);
     return {};
   }
 }

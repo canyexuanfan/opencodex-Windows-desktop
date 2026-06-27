@@ -6,13 +6,15 @@
  * restore it via the command.
  */
 import { execFileSync, execSync } from "node:child_process";
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { getConfigDir, readPid, removePid } from "./config";
+import { loadConfig } from "./config";
 import { restoreNativeCodex } from "./codex-inject";
 import { durableBunPath } from "./bun-runtime";
 import { killProxy } from "./process-control";
+import { serviceApiTokenFilePath } from "./service-secrets";
 
 const LABEL = "com.opencodex.proxy";
 const TASK = "opencodex-proxy";
@@ -36,6 +38,87 @@ function windowsServiceScriptPath(): string {
   return join(getConfigDir(), "opencodex-service.cmd");
 }
 
+function serviceStatePath(): string {
+  return join(getConfigDir(), "service-state.json");
+}
+
+function defaultOpenCodexHome(): string {
+  return resolve(join(homedir(), ".opencodex"));
+}
+
+function serviceStatePaths(): string[] {
+  const paths = [serviceStatePath()];
+  const defaultPath = join(defaultOpenCodexHome(), "service-state.json");
+  if (normalizePathForCompare(defaultPath) !== normalizePathForCompare(paths[0])) paths.push(defaultPath);
+  return paths;
+}
+
+function currentCodexHome(): string {
+  return resolve(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"));
+}
+
+function currentOpenCodexHome(): string {
+  return resolve(process.env.OPENCODEX_HOME?.trim() || getConfigDir());
+}
+
+function normalizePathForCompare(path: string): string {
+  const resolved = resolve(path);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+interface ServiceInstallState {
+  version: 1;
+  codexHome: string;
+  opencodexHome: string;
+}
+
+function writeServiceInstallState(): void {
+  const state: ServiceInstallState = {
+    version: 1,
+    codexHome: currentCodexHome(),
+    opencodexHome: currentOpenCodexHome(),
+  };
+  for (const path of serviceStatePaths()) {
+    const dir = dirname(path);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(path, JSON.stringify(state, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+    try { chmodSync(path, 0o600); } catch { /* best-effort */ }
+  }
+}
+
+function readServiceInstallState(): ServiceInstallState | null {
+  for (const path of serviceStatePaths()) {
+    try {
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as ServiceInstallState;
+      if (parsed.version === 1) return parsed;
+    } catch {
+      /* try the next known state path */
+    }
+  }
+  return null;
+}
+
+export function assertServiceEnvironmentMatchesInstall(): void {
+  const state = readServiceInstallState();
+  if (!state) return;
+  const expected = normalizePathForCompare(state.codexHome);
+  const actual = normalizePathForCompare(currentCodexHome());
+  if (expected !== actual) {
+    throw new Error(
+      `Service was installed with CODEX_HOME=${state.codexHome}, but current CODEX_HOME=${currentCodexHome()}. ` +
+        "Run the service command from the same Codex home so native Codex restore updates the correct config.",
+    );
+  }
+  const expectedOpenCodexHome = normalizePathForCompare(state.opencodexHome);
+  const actualOpenCodexHome = normalizePathForCompare(currentOpenCodexHome());
+  if (expectedOpenCodexHome !== actualOpenCodexHome) {
+    throw new Error(
+      `Service was installed with OPENCODEX_HOME=${state.opencodexHome}, but current OPENCODEX_HOME=${currentOpenCodexHome()}. ` +
+        "Run the service command from the same OpenCodex home so service state and secrets match.",
+    );
+  }
+}
+
 function plistString(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -45,12 +128,45 @@ function plistString(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
+function isLoopbackHostname(hostname: string | undefined): boolean {
+  const normalized = (hostname ?? "127.0.0.1").trim().toLowerCase();
+  return normalized === "" || normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
+}
+
+export function assertServiceAuthEnvironment(): void {
+  const config = loadConfig();
+  if (isLoopbackHostname(config.hostname)) return;
+  if (process.env.OPENCODEX_API_AUTH_TOKEN?.trim()) return;
+  throw new Error(
+    "OPENCODEX_API_AUTH_TOKEN is required before installing a service for non-loopback hostname. " +
+      "Set it in the same shell, then rerun `ocx service install`.",
+  );
+}
+
+function writeServiceApiTokenFile(): string | null {
+  const token = process.env.OPENCODEX_API_AUTH_TOKEN?.trim();
+  if (!token) return null;
+  const path = serviceApiTokenFilePath();
+  const dir = getConfigDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(path, `${token}\n`, { encoding: "utf8", mode: 0o600 });
+  try { chmodSync(path, 0o600); } catch { /* best-effort */ }
+  return path;
+}
+
 export function buildPlist(): string {
   const { bun, cli } = cliEntry();
   const log = logPath();
   const path = process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin";
   const codexHome = process.env.CODEX_HOME?.trim();
-  const codexHomeXml = codexHome ? `    <key>CODEX_HOME</key><string>${plistString(codexHome)}</string>` : "";
+  const opencodexHome = process.env.OPENCODEX_HOME?.trim();
+  const envLines = [
+    `    <key>OCX_SERVICE</key><string>1</string>`,
+    `    <key>PATH</key><string>${plistString(path)}</string>`,
+    codexHome ? `    <key>CODEX_HOME</key><string>${plistString(codexHome)}</string>` : null,
+    opencodexHome ? `    <key>OPENCODEX_HOME</key><string>${plistString(opencodexHome)}</string>` : null,
+  ].filter((line): line is string => Boolean(line)).join("\n");
+  const command = buildServiceShellCommand(bun, cli);
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -58,22 +174,30 @@ export function buildPlist(): string {
   <key>Label</key><string>${LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${plistString(bun)}</string>
-    <string>${plistString(cli)}</string>
-    <string>start</string>
+    <string>/bin/sh</string>
+    <string>-lc</string>
+    <string>${plistString(command)}</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>OCX_SERVICE</key><string>1</string>
-    <key>PATH</key><string>${plistString(path)}</string>
-${codexHomeXml ? `${codexHomeXml}\n` : ""}  </dict>
+${envLines}
+  </dict>
   <key>StandardOutPath</key><string>${plistString(log)}</string>
   <key>StandardErrorPath</key><string>${plistString(log)}</string>
 </dict>
 </plist>
 `;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function buildServiceShellCommand(bun: string, cli: string): string {
+  const tokenFile = serviceApiTokenFilePath();
+  return `if [ -f ${shellQuote(tokenFile)} ]; then OPENCODEX_API_AUTH_TOKEN="$(cat ${shellQuote(tokenFile)})"; export OPENCODEX_API_AUTH_TOKEN; fi; exec ${shellQuote(bun)} ${shellQuote(cli)} start`;
 }
 
 function systemdQuote(value: string): string {
@@ -113,7 +237,11 @@ function schtasks(args: string[]): string {
 }
 
 function windowsBatchValue(value: string): string {
-  return value.replace(/%/g, "%%").replace(/[\r\n]/g, "");
+  return value
+    .replace(/%/g, "%%")
+    .replace(/\^/g, "^^")
+    .replace(/"/g, "")
+    .replace(/[\r\n]/g, "");
 }
 
 function windowsBatchSet(name: string, value: string | undefined): string | null {
@@ -121,8 +249,8 @@ function windowsBatchSet(name: string, value: string | undefined): string | null
   return `set "${name}=${windowsBatchValue(value)}"`;
 }
 
-export function buildWindowsServiceScript(): string {
-  const { bun, cli } = cliEntry();
+export function buildWindowsServiceScript(entry = cliEntry()): string {
+  const { bun, cli } = entry;
   const path = process.env.PATH ?? "";
   const lines = [
     "@echo off",
@@ -130,8 +258,15 @@ export function buildWindowsServiceScript(): string {
     windowsBatchSet("OCX_SERVICE", "1"),
     windowsBatchSet("PATH", path),
     windowsBatchSet("CODEX_HOME", process.env.CODEX_HOME?.trim()),
+    windowsBatchSet("OPENCODEX_HOME", process.env.OPENCODEX_HOME?.trim()),
+    windowsBatchSet("OCX_API_TOKEN_FILE", serviceApiTokenFilePath()),
+    windowsBatchSet("OCX_BUN", bun),
+    windowsBatchSet("OCX_CLI", cli),
+    'if exist "%OCX_API_TOKEN_FILE%" (',
+    '  set /p OPENCODEX_API_AUTH_TOKEN=<"%OCX_API_TOKEN_FILE%"',
+    ")",
     ":loop",
-    `"${bun}" "${cli}" start`,
+    '"%OCX_BUN%" "%OCX_CLI%" start',
     "if %ERRORLEVEL% NEQ 0 (",
     "  timeout /t 5 /nobreak >nul",
     "  goto loop",
@@ -142,7 +277,7 @@ export function buildWindowsServiceScript(): string {
 }
 
 export function buildWindowsSchtasksCreateArgs(script = windowsServiceScriptPath()): string[] {
-  return ["/create", "/tn", TASK, "/tr", `"${script}"`, "/sc", "onlogon", "/rl", "highest", "/f"];
+  return ["/create", "/tn", TASK, "/tr", `"${script}"`, "/sc", "onlogon", "/rl", "LIMITED", "/f"];
 }
 
 // ── macOS (launchd) ──
@@ -150,10 +285,12 @@ function installLaunchd(): void {
   const dir = join(homedir(), "Library", "LaunchAgents");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   if (!existsSync(getConfigDir())) mkdirSync(getConfigDir(), { recursive: true });
+  writeServiceApiTokenFile();
   const p = plistPath();
   writeFileSync(p, buildPlist(), "utf8");
   try { sh(`launchctl unload "${p}" 2>/dev/null`); } catch { /* not loaded */ }
   sh(`launchctl load -w "${p}"`);
+  writeServiceInstallState();
 }
 function startLaunchd(): void { sh(`launchctl load -w "${plistPath()}"`); }
 function stopLaunchd(): void { try { sh(`launchctl unload "${plistPath()}"`); } catch { /* not loaded */ } }
@@ -167,10 +304,13 @@ function uninstallLaunchd(): void {
 // ── Windows (Task Scheduler) ──
 function installWindows(): void {
   if (!existsSync(getConfigDir())) mkdirSync(getConfigDir(), { recursive: true });
+  writeServiceApiTokenFile();
   const script = windowsServiceScriptPath();
   writeFileSync(script, buildWindowsServiceScript(), "utf8");
+  try { stopWindows(); } catch { /* not running */ }
   schtasks(buildWindowsSchtasksCreateArgs(script));
   schtasks(["/run", "/tn", TASK]);
+  writeServiceInstallState();
 }
 function startWindows(): void { schtasks(["/run", "/tn", TASK]); }
 function stopWindows(): void { try { schtasks(["/end", "/tn", TASK]); } catch { /* not running */ } }
@@ -194,10 +334,12 @@ export function buildUnit(): string {
   const log = logPath();
   const path = process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin";
   const codexHome = systemdEnvironmentAssignment("CODEX_HOME", process.env.CODEX_HOME?.trim());
+  const opencodexHome = systemdEnvironmentAssignment("OPENCODEX_HOME", process.env.OPENCODEX_HOME?.trim());
   const envLines = [
     systemdEnvironmentAssignment("OCX_SERVICE", "1"),
     systemdEnvironmentAssignment("PATH", path),
     codexHome,
+    opencodexHome,
   ].filter((line): line is string => Boolean(line)).join("\n");
   return `[Unit]
 Description=OpenCodex Proxy Server
@@ -206,7 +348,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${systemdQuote(bun)} ${systemdQuote(cli)} start
+ExecStart=${systemdQuote("/bin/sh")} -lc ${systemdQuote(buildServiceShellCommand(bun, cli))}
 Restart=on-failure
 RestartSec=5
 ${envLines}
@@ -219,16 +361,20 @@ WantedBy=default.target
 }
 
 function isSystemd(): boolean {
-  try { execSync("systemctl --version", { stdio: "pipe" }); return true; } catch { return false; }
+  try { execSync("systemctl --version", { stdio: "pipe" }); } catch { return false; }
+  try { execSync("systemctl --user show-environment", { stdio: "pipe" }); return true; } catch { return false; }
 }
 
 function installSystemd(): void {
   const dir = unitDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   if (!existsSync(getConfigDir())) mkdirSync(getConfigDir(), { recursive: true });
+  writeServiceApiTokenFile();
   writeFileSync(unitPath(), buildUnit(), "utf8");
   sh("systemctl --user daemon-reload");
-  sh(`systemctl --user enable --now ${TASK}`);
+  sh(`systemctl --user enable ${TASK}`);
+  sh(`systemctl --user restart ${TASK}`);
+  writeServiceInstallState();
 }
 function startSystemd(): void { sh(`systemctl --user start ${TASK}`); }
 function stopSystemd(): void { try { sh(`systemctl --user stop ${TASK}`); } catch { /* not running */ } }
@@ -254,7 +400,7 @@ function platformOps(): ServiceOps | null {
       console.error("Docker detected. Run 'ocx start' directly instead of using the service manager.");
       process.exit(1);
     }
-    if (!isSystemd()) {
+    if (!isSystemd() && !existsSync(unitPath())) {
       console.error("systemd not found. Run 'ocx start' under your process supervisor.");
       process.exit(1);
     }
@@ -285,6 +431,7 @@ function stopTrackedProxyForServiceCommand(): boolean {
  * Returns true if a service was found and stopped.
  */
 export function stopServiceIfInstalled(): boolean {
+  assertServiceEnvironmentMatchesInstall();
   if (process.platform === "darwin") {
     if (existsSync(plistPath())) {
       try { stopLaunchd(); return true; } catch { return false; }
@@ -306,6 +453,7 @@ export function stopServiceIfInstalled(): boolean {
  * manager.
  */
 export function uninstallServiceIfInstalled(): boolean {
+  assertServiceEnvironmentMatchesInstall();
   if (process.platform === "darwin") {
     if (existsSync(plistPath())) {
       try { uninstallLaunchd(); return true; } catch { return false; }
@@ -315,8 +463,10 @@ export function uninstallServiceIfInstalled(): boolean {
       const q = schtasks(["/query", "/tn", TASK]);
       if (q.includes(TASK)) { uninstallWindows(); return true; }
     } catch { /* task not found */ }
-  } else if (process.platform === "linux" && isSystemd() && existsSync(unitPath())) {
-    try { uninstallSystemd(); return true; } catch { return false; }
+  } else if (process.platform === "linux" && existsSync(unitPath())) {
+    try { uninstallSystemd(); return true; } catch {
+      try { unlinkSync(unitPath()); return true; } catch { return false; }
+    }
   }
   return false;
 }
@@ -354,6 +504,8 @@ export function serviceCommand(sub?: string): void {
   }
   switch (sub) {
     case "install":
+      assertServiceEnvironmentMatchesInstall();
+      assertServiceAuthEnvironment();
       ops.install();
       console.log("✅ opencodex service installed + started (auto-starts on login, auto-restarts on crash).");
       if (process.platform === "linux") console.log("   For auto-start on boot: loginctl enable-linger $USER");
@@ -363,6 +515,7 @@ export function serviceCommand(sub?: string): void {
       console.log("✅ service started.");
       break;
     case "stop":
+      assertServiceEnvironmentMatchesInstall();
       ops.stop();
       stopTrackedProxyForServiceCommand();
       restoreNativeCodex();
@@ -375,10 +528,15 @@ export function serviceCommand(sub?: string): void {
     }
     case "uninstall":
     case "remove":
+      assertServiceEnvironmentMatchesInstall();
       ops.stop();
       stopTrackedProxyForServiceCommand();
       ops.uninstall();
       restoreNativeCodex();
+      for (const path of serviceStatePaths()) {
+        try { if (existsSync(path)) unlinkSync(path); } catch { /* best-effort */ }
+      }
+      try { if (existsSync(serviceApiTokenFilePath())) unlinkSync(serviceApiTokenFilePath()); } catch { /* best-effort */ }
       console.log("✅ service uninstalled + native Codex restored.");
       break;
     default:

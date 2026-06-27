@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { timingSafeEqual } from "node:crypto";
-import { extname, join } from "node:path";
+import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { createAnthropicAdapter } from "./adapters/anthropic";
 import { createAzureAdapter } from "./adapters/azure";
 import { createGoogleAdapter } from "./adapters/google";
@@ -10,14 +10,23 @@ import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse, type Resp
 import {
   buildWarmupCompletionFrames,
   buildWsErrorFrame,
-  selectForwardHeadersForAuthContext,
+  selectForwardHeaders,
   sendJsonFrame,
   sendResponseToWebSocket,
   sendTextFrame,
   type WsData,
 } from "./ws-bridge";
-import type { ServerWebSocket } from "bun";
-import { DEFAULT_SUBAGENT_MODELS, codexAutoStartEnabled, getConfigPath, loadConfig, saveConfig, websocketsEnabled } from "./config";
+import type { Server, ServerWebSocket } from "bun";
+import {
+  DEFAULT_SUBAGENT_MODELS,
+  codexAutoStartEnabled,
+  getConfigPath,
+  hasOwnProvider,
+  isValidProviderName,
+  loadConfig,
+  saveConfig,
+  websocketsEnabled,
+} from "./config";
 import { parseRequest } from "./responses/parser";
 import { routeModel } from "./router";
 import { namespacedToolName } from "./types";
@@ -32,10 +41,9 @@ import { describeImagesInPlace, planVisionSidecar } from "./vision";
 import { removeCredential } from "./oauth/store";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "./oauth/key-providers";
 import { deriveProviderPresets } from "./providers/derive";
-import type { OcxConfig, OcxProviderConfig } from "./types";
+import type { AdapterEvent, OcxConfig, OcxProviderConfig } from "./types";
 import {
   applyCodexAuthContextToProvider,
-  assertCodexAuthContextNotCooled,
   CodexAccountCooldownError,
   CodexAuthContextError,
   CodexThreadAffinityExpiredError,
@@ -55,7 +63,7 @@ import {
   recordCodexUpstreamOutcome,
   type CodexUpstreamOutcome,
 } from "./codex-routing";
-import { registerCodexWebSocket, unregisterCodexWebSocket } from "./codex-websocket-registry";
+import { registerCodexWebSocket, unregisterCodexWebSocket, updateCodexWebSocketAuthContext } from "./codex-websocket-registry";
 
 // ---------------------------------------------------------------------------
 // Active turn tracking + graceful shutdown drain
@@ -63,6 +71,7 @@ import { registerCodexWebSocket, unregisterCodexWebSocket } from "./codex-websoc
 
 const activeTurns = new Set<AbortController>();
 let draining = false;
+const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
 
 export function registerTurn(ac: AbortController): void { activeTurns.add(ac); }
 export function unregisterTurn(ac: AbortController): void { activeTurns.delete(ac); }
@@ -72,22 +81,30 @@ export function getActiveTurnCount(): number { return activeTurns.size; }
 export function trackStreamLifetime(
   body: ReadableStream<Uint8Array>,
   ac: AbortController,
+  onDone?: () => void,
 ): ReadableStream<Uint8Array> {
   registerTurn(ac);
   const reader = body.getReader();
+  let closed = false;
+  const finish = () => {
+    if (closed) return;
+    closed = true;
+    unregisterTurn(ac);
+    onDone?.();
+  };
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
         const { done, value } = await reader.read();
-        if (done) { unregisterTurn(ac); controller.close(); return; }
+        if (done) { finish(); controller.close(); return; }
         controller.enqueue(value);
       } catch (err) {
-        unregisterTurn(ac);
+        finish();
         try { controller.error(err); } catch { /* already closed */ }
       }
     },
     cancel(reason) {
-      unregisterTurn(ac);
+      finish();
       ac.abort(reason);
       reader.cancel(reason).catch(() => {});
     },
@@ -144,17 +161,43 @@ function findGuiDist(): string | null {
   return null;
 }
 
+export function resolveGuiFilePath(guiDist: string, pathname: string): string | null {
+  let decodedPath: string;
+  try {
+    decodedPath = decodeURIComponent(pathname);
+  } catch {
+    return null;
+  }
+  if (decodedPath.includes("\0")) return null;
+
+  const relativePath = decodedPath === "/" || decodedPath === ""
+    ? "index.html"
+    : decodedPath.replace(/\\/g, "/").replace(/^\/+/, "");
+  const root = resolve(guiDist);
+  const filePath = resolve(root, relativePath);
+  const rel = relative(root, filePath);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return null;
+  return filePath;
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function serveGuiFile(pathname: string): Response | null {
   const guiDist = findGuiDist();
   if (!guiDist) return null;
-  const filePath = pathname === "/" || pathname === ""
-    ? join(guiDist, "index.html")
-    : join(guiDist, pathname);
+  const filePath = resolveGuiFilePath(guiDist, pathname);
+  if (!filePath) return null;
 
-  if (!existsSync(filePath)) {
+  if (!isFile(filePath)) {
     if (!extname(pathname)) {
       const indexPath = join(guiDist, "index.html");
-      if (existsSync(indexPath)) {
+      if (isFile(indexPath)) {
         return new Response(Bun.file(indexPath), {
           headers: { "Content-Type": "text/html" },
         });
@@ -407,9 +450,10 @@ async function handleResponses(
     if (isEventStream && upstreamResponse.body) {
       const [nativeBody, inspectBody] = upstreamResponse.body.tee();
       const turnAc = new AbortController();
+      linkAbortSignal(upstream, turnAc.signal);
       const trackedNative = trackStreamLifetime(nativeBody, turnAc);
       if (terminalBodyWillRecord && recordTerminalOutcomes && terminalRecorder) {
-        consumeForInspection(inspectBody, terminalRecorder);
+        consumeForInspection(inspectBody, terminalRecorder, turnAc.signal);
       } else {
         inspectBody.cancel().catch(() => {});
       }
@@ -447,7 +491,7 @@ async function handleResponses(
   }
 
   const upstream = new AbortController();
-  linkAbortSignal(upstream, options.abortSignal);
+  const cleanupUpstreamAbort = linkAbortSignal(upstream, options.abortSignal);
   const connectMs = config.connectTimeoutMs ?? 30_000;
 
   const request = adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
@@ -457,6 +501,7 @@ async function handleResponses(
       method: request.method, headers: request.headers, body: request.body,
     }, upstream.signal, connectMs);
   } catch (err) {
+    cleanupUpstreamAbort();
     upstream.abort();
     const msg = err instanceof Error && err.name === "TimeoutError"
       ? `Provider connect timeout after ${connectMs}ms`
@@ -466,6 +511,7 @@ async function handleResponses(
 
   if (!upstreamResponse.ok) {
     const errorText = await upstreamResponse.text().catch(() => "unknown error");
+    cleanupUpstreamAbort();
     return formatErrorResponse(upstreamResponse.status, "upstream_error", `Provider error ${upstreamResponse.status}: ${errorText.slice(0, 500)}`);
   }
 
@@ -489,14 +535,19 @@ async function handleResponses(
       },
     );
     const bridgeTurnAc = new AbortController();
-    const trackedSse = trackStreamLifetime(sseStream, bridgeTurnAc);
+    const trackedSse = trackStreamLifetime(sseStream, bridgeTurnAc, cleanupUpstreamAbort);
     return new Response(trackedSse, {
       headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no" },
     });
   }
 
   if (adapter.parseResponse) {
-    const events = await adapter.parseResponse(upstreamResponse);
+    let events: AdapterEvent[];
+    try {
+      events = await adapter.parseResponse(upstreamResponse);
+    } finally {
+      cleanupUpstreamAbort();
+    }
     const toolNsMap = new Map<string, { namespace: string; name: string }>();
     const freeformToolNames = new Set<string>();
     const toolSearchToolNames = new Set<string>();
@@ -517,13 +568,15 @@ async function handleResponses(
   return formatErrorResponse(500, "internal_error", "Non-streaming not supported by this adapter");
 }
 
-export function linkAbortSignal(upstream: AbortController, signal?: AbortSignal): void {
-  if (!signal) return;
+export function linkAbortSignal(upstream: AbortController, signal?: AbortSignal): () => void {
+  if (!signal) return () => {};
   if (signal.aborted) {
     upstream.abort(signal.reason);
-    return;
+    return () => {};
   }
-  signal.addEventListener("abort", () => upstream.abort(signal.reason), { once: true });
+  const onAbort = () => upstream.abort(signal.reason);
+  signal.addEventListener("abort", onAbort, { once: true });
+  return () => signal.removeEventListener("abort", onAbort);
 }
 
 async function fetchWithHeaderTimeout(
@@ -575,9 +628,32 @@ export function requestLogErrorCode(status: number): string | undefined {
   if (status === 400 || status === 409) return "invalid_request_error";
   if (status === 401 || status === 403) return "invalid_api_key";
   if (status === 429) return "rate_limit_exceeded";
+  if (status === 499) return "client_closed_request";
   if (status === 503) return "server_is_overloaded";
   if (status >= 500) return "upstream_server_error";
   return `http_${status}`;
+}
+
+function httpStatusForTerminalStatus(status: ResponsesTerminalStatus): number {
+  return status === "completed" ? 200 : 502;
+}
+
+function addFinalRequestLog(
+  requestId: string,
+  start: number,
+  logCtx: { model: string; provider: string },
+  status: number,
+): void {
+  const errorCode = requestLogErrorCode(status);
+  addRequestLog({
+    requestId,
+    timestamp: start,
+    model: logCtx.model,
+    provider: logCtx.provider,
+    status,
+    durationMs: Date.now() - start,
+    ...(errorCode ? { errorCode } : {}),
+  });
 }
 
 export function filterRequestLogs(logs: RequestLogEntry[], params: URLSearchParams): RequestLogEntry[] {
@@ -669,6 +745,92 @@ function terminalStatusFromSsePayload(payload: string): ResponsesTerminalStatus 
   }
 }
 
+function trackSseForRequestLog(
+  body: ReadableStream<Uint8Array>,
+  onTerminal: (status: ResponsesTerminalStatus) => void,
+  onCancel: () => void,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let terminalReported = false;
+
+  const reportTerminal = (status: ResponsesTerminalStatus) => {
+    if (terminalReported) return;
+    terminalReported = true;
+    onTerminal(status);
+  };
+
+  const inspectPayload = (payload: string | null) => {
+    if (!payload) return;
+    const status = terminalStatusFromSsePayload(payload);
+    if (status) reportTerminal(status);
+  };
+
+  const inspectChunk = (value: Uint8Array) => {
+    buffer += decoder.decode(value, { stream: true });
+    let next: { block: string; rest: string } | null;
+    while ((next = nextSseBlock(buffer))) {
+      buffer = next.rest;
+      inspectPayload(sseDataPayload(next.block));
+    }
+  };
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          buffer += decoder.decode();
+          if (buffer.trim()) inspectPayload(sseDataPayload(buffer));
+          if (!terminalReported) reportTerminal("incomplete");
+          controller.close();
+          return;
+        }
+        inspectChunk(value);
+        controller.enqueue(value);
+      } catch (err) {
+        if (!terminalReported) reportTerminal("incomplete");
+        try { controller.error(err); } catch { /* already torn down */ }
+      }
+    },
+    cancel(reason) {
+      onCancel();
+      reader.cancel(reason).catch(() => {});
+    },
+  });
+}
+
+function responseWithDeferredRequestLog(
+  response: Response,
+  requestId: string,
+  start: number,
+  logCtx: { model: string; provider: string },
+): Response {
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (!response.body || !contentType.includes("text/event-stream")) {
+    addFinalRequestLog(requestId, start, logCtx, response.status);
+    return response;
+  }
+
+  let logged = false;
+  const finalize = (status: number) => {
+    if (logged) return;
+    logged = true;
+    addFinalRequestLog(requestId, start, logCtx, status);
+  };
+  const body = trackSseForRequestLog(
+    response.body,
+    status => finalize(httpStatusForTerminalStatus(status)),
+    () => finalize(499),
+  );
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
 export function relaySseWithHeartbeat(
   body: ReadableStream<Uint8Array> | null,
   upstream: AbortController,
@@ -758,11 +920,24 @@ export function relaySseWithHeartbeat(
 function consumeForInspection(
   body: ReadableStream<Uint8Array>,
   onTerminal: (status: ResponsesTerminalStatus) => void,
+  signal?: AbortSignal,
 ): void {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let reported = false;
+  let cancelled = false;
+  if (signal) {
+    if (signal.aborted) {
+      cancelled = true;
+      reader.cancel(signal.reason).catch(() => {});
+      return;
+    }
+    signal.addEventListener("abort", () => {
+      cancelled = true;
+      reader.cancel(signal.reason).catch(() => {});
+    }, { once: true });
+  }
   const pump = async () => {
     try {
       for (;;) {
@@ -776,7 +951,7 @@ function consumeForInspection(
               if (status) { reported = true; onTerminal(status); }
             }
           }
-          if (!reported) onTerminal("incomplete");
+          if (!reported && !cancelled) onTerminal("incomplete");
           return;
         }
         buffer += decoder.decode(value, { stream: true });
@@ -793,7 +968,7 @@ function consumeForInspection(
         }
       }
     } catch {
-      if (!reported) onTerminal("incomplete");
+      if (!reported && !cancelled) onTerminal("incomplete");
     }
   };
   pump();
@@ -814,6 +989,8 @@ export function sanitizePassthroughHeaders(upstream: Headers): Headers {
     "keep-alive",
     "proxy-authenticate",
     "proxy-authorization",
+    "set-cookie",
+    "set-cookie2",
     "te",
     "trailer",
     "upgrade",
@@ -827,27 +1004,83 @@ export function sanitizePassthroughHeaders(upstream: Headers): Headers {
 
 let _corsOrigin = "http://localhost:10100";
 function setCorsOrigin(port: number): void { _corsOrigin = `http://localhost:${port}`; }
-export function corsHeaders(): Record<string, string> {
+function configuredPort(): string {
+  try { return new URL(_corsOrigin).port; } catch { return "10100"; }
+}
+
+function parseHttpHost(value: string | null): { hostname: string; port: string } | null {
+  if (!value) return null;
+  try {
+    const parsed = new URL(`http://${value}`);
+    return { hostname: parsed.hostname.toLowerCase(), port: parsed.port };
+  } catch {
+    return null;
+  }
+}
+
+function isLoopbackRequestHost(value: string | null): boolean {
+  const parsed = parseHttpHost(value);
+  if (!parsed) return true;
+  if (!isLoopbackHostname(parsed.hostname)) return false;
+  return parsed.port === "" || parsed.port === configuredPort();
+}
+
+function isLoopbackOriginValue(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:") return false;
+    if (!isLoopbackHostname(parsed.hostname)) return false;
+    return parsed.port === configuredPort();
+  } catch {
+    return false;
+  }
+}
+
+function isSameOriginAsRequest(req: Request, origin: string): boolean {
+  try {
+    return origin === new URL(req.url).origin;
+  } catch {
+    return false;
+  }
+}
+
+function isAllowedRequestOrigin(req: Request, config: OcxConfig): boolean {
+  const origin = req.headers.get("Origin");
+  if (!isApiAuthRequired(config)) {
+    if (!isLoopbackRequestHost(req.headers.get("Host"))) return false;
+    return !origin || isLoopbackOriginValue(origin);
+  }
+  return !origin || isLoopbackOriginValue(origin) || isSameOriginAsRequest(req, origin);
+}
+
+export function corsHeaders(req?: Request, config?: OcxConfig): Record<string, string> {
+  const origin = req?.headers.get("Origin");
+  const allowOrigin = origin && req && config && isAllowedRequestOrigin(req, config) ? origin : _corsOrigin;
   return {
-    "Access-Control-Allow-Origin": _corsOrigin,
+    "Access-Control-Allow-Origin": allowOrigin,
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-OpenCodex-API-Key",
+    "Vary": "Origin",
   };
 }
 
-function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json", ...corsHeaders() },
+function withCors(response: Response, req: Request, config: OcxConfig): Response {
+  const headers = new Headers(response.headers);
+  for (const [name, value] of Object.entries(corsHeaders(req, config))) {
+    headers.set(name, value);
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
   });
 }
 
-function isLocalOrigin(req: Request): boolean {
-  const origin = req.headers.get("Origin");
-  if (!origin) return true;
-  const localhostOrigin = _corsOrigin;
-  const loopbackOrigin = _corsOrigin.replace("localhost", "127.0.0.1");
-  return origin === localhostOrigin || origin === loopbackOrigin;
+function jsonResponse(data: unknown, status = 200, req?: Request, config?: OcxConfig): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json", ...corsHeaders(req, config) },
+  });
 }
 
 function configuredApiAuthToken(_config: OcxConfig): string | undefined {
@@ -887,6 +1120,47 @@ function requireApiAuth(req: Request, config: OcxConfig, kind: "management" | "d
   return formatErrorResponse(401, "authentication_error", "opencodex API key required");
 }
 
+function providerManagementConfigError(name: string, provider: OcxProviderConfig): string | null {
+  const baseUrlError = providerBaseUrlConfigError(provider.baseUrl);
+  if (baseUrlError) return `provider ${name} ${baseUrlError}`;
+  if (provider.authMode === "forward") {
+    const normalizedName = name.trim().toLowerCase();
+    const base = provider.baseUrl.replace(/\/+$/, "");
+    const isBuiltInChatGptForward = (normalizedName === "openai" || normalizedName === "chatgpt")
+      && provider.adapter === "openai-responses"
+      && base === "https://chatgpt.com/backend-api/codex";
+    if (isBuiltInChatGptForward) return null;
+    return `provider ${name} uses reserved authMode "forward"; configure ChatGPT passthrough via the built-in provider`;
+  }
+  return null;
+}
+
+function providerBaseUrlConfigError(baseUrl: string): string | null {
+  try {
+    const parsed = new URL(baseUrl.trim());
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "baseUrl must be an http(s) URL";
+    if (parsed.username || parsed.password) return "baseUrl must not include embedded credentials";
+    if (parsed.search || parsed.hash) return "baseUrl must not include query strings or fragments";
+  } catch {
+    return "baseUrl must be a valid URL";
+  }
+  return null;
+}
+
+function publicProviderBaseUrl(baseUrl: string): string {
+  try {
+    const parsed = new URL(baseUrl.trim());
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "(invalid URL)";
+    parsed.username = "";
+    parsed.password = "";
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString().replace(/\/$/, baseUrl.endsWith("/") ? "/" : "");
+  } catch {
+    return "(invalid URL)";
+  }
+}
+
 function copyIfDefined<K extends keyof OcxProviderConfig>(
   out: Record<string, unknown>,
   provider: OcxProviderConfig,
@@ -901,7 +1175,7 @@ export function safeConfigDTO(config: OcxConfig): unknown {
   for (const [name, provider] of Object.entries(config.providers)) {
     const dto: Record<string, unknown> = {
       adapter: provider.adapter,
-      baseUrl: provider.baseUrl,
+      baseUrl: publicProviderBaseUrl(provider.baseUrl),
       hasApiKey: !!provider.apiKey,
       hasHeaders: !!provider.headers && Object.keys(provider.headers).length > 0,
     };
@@ -938,8 +1212,8 @@ export function safeConfigDTO(config: OcxConfig): unknown {
 }
 
 async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): Promise<Response | null> {
-  if ((req.method === "POST" || req.method === "PUT" || req.method === "DELETE") && !isLocalOrigin(req)) {
-    return jsonResponse({ error: "cross-origin request blocked" }, 403);
+  if (!isAllowedRequestOrigin(req, config)) {
+    return jsonResponse({ error: "cross-origin request blocked" }, 403, req, config);
   }
   async function refreshCodexCatalogBestEffort(): Promise<void> {
     try {
@@ -1014,7 +1288,7 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
 
   if (url.pathname === "/api/providers" && req.method === "GET") {
     return jsonResponse(Object.entries(config.providers).map(([name, p]) => ({
-      name, adapter: p.adapter, baseUrl: p.baseUrl, defaultModel: p.defaultModel,
+      name, adapter: p.adapter, baseUrl: publicProviderBaseUrl(p.baseUrl), defaultModel: p.defaultModel,
       hasApiKey: !!p.apiKey,
     })));
   }
@@ -1030,6 +1304,11 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
     if (!name || !prov?.adapter || !prov?.baseUrl) {
       return jsonResponse({ error: "name, provider.adapter and provider.baseUrl are required" }, 400);
     }
+    if (!isValidProviderName(name)) {
+      return jsonResponse({ error: "provider name must use letters, numbers, dot, underscore, or hyphen and cannot be a reserved object key" }, 400);
+    }
+    const providerError = providerManagementConfigError(name, prov);
+    if (providerError) return jsonResponse({ error: providerError }, 400);
     // Catalog providers (e.g. ollama-cloud) carry a models + vision/reasoning classification the GUI
     // doesn't send — merge it in so the sidecars are gated correctly.
     enrichProviderFromCatalog(name, prov);
@@ -1045,7 +1324,8 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
 
   if (url.pathname === "/api/providers" && req.method === "DELETE") {
     const name = url.searchParams.get("name")?.trim();
-    if (!name || !config.providers[name]) return jsonResponse({ error: "unknown provider" }, 404);
+    if (!name || !isValidProviderName(name) || !hasOwnProvider(config.providers, name)) return jsonResponse({ error: "unknown provider" }, 404);
+    if (name === config.defaultProvider) return jsonResponse({ error: "cannot delete the default provider; set another default first" }, 400);
     const { saveConfig: save } = await import("./config");
     delete config.providers[name];
     save(config);
@@ -1206,66 +1486,74 @@ export function startServer(port?: number) {
   const listenPort = port ?? config.port ?? 10100;
   setCorsOrigin(listenPort);
 
-  const server = Bun.serve<WsData>({
+  const server: Server<WsData> = Bun.serve<WsData>({
     port: listenPort,
     hostname: config.hostname ?? "127.0.0.1",
     idleTimeout: 255,
-    async fetch(req) {
+    async fetch(req): Promise<Response> {
       const url = new URL(req.url);
 
       if (req.method === "OPTIONS") {
-        return new Response(null, { status: 204, headers: corsHeaders() });
+        if (!isAllowedRequestOrigin(req, config)) {
+          return new Response(null, { status: 403, headers: corsHeaders() });
+        }
+        return new Response(null, { status: 204, headers: corsHeaders(req, config) });
       }
 
       // Responses WebSocket (phase 120.2). Codex upgrades the same /v1/responses path; auth is
       // handshake-time only, so capture inbound headers and thread them into the pipeline.
       if (url.pathname === "/v1/responses" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
         if (draining) {
-          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(), "Retry-After": "5" } });
+          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
         }
         const apiAuthError = requireApiAuth(req, config, "data-plane");
-        if (apiAuthError) return apiAuthError;
-        if (!isLocalOrigin(req)) {
-          return formatErrorResponse(403, "origin_rejected", "WebSocket upgrade blocked: non-local Origin");
+        if (apiAuthError) return withCors(apiAuthError, req, config);
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(formatErrorResponse(403, "origin_rejected", "WebSocket upgrade blocked: non-local Origin"), req, config);
         }
         let authCtx: CodexAuthContext;
         try {
           authCtx = await resolveCodexAuthContext(req.headers, config);
         } catch (err) {
           if (err instanceof CodexAccountCooldownError) {
-            return formatErrorResponse(429, "rate_limit_error", "Selected Codex account is cooling down");
+            return withCors(formatErrorResponse(429, "rate_limit_error", "Selected Codex account is cooling down"), req, config);
           }
           if (err instanceof CodexThreadAffinityExpiredError) {
-            return formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session");
+            return withCors(formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session"), req, config);
           }
           if (err instanceof CodexAuthContextError) {
             const safeAccountLabel = formatCodexProviderForLog("chatgpt", err.accountId, config);
             console.error(`[codex-auth] Pool account ${safeAccountLabel} token failed during websocket upgrade; reauthentication required`);
-            return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
+            return withCors(formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication"), req, config);
           }
           throw err;
         }
         if (server.upgrade(req, {
           data: {
-            headers: selectForwardHeadersForAuthContext(req.headers, authCtx),
+            headers: selectForwardHeaders(req.headers),
             authContext: authCtx,
           },
         })) return undefined as unknown as Response;
-        return formatErrorResponse(426, "upgrade_required", "WebSocket upgrade failed");
+        return withCors(formatErrorResponse(426, "upgrade_required", "WebSocket upgrade failed"), req, config);
       }
 
       if (url.pathname === "/healthz" && req.method === "GET") {
-        return jsonResponse({ status: "ok", version: VERSION, uptime: process.uptime() });
+        return jsonResponse({ status: "ok", version: VERSION, uptime: process.uptime() }, 200, req, config);
       }
 
       if (url.pathname.startsWith("/api/")) {
         const apiAuthError = requireApiAuth(req, config, "management");
-        if (apiAuthError) return apiAuthError;
+        if (apiAuthError) return withCors(apiAuthError, req, config);
         const mgmtResponse = await handleManagementAPI(req, url, config);
-        if (mgmtResponse) return mgmtResponse;
+        if (mgmtResponse) return withCors(mgmtResponse, req, config);
       }
 
       if (url.pathname === "/v1/models" && req.method === "GET") {
+        const apiAuthError = requireApiAuth(req, config, "data-plane");
+        if (apiAuthError) return withCors(apiAuthError, req, config);
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
+        }
         const goModels = await fetchAllModels(config);
         const { buildCatalogEntries, loadCatalogTemplate, nativeOpenAiSlugs, orderForSubagents } = await import("./codex-catalog");
         const nativeSlugs = nativeOpenAiSlugs();
@@ -1276,40 +1564,30 @@ export function startServer(port?: number) {
           // Codex client → Codex catalog shape: native gpt + namespaced routed models,
           // cloned from a native template so required fields (base_instructions, etc.) are present.
           // Pass the subagent picks so featured models lead by priority (matches the on-disk file).
-          return jsonResponse({ models: buildCatalogEntries(loadCatalogTemplate(), nativeSlugs, goOrdered, config.subagentModels, websocketsEnabled(config)) });
+          return jsonResponse({ models: buildCatalogEntries(loadCatalogTemplate(), nativeSlugs, goOrdered, config.subagentModels, websocketsEnabled(config)) }, 200, req, config);
         }
         // OpenAI list shape: native gpt bare + routed models namespaced "<provider>/<id>"
         const data = [
           ...nativeSlugs.map(id => ({ id, object: "model", created: 0, owned_by: "openai" })),
           ...goOrdered.map(m => ({ id: `${m.provider}/${m.id}`, object: "model", created: 0, owned_by: m.owned_by ?? m.provider })),
         ];
-        return jsonResponse({ object: "list", data });
+        return jsonResponse({ object: "list", data }, 200, req, config);
       }
 
       if (url.pathname === "/v1/responses" && req.method === "POST") {
         if (draining) {
-          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(), "Retry-After": "5" } });
+          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
         }
         const apiAuthError = requireApiAuth(req, config, "data-plane");
-        if (apiAuthError) return apiAuthError;
-        if (!isLocalOrigin(req)) {
-          return formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked");
+        if (apiAuthError) return withCors(apiAuthError, req, config);
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
         }
         const start = Date.now();
         const requestId = nextRequestLogId(start);
         const logCtx = { model: "unknown", provider: "unknown" };
         const response = await handleResponses(req, config, logCtx);
-        const errorCode = requestLogErrorCode(response.status);
-        addRequestLog({
-          requestId,
-          timestamp: start,
-          model: logCtx.model,
-          provider: logCtx.provider,
-          status: response.status,
-          durationMs: Date.now() - start,
-          ...(errorCode ? { errorCode } : {}),
-        });
-        return response;
+        return withCors(responseWithDeferredRequestLog(response, requestId, start, logCtx), req, config);
       }
 
       const guiFile = serveGuiFile(url.pathname);
@@ -1318,7 +1596,7 @@ export function startServer(port?: number) {
         return jsonResponse(rootFallbackPayload());
       }
 
-      return formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`);
+      return withCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
     },
     websocket: {
       // Responses WebSocket data plane (phase 120.2). Re-frames the same SSE pipeline onto the
@@ -1328,6 +1606,15 @@ export function startServer(port?: number) {
         registerCodexWebSocket(ws);
       },
       message(ws: ServerWebSocket<WsData>, raw: string | Buffer) {
+        const rawBytes = typeof raw === "string" ? Buffer.byteLength(raw) : raw.byteLength;
+        if (rawBytes > MAX_WS_FRAME_BYTES) {
+          sendJsonFrame(ws, buildWsErrorFrame(413, {
+            type: "invalid_request_error",
+            message: "WebSocket response.create frame is too large",
+          }));
+          ws.close(1009, "message too large");
+          return;
+        }
         let frame: Record<string, unknown>;
         try {
           frame = JSON.parse(typeof raw === "string" ? raw : raw.toString()) as Record<string, unknown>;
@@ -1358,41 +1645,97 @@ export function startServer(port?: number) {
 
         const payload: Record<string, unknown> = { ...frame };
         delete payload.type;
-        const wsTurnAc = new AbortController();
-        registerTurn(wsTurnAc);
+        registerTurn(turnAbort);
         void (async () => {
+          const start = Date.now();
+          const requestId = nextRequestLogId(start);
           const logCtx = { model: "unknown", provider: "unknown" };
+          let logged = false;
+          const finalizeLog = (status: number) => {
+            if (logged) return;
+            logged = true;
+            addFinalRequestLog(requestId, start, logCtx, status);
+          };
+          const baseHeaders = ws.data.headers ?? new Headers();
+          let authCtx: CodexAuthContext;
+          let selectedForwardHeaders: Headers;
+          try {
+            authCtx = await resolveCodexAuthContext(baseHeaders, config);
+            selectedForwardHeaders = headersForCodexAuthContext(baseHeaders, authCtx);
+            updateCodexWebSocketAuthContext(ws, authCtx);
+          } catch (err) {
+            if (!isCurrent()) return;
+            if (err instanceof CodexAccountCooldownError) {
+              finalizeLog(429);
+              sendJsonFrame(ws, buildWsErrorFrame(429, {
+                type: "rate_limit_error",
+                message: "Selected Codex account is cooling down",
+              }));
+              return;
+            }
+            if (err instanceof CodexThreadAffinityExpiredError) {
+              finalizeLog(409);
+              sendJsonFrame(ws, buildWsErrorFrame(409, {
+                type: "invalid_request_error",
+                message: "Codex thread account affinity expired; start a new session",
+              }));
+              return;
+            }
+            if (err instanceof CodexAuthContextError) {
+              const safeAccountLabel = formatCodexProviderForLog("chatgpt", err.accountId, config);
+              console.error(`[codex-auth] Pool account ${safeAccountLabel} token failed during websocket turn; reauthentication required`);
+              finalizeLog(401);
+              sendJsonFrame(ws, buildWsErrorFrame(401, {
+                type: "authentication_error",
+                message: "Selected Codex account needs reauthentication",
+              }));
+              return;
+            }
+            finalizeLog(502);
+            sendJsonFrame(ws, buildWsErrorFrame(502, {
+              type: "proxy_error",
+              message: err instanceof Error ? err.message : String(err),
+            }));
+            return;
+          }
           const fwd = new Headers({ "content-type": "application/json" });
-          ws.data.headers?.forEach((value, key) => fwd.set(key, value));
+          selectedForwardHeaders.forEach((value, key) => fwd.set(key, value));
           const req = new Request("http://localhost/v1/responses", {
             method: "POST",
             headers: fwd,
             body: JSON.stringify({ ...payload, stream: true }),
           });
           try {
-            assertCodexAuthContextNotCooled(ws.data.authContext);
             let terminalRecorder: ((status: ResponsesTerminalStatus) => void) | undefined;
             const response = await handleResponses(req, config, logCtx, {
               forceEmptyResponseId: true,
               abortSignal: turnAbort.signal,
-              authContext: ws.data.authContext,
-              selectedForwardHeaders: ws.data.headers,
+              authContext: authCtx,
+              selectedForwardHeaders,
               recordTerminalOutcomes: false,
               setTerminalOutcomeRecorder: recorder => {
                 terminalRecorder = recorder;
               },
             });
-            await sendResponseToWebSocket(ws, response, isCurrent, { onTerminal: terminalRecorder });
+            await sendResponseToWebSocket(ws, response, isCurrent, {
+              onTerminal: status => {
+                terminalRecorder?.(status);
+                finalizeLog(httpStatusForTerminalStatus(status));
+              },
+            });
+            if (!logged) finalizeLog(turnAbort.signal.aborted ? 499 : response.status);
           } catch (err) {
             if (!isCurrent()) return;
             try {
               if (err instanceof CodexAccountCooldownError) {
+                finalizeLog(429);
                 sendJsonFrame(ws, buildWsErrorFrame(429, {
                   type: "rate_limit_error",
                   message: "Selected Codex account is cooling down",
                 }));
                 return;
               }
+              finalizeLog(502);
               sendJsonFrame(ws, buildWsErrorFrame(502, {
                 type: "proxy_error",
                 message: err instanceof Error ? err.message : String(err),
@@ -1401,7 +1744,8 @@ export function startServer(port?: number) {
               /* socket already gone or send dropped */
             }
           } finally {
-            unregisterTurn(wsTurnAc);
+            unregisterTurn(turnAbort);
+            if (!logged && turnAbort.signal.aborted) finalizeLog(499);
             if (ws.data.cancel === cancelTurn) ws.data.cancel = undefined;
           }
         })();
@@ -1414,8 +1758,10 @@ export function startServer(port?: number) {
   });
 
   _serverRef = server;
+  const actualPort = server.port ?? listenPort;
+  setCorsOrigin(actualPort);
 
-  console.log(`🚀 opencodex proxy running on http://localhost:${listenPort}`);
+  console.log(`🚀 opencodex proxy running on http://localhost:${actualPort}`);
   console.log(`   POST /v1/responses → provider translation`);
   console.log(`   GET  /healthz      → health check`);
   console.log(`   GET  /api/*        → management API`);

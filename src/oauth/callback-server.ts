@@ -12,6 +12,7 @@ import type { OAuthController, OAuthCredentials } from "./types";
 
 const DEFAULT_TIMEOUT = 300_000;
 const DEFAULT_HOSTNAME = "localhost";
+const DEFAULT_BIND_HOSTNAME = "127.0.0.1";
 const CALLBACK_PATH = "/callback";
 
 const SUCCESS_HTML =
@@ -67,13 +68,13 @@ export abstract class OAuthCallbackFlow {
       this.preferredPort = preferredPortOrOptions;
       this.callbackPath = callbackPath;
       this.callbackHostname = DEFAULT_HOSTNAME;
-      this.callbackBindHostname = DEFAULT_HOSTNAME;
+      this.callbackBindHostname = DEFAULT_BIND_HOSTNAME;
       return;
     }
     this.preferredPort = preferredPortOrOptions.preferredPort;
     this.callbackPath = preferredPortOrOptions.callbackPath ?? CALLBACK_PATH;
     this.callbackHostname = preferredPortOrOptions.callbackHostname ?? DEFAULT_HOSTNAME;
-    this.callbackBindHostname = preferredPortOrOptions.callbackBindHostname ?? this.callbackHostname;
+    this.callbackBindHostname = preferredPortOrOptions.callbackBindHostname ?? DEFAULT_BIND_HOSTNAME;
     this.redirectUri = preferredPortOrOptions.redirectUri;
   }
 
@@ -151,30 +152,36 @@ export abstract class OAuthCallbackFlow {
     const errorDescription = url.searchParams.get("error_description") || error;
 
     let ok = false;
+    let consumeFlow = false;
     let errMessage = "";
+    const stateMatches = !expectedState || state === expectedState;
     if (error) {
       errMessage = `Authorization failed: ${errorDescription}`;
+      consumeFlow = stateMatches;
     } else if (!code) {
       errMessage = "Missing authorization code";
-    } else if (expectedState && state !== expectedState) {
+    } else if (!stateMatches) {
       errMessage = "State mismatch - possible CSRF attack";
     } else {
       ok = true;
+      consumeFlow = true;
     }
 
-    // Capture refs before they could be cleared, then resolve on the next microtask.
-    const resolve = this.#callbackResolve;
-    const reject = this.#callbackReject;
-    queueMicrotask(() => {
-      if (ok && code) {
-        resolve?.({ code, state });
-      } else {
-        reject?.(errMessage || "Unknown error");
-      }
-    });
+    if (consumeFlow) {
+      // Capture refs before they could be cleared, then resolve on the next microtask.
+      const resolve = this.#callbackResolve;
+      const reject = this.#callbackReject;
+      queueMicrotask(() => {
+        if (ok && code) {
+          resolve?.({ code, state });
+        } else {
+          reject?.(errMessage || "Unknown error");
+        }
+      });
+    }
 
     return new Response(ok ? SUCCESS_HTML : errorHtml(errMessage), {
-      status: ok ? 200 : 500,
+      status: ok ? 200 : consumeFlow ? 500 : 400,
       headers: { "Content-Type": "text/html" },
     });
   }
@@ -204,7 +211,7 @@ export abstract class OAuthCallbackFlow {
               .then((input): CallbackResult | null => {
                 const parsed = parseCallbackInput(input);
                 if (!parsed.code) return null;
-                if (expectedState && parsed.state && parsed.state !== expectedState) return null;
+                if (expectedState && parsed.state !== expectedState) return null;
                 return { code: parsed.code, state: parsed.state ?? "" };
               })
               .catch((): CallbackResult | null => null),

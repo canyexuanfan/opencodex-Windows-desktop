@@ -33,7 +33,7 @@ Codex CLI / App / SDK ──/v1/responses──▶ opencodex ──▶ Any provi
 
 ```bash
 # 安装（自动打包 Bun 运行时 —— 只需 Node 18+）
-npm install -g @bitkyc08/opencodex      # 或者: bun install -g @bitkyc08/opencodex
+npm install -g @bitkyc08/opencodex
 
 # 交互式初始化（写入配置 + 注入 Codex）
 ocx init
@@ -126,7 +126,7 @@ ocx logout <provider>          # 移除已保存的登录
 ocx gui                        # 打开 Web 仪表盘
 ocx codex-shim install         # 运行 codex 时自动启动代理
 ocx service <install|start|stop|status|uninstall>   # 后台服务（launchd/systemd/schtasks）
-ocx update                     # 更新到最新版
+ocx update [--tag preview]     # 更新 opencodex；preview 安装保持 @preview
 ```
 
 ### 自动启动：service vs shim
@@ -135,7 +135,7 @@ opencodex 提供两种自动启动代理的方式：
 
 | | `ocx service install` | `ocx codex-shim install` |
 |---|---|---|
-| **方式** | OS 服务管理器（launchd / systemd / schtasks） | 将 `codex` 二进制替换为包装脚本 |
+| **方式** | OS 服务管理器（launchd / systemd / schtasks） | 包装 `codex` 脚本启动器；不会改动真实 `codex.exe` |
 | **时机** | 登录后始终运行 | 按需 — 仅在运行 `codex` 时启动 |
 | **重启** | 崩溃后自动重启 | 每次调用 `codex` 时启动一次 |
 | **Codex 更新** | 不受影响 | 下次运行 `ocx codex-shim install` 或 `ocx update` 时修复 |

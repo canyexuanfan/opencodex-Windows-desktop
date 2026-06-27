@@ -52,7 +52,7 @@ GitHub Actions intentionally stay small:
 Use the helper for releases:
 
 ```bash
-bun run release <version>           # dry-run by default
+bun run release <version>           # commits/pushes the bump; publish workflow is dry-run by default
 bun run release <version> --publish # publish after the CI-gated dry run is understood
 bun run release:watch               # watch the newest Release workflow run
 ```

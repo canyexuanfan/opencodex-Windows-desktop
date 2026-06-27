@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, readFileSync, mkdirSync, openSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getConfigDir, atomicWriteFile, hardenConfigDir, hardenExistingSecret } from "./config";
+import { getConfigDir, atomicWriteFile, backupInvalidConfig, hardenConfigDir, hardenExistingSecret } from "./config";
 import type { CodexAccountCredentialRecord, CodexAccountCredentials } from "./types";
 
 type LegacyCodexAccountStore = Record<string, CodexAccountCredentials>;
@@ -87,6 +87,7 @@ function loadCodexAccountRecordStore(): CodexAccountStore {
     }
     return normalized;
   } catch {
+    backupInvalidConfig(path);
     return {};
   }
 }
@@ -145,10 +146,13 @@ export function saveCodexAccountCredentialIfGeneration(
   if (!current || current.generation !== generation || current.deletedAt != null || !current.credential) {
     return false;
   }
+  const refreshGrantFingerprint = current.credential.refreshToken === cred.refreshToken
+    ? current.refreshGrantFingerprint ?? refreshGrantFingerprintForToken(cred.refreshToken)
+    : refreshGrantFingerprintForToken(cred.refreshToken);
   store[id] = {
     credential: cred,
     generation: generation + 1,
-    refreshGrantFingerprint: current.refreshGrantFingerprint ?? refreshGrantFingerprintForToken(current.credential.refreshToken),
+    refreshGrantFingerprint,
     replacedAt: current.replacedAt,
   };
   persist(store);
@@ -191,7 +195,8 @@ export class CodexCredentialRefreshLockTimeoutError extends Error {
 }
 
 type CodexTokenResult = { accessToken: string; chatgptAccountId: string; generation: number };
-const refreshLocks = new Map<string, Promise<CodexTokenResult>>();
+type CodexRefreshResult = CodexTokenResult & { credential?: CodexAccountCredentials };
+const refreshLocks = new Map<string, Promise<CodexRefreshResult>>();
 
 function codexRefreshLockPath(lockKey: string): string {
   const digest = createHash("sha256").update(lockKey).digest("hex").slice(0, 32);
@@ -283,22 +288,50 @@ export async function getValidCodexToken(id: string): Promise<CodexTokenResult> 
 
   const existing = refreshLocks.get(refreshGrantFingerprint);
   if (existing) {
-    await existing;
+    const refreshed = await existing;
+    const current = readCodexAccountRecord(id);
+    const currentCred = current?.deletedAt == null ? current?.credential : undefined;
+    if (
+      current &&
+      currentCred &&
+      refreshed.credential &&
+      recordGrantFingerprint(current) === refreshGrantFingerprint
+    ) {
+      if (!saveCodexAccountCredentialIfGeneration(id, current.generation, refreshed.credential)) {
+        throw new CodexCredentialGenerationConflictError();
+      }
+      return {
+        accessToken: refreshed.credential.accessToken,
+        chatgptAccountId: refreshed.credential.chatgptAccountId,
+        generation: current.generation + 1,
+      };
+    }
     return getValidCodexToken(id);
   }
 
-  const refreshPromise = withCodexRefreshFileLock(refreshGrantFingerprint, async (): Promise<CodexTokenResult> => {
+  const refreshPromise = withCodexRefreshFileLock(refreshGrantFingerprint, async (): Promise<CodexRefreshResult> => {
     const lockedRecord = readCodexAccountRecord(id);
     const lockedCred = lockedRecord?.deletedAt == null ? lockedRecord?.credential : undefined;
     if (!lockedRecord || !lockedCred) throw new CodexCredentialGenerationConflictError();
     const startGeneration = lockedRecord.generation;
     const lockedRefreshGrantFingerprint = recordGrantFingerprint(lockedRecord);
-    if (lockedRefreshGrantFingerprint !== refreshGrantFingerprint) throw new CodexCredentialGenerationConflictError();
+    if (lockedRefreshGrantFingerprint !== refreshGrantFingerprint) {
+      if (lockedCred.expiresAt > Date.now() + REFRESH_SKEW_MS) {
+        return {
+          accessToken: lockedCred.accessToken,
+          chatgptAccountId: lockedCred.chatgptAccountId,
+          generation: startGeneration,
+          credential: lockedCred,
+        };
+      }
+      throw new CodexCredentialGenerationConflictError();
+    }
     if (lockedCred.expiresAt > Date.now() + REFRESH_SKEW_MS) {
       return {
         accessToken: lockedCred.accessToken,
         chatgptAccountId: lockedCred.chatgptAccountId,
         generation: startGeneration,
+        credential: lockedCred,
       };
     }
     const sameGrantFreshCredential = findFreshCredentialForGrant(refreshGrantFingerprint, id);
@@ -310,6 +343,7 @@ export async function getValidCodexToken(id: string): Promise<CodexTokenResult> 
         accessToken: sameGrantFreshCredential.accessToken,
         chatgptAccountId: sameGrantFreshCredential.chatgptAccountId,
         generation: startGeneration + 1,
+        credential: sameGrantFreshCredential,
       };
     }
     const res = await fetch(CHATGPT_TOKEN_URL, {
@@ -345,11 +379,16 @@ export async function getValidCodexToken(id: string): Promise<CodexTokenResult> 
     if (!saveCodexAccountCredentialIfGeneration(id, startGeneration, updated)) {
       throw new CodexCredentialGenerationConflictError();
     }
-    return { accessToken: updated.accessToken, chatgptAccountId: updated.chatgptAccountId, generation: startGeneration + 1 };
+    return { accessToken: updated.accessToken, chatgptAccountId: updated.chatgptAccountId, generation: startGeneration + 1, credential: updated };
   }).finally(() => {
     refreshLocks.delete(refreshGrantFingerprint);
   });
 
   refreshLocks.set(refreshGrantFingerprint, refreshPromise);
-  return refreshPromise;
+  const result = await refreshPromise;
+  return {
+    accessToken: result.accessToken,
+    chatgptAccountId: result.chatgptAccountId,
+    generation: result.generation,
+  };
 }

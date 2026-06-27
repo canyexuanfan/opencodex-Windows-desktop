@@ -1,6 +1,6 @@
 import * as readline from "node:readline";
 import { injectCodexConfig } from "./codex-inject";
-import { getDefaultConfig, saveConfig } from "./config";
+import { getDefaultConfig, isValidProviderName, saveConfig } from "./config";
 import { enrichProviderFromCatalog } from "./oauth/key-providers";
 import { deriveInitProviders } from "./providers/derive";
 import type { OcxConfig, OcxProviderConfig } from "./types";
@@ -97,7 +97,12 @@ export async function runInit(): Promise<void> {
       enrichProviderFromCatalog(p.id, providerConfig);
     }
   } else {
-    providerName = await prompt.ask("Provider name: ");
+    providerName = (await prompt.ask("Provider name: ")).trim();
+    if (!isValidProviderName(providerName)) {
+      console.error("Provider name must use letters, numbers, dot, underscore, or hyphen and cannot be a reserved object key.");
+      prompt.close();
+      process.exit(1);
+    }
     const baseUrl = await prompt.ask("Base URL (e.g. http://localhost:11434/v1): ");
     const adapter = await prompt.ask("Adapter [openai-chat]: ") || "openai-chat";
     const apiKey = await prompt.ask("API key (optional): ");

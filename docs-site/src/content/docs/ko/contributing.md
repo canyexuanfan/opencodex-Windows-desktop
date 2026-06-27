@@ -52,7 +52,7 @@ GitHub Actions는 의도적으로 짧게 유지합니다:
 릴리즈에는 helper를 사용하세요:
 
 ```bash
-bun run release <version>           # 기본은 dry-run
+bun run release <version>           # 버전 bump는 commit/push, publish workflow는 기본 dry-run
 bun run release <version> --publish # CI-gated dry-run을 확인한 뒤 실제 publish
 bun run release:watch               # 가장 최근 Release workflow run 감시
 ```

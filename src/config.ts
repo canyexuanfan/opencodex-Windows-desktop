@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import * as z from "zod/v4";
 import type { OcxConfig } from "./types";
 
@@ -16,8 +16,14 @@ export function atomicWriteFile(path: string, content: string): void {
   renameSync(tmp, path);
 }
 
+let resolvedConfigDirCache: { raw: string | undefined; path: string } | null = null;
+
 function resolveConfigDir(): string {
-  return process.env["OPENCODEX_HOME"] || join(homedir(), ".opencodex");
+  const raw = process.env["OPENCODEX_HOME"]?.trim() || undefined;
+  if (resolvedConfigDirCache && resolvedConfigDirCache.raw === raw) return resolvedConfigDirCache.path;
+  const path = raw ? resolve(raw) : join(homedir(), ".opencodex");
+  resolvedConfigDirCache = { raw, path };
+  return path;
 }
 
 function resolveConfigPath(): string {
@@ -35,12 +41,35 @@ const providerConfigSchema = z.object({
   baseUrl: z.string().min(1),
 }).passthrough();
 
+const RESERVED_PROVIDER_NAMES = new Set(["__proto__", "prototype", "constructor"]);
+const PROVIDER_NAME_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?$/;
+
+export function isValidProviderName(name: string): boolean {
+  const trimmed = name.trim();
+  return trimmed === name
+    && PROVIDER_NAME_PATTERN.test(name)
+    && !RESERVED_PROVIDER_NAMES.has(name.toLowerCase());
+}
+
+export function hasOwnProvider(providers: Record<string, unknown>, name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(providers, name);
+}
+
 const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
   providers: z.record(z.string(), providerConfigSchema),
   defaultProvider: z.string().min(1).default("openai"),
 }).passthrough().superRefine((config, ctx) => {
-  if (Object.keys(config.providers).length > 0 && !(config.defaultProvider in config.providers)) {
+  for (const name of Object.keys(config.providers)) {
+    if (!isValidProviderName(name)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers", name],
+        message: "provider names must use letters, numbers, dot, underscore, or hyphen and cannot be reserved JavaScript object keys",
+      });
+    }
+  }
+  if (!hasOwnProvider(config.providers, config.defaultProvider)) {
     ctx.addIssue({
       code: "custom",
       path: ["defaultProvider"],
@@ -273,7 +302,7 @@ function warnAndBackupInvalidConfig(configPath: string, error: unknown): void {
   console.error(`Could not load opencodex config at ${configPath}: ${reason}. Using default config.${backupNote}`);
 }
 
-function backupInvalidConfig(configPath: string): string | null {
+export function backupInvalidConfig(configPath: string): string | null {
   if (!existsSync(configPath)) return null;
   const backupPath = `${configPath}.invalid-${new Date().toISOString().replace(/[:.]/g, "-")}`;
   try {

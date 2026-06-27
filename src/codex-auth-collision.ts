@@ -44,6 +44,11 @@ export function checkAccountIdCollision(
   email?: string | null,
   plan?: string | null,
 ): { collision: true; reason: string } | { collision: false } {
+  const mainAccountId = getMainChatgptAccountId();
+  if (mainAccountId && mainAccountId === chatgptAccountId) {
+    return { collision: true, reason: "Account is already used by the main Codex login." };
+  }
+
   const candidateEmail = normalizedEmail(email);
   const candidateWorkspace = isWorkspacePlan(plan);
   for (const account of loadConfig().codexAccounts ?? []) {

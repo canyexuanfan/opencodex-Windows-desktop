@@ -26,7 +26,7 @@ export { clearAccountQuota, getAccountQuota, parseUsageQuota, updateAccountQuota
 import { extractAccountId, decodeJwtPayload } from "./oauth/chatgpt";
 import { maskEmail } from "./privacy";
 export { maskEmail } from "./privacy";
-import type { OcxConfig } from "./types";
+import type { CodexAccount, OcxConfig } from "./types";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -39,6 +39,73 @@ const ACCOUNT_ID_RE = /^[a-zA-Z0-9._-]{1,64}$/;
 const MANUAL_IMPORT_ENV = "OPENCODEX_ENABLE_UNVERIFIED_CODEX_IMPORT";
 
 const codexAuthLoginState = new Map<string, { status: string; accountId?: string; email?: string; error?: string; doneAt?: number }>();
+
+function configuredPoolAccount(config: OcxConfig, accountId: string): CodexAccount | null {
+  if (!ACCOUNT_ID_RE.test(accountId)) return null;
+  return (config.codexAccounts ?? []).find(account => account.id === accountId && !account.isMain) ?? null;
+}
+
+function poolAccountDto(
+  account: CodexAccount,
+  quotaResult: PoolQuotaResult,
+  hasCredential: boolean,
+): Record<string, unknown> {
+  return {
+    id: account.id,
+    email: maskEmail(account.email) ?? account.email,
+    ...(account.plan !== undefined ? { plan: account.plan } : {}),
+    ...(account.logLabel !== undefined ? { logLabel: account.logLabel } : {}),
+    isMain: false,
+    quota: quotaResult.quota ? { ...quotaResult.quota } : null,
+    needsReauth: !hasCredential || quotaResult.needsReauth || isAccountNeedsReauth(account.id),
+    hasCredential,
+  };
+}
+
+async function resolveResetCreditAuth(
+  runtimeConfig: OcxConfig,
+  accountId: string,
+): Promise<
+  | { ok: true; isMain: boolean; accessToken: string; chatgptAccountId: string }
+  | { ok: false; response: Response }
+> {
+  if (accountId === "__main__") {
+    const tokens = readCodexTokens();
+    if (!tokens) return { ok: false, response: jsonResponse({ error: "Main Codex account not logged in" }, 401) };
+    return { ok: true, isMain: true, accessToken: tokens.access_token, chatgptAccountId: tokens.account_id };
+  }
+  if (!ACCOUNT_ID_RE.test(accountId)) {
+    return { ok: false, response: jsonResponse({ error: "Invalid account id format" }, 400) };
+  }
+  if (!configuredPoolAccount(runtimeConfig, accountId)) {
+    return { ok: false, response: jsonResponse({ error: "Unknown Codex account" }, 404) };
+  }
+  const cred = await getValidCodexToken(accountId);
+  return { ok: true, isMain: false, accessToken: cred.accessToken, chatgptAccountId: cred.chatgptAccountId };
+}
+
+function safeResetCreditsDto(input: unknown): { credits: { granted_at: string; expires_at: string }[]; available_count?: number } {
+  const obj = typeof input === "object" && input !== null ? input as Record<string, unknown> : {};
+  const rawCredits = Array.isArray(obj.credits) ? obj.credits : [];
+  const credits = rawCredits.flatMap((raw): { granted_at: string; expires_at: string }[] => {
+    if (typeof raw !== "object" || raw === null) return [];
+    const credit = raw as Record<string, unknown>;
+    return typeof credit.granted_at === "string" && typeof credit.expires_at === "string"
+      ? [{ granted_at: credit.granted_at, expires_at: credit.expires_at }]
+      : [];
+  });
+  const rawAvailable = (obj.rate_limit_reset_credits as { available_count?: unknown } | null | undefined)?.available_count
+    ?? obj.available_count;
+  return {
+    credits,
+    ...(typeof rawAvailable === "number" && Number.isFinite(rawAvailable) ? { available_count: rawAvailable } : {}),
+  };
+}
+
+function safeResetCreditConsumeDto(input: unknown): { code: string } {
+  const obj = typeof input === "object" && input !== null ? input as Record<string, unknown> : {};
+  return { code: typeof obj.code === "string" ? obj.code : "unknown" };
+}
 
 export function isUnverifiedCodexImportEnabled(): boolean {
   return process.env[MANUAL_IMPORT_ENV] === "1";
@@ -176,13 +243,7 @@ export async function handleCodexAuthAPI(
       const quotaResult = cred
         ? await fetchPoolAccountQuota(a.id, forceRefresh)
         : { quota: null, needsReauth: true };
-      return {
-        ...a,
-        email: maskEmail(a.email) ?? a.email,
-        quota: quotaResult.quota ? { ...quotaResult.quota } : null,
-        needsReauth: !cred || quotaResult.needsReauth || isAccountNeedsReauth(a.id),
-        hasCredential: !!cred,
-      };
+      return poolAccountDto(a, quotaResult, !!cred);
     });
     const main = {
       id: "__main__",
@@ -301,39 +362,27 @@ export async function handleCodexAuthAPI(
     const accountId = url.searchParams.get("accountId");
     if (!accountId) return jsonResponse({ error: "accountId required" }, 400);
 
-    const isMain = accountId === "__main__";
-    let accessToken: string;
-    let chatgptAccountId: string;
-
     try {
-      if (isMain) {
-        const tokens = readCodexTokens();
-        if (!tokens) return jsonResponse({ error: "Main Codex account not logged in" }, 401);
-        accessToken = tokens.access_token;
-        chatgptAccountId = tokens.account_id;
-      } else {
-        const cred = await getValidCodexToken(accountId);
-        accessToken = cred.accessToken;
-        chatgptAccountId = cred.chatgptAccountId;
-      }
+      const auth = await resolveResetCreditAuth(getRuntimeConfig(config), accountId);
+      if (!auth.ok) return auth.response;
 
       const resp = await fetch(
         "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
         {
           headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "ChatGPT-Account-Id": chatgptAccountId,
+            Authorization: `Bearer ${auth.accessToken}`,
+            "ChatGPT-Account-Id": auth.chatgptAccountId,
           },
           signal: AbortSignal.timeout(8000),
         },
       );
       if (!resp.ok) {
-        const text = await resp.text().catch(() => "");
-        return jsonResponse({ error: `Upstream error ${resp.status}`, detail: text }, resp.status);
+        await resp.body?.cancel().catch(() => {});
+        return jsonResponse({ error: `Upstream error ${resp.status}` }, resp.status);
       }
-      return jsonResponse(await resp.json());
+      return jsonResponse(safeResetCreditsDto(await resp.json()));
     } catch (e) {
-      return jsonResponse({ error: String(e) }, 500);
+      return jsonResponse({ error: e instanceof Error ? e.message : "Reset credit lookup failed" }, 500);
     }
   }
 
@@ -341,21 +390,9 @@ export async function handleCodexAuthAPI(
     const body = (await req.json().catch(() => ({}))) as { accountId?: string };
     if (!body.accountId) return jsonResponse({ error: "accountId required" }, 400);
 
-    const isMain = body.accountId === "__main__";
-    let accessToken: string;
-    let chatgptAccountId: string;
-
     try {
-      if (isMain) {
-        const tokens = readCodexTokens();
-        if (!tokens) return jsonResponse({ error: "Main Codex account not logged in" }, 401);
-        accessToken = tokens.access_token;
-        chatgptAccountId = tokens.account_id;
-      } else {
-        const cred = await getValidCodexToken(body.accountId);
-        accessToken = cred.accessToken;
-        chatgptAccountId = cred.chatgptAccountId;
-      }
+      const auth = await resolveResetCreditAuth(getRuntimeConfig(config), body.accountId);
+      if (!auth.ok) return auth.response;
 
       const idempotencyKey = crypto.randomUUID();
       const resp = await fetch(
@@ -363,8 +400,8 @@ export async function handleCodexAuthAPI(
         {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "ChatGPT-Account-Id": chatgptAccountId,
+            Authorization: `Bearer ${auth.accessToken}`,
+            "ChatGPT-Account-Id": auth.chatgptAccountId,
             "Content-Type": "application/json",
           },
           body: JSON.stringify({ redeem_request_id: idempotencyKey }),
@@ -372,12 +409,12 @@ export async function handleCodexAuthAPI(
         },
       );
       if (!resp.ok) {
-        const text = await resp.text().catch(() => "");
-        return jsonResponse({ error: `Upstream error ${resp.status}`, detail: text }, resp.status);
+        await resp.body?.cancel().catch(() => {});
+        return jsonResponse({ error: `Upstream error ${resp.status}` }, resp.status);
       }
-      const result = (await resp.json()) as { code: string };
+      const result = safeResetCreditConsumeDto(await resp.json());
       if (result.code === "reset") {
-        if (isMain) {
+        if (auth.isMain) {
           await fetchMainAccountInfo(true);
         } else {
           await fetchPoolAccountQuota(body.accountId, true);
@@ -385,7 +422,7 @@ export async function handleCodexAuthAPI(
       }
       return jsonResponse(result);
     } catch (e) {
-      return jsonResponse({ error: String(e) }, 500);
+      return jsonResponse({ error: e instanceof Error ? e.message : "Reset credit consume failed" }, 500);
     }
   }
 
