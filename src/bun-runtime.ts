@@ -20,6 +20,13 @@ const require = createRequire(import.meta.url);
 // postinstall downloads the real ~60MB binary; reject the stub by size so we
 // never bake a non-executable path into durable artifacts.
 const REAL_BUN_MIN_BYTES = 1_000_000;
+const BUN_OVERRIDE_ENV = "OPENCODEX_BUN_PATH";
+
+export type DurableBunRuntime = {
+  path: string;
+  source: "override" | "bundled" | "process";
+  overrideEnv: typeof BUN_OVERRIDE_ENV;
+};
 
 /**
  * True only for a real, downloaded Bun binary — not the ~450-byte ASCII
@@ -53,6 +60,20 @@ export function bundledBunPath(): string | null {
   }
 }
 
+export function overrideBunPath(): string | null {
+  const value = process.env[BUN_OVERRIDE_ENV]?.trim();
+  if (!value) return null;
+  return isRealBunBinary(value) ? value : null;
+}
+
+export function durableBunRuntime(): DurableBunRuntime {
+  const override = overrideBunPath();
+  if (override) return { path: override, source: "override", overrideEnv: BUN_OVERRIDE_ENV };
+  const bundled = bundledBunPath();
+  if (bundled) return { path: bundled, source: "bundled", overrideEnv: BUN_OVERRIDE_ENV };
+  return { path: process.execPath, source: "process", overrideEnv: BUN_OVERRIDE_ENV };
+}
+
 /**
  * Bun path to bake into durable artifacts (launchd/systemd/Task Scheduler and
  * the Codex auto-start shim). Prefer the bundled binary — it lives under the
@@ -60,5 +81,5 @@ export function bundledBunPath(): string | null {
  * current runtime, which is Bun when launched normally.
  */
 export function durableBunPath(): string {
-  return bundledBunPath() ?? process.execPath;
+  return durableBunRuntime().path;
 }

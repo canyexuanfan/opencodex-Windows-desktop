@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { spawn } from "node:child_process";
 import { rmSync } from "node:fs";
-import { durableBunPath } from "./bun-runtime";
+import { durableBunRuntime } from "./bun-runtime";
 import { restoreNativeCodex } from "./codex-inject";
 import { restoreLegacyOpenaiHistory } from "./codex-history-provider";
 import { writeJournal, reconcileJournal } from "./codex-journal";
@@ -395,7 +395,9 @@ async function handleStatus() {
   console.log(`   Dashboard: http://localhost:${port}/`);
   console.log(`   Config: ${getConfigPath()}`);
   console.log(`   PID file: ${getPidPath()}`);
-  console.log(`   Runtime: ${durableBunPath()}`);
+  const bunRuntime = durableBunRuntime();
+  console.log(`   Runtime: ${bunRuntime.path}`);
+  console.log(`   Runtime source: ${bunRuntime.source}${bunRuntime.source === "override" ? ` (${bunRuntime.overrideEnv})` : ""}`);
   console.log(`   Default provider: ${config.defaultProvider}`);
   console.log(`   Codex autostart: ${codexAutoStartEnabled(config) ? "enabled" : "disabled"}`);
   console.log(`   Service: ${serviceStatusSummary()}`);

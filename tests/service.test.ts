@@ -204,6 +204,7 @@ describe("Windows service task", () => {
       expect(script).toContain('set "OCX_SERVICE_LOG=');
       expect(script).toContain("opencodex service wrapper start");
       expect(script).toContain('echo bun="%OCX_BUN%"');
+      expect(script).toContain('echo bun_source="');
       expect(script).toContain('echo cli="%OCX_CLI%"');
       expect(script).toContain('echo opencodex_home="%OPENCODEX_HOME%"');
       expect(script).toContain('echo codex_home="%CODEX_HOME%"');

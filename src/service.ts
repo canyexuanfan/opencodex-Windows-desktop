@@ -12,7 +12,7 @@ import { dirname, join, resolve } from "node:path";
 import { getConfigDir, readPid, removePid } from "./config";
 import { loadConfig } from "./config";
 import { restoreNativeCodex } from "./codex-inject";
-import { durableBunPath } from "./bun-runtime";
+import { durableBunPath, durableBunRuntime } from "./bun-runtime";
 import { killProxy } from "./process-control";
 import { serviceApiTokenFilePath } from "./service-secrets";
 
@@ -268,6 +268,7 @@ function taskXmlString(value: string): string {
 
 export function buildWindowsServiceScript(entry = cliEntry()): string {
   const { bun, cli } = entry;
+  const bunRuntime = durableBunRuntime();
   const path = process.env.PATH ?? "";
   const lines = [
     "@echo off",
@@ -286,6 +287,7 @@ export function buildWindowsServiceScript(entry = cliEntry()): string {
     ":loop",
     '>>"%OCX_SERVICE_LOG%" echo [%DATE% %TIME%] opencodex service wrapper start',
     '>>"%OCX_SERVICE_LOG%" echo bun="%OCX_BUN%"',
+    `>>"%OCX_SERVICE_LOG%" echo bun_source="${bunRuntime.source}"`,
     '>>"%OCX_SERVICE_LOG%" echo cli="%OCX_CLI%"',
     '>>"%OCX_SERVICE_LOG%" echo opencodex_home="%OPENCODEX_HOME%"',
     '>>"%OCX_SERVICE_LOG%" echo codex_home="%CODEX_HOME%"',
