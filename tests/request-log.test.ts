@@ -71,6 +71,9 @@ describe("request log metadata", () => {
       requestedModel: "gpt-5.5",
       requestedServiceTier: "priority",
       requestedSpeedLabel: requestLogSpeedLabel("priority"),
+      configuredServiceTier: "fast",
+      configuredSpeedLabel: requestLogSpeedLabel("fast"),
+      modelSupportsServiceTier: true,
     };
     const response = responseWithDeferredRequestLog(
       new Response(JSON.stringify({
@@ -90,6 +93,9 @@ describe("request log metadata", () => {
       requestedModel: "gpt-5.5",
       requestedServiceTier: "priority",
       requestedSpeedLabel: "fast",
+      configuredServiceTier: "fast",
+      configuredSpeedLabel: "fast",
+      modelSupportsServiceTier: true,
       responseServiceTier: "auto",
       resolvedModel: "gpt-5.5",
     });

@@ -35,7 +35,8 @@ import {
   listOAuthProviders, reconcileOAuthProviders, startLoginFlow, UnsupportedOAuthProviderError, upsertOAuthProvider,
 } from "./oauth/index";
 import type { CatalogModel } from "./codex-catalog";
-import { invalidateCodexModelsCache } from "./codex-catalog";
+import { invalidateCodexModelsCache, readCodexCatalogPath } from "./codex-catalog";
+import { CODEX_CONFIG_PATH, readRootTomlString } from "./codex-paths";
 import { buildWebSearchTool, planWebSearch, runWithWebSearch } from "./web-search";
 import { describeImagesInPlace, planVisionSidecar } from "./vision";
 import { removeCredential } from "./oauth/store";
@@ -81,6 +82,9 @@ export interface RequestLogContext {
   requestedModel?: string;
   requestedServiceTier?: string;
   requestedSpeedLabel?: string;
+  configuredServiceTier?: string;
+  configuredSpeedLabel?: string;
+  modelSupportsServiceTier?: boolean;
   responseServiceTier?: string;
   resolvedModel?: string;
 }
@@ -326,6 +330,8 @@ async function handleResponses(
   logCtx.requestedModel = parsed.modelId;
   logCtx.requestedServiceTier = parsed.options.serviceTier;
   logCtx.requestedSpeedLabel = requestLogSpeedLabel(parsed.options.serviceTier);
+  logCtx.configuredServiceTier = readConfiguredCodexServiceTier();
+  logCtx.configuredSpeedLabel = requestLogSpeedLabel(logCtx.configuredServiceTier);
 
   let route;
   try {
@@ -345,6 +351,7 @@ async function handleResponses(
   }
   logCtx.model = route.modelId;
   logCtx.provider = route.providerName;
+  logCtx.modelSupportsServiceTier = catalogModelSupportsServiceTier(route.modelId, logCtx.configuredServiceTier);
 
   let authCtx: CodexAuthContext;
   let selectedForwardHeaders: Headers;
@@ -657,6 +664,9 @@ export interface RequestLogEntry {
   requestedModel?: string;
   requestedServiceTier?: string;
   requestedSpeedLabel?: string;
+  configuredServiceTier?: string;
+  configuredSpeedLabel?: string;
+  modelSupportsServiceTier?: boolean;
   responseServiceTier?: string;
   resolvedModel?: string;
   status: number;
@@ -695,6 +705,38 @@ export function requestLogSpeedLabel(serviceTier: string | undefined): string | 
   const normalized = serviceTier?.trim().toLowerCase();
   if (normalized === "priority" || normalized === "fast") return "fast";
   return undefined;
+}
+
+function readConfiguredCodexServiceTier(): string | undefined {
+  try {
+    if (!existsSync(CODEX_CONFIG_PATH)) return undefined;
+    return readRootTomlString(readFileSync(CODEX_CONFIG_PATH, "utf-8"), "service_tier") ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function catalogModelSupportsServiceTier(modelId: string, serviceTier: string | undefined): boolean | undefined {
+  if (!serviceTier) return undefined;
+  const requestTier = serviceTier.trim().toLowerCase() === "fast" ? "priority" : serviceTier.trim();
+  try {
+    const catalogPath = readCodexCatalogPath();
+    if (!existsSync(catalogPath)) return undefined;
+    const catalog = JSON.parse(readFileSync(catalogPath, "utf-8")) as { models?: unknown };
+    const models = Array.isArray(catalog.models) ? catalog.models : [];
+    const entry = models.find(model => {
+      if (!model || typeof model !== "object") return false;
+      return (model as { slug?: unknown; id?: unknown }).slug === modelId
+        || (model as { slug?: unknown; id?: unknown }).id === modelId;
+    });
+    if (!entry || typeof entry !== "object") return undefined;
+    const tiers = (entry as { service_tiers?: unknown }).service_tiers;
+    return Array.isArray(tiers) && tiers.some(tier => (
+      tier && typeof tier === "object" && (tier as { id?: unknown }).id === requestTier
+    ));
+  } catch {
+    return undefined;
+  }
 }
 
 function applyResponseLogMetadata(logCtx: RequestLogContext, payload: unknown): void {
@@ -743,6 +785,9 @@ function addFinalRequestLog(
     ...(logCtx.requestedModel ? { requestedModel: logCtx.requestedModel } : {}),
     ...(logCtx.requestedServiceTier ? { requestedServiceTier: logCtx.requestedServiceTier } : {}),
     ...(logCtx.requestedSpeedLabel ? { requestedSpeedLabel: logCtx.requestedSpeedLabel } : {}),
+    ...(logCtx.configuredServiceTier ? { configuredServiceTier: logCtx.configuredServiceTier } : {}),
+    ...(logCtx.configuredSpeedLabel ? { configuredSpeedLabel: logCtx.configuredSpeedLabel } : {}),
+    ...(logCtx.modelSupportsServiceTier !== undefined ? { modelSupportsServiceTier: logCtx.modelSupportsServiceTier } : {}),
     ...(logCtx.responseServiceTier ? { responseServiceTier: logCtx.responseServiceTier } : {}),
     ...(logCtx.resolvedModel ? { resolvedModel: logCtx.resolvedModel } : {}),
     status,
