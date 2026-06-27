@@ -103,4 +103,27 @@ describe("CLI status JSON", () => {
       rmSync(opencodexHome, { recursive: true, force: true });
     }
   });
+
+  test("status --json rejects additional flags", () => {
+    const opencodexHome = mkdtempSync(join(tmpdir(), "ocx-status-json-"));
+    try {
+      writeFileSync(join(opencodexHome, "config.json"), JSON.stringify({
+        port: 9,
+        providers: {},
+        defaultProvider: "openai",
+      }), "utf8");
+
+      const result = spawnSync(process.execPath, [cliPath, "status", "--json", "--yaml"], {
+        cwd: repoRoot,
+        env: { ...process.env, OPENCODEX_HOME: opencodexHome },
+        encoding: "utf8",
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Usage: ocx status [--json]");
+      expect(result.stdout).toBe("");
+    } finally {
+      rmSync(opencodexHome, { recursive: true, force: true });
+    }
+  });
 });

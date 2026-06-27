@@ -176,4 +176,40 @@ describe("CLI subcommand help", () => {
       rmSync(codexHome, { recursive: true, force: true });
     }
   });
+
+  test("start rejects unknown and partially numeric port arguments", () => {
+    const cases = [
+      { args: ["start", "--port", "123abc"], expected: "Invalid port number" },
+      { args: ["start", "--bad"], expected: "Usage: ocx start [--port <port>]" },
+      { args: ["start", "--port", "1234", "--extra"], expected: "Usage: ocx start [--port <port>]" },
+    ];
+
+    for (const testCase of cases) {
+      const result = runCli(testCase.args);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(testCase.expected);
+      expect(result.stdout).not.toContain("Plain `codex`");
+    }
+  });
+
+  test("start help wins before port validation", () => {
+    const result = runCli(["start", "--port", "123abc", "--help"]);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Usage: ocx start [--port <port>]");
+  });
+
+  test("invalid service and codex-shim usage include remove alias", () => {
+    const cases = [
+      { args: ["service", "nope"], expected: "Usage: ocx service <install|start|stop|status|uninstall|remove>" },
+      { args: ["codex-shim", "nope"], expected: "Usage: ocx codex-shim <install|status|uninstall|remove>" },
+    ];
+
+    for (const testCase of cases) {
+      const result = runCli(testCase.args);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(testCase.expected);
+      expect(result.stdout).toBe("");
+    }
+  });
 });

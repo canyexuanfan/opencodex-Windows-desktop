@@ -626,7 +626,7 @@ export function serviceCommand(sub?: string): void {
       console.log("✅ service uninstalled + native Codex restored.");
       break;
     default:
-      console.error("Usage: ocx service <install|start|stop|status|uninstall>");
+      console.error("Usage: ocx service <install|start|stop|status|uninstall|remove>");
       process.exit(1);
   }
 }

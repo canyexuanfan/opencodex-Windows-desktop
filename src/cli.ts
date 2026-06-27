@@ -54,10 +54,15 @@ async function syncModelsToCodex(port?: number) {
 }
 
 function parsePortOption(): number | undefined {
+  if (args.length === 1) return undefined;
+  if (args.length !== 3 || args[1] !== "--port") {
+    console.error("Usage: ocx start [--port <port>]");
+    process.exit(1);
+  }
   const portIdx = args.indexOf("--port");
   if (portIdx === -1) return undefined;
   const value = args[portIdx + 1];
-  const port = value ? parseInt(value, 10) : NaN;
+  const port = value && /^\d+$/.test(value) ? Number(value) : NaN;
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     console.error("Invalid port number");
     process.exit(1);
@@ -105,6 +110,7 @@ async function chooseListenPort(requestedPort?: number): Promise<number> {
 }
 
 async function handleStart(options: { block?: boolean } = {}) {
+  const requestedPort = parsePortOption();
   reconcileJournal();
   const existingPid = readPid();
   if (existingPid) {
@@ -116,7 +122,6 @@ async function handleStart(options: { block?: boolean } = {}) {
     removePid(existingPid);
   }
 
-  const requestedPort = parsePortOption();
   const port = await chooseListenPort(requestedPort);
 
   const server = startServer(port);
@@ -268,13 +273,15 @@ async function handleUninstall() {
 }
 
 async function handleStatus() {
-  if (args[1] && args[1] !== "--json") {
+  const statusArgs = args.slice(1);
+  const wantsJson = statusArgs.length === 1 && statusArgs[0] === "--json";
+  if (statusArgs.length > 1 || (statusArgs.length === 1 && !wantsJson)) {
     console.error("Usage: ocx status [--json]");
     process.exit(1);
   }
 
   const status = await collectStatus();
-  if (args[1] === "--json") {
+  if (wantsJson) {
     console.log(JSON.stringify(status.json, null, 2));
     return;
   }
@@ -400,7 +407,7 @@ switch (command) {
         break;
       }
       default:
-        console.error("Usage: ocx codex-shim <install|status|uninstall>");
+        console.error("Usage: ocx codex-shim <install|status|uninstall|remove>");
         process.exit(1);
     }
     break;
