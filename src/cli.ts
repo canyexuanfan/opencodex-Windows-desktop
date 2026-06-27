@@ -418,7 +418,48 @@ async function handleUninstall() {
 
 type HealthCheck = {
   ok: boolean;
+  url: string;
+  message: string;
   label: string;
+};
+
+type CliStatusJson = {
+  schemaVersion: 1;
+  proxy: {
+    running: boolean;
+    pid: number | null;
+    health: {
+      ok: boolean;
+      url: string;
+      message: string;
+    };
+  };
+  dashboard: {
+    url: string;
+  };
+  paths: {
+    config: string;
+    pid: string;
+    runtime: string;
+  };
+  runtime: {
+    source: string;
+    overrideEnv?: string;
+  };
+  codexAutostart: boolean;
+  defaultProvider: string | null;
+  service: {
+    summary: string;
+  };
+  codexShim: {
+    summary: string;
+  };
+};
+
+type CliStatusView = {
+  json: CliStatusJson;
+  proxyLabel: string;
+  healthLabel: string;
 };
 
 async function checkProxyHealth(port: number, hostname?: string): Promise<HealthCheck> {
@@ -427,24 +468,32 @@ async function checkProxyHealth(port: number, hostname?: string): Promise<Health
   const timer = setTimeout(() => controller.abort(), 800);
   try {
     const response = await fetch(url, { signal: controller.signal });
-    if (!response.ok) return { ok: false, label: `${url} returned HTTP ${response.status}` };
+    if (!response.ok) {
+      const message = `returned HTTP ${response.status}`;
+      return { ok: false, url, message, label: `${url} ${message}` };
+    }
     const body = await response.json().catch(() => null) as { version?: unknown; uptime?: unknown } | null;
     const version = typeof body?.version === "string" ? ` v${body.version}` : "";
     const uptime = typeof body?.uptime === "number" ? `, uptime ${Math.round(body.uptime)}s` : "";
-    return { ok: true, label: `${url} ok${version}${uptime}` };
+    const message = `ok${version}${uptime}`;
+    return { ok: true, url, message, label: `${url} ${message}` };
   } catch (error) {
     const reason = error instanceof Error && error.name === "AbortError" ? "timed out" : "unreachable";
-    return { ok: false, label: `${url} ${reason}` };
+    return { ok: false, url, message: reason, label: `${url} ${reason}` };
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function handleStatus() {
+async function collectStatus(): Promise<CliStatusView> {
   const config = loadConfig();
   const port = config.port ?? 10100;
   const pid = readPid();
   const health = await checkProxyHealth(port, config.hostname);
+  const bunRuntime = durableBunRuntime();
+  const serviceSummary = serviceStatusSummary();
+  const { codexShimStatus } = await import("./codex-shim");
+  const codexShimSummary = codexShimStatus();
   const proxyLabel = pid && health.ok
     ? `running (PID ${pid})`
     : pid
@@ -453,23 +502,71 @@ async function handleStatus() {
         ? "reachable, but PID file is missing or stale"
         : "not running";
 
-  if (pid || health.ok) {
-    console.log(`✅ Proxy: ${proxyLabel}`);
-  } else {
-    console.log(`❌ Proxy: ${proxyLabel}`);
+  return {
+    proxyLabel,
+    healthLabel: health.label,
+    json: {
+      schemaVersion: 1,
+      proxy: {
+        running: Boolean(pid && health.ok),
+        pid,
+        health: {
+          ok: health.ok,
+          url: health.url,
+          message: health.message,
+        },
+      },
+      dashboard: {
+        url: `http://localhost:${port}/`,
+      },
+      paths: {
+        config: getConfigPath(),
+        pid: getPidPath(),
+        runtime: bunRuntime.path,
+      },
+      runtime: {
+        source: bunRuntime.source,
+        ...(bunRuntime.source === "override" ? { overrideEnv: bunRuntime.overrideEnv } : {}),
+      },
+      codexAutostart: codexAutoStartEnabled(config),
+      defaultProvider: typeof config.defaultProvider === "string" ? config.defaultProvider : null,
+      service: {
+        summary: serviceSummary,
+      },
+      codexShim: {
+        summary: codexShimSummary,
+      },
+    },
+  };
+}
+
+async function handleStatus() {
+  if (args[1] && args[1] !== "--json") {
+    console.error("Usage: ocx status [--json]");
+    process.exit(1);
   }
-  console.log(`   Health: ${health.label}`);
-  console.log(`   Dashboard: http://localhost:${port}/`);
-  console.log(`   Config: ${getConfigPath()}`);
-  console.log(`   PID file: ${getPidPath()}`);
-  const bunRuntime = durableBunRuntime();
-  console.log(`   Runtime: ${bunRuntime.path}`);
-  console.log(`   Runtime source: ${bunRuntime.source}${bunRuntime.source === "override" ? ` (${bunRuntime.overrideEnv})` : ""}`);
-  console.log(`   Default provider: ${config.defaultProvider}`);
-  console.log(`   Codex autostart: ${codexAutoStartEnabled(config) ? "enabled" : "disabled"}`);
-  console.log(`   Service: ${serviceStatusSummary()}`);
-  const { codexShimStatus } = await import("./codex-shim");
-  console.log(`   ${codexShimStatus()}`);
+
+  const status = await collectStatus();
+  if (args[1] === "--json") {
+    console.log(JSON.stringify(status.json, null, 2));
+    return;
+  }
+
+  if (status.json.proxy.pid || status.json.proxy.health.ok) {
+    console.log(`✅ Proxy: ${status.proxyLabel}`);
+  } else {
+    console.log(`❌ Proxy: ${status.proxyLabel}`);
+  }
+  console.log(`   Health: ${status.healthLabel}`);
+  console.log(`   Dashboard: ${status.json.dashboard.url}`);
+  console.log(`   Config: ${status.json.paths.config}`);
+  console.log(`   PID file: ${status.json.paths.pid}`);
+  console.log(`   Runtime: ${status.json.paths.runtime}`);
+  console.log(`   Runtime source: ${status.json.runtime.source}${status.json.runtime.overrideEnv ? ` (${status.json.runtime.overrideEnv})` : ""}`);
+  console.log(`   Default provider: ${status.json.defaultProvider}`);
+  console.log(`   Codex autostart: ${status.json.codexAutostart ? "enabled" : "disabled"}`);
+  console.log(`   Service: ${status.json.service.summary}`);
+  console.log(`   ${status.json.codexShim.summary}`);
 }
 
 function handleRecoverHistory() {

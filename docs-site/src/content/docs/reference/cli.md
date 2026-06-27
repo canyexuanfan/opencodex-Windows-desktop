@@ -42,6 +42,52 @@ catalog entries so plain `codex` works natively again. `eject` is an alias of `r
 Print a read-only diagnostic summary: proxy PID, `/healthz` reachability, dashboard URL,
 config path, default provider, Codex autostart setting, service state, and shim state.
 
+Use `--json` for a machine-readable, read-only diagnostics contract:
+
+```bash
+ocx status --json
+```
+
+Example shape:
+
+```json
+{
+  "schemaVersion": 1,
+  "proxy": {
+    "running": false,
+    "pid": null,
+    "health": {
+      "ok": false,
+      "url": "http://127.0.0.1:10100/healthz",
+      "message": "unreachable"
+    }
+  },
+  "dashboard": {
+    "url": "http://localhost:10100/"
+  },
+  "paths": {
+    "config": "/Users/example/.opencodex/config.json",
+    "pid": "/Users/example/.opencodex/ocx.pid",
+    "runtime": "/path/to/bun"
+  },
+  "runtime": {
+    "source": "bundled"
+  },
+  "codexAutostart": true,
+  "defaultProvider": "openai",
+  "service": {
+    "summary": "not installed (logs: /Users/example/.opencodex/service.log)"
+  },
+  "codexShim": {
+    "summary": "Codex autostart shim: not installed"
+  }
+}
+```
+
+The JSON schema is additive-only: future versions may add fields, but existing fields should stay
+stable. It intentionally excludes API keys, OAuth tokens, authorization headers, request content,
+emails, and account identities.
+
 ## Models & Codex
 
 ### `ocx sync`
