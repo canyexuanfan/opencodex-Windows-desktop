@@ -63,6 +63,7 @@ export function bridgeToResponsesSSE(
     stallTimeoutSec?: number;
     hideThinkingSummary?: boolean;
     onTerminal?: (status: ResponsesTerminalStatus) => void;
+    onCompletedResponse?: (response: Record<string, unknown>) => void;
   },
 ): ReadableStream<Uint8Array> {
   // Freeform/custom tools (apply_patch) carry their body in `input`; the model is given a
@@ -437,8 +438,10 @@ export function bridgeToResponsesSSE(
               if (currentRawReasoning) closeCurrentRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
               if (currentWebSearch) closeCurrentWebSearch("completed", []);
+              const response = { ...responseSnapshot("completed", finishedItems), usage: responsesUsage(event.usage) };
+              options?.onCompletedResponse?.(response);
               emit("response.completed", {
-                response: { ...responseSnapshot("completed", finishedItems), usage: responsesUsage(event.usage) },
+                response,
               });
               reportTerminal("completed");
               terminated = true;
