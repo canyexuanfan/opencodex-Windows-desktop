@@ -57,8 +57,18 @@ describe("codex auth account collision", () => {
   test("allows the same email and account id because personal and business subscriptions can coexist", async () => {
     seedAccount("team-member-a", "member-a@example.test", "shared-team-account");
 
-    expect(checkAccountIdCollision("shared-team-account", "MEMBER-A@example.test")).toEqual({
+    expect(checkAccountIdCollision("shared-team-account", "MEMBER-A@example.test", "refresh-personal-business")).toEqual({
       collision: false,
     });
+  });
+
+  test("rejects the exact same refresh grant under a different alias", async () => {
+    seedAccount("team-member-a", "member-a@example.test", "shared-team-account");
+
+    const result = checkAccountIdCollision("different-account-id", "other@example.test", "refresh-team-member-a");
+    expect(result.collision).toBe(true);
+    if (result.collision) {
+      expect(result.reason).toContain("Credential is already in the pool");
+    }
   });
 });

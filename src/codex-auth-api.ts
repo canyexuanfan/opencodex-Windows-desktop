@@ -214,9 +214,9 @@ export async function handleCodexAuthAPI(
     if (accounts.some(a => a.id === body.id) || getCodexAccountCredential(body.id)) {
       return jsonResponse({ error: `Account id already exists: ${body.id}` }, 400);
     }
-    // 1.1: JWT-derived account ID is authoritative; collision check
+    // 1.1: Duplicate check uses local alias plus exact credential material, not account identity.
     const derivedAccountId = extractAccountId(undefined, body.accessToken) ?? body.chatgptAccountId;
-    const collision = checkAccountIdCollision(derivedAccountId, body.email);
+    const collision = checkAccountIdCollision(derivedAccountId, body.email, body.refreshToken);
     if (collision.collision) {
       return jsonResponse({ error: collision.reason }, 400);
     }
@@ -414,7 +414,7 @@ export async function handleCodexAuthAPI(
             const { getCredential } = await import("./oauth/store");
             const cred = getCredential("chatgpt");
             if (cred) {
-              // 1.2: account-ID-based collision check (JWT-derived, not email)
+              // 1.2: Duplicate check uses local alias plus exact credential material, not account identity.
               const oauthAccountId = cred.accountId;
               if (!oauthAccountId) {
                 codexAuthLoginState.set(flowId, {
@@ -425,7 +425,7 @@ export async function handleCodexAuthAPI(
                 completed = true;
                 break;
               }
-              const collision = checkAccountIdCollision(oauthAccountId, cred.email);
+              const collision = checkAccountIdCollision(oauthAccountId, cred.email, cred.refresh);
               if (collision.collision) {
                 codexAuthLoginState.set(flowId, {
                   status: "error", error: collision.reason, doneAt: Date.now(),
