@@ -57,6 +57,7 @@ function isAllowedEmail(file: string, email: string): boolean {
 
 function isAllowedHomePath(file: string, username: string): boolean {
   if (file.startsWith("docs/") && (username === "me" || username === "user")) return true;
+  if (file.startsWith("docs-site/") && username === "example") return true;
   return false;
 }
 
