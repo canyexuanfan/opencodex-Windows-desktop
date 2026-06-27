@@ -1,11 +1,17 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import { CODEX_HOME } from "./codex-paths";
 import { atomicWriteFile, getConfigDir } from "./config";
 
 const STATE_DB_PATH = join(CODEX_HOME, "state_5.sqlite");
-const HISTORY_BACKUP_PATH = join(getConfigDir(), "codex-history-backup.json");
+function historyBackupPathFor(stateDbPath: string): string {
+  const normalized = process.platform === "win32" ? resolve(stateDbPath).toLowerCase() : resolve(stateDbPath);
+  const id = createHash("sha256").update(normalized).digest("hex").slice(0, 16);
+  return join(getConfigDir(), `codex-history-backup-${id}.json`);
+}
+const HISTORY_BACKUP_PATH = historyBackupPathFor(STATE_DB_PATH);
 const RESUMABLE_SOURCES = ["cli", "vscode"] as const;
 
 type CodexHistoryProvider = "openai" | "opencodex";
@@ -34,6 +40,7 @@ interface BackupEntry {
 
 interface BackupManifest {
   version: 1;
+  stateDbPath?: string;
   entries: Record<string, BackupEntry>;
 }
 
@@ -43,26 +50,35 @@ interface NativeRestoreTarget {
   hasUserEvent: number;
 }
 
-function readBackup(path: string): BackupManifest {
-  if (!existsSync(path)) return { version: 1, entries: {} };
+function samePath(a: string, b: string): boolean {
+  const left = resolve(a);
+  const right = resolve(b);
+  return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+function readBackup(path: string, stateDbPath?: string): BackupManifest {
+  if (!existsSync(path)) return { version: 1, stateDbPath, entries: {} };
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<BackupManifest>;
     if (parsed.version !== 1 || !parsed.entries || typeof parsed.entries !== "object") {
-      return { version: 1, entries: {} };
+      return { version: 1, stateDbPath, entries: {} };
     }
-    return { version: 1, entries: parsed.entries };
+    if (stateDbPath && typeof parsed.stateDbPath === "string" && !samePath(parsed.stateDbPath, stateDbPath)) {
+      return { version: 1, stateDbPath, entries: {} };
+    }
+    return { version: 1, stateDbPath: parsed.stateDbPath ?? stateDbPath, entries: parsed.entries };
   } catch {
-    return { version: 1, entries: {} };
+    return { version: 1, stateDbPath, entries: {} };
   }
 }
 
-function writeBackup(path: string, manifest: BackupManifest): void {
+function writeBackup(path: string, manifest: BackupManifest, stateDbPath?: string): void {
   if (Object.keys(manifest.entries).length === 0) {
     if (existsSync(path)) unlinkSync(path);
     return;
   }
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  atomicWriteFile(path, JSON.stringify(manifest, null, 2) + "\n");
+  atomicWriteFile(path, JSON.stringify({ ...manifest, stateDbPath: manifest.stateDbPath ?? stateDbPath }, null, 2) + "\n");
 }
 
 function rememberOriginal(manifest: BackupManifest, row: ThreadRow): void {
@@ -211,9 +227,9 @@ function syncCodexHistoryProviderUnsafe(provider: CodexHistoryProvider, stateDbP
       `)
       .all();
 
-    const manifest = readBackup(backupPath);
+    const manifest = readBackup(backupPath, stateDbPath);
     for (const row of [...openaiRows, ...execRows]) rememberOriginal(manifest, row);
-    writeBackup(backupPath, manifest);
+    writeBackup(backupPath, manifest, stateDbPath);
 
     let files = 0;
     for (const row of openaiRows) {
@@ -262,7 +278,7 @@ function syncCodexHistoryProviderUnsafe(provider: CodexHistoryProvider, stateDbP
 }
 
 function restoreCodexHistoryProvider(stateDbPath: string, backupPath: string): CodexHistorySyncResult {
-  const manifest = readBackup(backupPath);
+  const manifest = readBackup(backupPath, stateDbPath);
   const entries = Object.values(manifest.entries);
 
   const db = new Database(stateDbPath);
@@ -296,7 +312,7 @@ function restoreCodexHistoryProvider(stateDbPath: string, backupPath: string): C
       }
     });
     restore();
-    writeBackup(backupPath, { version: 1, entries: {} });
+    writeBackup(backupPath, { version: 1, stateDbPath, entries: {} }, stateDbPath);
     const ejected = ejectRemainingOpencodexHistory(db);
     return ejected.rows > 0
       ? { rows: entries.length, files: files + ejected.files, ejectedRows: ejected.rows }

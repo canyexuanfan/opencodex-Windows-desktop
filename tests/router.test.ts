@@ -83,6 +83,28 @@ describe("routeModel registry effort defaults", () => {
     expect(mapReasoningEffort(route.provider, route.modelId, "xhigh")).toBe("max");
   });
 
+  test("hydrates registry model capability metadata for stale persisted Umans configs", () => {
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "umans",
+      providers: {
+        umans: {
+          adapter: "anthropic",
+          baseUrl: "https://api.code.umans.ai",
+          models: ["umans-kimi-k2.7", "umans-glm-5.2"],
+        },
+      },
+    };
+
+    const route = routeModel(config, "umans/umans-kimi-k2.7");
+
+    expect(route.provider.escapeBuiltinToolNames).toBe(true);
+    expect(route.provider.modelContextWindows?.["umans-kimi-k2.7"]).toBe(262_144);
+    expect(route.provider.modelInputModalities?.["umans-kimi-k2.7"]).toEqual(["text", "image"]);
+    expect(route.provider.noVisionModels).toContain("umans-glm-5.2");
+    expect(route.provider.modelReasoningEfforts?.["umans-kimi-k2.7"]).toEqual(["low", "medium", "high", "xhigh"]);
+  });
+
   test("user per-model override wins while registry keys are preserved (nested merge)", () => {
     const config: OcxConfig = {
       port: 10100,
@@ -103,5 +125,42 @@ describe("routeModel registry effort defaults", () => {
     expect(mapReasoningEffort(route.provider, route.modelId, "xhigh")).toBe("high");
     // ...but registry keys the user did not set survive the nested merge.
     expect(mapReasoningEffort(route.provider, route.modelId, "minimal")).toBe("none");
+  });
+
+  test("registry model limitation lists are preserved alongside user additions", () => {
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "opencode-go",
+      providers: {
+        "opencode-go": {
+          adapter: "openai-chat",
+          baseUrl: "https://opencode.ai/zen/go/v1",
+          models: ["kimi-k2.7-code"],
+          noReasoningModels: ["custom-no-reasoning"],
+        },
+      },
+    };
+
+    const route = routeModel(config, "opencode-go/kimi-k2.7-code");
+
+    expect(route.provider.noReasoningModels).toContain("custom-no-reasoning");
+    expect(route.provider.noReasoningModels).toContain("kimi-k2.7-code");
+    expect(route.provider.noTemperatureModels).toContain("kimi-k2.7-code");
+  });
+
+  test("does not route inherited object keys as provider namespaces or defaults", () => {
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "constructor",
+      providers: {
+        openai: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.example.test/v1",
+          defaultModel: "gpt-test",
+        },
+      },
+    };
+
+    expect(() => routeModel(config, "constructor/model")).toThrow("No provider configured");
   });
 });

@@ -3,7 +3,6 @@
 # are explicit guards so dev-only content never leaks into the published tarball.
 devlog/
 docs-site/
-assets/
 .github/
 .codex/
 
@@ -12,6 +11,7 @@ gui/src/
 gui/public/
 gui/node_modules/
 gui/index.html
+gui/README.md
 gui/package.json
 gui/tsconfig*.json
 gui/vite.config.*

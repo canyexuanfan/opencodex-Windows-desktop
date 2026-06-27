@@ -143,6 +143,43 @@ describe("codex-auth API", () => {
     expect(data.accounts.find(a => a.id === "pool-mask")?.email).toBe("p***n@example.test");
   });
 
+  test("GET /api/codex-auth/accounts whitelists pool account response fields", async () => {
+    const config = makeConfig({
+      codexAccounts: [{
+        id: "pool-safe",
+        email: "person@example.test",
+        plan: "Plus",
+        chatgptAccountId: "acct-config-secret",
+        logLabel: "work",
+        isMain: false,
+      }],
+    });
+    saveCodexAccountCredential("pool-safe", {
+      accessToken: "access-safe",
+      refreshToken: "refresh-safe",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "acct-credential-secret",
+    });
+    updateAccountQuota("pool-safe", 10, 20);
+
+    const req = new Request("http://localhost/api/codex-auth/accounts", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<Record<string, unknown>> };
+    const pool = data.accounts.find(a => a.id === "pool-safe")!;
+
+    expect(pool).toMatchObject({
+      id: "pool-safe",
+      email: "p***n@example.test",
+      plan: "Plus",
+      logLabel: "work",
+      isMain: false,
+      hasCredential: true,
+    });
+    expect(pool).not.toHaveProperty("chatgptAccountId");
+    expect(JSON.stringify(pool)).not.toContain("acct-config-secret");
+    expect(JSON.stringify(pool)).not.toContain("acct-credential-secret");
+  });
+
   test("POST /api/codex-auth/accounts disables manual import by default before writing credentials", async () => {
     const req = new Request("http://localhost/api/codex-auth/accounts", {
       method: "POST",
@@ -353,6 +390,43 @@ describe("codex-auth API", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  test("reset-credit lookup rejects orphaned credential records before upstream fetch", async () => {
+    const config = makeConfig();
+    saveCodexAccountCredential("orphan", {
+      accessToken: "orphan-access",
+      refreshToken: "orphan-refresh",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "acct-orphan",
+    });
+    const originalFetch = globalThis.fetch;
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+
+    try {
+      const req = new Request("http://localhost/api/codex-auth/reset-credits?accountId=orphan", { method: "GET" });
+      const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+      expect(resp!.status).toBe(404);
+      expect(await resp!.json()).toMatchObject({ error: "Unknown Codex account" });
+      expect(called).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("reset-credit consume rejects invalid account ids before credential lookup", async () => {
+    const req = new Request("http://localhost/api/codex-auth/reset-credits/consume", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ accountId: "../bad" }),
+    });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+    expect(resp!.status).toBe(400);
+    expect(await resp!.json()).toMatchObject({ error: "Invalid account id format" });
   });
 
   test("unmatched route returns null", async () => {

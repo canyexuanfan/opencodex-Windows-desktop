@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getLoginStatus } from "../src/oauth/index";
 import { saveCredential } from "../src/oauth/store";
@@ -35,5 +35,20 @@ describe("OAuth status privacy", () => {
     expect(status.loggedIn).toBe(true);
     expect(status.email).toBe("p***n@example.test");
     expect(JSON.stringify(status)).not.toContain("person@example.test");
+  });
+
+  test("malformed oauth token store is backed up before a new credential save overwrites it", () => {
+    const authPath = join(TEST_DIR, "auth.json");
+    writeFileSync(authPath, "{not valid json", "utf8");
+
+    saveCredential("xai", {
+      access: "new-access",
+      refresh: "new-refresh",
+      expires: Date.now() + 60_000,
+    });
+
+    const backups = readdirSync(TEST_DIR).filter(name => name.startsWith("auth.json.invalid-"));
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(join(TEST_DIR, backups[0]), "utf8")).toBe("{not valid json");
   });
 });

@@ -13,7 +13,7 @@ import type {
   OcxToolResultMessage,
   OcxUsage,
 } from "../types";
-import { namespacedToolName } from "../types";
+import { isAllowedToolChoice, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
 import { ANTHROPIC_OAUTH_BETA, CLAUDE_CODE_SYSTEM_INSTRUCTION, applyClaudeToolPrefix, stripClaudeToolPrefix } from "../oauth/anthropic";
 import { parseDataUrl } from "./image";
 
@@ -115,7 +115,10 @@ function messagesToAnthropicFormat(
   parsed: OcxParsedRequest,
   toolNames: { toWire: (name: string) => string },
 ): { system: string | undefined; messages: unknown[] } {
-  const system = parsed.context.systemPrompt?.join("\n\n") || undefined;
+  const system = parsed.context.systemPrompt?.join("\n\n").replace(
+    "You are Codex, a coding agent based on GPT-5.",
+    `You are a coding agent (underlying model: ${parsed.modelId}) running via the opencodex proxy. Do not claim to be GPT-5 or to be made by OpenAI.`,
+  ) || undefined;
   const messages: unknown[] = [];
 
   for (let i = 0; i < parsed.context.messages.length; i++) {
@@ -192,7 +195,14 @@ function messagesToAnthropicFormat(
 
 function toolsToAnthropicFormat(parsed: OcxParsedRequest, toolNames: { toWire: (name: string) => string }): unknown[] | undefined {
   if (!parsed.context.tools || parsed.context.tools.length === 0) return undefined;
-  return parsed.context.tools.map(t => ({
+  const allowed = isAllowedToolChoice(parsed.options.toolChoice)
+    ? new Set(parsed.options.toolChoice.allowedTools)
+    : undefined;
+  const tools = allowed
+    ? parsed.context.tools.filter(t => toolAllowedByChoice(t, allowed))
+    : parsed.context.tools;
+  if (tools.length === 0) return undefined;
+  return tools.map(t => ({
     name: toolNames.toWire(namespacedToolName(t.namespace, t.name)),
     description: t.description,
     input_schema: t.parameters,
@@ -245,12 +255,13 @@ export function createAnthropicAdapter(provider: OcxProviderConfig): ProviderAda
         delete body.top_p;
       }
 
-      if (parsed.options.toolChoice) {
+      if (parsed.options.toolChoice && (tools || parsed.options.toolChoice === "none")) {
         const tc = parsed.options.toolChoice;
         if (tc === "auto") body.tool_choice = { type: "auto" };
         else if (tc === "none") body.tool_choice = { type: "none" };
         else if (tc === "required") body.tool_choice = { type: "any" };
-        else if (typeof tc === "object" && "name" in tc) body.tool_choice = { type: "tool", name: toolNames.toWire(tc.name) };
+        else if (isAllowedToolChoice(tc)) body.tool_choice = { type: tc.mode === "required" ? "any" : "auto" };
+        else if (typeof tc === "object" && "name" in tc) body.tool_choice = { type: "tool", name: toolNames.toWire(resolveToolChoiceWireName(parsed.context.tools, tc.name)) };
       }
 
       const base = provider.baseUrl.replace(/\/v1\/?$/, "");

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildCatalogEntries } from "../src/codex-catalog";
+import { createAnthropicAdapter } from "../src/adapters/anthropic";
 import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
 import type { OcxParsedRequest, OcxProviderConfig } from "../src/types";
 
@@ -167,6 +168,107 @@ describe("provider-specific reasoning effort mapping", () => {
 
     expect(body).toHaveProperty("tools");
     expect(body.tool_choice).toBe("auto");
+  });
+
+  test("OpenAI-compatible chat filters tools for Responses allowed_tools choices", () => {
+    const provider: OcxProviderConfig = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.neuralwatt.com/v1",
+    };
+
+    const req = createOpenAIChatAdapter(provider).buildRequest({
+      modelId: "glm-5.2",
+      context: {
+        messages: [{ role: "user", content: "hello", timestamp: 0 }],
+        tools: [
+          { name: "web_search", description: "Search", parameters: { type: "object", properties: {} } },
+          { name: "run_tests", description: "Run tests", parameters: { type: "object", properties: {} } },
+        ],
+      },
+      stream: false,
+      options: { toolChoice: { allowedTools: ["web_search"], mode: "required" } },
+    });
+    const body = JSON.parse(req.body as string) as { tools: Array<{ function: { name: string } }>; tool_choice: string };
+
+    expect(body.tools.map(t => t.function.name)).toEqual(["web_search"]);
+    expect(body.tool_choice).toBe("required");
+  });
+
+  test("OpenAI-compatible chat accepts dot-style namespaced allowed_tools from Responses", () => {
+    const provider: OcxProviderConfig = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.umans.ai/v1",
+    };
+
+    const req = createOpenAIChatAdapter(provider).buildRequest({
+      modelId: "umans-kimi-k2.7",
+      context: {
+        messages: [{ role: "user", content: "run it", timestamp: 0 }],
+        tools: [{
+          namespace: "functions",
+          name: "exec_command",
+          description: "Run a command",
+          parameters: { type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"] },
+        }],
+      },
+      stream: false,
+      options: { toolChoice: { allowedTools: ["functions.exec_command"], mode: "required" } },
+    });
+    const body = JSON.parse(req.body as string) as { tools: Array<{ function: { name: string } }>; tool_choice: string };
+
+    expect(body.tools.map(t => t.function.name)).toEqual(["functions__exec_command"]);
+    expect(body.tool_choice).toBe("required");
+  });
+
+  test("named namespaced tool_choice resolves to the chat wire name", () => {
+    const provider: OcxProviderConfig = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.umans.ai/v1",
+    };
+
+    const req = createOpenAIChatAdapter(provider).buildRequest({
+      modelId: "umans-kimi-k2.7",
+      context: {
+        messages: [{ role: "user", content: "run it", timestamp: 0 }],
+        tools: [{
+          namespace: "functions",
+          name: "exec_command",
+          description: "Run a command",
+          parameters: { type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"] },
+        }],
+      },
+      stream: false,
+      options: { toolChoice: { name: "functions.exec_command" } },
+    });
+    const body = JSON.parse(req.body as string) as { tool_choice: { function: { name: string } } };
+
+    expect(body.tool_choice.function.name).toBe("functions__exec_command");
+  });
+
+  test("Anthropic filters dot-style namespaced allowed_tools without dropping the tool", () => {
+    const provider: OcxProviderConfig = {
+      adapter: "anthropic",
+      baseUrl: "https://api.anthropic.com/v1",
+    };
+
+    const req = createAnthropicAdapter(provider).buildRequest({
+      modelId: "claude-sonnet",
+      context: {
+        messages: [{ role: "user", content: "run it", timestamp: 0 }],
+        tools: [{
+          namespace: "functions",
+          name: "exec_command",
+          description: "Run a command",
+          parameters: { type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"] },
+        }],
+      },
+      stream: false,
+      options: { toolChoice: { allowedTools: ["functions.exec_command"], mode: "required" } },
+    });
+    const body = JSON.parse(req.body as string) as { tools: Array<{ name: string }>; tool_choice: { type: string } };
+
+    expect(body.tools.map(t => t.name)).toEqual(["functions__exec_command"]);
+    expect(body.tool_choice).toEqual({ type: "any" });
   });
 
   test("sanitizeCodexReasoningEfforts strips non-Codex labels like 'max' from the catalog", () => {

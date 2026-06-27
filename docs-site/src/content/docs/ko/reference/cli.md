@@ -93,8 +93,8 @@ ocx service uninstall
 
 ### `ocx codex-shim <subcommand>`
 
-PATH에 있는 `codex` 바이너리를 래퍼 스크립트로 교체하여, `codex` 실행 시 opencodex 프록시가
-자동으로 시작되도록 합니다. 원본 바이너리는 백업되며 제거 시 복원됩니다.
+PATH에 있는 스크립트 기반 `codex` 런처를 자동 시작 래퍼로 감쌉니다. 실제 `codex.exe`는 정확한
+실행 파일 호출이 깨지지 않도록 건드리지 않습니다.
 
 Codex가 업데이트되어 래퍼를 덮어쓰면, 다음 `install` 호출 시 자동 복구됩니다 — 새 바이너리가
 백업되고 새 래퍼가 작성됩니다.

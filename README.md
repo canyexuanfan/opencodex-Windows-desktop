@@ -58,7 +58,7 @@ Requires [Node](https://nodejs.org) 18+. The Bun runtime is bundled automaticall
 
 ```bash
 # Install (bundles the Bun runtime automatically — only Node 18+ required)
-npm install -g @bitkyc08/opencodex      # or: bun install -g @bitkyc08/opencodex
+npm install -g @bitkyc08/opencodex
 
 # Interactive setup (writes config, injects into Codex, and offers autostart shim install)
 ocx init
@@ -197,7 +197,7 @@ ocx login <xai|anthropic|kimi> # OAuth login
 ocx logout <provider>          # remove a stored login
 ocx gui                        # open the web dashboard
 ocx service <install|start|stop|status|uninstall>   # background service (launchd/systemd/schtasks)
-ocx update                     # update opencodex to the latest published version
+ocx update [--tag preview]     # update opencodex; preview installs stay on @preview
 ```
 
 ### Autostart: service vs shim
@@ -206,7 +206,7 @@ opencodex has two ways to auto-start the proxy:
 
 | | `ocx service install` | `ocx codex-shim install` |
 |---|---|---|
-| **How** | OS service manager (launchd / systemd / schtasks) | Replaces the `codex` binary with a wrapper script |
+| **How** | OS service manager (launchd / systemd / schtasks) | Wraps script launchers for `codex`; real `codex.exe` is left untouched |
 | **When** | Always running after login | On-demand — runs `ocx ensure` when `codex` is launched |
 | **Restart** | Auto-restarts on crash | Starts once per `codex` invocation |
 | **Codex updates** | Unaffected | Repairs on next `ocx codex-shim install` or `ocx update` |
@@ -219,11 +219,11 @@ automatically picks another free local port and updates Codex to use it.
 
 ### Uninstall
 
-Before removing the npm/bun package, clean up local state:
+Before removing the npm package, clean up local state:
 
 ```bash
 ocx uninstall
-npm uninstall -g @bitkyc08/opencodex   # or: bun remove -g @bitkyc08/opencodex
+npm uninstall -g @bitkyc08/opencodex
 ```
 
 `ocx uninstall` stops the proxy, removes any installed service, removes the Codex shim, restores
@@ -302,7 +302,9 @@ export OPENCODEX_API_AUTH_TOKEN="your-secret-token"
 ocx start
 ```
 
-The proxy refuses to start without this variable when binding beyond loopback.
+The proxy refuses to start without this variable when binding beyond loopback. If you install a
+background service for LAN access, export the same variable before `ocx service install` so the
+service manager receives it.
 Clients (scripts, remote machines) must include the token in every request:
 
 ```

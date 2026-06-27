@@ -33,7 +33,7 @@ Usage:
   ocx status                  Check proxy server status
   ocx login <provider>        OAuth login (xai) — opens browser, stores token in ~/.opencodex/auth.json
   ocx logout <provider>       Remove a stored OAuth login
-  ocx update                  Update opencodex to the latest published version
+  ocx update [--tag <tag>]    Update opencodex (keeps preview installs on @preview)
   ocx help                    Show this help message
 
 Examples:
@@ -97,7 +97,7 @@ function printSubcommandUsage(name: string | undefined): void {
       console.log("Usage: ocx gui\n\nOpen the opencodex dashboard.");
       break;
     case "update":
-      console.log("Usage: ocx update\n\nUpdate opencodex to the latest published version.");
+      console.log("Usage: ocx update [--tag latest|preview]\n\nUpdate opencodex. Preview installs stay on the preview tag unless overridden.");
       break;
     default:
       printUsage();
@@ -333,9 +333,13 @@ async function handleUninstall() {
     console.error(`⚠️  Codex autostart shim removed failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  runStep("opencodex config removed", () => {
-    rmSync(getConfigDir(), { recursive: true, force: true });
-  });
+  if (failures.length === 0) {
+    runStep("opencodex config removed", () => {
+      rmSync(getConfigDir(), { recursive: true, force: true });
+    });
+  } else {
+    console.error("Leaving opencodex config/backups in place so the failed restore step can be retried.");
+  }
 
   if (failures.length > 0) {
     console.error(`\nUninstall finished with ${failures.length} failed step(s): ${failures.join(", ")}`);

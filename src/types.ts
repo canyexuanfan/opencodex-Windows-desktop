@@ -123,6 +123,20 @@ export function namespacedToolName(namespace: string | undefined, name: string):
   return namespace ? `${namespace}__${name}` : name;
 }
 
+export function toolChoiceAliases(tool: Pick<OcxTool, "namespace" | "name">): string[] {
+  const wireName = namespacedToolName(tool.namespace, tool.name);
+  return tool.namespace ? [wireName, `${tool.namespace}.${tool.name}`] : [wireName];
+}
+
+export function toolAllowedByChoice(tool: Pick<OcxTool, "namespace" | "name">, allowedTools: ReadonlySet<string>): boolean {
+  return toolChoiceAliases(tool).some(name => allowedTools.has(name));
+}
+
+export function resolveToolChoiceWireName(tools: readonly Pick<OcxTool, "namespace" | "name">[] | undefined, name: string): string {
+  const match = tools?.find(tool => toolChoiceAliases(tool).includes(name));
+  return match ? namespacedToolName(match.namespace, match.name) : name;
+}
+
 /**
  * Whether `modelId` is in a per-provider classification list (e.g. `noVisionModels`). Matches the full
  * id, OR — for Ollama-style ids — the family before the ":size" tag, so a `gpt-oss` entry covers
@@ -135,12 +149,23 @@ export function modelInList(list: string[] | undefined, modelId: string): boolea
   return colon > 0 && list.includes(modelId.slice(0, colon));
 }
 
+export type OcxToolChoice =
+  | "auto"
+  | "none"
+  | "required"
+  | { name: string }
+  | { allowedTools: string[]; mode: "auto" | "required" };
+
+export function isAllowedToolChoice(value: OcxToolChoice | undefined): value is { allowedTools: string[]; mode: "auto" | "required" } {
+  return typeof value === "object" && value !== null && "allowedTools" in value;
+}
+
 export interface OcxRequestOptions {
   maxOutputTokens?: number;
   temperature?: number;
   topP?: number;
   stopSequences?: string[];
-  toolChoice?: "auto" | "none" | "required" | { name: string };
+  toolChoice?: OcxToolChoice;
   reasoning?: string;
   hideThinkingSummary?: boolean;
   serviceTier?: string;

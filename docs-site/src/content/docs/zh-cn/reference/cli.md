@@ -83,8 +83,8 @@ ocx service uninstall
 
 ### `ocx codex-shim <subcommand>`
 
-将 PATH 上的 `codex` 二进制替换为轻量级包装脚本，在运行 `codex` 时自动启动 opencodex
-代理。原始二进制会被备份，卸载时自动恢复。
+将 PATH 上基于脚本的 `codex` 启动器包装成轻量级自动启动脚本。真实的 `codex.exe`
+会保持不变，避免破坏精确的可执行文件调用。
 
 如果 Codex 更新覆盖了包装脚本，下次调用 `install` 时会自动修复——新版二进制会被备份，
 然后写入新的包装脚本。

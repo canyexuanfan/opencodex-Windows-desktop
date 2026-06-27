@@ -29,6 +29,7 @@ describe("request log metadata", () => {
     expect(requestLogErrorCode(400)).toBe("invalid_request_error");
     expect(requestLogErrorCode(401)).toBe("invalid_api_key");
     expect(requestLogErrorCode(429)).toBe("rate_limit_exceeded");
+    expect(requestLogErrorCode(499)).toBe("client_closed_request");
     expect(requestLogErrorCode(503)).toBe("server_is_overloaded");
     expect(requestLogErrorCode(502)).toBe("upstream_server_error");
     expect(requestLogErrorCode(404)).toBe("http_404");

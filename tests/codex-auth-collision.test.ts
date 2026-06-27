@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveCodexAccountCredential } from "../src/codex-account-store";
 import { checkAccountIdCollision } from "../src/codex-auth-api";
@@ -79,6 +79,27 @@ describe("codex auth account collision", () => {
     expect(result.collision).toBe(true);
     if (result.collision) {
       expect(result.reason).toContain("Account is already in the pool");
+    }
+  });
+
+  test("rejects a pool account matching the main Codex login account id", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: {
+        access_token: "not-a-jwt",
+        account_id: "main-chatgpt-account",
+      },
+    }));
+    saveConfig({
+      port: 10100,
+      providers: {},
+      defaultProvider: "openai",
+      codexAccounts: [],
+    } as OcxConfig);
+
+    const result = checkAccountIdCollision("main-chatgpt-account", "main@example.test", "business");
+    expect(result.collision).toBe(true);
+    if (result.collision) {
+      expect(result.reason).toContain("main Codex login");
     }
   });
 });

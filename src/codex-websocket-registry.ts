@@ -8,8 +8,7 @@ function trackedAccountId(ws: ServerWebSocket<WsData>): string | null {
   return ctx?.kind === "pool" ? ctx.accountId : null;
 }
 
-export function registerCodexWebSocket(ws: ServerWebSocket<WsData>): void {
-  const accountId = trackedAccountId(ws);
+function addSocketForAccount(accountId: string | null, ws: ServerWebSocket<WsData>): void {
   if (!accountId) return;
   let sockets = socketsByAccount.get(accountId);
   if (!sockets) {
@@ -19,13 +18,30 @@ export function registerCodexWebSocket(ws: ServerWebSocket<WsData>): void {
   sockets.add(ws);
 }
 
-export function unregisterCodexWebSocket(ws: ServerWebSocket<WsData>): void {
-  const accountId = trackedAccountId(ws);
+function removeSocketForAccount(accountId: string | null, ws: ServerWebSocket<WsData>): void {
   if (!accountId) return;
   const sockets = socketsByAccount.get(accountId);
   if (!sockets) return;
   sockets.delete(ws);
   if (sockets.size === 0) socketsByAccount.delete(accountId);
+}
+
+export function registerCodexWebSocket(ws: ServerWebSocket<WsData>): void {
+  addSocketForAccount(trackedAccountId(ws), ws);
+}
+
+export function unregisterCodexWebSocket(ws: ServerWebSocket<WsData>): void {
+  removeSocketForAccount(trackedAccountId(ws), ws);
+}
+
+export function updateCodexWebSocketAuthContext(
+  ws: ServerWebSocket<WsData>,
+  authContext: WsData["authContext"],
+): void {
+  const before = trackedAccountId(ws);
+  removeSocketForAccount(before, ws);
+  ws.data.authContext = authContext;
+  addSocketForAccount(trackedAccountId(ws), ws);
 }
 
 export function invalidateCodexWebSocketsForAccount(accountId: string): number {

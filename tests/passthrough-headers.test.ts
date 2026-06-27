@@ -30,4 +30,16 @@ describe("passthrough header sanitization (RC5 / F4)", () => {
     expect(sanitized.get("openai-processing-ms")).toBe("812");
     expect(sanitized.get("x-ratelimit-remaining-tokens")).toBe("29000");
   });
+
+  test("sensitive upstream cookies are not relayed", () => {
+    const sanitized = sanitizePassthroughHeaders(new Headers({
+      "set-cookie": "session=secret; HttpOnly",
+      "set-cookie2": "legacy=secret",
+      "content-type": "text/event-stream",
+    }));
+
+    expect(sanitized.has("set-cookie")).toBe(false);
+    expect(sanitized.has("set-cookie2")).toBe(false);
+    expect(sanitized.get("content-type")).toBe("text/event-stream");
+  });
 });

@@ -93,8 +93,8 @@ ocx service uninstall
 
 ### `ocx codex-shim <subcommand>`
 
-Replace the `codex` binary on PATH with a lightweight wrapper script that auto-starts the opencodex
-proxy whenever `codex` is launched. The original binary is backed up and restored on uninstall.
+Wrap a script-based `codex` launcher on PATH with a lightweight autostart script. Real `codex.exe`
+targets are left untouched to avoid breaking exact executable invocations.
 
 If Codex is updated and overwrites the wrapper, the shim auto-repairs on the next `install` call —
 the new binary is backed up and a fresh wrapper is written.
@@ -120,13 +120,14 @@ lightweight, on-demand startup without a daemon — the proxy starts only when `
 
 ### `ocx update`
 
-Self-update opencodex to the latest version published on npm, using the package manager it was
-installed with (`bun install -g @bitkyc08/opencodex@latest` or `npm install -g @bitkyc08/opencodex@latest`). It detects a
-source checkout and tells you to `git pull && bun install` instead, and is a no-op if you're already
-on the newest version. Restart the proxy afterward (`ocx stop && ocx start`) to run the new build.
+Self-update opencodex from npm. Stable installs use `@latest`; preview installs stay on `@preview`
+unless you pass `--tag latest|preview`. It detects a source checkout and tells you to
+`git pull && bun install` instead, and is a no-op if you're already on the newest version for that
+tag. Restart the proxy afterward (`ocx stop && ocx start`) to run the new build.
 
 ```bash
 ocx update
+ocx update --tag preview
 ```
 
 New versions become available the moment the [Release workflow](https://github.com/lidge-jun/opencodex/actions/workflows/release.yml)

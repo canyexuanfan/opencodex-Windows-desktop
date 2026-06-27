@@ -7,6 +7,9 @@ import Logs from "./pages/Logs";
 import CodexAuth from "./pages/CodexAuth";
 import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconKey, IconGithub, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower } from "./icons";
 import { useI18n, useT, LOCALES, type TKey } from "./i18n";
+import { installApiAuthFetch } from "./api";
+
+installApiAuthFetch();
 
 type Page = "dashboard" | "providers" | "models" | "subagents" | "logs" | "codex-auth";
 type Theme = "light" | "dark" | "system";

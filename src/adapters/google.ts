@@ -10,7 +10,7 @@ import type {
   OcxToolCall,
   OcxUsage,
 } from "../types";
-import { namespacedToolName } from "../types";
+import { isAllowedToolChoice, namespacedToolName, toolAllowedByChoice } from "../types";
 import { contentPartsToText, parseDataUrl } from "./image";
 
 function messagesToGeminiFormat(parsed: OcxParsedRequest): { systemInstruction?: unknown; contents: unknown[] } {
@@ -68,8 +68,15 @@ function messagesToGeminiFormat(parsed: OcxParsedRequest): { systemInstruction?:
 
 function toolsToGeminiFormat(parsed: OcxParsedRequest): unknown[] | undefined {
   if (!parsed.context.tools?.length) return undefined;
+  const allowed = isAllowedToolChoice(parsed.options.toolChoice)
+    ? new Set(parsed.options.toolChoice.allowedTools)
+    : undefined;
+  const tools = allowed
+    ? parsed.context.tools.filter(t => toolAllowedByChoice(t, allowed))
+    : parsed.context.tools;
+  if (tools.length === 0) return undefined;
   return [{
-    functionDeclarations: parsed.context.tools.map(t => ({
+    functionDeclarations: tools.map(t => ({
       name: namespacedToolName(t.namespace, t.name),
       description: t.description,
       parameters: t.parameters,

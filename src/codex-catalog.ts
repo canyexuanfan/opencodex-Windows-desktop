@@ -311,7 +311,7 @@ function loadCatalogForSync(path: string): RawCatalog | null {
   const catalog = readCatalog(path);
   if (catalog && findNativeTemplate(catalog)) return catalog;
   return readCatalog(catalogBackupPathFor(path))
-    ?? readCatalog(legacyCatalogBackupPath())
+    ?? (isDefaultCatalogPath(path) ? readCatalog(legacyCatalogBackupPath()) : null)
     ?? readCatalog(CODEX_MODELS_CACHE_PATH)
     ?? materializeBundledCodexCatalog(path)
     ?? catalog;
@@ -332,8 +332,7 @@ function readCurrentCatalogOrCache(): RawCatalog | null {
 export function loadCatalogTemplate(): RawEntry | null {
   const catalogPath = readCodexCatalogPath();
   const native = findNativeTemplate(readCatalog(catalogPath))
-    ?? findNativeTemplate(readCatalog(catalogBackupPathFor(catalogPath)))
-    ?? findNativeTemplate(readCatalog(legacyCatalogBackupPath()))
+    ?? findNativeTemplate(readCatalogBackup(catalogPath))
     ?? findNativeTemplate(readCatalog(CODEX_MODELS_CACHE_PATH))
     ?? findNativeTemplate(loadBundledCodexCatalog());
   return native ? JSON.parse(JSON.stringify(native)) : null;
@@ -463,7 +462,8 @@ export function listCatalogNativeSlugs(): string[] {
  * (rather than the modified value left in the live catalog by a previous sync).
  */
 function readCatalogBackup(catalogPath: string): RawCatalog | null {
-  return readCatalog(catalogBackupPathFor(catalogPath)) ?? readCatalog(legacyCatalogBackupPath());
+  return readCatalog(catalogBackupPathFor(catalogPath))
+    ?? (isDefaultCatalogPath(catalogPath) ? readCatalog(legacyCatalogBackupPath()) : null);
 }
 
 function catalogHasRoutedEntries(catalog: RawCatalog | null): boolean {
@@ -486,7 +486,7 @@ function ensureCatalogBackup(catalogPath: string, catalog: RawCatalog): void {
   const dir = getConfigDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writePristineCatalogBackup(catalogBackupPathFor(catalogPath), catalogPath, catalog);
-  writePristineCatalogBackup(legacyCatalogBackupPath(), catalogPath, catalog);
+  if (isDefaultCatalogPath(catalogPath)) writePristineCatalogBackup(legacyCatalogBackupPath(), catalogPath, catalog);
 }
 
 function readNativeBaseline(catalogPath: string): Map<string, number> {
@@ -695,7 +695,6 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
   const template = findNativeTemplate(catalog);
 
   const goModels = await gatherRoutedModels(config);
-  if (goModels.length === 0) return { added: 0, path: catalogPath };
   try {
     // Once-only: preserve the PRISTINE pre-opencodex catalog as the native-priority baseline
     // (later syncs would otherwise overwrite it with featured-modified priorities).
@@ -719,7 +718,12 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
     .filter(m => typeof m.slug === "string" && !(m.slug as string).includes("/") && !goIds.has(m.slug as string))
     .map(m => {
       const slug = m.slug as string;
-      const priority = rank.has(slug) ? rank.get(slug)! : (baseline.get(slug) ?? (m.priority as number));
+      const baselinePriority = baseline.get(slug) ?? (m.priority as number);
+      const priority = rank.has(slug)
+        ? rank.get(slug)!
+        : featured.length > 0
+          ? Math.max(typeof baselinePriority === "number" ? baselinePriority : 9, featured.length + 100)
+          : baselinePriority;
       return normalizeServiceTiers({ ...m, priority });
     });
   // Central WS capability override on the FINAL on-disk catalog (the file Codex reads). Applies to
@@ -746,11 +750,19 @@ export function restoreCodexCatalog(): { removed: number; kept: number; path: st
   const catalogPath = readCodexCatalogPath();
   const catalog = readCatalog(catalogPath);
   if (!catalog || !Array.isArray(catalog.models)) return { removed: 0, kept: 0, path: catalogPath };
-  const exactBackup = readCatalog(catalogBackupPathFor(catalogPath));
-  if (exactBackup && Array.isArray(exactBackup.models)) {
-    const removed = Math.max(0, catalog.models.length - exactBackup.models.length);
-    atomicWriteFile(catalogPath, JSON.stringify(exactBackup, null, 2) + "\n");
-    return { removed, kept: exactBackup.models.length, path: catalogPath };
+  const backup = readCatalogBackup(catalogPath);
+  if (backup && Array.isArray(backup.models)) {
+    const removed = (catalog.models ?? []).filter(m => typeof m.slug === "string" && m.slug.includes("/")).length;
+    const backupSlugs = new Set(backup.models.flatMap(m => typeof m.slug === "string" ? [m.slug] : []));
+    const userNativeAdditions = (catalog.models ?? []).filter(m =>
+      typeof m.slug === "string" && !m.slug.includes("/") && !backupSlugs.has(m.slug)
+    );
+    const restored = {
+      ...backup,
+      models: [...backup.models, ...userNativeAdditions],
+    };
+    atomicWriteFile(catalogPath, JSON.stringify(restored, null, 2) + "\n");
+    return { removed, kept: restored.models.length, path: catalogPath };
   }
   const before = catalog.models.length;
   const native = catalog.models.filter(m => !(typeof m.slug === "string" && m.slug.includes("/")));

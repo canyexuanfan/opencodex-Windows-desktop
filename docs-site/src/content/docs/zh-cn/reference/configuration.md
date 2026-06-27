@@ -14,6 +14,7 @@ opencodex 通过 `~/.opencodex/config.json` 进行配置。它由 `ocx init` 和
 | `defaultProvider` | `string` | `"openai"` | 当路由找不到更优匹配时使用的 provider。 |
 | `subagentModels?` | `string[]` | — | 最多 5 个 `provider/model` id,会在 Codex 的 subagent 选择器中优先展示。 |
 | `disabledModels?` | `string[]` | — | 从 Codex 中隐藏的已路由 `provider/model` id(从目录和 `/v1/models` 中排除)。 |
+| `hostname?` | `string` | `"127.0.0.1"` | 绑定地址。设为 `"0.0.0.0"` 可暴露到 LAN（需要 `OPENCODEX_API_AUTH_TOKEN`；见下文 [远程访问](#远程访问)）。 |
 | `websockets?` | `boolean` | `false` | 广告 `supports_websockets`，让 Codex 使用 Responses WebSocket 路径。省略或设为 `false` 会保持 HTTP/SSE。 |
 | `syncResumeHistory?` | `boolean` | `false` | Codex App 历史兼容模式。启用后,opencodex 会备份原始 Codex thread metadata,把旧的 OpenAI interactive row remap 到 `opencodex`,并临时把 opencodex 创建的 `exec` row 提升为 App 可见的 source。`ocx stop` / `ocx restore` 会恢复已备份的 OpenAI row,并把剩余的 opencodex user thread eject 到 OpenAI,这样在 `config.toml` 中移除 proxy provider 后 native Codex 仍可 resume。 |
 | `modelCacheTtlMs?` | `number` | `300000` | 每个 provider 的 `/models` 缓存的有效期(5 分钟)。 |
@@ -22,6 +23,34 @@ opencodex 通过 `~/.opencodex/config.json` 进行配置。它由 `ocx init` 和
 
 如果旧的开发构建在备份支持出现之前已经运行过 `syncResumeHistory`,也可以显式运行
 `ocx recover-history --legacy-openai` 执行同样的 native-provider 恢复。
+
+## 远程访问
+
+默认情况下 opencodex 只绑定到 `127.0.0.1`（loopback）。当 `hostname` 设置为 `0.0.0.0`
+等非 loopback 地址时,opencodex 会对管理 API（`/api/*`）和 data-plane（`/v1/responses`）
+都强制启用 token 认证。
+
+启动前设置 `OPENCODEX_API_AUTH_TOKEN`:
+
+```bash
+export OPENCODEX_API_AUTH_TOKEN="your-secret-token"
+ocx start
+```
+
+非 loopback 绑定缺少该变量时,proxy 会拒绝启动。如果要为 LAN 访问安装后台服务,也需要先在同一个
+shell 中 export 该变量,再运行 `ocx service install`,这样 launchd、systemd 或 Task Scheduler
+才能收到 token。客户端必须在每个请求中通过 `x-opencodex-api-key` 头传入 token:
+
+```
+x-opencodex-api-key: your-secret-token
+```
+
+token 会用常量时间比较（`timingSafeEqual`）以避免 timing side-channel。
+
+:::caution[LAN 暴露]
+绑定到 `0.0.0.0` 会把 proxy 和已配置的 provider credential 暴露到本地网络。只应在可信网络中这样做,
+并始终设置强 `OPENCODEX_API_AUTH_TOKEN`。
+:::
 
 ## Providers(`OcxProviderConfig`)
 

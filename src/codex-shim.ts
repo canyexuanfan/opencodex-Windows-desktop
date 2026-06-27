@@ -2,8 +2,10 @@ import { delimiter, dirname, extname, join } from "node:path";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { getConfigDir } from "./config";
 import { durableBunPath } from "./bun-runtime";
+import { serviceApiTokenFilePath } from "./service-secrets";
 
 const SHIM_MARKER = "opencodex codex autostart shim";
+let lastShimDiscoveryError: string | null = null;
 const CODEX_INTERNAL_COMMANDS = [
   "app-server",
   "archive",
@@ -13,7 +15,6 @@ const CODEX_INTERNAL_COMMANDS = [
   "debug",
   "delete",
   "doctor",
-  "exec",
   "exec-server",
   "features",
   "fork",
@@ -22,8 +23,6 @@ const CODEX_INTERNAL_COMMANDS = [
   "logout",
   "mcp",
   "plugin",
-  "resume",
-  "review",
   "sandbox",
   "unarchive",
   "update",
@@ -41,6 +40,8 @@ interface ShimFileState {
   wrapperPath: string;
   originalPath: string;
   backupPath: string;
+  realPath?: string;
+  preserveOnly?: boolean;
 }
 
 function cliEntry(): { bun: string; cli: string } {
@@ -79,7 +80,20 @@ function findCodexOnPath(): string | null {
 }
 
 function findWindowsCodexTargets(): ShimFileState[] | null {
+  lastShimDiscoveryError = null;
   for (const dir of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
+    const exe = join(dir, "codex.exe");
+    if (existsSync(exe) && !isShim(exe)) {
+      try {
+        if (!lstatSync(exe).isDirectory()) {
+          lastShimDiscoveryError =
+            `Found codex.exe at ${exe}. Refusing to rename a real .exe because exact codex.exe invocations would break; ` +
+            "install a codex.cmd/codex.ps1 launcher or use `ocx service install` for autostart.";
+          return null;
+        }
+      } catch { /* keep scanning */ }
+    }
+
     const cmd = join(dir, "codex.cmd");
     const ps1 = join(dir, "codex.ps1");
     const targets: ShimFileState[] = [];
@@ -92,15 +106,6 @@ function findWindowsCodexTargets(): ShimFileState[] | null {
       } catch { /* keep scanning */ }
     }
     if (targets.length > 0) return targets;
-
-    const exe = join(dir, "codex.exe");
-    if (!existsSync(exe) || isShim(exe)) continue;
-    try {
-      if (lstatSync(exe).isDirectory()) continue;
-      const wrapperPath = join(dir, "codex.cmd");
-      if (existsSync(wrapperPath) && !isShim(wrapperPath)) continue;
-      return [{ wrapperPath, originalPath: exe, backupPath: backupPathFor(exe) }];
-    } catch { /* keep scanning */ }
   }
   return null;
 }
@@ -110,36 +115,62 @@ function backupPathFor(path: string): string {
   return ext ? `${path.slice(0, -ext.length)}.opencodex-real${ext}` : `${path}.opencodex-real`;
 }
 
+function shQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 export function buildUnixCodexShim(realCodexPath: string, bunPath: string, cliPath: string): string {
   const internalCommands = CODEX_INTERNAL_COMMANDS.join("|");
+  const tokenFile = serviceApiTokenFilePath();
   return `#!/usr/bin/env sh
 # ${SHIM_MARKER}
+if [ -z "$OPENCODEX_API_AUTH_TOKEN" ] && [ -f ${shQuote(tokenFile)} ]; then
+  OPENCODEX_API_AUTH_TOKEN="$(cat ${shQuote(tokenFile)})"
+  export OPENCODEX_API_AUTH_TOKEN
+fi
 case "$1" in
   ${internalCommands}|--help|-h|--version|-V)
     ;;
   *)
     if [ -z "$OCX_SHIM_BYPASS" ]; then
-      "${bunPath}" "${cliPath}" ensure >/dev/null 2>&1 || true
+      ${shQuote(bunPath)} ${shQuote(cliPath)} ensure >/dev/null 2>&1 || true
     fi
     ;;
 esac
-exec "${realCodexPath}" "$@"
+exec ${shQuote(realCodexPath)} "$@"
 `;
+}
+
+function windowsBatchValue(value: string): string {
+  return value
+    .replace(/%/g, "%%")
+    .replace(/\^/g, "^^")
+    .replace(/"/g, "")
+    .replace(/[\r\n]/g, "");
+}
+
+function windowsBatchSet(name: string, value: string): string {
+  return `set "${name}=${windowsBatchValue(value)}"`;
 }
 
 export function buildWindowsCodexShim(realCodexPath: string, bunPath: string, cliPath: string): string {
   const internalCommandChecks = CODEX_INTERNAL_COMMANDS.map(command => `if /I "%~1"=="${command}" goto run_codex`).join("\r\n");
   return `@echo off\r
 rem ${SHIM_MARKER}\r
+${windowsBatchSet("OCX_REAL_CODEX", realCodexPath)}\r
+${windowsBatchSet("OCX_BUN", bunPath)}\r
+${windowsBatchSet("OCX_CLI", cliPath)}\r
+${windowsBatchSet("OCX_API_TOKEN_FILE", serviceApiTokenFilePath())}\r
+if "%OPENCODEX_API_AUTH_TOKEN%"=="" if exist "%OCX_API_TOKEN_FILE%" set /p OPENCODEX_API_AUTH_TOKEN=<"%OCX_API_TOKEN_FILE%"\r
 if not "%OCX_SHIM_BYPASS%"=="" goto run_codex\r
 ${internalCommandChecks}\r
 if /I "%~1"=="--help" goto run_codex\r
 if /I "%~1"=="-h" goto run_codex\r
 if /I "%~1"=="--version" goto run_codex\r
 if /I "%~1"=="-V" goto run_codex\r
-"${bunPath}" "${cliPath}" ensure >nul 2>nul\r
+"%OCX_BUN%" "%OCX_CLI%" ensure >nul 2>nul\r
 :run_codex\r
-"${realCodexPath}" %*\r
+"%OCX_REAL_CODEX%" %*\r
 `;
 }
 
@@ -149,8 +180,12 @@ function psString(value: string): string {
 
 export function buildWindowsPowerShellCodexShim(realCodexPath: string, bunPath: string, cliPath: string): string {
   const internalCommands = CODEX_INTERNAL_COMMANDS.map(command => psString(command)).join(", ");
+  const tokenFile = serviceApiTokenFilePath();
   return `#!/usr/bin/env pwsh
 # ${SHIM_MARKER}
+if (-not $env:OPENCODEX_API_AUTH_TOKEN -and (Test-Path -LiteralPath ${psString(tokenFile)})) {
+  $env:OPENCODEX_API_AUTH_TOKEN = (Get-Content -Raw -LiteralPath ${psString(tokenFile)}).Trim()
+}
 $internalCommands = @(${internalCommands})
 $firstArg = if ($args.Count -gt 0) { [string]$args[0] } else { "" }
 $skipEnsure = $env:OCX_SHIM_BYPASS -or $internalCommands -contains $firstArg -or @("--help", "-h", "--version", "-V") -contains $firstArg
@@ -218,19 +253,26 @@ function replaceOwnedBackup(sourcePath: string, backupPath: string): void {
 }
 
 function refreshShimFile(file: ShimFileState): boolean {
+  if (file.preserveOnly) {
+    if (existsSync(file.originalPath) && !isShim(file.originalPath)) {
+      replaceOwnedBackup(file.originalPath, file.backupPath);
+      return true;
+    }
+    return false;
+  }
   if (existsSync(file.wrapperPath) && !isShim(file.wrapperPath)) {
     if (file.wrapperPath !== file.originalPath) return false;
     replaceOwnedBackup(file.wrapperPath, file.backupPath);
-    writeShim(file.wrapperPath, file.backupPath);
+    writeShim(file.wrapperPath, file.realPath ?? file.backupPath);
     return true;
   }
   if (!existsSync(file.wrapperPath) && existsSync(file.backupPath)) {
-    writeShim(file.wrapperPath, file.backupPath);
+    writeShim(file.wrapperPath, file.realPath ?? file.backupPath);
     return true;
   }
   if (file.originalPath !== file.wrapperPath && existsSync(file.originalPath) && existsSync(file.wrapperPath) && isShim(file.wrapperPath)) {
     replaceOwnedBackup(file.originalPath, file.backupPath);
-    writeShim(file.wrapperPath, file.backupPath);
+    writeShim(file.wrapperPath, file.realPath ?? file.backupPath);
     return true;
   }
   return false;
@@ -242,7 +284,11 @@ export function installCodexShim(): { installed: boolean; message: string } {
     const files = stateFiles(existing);
     let refreshed = false;
     for (const file of files) refreshed = refreshShimFile(file) || refreshed;
-    const allInstalled = files.every(file => existsSync(file.wrapperPath) && existsSync(file.backupPath) && isShim(file.wrapperPath));
+    const allInstalled = files.every(file => file.preserveOnly
+      ? existsSync(file.backupPath) && !existsSync(file.originalPath)
+      : existsSync(file.wrapperPath)
+        && (existsSync(file.backupPath) || (file.realPath ? existsSync(file.realPath) : false))
+        && isShim(file.wrapperPath));
     if (refreshed || allInstalled) {
       writeState(primaryState(files));
       if (refreshed) {
@@ -258,20 +304,20 @@ export function installCodexShim(): { installed: boolean; message: string } {
     }
   }
 
-  const targets = process.platform === "win32"
+  const targets: ShimFileState[] | null = process.platform === "win32"
     ? findWindowsCodexTargets()
     : (() => {
       const originalPath = findCodexOnPath();
       return originalPath ? [{ wrapperPath: originalPath, originalPath, backupPath: backupPathFor(originalPath) }] : null;
     })();
-  if (!targets) return { installed: false, message: "Could not find a codex executable on PATH." };
+  if (!targets) return { installed: false, message: lastShimDiscoveryError ?? "Could not find a codex executable on PATH." };
 
   for (const target of targets) {
     if (existsSync(target.backupPath)) return { installed: false, message: `Refusing to overwrite existing backup: ${target.backupPath}` };
   }
   for (const target of targets) {
-    renameSync(target.originalPath, target.backupPath);
-    writeShim(target.wrapperPath, target.backupPath);
+    if (existsSync(target.originalPath)) renameSync(target.originalPath, target.backupPath);
+    if (!target.preserveOnly) writeShim(target.wrapperPath, target.realPath ?? target.backupPath);
   }
   writeState(primaryState(targets));
   return {
@@ -285,6 +331,7 @@ export function uninstallCodexShim(): { removed: boolean; message: string } {
   if (!state) return { removed: false, message: "Codex autostart shim is not installed." };
   const files = stateFiles(state);
   for (const file of files) {
+    if (file.preserveOnly) continue;
     if (existsSync(file.wrapperPath) && isShim(file.wrapperPath)) unlinkSync(file.wrapperPath);
   }
   for (const file of files) {

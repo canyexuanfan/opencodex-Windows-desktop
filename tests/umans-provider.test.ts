@@ -100,6 +100,36 @@ describe("Umans provider", () => {
     expect(body.tool_choice).toEqual({ type: "tool", name: "ocx_web_search" });
   });
 
+  test("Anthropic adapter filters Umans tools for Responses allowed_tools choices", () => {
+    const req = createAnthropicAdapter(umansProvider()).buildRequest({
+      modelId: "umans-kimi-k2.7",
+      context: {
+        messages: [{ role: "user", content: "search docs", timestamp: 0 }],
+        tools: [
+          {
+            name: "web_search",
+            description: "Search the web",
+            parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+          },
+          {
+            name: "run_tests",
+            description: "Run tests",
+            parameters: { type: "object", properties: {} },
+          },
+        ],
+      },
+      stream: true,
+      options: { toolChoice: { allowedTools: ["web_search"], mode: "required" } },
+    });
+    const body = JSON.parse(req.body as string) as {
+      tools: Array<{ name: string }>;
+      tool_choice: { type: string };
+    };
+
+    expect(body.tools.map(t => t.name)).toEqual(["ocx_web_search"]);
+    expect(body.tool_choice).toEqual({ type: "any" });
+  });
+
   test("Anthropic adapter strips Umans compatibility prefix from streamed tool calls", async () => {
     const stream = new ReadableStream({
       start(controller) {

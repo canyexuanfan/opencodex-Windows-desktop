@@ -50,7 +50,7 @@ GitHub Actions 会刻意保持短小:
 发布请使用 helper:
 
 ```bash
-bun run release <version>           # 默认 dry-run
+bun run release <version>           # 会提交/推送版本 bump；publish workflow 默认 dry-run
 bun run release <version> --publish # 理解 CI-gated dry-run 后再真正 publish
 bun run release:watch               # 观察最新的 Release workflow run
 ```
