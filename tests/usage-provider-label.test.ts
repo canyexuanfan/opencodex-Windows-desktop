@@ -1,0 +1,26 @@
+import { describe, expect, test } from "bun:test";
+import { baseProviderLabel } from "../src/provider-label";
+
+describe("baseProviderLabel", () => {
+  test("returns the input when there is no pool suffix", () => {
+    expect(baseProviderLabel("chatgpt")).toBe("chatgpt");
+    expect(baseProviderLabel("openai")).toBe("openai");
+  });
+
+  test("strips a lowercase-hex pool suffix matching CODEX_ACCOUNT_LOG_LABEL_RE", () => {
+    expect(baseProviderLabel("chatgpt-p104398")).toBe("chatgpt");
+    expect(baseProviderLabel("chatgpt-pabc123")).toBe("chatgpt");
+  });
+
+  test("keeps suffixes that do not match the pool log-label shape", () => {
+    expect(baseProviderLabel("chatgpt-pABC123")).toBe("chatgpt-pABC123"); // uppercase not allowed
+    expect(baseProviderLabel("chatgpt-p12345")).toBe("chatgpt-p12345");   // 5 hex, not 6
+    expect(baseProviderLabel("chatgpt-p1234567")).toBe("chatgpt-p1234567"); // 7 hex, not 6
+    expect(baseProviderLabel("anthropic-claude")).toBe("anthropic-claude");
+  });
+
+  test("leaves bare provider names with leading or trailing dashes alone", () => {
+    expect(baseProviderLabel("-pabc123")).toBe("-pabc123"); // empty head
+    expect(baseProviderLabel("chatgpt-")).toBe("chatgpt-");  // empty tail
+  });
+});

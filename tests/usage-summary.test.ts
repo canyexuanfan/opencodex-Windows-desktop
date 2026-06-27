@@ -102,6 +102,18 @@ describe("summarizeUsage", () => {
     expect(sum.providers[0].shareRatio).toBeCloseTo(2 / 3);
   });
 
+  test("merges codex pool log-label suffix into one provider/model row", () => {
+    const entries: PersistedUsageEntry[] = [
+      entry({ ts: FIXED_NOW - 1, provider: "chatgpt", model: "gpt-5.5", usageStatus: "reported", usage: { inputTokens: 3, outputTokens: 1 }, totalTokens: 4 }),
+      entry({ ts: FIXED_NOW - 2, provider: "chatgpt-p104398", model: "gpt-5.5", usageStatus: "reported", usage: { inputTokens: 2, outputTokens: 1 }, totalTokens: 3 }),
+    ];
+    const sum = summarizeUsage(entries, "30d", FIXED_NOW);
+    expect(sum.providers).toHaveLength(1);
+    expect(sum.providers[0]).toMatchObject({ provider: "chatgpt", requests: 2, totalTokens: 7 });
+    expect(sum.models).toHaveLength(1);
+    expect(sum.models[0]).toMatchObject({ provider: "chatgpt", model: "gpt-5.5", requests: 2, totalTokens: 7 });
+  });
+
   test("all range keeps everything and reports since=null", () => {
     const entries: PersistedUsageEntry[] = [
       entry({ ts: FIXED_NOW - 365 * 86400000, usageStatus: "reported", usage: { inputTokens: 1, outputTokens: 1 }, totalTokens: 2 }),
