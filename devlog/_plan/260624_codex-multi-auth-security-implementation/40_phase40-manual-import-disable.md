@@ -219,7 +219,7 @@ Required imports:
 Assertions:
 
 - `checkAccountIdCollision("shared-team-account", "member-b@example.test")` returns no collision when an existing pool account has the same ChatGPT account id but a different email;
-- Correction 2026-06-27: `checkAccountIdCollision("shared-team-account", "MEMBER-A@example.test")` also returns no collision. ChatGPT account id plus email is not an authoritative duplicate key because one user can legitimately hold both personal and business subscriptions. Duplicate prevention remains scoped to local alias checks and exact OAuth refresh-grant fingerprint matches.
+- Correction 2026-06-27: `checkAccountIdCollision("shared-team-account", "MEMBER-A@example.test", "business")` returns no collision when the existing account is personal. Personal and workspace subscriptions are separate duplicate buckets because one user can legitimately hold both. Within the same bucket, the existing ChatGPT account id plus normalized email collision guard still applies.
 
 ### MODIFY `src/codex-auth-api.ts` OAuth wording
 

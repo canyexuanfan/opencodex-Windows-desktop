@@ -214,9 +214,9 @@ export async function handleCodexAuthAPI(
     if (accounts.some(a => a.id === body.id) || getCodexAccountCredential(body.id)) {
       return jsonResponse({ error: `Account id already exists: ${body.id}` }, 400);
     }
-    // 1.1: Duplicate check uses local alias plus exact credential material, not account identity.
+    // 1.1: Duplicate check is scoped by personal vs workspace plan bucket.
     const derivedAccountId = extractAccountId(undefined, body.accessToken) ?? body.chatgptAccountId;
-    const collision = checkAccountIdCollision(derivedAccountId, body.email, body.refreshToken);
+    const collision = checkAccountIdCollision(derivedAccountId, body.email, body.plan);
     if (collision.collision) {
       return jsonResponse({ error: collision.reason }, 400);
     }
@@ -414,21 +414,12 @@ export async function handleCodexAuthAPI(
             const { getCredential } = await import("./oauth/store");
             const cred = getCredential("chatgpt");
             if (cred) {
-              // 1.2: Duplicate check uses local alias plus exact credential material, not account identity.
               const oauthAccountId = cred.accountId;
               if (!oauthAccountId) {
                 codexAuthLoginState.set(flowId, {
                   status: "error",
                   error: "Could not determine account identity from OAuth tokens. Please retry OAuth login.",
                   doneAt: Date.now(),
-                });
-                completed = true;
-                break;
-              }
-              const collision = checkAccountIdCollision(oauthAccountId, cred.email, cred.refresh);
-              if (collision.collision) {
-                codexAuthLoginState.set(flowId, {
-                  status: "error", error: collision.reason, doneAt: Date.now(),
                 });
                 completed = true;
                 break;
@@ -450,6 +441,15 @@ export async function handleCodexAuthAPI(
                   quota = parseUsageQuota(data);
                 }
               } catch { /* wham fetch is non-blocking */ }
+              // 1.2: Duplicate check is scoped by personal vs workspace plan bucket.
+              const collision = checkAccountIdCollision(oauthAccountId, email, plan);
+              if (collision.collision) {
+                codexAuthLoginState.set(flowId, {
+                  status: "error", error: collision.reason, doneAt: Date.now(),
+                });
+                completed = true;
+                break;
+              }
 
               saveCodexAccountCredential(accountId, {
                 accessToken: cred.access,
