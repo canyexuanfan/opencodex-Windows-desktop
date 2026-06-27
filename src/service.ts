@@ -42,6 +42,10 @@ function windowsServiceScriptPath(): string {
   return join(getConfigDir(), "opencodex-service.cmd");
 }
 
+function windowsTaskXmlPath(): string {
+  return join(getConfigDir(), "opencodex-service-task.xml");
+}
+
 function serviceStatePath(): string {
   return join(getConfigDir(), "service-state.json");
 }
@@ -253,6 +257,15 @@ function windowsBatchSet(name: string, value: string | undefined): string | null
   return `set "${name}=${windowsBatchValue(value)}"`;
 }
 
+function taskXmlString(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
 export function buildWindowsServiceScript(entry = cliEntry()): string {
   const { bun, cli } = entry;
   const path = process.env.PATH ?? "";
@@ -289,15 +302,52 @@ export function buildWindowsServiceScript(entry = cliEntry()): string {
 }
 
 export function buildWindowsSchtasksCreateArgs(script = windowsServiceScriptPath()): string[] {
-  return [
-    "/create",
-    "/tn", TASK,
-    "/tr", `"${script}"`,
-    "/sc", "onlogon",
-    "/rl", "LIMITED",
-    "/du", "9999:59",
-    "/f",
-  ];
+  const xml = script === windowsServiceScriptPath() ? windowsTaskXmlPath() : `${script}.xml`;
+  return ["/create", "/tn", TASK, "/xml", xml, "/f"];
+}
+
+export function buildWindowsTaskXml(script = windowsServiceScriptPath()): string {
+  const escapedScript = taskXmlString(script);
+  return `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>OpenCodex proxy service wrapper</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>${escapedScript}</Command>
+    </Exec>
+  </Actions>
+</Task>
+`;
 }
 
 // ── macOS (launchd) ──
@@ -327,6 +377,7 @@ function installWindows(): void {
   writeServiceApiTokenFile();
   const script = windowsServiceScriptPath();
   writeFileSync(script, buildWindowsServiceScript(), "utf8");
+  writeFileSync(windowsTaskXmlPath(), buildWindowsTaskXml(script), "utf16le");
   try { stopWindows(); } catch { /* not running */ }
   schtasks(buildWindowsSchtasksCreateArgs(script));
   schtasks(["/run", "/tn", TASK]);
@@ -338,6 +389,7 @@ function statusWindows(): string { try { return schtasks(["/query", "/tn", TASK]
 function uninstallWindows(): void {
   try { schtasks(["/delete", "/tn", TASK, "/f"]); } catch { /* absent */ }
   if (existsSync(windowsServiceScriptPath())) unlinkSync(windowsServiceScriptPath());
+  if (existsSync(windowsTaskXmlPath())) unlinkSync(windowsTaskXmlPath());
 }
 
 function serviceDiagnosticsSummary(): string {

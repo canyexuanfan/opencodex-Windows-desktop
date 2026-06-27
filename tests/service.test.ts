@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
-import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, buildPlist, buildUnit, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, serviceLogPath, serviceStatusSummary } from "../src/service";
+import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, buildPlist, buildUnit, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, serviceLogPath, serviceStatusSummary } from "../src/service";
 import { serviceApiTokenFilePath } from "../src/service-secrets";
 import type { OcxConfig } from "../src/types";
 
@@ -117,17 +117,36 @@ describe("service install auth preflight", () => {
 });
 
 describe("Windows service task", () => {
-  test("builds schtasks create args without shell interpolation", () => {
+  test("builds schtasks create args from XML instead of runtime flags", () => {
     const script = "C:\\Users\\a&b\\.opencodex\\opencodex-service.cmd";
     const args = buildWindowsSchtasksCreateArgs(script);
 
     expect(args).toContain("/create");
-    expect(args).toContain("/tr");
-    expect(args[args.indexOf("/tr") + 1]).toBe(`"${script}"`);
-    expect(args[args.indexOf("/rl") + 1]).toBe("LIMITED");
-    expect(args[args.indexOf("/du") + 1]).toBe("9999:59");
+    expect(args).toContain("/xml");
+    expect(args[args.indexOf("/xml") + 1]).toBe(`${script}.xml`);
+    expect(args).not.toContain("/tr");
+    expect(args).not.toContain("/sc");
+    expect(args).not.toContain("/du");
+    expect(args).not.toContain("/rl");
     expect(args).not.toContain("highest");
     expect(args.join(" ")).toContain("a&b");
+  });
+
+  test("builds service-like Task Scheduler XML settings", () => {
+    const script = "C:\\Users\\a&b\\.opencodex\\opencodex-service.cmd";
+    const xml = buildWindowsTaskXml(script);
+
+    expect(xml).toContain('<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">');
+    expect(xml).toContain("<LogonTrigger>");
+    expect(xml).toContain("<RunLevel>LeastPrivilege</RunLevel>");
+    expect(xml).toContain("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>");
+    expect(xml).toContain("<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>");
+    expect(xml).toContain("<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>");
+    expect(xml).toContain("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>");
+    expect(xml).toContain("<RestartOnFailure>");
+    expect(xml).toContain("<Interval>PT1M</Interval>");
+    expect(xml).toContain("<Count>3</Count>");
+    expect(xml).toContain("<Command>C:\\Users\\a&amp;b\\.opencodex\\opencodex-service.cmd</Command>");
   });
 
   test("escapes environment values that would break out of set quotes", () => {
@@ -253,6 +272,15 @@ describe("service lifecycle cleanup ordering", () => {
     expect(uninstallCase.indexOf("ops.stop();")).toBeLessThan(uninstallCase.indexOf("stopTrackedProxyForServiceCommand();"));
     expect(uninstallCase.indexOf("stopTrackedProxyForServiceCommand();")).toBeLessThan(uninstallCase.indexOf("ops.uninstall();"));
     expect(uninstallCase.indexOf("ops.uninstall();")).toBeLessThan(uninstallCase.indexOf("restoreNativeCodex();"));
+  });
+
+  test("Windows service uninstall removes generated task XML", async () => {
+    const service = await readText("src/service.ts");
+    const uninstallWindows = service.slice(service.indexOf("function uninstallWindows()"), service.indexOf("function serviceDiagnosticsSummary()"));
+
+    expect(uninstallWindows).toContain("windowsServiceScriptPath()");
+    expect(uninstallWindows).toContain("windowsTaskXmlPath()");
+    expect(uninstallWindows).toContain("unlinkSync(windowsTaskXmlPath())");
   });
 
   test("service cleanup uses the shared process-tree killer and clears the pid file", async () => {
