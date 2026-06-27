@@ -29,12 +29,21 @@ bun run src/cli.ts version
 Findings:
 
 - `--help`, `-h`, and `help` print the same top-level usage.
+- `ocx help <command>` currently prints top-level help, not command-specific help.
 - `restore --help` and `recover-history --help` are safe and do not mutate Codex state.
 - Unknown commands print `Unknown command: <name>` and the full help, then exit 1.
+- Unknown commands with a trailing help flag, such as `ocx restart --help`, print top-level help and exit 0.
 - `-v`, `--version`, and `version` are not supported; `-v` and `version` are treated as unknown commands.
+- `ocx status --json` exits 0 but prints human status text; there is no JSON contract yet.
 - Help is compact but not task-oriented. It lists commands, but it does not answer "what should I run first?", "how do I diagnose a problem?", or "what is safe to run in scripts?".
 - There is no `--json` contract for status/diagnostics, so agents must parse human text.
 - `src/cli.ts` is doing command parsing, help text, runtime behavior, and dispatch in one file.
+
+Detailed matrix:
+
+```path
+/Users/jun/Developer/new/700_projects/opencodex/devlog/370_cli-human-friendly/11_help_surface_matrix.md
+```
 
 ## Reference CLI Patterns
 
@@ -116,6 +125,7 @@ Documentation-only investigation pass.
 - Explicitly probe missing or empty candidate commands such as `restart`, `doctor`, `logs`, `commands`, `--json`, and `--version`.
 - Compare actual behavior against README, docs-site, and `structure/` documentation.
 - Produce a command matrix before any implementation patch.
+- Avoid executing lifecycle commands without help flags during research because they can mutate service/shim/proxy/Codex state.
 
 ### Phase 2 - Help/Version Patch Plan
 
