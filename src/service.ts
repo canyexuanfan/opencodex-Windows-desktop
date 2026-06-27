@@ -289,7 +289,15 @@ export function buildWindowsServiceScript(entry = cliEntry()): string {
 }
 
 export function buildWindowsSchtasksCreateArgs(script = windowsServiceScriptPath()): string[] {
-  return ["/create", "/tn", TASK, "/tr", `"${script}"`, "/sc", "onlogon", "/rl", "LIMITED", "/f"];
+  return [
+    "/create",
+    "/tn", TASK,
+    "/tr", `"${script}"`,
+    "/sc", "onlogon",
+    "/rl", "LIMITED",
+    "/du", "9999:59",
+    "/f",
+  ];
 }
 
 // ── macOS (launchd) ──

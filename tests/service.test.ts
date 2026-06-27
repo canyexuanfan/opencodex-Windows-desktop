@@ -125,6 +125,7 @@ describe("Windows service task", () => {
     expect(args).toContain("/tr");
     expect(args[args.indexOf("/tr") + 1]).toBe(`"${script}"`);
     expect(args[args.indexOf("/rl") + 1]).toBe("LIMITED");
+    expect(args[args.indexOf("/du") + 1]).toBe("9999:59");
     expect(args).not.toContain("highest");
     expect(args.join(" ")).toContain("a&b");
   });
