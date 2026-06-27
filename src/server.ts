@@ -462,7 +462,11 @@ async function handleResponses(
       const upstreamContentType = upstreamResponse.headers.get("content-type");
       if (upstreamContentType) logCtx.usageDebugContentType = upstreamContentType;
     }
-    const isEventStream = headers.get("content-type")?.toLowerCase().includes("text/event-stream") ?? false;
+    // The chatgpt backend may omit Content-Type on SSE responses. Fall back to
+    // treating a successful body as SSE when the caller requested streaming.
+    const passthroughCt = headers.get("content-type")?.toLowerCase();
+    const isEventStream = passthroughCt?.includes("text/event-stream")
+      || (upstreamResponse.ok && !!upstreamResponse.body && !passthroughCt && parsed.stream);
     const terminalRecorder = codexForwardTerminalOutcomeRecorder(config, authCtx, route.provider);
     const terminalBodyWillRecord = !!terminalRecorder && upstreamResponse.ok && isEventStream;
     // Capture quota from upstream response for multi-account tracking
@@ -522,6 +526,7 @@ async function handleResponses(
       } else {
         consumeForResponseLogMetadata(inspectBody, logCtx, turnAc.signal, () => unregisterTurn(turnAc));
       }
+      if (!headers.has("content-type")) headers.set("content-type", "text/event-stream");
       return markNativePassthroughSseResponse(new Response(nativeBody, {
         status: upstreamResponse.status,
         headers,
