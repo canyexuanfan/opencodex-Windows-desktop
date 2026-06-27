@@ -45,18 +45,37 @@ function configuredPoolAccount(config: OcxConfig, accountId: string): CodexAccou
   return (config.codexAccounts ?? []).find(account => account.id === accountId && !account.isMain) ?? null;
 }
 
+function isThirtyDayOnlyPlan(plan: string | null | undefined): boolean {
+  const normalized = plan?.trim().toLowerCase();
+  return normalized === "go" || normalized === "free";
+}
+
+function quotaForPlan<T extends Omit<StoredAccountQuota, "updatedAt"> | StoredAccountQuota | null>(
+  quota: T,
+  plan: string | null | undefined,
+): T {
+  if (!quota || !isThirtyDayOnlyPlan(plan)) return quota;
+  return {
+    ...(quota.monthlyPercent !== undefined ? { monthlyPercent: quota.monthlyPercent } : {}),
+    ...(quota.monthlyResetAt !== undefined ? { monthlyResetAt: quota.monthlyResetAt } : {}),
+    ...(quota.resetCredits !== undefined ? { resetCredits: quota.resetCredits } : {}),
+    ...("updatedAt" in quota ? { updatedAt: quota.updatedAt } : {}),
+  } as T;
+}
+
 function poolAccountDto(
   account: CodexAccount,
   quotaResult: PoolQuotaResult,
   hasCredential: boolean,
 ): Record<string, unknown> {
+  const quota = quotaForPlan(quotaResult.quota, account.plan);
   return {
     id: account.id,
     email: maskEmail(account.email) ?? account.email,
     ...(account.plan !== undefined ? { plan: account.plan } : {}),
     ...(account.logLabel !== undefined ? { logLabel: account.logLabel } : {}),
     isMain: false,
-    quota: quotaResult.quota ? { ...quotaResult.quota } : null,
+    quota: quota ? { ...quota } : null,
     needsReauth: !hasCredential || quotaResult.needsReauth || isAccountNeedsReauth(account.id),
     hasCredential,
   };
@@ -251,7 +270,7 @@ export async function handleCodexAuthAPI(
       plan: mainInfo.plan,
       isMain: true,
       hasCredential: true,
-      quota: mainInfo.quota ? { ...mainInfo.quota, updatedAt: Date.now() } : null,
+      quota: mainInfo.quota ? { ...quotaForPlan({ ...mainInfo.quota, updatedAt: Date.now() }, mainInfo.plan) } : null,
     };
     return jsonResponse({ accounts: [main, ...withQuota] });
   }

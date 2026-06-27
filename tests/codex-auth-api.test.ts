@@ -143,6 +143,37 @@ describe("codex-auth API", () => {
     expect(data.accounts.find(a => a.id === "pool-mask")?.email).toBe("p***n@example.test");
   });
 
+  test("GET /api/codex-auth/accounts exposes only 30d quota for go and free plans", async () => {
+    const config = makeConfig({
+      codexAccounts: [
+        { id: "pool-go", email: "go@example.test", plan: "go", isMain: false },
+        { id: "pool-free", email: "free@example.test", plan: "free", isMain: false },
+      ],
+    });
+    for (const id of ["pool-go", "pool-free"]) {
+      saveCodexAccountCredential(id, {
+        accessToken: `access-${id}`,
+        refreshToken: `refresh-${id}`,
+        expiresAt: Date.now() + 5 * 60_000,
+        chatgptAccountId: `acct-${id}`,
+      });
+      updateAccountQuota(id, 91, 92, 111, 222, 33, 333);
+    }
+
+    const req = new Request("http://localhost/api/codex-auth/accounts", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<{ id: string; quota?: Record<string, unknown> }> };
+
+    for (const id of ["pool-go", "pool-free"]) {
+      const quota = data.accounts.find(a => a.id === id)?.quota;
+      expect(quota).toMatchObject({ monthlyPercent: 33, monthlyResetAt: 333 });
+      expect(quota).not.toHaveProperty("weeklyPercent");
+      expect(quota).not.toHaveProperty("fiveHourPercent");
+      expect(quota).not.toHaveProperty("weeklyResetAt");
+      expect(quota).not.toHaveProperty("fiveHourResetAt");
+    }
+  });
+
   test("GET /api/codex-auth/accounts whitelists pool account response fields", async () => {
     const config = makeConfig({
       codexAccounts: [{

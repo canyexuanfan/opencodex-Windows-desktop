@@ -74,8 +74,14 @@ export function computeCodexUsageScore(quota: {
   weeklyPercent?: number;
   fiveHourPercent?: number;
   monthlyPercent?: number;
-} | null): number {
+} | null, plan?: string | null): number {
   if (!quota) return CODEX_UNKNOWN_USAGE_SCORE;
+  const normalizedPlan = plan?.trim().toLowerCase();
+  if (normalizedPlan === "go" || normalizedPlan === "free") {
+    return typeof quota.monthlyPercent === "number" && Number.isFinite(quota.monthlyPercent)
+      ? quota.monthlyPercent
+      : CODEX_UNKNOWN_USAGE_SCORE;
+  }
   const values = [quota.weeklyPercent, quota.fiveHourPercent, quota.monthlyPercent]
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   return values.length > 0 ? Math.max(...values) : CODEX_UNKNOWN_USAGE_SCORE;
@@ -204,11 +210,15 @@ function getEligiblePoolAccounts(config: OcxConfig, excludeId?: string, now = Da
     .map(account => account.id);
 }
 
+function getPoolAccountPlan(config: OcxConfig, accountId: string): string | undefined {
+  return (config.codexAccounts ?? []).find(account => !account.isMain && account.id === accountId)?.plan;
+}
+
 function pickLowerUsageAccount(config: OcxConfig, active: string, activeUsage: number, now: number): string {
   let best = active;
   let bestUsage = activeUsage;
   for (const id of getEligiblePoolAccounts(config, active, now)) {
-    const usage = computeCodexUsageScore(getAccountQuota(id));
+    const usage = computeCodexUsageScore(getAccountQuota(id), getPoolAccountPlan(config, id));
     if (usage < bestUsage) {
       best = id;
       bestUsage = usage;
@@ -221,7 +231,7 @@ export function pickLowestUsageCodexAccount(config: OcxConfig, excludeId?: strin
   let best: string | null = null;
   let bestUsage = Number.POSITIVE_INFINITY;
   for (const id of getEligiblePoolAccounts(config, excludeId, now)) {
-    const usage = computeCodexUsageScore(getAccountQuota(id));
+    const usage = computeCodexUsageScore(getAccountQuota(id), getPoolAccountPlan(config, id));
     if (usage < bestUsage) {
       best = id;
       bestUsage = usage;
@@ -240,7 +250,7 @@ function applyQuotaAutoSwitch(config: OcxConfig, active: string, now: number): s
   const threshold = config.autoSwitchThreshold ?? 80;
   if (threshold <= 0) return active;
   const quota = getAccountQuota(active);
-  const activeUsage = computeCodexUsageScore(quota);
+  const activeUsage = computeCodexUsageScore(quota, getPoolAccountPlan(config, active));
   if (activeUsage < threshold) return active;
   const best = pickLowerUsageAccount(config, active, activeUsage, now);
   if (best !== active) setActiveCodexAccount(config, best);

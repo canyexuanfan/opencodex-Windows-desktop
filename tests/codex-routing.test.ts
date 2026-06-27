@@ -92,6 +92,12 @@ describe("codex routing", () => {
     expect(computeCodexUsageScore({ weeklyPercent: 15 })).toBe(15);
   });
 
+  test("go and free plans use only the 30d quota window", () => {
+    expect(computeCodexUsageScore({ weeklyPercent: 99, fiveHourPercent: 98, monthlyPercent: 12 }, "go")).toBe(12);
+    expect(computeCodexUsageScore({ weeklyPercent: 99, fiveHourPercent: 98, monthlyPercent: 13 }, "free")).toBe(13);
+    expect(computeCodexUsageScore({ weeklyPercent: 1, fiveHourPercent: 2 }, "go")).toBe(CODEX_UNKNOWN_USAGE_SCORE);
+  });
+
   test("usage score treats unknown quota conservatively", () => {
     expect(computeCodexUsageScore(null)).toBe(CODEX_UNKNOWN_USAGE_SCORE);
     expect(computeCodexUsageScore({})).toBe(CODEX_UNKNOWN_USAGE_SCORE);
@@ -102,6 +108,19 @@ describe("codex routing", () => {
     updateAccountQuota("a", 10, 85);
     updateAccountQuota("b", 20, 5);
     expect(resolveCodexAccountForThread("new-thread", config)).toBe("b");
+  });
+
+  test("go plan pool switching ignores 5h and weekly windows", () => {
+    const config = makeConfig({
+      codexAccounts: [
+        { id: "a", email: "a@test", plan: "go", isMain: false },
+        { id: "b", email: "b@test", plan: "go", isMain: false },
+      ],
+      activeCodexAccountId: "a",
+    });
+    updateAccountQuota("a", 99, 99, undefined, undefined, 10);
+    updateAccountQuota("b", 1, 1, undefined, undefined, 50);
+    expect(resolveCodexAccountForThread("go-monthly-thread", config)).toBe("a");
   });
 
   test("unknown active quota can switch to a known lower usage account", () => {
