@@ -90,7 +90,9 @@ describe("appendUsageDebug", () => {
     expect(parsed.requestId).toBe("ocx-debug-1");
     expect(parsed.bodyKind).toBe("sse");
     expect(parsed.upstreamContentType).toBe("text/event-stream");
-    expect((statSync(path).mode & 0o777).toString(8)).toBe("600");
+    if (process.platform !== "win32") {
+      expect((statSync(path).mode & 0o777).toString(8)).toBe("600");
+    }
   });
 
   test("rotates to the most recent USAGE_DEBUG_KEEP_LINES once USAGE_DEBUG_MAX_LINES is exceeded", () => {

@@ -61,7 +61,9 @@ describe("usage log", () => {
       usage: { inputTokens: 10, outputTokens: 3, cachedInputTokens: 2 },
       totalTokens: 13,
     }]);
-    expect((statSync(usageLogPath()).mode & 0o777).toString(8)).toBe("600");
+    if (process.platform !== "win32") {
+      expect((statSync(usageLogPath()).mode & 0o777).toString(8)).toBe("600");
+    }
   });
 
   test("skips malformed JSONL lines while keeping valid entries", () => {
