@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { formatCrashEntry } from "../src/crash-guard";
+import { sidecarEnter } from "../src/sidecar-tracker";
 
 describe("crash-guard diagnostics", () => {
   test("surfaces the JSC throw site from hidden source fields when the stack is native-only", () => {
@@ -35,5 +36,16 @@ describe("crash-guard diagnostics", () => {
     expect(() => formatCrashEntry("unhandledRejection", null)).not.toThrow();
     expect(() => formatCrashEntry("unhandledRejection", "string reason")).not.toThrow();
     expect(formatCrashEntry("unhandledRejection", 42)).toContain("42");
+  });
+
+  test("records a sidecar breadcrumb when one is in flight", () => {
+    const exit = sidecarEnter("web-search");
+    try {
+      const entry = formatCrashEntry("unhandledRejection", new TypeError("null is not an object"));
+      expect(entry).toContain("sidecar: inFlight=1");
+      expect(entry).toContain("last=web-search");
+    } finally {
+      exit();
+    }
   });
 });

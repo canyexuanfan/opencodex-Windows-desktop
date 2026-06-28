@@ -1,6 +1,7 @@
 import type { OcxProviderConfig } from "../types";
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
 import { signalWithTimeout } from "../abort";
+import { sidecarEnter } from "../sidecar-tracker";
 import { parseSidecarSSE } from "../web-search/parse";
 import type { SidecarOutcomeRecorder } from "../web-search/executor";
 
@@ -81,6 +82,7 @@ export async function describeImage(
     stream: true,
   };
   const linkedSignal = signalWithTimeout(settings.timeoutMs, abortSignal);
+  const sidecarExit = sidecarEnter("vision");
   try {
     const res = await fetch(`${forwardProvider.baseUrl}/responses`, {
       method: "POST",
@@ -102,6 +104,7 @@ export async function describeImage(
     recordOutcome?.(e instanceof Error && e.name === "TimeoutError" ? "timeout" : "connect_error");
     return { text: "", error: e instanceof Error ? e.message : String(e) };
   } finally {
+    sidecarExit();
     linkedSignal.cleanup();
   }
 }

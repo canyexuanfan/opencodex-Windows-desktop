@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "./config";
+import { sidecarBreadcrumb } from "./sidecar-tracker";
 
 /**
  * Process-level safety net for the long-running proxy daemon.
@@ -32,7 +33,7 @@ function crashLogPath(): string {
   return join(dir, "crash.log");
 }
 
-export function formatCrashEntry(kind: string, err: unknown): string {
+export function formatCrashEntry(kind: string, err: unknown, promise?: unknown): string {
   const ts = new Date().toISOString();
   const detail =
     err instanceof Error
@@ -40,7 +41,7 @@ export function formatCrashEntry(kind: string, err: unknown): string {
       : typeof err === "object"
         ? safeStringify(err)
         : String(err);
-  return `\n[${ts}] ${kind}\n${detail}${diagnose(err)}\n`;
+  return `\n[${ts}] ${kind}\n${detail}${diagnose(err)}${diagnosePromise(promise)}${breadcrumb()}\n`;
 }
 
 /**
@@ -96,6 +97,37 @@ function inspectErr(err: unknown): string {
   }
 }
 
+/**
+ * Inspect the rejected promise itself. Bun sometimes attaches richer context to the promise object
+ * than to the reason, and the rendered form helps distinguish a fetch/stream teardown from app code.
+ */
+function diagnosePromise(promise: unknown): string {
+  if (promise === undefined) return "";
+  try {
+    const bun = (globalThis as { Bun?: { inspect?: (v: unknown, o?: unknown) => string } }).Bun;
+    const rendered = bun?.inspect ? bun.inspect(promise, { depth: 1 }).trim() : String(promise);
+    if (!rendered || rendered === "Promise { <rejected> }") return "";
+    return `\n  promise: ${rendered.split("\n").join(" ")}`;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Record whether a sidecar (web-search / vision) was in flight when the fault fired. A native-only
+ * rejection coinciding with sidecar work is the prime suspect; this turns the correlation into a
+ * logged fact instead of an inference.
+ */
+function breadcrumb(): string {
+  try {
+    const b = sidecarBreadcrumb();
+    if (b.inFlight <= 0 && !b.lastLabel) return "";
+    return `\n  sidecar: inFlight=${b.inFlight} last=${b.lastLabel || "-"} sinceMs=${b.sinceMs}`;
+  } catch {
+    return "";
+  }
+}
+
 function safeStringify(value: unknown): string {
   try {
     return JSON.stringify(value, null, 2) ?? String(value);
@@ -104,8 +136,8 @@ function safeStringify(value: unknown): string {
   }
 }
 
-function record(kind: string, err: unknown): void {
-  const line = formatCrashEntry(kind, err);
+function record(kind: string, err: unknown, promise?: unknown): void {
+  const line = formatCrashEntry(kind, err, promise);
   // Always surface to stderr so foreground `ocx start` users still see it,
   // then persist for later diagnosis.
   console.error(`⚠️  ${kind} (proxy stayed up; logged to crash.log)`);
@@ -125,8 +157,8 @@ export function installCrashGuards(): void {
   if (installed) return;
   installed = true;
 
-  process.on("unhandledRejection", reason => {
-    record("unhandledRejection", reason);
+  process.on("unhandledRejection", (reason, promise) => {
+    record("unhandledRejection", reason, promise);
   });
 
   process.on("uncaughtException", err => {
