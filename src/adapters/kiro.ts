@@ -93,6 +93,18 @@ function userContentText(content: string | OcxContentPart[]): string {
   return content.map(p => (p.type === "text" ? p.text : "")).filter(Boolean).join("\n");
 }
 
+function usageContentText(content: string | OcxContentPart[]): string {
+  if (typeof content === "string") return content;
+  return content
+    .map(p => {
+      if (p.type === "text") return p.text;
+      if (p.type === "image") return `[image:${p.detail ?? "auto"}]`;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
 function convertTools(parsed: OcxParsedRequest): unknown[] {
   const tools = parsed.context.tools ?? [];
   return tools.map(t => ({
@@ -111,6 +123,53 @@ function stableConversationId(parsed: OcxParsedRequest): string {
     .map(m => `${m.role}:${JSON.stringify((m as { content?: unknown }).content ?? "").slice(0, 100)}`)
     .join("|");
   return createHash("sha256").update(key).digest("hex").slice(0, 16);
+}
+
+function serializeForUsage(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function currentTurnInputMessages(messages: OcxMessage[]): OcxMessage[] {
+  const lastAssistant = messages.map(m => m.role).lastIndexOf("assistant");
+  return messages.slice(lastAssistant + 1).filter(m => m.role !== "assistant");
+}
+
+function messageUsageText(msg: OcxMessage): string {
+  switch (msg.role) {
+    case "user":
+    case "developer":
+      return usageContentText(msg.content);
+    case "toolResult":
+      return [
+        msg.toolName,
+        msg.toolCallId,
+        msg.isError ? "error" : "success",
+        usageContentText(msg.content),
+      ].filter(Boolean).join("\n");
+    case "assistant":
+      return "";
+  }
+}
+
+function shouldCountStablePromptOverhead(parsed: OcxParsedRequest): boolean {
+  return !parsed.previousResponseId && !parsed.context.messages.some(m => m.role === "assistant");
+}
+
+function estimateKiroInputTokens(parsed: OcxParsedRequest): number {
+  const parts = currentTurnInputMessages(parsed.context.messages)
+    .map(messageUsageText)
+    .filter(Boolean);
+
+  if (shouldCountStablePromptOverhead(parsed)) {
+    if (parsed.context.systemPrompt?.length) parts.push(...parsed.context.systemPrompt);
+    if (parsed.context.tools?.length) parts.push(serializeForUsage(parsed.context.tools));
+  }
+
+  return estimateTokens(parts.join("\n"), parsed.modelId);
 }
 
 export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | undefined): Record<string, unknown> {
@@ -347,11 +406,11 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
       // model/agent-mode internal. Codex always forces a reasoning selection; we intentionally do NOT
       // forward parsed.options.reasoning into the payload (registry marks kiro models noReasoning too).
       const body = JSON.stringify(buildKiroPayload(parsed, profileArn));
-      // CW returns no usage. Estimate input tokens over the fully-assembled body (captures the heaviest
-      // Codex sources — toolResult content + assistant tool-call args — and is drift-proof; JSON chars
-      // bias it to slightly over-count = fail-safe for auto-compact). Carried into the stream below.
+      // CW returns no usage. Codex adds each response's usage into its session total, while Kiro requests
+      // must still send full history upstream. Report only the current-turn input delta here so old
+      // history is not repeatedly added to Codex's visible token usage.
       modelId = parsed.modelId;
-      inputTokens = estimateTokens(body, modelId);
+      inputTokens = estimateKiroInputTokens(parsed);
       return {
         url: `https://runtime.${region}.kiro.dev/`,
         method: "POST",

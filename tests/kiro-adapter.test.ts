@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { encodeMessage } from "../src/lib/eventstream-decoder";
 import { createKiroAdapter } from "../src/adapters/kiro";
+import { estimateTokens } from "../src/lib/token-estimate";
 import { configuredReasoningEfforts, mapReasoningEffort } from "../src/reasoning-effort";
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
 import type { OcxParsedRequest, OcxProviderConfig } from "../src/types";
@@ -43,6 +44,15 @@ function streamOf(...frames: Uint8Array[]): ReadableStream<Uint8Array> {
       else c.close();
     },
   });
+}
+
+async function doneUsage(adapter: ReturnType<typeof createKiroAdapter>, ...frames: Uint8Array[]): Promise<{ inputTokens: number; outputTokens: number }> {
+  let done: { inputTokens: number; outputTokens: number } | undefined;
+  for await (const e of adapter.parseStream(new Response(streamOf(...frames)))) {
+    if (e.type === "done") done = e.usage;
+  }
+  expect(done).toBeDefined();
+  return done!;
 }
 
 describe("kiro adapter — buildRequest", () => {
@@ -115,20 +125,61 @@ describe("kiro adapter — parseStream", () => {
     expect(out[0]).toBe("error:rate limited");
   });
 
-  test("done carries heuristic usage (input from buildRequest body, output from streamed text) so Codex auto-compact engages", async () => {
+  test("done carries heuristic usage (input from current turn, output from streamed text)", async () => {
     const adapter = createKiroAdapter(provider);
     // buildRequest first so the per-request closure captures the input estimate + modelId.
     adapter.buildRequest(parsedWith([{ role: "user", content: "x".repeat(700) }]));
     const frames = [eventFrame({ content: "y".repeat(350) })];
-    let done: { inputTokens: number; outputTokens: number } | undefined;
-    for await (const e of adapter.parseStream(new Response(streamOf(...frames)))) {
-      if (e.type === "done") done = e.usage;
-    }
-    expect(done).toBeDefined();
-    // input is estimated over the full JSON body (>= the 700-char user message / 3.5) — non-zero.
-    expect(done!.inputTokens).toBeGreaterThan(100);
+    const done = await doneUsage(adapter, ...frames);
+    // input: current user message only, 700 chars / 3.5 = 200 tokens.
+    expect(done.inputTokens).toBe(200);
     // output: 350 chars / 3.5 = 100 tokens (claude-sonnet-4.5 → kiro 3.5 ratio).
-    expect(done!.outputTokens).toBe(100);
+    expect(done.outputTokens).toBe(100);
+  });
+
+  test("usage input does not grow with old history while Kiro payload still includes it", async () => {
+    const latest = "please summarize recent commits";
+    const shortMessages = [
+      { role: "user", content: "old question" },
+      { role: "assistant", content: [{ type: "text", text: "old answer" }] },
+      { role: "user", content: latest },
+    ];
+    const longMessages = [
+      { role: "user", content: "u".repeat(8000) },
+      { role: "assistant", content: [{ type: "text", text: "a".repeat(8000) }] },
+      { role: "user", content: "another old question" },
+      { role: "assistant", content: [{ type: "text", text: "another old answer" }] },
+      { role: "user", content: latest },
+    ];
+
+    const shortAdapter = createKiroAdapter(provider);
+    const shortBody = shortAdapter.buildRequest(parsedWith(shortMessages)).body;
+    const shortUsage = await doneUsage(shortAdapter, eventFrame({ content: "ok" }));
+
+    const longAdapter = createKiroAdapter(provider);
+    const longBody = longAdapter.buildRequest(parsedWith(longMessages)).body;
+    const longUsage = await doneUsage(longAdapter, eventFrame({ content: "ok" }));
+
+    expect(longBody.length).toBeGreaterThan(shortBody.length + 10_000);
+    expect(longUsage.inputTokens).toBe(shortUsage.inputTokens);
+    expect(longUsage.inputTokens).toBe(estimateTokens(latest, "claude-sonnet-4.5"));
+  });
+
+  test("tool-result follow-up counts new tool output without re-counting prior assistant tool args", async () => {
+    const hugeArgs = { command: "x".repeat(8000) };
+    const messages = [
+      { role: "user", content: "run a command" },
+      { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: hugeArgs }] },
+      { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: "done", isError: false },
+    ];
+
+    const adapter = createKiroAdapter(provider);
+    const body = adapter.buildRequest(parsedWith(messages)).body;
+    const usage = await doneUsage(adapter, eventFrame({ content: "ok" }));
+
+    expect(body).toContain("x".repeat(8000));
+    expect(usage.inputTokens).toBeLessThan(50);
+    expect(usage.inputTokens).toBeGreaterThan(0);
   });
 });
 
