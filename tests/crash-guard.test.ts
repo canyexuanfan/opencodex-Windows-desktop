@@ -32,6 +32,32 @@ describe("crash-guard diagnostics", () => {
     expect(entry).toContain("cause: Error: socket hang up");
   });
 
+  test("redacts secrets from crash entry details and diagnostics", () => {
+    const err = Object.assign(
+      new Error("failed with Bearer access-token-value-123456 and refreshToken=refresh-live-value"),
+      {
+        code: "api_key=sk-crash-secret-key",
+        cause: new Error("cookie session=secret; profile arn:aws:codewhisperer:us-east-1:123456789012:profile/demo"),
+      },
+    );
+    err.stack = "Error: failed with Bearer stack-token-value-123456\n    at go (/abs/src/server.ts:120:13)";
+
+    const entry = formatCrashEntry("unhandledRejection", err);
+
+    for (const leaked of [
+      "access-token-value-123456",
+      "refresh-live-value",
+      "sk-crash-secret-key",
+      "stack-token-value-123456",
+      "arn:aws:codewhisperer",
+    ]) {
+      expect(entry).not.toContain(leaked);
+    }
+    expect(entry).toContain("Bearer [REDACTED]");
+    expect(entry).toContain("refreshToken=[REDACTED]");
+    expect(entry).toContain("api_key=[REDACTED]");
+  });
+
   test("never throws on non-object rejection values", () => {
     expect(() => formatCrashEntry("unhandledRejection", null)).not.toThrow();
     expect(() => formatCrashEntry("unhandledRejection", "string reason")).not.toThrow();

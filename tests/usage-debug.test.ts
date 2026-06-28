@@ -63,6 +63,13 @@ describe("truncateForDebug", () => {
   test("respects a custom max", () => {
     expect(truncateForDebug("abcdef", 3)).toBe("abc... [+3 more]");
   });
+
+  test("redacts before clamping so partial secrets are not preserved", () => {
+    const text = `Bearer access-token-value-123456 ${"x".repeat(20)}`;
+    const clamped = truncateForDebug(text, 18);
+    expect(clamped).not.toContain("access-token-value");
+    expect(clamped).toContain("Bearer [REDACTED]");
+  });
 });
 
 describe("appendUsageDebug", () => {
@@ -93,6 +100,20 @@ describe("appendUsageDebug", () => {
     if (process.platform !== "win32") {
       expect((statSync(path).mode & 0o777).toString(8)).toBe("600");
     }
+  });
+
+  test("redacts body samples before writing JSONL", () => {
+    appendUsageDebug({
+      ...sample(),
+      bodySample: "data: {\"authorization\":\"Bearer usage-debug-token\",\"refreshToken\":\"refresh-debug-token\"}",
+    });
+
+    const lines = readFileSync(usageDebugPath(), "utf-8").split(/\r?\n/).filter(Boolean);
+    const parsed = JSON.parse(lines[0]) as { bodySample: string };
+    expect(parsed.bodySample).not.toContain("usage-debug-token");
+    expect(parsed.bodySample).not.toContain("refresh-debug-token");
+    expect(parsed.bodySample).toContain("Bearer [REDACTED]");
+    expect(parsed.bodySample).toContain("refreshToken");
   });
 
   test("rotates to the most recent USAGE_DEBUG_KEEP_LINES once USAGE_DEBUG_MAX_LINES is exceeded", () => {

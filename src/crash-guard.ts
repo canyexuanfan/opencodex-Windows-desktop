@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "./config";
+import { redactSecretString, redactUrlForLog } from "./redact";
 import { sidecarBreadcrumb, activityBreadcrumb } from "./sidecar-tracker";
 
 /**
@@ -37,10 +38,10 @@ export function formatCrashEntry(kind: string, err: unknown, promise?: unknown):
   const ts = new Date().toISOString();
   const detail =
     err instanceof Error
-      ? `${err.name}: ${err.message}\n${err.stack ?? "(no stack)"}`
+      ? `${err.name}: ${redactDiagnosticText(err.message)}\n${redactDiagnosticText(err.stack ?? "(no stack)")}`
       : typeof err === "object"
-        ? safeStringify(err)
-        : String(err);
+        ? redactDiagnosticText(safeStringify(err))
+        : redactDiagnosticText(String(err));
   return `\n[${ts}] ${kind}\n${detail}${diagnose(err)}${diagnosePromise(promise)}${breadcrumb()}\n`;
 }
 
@@ -60,15 +61,15 @@ function diagnose(err: unknown): string {
       const e = err as Record<string, unknown>;
       const cause = e.cause;
       if (cause !== undefined) {
-        lines.push(`  cause: ${cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause)}`);
+        lines.push(`  cause: ${redactDiagnosticText(cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause))}`);
       }
-      if (e.code !== undefined) lines.push(`  code: ${String(e.code)}`);
+      if (e.code !== undefined) lines.push(`  code: ${redactDiagnosticText(String(e.code))}`);
       // JSC hidden throw-site fields survive even when the stack is native-only.
       const sourceURL = e.sourceURL;
       const line = e.line ?? e.originalLine;
       const column = e.column ?? e.originalColumn;
       if (typeof sourceURL === "string" && sourceURL) {
-        lines.push(`  origin: ${sourceURL}${line !== undefined ? `:${String(line)}` : ""}${column !== undefined ? `:${String(column)}` : ""}`);
+        lines.push(`  origin: ${redactUrlForLog(sourceURL)}${line !== undefined ? `:${String(line)}` : ""}${column !== undefined ? `:${String(column)}` : ""}`);
       }
     }
     const stack = err instanceof Error ? err.stack ?? "" : "";
@@ -91,7 +92,7 @@ function inspectErr(err: unknown): string {
   try {
     const bun = (globalThis as { Bun?: { inspect?: (v: unknown, o?: unknown) => string } }).Bun;
     if (!bun?.inspect) return "";
-    return bun.inspect(err, { depth: 2 }).trim();
+    return redactDiagnosticText(bun.inspect(err, { depth: 2 }).trim());
   } catch {
     return "";
   }
@@ -107,7 +108,7 @@ function diagnosePromise(promise: unknown): string {
     const bun = (globalThis as { Bun?: { inspect?: (v: unknown, o?: unknown) => string } }).Bun;
     const rendered = bun?.inspect ? bun.inspect(promise, { depth: 1 }).trim() : String(promise);
     if (!rendered || rendered === "Promise { <rejected> }") return "";
-    return `\n  promise: ${rendered.split("\n").join(" ")}`;
+    return `\n  promise: ${redactDiagnosticText(rendered.split("\n").join(" "))}`;
   } catch {
     return "";
   }
@@ -213,7 +214,7 @@ function instrumentFetch(): void {
       url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request)?.url ?? "";
     } catch { /* best-effort */ }
     const origin = (new Error().stack ?? "").split("\n").slice(2, 5).map(l => l.trim()).join(" <- ");
-    const trace: FetchTrace = { url: redactUrl(url), at: Date.now(), origin, settled: false };
+    const trace: FetchTrace = { url: redactUrlForLog(url), at: Date.now(), origin, settled: false };
     fetchRing.push(trace);
     if (fetchRing.length > FETCH_RING_MAX) fetchRing.shift();
     let p: ReturnType<typeof fetch>;
@@ -221,24 +222,14 @@ function instrumentFetch(): void {
       p = original.apply(this, args);
     } catch (e) {
       trace.settled = true;
-      trace.rejected = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+      trace.rejected = redactDiagnosticText(e instanceof Error ? `${e.name}: ${e.message}` : String(e));
       throw e;
     }
     return p.then(
       r => { trace.settled = true; return r; },
-      e => { trace.settled = true; trace.rejected = e instanceof Error ? `${e.name}: ${e.message}` : String(e); throw e; },
+      e => { trace.settled = true; trace.rejected = redactDiagnosticText(e instanceof Error ? `${e.name}: ${e.message}` : String(e)); throw e; },
     );
   } as typeof fetch;
-}
-
-/** Strip query/credentials from a URL so the breadcrumb never leaks tokens. */
-function redactUrl(url: string): string {
-  try {
-    const u = new URL(url);
-    return `${u.protocol}//${u.host}${u.pathname}`;
-  } catch {
-    return url.split("?")[0] ?? url;
-  }
 }
 
 /** Render the recent fetch ring (pending first) for the crash breadcrumb. */
@@ -254,6 +245,10 @@ function recentFetches(): string {
   } catch {
     return "";
   }
+}
+
+function redactDiagnosticText(value: string): string {
+  return redactSecretString(value);
 }
 
 /**

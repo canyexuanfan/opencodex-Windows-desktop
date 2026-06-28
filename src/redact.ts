@@ -6,6 +6,7 @@ const SECRET_VALUE_PATTERNS: Array<[RegExp, string]> = [
   [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/gi, `Bearer ${REDACTED_SECRET}`],
   [/\b(sk-[A-Za-z0-9][A-Za-z0-9._-]{6,})\b/g, REDACTED_SECRET],
   [/\b((?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|refreshToken|accessToken|apiKey)=)([^&\s"',;]+)/gi, `$1${REDACTED_SECRET}`],
+  [/((?:"(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|refreshToken|accessToken|apiKey)"\s*:\s*"))([^"]+)(")/gi, `$1${REDACTED_SECRET}$3`],
   [/\b(arn:aws:[A-Za-z0-9_-]+:[A-Za-z0-9-]*:\d{12}:[A-Za-z0-9_/:+=,.@-]+)\b/g, REDACTED_SECRET],
 ];
 

@@ -57,3 +57,26 @@ Out of scope:
 - Do not change the shape of `RequestLogEntry` unless tests reveal an actual
   secret-bearing field.
 - Do not alter Kiro adapter stream/retry behavior.
+
+## Build record
+
+Files changed:
+
+- MODIFY `src/crash-guard.ts`: crash detail, stack, cause, code, inspect output,
+  promise render, fetch rejection strings, and fetch URLs are now passed through
+  shared redaction helpers before formatting.
+- MODIFY `src/usage-debug.ts`: debug body samples are redacted before truncation,
+  and the full debug record is redacted before JSONL append.
+- MODIFY `tests/crash-guard.test.ts`: added secret-leak regression coverage for
+  crash entry details and diagnostics.
+- MODIFY `tests/usage-debug.test.ts`: added redaction-before-truncation and JSONL
+  body sample redaction coverage.
+- MODIFY `devlog/_plan/145_common-security-hardening/20_phase2_diagnostic-sinks.md`:
+  this build/verification record.
+
+Verification:
+
+- `bun test tests/crash-guard.test.ts tests/usage-debug.test.ts tests/redact.test.ts`
+  -> 29 pass, 0 fail.
+- `bun test tests/request-log.test.ts` -> 8 pass, 0 fail.
+- `bun x tsc --noEmit` -> exit 0, no diagnostics.
