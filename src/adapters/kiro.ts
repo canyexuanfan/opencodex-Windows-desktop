@@ -82,6 +82,13 @@ interface KiroUserInputMessage {
   modelId?: string;
   origin?: string;
   userInputMessageContext?: { tools?: unknown[]; toolResults?: KiroToolResult[] };
+  images?: KiroImage[];
+}
+// CodeWhisperer native image part (matches Kiro IDE wire format): the base64 bytes live directly in
+// userInputMessage.images, NOT in userInputMessageContext. Verified against kiro-gateway.
+interface KiroImage {
+  format: string; // "jpeg" | "png" | "webp" | "gif" — derived from the media subtype
+  source: { bytes: string }; // pure base64, no "data:...;base64," prefix
 }
 interface KiroHistoryEntry {
   userInputMessage?: KiroUserInputMessage;
@@ -91,6 +98,32 @@ interface KiroHistoryEntry {
 function userContentText(content: string | OcxContentPart[]): string {
   if (typeof content === "string") return content;
   return content.map(p => (p.type === "text" ? p.text : "")).filter(Boolean).join("\n");
+}
+
+// CodeWhisperer accepts images natively on userInputMessage. Codex sends each image as a `data:` URL
+// (base64) or a remote https URL. Only data URLs can be inlined as bytes here; remote URLs are not
+// fetchable at request-build time, so they are skipped (matching kiro-gateway's documented behavior).
+function parseDataUrlImage(imageUrl: string): KiroImage | undefined {
+  if (!imageUrl.startsWith("data:")) return undefined; // remote https — not fetchable here
+  const comma = imageUrl.indexOf(",");
+  if (comma === -1) return undefined;
+  const header = imageUrl.slice(5, comma); // strip "data:" → "image/png;base64"
+  const bytes = imageUrl.slice(comma + 1);
+  if (!bytes) return undefined;
+  const mediaType = header.split(";")[0] || "image/jpeg"; // "image/png"
+  const format = mediaType.includes("/") ? mediaType.split("/")[1] : mediaType; // "png"
+  return { format: format || "jpeg", source: { bytes } };
+}
+
+function extractKiroImages(content: string | OcxContentPart[]): KiroImage[] {
+  if (typeof content === "string") return [];
+  const out: KiroImage[] = [];
+  for (const p of content) {
+    if (p.type !== "image") continue;
+    const img = parseDataUrlImage(p.imageUrl);
+    if (img) out.push(img);
+  }
+  return out;
 }
 
 function usageContentText(content: string | OcxContentPart[]): string {
@@ -215,8 +248,13 @@ export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | 
   let systemPrefix = "";
   if (!parsed.previousResponseId && parsed.context.systemPrompt?.length) systemPrefix = `${parsed.context.systemPrompt.join("\n\n")}\n\n`;
 
-  const mkUser = (content: string): KiroHistoryEntry => ({
-    userInputMessage: { content, modelId, origin: "AI_EDITOR" },
+  const mkUser = (content: string, images?: KiroImage[]): KiroHistoryEntry => ({
+    userInputMessage: {
+      content,
+      modelId,
+      origin: "AI_EDITOR",
+      ...(images && images.length > 0 ? { images } : {}),
+    },
   });
   const history: KiroHistoryEntry[] = [];
   let pending: KiroToolResult[] = [];
@@ -231,10 +269,11 @@ export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | 
   for (const msg of kiroPayloadMessages(parsed)) {
     if (msg.role === "user" || msg.role === "developer") {
       const text = userContentText((msg as { content: string | OcxContentPart[] }).content);
+      const images = extractKiroImages((msg as { content: string | OcxContentPart[] }).content);
       if (pending.length === 0 && lastRole === "user") {
         history.push({ assistantResponseMessage: { content: "(acknowledged)" } });
       }
-      const entry = mkUser(text);
+      const entry = mkUser(text, images);
       attachPending(entry);
       history.push(entry);
       lastRole = "user";
