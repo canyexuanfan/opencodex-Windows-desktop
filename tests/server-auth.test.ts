@@ -445,6 +445,38 @@ describe("server local API auth", () => {
     }
   });
 
+  test("OPTIONS preflight rejects non-local Origin before CORS headers are trusted", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig(config("127.0.0.1"));
+
+    const server = startServer(0);
+    const loopbackOrigin = `http://127.0.0.1:${server.port}`;
+    try {
+      const rejected = await fetch(new URL("/api/settings", server.url), {
+        method: "OPTIONS",
+        headers: {
+          origin: "https://attacker.test",
+          "access-control-request-method": "GET",
+        },
+      });
+      expect(rejected.status).toBe(403);
+
+      const accepted = await fetch(new URL("/api/settings", server.url), {
+        method: "OPTIONS",
+        headers: {
+          origin: loopbackOrigin,
+          "access-control-request-method": "GET",
+        },
+      });
+      expect(accepted.status).toBe(204);
+      expect(accepted.headers.get("access-control-allow-origin")).toBe(loopbackOrigin);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("loopback management API rejects host-header same-origin rebinding", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
@@ -523,6 +555,38 @@ describe("server local API auth", () => {
       });
       expect(ok.status).toBe(200);
       expect(ok.headers.get("access-control-allow-origin")).toBe(origin);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("websocket upgrade rejects hostile Origin even with a valid API token", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    process.env.OPENCODEX_API_AUTH_TOKEN = "local-secret";
+    saveConfig({
+      ...config("0.0.0.0"),
+      port: 0,
+      websockets: true,
+    });
+
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/v1/responses", server.url), {
+        method: "GET",
+        headers: {
+          authorization: "Bearer inbound-main-token",
+          connection: "Upgrade",
+          upgrade: "websocket",
+          origin: "https://attacker.test",
+          "x-opencodex-api-key": "local-secret",
+        },
+      });
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({
+        error: { code: "origin_rejected" },
+      });
     } finally {
       await server.stop(true);
     }

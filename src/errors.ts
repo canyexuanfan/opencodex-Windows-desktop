@@ -24,6 +24,9 @@ export function classifyError(status: number, type: string, message: string): Oc
   if (status === 429 || text.includes("rate limit") || text.includes("too many requests")) {
     return { message, type: "rate_limit_error", code: "rate_limit_exceeded" };
   }
+  if (type === "origin_rejected") {
+    return { message, type: "invalid_request_error", code: "origin_rejected" };
+  }
   if (status === 401 || status === 403 || type === "authentication_error") {
     return { message, type: "authentication_error", code: "invalid_api_key" };
   }

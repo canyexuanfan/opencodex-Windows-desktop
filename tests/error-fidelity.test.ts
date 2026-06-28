@@ -42,6 +42,10 @@ describe("error fidelity", () => {
       type: "insufficient_quota",
       code: "insufficient_quota",
     });
+    expect(classifyError(403, "origin_rejected", "WebSocket upgrade blocked: non-local Origin")).toMatchObject({
+      type: "invalid_request_error",
+      code: "origin_rejected",
+    });
   });
 
   test("formatErrorResponse returns OpenAI-compatible classified error envelope", async () => {
