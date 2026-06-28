@@ -246,6 +246,61 @@ export function parseKiroEvent(payload: Uint8Array): ParsedKiroEvent | null {
 }
 
 // ---------------------------------------------------------------------------
+// Stream parsing (shared by parseStream + parseResponse)
+// ---------------------------------------------------------------------------
+// CodeWhisperer GenerateAssistantResponse ALWAYS returns an AWS eventstream body (there is no
+// non-streaming mode), so both the streaming bridge and the non-streaming web-search sidecar loop
+// decode the same way — parseResponse just collects what parseStream yields.
+export async function* parseKiroStream(response: Response): AsyncGenerator<AdapterEvent> {
+  if (!response.body) {
+    yield { type: "error", message: "Kiro response has no body" };
+    return;
+  }
+  let open: { id: string; name: string } | null = null;
+  try {
+    for await (const msg of decodeEventStream(response.body)) {
+      const mt = msg.headers[":message-type"];
+      if (mt === "exception" || mt === "error") {
+        yield { type: "error", message: new TextDecoder().decode(msg.payload).slice(0, 500) };
+        continue;
+      }
+      if (mt && mt !== "event") continue;
+      const ev = parseKiroEvent(msg.payload);
+      if (!ev) continue;
+      switch (ev.type) {
+        case "content":
+          if (ev.data) yield { type: "text_delta", text: ev.data };
+          break;
+        case "tool_start": {
+          if (open) yield { type: "tool_call_end" };
+          open = { id: ev.toolUseId!, name: ev.name || "unknown" };
+          yield { type: "tool_call_start", id: open.id, name: open.name };
+          break;
+        }
+        case "tool_input": {
+          if (!open && ev.toolUseId) {
+            open = { id: ev.toolUseId, name: ev.name || "unknown" };
+            yield { type: "tool_call_start", id: open.id, name: open.name };
+          }
+          if (open && ev.input) yield { type: "tool_call_delta", arguments: ev.input };
+          break;
+        }
+        case "tool_stop":
+          if (open) {
+            yield { type: "tool_call_end" };
+            open = null;
+          }
+          break;
+      }
+    }
+    if (open) yield { type: "tool_call_end" };
+    yield { type: "done" };
+  } catch (err) {
+    yield { type: "error", message: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Adapter
 // ---------------------------------------------------------------------------
 export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter {
@@ -278,53 +333,18 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
       };
     },
 
-    async *parseStream(response: Response): AsyncGenerator<AdapterEvent> {
-      if (!response.body) {
-        yield { type: "error", message: "Kiro response has no body" };
-        return;
-      }
-      let open: { id: string; name: string } | null = null;
-      try {
-        for await (const msg of decodeEventStream(response.body)) {
-          const mt = msg.headers[":message-type"];
-          if (mt === "exception" || mt === "error") {
-            yield { type: "error", message: new TextDecoder().decode(msg.payload).slice(0, 500) };
-            continue;
-          }
-          if (mt && mt !== "event") continue;
-          const ev = parseKiroEvent(msg.payload);
-          if (!ev) continue;
-          switch (ev.type) {
-            case "content":
-              if (ev.data) yield { type: "text_delta", text: ev.data };
-              break;
-            case "tool_start": {
-              if (open) yield { type: "tool_call_end" };
-              open = { id: ev.toolUseId!, name: ev.name || "unknown" };
-              yield { type: "tool_call_start", id: open.id, name: open.name };
-              break;
-            }
-            case "tool_input": {
-              if (!open && ev.toolUseId) {
-                open = { id: ev.toolUseId, name: ev.name || "unknown" };
-                yield { type: "tool_call_start", id: open.id, name: open.name };
-              }
-              if (open && ev.input) yield { type: "tool_call_delta", arguments: ev.input };
-              break;
-            }
-            case "tool_stop":
-              if (open) {
-                yield { type: "tool_call_end" };
-                open = null;
-              }
-              break;
-          }
-        }
-        if (open) yield { type: "tool_call_end" };
-        yield { type: "done" };
-      } catch (err) {
-        yield { type: "error", message: err instanceof Error ? err.message : String(err) };
-      }
+    parseStream(response: Response): AsyncGenerator<AdapterEvent> {
+      return parseKiroStream(response);
+    },
+
+    // Non-streaming path used by the web-search sidecar loop (loop.ts runs each iteration
+    // non-streamed so it can inspect tool calls). CW only ever event-streams, so we drain the
+    // same decoder into an array. Without this, any Codex request that includes the web_search
+    // tool failed with "web-search sidecar requires a non-streaming adapter" (kiro-only).
+    async parseResponse(response: Response): Promise<AdapterEvent[]> {
+      const events: AdapterEvent[] = [];
+      for await (const e of parseKiroStream(response)) events.push(e);
+      return events;
     },
   };
 }

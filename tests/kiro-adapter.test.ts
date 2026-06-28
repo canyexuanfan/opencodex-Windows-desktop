@@ -116,6 +116,30 @@ describe("kiro adapter — parseStream", () => {
   });
 });
 
+describe("kiro adapter — parseResponse (web-search sidecar non-streaming path)", () => {
+  test("adapter exposes parseResponse so the web_search sidecar accepts kiro", () => {
+    // Regression: a Codex request carrying the web_search tool routes through the non-streaming
+    // sidecar loop, which 500s ("requires a non-streaming adapter") if parseResponse is absent.
+    expect(typeof createKiroAdapter(provider).parseResponse).toBe("function");
+  });
+
+  test("drains the same CW eventstream into an AdapterEvent[] (parity with parseStream)", async () => {
+    const frames = [
+      eventFrame({ content: "Hi " }),
+      eventFrame({ content: "there" }),
+      eventFrame({ name: "bash", toolUseId: "t1" }),
+      eventFrame({ input: '{"q":1}', name: "bash", toolUseId: "t1" }),
+      eventFrame({ name: "bash", stop: true, toolUseId: "t1" }),
+    ];
+    const events = await createKiroAdapter(provider).parseResponse!(new Response(streamOf(...frames)));
+    expect(events.map(e => e.type)).toEqual([
+      "text_delta", "text_delta", "tool_call_start", "tool_call_delta", "tool_call_end", "done",
+    ]);
+    const start = events.find(e => e.type === "tool_call_start") as { id: string; name: string };
+    expect(start).toMatchObject({ id: "t1", name: "bash" });
+  });
+});
+
 describe("kiro adapter — reasoning ignored (Codex forces it, CW has no field)", () => {
   const kiro = PROVIDER_REGISTRY.find(p => p.id === "kiro") as unknown as OcxProviderConfig;
 
