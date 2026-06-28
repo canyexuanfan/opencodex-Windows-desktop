@@ -3,7 +3,7 @@ import { useT, type TFn } from "../i18n";
 import { IconLock, IconPlus, IconX, IconAlert, IconRefresh, IconTicket } from "../icons";
 import { Notice } from "../ui";
 import AddCodexAccountModal from "../components/AddCodexAccountModal";
-import { type AccountQuota, normalizeQuotaForPlan, isThirtyDayOnlyPlan } from "../codex-quota-utils";
+import { type AccountQuota, normalizeQuotaForPlan } from "../codex-quota-utils";
 
 export { normalizeQuotaForPlan, isThirtyDayOnlyPlan } from "../codex-quota-utils";
 export type { AccountQuota } from "../codex-quota-utils";
