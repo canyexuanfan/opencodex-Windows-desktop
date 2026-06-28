@@ -267,6 +267,9 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
         "amz-sdk-invocation-id": randomUUID(),
       };
       if (profileArn) headers["x-amzn-kiro-profile-arn"] = profileArn;
+      // NOTE: CodeWhisperer GenerateAssistantResponse has no reasoning_effort field — Kiro thinking is
+      // model/agent-mode internal. Codex always forces a reasoning selection; we intentionally do NOT
+      // forward parsed.options.reasoning into the payload (registry marks kiro models noReasoning too).
       return {
         url: `https://runtime.${region}.kiro.dev/`,
         method: "POST",

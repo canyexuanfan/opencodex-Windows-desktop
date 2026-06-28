@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { encodeMessage } from "../src/lib/eventstream-decoder";
 import { createKiroAdapter } from "../src/adapters/kiro";
+import { configuredReasoningEfforts, mapReasoningEffort } from "../src/reasoning-effort";
+import { PROVIDER_REGISTRY } from "../src/providers/registry";
 import type { OcxParsedRequest, OcxProviderConfig } from "../src/types";
 
 const enc = new TextEncoder();
@@ -111,5 +113,26 @@ describe("kiro adapter — parseStream", () => {
       out.push(e.type === "error" ? `error:${e.message}` : e.type);
     }
     expect(out[0]).toBe("error:rate limited");
+  });
+});
+
+describe("kiro adapter — reasoning ignored (Codex forces it, CW has no field)", () => {
+  const kiro = PROVIDER_REGISTRY.find(p => p.id === "kiro") as unknown as OcxProviderConfig;
+
+  test("kiro is registered with no-reasoning metadata", () => {
+    expect(kiro).toBeTruthy();
+    expect(kiro.noReasoningModels?.length).toBeGreaterThan(0);
+  });
+
+  test("configuredReasoningEfforts is [] for kiro models (catalog advertises none)", () => {
+    expect(configuredReasoningEfforts(kiro, "claude-opus-4.8")).toEqual([]);
+    expect(configuredReasoningEfforts(kiro, "kiro-auto")).toEqual([]);
+  });
+
+  test("mapReasoningEffort drops any Codex-forced effort for kiro models", () => {
+    for (const eff of ["low", "medium", "high", "xhigh", "max", "minimal"]) {
+      expect(mapReasoningEffort(kiro, "claude-opus-4.8", eff)).toBeUndefined();
+      expect(mapReasoningEffort(kiro, "deepseek-3.2", eff)).toBeUndefined();
+    }
   });
 });

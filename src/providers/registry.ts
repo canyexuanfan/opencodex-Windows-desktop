@@ -60,6 +60,22 @@ const ZAI_GLM_52_REASONING_MAP: Record<string, string> = {
 };
 const KIMI_THINKING_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5", "kimi-k2-0905-preview"];
 const KIMI_LOCKED_PARAMETER_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"];
+// Kiro/CodeWhisperer thinking is model/agent-mode internal — CW GenerateAssistantResponse has no
+// reasoning_effort field. Codex always forces a reasoning selection, so all kiro models are marked
+// no-reasoning: the catalog advertises [] efforts and any requested effort is dropped (not sent upstream).
+const KIRO_MODELS = [
+  "kiro-auto",
+  "claude-opus-4.8",
+  "claude-opus-4.7",
+  "claude-opus-4.6",
+  "claude-sonnet-4.6",
+  "claude-sonnet-4.5",
+  "claude-haiku-4.5",
+  "deepseek-3.2",
+  "minimax-m2.5",
+  "glm-5",
+  "qwen3-coder-next",
+];
 const NEURALWATT_REASONING_HISTORY_MODELS = [
   "glm-5.2",
   "moonshotai/Kimi-K2.5", "kimi-k2.6", "kimi-k2.7-code",
@@ -166,20 +182,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     authKind: "oauth",
     oauthId: "kiro",
     note: "Import-first: reuses your installed kiro-cli login (no browser). Experimental third-party harness — see Kiro ToS.",
-    models: [
-      "kiro-auto",
-      "claude-opus-4.8",
-      "claude-opus-4.7",
-      "claude-opus-4.6",
-      "claude-sonnet-4.6",
-      "claude-sonnet-4.5",
-      "claude-haiku-4.5",
-      "deepseek-3.2",
-      "minimax-m2.5",
-      "glm-5",
-      "qwen3-coder-next",
-    ],
+    models: KIRO_MODELS,
     defaultModel: "kiro-auto",
+    // CW has no reasoning_effort param — ignore Codex's forced reasoning selection for all kiro models.
+    noReasoningModels: KIRO_MODELS,
+    modelReasoningEfforts: Object.fromEntries(KIRO_MODELS.map(id => [id, []])),
   },
   { id: "openai-apikey", label: "OpenAI (API key)", adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", authKind: "key", featured: true, dashboardUrl: "https://platform.openai.com/api-keys", defaultModel: "gpt-5.5" },
   {
