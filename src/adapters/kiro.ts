@@ -130,20 +130,24 @@ function stableConversationId(parsed: OcxParsedRequest): string {
 }
 
 function serializeForUsage(value: unknown): string {
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
+  try { return JSON.stringify(value); } catch { return String(value); }
 }
 
-function currentTurnInputMessages(messages: OcxMessage[]): OcxMessage[] {
-  const lastAssistant = messages.map(m => m.role).lastIndexOf("assistant");
-  return messages.slice(lastAssistant + 1).filter(m => m.role !== "assistant");
+function currentTurnUsageMessages(messages: OcxMessage[]): OcxMessage[] {
+  return messages.slice(messages.map(m => m.role).lastIndexOf("assistant") + 1).filter(m => m.role !== "assistant");
+}
+
+function currentTurnPayloadMessages(messages: OcxMessage[]): OcxMessage[] {
+  const roles = messages.map(m => m.role);
+  const lastAssistant = roles.lastIndexOf("assistant");
+  const tail = messages.slice(lastAssistant + 1).filter(m => m.role !== "assistant");
+  if (lastAssistant === -1 || !tail.some(m => m.role === "toolResult")) return tail;
+  const priorAssistant = roles.slice(0, lastAssistant).lastIndexOf("assistant");
+  return messages.slice(priorAssistant + 1);
 }
 
 function kiroPayloadMessages(parsed: OcxParsedRequest): OcxMessage[] {
-  return parsed.previousResponseId ? currentTurnInputMessages(parsed.context.messages) : parsed.context.messages;
+  return parsed.previousResponseId ? currentTurnPayloadMessages(parsed.context.messages) : parsed.context.messages;
 }
 
 function messageUsageText(msg: OcxMessage): string {
@@ -168,7 +172,7 @@ function shouldCountStablePromptOverhead(parsed: OcxParsedRequest): boolean {
 }
 
 function estimateKiroInputTokens(parsed: OcxParsedRequest): number {
-  const parts = currentTurnInputMessages(parsed.context.messages)
+  const parts = currentTurnUsageMessages(parsed.context.messages)
     .map(messageUsageText)
     .filter(Boolean);
 

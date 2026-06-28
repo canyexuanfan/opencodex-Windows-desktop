@@ -230,6 +230,40 @@ describe("kiro adapter — parseStream", () => {
     expect(usage.inputTokens).toBeLessThan(50);
     expect(usage.inputTokens).toBeGreaterThan(0);
   });
+
+  test("resumed tool-result payload preserves the matching assistant toolUse context", async () => {
+    const messages = [
+      { role: "user", content: "run a command" },
+      { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "pwd" } }] },
+      { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: "/tmp", isError: false },
+    ];
+    const { body } = createKiroAdapter(provider).buildRequest({ ...parsedWith(messages), previousResponseId: "kiro-prev-1" });
+    const cs = JSON.parse(body).conversationState;
+
+    expect(cs.history).toHaveLength(2);
+    expect(cs.history[0].userInputMessage.content).toBe("run a command");
+    expect(cs.history[1].assistantResponseMessage.toolUses).toEqual([
+      { name: "bash", input: { command: "pwd" }, toolUseId: "call-1" },
+    ]);
+    expect(cs.currentMessage.userInputMessage.content).toBe("(tool results)");
+    expect(cs.currentMessage.userInputMessage.userInputMessageContext.toolResults).toEqual([
+      { content: [{ text: "/tmp" }], status: "success", toolUseId: "call-1" },
+    ]);
+  });
+
+  test("resumed tool-result usage remains current-turn only after payload repair", async () => {
+    const messages = [
+      { role: "user", content: "u".repeat(8000) },
+      { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "x".repeat(8000) } }] },
+      { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: "done", isError: false },
+    ];
+    const adapter = createKiroAdapter(provider);
+    adapter.buildRequest({ ...parsedWith(messages), previousResponseId: "kiro-prev-1" });
+    const usage = await doneUsage(adapter, eventFrame({ content: "ok" }));
+
+    expect(usage.inputTokens).toBeLessThan(50);
+    expect(usage.inputTokens).toBeGreaterThan(0);
+  });
 });
 
 describe("kiro adapter — parseResponse (web-search sidecar non-streaming path)", () => {
