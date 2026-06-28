@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -74,6 +74,11 @@ describe.skipIf(!runnable)("ocx launcher graceful shutdown", () => {
       tmpHomes.push(home);
       const port = await freePort();
 
+      // Seed a native Codex config so the proxy actually injects on start (injectCodexConfig
+      // no-ops when no config.toml exists) — this lets us prove the config is RESTORED on Ctrl-C.
+      const codexConfig = join(home, "config.toml");
+      writeFileSync(codexConfig, 'model = "gpt-5.1"\n');
+
       const child = spawn("node", [BIN_OCX, "start", "--port", String(port)], {
         stdio: "ignore",
         env: { ...process.env, OPENCODEX_HOME: home, CODEX_HOME: home },
@@ -91,6 +96,8 @@ describe.skipIf(!runnable)("ocx launcher graceful shutdown", () => {
       const up = await waitUntil(() => healthy(port), 20_000);
       expect(up).toBe(true);
       expect(existsSync(join(home, "ocx.pid"))).toBe(true);
+      // Codex config was injected on start (proves there is something to restore).
+      expect(readFileSync(codexConfig, "utf8")).toContain("model_providers.opencodex");
 
       // 2. Signal ONLY the launcher PID (the exact orphan trigger).
       child.kill("SIGINT");
@@ -103,9 +110,11 @@ describe.skipIf(!runnable)("ocx launcher graceful shutdown", () => {
       const portFreed = await waitUntil(async () => !(await healthy(port)), 10_000);
       expect(portFreed).toBe(true);
 
-      // 5. Cleanup ran: pid + runtime-port files removed.
+      // 5. Cleanup ran: pid + runtime-port files removed, and the Codex config was RESTORED
+      //    (opencodex injection reverted) — the full graceful-shutdown contract.
       expect(existsSync(join(home, "ocx.pid"))).toBe(false);
       expect(existsSync(join(home, "runtime-port.json"))).toBe(false);
+      expect(readFileSync(codexConfig, "utf8")).not.toContain("opencodex");
 
       void exitSignal; // captured for debugging; assertion is on teardown, not signal identity
     },
