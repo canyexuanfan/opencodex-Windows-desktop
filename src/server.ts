@@ -586,9 +586,11 @@ async function handleResponses(
   const request = adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
   let upstreamResponse: Response;
   try {
-    upstreamResponse = await fetchWithHeaderTimeout(request.url, {
-      method: request.method, headers: request.headers, body: request.body,
-    }, upstream.signal, connectMs);
+    upstreamResponse = adapter.fetchResponse
+      ? await adapter.fetchResponse(request, { abortSignal: upstream.signal, timeoutMs: connectMs })
+      : await fetchWithHeaderTimeout(request.url, {
+          method: request.method, headers: request.headers, body: request.body,
+        }, upstream.signal, connectMs);
   } catch (err) {
     cleanupUpstreamAbort();
     upstream.abort();

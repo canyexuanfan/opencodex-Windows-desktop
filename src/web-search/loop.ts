@@ -133,12 +133,14 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
     const request = adapter.buildRequest(iterParsed, { headers: selectedForwardHeaders });
     let resp: Response;
     try {
-      resp = await fetch(request.url, {
-        method: request.method,
-        headers: request.headers,
-        body: request.body,
-        signal: abortSignal,
-      });
+      resp = adapter.fetchResponse
+        ? await adapter.fetchResponse(request, { abortSignal })
+        : await fetch(request.url, {
+            method: request.method,
+            headers: request.headers,
+            body: request.body,
+            signal: abortSignal,
+          });
     } catch (e) {
       return jsonError(502, `Provider unreachable: ${e instanceof Error ? e.message : String(e)}`);
     }

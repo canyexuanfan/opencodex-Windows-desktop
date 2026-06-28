@@ -27,6 +27,9 @@ import type {
   OcxToolResultMessage,
 } from "../types";
 import type { ProviderAdapter } from "./base";
+import type { AdapterFetchContext, AdapterRequest } from "./base";
+import { extractKiroImages, type KiroImage } from "./kiro-images";
+import { fetchKiroWithRetry } from "./kiro-retry";
 
 const AMZ_TARGET = "AmazonCodeWhispererStreamingService.GenerateAssistantResponse";
 const SDK_VERSION = "1.0.27";
@@ -84,12 +87,6 @@ interface KiroUserInputMessage {
   userInputMessageContext?: { tools?: unknown[]; toolResults?: KiroToolResult[] };
   images?: KiroImage[];
 }
-// CodeWhisperer native image part (matches Kiro IDE wire format): the base64 bytes live directly in
-// userInputMessage.images, NOT in userInputMessageContext. Verified against kiro-gateway.
-interface KiroImage {
-  format: string; // "jpeg" | "png" | "webp" | "gif" — derived from the media subtype
-  source: { bytes: string }; // pure base64, no "data:...;base64," prefix
-}
 interface KiroHistoryEntry {
   userInputMessage?: KiroUserInputMessage;
   assistantResponseMessage?: { content: string; toolUses?: KiroToolUse[] };
@@ -98,32 +95,6 @@ interface KiroHistoryEntry {
 function userContentText(content: string | OcxContentPart[]): string {
   if (typeof content === "string") return content;
   return content.map(p => (p.type === "text" ? p.text : "")).filter(Boolean).join("\n");
-}
-
-// CodeWhisperer accepts images natively on userInputMessage. Codex sends each image as a `data:` URL
-// (base64) or a remote https URL. Only data URLs can be inlined as bytes here; remote URLs are not
-// fetchable at request-build time, so they are skipped (matching kiro-gateway's documented behavior).
-function parseDataUrlImage(imageUrl: string): KiroImage | undefined {
-  if (!imageUrl.startsWith("data:")) return undefined; // remote https — not fetchable here
-  const comma = imageUrl.indexOf(",");
-  if (comma === -1) return undefined;
-  const header = imageUrl.slice(5, comma); // strip "data:" → "image/png;base64"
-  const bytes = imageUrl.slice(comma + 1);
-  if (!bytes) return undefined;
-  const mediaType = header.split(";")[0] || "image/jpeg"; // "image/png"
-  const format = mediaType.includes("/") ? mediaType.split("/")[1] : mediaType; // "png"
-  return { format: format || "jpeg", source: { bytes } };
-}
-
-function extractKiroImages(content: string | OcxContentPart[]): KiroImage[] {
-  if (typeof content === "string") return [];
-  const out: KiroImage[] = [];
-  for (const p of content) {
-    if (p.type !== "image") continue;
-    const img = parseDataUrlImage(p.imageUrl);
-    if (img) out.push(img);
-  }
-  return out;
 }
 
 function usageContentText(content: string | OcxContentPart[]): string {
@@ -505,6 +476,10 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
 
     parseStream(response: Response): AsyncGenerator<AdapterEvent> {
       return parseKiroStream(response, modelId, inputTokens);
+    },
+
+    fetchResponse(request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response> {
+      return fetchKiroWithRetry(request, ctx);
     },
 
     // Non-streaming path used by the web-search sidecar loop (loop.ts runs each iteration
