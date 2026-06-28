@@ -15,6 +15,7 @@ import { hostname, userInfo } from "node:os";
 import { decodeEventStream } from "../lib/eventstream-decoder";
 import { estimateTokens } from "../lib/token-estimate";
 import { resolveKiroProfileArn, resolveKiroRegion } from "../oauth/kiro";
+import { KiroThinkingParser } from "./kiro-thinking";
 import type {
   AdapterEvent,
   OcxAssistantMessage,
@@ -37,9 +38,7 @@ const SDK_VERSION = "1.0.27";
 const NODE_VERSION = "22.21.1";
 const KIRO_IDE_VERSION = "1.2.0";
 
-// ---------------------------------------------------------------------------
 // Anti-detection fingerprint / headers
-// ---------------------------------------------------------------------------
 let cachedFp: string | undefined;
 function fingerprint(): string {
   if (cachedFp) return cachedFp;
@@ -68,9 +67,7 @@ function normalizeToolId(id: string): string {
   return s.length > 64 ? s.slice(0, 64) : s;
 }
 
-// ---------------------------------------------------------------------------
 // Payload construction (conversationState)
-// ---------------------------------------------------------------------------
 interface KiroToolUse {
   name: string;
   input: Record<string, unknown>; // OBJECT, not stringified
@@ -308,9 +305,7 @@ export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | 
   return payload;
 }
 
-// ---------------------------------------------------------------------------
-// Stream event parsing — discriminate stop/input/name (NOT name alone)
-// ---------------------------------------------------------------------------
+// Stream event parsing: discriminate stop/input/name (NOT name alone)
 interface ParsedKiroEvent {
   type: "content" | "tool_start" | "tool_input" | "tool_stop";
   data?: string;
@@ -349,9 +344,7 @@ export function parseKiroEvent(payload: Uint8Array): ParsedKiroEvent | null {
   return null;
 }
 
-// ---------------------------------------------------------------------------
 // Stream parsing (shared by parseStream + parseResponse)
-// ---------------------------------------------------------------------------
 // CodeWhisperer GenerateAssistantResponse ALWAYS returns an AWS eventstream body (there is no
 // non-streaming mode), so both the streaming bridge and the non-streaming web-search sidecar loop
 // decode the same way — parseResponse just collects what parseStream yields.
@@ -368,13 +361,15 @@ export async function* parseKiroStream(
   // CW provides no usage; accumulate output chars and emit a heuristic estimate on done so Codex's
   // usage display + auto-compact engage (see src/lib/token-estimate.ts).
   let outputChars = "";
+  const thinking = new KiroThinkingParser();
+  const trackContent = (event: AdapterEvent): void => {
+    if ("text" in event) outputChars += event.text;
+  };
   try {
     for await (const msg of decodeEventStream(response.body)) {
       const mt = msg.headers[":message-type"];
       if (mt === "exception" || mt === "error") {
-        // Terminal: an upstream exception/error ends the response. Close any dangling tool call so
-        // the bridge's tool-call bracketing stays balanced, surface the error, and stop — never fall
-        // through to the trailing `done`, which would make a failed call look partially successful.
+        // Terminal: surface the upstream error and never emit a trailing success-shaped `done`.
         if (open) {
           yield { type: "tool_call_end" };
           open = null;
@@ -388,17 +383,27 @@ export async function* parseKiroStream(
       switch (ev.type) {
         case "content":
           if (ev.data) {
-            outputChars += ev.data;
-            yield { type: "text_delta", text: ev.data };
+            for (const contentEvent of thinking.feed(ev.data)) {
+              trackContent(contentEvent);
+              yield contentEvent;
+            }
           }
           break;
         case "tool_start": {
+          for (const contentEvent of thinking.flush()) {
+            trackContent(contentEvent);
+            yield contentEvent;
+          }
           if (open) yield { type: "tool_call_end" };
           open = { id: ev.toolUseId!, name: ev.name || "unknown" };
           yield { type: "tool_call_start", id: open.id, name: open.name };
           break;
         }
         case "tool_input": {
+          for (const contentEvent of thinking.flush()) {
+            trackContent(contentEvent);
+            yield contentEvent;
+          }
           if (!open && ev.toolUseId) {
             open = { id: ev.toolUseId, name: ev.name || "unknown" };
             yield { type: "tool_call_start", id: open.id, name: open.name };
@@ -417,6 +422,10 @@ export async function* parseKiroStream(
           break;
       }
     }
+    for (const contentEvent of thinking.flush()) {
+      trackContent(contentEvent);
+      yield contentEvent;
+    }
     if (open) yield { type: "tool_call_end" };
     yield {
       type: "done",
@@ -427,9 +436,7 @@ export async function* parseKiroStream(
   }
 }
 
-// ---------------------------------------------------------------------------
 // Adapter
-// ---------------------------------------------------------------------------
 export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter {
   // Per-request closure (resolveAdapter builds a fresh adapter per request — server.ts:440 — so this
   // is race-free) carrying the heuristic input-token estimate from buildRequest into the stream.

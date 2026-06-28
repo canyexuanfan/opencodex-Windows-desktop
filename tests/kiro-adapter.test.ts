@@ -176,6 +176,55 @@ describe("kiro adapter — parseStream", () => {
     expect(out).not.toContain("done");
   });
 
+  test("leading thinking block is emitted as raw reasoning, not visible text", async () => {
+    const frames = [eventFrame({ content: "<thinking>private plan</thinking>visible answer" })];
+    const out: string[] = [];
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(...frames)))) {
+      if (e.type === "reasoning_raw_delta") out.push(`reason:${e.text}`);
+      else if (e.type === "text_delta") out.push(`text:${e.text}`);
+      else out.push(e.type);
+    }
+    expect(out).toEqual(["reason:private plan", "text:visible answer", "done"]);
+    expect(out.join("|")).not.toContain("<thinking>");
+  });
+
+  test("thinking tags split across chunks are parsed as reasoning", async () => {
+    const frames = [
+      eventFrame({ content: "<think" }),
+      eventFrame({ content: "ing>split" }),
+      eventFrame({ content: " thought</thinking>\nanswer" }),
+    ];
+    const out: string[] = [];
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(...frames)))) {
+      if (e.type === "reasoning_raw_delta") out.push(`reason:${e.text}`);
+      else if (e.type === "text_delta") out.push(`text:${e.text}`);
+      else out.push(e.type);
+    }
+    expect(out).toEqual(["reason:split thought", "text:answer", "done"]);
+  });
+
+  test("non-leading thinking tag remains visible text", async () => {
+    const frame = eventFrame({ content: "answer <thinking>literal</thinking>" });
+    const out: string[] = [];
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(frame)))) {
+      if (e.type === "text_delta") out.push(e.text);
+    }
+    expect(out.join("")).toBe("answer <thinking>literal</thinking>");
+  });
+
+  test("unterminated leading thinking block flushes as reasoning at stream end", async () => {
+    const frames = [eventFrame({ content: "<reasoning>still private" })];
+    const out: string[] = [];
+    let reasoning = "";
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(...frames)))) {
+      if (e.type === "reasoning_raw_delta") reasoning += e.text;
+      else if (e.type === "text_delta") out.push(`text:${e.text}`);
+      else out.push(e.type);
+    }
+    expect(reasoning).toBe("still private");
+    expect(out).toEqual(["done"]);
+  });
+
   test("done carries heuristic usage (input from current turn, output from streamed text)", async () => {
     const adapter = createKiroAdapter(provider);
     // buildRequest first so the per-request closure captures the input estimate + modelId.
