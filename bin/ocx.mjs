@@ -8,7 +8,7 @@
  * Node shim. (Dev still runs `bun run src/cli.ts` directly via the shebang on
  * src/cli.ts — only the published npm `bin` routes through here.)
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -160,12 +160,44 @@ if (process.argv[2] === "update" && isNodeModulesInstall() && !isBunGlobalInstal
 }
 
 const bun = resolveBun();
-const res = spawnSync(bun, [cliPath, ...process.argv.slice(2)], { stdio: "inherit" });
-if (res.error) {
-  console.error(`opencodex: failed to launch Bun runtime: ${res.error.message}`);
+
+// Run the Bun child asynchronously and FORWARD termination signals to it, then wait
+// for its graceful shutdown before this launcher exits. The previous blocking
+// spawnSync() could not run JS signal handlers and did not forward signals, so a
+// signal delivered only to this launcher (Codex app, IDE terminal, service wrapper,
+// or `kill -INT <launcherPid>`) killed the launcher and ORPHANED the Bun proxy —
+// port left bound, pid/runtime-port files left behind, Codex config not restored.
+const child = spawn(bun, [cliPath, ...process.argv.slice(2)], { stdio: "inherit" });
+
+// Windows has no real POSIX signals (no SIGHUP); forwarding is best-effort there.
+const FORWARDED = process.platform === "win32" ? ["SIGINT", "SIGTERM"] : ["SIGINT", "SIGTERM", "SIGHUP"];
+const handlers = FORWARDED.map(sig => {
+  const handler = () => {
+    try {
+      child.kill(sig);
+    } catch {
+      /* child already exited */
+    }
+  };
+  process.on(sig, handler);
+  return [sig, handler];
+});
+const clearHandlers = () => {
+  for (const [sig, handler] of handlers) process.removeListener(sig, handler);
+};
+
+child.on("error", err => {
+  clearHandlers();
+  console.error(`opencodex: failed to launch Bun runtime: ${err.message}`);
   process.exit(1);
-}
-if (res.signal) {
-  process.kill(process.pid, res.signal);
-}
-process.exit(res.status ?? 1);
+});
+
+child.on("exit", (code, signal) => {
+  clearHandlers();
+  // Mirror the child's terminating signal/exit code so this launcher's status matches.
+  if (signal) {
+    process.kill(process.pid, signal);
+    return;
+  }
+  process.exit(code ?? 1);
+});
