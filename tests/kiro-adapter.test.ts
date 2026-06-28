@@ -125,6 +125,31 @@ describe("kiro adapter — parseStream", () => {
     expect(out[0]).toBe("error:rate limited");
   });
 
+  test("exception frame is terminal: no trailing done", async () => {
+    // error frame followed by a (would-be) content frame + would-be normal end.
+    const errFrame = encodeMessage({ ":message-type": "exception", ":exception-type": "ThrottlingException" }, enc.encode("rate limited"));
+    const contentFrame = eventFrame({ content: "leaked text" });
+    const out: string[] = [];
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(errFrame, contentFrame)))) {
+      out.push(e.type === "error" ? `error:${e.message}` : e.type);
+    }
+    expect(out).toEqual(["error:rate limited"]);
+    expect(out).not.toContain("done");
+    expect(out).not.toContain("text_delta");
+  });
+
+  test("exception mid-stream closes an open tool call then stops", async () => {
+    const start = eventFrame({ name: "shell", toolUseId: "tu_1" });
+    const errFrame = encodeMessage({ ":message-type": "error", ":error-type": "InternalServerException" }, enc.encode("boom"));
+    const tail = eventFrame({ content: "should not appear" });
+    const out: string[] = [];
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(start, errFrame, tail)))) {
+      out.push(e.type === "error" ? `error:${e.message}` : e.type);
+    }
+    expect(out).toEqual(["tool_call_start", "tool_call_end", "error:boom"]);
+    expect(out).not.toContain("done");
+  });
+
   test("done carries heuristic usage (input from current turn, output from streamed text)", async () => {
     const adapter = createKiroAdapter(provider);
     // buildRequest first so the per-request closure captures the input estimate + modelId.

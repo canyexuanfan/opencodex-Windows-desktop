@@ -407,8 +407,15 @@ export async function* parseKiroStream(
     for await (const msg of decodeEventStream(response.body)) {
       const mt = msg.headers[":message-type"];
       if (mt === "exception" || mt === "error") {
+        // Terminal: an upstream exception/error ends the response. Close any dangling tool call so
+        // the bridge's tool-call bracketing stays balanced, surface the error, and stop — never fall
+        // through to the trailing `done`, which would make a failed call look partially successful.
+        if (open) {
+          yield { type: "tool_call_end" };
+          open = null;
+        }
         yield { type: "error", message: new TextDecoder().decode(msg.payload).slice(0, 500) };
-        continue;
+        return;
       }
       if (mt && mt !== "event") continue;
       const ev = parseKiroEvent(msg.payload);
