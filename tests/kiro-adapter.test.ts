@@ -114,6 +114,22 @@ describe("kiro adapter — parseStream", () => {
     }
     expect(out[0]).toBe("error:rate limited");
   });
+
+  test("done carries heuristic usage (input from buildRequest body, output from streamed text) so Codex auto-compact engages", async () => {
+    const adapter = createKiroAdapter(provider);
+    // buildRequest first so the per-request closure captures the input estimate + modelId.
+    adapter.buildRequest(parsedWith([{ role: "user", content: "x".repeat(700) }]));
+    const frames = [eventFrame({ content: "y".repeat(350) })];
+    let done: { inputTokens: number; outputTokens: number } | undefined;
+    for await (const e of adapter.parseStream(new Response(streamOf(...frames)))) {
+      if (e.type === "done") done = e.usage;
+    }
+    expect(done).toBeDefined();
+    // input is estimated over the full JSON body (>= the 700-char user message / 3.5) — non-zero.
+    expect(done!.inputTokens).toBeGreaterThan(100);
+    // output: 350 chars / 3.5 = 100 tokens (claude-sonnet-4.5 → kiro 3.5 ratio).
+    expect(done!.outputTokens).toBe(100);
+  });
 });
 
 describe("kiro adapter — parseResponse (web-search sidecar non-streaming path)", () => {

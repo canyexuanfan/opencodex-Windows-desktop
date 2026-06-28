@@ -13,6 +13,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { hostname, userInfo } from "node:os";
 import { decodeEventStream } from "../lib/eventstream-decoder";
+import { estimateTokens } from "../lib/token-estimate";
 import { resolveKiroProfileArn, resolveKiroRegion } from "../oauth/kiro";
 import type {
   AdapterEvent,
@@ -251,12 +252,19 @@ export function parseKiroEvent(payload: Uint8Array): ParsedKiroEvent | null {
 // CodeWhisperer GenerateAssistantResponse ALWAYS returns an AWS eventstream body (there is no
 // non-streaming mode), so both the streaming bridge and the non-streaming web-search sidecar loop
 // decode the same way — parseResponse just collects what parseStream yields.
-export async function* parseKiroStream(response: Response): AsyncGenerator<AdapterEvent> {
+export async function* parseKiroStream(
+  response: Response,
+  modelId?: string,
+  inputTokens = 0,
+): AsyncGenerator<AdapterEvent> {
   if (!response.body) {
     yield { type: "error", message: "Kiro response has no body" };
     return;
   }
   let open: { id: string; name: string } | null = null;
+  // CW provides no usage; accumulate output chars and emit a heuristic estimate on done so Codex's
+  // usage display + auto-compact engage (see src/lib/token-estimate.ts).
+  let outputChars = "";
   try {
     for await (const msg of decodeEventStream(response.body)) {
       const mt = msg.headers[":message-type"];
@@ -269,7 +277,10 @@ export async function* parseKiroStream(response: Response): AsyncGenerator<Adapt
       if (!ev) continue;
       switch (ev.type) {
         case "content":
-          if (ev.data) yield { type: "text_delta", text: ev.data };
+          if (ev.data) {
+            outputChars += ev.data;
+            yield { type: "text_delta", text: ev.data };
+          }
           break;
         case "tool_start": {
           if (open) yield { type: "tool_call_end" };
@@ -282,7 +293,10 @@ export async function* parseKiroStream(response: Response): AsyncGenerator<Adapt
             open = { id: ev.toolUseId, name: ev.name || "unknown" };
             yield { type: "tool_call_start", id: open.id, name: open.name };
           }
-          if (open && ev.input) yield { type: "tool_call_delta", arguments: ev.input };
+          if (open && ev.input) {
+            outputChars += ev.input;
+            yield { type: "tool_call_delta", arguments: ev.input };
+          }
           break;
         }
         case "tool_stop":
@@ -294,7 +308,10 @@ export async function* parseKiroStream(response: Response): AsyncGenerator<Adapt
       }
     }
     if (open) yield { type: "tool_call_end" };
-    yield { type: "done" };
+    yield {
+      type: "done",
+      usage: { inputTokens, outputTokens: estimateTokens(outputChars, modelId) },
+    };
   } catch (err) {
     yield { type: "error", message: err instanceof Error ? err.message : String(err) };
   }
@@ -304,6 +321,10 @@ export async function* parseKiroStream(response: Response): AsyncGenerator<Adapt
 // Adapter
 // ---------------------------------------------------------------------------
 export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter {
+  // Per-request closure (resolveAdapter builds a fresh adapter per request — server.ts:440 — so this
+  // is race-free) carrying the heuristic input-token estimate from buildRequest into the stream.
+  let inputTokens = 0;
+  let modelId: string | undefined;
   return {
     name: "kiro",
     buildRequest(parsed: OcxParsedRequest) {
@@ -325,16 +346,22 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
       // NOTE: CodeWhisperer GenerateAssistantResponse has no reasoning_effort field — Kiro thinking is
       // model/agent-mode internal. Codex always forces a reasoning selection; we intentionally do NOT
       // forward parsed.options.reasoning into the payload (registry marks kiro models noReasoning too).
+      const body = JSON.stringify(buildKiroPayload(parsed, profileArn));
+      // CW returns no usage. Estimate input tokens over the fully-assembled body (captures the heaviest
+      // Codex sources — toolResult content + assistant tool-call args — and is drift-proof; JSON chars
+      // bias it to slightly over-count = fail-safe for auto-compact). Carried into the stream below.
+      modelId = parsed.modelId;
+      inputTokens = estimateTokens(body, modelId);
       return {
         url: `https://runtime.${region}.kiro.dev/`,
         method: "POST",
         headers,
-        body: JSON.stringify(buildKiroPayload(parsed, profileArn)),
+        body,
       };
     },
 
     parseStream(response: Response): AsyncGenerator<AdapterEvent> {
-      return parseKiroStream(response);
+      return parseKiroStream(response, modelId, inputTokens);
     },
 
     // Non-streaming path used by the web-search sidecar loop (loop.ts runs each iteration
@@ -343,7 +370,7 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
     // tool failed with "web-search sidecar requires a non-streaming adapter" (kiro-only).
     async parseResponse(response: Response): Promise<AdapterEvent[]> {
       const events: AdapterEvent[] = [];
-      for await (const e of parseKiroStream(response)) events.push(e);
+      for await (const e of parseKiroStream(response, modelId, inputTokens)) events.push(e);
       return events;
     },
   };
