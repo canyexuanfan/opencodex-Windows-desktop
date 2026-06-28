@@ -68,3 +68,20 @@ Out of scope for Phase 10:
 - Do not wire the redactor into `src/crash-guard.ts`, `src/server.ts`, or
   `src/usage-debug.ts` yet. Those are Phase 20 sink changes.
 - Do not modify Kiro adapter request/stream semantics.
+
+## Build record
+
+Files changed:
+
+- NEW `src/redact.ts`: shared redaction helpers for strings, nested objects,
+  headers, and URLs.
+- NEW `tests/redact.test.ts`: focused regression coverage for bearer/API token,
+  access/refresh token, cookie/header, Kiro/AWS profile ARN, nested object, and
+  URL redaction.
+- MODIFY `devlog/_plan/145_common-security-hardening/10_phase1_redaction-foundation.md`:
+  this build/verification record.
+
+Verification:
+
+- `bun test tests/redact.test.ts` -> 8 pass, 0 fail.
+- `bun x tsc --noEmit` -> exit 0, no diagnostics.
