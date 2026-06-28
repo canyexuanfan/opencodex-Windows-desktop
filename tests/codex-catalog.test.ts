@@ -127,7 +127,7 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.auto_compact_token_limit).toBe(244_800);
   });
 
-  test("catalog entries cap stale max context to the active context window", () => {
+  test("native gpt-5.4 preserves Codex long-context max window metadata", () => {
     const template = {
       ...nativeTemplate(),
       context_window: 272_000,
@@ -137,8 +137,24 @@ describe("Codex catalog routed normalization", () => {
     const native = entries.find(e => e.slug === "gpt-5.4");
 
     expect(native?.context_window).toBe(272_000);
-    expect(native?.max_context_window).toBe(272_000);
+    expect(native?.max_context_window).toBe(1_000_000);
     expect(native?.auto_compact_token_limit).toBe(244_800);
+  });
+
+  test("routed entries still cap stale native max context to their active context window", () => {
+    const template = {
+      ...nativeTemplate(),
+      context_window: 272_000,
+      max_context_window: 1_000_000,
+    };
+    const entries = buildCatalogEntries(template, [], [
+      { provider: "local", id: "qwen3-coder" },
+    ]);
+    const routed = entries.find(e => e.slug === "local/qwen3-coder");
+
+    expect(routed?.context_window).toBe(272_000);
+    expect(routed?.max_context_window).toBe(272_000);
+    expect(routed?.auto_compact_token_limit).toBe(244_800);
   });
 
   test("buildCatalogEntries preserves native bare GPT template fields", () => {

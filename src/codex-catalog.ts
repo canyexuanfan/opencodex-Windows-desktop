@@ -36,23 +36,29 @@ function isDefaultCatalogPath(path: string): boolean {
 
 /**
  * Native OpenAI / Codex models served via ChatGPT OAuth passthrough — FALLBACK only. The ChatGPT
- * backend has no `GET /models`, so the real set is read from the live Codex catalog (the slugs Codex
- * itself ships for the installed version) via nativeOpenAiSlugs(); this static list is used only when
- * no catalog is present. Keep it to ids ChatGPT actually accepts — advertising a phantom (e.g. an
- * old `gpt-5.2`/`gpt-5.3-codex` that a newer Codex dropped) makes it 400 "model is not supported".
+ * backend has no `GET /models`, so the real set is read from the live Codex catalog via
+ * nativeOpenAiSlugs(); this static list is used when no catalog is present, plus selected documented
+ * Codex-native additions that may lag in a user's installed Codex catalog.
  */
 export const NATIVE_OPENAI_MODELS = [
   "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark",
 ];
 
+const DOCUMENTED_NATIVE_OPENAI_ADDITIONS = ["gpt-5.3-codex-spark"];
+
+const NATIVE_OPENAI_CONTEXT_OVERRIDES: Record<string, { contextWindow?: number; maxContextWindow?: number }> = {
+  "gpt-5.5": { contextWindow: 272_000, maxContextWindow: 272_000 },
+  "gpt-5.4": { maxContextWindow: 1_000_000 },
+};
+
 /**
  * The native (passthrough) OpenAI slugs to advertise — the LIVE Codex catalog's own bare slugs when
- * available (always-latest: matches exactly what the installed Codex supports), else the static
- * fallback above. Single source for the /v1/models native list and the subagent-default seed.
+ * available, with documented Codex-native additions layered in, else the static fallback above.
+ * Single source for the /v1/models native list and the subagent-default seed.
  */
 export function nativeOpenAiSlugs(): string[] {
   const live = listCatalogNativeSlugs();
-  return live.length > 0 ? live : NATIVE_OPENAI_MODELS;
+  return live.length > 0 ? unique([...live, ...DOCUMENTED_NATIVE_OPENAI_ADDITIONS]) : NATIVE_OPENAI_MODELS;
 }
 
 export interface CatalogModel { id: string; provider: string; owned_by?: string; reasoningEfforts?: string[]; contextWindow?: number; inputModalities?: string[]; }
@@ -142,6 +148,23 @@ function ensureAutoCompactTokenLimit(entry: RawEntry): RawEntry {
   return entry;
 }
 
+function isNativeOpenAiEntry(entry: RawEntry): boolean {
+  return typeof entry.slug === "string" && !entry.slug.includes("/");
+}
+
+function applyNativeOpenAiContextOverride(entry: RawEntry): void {
+  if (!isNativeOpenAiEntry(entry)) return;
+  const override = NATIVE_OPENAI_CONTEXT_OVERRIDES[entry.slug as string];
+  if (!override) return;
+  if (typeof override.contextWindow === "number") {
+    entry.context_window = override.contextWindow;
+    entry.auto_compact_token_limit = Math.floor(override.contextWindow * 0.9);
+  }
+  if (typeof override.maxContextWindow === "number") {
+    entry.max_context_window = override.maxContextWindow;
+  }
+}
+
 function ensureStrictCatalogFields(entry: RawEntry): RawEntry {
   if (typeof entry.supports_reasoning_summaries !== "boolean") entry.supports_reasoning_summaries = true;
   if (typeof entry.default_reasoning_summary !== "string") entry.default_reasoning_summary = "none";
@@ -160,7 +183,7 @@ function ensureStrictCatalogFields(entry: RawEntry): RawEntry {
   if (
     typeof entry.max_context_window !== "number"
     || entry.max_context_window <= 0
-    || entry.max_context_window > contextWindow
+    || (!isNativeOpenAiEntry(entry) && entry.max_context_window > contextWindow)
   ) {
     entry.max_context_window = contextWindow;
   }
@@ -398,6 +421,8 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
       normalizeRoutedCatalogEntry(e);
       applyJawcodeCatalogMetadata(e, slug);
       applyCatalogModelMetadata(e, model);
+    } else {
+      applyNativeOpenAiContextOverride(e);
     }
     return ensureStrictCatalogFields(normalizeServiceTiers(e));
   }
@@ -412,6 +437,7 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
   else applyReasoningLevels(entry);
   applyJawcodeCatalogMetadata(entry, slug);
   applyCatalogModelMetadata(entry, model);
+  applyNativeOpenAiContextOverride(entry);
   return ensureStrictCatalogFields(normalizeServiceTiers(entry));
 }
 
@@ -726,12 +752,25 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
           : baselinePriority;
       return normalizeServiceTiers({ ...m, priority });
     });
+  const nativeSlugs = new Set(native.flatMap(m => typeof m.slug === "string" ? [m.slug] : []));
+  for (const slug of nativeOpenAiSlugs()) {
+    if (nativeSlugs.has(slug)) continue;
+    nativeSlugs.add(slug);
+    const priority = rank.has(slug)
+      ? rank.get(slug)!
+      : featured.length > 0
+        ? featured.length + 100
+        : 9;
+    native.push(deriveEntry(template ? JSON.parse(JSON.stringify(template)) : null, slug, "OpenAI native model (Codex OAuth passthrough).", priority));
+  }
   // Central WS capability override on the FINAL on-disk catalog (the file Codex reads). Applies to
   // native AND routed so the advertised flag matches the implemented endpoint (phase 120.4) and a
   // native template can never leak supports_websockets while the flag is off.
   const wsEnabled = websocketsEnabled(config);
   catalog.models = [...native, ...goEntries].map(m => {
-    const e = ensureStrictCatalogFields(normalizeServiceTiers(m));
+    const normalized = normalizeServiceTiers(m);
+    applyNativeOpenAiContextOverride(normalized);
+    const e = ensureStrictCatalogFields(normalized);
     if (wsEnabled) e.supports_websockets = true;
     else delete e.supports_websockets;
     return e;
