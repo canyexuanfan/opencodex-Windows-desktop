@@ -176,3 +176,27 @@ describe("kiro adapter — reasoning ignored (Codex forces it, CW has no field)"
     }
   });
 });
+
+describe("kiro adapter — per-model context windows (kiro.dev/docs/models)", () => {
+  const kiro = PROVIDER_REGISTRY.find(p => p.id === "kiro") as unknown as OcxProviderConfig;
+  const cw = kiro.modelContextWindows ?? {};
+
+  test("1M-context models map to 1_000_000", () => {
+    for (const id of ["claude-opus-4.8", "claude-opus-4.7", "claude-opus-4.6", "claude-sonnet-4.6"]) {
+      expect(cw[id]).toBe(1_000_000);
+    }
+  });
+
+  test("smaller-context models match Kiro's published limits", () => {
+    expect(cw["claude-sonnet-4.5"]).toBe(200_000);
+    expect(cw["claude-haiku-4.5"]).toBe(200_000);
+    expect(cw["minimax-m2.5"]).toBe(200_000);
+    expect(cw["glm-5"]).toBe(200_000);
+    expect(cw["deepseek-3.2"]).toBe(128_000);
+    expect(cw["qwen3-coder-next"]).toBe(256_000);
+  });
+
+  test("Auto router has no fixed window (omitted)", () => {
+    expect(cw["kiro-auto"]).toBeUndefined();
+  });
+});
