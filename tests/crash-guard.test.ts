@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatCrashEntry } from "../src/crash-guard";
+import { formatCrashEntry, installCrashGuards } from "../src/crash-guard";
 import { sidecarEnter } from "../src/sidecar-tracker";
 
 describe("crash-guard diagnostics", () => {
@@ -36,6 +36,15 @@ describe("crash-guard diagnostics", () => {
     expect(() => formatCrashEntry("unhandledRejection", null)).not.toThrow();
     expect(() => formatCrashEntry("unhandledRejection", "string reason")).not.toThrow();
     expect(formatCrashEntry("unhandledRejection", 42)).toContain("42");
+  });
+
+  test("dumps recent fetch origins (pending/rejected) in the breadcrumb", async () => {
+    installCrashGuards(); // idempotent; wraps global fetch once
+    await fetch("https://opencodex.invalid.test/v1/models?token=secret").catch(() => {});
+    const entry = formatCrashEntry("unhandledRejection", new TypeError("null is not an object"));
+    expect(entry).toContain("fetches:");
+    expect(entry).toContain("opencodex.invalid.test/v1/models");
+    expect(entry).not.toContain("token=secret"); // query redacted
   });
 
   test("records a sidecar breadcrumb when one is in flight", () => {

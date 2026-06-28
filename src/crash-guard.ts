@@ -127,6 +127,8 @@ function breadcrumb(): string {
     }
     const a = activityBreadcrumb();
     if (a.note) lines.push(`  activity: ${a.note} sinceMs=${a.sinceMs}`);
+    const fetches = recentFetches();
+    if (fetches) lines.push(fetches);
     return lines.length ? `\n${lines.join("\n")}` : "";
   } catch {
     return "";
@@ -154,6 +156,74 @@ function record(kind: string, err: unknown, promise?: unknown): void {
   }
 }
 
+interface FetchTrace { url: string; at: number; origin: string; settled: boolean; rejected?: string }
+const FETCH_RING_MAX = 12;
+const fetchRing: FetchTrace[] = [];
+let fetchInstrumented = false;
+
+/**
+ * The recurring native-only rejection carries no source location, and every JS `await fetch(...)`
+ * is already try/caught — so the offending promise is created INSIDE Bun's fetch and rejects off the
+ * awaited path. Wrap global fetch to record each call's origin (a JS stack captured at call time) and
+ * whether it later rejected. crash-guard then dumps the still-pending / recently-rejected fetches so
+ * the next fault names the exact call site Bun lost.
+ */
+function instrumentFetch(): void {
+  if (fetchInstrumented) return;
+  const g = globalThis as { fetch?: typeof fetch };
+  const original = g.fetch;
+  if (typeof original !== "function") return;
+  fetchInstrumented = true;
+  g.fetch = function instrumentedFetch(this: unknown, ...args: Parameters<typeof fetch>): ReturnType<typeof fetch> {
+    let url = "";
+    try {
+      const input = args[0];
+      url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request)?.url ?? "";
+    } catch { /* best-effort */ }
+    const origin = (new Error().stack ?? "").split("\n").slice(2, 5).map(l => l.trim()).join(" <- ");
+    const trace: FetchTrace = { url: redactUrl(url), at: Date.now(), origin, settled: false };
+    fetchRing.push(trace);
+    if (fetchRing.length > FETCH_RING_MAX) fetchRing.shift();
+    let p: ReturnType<typeof fetch>;
+    try {
+      p = original.apply(this, args);
+    } catch (e) {
+      trace.settled = true;
+      trace.rejected = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+      throw e;
+    }
+    return p.then(
+      r => { trace.settled = true; return r; },
+      e => { trace.settled = true; trace.rejected = e instanceof Error ? `${e.name}: ${e.message}` : String(e); throw e; },
+    );
+  } as typeof fetch;
+}
+
+/** Strip query/credentials from a URL so the breadcrumb never leaks tokens. */
+function redactUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.protocol}//${u.host}${u.pathname}`;
+  } catch {
+    return url.split("?")[0] ?? url;
+  }
+}
+
+/** Render the recent fetch ring (pending first) for the crash breadcrumb. */
+function recentFetches(): string {
+  try {
+    if (fetchRing.length === 0) return "";
+    const now = Date.now();
+    const rows = fetchRing.slice(-6).map(f => {
+      const state = !f.settled ? "PENDING" : f.rejected ? `REJECTED(${f.rejected})` : "ok";
+      return `    [${state}] ${f.url} ageMs=${now - f.at}${!f.settled ? ` origin=${f.origin}` : ""}`;
+    });
+    return `  fetches:\n${rows.join("\n")}`;
+  } catch {
+    return "";
+  }
+}
+
 /**
  * Register global handlers that keep the proxy alive and capture full stacks.
  * Idempotent: safe to call more than once.
@@ -161,6 +231,7 @@ function record(kind: string, err: unknown, promise?: unknown): void {
 export function installCrashGuards(): void {
   if (installed) return;
   installed = true;
+  instrumentFetch();
 
   process.on("unhandledRejection", (reason, promise) => {
     record("unhandledRejection", reason, promise);
