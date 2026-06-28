@@ -185,6 +185,9 @@ async function handleStart(options: { block?: boolean } = {}) {
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+  // The launcher (bin/ocx.mjs) forwards SIGHUP too (e.g. terminal close); handle it
+  // gracefully here so it drains + cleans up instead of a default immediate kill.
+  process.on("SIGHUP", shutdown);
   process.on("exit", syncCleanup);
 
   await maybeShowStarPrompt(); // once-only [Y/n] GitHub-star prompt on first interactive start

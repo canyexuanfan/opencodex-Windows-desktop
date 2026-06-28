@@ -67,57 +67,51 @@ async function waitUntil(fn: () => Promise<boolean>, deadlineMs: number): Promis
 }
 
 describe.skipIf(!runnable)("ocx launcher graceful shutdown", () => {
-  test(
-    "SIGINT to the launcher tears down the Bun proxy (no orphan)",
-    async () => {
-      const home = mkdtempSync(join(tmpdir(), "ocx-shutdown-"));
-      tmpHomes.push(home);
-      const port = await freePort();
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    test(
+      `${signal} to the launcher tears down the Bun proxy and restores Codex config (no orphan)`,
+      async () => {
+        const home = mkdtempSync(join(tmpdir(), "ocx-shutdown-"));
+        tmpHomes.push(home);
+        const port = await freePort();
 
-      // Seed a native Codex config so the proxy actually injects on start (injectCodexConfig
-      // no-ops when no config.toml exists) — this lets us prove the config is RESTORED on Ctrl-C.
-      const codexConfig = join(home, "config.toml");
-      writeFileSync(codexConfig, 'model = "gpt-5.1"\n');
+        // Seed a native Codex config so the proxy actually injects on start (injectCodexConfig
+        // no-ops when no config.toml exists) — this lets us prove the config is RESTORED.
+        const codexConfig = join(home, "config.toml");
+        writeFileSync(codexConfig, 'model = "gpt-5.1"\n');
 
-      const child = spawn("node", [BIN_OCX, "start", "--port", String(port)], {
-        stdio: "ignore",
-        env: { ...process.env, OPENCODEX_HOME: home, CODEX_HOME: home },
-      });
-      spawned.push(child);
+        const child = spawn("node", [BIN_OCX, "start", "--port", String(port)], {
+          stdio: "ignore",
+          env: { ...process.env, OPENCODEX_HOME: home, CODEX_HOME: home },
+        });
+        spawned.push(child);
 
-      let exited = false;
-      let exitSignal: NodeJS.Signals | null = null;
-      child.on("exit", (_code, signal) => {
-        exited = true;
-        exitSignal = signal;
-      });
+        let exited = false;
+        child.on("exit", () => { exited = true; });
 
-      // 1. Proxy comes up.
-      const up = await waitUntil(() => healthy(port), 20_000);
-      expect(up).toBe(true);
-      expect(existsSync(join(home, "ocx.pid"))).toBe(true);
-      // Codex config was injected on start (proves there is something to restore).
-      expect(readFileSync(codexConfig, "utf8")).toContain("model_providers.opencodex");
+        // 1. Proxy comes up + injected the Codex config.
+        const up = await waitUntil(() => healthy(port), 20_000);
+        expect(up).toBe(true);
+        expect(existsSync(join(home, "ocx.pid"))).toBe(true);
+        expect(readFileSync(codexConfig, "utf8")).toContain("model_providers.opencodex");
 
-      // 2. Signal ONLY the launcher PID (the exact orphan trigger).
-      child.kill("SIGINT");
+        // 2. Signal ONLY the launcher PID (the exact orphan trigger).
+        child.kill(signal);
 
-      // 3. Launcher exits...
-      const launcherGone = await waitUntil(async () => exited, 15_000);
-      expect(launcherGone).toBe(true);
+        // 3. Launcher exits...
+        const launcherGone = await waitUntil(async () => exited, 15_000);
+        expect(launcherGone).toBe(true);
 
-      // 4. ...and the Bun proxy is gone (port freed) — the regression guard.
-      const portFreed = await waitUntil(async () => !(await healthy(port)), 10_000);
-      expect(portFreed).toBe(true);
+        // 4. ...and the Bun proxy is gone (port freed) — the regression guard.
+        const portFreed = await waitUntil(async () => !(await healthy(port)), 10_000);
+        expect(portFreed).toBe(true);
 
-      // 5. Cleanup ran: pid + runtime-port files removed, and the Codex config was RESTORED
-      //    (opencodex injection reverted) — the full graceful-shutdown contract.
-      expect(existsSync(join(home, "ocx.pid"))).toBe(false);
-      expect(existsSync(join(home, "runtime-port.json"))).toBe(false);
-      expect(readFileSync(codexConfig, "utf8")).not.toContain("opencodex");
-
-      void exitSignal; // captured for debugging; assertion is on teardown, not signal identity
-    },
-    45_000,
-  );
+        // 5. Graceful cleanup ran: pid + runtime-port removed, Codex config restored.
+        expect(existsSync(join(home, "ocx.pid"))).toBe(false);
+        expect(existsSync(join(home, "runtime-port.json"))).toBe(false);
+        expect(readFileSync(codexConfig, "utf8")).not.toContain("opencodex");
+      },
+      45_000,
+    );
+  }
 });
