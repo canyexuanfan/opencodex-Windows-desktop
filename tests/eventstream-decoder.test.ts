@@ -18,6 +18,35 @@ function streamOf(...frames: Uint8Array[]): ReadableStream<Uint8Array> {
 	});
 }
 
+function streamChunks(...chunks: Uint8Array[]): ReadableStream<Uint8Array> {
+	let i = 0;
+	return new ReadableStream<Uint8Array>({
+		pull(controller) {
+			if (i < chunks.length) controller.enqueue(chunks[i++]);
+			else controller.close();
+		},
+	});
+}
+
+function refreshMessageCrc(frame: Uint8Array): Uint8Array {
+	const dv = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+	const total = dv.getUint32(0, false);
+	dv.setUint32(total - 4, crc32(frame.subarray(0, total - 4)), false);
+	return frame;
+}
+
+function refreshPreludeAndMessageCrc(frame: Uint8Array): Uint8Array {
+	const dv = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+	dv.setUint32(8, crc32(frame.subarray(0, 8)), false);
+	return refreshMessageCrc(frame);
+}
+
+async function drain(stream: ReadableStream<Uint8Array>): Promise<void> {
+	for await (const _ of decodeEventStream(stream)) {
+		// drain
+	}
+}
+
 describe("eventstream-decoder", () => {
 	test("decodeMessage round-trips headers + payload", () => {
 		const frame = encodeMessage({ ":event-type": "assistantResponseEvent", ":message-type": "event" }, enc.encode("hi"));
@@ -39,6 +68,26 @@ describe("eventstream-decoder", () => {
 		expect(() => decodeMessage(frame)).toThrow(/CRC mismatch/);
 	});
 
+	test("headers length beyond payload boundary throws controlled framing error", () => {
+		const frame = encodeMessage({ "x": "abc" }, enc.encode("body"));
+		const dv = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+		dv.setUint32(4, dv.getUint32(0, false), false);
+		expect(() => decodeMessage(refreshPreludeAndMessageCrc(frame))).toThrow(/headers length exceeds/);
+	});
+
+	test("truncated string header throws controlled header error", () => {
+		const frame = encodeMessage({ "x": "abc" }, enc.encode("body"));
+		const dv = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+		dv.setUint16(15, 10, false); // after nameLen(12), name(13), type(14)
+		expect(() => decodeMessage(refreshMessageCrc(frame))).toThrow(/truncated header string value/);
+	});
+
+	test("advertised oversized frame fails before buffering indefinitely", async () => {
+		const prelude = new Uint8Array(4);
+		new DataView(prelude.buffer).setUint32(0, 16 * 1024 * 1024 + 1, false);
+		await expect(drain(streamChunks(prelude))).rejects.toThrow(/exceeds maximum/);
+	});
+
 	test("decodeEventStream yields multiple frames across chunk boundaries", async () => {
 		const f1 = encodeMessage({ ":event-type": "a" }, enc.encode('{"content":"foo"}'));
 		const f2 = encodeMessage({ ":event-type": "b" }, enc.encode('{"name":"bash","toolUseId":"t1"}'));
@@ -47,6 +96,17 @@ describe("eventstream-decoder", () => {
 			out.push(`${m.headers[":event-type"]}:${dec.decode(m.payload)}`);
 		}
 		expect(out).toEqual(['a:{"content":"foo"}', 'b:{"name":"bash","toolUseId":"t1"}']);
+	});
+
+	test("single frame decodes when split at every byte boundary", async () => {
+		const frame = encodeMessage({ ":event-type": "split" }, enc.encode("payload"));
+		for (let split = 1; split < frame.length; split++) {
+			const out: string[] = [];
+			for await (const msg of decodeEventStream(streamChunks(frame.subarray(0, split), frame.subarray(split)))) {
+				out.push(`${msg.headers[":event-type"]}:${dec.decode(msg.payload)}`);
+			}
+			expect(out).toEqual(["split:payload"]);
+		}
 	});
 
 	test("crc32 matches a known vector (zlib of 'hello')", () => {
