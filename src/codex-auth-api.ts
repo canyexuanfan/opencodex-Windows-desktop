@@ -24,6 +24,7 @@ import {
 } from "./codex-quota";
 export { clearAccountQuota, getAccountQuota, parseUsageQuota, updateAccountQuota } from "./codex-quota";
 import { extractAccountId, decodeJwtPayload } from "./oauth/chatgpt";
+import { MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from "./codex-main-account";
 import { maskEmail } from "./privacy";
 export { maskEmail } from "./privacy";
 import type { CodexAccount, OcxConfig } from "./types";
@@ -88,7 +89,7 @@ async function resolveResetCreditAuth(
   | { ok: true; isMain: boolean; accessToken: string; chatgptAccountId: string }
   | { ok: false; response: Response }
 > {
-  if (accountId === "__main__") {
+  if (accountId === MAIN_CODEX_ACCOUNT_ID) {
     const tokens = readCodexTokens();
     if (!tokens) return { ok: false, response: jsonResponse({ error: "Main Codex account not logged in" }, 401) };
     return { ok: true, isMain: true, accessToken: tokens.access_token, chatgptAccountId: tokens.account_id };
@@ -202,6 +203,21 @@ async function fetchMainAccountInfo(forceRefresh = false): Promise<{ email: stri
       ts: Date.now(),
     };
     mainAccountCache = result;
+    // Mirror main quota + plan into the shared stores so the rotation engine can
+    // score and auto-switch the main account exactly like a pool account (Option A).
+    setMainAccountPlan(result.plan);
+    if (result.quota) {
+      updateAccountQuota(
+        MAIN_CODEX_ACCOUNT_ID,
+        result.quota.weeklyPercent,
+        result.quota.fiveHourPercent,
+        result.quota.weeklyResetAt,
+        result.quota.fiveHourResetAt,
+        result.quota.monthlyPercent,
+        result.quota.monthlyResetAt,
+        result.quota.resetCredits,
+      );
+    }
     return result;
   } catch {
     return { email: null, plan: null, quota: null };
@@ -265,7 +281,7 @@ export async function handleCodexAuthAPI(
       return poolAccountDto(a, quotaResult, !!cred);
     });
     const main = {
-      id: "__main__",
+      id: MAIN_CODEX_ACCOUNT_ID,
       email: maskEmail(mainInfo.email) ?? "Codex App login",
       plan: mainInfo.plan,
       isMain: true,
@@ -329,7 +345,7 @@ export async function handleCodexAuthAPI(
     let body: { accountId: string | null };
     try { body = (await req.json()) as typeof body; } catch { return jsonResponse({ error: "Invalid JSON" }, 400); }
     const runtimeConfig = getRuntimeConfig(config);
-    if (body.accountId != null) {
+    if (body.accountId != null && body.accountId !== MAIN_CODEX_ACCOUNT_ID) {
       const exists = (runtimeConfig.codexAccounts ?? []).some(a => a.id === body.accountId);
       if (!exists) return jsonResponse({ error: "Account not found" }, 400);
     }

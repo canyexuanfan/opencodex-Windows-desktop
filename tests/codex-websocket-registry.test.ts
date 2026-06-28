@@ -47,6 +47,26 @@ describe("codex websocket registry", () => {
     expect(getTrackedCodexWebSocketCountForAccount("main")).toBe(0);
   });
 
+  test("tracks rotation-injected main account websockets under __main__", () => {
+    const mainPool = mockWs({
+      authContext: {
+        kind: "main-pool",
+        accountId: "__main__",
+        accessToken: "main_token",
+        chatgptAccountId: "main_acc",
+      },
+    });
+    const passthroughMain = mockWs({ authContext: { kind: "main", accountId: null } });
+
+    registerCodexWebSocket(mainPool.ws);
+    registerCodexWebSocket(passthroughMain.ws);
+
+    expect(getTrackedCodexWebSocketCountForAccount("__main__")).toBe(1);
+
+    unregisterCodexWebSocket(mainPool.ws);
+    expect(getTrackedCodexWebSocketCountForAccount("__main__")).toBe(0);
+  });
+
   test("unregister removes tracked socket", () => {
     const pool = mockWs({
       authContext: {

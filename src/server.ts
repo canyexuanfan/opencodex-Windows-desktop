@@ -298,16 +298,22 @@ export function resolveAdapter(providerConfig: OcxProviderConfig) {
 }
 
 function sidecarOutcomeRecorder(config: OcxConfig, authCtx: CodexAuthContext): ((outcome: CodexUpstreamOutcome) => void) | undefined {
-  return authCtx.kind === "pool"
+  return authCtx.kind === "pool" || authCtx.kind === "main-pool"
     ? outcome => recordCodexUpstreamOutcome(config, authCtx.accountId, outcome)
     : undefined;
+}
+
+/** Account id to attribute log labels / upstream outcomes to (pool + rotation-injected main). */
+function codexLogAccountId(authCtx: CodexAuthContext): string | null {
+  return authCtx.kind === "pool" || authCtx.kind === "main-pool" ? authCtx.accountId : null;
 }
 
 function usesCodexForwardPoolAuth(
   authCtx: CodexAuthContext,
   provider: OcxProviderConfig,
-): authCtx is Extract<CodexAuthContext, { kind: "pool" }> {
-  return authCtx.kind === "pool" && provider.authMode === "forward" && provider.adapter === "openai-responses";
+): authCtx is Extract<CodexAuthContext, { kind: "pool" | "main-pool" }> {
+  return (authCtx.kind === "pool" || authCtx.kind === "main-pool")
+    && provider.authMode === "forward" && provider.adapter === "openai-responses";
 }
 
 function codexForwardTerminalOutcomeRecorder(
@@ -399,7 +405,7 @@ async function handleResponses(
     return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
   }
   route.provider = applyCodexAuthContextToProvider(route.provider, authCtx);
-  logCtx.provider = formatCodexProviderForLog(route.providerName, authCtx.kind === "pool" ? authCtx.accountId : null, config);
+  logCtx.provider = formatCodexProviderForLog(route.providerName, codexLogAccountId(authCtx), config);
 
   // OAuth providers: swap in a fresh access token (auto-refreshed) as the Bearer key, so the
   // existing openai-chat / anthropic adapters authenticate with no change.

@@ -51,7 +51,7 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
     });
     setActiveId(id);
     setConfirm(null);
-    const label = id ? accounts.find(a => a.id === id)?.email ?? id : "main";
+    const label = id && id !== "__main__" ? accounts.find(a => a.id === id)?.email ?? id : "main";
     setToast(t("codexAuth.switched", { email: label }));
     setTimeout(() => setToast(""), 5000);
   };
@@ -134,6 +134,9 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
   const main = accounts.find(a => a.isMain);
   const pool = accounts.filter(a => !a.isMain);
   const isNext = (id: string) => activeId === id;
+  // Main is the active/next account when no pool account is selected (legacy null) or when
+  // it is explicitly set to the rotation id "__main__".
+  const isMainActive = !activeId || activeId === "__main__";
 
   return (
     <div>
@@ -146,16 +149,16 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
 
       {toast && <Notice tone="ok">{toast}</Notice>}
 
-      <div className={`card ${!activeId ? "card-active" : ""}`}
-        onClick={() => activeId ? setConfirm({ id: "__main__", email: main?.email ?? "Codex App", plan: main?.plan, isMain: true, hasCredential: true, quota: main?.quota ?? null }) : undefined}
-        style={{ cursor: activeId ? "pointer" : "default", marginBottom: 12 }}>
+      <div className={`card ${isMainActive ? "card-active" : ""}`}
+        onClick={() => !isMainActive ? setConfirm({ id: "__main__", email: main?.email ?? "Codex App", plan: main?.plan, isMain: true, hasCredential: true, quota: main?.quota ?? null }) : undefined}
+        style={{ cursor: isMainActive ? "default" : "pointer", marginBottom: 12 }}>
         <div className="card-head">
           <span className="dot dot-green" />
           <strong>{t("codexAuth.mainAccount")}</strong>
           <span className="card-badges">
             {main && <TicketBadge account={{ ...main, id: "__main__" } as AccountEntry} onClick={() => openResetPopup({ ...main, id: "__main__" } as AccountEntry)} />}
-            <span className={`badge ${!activeId ? "badge-primary" : "badge-muted"}`}>
-              {!activeId ? t("codexAuth.nextSession") : t("codexAuth.current")}
+            <span className={`badge ${isMainActive ? "badge-primary" : "badge-muted"}`}>
+              {isMainActive ? t("codexAuth.nextSession") : t("codexAuth.current")}
             </span>
           </span>
           <span className="card-right"><IconLock width={14} /> {t("codexAuth.appLogin")}</span>
@@ -226,7 +229,7 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
             )}
             <div className="modal-actions">
               <button className="btn btn-ghost" onClick={() => setConfirm(null)}>{t("codexAuth.cancel")}</button>
-              <button className="btn btn-primary" onClick={() => setActive(confirm.id === "__main__" ? null : confirm.id)}>
+              <button className="btn btn-primary" onClick={() => setActive(confirm.id === "__main__" ? "__main__" : confirm.id)}>
                 {t("codexAuth.setAsNext")}
               </button>
             </div>

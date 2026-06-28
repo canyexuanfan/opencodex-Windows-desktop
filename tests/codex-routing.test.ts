@@ -34,6 +34,7 @@ import type { OcxConfig } from "../src/types";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-routing-test");
 let previousOpencodexHome: string | undefined;
+let previousCodexHome: string | undefined;
 
 function makeConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
   return {
@@ -64,6 +65,10 @@ describe("codex routing", () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
     process.env.OPENCODEX_HOME = TEST_DIR;
+    // Isolate the main-account credential source: TEST_DIR has no auth.json, so the main
+    // account is deterministically absent (these cases test the pool-only scenario).
+    previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = TEST_DIR;
     clearThreadAccountMap();
     clearCodexUpstreamHealth();
     clearAccountQuota();
@@ -83,6 +88,8 @@ describe("codex routing", () => {
     clearAccountNeedsReauth("c");
     if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
     else process.env.OPENCODEX_HOME = previousOpencodexHome;
+    if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousCodexHome;
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
   });
 

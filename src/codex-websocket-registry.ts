@@ -5,7 +5,7 @@ const socketsByAccount = new Map<string, Set<ServerWebSocket<WsData>>>();
 
 function trackedAccountId(ws: ServerWebSocket<WsData>): string | null {
   const ctx = ws.data.authContext;
-  return ctx?.kind === "pool" ? ctx.accountId : null;
+  return ctx?.kind === "pool" || ctx?.kind === "main-pool" ? ctx.accountId : null;
 }
 
 function addSocketForAccount(accountId: string | null, ws: ServerWebSocket<WsData>): void {

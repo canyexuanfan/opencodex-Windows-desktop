@@ -4,6 +4,7 @@ import { codexAccountLogLabel } from "./codex-account-label";
 import { isCodexAccountUsable } from "./codex-account-usability";
 import { isAccountNeedsReauth, markAccountNeedsReauth } from "./codex-account-runtime-state";
 import { CODEX_UNKNOWN_USAGE_SCORE, getAccountQuota } from "./codex-quota";
+import { MAIN_CODEX_ACCOUNT_ID, getMainAccountPlan } from "./codex-main-account";
 import type { OcxConfig } from "./types";
 
 type ThreadAffinityEntry = {
@@ -43,6 +44,7 @@ export type CodexUpstreamOutcomeMeta = {
 };
 
 function hasConfiguredPoolAccount(config: OcxConfig, accountId: string): boolean {
+  if (accountId === MAIN_CODEX_ACCOUNT_ID) return isCodexAccountUsable(config, accountId);
   return (config.codexAccounts ?? []).some(account => !account.isMain && account.id === accountId);
 }
 
@@ -203,14 +205,26 @@ function bindThreadAffinity(threadId: string, accountId: string, now: number): v
 }
 
 function getEligiblePoolAccounts(config: OcxConfig, excludeId?: string, now = Date.now()): string[] {
-  return (config.codexAccounts ?? [])
+  const ids = (config.codexAccounts ?? [])
     .filter(account => !account.isMain && account.id !== excludeId && !isAccountNeedsReauth(account.id))
     .filter(account => !isCodexAccountInCooldown(account.id, now))
     .filter(account => isCodexAccountUsable(config, account.id))
     .map(account => account.id);
+  // The main Codex account is not stored in config.codexAccounts; include it as a
+  // first-class rotation candidate when its read-only token is usable (Option A).
+  if (
+    excludeId !== MAIN_CODEX_ACCOUNT_ID
+    && !isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)
+    && !isCodexAccountInCooldown(MAIN_CODEX_ACCOUNT_ID, now)
+    && isCodexAccountUsable(config, MAIN_CODEX_ACCOUNT_ID)
+  ) {
+    ids.unshift(MAIN_CODEX_ACCOUNT_ID);
+  }
+  return ids;
 }
 
 function getPoolAccountPlan(config: OcxConfig, accountId: string): string | undefined {
+  if (accountId === MAIN_CODEX_ACCOUNT_ID) return getMainAccountPlan();
   return (config.codexAccounts ?? []).find(account => !account.isMain && account.id === accountId)?.plan;
 }
 
@@ -387,6 +401,7 @@ export function recordCodexUpstreamOutcome(
 
 export function formatCodexProviderForLog(providerName: string, accountId: string | null, config: OcxConfig): string {
   if (!accountId) return providerName;
+  if (accountId === MAIN_CODEX_ACCOUNT_ID) return `${providerName}-main`;
   const account = (config.codexAccounts ?? []).find(a => !a.isMain && a.id === accountId);
   return account ? `${providerName}-${codexAccountLogLabel(account)}` : providerName;
 }

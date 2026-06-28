@@ -6,6 +6,7 @@ import {
 } from "./codex-account-store";
 import { markAccountNeedsReauth } from "./codex-account-runtime-state";
 import { isCodexAccountUsable } from "./codex-account-usability";
+import { MAIN_CODEX_ACCOUNT_ID, getMainAccountToken } from "./codex-main-account";
 import { getCodexAccountCooldownUntil, resolveCodexAccountForThreadDetailed } from "./codex-routing";
 import type { OcxConfig, OcxProviderConfig } from "./types";
 import { FORWARD_HEADERS } from "./adapters/openai-responses";
@@ -16,6 +17,14 @@ export type CodexAuthContext =
       kind: "pool";
       accountId: string;
       generation: number;
+      accessToken: string;
+      chatgptAccountId: string;
+    }
+  | {
+      // Main Codex account participating in rotation: token injected from ~/.codex/auth.json
+      // (Option A). Distinct from "main" (passthrough fallback that forwards the client token).
+      kind: "main-pool";
+      accountId: string;
       accessToken: string;
       chatgptAccountId: string;
     };
@@ -70,6 +79,14 @@ export async function resolveCodexAuthContext(headers: Headers, config: OcxConfi
   const cooldownUntil = getCodexAccountCooldownUntil(accountId);
   if (cooldownUntil) throw new CodexAccountCooldownError(accountId, cooldownUntil);
 
+  if (accountId === MAIN_CODEX_ACCOUNT_ID) {
+    // Main account in rotation: inject the read-only auth.json token. If the token vanished
+    // since selection, fall back to passthrough rather than failing the request.
+    const token = getMainAccountToken();
+    if (!token) return { kind: "main", accountId: null };
+    return { kind: "main-pool", accountId, accessToken: token.accessToken, chatgptAccountId: token.chatgptAccountId };
+  }
+
   try {
     const token = await getValidCodexToken(accountId);
     return {
@@ -88,7 +105,7 @@ export async function resolveCodexAuthContext(headers: Headers, config: OcxConfi
 }
 
 export function assertCodexAuthContextNotCooled(ctx: CodexAuthContext | undefined): void {
-  if (ctx?.kind !== "pool") return;
+  if (ctx?.kind !== "pool" && ctx?.kind !== "main-pool") return;
   const cooldownUntil = getCodexAccountCooldownUntil(ctx.accountId);
   if (cooldownUntil) throw new CodexAccountCooldownError(ctx.accountId, cooldownUntil);
 }
@@ -97,7 +114,7 @@ export function applyCodexAuthContextToProvider(
   provider: OcxProviderConfig,
   ctx: CodexAuthContext,
 ): OcxRuntimeProviderConfig {
-  if (ctx.kind !== "pool" || provider.authMode !== "forward") return provider;
+  if ((ctx.kind !== "pool" && ctx.kind !== "main-pool") || provider.authMode !== "forward") return provider;
   return {
     ...provider,
     _codexAccountOverride: {
@@ -114,7 +131,7 @@ export function headersForCodexAuthContext(headers: Headers, ctx: CodexAuthConte
     const value = headers.get(name);
     if (value) selected.set(name, value);
   }
-  if (ctx.kind === "pool") {
+  if (ctx.kind === "pool" || ctx.kind === "main-pool") {
     selected.set("authorization", `Bearer ${ctx.accessToken}`);
     selected.set("chatgpt-account-id", ctx.chatgptAccountId);
   }
@@ -123,6 +140,7 @@ export function headersForCodexAuthContext(headers: Headers, ctx: CodexAuthConte
 
 export function isCodexAuthContextUsable(ctx: CodexAuthContext, config: OcxConfig): boolean {
   if (ctx.kind === "main") return true;
+  if (ctx.kind === "main-pool") return isCodexAccountUsable(config, ctx.accountId);
   return isCodexAccountUsable(config, ctx.accountId) && isCodexAccountGenerationLive(ctx.accountId, ctx.generation);
 }
 
