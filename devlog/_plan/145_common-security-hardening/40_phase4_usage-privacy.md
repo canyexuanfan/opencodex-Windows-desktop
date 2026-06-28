@@ -19,3 +19,32 @@ Verification:
 - Stored records contain provider/model/status/counts but not prompt/tool text.
 - Debug body samples are redacted and size-capped.
 - Typecheck.
+
+## Diff-level plan
+
+MODIFY `src/usage-log.ts`
+
+- Add an internal `normalizeUsageEntry(entry: PersistedUsageEntry): PersistedUsageEntry`.
+- `appendUsageEntry()` writes only the normalized allowlisted fields:
+  `requestId`, `timestamp`, `provider`, `model`, optional `resolvedModel`,
+  `status`, `durationMs`, `usageStatus`, optional numeric `usage`, and optional
+  `totalTokens`.
+- Ignore any runtime extra keys such as `prompt`, `input`, `messages`,
+  `headers`, `authorization`, `accessToken`, `refreshToken`, `profileArn`, or
+  tool payloads even if a caller passes a widened object.
+
+MODIFY `tests/usage-log.test.ts`
+
+- Add a regression test that passes an object with secret-bearing extra keys via
+  a widened cast and proves the persisted JSONL line omits them.
+- Keep existing mode `0o600` and malformed-line tests.
+
+MODIFY `devlog/_plan/145_common-security-hardening/40_phase4_usage-privacy.md`
+
+- Record changed files, verification commands, and commit.
+
+Out of scope:
+
+- Do not change `/api/usage` response shape unless this phase reveals a leak.
+- Do not change usage aggregation semantics.
+- Do not change `usage-debug` again; diagnostic debug sink redaction was Phase 20.
