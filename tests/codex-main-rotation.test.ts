@@ -153,9 +153,11 @@ describe("main account rotation (Option A)", () => {
     expect(ctx).toEqual({ kind: "main", accountId: null });
   });
 
-  test("provider log label distinguishes the main account", () => {
+  test("provider log label unifies the main account with the passthrough provider", () => {
     const config = makeConfig();
-    expect(formatCodexProviderForLog("chatgpt", MAIN_CODEX_ACCOUNT_ID, config)).toBe("chatgpt-main");
+    // main-pool (MAIN_CODEX_ACCOUNT_ID) and the main passthrough (null) are the same physical
+    // account, so both log under the base provider name and aggregate into one usage row.
+    expect(formatCodexProviderForLog("chatgpt", MAIN_CODEX_ACCOUNT_ID, config)).toBe("chatgpt");
     expect(formatCodexProviderForLog("chatgpt", null, config)).toBe("chatgpt");
   });
 

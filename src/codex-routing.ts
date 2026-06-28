@@ -401,7 +401,10 @@ export function recordCodexUpstreamOutcome(
 
 export function formatCodexProviderForLog(providerName: string, accountId: string | null, config: OcxConfig): string {
   if (!accountId) return providerName;
-  if (accountId === MAIN_CODEX_ACCOUNT_ID) return `${providerName}-main`;
+  // The main Codex login participates in rotation as "main-pool" (MAIN_CODEX_ACCOUNT_ID) but is the
+  // same physical account as the "main" passthrough (null accountId). Log both under the base provider
+  // name so usage/tokens aggregate into a single row instead of splitting into `chatgpt` + `chatgpt-main`.
+  if (accountId === MAIN_CODEX_ACCOUNT_ID) return providerName;
   const account = (config.codexAccounts ?? []).find(a => !a.isMain && a.id === accountId);
   return account ? `${providerName}-${codexAccountLogLabel(account)}` : providerName;
 }
