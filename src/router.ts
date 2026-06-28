@@ -150,9 +150,6 @@ export function routeModel(config: OcxConfig, modelId: string): RouteResult {
     }
   }
 
-  const patternRoute = routeByKnownModelPattern(config, modelId);
-  if (patternRoute) return patternRoute;
-
   for (const [provName, prov] of activeProviderEntries(config)) {
     if (prov.defaultModel === modelId) {
       return {
@@ -163,6 +160,9 @@ export function routeModel(config: OcxConfig, modelId: string): RouteResult {
     }
   }
 
+  const patternRoute = routeByKnownModelPattern(config, modelId);
+  if (patternRoute) return patternRoute;
+
   for (const [provName, prov] of activeProviderEntries(config)) {
     if (prov.models && Array.isArray(prov.models) && (prov.models as string[]).includes(modelId)) {
       return {
@@ -172,9 +172,6 @@ export function routeModel(config: OcxConfig, modelId: string): RouteResult {
       };
     }
   }
-
-  const fallbackPatternRoute = routeByKnownModelPattern(config, modelId);
-  if (fallbackPatternRoute) return fallbackPatternRoute;
 
   if (hasOwnProvider(config.providers, config.defaultProvider)) {
     const defaultProv = config.providers[config.defaultProvider];
