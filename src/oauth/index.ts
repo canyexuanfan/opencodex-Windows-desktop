@@ -6,6 +6,7 @@ import { getCredential, saveCredential } from "./store";
 import { loginXai, refreshXaiToken } from "./xai";
 import { ANTHROPIC_OAUTH_BETA, loginAnthropic, refreshAnthropicToken } from "./anthropic";
 import { loginKimi, refreshKimiToken } from "./kimi";
+import { loginKiro, refreshKiroToken } from "./kiro";
 import { loginChatGPT, refreshChatGPTToken } from "./chatgpt";
 import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers/derive";
 
@@ -51,6 +52,12 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
     refresh: refreshKimiToken,
     providerConfig: oauthConfig("kimi"),
     defaultModel: oauthDefaultModel("kimi"),
+  },
+  kiro: {
+    login: (ctrl) => loginKiro(ctrl),
+    refresh: (rt, signal) => refreshKiroToken(rt, signal),
+    providerConfig: oauthConfig("kiro"),
+    defaultModel: oauthDefaultModel("kiro"),
   },
   chatgpt: {
     login: loginChatGPT,
