@@ -114,6 +114,18 @@ describe("summarizeUsage", () => {
     expect(sum.models[0]).toMatchObject({ provider: "chatgpt", model: "gpt-5.5", requests: 2, totalTokens: 7 });
   });
 
+  test("merges reported and unreported rows of the same model into one row", () => {
+    // Reported upstream rows carry resolvedModel; unreported rows (no usage) often do not. They
+    // must still collapse into a single model row whose reportedRequests < requests.
+    const entries: PersistedUsageEntry[] = [
+      entry({ ts: FIXED_NOW - 1, provider: "openai", model: "gpt-5.5", resolvedModel: "gpt-5.5", usageStatus: "reported", usage: { inputTokens: 4, outputTokens: 2 }, totalTokens: 6 }),
+      entry({ ts: FIXED_NOW - 2, provider: "openai", model: "gpt-5.5", usageStatus: "unreported" }),
+    ];
+    const sum = summarizeUsage(entries, "30d", FIXED_NOW);
+    expect(sum.models).toHaveLength(1);
+    expect(sum.models[0]).toMatchObject({ provider: "openai", model: "gpt-5.5", requests: 2, reportedRequests: 1, totalTokens: 6 });
+  });
+
   test("all range keeps everything and reports since=null", () => {
     const entries: PersistedUsageEntry[] = [
       entry({ ts: FIXED_NOW - 365 * 86400000, usageStatus: "reported", usage: { inputTokens: 1, outputTokens: 1 }, totalTokens: 2 }),
