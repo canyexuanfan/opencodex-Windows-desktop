@@ -32,7 +32,7 @@ function crashLogPath(): string {
   return join(dir, "crash.log");
 }
 
-function formatError(kind: string, err: unknown): string {
+export function formatCrashEntry(kind: string, err: unknown): string {
   const ts = new Date().toISOString();
   const detail =
     err instanceof Error
@@ -40,7 +40,41 @@ function formatError(kind: string, err: unknown): string {
       : typeof err === "object"
         ? safeStringify(err)
         : String(err);
-  return `\n[${ts}] ${kind}\n${detail}\n`;
+  return `\n[${ts}] ${kind}\n${detail}${diagnose(err)}\n`;
+}
+
+/**
+ * Bun surfaces some request-time stream/abort errors with only native frames
+ * (`at <anonymous> (native:1:11)`), so `err.stack` alone cannot locate the
+ * fault. Capture extra shape (constructor, own keys, cause/code) plus a FRESH
+ * stack taken from the handler tick so the next occurrence is pinpointable.
+ */
+function diagnose(err: unknown): string {
+  const lines: string[] = [];
+  try {
+    const ctor = (err as { constructor?: { name?: string } } | null)?.constructor?.name;
+    if (ctor && ctor !== "Error" && ctor !== "Object") lines.push(`  ctor: ${ctor}`);
+    if (err && typeof err === "object") {
+      const keys = Object.keys(err as object);
+      if (keys.length) lines.push(`  keys: ${keys.join(", ")}`);
+      const cause = (err as { cause?: unknown }).cause;
+      if (cause !== undefined) {
+        lines.push(`  cause: ${cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause)}`);
+      }
+      const code = (err as { code?: unknown }).code;
+      if (code !== undefined) lines.push(`  code: ${String(code)}`);
+    }
+    const stack = err instanceof Error ? err.stack ?? "" : "";
+    const hasUsableStack = /\((?!native:)[^)]*:\d+:\d+\)/.test(stack);
+    if (!hasUsableStack) {
+      const here = new Error("crash-guard handler trace").stack ?? "";
+      const frames = here.split("\n").slice(1).map(l => `    ${l.trim()}`).join("\n");
+      if (frames) lines.push(`  handler-stack:\n${frames}`);
+    }
+  } catch {
+    /* diagnosis must never throw */
+  }
+  return lines.length ? `\n${lines.join("\n")}` : "";
 }
 
 function safeStringify(value: unknown): string {
@@ -52,7 +86,7 @@ function safeStringify(value: unknown): string {
 }
 
 function record(kind: string, err: unknown): void {
-  const line = formatError(kind, err);
+  const line = formatCrashEntry(kind, err);
   // Always surface to stderr so foreground `ocx start` users still see it,
   // then persist for later diagnosis.
   console.error(`⚠️  ${kind} (proxy stayed up; logged to crash.log)`);
