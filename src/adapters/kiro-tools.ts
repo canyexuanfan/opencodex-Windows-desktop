@@ -1,0 +1,24 @@
+import type { OcxParsedRequest } from "../types";
+
+function sanitizeKiroSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeKiroSchema);
+  if (!value || typeof value !== "object") return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (key === "additionalProperties") continue;
+    if (key === "required" && Array.isArray(child) && child.length === 0) continue;
+    out[key] = sanitizeKiroSchema(child);
+  }
+  return out;
+}
+
+export function convertKiroTools(parsed: OcxParsedRequest): unknown[] {
+  const tools = parsed.context.tools ?? [];
+  return tools.map(t => ({
+    toolSpecification: {
+      name: t.name.slice(0, 64),
+      description: (t.description || `Tool: ${t.name}`).slice(0, 1024),
+      inputSchema: { json: sanitizeKiroSchema(t.parameters ?? {}) as Record<string, unknown> },
+    },
+  }));
+}

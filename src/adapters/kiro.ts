@@ -30,6 +30,7 @@ import type { ProviderAdapter } from "./base";
 import type { AdapterFetchContext, AdapterRequest } from "./base";
 import { extractKiroImages, type KiroImage } from "./kiro-images";
 import { fetchKiroWithRetry } from "./kiro-retry";
+import { convertKiroTools } from "./kiro-tools";
 
 const AMZ_TARGET = "AmazonCodeWhispererStreamingService.GenerateAssistantResponse";
 const SDK_VERSION = "1.0.27";
@@ -107,17 +108,6 @@ function usageContentText(content: string | OcxContentPart[]): string {
     })
     .filter(Boolean)
     .join("\n");
-}
-
-function convertTools(parsed: OcxParsedRequest): unknown[] {
-  const tools = parsed.context.tools ?? [];
-  return tools.map(t => ({
-    toolSpecification: {
-      name: t.name.slice(0, 64),
-      description: (t.description || `Tool: ${t.name}`).slice(0, 1024),
-      inputSchema: { json: (t.parameters ?? {}) as Record<string, unknown> },
-    },
-  }));
 }
 
 function stableConversationId(parsed: OcxParsedRequest): string {
@@ -219,7 +209,7 @@ function injectKiroThinkingTags(content: string, parsed: OcxParsedRequest): stri
 
 export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | undefined): Record<string, unknown> {
   const modelId = mapModelId(parsed.modelId);
-  const kiroTools = convertTools(parsed);
+  const kiroTools = convertKiroTools(parsed);
   let systemPrefix = "";
   if (!parsed.previousResponseId && parsed.context.systemPrompt?.length) systemPrefix = `${parsed.context.systemPrompt.join("\n\n")}\n\n`;
 

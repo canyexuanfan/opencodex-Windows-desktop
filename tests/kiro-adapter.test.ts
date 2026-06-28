@@ -92,6 +92,32 @@ describe("kiro adapter — buildRequest", () => {
     expect(ctx.tools[0].toolSpecification.name).toBe("grep");
     expect(ctx.tools[0].toolSpecification.inputSchema.json).toEqual({ type: "object" });
   });
+
+  test("tool schemas remove Kiro-rejected fields recursively", () => {
+    const parameters = {
+      type: "object",
+      required: [],
+      additionalProperties: false,
+      properties: {
+        path: { type: "string" },
+        options: {
+          type: "object",
+          required: ["mode"],
+          additionalProperties: false,
+          properties: { mode: { type: "string" } },
+        },
+      },
+    };
+    const { body } = createKiroAdapter(provider).buildRequest(
+      parsedWith([{ role: "user", content: "hi" }], [{ name: "bash", description: "Run command", parameters }]),
+    );
+    const schema = JSON.parse(body).conversationState.currentMessage.userInputMessage.userInputMessageContext.tools[0].toolSpecification.inputSchema.json;
+
+    expect(schema.required).toBeUndefined();
+    expect(schema.additionalProperties).toBeUndefined();
+    expect(schema.properties.options.required).toEqual(["mode"]);
+    expect(schema.properties.options.additionalProperties).toBeUndefined();
+  });
 });
 
 describe("kiro adapter — parseStream", () => {
