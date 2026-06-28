@@ -6,11 +6,12 @@ import { getCredential, saveCredential } from "./store";
 import { loginXai, refreshXaiToken } from "./xai";
 import { ANTHROPIC_OAUTH_BETA, loginAnthropic, refreshAnthropicToken } from "./anthropic";
 import { loginKimi, refreshKimiToken } from "./kimi";
-import { loginKiro, refreshKiroToken } from "./kiro";
+import { loginKiro, readKiroCliSqlite, refreshKiroToken } from "./kiro";
 import { loginChatGPT, refreshChatGPTToken } from "./chatgpt";
 import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers/derive";
 
 const REFRESH_SKEW_MS = 60_000;
+const tokenRefreshes = new Map<string, Promise<string>>();
 
 export interface LoginOpts { forceLogin?: boolean }
 
@@ -97,9 +98,47 @@ export async function getValidAccessToken(provider: string): Promise<string> {
   const cred = getCredential(provider);
   if (!cred) throw new OAuthLoginRequiredError(provider);
   if (cred.expires > Date.now() + REFRESH_SKEW_MS) return cred.access;
-  const fresh = await def.refresh(cred.refresh);
-  saveCredential(provider, fresh);
-  return fresh.access;
+  const existing = tokenRefreshes.get(provider);
+  if (existing) return existing;
+  const refresh = refreshAndPersistAccessToken(provider, def, cred).finally(() => {
+    if (tokenRefreshes.get(provider) === refresh) tokenRefreshes.delete(provider);
+  });
+  tokenRefreshes.set(provider, refresh);
+  return refresh;
+}
+
+function readFreshKiroCliCredential(): OAuthCredentials | undefined {
+  const imported = readKiroCliSqlite();
+  if (!imported || imported.expires <= Date.now() + REFRESH_SKEW_MS) return undefined;
+  return { access: imported.access, refresh: imported.refresh, expires: imported.expires };
+}
+
+async function refreshAndPersistAccessToken(
+  provider: string,
+  def: OAuthProviderDef,
+  cred: OAuthCredentials,
+): Promise<string> {
+  if (provider === "kiro") {
+    const imported = readFreshKiroCliCredential();
+    if (imported) {
+      saveCredential(provider, imported);
+      return imported.access;
+    }
+  }
+  try {
+    const fresh = await def.refresh(cred.refresh);
+    saveCredential(provider, fresh);
+    return fresh.access;
+  } catch (err) {
+    if (provider === "kiro") {
+      const imported = readFreshKiroCliCredential();
+      if (imported) {
+        saveCredential(provider, imported);
+        return imported.access;
+      }
+    }
+    throw err;
+  }
 }
 
 /**
