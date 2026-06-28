@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildProfileFile, buildProviderTableBlock, chooseCatalogPathForInjection, stripOpencodexConfig } from "../src/codex-inject";
+import { buildProfileFile, buildProviderTableBlock, chooseCatalogPathForInjection, stripOpencodexConfig, stripRootContextWindowOverrides } from "../src/codex-inject";
 
 describe("Codex config injection", () => {
   test("omits provider-level Responses WebSocket support by default", () => {
@@ -34,6 +34,29 @@ describe("Codex config injection", () => {
     expect(buildProviderTableBlock(10100, false, false, "::")).toContain('base_url = "http://localhost:10100/v1"');
     expect(buildProviderTableBlock(10100, false, false, "192.168.1.20")).toContain('base_url = "http://192.168.1.20:10100/v1"');
     expect(buildProviderTableBlock(10100, false, false, "2001:db8::5")).toContain('base_url = "http://[2001:db8::5]:10100/v1"');
+  });
+
+  test("strips stale root context-window overrides on injection so the catalog drives model context (gpt-5.5 regression)", () => {
+    const cleaned = stripRootContextWindowOverrides([
+      'model_provider = "opencodex"',
+      "model_context_window = 1000000",
+      "model_auto_compact_token_limit = 900000",
+      'model = "gpt-5.5"',
+      "",
+      "[model_providers.opencodex]",
+      "# a nested table key must survive",
+      "model_context_window = 272000",
+      "",
+    ].join("\n"));
+
+    // Root-level overrides (before the first table header) are removed.
+    expect(cleaned).not.toMatch(/^model_context_window = 1000000$/m);
+    expect(cleaned).not.toMatch(/^model_auto_compact_token_limit = 900000$/m);
+    // Non-context-window root keys are untouched.
+    expect(cleaned).toContain('model_provider = "opencodex"');
+    expect(cleaned).toContain('model = "gpt-5.5"');
+    // Table-nested keys (after the first [table]) are preserved.
+    expect(cleaned).toContain("model_context_window = 272000");
   });
 
   test("preserves user root context-window overrides when restoring native Codex", () => {
