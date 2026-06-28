@@ -3,10 +3,12 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loginKiro, readKiroCliSqlite, refreshKiroToken } from "../src/oauth/kiro";
+import { loginKiro, readKiroCliSqlite, refreshKiroToken, resolveKiroProfileArn, resolveKiroRegion } from "../src/oauth/kiro";
 
 const origHome = process.env.HOME;
 const origEnvTok = process.env.KIRO_ACCESS_TOKEN;
+const origArn = process.env.KIRO_PROFILE_ARN;
+const origRegion = process.env.KIRO_REGION;
 const origFetch = globalThis.fetch;
 let tmp: string;
 
@@ -14,17 +16,23 @@ beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "kiro-oauth-"));
   process.env.HOME = tmp;
   delete process.env.KIRO_ACCESS_TOKEN;
+  delete process.env.KIRO_PROFILE_ARN;
+  delete process.env.KIRO_REGION;
 });
 afterEach(() => {
   if (origHome === undefined) delete process.env.HOME;
   else process.env.HOME = origHome;
   if (origEnvTok === undefined) delete process.env.KIRO_ACCESS_TOKEN;
   else process.env.KIRO_ACCESS_TOKEN = origEnvTok;
+  if (origArn === undefined) delete process.env.KIRO_PROFILE_ARN;
+  else process.env.KIRO_PROFILE_ARN = origArn;
+  if (origRegion === undefined) delete process.env.KIRO_REGION;
+  else process.env.KIRO_REGION = origRegion;
   globalThis.fetch = origFetch;
   rmSync(tmp, { recursive: true, force: true });
 });
 
-function seedKiroCliDb(token: { access_token: string; refresh_token?: string; expires_at?: string }) {
+function seedKiroCliDb(token: { access_token: string; refresh_token?: string; expires_at?: string; profile_arn?: string }) {
   const dir = join(tmp, "Library", "Application Support", "kiro-cli");
   mkdirSync(dir, { recursive: true });
   const db = new Database(join(dir, "data.sqlite3"));
@@ -85,5 +93,28 @@ describe("kiro oauth — import-first", () => {
 
   test("refreshKiroToken throws without a refresh token", async () => {
     await expect(refreshKiroToken("")).rejects.toThrow(/no refresh token/i);
+  });
+});
+
+describe("kiro oauth — adapter-time resolvers (profileArn / region)", () => {
+  test("resolveKiroProfileArn: KIRO_PROFILE_ARN env wins over SQLite", () => {
+    process.env.KIRO_PROFILE_ARN = "arn:env";
+    seedKiroCliDb({ access_token: "aoa", profile_arn: "arn:sqlite" });
+    expect(resolveKiroProfileArn()).toBe("arn:env");
+  });
+
+  test("resolveKiroProfileArn: reads profile_arn from SQLite when env unset", () => {
+    seedKiroCliDb({ access_token: "aoa", profile_arn: "arn:sqlite" });
+    expect(resolveKiroProfileArn()).toBe("arn:sqlite");
+  });
+
+  test("resolveKiroProfileArn: undefined when no env and no SQLite", () => {
+    expect(resolveKiroProfileArn()).toBeUndefined();
+  });
+
+  test("resolveKiroRegion: KIRO_REGION override, else us-east-1 default", () => {
+    expect(resolveKiroRegion()).toBe("us-east-1");
+    process.env.KIRO_REGION = "eu-west-1";
+    expect(resolveKiroRegion()).toBe("eu-west-1");
   });
 });
