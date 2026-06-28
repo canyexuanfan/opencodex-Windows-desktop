@@ -31,6 +31,31 @@ export function usageStatusForFinalLog(usage: OcxUsage | undefined): UsageStatus
   return usage ? "reported" : "unreported";
 }
 
+function normalizeUsageValue(usage: OcxUsage | undefined): OcxUsage | undefined {
+  if (!usage) return undefined;
+  return {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    ...(typeof usage.cachedInputTokens === "number" ? { cachedInputTokens: usage.cachedInputTokens } : {}),
+    ...(typeof usage.reasoningOutputTokens === "number" ? { reasoningOutputTokens: usage.reasoningOutputTokens } : {}),
+  };
+}
+
+function normalizeUsageEntry(entry: PersistedUsageEntry): PersistedUsageEntry {
+  return {
+    requestId: entry.requestId,
+    timestamp: entry.timestamp,
+    provider: entry.provider,
+    model: entry.model,
+    ...(entry.resolvedModel ? { resolvedModel: entry.resolvedModel } : {}),
+    status: entry.status,
+    durationMs: entry.durationMs,
+    usageStatus: entry.usageStatus,
+    ...(entry.usage ? { usage: normalizeUsageValue(entry.usage) } : {}),
+    ...(typeof entry.totalTokens === "number" ? { totalTokens: entry.totalTokens } : {}),
+  };
+}
+
 function ensureUsageLogDir(): void {
   const dir = getConfigDir();
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -40,7 +65,7 @@ function ensureUsageLogDir(): void {
 export function appendUsageEntry(entry: PersistedUsageEntry): void {
   ensureUsageLogDir();
   const path = usageLogPath();
-  appendFileSync(path, `${JSON.stringify(entry)}\n`, { encoding: "utf-8", mode: 0o600 });
+  appendFileSync(path, `${JSON.stringify(normalizeUsageEntry(entry))}\n`, { encoding: "utf-8", mode: 0o600 });
   try { chmodSync(path, 0o600); } catch { /* best-effort on platforms that ignore chmod */ }
 }
 

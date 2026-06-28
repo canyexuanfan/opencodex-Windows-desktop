@@ -66,6 +66,56 @@ describe("usage log", () => {
     }
   });
 
+  test("drops runtime extra fields before persisting usage JSONL", () => {
+    appendUsageEntry({
+      requestId: "ocx-extra",
+      timestamp: 2,
+      provider: "openai",
+      model: "gpt-5.5",
+      status: 200,
+      durationMs: 12,
+      usageStatus: "reported",
+      usage: {
+        inputTokens: 1,
+        outputTokens: 2,
+        prompt: "secret prompt text",
+      },
+      totalTokens: 3,
+      prompt: "secret prompt text",
+      messages: [{ role: "user", content: "secret message" }],
+      headers: { authorization: "Bearer usage-log-token" },
+      accessToken: "access-secret",
+      refreshToken: "refresh-secret",
+      profileArn: "arn:aws:codewhisperer:us-east-1:123456789012:profile/demo",
+    } as unknown as Parameters<typeof appendUsageEntry>[0]);
+
+    const raw = readFileSync(usageLogPath(), "utf-8");
+    for (const leaked of [
+      "secret prompt text",
+      "secret message",
+      "usage-log-token",
+      "access-secret",
+      "refresh-secret",
+      "arn:aws:codewhisperer",
+      "headers",
+      "messages",
+      "profileArn",
+    ]) {
+      expect(raw).not.toContain(leaked);
+    }
+    expect(readUsageEntries()).toEqual([{
+      requestId: "ocx-extra",
+      timestamp: 2,
+      provider: "openai",
+      model: "gpt-5.5",
+      status: 200,
+      durationMs: 12,
+      usageStatus: "reported",
+      usage: { inputTokens: 1, outputTokens: 2 },
+      totalTokens: 3,
+    }]);
+  });
+
   test("skips malformed JSONL lines while keeping valid entries", () => {
     writeFileSync(usageLogPath(), [
       "{\"requestId\":\"a\",\"timestamp\":1,\"provider\":\"p\",\"model\":\"m\",\"status\":200,\"durationMs\":1,\"usageStatus\":\"unreported\"}",

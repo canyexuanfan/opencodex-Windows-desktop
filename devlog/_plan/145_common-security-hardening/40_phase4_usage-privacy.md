@@ -48,3 +48,21 @@ Out of scope:
 - Do not change `/api/usage` response shape unless this phase reveals a leak.
 - Do not change usage aggregation semantics.
 - Do not change `usage-debug` again; diagnostic debug sink redaction was Phase 20.
+
+## Build record
+
+Files changed:
+
+- MODIFY `src/usage-log.ts`: `appendUsageEntry()` now writes a normalized
+  allowlisted `PersistedUsageEntry` so runtime extra fields cannot persist into
+  `usage.jsonl`.
+- MODIFY `tests/usage-log.test.ts`: added widened-object regression coverage for
+  prompt/message/header/token/profile extra fields.
+- MODIFY `devlog/_plan/145_common-security-hardening/40_phase4_usage-privacy.md`:
+  this build/verification record.
+
+Verification:
+
+- `bun test tests/usage-log.test.ts tests/usage-summary.test.ts` -> 15 pass,
+  0 fail.
+- `bun x tsc --noEmit` -> exit 0, no diagnostics.
