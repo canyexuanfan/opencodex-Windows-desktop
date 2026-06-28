@@ -53,4 +53,33 @@ describe("eventstream-decoder", () => {
 		// zlib.crc32("hello") = 0x3610a686
 		expect(crc32(enc.encode("hello")) >>> 0).toBe(0x3610a686);
 	});
+
+	test("cancels the underlying reader on early consumer termination (no orphaned read)", async () => {
+		let cancelled = false;
+		let pulls = 0;
+		const frame = encodeMessage({ ":message-type": "event" }, enc.encode("one"));
+		const stream = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				pulls++;
+				if (pulls === 1) { controller.enqueue(frame); return; }
+				// Never resolve further: a read after the first frame stays pending until cancel().
+			},
+			cancel() { cancelled = true; },
+		});
+
+		const gen = decodeEventStream(stream);
+		const first = await gen.next();
+		expect(first.done).toBe(false);
+		// Consumer stops early (e.g. web-search loop break / turn abort) → generator.return runs finally.
+		await gen.return(undefined as never);
+		expect(cancelled).toBe(true);
+	});
+
+	test("clean completion still yields every frame and closes normally", async () => {
+		const f1 = encodeMessage({ ":message-type": "event" }, enc.encode("a"));
+		const f2 = encodeMessage({ ":message-type": "event" }, enc.encode("b"));
+		const out: string[] = [];
+		for await (const msg of decodeEventStream(streamOf(f1, f2))) out.push(dec.decode(msg.payload));
+		expect(out).toEqual(["a", "b"]);
+	});
 });

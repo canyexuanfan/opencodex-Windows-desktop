@@ -175,7 +175,22 @@ export async function* decodeEventStream(source: ReadableStream<Uint8Array>): As
 		}
 		if (buf.length > 0) throw new Error("eventstream: truncated message at end of stream");
 	} finally {
-		reader.releaseLock();
+		// Early termination (consumer break/return, turn abort, or an HTTP/2 mid-body reset) can leave
+		// an in-flight `reader.read()` pending when this generator's `finally` runs. Releasing the lock
+		// does NOT settle that orphaned read — Bun then surfaces it as an off-path
+		// `unhandledRejection: TypeError: null is not an object` that no caller try/catch can intercept.
+		// Cancel first (settles the pending read + closes the body), then release. On a clean `done`
+		// finish the read is already settled, so cancel() is a harmless no-op.
+		try {
+			await reader.cancel();
+		} catch {
+			/* body already errored/closed — nothing to cancel */
+		}
+		try {
+			reader.releaseLock();
+		} catch {
+			/* lock already released by cancel() on some runtimes */
+		}
 	}
 }
 
