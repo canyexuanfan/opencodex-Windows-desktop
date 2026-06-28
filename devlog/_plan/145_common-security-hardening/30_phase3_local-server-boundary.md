@@ -22,3 +22,28 @@ Verification:
 
 - Focused server-auth tests.
 - Typecheck.
+
+## Diff-level plan
+
+MODIFY `tests/server-auth.test.ts`
+
+- Add an `OPTIONS` preflight regression test:
+  - loopback/default config rejects non-loopback `Origin` with 403.
+  - loopback/default config accepts matching loopback `Origin` with 204.
+- Add a WebSocket upgrade regression test for non-loopback bindings:
+  - valid `X-OpenCodex-API-Key` is not enough when `Origin` is hostile.
+  - response is 403 with `origin_rejected` / cross-origin rejection shape.
+- Reuse existing `startServer`, `saveConfig`, and `config()` test helpers.
+
+MODIFY `src/server.ts` only if the new tests expose an actual boundary gap.
+
+MODIFY `devlog/_plan/145_common-security-hardening/30_phase3_local-server-boundary.md`
+
+- Record whether this phase was test-only or required a server patch.
+- Record verification commands and commit.
+
+Out of scope:
+
+- Do not change Kiro adapter parity files.
+- Do not broaden CORS to support arbitrary browser apps.
+- Do not introduce a new auth scheme; use the existing local API auth behavior.
