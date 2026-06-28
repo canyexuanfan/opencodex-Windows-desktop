@@ -5,7 +5,9 @@ import {
   clearThreadAccountMap,
   clearCodexUpstreamHealth,
   formatCodexProviderForLog,
+  isCodexAccountInCooldown,
   pickLowestUsageCodexAccount,
+  recordCodexUpstreamOutcome,
   resolveCodexAccountForThread,
 } from "../src/codex-routing";
 import {
@@ -155,5 +157,26 @@ describe("main account rotation (Option A)", () => {
     const config = makeConfig();
     expect(formatCodexProviderForLog("chatgpt", MAIN_CODEX_ACCOUNT_ID, config)).toBe("chatgpt-main");
     expect(formatCodexProviderForLog("chatgpt", null, config)).toBe("chatgpt");
+  });
+
+  test("failure failover can move from a failing pool account onto the main account", () => {
+    const config = makeConfig({ autoSwitchThreshold: 0, upstreamFailoverThreshold: 3 });
+    const now = 1_800_000_000_000;
+    updateAccountQuota("b", 50, 0);
+    updateAccountQuota(MAIN_CODEX_ACCOUNT_ID, 5, 0);
+    for (let i = 0; i < 3; i++) recordCodexUpstreamOutcome(config, "a", 500, { now });
+    expect(resolveCodexAccountForThread("failover-thread", config, now)).toBe(MAIN_CODEX_ACCOUNT_ID);
+  });
+
+  test("cooldown removes the main account from rotation candidates", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    updateAccountQuota("a", 90, 0);
+    updateAccountQuota("b", 50, 0);
+    updateAccountQuota(MAIN_CODEX_ACCOUNT_ID, 5, 0);
+    expect(pickLowestUsageCodexAccount(config, undefined, now)).toBe(MAIN_CODEX_ACCOUNT_ID);
+    recordCodexUpstreamOutcome(config, MAIN_CODEX_ACCOUNT_ID, 429, { retryAfter: "60", now });
+    expect(isCodexAccountInCooldown(MAIN_CODEX_ACCOUNT_ID, now)).toBe(true);
+    expect(pickLowestUsageCodexAccount(config, undefined, now)).toBe("b");
   });
 });
