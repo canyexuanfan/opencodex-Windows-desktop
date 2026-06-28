@@ -1,6 +1,6 @@
 import type { OcxProviderConfig } from "../types";
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
-import { signalWithTimeout } from "../abort";
+import { signalWithTimeout, cancelBodyOnAbort } from "../abort";
 import { sidecarEnter } from "../sidecar-tracker";
 import { parseSidecarSSE } from "../web-search/parse";
 import type { SidecarOutcomeRecorder } from "../web-search/executor";
@@ -95,7 +95,13 @@ export async function describeImage(
       const t = await res.text().catch(() => "");
       return { text: "", error: `vision sidecar HTTP ${res.status}: ${t.slice(0, 200)}` };
     }
-    const parsed = await parseSidecarSSE(res);
+    const detachBodyGuard = cancelBodyOnAbort(res.body, linkedSignal.signal);
+    let parsed;
+    try {
+      parsed = await parseSidecarSSE(res);
+    } finally {
+      detachBodyGuard();
+    }
     // The backend can return HTTP 200 then stream a `response.failed`/`error` event with no text;
     // surface that as a describe error instead of an empty (silently-blank) description.
     if (!parsed.text.trim() && parsed.error) return { text: "", error: parsed.error };
