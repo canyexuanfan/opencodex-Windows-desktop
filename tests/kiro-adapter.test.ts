@@ -137,7 +137,7 @@ describe("kiro adapter — parseStream", () => {
     expect(done.outputTokens).toBe(100);
   });
 
-  test("usage input does not grow with old history while Kiro payload still includes it", async () => {
+  test("fresh payload includes history while usage counts only the current turn", async () => {
     const latest = "please summarize recent commits";
     const shortMessages = [
       { role: "user", content: "old question" },
@@ -163,6 +163,30 @@ describe("kiro adapter — parseStream", () => {
     expect(longBody.length).toBeGreaterThan(shortBody.length + 10_000);
     expect(longUsage.inputTokens).toBe(shortUsage.inputTokens);
     expect(longUsage.inputTokens).toBe(estimateTokens(latest, "claude-sonnet-4.5"));
+  });
+
+  test("resumed payload sends only the current turn instead of repeated history", async () => {
+    const latest = "please summarize recent commits";
+    const oldHistory = [
+      { role: "user", content: "u".repeat(8000) },
+      { role: "assistant", content: [{ type: "text", text: "a".repeat(8000) }] },
+      { role: "user", content: "another old question" },
+      { role: "assistant", content: [{ type: "text", text: "another old answer" }] },
+    ];
+
+    const freshBody = createKiroAdapter(provider).buildRequest(parsedWith([...oldHistory, { role: "user", content: latest }])).body;
+    const resumedAdapter = createKiroAdapter(provider);
+    const resumedBody = resumedAdapter.buildRequest({
+      ...parsedWith([...oldHistory, { role: "user", content: latest }]),
+      previousResponseId: "kiro-prev-1",
+    }).body;
+    const resumedUsage = await doneUsage(resumedAdapter, eventFrame({ content: "ok" }));
+    const cs = JSON.parse(resumedBody).conversationState;
+
+    expect(freshBody.length).toBeGreaterThan(resumedBody.length + 10_000);
+    expect(cs.history).toBeUndefined();
+    expect(cs.currentMessage.userInputMessage.content).toBe(latest);
+    expect(resumedUsage.inputTokens).toBe(estimateTokens(latest, "claude-sonnet-4.5"));
   });
 
   test("tool-result follow-up counts new tool output without re-counting prior assistant tool args", async () => {
@@ -207,24 +231,43 @@ describe("kiro adapter — parseResponse (web-search sidecar non-streaming path)
   });
 });
 
-describe("kiro adapter — reasoning ignored (Codex forces it, CW has no field)", () => {
+describe("kiro adapter — fake reasoning effort tags", () => {
   const kiro = PROVIDER_REGISTRY.find(p => p.id === "kiro") as unknown as OcxProviderConfig;
 
-  test("kiro is registered with no-reasoning metadata", () => {
+  test("kiro advertises Codex-compatible reasoning efforts", () => {
     expect(kiro).toBeTruthy();
-    expect(kiro.noReasoningModels?.length).toBeGreaterThan(0);
+    expect(configuredReasoningEfforts(kiro, "claude-opus-4.8")).toEqual(["low", "medium", "high", "xhigh"]);
+    expect(configuredReasoningEfforts(kiro, "kiro-auto")).toEqual(["low", "medium", "high", "xhigh"]);
   });
 
-  test("configuredReasoningEfforts is [] for kiro models (catalog advertises none)", () => {
-    expect(configuredReasoningEfforts(kiro, "claude-opus-4.8")).toEqual([]);
-    expect(configuredReasoningEfforts(kiro, "kiro-auto")).toEqual([]);
+  test("mapReasoningEffort keeps Codex xhigh rather than advertising max", () => {
+    expect(mapReasoningEffort(kiro, "claude-opus-4.8", "xhigh")).toBe("xhigh");
+    expect(mapReasoningEffort(kiro, "deepseek-3.2", "max")).toBe("xhigh");
   });
 
-  test("mapReasoningEffort drops any Codex-forced effort for kiro models", () => {
-    for (const eff of ["low", "medium", "high", "xhigh", "max", "minimal"]) {
-      expect(mapReasoningEffort(kiro, "claude-opus-4.8", eff)).toBeUndefined();
-      expect(mapReasoningEffort(kiro, "deepseek-3.2", eff)).toBeUndefined();
-    }
+  test("xhigh injects current-message thinking tags with a 95% output-token budget", () => {
+    const { body } = createKiroAdapter(provider).buildRequest({
+      ...parsedWith([{ role: "user", content: "solve it" }]),
+      options: { reasoning: "xhigh", maxOutputTokens: 8000 },
+    });
+    const content = JSON.parse(body).conversationState.currentMessage.userInputMessage.content;
+
+    expect(content).toContain("<thinking_mode>enabled</thinking_mode>");
+    expect(content).toContain("<max_thinking_length>7600</max_thinking_length>");
+    expect(content).toContain("solve it");
+  });
+
+  test("reasoning tags are not injected into tool-result carrier turns", () => {
+    const messages = [
+      { role: "user", content: "run a command" },
+      { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "pwd" } }] },
+      { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: "/tmp", isError: false },
+    ];
+    const { body } = createKiroAdapter(provider).buildRequest({ ...parsedWith(messages), options: { reasoning: "high" } });
+    const content = JSON.parse(body).conversationState.currentMessage.userInputMessage.content;
+
+    expect(content).toBe("(tool results)");
+    expect(content).not.toContain("<thinking_mode>");
   });
 });
 

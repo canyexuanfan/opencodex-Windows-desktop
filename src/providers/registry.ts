@@ -60,9 +60,9 @@ const ZAI_GLM_52_REASONING_MAP: Record<string, string> = {
 };
 const KIMI_THINKING_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5", "kimi-k2-0905-preview"];
 const KIMI_LOCKED_PARAMETER_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"];
-// Kiro/CodeWhisperer thinking is model/agent-mode internal — CW GenerateAssistantResponse has no
-// reasoning_effort field. Codex always forces a reasoning selection, so all kiro models are marked
-// no-reasoning: the catalog advertises [] efforts and any requested effort is dropped (not sent upstream).
+// Kiro/CodeWhisperer has no reasoning_effort field, but kiro-gateway implements effort with
+// fake-thinking tags on the current user message. Advertise Codex-supported tiers so the Kiro adapter
+// can map them into those tags without inventing a CodeWhisperer request field.
 const KIRO_MODELS = [
   "kiro-auto",
   "claude-opus-4.8",
@@ -202,9 +202,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     defaultModel: "kiro-auto",
     // Context windows sourced from Kiro's official model catalog (kiro.dev/docs/models/).
     modelContextWindows: KIRO_MODEL_CONTEXT_WINDOWS,
-    // CW has no reasoning_effort param — ignore Codex's forced reasoning selection for all kiro models.
-    noReasoningModels: KIRO_MODELS,
-    modelReasoningEfforts: Object.fromEntries(KIRO_MODELS.map(id => [id, []])),
+    modelReasoningEfforts: Object.fromEntries(KIRO_MODELS.map(id => [id, ["low", "medium", "high", "xhigh"]])),
   },
   { id: "openai-apikey", label: "OpenAI (API key)", adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", authKind: "key", featured: true, dashboardUrl: "https://platform.openai.com/api-keys", defaultModel: "gpt-5.5" },
   {

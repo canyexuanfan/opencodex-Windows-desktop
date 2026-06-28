@@ -138,6 +138,10 @@ function currentTurnInputMessages(messages: OcxMessage[]): OcxMessage[] {
   return messages.slice(lastAssistant + 1).filter(m => m.role !== "assistant");
 }
 
+function kiroPayloadMessages(parsed: OcxParsedRequest): OcxMessage[] {
+  return parsed.previousResponseId ? currentTurnInputMessages(parsed.context.messages) : parsed.context.messages;
+}
+
 function messageUsageText(msg: OcxMessage): string {
   switch (msg.role) {
     case "user":
@@ -172,11 +176,44 @@ function estimateKiroInputTokens(parsed: OcxParsedRequest): number {
   return estimateTokens(parts.join("\n"), parsed.modelId);
 }
 
+function kiroThinkingBudget(parsed: OcxParsedRequest): number | undefined {
+  const effort = parsed.options.reasoning;
+  if (!effort || effort === "none") return undefined;
+  const maxTokens = parsed.options.maxOutputTokens || 4096;
+  const percent: Record<string, number> = {
+    minimal: 0.10,
+    low: 0.20,
+    medium: 0.50,
+    high: 0.80,
+    xhigh: 0.95,
+    max: 0.95,
+  };
+  const ratio = percent[effort];
+  return ratio === undefined ? undefined : Math.max(1, Math.floor(maxTokens * ratio));
+}
+
+function injectKiroThinkingTags(content: string, parsed: OcxParsedRequest): string {
+  const budget = kiroThinkingBudget(parsed);
+  if (!budget) return content;
+  const instruction = [
+    "Think in English for better reasoning quality.",
+    "Be thorough and systematic, consider edge cases, challenge assumptions, and verify reasoning before answering.",
+    "After thinking, respond in the user's language.",
+  ].join("\n");
+  return [
+    "<thinking_mode>enabled</thinking_mode>",
+    `<max_thinking_length>${budget}</max_thinking_length>`,
+    `<thinking_instruction>${instruction}</thinking_instruction>`,
+    "",
+    content,
+  ].join("\n");
+}
+
 export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | undefined): Record<string, unknown> {
   const modelId = mapModelId(parsed.modelId);
   const kiroTools = convertTools(parsed);
   let systemPrefix = "";
-  if (parsed.context.systemPrompt?.length) systemPrefix = `${parsed.context.systemPrompt.join("\n\n")}\n\n`;
+  if (!parsed.previousResponseId && parsed.context.systemPrompt?.length) systemPrefix = `${parsed.context.systemPrompt.join("\n\n")}\n\n`;
 
   const mkUser = (content: string): KiroHistoryEntry => ({
     userInputMessage: { content, modelId, origin: "AI_EDITOR" },
@@ -191,7 +228,7 @@ export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | 
     pending = [];
   };
 
-  for (const msg of parsed.context.messages) {
+  for (const msg of kiroPayloadMessages(parsed)) {
     if (msg.role === "user" || msg.role === "developer") {
       const text = userContentText((msg as { content: string | OcxContentPart[] }).content);
       if (pending.length === 0 && lastRole === "user") {
@@ -250,6 +287,9 @@ export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | 
   }
   if (kiroTools.length > 0) {
     currentUim.userInputMessageContext = { ...(currentUim.userInputMessageContext ?? {}), tools: kiroTools };
+  }
+  if (!currentUim.userInputMessageContext?.toolResults && currentUim.content !== "(continue)") {
+    currentUim.content = injectKiroThinkingTags(currentUim.content, parsed);
   }
 
   const payload: Record<string, unknown> = {
@@ -402,13 +442,11 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
         "amz-sdk-invocation-id": randomUUID(),
       };
       if (profileArn) headers["x-amzn-kiro-profile-arn"] = profileArn;
-      // NOTE: CodeWhisperer GenerateAssistantResponse has no reasoning_effort field — Kiro thinking is
-      // model/agent-mode internal. Codex always forces a reasoning selection; we intentionally do NOT
-      // forward parsed.options.reasoning into the payload (registry marks kiro models noReasoning too).
+      // CodeWhisperer GenerateAssistantResponse has no reasoning_effort field. Match kiro-gateway's
+      // fake-reasoning contract by injecting effort-derived thinking tags into only the current user turn.
       const body = JSON.stringify(buildKiroPayload(parsed, profileArn));
-      // CW returns no usage. Codex adds each response's usage into its session total, while Kiro requests
-      // must still send full history upstream. Report only the current-turn input delta here so old
-      // history is not repeatedly added to Codex's visible token usage.
+      // CW returns no usage. Codex adds each response's usage into its session total; report only the
+      // current-turn input delta so old history is not repeatedly added to Codex's visible token usage.
       modelId = parsed.modelId;
       inputTokens = estimateKiroInputTokens(parsed);
       return {
