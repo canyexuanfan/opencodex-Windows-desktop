@@ -111,7 +111,7 @@ describe("rate-limit reset credits", () => {
 
   describe("CodexAuth reset credit UI", () => {
     it("normalizes Go and Free quota displays to 30d only", async () => {
-      const { normalizeQuotaForPlan } = await import("../gui/src/pages/CodexAuth");
+      const { normalizeQuotaForPlan } = await import("../gui/src/codex-quota-utils");
       const quota = {
         fiveHourPercent: 99,
         weeklyPercent: 98,

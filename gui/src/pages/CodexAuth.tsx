@@ -3,17 +3,10 @@ import { useT, type TFn } from "../i18n";
 import { IconLock, IconPlus, IconX, IconAlert, IconRefresh, IconTicket } from "../icons";
 import { Notice } from "../ui";
 import AddCodexAccountModal from "../components/AddCodexAccountModal";
+import { type AccountQuota, normalizeQuotaForPlan, isThirtyDayOnlyPlan } from "../codex-quota-utils";
 
-interface AccountQuota {
-  weeklyPercent?: number;
-  fiveHourPercent?: number;
-  monthlyPercent?: number;
-  weeklyResetAt?: number;
-  fiveHourResetAt?: number;
-  monthlyResetAt?: number;
-  resetCredits?: number;
-  updatedAt: number;
-}
+export { normalizeQuotaForPlan, isThirtyDayOnlyPlan } from "../codex-quota-utils";
+export type { AccountQuota } from "../codex-quota-utils";
 interface AccountEntry {
   id: string; email: string; plan?: string; isMain: boolean;
   hasCredential: boolean; quota: AccountQuota | null;
@@ -310,20 +303,6 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
   );
 }
 
-export function isThirtyDayOnlyPlan(plan: string | null | undefined): boolean {
-  const normalized = plan?.trim().toLowerCase();
-  return normalized === "go" || normalized === "free";
-}
-
-export function normalizeQuotaForPlan(quota: AccountQuota | null, plan: string | null | undefined): AccountQuota | null {
-  if (!quota || !isThirtyDayOnlyPlan(plan)) return quota;
-  return {
-    ...(quota.monthlyPercent !== undefined ? { monthlyPercent: quota.monthlyPercent } : {}),
-    ...(quota.monthlyResetAt !== undefined ? { monthlyResetAt: quota.monthlyResetAt } : {}),
-    ...(quota.resetCredits !== undefined ? { resetCredits: quota.resetCredits } : {}),
-    updatedAt: quota.updatedAt,
-  };
-}
 
 function QuotaBars({ quota, plan, threshold, t }: { quota: AccountQuota | null; plan?: string; threshold: number; t: TFn }) {
   const displayQuota = normalizeQuotaForPlan(quota, plan);
