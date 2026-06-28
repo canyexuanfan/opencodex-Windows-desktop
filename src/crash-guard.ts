@@ -143,7 +143,39 @@ function safeStringify(value: unknown): string {
   }
 }
 
+let benignSuppressed = 0;
+let benignLastLoggedAt = 0;
+const BENIGN_LOG_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * Bun raises an off-path `unhandledRejection: TypeError: null is not an object` (native-only stack)
+ * whenever a streaming `fetch(..., { signal })` response body is torn down by an abort before/while
+ * we read it — turn supersede, client disconnect, upstream RST. The daemon is never at risk (the
+ * failed request is already isolated), the throw has no JS source location, and call-site body
+ * cancellation cannot fully close the runtime-internal window. Treat this exact shape as benign:
+ * keep the process alive, drop the alarmist banner, and fold repeats into a rate-limited summary so
+ * crash.log stays readable for genuinely novel faults.
+ */
+export function isBenignAbortTeardown(err: unknown): boolean {
+  if (!(err instanceof TypeError)) return false;
+  if (err.message !== "null is not an object") return false; // bare form only (no `(evaluating …)`)
+  const stack = err.stack ?? "";
+  // Native-only: no JS source frame. A real app TypeError would carry a `(file:line:col)` frame.
+  return !/\((?!native:)[^)]*:\d+:\d+\)/.test(stack);
+}
+
 function record(kind: string, err: unknown, promise?: unknown): void {
+  if (kind === "unhandledRejection" && isBenignAbortTeardown(err)) {
+    benignSuppressed++;
+    const now = Date.now();
+    if (now - benignLastLoggedAt < BENIGN_LOG_INTERVAL_MS) return; // fold repeats silently
+    benignLastLoggedAt = now;
+    const summary = `\n[${new Date(now).toISOString()}] benign-abort-teardown x${benignSuppressed}`
+      + ` (Bun fetch-body abort; proxy unaffected)${diagnose(err)}${diagnosePromise(promise)}${breadcrumb()}\n`;
+    benignSuppressed = 0;
+    try { appendFileSync(crashLogPath(), summary); } catch { /* logging must never throw */ }
+    return; // no stderr banner — this is expected noise, not a crash
+  }
   const line = formatCrashEntry(kind, err, promise);
   // Always surface to stderr so foreground `ocx start` users still see it,
   // then persist for later diagnosis.

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatCrashEntry, installCrashGuards } from "../src/crash-guard";
+import { formatCrashEntry, installCrashGuards, isBenignAbortTeardown } from "../src/crash-guard";
 import { sidecarEnter } from "../src/sidecar-tracker";
 
 describe("crash-guard diagnostics", () => {
@@ -56,5 +56,35 @@ describe("crash-guard diagnostics", () => {
     } finally {
       exit();
     }
+  });
+});
+
+describe("benign abort-teardown classification", () => {
+  test("flags the native-only bare TypeError as benign", () => {
+    const err = new TypeError("null is not an object");
+    err.stack = "TypeError: null is not an object\n    at <anonymous> (native:1:11)\n    at processTicksAndRejections (native:7:39)";
+    expect(isBenignAbortTeardown(err)).toBe(true);
+  });
+
+  test("does NOT flag a TypeError with a real JS source frame", () => {
+    const err = new TypeError("null is not an object");
+    err.stack = "TypeError: null is not an object\n    at handler (/abs/src/server.ts:120:13)";
+    expect(isBenignAbortTeardown(err)).toBe(false);
+  });
+
+  test("does NOT flag a different message or the (evaluating …) form", () => {
+    const a = new TypeError("null is not an object (evaluating 'x.y')");
+    a.stack = "TypeError: ...\n    at <anonymous> (native:1:11)";
+    expect(isBenignAbortTeardown(a)).toBe(false);
+
+    const b = new TypeError("Cannot read properties of null");
+    b.stack = "TypeError: ...\n    at <anonymous> (native:1:11)";
+    expect(isBenignAbortTeardown(b)).toBe(false);
+  });
+
+  test("does NOT flag non-TypeError rejections", () => {
+    expect(isBenignAbortTeardown(new Error("null is not an object"))).toBe(false);
+    expect(isBenignAbortTeardown(null)).toBe(false);
+    expect(isBenignAbortTeardown("null is not an object")).toBe(false);
   });
 });
