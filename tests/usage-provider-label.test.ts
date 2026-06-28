@@ -12,6 +12,11 @@ describe("baseProviderLabel", () => {
     expect(baseProviderLabel("chatgpt-pabc123")).toBe("chatgpt");
   });
 
+  test("strips the legacy -main suffix so historical main-account rows aggregate", () => {
+    expect(baseProviderLabel("chatgpt-main")).toBe("chatgpt");
+    expect(baseProviderLabel("codex-main")).toBe("codex");
+  });
+
   test("keeps suffixes that do not match the pool log-label shape", () => {
     expect(baseProviderLabel("chatgpt-pABC123")).toBe("chatgpt-pABC123"); // uppercase not allowed
     expect(baseProviderLabel("chatgpt-p12345")).toBe("chatgpt-p12345");   // 5 hex, not 6
