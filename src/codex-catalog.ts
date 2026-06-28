@@ -46,6 +46,14 @@ export const NATIVE_OPENAI_MODELS = [
 
 const DOCUMENTED_NATIVE_OPENAI_ADDITIONS = ["gpt-5.3-codex-spark"];
 
+/**
+ * The ONLY native OpenAI/Codex slugs opencodex advertises. A user's installed Codex ships extra
+ * native models in its live catalog (e.g. `gpt-5.2`, `gpt-5.3-codex`, `codex-auto-review`); those
+ * are legacy/internal and must never surface in `/v1/models` or the subagent picker. Live-catalog
+ * native slugs are filtered against this allowlist so only the supported set is exposed.
+ */
+const SUPPORTED_NATIVE_OPENAI_SLUGS = new Set(NATIVE_OPENAI_MODELS);
+
 const NATIVE_OPENAI_CONTEXT_OVERRIDES: Record<string, { contextWindow?: number; maxContextWindow?: number }> = {
   "gpt-5.5": { contextWindow: 272_000, maxContextWindow: 272_000 },
   "gpt-5.4": { maxContextWindow: 1_000_000 },
@@ -477,8 +485,18 @@ export function buildCatalogEntries(template: RawEntry | null, gptSlugs: string[
 /** Bare picker-visible native slugs in the live Codex catalog (drives the subagent picker UI). */
 export function listCatalogNativeSlugs(): string[] {
   const cat = readCurrentCatalogOrCache();
-  return (cat?.models ?? [])
-    .filter(m => typeof m.slug === "string" && !(m.slug as string).includes("/") && m.visibility === "list")
+  return filterSupportedNativeSlugs(cat?.models ?? []);
+}
+
+/**
+ * Keep only picker-visible, bare (non-routed) native slugs that opencodex actually supports.
+ * A user's installed Codex may list legacy/internal natives (`gpt-5.2`, `gpt-5.3-codex`,
+ * `codex-auto-review`, …); the allowlist drops them so `/v1/models` and the subagent picker
+ * never advertise an unsupported native. Exported for regression coverage.
+ */
+export function filterSupportedNativeSlugs(models: RawEntry[]): string[] {
+  return models
+    .filter(m => typeof m.slug === "string" && !(m.slug as string).includes("/") && m.visibility === "list" && SUPPORTED_NATIVE_OPENAI_SLUGS.has(m.slug as string))
     .map(m => m.slug as string);
 }
 

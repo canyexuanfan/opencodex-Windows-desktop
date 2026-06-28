@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { augmentRoutedModelsWithJawcodeMetadata, buildCatalogEntries, gatherRoutedModels, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, normalizeRoutedCatalogEntry } from "../src/codex-catalog";
+import { augmentRoutedModelsWithJawcodeMetadata, buildCatalogEntries, filterSupportedNativeSlugs, gatherRoutedModels, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, normalizeRoutedCatalogEntry } from "../src/codex-catalog";
 import { getJawcodeModelMetadata, resolveJawcodeProvider } from "../src/generated/jawcode-model-metadata";
 import { clearModelCache, setCached } from "../src/model-cache";
 
@@ -577,6 +577,26 @@ describe("Codex catalog routed normalization", () => {
     });
 
     expect(models.find(m => m.id === "cached-model")?.contextWindow).toBe(80_000);
+  });
+});
+
+describe("native slug allowlist", () => {
+  test("drops legacy/internal natives from a live Codex catalog", () => {
+    const liveModels = [
+      { slug: "gpt-5.5", visibility: "list" },
+      { slug: "gpt-5.4", visibility: "list" },
+      { slug: "gpt-5.4-mini", visibility: "list" },
+      { slug: "gpt-5.3-codex", visibility: "list" },
+      { slug: "gpt-5.2", visibility: "list" },
+      { slug: "codex-auto-review", visibility: "list" },
+      { slug: "gpt-5.3-codex-spark", visibility: "list" },
+      { slug: "anthropic/claude-opus-4-8", visibility: "list" },
+      { slug: "gpt-5.5", visibility: "hidden" },
+    ];
+
+    expect(filterSupportedNativeSlugs(liveModels)).toEqual([
+      "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark",
+    ]);
   });
 });
 
