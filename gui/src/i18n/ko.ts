@@ -149,7 +149,7 @@ export const ko: Record<TKey, string> = {
   "usage.section.coverage": "커버리지 상세",
   "usage.coverage.note": "측정됨 항목은 제공자가 보고한 토큰 수치를 사용합니다. 미보고/미지원 요청은 추적만 하고 0으로 환산하지 않습니다.",
   "usage.search.models": "모델 검색…",
-  "usage.col.requests": "요청",
+  "usage.col.requests": "요청 (전체/측정)",
   "usage.col.reported": "측정됨",
   "usage.col.tokens": "토큰",
   "usage.col.share": "비율",

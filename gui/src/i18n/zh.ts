@@ -150,7 +150,7 @@ export const zh: Record<TKey, string> = {
   "usage.coverage.note": "“已上报”使用提供方返回的真实 Token 数。未上报 / 不支持请求仅做计数，不会被算作 0 Token。",
   "usage.search.models": "搜索模型…",
   "usage.col.requests": "请求数",
-  "usage.col.reported": "已上报",
+  "usage.col.reported": "已测",
   "usage.col.tokens": "Token 数",
   "usage.col.share": "占比",
   "usage.heatmap.less": "少",

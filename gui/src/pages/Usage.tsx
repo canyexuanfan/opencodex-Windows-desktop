@@ -254,7 +254,6 @@ export default function Usage({ apiBase }: { apiBase: string }) {
                     <th>{t("logs.col.model")}</th>
                     <th>{t("logs.col.provider")}</th>
                     <th className="num">{t("usage.col.requests")}</th>
-                    <th className="num">{t("usage.col.reported")}</th>
                     <th className="num">{t("usage.col.tokens")}</th>
                     <th>{t("usage.col.share")}</th>
                   </tr>
@@ -264,8 +263,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
                     <tr key={`${m.provider}/${m.model}/${m.resolvedModel ?? ""}`}>
                       <td className="mono">{m.resolvedModel ?? m.model}</td>
                       <td className="muted">{m.provider}</td>
-                      <td className="num">{m.requests}</td>
-                      <td className="num">{m.reportedRequests}</td>
+                      <td className="num">{m.requests}<span className="muted">/{m.reportedRequests}</span></td>
                       <td className="num mono">{formatTokens(m.totalTokens)}</td>
                       <td><div className="usage-bar"><div className="usage-bar-fill" style={{ width: `${Math.round(m.shareRatio * 100)}%` }} /></div></td>
                     </tr>
@@ -283,7 +281,6 @@ export default function Usage({ apiBase }: { apiBase: string }) {
                   <tr>
                     <th>{t("logs.col.provider")}</th>
                     <th className="num">{t("usage.col.requests")}</th>
-                    <th className="num">{t("usage.col.reported")}</th>
                     <th className="num">{t("usage.col.tokens")}</th>
                     <th>{t("usage.col.share")}</th>
                   </tr>
@@ -292,8 +289,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
                   {data.providers.map(p => (
                     <tr key={p.provider}>
                       <td className="mono">{p.provider}</td>
-                      <td className="num">{p.requests}</td>
-                      <td className="num">{p.reportedRequests}</td>
+                      <td className="num">{p.requests}<span className="muted">/{p.reportedRequests}</span></td>
                       <td className="num mono">{formatTokens(p.totalTokens)}</td>
                       <td><div className="usage-bar"><div className="usage-bar-fill" style={{ width: `${Math.round(p.shareRatio * 100)}%` }} /></div></td>
                     </tr>
