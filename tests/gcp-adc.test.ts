@@ -35,7 +35,7 @@ beforeAll(async () => {
   const b64 = Buffer.from(pkcs8).toString("base64").match(/.{1,64}/g)!.join("\n");
   const pem = `-----BEGIN PRIVATE KEY-----\n${b64}\n-----END PRIVATE KEY-----\n`;
   saPath = join(tmp, "sa.json");
-  writeFileSync(saPath, JSON.stringify({ type: "service_account", client_email: "t@test.iam.gserviceaccount.com", private_key: pem, private_key_id: "k1" }));
+  writeFileSync(saPath, JSON.stringify({ type: "service_account", client_email: "svc@example.test", private_key: pem, private_key_id: "k1" }));
   realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;

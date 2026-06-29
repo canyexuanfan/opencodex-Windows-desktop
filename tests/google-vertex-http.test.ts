@@ -109,9 +109,9 @@ describe("safeVertexHttpErrorMessage classification + redaction", () => {
   });
 
   test("redacts a bearer token and an absolute path in the detail", () => {
-    const msg = safeVertexHttpErrorMessage(400, vertexError(400, "INVALID_ARGUMENT", "failed with Authorization: Bearer secret-abc123 at /Users/jun/secret.json"));
+    const msg = safeVertexHttpErrorMessage(400, vertexError(400, "INVALID_ARGUMENT", "failed with Authorization: Bearer secret-abc123 at /Users/example/secret.json"));
     expect(msg).not.toContain("secret-abc123");
-    expect(msg).not.toContain("/Users/jun/secret.json");
+    expect(msg).not.toContain("/Users/example/secret.json");
     expect(msg).toContain("[REDACTED_PATH]");
   });
 
