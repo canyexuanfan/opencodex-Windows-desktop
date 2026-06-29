@@ -20,6 +20,9 @@ redacted upstream truncation failure.
   open tool and then emits `done`.
 - `bridge.ts` already treats an adapter `error` event as `response.failed`, and
   treats a generator EOF without `done`/`error` as `response.incomplete`.
+- `bridge.ts` sets its upstream activity flag once per adapter event before the
+  switch dispatch, so an internal non-visual event can keep the stream alive
+  without sending Codex-visible output.
 - Kiro returns no authoritative usage frame, so ordinary text-only EOF must
   continue to be treated as normal completion.
 
@@ -54,11 +57,29 @@ Create a small helper module:
     real Kiro `stop` event.
   - Preserve chunk boundaries when flushing a completed tool call.
   - Ignore duplicate `name` starts for the same open tool before input arrives.
+  - Yield internal `{ type: "heartbeat" }` events while buffering Kiro tool
+    start/input events so the streaming bridge does not falsely stall-timeout
+    during long but active tool-call generation.
   - If a new tool/content/truncation/EOF arrives while a tool is still open
     without `stop`, emit `error` with `kiroTruncationErrorMessage()` and return.
   - Do not emit `done` after a truncation error.
 - Keep normal text-only EOF as `done` because Kiro has no usage terminal.
 - Keep stream exception/error frame behavior from Phase 70 unchanged.
+
+### MODIFY `src/types.ts`
+
+- Add a non-visual adapter event:
+  `{ type: "heartbeat" }`.
+- This event is internal to the proxy. It has no Responses API output item and
+  carries no user-visible content.
+
+### MODIFY `src/bridge.ts`
+
+- In `bridgeToResponsesSSE()`, explicitly ignore `heartbeat` in the event
+  switch. The existing `activity = true` assignment before the switch resets
+  stall tracking.
+- In `buildResponseJSON()`, explicitly ignore `heartbeat` so non-streaming
+  sidecar paths do not produce output or terminal status changes.
 
 ### MODIFY `tests/kiro-stream.test.ts`
 
@@ -73,12 +94,20 @@ Add regression tests:
 - Explicit Kiro length/truncation marker emits the truncation error and no
   `done`.
 - Duplicate tool `name` events before input do not create duplicate tool calls.
+- Buffered tool input emits internal `heartbeat` events that tests can observe,
+  but bridge tests prove they are not Codex-visible.
+
+### MODIFY `tests/bridge.test.ts`
+
+- Add a regression proving `heartbeat` events do not create SSE output items,
+  do not change non-streaming JSON output, and still allow surrounding normal
+  events to complete.
 
 ## Verification
 
 - `bun x tsc --noEmit`
-- `bun test tests/kiro-stream.test.ts tests/error-fidelity.test.ts`
-- `wc -l src/adapters/kiro.ts src/adapters/kiro-truncation.ts tests/kiro-stream.test.ts`
+- `bun test tests/kiro-stream.test.ts tests/bridge.test.ts tests/error-fidelity.test.ts`
+- `wc -l src/adapters/kiro.ts src/adapters/kiro-truncation.ts src/types.ts src/bridge.ts tests/kiro-stream.test.ts tests/bridge.test.ts`
 
 ## Commit
 
@@ -90,5 +119,5 @@ Add regression tests:
 - No attempt to classify ordinary text EOF as truncation without an explicit
   marker; Kiro has no terminal usage frame, so that would create false
   positives.
-- No new `AdapterEvent` schema. Truncation is surfaced through the existing
-  `error` event so streaming and non-streaming paths both fail closed.
+- No user-visible heartbeat or progress output. The new `heartbeat` event is
+  internal and ignored by response builders.
