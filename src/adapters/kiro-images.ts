@@ -17,8 +17,10 @@ function parseDataUrlImage(imageUrl: string): KiroImage | undefined {
   const bytes = imageUrl.slice(comma + 1);
   if (!bytes) return undefined;
   const mediaType = header.split(";")[0] || "image/jpeg";
-  const format = mediaType.includes("/") ? mediaType.split("/")[1] : mediaType;
-  return { format: format || "jpeg", source: { bytes } };
+  const subtype = (mediaType.includes("/") ? mediaType.split("/")[1] : mediaType) || "jpeg";
+  // CodeWhisperer/Bedrock expects "jpeg", not the "jpg" alias.
+  const format = subtype.toLowerCase() === "jpg" ? "jpeg" : subtype.toLowerCase();
+  return { format, source: { bytes } };
 }
 
 export function extractKiroImages(content: string | OcxContentPart[]): KiroImage[] {

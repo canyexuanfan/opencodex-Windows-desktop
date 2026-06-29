@@ -20,32 +20,59 @@ function ensureRootObjectType(schema: unknown): Record<string, unknown> {
     ? schema as Record<string, unknown>
     : {};
   // Bedrock rejects oneOf/allOf/anyOf at the root ("input_schema does not support oneOf, allOf, or
-  // anyOf at the top level"). Flatten them into a single object schema by merging every variant's
-  // properties so the model can still supply any valid argument. Required is merged only for allOf
-  // (AND semantics); anyOf/oneOf (OR) leave required off so a valid single-branch call passes.
-  const composition = obj.oneOf ?? obj.anyOf ?? obj.allOf;
-  if (Array.isArray(composition)) {
-    const merged: Record<string, unknown> = { type: "object" };
-    const props: Record<string, unknown> = {};
-    const required = new Set<string>();
-    for (const variant of composition) {
+  // anyOf at the top level") and requires the root type to be "object". Flatten every root
+  // composition into the object schema while preserving the root's own properties/required and any
+  // other sibling keys. allOf merges required (AND); anyOf/oneOf drop required so a single valid
+  // branch still passes. Nested (non-root) composition is left intact — only the root is illegal.
+  const COMPOSITION_KEYS = ["oneOf", "anyOf", "allOf"] as const;
+  const hasComposition = COMPOSITION_KEYS.some(k => Array.isArray(obj[k]));
+  const t = obj.type;
+  const rootObjectType = t === "object" || (Array.isArray(t) && t.includes("object"));
+  if (!hasComposition) {
+    if (rootObjectType && t === "object") return obj;
+    return { ...obj, type: "object" };
+  }
+
+  const props: Record<string, unknown> = {};
+  const required = new Set<string>();
+  // Seed with the root's own properties/required so a schema like
+  // { type:"object", properties:{path}, required:["path"], oneOf:[...] } keeps them.
+  if (obj.properties && typeof obj.properties === "object") {
+    Object.assign(props, sanitizeKiroSchema(obj.properties) as Record<string, unknown>);
+  }
+  if (Array.isArray(obj.required)) {
+    for (const r of obj.required) if (typeof r === "string") required.add(r);
+  }
+  for (const key of COMPOSITION_KEYS) {
+    const variants = obj[key];
+    if (!Array.isArray(variants)) continue;
+    // allOf is conjunction: its required fields always apply. oneOf/anyOf are disjunction, so
+    // promoting their required would over-constrain a valid single-branch call.
+    const mergeRequired = key === "allOf";
+    for (const variant of variants) {
       if (!variant || typeof variant !== "object" || Array.isArray(variant)) continue;
       const v = variant as Record<string, unknown>;
       if (v.properties && typeof v.properties === "object") {
         Object.assign(props, sanitizeKiroSchema(v.properties) as Record<string, unknown>);
       }
-      if (obj.allOf !== undefined && Array.isArray(v.required)) {
+      if (mergeRequired && Array.isArray(v.required)) {
         for (const r of v.required) if (typeof r === "string") required.add(r);
       }
     }
-    if (Object.keys(props).length > 0) merged.properties = props;
-    if (required.size > 0) merged.required = [...required];
-    return merged;
   }
-  const t = obj.type;
-  if (t === "object") return obj;
-  if (Array.isArray(t) && t.includes("object")) return { ...obj, type: "object" };
-  return { ...obj, type: "object" };
+
+  // Keep all non-composition sibling keys (description, $defs, definitions, etc.); replace
+  // type/properties/required with the flattened object form.
+  const merged: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(obj)) {
+    if (key === "oneOf" || key === "anyOf" || key === "allOf") continue;
+    if (key === "type" || key === "properties" || key === "required") continue;
+    merged[key] = child;
+  }
+  merged.type = "object";
+  if (Object.keys(props).length > 0) merged.properties = props;
+  if (required.size > 0) merged.required = [...required];
+  return merged;
 }
 
 export function convertKiroToolContext(parsed: OcxParsedRequest): { tools: unknown[]; systemAdditions: string[] } {
