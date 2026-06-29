@@ -423,9 +423,17 @@ function applyReasoningLevels(entry: RawEntry, effortsOverride?: string[]): void
   });
   if (efforts.length === 0) {
     delete entry.default_reasoning_level;
+    // No reasoning ladder → no summary to surface. Codex gates the expandable reasoning trace on
+    // default_reasoning_summary (turn_context resolves model_reasoning_summary ?? this), so "none"
+    // keeps non-reasoning models quiet.
+    entry.default_reasoning_summary = "none";
     return;
   }
   entry.default_reasoning_level = efforts.includes("medium") ? "medium" : efforts.includes("high") ? "high" : efforts[0];
+  // Reasoning-capable routed models must default the summary to "auto", otherwise codex-rs sends no
+  // reasoning summary param (client.rs build_reasoning) and the CLI/app never expand the trace even
+  // though supports_reasoning_summaries is true. Users can still override via model_reasoning_summary.
+  entry.default_reasoning_summary = "auto";
 }
 
 function deriveEntry(template: RawEntry | null, slug: string, desc: string, priority: number, model?: CatalogModel): RawEntry {

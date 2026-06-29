@@ -468,6 +468,18 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.auto_compact_token_limit).toBe(115_200);
     expect(routed?.input_modalities).toEqual(["text"]);
     expect(routed?.supports_reasoning_summaries).toBe(true);
+    // Reasoning-capable routed models default the summary to "auto" so codex-rs surfaces the
+    // expandable trace without requiring model_reasoning_summary in config.
+    expect(routed?.default_reasoning_summary).toBe("auto");
+  });
+
+  test("routed entries with no reasoning ladder keep summary disabled", () => {
+    const entries = buildCatalogEntries(null, [], [
+      { provider: "local", id: "no-think", reasoningEfforts: [] },
+    ]);
+    const routed = entries.find(e => e.slug === "local/no-think");
+    expect(routed?.supported_reasoning_levels).toEqual([]);
+    expect(routed?.default_reasoning_level).toBeUndefined();
     expect(routed?.default_reasoning_summary).toBe("none");
   });
 
