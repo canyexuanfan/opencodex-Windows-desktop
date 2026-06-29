@@ -98,7 +98,7 @@ describe("Cursor adapter live transport", () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       type: "error",
-      message: expect.stringContaining("Cursor transport failed before completion (gRPC error 16: Bearer [redacted] authorization=[redacted])."),
+      message: expect.stringContaining("gRPC error 16: Bearer [REDACTED] authorization=[REDACTED]"),
     });
     expect(JSON.stringify(events).includes("secret-token-123")).toBe(false);
   });
