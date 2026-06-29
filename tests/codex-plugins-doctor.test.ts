@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { diagnoseCodexBundledPlugins } from "../src/codex-plugins-doctor";
+import { diagnoseCodexBundledPlugins, locateCurrentBundledMarketplace } from "../src/codex-plugins-doctor";
 
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const cliPath = join(repoRoot, "src", "cli.ts");
@@ -204,6 +204,89 @@ describe("diagnoseCodexBundledPlugins (direct, platform-injected)", () => {
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("locateCurrentBundledMarketplace (injected fs)", () => {
+  test("finds a versioned app dir whose bundled marketplace has a manifest", () => {
+    const base = join("BASE");
+    const env = { LOCALAPPDATA: base } as NodeJS.ProcessEnv;
+    const appRoot = join(base, "Programs", "@openai", "codex");
+    const versioned = join(appRoot, "app-2.0.6", "plugins", "bundled-marketplaces", "openai-bundled");
+    const found = locateCurrentBundledMarketplace({
+      env,
+      listDir: (dir: string) => (dir === appRoot ? ["app-2.0.5", "app-2.0.6"] : []),
+      isManifestRoot: (dir: string) => dir === versioned,
+      mtimeOf: () => 1,
+    });
+    expect(found).toBe(versioned);
+  });
+
+  test("returns null when no candidate has a manifest", () => {
+    const found = locateCurrentBundledMarketplace({
+      env: { LOCALAPPDATA: "C:\\x" } as NodeJS.ProcessEnv,
+      listDir: () => ["v1"],
+      isManifestRoot: () => false,
+      mtimeOf: () => 0,
+    });
+    expect(found).toBeNull();
+  });
+});
+
+describe("diagnose path-mismatch (current vs registered)", () => {
+  test("registered path differing from the live app path is flagged stale", () => {
+    // The registered source must actually resolve to a manifest so we isolate
+    // the path-mismatch signal (not the "no longer resolves" branch).
+    const registered = mkdtempSync(join(tmpdir(), "ocx-registered-"));
+    mkdirSync(join(registered, ".agents", "plugins"), { recursive: true });
+    writeFileSync(join(registered, ".agents", "plugins", "marketplace.json"), "{}", "utf8");
+    const live = "C:\\Users\\bob\\AppData\\Local\\Programs\\@openai\\codex\\app-2.0.6\\plugins\\bundled-marketplaces\\openai-bundled";
+    const { dir, configPath } = makeConfig(
+      `[marketplaces.openai-bundled]\nsource_type = "local"\nsource = ${JSON.stringify(registered)}\n`,
+    );
+    try {
+      const result = diagnoseCodexBundledPlugins({
+        platform: "win32",
+        configPath,
+        locateCurrent: () => live,
+      });
+      expect(result.applicable).toBe(true);
+      if (result.applicable) {
+        expect(result.marketplace.resolvesToManifest).toBe(true);
+        expect(result.marketplace.pathMismatch).toBe(true);
+        expect(result.stale).toBe(true);
+        expect(result.marketplace.currentBundledPath).toContain("[USER]");
+        expect(result.summary.toLowerCase()).toContain("differs");
+        expect(result.suggestedRepair).not.toBeNull();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(registered, { recursive: true, force: true });
+    }
+  });
+
+  test("matching live and registered path is healthy (no mismatch)", () => {
+    const shared = mkdtempSync(join(tmpdir(), "ocx-shared-"));
+    mkdirSync(join(shared, ".claude-plugin"), { recursive: true });
+    writeFileSync(join(shared, ".claude-plugin", "marketplace.json"), "{}", "utf8");
+    const { dir, configPath } = makeConfig(
+      `[marketplaces.openai-bundled]\nsource_type = "local"\nsource = ${JSON.stringify(shared)}\n`,
+    );
+    try {
+      const result = diagnoseCodexBundledPlugins({
+        platform: "win32",
+        configPath,
+        locateCurrent: () => shared,
+      });
+      expect(result.applicable).toBe(true);
+      if (result.applicable) {
+        expect(result.marketplace.pathMismatch).toBe(false);
+        expect(result.stale).toBe(false);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(shared, { recursive: true, force: true });
     }
   });
 });
