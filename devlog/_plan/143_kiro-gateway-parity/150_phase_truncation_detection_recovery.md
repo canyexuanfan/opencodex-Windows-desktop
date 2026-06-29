@@ -77,13 +77,13 @@ Create a small helper module:
 - This event is internal to the proxy. It has no Responses API output item and
   carries no user-visible content.
 
-### MODIFY `src/bridge.ts`
+### BRIDGE BEHAVIOR (no code change)
 
-- In `bridgeToResponsesSSE()`, explicitly ignore `heartbeat` in the event
-  switch. The existing `activity = true` assignment before the switch resets
-  stall tracking.
-- In `buildResponseJSON()`, explicitly ignore `heartbeat` so non-streaming
-  sidecar paths do not produce output or terminal status changes.
+- Do not modify `src/bridge.ts`; it is already over the repo line limit.
+- `bridgeToResponsesSSE()` already sets `activity = true` before dispatching on
+  `event.type`, so `heartbeat` resets stall tracking even with no switch case.
+- `buildResponseJSON()` has no default side effect for unknown event variants,
+  so `heartbeat` is naturally non-visual. Add tests to lock this behavior.
 
 ### MODIFY `tests/kiro-stream.test.ts`
 
@@ -115,7 +115,7 @@ Add regression tests:
 
 - `bun x tsc --noEmit`
 - `bun test tests/kiro-stream.test.ts tests/bridge.test.ts tests/error-fidelity.test.ts`
-- `wc -l src/adapters/kiro.ts src/adapters/kiro-truncation.ts src/types.ts src/bridge.ts tests/kiro-stream.test.ts tests/bridge.test.ts`
+- `wc -l src/adapters/kiro.ts src/adapters/kiro-events.ts src/adapters/kiro-truncation.ts src/types.ts tests/kiro-stream.test.ts tests/bridge.test.ts`
 
 ## Commit
 
@@ -129,3 +129,31 @@ Add regression tests:
   positives.
 - No user-visible heartbeat or progress output. The new `heartbeat` event is
   internal and ignored by response builders.
+
+## Completion evidence
+
+- Implemented in `c3b10c9`:
+  - Added `src/adapters/kiro-events.ts` for Kiro event JSON parsing and
+    explicit truncation marker detection.
+  - Added `src/adapters/kiro-truncation.ts` for truncation reason detection,
+    tool-input completeness checks, and user-safe truncation messages.
+  - Updated `src/adapters/kiro.ts` to buffer tool starts/input until a real
+    stop event, emit internal `heartbeat` events while buffering, and fail
+    closed on EOF, exception/error, explicit truncation markers, or content
+    before tool stop.
+  - Added internal `{ type: "heartbeat" }` to `AdapterEvent`.
+  - Added regression tests in `tests/kiro-stream.test.ts` and
+    `tests/bridge.test.ts`.
+- Local verification:
+  - `bun x tsc --noEmit` passed.
+  - `bun test tests/kiro-stream.test.ts tests/bridge.test.ts tests/error-fidelity.test.ts`
+    passed: 42 tests.
+  - Line counts stayed under 500 for touched files:
+    `kiro.ts` 478, `kiro-events.ts` 42, `kiro-truncation.ts` 33,
+    `types.ts` 347, `kiro-stream.test.ts` 413, `bridge.test.ts` 213.
+- Independent verifier:
+  - Backend verifier reported DONE with the same typecheck, target tests, and
+    line-count evidence.
+  - It confirmed `src/bridge.ts` was intentionally not modified; heartbeat is
+    non-visual because existing bridge code marks activity before the switch and
+    has no output-producing heartbeat case.
