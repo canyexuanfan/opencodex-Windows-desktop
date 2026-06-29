@@ -35,11 +35,57 @@ function jsonBlob(value: unknown): Uint8Array {
   return encoder.encode(JSON.stringify(value));
 }
 
-function rootPromptMessages(request: CursorRunRequest): Uint8Array[] {
-  // Each entry is a SHA-256 blob ID (not inline JSON); Cursor fetches the bytes back via getBlobArgs.
+function systemPromptBlobs(request: CursorRunRequest): Uint8Array[] {
   return request.system.length > 0
     ? request.system.map(content => storeCursorBlob(jsonBlob({ role: "system", content })))
     : [storeCursorBlob(jsonBlob({ role: "system", content: "You are a helpful assistant." }))];
+}
+
+function assistantRootText(message: Extract<OcxMessage, { role: "assistant" }>): string {
+  if (typeof message.content === "string") return message.content;
+  return message.content
+    .map(part => (part.type === "text" ? part.text : part.type === "thinking" ? part.thinking : undefined))
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join("\n");
+}
+
+// Cursor builds the actual model prompt from rootPromptMessagesJson (turns[] is UI/display metadata),
+// so prior history — including assistant tool calls and tool results — must be replayed here or a
+// ResumeAction has nothing model-visible to continue from. The active user message is excluded
+// because it travels in the action. Tool results are rendered as user-role text with a marker, and
+// each entry is a SHA-256 blob ID (Cursor fetches the bytes back via getBlobArgs). Mirrors the
+// danger-pi reference buildRootPromptMessagesJson.
+function rootPromptMessages(request: CursorRunRequest): Uint8Array[] {
+  const entries = systemPromptBlobs(request);
+  const messages = request.rawMessages;
+  if (!messages?.length) return entries;
+
+  const lastRawIsToolResult = messages.at(-1)?.role === "toolResult";
+  const activeUserIndex = lastRawIsToolResult ? -1 : lastActionIndex(messages);
+
+  for (let i = 0; i < messages.length; i++) {
+    if (i === activeUserIndex) break;
+    const message = messages[i];
+    if (!message) continue;
+    if (message.role === "user" || message.role === "developer") {
+      const text = contentText(message).trim();
+      if (text.length > 0) entries.push(storeCursorBlob(jsonBlob({ role: "user", content: text })));
+    } else if (message.role === "assistant") {
+      const text = assistantRootText(message).trim();
+      if (text.length > 0) entries.push(storeCursorBlob(jsonBlob({ role: "assistant", content: [{ type: "text", text }] })));
+      for (const part of message.content) {
+        if (typeof part === "string" || part.type !== "toolCall") continue;
+        const toolName = namespacedToolName(part.namespace, part.name);
+        const callText = `[Tool Call]\ncall_id: ${part.id}\nname: ${toolName}\narguments:\n${JSON.stringify(part.arguments ?? {})}`;
+        entries.push(storeCursorBlob(jsonBlob({ role: "assistant", content: [{ type: "text", text: callText }] })));
+      }
+    } else if (message.role === "toolResult") {
+      const prefix = message.isError ? "[Tool Error]" : "[Tool Result]";
+      const text = `${prefix}\n${toolResultToText(message)}`;
+      entries.push(storeCursorBlob(jsonBlob({ role: "user", content: [{ type: "text", text }] })));
+    }
+  }
+  return entries;
 }
 
 function contentText(message: OcxMessage): string {

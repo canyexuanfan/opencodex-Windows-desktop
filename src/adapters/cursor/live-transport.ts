@@ -3,13 +3,15 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import type { OcxProviderConfig } from "../../types";
 import { CONNECT_FLAG_END_STREAM, decodeAvailableConnectFrames, encodeConnectFrame } from "./framing";
 import { encodeCursorRunRequest } from "./protobuf-request";
-import { createCursorProtobufEventState, mapCursorProtobufServerMessage, mapSyntheticMcpExecToToolEvents } from "./protobuf-events";
+import { createCursorProtobufEventState, finalizeTurnEvents, mapCursorProtobufServerMessage, mapSyntheticMcpExecToToolEvents } from "./protobuf-events";
 import {
   AgentClientMessageSchema,
   AgentServerMessageSchema,
   ClientHeartbeatSchema,
   type AgentServerMessage,
+  type ExecServerMessage,
 } from "./gen/agent_pb";
+import { OCX_RESPONSES_TOOL_PROVIDER } from "./tool-definitions";
 import { handleCursorNativeExec, handleCursorNativeKv, type CursorNativeExecContext } from "./native-exec";
 import { resolveMcpServers } from "./mcp-config";
 import { CursorMcpManager } from "./mcp-manager";
@@ -68,12 +70,75 @@ function encodeClientMessage(message: Parameters<typeof create<typeof AgentClien
   return encodeConnectFrame(toBinary(AgentClientMessageSchema, create(AgentClientMessageSchema, message)));
 }
 
+/**
+ * Decide how to handle an `execServerMessage.mcpArgs` frame for a client (Responses-provider) tool.
+ *
+ * A stateless Responses proxy cannot send Cursor a real `mcpResult` later (Cursor's MCP exec is
+ * synchronous on the live h2 stream; there is no deferred-result signal). So when Cursor asks us to
+ * run a client Responses tool we must:
+ *   1. surface the tool call to Codex (tool_call_start/delta/end),
+ *   2. deliberately END turn 1 as `done`/completed — Cursor will never send `turnEnded` because it
+ *      is waiting for an `mcpResult` that never comes, so relying on the stall watchdog would make
+ *      turn 1 `response.incomplete` and drop the conversation id (continuation dies at step 1), and
+ *   3. cancel the Cursor run WITHOUT writing any fake `mcpResult`.
+ * The real tool result arrives on the NEXT /v1/responses request as structured history.
+ *
+ * Pure (no I/O) so the decision is unit-testable. `handleServerMessage` performs the side effects.
+ */
+export interface McpArgsPlan {
+  handledByResponsesBridge: boolean;
+  events: CursorServerMessage[];
+  cancelCursorRun: boolean;
+  writeMcpResult?: never;
+}
+
+export function planMcpArgsHandling(
+  execMsg: ExecServerMessage,
+  state: ReturnType<typeof createCursorProtobufEventState>,
+): McpArgsPlan {
+  if (execMsg.message.case !== "mcpArgs") {
+    return { handledByResponsesBridge: false, events: [], cancelCursorRun: false };
+  }
+  const args = execMsg.message.value;
+  if (args.providerIdentifier !== OCX_RESPONSES_TOOL_PROVIDER) {
+    // A real MCP server tool: native exec handles it (executed locally, real mcpResult written).
+    return { handledByResponsesBridge: false, events: [], cancelCursorRun: false };
+  }
+
+  // From here on the Responses bridge owns the exec: never fall through to native exec, which would
+  // send Cursor a bogus "bridge suspension not implemented" mcpResult error.
+  const toolEvents = mapSyntheticMcpExecToToolEvents(args, `exec_${execMsg.id}`, {
+    allowEmptyArgs: true,
+    state,
+  });
+
+  if (toolEvents.some(event => event.type === "error")) {
+    // The error is itself the terminal signal; do not also emit `done`.
+    return { handledByResponsesBridge: true, events: toolEvents, cancelCursorRun: true };
+  }
+
+  // Parallel safety ("tool use N"): Cursor sends one exec mcpArgs per client tool call. Only END
+  // turn 1 once EVERY started client tool call has been committed (openToolCalls drained) — otherwise
+  // finalizing on the first exec would either drop the still-open siblings or make finalizeTurnEvents
+  // emit a truncation error. While siblings are still open we surface this call's events and keep the
+  // Cursor stream open to receive their exec args.
+  if (state.openToolCalls.size > 0) {
+    return { handledByResponsesBridge: true, events: toolEvents, cancelCursorRun: false };
+  }
+
+  // All client tool calls are committed: end turn 1 cleanly so onCompletedResponse stores the Cursor
+  // conversation id for the next request, then cancel the run (no fake mcpResult).
+  const events: CursorServerMessage[] = [...toolEvents, ...finalizeTurnEvents(state)];
+  return { handledByResponsesBridge: true, events, cancelCursorRun: true };
+}
+
 class LiveCursorTransport implements CursorTransport {
   private session?: http2.ClientHttp2Session;
   private stream?: http2.ClientHttp2Stream;
   private heartbeat?: ReturnType<typeof setInterval>;
   private firstFrameTimer?: ReturnType<typeof setTimeout>;
   private committed = false;
+  private expectedClose = false;
   private readonly token: string;
   private readonly mcpManager?: CursorMcpManager;
   private readonly desktopDeps: CursorNativeToolDeps;
@@ -193,6 +258,19 @@ class LiveCursorTransport implements CursorTransport {
     void this.mcpManager?.dispose();
   }
 
+  private cancelCursorRun(): void {
+    this.expectedClose = true;
+    if (this.heartbeat) clearInterval(this.heartbeat);
+    this.clearFirstFrameTimer();
+    try {
+      this.stream?.close(http2.constants.NGHTTP2_CANCEL);
+    } catch {
+      this.stream?.destroy();
+    }
+    this.session?.close();
+    void this.mcpManager?.dispose();
+  }
+
   private open(
     request: CursorRunRequest,
     signal: AbortSignal | undefined,
@@ -223,6 +301,12 @@ class LiveCursorTransport implements CursorTransport {
     // by every terminal path (trailers, error, end, abort, close) so it can never leak.
     const failAndClear = (error: Error) => {
       this.clearFirstFrameTimer();
+      if (this.expectedClose) {
+        // We already emitted a terminal `done` and cancelled the run (client-tool suspension). The
+        // RST_STREAM CANCEL surfaces here as a stream error/abort; it is expected, not a failure.
+        finish();
+        return;
+      }
       fail(error);
     };
     const session = this.session;
@@ -290,30 +374,10 @@ class LiveCursorTransport implements CursorTransport {
     if (message.message.case === "execServerMessage") {
       const execMsg = message.message.value;
       if (execMsg.message.case === "mcpArgs") {
-        const clientToolEvents = mapSyntheticMcpExecToToolEvents(execMsg.message.value, `exec_${execMsg.id}`, {
-          // Allow no-arg client tool calls through the native-exec channel: the mapper still returns
-          // [] for non-Responses providers, so real Cursor native exec keeps falling through below.
-          // Without this, a legitimate no-arg Responses tool would hit native-exec.ts and be rejected.
-          allowEmptyArgs: true,
-          state,
-        });
-        if (clientToolEvents.length > 0) {
-          for (const event of clientToolEvents) push(event);
-        if (clientToolEvents.some(event => event.type === "error")) {
-          // The error event is the terminal signal; pushing `done` too would make the bridge emit
-          // both response.failed and response.completed. Just close the stream.
-          this.close();
-          return;
-        }
-          // Do NOT send a fake mcpResult. Cursor's MCP exec protocol is synchronous-on-the-live-stream
-          // and has no "deferred result" signal (McpResult is all-terminal). Sending an empty
-          // McpSuccess would lie to Cursor ("tool succeeded with empty output") and let it finalize the
-          // agent turn on bad state. Instead we surface the tool_call to Codex, end this Responses turn
-          // honestly, and deliver the real result on the NEXT /v1/responses request as structured
-          // conversation history (mcpToolCall.result) on a new Run with the same conversation id
-          // (multi-turn continuation, see protobuf-request.ts toolCallStep + state.ts). The Cursor
-          // stream stays open; if Cursor waits for an mcpResult that never comes, the bridge stall
-          // watchdog produces a clean bounded `upstream_stall_timeout` instead of a silent hang.
+        const plan = planMcpArgsHandling(execMsg, state);
+        if (plan.handledByResponsesBridge) {
+          for (const event of plan.events) push(event);
+          if (plan.cancelCursorRun) this.cancelCursorRun();
           return;
         }
       }

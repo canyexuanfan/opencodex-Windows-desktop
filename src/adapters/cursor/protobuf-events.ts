@@ -265,7 +265,7 @@ export function mapCursorProtobufServerMessage(
       state.usage.outputTokens += update.value.tokens;
       return [];
     case "turnEnded":
-      return finalizeTurn(state);
+      return finalizeTurnEvents(state);
     default:
       return [];
   }
@@ -277,7 +277,7 @@ export function mapCursorProtobufServerMessage(
  * with corrupt/empty arguments. Emit an explicit error instead of done (fail-closed).
  * Mirrors kiro-truncation.ts behavior.
  */
-function finalizeTurn(state: CursorProtobufEventState): CursorServerMessage[] {
+export function finalizeTurnEvents(state: CursorProtobufEventState): CursorServerMessage[] {
   state.terminated = true;
   if (state.openToolCalls.size > 0) {
     const openIds = [...state.openToolCalls.keys()].join(", ");
