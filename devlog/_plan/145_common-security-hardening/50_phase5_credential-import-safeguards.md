@@ -90,3 +90,36 @@ Verification:
 - `bun test tests/oauth-status-privacy.test.ts tests/kiro-oauth.test.ts tests/oauth-refresh.test.ts`
   -> 22 pass, 0 fail.
 - `bun x tsc --noEmit` -> exit 0, no diagnostics.
+
+## Independent verification follow-up
+
+Read-only sub-agent audit (`Gauss`) returned FAIL after commit `68b079f`.
+
+Findings:
+
+- Existing providers in `auth.json` were not re-normalized when saving one
+  provider, so legacy extra fields could survive rewrites.
+- xAI/Anthropic local-token imports could be labeled as `oauth`.
+- Refreshed credentials could lose existing `source` metadata.
+- Legacy arbitrary `source` strings could be reflected by `getLoginStatus()`.
+- Kiro diagnostics needed coverage for `unreadable`, `token_missing`, and
+  `invalid_json`.
+
+Follow-up changes:
+
+- MODIFY `src/oauth/store.ts`: `loadAuthStore()` now normalizes the whole store;
+  invalid credential sources and extra fields are dropped for all providers.
+- MODIFY `src/oauth/index.ts`: refresh persistence preserves existing source
+  metadata when refresh responses do not provide one.
+- MODIFY `src/oauth/local-token-detect.ts`: Grok CLI and Claude Code imports are
+  tagged `local-cli` at detection time.
+- MODIFY `src/oauth/xai.ts` and `src/oauth/anthropic.ts`: refreshed local imports
+  keep `local-cli`.
+- MODIFY tests: added legacy-store whole-store normalization, invalid source
+  reflection, refresh source preservation, and missing Kiro diagnostic cases.
+
+Re-verification:
+
+- `bun test tests/oauth-status-privacy.test.ts tests/kiro-oauth.test.ts tests/oauth-refresh.test.ts`
+  -> 26 pass, 0 fail.
+- `bun x tsc --noEmit` -> exit 0, no diagnostics.

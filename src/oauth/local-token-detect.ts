@@ -32,6 +32,7 @@ export function detectGrokCliToken(): OAuthCredentials | null {
       expires: expiresAt,
       accountId: entry.user_id as string | undefined,
       email: entry.email as string | undefined,
+      source: "local-cli",
     };
   } catch {
     return null;
@@ -57,7 +58,7 @@ export function detectClaudeCodeToken(): OAuthCredentials | null {
     const data = JSON.parse(raw) as { claudeAiOauth?: { accessToken?: string; refreshToken?: string; expiresAt?: number } };
     const o = data.claudeAiOauth;
     if (!o?.accessToken || !o?.refreshToken) return null;
-    return { access: o.accessToken, refresh: o.refreshToken, expires: o.expiresAt ?? 0 };
+    return { access: o.accessToken, refresh: o.refreshToken, expires: o.expiresAt ?? 0, source: "local-cli" };
   } catch {
     return null;
   }

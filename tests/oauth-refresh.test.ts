@@ -76,6 +76,7 @@ describe("oauth refresh hardening", () => {
     await expect(getValidAccessToken("kiro")).resolves.toBe("aoa-sqlite");
     expect(mock.count()).toBe(0);
     expect(getCredential("kiro")?.refresh).toBe("rt-sqlite");
+    expect(getCredential("kiro")?.source).toBe("local-cli");
   });
 
   test("failed refresh recovers from a now-fresh Kiro CLI SQLite token", async () => {
@@ -90,5 +91,16 @@ describe("oauth refresh hardening", () => {
     await expect(getValidAccessToken("kiro")).resolves.toBe("aoa-recovered");
     expect(calls).toBe(1);
     expect(getCredential("kiro")?.refresh).toBe("rt-recovered");
+    expect(getCredential("kiro")?.source).toBe("local-cli");
+  });
+
+  test("refresh preserves existing credential source metadata", async () => {
+    mockRefreshFetch([
+      new Response(JSON.stringify({ accessToken: "aoa-fresh", refreshToken: "rt-fresh", expiresIn: 3600 }), { status: 200 }),
+    ]);
+    saveCredential("kiro", { access: "aoa-old", refresh: "rt-old", expires: Date.now() - 1, source: "manual" });
+
+    await expect(getValidAccessToken("kiro")).resolves.toBe("aoa-fresh");
+    expect(getCredential("kiro")?.source).toBe("manual");
   });
 });

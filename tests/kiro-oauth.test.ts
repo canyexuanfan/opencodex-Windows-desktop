@@ -41,6 +41,15 @@ function seedKiroCliDb(token: { access_token: string; refresh_token?: string; ex
   db.close();
 }
 
+function seedKiroCliRawValue(value: string) {
+  const dir = join(tmp, "Library", "Application Support", "kiro-cli");
+  mkdirSync(dir, { recursive: true });
+  const db = new Database(join(dir, "data.sqlite3"));
+  db.run("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)");
+  db.run("INSERT INTO auth_kv (key, value) VALUES (?, ?)", ["kirocli:social:token", value]);
+  db.close();
+}
+
 describe("kiro oauth — import-first", () => {
   test("readKiroCliSqlite imports access+refresh from auth_kv", () => {
     seedKiroCliDb({ access_token: "aoa-abc", refresh_token: "rt-1", expires_at: "2099-01-01T00:00:00Z" });
@@ -100,6 +109,33 @@ describe("kiro oauth — import-first", () => {
     expect(result.token).toBeNull();
     expect(result.diagnostics).toContainEqual({ location: "kiro-cli-data", status: "schema_mismatch" });
     expect(result.diagnostics).toContainEqual({ location: "kiro-sso-cache", status: "missing" });
+  });
+
+  test("inspectKiroCliSqlite distinguishes token_missing and invalid_json", () => {
+    seedKiroCliRawValue(JSON.stringify({ refresh_token: "rt-without-access" }));
+
+    const missing = inspectKiroCliSqlite();
+
+    expect(missing.token).toBeNull();
+    expect(missing.diagnostics).toContainEqual({ location: "kiro-cli-data", status: "token_missing" });
+
+    rmSync(join(tmp, "Library"), { recursive: true, force: true });
+    seedKiroCliRawValue("{not json");
+
+    const invalid = inspectKiroCliSqlite();
+
+    expect(invalid.token).toBeNull();
+    expect(invalid.diagnostics).toContainEqual({ location: "kiro-cli-data", status: "invalid_json" });
+  });
+
+  test("inspectKiroCliSqlite distinguishes unreadable database path", () => {
+    const dir = join(tmp, "Library", "Application Support", "kiro-cli");
+    mkdirSync(join(dir, "data.sqlite3"), { recursive: true });
+
+    const result = inspectKiroCliSqlite();
+
+    expect(result.token).toBeNull();
+    expect(result.diagnostics).toContainEqual({ location: "kiro-cli-data", status: "unreadable" });
   });
 
   test("refreshKiroToken maps the desktop refresh response to credentials", async () => {

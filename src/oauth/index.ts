@@ -127,7 +127,7 @@ async function refreshAndPersistAccessToken(
   }
   try {
     const fresh = await def.refresh(cred.refresh);
-    saveCredential(provider, fresh);
+    saveCredential(provider, { ...fresh, source: fresh.source ?? cred.source ?? "oauth" });
     return fresh.access;
   } catch (err) {
     if (provider === "kiro") {
