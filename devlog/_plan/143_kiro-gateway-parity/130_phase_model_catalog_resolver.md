@@ -126,3 +126,27 @@ Add/update regression coverage:
   availability can still vary and remains a documented limitation.
 - No new image-modality matrix. Phase 10 already sends images natively; public
   Kiro docs do not provide a complete per-model modality table for this phase.
+
+## Completion evidence
+
+- Implemented in `0b8d95c`:
+  - Added `src/providers/kiro-models.ts` as the shared Kiro model metadata and
+    normalization owner.
+  - Updated `src/providers/registry.ts` to consume the shared Kiro model list,
+    context windows, and Codex-safe reasoning efforts.
+  - Updated `src/adapters/kiro-wire.ts` so runtime wire model ids use the same
+    normalizer as the catalog.
+  - Added regression coverage in `tests/kiro-adapter.test.ts` and
+    `tests/token-estimate.test.ts`.
+- Re-verified on 2026-06-29:
+  - `bun x tsc --noEmit` passed.
+  - `bun test tests/kiro-adapter.test.ts tests/token-estimate.test.ts tests/provider-registry-parity.test.ts tests/router.test.ts tests/openai-chat-model-suffix.test.ts`
+    passed: 50 tests.
+  - The files that failed during a broad parallel `bun test tests/*.test.ts`
+    run all passed in isolation:
+    `tests/codex-routing.test.ts`, `tests/codex-account-store.test.ts`,
+    `tests/codex-auth-api.test.ts`, `tests/server-auth.test.ts`, and
+    `tests/api-usage.test.ts`.
+- Check verdict: Phase 130 changes are clean. The broad parallel-suite failure
+  is tracked as test isolation/shared-state behavior, not as a Kiro model
+  resolver regression.
