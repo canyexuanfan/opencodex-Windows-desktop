@@ -134,6 +134,20 @@ describe("kiro adapter — buildRequest", () => {
     expect(current.images).toEqual([{ format: "png", source: { bytes: "aGVsbG8=" } }]);
   });
 
+  test("image/jpg media type is normalized to the CodeWhisperer 'jpeg' format", () => {
+    const messages = [
+      { role: "user", content: [
+        { type: "text", text: "look" },
+        { type: "image", imageUrl: "data:image/jpg;base64,aGVsbG8=", detail: "high" },
+      ] },
+    ];
+    const { body } = createKiroAdapter(provider).buildRequest(
+      parsedWith(messages, [{ name: "noop", description: "d", parameters: { type: "object" } }]),
+    );
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+    expect(current.images).toEqual([{ format: "jpeg", source: { bytes: "aGVsbG8=" } }]);
+  });
+
   test("tools map to toolSpecification", () => {
     const { body } = createKiroAdapter(provider).buildRequest(
       parsedWith([{ role: "user", content: "hi" }], [{ name: "grep", description: "search", parameters: { type: "object" } }]),
