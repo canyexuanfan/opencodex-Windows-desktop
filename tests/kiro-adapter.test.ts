@@ -215,8 +215,79 @@ describe("kiro adapter — buildRequest", () => {
 
     expect(schema.required).toBeUndefined();
     expect(schema.additionalProperties).toBeUndefined();
-    expect(schema.properties.options.required).toEqual(["mode"]);
-    expect(schema.properties.options.additionalProperties).toBeUndefined();
+   expect(schema.properties.options.required).toEqual(["mode"]);
+   expect(schema.properties.options.additionalProperties).toBeUndefined();
+ });
+
+  test("root inputSchema always declares type:object (Bedrock requires it)", () => {
+    // Empty parameters (e.g. some MCP/Computer Use tools) must still surface type:"object" or
+    // Bedrock rejects with "toolSpec.inputSchema.json.type must be one of the following: object".
+    const empty = JSON.parse(
+      createKiroAdapter(provider).buildRequest(
+        parsedWith([{ role: "user", content: "hi" }], [{ name: "noargs", description: "d", parameters: {} }]),
+      ).body,
+    ).conversationState.currentMessage.userInputMessage.userInputMessageContext.tools[0].toolSpecification.inputSchema.json;
+    expect(empty).toEqual({ type: "object" });
+
+    // Missing parameters entirely -> defaults to type:"object".
+    const none = JSON.parse(
+      createKiroAdapter(provider).buildRequest(
+        parsedWith([{ role: "user", content: "hi" }], [{ name: "noargs2", description: "d" }]),
+      ).body,
+    ).conversationState.currentMessage.userInputMessage.userInputMessageContext.tools[0].toolSpecification.inputSchema.json;
+    expect(none).toEqual({ type: "object" });
+
+    // Array-form type including "object" collapses to "object" while preserving properties.
+    const arrForm = JSON.parse(
+      createKiroAdapter(provider).buildRequest(
+        parsedWith([{ role: "user", content: "hi" }], [{ name: "arr", description: "d", parameters: { type: ["object", "null"], properties: { a: { type: "string" } } } }]),
+      ).body,
+    ).conversationState.currentMessage.userInputMessage.userInputMessageContext.tools[0].toolSpecification.inputSchema.json;
+    expect(arrForm.type).toBe("object");
+    expect(arrForm.properties).toEqual({ a: { type: "string" } });
+
+    // An explicitly object-typed schema is left untouched.
+    const obj = JSON.parse(
+      createKiroAdapter(provider).buildRequest(
+        parsedWith([{ role: "user", content: "hi" }], [{ name: "obj", description: "d", parameters: { type: "object", properties: { a: { type: "string" } } } }]),
+      ).body,
+    ).conversationState.currentMessage.userInputMessage.userInputMessageContext.tools[0].toolSpecification.inputSchema.json;
+    expect(obj).toEqual({ type: "object", properties: { a: { type: "string" } } });
+  });
+
+  test("root oneOf/anyOf/allOf are flattened into a single object schema (Bedrock rejects them)", () => {
+    const pick = (schema: unknown) =>
+      JSON.parse(createKiroAdapter(provider).buildRequest(
+        parsedWith([{ role: "user", content: "hi" }], [{ name: "comp", description: "d", parameters: schema }]),
+      ).body).conversationState.currentMessage.userInputMessage.userInputMessageContext.tools[0].toolSpecification.inputSchema.json;
+
+    // anyOf: properties merged, no required (OR semantics -> keep lenient).
+    const anyOf = pick({ anyOf: [
+      { type: "object", properties: { a: { type: "string" } }, required: ["a"] },
+      { type: "object", properties: { b: { type: "number" } } },
+    ] });
+    expect(anyOf.oneOf).toBeUndefined();
+    expect(anyOf.anyOf).toBeUndefined();
+    expect(anyOf.allOf).toBeUndefined();
+    expect(anyOf.type).toBe("object");
+    expect(anyOf.properties).toEqual({ a: { type: "string" }, b: { type: "number" } });
+    expect(anyOf.required).toBeUndefined();
+
+    // oneOf: same flattening, no required.
+    const oneOf = pick({ oneOf: [{ type: "object", properties: { x: { type: "string" } } }] });
+    expect(oneOf.oneOf).toBeUndefined();
+    expect(oneOf.type).toBe("object");
+    expect(oneOf.properties).toEqual({ x: { type: "string" } });
+
+    // allOf: properties merged AND required union kept (AND semantics).
+    const allOf = pick({ allOf: [
+      { type: "object", properties: { a: { type: "string" } }, required: ["a"] },
+      { type: "object", properties: { b: { type: "string" } }, required: ["b"] },
+    ] });
+    expect(allOf.allOf).toBeUndefined();
+    expect(allOf.type).toBe("object");
+    expect(allOf.properties).toEqual({ a: { type: "string" }, b: { type: "string" } });
+    expect(allOf.required).toEqual(expect.arrayContaining(["a", "b"]));
   });
 
   test("long tool descriptions move into the system prompt instead of being truncated away", () => {
