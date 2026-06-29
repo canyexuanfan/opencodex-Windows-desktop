@@ -12,6 +12,7 @@
  */
 import { decodeEventStream } from "../lib/eventstream-decoder";
 import { estimateTokens } from "../lib/token-estimate";
+import { debugProviderDiagnostic } from "../debug";
 import { resolveKiroApiRegion, resolveKiroProfileArn } from "../oauth/kiro";
 import { parseKiroEvent } from "./kiro-events";
 import { safeKiroErrorMessage } from "./kiro-errors";
@@ -411,7 +412,7 @@ export async function* parseKiroStream(
     }
     yield {
       type: "done",
-      usage: { inputTokens, outputTokens: estimateTokens(outputChars, modelId) },
+      usage: { inputTokens, outputTokens: estimateTokens(outputChars, modelId), estimated: true },
     };
   } catch (err) {
     yield { type: "error", message: safeKiroErrorMessage({}, err instanceof Error ? err.message : String(err)) };
@@ -444,7 +445,17 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
       if (profileArn) headers["x-amzn-kiro-profile-arn"] = profileArn;
       // CodeWhisperer GenerateAssistantResponse has no reasoning_effort field. Match kiro-gateway's
       // fake-reasoning contract by injecting effort-derived thinking tags into only the current user turn.
-      const body = JSON.stringify(buildKiroPayload(parsed, profileArn));
+      const payload = buildKiroPayload(parsed, profileArn);
+      const body = JSON.stringify(payload);
+      debugProviderDiagnostic("kiro", "request", {
+        region,
+        requestedModel: parsed.modelId,
+        bodyBytes: new TextEncoder().encode(body).length,
+        messageCount: kiroPayloadMessages(parsed).length,
+        toolCount: parsed.context.tools?.length ?? 0,
+        hasProfileArn: Boolean(profileArn),
+        hasPreviousResponseId: Boolean(parsed.previousResponseId),
+      });
       // CW returns no usage. Codex adds each response's usage into its session total; report only the
       // current-turn input delta so old history is not repeatedly added to Codex's visible token usage.
       modelId = parsed.modelId;

@@ -184,4 +184,33 @@ describe("request log metadata", () => {
       usage: { inputTokens: 9, outputTokens: 4 },
     });
   });
+
+  test("deferred SSE logging marks Kiro usage as estimated without changing SSE payload", async () => {
+    const entries: RequestLogEntry[] = [];
+    const payload = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"kiro/claude-sonnet-4.5\",\"usage\":{\"input_tokens\":9,\"output_tokens\":4}}}";
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`data: ${payload}\n\n`));
+        controller.close();
+      },
+    });
+    const response = responseWithDeferredRequestLog(
+      new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }),
+      "ocx-test-kiro-sse-usage",
+      Date.now(),
+      { model: "kiro/claude-sonnet-4.5", provider: "kiro" },
+      entry => entries.push(entry),
+    );
+
+    const text = await response.text();
+    expect(text).toContain("\"usage\":{\"input_tokens\":9,\"output_tokens\":4}");
+    expect(text).not.toContain("estimated");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      terminalStatus: "completed",
+      usageStatus: "estimated",
+      totalTokens: 13,
+      usage: { inputTokens: 9, outputTokens: 4, estimated: true },
+    });
+  });
 });

@@ -27,8 +27,15 @@ export function usageTotalTokens(usage: OcxUsage | undefined): number | undefine
   return usage.inputTokens + usage.outputTokens;
 }
 
+export function usageForFinalLog(provider: string, usage: OcxUsage | undefined): OcxUsage | undefined {
+  if (!usage) return undefined;
+  if (usage.estimated || provider === "kiro") return { ...usage, estimated: true };
+  return usage;
+}
+
 export function usageStatusForFinalLog(usage: OcxUsage | undefined): UsageStatus {
-  return usage ? "reported" : "unreported";
+  if (!usage) return "unreported";
+  return usage.estimated ? "estimated" : "reported";
 }
 
 function normalizeUsageValue(usage: OcxUsage | undefined): OcxUsage | undefined {
@@ -38,6 +45,7 @@ function normalizeUsageValue(usage: OcxUsage | undefined): OcxUsage | undefined 
     outputTokens: usage.outputTokens,
     ...(typeof usage.cachedInputTokens === "number" ? { cachedInputTokens: usage.cachedInputTokens } : {}),
     ...(typeof usage.reasoningOutputTokens === "number" ? { reasoningOutputTokens: usage.reasoningOutputTokens } : {}),
+    ...(usage.estimated ? { estimated: true } : {}),
   };
 }
 

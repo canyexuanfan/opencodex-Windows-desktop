@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   appendUsageEntry,
   readUsageEntries,
+  usageForFinalLog,
   usageLogPath,
   usageStatusForFinalLog,
   usageTotalTokens,
@@ -78,6 +79,7 @@ describe("usage log", () => {
       usage: {
         inputTokens: 1,
         outputTokens: 2,
+        estimated: true,
         prompt: "secret prompt text",
       },
       totalTokens: 3,
@@ -111,7 +113,7 @@ describe("usage log", () => {
       status: 200,
       durationMs: 12,
       usageStatus: "reported",
-      usage: { inputTokens: 1, outputTokens: 2 },
+      usage: { inputTokens: 1, outputTokens: 2, estimated: true },
       totalTokens: 3,
     }]);
   });
@@ -129,7 +131,15 @@ describe("usage log", () => {
   test("keeps missing usage distinct from zero usage", () => {
     expect(usageStatusForFinalLog(undefined)).toBe("unreported");
     expect(usageStatusForFinalLog({ inputTokens: 0, outputTokens: 0 })).toBe("reported");
+    expect(usageStatusForFinalLog({ inputTokens: 0, outputTokens: 0, estimated: true })).toBe("estimated");
     expect(usageTotalTokens(undefined)).toBeUndefined();
     expect(usageTotalTokens({ inputTokens: 4, outputTokens: 6, cachedInputTokens: 2 })).toBe(10);
+  });
+
+  test("marks Kiro final log usage as estimated without changing other providers", () => {
+    const usage = { inputTokens: 4, outputTokens: 6 };
+    expect(usageForFinalLog("kiro", usage)).toEqual({ ...usage, estimated: true });
+    expect(usageForFinalLog("openai", usage)).toEqual(usage);
+    expect(usageForFinalLog("openai", { ...usage, estimated: true })).toEqual({ ...usage, estimated: true });
   });
 });

@@ -116,6 +116,22 @@ describe("appendUsageDebug", () => {
     expect(parsed.bodySample).toContain("refreshToken");
   });
 
+  test("preserves estimated extracted usage while redacting surrounding secrets", () => {
+    appendUsageDebug({
+      ...sample(),
+      bodySample: "Bearer usage-debug-token-123456",
+      extractedUsage: { inputTokens: 9, outputTokens: 4, estimated: true },
+    });
+
+    const parsed = JSON.parse(readFileSync(usageDebugPath(), "utf-8")) as {
+      bodySample: string;
+      extractedUsage: { inputTokens: number; outputTokens: number; estimated?: boolean };
+    };
+    expect(parsed.extractedUsage).toEqual({ inputTokens: 9, outputTokens: 4, estimated: true });
+    expect(parsed.bodySample).not.toContain("usage-debug-token");
+    expect(parsed.bodySample).toContain("Bearer [REDACTED]");
+  });
+
   test("rotates to the most recent USAGE_DEBUG_KEEP_LINES once USAGE_DEBUG_MAX_LINES is exceeded", () => {
     // Lazy rotation: append #(MAX+1) triggers one rewrite to KEEP. Subsequent appends
     // grow the file again up to MAX before the next rewrite. After MAX+1 appends the

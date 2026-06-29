@@ -190,6 +190,7 @@ export interface OcxUsage {
   outputTokens: number;
   cachedInputTokens?: number;
   reasoningOutputTokens?: number;
+  estimated?: boolean;
 }
 
 export interface OcxConfig {

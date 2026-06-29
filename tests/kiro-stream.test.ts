@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKiroAdapter } from "../src/adapters/kiro";
 import { encodeMessage } from "../src/lib/eventstream-decoder";
 import { estimateTokens } from "../src/lib/token-estimate";
-import type { OcxParsedRequest, OcxProviderConfig } from "../src/types";
+import type { OcxParsedRequest, OcxProviderConfig, OcxUsage } from "../src/types";
 
 const enc = new TextEncoder();
 const origHome = process.env.HOME;
@@ -14,6 +14,7 @@ const origApiRegion = process.env.KIRO_API_REGION;
 const origArn = process.env.KIRO_PROFILE_ARN;
 const origCredsFile = process.env.KIRO_CREDS_FILE;
 const origCredentialsFile = process.env.KIRO_CREDENTIALS_FILE;
+const origDebugFrames = process.env.OCX_DEBUG_FRAMES;
 let tmp: string;
 
 beforeEach(() => {
@@ -24,6 +25,7 @@ beforeEach(() => {
   delete process.env.KIRO_PROFILE_ARN;
   delete process.env.KIRO_CREDS_FILE;
   delete process.env.KIRO_CREDENTIALS_FILE;
+  delete process.env.OCX_DEBUG_FRAMES;
 });
 afterEach(() => {
   if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
@@ -32,6 +34,7 @@ afterEach(() => {
   if (origArn === undefined) delete process.env.KIRO_PROFILE_ARN; else process.env.KIRO_PROFILE_ARN = origArn;
   if (origCredsFile === undefined) delete process.env.KIRO_CREDS_FILE; else process.env.KIRO_CREDS_FILE = origCredsFile;
   if (origCredentialsFile === undefined) delete process.env.KIRO_CREDENTIALS_FILE; else process.env.KIRO_CREDENTIALS_FILE = origCredentialsFile;
+  if (origDebugFrames === undefined) delete process.env.OCX_DEBUG_FRAMES; else process.env.OCX_DEBUG_FRAMES = origDebugFrames;
   rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -53,8 +56,8 @@ function streamOf(...frames: Uint8Array[]): ReadableStream<Uint8Array> {
   });
 }
 
-async function doneUsage(adapter: ReturnType<typeof createKiroAdapter>, ...frames: Uint8Array[]): Promise<{ inputTokens: number; outputTokens: number }> {
-  let done: { inputTokens: number; outputTokens: number } | undefined;
+async function doneUsage(adapter: ReturnType<typeof createKiroAdapter>, ...frames: Uint8Array[]): Promise<OcxUsage> {
+  let done: OcxUsage | undefined;
   for await (const e of adapter.parseStream(new Response(streamOf(...frames)))) {
     if (e.type === "done") done = e.usage;
   }
@@ -293,6 +296,7 @@ describe("kiro adapter — parseStream", () => {
     const done = await doneUsage(adapter, eventFrame({ content: "y".repeat(350) }));
     expect(done.inputTokens).toBe(200);
     expect(done.outputTokens).toBe(100);
+    expect(done.estimated).toBe(true);
   });
 
   test("fresh payload includes history while usage counts only the current turn", async () => {
@@ -387,6 +391,25 @@ describe("kiro adapter — parseStream", () => {
     const usage = await doneUsage(adapter, eventFrame({ content: "ok" }));
     expect(usage.inputTokens).toBeLessThan(50);
     expect(usage.inputTokens).toBeGreaterThan(0);
+  });
+
+  test("buildRequest emits only redacted Kiro diagnostic breadcrumbs when enabled", () => {
+    process.env.OCX_DEBUG_FRAMES = "1";
+    process.env.KIRO_PROFILE_ARN = "arn:aws:codewhisperer:us-east-1:123456789012:profile/demo";
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      createKiroAdapter(provider).buildRequest(parsedWith([{ role: "user", content: "secret prompt body" }], [bashTool]));
+      expect(error).toHaveBeenCalledTimes(1);
+      const line = String(error.mock.calls[0]?.[0] ?? "");
+      expect(line).toContain("[ocx:kiro:request]");
+      expect(line).toContain("\"region\":\"us-east-1\"");
+      expect(line).toContain("\"hasProfileArn\":true");
+      expect(line).not.toContain("secret prompt body");
+      expect(line).not.toContain("tok-123");
+      expect(line).not.toContain("arn:aws:codewhisperer");
+    } finally {
+      error.mockRestore();
+    }
   });
 });
 

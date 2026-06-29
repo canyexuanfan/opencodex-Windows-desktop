@@ -51,6 +51,7 @@ import type { OcxUsage } from "./types";
 import {
   appendUsageEntry,
   readUsageEntries,
+  usageForFinalLog,
   usageStatusForFinalLog,
   usageTotalTokens,
   type UsageStatus,
@@ -903,8 +904,9 @@ function addFinalRequestLog(
   addLog: (entry: RequestLogEntry) => void = addRequestLog,
 ): void {
   const errorCode = requestLogErrorCode(status);
-  const usageStatus = usageStatusForFinalLog(logCtx.usage);
-  const totalTokens = usageTotalTokens(logCtx.usage);
+  const finalUsage = usageForFinalLog(logCtx.provider, logCtx.usage);
+  const usageStatus = usageStatusForFinalLog(finalUsage);
+  const totalTokens = usageTotalTokens(finalUsage);
   addLog({
     requestId,
     timestamp: start,
@@ -924,7 +926,7 @@ function addFinalRequestLog(
     ...(meta?.terminalStatus ? { terminalStatus: meta.terminalStatus } : {}),
     ...(meta?.closeReason ? { closeReason: meta.closeReason } : {}),
     usageStatus,
-    ...(logCtx.usage ? { usage: logCtx.usage } : {}),
+    ...(finalUsage ? { usage: finalUsage } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
   });
   if (isUsageDebugEnabled()) {
@@ -937,7 +939,7 @@ function addFinalRequestLog(
       upstreamStatus: status,
       bodyKind: logCtx.usageDebugBodyKind ?? "none",
       bodySample: logCtx.usageDebugBodySample ?? "",
-      extractedUsage: logCtx.usage ?? null,
+      extractedUsage: finalUsage ?? null,
     });
   }
 }
