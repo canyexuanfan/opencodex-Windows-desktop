@@ -27,12 +27,21 @@ function replayKey(model: string, sessionId: string): string {
   return `${model}::session:${sessionId}`;
 }
 
-/** Stable identity for a functionCall part: name + canonical (key-sorted) args JSON. */
+/** Recursively canonicalize a JSON value: object keys sorted, arrays preserved. */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const entries = Object.keys(value as Record<string, unknown>).sort()
+    .map(k => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`);
+  return `{${entries.join(",")}}`;
+}
+
+/** Stable identity for a functionCall part: name + recursively canonicalized args. */
 function functionCallKey(name: unknown, args: unknown): string | undefined {
   if (typeof name !== "string" || name.length === 0) return undefined;
   let argsKey = "";
   try {
-    argsKey = JSON.stringify(args ?? {}, Object.keys((args as Record<string, unknown>) ?? {}).sort());
+    argsKey = canonicalJson(args ?? {});
   } catch {
     argsKey = "";
   }

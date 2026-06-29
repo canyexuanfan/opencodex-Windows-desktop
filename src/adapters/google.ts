@@ -335,6 +335,10 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
 
       const candidates = json.candidates as { content?: { parts?: { text?: string; functionCall?: { name: string; args: unknown } }[] } }[] | undefined;
       if (candidates?.[0]?.content?.parts) {
+        // Non-streaming CCA: observe thoughtSignatures for the next turn, same as the stream path.
+        if (provider.googleMode === "cloud-code-assist" && antigravityModel && antigravitySession) {
+          observeAntigravityReplay(antigravityModel, antigravitySession, candidates[0].content.parts as unknown[]);
+        }
         for (const part of candidates[0].content.parts) {
           if (part.text) events.push({ type: "text_delta", text: part.text });
           if (part.functionCall) {

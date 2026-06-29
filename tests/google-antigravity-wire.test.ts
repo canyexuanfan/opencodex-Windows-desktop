@@ -83,6 +83,21 @@ describe("antigravity parseResponse unwraps response (non-streaming)", () => {
     const done = events.find(e => e.type === "done");
     expect((done as Extract<AdapterEvent, { type: "done" }>).usage?.inputTokens).toBe(9);
   });
+
+  test("non-streaming observes thoughtSignatures so the next turn can replay them", async () => {
+    const { __resetAntigravityReplayCache, applyAntigravityReplay } = await import("../src/adapters/google-antigravity-replay");
+    __resetAntigravityReplayCache();
+    const adapter = createGoogleAdapter(provider);
+    // buildRequest first to set the per-adapter model/session, then parseResponse to observe.
+    await adapter.buildRequest(parsed("hello world"));
+    const body = JSON.stringify({ response: { candidates: [{ content: { parts: [{ functionCall: { name: "do_x", args: { a: 1 } }, thoughtSignature: "sig-nonstream0000000" } ] } }] } });
+    await adapter.parseResponse!(new Response(body, { status: 200 }));
+    // A follow-up request's history should now get the signature re-injected.
+    const followup = parsed("hello world");
+    const contents = [{ role: "model", parts: [{ functionCall: { name: "do_x", args: { a: 1 } } }] }];
+    applyAntigravityReplay("gemini-3-pro", antigravitySessionId(followup), contents);
+    expect((contents[0].parts[0] as { thoughtSignature?: string }).thoughtSignature).toBe("sig-nonstream0000000");
+  });
 });
 
 describe("antigravity history preserves tool-call thoughtSignature", () => {
