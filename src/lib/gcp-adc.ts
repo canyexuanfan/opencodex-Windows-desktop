@@ -16,7 +16,7 @@
 import { Buffer } from "node:buffer";
 import * as os from "node:os";
 import * as path from "node:path";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, statSync } from "node:fs";
 
 /** Injectable fetch (tests pass a mock); defaults to the global fetch. */
 export type FetchImpl = typeof fetch;
@@ -69,6 +69,20 @@ function userAdcPath(): string {
   return path.join(os.homedir(), ".config", "gcloud", "application_default_credentials.json");
 }
 
+/**
+ * A content-freshness fingerprint for a credential file, so an in-place rewrite (e.g.
+ * `gcloud auth application-default login`, or a rotated service-account key at the same path)
+ * changes the cache key and invalidates the stale token. Falls back to the bare path when stat fails.
+ */
+function fileSourceTag(prefix: string, filePath: string): string {
+  try {
+    const st = statSync(filePath);
+    return `${prefix}:${filePath}:${st.size}:${Math.floor(st.mtimeMs)}`;
+  } catch {
+    return `${prefix}:${filePath}`;
+  }
+}
+
 function readJsonFile<T>(filePath: string): T | undefined {
   if (!existsSync(filePath)) return undefined;
   return JSON.parse(readFileSync(filePath, "utf8")) as T;
@@ -79,11 +93,11 @@ function loadAdcCredentials(): { source: string; creds: AdcFileCredentials } | u
   if (gacPath) {
     const creds = readJsonFile<AdcFileCredentials>(gacPath);
     if (!creds) throw new Error(`GOOGLE_APPLICATION_CREDENTIALS points to a missing file: ${gacPath}`);
-    return { source: `gac:${gacPath}`, creds };
+    return { source: fileSourceTag("gac", gacPath), creds };
   }
   const userPath = userAdcPath();
   const creds = readJsonFile<AdcFileCredentials>(userPath);
-  if (creds) return { source: `user:${userPath}`, creds };
+  if (creds) return { source: fileSourceTag("user", userPath), creds };
   return undefined;
 }
 
@@ -95,9 +109,9 @@ function loadAdcCredentials(): { source: string; creds: AdcFileCredentials } | u
  */
 function currentAdcSourceKey(): string {
   const gacPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-  if (gacPath) return `gac:${gacPath}`;
+  if (gacPath) return fileSourceTag("gac", gacPath);
   const userPath = userAdcPath();
-  if (existsSync(userPath)) return `user:${userPath}`;
+  if (existsSync(userPath)) return fileSourceTag("user", userPath);
   return "metadata";
 }
 

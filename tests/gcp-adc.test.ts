@@ -203,4 +203,26 @@ describe("gcp-adc token-exchange hardening", () => {
     expect(caught).toBeDefined();
     expect(caught!.message).toContain("missing file");
   });
+
+  test("invalidates the cached token when the SAME ADC file is rewritten in place", async () => {
+    __resetVertexTokenCache();
+    const saB = join(tmp, "rotated-sa.json");
+    const { writeFileSync: wf } = await import("node:fs");
+    // Reuse the existing SA PEM by copying the seeded SA file content.
+    const original = (await import("node:fs")).readFileSync(saPath, "utf8");
+    wf(saB, original);
+    setEnv("GOOGLE_APPLICATION_CREDENTIALS", saB);
+    let issued = "tok-before-rotation";
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;
+      if (url === OAUTH_TOKEN_URL) return new Response(JSON.stringify({ access_token: issued, expires_in: 3600 }), { status: 200 });
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+    expect(await getVertexAccessToken()).toBe("tok-before-rotation");
+    // Rewrite the same path with new content + a newer mtime → cache key changes → re-resolves.
+    await new Promise(r => setTimeout(r, 10));
+    wf(saB, original + "\n");
+    issued = "tok-after-rotation";
+    expect(await getVertexAccessToken()).toBe("tok-after-rotation");
+  });
 });

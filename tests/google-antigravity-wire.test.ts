@@ -105,4 +105,24 @@ describe("antigravity history preserves tool-call thoughtSignature", () => {
     const fcPart = modelTurn?.parts.find(part => "functionCall" in part);
     expect(fcPart?.thoughtSignature).toBe("sig-abcdef0123456789");
   });
+
+  test("a synthetic Responses item id (fc_...) is NOT forwarded as a thoughtSignature", async () => {
+    const p = {
+      modelId: "gemini-3-pro",
+      stream: false,
+      context: {
+        messages: [
+          { role: "user", content: "go" },
+          { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "get_x", namespace: "mcp__t", arguments: {}, thoughtSignature: "fc_d8df7548e31a4130b7624f3d27571cdd" }] },
+        ],
+        systemPrompt: [], tools: [],
+      },
+      options: {},
+    } as unknown as OcxParsedRequest;
+    const req = await createGoogleAdapter(provider).buildRequest(p);
+    const env = JSON.parse(req.body);
+    const modelTurn = (env.request.contents as { role: string; parts: Record<string, unknown>[] }[]).find(c => c.role === "model");
+    const fcPart = modelTurn?.parts.find(part => "functionCall" in part);
+    expect(fcPart?.thoughtSignature).toBeUndefined();
+  });
 });

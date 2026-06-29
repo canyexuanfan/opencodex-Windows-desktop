@@ -4,6 +4,18 @@ import type { OcxContentPart, OcxParsedRequest } from "../types";
 /** Antigravity request User-Agent (overridable). Mirrors the Antigravity desktop client UA. */
 export const ANTIGRAVITY_REQUEST_UA = process.env.GOOGLE_ANTIGRAVITY_USER_AGENT || "antigravity";
 
+/**
+ * Whether a stored `OcxToolCall.thoughtSignature` is a REAL upstream Gemini signature versus a
+ * synthetic Responses item id (`fc_...`, `call_...`, `rs_...`, etc) that the bridge/parser stashes
+ * on the field. Only real signatures may be forwarded to Gemini/Antigravity — sending a synthetic
+ * id as `thoughtSignature` breaks multi-turn reasoning continuity (upstream rejects it). Real
+ * signatures are opaque base64-ish blobs with no Responses-id prefix.
+ */
+export function isLikelyRealThoughtSignature(sig: string | undefined): boolean {
+  if (typeof sig !== "string" || sig.length < 16) return false;
+  return !/^(fc|call|msg|rs|resp|reasoning|item|ws)_/.test(sig);
+}
+
 function firstUserText(parsed: OcxParsedRequest): string | undefined {
   for (const msg of parsed.context.messages) {
     if (msg.role !== "user") continue;

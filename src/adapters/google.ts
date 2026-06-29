@@ -15,7 +15,7 @@ import { contentPartsToText, parseDataUrl } from "./image";
 import { getVertexAccessToken } from "../lib/gcp-adc";
 import { fetchAntigravityWithRetry, fetchVertexWithRetry } from "./google-http";
 import { isVertexTruncationReason, vertexTruncationErrorMessage } from "./google-truncation";
-import { ANTIGRAVITY_REQUEST_UA, antigravitySessionId, sanitizeAntigravityClaudeSignatures } from "./google-antigravity-wire";
+import { ANTIGRAVITY_REQUEST_UA, antigravitySessionId, isLikelyRealThoughtSignature, sanitizeAntigravityClaudeSignatures } from "./google-antigravity-wire";
 import { antigravityUsesReplayCache, applyAntigravityReplay, clearAntigravityReplay, observeAntigravityReplay } from "./google-antigravity-replay";
 
 /** Vertex API key: provider.apiKey if it looks real (not a sentinel), else GOOGLE_CLOUD_API_KEY env. */
@@ -76,9 +76,11 @@ function messagesToGeminiFormat(parsed: OcxParsedRequest): { systemInstruction?:
             const tc = p as OcxToolCall;
             // Preserve the thought signature on the function-call part so Antigravity/Gemini-3
             // reasoning continuity survives history-driven (stateless) turns, not just same-process
-            // streaming covered by the replay cache.
+            // streaming covered by the replay cache. Only forward a REAL upstream signature — the
+            // Responses parser also stashes synthetic item ids (`fc_...`) on this field, and sending
+            // those as a thoughtSignature breaks continuity (the replay cache supplies the real one).
             const part: Record<string, unknown> = { functionCall: { name: namespacedToolName(tc.namespace, tc.name), args: tc.arguments } };
-            if (tc.thoughtSignature) part.thoughtSignature = tc.thoughtSignature;
+            if (isLikelyRealThoughtSignature(tc.thoughtSignature)) part.thoughtSignature = tc.thoughtSignature;
             parts.push(part);
           }
         }
