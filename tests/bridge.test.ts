@@ -265,6 +265,30 @@ describe("Responses bridge reasoning and usage parity", () => {
     const output = json.output as Record<string, unknown>[];
     expect(output.map(item => item.type)).toEqual(["message"]);
   });
+
+  test("heartbeat events reset the stall watchdog and emit no protocol frame", async () => {
+    // Regression for the Cursor parallel-tool-call stall: while the upstream silently assembles tool
+    // calls, the adapter emits `heartbeat` events. They must keep the stall watchdog alive (no
+    // upstream_stall_timeout) without producing any Responses protocol event of their own.
+    async function* heartbeatsThenDone(): AsyncGenerator<AdapterEvent> {
+      // More heartbeats than maxStallTicks would allow if they did NOT reset the counter.
+      for (let i = 0; i < 6; i++) {
+        yield { type: "heartbeat" };
+        await new Promise(r => setTimeout(r, 12));
+      }
+      yield { type: "text_delta", text: "ok" };
+      yield { type: "done" };
+    }
+    // heartbeatMs=10ms, stallTimeoutSec=0.03s -> maxStallTicks=3. 6 spaced heartbeats only survive
+    // if each one resets stallTicks.
+    const frames = await collectSse(bridgeToResponsesSSE(
+      heartbeatsThenDone(), "model", undefined, undefined, undefined, undefined, 10, { stallTimeoutSec: 0.03 },
+    ));
+    expect(frames.some(f => (f.data.response as Record<string, unknown> | undefined)?.incomplete_details)).toBe(false);
+    expect(frames.some(f => f.event === "response.completed")).toBe(true);
+    // No protocol frame is produced by a heartbeat itself (only created/text/completed appear).
+    expect(frames.some(f => f.event === "response.heartbeat" && f.data.type === "heartbeat" && Object.keys(f.data).length > 2)).toBe(false);
+  });
 });
 
 describe("Responses bridge web_search_call native item", () => {

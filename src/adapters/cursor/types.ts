@@ -25,6 +25,7 @@ export type CursorServerMessage =
   | { type: "tool_call_end"; id?: string }
   | { type: "done"; usage?: OcxUsage }
   | { type: "error"; message: string }
+  | { type: "heartbeat" }
   | { type: "kv_get"; key: string }
   | { type: "kv_set"; key: string; value: Uint8Array }
   | { type: "exec"; execCase: string; requestId: string };

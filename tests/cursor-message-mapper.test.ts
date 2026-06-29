@@ -17,6 +17,14 @@ describe("Cursor message mapper", () => {
     expect(writes).toEqual([]);
   });
 
+  test("maps a heartbeat to a liveness AdapterEvent (no protocol output)", () => {
+    const writes: CursorClientMessage[] = [];
+    const state = { kv: createCursorKvStore(), writeClient: (message: CursorClientMessage) => writes.push(message) };
+    // Heartbeats keep the bridge stall watchdog alive during silent (parallel) tool-call assembly.
+    expect(mapCursorServerMessage({ type: "heartbeat" }, state)).toEqual([{ type: "heartbeat" }]);
+    expect(writes).toEqual([]);
+  });
+
   test("handles KV get and set as internal client replies only", () => {
     const writes: CursorClientMessage[] = [];
     const kv = createCursorKvStore({ present: bytes(1, 2) });

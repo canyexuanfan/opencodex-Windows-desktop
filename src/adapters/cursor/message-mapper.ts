@@ -27,6 +27,11 @@ export function mapCursorServerMessage(
       return [{ type: "done", usage: message.usage }];
     case "error":
       return [{ type: "error", message: message.message }];
+    case "heartbeat":
+      // Liveness only: keeps the bridge's stall watchdog from tripping upstream_stall_timeout while
+      // Cursor silently assembles (parallel) tool calls. The bridge resets stallTicks on any adapter
+      // event and ignores unknown event types, so this emits no Responses protocol event.
+      return [{ type: "heartbeat" }];
     case "kv_get":
       state.writeClient({ type: "kv_value", key: message.key, value: state.kv.get(message.key) });
       return [];

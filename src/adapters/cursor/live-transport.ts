@@ -313,7 +313,36 @@ class LiveCursorTransport implements CursorTransport {
       for (const reply of replies) this.stream.write(encodeConnectFrame(reply));
       return;
     }
-    for (const event of mapCursorProtobufServerMessage(message, state)) push(event);
+    const mapped = mapCursorProtobufServerMessage(message, state);
+    if (mapped.length > 0) {
+      for (const event of mapped) push(event);
+      return;
+    }
+    // The frame produced no outward Responses event (e.g. toolCallStarted / partialToolCall args
+    // buffering, toolCallDelta, tokenDelta, or a checkpoint update). Tool-call protocol events are
+    // deferred to completion for atomic, parallel-safe emission, so a turn that silently assembles
+    // several tool calls can otherwise exceed the bridge's stall watchdog (upstream_stall_timeout).
+    // Emit a liveness heartbeat for these progress frames so the watchdog sees the upstream is alive.
+    if (isCursorProgressFrame(message)) push({ type: "heartbeat" });
+  }
+}
+
+/**
+ * True when a server frame represents real upstream progress that produced no outward Responses
+ * event (so the bridge's stall watchdog would otherwise see silence). Covers tool-call assembly,
+ * token/checkpoint accounting — the frames `mapCursorProtobufServerMessage` intentionally swallows.
+ */
+function isCursorProgressFrame(message: AgentServerMessage): boolean {
+  if (message.message.case === "conversationCheckpointUpdate") return true;
+  if (message.message.case !== "interactionUpdate") return false;
+  switch (message.message.value.message.case) {
+    case "toolCallStarted":
+    case "partialToolCall":
+    case "toolCallDelta":
+    case "tokenDelta":
+      return true;
+    default:
+      return false;
   }
 }
 
