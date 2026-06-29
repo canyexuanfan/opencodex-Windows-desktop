@@ -252,7 +252,10 @@ class LiveCursorTransport implements CursorTransport {
       if (execMsg.message.case === "mcpArgs") {
         const callId = execMsg.message.value.toolCallId || `exec_${execMsg.id}`;
         const clientToolEvents = mapSyntheticMcpExecToToolEvents(execMsg.message.value, `exec_${execMsg.id}`, {
-          allowEmptyArgs: false,
+          // Allow no-arg client tool calls through the native-exec channel: the mapper still returns
+          // [] for non-Responses providers, so real Cursor native exec keeps falling through below.
+          // Without this, a legitimate no-arg Responses tool would hit native-exec.ts and be rejected.
+          allowEmptyArgs: true,
           state,
           suppressStart: state.openToolCalls.has(callId),
         });
