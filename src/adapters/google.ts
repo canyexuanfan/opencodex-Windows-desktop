@@ -1,4 +1,4 @@
-import type { ProviderAdapter } from "./base";
+import type { AdapterFetchContext, AdapterRequest, ProviderAdapter } from "./base";
 import { debugDroppedFrame } from "../debug";
 import type {
   AdapterEvent,
@@ -13,6 +13,7 @@ import type {
 import { isAllowedToolChoice, namespacedToolName, toolAllowedByChoice } from "../types";
 import { contentPartsToText, parseDataUrl } from "./image";
 import { getVertexAccessToken } from "../lib/gcp-adc";
+import { fetchVertexWithRetry } from "./google-http";
 
 /** Vertex API key: provider.apiKey if it looks real (not a sentinel), else GOOGLE_CLOUD_API_KEY env. */
 function resolveVertexApiKey(optKey?: string): string | undefined {
@@ -125,6 +126,12 @@ function usageFromGemini(usage: Record<string, number> | undefined): OcxUsage | 
 export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapter {
   return {
     name: "google",
+
+    // Vertex gets Kiro-style retry/timeout + classified, redacted errors. AI-Studio Gemini keeps the
+    // default server fetch path (fetchResponse stays undefined so server.ts falls back).
+    ...(provider.googleMode === "vertex"
+      ? { fetchResponse: (request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response> => fetchVertexWithRetry(request, ctx) }
+      : {}),
 
     async buildRequest(parsed: OcxParsedRequest) {
       const { systemInstruction, contents } = messagesToGeminiFormat(parsed);
