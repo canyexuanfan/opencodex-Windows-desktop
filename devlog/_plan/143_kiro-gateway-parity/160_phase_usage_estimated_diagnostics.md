@@ -113,3 +113,25 @@ leaking prompts, tokens, profile ARNs, or local paths.
 - No full raw AWS eventstream frame capture.
 - No public Responses API schema change for usage; estimated status is for
   opencodex logs/debugging.
+
+## Completion evidence
+
+- Implementation commit: `e50ca23 fix(kiro): mark heuristic usage as estimated`.
+- `src/types.ts` now carries internal `OcxUsage.estimated`.
+- `src/usage-log.ts` marks provider `kiro` usage as estimated at final log time,
+  preserves only the boolean metadata in JSONL, and still strips unknown runtime
+  fields.
+- `src/server.ts` uses the final normalized usage for request logs and
+  `usage-debug` extracted usage, without changing downstream Responses usage.
+- `src/adapters/kiro.ts` emits `done.usage.estimated = true` and logs only
+  opt-in redacted request breadcrumbs through `debugProviderDiagnostic()`.
+- `src/debug.ts` keeps provider diagnostics behind `OCX_DEBUG_FRAMES=1`, redacts
+  secrets/profile ARNs/tokens, and swallows diagnostic failures.
+- Local verification passed:
+  - `bun x tsc --noEmit`
+  - `bun test tests/usage-log.test.ts tests/request-log.test.ts tests/kiro-stream.test.ts tests/debug.test.ts tests/usage-debug.test.ts tests/usage-summary.test.ts`
+  - `65 pass, 0 fail`
+- Backend verifier returned `DONE`, confirmed public Responses usage shape stays
+  unchanged, request logs mark Kiro usage `estimated`, usage-debug preserves
+  `estimated`, provider diagnostics are opt-in/redacted, and `src/adapters/kiro.ts`
+  is 489 lines.
