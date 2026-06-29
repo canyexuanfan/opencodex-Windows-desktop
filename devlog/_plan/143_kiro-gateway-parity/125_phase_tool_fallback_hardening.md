@@ -36,8 +36,22 @@ flags three Kiro tool-compatibility gaps:
   - Add the full description to `systemAdditions` under a deterministic heading.
 - Preserve existing schema sanitization behavior from Phase 120.
 
+### ADD `src/adapters/kiro-wire.ts`
+
+Keep `src/adapters/kiro.ts` below the 500-line project limit by moving existing
+wire helpers out before adding fallback logic:
+
+- `fingerprint()`
+- `osTag()`
+- `mapModelId(id)`
+- `normalizeToolId(id)`
+
+The functions keep their current behavior exactly. This is a mechanical
+extraction only.
+
 ### MODIFY `src/adapters/kiro.ts`
 
+- Remove local wire helpers and import them from `src/adapters/kiro-wire.ts`.
 - Import `convertKiroToolContext()` instead of only `convertKiroTools()`.
 - Append `systemAdditions` to the payload system prefix. Unlike the stable
   system prompt, tool documentation additions should be present whenever the
@@ -73,7 +87,7 @@ Add regression coverage:
 
 - `bun x tsc --noEmit`
 - `bun test tests/kiro-adapter.test.ts`
-- `wc -l src/adapters/kiro.ts src/adapters/kiro-tools.ts tests/kiro-adapter.test.ts`
+- `wc -l src/adapters/kiro.ts src/adapters/kiro-tools.ts src/adapters/kiro-wire.ts tests/kiro-adapter.test.ts`
 
 ## Commit
 
