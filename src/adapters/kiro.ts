@@ -1,15 +1,3 @@
-/**
- * Kiro (AWS CodeWhisperer) adapter — GenerateAssistantResponse over AWS eventstream.
- *
- * buildRequest: Responses-derived OcxParsedRequest → CodeWhisperer `conversationState`
- *   (strict user/assistant alternation, toolResult adjacency, toolUses[].input as a JSON OBJECT)
- *   + KiroIDE-spoof fingerprint headers + Bearer token (provider.apiKey, pre-resolved by the server).
- * parseStream: decodeEventStream (Phase 1) → discriminate stop/input/name (CW repeats name on every
- *   tool event) → opencodex AdapterEvent variants.
- *
- * Ported from jawcode packages/ai/src/providers/kiro.ts with the 260628 live-confirmed fixes.
- * profileArn/region are resolved here at request time (not stored in the credential).
- */
 import { decodeEventStream } from "../lib/eventstream-decoder";
 import { estimateTokens } from "../lib/token-estimate";
 import { debugProviderDiagnostic } from "../debug";
@@ -120,6 +108,15 @@ function messageUsageText(msg: OcxMessage): string {
   }
 }
 
+function messageLogText(msg: OcxMessage): string {
+  if (msg.role !== "assistant") return messageUsageText(msg);
+  return msg.content.map(part => {
+    if (part.type === "text") return part.text;
+    if (part.type === "toolCall") return [part.name, part.id, serializeForUsage(part.arguments)].join("\n");
+    return part.thinking;
+  }).filter(Boolean).join("\n");
+}
+
 function shouldCountStablePromptOverhead(parsed: OcxParsedRequest): boolean {
   return !parsed.previousResponseId && !parsed.context.messages.some(m => m.role === "assistant");
 }
@@ -135,6 +132,13 @@ function estimateKiroInputTokens(parsed: OcxParsedRequest): number {
   }
 
   return estimateTokens(parts.join("\n"), parsed.modelId);
+}
+
+function estimateKiroLogInputTokens(parsed: OcxParsedRequest): number {
+  const parts = parsed.context.messages.map(messageLogText).filter(Boolean);
+  if (parsed.context.systemPrompt?.length) parts.push(...parsed.context.systemPrompt);
+  if (parsed.context.tools?.length) parts.push(serializeForUsage(parsed.context.tools));
+  return Math.max(estimateKiroInputTokens(parsed), estimateTokens(parts.join("\n"), parsed.modelId));
 }
 
 function kiroThinkingBudget(parsed: OcxParsedRequest): number | undefined {
@@ -465,6 +469,7 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
         method: "POST",
         headers,
         body,
+        usageLog: { inputTokens: estimateKiroLogInputTokens(parsed), estimated: true },
       };
     },
 

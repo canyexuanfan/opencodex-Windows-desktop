@@ -21,6 +21,10 @@ export interface AdapterRequest {
     method: string;
     headers: Record<string, string>;
     body: string;
+    usageLog?: {
+      inputTokens?: number;
+      estimated?: boolean;
+    };
 }
 
 export interface AdapterFetchContext {

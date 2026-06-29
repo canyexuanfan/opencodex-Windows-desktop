@@ -324,6 +324,22 @@ describe("kiro adapter — parseStream", () => {
     expect(longUsage.inputTokens).toBe(estimateTokens(latest, "claude-sonnet-4.5"));
   });
 
+  test("request log usage estimates the full Codex context while SSE usage stays current-turn", async () => {
+    const latest = "please summarize recent commits";
+    const messages = [
+      { role: "user", content: "u".repeat(8000) },
+      { role: "assistant", content: [{ type: "text", text: "a".repeat(8000) }] },
+      { role: "user", content: latest },
+    ];
+    const adapter = createKiroAdapter(provider);
+    const request = adapter.buildRequest(parsedWith(messages));
+    const usage = await doneUsage(adapter, eventFrame({ content: "ok" }));
+
+    expect(usage.inputTokens).toBe(estimateTokens(latest, "claude-sonnet-4.5"));
+    expect(request.usageLog?.estimated).toBe(true);
+    expect(request.usageLog?.inputTokens).toBeGreaterThan(usage.inputTokens + 4000);
+  });
+
   test("resumed payload sends only the current turn instead of repeated history", async () => {
     const latest = "please summarize recent commits";
     const oldHistory = [

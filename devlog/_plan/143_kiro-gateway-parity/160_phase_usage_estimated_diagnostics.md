@@ -135,3 +135,31 @@ leaking prompts, tokens, profile ARNs, or local paths.
   unchanged, request logs mark Kiro usage `estimated`, usage-debug preserves
   `estimated`, provider diagnostics are opt-in/redacted, and `src/adapters/kiro.ts`
   is 489 lines.
+
+## Follow-up: Request Logs should show full-context estimates
+
+User observed that Kiro request log rows showed only ~100-800 tokens while
+ChatGPT rows showed large context-sized totals. Root cause: Kiro's downstream
+Responses usage intentionally reports only current-turn input delta so Codex's
+own cumulative session accounting does not double count old history. The GUI
+Request Logs, however, should answer a different question: approximate context
+size/cost for that request.
+
+Patch plan:
+
+- Keep public Responses/SSE Kiro usage unchanged (`input_tokens` remains
+  current-turn delta).
+- Add adapter-internal `AdapterRequest.usageLog.inputTokens`.
+- Have Kiro fill `usageLog.inputTokens` with a full Codex-context estimate:
+  system prompt, tools, user/developer messages, assistant text/tool calls,
+  and tool results.
+- Have server request-log finalization use that internal estimate only for
+  persisted/logged usage totals.
+- Keep `estimated: true` on Kiro logs.
+
+Verification:
+
+- `bun x tsc --noEmit`
+- `bun test tests/kiro-stream.test.ts tests/request-log.test.ts tests/usage-log.test.ts tests/usage-summary.test.ts tests/usage-debug.test.ts`
+- `63 pass, 0 fail`
+- `src/adapters/kiro.ts` is 494 lines.

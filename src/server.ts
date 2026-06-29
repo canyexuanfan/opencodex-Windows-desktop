@@ -109,6 +109,7 @@ export interface RequestLogContext {
   responseServiceTier?: string;
   resolvedModel?: string;
   usage?: OcxUsage;
+  usageLogInputTokens?: number;
   usageDebugBodyKind?: UsageDebugBodyKind;
   usageDebugBodySample?: string;
   usageDebugContentType?: string;
@@ -586,6 +587,9 @@ async function handleResponses(
   const connectMs = config.connectTimeoutMs ?? 30_000;
 
   const request = adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
+  if (typeof request.usageLog?.inputTokens === "number") {
+    logCtx.usageLogInputTokens = request.usageLog.inputTokens;
+  }
   let upstreamResponse: Response;
   try {
     upstreamResponse = adapter.fetchResponse
@@ -904,8 +908,11 @@ function addFinalRequestLog(
 ): void {
   const errorCode = requestLogErrorCode(status);
   const finalUsage = usageForFinalLog(logCtx.provider, logCtx.usage);
-  const usageStatus = usageStatusForFinalLog(finalUsage);
-  const totalTokens = usageTotalTokens(finalUsage);
+  const loggedUsage = finalUsage && typeof logCtx.usageLogInputTokens === "number"
+    ? { ...finalUsage, inputTokens: Math.max(finalUsage.inputTokens, logCtx.usageLogInputTokens) }
+    : finalUsage;
+  const usageStatus = usageStatusForFinalLog(loggedUsage);
+  const totalTokens = usageTotalTokens(loggedUsage);
   addLog({
     requestId,
     timestamp: start,
@@ -925,7 +932,7 @@ function addFinalRequestLog(
     ...(meta?.terminalStatus ? { terminalStatus: meta.terminalStatus } : {}),
     ...(meta?.closeReason ? { closeReason: meta.closeReason } : {}),
     usageStatus,
-    ...(finalUsage ? { usage: finalUsage } : {}),
+    ...(loggedUsage ? { usage: loggedUsage } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
   });
   if (isUsageDebugEnabled()) {
@@ -938,7 +945,7 @@ function addFinalRequestLog(
       upstreamStatus: status,
       bodyKind: logCtx.usageDebugBodyKind ?? "none",
       bodySample: logCtx.usageDebugBodySample ?? "",
-      extractedUsage: finalUsage ?? null,
+      extractedUsage: loggedUsage ?? null,
     });
   }
 }
