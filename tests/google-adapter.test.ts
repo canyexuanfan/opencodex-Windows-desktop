@@ -8,14 +8,15 @@ function parsedWith(messages: unknown[], tools?: unknown[]): OcxParsedRequest {
   return { modelId: "gemini-3-pro", stream: false, options: {}, context: { messages, tools } } as unknown as OcxParsedRequest;
 }
 
-function geminiContents(parsed: OcxParsedRequest): { role: string; parts: Record<string, unknown>[] }[] {
-  const { body } = createGoogleAdapter(provider).buildRequest(parsed);
+async function geminiContents(parsed: OcxParsedRequest): Promise<{ role: string; parts: Record<string, unknown>[] }[]> {
+  // buildRequest is async (google-vertex auth path); await before parsing the body.
+  const { body } = await createGoogleAdapter(provider).buildRequest(parsed);
   return JSON.parse(body).contents;
 }
 
 describe("google adapter — tool result images", () => {
-  test("tool-result screenshots ride along as inline_data beside the functionResponse", () => {
-    const contents = geminiContents(parsedWith([
+  test("tool-result screenshots ride along as inline_data beside the functionResponse", async () => {
+    const contents = await geminiContents(parsedWith([
       {
         role: "assistant",
         content: [{ type: "toolCall", id: "call_1", name: "get_app_state", namespace: "mcp__chrome", arguments: {} }],
@@ -41,8 +42,8 @@ describe("google adapter — tool result images", () => {
     expect(toolTurn!.parts[1]).toEqual({ inline_data: { mime_type: "image/png", data: "aGVsbG8=" } });
   });
 
-  test("text-only tool results emit a single functionResponse part", () => {
-    const contents = geminiContents(parsedWith([
+  test("text-only tool results emit a single functionResponse part", async () => {
+    const contents = await geminiContents(parsedWith([
       {
         role: "assistant",
         content: [{ type: "toolCall", id: "call_1", name: "bash", arguments: {} }],
@@ -56,8 +57,8 @@ describe("google adapter — tool result images", () => {
     ]);
   });
 
-  test("remote (non-data) tool-result image URLs are not inlined", () => {
-    const contents = geminiContents(parsedWith([
+  test("remote (non-data) tool-result image URLs are not inlined", async () => {
+    const contents = await geminiContents(parsedWith([
       {
         role: "assistant",
         content: [{ type: "toolCall", id: "call_1", name: "snap", arguments: {} }],
