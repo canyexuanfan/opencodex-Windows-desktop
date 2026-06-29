@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { hostname, userInfo } from "node:os";
+import { normalizeKiroModelId } from "../providers/kiro-models";
 import type { OcxParsedRequest } from "../types";
 
 let cachedFp: string | undefined;
@@ -21,9 +22,9 @@ export function osTag(): string {
   return "linux#6.8.0";
 }
 
-/** registry model id -> CodeWhisperer model id (only "kiro-auto" is prefixed). */
+/** Registry/user model id -> CodeWhisperer model id. */
 export function mapModelId(id: string): string {
-  return id === "kiro-auto" ? "auto" : id.replace(/^kiro-/, "");
+  return normalizeKiroModelId(id);
 }
 
 /** CodeWhisperer toolUseId constraint: ^[a-zA-Z0-9_-]{1,64}$ */

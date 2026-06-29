@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKiroAdapter } from "../src/adapters/kiro";
+import { normalizeKiroModelId } from "../src/providers/kiro-models";
 import { configuredReasoningEfforts, mapReasoningEffort } from "../src/reasoning-effort";
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
 import type { OcxParsedRequest, OcxProviderConfig } from "../src/types";
@@ -38,8 +39,8 @@ afterEach(() => {
 const provider = { adapter: "kiro", baseUrl: "https://runtime.us-east-1.kiro.dev", authMode: "oauth", apiKey: "tok-123" } as unknown as OcxProviderConfig;
 const bashTool = { name: "bash", description: "Run a shell command", parameters: { type: "object" } };
 
-function parsedWith(messages: unknown[], tools?: unknown[]): OcxParsedRequest {
-  return { modelId: "claude-sonnet-4.5", stream: true, options: {}, context: { messages, tools } } as unknown as OcxParsedRequest;
+function parsedWith(messages: unknown[], tools?: unknown[], modelId = "claude-sonnet-4.5"): OcxParsedRequest {
+  return { modelId, stream: true, options: {}, context: { messages, tools } } as unknown as OcxParsedRequest;
 }
 
 describe("kiro adapter — buildRequest", () => {
@@ -73,6 +74,21 @@ describe("kiro adapter — buildRequest", () => {
       } catch (err) {
         expect(err instanceof Error ? err.message : String(err)).not.toContain(value);
       }
+    }
+  });
+
+  test("normalizes versioned and effort-suffixed model aliases for Kiro payloads", () => {
+    for (const [input, expected] of [
+      ["kiro-auto", "auto"],
+      ["auto", "auto"],
+      ["claude-sonnet-4-5-20250929", "claude-sonnet-4.5"],
+      ["claude-4.5-sonnet-high", "claude-sonnet-4.5"],
+      ["claude-4-5-opus-max", "claude-opus-4.5"],
+      ["minimax-m2-1", "minimax-m2.1"],
+    ]) {
+      expect(normalizeKiroModelId(input)).toBe(expected);
+      const { body } = createKiroAdapter(provider).buildRequest(parsedWith([{ role: "user", content: "hi" }], undefined, input));
+      expect(JSON.parse(body).conversationState.currentMessage.userInputMessage.modelId).toBe(expected);
     }
   });
 
@@ -178,7 +194,9 @@ describe("kiro adapter — fake reasoning effort tags", () => {
   test("kiro advertises Codex-compatible reasoning efforts", () => {
     expect(kiro).toBeTruthy();
     expect(configuredReasoningEfforts(kiro, "claude-opus-4.8")).toEqual(["low", "medium", "high", "xhigh"]);
+    expect(configuredReasoningEfforts(kiro, "claude-opus-4.5")).toEqual(["low", "medium", "high", "xhigh"]);
     expect(configuredReasoningEfforts(kiro, "kiro-auto")).toEqual(["low", "medium", "high", "xhigh"]);
+    expect(configuredReasoningEfforts(kiro, "claude-opus-4.5")).not.toContain("max");
   });
 
   test("mapReasoningEffort keeps Codex xhigh rather than advertising max", () => {
@@ -216,6 +234,12 @@ describe("kiro adapter — per-model context windows (kiro.dev/docs/models)", ()
   const kiro = PROVIDER_REGISTRY.find(p => p.id === "kiro") as unknown as OcxProviderConfig;
   const cw = kiro.modelContextWindows ?? {};
 
+  test("registry includes the currently documented Kiro models", () => {
+    for (const id of ["claude-opus-4.5", "claude-sonnet-4.0", "minimax-m2.1"]) {
+      expect(kiro.models ?? []).toContain(id);
+    }
+  });
+
   test("1M-context models map to 1_000_000", () => {
     for (const id of ["claude-opus-4.8", "claude-opus-4.7", "claude-opus-4.6", "claude-sonnet-4.6"]) {
       expect(cw[id]).toBe(1_000_000);
@@ -223,9 +247,12 @@ describe("kiro adapter — per-model context windows (kiro.dev/docs/models)", ()
   });
 
   test("smaller-context models match Kiro's published limits", () => {
+    expect(cw["claude-opus-4.5"]).toBe(200_000);
     expect(cw["claude-sonnet-4.5"]).toBe(200_000);
+    expect(cw["claude-sonnet-4.0"]).toBe(200_000);
     expect(cw["claude-haiku-4.5"]).toBe(200_000);
     expect(cw["minimax-m2.5"]).toBe(200_000);
+    expect(cw["minimax-m2.1"]).toBe(200_000);
     expect(cw["glm-5"]).toBe(200_000);
     expect(cw["deepseek-3.2"]).toBe(128_000);
     expect(cw["qwen3-coder-next"]).toBe(256_000);

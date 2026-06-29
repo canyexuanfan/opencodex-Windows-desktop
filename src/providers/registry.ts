@@ -1,4 +1,5 @@
 import type { OcxProviderConfig } from "../types";
+import { KIRO_MODELS, KIRO_MODEL_CONTEXT_WINDOWS, KIRO_MODEL_REASONING_EFFORTS } from "./kiro-models";
 
 export type ProviderAuthKind = "forward" | "oauth" | "key" | "local";
 export type MetadataModelIdNormalize = "case-insensitive";
@@ -60,38 +61,6 @@ const ZAI_GLM_52_REASONING_MAP: Record<string, string> = {
 };
 const KIMI_THINKING_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5", "kimi-k2-0905-preview"];
 const KIMI_LOCKED_PARAMETER_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"];
-// Kiro/CodeWhisperer has no reasoning_effort field, but kiro-gateway implements effort with
-// fake-thinking tags on the current user message. Advertise Codex-supported tiers so the Kiro adapter
-// can map them into those tags without inventing a CodeWhisperer request field.
-const KIRO_MODELS = [
-  "kiro-auto",
-  "claude-opus-4.8",
-  "claude-opus-4.7",
-  "claude-opus-4.6",
-  "claude-sonnet-4.6",
-  "claude-sonnet-4.5",
-  "claude-haiku-4.5",
-  "deepseek-3.2",
-  "minimax-m2.5",
-  "glm-5",
-  "qwen3-coder-next",
-];
-// Per-model context windows as documented on Kiro's official model catalog
-// (https://kiro.dev/docs/models/ — "Quick comparison" table, page updated 2026-06-19).
-// These are Kiro's gateway-enforced limits (decimal K/M expansion). "Auto" (kiro-auto) is a
-// router with no fixed window on Kiro's table, so it is intentionally omitted here.
-const KIRO_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
-  "claude-opus-4.8": 1_000_000,
-  "claude-opus-4.7": 1_000_000,
-  "claude-opus-4.6": 1_000_000,
-  "claude-sonnet-4.6": 1_000_000,
-  "claude-sonnet-4.5": 200_000,
-  "claude-haiku-4.5": 200_000,
-  "deepseek-3.2": 128_000,
-  "minimax-m2.5": 200_000,
-  "glm-5": 200_000,
-  "qwen3-coder-next": 256_000,
-};
 const NEURALWATT_REASONING_HISTORY_MODELS = [
   "glm-5.2",
   "moonshotai/Kimi-K2.5", "kimi-k2.6", "kimi-k2.7-code",
@@ -202,7 +171,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     defaultModel: "kiro-auto",
     // Context windows sourced from Kiro's official model catalog (kiro.dev/docs/models/).
     modelContextWindows: KIRO_MODEL_CONTEXT_WINDOWS,
-    modelReasoningEfforts: Object.fromEntries(KIRO_MODELS.map(id => [id, ["low", "medium", "high", "xhigh"]])),
+    modelReasoningEfforts: KIRO_MODEL_REASONING_EFFORTS,
   },
   { id: "openai-apikey", label: "OpenAI (API key)", adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", authKind: "key", featured: true, dashboardUrl: "https://platform.openai.com/api-keys", defaultModel: "gpt-5.5" },
   {
