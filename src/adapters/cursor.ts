@@ -5,6 +5,7 @@ import { createCursorKvStore, type CursorKvStore } from "./cursor/kv-store";
 import { mapCursorServerMessage } from "./cursor/message-mapper";
 import { createCursorRequest, generatedCursorConversationId } from "./cursor/request-builder";
 import { createLiveCursorTransport, CursorMissingCredentialError } from "./cursor/live-transport";
+import { runCursorTurnWithRetry } from "./cursor/transport-retry";
 import {
   createDisabledCursorTransport,
   CursorTransportDisabledError,
@@ -81,30 +82,32 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
         emit({ type: "error", message: "Cursor turn was aborted before start." });
         return;
       }
-      let transport: ReturnType<CursorTransportFactory> | undefined;
       try {
-        transport = (deps.createTransport ?? createLiveCursorTransport)({ provider, headers: incoming.headers });
-        const activeTransport = transport;
+        const makeTransport = deps.createTransport ?? createLiveCursorTransport;
         const kv = deps.kv ?? createCursorKvStore();
         _parsed._cursorConversationId ??= generatedCursorConversationId();
         const request = createCursorRequest(_parsed);
-        for await (const message of activeTransport.run(request, incoming.abortSignal)) {
-          if (incoming.abortSignal?.aborted) {
-            emit({ type: "error", message: "Cursor turn was aborted." });
-            return;
-          }
-          const events = mapCursorServerMessage(message, {
-            kv,
-            writeClient: clientMessage => {
-              void activeTransport.writeClient(clientMessage);
-            },
-          });
-          for (const event of events) emit(event);
-        }
+        await runCursorTurnWithRetry(
+          makeTransport,
+          { provider, headers: incoming.headers },
+          request,
+          incoming.abortSignal,
+          (message, activeTransport) => {
+            if (incoming.abortSignal?.aborted) {
+              emit({ type: "error", message: "Cursor turn was aborted." });
+              return;
+            }
+            const events = mapCursorServerMessage(message, {
+              kv,
+              writeClient: clientMessage => {
+                void activeTransport.writeClient(clientMessage);
+              },
+            });
+            for (const event of events) emit(event);
+          },
+        );
       } catch (err) {
         emit({ type: "error", message: safeCursorTransportError(err) });
-      } finally {
-        await transport?.close?.();
       }
     },
   };

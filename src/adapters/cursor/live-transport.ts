@@ -23,6 +23,7 @@ import type { CursorTransport, CursorTransportFactoryInput } from "./transport";
 const CURSOR_RUN_PATH = "/agent.v1.AgentService/Run";
 const CURSOR_CLIENT_VERSION = "cli-2026.01.09-231024f";
 const HEARTBEAT_MS = 5_000;
+const CURSOR_FIRST_FRAME_TIMEOUT_MS = 30_000;
 
 export class CursorMissingCredentialError extends Error {
   readonly code = "cursor_missing_credential";
@@ -71,6 +72,8 @@ class LiveCursorTransport implements CursorTransport {
   private session?: http2.ClientHttp2Session;
   private stream?: http2.ClientHttp2Stream;
   private heartbeat?: ReturnType<typeof setInterval>;
+  private firstFrameTimer?: ReturnType<typeof setTimeout>;
+  private committed = false;
   private readonly token: string;
   private readonly mcpManager?: CursorMcpManager;
   private readonly desktopDeps: CursorNativeToolDeps;
@@ -166,8 +169,20 @@ class LiveCursorTransport implements CursorTransport {
 
   writeClient(_message: CursorClientMessage): void {}
 
+  requestCommitted(): boolean {
+    return this.committed;
+  }
+
+  private clearFirstFrameTimer(): void {
+    if (this.firstFrameTimer) {
+      clearTimeout(this.firstFrameTimer);
+      this.firstFrameTimer = undefined;
+    }
+  }
+
   close(): void {
     if (this.heartbeat) clearInterval(this.heartbeat);
+    this.clearFirstFrameTimer();
     this.stream?.close();
     this.session?.close();
     void this.mcpManager?.dispose();
@@ -182,6 +197,10 @@ class LiveCursorTransport implements CursorTransport {
     finish: () => void,
   ): void {
     this.session = http2.connect(this.input.provider.baseUrl || "https://api2.cursor.sh");
+    // The run request is buffered until the HTTP/2 session connects. Failures before `connect`
+    // (DNS, ECONNREFUSED, TLS, connect timeout) mean the server never received the request, so they
+    // are safe to retry. Once connected, bytes flush to the server and the turn must not be replayed.
+    this.session.on("connect", () => { this.committed = true; });
     this.stream = this.session.request({
       ":method": "POST",
       ":path": CURSOR_RUN_PATH,
@@ -195,8 +214,24 @@ class LiveCursorTransport implements CursorTransport {
       "x-request-id": crypto.randomUUID(),
     });
 
+    // Single owner of the pre-first-frame deadline. Cleared by the first server frame/end-stream and
+    // by every terminal path (trailers, error, end, abort, close) so it can never leak.
+    const failAndClear = (error: Error) => {
+      this.clearFirstFrameTimer();
+      fail(error);
+    };
+    const session = this.session;
+    const stream = this.stream;
+    this.firstFrameTimer = setTimeout(() => {
+      this.firstFrameTimer = undefined;
+      try { stream.close(); } catch { /* already closing */ }
+      try { session.close(); } catch { /* already closing */ }
+      fail(new Error("Cursor transport timed out before first response"));
+    }, this.input.firstFrameTimeoutMs ?? CURSOR_FIRST_FRAME_TIMEOUT_MS);
+
     let pending: Uint8Array<ArrayBufferLike> = new Uint8Array();
     this.stream.on("data", chunk => {
+      this.clearFirstFrameTimer();
       const bytes = typeof chunk === "string" ? new TextEncoder().encode(chunk) : new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
       pending = concatBytes(pending, bytes);
       try {
@@ -206,27 +241,27 @@ class LiveCursorTransport implements CursorTransport {
         for (const frame of frames) {
           if ((frame.flags & CONNECT_FLAG_END_STREAM) === CONNECT_FLAG_END_STREAM) {
             const endError = parseConnectEndStreamError(frame.payload);
-            if (endError) fail(endError);
+            if (endError) failAndClear(endError);
             continue;
           }
           void this.handleServerMessage(fromBinary(AgentServerMessageSchema, frame.payload), state, push).catch(err => {
-            fail(err instanceof Error ? err : new Error(String(err)));
+            failAndClear(err instanceof Error ? err : new Error(String(err)));
           });
         }
       } catch (err) {
-        fail(err instanceof Error ? err : new Error(String(err)));
+        failAndClear(err instanceof Error ? err : new Error(String(err)));
       }
     });
     this.stream.on("trailers", trailers => {
       const status = trailers["grpc-status"];
-      if (status && status !== "0") fail(new Error(`Cursor gRPC error ${status}`));
+      if (status && status !== "0") failAndClear(new Error(`Cursor gRPC error ${status}`));
     });
-    this.stream.on("error", err => fail(err instanceof Error ? err : new Error(String(err))));
-    this.stream.on("end", finish);
+    this.stream.on("error", err => failAndClear(err instanceof Error ? err : new Error(String(err))));
+    this.stream.on("end", () => { this.clearFirstFrameTimer(); finish(); });
 
     signal?.addEventListener("abort", () => {
       this.close();
-      fail(new Error("Cursor request was aborted"));
+      failAndClear(new Error("Cursor request was aborted"));
     }, { once: true });
 
     this.stream.write(encodeConnectFrame(encodeCursorRunRequest(request)));
