@@ -4,6 +4,8 @@ import { isAbsolute, join } from "node:path";
 import { Database } from "bun:sqlite";
 
 const DEFAULT_EXPIRES_MS = 3600_000;
+const KIRO_REGION_PATTERN = /^[a-z]{2}(?:-[a-z]+)+-\d$/;
+const CLIENT_ID_HASH_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const TOKEN_KEYS = ["kirocli:social:token", "kirocli:odic:token", "codewhisperer:odic:token"];
 const REGISTRATION_KEYS = ["kirocli:odic:device-registration", "codewhisperer:odic:device-registration"];
 
@@ -67,7 +69,18 @@ function parseExpires(value: unknown): number {
 export function inferRegionFromProfileArn(arn: string | undefined): string | undefined {
   if (!arn) return undefined;
   const region = arn.split(":")[3];
-  return region && /^[a-z]+-[a-z]+-\d+$/.test(region) ? region : undefined;
+  return normalizeKiroRegion(region);
+}
+
+export function normalizeKiroRegion(region: string | undefined): string | undefined {
+  const trimmed = region?.trim();
+  return trimmed && KIRO_REGION_PATTERN.test(trimmed) ? trimmed : undefined;
+}
+
+export function requireKiroRegion(region: string | undefined): string {
+  const normalized = normalizeKiroRegion(region);
+  if (!normalized) throw new Error("Kiro: invalid region value.");
+  return normalized;
 }
 
 function jsonCredentialPaths(): string[] {
@@ -114,6 +127,7 @@ function credentialFromJson(data: JsonObject, source: KiroCredentialSource): Imp
 function loadEnterpriseRegistration(data: JsonObject): JsonObject | undefined {
   const hash = stringField(data, "clientIdHash");
   if (!hash) return undefined;
+  if (!CLIENT_ID_HASH_PATTERN.test(hash)) return undefined;
   const path = join(userHome(), ".aws", "sso", "cache", `${hash}.json`);
   if (!existsSync(path)) return undefined;
   try {

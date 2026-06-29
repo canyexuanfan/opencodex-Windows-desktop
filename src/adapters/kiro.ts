@@ -15,6 +15,7 @@ import { hostname, userInfo } from "node:os";
 import { decodeEventStream } from "../lib/eventstream-decoder";
 import { estimateTokens } from "../lib/token-estimate";
 import { resolveKiroApiRegion, resolveKiroProfileArn } from "../oauth/kiro";
+import { safeKiroErrorMessage } from "./kiro-errors";
 import { KiroThinkingParser } from "./kiro-thinking";
 import type {
   AdapterEvent,
@@ -374,7 +375,7 @@ export async function* parseKiroStream(
           yield { type: "tool_call_end" };
           open = null;
         }
-        yield { type: "error", message: new TextDecoder().decode(msg.payload).slice(0, 500) };
+        yield { type: "error", message: safeKiroErrorMessage(msg.headers, new TextDecoder().decode(msg.payload)) };
         return;
       }
       if (mt && mt !== "event") continue;
@@ -432,7 +433,7 @@ export async function* parseKiroStream(
       usage: { inputTokens, outputTokens: estimateTokens(outputChars, modelId) },
     };
   } catch (err) {
-    yield { type: "error", message: err instanceof Error ? err.message : String(err) };
+    yield { type: "error", message: safeKiroErrorMessage({}, err instanceof Error ? err.message : String(err)) };
   }
 }
 

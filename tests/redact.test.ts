@@ -14,6 +14,7 @@ describe("redactSecretString", () => {
       "api_key=sk-secret-provider-key",
       "accessToken=access-live-value",
       "refresh_token=refresh-live-value",
+      "clientSecret=client-secret-live-value",
       "profile arn:aws:codewhisperer:us-east-1:123456789012:profile/demo",
     ].join("\n");
 
@@ -22,9 +23,11 @@ describe("redactSecretString", () => {
     expect(redacted).toContain(`api_key=${REDACTED_SECRET}`);
     expect(redacted).toContain(`accessToken=${REDACTED_SECRET}`);
     expect(redacted).toContain(`refresh_token=${REDACTED_SECRET}`);
+    expect(redacted).toContain(`clientSecret=${REDACTED_SECRET}`);
     expect(redacted).not.toContain("access-token-value-123456");
     expect(redacted).not.toContain("sk-secret-provider-key");
     expect(redacted).not.toContain("refresh-live-value");
+    expect(redacted).not.toContain("client-secret-live-value");
     expect(redacted).not.toContain("arn:aws:codewhisperer");
   });
 

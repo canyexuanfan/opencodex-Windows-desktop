@@ -236,6 +236,34 @@ describe("kiro oauth — import-first", () => {
     });
   });
 
+  test("enterprise clientIdHash traversal is ignored outside the AWS SSO cache directory", async () => {
+    const file = join(tmp, "kiro-enterprise-traversal.json");
+    const cacheDir = join(tmp, ".aws", "sso", "cache");
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(join(tmp, ".aws", "sso", "escaped.json"), JSON.stringify({
+      clientId: "escaped-client",
+      clientSecret: "escaped-secret",
+      region: "ap-south-1",
+    }));
+    writeFileSync(file, JSON.stringify({
+      accessToken: "aoa-enterprise",
+      refreshToken: "rt-enterprise",
+      clientIdHash: "../escaped",
+      region: "us-east-2",
+    }));
+    process.env.KIRO_CREDS_FILE = file;
+    let capturedUrl = "";
+    globalThis.fetch = (async (input) => {
+      capturedUrl = String(input);
+      return new Response(JSON.stringify({ accessToken: "aoa-new", refreshToken: "rt-new", expiresIn: 60 }), { status: 200 });
+    }) as typeof fetch;
+
+    const cred = await refreshKiroToken("rt-enterprise");
+
+    expect(cred.access).toBe("aoa-new");
+    expect(capturedUrl).toBe("https://prod.us-east-2.auth.desktop.kiro.dev/refreshToken");
+  });
+
   test("refreshKiroToken uses AWS SSO OIDC JSON payload when client credentials exist", async () => {
     const file = join(tmp, "kiro-oidc.json");
     writeFileSync(file, JSON.stringify({
@@ -313,6 +341,18 @@ describe("kiro oauth — adapter-time resolvers (profileArn / region)", () => {
     expect(resolveKiroRegion()).toBe("us-east-1");
     process.env.KIRO_REGION = "eu-west-1";
     expect(resolveKiroRegion()).toBe("eu-west-1");
+  });
+
+  test("resolveKiroRegion rejects host-injection region values without echoing input", () => {
+    for (const value of ["us-east-1/../../evil", "us-east-1@evil.test", "https://evil.test", "../us-east-1"]) {
+      process.env.KIRO_REGION = value;
+      expect(() => resolveKiroRegion()).toThrow("Kiro: invalid region value.");
+      try {
+        resolveKiroRegion();
+      } catch (err) {
+        expect(err instanceof Error ? err.message : String(err)).not.toContain(value);
+      }
+    }
   });
 
   test("resolveKiroApiRegion: KIRO_API_REGION overrides imported profile region", () => {

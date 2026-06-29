@@ -84,6 +84,20 @@ describe("kiro adapter — buildRequest", () => {
     expect(url).toBe("https://runtime.ap-northeast-2.kiro.dev/");
   });
 
+  test("runtime URL rejects host-injection KIRO_API_REGION values", () => {
+    for (const value of ["us-east-1/../../evil", "us-east-1@evil.test", "https://evil.test", "../us-east-1"]) {
+      process.env.KIRO_API_REGION = value;
+      expect(() => createKiroAdapter(provider).buildRequest(parsedWith([{ role: "user", content: "hi" }]))).toThrow(
+        "Kiro: invalid region value.",
+      );
+      try {
+        createKiroAdapter(provider).buildRequest(parsedWith([{ role: "user", content: "hi" }]));
+      } catch (err) {
+        expect(err instanceof Error ? err.message : String(err)).not.toContain(value);
+      }
+    }
+  });
+
   test("toolUses[].input is a JSON object (not stringified) and toolResults are adjacent", () => {
     const messages = [
       { role: "user", content: "run it" },
@@ -166,7 +180,7 @@ describe("kiro adapter — parseStream", () => {
     for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(frame)))) {
       out.push(e.type === "error" ? `error:${e.message}` : e.type);
     }
-    expect(out[0]).toBe("error:rate limited");
+    expect(out[0]).toBe("error:Kiro upstream error: ThrottlingException: rate limited");
   });
 
   test("exception frame is terminal: no trailing done", async () => {
@@ -177,7 +191,7 @@ describe("kiro adapter — parseStream", () => {
     for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(errFrame, contentFrame)))) {
       out.push(e.type === "error" ? `error:${e.message}` : e.type);
     }
-    expect(out).toEqual(["error:rate limited"]);
+    expect(out).toEqual(["error:Kiro upstream error: ThrottlingException: rate limited"]);
     expect(out).not.toContain("done");
     expect(out).not.toContain("text_delta");
   });
@@ -190,8 +204,53 @@ describe("kiro adapter — parseStream", () => {
     for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(start, errFrame, tail)))) {
       out.push(e.type === "error" ? `error:${e.message}` : e.type);
     }
-    expect(out).toEqual(["tool_call_start", "tool_call_end", "error:boom"]);
+    expect(out).toEqual(["tool_call_start", "tool_call_end", "error:Kiro upstream error: InternalServerException: boom"]);
     expect(out).not.toContain("done");
+  });
+
+  test("exception payload errors redact secrets, profile ARNs, raw JSON, and local paths", async () => {
+    const secretPayload = JSON.stringify({
+      __type: "ValidationException",
+      message: "accessToken=aoa-secret refreshToken=rt-secret clientSecret=client-secret profile arn:aws:codewhisperer:us-east-1:123456789012:profile/demo path /Users/jun/private/file.json",
+      accessToken: "aoa-secret",
+      refreshToken: "rt-secret",
+      clientSecret: "client-secret",
+      profileArn: "arn:aws:codewhisperer:us-east-1:123456789012:profile/demo",
+    });
+    const frame = encodeMessage({ ":message-type": "exception", ":exception-type": "ValidationException" }, enc.encode(secretPayload));
+    const errors: string[] = [];
+
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(frame)))) {
+      if (e.type === "error") errors.push(e.message);
+    }
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("Kiro upstream error: ValidationException");
+    expect(errors[0]).not.toContain("aoa-secret");
+    expect(errors[0]).not.toContain("rt-secret");
+    expect(errors[0]).not.toContain("client-secret");
+    expect(errors[0]).not.toContain("arn:aws");
+    expect(errors[0]).not.toContain("/Users/jun");
+    expect(errors[0]).not.toContain("{");
+  });
+
+  test("stream parser catch path redacts thrown error details", async () => {
+    const broken = new ReadableStream<Uint8Array>({
+      pull() {
+        throw new Error("decoder failed refreshToken=rt-secret clientSecret=client-secret /Users/jun/private/file.json");
+      },
+    });
+    const errors: string[] = [];
+
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(broken))) {
+      if (e.type === "error") errors.push(e.message);
+    }
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("Kiro upstream error");
+    expect(errors[0]).not.toContain("rt-secret");
+    expect(errors[0]).not.toContain("client-secret");
+    expect(errors[0]).not.toContain("/Users/jun");
   });
 
   test("leading thinking block is emitted as raw reasoning, not visible text", async () => {

@@ -14,8 +14,10 @@ import type { OAuthController, OAuthCredentials } from "./types";
 import {
   inferRegionFromProfileArn,
   inspectKiroCliSqliteSources,
+  normalizeKiroRegion,
   readImportedKiroCredential,
   readKiroCliSqliteCredential,
+  requireKiroRegion,
   type KiroImportDiagnostic,
 } from "./kiro-credentials";
 
@@ -82,18 +84,19 @@ export async function loginKiro(ctrl: OAuthController): Promise<OAuthCredentials
 
 /** Auth/SSO region precedence: KIRO_REGION → imported SSO region → default us-east-1. */
 export function resolveKiroRegion(): string {
-  return process.env.KIRO_REGION || readImportedKiroCredential()?.ssoRegion || DEFAULT_REGION;
+  if (process.env.KIRO_REGION !== undefined) return requireKiroRegion(process.env.KIRO_REGION);
+  return normalizeKiroRegion(readImportedKiroCredential()?.ssoRegion) || DEFAULT_REGION;
 }
 
 /** Runtime API region precedence: KIRO_API_REGION → imported API/profile region → auth region. */
 export function resolveKiroApiRegion(): string {
   const imported = readImportedKiroCredential();
+  if (process.env.KIRO_API_REGION !== undefined) return requireKiroRegion(process.env.KIRO_API_REGION);
   return (
-    process.env.KIRO_API_REGION ||
-    imported?.apiRegion ||
+    normalizeKiroRegion(imported?.apiRegion) ||
     inferRegionFromProfileArn(imported?.profileArn) ||
-    imported?.ssoRegion ||
-    process.env.KIRO_REGION ||
+    normalizeKiroRegion(imported?.ssoRegion) ||
+    (process.env.KIRO_REGION !== undefined ? requireKiroRegion(process.env.KIRO_REGION) : undefined) ||
     DEFAULT_REGION
   );
 }
@@ -134,7 +137,7 @@ async function refreshKiroDesktopToken(refresh: string, signal?: AbortSignal): P
 async function refreshAwsSsoOidcToken(refresh: string, signal?: AbortSignal): Promise<OAuthCredentials> {
   const imported = readImportedKiroCredential();
   if (!imported?.clientId || !imported.clientSecret) return refreshKiroDesktopToken(refresh, signal);
-  const region = process.env.KIRO_REGION || imported.ssoRegion || DEFAULT_REGION;
+  const region = resolveKiroRegion();
   const run = async (refreshToken: string): Promise<Response> => fetch(OIDC_URL.replace("{region}", region), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
