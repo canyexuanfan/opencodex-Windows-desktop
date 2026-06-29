@@ -190,7 +190,7 @@ describe("kiro adapter — parseStream", () => {
   test("exception payload errors redact secrets, profile ARNs, raw JSON, and local paths", async () => {
     const secretPayload = JSON.stringify({
       __type: "ValidationException",
-      message: "accessToken=aoa-secret refreshToken=rt-secret clientSecret=client-secret profile arn:aws:codewhisperer:us-east-1:123456789012:profile/demo path /Users/jun/private/file.json",
+      message: "accessToken=aoa-secret refreshToken=rt-secret clientSecret=client-secret profile arn:aws:codewhisperer:us-east-1:123456789012:profile/demo path /Users/example/private/file.json",
       accessToken: "aoa-secret",
       refreshToken: "rt-secret",
       clientSecret: "client-secret",
@@ -207,7 +207,7 @@ describe("kiro adapter — parseStream", () => {
     expect(errors[0]).not.toContain("rt-secret");
     expect(errors[0]).not.toContain("client-secret");
     expect(errors[0]).not.toContain("arn:aws");
-    expect(errors[0]).not.toContain("/Users/jun");
+    expect(errors[0]).not.toContain("/Users/example");
     expect(errors[0]).not.toContain("{");
   });
 
@@ -236,7 +236,7 @@ describe("kiro adapter — parseStream", () => {
   test("stream parser catch path redacts thrown error details", async () => {
     const broken = new ReadableStream<Uint8Array>({
       pull() {
-        throw new Error("decoder failed refreshToken=rt-secret clientSecret=client-secret /Users/jun/private/file.json");
+        throw new Error("decoder failed refreshToken=rt-secret clientSecret=client-secret /Users/example/private/file.json");
       },
     });
     const errors: string[] = [];
@@ -247,7 +247,7 @@ describe("kiro adapter — parseStream", () => {
     expect(errors[0]).toContain("Kiro upstream error");
     expect(errors[0]).not.toContain("rt-secret");
     expect(errors[0]).not.toContain("client-secret");
-    expect(errors[0]).not.toContain("/Users/jun");
+    expect(errors[0]).not.toContain("/Users/example");
   });
 
   test("leading thinking block is emitted as raw reasoning, not visible text", async () => {

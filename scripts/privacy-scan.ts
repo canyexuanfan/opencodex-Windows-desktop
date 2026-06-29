@@ -56,9 +56,17 @@ function isAllowedEmail(file: string, email: string): boolean {
 }
 
 function isAllowedHomePath(file: string, username: string): boolean {
+  if (file.startsWith("tests/") && (username === "example" || username === "test" || username === "x")) {
+    return true;
+  }
   if (file.startsWith("docs/") && (username === "me" || username === "user")) return true;
   if (file.startsWith("docs-site/") && username === "example") return true;
   return false;
+}
+
+function isAllowedBearerToken(file: string, token: string): boolean {
+  if (!file.startsWith("tests/")) return false;
+  return /^(?:access|stack|usage-debug)-token(?:-value)?-[A-Za-z0-9-]+$/.test(token);
 }
 
 function addFindingsForPattern(
@@ -105,7 +113,7 @@ function scanFile(file: string): Finding[] {
     text,
     "bearer-token",
     /Bearer\s+([A-Za-z0-9._-]{24,})/g,
-    () => false,
+    match => isAllowedBearerToken(file, match[1] ?? ""),
   );
   addFindingsForPattern(
     findings,
