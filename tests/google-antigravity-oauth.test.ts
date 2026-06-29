@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { discoverAntigravityProject, refreshAntigravityToken } from "../src/oauth/google-antigravity";
+import { mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { getCredential, saveCredential } from "../src/oauth/store";
 
 const realFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = realFetch; });
@@ -46,13 +50,28 @@ describe("antigravity project discovery", () => {
     expect(onboardCalls).toBe(2);
   });
 
-  test("returns undefined when onboardUser aborts with non-200", async () => {
+  test("returns undefined when onboardUser aborts with a hard 4xx", async () => {
     routeFetch((url) => {
       if (url.includes(":loadCodeAssist")) return new Response(JSON.stringify({}), { status: 200 });
-      if (url.includes(":onboardUser")) return new Response("nope", { status: 500 });
+      if (url.includes(":onboardUser")) return new Response("forbidden", { status: 403 });
       return new Response("no", { status: 404 });
     });
     expect(await discoverAntigravityProject("tok")).toBeUndefined();
+  });
+
+  test("onboardUser retries a transient 503 within the attempt budget then succeeds", async () => {
+    let onboardCalls = 0;
+    routeFetch((url) => {
+      if (url.includes(":loadCodeAssist")) return new Response(JSON.stringify({}), { status: 200 });
+      if (url.includes(":onboardUser")) {
+        onboardCalls++;
+        if (onboardCalls === 1) return new Response("busy", { status: 503 });
+        return new Response(JSON.stringify({ done: true, response: { cloudaicompanionProject: "proj-T" } }), { status: 200 });
+      }
+      return new Response("no", { status: 404 });
+    });
+    expect(await discoverAntigravityProject("tok")).toBe("proj-T");
+    expect(onboardCalls).toBe(2);
   });
 });
 
@@ -81,5 +100,26 @@ describe("antigravity refresh", () => {
     expect(caught).toBeDefined();
     expect(caught!.message).toContain("400");
     expect(caught!.message).not.toContain("secret-detail");
+  });
+});
+
+describe("antigravity credential persistence (projectId survives the store)", () => {
+  const origHome = process.env.HOME;
+  const origOcxHome = process.env.OPENCODEX_HOME;
+  let tmp: string;
+
+  afterEach(() => {
+    if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
+    if (origOcxHome === undefined) delete process.env.OPENCODEX_HOME; else process.env.OPENCODEX_HOME = origOcxHome;
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test("saveCredential + getCredential round-trips projectId (regression: was stripped by normalizeCredential)", () => {
+    tmp = join(tmpdir(), `ag-store-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    mkdirSync(tmp, { recursive: true });
+    process.env.HOME = tmp;
+    process.env.OPENCODEX_HOME = join(tmp, "ocx");
+    saveCredential("google-antigravity", { access: "a", refresh: "r", expires: Date.now() + 3_600_000, projectId: "proj-persist" });
+    expect(getCredential("google-antigravity")?.projectId).toBe("proj-persist");
   });
 });

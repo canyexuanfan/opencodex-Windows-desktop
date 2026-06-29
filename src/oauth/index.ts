@@ -139,7 +139,13 @@ async function refreshAndPersistAccessToken(
   }
   try {
     const fresh = await def.refresh(cred.refresh);
-    saveCredential(provider, { ...fresh, source: fresh.source ?? cred.source ?? "oauth" });
+    saveCredential(provider, {
+      ...fresh,
+      source: fresh.source ?? cred.source ?? "oauth",
+      // Preserve a previously-discovered project id when a refresh-time re-discovery comes back empty
+      // (e.g. a transient network blip), so Antigravity does not lose its CCA project across refresh.
+      ...(fresh.projectId === undefined && cred.projectId ? { projectId: cred.projectId } : {}),
+    });
     return fresh.access;
   } catch (err) {
     if (provider === "kiro") {

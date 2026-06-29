@@ -16,7 +16,7 @@ import { getVertexAccessToken } from "../lib/gcp-adc";
 import { fetchAntigravityWithRetry, fetchVertexWithRetry } from "./google-http";
 import { isVertexTruncationReason, vertexTruncationErrorMessage } from "./google-truncation";
 import { ANTIGRAVITY_REQUEST_UA, antigravitySessionId, sanitizeAntigravityClaudeSignatures } from "./google-antigravity-wire";
-import { antigravityUsesReplayCache, applyAntigravityReplay, observeAntigravityReplay } from "./google-antigravity-replay";
+import { antigravityUsesReplayCache, applyAntigravityReplay, clearAntigravityReplay, observeAntigravityReplay } from "./google-antigravity-replay";
 
 /** Vertex API key: provider.apiKey if it looks real (not a sentinel), else GOOGLE_CLOUD_API_KEY env. */
 function resolveVertexApiKey(optKey?: string): string | undefined {
@@ -185,7 +185,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         const request: Record<string, unknown> = { ...body, sessionId };
         const envelope = {
           model: parsed.modelId,
-          userAgent: "antigravity",
+          userAgent: ANTIGRAVITY_REQUEST_UA,
           requestType: "agent",
           project,
           requestId: `agent-${crypto.randomUUID()}`,
@@ -255,6 +255,12 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
             // Inline provider error inside a 200 stream → terminal error (see openai-chat.ts).
             if (chunk.error) {
               const err = chunk.error as { message?: string } | undefined;
+              // Clear-on-invalid: a signature rejection means our replayed thoughtSignatures are stale.
+              // Drop the cache entry so the next turn starts clean instead of re-injecting a bad sig.
+              if (provider.googleMode === "cloud-code-assist" && antigravityModel && antigravitySession
+                && /signature|invalid_argument|invalid argument/i.test(err?.message ?? "")) {
+                clearAntigravityReplay(antigravityModel, antigravitySession);
+              }
               yield { type: "error", message: err?.message ?? "upstream error" };
               return;
             }

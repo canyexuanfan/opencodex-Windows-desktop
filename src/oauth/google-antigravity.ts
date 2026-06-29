@@ -111,7 +111,14 @@ async function onboardProject(accessToken: string, signal?: AbortSignal): Promis
       body: JSON.stringify({ tier_id: "free-tier", metadata: { ide_type: "ANTIGRAVITY", ide_name: "antigravity" } }),
       signal: requestSignal(signal),
     });
-    if (!response.ok) return undefined; // non-200 aborts the loop
+    if (!response.ok) {
+      // Transient (429/5xx): keep polling within the attempt budget. Hard 4xx: give up now.
+      if (response.status === 429 || response.status >= 500) {
+        await new Promise(resolve => setTimeout(resolve, ONBOARD_POLL_MS));
+        continue;
+      }
+      return undefined;
+    }
     const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
     if (data.done === true) {
       return extractProjectId(data.response as Record<string, unknown> | undefined);

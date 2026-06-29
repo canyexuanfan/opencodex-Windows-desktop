@@ -1,6 +1,6 @@
 import { redactSecretString } from "../redact";
 
-const ABSOLUTE_PATH_PATTERN = /(?:\/Users\/[^ "';,]+|\/home\/[^ "';,]+|[A-Za-z]:\\Users\\[^ "';,]+)/g;
+const ABSOLUTE_PATH_PATTERN = /(?:\/Users\/[^ "';,]+|\/home\/[^ "';,]+|\/root\/[^ "';,]*|[A-Za-z]:\\Users\\[^ "';,]+)/g;
 
 function sanitizeGoogleErrorText(value: string): string {
   return redactSecretString(value).replace(ABSOLUTE_PATH_PATTERN, "[REDACTED_PATH]");
