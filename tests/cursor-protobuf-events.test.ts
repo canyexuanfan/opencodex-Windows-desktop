@@ -47,10 +47,11 @@ describe("Cursor protobuf tool-call events", () => {
     const state = createCursorProtobufEventState();
     const toolCall = mcpToolCall("mcp__fs__read_file", { path: "a.txt" });
 
+    // Start is recorded but NOT emitted (deferred to completion for atomic, serialized emission).
     expect(mapCursorProtobufServerMessage(interaction({
       case: "toolCallStarted",
       value: create(ToolCallStartedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall }),
-    }), state)).toEqual([{ type: "tool_call_start", id: "call_1", name: "mcp__fs__read_file" }]);
+    }), state)).toEqual([]);
 
     // Partial args are buffered silently (no delta) until completion.
     expect(mapCursorProtobufServerMessage(interaction({
@@ -58,11 +59,12 @@ describe("Cursor protobuf tool-call events", () => {
       value: create(PartialToolCallUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall, argsTextDelta: "{\"path\":\"a.txt\"}" }),
     }), state)).toEqual([]);
 
-    // Completion emits the full args once, then end.
+    // Completion emits the deferred start, the full args once, then end (one atomic unit).
     expect(mapCursorProtobufServerMessage(interaction({
       case: "toolCallCompleted",
       value: create(ToolCallCompletedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall }),
     }), state)).toEqual([
+      { type: "tool_call_start", id: "call_1", name: "mcp__fs__read_file" },
       { type: "tool_call_delta", arguments: "{\"path\":\"a.txt\"}" },
       { type: "tool_call_end", id: "call_1" },
     ]);
@@ -72,13 +74,11 @@ describe("Cursor protobuf tool-call events", () => {
     const state = createCursorProtobufEventState();
     const toolCall = mcpToolCall("mcp__fs__read_file", { path: "a.txt" });
 
-    // First partial: opens the call, buffers args, emits no delta.
+    // First partial: opens the call, buffers args, emits nothing (start deferred).
     expect(mapCursorProtobufServerMessage(interaction({
       case: "partialToolCall",
       value: create(PartialToolCallUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall, argsTextDelta: "{\"path\"" }),
-    }), state)).toEqual([
-      { type: "tool_call_start", id: "call_1", name: "mcp__fs__read_file" },
-    ]);
+    }), state)).toEqual([]);
 
     // Second partial: more cumulative text buffered, still no delta.
     expect(mapCursorProtobufServerMessage(interaction({
@@ -86,12 +86,13 @@ describe("Cursor protobuf tool-call events", () => {
       value: create(PartialToolCallUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall, argsTextDelta: "{\"path\":\"a.txt\"}" }),
     }), state)).toEqual([]);
 
-    // Completion (no map bytes here) flushes the buffered complete JSON once.
+    // Completion (no map bytes here) emits the deferred start + buffered complete JSON once.
     const noBytes = mcpToolCall("mcp__fs__read_file", {});
     expect(mapCursorProtobufServerMessage(interaction({
       case: "toolCallCompleted",
       value: create(ToolCallCompletedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall: noBytes }),
     }), state)).toEqual([
+      { type: "tool_call_start", id: "call_1", name: "mcp__fs__read_file" },
       { type: "tool_call_delta", arguments: "{\"path\":\"a.txt\"}" },
       { type: "tool_call_end", id: "call_1" },
     ]);
@@ -125,26 +126,50 @@ describe("Cursor protobuf tool-call events", () => {
     }), guarded)).toEqual([{ type: "error", message: "Cursor requested unknown Responses tool: mcp__fs__write_file" }]);
   });
 
-  test("rejects a second synthetic tool call when parallel tool calls are disabled", () => {
+  test("serializes overlapping/parallel tool calls into atomic units (no fail-closed)", () => {
+    // Cursor may open several client tool calls before any completes (the model requested many tools
+    // at once). Deferred-start emission means each call surfaces as one self-contained
+    // start -> delta -> end unit at completion, so they never cross-wire the single-current-call
+    // bridge. parallel_tool_calls=false must NOT abort the turn.
     const state = createCursorProtobufEventState({
       clientToolNames: ["mcp__fs__read_file", "mcp__fs__write_file"],
       parallelToolCalls: false,
     });
 
+    const read = mcpToolCall("mcp__fs__read_file", { path: "a.txt" });
+    const write = mcpToolCall("mcp__fs__write_file", { path: "b.txt" });
+
+    // call_1 starts (recorded, no emit).
     expect(mapCursorProtobufServerMessage(interaction({
       case: "toolCallStarted",
-      value: create(ToolCallStartedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall: mcpToolCall("mcp__fs__read_file", {}) }),
-    }), state)).toEqual([{ type: "tool_call_start", id: "call_1", name: "mcp__fs__read_file" }]);
-
-    expect(mapCursorProtobufServerMessage(interaction({
-      case: "partialToolCall",
-      value: create(PartialToolCallUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall: mcpToolCall("mcp__fs__read_file", {}), argsTextDelta: "{}" }),
+      value: create(ToolCallStartedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall: read }),
     }), state)).toEqual([]);
 
+    // call_2 opens WHILE call_1 is still open (overlap) — still recorded, no error, no emit.
     expect(mapCursorProtobufServerMessage(interaction({
       case: "toolCallStarted",
-      value: create(ToolCallStartedUpdateSchema, { callId: "call_2", modelCallId: "model_2", toolCall: mcpToolCall("mcp__fs__write_file", {}) }),
-    }), state)).toEqual([{ type: "error", message: "Cursor requested multiple parallel Responses tool calls but parallel_tool_calls is false" }]);
+      value: create(ToolCallStartedUpdateSchema, { callId: "call_2", modelCallId: "model_2", toolCall: write }),
+    }), state)).toEqual([]);
+
+    // call_1 completes as a whole atomic unit.
+    expect(mapCursorProtobufServerMessage(interaction({
+      case: "toolCallCompleted",
+      value: create(ToolCallCompletedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall: read }),
+    }), state)).toEqual([
+      { type: "tool_call_start", id: "call_1", name: "mcp__fs__read_file" },
+      { type: "tool_call_delta", arguments: "{\"path\":\"a.txt\"}" },
+      { type: "tool_call_end", id: "call_1" },
+    ]);
+
+    // call_2 then completes as its own atomic unit.
+    expect(mapCursorProtobufServerMessage(interaction({
+      case: "toolCallCompleted",
+      value: create(ToolCallCompletedUpdateSchema, { callId: "call_2", modelCallId: "model_2", toolCall: write }),
+    }), state)).toEqual([
+      { type: "tool_call_start", id: "call_2", name: "mcp__fs__write_file" },
+      { type: "tool_call_delta", arguments: "{\"path\":\"b.txt\"}" },
+      { type: "tool_call_end", id: "call_2" },
+    ]);
   });
 
   test("uses completed MCP args when no partial args arrived", () => {
@@ -168,10 +193,11 @@ describe("Cursor protobuf tool-call events", () => {
     const state = createCursorProtobufEventState();
     const toolCall = mcpToolCall("mcp__fs__read_file", { path: "a.txt" });
 
+    // Start recorded, not emitted (deferred to completion).
     expect(mapCursorProtobufServerMessage(interaction({
       case: "toolCallStarted",
       value: create(ToolCallStartedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall }),
-    }), state)).toEqual([{ type: "tool_call_start", id: "call_1", name: "mcp__fs__read_file" }]);
+    }), state)).toEqual([]);
 
     // Partial buffered silently (no delta).
     expect(mapCursorProtobufServerMessage(interaction({
@@ -179,11 +205,12 @@ describe("Cursor protobuf tool-call events", () => {
       value: create(PartialToolCallUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall, argsTextDelta: "{\"path\": \"a.txt\"}" }),
     }), state)).toEqual([]);
 
-    // Completion carries the canonical map; emit it once + end.
+    // Completion carries the canonical map; emit deferred start + canonical args once + end.
     expect(mapCursorProtobufServerMessage(interaction({
       case: "toolCallCompleted",
       value: create(ToolCallCompletedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall }),
     }), state)).toEqual([
+      { type: "tool_call_start", id: "call_1", name: "mcp__fs__read_file" },
       { type: "tool_call_delta", arguments: "{\"path\":\"a.txt\"}" },
       { type: "tool_call_end", id: "call_1" },
     ]);
@@ -242,18 +269,22 @@ describe("Cursor protobuf tool-call events", () => {
     }), state)).toEqual([]);
   });
 
-  test("fails closed when Cursor opens overlapping tool calls", () => {
-    // call_1 is started and still open (not completed) when call_2 starts -> genuine overlap.
-    // Cursor deltas carry no call id, so interleaving would cross-wire args; we reject instead.
+  test("records overlapping opens without emitting (deferred start, no fail-closed)", () => {
+    // call_1 is started and still open when call_2 starts. Under deferred-start emission both are
+    // merely recorded (no outward event), so there is no cross-wiring and no error: completion emits
+    // each call as its own atomic unit (see the serialization test above).
     const state = createCursorProtobufEventState({ clientToolNames: ["mcp__fs__read_file", "mcp__fs__write_file"] });
     expect(mapCursorProtobufServerMessage(interaction({
       case: "toolCallStarted",
       value: create(ToolCallStartedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall: mcpToolCall("mcp__fs__read_file", {}) }),
-    }), state)).toEqual([{ type: "tool_call_start", id: "call_1", name: "mcp__fs__read_file" }]);
+    }), state)).toEqual([]);
     expect(mapCursorProtobufServerMessage(interaction({
       case: "toolCallStarted",
       value: create(ToolCallStartedUpdateSchema, { callId: "call_2", modelCallId: "model_2", toolCall: mcpToolCall("mcp__fs__write_file", {}) }),
-    }), state)).toEqual([{ type: "error", message: "Cursor opened overlapping Responses tool calls; opencodex serializes Cursor tool calls and cannot interleave their arguments" }]);
+    }), state)).toEqual([]);
+    // Both calls remain open and recorded, ready to be committed atomically on completion.
+    expect(state.openToolCalls.has("call_1")).toBe(true);
+    expect(state.openToolCalls.has("call_2")).toBe(true);
   });
 
   test("allows sequential tool calls (no false-positive overlap)", () => {

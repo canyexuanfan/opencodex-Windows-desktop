@@ -102,7 +102,7 @@ function resolveCompletedArgs(buffered: string, args: McpArgs | undefined, state
 export function mapSyntheticMcpExecToToolEvents(
   args: McpArgs,
   fallbackCallId = "cursor_mcp_exec",
-  options: { allowEmptyArgs?: boolean; suppressStart?: boolean; state?: CursorProtobufEventState } = {},
+  options: { allowEmptyArgs?: boolean; state?: CursorProtobufEventState } = {},
 ): CursorServerMessage[] {
   if (args.providerIdentifier !== OCX_RESPONSES_TOOL_PROVIDER) return [];
   if (options.allowEmptyArgs !== true && !hasMcpArgBytes(args)) return [];
@@ -111,43 +111,55 @@ export function mapSyntheticMcpExecToToolEvents(
   const callId = args.toolCallId || fallbackCallId;
   if (options.state?.completedToolCalls.has(callId)) return [];
   if (options.state) {
-    const out: CursorServerMessage[] = [];
-    if (options.suppressStart !== true) out.push(...startToolCall(options.state, callId, name));
+    // Native-exec delivers the whole client tool call at once. Record it (no-op if already opened by
+    // an earlier started/partial event), then emit the atomic start -> delta -> end unit.
+    const out: CursorServerMessage[] = [...recordToolCall(options.state, callId, name)];
     if (out.some(event => event.type === "error")) return out;
     const open = options.state.openToolCalls.get(callId);
     const finalArgs = resolveCompletedArgs(open?.args ?? "", args, options.state);
-    if (finalArgs.length > 0) out.push({ type: "tool_call_delta", arguments: finalArgs });
-    out.push(...endToolCall(options.state, callId));
+    out.push(...commitToolCall(options.state, callId, finalArgs));
     return out;
   }
-  const out: CursorServerMessage[] = [];
-  if (options.suppressStart !== true) out.push({ type: "tool_call_start", id: callId, name });
-  out.push({ type: "tool_call_delta", arguments: decodeMcpArgs(args) });
-  out.push({ type: "tool_call_end", id: callId });
-  return out;
+  // Stateless fallback (no shared event state): emit a complete, self-contained tool call.
+  return [
+    { type: "tool_call_start", id: callId, name },
+    { type: "tool_call_delta", arguments: decodeMcpArgs(args) },
+    { type: "tool_call_end", id: callId },
+  ];
 }
 
-function startToolCall(state: CursorProtobufEventState, callId: string, name: string): CursorServerMessage[] {
+/**
+ * Record (open) a client tool call WITHOUT emitting `tool_call_start`. The outward start is deferred
+ * to completion (see commitToolCall) so each Cursor tool call surfaces to the bridge as one atomic,
+ * self-contained start -> delta -> end unit. This lets Cursor open several tool calls in parallel
+ * (or interleave their partial-arg streams) without cross-wiring: nothing reaches the single-current-
+ * call bridge until a call completes, and completed calls are emitted whole, one after another.
+ * Returns an error only for a genuinely unknown (un-advertised) tool name.
+ */
+function recordToolCall(state: CursorProtobufEventState, callId: string, name: string): CursorServerMessage[] {
   if (state.completedToolCalls.has(callId)) return [];
   if (state.openToolCalls.has(callId)) return [];
   if (state.clientToolNames && !state.clientToolNames.has(name)) {
     return [{ type: "error", message: `Cursor requested unknown Responses tool: ${name}` }];
   }
-  if (state.parallelToolCalls === false && state.startedClientToolCalls > 0) {
-    return [{ type: "error", message: "Cursor requested multiple parallel Responses tool calls but parallel_tool_calls is false" }];
-  }
-  // Fail closed on genuine overlap: a different client tool call is already open and uncompleted.
-  // Cursor's downstream tool_call_delta/end events carry no call id and the Responses bridge tracks
-  // a single current tool call, so interleaving two open calls would cross-wire their arguments.
-  // (`startedClientToolCalls` is never decremented, so it cannot distinguish overlap from sequential
-  // calls — overlap must be detected from the live `openToolCalls` set. The explicit
-  // parallel_tool_calls=false rejection above takes precedence when configured.)
-  if (state.openToolCalls.size > 0) {
-    return [{ type: "error", message: "Cursor opened overlapping Responses tool calls; opencodex serializes Cursor tool calls and cannot interleave their arguments" }];
-  }
   state.openToolCalls.set(callId, { name, args: "" });
   state.startedClientToolCalls++;
-  return [{ type: "tool_call_start", id: callId, name }];
+  return [];
+}
+
+/**
+ * Emit a completed client tool call as one atomic unit: `tool_call_start` (deferred from open time),
+ * the full normalized arguments delta when present, then `tool_call_end`. The call must already be
+ * recorded in `openToolCalls`. Because each completion emits a whole non-interleaved unit, the bridge
+ * (which tracks a single current tool call) serializes parallel Cursor calls correctly.
+ */
+function commitToolCall(state: CursorProtobufEventState, callId: string, finalArgs: string): CursorServerMessage[] {
+  const open = state.openToolCalls.get(callId);
+  if (!open) return [];
+  const out: CursorServerMessage[] = [{ type: "tool_call_start", id: callId, name: open.name }];
+  if (finalArgs.length > 0) out.push({ type: "tool_call_delta", arguments: finalArgs });
+  out.push(...endToolCall(state, callId));
+  return out;
 }
 
 /**
@@ -188,12 +200,13 @@ export function mapCursorProtobufServerMessage(
       return update.value.text ? [{ type: "thinking", thinking: update.value.text }] : [];
     case "toolCallStarted": {
       const name = mcpToolName(update.value.toolCall);
-      return name ? startToolCall(state, update.value.callId, name) : [];
+      // Record the open call but defer the outward tool_call_start to completion (atomic emission).
+      return name ? recordToolCall(state, update.value.callId, name) : [];
     }
     case "partialToolCall": {
       const out: CursorServerMessage[] = [];
       const name = mcpToolName(update.value.toolCall);
-      if (name) out.push(...startToolCall(state, update.value.callId, name));
+      if (name) out.push(...recordToolCall(state, update.value.callId, name));
       if (out.some(event => event.type === "error")) return out;
       // Buffer cumulative args; do not emit a delta. Args are emitted once, normalized, at completion.
       if (state.openToolCalls.has(update.value.callId)) {
@@ -223,14 +236,15 @@ export function mapCursorProtobufServerMessage(
         const advertised = state.clientToolNames?.has(name) ?? false;
         if (!openBeforeStart && !advertised) return [];
       }
-      if (name) out.push(...startToolCall(state, update.value.callId, name));
+      // Ensure the call is recorded (covers a completion with no prior started/partial event), then
+      // emit it as one atomic start -> delta -> end unit so parallel Cursor calls serialize cleanly.
+      if (name) out.push(...recordToolCall(state, update.value.callId, name));
       if (out.some(event => event.type === "error")) return out;
       const open = state.openToolCalls.get(update.value.callId);
       if (open) {
         const finalArgs = resolveCompletedArgs(open.args, args, state);
-        if (finalArgs.length > 0) out.push({ type: "tool_call_delta", arguments: finalArgs });
+        out.push(...commitToolCall(state, update.value.callId, finalArgs));
       }
-      out.push(...endToolCall(state, update.value.callId));
       return out;
     }
     case "tokenDelta":

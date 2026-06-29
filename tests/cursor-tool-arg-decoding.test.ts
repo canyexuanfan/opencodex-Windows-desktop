@@ -116,10 +116,11 @@ describe("Cursor Responses tool argument decoding", () => {
 
   test("empty completed update after a start waits for native exec args", () => {
     const state = createCursorProtobufEventState();
-    expect(mapCursorProtobufServerMessage(started(), state)).toEqual([
-      { type: "tool_call_start", id: "call_1", name: "mcp__fs__read_file" },
-    ]);
+    // Start is recorded but not emitted (deferred). An empty completion then waits for native exec.
+    expect(mapCursorProtobufServerMessage(started(), state)).toEqual([]);
     expect(mapCursorProtobufServerMessage(completed({}), state)).toEqual([]);
+    // The call stays open so a later native-exec args frame (or turnEnded) can resolve it.
+    expect(state.openToolCalls.has("call_1")).toBe(true);
   });
 
   test("decodes protobuf Value arg bytes from native exec channel", () => {
@@ -184,7 +185,9 @@ describe("Cursor Responses tool argument decoding", () => {
     ]);
   });
 
-  test("synthetic native mcp exec can append to an already-started tool call", () => {
+  test("synthetic native mcp exec emits a self-contained atomic tool call", () => {
+    // Native-exec delivers the whole call at once. With deferred-start emission the synthetic mapper
+    // always emits its own start -> delta -> end unit (the old suppressStart option is gone).
     const args = create(McpArgsSchema, {
       name: "ping",
       toolName: "ping",
@@ -193,7 +196,8 @@ describe("Cursor Responses tool argument decoding", () => {
       args: { value: valueBytes("hello") },
     });
 
-    expect(mapSyntheticMcpExecToToolEvents(args, "fallback", { allowEmptyArgs: false, suppressStart: true })).toEqual([
+    expect(mapSyntheticMcpExecToToolEvents(args, "fallback", { allowEmptyArgs: false })).toEqual([
+      { type: "tool_call_start", id: "toolu_1", name: "ping" },
       { type: "tool_call_delta", arguments: "{\"value\":\"hello\"}" },
       { type: "tool_call_end", id: "toolu_1" },
     ]);
@@ -214,7 +218,9 @@ describe("Cursor Responses tool argument decoding", () => {
     ]);
   });
 
-  test("synthetic native mcp exec honors parallel_tool_calls false", () => {
+  test("synthetic native mcp exec serializes multiple calls even when parallel_tool_calls is false", () => {
+    // parallel_tool_calls=false no longer aborts: each native-exec call is emitted as its own atomic
+    // start -> delta -> end unit, so several can be serialized through the single-current-call bridge.
     const state = createCursorProtobufEventState({ clientToolNames: ["ping"], parallelToolCalls: false });
     const first = create(McpArgsSchema, {
       name: "ping",
@@ -237,7 +243,9 @@ describe("Cursor Responses tool argument decoding", () => {
       { type: "tool_call_end", id: "toolu_1" },
     ]);
     expect(mapSyntheticMcpExecToToolEvents(second, "fallback", { allowEmptyArgs: false, state })).toEqual([
-      { type: "error", message: "Cursor requested multiple parallel Responses tool calls but parallel_tool_calls is false" },
+      { type: "tool_call_start", id: "toolu_2", name: "ping" },
+      { type: "tool_call_delta", arguments: "{\"value\":\"two\"}" },
+      { type: "tool_call_end", id: "toolu_2" },
     ]);
   });
 
