@@ -71,3 +71,27 @@ instead of pushing.
 - Commit this plan/evidence as `docs(kiro): plan final parity audit`.
 - If verification passes and no blocker remains, push:
   - `git push origin feat/kiro-on-dev`
+
+## Local final audit evidence
+
+Local audit after the Kiro Request Logs full-context usage follow-up found no
+new in-scope functional gap against the GPT-Pro P0/P1/P2 checklist. The
+remaining known non-parity is intentionally out of scope: Kiro multi-account
+failover / sticky account selection / circuit breakers, and live Kiro account
+validation when no live account is available.
+
+Verification passed:
+
+- `bun x tsc --noEmit`
+- `bun test tests/kiro-images.test.ts tests/kiro-stream.test.ts tests/kiro-retry.test.ts tests/kiro-oauth.test.ts tests/eventstream-decoder.test.ts tests/kiro-adapter.test.ts tests/error-fidelity.test.ts tests/usage-log.test.ts tests/request-log.test.ts tests/debug.test.ts tests/usage-debug.test.ts tests/usage-summary.test.ts`
+- `138 pass, 0 fail`
+- Kiro split files are below the 500-line limit; `src/adapters/kiro.ts` is 494
+  lines.
+
+Independent Backend employee verification could not be completed in this
+session. Two dispatch attempts returned `Not logged in - Please run /login`.
+Therefore no employee `DONE` verdict is claimed.
+
+Push was not performed in this audit pass because the verification plan says to
+push only after employee `DONE`, and the current user turn did not freshly
+authorize `git push`.
