@@ -101,6 +101,7 @@ export interface RequestLogContext {
   model: string;
   provider: string;
   requestedModel?: string;
+  requestedEffort?: string;
   requestedServiceTier?: string;
   requestedSpeedLabel?: string;
   configuredServiceTier?: string;
@@ -362,6 +363,7 @@ async function handleResponses(
     return formatErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
   logCtx.requestedModel = parsed.modelId;
+  logCtx.requestedEffort = parsed.options.reasoning;
   logCtx.requestedServiceTier = parsed.options.serviceTier;
   logCtx.requestedSpeedLabel = requestLogSpeedLabel(parsed.options.serviceTier);
   logCtx.configuredServiceTier = readConfiguredCodexServiceTier();
@@ -712,6 +714,7 @@ export interface RequestLogEntry {
   model: string;
   provider: string;
   requestedModel?: string;
+  requestedEffort?: string;
   requestedServiceTier?: string;
   requestedSpeedLabel?: string;
   configuredServiceTier?: string;
@@ -908,9 +911,12 @@ function addFinalRequestLog(
 ): void {
   const errorCode = requestLogErrorCode(status);
   const finalUsage = usageForFinalLog(logCtx.provider, logCtx.usage);
+  const usageFallback = !finalUsage && typeof logCtx.usageLogInputTokens === "number"
+    ? { inputTokens: logCtx.usageLogInputTokens, outputTokens: 0, estimated: true }
+    : undefined;
   const loggedUsage = finalUsage && typeof logCtx.usageLogInputTokens === "number"
     ? { ...finalUsage, inputTokens: Math.max(finalUsage.inputTokens, logCtx.usageLogInputTokens) }
-    : finalUsage;
+    : (finalUsage ?? usageFallback);
   const usageStatus = usageStatusForFinalLog(loggedUsage);
   const totalTokens = usageTotalTokens(loggedUsage);
   addLog({
@@ -919,6 +925,7 @@ function addFinalRequestLog(
     model: logCtx.model,
     provider: logCtx.provider,
     ...(logCtx.requestedModel ? { requestedModel: logCtx.requestedModel } : {}),
+    ...(logCtx.requestedEffort ? { requestedEffort: logCtx.requestedEffort } : {}),
     ...(logCtx.requestedServiceTier ? { requestedServiceTier: logCtx.requestedServiceTier } : {}),
     ...(logCtx.requestedSpeedLabel ? { requestedSpeedLabel: logCtx.requestedSpeedLabel } : {}),
     ...(logCtx.configuredServiceTier ? { configuredServiceTier: logCtx.configuredServiceTier } : {}),

@@ -120,6 +120,7 @@ export const en = {
   "logs.col.time": "Time",
   "logs.col.request": "Request",
   "logs.col.model": "Model",
+  "logs.col.effort": "Effort",
   "logs.col.provider": "Provider",
   "logs.col.status": "Status",
   "logs.col.tokens": "Tokens",

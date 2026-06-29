@@ -70,6 +70,7 @@ describe("request log metadata", () => {
       model: "gpt-5.5",
       provider: "chatgpt-p000001",
       requestedModel: "gpt-5.5",
+      requestedEffort: "xhigh",
       requestedServiceTier: "priority",
       requestedSpeedLabel: requestLogSpeedLabel("priority"),
       configuredServiceTier: "fast",
@@ -92,6 +93,7 @@ describe("request log metadata", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
       requestedModel: "gpt-5.5",
+      requestedEffort: "xhigh",
       requestedServiceTier: "priority",
       requestedSpeedLabel: "fast",
       configuredServiceTier: "fast",
@@ -238,6 +240,25 @@ describe("request log metadata", () => {
       usageStatus: "estimated",
       totalTokens: 240_004,
       usage: { inputTokens: 240_000, outputTokens: 4, estimated: true },
+    });
+  });
+
+  test("final logging shows numeric Kiro estimates even when SSE usage is absent", async () => {
+    const entries: RequestLogEntry[] = [];
+    const response = responseWithDeferredRequestLog(
+      new Response(null, { status: 200 }),
+      "ocx-test-kiro-fallback-log-usage",
+      Date.now(),
+      { model: "kiro/claude-opus-4.8", provider: "kiro-p442fff", usageLogInputTokens: 133_900 },
+      entry => entries.push(entry),
+    );
+
+    await response.text();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      usageStatus: "estimated",
+      totalTokens: 133_900,
+      usage: { inputTokens: 133_900, outputTokens: 0, estimated: true },
     });
   });
 });
