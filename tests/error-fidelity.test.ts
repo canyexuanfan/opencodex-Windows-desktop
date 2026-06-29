@@ -42,6 +42,26 @@ describe("error fidelity", () => {
       type: "insufficient_quota",
       code: "insufficient_quota",
     });
+    expect(classifyError(403, "origin_rejected", "WebSocket upgrade blocked: non-local Origin")).toMatchObject({
+      type: "invalid_request_error",
+      code: "origin_rejected",
+    });
+    expect(classifyError(502, "upstream_error", "Kiro rate limit exceeded: ThrottlingException: rate limited")).toMatchObject({
+      type: "rate_limit_error",
+      code: "rate_limit_exceeded",
+    });
+    expect(classifyError(502, "upstream_error", "Kiro authentication failed: AccessDeniedException: expired token")).toMatchObject({
+      type: "authentication_error",
+      code: "invalid_api_key",
+    });
+    expect(classifyError(502, "upstream_error", "Kiro invalid request: ValidationException: model not found")).toMatchObject({
+      type: "invalid_request_error",
+      code: "invalid_request_error",
+    });
+    expect(classifyError(502, "upstream_error", "Kiro quota exhausted: monthly quota exceeded")).toMatchObject({
+      type: "insufficient_quota",
+      code: "insufficient_quota",
+    });
   });
 
   test("formatErrorResponse returns OpenAI-compatible classified error envelope", async () => {

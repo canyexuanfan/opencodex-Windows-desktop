@@ -1,6 +1,7 @@
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "./config";
+import { redactSecretString, redactSecrets } from "./redact";
 import type { OcxUsage } from "./types";
 
 export const USAGE_DEBUG_ENV = "OPENCODEX_USAGE_DEBUG";
@@ -31,9 +32,10 @@ export function usageDebugPath(): string {
 }
 
 export function truncateForDebug(text: string, max = USAGE_DEBUG_BODY_SAMPLE_BYTES): string {
-  if (text.length <= max) return text;
-  const cut = text.slice(0, max);
-  const remaining = text.length - max;
+  const redacted = redactSecretString(text);
+  if (redacted.length <= max) return redacted;
+  const cut = redacted.slice(0, max);
+  const remaining = redacted.length - max;
   return `${cut}... [+${remaining} more]`;
 }
 
@@ -56,7 +58,8 @@ export function appendUsageDebug(record: UsageDebugRecord): void {
   try {
     ensureUsageDebugDir();
     const path = usageDebugPath();
-    appendFileSync(path, `${JSON.stringify(record)}\n`, { encoding: "utf-8", mode: 0o600 });
+    const safeRecord = redactSecrets(record) as UsageDebugRecord;
+    appendFileSync(path, `${JSON.stringify(safeRecord)}\n`, { encoding: "utf-8", mode: 0o600 });
     try { chmodSync(path, 0o600); } catch { /* best-effort */ }
     if (existsSync(path)) trimRollingFile(path);
   } catch {

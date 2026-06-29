@@ -6,10 +6,12 @@ import { getCredential, saveCredential } from "./store";
 import { loginXai, refreshXaiToken } from "./xai";
 import { ANTHROPIC_OAUTH_BETA, loginAnthropic, refreshAnthropicToken } from "./anthropic";
 import { loginKimi, refreshKimiToken } from "./kimi";
+import { loginKiro, readKiroCliSqlite, refreshKiroToken } from "./kiro";
 import { loginChatGPT, refreshChatGPTToken } from "./chatgpt";
 import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers/derive";
 
 const REFRESH_SKEW_MS = 60_000;
+const tokenRefreshes = new Map<string, Promise<string>>();
 
 export interface LoginOpts { forceLogin?: boolean }
 
@@ -52,6 +54,12 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
     providerConfig: oauthConfig("kimi"),
     defaultModel: oauthDefaultModel("kimi"),
   },
+  kiro: {
+    login: (ctrl) => loginKiro(ctrl),
+    refresh: (rt, signal) => refreshKiroToken(rt, signal),
+    providerConfig: oauthConfig("kiro"),
+    defaultModel: oauthDefaultModel("kiro"),
+  },
   chatgpt: {
     login: loginChatGPT,
     refresh: (rt) => refreshChatGPTToken(rt),
@@ -90,9 +98,47 @@ export async function getValidAccessToken(provider: string): Promise<string> {
   const cred = getCredential(provider);
   if (!cred) throw new OAuthLoginRequiredError(provider);
   if (cred.expires > Date.now() + REFRESH_SKEW_MS) return cred.access;
-  const fresh = await def.refresh(cred.refresh);
-  saveCredential(provider, fresh);
-  return fresh.access;
+  const existing = tokenRefreshes.get(provider);
+  if (existing) return existing;
+  const refresh = refreshAndPersistAccessToken(provider, def, cred).finally(() => {
+    if (tokenRefreshes.get(provider) === refresh) tokenRefreshes.delete(provider);
+  });
+  tokenRefreshes.set(provider, refresh);
+  return refresh;
+}
+
+function readFreshKiroCliCredential(): OAuthCredentials | undefined {
+  const imported = readKiroCliSqlite();
+  if (!imported || imported.expires <= Date.now() + REFRESH_SKEW_MS) return undefined;
+  return { access: imported.access, refresh: imported.refresh, expires: imported.expires, source: "local-cli" };
+}
+
+async function refreshAndPersistAccessToken(
+  provider: string,
+  def: OAuthProviderDef,
+  cred: OAuthCredentials,
+): Promise<string> {
+  if (provider === "kiro") {
+    const imported = readFreshKiroCliCredential();
+    if (imported) {
+      saveCredential(provider, imported);
+      return imported.access;
+    }
+  }
+  try {
+    const fresh = await def.refresh(cred.refresh);
+    saveCredential(provider, { ...fresh, source: fresh.source ?? cred.source ?? "oauth" });
+    return fresh.access;
+  } catch (err) {
+    if (provider === "kiro") {
+      const imported = readFreshKiroCliCredential();
+      if (imported) {
+        saveCredential(provider, imported);
+        return imported.access;
+      }
+    }
+    throw err;
+  }
 }
 
 /**
@@ -205,7 +251,8 @@ export function upsertOAuthProvider(config: OcxConfig, provider: string): void {
 export async function runLogin(provider: string, ctrl: OAuthController, opts?: LoginOpts): Promise<OAuthCredentials> {
   const def = OAUTH_PROVIDERS[provider];
   if (!def) throw new UnsupportedOAuthProviderError(provider);
-  const cred = await def.login(ctrl, opts);
+  const rawCred = await def.login(ctrl, opts);
+  const cred: OAuthCredentials = rawCred.source ? rawCred : { ...rawCred, source: "oauth" };
   saveCredential(provider, cred);
   const config = loadConfig();
   upsertOAuthProvider(config, provider);
@@ -221,10 +268,10 @@ export async function runLogin(provider: string, ctrl: OAuthController, opts?: L
 const loginState = new Map<string, { error?: string; done: boolean }>();
 const loginAbort = new Map<string, AbortController>();
 
-export function getLoginStatus(provider: string): { loggedIn: boolean; email?: string; error?: string; done: boolean } {
+export function getLoginStatus(provider: string): { loggedIn: boolean; email?: string; source?: OAuthCredentials["source"]; error?: string; done: boolean } {
   const cred = getCredential(provider);
   const st = loginState.get(provider);
-  return { loggedIn: !!cred, email: maskEmail(cred?.email) ?? undefined, error: st?.error, done: st?.done ?? false };
+  return { loggedIn: !!cred, email: maskEmail(cred?.email) ?? undefined, source: cred?.source, error: st?.error, done: st?.done ?? false };
 }
 
 export function clearLoginState(provider: string): void {

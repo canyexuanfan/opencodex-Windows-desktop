@@ -4,9 +4,11 @@ import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { createAnthropicAdapter } from "./adapters/anthropic";
 import { createAzureAdapter } from "./adapters/azure";
 import { createGoogleAdapter } from "./adapters/google";
+import { createKiroAdapter } from "./adapters/kiro";
 import { createOpenAIChatAdapter } from "./adapters/openai-chat";
 import { createResponsesPassthroughAdapter } from "./adapters/openai-responses";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse, type ResponsesTerminalStatus } from "./bridge";
+import { markActivity } from "./sidecar-tracker";
 import {
   buildWarmupCompletionFrames,
   buildWsErrorFrame,
@@ -24,6 +26,8 @@ import {
   hasOwnProvider,
   isValidProviderName,
   loadConfig,
+  providerBaseUrlConfigError,
+  providerHeadersConfigError,
   saveConfig,
   websocketsEnabled,
 } from "./config";
@@ -47,6 +51,7 @@ import type { OcxUsage } from "./types";
 import {
   appendUsageEntry,
   readUsageEntries,
+  usageForFinalLog,
   usageStatusForFinalLog,
   usageTotalTokens,
   type UsageStatus,
@@ -96,6 +101,7 @@ export interface RequestLogContext {
   model: string;
   provider: string;
   requestedModel?: string;
+  requestedEffort?: string;
   requestedServiceTier?: string;
   requestedSpeedLabel?: string;
   configuredServiceTier?: string;
@@ -104,6 +110,7 @@ export interface RequestLogContext {
   responseServiceTier?: string;
   resolvedModel?: string;
   usage?: OcxUsage;
+  usageLogInputTokens?: number;
   usageDebugBodyKind?: UsageDebugBodyKind;
   usageDebugBodySample?: string;
   usageDebugContentType?: string;
@@ -289,6 +296,8 @@ export function resolveAdapter(providerConfig: OcxProviderConfig) {
       return createResponsesPassthroughAdapter(providerConfig);
     case "google":
       return createGoogleAdapter(providerConfig);
+    case "kiro":
+      return createKiroAdapter(providerConfig);
     case "azure":
     case "azure-openai":
       return createAzureAdapter(providerConfig);
@@ -354,6 +363,7 @@ async function handleResponses(
     return formatErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
   logCtx.requestedModel = parsed.modelId;
+  logCtx.requestedEffort = parsed.options.reasoning;
   logCtx.requestedServiceTier = parsed.options.serviceTier;
   logCtx.requestedSpeedLabel = requestLogSpeedLabel(parsed.options.serviceTier);
   logCtx.configuredServiceTier = readConfiguredCodexServiceTier();
@@ -518,14 +528,13 @@ async function handleResponses(
       const turnAc = new AbortController();
       linkAbortSignal(upstream, turnAc.signal);
       registerTurn(turnAc);
-      if (terminalBodyWillRecord && recordTerminalOutcomes) {
-        const recordTerminal = terminalRecorder;
+      if (recordTerminalOutcomes) {
         const reportNativeTerminal = (status: ResponsesTerminalStatus) => {
           if (options.abortSignal?.aborted) {
             options.onNativePassthroughCancel?.();
             return;
           }
-          recordTerminal(status);
+          terminalRecorder?.(status);
           options.onNativePassthroughTerminal?.(status);
         };
         consumeForInspection(inspectBody, reportNativeTerminal, turnAc.signal, () => unregisterTurn(turnAc), logCtx);
@@ -580,11 +589,16 @@ async function handleResponses(
   const connectMs = config.connectTimeoutMs ?? 30_000;
 
   const request = adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
+  if (typeof request.usageLog?.inputTokens === "number") {
+    logCtx.usageLogInputTokens = request.usageLog.inputTokens;
+  }
   let upstreamResponse: Response;
   try {
-    upstreamResponse = await fetchWithHeaderTimeout(request.url, {
-      method: request.method, headers: request.headers, body: request.body,
-    }, upstream.signal, connectMs);
+    upstreamResponse = adapter.fetchResponse
+      ? await adapter.fetchResponse(request, { abortSignal: upstream.signal, timeoutMs: connectMs })
+      : await fetchWithHeaderTimeout(request.url, {
+          method: request.method, headers: request.headers, body: request.body,
+        }, upstream.signal, connectMs);
   } catch (err) {
     cleanupUpstreamAbort();
     upstream.abort();
@@ -700,6 +714,7 @@ export interface RequestLogEntry {
   model: string;
   provider: string;
   requestedModel?: string;
+  requestedEffort?: string;
   requestedServiceTier?: string;
   requestedSpeedLabel?: string;
   configuredServiceTier?: string;
@@ -895,14 +910,22 @@ function addFinalRequestLog(
   addLog: (entry: RequestLogEntry) => void = addRequestLog,
 ): void {
   const errorCode = requestLogErrorCode(status);
-  const usageStatus = usageStatusForFinalLog(logCtx.usage);
-  const totalTokens = usageTotalTokens(logCtx.usage);
+  const finalUsage = usageForFinalLog(logCtx.provider, logCtx.usage);
+  const usageFallback = !finalUsage && typeof logCtx.usageLogInputTokens === "number"
+    ? { inputTokens: logCtx.usageLogInputTokens, outputTokens: 0, estimated: true }
+    : undefined;
+  const loggedUsage = finalUsage && typeof logCtx.usageLogInputTokens === "number"
+    ? { ...finalUsage, inputTokens: Math.max(finalUsage.inputTokens, logCtx.usageLogInputTokens) }
+    : (finalUsage ?? usageFallback);
+  const usageStatus = usageStatusForFinalLog(loggedUsage);
+  const totalTokens = usageTotalTokens(loggedUsage);
   addLog({
     requestId,
     timestamp: start,
     model: logCtx.model,
     provider: logCtx.provider,
     ...(logCtx.requestedModel ? { requestedModel: logCtx.requestedModel } : {}),
+    ...(logCtx.requestedEffort ? { requestedEffort: logCtx.requestedEffort } : {}),
     ...(logCtx.requestedServiceTier ? { requestedServiceTier: logCtx.requestedServiceTier } : {}),
     ...(logCtx.requestedSpeedLabel ? { requestedSpeedLabel: logCtx.requestedSpeedLabel } : {}),
     ...(logCtx.configuredServiceTier ? { configuredServiceTier: logCtx.configuredServiceTier } : {}),
@@ -916,7 +939,7 @@ function addFinalRequestLog(
     ...(meta?.terminalStatus ? { terminalStatus: meta.terminalStatus } : {}),
     ...(meta?.closeReason ? { closeReason: meta.closeReason } : {}),
     usageStatus,
-    ...(logCtx.usage ? { usage: logCtx.usage } : {}),
+    ...(loggedUsage ? { usage: loggedUsage } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
   });
   if (isUsageDebugEnabled()) {
@@ -929,7 +952,7 @@ function addFinalRequestLog(
       upstreamStatus: status,
       bodyKind: logCtx.usageDebugBodyKind ?? "none",
       bodySample: logCtx.usageDebugBodySample ?? "",
-      extractedUsage: logCtx.usage ?? null,
+      extractedUsage: loggedUsage ?? null,
     });
   }
 }
@@ -1507,6 +1530,8 @@ function requireApiAuth(req: Request, config: OcxConfig, kind: "management" | "d
 function providerManagementConfigError(name: string, provider: OcxProviderConfig): string | null {
   const baseUrlError = providerBaseUrlConfigError(provider.baseUrl);
   if (baseUrlError) return `provider ${name} ${baseUrlError}`;
+  const headersError = providerHeadersConfigError(provider.headers);
+  if (headersError) return `provider ${name} ${headersError}`;
   if (provider.authMode === "forward") {
     const normalizedName = name.trim().toLowerCase();
     const base = provider.baseUrl.replace(/\/+$/, "");
@@ -1515,18 +1540,6 @@ function providerManagementConfigError(name: string, provider: OcxProviderConfig
       && base === "https://chatgpt.com/backend-api/codex";
     if (isBuiltInChatGptForward) return null;
     return `provider ${name} uses reserved authMode "forward"; configure ChatGPT passthrough via the built-in provider`;
-  }
-  return null;
-}
-
-function providerBaseUrlConfigError(baseUrl: string): string | null {
-  try {
-    const parsed = new URL(baseUrl.trim());
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "baseUrl must be an http(s) URL";
-    if (parsed.username || parsed.password) return "baseUrl must not include embedded credentials";
-    if (parsed.search || parsed.hash) return "baseUrl must not include query strings or fragments";
-  } catch {
-    return "baseUrl must be a valid URL";
   }
   return null;
 }
@@ -1907,6 +1920,7 @@ export function startServer(port?: number) {
     idleTimeout: 255,
     async fetch(req, requestServer): Promise<Response> {
       const url = new URL(req.url);
+      markActivity(`${req.method} ${url.pathname}`);
 
       if (req.method === "OPTIONS") {
         if (!isAllowedRequestOrigin(req, config)) {
@@ -2060,6 +2074,7 @@ export function startServer(port?: number) {
         }
         if (frame.type === "response.processed") return; // ack — no-op
         if (frame.type !== "response.create") return;
+        markActivity("ws response.create");
 
         ws.data.cancel?.();
         const turnId = (ws.data.turnId ?? 0) + 1;

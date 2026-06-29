@@ -27,8 +27,45 @@ export function usageTotalTokens(usage: OcxUsage | undefined): number | undefine
   return usage.inputTokens + usage.outputTokens;
 }
 
+function isKiroLogProvider(provider: string): boolean {
+  return provider === "kiro" || provider.startsWith("kiro-");
+}
+
+export function usageForFinalLog(provider: string, usage: OcxUsage | undefined): OcxUsage | undefined {
+  if (!usage) return undefined;
+  if (usage.estimated || isKiroLogProvider(provider)) return { ...usage, estimated: true };
+  return usage;
+}
+
 export function usageStatusForFinalLog(usage: OcxUsage | undefined): UsageStatus {
-  return usage ? "reported" : "unreported";
+  if (!usage) return "unreported";
+  return usage.estimated ? "estimated" : "reported";
+}
+
+function normalizeUsageValue(usage: OcxUsage | undefined): OcxUsage | undefined {
+  if (!usage) return undefined;
+  return {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    ...(typeof usage.cachedInputTokens === "number" ? { cachedInputTokens: usage.cachedInputTokens } : {}),
+    ...(typeof usage.reasoningOutputTokens === "number" ? { reasoningOutputTokens: usage.reasoningOutputTokens } : {}),
+    ...(usage.estimated ? { estimated: true } : {}),
+  };
+}
+
+function normalizeUsageEntry(entry: PersistedUsageEntry): PersistedUsageEntry {
+  return {
+    requestId: entry.requestId,
+    timestamp: entry.timestamp,
+    provider: entry.provider,
+    model: entry.model,
+    ...(entry.resolvedModel ? { resolvedModel: entry.resolvedModel } : {}),
+    status: entry.status,
+    durationMs: entry.durationMs,
+    usageStatus: entry.usageStatus,
+    ...(entry.usage ? { usage: normalizeUsageValue(entry.usage) } : {}),
+    ...(typeof entry.totalTokens === "number" ? { totalTokens: entry.totalTokens } : {}),
+  };
 }
 
 function ensureUsageLogDir(): void {
@@ -40,7 +77,7 @@ function ensureUsageLogDir(): void {
 export function appendUsageEntry(entry: PersistedUsageEntry): void {
   ensureUsageLogDir();
   const path = usageLogPath();
-  appendFileSync(path, `${JSON.stringify(entry)}\n`, { encoding: "utf-8", mode: 0o600 });
+  appendFileSync(path, `${JSON.stringify(normalizeUsageEntry(entry))}\n`, { encoding: "utf-8", mode: 0o600 });
   try { chmodSync(path, 0o600); } catch { /* best-effort on platforms that ignore chmod */ }
 }
 

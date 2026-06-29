@@ -81,6 +81,23 @@ function stripExistingModelProvider(content: string): string {
   return out.join("\n");
 }
 
+/**
+ * Drop ROOT-level `model_context_window` / `model_auto_compact_token_limit` overrides (keys before
+ * the first table header). Codex treats these root keys as a global override that wins over the
+ * per-model catalog values, so a stale `model_context_window = 1000000` makes every model (e.g.
+ * gpt-5.5) report a 1M window. Stripping them on (re)injection lets the catalog drive context size.
+ */
+export function stripRootContextWindowOverrides(content: string): string {
+  const lines = content.split("\n");
+  const firstTable = lines.findIndex(l => /^\s*\[/.test(l));
+  return lines
+    .filter((line, i) => {
+      const isRoot = firstTable === -1 || i < firstTable;
+      return !isRoot || !/^\s*model_(?:context_window|auto_compact_token_limit)\s*=/.test(line);
+    })
+    .join("\n");
+}
+
 function stripRootRoutedModel(content: string): string {
   const lines = content.split("\n");
   const firstTable = lines.findIndex(l => /^\s*\[/.test(l));
@@ -243,6 +260,7 @@ export async function injectCodexConfig(port: number, config?: OcxConfig, option
   }
   content = removeProfileSection(content);
   content = stripExistingModelProvider(content);
+  content = stripRootContextWindowOverrides(content);
   content = normalizeServiceTier(content);
   content = ensureFastModeFeature(content);
 

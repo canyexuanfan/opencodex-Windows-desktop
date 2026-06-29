@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   appendUsageEntry,
   readUsageEntries,
+  usageForFinalLog,
   usageLogPath,
   usageStatusForFinalLog,
   usageTotalTokens,
@@ -66,6 +67,57 @@ describe("usage log", () => {
     }
   });
 
+  test("drops runtime extra fields before persisting usage JSONL", () => {
+    appendUsageEntry({
+      requestId: "ocx-extra",
+      timestamp: 2,
+      provider: "openai",
+      model: "gpt-5.5",
+      status: 200,
+      durationMs: 12,
+      usageStatus: "reported",
+      usage: {
+        inputTokens: 1,
+        outputTokens: 2,
+        estimated: true,
+        prompt: "secret prompt text",
+      },
+      totalTokens: 3,
+      prompt: "secret prompt text",
+      messages: [{ role: "user", content: "secret message" }],
+      headers: { authorization: "Bearer usage-log-token" },
+      accessToken: "access-secret",
+      refreshToken: "refresh-secret",
+      profileArn: "arn:aws:codewhisperer:us-east-1:123456789012:profile/demo",
+    } as unknown as Parameters<typeof appendUsageEntry>[0]);
+
+    const raw = readFileSync(usageLogPath(), "utf-8");
+    for (const leaked of [
+      "secret prompt text",
+      "secret message",
+      "usage-log-token",
+      "access-secret",
+      "refresh-secret",
+      "arn:aws:codewhisperer",
+      "headers",
+      "messages",
+      "profileArn",
+    ]) {
+      expect(raw).not.toContain(leaked);
+    }
+    expect(readUsageEntries()).toEqual([{
+      requestId: "ocx-extra",
+      timestamp: 2,
+      provider: "openai",
+      model: "gpt-5.5",
+      status: 200,
+      durationMs: 12,
+      usageStatus: "reported",
+      usage: { inputTokens: 1, outputTokens: 2, estimated: true },
+      totalTokens: 3,
+    }]);
+  });
+
   test("skips malformed JSONL lines while keeping valid entries", () => {
     writeFileSync(usageLogPath(), [
       "{\"requestId\":\"a\",\"timestamp\":1,\"provider\":\"p\",\"model\":\"m\",\"status\":200,\"durationMs\":1,\"usageStatus\":\"unreported\"}",
@@ -79,7 +131,16 @@ describe("usage log", () => {
   test("keeps missing usage distinct from zero usage", () => {
     expect(usageStatusForFinalLog(undefined)).toBe("unreported");
     expect(usageStatusForFinalLog({ inputTokens: 0, outputTokens: 0 })).toBe("reported");
+    expect(usageStatusForFinalLog({ inputTokens: 0, outputTokens: 0, estimated: true })).toBe("estimated");
     expect(usageTotalTokens(undefined)).toBeUndefined();
     expect(usageTotalTokens({ inputTokens: 4, outputTokens: 6, cachedInputTokens: 2 })).toBe(10);
+  });
+
+  test("marks Kiro final log usage as estimated without changing other providers", () => {
+    const usage = { inputTokens: 4, outputTokens: 6 };
+    expect(usageForFinalLog("kiro", usage)).toEqual({ ...usage, estimated: true });
+    expect(usageForFinalLog("kiro-p9d8524", usage)).toEqual({ ...usage, estimated: true });
+    expect(usageForFinalLog("openai", usage)).toEqual(usage);
+    expect(usageForFinalLog("openai", { ...usage, estimated: true })).toEqual({ ...usage, estimated: true });
   });
 });

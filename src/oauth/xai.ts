@@ -200,7 +200,7 @@ export async function loginXai(
       ctrl.onProgress?.("Found Grok CLI token, importing automatically");
       if (local.expires >= Date.now() + 60_000) return local;
       try {
-        return await refreshXaiToken(local.refresh, ctrl.signal);
+        return { ...(await refreshXaiToken(local.refresh, ctrl.signal)), source: "local-cli" };
       } catch (error) {
         if (importLocal === "only") {
           throw new Error(

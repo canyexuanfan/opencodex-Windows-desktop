@@ -5,6 +5,15 @@ import { isAllowedToolChoice, modelInList, namespacedToolName, resolveToolChoice
 import { mapReasoningEffort } from "../reasoning-effort";
 import { contentPartsToText } from "./image";
 
+// Z.AI's "glm-5.2[1m]" 1M-context id is a Claude-Code / Anthropic-endpoint-only
+// convention; OpenAI-compatible chat-completions endpoints reject the bracketed
+// suffix (Z.AI 400 code 1211 "Unknown Model"). Strip a single trailing "[...]"
+// group from the wire model id so the bare id is sent. Applies to the
+// openai-chat path only — the anthropic adapter keeps the suffix verbatim.
+export function stripBracketedModelSuffix(modelId: string): string {
+  return modelId.replace(/\[[^\]]*\]\s*$/, "");
+}
+
 function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] {
   const out: unknown[] = [];
   const { context, options } = parsed;
@@ -163,7 +172,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       const toolChoice = toolChoiceToChatFormat(parsed.options.toolChoice, parsed.context.tools);
 
       const body: Record<string, unknown> = {
-        model: parsed.modelId,
+        model: stripBracketedModelSuffix(parsed.modelId),
         messages,
         stream: parsed.stream,
       };

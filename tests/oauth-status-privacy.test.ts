@@ -28,13 +28,72 @@ describe("OAuth status privacy", () => {
       expires: Date.now() + 60_000,
       email: "person@example.test",
       accountId: "acct-xai",
+      source: "local-cli",
     });
 
     const status = getLoginStatus("xai");
 
     expect(status.loggedIn).toBe(true);
     expect(status.email).toBe("p***n@example.test");
+    expect(status.source).toBe("local-cli");
     expect(JSON.stringify(status)).not.toContain("person@example.test");
+    expect(JSON.stringify(status)).not.toContain("access-token");
+    expect(JSON.stringify(status)).not.toContain("refresh-token");
+  });
+
+  test("saveCredential persists only the credential allowlist", () => {
+    writeFileSync(join(TEST_DIR, "auth.json"), JSON.stringify({
+      legacy: {
+        access: "legacy-access",
+        refresh: "legacy-refresh",
+        expires: Date.now() + 60_000,
+        source: "attacker-controlled-source",
+        prompt: "legacy prompt",
+        headers: { authorization: "Bearer legacy" },
+      },
+    }), "utf8");
+
+    saveCredential("xai", {
+      access: "access-token",
+      refresh: "refresh-token",
+      expires: Date.now() + 60_000,
+      email: "person@example.test",
+      accountId: "acct-xai",
+      source: "credential-file",
+      prompt: "secret prompt",
+      headers: { authorization: "Bearer leaked" },
+      idToken: "jwt-secret",
+    } as never);
+
+    const stored = readFileSync(join(TEST_DIR, "auth.json"), "utf8");
+
+    expect(stored).toContain("access-token");
+    expect(stored).toContain("refresh-token");
+    expect(stored).toContain("legacy-access");
+    expect(stored).toContain("\"source\": \"credential-file\"");
+    expect(stored).not.toContain("attacker-controlled-source");
+    expect(stored).not.toContain("legacy prompt");
+    expect(stored).not.toContain("Bearer legacy");
+    expect(stored).not.toContain("secret prompt");
+    expect(stored).not.toContain("Bearer leaked");
+    expect(stored).not.toContain("jwt-secret");
+  });
+
+  test("getLoginStatus ignores invalid legacy source metadata", () => {
+    writeFileSync(join(TEST_DIR, "auth.json"), JSON.stringify({
+      xai: {
+        access: "access-token",
+        refresh: "refresh-token",
+        expires: Date.now() + 60_000,
+        source: "oauth<script>",
+      },
+    }), "utf8");
+
+    const status = getLoginStatus("xai");
+
+    expect(status.loggedIn).toBe(true);
+    expect(status.source).toBeUndefined();
+    expect(JSON.stringify(status)).not.toContain("oauth<script>");
   });
 
   test("stale credentials for removed OAuth providers fail as unsupported provider config", async () => {

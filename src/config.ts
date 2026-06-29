@@ -47,6 +47,16 @@ const providerConfigSchema = z.object({
 
 const RESERVED_PROVIDER_NAMES = new Set(["__proto__", "prototype", "constructor"]);
 const PROVIDER_NAME_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?$/;
+const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const SENSITIVE_PROVIDER_HEADERS = new Set([
+  "authorization",
+  "cookie",
+  "set-cookie",
+  "proxy-authorization",
+  "x-api-key",
+  "x-goog-api-key",
+  "x-amz-security-token",
+]);
 
 export function isValidProviderName(name: string): boolean {
   const trimmed = name.trim();
@@ -57,6 +67,31 @@ export function isValidProviderName(name: string): boolean {
 
 export function hasOwnProvider(providers: Record<string, unknown>, name: string): boolean {
   return Object.prototype.hasOwnProperty.call(providers, name);
+}
+
+export function providerBaseUrlConfigError(baseUrl: string): string | null {
+  try {
+    const parsed = new URL(baseUrl.trim());
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "baseUrl must be an http(s) URL";
+    if (parsed.username || parsed.password) return "baseUrl must not include embedded credentials";
+    if (parsed.search || parsed.hash) return "baseUrl must not include query strings or fragments";
+  } catch {
+    return "baseUrl must be a valid URL";
+  }
+  return null;
+}
+
+export function providerHeadersConfigError(headers: unknown): string | null {
+  if (headers === undefined) return null;
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) return "headers must be an object";
+  for (const [name, value] of Object.entries(headers)) {
+    const normalized = name.trim().toLowerCase();
+    if (!normalized || !HEADER_NAME_PATTERN.test(name)) return "headers must use valid HTTP header names";
+    if (SENSITIVE_PROVIDER_HEADERS.has(normalized)) return `headers must not include sensitive header "${name}"; use apiKey/authMode instead`;
+    if (typeof value !== "string") return `header "${name}" value must be a string`;
+    if (/[\r\n]/.test(value)) return `header "${name}" value must not include line breaks`;
+  }
+  return null;
 }
 
 const configSchema = z.object({
@@ -70,6 +105,23 @@ const configSchema = z.object({
         code: "custom",
         path: ["providers", name],
         message: "provider names must use letters, numbers, dot, underscore, or hyphen and cannot be reserved JavaScript object keys",
+      });
+    }
+    const provider = config.providers[name];
+    const baseUrlError = providerBaseUrlConfigError(provider.baseUrl);
+    if (baseUrlError) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers", name, "baseUrl"],
+        message: baseUrlError,
+      });
+    }
+    const headersError = providerHeadersConfigError((provider as { headers?: unknown }).headers);
+    if (headersError) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers", name, "headers"],
+        message: headersError,
       });
     }
   }

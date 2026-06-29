@@ -27,3 +27,25 @@ export function signalWithTimeout(timeoutMs: number, parent?: AbortSignal): Link
     },
   };
 }
+
+/**
+ * Bind a response body's lifetime to an abort signal.
+ *
+ * Bun's HTTP client, when a `fetch(..., { signal })` is aborted AFTER the response resolved, tears
+ * down the response body stream and rejects any in-flight internal read. If our code hasn't attached
+ * a reader yet (e.g. the abort lands between `await fetch()` and the decoder's first read), that
+ * rejection is orphaned off the awaited path and Bun reports it as
+ * `unhandledRejection: TypeError: null is not an object` (native-only stack) — uncatchable by any
+ * caller try/catch. Proactively cancelling the body on abort makes US the consumer that settles it,
+ * so the rejection is absorbed. Returns a cleanup to detach the listener on the normal path.
+ */
+export function cancelBodyOnAbort(body: ReadableStream<Uint8Array> | null, signal?: AbortSignal): () => void {
+  if (!body || !signal) return () => {};
+  const onAbort = () => { void body.cancel().catch(() => {}); };
+  if (signal.aborted) {
+    onAbort();
+    return () => {};
+  }
+  signal.addEventListener("abort", onAbort, { once: true });
+  return () => signal.removeEventListener("abort", onAbort);
+}

@@ -120,6 +120,7 @@ export const ko: Record<TKey, string> = {
   "logs.col.time": "시간",
   "logs.col.request": "요청",
   "logs.col.model": "모델",
+  "logs.col.effort": "추론 강도",
   "logs.col.provider": "프로바이더",
   "logs.col.status": "상태",
   "logs.col.tokens": "토큰",
