@@ -37,7 +37,7 @@ describe("google adapter — tool result images", () => {
     const toolTurn = contents.find(c => c.parts.some(p => "functionResponse" in p));
     expect(toolTurn).toBeDefined();
     expect(toolTurn!.parts[0]).toEqual({
-      functionResponse: { name: "mcp__chrome__get_app_state", response: { result: "Looked at Google Chrome[image]" } },
+      functionResponse: { name: "mcp__chrome__get_app_state", response: { result: "Looked at Google Chrome[image]" }, id: "call_1" },
     });
     expect(toolTurn!.parts[1]).toEqual({ inline_data: { mime_type: "image/png", data: "aGVsbG8=" } });
   });
@@ -53,7 +53,7 @@ describe("google adapter — tool result images", () => {
 
     const toolTurn = contents.find(c => c.parts.some(p => "functionResponse" in p));
     expect(toolTurn!.parts).toEqual([
-      { functionResponse: { name: "bash", response: { result: "ok" } } },
+      { functionResponse: { name: "bash", response: { result: "ok" }, id: "call_1" } },
     ]);
   });
 
@@ -74,5 +74,79 @@ describe("google adapter — tool result images", () => {
 
     const toolTurn = contents.find(c => c.parts.some(p => "functionResponse" in p));
     expect(toolTurn!.parts.some(p => "inline_data" in p)).toBe(false);
+  });
+});
+
+describe("google adapter — tool-call ids on the wire", () => {
+  test("functionCall and functionResponse carry the matching tool-call id", async () => {
+    const contents = await geminiContents(parsedWith([
+      { role: "assistant", content: [{ type: "toolCall", id: "call_abc", name: "bash", arguments: { cmd: "ls" } }] },
+      { role: "toolResult", toolCallId: "call_abc", toolName: "bash", content: "ok", isError: false },
+    ]));
+
+    const modelTurn = contents.find(c => c.role === "model");
+    const fcPart = modelTurn!.parts.find(p => "functionCall" in p) as { functionCall: { id?: string } };
+    expect(fcPart.functionCall.id).toBe("call_abc");
+
+    const toolTurn = contents.find(c => c.parts.some(p => "functionResponse" in p));
+    const frPart = toolTurn!.parts.find(p => "functionResponse" in p) as { functionResponse: { id?: string } };
+    // Must equal the functionCall id so the upstream Anthropic conversion can pair them.
+    expect(frPart.functionResponse.id).toBe("call_abc");
+  });
+
+  test("ids are normalized to Anthropic's tool_use.id charset, preserving call/response pairing", async () => {
+    const contents = await geminiContents(parsedWith([
+      { role: "assistant", content: [{ type: "toolCall", id: "fc:weird/id#1", name: "bash", arguments: {} }] },
+      { role: "toolResult", toolCallId: "fc:weird/id#1", toolName: "bash", content: "ok", isError: false },
+    ]));
+
+    const fc = (contents.find(c => c.role === "model")!.parts.find(p => "functionCall" in p) as { functionCall: { id?: string } }).functionCall.id;
+    const fr = (contents.find(c => c.parts.some(p => "functionResponse" in p))!.parts.find(p => "functionResponse" in p) as { functionResponse: { id?: string } }).functionResponse.id;
+    // Lossy chars are rewritten to `_` plus a deterministic hash suffix (collision-resistant).
+    expect(fc).toMatch(/^fc_weird_id_1_[0-9a-f]{8}$/);
+    // Call and result share the same raw id, so they normalize identically and stay paired.
+    expect(fc).toBe(fr);
+  });
+
+  test("distinct raw ids that share a normalized prefix do not collide", async () => {
+    const contents = await geminiContents(parsedWith([
+      { role: "assistant", content: [
+        { type: "toolCall", id: "call:a", name: "bash", arguments: {} },
+        { type: "toolCall", id: "call/a", name: "bash", arguments: {} },
+      ] },
+    ]));
+    const ids = contents.find(c => c.role === "model")!.parts
+      .filter(p => "functionCall" in p)
+      .map(p => (p as { functionCall: { id?: string } }).functionCall.id);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).not.toBe(ids[1]);
+  });
+
+  test("claude-on-antigravity keeps the tool_use id through signature sanitization", async () => {
+    const ccaProvider = {
+      adapter: "google",
+      googleMode: "cloud-code-assist",
+      baseUrl: "https://daily-cloudcode-pa.googleapis.com",
+      apiKey: "key",
+      project: "proj-123",
+    };
+    const parsed = {
+      modelId: "claude-opus-4.8",
+      stream: false,
+      options: {},
+      context: {
+        messages: [
+          { role: "user", content: "hi" },
+          { role: "assistant", content: [{ type: "toolCall", id: "call_xyz", name: "bash", arguments: {} }] },
+          { role: "toolResult", toolCallId: "call_xyz", toolName: "bash", content: "ok", isError: false },
+        ],
+      },
+    } as unknown as OcxParsedRequest;
+
+    const { body } = await createGoogleAdapter(ccaProvider).buildRequest(parsed);
+    const envelope = JSON.parse(body);
+    const contents = envelope.request.contents as { role: string; parts: Record<string, unknown>[] }[];
+    const fc = (contents.find(c => c.role === "model")!.parts.find(p => "functionCall" in p) as { functionCall: { id?: string } }).functionCall.id;
+    expect(fc).toBe("call_xyz");
   });
 });
