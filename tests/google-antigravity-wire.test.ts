@@ -73,3 +73,36 @@ describe("antigravity parseStream unwraps response", () => {
     expect((done as Extract<AdapterEvent, { type: "done" }>).usage?.inputTokens).toBe(4);
   });
 });
+
+describe("antigravity parseResponse unwraps response (non-streaming)", () => {
+  test("reads response.candidates + response.usageMetadata from the CCA envelope", async () => {
+    const adapter = createGoogleAdapter(provider);
+    const body = JSON.stringify({ response: { candidates: [{ content: { parts: [{ text: "hello" }] } }], usageMetadata: { promptTokenCount: 9, candidatesTokenCount: 2 } } });
+    const events = await adapter.parseResponse!(new Response(body, { status: 200 }));
+    expect(events.some(e => e.type === "text_delta" && e.text === "hello")).toBe(true);
+    const done = events.find(e => e.type === "done");
+    expect((done as Extract<AdapterEvent, { type: "done" }>).usage?.inputTokens).toBe(9);
+  });
+});
+
+describe("antigravity history preserves tool-call thoughtSignature", () => {
+  test("a prior assistant toolCall with thoughtSignature carries it into the CCA request part", async () => {
+    const p = {
+      modelId: "gemini-3-pro",
+      stream: false,
+      context: {
+        messages: [
+          { role: "user", content: "go" },
+          { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "get_x", namespace: "mcp__t", arguments: { a: 1 }, thoughtSignature: "sig-abcdef0123456789" }] },
+        ],
+        systemPrompt: [], tools: [],
+      },
+      options: {},
+    } as unknown as OcxParsedRequest;
+    const req = await createGoogleAdapter(provider).buildRequest(p);
+    const env = JSON.parse(req.body);
+    const modelTurn = (env.request.contents as { role: string; parts: Record<string, unknown>[] }[]).find(c => c.role === "model");
+    const fcPart = modelTurn?.parts.find(part => "functionCall" in part);
+    expect(fcPart?.thoughtSignature).toBe("sig-abcdef0123456789");
+  });
+});

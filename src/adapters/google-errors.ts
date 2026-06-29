@@ -77,3 +77,19 @@ export function safeAntigravityHttpErrorMessage(status: number, payloadText: str
 export function retryableGoogleStatus(status: number): boolean {
   return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
 }
+
+/**
+ * True when a 429 body indicates hard quota exhaustion (not a transient rate limit). Quota
+ * exhaustion is generally not expected to recover for hours (AIP-194), so it must NOT be retried —
+ * unlike a plain rate limit. The HTTP status alone can't distinguish the two, so the retry layer
+ * inspects the body with this.
+ */
+export function isQuotaExhaustedBody(payloadText: string): boolean {
+  const { message, status } = googleErrorDetail(payloadText);
+  if (status !== "RESOURCE_EXHAUSTED") return false;
+  const lower = (message ?? "").toLowerCase();
+  return lower.includes("quotafailure")
+    || lower.includes("quota exceeded")
+    || lower.includes("exceeded your current quota")
+    || lower.includes("billing");
+}

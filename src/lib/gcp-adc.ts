@@ -87,6 +87,20 @@ function loadAdcCredentials(): { source: string; creds: AdcFileCredentials } | u
   return undefined;
 }
 
+/**
+ * The cache key for the source the NEXT resolve would use, computed cheaply (no network). Lets the
+ * cache return a token only when it still matches the active credential source, so an in-process
+ * change to GOOGLE_APPLICATION_CREDENTIALS (or the user ADC file) does not keep serving a stale
+ * token from a different source. Falls back to "metadata" when no file/env ADC is present.
+ */
+function currentAdcSourceKey(): string {
+  const gacPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (gacPath) return `gac:${gacPath}`;
+  const userPath = userAdcPath();
+  if (existsSync(userPath)) return `user:${userPath}`;
+  return "metadata";
+}
+
 function base64UrlEncode(bytes: Uint8Array | string): string {
   const buf = typeof bytes === "string" ? Buffer.from(bytes, "utf8") : Buffer.from(bytes);
   return buf.toString("base64url");
@@ -229,9 +243,12 @@ export async function getVertexAccessToken(options?: { signal?: AbortSignal; fet
   const skew = getRefreshSkewMs();
   const now = Date.now();
 
+  // Only serve a cached token that matches the source the next resolve would actually use; prune
+  // expired or now-stale (different-source) entries so a credential-source change is honored.
+  const expectedSource = currentAdcSourceKey();
   for (const [source, cached] of tokenCache) {
-    if (cached.expiresAtMs - skew > now) return cached.token;
-    tokenCache.delete(source);
+    if (source === expectedSource && cached.expiresAtMs - skew > now) return cached.token;
+    if (cached.expiresAtMs - skew <= now) tokenCache.delete(source);
   }
 
   const cacheKey = "vertex-adc";

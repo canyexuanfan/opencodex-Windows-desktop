@@ -184,4 +184,23 @@ describe("gcp-adc token-exchange hardening", () => {
     expect(caught!.message).not.toContain("secret-grant-detail");
     expect(calls).toBe(1);
   });
+
+  test("does not serve a cached token from a different ADC source after the source changes", async () => {
+    __resetVertexTokenCache();
+    // First resolve with the SA file → caches under source `gac:<saPath>`.
+    setEnv("GOOGLE_APPLICATION_CREDENTIALS", saPath);
+    let tokenValue = "tok-source-A";
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;
+      if (url === OAUTH_TOKEN_URL) return new Response(JSON.stringify({ access_token: tokenValue, expires_in: 3600 }), { status: 200 });
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+    expect(await getVertexAccessToken()).toBe("tok-source-A");
+    // Change the source to a missing file: the stale cached token must NOT be returned; resolve fails.
+    setEnv("GOOGLE_APPLICATION_CREDENTIALS", join(tmp, "missing-adc.json"));
+    let caught: Error | undefined;
+    try { await getVertexAccessToken(); } catch (e) { caught = e as Error; }
+    expect(caught).toBeDefined();
+    expect(caught!.message).toContain("missing file");
+  });
 });

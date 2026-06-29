@@ -1,5 +1,5 @@
 import type { AdapterFetchContext, AdapterRequest } from "./base";
-import { retryableGoogleStatus, safeGoogleHttpErrorMessage } from "./google-errors";
+import { isQuotaExhaustedBody, retryableGoogleStatus, safeGoogleHttpErrorMessage } from "./google-errors";
 
 const GOOGLE_RETRY_ATTEMPTS = 3;
 const GOOGLE_RETRY_BASE_MS = 250;
@@ -72,6 +72,19 @@ export async function fetchGoogleWithRetry(label: string, request: AdapterReques
       });
       if (!retryableGoogleStatus(res.status) || attempt === GOOGLE_RETRY_ATTEMPTS - 1) {
         return normalizeFinalGoogleError(label, res);
+      }
+      // A 429 may be a transient rate limit (retry) or hard quota exhaustion (do NOT retry —
+      // it won't recover for hours and burns retries). Peek the body to tell them apart.
+      if (res.status === 429) {
+        const peek = await res.clone().text().catch(() => "");
+        if (isQuotaExhaustedBody(peek)) {
+          const headers = new Headers(res.headers);
+          headers.delete("content-encoding");
+          headers.delete("content-length");
+          return new Response(safeGoogleHttpErrorMessage(label, res.status, peek), {
+            status: res.status, statusText: res.statusText, headers,
+          });
+        }
       }
       await res.body?.cancel().catch(() => {});
       await sleepWithAbort(retryDelayMs(attempt, res.headers), ctx.abortSignal);

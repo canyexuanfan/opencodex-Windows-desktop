@@ -74,7 +74,12 @@ function messagesToGeminiFormat(parsed: OcxParsedRequest): { systemInstruction?:
           if (p.type === "text") parts.push({ text: (p as OcxTextContent).text });
           else if (p.type === "toolCall") {
             const tc = p as OcxToolCall;
-            parts.push({ functionCall: { name: namespacedToolName(tc.namespace, tc.name), args: tc.arguments } });
+            // Preserve the thought signature on the function-call part so Antigravity/Gemini-3
+            // reasoning continuity survives history-driven (stateless) turns, not just same-process
+            // streaming covered by the replay cache.
+            const part: Record<string, unknown> = { functionCall: { name: namespacedToolName(tc.namespace, tc.name), args: tc.arguments } };
+            if (tc.thoughtSignature) part.thoughtSignature = tc.thoughtSignature;
+            parts.push(part);
           }
         }
         contents.push({ role: "model", parts });
@@ -182,7 +187,9 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
             sanitizeAntigravityClaudeSignatures(contents);
           }
         }
-        const request: Record<string, unknown> = { ...body, sessionId };
+        // The CCA client serializes `session_id` (snake_case); send both spellings so the
+        // deterministic session id is honored regardless of which the backend accepts.
+        const request: Record<string, unknown> = { ...body, sessionId, session_id: sessionId };
         const envelope = {
           model: parsed.modelId,
           userAgent: ANTIGRAVITY_REQUEST_UA,
@@ -269,6 +276,14 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
             const root = (provider.googleMode === "cloud-code-assist"
               ? (chunk.response as Record<string, unknown> | undefined) ?? chunk
               : chunk);
+            // usageMetadata is a top-level field independent of candidates; read it BEFORE the
+            // candidates guard so a usage-only final chunk is not dropped.
+            const usageMeta = root.usageMetadata as Record<string, number> | undefined;
+            if (usageMeta) {
+              // Accumulate usage; emit a single terminal `done` post-loop so usage is never
+              // dropped on EOF and the stream never yields two `done` events.
+              pendingUsage = usageFromGemini(usageMeta);
+            }
             const candidates = root.candidates as { content?: { parts?: unknown[] }; finishReason?: string }[] | undefined;
             if (!candidates?.length) continue;
 
@@ -293,13 +308,6 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
                 }
               }
             }
-
-            const usageMeta = root.usageMetadata as Record<string, number> | undefined;
-            if (usageMeta) {
-              // Accumulate usage; emit a single terminal `done` post-loop so usage is never
-              // dropped on EOF and the stream never yields two `done` events.
-              pendingUsage = usageFromGemini(usageMeta);
-            }
           }
         }
         // Fail-closed: a turn cut off mid tool call (MAX_TOKENS / MALFORMED_FUNCTION_CALL) surfaces
@@ -316,7 +324,11 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
     },
 
     async parseResponse(response: Response): Promise<AdapterEvent[]> {
-      const json = await response.json() as Record<string, unknown>;
+      const raw = await response.json() as Record<string, unknown>;
+      // Antigravity (CCA) nests the standard Gemini payload under `response`; unwrap it.
+      const json = (provider.googleMode === "cloud-code-assist"
+        ? (raw.response as Record<string, unknown> | undefined) ?? raw
+        : raw);
       const events: AdapterEvent[] = [];
 
       const candidates = json.candidates as { content?: { parts?: { text?: string; functionCall?: { name: string; args: unknown } }[] } }[] | undefined;

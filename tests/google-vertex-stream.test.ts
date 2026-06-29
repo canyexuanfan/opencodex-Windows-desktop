@@ -61,6 +61,17 @@ describe("vertex parseStream fail-closed truncation", () => {
     expect(events.some(e => e.type === "done")).toBe(true);
     expect(events.some(e => e.type === "error")).toBe(false);
   });
+
+  test("usage-only final chunk (no candidates) is not dropped", async () => {
+    const events = await collect(vertexProvider, [
+      { candidates: [{ content: { parts: [{ text: "hi" }] } }] },
+      { usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 3 } },
+    ]);
+    const done = events.find(e => e.type === "done");
+    const usage = (done as Extract<AdapterEvent, { type: "done" }>).usage;
+    expect(usage?.inputTokens).toBe(7);
+    expect(usage?.outputTokens).toBe(3);
+  });
 });
 
 describe("usage status for google-vertex stays reported", () => {

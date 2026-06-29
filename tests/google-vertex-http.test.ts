@@ -48,6 +48,25 @@ describe("vertex retry fetch", () => {
     expect(mock.calls).toHaveLength(2);
   });
 
+  test("does NOT retry a quota-exhausted 429 (single attempt), but DOES retry a plain rate-limit 429", async () => {
+    const quota = mockFetch([
+      new Response(vertexError(429, "RESOURCE_EXHAUSTED", "Quota exceeded for your current billing plan"), { status: 429, headers: { "Retry-After": "0" } }),
+      new Response("ok", { status: 200 }),
+    ]);
+    const qres = await fetchVertexWithRetry(request, { timeoutMs: 5_000 });
+    expect(qres.status).toBe(429);
+    expect(await qres.text()).toContain("Vertex AI quota exhausted");
+    expect(quota.calls).toHaveLength(1);
+
+    const rate = mockFetch([
+      new Response(vertexError(429, "RESOURCE_EXHAUSTED", "rate limit, try again"), { status: 429, headers: { "Retry-After": "0" } }),
+      new Response("ok", { status: 200 }),
+    ]);
+    const rres = await fetchVertexWithRetry(request, { timeoutMs: 5_000 });
+    expect(rres.status).toBe(200);
+    expect(rate.calls).toHaveLength(2);
+  });
+
   test("does not retry a non-retryable 400 and classifies the body", async () => {
     const mock = mockFetch([new Response(vertexError(400, "INVALID_ARGUMENT", "bad model"), { status: 400 })]);
     const res = await fetchVertexWithRetry(request, { timeoutMs: 5_000 });
