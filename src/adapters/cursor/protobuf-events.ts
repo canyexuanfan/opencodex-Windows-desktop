@@ -69,31 +69,34 @@ function isCompleteJson(text: string): boolean {
   }
 }
 
+/** Schema-normalize a JSON-text argument blob for a named tool, if a schema is known. */
+function normalizeJsonText(text: string, toolName: string | undefined, state: CursorProtobufEventState): string {
+  if (!toolName || !state.toolSchemas?.has(toolName)) return text;
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return JSON.stringify(normalizeArgKeys(parsed as Record<string, unknown>, state.toolSchemas.get(toolName)));
+    }
+  } catch {
+    // Not parseable as an object: leave as-is.
+  }
+  return text;
+}
+
 /**
- * Reconcile a completed Responses tool call against whatever args were already streamed.
+ * Resolve the authoritative argument string for a completed client tool call.
  *
- * Cursor streams `argsTextDelta` as the model emits it (arbitrary whitespace / key order), then the
- * `toolCallCompleted` update redelivers the same args as a structured protobuf map. Our bridge
- * rebuilds the final argument string by concatenating the `tool_call_delta` chunks we emit, so the
- * streamed text and a freshly serialized map only have to *agree*, not match byte-for-byte. When the
- * streamed text already parses as JSON it is authoritative; re-appending the compact map
- * serialization would corrupt the concatenated string (e.g. `{"path": "a.txt"}` + `{"path":"a.txt"}`).
+ * Cursor sends args two ways: incrementally as `argsTextDelta` (buffered into `open.args`, never
+ * streamed onward), and/or as a structured protobuf map on `toolCallCompleted`. We emit the args
+ * exactly once, at completion, so they can always be schema-normalized regardless of which form
+ * arrived. The completed map wins when present (canonical); otherwise the buffered streamed text is
+ * used. Returns an empty string when there are no args (the bridge serializes that as `{}`).
  */
-function reconcileCompletedArgs(
-  state: CursorProtobufEventState,
-  callId: string,
-  streamed: string,
-  args: McpArgs | undefined,
-): CursorServerMessage[] {
-  // Streamed text is already a complete JSON document: it is authoritative. Re-appending the
-  // compact map serialization would corrupt the concatenated argument string the bridge rebuilds.
-  if (isCompleteJson(streamed)) return [];
-  // Otherwise fall back to the structured map. An incomplete stream is always a true prefix of the
-  // final document, so appendToolArgs forwards only the missing remainder. If the bytes genuinely
-  // diverged (a corrupt stream we can no longer un-send), appendToolArgs surfaces an honest error
-  // instead of silently shipping broken args.
-  if (!hasMcpArgBytes(args)) return [];
-  return appendToolArgs(state, callId, decodeMcpArgsNormalized(args, state));
+function resolveCompletedArgs(buffered: string, args: McpArgs | undefined, state: CursorProtobufEventState): string {
+  if (hasMcpArgBytes(args)) return decodeMcpArgsNormalized(args, state);
+  const name = args?.toolName || args?.name;
+  if (isCompleteJson(buffered)) return normalizeJsonText(buffered, name, state);
+  return "";
 }
 
 export function mapSyntheticMcpExecToToolEvents(
@@ -112,7 +115,8 @@ export function mapSyntheticMcpExecToToolEvents(
     if (options.suppressStart !== true) out.push(...startToolCall(options.state, callId, name));
     if (out.some(event => event.type === "error")) return out;
     const open = options.state.openToolCalls.get(callId);
-    out.push(...reconcileCompletedArgs(options.state, callId, open?.args ?? "", args));
+    const finalArgs = resolveCompletedArgs(open?.args ?? "", args, options.state);
+    if (finalArgs.length > 0) out.push({ type: "tool_call_delta", arguments: finalArgs });
     out.push(...endToolCall(options.state, callId));
     return out;
   }
@@ -146,20 +150,16 @@ function startToolCall(state: CursorProtobufEventState, callId: string, name: st
   return [{ type: "tool_call_start", id: callId, name }];
 }
 
-function appendToolArgs(state: CursorProtobufEventState, callId: string, nextArgs: string): CursorServerMessage[] {
-  if (nextArgs.length === 0) return [];
+/**
+ * Buffer Cursor's cumulative `argsTextDelta` into the open call WITHOUT emitting a delta. Args are
+ * emitted once, normalized, at completion (see resolveCompletedArgs), so a mis-keyed or
+ * non-canonical streamed blob can still be repaired before Codex sees it. `argsTextDelta` is
+ * cumulative; keep the longest value seen.
+ */
+function bufferToolArgs(state: CursorProtobufEventState, callId: string, cumulative: string): void {
   const open = state.openToolCalls.get(callId);
-  const delta = open ? nextArgs.slice(open.args.length) : nextArgs;
-  if (open) {
-    if (!nextArgs.startsWith(open.args)) {
-      // Streaming chunks are cumulative, so a non-prefix here means a genuinely corrupt stream.
-      state.openToolCalls.delete(callId);
-      return [{ type: "error", message: `Cursor sent non-prefix Responses tool arguments for call ${callId}` }];
-    }
-    open.args = nextArgs;
-  }
-  if (delta.length === 0) return [];
-  return [{ type: "tool_call_delta", arguments: delta }];
+  if (!open) return;
+  if (cumulative.length >= open.args.length) open.args = cumulative;
 }
 
 function endToolCall(state: CursorProtobufEventState, callId: string): CursorServerMessage[] {
@@ -194,8 +194,10 @@ export function mapCursorProtobufServerMessage(
       const out: CursorServerMessage[] = [];
       const name = mcpToolName(update.value.toolCall);
       if (name) out.push(...startToolCall(state, update.value.callId, name));
+      if (out.some(event => event.type === "error")) return out;
+      // Buffer cumulative args; do not emit a delta. Args are emitted once, normalized, at completion.
       if (state.openToolCalls.has(update.value.callId)) {
-        out.push(...appendToolArgs(state, update.value.callId, update.value.argsTextDelta));
+        bufferToolArgs(state, update.value.callId, update.value.argsTextDelta);
       }
       return out;
     }
@@ -225,7 +227,8 @@ export function mapCursorProtobufServerMessage(
       if (out.some(event => event.type === "error")) return out;
       const open = state.openToolCalls.get(update.value.callId);
       if (open) {
-        out.push(...reconcileCompletedArgs(state, update.value.callId, open.args, args));
+        const finalArgs = resolveCompletedArgs(open.args, args, state);
+        if (finalArgs.length > 0) out.push({ type: "tool_call_delta", arguments: finalArgs });
       }
       out.push(...endToolCall(state, update.value.callId));
       return out;

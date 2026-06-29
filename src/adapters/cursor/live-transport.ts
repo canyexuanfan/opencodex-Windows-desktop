@@ -302,7 +302,8 @@ class LiveCursorTransport implements CursorTransport {
         if (clientToolEvents.length > 0) {
           for (const event of clientToolEvents) push(event);
           if (clientToolEvents.some(event => event.type === "error")) {
-            push({ type: "done", usage: { ...state.usage } });
+            // The error event is the terminal signal; pushing `done` too would make the bridge emit
+            // both response.failed and response.completed. Just close the stream.
             this.close();
             return;
           }

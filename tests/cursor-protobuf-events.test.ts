@@ -52,33 +52,49 @@ describe("Cursor protobuf tool-call events", () => {
       value: create(ToolCallStartedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall }),
     }), state)).toEqual([{ type: "tool_call_start", id: "call_1", name: "mcp__fs__read_file" }]);
 
+    // Partial args are buffered silently (no delta) until completion.
     expect(mapCursorProtobufServerMessage(interaction({
       case: "partialToolCall",
       value: create(PartialToolCallUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall, argsTextDelta: "{\"path\":\"a.txt\"}" }),
-    }), state)).toEqual([{ type: "tool_call_delta", arguments: "{\"path\":\"a.txt\"}" }]);
+    }), state)).toEqual([]);
 
+    // Completion emits the full args once, then end.
     expect(mapCursorProtobufServerMessage(interaction({
       case: "toolCallCompleted",
       value: create(ToolCallCompletedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall }),
-    }), state)).toEqual([{ type: "tool_call_end", id: "call_1" }]);
+    }), state)).toEqual([
+      { type: "tool_call_delta", arguments: "{\"path\":\"a.txt\"}" },
+      { type: "tool_call_end", id: "call_1" },
+    ]);
   });
 
-  test("treats partial tool-call args as aggregated text", () => {
+  test("buffers partial tool-call args silently and emits once at completion", () => {
     const state = createCursorProtobufEventState();
     const toolCall = mcpToolCall("mcp__fs__read_file", { path: "a.txt" });
 
+    // First partial: opens the call, buffers args, emits no delta.
     expect(mapCursorProtobufServerMessage(interaction({
       case: "partialToolCall",
       value: create(PartialToolCallUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall, argsTextDelta: "{\"path\"" }),
     }), state)).toEqual([
       { type: "tool_call_start", id: "call_1", name: "mcp__fs__read_file" },
-      { type: "tool_call_delta", arguments: "{\"path\"" },
     ]);
 
+    // Second partial: more cumulative text buffered, still no delta.
     expect(mapCursorProtobufServerMessage(interaction({
       case: "partialToolCall",
       value: create(PartialToolCallUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall, argsTextDelta: "{\"path\":\"a.txt\"}" }),
-    }), state)).toEqual([{ type: "tool_call_delta", arguments: ":\"a.txt\"}" }]);
+    }), state)).toEqual([]);
+
+    // Completion (no map bytes here) flushes the buffered complete JSON once.
+    const noBytes = mcpToolCall("mcp__fs__read_file", {});
+    expect(mapCursorProtobufServerMessage(interaction({
+      case: "toolCallCompleted",
+      value: create(ToolCallCompletedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall: noBytes }),
+    }), state)).toEqual([
+      { type: "tool_call_delta", arguments: "{\"path\":\"a.txt\"}" },
+      { type: "tool_call_end", id: "call_1" },
+    ]);
   });
 
   test("ignores local MCP tool-call updates and rejects unknown synthetic tools", () => {
@@ -123,7 +139,7 @@ describe("Cursor protobuf tool-call events", () => {
     expect(mapCursorProtobufServerMessage(interaction({
       case: "partialToolCall",
       value: create(PartialToolCallUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall: mcpToolCall("mcp__fs__read_file", {}), argsTextDelta: "{}" }),
-    }), state)).toEqual([{ type: "tool_call_delta", arguments: "{}" }]);
+    }), state)).toEqual([]);
 
     expect(mapCursorProtobufServerMessage(interaction({
       case: "toolCallStarted",
@@ -147,9 +163,8 @@ describe("Cursor protobuf tool-call events", () => {
 
   test("trusts already-streamed JSON args and ignores the redundant completed map", () => {
     // Cursor streams the model's raw cumulative JSON text (with spaces), then redelivers the same
-    // args as a structured map on completion. The streamed text is authoritative once it parses,
-    // so completion must not re-append the compact map serialization (which would corrupt the
-    // concatenated argument string the bridge rebuilds).
+    // args as a structured map on completion. Partial args are buffered silently; completion emits
+    // the canonical map once. The streamed-with-spaces text never reaches the bridge raw.
     const state = createCursorProtobufEventState();
     const toolCall = mcpToolCall("mcp__fs__read_file", { path: "a.txt" });
 
@@ -158,21 +173,25 @@ describe("Cursor protobuf tool-call events", () => {
       value: create(ToolCallStartedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall }),
     }), state)).toEqual([{ type: "tool_call_start", id: "call_1", name: "mcp__fs__read_file" }]);
 
+    // Partial buffered silently (no delta).
     expect(mapCursorProtobufServerMessage(interaction({
       case: "partialToolCall",
       value: create(PartialToolCallUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall, argsTextDelta: "{\"path\": \"a.txt\"}" }),
-    }), state)).toEqual([{ type: "tool_call_delta", arguments: "{\"path\": \"a.txt\"}" }]);
+    }), state)).toEqual([]);
 
-    // Completion carries the same args as a map; no extra delta, no non-prefix error.
+    // Completion carries the canonical map; emit it once + end.
     expect(mapCursorProtobufServerMessage(interaction({
       case: "toolCallCompleted",
       value: create(ToolCallCompletedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall }),
-    }), state)).toEqual([{ type: "tool_call_end", id: "call_1" }]);
+    }), state)).toEqual([
+      { type: "tool_call_delta", arguments: "{\"path\":\"a.txt\"}" },
+      { type: "tool_call_end", id: "call_1" },
+    ]);
   });
 
   test("falls back to the completed map when the streamed args never completed", () => {
-    // A partial stream that stops mid-JSON (never a complete document) must be repaired from the
-    // authoritative completed map instead of being dropped with a non-prefix error.
+    // A partial stream that stops mid-JSON (never a complete document) is repaired from the
+    // authoritative completed map at completion (buffered text is discarded when incomplete).
     const state = createCursorProtobufEventState();
     const toolCall = mcpToolCall("mcp__fs__read_file", { path: "a.txt" });
 
@@ -180,10 +199,11 @@ describe("Cursor protobuf tool-call events", () => {
       case: "toolCallStarted",
       value: create(ToolCallStartedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall }),
     }), state);
+    // Incomplete partial buffered silently.
     expect(mapCursorProtobufServerMessage(interaction({
       case: "partialToolCall",
       value: create(PartialToolCallUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall, argsTextDelta: "{\"path\":" }),
-    }), state)).toEqual([{ type: "tool_call_delta", arguments: "{\"path\":" }]);
+    }), state)).toEqual([]);
 
     const completedEvents = mapCursorProtobufServerMessage(interaction({
       case: "toolCallCompleted",
@@ -192,12 +212,9 @@ describe("Cursor protobuf tool-call events", () => {
     // No error is emitted, and the call ends.
     expect(completedEvents.find(e => e.type === "error")).toBeUndefined();
     expect(completedEvents.at(-1)).toEqual({ type: "tool_call_end", id: "call_1" });
-    // The full concatenated delta stream parses to the authoritative args.
-    const streamed = [
-      "{\"path\":",
-      ...completedEvents.filter(e => e.type === "tool_call_delta").map(e => e.type === "tool_call_delta" ? e.arguments : ""),
-    ].join("");
-    expect(JSON.parse(streamed)).toEqual({ path: "a.txt" });
+    // The single emitted delta parses to the authoritative args from the completed map.
+    const delta = completedEvents.find(e => e.type === "tool_call_delta");
+    expect(delta && delta.type === "tool_call_delta" ? JSON.parse(delta.arguments) : null).toEqual({ path: "a.txt" });
   });
 
   test("commits an advertised no-arg tool call instead of dropping it", () => {
@@ -310,6 +327,30 @@ describe("Cursor protobuf tool-call events", () => {
     const events = mapCursorProtobufServerMessage(interaction({
       case: "toolCallCompleted",
       value: create(ToolCallCompletedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall }),
+    }), state);
+    const delta = events.find(e => e.type === "tool_call_delta");
+    expect(delta && delta.type === "tool_call_delta" ? JSON.parse(delta.arguments) : null).toEqual({ path: "a.txt" });
+  });
+
+  test("normalizes mis-keyed args that arrived only via streamed text (no completed map)", () => {
+    // The P1 audit case: model streamed `{"filepath":"a.txt"}` complete and the completion has no
+    // map bytes. Buffered text must still be schema-normalized to `path` before reaching Codex.
+    const toolSchemas = new Map<string, unknown>([
+      ["mcp__fs__read_file", { type: "object", properties: { path: { type: "string" } } }],
+    ]);
+    const state = createCursorProtobufEventState({ clientToolNames: ["mcp__fs__read_file"], toolSchemas });
+    const withArgs = mcpToolCall("mcp__fs__read_file", {});
+    mapCursorProtobufServerMessage(interaction({
+      case: "toolCallStarted",
+      value: create(ToolCallStartedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall: withArgs }),
+    }), state);
+    mapCursorProtobufServerMessage(interaction({
+      case: "partialToolCall",
+      value: create(PartialToolCallUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall: withArgs, argsTextDelta: "{\"filepath\": \"a.txt\"}" }),
+    }), state);
+    const events = mapCursorProtobufServerMessage(interaction({
+      case: "toolCallCompleted",
+      value: create(ToolCallCompletedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall: withArgs }),
     }), state);
     const delta = events.find(e => e.type === "tool_call_delta");
     expect(delta && delta.type === "tool_call_delta" ? JSON.parse(delta.arguments) : null).toEqual({ path: "a.txt" });
