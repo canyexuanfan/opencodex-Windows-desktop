@@ -118,6 +118,9 @@ export function diagnoseCodexBundledPlugins(
   // resolves to a manifest. A missing marketplace is "not stale" but flagged
   // separately by `present: false`.
   const stale = present && isLocal && !resolvesToManifest;
+  // Present but not a usable local entry (wrong source_type or empty source):
+  // not "stale" in the app-update sense, but it must NOT be reported as healthy.
+  const malformed = present && !isLocal;
 
   const bundledPlugins = COMMON_BUNDLED_PLUGINS.map(id => ({
     id,
@@ -132,7 +135,9 @@ export function diagnoseCodexBundledPlugins(
     ? `no [marketplaces.${OPENAI_BUNDLED_MARKETPLACE_NAME}] entry in Codex config`
     : stale
       ? `stale: registered ${OPENAI_BUNDLED_MARKETPLACE_NAME} source no longer resolves to a marketplace manifest`
-      : `ok: ${OPENAI_BUNDLED_MARKETPLACE_NAME} marketplace resolves`;
+      : malformed
+        ? `[marketplaces.${OPENAI_BUNDLED_MARKETPLACE_NAME}] is present but not a usable local source (source_type/source missing)`
+        : `ok: ${OPENAI_BUNDLED_MARKETPLACE_NAME} marketplace resolves`;
 
   return {
     applicable: true,

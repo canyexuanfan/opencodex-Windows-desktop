@@ -77,15 +77,21 @@ const USER_HOME_PATH_PATTERNS: Array<[RegExp, string]> = [
   [/(\/(?:Users|home)\/)[^/]+/gi, "$1[USER]"],
 ];
 
+// Path segments whose name alone looks sensitive. Masked so a configured path
+// cannot surface a secret-flavored substring in diagnostics or logs.
+const SENSITIVE_SEGMENT_PATTERN = /(^|[\\/])([^\\/]*(?:secret|password|passwd|token|api[-_]?key|apikey|credential|email)[^\\/]*)(?=[\\/]|$)/gi;
+
 /**
  * Mask the username segment of an absolute home path so diagnostics can print
- * paths without leaking the OS account name. Path-focused and secret-safe:
- * also runs {@link redactSecretString} in case a token leaked into the path.
+ * paths without leaking the OS account name, and mask any path segment whose
+ * name looks sensitive (token/secret/password/credential/email/...). Path-focused
+ * and secret-safe: also runs {@link redactSecretString} for token-shaped values.
  */
 export function redactUserPath(path: string): string {
   let masked = path;
   for (const [pattern, replacement] of USER_HOME_PATH_PATTERNS) {
     masked = masked.replace(pattern, replacement);
   }
+  masked = masked.replace(SENSITIVE_SEGMENT_PATTERN, (_m, sep: string) => `${sep}[REDACTED]`);
   return redactSecretString(masked);
 }

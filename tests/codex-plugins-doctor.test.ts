@@ -170,6 +170,42 @@ describe("diagnoseCodexBundledPlugins (direct, platform-injected)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("sensitive path segments are masked so no forbidden substring leaks", () => {
+    const { dir, configPath } = makeConfig(
+      `[marketplaces.openai-bundled]\nsource_type = "local"\nsource = "C:\\\\Users\\\\bob\\\\token\\\\my-email\\\\openai-bundled"\n`,
+    );
+    try {
+      const result = diagnoseCodexBundledPlugins({ platform: "win32", configPath });
+      expect(result.applicable).toBe(true);
+      if (result.applicable) {
+        const src = (result.marketplace.source ?? "").toLowerCase();
+        for (const forbidden of ["token", "email", "apikey", "secret", "password"]) {
+          expect(src).not.toContain(forbidden);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("present-but-not-local entry is not reported as healthy", () => {
+    const { dir, configPath } = makeConfig(
+      `[marketplaces.openai-bundled]\nsource_type = "git"\nsource = "https://example.com/repo"\n`,
+    );
+    try {
+      const result = diagnoseCodexBundledPlugins({ platform: "win32", configPath });
+      expect(result.applicable).toBe(true);
+      if (result.applicable) {
+        expect(result.marketplace.present).toBe(true);
+        expect(result.marketplace.resolvesToManifest).toBe(false);
+        expect(result.summary).not.toContain("ok:");
+        expect(result.summary.toLowerCase()).toContain("not a usable local source");
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("ocx status --json codexPlugins (spawned, read-only)", () => {
