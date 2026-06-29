@@ -410,6 +410,18 @@ describe("kiro adapter — fake reasoning effort tags", () => {
     expect(content).toContain("solve it");
   });
 
+  test("reasoning tags are not injected when executable tools are present", () => {
+    const { body } = createKiroAdapter(provider).buildRequest({
+      ...parsedWith([{ role: "user", content: "inspect the repo" }], [bashTool]),
+      options: { reasoning: "xhigh", maxOutputTokens: 8000 },
+    });
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+
+    expect(current.content).toBe("inspect the repo");
+    expect(current.content).not.toContain("<thinking_mode>");
+    expect(current.userInputMessageContext.tools).toHaveLength(1);
+  });
+
   test("reasoning tags are not injected into tool-result carrier turns", () => {
     const messages = [
       { role: "user", content: "run a command" },

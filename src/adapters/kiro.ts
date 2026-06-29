@@ -192,6 +192,21 @@ function injectKiroThinkingTags(content: string, parsed: OcxParsedRequest): stri
   ].join("\n");
 }
 
+function shouldInjectKiroThinkingTags(
+  currentEntry: KiroHistoryEntry,
+  currentUim: KiroUserInputMessage,
+  fallbackEntries: WeakSet<KiroHistoryEntry>,
+): boolean {
+  if (fallbackEntries.has(currentEntry)) return false;
+  if (currentUim.content === "(continue)") return false;
+  const context = currentUim.userInputMessageContext;
+  if (context?.toolResults) return false;
+  // Synthetic thinking prompts can keep Kiro silent before the first tool/exec event.
+  // Natural leading thinking blocks are still routed by KiroThinkingParser.
+  if ((context?.tools?.length ?? 0) > 0) return false;
+  return true;
+}
+
 export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | undefined): Record<string, unknown> {
   const modelId = mapModelId(parsed.modelId);
   const toolContext = convertKiroToolContext(parsed);
@@ -304,7 +319,7 @@ export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | 
   if (kiroTools.length > 0) {
     currentUim.userInputMessageContext = { ...(currentUim.userInputMessageContext ?? {}), tools: kiroTools };
   }
-  if (!fallbackEntries.has(currentEntry) && !currentUim.userInputMessageContext?.toolResults && currentUim.content !== "(continue)") {
+  if (shouldInjectKiroThinkingTags(currentEntry, currentUim, fallbackEntries)) {
     currentUim.content = injectKiroThinkingTags(currentUim.content, parsed);
   }
 
