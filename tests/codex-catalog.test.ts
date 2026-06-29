@@ -326,14 +326,14 @@ describe("Codex catalog routed normalization", () => {
       expect(auto).toMatchObject({
         provider: "cursor",
         id: "auto",
-        contextWindow: 128_000,
+        contextWindow: 200_000,
         inputModalities: ["text", "image"],
         reasoningEfforts: [],
       });
 
       const entries = buildCatalogEntries(nativeTemplate(), [], models);
       const entry = entries.find(item => item.slug === "cursor/auto");
-      expect(entry?.context_window).toBe(128_000);
+      expect(entry?.context_window).toBe(200_000);
       expect(entry?.input_modalities).toEqual(["text", "image"]);
       expect(entry?.supported_reasoning_levels).toEqual([]);
       expect(entry).not.toHaveProperty("default_reasoning_level");

@@ -17,12 +17,15 @@ describe("Cursor discovery metadata", () => {
     expect(ids.length).toBeGreaterThanOrEqual(30);
     expect(ids).toContain("auto");
     expect(ids).toContain("composer-2.5");
+    expect(ids).toContain("composer-2.5-fast");
     expect(ids).toContain("claude-4.6-sonnet");
     expect(ids).toContain("gemini-3.5-flash");
     expect(ids).toContain("gpt-5.5");
     expect(ids).toContain("grok-4.3");
     expect(ids).toContain("kimi-k2.5");
-    expect(cursorModelContextWindows(CURSOR_STATIC_MODELS).auto).toBe(CURSOR_DEFAULT_CONTEXT_WINDOW);
+    // `auto` mirrors the jawcode SOT `default` entry (200k), not the generic fallback window.
+    expect(cursorModelContextWindows(CURSOR_STATIC_MODELS).auto).toBe(200_000);
+    expect(cursorModelContextWindows(CURSOR_STATIC_MODELS)["composer-2.5-fast"]).toBe(200_000);
   });
 
   test("normalization trims, deduplicates, sorts, and fills context windows", () => {

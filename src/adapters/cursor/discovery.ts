@@ -10,7 +10,10 @@ export const CURSOR_DEFAULT_CONTEXT_WINDOW = 128_000;
 const CURSOR_REASONING_EFFORTS = ["low", "medium", "high"] as const;
 const CURSOR_DEFAULT_INPUT_MODALITIES = ["text", "image"] as const;
 const CONTEXT_1M = 1_000_000;
+const CONTEXT_GEMINI = 1_048_576;
 const CONTEXT_400K = 400_000;
+const CONTEXT_272K = 272_000;
+const CONTEXT_262K = 262_144;
 const CONTEXT_256K = 256_000;
 const CONTEXT_200K = 200_000;
 
@@ -50,12 +53,17 @@ export function normalizeCursorModels(models: readonly CursorModelInfo[]): Curso
 }
 
 export const CURSOR_STATIC_MODELS: readonly CursorModelInfo[] = normalizeCursorModels([
-  { id: "auto", contextWindow: CURSOR_DEFAULT_CONTEXT_WINDOW, supportsReasoningEffort: false },
+  // Context windows and the model lineup mirror the jawcode SOT
+  // (../jawcode/packages/ai/src/models.json, `cursor` provider), which is the authoritative
+  // mirror of Cursor's real GetUsableModels catalog. Live discovery stays disabled; these ids only
+  // seed the routed Codex catalog. Every entry pins an explicit contextWindow so the catalog never
+  // depends on the inferCursorContextWindow fallback. Cursor base ids carry no effort suffix here —
+  // the request builder appends the per-model suffix (see effort-map.ts) and reasoning models
+  // advertise effort so Codex exposes the tier picker. `supportsReasoningEffort` tracks whether the
+  // model has *selectable effort tiers* (CURSOR_MODEL_EFFORT_TIERS), NOT merely whether it reasons:
+  // gemini/grok/kimi/gpt-5-mini are reasoning models in the SOT but are sent bare (no tier picker).
+  { id: "auto", contextWindow: CONTEXT_200K, supportsReasoningEffort: false },
 
-  // Cursor public Models & Pricing reference. Live discovery stays disabled;
-  // these ids only seed the routed Codex catalog.
-  // Cursor base ids (the request builder appends the per-model effort suffix, see effort-map.ts).
-  // Reasoning models advertise effort so Codex exposes the tier picker.
   { id: "claude-4-sonnet", contextWindow: CONTEXT_200K },
   { id: "claude-4.5-sonnet", contextWindow: CONTEXT_200K },
   { id: "claude-4.5-opus", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
@@ -65,33 +73,34 @@ export const CURSOR_STATIC_MODELS: readonly CursorModelInfo[] = normalizeCursorM
   { id: "claude-opus-4-8", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
   { id: "claude-fable-5", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
 
-  { id: "composer-1" },
-  { id: "composer-1.5" },
-  { id: "composer-2.5" },
+  { id: "composer-1", contextWindow: CONTEXT_200K },
+  { id: "composer-1.5", contextWindow: CONTEXT_200K },
+  { id: "composer-2.5", contextWindow: CONTEXT_200K },
+  { id: "composer-2.5-fast", contextWindow: CONTEXT_200K },
 
-  { id: "gemini-3-flash", contextWindow: CONTEXT_1M },
-  { id: "gemini-3-pro", contextWindow: CONTEXT_1M },
-  { id: "gemini-3.1-pro", contextWindow: CONTEXT_1M },
-  { id: "gemini-3.5-flash", contextWindow: CONTEXT_1M },
+  { id: "gemini-3-flash", contextWindow: CONTEXT_GEMINI },
+  { id: "gemini-3-pro", contextWindow: CONTEXT_GEMINI },
+  { id: "gemini-3.1-pro", contextWindow: CONTEXT_GEMINI },
+  { id: "gemini-3.5-flash", contextWindow: CONTEXT_200K },
 
-  { id: "gpt-5-mini" },
-  { id: "gpt-5.1", supportsReasoningEffort: true },
-  { id: "gpt-5.1-codex-max", supportsReasoningEffort: true },
-  { id: "gpt-5.1-codex-mini", supportsReasoningEffort: true },
-  { id: "gpt-5.2", supportsReasoningEffort: true },
-  { id: "gpt-5.2-codex", supportsReasoningEffort: true },
-  { id: "gpt-5.3-codex", supportsReasoningEffort: true },
-  { id: "gpt-5.4", contextWindow: CONTEXT_400K, supportsReasoningEffort: true },
-  { id: "gpt-5.4-mini", contextWindow: CONTEXT_400K, supportsReasoningEffort: true },
-  { id: "gpt-5.4-nano", contextWindow: CONTEXT_400K, supportsReasoningEffort: true },
-  { id: "gpt-5.5", contextWindow: CONTEXT_400K, supportsReasoningEffort: true },
-  { id: "gpt-5.5-extra", contextWindow: CONTEXT_400K, supportsReasoningEffort: true },
+  { id: "gpt-5-mini", contextWindow: CONTEXT_200K },
+  { id: "gpt-5.1", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
+  { id: "gpt-5.1-codex-max", contextWindow: CONTEXT_272K, supportsReasoningEffort: true },
+  { id: "gpt-5.1-codex-mini", contextWindow: CONTEXT_272K, supportsReasoningEffort: true },
+  { id: "gpt-5.2", contextWindow: CONTEXT_400K, supportsReasoningEffort: true },
+  { id: "gpt-5.2-codex", contextWindow: CONTEXT_272K, supportsReasoningEffort: true },
+  { id: "gpt-5.3-codex", contextWindow: CONTEXT_272K, supportsReasoningEffort: true },
+  { id: "gpt-5.4", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
+  { id: "gpt-5.4-mini", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
+  { id: "gpt-5.4-nano", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
+  { id: "gpt-5.5", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
+  { id: "gpt-5.5-extra", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
 
-  { id: "grok-4.3", contextWindow: CONTEXT_256K, supportsReasoningEffort: true },
-  { id: "grok-build-0.1", contextWindow: CONTEXT_256K },
+  { id: "grok-4.3", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
+  { id: "grok-build-0.1", contextWindow: CONTEXT_200K },
   { id: "grok-code-fast-1", contextWindow: CONTEXT_256K },
 
-  { id: "kimi-k2.5" },
+  { id: "kimi-k2.5", contextWindow: CONTEXT_262K },
 ]);
 
 export function cursorModelIds(models: readonly CursorModelInfo[] = CURSOR_STATIC_MODELS): string[] {

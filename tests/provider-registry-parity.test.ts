@@ -105,8 +105,8 @@ describe("provider registry parity", () => {
     expect(seed.models).toContain("composer-2.5");
     expect(seed.models).toContain("gpt-5.5");
     expect(seed.models).toContain("kimi-k2.5");
-    expect(seed.modelContextWindows?.auto).toBe(128_000);
-    expect(seed.modelContextWindows?.["gemini-3.5-flash"]).toBe(1_000_000);
+    expect(seed.modelContextWindows?.auto).toBe(200_000);
+    expect(seed.modelContextWindows?.["gemini-3.5-flash"]).toBe(200_000);
     expect(seed.modelReasoningEfforts?.["grok-4.3"]).toEqual(["low", "medium", "high"]);
 
     const savedCursor: OcxProviderConfig = { adapter: "cursor", baseUrl: "https://api2.cursor.sh" };

@@ -63,8 +63,11 @@ describe("Cursor static Codex catalog", () => {
 
     const entries = buildCatalogEntries(nativeTemplate(), [], models);
     expect(entries.find(item => item.slug === "cursor/composer-2.5")).toBeTruthy();
+    expect(entries.find(item => item.slug === "cursor/composer-2.5-fast")).toBeTruthy();
     expect(entries.find(item => item.slug === "cursor/gemini-3-pro")).toBeTruthy();
-    expect(entries.find(item => item.slug === "cursor/gemini-3.5-flash")?.context_window).toBe(1_000_000);
+    expect(entries.find(item => item.slug === "cursor/gemini-3-pro")?.context_window).toBe(1_048_576);
+    expect(entries.find(item => item.slug === "cursor/gemini-3.5-flash")?.context_window).toBe(200_000);
+    expect(entries.find(item => item.slug === "cursor/composer-2.5-fast")?.context_window).toBe(200_000);
     expect(entries.find(item => item.slug === "cursor/grok-4.3")?.supported_reasoning_levels)
       .toMatchObject([{ effort: "low" }, { effort: "medium" }, { effort: "high" }]);
   });
