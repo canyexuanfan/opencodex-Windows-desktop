@@ -122,3 +122,26 @@ NOT-COMPLETE with two valid gaps, both now fixed (commit 84f6db7):
 Regression tests added: sensitive-path-segment masking and present-but-not-local
 summary. Re-verified: `bun x tsc --noEmit` clean; full `bun test`
 1471 pass / 71 fail / 13 errors (baseline unchanged, no new failures).
+
+### Fourth round: live locator + current-vs-registered path mismatch (commit 0254b66)
+
+Phase 1 originally reported only whether the *registered*
+`[marketplaces.openai-bundled]` entry still resolved to a manifest. The issue's
+core symptom, though, is that a Windows app update moves the bundled marketplace
+to a *new* versioned path while the config still points at the old one. To catch
+that directly we added `locateCurrentBundledMarketplace({env, listDir,
+isManifestRoot, mtimeOf})`: it scans the usual Windows bases (`LOCALAPPDATA`,
+`PROGRAMFILES`, etc.), finds the newest app directory that actually contains a
+bundled marketplace manifest, and returns that path. The fs surface is injected
+so the scan stays read-only and is fully testable without a real Windows tree.
+
+`diagnoseCodexBundledPlugins` now accepts an optional `locateCurrent` hook and
+reports two new fields: `currentBundledPath` (the live location the locator
+found) and `pathMismatch` (true when the registered `source` and the live path
+disagree). When they diverge, `suggestedRepair` names the current path so the
+user can re-add it manually, keeping the diagnostic read-only by design.
+
+Re-verified after this round: `bun x tsc --noEmit` clean;
+`bun test tests/codex-plugins-doctor.test.ts` 17 pass / 0 fail; full `bun test`
+1475 pass / 71 fail / 13 errors (the 71 fail / 13 errors are the pre-existing
+baseline in unrelated cursor-agent/ACP suites, unchanged by this work).
