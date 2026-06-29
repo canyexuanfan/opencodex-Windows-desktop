@@ -86,6 +86,22 @@ describe("Codex history provider sync", () => {
     expect(statSync(rollout).mtime.getTime()).toBe(mtime.getTime());
   });
 
+  test("rewrites the rollout session_meta in place, preserving the file inode", () => {
+    const { dbPath, backupPath, rollout } = makeFixture();
+    const inodeBefore = statSync(rollout).ino;
+    const restAfterFirstLine = readFileSync(rollout, "utf8").split("\n").slice(1).join("\n");
+
+    const result = syncCodexHistoryProvider("opencodex", dbPath, backupPath);
+
+    expect(result).toEqual({ rows: 1, files: 1 });
+    // The Codex app caches the live session's rollout file handle; a temp+rename swap would orphan
+    // that handle and drop new turns. The inode must survive the rewrite.
+    expect(statSync(rollout).ino).toBe(inodeBefore);
+    // Everything after the session_meta line must be byte-identical (we only touch line 1).
+    expect(readFileSync(rollout, "utf8").split("\n").slice(1).join("\n")).toBe(restAfterFirstLine);
+    expect(JSON.parse(readFileSync(rollout, "utf8").split("\n")[0]).payload.model_provider).toBe("opencodex");
+  });
+
   test("maps resumable Codex threads back to openai", () => {
     const { dbPath, backupPath, rollout } = makeFixture();
     syncCodexHistoryProvider("opencodex", dbPath, backupPath);

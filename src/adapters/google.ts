@@ -16,7 +16,21 @@ import { getVertexAccessToken } from "../lib/gcp-adc";
 import { fetchAntigravityWithRetry, fetchVertexWithRetry } from "./google-http";
 import { isVertexTruncationReason, vertexTruncationErrorMessage } from "./google-truncation";
 import { ANTIGRAVITY_REQUEST_UA, antigravitySessionId, isLikelyRealThoughtSignature, sanitizeAntigravityClaudeSignatures } from "./google-antigravity-wire";
+import { sanitizeGeminiToolParameters } from "./google-tool-schema";
 import { antigravityUsesReplayCache, applyAntigravityReplay, clearAntigravityReplay, observeAntigravityReplay } from "./google-antigravity-replay";
+
+// Google-family models (Gemini/Vertex/Antigravity) tend to emit long running commentary between
+// tool calls. This steers them to keep the BETWEEN-STEP text to one line and reason internally
+// while still driving tools to completion. The FINAL answer is explicitly exempt so task output is
+// not truncated. Appended to systemInstruction for the `google` adapter only, so non-Google
+// providers are unaffected.
+const GOOGLE_BREVITY_INSTRUCTION = [
+  "Output style for this session:",
+  "- While you are still working (between tool calls), keep any text you emit to a single short line; do not narrate at length.",
+  "- Do detailed reasoning internally, not as visible intermediate output.",
+  "- Prefer taking the next tool action over explaining; keep calling tools until the task is complete.",
+  "- This applies only to intermediate progress text. Your final answer after the work is done is exempt: write it in full and at whatever length the task requires.",
+].join("\n");
 
 /** Vertex API key: provider.apiKey if it looks real (not a sentinel), else GOOGLE_CLOUD_API_KEY env. */
 function resolveVertexApiKey(optKey?: string): string | undefined {
@@ -41,9 +55,8 @@ function toolResultImageParts(content: string | OcxContentPart[]): unknown[] {
 }
 
 function messagesToGeminiFormat(parsed: OcxParsedRequest): { systemInstruction?: unknown; contents: unknown[] } {
-  const systemInstruction = parsed.context.systemPrompt?.length
-    ? { parts: [{ text: parsed.context.systemPrompt.join("\n\n") }] }
-    : undefined;
+  const systemText = [...(parsed.context.systemPrompt ?? []), GOOGLE_BREVITY_INSTRUCTION].join("\n\n");
+  const systemInstruction = { parts: [{ text: systemText }] };
 
   const contents: unknown[] = [];
 
@@ -118,7 +131,7 @@ function toolsToGeminiFormat(parsed: OcxParsedRequest): unknown[] | undefined {
     functionDeclarations: tools.map(t => ({
       name: namespacedToolName(t.namespace, t.name),
       description: t.description,
-      parameters: t.parameters,
+      parameters: sanitizeGeminiToolParameters(t.parameters),
     })),
   }];
 }

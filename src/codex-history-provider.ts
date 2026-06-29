@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, ftruncateSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, utimesSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import { CODEX_HOME } from "./codex-paths";
@@ -13,6 +13,45 @@ function historyBackupPathFor(stateDbPath: string): string {
 }
 const HISTORY_BACKUP_PATH = historyBackupPathFor(STATE_DB_PATH);
 const RESUMABLE_SOURCES = ["cli", "vscode"] as const;
+
+/**
+ * Open the live `state_5.sqlite` the way the Codex app expects a *secondary* writer to behave:
+ * wait on the WAL/file lock instead of failing instantly, so we never race the app's own
+ * connection pool into a half-applied checkpoint. The app opens this DB with `busy_timeout=5s`
+ * (see codex-rs `state::runtime::base_sqlite_options`); we mirror that here.
+ */
+function openStateDb(stateDbPath: string): Database {
+  const db = new Database(stateDbPath);
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+  } catch {
+    /* best-effort: an older sqlite without busy_timeout still works, just less politely */
+  }
+  return db;
+}
+
+/**
+ * Rewrite the first line of a rollout JSONL *in place*, preserving the file's inode.
+ *
+ * The Codex app keeps a cached append-mode file handle for the live session's rollout
+ * (codex-rs `RolloutWriterState::ensure_writer_open` only reopens when the handle is gone). If we
+ * replaced the file via temp+rename (`atomicWriteFile`), the app would keep writing to the now
+ * orphaned inode while the path holds only our snapshot — so the live session's new turns would
+ * silently vanish on the next app restart. Writing in place keeps the app's handle valid.
+ */
+function rewriteFirstLineInPlace(path: string, newContent: string): void {
+  const stat = statSync(path);
+  const fd = openSync(path, "r+");
+  try {
+    const buf = Buffer.from(newContent, "utf8");
+    writeSync(fd, buf, 0, buf.length, 0);
+    ftruncateSync(fd, buf.length);
+  } finally {
+    closeSync(fd);
+  }
+  // Preserve timestamps so the app's mtime-based backfill watermark isn't perturbed.
+  utimesSync(path, stat.atime, stat.mtime);
+}
 
 type CodexHistoryProvider = "openai" | "opencodex";
 
@@ -94,7 +133,6 @@ function rememberOriginal(manifest: BackupManifest, row: ThreadRow): void {
 
 function updateSessionMeta(path: string, patch: { provider?: string; source?: string }): boolean {
   if (!path || !existsSync(path)) return false;
-  const stat = statSync(path);
   const raw = readFileSync(path, "utf8");
   const newline = raw.indexOf("\n");
   const firstLine = newline === -1 ? raw : raw.slice(0, newline);
@@ -122,8 +160,10 @@ function updateSessionMeta(path: string, patch: { provider?: string; source?: st
   }
   if (!changed) return false;
 
-  atomicWriteFile(path, `${JSON.stringify(record)}${rest}`);
-  utimesSync(path, stat.atime, stat.mtime);
+  // In-place rewrite (NOT temp+rename): the Codex app caches the live session's rollout file
+  // handle, so swapping the inode would orphan its writer and drop new turns. See
+  // rewriteFirstLineInPlace for the full rationale.
+  rewriteFirstLineInPlace(path, `${JSON.stringify(record)}${rest}`);
   return true;
 }
 
@@ -206,7 +246,7 @@ function syncCodexHistoryProviderUnsafe(provider: CodexHistoryProvider, stateDbP
   if (!existsSync(stateDbPath)) return { rows: 0, files: 0 };
   if (provider === "openai") return restoreCodexHistoryProvider(stateDbPath, backupPath);
 
-  const db = new Database(stateDbPath);
+  const db = openStateDb(stateDbPath);
   try {
     const placeholders = RESUMABLE_SOURCES.map(() => "?").join(",");
     const openaiRows = db
@@ -281,7 +321,7 @@ function restoreCodexHistoryProvider(stateDbPath: string, backupPath: string): C
   const manifest = readBackup(backupPath, stateDbPath);
   const entries = Object.values(manifest.entries);
 
-  const db = new Database(stateDbPath);
+  const db = openStateDb(stateDbPath);
   try {
     if (entries.length === 0) {
       const ejected = ejectRemainingOpencodexHistory(db);
@@ -325,7 +365,7 @@ function restoreCodexHistoryProvider(stateDbPath: string, backupPath: string): C
 export function restoreLegacyOpenaiHistory(stateDbPath = STATE_DB_PATH): { rows: number; files: number } {
   try {
     if (!existsSync(stateDbPath)) return { rows: 0, files: 0 };
-    const db = new Database(stateDbPath);
+    const db = openStateDb(stateDbPath);
     try {
       return ejectRemainingOpencodexHistory(db);
     } finally {
