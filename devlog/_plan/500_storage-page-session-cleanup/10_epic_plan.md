@@ -53,3 +53,22 @@ and respect WAL locks while Codex is running.
 - All decade docs present and non-empty.
 - Storage numbers reproducible: `du -sh ~/.codex/sessions`, `sqlite3 state_5.sqlite "select count(*) from threads"`.
 - GitHub comment posted (capture comment URL).
+
+## Document map (jawdev structure)
+
+- `00_review.md` — original root-cause/scoping review
+- `10_epic_plan.md` — this file (epic overview + map)
+- `11_expansion_plan.md` — jawdev expansion rationale
+- `20_codex-storage-structure.md` — measured on-disk layout (macOS)
+- `21_storage-scanner-module.md` — read-only scanner foundation spec
+- Phase 1 (read-only diagnostics, C2):
+  - `30_phase1-diagnostics.md` — overview
+  - `31_phase1_api-endpoint.md` — `GET /api/storage` (server.ts:1671 template)
+  - `32_phase1_gui-page.md` — `Storage.tsx` + App.tsx nav + i18n
+  - `33_phase1_tests-fixtures.md` — fixtures + read-only assertions
+- Phase 2 (manual cleanup, C4):
+  - `40_phase2-manual-cleanup.md` — overview
+  - `41_phase2_deletion-data-model.md` — reconciliation sequence
+  - `42_phase2_quarantine-restore.md` — quarantine + restore
+- Phase 3 (auto-policy, C4): `50_phase3-auto-policy.md`, `51_phase3_policy-engine.md`
+- Cross-cutting: `90_open-questions.md`, `95_verification-matrix.md`
