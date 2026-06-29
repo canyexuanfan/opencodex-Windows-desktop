@@ -455,7 +455,7 @@ async function handleResponses(
     // whose cancel() aborts the upstream — preventing leaked connections (RC2, passthrough path).
     const upstream = new AbortController();
     linkAbortSignal(upstream, options.abortSignal);
-    const connectMs = config.connectTimeoutMs ?? 30_000;
+    const connectMs = config.connectTimeoutMs ?? 100_000;
     let upstreamResponse: Response;
     try {
       upstreamResponse = await fetchWithHeaderTimeout(request.url, {
@@ -587,7 +587,7 @@ async function handleResponses(
 
   const upstream = new AbortController();
   const cleanupUpstreamAbort = linkAbortSignal(upstream, options.abortSignal);
-  const connectMs = config.connectTimeoutMs ?? 30_000;
+  const connectMs = config.connectTimeoutMs ?? 100_000;
 
   const request = adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
   if (typeof request.usageLog?.inputTokens === "number") {
