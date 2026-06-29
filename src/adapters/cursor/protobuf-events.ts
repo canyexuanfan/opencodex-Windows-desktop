@@ -1,6 +1,7 @@
 import type { OcxUsage } from "../../types";
 import type { AgentServerMessage, McpArgs, ToolCall } from "./gen/agent_pb";
 import { decodeCursorArgsMap } from "./arg-codec";
+import { normalizeArgKeys } from "./arg-normalize";
 import { OCX_RESPONSES_TOOL_PROVIDER } from "./tool-definitions";
 import type { CursorServerMessage } from "./types";
 
@@ -11,9 +12,11 @@ export interface CursorProtobufEventState {
   clientToolNames?: Set<string>;
   parallelToolCalls?: boolean;
   startedClientToolCalls: number;
+  /** Tool wire-name → original JSON Schema parameters object, for arg-key normalization. */
+  toolSchemas?: Map<string, unknown>;
 }
 
-export function createCursorProtobufEventState(options: { clientToolNames?: Iterable<string>; parallelToolCalls?: boolean } = {}): CursorProtobufEventState {
+export function createCursorProtobufEventState(options: { clientToolNames?: Iterable<string>; parallelToolCalls?: boolean; toolSchemas?: Map<string, unknown> } = {}): CursorProtobufEventState {
   return {
     // Cursor provides no authoritative usage frame; token counts are heuristic estimates from
     // checkpoint/delta events, so mark estimated from the start.
@@ -23,6 +26,7 @@ export function createCursorProtobufEventState(options: { clientToolNames?: Iter
     ...(options.clientToolNames ? { clientToolNames: new Set(options.clientToolNames) } : {}),
     ...(options.parallelToolCalls !== undefined ? { parallelToolCalls: options.parallelToolCalls } : {}),
     startedClientToolCalls: 0,
+    ...(options.toolSchemas ? { toolSchemas: options.toolSchemas } : {}),
   };
 }
 
@@ -40,6 +44,15 @@ function mcpToolName(toolCall: ToolCall | undefined): string | undefined {
 
 function decodeMcpArgs(args: McpArgs | undefined): string {
   return JSON.stringify(decodeCursorArgsMap(args?.args));
+}
+
+function decodeMcpArgsNormalized(args: McpArgs | undefined, state: CursorProtobufEventState): string {
+  const decoded = decodeCursorArgsMap(args?.args);
+  const toolName = args?.toolName || args?.name;
+  if (toolName && state.toolSchemas?.has(toolName)) {
+    return JSON.stringify(normalizeArgKeys(decoded, state.toolSchemas.get(toolName)));
+  }
+  return JSON.stringify(decoded);
 }
 
 function hasMcpArgBytes(args: McpArgs | undefined): boolean {
@@ -80,7 +93,7 @@ function reconcileCompletedArgs(
   // diverged (a corrupt stream we can no longer un-send), appendToolArgs surfaces an honest error
   // instead of silently shipping broken args.
   if (!hasMcpArgBytes(args)) return [];
-  return appendToolArgs(state, callId, decodeMcpArgs(args));
+  return appendToolArgs(state, callId, decodeMcpArgsNormalized(args, state));
 }
 
 export function mapSyntheticMcpExecToToolEvents(

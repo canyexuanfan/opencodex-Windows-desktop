@@ -299,4 +299,19 @@ describe("Cursor protobuf tool-call events", () => {
     const events = mapCursorProtobufServerMessage(turnEnd, state);
     expect(events).toEqual([{ type: "done", usage: { inputTokens: 0, outputTokens: 0, estimated: true } }]);
   });
+
+  test("normalizes a mis-keyed completed tool-call arg against the advertised schema", () => {
+    // The model called the right tool but used `filepath` instead of the schema's `path`.
+    const toolSchemas = new Map<string, unknown>([
+      ["mcp__fs__read_file", { type: "object", properties: { path: { type: "string" } } }],
+    ]);
+    const state = createCursorProtobufEventState({ clientToolNames: ["mcp__fs__read_file"], toolSchemas });
+    const toolCall = mcpToolCall("mcp__fs__read_file", { filepath: "a.txt" });
+    const events = mapCursorProtobufServerMessage(interaction({
+      case: "toolCallCompleted",
+      value: create(ToolCallCompletedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall }),
+    }), state);
+    const delta = events.find(e => e.type === "tool_call_delta");
+    expect(delta && delta.type === "tool_call_delta" ? JSON.parse(delta.arguments) : null).toEqual({ path: "a.txt" });
+  });
 });

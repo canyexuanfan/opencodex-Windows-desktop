@@ -15,7 +15,7 @@ import { resolveMcpServers } from "./mcp-config";
 import { CursorMcpManager } from "./mcp-manager";
 import { buildMcpToolDefinitions, mcpDepsFromManager } from "./native-exec-mcp";
 import { desktopDepsFromConfig } from "./native-exec-desktop";
-import { buildCursorToolDefinitions } from "./tool-definitions";
+import { buildCursorToolDefinitions, cursorToolWireName } from "./tool-definitions";
 import type { CursorNativeToolDeps } from "./native-exec-tools";
 import type { CursorClientMessage, CursorRunRequest, CursorServerMessage } from "./types";
 import type { CursorTransport, CursorTransportFactoryInput } from "./transport";
@@ -140,9 +140,14 @@ class LiveCursorTransport implements CursorTransport {
     await this.prepareMcp();
     const clientToolDefs = buildCursorToolDefinitions(request.tools, request.toolChoice);
     this.execContext = { ...this.execContext, clientToolDefs };
+    const toolSchemas = new Map<string, unknown>();
+    for (const tool of request.tools ?? []) {
+      if (tool.parameters) toolSchemas.set(cursorToolWireName(tool), tool.parameters);
+    }
     state = createCursorProtobufEventState({
       clientToolNames: clientToolDefs.map(tool => tool.toolName || tool.name),
       parallelToolCalls: request.parallelToolCalls,
+      toolSchemas,
     });
 
     this.open(request, signal, state, push, err => {
