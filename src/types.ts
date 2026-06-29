@@ -329,8 +329,9 @@ export interface OcxProviderConfig {
   /**
    * Google adapter mode. "ai-studio" (default) = Generative Language API + x-goog-api-key.
    * "vertex" = Vertex AI project/location endpoints with GCP ADC (or x-goog-api-key).
+   * "cloud-code-assist" = Google Antigravity (Cloud Code Assist) OAuth + CCA envelope.
    */
-  googleMode?: "ai-studio" | "vertex";
+  googleMode?: "ai-studio" | "vertex" | "cloud-code-assist";
   /** Vertex AI GCP project id (or GOOGLE_CLOUD_PROJECT / GCLOUD_PROJECT env). */
   project?: string;
   /** Vertex AI location, e.g. "us-central1" or "global" (or GOOGLE_CLOUD_LOCATION env). */

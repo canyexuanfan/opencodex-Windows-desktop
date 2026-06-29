@@ -13,8 +13,9 @@ import type {
 import { isAllowedToolChoice, namespacedToolName, toolAllowedByChoice } from "../types";
 import { contentPartsToText, parseDataUrl } from "./image";
 import { getVertexAccessToken } from "../lib/gcp-adc";
-import { fetchVertexWithRetry } from "./google-http";
+import { fetchAntigravityWithRetry, fetchVertexWithRetry } from "./google-http";
 import { isVertexTruncationReason, vertexTruncationErrorMessage } from "./google-truncation";
+import { ANTIGRAVITY_REQUEST_UA, antigravitySessionId } from "./google-antigravity-wire";
 
 /** Vertex API key: provider.apiKey if it looks real (not a sentinel), else GOOGLE_CLOUD_API_KEY env. */
 function resolveVertexApiKey(optKey?: string): string | undefined {
@@ -128,10 +129,13 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
   return {
     name: "google",
 
-    // Vertex gets Kiro-style retry/timeout + classified, redacted errors. AI-Studio Gemini keeps the
-    // default server fetch path (fetchResponse stays undefined so server.ts falls back).
-    ...(provider.googleMode === "vertex"
-      ? { fetchResponse: (request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response> => fetchVertexWithRetry(request, ctx) }
+    // Vertex + Antigravity get Kiro-style retry/timeout + classified, redacted errors. AI-Studio
+    // Gemini keeps the default server fetch path (fetchResponse stays undefined so server.ts falls back).
+    ...(provider.googleMode === "vertex" || provider.googleMode === "cloud-code-assist"
+      ? {
+          fetchResponse: (request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response> =>
+            (provider.googleMode === "cloud-code-assist" ? fetchAntigravityWithRetry : fetchVertexWithRetry)(request, ctx),
+        }
       : {}),
 
     async buildRequest(parsed: OcxParsedRequest) {
@@ -153,6 +157,26 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
       const streamParam = parsed.stream ? "?alt=sse" : "";
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (provider.headers) Object.assign(headers, provider.headers);
+
+      if (provider.googleMode === "cloud-code-assist") {
+        // Google Antigravity (Cloud Code Assist): wrap the flat Gemini body in the CCA envelope.
+        const base = provider.baseUrl || "https://daily-cloudcode-pa.googleapis.com";
+        const url = `${base}/v1internal:${method}${streamParam}`;
+        const project = provider.project;
+        if (!project) throw new Error("Antigravity requires a discovered Cloud Code Assist project id (re-run `ocx login google-antigravity`).");
+        const request: Record<string, unknown> = { ...body, sessionId: antigravitySessionId(parsed) };
+        const envelope = {
+          model: parsed.modelId,
+          userAgent: "antigravity",
+          requestType: "agent",
+          project,
+          requestId: `agent-${crypto.randomUUID()}`,
+          request,
+        };
+        headers["User-Agent"] = ANTIGRAVITY_REQUEST_UA;
+        if (provider.apiKey) headers["Authorization"] = `Bearer ${provider.apiKey}`;
+        return { url, method: "POST", headers, body: JSON.stringify(envelope) };
+      }
 
       if (provider.googleMode === "vertex") {
         // Vertex AI: project/location endpoint with GCP ADC, or x-goog-api-key fast path.
@@ -217,7 +241,11 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
               return;
             }
 
-            const candidates = chunk.candidates as { content?: { parts?: unknown[] }; finishReason?: string }[] | undefined;
+            // Antigravity (CCA) nests the standard Gemini payload under `response`.
+            const root = (provider.googleMode === "cloud-code-assist"
+              ? (chunk.response as Record<string, unknown> | undefined) ?? chunk
+              : chunk);
+            const candidates = root.candidates as { content?: { parts?: unknown[] }; finishReason?: string }[] | undefined;
             if (!candidates?.length) continue;
 
             lastFinishReason = candidates[0].finishReason ?? lastFinishReason;
@@ -238,7 +266,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
               }
             }
 
-            const usageMeta = chunk.usageMetadata as Record<string, number> | undefined;
+            const usageMeta = root.usageMetadata as Record<string, number> | undefined;
             if (usageMeta) {
               // Accumulate usage; emit a single terminal `done` post-loop so usage is never
               // dropped on EOF and the stream never yields two `done` events.
@@ -248,7 +276,8 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         }
         // Fail-closed: a turn cut off mid tool call (MAX_TOKENS / MALFORMED_FUNCTION_CALL) surfaces
         // an error instead of a silently-incomplete done. Mirrors kiro-truncation.
-        if (provider.googleMode === "vertex" && toolCallsStarted > 0 && isVertexTruncationReason(lastFinishReason)) {
+        if ((provider.googleMode === "vertex" || provider.googleMode === "cloud-code-assist")
+          && toolCallsStarted > 0 && isVertexTruncationReason(lastFinishReason)) {
           yield { type: "error", message: vertexTruncationErrorMessage(lastFinishReason) };
           return;
         }

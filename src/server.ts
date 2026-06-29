@@ -35,7 +35,7 @@ import { parseRequest } from "./responses/parser";
 import { routeModel } from "./router";
 import { namespacedToolName } from "./types";
 import {
-  clearLoginState, getLoginStatus, getValidAccessToken, isOAuthProvider,
+  clearLoginState, getLoginStatus, getOAuthCredentialProjectId, getValidAccessToken, isOAuthProvider,
   listOAuthProviders, reconcileOAuthProviders, startLoginFlow, UnsupportedOAuthProviderError, upsertOAuthProvider,
 } from "./oauth/index";
 import type { CatalogModel } from "./codex-catalog";
@@ -423,6 +423,12 @@ async function handleResponses(
   if (route.provider.authMode === "oauth") {
     try {
       route.provider = { ...route.provider, apiKey: await getValidAccessToken(route.providerName) };
+      // Antigravity (cloud-code-assist) needs the discovered Cloud Code Assist project id in the
+      // CCA envelope; the server injects only the bare token, so pull project from the credential.
+      if (route.provider.googleMode === "cloud-code-assist" && !route.provider.project) {
+        const projectId = getOAuthCredentialProjectId(route.providerName);
+        if (projectId) route.provider = { ...route.provider, project: projectId };
+      }
     } catch (err) {
       if (err instanceof UnsupportedOAuthProviderError) {
         return formatErrorResponse(

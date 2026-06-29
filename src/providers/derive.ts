@@ -81,6 +81,9 @@ export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderCon
     ...(entry.autoToolChoiceOnlyModels ? { autoToolChoiceOnlyModels: [...entry.autoToolChoiceOnlyModels] } : {}),
     ...(entry.preserveReasoningContentModels ? { preserveReasoningContentModels: [...entry.preserveReasoningContentModels] } : {}),
     ...(entry.escapeBuiltinToolNames !== undefined ? { escapeBuiltinToolNames: entry.escapeBuiltinToolNames } : {}),
+    ...(entry.googleMode ? { googleMode: entry.googleMode } : {}),
+    ...(entry.project ? { project: entry.project } : {}),
+    ...(entry.location ? { location: entry.location } : {}),
   };
 }
 
