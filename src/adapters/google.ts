@@ -1,5 +1,6 @@
 import type { AdapterFetchContext, AdapterRequest, ProviderAdapter } from "./base";
 import { debugDroppedFrame } from "../debug";
+import { createHash } from "node:crypto";
 import type {
   AdapterEvent,
   OcxAssistantMessage,
@@ -36,6 +37,33 @@ const GOOGLE_BREVITY_INSTRUCTION = [
 function resolveVertexApiKey(optKey?: string): string | undefined {
   const realKey = optKey && !optKey.startsWith("<") && optKey !== "N/A" ? optKey : undefined;
   return realKey || process.env.GOOGLE_CLOUD_API_KEY;
+}
+
+/**
+ * Stable tool-call id for the Gemini wire `functionCall.id` / `functionResponse.id` fields.
+ *
+ * Gemini treats these ids as optional and pairs a call with its response by id when present, so
+ * emitting them is harmless for Gemini models. They are REQUIRED, however, for Claude-on-Antigravity:
+ * the backend converts the Gemini-shaped request into Anthropic `messages`, mapping
+ * `functionCall.id -> tool_use.id` and `functionResponse.id -> tool_result.tool_use_id`. With no id
+ * the conversion fails upstream with `messages.N.content.M.tool_use.id: Field required` (HTTP 400).
+ *
+ * Anthropic's `tool_use.id` only accepts `[a-zA-Z0-9_-]`, so non-conforming characters are mapped to
+ * `_`. To keep the mapping injective (so two distinct raw ids like `call:a` and `call/a` cannot
+ * collide into one `tool_use.id` within a request), a short hash of the original raw id is appended
+ * whenever any character had to be rewritten. The transform is deterministic, so a call id and its
+ * matching result id — equal at the source, since Codex pairs them — still normalize identically and
+ * the call/response pairing is preserved. Returns `undefined` for an empty id so the caller omits the
+ * field entirely rather than inventing a non-matching one.
+ */
+function geminiToolCallId(rawId: string | undefined): string | undefined {
+  const raw = rawId ?? "";
+  if (raw.length === 0) return undefined;
+  const cleaned = raw.replace(/[^a-zA-Z0-9_-]/g, "_");
+  if (cleaned === raw) return cleaned;
+  // Lossy rewrite happened: disambiguate with a deterministic suffix derived from the raw id.
+  const suffix = createHash("sha256").update(raw).digest("hex").slice(0, 8);
+  return `${cleaned}_${suffix}`;
 }
 
 /**
@@ -92,7 +120,12 @@ function messagesToGeminiFormat(parsed: OcxParsedRequest): { systemInstruction?:
             // streaming covered by the replay cache. Only forward a REAL upstream signature — the
             // Responses parser also stashes synthetic item ids (`fc_...`) on this field, and sending
             // those as a thoughtSignature breaks continuity (the replay cache supplies the real one).
-            const part: Record<string, unknown> = { functionCall: { name: namespacedToolName(tc.namespace, tc.name), args: tc.arguments } };
+            const callId = geminiToolCallId(tc.id);
+            const functionCall: Record<string, unknown> = { name: namespacedToolName(tc.namespace, tc.name), args: tc.arguments };
+            // Claude-on-Antigravity maps this id to Anthropic `tool_use.id`; without it the upstream
+            // conversion 400s. Gemini accepts the optional id and pairs call/response by it.
+            if (callId !== undefined) functionCall.id = callId;
+            const part: Record<string, unknown> = { functionCall };
             if (isLikelyRealThoughtSignature(tc.thoughtSignature)) part.thoughtSignature = tc.thoughtSignature;
             parts.push(part);
           }
@@ -105,9 +138,12 @@ function messagesToGeminiFormat(parsed: OcxParsedRequest): { systemInstruction?:
         // functionResponse, but it does accept sibling inline_data parts in the same user turn, so
         // tool-result screenshots (e.g. Computer Use) ride along as inline_data instead of being
         // flattened to a "[image]" marker the model can't actually see.
-        const parts: unknown[] = [
-          { functionResponse: { name: namespacedToolName(msg.toolNamespace, msg.toolName), response: { result: contentPartsToText(msg.content) } } },
-        ];
+        const responseId = geminiToolCallId(msg.toolCallId);
+        const functionResponse: Record<string, unknown> = { name: namespacedToolName(msg.toolNamespace, msg.toolName), response: { result: contentPartsToText(msg.content) } };
+        // Mirror the matching functionCall id so Claude-on-Antigravity can pair this result with its
+        // `tool_use` block (-> Anthropic `tool_result.tool_use_id`).
+        if (responseId !== undefined) functionResponse.id = responseId;
+        const parts: unknown[] = [{ functionResponse }];
         for (const part of toolResultImageParts(msg.content)) parts.push(part);
         contents.push({ role: "user", parts });
         break;
