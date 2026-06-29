@@ -26,6 +26,8 @@ import {
   hasOwnProvider,
   isValidProviderName,
   loadConfig,
+  providerBaseUrlConfigError,
+  providerHeadersConfigError,
   saveConfig,
   websocketsEnabled,
 } from "./config";
@@ -1513,6 +1515,8 @@ function requireApiAuth(req: Request, config: OcxConfig, kind: "management" | "d
 function providerManagementConfigError(name: string, provider: OcxProviderConfig): string | null {
   const baseUrlError = providerBaseUrlConfigError(provider.baseUrl);
   if (baseUrlError) return `provider ${name} ${baseUrlError}`;
+  const headersError = providerHeadersConfigError(provider.headers);
+  if (headersError) return `provider ${name} ${headersError}`;
   if (provider.authMode === "forward") {
     const normalizedName = name.trim().toLowerCase();
     const base = provider.baseUrl.replace(/\/+$/, "");
@@ -1521,18 +1525,6 @@ function providerManagementConfigError(name: string, provider: OcxProviderConfig
       && base === "https://chatgpt.com/backend-api/codex";
     if (isBuiltInChatGptForward) return null;
     return `provider ${name} uses reserved authMode "forward"; configure ChatGPT passthrough via the built-in provider`;
-  }
-  return null;
-}
-
-function providerBaseUrlConfigError(baseUrl: string): string | null {
-  try {
-    const parsed = new URL(baseUrl.trim());
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "baseUrl must be an http(s) URL";
-    if (parsed.username || parsed.password) return "baseUrl must not include embedded credentials";
-    if (parsed.search || parsed.hash) return "baseUrl must not include query strings or fragments";
-  } catch {
-    return "baseUrl must be a valid URL";
   }
   return null;
 }

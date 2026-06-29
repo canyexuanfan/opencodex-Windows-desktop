@@ -39,7 +39,7 @@ function config(hostname?: string): OcxConfig {
         adapter: "openai-chat",
         baseUrl: "https://api.example.test/v1",
         apiKey: "sk-secret-value",
-        headers: { Authorization: "Bearer provider-secret", "X-Custom": "secret" },
+        headers: { "X-Custom": "provider-secret" },
         defaultModel: "gpt-test",
       },
     },
@@ -357,6 +357,41 @@ describe("server local API auth", () => {
         expect(response.status).toBe(400);
         expect(await response.json()).toMatchObject({
           error: expect.stringContaining("baseUrl"),
+        });
+      }
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("provider management rejects sensitive or injectable provider headers", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig(config("127.0.0.1"));
+
+    const server = startServer(0);
+    try {
+      for (const { name, headers, message } of [
+        { name: "bad-auth", headers: { Authorization: "Bearer provider-secret" }, message: "sensitive header" },
+        { name: "bad-cookie", headers: { Cookie: "session=secret" }, message: "sensitive header" },
+        { name: "bad-injection", headers: { "X-Custom": "ok\r\nInjected: yes" }, message: "line breaks" },
+      ]) {
+        const response = await fetch(new URL("/api/providers", server.url), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name,
+            provider: {
+              adapter: "openai-chat",
+              baseUrl: "https://api.example.test/v1",
+              headers,
+            },
+          }),
+        });
+        expect(response.status).toBe(400);
+        expect(await response.json()).toMatchObject({
+          error: expect.stringContaining(message),
         });
       }
     } finally {

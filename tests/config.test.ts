@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -226,6 +226,52 @@ describe("opencodex config defaults", () => {
       const backups = backupNames();
       expect(backups).toHaveLength(1);
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("defaultProvider must exist in providers"));
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test("diagnoses config with unsafe provider URLs or sensitive headers", () => {
+    for (const provider of [
+      { adapter: "openai-chat", baseUrl: "file:///tmp/provider" },
+      { adapter: "openai-chat", baseUrl: "https://user:pass@example.test/v1" },
+      { adapter: "openai-chat", baseUrl: "https://example.test/v1?token=secret" },
+      { adapter: "openai-chat", baseUrl: "https://example.test/v1", headers: { Authorization: "Bearer secret" } },
+      { adapter: "openai-chat", baseUrl: "https://example.test/v1", headers: { "X-Custom": "ok\r\nInjected: yes" } },
+    ]) {
+      rmSync(testDir, { recursive: true, force: true });
+      mkdirSync(testDir, { recursive: true });
+      writeConfig({
+        port: 10100,
+        providers: { custom: provider },
+        defaultProvider: "custom",
+      });
+
+      const diagnostics = readConfigDiagnostics();
+
+      expect(diagnostics.config).toEqual(getDefaultConfig());
+      expect(diagnostics.source).toBe("fallback");
+      expect(diagnostics.error).toContain("providers.custom");
+      expect(JSON.stringify(diagnostics)).not.toContain("Bearer secret");
+    }
+  });
+
+  test("backs up config when provider validation fails during load", () => {
+    writeConfig({
+      port: 10100,
+      providers: {
+        custom: { adapter: "openai-chat", baseUrl: "https://example.test/v1", headers: { Authorization: "Bearer secret" } },
+      },
+      defaultProvider: "custom",
+    });
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const loaded = loadConfig();
+
+      expect(loaded).toEqual(getDefaultConfig());
+      expect(backupNames()).toHaveLength(1);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("providers.custom.headers"));
     } finally {
       errorSpy.mockRestore();
     }
