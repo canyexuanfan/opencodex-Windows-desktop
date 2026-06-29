@@ -1,0 +1,333 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createKiroAdapter } from "../src/adapters/kiro";
+import { encodeMessage } from "../src/lib/eventstream-decoder";
+import { estimateTokens } from "../src/lib/token-estimate";
+import type { OcxParsedRequest, OcxProviderConfig } from "../src/types";
+
+const enc = new TextEncoder();
+const origHome = process.env.HOME;
+const origRegion = process.env.KIRO_REGION;
+const origApiRegion = process.env.KIRO_API_REGION;
+const origArn = process.env.KIRO_PROFILE_ARN;
+const origCredsFile = process.env.KIRO_CREDS_FILE;
+const origCredentialsFile = process.env.KIRO_CREDENTIALS_FILE;
+let tmp: string;
+
+beforeEach(() => {
+  tmp = mkdtempSync(join(tmpdir(), "kiro-stream-"));
+  process.env.HOME = tmp;
+  process.env.KIRO_REGION = "us-east-1";
+  delete process.env.KIRO_API_REGION;
+  delete process.env.KIRO_PROFILE_ARN;
+  delete process.env.KIRO_CREDS_FILE;
+  delete process.env.KIRO_CREDENTIALS_FILE;
+});
+afterEach(() => {
+  if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
+  if (origRegion === undefined) delete process.env.KIRO_REGION; else process.env.KIRO_REGION = origRegion;
+  if (origApiRegion === undefined) delete process.env.KIRO_API_REGION; else process.env.KIRO_API_REGION = origApiRegion;
+  if (origArn === undefined) delete process.env.KIRO_PROFILE_ARN; else process.env.KIRO_PROFILE_ARN = origArn;
+  if (origCredsFile === undefined) delete process.env.KIRO_CREDS_FILE; else process.env.KIRO_CREDS_FILE = origCredsFile;
+  if (origCredentialsFile === undefined) delete process.env.KIRO_CREDENTIALS_FILE; else process.env.KIRO_CREDENTIALS_FILE = origCredentialsFile;
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+const provider = { adapter: "kiro", baseUrl: "https://runtime.us-east-1.kiro.dev", authMode: "oauth", apiKey: "tok-123" } as unknown as OcxProviderConfig;
+const bashTool = { name: "bash", description: "Run a shell command", parameters: { type: "object" } };
+
+function parsedWith(messages: unknown[], tools?: unknown[]): OcxParsedRequest {
+  return { modelId: "claude-sonnet-4.5", stream: true, options: {}, context: { messages, tools } } as unknown as OcxParsedRequest;
+}
+
+const eventFrame = (obj: unknown) => encodeMessage({ ":message-type": "event", ":event-type": "x" }, enc.encode(JSON.stringify(obj)));
+function streamOf(...frames: Uint8Array[]): ReadableStream<Uint8Array> {
+  let i = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(c) {
+      if (i < frames.length) c.enqueue(frames[i++]);
+      else c.close();
+    },
+  });
+}
+
+async function doneUsage(adapter: ReturnType<typeof createKiroAdapter>, ...frames: Uint8Array[]): Promise<{ inputTokens: number; outputTokens: number }> {
+  let done: { inputTokens: number; outputTokens: number } | undefined;
+  for await (const e of adapter.parseStream(new Response(streamOf(...frames)))) {
+    if (e.type === "done") done = e.usage;
+  }
+  expect(done).toBeDefined();
+  return done!;
+}
+
+describe("kiro adapter — parseStream", () => {
+  test("maps CW events (name repeated on every tool chunk) to AdapterEvents with accumulated args", async () => {
+    const frames = [
+      eventFrame({ content: "Hi " }),
+      eventFrame({ content: "there" }),
+      eventFrame({ name: "bash", toolUseId: "t1" }),
+      eventFrame({ input: '{"command":"ec', name: "bash", toolUseId: "t1" }),
+      eventFrame({ input: 'ho hi"}', name: "bash", toolUseId: "t1" }),
+      eventFrame({ name: "bash", stop: true, toolUseId: "t1" }),
+    ];
+    const events: string[] = [];
+    let args = "";
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(...frames)))) {
+      if (e.type === "text_delta") events.push(`text:${e.text}`);
+      else if (e.type === "tool_call_start") events.push(`start:${e.id}:${e.name}`);
+      else if (e.type === "tool_call_delta") { args += e.arguments; events.push("delta"); }
+      else events.push(e.type);
+    }
+    expect(events).toEqual(["text:Hi ", "text:there", "start:t1:bash", "delta", "delta", "tool_call_end", "done"]);
+    expect(JSON.parse(args)).toEqual({ command: "echo hi" });
+  });
+
+  test("emits error for an exception frame", async () => {
+    const frame = encodeMessage({ ":message-type": "exception", ":exception-type": "ThrottlingException" }, enc.encode("rate limited"));
+    const out: string[] = [];
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(frame)))) {
+      out.push(e.type === "error" ? `error:${e.message}` : e.type);
+    }
+    expect(out[0]).toBe("error:Kiro upstream error: ThrottlingException: rate limited");
+  });
+
+  test("exception frame is terminal: no trailing done", async () => {
+    const errFrame = encodeMessage({ ":message-type": "exception", ":exception-type": "ThrottlingException" }, enc.encode("rate limited"));
+    const contentFrame = eventFrame({ content: "leaked text" });
+    const out: string[] = [];
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(errFrame, contentFrame)))) {
+      out.push(e.type === "error" ? `error:${e.message}` : e.type);
+    }
+    expect(out).toEqual(["error:Kiro upstream error: ThrottlingException: rate limited"]);
+    expect(out).not.toContain("done");
+    expect(out).not.toContain("text_delta");
+  });
+
+  test("exception mid-stream closes an open tool call then stops", async () => {
+    const start = eventFrame({ name: "shell", toolUseId: "tu_1" });
+    const errFrame = encodeMessage({ ":message-type": "error", ":error-type": "InternalServerException" }, enc.encode("boom"));
+    const tail = eventFrame({ content: "should not appear" });
+    const out: string[] = [];
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(start, errFrame, tail)))) {
+      out.push(e.type === "error" ? `error:${e.message}` : e.type);
+    }
+    expect(out).toEqual(["tool_call_start", "tool_call_end", "error:Kiro upstream error: InternalServerException: boom"]);
+    expect(out).not.toContain("done");
+  });
+
+  test("exception payload errors redact secrets, profile ARNs, raw JSON, and local paths", async () => {
+    const secretPayload = JSON.stringify({
+      __type: "ValidationException",
+      message: "accessToken=aoa-secret refreshToken=rt-secret clientSecret=client-secret profile arn:aws:codewhisperer:us-east-1:123456789012:profile/demo path /Users/jun/private/file.json",
+      accessToken: "aoa-secret",
+      refreshToken: "rt-secret",
+      clientSecret: "client-secret",
+      profileArn: "arn:aws:codewhisperer:us-east-1:123456789012:profile/demo",
+    });
+    const frame = encodeMessage({ ":message-type": "exception", ":exception-type": "ValidationException" }, enc.encode(secretPayload));
+    const errors: string[] = [];
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(frame)))) {
+      if (e.type === "error") errors.push(e.message);
+    }
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("Kiro upstream error: ValidationException");
+    expect(errors[0]).not.toContain("aoa-secret");
+    expect(errors[0]).not.toContain("rt-secret");
+    expect(errors[0]).not.toContain("client-secret");
+    expect(errors[0]).not.toContain("arn:aws");
+    expect(errors[0]).not.toContain("/Users/jun");
+    expect(errors[0]).not.toContain("{");
+  });
+
+  test("stream parser catch path redacts thrown error details", async () => {
+    const broken = new ReadableStream<Uint8Array>({
+      pull() {
+        throw new Error("decoder failed refreshToken=rt-secret clientSecret=client-secret /Users/jun/private/file.json");
+      },
+    });
+    const errors: string[] = [];
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(broken))) {
+      if (e.type === "error") errors.push(e.message);
+    }
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("Kiro upstream error");
+    expect(errors[0]).not.toContain("rt-secret");
+    expect(errors[0]).not.toContain("client-secret");
+    expect(errors[0]).not.toContain("/Users/jun");
+  });
+
+  test("leading thinking block is emitted as raw reasoning, not visible text", async () => {
+    const frames = [eventFrame({ content: "<thinking>private plan</thinking>visible answer" })];
+    const out: string[] = [];
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(...frames)))) {
+      if (e.type === "reasoning_raw_delta") out.push(`reason:${e.text}`);
+      else if (e.type === "text_delta") out.push(`text:${e.text}`);
+      else out.push(e.type);
+    }
+    expect(out).toEqual(["reason:private plan", "text:visible answer", "done"]);
+    expect(out.join("|")).not.toContain("<thinking>");
+  });
+
+  test("thinking tags split across chunks are parsed as reasoning", async () => {
+    const frames = [
+      eventFrame({ content: "<think" }),
+      eventFrame({ content: "ing>split" }),
+      eventFrame({ content: " thought</thinking>\nanswer" }),
+    ];
+    const out: string[] = [];
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(...frames)))) {
+      if (e.type === "reasoning_raw_delta") out.push(`reason:${e.text}`);
+      else if (e.type === "text_delta") out.push(`text:${e.text}`);
+      else out.push(e.type);
+    }
+    expect(out).toEqual(["reason:split thought", "text:answer", "done"]);
+  });
+
+  test("non-leading thinking tag remains visible text", async () => {
+    const frame = eventFrame({ content: "answer <thinking>literal</thinking>" });
+    const out: string[] = [];
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(frame)))) {
+      if (e.type === "text_delta") out.push(e.text);
+    }
+    expect(out.join("")).toBe("answer <thinking>literal</thinking>");
+  });
+
+  test("unterminated leading thinking block flushes as reasoning at stream end", async () => {
+    const frames = [eventFrame({ content: "<reasoning>still private" })];
+    const out: string[] = [];
+    let reasoning = "";
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(...frames)))) {
+      if (e.type === "reasoning_raw_delta") reasoning += e.text;
+      else if (e.type === "text_delta") out.push(`text:${e.text}`);
+      else out.push(e.type);
+    }
+    expect(reasoning).toBe("still private");
+    expect(out).toEqual(["done"]);
+  });
+
+  test("done carries heuristic usage (input from current turn, output from streamed text)", async () => {
+    const adapter = createKiroAdapter(provider);
+    adapter.buildRequest(parsedWith([{ role: "user", content: "x".repeat(700) }]));
+    const done = await doneUsage(adapter, eventFrame({ content: "y".repeat(350) }));
+    expect(done.inputTokens).toBe(200);
+    expect(done.outputTokens).toBe(100);
+  });
+
+  test("fresh payload includes history while usage counts only the current turn", async () => {
+    const latest = "please summarize recent commits";
+    const shortMessages = [
+      { role: "user", content: "old question" },
+      { role: "assistant", content: [{ type: "text", text: "old answer" }] },
+      { role: "user", content: latest },
+    ];
+    const longMessages = [
+      { role: "user", content: "u".repeat(8000) },
+      { role: "assistant", content: [{ type: "text", text: "a".repeat(8000) }] },
+      { role: "user", content: "another old question" },
+      { role: "assistant", content: [{ type: "text", text: "another old answer" }] },
+      { role: "user", content: latest },
+    ];
+    const shortAdapter = createKiroAdapter(provider);
+    const shortBody = shortAdapter.buildRequest(parsedWith(shortMessages)).body;
+    const shortUsage = await doneUsage(shortAdapter, eventFrame({ content: "ok" }));
+    const longAdapter = createKiroAdapter(provider);
+    const longBody = longAdapter.buildRequest(parsedWith(longMessages)).body;
+    const longUsage = await doneUsage(longAdapter, eventFrame({ content: "ok" }));
+    expect(longBody.length).toBeGreaterThan(shortBody.length + 10_000);
+    expect(longUsage.inputTokens).toBe(shortUsage.inputTokens);
+    expect(longUsage.inputTokens).toBe(estimateTokens(latest, "claude-sonnet-4.5"));
+  });
+
+  test("resumed payload sends only the current turn instead of repeated history", async () => {
+    const latest = "please summarize recent commits";
+    const oldHistory = [
+      { role: "user", content: "u".repeat(8000) },
+      { role: "assistant", content: [{ type: "text", text: "a".repeat(8000) }] },
+      { role: "user", content: "another old question" },
+      { role: "assistant", content: [{ type: "text", text: "another old answer" }] },
+    ];
+    const freshBody = createKiroAdapter(provider).buildRequest(parsedWith([...oldHistory, { role: "user", content: latest }])).body;
+    const resumedAdapter = createKiroAdapter(provider);
+    const resumedBody = resumedAdapter.buildRequest({
+      ...parsedWith([...oldHistory, { role: "user", content: latest }]),
+      previousResponseId: "kiro-prev-1",
+    }).body;
+    const resumedUsage = await doneUsage(resumedAdapter, eventFrame({ content: "ok" }));
+    const cs = JSON.parse(resumedBody).conversationState;
+    expect(freshBody.length).toBeGreaterThan(resumedBody.length + 10_000);
+    expect(cs.history).toBeUndefined();
+    expect(cs.currentMessage.userInputMessage.content).toBe(latest);
+    expect(resumedUsage.inputTokens).toBe(estimateTokens(latest, "claude-sonnet-4.5"));
+  });
+
+  test("tool-result follow-up counts new tool output without re-counting prior assistant tool args", async () => {
+    const hugeArgs = { command: "x".repeat(8000) };
+    const messages = [
+      { role: "user", content: "run a command" },
+      { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: hugeArgs }] },
+      { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: "done", isError: false },
+    ];
+    const adapter = createKiroAdapter(provider);
+    const body = adapter.buildRequest(parsedWith(messages)).body;
+    const usage = await doneUsage(adapter, eventFrame({ content: "ok" }));
+    expect(body).toContain("x".repeat(8000));
+    expect(usage.inputTokens).toBeLessThan(50);
+    expect(usage.inputTokens).toBeGreaterThan(0);
+  });
+
+  test("resumed tool-result payload preserves the matching assistant toolUse context", async () => {
+    const messages = [
+      { role: "user", content: "run a command" },
+      { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "pwd" } }] },
+      { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: "/tmp", isError: false },
+    ];
+    const { body } = createKiroAdapter(provider).buildRequest({ ...parsedWith(messages, [bashTool]), previousResponseId: "kiro-prev-1" });
+    const cs = JSON.parse(body).conversationState;
+    expect(cs.history).toHaveLength(2);
+    expect(cs.history[0].userInputMessage.content).toBe("run a command");
+    expect(cs.history[1].assistantResponseMessage.toolUses).toEqual([
+      { name: "bash", input: { command: "pwd" }, toolUseId: "call-1" },
+    ]);
+    expect(cs.currentMessage.userInputMessage.content).toBe("(tool results)");
+    expect(cs.currentMessage.userInputMessage.userInputMessageContext.toolResults).toEqual([
+      { content: [{ text: "/tmp" }], status: "success", toolUseId: "call-1" },
+    ]);
+  });
+
+  test("resumed tool-result usage remains current-turn only after payload repair", async () => {
+    const messages = [
+      { role: "user", content: "u".repeat(8000) },
+      { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "x".repeat(8000) } }] },
+      { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: "done", isError: false },
+    ];
+    const adapter = createKiroAdapter(provider);
+    adapter.buildRequest({ ...parsedWith(messages), previousResponseId: "kiro-prev-1" });
+    const usage = await doneUsage(adapter, eventFrame({ content: "ok" }));
+    expect(usage.inputTokens).toBeLessThan(50);
+    expect(usage.inputTokens).toBeGreaterThan(0);
+  });
+});
+
+describe("kiro adapter — parseResponse (web-search sidecar non-streaming path)", () => {
+  test("adapter exposes parseResponse so the web_search sidecar accepts kiro", () => {
+    expect(typeof createKiroAdapter(provider).parseResponse).toBe("function");
+  });
+
+  test("drains the same CW eventstream into an AdapterEvent[] (parity with parseStream)", async () => {
+    const frames = [
+      eventFrame({ content: "Hi " }),
+      eventFrame({ content: "there" }),
+      eventFrame({ name: "bash", toolUseId: "t1" }),
+      eventFrame({ input: '{"q":1}', name: "bash", toolUseId: "t1" }),
+      eventFrame({ name: "bash", stop: true, toolUseId: "t1" }),
+    ];
+    const events = await createKiroAdapter(provider).parseResponse!(new Response(streamOf(...frames)));
+    expect(events.map(e => e.type)).toEqual([
+      "text_delta", "text_delta", "tool_call_start", "tool_call_delta", "tool_call_end", "done",
+    ]);
+    const start = events.find(e => e.type === "tool_call_start") as { id: string; name: string };
+    expect(start).toMatchObject({ id: "t1", name: "bash" });
+  });
+});
