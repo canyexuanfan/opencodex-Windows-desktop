@@ -26,6 +26,7 @@ const CURSOR_RUN_PATH = "/agent.v1.AgentService/Run";
 const CURSOR_CLIENT_VERSION = "cli-2026.01.09-231024f";
 const HEARTBEAT_MS = 5_000;
 const CURSOR_FIRST_FRAME_TIMEOUT_MS = 30_000;
+const CLIENT_TOOL_FINALIZE_GRACE_MS = 50;
 
 export class CursorMissingCredentialError extends Error {
   readonly code = "cursor_missing_credential";
@@ -89,6 +90,13 @@ export interface McpArgsPlan {
   handledByResponsesBridge: boolean;
   events: CursorServerMessage[];
   cancelCursorRun: boolean;
+  /**
+   * The Responses bridge owns this exec and every known client tool call is committed, but turn 1 is
+   * NOT ended synchronously: a sibling call may still be announced in a later receive chunk. The
+   * transport arms a revocable grace timer and only ends the turn (see finalizeAfterDrain) if the set
+   * is still drained when it fires.
+   */
+  finalizeWhenDrained: boolean;
   writeMcpResult?: never;
 }
 
@@ -97,12 +105,12 @@ export function planMcpArgsHandling(
   state: ReturnType<typeof createCursorProtobufEventState>,
 ): McpArgsPlan {
   if (execMsg.message.case !== "mcpArgs") {
-    return { handledByResponsesBridge: false, events: [], cancelCursorRun: false };
+    return { handledByResponsesBridge: false, events: [], cancelCursorRun: false, finalizeWhenDrained: false };
   }
   const args = execMsg.message.value;
   if (args.providerIdentifier !== OCX_RESPONSES_TOOL_PROVIDER) {
     // A real MCP server tool: native exec handles it (executed locally, real mcpResult written).
-    return { handledByResponsesBridge: false, events: [], cancelCursorRun: false };
+    return { handledByResponsesBridge: false, events: [], cancelCursorRun: false, finalizeWhenDrained: false };
   }
 
   // From here on the Responses bridge owns the exec: never fall through to native exec, which would
@@ -114,22 +122,32 @@ export function planMcpArgsHandling(
 
   if (toolEvents.some(event => event.type === "error")) {
     // The error is itself the terminal signal; do not also emit `done`.
-    return { handledByResponsesBridge: true, events: toolEvents, cancelCursorRun: true };
+    return { handledByResponsesBridge: true, events: toolEvents, cancelCursorRun: true, finalizeWhenDrained: false };
   }
 
-  // Parallel safety ("tool use N"): Cursor sends one exec mcpArgs per client tool call. Only END
-  // turn 1 once EVERY started client tool call has been committed (openToolCalls drained) — otherwise
-  // finalizing on the first exec would either drop the still-open siblings or make finalizeTurnEvents
-  // emit a truncation error. While siblings are still open we surface this call's events and keep the
-  // Cursor stream open to receive their exec args.
-  if (state.openToolCalls.size > 0) {
-    return { handledByResponsesBridge: true, events: toolEvents, cancelCursorRun: false };
-  }
+  // Parallel safety ("tool use N"): Cursor sends one exec mcpArgs per client tool call. An empty
+  // openToolCalls set proves only that every KNOWN call is committed, not that Cursor has finished
+  // announcing siblings — a sibling's toolCallStarted can still arrive in a later receive chunk. So
+  // never end turn 1 synchronously here: surface this call's events, and when the set is drained flag
+  // finalizeWhenDrained so the transport arms a revocable grace timer (finalizeAfterDrain re-checks
+  // the guard when it fires). While siblings are still open, just keep the stream open.
+  return {
+    handledByResponsesBridge: true,
+    events: toolEvents,
+    cancelCursorRun: false,
+    finalizeWhenDrained: state.openToolCalls.size === 0,
+  };
+}
 
-  // All client tool calls are committed: end turn 1 cleanly so onCompletedResponse stores the Cursor
-  // conversation id for the next request, then cancel the run (no fake mcpResult).
-  const events: CursorServerMessage[] = [...toolEvents, ...finalizeTurnEvents(state)];
-  return { handledByResponsesBridge: true, events, cancelCursorRun: true };
+/**
+ * Re-check the drain guard at grace-timer fire time and finalize turn 1 only if still drained. A
+ * sibling client tool call announced after the timer was armed reopens `openToolCalls`, so this
+ * returns `[]` (the pending finalize is revoked); a later drain re-arms it. Pure for unit testing.
+ */
+export function finalizeAfterDrain(state: ReturnType<typeof createCursorProtobufEventState>): CursorServerMessage[] {
+  if (state.terminated) return [];
+  if (state.openToolCalls.size > 0) return [];
+  return finalizeTurnEvents(state);
 }
 
 class LiveCursorTransport implements CursorTransport {
@@ -139,6 +157,8 @@ class LiveCursorTransport implements CursorTransport {
   private firstFrameTimer?: ReturnType<typeof setTimeout>;
   private committed = false;
   private expectedClose = false;
+  private pendingFinalize?: ReturnType<typeof setTimeout>;
+  private readonly clientToolFinalizeGraceMs: number;
   private readonly token: string;
   private readonly mcpManager?: CursorMcpManager;
   private readonly desktopDeps: CursorNativeToolDeps;
@@ -147,6 +167,10 @@ class LiveCursorTransport implements CursorTransport {
 
   constructor(private readonly input: CursorTransportFactoryInput) {
     this.token = resolveCursorToken(input.provider, input.headers);
+    // Grace window before a drained client-tool turn is finalized. Small enough not to look like a
+    // stall, large enough to catch a sibling tool call announced in the next receive chunk. Injectable
+    // so the transport-level race test can drive it deterministically.
+    this.clientToolFinalizeGraceMs = input.clientToolFinalizeGraceMs ?? CLIENT_TOOL_FINALIZE_GRACE_MS;
     // Desktop (computer-use / record-screen) executors are available even with no MCP servers.
     this.desktopDeps = desktopDepsFromConfig(input.provider.desktopExecutor);
     this.execContext = { ...this.desktopDeps };
@@ -252,6 +276,7 @@ class LiveCursorTransport implements CursorTransport {
 
   close(): void {
     if (this.heartbeat) clearInterval(this.heartbeat);
+    this.clearPendingFinalize();
     this.clearFirstFrameTimer();
     this.stream?.close();
     this.session?.close();
@@ -260,6 +285,7 @@ class LiveCursorTransport implements CursorTransport {
 
   private cancelCursorRun(): void {
     this.expectedClose = true;
+    this.clearPendingFinalize();
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.clearFirstFrameTimer();
     try {
@@ -269,6 +295,43 @@ class LiveCursorTransport implements CursorTransport {
     }
     this.session?.close();
     void this.mcpManager?.dispose();
+  }
+
+  private clearPendingFinalize(): void {
+    if (this.pendingFinalize) {
+      clearTimeout(this.pendingFinalize);
+      this.pendingFinalize = undefined;
+    }
+  }
+
+  /**
+   * Any frame that records or commits a client tool call revokes a pending finalize: the call set is
+   * about to change, so the drain that armed the timer is no longer authoritative. The timer re-arms
+   * when the set drains again (see scheduleClientToolFinalize).
+   */
+  private noteClientToolActivity(): void {
+    this.clearPendingFinalize();
+  }
+
+  /**
+   * Arm the revocable grace timer that ends a drained client-tool turn. On fire it re-checks the
+   * drain guard (finalizeAfterDrain): a sibling announced during the window reopened the set, so it
+   * emits nothing and waits for the next drain; otherwise it pushes the terminal `done` and cancels
+   * the Cursor run with RST_STREAM. No fake mcpResult is ever written.
+   */
+  private scheduleClientToolFinalize(
+    state: ReturnType<typeof createCursorProtobufEventState>,
+    push: (message: CursorServerMessage) => void,
+  ): void {
+    this.clearPendingFinalize();
+    this.pendingFinalize = setTimeout(() => {
+      this.pendingFinalize = undefined;
+      if (this.expectedClose) return;
+      const terminal = finalizeAfterDrain(state);
+      if (terminal.length === 0) return;
+      for (const event of terminal) push(event);
+      this.cancelCursorRun();
+    }, this.clientToolFinalizeGraceMs);
   }
 
   private open(
@@ -376,8 +439,10 @@ class LiveCursorTransport implements CursorTransport {
       if (execMsg.message.case === "mcpArgs") {
         const plan = planMcpArgsHandling(execMsg, state);
         if (plan.handledByResponsesBridge) {
+          this.noteClientToolActivity();
           for (const event of plan.events) push(event);
           if (plan.cancelCursorRun) this.cancelCursorRun();
+          else if (plan.finalizeWhenDrained) this.scheduleClientToolFinalize(state, push);
           return;
         }
       }
@@ -387,6 +452,9 @@ class LiveCursorTransport implements CursorTransport {
     }
     const mapped = mapCursorProtobufServerMessage(message, state);
     if (mapped.length > 0) {
+      // A client tool call announced/committed via interactionUpdate (toolCallStarted/partialToolCall/
+      // toolCallCompleted) changes the call set, so revoke any finalize armed by an earlier drain.
+      if (isClientToolFrame(message)) this.noteClientToolActivity();
       for (const event of mapped) push(event);
       return;
     }
@@ -396,7 +464,10 @@ class LiveCursorTransport implements CursorTransport {
     // several tool calls can otherwise exceed the bridge's stall watchdog (upstream_stall_timeout).
     // Emit a liveness heartbeat for these progress frames so the watchdog sees the upstream is alive.
     // Never after a terminal (done/truncation): a stray post-terminal frame must stay fully inert.
-    if (!state.terminated && isCursorProgressFrame(message)) push({ type: "heartbeat" });
+    if (!state.terminated && isCursorProgressFrame(message)) {
+      if (isClientToolFrame(message)) this.noteClientToolActivity();
+      push({ type: "heartbeat" });
+    }
   }
 }
 
@@ -413,6 +484,22 @@ function isCursorProgressFrame(message: AgentServerMessage): boolean {
     case "partialToolCall":
     case "toolCallDelta":
     case "tokenDelta":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
+ * A tool-call lifecycle frame that can change the client tool call set (announce a new sibling or
+ * commit one). Used to revoke a pending finalize so a late-announced parallel call is never dropped.
+ */
+function isClientToolFrame(message: AgentServerMessage): boolean {
+  if (message.message.case !== "interactionUpdate") return false;
+  switch (message.message.value.message.case) {
+    case "toolCallStarted":
+    case "partialToolCall":
+    case "toolCallCompleted":
       return true;
     default:
       return false;

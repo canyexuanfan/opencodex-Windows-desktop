@@ -73,7 +73,7 @@ describe("363-B: tool result reaches the model via rootPromptMessagesJson", () =
 import { create as createPb } from "@bufbuild/protobuf";
 import { ExecServerMessageSchema, McpArgsSchema } from "../src/adapters/cursor/gen/agent_pb";
 import { createCursorProtobufEventState } from "../src/adapters/cursor/protobuf-events";
-import { planMcpArgsHandling } from "../src/adapters/cursor/live-transport";
+import { planMcpArgsHandling, finalizeAfterDrain } from "../src/adapters/cursor/live-transport";
 
 function execMcpArgs(opts: { provider?: string; toolName?: string; toolCallId?: string; args?: Record<string, Uint8Array> }) {
   return createPb(ExecServerMessageSchema, {
@@ -104,12 +104,17 @@ describe("363-A: turn-1 termination for Responses client tool via exec mcpArgs",
     const types = plan.events.map(e => e.type);
     expect(types).toContain("tool_call_start");
     expect(types).toContain("tool_call_end");
-    // ...then deliberately ends turn 1 as completed so onCompletedResponse stores the conversationId.
-    expect(types).toContain("done");
+    // ...but it must NOT synchronously end turn 1. A sibling client tool call may still be announced
+    // in a LATER receive chunk (toolCallStarted after this exec); finalizing now would truncate it.
+    // Instead the plan flags finalize-when-drained and the transport arms a revocable grace timer.
+    expect(types).not.toContain("done");
     expect(types).not.toContain("error");
-    // And cancels the Cursor run (no fake mcpResult written).
-    expect(plan.cancelCursorRun).toBe(true);
+    expect(plan.cancelCursorRun).toBe(false);
+    expect(plan.finalizeWhenDrained).toBe(true);
     expect(plan.writeMcpResult).toBeUndefined();
+    // When the grace window elapses with the call set still drained, finalize emits exactly one done.
+    const finalized = finalizeAfterDrain(state);
+    expect(finalized.map(e => e.type)).toEqual(["done"]);
   });
 
   test("non-Responses mcpArgs is left to native exec (not handled by the bridge)", () => {
@@ -126,11 +131,12 @@ describe("363-A: turn-1 termination for Responses client tool via exec mcpArgs",
     const plan = planMcpArgsHandling(execMcpArgs({ args: { path: new TextEncoder().encode(JSON.stringify("a.txt")) } }), state);
     // Must NOT fall through to native-exec even though the mapper yields no fresh tool events.
     expect(plan.handledByResponsesBridge).toBe(true);
-    expect(plan.cancelCursorRun).toBe(true);
     expect(plan.writeMcpResult).toBeUndefined();
-    // It still terminates turn 1 (done) so the turn completes cleanly.
-    expect(plan.events.map(e => e.type)).toContain("done");
-    expect(plan.events.map(e => e.type)).not.toContain("error");
+    // The mapper yields no fresh events, but the call set is already drained, so the plan flags
+    // finalize-when-drained (the transport's grace timer ends the turn) rather than falling through.
+    expect(plan.cancelCursorRun).toBe(false);
+    expect(plan.finalizeWhenDrained).toBe(true);
+    expect(finalizeAfterDrain(state).map(e => e.type)).toEqual(["done"]);
   });
 
   test("parallel: an open sibling tool call defers turn-1 termination (no done, no cancel, no truncation error)", () => {
@@ -152,18 +158,51 @@ describe("363-A: turn-1 termination for Responses client tool via exec mcpArgs",
     expect(typesA).not.toContain("done");
     expect(typesA).not.toContain("error");
     expect(planA.cancelCursorRun).toBe(false);
+    expect(planA.finalizeWhenDrained).toBe(false);
     expect(state.openToolCalls.has("call_b")).toBe(true);
 
-    // call_b's exec args arrive last. Now every call is committed -> finalize turn 1 with done + cancel.
     const planB = planMcpArgsHandling(
       execMcpArgs({ toolName: "echo_b", toolCallId: "call_b", args: { text: new TextEncoder().encode(JSON.stringify("B")) } }),
       state,
     );
     const typesB = planB.events.map(e => e.type);
     expect(typesB).toContain("tool_call_end");
-    expect(typesB).toContain("done");
+    expect(typesB).not.toContain("done");
     expect(typesB).not.toContain("error");
-    expect(planB.cancelCursorRun).toBe(true);
+    expect(planB.cancelCursorRun).toBe(false);
+    expect(planB.finalizeWhenDrained).toBe(true);
     expect(state.openToolCalls.size).toBe(0);
+    expect(finalizeAfterDrain(state).map(e => e.type)).toEqual(["done"]);
+  });
+
+  test("hidden parallel sibling: a late-announced call revokes a pending finalize (no premature done)", () => {
+    const state = createCursorProtobufEventState({ clientToolNames: ["echo_a", "echo_b"] });
+    // Only call_a is known so far (its start + exec arrive in the same receive chunk).
+    state.openToolCalls.set("call_a", { name: "echo_a", args: "" });
+    state.startedClientToolCalls = 1;
+    const planA = planMcpArgsHandling(
+      execMcpArgs({ toolName: "echo_a", toolCallId: "call_a", args: { text: new TextEncoder().encode(JSON.stringify("A")) } }),
+      state,
+    );
+    // call_a drains the known set, so the plan flags finalize-when-drained (timer armed by transport).
+    expect(planA.finalizeWhenDrained).toBe(true);
+    expect(planA.cancelCursorRun).toBe(false);
+    expect(planA.events.map(e => e.type)).not.toContain("done");
+
+    // BEFORE the grace timer fires, Cursor announces a sibling (call_b) in a later chunk.
+    state.openToolCalls.set("call_b", { name: "echo_b", args: "" });
+    state.startedClientToolCalls = 2;
+
+    // The pending finalize must be revoked: re-checking the drain guard now yields NO done (call_b open).
+    expect(finalizeAfterDrain(state)).toEqual([]);
+    expect(state.terminated).not.toBe(true);
+
+    // call_b's exec arrives and drains the set again; only now does finalize emit a single done.
+    const planB = planMcpArgsHandling(
+      execMcpArgs({ toolName: "echo_b", toolCallId: "call_b", args: { text: new TextEncoder().encode(JSON.stringify("B")) } }),
+      state,
+    );
+    expect(planB.finalizeWhenDrained).toBe(true);
+    expect(finalizeAfterDrain(state).map(e => e.type)).toEqual(["done"]);
   });
 });

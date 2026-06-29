@@ -18,6 +18,11 @@ export interface CursorTransportFactoryInput {
   headers?: Headers;
   /** Pre-first-frame deadline (dial + first server frame). Defaults to 30s when omitted. */
   firstFrameTimeoutMs?: number;
+  /**
+   * Grace window (ms) before a drained client-tool turn is finalized, so a sibling tool call
+   * announced in a later receive chunk can revoke a premature finalize. Defaults to 50ms.
+   */
+  clientToolFinalizeGraceMs?: number;
 }
 
 export type CursorTransportFactory = (input: CursorTransportFactoryInput) => CursorTransport;
