@@ -348,6 +348,27 @@ export function bridgeToResponsesSSE(
               closeCurrentToolCall();
               break;
             }
+            case "web_search_call": {
+              // Self-contained native search activity (the sidecar already ran the search). Close any
+              // open item first, then emit the added/done pair under a fresh output index so Codex
+              // renders a "Searched the web" cell. Reuse event.id as the item id on both frames.
+              if (currentMsg) closeCurrentMessage();
+              if (currentReasoning) closeCurrentReasoning();
+              if (currentRawReasoning) closeCurrentRawReasoning();
+              if (currentToolCall) closeCurrentToolCall();
+              emit("response.output_item.added", {
+                output_index: outputIndex,
+                item: { type: "web_search_call", id: event.id, status: "in_progress" },
+              });
+              const item = {
+                type: "web_search_call", id: event.id, status: event.status ?? "completed",
+                action: { type: "search", query: event.query },
+              };
+              emit("response.output_item.done", { output_index: outputIndex, item });
+              finishedItems.push(item as OutputItem);
+              outputIndex++;
+              break;
+            }
             case "done": {
               if (currentMsg) closeCurrentMessage();
               if (currentReasoning) closeCurrentReasoning();
@@ -547,6 +568,16 @@ export function buildResponseJSON(
         break;
       case "tool_call_end":
         flushToolCall();
+        break;
+      case "web_search_call":
+        if (currentText) flushText();
+        if (currentSummaryReasoning) flushSummaryReasoning();
+        if (currentRawReasoning) flushRawReasoning();
+        flushToolCall();
+        output.push({
+          type: "web_search_call", id: e.id, status: e.status ?? "completed",
+          action: { type: "search", query: e.query },
+        });
         break;
       case "error":
         errorMessage = e.message;

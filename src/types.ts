@@ -182,6 +182,10 @@ export type AdapterEvent =
   | { type: "tool_call_start"; id: string; name: string }
   | { type: "tool_call_delta"; arguments: string }
   | { type: "tool_call_end" }
+  // Native web-search activity surfaced by the web-search sidecar so Codex renders a "Searched the
+  // web" item. The bridge expands this into a self-contained web_search_call output item; routed
+  // adapters never emit it (only src/web-search/loop.ts does, for searches it actually ran).
+  | { type: "web_search_call"; id: string; query: string; status?: "completed" | "in_progress" }
   | { type: "done"; usage?: OcxUsage }
   | { type: "error"; message: string };
 

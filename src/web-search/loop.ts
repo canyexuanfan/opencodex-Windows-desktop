@@ -118,6 +118,9 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
   const toolsNoWebSearch = allTools.filter(t => !t.webSearch);
   let searchesExecuted = 0;
   let finalEvents: AdapterEvent[] = [];
+  // Searches we actually ran via the sidecar (not failed-repeat / limit / empty-query placeholders).
+  // Replayed as native web_search_call items so Codex shows a "Searched the web" cell.
+  const executedSearches: { id: string; query: string }[] = [];
   // Queries whose search already failed this turn — repeats are short-circuited so a model that keeps
   // re-asking the same failing query doesn't burn the whole search budget on it.
   const failedQueries = new Set<string>();
@@ -190,6 +193,9 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
         outcome = await runWebSearch(call.query, hostedTool, forwardProvider, selectedForwardHeaders, settings, abortSignal, recordSidecarOutcome);
         searchesExecuted++;
         if (outcome.error) failedQueries.add(normalizeQuery(call.query));
+        // Record only searches that actually hit the sidecar (this branch), so the native UI mirrors
+        // real searches — not empty/limit/repeat placeholders handled in the branches above.
+        executedSearches.push({ id: call.id, query: call.query });
       }
       messages.push({
         role: "assistant",
@@ -211,8 +217,13 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
     if (t.freeform) freeform.add(t.name);
     if (t.toolSearch) toolSearch.add(t.name);
   }
+  // Surface the searches that ran as native web_search_call items, ahead of the final answer, so the
+  // routed model's turn shows "Searched the web" activity in Codex.
+  const searchEvents: AdapterEvent[] = executedSearches.map(s => ({
+    type: "web_search_call", id: s.id, query: s.query,
+  }));
   const sse = bridgeToResponsesSSE(
-    replay(finalEvents), parsed.modelId, toolNsMap, freeform, toolSearch,
+    replay([...searchEvents, ...finalEvents]), parsed.modelId, toolNsMap, freeform, toolSearch,
     undefined, undefined,
     {
       ...(deps.forceEmptyResponseId ? { responseId: "" } : {}),

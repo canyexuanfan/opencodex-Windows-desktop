@@ -1,8 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { parseRequest } from "../src/responses/parser";
 import { planWebSearch } from "../src/web-search";
+import { runWithWebSearch } from "../src/web-search/loop";
 import { headersForCodexAuthContext } from "../src/codex-auth-context";
-import type { OcxConfig, OcxProviderConfig } from "../src/types";
+import type { AdapterEvent, OcxConfig, OcxProviderConfig } from "../src/types";
+import type { ProviderAdapter } from "../src/adapters/base";
 
 const routedProvider: OcxProviderConfig = {
   adapter: "openai-chat",
@@ -94,5 +96,110 @@ describe("web-search sidecar planning", () => {
     expect(planWebSearch(config({ providers: { routed: routedProvider } }), parsed, false, new Headers({ authorization: "Bearer x" }), routedProvider, "model")).toBeUndefined();
     expect(planWebSearch(config({ webSearchSidecar: { enabled: false } }), parsed, false, new Headers({ authorization: "Bearer x" }), routedProvider, "model")).toBeUndefined();
     expect(planWebSearch(config(), { ...parsed, _webSearch: undefined }, false, new Headers({ authorization: "Bearer x" }), routedProvider, "model")).toBeUndefined();
+  });
+});
+
+const originalFetch = globalThis.fetch;
+afterEach(() => { globalThis.fetch = originalFetch; });
+
+async function collectSse(stream: ReadableStream<Uint8Array>): Promise<{ event?: string; data: Record<string, unknown> }[]> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+  }
+  return text.split("\n\n")
+    .map(frame => frame.trim())
+    .filter(frame => frame.length > 0 && frame !== "data: [DONE]")
+    .map(frame => {
+      const lines = frame.split("\n");
+      const event = lines.find(line => line.startsWith("event: "))?.slice(7);
+      const dataLine = lines.find(line => line.startsWith("data: "));
+      return { event, data: JSON.parse(dataLine?.slice(6) ?? "{}") as Record<string, unknown> };
+    });
+}
+
+/** Adapter whose first non-stream pass returns the events, and every later (forceAnswer) pass a text answer. */
+function scriptedAdapter(firstPass: AdapterEvent[]): ProviderAdapter {
+  let pass = 0;
+  return {
+    name: "mock",
+    buildRequest: () => ({ url: "https://routed.test/v1/chat/completions", method: "POST", headers: {}, body: "{}" }),
+    async *parseStream() { /* unused */ },
+    async parseResponse() {
+      pass++;
+      if (pass === 1) return firstPass;
+      return [{ type: "text_delta", text: "final answer" }, { type: "done" }];
+    },
+  };
+}
+
+describe("web-search sidecar native web_search_call emission", () => {
+  test("an executed search emits a web_search_call item ahead of the assistant message", async () => {
+    globalThis.fetch = ((input) => {
+      const url = String(input);
+      if (url.startsWith("https://routed.test/")) return Promise.resolve(new Response("{}", { status: 200 }));
+      // sidecar /responses: return a minimal completed SSE with answer text
+      return Promise.resolve(new Response(
+        'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"docs say X"}\n\n' +
+          'event: response.completed\ndata: {"type":"response.completed"}\n\n',
+        { headers: { "Content-Type": "text/event-stream" } },
+      ));
+    }) as typeof fetch;
+
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "Search for current docs", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: scriptedAdapter([
+        { type: "tool_call_start", id: "call_1", name: "web_search" },
+        { type: "tool_call_delta", arguments: JSON.stringify({ query: "current docs" }) },
+        { type: "tool_call_end" },
+      ]),
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+    });
+
+    const frames = await collectSse(response.body!);
+    const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
+    const output = completed.output as Record<string, unknown>[];
+    expect(output.map(item => item.type)).toEqual(["web_search_call", "message"]);
+    expect(output[0]).toMatchObject({ type: "web_search_call", action: { type: "search", query: "current docs" } });
+  });
+
+  test("empty-query and limit placeholders do NOT emit a web_search_call item", async () => {
+    globalThis.fetch = ((input) => {
+      const url = String(input);
+      if (url.startsWith("https://routed.test/")) return Promise.resolve(new Response("{}", { status: 200 }));
+      return Promise.resolve(new Response(
+        'event: response.completed\ndata: {"type":"response.completed"}\n\n',
+        { headers: { "Content-Type": "text/event-stream" } },
+      ));
+    }) as typeof fetch;
+
+    // First pass: an empty-query web_search call (handled by the empty-query branch, never hits the sidecar).
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "go", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: scriptedAdapter([
+        { type: "tool_call_start", id: "call_empty", name: "web_search" },
+        { type: "tool_call_delta", arguments: JSON.stringify({ query: "" }) },
+        { type: "tool_call_end" },
+      ]),
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+    });
+
+    const frames = await collectSse(response.body!);
+    const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
+    const output = completed.output as Record<string, unknown>[];
+    expect(output.some(item => item.type === "web_search_call")).toBe(false);
+    expect(output.map(item => item.type)).toEqual(["message"]);
   });
 });
