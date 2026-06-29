@@ -70,6 +70,7 @@ describe("request log metadata", () => {
       model: "gpt-5.5",
       provider: "chatgpt-p000001",
       requestedModel: "gpt-5.5",
+      requestedEffort: "xhigh",
       requestedServiceTier: "priority",
       requestedSpeedLabel: requestLogSpeedLabel("priority"),
       configuredServiceTier: "fast",
@@ -92,6 +93,7 @@ describe("request log metadata", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
       requestedModel: "gpt-5.5",
+      requestedEffort: "xhigh",
       requestedServiceTier: "priority",
       requestedSpeedLabel: "fast",
       configuredServiceTier: "fast",
@@ -182,6 +184,81 @@ describe("request log metadata", () => {
       usageStatus: "reported",
       totalTokens: 13,
       usage: { inputTokens: 9, outputTokens: 4 },
+    });
+  });
+
+  test("deferred SSE logging marks Kiro usage as estimated without changing SSE payload", async () => {
+    const entries: RequestLogEntry[] = [];
+    const payload = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"kiro/claude-sonnet-4.5\",\"usage\":{\"input_tokens\":9,\"output_tokens\":4}}}";
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`data: ${payload}\n\n`));
+        controller.close();
+      },
+    });
+    const response = responseWithDeferredRequestLog(
+      new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }),
+      "ocx-test-kiro-sse-usage",
+      Date.now(),
+      { model: "kiro/claude-sonnet-4.5", provider: "kiro-p9d8524" },
+      entry => entries.push(entry),
+    );
+
+    const text = await response.text();
+    expect(text).toContain("\"usage\":{\"input_tokens\":9,\"output_tokens\":4}");
+    expect(text).not.toContain("estimated");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      terminalStatus: "completed",
+      usageStatus: "estimated",
+      totalTokens: 13,
+      usage: { inputTokens: 9, outputTokens: 4, estimated: true },
+    });
+  });
+
+  test("deferred SSE logging uses adapter-provided Kiro log input tokens", async () => {
+    const entries: RequestLogEntry[] = [];
+    const payload = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"kiro/claude-sonnet-4.5\",\"usage\":{\"input_tokens\":9,\"output_tokens\":4}}}";
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`data: ${payload}\n\n`));
+        controller.close();
+      },
+    });
+    const response = responseWithDeferredRequestLog(
+      new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }),
+      "ocx-test-kiro-sse-log-usage",
+      Date.now(),
+      { model: "kiro/claude-sonnet-4.5", provider: "kiro-p9d8524", usageLogInputTokens: 240_000 },
+      entry => entries.push(entry),
+    );
+
+    const text = await response.text();
+    expect(text).toContain("\"input_tokens\":9");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      usageStatus: "estimated",
+      totalTokens: 240_004,
+      usage: { inputTokens: 240_000, outputTokens: 4, estimated: true },
+    });
+  });
+
+  test("final logging shows numeric Kiro estimates even when SSE usage is absent", async () => {
+    const entries: RequestLogEntry[] = [];
+    const response = responseWithDeferredRequestLog(
+      new Response(null, { status: 200 }),
+      "ocx-test-kiro-fallback-log-usage",
+      Date.now(),
+      { model: "kiro/claude-opus-4.8", provider: "kiro-p442fff", usageLogInputTokens: 133_900 },
+      entry => entries.push(entry),
+    );
+
+    await response.text();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      usageStatus: "estimated",
+      totalTokens: 133_900,
+      usage: { inputTokens: 133_900, outputTokens: 0, estimated: true },
     });
   });
 });

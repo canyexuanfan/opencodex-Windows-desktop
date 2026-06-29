@@ -14,7 +14,7 @@ function responsesUsage(usage: OcxUsage | undefined): Record<string, unknown> {
   const out: Record<string, unknown> = {
     input_tokens: usage.inputTokens,
     output_tokens: usage.outputTokens,
-    total_tokens: usage.inputTokens + usage.outputTokens,
+    total_tokens: usage.totalTokens ?? usage.inputTokens + usage.outputTokens,
   };
   if (usage.cachedInputTokens !== undefined) {
     out.input_tokens_details = { cached_tokens: usage.cachedInputTokens };

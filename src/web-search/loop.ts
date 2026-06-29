@@ -3,6 +3,7 @@ import type { AdapterEvent, OcxMessage, OcxParsedRequest, OcxProviderConfig } fr
 import { namespacedToolName } from "../types";
 import { bridgeToResponsesSSE } from "../bridge";
 import { runWebSearch, type SidecarOutcomeRecorder, type SidecarSettings } from "./executor";
+import { cancelBodyOnAbort } from "../abort";
 import { formatWebSearchResult } from "./format-result";
 import { WEB_SEARCH_TOOL_NAME } from "./synthetic-tool";
 
@@ -132,12 +133,14 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
     const request = adapter.buildRequest(iterParsed, { headers: selectedForwardHeaders });
     let resp: Response;
     try {
-      resp = await fetch(request.url, {
-        method: request.method,
-        headers: request.headers,
-        body: request.body,
-        signal: abortSignal,
-      });
+      resp = adapter.fetchResponse
+        ? await adapter.fetchResponse(request, { abortSignal })
+        : await fetch(request.url, {
+            method: request.method,
+            headers: request.headers,
+            body: request.body,
+            signal: abortSignal,
+          });
     } catch (e) {
       return jsonError(502, `Provider unreachable: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -145,7 +148,24 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
       const t = await resp.text().catch(() => "");
       return jsonError(resp.status, `Provider error ${resp.status}: ${t.slice(0, 400)}`);
     }
-    const events = await adapter.parseResponse(resp);
+    // The fetch above carries `abortSignal`; when the turn is superseded/cancelled, Bun aborts the
+    // response body stream. If parseResponse hasn't attached a reader yet, the body's pending read is
+    // orphaned off the awaited path and surfaces as `unhandledRejection: TypeError: null is not an
+    // object` (native-only stack). Proactively cancel the body on abort so WE settle it, and guard
+    // the drain so a mid-decode abort/stream error ends cleanly instead of throwing.
+    const detachBodyGuard = cancelBodyOnAbort(resp.body, abortSignal);
+    let events: AdapterEvent[];
+    try {
+      events = await adapter.parseResponse(resp);
+    } catch (e) {
+      await resp.body?.cancel().catch(() => {});
+      if (abortSignal?.aborted) {
+        return jsonError(499, "client closed request during web-search");
+      }
+      return jsonError(502, `Provider stream error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      detachBodyGuard();
+    }
     const { calls, passthrough, hasRealToolCall } = scanEventsForWebSearch(events);
     // Loop (search + re-ask) ONLY when the model's actionable output is purely web_search. A real
     // tool call (e.g. shell/apply_patch) means this turn is terminal for Codex — finalize so those

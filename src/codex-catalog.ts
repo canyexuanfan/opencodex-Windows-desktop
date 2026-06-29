@@ -36,23 +36,49 @@ function isDefaultCatalogPath(path: string): boolean {
 
 /**
  * Native OpenAI / Codex models served via ChatGPT OAuth passthrough — FALLBACK only. The ChatGPT
- * backend has no `GET /models`, so the real set is read from the live Codex catalog (the slugs Codex
- * itself ships for the installed version) via nativeOpenAiSlugs(); this static list is used only when
- * no catalog is present. Keep it to ids ChatGPT actually accepts — advertising a phantom (e.g. an
- * old `gpt-5.2`/`gpt-5.3-codex` that a newer Codex dropped) makes it 400 "model is not supported".
+ * backend has no `GET /models`, so the real set is read from the live Codex catalog via
+ * nativeOpenAiSlugs(); this static list is used when no catalog is present, plus selected documented
+ * Codex-native additions that may lag in a user's installed Codex catalog.
  */
 export const NATIVE_OPENAI_MODELS = [
   "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark",
 ];
 
+const DOCUMENTED_NATIVE_OPENAI_ADDITIONS = ["gpt-5.3-codex-spark"];
+
+/**
+ * The ONLY native OpenAI/Codex slugs opencodex advertises. A user's installed Codex ships extra
+ * native models in its live catalog (e.g. `gpt-5.2`, `gpt-5.3-codex`, `codex-auto-review`); those
+ * are legacy/internal and must never surface in `/v1/models` or the subagent picker. Live-catalog
+ * native slugs are filtered against this allowlist so only the supported set is exposed.
+ */
+const SUPPORTED_NATIVE_OPENAI_SLUGS = new Set(NATIVE_OPENAI_MODELS);
+
+/**
+ * True when a bare slug is an OpenAI/Codex-family native that opencodex does NOT support
+ * (legacy/internal like `gpt-5.2`, `gpt-5.3-codex`, `codex-auto-review`). Used to drop these
+ * from the ON-DISK catalog so the Codex file picker matches the live `/v1/models` filter,
+ * WITHOUT removing genuine user-added natives (non gpt-/codex- slugs are preserved).
+ */
+function isUnsupportedOpenAiNativeSlug(slug: string): boolean {
+  if (slug.includes("/")) return false;
+  if (SUPPORTED_NATIVE_OPENAI_SLUGS.has(slug)) return false;
+  return /^(?:gpt|codex)-/.test(slug);
+}
+
+const NATIVE_OPENAI_CONTEXT_OVERRIDES: Record<string, { contextWindow?: number; maxContextWindow?: number }> = {
+  "gpt-5.5": { contextWindow: 272_000, maxContextWindow: 272_000 },
+  "gpt-5.4": { maxContextWindow: 1_000_000 },
+};
+
 /**
  * The native (passthrough) OpenAI slugs to advertise — the LIVE Codex catalog's own bare slugs when
- * available (always-latest: matches exactly what the installed Codex supports), else the static
- * fallback above. Single source for the /v1/models native list and the subagent-default seed.
+ * available, with documented Codex-native additions layered in, else the static fallback above.
+ * Single source for the /v1/models native list and the subagent-default seed.
  */
 export function nativeOpenAiSlugs(): string[] {
   const live = listCatalogNativeSlugs();
-  return live.length > 0 ? live : NATIVE_OPENAI_MODELS;
+  return live.length > 0 ? unique([...live, ...DOCUMENTED_NATIVE_OPENAI_ADDITIONS]) : NATIVE_OPENAI_MODELS;
 }
 
 export interface CatalogModel { id: string; provider: string; owned_by?: string; reasoningEfforts?: string[]; contextWindow?: number; inputModalities?: string[]; }
@@ -142,6 +168,23 @@ function ensureAutoCompactTokenLimit(entry: RawEntry): RawEntry {
   return entry;
 }
 
+function isNativeOpenAiEntry(entry: RawEntry): boolean {
+  return typeof entry.slug === "string" && !entry.slug.includes("/");
+}
+
+function applyNativeOpenAiContextOverride(entry: RawEntry): void {
+  if (!isNativeOpenAiEntry(entry)) return;
+  const override = NATIVE_OPENAI_CONTEXT_OVERRIDES[entry.slug as string];
+  if (!override) return;
+  if (typeof override.contextWindow === "number") {
+    entry.context_window = override.contextWindow;
+    entry.auto_compact_token_limit = Math.floor(override.contextWindow * 0.9);
+  }
+  if (typeof override.maxContextWindow === "number") {
+    entry.max_context_window = override.maxContextWindow;
+  }
+}
+
 function ensureStrictCatalogFields(entry: RawEntry): RawEntry {
   if (typeof entry.supports_reasoning_summaries !== "boolean") entry.supports_reasoning_summaries = true;
   if (typeof entry.default_reasoning_summary !== "string") entry.default_reasoning_summary = "none";
@@ -160,7 +203,7 @@ function ensureStrictCatalogFields(entry: RawEntry): RawEntry {
   if (
     typeof entry.max_context_window !== "number"
     || entry.max_context_window <= 0
-    || entry.max_context_window > contextWindow
+    || (!isNativeOpenAiEntry(entry) && entry.max_context_window > contextWindow)
   ) {
     entry.max_context_window = contextWindow;
   }
@@ -398,6 +441,8 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
       normalizeRoutedCatalogEntry(e);
       applyJawcodeCatalogMetadata(e, slug);
       applyCatalogModelMetadata(e, model);
+    } else {
+      applyNativeOpenAiContextOverride(e);
     }
     return ensureStrictCatalogFields(normalizeServiceTiers(e));
   }
@@ -412,6 +457,7 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
   else applyReasoningLevels(entry);
   applyJawcodeCatalogMetadata(entry, slug);
   applyCatalogModelMetadata(entry, model);
+  applyNativeOpenAiContextOverride(entry);
   return ensureStrictCatalogFields(normalizeServiceTiers(entry));
 }
 
@@ -451,8 +497,18 @@ export function buildCatalogEntries(template: RawEntry | null, gptSlugs: string[
 /** Bare picker-visible native slugs in the live Codex catalog (drives the subagent picker UI). */
 export function listCatalogNativeSlugs(): string[] {
   const cat = readCurrentCatalogOrCache();
-  return (cat?.models ?? [])
-    .filter(m => typeof m.slug === "string" && !(m.slug as string).includes("/") && m.visibility === "list")
+  return filterSupportedNativeSlugs(cat?.models ?? []);
+}
+
+/**
+ * Keep only picker-visible, bare (non-routed) native slugs that opencodex actually supports.
+ * A user's installed Codex may list legacy/internal natives (`gpt-5.2`, `gpt-5.3-codex`,
+ * `codex-auto-review`, …); the allowlist drops them so `/v1/models` and the subagent picker
+ * never advertise an unsupported native. Exported for regression coverage.
+ */
+export function filterSupportedNativeSlugs(models: RawEntry[]): string[] {
+  return models
+    .filter(m => typeof m.slug === "string" && !(m.slug as string).includes("/") && m.visibility === "list" && SUPPORTED_NATIVE_OPENAI_SLUGS.has(m.slug as string))
     .map(m => m.slug as string);
 }
 
@@ -715,7 +771,13 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
   const baseline = readNativeBaseline(catalogPath);
   const goIds = new Set(enabledGo.map(m => m.id));
   const native = (catalog.models ?? [])
-    .filter(m => typeof m.slug === "string" && !(m.slug as string).includes("/") && !goIds.has(m.slug as string))
+    .filter(m => typeof m.slug === "string"
+      && !(m.slug as string).includes("/")
+      && !goIds.has(m.slug as string)
+      // Gap B: drop legacy/internal OpenAI-family natives (gpt-5.2, gpt-5.3-codex,
+      // codex-auto-review, …) from the on-disk catalog too, matching the live /v1/models
+      // allowlist. Genuine user-added natives (non gpt-/codex- slugs) are preserved.
+      && !isUnsupportedOpenAiNativeSlug(m.slug as string))
     .map(m => {
       const slug = m.slug as string;
       const baselinePriority = baseline.get(slug) ?? (m.priority as number);
@@ -726,12 +788,34 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
           : baselinePriority;
       return normalizeServiceTiers({ ...m, priority });
     });
+  const nativeSlugs = new Set(native.flatMap(m => typeof m.slug === "string" ? [m.slug] : []));
+  for (const slug of nativeOpenAiSlugs()) {
+    if (nativeSlugs.has(slug)) continue;
+    nativeSlugs.add(slug);
+    const priority = rank.has(slug)
+      ? rank.get(slug)!
+      : featured.length > 0
+        ? featured.length + 100
+        : 9;
+    native.push(deriveEntry(template ? JSON.parse(JSON.stringify(template)) : null, slug, "OpenAI native model (Codex OAuth passthrough).", priority));
+  }
   // Central WS capability override on the FINAL on-disk catalog (the file Codex reads). Applies to
   // native AND routed so the advertised flag matches the implemented endpoint (phase 120.4) and a
   // native template can never leak supports_websockets while the flag is off.
   const wsEnabled = websocketsEnabled(config);
-  catalog.models = [...native, ...goEntries].map(m => {
-    const e = ensureStrictCatalogFields(normalizeServiceTiers(m));
+  // Gap A: never let a transient EMPTY routed fetch wipe routed entries that were on disk. If
+  // gatherRoutedModels returned nothing (provider down / flaky / cache miss) but the pre-sync
+  // catalog DID carry routed entries, preserve those prior routed entries instead of overwriting
+  // them with an empty set — otherwise the Codex picker silently loses kiro/opencode-go models.
+  let routedEntries = goEntries;
+  if (goEntries.length === 0 && catalogHasRoutedEntries(catalog)) {
+    routedEntries = (catalog.models ?? []).filter(m => typeof m.slug === "string" && (m.slug as string).includes("/"));
+    console.warn(`[opencodex] catalog sync: routed model fetch returned empty; preserving ${routedEntries.length} existing routed entr${routedEntries.length === 1 ? "y" : "ies"} on disk.`);
+  }
+  catalog.models = [...native, ...routedEntries].map(m => {
+    const normalized = normalizeServiceTiers(m);
+    applyNativeOpenAiContextOverride(normalized);
+    const e = ensureStrictCatalogFields(normalized);
     if (wsEnabled) e.supports_websockets = true;
     else delete e.supports_websockets;
     return e;

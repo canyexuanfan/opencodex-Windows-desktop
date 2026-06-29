@@ -155,17 +155,39 @@ async function handleStart(options: { block?: boolean } = {}) {
     if (!process.env.OCX_SERVICE) { try { restoreNativeCodex(); } catch { /* best-effort restore */ } }
   };
 
+  let shuttingDown = false;
+  let shutdownStartedAt = 0;
+  // Terminal Ctrl-C delivers SIGINT to the whole foreground group AND the launcher
+  // forwards its own — two signals land within milliseconds. Treat a duplicate inside
+  // this window as the same Ctrl-C (one graceful drain); a deliberate later press
+  // escalates to an immediate force-exit ("gradual kill").
+  const FORCE_AFTER_MS = 500;
   const shutdown = () => {
+    const now = Date.now();
+    if (shuttingDown) {
+      if (now - shutdownStartedAt < FORCE_AFTER_MS) return; // near-simultaneous duplicate — ignore
+      console.log("\n⏹  Force shutdown (second signal).");
+      try { syncCleanup(); } catch { /* best-effort */ }
+      process.exit(130);
+    }
+    shuttingDown = true;
+    shutdownStartedAt = now;
     console.log("\n🛑 Shutting down opencodex proxy...");
     void (async () => {
-      await drainAndShutdown(server, config.shutdownTimeoutMs ?? 5000);
-      syncCleanup();
-      process.exit(0);
+      try {
+        await drainAndShutdown(server, config.shutdownTimeoutMs ?? 5000);
+      } finally {
+        syncCleanup(); // idempotent (cleaned-guard); also re-run by process.on("exit")
+        process.exit(0);
+      }
     })();
   };
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+  // The launcher (bin/ocx.mjs) forwards SIGHUP too (e.g. terminal close); handle it
+  // gracefully here so it drains + cleans up instead of a default immediate kill.
+  process.on("SIGHUP", shutdown);
   process.on("exit", syncCleanup);
 
   await maybeShowStarPrompt(); // once-only [Y/n] GitHub-star prompt on first interactive start

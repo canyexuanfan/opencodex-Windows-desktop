@@ -52,6 +52,17 @@ describe("summarizeUsage", () => {
     expect(sum.summary.outputTokens).toBe(5);
   });
 
+  test("estimated usage is counted separately while still contributing tokens", () => {
+    const entries: PersistedUsageEntry[] = [
+      entry({ ts: FIXED_NOW - 1000, provider: "kiro", usageStatus: "estimated", usage: { inputTokens: 9, outputTokens: 4, estimated: true }, totalTokens: 13 }),
+    ];
+    const sum = summarizeUsage(entries, "30d", FIXED_NOW);
+    expect(sum.summary.requests).toBe(1);
+    expect(sum.summary.reportedRequests).toBe(0);
+    expect(sum.summary.estimatedRequests).toBe(1);
+    expect(sum.summary.totalTokens).toBe(13);
+  });
+
   test("days grid covers the full range with zero-fill", () => {
     const entries: PersistedUsageEntry[] = [
       entry({ ts: FIXED_NOW - 1000, usageStatus: "reported", usage: { inputTokens: 1, outputTokens: 1 }, totalTokens: 2 }),

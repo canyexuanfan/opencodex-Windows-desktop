@@ -63,6 +63,38 @@ describe("Responses bridge reasoning and usage parity", () => {
     expect(frames.some(f => f.event === "response.reasoning_text.delta")).toBe(false);
   });
 
+  test("usage totalTokens overrides input plus output totals", async () => {
+    const frames = await collectSse(bridgeToResponsesSSE(replay([
+      { type: "done", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 50_000, estimated: true } },
+    ]), "kiro/claude-sonnet-4.5"));
+
+    const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
+    expect(completed.usage).toMatchObject({
+      input_tokens: 10,
+      output_tokens: 5,
+      total_tokens: 50_000,
+    });
+  });
+
+  test("adapter heartbeat is non-visual in streaming and non-streaming responses", async () => {
+    const events: AdapterEvent[] = [
+      { type: "heartbeat" },
+      { type: "text_delta", text: "ok" },
+      { type: "heartbeat" },
+      { type: "done" },
+    ];
+    const frames = await collectSse(bridgeToResponsesSSE(replay(events), "routed/model"));
+    expect(frames.some(f => f.event === "response.heartbeat")).toBe(false);
+    const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
+    const output = completed.output as Record<string, unknown>[];
+    expect(output).toHaveLength(1);
+    expect(output[0]).toMatchObject({ type: "message" });
+
+    const json = buildResponseJSON(events, "routed/model");
+    expect((json.output as Record<string, unknown>[]).map(item => item.type)).toEqual(["message"]);
+    expect(json.status).toBe("completed");
+  });
+
   test("raw reasoning closes before later text output and preserves ordering", async () => {
     const frames = await collectSse(bridgeToResponsesSSE(replay([
       { type: "reasoning_raw_delta", text: "raw" },

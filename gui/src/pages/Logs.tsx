@@ -15,6 +15,7 @@ interface LogEntry {
   timestamp: number;
   model: string;
   provider: string;
+  requestedEffort?: string;
   requestedServiceTier?: string;
   requestedSpeedLabel?: string;
   configuredServiceTier?: string;
@@ -44,6 +45,12 @@ function tokensTitle(log: LogEntry): string | undefined {
   if (typeof log.usage.cachedInputTokens === "number") parts.push(`cached=${log.usage.cachedInputTokens}`);
   if (typeof log.usage.reasoningOutputTokens === "number") parts.push(`reasoning=${log.usage.reasoningOutputTokens}`);
   return parts.join(" · ");
+}
+
+function displayTokenTotal(log: LogEntry): number | undefined {
+  if (typeof log.totalTokens === "number") return log.totalTokens;
+  if (log.usage) return log.usage.inputTokens + log.usage.outputTokens;
+  return undefined;
 }
 
 function speedLabel(log: LogEntry): string | undefined {
@@ -106,6 +113,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                 <th>{t("logs.col.time")}</th>
                 <th>{t("logs.col.request")}</th>
                 <th>{t("logs.col.model")}</th>
+                <th>{t("logs.col.effort")}</th>
                 <th>{t("logs.col.provider")}</th>
                 <th>{t("logs.col.status")}</th>
                 <th className="num">{t("logs.col.tokens")}</th>
@@ -124,14 +132,18 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                       {speedLabel(log) && <span className="badge badge-amber">{speedLabel(log)}</span>}
                     </span>
                   </td>
+                  <td className="mono">{log.requestedEffort ?? "-"}</td>
                   <td className="muted">{log.provider}</td>
                   <td>
                     <span className="mono" style={{ color: statusColor(log.status), fontWeight: 600 }}>{log.status}</span>
                   </td>
                   <td className="num mono" title={tokensTitle(log)}>
-                    {log.usageStatus === "reported" && typeof log.totalTokens === "number"
-                      ? formatTokens(log.totalTokens)
-                      : <span className="muted">{t(`logs.tokens.${log.usageStatus ?? "unreported"}`)}</span>}
+                    {(() => {
+                      const tokenTotal = displayTokenTotal(log);
+                      return tokenTotal !== undefined
+                        ? formatTokens(tokenTotal)
+                        : <span className="muted">{t(`logs.tokens.${log.usageStatus ?? "unreported"}`)}</span>;
+                    })()}
                   </td>
                   <td className="muted mono">{log.errorCode ?? "-"}</td>
                   <td className="num">{log.durationMs}ms</td>

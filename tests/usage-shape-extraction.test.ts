@@ -17,12 +17,14 @@ describe("usageFromResponsesPayload", () => {
     const usage = usageFromResponsesPayload({
       input_tokens: 100,
       output_tokens: 23,
+      total_tokens: 150,
       input_tokens_details: { cached_tokens: 7 },
       output_tokens_details: { reasoning_tokens: 5 },
     });
     expect(usage).toEqual({
       inputTokens: 100,
       outputTokens: 23,
+      totalTokens: 150,
       cachedInputTokens: 7,
       reasoningOutputTokens: 5,
     });
@@ -32,12 +34,14 @@ describe("usageFromResponsesPayload", () => {
     const usage = usageFromResponsesPayload({
       prompt_tokens: 42,
       completion_tokens: 7,
+      total_tokens: 60,
       prompt_tokens_details: { cached_tokens: 11 },
       completion_tokens_details: { reasoning_tokens: 3 },
     });
     expect(usage).toEqual({
       inputTokens: 42,
       outputTokens: 7,
+      totalTokens: 60,
       cachedInputTokens: 11,
       reasoningOutputTokens: 3,
     });
