@@ -296,19 +296,29 @@ export function bridgeToResponsesSSE(
               break;
             }
             case "reasoning_raw_delta": {
+              // Chat-completions providers (DeepSeek-R style) deliver their thinking as raw
+              // `reasoning_content`, with no separate condensed summary stream. Codex renders the
+              // expandable trace from the SUMMARY channel only, so route reasoning_content through
+              // the same summary path as thinking_delta (issue #45). hideThinkingSummary suppresses
+              // it identically to the thinking path.
+              if (options?.hideThinkingSummary) break;
               if (currentMsg) closeCurrentMessage();
-              if (currentReasoning) closeCurrentReasoning();
+              if (currentRawReasoning) closeCurrentRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
-              if (!currentRawReasoning) {
+              if (!currentReasoning) {
                 const itemId = `rs_${uuid()}`;
-                const item = { type: "reasoning", id: itemId, summary: [] as never[], content: [] as { type: string; text: string }[] };
+                const item = { type: "reasoning", id: itemId, summary: [] as { type: string; text: string }[] };
                 emit("response.output_item.added", { output_index: outputIndex, item });
-                currentRawReasoning = { itemId, outputIndex, text: "" };
+                emit("response.reasoning_summary_part.added", {
+                  item_id: itemId, output_index: outputIndex, summary_index: 0,
+                  part: { type: "summary_text", text: "" },
+                });
+                currentReasoning = { itemId, outputIndex, text: "" };
               }
-              currentRawReasoning.text += event.text;
-              emit("response.reasoning_text.delta", {
-                item_id: currentRawReasoning.itemId, output_index: currentRawReasoning.outputIndex,
-                content_index: 0, delta: event.text,
+              currentReasoning.text += event.text;
+              emit("response.reasoning_summary_text.delta", {
+                item_id: currentReasoning.itemId, output_index: currentReasoning.outputIndex,
+                summary_index: 0, delta: event.text,
               });
               break;
             }
@@ -528,10 +538,13 @@ export function buildResponseJSON(
         currentSummaryReasoning += e.thinking;
         break;
       case "reasoning_raw_delta":
+        // Route raw reasoning_content through the summary channel (issue #45) so the final
+        // reasoning item carries a non-empty summary[] that Codex can expand. flushSummaryReasoning
+        // already honors hideThinkingSummary.
         if (currentText) flushText();
-        if (currentSummaryReasoning) flushSummaryReasoning();
+        if (currentRawReasoning) flushRawReasoning();
         if (currentToolCallId) flushToolCall();
-        currentRawReasoning += e.text;
+        currentSummaryReasoning += e.text;
         break;
       case "tool_call_start":
         if (currentText) flushText();
