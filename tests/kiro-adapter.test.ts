@@ -134,6 +134,20 @@ describe("kiro adapter — buildRequest", () => {
     expect(current.images).toEqual([{ format: "png", source: { bytes: "aGVsbG8=" } }]);
   });
 
+  test("image/jpg media type is normalized to the CodeWhisperer 'jpeg' format", () => {
+    const messages = [
+      { role: "user", content: [
+        { type: "text", text: "look" },
+        { type: "image", imageUrl: "data:image/jpg;base64,aGVsbG8=", detail: "high" },
+      ] },
+    ];
+    const { body } = createKiroAdapter(provider).buildRequest(
+      parsedWith(messages, [{ name: "noop", description: "d", parameters: { type: "object" } }]),
+    );
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+    expect(current.images).toEqual([{ format: "jpeg", source: { bytes: "aGVsbG8=" } }]);
+  });
+
   test("tools map to toolSpecification", () => {
     const { body } = createKiroAdapter(provider).buildRequest(
       parsedWith([{ role: "user", content: "hi" }], [{ name: "grep", description: "search", parameters: { type: "object" } }]),
@@ -288,6 +302,41 @@ describe("kiro adapter — buildRequest", () => {
     expect(allOf.type).toBe("object");
     expect(allOf.properties).toEqual({ a: { type: "string" }, b: { type: "string" } });
     expect(allOf.required).toEqual(expect.arrayContaining(["a", "b"]));
+  });
+
+  test("root composition preserves root properties/siblings and merges coexisting keywords", () => {
+    const pick = (schema: unknown) =>
+      JSON.parse(createKiroAdapter(provider).buildRequest(
+        parsedWith([{ role: "user", content: "hi" }], [{ name: "comp2", description: "d", parameters: schema }]),
+      ).body).conversationState.currentMessage.userInputMessage.userInputMessageContext.tools[0].toolSpecification.inputSchema.json;
+
+    // Root direct properties/required AND a sibling oneOf: keep the root fields, merge the variant.
+    const rootPlusOneOf = pick({
+      type: "object",
+      description: "keep me",
+      properties: { keep: { type: "string" } },
+      required: ["keep"],
+      oneOf: [{ properties: { a: { type: "string" } } }],
+    });
+    expect(rootPlusOneOf.oneOf).toBeUndefined();
+    expect(rootPlusOneOf.description).toBe("keep me");
+    expect(rootPlusOneOf.properties).toEqual({ keep: { type: "string" }, a: { type: "string" } });
+    expect(rootPlusOneOf.required).toEqual(["keep"]);
+
+    // oneOf AND allOf at the root simultaneously: both must be flattened (not just the first).
+    const both = pick({
+      oneOf: [{ properties: { a: { type: "string" } } }],
+      allOf: [{ properties: { b: { type: "string" } }, required: ["b"] }],
+    });
+    expect(both.oneOf).toBeUndefined();
+    expect(both.allOf).toBeUndefined();
+    expect(both.properties).toEqual({ a: { type: "string" }, b: { type: "string" } });
+    expect(both.required).toEqual(["b"]);
+
+    // $defs are preserved so merged $ref properties still resolve.
+    const withDefs = pick({ $defs: { X: { type: "string" } }, anyOf: [{ properties: { a: { $ref: "#/$defs/X" } } }] });
+    expect(withDefs.$defs).toEqual({ X: { type: "string" } });
+    expect(withDefs.properties).toEqual({ a: { $ref: "#/$defs/X" } });
   });
 
   test("long tool descriptions move into the system prompt instead of being truncated away", () => {
