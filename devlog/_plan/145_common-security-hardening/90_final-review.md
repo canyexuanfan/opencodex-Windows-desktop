@@ -47,11 +47,12 @@ auth-input hardening is tracked separately in
 ## Final verification bundle
 
 - `bun test tests/redact.test.ts tests/crash-guard.test.ts tests/usage-debug.test.ts tests/request-log.test.ts tests/server-auth.test.ts tests/error-fidelity.test.ts tests/usage-log.test.ts tests/usage-summary.test.ts tests/oauth-status-privacy.test.ts tests/kiro-oauth.test.ts tests/oauth-refresh.test.ts tests/config.test.ts tests/kiro-adapter.test.ts`
-  -> 174 pass, 0 fail, 571 expect calls.
+  -> refreshed after Kiro auth-input follow-up: 179 pass, 0 fail, 604 expect
+  calls.
 - `bun x tsc --noEmit` -> exit 0, no diagnostics.
 - File-size check for the active Kiro hardening files:
-  `src/oauth/kiro.ts` 161 lines, `src/oauth/kiro-credentials.ts` 242 lines,
-  `src/adapters/kiro.ts` 496 lines.
+  `src/oauth/kiro.ts` 164 lines, `src/oauth/kiro-credentials.ts` 256 lines,
+  `src/adapters/kiro.ts` 497 lines, `src/adapters/kiro-errors.ts` 40 lines.
 
 ## Completion decision
 

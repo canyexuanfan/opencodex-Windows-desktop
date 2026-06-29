@@ -189,3 +189,47 @@ Security notes:
 - The phase stays single-account. It broadens credential inputs and refresh
   compatibility but does not introduce failover, account pools, or write-back to
   external Kiro stores.
+
+## Independent audit follow-up
+
+Read-only audit (`Bacon`) initially returned FAIL after commit `4c97e0d`.
+
+Blocking findings:
+
+- Region strings from `KIRO_REGION`, `KIRO_API_REGION`, and imported
+  credential metadata were interpolated into Kiro runtime/auth URLs without a
+  central validator.
+- `clientIdHash` was joined directly into the AWS SSO cache path, allowing
+  traversal outside the intended cache directory.
+- Kiro eventstream exception/error payloads and stream parser catch errors could
+  surface raw upstream JSON, tokens, client secrets, profile ARNs, or local
+  absolute paths.
+
+Follow-up fixes:
+
+- Commit `931847b fix(kiro): sanitize region and upstream error details`
+  added:
+  - central Kiro region normalization/rejection in
+    `src/oauth/kiro-credentials.ts` and `src/oauth/kiro.ts`;
+  - `clientIdHash` basename-safe allowlisting;
+  - client-secret redaction in `src/redact.ts`;
+  - host-injection, traversal, and error-leak regression tests.
+- Commit `e95338e fix(kiro): include safe error formatter` added the tracked
+  `src/adapters/kiro-errors.ts` helper so `src/adapters/kiro.ts` stays under
+  the project 500-line limit.
+
+Re-verification:
+
+- `bun test tests/redact.test.ts tests/kiro-oauth.test.ts tests/kiro-adapter.test.ts tests/oauth-status-privacy.test.ts`
+  -> 67 pass, 0 fail.
+- `bun test tests/redact.test.ts tests/crash-guard.test.ts tests/usage-debug.test.ts tests/request-log.test.ts tests/server-auth.test.ts tests/error-fidelity.test.ts tests/usage-log.test.ts tests/usage-summary.test.ts tests/oauth-status-privacy.test.ts tests/kiro-oauth.test.ts tests/oauth-refresh.test.ts tests/config.test.ts tests/kiro-adapter.test.ts`
+  -> 179 pass, 0 fail, 604 expect calls.
+- `bun x tsc --noEmit` -> exit 0, no diagnostics.
+- `wc -l src/oauth/kiro.ts src/oauth/kiro-credentials.ts src/adapters/kiro.ts src/adapters/kiro-errors.ts`
+  -> 164 / 256 / 497 / 40 lines.
+
+Re-audit:
+
+- `Bacon` returned PASS. The audit confirmed validated region interpolation,
+  `clientIdHash` traversal blocking, safe Kiro upstream error formatting,
+  regression coverage, and file-size compliance.
