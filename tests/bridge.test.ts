@@ -27,25 +27,22 @@ async function collectSse(stream: ReadableStream<Uint8Array>): Promise<{ event?:
 }
 
 describe("Responses bridge reasoning and usage parity", () => {
-  test("streaming raw reasoning is routed through the expandable summary channel", async () => {
+  test("streaming raw reasoning emits reasoning_text deltas and final raw content", async () => {
     const frames = await collectSse(bridgeToResponsesSSE(replay([
       { type: "reasoning_raw_delta", text: "raw detail" },
       { type: "done", usage: { inputTokens: 10, outputTokens: 5, cachedInputTokens: 3, reasoningOutputTokens: 2 } },
     ]), "routed/model"));
 
-    // Raw reasoning_content is routed through the summary channel (issue #45) so Codex can expand
-    // it. No content-channel reasoning_text.delta is emitted for this producer anymore.
-    expect(frames.find(f => f.event === "response.reasoning_summary_text.delta")?.data)
-      .toMatchObject({ summary_index: 0, delta: "raw detail" });
-    expect(frames.some(f => f.event === "response.reasoning_text.delta")).toBe(false);
+    const delta = frames.find(f => f.event === "response.reasoning_text.delta")?.data;
+    expect(delta).toMatchObject({ content_index: 0, delta: "raw detail" });
 
     const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
     const output = completed.output as Record<string, unknown>[];
     expect(output[0]).toMatchObject({
       type: "reasoning",
-      summary: [{ type: "summary_text", text: "raw detail" }],
+      summary: [],
+      content: [{ type: "reasoning_text", text: "raw detail" }],
     });
-    expect((output[0] as { content?: unknown }).content).toBeUndefined();
     expect(completed.usage).toMatchObject({
       input_tokens: 10,
       input_tokens_details: { cached_tokens: 3 },
@@ -136,36 +133,12 @@ describe("Responses bridge reasoning and usage parity", () => {
     const output = json.output as Record<string, unknown>[];
     expect(output.map(item => item.type)).toEqual(["reasoning", "message"]);
     expect(output[0]).toMatchObject({
-      summary: [{ type: "summary_text", text: "raw json" }],
+      content: [{ type: "reasoning_text", text: "raw json" }],
     });
-    expect((output[0] as { content?: unknown }).content).toBeUndefined();
     expect(json.usage).toMatchObject({
       input_tokens_details: { cached_tokens: 1 },
       output_tokens_details: { reasoning_tokens: 2 },
     });
-  });
-
-  test("hideThinkingSummary suppresses routed raw reasoning in both paths", async () => {
-    // Streaming: no summary delta and no reasoning output item at all.
-    const frames = await collectSse(bridgeToResponsesSSE(replay([
-      { type: "reasoning_raw_delta", text: "secret" },
-      { type: "text_delta", text: "answer" },
-      { type: "done" },
-    ]), "routed/model", undefined, undefined, undefined, undefined, undefined, { hideThinkingSummary: true }));
-    expect(frames.some(f => f.event === "response.reasoning_summary_text.delta")).toBe(false);
-    expect(frames.some(f => f.event === "response.reasoning_text.delta")).toBe(false);
-    const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
-    const sseTypes = (completed.output as Record<string, unknown>[]).map(i => i.type);
-    expect(sseTypes).not.toContain("reasoning");
-
-    // Non-streaming: same parity — no reasoning item.
-    const json = buildResponseJSON([
-      { type: "reasoning_raw_delta", text: "secret" },
-      { type: "text_delta", text: "answer" },
-      { type: "done" },
-    ], "routed/model", { hideThinkingSummary: true });
-    const jsonTypes = (json.output as Record<string, unknown>[]).map(i => i.type);
-    expect(jsonTypes).not.toContain("reasoning");
   });
 
   test("non-streaming preserves text → tool → text output order", () => {
