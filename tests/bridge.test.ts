@@ -63,6 +63,19 @@ describe("Responses bridge reasoning and usage parity", () => {
     expect(frames.some(f => f.event === "response.reasoning_text.delta")).toBe(false);
   });
 
+  test("usage totalTokens overrides input plus output totals", async () => {
+    const frames = await collectSse(bridgeToResponsesSSE(replay([
+      { type: "done", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 50_000, estimated: true } },
+    ]), "kiro/claude-sonnet-4.5"));
+
+    const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
+    expect(completed.usage).toMatchObject({
+      input_tokens: 10,
+      output_tokens: 5,
+      total_tokens: 50_000,
+    });
+  });
+
   test("adapter heartbeat is non-visual in streaming and non-streaming responses", async () => {
     const events: AdapterEvent[] = [
       { type: "heartbeat" },

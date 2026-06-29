@@ -24,7 +24,7 @@ export function usageLogPath(): string {
 
 export function usageTotalTokens(usage: OcxUsage | undefined): number | undefined {
   if (!usage) return undefined;
-  return usage.inputTokens + usage.outputTokens;
+  return usage.totalTokens ?? usage.inputTokens + usage.outputTokens;
 }
 
 function isKiroLogProvider(provider: string): boolean {
@@ -47,6 +47,7 @@ function normalizeUsageValue(usage: OcxUsage | undefined): OcxUsage | undefined 
   return {
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
+    ...(typeof usage.totalTokens === "number" ? { totalTokens: usage.totalTokens } : {}),
     ...(typeof usage.cachedInputTokens === "number" ? { cachedInputTokens: usage.cachedInputTokens } : {}),
     ...(typeof usage.reasoningOutputTokens === "number" ? { reasoningOutputTokens: usage.reasoningOutputTokens } : {}),
     ...(usage.estimated ? { estimated: true } : {}),

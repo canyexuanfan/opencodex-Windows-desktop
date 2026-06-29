@@ -832,6 +832,7 @@ export function usageFromResponsesPayload(usage: unknown): OcxUsage | undefined 
     output_tokens?: unknown;
     input_tokens_details?: { cached_tokens?: unknown };
     output_tokens_details?: { reasoning_tokens?: unknown };
+    total_tokens?: unknown;
     prompt_tokens?: unknown;
     completion_tokens?: unknown;
     prompt_tokens_details?: { cached_tokens?: unknown };
@@ -841,6 +842,7 @@ export function usageFromResponsesPayload(usage: unknown): OcxUsage | undefined 
     return {
       inputTokens: raw.input_tokens,
       outputTokens: raw.output_tokens,
+      ...(typeof raw.total_tokens === "number" ? { totalTokens: raw.total_tokens } : {}),
       ...(typeof raw.input_tokens_details?.cached_tokens === "number"
         ? { cachedInputTokens: raw.input_tokens_details.cached_tokens }
         : {}),
@@ -853,6 +855,7 @@ export function usageFromResponsesPayload(usage: unknown): OcxUsage | undefined 
     return {
       inputTokens: raw.prompt_tokens,
       outputTokens: raw.completion_tokens,
+      ...(typeof raw.total_tokens === "number" ? { totalTokens: raw.total_tokens } : {}),
       ...(typeof raw.prompt_tokens_details?.cached_tokens === "number"
         ? { cachedInputTokens: raw.prompt_tokens_details.cached_tokens }
         : {}),

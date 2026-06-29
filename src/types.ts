@@ -188,6 +188,7 @@ export type AdapterEvent =
 export interface OcxUsage {
   inputTokens: number;
   outputTokens: number;
+  totalTokens?: number;
   cachedInputTokens?: number;
   reasoningOutputTokens?: number;
   estimated?: boolean;

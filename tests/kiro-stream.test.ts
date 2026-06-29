@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKiroAdapter } from "../src/adapters/kiro";
+import { parseKiroEvent } from "../src/adapters/kiro-events";
 import { encodeMessage } from "../src/lib/eventstream-decoder";
 import { estimateTokens } from "../src/lib/token-estimate";
 import type { OcxParsedRequest, OcxProviderConfig, OcxUsage } from "../src/types";
@@ -41,8 +42,8 @@ afterEach(() => {
 const provider = { adapter: "kiro", baseUrl: "https://runtime.us-east-1.kiro.dev", authMode: "oauth", apiKey: "tok-123" } as unknown as OcxProviderConfig;
 const bashTool = { name: "bash", description: "Run a shell command", parameters: { type: "object" } };
 
-function parsedWith(messages: unknown[], tools?: unknown[]): OcxParsedRequest {
-  return { modelId: "claude-sonnet-4.5", stream: true, options: {}, context: { messages, tools } } as unknown as OcxParsedRequest;
+function parsedWith(messages: unknown[], tools?: unknown[], modelId = "claude-sonnet-4.5"): OcxParsedRequest {
+  return { modelId, stream: true, options: {}, context: { messages, tools } } as unknown as OcxParsedRequest;
 }
 
 const eventFrame = (obj: unknown) => encodeMessage({ ":message-type": "event", ":event-type": "x" }, enc.encode(JSON.stringify(obj)));
@@ -66,6 +67,14 @@ async function doneUsage(adapter: ReturnType<typeof createKiroAdapter>, ...frame
 }
 
 describe("kiro adapter — parseStream", () => {
+  test("Kiro event parser preserves usage and context usage frames", () => {
+    expect(parseKiroEvent(enc.encode(JSON.stringify({ usage: 123 })))).toEqual({ type: "usage", usage: 123 });
+    expect(parseKiroEvent(enc.encode(JSON.stringify({ contextUsagePercentage: 25.5 })))).toEqual({
+      type: "context_usage",
+      contextUsagePercentage: 25.5,
+    });
+  });
+
   test("maps CW events (name repeated on every tool chunk) to AdapterEvents with accumulated args", async () => {
     const frames = [
       eventFrame({ content: "Hi " }),
@@ -297,6 +306,35 @@ describe("kiro adapter — parseStream", () => {
     expect(done.inputTokens).toBe(200);
     expect(done.outputTokens).toBe(100);
     expect(done.estimated).toBe(true);
+  });
+
+  test("Kiro contextUsagePercentage overrides total tokens for fixed-window models", async () => {
+    const adapter = createKiroAdapter(provider);
+    adapter.buildRequest(parsedWith([{ role: "user", content: "x".repeat(700) }]));
+    const done = await doneUsage(
+      adapter,
+      eventFrame({ content: "y".repeat(350) }),
+      eventFrame({ contextUsagePercentage: 25 }),
+    );
+
+    expect(done.inputTokens).toBe(200);
+    expect(done.outputTokens).toBe(100);
+    expect(done.totalTokens).toBe(50_000);
+    expect(done.estimated).toBe(true);
+  });
+
+  test("Kiro auto ignores provider-level context window and falls back to heuristic totals", async () => {
+    const adapter = createKiroAdapter({ ...provider, contextWindow: 200_000 });
+    adapter.buildRequest(parsedWith([{ role: "user", content: "x".repeat(700) }], undefined, "kiro-auto"));
+    const done = await doneUsage(
+      adapter,
+      eventFrame({ content: "y".repeat(350) }),
+      eventFrame({ contextUsagePercentage: 25 }),
+    );
+
+    expect(done.inputTokens).toBe(200);
+    expect(done.outputTokens).toBe(100);
+    expect(done.totalTokens).toBeUndefined();
   });
 
   test("fresh payload includes history while usage counts only the current turn", async () => {

@@ -2,6 +2,8 @@ import { decodeEventStream } from "../lib/eventstream-decoder";
 import { estimateTokens } from "../lib/token-estimate";
 import { debugProviderDiagnostic } from "../debug";
 import { resolveKiroApiRegion, resolveKiroProfileArn } from "../oauth/kiro";
+import { KIRO_MODEL_CONTEXT_WINDOWS, normalizeKiroModelId } from "../providers/kiro-models";
+import { modelRecordValue } from "../reasoning-effort";
 import { parseKiroEvent } from "./kiro-events";
 import { safeKiroErrorMessage } from "./kiro-errors";
 import { appendFallbackText, toolCallFallbackText, toolResultFallbackText } from "./kiro-tool-fallback";
@@ -18,6 +20,7 @@ import type {
   OcxTextContent,
   OcxToolCall,
   OcxToolResultMessage,
+  OcxUsage,
 } from "../types";
 import type { ProviderAdapter } from "./base";
 import type { AdapterFetchContext, AdapterRequest } from "./base";
@@ -139,6 +142,24 @@ function estimateKiroLogInputTokens(parsed: OcxParsedRequest): number {
   if (parsed.context.systemPrompt?.length) parts.push(...parsed.context.systemPrompt);
   if (parsed.context.tools?.length) parts.push(serializeForUsage(parsed.context.tools));
   return Math.max(estimateKiroInputTokens(parsed), estimateTokens(parts.join("\n"), parsed.modelId));
+}
+
+function configuredKiroContextWindow(provider: OcxProviderConfig, modelId: string | undefined): number | undefined {
+  if (!modelId) return undefined;
+  const normalizedModelId = normalizeKiroModelId(modelId);
+  if (normalizedModelId === "auto") return undefined;
+  const window =
+    modelRecordValue(provider.modelContextWindows, modelId)
+    ?? modelRecordValue(provider.modelContextWindows, normalizedModelId)
+    ?? provider.contextWindow
+    ?? modelRecordValue(KIRO_MODEL_CONTEXT_WINDOWS, modelId)
+    ?? modelRecordValue(KIRO_MODEL_CONTEXT_WINDOWS, normalizedModelId);
+  return typeof window === "number" && Number.isFinite(window) && window > 0 ? window : undefined;
+}
+
+function contextUsageTotalTokens(contextUsagePercentage: number | undefined, contextWindow: number | undefined): number | undefined {
+  if (contextUsagePercentage === undefined || contextUsagePercentage <= 0 || !contextWindow) return undefined;
+  return Math.max(0, Math.floor((contextUsagePercentage / 100) * contextWindow));
 }
 
 function kiroThinkingBudget(parsed: OcxParsedRequest): number | undefined {
@@ -305,6 +326,7 @@ export async function* parseKiroStream(
   response: Response,
   modelId?: string,
   inputTokens = 0,
+  contextWindow?: number,
 ): AsyncGenerator<AdapterEvent> {
   if (!response.body) {
     yield { type: "error", message: "Kiro response has no body" };
@@ -314,6 +336,7 @@ export async function* parseKiroStream(
   // CW provides no usage; accumulate output chars and emit a heuristic estimate on done so Codex's
   // usage display + auto-compact engage (see src/lib/token-estimate.ts).
   let outputChars = "";
+  let contextUsagePercentage: number | undefined;
   const thinking = new KiroThinkingParser();
   const trackContent = (event: AdapterEvent): void => {
     if ("text" in event) outputChars += event.text;
@@ -339,6 +362,13 @@ export async function* parseKiroStream(
       const ev = parseKiroEvent(msg.payload);
       if (!ev) continue;
       switch (ev.type) {
+        case "usage":
+          break;
+        case "context_usage":
+          if (ev.contextUsagePercentage !== undefined && ev.contextUsagePercentage > 0) {
+            contextUsagePercentage = ev.contextUsagePercentage;
+          }
+          break;
         case "content":
           if (open) {
             open = null;
@@ -414,10 +444,11 @@ export async function* parseKiroStream(
       yield { type: "error", message: kiroTruncationErrorMessage("stream ended before tool stop") };
       return;
     }
-    yield {
-      type: "done",
-      usage: { inputTokens, outputTokens: estimateTokens(outputChars, modelId), estimated: true },
-    };
+    const outputTokens = estimateTokens(outputChars, modelId);
+    const usage: OcxUsage = { inputTokens, outputTokens, estimated: true };
+    const totalTokens = contextUsageTotalTokens(contextUsagePercentage, contextWindow);
+    if (totalTokens !== undefined) usage.totalTokens = totalTokens;
+    yield { type: "done", usage };
   } catch (err) {
     yield { type: "error", message: safeKiroErrorMessage({}, err instanceof Error ? err.message : String(err)) };
   }
@@ -429,6 +460,7 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
   // is race-free) carrying the heuristic input-token estimate from buildRequest into the stream.
   let inputTokens = 0;
   let modelId: string | undefined;
+  let contextWindow: number | undefined;
   return {
     name: "kiro",
     buildRequest(parsed: OcxParsedRequest) {
@@ -463,6 +495,7 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
       // CW returns no usage. Codex adds each response's usage into its session total; report only the
       // current-turn input delta so old history is not repeatedly added to Codex's visible token usage.
       modelId = parsed.modelId;
+      contextWindow = configuredKiroContextWindow(provider, parsed.modelId);
       inputTokens = estimateKiroInputTokens(parsed);
       return {
         url: `https://runtime.${region}.kiro.dev/`,
@@ -474,7 +507,7 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
     },
 
     parseStream(response: Response): AsyncGenerator<AdapterEvent> {
-      return parseKiroStream(response, modelId, inputTokens);
+      return parseKiroStream(response, modelId, inputTokens, contextWindow);
     },
 
     fetchResponse(request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response> {
@@ -487,7 +520,7 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
     // tool failed with "web-search sidecar requires a non-streaming adapter" (kiro-only).
     async parseResponse(response: Response): Promise<AdapterEvent[]> {
       const events: AdapterEvent[] = [];
-      for await (const e of parseKiroStream(response, modelId, inputTokens)) events.push(e);
+      for await (const e of parseKiroStream(response, modelId, inputTokens, contextWindow)) events.push(e);
       return events;
     },
   };
