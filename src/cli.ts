@@ -348,6 +348,13 @@ async function handleStatus() {
   console.log(`   Codex autostart: ${status.json.codexAutostart ? "enabled" : "disabled"}`);
   console.log(`   Service: ${status.json.service.summary}`);
   console.log(`   ${status.json.codexShim.summary}`);
+  if (status.json.codexPlugins.applicable) {
+    const icon = status.json.codexPlugins.stale ? "⚠️ " : "✅";
+    console.log(`   ${icon} Codex bundled plugins: ${status.json.codexPlugins.summary}`);
+    if (status.json.codexPlugins.suggestedRepair) {
+      console.log(`      Suggested: ${status.json.codexPlugins.suggestedRepair}`);
+    }
+  }
 }
 
 function handleRecoverHistory() {
