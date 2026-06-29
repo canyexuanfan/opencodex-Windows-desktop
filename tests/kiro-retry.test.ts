@@ -61,7 +61,7 @@ describe("kiro retry fetch", () => {
     const mock = mockFetch([
       new Response(JSON.stringify({
         __type: "AccessDeniedException",
-        message: "expired token accessToken=aoa-secret path /Users/jun/private.json",
+        message: "expired token accessToken=aoa-secret path /Users/example/private.json",
       }), { status: 403 }),
     ]);
     const res = await fetchKiroWithRetry(request, { timeoutMs: 5_000 });
@@ -69,7 +69,7 @@ describe("kiro retry fetch", () => {
     expect(res.status).toBe(403);
     expect(text).toContain("Kiro authentication failed: AccessDeniedException");
     expect(text).not.toContain("aoa-secret");
-    expect(text).not.toContain("/Users/jun");
+    expect(text).not.toContain("/Users/example");
     expect(mock.calls).toHaveLength(1);
   });
 
