@@ -2,10 +2,13 @@ import { create } from "@bufbuild/protobuf";
 import { describe, expect, test } from "bun:test";
 import {
   AgentServerMessageSchema,
+  ConversationStateStructureSchema,
+  ConversationTokenDetailsSchema,
   InteractionUpdateSchema,
   McpArgsSchema,
   McpToolCallSchema,
   PartialToolCallUpdateSchema,
+  TokenDeltaUpdateSchema,
   ToolCallCompletedUpdateSchema,
   ToolCallSchema,
   ToolCallStartedUpdateSchema,
@@ -385,5 +388,37 @@ describe("Cursor protobuf tool-call events", () => {
     }), state);
     const delta = events.find(e => e.type === "tool_call_delta");
     expect(delta && delta.type === "tool_call_delta" ? JSON.parse(delta.arguments) : null).toEqual({ path: "a.txt" });
+  });
+
+  test("checkpoint usedTokens becomes absolute totalTokens, not additive output (no double-count)", () => {
+    // Regression for the 10000-then-10300-shows-as-20300 bug. Cursor's checkpoint usedTokens is the
+    // ABSOLUTE conversation context size; tokenDelta is additive per-turn output. They must land in
+    // separate fields: totalTokens (absolute) vs outputTokens (additive), mirroring the Kiro SOT fix.
+    const state = createCursorProtobufEventState();
+
+    const checkpoint = (usedTokens: number) => create(AgentServerMessageSchema, {
+      message: {
+        case: "conversationCheckpointUpdate",
+        value: create(ConversationStateStructureSchema, {
+          tokenDetails: create(ConversationTokenDetailsSchema, { usedTokens }),
+        }),
+      },
+    });
+
+    // Two checkpoints (absolute, monotonic) + some streamed output tokens.
+    expect(mapCursorProtobufServerMessage(checkpoint(10_000), state)).toEqual([]);
+    mapCursorProtobufServerMessage(interaction({ case: "tokenDelta", value: create(TokenDeltaUpdateSchema, { tokens: 42 }) }), state);
+    expect(mapCursorProtobufServerMessage(checkpoint(10_300), state)).toEqual([]);
+
+    const turnEnd = create(AgentServerMessageSchema, {
+      message: { case: "interactionUpdate", value: create(InteractionUpdateSchema, {
+        message: { case: "turnEnded", value: {} },
+      }) },
+    });
+    // totalTokens reflects the latest absolute checkpoint (10300), NOT 10000+10300 and NOT folded
+    // into outputTokens (which carries only the additive per-turn output delta).
+    expect(mapCursorProtobufServerMessage(turnEnd, state)).toEqual([
+      { type: "done", usage: { inputTokens: 0, outputTokens: 42, totalTokens: 10_300, estimated: true } },
+    ]);
   });
 });

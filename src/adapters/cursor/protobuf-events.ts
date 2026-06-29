@@ -7,6 +7,15 @@ import type { CursorServerMessage } from "./types";
 
 export interface CursorProtobufEventState {
   usage: OcxUsage;
+  /**
+   * Absolute conversation context size from Cursor's `conversationCheckpointUpdate.usedTokens`
+   * (authoritative cumulative context, NOT a per-turn delta). Kept separate from `usage.outputTokens`
+   * so it is never folded into the additive per-turn output count. Surfaced as `done.usage.totalTokens`
+   * so Codex's `last_token_usage.total_tokens` reflects the real active context. Mirrors the Kiro
+   * contextUsagePercentage SOT fix (devlog 142.10): absolute context and additive output must not
+   * share one field, or Codex double-counts (e.g. 10000 then 10300 surfacing as 20300).
+   */
+  contextTokens?: number;
   openToolCalls: Map<string, { name: string; args: string }>;
   completedToolCalls: Set<string>;
   clientToolNames?: Set<string>;
@@ -187,7 +196,10 @@ export function mapCursorProtobufServerMessage(
 ): CursorServerMessage[] {
   if (serverMessage.message.case === "conversationCheckpointUpdate") {
     const usedTokens = serverMessage.message.value.tokenDetails?.usedTokens ?? 0;
-    if (usedTokens > state.usage.outputTokens) state.usage.outputTokens = usedTokens;
+    // `usedTokens` is the ABSOLUTE conversation context size, not a per-turn output delta. Track it
+    // separately (monotonic max) and surface it as `done.usage.totalTokens`; folding it into
+    // `outputTokens` (which also accumulates `tokenDelta`) double-counts in Codex. See contextTokens.
+    if (usedTokens > (state.contextTokens ?? 0)) state.contextTokens = usedTokens;
     return [];
   }
 
@@ -270,5 +282,11 @@ function finalizeTurn(state: CursorProtobufEventState): CursorServerMessage[] {
     state.openToolCalls.clear();
     return [{ type: "error", message: `Cursor stream ended with incomplete tool call(s): ${openIds}. Arguments may be truncated; the call was not committed.` }];
   }
-  return [{ type: "done", usage: { ...state.usage } }];
+  // Surface the absolute context size (when Cursor reported a checkpoint) as totalTokens so Codex's
+  // last_token_usage.total_tokens reflects real context, without folding it into the additive
+  // per-turn outputTokens. bridge.ts uses `totalTokens ?? input + output`.
+  const usage: OcxUsage = state.contextTokens !== undefined
+    ? { ...state.usage, totalTokens: state.contextTokens }
+    : { ...state.usage };
+  return [{ type: "done", usage }];
 }
