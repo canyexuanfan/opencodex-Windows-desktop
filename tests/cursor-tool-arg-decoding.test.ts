@@ -166,6 +166,24 @@ describe("Cursor Responses tool argument decoding", () => {
     expect(mapSyntheticMcpExecToToolEvents(args, "fallback", { allowEmptyArgs: false })).toEqual([]);
   });
 
+  test("native exec surfaces an advertised no-arg tool call when empty args are allowed", () => {
+    // Mirrors live-transport's allowEmptyArgs:true branch: a no-arg Responses tool must surface as a
+    // real tool call (start+end) instead of being suppressed and rejected by native-exec.ts.
+    const state = createCursorProtobufEventState({ clientToolNames: ["ping"] });
+    const args = create(McpArgsSchema, {
+      name: "ping",
+      toolName: "ping",
+      toolCallId: "toolu_1",
+      providerIdentifier: "opencodex-responses",
+      args: {},
+    });
+
+    expect(mapSyntheticMcpExecToToolEvents(args, "fallback", { allowEmptyArgs: true, state })).toEqual([
+      { type: "tool_call_start", id: "toolu_1", name: "ping" },
+      { type: "tool_call_end", id: "toolu_1" },
+    ]);
+  });
+
   test("synthetic native mcp exec can append to an already-started tool call", () => {
     const args = create(McpArgsSchema, {
       name: "ping",
