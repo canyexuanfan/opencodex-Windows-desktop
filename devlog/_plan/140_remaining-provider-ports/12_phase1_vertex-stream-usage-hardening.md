@@ -189,3 +189,14 @@ truncation error; 503→200 token-exchange retry.
 - Depends-on: Phase 10 + 11.
 - Enables: Phase 20 antigravity reuses the truncation helper and inherits the hardened ADC/OAuth
   refresh shape for its own token endpoint.
+
+---
+
+## ✅ Implemented (commit `c225642`)
+
+- NEW `src/adapters/google-truncation.ts` — `isVertexTruncationReason` + `vertexTruncationErrorMessage`.
+- `src/adapters/google.ts` parseStream — tracks `lastFinishReason` + `toolCallsStarted`; fail-closed
+  error on MAX_TOKENS/MALFORMED_FUNCTION_CALL mid tool call (vertex + cloud-code-assist).
+- `src/lib/gcp-adc.ts` `postForToken` — per-attempt 15s timeout + bounded retry (429/5xx/network),
+  status-only error (no body leak). Usage stays `reported` (no estimated tag for google-vertex).
+- Tests: `tests/google-vertex-stream.test.ts` + retry cases in `tests/gcp-adc.test.ts`. Suite 1023/0.

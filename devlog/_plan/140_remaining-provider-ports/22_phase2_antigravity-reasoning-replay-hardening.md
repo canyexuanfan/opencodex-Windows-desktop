@@ -145,3 +145,16 @@ re-injects a signature; a Claude request with an empty-signature thinking block 
 - Depends-on: Phase 21 (CCA wire + sessionId), Phase 11/12 (errors/truncation/usage modules).
 - Enables: Phase 2 (google-antigravity) reaches the Cursor/Kiro hardening bar — closes the 140 track
   for the two Gemini-family ports.
+
+---
+
+## ✅ Implemented (commit `23806df`)
+
+- NEW `src/adapters/google-antigravity-replay.ts` — `observeAntigravityReplay` / `applyAntigravityReplay`
+  / `clearAntigravityReplay` / `antigravityUsesReplayCache` (Gemini-only, 1h TTL, 10240-entry bound,
+  ≥16-char signatures, `extra_content.google.thought_signature` alias).
+- `src/adapters/google-antigravity-wire.ts` — `sanitizeAntigravityClaudeSignatures` (Claude inline path).
+- `src/adapters/google.ts` — per-request closure (model/session); buildRequest applies replay (Gemini)
+  or Claude sanitize; parseStream observes signatures from the unwrapped model parts.
+- Tests: `tests/google-antigravity-replay.test.ts` (9). Suite 1043/0, tsc clean.
+- Final verification (glm-5.2 subagent): all 7 integration items PASS, no bug/concurrency/security risk.

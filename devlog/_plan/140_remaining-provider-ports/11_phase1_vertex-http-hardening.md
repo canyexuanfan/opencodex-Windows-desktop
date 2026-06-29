@@ -251,3 +251,12 @@ import { fetchVertexWithRetry } from "./google-http";
 
 - Depends-on: Phase 10 (vertex branch exists). 
 - Enables: Phase 20 antigravity reuses `fetchVertexWithRetry` + `google-errors` for its CCA endpoint.
+
+---
+
+## ✅ Implemented (commit `b4a772b`)
+
+- NEW `src/adapters/google-errors.ts` — `safeGoogleHttpErrorMessage(label,…)` + `safeVertexHttpErrorMessage` / `safeAntigravityHttpErrorMessage` + `retryableGoogleStatus`. (Generalized with a `label` param so antigravity reuses it.)
+- NEW `src/adapters/google-http.ts` — `fetchGoogleWithRetry(label,…)` + `fetchVertexWithRetry` / `fetchAntigravityWithRetry`.
+- `src/adapters/google.ts` — `fetchResponse` spread for `googleMode` vertex|cloud-code-assist; ai-studio stays undefined.
+- Tests: `tests/google-vertex-http.test.ts` (9). Suite 1015/0, tsc clean.

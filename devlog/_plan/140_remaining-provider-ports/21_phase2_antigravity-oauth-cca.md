@@ -207,3 +207,19 @@ label, or add a thin `safeAntigravityHttpErrorMessage` that delegates with an `"
 
 - Depends-on: Phase 10/11/12 (googleMode hook, `fetchVertexWithRetry`, `google-errors`, truncation).
 - Enables: Phase 22 (thoughtSignature reasoning-replay) layers onto this wire.
+
+---
+
+## ✅ Implemented (commit `0909f4a`)
+
+- `src/types.ts` + `src/providers/registry.ts` — `googleMode` union gains `"cloud-code-assist"`;
+  NEW `google-antigravity` registry entry (adapter `google`, authKind `oauth`, keyed by its id).
+- `src/oauth/types.ts` — `OAuthCredentials.projectId?`. `src/oauth/index.ts` — `OAUTH_PROVIDERS["google-antigravity"]`
+  + `getOAuthCredentialProjectId`. NEW `src/oauth/google-antigravity.ts` (PKCE login, loadCodeAssist/onboardUser
+  discovery, hardened refresh).
+- `src/providers/derive.ts` — `providerConfigSeed` now propagates `googleMode`/`project`/`location` (was dropped).
+- `src/server.ts` — injects credential `projectId` → `provider.project` for cloud-code-assist.
+- `src/adapters/google.ts` + NEW `src/adapters/google-antigravity-wire.ts` — CCA envelope (daily host,
+  `userAgent` literal, stable sessionId), `response`-unwrap in parseStream, `fetchAntigravityWithRetry`.
+- Tests: `tests/google-antigravity-wire.test.ts` + `tests/google-antigravity-oauth.test.ts`;
+  `provider-registry-parity` alias snapshot updated. Suite 1034/0, tsc clean.
