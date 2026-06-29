@@ -110,13 +110,87 @@ describe("kiro adapter — buildRequest", () => {
     expect(results[0].status).toBe("success");
   });
 
-  test("tools map to toolSpecification with name<=64", () => {
+  test("tool result images are attached to Kiro carrier user messages", () => {
+    const messages = [
+      { role: "user", content: "look" },
+      { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "get_app_state", arguments: {} }] },
+      {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "get_app_state",
+        content: [
+          { type: "text", text: "Looked at Google Chrome" },
+          { type: "image", imageUrl: "data:image/png;base64,aGVsbG8=", detail: "high" },
+        ],
+        isError: false,
+      },
+    ];
+    const { body } = createKiroAdapter(provider).buildRequest(
+      parsedWith(messages, [{ name: "get_app_state", description: "Look at app", parameters: { type: "object" } }]),
+    );
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+
+    expect(current.userInputMessageContext.toolResults[0].content[0].text).toBe("Looked at Google Chrome");
+    expect(current.images).toEqual([{ format: "png", source: { bytes: "aGVsbG8=" } }]);
+  });
+
+  test("tools map to toolSpecification", () => {
     const { body } = createKiroAdapter(provider).buildRequest(
       parsedWith([{ role: "user", content: "hi" }], [{ name: "grep", description: "search", parameters: { type: "object" } }]),
     );
     const ctx = JSON.parse(body).conversationState.currentMessage.userInputMessage.userInputMessageContext;
     expect(ctx.tools[0].toolSpecification.name).toBe("grep");
     expect(ctx.tools[0].toolSpecification.inputSchema.json).toEqual({ type: "object" });
+  });
+
+  test("namespaced (MCP) tools advertise + replay the full wire name", () => {
+    const adapter = createKiroAdapter(provider);
+    // Tool spec advertised to Kiro must carry the full namespaced name so the bridge's toolNsMap
+    // (keyed by namespace__name) can restore the MCP namespace when Kiro echoes the name back.
+    const specBody = adapter.buildRequest(
+      parsedWith(
+        [{ role: "user", content: "hi" }],
+        [{ name: "navigate_page", namespace: "mcp__chrome-devtools", description: "navigate", parameters: { type: "object" } }],
+      ),
+    ).body;
+    const specCtx = JSON.parse(specBody).conversationState.currentMessage.userInputMessage.userInputMessageContext;
+    expect(specCtx.tools[0].toolSpecification.name).toBe("mcp__chrome-devtools__navigate_page");
+
+    // Replayed assistant tool calls in history must use the same wire name.
+    const replayBody = adapter.buildRequest(
+      parsedWith(
+        [
+          { role: "user", content: "hi" },
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "call_1", name: "navigate_page", namespace: "mcp__chrome-devtools", arguments: { url: "x" } }],
+          },
+          { role: "toolResult", toolCallId: "call_1", toolName: "navigate_page", content: "ok", isError: false },
+        ],
+        [{ name: "navigate_page", namespace: "mcp__chrome-devtools", description: "navigate", parameters: { type: "object" } }],
+      ),
+    ).body;
+    const history = JSON.parse(replayBody).conversationState.history;
+    const replayed = history.find((e: { assistantResponseMessage?: { toolUses?: { name: string }[] } }) => e.assistantResponseMessage?.toolUses);
+    expect(replayed.assistantResponseMessage.toolUses[0].name).toBe("mcp__chrome-devtools__navigate_page");
+  });
+
+  test("long namespaced tool names are preserved rather than truncated", () => {
+    const wireName = "mcp__very-long-computer-use-namespace-with-browser-state__look_at_current_applications";
+    const { body } = createKiroAdapter(provider).buildRequest(
+      parsedWith(
+        [{ role: "user", content: "hi" }],
+        [{
+          name: "look_at_current_applications",
+          namespace: "mcp__very-long-computer-use-namespace-with-browser-state",
+          description: "look",
+          parameters: { type: "object" },
+        }],
+      ),
+    );
+    const ctx = JSON.parse(body).conversationState.currentMessage.userInputMessage.userInputMessageContext;
+    expect(wireName.length).toBeGreaterThan(64);
+    expect(ctx.tools[0].toolSpecification.name).toBe(wireName);
   });
 
   test("tool schemas remove Kiro-rejected fields recursively", () => {
@@ -141,8 +215,79 @@ describe("kiro adapter — buildRequest", () => {
 
     expect(schema.required).toBeUndefined();
     expect(schema.additionalProperties).toBeUndefined();
-    expect(schema.properties.options.required).toEqual(["mode"]);
-    expect(schema.properties.options.additionalProperties).toBeUndefined();
+   expect(schema.properties.options.required).toEqual(["mode"]);
+   expect(schema.properties.options.additionalProperties).toBeUndefined();
+ });
+
+  test("root inputSchema always declares type:object (Bedrock requires it)", () => {
+    // Empty parameters (e.g. some MCP/Computer Use tools) must still surface type:"object" or
+    // Bedrock rejects with "toolSpec.inputSchema.json.type must be one of the following: object".
+    const empty = JSON.parse(
+      createKiroAdapter(provider).buildRequest(
+        parsedWith([{ role: "user", content: "hi" }], [{ name: "noargs", description: "d", parameters: {} }]),
+      ).body,
+    ).conversationState.currentMessage.userInputMessage.userInputMessageContext.tools[0].toolSpecification.inputSchema.json;
+    expect(empty).toEqual({ type: "object" });
+
+    // Missing parameters entirely -> defaults to type:"object".
+    const none = JSON.parse(
+      createKiroAdapter(provider).buildRequest(
+        parsedWith([{ role: "user", content: "hi" }], [{ name: "noargs2", description: "d" }]),
+      ).body,
+    ).conversationState.currentMessage.userInputMessage.userInputMessageContext.tools[0].toolSpecification.inputSchema.json;
+    expect(none).toEqual({ type: "object" });
+
+    // Array-form type including "object" collapses to "object" while preserving properties.
+    const arrForm = JSON.parse(
+      createKiroAdapter(provider).buildRequest(
+        parsedWith([{ role: "user", content: "hi" }], [{ name: "arr", description: "d", parameters: { type: ["object", "null"], properties: { a: { type: "string" } } } }]),
+      ).body,
+    ).conversationState.currentMessage.userInputMessage.userInputMessageContext.tools[0].toolSpecification.inputSchema.json;
+    expect(arrForm.type).toBe("object");
+    expect(arrForm.properties).toEqual({ a: { type: "string" } });
+
+    // An explicitly object-typed schema is left untouched.
+    const obj = JSON.parse(
+      createKiroAdapter(provider).buildRequest(
+        parsedWith([{ role: "user", content: "hi" }], [{ name: "obj", description: "d", parameters: { type: "object", properties: { a: { type: "string" } } } }]),
+      ).body,
+    ).conversationState.currentMessage.userInputMessage.userInputMessageContext.tools[0].toolSpecification.inputSchema.json;
+    expect(obj).toEqual({ type: "object", properties: { a: { type: "string" } } });
+  });
+
+  test("root oneOf/anyOf/allOf are flattened into a single object schema (Bedrock rejects them)", () => {
+    const pick = (schema: unknown) =>
+      JSON.parse(createKiroAdapter(provider).buildRequest(
+        parsedWith([{ role: "user", content: "hi" }], [{ name: "comp", description: "d", parameters: schema }]),
+      ).body).conversationState.currentMessage.userInputMessage.userInputMessageContext.tools[0].toolSpecification.inputSchema.json;
+
+    // anyOf: properties merged, no required (OR semantics -> keep lenient).
+    const anyOf = pick({ anyOf: [
+      { type: "object", properties: { a: { type: "string" } }, required: ["a"] },
+      { type: "object", properties: { b: { type: "number" } } },
+    ] });
+    expect(anyOf.oneOf).toBeUndefined();
+    expect(anyOf.anyOf).toBeUndefined();
+    expect(anyOf.allOf).toBeUndefined();
+    expect(anyOf.type).toBe("object");
+    expect(anyOf.properties).toEqual({ a: { type: "string" }, b: { type: "number" } });
+    expect(anyOf.required).toBeUndefined();
+
+    // oneOf: same flattening, no required.
+    const oneOf = pick({ oneOf: [{ type: "object", properties: { x: { type: "string" } } }] });
+    expect(oneOf.oneOf).toBeUndefined();
+    expect(oneOf.type).toBe("object");
+    expect(oneOf.properties).toEqual({ x: { type: "string" } });
+
+    // allOf: properties merged AND required union kept (AND semantics).
+    const allOf = pick({ allOf: [
+      { type: "object", properties: { a: { type: "string" } }, required: ["a"] },
+      { type: "object", properties: { b: { type: "string" } }, required: ["b"] },
+    ] });
+    expect(allOf.allOf).toBeUndefined();
+    expect(allOf.type).toBe("object");
+    expect(allOf.properties).toEqual({ a: { type: "string" }, b: { type: "string" } });
+    expect(allOf.required).toEqual(expect.arrayContaining(["a", "b"]));
   });
 
   test("long tool descriptions move into the system prompt instead of being truncated away", () => {
