@@ -21,6 +21,10 @@ const POLL_BACKOFF = 1.2;
 const EXPIRY_SKEW_MS = 5 * 60 * 1000;
 const FALLBACK_TTL_MS = 60 * 60 * 1000;
 
+const REFRESH_TIMEOUT_MS = 15_000;
+const REFRESH_ATTEMPTS = 3;
+const REFRESH_RETRY_BASE_MS = 300;
+
 export interface CursorAuthParams {
   verifier: string;
   challenge: string;
@@ -112,22 +116,60 @@ export async function loginCursor(
   return { access: accessToken, refresh: refreshToken, expires: getTokenExpiry(accessToken) };
 }
 
-/** Exchange a refresh token for fresh credentials. Keeps the old refresh if the server omits one. */
+function isRetryableRefreshStatus(status: number): boolean {
+  return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+}
+
+function refreshRetryDelayMs(attempt: number): number {
+  const exp = REFRESH_RETRY_BASE_MS * 2 ** attempt;
+  return Math.floor(exp * (0.8 + Math.random() * 0.4));
+}
+
+function refreshTimeoutSignal(parent: AbortSignal | undefined): AbortSignal {
+  const timeout = AbortSignal.timeout(REFRESH_TIMEOUT_MS);
+  return parent ? AbortSignal.any([parent, timeout]) : timeout;
+}
+
+/**
+ * Exchange a refresh token for fresh credentials. Keeps the old refresh if the server omits one.
+ *
+ * Hardened with a per-attempt timeout and bounded retry on transient failures (network errors and
+ * 429/5xx). Non-retryable statuses (e.g. 401/403 from an expired refresh token) fail fast so the
+ * caller can surface a re-auth prompt. Errors never include the token value.
+ */
 export async function refreshCursorToken(refresh: string, signal?: AbortSignal): Promise<OAuthCredentials> {
-  const response = await fetch(CURSOR_REFRESH_URL, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${refresh}`, "Content-Type": "application/json" },
-    body: "{}",
-    signal,
-  });
-  if (!response.ok) {
-    throw new Error(`Cursor token refresh failed: ${response.status}`);
+  let lastError: unknown;
+  for (let attempt = 0; attempt < REFRESH_ATTEMPTS; attempt++) {
+    if (signal?.aborted) throw signal.reason ?? new Error("Cursor token refresh aborted");
+    let response: Response;
+    try {
+      response = await fetch(CURSOR_REFRESH_URL, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${refresh}`, "Content-Type": "application/json" },
+        body: "{}",
+        signal: refreshTimeoutSignal(signal),
+      });
+    } catch (err) {
+      // Network/timeout error: retry unless the caller aborted or we are out of attempts.
+      if (signal?.aborted) throw err;
+      lastError = err;
+      if (attempt === REFRESH_ATTEMPTS - 1) break;
+      await new Promise(resolve => setTimeout(resolve, refreshRetryDelayMs(attempt)));
+      continue;
+    }
+    if (response.ok) {
+      const data = (await response.json()) as { accessToken?: string; refreshToken?: string };
+      if (!data.accessToken) throw new Error("Cursor refresh response missing access token");
+      return { access: data.accessToken, refresh: data.refreshToken || refresh, expires: getTokenExpiry(data.accessToken) };
+    }
+    if (!isRetryableRefreshStatus(response.status) || attempt === REFRESH_ATTEMPTS - 1) {
+      throw new Error(`Cursor token refresh failed: ${response.status}`);
+    }
+    lastError = new Error(`Cursor token refresh failed: ${response.status}`);
+    await response.body?.cancel().catch(() => {});
+    await new Promise(resolve => setTimeout(resolve, refreshRetryDelayMs(attempt)));
   }
-  const data = (await response.json()) as { accessToken?: string; refreshToken?: string };
-  if (!data.accessToken) {
-    throw new Error("Cursor refresh response missing access token");
-  }
-  return { access: data.accessToken, refresh: data.refreshToken || refresh, expires: getTokenExpiry(data.accessToken) };
+  throw lastError instanceof Error ? lastError : new Error("Cursor token refresh failed");
 }
 
 /** Resolve a token's expiry (epoch ms) from its JWT `exp`, minus a 5-minute skew; ~1h fallback. */

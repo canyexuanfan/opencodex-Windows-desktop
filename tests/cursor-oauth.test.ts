@@ -81,6 +81,37 @@ describe("Cursor OAuth core flow", () => {
     expect(err.message).not.toContain("secret-rt");
   });
 
+  test("refreshCursorToken retries a transient 503 then succeeds", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      if (calls === 1) return new Response("busy", { status: 503 });
+      return new Response(JSON.stringify({ accessToken: "a3", refreshToken: "r3" }), { status: 200 });
+    }) as typeof fetch;
+    const out = await refreshCursorToken("rt");
+    expect(calls).toBe(2);
+    expect(out.access).toBe("a3");
+  });
+
+  test("refreshCursorToken retries a transient network error then succeeds", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      if (calls === 1) throw new Error("ECONNRESET");
+      return new Response(JSON.stringify({ accessToken: "a4" }), { status: 200 });
+    }) as typeof fetch;
+    const out = await refreshCursorToken("rt");
+    expect(calls).toBe(2);
+    expect(out.access).toBe("a4");
+  });
+
+  test("refreshCursorToken fails fast on a non-retryable 401 (single attempt)", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => { calls++; return new Response("no", { status: 401 }); }) as typeof fetch;
+    await expect(refreshCursorToken("rt")).rejects.toThrow("401");
+    expect(calls).toBe(1);
+  });
+
   test("getTokenExpiry parses JWT exp with a 5-minute skew", () => {
     const exp = Math.floor(Date.now() / 1000) + 3600;
     expect(getTokenExpiry(jwtWithExp(exp))).toBe(exp * 1000 - 5 * 60 * 1000);
