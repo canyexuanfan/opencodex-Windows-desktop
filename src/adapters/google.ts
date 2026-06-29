@@ -14,6 +14,7 @@ import { isAllowedToolChoice, namespacedToolName, toolAllowedByChoice } from "..
 import { contentPartsToText, parseDataUrl } from "./image";
 import { getVertexAccessToken } from "../lib/gcp-adc";
 import { fetchVertexWithRetry } from "./google-http";
+import { isVertexTruncationReason, vertexTruncationErrorMessage } from "./google-truncation";
 
 /** Vertex API key: provider.apiKey if it looks real (not a sentinel), else GOOGLE_CLOUD_API_KEY env. */
 function resolveVertexApiKey(optKey?: string): string | undefined {
@@ -189,6 +190,8 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
       const decoder = new TextDecoder();
       let buffer = "";
       let pendingUsage: OcxUsage | undefined;
+      let toolCallsStarted = 0;
+      let lastFinishReason: string | undefined;
 
       try {
         while (true) {
@@ -217,6 +220,8 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
             const candidates = chunk.candidates as { content?: { parts?: unknown[] }; finishReason?: string }[] | undefined;
             if (!candidates?.length) continue;
 
+            lastFinishReason = candidates[0].finishReason ?? lastFinishReason;
+
             const parts = candidates[0].content?.parts as { text?: string; functionCall?: { name: string; args: unknown } }[] | undefined;
             if (parts) {
               for (const part of parts) {
@@ -225,6 +230,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
                 }
                 if (part.functionCall) {
                   const id = `call_${crypto.randomUUID().slice(0, 8)}`;
+                  toolCallsStarted++;
                   yield { type: "tool_call_start", id, name: part.functionCall.name };
                   yield { type: "tool_call_delta", arguments: JSON.stringify(part.functionCall.args ?? {}) };
                   yield { type: "tool_call_end" };
@@ -239,6 +245,12 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
               pendingUsage = usageFromGemini(usageMeta);
             }
           }
+        }
+        // Fail-closed: a turn cut off mid tool call (MAX_TOKENS / MALFORMED_FUNCTION_CALL) surfaces
+        // an error instead of a silently-incomplete done. Mirrors kiro-truncation.
+        if (provider.googleMode === "vertex" && toolCallsStarted > 0 && isVertexTruncationReason(lastFinishReason)) {
+          yield { type: "error", message: vertexTruncationErrorMessage(lastFinishReason) };
+          return;
         }
         yield { type: "done", usage: pendingUsage };
       } finally {

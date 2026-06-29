@@ -26,6 +26,10 @@ const METADATA_TOKEN_URL = "http://metadata.google.internal/computeMetadata/v1/i
 const CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
 const JWT_BEARER_GRANT = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 
+const TOKEN_TIMEOUT_MS = 15_000;
+const TOKEN_ATTEMPTS = 3;
+const TOKEN_RETRY_BASE_MS = 300;
+
 interface CachedToken {
   token: string;
   expiresAtMs: number;
@@ -115,18 +119,54 @@ async function signJwtRs256(claims: Record<string, unknown>, privateKeyPem: stri
   return `${payload}.${base64UrlEncode(signature)}`;
 }
 
+function tokenRetryDelayMs(attempt: number): number {
+  const exp = TOKEN_RETRY_BASE_MS * 2 ** attempt;
+  return Math.floor(exp * (0.8 + Math.random() * 0.4));
+}
+
+function isRetryableTokenStatus(status: number): boolean {
+  return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+}
+
+function tokenTimeoutSignal(parent: AbortSignal | undefined): AbortSignal {
+  const timeout = AbortSignal.timeout(TOKEN_TIMEOUT_MS);
+  return parent ? AbortSignal.any([parent, timeout]) : timeout;
+}
+
+/**
+ * Exchange a grant for a Google access token, hardened with a per-attempt timeout + bounded retry
+ * on transient failures (network errors and 429/5xx). Non-retryable statuses (e.g. 400/401 from a
+ * bad grant) fail fast. The error message carries only the status code, never the response body
+ * (which can leak grant/account details) or the token/key.
+ */
 async function postForToken(body: URLSearchParams, signal: AbortSignal | undefined, fetchImpl: FetchImpl): Promise<TokenResponse> {
-  const response = await fetchImpl(OAUTH_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
-    signal,
-  });
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(`Google OAuth token exchange failed (${response.status}): ${detail}`);
+  let lastError: unknown;
+  for (let attempt = 0; attempt < TOKEN_ATTEMPTS; attempt++) {
+    if (signal?.aborted) throw signal.reason ?? new Error("Google OAuth token exchange aborted");
+    let response: Response;
+    try {
+      response = await fetchImpl(OAUTH_TOKEN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+        signal: tokenTimeoutSignal(signal),
+      });
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      lastError = err;
+      if (attempt === TOKEN_ATTEMPTS - 1) break;
+      await new Promise(resolve => setTimeout(resolve, tokenRetryDelayMs(attempt)));
+      continue;
+    }
+    if (response.ok) return (await response.json()) as TokenResponse;
+    if (!isRetryableTokenStatus(response.status) || attempt === TOKEN_ATTEMPTS - 1) {
+      throw new Error(`Google OAuth token exchange failed (${response.status})`);
+    }
+    lastError = new Error(`Google OAuth token exchange failed (${response.status})`);
+    await response.body?.cancel().catch(() => {});
+    await new Promise(resolve => setTimeout(resolve, tokenRetryDelayMs(attempt)));
   }
-  return (await response.json()) as TokenResponse;
+  throw lastError instanceof Error ? lastError : new Error("Google OAuth token exchange failed");
 }
 
 async function exchangeJwtForToken(creds: ServiceAccountCredentials, signal: AbortSignal | undefined, fetchImpl: FetchImpl): Promise<TokenResponse> {

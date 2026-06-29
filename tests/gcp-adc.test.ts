@@ -126,3 +126,62 @@ describe("google adapter vertex mode", () => {
     expect(oauthCalls).toBe(0);
   });
 });
+
+describe("gcp-adc token-exchange hardening", () => {
+  // This block installs its own per-test flaky OAuth mock (the file-level mock always returns 200).
+  test("retries a transient 503 then succeeds", async () => {
+    setEnv("GOOGLE_APPLICATION_CREDENTIALS", saPath);
+    __resetVertexTokenCache();
+    let calls = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;
+      if (url === OAUTH_TOKEN_URL) {
+        calls++;
+        if (calls === 1) return new Response("busy", { status: 503 });
+        return new Response(JSON.stringify({ access_token: "tok-after-retry", expires_in: 3600 }), { status: 200 });
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+    const tok = await getVertexAccessToken();
+    expect(tok).toBe("tok-after-retry");
+    expect(calls).toBe(2);
+  });
+
+  test("retries a thrown network error then succeeds", async () => {
+    setEnv("GOOGLE_APPLICATION_CREDENTIALS", saPath);
+    __resetVertexTokenCache();
+    let calls = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;
+      if (url === OAUTH_TOKEN_URL) {
+        calls++;
+        if (calls === 1) throw new Error("ECONNRESET");
+        return new Response(JSON.stringify({ access_token: "tok-net", expires_in: 3600 }), { status: 200 });
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+    const tok = await getVertexAccessToken();
+    expect(tok).toBe("tok-net");
+    expect(calls).toBe(2);
+  });
+
+  test("fails fast on a non-retryable 400 and never leaks the response body", async () => {
+    setEnv("GOOGLE_APPLICATION_CREDENTIALS", saPath);
+    __resetVertexTokenCache();
+    let calls = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;
+      if (url === OAUTH_TOKEN_URL) {
+        calls++;
+        return new Response("invalid_grant: secret-grant-detail", { status: 400 });
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+    let caught: Error | undefined;
+    try { await getVertexAccessToken(); } catch (e) { caught = e as Error; }
+    expect(caught).toBeDefined();
+    expect(caught!.message).toContain("400");
+    expect(caught!.message).not.toContain("secret-grant-detail");
+    expect(calls).toBe(1);
+  });
+});
