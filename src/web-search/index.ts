@@ -11,7 +11,7 @@ const DEFAULT_SIDECAR_MODEL = "gpt-5.4-mini";
 // "tools cannot be used with reasoning.effort 'minimal'") — keeps the sidecar fast/cheap.
 const DEFAULT_SIDECAR_REASONING = "low";
 const DEFAULT_MAX_SEARCHES = 3;
-const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 200_000;
 
 /** First configured forward (ChatGPT passthrough) provider — the only path with server-side web_search. */
 export function findForwardProvider(config: OcxConfig): OcxProviderConfig | undefined {
