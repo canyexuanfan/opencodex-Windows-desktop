@@ -137,6 +137,56 @@ describe("Codex history provider sync", () => {
     db.close();
   });
 
+  test("rewrites line 1 in place (length-preserving) when reverting an opencodex-origin rollout, so a later first-line clone cannot resurrect opencodex", () => {
+    const { dbPath, backupPath, legacyRollout } = makeFixture({ includeLegacy: true });
+    // thread-3 / legacyRollout is an opencodex-origin row with no backup -> eject path (revert to openai).
+    const firstLineBefore = readFileSync(legacyRollout, "utf8").split("\n")[0];
+    const inodeBefore = statSync(legacyRollout).ino;
+
+    const result = syncCodexHistoryProvider("openai", dbPath, backupPath);
+    expect(result.ejectedRows).toBe(1);
+
+    const afterRestore = readFileSync(legacyRollout, "utf8");
+    const firstLineAfter = afterRestore.split("\n")[0];
+    // Line 1 now says openai, byte length preserved, inode unchanged (no truncate / no rename).
+    expect(JSON.parse(firstLineAfter).payload.model_provider).toBe("openai");
+    expect(Buffer.byteLength(firstLineAfter)).toBe(Buffer.byteLength(firstLineBefore));
+    expect(statSync(legacyRollout).ino).toBe(inodeBefore);
+
+    // Simulate the Codex app cloning line 1 and re-appending it (git/memory-mode update path).
+    const cloned = JSON.parse(firstLineAfter);
+    cloned.timestamp = "2026-02-01T00:00:00.000Z";
+    cloned.payload.git = { branch: "main" };
+    appendFileSync(legacyRollout, JSON.stringify(cloned) + "\n");
+
+    expect(latestSessionMetaPayload(legacyRollout).model_provider).toBe("openai");
+  });
+
+  test("patches line 1 even when the first session_meta line is larger than the read chunk (big base_instructions)", () => {
+    const dir = join(tmpdir(), `ocx-bighead-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    mkdirSync(dir, { recursive: true });
+    const rollout = join(dir, "rollout.jsonl");
+    const big = "x".repeat(200_000); // > 64KiB read chunk, forces the probe to grow
+    writeFileSync(rollout, [
+      JSON.stringify({ type: "session_meta", payload: { id: "big-1", model_provider: "opencodex", source: "cli", cwd: dir, base_instructions: big } }),
+      JSON.stringify({ type: "event_msg", timestamp: "2026-01-01T00:00:00.000Z", payload: { message: "live turn keep me" } }),
+    ].join("\n") + "\n");
+    const dbPath = join(dir, "state_5.sqlite");
+    const backupPath = join(dir, "bk.json");
+    const db = new Database(dbPath);
+    db.run(`CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, model_provider TEXT NOT NULL, source TEXT NOT NULL, first_user_message TEXT NOT NULL, has_user_event INTEGER NOT NULL DEFAULT 0)`);
+    db.run(`INSERT INTO threads VALUES ('big-1', ?, 'opencodex', 'cli', 'hi', 1)`, rollout);
+    db.close();
+    const firstLineBefore = readFileSync(rollout, "utf8").split("\n")[0];
+
+    syncCodexHistoryProvider("openai", dbPath, backupPath);
+
+    const firstLineAfter = readFileSync(rollout, "utf8").split("\n")[0];
+    expect(JSON.parse(firstLineAfter).payload.model_provider).toBe("openai");
+    expect(Buffer.byteLength(firstLineAfter)).toBe(Buffer.byteLength(firstLineBefore));
+    expect(readFileSync(rollout, "utf8").includes("live turn keep me")).toBe(true);
+  });
+
   test("maps resumable Codex threads back to openai", () => {
     const { dbPath, backupPath, rollout } = makeFixture();
     syncCodexHistoryProvider("opencodex", dbPath, backupPath);

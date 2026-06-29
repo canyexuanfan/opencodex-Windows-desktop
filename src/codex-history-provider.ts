@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import { CODEX_HOME } from "./codex-paths";
@@ -54,6 +54,85 @@ function appendRolloutLine(path: string, line: string): void {
       offset += writeSync(fd, buf, offset, buf.length - offset, null);
     }
     try { fsyncSync(fd); } catch { /* best-effort durability */ }
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Patch the `model_provider` value inside the FIRST line of a rollout *in place, length-preserving*.
+ *
+ * Why this exists in addition to {@link appendRolloutLine}: Codex resolves a thread's provider via
+ * two different readers. The SQLite replay path folds every `session_meta` line last-writer-wins
+ * (covered by appending a trailing meta), but `read_session_meta_line` reads only the FIRST line
+ * and `update_thread_metadata` clones it when the app later writes git/memory-mode metadata
+ * (codex-rs `thread-store/src/local/update_thread_metadata.rs`). If the first line still says
+ * `opencodex` after a native restore, that clone re-appends `opencodex` and last-writer-wins
+ * resurrects the routed provider. So a durable restore must also fix line 1.
+ *
+ * Safety: Codex parses each rollout line as `serde_json::from_str(line.trim())`, which tolerates
+ * insignificant JSON whitespace. We therefore replace the provider value and pad the removed bytes
+ * with spaces so the line's byte length is unchanged. Equal length means we can write at offset 0
+ * with no truncate and no inode swap, so this composes safely with the app's cached append handle.
+ * Only length-preserving shrinks are handled (e.g. "opencodex" -> "openai"); callers that would
+ * grow the value fall back to append-only, which is correct for the opencodex direction.
+ *
+ * Returns true when line 1 was patched, false when it could not be done safely (missing file,
+ * non-`session_meta` first line, id mismatch, value already correct, or a length-growing change).
+ */
+function patchFirstLineProviderInPlace(path: string, expectedId: string, provider: string): boolean {
+  if (!existsSync(path)) return false;
+  const fd = openSync(path, "r+");
+  try {
+    // Read the first line by growing the probe until we hit a newline. session_meta lines embed
+    // base_instructions and can be tens of KB; a fixed cap would silently skip the in-place patch
+    // (and fall back to append-only, re-opening the first-line-clone resurrection gap), so we read
+    // until the line actually ends rather than guessing a ceiling.
+    const CHUNK = 1 << 16;
+    const MAX_FIRST_LINE = 1 << 24; // 16 MiB hard stop so a newline-less/corrupt file can't OOM us.
+    let collected = Buffer.alloc(0);
+    let nlIndex = -1;
+    let pos = 0;
+    while (nlIndex === -1) {
+      const chunk = Buffer.alloc(CHUNK);
+      const read = readSync(fd, chunk, 0, CHUNK, pos);
+      if (read === 0) break; // EOF with no newline: single-line file, skip
+      collected = Buffer.concat([collected, chunk.subarray(0, read)]);
+      nlIndex = collected.indexOf(0x0a);
+      pos += read;
+      if (collected.length > MAX_FIRST_LINE) return false;
+    }
+    if (nlIndex === -1) return false; // no newline anywhere: skip
+    const firstLine = collected.subarray(0, nlIndex).toString("utf8");
+
+    const meta = parseSessionMetaLine(firstLine);
+    if (!meta) return false;
+    if (meta.record.payload.id !== expectedId) return false;
+    if (meta.record.payload.model_provider === provider) return false;
+
+    // Locate the exact `"model_provider":"<value>"` token (allowing whitespace after the colon).
+    const match = firstLine.match(/"model_provider"\s*:\s*"([^"\\]*)"/);
+    if (!match || match.index === undefined) return false;
+    const oldToken = match[0];
+    const newCore = `"model_provider":"${provider}"`;
+    if (Buffer.byteLength(newCore, "utf8") > Buffer.byteLength(oldToken, "utf8")) return false; // grow: not length-preserving
+    const pad = " ".repeat(Buffer.byteLength(oldToken, "utf8") - Buffer.byteLength(newCore, "utf8"));
+    const newToken = `${newCore}${pad}`;
+
+    const patchedLine = firstLine.slice(0, match.index) + newToken + firstLine.slice(match.index + oldToken.length);
+    // Length must be identical so the trailing bytes (newline + rest of file) are untouched.
+    if (Buffer.byteLength(patchedLine, "utf8") !== Buffer.byteLength(firstLine, "utf8")) return false;
+    // Sanity: the patched line must still parse and carry the new provider.
+    const reparsed = parseSessionMetaLine(patchedLine);
+    if (!reparsed || reparsed.record.payload.model_provider !== provider) return false;
+
+    const out = Buffer.from(patchedLine, "utf8");
+    let offset = 0;
+    while (offset < out.length) {
+      offset += writeSync(fd, out, offset, out.length - offset, offset);
+    }
+    try { fsyncSync(fd); } catch { /* best-effort durability */ }
+    return true;
   } finally {
     closeSync(fd);
   }
@@ -204,6 +283,16 @@ function updateSessionMeta(path: string, expectedId: string, patch: { provider?:
     changed = true;
   }
   if (!changed) return false;
+
+  // Cover Codex's *other* provider reader: `read_session_meta_line` reads only line 1, and the
+  // app clones it when writing later git/memory-mode metadata. Appending alone leaves a stale
+  // line-1 provider that the clone would re-append, so for a length-preserving provider change we
+  // also patch line 1 in place (no inode swap, no truncate). Best-effort: when it can't be done
+  // safely (e.g. a length-growing change), the trailing append below is still correct for the
+  // SQLite replay path.
+  if (patch.provider !== undefined) {
+    try { patchFirstLineProviderInPlace(path, expectedId, patch.provider); } catch { /* best-effort line-1 patch */ }
+  }
 
   // Refresh the line timestamp so the appended record reads as the newest metadata.
   record.timestamp = new Date().toISOString();
