@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, ftruncateSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, utimesSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import { CODEX_HOME } from "./codex-paths";
@@ -31,26 +31,32 @@ function openStateDb(stateDbPath: string): Database {
 }
 
 /**
- * Rewrite the first line of a rollout JSONL *in place*, preserving the file's inode.
+ * Append one JSONL line to a rollout using an O_APPEND handle, exactly like the Codex app's own
+ * metadata writer (`append_rollout_item_to_path` in codex-rs `rollout/src/recorder.rs`).
  *
- * The Codex app keeps a cached append-mode file handle for the live session's rollout
- * (codex-rs `RolloutWriterState::ensure_writer_open` only reopens when the handle is gone). If we
- * replaced the file via temp+rename (`atomicWriteFile`), the app would keep writing to the now
- * orphaned inode while the path holds only our snapshot — so the live session's new turns would
- * silently vanish on the next app restart. Writing in place keeps the app's handle valid.
+ * Why append instead of rewriting line 1:
+ * - The app caches the live session's append handle and only reopens it when the handle is gone
+ *   (codex-rs `RolloutWriterState::ensure_writer_open`). A temp+rename swap would orphan that
+ *   handle; an in-place truncate would race the app's concurrent appends and clip new turns.
+ * - The app folds metadata by replaying every `session_meta` line in file order, last-writer-wins
+ *   (codex-rs `apply_session_meta_from_item`), so a trailing `session_meta` overrides earlier ones.
+ *   Real rollouts already contain multiple `session_meta` lines for this reason.
+ * O_APPEND makes each write land at EOF atomically, so it composes safely with the app appending
+ * concurrently. We do not touch mtime: a fresh mtime is correct here (the app uses mtime as the
+ * rollout's updated_at), and forcing it backwards could hide a real edit from list ordering.
  */
-function rewriteFirstLineInPlace(path: string, newContent: string): void {
-  const stat = statSync(path);
-  const fd = openSync(path, "r+");
+function appendRolloutLine(path: string, line: string): void {
+  const fd = openSync(path, "a");
   try {
-    const buf = Buffer.from(newContent, "utf8");
-    writeSync(fd, buf, 0, buf.length, 0);
-    ftruncateSync(fd, buf.length);
+    const buf = Buffer.from(line.endsWith("\n") ? line : `${line}\n`, "utf8");
+    let offset = 0;
+    while (offset < buf.length) {
+      offset += writeSync(fd, buf, offset, buf.length - offset, null);
+    }
+    try { fsyncSync(fd); } catch { /* best-effort durability */ }
   } finally {
     closeSync(fd);
   }
-  // Preserve timestamps so the app's mtime-based backfill watermark isn't perturbed.
-  utimesSync(path, stat.atime, stat.mtime);
 }
 
 type CodexHistoryProvider = "openai" | "opencodex";
@@ -131,23 +137,62 @@ function rememberOriginal(manifest: BackupManifest, row: ThreadRow): void {
   };
 }
 
-function updateSessionMeta(path: string, patch: { provider?: string; source?: string }): boolean {
-  if (!path || !existsSync(path)) return false;
-  const raw = readFileSync(path, "utf8");
-  const newline = raw.indexOf("\n");
-  const firstLine = newline === -1 ? raw : raw.slice(0, newline);
-  const rest = newline === -1 ? "" : raw.slice(newline);
+interface ParsedSessionMeta {
+  record: { type?: unknown; timestamp?: unknown; payload: { model_provider?: unknown; source?: unknown } & Record<string, unknown> };
+}
 
+/** Parse one JSONL line into a `session_meta` record, or null if it isn't one. */
+function parseSessionMetaLine(line: string): ParsedSessionMeta | null {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(firstLine);
+    parsed = JSON.parse(line);
   } catch {
-    return false;
+    return null;
   }
+  if (!parsed || typeof parsed !== "object") return null;
+  const record = parsed as ParsedSessionMeta["record"];
+  if (record.type !== "session_meta" || !record.payload || typeof record.payload !== "object") return null;
+  return { record };
+}
 
-  if (!parsed || typeof parsed !== "object") return false;
-  const record = parsed as { type?: unknown; payload?: { model_provider?: unknown; source?: unknown } };
-  if (record.type !== "session_meta" || !record.payload || typeof record.payload !== "object") return false;
+/**
+ * Find the LAST `session_meta` line in a rollout, mirroring the app's last-writer-wins fold
+ * (codex-rs `apply_session_meta_from_item`). We base our patch on the most recent metadata so we
+ * never resurrect a stale provider that a later app-written `session_meta` already changed.
+ */
+function readLatestSessionMeta(path: string): ParsedSessionMeta | null {
+  const raw = readFileSync(path, "utf8");
+  const lines = raw.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line) continue;
+    if (!line.includes("\"session_meta\"")) continue;
+    const meta = parseSessionMetaLine(line);
+    if (meta) return meta;
+  }
+  return null;
+}
+
+/**
+ * Make a thread's rollout reflect a provider/source change by APPENDING a new `session_meta` line,
+ * rather than rewriting line 1. The appended line clones the latest metadata payload (so no field
+ * is accidentally reset to empty) and applies only the requested changes. Returns false when the
+ * rollout is missing, has no parseable `session_meta`, its latest `session_meta` belongs to a
+ * different thread id, or it already matches the desired values.
+ */
+function updateSessionMeta(path: string, expectedId: string, patch: { provider?: string; source?: string }): boolean {
+  if (!path || !existsSync(path)) return false;
+
+  const latest = readLatestSessionMeta(path);
+  if (!latest) return false;
+  const record = latest.record;
+
+  // The app ignores `session_meta` lines whose payload id != the canonical thread id
+  // (codex-rs `apply_session_meta_from_item`). Forked rollouts can embed a source session's
+  // metadata, so an id-mismatched latest line means we'd be cloning the wrong thread's meta and
+  // appending a line the app would discard. Skip rather than write a no-op/misleading line.
+  const payloadId = record.payload.id;
+  if (typeof payloadId !== "string" || payloadId !== expectedId) return false;
 
   let changed = false;
   if (patch.provider !== undefined && record.payload.model_provider !== patch.provider) {
@@ -160,10 +205,9 @@ function updateSessionMeta(path: string, patch: { provider?: string; source?: st
   }
   if (!changed) return false;
 
-  // In-place rewrite (NOT temp+rename): the Codex app caches the live session's rollout file
-  // handle, so swapping the inode would orphan its writer and drop new turns. See
-  // rewriteFirstLineInPlace for the full rationale.
-  rewriteFirstLineInPlace(path, `${JSON.stringify(record)}${rest}`);
+  // Refresh the line timestamp so the appended record reads as the newest metadata.
+  record.timestamp = new Date().toISOString();
+  appendRolloutLine(path, JSON.stringify(record));
   return true;
 }
 
@@ -195,7 +239,7 @@ function ejectRemainingOpencodexHistory(db: Database): { rows: number; files: nu
   let files = 0;
   for (const row of rows) {
     try {
-      if (updateSessionMeta(row.rollout_path, {
+      if (updateSessionMeta(row.rollout_path, row.id, {
         provider: "openai",
         source: row.source === "exec" ? "cli" : undefined,
       })) files++;
@@ -274,14 +318,14 @@ function syncCodexHistoryProviderUnsafe(provider: CodexHistoryProvider, stateDbP
     let files = 0;
     for (const row of openaiRows) {
       try {
-        if (updateSessionMeta(row.rollout_path, { provider: "opencodex" })) files++;
+        if (updateSessionMeta(row.rollout_path, row.id, { provider: "opencodex" })) files++;
       } catch {
         /* best-effort; keep DB migration moving even if one old rollout is malformed */
       }
     }
     for (const row of execRows) {
       try {
-        if (updateSessionMeta(row.rollout_path, { source: "cli" })) files++;
+        if (updateSessionMeta(row.rollout_path, row.id, { source: "cli" })) files++;
       } catch {
         /* best-effort; keep DB migration moving even if one old rollout is malformed */
       }
@@ -332,7 +376,7 @@ function restoreCodexHistoryProvider(stateDbPath: string, backupPath: string): C
     for (const entry of entries) {
       const target = toNativeRestoreTarget(entry);
       try {
-        if (updateSessionMeta(entry.rolloutPath, { provider: target.modelProvider, source: target.source })) files++;
+        if (updateSessionMeta(entry.rolloutPath, entry.id, { provider: target.modelProvider, source: target.source })) files++;
       } catch {
         /* best-effort; keep DB restore moving even if one rollout disappeared */
       }
