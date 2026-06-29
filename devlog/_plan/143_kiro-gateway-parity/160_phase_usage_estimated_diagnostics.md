@@ -1,0 +1,115 @@
+# Phase 160/170 (P2) - Kiro estimated usage tagging and redacted diagnostics
+
+## Trigger
+
+Kiro/CodeWhisperer does not return authoritative token usage. opencodex now
+estimates usage so Codex display and auto-compact work, but internal usage logs
+still classify those numbers as `reported`. The parity review also asks for
+redacted diagnostics that make Kiro auth/region/model/debugging easier without
+leaking prompts, tokens, profile ARNs, or local paths.
+
+## Current state
+
+- `src/types.ts` `OcxUsage` has token fields but no estimated marker.
+- `src/usage-log.ts` already has `UsageStatus = "estimated"`, and
+  `usage-summary.ts` already counts `estimatedRequests`, but
+  `usageStatusForFinalLog()` currently returns `reported` for any usage object.
+- Kiro emits heuristic usage from `parseKiroStream()` and `parseResponse()` via
+  `done.usage`.
+- Request logging extracts usage from the Responses SSE/JSON that the bridge
+  sends downstream. That means adapter-only metadata is not preserved unless
+  request-log finalization marks Kiro usage as estimated by provider.
+- `src/debug.ts` has opt-in `OCX_DEBUG_FRAMES=1` diagnostics for dropped frames,
+  but no structured redacted provider breadcrumb helper.
+- `src/usage-debug.ts` already writes redacted JSONL records behind
+  `OPENCODEX_USAGE_DEBUG=1`.
+
+## Diff plan
+
+### MODIFY `src/types.ts`
+
+- Add optional `estimated?: boolean` to `OcxUsage`.
+- This is an internal metadata flag; bridge response usage should keep the
+  OpenAI-compatible token shape.
+
+### MODIFY `src/usage-log.ts`
+
+- Add `usageForFinalLog(provider: string, usage: OcxUsage | undefined)`:
+  - returns `undefined` when no usage exists.
+  - returns `{ ...usage, estimated: true }` for provider `kiro`.
+  - preserves an already-estimated usage object for other providers.
+- Change `usageStatusForFinalLog()`:
+  - no usage -> `unreported`
+  - usage.estimated -> `estimated`
+  - otherwise -> `reported`
+- Preserve `estimated: true` in `normalizeUsageValue()` while continuing to
+  strip unknown runtime fields.
+
+### MODIFY `src/server.ts`
+
+- In `addFinalRequestLog()`, derive `const finalUsage =
+  usageForFinalLog(logCtx.provider, logCtx.usage)`.
+- Use `finalUsage` for:
+  - `usageStatusForFinalLog(finalUsage)`
+  - `usageTotalTokens(finalUsage)`
+  - persisted/request-log `usage`
+  - `usage-debug` `extractedUsage`
+- Do not expose the estimated flag through `bridge.ts` Responses usage.
+
+### MODIFY `src/adapters/kiro.ts`
+
+- Keep Kiro `done.usage` values heuristic, but add `estimated: true` for direct
+  adapter consumers/tests.
+- Add an opt-in redacted diagnostic breadcrumb after `buildKiroPayload()`:
+  - adapter/provider: `kiro`
+  - auth/runtime region
+  - requested model id
+  - body byte length
+  - message/tool counts
+  - booleans only for profile ARN presence and previous response state
+- Do not log raw request body, prompt content, image bytes, bearer tokens, or
+  profile ARN values.
+
+### MODIFY `src/debug.ts`
+
+- Add `debugProviderDiagnostic(adapter, event, details)` behind existing
+  `OCX_DEBUG_FRAMES=1`.
+- Redact via `redactSecrets()` before JSON serialization.
+- Keep failure-safe behavior: diagnostics must never throw back into request
+  handling.
+
+### MODIFY tests
+
+- `tests/usage-log.test.ts`
+  - `usageStatusForFinalLog({ estimated: true })` returns `estimated`.
+  - `usageForFinalLog("kiro", usage)` marks usage estimated.
+  - persisted usage JSONL preserves only the boolean `estimated` metadata and
+    still strips unknown fields.
+- `tests/request-log.test.ts`
+  - Kiro deferred SSE logging records `usageStatus: "estimated"` and usage with
+    `estimated: true`, while the SSE usage payload itself stays standard.
+- `tests/kiro-stream.test.ts`
+  - Kiro done usage includes `estimated: true`.
+- `tests/debug.test.ts`
+  - provider diagnostic helper stays silent by default and redacts secrets when
+    enabled.
+- `tests/usage-debug.test.ts`
+  - usage-debug record can store `extractedUsage.estimated === true` without
+    leaking secret fields.
+
+## Verification
+
+- `bun x tsc --noEmit`
+- `bun test tests/usage-log.test.ts tests/request-log.test.ts tests/kiro-stream.test.ts tests/debug.test.ts tests/usage-debug.test.ts tests/usage-summary.test.ts`
+- `wc -l src/types.ts src/usage-log.ts src/server.ts src/adapters/kiro.ts src/debug.ts tests/usage-log.test.ts tests/request-log.test.ts tests/kiro-stream.test.ts tests/debug.test.ts tests/usage-debug.test.ts`
+
+## Commit
+
+`fix(kiro): mark heuristic usage as estimated`
+
+## Explicit non-goals
+
+- No raw prompt or full Kiro payload logging.
+- No full raw AWS eventstream frame capture.
+- No public Responses API schema change for usage; estimated status is for
+  opencodex logs/debugging.
