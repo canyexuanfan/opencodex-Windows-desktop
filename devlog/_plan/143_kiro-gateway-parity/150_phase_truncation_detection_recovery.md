@@ -60,6 +60,10 @@ Create a small helper module:
   - Yield internal `{ type: "heartbeat" }` events while buffering Kiro tool
     start/input events so the streaming bridge does not falsely stall-timeout
     during long but active tool-call generation.
+  - On Kiro eventstream `exception`/`error` frames, discard any buffered
+    unflushed tool call and emit only the upstream error. Do not yield
+    `tool_call_end`, because no matching `tool_call_start` has been sent to the
+    bridge under the buffering model.
   - If a new tool/content/truncation/EOF arrives while a tool is still open
     without `stop`, emit `error` with `kiroTruncationErrorMessage()` and return.
   - Do not emit `done` after a truncation error.
@@ -96,6 +100,10 @@ Add regression tests:
 - Duplicate tool `name` events before input do not create duplicate tool calls.
 - Buffered tool input emits internal `heartbeat` events that tests can observe,
   but bridge tests prove they are not Codex-visible.
+- Update the existing `exception mid-stream closes an open tool call then stops`
+  regression to the new fail-closed behavior: if the tool was buffered and not
+  stopped, expect only heartbeat/internal activity plus the upstream error, with
+  no client-facing `tool_call_start`/`tool_call_end`.
 
 ### MODIFY `tests/bridge.test.ts`
 
