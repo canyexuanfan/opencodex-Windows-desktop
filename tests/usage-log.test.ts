@@ -139,6 +139,7 @@ describe("usage log", () => {
   test("marks Kiro final log usage as estimated without changing other providers", () => {
     const usage = { inputTokens: 4, outputTokens: 6 };
     expect(usageForFinalLog("kiro", usage)).toEqual({ ...usage, estimated: true });
+    expect(usageForFinalLog("kiro-p9d8524", usage)).toEqual({ ...usage, estimated: true });
     expect(usageForFinalLog("openai", usage)).toEqual(usage);
     expect(usageForFinalLog("openai", { ...usage, estimated: true })).toEqual({ ...usage, estimated: true });
   });

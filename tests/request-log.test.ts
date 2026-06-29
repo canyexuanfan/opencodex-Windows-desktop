@@ -198,7 +198,7 @@ describe("request log metadata", () => {
       new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }),
       "ocx-test-kiro-sse-usage",
       Date.now(),
-      { model: "kiro/claude-sonnet-4.5", provider: "kiro" },
+      { model: "kiro/claude-sonnet-4.5", provider: "kiro-p9d8524" },
       entry => entries.push(entry),
     );
 
@@ -227,7 +227,7 @@ describe("request log metadata", () => {
       new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }),
       "ocx-test-kiro-sse-log-usage",
       Date.now(),
-      { model: "kiro/claude-sonnet-4.5", provider: "kiro", usageLogInputTokens: 240_000 },
+      { model: "kiro/claude-sonnet-4.5", provider: "kiro-p9d8524", usageLogInputTokens: 240_000 },
       entry => entries.push(entry),
     );
 

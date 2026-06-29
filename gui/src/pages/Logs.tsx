@@ -129,7 +129,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                     <span className="mono" style={{ color: statusColor(log.status), fontWeight: 600 }}>{log.status}</span>
                   </td>
                   <td className="num mono" title={tokensTitle(log)}>
-                    {log.usageStatus === "reported" && typeof log.totalTokens === "number"
+                    {(log.usageStatus === "reported" || log.usageStatus === "estimated") && typeof log.totalTokens === "number"
                       ? formatTokens(log.totalTokens)
                       : <span className="muted">{t(`logs.tokens.${log.usageStatus ?? "unreported"}`)}</span>}
                   </td>

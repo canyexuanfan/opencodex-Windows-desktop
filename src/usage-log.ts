@@ -27,9 +27,13 @@ export function usageTotalTokens(usage: OcxUsage | undefined): number | undefine
   return usage.inputTokens + usage.outputTokens;
 }
 
+function isKiroLogProvider(provider: string): boolean {
+  return provider === "kiro" || provider.startsWith("kiro-");
+}
+
 export function usageForFinalLog(provider: string, usage: OcxUsage | undefined): OcxUsage | undefined {
   if (!usage) return undefined;
-  if (usage.estimated || provider === "kiro") return { ...usage, estimated: true };
+  if (usage.estimated || isKiroLogProvider(provider)) return { ...usage, estimated: true };
   return usage;
 }
 
