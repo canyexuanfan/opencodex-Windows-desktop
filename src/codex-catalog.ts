@@ -54,6 +54,18 @@ const DOCUMENTED_NATIVE_OPENAI_ADDITIONS = ["gpt-5.3-codex-spark"];
  */
 const SUPPORTED_NATIVE_OPENAI_SLUGS = new Set(NATIVE_OPENAI_MODELS);
 
+/**
+ * True when a bare slug is an OpenAI/Codex-family native that opencodex does NOT support
+ * (legacy/internal like `gpt-5.2`, `gpt-5.3-codex`, `codex-auto-review`). Used to drop these
+ * from the ON-DISK catalog so the Codex file picker matches the live `/v1/models` filter,
+ * WITHOUT removing genuine user-added natives (non gpt-/codex- slugs are preserved).
+ */
+function isUnsupportedOpenAiNativeSlug(slug: string): boolean {
+  if (slug.includes("/")) return false;
+  if (SUPPORTED_NATIVE_OPENAI_SLUGS.has(slug)) return false;
+  return /^(?:gpt|codex)-/.test(slug);
+}
+
 const NATIVE_OPENAI_CONTEXT_OVERRIDES: Record<string, { contextWindow?: number; maxContextWindow?: number }> = {
   "gpt-5.5": { contextWindow: 272_000, maxContextWindow: 272_000 },
   "gpt-5.4": { maxContextWindow: 1_000_000 },
@@ -759,7 +771,13 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
   const baseline = readNativeBaseline(catalogPath);
   const goIds = new Set(enabledGo.map(m => m.id));
   const native = (catalog.models ?? [])
-    .filter(m => typeof m.slug === "string" && !(m.slug as string).includes("/") && !goIds.has(m.slug as string))
+    .filter(m => typeof m.slug === "string"
+      && !(m.slug as string).includes("/")
+      && !goIds.has(m.slug as string)
+      // Gap B: drop legacy/internal OpenAI-family natives (gpt-5.2, gpt-5.3-codex,
+      // codex-auto-review, …) from the on-disk catalog too, matching the live /v1/models
+      // allowlist. Genuine user-added natives (non gpt-/codex- slugs) are preserved.
+      && !isUnsupportedOpenAiNativeSlug(m.slug as string))
     .map(m => {
       const slug = m.slug as string;
       const baselinePriority = baseline.get(slug) ?? (m.priority as number);
@@ -785,7 +803,16 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
   // native AND routed so the advertised flag matches the implemented endpoint (phase 120.4) and a
   // native template can never leak supports_websockets while the flag is off.
   const wsEnabled = websocketsEnabled(config);
-  catalog.models = [...native, ...goEntries].map(m => {
+  // Gap A: never let a transient EMPTY routed fetch wipe routed entries that were on disk. If
+  // gatherRoutedModels returned nothing (provider down / flaky / cache miss) but the pre-sync
+  // catalog DID carry routed entries, preserve those prior routed entries instead of overwriting
+  // them with an empty set — otherwise the Codex picker silently loses kiro/opencode-go models.
+  let routedEntries = goEntries;
+  if (goEntries.length === 0 && catalogHasRoutedEntries(catalog)) {
+    routedEntries = (catalog.models ?? []).filter(m => typeof m.slug === "string" && (m.slug as string).includes("/"));
+    console.warn(`[opencodex] catalog sync: routed model fetch returned empty; preserving ${routedEntries.length} existing routed entr${routedEntries.length === 1 ? "y" : "ies"} on disk.`);
+  }
+  catalog.models = [...native, ...routedEntries].map(m => {
     const normalized = normalizeServiceTiers(m);
     applyNativeOpenAiContextOverride(normalized);
     const e = ensureStrictCatalogFields(normalized);
