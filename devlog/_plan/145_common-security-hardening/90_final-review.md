@@ -1,10 +1,10 @@
 # 90 — Final review
 
 Purpose: close the common-security hardening passes with concrete evidence.
-This review covers phases 10 through 60 in
-`devlog/_plan/145_common-security-hardening/`. The later Kiro single-account
-auth-input hardening is tracked separately in
-`devlog/_plan/143_kiro-gateway-parity/95_phase_auth_input_hardening.md`.
+This review covers only non-Kiro phases 10 through 60 in
+`devlog/_plan/145_common-security-hardening/`. Kiro adapter, Kiro OAuth, Kiro
+parity, and `tests/kiro*.test.ts` evidence are intentionally excluded because
+that work is owned separately.
 
 ## Implemented phase evidence
 
@@ -24,12 +24,11 @@ auth-input hardening is tracked separately in
   - Main files: `src/usage-log.ts`, `tests/usage-log.test.ts`.
 - Phase 50 credential safeguards:
   - Commits `68b079f fix(security): record OAuth credential source safely` and
-    `4566b11 fix(security): normalize OAuth credential store`.
+    `4566b11 fix(security): normalize OAuth credential store`, counted here
+    only for their non-Kiro common OAuth changes.
   - Main files: `src/oauth/store.ts`, `src/oauth/index.ts`,
     `src/oauth/local-token-detect.ts`, `src/oauth/xai.ts`,
-    `src/oauth/anthropic.ts`, `src/oauth/kiro.ts`,
-    `tests/oauth-status-privacy.test.ts`, `tests/oauth-refresh.test.ts`,
-    `tests/kiro-oauth.test.ts`.
+    `src/oauth/anthropic.ts`, `tests/oauth-status-privacy.test.ts`.
 - Phase 60 provider config validation:
   - Commit `96a60a2 fix(security): validate provider URLs and headers`.
   - Main files: `src/config.ts`, `src/server.ts`, `tests/config.test.ts`,
@@ -39,24 +38,20 @@ auth-input hardening is tracked separately in
 
 - Phase 50 re-audit (`Gauss`): PASS. Confirmed whole-store OAuth
   normalization, credential-source allowlist, local-cli source tagging,
-  refresh-source preservation, and Kiro diagnostic coverage.
+  and refresh-source preservation for the common OAuth path.
 - Phase 60 audit (`James`): PASS. Confirmed scoped URL/header validation,
   management DTO redaction, preserved local/private HTTP provider support, and
   focused config/server tests.
 
 ## Final verification bundle
 
-- `bun test tests/redact.test.ts tests/crash-guard.test.ts tests/usage-debug.test.ts tests/request-log.test.ts tests/server-auth.test.ts tests/error-fidelity.test.ts tests/usage-log.test.ts tests/usage-summary.test.ts tests/oauth-status-privacy.test.ts tests/kiro-oauth.test.ts tests/oauth-refresh.test.ts tests/config.test.ts tests/kiro-adapter.test.ts`
-  -> refreshed after Kiro auth-input follow-up: 179 pass, 0 fail, 604 expect
-  calls.
-- `bun x tsc --noEmit` -> exit 0, no diagnostics.
-- File-size check for the active Kiro hardening files:
-  `src/oauth/kiro.ts` 164 lines, `src/oauth/kiro-credentials.ts` 256 lines,
-  `src/adapters/kiro.ts` 497 lines, `src/adapters/kiro-errors.ts` 40 lines.
+- `bun test tests/redact.test.ts tests/crash-guard.test.ts tests/usage-debug.test.ts tests/request-log.test.ts tests/server-auth.test.ts tests/error-fidelity.test.ts tests/usage-log.test.ts tests/usage-summary.test.ts tests/oauth-status-privacy.test.ts tests/config.test.ts`
+  -> 120 pass, 0 fail, 418 expect calls.
+- `bun x tsc --noEmit`
+  -> exit 0, no diagnostics.
 
 ## Completion decision
 
 Common-security phases 10 through 60 are implemented, committed, independently
-reviewed, and covered by a fresh focused regression bundle. The active residual
-work after this review is Kiro-specific functional hardening, not the common
-security goal scope.
+reviewed, and covered by a focused non-Kiro regression bundle. Kiro-specific
+functional hardening is outside this goal scope.
