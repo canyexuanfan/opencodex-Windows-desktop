@@ -9,7 +9,7 @@ import { safeKiroErrorMessage } from "./kiro-errors";
 import { appendFallbackText, toolCallFallbackText, toolResultFallbackText } from "./kiro-tool-fallback";
 import { KiroThinkingParser } from "./kiro-thinking";
 import { isCompleteKiroToolInput, kiroTruncationErrorMessage } from "./kiro-truncation";
-import { fallbackToolUseId, fingerprint, invocationId, mapModelId, normalizeToolId, osTag, stableConversationId } from "./kiro-wire";
+import { fallbackToolUseId, fingerprint, invocationId, kiroToolName, mapModelId, normalizeToolId, osTag, stableConversationId } from "./kiro-wire";
 import { namespacedToolName } from "../types";
 import type {
   AdapterEvent,
@@ -192,10 +192,11 @@ function injectKiroThinkingTags(content: string, parsed: OcxParsedRequest): stri
   ].join("\n");
 }
 
-export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | undefined): Record<string, unknown> {
+export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | undefined): { payload: Record<string, unknown>; nameMap: Map<string, string> } {
   const modelId = mapModelId(parsed.modelId);
   const toolContext = convertKiroToolContext(parsed);
   const kiroTools = toolContext.tools;
+  const nameMap = toolContext.nameMap;
   const systemParts: string[] = [];
   if (!parsed.previousResponseId && parsed.context.systemPrompt?.length) systemParts.push(parsed.context.systemPrompt.join("\n\n"));
   if (toolContext.systemAdditions.length > 0) systemParts.push(...toolContext.systemAdditions);
@@ -253,7 +254,9 @@ export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | 
         ? toolCalls.map(tc => {
           const toolUseId = normalizeToolId(tc.id);
           structuredToolIds.add(toolUseId);
-          return { name: namespacedToolName(tc.namespace, tc.name), input: (tc.arguments ?? {}) as Record<string, unknown>, toolUseId };
+          // Same deterministic normalization as the toolSpecification so the replayed assistant
+          // toolUse name matches what Kiro was told the tool is called.
+          return { name: kiroToolName(namespacedToolName(tc.namespace, tc.name)), input: (tc.arguments ?? {}) as Record<string, unknown>, toolUseId };
         })
         : [];
       if (kiroTools.length === 0) {
@@ -317,7 +320,7 @@ export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | 
     },
   };
   if (profileArn) payload.profileArn = profileArn;
-  return payload;
+  return { payload, nameMap };
 }
 
 // Stream parsing (shared by parseStream + parseResponse)
@@ -329,6 +332,7 @@ export async function* parseKiroStream(
   modelId?: string,
   inputTokens = 0,
   contextWindow?: number,
+  nameMap?: Map<string, string>,
 ): AsyncGenerator<AdapterEvent> {
   if (!response.body) {
     yield { type: "error", message: "Kiro response has no body" };
@@ -347,7 +351,10 @@ export async function* parseKiroStream(
     if (!open) return;
     const tool = open;
     open = null;
-    yield { type: "tool_call_start", id: tool.id, name: tool.name };
+    // Restore the original wire name if it was normalized for Kiro (spaces/length), so the bridge's
+    // toolNsMap (keyed by the original wire name) can route the call back to its MCP namespace.
+    const restored = nameMap?.get(tool.name) ?? tool.name;
+    yield { type: "tool_call_start", id: tool.id, name: restored };
     for (const chunk of tool.chunks) if (chunk) yield { type: "tool_call_delta", arguments: chunk };
     yield { type: "tool_call_end" };
   }
@@ -467,6 +474,7 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
   let inputTokens = 0;
   let modelId: string | undefined;
   let contextWindow: number | undefined;
+  let toolNameMap: Map<string, string> | undefined;
   return {
     name: "kiro",
     buildRequest(parsed: OcxParsedRequest) {
@@ -487,8 +495,9 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
       if (profileArn) headers["x-amzn-kiro-profile-arn"] = profileArn;
       // CodeWhisperer GenerateAssistantResponse has no reasoning_effort field. Match kiro-gateway's
       // fake-reasoning contract by injecting effort-derived thinking tags into only the current user turn.
-      const payload = buildKiroPayload(parsed, profileArn);
-      const body = JSON.stringify(payload);
+      const built = buildKiroPayload(parsed, profileArn);
+      toolNameMap = built.nameMap;
+      const body = JSON.stringify(built.payload);
       debugProviderDiagnostic("kiro", "request", {
         region,
         requestedModel: parsed.modelId,
@@ -513,7 +522,7 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
     },
 
     parseStream(response: Response): AsyncGenerator<AdapterEvent> {
-      return parseKiroStream(response, modelId, inputTokens, contextWindow);
+      return parseKiroStream(response, modelId, inputTokens, contextWindow, toolNameMap);
     },
 
     fetchResponse(request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response> {
@@ -526,7 +535,7 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
     // tool failed with "web-search sidecar requires a non-streaming adapter" (kiro-only).
     async parseResponse(response: Response): Promise<AdapterEvent[]> {
       const events: AdapterEvent[] = [];
-      for await (const e of parseKiroStream(response, modelId, inputTokens, contextWindow)) events.push(e);
+      for await (const e of parseKiroStream(response, modelId, inputTokens, contextWindow, toolNameMap)) events.push(e);
       return events;
     },
   };

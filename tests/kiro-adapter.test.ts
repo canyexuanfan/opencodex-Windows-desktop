@@ -189,7 +189,7 @@ describe("kiro adapter — buildRequest", () => {
     expect(replayed.assistantResponseMessage.toolUses[0].name).toBe("mcp__chrome-devtools__navigate_page");
   });
 
-  test("long namespaced tool names are preserved rather than truncated", () => {
+  test("long namespaced tool names are normalized to Kiro's <=64-char charset", () => {
     const wireName = "mcp__very-long-computer-use-namespace-with-browser-state__look_at_current_applications";
     const { body } = createKiroAdapter(provider).buildRequest(
       parsedWith(
@@ -203,8 +203,30 @@ describe("kiro adapter — buildRequest", () => {
       ),
     );
     const ctx = JSON.parse(body).conversationState.currentMessage.userInputMessage.userInputMessageContext;
+    const sent = ctx.tools[0].toolSpecification.name;
     expect(wireName.length).toBeGreaterThan(64);
-    expect(ctx.tools[0].toolSpecification.name).toBe(wireName);
+    // Kiro's runtimeservice rejects names >64 chars or outside [a-zA-Z0-9_-]; the sent name conforms.
+    expect(sent.length).toBeLessThanOrEqual(64);
+    expect(sent).toMatch(/^[a-zA-Z0-9_-]{1,64}$/);
+    // Deterministic hash suffix keeps it unique/reversible.
+    expect(sent).toMatch(/_[0-9a-f]{8}$/);
+  });
+
+  test("tool names with spaces are normalized for Kiro (codex_apps workspace agents)", () => {
+    const { body } = createKiroAdapter(provider).buildRequest(
+      parsedWith(
+        [{ role: "user", content: "hi" }],
+        [{
+          name: "workspace agents_create_agent",
+          namespace: "mcp__codex_apps__workspace_agents",
+          description: "create",
+          parameters: { type: "object" },
+        }],
+      ),
+    );
+    const sent = JSON.parse(body).conversationState.currentMessage.userInputMessage.userInputMessageContext.tools[0].toolSpecification.name;
+    expect(sent).not.toContain(" ");
+    expect(sent).toMatch(/^[a-zA-Z0-9_-]{1,64}$/);
   });
 
   test("tool schemas remove Kiro-rejected fields recursively", () => {
