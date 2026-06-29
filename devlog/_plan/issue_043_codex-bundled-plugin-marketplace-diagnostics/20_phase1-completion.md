@@ -102,3 +102,23 @@ header name, and a preceding `[marketplaces.other]` not bleeding into the read.
 
 Re-verified after the fix: `bun x tsc --noEmit` clean,
 `bun test tests/codex-plugins-doctor.test.ts` 11 pass / 0 fail.
+
+### Third verification round: secret-leak + malformed-entry (gpt-5.5)
+
+A thorough requirement-by-requirement verification (gpt-5.5 subagent) returned
+NOT-COMPLETE with two valid gaps, both now fixed (commit 84f6db7):
+
+- Secret-safety (was CONTRADICTED): a configured `source` path segment such as
+  `\token\` survived `redactUserPath` (which only masked the username segment)
+  and surfaced a test-forbidden substring in `status --json`. `redactUserPath`
+  now also masks path segments whose name looks sensitive
+  (token/secret/password/api-key/credential/email) before `redactSecretString`.
+- Stale logic (was WEAK): a present-but-not-local
+  `[marketplaces.openai-bundled]` entry (wrong `source_type` or empty `source`)
+  was summarized as "ok ... resolves" despite `resolvesToManifest:false`. Added
+  a `malformed` branch so it now reports "present but not a usable local
+  source" instead of a false healthy.
+
+Regression tests added: sensitive-path-segment masking and present-but-not-local
+summary. Re-verified: `bun x tsc --noEmit` clean; full `bun test`
+1471 pass / 71 fail / 13 errors (baseline unchanged, no new failures).
