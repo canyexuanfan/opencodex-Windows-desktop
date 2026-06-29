@@ -69,3 +69,23 @@ export function redactUrlForLog(url: string): string {
     return redactSecretString(url.split("?")[0] ?? url);
   }
 }
+
+const USER_HOME_PATH_PATTERNS: Array<[RegExp, string]> = [
+  // Windows: C:\Users\<name>\...  ->  C:\Users\[USER]\...
+  [/([A-Za-z]:\\Users\\)[^\\/]+/gi, "$1[USER]"],
+  // POSIX: /Users/<name>/... (macOS) and /home/<name>/... (Linux)
+  [/(\/(?:Users|home)\/)[^/]+/gi, "$1[USER]"],
+];
+
+/**
+ * Mask the username segment of an absolute home path so diagnostics can print
+ * paths without leaking the OS account name. Path-focused and secret-safe:
+ * also runs {@link redactSecretString} in case a token leaked into the path.
+ */
+export function redactUserPath(path: string): string {
+  let masked = path;
+  for (const [pattern, replacement] of USER_HOME_PATH_PATTERNS) {
+    masked = masked.replace(pattern, replacement);
+  }
+  return redactSecretString(masked);
+}
