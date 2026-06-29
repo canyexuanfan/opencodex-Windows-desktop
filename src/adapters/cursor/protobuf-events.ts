@@ -15,7 +15,9 @@ export interface CursorProtobufEventState {
 
 export function createCursorProtobufEventState(options: { clientToolNames?: Iterable<string>; parallelToolCalls?: boolean } = {}): CursorProtobufEventState {
   return {
-    usage: { inputTokens: 0, outputTokens: 0 },
+    // Cursor provides no authoritative usage frame; token counts are heuristic estimates from
+    // checkpoint/delta events, so mark estimated from the start.
+    usage: { inputTokens: 0, outputTokens: 0, estimated: true },
     openToolCalls: new Map(),
     completedToolCalls: new Set(),
     ...(options.clientToolNames ? { clientToolNames: new Set(options.clientToolNames) } : {}),

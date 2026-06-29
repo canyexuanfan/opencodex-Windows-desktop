@@ -297,6 +297,6 @@ describe("Cursor protobuf tool-call events", () => {
       }) },
     });
     const events = mapCursorProtobufServerMessage(turnEnd, state);
-    expect(events).toEqual([{ type: "done", usage: { inputTokens: 0, outputTokens: 0 } }]);
+    expect(events).toEqual([{ type: "done", usage: { inputTokens: 0, outputTokens: 0, estimated: true } }]);
   });
 });
