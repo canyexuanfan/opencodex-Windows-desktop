@@ -10,18 +10,18 @@
  * time (SQLite profile_arn / KIRO_PROFILE_ARN, KIRO_REGION) since getValidAccessToken surfaces
  * only the access token.
  */
-import { existsSync } from "node:fs";
-import { Database } from "bun:sqlite";
 import type { OAuthController, OAuthCredentials } from "./types";
+import {
+  inferRegionFromProfileArn,
+  inspectKiroCliSqliteSources,
+  readImportedKiroCredential,
+  readKiroCliSqliteCredential,
+  type KiroImportDiagnostic,
+} from "./kiro-credentials";
 
 const DEFAULT_REGION = "us-east-1";
 const REFRESH_URL = "https://prod.{region}.auth.desktop.kiro.dev/refreshToken";
-const TOKEN_KEYS = ["kirocli:social:token", "kirocli:odic:token", "codewhisperer:odic:token"];
-
-function dbPaths(): string[] {
-  const home = process.env.HOME || "";
-  return [`${home}/Library/Application Support/kiro-cli/data.sqlite3`, `${home}/.kiro/sso/cache.db`];
-}
+const OIDC_URL = "https://oidc.{region}.amazonaws.com/token";
 
 interface ImportedKiroToken {
   access: string;
@@ -29,71 +29,21 @@ interface ImportedKiroToken {
   expires: number;
 }
 
-export type KiroCliImportDiagnosticStatus = "missing" | "unreadable" | "schema_mismatch" | "invalid_json" | "token_missing" | "token_found";
-
-export interface KiroCliImportDiagnostic {
-  location: "kiro-cli-data" | "kiro-sso-cache";
-  status: KiroCliImportDiagnosticStatus;
-}
-
-function dbEntries(): Array<{ location: KiroCliImportDiagnostic["location"]; path: string }> {
-  const [kiroCliData, kiroSsoCache] = dbPaths();
-  return [
-    { location: "kiro-cli-data", path: kiroCliData },
-    { location: "kiro-sso-cache", path: kiroSsoCache },
-  ];
-}
+export type KiroCliImportDiagnosticStatus = KiroImportDiagnostic["status"];
+export type KiroCliImportDiagnostic = KiroImportDiagnostic;
 
 export function inspectKiroCliSqlite(): { token: ImportedKiroToken | null; diagnostics: KiroCliImportDiagnostic[] } {
-  const diagnostics: KiroCliImportDiagnostic[] = [];
-  for (const { location, path } of dbEntries()) {
-    if (!existsSync(path)) {
-      diagnostics.push({ location, status: "missing" });
-      continue;
-    }
-    let db: Database | undefined;
-    try {
-      db = new Database(path, { readonly: true });
-    } catch {
-      diagnostics.push({ location, status: "unreadable" });
-      continue;
-    }
-    try {
-      for (const key of TOKEN_KEYS) {
-        const row = db.query("SELECT value FROM auth_kv WHERE key = ?").get(key) as { value: string } | null;
-        if (!row) continue;
-        let data: { access_token?: string; refresh_token?: string; expires_at?: string };
-        try {
-          data = JSON.parse(row.value) as { access_token?: string; refresh_token?: string; expires_at?: string };
-        } catch {
-          diagnostics.push({ location, status: "invalid_json" });
-          continue;
-        }
-        if (data.access_token) {
-          diagnostics.push({ location, status: "token_found" });
-          return {
-            token: {
-              access: data.access_token,
-              refresh: data.refresh_token || "",
-              expires: data.expires_at ? new Date(data.expires_at).getTime() : Date.now() + 3600_000,
-            },
-            diagnostics,
-          };
-        }
-      }
-      diagnostics.push({ location, status: "token_missing" });
-    } catch {
-      diagnostics.push({ location, status: "schema_mismatch" });
-    } finally {
-      db.close();
-    }
-  }
-  return { token: null, diagnostics };
+  const { credential, diagnostics } = inspectKiroCliSqliteSources();
+  return {
+    token: credential ? { access: credential.access, refresh: credential.refresh, expires: credential.expires } : null,
+    diagnostics,
+  };
 }
 
 /** Read the kiro-cli SQLite token store (mac/linux). Returns null if no token found. */
 export function readKiroCliSqlite(): ImportedKiroToken | null {
-  return inspectKiroCliSqlite().token;
+  const imported = readKiroCliSqliteCredential();
+  return imported ? { access: imported.access, refresh: imported.refresh, expires: imported.expires } : null;
 }
 
 /**
@@ -101,10 +51,15 @@ export function readKiroCliSqlite(): ImportedKiroToken | null {
  * In GUI (no onManualCodeInput) with no SQLite token and no env, throws a clear error — never hangs.
  */
 export async function loginKiro(ctrl: OAuthController): Promise<OAuthCredentials> {
-  const imported = readKiroCliSqlite();
+  const imported = readImportedKiroCredential();
   if (imported) {
-    ctrl.onProgress?.("Imported token from installed kiro-cli login.");
-    return { access: imported.access, refresh: imported.refresh, expires: imported.expires, source: "local-cli" };
+    ctrl.onProgress?.(imported.source === "json" ? "Imported token from Kiro credentials file." : "Imported token from installed kiro-cli login.");
+    return {
+      access: imported.access,
+      refresh: imported.refresh,
+      expires: imported.expires,
+      source: imported.source === "json" ? "credential-file" : "local-cli",
+    };
   }
 
   const envToken = process.env.KIRO_ACCESS_TOKEN;
@@ -125,9 +80,22 @@ export async function loginKiro(ctrl: OAuthController): Promise<OAuthCredentials
   );
 }
 
-/** Region precedence: KIRO_REGION → default us-east-1. */
+/** Auth/SSO region precedence: KIRO_REGION → imported SSO region → default us-east-1. */
 export function resolveKiroRegion(): string {
-  return process.env.KIRO_REGION || DEFAULT_REGION;
+  return process.env.KIRO_REGION || readImportedKiroCredential()?.ssoRegion || DEFAULT_REGION;
+}
+
+/** Runtime API region precedence: KIRO_API_REGION → imported API/profile region → auth region. */
+export function resolveKiroApiRegion(): string {
+  const imported = readImportedKiroCredential();
+  return (
+    process.env.KIRO_API_REGION ||
+    imported?.apiRegion ||
+    inferRegionFromProfileArn(imported?.profileArn) ||
+    imported?.ssoRegion ||
+    process.env.KIRO_REGION ||
+    DEFAULT_REGION
+  );
 }
 
 /**
@@ -138,28 +106,21 @@ export function resolveKiroRegion(): string {
 export function resolveKiroProfileArn(): string | undefined {
   const env = process.env.KIRO_PROFILE_ARN;
   if (env) return env;
-  for (const dbPath of dbPaths()) {
-    if (!existsSync(dbPath)) continue;
-    let db: Database | undefined;
-    try {
-      db = new Database(dbPath, { readonly: true });
-      for (const key of TOKEN_KEYS) {
-        const row = db.query("SELECT value FROM auth_kv WHERE key = ?").get(key) as { value: string } | null;
-        if (!row) continue;
-        const data = JSON.parse(row.value) as { profile_arn?: string };
-        if (data.profile_arn) return data.profile_arn;
-      }
-    } catch {
-      // try next path
-    } finally {
-      db?.close();
-    }
-  }
-  return undefined;
+  return readImportedKiroCredential()?.profileArn;
 }
-export async function refreshKiroToken(refresh: string, signal?: AbortSignal): Promise<OAuthCredentials> {
-  if (!refresh) throw new Error("Kiro: no refresh token available (re-run `kiro-cli login`).");
-  const region = process.env.KIRO_REGION || DEFAULT_REGION;
+
+async function readTokenResponse(res: Response, oldRefresh: string): Promise<OAuthCredentials> {
+  const data = (await res.json()) as { accessToken?: string; refreshToken?: string; expiresIn?: number };
+  if (!data.accessToken) throw new Error("Kiro refresh returned no accessToken");
+  return {
+    access: data.accessToken,
+    refresh: data.refreshToken || oldRefresh,
+    expires: Date.now() + (data.expiresIn ?? 3600) * 1000,
+  };
+}
+
+async function refreshKiroDesktopToken(refresh: string, signal?: AbortSignal): Promise<OAuthCredentials> {
+  const region = resolveKiroRegion();
   const res = await fetch(REFRESH_URL.replace("{region}", region), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -167,11 +128,34 @@ export async function refreshKiroToken(refresh: string, signal?: AbortSignal): P
     signal: signal ?? AbortSignal.timeout(30_000),
   });
   if (!res.ok) throw new Error(`Kiro token refresh failed: ${res.status}`);
-  const data = (await res.json()) as { accessToken?: string; refreshToken?: string; expiresIn?: number };
-  if (!data.accessToken) throw new Error("Kiro refresh returned no accessToken");
-  return {
-    access: data.accessToken,
-    refresh: data.refreshToken || refresh,
-    expires: Date.now() + (data.expiresIn ?? 3600) * 1000,
-  };
+  return readTokenResponse(res, refresh);
+}
+
+async function refreshAwsSsoOidcToken(refresh: string, signal?: AbortSignal): Promise<OAuthCredentials> {
+  const imported = readImportedKiroCredential();
+  if (!imported?.clientId || !imported.clientSecret) return refreshKiroDesktopToken(refresh, signal);
+  const region = process.env.KIRO_REGION || imported.ssoRegion || DEFAULT_REGION;
+  const run = async (refreshToken: string): Promise<Response> => fetch(OIDC_URL.replace("{region}", region), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      grantType: "refresh_token",
+      clientId: imported.clientId,
+      clientSecret: imported.clientSecret,
+      refreshToken,
+    }),
+    signal: signal ?? AbortSignal.timeout(30_000),
+  });
+  let res = await run(refresh);
+  if (!res.ok && res.status === 400 && imported.source === "sqlite") {
+    const reloaded = readImportedKiroCredential();
+    if (reloaded?.refresh && reloaded.refresh !== refresh) res = await run(reloaded.refresh);
+  }
+  if (!res.ok) throw new Error(`Kiro AWS SSO OIDC refresh failed: ${res.status}`);
+  return readTokenResponse(res, refresh);
+}
+
+export async function refreshKiroToken(refresh: string, signal?: AbortSignal): Promise<OAuthCredentials> {
+  if (!refresh) throw new Error("Kiro: no refresh token available (re-run `kiro-cli login`).");
+  return refreshAwsSsoOidcToken(refresh, signal);
 }

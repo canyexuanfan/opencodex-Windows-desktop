@@ -12,7 +12,10 @@ import type { OcxParsedRequest, OcxProviderConfig } from "../src/types";
 const enc = new TextEncoder();
 const origHome = process.env.HOME;
 const origRegion = process.env.KIRO_REGION;
+const origApiRegion = process.env.KIRO_API_REGION;
 const origArn = process.env.KIRO_PROFILE_ARN;
+const origCredsFile = process.env.KIRO_CREDS_FILE;
+const origCredentialsFile = process.env.KIRO_CREDENTIALS_FILE;
 let tmp: string;
 
 beforeEach(() => {
@@ -20,12 +23,18 @@ beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "kiro-adapter-"));
   process.env.HOME = tmp;
   process.env.KIRO_REGION = "us-east-1";
+  delete process.env.KIRO_API_REGION;
   delete process.env.KIRO_PROFILE_ARN;
+  delete process.env.KIRO_CREDS_FILE;
+  delete process.env.KIRO_CREDENTIALS_FILE;
 });
 afterEach(() => {
   if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
   if (origRegion === undefined) delete process.env.KIRO_REGION; else process.env.KIRO_REGION = origRegion;
+  if (origApiRegion === undefined) delete process.env.KIRO_API_REGION; else process.env.KIRO_API_REGION = origApiRegion;
   if (origArn === undefined) delete process.env.KIRO_PROFILE_ARN; else process.env.KIRO_PROFILE_ARN = origArn;
+  if (origCredsFile === undefined) delete process.env.KIRO_CREDS_FILE; else process.env.KIRO_CREDS_FILE = origCredsFile;
+  if (origCredentialsFile === undefined) delete process.env.KIRO_CREDENTIALS_FILE; else process.env.KIRO_CREDENTIALS_FILE = origCredentialsFile;
   rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -64,6 +73,15 @@ describe("kiro adapter — buildRequest", () => {
     expect(headers["x-amz-target"]).toBe("AmazonCodeWhispererStreamingService.GenerateAssistantResponse");
     expect(headers.accept).toBe("application/vnd.amazon.eventstream");
     expect(headers["x-amzn-kiro-agent-mode"]).toBe("vibe");
+  });
+
+  test("runtime URL uses KIRO_API_REGION separately from auth region", () => {
+    process.env.KIRO_REGION = "us-east-1";
+    process.env.KIRO_API_REGION = "ap-northeast-2";
+
+    const { url } = createKiroAdapter(provider).buildRequest(parsedWith([{ role: "user", content: "hi" }]));
+
+    expect(url).toBe("https://runtime.ap-northeast-2.kiro.dev/");
   });
 
   test("toolUses[].input is a JSON object (not stringified) and toolResults are adjacent", () => {

@@ -14,7 +14,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { hostname, userInfo } from "node:os";
 import { decodeEventStream } from "../lib/eventstream-decoder";
 import { estimateTokens } from "../lib/token-estimate";
-import { resolveKiroProfileArn, resolveKiroRegion } from "../oauth/kiro";
+import { resolveKiroApiRegion, resolveKiroProfileArn } from "../oauth/kiro";
 import { KiroThinkingParser } from "./kiro-thinking";
 import type {
   AdapterEvent,
@@ -445,7 +445,7 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
   return {
     name: "kiro",
     buildRequest(parsed: OcxParsedRequest) {
-      const region = resolveKiroRegion();
+      const region = resolveKiroApiRegion();
       const profileArn = resolveKiroProfileArn();
       const fp = fingerprint().slice(0, 64);
       const headers: Record<string, string> = {

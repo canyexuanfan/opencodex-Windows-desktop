@@ -1,5 +1,5 @@
 /** Minimal OAuth types, ported from jawcode packages/ai/src/utils/oauth/types.ts. */
-export type OAuthCredentialSource = "oauth" | "local-cli" | "environment" | "manual";
+export type OAuthCredentialSource = "oauth" | "local-cli" | "credential-file" | "environment" | "manual";
 
 export type OAuthCredentials = {
   refresh: string;

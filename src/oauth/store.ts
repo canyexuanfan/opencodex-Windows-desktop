@@ -34,7 +34,7 @@ function persist(store: AuthStore): void {
 }
 
 function isCredentialSource(value: unknown): value is OAuthCredentialSource {
-  return value === "oauth" || value === "local-cli" || value === "environment" || value === "manual";
+  return value === "oauth" || value === "local-cli" || value === "credential-file" || value === "environment" || value === "manual";
 }
 
 function normalizeCredential(cred: unknown): OAuthCredentials | null {

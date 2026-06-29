@@ -1,14 +1,18 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inspectKiroCliSqlite, loginKiro, readKiroCliSqlite, refreshKiroToken, resolveKiroProfileArn, resolveKiroRegion } from "../src/oauth/kiro";
+import { inspectKiroCliSqlite, loginKiro, readKiroCliSqlite, refreshKiroToken, resolveKiroApiRegion, resolveKiroProfileArn, resolveKiroRegion } from "../src/oauth/kiro";
 
 const origHome = process.env.HOME;
 const origEnvTok = process.env.KIRO_ACCESS_TOKEN;
 const origArn = process.env.KIRO_PROFILE_ARN;
 const origRegion = process.env.KIRO_REGION;
+const origApiRegion = process.env.KIRO_API_REGION;
+const origCredsFile = process.env.KIRO_CREDS_FILE;
+const origCredentialsFile = process.env.KIRO_CREDENTIALS_FILE;
+const origCliDbFile = process.env.KIRO_CLI_DB_FILE;
 const origFetch = globalThis.fetch;
 let tmp: string;
 
@@ -18,6 +22,10 @@ beforeEach(() => {
   delete process.env.KIRO_ACCESS_TOKEN;
   delete process.env.KIRO_PROFILE_ARN;
   delete process.env.KIRO_REGION;
+  delete process.env.KIRO_API_REGION;
+  delete process.env.KIRO_CREDS_FILE;
+  delete process.env.KIRO_CREDENTIALS_FILE;
+  delete process.env.KIRO_CLI_DB_FILE;
 });
 afterEach(() => {
   if (origHome === undefined) delete process.env.HOME;
@@ -28,16 +36,34 @@ afterEach(() => {
   else process.env.KIRO_PROFILE_ARN = origArn;
   if (origRegion === undefined) delete process.env.KIRO_REGION;
   else process.env.KIRO_REGION = origRegion;
+  if (origApiRegion === undefined) delete process.env.KIRO_API_REGION;
+  else process.env.KIRO_API_REGION = origApiRegion;
+  if (origCredsFile === undefined) delete process.env.KIRO_CREDS_FILE;
+  else process.env.KIRO_CREDS_FILE = origCredsFile;
+  if (origCredentialsFile === undefined) delete process.env.KIRO_CREDENTIALS_FILE;
+  else process.env.KIRO_CREDENTIALS_FILE = origCredentialsFile;
+  if (origCliDbFile === undefined) delete process.env.KIRO_CLI_DB_FILE;
+  else process.env.KIRO_CLI_DB_FILE = origCliDbFile;
   globalThis.fetch = origFetch;
   rmSync(tmp, { recursive: true, force: true });
 });
 
-function seedKiroCliDb(token: { access_token: string; refresh_token?: string; expires_at?: string; profile_arn?: string }) {
+function seedKiroCliDb(
+  token: { access_token: string; refresh_token?: string; expires_at?: string; profile_arn?: string; region?: string },
+  opts: { registration?: Record<string, unknown>; stateArn?: string } = {},
+) {
   const dir = join(tmp, "Library", "Application Support", "kiro-cli");
   mkdirSync(dir, { recursive: true });
   const db = new Database(join(dir, "data.sqlite3"));
   db.run("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)");
   db.run("INSERT INTO auth_kv (key, value) VALUES (?, ?)", ["kirocli:social:token", JSON.stringify(token)]);
+  if (opts.registration) {
+    db.run("INSERT INTO auth_kv (key, value) VALUES (?, ?)", ["kirocli:odic:device-registration", JSON.stringify(opts.registration)]);
+  }
+  if (opts.stateArn) {
+    db.run("CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT)");
+    db.run("INSERT INTO state (key, value) VALUES (?, ?)", ["api.codewhisperer.profile", JSON.stringify({ arn: opts.stateArn })]);
+  }
   db.close();
 }
 
@@ -65,6 +91,28 @@ describe("kiro oauth — import-first", () => {
     expect(cred.access).toBe("aoa-xyz");
     expect(cred.refresh).toBe("rt-2");
     expect(cred.source).toBe("local-cli");
+  });
+
+  test("loginKiro imports JSON credentials and resolver metadata", async () => {
+    const file = join(tmp, "kiro-creds.json");
+    writeFileSync(file, JSON.stringify({
+      accessToken: "aoa-json",
+      refreshToken: "rt-json",
+      expiresAt: "2099-01-01T00:00:00Z",
+      profileArn: "arn:aws:codewhisperer:ap-northeast-1:123456789012:profile/demo",
+      region: "us-west-2",
+      apiRegion: "eu-central-1",
+    }));
+    process.env.KIRO_CREDS_FILE = file;
+
+    const cred = await loginKiro({});
+
+    expect(cred.access).toBe("aoa-json");
+    expect(cred.refresh).toBe("rt-json");
+    expect(cred.source).toBe("credential-file");
+    expect(resolveKiroProfileArn()).toBe("arn:aws:codewhisperer:ap-northeast-1:123456789012:profile/demo");
+    expect(resolveKiroRegion()).toBe("us-west-2");
+    expect(resolveKiroApiRegion()).toBe("eu-central-1");
   });
 
   test("loginKiro falls back to KIRO_ACCESS_TOKEN env when no SQLite token", async () => {
@@ -138,6 +186,89 @@ describe("kiro oauth — import-first", () => {
     expect(result.diagnostics).toContainEqual({ location: "kiro-cli-data", status: "unreadable" });
   });
 
+  test("SQLite import reads device registration and state profile region without leaking diagnostics", () => {
+    const arn = "arn:aws:codewhisperer:eu-central-1:123456789012:profile/demo";
+    seedKiroCliDb(
+      { access_token: "aoa-sqlite", refresh_token: "rt-sqlite", region: "ap-southeast-2" },
+      { registration: { client_id: "cid-sqlite", client_secret: "secret-sqlite", region: "us-west-2" }, stateArn: arn },
+    );
+
+    const result = inspectKiroCliSqlite();
+    const rendered = JSON.stringify(result.diagnostics);
+
+    expect(result.token?.access).toBe("aoa-sqlite");
+    expect(result.diagnostics).toContainEqual({ location: "kiro-cli-data", status: "registration_found" });
+    expect(resolveKiroProfileArn()).toBe(arn);
+    expect(resolveKiroRegion()).toBe("ap-southeast-2");
+    expect(resolveKiroApiRegion()).toBe("eu-central-1");
+    expect(rendered).not.toContain("secret-sqlite");
+    expect(rendered).not.toContain(arn);
+    expect(rendered).not.toContain(tmp);
+  });
+
+  test("enterprise clientIdHash JSON credentials load AWS SSO device registration", async () => {
+    const file = join(tmp, "kiro-enterprise.json");
+    const cacheDir = join(tmp, ".aws", "sso", "cache");
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(join(cacheDir, "hash123.json"), JSON.stringify({ clientId: "cid-hash", clientSecret: "secret-hash" }));
+    writeFileSync(file, JSON.stringify({
+      accessToken: "aoa-enterprise",
+      refreshToken: "rt-enterprise",
+      clientIdHash: "hash123",
+      region: "us-east-2",
+    }));
+    process.env.KIRO_CREDS_FILE = file;
+    let captured: { url: string; body: Record<string, unknown> } | undefined;
+    globalThis.fetch = (async (input, init) => {
+      captured = { url: String(input), body: JSON.parse(String(init?.body)) as Record<string, unknown> };
+      return new Response(JSON.stringify({ accessToken: "aoa-new", refreshToken: "rt-new", expiresIn: 60 }), { status: 200 });
+    }) as typeof fetch;
+
+    const cred = await refreshKiroToken("rt-enterprise");
+
+    expect(cred.access).toBe("aoa-new");
+    expect(captured?.url).toBe("https://oidc.us-east-2.amazonaws.com/token");
+    expect(captured?.body).toEqual({
+      grantType: "refresh_token",
+      clientId: "cid-hash",
+      clientSecret: "secret-hash",
+      refreshToken: "rt-enterprise",
+    });
+  });
+
+  test("refreshKiroToken uses AWS SSO OIDC JSON payload when client credentials exist", async () => {
+    const file = join(tmp, "kiro-oidc.json");
+    writeFileSync(file, JSON.stringify({
+      accessToken: "aoa-old",
+      refreshToken: "rt-old",
+      region: "ap-southeast-1",
+      clientId: "cid",
+      clientSecret: "secret",
+    }));
+    process.env.KIRO_CREDS_FILE = file;
+    let captured: { url: string; contentType?: string; body: Record<string, unknown> } | undefined;
+    globalThis.fetch = (async (input, init) => {
+      captured = {
+        url: String(input),
+        contentType: (init?.headers as Record<string, string>)?.["Content-Type"],
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+      };
+      return new Response(JSON.stringify({ accessToken: "aoa-oidc", refreshToken: "rt-oidc", expiresIn: 60 }), { status: 200 });
+    }) as typeof fetch;
+
+    const cred = await refreshKiroToken("rt-old");
+
+    expect(cred.access).toBe("aoa-oidc");
+    expect(captured?.url).toBe("https://oidc.ap-southeast-1.amazonaws.com/token");
+    expect(captured?.contentType).toBe("application/json");
+    expect(captured?.body).toEqual({
+      grantType: "refresh_token",
+      clientId: "cid",
+      clientSecret: "secret",
+      refreshToken: "rt-old",
+    });
+  });
+
   test("refreshKiroToken maps the desktop refresh response to credentials", async () => {
     globalThis.fetch = (async () =>
       new Response(JSON.stringify({ accessToken: "aoa-new", refreshToken: "rt-new", expiresIn: 1000 }), {
@@ -182,5 +313,15 @@ describe("kiro oauth — adapter-time resolvers (profileArn / region)", () => {
     expect(resolveKiroRegion()).toBe("us-east-1");
     process.env.KIRO_REGION = "eu-west-1";
     expect(resolveKiroRegion()).toBe("eu-west-1");
+  });
+
+  test("resolveKiroApiRegion: KIRO_API_REGION overrides imported profile region", () => {
+    seedKiroCliDb({
+      access_token: "aoa",
+      profile_arn: "arn:aws:codewhisperer:eu-central-1:123456789012:profile/demo",
+    });
+    expect(resolveKiroApiRegion()).toBe("eu-central-1");
+    process.env.KIRO_API_REGION = "us-east-2";
+    expect(resolveKiroApiRegion()).toBe("us-east-2");
   });
 });

@@ -59,7 +59,7 @@ describe("OAuth status privacy", () => {
       expires: Date.now() + 60_000,
       email: "person@example.test",
       accountId: "acct-xai",
-      source: "oauth",
+      source: "credential-file",
       prompt: "secret prompt",
       headers: { authorization: "Bearer leaked" },
       idToken: "jwt-secret",
@@ -70,7 +70,7 @@ describe("OAuth status privacy", () => {
     expect(stored).toContain("access-token");
     expect(stored).toContain("refresh-token");
     expect(stored).toContain("legacy-access");
-    expect(stored).toContain("\"source\": \"oauth\"");
+    expect(stored).toContain("\"source\": \"credential-file\"");
     expect(stored).not.toContain("attacker-controlled-source");
     expect(stored).not.toContain("legacy prompt");
     expect(stored).not.toContain("Bearer legacy");
