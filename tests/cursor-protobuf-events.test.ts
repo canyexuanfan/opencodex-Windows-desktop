@@ -261,4 +261,42 @@ describe("Cursor protobuf tool-call events", () => {
       { type: "tool_call_end", id: "call_2" },
     ]);
   });
+
+  test("turnEnded with an open tool call emits truncation error instead of done (fail-closed)", () => {
+    const state = createCursorProtobufEventState({ clientToolNames: ["mcp__fs__read_file"] });
+    // Start a tool call but never complete it.
+    mapCursorProtobufServerMessage(interaction({
+      case: "toolCallStarted",
+      value: create(ToolCallStartedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall: mcpToolCall("mcp__fs__read_file", {}) }),
+    }), state);
+    // Now the turn ends while the tool call is still open.
+    const turnEnd = create(AgentServerMessageSchema, {
+      message: { case: "interactionUpdate", value: create(InteractionUpdateSchema, {
+        message: { case: "turnEnded", value: {} },
+      }) },
+    });
+    const events = mapCursorProtobufServerMessage(turnEnd, state);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.type).toBe("error");
+    expect((events[0] as { message: string }).message).toContain("incomplete tool call");
+    expect((events[0] as { message: string }).message).toContain("call_1");
+  });
+
+  test("turnEnded without open tool calls emits done normally", () => {
+    const state = createCursorProtobufEventState({ clientToolNames: ["mcp__fs__read_file"] });
+    const toolCall = mcpToolCall("mcp__fs__read_file", { path: "a.txt" });
+    // Complete the tool call first.
+    mapCursorProtobufServerMessage(interaction({
+      case: "toolCallCompleted",
+      value: create(ToolCallCompletedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall }),
+    }), state);
+    // Turn ends cleanly.
+    const turnEnd = create(AgentServerMessageSchema, {
+      message: { case: "interactionUpdate", value: create(InteractionUpdateSchema, {
+        message: { case: "turnEnded", value: {} },
+      }) },
+    });
+    const events = mapCursorProtobufServerMessage(turnEnd, state);
+    expect(events).toEqual([{ type: "done", usage: { inputTokens: 0, outputTokens: 0 } }]);
+  });
 });

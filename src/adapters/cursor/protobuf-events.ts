@@ -219,8 +219,24 @@ export function mapCursorProtobufServerMessage(
       state.usage.outputTokens += update.value.tokens;
       return [];
     case "turnEnded":
-      return [{ type: "done", usage: { ...state.usage } }];
+      return finalizeTurn(state);
     default:
       return [];
   }
+}
+
+/**
+ * Finalize a Cursor turn. If any client tool call is still open (started but never completed),
+ * the stream was truncated and the partial tool call must not reach Codex as a completed call
+ * with corrupt/empty arguments. Emit an explicit error instead of done (fail-closed).
+ * Mirrors kiro-truncation.ts behavior.
+ */
+function finalizeTurn(state: CursorProtobufEventState): CursorServerMessage[] {
+  if (state.openToolCalls.size > 0) {
+    const openIds = [...state.openToolCalls.keys()].join(", ");
+    // Clear so a second turnEnded (should not happen, but defensive) doesn't re-emit.
+    state.openToolCalls.clear();
+    return [{ type: "error", message: `Cursor stream ended with incomplete tool call(s): ${openIds}. Arguments may be truncated; the call was not committed.` }];
+  }
+  return [{ type: "done", usage: { ...state.usage } }];
 }
