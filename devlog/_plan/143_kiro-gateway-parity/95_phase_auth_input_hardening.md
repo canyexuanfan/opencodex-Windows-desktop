@@ -146,3 +146,46 @@ Add regression coverage for:
 - No account circuit breaker.
 - No sticky account routing.
 - No write-back to Kiro CLI SQLite in this phase.
+
+## Build record
+
+Files changed:
+
+- ADD `src/oauth/kiro-credentials.ts`: centralized Kiro credential import from
+  JSON credential files, SQLite overrides, macOS/Linux/Amazon-Q SQLite paths,
+  device registration rows, profile state rows, and AWS SSO cache references.
+- MODIFY `src/oauth/kiro.ts`: replaced inline SQLite scanning with the helper,
+  preserved public SQLite import APIs, added `resolveKiroApiRegion()`, kept
+  `resolveKiroRegion()` for auth/SSO refresh, and selected AWS SSO OIDC refresh
+  when imported credentials carry client registration data.
+- MODIFY `src/adapters/kiro.ts`: runtime requests now use
+  `resolveKiroApiRegion()` instead of conflating runtime API region with auth
+  region.
+- MODIFY `src/oauth/types.ts` and `src/oauth/store.ts`: added and persisted the
+  safe `credential-file` credential source label through the existing OAuth
+  store allowlist.
+- MODIFY `tests/kiro-oauth.test.ts`: added JSON credential import,
+  `clientIdHash` AWS SSO cache loading, AWS SSO OIDC body/URL selection,
+  SQLite device-registration/profile-state import, no-secret diagnostics, and
+  API-region resolver coverage.
+- MODIFY `tests/kiro-adapter.test.ts`: added runtime URL coverage for
+  `KIRO_API_REGION`.
+- MODIFY `tests/oauth-status-privacy.test.ts`: confirmed `credential-file`
+  survives the credential-store allowlist without allowing arbitrary metadata.
+
+Verification:
+
+- `bun test tests/kiro-oauth.test.ts tests/oauth-refresh.test.ts tests/kiro-adapter.test.ts tests/oauth-status-privacy.test.ts`
+  -> 59 pass, 0 fail.
+- `bun x tsc --noEmit` -> exit 0, no diagnostics.
+- `wc -l src/oauth/kiro.ts src/oauth/kiro-credentials.ts src/adapters/kiro.ts`
+  -> 161 / 242 / 496 lines, all under the 500-line project limit.
+
+Security notes:
+
+- Diagnostics remain label/status-only and intentionally exclude access tokens,
+  refresh tokens, client secrets, profile ARNs, raw JSON payloads, and absolute
+  user paths.
+- The phase stays single-account. It broadens credential inputs and refresh
+  compatibility but does not introduce failover, account pools, or write-back to
+  external Kiro stores.
