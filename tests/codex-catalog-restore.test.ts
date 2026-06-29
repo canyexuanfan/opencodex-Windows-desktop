@@ -151,4 +151,47 @@ describe("Codex catalog restore", () => {
     expect(synced.find(m => m.slug === "gpt-5.5")?.priority).toBe(0);
     expect(synced.find(m => m.slug === "gpt-5.4")?.priority).toBeGreaterThan(100);
   });
+
+  test("sync advertises documented Codex-native additions omitted by the bundled catalog", () => {
+    const catalogPath = join(codexHome, "catalog.json");
+    writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
+    writeFileSync(catalogPath, JSON.stringify({
+      models: [
+        {
+          slug: "gpt-5.5",
+          priority: 0,
+          base_instructions: "native",
+          visibility: "list",
+          context_window: 272_000,
+          max_context_window: 272_000,
+        },
+        {
+          slug: "gpt-5.4",
+          priority: 2,
+          base_instructions: "native",
+          visibility: "list",
+          context_window: 272_000,
+          max_context_window: 1_000_000,
+        },
+      ],
+    }, null, 2) + "\n");
+
+    const r = runScript(codexHome, opencodexHome, `
+      const { syncCatalogModels } = require("./src/codex-catalog");
+      (async () => {
+        const result = await syncCatalogModels({
+          port: 10100,
+          providers: {},
+          defaultProvider: "openai",
+          subagentModels: ["gpt-5.5", "gpt-5.4", "gpt-5.3-codex-spark"],
+        });
+        console.log(JSON.stringify(result));
+      })();
+    `);
+
+    expect(r.status).toBe(0);
+    const synced = JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<Record<string, unknown>>;
+    expect(synced.map(m => m.slug)).toContain("gpt-5.3-codex-spark");
+    expect(synced.find(m => m.slug === "gpt-5.4")?.max_context_window).toBe(1_000_000);
+  });
 });

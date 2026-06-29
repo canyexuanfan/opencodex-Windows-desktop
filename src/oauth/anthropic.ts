@@ -128,7 +128,7 @@ export async function loginAnthropic(
       ctrl.onProgress?.("Found Claude Code token, importing automatically");
       if (local.expires >= Date.now() + 60_000) return local;
       try {
-        return await refreshAnthropicToken(local.refresh);
+        return { ...(await refreshAnthropicToken(local.refresh)), source: "local-cli" };
       } catch (error) {
         if (importLocal === "only") {
           throw new Error(`Claude Code token expired and could not be refreshed: ${error instanceof Error ? error.message : String(error)}`);

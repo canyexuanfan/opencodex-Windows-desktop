@@ -1,6 +1,7 @@
 import type { OcxProviderConfig } from "../types";
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
-import { signalWithTimeout } from "../abort";
+import { signalWithTimeout, cancelBodyOnAbort } from "../abort";
+import { sidecarEnter } from "../sidecar-tracker";
 import { parseSidecarSSE, type WebSearchResult } from "./parse";
 import type { CodexUpstreamOutcome } from "../codex-routing";
 
@@ -63,6 +64,7 @@ export async function runWebSearch(
   };
   const url = `${forwardProvider.baseUrl}/responses`;
   const linkedSignal = signalWithTimeout(settings.timeoutMs, abortSignal);
+  const sidecarExit = sidecarEnter("web-search");
   try {
     const res = await fetch(url, {
       method: "POST",
@@ -75,11 +77,17 @@ export async function runWebSearch(
       const t = await res.text().catch(() => "");
       return { text: "", sources: [], error: `sidecar HTTP ${res.status}: ${t.slice(0, 200)}` };
     }
-    return await parseSidecarSSE(res);
+    const detachBodyGuard = cancelBodyOnAbort(res.body, linkedSignal.signal);
+    try {
+      return await parseSidecarSSE(res);
+    } finally {
+      detachBodyGuard();
+    }
   } catch (e) {
     recordOutcome?.(e instanceof Error && e.name === "TimeoutError" ? "timeout" : "connect_error");
     return { text: "", sources: [], error: e instanceof Error ? e.message : String(e) };
   } finally {
+    sidecarExit();
     linkedSignal.cleanup();
   }
 }

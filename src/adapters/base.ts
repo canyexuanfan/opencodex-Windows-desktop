@@ -8,13 +8,26 @@ export interface IncomingMeta {
 export interface ProviderAdapter {
   name: string;
 
-  buildRequest(parsed: OcxParsedRequest, incoming?: IncomingMeta): {
+  buildRequest(parsed: OcxParsedRequest, incoming?: IncomingMeta): AdapterRequest;
+
+  fetchResponse?(request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response>;
+
+  parseStream(response: Response): AsyncGenerator<AdapterEvent>;
+  parseResponse?(response: Response): Promise<AdapterEvent[]>;
+}
+
+export interface AdapterRequest {
     url: string;
     method: string;
     headers: Record<string, string>;
     body: string;
-  };
+    usageLog?: {
+      inputTokens?: number;
+      estimated?: boolean;
+    };
+}
 
-  parseStream(response: Response): AsyncGenerator<AdapterEvent>;
-  parseResponse?(response: Response): Promise<AdapterEvent[]>;
+export interface AdapterFetchContext {
+  abortSignal?: AbortSignal;
+  timeoutMs?: number;
 }

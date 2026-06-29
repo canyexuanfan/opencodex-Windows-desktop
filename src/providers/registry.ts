@@ -1,4 +1,5 @@
 import type { OcxProviderConfig } from "../types";
+import { KIRO_MODELS, KIRO_MODEL_CONTEXT_WINDOWS, KIRO_MODEL_REASONING_EFFORTS } from "./kiro-models";
 
 export type ProviderAuthKind = "forward" | "oauth" | "key" | "local";
 export type MetadataModelIdNormalize = "case-insensitive";
@@ -157,6 +158,20 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     noPenaltyModels: KIMI_LOCKED_PARAMETER_MODELS,
     autoToolChoiceOnlyModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
     preserveReasoningContentModels: KIMI_THINKING_MODELS,
+  },
+  {
+    id: "kiro",
+    label: "Kiro (AWS CodeWhisperer)",
+    adapter: "kiro",
+    baseUrl: "https://runtime.us-east-1.kiro.dev",
+    authKind: "oauth",
+    oauthId: "kiro",
+    note: "Import-first: reuses your installed kiro-cli login (no browser). Experimental third-party harness — see Kiro ToS.",
+    models: KIRO_MODELS,
+    defaultModel: "kiro-auto",
+    // Context windows sourced from Kiro's official model catalog (kiro.dev/docs/models/).
+    modelContextWindows: KIRO_MODEL_CONTEXT_WINDOWS,
+    modelReasoningEfforts: KIRO_MODEL_REASONING_EFFORTS,
   },
   { id: "openai-apikey", label: "OpenAI (API key)", adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", authKind: "key", featured: true, dashboardUrl: "https://platform.openai.com/api-keys", defaultModel: "gpt-5.5" },
   {

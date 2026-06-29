@@ -39,7 +39,7 @@ function config(hostname?: string): OcxConfig {
         adapter: "openai-chat",
         baseUrl: "https://api.example.test/v1",
         apiKey: "sk-secret-value",
-        headers: { Authorization: "Bearer provider-secret", "X-Custom": "secret" },
+        headers: { "X-Custom": "provider-secret" },
         defaultModel: "gpt-test",
       },
     },
@@ -364,6 +364,41 @@ describe("server local API auth", () => {
     }
   });
 
+  test("provider management rejects sensitive or injectable provider headers", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig(config("127.0.0.1"));
+
+    const server = startServer(0);
+    try {
+      for (const { name, headers, message } of [
+        { name: "bad-auth", headers: { Authorization: "Bearer provider-secret" }, message: "sensitive header" },
+        { name: "bad-cookie", headers: { Cookie: "session=secret" }, message: "sensitive header" },
+        { name: "bad-injection", headers: { "X-Custom": "ok\r\nInjected: yes" }, message: "line breaks" },
+      ]) {
+        const response = await fetch(new URL("/api/providers", server.url), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name,
+            provider: {
+              adapter: "openai-chat",
+              baseUrl: "https://api.example.test/v1",
+              headers,
+            },
+          }),
+        });
+        expect(response.status).toBe(400);
+        expect(await response.json()).toMatchObject({
+          error: expect.stringContaining(message),
+        });
+      }
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("provider deletion does not treat inherited object keys as configured providers", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
@@ -440,6 +475,38 @@ describe("server local API auth", () => {
         headers: { "x-opencodex-api-key": "local-secret", origin: `http://127.0.0.1:${server.port}` },
       });
       expect(ok.status).toBe(200);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("OPTIONS preflight rejects non-local Origin before CORS headers are trusted", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig(config("127.0.0.1"));
+
+    const server = startServer(0);
+    const loopbackOrigin = `http://127.0.0.1:${server.port}`;
+    try {
+      const rejected = await fetch(new URL("/api/settings", server.url), {
+        method: "OPTIONS",
+        headers: {
+          origin: "https://attacker.test",
+          "access-control-request-method": "GET",
+        },
+      });
+      expect(rejected.status).toBe(403);
+
+      const accepted = await fetch(new URL("/api/settings", server.url), {
+        method: "OPTIONS",
+        headers: {
+          origin: loopbackOrigin,
+          "access-control-request-method": "GET",
+        },
+      });
+      expect(accepted.status).toBe(204);
+      expect(accepted.headers.get("access-control-allow-origin")).toBe(loopbackOrigin);
     } finally {
       await server.stop(true);
     }
@@ -523,6 +590,38 @@ describe("server local API auth", () => {
       });
       expect(ok.status).toBe(200);
       expect(ok.headers.get("access-control-allow-origin")).toBe(origin);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("websocket upgrade rejects hostile Origin even with a valid API token", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    process.env.OPENCODEX_API_AUTH_TOKEN = "local-secret";
+    saveConfig({
+      ...config("0.0.0.0"),
+      port: 0,
+      websockets: true,
+    });
+
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/v1/responses", server.url), {
+        method: "GET",
+        headers: {
+          authorization: "Bearer inbound-main-token",
+          connection: "Upgrade",
+          upgrade: "websocket",
+          origin: "https://attacker.test",
+          "x-opencodex-api-key": "local-secret",
+        },
+      });
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({
+        error: { code: "origin_rejected" },
+      });
     } finally {
       await server.stop(true);
     }
@@ -836,6 +935,87 @@ describe("server local API auth", () => {
         errorCode: "upstream_server_error",
         terminalStatus: "failed",
         closeReason: "terminal",
+      });
+    } finally {
+      await server.stop(true);
+      await upstream.stop(true);
+    }
+  });
+
+  test("native passthrough SSE records completed usage without pool terminal tracking", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+
+    const upstream = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(
+          [
+            "event: response.completed",
+            'data: {"type":"response.completed","response":{"status":"completed","model":"gpt-5.5","usage":{"input_tokens":11,"output_tokens":7,"input_tokens_details":{"cached_tokens":3},"output_tokens_details":{"reasoning_tokens":2}}}}',
+            "",
+            "",
+          ].join("\n"),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      },
+    });
+    saveConfig({
+      port: 0,
+      defaultProvider: "test-openai",
+      providers: {
+        "test-openai": {
+          adapter: "openai-responses",
+          baseUrl: upstream.url.toString(),
+          apiKey: "provider-key",
+          defaultModel: "gpt-5.5",
+        },
+      },
+    } as OcxConfig);
+
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/v1/responses", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-5.5", input: "hello", stream: true }),
+      });
+
+      expect(response.status).toBe(200);
+      await response.text();
+      const logs = await fetch(new URL("/api/logs?tail=1", server.url)).then(r => r.json()) as Array<{
+        status: number;
+        terminalStatus?: string;
+        closeReason?: string;
+        usageStatus?: string;
+        totalTokens?: number;
+        usage?: { inputTokens: number; outputTokens: number; cachedInputTokens?: number; reasoningOutputTokens?: number };
+      }>;
+      expect(logs.at(-1)).toMatchObject({
+        status: 200,
+        terminalStatus: "completed",
+        closeReason: "terminal",
+        usageStatus: "reported",
+        totalTokens: 18,
+        usage: {
+          inputTokens: 11,
+          outputTokens: 7,
+          cachedInputTokens: 3,
+          reasoningOutputTokens: 2,
+        },
+      });
+
+      const usage = await fetch(new URL("/api/usage?range=all", server.url)).then(r => r.json()) as {
+        summary: { requests: number; reportedRequests: number; totalTokens: number };
+        models: Array<{ provider: string; model: string; reportedRequests: number; totalTokens: number }>;
+      };
+      expect(usage.summary).toMatchObject({ requests: 1, reportedRequests: 1, totalTokens: 18 });
+      expect(usage.models.at(-1)).toMatchObject({
+        provider: "test-openai",
+        model: "gpt-5.5",
+        reportedRequests: 1,
+        totalTokens: 18,
       });
     } finally {
       await server.stop(true);
