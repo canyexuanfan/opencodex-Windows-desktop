@@ -103,3 +103,25 @@ quota wording remains `rate_limit_exceeded`, not `insufficient_quota`.
 - No live Kiro account smoke test; use deterministic wire fixtures.
 - No new adapter event schema. This phase works with the existing
   `AdapterEvent.error` string and shared bridge classifier.
+
+## Completion evidence
+
+- Implemented in `a038784`:
+  - `src/adapters/kiro-errors.ts` now keeps `safeKiroErrorMessage()` and adds
+    `safeKiroHttpErrorMessage()` with Kiro-specific redacted category prefixes.
+  - `src/adapters/kiro-retry.ts` now replaces final non-OK Kiro HTTP bodies
+    with sanitized actionable text while preserving status, retry count, and
+    abort behavior.
+  - `src/errors.ts` now recognizes Kiro rate-limit, auth, quota, validation,
+    model, and region messages before the generic `status >= 500` fallback.
+  - Regression coverage was added in `tests/kiro-stream.test.ts`,
+    `tests/kiro-retry.test.ts`, and `tests/error-fidelity.test.ts`.
+- Local verification:
+  - `bun x tsc --noEmit` passed.
+  - `bun test tests/kiro-stream.test.ts tests/kiro-retry.test.ts tests/error-fidelity.test.ts tests/adapter-error-inline.test.ts`
+    passed: 36 tests.
+  - Line counts stayed under 500 for all touched files.
+- Independent verifier:
+  - Backend verifier reported DONE.
+  - It reran `bun x tsc --noEmit` and the same four-file target suite, with
+    36 pass / 0 fail, and confirmed touched file line counts under 500.
