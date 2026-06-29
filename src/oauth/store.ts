@@ -33,13 +33,25 @@ function persist(store: AuthStore): void {
   atomicWriteFile(authPath(), JSON.stringify(store, null, 2) + "\n");
 }
 
+function normalizeCredential(cred: OAuthCredentials): OAuthCredentials {
+  const normalized: OAuthCredentials = {
+    access: cred.access,
+    refresh: cred.refresh,
+    expires: cred.expires,
+  };
+  if (cred.email) normalized.email = cred.email;
+  if (cred.accountId) normalized.accountId = cred.accountId;
+  if (cred.source) normalized.source = cred.source;
+  return normalized;
+}
+
 export function getCredential(provider: string): OAuthCredentials | null {
   return loadAuthStore()[provider] ?? null;
 }
 
 export function saveCredential(provider: string, cred: OAuthCredentials): void {
   const store = loadAuthStore();
-  store[provider] = cred;
+  store[provider] = normalizeCredential(cred);
   persist(store);
 }
 

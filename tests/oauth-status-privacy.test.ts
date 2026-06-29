@@ -28,13 +28,40 @@ describe("OAuth status privacy", () => {
       expires: Date.now() + 60_000,
       email: "person@example.test",
       accountId: "acct-xai",
+      source: "local-cli",
     });
 
     const status = getLoginStatus("xai");
 
     expect(status.loggedIn).toBe(true);
     expect(status.email).toBe("p***n@example.test");
+    expect(status.source).toBe("local-cli");
     expect(JSON.stringify(status)).not.toContain("person@example.test");
+    expect(JSON.stringify(status)).not.toContain("access-token");
+    expect(JSON.stringify(status)).not.toContain("refresh-token");
+  });
+
+  test("saveCredential persists only the credential allowlist", () => {
+    saveCredential("xai", {
+      access: "access-token",
+      refresh: "refresh-token",
+      expires: Date.now() + 60_000,
+      email: "person@example.test",
+      accountId: "acct-xai",
+      source: "oauth",
+      prompt: "secret prompt",
+      headers: { authorization: "Bearer leaked" },
+      idToken: "jwt-secret",
+    } as never);
+
+    const stored = readFileSync(join(TEST_DIR, "auth.json"), "utf8");
+
+    expect(stored).toContain("access-token");
+    expect(stored).toContain("refresh-token");
+    expect(stored).toContain("\"source\": \"oauth\"");
+    expect(stored).not.toContain("secret prompt");
+    expect(stored).not.toContain("Bearer leaked");
+    expect(stored).not.toContain("jwt-secret");
   });
 
   test("stale credentials for removed OAuth providers fail as unsupported provider config", async () => {

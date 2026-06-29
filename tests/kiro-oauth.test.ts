@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loginKiro, readKiroCliSqlite, refreshKiroToken, resolveKiroProfileArn, resolveKiroRegion } from "../src/oauth/kiro";
+import { inspectKiroCliSqlite, loginKiro, readKiroCliSqlite, refreshKiroToken, resolveKiroProfileArn, resolveKiroRegion } from "../src/oauth/kiro";
 
 const origHome = process.env.HOME;
 const origEnvTok = process.env.KIRO_ACCESS_TOKEN;
@@ -55,21 +55,51 @@ describe("kiro oauth — import-first", () => {
     const cred = await loginKiro({});
     expect(cred.access).toBe("aoa-xyz");
     expect(cred.refresh).toBe("rt-2");
+    expect(cred.source).toBe("local-cli");
   });
 
   test("loginKiro falls back to KIRO_ACCESS_TOKEN env when no SQLite token", async () => {
     process.env.KIRO_ACCESS_TOKEN = "aoa-env";
     const cred = await loginKiro({});
     expect(cred.access).toBe("aoa-env");
+    expect(cred.source).toBe("environment");
   });
 
   test("loginKiro uses manual paste (CLI) when no SQLite/env token", async () => {
     const cred = await loginKiro({ onManualCodeInput: async () => "  aoa-pasted  " });
     expect(cred.access).toBe("aoa-pasted");
+    expect(cred.source).toBe("manual");
   });
 
   test("loginKiro throws (not hangs) in GUI with no token and no manual input", async () => {
     await expect(loginKiro({})).rejects.toThrow(/no token found/i);
+  });
+
+  test("inspectKiroCliSqlite reports safe diagnostics without token values", () => {
+    seedKiroCliDb({ access_token: "aoa-diagnostic-secret", refresh_token: "rt-diagnostic-secret" });
+
+    const result = inspectKiroCliSqlite();
+    const rendered = JSON.stringify(result.diagnostics);
+
+    expect(result.token?.access).toBe("aoa-diagnostic-secret");
+    expect(result.diagnostics).toContainEqual({ location: "kiro-cli-data", status: "token_found" });
+    expect(rendered).not.toContain("aoa-diagnostic-secret");
+    expect(rendered).not.toContain("rt-diagnostic-secret");
+    expect(rendered).not.toContain(tmp);
+  });
+
+  test("inspectKiroCliSqlite distinguishes schema mismatch from no token", () => {
+    const dir = join(tmp, "Library", "Application Support", "kiro-cli");
+    mkdirSync(dir, { recursive: true });
+    const db = new Database(join(dir, "data.sqlite3"));
+    db.run("CREATE TABLE other_table (key TEXT PRIMARY KEY, value TEXT)");
+    db.close();
+
+    const result = inspectKiroCliSqlite();
+
+    expect(result.token).toBeNull();
+    expect(result.diagnostics).toContainEqual({ location: "kiro-cli-data", status: "schema_mismatch" });
+    expect(result.diagnostics).toContainEqual({ location: "kiro-sso-cache", status: "missing" });
   });
 
   test("refreshKiroToken maps the desktop refresh response to credentials", async () => {

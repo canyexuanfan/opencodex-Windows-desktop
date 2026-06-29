@@ -29,32 +29,71 @@ interface ImportedKiroToken {
   expires: number;
 }
 
-/** Read the kiro-cli SQLite token store (mac/linux). Returns null if no token found. */
-export function readKiroCliSqlite(): ImportedKiroToken | null {
-  for (const dbPath of dbPaths()) {
-    if (!existsSync(dbPath)) continue;
+export type KiroCliImportDiagnosticStatus = "missing" | "unreadable" | "schema_mismatch" | "invalid_json" | "token_missing" | "token_found";
+
+export interface KiroCliImportDiagnostic {
+  location: "kiro-cli-data" | "kiro-sso-cache";
+  status: KiroCliImportDiagnosticStatus;
+}
+
+function dbEntries(): Array<{ location: KiroCliImportDiagnostic["location"]; path: string }> {
+  const [kiroCliData, kiroSsoCache] = dbPaths();
+  return [
+    { location: "kiro-cli-data", path: kiroCliData },
+    { location: "kiro-sso-cache", path: kiroSsoCache },
+  ];
+}
+
+export function inspectKiroCliSqlite(): { token: ImportedKiroToken | null; diagnostics: KiroCliImportDiagnostic[] } {
+  const diagnostics: KiroCliImportDiagnostic[] = [];
+  for (const { location, path } of dbEntries()) {
+    if (!existsSync(path)) {
+      diagnostics.push({ location, status: "missing" });
+      continue;
+    }
     let db: Database | undefined;
     try {
-      db = new Database(dbPath, { readonly: true });
+      db = new Database(path, { readonly: true });
+    } catch {
+      diagnostics.push({ location, status: "unreadable" });
+      continue;
+    }
+    try {
       for (const key of TOKEN_KEYS) {
         const row = db.query("SELECT value FROM auth_kv WHERE key = ?").get(key) as { value: string } | null;
         if (!row) continue;
-        const data = JSON.parse(row.value) as { access_token?: string; refresh_token?: string; expires_at?: string };
+        let data: { access_token?: string; refresh_token?: string; expires_at?: string };
+        try {
+          data = JSON.parse(row.value) as { access_token?: string; refresh_token?: string; expires_at?: string };
+        } catch {
+          diagnostics.push({ location, status: "invalid_json" });
+          continue;
+        }
         if (data.access_token) {
+          diagnostics.push({ location, status: "token_found" });
           return {
-            access: data.access_token,
-            refresh: data.refresh_token || "",
-            expires: data.expires_at ? new Date(data.expires_at).getTime() : Date.now() + 3600_000,
+            token: {
+              access: data.access_token,
+              refresh: data.refresh_token || "",
+              expires: data.expires_at ? new Date(data.expires_at).getTime() : Date.now() + 3600_000,
+            },
+            diagnostics,
           };
         }
       }
+      diagnostics.push({ location, status: "token_missing" });
     } catch {
-      // unreadable / wrong schema — try the next path
+      diagnostics.push({ location, status: "schema_mismatch" });
     } finally {
-      db?.close();
+      db.close();
     }
   }
-  return null;
+  return { token: null, diagnostics };
+}
+
+/** Read the kiro-cli SQLite token store (mac/linux). Returns null if no token found. */
+export function readKiroCliSqlite(): ImportedKiroToken | null {
+  return inspectKiroCliSqlite().token;
 }
 
 /**
@@ -65,19 +104,19 @@ export async function loginKiro(ctrl: OAuthController): Promise<OAuthCredentials
   const imported = readKiroCliSqlite();
   if (imported) {
     ctrl.onProgress?.("Imported token from installed kiro-cli login.");
-    return { access: imported.access, refresh: imported.refresh, expires: imported.expires };
+    return { access: imported.access, refresh: imported.refresh, expires: imported.expires, source: "local-cli" };
   }
 
   const envToken = process.env.KIRO_ACCESS_TOKEN;
   if (envToken) {
     ctrl.onProgress?.("Using KIRO_ACCESS_TOKEN from environment.");
-    return { access: envToken, refresh: process.env.KIRO_REFRESH_TOKEN ?? "", expires: Date.now() + 3600_000 };
+    return { access: envToken, refresh: process.env.KIRO_REFRESH_TOKEN ?? "", expires: Date.now() + 3600_000, source: "environment" };
   }
 
   if (ctrl.onManualCodeInput) {
     ctrl.onProgress?.("No kiro-cli token found. Paste a Kiro access token (starts with 'aoa').");
     const raw = (await ctrl.onManualCodeInput()).trim();
-    if (raw) return { access: raw, refresh: "", expires: Date.now() + 3600_000 };
+    if (raw) return { access: raw, refresh: "", expires: Date.now() + 3600_000, source: "manual" };
   }
 
   throw new Error(

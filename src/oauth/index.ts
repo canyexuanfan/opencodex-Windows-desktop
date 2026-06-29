@@ -110,7 +110,7 @@ export async function getValidAccessToken(provider: string): Promise<string> {
 function readFreshKiroCliCredential(): OAuthCredentials | undefined {
   const imported = readKiroCliSqlite();
   if (!imported || imported.expires <= Date.now() + REFRESH_SKEW_MS) return undefined;
-  return { access: imported.access, refresh: imported.refresh, expires: imported.expires };
+  return { access: imported.access, refresh: imported.refresh, expires: imported.expires, source: "local-cli" };
 }
 
 async function refreshAndPersistAccessToken(
@@ -251,7 +251,8 @@ export function upsertOAuthProvider(config: OcxConfig, provider: string): void {
 export async function runLogin(provider: string, ctrl: OAuthController, opts?: LoginOpts): Promise<OAuthCredentials> {
   const def = OAUTH_PROVIDERS[provider];
   if (!def) throw new UnsupportedOAuthProviderError(provider);
-  const cred = await def.login(ctrl, opts);
+  const rawCred = await def.login(ctrl, opts);
+  const cred: OAuthCredentials = rawCred.source ? rawCred : { ...rawCred, source: "oauth" };
   saveCredential(provider, cred);
   const config = loadConfig();
   upsertOAuthProvider(config, provider);
@@ -267,10 +268,10 @@ export async function runLogin(provider: string, ctrl: OAuthController, opts?: L
 const loginState = new Map<string, { error?: string; done: boolean }>();
 const loginAbort = new Map<string, AbortController>();
 
-export function getLoginStatus(provider: string): { loggedIn: boolean; email?: string; error?: string; done: boolean } {
+export function getLoginStatus(provider: string): { loggedIn: boolean; email?: string; source?: OAuthCredentials["source"]; error?: string; done: boolean } {
   const cred = getCredential(provider);
   const st = loginState.get(provider);
-  return { loggedIn: !!cred, email: maskEmail(cred?.email) ?? undefined, error: st?.error, done: st?.done ?? false };
+  return { loggedIn: !!cred, email: maskEmail(cred?.email) ?? undefined, source: cred?.source, error: st?.error, done: st?.done ?? false };
 }
 
 export function clearLoginState(provider: string): void {
