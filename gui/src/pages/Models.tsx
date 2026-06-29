@@ -101,11 +101,6 @@ export default function Models({ apiBase }: { apiBase: string }) {
     if (next.has(ns)) next.delete(ns); else next.add(ns);
     apply(next);
   };
-  const toggleProvider = (rows: ModelRow[], enable: boolean) => {
-    const next = new Set(disabled);
-    for (const m of rows) { if (enable) next.delete(m.namespaced); else next.add(m.namespaced); }
-    apply(next);
-  };
   const toggleProviderCap = async (provider: string) => {
     setBusy(true);
     busyRef.current = true;
@@ -254,8 +249,6 @@ export default function Models({ apiBase }: { apiBase: string }) {
                 <Switch on={capOn} onClick={() => toggleProviderCap(provider)} disabled={busy} label={t("models.capValue", { value: fmtK(contextCapValue) })} />
                 <span className="muted mono" style={{ fontSize: 12 }}>{t("models.capValue", { value: fmtK(contextCapValue) })}</span>
               </div>
-              <button onClick={e => { e.stopPropagation(); toggleProvider(rows, true); }} disabled={busy} className="btn btn-ghost btn-sm">{t("models.allOn")}</button>
-              <button onClick={e => { e.stopPropagation(); toggleProvider(rows, false); }} disabled={busy} className="btn btn-ghost btn-sm">{t("models.allOff")}</button>
             </div>
             {!isCollapsed && (
               <div style={{ padding: "6px 12px" }}>
