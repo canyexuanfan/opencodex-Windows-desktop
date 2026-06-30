@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ServerWebSocket } from "bun";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CODEX_ACCOUNT_LOG_LABEL_RE } from "../src/codex-account-label";
 import {
@@ -556,6 +556,30 @@ describe("codex-auth API", () => {
       refreshToken: "refresh-manual-test",
       chatgptAccountId: "acct-manual-test",
     });
+  });
+
+  test("POST /api/codex-auth/accounts allows a pool account matching the main login", async () => {
+    enableManualImport();
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: {
+        access_token: "not-a-jwt",
+        account_id: "acct-main-login",
+      },
+    }));
+    const config = makeConfig();
+    const req = new Request("http://localhost/api/codex-auth/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(manualImportBody({
+        id: "manual-main-match",
+        chatgptAccountId: "acct-main-login",
+      })),
+    });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+
+    expect(resp!.status).toBe(200);
+    expect(config.codexAccounts?.map(a => a.id)).toEqual(["manual-main-match"]);
+    expect(getCodexAccountCredential("manual-main-match")?.chatgptAccountId).toBe("acct-main-login");
   });
 
   test("POST /api/codex-auth/accounts rejects duplicate runtime alias before writing credentials", async () => {

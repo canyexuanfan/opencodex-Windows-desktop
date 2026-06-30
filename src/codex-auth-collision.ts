@@ -37,18 +37,14 @@ function isWorkspacePlan(plan: string | undefined | null): boolean {
   return !!plan && /team|business|enterprise|workspace|edu/i.test(plan);
 }
 
-// Personal and workspace subscriptions are separate duplicate buckets.
-// Within each bucket, keep the original ChatGPT account id + email collision guard.
+// Main login and managed pool accounts are separate duplicate buckets.
+// Inside the pool, personal and workspace subscriptions are also separate buckets.
+// Within each pool bucket, keep the original ChatGPT account id + email collision guard.
 export function checkAccountIdCollision(
   chatgptAccountId: string,
   email?: string | null,
   plan?: string | null,
 ): { collision: true; reason: string } | { collision: false } {
-  const mainAccountId = getMainChatgptAccountId();
-  if (mainAccountId && mainAccountId === chatgptAccountId) {
-    return { collision: true, reason: "Account is already used by the main Codex login." };
-  }
-
   const candidateEmail = normalizedEmail(email);
   const candidateWorkspace = isWorkspacePlan(plan);
   for (const account of loadConfig().codexAccounts ?? []) {
