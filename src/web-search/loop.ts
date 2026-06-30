@@ -81,6 +81,24 @@ function normalizeQuery(q: string): string {
   return q.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+/**
+ * Transient developer-role nudge appended ONLY to the forced-answer pass's request (never the
+ * persisted `messages`). It tells the model to ground its final answer in the web results already
+ * gathered this turn. Citation wording is conditional — a failed/empty search still wants an answer,
+ * just without fabricated sources.
+ */
+function forcedAnswerNudge(): OcxMessage {
+  return {
+    role: "developer",
+    content:
+      "Answer the user's question now using the web search results already gathered above. " +
+      "Ground your answer in what those results actually say, and reference the relevant sources " +
+      "when they are available. Do not claim you lack information that the results contain, and do " +
+      "not invent sources that were not returned.",
+    timestamp: Date.now(),
+  };
+}
+
 function jsonError(status: number, message: string): Response {
   return new Response(JSON.stringify({ error: { message, type: "upstream_error", code: null } }), {
     status,
@@ -129,9 +147,17 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
   const HARD_CAP = maxSearches + 2;
   for (let i = 0; i < HARD_CAP; i++) {
     const forceAnswer = searchesExecuted >= maxSearches;
+    // On the forced-answer pass the synthetic web_search tool is gone, so the model MUST answer
+    // from the results already in `messages`. A weak model can still produce a thin answer that
+    // ignores what the search found, which reads to the user as "the search did nothing". Nudge it
+    // (iteration-locally — never mutate the shared `messages`) to actually use the gathered results.
+    // Only when a REAL search ran (executedSearches, not the empty-query/limit/repeat placeholders).
+    const iterMessages: OcxMessage[] = forceAnswer && executedSearches.length > 0
+      ? [...messages, forcedAnswerNudge()]
+      : messages;
     const iterParsed: OcxParsedRequest = {
       ...parsed, stream: false,
-      context: { ...parsed.context, messages, tools: forceAnswer ? toolsNoWebSearch : allTools },
+      context: { ...parsed.context, messages: iterMessages, tools: forceAnswer ? toolsNoWebSearch : allTools },
     };
     const request = await adapter.buildRequest(iterParsed, { headers: selectedForwardHeaders });
     let resp: Response;

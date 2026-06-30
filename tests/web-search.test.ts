@@ -5,6 +5,7 @@ import { runWithWebSearch } from "../src/web-search/loop";
 import { headersForCodexAuthContext } from "../src/codex-auth-context";
 import type { AdapterEvent, OcxConfig, OcxProviderConfig } from "../src/types";
 import type { ProviderAdapter } from "../src/adapters/base";
+import type { OcxMessage, OcxParsedRequest } from "../src/types";
 
 const routedProvider: OcxProviderConfig = {
   adapter: "openai-chat",
@@ -201,5 +202,101 @@ describe("web-search sidecar native web_search_call emission", () => {
     const output = completed.output as Record<string, unknown>[];
     expect(output.some(item => item.type === "web_search_call")).toBe(false);
     expect(output.map(item => item.type)).toEqual(["message"]);
+  });
+});
+
+/** Adapter that records the messages handed to it on each pass (forced-answer nudge assertion). */
+function capturingAdapter(firstPass: AdapterEvent[]): { adapter: ProviderAdapter; messagesPerPass: OcxMessage[][] } {
+  const messagesPerPass: OcxMessage[][] = [];
+  let pass = 0;
+  const adapter: ProviderAdapter = {
+    name: "mock",
+    buildRequest: (parsed: OcxParsedRequest) => {
+      messagesPerPass.push(parsed.context.messages);
+      return { url: "https://routed.test/v1/chat/completions", method: "POST", headers: {}, body: "{}" };
+    },
+    async *parseStream() { /* unused */ },
+    async parseResponse() {
+      pass++;
+      if (pass === 1) return firstPass;
+      return [{ type: "text_delta", text: "final answer" }, { type: "done" }];
+    },
+  };
+  return { adapter, messagesPerPass };
+}
+
+describe("web-search forced-answer nudge", () => {
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  test("forced pass appends exactly one developer nudge after a real search, without mutating shared messages", async () => {
+    globalThis.fetch = ((input) => {
+      const url = String(input);
+      if (url.startsWith("https://routed.test/")) return Promise.resolve(new Response("{}", { status: 200 }));
+      return Promise.resolve(new Response(
+        'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"docs say X"}\n\n' +
+          'event: response.completed\ndata: {"type":"response.completed"}\n\n',
+        { headers: { "Content-Type": "text/event-stream" } },
+      ));
+    }) as typeof fetch;
+
+    const { adapter, messagesPerPass } = capturingAdapter([
+      { type: "tool_call_start", id: "call_1", name: "web_search" },
+      { type: "tool_call_delta", arguments: JSON.stringify({ query: "current docs" }) },
+      { type: "tool_call_end" },
+    ]);
+    const parsed = parseRequest({ model: "routed/model", input: "Search for current docs", stream: true, tools: [{ type: "web_search" }] });
+    const baselineUserMessages = parsed.context.messages.length;
+
+    await runWithWebSearch({
+      parsed,
+      adapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+    });
+
+    // Pass 1 (search) has no nudge; pass 2 (forced answer) ends with exactly one developer nudge.
+    expect(messagesPerPass.length).toBe(2);
+    expect(messagesPerPass[0].some(m => m.role === "developer")).toBe(false);
+    const forced = messagesPerPass[1];
+    const developerMsgs = forced.filter(m => m.role === "developer");
+    expect(developerMsgs.length).toBe(1);
+    expect(forced[forced.length - 1].role).toBe("developer");
+    // The nudge is iteration-local: the shared/persisted message list is never grown by it.
+    expect(parsed.context.messages.length).toBe(baselineUserMessages);
+    expect(parsed.context.messages.some(m => m.role === "developer")).toBe(false);
+  });
+
+  test("a run with only an empty-query placeholder gets NO forced-answer nudge", async () => {
+    globalThis.fetch = ((input) => {
+      const url = String(input);
+      if (url.startsWith("https://routed.test/")) return Promise.resolve(new Response("{}", { status: 200 }));
+      return Promise.resolve(new Response(
+        'event: response.completed\ndata: {"type":"response.completed"}\n\n',
+        { headers: { "Content-Type": "text/event-stream" } },
+      ));
+    }) as typeof fetch;
+
+    const { adapter, messagesPerPass } = capturingAdapter([
+      { type: "tool_call_start", id: "call_empty", name: "web_search" },
+      { type: "tool_call_delta", arguments: JSON.stringify({ query: "" }) },
+      { type: "tool_call_end" },
+    ]);
+    await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "go", stream: true, tools: [{ type: "web_search" }] }),
+      adapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+    });
+
+    // Every pass is nudge-free because no real sidecar search ran (executedSearches stayed empty).
+    for (const msgs of messagesPerPass) {
+      expect(msgs.some(m => m.role === "developer")).toBe(false);
+    }
   });
 });
