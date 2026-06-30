@@ -5,6 +5,7 @@ import {
   CODEX_FAILURE_WINDOW_MS,
   CODEX_THREAD_AFFINITY_IDLE_TTL_MS,
   CODEX_THREAD_AFFINITY_MAX_ENTRIES,
+  CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS,
   classifyCodexUpstreamOutcome,
   clearCodexUpstreamHealth,
   clearCodexUpstreamHealthForAccount,
@@ -535,5 +536,80 @@ describe("codex routing", () => {
     expect(isCodexAccountInCooldown("b")).toBe(true);
     expect(resolveCodexAccountForThread("rotate-skip-cooldown", config)).toBe("c");
     expect(config.activeCodexAccountId).toBe("c");
+  });
+
+  // Phase 40 (260630_wsl-account-autoswitch): bound-thread quota re-eval.
+  test("bound thread over threshold switches after the re-eval interval", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 10, 5);
+    // Bind t1 to a while a is cool.
+    expect(resolveCodexAccountForThread("t1", config, now)).toBe("a");
+    // a goes hot, b stays cool.
+    updateAccountQuota("a", 90, 95);
+    updateAccountQuota("b", 5, 5);
+    const later = now + CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS + 1;
+    expect(resolveCodexAccountForThread("t1", config, later)).toBe("b");
+    expect(config.activeCodexAccountId).toBe("b");
+  });
+
+  test("bound thread under threshold stays even if a lower account exists", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 10, 5);
+    expect(resolveCodexAccountForThread("t1", config, now)).toBe("a");
+    // a at 50 (under threshold 80), b lower at 5.
+    updateAccountQuota("a", 50, 50);
+    updateAccountQuota("b", 5, 5);
+    const later = now + CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS + 1;
+    expect(resolveCodexAccountForThread("t1", config, later)).toBe("a");
+    expect(config.activeCodexAccountId).toBe("a");
+  });
+
+  test("bound thread does not flap within the re-eval interval, then switches once", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 10, 5);
+    expect(resolveCodexAccountForThread("t1", config, now)).toBe("a");
+    updateAccountQuota("a", 90, 95);
+    updateAccountQuota("b", 5, 5);
+    // Within the interval: no rebind yet.
+    expect(resolveCodexAccountForThread("t1", config, now + 1_000)).toBe("a");
+    // After the interval: switches once.
+    const later = now + CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS + 1;
+    expect(resolveCodexAccountForThread("t1", config, later)).toBe("b");
+    // A subsequent interval does not ping-pong back: b is now the lowest.
+    const later2 = later + CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS + 1;
+    expect(resolveCodexAccountForThread("t1", config, later2)).toBe("b");
+  });
+
+  test("bound thread with an all-unknown pool does not flap on re-eval", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 10, 5);
+    expect(resolveCodexAccountForThread("t1", config, now)).toBe("a");
+    // Both unknown now (over threshold sentinel, but strict < yields no better).
+    clearAccountQuota();
+    const later = now + CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS + 1;
+    expect(resolveCodexAccountForThread("t1", config, later)).toBe("a");
+    expect(config.activeCodexAccountId).toBe("a");
+  });
+
+  test("bound thread reuse under the interval still slides the idle TTL", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 10, 5);
+    expect(resolveCodexAccountForThread("t1", config, now)).toBe("a");
+    // Reuse just under the re-eval interval keeps the binding (slides lastUsedAt),
+    // then a reuse just under the 24h idle TTL from THAT point still resolves a.
+    const reuse = now + CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS - 1;
+    expect(resolveCodexAccountForThread("t1", config, reuse)).toBe("a");
+    const nearIdle = reuse + CODEX_THREAD_AFFINITY_IDLE_TTL_MS - 1;
+    expect(resolveCodexAccountForThread("t1", config, nearIdle)).toBe("a");
   });
 });

@@ -12,6 +12,9 @@ type ThreadAffinityEntry = {
   generation: number;
   createdAt: number;
   lastUsedAt: number;
+  // Last time the bound account's quota threshold was re-evaluated for this
+  // thread (interval-gated to avoid per-request flapping). See REEVAL_INTERVAL_MS.
+  lastReevalAt: number;
 };
 
 export type CodexThreadResolution =
@@ -32,6 +35,9 @@ const CODEX_MAX_QUOTA_COOLDOWN_MS = 24 * 60 * 60_000;
 export const CODEX_FAILURE_WINDOW_MS = 5 * 60_000;
 export const CODEX_THREAD_AFFINITY_IDLE_TTL_MS = 24 * 60 * 60_000;
 export const CODEX_THREAD_AFFINITY_MAX_ENTRIES = 2048;
+// Min interval between quota threshold re-evaluations for a single bound thread.
+// Well under the 5h/weekly quota windows, but enough to stop per-request flapping.
+export const CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS = 60_000;
 
 const upstreamHealth = new Map<string, CodexUpstreamHealth>();
 
@@ -200,6 +206,7 @@ function bindThreadAffinity(threadId: string, accountId: string, now: number): v
     generation: record.generation,
     createdAt: previous?.createdAt ?? now,
     lastUsedAt: now,
+    lastReevalAt: now,
   });
   pruneLruThreadAffinities();
 }
@@ -347,6 +354,28 @@ export function resolveCodexAccountForThreadDetailed(
       && isCodexAccountSelectable(config, entry.accountId, now)
     ) {
       entry.lastUsedAt = now;
+      // Periodic quota re-eval: a long-lived bound thread must still switch when
+      // it crosses autoSwitchThreshold and a strictly-cooler account exists.
+      // Without this the reuse branch returns before applyQuotaAutoSwitch and the
+      // thread stays pinned for the full idle TTL (the WSL "never switches" report).
+      if (now - entry.lastReevalAt >= CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS) {
+        entry.lastReevalAt = now;
+        const threshold = config.autoSwitchThreshold ?? 80;
+        if (threshold > 0) {
+          const usage = computeCodexUsageScore(
+            getAccountQuota(entry.accountId),
+            getPoolAccountPlan(config, entry.accountId),
+          );
+          if (usage >= threshold) {
+            const best = pickLowerUsageAccount(config, entry.accountId, usage, now);
+            if (best !== entry.accountId) {
+              setActiveCodexAccount(config, best);
+              bindThreadAffinity(threadId, best, now); // rebinds + resets clocks
+              return { status: "selected", accountId: best };
+            }
+          }
+        }
+      }
       return { status: "selected", accountId: entry.accountId };
     }
     threadAccountMap.delete(threadId);
