@@ -229,7 +229,7 @@ describe("Responses bridge web_search_call native item", () => {
   test("streaming web_search_call emits an added/done pair with action.query and a completed turn", async () => {
     const frames = await collectSse(bridgeToResponsesSSE(replay([
       { type: "web_search_call_begin", id: "ws_1" },
-      { type: "web_search_call_end", id: "ws_1", query: "current docs" },
+      { type: "web_search_call_end", id: "ws_1", queries: ["current docs"] },
       { type: "text_delta", text: "answer" },
       { type: "done" },
     ]), "routed/model"));
@@ -257,7 +257,7 @@ describe("Responses bridge web_search_call native item", () => {
   test("non-streaming web_search_call pushes a completed search item before the message", () => {
     const json = buildResponseJSON([
       { type: "web_search_call_begin", id: "ws_2" },
-      { type: "web_search_call_end", id: "ws_2", query: "weather seattle" },
+      { type: "web_search_call_end", id: "ws_2", queries: ["weather seattle"] },
       { type: "text_delta", text: "answer" },
       { type: "done" },
     ], "routed/model");
@@ -267,5 +267,20 @@ describe("Responses bridge web_search_call native item", () => {
     expect(output[0]).toMatchObject({
       type: "web_search_call", status: "completed", action: { type: "search", query: "weather seattle" },
     });
+  });
+
+  test("a batched (plural) search emits action.search.queries without a singular query", () => {
+    const json = buildResponseJSON([
+      { type: "web_search_call_begin", id: "ws_3" },
+      { type: "web_search_call_end", id: "ws_3", queries: ["rust async", "tokio runtime"] },
+      { type: "text_delta", text: "answer" },
+      { type: "done" },
+    ], "routed/model");
+
+    const output = json.output as Record<string, unknown>[];
+    const action = (output[0] as Record<string, unknown>).action as Record<string, unknown>;
+    // Native renders "<first> ..." only when `query` is absent and queries.len() > 1.
+    expect(action).toEqual({ type: "search", queries: ["rust async", "tokio runtime"] });
+    expect(action.query).toBeUndefined();
   });
 });

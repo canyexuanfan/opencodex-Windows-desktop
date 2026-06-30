@@ -385,3 +385,52 @@ describe("web-search live spinner ordering", () => {
     expect(releasedAt).toBe(1);
   });
 });
+
+describe("web-search batched queries", () => {
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  test("a single call with queries[] runs each query and emits ONE cell carrying all queries", async () => {
+    const sidecarQueries: string[] = [];
+    globalThis.fetch = ((input, init) => {
+      const url = String(input);
+      if (url.startsWith("https://routed.test/")) return Promise.resolve(new Response("{}", { status: 200 }));
+      // sidecar: capture the query the proxy asked for, return a minimal answer.
+      try {
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        // Sidecar query lives at input[0].content[0].text (see src/web-search/executor.ts).
+        const text = body?.input?.[0]?.content?.[0]?.text;
+        if (typeof text === "string") sidecarQueries.push(text);
+      } catch { /* ignore */ }
+      return Promise.resolve(new Response(
+        'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"ans"}\n\n' +
+          'event: response.completed\ndata: {"type":"response.completed"}\n\n',
+        { headers: { "Content-Type": "text/event-stream" } },
+      ));
+    }) as typeof fetch;
+
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "compare", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: scriptedAdapter([
+        { type: "tool_call_start", id: "call_b", name: "web_search" },
+        { type: "tool_call_delta", arguments: JSON.stringify({ queries: ["rust async", "tokio runtime"] }) },
+        { type: "tool_call_end" },
+      ]),
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 3,
+    });
+
+    const frames = await collectSse(response.body!);
+    const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
+    const output = completed.output as Record<string, unknown>[];
+    // Exactly ONE web_search_call cell, ahead of the message, carrying both queries (native plural).
+    const cells = output.filter(item => item.type === "web_search_call");
+    expect(cells.length).toBe(1);
+    expect(cells[0]).toMatchObject({ action: { type: "search", queries: ["rust async", "tokio runtime"] } });
+    // Both queries actually hit the sidecar.
+    expect(sidecarQueries.some(q => q.includes("rust async"))).toBe(true);
+    expect(sidecarQueries.some(q => q.includes("tokio runtime"))).toBe(true);
+  });
+});

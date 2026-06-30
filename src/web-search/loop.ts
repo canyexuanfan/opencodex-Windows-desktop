@@ -2,9 +2,9 @@ import type { ProviderAdapter } from "../adapters/base";
 import type { AdapterEvent, OcxMessage, OcxParsedRequest, OcxProviderConfig } from "../types";
 import { namespacedToolName } from "../types";
 import { bridgeToResponsesSSE } from "../bridge";
-import { runWebSearch, type SidecarOutcomeRecorder, type SidecarSettings } from "./executor";
+import { runWebSearch, type SidecarOutcome, type SidecarOutcomeRecorder, type SidecarSettings } from "./executor";
 import { cancelBodyOnAbort } from "../abort";
-import { formatWebSearchResult } from "./format-result";
+import { formatWebSearchResults } from "./format-result";
 import { WEB_SEARCH_TOOL_NAME } from "./synthetic-tool";
 
 const SSE_HEADERS = {
@@ -16,7 +16,29 @@ const SSE_HEADERS = {
 
 interface WebSearchCall {
   id: string;
-  query: string;
+  // One or more queries the model batched into a single web_search call. Always length >= 0; an
+  // empty array means the model called the tool with neither `query` nor `queries` (handled as an
+  // empty-query placeholder).
+  queries: string[];
+}
+
+/**
+ * Normalize a web_search tool call's raw JSON args into a canonical `queries[]`. Accepts native
+ * plural `queries: string[]` or singular `query: string` (the model may send either). Non-string /
+ * empty entries are dropped; malformed JSON yields `[]` (handled downstream as an empty-query call).
+ */
+function parseQueries(argsBuf: string): string[] {
+  try {
+    const o: unknown = JSON.parse(argsBuf || "{}");
+    if (!o || typeof o !== "object") return [];
+    const obj = o as { query?: unknown; queries?: unknown };
+    if (Array.isArray(obj.queries)) {
+      const qs = obj.queries.filter((q): q is string => typeof q === "string" && q.trim() !== "");
+      if (qs.length > 0) return qs;
+    }
+    if (typeof obj.query === "string" && obj.query.trim() !== "") return [obj.query];
+  } catch { /* malformed args → empty */ }
+  return [];
 }
 
 /**
@@ -51,14 +73,7 @@ export function scanEventsForWebSearch(events: AdapterEvent[]): {
     } else if (e.type === "tool_call_end" && pending) {
       pending.events.push(e);
       if (pending.name === WEB_SEARCH_TOOL_NAME) {
-        let query = "";
-        try {
-          const o: unknown = JSON.parse(pending.argsBuf || "{}");
-          if (o && typeof o === "object" && typeof (o as { query?: unknown }).query === "string") {
-            query = (o as { query: string }).query;
-          }
-        } catch { /* malformed args → empty query */ }
-        calls.push({ id: pending.id, query });
+        calls.push({ id: pending.id, queries: parseQueries(pending.argsBuf) });
       } else {
         passthrough.push(...pending.events);
         hasRealToolCall = true;
@@ -217,41 +232,68 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
     return scanEventsForWebSearch(events);
   };
 
-  // Execute one model-requested web_search call: emit a `begin` cell, run (or short-circuit) the
-  // sidecar, inject the toolResult into `messages`, then emit the matching `end` cell. Yields the
-  // lifecycle events at real wall-clock moments so Codex animates "Searching the web".
+  // Execute one model-requested web_search call. The call may batch several queries (native
+  // `action.search.queries`); each query runs as its own sidecar search (budget-aware), but they are
+  // paired as ONE assistant toolCall + ONE aggregated toolResult so function-call pairing stays
+  // valid, and surface as ONE search cell carrying every attempted query. A real search (one that
+  // hits the sidecar) shows the spinner WHILE the batch runs. Empty/limit/repeat placeholders never
+  // emit a cell (matching the prior single-query behavior).
   async function* runSearchCall(call: WebSearchCall): AsyncGenerator<AdapterEvent> {
-    let outcome: { text: string; sources: { url: string; title?: string }[]; error?: string };
-    let emitCell = false;
-    if (call.query && failedQueries.has(normalizeQuery(call.query))) {
-      // Already failed this turn — don't spend another real search on it.
-      outcome = { text: "", sources: [], error: "this query already failed earlier in the turn — do not call web_search again for it; answer from existing context" };
-    } else if (searchesExecuted >= maxSearches) {
-      outcome = { text: "", sources: [], error: "web search limit reached for this turn — answer from results already gathered" };
-    } else if (!call.query) {
-      outcome = { text: "", sources: [], error: "the model called web_search with an empty query" };
+    const results: { query: string; outcome: SidecarOutcome }[] = [];
+    let beganCell = false;
+    if (call.queries.length === 0) {
+      // The model called web_search with neither query nor queries — count it against the budget
+      // (loop-bounding) exactly as the old empty-query placeholder did, but emit no cell.
       searchesExecuted++;
-    } else {
-      // Real sidecar search — show the spinner WHILE it runs, then finalize the cell.
-      emitCell = true;
-      yield { type: "web_search_call_begin", id: call.id };
-      outcome = await runWebSearch(call.query, hostedTool, forwardProvider, selectedForwardHeaders, settings, signal, recordSidecarOutcome);
-      searchesExecuted++;
-      executedSearchCount++;
-      if (outcome.error) failedQueries.add(normalizeQuery(call.query));
+      results.push({ query: "", outcome: { text: "", sources: [], error: "the model called web_search with an empty query" } });
+    }
+    for (const query of call.queries) {
+      let outcome: SidecarOutcome;
+      if (failedQueries.has(normalizeQuery(query))) {
+        // Already failed this turn — don't spend another real search on it.
+        outcome = { text: "", sources: [], error: "this query already failed earlier in the turn — do not call web_search again for it; answer from existing context" };
+      } else if (searchesExecuted >= maxSearches) {
+        outcome = { text: "", sources: [], error: "web search limit reached for this turn — answer from results already gathered" };
+      } else {
+        // Real sidecar search. Open the cell once, before the first real query runs.
+        if (!beganCell) {
+          beganCell = true;
+          yield { type: "web_search_call_begin", id: call.id };
+        }
+        outcome = await runWebSearch(query, hostedTool, forwardProvider, selectedForwardHeaders, settings, signal, recordSidecarOutcome);
+        searchesExecuted++;
+        executedSearchCount++;
+        if (outcome.error) failedQueries.add(normalizeQuery(query));
+      }
+      results.push({ query, outcome });
     }
     const now = Date.now();
+    // Preserve the singular `{query}` arg shape for a single-query call (avoids prompt-history drift);
+    // use `{queries}` only when the model actually batched several.
+    const callArgs: Record<string, unknown> = call.queries.length > 1
+      ? { queries: call.queries }
+      : { query: call.queries[0] ?? "" };
     messages.push({
       role: "assistant",
-      content: [{ type: "toolCall", id: call.id, name: WEB_SEARCH_TOOL_NAME, arguments: { query: call.query } }],
+      content: [{ type: "toolCall", id: call.id, name: WEB_SEARCH_TOOL_NAME, arguments: callArgs }],
       timestamp: now,
     });
+    // One aggregated tool result. isError only when EVERY query failed (a partial success is usable).
+    const allFailed = results.every(r => !!r.outcome.error);
     messages.push({
       role: "toolResult", toolCallId: call.id, toolName: WEB_SEARCH_TOOL_NAME,
-      content: formatWebSearchResult(call.query, outcome, !!parsed._structuredOutput), isError: !!outcome.error, timestamp: now,
+      content: formatWebSearchResults(results, !!parsed._structuredOutput),
+      isError: allFailed, timestamp: now,
     });
-    if (emitCell) {
-      yield { type: "web_search_call_end", id: call.id, query: call.query, status: outcome.error ? "failed" : "completed" };
+    if (beganCell) {
+      // The cell is "completed" if any query produced a usable result, else "failed". `queries`
+      // carries every attempted query so Codex renders the native plural label.
+      const anySuccess = results.some(r => !r.outcome.error);
+      yield {
+        type: "web_search_call_end", id: call.id,
+        queries: call.queries,
+        status: anySuccess ? "completed" : "failed",
+      };
     }
   }
 

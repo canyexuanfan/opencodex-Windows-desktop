@@ -29,6 +29,17 @@ function responseError(status: number, type: string, message: string): OcxErrorP
   return classifyError(status, type, message);
 }
 
+/**
+ * Build the native `WebSearchAction::Search` payload from the queries that ran. codex-rs prefers a
+ * non-empty `query` over `queries` for the cell label, and only renders "<first> ..." when `query`
+ * is absent and `queries.len() > 1`. So a single query → `{ query }`; multiple → `{ queries }` with
+ * no singular `query`, so Codex shows the native plural ellipsis. Empty → `{ query: "" }`.
+ */
+function webSearchAction(queries: string[]): Record<string, unknown> {
+  if (queries.length <= 1) return { type: "search", query: queries[0] ?? "" };
+  return { type: "search", queries };
+}
+
 interface OutputItem {
   type: string;
   id: string;
@@ -128,7 +139,7 @@ export function bridgeToResponsesSSE(
           if (currentReasoning) closeCurrentReasoning();
           if (currentRawReasoning) closeCurrentRawReasoning();
           if (currentToolCall) closeCurrentToolCall();
-          if (currentWebSearch) closeCurrentWebSearch("failed", "");
+          if (currentWebSearch) closeCurrentWebSearch("failed", []);
           emit("response.incomplete", {
             response: {
               ...responseSnapshot("incomplete", finishedItems),
@@ -245,11 +256,11 @@ export function bridgeToResponsesSSE(
       // Finalize an open web-search cell. `status` is "completed" on a normal end, or "failed" when
       // the stream terminates (error/incomplete) while a search was still in flight, so Codex never
       // leaves a "Searching the web" spinner spinning forever.
-      const closeCurrentWebSearch = (status: "completed" | "failed", query: string) => {
+      const closeCurrentWebSearch = (status: "completed" | "failed", queries: string[]) => {
         if (!currentWebSearch) return;
         const item = {
           type: "web_search_call", id: currentWebSearch.itemId, status,
-          action: { type: "search", query },
+          action: webSearchAction(queries),
         };
         emit("response.output_item.done", { output_index: currentWebSearch.outputIndex, item });
         finishedItems.push(item as OutputItem);
@@ -375,7 +386,7 @@ export function bridgeToResponsesSSE(
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
-              if (currentWebSearch) closeCurrentWebSearch("completed", "");
+              if (currentWebSearch) closeCurrentWebSearch("completed", []);
               emit("response.output_item.added", {
                 output_index: outputIndex,
                 item: { type: "web_search_call", id: event.id, status: "in_progress" },
@@ -387,14 +398,14 @@ export function bridgeToResponsesSSE(
               // The sidecar resolved — finalize the cell as "Searched <query>". If no begin opened
               // (defensive), synthesize the added frame first so the done has a matching item.
               if (!currentWebSearch || currentWebSearch.itemId !== event.id) {
-                if (currentWebSearch) closeCurrentWebSearch("completed", "");
+                if (currentWebSearch) closeCurrentWebSearch("completed", []);
                 emit("response.output_item.added", {
                   output_index: outputIndex,
                   item: { type: "web_search_call", id: event.id, status: "in_progress" },
                 });
                 currentWebSearch = { itemId: event.id, outputIndex };
               }
-              closeCurrentWebSearch(event.status ?? "completed", event.query);
+              closeCurrentWebSearch(event.status ?? "completed", event.queries);
               break;
             }
             case "done": {
@@ -402,7 +413,7 @@ export function bridgeToResponsesSSE(
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
-              if (currentWebSearch) closeCurrentWebSearch("completed", "");
+              if (currentWebSearch) closeCurrentWebSearch("completed", []);
               emit("response.completed", {
                 response: { ...responseSnapshot("completed", finishedItems), usage: responsesUsage(event.usage) },
               });
@@ -415,7 +426,7 @@ export function bridgeToResponsesSSE(
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
-              if (currentWebSearch) closeCurrentWebSearch("failed", "");
+              if (currentWebSearch) closeCurrentWebSearch("failed", []);
               emit("response.failed", {
                 response: {
                   ...responseSnapshot("failed", finishedItems),
@@ -430,7 +441,7 @@ export function bridgeToResponsesSSE(
           }
         }
       } catch (err) {
-        if (currentWebSearch) closeCurrentWebSearch("failed", "");
+        if (currentWebSearch) closeCurrentWebSearch("failed", []);
         emit("response.failed", {
           response: {
             ...responseSnapshot("failed", finishedItems),
@@ -451,7 +462,7 @@ export function bridgeToResponsesSSE(
         if (currentReasoning) closeCurrentReasoning();
         if (currentRawReasoning) closeCurrentRawReasoning();
         if (currentToolCall) closeCurrentToolCall();
-        if (currentWebSearch) closeCurrentWebSearch("failed", "");
+        if (currentWebSearch) closeCurrentWebSearch("failed", []);
         emit("response.incomplete", {
           response: {
             ...responseSnapshot("incomplete", finishedItems),
@@ -612,7 +623,7 @@ export function buildResponseJSON(
         flushToolCall();
         output.push({
           type: "web_search_call", id: e.id, status: e.status ?? "completed",
-          action: { type: "search", query: e.query },
+          action: webSearchAction(e.queries),
         });
         break;
       case "error":

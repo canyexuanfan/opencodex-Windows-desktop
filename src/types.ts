@@ -189,7 +189,7 @@ export type AdapterEvent =
   // output_item.added(in_progress) and end → the matching output_item.done(completed|failed) under
   // the SAME output index, so the activity animates instead of flashing completed instantly.
   | { type: "web_search_call_begin"; id: string }
-  | { type: "web_search_call_end"; id: string; query: string; status?: "completed" | "failed" }
+  | { type: "web_search_call_end"; id: string; queries: string[]; status?: "completed" | "failed" }
   | { type: "done"; usage?: OcxUsage }
   | { type: "error"; message: string };
 
