@@ -34,6 +34,47 @@ function collectAnnotation(ann: AnnotationLike | undefined, sources: WebSearchSo
   sources.push({ url: ann.url, ...(ann.title ? { title: ann.title } : {}) });
 }
 
+/**
+ * Hosted web_search (gpt-mini) rarely emits structured `url_citation` annotations; instead it ends
+ * its answer with a markdown `Sources:` section. Extract sources from that TRAILING section only
+ * (a whole-body URL scan would false-positive on URLs the model merely mentions), and return the
+ * answer text with that section stripped so the tool_result renderer doesn't double-print sources.
+ *
+ * Handles the per-line forms seen from the backend: `- title: url`, `- title (url)`,
+ * `- [title](url)`, `- <url>`, `- url`, and numbered `1. ...` variants.
+ */
+const URL_RE = /https?:\/\/[^\s<>()\]]+/;
+function extractTrailingSources(text: string): { text: string; sources: WebSearchSource[] } {
+  const lines = text.split("\n");
+  // Find the LAST line that is just a "Sources:" / "Source:" header (case-insensitive).
+  let headerIdx = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/^\s*\**\s*sources?\s*:?\s*\**\s*$/i.test(lines[i])) { headerIdx = i; break; }
+  }
+  if (headerIdx === -1) return { text, sources: [] };
+  const sources: WebSearchSource[] = [];
+  const seen = new Set<string>();
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const raw = lines[i].trim();
+    if (raw === "") continue;
+    // Only consume list-ish lines that carry a URL; stop at the first non-source line so we don't
+    // swallow trailing prose after the section.
+    const m = raw.match(URL_RE);
+    if (!m) break;
+    const url = m[0].replace(/[).,]+$/, "");
+    if (seen.has(url)) continue;
+    seen.add(url);
+    // Derive a title from the text before the URL: strip list markers, [md](), and separators.
+    let title = raw.slice(0, m.index).replace(/^[-*\d.)\s]+/, "").trim();
+    title = title.replace(/^\[/, "").replace(/\]\(?$/, "").replace(/[:\-—(]\s*$/, "").trim();
+    sources.push(title ? { url, title } : { url });
+  }
+  if (sources.length === 0) return { text, sources: [] };
+  // Strip the Sources section (header + consumed lines) from the answer text.
+  const stripped = lines.slice(0, headerIdx).join("\n").replace(/\s+$/, "");
+  return { text: stripped, sources };
+}
+
 /** Pull final text + url_citation sources from a completed Responses `output[]` array. */
 function fromOutputArray(output: OutputItem[], seen: Set<string>): WebSearchResult {
   let text = "";
@@ -123,6 +164,17 @@ export async function parseSidecarSSE(response: Response): Promise<WebSearchResu
   for (const s of acc.streamSources) {
     if (!seenMerge.has(s.url)) { seenMerge.add(s.url); sources.push(s); }
   }
-  if (!text.trim() && acc.error) return { text: "", sources, error: acc.error };
-  return { text, sources };
+  // Hosted web_search usually omits url_citation annotations and lists sources in a trailing
+  // `Sources:` markdown block instead. Pull those out (and strip the block from the answer so the
+  // tool_result renderer doesn't print sources twice). Annotation titles win; text-block titles
+  // only fill a gap. URL-deduped against annotation sources.
+  const { text: body, sources: textSources } = extractTrailingSources(typeof text === "string" ? text : "");
+  for (const s of textSources) {
+    if (seenMerge.has(s.url)) continue;
+    seenMerge.add(s.url);
+    sources.push(s);
+  }
+  const finalText = textSources.length > 0 ? body : (typeof text === "string" ? text : "");
+  if (!finalText.trim() && acc.error) return { text: "", sources, error: acc.error };
+  return { text: finalText, sources };
 }

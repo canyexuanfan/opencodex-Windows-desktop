@@ -96,6 +96,35 @@ describe("kiro adapter — parseStream", () => {
     expect(JSON.parse(args)).toEqual({ command: "echo hi" });
   });
 
+  test("normalized tool name round-trips: Kiro echoes the safe name, parser restores the wire name", async () => {
+    // A wire name with a space (codex_apps workspace agents) is sent to Kiro normalized; when Kiro
+    // echoes that normalized name back, the parser must restore the original so the bridge can route it.
+    const adapter = createKiroAdapter(provider);
+    const tool = {
+      name: "workspace agents_create_agent",
+      namespace: "mcp__codex_apps__workspace_agents",
+      description: "create",
+      parameters: { type: "object" },
+    };
+    const { body } = adapter.buildRequest(parsedWith([{ role: "user", content: "hi" }], [tool]));
+    const sentName = JSON.parse(body).conversationState.currentMessage.userInputMessage.userInputMessageContext.tools[0].toolSpecification.name;
+    const wireName = "mcp__codex_apps__workspace_agents__workspace agents_create_agent";
+    expect(sentName).not.toBe(wireName);
+    expect(sentName).toMatch(/^[a-zA-Z0-9_-]{1,64}$/);
+
+    // Kiro replies using the normalized name it was given.
+    const frames = [
+      eventFrame({ name: sentName, toolUseId: "t1" }),
+      eventFrame({ input: "{}", name: sentName, toolUseId: "t1" }),
+      eventFrame({ name: sentName, stop: true, toolUseId: "t1" }),
+    ];
+    let restored: string | undefined;
+    for await (const e of adapter.parseStream(new Response(streamOf(...frames)))) {
+      if (e.type === "tool_call_start") restored = e.name;
+    }
+    expect(restored).toBe(wireName);
+  });
+
   test("emits error for an exception frame", async () => {
     const frame = encodeMessage({ ":message-type": "exception", ":exception-type": "ThrottlingException" }, enc.encode("rate limited"));
     const out: string[] = [];

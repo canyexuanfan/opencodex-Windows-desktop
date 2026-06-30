@@ -1,5 +1,6 @@
 import type { OcxParsedRequest } from "../types";
 import { namespacedToolName } from "../types";
+import { kiroToolName } from "./kiro-wire";
 
 const MAX_KIRO_TOOL_DESCRIPTION = 1024;
 
@@ -128,16 +129,23 @@ function ensureRootObjectType(schema: unknown): Record<string, unknown> {
   return merged;
 }
 
-export function convertKiroToolContext(parsed: OcxParsedRequest): { tools: unknown[]; systemAdditions: string[] } {
+export function convertKiroToolContext(parsed: OcxParsedRequest): { tools: unknown[]; systemAdditions: string[]; nameMap: Map<string, string> } {
   const tools = parsed.context.tools ?? [];
   const systemAdditions: string[] = [];
+  // Maps the Kiro-safe toolSpecification.name back to the original wire name so the response parser
+  // can restore it (the bridge's toolNsMap is keyed by the original wire name). Only non-identity
+  // entries are stored.
+  const nameMap = new Map<string, string>();
   return {
     tools: tools.map(t => {
       const description = t.description || `Tool: ${t.name}`;
       // Send the full namespaced wire name (e.g. mcp__chrome-devtools__navigate_page) so Kiro echoes
-      // it back unchanged; the bridge's toolNsMap is keyed by this name and restores the MCP namespace
-      // Codex routes by. Truncating here breaks long MCP/computer-use round trips.
-      const toolName = namespacedToolName(t.namespace, t.name);
+      // it back; the bridge's toolNsMap is keyed by this name and restores the MCP namespace Codex
+      // routes by. Kiro's runtimeservice rejects names with spaces or >64 chars, so normalize to a
+      // safe form and remember the mapping; the response parser restores the original wire name.
+      const wireName = namespacedToolName(t.namespace, t.name);
+      const toolName = kiroToolName(wireName);
+      if (toolName !== wireName) nameMap.set(toolName, wireName);
       const kiroDescription = description.length > MAX_KIRO_TOOL_DESCRIPTION
         ? `Tool documentation moved to the system prompt: ${toolName}.`
         : description;
@@ -153,6 +161,7 @@ export function convertKiroToolContext(parsed: OcxParsedRequest): { tools: unkno
       };
     }),
     systemAdditions,
+    nameMap,
   };
 }
 

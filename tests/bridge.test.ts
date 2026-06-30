@@ -224,3 +224,94 @@ describe("Responses bridge reasoning and usage parity", () => {
     expect(output.map(item => item.type)).toEqual(["message"]);
   });
 });
+
+describe("Responses bridge web_search_call native item", () => {
+  test("streaming web_search_call emits an added/done pair with action.query and a completed turn", async () => {
+    const frames = await collectSse(bridgeToResponsesSSE(replay([
+      { type: "web_search_call_begin", id: "ws_1" },
+      { type: "web_search_call_end", id: "ws_1", queries: ["current docs"] },
+      { type: "text_delta", text: "answer" },
+      { type: "done" },
+    ]), "routed/model"));
+
+    const added = frames.find(f => f.event === "response.output_item.added"
+      && (f.data.item as Record<string, unknown>)?.type === "web_search_call");
+    const done = frames.find(f => f.event === "response.output_item.done"
+      && (f.data.item as Record<string, unknown>)?.type === "web_search_call");
+    expect(added).toBeDefined();
+    expect(done).toBeDefined();
+    const addedItem = added!.data.item as Record<string, unknown>;
+    const doneItem = done!.data.item as Record<string, unknown>;
+    // Same id on both frames so codex-rs reconciles the started/completed cell.
+    expect(addedItem.id).toBe("ws_1");
+    expect(doneItem.id).toBe("ws_1");
+    expect(doneItem.status).toBe("completed");
+    expect(doneItem.action).toEqual({ type: "search", query: "current docs" });
+
+    const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
+    const output = completed.output as Record<string, unknown>[];
+    // Search item is finalized into the snapshot ahead of the assistant message.
+    expect(output.map(item => item.type)).toEqual(["web_search_call", "message"]);
+  });
+
+  test("non-streaming web_search_call pushes a completed search item before the message", () => {
+    const json = buildResponseJSON([
+      { type: "web_search_call_begin", id: "ws_2" },
+      { type: "web_search_call_end", id: "ws_2", queries: ["weather seattle"] },
+      { type: "text_delta", text: "answer" },
+      { type: "done" },
+    ], "routed/model");
+
+    const output = json.output as Record<string, unknown>[];
+    expect(output.map(item => item.type)).toEqual(["web_search_call", "message"]);
+    expect(output[0]).toMatchObject({
+      type: "web_search_call", status: "completed", action: { type: "search", query: "weather seattle" },
+    });
+  });
+
+  test("a batched (plural) search emits action.search.queries without a singular query", () => {
+    const json = buildResponseJSON([
+      { type: "web_search_call_begin", id: "ws_3" },
+      { type: "web_search_call_end", id: "ws_3", queries: ["rust async", "tokio runtime"] },
+      { type: "text_delta", text: "answer" },
+      { type: "done" },
+    ], "routed/model");
+
+    const output = json.output as Record<string, unknown>[];
+    const action = (output[0] as Record<string, unknown>).action as Record<string, unknown>;
+    // Native renders "<first> ..." only when `query` is absent and queries.len() > 1.
+    expect(action).toEqual({ type: "search", queries: ["rust async", "tokio runtime"] });
+    expect(action.query).toBeUndefined();
+  });
+
+  test("streaming: web_search_call_end sources attach as url_citation annotations on the next message", async () => {
+    const frames = await collectSse(bridgeToResponsesSSE(replay([
+      { type: "web_search_call_begin", id: "ws_4" },
+      { type: "web_search_call_end", id: "ws_4", queries: ["node lts"], sources: [{ url: "https://nodejs.org", title: "Node.js" }] },
+      { type: "text_delta", text: "Node 24 LTS" },
+      { type: "done" },
+    ]), "routed/model"));
+    const done = frames.find(f => f.event === "response.output_item.done"
+      && (f.data.item as Record<string, unknown>)?.type === "message");
+    const item = done!.data.item as Record<string, unknown>;
+    const part = (item.content as Record<string, unknown>[])[0];
+    expect(part.annotations).toEqual([{
+      type: "url_citation", url: "https://nodejs.org", title: "Node.js", start_index: 0, end_index: 0,
+    }]);
+  });
+
+  test("non-streaming: web_search_call_end sources attach as url_citation annotations", () => {
+    const json = buildResponseJSON([
+      { type: "web_search_call_begin", id: "ws_5" },
+      { type: "web_search_call_end", id: "ws_5", queries: ["node lts"], sources: [{ url: "https://nodejs.org", title: "Node.js" }] },
+      { type: "text_delta", text: "Node 24 LTS" },
+      { type: "done" },
+    ], "routed/model");
+    const output = json.output as Record<string, unknown>[];
+    const message = output.find(item => item.type === "message") as Record<string, unknown>;
+    const part = (message.content as Record<string, unknown>[])[0];
+    expect(part.annotations).toEqual([{
+      type: "url_citation", url: "https://nodejs.org", title: "Node.js", start_index: 0, end_index: 0,
+    }]);
+  });
+});
