@@ -19,7 +19,8 @@ export interface SidecarSettings {
 
 const BASE_INSTRUCTION =
   "You are a web-search assistant. Use the web_search tool to find current information for the " +
-  "user's query, then reply with a concise, factual answer and cite the sources you used.";
+  "user's query, then reply with a concise, factual answer. End your reply with a `Sources:` " +
+  "section listing each source you used on its own line as `- Title: URL` (one per line).";
 const IMAGE_INSTRUCTION =
   " The model that will read your answer is TEXT-ONLY and cannot see images: if the results include " +
   "relevant images, describe what they show in words and include their source URLs in your answer.";

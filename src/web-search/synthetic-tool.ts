@@ -33,9 +33,14 @@ export function buildWebSearchTool(): OcxTool {
     parameters: {
       type: "object",
       properties: {
-        query: { type: "string", description: "The search query — a focused natural-language question or keywords." },
+        query: { type: "string", description: "A single search query — a focused natural-language question or keywords." },
+        queries: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional: run several related queries together in one call. Use instead of `query` to batch independent searches.",
+        },
       },
-      required: ["query"],
+      // Either `query` or `queries` is accepted; the proxy normalizes them.
     },
     webSearch: true,
   };

@@ -182,8 +182,26 @@ export type AdapterEvent =
   | { type: "tool_call_start"; id: string; name: string }
   | { type: "tool_call_delta"; arguments: string }
   | { type: "tool_call_end" }
+  // Native web-search activity surfaced by the web-search sidecar so Codex renders a "Searched the
+  // web" cell. Emitted as a lifecycle PAIR at real wall-clock moments by src/web-search/loop.ts
+  // (routed adapters never emit these): `begin` right before the sidecar runs so Codex shows the
+  // "Searching the web" spinner, then `end` once it resolves. The bridge maps begin → an
+  // output_item.added(in_progress) and end → the matching output_item.done(completed|failed) under
+  // the SAME output index, so the activity animates instead of flashing completed instantly.
+  | { type: "web_search_call_begin"; id: string }
+  | { type: "web_search_call_end"; id: string; queries: string[]; status?: "completed" | "failed"; sources?: OcxUrlCitation[] }
   | { type: "done"; usage?: OcxUsage }
   | { type: "error"; message: string };
+
+/**
+ * A web source backing a search answer. Surfaced on the search-end event and rendered by the bridge
+ * as a `url_citation` annotation on the following assistant message (the desktop app's Sources chip
+ * reads these; the TUI ignores annotations, so this is additive).
+ */
+export interface OcxUrlCitation {
+  url: string;
+  title?: string;
+}
 
 export interface OcxUsage {
   inputTokens: number;
