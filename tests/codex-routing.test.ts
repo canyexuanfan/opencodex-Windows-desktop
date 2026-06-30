@@ -5,6 +5,7 @@ import {
   CODEX_FAILURE_WINDOW_MS,
   CODEX_THREAD_AFFINITY_IDLE_TTL_MS,
   CODEX_THREAD_AFFINITY_MAX_ENTRIES,
+  CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS,
   classifyCodexUpstreamOutcome,
   clearCodexUpstreamHealth,
   clearCodexUpstreamHealthForAccount,
@@ -281,6 +282,10 @@ describe("codex routing", () => {
 
   test("stale transient failure streaks expire before failover thresholding", () => {
     const config = makeConfig();
+    // Known low quota keeps "a" the deterministic active (this case tests failover
+    // streak expiry, not the all-unknown quota rotation added in Phase 10).
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 10, 5);
     const now = 1_800_000_000_000;
 
     recordCodexUpstreamOutcome(config, "a", 503, { now });
@@ -292,6 +297,8 @@ describe("codex routing", () => {
 
   test("2xx responses reset the failure streak", () => {
     const config = makeConfig();
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 10, 5);
     recordCodexUpstreamOutcome(config, "a", 503);
     recordCodexUpstreamOutcome(config, "a", 200);
     recordCodexUpstreamOutcome(config, "a", 503);
@@ -301,6 +308,8 @@ describe("codex routing", () => {
 
   test("failure failover can be disabled independently from quota switching", () => {
     const config = makeConfig({ upstreamFailoverThreshold: 0 });
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 10, 5);
     recordCodexUpstreamOutcome(config, "a", 503);
     recordCodexUpstreamOutcome(config, "a", 503);
     recordCodexUpstreamOutcome(config, "a", 503);
@@ -309,6 +318,8 @@ describe("codex routing", () => {
 
   test("stale thread affinity is revalidated before reuse", () => {
     const config = makeConfig();
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 10, 5);
     expect(resolveCodexAccountForThread("stale-thread", config)).toBe("a");
 
     config.codexAccounts = config.codexAccounts?.filter(account => account.id !== "a");
@@ -319,6 +330,8 @@ describe("codex routing", () => {
 
   test("expired thread affinity is not silently remapped", () => {
     const config = makeConfig();
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 10, 5);
     const now = 1_800_000_000_000;
     expect(resolveCodexAccountForThread("expired-thread", config, now)).toBe("a");
 
@@ -331,6 +344,8 @@ describe("codex routing", () => {
 
   test("detailed resolver reports expired thread affinity", () => {
     const config = makeConfig();
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 10, 5);
     const now = 1_800_000_000_000;
     expect(resolveCodexAccountForThreadDetailed("expired-detailed", config, now))
       .toEqual({ status: "selected", accountId: "a" });
@@ -344,6 +359,8 @@ describe("codex routing", () => {
 
   test("thread affinity LRU cap evicts the oldest mapping", () => {
     const config = makeConfig();
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 10, 5);
     const now = 1_800_000_000_000;
     for (let i = 0; i < CODEX_THREAD_AFFINITY_MAX_ENTRIES + 1; i += 1) {
       expect(resolveCodexAccountForThread(`lru-${i}`, config, now + i)).toBe("a");
@@ -357,6 +374,8 @@ describe("codex routing", () => {
 
   test("generation mismatch invalidates a mapped thread before reuse", () => {
     const config = makeConfig();
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 10, 5);
     const now = 1_800_000_000_000;
     expect(resolveCodexAccountForThread("generation-thread", config, now)).toBe("a");
 
@@ -373,6 +392,8 @@ describe("codex routing", () => {
 
   test("account-specific cleanup clears affinity and upstream health", () => {
     const config = makeConfig();
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 10, 5);
     expect(resolveCodexAccountForThread("cleanup-thread", config)).toBe("a");
     recordCodexUpstreamOutcome(config, "a", 503);
     expect(getCodexUpstreamHealth("a")).not.toBeNull();
@@ -450,5 +471,145 @@ describe("codex routing", () => {
       monthlyPercent: 0,
       weeklyResetAt: 2,
     });
+  });
+
+  // Phase 10 (260630_wsl-account-autoswitch): all-unknown quota deadlock fallback.
+  test("all-unknown pool still rotates off an over-threshold active account", () => {
+    const config = makeConfig();
+    // No updateAccountQuota calls: both a and b score the unknown sentinel.
+    expect(resolveCodexAccountForThread("all-unknown-rotate", config)).toBe("b");
+    expect(config.activeCodexAccountId).toBe("b");
+  });
+
+  test("all-unknown with no eligible rotation target stays put without throwing", () => {
+    const config = makeConfig({
+      codexAccounts: [{ id: "a", email: "a@test", isMain: false }],
+      activeCodexAccountId: "a",
+    });
+    expect(resolveCodexAccountForThread("all-unknown-no-target", config)).toBe("a");
+    expect(config.activeCodexAccountId).toBe("a");
+  });
+
+  test("mixed known/unknown still picks the truly-lower account, never an unknown", () => {
+    const config = makeConfig({
+      codexAccounts: [
+        { id: "a", email: "a@test", isMain: false },
+        { id: "b", email: "b@test", isMain: false },
+        { id: "c", email: "c@test", isMain: false },
+      ],
+      activeCodexAccountId: "a",
+    });
+    saveTestCredential("c");
+    updateAccountQuota("a", 10, 90); // active over threshold
+    // b stays unknown; c is genuinely low.
+    updateAccountQuota("c", 5, 5);
+    expect(resolveCodexAccountForThread("mixed-pick-lower", config)).toBe("c");
+    expect(config.activeCodexAccountId).toBe("c");
+  });
+
+  test("known-but-saturated active does not bounce to an unknown candidate", () => {
+    const config = makeConfig();
+    updateAccountQuota("a", 90, 95); // real 95, not the unknown sentinel
+    // b unknown.
+    expect(resolveCodexAccountForThread("saturated-known", config)).toBe("a");
+    expect(config.activeCodexAccountId).toBe("a");
+  });
+
+  test("threshold=0 disables auto-switch even when all quotas are unknown", () => {
+    const config = makeConfig({ autoSwitchThreshold: 0 });
+    expect(resolveCodexAccountForThread("threshold-disabled", config)).toBe("a");
+    expect(config.activeCodexAccountId).toBe("a");
+  });
+
+  test("all-unknown rotation skips cooldown/reauth candidates", () => {
+    const config = makeConfig({
+      codexAccounts: [
+        { id: "a", email: "a@test", isMain: false },
+        { id: "b", email: "b@test", isMain: false },
+        { id: "c", email: "c@test", isMain: false },
+      ],
+      activeCodexAccountId: "a",
+    });
+    saveTestCredential("c");
+    // Put b into cooldown via a 429 quota outcome; c remains a usable unknown.
+    recordCodexUpstreamOutcome(config, "b", 429);
+    expect(isCodexAccountInCooldown("b")).toBe(true);
+    expect(resolveCodexAccountForThread("rotate-skip-cooldown", config)).toBe("c");
+    expect(config.activeCodexAccountId).toBe("c");
+  });
+
+  // Phase 40 (260630_wsl-account-autoswitch): bound-thread quota re-eval.
+  test("bound thread over threshold switches after the re-eval interval", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 10, 5);
+    // Bind t1 to a while a is cool.
+    expect(resolveCodexAccountForThread("t1", config, now)).toBe("a");
+    // a goes hot, b stays cool.
+    updateAccountQuota("a", 90, 95);
+    updateAccountQuota("b", 5, 5);
+    const later = now + CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS + 1;
+    expect(resolveCodexAccountForThread("t1", config, later)).toBe("b");
+    expect(config.activeCodexAccountId).toBe("b");
+  });
+
+  test("bound thread under threshold stays even if a lower account exists", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 10, 5);
+    expect(resolveCodexAccountForThread("t1", config, now)).toBe("a");
+    // a at 50 (under threshold 80), b lower at 5.
+    updateAccountQuota("a", 50, 50);
+    updateAccountQuota("b", 5, 5);
+    const later = now + CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS + 1;
+    expect(resolveCodexAccountForThread("t1", config, later)).toBe("a");
+    expect(config.activeCodexAccountId).toBe("a");
+  });
+
+  test("bound thread does not flap within the re-eval interval, then switches once", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 10, 5);
+    expect(resolveCodexAccountForThread("t1", config, now)).toBe("a");
+    updateAccountQuota("a", 90, 95);
+    updateAccountQuota("b", 5, 5);
+    // Within the interval: no rebind yet.
+    expect(resolveCodexAccountForThread("t1", config, now + 1_000)).toBe("a");
+    // After the interval: switches once.
+    const later = now + CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS + 1;
+    expect(resolveCodexAccountForThread("t1", config, later)).toBe("b");
+    // A subsequent interval does not ping-pong back: b is now the lowest.
+    const later2 = later + CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS + 1;
+    expect(resolveCodexAccountForThread("t1", config, later2)).toBe("b");
+  });
+
+  test("bound thread with an all-unknown pool does not flap on re-eval", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 10, 5);
+    expect(resolveCodexAccountForThread("t1", config, now)).toBe("a");
+    // Both unknown now (over threshold sentinel, but strict < yields no better).
+    clearAccountQuota();
+    const later = now + CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS + 1;
+    expect(resolveCodexAccountForThread("t1", config, later)).toBe("a");
+    expect(config.activeCodexAccountId).toBe("a");
+  });
+
+  test("bound thread reuse under the interval still slides the idle TTL", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    updateAccountQuota("a", 10, 5);
+    updateAccountQuota("b", 10, 5);
+    expect(resolveCodexAccountForThread("t1", config, now)).toBe("a");
+    // Reuse just under the re-eval interval keeps the binding (slides lastUsedAt),
+    // then a reuse just under the 24h idle TTL from THAT point still resolves a.
+    const reuse = now + CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS - 1;
+    expect(resolveCodexAccountForThread("t1", config, reuse)).toBe("a");
+    const nearIdle = reuse + CODEX_THREAD_AFFINITY_IDLE_TTL_MS - 1;
+    expect(resolveCodexAccountForThread("t1", config, nearIdle)).toBe("a");
   });
 });

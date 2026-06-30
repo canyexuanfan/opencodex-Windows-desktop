@@ -396,6 +396,11 @@ switch (command) {
   case "status":
     await handleStatus();
     break;
+  case "doctor": {
+    const { runDoctor } = await import("./doctor");
+    await runDoctor();
+    break;
+  }
   case "ensure":
     await handleEnsure();
     break;

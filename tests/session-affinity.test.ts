@@ -9,6 +9,7 @@ import type { OcxConfig } from "../src/types";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-session-affinity-test");
 let previousOpencodexHome: string | undefined;
+let previousCodexHome: string | undefined;
 
 function makeConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
   return {
@@ -43,6 +44,10 @@ describe("resolveCodexAccountForThread", () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
     process.env.OPENCODEX_HOME = TEST_DIR;
+    // Isolate the main-account credential source: TEST_DIR has no auth.json, so the
+    // main account is deterministically absent and cannot become a rotation target.
+    previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = TEST_DIR;
     clearThreadAccountMap();
     clearAccountQuota();
   });
@@ -52,6 +57,8 @@ describe("resolveCodexAccountForThread", () => {
     clearThreadAccountMap();
     if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
     else process.env.OPENCODEX_HOME = previousOpencodexHome;
+    if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousCodexHome;
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
   });
 
@@ -67,6 +74,10 @@ describe("resolveCodexAccountForThread", () => {
 
   test("same thread-id returns same account (affinity)", () => {
     const config = makeActivePoolConfig("work", ["work", "personal"]);
+    // Known low quota keeps "work" the deterministic active (this case tests
+    // thread affinity, not the all-unknown quota rotation added in Phase 10).
+    updateAccountQuota("work", 10, 5);
+    updateAccountQuota("personal", 10, 5);
     resolveCodexAccountForThread("t1", config);
     config.activeCodexAccountId = "personal";
     expect(resolveCodexAccountForThread("t1", config)).toBe("work");
@@ -74,6 +85,8 @@ describe("resolveCodexAccountForThread", () => {
 
   test("different thread gets different account", () => {
     const config = makeActivePoolConfig("work", ["work", "personal"]);
+    updateAccountQuota("work", 10, 5);
+    updateAccountQuota("personal", 10, 5);
     resolveCodexAccountForThread("t1", config);
     config.activeCodexAccountId = "personal";
     expect(resolveCodexAccountForThread("t2", config)).toBe("personal");
@@ -81,6 +94,8 @@ describe("resolveCodexAccountForThread", () => {
 
   test("null thread-id does not cache", () => {
     const config = makeActivePoolConfig("work", ["work", "personal"]);
+    updateAccountQuota("work", 10, 5);
+    updateAccountQuota("personal", 10, 5);
     resolveCodexAccountForThread(null, config);
     config.activeCodexAccountId = "personal";
     expect(resolveCodexAccountForThread(null, config)).toBe("personal");

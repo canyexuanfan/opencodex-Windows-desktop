@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { saveCodexAccountCredential } from "../src/codex-account-store";
-import { clearAccountNeedsReauth } from "../src/codex-auth-api";
+import { clearAccountNeedsReauth, clearAccountQuota, updateAccountQuota } from "../src/codex-auth-api";
 import {
   CODEX_THREAD_AFFINITY_IDLE_TTL_MS,
   clearCodexUpstreamHealth,
@@ -904,6 +904,7 @@ describe("server local API auth", () => {
     clearCodexUpstreamHealth();
     clearThreadAccountMap();
     clearAccountNeedsReauth("pool-a");
+    clearAccountQuota();
 
     let upstreamRequests = 0;
     const upstream = Bun.serve({
@@ -1116,6 +1117,9 @@ describe("server local API auth", () => {
       expiresAt: Date.now() + 5 * 60_000,
       chatgptAccountId: "acct-pool-a",
     });
+    // Known low quota keeps "pool-a" the deterministic active (this case tests
+    // failure-health recording, not the all-unknown rotation added in Phase 10).
+    updateAccountQuota("pool-a", 10, 5);
 
     const server = startServer(0);
     try {

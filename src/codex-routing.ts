@@ -12,6 +12,9 @@ type ThreadAffinityEntry = {
   generation: number;
   createdAt: number;
   lastUsedAt: number;
+  // Last time the bound account's quota threshold was re-evaluated for this
+  // thread (interval-gated to avoid per-request flapping). See REEVAL_INTERVAL_MS.
+  lastReevalAt: number;
 };
 
 export type CodexThreadResolution =
@@ -32,6 +35,9 @@ const CODEX_MAX_QUOTA_COOLDOWN_MS = 24 * 60 * 60_000;
 export const CODEX_FAILURE_WINDOW_MS = 5 * 60_000;
 export const CODEX_THREAD_AFFINITY_IDLE_TTL_MS = 24 * 60 * 60_000;
 export const CODEX_THREAD_AFFINITY_MAX_ENTRIES = 2048;
+// Min interval between quota threshold re-evaluations for a single bound thread.
+// Well under the 5h/weekly quota windows, but enough to stop per-request flapping.
+export const CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS = 60_000;
 
 const upstreamHealth = new Map<string, CodexUpstreamHealth>();
 
@@ -200,6 +206,7 @@ function bindThreadAffinity(threadId: string, accountId: string, now: number): v
     generation: record.generation,
     createdAt: previous?.createdAt ?? now,
     lastUsedAt: now,
+    lastReevalAt: now,
   });
   pruneLruThreadAffinities();
 }
@@ -260,6 +267,20 @@ function setActiveCodexAccount(config: OcxConfig, accountId: string): void {
   saveConfig(config);
 }
 
+function isUnknownUsage(usage: number): boolean {
+  return usage >= CODEX_UNKNOWN_USAGE_SCORE;
+}
+
+// Round-robin among eligible unknown-quota candidates. `getEligiblePoolAccounts`
+// already returns a deterministic order (config order, main unshifted first) and
+// excludes the active id, so taking the first eligible unknown is a stable rotation
+// without any new per-account state.
+function pickNextUnknownAccount(config: OcxConfig, active: string, now: number): string | null {
+  const eligible = getEligiblePoolAccounts(config, active, now)
+    .filter(id => isUnknownUsage(computeCodexUsageScore(getAccountQuota(id), getPoolAccountPlan(config, id))));
+  return eligible.length > 0 ? eligible[0]! : null;
+}
+
 function applyQuotaAutoSwitch(config: OcxConfig, active: string, now: number): string {
   const threshold = config.autoSwitchThreshold ?? 80;
   if (threshold <= 0) return active;
@@ -267,8 +288,27 @@ function applyQuotaAutoSwitch(config: OcxConfig, active: string, now: number): s
   const activeUsage = computeCodexUsageScore(quota, getPoolAccountPlan(config, active));
   if (activeUsage < threshold) return active;
   const best = pickLowerUsageAccount(config, active, activeUsage, now);
-  if (best !== active) setActiveCodexAccount(config, best);
-  return best;
+  if (best !== active) {
+    setActiveCodexAccount(config, best);
+    return best;
+  }
+
+  // Deadlock guard: active is over threshold but no candidate scored strictly
+  // lower. When the active itself is unknown, every candidate is likely unknown
+  // too (100 < 100 never fires), which pins the pool to one account whose real
+  // usage we cannot see (e.g. quota never primed on WSL). Rotate to the next
+  // eligible unknown so rotation is not stuck; known-but-saturated accounts are
+  // intentionally left alone so a genuinely hot pool stays visible.
+  if (isUnknownUsage(activeUsage)) {
+    const next = pickNextUnknownAccount(config, active, now);
+    if (next) {
+      console.warn(`[codex-routing] quota unknown for active "${active}"; rotating to "${next}" (all candidates unknown, threshold=${threshold})`);
+      setActiveCodexAccount(config, next);
+      return next;
+    }
+    console.warn(`[codex-routing] quota unknown for active "${active}" and no eligible rotation target; staying put`);
+  }
+  return active;
 }
 
 function shouldFailover(config: OcxConfig, accountId: string, now: number): boolean {
@@ -314,6 +354,28 @@ export function resolveCodexAccountForThreadDetailed(
       && isCodexAccountSelectable(config, entry.accountId, now)
     ) {
       entry.lastUsedAt = now;
+      // Periodic quota re-eval: a long-lived bound thread must still switch when
+      // it crosses autoSwitchThreshold and a strictly-cooler account exists.
+      // Without this the reuse branch returns before applyQuotaAutoSwitch and the
+      // thread stays pinned for the full idle TTL (the WSL "never switches" report).
+      if (now - entry.lastReevalAt >= CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS) {
+        entry.lastReevalAt = now;
+        const threshold = config.autoSwitchThreshold ?? 80;
+        if (threshold > 0) {
+          const usage = computeCodexUsageScore(
+            getAccountQuota(entry.accountId),
+            getPoolAccountPlan(config, entry.accountId),
+          );
+          if (usage >= threshold) {
+            const best = pickLowerUsageAccount(config, entry.accountId, usage, now);
+            if (best !== entry.accountId) {
+              setActiveCodexAccount(config, best);
+              bindThreadAffinity(threadId, best, now); // rebinds + resets clocks
+              return { status: "selected", accountId: best };
+            }
+          }
+        }
+      }
       return { status: "selected", accountId: entry.accountId };
     }
     threadAccountMap.delete(threadId);

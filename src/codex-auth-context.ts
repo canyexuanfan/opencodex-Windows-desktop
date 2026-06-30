@@ -8,6 +8,7 @@ import { markAccountNeedsReauth } from "./codex-account-runtime-state";
 import { isCodexAccountUsable } from "./codex-account-usability";
 import { MAIN_CODEX_ACCOUNT_ID, getMainAccountToken } from "./codex-main-account";
 import { getCodexAccountCooldownUntil, resolveCodexAccountForThreadDetailed } from "./codex-routing";
+import { getAccountQuota } from "./codex-quota";
 import type { OcxConfig, OcxProviderConfig } from "./types";
 import { FORWARD_HEADERS } from "./adapters/openai-responses";
 
@@ -76,6 +77,16 @@ export async function resolveCodexAuthContext(headers: Headers, config: OcxConfi
   if (resolution.status === "expired") throw new CodexThreadAffinityExpiredError(resolution.accountId);
   const accountId = resolution.status === "selected" ? resolution.accountId : null;
   if (!accountId) return { kind: "main", accountId: null };
+  // Lazy prime: if the selected account has no quota yet, the pool is likely
+  // unprimed (dashboard never opened, or startup prime was blocked). Kick a
+  // best-effort prime so the NEXT routing decision has real scores. This never
+  // blocks the current request, and the helper's single-flight guard collapses
+  // repeated triggers into one pass.
+  if (!getAccountQuota(accountId)) {
+    import("./codex-auth-api")
+      .then(({ primeCodexPoolQuotas }) => primeCodexPoolQuotas(config, "pre-route"))
+      .catch(() => {});
+  }
   const cooldownUntil = getCodexAccountCooldownUntil(accountId);
   if (cooldownUntil) throw new CodexAccountCooldownError(accountId, cooldownUntil);
 
