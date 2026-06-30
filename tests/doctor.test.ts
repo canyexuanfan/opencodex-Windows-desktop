@@ -60,19 +60,19 @@ describe("doctor", () => {
       "drivers /mnt/c drvfs rw,noatime 0 0",
     ].join("\n");
 
-    const c = detectFsType("/mnt/c/Users/jun/.opencodex", mounts);
+    const c = detectFsType("/mnt/c/Users/test/.opencodex", mounts);
     expect(c.isDrvfs).toBe(true);
     expect(c.isMntDrive).toBe(true);
     expect(c.fstype).toBe("drvfs");
 
-    const home = detectFsType("/home/jun/.opencodex", mounts);
+    const home = detectFsType("/home/test/.opencodex", mounts);
     expect(home.isDrvfs).toBe(false);
     expect(home.isMntDrive).toBe(false);
     expect(home.fstype).toBe("ext4");
   });
 
   test("detectFsType returns n/a when mounts content is unavailable", () => {
-    const info = detectFsType("/home/jun/.codex", null);
+    const info = detectFsType("/home/test/.codex", null);
     expect(info.fstype).toBe("n/a");
     expect(info.isDrvfs).toBe(false);
   });
@@ -81,7 +81,7 @@ describe("doctor", () => {
     let rows = collectProxyEnv();
     expect(rows.find(r => r.key === "HTTPS_PROXY")!.present).toBe(false);
 
-    process.env.HTTPS_PROXY = "http://user:secret@proxy.example.com:8080";
+    process.env.HTTPS_PROXY = "http://user:secret@proxy.example.test:8080";
     rows = collectProxyEnv();
     const https = rows.find(r => r.key === "HTTPS_PROXY")!;
     expect(https.present).toBe(true);
