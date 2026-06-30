@@ -225,6 +225,15 @@ function capturingAdapter(firstPass: AdapterEvent[]): { adapter: ProviderAdapter
   return { adapter, messagesPerPass };
 }
 
+/** Drain an SSE body so iterations that run live inside the stream actually execute. */
+async function drain(stream: ReadableStream<Uint8Array>): Promise<void> {
+  const reader = stream.getReader();
+  while (true) {
+    const { done } = await reader.read();
+    if (done) break;
+  }
+}
+
 describe("web-search forced-answer nudge", () => {
   afterEach(() => { globalThis.fetch = originalFetch; });
 
@@ -247,7 +256,7 @@ describe("web-search forced-answer nudge", () => {
     const parsed = parseRequest({ model: "routed/model", input: "Search for current docs", stream: true, tools: [{ type: "web_search" }] });
     const baselineUserMessages = parsed.context.messages.length;
 
-    await runWithWebSearch({
+    const response = await runWithWebSearch({
       parsed,
       adapter,
       forwardProvider,
@@ -256,6 +265,8 @@ describe("web-search forced-answer nudge", () => {
       settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
       maxSearches: 1,
     });
+    // Iteration 2 (the forced-answer pass) runs live inside the SSE body — drain it so it executes.
+    await drain(response.body!);
 
     // Pass 1 (search) has no nudge; pass 2 (forced answer) ends with exactly one developer nudge.
     expect(messagesPerPass.length).toBe(2);
@@ -284,7 +295,7 @@ describe("web-search forced-answer nudge", () => {
       { type: "tool_call_delta", arguments: JSON.stringify({ query: "" }) },
       { type: "tool_call_end" },
     ]);
-    await runWithWebSearch({
+    const response = await runWithWebSearch({
       parsed: parseRequest({ model: "routed/model", input: "go", stream: true, tools: [{ type: "web_search" }] }),
       adapter,
       forwardProvider,
@@ -293,10 +304,84 @@ describe("web-search forced-answer nudge", () => {
       settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
       maxSearches: 1,
     });
+    await drain(response.body!);
 
     // Every pass is nudge-free because no real sidecar search ran (executedSearches stayed empty).
     for (const msgs of messagesPerPass) {
       expect(msgs.some(m => m.role === "developer")).toBe(false);
     }
+  });
+});
+
+describe("web-search live spinner ordering", () => {
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  test("the in_progress added frame is emitted BEFORE the sidecar search resolves", async () => {
+    // Gate the sidecar response so the search stays pending until we choose to release it.
+    let releaseSidecar: () => void = () => {};
+    const sidecarGate = new Promise<void>(resolve => { releaseSidecar = resolve; });
+    globalThis.fetch = ((input) => {
+      const url = String(input);
+      if (url.startsWith("https://routed.test/")) return Promise.resolve(new Response("{}", { status: 200 }));
+      // sidecar: resolve only after the gate opens.
+      return sidecarGate.then(() => new Response(
+        'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"docs say X"}\n\n' +
+          'event: response.completed\ndata: {"type":"response.completed"}\n\n',
+        { headers: { "Content-Type": "text/event-stream" } },
+      ));
+    }) as typeof fetch;
+
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "Search for current docs", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: scriptedAdapter([
+        { type: "tool_call_start", id: "call_1", name: "web_search" },
+        { type: "tool_call_delta", arguments: JSON.stringify({ query: "current docs" }) },
+        { type: "tool_call_end" },
+      ]),
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+    });
+
+    // Read frames incrementally. The added(in_progress) web_search_call must arrive while the
+    // sidecar promise is still gated; only after we see it do we release the sidecar.
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let sawInProgress = false;
+    let releasedAt = -1;
+    const order: string[] = [];
+    for (let reads = 0; reads < 200; reads++) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buf.indexOf("\n\n")) !== -1) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const data = frame.split("\n").find(l => l.startsWith("data: "))?.slice(6);
+        if (!data) continue;
+        let parsed: Record<string, unknown>;
+        try { parsed = JSON.parse(data); } catch { continue; }
+        const item = parsed.item as Record<string, unknown> | undefined;
+        if (item?.type === "web_search_call") {
+          order.push(`${parsed.type}:${item.status}`);
+          if (parsed.type === "response.output_item.added" && item.status === "in_progress") {
+            sawInProgress = true;
+            releasedAt = order.length;
+            releaseSidecar(); // open the gate ONLY after the spinner frame is observed
+          }
+        }
+      }
+    }
+
+    expect(sawInProgress).toBe(true);
+    // The added(in_progress) frame came first, and we released the sidecar only after seeing it —
+    // proving the spinner is live, not flashed back-to-back with done.
+    expect(order[0]).toBe("response.output_item.added:in_progress");
+    expect(order).toContain("response.output_item.done:completed");
+    expect(releasedAt).toBe(1);
   });
 });

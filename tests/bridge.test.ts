@@ -228,7 +228,8 @@ describe("Responses bridge reasoning and usage parity", () => {
 describe("Responses bridge web_search_call native item", () => {
   test("streaming web_search_call emits an added/done pair with action.query and a completed turn", async () => {
     const frames = await collectSse(bridgeToResponsesSSE(replay([
-      { type: "web_search_call", id: "ws_1", query: "current docs" },
+      { type: "web_search_call_begin", id: "ws_1" },
+      { type: "web_search_call_end", id: "ws_1", query: "current docs" },
       { type: "text_delta", text: "answer" },
       { type: "done" },
     ]), "routed/model"));
@@ -255,7 +256,8 @@ describe("Responses bridge web_search_call native item", () => {
 
   test("non-streaming web_search_call pushes a completed search item before the message", () => {
     const json = buildResponseJSON([
-      { type: "web_search_call", id: "ws_2", query: "weather seattle" },
+      { type: "web_search_call_begin", id: "ws_2" },
+      { type: "web_search_call_end", id: "ws_2", query: "weather seattle" },
       { type: "text_delta", text: "answer" },
       { type: "done" },
     ], "routed/model");

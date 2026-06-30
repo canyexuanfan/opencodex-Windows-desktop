@@ -71,10 +71,13 @@ describe("sidecar abort propagation", () => {
     // fetch; flush the microtask/timer queue so the routed fetch is observed.
     await new Promise((r) => setTimeout(r, 0));
     const signal = getSignal();
-    expect(signal).toBe(turn.signal);
+    // The loop now links an internal AbortController to the turn signal (so a client cancel of the
+    // SSE body also aborts in-flight work). The routed fetch observes that linked signal, and a turn
+    // abort must propagate to it.
     expect(signal.aborted).toBe(false);
     turn.abort("replacement turn");
     expect(signal.aborted).toBe(true);
+    // The eager first iteration's fetch rejects on abort → non-200 jsonError (status contract).
     expect((await response).status).toBe(502);
   });
 
@@ -170,6 +173,13 @@ describe("sidecar abort propagation", () => {
     });
 
     expect(response.status).toBe(200);
+    // The sidecar now runs INSIDE the SSE body (live spinner), so its outcome is recorded only once
+    // the stream is consumed. Drain the body, then assert.
+    const reader = response.body!.getReader();
+    while (true) {
+      const { done } = await reader.read();
+      if (done) break;
+    }
     expect(recorded).toEqual([401]);
   });
 

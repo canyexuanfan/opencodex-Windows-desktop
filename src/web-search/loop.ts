@@ -106,6 +106,15 @@ function jsonError(status: number, message: string): Response {
   });
 }
 
+/** Hard provider/parse failure inside an iteration. The eager first iteration converts it to a
+ *  non-200 jsonError; later (already-streaming) iterations surface it as an in-stream error event. */
+class LoopError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "LoopError";
+  }
+}
+
 export interface WebSearchLoopDeps {
   parsed: OcxParsedRequest;
   adapter: ProviderAdapter;
@@ -135,24 +144,36 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
   // results already in `messages` (can't search again) — this guarantees a non-empty final answer.
   const toolsNoWebSearch = allTools.filter(t => !t.webSearch);
   let searchesExecuted = 0;
-  let finalEvents: AdapterEvent[] = [];
-  // Searches we actually ran via the sidecar (not failed-repeat / limit / empty-query placeholders).
-  // Replayed as native web_search_call items so Codex shows a "Searched the web" cell.
-  const executedSearches: { id: string; query: string }[] = [];
+  let executedSearchCount = 0;
   // Queries whose search already failed this turn — repeats are short-circuited so a model that keeps
   // re-asking the same failing query doesn't burn the whole search budget on it.
   const failedQueries = new Set<string>();
 
+  // Link an internal AbortController to the turn signal so a client cancel of the SSE body (bridge
+  // `onCancel`) aborts in-flight model fetches AND the sidecar — the work now runs INSIDE the stream,
+  // so without this a cancelled turn would leak fetches and keep draining tokens.
+  const internalAbort = new AbortController();
+  const linkAbort = (): void => internalAbort.abort(abortSignal?.reason);
+  if (abortSignal) {
+    if (abortSignal.aborted) linkAbort();
+    else abortSignal.addEventListener("abort", linkAbort, { once: true });
+  }
+  const signal = internalAbort.signal;
+
   // Hard iteration bound (termination safety net); forceAnswer normally ends the loop sooner.
   const HARD_CAP = maxSearches + 2;
-  for (let i = 0; i < HARD_CAP; i++) {
-    const forceAnswer = searchesExecuted >= maxSearches;
+
+  // Run one model iteration: build the request, fetch it, parse to adapter events. Returns the
+  // scanned split. Throws `LoopError` on a hard provider/parse failure so the EAGER first call can
+  // turn it into a non-200 jsonError (preserving the status contract), while later iterations —
+  // already inside the 200 SSE — surface it as an in-stream error event.
+  const runIteration = async (forceAnswer: boolean): Promise<{ calls: WebSearchCall[]; passthrough: AdapterEvent[]; hasRealToolCall: boolean }> => {
     // On the forced-answer pass the synthetic web_search tool is gone, so the model MUST answer
     // from the results already in `messages`. A weak model can still produce a thin answer that
     // ignores what the search found, which reads to the user as "the search did nothing". Nudge it
     // (iteration-locally — never mutate the shared `messages`) to actually use the gathered results.
-    // Only when a REAL search ran (executedSearches, not the empty-query/limit/repeat placeholders).
-    const iterMessages: OcxMessage[] = forceAnswer && executedSearches.length > 0
+    // Only when a REAL search ran (executedSearchCount, not empty-query/limit/repeat placeholders).
+    const iterMessages: OcxMessage[] = forceAnswer && executedSearchCount > 0
       ? [...messages, forcedAnswerNudge()]
       : messages;
     const iterParsed: OcxParsedRequest = {
@@ -163,76 +184,86 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
     let resp: Response;
     try {
       resp = adapter.fetchResponse
-        ? await adapter.fetchResponse(request, { abortSignal })
+        ? await adapter.fetchResponse(request, { abortSignal: signal })
         : await fetch(request.url, {
             method: request.method,
             headers: request.headers,
             body: request.body,
-            signal: abortSignal,
+            signal,
           });
     } catch (e) {
-      return jsonError(502, `Provider unreachable: ${e instanceof Error ? e.message : String(e)}`);
+      throw new LoopError(502, `Provider unreachable: ${e instanceof Error ? e.message : String(e)}`);
     }
     if (!resp.ok) {
       const t = await resp.text().catch(() => "");
-      return jsonError(resp.status, `Provider error ${resp.status}: ${t.slice(0, 400)}`);
+      throw new LoopError(resp.status, `Provider error ${resp.status}: ${t.slice(0, 400)}`);
     }
-    // The fetch above carries `abortSignal`; when the turn is superseded/cancelled, Bun aborts the
+    // The fetch above carries `signal`; when the turn is superseded/cancelled, Bun aborts the
     // response body stream. If parseResponse hasn't attached a reader yet, the body's pending read is
     // orphaned off the awaited path and surfaces as `unhandledRejection: TypeError: null is not an
     // object` (native-only stack). Proactively cancel the body on abort so WE settle it, and guard
     // the drain so a mid-decode abort/stream error ends cleanly instead of throwing.
-    const detachBodyGuard = cancelBodyOnAbort(resp.body, abortSignal);
+    const detachBodyGuard = cancelBodyOnAbort(resp.body, signal);
     let events: AdapterEvent[];
     try {
-      events = await adapter.parseResponse(resp);
+      events = await adapter.parseResponse!(resp);
     } catch (e) {
       await resp.body?.cancel().catch(() => {});
-      if (abortSignal?.aborted) {
-        return jsonError(499, "client closed request during web-search");
-      }
-      return jsonError(502, `Provider stream error: ${e instanceof Error ? e.message : String(e)}`);
+      if (signal.aborted) throw new LoopError(499, "client closed request during web-search");
+      throw new LoopError(502, `Provider stream error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       detachBodyGuard();
     }
-    const { calls, passthrough, hasRealToolCall } = scanEventsForWebSearch(events);
-    // Loop (search + re-ask) ONLY when the model's actionable output is purely web_search. A real
-    // tool call (e.g. shell/apply_patch) means this turn is terminal for Codex — finalize so those
-    // calls reach Codex instead of being discarded. forceAnswer also finalizes.
-    const shouldLoop = calls.length > 0 && !hasRealToolCall && !forceAnswer;
-    if (!shouldLoop) {
-      finalEvents = passthrough;
-      break;
+    return scanEventsForWebSearch(events);
+  };
+
+  // Execute one model-requested web_search call: emit a `begin` cell, run (or short-circuit) the
+  // sidecar, inject the toolResult into `messages`, then emit the matching `end` cell. Yields the
+  // lifecycle events at real wall-clock moments so Codex animates "Searching the web".
+  async function* runSearchCall(call: WebSearchCall): AsyncGenerator<AdapterEvent> {
+    let outcome: { text: string; sources: { url: string; title?: string }[]; error?: string };
+    let emitCell = false;
+    if (call.query && failedQueries.has(normalizeQuery(call.query))) {
+      // Already failed this turn — don't spend another real search on it.
+      outcome = { text: "", sources: [], error: "this query already failed earlier in the turn — do not call web_search again for it; answer from existing context" };
+    } else if (searchesExecuted >= maxSearches) {
+      outcome = { text: "", sources: [], error: "web search limit reached for this turn — answer from results already gathered" };
+    } else if (!call.query) {
+      outcome = { text: "", sources: [], error: "the model called web_search with an empty query" };
+      searchesExecuted++;
+    } else {
+      // Real sidecar search — show the spinner WHILE it runs, then finalize the cell.
+      emitCell = true;
+      yield { type: "web_search_call_begin", id: call.id };
+      outcome = await runWebSearch(call.query, hostedTool, forwardProvider, selectedForwardHeaders, settings, signal, recordSidecarOutcome);
+      searchesExecuted++;
+      executedSearchCount++;
+      if (outcome.error) failedQueries.add(normalizeQuery(call.query));
     }
     const now = Date.now();
-    for (const call of calls) {
-      let outcome: { text: string; sources: { url: string; title?: string }[]; error?: string };
-      if (call.query && failedQueries.has(normalizeQuery(call.query))) {
-        // Already failed this turn — don't spend another real search on it.
-        outcome = { text: "", sources: [], error: "this query already failed earlier in the turn — do not call web_search again for it; answer from existing context" };
-      } else if (searchesExecuted >= maxSearches) {
-        outcome = { text: "", sources: [], error: "web search limit reached for this turn — answer from results already gathered" };
-      } else if (!call.query) {
-        outcome = { text: "", sources: [], error: "the model called web_search with an empty query" };
-        searchesExecuted++;
-      } else {
-        outcome = await runWebSearch(call.query, hostedTool, forwardProvider, selectedForwardHeaders, settings, abortSignal, recordSidecarOutcome);
-        searchesExecuted++;
-        if (outcome.error) failedQueries.add(normalizeQuery(call.query));
-        // Record only searches that actually hit the sidecar (this branch), so the native UI mirrors
-        // real searches — not empty/limit/repeat placeholders handled in the branches above.
-        executedSearches.push({ id: call.id, query: call.query });
-      }
-      messages.push({
-        role: "assistant",
-        content: [{ type: "toolCall", id: call.id, name: WEB_SEARCH_TOOL_NAME, arguments: { query: call.query } }],
-        timestamp: now,
-      });
-      messages.push({
-        role: "toolResult", toolCallId: call.id, toolName: WEB_SEARCH_TOOL_NAME,
-        content: formatWebSearchResult(call.query, outcome, !!parsed._structuredOutput), isError: !!outcome.error, timestamp: now,
-      });
+    messages.push({
+      role: "assistant",
+      content: [{ type: "toolCall", id: call.id, name: WEB_SEARCH_TOOL_NAME, arguments: { query: call.query } }],
+      timestamp: now,
+    });
+    messages.push({
+      role: "toolResult", toolCallId: call.id, toolName: WEB_SEARCH_TOOL_NAME,
+      content: formatWebSearchResult(call.query, outcome, !!parsed._structuredOutput), isError: !!outcome.error, timestamp: now,
+    });
+    if (emitCell) {
+      yield { type: "web_search_call_end", id: call.id, query: call.query, status: outcome.error ? "failed" : "completed" };
     }
+  }
+
+  // Eagerly run the FIRST iteration so a hard provider failure becomes a non-200 jsonError before any
+  // streaming starts (the status contract Codex relies on). Later iterations run live inside the SSE.
+  let first: { calls: WebSearchCall[]; passthrough: AdapterEvent[]; hasRealToolCall: boolean };
+  try {
+    first = await runIteration(false);
+  } catch (e) {
+    if (abortSignal) abortSignal.removeEventListener("abort", linkAbort);
+    if (e instanceof LoopError) return jsonError(e.status, e.message);
+    throw e;
   }
 
   const toolNsMap = new Map<string, { namespace: string; name: string }>();
@@ -243,14 +274,40 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
     if (t.freeform) freeform.add(t.name);
     if (t.toolSearch) toolSearch.add(t.name);
   }
-  // Surface the searches that ran as native web_search_call items, ahead of the final answer, so the
-  // routed model's turn shows "Searched the web" activity in Codex.
-  const searchEvents: AdapterEvent[] = executedSearches.map(s => ({
-    type: "web_search_call", id: s.id, query: s.query,
-  }));
+
+  // Drive the remaining iterations live. Search cells (begin/end) are yielded interleaved with the
+  // real sidecar timing, the final answer's passthrough events come last — matching native ordering
+  // (search cell BEFORE the assistant message). Iteration 2+ failures surface as an in-stream error.
+  async function* produce(): AsyncGenerator<AdapterEvent> {
+    let split = first;
+    for (let i = 0; i < HARD_CAP; i++) {
+      const forceAnswer = searchesExecuted >= maxSearches;
+      // First loop turn reuses the eager result; subsequent turns run a fresh iteration here.
+      if (i > 0) {
+        try {
+          split = await runIteration(forceAnswer);
+        } catch (e) {
+          yield { type: "error", message: e instanceof LoopError ? e.message : (e instanceof Error ? e.message : String(e)) };
+          return;
+        }
+      }
+      // Loop (search + re-ask) ONLY when the model's actionable output is purely web_search. A real
+      // tool call (e.g. shell/apply_patch) means this turn is terminal for Codex — finalize so those
+      // calls reach Codex. forceAnswer also finalizes.
+      const shouldLoop = split.calls.length > 0 && !split.hasRealToolCall && !forceAnswer;
+      if (!shouldLoop) {
+        yield* replay(split.passthrough);
+        return;
+      }
+      for (const call of split.calls) {
+        yield* runSearchCall(call);
+      }
+    }
+  }
+
   const sse = bridgeToResponsesSSE(
-    replay([...searchEvents, ...finalEvents]), parsed.modelId, toolNsMap, freeform, toolSearch,
-    undefined, undefined,
+    produce(), parsed.modelId, toolNsMap, freeform, toolSearch,
+    () => internalAbort.abort("client closed responses stream"), undefined,
     {
       ...(deps.forceEmptyResponseId ? { responseId: "" } : {}),
       hideThinkingSummary: parsed.options.hideThinkingSummary,
