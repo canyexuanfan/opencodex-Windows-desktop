@@ -9,15 +9,13 @@ description: 开发 opencodex —— 环境搭建、目录结构、约定,以及
 git clone https://github.com/lidge-jun/opencodex.git
 cd opencodex
 bun install
-bun run dev          # proxy in dev mode
+bun run dev:proxy    # 开发模式代理 API
+bun run dev:gui      # 仪表盘 dev 服务器 (另一个终端)
 bun x tsc --noEmit   # typecheck (must be clean)
 ```
 
-Web 仪表盘是一个独立的应用:
-
-```bash
-cd gui && bun install && bun dev
-```
+`bun run dev` 作为 `bun run dev:proxy` 的别名保留。仪表盘 dev 服务器是 `bun run dev:gui`;
+`GET /` 的打包仪表盘由 `bun run build:gui`(`gui/dist`)生成。
 
 你正在阅读的文档站点位于 `docs-site/`(Astro + Starlight):
 

@@ -34,17 +34,14 @@ To hack on opencodex itself:
 git clone https://github.com/lidge-jun/opencodex.git
 cd opencodex
 bun install
-bun run dev      # starts the proxy in dev mode (src/cli.ts start)
+bun run dev:proxy   # starts the proxy API in dev mode (src/cli.ts start)
+bun run dev:gui     # starts the dashboard dev server (another terminal)
 ```
 
-`bun run dev` starts the proxy API only (`/healthz`, `/v1/responses`, `/api/*`). It does not
-serve the packaged dashboard at `/`.
-
-The web dashboard lives in `gui/` and runs separately:
-
-```bash
-cd gui && bun install && bun dev
-```
+`bun run dev` remains an alias for `bun run dev:proxy`. The proxy API exposes `/healthz`,
+`/v1/responses`, and `/api/*`; `GET /` serves the packaged dashboard only after `bun run build:gui`
+has produced `gui/dist`. While hacking on the dashboard, run the frontend separately with
+`bun run dev:gui`.
 
 ## What gets created
 

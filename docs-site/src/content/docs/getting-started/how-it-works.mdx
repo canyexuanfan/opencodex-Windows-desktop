@@ -65,7 +65,7 @@ account before the request is forwarded upstream. The rule is intentionally spli
    See [Sidecars](/opencodex/guides/sidecars/).
 
 5. **Passthrough fast path** — if the adapter is a passthrough (`openai-responses` in `forward` mode,
-   or `azure`), the raw request body is piped straight to the provider and the response streamed back
+   or `azure-openai`), the raw request body is piped straight to the provider and the response streamed back
    untouched. No translation happens.
 
 6. **Web-search sidecar (optional)** — if Codex enabled hosted `web_search` but the routed model is
