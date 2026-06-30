@@ -486,6 +486,50 @@ describe("web-search sources -> url_citation annotations", () => {
     }]);
   });
 
+  test("real-world: empty annotations + body Sources block still produce url_citation annotations", async () => {
+    // Mirrors the actual OpenAI hosted web_search wire shape captured in dumps: annotations:[] and a
+    // trailing markdown Sources block in the answer text.
+    globalThis.fetch = ((input) => {
+      const url = String(input);
+      if (url.startsWith("https://routed.test/")) return Promise.resolve(new Response("{}", { status: 200 }));
+      const answer = "Node 24.18.0 is the latest LTS.\n\nSources:\n" +
+        "- Node.js Download page: https://nodejs.org/en/download/current\n" +
+        "- Node.js release archive: https://nodejs.org/en/download/archive/current";
+      const completed = {
+        type: "response.completed",
+        response: { output: [{ type: "message", role: "assistant", content: [{ type: "output_text", annotations: [], text: answer }] }] },
+      };
+      return Promise.resolve(new Response(
+        `event: response.completed\ndata: ${JSON.stringify(completed)}\n\n`,
+        { headers: { "Content-Type": "text/event-stream" } },
+      ));
+    }) as typeof fetch;
+
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "node lts?", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: scriptedAdapter([
+        { type: "tool_call_start", id: "call_s2", name: "web_search" },
+        { type: "tool_call_delta", arguments: JSON.stringify({ query: "node lts" }) },
+        { type: "tool_call_end" },
+      ]),
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+    });
+
+    const frames = await collectSse(response.body!);
+    const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
+    const output = completed.output as Record<string, unknown>[];
+    const message = output.find(item => item.type === "message") as Record<string, unknown>;
+    const part = (message.content as Record<string, unknown>[])[0];
+    expect(part.annotations).toEqual([
+      { type: "url_citation", url: "https://nodejs.org/en/download/current", title: "Node.js Download page", start_index: 0, end_index: 0 },
+      { type: "url_citation", url: "https://nodejs.org/en/download/archive/current", title: "Node.js release archive", start_index: 0, end_index: 0 },
+    ]);
+  });
+
   test("a turn with no search keeps empty annotations", async () => {
     globalThis.fetch = ((input) => {
       const u = String(input);
