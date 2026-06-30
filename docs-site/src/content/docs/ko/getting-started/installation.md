@@ -34,17 +34,14 @@ opencodex 자체를 직접 수정하며 작업하려면:
 git clone https://github.com/lidge-jun/opencodex.git
 cd opencodex
 bun install
-bun run dev      # starts the proxy in dev mode (src/cli.ts start)
+bun run dev:proxy   # 개발 모드로 프록시 API 시작 (src/cli.ts start)
+bun run dev:gui     # 대시보드 dev 서버 시작 (다른 터미널)
 ```
 
-`bun run dev`는 프록시 API(`/healthz`, `/v1/responses`, `/api/*`)만 시작합니다. 패키징된
-대시보드 `/`를 함께 서빙하지 않습니다.
-
-웹 대시보드는 `gui/`에 있으며 별도로 실행됩니다:
-
-```bash
-cd gui && bun install && bun dev
-```
+`bun run dev`는 `bun run dev:proxy`의 별칭으로 남아 있습니다. 프록시 API는 `/healthz`,
+`/v1/responses`, `/api/*`를 노출하며, `GET /`는 `bun run build:gui`가 `gui/dist`를 생성한
+뒤에만 패키징된 대시보드를 서빙합니다. 대시보드를 수정할 때는 `bun run dev:gui`로 프론트엔드를
+별도로 실행하세요.
 
 ## 생성되는 항목
 

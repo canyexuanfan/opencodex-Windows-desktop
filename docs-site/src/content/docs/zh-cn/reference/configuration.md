@@ -56,7 +56,7 @@ token 会用常量时间比较（`timingSafeEqual`）以避免 timing side-chann
 
 | Field | Type | 含义 |
 | --- | --- | --- |
-| `adapter` | `string` | `openai-chat`、`openai-responses`、`anthropic`、`google`、`azure` 之一。 |
+| `adapter` | `string` | `openai-chat`、`openai-responses`、`anthropic`、`google`、`azure-openai` 之一。 |
 | `baseUrl` | `string` | 上游 API 的基础 URL。 |
 | `apiKey?` | `string` | API key,或在请求时解析的 `${ENV_VAR}` / `$ENV_VAR` 引用。 |
 | `defaultModel?` | `string` | 当选中该 provider 但未指定明确模型时使用的模型。 |

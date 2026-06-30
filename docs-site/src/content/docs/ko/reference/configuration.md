@@ -72,7 +72,7 @@ x-opencodex-api-key: your-secret-token
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `adapter` | `string` | `openai-chat`, `openai-responses`, `anthropic`, `google`, `azure` 중 하나. |
+| `adapter` | `string` | `openai-chat`, `openai-responses`, `anthropic`, `google`, `azure-openai` 중 하나. |
 | `baseUrl` | `string` | 업스트림 API 기본 URL. |
 | `apiKey?` | `string` | API 키, 또는 요청 시점에 해석되는 `${ENV_VAR}` / `$ENV_VAR` 참조. |
 | `defaultModel?` | `string` | 명시적인 모델 없이 이 프로바이더가 선택되었을 때 사용하는 모델. |

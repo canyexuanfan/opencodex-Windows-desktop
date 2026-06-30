@@ -15,7 +15,7 @@ ocx gui
 
 ```bash
 ocx start
-cd gui && bun dev
+bun run dev:gui
 ```
 
 ## 你可以做什么

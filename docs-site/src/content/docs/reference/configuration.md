@@ -72,7 +72,7 @@ network. Only do this on trusted networks, and always set a strong `OPENCODEX_AP
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `adapter` | `string` | One of `openai-chat`, `openai-responses`, `anthropic`, `google`, `azure`. |
+| `adapter` | `string` | One of `openai-chat`, `openai-responses`, `anthropic`, `google`, `azure-openai`. |
 | `baseUrl` | `string` | Upstream API base URL. |
 | `apiKey?` | `string` | API key, or an `${ENV_VAR}` / `$ENV_VAR` reference resolved at request time. |
 | `defaultModel?` | `string` | Model used when this provider is selected without an explicit model. |

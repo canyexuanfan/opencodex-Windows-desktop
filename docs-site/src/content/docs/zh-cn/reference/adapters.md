@@ -52,7 +52,7 @@ interface ProviderAdapter {
 - 系统提示词 → `systemInstruction`;消息 → `contents[]`(assistant → `model`);工具 → `functionDeclarations`。Data-URL 图像 → `inline_data`。
 - 无原生推理;tool-call id 是合成的(Gemini 不会返回它们)。
 
-## `azure`
+## `azure-openai`
 
 **目标:** **Azure OpenAI**。封装 `openai-responses`(因此同样是 `passthrough: true`)。
 **认证:** 通过 `api-key` header 进行 `key` 认证(而非 Bearer)。
