@@ -223,6 +223,11 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       let currentToolCallId = "";
       let currentToolCallName = "";
       let pendingUsage: OcxUsage | undefined;
+      // Track terminal signals so a socket EOF without any terminator can fail closed instead of
+      // being reported as a clean completion (silent truncation). A graceful close is either an
+      // explicit `[DONE]` sentinel OR a chunk carrying a non-null `finish_reason` (some
+      // OpenAI-compatible providers omit `[DONE]` but do send finish_reason).
+      let sawFinish = false;
 
       try {
         while (true) {
@@ -272,6 +277,11 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
 
             const choices = chunk.choices as { delta?: Record<string, unknown>; finish_reason?: string }[] | undefined;
             if (!choices || choices.length === 0) continue;
+            // Observe the terminator BEFORE the delta guard: a finish-only chunk (finish_reason set,
+            // no delta) is a graceful close and must mark sawFinish even though we skip it below.
+            if (typeof choices[0].finish_reason === "string" && choices[0].finish_reason) {
+              sawFinish = true;
+            }
             const delta = choices[0].delta;
             if (!delta) continue;
 
@@ -308,7 +318,15 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         if (currentToolCallId) {
           yield { type: "tool_call_end" };
         }
-        // EOF without a [DONE] sentinel: still surface any usage accumulated mid-stream.
+        // Reader EOF. A graceful close shows at least one terminal signal: `[DONE]` (returns above),
+        // a non-null finish_reason (sawFinish), or a trailing usage chunk (providers emit usage only
+        // at end-of-generation). If NONE of those were seen, the stream was cut mid-flight — fail
+        // closed so the bridge emits a classified response.failed rather than a silent truncation.
+        if (!sawFinish && pendingUsage === undefined) {
+          yield { type: "error", message: "upstream stream ended without a terminal signal ([DONE] or finish_reason) — possible truncation" };
+          return;
+        }
+        // Graceful close that omitted [DONE] but delivered finish_reason and/or final usage.
         yield { type: "done", usage: pendingUsage };
       } finally {
         reader.releaseLock();
