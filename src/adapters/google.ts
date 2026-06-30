@@ -242,12 +242,22 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
             sanitizeAntigravityClaudeSignatures(contents);
           }
         }
-        // The CCA client serializes `session_id` (snake_case); send both spellings so the
-        // deterministic session id is honored regardless of which the backend accepts.
-        const request: Record<string, unknown> = { ...body, sessionId, session_id: sessionId };
+        // The real Antigravity client puts the session id ONLY at `request.sessionId` (camelCase,
+        // nested) — matching CLIProxyAPI `generateStableSessionID`. An extra top-level/snake_case
+        // spelling is a non-first-party key, so we send the single canonical location.
+        const request: Record<string, unknown> = { ...body, sessionId };
+        // Claude-on-Antigravity forces VALIDATED function calling (the real client always sets it).
+        if (/claude/i.test(parsed.modelId)) {
+          const existing = (request.toolConfig ?? {}) as Record<string, unknown>;
+          const fcc = (existing.functionCallingConfig ?? {}) as Record<string, unknown>;
+          request.toolConfig = { ...existing, functionCallingConfig: { ...fcc, mode: "VALIDATED" } };
+        }
         const envelope = {
           model: parsed.modelId,
-          userAgent: ANTIGRAVITY_REQUEST_UA,
+          // The envelope's `userAgent` field is a protocol constant ("antigravity"), distinct from
+          // the HTTP `User-Agent` header (the real CLI UA). CLIProxyAPI `geminiToAntigravity` hardcodes
+          // the body field; only the header carries the versioned client string.
+          userAgent: "antigravity",
           requestType: "agent",
           project,
           requestId: `agent-${crypto.randomUUID()}`,
