@@ -262,6 +262,57 @@ async function fetchPoolAccountQuota(accountId: string, forceRefresh = false, co
   }
 }
 
+let primeInFlight: Promise<void> | null = null;
+
+/**
+ * Best-effort prime of pool-account (and main) quota so the rotation engine has
+ * real usage scores instead of leaving every account at the unknown sentinel.
+ *
+ * Quota is otherwise populated only from live upstream headers (an idle pool
+ * account never serves traffic, so it never gets scored) or from the dashboard
+ * WHAM fetch (a CLI-only user never opens it). Without priming, every account
+ * stays unknown and auto-switch cannot move (see Phase 10). This runs at startup
+ * and lazily before routing when the active account is unknown.
+ *
+ * Single-flight: concurrent callers share one pass instead of stampeding N WHAM
+ * fetches. Per-fetch 8s timeouts and the 5-minute POOL_CACHE_TTL already bound
+ * cost, so the worst case is one WHAM call per account per TTL window. Failures
+ * are swallowed: a blocked WSL network must never crash startup or a request.
+ */
+export async function primeCodexPoolQuotas(config: OcxConfig, reason: string): Promise<void> {
+  if (primeInFlight) return primeInFlight;
+  primeInFlight = (async () => {
+    const runtimeConfig = getRuntimeConfig(config);
+    const pool = (runtimeConfig.codexAccounts ?? []).filter(a => !a.isMain);
+    const stale = pool.filter(a => {
+      const q = getAccountQuota(a.id);
+      return !q || Date.now() - q.updatedAt >= POOL_CACHE_TTL;
+    });
+    const primeMain = !!readCodexTokens() && !getAccountQuota(MAIN_CODEX_ACCOUNT_ID);
+    try {
+      await Promise.allSettled([
+        primeMain ? fetchMainAccountInfo(false) : Promise.resolve(),
+        mapWithConcurrency(stale, POOL_QUOTA_REFRESH_CONCURRENCY, async a => {
+          if (!getCodexAccountCredential(a.id)) return;
+          await fetchPoolAccountQuota(a.id, false, a.plan);
+        }),
+      ]);
+    } catch {
+      // Priming is best-effort; never propagate.
+    }
+    if (process.env.OPENCODEX_DEBUG_QUOTA === "1") {
+      console.warn(`[codex-quota] prime done (reason=${reason}, pool=${pool.length}, refreshed=${stale.length})`);
+    }
+  })().finally(() => { primeInFlight = null; });
+  return primeInFlight;
+}
+
+/** Test-only: drop any in-flight prime pass so a leaked single-flight promise
+ * from another suite cannot coalesce into the next prime. */
+export function clearCodexQuotaPrimeState(): void {
+  primeInFlight = null;
+}
+
 export async function handleCodexAuthAPI(
   req: Request,
   url: URL,
