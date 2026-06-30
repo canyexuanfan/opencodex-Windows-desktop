@@ -22,7 +22,7 @@ export function applyClaudeToolPrefix(name: string): string {
   return CLAUDE_TOOL_PREFIX + name;
 }
 
-/** Strip the proxy_ prefix from a returned tool_use name so the caller (Codex) sees the original. */
+/** Strip the custom_ prefix from a returned tool_use name so the caller (Codex) sees the original. */
 export function stripClaudeToolPrefix(name: string): string {
   return name.startsWith(CLAUDE_TOOL_PREFIX) ? name.slice(CLAUDE_TOOL_PREFIX.length) : name;
 }
