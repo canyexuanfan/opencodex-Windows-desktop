@@ -2310,5 +2310,13 @@ export function startServer(port?: number) {
   console.log(`   GET  /api/*        → management API`);
   console.log(`   GET  /             → GUI dashboard`);
 
+  // Prime pool-account quota in the background so the rotation engine has real
+  // usage scores from the first routing decision, even when the dashboard is
+  // never opened (the common CLI/WSL case). Fire-and-forget: never blocks the
+  // listener, and a blocked network silently no-ops (see Phase 30 diagnostics).
+  import("./codex-auth-api")
+    .then(({ primeCodexPoolQuotas }) => primeCodexPoolQuotas(config, "startup"))
+    .catch(() => {});
+
   return server;
 }

@@ -82,7 +82,7 @@ describe("codex auth account collision", () => {
     }
   });
 
-  test("rejects a pool account matching the main Codex login account id", async () => {
+  test("allows pool registration matching the main Codex login account id", async () => {
     writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
       tokens: {
         access_token: "not-a-jwt",
@@ -97,9 +97,6 @@ describe("codex auth account collision", () => {
     } as OcxConfig);
 
     const result = checkAccountIdCollision("main-chatgpt-account", "main@example.test", "business");
-    expect(result.collision).toBe(true);
-    if (result.collision) {
-      expect(result.reason).toContain("main Codex login");
-    }
+    expect(result).toEqual({ collision: false });
   });
 });
