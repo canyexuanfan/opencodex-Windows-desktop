@@ -26,7 +26,7 @@ describe("antigravity CCA envelope", () => {
     const env = JSON.parse(req.body);
     expect(req.url).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent");
     expect(env.model).toBe("gemini-3-pro");
-    expect(env.userAgent).toBe("antigravity");
+    expect(env.userAgent).toMatch(/^antigravity\/cli\/[\d.]+ \(aidev_client; os_type=\w+; arch=\w+\)$/);
     expect(env.requestType).toBe("agent");
     expect(env.project).toBe("proj-123");
     expect(env.requestId).toMatch(/^agent-/);
@@ -35,7 +35,10 @@ describe("antigravity CCA envelope", () => {
     expect(env.request.model).toBeUndefined();
     expect(env.request.safetySettings).toBeUndefined();
     expect(req.headers["Authorization"]).toBe("Bearer ya29.token");
-    expect(req.headers["User-Agent"]).toBe("antigravity");
+    expect(req.headers["User-Agent"]).toMatch(/^antigravity\/cli\/[\d.]+ \(aidev_client; os_type=\w+; arch=\w+\)$/);
+    // The literal "antigravity" giveaway UA must no longer be sent.
+    expect(req.headers["User-Agent"]).not.toBe("antigravity");
+    expect(req.headers["x-goog-api-client"]).toBe("google-api-nodejs-client/10.3.0");
   });
 
   test("stream uses :streamGenerateContent?alt=sse", async () => {
