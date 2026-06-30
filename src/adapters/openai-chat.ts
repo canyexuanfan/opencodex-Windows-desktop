@@ -318,6 +318,28 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         if (currentToolCallId) {
           yield { type: "tool_call_end" };
         }
+        // Some providers send the terminal `data:` frame (carrying finish_reason and/or usage)
+        // WITHOUT a trailing newline before closing the socket, so it never crosses the
+        // split("\n") boundary and stays in `buffer`. Parse that residual frame here before the
+        // terminal-signal check, otherwise a genuinely complete stream is falsely failed below.
+        const tail = buffer.trim();
+        if (tail.startsWith("data: ")) {
+          const payload = tail.slice(6).trim();
+          if (payload === "[DONE]") {
+            yield { type: "done", usage: pendingUsage };
+            return;
+          }
+          try {
+            const chunk = JSON.parse(payload) as Record<string, unknown>;
+            if (chunk.usage) pendingUsage = usageFromOpenAIChat(chunk.usage as Record<string, unknown>);
+            const choices = chunk.choices as { finish_reason?: string }[] | undefined;
+            if (choices && choices.length > 0 && typeof choices[0].finish_reason === "string" && choices[0].finish_reason) {
+              sawFinish = true;
+            }
+          } catch {
+            debugDroppedFrame("openai-chat", payload);
+          }
+        }
         // Reader EOF. A graceful close shows at least one terminal signal: `[DONE]` (returns above),
         // a non-null finish_reason (sawFinish), or a trailing usage chunk (providers emit usage only
         // at end-of-generation). If NONE of those were seen, the stream was cut mid-flight — fail

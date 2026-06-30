@@ -56,4 +56,30 @@ describe("openai-chat stream EOF fail-closed", () => {
     expect(events.at(-1)?.type).toBe("done");
     expect(events.some(e => e.type === "error")).toBe(false);
   });
+
+  test("final finish_reason frame WITHOUT a trailing newline is accepted as done (not falsely failed)", async () => {
+    // No trailing "\n" — the terminal frame stays in the buffer and is only seen at EOF.
+    const response = new Response('data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}');
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.at(-1)?.type).toBe("done");
+    expect(events.some(e => e.type === "error")).toBe(false);
+  });
+
+  test("final usage-only frame without a trailing newline is accepted as done", async () => {
+    const response = new Response(
+      'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' +
+        'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}',
+    );
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.at(-1)?.type).toBe("done");
+    expect(events.some(e => e.type === "error")).toBe(false);
+  });
+
+  test("genuinely truncated stream WITHOUT a trailing newline still fails closed", async () => {
+    // Mid-content frame, no terminator, no newline — must remain a terminal error.
+    const response = new Response('data: {"choices":[{"delta":{"content":"par"}}]}');
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.at(-1)?.type).toBe("error");
+    expect(events.some(e => e.type === "done")).toBe(false);
+  });
 });
