@@ -16,6 +16,7 @@ import type {
 import { isAllowedToolChoice, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
 import { ANTHROPIC_OAUTH_BETA, CLAUDE_CODE_SYSTEM_INSTRUCTION, applyClaudeToolPrefix, stripClaudeToolPrefix } from "../oauth/anthropic";
 import { parseDataUrl } from "./image";
+import { neutralizeIdentity } from "./identity";
 
 /** Map a user content part to an Anthropic content block (text or image source). */
 function toAnthropicContentPart(p: OcxContentPart): unknown {
@@ -115,10 +116,9 @@ function messagesToAnthropicFormat(
   parsed: OcxParsedRequest,
   toolNames: { toWire: (name: string) => string },
 ): { system: string | undefined; messages: unknown[] } {
-  const system = parsed.context.systemPrompt?.join("\n\n").replace(
-    "You are Codex, a coding agent based on GPT-5.",
-    `You are a coding agent (underlying model: ${parsed.modelId}) running via the opencodex proxy. Do not claim to be GPT-5 or to be made by OpenAI.`,
-  ) || undefined;
+  const system = parsed.context.systemPrompt?.length
+    ? neutralizeIdentity(parsed.context.systemPrompt.join("\n\n")) || undefined
+    : undefined;
   const messages: unknown[] = [];
 
   for (let i = 0; i < parsed.context.messages.length; i++) {

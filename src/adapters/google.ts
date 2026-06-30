@@ -18,6 +18,7 @@ import { fetchAntigravityWithRetry, fetchVertexWithRetry } from "./google-http";
 import { isVertexTruncationReason, vertexTruncationErrorMessage } from "./google-truncation";
 import { ANTIGRAVITY_REQUEST_UA, antigravitySessionId, isLikelyRealThoughtSignature, sanitizeAntigravityClaudeSignatures } from "./google-antigravity-wire";
 import { sanitizeGeminiToolParameters } from "./google-tool-schema";
+import { neutralizeIdentity } from "./identity";
 import { antigravityUsesReplayCache, applyAntigravityReplay, clearAntigravityReplay, observeAntigravityReplay } from "./google-antigravity-replay";
 
 // Google-family models (Gemini/Vertex/Antigravity) tend to emit long running commentary between
@@ -83,7 +84,9 @@ function toolResultImageParts(content: string | OcxContentPart[]): unknown[] {
 }
 
 function messagesToGeminiFormat(parsed: OcxParsedRequest): { systemInstruction?: unknown; contents: unknown[] } {
-  const systemText = [...(parsed.context.systemPrompt ?? []), GOOGLE_BREVITY_INSTRUCTION].join("\n\n");
+  // Neutralize Codex's GPT-5 identity line (Gemini/Antigravity share this path) so a routed model
+  // never misreports as GPT-5/OpenAI, and never leaks the proxy identity upstream.
+  const systemText = neutralizeIdentity([...(parsed.context.systemPrompt ?? []), GOOGLE_BREVITY_INSTRUCTION].join("\n\n"));
   const systemInstruction = { parts: [{ text: systemText }] };
 
   const contents: unknown[] = [];
