@@ -283,4 +283,35 @@ describe("Responses bridge web_search_call native item", () => {
     expect(action).toEqual({ type: "search", queries: ["rust async", "tokio runtime"] });
     expect(action.query).toBeUndefined();
   });
+
+  test("streaming: web_search_call_end sources attach as url_citation annotations on the next message", async () => {
+    const frames = await collectSse(bridgeToResponsesSSE(replay([
+      { type: "web_search_call_begin", id: "ws_4" },
+      { type: "web_search_call_end", id: "ws_4", queries: ["node lts"], sources: [{ url: "https://nodejs.org", title: "Node.js" }] },
+      { type: "text_delta", text: "Node 24 LTS" },
+      { type: "done" },
+    ]), "routed/model"));
+    const done = frames.find(f => f.event === "response.output_item.done"
+      && (f.data.item as Record<string, unknown>)?.type === "message");
+    const item = done!.data.item as Record<string, unknown>;
+    const part = (item.content as Record<string, unknown>[])[0];
+    expect(part.annotations).toEqual([{
+      type: "url_citation", url: "https://nodejs.org", title: "Node.js", start_index: 0, end_index: 0,
+    }]);
+  });
+
+  test("non-streaming: web_search_call_end sources attach as url_citation annotations", () => {
+    const json = buildResponseJSON([
+      { type: "web_search_call_begin", id: "ws_5" },
+      { type: "web_search_call_end", id: "ws_5", queries: ["node lts"], sources: [{ url: "https://nodejs.org", title: "Node.js" }] },
+      { type: "text_delta", text: "Node 24 LTS" },
+      { type: "done" },
+    ], "routed/model");
+    const output = json.output as Record<string, unknown>[];
+    const message = output.find(item => item.type === "message") as Record<string, unknown>;
+    const part = (message.content as Record<string, unknown>[])[0];
+    expect(part.annotations).toEqual([{
+      type: "url_citation", url: "https://nodejs.org", title: "Node.js", start_index: 0, end_index: 0,
+    }]);
+  });
 });

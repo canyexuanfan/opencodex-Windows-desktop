@@ -189,9 +189,19 @@ export type AdapterEvent =
   // output_item.added(in_progress) and end → the matching output_item.done(completed|failed) under
   // the SAME output index, so the activity animates instead of flashing completed instantly.
   | { type: "web_search_call_begin"; id: string }
-  | { type: "web_search_call_end"; id: string; queries: string[]; status?: "completed" | "failed" }
+  | { type: "web_search_call_end"; id: string; queries: string[]; status?: "completed" | "failed"; sources?: OcxUrlCitation[] }
   | { type: "done"; usage?: OcxUsage }
   | { type: "error"; message: string };
+
+/**
+ * A web source backing a search answer. Surfaced on the search-end event and rendered by the bridge
+ * as a `url_citation` annotation on the following assistant message (the desktop app's Sources chip
+ * reads these; the TUI ignores annotations, so this is additive).
+ */
+export interface OcxUrlCitation {
+  url: string;
+  title?: string;
+}
 
 export interface OcxUsage {
   inputTokens: number;

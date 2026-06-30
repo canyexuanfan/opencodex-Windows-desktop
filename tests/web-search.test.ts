@@ -434,3 +434,78 @@ describe("web-search batched queries", () => {
     expect(sidecarQueries.some(q => q.includes("tokio runtime"))).toBe(true);
   });
 });
+
+describe("web-search sources -> url_citation annotations", () => {
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  test("a search's sources land as url_citation annotations on the assistant message", async () => {
+    // Sidecar returns answer text plus a url_citation annotation in the completed output[].
+    globalThis.fetch = ((input) => {
+      const url = String(input);
+      if (url.startsWith("https://routed.test/")) return Promise.resolve(new Response("{}", { status: 200 }));
+      const completed = {
+        type: "response.completed",
+        response: {
+          output: [{
+            type: "message", role: "assistant",
+            content: [{
+              type: "output_text", text: "Node 24 is LTS.",
+              annotations: [{ type: "url_citation", url: "https://nodejs.org/en/about/previous-releases", title: "Node.js Releases" }],
+            }],
+          }],
+        },
+      };
+      return Promise.resolve(new Response(
+        'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Node 24 is LTS."}\n\n' +
+          `event: response.completed\ndata: ${JSON.stringify(completed)}\n\n`,
+        { headers: { "Content-Type": "text/event-stream" } },
+      ));
+    }) as typeof fetch;
+
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "node lts?", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: scriptedAdapter([
+        { type: "tool_call_start", id: "call_s", name: "web_search" },
+        { type: "tool_call_delta", arguments: JSON.stringify({ query: "node lts" }) },
+        { type: "tool_call_end" },
+      ]),
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+    });
+
+    const frames = await collectSse(response.body!);
+    const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
+    const output = completed.output as Record<string, unknown>[];
+    const message = output.find(item => item.type === "message") as Record<string, unknown>;
+    const part = (message.content as Record<string, unknown>[])[0];
+    expect(part.annotations).toEqual([{
+      type: "url_citation", url: "https://nodejs.org/en/about/previous-releases", title: "Node.js Releases", start_index: 0, end_index: 0,
+    }]);
+  });
+
+  test("a turn with no search keeps empty annotations", async () => {
+    globalThis.fetch = ((input) => {
+      const u = String(input);
+      if (u.startsWith("https://routed.test/")) return Promise.resolve(new Response("{}", { status: 200 }));
+      return Promise.resolve(new Response('event: response.completed\ndata: {"type":"response.completed"}\n\n', { headers: { "Content-Type": "text/event-stream" } }));
+    }) as typeof fetch;
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: scriptedAdapter([{ type: "text_delta", text: "no search needed" }, { type: "done" }]),
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+    });
+    const frames = await collectSse(response.body!);
+    const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
+    const output = completed.output as Record<string, unknown>[];
+    const message = output.find(item => item.type === "message") as Record<string, unknown>;
+    const part = (message.content as Record<string, unknown>[])[0];
+    expect(part.annotations).toEqual([]);
+  });
+});

@@ -164,9 +164,23 @@ export function bridgeToResponsesSSE(
       // Open native web-search cell (between begin and end). Holds the output index allocated on
       // begin so the matching done reuses it; closed as `failed` if the stream terminates early.
       let currentWebSearch: { itemId: string; outputIndex: number } | null = null;
+      // Sources from completed web searches, awaiting the next assistant message. Attached as
+      // url_citation annotations on that message (the desktop app's Sources chip), then cleared so
+      // they bind to exactly one message. Deduped by URL across multiple searches in the turn.
+      let pendingWebSources: { url: string; title?: string }[] = [];
+      const takeWebAnnotations = (): { type: string; url: string; title?: string; start_index: number; end_index: number }[] => {
+        if (pendingWebSources.length === 0) return [];
+        const anns = pendingWebSources.map(s => ({
+          type: "url_citation", url: s.url, ...(s.title ? { title: s.title } : {}), start_index: 0, end_index: 0,
+        }));
+        pendingWebSources = [];
+        return anns;
+      };
 
       const closeCurrentMessage = () => {
         if (!currentMsg) return;
+        // Bind any pending web-search citations to this assistant message (then they clear).
+        const annotations = takeWebAnnotations();
         // Finalize the text part (Responses protocol). Without these .done events Codex never
         // commits the content part and renders the message as truncated / cut off.
         emit("response.output_text.done", {
@@ -174,11 +188,11 @@ export function bridgeToResponsesSSE(
         });
         emit("response.content_part.done", {
           item_id: currentMsg.itemId, output_index: currentMsg.outputIndex, content_index: 0,
-          part: { type: "output_text", text: currentMsg.text, annotations: [] },
+          part: { type: "output_text", text: currentMsg.text, annotations },
         });
         const item = {
           type: "message", id: currentMsg.itemId, status: "completed", role: "assistant",
-          content: [{ type: "output_text", text: currentMsg.text, annotations: [] }],
+          content: [{ type: "output_text", text: currentMsg.text, annotations }],
         };
         emit("response.output_item.done", { output_index: currentMsg.outputIndex, item });
         finishedItems.push(item as OutputItem);
@@ -406,6 +420,13 @@ export function bridgeToResponsesSSE(
                 currentWebSearch = { itemId: event.id, outputIndex };
               }
               closeCurrentWebSearch(event.status ?? "completed", event.queries);
+              // Queue this search's sources for the next assistant message (dedup by URL).
+              if (event.sources) {
+                const seen = new Set(pendingWebSources.map(s => s.url));
+                for (const s of event.sources) {
+                  if (!seen.has(s.url)) { seen.add(s.url); pendingWebSources.push(s); }
+                }
+              }
               break;
             }
             case "done": {
@@ -512,6 +533,8 @@ export function buildResponseJSON(
   let currentToolCallId = "";
   let currentToolCallName = "";
   let currentToolCallArgs = "";
+  // Web-search citations awaiting the next assistant message (attached as url_citation annotations).
+  let pendingWebSources: { url: string; title?: string }[] = [];
 
   const freeformInput = (args: string): string => {
     try { const o = JSON.parse(args); if (o && typeof o.input === "string") return o.input; } catch { /* raw */ }
@@ -523,9 +546,13 @@ export function buildResponseJSON(
 
   const flushText = () => {
     if (!currentText) return;
+    const annotations = pendingWebSources.map(s => ({
+      type: "url_citation", url: s.url, ...(s.title ? { title: s.title } : {}), start_index: 0, end_index: 0,
+    }));
+    pendingWebSources = [];
     output.push({
       type: "message", id: `msg_${uuid()}`, role: "assistant", status: "completed",
-      content: [{ type: "output_text", text: currentText, annotations: [] }],
+      content: [{ type: "output_text", text: currentText, annotations }],
     });
     currentText = "";
   };
@@ -625,6 +652,12 @@ export function buildResponseJSON(
           type: "web_search_call", id: e.id, status: e.status ?? "completed",
           action: webSearchAction(e.queries),
         });
+        if (e.sources) {
+          const seen = new Set(pendingWebSources.map(s => s.url));
+          for (const s of e.sources) {
+            if (!seen.has(s.url)) { seen.add(s.url); pendingWebSources.push(s); }
+          }
+        }
         break;
       case "error":
         errorMessage = e.message;

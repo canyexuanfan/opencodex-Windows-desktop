@@ -289,10 +289,22 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
       // The cell is "completed" if any query produced a usable result, else "failed". `queries`
       // carries every attempted query so Codex renders the native plural label.
       const anySuccess = results.some(r => !r.outcome.error);
+      // Collect the citations backing this batch (dedup by URL), so the bridge can attach them as
+      // url_citation annotations on the following assistant message → the app's Sources chip.
+      const sources: { url: string; title?: string }[] = [];
+      const seenSrc = new Set<string>();
+      for (const r of results) {
+        for (const s of r.outcome.sources) {
+          if (seenSrc.has(s.url)) continue;
+          seenSrc.add(s.url);
+          sources.push(s.title ? { url: s.url, title: s.title } : { url: s.url });
+        }
+      }
       yield {
         type: "web_search_call_end", id: call.id,
         queries: call.queries,
         status: anySuccess ? "completed" : "failed",
+        ...(sources.length > 0 ? { sources } : {}),
       };
     }
   }
