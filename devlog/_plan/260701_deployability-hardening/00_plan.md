@@ -71,3 +71,36 @@ Baseline was 975; +2 from the new fingerprint assertions. Worktree removed after
 
 - gpt-5.5 xhigh final deployability review of 717d2ff vs origin/main.
 - Merge dev -> main/preview + publish 2.6.14 ONLY after explicit user confirmation.
+
+## WP2 (post-review hardening + user-authored changes folded in)
+
+After the WP1 gpt-5.5 review (SHIP-WITH-NITS), the user confirmed the previously
+deferred working-tree changes are THEIR work and must ship in this release. WP2
+folds them in and clears the one MEDIUM from the WP1 review.
+
+Candidate SHA: `f34f742`.
+
+1. openai-chat EOF MEDIUM fixed: a final `finish_reason`/usage frame delivered
+   WITHOUT a trailing newline stayed in `buffer` and was never parsed at reader
+   EOF, so a complete stream was falsely failed. Added a trailing-buffer flush
+   before the terminal-signal check; a genuinely truncated mid-content frame
+   still fails closed. +3 paired tests (red-green verified).
+2. openai-responses: `stripUnsupportedHostedTools` removes hosted tools a native
+   slug rejects (codex-spark vs `image_generation`) before OAuth passthrough.
+   +2 paired tests. (user-authored)
+3. client-fingerprint: added X-Stainless Arch/OS/Package-Version/Runtime-Version.
+4. google: antigravity UA assembly moved; runtime `x-goog-api-client` dropped
+   (now onboarding-only) + test updated. Fixed a stray 7-space indent.
+5. oauth: anthropic tool prefix `proxy_`->`custom_`; antigravity onboarding UA +
+   `x-goog-api-client`; kimi CLI `0.14.0` + `kimi_code_cli` platform.
+6. kiro: fingerprint salt + `KIRO_IDE_VERSION` alignment.
+
+### Verification (clean worktree at f34f742)
+
+    bun test ./tests/       # 982 pass / 0 fail / 5134 expect, 93 files (2 stable runs)
+    bun x tsc --noEmit      # exit 0
+    bun run privacy:scan    # passed
+    bun run prepublishOnly  # GUI build + package prep, exit 0
+    npm pack --dry-run      # bitkyc08-opencodex-2.6.14.tgz, 131 files, valid
+
+Final gate: gpt-5.5 review of f34f742, then merge dev->main/preview + publish 2.6.14.
