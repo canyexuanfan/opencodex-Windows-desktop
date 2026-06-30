@@ -68,7 +68,7 @@ streams the response back **untranslated**.
   `functionDeclarations`. Data-URL images → `inline_data`.
 - No native reasoning; tool-call ids are synthesized (Gemini doesn't return them).
 
-## `azure`
+## `azure-openai`
 
 **Targets:** **Azure OpenAI**. Wraps `openai-responses` (so also `passthrough: true`).
 **Auth:** `key` via the `api-key` header (not Bearer).

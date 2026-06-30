@@ -9,15 +9,13 @@ description: Develop opencodex — setup, layout, conventions, and how to add a 
 git clone https://github.com/lidge-jun/opencodex.git
 cd opencodex
 bun install
-bun run dev          # proxy in dev mode
+bun run dev:proxy    # proxy API in dev mode
+bun run dev:gui      # dashboard dev server (another terminal)
 bun x tsc --noEmit   # typecheck (must be clean)
 ```
 
-The web dashboard is a separate app:
-
-```bash
-cd gui && bun install && bun dev
-```
+`bun run dev` remains an alias for `bun run dev:proxy`. The dashboard dev server is `bun run dev:gui`;
+the packaged dashboard at `GET /` is produced by `bun run build:gui` (`gui/dist`).
 
 The docs site you're reading lives in `docs-site/` (Astro + Starlight):
 

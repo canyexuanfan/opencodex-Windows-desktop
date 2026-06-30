@@ -34,17 +34,13 @@ ocx --help
 git clone https://github.com/lidge-jun/opencodex.git
 cd opencodex
 bun install
-bun run dev      # starts the proxy in dev mode (src/cli.ts start)
+bun run dev:proxy   # 以开发模式启动代理 API (src/cli.ts start)
+bun run dev:gui     # 启动仪表盘 dev 服务器 (另一个终端)
 ```
 
-`bun run dev` 只启动代理 API（`/healthz`、`/v1/responses`、`/api/*`）。它不会同时在 `/`
-提供打包后的仪表盘。
-
-Web 仪表盘位于 `gui/`,单独运行:
-
-```bash
-cd gui && bun install && bun dev
-```
+`bun run dev` 作为 `bun run dev:proxy` 的别名保留。代理 API 暴露 `/healthz`、`/v1/responses`、
+`/api/*`;只有在 `bun run build:gui` 生成 `gui/dist` 之后,`GET /` 才会提供打包后的仪表盘。
+开发仪表盘时,请用 `bun run dev:gui` 单独运行前端。
 
 ## 会创建哪些内容
 

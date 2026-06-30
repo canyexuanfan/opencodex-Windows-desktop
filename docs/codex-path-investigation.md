@@ -2,6 +2,12 @@
 
 Date: 2026-06-19
 
+> **Archive note.** This is a dated investigation record, not current behavior
+> documentation. Some details (e.g. the referenced Codex version) reflect the state
+> at the time of writing. For current behavior see
+> [lidge-jun.github.io/opencodex](https://lidge-jun.github.io/opencodex/) and the
+> maintainer source-of-truth under [`structure/`](../structure).
+
 This note records the web/source investigation behind opencodex's Codex path
 handling. The short version is that modern Codex resolves almost all durable
 local state through `CODEX_HOME`, not a platform-specific opencodex guess. If
@@ -320,7 +326,7 @@ model_provider = "opencodex"
 model_catalog_json = "/absolute/path/to/opencodex-catalog.json"
 
 [model_providers.opencodex]
-name = "opencodex"
+name = "OpenCodex Proxy"
 base_url = "http://127.0.0.1:10100/v1"
 wire_api = "responses"
 requires_openai_auth = true

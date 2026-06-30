@@ -69,7 +69,7 @@ interface ProviderAdapter {
   `functionDeclarations`. data-URL 이미지 → `inline_data`.
 - 네이티브 reasoning 없음. tool-call id는 합성됩니다(Gemini는 이를 반환하지 않음).
 
-## `azure`
+## `azure-openai`
 
 **대상:** **Azure OpenAI**. `openai-responses`를 감쌉니다(따라서 마찬가지로 `passthrough: true`).
 **인증:** `api-key` 헤더를 통한 `key`(Bearer 아님).

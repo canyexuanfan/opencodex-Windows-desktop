@@ -18,7 +18,7 @@ development you can run the GUI dev server separately against a running proxy:
 
 ```bash
 ocx start
-cd gui && bun dev
+bun run dev:gui
 ```
 
 ## What you can do

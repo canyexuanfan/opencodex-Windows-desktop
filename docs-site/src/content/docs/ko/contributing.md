@@ -9,15 +9,13 @@ description: opencodex 개발하기 — 설정, 구조, 컨벤션, 그리고 프
 git clone https://github.com/lidge-jun/opencodex.git
 cd opencodex
 bun install
-bun run dev          # proxy in dev mode
+bun run dev:proxy    # 개발 모드 프록시 API
+bun run dev:gui      # 대시보드 dev 서버 (다른 터미널)
 bun x tsc --noEmit   # typecheck (must be clean)
 ```
 
-웹 대시보드는 별도의 앱입니다:
-
-```bash
-cd gui && bun install && bun dev
-```
+`bun run dev`는 `bun run dev:proxy`의 별칭으로 남아 있습니다. 대시보드 dev 서버는 `bun run dev:gui`이며,
+`GET /`의 패키징된 대시보드는 `bun run build:gui`(`gui/dist`)로 생성됩니다.
 
 지금 읽고 있는 문서 사이트는 `docs-site/`에 있습니다(Astro + Starlight):
 
