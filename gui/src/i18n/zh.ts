@@ -8,7 +8,6 @@ export const zh: Record<TKey, string> = {
   "nav.subagents": "子代理",
   "nav.logs": "日志",
   "nav.usage": "用量",
-  "nav.cyberpunk": "赛博朋克",
   "common.github": "GitHub",
   "common.save": "保存",
   "common.cancel": "取消",

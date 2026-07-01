@@ -8,7 +8,6 @@ export const ko: Record<TKey, string> = {
   "nav.subagents": "서브에이전트",
   "nav.logs": "로그",
   "nav.usage": "사용량",
-  "nav.cyberpunk": "사이버펑크",
   "common.github": "GitHub",
   "common.save": "저장",
   "common.cancel": "취소",
