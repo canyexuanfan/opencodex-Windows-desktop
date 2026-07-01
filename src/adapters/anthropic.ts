@@ -47,6 +47,12 @@ function withPromptCache<T extends Record<string, unknown>>(block: T): T & { cac
   return { ...block, cache_control: EPHEMERAL_CACHE_CONTROL };
 }
 
+function isLikelyRealAnthropicThinkingSignature(signature: string | undefined): signature is string {
+  if (typeof signature !== "string" || signature.length < 16) return false;
+  if (/^(fc|call|msg|rs|resp|reasoning|item|ws|tool|func|function)[-_]/i.test(signature)) return false;
+  return /^[A-Za-z0-9+/_=-]+$/.test(signature);
+}
+
 function usesNativeAnthropicEndpoint(provider: OcxProviderConfig): boolean {
   try {
     return new URL(provider.baseUrl).hostname === "api.anthropic.com";
@@ -159,7 +165,9 @@ function messagesToAnthropicFormat(
             content.push({ type: "text", text: (part as OcxTextContent).text });
           } else if (part.type === "thinking") {
             const t = part as OcxThinkingContent;
-            content.push({ type: "thinking", thinking: t.thinking, ...(t.signature ? { signature: t.signature } : {}) });
+            if (isLikelyRealAnthropicThinkingSignature(t.signature)) {
+              content.push({ type: "thinking", thinking: t.thinking, signature: t.signature });
+            }
           } else if (part.type === "toolCall") {
             const tc = part as OcxToolCall;
             const flatName = namespacedToolName(tc.namespace, tc.name);
@@ -167,6 +175,7 @@ function messagesToAnthropicFormat(
             content.push({ type: "tool_use", id: tc.id, name: toolNames.toWire(flatName), input: tc.arguments });
           }
         }
+        if (content.length === 0) break;
         messages.push({ role: "assistant", content });
         if (toolUseIds.length > 0) {
           const requiredIds = new Set(toolUseIds);
