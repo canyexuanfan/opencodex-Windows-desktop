@@ -1589,6 +1589,7 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
         generatedAt: now,
         summary: {
           requests: 0,
+          measuredRequests: 0,
           reportedRequests: 0,
           unreportedRequests: 0,
           unsupportedRequests: 0,

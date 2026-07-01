@@ -117,6 +117,7 @@ describe("GET /api/usage", () => {
       const body = await res.json();
       expect(body.range).toBe("30d");
       expect(body.summary.requests).toBe(3);
+      expect(body.summary.measuredRequests).toBe(2);
       expect(body.summary.reportedRequests).toBe(2);
       expect(body.summary.unreportedRequests).toBe(1);
       expect(body.summary.totalTokens).toBe(165);
@@ -144,6 +145,7 @@ describe("GET /api/usage", () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.summary.requests).toBe(0);
+      expect(body.summary.measuredRequests).toBe(0);
       expect(body.summary.totalTokens).toBe(0);
       expect(body.summary.coverageRatio).toBe(0);
     } finally {

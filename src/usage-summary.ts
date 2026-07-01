@@ -5,6 +5,7 @@ export type UsageRange = "7d" | "30d" | "all";
 
 export interface UsageSummaryTotals {
   requests: number;
+  measuredRequests: number;
   reportedRequests: number;
   unreportedRequests: number;
   unsupportedRequests: number;
@@ -20,6 +21,7 @@ export interface UsageSummaryTotals {
 export interface UsageDay {
   date: string;
   requests: number;
+  measuredRequests: number;
   reportedRequests: number;
   totalTokens: number;
   models: UsageDayModel[];
@@ -37,7 +39,9 @@ export interface UsageModel {
   model: string;
   resolvedModel?: string;
   requests: number;
+  measuredRequests: number;
   reportedRequests: number;
+  estimatedRequests: number;
   totalTokens: number;
   inputTokens: number;
   outputTokens: number;
@@ -47,7 +51,9 @@ export interface UsageModel {
 export interface UsageProvider {
   provider: string;
   requests: number;
+  measuredRequests: number;
   reportedRequests: number;
+  estimatedRequests: number;
   totalTokens: number;
   shareRatio: number;
 }
@@ -93,6 +99,7 @@ function dayCountForAllRange(entries: PersistedUsageEntry[], now: number): numbe
 function blankTotals(): UsageSummaryTotals {
   return {
     requests: 0,
+    measuredRequests: 0,
     reportedRequests: 0,
     unreportedRequests: 0,
     unsupportedRequests: 0,
@@ -106,8 +113,13 @@ function blankTotals(): UsageSummaryTotals {
   };
 }
 
+function isMeasuredStatus(status: UsageStatus): boolean {
+  return status === "reported" || status === "estimated";
+}
+
 function bumpStatus(totals: UsageSummaryTotals, status: UsageStatus): void {
   totals.requests += 1;
+  if (isMeasuredStatus(status)) totals.measuredRequests += 1;
   if (status === "reported") totals.reportedRequests += 1;
   else if (status === "unreported") totals.unreportedRequests += 1;
   else if (status === "unsupported") totals.unsupportedRequests += 1;
@@ -125,7 +137,7 @@ function addTokens(totals: UsageSummaryTotals, entry: PersistedUsageEntry): void
 }
 
 function finalizeCoverage(totals: UsageSummaryTotals): void {
-  totals.coverageRatio = totals.requests === 0 ? 0 : totals.reportedRequests / totals.requests;
+  totals.coverageRatio = totals.requests === 0 ? 0 : totals.measuredRequests / totals.requests;
 }
 
 function buildDayGrid(range: UsageRange, since: number | null, now: number, entries: PersistedUsageEntry[]): UsageDay[] {
@@ -147,16 +159,17 @@ function buildDayGrid(range: UsageRange, since: number | null, now: number, entr
   };
   for (let i = days - 1; i >= 0; i--) {
     const key = localDateKey(now - i * DAY_MS);
-    grid.set(key, { date: key, requests: 0, reportedRequests: 0, totalTokens: 0, models: [] });
+    grid.set(key, { date: key, requests: 0, measuredRequests: 0, reportedRequests: 0, totalTokens: 0, models: [] });
   }
   for (const entry of entries) {
     const key = localDateKey(entry.timestamp);
     let day = grid.get(key);
     if (!day) {
-      day = { date: key, requests: 0, reportedRequests: 0, totalTokens: 0, models: [] };
+      day = { date: key, requests: 0, measuredRequests: 0, reportedRequests: 0, totalTokens: 0, models: [] };
       grid.set(key, day);
     }
     day.requests += 1;
+    if (isMeasuredStatus(entry.usageStatus)) day.measuredRequests += 1;
     if (entry.usageStatus === "reported") day.reportedRequests += 1;
     if (typeof entry.totalTokens === "number") day.totalTokens += entry.totalTokens;
     else if (entry.usage) day.totalTokens += entry.usage.inputTokens + entry.usage.outputTokens;
@@ -186,7 +199,9 @@ function buildModels(entries: PersistedUsageEntry[], totalRequests: number): Usa
         model: entry.model,
         ...(entry.resolvedModel ? { resolvedModel: entry.resolvedModel } : {}),
         requests: 0,
+        measuredRequests: 0,
         reportedRequests: 0,
+        estimatedRequests: 0,
         totalTokens: 0,
         inputTokens: 0,
         outputTokens: 0,
@@ -195,7 +210,9 @@ function buildModels(entries: PersistedUsageEntry[], totalRequests: number): Usa
       byKey.set(key, model);
     }
     model.requests += 1;
+    if (isMeasuredStatus(entry.usageStatus)) model.measuredRequests += 1;
     if (entry.usageStatus === "reported") model.reportedRequests += 1;
+    else if (entry.usageStatus === "estimated") model.estimatedRequests += 1;
     if (entry.usage) {
       model.inputTokens += entry.usage.inputTokens;
       model.outputTokens += entry.usage.outputTokens;
@@ -217,14 +234,18 @@ function buildProviders(entries: PersistedUsageEntry[], totalRequests: number): 
       provider = {
         provider: providerKey,
         requests: 0,
+        measuredRequests: 0,
         reportedRequests: 0,
+        estimatedRequests: 0,
         totalTokens: 0,
         shareRatio: 0,
       };
       byKey.set(providerKey, provider);
     }
     provider.requests += 1;
+    if (isMeasuredStatus(entry.usageStatus)) provider.measuredRequests += 1;
     if (entry.usageStatus === "reported") provider.reportedRequests += 1;
+    else if (entry.usageStatus === "estimated") provider.estimatedRequests += 1;
     if (entry.usage) {
       if (typeof entry.totalTokens === "number") provider.totalTokens += entry.totalTokens;
       else provider.totalTokens += entry.usage.inputTokens + entry.usage.outputTokens;

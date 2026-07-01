@@ -44,6 +44,7 @@ describe("summarizeUsage", () => {
     ];
     const sum = summarizeUsage(entries, "30d", FIXED_NOW);
     expect(sum.summary.requests).toBe(3);
+    expect(sum.summary.measuredRequests).toBe(1);
     expect(sum.summary.reportedRequests).toBe(1);
     expect(sum.summary.unreportedRequests).toBe(1);
     expect(sum.summary.unsupportedRequests).toBe(1);
@@ -58,9 +59,59 @@ describe("summarizeUsage", () => {
     ];
     const sum = summarizeUsage(entries, "30d", FIXED_NOW);
     expect(sum.summary.requests).toBe(1);
+    expect(sum.summary.measuredRequests).toBe(1);
     expect(sum.summary.reportedRequests).toBe(0);
     expect(sum.summary.estimatedRequests).toBe(1);
+    expect(sum.summary.coverageRatio).toBe(1);
     expect(sum.summary.totalTokens).toBe(13);
+    expect(sum.models[0]).toMatchObject({
+      provider: "kiro",
+      requests: 1,
+      measuredRequests: 1,
+      reportedRequests: 0,
+      estimatedRequests: 1,
+      totalTokens: 13,
+    });
+    expect(sum.providers[0]).toMatchObject({
+      provider: "kiro",
+      requests: 1,
+      measuredRequests: 1,
+      reportedRequests: 0,
+      estimatedRequests: 1,
+      totalTokens: 13,
+    });
+  });
+
+  test("Kiro estimated totals count as measured for coverage and model rows", () => {
+    const entries: PersistedUsageEntry[] = [
+      entry({
+        ts: FIXED_NOW - 1000,
+        provider: "kiro",
+        model: "claude-opus-4.8",
+        usageStatus: "estimated",
+        usage: { inputTokens: 15_256, outputTokens: 1_018, estimated: true },
+        totalTokens: 2_879_320_000,
+      }),
+    ];
+    const sum = summarizeUsage(entries, "30d", FIXED_NOW);
+
+    expect(sum.summary).toMatchObject({
+      requests: 1,
+      measuredRequests: 1,
+      reportedRequests: 0,
+      estimatedRequests: 1,
+      coverageRatio: 1,
+      totalTokens: 2_879_320_000,
+    });
+    expect(sum.models[0]).toMatchObject({
+      provider: "kiro",
+      model: "claude-opus-4.8",
+      requests: 1,
+      measuredRequests: 1,
+      reportedRequests: 0,
+      estimatedRequests: 1,
+      totalTokens: 2_879_320_000,
+    });
   });
 
   test("days grid covers the full range with zero-fill", () => {

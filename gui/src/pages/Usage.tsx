@@ -5,6 +5,7 @@ type Range = "all" | "30d" | "7d";
 
 interface UsageSummaryTotals {
   requests: number;
+  measuredRequests: number;
   reportedRequests: number;
   unreportedRequests: number;
   unsupportedRequests: number;
@@ -20,6 +21,7 @@ interface UsageSummaryTotals {
 interface UsageDay {
   date: string;
   requests: number;
+  measuredRequests: number;
   reportedRequests: number;
   totalTokens: number;
   models: UsageDayModel[];
@@ -37,7 +39,9 @@ interface UsageModel {
   model: string;
   resolvedModel?: string;
   requests: number;
+  measuredRequests: number;
   reportedRequests: number;
+  estimatedRequests: number;
   totalTokens: number;
   inputTokens: number;
   outputTokens: number;
@@ -47,7 +51,9 @@ interface UsageModel {
 interface UsageProvider {
   provider: string;
   requests: number;
+  measuredRequests: number;
   reportedRequests: number;
+  estimatedRequests: number;
   totalTokens: number;
   shareRatio: number;
 }
@@ -113,7 +119,14 @@ function lastSevenDays(days: UsageDay[]): UsageDay[] {
   for (let i = 0; i < 7; i++) {
     const iso = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}-${String(cursor.getDate()).padStart(2, "0")}`;
     const d = byDate.get(iso);
-    out.push({ date: iso, requests: d?.requests ?? 0, reportedRequests: d?.reportedRequests ?? 0, totalTokens: d?.totalTokens ?? 0, models: d?.models ?? [] });
+    out.push({
+      date: iso,
+      requests: d?.requests ?? 0,
+      measuredRequests: d?.measuredRequests ?? 0,
+      reportedRequests: d?.reportedRequests ?? 0,
+      totalTokens: d?.totalTokens ?? 0,
+      models: d?.models ?? [],
+    });
     cursor.setDate(cursor.getDate() + 1);
   }
   return out;
@@ -257,7 +270,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
         <>
           <div className="usage-cards">
             <div className="stat"><div className="muted">{t("usage.card.requests")}</div><div className="stat-value">{data.summary.requests}</div></div>
-            <div className="stat"><div className="muted">{t("usage.card.reported")}</div><div className="stat-value">{data.summary.reportedRequests}</div></div>
+            <div className="stat"><div className="muted">{t("usage.card.measured")}</div><div className="stat-value">{data.summary.measuredRequests}</div></div>
             <div className="stat"><div className="muted">{t("usage.card.totalTokens")}</div><div className="stat-value">{formatTotalTokens(data.summary.totalTokens, locale)}</div></div>
             <div className="stat"><div className="muted">{t("usage.card.coverage")}</div><div className="stat-value">{formatPct(data.summary.coverageRatio)}</div></div>
             <div className="stat"><div className="muted">{t("usage.card.activeDays")}</div><div className="stat-value">{activeDays}</div></div>
@@ -353,7 +366,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
                     <th>{t("logs.col.model")}</th>
                     <th>{t("logs.col.provider")}</th>
                     <th className="num">{t("usage.col.requests")}</th>
-                    <th className="num">{t("usage.col.reported")}</th>
+                    <th className="num">{t("usage.col.measured")}</th>
                     <th className="num">{t("usage.col.tokens")}</th>
                     <th>{t("usage.col.share")}</th>
                   </tr>
@@ -364,7 +377,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
                       <td className="mono">{m.resolvedModel ?? m.model}</td>
                       <td className="muted">{m.provider}</td>
                       <td className="num">{m.requests}</td>
-                      <td className="num">{m.reportedRequests}</td>
+                      <td className="num">{m.measuredRequests}</td>
                       <td className="num mono">{formatTokens(m.totalTokens)}</td>
                       <td><div className="usage-bar"><div className="usage-bar-fill" style={{ width: `${Math.round(m.shareRatio * 100)}%` }} /></div></td>
                     </tr>
@@ -382,7 +395,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
                   <tr>
                     <th>{t("logs.col.provider")}</th>
                     <th className="num">{t("usage.col.requests")}</th>
-                    <th className="num">{t("usage.col.reported")}</th>
+                    <th className="num">{t("usage.col.measured")}</th>
                     <th className="num">{t("usage.col.tokens")}</th>
                     <th>{t("usage.col.share")}</th>
                   </tr>
@@ -392,7 +405,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
                     <tr key={p.provider}>
                       <td className="mono">{p.provider}</td>
                       <td className="num">{p.requests}</td>
-                      <td className="num">{p.reportedRequests}</td>
+                      <td className="num">{p.measuredRequests}</td>
                       <td className="num mono">{formatTokens(p.totalTokens)}</td>
                       <td><div className="usage-bar"><div className="usage-bar-fill" style={{ width: `${Math.round(p.shareRatio * 100)}%` }} /></div></td>
                     </tr>
@@ -404,8 +417,10 @@ export default function Usage({ apiBase }: { apiBase: string }) {
 
           <section className="panel" style={{ marginTop: 16 }}>
             <h3 className="panel-title">{t("usage.section.coverage")}</h3>
-            <div className="usage-cards" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
-              <div className="stat"><div className="muted">{t("logs.tokens.reported")}</div><div className="stat-value">{data.summary.reportedRequests}</div></div>
+            <div className="usage-cards">
+              <div className="stat"><div className="muted">{t("usage.coverage.measured")}</div><div className="stat-value">{data.summary.measuredRequests}</div></div>
+              <div className="stat"><div className="muted">{t("usage.coverage.reported")}</div><div className="stat-value">{data.summary.reportedRequests}</div></div>
+              <div className="stat"><div className="muted">{t("usage.coverage.estimated")}</div><div className="stat-value">{data.summary.estimatedRequests}</div></div>
               <div className="stat"><div className="muted">{t("logs.tokens.unreported")}</div><div className="stat-value">{data.summary.unreportedRequests}</div></div>
               <div className="stat"><div className="muted">{t("logs.tokens.unsupported")}</div><div className="stat-value">{data.summary.unsupportedRequests}</div></div>
             </div>
