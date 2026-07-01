@@ -41,6 +41,11 @@ const OUTPUT_HEADROOM = 8192;
 /** Minimum visible-output room kept below `max_tokens` (so `max_tokens > budget_tokens` always holds). */
 const OUTPUT_FLOOR = 4096;
 const COMPAT_TOOL_PREFIX = "cx_";
+const EPHEMERAL_CACHE_CONTROL = { type: "ephemeral" } as const;
+
+function withPromptCache<T extends Record<string, unknown>>(block: T): T & { cache_control: typeof EPHEMERAL_CACHE_CONTROL } {
+  return { ...block, cache_control: EPHEMERAL_CACHE_CONTROL };
+}
 
 /** Map a Responses reasoning effort to an Anthropic extended-thinking budget (tokens, >= 1024). */
 function reasoningBudget(effort: string): number {
@@ -203,11 +208,14 @@ function toolsToAnthropicFormat(parsed: OcxParsedRequest, toolNames: { toWire: (
     ? parsed.context.tools.filter(t => toolAllowedByChoice(t, allowed))
     : parsed.context.tools;
   if (tools.length === 0) return undefined;
-  return tools.map(t => ({
+  const converted = tools.map(t => ({
     name: toolNames.toWire(namespacedToolName(t.namespace, t.name)),
     description: t.description,
     input_schema: t.parameters,
   }));
+  const last = converted.length - 1;
+  converted[last] = withPromptCache(converted[last]);
+  return converted;
 }
 
 export function createAnthropicAdapter(provider: OcxProviderConfig): ProviderAdapter {
@@ -230,10 +238,10 @@ export function createAnthropicAdapter(provider: OcxProviderConfig): ProviderAda
         // Claude OAuth (Pro/Max) requires the first system block to be the Claude Code identity.
         body.system = [
           { type: "text", text: CLAUDE_CODE_SYSTEM_INSTRUCTION },
-          ...(system ? [{ type: "text", text: system }] : []),
+          ...(system ? [withPromptCache({ type: "text", text: system })] : []),
         ];
       } else if (system) {
-        body.system = system;
+        body.system = [withPromptCache({ type: "text", text: system })];
       }
       if (tools) body.tools = tools;
       if (parsed.options.temperature !== undefined) body.temperature = parsed.options.temperature;

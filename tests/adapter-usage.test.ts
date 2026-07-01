@@ -75,6 +75,82 @@ describe("adapter reasoning and usage details", () => {
     });
   });
 
+  test("Anthropic API-key requests mark system prompt as cacheable", () => {
+    const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
+    const request = adapter.buildRequest({
+      modelId: "claude-opus-4-1",
+      context: {
+        systemPrompt: ["stable project instructions"],
+        messages: [{ role: "user", content: "hi" }],
+      },
+      stream: true,
+      options: {},
+    });
+    const body = JSON.parse(request.body) as { system: unknown };
+
+    expect(body.system).toEqual([{
+      type: "text",
+      text: "stable project instructions",
+      cache_control: { type: "ephemeral" },
+    }]);
+  });
+
+  test("Anthropic OAuth requests keep Claude identity first and cache user system prompt", () => {
+    const adapter = createAnthropicAdapter({
+      ...provider,
+      adapter: "anthropic",
+      authMode: "oauth",
+    });
+    const request = adapter.buildRequest({
+      modelId: "claude-opus-4-1",
+      context: {
+        systemPrompt: ["stable project instructions"],
+        messages: [{ role: "user", content: "hi" }],
+      },
+      stream: true,
+      options: {},
+    });
+    const body = JSON.parse(request.body) as { system: Record<string, unknown>[] };
+
+    expect(body.system[0]).toMatchObject({ type: "text" });
+    expect(body.system[0].cache_control).toBeUndefined();
+    expect(body.system[1]).toEqual({
+      type: "text",
+      text: "stable project instructions",
+      cache_control: { type: "ephemeral" },
+    });
+  });
+
+  test("Anthropic requests mark the final tool definition as cacheable", () => {
+    const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
+    const request = adapter.buildRequest({
+      modelId: "claude-opus-4-1",
+      context: {
+        messages: [{ role: "user", content: "hi" }],
+        tools: [
+          {
+            namespace: "codex",
+            name: "read_file",
+            description: "Read a file",
+            parameters: { type: "object", properties: {} },
+          },
+          {
+            namespace: "codex",
+            name: "write_file",
+            description: "Write a file",
+            parameters: { type: "object", properties: {} },
+          },
+        ],
+      },
+      stream: true,
+      options: {},
+    });
+    const body = JSON.parse(request.body) as { tools: Record<string, unknown>[] };
+
+    expect(body.tools[0].cache_control).toBeUndefined();
+    expect(body.tools[1].cache_control).toEqual({ type: "ephemeral" });
+  });
+
   test("Google usage maps cached and thoughts tokens when present", async () => {
     const adapter = createGoogleAdapter({ ...provider, adapter: "google" });
     const events = await adapter.parseResponse?.(new Response(JSON.stringify({
