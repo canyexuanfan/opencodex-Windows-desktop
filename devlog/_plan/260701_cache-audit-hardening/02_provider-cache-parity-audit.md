@@ -22,6 +22,7 @@ Findings:
 
 - Anthropic supports both top-level automatic caching and explicit block-level breakpoints.
 - Top-level `cache_control: { "type": "ephemeral" }` automatically moves the cache breakpoint to the last cacheable block as a conversation grows.
+- The official cURL, Python, and TypeScript examples put `cache_control` at the request body root next to `model`, `max_tokens`, `system`, and `messages`.
 - Explicit and automatic caching can be combined. Automatic caching consumes one of the four available cache breakpoint slots.
 - Prompt prefix order is `tools`, then `system`, then `messages`.
 - Cache reads look back up to 20 blocks per breakpoint.
@@ -37,7 +38,7 @@ opencodex status:
 
 Recommendation:
 
-- Add top-level automatic caching for the Anthropic adapter using the same 5-minute TTL as the existing block-level breakpoints.
+- Add top-level automatic caching for native Anthropic API requests using the same 5-minute TTL as the existing block-level breakpoints.
 - Keep explicit system/tool breakpoints because they protect stable prefix regions and keep behavior aligned with Claude Code-style static prefix caching.
 - Do not enable 1-hour TTL by default because it changes write cost.
 
@@ -120,7 +121,7 @@ Source state:
 opencodex status:
 
 - Umans inherits Anthropic adapter request construction, including current explicit `cache_control` markers.
-- If top-level automatic caching is added to the Anthropic adapter, Umans will receive the same field unless explicitly gated.
+- If top-level automatic caching is added unconditionally to the Anthropic adapter, Umans will receive the same field unless explicitly gated.
 
 Risk:
 
@@ -128,8 +129,9 @@ Risk:
 
 Recommendation:
 
-- Add top-level automatic caching for all Anthropic adapter providers only if existing Anthropic-compatible tests prove request shape is acceptable.
-- If Umans tests or live compatibility evidence fails later, gate top-level automatic caching to native Anthropic OAuth/API-key providers and leave block-level markers for gateways.
+- Gate top-level automatic caching to native Anthropic API requests only.
+- Keep Umans on existing block-level cache markers until Umans publishes or proves top-level automatic `cache_control` support.
+- Add an Umans regression assertion that `body.cache_control` is absent while existing system/tool block-level markers remain.
 
 ## Local Claude Code / CLI Source Comparison
 
@@ -171,9 +173,8 @@ Implications for opencodex:
 
 Proceed with a narrow implementation pass:
 
-1. Add Anthropic top-level automatic cache control with default 5-minute ephemeral TTL.
+1. Add native-Anthropic-only top-level automatic cache control with default 5-minute ephemeral TTL.
 2. Keep existing explicit system/tool breakpoints.
-3. Add request-shape tests for native Anthropic, OAuth Anthropic, and Umans gateway shape.
+3. Add request-shape tests for native Anthropic, OAuth Anthropic, and Umans gateway shape; Umans must not receive the top-level field.
 4. Add OpenAI Responses passthrough test for `prompt_cache_retention`.
 5. Update cache devlog taxonomy after verification.
-

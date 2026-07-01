@@ -2,7 +2,7 @@
 
 ## Part 1: Easy Explanation
 
-The next implementation pass makes Anthropic caching behave like the current official Anthropic recommendation for multi-turn conversations. opencodex already caches stable system/tool prefixes; this pass adds the missing moving conversation-history breakpoint by sending top-level `cache_control`. OpenAI/ChatGPT, Gemini/Antigravity, and Kimi stay conservative: preserve and display cache telemetry, but do not inject unproven provider-specific fields. Tests will prove request shape and raw pass-through behavior before any runtime claim is made.
+The next implementation pass makes native Anthropic caching behave like the current official Anthropic recommendation for multi-turn conversations. opencodex already caches stable system/tool prefixes; this pass adds the missing moving conversation-history breakpoint by sending top-level `cache_control` only to native Anthropic API requests. OpenAI/ChatGPT, Gemini/Antigravity, Kimi, and Anthropic-compatible gateways such as Umans stay conservative: preserve and display cache telemetry, but do not inject unproven provider-specific fields. Tests will prove request shape and raw pass-through behavior before any runtime claim is made.
 
 ## Part 2: Diff-Level Plan
 
@@ -41,8 +41,8 @@ const body: Record<string, unknown> = {
   messages,
   stream: parsed.stream,
   max_tokens: parsed.options.maxOutputTokens ?? DEFAULT_MAX_TOKENS,
-  cache_control: EPHEMERAL_CACHE_CONTROL,
 };
+if (usesNativeAnthropicEndpoint(provider)) body.cache_control = EPHEMERAL_CACHE_CONTROL;
 ```
 
 Rationale:
@@ -50,6 +50,19 @@ Rationale:
 - Official Anthropic docs recommend top-level automatic caching for multi-turn conversations.
 - Existing explicit breakpoints remain and consume two slots at most; automatic caching uses one additional slot.
 - Default 5-minute TTL avoids the extra 1-hour write premium.
+- Anthropic-compatible gateways are not assumed to support this root field.
+
+Add helper near `withPromptCache`:
+
+```ts
+function usesNativeAnthropicEndpoint(provider: OcxProviderConfig): boolean {
+  try {
+    return new URL(provider.baseUrl).hostname === "api.anthropic.com";
+  } catch {
+    return false;
+  }
+}
+```
 
 ### MODIFY: `tests/adapter-usage.test.ts`
 
@@ -59,7 +72,11 @@ Add assertions to existing Anthropic request-shape tests:
 - OAuth Anthropic request body has `cache_control: { type: "ephemeral" }` while the Claude Code identity system block remains unmarked.
 - Tool cache-control test also confirms top-level automatic cache control exists.
 
-Add or extend Umans-compatible coverage only if the existing Umans test does not already parse the Anthropic adapter body. The assertion should verify top-level cache control is present on the body and no Anthropic OAuth beta header is added for Umans.
+Extend Umans-compatible coverage in `tests/umans-provider.test.ts`:
+
+- `body.cache_control` is absent for Umans.
+- Existing system/tool block-level cache markers remain valid.
+- No Anthropic OAuth beta header is added for Umans.
 
 ### MODIFY: `tests/openai-responses-passthrough.test.ts`
 
@@ -81,7 +98,8 @@ Rationale:
 
 Append a "Phase 4 outcome" section after implementation:
 
-- Anthropic now sends both explicit block breakpoints and top-level automatic caching.
+- Native Anthropic now sends both explicit block breakpoints and top-level automatic caching.
+- Umans remains block-level-only until top-level support is proven.
 - OpenAI Responses pass-through preserves `prompt_cache_retention`.
 - Kimi/OpenAI-compatible chat remains usage-only.
 - Google/Antigravity remains implicit usage-only.
@@ -136,4 +154,3 @@ Potential deliverables:
 - Dashboard display update for read/write distinction.
 
 This is intentionally not implemented in Cycle 2 because it changes public log shape and requires a separate contract decision.
-
