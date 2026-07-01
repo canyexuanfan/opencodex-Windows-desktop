@@ -4,6 +4,7 @@ import { useI18n, LOCALES } from "../i18n";
 interface UsageBreakdown {
   inputTokens: number;
   outputTokens: number;
+  totalTokens?: number;
   cachedInputTokens?: number;
   cacheReadInputTokens?: number;
   cacheCreationInputTokens?: number;
@@ -52,9 +53,17 @@ function tokensTitle(log: LogEntry): string | undefined {
 }
 
 function displayTokenTotal(log: LogEntry): number | undefined {
-  if (typeof log.totalTokens === "number") return log.totalTokens;
-  if (log.usage) return log.usage.inputTokens + log.usage.outputTokens;
-  return undefined;
+  if (!log.usage) return typeof log.totalTokens === "number" ? log.totalTokens : undefined;
+  const baseTotal = log.usage.inputTokens + log.usage.outputTokens;
+  const explicitTotal = log.usage.totalTokens ?? log.totalTokens;
+  const hasRead = typeof log.usage.cacheReadInputTokens === "number";
+  const hasCreate = typeof log.usage.cacheCreationInputTokens === "number";
+  if (hasRead || hasCreate) {
+    const detailedTotal = baseTotal + (log.usage.cacheReadInputTokens ?? 0) + (log.usage.cacheCreationInputTokens ?? 0);
+    return typeof explicitTotal === "number" ? Math.max(explicitTotal, detailedTotal) : detailedTotal;
+  }
+  if (typeof explicitTotal === "number") return explicitTotal;
+  return baseTotal;
 }
 
 function cachedTokenTotal(log: LogEntry): number | undefined {
