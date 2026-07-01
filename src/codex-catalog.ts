@@ -511,7 +511,10 @@ export function buildCatalogEntries(template: RawEntry | null, gptSlugs: string[
 /** Bare picker-visible native slugs in the live Codex catalog (drives the subagent picker UI). */
 export function listCatalogNativeSlugs(): string[] {
   const cat = readCurrentCatalogOrCache();
-  return filterSupportedNativeSlugs(cat?.models ?? []);
+  const live = filterSupportedNativeSlugs(cat?.models ?? []);
+  // Ensure documented additions (e.g. gpt-5.3-codex-spark) appear even when the bundled catalog
+  // predates the slug — mirrors nativeOpenAiSlugs() which already merges them for /v1/models.
+  return unique([...live, ...DOCUMENTED_NATIVE_OPENAI_ADDITIONS]);
 }
 
 /**

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createAnthropicAdapter } from "../src/adapters/anthropic";
+import { parseRequest } from "../src/responses/parser";
 import type { OcxParsedRequest, OcxProviderConfig } from "../src/types";
 
 const provider = { adapter: "anthropic", baseUrl: "https://api.anthropic.com", apiKey: "sk-x", authMode: "apiKey" } as unknown as OcxProviderConfig;
@@ -41,5 +42,30 @@ describe("anthropic extended-thinking gate", () => {
     expect(b.max_tokens as number).toBeGreaterThan(thinking!.budget_tokens);
     expect(b.temperature).toBeUndefined();
     expect(b.top_p).toBeUndefined();
+  });
+
+  test("drops reconstructed Responses reasoning signatures when switching into Anthropic", () => {
+    const b = bodyOf(parseRequest({
+      model: "anthropic/claude-sonnet-4.5",
+      input: [
+        {
+          type: "reasoning",
+          id: "rs_other_provider",
+          summary: [],
+          content: [{ type: "reasoning_text", text: "raw routed reasoning" }],
+        },
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "continue on anthropic" }],
+        },
+      ],
+      reasoning: { effort: "high" },
+    }));
+    const messages = b.messages as { role: string; content: unknown }[];
+
+    expect(JSON.stringify(messages)).not.toContain("rs_other_provider");
+    expect(JSON.stringify(messages)).not.toContain("signature");
+    expect(messages).toEqual([{ role: "user", content: "continue on anthropic" }]);
   });
 });
