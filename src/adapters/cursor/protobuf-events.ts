@@ -285,11 +285,17 @@ export function finalizeTurnEvents(state: CursorProtobufEventState): CursorServe
     state.openToolCalls.clear();
     return [{ type: "error", message: `Cursor stream ended with incomplete tool call(s): ${openIds}. Arguments may be truncated; the call was not committed.` }];
   }
-  // Surface the absolute context size (when Cursor reported a checkpoint) as totalTokens so Codex's
-  // last_token_usage.total_tokens reflects real context, without folding it into the additive
-  // per-turn outputTokens. bridge.ts uses `totalTokens ?? input + output`.
+  // Surface the absolute context size (when Cursor reported a checkpoint) as both totalTokens and
+  // the estimated input side of Codex's visible `input + output` counter. Codex status lines can
+  // render the additive pair instead of total_tokens, so leaving inputTokens at 0 makes a 16k-context
+  // first turn display as "9 used". Keep outputTokens as the per-turn delta and clamp the inferred
+  // input to 0 in case Cursor reports a checkpoint smaller than the streamed output delta.
   const usage: OcxUsage = state.contextTokens !== undefined
-    ? { ...state.usage, totalTokens: state.contextTokens }
+    ? {
+        ...state.usage,
+        inputTokens: Math.max(0, state.contextTokens - state.usage.outputTokens),
+        totalTokens: state.contextTokens,
+      }
     : { ...state.usage };
   return [{ type: "done", usage }];
 }

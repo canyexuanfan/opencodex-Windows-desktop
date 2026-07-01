@@ -416,11 +416,37 @@ describe("Cursor protobuf tool-call events", () => {
       }) },
     });
     // totalTokens reflects the latest absolute checkpoint (10300), NOT 10000+10300 and NOT folded
-    // into outputTokens (which carries only the additive per-turn output delta).
+    // into outputTokens (which carries only the additive per-turn output delta). inputTokens is the
+    // inferred active context before the streamed output so Codex's visible input+output counter
+    // matches totalTokens instead of showing only 42.
     expect(mapCursorProtobufServerMessage(turnEnd, state)).toEqual([
-      { type: "done", usage: { inputTokens: 0, outputTokens: 42, totalTokens: 10_300, estimated: true } },
+      { type: "done", usage: { inputTokens: 10_258, outputTokens: 42, totalTokens: 10_300, estimated: true } },
     ]);
     // After the terminal done, state is marked terminated so post-terminal progress frames stay inert.
     expect(state.terminated).toBe(true);
+  });
+
+  test("checkpoint usage clamps inferred input when output delta exceeds context", () => {
+    const state = createCursorProtobufEventState();
+    const checkpoint = create(AgentServerMessageSchema, {
+      message: {
+        case: "conversationCheckpointUpdate",
+        value: create(ConversationStateStructureSchema, {
+          tokenDetails: create(ConversationTokenDetailsSchema, { usedTokens: 10 }),
+        }),
+      },
+    });
+    const turnEnd = create(AgentServerMessageSchema, {
+      message: { case: "interactionUpdate", value: create(InteractionUpdateSchema, {
+        message: { case: "turnEnded", value: {} },
+      }) },
+    });
+
+    expect(mapCursorProtobufServerMessage(checkpoint, state)).toEqual([]);
+    mapCursorProtobufServerMessage(interaction({ case: "tokenDelta", value: create(TokenDeltaUpdateSchema, { tokens: 42 }) }), state);
+
+    expect(mapCursorProtobufServerMessage(turnEnd, state)).toEqual([
+      { type: "done", usage: { inputTokens: 0, outputTokens: 42, totalTokens: 10, estimated: true } },
+    ]);
   });
 });
