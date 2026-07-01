@@ -144,4 +144,40 @@ describe("usage log", () => {
     expect(usageForFinalLog("openai", usage)).toEqual(usage);
     expect(usageForFinalLog("openai", { ...usage, estimated: true })).toEqual({ ...usage, estimated: true });
   });
+
+  test("preserves cached token counts alongside estimated status", () => {
+    appendUsageEntry({
+      requestId: "ocx-cache",
+      timestamp: 3,
+      provider: "kiro",
+      model: "claude-opus-4.8",
+      status: 200,
+      durationMs: 21,
+      usageStatus: "estimated",
+      usage: {
+        inputTokens: 100,
+        outputTokens: 10,
+        cachedInputTokens: 80,
+        estimated: true,
+      },
+      totalTokens: 110,
+    });
+
+    expect(readUsageEntries()[0]).toEqual({
+      requestId: "ocx-cache",
+      timestamp: 3,
+      provider: "kiro",
+      model: "claude-opus-4.8",
+      status: 200,
+      durationMs: 21,
+      usageStatus: "estimated",
+      usage: {
+        inputTokens: 100,
+        outputTokens: 10,
+        cachedInputTokens: 80,
+        estimated: true,
+      },
+      totalTokens: 110,
+    });
+  });
 });

@@ -171,6 +171,7 @@ export interface OcxRequestOptions {
   serviceTier?: string;
   presencePenalty?: number;
   frequencyPenalty?: number;
+  /** Responses prompt-cache affinity key. Passthrough preserves it via _rawBody; routed adapters do not consume it unless their upstream wire supports it. */
   promptCacheKey?: string;
 }
 

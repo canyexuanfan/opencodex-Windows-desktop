@@ -396,6 +396,7 @@ export function parseRequest(body: unknown): OcxParsedRequest {
   if (data.presence_penalty !== undefined) options.presencePenalty = data.presence_penalty;
   if (data.frequency_penalty !== undefined) options.frequencyPenalty = data.frequency_penalty;
   if (data.service_tier !== undefined) options.serviceTier = data.service_tier;
+  if (data.prompt_cache_key !== undefined) options.promptCacheKey = data.prompt_cache_key;
 
   // Stash the hosted web_search config (if Codex enabled it) so the proxy can run searches via the
   // gpt-mini sidecar for routed providers. buildTools still drops the hosted tool; the sidecar path

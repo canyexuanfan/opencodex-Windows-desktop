@@ -88,4 +88,22 @@ describe("OpenAI Responses passthrough sanitization", () => {
     expect(body.tools).toHaveLength(1);
     expect(body.tools[0]).toMatchObject({ type: "image_generation" });
   });
+
+  test("preserves prompt_cache_key in the raw Responses passthrough body", () => {
+    const adapter = createResponsesPassthroughAdapter(provider);
+    const request = adapter.buildRequest({
+      modelId: "gpt-5.5",
+      context: { messages: [] },
+      stream: true,
+      options: { promptCacheKey: "project-cache-v1" },
+      _rawBody: {
+        model: "gpt-5.5",
+        input: "hi",
+        prompt_cache_key: "project-cache-v1",
+      },
+    }, { headers: new Headers({ authorization: "Bearer token" }) });
+    const body = JSON.parse(request.body) as { prompt_cache_key?: string };
+
+    expect(body.prompt_cache_key).toBe("project-cache-v1");
+  });
 });

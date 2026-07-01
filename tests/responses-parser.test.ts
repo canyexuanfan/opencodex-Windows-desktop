@@ -57,6 +57,17 @@ describe("Responses parser", () => {
     expect(parsed.options.serviceTier).toBe("priority");
   });
 
+  test("preserves prompt_cache_key as an internal request option", () => {
+    const parsed = parseRequest({
+      model: "gpt-5.5",
+      input: "cache affinity",
+      stream: true,
+      prompt_cache_key: "project-cache-v1",
+    });
+
+    expect(parsed.options.promptCacheKey).toBe("project-cache-v1");
+  });
+
   test("preserves input_image blocks from function_call_output", () => {
     const parsed = parseRequest({
       model: "kiro/claude-sonnet-4.5",
