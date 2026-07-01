@@ -1,4 +1,5 @@
 import { baseProviderLabel } from "./provider-label";
+import { usageDisplayTotalTokens } from "./usage-totals";
 import type { PersistedUsageEntry, UsageStatus } from "./usage-log";
 
 export type UsageRange = "7d" | "30d" | "all";
@@ -132,8 +133,7 @@ function addTokens(totals: UsageSummaryTotals, entry: PersistedUsageEntry): void
   totals.outputTokens += entry.usage.outputTokens;
   if (typeof entry.usage.cachedInputTokens === "number") totals.cachedInputTokens += entry.usage.cachedInputTokens;
   if (typeof entry.usage.reasoningOutputTokens === "number") totals.reasoningOutputTokens += entry.usage.reasoningOutputTokens;
-  if (typeof entry.totalTokens === "number") totals.totalTokens += entry.totalTokens;
-  else totals.totalTokens += entry.usage.inputTokens + entry.usage.outputTokens;
+  totals.totalTokens += usageDisplayTotalTokens(entry.usage, entry.totalTokens) ?? 0;
 }
 
 function finalizeCoverage(totals: UsageSummaryTotals): void {
@@ -154,8 +154,7 @@ function buildDayGrid(range: UsageRange, since: number | null, now: number, entr
     let m = models.get(mKey);
     if (!m) { m = { model: entry.model, provider: entry.provider, requests: 0, totalTokens: 0 }; models.set(mKey, m); }
     m.requests += 1;
-    if (typeof entry.totalTokens === "number") m.totalTokens += entry.totalTokens;
-    else if (entry.usage) m.totalTokens += entry.usage.inputTokens + entry.usage.outputTokens;
+    m.totalTokens += usageDisplayTotalTokens(entry.usage, entry.totalTokens) ?? 0;
   };
   for (let i = days - 1; i >= 0; i--) {
     const key = localDateKey(now - i * DAY_MS);
@@ -171,8 +170,7 @@ function buildDayGrid(range: UsageRange, since: number | null, now: number, entr
     day.requests += 1;
     if (isMeasuredStatus(entry.usageStatus)) day.measuredRequests += 1;
     if (entry.usageStatus === "reported") day.reportedRequests += 1;
-    if (typeof entry.totalTokens === "number") day.totalTokens += entry.totalTokens;
-    else if (entry.usage) day.totalTokens += entry.usage.inputTokens + entry.usage.outputTokens;
+    day.totalTokens += usageDisplayTotalTokens(entry.usage, entry.totalTokens) ?? 0;
     bumpDayModel(key, entry);
   }
   void since;
@@ -216,8 +214,7 @@ function buildModels(entries: PersistedUsageEntry[], totalRequests: number): Usa
     if (entry.usage) {
       model.inputTokens += entry.usage.inputTokens;
       model.outputTokens += entry.usage.outputTokens;
-      if (typeof entry.totalTokens === "number") model.totalTokens += entry.totalTokens;
-      else model.totalTokens += entry.usage.inputTokens + entry.usage.outputTokens;
+      model.totalTokens += usageDisplayTotalTokens(entry.usage, entry.totalTokens) ?? 0;
     }
   }
   const models = [...byKey.values()];
@@ -247,8 +244,7 @@ function buildProviders(entries: PersistedUsageEntry[], totalRequests: number): 
     if (entry.usageStatus === "reported") provider.reportedRequests += 1;
     else if (entry.usageStatus === "estimated") provider.estimatedRequests += 1;
     if (entry.usage) {
-      if (typeof entry.totalTokens === "number") provider.totalTokens += entry.totalTokens;
-      else provider.totalTokens += entry.usage.inputTokens + entry.usage.outputTokens;
+      provider.totalTokens += usageDisplayTotalTokens(entry.usage, entry.totalTokens) ?? 0;
     }
   }
   const providers = [...byKey.values()];

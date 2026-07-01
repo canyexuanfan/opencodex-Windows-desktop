@@ -109,6 +109,31 @@ describe("summarizeUsage", () => {
     expect(sum.summary.estimatedRequests).toBe(1);
   });
 
+  test("Anthropic cache read and write tokens contribute to display totals", () => {
+    const entries: PersistedUsageEntry[] = [
+      entry({
+        ts: FIXED_NOW - 1000,
+        provider: "anthropic",
+        usageStatus: "reported",
+        usage: {
+          inputTokens: 100,
+          outputTokens: 20,
+          cachedInputTokens: 70,
+          cacheReadInputTokens: 50,
+          cacheCreationInputTokens: 20,
+        },
+        totalTokens: 120,
+      }),
+    ];
+    const sum = summarizeUsage(entries, "30d", FIXED_NOW);
+
+    expect(sum.summary.cachedInputTokens).toBe(70);
+    expect(sum.summary.totalTokens).toBe(190);
+    expect(sum.days.find(day => day.requests === 1)?.totalTokens).toBe(190);
+    expect(sum.models[0].totalTokens).toBe(190);
+    expect(sum.providers[0].totalTokens).toBe(190);
+  });
+
   test("Kiro estimated totals count as measured for coverage and model rows", () => {
     const entries: PersistedUsageEntry[] = [
       entry({

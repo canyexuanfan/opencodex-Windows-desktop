@@ -134,6 +134,7 @@ describe("usage log", () => {
     expect(usageStatusForFinalLog({ inputTokens: 0, outputTokens: 0, estimated: true })).toBe("estimated");
     expect(usageTotalTokens(undefined)).toBeUndefined();
     expect(usageTotalTokens({ inputTokens: 4, outputTokens: 6, cachedInputTokens: 2 })).toBe(10);
+    expect(usageTotalTokens({ inputTokens: 4, outputTokens: 6, cachedInputTokens: 2, cacheReadInputTokens: 1, cacheCreationInputTokens: 1 })).toBe(12);
     expect(usageTotalTokens({ inputTokens: 4, outputTokens: 6, totalTokens: 50_000 })).toBe(50_000);
   });
 
@@ -158,6 +159,8 @@ describe("usage log", () => {
         inputTokens: 100,
         outputTokens: 10,
         cachedInputTokens: 80,
+        cacheReadInputTokens: 60,
+        cacheCreationInputTokens: 20,
         estimated: true,
       },
       totalTokens: 110,
@@ -175,6 +178,8 @@ describe("usage log", () => {
         inputTokens: 100,
         outputTokens: 10,
         cachedInputTokens: 80,
+        cacheReadInputTokens: 60,
+        cacheCreationInputTokens: 20,
         estimated: true,
       },
       totalTokens: 110,
