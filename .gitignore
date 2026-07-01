@@ -6,3 +6,7 @@ dist/
 devlog/
 .tmp/
 .opencode/
+
+# Local agent/session artifacts
+.codexclaw/
+.omo/
