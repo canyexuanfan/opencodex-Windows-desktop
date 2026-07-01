@@ -20,6 +20,7 @@ import { ANTIGRAVITY_REQUEST_UA, antigravitySessionId, isLikelyRealThoughtSignat
 import { sanitizeGeminiToolParameters } from "./google-tool-schema";
 import { neutralizeIdentity } from "./identity";
 import { antigravityUsesReplayCache, applyAntigravityReplay, clearAntigravityReplay, observeAntigravityReplay } from "./google-antigravity-replay";
+import { resolveAntigravityWireModelId } from "../providers/antigravity-models";
 
 // Google-family models (Gemini/Vertex/Antigravity) tend to emit long running commentary between
 // tool calls. This steers them to keep the BETWEEN-STEP text to one line and reason internally
@@ -229,14 +230,15 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         const project = provider.project;
         if (!project) throw new Error("Antigravity requires a discovered Cloud Code Assist project id (re-run `ocx login google-antigravity`).");
         const sessionId = antigravitySessionId(parsed);
-        antigravityModel = parsed.modelId;
+        const wireModelId = resolveAntigravityWireModelId(parsed.modelId);
+        antigravityModel = wireModelId;
         antigravitySession = sessionId;
         // Reasoning continuity: Gemini models re-inject cached thoughtSignatures; Claude-on-Antigravity
         // sanitizes signatures inline (no cache). Both guard against the upstream 400 on bad signatures.
         if (Array.isArray((body as { contents?: unknown[] }).contents)) {
           const contents = (body as { contents: unknown[] }).contents;
-          if (antigravityUsesReplayCache(parsed.modelId)) {
-            applyAntigravityReplay(parsed.modelId, sessionId, contents);
+          if (antigravityUsesReplayCache(wireModelId)) {
+            applyAntigravityReplay(wireModelId, sessionId, contents);
           } else {
             sanitizeAntigravityClaudeSignatures(contents);
           }
@@ -246,13 +248,13 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         // spelling is a non-first-party key, so we send the single canonical location.
         const request: Record<string, unknown> = { ...body, sessionId };
         // Claude-on-Antigravity forces VALIDATED function calling (the real client always sets it).
-        if (/claude/i.test(parsed.modelId)) {
+        if (/claude/i.test(wireModelId)) {
           const existing = (request.toolConfig ?? {}) as Record<string, unknown>;
           const fcc = (existing.functionCallingConfig ?? {}) as Record<string, unknown>;
           request.toolConfig = { ...existing, functionCallingConfig: { ...fcc, mode: "VALIDATED" } };
         }
         const envelope = {
-          model: parsed.modelId,
+          model: wireModelId,
           // The envelope's `userAgent` field is a protocol constant ("antigravity"), distinct from
           // the HTTP `User-Agent` header (the real CLI UA). CLIProxyAPI `geminiToAntigravity` hardcodes
           // the body field; only the header carries the versioned client string.

@@ -3,9 +3,9 @@ import { createGoogleAdapter } from "../src/adapters/google";
 import { antigravitySessionId, isLikelyRealThoughtSignature } from "../src/adapters/google-antigravity-wire";
 import type { AdapterEvent, OcxParsedRequest, OcxProviderConfig } from "../src/types";
 
-function parsed(text = "hello world", stream = false): OcxParsedRequest {
+function parsed(text = "hello world", stream = false, modelId = "gemini-3-pro"): OcxParsedRequest {
   return {
-    modelId: "gemini-3-pro",
+    modelId,
     stream,
     context: { messages: [{ role: "user", content: text }], systemPrompt: [], tools: [] },
     options: {},
@@ -50,6 +50,18 @@ describe("antigravity CCA envelope", () => {
   test("stream uses :streamGenerateContent?alt=sse", async () => {
     const req = await createGoogleAdapter(provider).buildRequest(parsed("x", true));
     expect(req.url).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse");
+  });
+
+  test("client-visible Antigravity aliases resolve to CCA wire model ids", async () => {
+    for (const [alias, wire] of [
+      ["gemini-3.5-flash-mid", "gemini-3.5-flash-low"],
+      ["gemini-3.5-flash-high", "gemini-3-flash-agent"],
+      ["gemini-3.1-pro-high", "gemini-pro-agent"],
+      ["gemini-3.1-pro-preview", "gemini-pro-agent"],
+    ]) {
+      const req = await createGoogleAdapter(provider).buildRequest(parsed("x", false, alias));
+      expect(JSON.parse(req.body).model).toBe(wire);
+    }
   });
 
   test("throws when no project id is available", async () => {
