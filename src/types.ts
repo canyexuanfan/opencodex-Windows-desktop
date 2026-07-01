@@ -209,6 +209,8 @@ export interface OcxUsage {
   outputTokens: number;
   totalTokens?: number;
   cachedInputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
   reasoningOutputTokens?: number;
   estimated?: boolean;
 }

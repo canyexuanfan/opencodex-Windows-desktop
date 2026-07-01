@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "./config";
+import { usageDisplayTotalTokens } from "./usage-totals";
 import type { OcxUsage } from "./types";
 
 export type UsageStatus = "reported" | "unreported" | "unsupported" | "estimated";
@@ -23,8 +24,7 @@ export function usageLogPath(): string {
 }
 
 export function usageTotalTokens(usage: OcxUsage | undefined): number | undefined {
-  if (!usage) return undefined;
-  return usage.totalTokens ?? usage.inputTokens + usage.outputTokens;
+  return usageDisplayTotalTokens(usage);
 }
 
 function isKiroLogProvider(provider: string): boolean {
@@ -49,6 +49,8 @@ function normalizeUsageValue(usage: OcxUsage | undefined): OcxUsage | undefined 
     outputTokens: usage.outputTokens,
     ...(typeof usage.totalTokens === "number" ? { totalTokens: usage.totalTokens } : {}),
     ...(typeof usage.cachedInputTokens === "number" ? { cachedInputTokens: usage.cachedInputTokens } : {}),
+    ...(typeof usage.cacheReadInputTokens === "number" ? { cacheReadInputTokens: usage.cacheReadInputTokens } : {}),
+    ...(typeof usage.cacheCreationInputTokens === "number" ? { cacheCreationInputTokens: usage.cacheCreationInputTokens } : {}),
     ...(typeof usage.reasoningOutputTokens === "number" ? { reasoningOutputTokens: usage.reasoningOutputTokens } : {}),
     ...(usage.estimated ? { estimated: true } : {}),
   };

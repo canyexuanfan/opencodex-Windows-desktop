@@ -4,7 +4,10 @@ import { useI18n, LOCALES } from "../i18n";
 interface UsageBreakdown {
   inputTokens: number;
   outputTokens: number;
+  totalTokens?: number;
   cachedInputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
   reasoningOutputTokens?: number;
 }
 
@@ -43,14 +46,24 @@ function tokensTitle(log: LogEntry): string | undefined {
     `out=${log.usage.outputTokens}`,
   ];
   if (typeof log.usage.cachedInputTokens === "number") parts.push(`cached=${log.usage.cachedInputTokens}`);
+  if (typeof log.usage.cacheReadInputTokens === "number") parts.push(`cacheRead=${log.usage.cacheReadInputTokens}`);
+  if (typeof log.usage.cacheCreationInputTokens === "number") parts.push(`cacheCreate=${log.usage.cacheCreationInputTokens}`);
   if (typeof log.usage.reasoningOutputTokens === "number") parts.push(`reasoning=${log.usage.reasoningOutputTokens}`);
   return parts.join(" · ");
 }
 
 function displayTokenTotal(log: LogEntry): number | undefined {
-  if (typeof log.totalTokens === "number") return log.totalTokens;
-  if (log.usage) return log.usage.inputTokens + log.usage.outputTokens;
-  return undefined;
+  if (!log.usage) return typeof log.totalTokens === "number" ? log.totalTokens : undefined;
+  const baseTotal = log.usage.inputTokens + log.usage.outputTokens;
+  const explicitTotal = log.usage.totalTokens ?? log.totalTokens;
+  const hasRead = typeof log.usage.cacheReadInputTokens === "number";
+  const hasCreate = typeof log.usage.cacheCreationInputTokens === "number";
+  if (hasRead || hasCreate) {
+    const detailedTotal = baseTotal + (log.usage.cacheReadInputTokens ?? 0) + (log.usage.cacheCreationInputTokens ?? 0);
+    return typeof explicitTotal === "number" ? Math.max(explicitTotal, detailedTotal) : detailedTotal;
+  }
+  if (typeof explicitTotal === "number") return explicitTotal;
+  return baseTotal;
 }
 
 function cachedTokenTotal(log: LogEntry): number | undefined {
