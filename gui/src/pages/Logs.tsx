@@ -53,6 +53,10 @@ function displayTokenTotal(log: LogEntry): number | undefined {
   return undefined;
 }
 
+function cachedTokenTotal(log: LogEntry): number | undefined {
+  return typeof log.usage?.cachedInputTokens === "number" ? log.usage.cachedInputTokens : undefined;
+}
+
 function speedLabel(log: LogEntry): string | undefined {
   if (log.requestedSpeedLabel) return log.requestedSpeedLabel;
   if (log.modelSupportsServiceTier && log.configuredSpeedLabel) return log.configuredSpeedLabel;
@@ -140,8 +144,18 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                   <td className="num mono" title={tokensTitle(log)}>
                     {(() => {
                       const tokenTotal = displayTokenTotal(log);
+                      const cachedTotal = cachedTokenTotal(log);
                       return tokenTotal !== undefined
-                        ? formatTokens(tokenTotal)
+                        ? (
+                            <span style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+                              <span>{formatTokens(tokenTotal)}</span>
+                              {cachedTotal !== undefined && (
+                                <span className="muted" style={{ fontSize: 11, lineHeight: 1 }}>
+                                  cache {formatTokens(cachedTotal)}
+                                </span>
+                              )}
+                            </span>
+                          )
                         : <span className="muted">{t(`logs.tokens.${log.usageStatus ?? "unreported"}`)}</span>;
                     })()}
                   </td>

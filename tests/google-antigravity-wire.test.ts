@@ -118,24 +118,26 @@ describe("antigravity parseStream unwraps response", () => {
     const adapter = createGoogleAdapter(provider);
     const chunks = [
       { response: { candidates: [{ content: { parts: [{ text: "hi" }] } }] } },
-      { response: { candidates: [{ finishReason: "STOP" }], usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 1 } } },
+      { response: { candidates: [{ finishReason: "STOP" }], usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 1, cachedContentTokenCount: 3 } } },
     ];
     const events: AdapterEvent[] = [];
     for await (const ev of adapter.parseStream(sseResponse(chunks))) events.push(ev);
     expect(events.some(e => e.type === "text_delta" && e.text === "hi")).toBe(true);
     const done = events.find(e => e.type === "done");
     expect((done as Extract<AdapterEvent, { type: "done" }>).usage?.inputTokens).toBe(4);
+    expect((done as Extract<AdapterEvent, { type: "done" }>).usage?.cachedInputTokens).toBe(3);
   });
 });
 
 describe("antigravity parseResponse unwraps response (non-streaming)", () => {
   test("reads response.candidates + response.usageMetadata from the CCA envelope", async () => {
     const adapter = createGoogleAdapter(provider);
-    const body = JSON.stringify({ response: { candidates: [{ content: { parts: [{ text: "hello" }] } }], usageMetadata: { promptTokenCount: 9, candidatesTokenCount: 2 } } });
+    const body = JSON.stringify({ response: { candidates: [{ content: { parts: [{ text: "hello" }] } }], usageMetadata: { promptTokenCount: 9, candidatesTokenCount: 2, cachedContentTokenCount: 7 } } });
     const events = await adapter.parseResponse!(new Response(body, { status: 200 }));
     expect(events.some(e => e.type === "text_delta" && e.text === "hello")).toBe(true);
     const done = events.find(e => e.type === "done");
     expect((done as Extract<AdapterEvent, { type: "done" }>).usage?.inputTokens).toBe(9);
+    expect((done as Extract<AdapterEvent, { type: "done" }>).usage?.cachedInputTokens).toBe(7);
   });
 
   test("non-streaming observes thoughtSignatures so the next turn can replay them", async () => {
