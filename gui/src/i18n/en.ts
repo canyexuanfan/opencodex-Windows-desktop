@@ -166,6 +166,7 @@ export const en = {
   "usage.card.measured": "Measured",
   "usage.card.reported": "Reported",
   "usage.card.totalTokens": "Total tokens",
+  "usage.card.cachedTokens": "Cached tokens",
   "usage.card.coverage": "Coverage",
   "usage.card.activeDays": "Active days",
   "usage.section.heatmap": "Daily activity",

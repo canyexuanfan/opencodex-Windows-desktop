@@ -272,6 +272,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
             <div className="stat"><div className="muted">{t("usage.card.requests")}</div><div className="stat-value">{data.summary.requests}</div></div>
             <div className="stat"><div className="muted">{t("usage.card.measured")}</div><div className="stat-value">{data.summary.measuredRequests}</div></div>
             <div className="stat"><div className="muted">{t("usage.card.totalTokens")}</div><div className="stat-value">{formatTotalTokens(data.summary.totalTokens, locale)}</div></div>
+            <div className="stat"><div className="muted">{t("usage.card.cachedTokens")}</div><div className="stat-value">{formatTotalTokens(data.summary.cachedInputTokens, locale)}</div></div>
             <div className="stat"><div className="muted">{t("usage.card.coverage")}</div><div className="stat-value">{formatPct(data.summary.coverageRatio)}</div></div>
             <div className="stat"><div className="muted">{t("usage.card.activeDays")}</div><div className="stat-value">{activeDays}</div></div>
           </div>

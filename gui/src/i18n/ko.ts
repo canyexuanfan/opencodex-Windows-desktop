@@ -166,6 +166,7 @@ export const ko: Record<TKey, string> = {
   "usage.card.measured": "측정됨",
   "usage.card.reported": "측정됨",
   "usage.card.totalTokens": "총 토큰",
+  "usage.card.cachedTokens": "캐시 토큰",
   "usage.card.coverage": "커버리지",
   "usage.card.activeDays": "활동일",
   "usage.section.heatmap": "일별 활동",

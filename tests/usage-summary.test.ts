@@ -82,6 +82,33 @@ describe("summarizeUsage", () => {
     });
   });
 
+  test("cached input tokens aggregate separately from total tokens", () => {
+    const entries: PersistedUsageEntry[] = [
+      entry({
+        ts: FIXED_NOW - 1000,
+        provider: "anthropic",
+        usageStatus: "reported",
+        usage: { inputTokens: 100, outputTokens: 20, cachedInputTokens: 40 },
+        totalTokens: 120,
+      }),
+      entry({
+        ts: FIXED_NOW - 2000,
+        provider: "kiro",
+        usageStatus: "estimated",
+        usage: { inputTokens: 30, outputTokens: 5, cachedInputTokens: 10, estimated: true },
+        totalTokens: 35,
+      }),
+    ];
+    const sum = summarizeUsage(entries, "30d", FIXED_NOW);
+
+    expect(sum.summary.cachedInputTokens).toBe(50);
+    expect(sum.summary.inputTokens).toBe(130);
+    expect(sum.summary.outputTokens).toBe(25);
+    expect(sum.summary.totalTokens).toBe(155);
+    expect(sum.summary.reportedRequests).toBe(1);
+    expect(sum.summary.estimatedRequests).toBe(1);
+  });
+
   test("Kiro estimated totals count as measured for coverage and model rows", () => {
     const entries: PersistedUsageEntry[] = [
       entry({

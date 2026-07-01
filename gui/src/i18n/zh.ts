@@ -166,6 +166,7 @@ export const zh: Record<TKey, string> = {
   "usage.card.measured": "已计量",
   "usage.card.reported": "已上报",
   "usage.card.totalTokens": "Token 总数",
+  "usage.card.cachedTokens": "缓存 Token",
   "usage.card.coverage": "覆盖率",
   "usage.card.activeDays": "活跃天数",
   "usage.section.heatmap": "每日活动",
