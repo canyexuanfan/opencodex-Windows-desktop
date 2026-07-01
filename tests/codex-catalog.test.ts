@@ -148,6 +148,20 @@ describe("Codex catalog routed normalization", () => {
     expect(native?.auto_compact_token_limit).toBe(244_800);
   });
 
+  test("native gpt-5.3-codex-spark uses its 128k context window instead of inherited codex max", () => {
+    const template = {
+      ...nativeTemplate(),
+      context_window: 272_000,
+      max_context_window: 272_000,
+    };
+    const entries = buildCatalogEntries(template, ["gpt-5.3-codex-spark"], []);
+    const native = entries.find(e => e.slug === "gpt-5.3-codex-spark");
+
+    expect(native?.context_window).toBe(128_000);
+    expect(native?.max_context_window).toBe(128_000);
+    expect(native?.auto_compact_token_limit).toBe(115_200);
+  });
+
   test("routed entries still cap stale native max context to their active context window", () => {
     const template = {
       ...nativeTemplate(),

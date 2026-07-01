@@ -72,6 +72,7 @@ function isUnsupportedOpenAiNativeSlug(slug: string): boolean {
 const NATIVE_OPENAI_CONTEXT_OVERRIDES: Record<string, { contextWindow?: number; maxContextWindow?: number }> = {
   "gpt-5.5": { contextWindow: 272_000, maxContextWindow: 272_000 },
   "gpt-5.4": { maxContextWindow: 1_000_000 },
+  "gpt-5.3-codex-spark": { contextWindow: 128_000, maxContextWindow: 128_000 },
 };
 
 /**
