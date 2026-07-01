@@ -76,6 +76,29 @@ describe("Responses bridge reasoning and usage parity", () => {
     });
   });
 
+  test("Anthropic cache read and write tokens count toward Responses input totals", async () => {
+    const frames = await collectSse(bridgeToResponsesSSE(replay([
+      {
+        type: "done",
+        usage: {
+          inputTokens: 600,
+          outputTokens: 20,
+          cachedInputTokens: 78_000,
+          cacheReadInputTokens: 77_000,
+          cacheCreationInputTokens: 1_000,
+        },
+      },
+    ]), "anthropic/claude-opus-4-6"));
+
+    const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
+    expect(completed.usage).toMatchObject({
+      input_tokens: 78_600,
+      input_tokens_details: { cached_tokens: 78_000 },
+      output_tokens: 20,
+      total_tokens: 78_620,
+    });
+  });
+
   test("adapter heartbeat is non-visual in streaming and non-streaming responses", async () => {
     const events: AdapterEvent[] = [
       { type: "heartbeat" },

@@ -1,5 +1,6 @@
 import { baseProviderLabel } from "./provider-label";
-import { usageDisplayTotalTokens, type PersistedUsageEntry, type UsageStatus } from "./usage-log";
+import { usageDisplayTotalTokens } from "./usage-totals";
+import type { PersistedUsageEntry, UsageStatus } from "./usage-log";
 
 export type UsageRange = "7d" | "30d" | "all";
 
