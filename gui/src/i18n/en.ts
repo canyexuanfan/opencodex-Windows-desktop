@@ -8,6 +8,7 @@ export const en = {
   "nav.subagents": "Subagents",
   "nav.logs": "Logs",
   "nav.usage": "Usage",
+  "nav.cyberpunk": "Cyberpunk",
   "common.github": "GitHub",
   "common.save": "Save",
   "common.cancel": "Cancel",
