@@ -63,3 +63,10 @@ opencodex has several unrelated cache surfaces. Treat them separately:
 - OpenAI / ChatGPT Responses passthrough preserves raw `prompt_cache_key` and `prompt_cache_retention` fields; opencodex does not synthesize or validate retention policy in this pass.
 - Kimi and other generic OpenAI-compatible chat providers remain usage-only for cache behavior; `prompt_tokens_details.cached_tokens` is preserved when upstream reports it, but no unproven request fields are injected.
 - Google / Antigravity remains implicit-cache usage-only; `usageMetadata.cachedContentTokenCount` continues to map to `cachedInputTokens`.
+
+## Phase 5 outcome
+
+- `cachedInputTokens` remains the combined compatibility total used by Responses bridge output and usage summaries.
+- Anthropic usage now also records optional `cacheReadInputTokens` and `cacheCreationInputTokens` when upstream reports `cache_read_input_tokens` or `cache_creation_input_tokens`.
+- Usage JSONL persistence preserves the optional read/write detail fields without changing total token math.
+- Request log tooltips include `cacheRead=<n>` and `cacheCreate=<n>` when present, so a row can distinguish true cache hits from first-turn cache writes.

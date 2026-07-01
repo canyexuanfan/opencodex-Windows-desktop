@@ -74,7 +74,11 @@ function usageFromAnthropic(usage: Record<string, number> | undefined): OcxUsage
   return {
     inputTokens: usage.input_tokens ?? 0,
     outputTokens: usage.output_tokens ?? 0,
-    ...(hasCache ? { cachedInputTokens: (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) } : {}),
+    ...(hasCache ? {
+      cachedInputTokens: (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
+      cacheReadInputTokens: usage.cache_read_input_tokens ?? 0,
+      cacheCreationInputTokens: usage.cache_creation_input_tokens ?? 0,
+    } : {}),
   };
 }
 

@@ -58,7 +58,13 @@ describe("adapter reasoning and usage details", () => {
 
     expect(events?.at(-1)).toEqual({
       type: "done",
-      usage: { inputTokens: 20, outputTokens: 8, cachedInputTokens: 10 },
+      usage: {
+        inputTokens: 20,
+        outputTokens: 8,
+        cachedInputTokens: 10,
+        cacheReadInputTokens: 4,
+        cacheCreationInputTokens: 6,
+      },
     });
   });
 
@@ -218,7 +224,13 @@ describe("usage and content retention (F2)", () => {
     expect(dones).toHaveLength(1);
     expect(dones[0]).toEqual({
       type: "done",
-      usage: { inputTokens: 20, outputTokens: 4, cachedInputTokens: 5 },
+      usage: {
+        inputTokens: 20,
+        outputTokens: 4,
+        cachedInputTokens: 5,
+        cacheReadInputTokens: 3,
+        cacheCreationInputTokens: 2,
+      },
     });
   });
 

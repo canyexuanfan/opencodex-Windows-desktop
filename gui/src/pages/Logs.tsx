@@ -5,6 +5,8 @@ interface UsageBreakdown {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
   reasoningOutputTokens?: number;
 }
 
@@ -43,6 +45,8 @@ function tokensTitle(log: LogEntry): string | undefined {
     `out=${log.usage.outputTokens}`,
   ];
   if (typeof log.usage.cachedInputTokens === "number") parts.push(`cached=${log.usage.cachedInputTokens}`);
+  if (typeof log.usage.cacheReadInputTokens === "number") parts.push(`cacheRead=${log.usage.cacheReadInputTokens}`);
+  if (typeof log.usage.cacheCreationInputTokens === "number") parts.push(`cacheCreate=${log.usage.cacheCreationInputTokens}`);
   if (typeof log.usage.reasoningOutputTokens === "number") parts.push(`reasoning=${log.usage.reasoningOutputTokens}`);
   return parts.join(" · ");
 }

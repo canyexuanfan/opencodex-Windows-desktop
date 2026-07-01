@@ -49,6 +49,8 @@ function normalizeUsageValue(usage: OcxUsage | undefined): OcxUsage | undefined 
     outputTokens: usage.outputTokens,
     ...(typeof usage.totalTokens === "number" ? { totalTokens: usage.totalTokens } : {}),
     ...(typeof usage.cachedInputTokens === "number" ? { cachedInputTokens: usage.cachedInputTokens } : {}),
+    ...(typeof usage.cacheReadInputTokens === "number" ? { cacheReadInputTokens: usage.cacheReadInputTokens } : {}),
+    ...(typeof usage.cacheCreationInputTokens === "number" ? { cacheCreationInputTokens: usage.cacheCreationInputTokens } : {}),
     ...(typeof usage.reasoningOutputTokens === "number" ? { reasoningOutputTokens: usage.reasoningOutputTokens } : {}),
     ...(usage.estimated ? { estimated: true } : {}),
   };
