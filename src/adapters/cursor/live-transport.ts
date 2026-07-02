@@ -40,6 +40,7 @@ import { buildMcpToolDefinitions, mcpDepsFromManager } from "./native-exec-mcp";
 import { desktopDepsFromConfig } from "./native-exec-desktop";
 import {
   buildCursorToolDefinitions,
+  cursorRequestAdvertisesApplyPatch,
   cursorRequestHasShellAlias,
   cursorToolInputSchema,
   cursorToolWireName,
@@ -390,7 +391,11 @@ class LiveCursorTransport implements CursorTransport {
     this.activeClientToolFinalizeGraceMs = clientToolFinalizeGraceMsForRequest(request, this.clientToolFinalizeGraceMs);
     const cursorVisibleTools = cursorToolsForActivePrompt(request.tools, activeText, request.toolChoice);
     const clientToolDefs = buildCursorToolDefinitions(cursorVisibleTools, request.toolChoice);
-    this.execContext = { ...this.execContext, clientToolDefs };
+    this.execContext = {
+      ...this.execContext,
+      clientToolDefs,
+      rejectNativeFileMutations: cursorRequestAdvertisesApplyPatch(request.tools, request.toolChoice),
+    };
     const toolSchemas = new Map<string, unknown>();
     const cursorToolNameMap = new Map<string, string>();
     for (const tool of cursorVisibleTools ?? []) {

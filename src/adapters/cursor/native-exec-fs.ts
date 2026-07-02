@@ -4,6 +4,7 @@ import { create } from "@bufbuild/protobuf";
 import {
   DeleteErrorSchema,
   DeleteFileNotFoundSchema,
+  DeleteRejectedSchema,
   DeleteResultSchema,
   DeleteSuccessSchema,
   GrepContentMatchSchema,
@@ -26,6 +27,7 @@ import {
   ReadResultSchema,
   ReadSuccessSchema,
   WriteErrorSchema,
+  WriteRejectedSchema,
   WriteResultSchema,
   WriteSuccessSchema,
   type ExecServerMessage,
@@ -36,6 +38,10 @@ import { errorText, execBytes, lineCount, textDecoder, textEncoder } from "./nat
 const MAX_GREP_FILES = 500;
 const MAX_GREP_RESULTS = 200;
 const MAX_FILE_BYTES = 1_000_000;
+
+function codexNativeMutationRefusal(operation: "write" | "delete"): string {
+  return `Cursor-native ${operation} is disabled for this Codex request because apply_patch is available. Use the apply_patch tool for file edits so Codex can approve the change, enforce sandbox policy, show diffs, and record rollout. No file was changed.`;
+}
 
 export function readExec(execMsg: ExecServerMessage): Uint8Array {
   if (execMsg.message.case !== "readArgs") throw new Error("invalid read exec");
@@ -67,6 +73,17 @@ export function readExec(execMsg: ExecServerMessage): Uint8Array {
   }
 }
 
+export function rejectWriteExecForApplyPatch(execMsg: ExecServerMessage): Uint8Array {
+  if (execMsg.message.case !== "writeArgs") throw new Error("invalid write exec");
+  const path = resolve(execMsg.message.value.path);
+  return execBytes(execMsg, "writeResult", create(WriteResultSchema, {
+    result: {
+      case: "rejected",
+      value: create(WriteRejectedSchema, { path, reason: codexNativeMutationRefusal("write") }),
+    },
+  }));
+}
+
 export function writeExec(execMsg: ExecServerMessage): Uint8Array {
   if (execMsg.message.case !== "writeArgs") throw new Error("invalid write exec");
   const args = execMsg.message.value;
@@ -92,6 +109,17 @@ export function writeExec(execMsg: ExecServerMessage): Uint8Array {
       result: { case: "error", value: create(WriteErrorSchema, { path, error: errorText(err) }) },
     }));
   }
+}
+
+export function rejectDeleteExecForApplyPatch(execMsg: ExecServerMessage): Uint8Array {
+  if (execMsg.message.case !== "deleteArgs") throw new Error("invalid delete exec");
+  const path = resolve(execMsg.message.value.path);
+  return execBytes(execMsg, "deleteResult", create(DeleteResultSchema, {
+    result: {
+      case: "rejected",
+      value: create(DeleteRejectedSchema, { path, reason: codexNativeMutationRefusal("delete") }),
+    },
+  }));
 }
 
 export function deleteExec(execMsg: ExecServerMessage): Uint8Array {

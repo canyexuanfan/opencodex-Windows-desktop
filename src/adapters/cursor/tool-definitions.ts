@@ -6,6 +6,7 @@ import { McpToolDefinitionSchema, type McpToolDefinition } from "./gen/agent_pb"
 
 export const OCX_RESPONSES_TOOL_PROVIDER = "opencodex-responses";
 export const CODEX_EXEC_COMMAND_TOOL = "exec_command";
+export const CODEX_APPLY_PATCH_TOOL = "apply_patch";
 export const CURSOR_EXEC_COMMAND_TOOL = CODEX_EXEC_COMMAND_TOOL;
 export const CURSOR_SHELL_ALIAS_SYSTEM_NOTE = 'Shell commands use the `exec_command` tool with JSON arguments like {"cmd":"..."}.';
 export const CURSOR_SHELL_ALIAS_USER_HINT = "Use exec_command for this shell command.";
@@ -43,6 +44,13 @@ function isBareCodexExecCommandTool(tool: Pick<OcxTool, "namespace" | "name">): 
 
 export function cursorRequestHasShellAlias(tools: readonly Pick<OcxTool, "namespace" | "name">[] | undefined): boolean {
   return tools?.some(isBareCodexExecCommandTool) ?? false;
+}
+
+export function cursorRequestAdvertisesApplyPatch(
+  tools: readonly Pick<OcxTool, "namespace" | "name" | "freeform">[] | undefined,
+  toolChoice?: OcxRequestOptions["toolChoice"],
+): boolean {
+  return tools?.some(tool => !tool.namespace && tool.name === CODEX_APPLY_PATCH_TOOL && tool.freeform === true && toolChoiceAllows(tool, toolChoice)) ?? false;
 }
 
 export function cursorToolWireName(tool: Pick<OcxTool, "namespace" | "name">): string {
@@ -218,7 +226,7 @@ function discoveryToolLabel(wireNames: readonly string[]): string | undefined {
 }
 
 export function buildCursorToolGuidanceSystemNote(
-  tools: readonly Pick<OcxTool, "namespace" | "name">[] | undefined,
+  tools: readonly Pick<OcxTool, "namespace" | "name" | "freeform">[] | undefined,
   toolChoice?: OcxRequestOptions["toolChoice"],
 ): string | undefined {
   if (!tools?.length) return undefined;
@@ -231,6 +239,7 @@ export function buildCursorToolGuidanceSystemNote(
 
   const listedNames = quotedNames(wireNames);
   const hasBareExec = wireNames.includes(CODEX_EXEC_COMMAND_TOOL);
+  const hasApplyPatch = cursorRequestAdvertisesApplyPatch(tools, toolChoice);
   const discoveryTools = discoveryToolLabel(wireNames);
   const unavailableNeighborNames = unavailableNeighborAgentToolNames(wireNames);
   const notes = [
@@ -248,6 +257,9 @@ export function buildCursorToolGuidanceSystemNote(
     "Cursor product features (Chronicle, screen recording, Notes, Plans, background agents) are available only if this turn's catalog lists a matching tool; do not offer or promise them otherwise.",
     hasBareExec
       ? "For file read/search/listing, use `exec_command` when no more specific listed tool is available."
+      : undefined,
+    hasApplyPatch
+      ? "For file edits, use the `apply_patch` tool, not built-in file write/delete tools."
       : undefined,
     hasBareExec
       ? "For tool-count demos, each counted tool must be a separate `exec_command` invocation/result; do not collapse several requested tools into one chained shell command."

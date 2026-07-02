@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { create, fromBinary } from "@bufbuild/protobuf";
@@ -113,6 +113,53 @@ describe("Cursor native exec bridge", () => {
       expect(read.message.value.result.value.output.case).toBe("content");
       expect(read.message.value.result.value.totalLines).toBe(2);
     }
+  });
+
+  test("rejects native write and delete when apply_patch is available", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-cursor-patch-policy-"));
+    const newPath = join(dir, "new.txt");
+    const existingPath = join(dir, "existing.txt");
+    writeFileSync(existingPath, "keep");
+
+    const write = decode((await handleCursorNativeExec(execMessage({
+      case: "writeArgs",
+      value: create(WriteArgsSchema, { path: newPath, fileText: "blocked" }),
+    }), {
+      rejectNativeFileMutations: true,
+    }))[0]);
+
+    expect(write.message.case).toBe("writeResult");
+    expect(write.message.value.result.case).toBe("rejected");
+    if (write.message.value.result.case === "rejected") {
+      expect(write.message.value.result.value.reason).toContain("apply_patch");
+      expect(write.message.value.result.value.reason).toContain("No file was changed.");
+    }
+    expect(existsSync(newPath)).toBe(false);
+
+    const read = decode((await handleCursorNativeExec(execMessage({
+      case: "readArgs",
+      value: create(ReadArgsSchema, { path: existingPath }),
+    }), {
+      rejectNativeFileMutations: true,
+    }))[0]);
+
+    expect(read.message.case).toBe("readResult");
+    expect(read.message.value.result.case).toBe("success");
+
+    const deleted = decode((await handleCursorNativeExec(execMessage({
+      case: "deleteArgs",
+      value: create(DeleteArgsSchema, { path: existingPath }),
+    }), {
+      rejectNativeFileMutations: true,
+    }))[0]);
+
+    expect(deleted.message.case).toBe("deleteResult");
+    expect(deleted.message.value.result.case).toBe("rejected");
+    if (deleted.message.value.result.case === "rejected") {
+      expect(deleted.message.value.result.value.reason).toContain("apply_patch");
+      expect(deleted.message.value.result.value.reason).toContain("No file was changed.");
+    }
+    expect(readFileSync(existingPath, "utf8")).toBe("keep");
   });
 
   test("deletes only the requested temp file", async () => {

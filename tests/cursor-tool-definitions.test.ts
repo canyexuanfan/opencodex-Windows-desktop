@@ -7,6 +7,7 @@ import {
   cursorToolsForActivePrompt,
   buildCursorToolGuidanceSystemNote,
   CURSOR_EXEC_COMMAND_INPUT_SCHEMA,
+  cursorRequestAdvertisesApplyPatch,
   cursorToolWireName,
   isGenericToolUseCountDemoPrompt,
 } from "../src/adapters/cursor/tool-definitions";
@@ -188,6 +189,24 @@ describe("Cursor tool definitions", () => {
     expect(note).toContain("Use MCP only for explicit discovery/resource tasks");
     expect(note).toContain("not generic tool-count demos");
     expect(note).toContain("Do not count or report a tool call unless a tool result was actually returned.");
+  });
+
+  test("adds codex-native edit guidance only when apply_patch is advertised", () => {
+    const tools: OcxTool[] = [
+      { name: "exec_command", description: "Run", parameters: {} },
+      { name: "apply_patch", description: "Patch", parameters: {}, freeform: true },
+    ];
+
+    expect(cursorRequestAdvertisesApplyPatch(tools)).toBe(true);
+    const note = buildCursorToolGuidanceSystemNote(tools);
+    expect(note).toContain("For file edits, use the `apply_patch` tool, not built-in file write/delete tools.");
+
+    const noPatchNote = buildCursorToolGuidanceSystemNote([{ name: "exec_command", description: "Run", parameters: {} }]);
+    expect(noPatchNote).not.toContain("built-in file write/delete tools");
+
+    const execOnlyNote = buildCursorToolGuidanceSystemNote(tools, { name: "exec_command" });
+    expect(cursorRequestAdvertisesApplyPatch(tools, { name: "exec_command" })).toBe(false);
+    expect(execOnlyNote).not.toContain("built-in file write/delete tools");
   });
 
   test("does not forbid neighboring-agent names that are actually advertised", () => {

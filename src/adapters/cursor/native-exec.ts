@@ -14,7 +14,7 @@ import {
   type ExecServerMessage,
   type KvServerMessage,
 } from "./gen/agent_pb";
-import { deleteExec, grepExec, lsExec, readExec, writeExec } from "./native-exec-fs";
+import { deleteExec, grepExec, lsExec, readExec, rejectDeleteExecForApplyPatch, rejectWriteExecForApplyPatch, writeExec } from "./native-exec-fs";
 import { fetchExec, type CursorNativeNetworkDeps } from "./native-exec-network";
 import { backgroundShellSpawnExec, shellExec, shellStreamExec, writeShellStdinExec } from "./native-exec-shell";
 import {
@@ -39,6 +39,8 @@ export type CursorNativeExecDeps = CursorNativeNetworkDeps & CursorNativeToolDep
 export interface CursorNativeExecContext extends CursorNativeExecDeps {
   mcpToolDefs?: McpToolDefinition[];
   clientToolDefs?: McpToolDefinition[];
+  /** apply_patch is visible for this request; Cursor-native write/delete must not bypass Codex. */
+  rejectNativeFileMutations?: boolean;
 }
 
 /**
@@ -114,8 +116,8 @@ export async function handleCursorNativeExec(execMsg: ExecServerMessage, deps: C
     }))];
   }
   if (execCase === "readArgs") return [readExec(execMsg)];
-  if (execCase === "writeArgs") return [writeExec(execMsg)];
-  if (execCase === "deleteArgs") return [deleteExec(execMsg)];
+  if (execCase === "writeArgs") return [deps.rejectNativeFileMutations ? rejectWriteExecForApplyPatch(execMsg) : writeExec(execMsg)];
+  if (execCase === "deleteArgs") return [deps.rejectNativeFileMutations ? rejectDeleteExecForApplyPatch(execMsg) : deleteExec(execMsg)];
   if (execCase === "lsArgs") return [lsExec(execMsg)];
   if (execCase === "grepArgs") return [grepExec(execMsg)];
   if (execCase === "shellArgs") return [shellExec(execMsg)];
