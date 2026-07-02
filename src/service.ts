@@ -569,6 +569,13 @@ export function stopServiceIfInstalled(): boolean {
   return false;
 }
 
+/** Delete install-state files; stale state would make `ocx update` "reinstall" a service that no longer exists. */
+function removeServiceInstallState(): void {
+  for (const path of serviceStatePaths()) {
+    try { if (existsSync(path)) unlinkSync(path); } catch { /* best-effort */ }
+  }
+}
+
 /**
  * Best-effort service removal for full uninstall. Unlike `ocx service uninstall`, this is quiet
  * when no service exists and never exits the process just because the platform has no service
@@ -578,16 +585,16 @@ export function uninstallServiceIfInstalled(): boolean {
   assertServiceEnvironmentMatchesInstall();
   if (process.platform === "darwin") {
     if (existsSync(plistPath())) {
-      try { uninstallLaunchd(); return true; } catch { return false; }
+      try { uninstallLaunchd(); removeServiceInstallState(); return true; } catch { return false; }
     }
   } else if (process.platform === "win32") {
     try {
       const q = schtasks(["/query", "/tn", TASK]);
-      if (q.includes(TASK)) { uninstallWindows(); return true; }
+      if (q.includes(TASK)) { uninstallWindows(); removeServiceInstallState(); return true; }
     } catch { /* task not found */ }
   } else if (process.platform === "linux" && existsSync(unitPath())) {
-    try { uninstallSystemd(); return true; } catch {
-      try { unlinkSync(unitPath()); return true; } catch { return false; }
+    try { uninstallSystemd(); removeServiceInstallState(); return true; } catch {
+      try { unlinkSync(unitPath()); removeServiceInstallState(); return true; } catch { return false; }
     }
   }
   return false;
@@ -657,9 +664,7 @@ export async function serviceCommand(sub?: string): Promise<void> {
       await stopTrackedProxyForServiceCommand();
       ops.uninstall();
       restoreNativeCodex();
-      for (const path of serviceStatePaths()) {
-        try { if (existsSync(path)) unlinkSync(path); } catch { /* best-effort */ }
-      }
+      removeServiceInstallState();
       try { if (existsSync(serviceApiTokenFilePath())) unlinkSync(serviceApiTokenFilePath()); } catch { /* best-effort */ }
       console.log("✅ service uninstalled + native Codex restored.");
       break;

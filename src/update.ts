@@ -93,8 +93,9 @@ export async function runUpdate(): Promise<void> {
 
   // Never replace package files under a live proxy: the running server dynamic-imports
   // modules after startup, so an in-place update leaves it executing mixed old/new code.
-  // Full `ocx stop` semantics (graceful drain, service stop, native Codex restore).
-  if (readPid()) {
+  // Gate on the service too, not just the pid file — a service-managed proxy can be live
+  // while ocx.pid is stale/missing. Full `ocx stop` semantics (drain, service stop, restore).
+  if (serviceWasInstalled || readPid()) {
     console.log("⏹  Stopping the running proxy before updating...");
     const stop = spawnSync(process.execPath, [process.argv[1], "stop"], { stdio: "inherit", windowsHide: true });
     if (stop.status !== 0 || readPid()) {

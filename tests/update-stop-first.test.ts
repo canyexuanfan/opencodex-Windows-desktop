@@ -13,7 +13,7 @@ describe("update stops the running proxy before replacing files", () => {
     const updateAt = updateSource.indexOf("const { bin, args: cmdArgs } = updateCommand(installer, tag);");
     expect(stopAt).toBeGreaterThan(-1);
     expect(stopAt).toBeLessThan(updateAt);
-    expect(updateSource).toContain("if (readPid())");
+    expect(updateSource).toContain("if (serviceWasInstalled || readPid())");
   });
 
   test("npm launcher update path stops via its own launcher path before npm install", () => {
@@ -31,6 +31,11 @@ describe("update stops the running proxy before replacing files", () => {
     expect(launcherSource).toContain("aborting the update");
     expect(launcherSource).toContain('[launcher, "service", "install"]');
     expect(launcherSource).toContain('existsSync(join(configDir(), "service-state.json"))');
+  });
+
+  test("the stop gate covers service-managed proxies whose pid file is stale/missing", () => {
+    expect(updateSource).toContain("if (serviceWasInstalled || readPid())");
+    expect(launcherSource).toContain('if (serviceWasInstalled || existsSync(join(configDir(), "ocx.pid")))');
   });
 });
 

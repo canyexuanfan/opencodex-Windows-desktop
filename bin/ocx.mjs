@@ -104,10 +104,10 @@ function runNpmSelfUpdate() {
   const serviceWasInstalled = existsSync(join(configDir(), "service-state.json"));
 
   // Never replace package files under a live proxy — stop it first (full `ocx stop`
-  // semantics: graceful drain, service stop, native Codex restore). The pid file is the
-  // cheap liveness gate available to this Node launcher.
+  // semantics: graceful drain, service stop, native Codex restore). Gate on the service
+  // too: a service-managed proxy can be live while ocx.pid is stale/missing.
   const launcher = fileURLToPath(import.meta.url);
-  if (existsSync(join(configDir(), "ocx.pid"))) {
+  if (serviceWasInstalled || existsSync(join(configDir(), "ocx.pid"))) {
     console.log("⏹  Stopping the running proxy before updating...");
     const stopRes = spawnSync(process.execPath, [launcher, "stop"], { stdio: "inherit", windowsHide: true });
     if (stopRes.status !== 0 || existsSync(join(configDir(), "ocx.pid"))) {
