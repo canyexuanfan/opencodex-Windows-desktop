@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
-import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, buildPlist, buildUnit, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, serviceLogPath, serviceStatusSummary } from "../src/service";
+import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, buildPlist, buildUnit, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, serviceLogPath, serviceStatusSummary } from "../src/service";
 import { serviceApiTokenFilePath } from "../src/service-secrets";
 import type { OcxConfig } from "../src/types";
 
@@ -324,7 +324,8 @@ describe("service lifecycle cleanup ordering", () => {
   test("service cleanup stops gracefully first via the shared stopper and clears the pid file", async () => {
     const service = await readText("src/service.ts");
 
-    expect(service).toContain('import { getConfigDir, readPid, removePid } from "./config";');
+    expect(service).toContain('import { getConfigDir, readPid, removePid, removeRuntimePort } from "./config";');
+    expect(service).toContain("removeRuntimePort(pid);");
     expect(service).toContain('import { isProcessAlive, stopProxy } from "./process-control";');
     expect(service).toContain('type TrackedProxyCleanupResult = "none" | "stale" | "stopped";');
     expect(service).toContain("async function stopTrackedProxyIfRunning(): Promise<TrackedProxyCleanupResult>");
@@ -351,6 +352,44 @@ describe("service diagnostics", () => {
     const summary = serviceStatusSummary();
 
     expectTextToContainPath(summary, serviceLogPath());
+  });
+
+  test("flags stale baked service paths recorded at install time", () => {
+    const oldOpenCodexHome = process.env.OPENCODEX_HOME;
+    const stateDir = join(TEST_DIR, "baked-paths-home");
+    try {
+      process.env.OPENCODEX_HOME = stateDir;
+      mkdirSync(stateDir, { recursive: true });
+      const statePath = join(stateDir, "service-state.json");
+
+      const missing = join(stateDir, "gone", "bun");
+      writeFileSync(statePath, JSON.stringify({
+        version: 1,
+        codexHome: stateDir,
+        opencodexHome: stateDir,
+        bunPath: missing,
+        cliPath: join(import.meta.dir, "service.test.ts"),
+      }), "utf8");
+      const diagnostic = bakedServicePathsDiagnostic();
+      expect(diagnostic).toContain("STALE baked paths");
+      expect(diagnostic).toContain(missing);
+
+      writeFileSync(statePath, JSON.stringify({
+        version: 1,
+        codexHome: stateDir,
+        opencodexHome: stateDir,
+        bunPath: join(import.meta.dir, "service.test.ts"),
+        cliPath: join(import.meta.dir, "service.test.ts"),
+      }), "utf8");
+      expect(bakedServicePathsDiagnostic()).toBeNull();
+
+      // Pre-loop-3 state files without baked paths stay silent.
+      writeFileSync(statePath, JSON.stringify({ version: 1, codexHome: stateDir, opencodexHome: stateDir }), "utf8");
+      expect(bakedServicePathsDiagnostic()).toBeNull();
+    } finally {
+      if (oldOpenCodexHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = oldOpenCodexHome;
+    }
   });
 
   test("direct service status prints the diagnostics line", async () => {

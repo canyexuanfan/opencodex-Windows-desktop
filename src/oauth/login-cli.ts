@@ -1,6 +1,7 @@
 import * as readline from "node:readline";
 import { openUrl } from "../open-url";
-import { loadConfig, readPid, saveConfig } from "../config";
+import { loadConfig, saveConfig } from "../config";
+import { findLiveProxy } from "../proxy-liveness";
 import { OAUTH_PROVIDERS, runLogin } from "./index";
 import { KEY_LOGIN_PROVIDERS, isKeyLoginProvider, validateApiKey, type KeyLoginProvider } from "./key-providers";
 import type { OcxProviderConfig } from "../types";
@@ -14,10 +15,12 @@ export function runningProxyUpdateHeaders(): Headers {
 
 /** Push the new provider into a running proxy's live config so it routes without a restart. */
 async function notifyRunningProxy(name: string, provider: unknown): Promise<void> {
-  if (!readPid()) return;
-  const cfg = loadConfig();
+  // Identity-checked runtime-port lookup: reaches a fallback-port proxy and avoids
+  // posting credentials-adjacent config to whatever else answers on config.port.
+  const live = await findLiveProxy();
+  if (!live) return;
   try {
-    await fetch(`http://localhost:${cfg.port}/api/providers`, {
+    await fetch(`http://127.0.0.1:${live.port}/api/providers`, {
       method: "POST",
       headers: runningProxyUpdateHeaders(),
       body: JSON.stringify({ name, provider }),

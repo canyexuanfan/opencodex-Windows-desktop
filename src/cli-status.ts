@@ -1,6 +1,7 @@
 import { durableBunRuntime } from "./bun-runtime";
 import { codexAutoStartEnabled, getConfigPath, getPidPath, readConfigDiagnostics, readPid, readRuntimePort, type RuntimePortState } from "./config";
 import { diagnoseCodexBundledPlugins, type CodexPluginsDiagnostic } from "./codex-plugins-doctor";
+import { isOpencodexHealthz } from "./proxy-liveness";
 import type { OcxConfig } from "./types";
 import { serviceStatusSummary } from "./service";
 
@@ -93,7 +94,11 @@ async function checkProxyHealth(target: ListenTarget): Promise<HealthCheck> {
       const message = `returned HTTP ${response.status}`;
       return { ok: false, url, message, label: `${url} ${message}` };
     }
-    const body = await response.json().catch(() => null) as { version?: unknown; uptime?: unknown } | null;
+    const body = await response.json().catch(() => null) as { service?: unknown; status?: unknown; version?: unknown; uptime?: unknown } | null;
+    if (!isOpencodexHealthz(body)) {
+      const message = "responded, but not an opencodex proxy";
+      return { ok: false, url, message, label: `${url} ${message}` };
+    }
     const version = typeof body?.version === "string" ? ` v${body.version}` : "";
     const uptime = typeof body?.uptime === "number" ? `, uptime ${Math.round(body.uptime)}s` : "";
     const message = `ok${version}${uptime}`;

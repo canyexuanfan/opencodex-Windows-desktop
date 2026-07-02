@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { readPid } from "./config";
 
 export const PKG = "@bitkyc08/opencodex";
 const HERE = dirname(fileURLToPath(import.meta.url)); // .../opencodex/src
@@ -80,6 +81,14 @@ export async function runUpdate(): Promise<void> {
   if (latest && latest === current) {
     console.log(`Already on the latest ${tag} version (v${latest}).`);
     return;
+  }
+
+  // Never replace package files under a live proxy: the running server dynamic-imports
+  // modules after startup, so an in-place update leaves it executing mixed old/new code.
+  // Full `ocx stop` semantics (graceful drain, service stop, native Codex restore).
+  if (readPid()) {
+    console.log("⏹  Stopping the running proxy before updating (restart afterwards with 'ocx start')...");
+    spawnSync(process.execPath, [process.argv[1], "stop"], { stdio: "inherit", windowsHide: true });
   }
 
   const { bin, args: cmdArgs } = updateCommand(installer, tag);

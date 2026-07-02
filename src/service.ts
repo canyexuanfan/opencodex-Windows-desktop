@@ -9,7 +9,7 @@ import { execFileSync, execSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { getConfigDir, readPid, removePid } from "./config";
+import { getConfigDir, readPid, removePid, removeRuntimePort } from "./config";
 import { loadConfig } from "./config";
 import { restoreNativeCodex } from "./codex-inject";
 import { durableBunPath, durableBunRuntime } from "./bun-runtime";
@@ -79,13 +79,19 @@ interface ServiceInstallState {
   version: 1;
   codexHome: string;
   opencodexHome: string;
+  /** Baked at install; lets status flag paths gone stale after npm prefix/nvm moves. */
+  bunPath?: string;
+  cliPath?: string;
 }
 
 function writeServiceInstallState(): void {
+  const { bun, cli } = cliEntry();
   const state: ServiceInstallState = {
     version: 1,
     codexHome: currentCodexHome(),
     opencodexHome: currentOpenCodexHome(),
+    bunPath: bun,
+    cliPath: cli,
   };
   for (const path of serviceStatePaths()) {
     const dir = dirname(path);
@@ -406,8 +412,22 @@ function uninstallWindows(): void {
   if (existsSync(windowsTaskXmlPath())) unlinkSync(windowsTaskXmlPath());
 }
 
+/**
+ * Warn when the paths baked into installed service assets no longer exist (npm prefix
+ * moved, nvm switch, reinstall) — the service manager would restart-loop on a dead path
+ * while `schtasks`/`launchctl` still report "installed".
+ */
+export function bakedServicePathsDiagnostic(): string | null {
+  const state = readServiceInstallState();
+  if (!state?.bunPath || !state?.cliPath) return null;
+  const missing = [state.bunPath, state.cliPath].filter(path => !existsSync(path));
+  if (missing.length === 0) return null;
+  return `STALE baked paths (missing: ${missing.join(", ")}) — run 'ocx service install' to re-bake`;
+}
+
 function serviceDiagnosticsSummary(): string {
-  return `logs: ${serviceLogPath()}`;
+  const stale = bakedServicePathsDiagnostic();
+  return stale ? `${stale}; logs: ${serviceLogPath()}` : `logs: ${serviceLogPath()}`;
 }
 
 // ── Linux (systemd user unit) ──
@@ -506,10 +526,12 @@ async function stopTrackedProxyIfRunning(): Promise<TrackedProxyCleanupResult> {
   if (!pid) return "none";
   if (!isProcessAlive(pid)) {
     removePid(pid);
+    removeRuntimePort(pid);
     return "stale";
   }
   await stopProxy(pid);
   removePid(pid);
+  removeRuntimePort(pid);
   return "stopped";
 }
 

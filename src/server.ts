@@ -2008,7 +2008,8 @@ export function startServer(port?: number) {
       }
 
       if (url.pathname === "/healthz" && req.method === "GET") {
-        return jsonResponse({ status: "ok", version: VERSION, uptime: process.uptime() }, 200, req, config);
+        // service/pid/port let CLI liveness reject foreign 200s and verify pid identity.
+        return jsonResponse({ status: "ok", service: "opencodex", version: VERSION, uptime: process.uptime(), pid: process.pid, port: listenPort }, 200, req, config);
       }
 
       if (url.pathname.startsWith("/api/")) {

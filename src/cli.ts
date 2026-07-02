@@ -21,6 +21,7 @@ import { collectStatus } from "./cli-status";
 import { installCrashGuards } from "./crash-guard";
 import { hasHelpFlag, printSubcommandUsage, printUsage, printVersion } from "./cli-help";
 import { findAvailablePort, shouldPersistSelectedPort } from "./ports";
+import { findLiveProxy } from "./proxy-liveness";
 import { stopProxy } from "./process-control";
 import { serviceCommand, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "./service";
 import { drainAndShutdown, startServer } from "./server";
@@ -86,26 +87,13 @@ function parsePortOption(): number | undefined {
   return port;
 }
 
-async function proxyHealthy(port?: number): Promise<boolean> {
-  const config = loadConfig();
-  const p = port ?? config.port ?? 10100;
-  try {
-    const hostname = !config.hostname || config.hostname === "0.0.0.0" || config.hostname === "::" ? "127.0.0.1" : config.hostname;
-    const res = await fetch(`http://${hostname}:${p}/healthz`, {
-      signal: AbortSignal.timeout(750),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
 async function waitForProxy(timeoutMs = 8_000): Promise<number | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const config = loadConfig();
-    const port = config.port ?? 10100;
-    if (await proxyHealthy(port)) return port;
+    // Runtime-state-first with identity: finds the proxy even when it started on a
+    // fallback port, and never mistakes a foreign 200 for our proxy.
+    const live = await findLiveProxy();
+    if (live) return live.port;
     await new Promise(resolve => setTimeout(resolve, 150));
   }
   return null;
@@ -130,9 +118,9 @@ async function handleStart(options: { block?: boolean } = {}) {
   reconcileJournal();
   const existingPid = readPid();
   if (existingPid) {
-    const config = loadConfig();
-    if (await proxyHealthy(config.port)) {
-      console.error(`⚠️  Proxy already running (PID ${existingPid}). Use 'ocx stop' first.`);
+    const live = await findLiveProxy();
+    if (live) {
+      console.error(`⚠️  Proxy already running (PID ${live.pid ?? existingPid}, port ${live.port}). Use 'ocx stop' first.`);
       process.exit(1);
     }
     removePid(existingPid);
@@ -209,16 +197,17 @@ async function handleStart(options: { block?: boolean } = {}) {
 
 async function handleEnsure() {
   reconcileJournal();
-  let config = loadConfig();
+  const config = loadConfig();
   if (!codexAutoStartEnabled(config)) {
     console.log("Codex autostart is disabled.");
     return;
   }
-  if (await proxyHealthy(config.port)) {
-    await syncModelsToCodex(config.port).catch(e => {
+  const live = await findLiveProxy();
+  if (live) {
+    await syncModelsToCodex(live.port).catch(e => {
       console.error(`⚠️  Model sync skipped: ${e instanceof Error ? e.message : String(e)}`);
     });
-    console.log(`✅ Proxy running on port ${config.port}`);
+    console.log(`✅ Proxy running on port ${live.port}`);
     return;
   }
 
@@ -235,11 +224,12 @@ async function handleEnsure() {
     console.error("❌ Proxy did not become healthy after starting.");
     process.exit(1);
   }
-  config = loadConfig();
-  await syncModelsToCodex(config.port ?? port).catch(e => {
+  // Always sync the LIVE port: after a fallback-port start, config.port still names the
+  // busy preferred port — syncing that would point Codex at a dead listener.
+  await syncModelsToCodex(port).catch(e => {
     console.error(`⚠️  Model sync skipped: ${e instanceof Error ? e.message : String(e)}`);
   });
-  console.log(`✅ Proxy running on port ${config.port ?? port}`);
+  console.log(`✅ Proxy running on port ${port}`);
 }
 
 async function handleStop() {
@@ -427,7 +417,7 @@ switch (command) {
     break;
   }
   case "sync": {
-    await syncModelsToCodex();
+    await syncModelsToCodex((await findLiveProxy())?.port);
     break;
   }
   case "sync-cache": {

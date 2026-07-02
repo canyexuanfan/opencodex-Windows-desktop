@@ -90,6 +90,15 @@ function runNpmSelfUpdate() {
     process.exit(0);
   }
 
+  // Never replace package files under a live proxy — stop it first (full `ocx stop`
+  // semantics: graceful drain, service stop, native Codex restore). The pid file is the
+  // cheap liveness gate available to this Node launcher.
+  if (existsSync(join(configDir(), "ocx.pid"))) {
+    console.log("⏹  Stopping the running proxy before updating (restart afterwards with 'ocx start')...");
+    const launcher = fileURLToPath(import.meta.url);
+    spawnSync(process.execPath, [launcher, "stop"], { stdio: "inherit", windowsHide: true });
+  }
+
   console.log(`Updating${latest ? ` to v${latest}` : ""}...\n$ ${npm} install -g ${PKG}@${tag}`);
   const res = spawnSync(npm, ["install", "-g", `${PKG}@${tag}`], {
     stdio: "inherit",
