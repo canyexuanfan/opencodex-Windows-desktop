@@ -108,6 +108,21 @@ describe("findLiveProxy", () => {
     expect(urls).toEqual(["http://[::1]:58195/healthz"]);
   });
 
+  test("an orphaned record backed by a pidless legacy proxy yields pid null (never a killable stale pid)", async () => {
+    const legacyBody = { status: "ok", version: "2.6.16", uptime: 5 }; // pre-identity healthz: no pid
+    const live = await findLiveProxy({
+      readPidFn: () => null,
+      readRuntimeFn: () => ({ pid: 1111, port: 58195, hostname: undefined }),
+      configFn: () => ({ port: 10100 }),
+      fetchFn: (async (url: string | URL | Request) =>
+        String(url).includes("58195") ? healthz(legacyBody) : healthz({ status: "ok" })) as typeof fetch,
+    });
+
+    // The record's pid 1111 may be dead/reused — synthesizing it would let `ocx stop`
+    // kill an unrelated process via the taskkill/kill fallback.
+    expect(live).toEqual({ pid: null, port: 58195, hostname: undefined });
+  });
+
   test("an orphaned record whose healthz pid mismatches is rejected (config fallback still runs)", async () => {
     const live = await findLiveProxy({
       readPidFn: () => null,

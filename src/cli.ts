@@ -10,9 +10,12 @@ import {
   getConfigDir,
   loadConfig,
   readPid,
+  readPidFileValue,
   readRuntimePort,
   removePid,
+  removePidIfValueIs,
   removeRuntimePort,
+  removeRuntimePortIfPidIs,
   saveConfig,
   writePid,
   writeRuntimePort,
@@ -21,7 +24,7 @@ import { collectStatus } from "./cli-status";
 import { installCrashGuards } from "./crash-guard";
 import { hasHelpFlag, printSubcommandUsage, printUsage, printVersion } from "./cli-help";
 import { findAvailablePort, isAddrInUse, shouldPersistSelectedPort } from "./ports";
-import { findLiveProxy } from "./proxy-liveness";
+import { findLiveProxy, probeHostname, type LiveProxy } from "./proxy-liveness";
 import { stopProxy } from "./process-control";
 import { serviceCommand, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "./service";
 import { drainAndShutdown, startServer } from "./server";
@@ -87,13 +90,13 @@ function parsePortOption(): number | undefined {
   return port;
 }
 
-async function waitForProxy(timeoutMs = 8_000): Promise<number | null> {
+async function waitForProxy(timeoutMs = 8_000): Promise<LiveProxy | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     // Runtime-state-first with identity: finds the proxy even when it started on a
     // fallback port, and never mistakes a foreign 200 for our proxy.
     const live = await findLiveProxy();
-    if (live) return live.port;
+    if (live) return live;
     await new Promise(resolve => setTimeout(resolve, 150));
   }
   return null;
@@ -230,7 +233,7 @@ async function handleEnsure() {
   });
   child.unref();
 
-  const port = await waitForProxy();
+  const port = (await waitForProxy())?.port;
   if (!port) {
     console.error("❌ Proxy did not become healthy after starting.");
     process.exit(1);
@@ -262,6 +265,10 @@ async function handleStop() {
       console.error(`❌ Failed to stop proxy (PID ${pid}).`);
     }
   } else {
+    // Snapshot the stale on-disk state BEFORE the async probe: a concurrent `ocx start`
+    // can write fresh records mid-probe, and the purge below must never delete those.
+    const stalePidValue = readPidFileValue();
+    const staleRuntimePid = readRuntimePort()?.pid ?? null;
     // Orphan recovery: a live proxy can outlive its pid file (crash, manual delete,
     // corrupt file). Identity-checked liveness still finds it via the runtime record.
     const live = await findLiveProxy();
@@ -277,10 +284,11 @@ async function handleStop() {
       console.log("No running proxy found.");
     }
     if (!stopFailed) {
-      // `readPid() === null` means any pid file on disk is absent, invalid, dead, or not
-      // ours — stale by definition. Purge so `ocx update`'s stop gate can't wedge on it.
-      removePid();
-      removeRuntimePort();
+      // `readPid() === null` means the snapshotted pid file was absent, invalid, dead, or
+      // not ours — stale by definition. Purge (guarded by the snapshot) so `ocx update`'s
+      // stop gate can't wedge on it.
+      removePidIfValueIs(stalePidValue);
+      removeRuntimePortIfPidIs(staleRuntimePid);
     }
   }
   const r = restoreNativeCodex();
@@ -394,6 +402,12 @@ function handleRecoverHistory() {
     process.exit(1);
   }
   const r = restoreLegacyOpenaiHistory();
+  if (r.failed) {
+    console.error(
+      "⚠️  Recovery SKIPPED: the Codex history DB is locked (Codex app/IDE open?). Close it and rerun this command.",
+    );
+    process.exit(1);
+  }
   console.log(`Recovered ${r.rows} legacy thread(s) to openai (${r.files} rollout file(s) updated).`);
 }
 
@@ -473,8 +487,8 @@ switch (command) {
     const config = cfg.loadConfig();
     // Identity-checked liveness (not the pid file + a fixed sleep): finds a fallback-port
     // proxy and waits until the spawned one actually answers before opening the browser.
-    let guiPort = (await findLiveProxy())?.port ?? null;
-    if (guiPort === null) {
+    let live = await findLiveProxy();
+    if (!live) {
       console.log("Proxy not running. Starting...");
       const child = spawn(process.execPath, [process.argv[1], "start"], {
         detached: true,
@@ -483,9 +497,12 @@ switch (command) {
         env: process.env,
       });
       child.unref();
-      guiPort = await waitForProxy();
+      live = await waitForProxy();
     }
-    const guiUrl = `http://localhost:${guiPort ?? config.port}`;
+    // Open the host the proxy actually binds — `localhost` only answers for
+    // loopback/wildcard binds, not a concrete LAN/IPv6 hostname.
+    const guiHost = probeHostname(live?.hostname ?? config.hostname);
+    const guiUrl = `http://${guiHost === "127.0.0.1" ? "localhost" : guiHost}:${live?.port ?? config.port}`;
     console.log(`Opening ${guiUrl}`);
     const { openUrl } = await import("./open-url");
     openUrl(guiUrl);

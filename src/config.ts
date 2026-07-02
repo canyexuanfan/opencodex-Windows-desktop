@@ -427,7 +427,7 @@ function warnConfigRepaired(configPath: string, error: z.ZodError): void {
   console.error(`opencodex config at ${configPath}: repaired missing field(s) [${fields}] with defaults. Your providers and accounts are preserved.`);
 }
 
-function readPidFileValue(): number | null {
+export function readPidFileValue(): number | null {
   try {
     return parsePidFile(readFileSync(getPidPath(), "utf-8"));
   } catch {
@@ -437,6 +437,27 @@ function readPidFileValue(): number | null {
 
 export function removeRuntimePort(expectedPid?: number): void {
   if (expectedPid !== undefined && readRuntimePort(expectedPid) === null) return;
+  try {
+    unlinkSync(getRuntimePortPath());
+  } catch { /* ignore */ }
+}
+
+/**
+ * Snapshot-guarded stale-state purge: remove the pid/runtime files only when their content
+ * still matches what the caller saw BEFORE its liveness probe. A concurrent `ocx start` can
+ * write fresh records mid-probe; an unconditional purge would erase the new proxy's state.
+ */
+export function removePidIfValueIs(snapshot: number | null): void {
+  if (!existsSync(getPidPath())) return;
+  if (readPidFileValue() !== snapshot) return;
+  try {
+    unlinkSync(getPidPath());
+  } catch { /* ignore */ }
+}
+
+export function removeRuntimePortIfPidIs(snapshotPid: number | null): void {
+  const current = readRuntimePort();
+  if ((current?.pid ?? null) !== snapshotPid) return;
   try {
     unlinkSync(getRuntimePortPath());
   } catch { /* ignore */ }

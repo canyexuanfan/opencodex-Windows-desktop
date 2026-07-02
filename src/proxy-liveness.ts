@@ -108,7 +108,10 @@ export async function findLiveProxy(io: LivenessIo = {}): Promise<LiveProxy | nu
   if (record?.port && record.port !== probedPort) {
     const expectedPid = typeof record.pid === "number" ? record.pid : undefined;
     const identity = await proxyIdentityAt(record.port, { hostname: record.hostname, expectedPid }, io);
-    if (identity) return { pid: identity.pid ?? expectedPid ?? null, port: record.port, hostname: record.hostname };
+    // Only the healthz-reported pid is authoritative here. The record's pid may be stale
+    // (its process dead, the port reused by a pidless legacy proxy) — synthesizing it
+    // would hand destructive callers (stopProxy → kill fallback) a reusable pid.
+    if (identity) return { pid: identity.pid ?? null, port: record.port, hostname: record.hostname };
   }
 
   const config = configFn();
