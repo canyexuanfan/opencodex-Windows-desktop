@@ -40,15 +40,16 @@ describe("classifyCursorError", () => {
 
 describe("safeCursorErrorMessage", () => {
   test("redacts Bearer tokens", () => {
-    const msg = safeCursorErrorMessage("unauthenticated: Bearer eyJhbGciOiJSUzI1NiJ9.payload.sig");
+    // Placeholder token shape is constrained by scripts/privacy-scan.ts's tests/ allowlist.
+    const msg = safeCursorErrorMessage("unauthenticated: Bearer access-token-value-testonly123");
     expect(msg).toContain("Cursor authentication failed");
-    expect(msg).not.toContain("eyJhbGciOiJSUzI1NiJ9");
+    expect(msg).not.toContain("access-token-value-testonly123");
     expect(msg).toContain("[REDACTED]");
   });
 
   test("redacts absolute paths", () => {
-    const msg = safeCursorErrorMessage("config error in /Users/jun/.cursor/settings.json");
-    expect(msg).not.toContain("/Users/jun/");
+    const msg = safeCursorErrorMessage("config error in /Users/example/.cursor/settings.json");
+    expect(msg).not.toContain("/Users/example/");
     expect(msg).toContain("[REDACTED_PATH]");
   });
 
