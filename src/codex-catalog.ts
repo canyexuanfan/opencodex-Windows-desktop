@@ -6,6 +6,7 @@ import { atomicWriteFile, getConfigDir, websocketsEnabled } from "./config";
 import { CODEX_CONFIG_PATH, CODEX_MODELS_CACHE_PATH, DEFAULT_CATALOG_PATH, readRootTomlString, resolveCodexConfigPath } from "./codex-paths";
 import { DEFAULT_MODEL_CACHE_TTL_MS, getFreshCached, getStaleCached, setCached } from "./model-cache";
 import { buildModelsRequest, resolveModelsAuthToken } from "./oauth/index";
+import { effectiveGoogleMode } from "./providers/registry";
 import type { OcxConfig, OcxProviderConfig } from "./types";
 import { CODEX_REASONING_LEVELS, configuredReasoningEfforts, modelRecordValue, sanitizeCodexReasoningEfforts } from "./reasoning-effort";
 import { getJawcodeModelMetadata, getJawcodeModelMetadataCaseInsensitive, listJawcodeModelMetadata, resolveJawcodeProvider } from "./generated/jawcode-model-metadata";
@@ -594,6 +595,25 @@ type ProviderModelsApiItem = {
   };
 };
 
+/** Generative Language API `models.list` item (`{ models: [...] }`, not OpenAI's `{ data }`). */
+type GoogleModelsApiModel = {
+  name?: string;
+  inputTokenLimit?: number;
+  supportedGenerationMethods?: string[];
+};
+
+function googleModelsToApiItems(models: GoogleModelsApiModel[]): ProviderModelsApiItem[] {
+  return models
+    // Keep chat-capable models only; a model missing the field stays (defensive).
+    .filter(m => m.supportedGenerationMethods?.includes("generateContent") ?? true)
+    .map(m => ({
+      id: (m.name ?? "").replace(/^models\//, ""),
+      owned_by: "google",
+      ...(typeof m.inputTokenLimit === "number" && m.inputTokenLimit > 0 ? { context_length: m.inputTokenLimit } : {}),
+    }))
+    .filter(m => m.id.length > 0);
+}
+
 function configuredContextWindow(prov: OcxProviderConfig, id: string): number | undefined {
   const configured = modelRecordValue(prov.modelContextWindows, id) ?? prov.contextWindow;
   return typeof configured === "number" && configured > 0 ? configured : undefined;
@@ -706,15 +726,18 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
   }
   const fresh = getFreshCached(name, ttlMs);
   if (fresh) return applyConfigHintsToCachedModels(name, prov, fresh, contextCap); // dedups Codex's frequent /v1/models polling within the TTL
-  const { url, headers } = buildModelsRequest(prov, apiKey);
+  const { url, headers } = buildModelsRequest(prov, apiKey, name);
   try {
     const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
     if (!res.ok) {
       const stale = getStaleCached(name);
       return stale ? applyConfigHintsToCachedModels(name, prov, stale, contextCap) : configured;
     }
-    const json = await res.json() as { data?: ProviderModelsApiItem[] };
-    const live = (json.data ?? []).map(m => applyProviderConfigHints(name, prov, {
+    const json = await res.json() as { data?: ProviderModelsApiItem[]; models?: GoogleModelsApiModel[] };
+    const items: ProviderModelsApiItem[] = effectiveGoogleMode(name, prov) === "ai-studio" && Array.isArray(json.models)
+      ? googleModelsToApiItems(json.models)
+      : (json.data ?? []);
+    const live = items.map(m => applyProviderConfigHints(name, prov, {
       id: m.id,
       provider: name,
       owned_by: m.owned_by,

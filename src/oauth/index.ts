@@ -11,6 +11,7 @@ import { loginChatGPT, refreshChatGPTToken } from "./chatgpt";
 import { loginAntigravity, refreshAntigravityToken } from "./google-antigravity";
 import { loginCursor, refreshCursorToken } from "./cursor";
 import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers/derive";
+import { effectiveGoogleMode } from "../providers/registry";
 
 const REFRESH_SKEW_MS = 60_000;
 const tokenRefreshes = new Map<string, Promise<string>>();
@@ -187,11 +188,21 @@ export async function resolveModelsAuthToken(name: string, prov: OcxProviderConf
  * Provider-correct `GET /models` request (URL + headers), so both model-listing paths fetch the
  * LIVE catalog correctly per adapter. Anthropic is the special case: its endpoint is `/v1/models`
  * (not `/models`), it needs `anthropic-version`, and it authenticates with `x-api-key` (key) or
- * `Authorization: Bearer` + the OAuth beta (oauth) — not a bare Bearer. Everyone else uses the
- * OpenAI-style `/models` + Bearer. Response shape is `{ data: [{ id, owned_by? }] }` for both.
+ * `Authorization: Bearer` + the OAuth beta (oauth) — not a bare Bearer. Google (ai-studio mode)
+ * is the other special case: `x-goog-api-key` + `/v1beta/models`, returning `{ models: [...] }`
+ * (parsed by the caller). Everyone else uses the OpenAI-style `/models` + Bearer with a
+ * `{ data: [{ id, owned_by? }] }` response.
  */
-export function buildModelsRequest(prov: OcxProviderConfig, apiKey: string | undefined): { url: string; headers: Record<string, string> } {
+export function buildModelsRequest(prov: OcxProviderConfig, apiKey: string | undefined, providerName = ""): { url: string; headers: Record<string, string> } {
   const headers: Record<string, string> = { ...(prov.headers ?? {}) };
+  if (effectiveGoogleMode(providerName, prov) === "ai-studio") {
+    // Generative Language API: API key goes in x-goog-api-key (never Authorization: Bearer),
+    // models live under /v1beta (v1 misses preview models), and pageSize maxes at 1000 —
+    // enough to list everything without a pageToken loop. Vertex/antigravity keep the
+    // generic branch (they fall back to their static model lists).
+    if (apiKey) headers["x-goog-api-key"] = apiKey;
+    return { url: `${prov.baseUrl}/v1beta/models?pageSize=1000`, headers };
+  }
   if (prov.adapter === "anthropic") {
     headers["anthropic-version"] = "2023-06-01";
     if (prov.authMode === "oauth") {

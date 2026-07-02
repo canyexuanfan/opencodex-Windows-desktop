@@ -380,3 +380,16 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
 export function getProviderRegistryEntry(id: string): ProviderRegistryEntry | undefined {
   return PROVIDER_REGISTRY.find(entry => entry.id === id);
 }
+
+/**
+ * Effective Google wire mode for a provider: config value, else registry backfill (a saved
+ * key-login config may omit `googleMode` — mirrors the router's backfill), else "ai-studio"
+ * (the Generative Language API default). Null for non-google adapters.
+ */
+export function effectiveGoogleMode(
+  providerId: string,
+  prov: { adapter?: string; googleMode?: "ai-studio" | "vertex" | "cloud-code-assist" },
+): "ai-studio" | "vertex" | "cloud-code-assist" | null {
+  if (prov.adapter !== "google") return null;
+  return prov.googleMode ?? getProviderRegistryEntry(providerId)?.googleMode ?? "ai-studio";
+}

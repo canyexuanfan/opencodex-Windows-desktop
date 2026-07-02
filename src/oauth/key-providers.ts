@@ -36,6 +36,7 @@ export interface KeyLoginProvider {
   autoToolChoiceOnlyModels?: string[];
   preserveReasoningContentModels?: string[];
   escapeBuiltinToolNames?: boolean;
+  googleMode?: "ai-studio" | "vertex" | "cloud-code-assist";
 }
 
 export const KEY_LOGIN_PROVIDERS: Record<string, KeyLoginProvider> = deriveKeyLoginMap();
@@ -79,6 +80,18 @@ export async function validateApiKey(provider: KeyLoginProvider, key: string): P
       });
       if (res.ok) return true;
       if (res.status === 401 || res.status === 403) return false;
+      return "unknown";
+    }
+
+    if (provider.adapter === "google" && (provider.googleMode ?? "ai-studio") === "ai-studio") {
+      // Generative Language API rejects Bearer-wrapped API keys; probe models.list with the
+      // documented x-goog-api-key header instead (pageSize=1 — validation only needs a 200).
+      const res = await fetch(`${provider.baseUrl}/v1beta/models?pageSize=1`, {
+        headers: { "x-goog-api-key": key },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.ok) return true;
+      if (res.status === 400 || res.status === 401 || res.status === 403) return false;
       return "unknown";
     }
 
