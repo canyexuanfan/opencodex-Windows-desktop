@@ -13,7 +13,7 @@ describe("update stops the running proxy before replacing files", () => {
     const updateAt = updateSource.indexOf("const { bin, args: cmdArgs } = updateCommand(installer, tag);");
     expect(stopAt).toBeGreaterThan(-1);
     expect(stopAt).toBeLessThan(updateAt);
-    expect(updateSource).toContain("if (serviceWasInstalled || readPid())");
+    expect(updateSource).toContain("if (serviceWasInstalled || readPid() || readRuntimePort())");
   });
 
   test("npm launcher update path stops via its own launcher path before npm install", () => {
@@ -23,6 +23,7 @@ describe("update stops the running proxy before replacing files", () => {
     expect(stopAt).toBeGreaterThan(-1);
     expect(stopAt).toBeLessThan(installAt);
     expect(launcherSource).toContain('existsSync(join(configDir(), "ocx.pid"))');
+    expect(launcherSource).toContain('existsSync(join(configDir(), "runtime-port.json"))');
   });
 
   test("both paths abort when the stop fails, and reinstall a managed service after success", () => {
@@ -33,9 +34,10 @@ describe("update stops the running proxy before replacing files", () => {
     expect(launcherSource).toContain('existsSync(join(configDir(), "service-state.json"))');
   });
 
-  test("the stop gate covers service-managed proxies whose pid file is stale/missing", () => {
-    expect(updateSource).toContain("if (serviceWasInstalled || readPid())");
-    expect(launcherSource).toContain('if (serviceWasInstalled || existsSync(join(configDir(), "ocx.pid")))');
+  test("the stop gate covers service-managed and orphaned proxies whose pid file is stale/missing", () => {
+    expect(updateSource).toContain("if (serviceWasInstalled || readPid() || readRuntimePort())");
+    expect(launcherSource).toContain("if (serviceWasInstalled || hasRuntimeState)");
+    expect(launcherSource).toContain("stopRes.status !== 0 || stillHasRuntimeState");
   });
 });
 

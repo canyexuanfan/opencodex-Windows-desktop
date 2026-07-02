@@ -92,6 +92,34 @@ describe("findLiveProxy", () => {
     expect(live).toBeNull();
   });
 
+  test("adopts an orphaned runtime record when the pid file is lost (identity-checked)", async () => {
+    const urls: string[] = [];
+    const live = await findLiveProxy({
+      readPidFn: () => null,
+      readRuntimeFn: () => ({ pid: 4242, port: 58195, hostname: "::1" }),
+      configFn: () => ({ port: 10100 }),
+      fetchFn: (async (url: string | URL | Request) => {
+        urls.push(String(url));
+        return healthz(OURS);
+      }) as typeof fetch,
+    });
+
+    expect(live).toEqual({ pid: 4242, port: 58195, hostname: "::1" });
+    expect(urls).toEqual(["http://[::1]:58195/healthz"]);
+  });
+
+  test("an orphaned record whose healthz pid mismatches is rejected (config fallback still runs)", async () => {
+    const live = await findLiveProxy({
+      readPidFn: () => null,
+      readRuntimeFn: () => ({ pid: 1111, port: 58195, hostname: undefined }),
+      configFn: () => ({ port: 10100 }),
+      fetchFn: (async (url: string | URL | Request) =>
+        String(url).includes("58195") ? healthz({ ...OURS, pid: 9999 }) : healthz({ status: "ok" })) as typeof fetch,
+    });
+
+    expect(live).toBeNull();
+  });
+
   test("a runtime record whose healthz reports a different pid is rejected", async () => {
     const live = await findLiveProxy({
       readPidFn: () => 1111,

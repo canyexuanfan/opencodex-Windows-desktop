@@ -32,11 +32,11 @@ describe("applyProxyEnv", () => {
     expect(process.env.NO_PROXY).toBeUndefined();
   });
 
-  test("mirrors config.proxy into HTTP(S)_PROXY and excludes localhost", () => {
+  test("mirrors config.proxy into HTTP(S)_PROXY and excludes loopback (IPv4 + IPv6)", () => {
     applyProxyEnv(configWithProxy("http://proxy.corp:8080"));
     expect(process.env.HTTP_PROXY).toBe("http://proxy.corp:8080");
     expect(process.env.HTTPS_PROXY).toBe("http://proxy.corp:8080");
-    expect(process.env.NO_PROXY).toBe("localhost,127.0.0.1");
+    expect(process.env.NO_PROXY).toBe("localhost,127.0.0.1,::1,[::1]");
   });
 
   test("user-set env vars win over config", () => {
@@ -46,10 +46,16 @@ describe("applyProxyEnv", () => {
     expect(process.env.HTTP_PROXY).toBe("http://proxy.corp:8080");
   });
 
-  test("appends localhost to an existing NO_PROXY without duplicating", () => {
+  test("appends loopback entries to an existing NO_PROXY without duplicating", () => {
     process.env.NO_PROXY = "internal.corp,localhost";
     applyProxyEnv(configWithProxy("http://proxy.corp:8080"));
-    expect(process.env.NO_PROXY).toBe("internal.corp,localhost,127.0.0.1");
+    expect(process.env.NO_PROXY).toBe("internal.corp,localhost,127.0.0.1,::1,[::1]");
+  });
+
+  test("dedup is case-insensitive against existing entries", () => {
+    process.env.NO_PROXY = "LOCALHOST,[::1]";
+    applyProxyEnv(configWithProxy("http://proxy.corp:8080"));
+    expect(process.env.NO_PROXY).toBe("LOCALHOST,[::1],127.0.0.1,::1");
   });
 
   test("resolves ${VAR}-style env references like other config secrets", () => {

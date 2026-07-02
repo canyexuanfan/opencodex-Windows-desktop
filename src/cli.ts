@@ -250,8 +250,27 @@ async function handleStop() {
       stopFailed = true;
       console.error(`❌ Failed to stop proxy (PID ${pid}).`);
     }
-  } else if (!stoppedService) {
-    console.log("No running proxy found.");
+  } else {
+    // Orphan recovery: a live proxy can outlive its pid file (crash, manual delete,
+    // corrupt file). Identity-checked liveness still finds it via the runtime record.
+    const live = await findLiveProxy();
+    if (live?.pid) {
+      try {
+        await stopProxy(live.pid);
+        console.log(`✅ Proxy (PID ${live.pid}) stopped.`);
+      } catch {
+        stopFailed = true;
+        console.error(`❌ Failed to stop proxy (PID ${live.pid}).`);
+      }
+    } else if (!stoppedService) {
+      console.log("No running proxy found.");
+    }
+    if (!stopFailed) {
+      // `readPid() === null` means any pid file on disk is absent, invalid, dead, or not
+      // ours — stale by definition. Purge so `ocx update`'s stop gate can't wedge on it.
+      removePid();
+      removeRuntimePort();
+    }
   }
   const r = restoreNativeCodex();
   console.log(`↩️  ${r.message}`);
@@ -428,8 +447,10 @@ switch (command) {
   case "gui": {
     const cfg = await import("./config");
     const config = cfg.loadConfig();
-    let pid = cfg.readPid();
-    if (!pid) {
+    // Identity-checked liveness (not the pid file + a fixed sleep): finds a fallback-port
+    // proxy and waits until the spawned one actually answers before opening the browser.
+    let guiPort = (await findLiveProxy())?.port ?? null;
+    if (guiPort === null) {
       console.log("Proxy not running. Starting...");
       const child = spawn(process.execPath, [process.argv[1], "start"], {
         detached: true,
@@ -438,12 +459,9 @@ switch (command) {
         env: process.env,
       });
       child.unref();
-      await new Promise(r => setTimeout(r, 1000));
-      pid = cfg.readPid();
+      guiPort = await waitForProxy();
     }
-    const runtimePort = pid ? cfg.readRuntimePort(pid) : null;
-    const guiPort = runtimePort?.port ?? config.port;
-    const guiUrl = `http://localhost:${guiPort}`;
+    const guiUrl = `http://localhost:${guiPort ?? config.port}`;
     console.log(`Opening ${guiUrl}`);
     const { openUrl } = await import("./open-url");
     openUrl(guiUrl);

@@ -1,7 +1,7 @@
 import { durableBunRuntime } from "./bun-runtime";
 import { codexAutoStartEnabled, getConfigPath, getPidPath, readConfigDiagnostics, readPid, readRuntimePort, type RuntimePortState } from "./config";
 import { diagnoseCodexBundledPlugins, type CodexPluginsDiagnostic } from "./codex-plugins-doctor";
-import { isOpencodexHealthz } from "./proxy-liveness";
+import { isOpencodexHealthz, probeHostname } from "./proxy-liveness";
 import type { OcxConfig } from "./types";
 import { serviceStatusSummary } from "./service";
 
@@ -55,9 +55,6 @@ export type CliStatusView = {
   healthLabel: string;
 };
 
-function healthHost(hostname?: string): string {
-  return !hostname || hostname === "0.0.0.0" || hostname === "::" ? "127.0.0.1" : hostname;
-}
 
 export type ListenTarget = {
   port: number;
@@ -79,7 +76,7 @@ export function selectListenTarget(
     port,
     hostname,
     source: currentRuntimePort ? "runtime" : "config",
-    healthUrl: `http://${healthHost(hostname)}:${port}/healthz`,
+    healthUrl: `http://${probeHostname(hostname)}:${port}/healthz`,
     dashboardUrl: `http://localhost:${port}/`,
   };
 }

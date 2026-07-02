@@ -1,7 +1,7 @@
 import * as readline from "node:readline";
 import { openUrl } from "../open-url";
 import { loadConfig, saveConfig } from "../config";
-import { findLiveProxy } from "../proxy-liveness";
+import { findLiveProxy, probeHostname } from "../proxy-liveness";
 import { OAUTH_PROVIDERS, runLogin } from "./index";
 import { KEY_LOGIN_PROVIDERS, isKeyLoginProvider, validateApiKey, type KeyLoginProvider } from "./key-providers";
 import type { OcxProviderConfig } from "../types";
@@ -20,7 +20,7 @@ async function notifyRunningProxy(name: string, provider: unknown): Promise<void
   const live = await findLiveProxy();
   if (!live) return;
   try {
-    await fetch(`http://127.0.0.1:${live.port}/api/providers`, {
+    await fetch(`http://${probeHostname(live.hostname)}:${live.port}/api/providers`, {
       method: "POST",
       headers: runningProxyUpdateHeaders(),
       body: JSON.stringify({ name, provider }),

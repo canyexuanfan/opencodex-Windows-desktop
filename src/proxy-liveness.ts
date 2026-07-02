@@ -22,7 +22,7 @@ export interface HealthzIdentity {
 export interface LivenessIo {
   fetchFn?: typeof fetch;
   readPidFn?: () => number | null;
-  readRuntimeFn?: (pid: number) => { port: number; hostname?: string } | null;
+  readRuntimeFn?: (pid?: number) => { pid?: number; port: number; hostname?: string } | null;
   configFn?: () => { port?: number; hostname?: string };
   timeoutMs?: number;
 }
@@ -30,6 +30,8 @@ export interface LivenessIo {
 export interface LiveProxy {
   pid: number | null;
   port: number;
+  /** Raw bind hostname the probe succeeded against; compose URLs via `probeHostname`. */
+  hostname?: string;
 }
 
 /**
@@ -89,17 +91,29 @@ export async function findLiveProxy(io: LivenessIo = {}): Promise<LiveProxy | nu
   const configFn = io.configFn ?? loadConfig;
 
   const pid = readPidFn();
+  let probedPort: number | null = null;
   if (pid) {
     const runtime = readRuntimeFn(pid);
     if (runtime?.port) {
+      probedPort = runtime.port;
       const identity = await proxyIdentityAt(runtime.port, { hostname: runtime.hostname, expectedPid: pid }, io);
-      if (identity) return { pid, port: runtime.port };
+      if (identity) return { pid, port: runtime.port, hostname: runtime.hostname };
     }
+  }
+
+  // Orphan recovery: the pid file can be lost/corrupt while the proxy is alive (crash of a
+  // sibling command, manual deletion). The runtime record still says where it listens —
+  // identity-probe it so ensure/update/stop see the live proxy instead of shadowing it.
+  const record = readRuntimeFn();
+  if (record?.port && record.port !== probedPort) {
+    const expectedPid = typeof record.pid === "number" ? record.pid : undefined;
+    const identity = await proxyIdentityAt(record.port, { hostname: record.hostname, expectedPid }, io);
+    if (identity) return { pid: identity.pid ?? expectedPid ?? null, port: record.port, hostname: record.hostname };
   }
 
   const config = configFn();
   const port = config.port ?? 10100;
   const identity = await proxyIdentityAt(port, { hostname: config.hostname }, io);
-  if (identity) return { pid: identity.pid ?? pid ?? null, port };
+  if (identity) return { pid: identity.pid ?? pid ?? null, port, hostname: config.hostname };
   return null;
 }

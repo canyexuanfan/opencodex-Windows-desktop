@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import {
   collectPaths,
   detectFsType,
   collectProxyEnv,
   probeWham,
+  resolveCodexHomeDir,
 } from "../src/doctor";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-doctor-test");
@@ -51,6 +53,11 @@ describe("doctor", () => {
     rows = collectPaths();
     expect(auth().exists).toBe(true);
     expect(cfg().exists).toBe(true);
+  });
+
+  test("resolveCodexHomeDir expands ~ like the hardened runtime paths", () => {
+    process.env.CODEX_HOME = "~/custom-codex";
+    expect(resolveCodexHomeDir()).toBe(join(homedir(), "custom-codex"));
   });
 
   test("detectFsType flags /mnt drvfs mounts and leaves ext4 home alone", () => {

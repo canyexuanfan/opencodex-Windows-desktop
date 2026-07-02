@@ -333,8 +333,12 @@ export function applyProxyEnv(config: OcxConfig): void {
   if (!process.env.HTTPS_PROXY?.trim() && !process.env.https_proxy?.trim()) process.env.HTTPS_PROXY = proxy;
   const existing = process.env.NO_PROXY ?? process.env.no_proxy ?? "";
   const entries = existing.split(",").map(s => s.trim()).filter(Boolean);
-  for (const host of ["localhost", "127.0.0.1"]) {
-    if (!entries.includes(host)) entries.push(host);
+  const seen = new Set(entries.map(e => e.toLowerCase()));
+  for (const host of ["localhost", "127.0.0.1", "::1", "[::1]"]) {
+    if (!seen.has(host)) {
+      entries.push(host);
+      seen.add(host);
+    }
   }
   process.env.NO_PROXY = entries.join(",");
 }

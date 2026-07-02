@@ -178,6 +178,17 @@ describe("CLI status JSON", () => {
     expect(target.dashboardUrl).toBe("http://localhost:58195/");
   });
 
+  test("listen target brackets raw IPv6 hostnames in the health URL", () => {
+    const target = selectListenTarget(
+      { port: 10100, hostname: "::1" },
+      123,
+      { pid: 123, port: 58195, hostname: "::1" },
+    );
+
+    expect(target.healthUrl).toBe("http://[::1]:58195/healthz");
+    expect(target.dashboardUrl).toBe("http://localhost:58195/");
+  });
+
   test("listen target ignores stale runtime port metadata", () => {
     const target = selectListenTarget(
       { port: 10100, hostname: "127.0.0.1" },

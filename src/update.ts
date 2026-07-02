@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { readPid } from "./config";
+import { readPid, readRuntimePort } from "./config";
 
 export const PKG = "@bitkyc08/opencodex";
 const HERE = dirname(fileURLToPath(import.meta.url)); // .../opencodex/src
@@ -93,12 +93,13 @@ export async function runUpdate(): Promise<void> {
 
   // Never replace package files under a live proxy: the running server dynamic-imports
   // modules after startup, so an in-place update leaves it executing mixed old/new code.
-  // Gate on the service too, not just the pid file — a service-managed proxy can be live
-  // while ocx.pid is stale/missing. Full `ocx stop` semantics (drain, service stop, restore).
-  if (serviceWasInstalled || readPid()) {
+  // Gate on the service and the runtime-port record too, not just the pid file — a
+  // service-managed or orphaned proxy can be live while ocx.pid is stale/missing.
+  // Full `ocx stop` semantics (drain, service stop, restore).
+  if (serviceWasInstalled || readPid() || readRuntimePort()) {
     console.log("⏹  Stopping the running proxy before updating...");
     const stop = spawnSync(process.execPath, [process.argv[1], "stop"], { stdio: "inherit", windowsHide: true });
-    if (stop.status !== 0 || readPid()) {
+    if (stop.status !== 0 || readPid() || readRuntimePort()) {
       console.error("⚠️  Could not stop the running proxy; aborting the update. Run 'ocx stop' and retry.");
       process.exit(1);
     }

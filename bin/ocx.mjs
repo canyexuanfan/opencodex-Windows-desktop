@@ -105,12 +105,17 @@ function runNpmSelfUpdate() {
 
   // Never replace package files under a live proxy — stop it first (full `ocx stop`
   // semantics: graceful drain, service stop, native Codex restore). Gate on the service
-  // too: a service-managed proxy can be live while ocx.pid is stale/missing.
+  // and the runtime-port record too: a service-managed or orphaned proxy can be live
+  // while ocx.pid is stale/missing.
   const launcher = fileURLToPath(import.meta.url);
-  if (serviceWasInstalled || existsSync(join(configDir(), "ocx.pid"))) {
+  const hasRuntimeState =
+    existsSync(join(configDir(), "ocx.pid")) || existsSync(join(configDir(), "runtime-port.json"));
+  if (serviceWasInstalled || hasRuntimeState) {
     console.log("⏹  Stopping the running proxy before updating...");
     const stopRes = spawnSync(process.execPath, [launcher, "stop"], { stdio: "inherit", windowsHide: true });
-    if (stopRes.status !== 0 || existsSync(join(configDir(), "ocx.pid"))) {
+    const stillHasRuntimeState =
+      existsSync(join(configDir(), "ocx.pid")) || existsSync(join(configDir(), "runtime-port.json"));
+    if (stopRes.status !== 0 || stillHasRuntimeState) {
       console.error("opencodex: could not stop the running proxy; aborting the update. Run 'ocx stop' and retry.");
       process.exit(1);
     }

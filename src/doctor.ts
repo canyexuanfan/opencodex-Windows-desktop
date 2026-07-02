@@ -10,7 +10,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { getConfigDir, getConfigPath } from "./config";
+import { expandUserPath, getConfigDir, getConfigPath } from "./config";
 import { readCodexTokens } from "./codex-auth-collision";
 
 const WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
@@ -20,7 +20,9 @@ export type PathRow = { label: string; path: string; exists: boolean };
 
 export function resolveCodexHomeDir(): string {
   const raw = process.env["CODEX_HOME"]?.trim();
-  return raw ? resolve(raw) : join(homedir(), ".codex");
+  // `~` parity with the hardened runtime paths (codex-paths.ts) — a literal "~/..." here
+  // would report every Codex file as missing while the runtime happily uses the real dir.
+  return raw ? resolve(expandUserPath(raw)) : join(homedir(), ".codex");
 }
 
 export function collectPaths(): PathRow[] {
