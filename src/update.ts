@@ -23,11 +23,15 @@ export function currentVersion(): string {
   }
 }
 
+export function defaultUpdateTag(current: string): Channel {
+  return current.includes("-preview.") ? "preview" : "latest";
+}
+
 export function updateTag(current: string): Channel {
   const tagIndex = process.argv.indexOf("--tag");
   const explicit = tagIndex !== -1 ? process.argv[tagIndex + 1] : undefined;
   if (explicit === "preview" || explicit === "latest") return explicit;
-  return current.includes("-preview.") ? "preview" : "latest";
+  return defaultUpdateTag(current);
 }
 
 /** Latest published version from the registry (best-effort; null if npm isn't available). */

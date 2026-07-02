@@ -164,6 +164,15 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); min-width: 0; }
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; }
 .panel-accent { border-color: rgba(124, 92, 255, 0.28); background: linear-gradient(180deg, var(--accent-soft), transparent 120%), var(--surface); }
+.maintenance-head { align-items: flex-start; flex-wrap: wrap; }
+.maintenance-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.maintenance-notice { margin: 14px 0 0; align-items: flex-start; }
+.update-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.update-row .field-label { margin: 0; }
+.update-empty { padding: 18px; margin-bottom: 14px; }
+.update-box { display: flex; flex-direction: column; gap: 12px; }
+.update-command { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.update-restart { border-top: 1px solid var(--border-soft); padding-top: 12px; }
 
 /* ---- stat cards (metric tiles) ---- */
 .stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 28px; }
