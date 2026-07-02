@@ -235,6 +235,12 @@ export interface OcxConfig {
   contextCapValue?: number;
   /** Bind hostname. Default "127.0.0.1" (loopback only). Set "0.0.0.0" to expose on all interfaces. */
   hostname?: string;
+  /**
+   * Outbound HTTP(S) proxy URL for provider requests (e.g. "http://user:pass@proxy:8080", or
+   * "${HTTPS_PROXY}"-style env reference). Mirrored into HTTP_PROXY/HTTPS_PROXY at startup when
+   * those are unset — Bun's fetch honors them for all outbound calls; localhost is excluded.
+   */
+  proxy?: string;
   /** Upstream stall timeout (seconds). After this many seconds of no upstream data, emits response.incomplete. Default 90. Min 1. */
   stallTimeoutSec?: number;
   /** Connect timeout (ms) for upstream fetch — covers DNS, TCP, TLS, and response header. Default 30000. */

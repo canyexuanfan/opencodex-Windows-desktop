@@ -19,6 +19,21 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
+/** Cooldown after a failed live `/models` fetch, so a dead/unreachable provider doesn't re-pay
+ * the full fetch timeout on every catalog poll (issue #54: UI stalls behind corporate proxies). */
+export const MODELS_FETCH_FAILURE_COOLDOWN_MS = 30_000;
+
+const failureAt = new Map<string, number>();
+
+export function markModelsFetchFailure(provider: string, now = Date.now()): void {
+  failureAt.set(provider, now);
+}
+
+export function isModelsFetchCoolingDown(provider: string, cooldownMs = MODELS_FETCH_FAILURE_COOLDOWN_MS, now = Date.now()): boolean {
+  const at = failureAt.get(provider);
+  return at !== undefined && now - at < cooldownMs;
+}
+
 /** Fresh cached models for a provider, or null when absent/stale (caller should re-fetch). */
 export function getFreshCached(provider: string, ttlMs: number, now = Date.now()): CatalogModel[] | null {
   const entry = cache.get(provider);
@@ -37,6 +52,11 @@ export function setCached(provider: string, models: CatalogModel[], now = Date.n
 
 /** Drop one provider's cache (or all) so the next resolve forces a live re-fetch. */
 export function clearModelCache(provider?: string): void {
-  if (provider) cache.delete(provider);
-  else cache.clear();
+  if (provider) {
+    cache.delete(provider);
+    failureAt.delete(provider);
+  } else {
+    cache.clear();
+    failureAt.clear();
+  }
 }

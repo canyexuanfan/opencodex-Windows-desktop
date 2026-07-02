@@ -5,6 +5,7 @@ import { restoreNativeCodex } from "./codex-inject";
 import { restoreLegacyOpenaiHistory } from "./codex-history-provider";
 import { writeJournal, reconcileJournal } from "./codex-journal";
 import {
+  applyProxyEnv,
   codexAutoStartEnabled,
   getConfigDir,
   loadConfig,
@@ -46,6 +47,8 @@ if (command !== undefined && command !== "help" && hasHelpFlag(args.slice(1))) {
 
 async function syncModelsToCodex(port?: number) {
   const config = loadConfig();
+  applyProxyEnv(config); // `ocx ensure`/`ocx sync` fetch provider models outside the server process
+
   const p = port ?? config.port ?? 10100;
   let catalogPath: string | null | undefined;
   try {

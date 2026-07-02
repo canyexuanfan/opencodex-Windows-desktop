@@ -80,3 +80,36 @@ describe("google models listing via catalog", () => {
     expect(ids).not.toContain("text-embedding-004");
   });
 });
+
+describe("models fetch failure cooldown", () => {
+  test("a failed provider fetch is not retried within the cooldown window", async () => {
+    clearModelCache("flaky");
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      throw new Error("connect refused");
+    }) as typeof fetch;
+
+    const config = configWith("flaky", {
+      adapter: "openai-chat",
+      authMode: "key",
+      apiKey: "k",
+      baseUrl: "https://flaky.invalid/v1",
+      models: ["alpha"],
+    });
+
+    const first = await gatherRoutedModels(config);
+    expect(fetchCalls).toBe(1);
+    expect(first.map(m => `${m.provider}/${m.id}`)).toContain("flaky/alpha");
+
+    // Second poll inside the cooldown: no new fetch, still serves the configured fallback.
+    const second = await gatherRoutedModels(config);
+    expect(fetchCalls).toBe(1);
+    expect(second.map(m => `${m.provider}/${m.id}`)).toContain("flaky/alpha");
+
+    // clearModelCache resets the cooldown too, forcing a live re-fetch.
+    clearModelCache("flaky");
+    await gatherRoutedModels(config);
+    expect(fetchCalls).toBe(2);
+  });
+});

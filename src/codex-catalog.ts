@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { atomicWriteFile, getConfigDir, websocketsEnabled } from "./config";
 import { CODEX_CONFIG_PATH, CODEX_MODELS_CACHE_PATH, DEFAULT_CATALOG_PATH, readRootTomlString, resolveCodexConfigPath } from "./codex-paths";
-import { DEFAULT_MODEL_CACHE_TTL_MS, getFreshCached, getStaleCached, setCached } from "./model-cache";
+import { DEFAULT_MODEL_CACHE_TTL_MS, getFreshCached, getStaleCached, isModelsFetchCoolingDown, markModelsFetchFailure, setCached } from "./model-cache";
 import { buildModelsRequest, resolveModelsAuthToken } from "./oauth/index";
 import { effectiveGoogleMode } from "./providers/registry";
 import type { OcxConfig, OcxProviderConfig } from "./types";
@@ -726,10 +726,17 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
   }
   const fresh = getFreshCached(name, ttlMs);
   if (fresh) return applyConfigHintsToCachedModels(name, prov, fresh, contextCap); // dedups Codex's frequent /v1/models polling within the TTL
+  if (isModelsFetchCoolingDown(name)) {
+    // A recently-failed provider (unreachable API, missing proxy, bad key) must not re-pay the
+    // fetch timeout on every catalog poll — the dashboard polls this path per page load.
+    const stale = getStaleCached(name);
+    return stale ? applyConfigHintsToCachedModels(name, prov, stale, contextCap) : configured;
+  }
   const { url, headers } = buildModelsRequest(prov, apiKey, name);
   try {
     const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
     if (!res.ok) {
+      markModelsFetchFailure(name);
       const stale = getStaleCached(name);
       return stale ? applyConfigHintsToCachedModels(name, prov, stale, contextCap) : configured;
     }
@@ -749,6 +756,7 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
     setCached(name, merged);
     return merged;
   } catch {
+    markModelsFetchFailure(name);
     const stale = getStaleCached(name);
     return stale ? applyConfigHintsToCachedModels(name, prov, stale, contextCap) : configured;
   }

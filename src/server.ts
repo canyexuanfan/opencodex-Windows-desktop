@@ -15,6 +15,7 @@ import type { Server, ServerWebSocket } from "bun";
 import {
   DEFAULT_SUBAGENT_MODELS,
   codexAutoStartEnabled,
+  applyProxyEnv,
   getConfigPath,
   hasOwnProvider,
   isValidProviderName,
@@ -1933,6 +1934,7 @@ async function fetchAllModels(config: OcxConfig): Promise<CatalogModel[]> {
 
 export function startServer(port?: number) {
   const config = loadConfig();
+  applyProxyEnv(config);
   assertServerAuthConfig(config);
   // Refresh OAuth provider presets (models/noReasoningModels) from the registry so a proxy update
   // adding/dropping models reaches existing configs on start — not just fresh installs.

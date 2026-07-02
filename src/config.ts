@@ -308,6 +308,26 @@ export function resolveEnvValue(value: string | undefined): string | undefined {
   return value;
 }
 
+/**
+ * Mirror `config.proxy` into HTTP(S)_PROXY env vars so Bun's native fetch routes every outbound
+ * provider call through the proxy — no per-callsite changes (verified: Bun honors these plus
+ * NO_PROXY). User-set env vars always win; localhost/127.0.0.1 are appended to NO_PROXY so the
+ * CLI's own health checks and running-proxy API calls stay direct. Call once per process entry
+ * that makes outbound provider requests (server start, catalog sync).
+ */
+export function applyProxyEnv(config: OcxConfig): void {
+  const proxy = resolveEnvValue(config.proxy);
+  if (!proxy) return;
+  if (!process.env.HTTP_PROXY?.trim() && !process.env.http_proxy?.trim()) process.env.HTTP_PROXY = proxy;
+  if (!process.env.HTTPS_PROXY?.trim() && !process.env.https_proxy?.trim()) process.env.HTTPS_PROXY = proxy;
+  const existing = process.env.NO_PROXY ?? process.env.no_proxy ?? "";
+  const entries = existing.split(",").map(s => s.trim()).filter(Boolean);
+  for (const host of ["localhost", "127.0.0.1"]) {
+    if (!entries.includes(host)) entries.push(host);
+  }
+  process.env.NO_PROXY = entries.join(",");
+}
+
 export function writePid(pid: number): void {
   const dir = getConfigDir();
   if (!existsSync(dir)) {
