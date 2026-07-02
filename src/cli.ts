@@ -411,9 +411,22 @@ switch (command) {
     break;
   case "restore":
   case "eject": {
+    if (args[1] === "back") {
+      // Reverse switch: re-point plain `codex` at the RUNNING proxy without touching its
+      // lifecycle — the counterpart of `ocx restore`. Start/stop triggers are unchanged;
+      // this only re-runs the same inject (config + catalog + history) `ocx start` does.
+      const live = await findLiveProxy();
+      if (!live) {
+        console.error("No running proxy found. Run 'ocx start' — it injects opencodex automatically.");
+        process.exit(1);
+      }
+      await syncModelsToCodex(live.port);
+      console.log("Plain `codex` now routes through opencodex again (undo with: ocx restore).");
+      break;
+    }
     const r = restoreNativeCodex();
     console.log(r.success ? `✅ ${r.message}` : `⚠️  ${r.message}`);
-    console.log("Plain `codex` now runs natively (no proxy).");
+    console.log("Plain `codex` now runs natively (no proxy). Switch back with: ocx restore back");
     break;
   }
   case "recover-history":

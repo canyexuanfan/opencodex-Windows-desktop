@@ -14,8 +14,14 @@ const helpEntries: Record<string, HelpEntry> = {
   init: { usage: "ocx init", summary: "Interactive setup for providers and Codex config injection." },
   start: { usage: "ocx start [--port <port>]", summary: "Start the proxy server and sync models to Codex." },
   stop: { usage: "ocx stop", summary: "Stop the proxy and restore native Codex config." },
-  restore: { usage: "ocx restore", summary: "Restore native Codex config without stopping the proxy." },
-  eject: { usage: "ocx eject", summary: "Restore native Codex config without stopping the proxy." },
+  restore: {
+    usage: "ocx restore [back]",
+    summary: "Restore native Codex config without stopping the proxy; `restore back` re-points codex at the running proxy.",
+  },
+  eject: {
+    usage: "ocx eject [back]",
+    summary: "Restore native Codex config without stopping the proxy; `eject back` re-points codex at the running proxy.",
+  },
   "recover-history": {
     usage: "ocx recover-history --legacy-openai",
     summary: "Explicitly recover pre-backup syncResumeHistory rows.",
@@ -72,6 +78,7 @@ Usage:
   ocx start [--port <port>]   Start the proxy server (auto-syncs models to Codex)
   ocx stop                    Stop the proxy AND restore native Codex (plain codex works again)
   ocx restore                 Restore native Codex without stopping (alias: eject)
+  ocx restore back            Re-point codex at the running proxy (undo restore)
   ocx recover-history --legacy-openai
                                Explicitly recover pre-backup syncResumeHistory rows
   ocx uninstall               Remove service/shim/config and restore native Codex (alias: remove)
