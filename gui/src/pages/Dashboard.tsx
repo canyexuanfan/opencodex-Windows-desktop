@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { formatUptime } from "../formatUptime";
-import { IconAlert } from "../icons";
+import { IconAlert, IconExternal, IconRefresh, IconX } from "../icons";
 import { useI18n, Trans } from "../i18n";
 
 interface HealthData { status: string; version: string; uptime: number }
@@ -9,6 +9,43 @@ interface ModelInfo { id: string; provider: string; owned_by?: string }
 interface SettingsData { codexAutoStart: boolean; port: number; hostname: string }
 interface SidecarData { webSearch: { model: string; reasoning: string }; vision: { model: string } }
 interface UsageSummary30d { summary: { requests: number; totalTokens: number; coverageRatio: number } }
+type UpdateChannel = "latest" | "preview";
+type Installer = "npm" | "bun" | "source";
+type UpdateJobStatus = "running" | "restarting" | "succeeded" | "failed";
+interface SyncResult {
+  ok: boolean;
+  added: number;
+  catalogPath: string | null;
+  catalogExists: boolean;
+  cacheSynced: boolean;
+  message: string;
+  warning?: string;
+  staleAppServerHint?: string;
+}
+interface UpdateCheckData {
+  currentVersion: string;
+  latestVersion: string | null;
+  channel: UpdateChannel;
+  installer: Installer;
+  updateAvailable: boolean;
+  canUpdate: boolean;
+  command: string;
+  releaseNotesUrl: string;
+  reason?: string;
+}
+interface UpdateJob {
+  id: string;
+  status: UpdateJobStatus;
+  currentVersion: string;
+  latestVersion: string | null;
+  channel: UpdateChannel;
+  installer: Installer;
+  restart: boolean;
+  command: string;
+  log: string[];
+  error?: string;
+  restarted?: boolean;
+}
 
 function formatTokens(n: number): string {
   if (n < 10_000) return String(n);
@@ -18,6 +55,10 @@ function formatTokens(n: number): string {
 
 const SIDECAR_MODELS = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.3-codex-spark"];
 const REASONING_LEVELS = ["low", "medium", "high"];
+
+function defaultUpdateChannel(version: string | undefined): UpdateChannel {
+  return version?.includes("-preview.") ? "preview" : "latest";
+}
 
 export default function Dashboard({ apiBase }: { apiBase: string }) {
   const { locale, t } = useI18n();
@@ -30,6 +71,17 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   const [sidecarSaving, setSidecarSaving] = useState(false);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [updateOpen, setUpdateOpen] = useState(false);
+  const [updateChannel, setUpdateChannel] = useState<UpdateChannel>("latest");
+  const [updateRestart, setUpdateRestart] = useState(true);
+  const [updateLoading, setUpdateLoading] = useState(false);
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheckData | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const [updateJob, setUpdateJob] = useState<UpdateJob | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
   const [error, setError] = useState(false);
 
   useEffect(() => {
@@ -65,6 +117,45 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       .then((data: ModelInfo[]) => { setModels(data); setModelsLoading(false); })
       .catch(() => setModelsLoading(false));
   }, [apiBase, error]);
+
+  useEffect(() => {
+    if (!updateJob?.id || !updateJob.restart) return;
+    let cancelled = false;
+    const targetVersion = updateJob.latestVersion;
+    const poll = async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/update/status?jobId=${encodeURIComponent(updateJob.id)}`);
+        if (res.ok) {
+          const data = await res.json() as { job?: UpdateJob };
+          if (!cancelled && data.job) {
+            setUpdateJob(data.job);
+            if (data.job.status === "failed") {
+              setReconnecting(false);
+              return;
+            }
+          }
+        }
+      } catch {
+        if (!cancelled) setReconnecting(true);
+      }
+
+      if (!targetVersion) return;
+      try {
+        const healthRes = await fetch(`${apiBase}/healthz`, { cache: "no-store" });
+        if (!healthRes.ok) throw new Error("health failed");
+        const data = await healthRes.json() as HealthData;
+        if (!cancelled && data.version === targetVersion) {
+          setReconnecting(false);
+          window.location.reload();
+        }
+      } catch {
+        if (!cancelled) setReconnecting(true);
+      }
+    };
+    poll();
+    const interval = setInterval(poll, 1500);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [apiBase, updateJob?.id, updateJob?.latestVersion, updateJob?.restart]);
 
   // Group models by provider so the list reads as provider → its models, not one flat wall of cards.
   const grouped = useMemo(() => {
@@ -131,6 +222,80 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     }
   };
 
+  const runSync = async () => {
+    if (syncing) return;
+    setSyncing(true);
+    setSyncResult(null);
+    setSyncError(null);
+    try {
+      const res = await fetch(`${apiBase}/api/sync`, { method: "POST" });
+      const data = await res.json() as SyncResult | { error?: string };
+      if (!res.ok) throw new Error("error" in data && data.error ? data.error : "sync failed");
+      setSyncResult(data as SyncResult);
+    } catch (err) {
+      setSyncError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const fetchUpdateCheck = async (channel: UpdateChannel) => {
+    setUpdateLoading(true);
+    setUpdateError(null);
+    setUpdateCheck(null);
+    try {
+      const res = await fetch(`${apiBase}/api/update/check?tag=${channel}`);
+      const data = await res.json() as UpdateCheckData | { error?: string };
+      if (!res.ok) throw new Error("error" in data && data.error ? data.error : "update check failed");
+      setUpdateCheck(data as UpdateCheckData);
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUpdateLoading(false);
+    }
+  };
+
+  const openUpdateDialog = () => {
+    const channel = defaultUpdateChannel(health?.version);
+    setUpdateChannel(channel);
+    setUpdateRestart(true);
+    setUpdateOpen(true);
+    fetchUpdateCheck(channel);
+  };
+
+  const changeUpdateChannel = (channel: UpdateChannel) => {
+    setUpdateChannel(channel);
+    fetchUpdateCheck(channel);
+  };
+
+  const runUpdate = async () => {
+    if (!updateCheck?.canUpdate) return;
+    setUpdateError(null);
+    try {
+      const res = await fetch(`${apiBase}/api/update/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag: updateChannel, restart: updateRestart }),
+      });
+      const data = await res.json() as { job?: UpdateJob; error?: string };
+      if (!res.ok || !data.job) throw new Error(data.error ?? "update failed to start");
+      setUpdateJob(data.job);
+      setReconnecting(false);
+      setUpdateOpen(false);
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const updateJobLabel = (status: UpdateJobStatus): string => {
+    switch (status) {
+      case "running": return t("dash.updateStatus.running");
+      case "restarting": return t("dash.updateStatus.restarting");
+      case "succeeded": return t("dash.updateStatus.succeeded");
+      case "failed": return t("dash.updateStatus.failed");
+    }
+  };
+
   return (
     <>
       <div className="page-head"><h2>{t("nav.dashboard")}</h2></div>
@@ -155,6 +320,49 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             </div>
           )}
         </div>
+      </div>
+
+      <div className="panel maintenance-panel" style={{ marginBottom: 24 }}>
+        <div className="spread maintenance-head">
+          <div>
+            <div style={{ fontWeight: 650 }}>{t("dash.maintenance")}</div>
+            <div className="muted" style={{ fontSize: 13, marginTop: 3 }}>{t("dash.maintenanceHint")}</div>
+          </div>
+          <div className="maintenance-actions">
+            <button type="button" className="btn btn-ghost" onClick={runSync} disabled={syncing}>
+              <IconRefresh /> {syncing ? t("dash.syncing") : t("dash.syncModels")}
+            </button>
+            <button type="button" className="btn btn-primary" onClick={openUpdateDialog} disabled={updateLoading}>
+              <IconExternal /> {t("dash.checkUpdate")}
+            </button>
+          </div>
+        </div>
+        {syncResult && (
+          <div className="notice notice-ok maintenance-notice" role="status">
+            <IconRefresh />
+            <span>
+              {t("dash.syncOk", { count: syncResult.added })}
+              {syncResult.warning ? ` ${syncResult.warning}` : ""}
+              {syncResult.staleAppServerHint ? ` ${t("dash.syncStaleHint")}` : ""}
+            </span>
+          </div>
+        )}
+        {syncError && (
+          <div className="notice notice-err maintenance-notice" role="status">
+            <IconAlert /><span>{t("dash.syncFailed", { error: syncError })}</span>
+          </div>
+        )}
+        {updateJob && (
+          <div className={`notice ${updateJob.status === "failed" ? "notice-err" : "notice-ok"} maintenance-notice`} role="status">
+            {updateJob.status === "failed" ? <IconAlert /> : <IconRefresh />}
+            <span>
+              {updateJobLabel(updateJob.status)}
+              {updateJob.latestVersion ? ` ${updateJob.currentVersion} -> ${updateJob.latestVersion}.` : ""}
+              {reconnecting ? ` ${t("dash.updateReconnecting")}` : ""}
+              {updateJob.error ? ` ${updateJob.error}` : ""}
+            </span>
+          </div>
+        )}
       </div>
 
       <div className="panel" style={{ marginBottom: 24 }}>
@@ -266,6 +474,89 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {updateOpen && (
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="update-title">
+          <div className="modal-card">
+            <div className="modal-head">
+              <h3 id="update-title">{t("dash.updateTitle")}</h3>
+              <button type="button" className="btn-icon" onClick={() => setUpdateOpen(false)} aria-label={t("common.cancel")}>
+                <IconX />
+              </button>
+            </div>
+            <div className="modal-desc">{t("dash.updateDesc")}</div>
+            <div className="update-row">
+              <label className="field-label" htmlFor="update-channel">{t("dash.updateChannel")}</label>
+              <select
+                id="update-channel"
+                className="select-sm"
+                value={updateChannel}
+                disabled={updateLoading}
+                onChange={e => changeUpdateChannel(e.target.value as UpdateChannel)}
+              >
+                <option value="latest">latest</option>
+                <option value="preview">preview</option>
+              </select>
+            </div>
+            {updateLoading && <div className="empty update-empty"><span className="spin" /> {t("dash.updateChecking")}</div>}
+            {updateError && (
+              <div className="notice notice-err" role="status"><IconAlert /><span>{updateError}</span></div>
+            )}
+            {updateCheck && !updateLoading && (
+              <div className="update-box">
+                <div className="spread">
+                  <div>
+                    <div className="muted" style={{ fontSize: 12 }}>{t("dash.updateInstalled")}</div>
+                    <div className="mono">{updateCheck.currentVersion}</div>
+                  </div>
+                  <div>
+                    <div className="muted" style={{ fontSize: 12 }}>{t("dash.updateLatest")}</div>
+                    <div className="mono">{updateCheck.latestVersion ?? "—"}</div>
+                  </div>
+                  <span className={`badge ${updateCheck.updateAvailable ? "badge-green" : "badge-muted"}`}>
+                    {updateCheck.updateAvailable ? t("dash.updateAvailable") : t("dash.updateCurrent")}
+                  </span>
+                </div>
+                <div className="muted update-command">{t("dash.updateCommand")} <code className="chip">{updateCheck.command}</code></div>
+                {updateCheck.reason === "source_checkout" && (
+                  <div className="notice-warn" role="status"><IconAlert /> {t("dash.updateSource")}</div>
+                )}
+                {updateCheck.reason === "latest_unavailable" && (
+                  <div className="notice-warn" role="status"><IconAlert /> {t("dash.updateUnavailable")}</div>
+                )}
+                {updateCheck.canUpdate && (
+                  <div className="spread update-restart">
+                    <div>
+                      <div style={{ fontWeight: 600 }}>{t("dash.updateRestart")}</div>
+                      <div className="muted" style={{ fontSize: 12 }}>{t("dash.updateRestartHint")}</div>
+                    </div>
+                    <button
+                      type="button"
+                      className={`switch ${updateRestart ? "on" : ""}`}
+                      onClick={() => setUpdateRestart(v => !v)}
+                      aria-label={t("dash.updateRestart")}
+                      aria-pressed={updateRestart}
+                    >
+                      <span className="knob" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="modal-actions">
+              <button type="button" className="btn btn-ghost" onClick={() => setUpdateOpen(false)}>{t("common.cancel")}</button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={runUpdate}
+                disabled={!updateCheck?.canUpdate || updateLoading}
+              >
+                {t("dash.runUpdate")}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </>

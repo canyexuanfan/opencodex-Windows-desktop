@@ -5,7 +5,6 @@ import { restoreNativeCodex } from "./codex-inject";
 import { restoreLegacyOpenaiHistory } from "./codex-history-provider";
 import { writeJournal, reconcileJournal } from "./codex-journal";
 import {
-  applyProxyEnv,
   codexAutoStartEnabled,
   getConfigDir,
   loadConfig,
@@ -30,6 +29,8 @@ import { serviceCommand, serviceStatusSummary, stopServiceIfInstalled, uninstall
 import { drainAndShutdown, startServer } from "./server";
 import { maybeShowStarPrompt } from "./star-prompt";
 import { maybeShowUpdatePrompt } from "./update-notify";
+import { syncModelsToCodex } from "./codex-sync";
+import { normalizeUpdateChannel, runGuiUpdateWorker } from "./update-job";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -47,30 +48,6 @@ if (command === "help" && args[1]) {
 if (command !== undefined && command !== "help" && hasHelpFlag(args.slice(1))) {
   printSubcommandUsage(command);
   process.exit(0);
-}
-
-async function syncModelsToCodex(port?: number) {
-  const config = loadConfig();
-  applyProxyEnv(config); // `ocx ensure`/`ocx sync` fetch provider models outside the server process
-
-  const p = port ?? config.port ?? 10100;
-  let catalogPath: string | null | undefined;
-  try {
-    const { refreshCodexModelCatalog } = await import("./codex-refresh");
-    const cat = await refreshCodexModelCatalog(config);
-    catalogPath = cat.catalogExists ? cat.path : null;
-    if (cat.added > 0) {
-      console.log(`   + ${cat.added} models appended to Codex catalog (${cat.path})`);
-    } else if (catalogPath === null) {
-      console.error("catalog sync skipped: no Codex catalog source found; keeping Codex's native catalog.");
-    }
-  } catch (e) {
-    console.error("catalog sync skipped:", e instanceof Error ? e.message : String(e));
-  }
-  const { injectCodexConfig } = await import("./codex-inject");
-  const result = await injectCodexConfig(p, config, { catalogPath });
-  console.log(result.message);
-  return result;
 }
 
 function parsePortOption(): number | undefined {
@@ -545,6 +522,13 @@ switch (command) {
     const { refreshVersionCache } = await import("./update-notify");
     const channel = args[1] === "preview" ? "preview" : "latest";
     await refreshVersionCache(channel);
+    break;
+  }
+  case "__gui-update-worker": {
+    const jobId = args[1];
+    if (!jobId) process.exit(1);
+    const channel = normalizeUpdateChannel(args[2]);
+    runGuiUpdateWorker(jobId, channel, args[3] === "restart");
     break;
   }
   case "help":

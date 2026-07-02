@@ -1607,6 +1607,51 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
     return jsonResponse({ ok: true, codexAutoStart: codexAutoStartEnabled(config) });
   }
 
+  if (url.pathname === "/api/sync" && req.method === "POST") {
+    const { syncModelsToCodex } = await import("./codex-sync");
+    const result = await syncModelsToCodex(undefined, config, null);
+    return jsonResponse({
+      ...result,
+      staleAppServerHint: "If Codex App still shows an older model list, restart its long-lived app-server process after sync.",
+    }, result.ok ? 200 : 500);
+  }
+
+  if (url.pathname === "/api/update/check" && req.method === "GET") {
+    const { checkForUpdate, normalizeUpdateChannel } = await import("./update-job");
+    const rawTag = url.searchParams.get("tag");
+    if (rawTag && rawTag !== "latest" && rawTag !== "preview") {
+      return jsonResponse({ error: "tag must be latest or preview" }, 400);
+    }
+    return jsonResponse(checkForUpdate(normalizeUpdateChannel(rawTag)));
+  }
+
+  if (url.pathname === "/api/update/run" && req.method === "POST") {
+    const { normalizeUpdateChannel, startUpdateJob, UpdateJobError } = await import("./update-job");
+    let body: { tag?: unknown; restart?: unknown };
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (body.tag !== undefined && body.tag !== "latest" && body.tag !== "preview") {
+      return jsonResponse({ error: "tag must be latest or preview" }, 400);
+    }
+    if (body.restart !== undefined && typeof body.restart !== "boolean") {
+      return jsonResponse({ error: "restart boolean is required" }, 400);
+    }
+    try {
+      return jsonResponse({ ok: true, job: startUpdateJob(normalizeUpdateChannel(body.tag as string | undefined), body.restart !== false) });
+    } catch (err) {
+      if (err instanceof UpdateJobError) {
+        return jsonResponse({ error: err.message, code: err.code }, err.status);
+      }
+      return jsonResponse({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  }
+
+  if (url.pathname === "/api/update/status" && req.method === "GET") {
+    const { readUpdateJob } = await import("./update-job");
+    const job = readUpdateJob(url.searchParams.get("jobId"));
+    if (!job) return jsonResponse({ error: "update job not found" }, 404);
+    return jsonResponse({ ok: true, job });
+  }
+
   if (url.pathname === "/api/sidecar-settings" && req.method === "GET") {
     const ws = config.webSearchSidecar ?? {};
     const vs = config.visionSidecar ?? {};
