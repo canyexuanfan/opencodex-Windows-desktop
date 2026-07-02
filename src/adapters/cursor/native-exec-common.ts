@@ -1,7 +1,9 @@
 import { create, toBinary } from "@bufbuild/protobuf";
 import {
   AgentClientMessageSchema,
+  ExecClientControlMessageSchema,
   ExecClientMessageSchema,
+  ExecClientStreamCloseSchema,
   type ExecClientMessage,
   type ExecServerMessage,
 } from "./gen/agent_pb";
@@ -21,6 +23,23 @@ export function execBytes(execMsg: ExecServerMessage, messageCase: ExecClientMes
         id: execMsg.id,
         execId: execMsg.execId,
         message: { case: messageCase, value: value as never },
+      }),
+    },
+  });
+}
+
+/**
+ * Exec-channel stream close acknowledgement (`execClientControlMessage.streamClose`). Cursor keeps
+ * a streamed exec (e.g. `shellStreamArgs`) — and with it the whole turn — pending until the client
+ * closes the exec stream; stream deltas and even the `exit` event alone are not treated as
+ * completion. Mirrors jawcode `sendExecClientStreamClose`.
+ */
+export function execStreamCloseBytes(execMsg: ExecServerMessage): Uint8Array {
+  return clientBytes({
+    message: {
+      case: "execClientControlMessage",
+      value: create(ExecClientControlMessageSchema, {
+        message: { case: "streamClose", value: create(ExecClientStreamCloseSchema, { id: execMsg.id }) },
       }),
     },
   });

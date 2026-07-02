@@ -18,7 +18,7 @@ import {
   WriteShellStdinSuccessSchema,
   type ExecServerMessage,
 } from "./gen/agent_pb";
-import { errorText, execBytes } from "./native-exec-common";
+import { errorText, execBytes, execStreamCloseBytes } from "./native-exec-common";
 
 const backgroundShells = new Map<number, { child: ChildProcessWithoutNullStreams; outputLength: number }>();
 let nextShellId = 1;
@@ -62,6 +62,7 @@ export async function shellStreamExec(execMsg: ExecServerMessage): Promise<Uint8
   if (execMsg.message.case !== "shellStreamArgs") throw new Error("invalid shell stream exec");
   const args = execMsg.message.value;
   const cwd = resolve(args.workingDirectory || process.cwd());
+  const started = Date.now();
   const replies = [
     execBytes(execMsg, "shellStream", create(ShellStreamSchema, {
       event: { case: "start", value: create(ShellStreamStartSchema, { sandboxPolicy: args.requestedSandboxPolicy }) },
@@ -104,6 +105,42 @@ export async function shellStreamExec(execMsg: ExecServerMessage): Promise<Uint8
   replies.push(execBytes(execMsg, "shellStream", create(ShellStreamSchema, {
     event: { case: "exit", value: create(ShellStreamExitSchema, { code: result.code, cwd, aborted: result.aborted }) },
   })));
+  // Cursor keeps the turn pending when it receives only stream deltas/exit: it requires the final
+  // structured shellResult as completion acknowledgement, followed by an exec stream close. Without
+  // these two frames the server-side agent waits forever (heartbeat-only stall → watchdog
+  // upstream_stall_timeout → upstream 502). Mirrors jawcode handleShellStreamArgs.
+  const shellResult = result.code === 0 && !result.aborted
+    ? create(ShellResultSchema, {
+        result: {
+          case: "success",
+          value: create(ShellSuccessSchema, {
+            command: args.command,
+            workingDirectory: cwd,
+            exitCode: result.code,
+            signal: "",
+            stdout: result.stdout,
+            stderr: result.stderr,
+            executionTime: Date.now() - started,
+          }),
+        },
+      })
+    : create(ShellResultSchema, {
+        result: {
+          case: "failure",
+          value: create(ShellFailureSchema, {
+            command: args.command,
+            workingDirectory: cwd,
+            exitCode: result.code,
+            signal: "",
+            stdout: result.stdout,
+            stderr: result.stderr,
+            executionTime: Date.now() - started,
+            aborted: result.aborted,
+          }),
+        },
+      });
+  replies.push(execBytes(execMsg, "shellResult", shellResult));
+  replies.push(execStreamCloseBytes(execMsg));
   return replies;
 }
 

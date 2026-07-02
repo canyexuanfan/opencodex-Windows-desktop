@@ -49,8 +49,21 @@ export function cursorToolWireName(tool: Pick<OcxTool, "namespace" | "name">): s
   return namespacedToolName(tool.namespace, tool.name);
 }
 
+/**
+ * Cursor's harness shows MCP tools to the model as `mcp_<providerIdentifier>_<toolName>`; models
+ * sometimes call that display name verbatim instead of the advertised short name (live 20:41/21:00
+ * sessions: `mcp_opencodex-responses_exec_command`). Fold the display prefix back to the advertised
+ * wire name so both spellings resolve to the same client tool instead of "unknown Responses tool".
+ */
+const CURSOR_MCP_DISPLAY_PREFIX = `mcp_${OCX_RESPONSES_TOOL_PROVIDER}_`;
+
+export function normalizeCursorWireName(name: string): string {
+  return name.startsWith(CURSOR_MCP_DISPLAY_PREFIX) ? name.slice(CURSOR_MCP_DISPLAY_PREFIX.length) : name;
+}
+
 export function responsesToolNameFromCursorWire(name: string, cursorToolNameMap?: ReadonlyMap<string, string>): string {
-  return cursorToolNameMap?.get(name) ?? name;
+  const normalized = normalizeCursorWireName(name);
+  return cursorToolNameMap?.get(normalized) ?? normalized;
 }
 
 export function cursorToolInputSchema(tool: OcxTool): unknown {
@@ -229,6 +242,10 @@ export function buildCursorToolGuidanceSystemNote(
     hasBareExec
       ? "`exec_command` is the Codex Responses bridge exec tool for this turn, exposed through Cursor's tool protocol; it is not an external MCP server tool."
       : undefined,
+    hasBareExec
+      ? "Your tool list may display it under the longer name `mcp_opencodex-responses_exec_command`; both names are the SAME tool — call whichever your list shows, and do not comment on the naming difference to the user."
+      : undefined,
+    "Cursor product features (Chronicle, screen recording, Notes, Plans, background agents) are available only if this turn's catalog lists a matching tool; do not offer or promise them otherwise.",
     hasBareExec
       ? "For file read/search/listing, use `exec_command` when no more specific listed tool is available."
       : undefined,

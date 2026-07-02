@@ -41,7 +41,54 @@ export interface CursorNativeExecContext extends CursorNativeExecDeps {
   clientToolDefs?: McpToolDefinition[];
 }
 
-const blobs = new Map<string, Uint8Array>();
+/**
+ * Content-addressed blob store shared across streams. Bounded: without eviction a long-running
+ * proxy accumulates every conversation's prompt blobs forever (unbounded memory) and any stale
+ * blob stays servable indefinitely — a cross-conversation contamination enabler if Cursor's
+ * server-side state ever references old ids (devlog 260702 P0). Continuation requests re-store
+ * their blobs on every turn (`rootPromptMessages` → `storeCursorBlob`), so TTL + cap eviction is
+ * safe for live sessions: only genuinely abandoned entries age out.
+ */
+const BLOB_TTL_MS = 15 * 60 * 1000;
+const BLOB_MAX_ENTRIES = 4096;
+const blobs = new Map<string, { data: Uint8Array; storedAt: number }>();
+
+function evictStaleBlobs(now: number): void {
+  if (blobs.size <= BLOB_MAX_ENTRIES) {
+    // TTL sweep only when the map has any chance of stale entries; Map iterates insertion order.
+    for (const [k, entry] of blobs) {
+      if (now - entry.storedAt <= BLOB_TTL_MS) break;
+      blobs.delete(k);
+    }
+    return;
+  }
+  // Over cap: drop oldest entries first (insertion order approximates recency because re-stores
+  // delete+set to refresh their position).
+  const excess = blobs.size - BLOB_MAX_ENTRIES;
+  let dropped = 0;
+  for (const k of blobs.keys()) {
+    if (dropped >= excess) break;
+    blobs.delete(k);
+    dropped++;
+  }
+}
+
+function setBlob(k: string, data: Uint8Array): void {
+  const now = Date.now();
+  blobs.delete(k); // refresh insertion order so live sessions stay newest
+  blobs.set(k, { data, storedAt: now });
+  evictStaleBlobs(now);
+}
+
+function getBlob(k: string): Uint8Array | undefined {
+  const entry = blobs.get(k);
+  if (!entry) return undefined;
+  if (Date.now() - entry.storedAt > BLOB_TTL_MS) {
+    blobs.delete(k);
+    return undefined;
+  }
+  return entry.data;
+}
 
 function key(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("hex");
@@ -54,7 +101,7 @@ function key(bytes: Uint8Array): string {
  */
 export function storeCursorBlob(data: Uint8Array): Uint8Array {
   const blobId = new Uint8Array(createHash("sha256").update(data).digest());
-  blobs.set(key(blobId), data);
+  setBlob(key(blobId), data);
   return blobId;
 }
 
@@ -101,7 +148,7 @@ export async function handleCursorNativeExec(execMsg: ExecServerMessage, deps: C
 
 export function handleCursorNativeKv(kvMsg: KvServerMessage): Uint8Array {
   if (kvMsg.message.case === "getBlobArgs") {
-    const blobData = blobs.get(key(kvMsg.message.value.blobId));
+    const blobData = getBlob(key(kvMsg.message.value.blobId));
     return clientBytes({
       message: {
         case: "kvClientMessage",
@@ -113,7 +160,7 @@ export function handleCursorNativeKv(kvMsg: KvServerMessage): Uint8Array {
     });
   }
   if (kvMsg.message.case === "setBlobArgs") {
-    blobs.set(key(kvMsg.message.value.blobId), kvMsg.message.value.blobData);
+    setBlob(key(kvMsg.message.value.blobId), kvMsg.message.value.blobData);
     return clientBytes({
       message: {
         case: "kvClientMessage",

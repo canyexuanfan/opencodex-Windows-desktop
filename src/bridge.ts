@@ -456,6 +456,9 @@ export function bridgeToResponsesSSE(
               emit("response.failed", {
                 response: {
                   ...responseSnapshot("failed", finishedItems),
+                  // Partial consumption from a mid-stream upstream failure: surfaced so the request
+                  // log can record real tokens instead of usageStatus "unreported" with 0.
+                  ...(event.usage ? { usage: responsesUsage(event.usage) } : {}),
                   error: responseError(502, "upstream_error", event.message),
                   last_error: responseError(502, "upstream_error", event.message),
                 },

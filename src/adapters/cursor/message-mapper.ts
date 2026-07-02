@@ -26,7 +26,7 @@ export function mapCursorServerMessage(
     case "done":
       return [{ type: "done", usage: message.usage }];
     case "error":
-      return [{ type: "error", message: message.message }];
+      return [{ type: "error", message: message.message, ...(message.usage ? { usage: message.usage } : {}) }];
     case "heartbeat":
       // Liveness only: keeps the bridge's stall watchdog from tripping upstream_stall_timeout while
       // Cursor silently assembles (parallel) tool calls. The bridge resets stallTicks on any adapter

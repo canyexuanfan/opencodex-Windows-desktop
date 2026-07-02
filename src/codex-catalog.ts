@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
-import { atomicWriteFile, getConfigDir, websocketsEnabled } from "./config";
+import { atomicWriteFile, expandUserPath, getConfigDir, websocketsEnabled } from "./config";
 import { CODEX_CONFIG_PATH, CODEX_MODELS_CACHE_PATH, DEFAULT_CATALOG_PATH, readRootTomlString, resolveCodexConfigPath } from "./codex-paths";
 import { DEFAULT_MODEL_CACHE_TTL_MS, getFreshCached, getStaleCached, isModelsFetchCoolingDown, markModelsFetchFailure, setCached } from "./model-cache";
 import { buildModelsRequest, resolveModelsAuthToken } from "./oauth/index";
@@ -34,8 +34,39 @@ function samePath(a: string, b: string): boolean {
   return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
 }
 
+function activeCodexHome(): string | null {
+  const raw = process.env.CODEX_HOME?.trim();
+  if (!raw) return null;
+  const path = resolve(expandUserPath(raw));
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return path;
+  }
+}
+
+function activeCodexConfigPath(): string {
+  const home = activeCodexHome();
+  return home ? join(home, "config.toml") : CODEX_CONFIG_PATH;
+}
+
+function activeDefaultCatalogPath(): string {
+  const home = activeCodexHome();
+  return home ? join(home, "opencodex-catalog.json") : DEFAULT_CATALOG_PATH;
+}
+
+function activeCodexModelsCachePath(): string {
+  const home = activeCodexHome();
+  return home ? join(home, "models_cache.json") : CODEX_MODELS_CACHE_PATH;
+}
+
+function resolveActiveCodexConfigPath(path: string): string {
+  const home = activeCodexHome();
+  return home ? resolve(home, path) : resolveCodexConfigPath(path);
+}
+
 function isDefaultCatalogPath(path: string): boolean {
-  return samePath(path, DEFAULT_CATALOG_PATH);
+  return samePath(path, activeDefaultCatalogPath());
 }
 
 /**
@@ -132,13 +163,14 @@ function shouldExposeRoutedModel(model: CatalogModel): boolean {
 /** Resolve the `model_catalog_json` path from Codex config.toml, else the default. */
 export function readCodexCatalogPath(): string {
   try {
-    if (existsSync(CODEX_CONFIG_PATH)) {
-      const toml = readFileSync(CODEX_CONFIG_PATH, "utf-8");
+    const configPath = activeCodexConfigPath();
+    if (existsSync(configPath)) {
+      const toml = readFileSync(configPath, "utf-8");
       const path = readRootTomlString(toml, "model_catalog_json");
-      if (path) return resolveCodexConfigPath(path);
+      if (path) return resolveActiveCodexConfigPath(path);
     }
   } catch { /* ignore */ }
-  return DEFAULT_CATALOG_PATH;
+  return activeDefaultCatalogPath();
 }
 
 function parseCatalogJson(raw: string): RawCatalog | null {
@@ -398,7 +430,7 @@ function loadCatalogForSync(path: string): RawCatalog | null {
   if (catalog && findNativeTemplate(catalog)) return catalog;
   return readCatalog(catalogBackupPathFor(path))
     ?? (isDefaultCatalogPath(path) ? readCatalog(legacyCatalogBackupPath()) : null)
-    ?? readCatalog(CODEX_MODELS_CACHE_PATH)
+    ?? readCatalog(activeCodexModelsCachePath())
     ?? materializeBundledCodexCatalog(path)
     ?? catalog;
 }
@@ -407,7 +439,7 @@ function readCurrentCatalogOrCache(): RawCatalog | null {
   const path = readCodexCatalogPath();
   return (isDefaultCatalogPath(path) ? loadBundledCodexCatalog() : null)
     ?? readCatalog(path)
-    ?? readCatalog(CODEX_MODELS_CACHE_PATH);
+    ?? readCatalog(activeCodexModelsCachePath());
 }
 
 /**
@@ -419,7 +451,7 @@ export function loadCatalogTemplate(): RawEntry | null {
   const catalogPath = readCodexCatalogPath();
   const native = findNativeTemplate(readCatalog(catalogPath))
     ?? findNativeTemplate(readCatalogBackup(catalogPath))
-    ?? findNativeTemplate(readCatalog(CODEX_MODELS_CACHE_PATH))
+    ?? findNativeTemplate(readCatalog(activeCodexModelsCachePath()))
     ?? findNativeTemplate(loadBundledCodexCatalog());
   return native ? JSON.parse(JSON.stringify(native)) : null;
 }
@@ -863,6 +895,11 @@ export function mergeCatalogEntriesForSync(
   wsEnabled: boolean,
   goIds: Set<string> = new Set(),
   template: RawEntry | null = null,
+  gatheredProviderNames: Set<string> = new Set(routedEntries.flatMap(entry => {
+    const slug = typeof entry.slug === "string" ? entry.slug : "";
+    const slash = slug.indexOf("/");
+    return slash > 0 ? [slug.slice(0, slash)] : [];
+  })),
 ): RawEntry[] {
   const rank = new Map(featured.map((slug, i) => [slug, i] as const));
   const native = catalogModels
@@ -901,6 +938,14 @@ export function mergeCatalogEntriesForSync(
   if (routedEntries.length === 0 && catalogModels.some(m => typeof m.slug === "string" && (m.slug as string).includes("/"))) {
     finalRoutedEntries = catalogModels.filter(m => typeof m.slug === "string" && (m.slug as string).includes("/"));
     console.warn(`[opencodex] catalog sync: routed model fetch returned empty; preserving ${finalRoutedEntries.length} existing routed entr${finalRoutedEntries.length === 1 ? "y" : "ies"} on disk.`);
+  } else {
+    const freshSlugs = new Set(routedEntries.flatMap(entry => typeof entry.slug === "string" ? [entry.slug] : []));
+    const preservedForeignRouted = catalogModels.filter(m => {
+      if (typeof m.slug !== "string" || !m.slug.includes("/")) return false;
+      const provider = m.slug.slice(0, m.slug.indexOf("/"));
+      return !gatheredProviderNames.has(provider) && !freshSlugs.has(m.slug);
+    });
+    finalRoutedEntries = [...routedEntries, ...preservedForeignRouted];
   }
 
   return [...native, ...finalRoutedEntries].map(m => {
@@ -948,11 +993,16 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
   // like `gpt-5.5`; those must not delete the native OpenAI/Codex base row.
   const baseline = readNativeBaseline(catalogPath);
   const goIds = new Set(enabledGo.map(m => m.id));
+  const gatheredProviderNames = new Set(
+    Object.entries(config.providers ?? {})
+      .filter(([, prov]) => prov.disabled !== true)
+      .map(([name]) => name),
+  );
   // Central WS capability override on the FINAL on-disk catalog (the file Codex reads). Applies to
   // native AND routed so the advertised flag matches the implemented endpoint (phase 120.4) and a
   // native template can never leak supports_websockets while the flag is off.
   const wsEnabled = websocketsEnabled(config);
-  catalog.models = mergeCatalogEntriesForSync(catalog.models ?? [], goEntries, baseline, featured, wsEnabled, goIds, template);
+  catalog.models = mergeCatalogEntriesForSync(catalog.models ?? [], goEntries, baseline, featured, wsEnabled, goIds, template, gatheredProviderNames);
 
   atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2) + "\n");
   return { added: goEntries.length, path: catalogPath };
@@ -1007,6 +1057,6 @@ export function invalidateCodexModelsCache(): void {
       client_version: "0.0.0",
       models,
     };
-    atomicWriteFile(CODEX_MODELS_CACHE_PATH, JSON.stringify(wrapper, null, 2) + "\n");
+    atomicWriteFile(activeCodexModelsCachePath(), JSON.stringify(wrapper, null, 2) + "\n");
   } catch { /* best-effort */ }
 }

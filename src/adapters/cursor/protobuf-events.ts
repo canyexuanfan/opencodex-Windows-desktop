@@ -2,7 +2,7 @@ import type { OcxUsage } from "../../types";
 import type { AgentServerMessage, McpArgs, ToolCall } from "./gen/agent_pb";
 import { decodeCursorArgsMap } from "./arg-codec";
 import { normalizeArgKeys } from "./arg-normalize";
-import { OCX_RESPONSES_TOOL_PROVIDER, responsesToolNameFromCursorWire } from "./tool-definitions";
+import { OCX_RESPONSES_TOOL_PROVIDER, normalizeCursorWireName, responsesToolNameFromCursorWire } from "./tool-definitions";
 import type { CursorServerMessage } from "./types";
 
 export interface CursorProtobufEventState {
@@ -44,16 +44,21 @@ export function createCursorProtobufEventState(options: { clientToolNames?: Iter
   };
 }
 
-function mcpArgsFromToolCall(toolCall: ToolCall | undefined): McpArgs | undefined {
+/** Exported for live-transport's client-tool frame classification (finalize revocation). */
+export function mcpArgsFromToolCall(toolCall: ToolCall | undefined): McpArgs | undefined {
   if (toolCall?.tool.case !== "mcpToolCall") return undefined;
   const args = toolCall.tool.value.args;
   return args?.providerIdentifier === OCX_RESPONSES_TOOL_PROVIDER ? args : undefined;
 }
 
+function mcpWireNameFromArgs(args: McpArgs | undefined): string | undefined {
+  const raw = args?.toolName || args?.name;
+  // Models may call the Cursor-displayed `mcp_<provider>_<tool>` name; fold it to the advertised name.
+  return raw && raw.length > 0 ? normalizeCursorWireName(raw) : undefined;
+}
+
 function mcpCursorWireName(toolCall: ToolCall | undefined): string | undefined {
-  const args = mcpArgsFromToolCall(toolCall);
-  const name = args?.toolName || args?.name;
-  return name && name.length > 0 ? name : undefined;
+  return mcpWireNameFromArgs(mcpArgsFromToolCall(toolCall));
 }
 
 function decodeMcpArgs(args: McpArgs | undefined): string {
@@ -62,7 +67,7 @@ function decodeMcpArgs(args: McpArgs | undefined): string {
 
 function decodeMcpArgsNormalized(args: McpArgs | undefined, state: CursorProtobufEventState): string {
   const decoded = decodeCursorArgsMap(args?.args);
-  const toolName = args?.toolName || args?.name;
+  const toolName = mcpWireNameFromArgs(args);
   if (toolName && state.toolSchemas?.has(toolName)) {
     return JSON.stringify(normalizeArgKeys(decoded, state.toolSchemas.get(toolName)));
   }
@@ -108,7 +113,7 @@ function normalizeJsonText(text: string, toolName: string | undefined, state: Cu
  */
 function resolveCompletedArgs(buffered: string, args: McpArgs | undefined, state: CursorProtobufEventState): string {
   if (hasMcpArgBytes(args)) return decodeMcpArgsNormalized(args, state);
-  const name = args?.toolName || args?.name;
+  const name = mcpWireNameFromArgs(args);
   if (isCompleteJson(buffered)) return normalizeJsonText(buffered, name, state);
   return "";
 }
@@ -120,7 +125,7 @@ export function mapSyntheticMcpExecToToolEvents(
 ): CursorServerMessage[] {
   if (args.providerIdentifier !== OCX_RESPONSES_TOOL_PROVIDER) return [];
   if (options.allowEmptyArgs !== true && !hasMcpArgBytes(args)) return [];
-  const cursorWireName = args.toolName || args.name;
+  const cursorWireName = mcpWireNameFromArgs(args);
   if (!cursorWireName) return [{ type: "error", message: "Cursor requested a Responses tool without a tool name" }];
   const callId = args.toolCallId || fallbackCallId;
   if (options.state?.completedToolCalls.has(callId)) return [];

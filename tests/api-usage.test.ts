@@ -5,9 +5,11 @@ import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
 import type { OcxConfig } from "../src/types";
+import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 
 let testDir = "";
 let previousHome: string | undefined;
+let isolatedCodexHome: IsolatedCodexHome | null = null;
 
 function baseConfig(): OcxConfig {
   return {
@@ -63,6 +65,7 @@ function writeFixture(now: number): void {
 
 beforeEach(() => {
   previousHome = process.env.OPENCODEX_HOME;
+  isolatedCodexHome = installIsolatedCodexHome("ocx-api-usage-codex-");
   testDir = mkdtempSync(join(tmpdir(), "ocx-api-usage-"));
   process.env.OPENCODEX_HOME = testDir;
   saveConfig(baseConfig());
@@ -71,6 +74,8 @@ beforeEach(() => {
 afterEach(() => {
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
+  isolatedCodexHome?.restore();
+  isolatedCodexHome = null;
   if (testDir) rmSync(testDir, { recursive: true, force: true });
 });
 

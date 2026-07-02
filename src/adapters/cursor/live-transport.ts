@@ -1,16 +1,37 @@
 import http2 from "node:http2";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import { namespacedToolName, type OcxProviderConfig } from "../../types";
+import { namespacedToolName, type OcxProviderConfig, type OcxUsage } from "../../types";
 import { CONNECT_FLAG_END_STREAM, decodeAvailableConnectFrames, encodeConnectFrame } from "./framing";
 import { activePromptText, encodeCursorRunRequest } from "./protobuf-request";
 import { createCursorProtobufEventState, finalizeTurnEvents, mapCursorProtobufServerMessage, mapSyntheticMcpExecToToolEvents } from "./protobuf-events";
 import {
   AgentClientMessageSchema,
   AgentServerMessageSchema,
+  AskQuestionInteractionResponseSchema,
+  AskQuestionRejectedSchema,
+  AskQuestionResultSchema,
   ClientHeartbeatSchema,
+  CreatePlanRequestResponseSchema,
+  CreatePlanResultSchema,
+  CreatePlanSuccessSchema,
+  ExaFetchRequestResponseSchema,
+  ExaFetchRequestResponse_RejectedSchema,
+  ExaSearchRequestResponseSchema,
+  ExaSearchRequestResponse_RejectedSchema,
+  InteractionResponseSchema,
+  SetupVmEnvironmentResultSchema,
+  SetupVmEnvironmentSuccessSchema,
+  SwitchModeRequestResponseSchema,
+  SwitchModeRequestResponse_RejectedSchema,
+  WebSearchRequestResponseSchema,
+  WebSearchRequestResponse_RejectedSchema,
   type AgentServerMessage,
   type ExecServerMessage,
+  type InteractionQuery,
+  type InteractionResponse,
 } from "./gen/agent_pb";
+import { debugProviderDiagnostic } from "../../debug";
+import { mcpArgsFromToolCall } from "./protobuf-events";
 import { OCX_RESPONSES_TOOL_PROVIDER } from "./tool-definitions";
 import { handleCursorNativeExec, handleCursorNativeKv, type CursorNativeExecContext } from "./native-exec";
 import { resolveMcpServers } from "./mcp-config";
@@ -151,6 +172,117 @@ export function planMcpArgsHandling(
 }
 
 /**
+ * Build the `interactionResponse` reply for a server `interactionQuery`. Cursor's server-side agent
+ * BLOCKS on these queries until the client answers (matching `id`); an unanswered query is the
+ * proven cause of the heartbeat-only stall → watchdog `upstream_stall_timeout` → upstream 502 loop
+ * (devlog 260702_cursor-live-stability-rca). ocx is a headless non-interactive client, so:
+ *   - createPlan: acknowledge success (the agent proceeds to execute); the plan text is surfaced to
+ *     Codex as visible output so the user still sees it.
+ *   - askQuestion: reject with a reason — the agent must proceed autonomously; there is no human to
+ *     answer mid-turn. (Future: bridge to a Codex user-input request.)
+ *   - switchMode / webSearch / exaSearch / exaFetch: reject (deterministic default; web search has
+ *     its own sidecar path outside this transport).
+ *   - setupVmEnvironment: the result schema has no error case — reply success so the agent is not
+ *     left waiting; the command itself was never run locally.
+ * Pure (no I/O) for unit testing; `handleServerMessage` writes the frame and emits liveness.
+ */
+export function planInteractionQueryReply(query: InteractionQuery): { response: InteractionResponse; replyCase: string; planText?: string } {
+  const NON_INTERACTIVE_REASON = "opencodex bridge is non-interactive; proceed without this interaction.";
+  const q = query.query;
+  const respond = (result: InteractionResponse["result"]): InteractionResponse =>
+    create(InteractionResponseSchema, { id: query.id, result });
+
+  if (q.case === "createPlanRequestQuery") {
+    const args = q.value.args;
+    const parts = [
+      args?.name ? `Plan: ${args.name}` : undefined,
+      args?.overview?.trim() ? args.overview.trim() : undefined,
+      args?.plan?.trim() ? args.plan.trim() : undefined,
+    ].filter((part): part is string => typeof part === "string" && part.length > 0);
+    return {
+      response: respond({
+        case: "createPlanRequestResponse",
+        value: create(CreatePlanRequestResponseSchema, {
+          result: create(CreatePlanResultSchema, { result: { case: "success", value: create(CreatePlanSuccessSchema, {}) } }),
+        }),
+      }),
+      replyCase: "createPlanRequestResponse:success",
+      planText: parts.length > 0 ? `${parts.join("\n\n")}\n` : undefined,
+    };
+  }
+  if (q.case === "askQuestionInteractionQuery") {
+    return {
+      response: respond({
+        case: "askQuestionInteractionResponse",
+        value: create(AskQuestionInteractionResponseSchema, {
+          result: create(AskQuestionResultSchema, {
+            result: { case: "rejected", value: create(AskQuestionRejectedSchema, { reason: NON_INTERACTIVE_REASON }) },
+          }),
+        }),
+      }),
+      replyCase: "askQuestionInteractionResponse:rejected",
+    };
+  }
+  if (q.case === "switchModeRequestQuery") {
+    return {
+      response: respond({
+        case: "switchModeRequestResponse",
+        value: create(SwitchModeRequestResponseSchema, {
+          result: { case: "rejected", value: create(SwitchModeRequestResponse_RejectedSchema, { reason: NON_INTERACTIVE_REASON }) },
+        }),
+      }),
+      replyCase: "switchModeRequestResponse:rejected",
+    };
+  }
+  if (q.case === "webSearchRequestQuery") {
+    return {
+      response: respond({
+        case: "webSearchRequestResponse",
+        value: create(WebSearchRequestResponseSchema, {
+          result: { case: "rejected", value: create(WebSearchRequestResponse_RejectedSchema, { reason: NON_INTERACTIVE_REASON }) },
+        }),
+      }),
+      replyCase: "webSearchRequestResponse:rejected",
+    };
+  }
+  if (q.case === "exaSearchRequestQuery") {
+    return {
+      response: respond({
+        case: "exaSearchRequestResponse",
+        value: create(ExaSearchRequestResponseSchema, {
+          result: { case: "rejected", value: create(ExaSearchRequestResponse_RejectedSchema, { reason: NON_INTERACTIVE_REASON }) },
+        }),
+      }),
+      replyCase: "exaSearchRequestResponse:rejected",
+    };
+  }
+  if (q.case === "exaFetchRequestQuery") {
+    return {
+      response: respond({
+        case: "exaFetchRequestResponse",
+        value: create(ExaFetchRequestResponseSchema, {
+          result: { case: "rejected", value: create(ExaFetchRequestResponse_RejectedSchema, { reason: NON_INTERACTIVE_REASON }) },
+        }),
+      }),
+      replyCase: "exaFetchRequestResponse:rejected",
+    };
+  }
+  if (q.case === "setupVmEnvironmentArgs") {
+    return {
+      response: respond({
+        case: "setupVmEnvironmentResult",
+        value: create(SetupVmEnvironmentResultSchema, {
+          result: { case: "success", value: create(SetupVmEnvironmentSuccessSchema, {}) },
+        }),
+      }),
+      replyCase: "setupVmEnvironmentResult:success",
+    };
+  }
+  // Unknown/future query case: an empty response still unblocks the matching id.
+  return { response: respond({ case: undefined, value: undefined } as InteractionResponse["result"]), replyCase: "empty" };
+}
+
+/**
  * Re-check the drain guard at grace-timer fire time and finalize turn 1 only if still drained. A
  * sibling client tool call announced after the timer was armed reopens `openToolCalls`, so this
  * returns `[]` (the pending finalize is revoked); a later drain re-arms it. Pure for unit testing.
@@ -286,13 +418,13 @@ class LiveCursorTransport implements CursorTransport {
         const message = queue.shift();
         if (message) yield message;
       }
-      if (failure) throw failure;
+      if (failure) throw attachPartialUsage(failure, state);
       if (done) break;
       await new Promise<void>(resolve => {
         notify = resolve;
       });
     }
-    if (failure) throw failure;
+    if (failure) throw attachPartialUsage(failure, state);
   }
 
   writeClient(_message: CursorClientMessage): void {}
@@ -464,6 +596,7 @@ class LiveCursorTransport implements CursorTransport {
     push: (message: CursorServerMessage) => void,
   ): Promise<void> {
     if (!this.stream) return;
+    debugProviderDiagnostic("cursor", "frame", describeCursorServerFrame(message));
     if (message.message.case === "kvServerMessage") {
       this.stream.write(encodeConnectFrame(handleCursorNativeKv(message.message.value)));
       return;
@@ -482,6 +615,20 @@ class LiveCursorTransport implements CursorTransport {
       }
       const replies = await handleCursorNativeExec(message.message.value, this.execContext);
       for (const reply of replies) this.stream.write(encodeConnectFrame(reply));
+      return;
+    }
+    if (message.message.case === "interactionQuery") {
+      // The server-side agent BLOCKS until this query is answered with the matching id; leaving it
+      // unanswered is the proven stall → watchdog → upstream-502 mechanism. Reply immediately with
+      // the non-interactive default and emit liveness so the bridge watchdog sees progress.
+      const query = message.message.value;
+      const plan = planInteractionQueryReply(query);
+      debugProviderDiagnostic("cursor", "interaction-query", { id: query.id, queryCase: query.query.case ?? "unknown", reply: plan.replyCase });
+      this.stream.write(encodeClientMessage({ message: { case: "interactionResponse", value: plan.response } }));
+      if (!state.terminated) {
+        if (plan.planText) push({ type: "text", text: plan.planText });
+        push({ type: "heartbeat" });
+      }
       return;
     }
     const mapped = mapCursorProtobufServerMessage(message, state);
@@ -506,6 +653,56 @@ class LiveCursorTransport implements CursorTransport {
 }
 
 /**
+ * Build the best-effort partial usage for a turn that failed before a clean `done` (upstream 502,
+ * stream error, abort). Mirrors the clean-finalize math in `finalizeTurnEvents`: the last absolute
+ * checkpoint (`contextTokens`) is the cumulative context, the streamed delta stays in outputTokens.
+ * Returns undefined when the stream died before ANY token signal (nothing meaningful to report).
+ * Exported for unit testing.
+ */
+export function partialUsageFromEventState(state: ReturnType<typeof createCursorProtobufEventState>): OcxUsage | undefined {
+  const out = state.usage.outputTokens;
+  const ctx = state.contextTokens;
+  if (ctx === undefined && out <= 0) return undefined;
+  return ctx !== undefined
+    ? { ...state.usage, inputTokens: Math.max(0, ctx - out), totalTokens: ctx, estimated: true }
+    : { ...state.usage, estimated: true };
+}
+
+/**
+ * Attach partial usage to a transport failure so the adapter's error path can surface real token
+ * consumption for 502/stall rows instead of `usageStatus: unreported` with 0 tokens.
+ */
+function attachPartialUsage(failure: Error, state: ReturnType<typeof createCursorProtobufEventState>): Error {
+  const usage = partialUsageFromEventState(state);
+  if (usage) (failure as Error & { partialUsage?: OcxUsage }).partialUsage = usage;
+  return failure;
+}
+
+/**
+ * Compact frame descriptor for OCX_DEBUG_FRAMES diagnostics: outer case plus the inner
+ * interactionUpdate/exec case and tool-call union case when present. No payload content is logged.
+ */
+function describeCursorServerFrame(message: AgentServerMessage): Record<string, unknown> {
+  const out: Record<string, unknown> = { case: message.message.case ?? "unknown" };
+  if (message.message.case === "interactionUpdate") {
+    const update = message.message.value.message;
+    out.update = update.case ?? "unknown";
+    if (update.case === "toolCallStarted" || update.case === "partialToolCall" || update.case === "toolCallCompleted") {
+      out.toolCase = update.value.toolCall?.tool.case ?? "none";
+      out.callId = update.value.callId;
+    }
+  } else if (message.message.case === "execServerMessage") {
+    out.exec = message.message.value.message.case ?? "unknown";
+  } else if (message.message.case === "interactionQuery") {
+    out.query = message.message.value.query.case ?? "unknown";
+    out.id = message.message.value.id;
+  } else if (message.message.case === "kvServerMessage") {
+    out.kv = message.message.value.message.case ?? "unknown";
+  }
+  return out;
+}
+
+/**
  * True when a server frame represents real upstream progress that produced no outward Responses
  * event (so the bridge's stall watchdog would otherwise see silence). Covers tool-call assembly,
  * token/checkpoint accounting — the frames `mapCursorProtobufServerMessage` intentionally swallows.
@@ -525,16 +722,20 @@ function isCursorProgressFrame(message: AgentServerMessage): boolean {
 }
 
 /**
- * A tool-call lifecycle frame that can change the client tool call set (announce a new sibling or
+ * A tool-call lifecycle frame that can change the CLIENT tool call set (announce a new sibling or
  * commit one). Used to revoke a pending finalize so a late-announced parallel call is never dropped.
+ * Only frames whose inner ToolCall is an ocx-bridged Responses tool (`mcpToolCall` with our provider)
+ * count: Cursor-native tool frames (readToolCall/editToolCall/...) are display-plane and must not
+ * revoke a pending client-tool finalize. Exported for unit testing.
  */
-function isClientToolFrame(message: AgentServerMessage): boolean {
+export function isClientToolFrame(message: AgentServerMessage): boolean {
   if (message.message.case !== "interactionUpdate") return false;
-  switch (message.message.value.message.case) {
+  const update = message.message.value.message;
+  switch (update.case) {
     case "toolCallStarted":
     case "partialToolCall":
     case "toolCallCompleted":
-      return true;
+      return mcpArgsFromToolCall(update.value.toolCall) !== undefined;
     default:
       return false;
   }

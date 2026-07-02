@@ -24,7 +24,7 @@ export type CursorServerMessage =
   | { type: "tool_call_delta"; arguments: string }
   | { type: "tool_call_end"; id?: string }
   | { type: "done"; usage?: OcxUsage }
-  | { type: "error"; message: string }
+  | { type: "error"; message: string; usage?: OcxUsage }
   | { type: "heartbeat" }
   | { type: "kv_get"; key: string }
   | { type: "kv_set"; key: string; value: Uint8Array }

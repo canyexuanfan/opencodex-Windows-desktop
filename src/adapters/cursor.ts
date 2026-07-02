@@ -91,7 +91,8 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
           },
         );
       } catch (err) {
-        emit({ type: "error", message: safeCursorTransportError(err) });
+        const partialUsage = (err as { partialUsage?: import("../types").OcxUsage }).partialUsage;
+        emit({ type: "error", message: safeCursorTransportError(err), ...(partialUsage ? { usage: partialUsage } : {}) });
       }
     },
   };

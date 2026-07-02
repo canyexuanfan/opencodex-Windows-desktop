@@ -149,12 +149,19 @@ describe("Cursor native exec bridge", () => {
       case: "shellStreamArgs",
       value: create(ShellArgsSchema, { command: "printf stream-ok", workingDirectory: dir }),
     }));
-    const cases = replies.map(reply => decode(reply).message.case);
+    const decodedAll = replies.map(reply => fromBinary(AgentClientMessageSchema, reply));
+    const execFrames = decodedAll
+      .flatMap(msg => (msg.message.case === "execClientMessage" ? [msg.message.value] : []));
+    const cases = execFrames.map(frame => frame.message.case);
 
     expect(cases[0]).toBe("shellStream");
-    expect(cases).toContain("shellStream");
-    const events = replies.map(reply => decode(reply).message.value.event.case);
+    const events = execFrames
+      .flatMap(frame => (frame.message.case === "shellStream" ? [frame.message.value.event.case] : []));
     expect(events).toEqual(expect.arrayContaining(["start", "stdout", "exit"]));
+    // Completion acknowledgement: structured shellResult then exec streamClose — without these
+    // Cursor keeps the turn pending forever (heartbeat-only stall). See native-exec-shell.ts.
+    expect(cases).toContain("shellResult");
+    expect(decodedAll.at(-1)?.message.case).toBe("execClientControlMessage");
   });
 
   test("supports background shell spawn and stdin writes", async () => {

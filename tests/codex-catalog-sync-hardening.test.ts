@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -25,6 +25,18 @@ function nativeEntry(slug: string, priority: number): Record<string, unknown> {
     visibility: "list",
     base_instructions: "You are Codex, a coding agent based on GPT-5.",
     supported_reasoning_levels: [{ effort: "medium", description: "m" }],
+  };
+}
+
+function routedEntry(slug: string, priority: number): Record<string, unknown> {
+  return {
+    slug,
+    display_name: slug,
+    description: "routed",
+    priority,
+    visibility: "list",
+    base_instructions: "You are Codex, a coding agent based on GPT-5.",
+    supported_reasoning_levels: [],
   };
 }
 
@@ -92,10 +104,89 @@ describe("Codex catalog sync hardening", () => {
       syncCatalogModels({ providers: {} }).then(res => console.log(JSON.stringify(res)));
     `);
     expect(r.status).toBe(0);
+    expect(r.stderr).toContain("routed model fetch returned empty; preserving 2 existing routed entries");
 
     const slugs = (JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{ slug: string }>).map(m => m.slug);
     expect(slugs).toContain("kiro/claude-opus-4.8");   // routed preserved despite empty fetch
     expect(slugs).toContain("opencode-go/glm-5.2");
     expect(slugs).toContain("gpt-5.5");
+  });
+
+  test("preserves existing routed entries for providers absent from the current sync config", () => {
+    const catalogPath = join(codexHome, "catalog.json");
+    writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
+    writeFileSync(catalogPath, JSON.stringify({
+      models: [
+        nativeEntry("gpt-5.5", 0),
+        routedEntry("cursor/composer-2.5", 5),
+        routedEntry("openai/stale-model", 6),
+      ],
+    }, null, 2) + "\n");
+
+    const r = runScript(codexHome, opencodexHome, `
+      const { syncCatalogModels } = require("./src/codex-catalog");
+      syncCatalogModels({
+        providers: {
+          openai: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.example.test/v1",
+            liveModels: false,
+            models: ["fresh-model"]
+          }
+        }
+      }).then(res => console.log(JSON.stringify(res)));
+    `);
+    expect(r.status).toBe(0);
+
+    const slugs = (JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{ slug: string }>).map(m => m.slug);
+    expect(slugs).toContain("cursor/composer-2.5");
+    expect(slugs).toContain("openai/fresh-model");
+    expect(slugs).not.toContain("openai/stale-model");
+  });
+
+  test("replaces existing routed entries for providers present in the current sync config", () => {
+    const catalogPath = join(codexHome, "catalog.json");
+    writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
+    writeFileSync(catalogPath, JSON.stringify({
+      models: [
+        nativeEntry("gpt-5.5", 0),
+        routedEntry("cursor/stale-model", 5),
+        routedEntry("xai/grok-5-code", 6),
+      ],
+    }, null, 2) + "\n");
+
+    const r = runScript(codexHome, opencodexHome, `
+      const { syncCatalogModels } = require("./src/codex-catalog");
+      syncCatalogModels({
+        providers: {
+          cursor: {
+            adapter: "cursor",
+            baseUrl: "https://api2.cursor.sh",
+            liveModels: false,
+            models: ["composer-2.5"]
+          }
+        }
+      }).then(res => console.log(JSON.stringify(res)));
+    `);
+    expect(r.status).toBe(0);
+
+    const slugs = (JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{ slug: string }>).map(m => m.slug);
+    expect(slugs).toContain("cursor/composer-2.5");
+    expect(slugs).toContain("xai/grok-5-code");
+    expect(slugs).not.toContain("cursor/stale-model");
+  });
+
+  test("readCodexCatalogPath honors CODEX_HOME at call time", () => {
+    const alternateHome = join(codexHome, "alternate-codex-home");
+    mkdirSync(alternateHome, { recursive: true });
+    writeFileSync(join(alternateHome, "config.toml"), 'model_catalog_json = "nested/catalog.json"\n', "utf8");
+
+    const r = runScript(codexHome, opencodexHome, `
+      const { readCodexCatalogPath } = require("./src/codex-catalog");
+      process.env.CODEX_HOME = ${JSON.stringify(alternateHome)};
+      console.log(readCodexCatalogPath());
+    `);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe(resolve(realpathSync.native(alternateHome), "nested/catalog.json"));
   });
 });

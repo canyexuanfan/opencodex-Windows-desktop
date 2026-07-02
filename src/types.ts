@@ -195,7 +195,9 @@ export type AdapterEvent =
   | { type: "web_search_call_begin"; id: string }
   | { type: "web_search_call_end"; id: string; queries: string[]; status?: "completed" | "failed"; sources?: OcxUrlCitation[] }
   | { type: "done"; usage?: OcxUsage }
-  | { type: "error"; message: string };
+  // `usage` carries best-effort partial consumption when a turn dies before a clean done
+  // (e.g. cursor upstream 502 mid-stream), so failed requests can log real token counts.
+  | { type: "error"; message: string; usage?: OcxUsage };
 
 /**
  * A web source backing a search answer. Surfaced on the search-end event and rendered by the bridge
