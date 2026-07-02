@@ -144,6 +144,8 @@ export interface CodexHistorySyncResult {
   rows: number;
   files: number;
   ejectedRows?: number;
+  /** Set when a lock/busy error survived retries and the sync was SKIPPED, not empty. */
+  failed?: true;
 }
 
 interface ThreadRow {
@@ -351,7 +353,7 @@ function ejectRemainingOpencodexHistory(db: Database): { rows: number; files: nu
   return { rows: rows.length, files };
 }
 
-function isRecoverableHistoryError(error: unknown): boolean {
+export function isRecoverableHistoryError(error: unknown): boolean {
   const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : "";
   const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
   return code === "SQLITE_BUSY"
@@ -366,13 +368,31 @@ function isRecoverableHistoryError(error: unknown): boolean {
     || message.includes("permission denied");
 }
 
-export function syncCodexHistoryProvider(provider: CodexHistoryProvider, stateDbPath = STATE_DB_PATH, backupPath = HISTORY_BACKUP_PATH): CodexHistorySyncResult {
-  try {
-    return syncCodexHistoryProviderUnsafe(provider, stateDbPath, backupPath);
-  } catch (error) {
-    if (isRecoverableHistoryError(error)) return { rows: 0, files: 0 };
-    throw error;
+const HISTORY_RETRY_DELAY_MS = 500;
+
+/**
+ * Run a history mutation with one retry across recoverable lock/busy errors (the app's own
+ * connection holds `state_5.sqlite` in WAL with a 5 s busy_timeout; a transient writer
+ * usually clears within that window). Returns null when both attempts hit a recoverable
+ * error — callers surface that as `failed: true` instead of a silent no-op. Hard errors
+ * (corruption, programming bugs) still throw.
+ */
+export function withHistoryRetry<T>(fn: () => T, io: { sleepFn?: (ms: number) => void } = {}): T | null {
+  const sleepFn = io.sleepFn ?? Bun.sleepSync;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return fn();
+    } catch (error) {
+      if (!isRecoverableHistoryError(error)) throw error;
+      if (attempt >= 1) return null;
+      try { sleepFn(HISTORY_RETRY_DELAY_MS); } catch { /* sleep is best-effort */ }
+    }
   }
+}
+
+export function syncCodexHistoryProvider(provider: CodexHistoryProvider, stateDbPath = STATE_DB_PATH, backupPath = HISTORY_BACKUP_PATH): CodexHistorySyncResult {
+  return withHistoryRetry(() => syncCodexHistoryProviderUnsafe(provider, stateDbPath, backupPath))
+    ?? { rows: 0, files: 0, failed: true };
 }
 
 function syncCodexHistoryProviderUnsafe(provider: CodexHistoryProvider, stateDbPath: string, backupPath: string): CodexHistorySyncResult {
@@ -495,17 +515,14 @@ function restoreCodexHistoryProvider(stateDbPath: string, backupPath: string): C
   }
 }
 
-export function restoreLegacyOpenaiHistory(stateDbPath = STATE_DB_PATH): { rows: number; files: number } {
-  try {
-    if (!existsSync(stateDbPath)) return { rows: 0, files: 0 };
+export function restoreLegacyOpenaiHistory(stateDbPath = STATE_DB_PATH): { rows: number; files: number; failed?: true } {
+  if (!existsSync(stateDbPath)) return { rows: 0, files: 0 };
+  return withHistoryRetry(() => {
     const db = openStateDb(stateDbPath);
     try {
       return ejectRemainingOpencodexHistory(db);
     } finally {
       db.close();
     }
-  } catch (error) {
-    if (isRecoverableHistoryError(error)) return { rows: 0, files: 0 };
-    throw error;
-  }
+  }) ?? { rows: 0, files: 0, failed: true };
 }

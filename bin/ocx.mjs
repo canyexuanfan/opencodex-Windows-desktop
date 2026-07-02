@@ -10,7 +10,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,6 +66,18 @@ function shouldRepairCodexShim() {
   return existsSync(join(configDir(), "codex-shim.json"));
 }
 
+function historyRestoreIncomplete() {
+  // Mirror src/update.ts historyRestoreIncomplete — a codex-history-backup-*.json surviving
+  // a stop means the native-history restore was skipped (locked state DB).
+  try {
+    return readdirSync(configDir()).some(
+      name => name.startsWith("codex-history-backup-") && name.endsWith(".json"),
+    );
+  } catch {
+    return false;
+  }
+}
+
 function repairCodexShimIfNeeded() {
   if (!shouldRepairCodexShim()) return;
   const launcher = fileURLToPath(import.meta.url);
@@ -118,6 +130,13 @@ function runNpmSelfUpdate() {
     if (stopRes.status !== 0 || stillHasRuntimeState) {
       console.error("opencodex: could not stop the running proxy; aborting the update. Run 'ocx stop' and retry.");
       process.exit(1);
+    }
+    if (historyRestoreIncomplete()) {
+      console.warn(
+        "opencodex: WARNING — Codex resume history was NOT restored (history DB locked; Codex app/IDE open?).\n" +
+        "  Routed threads stay hidden in the native Codex app until restored.\n" +
+        "  After the update: close the Codex app, then run 'ocx stop' once to restore.",
+      );
     }
   }
 

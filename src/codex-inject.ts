@@ -287,9 +287,11 @@ export async function injectCodexConfig(port: number, config?: OcxConfig, option
   const catalogMessage = catalogPath
     ? `  Codex model catalog: ${catalogPath}\n`
     : `  Codex model catalog not injected because no opencodex catalog file exists yet.\n`;
-  const historyMessage = config?.syncResumeHistory !== false
-    ? `  Codex resume history: ${history.rows} thread(s) made visible for opencodex; originals backed up for restore.\n`
-    : `  Codex resume history: left unchanged (syncResumeHistory=false).\n`;
+  const historyMessage = config?.syncResumeHistory === false
+    ? `  Codex resume history: left unchanged (syncResumeHistory=false).\n`
+    : history.failed
+      ? `  ⚠️ Codex resume history sync SKIPPED: the history DB is locked (Codex app/IDE open?). Close it and rerun 'ocx start'.\n`
+      : `  Codex resume history: ${history.rows} thread(s) made visible for opencodex; originals backed up for restore.\n`;
   return {
     success: true,
     message: `Injected opencodex as default provider into Codex config.\n` +
@@ -380,11 +382,13 @@ export function restoreNativeCodex(): { success: boolean; message: string } {
   const msg = cat.removed > 0
     ? `${cfg.message} Catalog restored to ${cat.kept} native model(s) (dropped ${cat.removed} proxy-routed).`
     : cfg.message;
-  const historyMsg = history.rows > 0
-    ? ` Resume history restored from opencodex backup (${history.rows} thread(s)).`
-    : history.ejectedRows
-      ? ` ${history.ejectedRows} opencodex history thread(s) were ejected to openai so native Codex can resume them.`
-      : "";
+  const historyMsg = history.failed
+    ? ` ⚠️ Codex resume history could NOT be restored — the Codex app appears to be holding the history DB. Close the Codex app/IDE and run 'ocx stop' again; until then routed threads stay hidden in the native app.`
+    : history.rows > 0
+      ? ` Resume history restored from opencodex backup (${history.rows} thread(s)).`
+      : history.ejectedRows
+        ? ` ${history.ejectedRows} opencodex history thread(s) were ejected to openai so native Codex can resume them.`
+        : "";
   return { success: cfg.success, message: `${msg}${historyMsg}` };
 }
 

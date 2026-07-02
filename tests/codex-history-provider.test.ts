@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { restoreLegacyOpenaiHistory, syncCodexHistoryProvider } from "../src/codex-history-provider";
+import { isRecoverableHistoryError, restoreLegacyOpenaiHistory, syncCodexHistoryProvider, withHistoryRetry } from "../src/codex-history-provider";
 
 /** Read the LAST session_meta payload, mirroring the app's last-writer-wins fold over rollout lines. */
 function latestSessionMetaPayload(path: string): Record<string, unknown> {
@@ -280,5 +280,55 @@ describe("Codex history provider sync", () => {
     expect(latestSessionMetaPayload(execRollout).model_provider).toBe("openai");
     expect(latestSessionMetaPayload(execRollout).source).toBe("cli");
     expect(latestSessionMetaPayload(legacyRollout).model_provider).toBe("openai");
+  });
+});
+
+describe("history lock retry", () => {
+  const busy = () => Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+
+  test("isRecoverableHistoryError recognizes lock/busy shapes and rejects hard errors", () => {
+    expect(isRecoverableHistoryError(busy())).toBe(true);
+    expect(isRecoverableHistoryError(Object.assign(new Error("x"), { code: "SQLITE_LOCKED" }))).toBe(true);
+    expect(isRecoverableHistoryError(Object.assign(new Error("x"), { code: "EBUSY" }))).toBe(true);
+    expect(isRecoverableHistoryError(new Error("database is locked"))).toBe(true);
+    expect(isRecoverableHistoryError(new Error("permission denied"))).toBe(true);
+    expect(isRecoverableHistoryError(new Error("malformed database schema"))).toBe(false);
+    expect(isRecoverableHistoryError(new TypeError("undefined is not a function"))).toBe(false);
+  });
+
+  test("withHistoryRetry succeeds after one recoverable failure, sleeping between attempts", () => {
+    const sleeps: number[] = [];
+    let calls = 0;
+    const result = withHistoryRetry(() => {
+      calls++;
+      if (calls === 1) throw busy();
+      return { rows: 3, files: 2 };
+    }, { sleepFn: ms => sleeps.push(ms) });
+
+    expect(result).toEqual({ rows: 3, files: 2 });
+    expect(calls).toBe(2);
+    expect(sleeps.length).toBe(1);
+  });
+
+  test("withHistoryRetry returns null when the lock never clears (callers surface failed:true)", () => {
+    let calls = 0;
+    const result = withHistoryRetry(() => {
+      calls++;
+      throw busy();
+    }, { sleepFn: () => {} });
+
+    expect(result).toBeNull();
+    expect(calls).toBe(2);
+  });
+
+  test("withHistoryRetry rethrows hard errors immediately", () => {
+    let calls = 0;
+    expect(() =>
+      withHistoryRetry(() => {
+        calls++;
+        throw new Error("malformed database schema");
+      }, { sleepFn: () => {} }),
+    ).toThrow("malformed database schema");
+    expect(calls).toBe(1);
   });
 });

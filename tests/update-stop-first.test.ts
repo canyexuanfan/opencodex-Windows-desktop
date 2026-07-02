@@ -34,6 +34,22 @@ describe("update stops the running proxy before replacing files", () => {
     expect(launcherSource).toContain('existsSync(join(configDir(), "service-state.json"))');
   });
 
+  test("both update paths surface a skipped history restore after the stop", () => {
+    // A codex-history-backup-*.json surviving `ocx stop` means the native-history restore
+    // was skipped (locked state DB) — users must be told or their threads silently stay
+    // hidden in the Codex app.
+    expect(updateSource).toContain("export function historyRestoreIncomplete(");
+    expect(updateSource).toContain('name.startsWith("codex-history-backup-") && name.endsWith(".json")');
+    expect(updateSource).toContain("if (historyRestoreIncomplete())");
+    expect(launcherSource).toContain("function historyRestoreIncomplete()");
+    expect(launcherSource).toContain('name.startsWith("codex-history-backup-") && name.endsWith(".json")');
+    expect(launcherSource).toContain("if (historyRestoreIncomplete())");
+    const warnAt = launcherSource.indexOf("Codex resume history was NOT restored");
+    const installAt = launcherSource.indexOf('spawnSync(npm, ["install", "-g"');
+    expect(warnAt).toBeGreaterThan(-1);
+    expect(warnAt).toBeLessThan(installAt);
+  });
+
   test("the stop gate covers service-managed and orphaned proxies whose pid file is stale/missing", () => {
     expect(updateSource).toContain("if (serviceWasInstalled || readPid() || readRuntimePort())");
     expect(launcherSource).toContain("if (serviceWasInstalled || hasRuntimeState)");

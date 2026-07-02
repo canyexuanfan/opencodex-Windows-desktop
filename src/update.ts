@@ -1,8 +1,22 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { readPid, readRuntimePort } from "./config";
+import { getConfigDir, readPid, readRuntimePort } from "./config";
+
+/**
+ * A `codex-history-backup-*.json` surviving a stop means the native-history restore was
+ * skipped (locked state DB) — routed threads stay hidden in the Codex app until a retry.
+ */
+export function historyRestoreIncomplete(configDir = getConfigDir()): boolean {
+  try {
+    return readdirSync(configDir).some(
+      name => name.startsWith("codex-history-backup-") && name.endsWith(".json"),
+    );
+  } catch {
+    return false;
+  }
+}
 
 export const PKG = "@bitkyc08/opencodex";
 const HERE = dirname(fileURLToPath(import.meta.url)); // .../opencodex/src
@@ -102,6 +116,13 @@ export async function runUpdate(): Promise<void> {
     if (stop.status !== 0 || readPid() || readRuntimePort()) {
       console.error("⚠️  Could not stop the running proxy; aborting the update. Run 'ocx stop' and retry.");
       process.exit(1);
+    }
+    if (historyRestoreIncomplete()) {
+      console.warn(
+        "⚠️  Codex resume history was NOT restored (history DB locked — Codex app/IDE open?).\n" +
+        "    Your routed threads stay hidden in the native Codex app until restored.\n" +
+        "    After the update: close the Codex app, then run 'ocx stop' once to restore.",
+      );
     }
   }
 
