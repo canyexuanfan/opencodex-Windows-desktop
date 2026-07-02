@@ -152,7 +152,7 @@ describe("Windows service task", () => {
   test("writes Task Scheduler XML with a UTF-16 BOM for schtasks", async () => {
     const service = await Bun.file(new URL("../src/service.ts", import.meta.url)).text();
 
-    expect(service).toContain('writeFileSync(windowsTaskXmlPath(), `\\uFEFF${buildWindowsTaskXml(script)}`, "utf16le")');
+    expect(service).toContain('writeServiceAssetWithRetry(windowsTaskXmlPath(), `\\uFEFF${buildWindowsTaskXml(script)}`, "utf16le")');
   });
 
   test("escapes environment values that would break out of set quotes", () => {
@@ -310,6 +310,23 @@ describe("service lifecycle cleanup ordering", () => {
     expect(uninstallCase.indexOf("ops.stop();")).toBeLessThan(uninstallCase.indexOf("stopTrackedProxyForServiceCommand();"));
     expect(uninstallCase.indexOf("stopTrackedProxyForServiceCommand();")).toBeLessThan(uninstallCase.indexOf("ops.uninstall();"));
     expect(uninstallCase.indexOf("ops.uninstall();")).toBeLessThan(uninstallCase.indexOf("restoreNativeCodex();"));
+  });
+
+  test("Windows service install ends the running task before rewriting its assets, with write retry", async () => {
+    const service = await readText("src/service.ts");
+    const installWindows = service.slice(service.indexOf("function installWindows()"), service.indexOf("function startWindows()"));
+
+    const stopAt = installWindows.indexOf("stopWindows();");
+    const scriptWriteAt = installWindows.indexOf("writeServiceAssetWithRetry(script");
+    const xmlWriteAt = installWindows.indexOf("writeServiceAssetWithRetry(windowsTaskXmlPath()");
+    expect(stopAt).toBeGreaterThan(-1);
+    expect(scriptWriteAt).toBeGreaterThan(-1);
+    expect(xmlWriteAt).toBeGreaterThan(-1);
+    expect(stopAt).toBeLessThan(scriptWriteAt);
+    expect(scriptWriteAt).toBeLessThan(xmlWriteAt);
+    expect(installWindows).not.toContain("writeFileSync(script");
+    // Retry helper tolerates transient Windows file locks from the just-ended task.
+    expect(service).toContain('code !== "EBUSY" && code !== "EPERM" && code !== "EACCES"');
   });
 
   test("Windows service uninstall removes generated task XML", async () => {

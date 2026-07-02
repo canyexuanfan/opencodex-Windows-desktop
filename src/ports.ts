@@ -1,5 +1,18 @@
 import { createServer } from "node:net";
 
+/**
+ * True when an error means "this port/address is already bound" — the only bind failure
+ * that is safe to answer with a retry on another port. Bun/Node surface it as
+ * `code: "EADDRINUSE"` or an EADDRINUSE / "address in use" message depending on the API.
+ */
+export function isAddrInUse(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const { code, message } = err as { code?: unknown; message?: unknown };
+  if (code === "EADDRINUSE") return true;
+  const text = typeof message === "string" ? message.toLowerCase() : "";
+  return text.includes("eaddrinuse") || text.includes("in use");
+}
+
 export async function isPortAvailable(port: number, hostname = "127.0.0.1"): Promise<boolean> {
   return await new Promise(resolve => {
     const server = createServer();

@@ -8,6 +8,7 @@
  * Handles: port allocation (preferred → random fallback), callback server, CSRF state,
  * manual-input race, 300s timeout. Providers implement generateAuthUrl() + exchangeToken().
  */
+import { isAddrInUse } from "../ports";
 import type { OAuthController, OAuthCredentials } from "./types";
 
 const DEFAULT_TIMEOUT = 300_000;
@@ -152,8 +153,16 @@ export abstract class OAuthCallbackFlow {
     for (const host of extraHosts) {
       try {
         servers.push(Bun.serve({ hostname: host, port: primary.port, reusePort: false, fetch }));
-      } catch {
-        // IPv6 loopback unavailable/occupied — the IPv4 listener still serves the redirect.
+      } catch (err) {
+        // extraHosts is only non-empty when we advertise ambiguous `localhost`. A foreign
+        // process HOLDING the IPv6 loopback port could then receive the browser's OAuth
+        // callback (localhost may resolve to ::1 first) — treat the whole port as unusable
+        // so the caller falls back to a fresh one. IPv6 merely unsupported/unavailable
+        // (EAFNOSUPPORT etc.) keeps the IPv4-only degradation.
+        if (isAddrInUse(err)) {
+          for (const server of servers) server.stop(true);
+          throw err;
+        }
       }
     }
     return servers;

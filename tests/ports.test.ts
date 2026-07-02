@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createServer, type Server } from "node:net";
-import { findAvailablePort, isPortAvailable, shouldPersistSelectedPort } from "../src/ports";
+import { findAvailablePort, isAddrInUse, isPortAvailable, shouldPersistSelectedPort } from "../src/ports";
 
 const servers: Server[] = [];
 
@@ -52,5 +52,15 @@ describe("port selection", () => {
     expect(shouldPersistSelectedPort(58195, 10100, 10100)).toBe(true);
     expect(shouldPersistSelectedPort(10100, 58195, 10100)).toBe(false);
     expect(shouldPersistSelectedPort(10100, 10100, 10100)).toBe(false);
+  });
+
+  test("isAddrInUse recognizes bind conflicts by code or message and rejects everything else", () => {
+    expect(isAddrInUse(Object.assign(new Error("listen failed"), { code: "EADDRINUSE" }))).toBe(true);
+    expect(isAddrInUse(new Error("listen EADDRINUSE: address already in use ::1:8123"))).toBe(true);
+    expect(isAddrInUse(new Error("Failed to start server. Is port 8123 in use?"))).toBe(true);
+    expect(isAddrInUse(Object.assign(new Error("no ipv6"), { code: "EAFNOSUPPORT" }))).toBe(false);
+    expect(isAddrInUse(new Error("permission denied"))).toBe(false);
+    expect(isAddrInUse(null)).toBe(false);
+    expect(isAddrInUse("EADDRINUSE")).toBe(false);
   });
 });

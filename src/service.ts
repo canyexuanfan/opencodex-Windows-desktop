@@ -396,13 +396,32 @@ function uninstallLaunchd(): void {
 }
 
 // ── Windows (Task Scheduler) ──
+/**
+ * In-place service-asset write that tolerates the transient EBUSY/EPERM/EACCES Windows
+ * throws while the just-ended task's cmd.exe (or an AV scanner) still holds the file.
+ */
+function writeServiceAssetWithRetry(path: string, content: string, encoding: "utf8" | "utf16le"): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      writeFileSync(path, content, encoding);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (attempt >= 2 || (code !== "EBUSY" && code !== "EPERM" && code !== "EACCES")) throw err;
+      Bun.sleepSync(150);
+    }
+  }
+}
+
 function installWindows(): void {
   if (!existsSync(getConfigDir())) mkdirSync(getConfigDir(), { recursive: true });
   writeServiceApiTokenFile();
-  const script = windowsServiceScriptPath();
-  writeFileSync(script, buildWindowsServiceScript(), "utf8");
-  writeFileSync(windowsTaskXmlPath(), `\uFEFF${buildWindowsTaskXml(script)}`, "utf16le");
+  // End a running task BEFORE rewriting the assets it is executing — cmd.exe reading the
+  // script mid-rewrite runs a torn batch file, and its open handle can fail the write.
   try { stopWindows(); } catch { /* not running */ }
+  const script = windowsServiceScriptPath();
+  writeServiceAssetWithRetry(script, buildWindowsServiceScript(), "utf8");
+  writeServiceAssetWithRetry(windowsTaskXmlPath(), `\uFEFF${buildWindowsTaskXml(script)}`, "utf16le");
   schtasks(buildWindowsSchtasksCreateArgs(script));
   schtasks(["/run", "/tn", TASK]);
   writeServiceInstallState();

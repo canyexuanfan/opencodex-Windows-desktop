@@ -119,7 +119,7 @@ describe("cli wiring", () => {
   test("update prompt runs before the server binds a port", async () => {
     const cli = await readText("src/cli.ts");
     const promptIndex = cli.indexOf("await maybeShowUpdatePrompt()");
-    const portIndex = cli.indexOf("const port = await chooseListenPort");
+    const portIndex = cli.indexOf("let port = await chooseListenPort");
     const serverIndex = cli.indexOf("startServer(port)");
     expect(promptIndex).toBeGreaterThan(-1);
     expect(portIndex).toBeGreaterThan(-1);

@@ -20,7 +20,7 @@ import {
 import { collectStatus } from "./cli-status";
 import { installCrashGuards } from "./crash-guard";
 import { hasHelpFlag, printSubcommandUsage, printUsage, printVersion } from "./cli-help";
-import { findAvailablePort, shouldPersistSelectedPort } from "./ports";
+import { findAvailablePort, isAddrInUse, shouldPersistSelectedPort } from "./ports";
 import { findLiveProxy } from "./proxy-liveness";
 import { stopProxy } from "./process-control";
 import { serviceCommand, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "./service";
@@ -131,9 +131,20 @@ async function handleStart(options: { block?: boolean } = {}) {
   // live daemon holding resources while it overwrites its own binary.
   await maybeShowUpdatePrompt();
 
-  const port = await chooseListenPort(requestedPort);
-
-  const server = startServer(port);
+  // Port selection is check-then-bind: a concurrent `ocx start`/`ensure` can win the port
+  // between the probe and Bun.serve. Retry the pick instead of dying on EADDRINUSE.
+  let port = await chooseListenPort(requestedPort);
+  let server: ReturnType<typeof startServer>;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      server = startServer(port);
+      break;
+    } catch (err) {
+      if (!isAddrInUse(err) || attempt >= 2) throw err;
+      console.log(`⚠️  Port ${port} was taken while starting; picking another...`);
+      port = await chooseListenPort(requestedPort);
+    }
+  }
   // A single request's streaming error must never crash the daemon serving every
   // other Codex session — capture the full stack to crash.log and stay up.
   installCrashGuards();
