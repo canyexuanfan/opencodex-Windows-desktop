@@ -87,7 +87,7 @@ describe("Umans provider", () => {
       tools: Array<{ name: string }>;
       tool_choice: { type: string; name: string };
       cache_control?: unknown;
-      system?: unknown;
+      system?: Array<{ text: string }>;
     };
 
     expect(req.url).toBe("https://api.code.umans.ai/v1/messages");
@@ -97,7 +97,8 @@ describe("Umans provider", () => {
     expect(req.headers["anthropic-version"]).toBe("2023-06-01");
     expect(req.headers["anthropic-beta"]).toBeUndefined();
     expect(body.cache_control).toBeUndefined();
-    expect(body.system).toBeUndefined();
+    expect(body.system?.[0]?.text).toContain("Tool contract: use the current tool catalog as ground truth.");
+    expect(body.system?.[0]?.text).toContain("Valid tool names for this turn are exactly `cx_web_search`.");
     expect(body.tools[0].name).toBe("cx_web_search");
     expect(body.tool_choice).toEqual({ type: "tool", name: "cx_web_search" });
   });

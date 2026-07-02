@@ -1,8 +1,8 @@
 import http2 from "node:http2";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import type { OcxProviderConfig } from "../../types";
+import { namespacedToolName, type OcxProviderConfig } from "../../types";
 import { CONNECT_FLAG_END_STREAM, decodeAvailableConnectFrames, encodeConnectFrame } from "./framing";
-import { encodeCursorRunRequest } from "./protobuf-request";
+import { activePromptText, encodeCursorRunRequest } from "./protobuf-request";
 import { createCursorProtobufEventState, finalizeTurnEvents, mapCursorProtobufServerMessage, mapSyntheticMcpExecToToolEvents } from "./protobuf-events";
 import {
   AgentClientMessageSchema,
@@ -17,7 +17,15 @@ import { resolveMcpServers } from "./mcp-config";
 import { CursorMcpManager } from "./mcp-manager";
 import { buildMcpToolDefinitions, mcpDepsFromManager } from "./native-exec-mcp";
 import { desktopDepsFromConfig } from "./native-exec-desktop";
-import { buildCursorToolDefinitions, cursorToolWireName } from "./tool-definitions";
+import {
+  buildCursorToolDefinitions,
+  cursorRequestHasShellAlias,
+  cursorToolInputSchema,
+  cursorToolWireName,
+  cursorToolsForActivePrompt,
+  isGenericToolUseCountDemoPrompt,
+  requestedCursorToolUseCount,
+} from "./tool-definitions";
 import type { CursorNativeToolDeps } from "./native-exec-tools";
 import type { CursorClientMessage, CursorRunRequest, CursorServerMessage } from "./types";
 import type { CursorTransport, CursorTransportFactoryInput } from "./transport";
@@ -27,6 +35,9 @@ const CURSOR_CLIENT_VERSION = "cli-2026.01.09-231024f";
 const HEARTBEAT_MS = 5_000;
 const CURSOR_FIRST_FRAME_TIMEOUT_MS = 30_000;
 const CLIENT_TOOL_FINALIZE_GRACE_MS = 50;
+const GENERIC_TOOL_COUNT_MIN_FINALIZE_GRACE_MS = 750;
+const GENERIC_TOOL_COUNT_MAX_FINALIZE_GRACE_MS = 1_800;
+const GENERIC_TOOL_COUNT_PER_TOOL_GRACE_MS = 125;
 
 export class CursorMissingCredentialError extends Error {
   readonly code = "cursor_missing_credential";
@@ -150,6 +161,20 @@ export function finalizeAfterDrain(state: ReturnType<typeof createCursorProtobuf
   return finalizeTurnEvents(state);
 }
 
+export function clientToolFinalizeGraceMsForRequest(request: CursorRunRequest, baseGraceMs = CLIENT_TOOL_FINALIZE_GRACE_MS): number {
+  if (request.rawMessages?.at(-1)?.role === "toolResult") return baseGraceMs;
+  const text = activePromptText(request);
+  if (!cursorRequestHasShellAlias(request.tools) || !isGenericToolUseCountDemoPrompt(text)) return baseGraceMs;
+  const requestedCount = requestedCursorToolUseCount(text);
+  const expandedGraceMs = requestedCount
+    ? Math.min(
+        GENERIC_TOOL_COUNT_MAX_FINALIZE_GRACE_MS,
+        Math.max(GENERIC_TOOL_COUNT_MIN_FINALIZE_GRACE_MS, requestedCount * GENERIC_TOOL_COUNT_PER_TOOL_GRACE_MS),
+      )
+    : GENERIC_TOOL_COUNT_MIN_FINALIZE_GRACE_MS;
+  return Math.max(baseGraceMs, expandedGraceMs);
+}
+
 class LiveCursorTransport implements CursorTransport {
   private session?: http2.ClientHttp2Session;
   private stream?: http2.ClientHttp2Stream;
@@ -159,6 +184,7 @@ class LiveCursorTransport implements CursorTransport {
   private expectedClose = false;
   private pendingFinalize?: ReturnType<typeof setTimeout>;
   private readonly clientToolFinalizeGraceMs: number;
+  private activeClientToolFinalizeGraceMs: number;
   private readonly token: string;
   private readonly mcpManager?: CursorMcpManager;
   private readonly desktopDeps: CursorNativeToolDeps;
@@ -171,6 +197,7 @@ class LiveCursorTransport implements CursorTransport {
     // stall, large enough to catch a sibling tool call announced in the next receive chunk. Injectable
     // so the transport-level race test can drive it deterministically.
     this.clientToolFinalizeGraceMs = input.clientToolFinalizeGraceMs ?? CLIENT_TOOL_FINALIZE_GRACE_MS;
+    this.activeClientToolFinalizeGraceMs = this.clientToolFinalizeGraceMs;
     // Desktop (computer-use / record-screen) executors are available even with no MCP servers.
     this.desktopDeps = desktopDepsFromConfig(input.provider.desktopExecutor);
     this.execContext = { ...this.desktopDeps };
@@ -227,16 +254,23 @@ class LiveCursorTransport implements CursorTransport {
 
     // Advertise MCP tools before the stream opens — the server only calls tools it was told about.
     await this.prepareMcp();
-    const clientToolDefs = buildCursorToolDefinitions(request.tools, request.toolChoice);
+    const activeText = activePromptText(request);
+    this.activeClientToolFinalizeGraceMs = clientToolFinalizeGraceMsForRequest(request, this.clientToolFinalizeGraceMs);
+    const cursorVisibleTools = cursorToolsForActivePrompt(request.tools, activeText, request.toolChoice);
+    const clientToolDefs = buildCursorToolDefinitions(cursorVisibleTools, request.toolChoice);
     this.execContext = { ...this.execContext, clientToolDefs };
     const toolSchemas = new Map<string, unknown>();
-    for (const tool of request.tools ?? []) {
-      if (tool.parameters) toolSchemas.set(cursorToolWireName(tool), tool.parameters);
+    const cursorToolNameMap = new Map<string, string>();
+    for (const tool of cursorVisibleTools ?? []) {
+      const cursorWireName = cursorToolWireName(tool);
+      toolSchemas.set(cursorWireName, cursorToolInputSchema(tool));
+      cursorToolNameMap.set(cursorWireName, namespacedToolName(tool.namespace, tool.name));
     }
     state = createCursorProtobufEventState({
       clientToolNames: clientToolDefs.map(tool => tool.toolName || tool.name),
       parallelToolCalls: request.parallelToolCalls,
       toolSchemas,
+      cursorToolNameMap,
     });
 
     this.open(request, signal, state, push, err => {
@@ -331,7 +365,7 @@ class LiveCursorTransport implements CursorTransport {
       if (terminal.length === 0) return;
       for (const event of terminal) push(event);
       this.cancelCursorRun();
-    }, this.clientToolFinalizeGraceMs);
+    }, this.activeClientToolFinalizeGraceMs);
   }
 
   private open(

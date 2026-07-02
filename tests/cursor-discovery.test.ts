@@ -14,13 +14,19 @@ describe("Cursor discovery metadata", () => {
   test("static seed includes Cursor's public model families plus the safe auto model", () => {
     const ids = cursorModelIds(CURSOR_STATIC_MODELS);
 
-    expect(ids.length).toBeGreaterThanOrEqual(30);
+    expect(ids.length).toBeGreaterThanOrEqual(40);
     expect(ids).toContain("auto");
+    expect(ids).toContain("claude-sonnet-5");
     expect(ids).toContain("composer-2.5");
     expect(ids).toContain("composer-2.5-fast");
     expect(ids).toContain("claude-4.6-sonnet");
+    expect(ids).toContain("gemini-2.5-flash");
+    expect(ids).toContain("gemini-3-pro-image-preview");
     expect(ids).toContain("gemini-3.5-flash");
+    expect(ids).toContain("gpt-5-codex");
     expect(ids).toContain("gpt-5.5");
+    expect(ids).toContain("glm-5.2");
+    expect(ids).toContain("grok-4.20");
     expect(ids).toContain("grok-4.3");
     expect(ids).toContain("kimi-k2.5");
     // `auto` mirrors the jawcode SOT `default` entry (200k), not the generic fallback window.
@@ -38,7 +44,7 @@ describe("Cursor discovery metadata", () => {
     ]);
 
     expect(models.map(model => model.id)).toEqual(["auto", "claude-4.5-sonnet", "gpt-5.5"]);
-    expect(models.find(model => model.id === "gpt-5.5")?.contextWindow).toBe(400_000);
+    expect(models.find(model => model.id === "gpt-5.5")?.contextWindow).toBe(272_000);
     expect(models.find(model => model.id === "claude-4.5-sonnet")?.contextWindow).toBe(200_000);
   });
 
@@ -49,7 +55,7 @@ describe("Cursor discovery metadata", () => {
     expect(inferCursorContextWindow("gemini-3.5-flash")).toBe(1_000_000);
     expect(inferCursorContextWindow("glm-5.2")).toBe(1_000_000);
     expect(inferCursorContextWindow("grok-4.3")).toBe(256_000);
-    expect(inferCursorContextWindow("gpt-5.5")).toBe(400_000);
+    expect(inferCursorContextWindow("gpt-5.5")).toBe(272_000);
   });
 
   test("input modalities are cloned per model", () => {

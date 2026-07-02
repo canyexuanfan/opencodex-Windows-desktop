@@ -152,7 +152,10 @@ describe("kiro adapter — buildRequest", () => {
     const { body } = createKiroAdapter(provider).buildRequest(
       parsedWith([{ role: "user", content: "hi" }], [{ name: "grep", description: "search", parameters: { type: "object" } }]),
     );
-    const ctx = JSON.parse(body).conversationState.currentMessage.userInputMessage.userInputMessageContext;
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+    const ctx = current.userInputMessageContext;
+    expect(current.content).toContain("Tool contract: use the current tool catalog as ground truth.");
+    expect(current.content).toContain("Valid tool names for this turn are exactly `grep`.");
     expect(ctx.tools[0].toolSpecification.name).toBe("grep");
     expect(ctx.tools[0].toolSpecification.inputSchema.json).toEqual({ type: "object" });
   });

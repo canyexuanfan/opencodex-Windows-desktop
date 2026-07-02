@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { create, toBinary } from "@bufbuild/protobuf";
-import { createLiveCursorTransport } from "../src/adapters/cursor/live-transport";
+import { clientToolFinalizeGraceMsForRequest, createLiveCursorTransport } from "../src/adapters/cursor/live-transport";
 import { createCursorProtobufEventState } from "../src/adapters/cursor/protobuf-events";
-import type { CursorServerMessage } from "../src/adapters/cursor/types";
+import type { CursorRunRequest, CursorServerMessage } from "../src/adapters/cursor/types";
 import {
   AgentServerMessageSchema,
   ExecServerMessageSchema,
@@ -94,6 +94,37 @@ function makeHarness(graceMs: number, clientToolNames: string[]): Harness {
 
 const NGHTTP2_CANCEL = 8;
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+function requestForGrace(content: string, rawTailRole?: "toolResult"): CursorRunRequest {
+  return {
+    modelId: "composer-2.5",
+    conversationId: "c1",
+    system: ["You are helpful."],
+    messages: [{ role: "user", content }],
+    rawMessages: rawTailRole === "toolResult"
+      ? [
+          { role: "user", content, timestamp: 1 },
+          { role: "toolResult", toolCallId: "call_1", toolName: "exec_command", content: "ok", isError: false, timestamp: 2 },
+        ]
+      : undefined,
+    tools: [{ name: "exec_command", description: "Run", parameters: {} }],
+  };
+}
+
+describe("client-tool finalize grace selection", () => {
+  test("keeps ordinary single-tool turns on the base grace", () => {
+    expect(clientToolFinalizeGraceMsForRequest(requestForGrace("Run: echo hi"), 50)).toBe(50);
+  });
+
+  test("expands grace only for generic tool-count prompts", () => {
+    expect(clientToolFinalizeGraceMsForRequest(requestForGrace("아무 tool 10개 써봐"), 50)).toBe(1250);
+    expect(clientToolFinalizeGraceMsForRequest(requestForGrace("Use any 50 tools"), 50)).toBe(1800);
+  });
+
+  test("does not carry expanded grace into tool-result continuations", () => {
+    expect(clientToolFinalizeGraceMsForRequest(requestForGrace("아무 tool 10개 써봐", "toolResult"), 50)).toBe(50);
+  });
+});
 
 describe("transport finalize race (hidden parallel sibling)", () => {
   test("single client tool: grace timer fires once, emits done, cancels with RST_STREAM CANCEL", async () => {

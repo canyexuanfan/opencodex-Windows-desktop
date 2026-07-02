@@ -18,6 +18,7 @@ import { ANTHROPIC_OAUTH_BETA, CLAUDE_CODE_SYSTEM_INSTRUCTION, applyClaudeToolPr
 import { parseDataUrl } from "./image";
 import { neutralizeIdentity } from "./identity";
 import { CLAUDE_CODE_HEADERS, claudeCodeSessionId } from "./client-fingerprint";
+import { buildNonOpenAIToolCatalogNudgeForTools } from "./tool-catalog-nudge";
 
 /** Map a user content part to an Anthropic content block (text or image source). */
 function toAnthropicContentPart(p: OcxContentPart): unknown {
@@ -140,8 +141,14 @@ function messagesToAnthropicFormat(
   parsed: OcxParsedRequest,
   toolNames: { toWire: (name: string) => string },
 ): { system: string | undefined; messages: unknown[] } {
-  const system = parsed.context.systemPrompt?.length
-    ? neutralizeIdentity(parsed.context.systemPrompt.join("\n\n")) || undefined
+  const toolCatalogNudge = buildNonOpenAIToolCatalogNudgeForTools(
+    parsed.context.tools,
+    parsed.options.toolChoice,
+    tool => toolNames.toWire(namespacedToolName(tool.namespace, tool.name)),
+  );
+  const systemParts = [...(parsed.context.systemPrompt ?? []), ...(toolCatalogNudge ? [toolCatalogNudge] : [])];
+  const system = systemParts.length
+    ? neutralizeIdentity(systemParts.join("\n\n")) || undefined
     : undefined;
   const messages: unknown[] = [];
 

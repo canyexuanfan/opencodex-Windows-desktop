@@ -27,7 +27,15 @@ import {
   UserMessageActionSchema,
   UserMessageSchema,
 } from "./gen/agent_pb";
-import { OCX_RESPONSES_TOOL_PROVIDER } from "./tool-definitions";
+import {
+  appendCursorGenericToolUseHint,
+  appendCursorShellAliasHint,
+  cursorToolsForActivePrompt,
+  buildCursorToolGuidanceSystemNote,
+  cursorRequestHasShellAlias,
+  CURSOR_SHELL_ALIAS_SYSTEM_NOTE,
+  OCX_RESPONSES_TOOL_PROVIDER,
+} from "./tool-definitions";
 
 const encoder = new TextEncoder();
 
@@ -36,9 +44,14 @@ function jsonBlob(value: unknown): Uint8Array {
 }
 
 function systemPromptBlobs(request: CursorRunRequest): Uint8Array[] {
-  return request.system.length > 0
-    ? request.system.map(content => storeCursorBlob(jsonBlob({ role: "system", content })))
-    : [storeCursorBlob(jsonBlob({ role: "system", content: "You are a helpful assistant." }))];
+  const prompts = request.system.length > 0 ? [...request.system] : ["You are a helpful assistant."];
+  if (cursorRequestHasShellAlias(request.tools)) prompts.push(CURSOR_SHELL_ALIAS_SYSTEM_NOTE);
+  const cursorToolGuidance = buildCursorToolGuidanceSystemNote(
+    cursorToolsForActivePrompt(request.tools, activePromptText(request), request.toolChoice),
+    request.toolChoice,
+  );
+  if (cursorToolGuidance) prompts.push(cursorToolGuidance);
+  return prompts.map(content => storeCursorBlob(jsonBlob({ role: "system", content })));
 }
 
 function assistantRootText(message: Extract<OcxMessage, { role: "assistant" }>): string {
@@ -260,13 +273,25 @@ function conversationTurns(request: CursorRunRequest): Uint8Array[] {
   return turns;
 }
 
-function lastUserText(request: CursorRunRequest): string {
+export function activePromptText(request: CursorRunRequest): string {
   const last = request.messages.at(-1);
-  return last?.role === "user" || last?.role === "developer" || last?.role === "tool" ? last.content : "";
+  if (last?.role === "user" || last?.role === "developer") return last.content;
+  for (let i = (request.rawMessages?.length ?? 0) - 1; i >= 0; i--) {
+    const message = request.rawMessages?.[i];
+    if (message?.role === "user" || message?.role === "developer") {
+      const text = contentText(message);
+      if (text.trim().length > 0) return text;
+    }
+  }
+  return last?.role === "tool" ? last.content : "";
 }
 
 export function encodeCursorRunRequest(request: CursorRunRequest): Uint8Array {
-  const text = lastUserText(request);
+  const rawText = activePromptText(request);
+  const lastRole = request.messages.at(-1)?.role;
+  const text = lastRole === "user" || lastRole === "developer"
+    ? appendCursorShellAliasHint(request.tools, appendCursorGenericToolUseHint(request.tools, rawText))
+    : rawText;
   // A tool-result-only turn (the last raw message is a toolResult) continues the SAME Cursor
   // conversation with the tool result carried as structured conversation history (mcpToolCall.result
   // in conversationTurns). It must NOT inject the tool result text as a new UserMessageAction — that

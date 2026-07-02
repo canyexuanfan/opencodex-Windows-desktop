@@ -117,6 +117,18 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.base_instructions).toContain("claude-sonnet-4-6");
     expect(routed?.default_reasoning_level).toBe("medium");
   });
+  test("buildCatalogEntries advertises parallel tool calls only for Cursor routed models", () => {
+    const entries = buildCatalogEntries(nativeTemplate(), [], [
+      { provider: "cursor", id: "composer-2.5", owned_by: "cursor" },
+      { provider: "anthropic", id: "claude-sonnet-4-6", owned_by: "anthropic" },
+    ]);
+
+    const cursor = entries.find(e => e.slug === "cursor/composer-2.5");
+    const anthropic = entries.find(e => e.slug === "anthropic/claude-sonnet-4-6");
+
+    expect(cursor?.supports_parallel_tool_calls).toBe(true);
+    expect(anthropic?.supports_parallel_tool_calls).toBe(false);
+  });
 
   test("routed entries fill auto compact when context already exists on the template", () => {
     const template = {
@@ -325,6 +337,7 @@ describe("Codex catalog routed normalization", () => {
           cursor: {
             baseUrl: "https://api2.cursor.sh",
             adapter: "cursor",
+            authMode: "oauth",
             liveModels: false,
             models: cursorModelIds(CURSOR_STATIC_MODELS),
             defaultModel: "auto",

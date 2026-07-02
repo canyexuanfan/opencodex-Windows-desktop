@@ -14,6 +14,11 @@ async function geminiContents(parsed: OcxParsedRequest): Promise<{ role: string;
   return JSON.parse(body).contents;
 }
 
+async function geminiBody(parsed: OcxParsedRequest): Promise<Record<string, unknown>> {
+  const { body } = await createGoogleAdapter(provider).buildRequest(parsed);
+  return JSON.parse(body);
+}
+
 describe("google adapter — tool result images", () => {
   test("tool-result screenshots ride along as inline_data beside the functionResponse", async () => {
     const contents = await geminiContents(parsedWith([
@@ -78,6 +83,17 @@ describe("google adapter — tool result images", () => {
 });
 
 describe("google adapter — tool-call ids on the wire", () => {
+  test("systemInstruction includes the non-OpenAI tool catalog nudge when tools are present", async () => {
+    const body = await geminiBody(parsedWith(
+      [{ role: "user", content: "find files" }],
+      [{ name: "exec_command", description: "Run", parameters: { type: "object" } }],
+    ));
+    const instruction = body.systemInstruction as { parts: Array<{ text: string }> };
+
+    expect(instruction.parts[0].text).toContain("Tool contract: use the current tool catalog as ground truth.");
+    expect(instruction.parts[0].text).toContain("Valid tool names for this turn are exactly `exec_command`.");
+  });
+
   test("functionCall and functionResponse carry the matching tool-call id", async () => {
     const contents = await geminiContents(parsedWith([
       { role: "assistant", content: [{ type: "toolCall", id: "call_abc", name: "bash", arguments: { cmd: "ls" } }] },

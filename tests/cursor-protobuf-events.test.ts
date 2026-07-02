@@ -73,6 +73,44 @@ describe("Cursor protobuf tool-call events", () => {
     ]);
   });
 
+  test("maps Cursor run_shell calls back to Responses exec_command events", () => {
+    const state = createCursorProtobufEventState({
+      clientToolNames: ["run_shell"],
+      toolSchemas: new Map([[
+        "run_shell",
+        { type: "object", properties: { cmd: { type: "string" }, workdir: { type: "string" } }, required: ["cmd"] },
+      ]]),
+      cursorToolNameMap: new Map([["run_shell", "exec_command"]]),
+    });
+    const toolCall = mcpToolCall("run_shell", { cmd: "echo hi" });
+
+    expect(mapCursorProtobufServerMessage(interaction({
+      case: "toolCallCompleted",
+      value: create(ToolCallCompletedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall }),
+    }), state)).toEqual([
+      { type: "tool_call_start", id: "call_1", name: "exec_command" },
+      { type: "tool_call_delta", arguments: "{\"cmd\":\"echo hi\"}" },
+      { type: "tool_call_end", id: "call_1" },
+    ]);
+  });
+
+  test("keeps genuine run_shell tool name when no exec_command alias was advertised", () => {
+    const state = createCursorProtobufEventState({
+      clientToolNames: ["run_shell"],
+      cursorToolNameMap: new Map([["run_shell", "run_shell"]]),
+    });
+    const toolCall = mcpToolCall("run_shell", { cmd: "echo hi" });
+
+    expect(mapCursorProtobufServerMessage(interaction({
+      case: "toolCallCompleted",
+      value: create(ToolCallCompletedUpdateSchema, { callId: "call_1", modelCallId: "model_1", toolCall }),
+    }), state)).toEqual([
+      { type: "tool_call_start", id: "call_1", name: "run_shell" },
+      { type: "tool_call_delta", arguments: "{\"cmd\":\"echo hi\"}" },
+      { type: "tool_call_end", id: "call_1" },
+    ]);
+  });
+
   test("buffers partial tool-call args silently and emits once at completion", () => {
     const state = createCursorProtobufEventState();
     const toolCall = mcpToolCall("mcp__fs__read_file", { path: "a.txt" });

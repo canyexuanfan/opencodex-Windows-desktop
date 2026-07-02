@@ -244,7 +244,9 @@ export function normalizeRoutedCatalogEntry(entry: RawEntry): RawEntry {
   // runs through native gpt-5.4-mini, so image search is available and verbalized for text-only models.
   entry.web_search_tool_type = "text_and_image";
   entry.supports_search_tool = true;
-  entry.supports_parallel_tool_calls = false;
+  // Cursor's transport already serializes overlapping tool calls into atomic Responses tool events.
+  // Advertising parallel calls lets Codex send the same native capability bit it sends for OpenAI.
+  entry.supports_parallel_tool_calls = typeof entry.slug === "string" && entry.slug.startsWith("cursor/");
   return ensureStrictCatalogFields(entry);
 }
 
@@ -675,13 +677,13 @@ function catalogHintsFromModelsApiItem(providerName: string, item: ProviderModel
 async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs: number, contextCap?: number): Promise<CatalogModel[]> {
   if (prov.authMode === "forward") return []; // ChatGPT backend has no /models
   const apiKey = await resolveModelsAuthToken(name, prov);
-  if (prov.authMode === "oauth" && !apiKey) return []; // not logged in → skip
   const configured: CatalogModel[] = (prov.models ?? []).map(id => ({
     id,
     provider: name,
     ...catalogHintsFromProviderConfig(name, prov, id, contextCap),
   }));
-  if (prov.adapter === "cursor" && apiKey) {
+  if (prov.adapter === "cursor") {
+    if (prov.liveModels === false || !apiKey) return configured;
     // Cursor uses a bespoke GetUsableModels RPC (not /models), returning the full effort-suffixed
     // variants this PLAN can use. Keep the base-model UX (the request builder appends the effort
     // suffix) but filter the static seed to the bases the account actually has — so models not on the
@@ -698,6 +700,7 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
     const staleCursor = getStaleCached(name);
     return staleCursor ? applyConfigHintsToCachedModels(name, prov, staleCursor) : configured;
   }
+  if (prov.authMode === "oauth" && !apiKey) return []; // not logged in → skip
   if (prov.liveModels === false) {
     return configured;
   }

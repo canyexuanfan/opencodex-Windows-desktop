@@ -2,7 +2,7 @@ import type { OcxUsage } from "../../types";
 import type { AgentServerMessage, McpArgs, ToolCall } from "./gen/agent_pb";
 import { decodeCursorArgsMap } from "./arg-codec";
 import { normalizeArgKeys } from "./arg-normalize";
-import { OCX_RESPONSES_TOOL_PROVIDER } from "./tool-definitions";
+import { OCX_RESPONSES_TOOL_PROVIDER, responsesToolNameFromCursorWire } from "./tool-definitions";
 import type { CursorServerMessage } from "./types";
 
 export interface CursorProtobufEventState {
@@ -25,9 +25,11 @@ export interface CursorProtobufEventState {
   startedClientToolCalls: number;
   /** Tool wire-name → original JSON Schema parameters object, for arg-key normalization. */
   toolSchemas?: Map<string, unknown>;
+  /** Cursor wire-name → original Responses/Codex tool name for this request. */
+  cursorToolNameMap?: Map<string, string>;
 }
 
-export function createCursorProtobufEventState(options: { clientToolNames?: Iterable<string>; parallelToolCalls?: boolean; toolSchemas?: Map<string, unknown> } = {}): CursorProtobufEventState {
+export function createCursorProtobufEventState(options: { clientToolNames?: Iterable<string>; parallelToolCalls?: boolean; toolSchemas?: Map<string, unknown>; cursorToolNameMap?: Map<string, string> } = {}): CursorProtobufEventState {
   return {
     // Cursor provides no authoritative usage frame; token counts are heuristic estimates from
     // checkpoint/delta events, so mark estimated from the start.
@@ -38,6 +40,7 @@ export function createCursorProtobufEventState(options: { clientToolNames?: Iter
     ...(options.parallelToolCalls !== undefined ? { parallelToolCalls: options.parallelToolCalls } : {}),
     startedClientToolCalls: 0,
     ...(options.toolSchemas ? { toolSchemas: options.toolSchemas } : {}),
+    ...(options.cursorToolNameMap ? { cursorToolNameMap: options.cursorToolNameMap } : {}),
   };
 }
 
@@ -47,7 +50,7 @@ function mcpArgsFromToolCall(toolCall: ToolCall | undefined): McpArgs | undefine
   return args?.providerIdentifier === OCX_RESPONSES_TOOL_PROVIDER ? args : undefined;
 }
 
-function mcpToolName(toolCall: ToolCall | undefined): string | undefined {
+function mcpCursorWireName(toolCall: ToolCall | undefined): string | undefined {
   const args = mcpArgsFromToolCall(toolCall);
   const name = args?.toolName || args?.name;
   return name && name.length > 0 ? name : undefined;
@@ -117,14 +120,14 @@ export function mapSyntheticMcpExecToToolEvents(
 ): CursorServerMessage[] {
   if (args.providerIdentifier !== OCX_RESPONSES_TOOL_PROVIDER) return [];
   if (options.allowEmptyArgs !== true && !hasMcpArgBytes(args)) return [];
-  const name = args.toolName || args.name;
-  if (!name) return [{ type: "error", message: "Cursor requested a Responses tool without a tool name" }];
+  const cursorWireName = args.toolName || args.name;
+  if (!cursorWireName) return [{ type: "error", message: "Cursor requested a Responses tool without a tool name" }];
   const callId = args.toolCallId || fallbackCallId;
   if (options.state?.completedToolCalls.has(callId)) return [];
   if (options.state) {
     // Native-exec delivers the whole client tool call at once. Record it (no-op if already opened by
     // an earlier started/partial event), then emit the atomic start -> delta -> end unit.
-    const out: CursorServerMessage[] = [...recordToolCall(options.state, callId, name)];
+    const out: CursorServerMessage[] = [...recordToolCall(options.state, callId, cursorWireName)];
     if (out.some(event => event.type === "error")) return out;
     const open = options.state.openToolCalls.get(callId);
     const finalArgs = resolveCompletedArgs(open?.args ?? "", args, options.state);
@@ -133,7 +136,7 @@ export function mapSyntheticMcpExecToToolEvents(
   }
   // Stateless fallback (no shared event state): emit a complete, self-contained tool call.
   return [
-    { type: "tool_call_start", id: callId, name },
+    { type: "tool_call_start", id: callId, name: responsesToolNameFromCursorWire(cursorWireName) },
     { type: "tool_call_delta", arguments: decodeMcpArgs(args) },
     { type: "tool_call_end", id: callId },
   ];
@@ -147,13 +150,13 @@ export function mapSyntheticMcpExecToToolEvents(
  * call bridge until a call completes, and completed calls are emitted whole, one after another.
  * Returns an error only for a genuinely unknown (un-advertised) tool name.
  */
-function recordToolCall(state: CursorProtobufEventState, callId: string, name: string): CursorServerMessage[] {
+function recordToolCall(state: CursorProtobufEventState, callId: string, cursorWireName: string): CursorServerMessage[] {
   if (state.completedToolCalls.has(callId)) return [];
   if (state.openToolCalls.has(callId)) return [];
-  if (state.clientToolNames && !state.clientToolNames.has(name)) {
-    return [{ type: "error", message: `Cursor requested unknown Responses tool: ${name}` }];
+  if (state.clientToolNames && !state.clientToolNames.has(cursorWireName)) {
+    return [{ type: "error", message: `Cursor requested unknown Responses tool: ${cursorWireName}` }];
   }
-  state.openToolCalls.set(callId, { name, args: "" });
+  state.openToolCalls.set(callId, { name: responsesToolNameFromCursorWire(cursorWireName, state.cursorToolNameMap), args: "" });
   state.startedClientToolCalls++;
   return [];
 }
@@ -213,13 +216,13 @@ export function mapCursorProtobufServerMessage(
     case "thinkingDelta":
       return update.value.text ? [{ type: "thinking", thinking: update.value.text }] : [];
     case "toolCallStarted": {
-      const name = mcpToolName(update.value.toolCall);
+      const name = mcpCursorWireName(update.value.toolCall);
       // Record the open call but defer the outward tool_call_start to completion (atomic emission).
       return name ? recordToolCall(state, update.value.callId, name) : [];
     }
     case "partialToolCall": {
       const out: CursorServerMessage[] = [];
-      const name = mcpToolName(update.value.toolCall);
+      const name = mcpCursorWireName(update.value.toolCall);
       if (name) out.push(...recordToolCall(state, update.value.callId, name));
       if (out.some(event => event.type === "error")) return out;
       // Buffer cumulative args; do not emit a delta. Args are emitted once, normalized, at completion.
@@ -235,7 +238,7 @@ export function mapCursorProtobufServerMessage(
     case "toolCallCompleted": {
       const out: CursorServerMessage[] = [];
       if (state.completedToolCalls.has(update.value.callId)) return [];
-      const name = mcpToolName(update.value.toolCall);
+      const name = mcpCursorWireName(update.value.toolCall);
       const args = mcpArgsFromToolCall(update.value.toolCall);
       const openBeforeStart = state.openToolCalls.get(update.value.callId);
       // Empty-arg completion handling:

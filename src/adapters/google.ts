@@ -21,6 +21,7 @@ import { sanitizeGeminiToolParameters } from "./google-tool-schema";
 import { neutralizeIdentity } from "./identity";
 import { antigravityUsesReplayCache, applyAntigravityReplay, clearAntigravityReplay, observeAntigravityReplay } from "./google-antigravity-replay";
 import { resolveAntigravityWireModelId } from "../providers/antigravity-models";
+import { buildNonOpenAIToolCatalogNudgeForTools } from "./tool-catalog-nudge";
 
 // Google-family models (Gemini/Vertex/Antigravity) tend to emit long running commentary between
 // tool calls. This steers them to keep the BETWEEN-STEP text to one line and reason internally
@@ -87,7 +88,12 @@ function toolResultImageParts(content: string | OcxContentPart[]): unknown[] {
 function messagesToGeminiFormat(parsed: OcxParsedRequest): { systemInstruction?: unknown; contents: unknown[] } {
   // Neutralize Codex's GPT-5 identity line (Gemini/Antigravity share this path) so a routed model
   // never misreports as GPT-5/OpenAI, and never leaks the proxy identity upstream.
-  const systemText = neutralizeIdentity([...(parsed.context.systemPrompt ?? []), GOOGLE_BREVITY_INSTRUCTION].join("\n\n"));
+  const toolCatalogNudge = buildNonOpenAIToolCatalogNudgeForTools(parsed.context.tools, parsed.options.toolChoice);
+  const systemText = neutralizeIdentity([
+    ...(parsed.context.systemPrompt ?? []),
+    ...(toolCatalogNudge ? [toolCatalogNudge] : []),
+    GOOGLE_BREVITY_INSTRUCTION,
+  ].join("\n\n"));
   const systemInstruction = { parts: [{ text: systemText }] };
 
   const contents: unknown[] = [];

@@ -44,6 +44,41 @@ describe("adapter reasoning and usage details", () => {
     });
   });
 
+  test("OpenAI-compatible non-OpenAI providers receive the tool catalog nudge", () => {
+    const adapter = createOpenAIChatAdapter(provider);
+    const request = adapter.buildRequest({
+      modelId: "kimi-k2.7-code",
+      context: {
+        messages: [{ role: "user", content: "run a command" }],
+        tools: [{ name: "exec_command", description: "Run", parameters: { type: "object" } }],
+      },
+      stream: true,
+      options: {},
+    });
+    const body = JSON.parse(request.body) as { messages: Array<{ role: string; content: string }> };
+
+    expect(body.messages[0]).toMatchObject({ role: "system" });
+    expect(body.messages[0].content).toContain("Tool contract: use the current tool catalog as ground truth.");
+    expect(body.messages[0].content).toContain("Valid tool names for this turn are exactly `exec_command`.");
+  });
+
+  test("OpenAI-compatible OpenAI hosts do not receive the non-OpenAI nudge", () => {
+    const adapter = createOpenAIChatAdapter({ ...provider, baseUrl: "https://api.openai.com/v1" });
+    const request = adapter.buildRequest({
+      modelId: "gpt-5.5",
+      context: {
+        messages: [{ role: "user", content: "run a command" }],
+        tools: [{ name: "exec_command", description: "Run", parameters: { type: "object" } }],
+      },
+      stream: true,
+      options: {},
+    });
+    const body = JSON.parse(request.body) as { messages: Array<{ role: string; content: string }> };
+
+    expect(body.messages[0]).toMatchObject({ role: "user", content: "run a command" });
+    expect(JSON.stringify(body.messages)).not.toContain("Tool contract: use the current tool catalog as ground truth.");
+  });
+
   test("Anthropic usage maps cache tokens only when present", async () => {
     const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
     const events = await adapter.parseResponse?.(new Response(JSON.stringify({
@@ -154,9 +189,10 @@ describe("adapter reasoning and usage details", () => {
       stream: true,
       options: {},
     });
-    const body = JSON.parse(request.body) as { tools: Record<string, unknown>[]; cache_control?: unknown };
+    const body = JSON.parse(request.body) as { tools: Record<string, unknown>[]; cache_control?: unknown; system?: Array<{ text: string }> };
 
     expect(body.cache_control).toEqual({ type: "ephemeral" });
+    expect(body.system?.[0]?.text).toContain("Valid tool names for this turn are exactly `codex__read_file`, `codex__write_file`.");
     expect(body.tools[0].cache_control).toBeUndefined();
     expect(body.tools[1].cache_control).toEqual({ type: "ephemeral" });
   });

@@ -155,6 +155,62 @@ describe("Cursor Responses tool argument decoding", () => {
     ]);
   });
 
+  test("stateless synthetic native mcp exec preserves run_shell without request alias state", () => {
+    const args = create(McpArgsSchema, {
+      name: "run_shell",
+      toolName: "run_shell",
+      toolCallId: "toolu_1",
+      providerIdentifier: "opencodex-responses",
+      args: { cmd: jsonBytes("echo hi") },
+    });
+
+    expect(mapSyntheticMcpExecToToolEvents(args)).toEqual([
+      { type: "tool_call_start", id: "toolu_1", name: "run_shell" },
+      { type: "tool_call_delta", arguments: "{\"cmd\":\"echo hi\"}" },
+      { type: "tool_call_end", id: "toolu_1" },
+    ]);
+  });
+
+  test("stateful synthetic native mcp exec accepts advertised run_shell and emits exec_command", () => {
+    const state = createCursorProtobufEventState({
+      clientToolNames: ["run_shell"],
+      cursorToolNameMap: new Map([["run_shell", "exec_command"]]),
+    });
+    const args = create(McpArgsSchema, {
+      name: "run_shell",
+      toolName: "run_shell",
+      toolCallId: "toolu_1",
+      providerIdentifier: "opencodex-responses",
+      args: { cmd: jsonBytes("echo hi") },
+    });
+
+    expect(mapSyntheticMcpExecToToolEvents(args, "fallback", { allowEmptyArgs: false, state })).toEqual([
+      { type: "tool_call_start", id: "toolu_1", name: "exec_command" },
+      { type: "tool_call_delta", arguments: "{\"cmd\":\"echo hi\"}" },
+      { type: "tool_call_end", id: "toolu_1" },
+    ]);
+  });
+
+  test("stateful synthetic native mcp exec preserves genuine run_shell mapping", () => {
+    const state = createCursorProtobufEventState({
+      clientToolNames: ["run_shell"],
+      cursorToolNameMap: new Map([["run_shell", "run_shell"]]),
+    });
+    const args = create(McpArgsSchema, {
+      name: "run_shell",
+      toolName: "run_shell",
+      toolCallId: "toolu_1",
+      providerIdentifier: "opencodex-responses",
+      args: { cmd: jsonBytes("echo hi") },
+    });
+
+    expect(mapSyntheticMcpExecToToolEvents(args, "fallback", { allowEmptyArgs: false, state })).toEqual([
+      { type: "tool_call_start", id: "toolu_1", name: "run_shell" },
+      { type: "tool_call_delta", arguments: "{\"cmd\":\"echo hi\"}" },
+      { type: "tool_call_end", id: "toolu_1" },
+    ]);
+  });
+
   test("live bridge can ignore empty synthetic native mcp exec prelude", () => {
     const args = create(McpArgsSchema, {
       name: "ping",

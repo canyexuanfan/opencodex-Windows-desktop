@@ -67,7 +67,7 @@ describe("provider registry parity", () => {
     expect(buildInitProviders().find(p => p.id === "azure-openai")?.adapter).toBe("azure-openai");
   });
 
-  test("Cursor registry exposure is dashboard/oauth with live native exec", () => {
+  test("Cursor registry exposure is dashboard/oauth with live native exec and model discovery", () => {
     const cursor = PROVIDER_REGISTRY.find(entry => entry.id === "cursor");
 
     expect(cursor).toMatchObject({
@@ -77,14 +77,19 @@ describe("provider registry parity", () => {
       featured: false,
       dashboardPreset: true,
       defaultModel: "auto",
-      liveModels: false,
+      liveModels: true,
     });
     expect(cursor?.note).toContain("Live transport");
+    expect(cursor?.note).toContain("live model discovery");
     expect(cursor?.note).toContain("native read/write/delete/shell");
     expect(cursor?.models).toContain("auto");
-    expect(cursor?.models?.length).toBeGreaterThanOrEqual(30);
+    expect(cursor?.models?.length).toBeGreaterThanOrEqual(40);
+    expect(cursor?.models).toContain("claude-sonnet-5");
     expect(cursor?.models).toContain("composer-2.5");
+    expect(cursor?.models).toContain("gemini-3-pro-image-preview");
     expect(cursor?.models).toContain("gemini-3.5-flash");
+    expect(cursor?.models).toContain("gpt-5-codex");
+    expect(cursor?.models).toContain("glm-5.2");
     expect(cursor?.models).toContain("grok-4.3");
     expect(deriveFeaturedProviderIds()).not.toContain("cursor");
     expect(Object.keys(deriveKeyLoginMap())).not.toContain("cursor");
@@ -98,11 +103,13 @@ describe("provider registry parity", () => {
     expect(seed).toMatchObject({
       adapter: "cursor",
       baseUrl: "https://api2.cursor.sh",
-      liveModels: false,
+      liveModels: true,
       defaultModel: "auto",
     });
     expect(seed.models).toContain("auto");
     expect(seed.models).toContain("composer-2.5");
+    expect(seed.models).toContain("gemini-3-pro-image-preview");
+    expect(seed.models).toContain("gpt-5-codex");
     expect(seed.models).toContain("gpt-5.5");
     expect(seed.models).toContain("kimi-k2.5");
     expect(seed.modelContextWindows?.auto).toBe(200_000);
@@ -112,7 +119,7 @@ describe("provider registry parity", () => {
     const savedCursor: OcxProviderConfig = { adapter: "cursor", baseUrl: "https://api2.cursor.sh" };
     enrichProviderFromCatalog("cursor", savedCursor);
     expect(savedCursor).toMatchObject({
-      liveModels: false,
+      liveModels: true,
       defaultModel: "auto",
     });
     expect(savedCursor.models).toContain("auto");

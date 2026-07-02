@@ -29,6 +29,7 @@ import { extractKiroImages, type KiroImage } from "./kiro-images";
 import { fetchKiroWithRetry } from "./kiro-retry";
 import { convertKiroToolContext } from "./kiro-tools";
 import { neutralizeIdentity } from "./identity";
+import { buildNonOpenAIToolCatalogNudgeFromNames } from "./tool-catalog-nudge";
 
 const AMZ_TARGET = "AmazonCodeWhispererStreamingService.GenerateAssistantResponse";
 const SDK_VERSION = "1.0.27";
@@ -57,6 +58,16 @@ interface KiroHistoryEntry {
   userInputMessage?: KiroUserInputMessage;
   assistantResponseMessage?: { content: string; toolUses?: KiroToolUse[] };
 }
+
+function kiroToolWireNames(tools: readonly unknown[]): string[] {
+  return tools
+    .map(tool => {
+      const spec = (tool as { toolSpecification?: { name?: unknown } }).toolSpecification;
+      return typeof spec?.name === "string" ? spec.name : undefined;
+    })
+    .filter((name): name is string => typeof name === "string");
+}
+
 function userContentText(content: string | OcxContentPart[]): string {
   if (typeof content === "string") return content;
   return content.map(p => (p.type === "text" ? p.text : "")).filter(Boolean).join("\n");
@@ -202,6 +213,10 @@ export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | 
   // Neutralize Codex's GPT-5 identity line so a routed Kiro model never misreports as GPT-5/OpenAI
   // and the proxy identity never leaks upstream.
   if (!parsed.previousResponseId && parsed.context.systemPrompt?.length) systemParts.push(neutralizeIdentity(parsed.context.systemPrompt.join("\n\n")));
+  const toolCatalogNudge = !parsed.previousResponseId
+    ? buildNonOpenAIToolCatalogNudgeFromNames(kiroToolWireNames(kiroTools))
+    : undefined;
+  if (toolCatalogNudge) systemParts.push(toolCatalogNudge);
   if (toolContext.systemAdditions.length > 0) systemParts.push(...toolContext.systemAdditions);
   const systemPrefix = systemParts.length > 0 ? `${systemParts.join("\n\n")}\n\n` : "";
   const structuredToolIds = new Set<string>();

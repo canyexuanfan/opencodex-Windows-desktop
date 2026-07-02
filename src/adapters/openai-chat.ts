@@ -5,6 +5,7 @@ import { isAllowedToolChoice, modelInList, namespacedToolName, resolveToolChoice
 import { mapReasoningEffort } from "../reasoning-effort";
 import { contentPartsToText } from "./image";
 import { neutralizeIdentity } from "./identity";
+import { buildNonOpenAIToolCatalogNudgeForTools, shouldInjectNonOpenAIToolCatalogNudge } from "./tool-catalog-nudge";
 
 // Z.AI's "glm-5.2[1m]" 1M-context id is a Claude-Code / Anthropic-endpoint-only
 // convention; OpenAI-compatible chat-completions endpoints reject the bracketed
@@ -20,12 +21,16 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
   const { context, options } = parsed;
   let pendingToolCallIds = new Set<string>();
 
-  if (context.systemPrompt && context.systemPrompt.length > 0) {
+  const toolCatalogNudge = shouldInjectNonOpenAIToolCatalogNudge(provider)
+    ? buildNonOpenAIToolCatalogNudgeForTools(context.tools, options.toolChoice)
+    : undefined;
+  const systemParts = [...(context.systemPrompt ?? []), ...(toolCatalogNudge ? [toolCatalogNudge] : [])];
+  if (systemParts.length > 0) {
     // Codex sends its GPT-5 identity prompt for EVERY model (the per-model catalog
     // base_instructions is ignored at request time). Neutralize that one identity line
     // so routed, non-OpenAI models don't misreport themselves as GPT-5 / OpenAI — without
     // leaking the proxy identity into the payload.
-    const sys = neutralizeIdentity(context.systemPrompt.join("\n\n"));
+    const sys = neutralizeIdentity(systemParts.join("\n\n"));
     out.push({ role: "system", content: sys });
   }
 

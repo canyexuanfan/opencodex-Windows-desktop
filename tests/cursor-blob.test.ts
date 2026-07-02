@@ -26,6 +26,20 @@ function blobData(blobId: Uint8Array): Uint8Array {
   return kv.message.value.blobData;
 }
 
+function decodeRootMessages(bytes: Uint8Array): unknown[] {
+  const msg = fromBinary(AgentClientMessageSchema, bytes);
+  const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
+  return (run?.conversationState?.rootPromptMessagesJson ?? [])
+    .map(blobId => JSON.parse(new TextDecoder().decode(blobData(blobId))) as unknown);
+}
+
+function actionText(bytes: Uint8Array): string | undefined {
+  const msg = fromBinary(AgentClientMessageSchema, bytes);
+  const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
+  const action = run?.action?.action;
+  return action?.case === "userMessageAction" ? action.value.userMessage?.text : undefined;
+}
+
 describe("Cursor blob handshake", () => {
   test("storeCursorBlob returns the SHA-256 blob id (32 bytes)", () => {
     const data = new TextEncoder().encode('{"role":"system","content":"hi"}');
@@ -56,6 +70,126 @@ describe("Cursor blob handshake", () => {
     // not mirrored into the initial AgentRunRequest.mcp_tools payload. The top-level field is
     // not wire-compatible with the live Cursor Connect parser for this client path.
     expect(run?.mcpTools).toBeUndefined();
+  });
+
+  test("adds Cursor exact-tool guidance to system prompt blobs when tools are advertised", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "claude-4.6-sonnet",
+      conversationId: "c1",
+      system: ["You are helpful."],
+      messages: [{ role: "user", content: "read a file" }],
+      toolChoice: { mode: "required", allowedTools: ["read_file"] },
+      tools: [
+        { name: "read_file", namespace: "mcp__fs", description: "Read", parameters: {} },
+        { name: "write_file", namespace: "mcp__fs", description: "Write", parameters: {} },
+      ],
+    });
+
+    const roots = JSON.stringify(decodeRootMessages(bytes));
+    expect(roots).toContain("available tool names are exactly `mcp__fs__read_file`");
+    expect(roots).not.toContain("`mcp__fs__write_file`");
+    expect(roots).toContain("neighboring-agent tool names `Read`, `Grep`, `Glob`, `Bash`, `LS`");
+    expect(roots).toContain("unless a tool result was actually returned");
+
+  });
+
+  test("adds exec_command prompt hints for active shell requests when native exec is available", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "claude-4.6-sonnet",
+      conversationId: "c1",
+      system: ["You are helpful."],
+      messages: [{ role: "user", content: "Run: echo OCX via your shell tool, report stdout." }],
+      tools: [{
+        name: "exec_command",
+        description: "Run a command",
+        parameters: { type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"] },
+      }],
+    });
+
+    const roots = decodeRootMessages(bytes);
+    expect(JSON.stringify(roots)).toContain("Shell commands use");
+    expect(JSON.stringify(roots)).toContain("exec_command");
+    expect(actionText(bytes)).toContain("Run: echo OCX via your shell tool, report stdout.");
+    expect(actionText(bytes)).toContain("Use exec_command for this shell command.");
+  });
+
+  test("adds generic exec_command guidance for active tool-count demo prompts", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "claude-4.6-sonnet",
+      conversationId: "c1",
+      system: ["You are helpful."],
+      messages: [{ role: "developer", content: "아무 tool 10개 써봐" }],
+      tools: [
+        {
+          name: "exec_command",
+          description: "Run a command",
+          parameters: { type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"] },
+        },
+        { name: "tool_search", description: "Discover tools", parameters: {} },
+      ],
+    });
+
+    const text = actionText(bytes);
+    expect(text).toContain("아무 tool 10개 써봐");
+    expect(text).toContain("This turn requests 10 tool uses");
+    expect(text).toContain("exactly 10 separate `exec_command` function calls/results");
+    expect(text).toContain("One `exec_command` containing chained commands counts as 1 tool call, not 10");
+    expect(text).toContain("one parallel tool-call batch containing all 10");
+    expect(text).toContain("repeated `exec_command` calls");
+    expect(text).toContain("Codex Responses bridge exec tool");
+    expect(text).toContain("external MCP server tool");
+    expect(text).toContain("bridge may suspend");
+    expect(text).toContain("Do not use `run_shell`");
+    expect(text).toContain("Do not use `tool_search`, external MCP, or resource discovery just to pad the count");
+    expect(text).toContain("neighboring-agent tools");
+    expect(text).toContain("unless this turn's catalog lists those exact names");
+    expect(text).not.toContain("Use exec_command for this shell command.");
+    const roots = JSON.stringify(decodeRootMessages(bytes));
+    expect(roots).toContain("available tool names are exactly `exec_command`");
+    expect(roots).not.toContain("available tool names are exactly `exec_command`, `tool_search`");
+  });
+
+  test("keeps generic exec-only guidance on tool-result continuations", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "claude-4.6-sonnet",
+      conversationId: "c1",
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "[tool_result]\ncall_id: call_1\nname: exec_command\nis_error: false\noutput:\ntool 1" }],
+      rawMessages: [
+        { role: "user", content: "tool use 10개해봐", timestamp: 1 },
+        {
+          role: "assistant",
+          model: "cursor/composer-2.5",
+          timestamp: 2,
+          content: [{ type: "toolCall", id: "call_1", name: "exec_command", arguments: { cmd: "echo tool 1" } }],
+        },
+        { role: "toolResult", toolCallId: "call_1", toolName: "exec_command", content: "tool 1", isError: false, timestamp: 3 },
+      ],
+      tools: [
+        { name: "exec_command", description: "Run", parameters: {} },
+        { name: "tool_search", description: "Discover", parameters: {} },
+      ],
+    });
+
+    const roots = JSON.stringify(decodeRootMessages(bytes));
+    expect(roots).toContain("available tool names are exactly `exec_command`");
+    expect(roots).not.toContain("available tool names are exactly `exec_command`, `tool_search`");
+  });
+
+  test("does not add exec_command to non-command active user text", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "claude-4.6-sonnet",
+      conversationId: "c1",
+      system: ["You are helpful."],
+      messages: [{ role: "user", content: "Tell me a short story about proxies." }],
+      tools: [{
+        name: "exec_command",
+        description: "Run a command",
+        parameters: { type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"] },
+      }],
+    });
+
+    expect(actionText(bytes)).toBe("Tell me a short story about proxies.");
   });
 
   test("encodeCursorRunRequest surfaces trailing tool result as current action text", () => {
