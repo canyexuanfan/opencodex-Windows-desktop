@@ -2102,9 +2102,15 @@ export function startServer(port?: number) {
   const listenPort = port ?? config.port ?? 10100;
   setCorsOrigin(listenPort);
 
+  // Canonicalize an explicit "localhost" bind to IPv4 so it matches the injected base_url (which
+  // resolves localhost→127.0.0.1): on Windows `localhost` resolves ::1-first, but the injected URL
+  // is 127.0.0.1, so binding literal "localhost" would reintroduce the F4 refusal. Wildcards
+  // (0.0.0.0/::) and specific hosts are left untouched so intentional exposure is preserved.
+  const bindHost = /^localhost$/i.test(config.hostname ?? "") ? "127.0.0.1" : (config.hostname ?? "127.0.0.1");
+
   const server: Server<WsData> = Bun.serve<WsData>({
     port: listenPort,
-    hostname: config.hostname ?? "127.0.0.1",
+    hostname: bindHost,
     idleTimeout: 255,
     async fetch(req, requestServer): Promise<Response> {
       const url = new URL(req.url);
