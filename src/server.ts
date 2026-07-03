@@ -1981,6 +1981,38 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
     return jsonResponse({ ok: true, applied: chosen });
   }
 
+  // Per-provider catalog allowlist (issue #52): when a provider has a non-empty selectedModels list,
+  // only those ids ship to Codex's catalog / /v1/models. GET returns the CURRENT selection plus the
+  // FULL available set per provider (unfiltered — the picker needs everything to choose from).
+  if (url.pathname === "/api/selected-models" && req.method === "GET") {
+    const models = await fetchAllModels(config);
+    const available: Record<string, string[]> = {};
+    for (const m of models) (available[m.provider] ??= []).push(m.id);
+    const selected: Record<string, string[]> = {};
+    for (const [name, prov] of Object.entries(config.providers)) {
+      if (Array.isArray(prov.selectedModels) && prov.selectedModels.length > 0) selected[name] = [...prov.selectedModels];
+    }
+    return jsonResponse({ selected, available });
+  }
+  if (url.pathname === "/api/selected-models" && req.method === "PUT") {
+    let body: { provider?: unknown; models?: unknown };
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    const provider = typeof body.provider === "string" ? body.provider : "";
+    if (!provider || !hasOwnProvider(config.providers, provider)) {
+      return jsonResponse({ error: "unknown provider" }, provider ? 404 : 400);
+    }
+    const models = Array.isArray(body.models)
+      ? [...new Set(body.models.filter((m): m is string => typeof m === "string"))]
+      : [];
+    // Empty list clears the allowlist (provider reverts to exposing all models).
+    if (models.length > 0) config.providers[provider].selectedModels = models;
+    else delete config.providers[provider].selectedModels;
+    const { saveConfig: save } = await import("./config");
+    save(config);
+    await refreshCodexCatalogBestEffort();
+    return jsonResponse({ ok: true, provider, selected: models });
+  }
+
   // OAuth login (xai now; anthropic/kimi in cycle 2). Starts the flow and returns the auth URL;
   // the provider's loopback callback server (inside this process) captures the redirect in the
   // background, then the credential is persisted. The GUI opens the URL and polls /api/oauth/status.
@@ -2141,10 +2173,9 @@ export function startServer(port?: number) {
           return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
         }
         const goModels = await fetchAllModels(config);
-        const { buildCatalogEntries, loadCatalogTemplate, nativeOpenAiSlugs, orderForSubagents } = await import("./codex-catalog");
+        const { buildCatalogEntries, loadCatalogTemplate, nativeOpenAiSlugs, orderForSubagents, filterCatalogVisibleModels } = await import("./codex-catalog");
         const nativeSlugs = nativeOpenAiSlugs();
-        const disabledSet = new Set(config.disabledModels ?? []);
-        const goEnabled = goModels.filter(m => !disabledSet.has(`${m.provider}/${m.id}`));
+        const goEnabled = filterCatalogVisibleModels(goModels, config);
         const goOrdered = orderForSubagents(goEnabled, config.subagentModels);
         if (url.searchParams.has("client_version")) {
           // Codex client → Codex catalog shape: native gpt + namespaced routed models,

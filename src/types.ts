@@ -339,6 +339,14 @@ export interface OcxProviderConfig {
    * or too flaky for startup/catalog sync.
    */
   liveModels?: boolean;
+  /**
+   * Per-provider catalog allowlist. When non-empty, ONLY these model ids are emitted to Codex's
+   * catalog and `/v1/models` — live discovery still runs, this just narrows what ships (so a proxy
+   * exposing thousands of models, or an aggregator like OpenRouter, doesn't bloat the catalog).
+   * Empty/undefined = expose all. The admin `/api/models` list is unaffected (it always shows the
+   * full set so the user can pick). See devlog issue_052_provider-model-allowlist.
+   */
+  selectedModels?: string[];
   /** Provider-wide Codex-visible context-window cap for routed catalog entries. */
   contextWindow?: number;
   /** Model-specific Codex-visible context-window caps. Values cap live metadata, never raise it. */
