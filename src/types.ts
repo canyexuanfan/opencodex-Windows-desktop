@@ -274,6 +274,33 @@ export interface OcxConfig {
   autoSwitchThreshold?: number;
   /** Consecutive non-2xx upstream responses before switching future new threads. Default 3. 0 = disabled. */
   upstreamFailoverThreshold?: number;
+  /** Background proactive token refresh ("Token Guardian"). Off by default; see OcxTokenGuardianConfig. */
+  tokenGuardian?: OcxTokenGuardianConfig;
+}
+
+/**
+ * Per-provider proactive-refresh policy. The guardian only ever touches a provider whose EFFECTIVE
+ * policy is "proactive"; "lazy-only" keeps today's on-demand refresh, "disabled" forbids the
+ * guardian entirely (used for providers whose ToS actively enforces against non-official-client
+ * token traffic, e.g. Anthropic subscription OAuth). See devlog 260703_oauth-multi-account-refresh-and-tos.
+ */
+export type RefreshPolicy = "proactive" | "lazy-only" | "disabled";
+
+export interface OcxTokenGuardianConfig {
+  /** Global kill-switch. Default false — the guardian does nothing unless explicitly enabled. */
+  enabled?: boolean;
+  /** Seconds between refresh sweeps. Default 21600 (6h). Min 60. */
+  tickSeconds?: number;
+  /** Random 0..jitterSeconds added before each sweep to de-synchronize. Default 300. */
+  jitterSeconds?: number;
+  /** Max concurrent refreshes per sweep. Default 3. Min 1. */
+  concurrency?: number;
+  /** Extra lead (seconds) beyond one tick when deciding a token is "expiring soon". Default 900. */
+  leadSeconds?: number;
+  /** First backoff (seconds) after a permanent refresh failure. Default 300. */
+  failureBackoffBaseSeconds?: number;
+  /** Backoff ceiling (seconds). Default 3600. */
+  failureBackoffMaxSeconds?: number;
 }
 
 export interface OcxVisionSidecarConfig {
@@ -312,6 +339,14 @@ export interface OcxProviderConfig {
    * or too flaky for startup/catalog sync.
    */
   liveModels?: boolean;
+  /**
+   * Per-provider catalog allowlist. When non-empty, ONLY these model ids are emitted to Codex's
+   * catalog and `/v1/models` — live discovery still runs, this just narrows what ships (so a proxy
+   * exposing thousands of models, or an aggregator like OpenRouter, doesn't bloat the catalog).
+   * Empty/undefined = expose all. The admin `/api/models` list is unaffected (it always shows the
+   * full set so the user can pick). See devlog issue_052_provider-model-allowlist.
+   */
+  selectedModels?: string[];
   /** Provider-wide Codex-visible context-window cap for routed catalog entries. */
   contextWindow?: number;
   /** Model-specific Codex-visible context-window caps. Values cap live metadata, never raise it. */
@@ -326,6 +361,12 @@ export interface OcxProviderConfig {
    * Only the openai-responses adapter implements "forward"; openai-chat uses its own key/token.
    */
   authMode?: "key" | "forward" | "oauth";
+  /**
+   * Override the guardian's proactive-refresh policy for this provider. When unset, the provider's
+   * built-in risk-tiered default applies (see OAUTH_PROVIDERS in src/oauth/index.ts). Set "proactive"
+   * to opt this provider into background refresh; "disabled"/"lazy-only" to forbid/limit it.
+   */
+  refreshPolicy?: RefreshPolicy;
   /**
    * Provider-wide Codex-visible reasoning tiers for routed models. Use only Codex-supported labels
    * here (`low`, `medium`, `high`, `xhigh`); translate to provider-specific wire values with

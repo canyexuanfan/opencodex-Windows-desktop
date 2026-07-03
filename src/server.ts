@@ -84,6 +84,7 @@ import {
 } from "./codex-routing";
 import { registerCodexWebSocket, unregisterCodexWebSocket, updateCodexWebSocketAuthContext } from "./codex-websocket-registry";
 import { resolveGuiFilePath, rootFallbackPayload, serveGuiFile } from "./server/gui-static";
+import { fetchWithResetRetry } from "./upstream-retry";
 export { resolveGuiFilePath, rootFallbackPayload } from "./server/gui-static";
 import { resolveAdapter, resolveWireProtocolOverride } from "./server/adapter-resolve";
 export { resolveAdapter } from "./server/adapter-resolve";
@@ -368,11 +369,14 @@ async function handleResponses(
     const connectMs = config.connectTimeoutMs ?? 100_000;
     let upstreamResponse: Response;
     try {
-      upstreamResponse = await fetchWithHeaderTimeout(request.url, {
-        method: request.method,
-        headers: request.headers,
-        body: request.body,
-      }, upstream.signal, connectMs);
+      upstreamResponse = await fetchWithResetRetry(
+        () => fetchWithHeaderTimeout(request.url, {
+          method: request.method,
+          headers: request.headers,
+          body: request.body,
+        }, upstream.signal, connectMs),
+        { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
+      );
     } catch (err) {
       upstream.abort();
       const outcome = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "connect_error";
@@ -453,7 +457,13 @@ async function handleResponses(
         consumeForResponseLogMetadata(inspectBody, logCtx, turnAc.signal, () => unregisterTurn(turnAc));
       }
       if (!headers.has("content-type")) headers.set("content-type", "text/event-stream");
-      return markNativePassthroughSseResponse(new Response(nativeBody, {
+      // win32 must keep the pure native relay (Bun#32111 JS-sink segfault); elsewhere a JS pull
+      // relay is established practice (relayWithAbort, relaySseWithHeartbeat) and lets a
+      // mid-stream reset end with a clean response.failed terminal instead of a raw socket error.
+      const clientBody = process.platform === "win32"
+        ? nativeBody
+        : relaySseWithFailedTail(nativeBody, upstream);
+      return markNativePassthroughSseResponse(new Response(clientBody, {
         status: upstreamResponse.status,
         headers,
       }));
@@ -563,9 +573,12 @@ async function handleResponses(
   try {
     upstreamResponse = adapter.fetchResponse
       ? await adapter.fetchResponse(request, { abortSignal: upstream.signal, timeoutMs: connectMs })
-      : await fetchWithHeaderTimeout(request.url, {
-          method: request.method, headers: request.headers, body: request.body,
-        }, upstream.signal, connectMs);
+      : await fetchWithResetRetry(
+          () => fetchWithHeaderTimeout(request.url, {
+            method: request.method, headers: request.headers, body: request.body,
+          }, upstream.signal, connectMs),
+          { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
+        );
   } catch (err) {
     cleanupUpstreamAbort();
     upstream.abort();
@@ -640,6 +653,15 @@ export function disableResponsesRequestTimeout(req: Request, server: Pick<Server
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Host-only label for retry logs — never leaks path/query/credentials. */
+function safeHostLabel(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "upstream";
   }
 }
 
@@ -960,6 +982,54 @@ export function relayWithAbort(
     },
     cancel(reason) {
       // Client disconnected: abort the upstream fetch and release the reader so we do not leak it.
+      upstream.abort(reason);
+      reader.cancel(reason).catch(() => {});
+    },
+  });
+}
+
+/**
+ * Relay a passthrough SSE body like relayWithAbort, but convert a MID-STREAM failure (upstream
+ * reset after headers) into a clean terminal: any partial block is closed off, then a synthetic
+ * `response.failed` event and `data: [DONE]` are emitted and the stream closes. Without this the
+ * client sees a raw socket teardown with no terminal SSE event. Deliberately NOT a resend: the
+ * upstream already committed the request (duplicate-completion risk — same policy as cursor's
+ * committed=non-replayable transport retry).
+ */
+export function relaySseWithFailedTail(
+  body: ReadableStream<Uint8Array>,
+  upstream: AbortController,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(value);
+      } catch (err) {
+        const failure = {
+          type: "upstream_error",
+          code: "upstream_reset",
+          message: `Upstream stream terminated unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
+        };
+        const payload = JSON.stringify({
+          type: "response.failed",
+          response: { status: "failed", error: failure, last_error: failure },
+        });
+        try {
+          // Leading blank line terminates a partial SSE block so the failed frame parses cleanly.
+          controller.enqueue(encoder.encode(`\n\nevent: response.failed\ndata: ${payload}\n\ndata: [DONE]\n\n`));
+          controller.close();
+        } catch { /* client already torn down */ }
+        upstream.abort();
+      }
+    },
+    cancel(reason) {
       upstream.abort(reason);
       reader.cancel(reason).catch(() => {});
     },
@@ -1911,6 +1981,38 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
     return jsonResponse({ ok: true, applied: chosen });
   }
 
+  // Per-provider catalog allowlist (issue #52): when a provider has a non-empty selectedModels list,
+  // only those ids ship to Codex's catalog / /v1/models. GET returns the CURRENT selection plus the
+  // FULL available set per provider (unfiltered — the picker needs everything to choose from).
+  if (url.pathname === "/api/selected-models" && req.method === "GET") {
+    const models = await fetchAllModels(config);
+    const available: Record<string, string[]> = {};
+    for (const m of models) (available[m.provider] ??= []).push(m.id);
+    const selected: Record<string, string[]> = {};
+    for (const [name, prov] of Object.entries(config.providers)) {
+      if (Array.isArray(prov.selectedModels) && prov.selectedModels.length > 0) selected[name] = [...prov.selectedModels];
+    }
+    return jsonResponse({ selected, available });
+  }
+  if (url.pathname === "/api/selected-models" && req.method === "PUT") {
+    let body: { provider?: unknown; models?: unknown };
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    const provider = typeof body.provider === "string" ? body.provider : "";
+    if (!provider || !hasOwnProvider(config.providers, provider)) {
+      return jsonResponse({ error: "unknown provider" }, provider ? 404 : 400);
+    }
+    const models = Array.isArray(body.models)
+      ? [...new Set(body.models.filter((m): m is string => typeof m === "string"))]
+      : [];
+    // Empty list clears the allowlist (provider reverts to exposing all models).
+    if (models.length > 0) config.providers[provider].selectedModels = models;
+    else delete config.providers[provider].selectedModels;
+    const { saveConfig: save } = await import("./config");
+    save(config);
+    await refreshCodexCatalogBestEffort();
+    return jsonResponse({ ok: true, provider, selected: models });
+  }
+
   // OAuth login (xai now; anthropic/kimi in cycle 2). Starts the flow and returns the auth URL;
   // the provider's loopback callback server (inside this process) captures the redirect in the
   // background, then the credential is persisted. The GUI opens the URL and polls /api/oauth/status.
@@ -2071,10 +2173,9 @@ export function startServer(port?: number) {
           return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
         }
         const goModels = await fetchAllModels(config);
-        const { buildCatalogEntries, loadCatalogTemplate, nativeOpenAiSlugs, orderForSubagents } = await import("./codex-catalog");
+        const { buildCatalogEntries, loadCatalogTemplate, nativeOpenAiSlugs, orderForSubagents, filterCatalogVisibleModels } = await import("./codex-catalog");
         const nativeSlugs = nativeOpenAiSlugs();
-        const disabledSet = new Set(config.disabledModels ?? []);
-        const goEnabled = goModels.filter(m => !disabledSet.has(`${m.provider}/${m.id}`));
+        const goEnabled = filterCatalogVisibleModels(goModels, config);
         const goOrdered = orderForSubagents(goEnabled, config.subagentModels);
         if (url.searchParams.has("client_version")) {
           // Codex client → Codex catalog shape: native gpt + namespaced routed models,

@@ -27,6 +27,7 @@ import { findLiveProxy, probeHostname, type LiveProxy } from "./proxy-liveness";
 import { stopProxy } from "./process-control";
 import { serviceCommand, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "./service";
 import { drainAndShutdown, startServer } from "./server";
+import { startTokenGuardian } from "./oauth/token-guardian";
 import { maybeShowStarPrompt } from "./star-prompt";
 import { maybeShowUpdatePrompt } from "./update-notify";
 import { syncModelsToCodex } from "./codex-sync";
@@ -134,10 +135,15 @@ async function handleStart(options: { block?: boolean } = {}) {
   writeRuntimePort({ pid: process.pid, port, hostname: config.hostname });
   writeJournal();
 
+  // Background proactive token refresh. No-op unless config.tokenGuardian.enabled; timer is unref'd
+  // so it never keeps the process alive on its own. Stopped in syncCleanup so no refresh fires mid-drain.
+  const guardian = startTokenGuardian();
+
   let cleaned = false;
   const syncCleanup = () => {
     if (cleaned) return;
     cleaned = true;
+    try { guardian.stop(); } catch { /* best-effort */ }
     removePid(process.pid);
     removeRuntimePort(process.pid);
     if (!process.env.OCX_SERVICE) { try { restoreNativeCodex(); } catch { /* best-effort restore */ } }

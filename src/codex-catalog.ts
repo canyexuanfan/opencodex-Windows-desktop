@@ -816,6 +816,30 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
 }
 
 /**
+ * Narrow a raw routed-model list to what Codex's catalog / clients should see: drop the
+ * `disabledModels` blocklist AND, for any provider with a non-empty `selectedModels` allowlist, keep
+ * only those ids. This is the single choke point applied at every CATALOG emission point (on-disk
+ * sync + /v1/models); the admin `/api/models` list stays unfiltered so the picker can show the full
+ * set. Live discovery is unaffected — this only decides what ships. See issue_052.
+ */
+export function filterCatalogVisibleModels(
+  models: CatalogModel[],
+  config: Pick<OcxConfig, "disabledModels" | "providers">,
+): CatalogModel[] {
+  const disabled = new Set(config.disabledModels ?? []);
+  const allowByProvider = new Map<string, Set<string>>();
+  for (const [name, prov] of Object.entries(config.providers)) {
+    const sel = prov.selectedModels;
+    if (Array.isArray(sel) && sel.length > 0) allowByProvider.set(name, new Set(sel));
+  }
+  return models.filter(m => {
+    if (disabled.has(`${m.provider}/${m.id}`)) return false;
+    const allow = allowByProvider.get(m.provider);
+    return !allow || allow.has(m.id);
+  });
+}
+
+/**
  * Gather routed (non-forward) provider models across the config — the single source of truth for
  * the live model list, used by both the on-disk catalog sync and the proxy's /api/* + /v1/models
  * endpoints. Providers are fetched in parallel; the result is sorted (provider, then id) for a
@@ -983,8 +1007,7 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
 
   // Hide disabled models from Codex, then feature the chosen subagent models (native OR routed)
   // by giving them the lowest priority — see buildCatalogEntries for why priority, not array order.
-  const disabled = new Set(config.disabledModels ?? []);
-  const enabledGo = goModels.filter(m => !disabled.has(`${m.provider}/${m.id}`));
+  const enabledGo = filterCatalogVisibleModels(goModels, config);
   const featured = config.subagentModels ?? [];
   const orderedGoModels = orderForSubagents(enabledGo, featured); // stable tie-break among equal priorities
   const goEntries = buildCatalogEntries(template ? JSON.parse(JSON.stringify(template)) : null, [], orderedGoModels, featured, websocketsEnabled(config));

@@ -30,7 +30,7 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<string> {
 }
 
 describe("passthrough relayWithAbort (RC2, passthrough path)", () => {
-  test("native passthrough SSE response body avoids async-pull client wrappers", async () => {
+  test("native passthrough SSE keeps win32 on the pure native relay (Bun#32111)", async () => {
     const source = await readSource("src/server.ts");
     const sseBranch = source.slice(
       source.indexOf("if (isEventStream && upstreamResponse.body)"),
@@ -42,7 +42,12 @@ describe("passthrough relayWithAbort (RC2, passthrough path)", () => {
     );
 
     expect(sseBranch).toContain("upstreamResponse.body.tee()");
-    expect(sseBranch).toContain("new Response(nativeBody");
+    // win32 must receive the tee'd body untouched — no JS pull wrapper (Bun#32111 segfault).
+    expect(sseBranch).toContain('process.platform === "win32"');
+    expect(sseBranch).toContain("? nativeBody");
+    // Elsewhere the failed-tail relay converts mid-stream resets into a clean response.failed.
+    expect(sseBranch).toContain("relaySseWithFailedTail(nativeBody, upstream)");
+    expect(sseBranch).toContain("new Response(clientBody");
     expect(sseBranch).toContain("markNativePassthroughSseResponse");
     expect(sseBranch).not.toContain("relaySseWithHeartbeat(");
     expect(sseBranch).not.toContain("trackStreamLifetime(");
