@@ -1,5 +1,5 @@
 import type { OAuthController, OAuthCredentials } from "./types";
-import type { OcxConfig, OcxProviderConfig } from "../types";
+import type { OcxConfig, OcxProviderConfig, RefreshPolicy } from "../types";
 import { loadConfig, resolveEnvValue, saveConfig } from "../config";
 import { maskEmail } from "../privacy";
 import { getCredential, saveCredential } from "./store";
@@ -24,6 +24,12 @@ interface OAuthProviderDef {
   /** provider entry written into config.json on first login. */
   providerConfig: OcxProviderConfig;
   defaultModel: string;
+  /**
+   * Built-in proactive-refresh policy, risk-tiered by the provider's ToS exposure (devlog
+   * 260703_oauth-multi-account-refresh-and-tos). A user's per-provider `config.providers[x].refreshPolicy`
+   * overrides this. Default when unset here: "lazy-only".
+   */
+  defaultRefreshPolicy?: RefreshPolicy;
 }
 
 function oauthConfig(id: string): OcxProviderConfig {
@@ -50,6 +56,9 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
     refresh: refreshAnthropicToken,
     providerConfig: oauthConfig("anthropic"),
     defaultModel: oauthDefaultModel("anthropic"),
+    // Anthropic actively server-side-blocks subscription OAuth outside its own clients (Feb 2026).
+    // Never generate background refresh traffic for it — grade 20, highest ToS risk.
+    defaultRefreshPolicy: "disabled",
   },
   kimi: {
     login: (ctrl) => loginKimi(ctrl),
@@ -85,6 +94,22 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
 
 export function isOAuthProvider(name: string): boolean {
   return name in OAUTH_PROVIDERS;
+}
+
+function isRefreshPolicy(value: unknown): value is RefreshPolicy {
+  return value === "proactive" || value === "lazy-only" || value === "disabled";
+}
+
+/**
+ * The effective proactive-refresh policy for a provider: the user's per-provider
+ * `config.providers[provider].refreshPolicy` if set, else the provider def's risk-tiered default,
+ * else "lazy-only". The guardian acts only when this resolves to "proactive".
+ */
+export function resolveRefreshPolicy(provider: string, config: OcxConfig): RefreshPolicy {
+  const override = config.providers[provider]?.refreshPolicy;
+  if (isRefreshPolicy(override)) return override;
+  const def = OAUTH_PROVIDERS[provider];
+  return def?.defaultRefreshPolicy ?? "lazy-only";
 }
 
 /** The discovered project id stored on an OAuth credential (Antigravity CCA), if any. */

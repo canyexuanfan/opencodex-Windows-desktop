@@ -145,6 +145,11 @@ export const en = {
   "models.noRouted": "No routed models",
   "models.noRoutedHint": "Log into a provider or add one first.",
   "models.loading": "Loading…",
+  "models.search": "Search models…",
+  "models.showMore": "Show {n} more",
+  "models.allowlistLabel": "Only selected",
+  "models.allowlistHint": "Only checked models ship to the catalog (empty = all). Useful for providers exposing thousands of models.",
+  "models.selectedCount": "{n} selected",
 
   // subagents
   "sub.subtitle": "Codex's {cmd} advertises only the first 5 models (by priority) as overrides. Pick up to 5 here — native gpt or routed — and opencodex sets their catalog priority so exactly these lead. Any other model is still callable by its exact name; this only controls what's shown.",

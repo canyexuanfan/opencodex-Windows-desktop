@@ -1,0 +1,10 @@
+# Scope `bun test` discovery to opencodex's own suite.
+#
+# Vendored trees under devlog/ (opencode-cursor, _chase/_litellm, _cca …) ship their own
+# *.test.ts / *.spec.ts files with deps we don't install (react/jsx-dev-runtime, @playwright/test),
+# so a bare `bun test` — or `bun test tests/` (a substring filter that also matches
+# devlog/opencode-cursor/tests/) — drags them in and reports hundreds of spurious failures.
+# `root` pins discovery to ./tests so every invocation stays on the real suite.
+# The npm script already uses `bun test ./tests/`; this makes a bare `bun test` behave the same.
+[test]
+root = "tests"

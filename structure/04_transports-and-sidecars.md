@@ -45,6 +45,18 @@ orphan `toolResult` messages by inserting a synthetic assistant `tool_call` befo
 These compatibility guards are covered by focused tests and should stay close to the adapters that
 need them.
 
+## Upstream reset retry
+
+`src/upstream-retry.ts` guards upstream fetches against stale pooled keep-alive sockets
+(Cloudflare closes idle connections; Bun's fetch reuses the dead socket and rejects with
+`ECONNRESET` before any response bytes). `fetchWithResetRetry` retries only
+connection-reset-shaped rejections (up to 3 total attempts, jittered backoff, warn-logged);
+timeouts, aborts, `ECONNREFUSED`, HTTP error statuses, and mid-stream SSE failures are never
+retried. Guarded paths: the ChatGPT passthrough and generic adapter fetch in `server.ts`, the
+vision/web-search sidecars, and the web-search loop's direct-fetch fallback. Adapters with
+their own `fetchResponse` (kiro, cursor, google) keep their own retry policies; kiro imports
+the shared abort/sleep helpers from this module.
+
 ## Sidecars
 
 Web search and vision sidecars only run when a forward ChatGPT provider/login exists and the main

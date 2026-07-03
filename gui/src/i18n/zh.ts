@@ -145,6 +145,11 @@ export const zh: Record<TKey, string> = {
   "models.noRouted": "没有已路由的模型",
   "models.noRoutedHint": "请先登录提供方或添加一个。",
   "models.loading": "加载中…",
+  "models.search": "搜索模型…",
+  "models.showMore": "再显示 {n} 个",
+  "models.allowlistLabel": "仅所选",
+  "models.allowlistHint": "仅勾选的模型进入目录（留空 = 全部）。适用于暴露成千上万模型的提供商。",
+  "models.selectedCount": "已选 {n} 个",
 
   // subagents
   "sub.subtitle": "Codex 的 {cmd} 仅将优先级最高的前 5 个模型作为覆盖项公开。在此最多选择 5 个 — 原生 gpt 或已路由模型 — opencodex 会设置它们的目录优先级，使其正好排在前面。其他模型仍可按确切名称调用；此设置仅控制显示项。",
