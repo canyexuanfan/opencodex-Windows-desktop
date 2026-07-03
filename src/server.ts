@@ -457,7 +457,13 @@ async function handleResponses(
         consumeForResponseLogMetadata(inspectBody, logCtx, turnAc.signal, () => unregisterTurn(turnAc));
       }
       if (!headers.has("content-type")) headers.set("content-type", "text/event-stream");
-      return markNativePassthroughSseResponse(new Response(nativeBody, {
+      // win32 must keep the pure native relay (Bun#32111 JS-sink segfault); elsewhere a JS pull
+      // relay is established practice (relayWithAbort, relaySseWithHeartbeat) and lets a
+      // mid-stream reset end with a clean response.failed terminal instead of a raw socket error.
+      const clientBody = process.platform === "win32"
+        ? nativeBody
+        : relaySseWithFailedTail(nativeBody, upstream);
+      return markNativePassthroughSseResponse(new Response(clientBody, {
         status: upstreamResponse.status,
         headers,
       }));
@@ -976,6 +982,54 @@ export function relayWithAbort(
     },
     cancel(reason) {
       // Client disconnected: abort the upstream fetch and release the reader so we do not leak it.
+      upstream.abort(reason);
+      reader.cancel(reason).catch(() => {});
+    },
+  });
+}
+
+/**
+ * Relay a passthrough SSE body like relayWithAbort, but convert a MID-STREAM failure (upstream
+ * reset after headers) into a clean terminal: any partial block is closed off, then a synthetic
+ * `response.failed` event and `data: [DONE]` are emitted and the stream closes. Without this the
+ * client sees a raw socket teardown with no terminal SSE event. Deliberately NOT a resend: the
+ * upstream already committed the request (duplicate-completion risk — same policy as cursor's
+ * committed=non-replayable transport retry).
+ */
+export function relaySseWithFailedTail(
+  body: ReadableStream<Uint8Array>,
+  upstream: AbortController,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(value);
+      } catch (err) {
+        const failure = {
+          type: "upstream_error",
+          code: "upstream_reset",
+          message: `Upstream stream terminated unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
+        };
+        const payload = JSON.stringify({
+          type: "response.failed",
+          response: { status: "failed", error: failure, last_error: failure },
+        });
+        try {
+          // Leading blank line terminates a partial SSE block so the failed frame parses cleanly.
+          controller.enqueue(encoder.encode(`\n\nevent: response.failed\ndata: ${payload}\n\ndata: [DONE]\n\n`));
+          controller.close();
+        } catch { /* client already torn down */ }
+        upstream.abort();
+      }
+    },
+    cancel(reason) {
       upstream.abort(reason);
       reader.cancel(reason).catch(() => {});
     },
