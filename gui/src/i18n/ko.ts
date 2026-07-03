@@ -145,6 +145,11 @@ export const ko: Record<TKey, string> = {
   "models.noRouted": "라우팅된 모델 없음",
   "models.noRoutedHint": "먼저 프로바이더에 로그인하거나 추가하세요.",
   "models.loading": "불러오는 중…",
+  "models.search": "모델 검색…",
+  "models.showMore": "{n}개 더 보기",
+  "models.allowlistLabel": "선택만 노출",
+  "models.allowlistHint": "체크한 모델만 카탈로그에 노출돼요 (비우면 전체). 수천 개 모델을 노출하는 프로바이더에 유용해요.",
+  "models.selectedCount": "{n}개 선택",
 
   // subagents
   "sub.subtitle": "Codex의 {cmd} 는 우선순위 상위 5개 모델만 오버라이드로 노출합니다. 여기서 최대 5개를 선택하면 — 네이티브 gpt 또는 라우팅된 모델 — opencodex가 카탈로그 우선순위를 설정해 정확히 이들이 앞에 옵니다. 다른 모델도 정확한 이름으로 호출할 수 있으며, 이 설정은 표시 항목만 제어합니다.",
