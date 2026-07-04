@@ -3,6 +3,9 @@ import AddProviderModal from "../components/AddProviderModal";
 import { Notice } from "../ui";
 import { IconPlus, IconTrash, IconLock, IconExternal, IconPower } from "../icons";
 import { useT } from "../i18n";
+import type { AccountQuota } from "../codex-quota-utils";
+import QuotaBars from "../components/QuotaBars";
+import { providerIconSrc } from "../provider-icons";
 
 interface Config {
   port: number;
@@ -11,6 +14,7 @@ interface Config {
 }
 
 interface OAuthStatus { loggedIn: boolean; email?: string; error?: string }
+interface ProviderQuotaReport { provider: string; quota: AccountQuota; source: string; updatedAt: number }
 
 // Friendly labels for the OAuth providers the proxy supports.
 const OAUTH_LABELS: Record<string, string> = {
@@ -30,6 +34,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const [statusOk, setStatusOk] = useState(false);
   const [oauthProviders, setOauthProviders] = useState<string[]>([]);
   const [oauthStatus, setOauthStatus] = useState<Record<string, OAuthStatus>>({});
+  const [quotaReports, setQuotaReports] = useState<Record<string, ProviderQuotaReport>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [loginInfo, setLoginInfo] = useState<{ provider: string; url?: string; instructions?: string } | null>(null);
   const aliveRef = useRef(true);
@@ -62,7 +67,20 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     } catch { /* ignore */ }
   };
 
-  useEffect(() => { fetchConfig(); fetchOauth(); }, [apiBase]);
+  const fetchProviderQuotas = async (refresh = false) => {
+    try {
+      const data = await fetch(`${apiBase}/api/provider-quotas${refresh ? "?refresh=1" : ""}`).then(r => r.json()) as { reports?: ProviderQuotaReport[] };
+      setQuotaReports(Object.fromEntries((data.reports ?? []).map(report => [report.provider, report])));
+    } catch {
+      setQuotaReports({});
+    }
+  };
+
+  useEffect(() => {
+    fetchConfig();
+    fetchOauth();
+    fetchProviderQuotas();
+  }, [apiBase]);
 
   const saveConfig = async () => {
     try {
@@ -76,6 +94,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
         notify(t("prov.saved"), true);
         setEditing(false);
         fetchConfig();
+        fetchProviderQuotas(true);
       } else {
         notify(t("prov.saveFailed"), false);
       }
@@ -108,6 +127,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
           notify(t("prov.loginOk", { provider: oauthLabel(provider), cmd: "ocx sync" }), true);
           setLoginInfo(null);
           fetchConfig();
+          fetchProviderQuotas(true);
           break;
         }
         if (s.error) { setOauthStatus(prev => ({ ...prev, [provider]: s })); notify(t("prov.loginError", { provider: oauthLabel(provider), error: s.error }), false); break; }
@@ -124,12 +144,13 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     setOauthStatus(prev => ({ ...prev, [provider]: { loggedIn: false } }));
     notify(t("prov.logoutOk", { provider: oauthLabel(provider) }), true);
     fetchConfig();
+    fetchProviderQuotas(true);
   };
 
   const removeProvider = async (name: string) => {
     if (!window.confirm(t("prov.removeConfirm", { name }))) return;
     const res = await fetch(`${apiBase}/api/providers?name=${encodeURIComponent(name)}`, { method: "DELETE" });
-    if (res.ok) { notify(t("prov.removed", { name }), true); fetchConfig(); fetchOauth(); }
+    if (res.ok) { notify(t("prov.removed", { name }), true); fetchConfig(); fetchOauth(); fetchProviderQuotas(true); }
     else notify(t("prov.removeFail", { name }), false);
   };
 
@@ -143,6 +164,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
       notify(disabled ? t("prov.disabled", { name }) : t("prov.enabled", { name }), true);
       fetchConfig();
       fetchOauth();
+      fetchProviderQuotas(true);
       return;
     }
     const data = await res.json().catch(() => ({}));
@@ -230,36 +252,45 @@ export default function Providers({ apiBase }: { apiBase: string }) {
           {Object.entries(config.providers).map(([name, prov]) => {
             const isDefault = name === config.defaultProvider;
             const isDisabled = prov.disabled === true;
+            const quota = quotaReports[name]?.quota ?? null;
+            const icon = providerIconSrc(name);
             return (
               <div key={name} className={`card prov-card${isDisabled ? " prov-card-disabled" : ""}`}>
-                <div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
-                    <span style={{ fontWeight: 600 }}>{name}</span>
-                    {isDefault && <span className="badge badge-primary">{t("prov.defaultBadge")}</span>}
-                    {isDisabled ? <span className="badge badge-muted">{t("prov.disabledBadge")}</span> : <span className="badge badge-green">{t("prov.activeBadge")}</span>}
-                    {prov.authMode === "oauth" && <span className="badge badge-accent">oauth</span>}
-                    {prov.authMode === "forward" && <span className="badge badge-amber">passthrough</span>}
+                <div className="prov-card-main">
+                  <div className="prov-card-info">
+                    {icon && <span className="provider-icon"><img src={icon} alt="" aria-hidden="true" /></span>}
+                    <div className="prov-card-copy">
+                      <div className="prov-title">
+                        <span style={{ fontWeight: 600 }}>{name}</span>
+                        {isDefault && <span className="badge badge-primary">{t("prov.defaultBadge")}</span>}
+                        {isDisabled ? <span className="badge badge-muted">{t("prov.disabledBadge")}</span> : <span className="badge badge-green">{t("prov.activeBadge")}</span>}
+                        {prov.authMode === "oauth" && <span className="badge badge-accent">oauth</span>}
+                        {prov.authMode === "forward" && <span className="badge badge-amber">passthrough</span>}
+                      </div>
+                      <div className="muted prov-meta" style={{ fontSize: 13 }}>
+                        <code className="chip">{prov.adapter}</code>
+                        <span>{prov.baseUrl}</span>
+                        {prov.defaultModel && <span>{prov.defaultModel}</span>}
+                        {prov.hasApiKey && <span>{t("prov.hasApiKey")}</span>}
+                        {prov.hasHeaders && <span>{t("prov.hasHeaders")}</span>}
+                      </div>
+                    </div>
                   </div>
-                  <div className="muted" style={{ fontSize: 13 }}>
-                    <code className="chip">{prov.adapter}</code> · {prov.baseUrl}
-                    {prov.defaultModel && <> · {prov.defaultModel}</>}
-                    {prov.hasApiKey && <> · {t("prov.hasApiKey")}</>}
-                    {prov.hasHeaders && <> · {t("prov.hasHeaders")}</>}
+                  <div className="provider-actions">
+                    <button
+                      className={`btn ${isDisabled ? "btn-primary" : "btn-ghost"} btn-sm`}
+                      onClick={() => setProviderDisabled(name, !isDisabled)}
+                      disabled={isDefault}
+                      title={isDefault ? t("prov.defaultCannotDisable") : undefined}
+                      aria-label={isDisabled ? t("prov.enableAria", { name }) : t("prov.disableAria", { name })}
+                    >
+                      {isDefault ? <IconLock /> : <IconPower />}
+                      {isDisabled ? t("prov.enable") : t("prov.disable")}
+                    </button>
+                    <button className="btn btn-danger btn-sm" onClick={() => removeProvider(name)} aria-label={t("sub.removeAria", { m: name })}><IconTrash />{t("common.remove")}</button>
                   </div>
                 </div>
-                <div className="provider-actions">
-                  <button
-                    className={`btn ${isDisabled ? "btn-primary" : "btn-ghost"} btn-sm`}
-                    onClick={() => setProviderDisabled(name, !isDisabled)}
-                    disabled={isDefault}
-                    title={isDefault ? t("prov.defaultCannotDisable") : undefined}
-                    aria-label={isDisabled ? t("prov.enableAria", { name }) : t("prov.disableAria", { name })}
-                  >
-                    {isDefault ? <IconLock /> : <IconPower />}
-                    {isDisabled ? t("prov.enable") : t("prov.disable")}
-                  </button>
-                  <button className="btn btn-danger btn-sm" onClick={() => removeProvider(name)} aria-label={t("sub.removeAria", { m: name })}><IconTrash />{t("common.remove")}</button>
-                </div>
+                {quota && <QuotaBars quota={quota} threshold={80} t={t} className="provider-quota" />}
               </div>
             );
           })}
@@ -270,7 +301,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
           apiBase={apiBase}
           existingNames={Object.keys(config.providers)}
           onClose={() => setAdding(false)}
-          onAdded={(name) => { setAdding(false); notify(t("prov.added", { name, cmd: "ocx sync" }), true); fetchConfig(); fetchOauth(); }}
+          onAdded={(name) => { setAdding(false); notify(t("prov.added", { name, cmd: "ocx sync" }), true); fetchConfig(); fetchOauth(); fetchProviderQuotas(true); }}
         />
       )}
     </>
