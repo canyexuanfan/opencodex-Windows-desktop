@@ -33,7 +33,7 @@ import {
 import { debugProviderDiagnostic } from "../../debug";
 import { mcpArgsFromToolCall } from "./protobuf-events";
 import { OCX_RESPONSES_TOOL_PROVIDER } from "./tool-definitions";
-import { handleCursorNativeExec, handleCursorNativeKv, type CursorNativeExecContext } from "./native-exec";
+import { cursorUnsafeNativeLocalExecEnabled, handleCursorNativeExec, handleCursorNativeKv, type CursorNativeExecContext } from "./native-exec";
 import { resolveMcpServers } from "./mcp-config";
 import { CursorMcpManager } from "./mcp-manager";
 import { buildMcpToolDefinitions, mcpDepsFromManager } from "./native-exec-mcp";
@@ -333,7 +333,7 @@ class LiveCursorTransport implements CursorTransport {
     this.activeClientToolFinalizeGraceMs = this.clientToolFinalizeGraceMs;
     // Desktop (computer-use / record-screen) executors are available even with no MCP servers.
     this.desktopDeps = desktopDepsFromConfig(input.provider.desktopExecutor);
-    this.execContext = { ...this.desktopDeps };
+    this.execContext = { ...this.desktopDeps, unsafeAllowNativeLocalExec: cursorUnsafeNativeLocalExecEnabled(input.provider) };
     const servers = resolveMcpServers(input.provider);
     if (servers.length > 0) {
       this.mcpManager = new CursorMcpManager(servers, {
@@ -354,10 +354,15 @@ class LiveCursorTransport implements CursorTransport {
       this.mcpPrepared = (async () => {
         try {
           const mcpToolDefs = await buildMcpToolDefinitions(this.mcpManager!);
-          this.execContext = { ...this.desktopDeps, ...mcpDepsFromManager(this.mcpManager!), mcpToolDefs };
+          this.execContext = {
+            ...this.desktopDeps,
+            ...mcpDepsFromManager(this.mcpManager!),
+            mcpToolDefs,
+            unsafeAllowNativeLocalExec: cursorUnsafeNativeLocalExecEnabled(this.input.provider),
+          };
         } catch (err) {
           console.warn(`[cursor-mcp] preparation failed, MCP disabled for this stream: ${err instanceof Error ? err.message : String(err)}`);
-          this.execContext = { ...this.desktopDeps };
+          this.execContext = { ...this.desktopDeps, unsafeAllowNativeLocalExec: cursorUnsafeNativeLocalExecEnabled(this.input.provider) };
         }
       })();
     }

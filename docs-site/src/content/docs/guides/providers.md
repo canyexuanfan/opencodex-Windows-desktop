@@ -97,11 +97,14 @@ Gateway** needs your account + gateway ids filled into the URL.
 Cursor is tracked separately as an experimental adapter. `adapter: "cursor"` appears in `ocx init`
 and the dashboard Add Provider picker as an experimental local config entry with Cursor's static
 public model catalog metadata. When a Cursor access token is configured, opencodex uses Cursor's
-live HTTP/2 transport and handles native read/write/delete/ls/grep/shell/fetch requests locally.
-MCP, screen recording, and computer-use are available as executor hooks; without a configured local
-executor, opencodex returns typed no-executor results instead of policy-blocking the request. Cursor
-OAuth and live model discovery remain separate future phases; Cursor is still not shown in key-login
-or OAuth login lists.
+live HTTP/2 transport. Cursor server-driven native read/write/delete/ls/grep/shell/fetch execution
+is disabled by default because it bypasses Codex's approval and sandbox path; set
+`unsafeAllowNativeLocalExec: true` only for trusted local experiments. The older
+`allowNativeLocalExec` spelling is accepted as a deprecated transition alias. MCP, screen recording,
+and computer-use are available as executor hooks; without a configured local executor, opencodex
+returns typed no-executor results instead of policy-blocking the request. Cursor OAuth and live
+model discovery are enabled for this experimental adapter; Cursor is still not shown in key-login
+lists.
 :::
 
 ### Ollama Cloud

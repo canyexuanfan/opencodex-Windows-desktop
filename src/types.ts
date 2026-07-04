@@ -425,6 +425,15 @@ export interface OcxProviderConfig {
    * that can. With no executor, these tools honestly report "not supported".
    */
   desktopExecutor?: import("./adapters/cursor/native-exec-desktop").DesktopExecutorConfig;
+  /**
+   * Cursor adapter only: unsafe opt-in escape hatch for Cursor server-driven built-in local
+   * read/write/delete/ls/grep/shell/fetch execution. Defaults to false so remote Cursor messages
+   * cannot bypass Codex approval/sandbox semantics. Explicit MCP and desktop executors remain
+   * controlled by their own opt-in config.
+   */
+  unsafeAllowNativeLocalExec?: boolean;
+  /** @deprecated Use unsafeAllowNativeLocalExec. Kept as a transition alias for local experiments. */
+  allowNativeLocalExec?: boolean;
 }
 
 export interface CodexAccount {

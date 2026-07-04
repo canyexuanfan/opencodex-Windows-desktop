@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
-import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, buildPlist, buildUnit, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, serviceLogPath, serviceStatusSummary } from "../src/service";
+import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, buildPlist, buildUnit, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, normalizeServiceSubcommand, serviceLogPath, serviceStatusSummary } from "../src/service";
 import { serviceApiTokenFilePath } from "../src/service-secrets";
 import type { OcxConfig } from "../src/types";
 
@@ -36,6 +36,17 @@ function expectTextToContainPath(text: string, path: string): void {
 }
 
 describe("systemd service unit", () => {
+  test("bare service command defaults to the install/update/start path", async () => {
+    expect(normalizeServiceSubcommand()).toBe("install");
+    expect(normalizeServiceSubcommand("start")).toBe("start");
+    expect(normalizeServiceSubcommand("nope")).toBe("nope");
+
+    const service = await readText("src/service.ts");
+    const serviceCommand = service.slice(service.indexOf("export async function serviceCommand"));
+    expect(serviceCommand).toContain("const command = normalizeServiceSubcommand(sub);");
+    expect(serviceCommand).toContain("switch (command)");
+  });
+
   test("uses unquoted append targets for service logs", () => {
     const unit = buildUnit();
 
@@ -67,6 +78,31 @@ describe("systemd service unit", () => {
       if (oldApiAuthToken === undefined) delete process.env.OPENCODEX_API_AUTH_TOKEN;
       else process.env.OPENCODEX_API_AUTH_TOKEN = oldApiAuthToken;
     }
+  });
+
+  test("service start checks for the systemd user unit before shelling out", async () => {
+    const service = await readText("src/service.ts");
+    const installSystemd = service.slice(service.indexOf("function installSystemd()"), service.indexOf("function startSystemd()"));
+    const startSystemd = service.slice(service.indexOf("function startSystemd()"), service.indexOf("function stopSystemd()"));
+
+    const unitCheckAt = startSystemd.indexOf("existsSync(unitPath())");
+    const startAt = startSystemd.indexOf("systemctl --user start");
+    expect(unitCheckAt).toBeGreaterThan(-1);
+    expect(startAt).toBeGreaterThan(-1);
+    expect(unitCheckAt).toBeLessThan(startAt);
+    expect(startSystemd).toContain("ocx service install");
+    expect(startSystemd).toContain("process.exit(1)");
+
+    const writeAt = installSystemd.indexOf('writeFileSync(unitPath(), buildUnit(), "utf8")');
+    const reloadAt = installSystemd.indexOf("systemctl --user daemon-reload");
+    const enableAt = installSystemd.indexOf("systemctl --user enable");
+    const restartAt = installSystemd.indexOf("systemctl --user restart");
+    expect(writeAt).toBeGreaterThan(-1);
+    expect(writeAt).toBeLessThan(reloadAt);
+    expect(reloadAt).toBeLessThan(enableAt);
+    expect(enableAt).toBeLessThan(restartAt);
+    expect(installSystemd).not.toContain("ocx service install");
+    expect(installSystemd).not.toContain("process.exit(1)");
   });
 });
 

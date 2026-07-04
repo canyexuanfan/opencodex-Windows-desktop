@@ -85,7 +85,7 @@ describe("provider registry parity", () => {
     });
     expect(cursor?.note).toContain("Live transport");
     expect(cursor?.note).toContain("live model discovery");
-    expect(cursor?.note).toContain("native read/write/delete/shell");
+    expect(cursor?.note).toContain("provider.unsafeAllowNativeLocalExec");
     expect(cursor?.models).toContain("auto");
     expect(cursor?.models?.length).toBeGreaterThanOrEqual(40);
     expect(cursor?.models).toContain("claude-sonnet-5");

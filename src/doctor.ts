@@ -8,25 +8,19 @@
  * networking. See devlog/_plan/260630_wsl-account-autoswitch/30_*.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
-import { expandUserPath, getConfigDir, getConfigPath, readConfigDiagnostics, readPid, resolveEnvValue } from "./config";
+import { join } from "node:path";
+import { getConfigDir, getConfigPath, readConfigDiagnostics, readPid, resolveEnvValue } from "./config";
 import { readCodexTokens } from "./codex-auth-collision";
+import { resolveCodexHomeDir as resolveCodexHomeDirImpl } from "./codex-home";
+export { resolveCodexHomeDir } from "./codex-home";
 
 const WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const PROBE_TIMEOUT_MS = 8000;
 
 export type PathRow = { label: string; path: string; exists: boolean };
 
-export function resolveCodexHomeDir(): string {
-  const raw = process.env["CODEX_HOME"]?.trim();
-  // `~` parity with the hardened runtime paths (codex-paths.ts) — a literal "~/..." here
-  // would report every Codex file as missing while the runtime happily uses the real dir.
-  return raw ? resolve(expandUserPath(raw)) : join(homedir(), ".codex");
-}
-
 export function collectPaths(): PathRow[] {
-  const codexHome = resolveCodexHomeDir();
+  const codexHome = resolveCodexHomeDirImpl();
   const opencodexHome = getConfigDir();
   return [
     { label: "CODEX_HOME", path: codexHome, exists: existsSync(codexHome) },

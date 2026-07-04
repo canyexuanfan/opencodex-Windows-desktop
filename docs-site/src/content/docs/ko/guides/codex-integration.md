@@ -48,6 +48,11 @@ $CODEX_HOME/opencodex-catalog.json
 $CODEX_HOME/models_cache.json
 ```
 
+WSL에서는 `CODEX_HOME`이 없고 Linux 쪽 `~/.codex/config.toml`도 없을 때
+`/mnt/c/Users/*/.codex/config.toml` 아래의 Windows Codex Desktop home을 확인합니다. 후보가
+정확히 하나면 그 디렉터리를 사용하므로 WSL app-server mode와 Windows Codex Desktop이 같은 config와
+auth 파일을 공유합니다. 이 탐지를 덮어쓰려면 `CODEX_HOME`을 명시하세요.
+
 `requires_openai_auth = true`는 Codex App/TUI의 계정 게이트 UI가 네이티브 Codex와 같은 조건으로 동작하게 합니다.
 WebSocket 전송은 별도입니다. opencodex는 `/v1/responses` WebSocket 엔드포인트를 제공하지만,
 `~/.opencodex/config.json`에서 `"websockets": true`일 때만 `supports_websockets = true`를 광고합니다.

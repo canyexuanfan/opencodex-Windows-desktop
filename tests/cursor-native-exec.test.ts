@@ -92,26 +92,106 @@ describe("Cursor native exec bridge", () => {
   });
 
 
-  test("writes and reads files in a temp directory", async () => {
+  test("blocks built-in local fs, shell, and fetch execution by default", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-cursor-exec-"));
+    const path = join(dir, "note.txt");
+
+    const deniedRead = decode((await handleCursorNativeExec(execMessage({
+      case: "readArgs",
+      value: create(ReadArgsSchema, { path }),
+    })))[0]);
+    expect(deniedRead.message.case).toBe("readResult");
+    expect(deniedRead.message.value.result.case).toBe("error");
+    if (deniedRead.message.value.result.case === "error") {
+      expect(deniedRead.message.value.result.value.error).toContain("bypasses Codex approval and sandbox");
+    }
+
+    const deniedShell = decode((await handleCursorNativeExec(execMessage({
+      case: "shellArgs",
+      value: create(ShellArgsSchema, { command: "printf blocked", workingDirectory: dir }),
+    })))[0]);
+    expect(deniedShell.message.case).toBe("shellResult");
+    expect(deniedShell.message.value.result.case).toBe("failure");
+    if (deniedShell.message.value.result.case === "failure") {
+      expect(deniedShell.message.value.result.value.stderr).toContain("provider.unsafeAllowNativeLocalExec=true");
+    }
+
+    const deniedStream = await handleCursorNativeExec(execMessage({
+      case: "shellStreamArgs",
+      value: create(ShellArgsSchema, { command: "printf blocked", workingDirectory: dir }),
+    }));
+    const streamText = deniedStream
+      .map(reply => fromBinary(AgentClientMessageSchema, reply))
+      .flatMap(msg => (msg.message.case === "execClientMessage" ? [msg.message.value] : []))
+      .flatMap(frame => (frame.message.case === "shellStream" && frame.message.value.event.case === "stderr" ? [frame.message.value.event.value.data] : []))
+      .join("\n");
+    expect(streamText).toContain("provider.unsafeAllowNativeLocalExec=true");
+
+    const deniedBackground = decode((await handleCursorNativeExec(execMessage({
+      case: "backgroundShellSpawnArgs",
+      value: create(BackgroundShellSpawnArgsSchema, { command: "printf blocked", workingDirectory: dir }),
+    })))[0]);
+    expect(deniedBackground.message.case).toBe("backgroundShellSpawnResult");
+    expect(deniedBackground.message.value.result.case).toBe("error");
+    if (deniedBackground.message.value.result.case === "error") {
+      expect(deniedBackground.message.value.result.value.error).toContain("provider.unsafeAllowNativeLocalExec=true");
+    }
+
+    const deniedStdin = decode((await handleCursorNativeExec(execMessage({
+      case: "writeShellStdinArgs",
+      value: create(WriteShellStdinArgsSchema, { shellId: 123, chars: "blocked\n" }),
+    })))[0]);
+    expect(deniedStdin.message.case).toBe("writeShellStdinResult");
+    expect(deniedStdin.message.value.result.case).toBe("error");
+    if (deniedStdin.message.value.result.case === "error") {
+      expect(deniedStdin.message.value.result.value.error).toContain("provider.unsafeAllowNativeLocalExec=true");
+    }
+
+    const deniedFetch = decode((await handleCursorNativeExec(execMessage({
+      case: "fetchArgs",
+      value: create(FetchArgsSchema, { url: "https://example.test/doc" }),
+    })))[0]);
+    expect(deniedFetch.message.case).toBe("fetchResult");
+    expect(deniedFetch.message.value.result.case).toBe("error");
+    if (deniedFetch.message.value.result.case === "error") {
+      expect(deniedFetch.message.value.result.value.error).toContain("bypasses Codex approval and sandbox");
+    }
+  });
+
+  test("writes and reads files in a temp directory with unsafe opt-in", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ocx-cursor-exec-"));
     const path = join(dir, "note.txt");
 
     const write = decode((await handleCursorNativeExec(execMessage({
       case: "writeArgs",
       value: create(WriteArgsSchema, { path, fileText: "hello\ncursor", returnFileContentAfterWrite: true }),
-    })))[0]);
+    }), { unsafeAllowNativeLocalExec: true }))[0]);
     expect(write.message.case).toBe("writeResult");
     expect(readFileSync(path, "utf8")).toBe("hello\ncursor");
 
     const read = decode((await handleCursorNativeExec(execMessage({
       case: "readArgs",
       value: create(ReadArgsSchema, { path }),
-    })))[0]);
+    }), { unsafeAllowNativeLocalExec: true }))[0]);
     expect(read.message.case).toBe("readResult");
     expect(read.message.value.result.case).toBe("success");
     if (read.message.value.result.case === "success") {
       expect(read.message.value.result.value.output.case).toBe("content");
       expect(read.message.value.result.value.totalLines).toBe(2);
+    }
+  });
+
+  test("keeps allowNativeLocalExec as a deprecated transition alias", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-cursor-alias-"));
+    const shell = decode((await handleCursorNativeExec(execMessage({
+      case: "shellArgs",
+      value: create(ShellArgsSchema, { command: "printf alias-ok", workingDirectory: dir }),
+    }), { allowNativeLocalExec: true }))[0]);
+
+    expect(shell.message.case).toBe("shellResult");
+    expect(shell.message.value.result.case).toBe("success");
+    if (shell.message.value.result.case === "success") {
+      expect(shell.message.value.result.value.stdout).toBe("alias-ok");
     }
   });
 
@@ -125,6 +205,7 @@ describe("Cursor native exec bridge", () => {
       case: "writeArgs",
       value: create(WriteArgsSchema, { path: newPath, fileText: "blocked" }),
     }), {
+      unsafeAllowNativeLocalExec: true,
       rejectNativeFileMutations: true,
     }))[0]);
 
@@ -140,6 +221,7 @@ describe("Cursor native exec bridge", () => {
       case: "readArgs",
       value: create(ReadArgsSchema, { path: existingPath }),
     }), {
+      unsafeAllowNativeLocalExec: true,
       rejectNativeFileMutations: true,
     }))[0]);
 
@@ -150,6 +232,7 @@ describe("Cursor native exec bridge", () => {
       case: "deleteArgs",
       value: create(DeleteArgsSchema, { path: existingPath }),
     }), {
+      unsafeAllowNativeLocalExec: true,
       rejectNativeFileMutations: true,
     }))[0]);
 
@@ -170,7 +253,7 @@ describe("Cursor native exec bridge", () => {
     const deleted = decode((await handleCursorNativeExec(execMessage({
       case: "deleteArgs",
       value: create(DeleteArgsSchema, { path }),
-    })))[0]);
+    }), { unsafeAllowNativeLocalExec: true }))[0]);
 
     expect(deleted.message.case).toBe("deleteResult");
     expect(deleted.message.value.result.case).toBe("success");
@@ -181,7 +264,7 @@ describe("Cursor native exec bridge", () => {
     const shell = decode((await handleCursorNativeExec(execMessage({
       case: "shellArgs",
       value: create(ShellArgsSchema, { command: "printf cursor-ok", workingDirectory: dir }),
-    })))[0]);
+    }), { unsafeAllowNativeLocalExec: true }))[0]);
 
     expect(shell.message.case).toBe("shellResult");
     expect(shell.message.value.result.case).toBe("success");
@@ -195,7 +278,7 @@ describe("Cursor native exec bridge", () => {
     const replies = await handleCursorNativeExec(execMessage({
       case: "shellStreamArgs",
       value: create(ShellArgsSchema, { command: "printf stream-ok", workingDirectory: dir }),
-    }));
+    }), { unsafeAllowNativeLocalExec: true });
     const decodedAll = replies.map(reply => fromBinary(AgentClientMessageSchema, reply));
     const execFrames = decodedAll
       .flatMap(msg => (msg.message.case === "execClientMessage" ? [msg.message.value] : []));
@@ -220,7 +303,7 @@ describe("Cursor native exec bridge", () => {
         workingDirectory: dir,
         enableWriteShellStdinTool: true,
       }),
-    })))[0]);
+    }), { unsafeAllowNativeLocalExec: true }))[0]);
     expect(spawned.message.case).toBe("backgroundShellSpawnResult");
     expect(spawned.message.value.result.case).toBe("success");
 
@@ -228,7 +311,7 @@ describe("Cursor native exec bridge", () => {
       const stdin = decode((await handleCursorNativeExec(execMessage({
         case: "writeShellStdinArgs",
         value: create(WriteShellStdinArgsSchema, { shellId: spawned.message.value.result.value.shellId, chars: "hello\n" }),
-      })))[0]);
+      }), { unsafeAllowNativeLocalExec: true }))[0]);
       expect(stdin.message.case).toBe("writeShellStdinResult");
       expect(stdin.message.value.result.case).toBe("success");
     }
@@ -243,7 +326,7 @@ describe("Cursor native exec bridge", () => {
       const grep = decode((await handleCursorNativeExec(execMessage({
         case: "grepArgs",
         value: create(GrepArgsSchema, { pattern: "cursor", path: dir, glob: "*.txt", outputMode }),
-      })))[0]);
+      }), { unsafeAllowNativeLocalExec: true }))[0]);
       expect(grep.message.case).toBe("grepResult");
       expect(grep.message.value.result.case).toBe("success");
     }
@@ -254,6 +337,7 @@ describe("Cursor native exec bridge", () => {
       case: "fetchArgs",
       value: create(FetchArgsSchema, { url: "https://example.test/doc" }),
     }), {
+      unsafeAllowNativeLocalExec: true,
       fetch: async () => new Response("ok", { status: 203, headers: { "content-type": "text/plain" } }),
     }))[0]);
 

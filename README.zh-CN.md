@@ -197,7 +197,7 @@ ocx login <xai|anthropic|kimi> # OAuth 登录
 ocx logout <provider>          # 移除已保存的登录
 ocx gui                        # 打开 Web 仪表盘
 ocx codex-shim install         # 运行 codex 时自动启动代理
-ocx service <install|start|stop|status|uninstall>   # 后台服务（launchd/systemd/schtasks）
+ocx service [install|start|stop|status|uninstall]   # 安装/更新/启动后台服务
 ocx update [--tag preview]     # 更新 opencodex；preview 安装保持 @preview
 ```
 
@@ -205,7 +205,7 @@ ocx update [--tag preview]     # 更新 opencodex；preview 安装保持 @previe
 
 opencodex 提供两种自动启动代理的方式：
 
-| | `ocx service install` | `ocx codex-shim install` |
+| | `ocx service` / `ocx service install` | `ocx codex-shim install` |
 |---|---|---|
 | **方式** | OS 服务管理器（launchd / systemd / schtasks） | 包装 `codex` 脚本启动器；不会改动真实 `codex.exe` |
 | **时机** | 登录后始终运行 | 按需 — 仅在运行 `codex` 时启动 |

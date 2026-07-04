@@ -45,7 +45,7 @@ provider、Codex 自动启动设置、服务状态和 shim 状态。
 
 ### `ocx login <provider>`
 
-为某个 provider 运行 OAuth 登录流程,并将凭据存储在 `~/.opencodex/auth.json` 中(自动刷新)。支持:`xai`、`anthropic`、`kimi`。
+为某个 provider 运行 OAuth 登录流程,并将凭据存储在 `~/.opencodex/auth.json` 中(自动刷新)。支持示例:`xai`、`anthropic`、`kimi`、`cursor`、`kiro`、`google-antigravity`、`chatgpt`。
 
 ```bash
 ocx login xai
@@ -63,19 +63,22 @@ ocx login xai
 
 ## 后台服务
 
-### `ocx service <subcommand>`
+### `ocx service [subcommand]`
 
 将 opencodex 作为受登录管理的后台服务运行(macOS 上为 **launchd**,Linux 上为 **systemd user unit**,Windows 上为 **Task Scheduler**),它会在登录时自动启动,并在崩溃后自动重启。服务运行时会设置 `OCX_SERVICE=1`,因此重启不会反复改动 Codex 配置。
 
 | Subcommand | Action |
 | --- | --- |
+| 无 | 创建/更新并启动服务。 |
 | `install` | 创建并启动服务。 |
 | `start` | 启动已安装的服务。 |
 | `stop` | 停止服务并恢复原生 Codex。 |
 | `status` | 报告服务是否正在运行。 |
-| `uninstall` | 移除服务并恢复原生 Codex。(别名:`remove`) |
+| `uninstall` | 移除服务并恢复原生 Codex。 |
+| `remove` | `uninstall` 的别名。 |
 
 ```bash
+ocx service
 ocx service install
 ocx service status
 ocx service uninstall

@@ -186,7 +186,7 @@ next Codex session. opencodex keeps two separate behaviors:
 | Kimi (Moonshot) | `openai-chat` | oauth / key |
 | Google Gemini | `google` | key |
 | Azure OpenAI | `azure-openai` | key |
-| Cursor (experimental) | `cursor` | dashboard/local config; live transport + native exec |
+| Cursor (experimental) | `cursor` | dashboard/local config; live transport; unsafe native local exec is opt-in |
 | Ollama Cloud + 17-provider catalog | `openai-chat` | key |
 | Ollama / vLLM / LM Studio (local) | `openai-chat` | key (usually blank) |
 | Any OpenAI-compatible endpoint | `openai-chat` | key |
@@ -195,11 +195,14 @@ Plus DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Mistral, Hugging
 
 Cursor support is a staged experimental bridge: it appears in `ocx init` and the dashboard Add
 Provider picker as a local config with Cursor's static public model catalog. Live
-HTTP/2 transport is enabled when a Cursor access token is configured, and Cursor native
-read/write/delete/ls/grep/shell/fetch requests are handled by opencodex. MCP, screen recording,
-and computer-use are exposed through executor hooks; when no local executor is configured,
-opencodex returns typed no-executor results instead of policy-blocking the request. Cursor OAuth
-and live model discovery remain separate future phases.
+HTTP/2 transport is enabled when a Cursor access token is configured. Cursor server-driven native
+read/write/delete/ls/grep/shell/fetch execution is disabled by default because it bypasses Codex's
+approval and sandbox path; set `unsafeAllowNativeLocalExec: true` only for trusted local
+experiments. The older `allowNativeLocalExec` spelling is accepted as a deprecated transition
+alias.
+MCP, screen recording, and computer-use are exposed through executor hooks; when no local executor
+is configured, opencodex returns typed no-executor results instead of policy-blocking the request.
+Cursor OAuth and live model discovery are enabled for the experimental Cursor adapter.
 
 ## CLI
 
@@ -213,10 +216,10 @@ ocx ensure                     # start if needed + refresh Codex config/cache
 ocx sync                       # refresh models + re-inject into Codex
 ocx codex-shim install         # run `ocx ensure` whenever `codex` is launched
 ocx status                     # is the proxy running?
-ocx login <xai|anthropic|kimi> # OAuth login
+ocx login <provider>          # OAuth login (xai, anthropic, kimi, cursor, ...)
 ocx logout <provider>          # remove a stored login
 ocx gui                        # open the web dashboard
-ocx service <install|start|stop|status|uninstall>   # background service (launchd/systemd/schtasks)
+ocx service [install|start|stop|status|uninstall]   # install/update/start background service
 ocx update [--tag preview]     # update opencodex; preview installs stay on @preview
 ```
 
@@ -224,7 +227,7 @@ ocx update [--tag preview]     # update opencodex; preview installs stay on @pre
 
 opencodex has two ways to auto-start the proxy:
 
-| | `ocx service install` | `ocx codex-shim install` |
+| | `ocx service` / `ocx service install` | `ocx codex-shim install` |
 |---|---|---|
 | **How** | OS service manager (launchd / systemd / schtasks) | Wraps script launchers for `codex`; real `codex.exe` is left untouched |
 | **When** | Always running after login | On-demand — runs `ocx ensure` when `codex` is launched |
