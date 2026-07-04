@@ -24,7 +24,8 @@ interface ProviderAdapter {
 
 - 将内部消息转换为 OpenAI 角色;将工具映射为 `{type:"function", function:{…}}` 和 `tool_choice`(`auto`/`none`/`required` 或某个具名函数)。
 - **重写 Codex 的 GPT-5 身份提示词**,改为一段与模型无关的介绍,使被路由的模型不会自称是 OpenAI。
-- **将 `reasoning_effort` 钳制**到大多数 provider 接受的范围(`minimal`→`low`,`xhigh`/`max`→`high`),并对 `provider.noReasoningModels` 中的 id **完全省略它**。
+- **将 `reasoning_effort` 钳制**到模型广告的子集；当 provider 没有显式配置 alias 时,
+  `xhigh` 和 `max` 会保持为不同标签。对于 `provider.noReasoningModels` 中的 id,则**完全省略它**。
 - 流式输出 `delta.content`(文本)、`delta.reasoning_content`(思考)以及 `delta.tool_calls[]`;并收集 `usage`。
 
 ## `openai-responses`

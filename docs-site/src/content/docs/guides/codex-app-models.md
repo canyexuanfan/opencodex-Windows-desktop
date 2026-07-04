@@ -53,6 +53,21 @@ visibility = "list"
 The clone keeps strict-parser fields such as reasoning levels, shell type, API support flags, and
 base instructions. That makes each routed entry look like a valid picker-visible Codex model.
 
+## GPT-5.6 preview entries
+
+Preview builds add GPT-5.6 Sol/Terra/Luna to the synced catalog without waiting for every installed
+Codex catalog to ship those slugs:
+
+| Route | Picker id |
+| --- | --- |
+| ChatGPT passthrough | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` |
+| OpenAI (API key) | `openai-apikey/gpt-5.6-sol`, `openai-apikey/gpt-5.6-terra`, `openai-apikey/gpt-5.6-luna` |
+| OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` |
+
+Each entry advertises the current GPT-5.6 context metadata (372,000 usable tokens) and keeps `xhigh`
+and `max` as separate reasoning choices. If the upstream account is not enabled for the model, the
+request still fails upstream normally.
+
 ## Fast tier rules
 
 Codex currently stores fast mode as:

@@ -180,7 +180,7 @@ function kiroThinkingBudget(parsed: OcxParsedRequest): number | undefined {
     low: 0.20,
     medium: 0.50,
     high: 0.80,
-    xhigh: 0.95,
+    xhigh: 0.90,
     max: 0.95,
   };
   const ratio = percent[effort];

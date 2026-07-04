@@ -13,7 +13,7 @@ ocx init
 
 `ocx init`은 다음 과정을 안내합니다:
 
-1. **프로바이더 선택** — 프리셋(opencode zen, Anthropic, OpenAI, OpenRouter, Groq, Google,
+1. **프로바이더 선택** — 프리셋(opencode zen, Anthropic, OpenAI, OpenAI API key, OpenRouter, Groq, Google,
    Azure)을 고르거나, `custom`을 선택해 base URL과 adapter를 직접 입력합니다.
 2. **API 키** — 키를 붙여넣거나, `${ANTHROPIC_API_KEY}`와 같은 환경 변수를 참조합니다.
 3. **기본 모델** — 요청이 다른 프로바이더와 매칭되지 않을 때 사용되는 모델입니다.
@@ -57,6 +57,16 @@ codex -m "anthropic/claude-opus-4-8" "Explain this stack trace"
 codex -m "ollama-cloud/glm-5.2"      "Write a SQL migration"
 ```
 
+GPT-5.6 Sol/Terra/Luna는 preview 권한이 있는 계정 또는 프로바이더에서만 사용할 수 있습니다.
+권한이 있다면 native ChatGPT 경로는 bare 모델명, API 키와 OpenRouter 경로는 명시적
+`provider/model` 형식을 사용하세요:
+
+```bash
+codex -m "gpt-5.6-sol"                    "Plan a risky refactor"
+codex -m "openai-apikey/gpt-5.6-terra"    "Review this architecture"
+codex -m "openrouter/openai/gpt-5.6-luna" "Summarize this trace"
+```
+
 ## 키를 붙여넣는 대신 로그인하기
 
 일부 프로바이더는 실제 계정 로그인을 지원합니다(OAuth, 자동 갱신):
@@ -66,8 +76,10 @@ ocx login xai          # or: anthropic, kimi
 ocx logout xai
 ```
 
-OpenAI 자체는 **키가 필요 없습니다** — 기본 프로바이더가 기존 `codex login`
-자격 증명을 그대로 포워딩합니다([프로바이더](/opencodex/ko/guides/providers/) 참고).
+기본 OpenAI 경로는 **키가 필요 없습니다** — 기존 `codex login` 자격 증명을 그대로 포워딩합니다.
+OpenAI API 키를 따로 쓰려면 `openai-apikey` 프로바이더를 추가하세요. 이 경로는 preview 권한이
+있는 API 키에서 `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` seed/fallback 모델명을 제공합니다
+([프로바이더](/opencodex/ko/guides/providers/) 참고).
 
 ## 중지 및 복원
 

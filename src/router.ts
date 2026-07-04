@@ -29,9 +29,8 @@ const MODEL_PROVIDER_PATTERNS: Array<{ providerNames: string[]; prefixes: string
   },
 ];
 
-// Merge registry-default effort maps under user values so persisted built-in provider configs
-// that predate reasoningEffortMap/modelReasoningEffortMap still get correct wire translations
-// (e.g. ollama-cloud xhigh -> max) without a disk migration. User overrides win per-key.
+// Merge registry-default effort maps under user values so built-in provider configs can
+// carry real upstream aliases without a disk migration. User overrides win per-key.
 function mergeRecord(
   seed: Record<string, string> | undefined,
   user: Record<string, string> | undefined,

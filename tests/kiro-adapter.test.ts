@@ -473,21 +473,32 @@ describe("kiro adapter — fake reasoning effort tags", () => {
 
   test("kiro advertises Codex-compatible reasoning efforts", () => {
     expect(kiro).toBeTruthy();
-    expect(configuredReasoningEfforts(kiro, "claude-opus-4.8")).toEqual(["low", "medium", "high", "xhigh"]);
-    expect(configuredReasoningEfforts(kiro, "claude-opus-4.5")).toEqual(["low", "medium", "high", "xhigh"]);
-    expect(configuredReasoningEfforts(kiro, "kiro-auto")).toEqual(["low", "medium", "high", "xhigh"]);
-    expect(configuredReasoningEfforts(kiro, "claude-opus-4.5")).not.toContain("max");
+    expect(configuredReasoningEfforts(kiro, "claude-opus-4.8")).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(configuredReasoningEfforts(kiro, "claude-opus-4.5")).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(configuredReasoningEfforts(kiro, "kiro-auto")).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
 
-  test("mapReasoningEffort keeps Codex xhigh rather than advertising max", () => {
+  test("mapReasoningEffort keeps xhigh and max as distinct labels", () => {
     expect(mapReasoningEffort(kiro, "claude-opus-4.8", "xhigh")).toBe("xhigh");
-    expect(mapReasoningEffort(kiro, "deepseek-3.2", "max")).toBe("xhigh");
+    expect(mapReasoningEffort(kiro, "deepseek-3.2", "max")).toBe("max");
   });
 
-  test("xhigh injects current-message thinking tags with a 95% output-token budget", () => {
+  test("xhigh injects current-message thinking tags with a 90% output-token budget", () => {
     const { body } = createKiroAdapter(provider).buildRequest({
       ...parsedWith([{ role: "user", content: "solve it" }]),
       options: { reasoning: "xhigh", maxOutputTokens: 8000 },
+    });
+    const content = JSON.parse(body).conversationState.currentMessage.userInputMessage.content;
+
+    expect(content).toContain("<thinking_mode>enabled</thinking_mode>");
+    expect(content).toContain("<max_thinking_length>7200</max_thinking_length>");
+    expect(content).toContain("solve it");
+  });
+
+  test("max injects current-message thinking tags with a 95% output-token budget", () => {
+    const { body } = createKiroAdapter(provider).buildRequest({
+      ...parsedWith([{ role: "user", content: "solve it" }]),
+      options: { reasoning: "max", maxOutputTokens: 8000 },
     });
     const content = JSON.parse(body).conversationState.currentMessage.userInputMessage.content;
 

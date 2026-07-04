@@ -81,6 +81,10 @@ x-opencodex-api-key: your-secret-token
 | `contextWindow?` | `number` | routed catalog entry에 표시할 프로바이더 전체 context-window cap. 실시간 metadata가 이보다 작으면 그대로 둡니다. |
 | `modelContextWindows?` | `Record<string,number>` | 모델별 context-window cap. 매칭되는 모델에서는 `contextWindow`보다 우선하며, 더 작은 실시간 metadata를 올리지 않습니다. |
 | `modelInputModalities?` | `Record<string,string[]>` | `["text"]` 또는 `["text", "image"]` 같은 모델별 catalog input hint. |
+| `reasoningEfforts?` | `string[]` | 프로바이더 전체에 광고할 Codex reasoning tier (`low`, `medium`, `high`, `xhigh`, `max`). |
+| `modelReasoningEfforts?` | `Record<string,string[]>` | 모델별 reasoning tier override. 빈 배열은 해당 모델의 effort control을 숨깁니다. |
+| `reasoningEffortMap?` | `Record<string,string>` | Codex tier를 업스트림 wire 값으로 바꾸는 프로바이더 단위 alias map. `xhigh`와 `max`는 기본적으로 서로 다른 tier입니다. |
+| `modelReasoningEffortMap?` | `Record<string,Record<string,string>>` | 모델별 reasoning alias map. |
 | `headers?` | `Record<string,string>` | 업스트림으로 전송되는 추가 HTTP 헤더. |
 | `authMode?` | `"key" \| "forward" \| "oauth"` | 인증 방식 (기본 `key`). [프로바이더](/opencodex/ko/guides/providers/#auth-modes) 참조. |
 | `noReasoningModels?` | `string[]` | reasoning/thinking 파라미터를 거부하는 모델 — 어댑터가 이들에 대해 `reasoning_effort`를 제거함. |
@@ -108,6 +112,17 @@ routed model을 노출하지 않습니다.
   }
 }
 ```
+
+## GPT-5.6 seed/fallback 모델
+
+내장 **OpenAI (API key)** 프로바이더는 OpenAI Responses API(`https://api.openai.com/v1`)를 사용하며
+fallback 모델 목록에 `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`를 포함합니다.
+OpenRouter는 같은 preview 모델을 `openai/gpt-5.6-sol`, `openai/gpt-5.6-terra`,
+`openai/gpt-5.6-luna` 이름으로 seed합니다. GPT-5.6 세 모델의 `modelContextWindows` 값은
+`372000`이며, `max` reasoning tier는 `xhigh`와 별개로 유지됩니다.
+
+이 값들은 rollout 준비용 metadata입니다. 실제 호출은 연결된 OpenAI API 키, OpenRouter 계정, 또는
+native ChatGPT/Codex 계정에 GPT-5.6 preview 권한이 있을 때만 성공합니다.
 
 ## 사이드카
 

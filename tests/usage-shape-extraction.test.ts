@@ -13,12 +13,12 @@ describe("usageFromResponsesPayload", () => {
     expect(usageFromResponsesPayload({ prompt_tokens: 1 })).toBeUndefined();
   });
 
-  test("parses the standard Responses shape with cached + reasoning details", () => {
+  test("parses the standard Responses shape with cached, cache-write, and reasoning details", () => {
     const usage = usageFromResponsesPayload({
       input_tokens: 100,
       output_tokens: 23,
       total_tokens: 150,
-      input_tokens_details: { cached_tokens: 7 },
+      input_tokens_details: { cached_tokens: 7, cache_write_tokens: 3 },
       output_tokens_details: { reasoning_tokens: 5 },
     });
     expect(usage).toEqual({
@@ -26,6 +26,7 @@ describe("usageFromResponsesPayload", () => {
       outputTokens: 23,
       totalTokens: 150,
       cachedInputTokens: 7,
+      cacheCreationInputTokens: 3,
       reasoningOutputTokens: 5,
     });
   });
@@ -35,7 +36,7 @@ describe("usageFromResponsesPayload", () => {
       prompt_tokens: 42,
       completion_tokens: 7,
       total_tokens: 60,
-      prompt_tokens_details: { cached_tokens: 11 },
+      prompt_tokens_details: { cached_tokens: 11, cache_write_tokens: 2 },
       completion_tokens_details: { reasoning_tokens: 3 },
     });
     expect(usage).toEqual({
@@ -43,6 +44,7 @@ describe("usageFromResponsesPayload", () => {
       outputTokens: 7,
       totalTokens: 60,
       cachedInputTokens: 11,
+      cacheCreationInputTokens: 2,
       reasoningOutputTokens: 3,
     });
   });

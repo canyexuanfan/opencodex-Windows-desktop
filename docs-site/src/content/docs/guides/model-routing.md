@@ -29,7 +29,7 @@ checked **in order**; the first match wins.
    | Prefixes | Provider |
    | --- | --- |
    | `claude-`, `claude-sonnet-`, `claude-opus-`, `claude-haiku-` | `anthropic` |
-   | `gpt-`, `o1-`, `o3-`, `o4-` | `openai` |
+   | `gpt-`, `o1-`, `o3-`, `o4-` | `chatgpt` |
    | `llama-`, `mixtral-`, `gemma-` | `groq` |
 
 5. **Default provider** — if nothing matched, the id is sent to `config.defaultProvider` unchanged.

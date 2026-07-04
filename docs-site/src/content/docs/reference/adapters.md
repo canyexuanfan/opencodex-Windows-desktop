@@ -30,8 +30,9 @@ provider — xAI, Kimi, DeepSeek, GLM, Groq, OpenRouter, Ollama (local & cloud),
   `tool_choice` (`auto`/`none`/`required` or a named function).
 - **Rewrites Codex's GPT-5 identity prompt** to a model-agnostic intro so routed models don't claim to
   be OpenAI.
-- **Clamps `reasoning_effort`** to what most providers accept (`minimal`→`low`, `xhigh`/`max`→`high`),
-  and **omits it entirely** for ids in `provider.noReasoningModels`.
+- **Clamps `reasoning_effort`** to the model's advertised subset when an exact tier is unavailable;
+  `xhigh` and `max` remain distinct labels unless a provider explicitly configures an alias. The
+  adapter **omits it entirely** for ids in `provider.noReasoningModels`.
 - Streams `delta.content` (text), `delta.reasoning_content` (thinking), and `delta.tool_calls[]`;
   collects `usage`.
 

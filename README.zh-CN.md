@@ -100,8 +100,9 @@ npm install -g @bitkyc08/opencodex   # 不要加 --ignore-scripts、--omit=optio
 - **登录一次，免填 API key。** xAI、Anthropic、Kimi 支持 OAuth，可用现有账户认证，token 自动刷新。也可以转发 `codex login`、粘贴 API key，或使用 `${ENV_VAR}` 引用 —— 随你选择。
 - **Codex 在哪里能用，它就在哪里能用。** 自动注入 Codex CLI、TUI、App 和 SDK。路由模型像原生模型一样出现在 Codex 的模型选择器里。
 - **委派给合适的模型。** 在仪表盘或 config 中把最多 5 个路由/原生模型放进 Codex 的 subagent 选择器 —— 复杂任务交给 reasoning 模型，快速任务交给便宜模型。
+- **为 preview-gated OpenAI rollout 做好准备。** GPT-5.6 Sol/Terra/Luna fallback 条目已可用于 OpenAI API key 和 OpenRouter 路由；当上游访问可用时，会带有 `max` reasoning 和 372k usable-context 元数据。
 - **给任意模型超能力。** 非 OpenAI 模型也能通过你的 ChatGPT 登录上运行的 `gpt-5.4-mini` sidecar 获得真正的网页搜索和图片理解。
-- **看清正在发生什么。** Web 仪表盘展示 provider、OAuth 状态、模型选择和实时请求日志 —— 不必再猜测请求为何失败。
+- **看清正在发生什么。** Web 仪表盘展示 provider、OAuth 状态、模型选择和实时请求日志；当上游返回时，也会包含 cached/cache-write token 计数 —— 不必再猜测请求为何失败。
 - **后台运行。** 安装为系统服务（launchd / systemd / Task Scheduler）后开机自启，无需操心。
 - **干净退出，零残留。** `ocx stop`（或仪表盘的 Stop 按钮）会关闭代理、停止已安装的后台服务，并将 Codex 恢复为原始配置。之后 `codex` 就像从未安装过 opencodex 一样工作 —— 无残留配置，无僵尸进程。
 
@@ -146,6 +147,13 @@ codex -m "ollama/llama3" "重构这个函数"
 路由到 Anthropic，`gpt-*` 路由到 OpenAI）。
 
 路由模型也会出现在 **Codex App** 模型选择器中，并带有按模型的 reasoning effort 控制：
+
+当前 Codex 构建在模型声明支持时可显示 `low`、`medium`、`high`、`xhigh` 和 `max` reasoning 控制。
+除非 provider config 明确设置 alias，opencodex 会把 `xhigh` 与 `max` 保持为不同档位。
+
+GPT-5.6 Sol/Terra/Luna 已在 OpenAI API key 和 OpenRouter 预设中作为 rollout-ready 目录条目预置
+（`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`；OpenRouter 使用 `openai/...`）。可用性仍受上游
+preview gate 限制；opencodex 只是准备好你的账户/provider 可访问时所需的路由和目录元数据。
 
 <p align="center">
   <img src="assets/codex-app-picker.png" alt="Codex App 展示 opencodex 路由模型及 reasoning effort 选择器" width="480">
@@ -256,8 +264,9 @@ npm uninstall -g @bitkyc08/opencodex
 
 provider 条目还可以标注路由目录元数据。`contextWindow` 设置 provider 级别、对 Codex 可见的上下文上限，
 `modelContextWindows` 设置按模型的上限，`modelInputModalities` 设置按模型的目录输入提示，例如 `["text"]`
-或 `["text", "image"]`。这些值只会对实时 `/models` 元数据设上限，绝不会抬高更小的实时上下文窗口。完整字段
-参阅配置参考。
+或 `["text", "image"]`。这些值只会对实时 `/models` 元数据设上限，绝不会抬高更小的实时上下文窗口。内置
+GPT-5.6 Sol/Terra/Luna fallback 元数据会为 OpenAI API key 和 OpenRouter 目录条目使用 372,000 token 的
+usable context window；它不会绕过上游 preview access。完整字段参阅配置参考。
 
 > **通过 Z.AI 使用 GLM-5.2 1M 上下文：** 在 `openai-chat` adapter 下，`glm-5.2` 和 `glm-5.2[1m]` 都可用 ——
 > opencodex 会在发送请求前剥离末尾的 `[1m]` 后缀，因为 OpenAI 兼容端点会拒绝带方括号的 id（Z.AI 400 code

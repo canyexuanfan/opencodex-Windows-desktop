@@ -396,7 +396,7 @@ export interface OcxProviderConfig {
   refreshPolicy?: RefreshPolicy;
   /**
    * Provider-wide Codex-visible reasoning tiers for routed models. Use only Codex-supported labels
-   * here (`low`, `medium`, `high`, `xhigh`); translate to provider-specific wire values with
+   * here (`low`, `medium`, `high`, `xhigh`, `max`); translate provider aliases with
    * `reasoningEffortMap` / `modelReasoningEffortMap` below.
    */
   reasoningEfforts?: string[];

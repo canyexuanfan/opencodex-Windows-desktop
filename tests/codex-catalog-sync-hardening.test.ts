@@ -63,6 +63,9 @@ describe("Codex catalog sync hardening", () => {
         nativeEntry("gpt-5.4", 1),
         nativeEntry("gpt-5.4-mini", 2),
         nativeEntry("gpt-5.3-codex-spark", 3),
+        nativeEntry("gpt-5.6-sol", 4),
+        nativeEntry("gpt-5.6-terra", 5),
+        nativeEntry("gpt-5.6-luna", 6),
         nativeEntry("gpt-5.3-codex", 104),   // legacy -> drop
         nativeEntry("gpt-5.2", 104),          // legacy -> drop
         nativeEntry("codex-auto-review", 104),// legacy -> drop
@@ -81,6 +84,9 @@ describe("Codex catalog sync hardening", () => {
     expect(slugs).toContain("gpt-5.4");
     expect(slugs).toContain("gpt-5.4-mini");
     expect(slugs).toContain("gpt-5.3-codex-spark");
+    expect(slugs).toContain("gpt-5.6-sol");
+    expect(slugs).toContain("gpt-5.6-terra");
+    expect(slugs).toContain("gpt-5.6-luna");
     expect(slugs).toContain("user-native");           // genuine user native preserved
     expect(slugs).not.toContain("gpt-5.3-codex");      // legacy dropped
     expect(slugs).not.toContain("gpt-5.2");            // legacy dropped
