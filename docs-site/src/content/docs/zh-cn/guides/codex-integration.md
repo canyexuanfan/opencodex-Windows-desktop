@@ -45,6 +45,11 @@ $CODEX_HOME/opencodex-catalog.json
 $CODEX_HOME/models_cache.json
 ```
 
+在 WSL 中，如果未设置 `CODEX_HOME`，且 Linux 侧 `~/.codex/config.toml` 不存在，opencodex 还会检查
+`/mnt/c/Users/*/.codex/config.toml` 下的 Windows Codex Desktop home。只有候选项恰好为一个时才会
+使用该目录，让 WSL app-server mode 和 Windows Codex Desktop 共享同一份 config 与 auth 文件。要覆盖
+此检测，请显式设置 `CODEX_HOME`。
+
 `requires_openai_auth = true` 让 Codex App/TUI 的账号门控界面与原生 Codex 保持一致。
 WebSocket 传输是单独的：opencodex 提供 `/v1/responses` WebSocket 端点，但只有在
 `~/.opencodex/config.json` 中设置 `"websockets": true` 时才会广告 `supports_websockets = true`。

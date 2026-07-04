@@ -1,13 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import os from "node:os";
 import { getCodexAccountCredential } from "./codex-account-store";
 import { loadConfig } from "./config";
+import { resolveCodexHomeDir } from "./codex-home";
 import { extractAccountId } from "./oauth/chatgpt";
 
 export function readCodexTokens(): { access_token: string; account_id: string; id_token?: string } | null {
   try {
-    const codexHome = process.env["CODEX_HOME"] || join(os.homedir(), ".codex");
+    const codexHome = resolveCodexHomeDir();
     const authPath = join(codexHome, "auth.json");
     if (!existsSync(authPath)) return null;
     const j = JSON.parse(readFileSync(authPath, "utf-8")) as {

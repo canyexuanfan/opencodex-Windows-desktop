@@ -49,6 +49,11 @@ $CODEX_HOME/opencodex-catalog.json
 $CODEX_HOME/models_cache.json
 ```
 
+On WSL, if `CODEX_HOME` is unset and the Linux `~/.codex/config.toml` is absent, opencodex also
+checks for a single Windows Codex Desktop home at `/mnt/c/Users/*/.codex/config.toml`. When exactly
+one candidate exists, it uses that directory so WSL app-server mode and Windows Codex Desktop share
+the same config and auth files. Set `CODEX_HOME` explicitly to override this detection.
+
 `requires_openai_auth = true` keeps Codex App/TUI account-gated surfaces aligned with native Codex.
 WebSocket transport is different: opencodex serves `/v1/responses` over WebSocket, but only advertises
 `supports_websockets = true` when `"websockets": true` is set in `~/.opencodex/config.json`.

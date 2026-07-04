@@ -79,10 +79,15 @@ opencodex 内置了一个基于密钥的提供商目录（大多数兼容 OpenAI
 :::note[gateway 与订阅 proxy]
 只要某个提供商使用 opencodex 能够 proxy 的标准 streaming API（`openai-completions`、`anthropic-messages`、`openai-responses`、Azure 或 Gemini），它就会被收录——而**不是**根据它是否是一款"agent"产品来判断。使用专有协议、没有对应 opencodex adapter 的提供商会被排除：Gemini CLI / Antigravity、Vertex AI、Amazon Bedrock，以及 Codex 后端本身。**GitHub Copilot** 和 **GitLab Duo** 是多模型 gateway，映射到它们通用的 OpenAI 兼容端点；它们使用 Bearer **订阅令牌**（而非普通 API 密钥）进行认证，并且 Copilot 可能需要通过该提供商的 `headers` 设置 `User-Agent` 请求头。**Cloudflare AI Gateway** 需要将你的 account 和 gateway id 填入 URL。
 
-Cursor 作为单独的实验性 adapter scaffold 进行跟踪。源码中已经存在 `adapter: "cursor"`，但 live
-OAuth、模型 discovery、HTTP/2 transport 和 native tool 执行在 bridge 审计完成前都保持禁用。Cursor
-目前不会出现在 provider picker 或 OAuth login 列表中；手动 Cursor 配置也会以 disabled-transport
-错误 fail-closed。
+Cursor 作为单独的实验性 adapter 进行跟踪。`adapter: "cursor"` 会作为实验性本地配置出现在
+`ocx init` 和 dashboard Add Provider picker 中，并保存 Cursor 的静态公开模型目录 metadata。配置
+Cursor access token 后，opencodex 会使用 Cursor live HTTP/2 transport。Cursor 服务器直接发起的
+native read/write/delete/ls/grep/shell/fetch 执行默认禁用，因为它会绕过 Codex 的 approval 和
+sandbox 路径；只有在可信本地实验中才设置 `unsafeAllowNativeLocalExec: true`。旧的
+`allowNativeLocalExec` 拼写仅作为 deprecated 过渡 alias 被接受。MCP、屏幕录制和 computer-use
+通过 executor hook 暴露；没有配置本地 executor 时，opencodex 会返回 typed no-executor 结果。
+Cursor OAuth 和 live model discovery 已在这个实验性 adapter 中启用；Cursor 仍不会出现在 key-login
+列表中。
 :::
 
 ### Ollama Cloud

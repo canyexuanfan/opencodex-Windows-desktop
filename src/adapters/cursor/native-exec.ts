@@ -14,9 +14,31 @@ import {
   type ExecServerMessage,
   type KvServerMessage,
 } from "./gen/agent_pb";
-import { deleteExec, grepExec, lsExec, readExec, rejectDeleteExecForApplyPatch, rejectWriteExecForApplyPatch, writeExec } from "./native-exec-fs";
-import { fetchExec, type CursorNativeNetworkDeps } from "./native-exec-network";
-import { backgroundShellSpawnExec, shellExec, shellStreamExec, writeShellStdinExec } from "./native-exec-shell";
+import {
+  deleteExec,
+  grepExec,
+  lsExec,
+  readExec,
+  rejectDeleteExecForApplyPatch,
+  rejectDeleteExecForPolicy,
+  rejectGrepExecForPolicy,
+  rejectLsExecForPolicy,
+  rejectReadExecForPolicy,
+  rejectWriteExecForApplyPatch,
+  rejectWriteExecForPolicy,
+  writeExec,
+} from "./native-exec-fs";
+import { fetchExec, rejectFetchExecForPolicy, type CursorNativeNetworkDeps } from "./native-exec-network";
+import {
+  backgroundShellSpawnExec,
+  rejectBackgroundShellSpawnExecForPolicy,
+  rejectShellExecForPolicy,
+  rejectShellStreamExecForPolicy,
+  rejectWriteShellStdinExecForPolicy,
+  shellExec,
+  shellStreamExec,
+  writeShellStdinExec,
+} from "./native-exec-shell";
 import {
   computerUseExec,
   listMcpResourcesExec,
@@ -39,8 +61,16 @@ export type CursorNativeExecDeps = CursorNativeNetworkDeps & CursorNativeToolDep
 export interface CursorNativeExecContext extends CursorNativeExecDeps {
   mcpToolDefs?: McpToolDefinition[];
   clientToolDefs?: McpToolDefinition[];
+  /** Unsafe opt-in escape hatch for Cursor server-driven local fs/shell/fetch execution. */
+  unsafeAllowNativeLocalExec?: boolean;
+  /** @deprecated Use unsafeAllowNativeLocalExec. Kept as a transition alias for local experiments. */
+  allowNativeLocalExec?: boolean;
   /** apply_patch is visible for this request; Cursor-native write/delete must not bypass Codex. */
   rejectNativeFileMutations?: boolean;
+}
+
+export function cursorUnsafeNativeLocalExecEnabled(input: Pick<CursorNativeExecContext, "unsafeAllowNativeLocalExec" | "allowNativeLocalExec"> = {}): boolean {
+  return input.unsafeAllowNativeLocalExec === true || input.allowNativeLocalExec === true;
 }
 
 /**
@@ -114,6 +144,18 @@ export async function handleCursorNativeExec(execMsg: ExecServerMessage, deps: C
     return [execBytes(execMsg, "requestContextResult", create(RequestContextResultSchema, {
       result: { case: "success", value: create(RequestContextSuccessSchema, { requestContext: create(RequestContextSchema, { tools }) }) },
     }))];
+  }
+  if (!cursorUnsafeNativeLocalExecEnabled(deps)) {
+    if (execCase === "readArgs") return [rejectReadExecForPolicy(execMsg)];
+    if (execCase === "writeArgs") return [rejectWriteExecForPolicy(execMsg)];
+    if (execCase === "deleteArgs") return [rejectDeleteExecForPolicy(execMsg)];
+    if (execCase === "lsArgs") return [rejectLsExecForPolicy(execMsg)];
+    if (execCase === "grepArgs") return [rejectGrepExecForPolicy(execMsg)];
+    if (execCase === "shellArgs") return [rejectShellExecForPolicy(execMsg)];
+    if (execCase === "shellStreamArgs") return rejectShellStreamExecForPolicy(execMsg);
+    if (execCase === "backgroundShellSpawnArgs") return [rejectBackgroundShellSpawnExecForPolicy(execMsg)];
+    if (execCase === "writeShellStdinArgs") return [rejectWriteShellStdinExecForPolicy(execMsg)];
+    if (execCase === "fetchArgs") return [rejectFetchExecForPolicy(execMsg)];
   }
   if (execCase === "readArgs") return [readExec(execMsg)];
   if (execCase === "writeArgs") return [deps.rejectNativeFileMutations ? rejectWriteExecForApplyPatch(execMsg) : writeExec(execMsg)];
