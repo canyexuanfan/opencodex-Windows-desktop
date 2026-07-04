@@ -23,6 +23,33 @@ import { errorText, execBytes, execStreamCloseBytes } from "./native-exec-common
 const backgroundShells = new Map<number, { child: ChildProcessWithoutNullStreams; outputLength: number }>();
 let nextShellId = 1;
 
+const NATIVE_SHELL_DISABLED =
+  "Cursor native shell execution is disabled by default because it bypasses Codex approval and sandbox enforcement. Set provider.unsafeAllowNativeLocalExec=true only for trusted local experiments that may run local commands directly.";
+
+function rejectedShellResult(command: string, cwd: string, started: number) {
+  return create(ShellResultSchema, {
+    result: {
+      case: "failure",
+      value: create(ShellFailureSchema, {
+        command,
+        workingDirectory: cwd,
+        exitCode: 1,
+        signal: "",
+        stdout: "",
+        stderr: NATIVE_SHELL_DISABLED,
+        executionTime: Date.now() - started,
+        aborted: true,
+      }),
+    },
+  });
+}
+
+export function rejectShellExecForPolicy(execMsg: ExecServerMessage): Uint8Array {
+  if (execMsg.message.case !== "shellArgs") throw new Error("invalid shell exec");
+  const args = execMsg.message.value;
+  return execBytes(execMsg, "shellResult", rejectedShellResult(args.command, resolve(args.workingDirectory || process.cwd()), Date.now()));
+}
+
 export function shellExec(execMsg: ExecServerMessage): Uint8Array {
   if (execMsg.message.case !== "shellArgs") throw new Error("invalid shell exec");
   const args = execMsg.message.value;
@@ -56,6 +83,26 @@ export function shellExec(execMsg: ExecServerMessage): Uint8Array {
       }),
     },
   }));
+}
+
+export function rejectShellStreamExecForPolicy(execMsg: ExecServerMessage): Uint8Array[] {
+  if (execMsg.message.case !== "shellStreamArgs") throw new Error("invalid shell stream exec");
+  const args = execMsg.message.value;
+  const cwd = resolve(args.workingDirectory || process.cwd());
+  const started = Date.now();
+  return [
+    execBytes(execMsg, "shellStream", create(ShellStreamSchema, {
+      event: { case: "start", value: create(ShellStreamStartSchema, { sandboxPolicy: args.requestedSandboxPolicy }) },
+    })),
+    execBytes(execMsg, "shellStream", create(ShellStreamSchema, {
+      event: { case: "stderr", value: create(ShellStreamStderrSchema, { data: NATIVE_SHELL_DISABLED }) },
+    })),
+    execBytes(execMsg, "shellStream", create(ShellStreamSchema, {
+      event: { case: "exit", value: create(ShellStreamExitSchema, { code: 1, cwd, aborted: true }) },
+    })),
+    execBytes(execMsg, "shellResult", rejectedShellResult(args.command, cwd, started)),
+    execStreamCloseBytes(execMsg),
+  ];
 }
 
 export async function shellStreamExec(execMsg: ExecServerMessage): Promise<Uint8Array[]> {
@@ -144,6 +191,15 @@ export async function shellStreamExec(execMsg: ExecServerMessage): Promise<Uint8
   return replies;
 }
 
+export function rejectBackgroundShellSpawnExecForPolicy(execMsg: ExecServerMessage): Uint8Array {
+  if (execMsg.message.case !== "backgroundShellSpawnArgs") throw new Error("invalid background shell exec");
+  const args = execMsg.message.value;
+  const cwd = resolve(args.workingDirectory || process.cwd());
+  return execBytes(execMsg, "backgroundShellSpawnResult", create(BackgroundShellSpawnResultSchema, {
+    result: { case: "error", value: create(BackgroundShellSpawnErrorSchema, { command: args.command, workingDirectory: cwd, error: NATIVE_SHELL_DISABLED }) },
+  }));
+}
+
 export function backgroundShellSpawnExec(execMsg: ExecServerMessage): Uint8Array {
   if (execMsg.message.case !== "backgroundShellSpawnArgs") throw new Error("invalid background shell exec");
   const args = execMsg.message.value;
@@ -172,6 +228,13 @@ export function backgroundShellSpawnExec(execMsg: ExecServerMessage): Uint8Array
       result: { case: "error", value: create(BackgroundShellSpawnErrorSchema, { command: args.command, workingDirectory: cwd, error: errorText(err) }) },
     }));
   }
+}
+
+export function rejectWriteShellStdinExecForPolicy(execMsg: ExecServerMessage): Uint8Array {
+  if (execMsg.message.case !== "writeShellStdinArgs") throw new Error("invalid shell stdin exec");
+  return execBytes(execMsg, "writeShellStdinResult", create(WriteShellStdinResultSchema, {
+    result: { case: "error", value: create(WriteShellStdinErrorSchema, { error: NATIVE_SHELL_DISABLED }) },
+  }));
 }
 
 export function writeShellStdinExec(execMsg: ExecServerMessage): Uint8Array {

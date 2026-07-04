@@ -538,7 +538,15 @@ function installSystemd(): void {
   sh(`systemctl --user restart ${TASK}`);
   writeServiceInstallState();
 }
-function startSystemd(): void { sh(`systemctl --user start ${TASK}`); }
+function startSystemd(): void {
+  ensureUserBusEnv();
+  if (!existsSync(unitPath())) {
+    console.error(`opencodex service is not installed: ${unitPath()}`);
+    console.error("Run `ocx service install` first to create and enable the systemd user unit.");
+    process.exit(1);
+  }
+  sh(`systemctl --user start ${TASK}`);
+}
 function stopSystemd(): void { try { sh(`systemctl --user stop ${TASK}`); } catch { /* not running */ } }
 function statusSystemd(): string { try { return sh(`systemctl --user status ${TASK}`); } catch { return ""; } }
 function uninstallSystemd(): void {
@@ -674,13 +682,18 @@ export function serviceStatusSummary(): string {
   return `unsupported on ${process.platform}`;
 }
 
+export function normalizeServiceSubcommand(sub?: string): string {
+  return sub ?? "install";
+}
+
 export async function serviceCommand(sub?: string): Promise<void> {
   const ops = platformOps();
   if (!ops) {
     console.error("ocx service supports macOS (launchd), Windows (Task Scheduler), and Linux (systemd).");
     process.exit(1);
   }
-  switch (sub) {
+  const command = normalizeServiceSubcommand(sub);
+  switch (command) {
     case "install":
       assertServiceEnvironmentMatchesInstall();
       assertServiceAuthEnvironment();
@@ -717,7 +730,8 @@ export async function serviceCommand(sub?: string): Promise<void> {
       console.log("✅ service uninstalled + native Codex restored.");
       break;
     default:
-      console.error("Usage: ocx service <install|start|stop|status|uninstall|remove>");
+      console.error("Usage: ocx service [install|start|stop|status|uninstall|remove]");
+      console.error("       With no subcommand, installs/updates and starts the background service.");
       process.exit(1);
   }
 }

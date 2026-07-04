@@ -72,6 +72,41 @@ describe("doctor", () => {
     expect(resolveCodexHomeDir()).toBe(join(homedir(), "custom-codex"));
   });
 
+  test("resolveCodexHomeDir discovers a single Windows Codex Desktop home from WSL", () => {
+    delete process.env.CODEX_HOME;
+    const wslHome = join(TEST_DIR, "wsl-home");
+    const usersRoot = join(TEST_DIR, "mnt-c", "Users");
+    const windowsCodexHome = join(usersRoot, "jun", ".codex");
+    mkdirSync(windowsCodexHome, { recursive: true });
+    writeFileSync(join(windowsCodexHome, "config.toml"), "model_provider = \"opencodex\"\n");
+
+    expect(resolveCodexHomeDir({
+      env: { WSL_DISTRO_NAME: "Ubuntu" },
+      platform: "linux",
+      homedir: () => wslHome,
+      usersRoot,
+    })).toBe(windowsCodexHome);
+  });
+
+  test("resolveCodexHomeDir keeps Linux CODEX_HOME default when it already has config.toml", () => {
+    delete process.env.CODEX_HOME;
+    const wslHome = join(TEST_DIR, "wsl-home");
+    const linuxCodexHome = join(wslHome, ".codex");
+    const usersRoot = join(TEST_DIR, "mnt-c", "Users");
+    const windowsCodexHome = join(usersRoot, "jun", ".codex");
+    mkdirSync(linuxCodexHome, { recursive: true });
+    mkdirSync(windowsCodexHome, { recursive: true });
+    writeFileSync(join(linuxCodexHome, "config.toml"), "model_provider = \"linux\"\n");
+    writeFileSync(join(windowsCodexHome, "config.toml"), "model_provider = \"windows\"\n");
+
+    expect(resolveCodexHomeDir({
+      env: { WSL_DISTRO_NAME: "Ubuntu" },
+      platform: "linux",
+      homedir: () => wslHome,
+      usersRoot,
+    })).toBe(linuxCodexHome);
+  });
+
   test("detectFsType flags /mnt drvfs mounts and leaves ext4 home alone", () => {
     const mounts = [
       "rootfs / wslroot rw 0 0",

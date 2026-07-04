@@ -1,7 +1,7 @@
 import { realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { expandUserPath } from "./config";
+import { defaultCodexHome } from "./codex-home";
 
 function resolveCodexHome(): string {
   const raw = process.env.CODEX_HOME?.trim();
@@ -20,7 +20,7 @@ function resolveCodexHome(): string {
     return realpathSync.native(path);
   }
 
-  return join(homedir(), ".codex");
+  return defaultCodexHome();
 }
 
 export const CODEX_HOME = resolveCodexHome();

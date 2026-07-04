@@ -100,7 +100,8 @@ Run it after adding a provider or to refresh available models.
 ### `ocx login <provider>`
 
 Run the OAuth login flow for a provider and store the credential in `~/.opencodex/auth.json`
-(auto-refreshed). Supported: `xai`, `anthropic`, `kimi`.
+(auto-refreshed). Supported examples: `xai`, `anthropic`, `kimi`, `cursor`, `kiro`,
+`google-antigravity`, `chatgpt`.
 
 ```bash
 ocx login xai
@@ -119,7 +120,7 @@ the proxy if it isn't running.
 
 ## Background service
 
-### `ocx service <subcommand>`
+### `ocx service [subcommand]`
 
 Run opencodex as a login-managed background service (macOS **launchd**, Linux **systemd user unit**,
 Windows **Task Scheduler**) that auto-starts on login and auto-restarts on crash. Service runs set
@@ -127,6 +128,7 @@ Windows **Task Scheduler**) that auto-starts on login and auto-restarts on crash
 
 | Subcommand | Action |
 | --- | --- |
+| none | Create/update and start the service. |
 | `install` | Create and start the service. |
 | `start` | Start an installed service. |
 | `stop` | Stop the service and restore native Codex. |
@@ -135,6 +137,7 @@ Windows **Task Scheduler**) that auto-starts on login and auto-restarts on crash
 | `remove` | Alias of `uninstall`. |
 
 ```bash
+ocx service
 ocx service install
 ocx service status
 ocx service uninstall
