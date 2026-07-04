@@ -1,0 +1,83 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { CodexWarmupError, warmCodexAccount } from "../src/codex/warmup";
+
+const originalFetch = globalThis.fetch;
+
+function sseResponse(frames: string, status = 200): Response {
+  return new Response(frames, { status, headers: { "Content-Type": "text/event-stream" } });
+}
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
+
+describe("codex warmup", () => {
+  test("posts a minimal gpt-5.4-mini Responses stream request and accepts response.completed", async () => {
+    let body: Record<string, unknown> | undefined;
+    let auth: string | null = null;
+    let account: string | null = null;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const headers = new Headers(init?.headers);
+      auth = headers.get("authorization");
+      account = headers.get("chatgpt-account-id");
+      return sseResponse('event: response.completed\ndata: {"type":"response.completed"}\n\n');
+    }) as typeof fetch;
+
+    await warmCodexAccount({ accessToken: "access-test", chatgptAccountId: "acct-test" });
+
+    expect(auth).toBe("Bearer access-test");
+    expect(account).toBe("acct-test");
+    expect(body).toMatchObject({
+      model: "gpt-5.4-mini",
+      instructions: "Reply with OK.",
+      input: "hi",
+      stream: true,
+      store: false,
+    });
+    expect(body).not.toHaveProperty("max_output_tokens");
+  });
+
+  test("rejects streamed failure terminal", async () => {
+    globalThis.fetch = (async () => sseResponse('event: response.failed\ndata: {"type":"response.failed"}\n\n')) as typeof fetch;
+    await expect(warmCodexAccount({ accessToken: "a", chatgptAccountId: "c" }))
+      .rejects.toMatchObject({ name: "CodexWarmupError", code: "stream_failed" });
+  });
+
+  test("rejects streamed incomplete and error terminals", async () => {
+    globalThis.fetch = (async () => sseResponse('event: response.incomplete\ndata: {"type":"response.incomplete"}\n\n')) as typeof fetch;
+    await expect(warmCodexAccount({ accessToken: "a", chatgptAccountId: "c" }))
+      .rejects.toMatchObject({ name: "CodexWarmupError", code: "stream_incomplete" });
+
+    globalThis.fetch = (async () => sseResponse('event: error\ndata: {"type":"error"}\n\n')) as typeof fetch;
+    await expect(warmCodexAccount({ accessToken: "a", chatgptAccountId: "c" }))
+      .rejects.toMatchObject({ name: "CodexWarmupError", code: "stream_error" });
+  });
+
+  test("rejects malformed SSE JSON", async () => {
+    globalThis.fetch = (async () => sseResponse("event: response.completed\ndata: {not-json}\n\n")) as typeof fetch;
+    await expect(warmCodexAccount({ accessToken: "a", chatgptAccountId: "c" }))
+      .rejects.toMatchObject({ name: "CodexWarmupError", code: "invalid_sse" });
+  });
+
+  test("rejects EOF before success terminal", async () => {
+    globalThis.fetch = (async () => sseResponse('event: response.created\ndata: {"type":"response.created"}\n\n')) as typeof fetch;
+    await expect(warmCodexAccount({ accessToken: "a", chatgptAccountId: "c" }))
+      .rejects.toMatchObject({ name: "CodexWarmupError", code: "no_terminal" });
+  });
+
+  test("rejects HTTP auth/session errors without exposing token material", async () => {
+    globalThis.fetch = (async () => new Response("sensitive-access-token revoked", { status: 401 })) as typeof fetch;
+    try {
+      await warmCodexAccount({ accessToken: "sensitive-access-token", chatgptAccountId: "sensitive-account-id" });
+      throw new Error("expected warmup to reject");
+    } catch (err) {
+      expect(err).toBeInstanceOf(CodexWarmupError);
+      expect((err as CodexWarmupError).code).toBe("http_status");
+      expect((err as CodexWarmupError).status).toBe(401);
+      expect((err as Error).message).not.toContain("sensitive-access-token");
+      expect((err as Error).message).not.toContain("sensitive-account-id");
+      expect((err as Error).message).not.toContain("revoked");
+    }
+  });
+});

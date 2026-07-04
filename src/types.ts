@@ -322,6 +322,12 @@ export interface OcxTokenGuardianConfig {
   failureBackoffBaseSeconds?: number;
   /** Backoff ceiling (seconds). Default 3600. */
   failureBackoffMaxSeconds?: number;
+  /** Optional Codex pool session warmup sweep. Default false to avoid background synthetic traffic. */
+  codexWarmupEnabled?: boolean;
+  /** Max age before a Codex pool account is revalidated via `/codex/responses`. Default 691200 (8d). */
+  codexWarmupMaxAgeSeconds?: number;
+  /** Model used for optional Codex pool warmup. Default gpt-5.4-mini. */
+  codexWarmupModel?: string;
 }
 
 export interface OcxVisionSidecarConfig {
@@ -489,4 +495,7 @@ export interface CodexAccountCredentialRecord {
   refreshGrantFingerprint?: string;
   deletedAt?: number;
   replacedAt?: number;
+  lastCodexValidatedAt?: number;
+  lastCodexValidationStatus?: "ok" | "failed";
+  lastCodexValidationError?: string;
 }

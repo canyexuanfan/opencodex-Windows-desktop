@@ -18,9 +18,12 @@ import { getValidAccessTokenForAccount, listOAuthProviders, OAuthLoginRequiredEr
 import {
   getValidCodexToken,
   listCodexAccountIds,
+  markCodexAccountValidated,
+  markCodexAccountValidationFailed,
   readCodexAccountRecord,
   TokenRefreshError,
 } from "../codex/account-store";
+import { codexWarmupFailureReason, warmCodexAccount } from "../codex/warmup";
 
 export interface TokenGuardianHandle {
   stop(): void;
@@ -29,6 +32,7 @@ export interface TokenGuardianHandle {
 export interface GuardianSweepResult {
   enabled: boolean;
   refreshed: string[];
+  warmed: string[];
   failed: string[];
   skippedBackoff: string[];
 }
@@ -40,6 +44,8 @@ const DEFAULTS = {
   leadSeconds: 900,
   failureBackoffBaseSeconds: 300,
   failureBackoffMaxSeconds: 3600,
+  codexWarmupMaxAgeSeconds: 691_200, // 8d — matches Codex managed-auth last_refresh cadence.
+  codexWarmupModel: "gpt-5.4-mini",
 };
 
 interface BackoffEntry {
@@ -67,6 +73,9 @@ function resolved(g: OcxTokenGuardianConfig | undefined) {
     leadSeconds: num(g?.leadSeconds, DEFAULTS.leadSeconds, 0),
     backoffBaseSeconds: num(g?.failureBackoffBaseSeconds, DEFAULTS.failureBackoffBaseSeconds, 0),
     backoffMaxSeconds: num(g?.failureBackoffMaxSeconds, DEFAULTS.failureBackoffMaxSeconds, 0),
+    codexWarmupEnabled: g?.codexWarmupEnabled === true,
+    codexWarmupMaxAgeSeconds: num(g?.codexWarmupMaxAgeSeconds, DEFAULTS.codexWarmupMaxAgeSeconds, 60),
+    codexWarmupModel: g?.codexWarmupModel?.trim() || DEFAULTS.codexWarmupModel,
   };
 }
 
@@ -106,7 +115,7 @@ async function runWithConcurrency(tasks: Array<() => Promise<void>>, limit: numb
 export async function guardianSweep(nowMs: number = Date.now()): Promise<GuardianSweepResult> {
   const config: OcxConfig = loadConfig();
   const g = config.tokenGuardian;
-  const result: GuardianSweepResult = { enabled: !!g?.enabled, refreshed: [], failed: [], skippedBackoff: [] };
+  const result: GuardianSweepResult = { enabled: !!g?.enabled, refreshed: [], warmed: [], failed: [], skippedBackoff: [] };
   if (!g?.enabled) return result;
 
   const opts = resolved(g);
@@ -142,18 +151,34 @@ export async function guardianSweep(nowMs: number = Date.now()): Promise<Guardia
   if (resolveRefreshPolicy("chatgpt", config) === "proactive") {
     for (const id of listCodexAccountIds()) {
       const record = readCodexAccountRecord(id);
-      const cred = record?.deletedAt == null ? record?.credential : undefined;
+      if (!record || record.deletedAt != null) continue;
+      const cred = record.credential;
       if (!cred) continue;
-      if (cred.expiresAt > nowMs + horizonMs) continue;
+      const needsRefresh = cred.expiresAt <= nowMs + horizonMs;
+      const needsWarmup = opts.codexWarmupEnabled
+        && (record.lastCodexValidatedAt === undefined || nowMs - record.lastCodexValidatedAt > opts.codexWarmupMaxAgeSeconds * 1000);
+      if (!needsRefresh && !needsWarmup) continue;
       const key = `codex:${id}`;
       if (inBackoff(key, nowMs)) { result.skippedBackoff.push(key); continue; }
       tasks.push(async () => {
         try {
-          await getValidCodexToken(id);
+          const token = await getValidCodexToken(id);
+          if (needsRefresh) result.refreshed.push(key);
+          if (needsWarmup) {
+            await warmCodexAccount({
+              accessToken: token.accessToken,
+              chatgptAccountId: token.chatgptAccountId,
+              model: opts.codexWarmupModel,
+            });
+            markCodexAccountValidated(id, Date.now());
+            result.warmed.push(key);
+          }
           backoff.delete(key);
-          result.refreshed.push(key);
         } catch (err) {
           const permanent = err instanceof TokenRefreshError && (err.reason === "revoked" || err.reason === "expired");
+          if (needsWarmup && !(err instanceof TokenRefreshError)) {
+            markCodexAccountValidationFailed(id, codexWarmupFailureReason(err));
+          }
           recordFailure(key, nowMs, opts.backoffBaseSeconds, opts.backoffMaxSeconds, permanent);
           result.failed.push(key);
         }
@@ -186,8 +211,8 @@ export function startTokenGuardian(): TokenGuardianHandle {
   const runSweep = () => {
     void guardianSweep()
       .then(r => {
-        if (r.enabled && (r.refreshed.length || r.failed.length)) {
-          console.log(`🛡️  token-guardian: refreshed ${r.refreshed.length}, failed ${r.failed.length}`);
+        if (r.enabled && (r.refreshed.length || r.warmed.length || r.failed.length)) {
+          console.log(`🛡️  token-guardian: refreshed ${r.refreshed.length}, warmed ${r.warmed.length}, failed ${r.failed.length}`);
         }
       })
       .catch(err => console.log(`token-guardian sweep error: ${err instanceof Error ? err.message : String(err)}`))

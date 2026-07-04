@@ -3,6 +3,7 @@ import { withCodexAccountLogLabel } from "./account-label";
 import {
   getCodexAccountCredential,
   getValidCodexToken,
+  markCodexAccountValidated,
   saveCodexAccountCredential,
   CodexCredentialGenerationConflictError,
   CodexCredentialRefreshLockTimeoutError,
@@ -26,6 +27,7 @@ export { clearAccountQuota, getAccountQuota, parseUsageQuota, updateAccountQuota
 import { extractAccountId, decodeJwtPayload } from "../oauth/chatgpt";
 import { MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from "./main-account";
 import { maskEmail } from "../lib/privacy";
+import { codexWarmupFailureReason, warmCodexAccount } from "./warmup";
 export { maskEmail } from "../lib/privacy";
 import type { CodexAccount, OcxConfig } from "../types";
 
@@ -136,6 +138,27 @@ function manualImportDisabledResponse(): Response {
     error: "Manual Codex account import is disabled. Use OAuth login to add a pool account.",
     code: "manual_import_disabled",
   }, 403);
+}
+
+async function verifyCodexAccountWarmup(
+  accountId: string,
+  accessToken: string,
+  chatgptAccountId: string,
+): Promise<{ ok: true; validatedAt: number } | { ok: false; response: Response }> {
+  try {
+    await warmCodexAccount({ accessToken, chatgptAccountId });
+    return { ok: true, validatedAt: Date.now() };
+  } catch (err) {
+    return {
+      ok: false,
+      response: jsonResponse({
+        error: "Codex account warmup failed. Reauthenticate the account and try again.",
+        code: "codex_warmup_failed",
+        reason: codexWarmupFailureReason(err),
+        accountId,
+      }, 401),
+    };
+  }
 }
 
 function expireCodexAuthFlow(flowId: string | null, error = "Login cancelled"): void {
@@ -385,12 +408,15 @@ export async function handleCodexAuthAPI(
     // 4.2: use JWT exp for expiresAt instead of hardcoded 1 hour
     const payload = decodeJwtPayload(body.accessToken);
     const exp = typeof payload?.exp === "number" ? payload.exp * 1000 : Date.now() + 3600_000;
+    const warmup = await verifyCodexAccountWarmup(body.id, body.accessToken, derivedAccountId);
+    if (!warmup.ok) return warmup.response;
     saveCodexAccountCredential(body.id, {
       accessToken: body.accessToken,
       refreshToken: body.refreshToken,
       expiresAt: exp,
       chatgptAccountId: derivedAccountId,
     });
+    markCodexAccountValidated(body.id, warmup.validatedAt);
     clearAccountNeedsReauth(body.id);
     accounts.push(withCodexAccountLogLabel({ id: body.id, email: body.email, plan: body.plan, isMain: false }, accounts));
     runtimeConfig.codexAccounts = accounts;
@@ -590,12 +616,25 @@ export async function handleCodexAuthAPI(
                 break;
               }
 
+              const warmup = await verifyCodexAccountWarmup(accountId, cred.access, oauthAccountId);
+              if (!warmup.ok) {
+                const body = await warmup.response.json().catch(() => ({})) as { error?: string; reason?: string };
+                codexAuthLoginState.set(flowId, {
+                  status: "error",
+                  error: body.reason ? `${body.error ?? "Codex account warmup failed"} (${body.reason})` : body.error ?? "Codex account warmup failed",
+                  doneAt: Date.now(),
+                });
+                completed = true;
+                break;
+              }
+
               saveCodexAccountCredential(accountId, {
                 accessToken: cred.access,
                 refreshToken: cred.refresh,
                 expiresAt: cred.expires,
                 chatgptAccountId: oauthAccountId,
               });
+              markCodexAccountValidated(accountId, warmup.validatedAt);
               clearAccountNeedsReauth(accountId);
               if (quota) {
                 updateAccountQuota(

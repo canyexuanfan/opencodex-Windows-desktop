@@ -179,6 +179,53 @@ describe("codex-account-store CRUD", () => {
     expect(getCodexAccountCredential("cas")).toEqual(second);
   });
 
+  test("validation metadata survives credential replacement and CAS refresh saves", async () => {
+    const {
+      markCodexAccountValidated,
+      readCodexAccountRecord,
+      saveCodexAccountCredential,
+      saveCodexAccountCredentialIfGeneration,
+    } = await import("../src/codex-account-store");
+    const first = { accessToken: "first", refreshToken: "first-r", expiresAt: 1, chatgptAccountId: "acc" };
+    const second = { accessToken: "second", refreshToken: "second-r", expiresAt: 2, chatgptAccountId: "acc" };
+    const third = { accessToken: "third", refreshToken: "third-r", expiresAt: 3, chatgptAccountId: "acc" };
+
+    saveCodexAccountCredential("validated", first);
+    markCodexAccountValidated("validated", 1234);
+    saveCodexAccountCredential("validated", second);
+    expect(readCodexAccountRecord("validated")).toMatchObject({
+      credential: second,
+      lastCodexValidatedAt: 1234,
+      lastCodexValidationStatus: "ok",
+    });
+
+    const generation = readCodexAccountRecord("validated")!.generation;
+    expect(saveCodexAccountCredentialIfGeneration("validated", generation, third)).toBe(true);
+    expect(readCodexAccountRecord("validated")).toMatchObject({
+      credential: third,
+      lastCodexValidatedAt: 1234,
+      lastCodexValidationStatus: "ok",
+    });
+  });
+
+  test("validation failure records a redacted reason without changing the last successful validation", async () => {
+    const {
+      markCodexAccountValidated,
+      markCodexAccountValidationFailed,
+      readCodexAccountRecord,
+      saveCodexAccountCredential,
+    } = await import("../src/codex-account-store");
+    saveCodexAccountCredential("failed-warmup", { accessToken: "sensitive-access", refreshToken: "sensitive-refresh", expiresAt: 1, chatgptAccountId: "sensitive-account" });
+    markCodexAccountValidated("failed-warmup", 1234);
+    markCodexAccountValidationFailed("failed-warmup", "http_status:401");
+
+    const record = readCodexAccountRecord("failed-warmup")!;
+    expect(record.lastCodexValidatedAt).toBe(1234);
+    expect(record.lastCodexValidationStatus).toBe("failed");
+    expect(record.lastCodexValidationError).toBe("http_status:401");
+    expect(JSON.stringify(record)).not.toContain("sensitive-access revoked");
+  });
+
   test("successful refresh returns bumped generation and persists rotated refresh token", async () => {
     const {
       getCodexAccountCredential,
