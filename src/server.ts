@@ -54,6 +54,7 @@ import {
   type UsageStatus,
 } from "./usage-log";
 import { parseRange, summarizeUsage } from "./usage-summary";
+import { fetchProviderQuotaReports } from "./provider-quota";
 import {
   appendUsageDebug,
   isUsageDebugEnabled,
@@ -1803,6 +1804,11 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
         error: "read_failed",
       });
     }
+  }
+
+  if (url.pathname === "/api/provider-quotas" && req.method === "GET") {
+    const forceRefresh = url.searchParams.get("refresh") === "1" || url.searchParams.get("refresh") === "true";
+    return jsonResponse(await fetchProviderQuotaReports(config, forceRefresh));
   }
 
   if (url.pathname === "/api/providers" && req.method === "GET") {

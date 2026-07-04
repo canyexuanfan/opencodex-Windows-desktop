@@ -68,7 +68,7 @@ function poolAccountDto(
   account: CodexAccount,
   quotaResult: PoolQuotaResult,
   hasCredential: boolean,
-): Record<string, unknown> {
+): CodexAuthAccountDto {
   const quota = quotaForPlan(quotaResult.quota, account.plan);
   return {
     id: account.id,
@@ -229,6 +229,17 @@ interface PoolQuotaResult {
   needsReauth: boolean;
 }
 
+export interface CodexAuthAccountDto {
+  id: string;
+  email: string;
+  plan?: string | null;
+  logLabel?: string;
+  isMain: boolean;
+  quota: (StoredAccountQuota | (Omit<StoredAccountQuota, "updatedAt"> & { updatedAt: number })) | null;
+  needsReauth?: boolean;
+  hasCredential: boolean;
+}
+
 async function fetchPoolAccountQuota(accountId: string, forceRefresh = false, configuredPlan?: string): Promise<PoolQuotaResult> {
   const existing = getAccountQuota(accountId);
   if (!forceRefresh && existing && Date.now() - existing.updatedAt < POOL_CACHE_TTL) {
@@ -313,6 +324,28 @@ export function clearCodexQuotaPrimeState(): void {
   primeInFlight = null;
 }
 
+export async function listCodexAuthAccounts(config: OcxConfig, forceRefresh = false): Promise<CodexAuthAccountDto[]> {
+  const runtimeConfig = getRuntimeConfig(config);
+  const poolAccounts = (runtimeConfig.codexAccounts ?? []).filter(a => !a.isMain);
+  const mainInfo = await fetchMainAccountInfo(forceRefresh);
+  const withQuota = await mapWithConcurrency(poolAccounts, POOL_QUOTA_REFRESH_CONCURRENCY, async a => {
+    const cred = getCodexAccountCredential(a.id);
+    const quotaResult = cred
+      ? await fetchPoolAccountQuota(a.id, forceRefresh, a.plan)
+      : { quota: null, needsReauth: true };
+    return poolAccountDto(a, quotaResult, !!cred);
+  });
+  const main: CodexAuthAccountDto = {
+    id: MAIN_CODEX_ACCOUNT_ID,
+    email: maskEmail(mainInfo.email) ?? "Codex App login",
+    plan: mainInfo.plan,
+    isMain: true,
+    hasCredential: true,
+    quota: mainInfo.quota ? { ...quotaForPlan({ ...mainInfo.quota, updatedAt: Date.now() }, mainInfo.plan) } : null,
+  };
+  return [main, ...withQuota];
+}
+
 export async function handleCodexAuthAPI(
   req: Request,
   url: URL,
@@ -321,25 +354,7 @@ export async function handleCodexAuthAPI(
 
   if (url.pathname === "/api/codex-auth/accounts" && req.method === "GET") {
     const forceRefresh = url.searchParams.get("refresh") === "1" || url.searchParams.get("refresh") === "true";
-    const runtimeConfig = getRuntimeConfig(config);
-    const poolAccounts = (runtimeConfig.codexAccounts ?? []).filter(a => !a.isMain);
-    const mainInfo = await fetchMainAccountInfo(forceRefresh);
-    const withQuota = await mapWithConcurrency(poolAccounts, POOL_QUOTA_REFRESH_CONCURRENCY, async a => {
-      const cred = getCodexAccountCredential(a.id);
-      const quotaResult = cred
-        ? await fetchPoolAccountQuota(a.id, forceRefresh, a.plan)
-        : { quota: null, needsReauth: true };
-      return poolAccountDto(a, quotaResult, !!cred);
-    });
-    const main = {
-      id: MAIN_CODEX_ACCOUNT_ID,
-      email: maskEmail(mainInfo.email) ?? "Codex App login",
-      plan: mainInfo.plan,
-      isMain: true,
-      hasCredential: true,
-      quota: mainInfo.quota ? { ...quotaForPlan({ ...mainInfo.quota, updatedAt: Date.now() }, mainInfo.plan) } : null,
-    };
-    return jsonResponse({ accounts: [main, ...withQuota] });
+    return jsonResponse({ accounts: await listCodexAuthAccounts(config, forceRefresh) });
   }
 
   if (url.pathname === "/api/codex-auth/accounts" && req.method === "POST") {

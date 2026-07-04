@@ -3,7 +3,8 @@ import { useT, type TFn } from "../i18n";
 import { IconLock, IconPlus, IconX, IconAlert, IconRefresh, IconTicket } from "../icons";
 import { Notice } from "../ui";
 import AddCodexAccountModal from "../components/AddCodexAccountModal";
-import { type AccountQuota, normalizeQuotaForPlan } from "../codex-quota-utils";
+import type { AccountQuota } from "../codex-quota-utils";
+import QuotaBars from "../components/QuotaBars";
 
 export { normalizeQuotaForPlan, isThirtyDayOnlyPlan } from "../codex-quota-utils";
 export type { AccountQuota } from "../codex-quota-utils";
@@ -306,62 +307,6 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
   );
 }
 
-
-function QuotaBars({ quota, plan, threshold, t }: { quota: AccountQuota | null; plan?: string; threshold: number; t: TFn }) {
-  const displayQuota = normalizeQuotaForPlan(quota, plan);
-  if (!displayQuota) return null;
-  const hasFiveHour = typeof displayQuota.fiveHourPercent === "number";
-  const hasWeekly = typeof displayQuota.weeklyPercent === "number";
-  const hasMonthly = typeof displayQuota.monthlyPercent === "number";
-  if (!hasFiveHour && !hasWeekly && !hasMonthly) return null;
-  return (
-    <div className="quota-compact">
-      {hasFiveHour && (
-        <QuotaRow
-          label={t("codexAuth.fiveHour")}
-          percent={displayQuota.fiveHourPercent!}
-          resetAt={displayQuota.fiveHourResetAt}
-          threshold={threshold}
-          t={t}
-        />
-      )}
-      {hasWeekly && (
-        <QuotaRow
-          label={t("codexAuth.weekly")}
-          percent={displayQuota.weeklyPercent!}
-          resetAt={displayQuota.weeklyResetAt}
-          threshold={threshold}
-          t={t}
-        />
-      )}
-      {hasMonthly && (
-        <QuotaRow
-          label={t("codexAuth.monthly")}
-          percent={displayQuota.monthlyPercent!}
-          resetAt={displayQuota.monthlyResetAt}
-          threshold={threshold}
-          t={t}
-        />
-      )}
-    </div>
-  );
-}
-
-function QuotaRow({ label, percent, resetAt, threshold, t }: { label: string; percent: number; resetAt?: number; threshold: number; t: TFn }) {
-  const color = threshold > 0 && percent >= threshold ? "bar-amber" : "bar-green";
-  const reset = formatResetAt(resetAt, t);
-  return (
-    <div className="quota-row">
-      <span className="quota-label">{label}</span>
-      <span className="quota-reset-label">{t("codexAuth.resets")}</span>
-      <span className="quota-reset-day">{reset.day}</span>
-      <span className="quota-reset-time">{reset.time}</span>
-      <div className="bar"><div className={`bar-fill ${color}`} style={{ width: `${clampPercent(percent)}%` }} /></div>
-      <span className="quota-val">{Math.round(percent)}%</span>
-    </div>
-  );
-}
-
 function formatCreditDate(iso: string): string {
   const d = new Date(iso);
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(d);
@@ -407,22 +352,4 @@ function TicketBadge({ account, onClick }: { account: AccountEntry; onClick: () 
       {credits}
     </button>
   );
-}
-
-function clampPercent(value: number): number {
-  return Math.max(0, Math.min(100, Math.round(value)));
-}
-
-function formatResetAt(resetAt: number | undefined, t: TFn): { day: string; time: string } {
-  if (typeof resetAt !== "number" || !Number.isFinite(resetAt)) return { day: "", time: "" };
-  const ms = resetAt < 10_000_000_000 ? resetAt * 1000 : resetAt;
-  const date = new Date(ms);
-  const now = new Date();
-  const time = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
-  const isToday = date.getFullYear() === now.getFullYear()
-    && date.getMonth() === now.getMonth()
-    && date.getDate() === now.getDate();
-  if (isToday) return { day: t("codexAuth.today"), time };
-  const day = new Intl.DateTimeFormat(undefined, { month: "numeric", day: "numeric" }).format(date);
-  return { day, time };
 }
