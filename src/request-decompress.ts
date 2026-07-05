@@ -24,7 +24,7 @@ export class DecompressedBodyTooLargeError extends Error {
   }
 }
 
-export function decodeRequestBody(raw: Uint8Array, contentEncoding: string | null): Uint8Array {
+export function decodeRequestBody(raw: Uint8Array<ArrayBuffer>, contentEncoding: string | null): Uint8Array {
   const encoding = (contentEncoding ?? "").trim().toLowerCase();
   if (encoding === "" || encoding === "identity") return raw;
   let decoded: Uint8Array;
