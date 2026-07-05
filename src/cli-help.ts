@@ -61,6 +61,20 @@ const helpEntries: Record<string, HelpEntry> = {
     usage: "ocx update [--tag latest|preview]",
     summary: "Update opencodex. Preview installs stay on the preview tag unless overridden.",
   },
+  provider: {
+    usage: "ocx provider <list|add|remove|show|set-default>",
+    summary: "Non-interactive provider management.",
+    details: [
+      "Subcommands: list, add <name>, remove <name>, show <name>, set-default <name>",
+      "Registry providers are auto-configured by name. Custom providers need --adapter and --base-url.",
+      "Run `ocx provider --help` for full usage and examples.",
+    ],
+  },
+  models: {
+    usage: "ocx models [--provider <name>] [--json]",
+    summary: "List available models from configured providers.",
+    details: ["Shows statically configured models. Providers with liveModels may have additional models at runtime."],
+  },
 };
 
 function packageVersion(): string {
@@ -96,6 +110,8 @@ Usage:
   ocx logout <provider>       Remove a stored OAuth login
   ocx gui                     Open the opencodex dashboard
   ocx update [--tag <tag>]    Update opencodex (keeps preview installs on @preview)
+  ocx provider <sub>          Manage providers (list|add|remove|show|set-default)
+  ocx models [--json]         List available models from configured providers
   ocx help [command]          Show help
   ocx --version | -v          Print version
 

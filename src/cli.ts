@@ -537,7 +537,17 @@ switch (command) {
     runGuiUpdateWorker(jobId, channel, args[3] === "restart");
     break;
   }
-  case "help":
+  case "provider": {
+    const { handleProviderCommand } = await import("./cli-provider");
+    handleProviderCommand(args.slice(1));
+    break;
+  }
+  case "models": {
+    const { handleModels } = await import("./cli-models");
+    handleModels(args.slice(1));
+    break;
+  }
+    case "help":
   case "--help":
   case "-h":
   case undefined:
