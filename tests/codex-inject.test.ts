@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { buildProfileFile, buildProviderTableBlock, chooseCatalogPathForInjection, stripOpencodexConfig, stripRootContextWindowOverrides } from "../src/codex-inject";
+import {
+  buildOpenaiBaseUrlLine,
+  buildProfileFile,
+  buildProviderTableBlock,
+  chooseCatalogPathForInjection,
+  setRootOpenaiBaseUrl,
+  stripInjectedOpenaiBaseUrl,
+  stripOpencodexConfig,
+  stripRootContextWindowOverrides,
+} from "../src/codex-inject";
 
 describe("Codex config injection", () => {
   test("omits provider-level Responses WebSocket support by default", () => {
@@ -115,23 +124,26 @@ describe("Codex config injection", () => {
     expect(stripped).toContain("[model_providers.proxy]");
   });
 
-  test("can build fallback profile without a model catalog path", () => {
+  test("loopback fallback file uses the Design B root override (no provider table)", () => {
     const profile = buildProfileFile(10100, null);
 
-    expect(profile).toContain('model_provider = "opencodex"');
-    expect(profile).toContain("[model_providers.opencodex]");
-    expect(profile).toContain('base_url = "http://127.0.0.1:10100/v1"');
+    expect(profile).toContain('openai_base_url = "http://127.0.0.1:10100/v1"');
+    expect(profile).not.toContain('model_provider = "opencodex"');
+    expect(profile).not.toContain("[model_providers.opencodex]");
     expect(profile).not.toContain("model_catalog_json");
+    expect(profile).toContain("fast_mode = true");
   });
 
-  test("fallback profile mirrors the injected non-loopback host", () => {
+  test("non-loopback fallback profile keeps the legacy provider-table shape with the injected host", () => {
     const profile = buildProfileFile(10100, null, false, true, "192.168.1.20");
 
     expect(profile).toContain("proxy at 192.168.1.20:10100");
     expect(profile).toContain('base_url = "http://192.168.1.20:10100/v1"');
+    expect(profile).toContain('model_provider = "opencodex"');
+    expect(profile).toContain("[model_providers.opencodex]");
   });
 
-  test("fallback profile mirrors websocket and API auth provider options", () => {
+  test("non-loopback fallback profile mirrors websocket and API auth provider options", () => {
     const profile = buildProfileFile(10100, "/tmp/opencodex-catalog.json", true, true);
 
     expect(profile).toContain('model_catalog_json = "/tmp/opencodex-catalog.json"');
@@ -169,5 +181,104 @@ describe("Codex config injection", () => {
     expect(stripped).toContain('model = "gpt-5.5"');
     expect(stripped).not.toContain("[model_providers.opencodex]");
     expect(stripped).not.toContain("[profiles.opencodex]");
+  });
+});
+
+describe("Design B openai_base_url injection", () => {
+  test("buildOpenaiBaseUrlLine matches the actual bind host", () => {
+    expect(buildOpenaiBaseUrlLine(10100)).toBe('openai_base_url = "http://127.0.0.1:10100/v1"');
+    expect(buildOpenaiBaseUrlLine(10100, "localhost")).toBe('openai_base_url = "http://127.0.0.1:10100/v1"');
+    expect(buildOpenaiBaseUrlLine(10100, "::1")).toBe('openai_base_url = "http://[::1]:10100/v1"');
+  });
+
+  test("inserts marker + root key before the first table header", () => {
+    const { content, keptUserBaseUrl } = setRootOpenaiBaseUrl([
+      'model = "gpt-5.5"',
+      "",
+      "[features]",
+      "fast_mode = true",
+      "",
+    ].join("\n"), 10100);
+
+    expect(keptUserBaseUrl).toBe(false);
+    const lines = content.split("\n");
+    const markerIdx = lines.findIndex(l => l.includes("Auto-injected by opencodex"));
+    const keyIdx = lines.findIndex(l => l.startsWith("openai_base_url"));
+    const tableIdx = lines.findIndex(l => l.trim() === "[features]");
+    expect(markerIdx).toBeGreaterThanOrEqual(0);
+    expect(keyIdx).toBe(markerIdx + 1);
+    expect(keyIdx).toBeLessThan(tableIdx);
+  });
+
+  test("re-inject is idempotent and rewrites the marker-owned line on port change", () => {
+    const first = setRootOpenaiBaseUrl("model = \"gpt-5.5\"\n\n[features]\nfast_mode = true\n", 10100).content;
+    const second = setRootOpenaiBaseUrl(first, 10190).content;
+
+    expect(second.match(/openai_base_url/g)?.length).toBe(1);
+    expect(second.match(/Auto-injected by opencodex/g)?.length).toBe(1);
+    expect(second).toContain('openai_base_url = "http://127.0.0.1:10190/v1"');
+  });
+
+  test("keeps a user's own root openai_base_url and injects nothing", () => {
+    const original = [
+      'openai_base_url = "https://my-own-gateway.example/v1"',
+      "",
+      "[features]",
+      "fast_mode = true",
+      "",
+    ].join("\n");
+    const { content, keptUserBaseUrl } = setRootOpenaiBaseUrl(original, 10100);
+
+    expect(keptUserBaseUrl).toBe(true);
+    expect(content).toBe(original);
+  });
+
+  test("strip removes only the marker-owned pair; a user's own line survives", () => {
+    const injected = setRootOpenaiBaseUrl("model = \"gpt-5.5\"\n\n[features]\nfast_mode = true\n", 10100).content;
+    const stripped = stripInjectedOpenaiBaseUrl(injected);
+    expect(stripped).not.toContain("openai_base_url");
+    expect(stripped).not.toContain("Auto-injected by opencodex");
+
+    const userOwned = 'openai_base_url = "https://my-own-gateway.example/v1"\n\n[features]\n';
+    expect(stripInjectedOpenaiBaseUrl(userOwned)).toBe(userOwned);
+  });
+
+  test("stripOpencodexConfig removes the Design B form including routed root models", () => {
+    const injected = setRootOpenaiBaseUrl([
+      'model = "opencode-go/minimax-m3"',
+      'model_verbosity = "high"',
+      'model_catalog_json = "/tmp/opencodex-catalog.json"',
+      "",
+      "[features]",
+      "fast_mode = true",
+      "",
+    ].join("\n"), 10100).content;
+    const stripped = stripOpencodexConfig(injected);
+
+    expect(stripped).not.toContain("openai_base_url");
+    expect(stripped).not.toContain('model = "opencode-go/minimax-m3"'); // routed id useless without proxy
+    expect(stripped).toContain('model_verbosity = "high"');
+    expect(stripped).not.toContain("model_catalog_json");
+    expect(stripped).toContain("[features]");
+  });
+
+  test("upgrade path: legacy table + root re-tag coexisting with Design B form all strip cleanly", () => {
+    const legacy = [
+      'model_provider = "opencodex"',
+      "# Auto-injected by opencodex",
+      'openai_base_url = "http://127.0.0.1:10100/v1"',
+      'model = "gpt-5.5"',
+      "",
+      "# Auto-injected by opencodex",
+      "[model_providers.opencodex]",
+      'name = "OpenCodex Proxy"',
+      'base_url = "http://127.0.0.1:10100/v1"',
+      "",
+    ].join("\n");
+    const stripped = stripOpencodexConfig(legacy);
+
+    expect(stripped).not.toContain("opencodex");
+    expect(stripped).not.toContain("openai_base_url");
+    expect(stripped).toContain('model = "gpt-5.5"');
   });
 });
