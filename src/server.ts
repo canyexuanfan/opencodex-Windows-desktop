@@ -2098,7 +2098,7 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
   // ---------------------------------------------------------------------------
   if (url.pathname === "/api/keys" && req.method === "GET") {
     const keys = config.apiKeys ?? [];
-    return jsonResponse({ keys: keys.map(k => ({ id: k.id, name: k.name, prefix: k.key.slice(0, 8) + "...", createdAt: k.createdAt })), endpoint: `http://${config.hostname ?? "127.0.0.1"}:${listenPort}/v1/responses` }, 200, req, config);
+    return jsonResponse({ keys: keys.map(k => ({ id: k.id, name: k.name, prefix: k.key.slice(0, 8) + "...", createdAt: k.createdAt })), endpoint: `http://${config.hostname ?? "127.0.0.1"}:${config.port ?? 10100}/v1/responses` }, 200, req, config);
   }
 
   if (url.pathname === "/api/keys" && req.method === "POST") {
