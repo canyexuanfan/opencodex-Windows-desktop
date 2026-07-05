@@ -46,9 +46,9 @@ describe("CLI subcommand help", () => {
   });
 
   test("unknown command with help flag remains an error", () => {
-    const result = runCli(["restart", "--help"]);
+    const result = runCli(["foobar", "--help"]);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("Unknown command: restart");
+    expect(result.stderr).toContain("Unknown command: foobar");
     expect(result.stdout).toContain("opencodex (ocx)");
   });
 
