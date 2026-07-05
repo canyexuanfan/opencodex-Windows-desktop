@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { IconKey, IconPlus, IconX, IconCheck } from "../icons";
+import { IconPlus, IconX, IconCheck } from "../icons";
 
 interface ApiKeyEntry {
   id: string;
@@ -69,7 +69,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
 
   return (
     <section className="page">
-      <h2><IconKey /> API Access</h2>
+      <h2>API Access</h2>
       <p className="muted">
         Use generated API keys to access the opencodex proxy from external apps.
         Keys authenticate via <code>Authorization: Bearer ocx_...</code> or <code>x-opencodex-api-key</code> header.
