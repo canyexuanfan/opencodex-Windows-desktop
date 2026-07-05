@@ -372,3 +372,29 @@ describe("ocx provider mutating --json", () => {
     }
   });
 });
+
+describe("ocx provider add --sync", () => {
+  test("provider add --sync flag is accepted without error", () => {
+    const { dir } = freshConfig();
+    try {
+      // --sync without a running proxy should still succeed (sync silently skipped)
+      const result = runCli(["provider", "add", "deepseek", "--api-key", "sk-test", "--sync"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("deepseek");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("provider add --sync --json reports needsSync false", () => {
+    const { dir } = freshConfig();
+    try {
+      const result = runCli(["provider", "add", "deepseek", "--api-key", "sk-test", "--sync", "--json"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(0);
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.needsSync).toBe(true); // JSON mode skips sync, always reports needsSync=true
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

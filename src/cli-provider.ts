@@ -13,6 +13,8 @@ import { hasHelpFlag } from "./cli-help";
 import { getProviderRegistryEntry, PROVIDER_REGISTRY } from "./providers/registry";
 import { providerConfigSeed } from "./providers/derive";
 import type { OcxProviderConfig } from "./types";
+import { findLiveProxy } from "./proxy-liveness";
+import { syncModelsToCodex } from "./codex-sync";
 
 // ---------------------------------------------------------------------------
 // Arg helpers
@@ -122,9 +124,9 @@ function handleList(args: string[]): void {
 // provider add
 // ---------------------------------------------------------------------------
 
-const ADD_USAGE = "Usage: ocx provider add <name> [--adapter <adapter>] [--base-url <url>] [--api-key <key>] [--default-model <model>] [--set-default] [--force] [--json]";
+const ADD_USAGE = "Usage: ocx provider add <name> [--adapter <adapter>] [--base-url <url>] [--api-key <key>] [--default-model <model>] [--set-default] [--force] [--json] [--sync]";
 
-function handleAdd(args: string[]): void {
+async function handleAdd(args: string[]): Promise<void> {
   const name = args[0];
   if (!name || name.startsWith("-")) {
     console.error(ADD_USAGE);
@@ -140,6 +142,7 @@ function handleAdd(args: string[]): void {
   const force = consumeFlag(restArgs, "--force");
   const setDefault = consumeFlag(restArgs, "--set-default");
   const wantsJson = consumeFlag(restArgs, "--json");
+  const wantsSync = consumeFlag(restArgs, "--sync");
   const apiKey = consumeFlagValue(restArgs, "--api-key");
   const adapter = consumeFlagValue(restArgs, "--adapter");
   const baseUrl = consumeFlagValue(restArgs, "--base-url");
@@ -203,6 +206,15 @@ function handleAdd(args: string[]): void {
     return;
   }
 
+  if (wantsSync) {
+    const live = await findLiveProxy();
+    if (live) {
+      await syncModelsToCodex(live.port).catch(e => {
+        console.error(`Warning: sync failed: ${e instanceof Error ? e.message : String(e)}`);
+      });
+    }
+  }
+
   const registryLabel = registryEntry ? ` (${registryEntry.label})` : "";
   console.log(`✅ Provider "${name}"${registryLabel} added.`);
   if (setDefault) console.log(`   Set as default provider.`);
@@ -214,7 +226,11 @@ function handleAdd(args: string[]): void {
     console.log(`   Set API key with: ocx provider add ${name} --api-key <key> --force`);
     console.log(`   Or set env var: ${envKey}`);
   }
-  console.log(`   Apply to Codex: ocx sync`);
+  if (wantsSync) {
+    console.log(`   Models synced to Codex.`);
+  } else {
+    console.log(`   Apply to Codex: ocx sync`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -249,6 +265,7 @@ function handleRemove(args: string[]): void {
 
   delete config.providers[name];
   validateAndSave(config);
+
 
   if (wantsJson) {
     console.log(JSON.stringify({
@@ -333,6 +350,7 @@ function handleSetDefault(args: string[]): void {
   config.defaultProvider = name;
   validateAndSave(config);
 
+
   if (wantsJson) {
     console.log(JSON.stringify({ action: "set-default", provider: name, defaultProvider: name, needsSync: true }, null, 2));
     return;
@@ -362,7 +380,7 @@ Examples:
   ocx provider set-default anthropic
   ocx provider remove my-ollama`;
 
-export function handleProviderCommand(args: string[]): void {
+export async function handleProviderCommand(args: string[]): Promise<void> {
   const sub = args[0];
 
   if (!sub || sub === "help" || hasHelpFlag(args)) {
@@ -377,7 +395,7 @@ export function handleProviderCommand(args: string[]): void {
       handleList(subArgs);
       break;
     case "add":
-      handleAdd(subArgs);
+      await handleAdd(subArgs);
       break;
     case "remove":
       handleRemove(subArgs);

@@ -75,6 +75,15 @@ const helpEntries: Record<string, HelpEntry> = {
     summary: "List available models from configured providers.",
     details: ["Shows statically configured models. Providers with liveModels may have additional models at runtime."],
   },
+  restart: {
+    usage: "ocx restart",
+    summary: "Stop the proxy and restart it (background). Equivalent to stop + ensure.",
+  },
+  health: {
+    usage: "ocx health [--json]",
+    summary: "Check proxy health. Exits 0 if healthy, 1 otherwise.",
+    details: ["Use --json for structured output: {ok, pid, port}."],
+  },
 };
 
 function packageVersion(): string {
@@ -110,6 +119,8 @@ Usage:
   ocx logout <provider>       Remove a stored OAuth login
   ocx gui                     Open the opencodex dashboard
   ocx update [--tag <tag>]    Update opencodex (keeps preview installs on @preview)
+  ocx restart                  Stop and restart the proxy
+  ocx health [--json]          Check proxy health (exit 0=healthy, 1=not)
   ocx provider <sub>          Manage providers (list|add|remove|show|set-default)
   ocx models [--json]         List available models from configured providers
   ocx help [command]          Show help
