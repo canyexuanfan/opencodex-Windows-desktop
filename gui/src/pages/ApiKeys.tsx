@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { IconPlus, IconX, IconCheck } from "../icons";
 
 interface ApiKeyEntry {
@@ -17,7 +17,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   const [copied, setCopied] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
-  const fetchKeys = async () => {
+  const fetchKeys = useCallback(async () => {
     try {
       const res = await fetch(`${apiBase}/api/keys`);
       if (res.ok) {
@@ -26,9 +26,11 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
         setEndpoint(data.endpoint ?? "");
       }
     } catch { /* proxy down */ }
-  };
+  }, [apiBase]);
 
-  useEffect(() => { fetchKeys(); }, []);
+  useEffect(() => { fetchKeys(); }, [fetchKeys]);
+
+  const responseEndpoint = endpoint || "http://127.0.0.1:10100/v1/responses";
 
   const handleCreate = async () => {
     setCreating(true);
@@ -68,45 +70,46 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   };
 
   return (
-    <section className="page">
-      <h2>API Access</h2>
-      <p className="muted">
+    <section className="api-page">
+      <div className="page-head">
+        <h2>API Access</h2>
+      </div>
+      <p className="page-sub">
         Use generated API keys to access the opencodex proxy from external apps.
         Keys authenticate via <code>Authorization: Bearer ocx_...</code> or <code>x-opencodex-api-key</code> header.
       </p>
 
-      <div className="card" style={{ marginTop: "1rem" }}>
-        <h3>Endpoint</h3>
-        <code className="block">{endpoint || "http://127.0.0.1:10100/v1/responses"}</code>
+      <div className="panel api-panel">
+        <h3 className="panel-title">Endpoint</h3>
+        <code className="api-code api-code-inline">{responseEndpoint}</code>
         <p className="muted small">Compatible with OpenAI Responses API format.</p>
       </div>
 
       {newKey && (
-        <div className="card highlight" style={{ marginTop: "1rem" }}>
-          <h3>New Key Created</h3>
+        <div className="panel api-panel panel-accent" style={{ marginTop: "1rem" }}>
+          <h3 className="panel-title">New Key Created</h3>
           <p className="muted small">Copy this key now — it won't be shown again.</p>
-          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-            <code className="block" style={{ flex: 1, wordBreak: "break-all" }}>{newKey}</code>
-            <button className="btn btn-sm" onClick={copyKey}>
+          <div className="api-form-row">
+            <code className="api-code" style={{ flex: 1, wordBreak: "break-all" }}>{newKey}</code>
+            <button className="btn btn-sm btn-ghost" onClick={copyKey}>
               {copied ? <><IconCheck /> Copied</> : "Copy"}
             </button>
           </div>
-          <button className="btn btn-sm" style={{ marginTop: "0.5rem" }} onClick={() => setNewKey(null)}>
+          <button className="btn btn-sm btn-ghost" style={{ alignSelf: "flex-start" }} onClick={() => setNewKey(null)}>
             Dismiss
           </button>
         </div>
       )}
 
-      <div className="card" style={{ marginTop: "1rem" }}>
-        <h3>Generate Key</h3>
-        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+      <div className="panel api-panel" style={{ marginTop: "1rem" }}>
+        <h3 className="panel-title">Generate Key</h3>
+        <div className="api-form-row">
           <input
             type="text"
             placeholder="Key name (optional)"
             value={newName}
             onChange={e => setNewName(e.target.value)}
             className="input"
-            style={{ flex: 1 }}
           />
           <button className="btn btn-primary" onClick={handleCreate} disabled={creating}>
             <IconPlus /> {creating ? "Creating..." : "Generate"}
@@ -114,41 +117,43 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
         </div>
       </div>
 
-      <div className="card" style={{ marginTop: "1rem" }}>
-        <h3>Active Keys ({keys.length})</h3>
+      <div className="panel api-panel" style={{ marginTop: "1rem" }}>
+        <h3 className="panel-title">Active Keys ({keys.length})</h3>
         {keys.length === 0 ? (
           <p className="muted">No API keys yet. Generate one above.</p>
         ) : (
-          <table className="table">
-            <thead>
-              <tr><th>Name</th><th>Key</th><th>Created</th><th></th></tr>
-            </thead>
-            <tbody>
-              {keys.map(k => (
-                <tr key={k.id}>
-                  <td>{k.name}</td>
-                  <td><code>{k.prefix}</code></td>
-                  <td>{new Date(k.createdAt).toLocaleDateString()}</td>
-                  <td>
-                    {confirmDelete === k.id ? (
-                      <span style={{ display: "flex", gap: "0.25rem" }}>
-                        <button className="btn btn-sm btn-danger" onClick={() => handleDelete(k.id)}>Confirm</button>
-                        <button className="btn btn-sm" onClick={() => setConfirmDelete(null)}>Cancel</button>
-                      </span>
-                    ) : (
-                      <button className="btn btn-sm" onClick={() => setConfirmDelete(k.id)}><IconX /></button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead>
+                <tr><th>Name</th><th>Key</th><th>Created</th><th></th></tr>
+              </thead>
+              <tbody>
+                {keys.map(k => (
+                  <tr key={k.id}>
+                    <td>{k.name}</td>
+                    <td><code>{k.prefix}</code></td>
+                    <td>{new Date(k.createdAt).toLocaleDateString()}</td>
+                    <td>
+                      {confirmDelete === k.id ? (
+                        <span className="api-actions">
+                          <button className="btn btn-sm btn-danger" onClick={() => handleDelete(k.id)}>Confirm</button>
+                          <button className="btn btn-sm btn-ghost" onClick={() => setConfirmDelete(null)}>Cancel</button>
+                        </span>
+                      ) : (
+                        <button className="btn btn-sm btn-ghost" aria-label="Delete API key" onClick={() => setConfirmDelete(k.id)}><IconX /></button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 
-      <div className="card" style={{ marginTop: "1rem" }}>
-        <h3>Usage Example</h3>
-        <pre className="block">{`curl ${endpoint || "http://127.0.0.1:10100"}/v1/responses \\
+      <div className="panel api-panel" style={{ marginTop: "1rem" }}>
+        <h3 className="panel-title">Usage Example</h3>
+        <pre className="api-code">{`curl ${responseEndpoint} \\
   -H "Authorization: Bearer ocx_YOUR_KEY_HERE" \\
   -H "Content-Type: application/json" \\
   -d '{

@@ -84,6 +84,7 @@ import {
   type CodexUpstreamOutcome,
 } from "./codex-routing";
 import { registerCodexWebSocket, unregisterCodexWebSocket, updateCodexWebSocketAuthContext } from "./codex-websocket-registry";
+import { readJsonRequestBody, UnsupportedContentEncodingError } from "./request-decompress";
 import { resolveGuiFilePath, rootFallbackPayload, serveGuiFile } from "./server/gui-static";
 import { fetchWithResetRetry } from "./upstream-retry";
 export { resolveGuiFilePath, rootFallbackPayload } from "./server/gui-static";
@@ -256,8 +257,11 @@ async function handleResponses(
 ): Promise<Response> {
   let body: unknown;
   try {
-    body = await req.json();
-  } catch {
+    body = await readJsonRequestBody(req);
+  } catch (err) {
+    if (err instanceof UnsupportedContentEncodingError) {
+      return formatErrorResponse(415, "invalid_request_error", err.message);
+    }
     return formatErrorResponse(400, "invalid_request_error", "Invalid JSON body");
   }
   body = expandPreviousResponseInput(body);
