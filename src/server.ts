@@ -1480,9 +1480,8 @@ function isLoopbackRequestHost(value: string | null): boolean {
 function isLoopbackOriginValue(value: string): boolean {
   try {
     const parsed = new URL(value);
-    if (parsed.protocol !== "http:") return false;
-    if (!isLoopbackHostname(parsed.hostname)) return false;
-    return parsed.port === configuredPort();
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    return isLoopbackHostname(parsed.hostname);
   } catch {
     return false;
   }
@@ -1497,12 +1496,22 @@ function isSameOriginAsRequest(req: Request, origin: string): boolean {
 }
 
 function isAllowedRequestOrigin(req: Request, config: OcxConfig): boolean {
+  function isExtraAllowedOrigin(origin: string, cfg: OcxConfig): boolean {
+    if (!cfg.corsAllowOrigins?.length) return false;
+    return cfg.corsAllowOrigins.some(allowed => {
+      try {
+        return new URL(allowed).origin === new URL(origin).origin;
+      } catch {
+        return allowed === origin;
+      }
+    });
+  }
   const origin = req.headers.get("Origin");
   if (!isApiAuthRequired(config)) {
     if (!isLoopbackRequestHost(req.headers.get("Host"))) return false;
-    return !origin || isLoopbackOriginValue(origin);
+    return !origin || isLoopbackOriginValue(origin) || isExtraAllowedOrigin(origin, config);
   }
-  return !origin || isLoopbackOriginValue(origin) || isSameOriginAsRequest(req, origin);
+  return !origin || isLoopbackOriginValue(origin) || isSameOriginAsRequest(req, origin) || isExtraAllowedOrigin(origin, config);
 }
 
 export function corsHeaders(req?: Request, config?: OcxConfig): Record<string, string> {
