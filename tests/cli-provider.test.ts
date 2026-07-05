@@ -280,3 +280,95 @@ describe("ocx provider", () => {
     }
   });
 });
+
+describe("ocx provider strict args", () => {
+  test("provider list rejects unknown flags", () => {
+    const { dir } = freshConfig();
+    try {
+      const result = runCli(["provider", "list", "--bogus"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Unknown flag");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("provider add rejects unknown flags", () => {
+    const { dir } = freshConfig();
+    try {
+      const result = runCli(["provider", "add", "deepseek", "--unknown-thing"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Unknown flag");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("provider show rejects unknown flags", () => {
+    const { dir } = freshConfig();
+    try {
+      const result = runCli(["provider", "show", "openai", "--bogus"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Unknown flag");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("ocx provider mutating --json", () => {
+  test("provider add --json returns structured output", () => {
+    const { dir } = freshConfig();
+    try {
+      const result = runCli(["provider", "add", "deepseek", "--api-key", "sk-test", "--json"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(0);
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.action).toBe("added");
+      expect(parsed.provider).toBe("deepseek");
+      expect(parsed.source).toBe("registry");
+      expect(parsed.needsSync).toBe(true);
+      expect(parsed.adapter).toBeDefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("provider remove --json returns structured output", () => {
+    const { dir } = freshConfig({
+      providers: {
+        openai: { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" },
+        deepseek: { adapter: "openai-chat", baseUrl: "https://api.deepseek.com/v1", apiKey: "k" },
+      },
+    });
+    try {
+      const result = runCli(["provider", "remove", "deepseek", "--json"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(0);
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.action).toBe("removed");
+      expect(parsed.provider).toBe("deepseek");
+      expect(parsed.remainingProviders).toContain("openai");
+      expect(parsed.needsSync).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("provider set-default --json returns structured output", () => {
+    const { dir } = freshConfig({
+      providers: {
+        openai: { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" },
+        deepseek: { adapter: "openai-chat", baseUrl: "https://api.deepseek.com/v1", apiKey: "k" },
+      },
+    });
+    try {
+      const result = runCli(["provider", "set-default", "deepseek", "--json"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(0);
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.action).toBe("set-default");
+      expect(parsed.defaultProvider).toBe("deepseek");
+      expect(parsed.needsSync).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

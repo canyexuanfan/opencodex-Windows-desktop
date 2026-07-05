@@ -33,6 +33,19 @@ function consumeFlagValue(args: string[], flag: string): string | undefined {
   return value;
 }
 
+/** Reject any leftover args (unknown flags or trailing values). */
+function rejectUnknownArgs(args: string[], usage: string): void {
+  if (args.length === 0) return;
+  const unknown = args.filter(a => a.startsWith("-"));
+  if (unknown.length > 0) {
+    console.error(`Unknown flag(s): ${unknown.join(", ")}`);
+  } else {
+    console.error(`Unexpected argument(s): ${args.join(", ")}`);
+  }
+  console.error(usage);
+  process.exit(1);
+}
+
 function maskSecret(value: string): string {
   if (value.length <= 8) return "****";
   return `${value.slice(0, 4)}****${value.slice(-4)}`;
@@ -60,6 +73,8 @@ function validateAndSave(config: ReturnType<typeof loadConfig>): void {
 
 function handleList(args: string[]): void {
   const wantsJson = consumeFlag(args, "--json");
+  rejectUnknownArgs(args, "Usage: ocx provider list [--json]");
+
   const config = loadConfig();
   const configured = Object.keys(config.providers);
 
@@ -107,10 +122,12 @@ function handleList(args: string[]): void {
 // provider add
 // ---------------------------------------------------------------------------
 
+const ADD_USAGE = "Usage: ocx provider add <name> [--adapter <adapter>] [--base-url <url>] [--api-key <key>] [--default-model <model>] [--set-default] [--force] [--json]";
+
 function handleAdd(args: string[]): void {
   const name = args[0];
   if (!name || name.startsWith("-")) {
-    console.error("Usage: ocx provider add <name> [--adapter <adapter>] [--base-url <url>] [--api-key <key>] [--default-model <model>] [--set-default] [--force]");
+    console.error(ADD_USAGE);
     process.exit(1);
   }
 
@@ -122,10 +139,12 @@ function handleAdd(args: string[]): void {
   const restArgs = args.slice(1);
   const force = consumeFlag(restArgs, "--force");
   const setDefault = consumeFlag(restArgs, "--set-default");
+  const wantsJson = consumeFlag(restArgs, "--json");
   const apiKey = consumeFlagValue(restArgs, "--api-key");
   const adapter = consumeFlagValue(restArgs, "--adapter");
   const baseUrl = consumeFlagValue(restArgs, "--base-url");
   const defaultModel = consumeFlagValue(restArgs, "--default-model");
+  rejectUnknownArgs(restArgs, ADD_USAGE);
 
   const config = loadConfig();
 
@@ -170,6 +189,20 @@ function handleAdd(args: string[]): void {
 
   validateAndSave(config);
 
+  if (wantsJson) {
+    console.log(JSON.stringify({
+      action: "added",
+      provider: name,
+      adapter: provConfig.adapter,
+      baseUrl: provConfig.baseUrl,
+      defaultModel: provConfig.defaultModel ?? null,
+      isDefault: config.defaultProvider === name,
+      source: registryEntry ? "registry" : "custom",
+      needsSync: true,
+    }, null, 2));
+    return;
+  }
+
   const registryLabel = registryEntry ? ` (${registryEntry.label})` : "";
   console.log(`✅ Provider "${name}"${registryLabel} added.`);
   if (setDefault) console.log(`   Set as default provider.`);
@@ -189,11 +222,14 @@ function handleAdd(args: string[]): void {
 // ---------------------------------------------------------------------------
 
 function handleRemove(args: string[]): void {
-  const name = args[0];
+  const restArgs = [...args];
+  const wantsJson = consumeFlag(restArgs, "--json");
+  const name = restArgs[0];
   if (!name || name.startsWith("-")) {
-    console.error("Usage: ocx provider remove <name>");
+    console.error("Usage: ocx provider remove <name> [--json]");
     process.exit(1);
   }
+  rejectUnknownArgs(restArgs.slice(1), "Usage: ocx provider remove <name> [--json]");
 
   const config = loadConfig();
   if (!hasOwnProvider(config.providers, name)) {
@@ -213,6 +249,18 @@ function handleRemove(args: string[]): void {
 
   delete config.providers[name];
   validateAndSave(config);
+
+  if (wantsJson) {
+    console.log(JSON.stringify({
+      action: "removed",
+      provider: name,
+      remainingProviders: Object.keys(config.providers),
+      defaultProvider: config.defaultProvider,
+      needsSync: true,
+    }, null, 2));
+    return;
+  }
+
   console.log(`✅ Provider "${name}" removed.`);
 }
 
@@ -228,6 +276,7 @@ function handleShow(args: string[]): void {
     console.error("Usage: ocx provider show <name> [--json]");
     process.exit(1);
   }
+  rejectUnknownArgs(restArgs.slice(1), "Usage: ocx provider show <name> [--json]");
 
   const config = loadConfig();
   if (!hasOwnProvider(config.providers, name)) {
@@ -257,11 +306,14 @@ function handleShow(args: string[]): void {
 // ---------------------------------------------------------------------------
 
 function handleSetDefault(args: string[]): void {
-  const name = args[0];
+  const restArgs = [...args];
+  const wantsJson = consumeFlag(restArgs, "--json");
+  const name = restArgs[0];
   if (!name || name.startsWith("-")) {
-    console.error("Usage: ocx provider set-default <name>");
+    console.error("Usage: ocx provider set-default <name> [--json]");
     process.exit(1);
   }
+  rejectUnknownArgs(restArgs.slice(1), "Usage: ocx provider set-default <name> [--json]");
 
   const config = loadConfig();
   if (!hasOwnProvider(config.providers, name)) {
@@ -270,12 +322,22 @@ function handleSetDefault(args: string[]): void {
   }
 
   if (config.defaultProvider === name) {
-    console.log(`"${name}" is already the default provider.`);
+    if (wantsJson) {
+      console.log(JSON.stringify({ action: "noop", provider: name, defaultProvider: name, needsSync: false }, null, 2));
+    } else {
+      console.log(`"${name}" is already the default provider.`);
+    }
     return;
   }
 
   config.defaultProvider = name;
   validateAndSave(config);
+
+  if (wantsJson) {
+    console.log(JSON.stringify({ action: "set-default", provider: name, defaultProvider: name, needsSync: true }, null, 2));
+    return;
+  }
+
   console.log(`✅ Default provider set to "${name}".`);
 }
 

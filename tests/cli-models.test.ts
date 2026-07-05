@@ -118,3 +118,52 @@ describe("ocx models", () => {
     expect(result.stdout).toContain("List available models");
   });
 });
+
+describe("ocx models richer metadata", () => {
+  test("models --json includes contextWindow and inputModalities", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-models-rich-"));
+    const config = {
+      port: 10100,
+      providers: {
+        test: {
+          adapter: "openai-chat",
+          baseUrl: "http://localhost:8080/v1",
+          defaultModel: "model-a",
+          models: ["model-a", "model-b"],
+          modelContextWindows: { "model-a": 128000, "model-b": 32000 },
+          modelInputModalities: { "model-a": ["text", "image"] },
+          noVisionModels: ["model-b"],
+          reasoningEfforts: ["low", "medium", "high"],
+        },
+      },
+      defaultProvider: "test",
+    };
+    writeFileSync(join(dir, "config.json"), JSON.stringify(config), "utf8");
+    try {
+      const result = runCli(["models", "--json"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(0);
+      const parsed = JSON.parse(result.stdout);
+      const modelA = parsed.models.find((m: { model: string }) => m.model === "model-a");
+      expect(modelA.contextWindow).toBe(128000);
+      expect(modelA.inputModalities).toEqual(["text", "image"]);
+      expect(modelA.reasoningEfforts).toEqual(["low", "medium", "high"]);
+
+      const modelB = parsed.models.find((m: { model: string }) => m.model === "model-b");
+      expect(modelB.contextWindow).toBe(32000);
+      expect(modelB.inputModalities).toEqual(["text"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("models rejects unknown flags", () => {
+    const { dir } = freshConfig();
+    try {
+      const result = runCli(["models", "--bogus"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Unknown flag");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

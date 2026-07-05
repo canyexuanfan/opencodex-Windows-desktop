@@ -11,6 +11,9 @@ interface ModelEntry {
   provider: string;
   model: string;
   isDefault: boolean;
+  contextWindow: number | null;
+  inputModalities: string[] | null;
+  reasoningEfforts: string[] | null;
 }
 
 function collectModels(config: OcxConfig, providerFilter?: string): ModelEntry[] {
@@ -22,21 +25,35 @@ function collectModels(config: OcxConfig, providerFilter?: string): ModelEntry[]
   for (const [provName, prov] of Object.entries(providers)) {
     if (!prov) continue;
     const seen = new Set<string>();
+    const contextWindows = prov.modelContextWindows ?? {};
+    const inputModalities = prov.modelInputModalities ?? {};
+    const reasoningEfforts = prov.modelReasoningEfforts ?? {};
+    const globalContext = prov.contextWindow ?? null;
+
+    const addModel = (model: string, isDefault: boolean) => {
+      if (seen.has(model)) return;
+      seen.add(model);
+
+      const noVision = prov.noVisionModels?.includes(model);
+      const modalities = inputModalities[model] ?? (noVision ? ["text"] : null);
+      const efforts = reasoningEfforts[model] ?? prov.reasoningEfforts ?? null;
+
+      entries.push({
+        provider: provName,
+        model,
+        isDefault,
+        contextWindow: contextWindows[model] ?? globalContext,
+        inputModalities: modalities,
+        reasoningEfforts: efforts,
+      });
+    };
 
     // defaultModel first
-    if (prov.defaultModel && !seen.has(prov.defaultModel)) {
-      seen.add(prov.defaultModel);
-      entries.push({ provider: provName, model: prov.defaultModel, isDefault: true });
-    }
+    if (prov.defaultModel) addModel(prov.defaultModel, true);
 
     // models array
     if (prov.models) {
-      for (const m of prov.models) {
-        if (!seen.has(m)) {
-          seen.add(m);
-          entries.push({ provider: provName, model: m, isDefault: m === prov.defaultModel });
-        }
-      }
+      for (const m of prov.models) addModel(m, m === prov.defaultModel);
     }
   }
 
@@ -64,6 +81,12 @@ export function handleModels(args: string[]): void {
   const providerFilter = consumeFlagValue(restArgs, "--provider");
 
   if (restArgs.length > 0) {
+    const unknown = restArgs.filter(a => a.startsWith("-"));
+    if (unknown.length > 0) {
+      console.error(`Unknown flag(s): ${unknown.join(", ")}`);
+    } else {
+      console.error(`Unexpected argument(s): ${restArgs.join(", ")}`);
+    }
     console.error("Usage: ocx models [--provider <name>] [--json]");
     process.exit(1);
   }
@@ -104,7 +127,8 @@ export function handleModels(args: string[]): void {
     console.log(`${provName}${isDefaultProv}:`);
     for (const m of provModels) {
       const marker = m.isDefault ? " *" : "";
-      console.log(`  ${m.model}${marker}`);
+      const ctx = m.contextWindow ? ` (${Math.round(m.contextWindow / 1000)}k)` : "";
+      console.log(`  ${m.model}${marker}${ctx}`);
     }
     console.log();
   }
