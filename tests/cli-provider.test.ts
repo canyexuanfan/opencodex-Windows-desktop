@@ -205,7 +205,7 @@ describe("ocx provider", () => {
     const { dir } = freshConfig({
       providers: {
         openai: { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" },
-        deepseek: { adapter: "openai-chat", baseUrl: "https://api.deepseek.com/v1", apiKey: "sk-very-secret-key-12345" },
+        deepseek: { adapter: "openai-chat", baseUrl: "https://api.deepseek.com/v1", apiKey: "test-dummy-key-for-masking" },
       },
     });
     try {
@@ -213,7 +213,7 @@ describe("ocx provider", () => {
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("deepseek");
       expect(result.stdout).toContain("openai-chat");
-      expect(result.stdout).not.toContain("sk-very-secret-key-12345");
+      expect(result.stdout).not.toContain("test-dummy-key-for-masking");
       expect(result.stdout).toContain("****");
     } finally {
       rmSync(dir, { recursive: true, force: true });
