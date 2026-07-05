@@ -251,6 +251,8 @@ export interface OcxConfig {
   shutdownTimeoutMs?: number;
   /** Advertise supports_websockets so Codex opens the WS endpoint. Default false; set true to opt in. */
   websockets?: boolean;
+  /** Generated API keys for external access to the proxy's /v1/responses endpoint. */
+  apiKeys?: Array<{ id: string; name: string; key: string; createdAt: string }>;
   /** Auto-start/sync the proxy from the Codex shim before launching Codex. Default true. */
   codexAutoStart?: boolean;
   /**
@@ -278,6 +280,8 @@ export interface OcxConfig {
   upstreamFailoverThreshold?: number;
   /** Background proactive token refresh ("Token Guardian"). Off by default; see OcxTokenGuardianConfig. */
   tokenGuardian?: OcxTokenGuardianConfig;
+  /** Additional origins allowed for CORS (e.g. ["https://clisu-oracle.tail19a2d7.ts.net"]). Loopback origins are always allowed. */
+  corsAllowOrigins?: string[];
 }
 
 /**

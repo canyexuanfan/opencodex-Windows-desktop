@@ -6,16 +6,17 @@ import Subagents from "./pages/Subagents";
 import Logs from "./pages/Logs";
 import Usage from "./pages/Usage";
 import CodexAuth from "./pages/CodexAuth";
+import ApiKeys from "./pages/ApiKeys";
 import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconKey, IconGithub, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower } from "./icons";
 import { useI18n, useT, LOCALES, type TKey } from "./i18n";
 import { installApiAuthFetch } from "./api";
 
 installApiAuthFetch();
 
-type Page = "dashboard" | "providers" | "models" | "subagents" | "logs" | "usage" | "codex-auth";
+type Page = "dashboard" | "providers" | "models" | "subagents" | "logs" | "usage" | "codex-auth" | "api";
 type Theme = "light" | "dark" | "system";
 
-const VALID_PAGES = new Set<Page>(["dashboard", "providers", "models", "subagents", "logs", "usage", "codex-auth"]);
+const VALID_PAGES = new Set<Page>(["dashboard", "providers", "models", "subagents", "logs", "usage", "codex-auth", "api"]);
 
 function readPageFromHash(): Page {
   const raw = location.hash.replace(/^#\/?/, "");
@@ -33,6 +34,7 @@ const NAV: { id: Page; tkey: TKey; Icon: typeof IconGrid }[] = [
   { id: "logs", tkey: "nav.logs", Icon: IconList },
   { id: "usage", tkey: "nav.usage", Icon: IconActivity },
   { id: "codex-auth", tkey: "nav.codexAuth", Icon: IconKey },
+  { id: "api", tkey: "nav.api", Icon: IconGlobe },
 ];
 
 const THEME_ICON = { light: IconSun, dark: IconMoon, system: IconMonitor } as const;
@@ -147,6 +149,7 @@ export default function App() {
           {page === "logs" && <Logs apiBase={API_BASE} />}
           {page === "usage" && <Usage apiBase={API_BASE} />}
           {page === "codex-auth" && <CodexAuth apiBase={API_BASE} />}
+          {page === "api" && <ApiKeys apiBase={API_BASE} />}
         </div>
       </main>
     </div>
