@@ -235,6 +235,7 @@ export const zh: Record<TKey, string> = {
   "modal.waitingLogin": "等待浏览器登录…",
   "modal.loggingIn": "登录中…",
   "modal.loginTimeout": "登录超时 — 请重试。",
+  "nav.api": "API",
   "nav.codexAuth": "Codex 认证",
   "codexAuth.mainAccount": "主账号",
   "codexAuth.appLogin": "应用登录",

@@ -235,6 +235,7 @@ export const ko: Record<TKey, string> = {
   "modal.waitingLogin": "브라우저 로그인 대기 중…",
   "modal.loggingIn": "로그인 중…",
   "modal.loginTimeout": "로그인 시간 초과 — 다시 시도하세요.",
+  "nav.api": "API",
   "nav.codexAuth": "Codex 인증",
   "codexAuth.mainAccount": "메인 계정",
   "codexAuth.appLogin": "앱 로그인",

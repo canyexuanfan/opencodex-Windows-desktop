@@ -1566,13 +1566,27 @@ export function assertServerAuthConfig(config: OcxConfig): void {
 
 export function hasValidApiAuth(req: Request, config: OcxConfig): boolean {
   if (!isApiAuthRequired(config)) return true;
+  const actual = req.headers.get("x-opencodex-api-key")?.trim()
+    || req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+  if (!actual) return false;
+  // Check env-based token
   const expected = configuredApiAuthToken(config);
-  const actual = req.headers.get("x-opencodex-api-key")?.trim();
-  if (!expected || !actual) return false;
-  const enc = new TextEncoder();
-  const expectedBytes = enc.encode(expected);
-  const actualBytes = enc.encode(actual);
-  return expectedBytes.length === actualBytes.length && timingSafeEqual(actualBytes, expectedBytes);
+  if (expected) {
+    const enc = new TextEncoder();
+    const expectedBytes = enc.encode(expected);
+    const actualBytes = enc.encode(actual);
+    if (expectedBytes.length === actualBytes.length && timingSafeEqual(actualBytes, expectedBytes)) return true;
+  }
+  // Check config-based API keys
+  if (config.apiKeys?.length) {
+    const enc = new TextEncoder();
+    const actualBytes = enc.encode(actual);
+    for (const k of config.apiKeys) {
+      const keyBytes = enc.encode(k.key);
+      if (keyBytes.length === actualBytes.length && timingSafeEqual(actualBytes, keyBytes)) return true;
+    }
+  }
+  return false;
 }
 
 function requireApiAuth(req: Request, config: OcxConfig, kind: "management" | "data-plane"): Response | null {
@@ -2077,6 +2091,37 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
     removeCredential(provider);
     clearLoginState(provider);
     return jsonResponse({ success: true });
+  }
+
+  // ---------------------------------------------------------------------------
+  // API Keys management
+  // ---------------------------------------------------------------------------
+  if (url.pathname === "/api/keys" && req.method === "GET") {
+    const keys = config.apiKeys ?? [];
+    return jsonResponse({ keys: keys.map(k => ({ id: k.id, name: k.name, prefix: k.key.slice(0, 8) + "...", createdAt: k.createdAt })), endpoint: `http://${config.hostname ?? "127.0.0.1"}:${listenPort}/v1/responses` }, 200, req, config);
+  }
+
+  if (url.pathname === "/api/keys" && req.method === "POST") {
+    const body = await req.json() as { name?: string };
+    const name = (body.name ?? "").trim() || "default";
+    // Generate key from provider keys hash + random salt
+    const providerKeys = Object.values(config.providers).map(p => p.apiKey ?? "").filter(Boolean).join("|");
+    const salt = crypto.randomUUID();
+    const hashInput = `${providerKeys}|${salt}|${Date.now()}`;
+    const hashBuf = new Bun.CryptoHasher("sha256").update(hashInput).digest();
+    const key = "ocx_" + Buffer.from(hashBuf).toString("hex").slice(0, 40);
+    const entry = { id: crypto.randomUUID(), name, key, createdAt: new Date().toISOString() };
+    config.apiKeys = [...(config.apiKeys ?? []), entry];
+    saveConfig(config);
+    return jsonResponse({ id: entry.id, name: entry.name, key: entry.key, createdAt: entry.createdAt }, 201, req, config);
+  }
+
+  if (url.pathname === "/api/keys" && req.method === "DELETE") {
+    const body = await req.json() as { id?: string };
+    if (!body.id) return jsonResponse({ error: "id required" }, 400, req, config);
+    config.apiKeys = (config.apiKeys ?? []).filter(k => k.id !== body.id);
+    saveConfig(config);
+    return jsonResponse({ success: true }, 200, req, config);
   }
 
   if (url.pathname === "/api/stop" && req.method === "POST") {
