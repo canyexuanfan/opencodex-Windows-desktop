@@ -537,7 +537,33 @@ switch (command) {
     runGuiUpdateWorker(jobId, channel, args[3] === "restart");
     break;
   }
-  case "help":
+  case "restart": {
+    await handleStop();
+    await handleEnsure();
+    break;
+  }
+  case "health": {
+    const healthArgs = args.slice(1);
+    const wantsHealthJson = healthArgs.includes("--json");
+    const live = await findLiveProxy();
+    if (wantsHealthJson) {
+      console.log(JSON.stringify({ ok: !!live, pid: live?.pid ?? null, port: live?.port ?? null }));
+    } else {
+      console.log(live ? `Proxy healthy (PID ${live.pid}, port ${live.port})` : "Proxy not healthy");
+    }
+    process.exit(live ? 0 : 1);
+  }
+    case "provider": {
+    const { handleProviderCommand } = await import("./cli-provider");
+    await handleProviderCommand(args.slice(1));
+    break;
+  }
+  case "models": {
+    const { handleModels } = await import("./cli-models");
+    handleModels(args.slice(1));
+    break;
+  }
+    case "help":
   case "--help":
   case "-h":
   case undefined:
