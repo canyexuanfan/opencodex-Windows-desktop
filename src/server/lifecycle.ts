@@ -59,7 +59,7 @@ export async function drainAndShutdown(
     await Bun.sleep(100);
   }
   if (activeTurns.size > 0) {
-    console.log(`⚠️  Aborting ${activeTurns.size} in-flight turn(s) after ${timeoutMs}ms deadline`);
+    console.warn(`⚠️  Aborting ${activeTurns.size} in-flight turn(s) after ${timeoutMs}ms deadline`);
     for (const ac of activeTurns) {
       ac.abort(new Error("server shutdown"));
     }

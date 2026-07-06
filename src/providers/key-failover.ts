@@ -74,6 +74,7 @@ export function rotateKeyOn429(
   providerName: string,
   retryAfterHeader: string | null | undefined,
   now = Date.now(),
+  attemptedKey?: string,
 ): OcxProviderConfig | null {
   const provider = config.providers[providerName];
   if (!provider) return null;
@@ -82,13 +83,25 @@ export function rotateKeyOn429(
   const pool = provider.apiKeyPool;
   if (!pool || pool.length < 2) return null;
 
-  // Find the current active key's pool entry
-  const currentEntry = pool.find(e => e.key === provider.apiKey);
+  // Cool the key that ACTUALLY failed. Under concurrent 429s another request may already have
+  // rotated provider.apiKey — cooling the live key would punish an innocent replacement and can
+  // exhaust a 2-key pool from a single bad key. CAS semantics: callers pass the key they used.
+  const failedKey = attemptedKey ?? provider.apiKey;
+  const currentEntry = pool.find(e => e.key === failedKey);
   if (currentEntry) {
     const cooldownMs = parseRetryAfterMs(retryAfterHeader, now) ?? DEFAULT_COOLDOWN_MS;
     keyCooldowns.set(cooldownKey(providerName, currentEntry.id), {
       cooldownUntil: now + cooldownMs,
     });
+  }
+
+  // Lost the race: someone already rotated away from the failed key. If the live key is healthy,
+  // retry with it as-is instead of rotating a second time.
+  if (attemptedKey !== undefined && provider.apiKey !== attemptedKey) {
+    const liveEntry = pool.find(e => e.key === provider.apiKey);
+    if (liveEntry && !isKeyInCooldown(providerName, liveEntry.id, now)) {
+      return { ...provider };
+    }
   }
 
   // Pick the next key that is NOT in cooldown

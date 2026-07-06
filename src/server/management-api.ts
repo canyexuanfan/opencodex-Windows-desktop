@@ -45,6 +45,14 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   if (!isAllowedRequestOrigin(req, config)) {
     return jsonResponse({ error: "cross-origin request blocked" }, 403, req, config);
   }
+  // Management bodies are small JSON (provider names, key ids, settings). Reject oversized
+  // payloads before any handler buffers them — the data plane has its own decompression cap.
+  if (req.method === "POST" || req.method === "PUT") {
+    const contentLength = Number(req.headers.get("content-length") ?? "0");
+    if (Number.isFinite(contentLength) && contentLength > 2 * 1024 * 1024) {
+      return jsonResponse({ error: "request body too large" }, 413, req, config);
+    }
+  }
   async function refreshCodexCatalogBestEffort(): Promise<void> {
     try {
       const { refreshCodexModelCatalog } = await import("../codex/refresh");

@@ -254,7 +254,10 @@ export async function handleResponses(
     // completed passthrough responses (force bypasses Codex's blanket store:false) so the next
     // turn's expansion hits. Never record a body whose own previous_response_id failed to
     // expand: its input is a delta, and storing it would replay a truncated conversation.
-    const passthroughRecordEligible = !parsed.previousResponseId || parsed._previousResponseInputExpanded === true;
+    // Compaction turns are excluded: _rawBody still carries the full pre-compaction history and
+    // recording it would let a later expansion rehydrate the chain Codex just replaced.
+    const passthroughRecordEligible = parsed._compactionRequest !== true
+      && (!parsed.previousResponseId || parsed._previousResponseInputExpanded === true);
     const rememberPassthroughResponse = passthroughRecordEligible
       ? (response: { id?: unknown; output?: unknown; status?: unknown }) =>
         rememberResponseState(parsed._rawBody, response, undefined, { force: true })
@@ -439,7 +442,7 @@ export async function handleResponses(
           stallTimeoutSec: config.stallTimeoutSec,
           hideThinkingSummary: parsed.options.hideThinkingSummary,
           ...(routedCompaction ? { compaction: true } : {}),
-          onCompletedResponse: response => rememberResponseState(parsed._rawBody, response, parsed._cursorConversationId),
+          ...(routedCompaction ? {} : { onCompletedResponse: (response: Record<string, unknown>) => rememberResponseState(parsed._rawBody, response, parsed._cursorConversationId) }),
         },
       );
       const bridgeTurnAc = new AbortController();
@@ -458,7 +461,7 @@ export async function handleResponses(
       toolSearchToolNames,
       ...(routedCompaction ? { compaction: true } : {}),
     });
-    rememberResponseState(parsed._rawBody, json, parsed._cursorConversationId);
+    if (!routedCompaction) rememberResponseState(parsed._rawBody, json, parsed._cursorConversationId);
     return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
   }
 
@@ -480,7 +483,7 @@ export async function handleResponses(
       recordSidecarOutcome,
       connectTimeoutMs: config.connectTimeoutMs ?? 200_000,
       on429: retryAfter => {
-        const rotated = rotateKeyOn429(config, route.providerName, retryAfter);
+        const rotated = rotateKeyOn429(config, route.providerName, retryAfter, Date.now(), route.provider.apiKey);
         if (!rotated) return null;
         route.provider = rotated;
         return resolveAdapter(
@@ -533,7 +536,7 @@ export async function handleResponses(
     // request once per remaining key. OAuth/forward providers and single-key pools return null
     // immediately, so this stays a no-op for them (src/providers/key-failover.ts).
     while (upstreamResponse.status === 429 && hasKeyPoolFailover(route.provider)) {
-      const rotated = rotateKeyOn429(config, route.providerName, upstreamResponse.headers.get("retry-after"));
+      const rotated = rotateKeyOn429(config, route.providerName, upstreamResponse.headers.get("retry-after"), Date.now(), route.provider.apiKey);
       if (!rotated) break;
       // Release the failed response's socket before retrying; unread bodies otherwise linger
       // until runtime cleanup (one per rotated key under a rate-limit storm).
@@ -574,7 +577,10 @@ export async function handleResponses(
         stallTimeoutSec: config.stallTimeoutSec,
         hideThinkingSummary: parsed.options.hideThinkingSummary,
         ...(routedCompaction ? { compaction: true } : {}),
-        onCompletedResponse: response => rememberResponseState(parsed._rawBody, response, parsed._cursorConversationId),
+        // Compaction turns must NOT enter the continuation cache: _rawBody still holds the full
+        // PRE-compaction history, and a later previous_response_id expansion would rehydrate the
+        // giant stale chain Codex just replaced.
+        ...(routedCompaction ? {} : { onCompletedResponse: (response: Record<string, unknown>) => rememberResponseState(parsed._rawBody, response, parsed._cursorConversationId) }),
       },
     );
     const bridgeTurnAc = new AbortController();
@@ -599,7 +605,8 @@ export async function handleResponses(
       toolSearchToolNames,
       ...(routedCompaction ? { compaction: true } : {}),
     });
-    rememberResponseState(parsed._rawBody, json, parsed._cursorConversationId);
+    // See the streaming branch: compaction turns skip the continuation cache.
+    if (!routedCompaction) rememberResponseState(parsed._rawBody, json, parsed._cursorConversationId);
     return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
   }
 
@@ -651,13 +658,34 @@ export async function handleResponsesCompact(req: Request, config: OcxConfig): P
 
   if (route.provider.adapter === "openai-responses") {
     // Native ChatGPT/OpenAI model: forward the compact request verbatim to the real backend.
-    const base = (route.provider.baseUrl ?? "").replace(/\/$/, "");
+    // Resolve the SAME pool/thread auth context as /v1/responses — forwarding the caller's raw
+    // headers would run compaction on the wrong account (or 401) whenever a pool account is
+    // active for this thread while normal turns succeed.
+    let compactProvider = route.provider;
     const headers = new Headers({ "content-type": "application/json" });
-    for (const name of FORWARD_HEADERS) {
-      const value = req.headers.get(name);
-      if (value) headers.set(name, value);
+    try {
+      const authCtx = await resolveCodexAuthContext(req.headers, config);
+      const selected = headersForCodexAuthContext(req.headers, authCtx);
+      compactProvider = applyCodexAuthContextToProvider(route.provider, authCtx);
+      for (const name of FORWARD_HEADERS) {
+        const value = selected.get(name);
+        if (value) headers.set(name, value);
+      }
+      const override = (compactProvider as { _codexAccountOverride?: { accessToken: string; chatgptAccountId: string } })._codexAccountOverride;
+      if (override) {
+        headers.set("authorization", `Bearer ${override.accessToken}`);
+        headers.set("chatgpt-account-id", override.chatgptAccountId);
+      }
+    } catch {
+      // Auth-context failures degrade to raw forwarded headers (pre-existing behavior) rather
+      // than failing the compact turn outright — codex-rs treats compact errors as session-fatal.
+      for (const name of FORWARD_HEADERS) {
+        const value = req.headers.get(name);
+        if (value) headers.set(name, value);
+      }
     }
-    if (route.provider.apiKey) headers.set("authorization", `Bearer ${resolveEnvValue(route.provider.apiKey)}`);
+    const base = (compactProvider.baseUrl ?? "").replace(/\/$/, "");
+    if (compactProvider.apiKey) headers.set("authorization", `Bearer ${resolveEnvValue(compactProvider.apiKey)}`);
     const upstream = await fetch(`${base}/responses/compact`, {
       method: "POST",
       headers,

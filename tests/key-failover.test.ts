@@ -110,4 +110,19 @@ describe("rotateKeyOn429", () => {
     clearKeyCooldowns("p");
     expect(getKeyCooldownUntil("p", "k1", now)).toBeNull();
   });
+
+  test("concurrent 429s from the SAME key do not cool the innocent replacement (CAS)", () => {
+    const config = makeConfig({ apiKey: "key-alpha-000111222333", apiKeyPool: pool3() });
+    const now = 1_000_000;
+    // Request 1 (used alpha) rotates alpha -> beta.
+    expect(rotateKeyOn429(config, "p", null, now, "key-alpha-000111222333")?.apiKey).toBe("key-beta-444555666777");
+    // Request 2 also used alpha and 429s AFTER the rotation: it must NOT cool beta —
+    // it re-cools alpha (harmless) and retries with the healthy live key.
+    const second = rotateKeyOn429(config, "p", null, now, "key-alpha-000111222333");
+    expect(second?.apiKey).toBe("key-beta-444555666777");
+    expect(getKeyCooldownUntil("p", "k2", now)).toBeNull(); // beta never cooled
+    expect(getKeyCooldownUntil("p", "k1", now)).not.toBeNull();
+    // A REAL beta failure afterwards still rotates to gamma.
+    expect(rotateKeyOn429(config, "p", null, now, "key-beta-444555666777")?.apiKey).toBe("key-gamma-888999000111");
+  });
 });
