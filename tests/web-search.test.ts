@@ -139,6 +139,65 @@ function scriptedAdapter(firstPass: AdapterEvent[]): ProviderAdapter {
 }
 
 describe("web-search sidecar native web_search_call emission", () => {
+  test("signed thinking before a web_search call survives into the replayed assistant turn", async () => {
+    globalThis.fetch = ((input) => {
+      const url = String(input);
+      if (url.startsWith("https://routed.test/")) return Promise.resolve(new Response("{}", { status: 200 }));
+      return Promise.resolve(new Response(
+        'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"docs say X"}\n\n' +
+          'event: response.completed\ndata: {"type":"response.completed"}\n\n',
+        { headers: { "Content-Type": "text/event-stream" } },
+      ));
+    }) as typeof fetch;
+
+    const seenBodies: OcxMessage[][] = [];
+    let pass = 0;
+    const adapter: ProviderAdapter = {
+      name: "mock",
+      buildRequest: (p: OcxParsedRequest) => {
+        seenBodies.push(p.context.messages);
+        return { url: "https://routed.test/v1/chat/completions", method: "POST", headers: {}, body: "{}" };
+      },
+      async *parseStream() { /* unused */ },
+      async parseResponse() {
+        pass++;
+        if (pass === 1) {
+          return [
+            { type: "thinking_delta", thinking: "I should search" },
+            { type: "thinking_signature", signature: "RealSig1234567890==" },
+            { type: "tool_call_start", id: "call_t", name: "web_search" },
+            { type: "tool_call_delta", arguments: JSON.stringify({ query: "docs" }) },
+            { type: "tool_call_end" },
+            { type: "done" },
+          ] as AdapterEvent[];
+        }
+        return [{ type: "text_delta", text: "final" }, { type: "done" }] as AdapterEvent[];
+      },
+    };
+
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "look up docs", stream: true, tools: [{ type: "web_search" }] }),
+      adapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 2,
+    });
+    await collectSse(response.body!);
+
+    // The second iteration's request must replay the assistant turn as [thinking, toolCall].
+    const replayMessages = seenBodies.at(-1)!;
+    const assistant = replayMessages.find(m => m.role === "assistant"
+      && Array.isArray(m.content) && (m.content as { type: string }[]).some(c => c.type === "toolCall"));
+    expect(assistant).toBeDefined();
+    const content = assistant!.content as { type: string; thinking?: string; signature?: string }[];
+    expect(content[0].type).toBe("thinking");
+    expect(content[0].thinking).toBe("I should search");
+    expect(content[0].signature).toBe("RealSig1234567890==");
+    expect(content[1].type).toBe("toolCall");
+  });
+
   test("an executed search emits a web_search_call item ahead of the assistant message", async () => {
     globalThis.fetch = ((input) => {
       const url = String(input);
