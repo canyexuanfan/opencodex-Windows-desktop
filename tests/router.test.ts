@@ -107,7 +107,9 @@ describe("routeModel registry effort defaults", () => {
 
     const route = routeModel(config, "opencode-go/glm-5.2");
 
-    expect(route.provider.modelReasoningEffortMap).toBeUndefined();
+    // glm-5.2 itself must have NO alias map (identity labels incl. native `max`); the provider
+    // still carries thinking-toggle alias maps for mimo/glm-5.x models, which is unrelated.
+    expect(route.provider.modelReasoningEffortMap?.["glm-5.2"]).toBeUndefined();
     expect(mapReasoningEffort(route.provider, route.modelId, "xhigh")).toBe("xhigh");
     expect(mapReasoningEffort(route.provider, route.modelId, "max")).toBe("max");
   });

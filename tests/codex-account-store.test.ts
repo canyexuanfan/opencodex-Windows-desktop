@@ -185,7 +185,7 @@ describe("codex-account-store CRUD", () => {
       readCodexAccountRecord,
       saveCodexAccountCredential,
       saveCodexAccountCredentialIfGeneration,
-    } = await import("../src/codex-account-store");
+    } = await import("../src/codex/account-store");
     const first = { accessToken: "first", refreshToken: "first-r", expiresAt: 1, chatgptAccountId: "acc" };
     const second = { accessToken: "second", refreshToken: "second-r", expiresAt: 2, chatgptAccountId: "acc" };
     const third = { accessToken: "third", refreshToken: "third-r", expiresAt: 3, chatgptAccountId: "acc" };
@@ -214,7 +214,7 @@ describe("codex-account-store CRUD", () => {
       markCodexAccountValidationFailed,
       readCodexAccountRecord,
       saveCodexAccountCredential,
-    } = await import("../src/codex-account-store");
+    } = await import("../src/codex/account-store");
     saveCodexAccountCredential("failed-warmup", { accessToken: "sensitive-access", refreshToken: "sensitive-refresh", expiresAt: 1, chatgptAccountId: "sensitive-account" });
     markCodexAccountValidated("failed-warmup", 1234);
     markCodexAccountValidationFailed("failed-warmup", "http_status:401");
