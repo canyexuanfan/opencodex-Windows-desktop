@@ -55,6 +55,13 @@ ocx logout <provider>
 
 You can also start OAuth from the [web dashboard](/opencodex/guides/web-dashboard/).
 
+### Multiple OAuth accounts
+
+OAuth providers can keep more than one logged-in account. The Providers page shows the stored
+accounts in a dropdown, lets you add another account with a fresh login, and switches the active
+account without logging the others out. Tokens stay in `~/.opencodex/auth.json`; the management API
+exposes only masked account metadata through `/api/oauth/accounts`.
+
 ## 3. API-key catalog
 
 opencodex ships a catalog of key-based providers (mostly OpenAI-compatible, a few
@@ -83,6 +90,13 @@ validates the key, and stores it. Notable entries:
 
 Most use the `openai-chat` adapter with a bearer key; a few that expose only an Anthropic-compatible
 endpoint (e.g. **Xiaomi MiMo**) use the `anthropic` adapter (`x-api-key`).
+
+### Multiple API keys
+
+Key-based providers can also keep a small key pool. Adding a key through the Providers page stores it
+under `provider.apiKeyPool`, makes it active, and mirrors it to `provider.apiKey` so routing and
+adapters continue to read the same field as before. The same dropdown can switch or remove keys; the
+management API is `/api/providers/keys` and returns masked keys only.
 
 :::note[Gateways & subscription proxies]
 A provider is included whenever it speaks a standard streaming API opencodex can proxy

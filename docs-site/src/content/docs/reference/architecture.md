@@ -11,26 +11,26 @@ model, routed, sent to a provider via an adapter, and bridged back to Responses 
 
 ```
 src/
-├── cli.ts              # ocx command dispatch
-├── index.ts            # public entry
-├── server.ts           # Bun.serve: /v1/* proxy + /api/* management API
-├── router.ts           # model id → provider + adapter
-├── config.ts           # ~/.opencodex/config.json, defaults, PID, env resolution
-├── service.ts          # launchd / systemd / Task Scheduler background service
-├── init.ts             # interactive setup wizard
-├── bridge.ts           # AdapterEvent stream → Responses SSE
-├── codex-inject.ts     # $CODEX_HOME/config.toml injection + restore
-├── codex-catalog.ts    # routed-model catalog merge + subagent ranking
-├── reasoning-effort.ts # reasoning-effort translation, clamping, and catalog levels
-├── model-cache.ts      # per-provider /models TTL cache
-├── types.ts            # core interfaces + helpers (modelInList, namespacedToolName)
-├── responses/
-│   ├── parser.ts       # Responses request → OcxParsedRequest
-│   └── schema.ts       # Zod validation
+├── cli/                # ocx command dispatch, init, status, provider commands
+├── server/             # Bun.serve, /v1/* proxy, /api/* management API, WS bridge
+├── codex/              # Codex config injection, catalog sync, auth/account integration
+├── providers/          # provider metadata, API-key pool, quota and labels
 ├── adapters/           # base + openai-chat, openai-responses, anthropic, google, azure, image
 ├── oauth/              # OAuth providers, API-key catalog, token store/refresh
+├── lib/                # runtime, process, retry, privacy, token estimate helpers
 ├── web-search/         # web-search sidecar (synthetic tool, loop, executor, parser)
-└── vision/             # vision sidecar (describe + plan)
+├── vision/             # vision sidecar (describe + plan)
+├── config.ts           # ~/.opencodex/config.json, defaults, PID, env resolution
+├── router.ts           # model id → provider + adapter
+├── bridge.ts           # AdapterEvent stream → Responses SSE / JSON
+├── reasoning-effort.ts # reasoning-effort translation, clamping, and catalog levels
+├── responses/
+│   ├── parser.ts       # Responses request → OcxParsedRequest
+│   ├── schema.ts       # Zod validation
+│   └── compaction.ts   # remote compaction prompts, envelopes, compact history
+├── service.ts          # launchd / systemd / Task Scheduler background service
+├── types.ts            # core interfaces + helpers (modelInList, namespacedToolName)
+└── index.ts            # public entry
 ```
 
 ## The parser
@@ -75,11 +75,23 @@ set, and the tool-search set captured by the parser — so MCP namespaces, `appl
 tools, and client-executed `tool_search` all round-trip. A `buildResponseJSON()` variant produces a
 single non-streaming response object from the same events.
 
+## Transport and compaction
+
+`server/index.ts` serves HTTP/SSE on `/v1/responses` by default. If Codex attempts a Responses
+WebSocket upgrade while `websockets` is `false`, opencodex returns `426 upgrade_required`; Codex then
+falls back to HTTP for that session. When `"websockets": true` is set, the same endpoint accepts the
+upgrade and uses the WebSocket bridge.
+
+Codex context compaction works for routed models. `server/responses.ts` handles
+`POST /v1/responses/compact` by running an internal routed summarization turn and returning compacted
+history, while `responses/parser.ts` and `bridge.ts` handle remote compaction v2
+`compaction_trigger` turns by emitting exactly one synthetic `compaction` output item.
+
 ## Caching & the catalog
 
-- `model-cache.ts` keeps a per-provider, in-memory TTL cache of live `/models` results (default 5 min,
+- `codex/model-cache.ts` keeps a per-provider, in-memory TTL cache of live `/models` results (default 5 min,
   matching Codex's own cache), with a stale-fallback when a fetch fails.
-- `codex-catalog.ts` merges routed models into Codex's catalog as namespaced entries, ranks featured
+- `codex/catalog.ts` merges routed models into Codex's catalog as namespaced entries, ranks featured
   [subagent models](/opencodex/guides/codex-integration/#the-subagent-picker) first, filters
   `disabledModels`, and can fully restore the pristine catalog from a one-time backup.
 

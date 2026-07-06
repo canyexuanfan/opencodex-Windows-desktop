@@ -50,6 +50,10 @@ ocx logout <provider>
 
 你也可以从 [web 仪表盘](/opencodex/zh-cn/guides/web-dashboard/) 启动 OAuth。
 
+### 多个 OAuth 账号
+
+OAuth 提供商可以保留多个已登录账号。Providers 页面会用下拉列表显示已存储的账号，允许通过一次新的登录添加账号，并可在不登出其他账号的情况下切换当前 active 账号。令牌仍保存在 `~/.opencodex/auth.json` 中；管理 API 只通过 `/api/oauth/accounts` 暴露经过脱敏的账号 metadata。
+
 ## 3. API 密钥目录
 
 opencodex 内置了一个基于密钥的提供商目录（大多数兼容 OpenAI，少数兼容 Anthropic）。仪表盘的 **Add provider** 选择器会打开该提供商的密钥仪表盘，验证密钥并将其存储。值得注意的条目：
@@ -75,6 +79,10 @@ opencodex 内置了一个基于密钥的提供商目录（大多数兼容 OpenAI
 | ……以及更多 | opencode zen、Vercel AI Gateway、Venice、NanoGPT、Synthetic、Qianfan、Alibaba、Parallel、ZenMux、LiteLLM |
 
 大多数使用带 bearer 密钥的 `openai-chat` adapter；少数仅暴露 Anthropic 兼容端点的提供商（例如 **Xiaomi MiMo**）使用 `anthropic` adapter（`x-api-key`）。
+
+### 多个 API 密钥
+
+基于密钥的提供商也可以保留一个小型 key pool。通过 Providers 页面添加密钥时，它会存入 `provider.apiKeyPool`、被设为 active，并同步到 `provider.apiKey`，这样路由和 adapter 仍读取原来的字段。同一个下拉列表可以切换或移除密钥；管理 API 是 `/api/providers/keys`，并且只返回脱敏后的密钥。
 
 :::note[gateway 与订阅 proxy]
 只要某个提供商使用 opencodex 能够 proxy 的标准 streaming API（`openai-completions`、`anthropic-messages`、`openai-responses`、Azure 或 Gemini），它就会被收录——而**不是**根据它是否是一款"agent"产品来判断。使用专有协议、没有对应 opencodex adapter 的提供商会被排除：Gemini CLI / Antigravity、Vertex AI、Amazon Bedrock，以及 Codex 后端本身。**GitHub Copilot** 和 **GitLab Duo** 是多模型 gateway，映射到它们通用的 OpenAI 兼容端点；它们使用 Bearer **订阅令牌**（而非普通 API 密钥）进行认证，并且 Copilot 可能需要通过该提供商的 `headers` 设置 `User-Agent` 请求头。**Cloudflare AI Gateway** 需要将你的 account 和 gateway id 填入 URL。

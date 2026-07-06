@@ -55,6 +55,13 @@ ocx logout <provider>
 
 [웹 대시보드](/opencodex/ko/guides/web-dashboard/)에서도 OAuth를 시작할 수 있습니다.
 
+### 여러 OAuth 계정
+
+OAuth 프로바이더는 로그인된 계정을 여러 개 보관할 수 있습니다. Providers 페이지는 저장된 계정을
+드롭다운으로 보여 주고, 새 로그인을 통해 계정을 추가하며, 다른 계정을 로그아웃하지 않고 활성 계정만
+전환할 수 있게 합니다. 토큰은 `~/.opencodex/auth.json`에 남아 있고, 관리 API는
+`/api/oauth/accounts`를 통해 마스킹된 계정 메타데이터만 노출합니다.
+
 ## 3. API 키 카탈로그
 
 opencodex는 키 기반 프로바이더 카탈로그를 제공합니다(대부분 OpenAI 호환이며, 일부는
@@ -83,6 +90,13 @@ Anthropic 호환입니다). 대시보드의 **Add provider** 선택기는 해당
 
 대부분은 bearer 키와 함께 `openai-chat` 어댑터를 사용하며, Anthropic 호환 엔드포인트만 노출하는 일부
 (예: **Xiaomi MiMo**)는 `anthropic` 어댑터(`x-api-key`)를 사용합니다.
+
+### 여러 API 키
+
+키 기반 프로바이더도 작은 키 풀을 보관할 수 있습니다. Providers 페이지에서 키를 추가하면
+`provider.apiKeyPool`에 저장하고 이를 활성화하며, 라우팅과 어댑터가 이전처럼 같은 필드를 읽도록
+`provider.apiKey`에도 반영합니다. 같은 드롭다운에서 키를 전환하거나 제거할 수 있습니다. 관리 API는
+`/api/providers/keys`이며 마스킹된 키만 반환합니다.
 
 :::note[게이트웨이 및 구독 프록시]
 프로바이더는 opencodex가 프록시할 수 있는 표준 streaming API를 사용하는 경우 포함됩니다

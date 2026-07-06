@@ -56,7 +56,7 @@ account before the request is forwarded upstream. The rule is intentionally spli
 
 3. **Authenticate** — for an `oauth` provider, opencodex swaps in a fresh, auto-refreshed access
    token as the bearer key, so the existing adapters authenticate unchanged. For ChatGPT/Codex pool
-   accounts, `codex-auth-context.ts` resolves the account first and the passthrough adapter refuses
+   accounts, `codex/auth-context.ts` resolves the account first and the passthrough adapter refuses
    to continue if the required pool credential is unavailable.
 
 4. **Vision sidecar (optional)** — if the routed model is listed in `provider.noVisionModels` and the
