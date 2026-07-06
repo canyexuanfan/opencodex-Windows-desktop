@@ -38,6 +38,7 @@ import { fetchWithResetRetry } from "../lib/upstream-retry";
 import { isUsageDebugEnabled } from "../usage/debug";
 import { readJsonRequestBody, UnsupportedContentEncodingError } from "./request-decompress";
 import { resolveAdapter, resolveWireProtocolOverride } from "./adapter-resolve";
+import { hasKeyPoolFailover, rotateKeyOn429 } from "../providers/key-failover";
 import type { WsData } from "./ws-bridge";
 import { registerTurn, trackStreamLifetime, unregisterTurn } from "./lifecycle";
 import {
@@ -503,9 +504,33 @@ export async function handleResponses(
   }
 
   if (!upstreamResponse.ok) {
-    const errorText = await upstreamResponse.text().catch(() => "unknown error");
-    cleanupUpstreamAbort();
-    return formatErrorResponse(upstreamResponse.status, "upstream_error", `Provider error ${upstreamResponse.status}: ${errorText.slice(0, 500)}`);
+    // Multi-key 429 failover: rotate to the next pool key (cooldown-aware) and retry the SAME
+    // request once per remaining key. OAuth/forward providers and single-key pools return null
+    // immediately, so this stays a no-op for them (src/providers/key-failover.ts).
+    while (upstreamResponse.status === 429 && hasKeyPoolFailover(route.provider)) {
+      const rotated = rotateKeyOn429(config, route.providerName, upstreamResponse.headers.get("retry-after"));
+      if (!rotated) break;
+      route.provider = rotated;
+      const retryAdapter = resolveAdapter(
+        resolveWireProtocolOverride(route.providerName, route.modelId, rotated),
+        config.cacheRetention,
+      );
+      const retryRequest = await retryAdapter.buildRequest(parsed, { headers: selectedForwardHeaders });
+      try {
+        upstreamResponse = retryAdapter.fetchResponse
+          ? await retryAdapter.fetchResponse(retryRequest, { abortSignal: upstream.signal, timeoutMs: connectMs })
+          : await fetchWithHeaderTimeout(retryRequest.url, {
+              method: retryRequest.method, headers: retryRequest.headers, body: retryRequest.body,
+            }, upstream.signal, connectMs);
+      } catch {
+        break; // network failure on the retry: fall through to the original error path
+      }
+    }
+    if (!upstreamResponse.ok) {
+      const errorText = await upstreamResponse.text().catch(() => "unknown error");
+      cleanupUpstreamAbort();
+      return formatErrorResponse(upstreamResponse.status, "upstream_error", `Provider error ${upstreamResponse.status}: ${errorText.slice(0, 500)}`);
+    }
   }
 
   if (parsed.stream) {

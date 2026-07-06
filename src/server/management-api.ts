@@ -520,6 +520,8 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     clearModelCache(name);
     const { clearProviderQuotaCache } = await import("../providers/quota");
     clearProviderQuotaCache();
+    const { clearKeyCooldowns } = await import("../providers/key-failover");
+    clearKeyCooldowns(name); // manual key management resets 429 cooldown state
     return jsonResponse({ ok: true, id: result.id }, 201);
   }
   if (url.pathname === "/api/providers/keys/active" && req.method === "PUT") {
@@ -533,6 +535,8 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     clearModelCache(name);
     const { clearProviderQuotaCache } = await import("../providers/quota");
     clearProviderQuotaCache();
+    const { clearKeyCooldowns } = await import("../providers/key-failover");
+    clearKeyCooldowns(name); // manual key management resets 429 cooldown state
     return jsonResponse({ ok: true, name, activeId: body.id });
   }
   if (url.pathname === "/api/providers/keys" && req.method === "DELETE") {
@@ -546,6 +550,8 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     clearModelCache(name);
     const { clearProviderQuotaCache } = await import("../providers/quota");
     clearProviderQuotaCache();
+    const { clearKeyCooldowns } = await import("../providers/key-failover");
+    clearKeyCooldowns(name); // manual key management resets 429 cooldown state
     return jsonResponse({ ok: true });
   }
 
