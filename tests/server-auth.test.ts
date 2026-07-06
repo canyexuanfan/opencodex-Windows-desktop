@@ -932,6 +932,91 @@ describe("server local API auth", () => {
     }
   });
 
+  test("after a 426'd upgrade the same client can immediately fall back to HTTP POST", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    delete process.env.OPENCODEX_API_AUTH_TOKEN;
+
+    const upstream = Bun.serve({
+      port: 0,
+      fetch() {
+        return Response.json({
+          id: "chatcmpl-fb", object: "chat.completion",
+          choices: [{ index: 0, message: { role: "assistant", content: "http fallback ok" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 2, completion_tokens: 2, total_tokens: 4 },
+        });
+      },
+    });
+    saveConfig({
+      port: 0, websockets: false, defaultProvider: "routed-fb",
+      providers: {
+        "routed-fb": { adapter: "openai-chat", baseUrl: `http://127.0.0.1:${upstream.port}/v1`, apiKey: "key-fb-000111222333" },
+      },
+    } as never);
+
+    const server = startServer(0);
+    try {
+      // codex-rs FallbackToHttp: the 426 must leave the connection/session fully usable for HTTP.
+      const upgrade = await fetch(new URL("/v1/responses", server.url), {
+        method: "GET",
+        headers: { connection: "Upgrade", upgrade: "websocket" },
+      });
+      expect(upgrade.status).toBe(426);
+      const post = await fetch(new URL("/v1/responses", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "routed-fb/some-model", input: "hello", stream: false }),
+      });
+      expect(post.status).toBe(200);
+      const json = await post.json() as { output?: { type: string; content?: { text?: string }[] }[] };
+      expect(json.output?.find(o => o.type === "message")?.content?.[0]?.text).toBe("http fallback ok");
+    } finally {
+      await server.stop(true);
+      upstream.stop(true);
+    }
+  });
+
+  test("compact v1 on a routed model propagates a summarizer failure instead of fabricating history", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    delete process.env.OPENCODEX_API_AUTH_TOKEN;
+
+    const upstream = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(JSON.stringify({ error: { message: "summarizer exploded" } }), {
+          status: 500, headers: { "content-type": "application/json" },
+        });
+      },
+    });
+    saveConfig({
+      port: 0, defaultProvider: "routed-cmp",
+      providers: {
+        "routed-cmp": { adapter: "openai-chat", baseUrl: `http://127.0.0.1:${upstream.port}/v1`, apiKey: "key-cmp-000111222333" },
+      },
+    } as never);
+
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/v1/responses/compact", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "routed-cmp/some-model",
+          input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "long history" }] }],
+        }),
+      });
+      expect(response.ok).toBe(false);
+      const body = await response.json() as { error?: { message?: string } };
+      expect(body.error?.message ?? "").toContain("500");
+    } finally {
+      await server.stop(true);
+      upstream.stop(true);
+    }
+  });
+
   test("unknown /v1/* paths return JSON 404, never GUI index.html", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
