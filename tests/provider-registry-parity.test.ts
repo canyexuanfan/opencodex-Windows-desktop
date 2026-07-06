@@ -54,6 +54,8 @@ describe("provider registry parity", () => {
       escapeBuiltinToolNames: true,
     });
     expect(KEY_LOGIN_PROVIDERS.umans.noVisionModels).toContain("umans-glm-5.2");
+    // GLM-5.2 on Zen Go is text-only → vision sidecar; Kimi K2.7 Code is multimodal and must NOT be listed.
+    expect(KEY_LOGIN_PROVIDERS["opencode-go"].noVisionModels).toEqual(["glm-5.2"]);
     expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-coder"]).toBe(262_144);
     expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-glm-5.2"]).toBe(405_504);
     expect(KEY_LOGIN_PROVIDERS.umans.modelInputModalities?.["umans-coder"]).toEqual(["text", "image"]);

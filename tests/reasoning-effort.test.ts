@@ -381,3 +381,58 @@ describe("provider-specific reasoning effort mapping", () => {
     expect(empty?.supported_reasoning_levels).toEqual([]);
   });
 });
+
+describe("thinking-toggle models (260707)", () => {
+  const toggleProvider: OcxProviderConfig = {
+    adapter: "openai-chat",
+    baseUrl: "https://opencode.ai/zen/go/v1",
+    thinkingToggleModels: ["mimo-v2.5", "glm-5"],
+    modelReasoningEfforts: { "mimo-v2.5": ["low", "high"], "glm-5": ["low", "high"] },
+    modelReasoningEffortMap: {
+      "mimo-v2.5": { none: "disabled", minimal: "disabled", low: "disabled", medium: "enabled", high: "enabled", xhigh: "enabled", max: "enabled" },
+      "glm-5": { none: "disabled", minimal: "disabled", low: "disabled", medium: "enabled", high: "enabled", xhigh: "enabled", max: "enabled" },
+    },
+  };
+
+  test("high effort emits thinking enabled, never reasoning_effort", () => {
+    const body = buildBody(toggleProvider, "mimo-v2.5", { reasoning: "high" });
+    expect(body.thinking).toEqual({ type: "enabled" });
+    expect(body).not.toHaveProperty("reasoning_effort");
+  });
+
+  test("low effort emits thinking disabled", () => {
+    const body = buildBody(toggleProvider, "glm-5", { reasoning: "low" });
+    expect(body.thinking).toEqual({ type: "disabled" });
+    expect(body).not.toHaveProperty("reasoning_effort");
+  });
+
+  test("no requested effort sends neither knob", () => {
+    const body = buildBody(toggleProvider, "mimo-v2.5", {});
+    expect(body).not.toHaveProperty("thinking");
+    expect(body).not.toHaveProperty("reasoning_effort");
+  });
+
+  test("non-toggle models on the same provider keep the reasoning_effort wire", () => {
+    const body = buildBody({ ...toggleProvider, modelReasoningEfforts: {}, modelReasoningEffortMap: {} }, "glm-5.2", { reasoning: "high" });
+    expect(body.reasoning_effort).toBe("high");
+    expect(body).not.toHaveProperty("thinking");
+  });
+
+  test("opencode-go registry routes mimo/glm5 through the toggle with a two-step ladder", () => {
+    const config = {
+      port: 10100,
+      defaultProvider: "opencode-go",
+      providers: { "opencode-go": { adapter: "openai-chat", baseUrl: "https://opencode.ai/zen/go/v1", apiKey: "k" } },
+    } as unknown as OcxConfig;
+    const route = routeModel(config, "opencode-go/mimo-v2.5");
+    expect(route.provider.thinkingToggleModels).toContain("mimo-v2.5");
+    expect(route.provider.modelReasoningEfforts?.["mimo-v2.5"]).toEqual(["low", "high"]);
+    const body = buildBody(route.provider, "mimo-v2.5", { reasoning: "xhigh" });
+    expect(body.thinking).toEqual({ type: "enabled" });
+    // kimi stays fully unadvertised (no fake knob).
+    const kimiRoute = routeModel(config, "opencode-go/kimi-k2.7-code");
+    const kimiBody = buildBody(kimiRoute.provider, "kimi-k2.7-code", { reasoning: "high" });
+    expect(kimiBody).not.toHaveProperty("thinking");
+    expect(kimiBody).not.toHaveProperty("reasoning_effort");
+  });
+});

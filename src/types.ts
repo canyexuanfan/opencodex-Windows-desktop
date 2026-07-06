@@ -415,6 +415,12 @@ export interface OcxProviderConfig {
   autoToolChoiceOnlyModels?: string[];
   /** Model ids that expect prior assistant `reasoning_content` to be preserved in chat history. */
   preserveReasoningContentModels?: string[];
+  /**
+   * Model ids whose reasoning is a vendor `thinking: {type: enabled|disabled}` toggle on the
+   * chat-completions wire (MiMo v2.x, GLM 5/5.1 style), NOT an OpenAI `reasoning_effort` ladder.
+   * The openai-chat adapter translates the mapped effort into the thinking toggle for these.
+   */
+  thinkingToggleModels?: string[];
   /** Anthropic-compatible gateways that need custom tool names escaped on the wire. */
   escapeBuiltinToolNames?: boolean;
   /**

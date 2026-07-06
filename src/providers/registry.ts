@@ -39,6 +39,7 @@ export interface ProviderRegistryEntry {
   noPenaltyModels?: string[];
   autoToolChoiceOnlyModels?: string[];
   preserveReasoningContentModels?: string[];
+  thinkingToggleModels?: string[];
   escapeBuiltinToolNames?: boolean;
   oauthId?: string;
   jawcodeBundle?: string;
@@ -55,7 +56,7 @@ export type ProviderConfigSeed = Pick<
   | "liveModels" | "contextWindow" | "modelContextWindows" | "modelInputModalities"
   | "reasoningEfforts" | "modelReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap"
   | "noVisionModels" | "noReasoningModels" | "noTemperatureModels" | "noTopPModels" | "noPenaltyModels"
-  | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "escapeBuiltinToolNames"
+  | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "thinkingToggleModels" | "escapeBuiltinToolNames"
   | "googleMode" | "project" | "location"
 >;
 
@@ -73,6 +74,26 @@ const ZAI_GLM_52_REASONING_MAP: Record<string, string> = {
   xhigh: "max",
   max: "max",
 };
+
+/**
+ * Vendor thinking-toggle models (MiMo v2.x, GLM 5/5.1 on Zen Go): the wire knob is
+ * `thinking: {type: enabled|disabled}` — a binary. Advertise a two-step Codex ladder
+ * (low = thinking off, high = thinking on) and map efforts onto the toggle. Zen Go
+ * pass-through probed live 2026-07-07 (glm-5.2 toggle verified; mimo/minimax accept shape).
+ */
+const THINKING_TOGGLE_EFFORTS = ["low", "high"];
+const THINKING_TOGGLE_MAP: Record<string, string> = {
+  none: "disabled",
+  minimal: "disabled",
+  low: "disabled",
+  medium: "enabled",
+  high: "enabled",
+  xhigh: "enabled",
+  max: "enabled",
+};
+const OPENCODE_GO_THINKING_TOGGLE_MODELS = [
+  "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2-omni", "mimo-v2-pro", "glm-5", "glm-5.1",
+];
 const DEEPSEEK_THINKING_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"];
 const DEEPSEEK_THINKING_EFFORTS = ["high", "xhigh"];
 const DEEPSEEK_THINKING_REASONING_MAP: Record<string, string> = {
@@ -251,9 +272,17 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
       "kimi-k2.7-code": [],
       "kimi-k2.7-code-highspeed": [],
+      ...Object.fromEntries(OPENCODE_GO_THINKING_TOGGLE_MODELS.map(id => [id, THINKING_TOGGLE_EFFORTS])),
     },
-    modelReasoningEffortMap: { "glm-5.2": ZAI_GLM_52_REASONING_MAP },
+    modelReasoningEffortMap: {
+      "glm-5.2": ZAI_GLM_52_REASONING_MAP,
+      ...Object.fromEntries(OPENCODE_GO_THINKING_TOGGLE_MODELS.map(id => [id, THINKING_TOGGLE_MAP])),
+    },
+    thinkingToggleModels: OPENCODE_GO_THINKING_TOGGLE_MODELS,
     noReasoningModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
+    // GLM-5.2 on Zen Go is text-only (opencode.ai/data/zhipu/glm-5-2) — the vision sidecar
+    // describes images for it. Kimi K2.7 Code accepts text+image+video: do NOT list it here.
+    noVisionModels: ["glm-5.2"],
     noTemperatureModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
     noTopPModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
     noPenaltyModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
