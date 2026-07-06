@@ -79,7 +79,8 @@ function nodeBin(): string {
 }
 
 function packageLauncherPath(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "ocx.mjs");
+  // This module lives at src/update/job.ts — the launcher is <pkg-root>/bin/ocx.mjs.
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "ocx.mjs");
 }
 
 function formatCommand(bin: string, args: string[]): string {
