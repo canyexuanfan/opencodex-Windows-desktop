@@ -142,6 +142,13 @@ export interface WebSearchLoopDeps {
   forceEmptyResponseId?: boolean;
   abortSignal?: AbortSignal;
   recordSidecarOutcome?: SidecarOutcomeRecorder;
+  /** Per-iteration deadline for routed model calls (mirrors the normal path's connectTimeoutMs). */
+  connectTimeoutMs?: number;
+  /**
+   * 429 key-failover hook: rotate the provider's active pool key and return a rebuilt adapter,
+   * or null when the pool is exhausted (same semantics as the normal routed path).
+   */
+  on429?: (retryAfterHeader: string | null) => ProviderAdapter | null;
 }
 
 /**
@@ -151,7 +158,9 @@ export interface WebSearchLoopDeps {
  * streamed Responses SSE. web_search calls are executed internally and never relayed to Codex.
  */
 export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Response> {
-  const { parsed, adapter, selectedForwardHeaders, forwardProvider, hostedTool, settings, maxSearches, abortSignal, recordSidecarOutcome } = deps;
+  const { parsed, selectedForwardHeaders, forwardProvider, hostedTool, settings, maxSearches, abortSignal, recordSidecarOutcome } = deps;
+  // Mutable: 429 key-failover (deps.on429) can swap in a rebuilt adapter mid-loop.
+  let adapter = deps.adapter;
   if (!adapter.parseResponse) return jsonError(500, "web-search sidecar requires a non-streaming adapter");
 
   const messages: OcxMessage[] = [...parsed.context.messages];
@@ -196,22 +205,41 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
       ...parsed, stream: false,
       context: { ...parsed.context, messages: iterMessages, tools: forceAnswer ? toolsNoWebSearch : allTools },
     };
-    const request = await adapter.buildRequest(iterParsed, { headers: selectedForwardHeaders });
-    let resp: Response;
-    try {
-      resp = adapter.fetchResponse
-        ? await adapter.fetchResponse(request, { abortSignal: signal })
-        : await fetchWithResetRetry(
-            () => fetch(request.url, {
-              method: request.method,
-              headers: request.headers,
-              body: request.body,
-              signal,
-            }),
-            { abortSignal: signal, label: "web-search-loop" },
-          );
-    } catch (e) {
-      throw new LoopError(502, `Provider unreachable: ${e instanceof Error ? e.message : String(e)}`);
+    // Per-iteration deadline: routed calls elsewhere carry connectTimeoutMs; without it a hung
+    // upstream would stall the whole loop until the client gives up.
+    const iterationSignal = deps.connectTimeoutMs
+      ? AbortSignal.any([signal, AbortSignal.timeout(deps.connectTimeoutMs)])
+      : signal;
+    const fetchOnce = async (): Promise<Response> => {
+      const request = await adapter.buildRequest(iterParsed, { headers: selectedForwardHeaders });
+      try {
+        return adapter.fetchResponse
+          ? await adapter.fetchResponse(request, { abortSignal: iterationSignal, ...(deps.connectTimeoutMs ? { timeoutMs: deps.connectTimeoutMs } : {}) })
+          : await fetchWithResetRetry(
+              () => fetch(request.url, {
+                method: request.method,
+                headers: request.headers,
+                body: request.body,
+                signal: iterationSignal,
+              }),
+              { abortSignal: iterationSignal, label: "web-search-loop" },
+            );
+      } catch (e) {
+        if (!signal.aborted && iterationSignal.aborted) {
+          throw new LoopError(504, `Provider timeout after ${deps.connectTimeoutMs}ms during web-search`);
+        }
+        throw new LoopError(502, `Provider unreachable: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    };
+    let resp = await fetchOnce();
+    // 429 key-failover parity with the normal routed path: rotate pool keys until one responds
+    // or the pool is exhausted (deps.on429 returns null — cooldown map guarantees termination).
+    while (resp.status === 429 && deps.on429) {
+      const rotated = deps.on429(resp.headers.get("retry-after"));
+      if (!rotated?.parseResponse) break;
+      try { void resp.body?.cancel(); } catch { /* already consumed */ }
+      adapter = rotated;
+      resp = await fetchOnce();
     }
     if (!resp.ok) {
       const t = await resp.text().catch(() => "");

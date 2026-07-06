@@ -174,6 +174,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelContextWindows: cursorModelContextWindows(CURSOR_STATIC_MODELS),
     modelInputModalities: cursorModelInputModalities(CURSOR_STATIC_MODELS),
     modelReasoningEfforts: cursorModelReasoningEfforts(CURSOR_STATIC_MODELS),
+    // Cursor's wire protocol never forwards image parts (request-builder emits an unsupported-
+    // content marker), so the vision sidecar covers ALL cursor models regardless of what the
+    // upstream model could natively do. Live-discovered models outside the static list fall back
+    // to the same marker until they appear here.
+    noVisionModels: cursorModelIds(CURSOR_STATIC_MODELS),
   },
   {
     id: "xai",
@@ -301,9 +306,16 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     },
     thinkingToggleModels: OPENCODE_GO_THINKING_TOGGLE_MODELS,
     noReasoningModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
-    // GLM-5.2 on Zen Go is text-only (opencode.ai/data/zhipu/glm-5-2) — the vision sidecar
-    // describes images for it. Kimi K2.7 Code accepts text+image+video: do NOT list it here.
-    noVisionModels: ["glm-5.2"],
+    // Text-only Zen Go models (jawcode metadata) — the vision sidecar describes images for
+    // every model listed here (and the catalog advertises image input on their behalf).
+    // Kimi K2.7 Code accepts text+image+video: do NOT list it here.
+    noVisionModels: [
+      "glm-5.2", "glm-5", "glm-5.1",
+      "deepseek-v4-flash", "deepseek-v4-pro",
+      "mimo-v2-pro", "mimo-v2.5-pro",
+      "minimax-m2.5", "minimax-m2.7",
+      "qwen3.7-max",
+    ],
     noTemperatureModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
     noTopPModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
     noPenaltyModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],

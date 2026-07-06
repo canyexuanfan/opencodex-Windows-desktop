@@ -54,8 +54,15 @@ describe("provider registry parity", () => {
       escapeBuiltinToolNames: true,
     });
     expect(KEY_LOGIN_PROVIDERS.umans.noVisionModels).toContain("umans-glm-5.2");
-    // GLM-5.2 on Zen Go is text-only → vision sidecar; Kimi K2.7 Code is multimodal and must NOT be listed.
-    expect(KEY_LOGIN_PROVIDERS["opencode-go"].noVisionModels).toEqual(["glm-5.2"]);
+    // Zen Go text-only models are vision-sidecar covered; Kimi K2.7 Code is multimodal and must NOT be listed.
+    expect(KEY_LOGIN_PROVIDERS["opencode-go"].noVisionModels).toEqual([
+      "glm-5.2", "glm-5", "glm-5.1",
+      "deepseek-v4-flash", "deepseek-v4-pro",
+      "mimo-v2-pro", "mimo-v2.5-pro",
+      "minimax-m2.5", "minimax-m2.7",
+      "qwen3.7-max",
+    ]);
+    expect(KEY_LOGIN_PROVIDERS["opencode-go"].noVisionModels).not.toContain("kimi-k2.7-code");
     expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-coder"]).toBe(262_144);
     expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-glm-5.2"]).toBe(405_504);
     expect(KEY_LOGIN_PROVIDERS.umans.modelInputModalities?.["umans-coder"]).toEqual(["text", "image"]);

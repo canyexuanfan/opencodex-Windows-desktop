@@ -9,7 +9,7 @@ import { buildCompactV1Output, COMPACT_PROMPT, decodeCompactionSummary, extractC
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
 import { expandPreviousResponseInput, previousResponseConversationId, rememberResponseState } from "../responses/state";
 import { routeModel } from "../router";
-import { namespacedToolName } from "../types";
+import { modelInList, namespacedToolName } from "../types";
 import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig } from "../types";
 import {
   getOAuthCredentialProjectId,
@@ -17,7 +17,7 @@ import {
   UnsupportedOAuthProviderError,
 } from "../oauth";
 import { buildWebSearchTool, planWebSearch, runWithWebSearch } from "../web-search";
-import { describeImagesInPlace, planVisionSidecar } from "../vision";
+import { describeImagesInPlace, planVisionSidecar, stripImagesInPlace } from "../vision";
 import { createAdapterEventQueue } from "../adapters/run-turn-queue";
 import {
   applyCodexAuthContextToProvider,
@@ -223,6 +223,10 @@ export async function handleResponses(
   const recordSidecarOutcome = sidecarOutcomeRecorder(config, authCtx);
   if (visionPlan) {
     await describeImagesInPlace(parsed, visionPlan.forwardProvider, selectedForwardHeaders, visionPlan.settings, options.abortSignal, recordSidecarOutcome);
+  } else if (modelInList(route.provider.noVisionModels, route.modelId)) {
+    // Sidecar-covered model but NO plan (no forward provider / missing forwarded auth / sidecar
+    // disabled): fail closed — never forward raw images to a text-only upstream.
+    stripImagesInPlace(parsed);
   }
 
   const adapterProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
@@ -474,6 +478,16 @@ export async function handleResponses(
       forceEmptyResponseId: true,
       abortSignal: options.abortSignal,
       recordSidecarOutcome,
+      connectTimeoutMs: config.connectTimeoutMs ?? 200_000,
+      on429: retryAfter => {
+        const rotated = rotateKeyOn429(config, route.providerName, retryAfter);
+        if (!rotated) return null;
+        route.provider = rotated;
+        return resolveAdapter(
+          resolveWireProtocolOverride(route.providerName, route.modelId, rotated),
+          config.cacheRetention,
+        );
+      },
     });
     // Register the sidecar stream as an active turn so drainAndShutdown waits for (or aborts)
     // in-flight web-search turns instead of skipping them during graceful shutdown.

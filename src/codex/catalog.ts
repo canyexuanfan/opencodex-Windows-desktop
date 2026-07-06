@@ -274,13 +274,21 @@ export function normalizeRoutedCatalogEntry(entry: RawEntry): RawEntry {
   delete entry.service_tier;
   delete entry.service_tiers;
   delete entry.default_service_tier;
+  const isCursorEntry = typeof entry.slug === "string" && entry.slug.startsWith("cursor/");
   // Routed providers use opencodex sidecars and client-executed tool discovery. The sidecar
-  // runs through native gpt-5.4-mini, so image search is available and verbalized for text-only models.
-  entry.web_search_tool_type = "text_and_image";
-  entry.supports_search_tool = true;
+  // runs through native gpt-5.4-mini, so image search is available and verbalized for text-only
+  // models. EXCEPT cursor: its runTurn transport bypasses the web-search plan entirely and
+  // rejects server search queries — advertising the tool would make models call into a void.
+  if (isCursorEntry) {
+    delete entry.web_search_tool_type;
+    entry.supports_search_tool = false;
+  } else {
+    entry.web_search_tool_type = "text_and_image";
+    entry.supports_search_tool = true;
+  }
   // Cursor's transport already serializes overlapping tool calls into atomic Responses tool events.
   // Advertising parallel calls lets Codex send the same native capability bit it sends for OpenAI.
-  entry.supports_parallel_tool_calls = typeof entry.slug === "string" && entry.slug.startsWith("cursor/");
+  entry.supports_parallel_tool_calls = isCursorEntry;
   return ensureStrictCatalogFields(entry);
 }
 

@@ -145,3 +145,23 @@ export async function describeImagesInPlace(
     msg.content = newParts;
   }
 }
+
+/**
+ * Fail-closed image strip for sidecar-covered models when NO sidecar plan exists (no forward
+ * provider / missing forwarded auth / sidecar disabled): the upstream is text-only, so forwarding
+ * raw images would 400 or silently confuse it. Replace each image with an explicit marker so the
+ * model (and the user, via its reply) knows the image was dropped rather than ignored.
+ */
+export function stripImagesInPlace(parsed: OcxParsedRequest): boolean {
+  let stripped = false;
+  for (const msg of parsed.context.messages) {
+    if (!carriesImages(msg.role) || !Array.isArray(msg.content)) continue;
+    const parts = msg.content as OcxContentPart[];
+    if (!parts.some(p => p.type === "image")) continue;
+    msg.content = parts.map(p => p.type === "image"
+      ? { type: "text", text: "[image omitted: this model is text-only and the vision sidecar is unavailable (no ChatGPT login)]" } as OcxContentPart
+      : p);
+    stripped = true;
+  }
+  return stripped;
+}
