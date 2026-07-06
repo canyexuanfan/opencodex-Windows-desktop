@@ -9,6 +9,10 @@ Responses-compatible streaming output.
 Native OpenAI/ChatGPT passthrough uses `openai-responses` with `authMode: "forward"`, forwarding only
 the allowed Codex/OpenAI auth/session headers.
 
+`POST /v1/responses/compact` handles remote compaction v1 before the generic `/v1/responses` branch
+and before the `/v1/*` guard. Unknown `/v1/*` paths return JSON 404 errors instead of falling through
+to GUI static serving.
+
 ## WebSocket
 
 The WebSocket endpoint exists at `/v1/responses`, but discovery is opt-in:
@@ -22,6 +26,8 @@ The WebSocket endpoint exists at `/v1/responses`, but discovery is opt-in:
 `websocketsEnabled(config)` is true only for an explicit `true`. When false, opencodex removes
 `supports_websockets` from injected provider tables and routed catalog entries, keeping Codex on
 HTTP/SSE. When true, Codex may use Responses WebSocket frames handled by `src/server/ws-bridge.ts`.
+If Codex still attempts a WebSocket upgrade while the feature is disabled, `/v1/responses` rejects
+the upgrade with 426 so Codex falls back to HTTP cleanly.
 
 The endpoint handles `response.create`, ignores `response.processed`, supports warmup
 `generate: false`, and feeds the same request pipeline as HTTP/SSE.
@@ -52,10 +58,10 @@ need them.
 `ECONNRESET` before any response bytes). `fetchWithResetRetry` retries only
 connection-reset-shaped rejections (up to 3 total attempts, jittered backoff, warn-logged);
 timeouts, aborts, `ECONNREFUSED`, HTTP error statuses, and mid-stream SSE failures are never
-retried. Guarded paths: the ChatGPT passthrough and generic adapter fetch in `server.ts`, the
-vision/web-search sidecars, and the web-search loop's direct-fetch fallback. Adapters with
-their own `fetchResponse` (kiro, cursor, google) keep their own retry policies; kiro imports
-the shared abort/sleep helpers from this module.
+retried. Guarded paths: the ChatGPT passthrough and generic adapter fetch in
+`src/server/responses.ts`, the vision/web-search sidecars, and the web-search loop's direct-fetch
+fallback. Adapters with their own `fetchResponse` (kiro, cursor, google) keep their own retry
+policies; kiro imports the shared abort/sleep helpers from this module.
 
 ## Sidecars
 

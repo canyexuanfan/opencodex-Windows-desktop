@@ -14,6 +14,7 @@ belong in `docs-site/`; historical investigations belong in `docs/`.
 | [`04_transports-and-sidecars.md`](04_transports-and-sidecars.md) | Responses HTTP/SSE, WebSocket opt-in, sidecars, compatibility guards. |
 | [`05_gui-and-management-api.md`](05_gui-and-management-api.md) | Dashboard serving and `/api/*` management surface. |
 | [`06_docs-and-release.md`](06_docs-and-release.md) | Public docs site, GitHub Pages, README ownership, release flow. |
+| [`07_design-methodology.md`](07_design-methodology.md) | Design process discipline for new GUI, CLI, and user-facing surfaces. |
 
 ## Product boundary
 
