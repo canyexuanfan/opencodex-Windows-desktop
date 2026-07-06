@@ -6,6 +6,7 @@ import type { ResponsesTerminalStatus } from "./bridge";
 
 const OPEN = 1;
 type ResponsesTerminalReporter = (status: ResponsesTerminalStatus) => void;
+type ResponsesPayloadObserver = (payload: string) => void;
 const SAFE_RESPONSE_HEADER_EXACT = new Set([
   "retry-after",
   "x-request-id",
@@ -169,7 +170,11 @@ function sendProtocolError(ws: ServerWebSocket<WsData>, status: number, message:
 export async function pumpResponsesSseToWebSocket(
   ws: ServerWebSocket<WsData>,
   sseStream: ReadableStream<Uint8Array>,
-  options: { isCurrent?: () => boolean; onTerminal?: ResponsesTerminalReporter } = {},
+  options: {
+    isCurrent?: () => boolean;
+    onTerminal?: ResponsesTerminalReporter;
+    onSsePayload?: ResponsesPayloadObserver;
+  } = {},
 ): Promise<void> {
   const reader = sseStream.getReader();
   const isCurrent = options.isCurrent ?? (() => true);
@@ -193,6 +198,11 @@ export async function pumpResponsesSseToWebSocket(
   const handlePayload = (payload: string): boolean => {
     if (!isCurrent()) return true;
     if (payload === "[DONE]") return false;
+    try {
+      options.onSsePayload?.(payload);
+    } catch {
+      /* payload observation must not affect WebSocket delivery */
+    }
     const type = payloadType(payload);
     if (!type) {
       reportTerminal("incomplete");
@@ -248,14 +258,24 @@ export function sendResponsesJsonAsEvents(
   ws: ServerWebSocket<WsData>,
   response: Record<string, unknown>,
   onTerminal?: ResponsesTerminalReporter,
+  onPayload?: ResponsesPayloadObserver,
 ): void {
+  const sendObservedFrame = (payload: Record<string, unknown>) => {
+    const text = JSON.stringify(payload);
+    try {
+      onPayload?.(text);
+    } catch {
+      /* payload observation must not affect WebSocket delivery */
+    }
+    sendTextFrame(ws, text);
+  };
   const output = Array.isArray(response.output) ? response.output : [];
-  sendJsonFrame(ws, {
+  sendObservedFrame({
     type: "response.created",
     response: { ...response, status: "in_progress", output: [] },
   });
   output.forEach((item, outputIndex) => {
-    sendJsonFrame(ws, {
+    sendObservedFrame({
       type: "response.output_item.done",
       output_index: outputIndex,
       item,
@@ -264,7 +284,7 @@ export function sendResponsesJsonAsEvents(
   const finalStatus = response.status === "failed" || response.status === "incomplete"
     ? response.status
     : "completed";
-  sendJsonFrame(ws, {
+  sendObservedFrame({
     type: `response.${finalStatus}` as "response.completed" | "response.failed" | "response.incomplete",
     response: { ...response, status: finalStatus },
   });
@@ -290,7 +310,10 @@ export async function sendResponseToWebSocket(
   ws: ServerWebSocket<WsData>,
   response: Response,
   isCurrent: () => boolean,
-  options: { onTerminal?: ResponsesTerminalReporter } = {},
+  options: {
+    onTerminal?: ResponsesTerminalReporter;
+    onSsePayload?: ResponsesPayloadObserver;
+  } = {},
 ): Promise<void> {
   if (!isCurrent()) {
     await response.body?.cancel().catch(() => {});
@@ -316,7 +339,11 @@ export async function sendResponseToWebSocket(
   }
 
   if (contentType.includes("text/event-stream")) {
-    await pumpResponsesSseToWebSocket(ws, response.body, { isCurrent, onTerminal: options.onTerminal });
+    await pumpResponsesSseToWebSocket(ws, response.body, {
+      isCurrent,
+      onTerminal: options.onTerminal,
+      onSsePayload: options.onSsePayload,
+    });
     return;
   }
 
@@ -324,7 +351,7 @@ export async function sendResponseToWebSocket(
     const text = await response.text();
     if (!isCurrent()) return;
     const json = JSON.parse(text) as Record<string, unknown>;
-    sendResponsesJsonAsEvents(ws, json, options.onTerminal);
+    sendResponsesJsonAsEvents(ws, json, options.onTerminal, options.onSsePayload);
     return;
   }
 
@@ -334,7 +361,11 @@ export async function sendResponseToWebSocket(
     return;
   }
   if (looksLikeSse(prefix)) {
-    await pumpResponsesSseToWebSocket(ws, stream, { isCurrent, onTerminal: options.onTerminal });
+    await pumpResponsesSseToWebSocket(ws, stream, {
+      isCurrent,
+      onTerminal: options.onTerminal,
+      onSsePayload: options.onSsePayload,
+    });
     return;
   }
 
@@ -343,7 +374,7 @@ export async function sendResponseToWebSocket(
   const trimmed = text.trim();
   if (trimmed.startsWith("{")) {
     const json = JSON.parse(trimmed) as Record<string, unknown>;
-    sendResponsesJsonAsEvents(ws, json, options.onTerminal);
+    sendResponsesJsonAsEvents(ws, json, options.onTerminal, options.onSsePayload);
     return;
   }
 

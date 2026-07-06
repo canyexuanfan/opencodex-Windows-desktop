@@ -2482,6 +2482,14 @@ export function startServer(port?: number) {
         if (!isAllowedRequestOrigin(req, config)) {
           return withCors(formatErrorResponse(403, "origin_rejected", "WebSocket upgrade blocked: non-local Origin"), req, config);
         }
+        // WS transport gate: Codex's built-in `openai` provider hardcodes supports_websockets=true,
+        // so under Design B it always tries the WS transport first. When the feature is off, reject
+        // the upgrade with 426 — codex-rs maps a connect-time UPGRADE_REQUIRED to a clean
+        // session-scoped HTTP fallback (client.rs WebsocketStreamOutcome::FallbackToHttp) instead of
+        // surfacing broken-pipe errors from sockets a "disabled" feature would otherwise accept.
+        if (!websocketsEnabled(config)) {
+          return withCors(formatErrorResponse(426, "upgrade_required", "Responses WebSocket transport is disabled; use HTTP"), req, config);
+        }
         let authCtx: CodexAuthContext;
         try {
           authCtx = await resolveCodexAuthContext(req.headers, config);
@@ -2597,6 +2605,14 @@ export function startServer(port?: number) {
         return withCors(responseWithDeferredRequestLog(response, requestId, start, logCtx), req, config);
       }
 
+      // Data-plane guard: unknown /v1/* paths must fail with JSON 404, never fall through to the
+      // GUI static handler (extensionless paths would get index.html with HTTP 200 and codex-rs
+      // endpoint clients — alpha/search, images/*, memories/*, realtime/* — would surface confusing
+      // serde decode errors instead of a clean not-found).
+      if (url.pathname.startsWith("/v1/")) {
+        return withCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
+      }
+
       const guiFile = serveGuiFile(url.pathname);
       if (guiFile) return guiFile;
       if (url.pathname === "/" && req.method === "GET") {
@@ -2660,10 +2676,13 @@ export function startServer(port?: number) {
           const requestId = nextRequestLogId(start);
           const logCtx = { model: "unknown", provider: "unknown" };
           let logged = false;
-          const finalizeLog = (status: number) => {
+          const finalizeLog = (
+            status: number,
+            meta?: Pick<RequestLogEntry, "terminalStatus" | "closeReason">,
+          ) => {
             if (logged) return;
             logged = true;
-            addFinalRequestLog(requestId, start, logCtx, status);
+            addFinalRequestLog(requestId, start, logCtx, status, meta);
           };
           const baseHeaders = ws.data.headers ?? new Headers();
           let authCtx: CodexAuthContext;
@@ -2727,9 +2746,13 @@ export function startServer(port?: number) {
               },
             });
             await sendResponseToWebSocket(ws, response, isCurrent, {
+              onSsePayload: payload => inspectResponseLogSsePayload(logCtx, payload),
               onTerminal: status => {
                 terminalRecorder?.(status);
-                finalizeLog(httpStatusForTerminalStatus(status));
+                finalizeLog(httpStatusForTerminalStatus(status), {
+                  terminalStatus: status,
+                  closeReason: "terminal",
+                });
               },
             });
             if (!logged) finalizeLog(turnAbort.signal.aborted ? 499 : response.status);

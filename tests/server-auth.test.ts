@@ -905,6 +905,114 @@ describe("server local API auth", () => {
     }
   });
 
+  test("websocket upgrade returns 426 when the WS transport is disabled", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    delete process.env.OPENCODEX_API_AUTH_TOKEN;
+    saveConfig({ ...config(), port: 0, websockets: false });
+
+    const server = startServer(0);
+    try {
+      // codex-rs maps a connect-time 426 to a clean session-scoped HTTP fallback
+      // (WebsocketStreamOutcome::FallbackToHttp) — this must NOT accept the socket.
+      const response = await fetch(new URL("/v1/responses", server.url), {
+        method: "GET",
+        headers: {
+          connection: "Upgrade",
+          upgrade: "websocket",
+        },
+      });
+      expect(response.status).toBe(426);
+      expect(await response.json()).toMatchObject({
+        error: { type: "upgrade_required" },
+      });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("unknown /v1/* paths return JSON 404, never GUI index.html", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    delete process.env.OPENCODEX_API_AUTH_TOKEN;
+    saveConfig({ ...config(), port: 0 });
+
+    const server = startServer(0);
+    try {
+      // codex-rs endpoint clients (alpha/search, images/*, memories/*) must get a clean 404
+      // instead of a 200 HTML page that fails serde with a confusing decode error.
+      for (const path of ["/v1/alpha/search", "/v1/images/generations", "/v1/memories/trace_summarize"]) {
+        const response = await fetch(new URL(path, server.url), { method: "POST" });
+        expect(response.status).toBe(404);
+        expect(response.headers.get("content-type")).toContain("application/json");
+      }
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("POST /v1/responses/compact on a routed model returns v1 replacement history", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    delete process.env.OPENCODEX_API_AUTH_TOKEN;
+
+    const upstream = Bun.serve({
+      port: 0,
+      fetch() {
+        // Anthropic non-stream response carrying the summarizer's text.
+        return Response.json({
+          content: [{ type: "text", text: "compact summary body" }],
+          usage: { input_tokens: 10, output_tokens: 5 },
+        });
+      },
+    });
+    saveConfig({
+      port: 0,
+      defaultProvider: "anthropic-test",
+      providers: {
+        "anthropic-test": {
+          adapter: "anthropic",
+          baseUrl: upstream.url.toString().replace(/\/$/, ""),
+          apiKey: "provider-key",
+          defaultModel: "claude-fable-5",
+        },
+      },
+    } as OcxConfig);
+
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/v1/responses/compact", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "anthropic-test/claude-fable-5",
+          input: [
+            { type: "message", role: "user", content: [{ type: "input_text", text: "original ask" }] },
+            { type: "message", role: "assistant", content: [{ type: "output_text", text: "work done" }] },
+          ],
+          instructions: "base instructions",
+        }),
+      });
+      expect(response.status).toBe(200);
+      const json = await response.json() as { output: { type: string; role?: string; content?: { text: string }[] }[] };
+      expect(Array.isArray(json.output)).toBe(true);
+      // Retained real user message + summary user message; codex-rs installs this as history.
+      expect(json.output[0]).toMatchObject({ type: "message", role: "user" });
+      expect(json.output[0].content?.[0].text).toBe("original ask");
+      const last = json.output[json.output.length - 1];
+      expect(last.role).toBe("user");
+      expect(last.content?.[0].text).toContain("compact summary body");
+      // No ocx1 envelope may leak into v1 output.
+      expect(JSON.stringify(json)).not.toContain("ocx1:");
+    } finally {
+      await server.stop(true);
+      await upstream.stop(true);
+    }
+  });
+
   test("expired thread affinity returns 409 before HTTP or WebSocket passthrough", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
@@ -926,6 +1034,7 @@ describe("server local API auth", () => {
     saveConfig({
       port: 0,
       defaultProvider: "chatgpt",
+      websockets: true,
       providers: {
         chatgpt: {
           adapter: "openai-responses",
@@ -1017,6 +1126,7 @@ describe("server local API auth", () => {
     saveConfig({
       port: 0,
       defaultProvider: "chatgpt",
+      websockets: true,
       providers: {
         chatgpt: {
           adapter: "openai-responses",
@@ -1088,6 +1198,93 @@ describe("server local API auth", () => {
     } finally {
       Date.now = originalNow;
       globalThis.fetch = originalFetch;
+      await server.stop(true);
+      await upstream.stop(true);
+    }
+  });
+
+  test("websocket routed adapter records completed usage in request logs", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+
+    const upstream = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response([
+          'event: message_start\n',
+          'data: {"type":"message_start","message":{"usage":{"input_tokens":20,"cache_read_input_tokens":3,"cache_creation_input_tokens":2}}}\n\n',
+          'event: content_block_delta\n',
+          'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n',
+          'event: message_delta\n',
+          'data: {"type":"message_delta","usage":{"output_tokens":4}}\n\n',
+          'event: message_stop\n',
+          'data: {"type":"message_stop"}\n\n',
+        ].join(""), { headers: { "content-type": "text/event-stream" } });
+      },
+    });
+    saveConfig({
+      port: 0,
+      defaultProvider: "anthropic-test",
+      websockets: true,
+      providers: {
+        "anthropic-test": {
+          adapter: "anthropic",
+          baseUrl: upstream.url.toString().replace(/\/$/, ""),
+          apiKey: "provider-key",
+          defaultModel: "claude-fable-5",
+        },
+      },
+    } as OcxConfig);
+
+    const server = startServer(0);
+    const wsUrl = new URL("/v1/responses", server.url);
+    wsUrl.protocol = "ws:";
+    try {
+      const ws = new WebSocket(wsUrl);
+      const waitForOpen = new Promise<void>((resolve, reject) => {
+        ws.addEventListener("open", () => resolve(), { once: true });
+        ws.addEventListener("error", () => reject(new Error("websocket failed to open")), { once: true });
+      });
+      const waitForTerminal = () => new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("websocket terminal timeout")), 1000);
+        const onMessage = (event: MessageEvent) => {
+          const text = typeof event.data === "string" ? event.data : "";
+          if (text.includes('"type":"response.completed"')) {
+            clearTimeout(timer);
+            ws.removeEventListener("message", onMessage);
+            resolve();
+          }
+        };
+        ws.addEventListener("message", onMessage);
+      });
+
+      await waitForOpen;
+      ws.send(JSON.stringify({ type: "response.create", model: "anthropic-test/claude-fable-5", input: "hello" }));
+      await waitForTerminal();
+      ws.close();
+
+      const logs = await fetch(new URL("/api/logs?tail=1", server.url)).then(r => r.json()) as Array<{
+        status: number;
+        terminalStatus?: string;
+        closeReason?: string;
+        usageStatus?: string;
+        totalTokens?: number;
+        usage?: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
+      }>;
+      expect(logs.at(-1)).toMatchObject({
+        status: 200,
+        terminalStatus: "completed",
+        closeReason: "terminal",
+        usageStatus: "reported",
+        totalTokens: 29,
+        usage: {
+          inputTokens: 25,
+          outputTokens: 4,
+          cachedInputTokens: 5,
+        },
+      });
+    } finally {
       await server.stop(true);
       await upstream.stop(true);
     }
