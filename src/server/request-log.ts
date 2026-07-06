@@ -1,0 +1,310 @@
+import { existsSync, readFileSync } from "node:fs";
+import type { ResponsesTerminalStatus } from "../bridge";
+import { CODEX_CONFIG_PATH, readRootTomlString } from "../codex/paths";
+import { readCodexCatalogPath } from "../codex/catalog";
+import type { OcxUsage } from "../types";
+import {
+  appendUsageEntry,
+  usageForFinalLog,
+  usageStatusForFinalLog,
+  usageTotalTokens,
+  type UsageStatus,
+} from "../usage/log";
+import {
+  appendUsageDebug,
+  isUsageDebugEnabled,
+  truncateForDebug,
+  USAGE_DEBUG_BODY_SAMPLE_BYTES,
+  type UsageDebugBodyKind,
+} from "../usage/debug";
+
+export interface RequestLogContext {
+  model: string;
+  provider: string;
+  requestedModel?: string;
+  requestedEffort?: string;
+  requestedServiceTier?: string;
+  requestedSpeedLabel?: string;
+  configuredServiceTier?: string;
+  configuredSpeedLabel?: string;
+  modelSupportsServiceTier?: boolean;
+  responseServiceTier?: string;
+  resolvedModel?: string;
+  usage?: OcxUsage;
+  usageLogInputTokens?: number;
+  usageDebugBodyKind?: UsageDebugBodyKind;
+  usageDebugBodySample?: string;
+  usageDebugContentType?: string;
+}
+
+export interface RequestLogEntry {
+  requestId: string;
+  timestamp: number;
+  model: string;
+  provider: string;
+  requestedModel?: string;
+  requestedEffort?: string;
+  requestedServiceTier?: string;
+  requestedSpeedLabel?: string;
+  configuredServiceTier?: string;
+  configuredSpeedLabel?: string;
+  modelSupportsServiceTier?: boolean;
+  responseServiceTier?: string;
+  resolvedModel?: string;
+  status: number;
+  durationMs: number;
+  errorCode?: string;
+  terminalStatus?: ResponsesTerminalStatus;
+  closeReason?: "terminal" | "client_cancel" | "non_stream";
+  usageStatus: UsageStatus;
+  usage?: OcxUsage;
+  totalTokens?: number;
+}
+
+const requestLog: RequestLogEntry[] = [];
+const MAX_LOG_SIZE = 200;
+let requestLogSeq = 0;
+
+export function addRequestLog(entry: RequestLogEntry) {
+  requestLog.push(entry);
+  if (requestLog.length > MAX_LOG_SIZE) requestLog.shift();
+  try {
+    appendUsageEntry({
+      requestId: entry.requestId,
+      timestamp: entry.timestamp,
+      provider: entry.provider,
+      model: entry.model,
+      ...(entry.resolvedModel ? { resolvedModel: entry.resolvedModel } : {}),
+      status: entry.status,
+      durationMs: entry.durationMs,
+      usageStatus: entry.usageStatus,
+      ...(entry.usage ? { usage: entry.usage } : {}),
+      ...(entry.totalTokens !== undefined ? { totalTokens: entry.totalTokens } : {}),
+    });
+  } catch {
+    /* request logging must never fail a user request */
+  }
+}
+
+export function nextRequestLogId(timestamp = Date.now()): string {
+  requestLogSeq = (requestLogSeq % 1_000_000) + 1;
+  return `ocx-${timestamp.toString(36)}-${requestLogSeq.toString(36)}`;
+}
+
+export function requestLogErrorCode(status: number): string | undefined {
+  if (status >= 200 && status < 400) return undefined;
+  if (status === 400 || status === 409) return "invalid_request_error";
+  if (status === 401 || status === 403) return "invalid_api_key";
+  if (status === 429) return "rate_limit_exceeded";
+  if (status === 499) return "client_closed_request";
+  if (status === 503) return "server_is_overloaded";
+  if (status >= 500) return "upstream_server_error";
+  return `http_${status}`;
+}
+
+export function requestLogSpeedLabel(serviceTier: string | undefined): string | undefined {
+  const normalized = serviceTier?.trim().toLowerCase();
+  if (normalized === "priority" || normalized === "fast") return "fast";
+  return undefined;
+}
+
+export function readConfiguredCodexServiceTier(): string | undefined {
+  try {
+    if (!existsSync(CODEX_CONFIG_PATH)) return undefined;
+    return readRootTomlString(readFileSync(CODEX_CONFIG_PATH, "utf-8"), "service_tier") ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function catalogModelSupportsServiceTier(modelId: string, serviceTier: string | undefined): boolean | undefined {
+  if (!serviceTier) return undefined;
+  const requestTier = serviceTier.trim().toLowerCase() === "fast" ? "priority" : serviceTier.trim();
+  try {
+    const catalogPath = readCodexCatalogPath();
+    if (!existsSync(catalogPath)) return undefined;
+    const catalog = JSON.parse(readFileSync(catalogPath, "utf-8")) as { models?: unknown };
+    const models = Array.isArray(catalog.models) ? catalog.models : [];
+    const entry = models.find(model => {
+      if (!model || typeof model !== "object") return false;
+      return (model as { slug?: unknown; id?: unknown }).slug === modelId
+        || (model as { slug?: unknown; id?: unknown }).id === modelId;
+    });
+    if (!entry || typeof entry !== "object") return undefined;
+    const tiers = (entry as { service_tiers?: unknown }).service_tiers;
+    return Array.isArray(tiers) && tiers.some(tier => (
+      tier && typeof tier === "object" && (tier as { id?: unknown }).id === requestTier
+    ));
+  } catch {
+    return undefined;
+  }
+}
+
+export function applyResponseLogMetadata(logCtx: RequestLogContext, payload: unknown): void {
+  if (!payload || typeof payload !== "object") return;
+  const source = "response" in payload && typeof (payload as { response?: unknown }).response === "object"
+    ? (payload as { response?: unknown }).response
+    : payload;
+  if (!source || typeof source !== "object") return;
+  const model = (source as { model?: unknown }).model;
+  if (typeof model === "string" && model.trim()) logCtx.resolvedModel = model;
+  const serviceTier = (source as { service_tier?: unknown }).service_tier;
+  if (typeof serviceTier === "string" && serviceTier.trim()) logCtx.responseServiceTier = serviceTier;
+  const usage = usageFromResponsesPayload((source as { usage?: unknown }).usage);
+  if (usage) logCtx.usage = usage;
+}
+
+export function usageFromResponsesPayload(usage: unknown): OcxUsage | undefined {
+  if (!usage || typeof usage !== "object") return undefined;
+  const raw = usage as {
+    input_tokens?: unknown;
+    output_tokens?: unknown;
+    input_tokens_details?: { cached_tokens?: unknown };
+    output_tokens_details?: { reasoning_tokens?: unknown };
+    total_tokens?: unknown;
+    prompt_tokens?: unknown;
+    completion_tokens?: unknown;
+    prompt_tokens_details?: { cached_tokens?: unknown };
+    completion_tokens_details?: { reasoning_tokens?: unknown };
+  };
+  if (typeof raw.input_tokens === "number" && typeof raw.output_tokens === "number") {
+    return {
+      inputTokens: raw.input_tokens,
+      outputTokens: raw.output_tokens,
+      ...(typeof raw.total_tokens === "number" ? { totalTokens: raw.total_tokens } : {}),
+      ...(typeof raw.input_tokens_details?.cached_tokens === "number"
+        ? { cachedInputTokens: raw.input_tokens_details.cached_tokens }
+        : {}),
+      ...(typeof raw.output_tokens_details?.reasoning_tokens === "number"
+        ? { reasoningOutputTokens: raw.output_tokens_details.reasoning_tokens }
+        : {}),
+    };
+  }
+  if (typeof raw.prompt_tokens === "number" && typeof raw.completion_tokens === "number") {
+    return {
+      inputTokens: raw.prompt_tokens,
+      outputTokens: raw.completion_tokens,
+      ...(typeof raw.total_tokens === "number" ? { totalTokens: raw.total_tokens } : {}),
+      ...(typeof raw.prompt_tokens_details?.cached_tokens === "number"
+        ? { cachedInputTokens: raw.prompt_tokens_details.cached_tokens }
+        : {}),
+      ...(typeof raw.completion_tokens_details?.reasoning_tokens === "number"
+        ? { reasoningOutputTokens: raw.completion_tokens_details.reasoning_tokens }
+        : {}),
+    };
+  }
+  return undefined;
+}
+
+export function inspectResponseLogJson(logCtx: RequestLogContext, text: string): void {
+  try {
+    applyResponseLogMetadata(logCtx, JSON.parse(text));
+  } catch {
+    /* body may not be JSON; request log metadata is best-effort only */
+  }
+  if (isUsageDebugEnabled() && logCtx.usageDebugBodyKind === undefined) {
+    logCtx.usageDebugBodyKind = "json";
+    logCtx.usageDebugBodySample = truncateForDebug(text);
+  }
+}
+
+export function inspectResponseLogSsePayload(logCtx: RequestLogContext, payload: string | null): void {
+  if (!payload || payload.trim() === "[DONE]") return;
+  const debugEnabled = isUsageDebugEnabled();
+  const sseAlreadyMarked = logCtx.usageDebugBodyKind === "sse";
+  try {
+    applyResponseLogMetadata(logCtx, JSON.parse(payload));
+  } catch {
+    /* SSE block payload may not be JSON; metadata inspection is best-effort */
+  }
+  if (debugEnabled) {
+    if (!sseAlreadyMarked) {
+      logCtx.usageDebugBodyKind = "sse";
+      logCtx.usageDebugBodySample = truncateForDebug(payload);
+    } else if (typeof logCtx.usageDebugBodySample === "string"
+      && logCtx.usageDebugBodySample.length < USAGE_DEBUG_BODY_SAMPLE_BYTES) {
+      const combined = `${logCtx.usageDebugBodySample}\n${payload}`;
+      logCtx.usageDebugBodySample = truncateForDebug(combined);
+    }
+  }
+}
+
+export function httpStatusForTerminalStatus(status: ResponsesTerminalStatus): number {
+  return status === "completed" ? 200 : 502;
+}
+
+export function addFinalRequestLog(
+  requestId: string,
+  start: number,
+  logCtx: RequestLogContext,
+  status: number,
+  meta?: Pick<RequestLogEntry, "terminalStatus" | "closeReason">,
+  addLog: (entry: RequestLogEntry) => void = addRequestLog,
+): void {
+  const errorCode = requestLogErrorCode(status);
+  const finalUsage = usageForFinalLog(logCtx.provider, logCtx.usage);
+  const usageFallback = !finalUsage && typeof logCtx.usageLogInputTokens === "number"
+    ? { inputTokens: logCtx.usageLogInputTokens, outputTokens: 0, estimated: true }
+    : undefined;
+  const loggedUsage = finalUsage && typeof logCtx.usageLogInputTokens === "number"
+    ? { ...finalUsage, inputTokens: Math.max(finalUsage.inputTokens, logCtx.usageLogInputTokens) }
+    : (finalUsage ?? usageFallback);
+  const usageStatus = usageStatusForFinalLog(loggedUsage);
+  const totalTokens = usageTotalTokens(loggedUsage);
+  addLog({
+    requestId,
+    timestamp: start,
+    model: logCtx.model,
+    provider: logCtx.provider,
+    ...(logCtx.requestedModel ? { requestedModel: logCtx.requestedModel } : {}),
+    ...(logCtx.requestedEffort ? { requestedEffort: logCtx.requestedEffort } : {}),
+    ...(logCtx.requestedServiceTier ? { requestedServiceTier: logCtx.requestedServiceTier } : {}),
+    ...(logCtx.requestedSpeedLabel ? { requestedSpeedLabel: logCtx.requestedSpeedLabel } : {}),
+    ...(logCtx.configuredServiceTier ? { configuredServiceTier: logCtx.configuredServiceTier } : {}),
+    ...(logCtx.configuredSpeedLabel ? { configuredSpeedLabel: logCtx.configuredSpeedLabel } : {}),
+    ...(logCtx.modelSupportsServiceTier !== undefined ? { modelSupportsServiceTier: logCtx.modelSupportsServiceTier } : {}),
+    ...(logCtx.responseServiceTier ? { responseServiceTier: logCtx.responseServiceTier } : {}),
+    ...(logCtx.resolvedModel ? { resolvedModel: logCtx.resolvedModel } : {}),
+    status,
+    durationMs: Date.now() - start,
+    ...(errorCode ? { errorCode } : {}),
+    ...(meta?.terminalStatus ? { terminalStatus: meta.terminalStatus } : {}),
+    ...(meta?.closeReason ? { closeReason: meta.closeReason } : {}),
+    usageStatus,
+    ...(loggedUsage ? { usage: loggedUsage } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+  });
+  if (isUsageDebugEnabled()) {
+    appendUsageDebug({
+      ts: Date.now(),
+      requestId,
+      provider: logCtx.provider,
+      model: logCtx.model,
+      upstreamContentType: logCtx.usageDebugContentType ?? null,
+      upstreamStatus: status,
+      bodyKind: logCtx.usageDebugBodyKind ?? "none",
+      bodySample: logCtx.usageDebugBodySample ?? "",
+      extractedUsage: loggedUsage ?? null,
+    });
+  }
+}
+
+export function filterRequestLogs(logs: RequestLogEntry[], params: URLSearchParams): RequestLogEntry[] {
+  let filtered = logs;
+  const provider = params.get("provider")?.trim();
+  if (provider) filtered = filtered.filter(entry => entry.provider === provider);
+  const status = params.get("status")?.trim().toLowerCase();
+  if (status) {
+    filtered = /^[1-5]xx$/.test(status)
+      ? filtered.filter(entry => Math.floor(entry.status / 100) === Number(status[0]))
+      : filtered.filter(entry => String(entry.status) === status);
+  }
+  const tailRaw = params.get("tail")?.trim();
+  if (tailRaw) {
+    const tail = Number.parseInt(tailRaw, 10);
+    if (Number.isFinite(tail) && tail > 0) filtered = filtered.slice(-Math.min(tail, MAX_LOG_SIZE));
+  }
+  return filtered;
+}
+
+export function getRequestLogEntries(): RequestLogEntry[] { return requestLog; }
