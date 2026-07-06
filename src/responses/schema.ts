@@ -4,7 +4,8 @@ const inputTextSchema = z.object({ type: z.literal("input_text"), text: z.string
 const plainTextSchema = z.object({ type: z.literal("text"), text: z.string() });
 const inputImageBlockSchema = z.object({
   type: z.literal("input_image"),
-  detail: z.enum(["auto", "low", "high"]).optional(),
+  // codex-rs ImageDetail: auto|low|high|original (view_image --detail original).
+  detail: z.enum(["auto", "low", "high", "original"]).optional(),
   image_url: z.string().optional(),
   file_id: z.string().optional(),
 }).refine(v => typeof v.image_url === "string" || typeof v.file_id === "string", {
@@ -20,9 +21,17 @@ const outputTextSchema = z.object({ type: z.literal("output_text"), text: z.stri
 const outputRefusalSchema = z.object({ type: z.literal("refusal"), refusal: z.string() });
 const summaryTextSchema = z.object({ type: z.literal("summary_text"), text: z.string() });
 const reasoningTextSchema = z.object({ type: z.literal("reasoning_text"), text: z.string() });
+// codex-rs FunctionCallOutputContentItem (protocol/src/models.rs): input_text | input_image | encrypted_content.
+const encryptedContentBlockSchema = z.object({ type: z.literal("encrypted_content"), encrypted_content: z.string() });
 
 const inputContentBlockSchema = z.union([inputTextSchema, plainTextSchema, inputImageBlockSchema, inputFileBlockSchema]);
 const outputContentBlockSchema = z.union([outputTextSchema, plainTextSchema, outputRefusalSchema]);
+// Tool outputs on the wire mix codex-rs FunctionCallOutputContentItem with legacy output blocks.
+const toolOutputContentBlockSchema = z.union([
+  outputTextSchema, plainTextSchema, outputRefusalSchema,
+  inputTextSchema, inputImageBlockSchema, encryptedContentBlockSchema,
+]);
+const toolOutputSchema = z.union([z.string(), z.array(toolOutputContentBlockSchema)]);
 
 const userMessageItemSchema = z.object({
   type: z.literal("message").optional(),
@@ -56,7 +65,7 @@ const functionCallItemSchema = z.object({
 const functionCallOutputItemSchema = z.object({
   type: z.literal("function_call_output"),
   call_id: z.string().min(1),
-  output: z.union([z.string(), z.array(z.union([outputContentBlockSchema, inputImageBlockSchema]))]).optional(),
+  output: toolOutputSchema.optional(),
 });
 const customToolCallItemSchema = z.object({
   type: z.literal("custom_tool_call"),
@@ -68,7 +77,8 @@ const customToolCallItemSchema = z.object({
 const customToolCallOutputItemSchema = z.object({
   type: z.literal("custom_tool_call_output"),
   call_id: z.string().min(1),
-  output: z.string(),
+  // codex-rs CustomToolCallOutput carries FunctionCallOutputPayload: string OR content items.
+  output: toolOutputSchema,
 });
 
 export const inputItemSchema = z.union([

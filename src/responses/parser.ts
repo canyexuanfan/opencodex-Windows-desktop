@@ -12,6 +12,7 @@ import type {
 } from "../types";
 import { namespacedToolName } from "../types";
 import { responsesRequestSchema } from "./schema";
+import { compactionItemToText } from "./compaction";
 import { extractHostedWebSearch, WEB_SEARCH_TOOL_NAME } from "../web-search/synthetic-tool";
 
 function isObj(v: unknown): v is Record<string, unknown> {
@@ -37,7 +38,7 @@ function inputContentParts(blocks: unknown[] | string | undefined): string | Ocx
       if (b.image_url) {
         // Preserve the image as a structured part — adapters send it as a native image block.
         // NEVER inline the (often base64 data-URL) image_url as text: that explodes the token count.
-        parts.push({ type: "image", imageUrl: b.image_url, ...(b.detail ? { detail: b.detail } : {}) });
+        parts.push({ type: "image", imageUrl: b.image_url, ...(b.detail ? { detail: normalizeImageDetail(b.detail) } : {}) });
       } else {
         parts.push({ type: "text", text: `[image: ${b.file_id ?? "?"}]` }); // file_id ref → no inline data
       }
@@ -180,17 +181,28 @@ function outputToToolResultContent(output: string | unknown[] | undefined): stri
   let hasImage = false;
   for (const raw of output) {
     if (!isObj(raw)) continue;
-    if (raw.type === "output_text" || raw.type === "text") {
+    if (raw.type === "output_text" || raw.type === "text" || raw.type === "input_text") {
       if (typeof raw.text === "string") parts.push({ type: "text", text: raw.text });
     } else if (raw.type === "refusal" && typeof raw.refusal === "string") {
       parts.push({ type: "text", text: `[refusal: ${raw.refusal}]` });
     } else if (raw.type === "input_image" && typeof raw.image_url === "string") {
-      parts.push({ type: "image", imageUrl: raw.image_url, ...(typeof raw.detail === "string" ? { detail: raw.detail } : {}) });
+      parts.push({ type: "image", imageUrl: raw.image_url, ...(typeof raw.detail === "string" ? { detail: normalizeImageDetail(raw.detail) } : {}) });
       hasImage = true;
+    } else if (raw.type === "encrypted_content") {
+      // codex-rs FunctionCallOutputContentItem::EncryptedContent — opaque to routed models.
+      parts.push({ type: "text", text: "[encrypted content omitted]" });
     }
   }
   if (!hasImage) return parts.map(p => (p.type === "text" ? p.text : "")).join("");
   return parts;
+}
+
+/**
+ * codex-rs ImageDetail allows "original", but chat-completions providers only accept
+ * auto|low|high on image_url.detail — degrade "original" to "high" (the codex default).
+ */
+function normalizeImageDetail(detail: string): string {
+  return detail === "original" ? "high" : detail;
 }
 
 function findToolById(messages: OcxMessage[], callId: string): { name: string; namespace?: string } {
@@ -218,6 +230,9 @@ export function parseRequest(body: unknown): OcxParsedRequest {
   // Tool specs surfaced by a prior tool_search (deferred tools, e.g. subagents). Codex does not
   // re-list these in `tools`, but chat models can only call listed tools — so we re-inject them.
   const loadedToolSpecs: unknown[] = [];
+  // Remote compaction v2: the input tail carries `{type:"compaction_trigger"}` and Codex expects a
+  // synthetic `{type:"compaction"}` output item (src/responses/compaction.ts). Flagged for the server.
+  let compactionRequest = false;
 
   if (typeof data.instructions === "string" && data.instructions.length > 0) {
     systemPrompt.push(data.instructions);
@@ -228,6 +243,27 @@ export function parseRequest(body: unknown): OcxParsedRequest {
   } else if (data.input) {
     for (const item of data.input) {
       const effectiveType = (item as { type?: string }).type ?? ("role" in item ? "message" : undefined);
+
+      if (effectiveType === "compaction_trigger") {
+        compactionRequest = true;
+        continue;
+      }
+
+      if (effectiveType === "compaction" || effectiveType === "compaction_summary" || effectiveType === "context_compaction") {
+        // A stored summary from a previous compaction. Decode our ocx1 envelope into plain text so
+        // the routed model keeps the compacted context; real OpenAI-encrypted blobs degrade to a note.
+        // `context_compaction` (encrypted_content optional) is codex-rs's local-compaction marker;
+        // with no payload it is a pure marker (the summary follows as its own user message), so it
+        // is dropped silently. It must NOT flag _compactionRequest.
+        const encrypted = (item as { encrypted_content?: unknown }).encrypted_content;
+        if (effectiveType === "context_compaction" && typeof encrypted !== "string") continue;
+        messages.push({
+          role: "user",
+          content: compactionItemToText(typeof encrypted === "string" ? encrypted : undefined),
+          timestamp: now,
+        });
+        continue;
+      }
 
       if (effectiveType === "message") {
         const msg = item as { role?: string; content?: unknown };
@@ -302,6 +338,32 @@ export function parseRequest(body: unknown): OcxParsedRequest {
         continue;
       }
 
+      if (effectiveType === "local_shell_call") {
+        // codex-rs LocalShellCall replay: pair it as an assistant toolCall so the subsequent
+        // function_call_output (same call_id) doesn't become an orphaned tool result.
+        const call = item as { id?: string; call_id?: string; action?: { type?: string; command?: string[] } };
+        const callId = call.call_id ?? call.id;
+        if (callId) {
+          const command = Array.isArray(call.action?.command) ? call.action.command : [];
+          ensureAssistantPlaceholder(messages, data.model, now).content.push({
+            type: "toolCall", id: callId, name: "shell",
+            arguments: command.length > 0 ? { command } : {},
+          });
+        }
+        continue;
+      }
+
+      if (effectiveType === "web_search_call") {
+        // Replayed hosted web-search evidence. Textify it into assistant history so the model
+        // knows the search already ran (prevents re-search loops); there is no output to pair.
+        const call = item as { action?: { type?: string; query?: string } };
+        const query = typeof call.action?.query === "string" ? call.action.query : "";
+        ensureAssistantPlaceholder(messages, data.model, now).content.push({
+          type: "text", text: query ? `[web search performed: ${query}]` : "[web search performed]",
+        });
+        continue;
+      }
+
       if (effectiveType === "tool_search_call") {
         // Preserve the model's prior tool_search call as an assistant tool call so multi-turn
         // history stays complete (otherwise the model re-issues tool_search forever).
@@ -316,7 +378,7 @@ export function parseRequest(body: unknown): OcxParsedRequest {
 
       if (effectiveType === "tool_search_output") {
         // Pair the tool_search call with its result so the model sees what was loaded.
-        const out = item as { call_id?: string; tools?: unknown[] };
+        const out = item as { call_id?: string; status?: string; tools?: unknown[] };
         const specs = Array.isArray(out.tools) ? (out.tools as Record<string, unknown>[]) : [];
         loadedToolSpecs.push(...specs);
         // List the EXACT wire names the model must call (flattened for namespaced specs), matching
@@ -331,12 +393,15 @@ export function parseRequest(body: unknown): OcxParsedRequest {
             wireNames.push(spec.name);
           }
         }
+        const failed = typeof out.status === "string" && out.status !== "completed" && out.status !== "success";
         messages.push({
           role: "toolResult", toolCallId: out.call_id ?? "", toolName: "tool_search",
-          content: wireNames.length
-            ? `Tool search loaded these tools — they are now in your available tools. Call one by its EXACT name: ${wireNames.join(", ")}.`
-            : "Tool search returned no tools.",
-          isError: false, timestamp: now,
+          content: failed && wireNames.length === 0
+            ? `Tool search failed (status: ${out.status}).`
+            : wireNames.length
+              ? `Tool search loaded these tools — they are now in your available tools. Call one by its EXACT name: ${wireNames.join(", ")}.`
+              : "Tool search returned no tools.",
+          isError: failed && wireNames.length === 0, timestamp: now,
         });
         continue;
       }
@@ -353,12 +418,14 @@ export function parseRequest(body: unknown): OcxParsedRequest {
       }
 
       if (effectiveType === "custom_tool_call_output") {
-        const output = item as { call_id: string; output: string };
+        const output = item as { call_id: string; output: string | unknown[] };
         const toolInfo = findToolById(messages, output.call_id);
         messages.push({
           role: "toolResult", toolCallId: output.call_id,
           toolName: toolInfo.name, toolNamespace: toolInfo.namespace,
-          content: output.output ?? "", isError: false, timestamp: now,
+          // Same payload shape as function_call_output (codex-rs FunctionCallOutputPayload):
+          // string or content items — normalize arrays instead of leaking raw wire blocks.
+          content: outputToToolResultContent(output.output), isError: false, timestamp: now,
         });
       }
     }
@@ -416,6 +483,7 @@ export function parseRequest(body: unknown): OcxParsedRequest {
     _rawBody: body,
     ...(webSearch ? { _webSearch: webSearch } : {}),
     ...(structuredOutput ? { _structuredOutput: true } : {}),
+    ...(compactionRequest ? { _compactionRequest: true } : {}),
   };
 }
 

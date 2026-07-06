@@ -1,5 +1,6 @@
 import type { AdapterEvent, OcxUsage } from "./types";
 import { classifyError, type OcxErrorPayload } from "./errors";
+import { encodeCompactionSummary } from "./responses/compaction";
 import { usageDisplayTotalTokens, usageInputTokensWithCacheDetail } from "./usage-totals";
 
 function uuid(): string {
@@ -62,6 +63,12 @@ export function bridgeToResponsesSSE(
     responseId?: string;
     stallTimeoutSec?: number;
     hideThinkingSummary?: boolean;
+    /**
+     * Remote compaction v2 turn: accumulate all assistant text and, on done, emit ONE synthetic
+     * `{type:"compaction", encrypted_content:"ocx1:"+base64(text)}` output item before
+     * response.completed — codex-rs collect_compaction_output requires exactly one.
+     */
+    compaction?: boolean;
     onTerminal?: (status: ResponsesTerminalStatus) => void;
     onCompletedResponse?: (response: Record<string, unknown>) => void;
   },
@@ -163,6 +170,9 @@ export function bridgeToResponsesSSE(
       let currentMsg: { itemId: string; outputIndex: number; text: string } | null = null;
       let currentReasoning: { itemId: string; outputIndex: number; text: string } | null = null;
       let currentRawReasoning: { itemId: string; outputIndex: number; text: string } | null = null;
+      // Full assistant text of a compaction turn (across message boundaries) — becomes the
+      // synthetic compaction item's payload on done.
+      let compactionText = "";
       let currentToolCall: { itemId: string; outputIndex: number; callId: string; name: string; args: string; namespace?: string; freeform?: boolean; toolSearch?: boolean } | null = null;
       // Open native web-search cell (between begin and end). Holds the output index allocated on
       // begin so the matching done reuses it; closed as `failed` if the stream terminates early.
@@ -295,6 +305,15 @@ export function bridgeToResponsesSSE(
         for await (const event of events) {
           activity = true;
           stallTicks = 0;
+          // Compaction turns emit ONLY the synthetic compaction item + response.completed. The
+          // summary text is accumulated silently: emitting it as a normal assistant message would
+          // duplicate the summary if this response is ever replayed via previous_response_id
+          // expansion (rememberResponseState stores input + output). Codex ignores extra items but
+          // its compaction UI renders nothing mid-turn, so nothing is lost visually.
+          if (options?.compaction) {
+            if (event.type === "text_delta") { compactionText += event.text; continue; }
+            if (event.type !== "done" && event.type !== "error") continue;
+          }
           switch (event.type) {
             case "text_delta": {
               if (currentReasoning) closeCurrentReasoning();
@@ -438,6 +457,16 @@ export function bridgeToResponsesSSE(
               if (currentRawReasoning) closeCurrentRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
               if (currentWebSearch) closeCurrentWebSearch("completed", []);
+              if (options?.compaction) {
+                // Exactly one compaction item per turn; codex-rs takes the first and fatals on 0.
+                const item = {
+                  type: "compaction", id: `cmp_${uuid()}`,
+                  encrypted_content: encodeCompactionSummary(compactionText),
+                };
+                emit("response.output_item.done", { output_index: outputIndex, item });
+                finishedItems.push(item as OutputItem);
+                outputIndex++;
+              }
               const response = { ...responseSnapshot("completed", finishedItems), usage: responsesUsage(event.usage) };
               options?.onCompletedResponse?.(response);
               emit("response.completed", {
@@ -528,12 +557,15 @@ export function buildResponseJSON(
     toolNsMap?: Map<string, { namespace: string; name: string }>;
     freeformToolNames?: Set<string>;
     toolSearchToolNames?: Set<string>;
+    /** Remote compaction v2 turn — append one synthetic compaction output item (see bridgeToResponsesSSE). */
+    compaction?: boolean;
   },
 ): Record<string, unknown> {
   const responseId = `resp_${uuid()}`;
   const output: OutputItem[] = [];
   let usage: OcxUsage | undefined;
   let errorMessage: string | undefined;
+  let compactionText = "";
 
   let currentText = "";
   let currentSummaryReasoning = "";
@@ -618,7 +650,10 @@ export function buildResponseJSON(
         if (currentSummaryReasoning) flushSummaryReasoning();
         if (currentRawReasoning) flushRawReasoning();
         if (currentToolCallId) flushToolCall();
-        currentText += e.text;
+        // Compaction turns keep the summary out of normal message output (replay dedup — see
+        // bridgeToResponsesSSE); it ships only inside the synthetic compaction item below.
+        if (options?.compaction) compactionText += e.text;
+        else currentText += e.text;
         break;
       case "thinking_delta":
         if (currentText) flushText();
@@ -679,6 +714,9 @@ export function buildResponseJSON(
   flushSummaryReasoning();
   flushRawReasoning();
   flushToolCall();
+  if (options?.compaction && !errorMessage) {
+    output.push({ type: "compaction", id: `cmp_${uuid()}`, encrypted_content: encodeCompactionSummary(compactionText) });
+  }
 
   return {
     id: responseId, object: "response",

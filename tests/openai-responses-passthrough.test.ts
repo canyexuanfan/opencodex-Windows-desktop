@@ -125,42 +125,143 @@ describe("OpenAI Responses passthrough sanitization", () => {
     expect(body.prompt_cache_retention).toBe("24h");
   });
 
-  test("drops previous_response_id only after proxy-expanded replay", () => {
+  const expandedRawBody = {
+    model: "gpt-5.5",
+    previous_response_id: "resp_1",
+    input: [
+      { role: "user", content: "first" },
+      { type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] },
+      { type: "function_call_output", call_id: "call_1", output: "done" },
+    ],
+  };
+  const deltaRawBody = {
+    ...expandedRawBody,
+    input: [{ type: "function_call_output", call_id: "call_1", output: "done" }],
+  };
+  const parsedBase = {
+    modelId: "gpt-5.5",
+    previousResponseId: "resp_1",
+    context: { messages: [] },
+    stream: true,
+    options: {},
+  };
+  const meta = { headers: new Headers({ authorization: "Bearer token" }) };
+
+  test("forward mode always drops previous_response_id (ChatGPT backend rejects it)", () => {
     const adapter = createResponsesPassthroughAdapter(provider);
-    const expandedRawBody = {
-      model: "gpt-5.5",
-      previous_response_id: "resp_1",
-      input: [
-        { role: "user", content: "first" },
-        { type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] },
-        { type: "function_call_output", call_id: "call_1", output: "done" },
-      ],
-    };
-    const expandedRequest = adapter.buildRequest({
-      modelId: "gpt-5.5",
-      previousResponseId: "resp_1",
-      context: { messages: [] },
-      stream: true,
-      options: {},
+
+    const expandedBody = JSON.parse(adapter.buildRequest({
+      ...parsedBase,
       _previousResponseInputExpanded: true,
       _rawBody: expandedRawBody,
-    }, { headers: new Headers({ authorization: "Bearer token" }) });
-    const expandedBody = JSON.parse(expandedRequest.body) as { previous_response_id?: string; input: unknown[] };
-
+    }, meta).body) as { previous_response_id?: string; input: unknown[] };
     expect(expandedBody.previous_response_id).toBeUndefined();
     expect(expandedBody.input).toHaveLength(3);
 
-    const rawDeltaRequest = adapter.buildRequest({
+    // Unexpanded miss (proxy restart, TTL, prior passthrough turn): the field must STILL be
+    // stripped — the Codex REST backend 400s on it ({"detail":"Unsupported parameter: ..."}).
+    const rawDeltaBody = JSON.parse(adapter.buildRequest({
+      ...parsedBase,
+      _rawBody: deltaRawBody,
+    }, meta).body) as { previous_response_id?: string; input: unknown[] };
+    expect(rawDeltaBody.previous_response_id).toBeUndefined();
+    expect(rawDeltaBody.input).toHaveLength(1);
+  });
+
+  test("api-key mode drops previous_response_id only after proxy-expanded replay", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://api.openai.example/v1",
+      authMode: "key" as const,
+      apiKey: "sk-test",
+    });
+
+    const expandedBody = JSON.parse(adapter.buildRequest({
+      ...parsedBase,
+      _previousResponseInputExpanded: true,
+      _rawBody: expandedRawBody,
+    }, meta).body) as { previous_response_id?: string; input: unknown[] };
+    expect(expandedBody.previous_response_id).toBeUndefined();
+    expect(expandedBody.input).toHaveLength(3);
+
+    // Platform /v1/responses supports server-side storage; an unexpanded id stays intact.
+    const rawDeltaBody = JSON.parse(adapter.buildRequest({
+      ...parsedBase,
+      _rawBody: deltaRawBody,
+    }, meta).body) as { previous_response_id?: string; input: unknown[] };
+    expect(rawDeltaBody.previous_response_id).toBe("resp_1");
+    expect(rawDeltaBody.input).toHaveLength(1);
+  });
+
+  test("forward unexpanded miss converts orphan tool outputs and drops reasoning", () => {
+    const adapter = createResponsesPassthroughAdapter(provider);
+    const body = JSON.parse(adapter.buildRequest({
+      ...parsedBase,
+      _rawBody: {
+        model: "gpt-5.5",
+        previous_response_id: "resp_gone",
+        input: [
+          { type: "reasoning", id: "rs_1", summary: [] },
+          { type: "function_call_output", call_id: "call_orphan", output: "tool said hi" },
+          { type: "custom_tool_call_output", call_id: "call_custom", output: [{ type: "output_text", text: "custom out" }] },
+          { role: "user", content: "next question" },
+        ],
+      },
+    }, meta).body) as { previous_response_id?: string; input: Record<string, unknown>[] };
+
+    expect(body.previous_response_id).toBeUndefined();
+    // reasoning dropped, both orphan outputs converted to user messages, user message intact
+    expect(body.input).toHaveLength(3);
+    expect(body.input[0]).toMatchObject({
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "[tool output for call_orphan]\ntool said hi" }],
+    });
+    expect(body.input[1]).toMatchObject({
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "[tool output for call_custom]\ncustom out" }],
+    });
+    expect(body.input[2]).toMatchObject({ role: "user", content: "next question" });
+  });
+
+  test("forward mode keeps paired tool outputs and local_shell_call pairs intact", () => {
+    const adapter = createResponsesPassthroughAdapter(provider);
+    const input = [
+      { type: "function_call", call_id: "call_fn", name: "ping", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_fn", output: "pong" },
+      { type: "local_shell_call", call_id: "call_sh", action: { type: "exec", command: ["ls"] } },
+      { type: "function_call_output", call_id: "call_sh", output: "files" },
+      { role: "user", content: "go on" },
+    ];
+    const body = JSON.parse(adapter.buildRequest({
       modelId: "gpt-5.5",
-      previousResponseId: "resp_1",
       context: { messages: [] },
       stream: true,
       options: {},
-      _rawBody: { ...expandedRawBody, input: [{ type: "function_call_output", call_id: "call_1", output: "done" }] },
-    }, { headers: new Headers({ authorization: "Bearer token" }) });
-    const rawDeltaBody = JSON.parse(rawDeltaRequest.body) as { previous_response_id?: string; input: unknown[] };
+      _rawBody: { model: "gpt-5.5", input },
+    }, meta).body) as { input: Record<string, unknown>[] };
 
-    expect(rawDeltaBody.previous_response_id).toBe("resp_1");
-    expect(rawDeltaBody.input).toHaveLength(1);
+    expect(body.input).toEqual(input);
+  });
+
+  test("forward expanded replay keeps reasoning items (chain is intact)", () => {
+    const adapter = createResponsesPassthroughAdapter(provider);
+    const body = JSON.parse(adapter.buildRequest({
+      ...parsedBase,
+      _previousResponseInputExpanded: true,
+      _rawBody: {
+        model: "gpt-5.5",
+        previous_response_id: "resp_1",
+        input: [
+          { type: "reasoning", id: "rs_1", summary: [] },
+          { type: "message", role: "assistant", content: [{ type: "output_text", text: "prior" }] },
+          { role: "user", content: "next" },
+        ],
+      },
+    }, meta).body) as { input: Record<string, unknown>[] };
+
+    expect(body.input).toHaveLength(3);
+    expect(body.input[0]).toMatchObject({ type: "reasoning", id: "rs_1" });
   });
 });

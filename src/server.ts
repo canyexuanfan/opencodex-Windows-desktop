@@ -22,11 +22,14 @@ import {
   loadConfig,
   providerBaseUrlConfigError,
   providerHeadersConfigError,
+  resolveEnvValue,
   saveConfig,
   websocketsEnabled,
 } from "./config";
 import { parseRequest } from "./responses/parser";
-import { expandPreviousResponseInput, previousResponseConversationId, rememberResponseState } from "./responses/state";
+import { buildCompactV1Output, COMPACT_PROMPT, decodeCompactionSummary, extractCompactUserMessages } from "./responses/compaction";
+import { FORWARD_HEADERS } from "./adapters/openai-responses";
+import { expandPreviousResponseInput, flushResponseState, previousResponseConversationId, rememberResponseState } from "./responses/state";
 import { routeModel } from "./router";
 import { namespacedToolName } from "./types";
 import {
@@ -177,6 +180,9 @@ export async function drainAndShutdown(
     }
     activeTurns.clear();
   }
+  // Debounced replay-state snapshot may still be pending; flush so the last completed turn's
+  // previous_response_id chain survives the restart this shutdown is usually part of.
+  flushResponseState();
   s?.stop(true);
   draining = false;
 }
@@ -367,7 +373,38 @@ async function handleResponses(
   const adapter = resolveAdapter(adapterProvider, config.cacheRetention);
   const recordTerminalOutcomes = options.recordTerminalOutcomes !== false;
 
+  // Remote compaction v2 on a ROUTED model: Codex sent `compaction_trigger` and requires exactly
+  // one `{type:"compaction"}` output item (codex-rs compact_remote_v2.rs). Passthrough handles it
+  // natively upstream; here we run the routed model as a plain summarizer — no tools, no web-search
+  // sidecar — and the bridge appends the synthetic compaction item (src/responses/compaction.ts).
+  const routedCompaction = parsed._compactionRequest === true && !("passthrough" in adapter && adapter.passthrough);
+  if (routedCompaction) {
+    delete parsed.context.tools;
+    delete parsed._webSearch;
+    delete parsed.options.toolChoice;
+    delete parsed.options.parallelToolCalls;
+    parsed.context.messages.push({ role: "user", content: COMPACT_PROMPT, timestamp: Date.now() });
+  }
+
   if ("passthrough" in adapter && adapter.passthrough) {
+    // Local continuation cache for the ChatGPT passthrough. Codex WS turns chain with
+    // previous_response_id, ocx converts them to internal HTTP requests, and the ChatGPT Codex
+    // REST backend rejects the parameter — the adapter strips it in forward mode, so the ONLY
+    // way a chained turn keeps its earlier context is the local replay expansion. Record
+    // completed passthrough responses (force bypasses Codex's blanket store:false) so the next
+    // turn's expansion hits. Never record a body whose own previous_response_id failed to
+    // expand: its input is a delta, and storing it would replay a truncated conversation.
+    const passthroughRecordEligible = !parsed.previousResponseId || parsed._previousResponseInputExpanded === true;
+    const rememberPassthroughResponse = passthroughRecordEligible
+      ? (response: { id?: unknown; output?: unknown; status?: unknown }) =>
+        rememberResponseState(parsed._rawBody, response, undefined, { force: true })
+      : undefined;
+    if (parsed.previousResponseId && !parsed._previousResponseInputExpanded) {
+      console.warn(
+        `[responses] previous_response_id ${parsed.previousResponseId} not found in local replay state `
+        + `(model ${parsed.modelId}); forwarding without it — earlier turns may be missing from this request`,
+      );
+    }
     const request = await adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
     // Abort the upstream if the client disconnects. A directly-relayed body does not propagate the
     // consumer's cancel to a signalled fetch, so we pass the signal and relay through relayWithAbort,
@@ -467,9 +504,10 @@ async function handleResponses(
           () => unregisterTurn(turnAc),
           logCtx,
           () => options.onNativePassthroughCancel?.(),
+          rememberPassthroughResponse,
         );
       } else {
-        consumeForResponseLogMetadata(inspectBody, logCtx, turnAc.signal, () => unregisterTurn(turnAc));
+        consumeForResponseLogMetadata(inspectBody, logCtx, turnAc.signal, () => unregisterTurn(turnAc), rememberPassthroughResponse);
       }
       if (!headers.has("content-type")) headers.set("content-type", "text/event-stream");
       // win32 must keep the pure native relay (Bun#32111 JS-sink segfault); elsewhere a JS pull
@@ -486,6 +524,11 @@ async function handleResponses(
     if (headers.get("content-type")?.toLowerCase().includes("application/json")) {
       const text = await upstreamResponse.text();
       inspectResponseLogJson(logCtx, text);
+      if (upstreamResponse.ok && rememberPassthroughResponse) {
+        try {
+          rememberPassthroughResponse(JSON.parse(text) as { id?: unknown; output?: unknown; status?: unknown });
+        } catch { /* non-JSON despite content-type; recording is best-effort */ }
+      }
       return new Response(text, {
         status: upstreamResponse.status,
         statusText: upstreamResponse.statusText,
@@ -535,6 +578,7 @@ async function handleResponses(
           ...(options.forceEmptyResponseId ? { responseId: "" } : {}),
           stallTimeoutSec: config.stallTimeoutSec,
           hideThinkingSummary: parsed.options.hideThinkingSummary,
+          ...(routedCompaction ? { compaction: true } : {}),
           onCompletedResponse: response => rememberResponseState(parsed._rawBody, response, parsed._cursorConversationId),
         },
       );
@@ -552,6 +596,7 @@ async function handleResponses(
       toolNsMap,
       freeformToolNames,
       toolSearchToolNames,
+      ...(routedCompaction ? { compaction: true } : {}),
     });
     rememberResponseState(parsed._rawBody, json, parsed._cursorConversationId);
     return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
@@ -619,6 +664,7 @@ async function handleResponses(
         ...(options.forceEmptyResponseId ? { responseId: "" } : {}),
         stallTimeoutSec: config.stallTimeoutSec,
         hideThinkingSummary: parsed.options.hideThinkingSummary,
+        ...(routedCompaction ? { compaction: true } : {}),
         onCompletedResponse: response => rememberResponseState(parsed._rawBody, response, parsed._cursorConversationId),
       },
     );
@@ -642,6 +688,7 @@ async function handleResponses(
       toolNsMap,
       freeformToolNames,
       toolSearchToolNames,
+      ...(routedCompaction ? { compaction: true } : {}),
     });
     rememberResponseState(parsed._rawBody, json, parsed._cursorConversationId);
     return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
@@ -659,6 +706,96 @@ export function linkAbortSignal(upstream: AbortController, signal?: AbortSignal)
   const onAbort = () => upstream.abort(signal.reason);
   signal.addEventListener("abort", onAbort, { once: true });
   return () => signal.removeEventListener("abort", onAbort);
+}
+
+/**
+ * Remote compaction v1 (`POST /v1/responses/compact`). Codex uses this whenever the provider
+ * "is openai" and Feature::RemoteCompactionV2 is OFF (the default) — under Design B that is the
+ * proxy. The response is a unary `{"output":[ResponseItem...]}` that codex installs as the
+ * REPLACEMENT history (compact_remote.rs). Passthrough forwards to the real ChatGPT backend;
+ * routed models run the same summarizer used for v2 and convert the summary to v1 history items.
+ */
+async function handleResponsesCompact(req: Request, config: OcxConfig): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await readJsonRequestBody(req);
+  } catch (err) {
+    if (err instanceof UnsupportedContentEncodingError) {
+      return formatErrorResponse(415, "invalid_request_error", err.message);
+    }
+    return formatErrorResponse(400, "invalid_request_error", "Invalid JSON body");
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return formatErrorResponse(400, "invalid_request_error", "Invalid compaction request body");
+  }
+  const raw = body as { model?: unknown; input?: unknown };
+  if (typeof raw.model !== "string" || raw.model.length === 0) {
+    return formatErrorResponse(400, "invalid_request_error", "compaction request requires a model");
+  }
+
+  let route;
+  try {
+    route = routeModel(config, raw.model);
+  } catch (err) {
+    return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
+  }
+
+  if (route.provider.adapter === "openai-responses") {
+    // Native ChatGPT/OpenAI model: forward the compact request verbatim to the real backend.
+    const base = (route.provider.baseUrl ?? "").replace(/\/$/, "");
+    const headers = new Headers({ "content-type": "application/json" });
+    for (const name of FORWARD_HEADERS) {
+      const value = req.headers.get(name);
+      if (value) headers.set(name, value);
+    }
+    if (route.provider.apiKey) headers.set("authorization", `Bearer ${resolveEnvValue(route.provider.apiKey)}`);
+    const upstream = await fetch(`${base}/responses/compact`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ ...raw, model: route.modelId }),
+    });
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers: { "Content-Type": upstream.headers.get("content-type") ?? "application/json" },
+    });
+  }
+
+  // ROUTED model: run the v2 synthetic-compaction turn internally (appends COMPACT_PROMPT, no
+  // tools) and decode the resulting ocx1 envelope into plain v1 replacement-history items.
+  const inputItems = Array.isArray(raw.input) ? (raw.input as unknown[]) : [];
+  const internalBody = {
+    ...raw,
+    stream: false,
+    input: [...inputItems, { type: "compaction_trigger" }],
+  };
+  const internalHeaders = new Headers({ "content-type": "application/json" });
+  for (const name of FORWARD_HEADERS) {
+    const value = req.headers.get(name);
+    if (value) internalHeaders.set(name, value);
+  }
+  const internalReq = new Request("http://localhost/v1/responses", {
+    method: "POST",
+    headers: internalHeaders,
+    body: JSON.stringify(internalBody),
+  });
+  const logCtx: RequestLogContext = { model: route.modelId, provider: route.providerName };
+  const response = await handleResponses(internalReq, config, logCtx, { abortSignal: req.signal });
+  if (!response.ok) return response;
+  let json: { output?: unknown[] };
+  try {
+    json = await response.json() as { output?: unknown[] };
+  } catch {
+    return formatErrorResponse(502, "server_error", "compaction turn returned a non-JSON response");
+  }
+  const compactionItem = (json.output ?? []).find(
+    (item): item is { type: string; encrypted_content?: string } =>
+      !!item && typeof item === "object" && (item as { type?: string }).type === "compaction",
+  );
+  const summary = compactionItem?.encrypted_content
+    ? decodeCompactionSummary(compactionItem.encrypted_content) ?? ""
+    : "";
+  const output = buildCompactV1Output(extractCompactUserMessages(inputItems), summary);
+  return new Response(JSON.stringify({ output }), { headers: { "Content-Type": "application/json" } });
 }
 
 export function disableResponsesRequestTimeout(req: Request, server: Pick<Server<WsData>, "timeout"> | undefined): boolean {
@@ -1089,6 +1226,20 @@ function terminalStatusFromSsePayload(payload: string): ResponsesTerminalStatus 
   }
 }
 
+/** Extract the response object from a `response.completed` SSE payload, or null. */
+function completedResponseFromSsePayload(payload: string): { id?: unknown; output?: unknown; status?: unknown } | null {
+  if (payload === "[DONE]") return null;
+  try {
+    const json = JSON.parse(payload) as { type?: unknown; response?: unknown };
+    if (json.type !== "response.completed") return null;
+    const response = json.response;
+    if (!response || typeof response !== "object" || Array.isArray(response)) return null;
+    return response as { id?: unknown; output?: unknown; status?: unknown };
+  } catch {
+    return null;
+  }
+}
+
 function trackSseForRequestLog(
   body: ReadableStream<Uint8Array>,
   onTerminal: (status: ResponsesTerminalStatus) => void,
@@ -1324,6 +1475,7 @@ export function consumeForInspection(
   onDone?: () => void,
   logCtx?: RequestLogContext,
   onCancel?: () => void,
+  onCompletedResponse?: (response: { id?: unknown; output?: unknown; status?: unknown }) => void,
 ): void {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -1361,6 +1513,10 @@ export function consumeForInspection(
             if (payload) {
               const status = terminalStatusFromSsePayload(payload);
               if (status) { reported = true; onTerminal(status); }
+              if (onCompletedResponse) {
+                const response = completedResponseFromSsePayload(payload);
+                if (response) onCompletedResponse(response);
+              }
             }
           }
           if (!reported && !cancelled) onTerminal("incomplete");
@@ -1370,13 +1526,17 @@ export function consumeForInspection(
         let next: { block: string; rest: string } | null;
         while ((next = nextSseBlock(buffer))) {
           buffer = next.rest;
+          if (reported && !onCompletedResponse) continue;
+          const payload = sseDataPayload(next.block);
+          if (!reported && logCtx) inspectResponseLogSsePayload(logCtx, payload);
+          if (!payload) continue;
           if (!reported) {
-            const payload = sseDataPayload(next.block);
-            if (logCtx) inspectResponseLogSsePayload(logCtx, payload);
-            if (payload) {
-              const status = terminalStatusFromSsePayload(payload);
-              if (status) { reported = true; onTerminal(status); }
-            }
+            const status = terminalStatusFromSsePayload(payload);
+            if (status) { reported = true; onTerminal(status); }
+          }
+          if (onCompletedResponse) {
+            const response = completedResponseFromSsePayload(payload);
+            if (response) onCompletedResponse(response);
           }
         }
       }
@@ -1394,6 +1554,7 @@ function consumeForResponseLogMetadata(
   logCtx: RequestLogContext,
   signal?: AbortSignal,
   onDone?: () => void,
+  onCompletedResponse?: (response: { id?: unknown; output?: unknown; status?: unknown }) => void,
 ): void {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -1414,14 +1575,26 @@ function consumeForResponseLogMetadata(
         const { done, value } = await reader.read();
         if (done) {
           buffer += decoder.decode();
-          if (buffer.trim()) inspectResponseLogSsePayload(logCtx, sseDataPayload(buffer));
+          if (buffer.trim()) {
+            const payload = sseDataPayload(buffer);
+            inspectResponseLogSsePayload(logCtx, payload);
+            if (payload && onCompletedResponse) {
+              const response = completedResponseFromSsePayload(payload);
+              if (response) onCompletedResponse(response);
+            }
+          }
           return;
         }
         buffer += decoder.decode(value, { stream: true });
         let next: { block: string; rest: string } | null;
         while ((next = nextSseBlock(buffer))) {
           buffer = next.rest;
-          inspectResponseLogSsePayload(logCtx, sseDataPayload(next.block));
+          const payload = sseDataPayload(next.block);
+          inspectResponseLogSsePayload(logCtx, payload);
+          if (payload && onCompletedResponse) {
+            const response = completedResponseFromSsePayload(payload);
+            if (response) onCompletedResponse(response);
+          }
         }
       }
     } catch {
@@ -2278,6 +2451,21 @@ export function startServer(port?: number) {
           ...goOrdered.map(m => ({ id: `${m.provider}/${m.id}`, object: "model", created: 0, owned_by: m.owned_by ?? m.provider })),
         ];
         return jsonResponse({ object: "list", data }, 200, req, config);
+      }
+
+      // Remote compaction v1 (codex-rs with Feature::RemoteCompactionV2 off — the default).
+      // Must be matched BEFORE the /v1/responses POST branch never sees it (distinct path) and
+      // before the /v1/* 404 guard below.
+      if (url.pathname === "/v1/responses/compact" && req.method === "POST") {
+        if (draining) {
+          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
+        }
+        const apiAuthError = requireApiAuth(req, config, "data-plane");
+        if (apiAuthError) return withCors(apiAuthError, req, config);
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
+        }
+        return withCors(await handleResponsesCompact(req, config), req, config);
       }
 
       if (url.pathname === "/v1/responses" && req.method === "POST") {

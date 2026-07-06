@@ -21,6 +21,13 @@ export interface OcxParsedRequest {
    * answer/"Sources:" text can't bleed into and corrupt the model's schema-constrained output.
    */
   _structuredOutput?: boolean;
+  /**
+   * True when the input carried `{type:"compaction_trigger"}` — Codex remote compaction v2 asking
+   * this turn to produce a `{type:"compaction"}` output item. Routed adapters can't natively;
+   * the server runs the model as a summarizer and the bridge emits a synthetic compaction item
+   * (see src/responses/compaction.ts).
+   */
+  _compactionRequest?: boolean;
 }
 
 export interface OcxContext {

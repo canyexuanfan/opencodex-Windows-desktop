@@ -1,5 +1,14 @@
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { atomicWriteFile, getConfigDir } from "../config";
+
 const MAX_STORED_RESPONSES = 1_000;
 const RESPONSE_TTL_MS = 60 * 60 * 1_000;
+const SNAPSHOT_DEBOUNCE_MS = 2_000;
+/** Entries whose serialized size exceeds this are kept in memory but skipped on disk: inputs can
+ * carry base64 `input_image` data URLs, and one screenshot-heavy thread must not balloon the file. */
+const SNAPSHOT_ENTRY_MAX_BYTES = 2 * 1024 * 1024;
+const SNAPSHOT_TOTAL_MAX_BYTES = 24 * 1024 * 1024;
 
 interface StoredResponseState {
   createdAt: number;
@@ -9,9 +18,83 @@ interface StoredResponseState {
 }
 
 const states = new Map<string, StoredResponseState>();
+let loaded = false;
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
 function now(): number {
   return Date.now();
+}
+
+function snapshotPath(): string {
+  return join(getConfigDir(), "responses-state.json");
+}
+
+/**
+ * Best-effort disk snapshot so previous_response_id chains survive a proxy restart (the
+ * dominant expansion-miss cause: an in-memory-only store dies with the process, and the next
+ * chained turn then reaches the upstream as a naked delta). Load is lazy on first store access;
+ * persistence is debounced + unref'd so the hot path never blocks and the process can exit.
+ * Every disk failure is swallowed — the snapshot is a cache, not a source of truth.
+ */
+function ensureLoaded(): void {
+  if (loaded) return;
+  loaded = true;
+  try {
+    const path = snapshotPath();
+    if (!existsSync(path)) return;
+    const raw = JSON.parse(readFileSync(path, "utf-8")) as { version?: unknown; states?: unknown };
+    if (raw.version !== 1 || !Array.isArray(raw.states)) return;
+    for (const entry of raw.states) {
+      if (!Array.isArray(entry) || entry.length !== 2) continue;
+      const [id, state] = entry as [unknown, unknown];
+      if (typeof id !== "string" || !state || typeof state !== "object") continue;
+      const rec = state as StoredResponseState;
+      if (typeof rec.createdAt !== "number" || !Array.isArray(rec.items)) continue;
+      states.set(id, rec);
+    }
+    pruneResponses();
+  } catch {
+    /* missing/corrupt snapshot: start empty */
+  }
+}
+
+function persistNow(path: string): void {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  try {
+    const entries: [string, StoredResponseState][] = [];
+    let total = 0;
+    // Newest-first so the most recent chains survive both caps.
+    for (const entry of [...states].reverse()) {
+      const size = JSON.stringify(entry).length;
+      if (size > SNAPSHOT_ENTRY_MAX_BYTES) continue;
+      if (total + size > SNAPSHOT_TOTAL_MAX_BYTES) break;
+      total += size;
+      entries.push(entry);
+    }
+    entries.reverse();
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    atomicWriteFile(path, JSON.stringify({ version: 1, states: entries }));
+  } catch {
+    /* best-effort: disk trouble must never affect request handling */
+  }
+}
+
+function schedulePersist(): void {
+  if (persistTimer) return;
+  // Resolve the target path NOW: tests (and anything else) may swap OPENCODEX_HOME before the
+  // debounce fires, and a late write must land in the home that owned the recorded state.
+  const path = snapshotPath();
+  persistTimer = setTimeout(() => persistNow(path), SNAPSHOT_DEBOUNCE_MS);
+  (persistTimer as { unref?: () => void }).unref?.();
+}
+
+/** Flush any pending debounced snapshot write (graceful shutdown / deterministic tests). */
+export function flushResponseState(): void {
+  if (!persistTimer) return;
+  persistNow(snapshotPath());
 }
 
 function inputItems(input: unknown): unknown[] {
@@ -37,6 +120,7 @@ export function expandPreviousResponseInput(body: unknown): unknown {
   const request = body as Record<string, unknown>;
   const previousId = typeof request.previous_response_id === "string" ? request.previous_response_id : undefined;
   if (!previousId) return body;
+  ensureLoaded();
   pruneResponses();
   const previous = states.get(previousId);
   if (!previous) return body;
@@ -48,6 +132,7 @@ export function expandPreviousResponseInput(body: unknown): unknown {
 
 export function previousResponseConversationId(responseId: string | undefined): string | undefined {
   if (!responseId) return undefined;
+  ensureLoaded();
   pruneResponses();
   return states.get(responseId)?.conversationId;
 }
@@ -56,12 +141,19 @@ export function rememberResponseState(
   requestBody: unknown,
   response: { id?: unknown; output?: unknown; status?: unknown },
   conversationId?: string,
+  opts?: { force?: boolean },
 ): void {
   if (!requestBody || typeof requestBody !== "object" || Array.isArray(requestBody)) return;
   const request = requestBody as Record<string, unknown>;
-  if (request.store === false) return;
+  // `force` bypasses only the store:false skip: Codex sends `store:false` on every non-Azure
+  // HTTP request (and WS inherits it), yet its WS turns still chain with previous_response_id.
+  // The passthrough branch records with force so those chains can be expanded locally; the
+  // store stays in-memory with a 1h TTL, so this is a proxy-internal continuation cache, not
+  // real server-side response storage.
+  if (request.store === false && !opts?.force) return;
   if (typeof response.id !== "string" || !Array.isArray(response.output)) return;
   if (response.status !== undefined && response.status !== "completed") return;
+  ensureLoaded();
   states.set(response.id, {
     createdAt: now(),
     items: [...inputItems(request.input), ...response.output],
@@ -76,8 +168,24 @@ export function rememberResponseState(
     }),
   });
   pruneResponses();
+  schedulePersist();
+}
+
+/** Memory-only reset (simulates a process restart: the snapshot file survives). */
+export function clearResponseStateMemoryForTests(): void {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  states.clear();
+  loaded = false;
 }
 
 export function clearResponseStateForTests(): void {
-  states.clear();
+  clearResponseStateMemoryForTests();
+  try {
+    unlinkSync(snapshotPath());
+  } catch {
+    /* no snapshot on disk */
+  }
 }
