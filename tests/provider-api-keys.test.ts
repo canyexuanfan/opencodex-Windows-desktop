@@ -17,7 +17,7 @@ function baseConfig(): OcxConfig {
     hostname: "127.0.0.1",
     defaultProvider: "opencode-go",
     providers: {
-      "opencode-go": { adapter: "openai-chat", baseUrl: "https://opencode.ai/zen/go/v1", apiKey: "sk-first-key-000111222333" },
+      "opencode-go": { adapter: "openai-chat", baseUrl: "https://opencode.ai/zen/go/v1", apiKey: "key-first-000111222333" },
     },
   } as OcxConfig;
 }
@@ -48,7 +48,7 @@ describe("provider API key pool", () => {
       expect(body.keys.length).toBe(1);
       expect(body.keys[0]!.active).toBe(true);
       expect(body.keys[0]!.masked.includes("****")).toBe(true);
-      expect(JSON.stringify(body).includes("sk-first-key-000111222333")).toBe(false);
+      expect(JSON.stringify(body).includes("key-first-000111222333")).toBe(false);
     } finally {
       await server.stop(true);
     }
@@ -59,7 +59,7 @@ describe("provider API key pool", () => {
     try {
       const add = await fetch(new URL("/api/providers/keys", server.url), {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: "opencode-go", key: "sk-second-key-444555666777" }),
+        body: JSON.stringify({ name: "opencode-go", key: "key-second-444555666777" }),
       });
       expect(add.status).toBe(201);
       const { id: secondId } = await add.json() as { id: string };
@@ -70,7 +70,7 @@ describe("provider API key pool", () => {
 
       // config.json mirrors the active key into apiKey
       const cfg = JSON.parse(readFileSync(join(testDir, "config.json"), "utf-8"));
-      expect(cfg.providers["opencode-go"].apiKey).toBe("sk-second-key-444555666777");
+      expect(cfg.providers["opencode-go"].apiKey).toBe("key-second-444555666777");
 
       const firstId = list.keys.find(k => k.id !== secondId)!.id;
       const put = await fetch(new URL("/api/providers/keys/active", server.url), {
@@ -88,7 +88,7 @@ describe("provider API key pool", () => {
       expect(list.keys.length).toBe(1);
       expect(list.activeId).toBe(secondId);
       const cfg2 = JSON.parse(readFileSync(join(testDir, "config.json"), "utf-8"));
-      expect(cfg2.providers["opencode-go"].apiKey).toBe("sk-second-key-444555666777");
+      expect(cfg2.providers["opencode-go"].apiKey).toBe("key-second-444555666777");
     } finally {
       await server.stop(true);
     }

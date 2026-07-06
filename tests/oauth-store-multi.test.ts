@@ -42,11 +42,11 @@ describe("multi-account auth store", () => {
     const authPath = join(TEST_DIR, "auth.json");
     mkdirSync(TEST_DIR, { recursive: true, mode: 0o700 });
     writeFileSync(authPath, JSON.stringify({
-      xai: { access: "legacy-access", refresh: "legacy-refresh", expires: Date.now() + 1000, email: "old@x.ai" },
+      xai: { access: "legacy-access", refresh: "legacy-refresh", expires: Date.now() + 1000, email: "old@example.com" },
     }));
     expect(getCredential("xai")?.access).toBe("legacy-access");
     // Any mutation persists the new shape + writes the downgrade backup.
-    saveCredential("xai", cred({ email: "old@x.ai", access: "new-access" }));
+    saveCredential("xai", cred({ email: "old@example.com", access: "new-access" }));
     expect(getCredential("xai")?.access).toBe("new-access");
     const raw = JSON.parse(readFileSync(authPath, "utf-8"));
     expect(Array.isArray(raw.xai.accounts)).toBe(true);
@@ -54,15 +54,15 @@ describe("multi-account auth store", () => {
   });
 
   test("new identity appends a second account and activates it", () => {
-    saveCredential("anthropic", cred({ email: "a@x.io", accountId: "acct-a" }));
-    saveCredential("anthropic", cred({ email: "b@x.io", accountId: "acct-b", access: "access-b" }));
+    saveCredential("anthropic", cred({ email: "a@example.com", accountId: "acct-a" }));
+    saveCredential("anthropic", cred({ email: "b@example.com", accountId: "acct-b", access: "access-b" }));
     expect(listAccounts("anthropic").length).toBe(2);
-    expect(getCredential("anthropic")?.email).toBe("b@x.io");
+    expect(getCredential("anthropic")?.email).toBe("b@example.com");
   });
 
   test("same identity replaces credential without duplicating", () => {
-    saveCredential("anthropic", cred({ email: "a@x.io", accountId: "acct-a" }));
-    saveCredential("anthropic", cred({ email: "a@x.io", accountId: "acct-a", access: "rotated", refresh: "rotated-refresh" }));
+    saveCredential("anthropic", cred({ email: "a@example.com", accountId: "acct-a" }));
+    saveCredential("anthropic", cred({ email: "a@example.com", accountId: "acct-a", access: "rotated", refresh: "rotated-refresh" }));
     expect(listAccounts("anthropic").length).toBe(1);
     expect(getCredential("anthropic")?.access).toBe("rotated");
   });
@@ -75,35 +75,35 @@ describe("multi-account auth store", () => {
   });
 
   test("chatgpt stays single-slot even with distinct identities", () => {
-    saveCredential("chatgpt", cred({ email: "a@x.io", accountId: "one" }));
-    saveCredential("chatgpt", cred({ email: "b@x.io", accountId: "two", access: "b-access" }));
+    saveCredential("chatgpt", cred({ email: "a@example.com", accountId: "one" }));
+    saveCredential("chatgpt", cred({ email: "b@example.com", accountId: "two", access: "b-access" }));
     expect(listAccounts("chatgpt").length).toBe(1);
-    expect(getCredential("chatgpt")?.email).toBe("b@x.io");
+    expect(getCredential("chatgpt")?.email).toBe("b@example.com");
   });
 
   test("setActiveAccount switches what getCredential returns", () => {
-    saveCredential("anthropic", cred({ email: "a@x.io", accountId: "acct-a", access: "access-a" }));
-    saveCredential("anthropic", cred({ email: "b@x.io", accountId: "acct-b", access: "access-b" }));
+    saveCredential("anthropic", cred({ email: "a@example.com", accountId: "acct-a", access: "access-a" }));
+    saveCredential("anthropic", cred({ email: "b@example.com", accountId: "acct-b", access: "access-b" }));
     const set = getAccountSet("anthropic")!;
-    const idA = set.accounts.find(a => a.credential.email === "a@x.io")!.id;
+    const idA = set.accounts.find(a => a.credential.email === "a@example.com")!.id;
     expect(setActiveAccount("anthropic", idA)).toBe(true);
     expect(getCredential("anthropic")?.access).toBe("access-a");
     expect(setActiveAccount("anthropic", "nope")).toBe(false);
   });
 
   test("saveAccountCredential persists refresh for a non-active account without switching active", () => {
-    saveCredential("xai", cred({ email: "a@x.io", accountId: "acct-a" }));
-    saveCredential("xai", cred({ email: "b@x.io", accountId: "acct-b", access: "access-b" }));
+    saveCredential("xai", cred({ email: "a@example.com", accountId: "acct-a" }));
+    saveCredential("xai", cred({ email: "b@example.com", accountId: "acct-b", access: "access-b" }));
     const set = getAccountSet("xai")!;
-    const idA = set.accounts.find(a => a.credential.email === "a@x.io")!.id;
-    saveAccountCredential("xai", idA, cred({ email: "a@x.io", accountId: "acct-a", access: "refreshed-a" }));
+    const idA = set.accounts.find(a => a.credential.email === "a@example.com")!.id;
+    saveAccountCredential("xai", idA, cred({ email: "a@example.com", accountId: "acct-a", access: "refreshed-a" }));
     expect(getAccountCredential("xai", idA)?.access).toBe("refreshed-a");
     expect(getCredential("xai")?.access).toBe("access-b"); // active unchanged
   });
 
   test("removeAccount of active promotes next; last removal deletes provider", () => {
-    saveCredential("xai", cred({ email: "a@x.io", accountId: "acct-a", access: "access-a" }));
-    saveCredential("xai", cred({ email: "b@x.io", accountId: "acct-b", access: "access-b" }));
+    saveCredential("xai", cred({ email: "a@example.com", accountId: "acct-a", access: "access-a" }));
+    saveCredential("xai", cred({ email: "b@example.com", accountId: "acct-b", access: "access-b" }));
     const set = getAccountSet("xai")!;
     expect(removeAccount("xai", set.activeAccountId)).toBe(true);
     expect(getCredential("xai")?.access).toBe("access-a");
@@ -114,19 +114,19 @@ describe("multi-account auth store", () => {
   });
 
   test("removeCredential removes only the active account", () => {
-    saveCredential("anthropic", cred({ email: "a@x.io", accountId: "acct-a", access: "access-a" }));
-    saveCredential("anthropic", cred({ email: "b@x.io", accountId: "acct-b", access: "access-b" }));
+    saveCredential("anthropic", cred({ email: "a@example.com", accountId: "acct-a", access: "access-a" }));
+    saveCredential("anthropic", cred({ email: "b@example.com", accountId: "acct-b", access: "access-b" }));
     removeCredential("anthropic"); // active is b
     expect(listAccounts("anthropic").length).toBe(1);
     expect(getCredential("anthropic")?.access).toBe("access-a");
   });
 
   test("needsReauth flag persists and clears on fresh save", () => {
-    saveCredential("xai", cred({ email: "a@x.io", accountId: "acct-a" }));
+    saveCredential("xai", cred({ email: "a@example.com", accountId: "acct-a" }));
     const id = getAccountSet("xai")!.activeAccountId;
     markAccountNeedsReauth("xai", id, true);
     expect(listAccounts("xai")[0]?.needsReauth).toBe(true);
-    saveCredential("xai", cred({ email: "a@x.io", accountId: "acct-a", access: "fresh" }));
+    saveCredential("xai", cred({ email: "a@example.com", accountId: "acct-a", access: "fresh" }));
     expect(listAccounts("xai")[0]?.needsReauth).toBeUndefined();
   });
 
