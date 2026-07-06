@@ -387,4 +387,64 @@ describe("Design B migration helpers", () => {
     const result = countPendingOpencodexHistory(missing, join(tmpdir(), "no-backup.json"));
     expect(result).toEqual({ pendingRows: 0, backupEntries: 0 });
   });
+
+  // Byte-identity covers the rollout and the main DB file; the no-write guarantee itself
+  // lives in the code path (the gate returns before withHistoryRetry ever opens a writer).
+  test("migrateHistoryToOpenai steady state leaves rollouts and the main DB file byte-identical", () => {
+    const { dbPath, backupPath, rollout } = makeFixture(); // only an openai-tagged row, no backup
+    const rolloutBefore = readFileSync(rollout, "utf8");
+    const dbBefore = readFileSync(dbPath);
+
+    const result = migrateHistoryToOpenai(dbPath, backupPath);
+
+    expect(result).toEqual({ rows: 0, files: 0 });
+    expect(readFileSync(rollout, "utf8")).toBe(rolloutBefore);
+    expect(readFileSync(dbPath).equals(dbBefore)).toBe(true);
+  });
+
+  test("migrateHistoryToOpenai still migrates through the steady-state gate when work is pending", () => {
+    const { dbPath, backupPath } = makeFixture({ includeLegacy: true });
+
+    const result = migrateHistoryToOpenai(dbPath, backupPath);
+
+    expect(result.failed).toBeUndefined();
+    expect(result.ejectedRows).toBe(1);
+    const db = new Database(dbPath);
+    expect(db.query("SELECT model_provider FROM threads WHERE id = 'thread-3'").get()).toEqual({ model_provider: "openai" });
+    db.close();
+  });
+
+  test("a missing DB with a leftover backup manifest does not satisfy the steady-state gate", () => {
+    const dir = join(tmpdir(), `ocx-reinstall-${process.pid}-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    const missingDb = join(dir, "state_5.sqlite");
+    const backupPath = join(dir, "codex-history-backup.json");
+    writeFileSync(backupPath, JSON.stringify({
+      version: 1,
+      entries: { "thread-1": { id: "thread-1", rolloutPath: join(dir, "r.jsonl"), modelProvider: "openai", source: "cli", hasUserEvent: 1 } },
+    }));
+
+    const pending = countPendingOpencodexHistory(missingDb, backupPath);
+    expect(pending.backupEntries).toBe(1); // gate must see this and NOT report a provable no-op
+
+    // migrateHistoryToOpenai keeps its missing-DB early return (no crash, no manifest consumption).
+    const result = migrateHistoryToOpenai(missingDb, backupPath);
+    expect(result).toEqual({ rows: 0, files: 0 });
+    expect(existsSync(backupPath)).toBe(true);
+  });
+
+  test("syncCodexHistoryProvider openai with skipWhenProvablyNoop skips writes in steady state but still restores pending rows", () => {
+    const steady = makeFixture();
+    const steadyBefore = readFileSync(steady.rollout, "utf8");
+    const skipped = syncCodexHistoryProvider("openai", steady.dbPath, steady.backupPath, { skipWhenProvablyNoop: true });
+    expect(skipped).toEqual({ rows: 0, files: 0 });
+    expect(readFileSync(steady.rollout, "utf8")).toBe(steadyBefore);
+
+    const pending = makeFixture({ includeLegacy: true });
+    const restored = syncCodexHistoryProvider("openai", pending.dbPath, pending.backupPath, { skipWhenProvablyNoop: true });
+    expect(restored.ejectedRows).toBe(1);
+    const db = new Database(pending.dbPath);
+    expect(db.query("SELECT model_provider FROM threads WHERE id = 'thread-3'").get()).toEqual({ model_provider: "openai" });
+    db.close();
+  });
 });

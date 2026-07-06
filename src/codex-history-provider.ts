@@ -393,7 +393,32 @@ export function withHistoryRetry<T>(fn: () => T, io: { sleepFn?: (ms: number) =>
   }
 }
 
-export function syncCodexHistoryProvider(provider: CodexHistoryProvider, stateDbPath = STATE_DB_PATH, backupPath = HISTORY_BACKUP_PATH): CodexHistorySyncResult {
+/**
+ * True when a READONLY probe proves the openai-direction restore would be a no-op:
+ * zero threads still tagged opencodex AND an empty backup manifest. Used to skip the
+ * write-open entirely in the Design B steady state — on Windows the Codex app holds
+ * `state_5.sqlite` (WAL, busy_timeout 5s), so an unnecessary write open can stall for
+ * seconds and surface a false lock warning, while WAL always admits readers. A failed
+ * probe (locked even for readers / schema drift) returns false so callers fall through
+ * to the write attempt and keep today's behavior for genuinely unknown state.
+ */
+function openaiRestoreIsNoop(stateDbPath: string, backupPath: string): boolean {
+  const pending = countPendingOpencodexHistory(stateDbPath, backupPath);
+  return !pending.failed && pending.pendingRows === 0 && pending.backupEntries === 0;
+}
+
+export function syncCodexHistoryProvider(
+  provider: CodexHistoryProvider,
+  stateDbPath = STATE_DB_PATH,
+  backupPath = HISTORY_BACKUP_PATH,
+  opts: { skipWhenProvablyNoop?: boolean } = {},
+): CodexHistorySyncResult {
+  // Opt-in steady-state gate (Design B loopback callers only): default semantics of
+  // this exported API are unchanged — legacy stop/restore paths never pass the flag.
+  if (opts.skipWhenProvablyNoop && provider === "openai" && existsSync(stateDbPath)
+    && openaiRestoreIsNoop(stateDbPath, backupPath)) {
+    return { rows: 0, files: 0 };
+  }
   return withHistoryRetry(() => syncCodexHistoryProviderUnsafe(provider, stateDbPath, backupPath))
     ?? { rows: 0, files: 0, failed: true };
 }
@@ -542,6 +567,11 @@ export function migrateHistoryToOpenai(
   opts: { attempts?: number; delayMs?: number; sleepFn?: (ms: number) => void } = {},
 ): CodexHistorySyncResult {
   if (!existsSync(stateDbPath)) return { rows: 0, files: 0 };
+  // Steady-state gate: this migration is Design-B-specific (inject + guardian callers),
+  // and after the one-time migration every start would otherwise write-open the DB for
+  // nothing. A missing DB with a leftover backup manifest does NOT satisfy the gate
+  // (backupEntries > 0), so the guardian's fresh-reinstall re-count protection holds.
+  if (openaiRestoreIsNoop(stateDbPath, backupPath)) return { rows: 0, files: 0 };
   return withHistoryRetry(() => syncCodexHistoryProviderUnsafe("openai", stateDbPath, backupPath), opts)
     ?? { rows: 0, files: 0, failed: true };
 }

@@ -114,4 +114,30 @@ describe("injectCodexConfig integration (Design B)", () => {
     expect(config).toContain('base_url = "http://192.168.1.20:10100/v1"');
     expect(config).not.toContain("openai_base_url");
   });
+
+  test("CRLF config (Windows-edited) stays uniformly CRLF after injection", () => {
+    writeFileSync(join(codexHome, "config.toml"), 'model = "gpt-5.5"\r\n\r\n[features]\r\nfast_mode = true\r\n', "utf8");
+
+    expect(runInject(codexHome, ocxHome).status).toBe(0);
+    const config = readFileSync(join(codexHome, "config.toml"), "utf8");
+
+    expect(config).toContain('openai_base_url = "http://127.0.0.1:10100/v1"');
+    // Every newline is CRLF — no mixed-EOL file on Windows.
+    expect(config.replace(/\r\n/g, "").includes("\n")).toBe(false);
+    expect(config).toContain("\r\n");
+
+    // Idempotent re-inject keeps the CRLF form stable.
+    expect(runInject(codexHome, ocxHome).status).toBe(0);
+    expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(config);
+  });
+
+  test("LF config gains no carriage returns from injection", () => {
+    writeFileSync(join(codexHome, "config.toml"), 'model = "gpt-5.5"\n', "utf8");
+
+    expect(runInject(codexHome, ocxHome).status).toBe(0);
+    const config = readFileSync(join(codexHome, "config.toml"), "utf8");
+
+    expect(config).toContain("openai_base_url");
+    expect(config).not.toContain("\r");
+  });
 });

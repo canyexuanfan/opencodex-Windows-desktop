@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
+  applyEol,
   buildOpenaiBaseUrlLine,
   buildProfileFile,
   buildProviderTableBlock,
   chooseCatalogPathForInjection,
+  dominantEol,
   setRootOpenaiBaseUrl,
   stripInjectedOpenaiBaseUrl,
   stripOpencodexConfig,
@@ -301,5 +303,30 @@ describe("Design B openai_base_url injection", () => {
     expect(stripped).not.toContain("opencodex");
     expect(stripped).not.toContain("[model_providers.opencodex]");
     expect(stripped).toContain('model = "gpt-5.5"');
+  });
+});
+
+describe("EOL boundary helpers (Windows CRLF configs)", () => {
+  test("dominantEol picks LF for LF-only and empty content", () => {
+    expect(dominantEol("")).toBe("\n");
+    expect(dominantEol("a = 1\nb = 2\n")).toBe("\n");
+  });
+
+  test("dominantEol picks CRLF for CRLF-only content", () => {
+    expect(dominantEol("a = 1\r\nb = 2\r\n")).toBe("\r\n");
+  });
+
+  test("dominantEol follows the majority in mixed content", () => {
+    expect(dominantEol("a = 1\r\nb = 2\r\nc = 3\n")).toBe("\r\n");
+    expect(dominantEol("a = 1\r\nb = 2\nc = 3\n")).toBe("\n");
+  });
+
+  test("applyEol round-trips CRLF -> LF -> CRLF without doubling CRs", () => {
+    const crlf = "a = 1\r\n\r\n[t]\r\nk = 2\r\n";
+    const lf = applyEol(crlf, "\n");
+    expect(lf).toBe("a = 1\n\n[t]\nk = 2\n");
+    expect(applyEol(lf, "\r\n")).toBe(crlf);
+    // Idempotent on already-normalized input.
+    expect(applyEol(crlf, "\r\n")).toBe(crlf);
   });
 });

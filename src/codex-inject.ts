@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { atomicWriteFile, websocketsEnabled } from "./config";
+import { atomicWriteFile, loadConfig, websocketsEnabled } from "./config";
 import { markJournalInjectedState, restoreJournalState, writeJournal } from "./codex-journal";
 import { restoreCodexCatalog } from "./codex-catalog";
 import { migrateHistoryToOpenai, syncCodexHistoryProvider } from "./codex-history-provider";
@@ -7,6 +7,25 @@ import { CODEX_CONFIG_PATH, CODEX_PROFILE_PATH, DEFAULT_CATALOG_PATH, parseTomlS
 import type { OcxConfig } from "./types";
 
 const OCX_SECTION_MARKER = "# Auto-injected by opencodex";
+
+/**
+ * Detect the file's dominant line ending. Every transform in this module is LF-pure
+ * (split("\n") + hard "\n" joins), so CRLF configs (Windows-edited config.toml) are
+ * normalized to LF at the pipeline boundary and converted back on write — otherwise a
+ * single inject would leave a mixed-EOL file.
+ */
+export function dominantEol(content: string): "\r\n" | "\n" {
+  const crlf = (content.match(/\r\n/g) ?? []).length;
+  if (crlf === 0) return "\n";
+  const bareLf = (content.match(/\n/g) ?? []).length - crlf;
+  return crlf >= bareLf ? "\r\n" : "\n";
+}
+
+/** Normalize all line endings to `eol` (CRLF first collapsed to LF, then expanded). */
+export function applyEol(content: string, eol: "\r\n" | "\n"): string {
+  const lf = content.replace(/\r\n/g, "\n");
+  return eol === "\n" ? lf : lf.replace(/\n/g, "\r\n");
+}
 
 /**
  * Design B (2026-07-06): loopback installs no longer re-tag the provider. Instead of
@@ -347,7 +366,10 @@ export async function injectCodexConfig(port: number, config?: OcxConfig, option
   }
 
   writeJournal();
-  let content = readFileSync(CODEX_CONFIG_PATH, "utf-8");
+  const rawContent = readFileSync(CODEX_CONFIG_PATH, "utf-8");
+  // EOL boundary: transforms below are LF-pure; preserve the file's dominant ending on write.
+  const eol = dominantEol(rawContent);
+  let content = applyEol(rawContent, "\n");
 
   // Idempotent clean-up of any prior injection: drop the provider table (marker-based) and every
   // stray/mis-nested model_provider line, so re-injecting can't duplicate keys or leave the buggy
@@ -386,6 +408,7 @@ export async function injectCodexConfig(port: number, config?: OcxConfig, option
   }
 
   const profileContent = buildProfileFile(port, catalogPath, websocketsEnabled(config ?? {}), legacyMode, config?.hostname);
+  content = applyEol(content, eol);
   atomicWriteFile(CODEX_CONFIG_PATH, content);
   atomicWriteFile(CODEX_PROFILE_PATH, profileContent);
   markJournalInjectedState(content, profileContent);
@@ -495,12 +518,15 @@ export function removeCodexConfig(options: { preserveProfile?: boolean } = {}): 
   if (!existsSync(CODEX_CONFIG_PATH)) {
     return { success: false, message: "Codex config not found." };
   }
-  const content = readFileSync(CODEX_CONFIG_PATH, "utf-8");
+  const rawContent = readFileSync(CODEX_CONFIG_PATH, "utf-8");
+  // Same EOL boundary as inject: strip in LF space, write back in the file's own ending.
+  // The unchanged fast path compares in LF space so an untouched file is never rewritten.
+  const eol = dominantEol(rawContent);
+  const content = applyEol(rawContent, "\n");
   const had = hasOpencodexRouting(content);
-  if (had) {
-    atomicWriteFile(CODEX_CONFIG_PATH, stripOpencodexConfig(content));
-  } else if (stripOpencodexConfig(content) !== content) {
-    atomicWriteFile(CODEX_CONFIG_PATH, stripOpencodexConfig(content));
+  const stripped = stripOpencodexConfig(content);
+  if (had || stripped !== content) {
+    atomicWriteFile(CODEX_CONFIG_PATH, applyEol(stripped, eol));
   }
   if (!options.preserveProfile && existsSync(CODEX_PROFILE_PATH)) unlinkSync(CODEX_PROFILE_PATH);
   return {
@@ -522,7 +548,15 @@ export function restoreNativeCodex(): { success: boolean; message: string } {
     ? { success: true, message: "Codex config restored from opencodex journal." }
     : removeCodexConfig({ preserveProfile: journal.profileRestored || journal.profileChanged });
   const cat = restoreCodexCatalog();
-  const history = syncCodexHistoryProvider("openai");
+  // Design B (loopback) steady state: threads are already tagged openai, so prove the
+  // no-op with a readonly probe instead of write-opening a DB the Codex app may hold
+  // (Windows: WAL writer lock -> seconds of stalling + a false warning on every stop).
+  // Legacy (non-loopback) installs keep the unconditional write-open restore.
+  let skipWhenProvablyNoop = false;
+  try {
+    skipWhenProvablyNoop = !shouldInjectApiAuthHeader(loadConfig());
+  } catch { /* unreadable config: keep the conservative write-open restore */ }
+  const history = syncCodexHistoryProvider("openai", undefined, undefined, { skipWhenProvablyNoop });
   const msg = cat.removed > 0
     ? `${cfg.message} Catalog restored to ${cat.kept} native model(s) (dropped ${cat.removed} proxy-routed).`
     : cfg.message;
