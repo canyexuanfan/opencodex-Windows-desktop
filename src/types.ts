@@ -94,6 +94,8 @@ export interface OcxThinkingContent {
   thinking: string;
   signature?: string;
   itemId?: string;
+  /** Raw Anthropic redacted_thinking block payloads to replay verbatim (order preserved). */
+  redacted?: string[];
 }
 
 export interface OcxToolCall {
@@ -191,6 +193,10 @@ export type AdapterEvent =
   | { type: "heartbeat" }
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; thinking: string }
+  // Anthropic extended-thinking round-trip: signature_delta for the current thinking block, and
+  // opaque redacted_thinking blocks. Both must be replayed verbatim or tool-use turns 400.
+  | { type: "thinking_signature"; signature: string }
+  | { type: "redacted_thinking"; data: string }
   | { type: "reasoning_raw_delta"; text: string }
   | { type: "tool_call_start"; id: string; name: string }
   | { type: "tool_call_delta"; arguments: string }
