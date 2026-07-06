@@ -1,6 +1,7 @@
 import type { IncomingMeta, ProviderAdapter } from "./base";
 import type { AdapterEvent, OcxParsedRequest, OcxProviderConfig } from "../types";
 import { decodeCompactionSummary, SUMMARY_PREFIX } from "../responses/compaction";
+import { OCX_REASONING_PREFIX } from "../responses/reasoning-envelope";
 
 // Headers relayed verbatim from the caller in OAuth-passthrough ("forward") mode.
 // Exported so the web-search sidecar reuses the exact same forwarded-auth set for its ChatGPT call.
@@ -32,12 +33,19 @@ function sanitizeReasoningInputContent(body: unknown): unknown {
   const input = raw.input.map(item => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return item;
     const rec = item as Record<string, unknown>;
-    if (rec.type !== "reasoning" || !Array.isArray(rec.content) || rec.content.length === 0) return item;
+    if (rec.type !== "reasoning") return item;
+    const hasRawContent = Array.isArray(rec.content) && rec.content.length > 0;
+    // ocxr1 envelopes are proxy-minted (Anthropic signatures), not OpenAI encryption — the native
+    // backend cannot decrypt them and would reject the request. Strip regardless of content shape.
+    const hasOcxEnvelope = typeof rec.encrypted_content === "string" && rec.encrypted_content.startsWith(OCX_REASONING_PREFIX);
+    if (!hasRawContent && !hasOcxEnvelope) return item;
     changed = true;
     // Routed models can produce raw `reasoning_text` output items. Codex echoes those in later
     // native GPT requests, but ChatGPT's Responses backend accepts reasoning input only with empty
     // `content`; keep summaries/ids and drop the raw content so native passthrough does not 400.
-    return { ...rec, content: [] };
+    const next: Record<string, unknown> = { ...rec, content: [] };
+    if (hasOcxEnvelope) delete next.encrypted_content;
+    return next;
   });
 
   return changed ? { ...raw, input } : body;

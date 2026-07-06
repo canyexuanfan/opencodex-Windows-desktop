@@ -19,6 +19,11 @@ export interface ReasoningEnvelope {
   sig?: string;
   /** Raw redacted_thinking block data payloads, order preserved. */
   red?: string[];
+  /**
+   * Hidden thinking text (hideThinkingSummary providers): the signature signs this exact text,
+   * so replay needs it even though the visible summary was suppressed.
+   */
+  txt?: string;
 }
 
 export function encodeReasoningEnvelope(envelope: ReasoningEnvelope): string {
@@ -38,7 +43,9 @@ export function decodeReasoningEnvelope(encryptedContent: string): ReasoningEnve
       const red = obj.red.filter((r): r is string => typeof r === "string");
       if (red.length > 0) envelope.red = red;
     }
-    return envelope.sig || envelope.red ? envelope : null;
+    const txt = (parsed as { txt?: unknown }).txt;
+    if (typeof txt === "string" && txt.length > 0) envelope.txt = txt;
+    return envelope.sig || envelope.red || envelope.txt ? envelope : null;
   } catch {
     return null;
   }

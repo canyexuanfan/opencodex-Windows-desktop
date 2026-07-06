@@ -13,6 +13,7 @@ import type {
 import { namespacedToolName } from "../types";
 import { responsesRequestSchema } from "./schema";
 import { compactionItemToText } from "./compaction";
+import { decodeReasoningEnvelope } from "./reasoning-envelope";
 import { extractHostedWebSearch, WEB_SEARCH_TOOL_NAME } from "../web-search/synthetic-tool";
 
 function isObj(v: unknown): v is Record<string, unknown> {
@@ -290,13 +291,20 @@ export function parseRequest(body: unknown): OcxParsedRequest {
       }
 
       if (effectiveType === "reasoning") {
-        const reasoning = item as { id?: string; summary?: { text: string }[]; content?: { text: string }[] };
+        const reasoning = item as { id?: string; summary?: { text: string }[]; content?: { text: string }[]; encrypted_content?: string };
         const fromSummary = (reasoning.summary ?? []).map(c => c.text).join("");
         const text = fromSummary || (reasoning.content ?? []).map(c => c.text).join("");
+        // ocxr1 envelope: the REAL Anthropic signature (+ redacted blocks, + hidden signed text)
+        // captured by the bridge. Native OpenAI-encrypted blobs decode to null and keep today's
+        // placeholder signature (which the anthropic adapter correctly rejects on replay).
+        const envelope = typeof reasoning.encrypted_content === "string"
+          ? decodeReasoningEnvelope(reasoning.encrypted_content)
+          : null;
         const thinking: OcxThinkingContent = {
           type: "thinking",
-          thinking: text,
-          signature: JSON.stringify(reasoning),
+          thinking: envelope?.txt || text,
+          signature: envelope?.sig ?? JSON.stringify(reasoning),
+          ...(envelope?.red ? { redacted: envelope.red } : {}),
           ...(reasoning.id ? { itemId: reasoning.id } : {}),
         };
         ensureAssistantPlaceholder(messages, data.model, now).content.push(thinking);

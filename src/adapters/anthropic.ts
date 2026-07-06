@@ -355,6 +355,11 @@ function messagesToAnthropicFormat(
             content.push({ type: "text", text: (part as OcxTextContent).text });
           } else if (part.type === "thinking") {
             const t = part as OcxThinkingContent;
+            // Redacted blocks replay verbatim FIRST (they preceded the visible thinking block
+            // in the original stream order preserved by the bridge envelope).
+            for (const data of t.redacted ?? []) {
+              content.push({ type: "redacted_thinking", data });
+            }
             if (isLikelyRealAnthropicThinkingSignature(t.signature)) {
               content.push({ type: "thinking", thinking: t.thinking, signature: t.signature });
             }
@@ -591,13 +596,17 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
                 break;
               }
               case "content_block_start": {
-                const block = data.content_block as { type: string; id?: string; name?: string } | undefined;
+                const block = data.content_block as { type: string; id?: string; name?: string; data?: string } | undefined;
                 if (!block) break;
                 currentBlockType = block.type;
                 if (block.type === "tool_use") {
                   currentToolCallId = block.id ?? "";
                   currentToolCallName = toolNames.fromWire(block.name ?? "");
                   yield { type: "tool_call_start", id: currentToolCallId, name: currentToolCallName };
+                }
+                if (block.type === "redacted_thinking" && typeof block.data === "string") {
+                  // Opaque redacted block: replay verbatim later or tool-use turns 400.
+                  yield { type: "redacted_thinking", data: block.data };
                 }
                 break;
               }
@@ -608,6 +617,10 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
                   yield { type: "text_delta", text: delta.text };
                 } else if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
                   yield { type: "thinking_delta", thinking: delta.thinking };
+                } else if (delta.type === "signature_delta" && typeof delta.signature === "string" && currentBlockType === "thinking") {
+                  // Arrives once, just before the thinking block's content_block_stop; block-scoped
+                  // so a stray signature on a non-thinking block can never be captured.
+                  yield { type: "thinking_signature", signature: delta.signature };
                 } else if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
                   yield { type: "tool_call_delta", arguments: delta.partial_json };
                 }
@@ -617,8 +630,8 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
                 if (currentBlockType === "tool_use") {
                   yield { type: "tool_call_end" };
                   currentToolCallId = "";
-                  currentBlockType = "";
                 }
+                currentBlockType = "";
                 break;
               }
               case "message_delta": {
@@ -648,11 +661,18 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
     async parseResponse(response: Response): Promise<AdapterEvent[]> {
       const json = await response.json() as Record<string, unknown>;
       const events: AdapterEvent[] = [];
-      const content = json.content as { type: string; text?: string; id?: string; name?: string; input?: unknown }[] | undefined;
+      const content = json.content as { type: string; text?: string; id?: string; name?: string; input?: unknown; thinking?: string; signature?: string; data?: string }[] | undefined;
       if (content) {
         for (const block of content) {
           if (block.type === "text" && block.text) {
             events.push({ type: "text_delta", text: block.text });
+          } else if (block.type === "thinking" && typeof block.thinking === "string") {
+            events.push({ type: "thinking_delta", thinking: block.thinking });
+            if (typeof block.signature === "string" && block.signature) {
+              events.push({ type: "thinking_signature", signature: block.signature });
+            }
+          } else if (block.type === "redacted_thinking" && typeof block.data === "string") {
+            events.push({ type: "redacted_thinking", data: block.data });
           } else if (block.type === "tool_use") {
             events.push({ type: "tool_call_start", id: block.id ?? "", name: toolNames.fromWire(block.name ?? "") });
             events.push({ type: "tool_call_delta", arguments: JSON.stringify(block.input ?? {}) });

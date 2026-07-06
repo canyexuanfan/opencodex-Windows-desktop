@@ -1,6 +1,7 @@
 import type { AdapterEvent, OcxUsage } from "./types";
 import { classifyError, type OcxErrorPayload } from "./lib/errors";
 import { encodeCompactionSummary } from "./responses/compaction";
+import { encodeReasoningEnvelope, type ReasoningEnvelope } from "./responses/reasoning-envelope";
 import { usageDisplayTotalTokens, usageInputTokensWithCacheDetail } from "./usage/totals";
 
 function uuid(): string {
@@ -170,6 +171,36 @@ export function bridgeToResponsesSSE(
       let currentMsg: { itemId: string; outputIndex: number; text: string } | null = null;
       let currentReasoning: { itemId: string; outputIndex: number; text: string } | null = null;
       let currentRawReasoning: { itemId: string; outputIndex: number; text: string } | null = null;
+      // Anthropic extended-thinking round-trip state: the signature signs the CURRENT thinking
+      // block; redacted blocks are opaque payloads replayed verbatim. Attached to the reasoning
+      // item as an ocxr1 encrypted_content envelope on close. hiddenThinkingText collects the
+      // suppressed text under hideThinkingSummary so the signed text still round-trips.
+      let pendingSignature: string | undefined;
+      let pendingRedacted: string[] = [];
+      let hiddenThinkingText = "";
+      const takeReasoningEnvelope = (hiddenText?: string): string | undefined => {
+        if (!pendingSignature && pendingRedacted.length === 0) return undefined;
+        const envelope: ReasoningEnvelope = {};
+        if (pendingSignature) envelope.sig = pendingSignature;
+        if (pendingRedacted.length > 0) envelope.red = pendingRedacted;
+        if (hiddenText) envelope.txt = hiddenText;
+        pendingSignature = undefined;
+        pendingRedacted = [];
+        return encodeReasoningEnvelope(envelope);
+      };
+      // hideThinkingSummary path: no visible reasoning item exists, but a signed thinking block
+      // must still round-trip — emit an envelope-only reasoning item (empty summary, no text leak).
+      const flushHiddenReasoningEnvelope = () => {
+        const encrypted = takeReasoningEnvelope(hiddenThinkingText || undefined);
+        hiddenThinkingText = "";
+        if (!encrypted) return;
+        const itemId = `rs_${uuid()}`;
+        const item = { type: "reasoning", id: itemId, summary: [] as never[], encrypted_content: encrypted };
+        emit("response.output_item.added", { output_index: outputIndex, item });
+        emit("response.output_item.done", { output_index: outputIndex, item });
+        finishedItems.push(item as OutputItem);
+        outputIndex++;
+      };
       // Full assistant text of a compaction turn (across message boundaries) — becomes the
       // synthetic compaction item's payload on done.
       let compactionText = "";
@@ -222,9 +253,11 @@ export function bridgeToResponsesSSE(
           item_id: currentReasoning.itemId, output_index: currentReasoning.outputIndex, summary_index: 0,
           part: { type: "summary_text", text: currentReasoning.text },
         });
+        const encrypted = takeReasoningEnvelope();
         const item = {
           type: "reasoning", id: currentReasoning.itemId,
           summary: [{ type: "summary_text", text: currentReasoning.text }],
+          ...(encrypted ? { encrypted_content: encrypted } : {}),
         };
         emit("response.output_item.done", { output_index: currentReasoning.outputIndex, item });
         finishedItems.push(item as OutputItem);
@@ -340,7 +373,7 @@ export function bridgeToResponsesSSE(
               break;
             }
             case "thinking_delta": {
-              if (options?.hideThinkingSummary) break;
+              if (options?.hideThinkingSummary) { hiddenThinkingText += event.thinking; break; }
               if (currentMsg) closeCurrentMessage();
               if (currentRawReasoning) closeCurrentRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
@@ -359,6 +392,18 @@ export function bridgeToResponsesSSE(
                 item_id: currentReasoning.itemId, output_index: currentReasoning.outputIndex,
                 summary_index: 0, delta: event.thinking,
               });
+              break;
+            }
+            case "thinking_signature": {
+              pendingSignature = event.signature;
+              // Signature arrives at the end of the thinking block. With a visible reasoning item
+              // open, closeCurrentReasoning attaches the envelope; hidden/suppressed blocks flush
+              // an envelope-only reasoning item now.
+              if (!currentReasoning) flushHiddenReasoningEnvelope();
+              break;
+            }
+            case "redacted_thinking": {
+              pendingRedacted.push(event.data);
               break;
             }
             case "reasoning_raw_delta": {
@@ -457,6 +502,9 @@ export function bridgeToResponsesSSE(
               if (currentRawReasoning) closeCurrentRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
               if (currentWebSearch) closeCurrentWebSearch("completed", []);
+              // Redacted-only turns (or hidden thinking without a trailing signature event) still
+              // need their envelope-only reasoning item so the blocks replay next turn.
+              flushHiddenReasoningEnvelope();
               if (options?.compaction) {
                 // Exactly one compaction item per turn; codex-rs takes the first and fatals on 0.
                 const item = {
@@ -570,6 +618,9 @@ export function buildResponseJSON(
   let currentText = "";
   let currentSummaryReasoning = "";
   let currentRawReasoning = "";
+  // Anthropic extended-thinking round-trip (batch): see bridgeToResponsesSSE counterpart.
+  let batchSignature: string | undefined;
+  let batchRedacted: string[] = [];
   let currentToolCallId = "";
   let currentToolCallName = "";
   let currentToolCallArgs = "";
@@ -597,10 +648,20 @@ export function buildResponseJSON(
     currentText = "";
   };
   const flushSummaryReasoning = () => {
-    if (!currentSummaryReasoning || options?.hideThinkingSummary) { currentSummaryReasoning = ""; return; }
+    if (!currentSummaryReasoning && !batchSignature && batchRedacted.length === 0) return;
+    const envelope: ReasoningEnvelope = {};
+    if (batchSignature) envelope.sig = batchSignature;
+    if (batchRedacted.length > 0) envelope.red = batchRedacted;
+    const hidden = options?.hideThinkingSummary === true;
+    if (hidden && currentSummaryReasoning && (envelope.sig || envelope.red)) envelope.txt = currentSummaryReasoning;
+    const encrypted = envelope.sig || envelope.red || envelope.txt ? encodeReasoningEnvelope(envelope) : undefined;
+    batchSignature = undefined;
+    batchRedacted = [];
+    if (hidden && !encrypted) { currentSummaryReasoning = ""; return; }
     output.push({
       type: "reasoning", id: `rs_${uuid()}`,
-      summary: [{ type: "summary_text", text: currentSummaryReasoning }],
+      summary: !hidden && currentSummaryReasoning ? [{ type: "summary_text", text: currentSummaryReasoning }] : [],
+      ...(encrypted ? { encrypted_content: encrypted } : {}),
     });
     currentSummaryReasoning = "";
   };
@@ -660,6 +721,15 @@ export function buildResponseJSON(
         if (currentRawReasoning) flushRawReasoning();
         if (currentToolCallId) flushToolCall();
         currentSummaryReasoning += e.thinking;
+        break;
+      case "thinking_signature":
+        // End of the current thinking block — flush it WITH the signature envelope so the
+        // block/signature pairing survives multi-block turns.
+        batchSignature = e.signature;
+        flushSummaryReasoning();
+        break;
+      case "redacted_thinking":
+        batchRedacted.push(e.data);
         break;
       case "reasoning_raw_delta":
         if (currentText) flushText();
