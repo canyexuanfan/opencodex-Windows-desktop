@@ -20,10 +20,21 @@ const RESUMABLE_SOURCES = ["cli", "vscode"] as const;
  * connection pool into a half-applied checkpoint. The app opens this DB with `busy_timeout=5s`
  * (see codex-rs `state::runtime::base_sqlite_options`); we mirror that here.
  */
+let historyDbBusyTimeoutMs = 5000;
+
+/**
+ * Test-only knob: Windows CI can spend the FULL busy timeout on a transient file lock, which
+ * alone exceeds bun's 5s default per-test timeout. Tests shrink this so a busy DB fails fast
+ * into withHistoryRetry instead of stalling; production keeps the codex-rs-matching 5s.
+ */
+export function setHistoryDbBusyTimeoutForTests(ms: number): void {
+  historyDbBusyTimeoutMs = ms;
+}
+
 function openStateDb(stateDbPath: string): Database {
   const db = new Database(stateDbPath);
   try {
-    db.exec("PRAGMA busy_timeout = 5000");
+    db.exec(`PRAGMA busy_timeout = ${historyDbBusyTimeoutMs}`);
   } catch {
     /* best-effort: an older sqlite without busy_timeout still works, just less politely */
   }
