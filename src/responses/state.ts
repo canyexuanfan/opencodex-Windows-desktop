@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { atomicWriteFile, getConfigDir } from "../config";
 
@@ -20,6 +20,7 @@ interface StoredResponseState {
 const states = new Map<string, StoredResponseState>();
 let loaded = false;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingPersistPath: string | null = null;
 
 function now(): number {
   return Date.now();
@@ -63,6 +64,7 @@ function persistNow(path: string): void {
     clearTimeout(persistTimer);
     persistTimer = null;
   }
+  pendingPersistPath = null;
   try {
     const entries: [string, StoredResponseState][] = [];
     let total = 0;
@@ -76,6 +78,9 @@ function persistNow(path: string): void {
     }
     entries.reverse();
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    // mkdirSync's mode only applies on creation — re-harden an existing config dir so the
+    // conversation-content snapshot never lands in a group/world-readable directory.
+    try { chmodSync(dirname(path), 0o700); } catch { /* best-effort (e.g. Windows) */ }
     atomicWriteFile(path, JSON.stringify({ version: 1, states: entries }));
   } catch {
     /* best-effort: disk trouble must never affect request handling */
@@ -86,7 +91,8 @@ function schedulePersist(): void {
   if (persistTimer) return;
   // Resolve the target path NOW: tests (and anything else) may swap OPENCODEX_HOME before the
   // debounce fires, and a late write must land in the home that owned the recorded state.
-  const path = snapshotPath();
+  pendingPersistPath = snapshotPath();
+  const path = pendingPersistPath;
   persistTimer = setTimeout(() => persistNow(path), SNAPSHOT_DEBOUNCE_MS);
   (persistTimer as { unref?: () => void }).unref?.();
 }
@@ -94,7 +100,8 @@ function schedulePersist(): void {
 /** Flush any pending debounced snapshot write (graceful shutdown / deterministic tests). */
 export function flushResponseState(): void {
   if (!persistTimer) return;
-  persistNow(snapshotPath());
+  // Use the path captured when the write was scheduled — OPENCODEX_HOME may have moved since.
+  persistNow(pendingPersistPath ?? snapshotPath());
 }
 
 function inputItems(input: unknown): unknown[] {

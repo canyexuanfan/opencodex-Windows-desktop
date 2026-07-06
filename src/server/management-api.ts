@@ -590,12 +590,14 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     const { restoreNativeCodex } = await import("../codex/inject");
     const { stopServiceIfInstalled } = await import("../service");
     stopServiceIfInstalled();
-    restoreNativeCodex();
+    const restore = restoreNativeCodex();
     setTimeout(async () => {
       await drainAndShutdown(undefined, config.shutdownTimeoutMs ?? 5000);
       process.exit(0);
     }, 200);
-    return jsonResponse({ success: true, message: "Proxy stopping, native Codex restored." });
+    return jsonResponse(restore.success
+      ? { success: true, message: "Proxy stopping, native Codex restored." }
+      : { success: false, message: `Proxy stopping, but native Codex restore failed: ${restore.message}. Run \`ocx restore\`.` });
   }
 
   if (url.pathname.startsWith("/api/codex-auth/")) {

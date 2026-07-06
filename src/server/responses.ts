@@ -41,6 +41,7 @@ import { resolveAdapter, resolveWireProtocolOverride } from "./adapter-resolve";
 import { hasKeyPoolFailover, rotateKeyOn429 } from "../providers/key-failover";
 import type { WsData } from "./ws-bridge";
 import { registerTurn, trackStreamLifetime, unregisterTurn } from "./lifecycle";
+import { redactSecretString } from "../lib/redact";
 import {
   catalogModelSupportsServiceTier,
   inspectResponseLogJson,
@@ -463,7 +464,7 @@ export async function handleResponses(
   const wsPlan = planWebSearch(config, parsed, false, selectedForwardHeaders, route.provider, route.modelId, authCtx);
   if (wsPlan) {
     parsed.context.tools = [...(parsed.context.tools ?? []), buildWebSearchTool()];
-    return runWithWebSearch({
+    const wsResponse = await runWithWebSearch({
       parsed, adapter,
       forwardProvider: wsPlan.forwardProvider,
       hostedTool: wsPlan.hostedTool,
@@ -474,6 +475,16 @@ export async function handleResponses(
       abortSignal: options.abortSignal,
       recordSidecarOutcome,
     });
+    // Register the sidecar stream as an active turn so drainAndShutdown waits for (or aborts)
+    // in-flight web-search turns instead of skipping them during graceful shutdown.
+    if (wsResponse.body) {
+      const wsTurnAc = new AbortController();
+      return new Response(trackStreamLifetime(wsResponse.body, wsTurnAc), {
+        status: wsResponse.status,
+        headers: wsResponse.headers,
+      });
+    }
+    return wsResponse;
   }
 
   const upstream = new AbortController();
@@ -510,6 +521,9 @@ export async function handleResponses(
     while (upstreamResponse.status === 429 && hasKeyPoolFailover(route.provider)) {
       const rotated = rotateKeyOn429(config, route.providerName, upstreamResponse.headers.get("retry-after"));
       if (!rotated) break;
+      // Release the failed response's socket before retrying; unread bodies otherwise linger
+      // until runtime cleanup (one per rotated key under a rate-limit storm).
+      try { void upstreamResponse.body?.cancel(); } catch { /* already consumed/closed */ }
       route.provider = rotated;
       const retryAdapter = resolveAdapter(
         resolveWireProtocolOverride(route.providerName, route.modelId, rotated),
@@ -529,7 +543,9 @@ export async function handleResponses(
     if (!upstreamResponse.ok) {
       const errorText = await upstreamResponse.text().catch(() => "unknown error");
       cleanupUpstreamAbort();
-      return formatErrorResponse(upstreamResponse.status, "upstream_error", `Provider error ${upstreamResponse.status}: ${errorText.slice(0, 500)}`);
+      // Upstreams occasionally echo request details in error bodies — scrub token-shaped
+      // material before it reaches the client-facing error surface.
+      return formatErrorResponse(upstreamResponse.status, "upstream_error", `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`);
     }
   }
 

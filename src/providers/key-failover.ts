@@ -100,8 +100,8 @@ export function rotateKeyOn429(
       provider.apiKey = candidate.key;
       saveConfig(config);
       console.warn(
-        `[key-failover] ${providerName}: 429 on key ${currentEntry?.id ?? "?"}; rotating to key ${candidate.id}` +
-        (candidate.label ? ` (${candidate.label})` : ""),
+        // Log ids only — labels are user-supplied free text and could carry secret material.
+        `[key-failover] ${providerName}: 429 on key ${currentEntry?.id ?? "?"}; rotating to key ${candidate.id}`,
       );
       return { ...provider };
     }

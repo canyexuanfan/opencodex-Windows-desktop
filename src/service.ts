@@ -709,8 +709,11 @@ export async function serviceCommand(sub?: string): Promise<void> {
       assertServiceEnvironmentMatchesInstall();
       ops.stop();
       await stopTrackedProxyForServiceCommand();
-      restoreNativeCodex();
-      console.log("✅ service stopped + native Codex restored.");
+      {
+        const restore = restoreNativeCodex();
+        if (restore.success) console.log("✅ service stopped + native Codex restored.");
+        else console.error(`⚠️ service stopped, but native Codex restore FAILED: ${restore.message}\nRun \`ocx restore\` (or check $CODEX_HOME/config.toml) before using native Codex.`);
+      }
       break;
     case "status": {
       const s = ops.status();
@@ -724,10 +727,15 @@ export async function serviceCommand(sub?: string): Promise<void> {
       ops.stop();
       await stopTrackedProxyForServiceCommand();
       ops.uninstall();
-      restoreNativeCodex();
+      {
+        const restore = restoreNativeCodex();
+        if (!restore.success) {
+          console.error(`⚠️ native Codex restore FAILED: ${restore.message}\nRun \`ocx restore\` before using native Codex.`);
+        }
+      }
       removeServiceInstallState();
       try { if (existsSync(serviceApiTokenFilePath())) unlinkSync(serviceApiTokenFilePath()); } catch { /* best-effort */ }
-      console.log("✅ service uninstalled + native Codex restored.");
+      console.log("✅ service uninstalled.");
       break;
     default:
       console.error("Usage: ocx service [install|start|stop|status|uninstall|remove]");
