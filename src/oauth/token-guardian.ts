@@ -13,8 +13,8 @@
  */
 import { loadConfig } from "../config";
 import type { OcxConfig, OcxTokenGuardianConfig } from "../types";
-import { getCredential } from "./store";
-import { getValidAccessToken, listOAuthProviders, resolveRefreshPolicy } from "./index";
+import { listAccounts } from "./store";
+import { getValidAccessTokenForAccount, listOAuthProviders, OAuthLoginRequiredError, resolveRefreshPolicy } from "./index";
 import {
   getValidCodexToken,
   listCodexAccountIds,
@@ -113,25 +113,29 @@ export async function guardianSweep(nowMs: number = Date.now()): Promise<Guardia
   const horizonMs = (opts.tickSeconds + opts.leadSeconds) * 1000;
   const tasks: Array<() => Promise<void>> = [];
 
-  // A) single-account OAuth providers
+  // A) OAuth providers — every account in each provider's set (multiauth keep-alive),
+  // skipping accounts already marked needsReauth (terminal; only a re-login fixes them).
   for (const provider of listOAuthProviders()) {
     if (resolveRefreshPolicy(provider, config) !== "proactive") continue;
-    const cred = getCredential(provider);
-    if (!cred) continue;
-    if (cred.expires > nowMs + horizonMs) continue;
-    const key = `oauth:${provider}`;
-    if (inBackoff(key, nowMs)) { result.skippedBackoff.push(key); continue; }
-    tasks.push(async () => {
-      try {
-        await getValidAccessToken(provider);
-        backoff.delete(key);
-        result.refreshed.push(key);
-      } catch {
-        // Single-account refresh throws generic errors; treat as transient (exponential backoff).
-        recordFailure(key, nowMs, opts.backoffBaseSeconds, opts.backoffMaxSeconds, false);
-        result.failed.push(key);
-      }
-    });
+    for (const account of listAccounts(provider)) {
+      if (account.needsReauth) continue;
+      if (account.credential.expires > nowMs + horizonMs) continue;
+      const key = `oauth:${provider}:${account.id}`;
+      if (inBackoff(key, nowMs)) { result.skippedBackoff.push(key); continue; }
+      tasks.push(async () => {
+        try {
+          await getValidAccessTokenForAccount(provider, account.id);
+          backoff.delete(key);
+          result.refreshed.push(key);
+        } catch (err) {
+          // Terminal grant failures surface as OAuthLoginRequiredError (account marked
+          // needsReauth by the resolver) — back off at the ceiling; transient errors backoff exponentially.
+          const permanent = err instanceof OAuthLoginRequiredError;
+          recordFailure(key, nowMs, opts.backoffBaseSeconds, opts.backoffMaxSeconds, permanent);
+          result.failed.push(key);
+        }
+      });
+    }
   }
 
   // B) multi-account Codex pool (gated on the chatgpt provider's policy)

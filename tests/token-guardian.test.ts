@@ -73,7 +73,8 @@ describe("token guardian", () => {
     saveCredential("kimi", { access: "a", refresh: "r", expires: Date.now() + 5_000 });
     const res = await guardianSweep(Date.now());
     expect(res.enabled).toBe(true);
-    expect(res.refreshed).toContain("oauth:kimi");
+    // Multiauth keys are oauth:<provider>:<accountId>
+    expect(res.refreshed.some(k => k.startsWith("oauth:kimi:"))).toBe(true);
     expect(mock.count()).toBeGreaterThan(0);
   });
 

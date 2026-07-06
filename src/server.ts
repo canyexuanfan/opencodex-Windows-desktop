@@ -2042,9 +2042,17 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
     // doesn't send — merge it in so the sidecars are gated correctly.
     enrichProviderFromCatalog(name, prov);
     const { saveConfig: save } = await import("./config");
+    // Overwriting an existing provider must not drop its multi-key pool: carry it over, then
+    // let the (possibly new) apiKey join the pool as the active entry.
+    const existingPool = config.providers[name]?.apiKeyPool;
+    if (existingPool && !prov.apiKeyPool) prov.apiKeyPool = existingPool;
     config.providers[name] = prov;
     if (body.setDefault) config.defaultProvider = name;
     save(config);
+    if (prov.apiKey && prov.apiKeyPool) {
+      const { addProviderApiKey } = await import("./provider-api-keys");
+      addProviderApiKey(config, name, prov.apiKey);
+    }
     const { clearModelCache } = await import("./model-cache");
     clearModelCache(name);
     await refreshCodexCatalogBestEffort();
@@ -2242,11 +2250,13 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
   // the provider's loopback callback server (inside this process) captures the redirect in the
   // background, then the credential is persisted. The GUI opens the URL and polls /api/oauth/status.
   if (url.pathname === "/api/oauth/login" && req.method === "POST") {
-    const body = await req.json().catch(() => ({})) as { provider?: string };
+    const body = await req.json().catch(() => ({})) as { provider?: string; addAccount?: boolean };
     const provider = (body.provider ?? "").trim().toLowerCase();
     if (!isOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
     try {
-      const { url: authUrl, instructions } = await startLoginFlow(provider);
+      // addAccount forces a fresh browser identity (skips local-CLI token import) so a
+      // SECOND account can be added instead of re-importing the first one.
+      const { url: authUrl, instructions } = await startLoginFlow(provider, body.addAccount ? { forceLogin: true } : undefined);
       upsertOAuthProvider(config, provider); // mutate LIVE config — routing sees it without restart
       if (authUrl) {
         // Open the browser server-side (the proxy runs on the user's machine) — the GUI's
@@ -2271,6 +2281,88 @@ async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): P
     removeCredential(provider);
     clearLoginState(provider);
     return jsonResponse({ success: true });
+  }
+
+  // Multiauth account management: list a provider's logged-in accounts, switch the active
+  // one, or remove one. Emails are masked; tokens never leave the store.
+  if (url.pathname === "/api/oauth/accounts" && req.method === "GET") {
+    const provider = (url.searchParams.get("provider") ?? "").trim().toLowerCase();
+    if (!isOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
+    const status = getLoginStatus(provider);
+    return jsonResponse({ activeAccountId: status.activeAccountId ?? null, accounts: status.accounts ?? [] });
+  }
+  if (url.pathname === "/api/oauth/accounts/active" && req.method === "PUT") {
+    const body = await req.json().catch(() => ({})) as { provider?: string; accountId?: string };
+    const provider = (body.provider ?? "").trim().toLowerCase();
+    if (!isOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
+    if (!body.accountId) return jsonResponse({ error: "missing accountId" }, 400);
+    const { setActiveAccount } = await import("./oauth/store");
+    if (!setActiveAccount(provider, body.accountId)) return jsonResponse({ error: "account not found" }, 404);
+    const { clearProviderQuotaCache } = await import("./provider-quota");
+    clearProviderQuotaCache();
+    return jsonResponse({ ok: true, provider, activeAccountId: body.accountId });
+  }
+  if (url.pathname === "/api/oauth/accounts" && req.method === "DELETE") {
+    const provider = (url.searchParams.get("provider") ?? "").trim().toLowerCase();
+    const id = url.searchParams.get("id") ?? "";
+    if (!isOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
+    if (!id) return jsonResponse({ error: "missing id" }, 400);
+    const { removeAccount, getAccountSet } = await import("./oauth/store");
+    if (!removeAccount(provider, id)) return jsonResponse({ error: "account not found" }, 404);
+    if (!getAccountSet(provider)) clearLoginState(provider);
+    const { clearProviderQuotaCache } = await import("./provider-quota");
+    clearProviderQuotaCache();
+    return jsonResponse({ ok: true });
+  }
+
+  // Multi-key pool for API-key providers (same GUI dropdown as OAuth multiauth): list masked
+  // keys, add one (upserts + activates), switch the active key, or remove one. `apiKey` always
+  // mirrors the active entry so routing is untouched.
+  if (url.pathname === "/api/providers/keys" && req.method === "GET") {
+    const name = (url.searchParams.get("name") ?? "").trim();
+    if (!name || !isValidProviderName(name) || !hasOwnProvider(config.providers, name)) return jsonResponse({ error: "unknown provider" }, 404);
+    const { listProviderApiKeys } = await import("./provider-api-keys");
+    return jsonResponse(listProviderApiKeys(config, name));
+  }
+  if (url.pathname === "/api/providers/keys" && req.method === "POST") {
+    const body = await req.json().catch(() => ({})) as { name?: string; key?: string; label?: string };
+    const name = (body.name ?? "").trim();
+    if (!name || !isValidProviderName(name) || !hasOwnProvider(config.providers, name)) return jsonResponse({ error: "unknown provider" }, 404);
+    if (typeof body.key !== "string" || !body.key.trim()) return jsonResponse({ error: "key is required" }, 400);
+    const { addProviderApiKey } = await import("./provider-api-keys");
+    const result = addProviderApiKey(config, name, body.key, body.label);
+    if ("error" in result) return jsonResponse({ error: result.error }, 400);
+    const { clearModelCache } = await import("./model-cache");
+    clearModelCache(name);
+    const { clearProviderQuotaCache } = await import("./provider-quota");
+    clearProviderQuotaCache();
+    return jsonResponse({ ok: true, id: result.id }, 201);
+  }
+  if (url.pathname === "/api/providers/keys/active" && req.method === "PUT") {
+    const body = await req.json().catch(() => ({})) as { name?: string; id?: string };
+    const name = (body.name ?? "").trim();
+    if (!name || !isValidProviderName(name) || !hasOwnProvider(config.providers, name)) return jsonResponse({ error: "unknown provider" }, 404);
+    if (!body.id) return jsonResponse({ error: "missing id" }, 400);
+    const { setActiveProviderApiKey } = await import("./provider-api-keys");
+    if (!setActiveProviderApiKey(config, name, body.id)) return jsonResponse({ error: "key not found" }, 404);
+    const { clearModelCache } = await import("./model-cache");
+    clearModelCache(name);
+    const { clearProviderQuotaCache } = await import("./provider-quota");
+    clearProviderQuotaCache();
+    return jsonResponse({ ok: true, name, activeId: body.id });
+  }
+  if (url.pathname === "/api/providers/keys" && req.method === "DELETE") {
+    const name = (url.searchParams.get("name") ?? "").trim();
+    const id = url.searchParams.get("id") ?? "";
+    if (!name || !isValidProviderName(name) || !hasOwnProvider(config.providers, name)) return jsonResponse({ error: "unknown provider" }, 404);
+    if (!id) return jsonResponse({ error: "missing id" }, 400);
+    const { removeProviderApiKey } = await import("./provider-api-keys");
+    if (!removeProviderApiKey(config, name, id)) return jsonResponse({ error: "key not found" }, 404);
+    const { clearModelCache } = await import("./model-cache");
+    clearModelCache(name);
+    const { clearProviderQuotaCache } = await import("./provider-quota");
+    clearProviderQuotaCache();
+    return jsonResponse({ ok: true });
   }
 
   // ---------------------------------------------------------------------------

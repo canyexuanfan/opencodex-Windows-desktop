@@ -302,7 +302,11 @@ function handleShow(args: string[]): void {
   }
 
   const prov = config.providers[name];
-  const display = { ...prov, ...(prov.apiKey ? { apiKey: maskSecret(prov.apiKey) } : {}) };
+  const display = {
+    ...prov,
+    ...(prov.apiKey ? { apiKey: maskSecret(prov.apiKey) } : {}),
+    ...(prov.apiKeyPool ? { apiKeyPool: prov.apiKeyPool.map(e => ({ ...e, key: maskSecret(e.key) })) } : {}),
+  };
 
   if (wantsJson) {
     console.log(JSON.stringify({ name, isDefault: name === config.defaultProvider, ...display }, null, 2));

@@ -346,6 +346,12 @@ export interface OcxProviderConfig {
   /** Keep provider settings on disk but exclude it from routing and model/catalog listings. */
   disabled?: boolean;
   apiKey?: string;
+  /**
+   * Multi-key pool (API-key twin of OAuth multiauth). `apiKey` always mirrors the ACTIVE
+   * entry so routing stays single-key; managed via /api/providers/keys. A legacy bare
+   * `apiKey` seeds a one-entry pool on first management touch.
+   */
+  apiKeyPool?: Array<{ id: string; key: string; label?: string; addedAt?: number }>;
   defaultModel?: string;
   models?: string[];
   /**

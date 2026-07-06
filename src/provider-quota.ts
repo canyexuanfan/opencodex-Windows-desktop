@@ -43,6 +43,11 @@ export interface ProviderQuotaResponse {
 
 let cache: { key: string; ts: number; response: ProviderQuotaResponse } | null = null;
 
+/** Invalidate the report cache (e.g. after switching a provider's active account). */
+export function clearProviderQuotaCache(): void {
+  cache = null;
+}
+
 function cacheKey(config: OcxConfig): string {
   const providers = Object.entries(config.providers)
     .map(([name, provider]) => `${name}:${provider.authMode ?? "key"}:${provider.disabled === true ? "off" : "on"}:${provider.baseUrl}`)

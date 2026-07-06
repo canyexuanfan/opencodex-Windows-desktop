@@ -1,0 +1,147 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  getAccountCredential,
+  getAccountSet,
+  getCredential,
+  listAccounts,
+  markAccountNeedsReauth,
+  removeAccount,
+  removeCredential,
+  saveAccountCredential,
+  saveCredential,
+  setActiveAccount,
+} from "../src/oauth/store";
+
+const TEST_DIR = join(import.meta.dir, ".tmp-oauth-store-multi-test");
+let previousOpencodexHome: string | undefined;
+
+const cred = (over: Partial<{ access: string; refresh: string; expires: number; email: string; accountId: string; projectId: string }> = {}) => ({
+  access: "access-1",
+  refresh: "refresh-1",
+  expires: Date.now() + 3600_000,
+  ...over,
+});
+
+describe("multi-account auth store", () => {
+  beforeEach(() => {
+    previousOpencodexHome = process.env.OPENCODEX_HOME;
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+  });
+
+  afterEach(() => {
+    if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
+    else process.env.OPENCODEX_HOME = previousOpencodexHome;
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+  });
+
+  test("legacy single-credential auth.json normalizes and round-trips without losing login", () => {
+    const authPath = join(TEST_DIR, "auth.json");
+    mkdirSync(TEST_DIR, { recursive: true, mode: 0o700 });
+    writeFileSync(authPath, JSON.stringify({
+      xai: { access: "legacy-access", refresh: "legacy-refresh", expires: Date.now() + 1000, email: "old@x.ai" },
+    }));
+    expect(getCredential("xai")?.access).toBe("legacy-access");
+    // Any mutation persists the new shape + writes the downgrade backup.
+    saveCredential("xai", cred({ email: "old@x.ai", access: "new-access" }));
+    expect(getCredential("xai")?.access).toBe("new-access");
+    const raw = JSON.parse(readFileSync(authPath, "utf-8"));
+    expect(Array.isArray(raw.xai.accounts)).toBe(true);
+    expect(existsSync(`${authPath}.pre-multiauth`)).toBe(true);
+  });
+
+  test("new identity appends a second account and activates it", () => {
+    saveCredential("anthropic", cred({ email: "a@x.io", accountId: "acct-a" }));
+    saveCredential("anthropic", cred({ email: "b@x.io", accountId: "acct-b", access: "access-b" }));
+    expect(listAccounts("anthropic").length).toBe(2);
+    expect(getCredential("anthropic")?.email).toBe("b@x.io");
+  });
+
+  test("same identity replaces credential without duplicating", () => {
+    saveCredential("anthropic", cred({ email: "a@x.io", accountId: "acct-a" }));
+    saveCredential("anthropic", cred({ email: "a@x.io", accountId: "acct-a", access: "rotated", refresh: "rotated-refresh" }));
+    expect(listAccounts("anthropic").length).toBe(1);
+    expect(getCredential("anthropic")?.access).toBe("rotated");
+  });
+
+  test("identity-less credential replaces active slot (no duplicate on refresh rotation)", () => {
+    saveCredential("cursor", cred());
+    saveCredential("cursor", cred({ access: "rotated", refresh: "totally-different-refresh" }));
+    expect(listAccounts("cursor").length).toBe(1);
+    expect(getCredential("cursor")?.access).toBe("rotated");
+  });
+
+  test("chatgpt stays single-slot even with distinct identities", () => {
+    saveCredential("chatgpt", cred({ email: "a@x.io", accountId: "one" }));
+    saveCredential("chatgpt", cred({ email: "b@x.io", accountId: "two", access: "b-access" }));
+    expect(listAccounts("chatgpt").length).toBe(1);
+    expect(getCredential("chatgpt")?.email).toBe("b@x.io");
+  });
+
+  test("setActiveAccount switches what getCredential returns", () => {
+    saveCredential("anthropic", cred({ email: "a@x.io", accountId: "acct-a", access: "access-a" }));
+    saveCredential("anthropic", cred({ email: "b@x.io", accountId: "acct-b", access: "access-b" }));
+    const set = getAccountSet("anthropic")!;
+    const idA = set.accounts.find(a => a.credential.email === "a@x.io")!.id;
+    expect(setActiveAccount("anthropic", idA)).toBe(true);
+    expect(getCredential("anthropic")?.access).toBe("access-a");
+    expect(setActiveAccount("anthropic", "nope")).toBe(false);
+  });
+
+  test("saveAccountCredential persists refresh for a non-active account without switching active", () => {
+    saveCredential("xai", cred({ email: "a@x.io", accountId: "acct-a" }));
+    saveCredential("xai", cred({ email: "b@x.io", accountId: "acct-b", access: "access-b" }));
+    const set = getAccountSet("xai")!;
+    const idA = set.accounts.find(a => a.credential.email === "a@x.io")!.id;
+    saveAccountCredential("xai", idA, cred({ email: "a@x.io", accountId: "acct-a", access: "refreshed-a" }));
+    expect(getAccountCredential("xai", idA)?.access).toBe("refreshed-a");
+    expect(getCredential("xai")?.access).toBe("access-b"); // active unchanged
+  });
+
+  test("removeAccount of active promotes next; last removal deletes provider", () => {
+    saveCredential("xai", cred({ email: "a@x.io", accountId: "acct-a", access: "access-a" }));
+    saveCredential("xai", cred({ email: "b@x.io", accountId: "acct-b", access: "access-b" }));
+    const set = getAccountSet("xai")!;
+    expect(removeAccount("xai", set.activeAccountId)).toBe(true);
+    expect(getCredential("xai")?.access).toBe("access-a");
+    const remaining = getAccountSet("xai")!;
+    expect(removeAccount("xai", remaining.activeAccountId)).toBe(true);
+    expect(getCredential("xai")).toBeNull();
+    expect(getAccountSet("xai")).toBeNull();
+  });
+
+  test("removeCredential removes only the active account", () => {
+    saveCredential("anthropic", cred({ email: "a@x.io", accountId: "acct-a", access: "access-a" }));
+    saveCredential("anthropic", cred({ email: "b@x.io", accountId: "acct-b", access: "access-b" }));
+    removeCredential("anthropic"); // active is b
+    expect(listAccounts("anthropic").length).toBe(1);
+    expect(getCredential("anthropic")?.access).toBe("access-a");
+  });
+
+  test("needsReauth flag persists and clears on fresh save", () => {
+    saveCredential("xai", cred({ email: "a@x.io", accountId: "acct-a" }));
+    const id = getAccountSet("xai")!.activeAccountId;
+    markAccountNeedsReauth("xai", id, true);
+    expect(listAccounts("xai")[0]?.needsReauth).toBe(true);
+    saveCredential("xai", cred({ email: "a@x.io", accountId: "acct-a", access: "fresh" }));
+    expect(listAccounts("xai")[0]?.needsReauth).toBeUndefined();
+  });
+
+  test("invalid account entries are dropped on load", () => {
+    const authPath = join(TEST_DIR, "auth.json");
+    mkdirSync(TEST_DIR, { recursive: true, mode: 0o700 });
+    writeFileSync(authPath, JSON.stringify({
+      xai: { activeAccountId: "gone", accounts: [
+        { id: "ok", credential: { access: "a", refresh: "r", expires: 1 } },
+        { id: "bad", credential: { access: 42 } },
+        { notAnAccount: true },
+      ] },
+    }));
+    const set = getAccountSet("xai")!;
+    expect(set.accounts.length).toBe(1);
+    expect(set.activeAccountId).toBe("ok"); // dangling active healed
+  });
+});

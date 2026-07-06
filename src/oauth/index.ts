@@ -2,7 +2,7 @@ import type { OAuthController, OAuthCredentials } from "./types";
 import type { OcxConfig, OcxProviderConfig, RefreshPolicy } from "../types";
 import { loadConfig, resolveEnvValue, saveConfig } from "../config";
 import { maskEmail } from "../privacy";
-import { getCredential, saveCredential } from "./store";
+import { getAccountCredential, getAccountSet, saveAccountCredential, saveCredential, markAccountNeedsReauth, getCredential } from "./store";
 import { loginXai, refreshXaiToken } from "./xai";
 import { ANTHROPIC_OAUTH_BETA, loginAnthropic, refreshAnthropicToken } from "./anthropic";
 import { loginKimi, refreshKimiToken } from "./kimi";
@@ -46,13 +46,14 @@ function oauthDefaultModel(id: string): string {
 
 export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
   xai: {
-    login: (ctrl) => loginXai(ctrl, { importLocal: "fallback" }),
+    // forceLogin skips the local grok-cli import so a SECOND account can be chosen in the browser.
+    login: (ctrl, opts) => loginXai(ctrl, { importLocal: opts?.forceLogin ? "off" : "fallback" }),
     refresh: refreshXaiToken,
     providerConfig: oauthConfig("xai"),
     defaultModel: oauthDefaultModel("xai"),
   },
   anthropic: {
-    login: (ctrl) => loginAnthropic(ctrl, { importLocal: "fallback" }),
+    login: (ctrl, opts) => loginAnthropic(ctrl, { importLocal: opts?.forceLogin ? "off" : "fallback" }),
     refresh: refreshAnthropicToken,
     providerConfig: oauthConfig("anthropic"),
     defaultModel: oauthDefaultModel("anthropic"),
@@ -73,7 +74,7 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
     defaultModel: oauthDefaultModel("kiro"),
   },
   "google-antigravity": {
-    login: (ctrl) => loginAntigravity(ctrl),
+    login: (ctrl, opts) => loginAntigravity(ctrl, { forceAccountSelect: opts?.forceLogin === true }),
     refresh: refreshAntigravityToken,
     providerConfig: oauthConfig("google-antigravity"),
     defaultModel: oauthDefaultModel("google-antigravity"),
@@ -136,19 +137,33 @@ export class OAuthLoginRequiredError extends Error {
   }
 }
 
-/** Return a valid access token, refreshing + persisting if expired. Throws if not logged in. */
+/** Return a valid access token for the ACTIVE account, refreshing + persisting if expired. */
 export async function getValidAccessToken(provider: string): Promise<string> {
   const def = OAUTH_PROVIDERS[provider];
   if (!def) throw new UnsupportedOAuthProviderError(provider);
-  const cred = getCredential(provider);
+  const set = getAccountSet(provider);
+  if (!set) throw new OAuthLoginRequiredError(provider);
+  return getValidAccessTokenForAccount(provider, set.activeAccountId);
+}
+
+/**
+ * Account-scoped token resolver (multiauth): refresh is single-flighted per
+ * (provider, account), and the rotated credential is persisted for THAT account only —
+ * a guardian refresh of a background account never switches the active account.
+ */
+export async function getValidAccessTokenForAccount(provider: string, accountId: string): Promise<string> {
+  const def = OAUTH_PROVIDERS[provider];
+  if (!def) throw new UnsupportedOAuthProviderError(provider);
+  const cred = getAccountCredential(provider, accountId);
   if (!cred) throw new OAuthLoginRequiredError(provider);
   if (cred.expires > Date.now() + REFRESH_SKEW_MS) return cred.access;
-  const existing = tokenRefreshes.get(provider);
+  const key = `${provider}\u0000${accountId}`;
+  const existing = tokenRefreshes.get(key);
   if (existing) return existing;
-  const refresh = refreshAndPersistAccessToken(provider, def, cred).finally(() => {
-    if (tokenRefreshes.get(provider) === refresh) tokenRefreshes.delete(provider);
+  const refresh = refreshAndPersistAccessToken(provider, accountId, def, cred).finally(() => {
+    if (tokenRefreshes.get(key) === refresh) tokenRefreshes.delete(key);
   });
-  tokenRefreshes.set(provider, refresh);
+  tokenRefreshes.set(key, refresh);
   return refresh;
 }
 
@@ -158,12 +173,22 @@ function readFreshKiroCliCredential(): OAuthCredentials | undefined {
   return { access: imported.access, refresh: imported.refresh, expires: imported.expires, source: "local-cli" };
 }
 
+/** Terminal refresh failures (revoked/rotated-away grants) — retrying cannot succeed. */
+function isTerminalRefreshError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return msg.includes("invalid_grant") || msg.includes("refresh_token_reused") || msg.includes("revoked");
+}
+
 async function refreshAndPersistAccessToken(
   provider: string,
+  accountId: string,
   def: OAuthProviderDef,
   cred: OAuthCredentials,
 ): Promise<string> {
-  if (provider === "kiro") {
+  // Local-CLI import fallback only for the ACTIVE account: importing another identity's
+  // token under a background account id would silently contaminate that account.
+  const isActive = getAccountSet(provider)?.activeAccountId === accountId;
+  if (provider === "kiro" && isActive) {
     const imported = readFreshKiroCliCredential();
     if (imported) {
       saveCredential(provider, imported);
@@ -172,21 +197,30 @@ async function refreshAndPersistAccessToken(
   }
   try {
     const fresh = await def.refresh(cred.refresh);
-    saveCredential(provider, {
+    // Persist to THIS account (rotation-safe: new refresh token hits disk before use) without
+    // touching activeAccountId.
+    saveAccountCredential(provider, accountId, {
       ...fresh,
       source: fresh.source ?? cred.source ?? "oauth",
       // Preserve a previously-discovered project id when a refresh-time re-discovery comes back empty
       // (e.g. a transient network blip), so Antigravity does not lose its CCA project across refresh.
       ...(fresh.projectId === undefined && cred.projectId ? { projectId: cred.projectId } : {}),
+      // Preserve identity fields the refresh response may omit, so identity matching stays stable.
+      ...(fresh.email === undefined && cred.email ? { email: cred.email } : {}),
+      ...(fresh.accountId === undefined && cred.accountId ? { accountId: cred.accountId } : {}),
     });
     return fresh.access;
   } catch (err) {
-    if (provider === "kiro") {
+    if (provider === "kiro" && isActive) {
       const imported = readFreshKiroCliCredential();
       if (imported) {
         saveCredential(provider, imported);
         return imported.access;
       }
+    }
+    if (isTerminalRefreshError(err)) {
+      markAccountNeedsReauth(provider, accountId, true);
+      throw new OAuthLoginRequiredError(provider);
     }
     throw err;
   }
@@ -329,10 +363,27 @@ export async function runLogin(provider: string, ctrl: OAuthController, opts?: L
 const loginState = new Map<string, { error?: string; done: boolean }>();
 const loginAbort = new Map<string, AbortController>();
 
-export function getLoginStatus(provider: string): { loggedIn: boolean; email?: string; source?: OAuthCredentials["source"]; error?: string; done: boolean } {
+export interface OAuthAccountSummary { id: string; email?: string; active: boolean; needsReauth?: boolean; expiresAt?: number }
+
+export function getLoginStatus(provider: string): { loggedIn: boolean; email?: string; source?: OAuthCredentials["source"]; error?: string; done: boolean; activeAccountId?: string; accounts?: OAuthAccountSummary[] } {
   const cred = getCredential(provider);
   const st = loginState.get(provider);
-  return { loggedIn: !!cred, email: maskEmail(cred?.email) ?? undefined, source: cred?.source, error: st?.error, done: st?.done ?? false };
+  const set = getAccountSet(provider);
+  const accounts: OAuthAccountSummary[] | undefined = set?.accounts.map(a => ({
+    id: a.id,
+    email: maskEmail(a.credential.email) ?? undefined,
+    active: a.id === set.activeAccountId,
+    ...(a.needsReauth ? { needsReauth: true } : {}),
+    expiresAt: a.credential.expires,
+  }));
+  return {
+    loggedIn: !!cred,
+    email: maskEmail(cred?.email) ?? undefined,
+    source: cred?.source,
+    error: st?.error,
+    done: st?.done ?? false,
+    ...(set ? { activeAccountId: set.activeAccountId, accounts } : {}),
+  };
 }
 
 /** Token-safe per-provider login state for the CLI `ocx status` logins section (no tokens, masked email). */

@@ -12,6 +12,22 @@ export type OAuthCredentials = {
   projectId?: string;
 };
 
+/** One logged-in account inside a provider's account set (multiauth). */
+export interface ProviderAccount {
+  /** Stable short id, generated once at append time; never re-derived after rotation. */
+  id: string;
+  credential: OAuthCredentials;
+  /** Terminal refresh failure (invalid_grant / reused / revoked) — re-login required. */
+  needsReauth?: boolean;
+  addedAt?: number;
+}
+
+/** auth.json value per provider: N accounts + which one requests use. */
+export interface ProviderAccountSet {
+  activeAccountId: string;
+  accounts: ProviderAccount[];
+}
+
 export interface OAuthController {
   onAuth?(info: { url: string; instructions?: string }): void;
   onProgress?(message: string): void;
