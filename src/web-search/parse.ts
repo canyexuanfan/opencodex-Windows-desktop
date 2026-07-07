@@ -154,7 +154,10 @@ export async function parseSidecarSSE(response: Response): Promise<WebSearchResu
   const handle = (payload: string): void => {
     if (!payload || payload === "[DONE]") return;
     let data: Record<string, unknown>;
-    try { data = JSON.parse(payload) as Record<string, unknown>; } catch { return; }
+    try { data = JSON.parse(payload) as Record<string, unknown>; } catch {
+      console.warn(`[web-search-parse] malformed SSE JSON (${payload.length} chars): ${payload.slice(0, 120)}`);
+      return;
+    }
     const type = data.type as string | undefined;
     if (type === "response.output_text.delta" && typeof data.delta === "string") {
       acc.deltaText += data.delta;

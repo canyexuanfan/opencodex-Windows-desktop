@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { parseRequest } from "../src/responses/parser";
-import { planWebSearch } from "../src/web-search";
+import { planWebSearch, webSearchStallTimeoutSec } from "../src/web-search";
 import { runWithWebSearch } from "../src/web-search/loop";
 import { headersForCodexAuthContext } from "../src/codex/auth-context";
 import type { AdapterEvent, OcxConfig, OcxProviderConfig } from "../src/types";
@@ -799,4 +799,60 @@ describe("web-search batched sources -> url_citation annotations", () => {
       { type: "url_citation", url: "https://ok.test/doc", title: "Good doc", start_index: 0, end_index: 0 },
     ]);
   });
+});
+
+describe("web-search stall deadline", () => {
+  test("planWebSearch computes the effective stall deadline covering bounded silent units", () => {
+    const parsed = parsedWithWebSearch();
+    const auth = new Headers({ authorization: "Bearer chatgpt" });
+    // defaults: max(90, connect 200s, sidecar 200s) + 30 margin
+    expect(planWebSearch(config(), parsed, false, auth, routedProvider, "model")?.stallTimeoutSec).toBe(230);
+    // a larger user-configured stallTimeoutSec dominates
+    expect(planWebSearch(config({ stallTimeoutSec: 600 }), parsed, false, auth, routedProvider, "model")?.stallTimeoutSec).toBe(630);
+    // small unit budgets -> the bridge's 90s default dominates
+    expect(planWebSearch(
+      config({ connectTimeoutMs: 30_000, webSearchSidecar: { timeoutMs: 30_000 } }),
+      parsed, false, auth, routedProvider, "model",
+    )?.stallTimeoutSec).toBe(120);
+  });
+
+  test("webSearchStallTimeoutSec helper covers the largest bounded unit plus margin", () => {
+    expect(webSearchStallTimeoutSec(undefined, undefined, 200_000)).toBe(230);
+    expect(webSearchStallTimeoutSec(90, 200_000, 200_000)).toBe(230);
+    expect(webSearchStallTimeoutSec(600, 200_000, 200_000)).toBe(630);
+    expect(webSearchStallTimeoutSec(undefined, 30_000, 30_000)).toBe(120);
+  });
+
+  test("threaded stallTimeoutSec reaches the bridge: a hung sidecar trips upstream_stall_timeout", async () => {
+    globalThis.fetch = ((input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("https://routed.test/")) return Promise.resolve(new Response("{}", { status: 200 }));
+      // sidecar /responses hangs until aborted (stall must fire first: sidecar budget is 600s)
+      return new Promise<Response>((_, reject) => {
+        (init?.signal as AbortSignal | undefined)?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    }) as typeof fetch;
+
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "Search for current docs", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: scriptedAdapter([
+        { type: "tool_call_start", id: "call_1", name: "web_search" },
+        { type: "tool_call_delta", arguments: JSON.stringify({ query: "current docs" }) },
+        { type: "tool_call_end" },
+      ]),
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 600_000 },
+      maxSearches: 1,
+      // Bridge clamps to >= 1s and checks on its 2s tick: the hung search dies on the first
+      // silent tick (~4s), proving deps.stallTimeoutSec actually reaches bridgeToResponsesSSE.
+      stallTimeoutSec: 1,
+    });
+    const frames = await collectSse(response.body!);
+    const incomplete = frames.find(f => f.event === "response.incomplete");
+    expect(incomplete).toBeDefined();
+    const resp = incomplete!.data.response as { incomplete_details?: { reason?: string } };
+    expect(resp.incomplete_details?.reason).toBe("upstream_stall_timeout");
+  }, 15_000);
 });

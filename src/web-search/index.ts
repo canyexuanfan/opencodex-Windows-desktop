@@ -12,6 +12,29 @@ const DEFAULT_SIDECAR_MODEL = "gpt-5.4-mini";
 const DEFAULT_SIDECAR_REASONING = "low";
 const DEFAULT_MAX_SEARCHES = 3;
 const DEFAULT_TIMEOUT_MS = 200_000;
+// Mirrors the bridge's stall default (bridge.ts `options?.stallTimeoutSec ?? 90`).
+const DEFAULT_STALL_TIMEOUT_SEC = 90;
+const STALL_MARGIN_SEC = 30;
+
+/**
+ * Effective bridge stall deadline (seconds) for the web-search loop. The loop's silent work units
+ * are individually bounded — one non-streaming model iteration by `connectTimeoutMs`, one sidecar
+ * search by the sidecar `timeoutMs` — and seam heartbeats in the loop keep every silent span down
+ * to ONE such unit. The stall deadline must therefore cover the largest unit plus a margin;
+ * otherwise a legitimately slow search trips the bridge's 90s default upstream_stall_timeout and
+ * kills the whole turn. Stays finite so a genuine hang is still cut off.
+ */
+export function webSearchStallTimeoutSec(
+  configuredSec: number | undefined,
+  connectTimeoutMs: number | undefined,
+  sidecarTimeoutMs: number,
+): number {
+  return Math.max(
+    configuredSec ?? DEFAULT_STALL_TIMEOUT_SEC,
+    Math.ceil((connectTimeoutMs ?? 0) / 1000),
+    Math.ceil(sidecarTimeoutMs / 1000),
+  ) + STALL_MARGIN_SEC;
+}
 
 /** First configured forward (ChatGPT passthrough) provider — the only path with server-side web_search. */
 export function findForwardProvider(config: OcxConfig): OcxProviderConfig | undefined {
@@ -27,6 +50,8 @@ export interface SidecarPlan {
   hostedTool: Record<string, unknown>;
   settings: SidecarSettings;
   maxSearches: number;
+  /** Effective bridge stall deadline for the sidecar turn (see webSearchStallTimeoutSec). */
+  stallTimeoutSec: number;
 }
 
 /**
@@ -50,16 +75,20 @@ export function planWebSearch(
   if (authContext.kind === "main" && !incomingHeaders.get("authorization")) return undefined; // not logged into ChatGPT → sidecar can't run
   const forwardProvider = findForwardProvider(config);
   if (!forwardProvider) return undefined;
+  const timeoutMs = cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  // Same `?? 200_000` default the server applies when threading connectTimeoutMs into the loop.
+  const connectTimeoutMs = config.connectTimeoutMs ?? 200_000;
   return {
     forwardProvider,
     hostedTool: parsed._webSearch,
     settings: {
       model: cfg.model ?? DEFAULT_SIDECAR_MODEL,
       reasoning: cfg.reasoning ?? DEFAULT_SIDECAR_REASONING,
-      timeoutMs: cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      timeoutMs,
       // The routed model is text-only → have the search model verbalize image results.
       describeImages: modelInList(provider.noVisionModels, modelId),
     },
     maxSearches: cfg.maxSearchesPerTurn ?? DEFAULT_MAX_SEARCHES,
+    stallTimeoutSec: webSearchStallTimeoutSec(config.stallTimeoutSec, connectTimeoutMs, timeoutMs),
   };
 }

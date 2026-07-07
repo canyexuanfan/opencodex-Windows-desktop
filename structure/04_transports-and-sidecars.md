@@ -39,8 +39,19 @@ frame rather than always emitting `response.completed`. If the response status i
 ## Heartbeat and stall deadline
 
 The HTTP/SSE bridge emits `response.heartbeat` events during upstream silence to re-arm Codex's idle
-timer. A bounded stall deadline (150 ticks = 5 minutes at the default 2 s interval) closes the stream
-and cancels the upstream request if no real events arrive, preventing indefinitely hung connections.
+timer (Codex's default `stream_idle_timeout` is 300 s and ANY SSE event re-arms it). Those
+bridge-enqueued keepalive frames do NOT count as activity for the bridge's own watchdog: a bounded
+stall deadline (default 90 s, configurable via `stallTimeoutSec`, checked on the 2 s heartbeat tick)
+closes the stream with `response.incomplete` / `upstream_stall_timeout` and cancels the upstream
+request if no real adapter events arrive. Adapter-yielded `{ type: "heartbeat" }` events DO reset
+the watchdog.
+
+The web-search loop's silent work units are individually bounded but longer than 90 s (one
+non-streaming model iteration: `connectTimeoutMs`, default 200 s; one sidecar search: sidecar
+`timeoutMs`, default 200 s), so its bridge call widens the deadline to
+`max(stallTimeoutSec ?? 90, connectTimeoutMs/1000, sidecar timeoutMs/1000) + 30 s` (230 s at
+defaults) and yields seam heartbeats between units (sequential batched queries, placeholder
+outcomes, in-stream iterations, 429 key rotations) so no silent span ever exceeds one unit budget.
 
 ## Reasoning and tool-result compatibility
 

@@ -67,6 +67,7 @@ export async function runWebSearch(
   const url = `${forwardProvider.baseUrl}/responses`;
   const linkedSignal = signalWithTimeout(settings.timeoutMs, abortSignal);
   const sidecarExit = sidecarEnter("web-search");
+  const t0 = Date.now();
   try {
     const res = await fetchWithResetRetry(
       () => fetch(url, {
@@ -80,6 +81,7 @@ export async function runWebSearch(
     recordOutcome?.(res.status);
     if (!res.ok) {
       const t = await res.text().catch(() => "");
+      console.warn(`[web-search] sidecar HTTP ${res.status} for query "${query.slice(0, 80)}" (${Date.now() - t0}ms)`);
       return { text: "", sources: [], error: `sidecar HTTP ${res.status}: ${t.slice(0, 200)}` };
     }
     const detachBodyGuard = cancelBodyOnAbort(res.body, linkedSignal.signal);
@@ -90,6 +92,8 @@ export async function runWebSearch(
     }
   } catch (e) {
     recordOutcome?.(e instanceof Error && e.name === "TimeoutError" ? "timeout" : "connect_error");
+    const kind = e instanceof Error && e.name === "TimeoutError" ? "timeout" : "connect_error";
+    console.warn(`[web-search] sidecar ${kind} for query "${query.slice(0, 80)}" (${Date.now() - t0}ms)`);
     return { text: "", sources: [], error: e instanceof Error ? e.message : String(e) };
   } finally {
     sidecarExit();

@@ -84,6 +84,7 @@ export async function describeImage(
   };
   const linkedSignal = signalWithTimeout(settings.timeoutMs, abortSignal);
   const sidecarExit = sidecarEnter("vision");
+  const t0 = Date.now();
   try {
     const res = await fetchWithResetRetry(
       () => fetch(`${forwardProvider.baseUrl}/responses`, {
@@ -97,6 +98,7 @@ export async function describeImage(
     recordOutcome?.(res.status);
     if (!res.ok) {
       const t = await res.text().catch(() => "");
+      console.warn(`[vision] sidecar HTTP ${res.status} (${Date.now() - t0}ms)`);
       return { text: "", error: `vision sidecar HTTP ${res.status}: ${t.slice(0, 200)}` };
     }
     const detachBodyGuard = cancelBodyOnAbort(res.body, linkedSignal.signal);
@@ -112,6 +114,8 @@ export async function describeImage(
     return { text: parsed.text };
   } catch (e) {
     recordOutcome?.(e instanceof Error && e.name === "TimeoutError" ? "timeout" : "connect_error");
+    const kind = e instanceof Error && e.name === "TimeoutError" ? "timeout" : "connect_error";
+    console.warn(`[vision] sidecar ${kind} (${Date.now() - t0}ms)`);
     return { text: "", error: e instanceof Error ? e.message : String(e) };
   } finally {
     sidecarExit();

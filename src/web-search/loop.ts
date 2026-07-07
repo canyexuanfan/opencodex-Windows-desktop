@@ -171,6 +171,13 @@ export interface WebSearchLoopDeps {
   /** Per-iteration deadline for routed model calls (mirrors the normal path's connectTimeoutMs). */
   connectTimeoutMs?: number;
   /**
+   * Effective bridge stall deadline for this turn (seconds). Computed by planWebSearch
+   * (webSearchStallTimeoutSec) to cover the loop's bounded silent units — a non-streaming model
+   * iteration (connectTimeoutMs) or one sidecar search (settings.timeoutMs) — so a legitimately
+   * slow-but-bounded unit never trips the bridge's 90s default upstream_stall_timeout.
+   */
+  stallTimeoutSec?: number;
+  /**
    * 429 key-failover hook: rotate the provider's active pool key and return a rebuilt adapter,
    * or null when the pool is exhausted (same semantics as the normal routed path).
    */
@@ -190,6 +197,7 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
   if (!adapter.parseResponse) return jsonError(500, "web-search sidecar requires a non-streaming adapter");
 
   const messages: OcxMessage[] = [...parsed.context.messages];
+  const loopT0 = Date.now();
   const allTools = parsed.context.tools ?? [];
   // For the forced-answer pass we drop the synthetic web_search tool so the model MUST answer from the
   // results already in `messages` (can't search again) — this guarantees a non-empty final answer.
@@ -214,11 +222,15 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
   // Hard iteration bound (termination safety net); forceAnswer normally ends the loop sooner.
   const HARD_CAP = maxSearches + 2;
 
-  // Run one model iteration: build the request, fetch it, parse to adapter events. Returns the
-  // scanned split. Throws `LoopError` on a hard provider/parse failure so the EAGER first call can
-  // turn it into a non-200 jsonError (preserving the status contract), while later iterations —
-  // already inside the 200 SSE — surface it as an in-stream error event.
-  const runIteration = async (forceAnswer: boolean): Promise<{ calls: WebSearchCall[]; passthrough: AdapterEvent[]; hasRealToolCall: boolean }> => {
+  // Run one model iteration: build the request, fetch it, parse to adapter events. RETURNS the
+  // scanned split (generator return value, not a yield). Throws `LoopError` on a hard
+  // provider/parse failure so the EAGER first call can turn it into a non-200 jsonError
+  // (preserving the status contract), while later iterations — already inside the 200 SSE —
+  // surface it as an in-stream error event. A generator so the 429 key-failover loop can YIELD a
+  // heartbeat between bounded retry fetches: the iteration-wide AbortSignal.timeout bounds the
+  // plain-fetch path, but adapters with their own fetchResponse timeout handling could otherwise
+  // chain silent retries past the bridge stall deadline.
+  const runIterationEvents = async function* (forceAnswer: boolean): AsyncGenerator<AdapterEvent, { calls: WebSearchCall[]; passthrough: AdapterEvent[]; hasRealToolCall: boolean }> {
     // On the forced-answer pass the synthetic web_search tool is gone, so the model MUST answer
     // from the results already in `messages`. A weak model can still produce a thin answer that
     // ignores what the search found, which reads to the user as "the search did nothing". Nudge it
@@ -265,6 +277,8 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
       if (!rotated?.parseResponse) break;
       try { void resp.body?.cancel(); } catch { /* already consumed */ }
       adapter = rotated;
+      // Stall-watchdog seam between bounded retry fetches (audit 011 B3).
+      yield { type: "heartbeat" };
       resp = await fetchOnce();
     }
     if (!resp.ok) {
@@ -290,6 +304,15 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
     return scanEventsForWebSearch(events);
   };
 
+  // Drain an iteration OUTSIDE the bridge (eager first call): the stall deadline is not armed
+  // before bridgeToResponsesSSE exists, so seam heartbeats have nowhere to go — discard them.
+  const runIterationDrained = async (forceAnswer: boolean): Promise<{ calls: WebSearchCall[]; passthrough: AdapterEvent[]; hasRealToolCall: boolean }> => {
+    const it = runIterationEvents(forceAnswer);
+    let r = await it.next();
+    while (!r.done) r = await it.next();
+    return r.value;
+  };
+
   // Execute one model-requested web_search call. The call may batch several queries (native
   // `action.search.queries`); each query runs as its own sidecar search (budget-aware), but they are
   // paired as ONE assistant toolCall + ONE aggregated toolResult so function-call pairing stays
@@ -306,6 +329,10 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
       results.push({ query: "", outcome: { text: "", sources: [], error: "the model called web_search with an empty query" } });
     }
     for (const query of call.queries) {
+      // Stall-watchdog seam: batched queries run sequentially inside ONE begin/end cell, and
+      // placeholder outcomes (repeat/limit) emit no cell at all — without this, consecutive
+      // bounded units chain into one silent span past the stall deadline (audit 011 B1).
+      yield { type: "heartbeat" };
       let outcome: SidecarOutcome;
       if (failedQueries.has(normalizeQuery(query))) {
         // Already failed this turn — don't spend another real search on it.
@@ -375,7 +402,7 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
   // streaming starts (the status contract Codex relies on). Later iterations run live inside the SSE.
   let first: { calls: WebSearchCall[]; passthrough: AdapterEvent[]; hasRealToolCall: boolean };
   try {
-    first = await runIteration(false);
+    first = await runIterationDrained(false);
   } catch (e) {
     if (abortSignal) abortSignal.removeEventListener("abort", linkAbort);
     if (e instanceof LoopError) return jsonError(e.status, e.message);
@@ -401,7 +428,18 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
       // First loop turn reuses the eager result; subsequent turns run a fresh iteration here.
       if (i > 0) {
         try {
-          split = await runIteration(forceAnswer);
+          // Stall-watchdog seam before each in-stream iteration (placeholder search turns emit no
+          // cell, so consecutive non-streaming iterations would otherwise be one silent span).
+          yield { type: "heartbeat" };
+          // Manual consumption (not for-await): re-yield seam heartbeats into the bridge AND
+          // capture the generator's RETURN value (the scanned split).
+          const it = runIterationEvents(forceAnswer);
+          let r = await it.next();
+          while (!r.done) {
+            yield r.value;
+            r = await it.next();
+          }
+          split = r.value;
         } catch (e) {
           yield { type: "error", message: e instanceof LoopError ? e.message : (e instanceof Error ? e.message : String(e)) };
           return;
@@ -411,7 +449,15 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
       // tool call (e.g. shell/apply_patch) means this turn is terminal for Codex — finalize so those
       // calls reach Codex. forceAnswer also finalizes.
       const shouldLoop = split.calls.length > 0 && !split.hasRealToolCall && !forceAnswer;
-      if (!shouldLoop) {
+     if (!shouldLoop) {
+        if (executedSearchCount > 0) {
+          const failedCount = failedQueries.size;
+          console.warn(
+            `[web-search-loop] done — ${executedSearchCount} search${executedSearchCount > 1 ? "es" : ""}`
+            + (failedCount > 0 ? ` (${failedCount} failed)` : "")
+            + `, ${i + 1} iteration${i > 0 ? "s" : ""}, ${Date.now() - loopT0}ms`,
+          );
+        }
         yield* replay(split.passthrough);
         return;
       }
@@ -424,11 +470,17 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
   }
 
   const sse = bridgeToResponsesSSE(
-    produce(), parsed.modelId, toolNsMap, freeform, toolSearch,
-    () => internalAbort.abort("client closed responses stream"), undefined,
+    produce(), parsed.modelId, toolNsMap, freeform, toolSearch, () => {
+      const elapsed = Date.now() - loopT0;
+      if (executedSearchCount > 0 || searchesExecuted > 0) {
+        console.warn(`[web-search-loop] cancelled — ${executedSearchCount} real searches, ${searchesExecuted - executedSearchCount} placeholders, ${elapsed}ms`);
+      }
+      internalAbort.abort("client closed responses stream");
+    }, undefined,
     {
       ...(deps.forceEmptyResponseId ? { responseId: "" } : {}),
       hideThinkingSummary: parsed.options.hideThinkingSummary,
+      ...(deps.stallTimeoutSec !== undefined ? { stallTimeoutSec: deps.stallTimeoutSec } : {}),
     },
   );
   return new Response(sse, { headers: SSE_HEADERS });

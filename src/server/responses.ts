@@ -482,6 +482,7 @@ export async function handleResponses(
       abortSignal: options.abortSignal,
       recordSidecarOutcome,
       connectTimeoutMs: config.connectTimeoutMs ?? 200_000,
+      stallTimeoutSec: wsPlan.stallTimeoutSec,
       on429: retryAfter => {
         const rotated = rotateKeyOn429(config, route.providerName, retryAfter, Date.now(), route.provider.apiKey);
         if (!rotated) return null;
