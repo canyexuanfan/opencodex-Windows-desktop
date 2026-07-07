@@ -4,9 +4,14 @@ import { getConfigDir } from "../config";
 import { durableBunPath } from "../lib/bun-runtime";
 import { serviceApiTokenFilePath } from "../lib/service-secrets";
 import { windowsEnvIndirectBatchValue } from "../lib/win-paths";
+import { isWslRuntime } from "./home";
 
 const SHIM_MARKER = "opencodex codex autostart shim";
 let lastShimDiscoveryError: string | null = null;
+/** Last human-readable reason discovery returned null (exposed for doctor/tests). */
+export function lastCodexDiscoveryError(): string | null {
+  return lastShimDiscoveryError;
+}
 const CODEX_INTERNAL_COMMANDS = [
   "app-server",
   "archive",
@@ -66,17 +71,63 @@ function isShim(path: string): boolean {
   }
 }
 
-function findCodexOnPath(): string | null {
-  for (const dir of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
-    for (const name of commandNames("codex")) {
-      const path = join(dir, name);
-      if (!existsSync(path) || isShim(path)) continue;
-      try {
-        if (!lstatSync(path).isDirectory()) return path;
-      } catch {
-        continue;
+/** A PATH entry that reaches Windows through WSL drive interop (`/mnt/<drive>/...`). */
+export function isWindowsInteropDir(dir: string): boolean {
+  return /^\/mnt\/[a-z](\/|$)/i.test(dir);
+}
+
+export type CodexPathScanDeps = {
+  pathValue?: string;
+  wsl?: boolean;
+  exists?: (path: string) => boolean;
+  isShimFile?: (path: string) => boolean;
+  isDirectory?: (path: string) => boolean;
+};
+
+function realIsDirectory(path: string): boolean {
+  try {
+    return lstatSync(path).isDirectory();
+  } catch {
+    return true; // unreadable -> treat as unusable
+  }
+}
+
+export function findCodexOnPath(deps: CodexPathScanDeps = {}): string | null {
+  lastShimDiscoveryError = null;
+  const exists = deps.exists ?? existsSync;
+  const shimFile = deps.isShimFile ?? isShim;
+  const isDir = deps.isDirectory ?? realIsDirectory;
+  const wsl = deps.wsl ?? (process.platform === "linux" && isWslRuntime());
+  // Windows npm prefixes ship codex.exe/codex.cmd next to the extensionless sh launcher.
+  const interopNames = ["codex", "codex.exe", "codex.cmd", "codex.ps1"];
+  let skippedInterop: string | null = null;
+
+  for (const dir of (deps.pathValue ?? process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
+    if (wsl && isWindowsInteropDir(dir)) {
+      // A Windows-side codex reached through WSL PATH interop: a Unix shim written
+      // here would embed WSL-only paths and break every Windows-side invocation.
+      if (!skippedInterop) {
+        for (const name of interopNames) {
+          const path = join(dir, name);
+          if (exists(path) && !shimFile(path) && !isDir(path)) { skippedInterop = path; break; }
+        }
       }
+      continue;
     }
+    // Interop dirs carry Windows launcher names even when the scan is not skipping them.
+    const names = isWindowsInteropDir(dir) ? interopNames : commandNames("codex");
+    for (const name of names) {
+      const path = join(dir, name);
+      if (!exists(path) || shimFile(path)) continue;
+      if (!isDir(path)) return path;
+    }
+  }
+
+  if (skippedInterop) {
+    lastShimDiscoveryError =
+      `Found a Windows codex at ${skippedInterop} via WSL PATH interop, but no Linux-side codex. ` +
+      "Refusing to shim a Windows launcher from WSL (a WSL shim breaks Windows invocations). " +
+      "Install codex inside WSL (npm i -g @openai/codex), or run 'ocx ensure' from Windows to shim the Windows side.";
   }
   return null;
 }

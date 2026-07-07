@@ -8,6 +8,7 @@ import {
   collectConfiguredProxy,
   collectProxyEnv,
   collectRunningProxyEnv,
+  collectWslDualInstall,
   parseProcessEnvBlock,
   probeWham,
   resolveCodexHomeDir,
@@ -105,6 +106,43 @@ describe("doctor", () => {
       homedir: () => wslHome,
       usersRoot,
     })).toBe(linuxCodexHome);
+  });
+
+  test("collectWslDualInstall reports both sides plus interop codex on PATH", () => {
+    delete process.env.CODEX_HOME;
+    const wslHome = join(TEST_DIR, "wsl-home");
+    const linuxCodexHome = join(wslHome, ".codex");
+    const usersRoot = join(TEST_DIR, "mnt-c", "Users");
+    const windowsCodexHome = join(usersRoot, "jun", ".codex");
+    mkdirSync(linuxCodexHome, { recursive: true });
+    mkdirSync(windowsCodexHome, { recursive: true });
+    writeFileSync(join(linuxCodexHome, "config.toml"), "model_provider = \"linux\"\n");
+    writeFileSync(join(windowsCodexHome, "config.toml"), "model_provider = \"windows\"\n");
+
+    const interopBin = "/mnt/c/Users/jun/AppData/Roaming/npm";
+    const diag = collectWslDualInstall({
+      env: { WSL_DISTRO_NAME: "Ubuntu" },
+      platform: "linux",
+      homedir: () => wslHome,
+      usersRoot,
+      effectiveCodexHome: linuxCodexHome,
+      pathValue: interopBin,
+      existsSync: (p: string) => p.startsWith(interopBin) ? p === join(interopBin, "codex.exe") : existsSync(p),
+    });
+
+    expect(diag.wsl).toBe(true);
+    expect(diag.dualInstall).toBe(true);
+    expect(diag.linuxCodexConfigured).toBe(true);
+    expect(diag.windowsCodexHomes).toEqual([windowsCodexHome]);
+    expect(diag.effectiveIsWindowsMount).toBe(false);
+    expect(diag.interopCodexOnPath).toBe(join(interopBin, "codex.exe"));
+  });
+
+  test("collectWslDualInstall is inert off WSL", () => {
+    const diag = collectWslDualInstall({ platform: "darwin", effectiveCodexHome: TEST_CODEX_HOME });
+    expect(diag.wsl).toBe(false);
+    expect(diag.dualInstall).toBe(false);
+    expect(diag.interopCodexOnPath).toBeNull();
   });
 
   test("detectFsType flags /mnt drvfs mounts and leaves ext4 home alone", () => {

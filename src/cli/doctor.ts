@@ -8,10 +8,12 @@
  * networking. See devlog/_plan/260630_wsl-account-autoswitch/30_*.
  */
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { getConfigDir, getConfigPath, readConfigDiagnostics, readPid, resolveEnvValue } from "../config";
 import { readCodexTokens } from "../codex/auth-collision";
-import { resolveCodexHomeDir as resolveCodexHomeDirImpl } from "../codex/home";
+import { resolveCodexHomeDir as resolveCodexHomeDirImpl, isWslRuntime, listWslWindowsCodexHomes, type CodexHomeDeps } from "../codex/home";
+import { findCodexOnPath, isWindowsInteropDir } from "../codex/shim";
 import { countPendingOpencodexHistory } from "../codex/history-provider";
 export { resolveCodexHomeDir } from "../codex/home";
 
@@ -68,6 +70,64 @@ function readMounts(): string | null {
   } catch {
     return null;
   }
+}
+
+export type WslDualInstallDiagnostic = {
+  wsl: boolean;
+  effectiveCodexHome: string;
+  effectiveIsWindowsMount: boolean;
+  linuxCodexConfigured: boolean;
+  windowsCodexHomes: string[];
+  dualInstall: boolean;
+  interopCodexOnPath: string | null;
+};
+
+type WslDualInstallDeps = CodexHomeDeps & {
+  pathValue?: string;
+  effectiveCodexHome?: string;
+};
+
+/**
+ * WSL + Windows dual-install visibility: which `.codex` home each side owns,
+ * whether the effective home sits on a Windows mount, and whether the `codex`
+ * on PATH is actually the Windows launcher reached through drive interop.
+ * Read-only; hints are printed by runDoctor, never applied.
+ */
+export function collectWslDualInstall(deps: WslDualInstallDeps = {}): WslDualInstallDiagnostic {
+  const wsl = isWslRuntime(deps);
+  const effectiveCodexHome = deps.effectiveCodexHome ?? resolveCodexHomeDirImpl(deps);
+  if (!wsl) {
+    return {
+      wsl: false,
+      effectiveCodexHome,
+      effectiveIsWindowsMount: false,
+      linuxCodexConfigured: false,
+      windowsCodexHomes: [],
+      dualInstall: false,
+      interopCodexOnPath: null,
+    };
+  }
+  const exists = deps.existsSync ?? existsSync;
+  const home = (deps.homedir ?? homedir)();
+  const linuxCodexConfigured = !!home && exists(join(home, ".codex", "config.toml"));
+  const windowsCodexHomes = listWslWindowsCodexHomes(deps);
+  const onPath = findCodexOnPath({
+    pathValue: deps.pathValue ?? process.env.PATH,
+    wsl: false, // scan everything; classify interop ourselves
+    // When a fake fs is injected (tests), the real lstat/readFile would miss its
+    // synthetic paths; treat every injected hit as a plain non-shim file.
+    ...(deps.existsSync ? { exists: deps.existsSync, isShimFile: () => false, isDirectory: () => false } : {}),
+  });
+  const interopCodexOnPath = onPath && isWindowsInteropDir(onPath) ? onPath : null;
+  return {
+    wsl,
+    effectiveCodexHome,
+    effectiveIsWindowsMount: isWindowsInteropDir(effectiveCodexHome),
+    linuxCodexConfigured,
+    windowsCodexHomes,
+    dualInstall: linuxCodexConfigured && windowsCodexHomes.length > 0,
+    interopCodexOnPath,
+  };
 }
 
 const PROXY_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"] as const;
@@ -307,6 +367,21 @@ export async function runDoctor(): Promise<void> {
     console.log(`  --     ${pending.pendingRows} thread(s) still tagged opencodex, ${pending.backupEntries} backup manifest entr${pending.backupEntries === 1 ? "y" : "ies"}`);
   }
 
+  const dual = collectWslDualInstall();
+  if (dual.wsl) {
+    console.log("\nWSL Codex installs");
+    console.log(`  ${dual.linuxCodexConfigured ? "ok " : "-- "} Linux ~/.codex/config.toml`);
+    if (dual.windowsCodexHomes.length > 0) {
+      for (const winHome of dual.windowsCodexHomes) console.log(`  ok  Windows ${winHome}`);
+    } else {
+      console.log("  --  no Windows-profile .codex detected under /mnt/c/Users");
+    }
+    console.log(`      effective CODEX_HOME: ${dual.effectiveCodexHome}${dual.effectiveIsWindowsMount ? " (Windows mount)" : ""}`);
+    if (dual.interopCodexOnPath) {
+      console.log(`  --  codex on PATH is the Windows launcher via interop: ${dual.interopCodexOnPath}`);
+    }
+  }
+
   // Hints, not fixes.
   const hints: string[] = [];
   const anyDrvfs = paths.some(p => detectFsType(p.path, mounts).isDrvfs || detectFsType(p.path, mounts).isMntDrive);
@@ -324,6 +399,12 @@ export async function runDoctor(): Promise<void> {
   }
   if (pending.failed || pending.pendingRows > 0 || pending.backupEntries > 0) {
     hints.push("Legacy chat threads are still tagged opencodex (or the DB was locked). The running proxy retries the migration automatically; to force it now, close the Codex app and run 'ocx sync'.");
+  }
+  if (dual.dualInstall && !dual.effectiveIsWindowsMount) {
+    hints.push("Codex is installed on BOTH WSL and Windows. Each side keeps its own ~/.codex (logins, config, catalog are separate); ocx here manages the Linux one. To share a single home, set CODEX_HOME=/mnt/c/Users/<you>/.codex in WSL (drvfs file locking is less reliable).");
+  }
+  if (dual.interopCodexOnPath) {
+    hints.push("The `codex` found on PATH is the Windows launcher reached through WSL interop; ocx will not shim it (a WSL shim breaks Windows invocations). Install codex inside WSL (npm i -g @openai/codex) or run 'ocx ensure' from Windows.");
   }
   if (hints.length > 0) {
     console.log("\nHints");

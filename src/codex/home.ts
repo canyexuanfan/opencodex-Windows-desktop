@@ -40,17 +40,16 @@ export function isWslRuntime(deps: CodexHomeDeps = {}): boolean {
   return /microsoft|wsl/i.test(version);
 }
 
-export function findWslWindowsCodexHome(deps: CodexHomeDeps = {}): string | null {
-  if (!isWslRuntime(deps)) return null;
+/** All Windows-profile `.codex` homes (with config.toml) visible from WSL, resolved real paths. */
+export function listWslWindowsCodexHomes(deps: CodexHomeDeps = {}): string[] {
+  if (!isWslRuntime(deps)) return [];
   const exists = deps.existsSync ?? existsSync;
   const stat = deps.statSync ?? statSync;
   const readdir = deps.readdirSync ?? readdirSync;
   const realpath = deps.realpathSync ?? realpathSync.native;
-  const env = deps.env ?? process.env;
   const usersRoot = deps.usersRoot ?? "/mnt/c/Users";
-  if (!exists(usersRoot)) return null;
+  if (!exists(usersRoot)) return [];
 
-  const explicitProfile = windowsUserProfileToWslPath(env.USERPROFILE);
   const candidates = [];
   try {
     for (const user of readdir(usersRoot)) {
@@ -65,9 +64,17 @@ export function findWslWindowsCodexHome(deps: CodexHomeDeps = {}): string | null
       }
     }
   } catch {
-    return null;
+    return [];
   }
+  return candidates;
+}
 
+export function findWslWindowsCodexHome(deps: CodexHomeDeps = {}): string | null {
+  const env = deps.env ?? process.env;
+  const candidates = listWslWindowsCodexHomes(deps);
+  if (candidates.length === 0) return null;
+
+  const explicitProfile = windowsUserProfileToWslPath(env.USERPROFILE);
   if (explicitProfile) {
     const explicitHome = join(explicitProfile, ".codex");
     const match = candidates.find(candidate => candidate === explicitHome || candidate.endsWith(`/${explicitProfile.split("/").pop()}/.codex`));

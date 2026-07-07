@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildUnixCodexShim, buildWindowsCodexShim, buildWindowsPowerShellCodexShim, installCodexShim, uninstallCodexShim } from "../src/codex/shim";
+import { buildUnixCodexShim, buildWindowsCodexShim, buildWindowsPowerShellCodexShim, findCodexOnPath, installCodexShim, isWindowsInteropDir, lastCodexDiscoveryError, uninstallCodexShim } from "../src/codex/shim";
 
 const SHIM_MARKER = "opencodex codex autostart shim";
 
@@ -290,5 +290,54 @@ describe("Codex autostart shim", () => {
       rmSync(dir, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+describe("WSL PATH interop guard", () => {
+  const fakeFs = (files: string[]) => ({
+    exists: (p: string) => files.includes(p),
+    isShimFile: () => false,
+    isDirectory: () => false,
+  });
+
+  test("isWindowsInteropDir matches /mnt drive prefixes only", () => {
+    expect(isWindowsInteropDir("/mnt/c/Users/jun/AppData/Roaming/npm")).toBe(true);
+    expect(isWindowsInteropDir("/mnt/d")).toBe(true);
+    expect(isWindowsInteropDir("/mnt/wsl")).toBe(false);
+    expect(isWindowsInteropDir("/usr/local/bin")).toBe(false);
+    expect(isWindowsInteropDir("/home/jun/mnt/c")).toBe(false);
+  });
+
+  test("on WSL, a Windows codex reached via interop is skipped with guidance", () => {
+    const interop = "/mnt/c/Users/jun/AppData/Roaming/npm";
+    const found = findCodexOnPath({
+      pathValue: `/usr/local/bin:${interop}`,
+      wsl: true,
+      ...fakeFs([join(interop, "codex"), join(interop, "codex.exe")]),
+    });
+    expect(found).toBeNull();
+    expect(lastCodexDiscoveryError()).toContain("WSL PATH interop");
+    expect(lastCodexDiscoveryError()).toContain(join(interop, "codex"));
+  });
+
+  test("on WSL, a Linux-side codex is preferred and returned", () => {
+    const interop = "/mnt/c/Users/jun/AppData/Roaming/npm";
+    const linuxBin = "/usr/local/bin";
+    const found = findCodexOnPath({
+      pathValue: `${interop}:${linuxBin}`,
+      wsl: true,
+      ...fakeFs([join(interop, "codex"), join(linuxBin, "codex")]),
+    });
+    expect(found).toBe(join(linuxBin, "codex"));
+  });
+
+  test("off WSL, /mnt-like dirs are scanned normally", () => {
+    const dir = "/mnt/c/tools";
+    const found = findCodexOnPath({
+      pathValue: dir,
+      wsl: false,
+      ...fakeFs([join(dir, "codex")]),
+    });
+    expect(found).toBe(join(dir, "codex"));
   });
 });
