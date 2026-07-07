@@ -12,6 +12,7 @@ import { dirname, join, resolve } from "node:path";
 import { expandUserPath, getConfigDir, readPid, removePid, removeRuntimePort } from "./config";
 import { loadConfig } from "./config";
 import { restoreNativeCodex } from "./codex/inject";
+import { isWslRuntime } from "./codex/home";
 import { durableBunPath, durableBunRuntime } from "./lib/bun-runtime";
 import { isProcessAlive, stopProxy } from "./lib/process-control";
 import { serviceApiTokenFilePath } from "./lib/service-secrets";
@@ -572,6 +573,9 @@ function platformOps(): ServiceOps | null {
     }
     if (!isSystemd() && !existsSync(unitPath())) {
       console.error("systemd not found. Run 'ocx start' under your process supervisor.");
+      if (isWslRuntime()) {
+        console.error("WSL detected: enable systemd by adding [boot] systemd=true to /etc/wsl.conf, then run 'wsl --shutdown' from Windows and reopen the distro (WSL 0.67.6+).");
+      }
       process.exit(1);
     }
     return { install: installSystemd, start: startSystemd, stop: stopSystemd, status: statusSystemd, uninstall: uninstallSystemd };

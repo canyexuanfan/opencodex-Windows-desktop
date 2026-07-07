@@ -10,18 +10,64 @@ export type CodexHomeDeps = {
   procVersion?: string | null;
   homedir?: () => string;
   usersRoot?: string;
+  /** Raw /etc/wsl.conf content override (tests); null means "no file". */
+  wslConf?: string | null;
   existsSync?: (path: string) => boolean;
   readdirSync?: (path: string) => string[];
   statSync?: typeof statSync;
   realpathSync?: (path: string) => string;
 };
 
-function windowsUserProfileToWslPath(value: string | undefined): string | null {
+function windowsUserProfileToWslPath(value: string | undefined, automountRoot = DEFAULT_WSL_AUTOMOUNT_ROOT): string | null {
   if (!value) return null;
   const normalized = value.replaceAll("\\", "/");
   const match = normalized.match(/^([A-Za-z]):\/Users\/([^/]+)$/);
   if (!match) return null;
-  return `/mnt/${match[1]!.toLowerCase()}/Users/${match[2]}`;
+  const root = normalizeAutomountRoot(automountRoot);
+  return `${root === "/" ? "" : root}/${match[1]!.toLowerCase()}/Users/${match[2]}`;
+}
+
+const DEFAULT_WSL_AUTOMOUNT_ROOT = "/mnt";
+
+function normalizeAutomountRoot(value: string): string {
+  const trimmed = value.replace(/\/+$/, "");
+  return trimmed === "" ? "/" : trimmed;
+}
+
+function readWslConf(): string | null {
+  try {
+    return readFileSync("/etc/wsl.conf", "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Windows drive mount root inside WSL: `[automount] root` from /etc/wsl.conf,
+ * default `/mnt` (https://learn.microsoft.com/en-us/windows/wsl/wsl-config).
+ * Returns a path without a trailing slash (or `/` itself).
+ */
+export function wslAutomountRoot(deps: CodexHomeDeps = {}): string {
+  const content = deps.wslConf !== undefined ? deps.wslConf : readWslConf();
+  if (!content) return DEFAULT_WSL_AUTOMOUNT_ROOT;
+  let section = "";
+  for (const rawLine of content.split("\n")) {
+    const line = rawLine.replace(/[#;].*$/, "").trim();
+    if (!line) continue;
+    const sect = line.match(/^\[(.+)\]$/);
+    if (sect) {
+      section = sect[1]!.trim().toLowerCase();
+      continue;
+    }
+    if (section !== "automount") continue;
+    const kv = line.match(/^root\s*=\s*(.+)$/i);
+    if (kv) {
+      const value = kv[1]!.trim().replace(/^["']|["']$/g, "");
+      if (!value.startsWith("/")) return DEFAULT_WSL_AUTOMOUNT_ROOT;
+      return normalizeAutomountRoot(value);
+    }
+  }
+  return DEFAULT_WSL_AUTOMOUNT_ROOT;
 }
 
 function readProcVersion(): string | null {
@@ -47,7 +93,8 @@ export function listWslWindowsCodexHomes(deps: CodexHomeDeps = {}): string[] {
   const stat = deps.statSync ?? statSync;
   const readdir = deps.readdirSync ?? readdirSync;
   const realpath = deps.realpathSync ?? realpathSync.native;
-  const usersRoot = deps.usersRoot ?? "/mnt/c/Users";
+  const automountRoot = wslAutomountRoot(deps);
+  const usersRoot = deps.usersRoot ?? join(automountRoot, "c", "Users");
   if (!exists(usersRoot)) return [];
 
   const candidates = [];
@@ -74,7 +121,7 @@ export function findWslWindowsCodexHome(deps: CodexHomeDeps = {}): string | null
   const candidates = listWslWindowsCodexHomes(deps);
   if (candidates.length === 0) return null;
 
-  const explicitProfile = windowsUserProfileToWslPath(env.USERPROFILE);
+  const explicitProfile = windowsUserProfileToWslPath(env.USERPROFILE, wslAutomountRoot(deps));
   if (explicitProfile) {
     const explicitHome = join(explicitProfile, ".codex");
     const match = candidates.find(candidate => candidate === explicitHome || candidate.endsWith(`/${explicitProfile.split("/").pop()}/.codex`));

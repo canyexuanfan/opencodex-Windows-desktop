@@ -4,7 +4,7 @@ import { getConfigDir } from "../config";
 import { durableBunPath } from "../lib/bun-runtime";
 import { serviceApiTokenFilePath } from "../lib/service-secrets";
 import { windowsEnvIndirectBatchValue } from "../lib/win-paths";
-import { isWslRuntime } from "./home";
+import { isWslRuntime, wslAutomountRoot } from "./home";
 
 const SHIM_MARKER = "opencodex codex autostart shim";
 let lastShimDiscoveryError: string | null = null;
@@ -71,14 +71,21 @@ function isShim(path: string): boolean {
   }
 }
 
-/** A PATH entry that reaches Windows through WSL drive interop (`/mnt/<drive>/...`). */
-export function isWindowsInteropDir(dir: string): boolean {
-  return /^\/mnt\/[a-z](\/|$)/i.test(dir);
+/**
+ * A PATH entry that reaches Windows through WSL drive interop
+ * (`<automount-root>/<drive>/...`; root defaults to /mnt, configurable via
+ * /etc/wsl.conf [automount] root).
+ */
+export function isWindowsInteropDir(dir: string, automountRoot = "/mnt"): boolean {
+  const root = automountRoot.replace(/\/+$/, "");
+  const escaped = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^${escaped}/[a-z](/|$)`, "i").test(dir);
 }
 
 export type CodexPathScanDeps = {
   pathValue?: string;
   wsl?: boolean;
+  automountRoot?: string;
   exists?: (path: string) => boolean;
   isShimFile?: (path: string) => boolean;
   isDirectory?: (path: string) => boolean;
@@ -98,12 +105,13 @@ export function findCodexOnPath(deps: CodexPathScanDeps = {}): string | null {
   const shimFile = deps.isShimFile ?? isShim;
   const isDir = deps.isDirectory ?? realIsDirectory;
   const wsl = deps.wsl ?? (process.platform === "linux" && isWslRuntime());
+  const automountRoot = deps.automountRoot ?? (wsl ? wslAutomountRoot() : "/mnt");
   // Windows npm prefixes ship codex.exe/codex.cmd next to the extensionless sh launcher.
   const interopNames = ["codex", "codex.exe", "codex.cmd", "codex.ps1"];
   let skippedInterop: string | null = null;
 
   for (const dir of (deps.pathValue ?? process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
-    if (wsl && isWindowsInteropDir(dir)) {
+    if (wsl && isWindowsInteropDir(dir, automountRoot)) {
       // A Windows-side codex reached through WSL PATH interop: a Unix shim written
       // here would embed WSL-only paths and break every Windows-side invocation.
       if (!skippedInterop) {
@@ -115,7 +123,7 @@ export function findCodexOnPath(deps: CodexPathScanDeps = {}): string | null {
       continue;
     }
     // Interop dirs carry Windows launcher names even when the scan is not skipping them.
-    const names = isWindowsInteropDir(dir) ? interopNames : commandNames("codex");
+    const names = isWindowsInteropDir(dir, automountRoot) ? interopNames : commandNames("codex");
     for (const name of names) {
       const path = join(dir, name);
       if (!exists(path) || shimFile(path)) continue;

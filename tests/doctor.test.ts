@@ -145,6 +145,29 @@ describe("doctor", () => {
     expect(diag.interopCodexOnPath).toBeNull();
   });
 
+  test("collectWslDualInstall honors a custom wsl.conf automount root", () => {
+    delete process.env.CODEX_HOME;
+    const wslHome = join(TEST_DIR, "wsl-home-root");
+    const linuxCodexHome = join(wslHome, ".codex");
+    mkdirSync(linuxCodexHome, { recursive: true });
+    writeFileSync(join(linuxCodexHome, "config.toml"), "model_provider = \"linux\"\n");
+
+    const interopBin = "/win/c/Users/jun/AppData/Roaming/npm";
+    const diag = collectWslDualInstall({
+      env: { WSL_DISTRO_NAME: "Ubuntu" },
+      platform: "linux",
+      homedir: () => wslHome,
+      wslConf: "[automount]\nroot = /win/\n",
+      effectiveCodexHome: linuxCodexHome,
+      pathValue: interopBin,
+      existsSync: (p: string) => p.startsWith("/win/") ? p === join(interopBin, "codex") : existsSync(p),
+      readdirSync: (p: string) => p === "/win/c/Users" ? [] : [],
+    });
+
+    expect(diag.automountRoot).toBe("/win");
+    expect(diag.interopCodexOnPath).toBe(join(interopBin, "codex"));
+  });
+
   test("detectFsType flags /mnt drvfs mounts and leaves ext4 home alone", () => {
     const mounts = [
       "rootfs / wslroot rw 0 0",

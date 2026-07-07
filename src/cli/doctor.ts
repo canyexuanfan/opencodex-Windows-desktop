@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { getConfigDir, getConfigPath, readConfigDiagnostics, readPid, resolveEnvValue } from "../config";
 import { readCodexTokens } from "../codex/auth-collision";
-import { resolveCodexHomeDir as resolveCodexHomeDirImpl, isWslRuntime, listWslWindowsCodexHomes, type CodexHomeDeps } from "../codex/home";
+import { resolveCodexHomeDir as resolveCodexHomeDirImpl, isWslRuntime, listWslWindowsCodexHomes, wslAutomountRoot, type CodexHomeDeps } from "../codex/home";
 import { findCodexOnPath, isWindowsInteropDir } from "../codex/shim";
 import { countPendingOpencodexHistory } from "../codex/history-provider";
 export { resolveCodexHomeDir } from "../codex/home";
@@ -74,6 +74,7 @@ function readMounts(): string | null {
 
 export type WslDualInstallDiagnostic = {
   wsl: boolean;
+  automountRoot: string;
   effectiveCodexHome: string;
   effectiveIsWindowsMount: boolean;
   linuxCodexConfigured: boolean;
@@ -99,6 +100,7 @@ export function collectWslDualInstall(deps: WslDualInstallDeps = {}): WslDualIns
   if (!wsl) {
     return {
       wsl: false,
+      automountRoot: "/mnt",
       effectiveCodexHome,
       effectiveIsWindowsMount: false,
       linuxCodexConfigured: false,
@@ -107,6 +109,7 @@ export function collectWslDualInstall(deps: WslDualInstallDeps = {}): WslDualIns
       interopCodexOnPath: null,
     };
   }
+  const automountRoot = wslAutomountRoot(deps);
   const exists = deps.existsSync ?? existsSync;
   const home = (deps.homedir ?? homedir)();
   const linuxCodexConfigured = !!home && exists(join(home, ".codex", "config.toml"));
@@ -114,15 +117,17 @@ export function collectWslDualInstall(deps: WslDualInstallDeps = {}): WslDualIns
   const onPath = findCodexOnPath({
     pathValue: deps.pathValue ?? process.env.PATH,
     wsl: false, // scan everything; classify interop ourselves
+    automountRoot,
     // When a fake fs is injected (tests), the real lstat/readFile would miss its
     // synthetic paths; treat every injected hit as a plain non-shim file.
     ...(deps.existsSync ? { exists: deps.existsSync, isShimFile: () => false, isDirectory: () => false } : {}),
   });
-  const interopCodexOnPath = onPath && isWindowsInteropDir(onPath) ? onPath : null;
+  const interopCodexOnPath = onPath && isWindowsInteropDir(onPath, automountRoot) ? onPath : null;
   return {
     wsl,
+    automountRoot,
     effectiveCodexHome,
-    effectiveIsWindowsMount: isWindowsInteropDir(effectiveCodexHome),
+    effectiveIsWindowsMount: isWindowsInteropDir(effectiveCodexHome, automountRoot),
     linuxCodexConfigured,
     windowsCodexHomes,
     dualInstall: linuxCodexConfigured && windowsCodexHomes.length > 0,
@@ -401,7 +406,8 @@ export async function runDoctor(): Promise<void> {
     hints.push("Legacy chat threads are still tagged opencodex (or the DB was locked). The running proxy retries the migration automatically; to force it now, close the Codex app and run 'ocx sync'.");
   }
   if (dual.dualInstall && !dual.effectiveIsWindowsMount) {
-    hints.push("Codex is installed on BOTH WSL and Windows. Each side keeps its own ~/.codex (logins, config, catalog are separate); ocx here manages the Linux one. To share a single home, set CODEX_HOME=/mnt/c/Users/<you>/.codex in WSL (drvfs file locking is less reliable).");
+    hints.push(`Codex is installed on BOTH WSL and Windows. Each side keeps its own ~/.codex (logins, config, catalog are separate); ocx here manages the Linux one. To share a single home, set CODEX_HOME=${dual.windowsCodexHomes[0] ?? `${dual.automountRoot}/c/Users/<you>/.codex`} in WSL (drvfs file locking is less reliable).`);
+    hints.push("localhost is one-way in WSL2 NAT mode: Windows-side codex reaches this WSL proxy via localhost (localhostForwarding, on by default), but a Windows-side proxy is NOT reachable from WSL via localhost — use networkingMode=mirrored in .wslconfig for both directions.");
   }
   if (dual.interopCodexOnPath) {
     hints.push("The `codex` found on PATH is the Windows launcher reached through WSL interop; ocx will not shim it (a WSL shim breaks Windows invocations). Install codex inside WSL (npm i -g @openai/codex) or run 'ocx ensure' from Windows.");
