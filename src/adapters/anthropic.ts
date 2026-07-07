@@ -331,9 +331,16 @@ function buildToolNameTransforms(provider: OcxProviderConfig): { toWire: (name: 
 function toAnthropicToolResult(msg: OcxToolResultMessage): Record<string, unknown> {
   // Anthropic tool_result accepts a string OR content blocks — render images natively
   // (e.g. Codex view_image output) instead of dropping them.
-  const content = typeof msg.content === "string"
-    ? msg.content
-    : (msg.content as OcxContentPart[]).map(toAnthropicContentPart);
+  let content: string | unknown[];
+  if (typeof msg.content === "string") {
+    // Anthropic rejects tool_result with empty text content blocks.
+    content = msg.content || "(empty tool output)";
+  } else {
+    const parts = (msg.content as OcxContentPart[])
+      .map(toAnthropicContentPart)
+      .filter(p => !((p as { type?: string }).type === "text" && !(p as { text?: string }).text));
+    content = parts.length > 0 ? parts : "(empty tool output)";
+  }
   return {
     type: "tool_result",
     tool_use_id: msg.toolCallId,
@@ -370,9 +377,16 @@ function messagesToAnthropicFormat(
     switch (msg.role) {
       case "user":
       case "developer": {
-        const content = typeof msg.content === "string"
-          ? msg.content
-          : (msg.content as OcxContentPart[]).map(toAnthropicContentPart);
+        let content: string | unknown[];
+        if (typeof msg.content === "string") {
+          // Anthropic rejects empty string text content blocks.
+          content = msg.content || "(empty)";
+        } else {
+          const parts = (msg.content as OcxContentPart[])
+            .map(toAnthropicContentPart)
+            .filter(p => !((p as { type?: string }).type === "text" && !(p as { text?: string }).text));
+          content = parts.length > 0 ? parts : "(empty)";
+        }
         messages.push({ role: "user", content });
         break;
       }
@@ -382,7 +396,8 @@ function messagesToAnthropicFormat(
         const toolUseIds: string[] = [];
         for (const part of aMsg.content) {
           if (part.type === "text") {
-            content.push({ type: "text", text: (part as OcxTextContent).text });
+            const text = (part as OcxTextContent).text;
+            if (text) content.push({ type: "text", text });
           } else if (part.type === "thinking") {
             const t = part as OcxThinkingContent;
             // Redacted blocks replay verbatim FIRST (they preceded the visible thinking block
