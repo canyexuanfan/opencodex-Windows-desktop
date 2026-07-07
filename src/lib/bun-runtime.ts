@@ -8,7 +8,7 @@
  * stable path to that binary. This module is the single source of truth.
  *
  * In a from-source dev checkout the `bun` dependency may be absent; callers fall
- * back to `process.execPath` (which is itself Bun when run via `bun src/cli.ts`).
+ * back to `process.execPath` (which is itself Bun when run via `bun src/cli/index.ts`).
  */
 import { createRequire } from "node:module";
 import { existsSync, statSync } from "node:fs";

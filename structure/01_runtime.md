@@ -16,8 +16,9 @@
 | `src/service.ts` | OS service manager (macOS launchd, Linux systemd, Windows schtasks): always-on proxy with crash restart. |
 
 The `src/` root stays thin: process entry, shared config/types, router, bridge, service manager, and
-reasoning effort definitions live there. Feature code is grouped under `src/codex/`, `src/cli/`,
-`src/usage/`, `src/update/`, `src/providers/`, `src/server/`, and `src/lib/`.
+reasoning effort definitions live there. Feature code is grouped under `src/adapters/`, `src/codex/`,
+`src/cli/`, `src/oauth/`, `src/providers/`, `src/responses/`, `src/server/`, `src/update/`,
+`src/usage/`, `src/vision/`, `src/web-search/`, and `src/lib/`.
 
 `src/server/` is split by responsibility: `index.ts` owns the listener and route ordering;
 `responses.ts` owns Responses handling and compaction; `management-api.ts` owns `/api/*`;

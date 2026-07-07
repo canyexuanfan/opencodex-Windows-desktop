@@ -138,12 +138,28 @@ describe("enforceAnthropicImageLimits", () => {
     expect(countImages(messages)).toBe(100);
   });
 
-  test("unknown-format images are never treated as oversized", () => {
+  test("unknown-format images count as risky in many-image requests (trimmed to 20)", () => {
+    // An unverifiable image can still be >2000px; one offender 400s the whole
+    // many-image request, so unknown dimensions must trigger the <=20 trim.
     const unknown = { type: "image", source: { type: "base64", media_type: "image/bmp", data: b64([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) } };
     const messages = [userMsg([...Array.from({ length: 22 }, () => ({ ...unknown }))])];
+    enforceAnthropicImageLimits(messages);
+    expect(countImages(messages)).toBe(20);
+  });
+
+  test("unknown-format images pass through untouched at <=20 images", () => {
+    const unknown = { type: "image", source: { type: "base64", media_type: "image/bmp", data: b64([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) } };
+    const messages = [userMsg([...Array.from({ length: 20 }, () => ({ ...unknown }))])];
     const before = JSON.stringify(messages);
     enforceAnthropicImageLimits(messages);
     expect(JSON.stringify(messages)).toBe(before);
+  });
+
+  test("url-only many-image request is trimmed to 20 (dimensions unverifiable)", () => {
+    const urlImg = { type: "image", source: { type: "url", url: "https://example.com/a.png" } };
+    const messages = [userMsg(Array.from({ length: 25 }, () => ({ ...urlImg })))];
+    enforceAnthropicImageLimits(messages);
+    expect(countImages(messages)).toBe(20);
   });
 
   test("url-source images count toward totals but are not sniffed", () => {

@@ -94,9 +94,15 @@ function normalizeCredential(cred: unknown): OAuthCredentials | null {
   return normalized;
 }
 
-/** Stable short account id, generated once at append time (never re-derived after rotation). */
+/**
+ * Stable short account id. MUST be deterministic for a given credential: legacy
+ * single-credential stores are re-normalized on EVERY load without being persisted,
+ * so a time-salted id would differ between two loads (getAccountSet vs
+ * getAccountCredential), surfacing as a spurious OAuthLoginRequiredError and making
+ * refresh persists silently miss the account (rotated refresh token lost).
+ */
 function newAccountId(cred: OAuthCredentials): string {
-  const identity = cred.accountId ?? cred.email ?? `${cred.refresh}:${Date.now()}`;
+  const identity = cred.accountId ?? cred.email ?? cred.refresh;
   return createHash("sha256").update(identity).digest("hex").slice(0, 8);
 }
 

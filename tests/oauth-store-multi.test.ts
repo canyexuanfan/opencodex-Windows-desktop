@@ -53,6 +53,28 @@ describe("multi-account auth store", () => {
     expect(existsSync(`${authPath}.pre-multiauth`)).toBe(true);
   });
 
+  test("legacy credential WITHOUT identity gets a deterministic account id across loads", () => {
+    // Legacy stores are re-normalized on EVERY load without being persisted, so the
+    // derived id must be stable: a time-salted id would make getAccountSet and
+    // getAccountCredential disagree (spurious logout) and refresh persists no-op.
+    const authPath = join(TEST_DIR, "auth.json");
+    mkdirSync(TEST_DIR, { recursive: true, mode: 0o700 });
+    writeFileSync(authPath, JSON.stringify({
+      cursor: { access: "legacy-access", refresh: "legacy-refresh", expires: Date.now() + 3600_000 },
+    }));
+    const set = getAccountSet("cursor");
+    expect(set).not.toBeNull();
+    // Separate load (fresh normalization) must resolve the SAME account id.
+    expect(getAccountCredential("cursor", set!.activeAccountId)?.access).toBe("legacy-access");
+    expect(getAccountSet("cursor")!.activeAccountId).toBe(set!.activeAccountId);
+    // A rotated refresh persisted against that id must land (not silently no-op).
+    saveAccountCredential("cursor", set!.activeAccountId, {
+      access: "rotated-access", refresh: "rotated-refresh", expires: Date.now() + 3600_000,
+    });
+    expect(getCredential("cursor")?.access).toBe("rotated-access");
+    expect(getCredential("cursor")?.refresh).toBe("rotated-refresh");
+  });
+
   test("new identity appends a second account and activates it", () => {
     saveCredential("anthropic", cred({ email: "a@example.com", accountId: "acct-a" }));
     saveCredential("anthropic", cred({ email: "b@example.com", accountId: "acct-b", access: "access-b" }));

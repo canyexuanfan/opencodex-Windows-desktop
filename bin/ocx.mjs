@@ -67,7 +67,7 @@ function shouldRepairCodexShim() {
 }
 
 function historyRestoreIncomplete() {
-  // Mirror src/update.ts historyRestoreIncomplete — a codex-history-backup-*.json surviving
+  // Mirror src/update/index.ts historyRestoreIncomplete — a codex-history-backup-*.json surviving
   // a stop means the native-history restore was skipped (locked state DB).
   try {
     return readdirSync(configDir()).some(

@@ -80,6 +80,34 @@ export function bridgeToResponsesSSE(
     try { const o = JSON.parse(args); if (o && typeof o.input === "string") return o.input; } catch { /* raw */ }
     return args;
   };
+  // Best-effort unwrap of a PARTIAL freeform arg buffer for live input streaming
+  // (`response.custom_tool_call_input.delta` — codex-rs uses it for UI preview only;
+  // the completed custom_tool_call item stays authoritative). Compact `{"input":"...`
+  // buffers get their string value progressively unescaped; anything else streams raw.
+  const FREEFORM_WRAP_PREFIX = '{"input":"';
+  const freeformPartialInput = (args: string): string => {
+    if (!args.startsWith(FREEFORM_WRAP_PREFIX)) return args;
+    const body = args.slice(FREEFORM_WRAP_PREFIX.length);
+    let out = "";
+    for (let i = 0; i < body.length; i++) {
+      const c = body[i];
+      if (c === '"') break; // unescaped closing quote: value complete
+      if (c === "\\") {
+        const n = body[i + 1];
+        if (n === undefined) break; // escape split across chunks: wait for more
+        i++;
+        if (n === "n") out += "\n";
+        else if (n === "t") out += "\t";
+        else if (n === "r") out += "\r";
+        else if (n === "u") {
+          const hex = body.slice(i + 1, i + 5);
+          if (hex.length === 4 && /^[0-9a-fA-F]{4}$/.test(hex)) { out += String.fromCharCode(parseInt(hex, 16)); i += 4; }
+          else break; // incomplete \uXXXX: wait for more
+        } else out += n; // \" \\ \/ etc.
+      } else out += c;
+    }
+    return out;
+  };
   // tool_search_call carries arguments as a JSON object ({query, limit}); parse the model's arg string.
   const parseArgsObj = (args: string): Record<string, unknown> => {
     try { const o = JSON.parse(args); return o && typeof o === "object" ? o : {}; } catch { return {}; }
@@ -204,7 +232,7 @@ export function bridgeToResponsesSSE(
       // Full assistant text of a compaction turn (across message boundaries) — becomes the
       // synthetic compaction item's payload on done.
       let compactionText = "";
-      let currentToolCall: { itemId: string; outputIndex: number; callId: string; name: string; args: string; namespace?: string; freeform?: boolean; toolSearch?: boolean } | null = null;
+      let currentToolCall: { itemId: string; outputIndex: number; callId: string; name: string; args: string; namespace?: string; freeform?: boolean; toolSearch?: boolean; inputEmitted?: string } | null = null;
       // Open native web-search cell (between begin and end). Holds the output index allocated on
       // begin so the matching done reuses it; closed as `failed` if the stream terminates early.
       let currentWebSearch: { itemId: string; outputIndex: number } | null = null;
@@ -287,6 +315,12 @@ export function bridgeToResponsesSSE(
         if (!currentToolCall.freeform && !currentToolCall.toolSearch) {
           emit("response.function_call_arguments.done", {
             item_id: currentToolCall.itemId, output_index: currentToolCall.outputIndex, arguments: argsStr,
+          });
+        }
+        if (currentToolCall.freeform) {
+          emit("response.custom_tool_call_input.done", {
+            item_id: currentToolCall.itemId, output_index: currentToolCall.outputIndex,
+            input: freeformInput(currentToolCall.args),
           });
         }
         const item = currentToolCall.toolSearch
@@ -451,6 +485,21 @@ export function bridgeToResponsesSSE(
                     item_id: currentToolCall.itemId, output_index: currentToolCall.outputIndex,
                     delta: event.arguments,
                   });
+                }
+                if (currentToolCall.freeform) {
+                  // Hold while the buffer is still an ambiguous prefix of the JSON wrapper,
+                  // then stream only the unwrapped input suffix (never rewind on mode flips).
+                  if (!FREEFORM_WRAP_PREFIX.startsWith(currentToolCall.args)) {
+                    const full = freeformPartialInput(currentToolCall.args);
+                    const emitted = currentToolCall.inputEmitted ?? "";
+                    if (full.startsWith(emitted) && full.length > emitted.length) {
+                      emit("response.custom_tool_call_input.delta", {
+                        item_id: currentToolCall.itemId, output_index: currentToolCall.outputIndex,
+                        delta: full.slice(emitted.length),
+                      });
+                      currentToolCall.inputEmitted = full;
+                    }
+                  }
                 }
               }
               break;

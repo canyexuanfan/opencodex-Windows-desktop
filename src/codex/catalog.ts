@@ -374,7 +374,7 @@ function codexShimCommandCandidates(): string[] {
  * `.cmd`/`.bat` launchers (npm's `codex.cmd`) cannot be spawned shell-less — Node ≥18.20
  * and Bun refuse with EINVAL (CVE-2024-27980 hardening), which the probe loop silently
  * swallowed, so npm-only Codex installs never loaded the bundled catalog on Windows.
- * Route those through the shell (repo convention — see src/update.ts, bin/ocx.mjs) and
+ * Route those through the shell (repo convention — see src/update/index.ts, bin/ocx.mjs) and
  * pre-quote the path: shell:true joins file+args verbatim, so an unquoted path with
  * spaces (`C:\Users\John Doe\...`) would split. Windows paths cannot contain `"`.
  */

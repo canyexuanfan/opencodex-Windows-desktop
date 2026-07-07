@@ -169,12 +169,14 @@ export function enforceAnthropicImageLimits(messages: unknown[]): void {
   }
 
   // Rule 2: many-image requests cap each image at 2000px. Keep the request at <=20
-  // images (dropping oldest first) whenever a surviving image exceeds that cap.
-  const hasOversizedForMany = [...live].some(i => {
+  // images (dropping oldest first) whenever a surviving image exceeds that cap OR has
+  // unknown dimensions (URL sources and unsniffable formats): one unverifiable offender
+  // 400s the whole request upstream, so unknown counts as risky, not as safe.
+  const hasRiskyForMany = [...live].some(i => {
     const d = dims[i];
-    return d !== null && (d.width > MANY_IMAGE_MAX_DIMENSION || d.height > MANY_IMAGE_MAX_DIMENSION);
+    return d === null || d.width > MANY_IMAGE_MAX_DIMENSION || d.height > MANY_IMAGE_MAX_DIMENSION;
   });
-  if (hasOversizedForMany && live.size > MANY_IMAGE_THRESHOLD) {
+  if (hasRiskyForMany && live.size > MANY_IMAGE_THRESHOLD) {
     for (const i of [...live]) {
       if (live.size <= MANY_IMAGE_THRESHOLD) break;
       textify(refs[i], OMITTED_TEXT);
