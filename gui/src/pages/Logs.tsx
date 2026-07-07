@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
 import { useI18n, LOCALES } from "../i18n";
+import { formatTokens } from "../format-tokens";
+import { statusCodeInfo } from "../status-codes";
+import { IconX } from "../icons";
 
 interface UsageBreakdown {
   inputTokens: number;
@@ -32,11 +35,6 @@ interface LogEntry {
   usageStatus?: LogUsageStatus;
   usage?: UsageBreakdown;
   totalTokens?: number;
-}
-
-function formatTokens(n: number): string {
-  if (n < 10_000) return String(n);
-  return `${(n / 1000).toFixed(1)}K`;
 }
 
 function tokensTitle(log: LogEntry): string | undefined {
@@ -92,6 +90,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   const { t, locale } = useI18n();
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [detail, setDetail] = useState<LogEntry | null>(null);
   const localeTag = LOCALES.find(l => l.code === locale)?.htmlLang;
 
   useEffect(() => {
@@ -108,6 +107,8 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   }, [apiBase, autoRefresh]);
 
   const statusColor = (s: number) => s >= 200 && s < 300 ? "var(--green)" : s >= 400 ? "var(--red)" : "var(--amber)";
+
+  const detailInfo = detail ? statusCodeInfo(detail.status, locale) : null;
 
   return (
     <>
@@ -126,45 +127,32 @@ export default function Logs({ apiBase }: { apiBase: string }) {
         <div className="tbl-wrap">
           <table className="tbl">
             <thead>
-              <tr>
-                <th>{t("logs.col.time")}</th>
+             <tr>
+               <th>{t("logs.col.time")}</th>
+                <th className="num log-col-tokens">{t("logs.col.tokens")}</th>
+               <th className="log-col-model">{t("logs.col.model")}</th>
+               <th>{t("logs.col.effort")}</th>
+               <th>{t("logs.col.provider")}</th>
+               <th>{t("logs.col.status")}</th>
                 <th>{t("logs.col.request")}</th>
-                <th>{t("logs.col.model")}</th>
-                <th>{t("logs.col.effort")}</th>
-                <th>{t("logs.col.provider")}</th>
-                <th>{t("logs.col.status")}</th>
-                <th className="num">{t("logs.col.tokens")}</th>
-                <th>{t("logs.col.error")}</th>
-                <th className="num">{t("logs.col.duration")}</th>
-              </tr>
+               <th className="num">{t("logs.col.duration")}</th>
+             </tr>
             </thead>
             <tbody>
               {[...logs].reverse().map((log, i) => (
-                <tr key={log.requestId ?? `${log.timestamp}-${i}`}>
-                  <td className="muted mono">{new Date(log.timestamp).toLocaleTimeString(localeTag)}</td>
-                  <td className="muted mono">{log.requestId ?? "-"}</td>
-                  <td className="mono" title={modelTitle(log)}>
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                      <span>{log.resolvedModel ?? log.model}</span>
-                      {speedLabel(log) && <span className="badge badge-amber">{speedLabel(log)}</span>}
-                    </span>
-                  </td>
-                  <td className="mono">{log.requestedEffort ?? "-"}</td>
-                  <td className="muted">{log.provider}</td>
-                  <td>
-                    <span className="mono" style={{ color: statusColor(log.status), fontWeight: 600 }}>{log.status}</span>
-                  </td>
-                  <td className="num mono" title={tokensTitle(log)}>
+               <tr key={log.requestId ?? `${log.timestamp}-${i}`}>
+                 <td className="muted mono">{new Date(log.timestamp).toLocaleTimeString(localeTag)}</td>
+                  <td className="num mono log-col-tokens" title={tokensTitle(log)}>
                     {(() => {
                       const tokenTotal = displayTokenTotal(log);
                       const cachedTotal = cachedTokenTotal(log);
                       return tokenTotal !== undefined
                         ? (
                             <span style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
-                              <span>{formatTokens(tokenTotal)}</span>
+                              <span>{formatTokens(tokenTotal, locale)}</span>
                               {cachedTotal !== undefined && (
                                 <span className="muted" style={{ fontSize: 11, lineHeight: 1 }}>
-                                  cache {formatTokens(cachedTotal)}
+                                  c {formatTokens(cachedTotal, locale)}
                                 </span>
                               )}
                             </span>
@@ -172,12 +160,55 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                         : <span className="muted">{t(`logs.tokens.${log.usageStatus ?? "unreported"}`)}</span>;
                     })()}
                   </td>
-                  <td className="muted mono">{log.errorCode ?? "-"}</td>
-                  <td className="num">{log.durationMs}ms</td>
+                 <td className="mono log-col-model" title={modelTitle(log)}>
+                   <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                     <span>{log.resolvedModel ?? log.model}</span>
+                      {speedLabel(log) && <span className="badge badge-amber">{speedLabel(log)}</span>}
+                    </span>
+                  </td>
+                  <td className="mono">{log.requestedEffort ?? "-"}</td>
+                  <td className="muted">{log.provider}</td>
+                  <td>
+                    <span className="log-status-cell">
+                      <span className="mono" style={{ color: statusColor(log.status), fontWeight: 600 }}>{log.status}</span>
+                      {log.status >= 400 && (
+                        <button type="button" className="log-detail-btn" onClick={() => setDetail(log)}>
+                          {t("logs.details")}
+                        </button>
+                      )}
+                    </span>
+                 </td>
+                  <td className="muted mono"><span className="log-reqid" title={log.requestId}>{log.requestId ?? "-"}</span></td>
+                 <td className="num">{log.durationMs}ms</td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {detail && (
+        <div role="dialog" aria-modal="true" aria-label={t("logs.detailTitle")} className="modal-overlay" onClick={() => setDetail(null)}>
+          <div className="modal-card" onClick={e => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>
+                <span className="mono" style={{ color: statusColor(detail.status) }}>{detail.status}</span>
+                {detailInfo && <span style={{ marginLeft: 8 }}>{detailInfo.label}</span>}
+              </h3>
+              <button className="btn btn-ghost btn-sm" onClick={() => setDetail(null)} aria-label={t("common.cancel")}><IconX /></button>
+            </div>
+            {detailInfo && <p className="modal-desc">{detailInfo.description}</p>}
+            <div className="log-detail-grid">
+              <span className="muted">{t("logs.col.time")}</span><span className="mono">{new Date(detail.timestamp).toLocaleString(localeTag)}</span>
+              <span className="muted">{t("logs.col.request")}</span><span className="mono log-detail-break">{detail.requestId ?? "-"}</span>
+              <span className="muted">{t("logs.col.model")}</span><span className="mono">{detail.resolvedModel ?? detail.model}</span>
+              <span className="muted">{t("logs.col.provider")}</span><span>{detail.provider}</span>
+              {detail.errorCode && (<><span className="muted">{t("logs.col.error")}</span><span className="mono">{detail.errorCode}</span></>)}
+              <span className="muted">{t("logs.col.duration")}</span><span className="mono">{detail.durationMs}ms</span>
+            </div>
+            <div className="muted" style={{ fontSize: 12, margin: "12px 0 6px" }}>{t("logs.detailRaw")}</div>
+            <pre className="log-detail-json">{JSON.stringify(detail, null, 2)}</pre>
+          </div>
         </div>
       )}
     </>

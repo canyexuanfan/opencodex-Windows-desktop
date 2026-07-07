@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { augmentRoutedModelsWithJawcodeMetadata, buildCatalogEntries, filterSupportedNativeSlugs, gatherRoutedModels, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, normalizeRoutedCatalogEntry } from "../src/codex-catalog";
+import { augmentRoutedModelsWithJawcodeMetadata, buildCatalogEntries, filterSupportedNativeSlugs, gatherRoutedModels, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, normalizeRoutedCatalogEntry } from "../src/codex/catalog";
 import {
   CURSOR_STATIC_MODELS,
   cursorModelContextWindows,
@@ -11,7 +11,7 @@ import {
   cursorModelReasoningEfforts,
 } from "../src/adapters/cursor/discovery";
 import { getJawcodeModelMetadata, resolveJawcodeProvider } from "../src/generated/jawcode-model-metadata";
-import { clearModelCache, setCached } from "../src/model-cache";
+import { clearModelCache, setCached } from "../src/codex/model-cache";
 
 const originalFetch = globalThis.fetch;
 
@@ -146,7 +146,7 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.auto_compact_token_limit).toBe(244_800);
   });
 
-  test("native gpt-5.4 preserves Codex long-context max window metadata", () => {
+  test("native gpt-5.4 uses its 1M context window override", () => {
     const template = {
       ...nativeTemplate(),
       context_window: 272_000,
@@ -155,9 +155,9 @@ describe("Codex catalog routed normalization", () => {
     const entries = buildCatalogEntries(template, ["gpt-5.4"], []);
     const native = entries.find(e => e.slug === "gpt-5.4");
 
-    expect(native?.context_window).toBe(272_000);
+    expect(native?.context_window).toBe(1_000_000);
     expect(native?.max_context_window).toBe(1_000_000);
-    expect(native?.auto_compact_token_limit).toBe(244_800);
+    expect(native?.auto_compact_token_limit).toBe(900_000);
   });
 
   test("native gpt-5.3-codex-spark uses its 128k context window instead of inherited codex max", () => {

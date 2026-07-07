@@ -77,7 +77,7 @@ jobs:
         run: cd gui && bun install --frozen-lockfile && bun run build
 
       - name: CLI help smoke
-        run: bun run src/cli.ts help
+        run: bun run src/cli/index.ts help
 
   npm-global-smoke:
     name: npm-global ${{ matrix.os }}

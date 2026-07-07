@@ -34,7 +34,7 @@ opencodex 자체를 직접 수정하며 작업하려면:
 git clone https://github.com/lidge-jun/opencodex.git
 cd opencodex
 bun install
-bun run dev:proxy   # 개발 모드로 프록시 API 시작 (src/cli.ts start)
+bun run dev:proxy   # 개발 모드로 프록시 API 시작 (src/cli/index.ts start)
 bun run dev:gui     # 대시보드 dev 서버 시작 (다른 터미널)
 ```
 

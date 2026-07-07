@@ -34,7 +34,7 @@ ocx --help
 git clone https://github.com/lidge-jun/opencodex.git
 cd opencodex
 bun install
-bun run dev:proxy   # 以开发模式启动代理 API (src/cli.ts start)
+bun run dev:proxy   # 以开发模式启动代理 API (src/cli/index.ts start)
 bun run dev:gui     # 启动仪表盘 dev 服务器 (另一个终端)
 ```
 

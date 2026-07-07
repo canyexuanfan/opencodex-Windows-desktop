@@ -1,4 +1,4 @@
-import { redactSecretString } from "../../redact";
+import { redactSecretString } from "../../lib/redact";
 
 const ABSOLUTE_PATH_PATTERN = /(?:\/Users\/[^ "';,]+|\/home\/[^ "';,]+|[A-Za-z]:\\Users\\[^ "';,]+)/g;
 // Cursor error messages can contain raw credential key=value pairs beyond what the shared
@@ -13,7 +13,7 @@ function sanitize(value: string): string {
 
 /**
  * Classify a Cursor transport/Connect/gRPC error message into an actionable category.
- * The returned prefix string is recognized by `src/errors.ts` `classifyError` keywords,
+ * The returned prefix string is recognized by `src/lib/errors.ts` `classifyError` keywords,
  * so bridge-level error mapping produces the right Codex error type (rate_limit, auth, etc.).
  */
 export function classifyCursorError(message: string): string {

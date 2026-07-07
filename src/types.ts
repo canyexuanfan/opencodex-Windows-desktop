@@ -5,6 +5,8 @@ export interface OcxParsedRequest {
   stream: boolean;
   options: OcxRequestOptions;
   _rawBody?: unknown;
+  /** True when the proxy expanded a previous_response_id request into a full input replay. */
+  _previousResponseInputExpanded?: boolean;
   /** Provider-private stable Cursor conversation id resolved from the Responses previous_response_id chain. */
   _cursorConversationId?: string;
   /**
@@ -19,6 +21,13 @@ export interface OcxParsedRequest {
    * answer/"Sources:" text can't bleed into and corrupt the model's schema-constrained output.
    */
   _structuredOutput?: boolean;
+  /**
+   * True when the input carried `{type:"compaction_trigger"}` — Codex remote compaction v2 asking
+   * this turn to produce a `{type:"compaction"}` output item. Routed adapters can't natively;
+   * the server runs the model as a summarizer and the bridge emits a synthetic compaction item
+   * (see src/responses/compaction.ts).
+   */
+  _compactionRequest?: boolean;
 }
 
 export interface OcxContext {
@@ -85,6 +94,8 @@ export interface OcxThinkingContent {
   thinking: string;
   signature?: string;
   itemId?: string;
+  /** Raw Anthropic redacted_thinking block payloads to replay verbatim (order preserved). */
+  redacted?: string[];
 }
 
 export interface OcxToolCall {
@@ -182,6 +193,10 @@ export type AdapterEvent =
   | { type: "heartbeat" }
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; thinking: string }
+  // Anthropic extended-thinking round-trip: signature_delta for the current thinking block, and
+  // opaque redacted_thinking blocks. Both must be replayed verbatim or tool-use turns 400.
+  | { type: "thinking_signature"; signature: string }
+  | { type: "redacted_thinking"; data: string }
   | { type: "reasoning_raw_delta"; text: string }
   | { type: "tool_call_start"; id: string; name: string }
   | { type: "tool_call_delta"; arguments: string }
@@ -337,6 +352,12 @@ export interface OcxProviderConfig {
   /** Keep provider settings on disk but exclude it from routing and model/catalog listings. */
   disabled?: boolean;
   apiKey?: string;
+  /**
+   * Multi-key pool (API-key twin of OAuth multiauth). `apiKey` always mirrors the ACTIVE
+   * entry so routing stays single-key; managed via /api/providers/keys. A legacy bare
+   * `apiKey` seeds a one-entry pool on first management touch.
+   */
+  apiKeyPool?: Array<{ id: string; key: string; label?: string; addedAt?: number }>;
   defaultModel?: string;
   models?: string[];
   /**
@@ -400,6 +421,12 @@ export interface OcxProviderConfig {
   autoToolChoiceOnlyModels?: string[];
   /** Model ids that expect prior assistant `reasoning_content` to be preserved in chat history. */
   preserveReasoningContentModels?: string[];
+  /**
+   * Model ids whose reasoning is a vendor `thinking: {type: enabled|disabled}` toggle on the
+   * chat-completions wire (MiMo v2.x, GLM 5/5.1 style), NOT an OpenAI `reasoning_effort` ladder.
+   * The openai-chat adapter translates the mapped effort into the thinking toggle for these.
+   */
+  thinkingToggleModels?: string[];
   /** Anthropic-compatible gateways that need custom tool names escaped on the wire. */
   escapeBuiltinToolNames?: boolean;
   /**

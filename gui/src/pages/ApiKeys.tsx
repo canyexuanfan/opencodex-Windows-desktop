@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { IconPlus, IconX, IconCheck } from "../icons";
+import { useI18n, LOCALES } from "../i18n";
 
 interface ApiKeyEntry {
   id: string;
@@ -9,6 +10,8 @@ interface ApiKeyEntry {
 }
 
 export default function ApiKeys({ apiBase }: { apiBase: string }) {
+  const { t, locale } = useI18n();
+  const localeTag = LOCALES.find(l => l.code === locale)?.htmlLang;
   const [keys, setKeys] = useState<ApiKeyEntry[]>([]);
   const [endpoint, setEndpoint] = useState("");
   const [newName, setNewName] = useState("");
@@ -17,7 +20,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   const [copied, setCopied] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
-  const fetchKeys = async () => {
+  const fetchKeys = useCallback(async () => {
     try {
       const res = await fetch(`${apiBase}/api/keys`);
       if (res.ok) {
@@ -26,9 +29,11 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
         setEndpoint(data.endpoint ?? "");
       }
     } catch { /* proxy down */ }
-  };
+  }, [apiBase]);
 
-  useEffect(() => { fetchKeys(); }, []);
+  useEffect(() => { fetchKeys(); }, [fetchKeys]);
+
+  const responseEndpoint = endpoint || "http://127.0.0.1:10100/v1/responses";
 
   const handleCreate = async () => {
     setCreating(true);
@@ -67,88 +72,97 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
     }
   };
 
+  // Subtitle carries two inline <code> chips; split the localized string on both tokens.
+  const subtitleParts = t("api.subtitle").split(/\{authHeader\}|\{altHeader\}/);
+
   return (
-    <section className="page">
-      <h2>API Access</h2>
-      <p className="muted">
-        Use generated API keys to access the opencodex proxy from external apps.
-        Keys authenticate via <code>Authorization: Bearer ocx_...</code> or <code>x-opencodex-api-key</code> header.
+    <section className="api-page">
+      <div className="page-head">
+        <h2>{t("api.title")}</h2>
+      </div>
+      <p className="page-sub">
+        {subtitleParts[0]}
+        <code>Authorization: Bearer ocx_...</code>
+        {subtitleParts[1]}
+        <code>x-opencodex-api-key</code>
+        {subtitleParts[2]}
       </p>
 
-      <div className="card" style={{ marginTop: "1rem" }}>
-        <h3>Endpoint</h3>
-        <code className="block">{endpoint || "http://127.0.0.1:10100/v1/responses"}</code>
-        <p className="muted small">Compatible with OpenAI Responses API format.</p>
+      <div className="panel api-panel">
+        <h3 className="panel-title">{t("api.endpoint")}</h3>
+        <code className="api-code api-code-inline">{responseEndpoint}</code>
+        <p className="muted small">{t("api.endpointNote")}</p>
       </div>
 
       {newKey && (
-        <div className="card highlight" style={{ marginTop: "1rem" }}>
-          <h3>New Key Created</h3>
-          <p className="muted small">Copy this key now — it won't be shown again.</p>
-          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-            <code className="block" style={{ flex: 1, wordBreak: "break-all" }}>{newKey}</code>
-            <button className="btn btn-sm" onClick={copyKey}>
-              {copied ? <><IconCheck /> Copied</> : "Copy"}
+        <div className="panel api-panel panel-accent" style={{ marginTop: "1rem" }}>
+          <h3 className="panel-title">{t("api.newKeyTitle")}</h3>
+          <p className="muted small">{t("api.newKeyNote")}</p>
+          <div className="api-form-row">
+            <code className="api-code" style={{ flex: 1, wordBreak: "break-all" }}>{newKey}</code>
+            <button className="btn btn-sm btn-ghost" onClick={copyKey}>
+              {copied ? <><IconCheck /> {t("api.copied")}</> : t("api.copy")}
             </button>
           </div>
-          <button className="btn btn-sm" style={{ marginTop: "0.5rem" }} onClick={() => setNewKey(null)}>
-            Dismiss
+          <button className="btn btn-sm btn-ghost" style={{ alignSelf: "flex-start" }} onClick={() => setNewKey(null)}>
+            {t("api.dismiss")}
           </button>
         </div>
       )}
 
-      <div className="card" style={{ marginTop: "1rem" }}>
-        <h3>Generate Key</h3>
-        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+      <div className="panel api-panel" style={{ marginTop: "1rem" }}>
+        <h3 className="panel-title">{t("api.generateTitle")}</h3>
+        <div className="api-form-row">
           <input
             type="text"
-            placeholder="Key name (optional)"
+            placeholder={t("api.keyNamePlaceholder")}
             value={newName}
             onChange={e => setNewName(e.target.value)}
             className="input"
-            style={{ flex: 1 }}
           />
           <button className="btn btn-primary" onClick={handleCreate} disabled={creating}>
-            <IconPlus /> {creating ? "Creating..." : "Generate"}
+            <IconPlus /> {creating ? t("api.generating") : t("api.generate")}
           </button>
         </div>
       </div>
 
-      <div className="card" style={{ marginTop: "1rem" }}>
-        <h3>Active Keys ({keys.length})</h3>
+      <div className="panel api-panel" style={{ marginTop: "1rem" }}>
+        <h3 className="panel-title">{t("api.activeKeys", { count: keys.length })}</h3>
         {keys.length === 0 ? (
-          <p className="muted">No API keys yet. Generate one above.</p>
+          <p className="muted">{t("api.noKeys")}</p>
         ) : (
-          <table className="table">
-            <thead>
-              <tr><th>Name</th><th>Key</th><th>Created</th><th></th></tr>
-            </thead>
-            <tbody>
-              {keys.map(k => (
-                <tr key={k.id}>
-                  <td>{k.name}</td>
-                  <td><code>{k.prefix}</code></td>
-                  <td>{new Date(k.createdAt).toLocaleDateString()}</td>
-                  <td>
-                    {confirmDelete === k.id ? (
-                      <span style={{ display: "flex", gap: "0.25rem" }}>
-                        <button className="btn btn-sm btn-danger" onClick={() => handleDelete(k.id)}>Confirm</button>
-                        <button className="btn btn-sm" onClick={() => setConfirmDelete(null)}>Cancel</button>
-                      </span>
-                    ) : (
-                      <button className="btn btn-sm" onClick={() => setConfirmDelete(k.id)}><IconX /></button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead>
+                <tr><th>{t("api.colName")}</th><th>{t("api.colKey")}</th><th>{t("api.colCreated")}</th><th></th></tr>
+              </thead>
+              <tbody>
+                {keys.map(k => (
+                  <tr key={k.id}>
+                    <td>{k.name}</td>
+                    <td><code>{k.prefix}</code></td>
+                    <td>{new Date(k.createdAt).toLocaleDateString(localeTag)}</td>
+                    <td>
+                      {confirmDelete === k.id ? (
+                        <span className="api-actions">
+                          <button className="btn btn-sm btn-danger" onClick={() => handleDelete(k.id)}>{t("api.confirm")}</button>
+                          <button className="btn btn-sm btn-ghost" onClick={() => setConfirmDelete(null)}>{t("common.cancel")}</button>
+                        </span>
+                      ) : (
+                        <button className="btn btn-sm btn-ghost" aria-label={t("api.deleteAria")} onClick={() => setConfirmDelete(k.id)}><IconX /></button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 
-      <div className="card" style={{ marginTop: "1rem" }}>
-        <h3>Usage Example</h3>
-        <pre className="block">{`curl ${endpoint || "http://127.0.0.1:10100"}/v1/responses \\
+      <div className="panel api-panel" style={{ marginTop: "1rem" }}>
+        <h3 className="panel-title">{t("api.usageTitle")}</h3>
+        <pre className="api-code">{`curl ${responseEndpoint} \\
   -H "Authorization: Bearer ocx_YOUR_KEY_HERE" \\
   -H "Content-Type: application/json" \\
   -d '{

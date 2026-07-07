@@ -34,7 +34,7 @@ To hack on opencodex itself:
 git clone https://github.com/lidge-jun/opencodex.git
 cd opencodex
 bun install
-bun run dev:proxy   # starts the proxy API in dev mode (src/cli.ts start)
+bun run dev:proxy   # starts the proxy API in dev mode (src/cli/index.ts start)
 bun run dev:gui     # starts the dashboard dev server (another terminal)
 ```
 

@@ -1,5 +1,5 @@
 import type { ProviderAdapter } from "./base";
-import { debugDroppedFrame } from "../debug";
+import { debugDroppedFrame } from "../lib/debug";
 import type {
   AdapterEvent,
   OcxAssistantMessage,
@@ -16,6 +16,7 @@ import type {
 import { isAllowedToolChoice, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
 import { ANTHROPIC_OAUTH_BETA, CLAUDE_CODE_SYSTEM_INSTRUCTION, applyClaudeToolPrefix, stripClaudeToolPrefix } from "../oauth/anthropic";
 import { parseDataUrl } from "./image";
+import { enforceAnthropicImageLimits } from "./anthropic-image-guard";
 import { neutralizeIdentity } from "./identity";
 import { CLAUDE_CODE_HEADERS, claudeCodeSessionId } from "./client-fingerprint";
 import { buildNonOpenAIToolCatalogNudgeForTools } from "./tool-catalog-nudge";
@@ -257,6 +258,36 @@ function reasoningBudget(effort: string): number {
   }
 }
 
+/**
+ * Claude families that moved to adaptive thinking: they 400 on `thinking.type: "enabled"`
+ * ("Use \"thinking.type.adaptive\" and \"output_config.effort\" to control thinking behavior."),
+ * while older families (Haiku 4.5, Sonnet 4.x, Opus <= 4.6) 400 on `adaptive` — so both wire
+ * shapes must stay. Verified against api.anthropic.com: sonnet-5, fable-5, opus-4-7 and opus-4-8
+ * require adaptive; haiku-4-5 and sonnet-4-5 reject it; opus-4-6/sonnet-4-6 accept both.
+ */
+const ADAPTIVE_THINKING_FAMILY_MINIMUMS: Record<string, readonly [major: number, minor: number]> = {
+  sonnet: [5, 0],
+  opus: [4, 7],
+  fable: [0, 0],
+};
+
+function usesAdaptiveThinking(modelId: string): boolean {
+  // Minor is 1-2 digits with a non-digit lookahead so date-pinned ids ("claude-opus-4-20250514")
+  // parse as minor 0 instead of minor 20250514; suffixed ids ("claude-opus-4-8[1m]") still match.
+  const match = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?!\d)/.exec(modelId);
+  if (!match) return false;
+  const minimum = ADAPTIVE_THINKING_FAMILY_MINIMUMS[match[1]];
+  if (!minimum) return false;
+  const major = Number(match[2]);
+  const minor = match[3] === undefined ? 0 : Number(match[3]);
+  return major > minimum[0] || (major === minimum[0] && minor >= minimum[1]);
+}
+
+/** `output_config.effort` accepts low|medium|high|xhigh|max — "minimal" is rejected with a 400. */
+function adaptiveEffort(effort: string): string {
+  return effort === "minimal" ? "low" : effort;
+}
+
 function usageFromAnthropic(usage: Record<string, number> | undefined): OcxUsage | undefined {
   if (!usage) return undefined;
   const hasCache = usage.cache_read_input_tokens !== undefined || usage.cache_creation_input_tokens !== undefined;
@@ -354,6 +385,11 @@ function messagesToAnthropicFormat(
             content.push({ type: "text", text: (part as OcxTextContent).text });
           } else if (part.type === "thinking") {
             const t = part as OcxThinkingContent;
+            // Redacted blocks replay verbatim FIRST (they preceded the visible thinking block
+            // in the original stream order preserved by the bridge envelope).
+            for (const data of t.redacted ?? []) {
+              content.push({ type: "redacted_thinking", data });
+            }
             if (isLikelyRealAnthropicThinkingSignature(t.signature)) {
               content.push({ type: "thinking", thinking: t.thinking, signature: t.signature });
             }
@@ -406,6 +442,16 @@ function messagesToAnthropicFormat(
     }
   }
 
+  // Newer Anthropic models reject assistant-tail histories as prefill:
+  // "This model does not support assistant message prefill. The conversation must end with a user message."
+  // previous_response_id expansion with empty new input, interrupted-turn replay, and web-search sidecar
+  // first iterations can all reach this; Kiro uses the same "(continue)" nudge precedent (src/adapters/kiro.ts:283).
+  if (messages.length === 0) {
+    messages.push({ role: "user", content: "(continue)" });
+  } else if ((messages[messages.length - 1] as { role?: string }).role === "assistant") {
+    messages.push({ role: "user", content: "(continue)" });
+  }
+
   return { system, messages };
 }
 
@@ -434,6 +480,9 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
 
     buildRequest(parsed: OcxParsedRequest) {
       const { system, messages } = messagesToAnthropicFormat(parsed, toolNames);
+      // Anthropic rejects many-image requests (>20 images) carrying any image over
+      // 2000px per side; see anthropic-image-guard.ts for the full limit policy.
+      enforceAnthropicImageLimits(messages);
       const tools = toolsToAnthropicFormat(parsed, toolNames);
 
       const body: Record<string, unknown> = {
@@ -460,16 +509,23 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
       // REASONING_EFFORTS). A bare truthy check would treat "none" as truthy and wrongly enable
       // extended thinking (and strip temperature/top_p), so gate on a real, non-disable effort.
       if (typeof parsed.options.reasoning === "string" && parsed.options.reasoning !== "none") {
-        // Anthropic requires max_tokens > thinking.budget_tokens (max_tokens caps thinking +
-        // visible output) and budget_tokens >= 1024. Codex sends the SAME value for both, which
-        // 400s ("max_tokens must be greater than thinking.budget_tokens"). Size them so max_tokens
-        // always exceeds the budget within a model-safe ceiling, reserving room for visible output.
-        const maxOut = parsed.options.maxOutputTokens ?? DEFAULT_MAX_TOKENS;
-        const wantBudget = reasoningBudget(parsed.options.reasoning);
-        const maxTokens = Math.min(REASONING_MAX_TOKENS_CEILING, Math.max(maxOut, wantBudget + OUTPUT_HEADROOM));
-        const budget = Math.max(MIN_THINKING_BUDGET, Math.min(wantBudget, maxTokens - OUTPUT_FLOOR));
-        body.max_tokens = maxTokens;
-        body.thinking = { type: "enabled", budget_tokens: budget };
+        if (usesAdaptiveThinking(parsed.modelId)) {
+          // Adaptive-thinking models replace the token budget with an effort knob and reject
+          // `thinking.type: "enabled"` outright — no budget/max_tokens re-sizing needed.
+          body.thinking = { type: "adaptive" };
+          body.output_config = { effort: adaptiveEffort(parsed.options.reasoning) };
+        } else {
+          // Anthropic requires max_tokens > thinking.budget_tokens (max_tokens caps thinking +
+          // visible output) and budget_tokens >= 1024. Codex sends the SAME value for both, which
+          // 400s ("max_tokens must be greater than thinking.budget_tokens"). Size them so max_tokens
+          // always exceeds the budget within a model-safe ceiling, reserving room for visible output.
+          const maxOut = parsed.options.maxOutputTokens ?? DEFAULT_MAX_TOKENS;
+          const wantBudget = reasoningBudget(parsed.options.reasoning);
+          const maxTokens = Math.min(REASONING_MAX_TOKENS_CEILING, Math.max(maxOut, wantBudget + OUTPUT_HEADROOM));
+          const budget = Math.max(MIN_THINKING_BUDGET, Math.min(wantBudget, maxTokens - OUTPUT_FLOOR));
+          body.max_tokens = maxTokens;
+          body.thinking = { type: "enabled", budget_tokens: budget };
+        }
         // Extended thinking disallows temperature != 1 and top_p — drop both or the API 400s.
         delete body.temperature;
         delete body.top_p;
@@ -577,13 +633,17 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
                 break;
               }
               case "content_block_start": {
-                const block = data.content_block as { type: string; id?: string; name?: string } | undefined;
+                const block = data.content_block as { type: string; id?: string; name?: string; data?: string } | undefined;
                 if (!block) break;
                 currentBlockType = block.type;
                 if (block.type === "tool_use") {
                   currentToolCallId = block.id ?? "";
                   currentToolCallName = toolNames.fromWire(block.name ?? "");
                   yield { type: "tool_call_start", id: currentToolCallId, name: currentToolCallName };
+                }
+                if (block.type === "redacted_thinking" && typeof block.data === "string") {
+                  // Opaque redacted block: replay verbatim later or tool-use turns 400.
+                  yield { type: "redacted_thinking", data: block.data };
                 }
                 break;
               }
@@ -594,6 +654,10 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
                   yield { type: "text_delta", text: delta.text };
                 } else if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
                   yield { type: "thinking_delta", thinking: delta.thinking };
+                } else if (delta.type === "signature_delta" && typeof delta.signature === "string" && currentBlockType === "thinking") {
+                  // Arrives once, just before the thinking block's content_block_stop; block-scoped
+                  // so a stray signature on a non-thinking block can never be captured.
+                  yield { type: "thinking_signature", signature: delta.signature };
                 } else if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
                   yield { type: "tool_call_delta", arguments: delta.partial_json };
                 }
@@ -603,8 +667,8 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
                 if (currentBlockType === "tool_use") {
                   yield { type: "tool_call_end" };
                   currentToolCallId = "";
-                  currentBlockType = "";
                 }
+                currentBlockType = "";
                 break;
               }
               case "message_delta": {
@@ -634,11 +698,18 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
     async parseResponse(response: Response): Promise<AdapterEvent[]> {
       const json = await response.json() as Record<string, unknown>;
       const events: AdapterEvent[] = [];
-      const content = json.content as { type: string; text?: string; id?: string; name?: string; input?: unknown }[] | undefined;
+      const content = json.content as { type: string; text?: string; id?: string; name?: string; input?: unknown; thinking?: string; signature?: string; data?: string }[] | undefined;
       if (content) {
         for (const block of content) {
           if (block.type === "text" && block.text) {
             events.push({ type: "text_delta", text: block.text });
+          } else if (block.type === "thinking" && typeof block.thinking === "string") {
+            events.push({ type: "thinking_delta", thinking: block.thinking });
+            if (typeof block.signature === "string" && block.signature) {
+              events.push({ type: "thinking_signature", signature: block.signature });
+            }
+          } else if (block.type === "redacted_thinking" && typeof block.data === "string") {
+            events.push({ type: "redacted_thinking", data: block.data });
           } else if (block.type === "tool_use") {
             events.push({ type: "tool_call_start", id: block.id ?? "", name: toolNames.fromWire(block.name ?? "") });
             events.push({ type: "tool_call_delta", arguments: JSON.stringify(block.input ?? {}) });

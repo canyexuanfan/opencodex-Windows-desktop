@@ -11,11 +11,11 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { expandUserPath, getConfigDir, readPid, removePid, removeRuntimePort } from "./config";
 import { loadConfig } from "./config";
-import { restoreNativeCodex } from "./codex-inject";
-import { durableBunPath, durableBunRuntime } from "./bun-runtime";
-import { isProcessAlive, stopProxy } from "./process-control";
-import { serviceApiTokenFilePath } from "./service-secrets";
-import { windowsEnvIndirectBatchPathList, windowsEnvIndirectBatchValue } from "./win-paths";
+import { restoreNativeCodex } from "./codex/inject";
+import { durableBunPath, durableBunRuntime } from "./lib/bun-runtime";
+import { isProcessAlive, stopProxy } from "./lib/process-control";
+import { serviceApiTokenFilePath } from "./lib/service-secrets";
+import { windowsEnvIndirectBatchPathList, windowsEnvIndirectBatchValue } from "./lib/win-paths";
 
 const LABEL = "com.opencodex.proxy";
 const TASK = "opencodex-proxy";
@@ -23,8 +23,8 @@ const TASK = "opencodex-proxy";
 function cliEntry(): { bun: string; cli: string } {
   // Bake the bundled Bun (npm global prefix, survives `ocx update`) rather than
   // a transient system Bun, so launchd/systemd/schtasks keep resolving even if a
-  // standalone Bun is later removed. cli.ts sits next to this module.
-  return { bun: durableBunPath(), cli: join(import.meta.dir, "cli.ts") };
+  // standalone Bun is later removed. The CLI entry lives at src/cli/index.ts.
+  return { bun: durableBunPath(), cli: join(import.meta.dir, "cli", "index.ts") };
 }
 
 function plistPath(): string {
@@ -709,8 +709,11 @@ export async function serviceCommand(sub?: string): Promise<void> {
       assertServiceEnvironmentMatchesInstall();
       ops.stop();
       await stopTrackedProxyForServiceCommand();
-      restoreNativeCodex();
-      console.log("✅ service stopped + native Codex restored.");
+      {
+        const restore = restoreNativeCodex();
+        if (restore.success) console.log("✅ service stopped + native Codex restored.");
+        else console.error(`⚠️ service stopped, but native Codex restore FAILED: ${restore.message}\nRun \`ocx restore\` (or check $CODEX_HOME/config.toml) before using native Codex.`);
+      }
       break;
     case "status": {
       const s = ops.status();
@@ -724,10 +727,15 @@ export async function serviceCommand(sub?: string): Promise<void> {
       ops.stop();
       await stopTrackedProxyForServiceCommand();
       ops.uninstall();
-      restoreNativeCodex();
+      {
+        const restore = restoreNativeCodex();
+        if (!restore.success) {
+          console.error(`⚠️ native Codex restore FAILED: ${restore.message}\nRun \`ocx restore\` before using native Codex.`);
+        }
+      }
       removeServiceInstallState();
       try { if (existsSync(serviceApiTokenFilePath())) unlinkSync(serviceApiTokenFilePath()); } catch { /* best-effort */ }
-      console.log("✅ service uninstalled + native Codex restored.");
+      console.log("✅ service uninstalled.");
       break;
     default:
       console.error("Usage: ocx service [install|start|stop|status|uninstall|remove]");

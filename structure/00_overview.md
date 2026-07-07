@@ -14,6 +14,7 @@ belong in `docs-site/`; historical investigations belong in `docs/`.
 | [`04_transports-and-sidecars.md`](04_transports-and-sidecars.md) | Responses HTTP/SSE, WebSocket opt-in, sidecars, compatibility guards. |
 | [`05_gui-and-management-api.md`](05_gui-and-management-api.md) | Dashboard serving and `/api/*` management surface. |
 | [`06_docs-and-release.md`](06_docs-and-release.md) | Public docs site, GitHub Pages, README ownership, release flow. |
+| [`07_design-methodology.md`](07_design-methodology.md) | Design process discipline for new GUI, CLI, and user-facing surfaces. |
 
 ## Product boundary
 
@@ -37,7 +38,7 @@ providers are routed by explicit `provider/model`, provider model lists, or the 
 | Path | Owner | Notes |
 | --- | --- | --- |
 | `~/.opencodex/config.json` | opencodex | Main config written by `ocx init` and the dashboard. |
-| `~/.opencodex/auth.json` | opencodex | OAuth tokens; not committed. |
+| `~/.opencodex/auth.json` | opencodex | OAuth tokens; not committed. Multiauth shape: `provider -> { activeAccountId, accounts[] }` (legacy single-credential values normalize on load; a one-time `auth.json.pre-multiauth` backup guards downgrades). `chatgpt` stays single-slot (Codex pool scratch); identity-less providers (kimi/kiro/cursor) replace their active slot. |
 | `~/.opencodex/catalog-backup.json` | opencodex | One-time pristine Codex catalog backup for restore. |
 | `~/.opencodex/usage.jsonl` | opencodex | Append-only request usage log (0o600); request metadata + token counts only, never prompts or auth. |
 | `$CODEX_HOME/config.toml` | Codex, edited by opencodex | Active provider and provider table. |

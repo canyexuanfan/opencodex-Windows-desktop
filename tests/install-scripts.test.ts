@@ -1,6 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+
+// Windows CI runners spawn Node/Bun child processes slowly ("Slow filesystem detected");
+// the package-main import test measured 9.4s there vs bun's 5s default. Same remedy as
+// codex-history-provider / cursor-mcp-stdio.
+setDefaultTimeout(30_000);
 
 const root = new URL("../", import.meta.url);
 const repoRoot = fileURLToPath(root);
@@ -26,8 +31,8 @@ describe("install scripts", () => {
     expect(pkg.dependencies?.zod).toBe("4.4.3");
     expect(pkg.devDependencies?.typescript).toBe("5.9.3");
     expect(pkg.devDependencies?.["@types/bun"]).toBe("1.3.14");
-    expect(pkg.scripts?.dev).toBe("bun run src/cli.ts start");
-    expect(pkg.scripts?.["dev:proxy"]).toBe("bun run src/cli.ts start");
+    expect(pkg.scripts?.dev).toBe("bun run src/cli/index.ts start");
+    expect(pkg.scripts?.["dev:proxy"]).toBe("bun run src/cli/index.ts start");
     expect(pkg.scripts?.["dev:gui"]).toBe("cd gui && bun run dev");
     expect(pkg.scripts?.["prepare:package"]).toBe("bun scripts/prepare-package.ts");
     expect(pkg.scripts?.prepack).toBe("bun run prepare:package");

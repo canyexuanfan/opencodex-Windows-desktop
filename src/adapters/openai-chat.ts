@@ -1,5 +1,5 @@
 import type { ProviderAdapter } from "./base";
-import { debugDroppedFrame } from "../debug";
+import { debugDroppedFrame } from "../lib/debug";
 import type { AdapterEvent, OcxAssistantMessage, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTextContent, OcxThinkingContent, OcxToolCall, OcxUsage } from "../types";
 import { isAllowedToolChoice, modelInList, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
 import { mapReasoningEffort } from "../reasoning-effort";
@@ -195,7 +195,17 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       }
       if (parsed.options.stopSequences !== undefined) body.stop = parsed.options.stopSequences;
       const reasoningEffort = mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning);
-      if (reasoningEffort !== undefined) body.reasoning_effort = reasoningEffort;
+      if (reasoningEffort !== undefined) {
+        if (modelInList(provider.thinkingToggleModels, parsed.modelId)) {
+          // Vendor thinking-toggle wire (MiMo v2.x, GLM 5/5.1): the mapped value is the toggle
+          // state, sent as `thinking: {type}` — these models ignore/reject reasoning_effort.
+          if (reasoningEffort === "enabled" || reasoningEffort === "disabled") {
+            body.thinking = { type: reasoningEffort };
+          }
+        } else {
+          body.reasoning_effort = reasoningEffort;
+        }
+      }
       if (parsed.options.presencePenalty !== undefined && !modelInList(provider.noPenaltyModels, parsed.modelId)) {
         body.presence_penalty = parsed.options.presencePenalty;
       }

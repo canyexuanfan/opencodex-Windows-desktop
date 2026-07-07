@@ -219,6 +219,32 @@ describe("Responses bridge reasoning and usage parity", () => {
     expect(output[1].type).toBe("tool_search_call");
   });
 
+  test("streaming freeform tool call emits unwrapped custom_tool_call_input deltas", async () => {
+    const frames = await collectSse(bridgeToResponsesSSE(replay([
+      { type: "tool_call_start", id: "c1", name: "apply_patch" },
+      // JSON wrapper split across chunks, incl. an escape split at a boundary.
+      { type: "tool_call_delta", arguments: "{\"inp" },
+      { type: "tool_call_delta", arguments: "ut\":\"line1\\" },
+      { type: "tool_call_delta", arguments: "nline2\"}" },
+      { type: "tool_call_end" },
+      { type: "done" },
+    ]), "model", undefined, new Set(["apply_patch"])));
+
+    const deltas = frames.filter(f => f.event === "response.custom_tool_call_input.delta").map(f => f.data.delta);
+    expect(deltas.join("")).toBe("line1\nline2");
+    // No raw JSON wrapper fragments leak into the preview stream.
+    for (const d of deltas) expect(String(d)).not.toContain("{\"inp");
+
+    const doneEvt = frames.find(f => f.event === "response.custom_tool_call_input.done")?.data;
+    expect(doneEvt).toMatchObject({ input: "line1\nline2" });
+
+    const item = frames.find(f => f.event === "response.output_item.done")?.data.item as Record<string, unknown>;
+    expect(item).toMatchObject({ type: "custom_tool_call", input: "line1\nline2", status: "completed" });
+    // Freeform calls must NOT emit function_call_arguments events.
+    expect(frames.some(f => f.event === "response.function_call_arguments.delta")).toBe(false);
+    expect(frames.some(f => f.event === "response.function_call_arguments.done")).toBe(false);
+  });
+
   test("non-streaming error produces failed status", () => {
     const json = buildResponseJSON([
       { type: "error", message: "upstream 500" },

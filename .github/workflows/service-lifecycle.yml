@@ -5,16 +5,16 @@ on:
     branches: [main, dev]
     paths:
       - "src/service.ts"
-      - "src/cli.ts"
-      - "src/bun-runtime.ts"
+      - "src/cli/index.ts"
+      - "src/lib/bun-runtime.ts"
       - "package.json"
       - "bun.lock"
       - ".github/workflows/service-lifecycle.yml"
   push:
     paths:
       - "src/service.ts"
-      - "src/cli.ts"
-      - "src/bun-runtime.ts"
+      - "src/cli/index.ts"
+      - "src/lib/bun-runtime.ts"
       - "package.json"
       - "bun.lock"
       - ".github/workflows/service-lifecycle.yml"
@@ -46,7 +46,7 @@ jobs:
 
       - name: Install service
         run: |
-          bun run src/cli.ts service install
+          bun run src/cli/index.ts service install
           sleep 2
 
       - name: Verify service is running
@@ -56,7 +56,7 @@ jobs:
 
       - name: ocx stop should stop the service too
         run: |
-          bun run src/cli.ts stop
+          bun run src/cli/index.ts stop
           sleep 1
           # Service should NOT be active after ocx stop
           if systemctl --user is-active opencodex-proxy 2>/dev/null; then
@@ -67,7 +67,7 @@ jobs:
 
       - name: Restart service and verify crash-restart
         run: |
-          bun run src/cli.ts service start
+          bun run src/cli/index.ts service start
           sleep 2
           PID=$(cat ~/.opencodex/ocx.pid 2>/dev/null || echo "")
           if [ -n "$PID" ]; then
@@ -84,7 +84,7 @@ jobs:
 
       - name: Uninstall service
         run: |
-          bun run src/cli.ts service uninstall
+          bun run src/cli/index.ts service uninstall
           sleep 1
           if systemctl --user is-active opencodex-proxy 2>/dev/null; then
             echo "❌ FAIL: service still active after uninstall"
@@ -109,7 +109,7 @@ jobs:
 
       - name: Install service
         run: |
-          bun run src/cli.ts service install
+          bun run src/cli/index.ts service install
           sleep 3
 
       - name: Verify launchd agent loaded
@@ -123,13 +123,13 @@ jobs:
 
       - name: ocx stop should unload the agent
         run: |
-          bun run src/cli.ts stop
+          bun run src/cli/index.ts stop
           sleep 2
           echo "✅ ocx stop completed"
 
       - name: Uninstall service
         run: |
-          bun run src/cli.ts service uninstall
+          bun run src/cli/index.ts service uninstall
           sleep 1
           if launchctl list | grep -q com.opencodex.proxy; then
             echo "❌ LaunchAgent still loaded after uninstall"
@@ -156,7 +156,7 @@ jobs:
       - name: Install service
         shell: pwsh
         run: |
-          bun run src/cli.ts service install
+          bun run src/cli/index.ts service install
           Start-Sleep -Seconds 3
 
       - name: Verify scheduled task exists
@@ -173,14 +173,14 @@ jobs:
       - name: ocx stop should end the task
         shell: pwsh
         run: |
-          bun run src/cli.ts stop
+          bun run src/cli/index.ts stop
           Start-Sleep -Seconds 2
           Write-Host "✅ ocx stop completed"
 
       - name: Uninstall service
         shell: pwsh
         run: |
-          bun run src/cli.ts service uninstall
+          bun run src/cli/index.ts service uninstall
           Start-Sleep -Seconds 1
           $found = $true
           try { $task = schtasks /query /tn opencodex-proxy 2>&1 } catch { $found = $false }

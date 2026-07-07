@@ -1,10 +1,10 @@
 import type { ProviderAdapter } from "../adapters/base";
-import type { AdapterEvent, OcxMessage, OcxParsedRequest, OcxProviderConfig } from "../types";
+import type { AdapterEvent, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxThinkingContent } from "../types";
 import { namespacedToolName } from "../types";
 import { bridgeToResponsesSSE } from "../bridge";
 import { runWebSearch, type SidecarOutcome, type SidecarOutcomeRecorder, type SidecarSettings } from "./executor";
-import { cancelBodyOnAbort } from "../abort";
-import { fetchWithResetRetry } from "../upstream-retry";
+import { cancelBodyOnAbort } from "../lib/abort";
+import { fetchWithResetRetry } from "../lib/upstream-retry";
 import { formatWebSearchResults } from "./format-result";
 import { WEB_SEARCH_TOOL_NAME } from "./synthetic-tool";
 
@@ -92,6 +92,32 @@ async function* replay(events: AdapterEvent[]): AsyncGenerator<AdapterEvent> {
   for (const e of events) yield e;
 }
 
+/**
+ * Collect the thinking block that preceded a web_search call in this iteration's events, so the
+ * replayed assistant turn can carry it. Anthropic extended thinking REQUIRES the assistant
+ * message that contains tool_use to start with its signed thinking/redacted_thinking blocks —
+ * replaying a bare toolCall 400s ("Expected `thinking` or `redacted_thinking`, but found
+ * `tool_use`"). The signature validity gate stays in the anthropic adapter; other adapters
+ * ignore or serialize the part harmlessly.
+ */
+function extractIterationThinking(events: AdapterEvent[]): OcxThinkingContent | null {
+  let thinking = "";
+  let signature: string | undefined;
+  const redacted: string[] = [];
+  for (const e of events) {
+    if (e.type === "thinking_delta") thinking += e.thinking;
+    else if (e.type === "thinking_signature") signature = e.signature;
+    else if (e.type === "redacted_thinking") redacted.push(e.data);
+  }
+  if (!thinking && !signature && redacted.length === 0) return null;
+  return {
+    type: "thinking",
+    thinking,
+    ...(signature ? { signature } : {}),
+    ...(redacted.length > 0 ? { redacted } : {}),
+  };
+}
+
 /** Normalize a query for failed-query de-duplication (case/whitespace-insensitive). */
 function normalizeQuery(q: string): string {
   return q.trim().toLowerCase().replace(/\s+/g, " ");
@@ -142,6 +168,13 @@ export interface WebSearchLoopDeps {
   forceEmptyResponseId?: boolean;
   abortSignal?: AbortSignal;
   recordSidecarOutcome?: SidecarOutcomeRecorder;
+  /** Per-iteration deadline for routed model calls (mirrors the normal path's connectTimeoutMs). */
+  connectTimeoutMs?: number;
+  /**
+   * 429 key-failover hook: rotate the provider's active pool key and return a rebuilt adapter,
+   * or null when the pool is exhausted (same semantics as the normal routed path).
+   */
+  on429?: (retryAfterHeader: string | null) => ProviderAdapter | null;
 }
 
 /**
@@ -151,7 +184,9 @@ export interface WebSearchLoopDeps {
  * streamed Responses SSE. web_search calls are executed internally and never relayed to Codex.
  */
 export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Response> {
-  const { parsed, adapter, selectedForwardHeaders, forwardProvider, hostedTool, settings, maxSearches, abortSignal, recordSidecarOutcome } = deps;
+  const { parsed, selectedForwardHeaders, forwardProvider, hostedTool, settings, maxSearches, abortSignal, recordSidecarOutcome } = deps;
+  // Mutable: 429 key-failover (deps.on429) can swap in a rebuilt adapter mid-loop.
+  let adapter = deps.adapter;
   if (!adapter.parseResponse) return jsonError(500, "web-search sidecar requires a non-streaming adapter");
 
   const messages: OcxMessage[] = [...parsed.context.messages];
@@ -196,22 +231,41 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
       ...parsed, stream: false,
       context: { ...parsed.context, messages: iterMessages, tools: forceAnswer ? toolsNoWebSearch : allTools },
     };
-    const request = await adapter.buildRequest(iterParsed, { headers: selectedForwardHeaders });
-    let resp: Response;
-    try {
-      resp = adapter.fetchResponse
-        ? await adapter.fetchResponse(request, { abortSignal: signal })
-        : await fetchWithResetRetry(
-            () => fetch(request.url, {
-              method: request.method,
-              headers: request.headers,
-              body: request.body,
-              signal,
-            }),
-            { abortSignal: signal, label: "web-search-loop" },
-          );
-    } catch (e) {
-      throw new LoopError(502, `Provider unreachable: ${e instanceof Error ? e.message : String(e)}`);
+    // Per-iteration deadline: routed calls elsewhere carry connectTimeoutMs; without it a hung
+    // upstream would stall the whole loop until the client gives up.
+    const iterationSignal = deps.connectTimeoutMs
+      ? AbortSignal.any([signal, AbortSignal.timeout(deps.connectTimeoutMs)])
+      : signal;
+    const fetchOnce = async (): Promise<Response> => {
+      const request = await adapter.buildRequest(iterParsed, { headers: selectedForwardHeaders });
+      try {
+        return adapter.fetchResponse
+          ? await adapter.fetchResponse(request, { abortSignal: iterationSignal, ...(deps.connectTimeoutMs ? { timeoutMs: deps.connectTimeoutMs } : {}) })
+          : await fetchWithResetRetry(
+              () => fetch(request.url, {
+                method: request.method,
+                headers: request.headers,
+                body: request.body,
+                signal: iterationSignal,
+              }),
+              { abortSignal: iterationSignal, label: "web-search-loop" },
+            );
+      } catch (e) {
+        if (!signal.aborted && iterationSignal.aborted) {
+          throw new LoopError(504, `Provider timeout after ${deps.connectTimeoutMs}ms during web-search`);
+        }
+        throw new LoopError(502, `Provider unreachable: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    };
+    let resp = await fetchOnce();
+    // 429 key-failover parity with the normal routed path: rotate pool keys until one responds
+    // or the pool is exhausted (deps.on429 returns null — cooldown map guarantees termination).
+    while (resp.status === 429 && deps.on429) {
+      const rotated = deps.on429(resp.headers.get("retry-after"));
+      if (!rotated?.parseResponse) break;
+      try { void resp.body?.cancel(); } catch { /* already consumed */ }
+      adapter = rotated;
+      resp = await fetchOnce();
     }
     if (!resp.ok) {
       const t = await resp.text().catch(() => "");
@@ -242,7 +296,7 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
   // valid, and surface as ONE search cell carrying every attempted query. A real search (one that
   // hits the sidecar) shows the spinner WHILE the batch runs. Empty/limit/repeat placeholders never
   // emit a cell (matching the prior single-query behavior).
-  async function* runSearchCall(call: WebSearchCall): AsyncGenerator<AdapterEvent> {
+  async function* runSearchCall(call: WebSearchCall, precedingThinking?: OcxThinkingContent | null): AsyncGenerator<AdapterEvent> {
     const results: { query: string; outcome: SidecarOutcome }[] = [];
     let beganCell = false;
     if (call.queries.length === 0) {
@@ -279,7 +333,11 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
       : { query: call.queries[0] ?? "" };
     messages.push({
       role: "assistant",
-      content: [{ type: "toolCall", id: call.id, name: WEB_SEARCH_TOOL_NAME, arguments: callArgs }],
+      content: [
+        // Signed thinking must precede tool_use on replay (Anthropic extended thinking).
+        ...(precedingThinking ? [precedingThinking] : []),
+        { type: "toolCall" as const, id: call.id, name: WEB_SEARCH_TOOL_NAME, arguments: callArgs },
+      ],
       timestamp: now,
     });
     // One aggregated tool result. isError only when EVERY query failed (a partial success is usable).
@@ -357,8 +415,10 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
         yield* replay(split.passthrough);
         return;
       }
-      for (const call of split.calls) {
-        yield* runSearchCall(call);
+      // The thinking that led to the search belongs to the FIRST call's assistant replay turn.
+      const iterationThinking = extractIterationThinking(split.passthrough);
+      for (const [callIndex, call] of split.calls.entries()) {
+        yield* runSearchCall(call, callIndex === 0 ? iterationThinking : null);
       }
     }
   }
