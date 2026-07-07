@@ -1,4 +1,4 @@
-import { delimiter, dirname, extname, join } from "node:path";
+import { delimiter, dirname, extname, join, posix } from "node:path";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { getConfigDir } from "../config";
 import { durableBunPath } from "../lib/bun-runtime";
@@ -85,6 +85,8 @@ export function isWindowsInteropDir(dir: string, automountRoot = "/mnt"): boolea
 export type CodexPathScanDeps = {
   pathValue?: string;
   wsl?: boolean;
+  /** Treat PATH entries as POSIX paths (WSL context). Defaults to wsl || non-win32. */
+  posixPaths?: boolean;
   automountRoot?: string;
   exists?: (path: string) => boolean;
   isShimFile?: (path: string) => boolean;
@@ -105,18 +107,21 @@ export function findCodexOnPath(deps: CodexPathScanDeps = {}): string | null {
   const shimFile = deps.isShimFile ?? isShim;
   const isDir = deps.isDirectory ?? realIsDirectory;
   const wsl = deps.wsl ?? (process.platform === "linux" && isWslRuntime());
+  const usePosix = deps.posixPaths ?? (wsl || process.platform !== "win32");
+  const joinPath = usePosix ? posix.join : join;
+  const pathSep = usePosix ? ":" : delimiter;
   const automountRoot = deps.automountRoot ?? (wsl ? wslAutomountRoot() : "/mnt");
   // Windows npm prefixes ship codex.exe/codex.cmd next to the extensionless sh launcher.
   const interopNames = ["codex", "codex.exe", "codex.cmd", "codex.ps1"];
   let skippedInterop: string | null = null;
 
-  for (const dir of (deps.pathValue ?? process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
+  for (const dir of (deps.pathValue ?? process.env.PATH ?? "").split(pathSep).filter(Boolean)) {
     if (wsl && isWindowsInteropDir(dir, automountRoot)) {
       // A Windows-side codex reached through WSL PATH interop: a Unix shim written
       // here would embed WSL-only paths and break every Windows-side invocation.
       if (!skippedInterop) {
         for (const name of interopNames) {
-          const path = join(dir, name);
+          const path = joinPath(dir, name);
           if (exists(path) && !shimFile(path) && !isDir(path)) { skippedInterop = path; break; }
         }
       }
@@ -125,7 +130,7 @@ export function findCodexOnPath(deps: CodexPathScanDeps = {}): string | null {
     // Interop dirs carry Windows launcher names even when the scan is not skipping them.
     const names = isWindowsInteropDir(dir, automountRoot) ? interopNames : commandNames("codex");
     for (const name of names) {
-      const path = join(dir, name);
+      const path = joinPath(dir, name);
       if (!exists(path) || shimFile(path)) continue;
       if (!isDir(path)) return path;
     }

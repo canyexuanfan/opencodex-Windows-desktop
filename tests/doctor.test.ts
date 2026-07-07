@@ -77,7 +77,7 @@ describe("doctor", () => {
     delete process.env.CODEX_HOME;
     const wslHome = join(TEST_DIR, "wsl-home");
     const usersRoot = join(TEST_DIR, "mnt-c", "Users");
-    const windowsCodexHome = join(usersRoot, "jun", ".codex");
+    const windowsCodexHome = join(usersRoot, "example", ".codex");
     mkdirSync(windowsCodexHome, { recursive: true });
     writeFileSync(join(windowsCodexHome, "config.toml"), "model_provider = \"opencodex\"\n");
 
@@ -94,7 +94,7 @@ describe("doctor", () => {
     const wslHome = join(TEST_DIR, "wsl-home");
     const linuxCodexHome = join(wslHome, ".codex");
     const usersRoot = join(TEST_DIR, "mnt-c", "Users");
-    const windowsCodexHome = join(usersRoot, "jun", ".codex");
+    const windowsCodexHome = join(usersRoot, "example", ".codex");
     mkdirSync(linuxCodexHome, { recursive: true });
     mkdirSync(windowsCodexHome, { recursive: true });
     writeFileSync(join(linuxCodexHome, "config.toml"), "model_provider = \"linux\"\n");
@@ -113,13 +113,13 @@ describe("doctor", () => {
     const wslHome = join(TEST_DIR, "wsl-home");
     const linuxCodexHome = join(wslHome, ".codex");
     const usersRoot = join(TEST_DIR, "mnt-c", "Users");
-    const windowsCodexHome = join(usersRoot, "jun", ".codex");
+    const windowsCodexHome = join(usersRoot, "example", ".codex");
     mkdirSync(linuxCodexHome, { recursive: true });
     mkdirSync(windowsCodexHome, { recursive: true });
     writeFileSync(join(linuxCodexHome, "config.toml"), "model_provider = \"linux\"\n");
     writeFileSync(join(windowsCodexHome, "config.toml"), "model_provider = \"windows\"\n");
 
-    const interopBin = "/mnt/c/Users/jun/AppData/Roaming/npm";
+    const interopBin = "/mnt/c/Users/example/AppData/Roaming/npm";
     const diag = collectWslDualInstall({
       env: { WSL_DISTRO_NAME: "Ubuntu" },
       platform: "linux",
@@ -127,7 +127,7 @@ describe("doctor", () => {
       usersRoot,
       effectiveCodexHome: linuxCodexHome,
       pathValue: interopBin,
-      existsSync: (p: string) => p.startsWith(interopBin) ? p === join(interopBin, "codex.exe") : existsSync(p),
+      existsSync: (p: string) => p.startsWith(interopBin) ? p === `${interopBin}/codex.exe` : existsSync(p),
     });
 
     expect(diag.wsl).toBe(true);
@@ -135,7 +135,7 @@ describe("doctor", () => {
     expect(diag.linuxCodexConfigured).toBe(true);
     expect(diag.windowsCodexHomes).toEqual([windowsCodexHome]);
     expect(diag.effectiveIsWindowsMount).toBe(false);
-    expect(diag.interopCodexOnPath).toBe(join(interopBin, "codex.exe"));
+    expect(diag.interopCodexOnPath).toBe(`${interopBin}/codex.exe`);
   });
 
   test("collectWslDualInstall is inert off WSL", () => {
@@ -152,7 +152,7 @@ describe("doctor", () => {
     mkdirSync(linuxCodexHome, { recursive: true });
     writeFileSync(join(linuxCodexHome, "config.toml"), "model_provider = \"linux\"\n");
 
-    const interopBin = "/win/c/Users/jun/AppData/Roaming/npm";
+    const interopBin = "/win/c/Users/example/AppData/Roaming/npm";
     const diag = collectWslDualInstall({
       env: { WSL_DISTRO_NAME: "Ubuntu" },
       platform: "linux",
@@ -160,12 +160,12 @@ describe("doctor", () => {
       wslConf: "[automount]\nroot = /win/\n",
       effectiveCodexHome: linuxCodexHome,
       pathValue: interopBin,
-      existsSync: (p: string) => p.startsWith("/win/") ? p === join(interopBin, "codex") : existsSync(p),
+      existsSync: (p: string) => p.startsWith("/win/") ? p === `${interopBin}/codex` : existsSync(p),
       readdirSync: (p: string) => p === "/win/c/Users" ? [] : [],
     });
 
     expect(diag.automountRoot).toBe("/win");
-    expect(diag.interopCodexOnPath).toBe(join(interopBin, "codex"));
+    expect(diag.interopCodexOnPath).toBe(`${interopBin}/codex`);
   });
 
   test("detectFsType flags /mnt drvfs mounts and leaves ext4 home alone", () => {

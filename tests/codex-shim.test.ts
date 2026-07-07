@@ -301,34 +301,34 @@ describe("WSL PATH interop guard", () => {
   });
 
   test("isWindowsInteropDir matches /mnt drive prefixes only", () => {
-    expect(isWindowsInteropDir("/mnt/c/Users/jun/AppData/Roaming/npm")).toBe(true);
+    expect(isWindowsInteropDir("/mnt/c/Users/example/AppData/Roaming/npm")).toBe(true);
     expect(isWindowsInteropDir("/mnt/d")).toBe(true);
     expect(isWindowsInteropDir("/mnt/wsl")).toBe(false);
     expect(isWindowsInteropDir("/usr/local/bin")).toBe(false);
-    expect(isWindowsInteropDir("/home/jun/mnt/c")).toBe(false);
+    expect(isWindowsInteropDir("/home/example/mnt/c")).toBe(false);
   });
 
   test("on WSL, a Windows codex reached via interop is skipped with guidance", () => {
-    const interop = "/mnt/c/Users/jun/AppData/Roaming/npm";
+    const interop = "/mnt/c/Users/example/AppData/Roaming/npm";
     const found = findCodexOnPath({
       pathValue: `/usr/local/bin:${interop}`,
       wsl: true,
-      ...fakeFs([join(interop, "codex"), join(interop, "codex.exe")]),
+      ...fakeFs([`${interop}/codex`, `${interop}/codex.exe`]),
     });
     expect(found).toBeNull();
     expect(lastCodexDiscoveryError()).toContain("WSL PATH interop");
-    expect(lastCodexDiscoveryError()).toContain(join(interop, "codex"));
+    expect(lastCodexDiscoveryError()).toContain(`${interop}/codex`);
   });
 
   test("on WSL, a Linux-side codex is preferred and returned", () => {
-    const interop = "/mnt/c/Users/jun/AppData/Roaming/npm";
+    const interop = "/mnt/c/Users/example/AppData/Roaming/npm";
     const linuxBin = "/usr/local/bin";
     const found = findCodexOnPath({
       pathValue: `${interop}:${linuxBin}`,
       wsl: true,
-      ...fakeFs([join(interop, "codex"), join(linuxBin, "codex")]),
+      ...fakeFs([`${interop}/codex`, `${linuxBin}/codex`]),
     });
-    expect(found).toBe(join(linuxBin, "codex"));
+    expect(found).toBe(`${linuxBin}/codex`);
   });
 
   test("off WSL, /mnt-like dirs are scanned normally", () => {
@@ -336,8 +336,9 @@ describe("WSL PATH interop guard", () => {
     const found = findCodexOnPath({
       pathValue: dir,
       wsl: false,
-      ...fakeFs([join(dir, "codex")]),
+      posixPaths: true,
+      ...fakeFs([`${dir}/codex`]),
     });
-    expect(found).toBe(join(dir, "codex"));
+    expect(found).toBe(`${dir}/codex`);
   });
 });

@@ -117,6 +117,7 @@ export function collectWslDualInstall(deps: WslDualInstallDeps = {}): WslDualIns
   const onPath = findCodexOnPath({
     pathValue: deps.pathValue ?? process.env.PATH,
     wsl: false, // scan everything; classify interop ourselves
+    posixPaths: true, // WSL PATH entries are POSIX regardless of the host running doctor
     automountRoot,
     // When a fake fs is injected (tests), the real lstat/readFile would miss its
     // synthetic paths; treat every injected hit as a plain non-shim file.

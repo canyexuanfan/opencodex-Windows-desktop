@@ -20,10 +20,10 @@ describe("wsl.conf automount root", () => {
   });
 
   test("isWindowsInteropDir follows the custom root", () => {
-    expect(isWindowsInteropDir("/custom/c/Users/jun", "/custom")).toBe(true);
-    expect(isWindowsInteropDir("/mnt/c/Users/jun", "/custom")).toBe(false);
-    expect(isWindowsInteropDir("/c/Users/jun", "/")).toBe(true);
-    expect(isWindowsInteropDir("/home/jun", "/")).toBe(false);
+    expect(isWindowsInteropDir("/custom/c/Users/example", "/custom")).toBe(true);
+    expect(isWindowsInteropDir("/mnt/c/Users/example", "/custom")).toBe(false);
+    expect(isWindowsInteropDir("/c/Users/example", "/")).toBe(true);
+    expect(isWindowsInteropDir("/home/example", "/")).toBe(false);
   });
 
   test("listWslWindowsCodexHomes derives Users root from the automount root", () => {
@@ -34,13 +34,13 @@ describe("wsl.conf automount root", () => {
       wslConf: "[automount]\nroot = /win\n",
       existsSync: (p: string) => {
         seen.push(p);
-        return p === "/win/c/Users" || p === "/win/c/Users/jun/.codex/config.toml";
+        return p === "/win/c/Users" || p === "/win/c/Users/example/.codex/config.toml";
       },
-      readdirSync: () => ["jun"],
+      readdirSync: () => ["example"],
       statSync: (() => ({ isDirectory: () => true })) as never,
       realpathSync: (p: string) => p,
     });
     expect(seen[0]).toBe("/win/c/Users");
-    expect(homes).toEqual(["/win/c/Users/jun/.codex"]);
+    expect(homes).toEqual(["/win/c/Users/example/.codex"]);
   });
 });

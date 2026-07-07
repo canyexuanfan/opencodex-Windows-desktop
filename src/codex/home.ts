@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, posix, resolve } from "node:path";
 import { expandUserPath } from "../config";
 
 export type CodexHomeDeps = {
@@ -94,15 +94,16 @@ export function listWslWindowsCodexHomes(deps: CodexHomeDeps = {}): string[] {
   const readdir = deps.readdirSync ?? readdirSync;
   const realpath = deps.realpathSync ?? realpathSync.native;
   const automountRoot = wslAutomountRoot(deps);
-  const usersRoot = deps.usersRoot ?? join(automountRoot, "c", "Users");
+  // WSL mount paths are POSIX by definition; keep separators stable on any host.
+  const usersRoot = deps.usersRoot ?? posix.join(automountRoot, "c", "Users");
   if (!exists(usersRoot)) return [];
 
   const candidates = [];
   try {
     for (const user of readdir(usersRoot)) {
       if (user === "Default" || user === "Default User" || user === "Public" || user === "All Users") continue;
-      const home = join(usersRoot, user, ".codex");
-      const config = join(home, "config.toml");
+      const home = posix.join(usersRoot, user, ".codex");
+      const config = posix.join(home, "config.toml");
       if (!exists(config)) continue;
       try {
         if (stat(home).isDirectory()) candidates.push(realpath(home));
@@ -123,7 +124,7 @@ export function findWslWindowsCodexHome(deps: CodexHomeDeps = {}): string | null
 
   const explicitProfile = windowsUserProfileToWslPath(env.USERPROFILE, wslAutomountRoot(deps));
   if (explicitProfile) {
-    const explicitHome = join(explicitProfile, ".codex");
+    const explicitHome = posix.join(explicitProfile, ".codex");
     const match = candidates.find(candidate => candidate === explicitHome || candidate.endsWith(`/${explicitProfile.split("/").pop()}/.codex`));
     if (match) return match;
   }
