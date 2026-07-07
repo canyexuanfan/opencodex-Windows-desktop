@@ -55,7 +55,7 @@ afterAll(() => {
 
 afterEach(() => {
   __resetVertexTokenCache();
-  for (const k of ["GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_API_KEY", "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"]) {
+  for (const k of ["GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_API_KEY", "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION", "CLOUDSDK_CONFIG"]) {
     if (prevEnv[k] === undefined) delete process.env[k]; else process.env[k] = prevEnv[k];
   }
   prevEnv = {};
@@ -91,6 +91,26 @@ describe("gcp-adc resolver", () => {
     const [a, b, c] = await Promise.all([getVertexAccessToken(), getVertexAccessToken(), getVertexAccessToken()]);
     expect([a, b, c]).toEqual(["vertex-tok", "vertex-tok", "vertex-tok"]);
     expect(oauthCalls).toBe(1);
+  });
+
+  test("CLOUDSDK_CONFIG redirects the user ADC lookup (authorized_user flow)", async () => {
+    // The host shell may export GOOGLE_APPLICATION_CREDENTIALS; clear it so the
+    // resolver falls through to the gcloud user ADC path under test.
+    prevEnv.GOOGLE_APPLICATION_CREDENTIALS ??= process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    const configDir = join(tmp, "cloudsdk-config");
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(
+      join(configDir, "application_default_credentials.json"),
+      JSON.stringify({ type: "authorized_user", client_id: "cid", client_secret: "sec", refresh_token: "rtok" }),
+    );
+    setEnv("CLOUDSDK_CONFIG", configDir);
+    const tok = await getVertexAccessToken();
+    expect(tok).toBe("vertex-tok");
+    const params = new URLSearchParams(lastBody);
+    expect(params.get("grant_type")).toBe("refresh_token");
+    expect(params.get("refresh_token")).toBe("rtok");
   });
 });
 
