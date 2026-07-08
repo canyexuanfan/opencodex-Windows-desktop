@@ -72,7 +72,7 @@ network. Only do this on trusted networks, and always set a strong `OPENCODEX_AP
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `adapter` | `string` | One of `openai-chat`, `openai-responses`, `anthropic`, `google`, `azure-openai`. |
+| `adapter` | `string` | One of `openai-chat`, `openai-responses`, `anthropic`, `google`, `azure-openai`, `cursor`. |
 | `baseUrl` | `string` | Upstream API base URL. |
 | `apiKey?` | `string` | API key, or an `${ENV_VAR}` / `$ENV_VAR` reference resolved at request time. |
 | `defaultModel?` | `string` | Model used when this provider is selected without an explicit model. |
@@ -90,6 +90,47 @@ network. Only do this on trusted networks, and always set a strong `OPENCODEX_AP
 | `noReasoningModels?` | `string[]` | Models that reject a reasoning/thinking param — the adapter drops `reasoning_effort` for them. |
 | `noVisionModels?` | `string[]` | Text-only models — the [vision sidecar](/opencodex/guides/sidecars/) describes images for them. Matching tolerates an Ollama `:size` tag. |
 | `escapeBuiltinToolNames?` | `boolean` | Anthropic-compatible gateways such as Umans can require tool-name escaping on the wire; opencodex strips the prefix before returning tool calls to Codex. |
+| `unsafeAllowNativeLocalExec?` | `boolean` | **Cursor adapter only.** Opt-in escape hatch for Cursor server-driven local `read` / `write` / `delete` / `ls` / `grep` / `shell` / `fetch` execution. Defaults to `false` so remote Cursor messages cannot bypass Codex approval and sandbox enforcement. See [Cursor provider](#cursor-provider-adapter-cursor) below. |
+
+## Cursor provider (`adapter: "cursor"`)
+
+The Cursor bridge is experimental. After `ocx login cursor`, add or edit the `cursor` entry under
+`providers` in `~/.opencodex/config.json` (Windows: `%USERPROFILE%\.opencodex\config.json`).
+
+By default, Cursor's server-driven native local tools stay **disabled**. Codex keeps using its own
+tools (`apply_patch`, `exec_command`, and so on) with approval and sandbox policy. Set
+`unsafeAllowNativeLocalExec` only for trusted local experiments where you accept that Cursor may
+read, write, delete, list, grep, shell, or fetch on your machine **without** Codex's approval path.
+
+```json
+{
+  "providers": {
+    "cursor": {
+      "adapter": "cursor",
+      "baseUrl": "https://api2.cursor.sh",
+      "authMode": "oauth",
+      "defaultModel": "auto",
+      "unsafeAllowNativeLocalExec": true
+    }
+  }
+}
+```
+
+The flag belongs on the **provider object** (`providers.cursor`), not at the top level of
+`config.json`.
+
+You can also set it from the [web dashboard](/opencodex/guides/web-dashboard/): **Providers →
+Cursor → Edit JSON**, add `"unsafeAllowNativeLocalExec": true`, save, then restart the proxy
+(`ocx restart` or `ocx stop` + `ocx start`).
+
+The older `allowNativeLocalExec` spelling is still accepted as a deprecated transition alias.
+MCP, screen recording, and computer-use use separate executor config (`mcpExecutor`,
+`desktopExecutor`) and are not controlled by this flag.
+
+:::caution[Security]
+Leave `unsafeAllowNativeLocalExec` unset or `false` unless you explicitly want Cursor-native local
+execution that bypasses Codex approval and sandbox semantics.
+:::
 
 ## Static model allowlists
 

@@ -159,7 +159,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     authKind: "oauth",
     featured: false,
     dashboardPreset: true,
-    note: "Experimental Cursor bridge. Live transport and live model discovery are enabled after a standalone PKCE browser login via 'ocx login cursor'; native read/write/delete/shell/fetch execution stays disabled unless provider.unsafeAllowNativeLocalExec is explicitly set for a trusted local experiment.",
+    note: "Experimental Cursor bridge. Live transport and live model discovery are enabled after a standalone PKCE browser login via 'ocx login cursor'; native read/write/delete/shell/fetch execution stays disabled unless you set \"unsafeAllowNativeLocalExec\": true on providers.cursor in ~/.opencodex/config.json (dashboard: Providers → Cursor → Edit JSON) for a trusted local experiment.",
     models: cursorModelIds(CURSOR_STATIC_MODELS),
     liveModels: true,
     defaultModel: "auto",
