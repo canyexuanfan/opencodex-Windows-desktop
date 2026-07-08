@@ -1,6 +1,6 @@
 import { decodeEventStream } from "../lib/eventstream-decoder";
 import { estimateTokens } from "../lib/token-estimate";
-import { debugProviderDiagnostic } from "../debug";
+import { debugProviderDiagnostic } from "../lib/debug";
 import { resolveKiroApiRegion, resolveKiroProfileArn } from "../oauth/kiro";
 import { KIRO_MODEL_CONTEXT_WINDOWS, normalizeKiroModelId } from "../providers/kiro-models";
 import { modelRecordValue } from "../reasoning-effort";
@@ -180,7 +180,7 @@ function kiroThinkingBudget(parsed: OcxParsedRequest): number | undefined {
     low: 0.20,
     medium: 0.50,
     high: 0.80,
-    xhigh: 0.95,
+    xhigh: 0.90,
     max: 0.95,
   };
   const ratio = percent[effort];

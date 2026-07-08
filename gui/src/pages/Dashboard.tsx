@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { formatUptime } from "../formatUptime";
 import { IconAlert, IconExternal, IconRefresh, IconX } from "../icons";
 import { useI18n, Trans } from "../i18n";
+import { formatTokens } from "../format-tokens";
 
 interface HealthData { status: string; version: string; uptime: number }
 interface ProviderInfo { name: string; adapter: string; baseUrl: string; defaultModel?: string; hasApiKey: boolean }
@@ -45,12 +46,6 @@ interface UpdateJob {
   log: string[];
   error?: string;
   restarted?: boolean;
-}
-
-function formatTokens(n: number): string {
-  if (n < 10_000) return String(n);
-  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}K`;
-  return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
 const SIDECAR_MODELS = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.3-codex-spark"];
@@ -313,7 +308,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         <div className="stat"><div className="label">{t("dash.providers")}</div><div className="value">{providers.length}</div></div>
         <div className="stat">
           <div className="label">{t("dash.tokens30d")}</div>
-          <div className="value mono">{usage30d && usage30d.summary.requests > 0 ? formatTokens(usage30d.summary.totalTokens) : "—"}</div>
+          <div className="value mono">{usage30d && usage30d.summary.requests > 0 ? formatTokens(usage30d.summary.totalTokens, locale) : "—"}</div>
           {usage30d && usage30d.summary.requests > 0 && (
             <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
               {t("dash.coverage").replace("{pct}", `${Math.round(usage30d.summary.coverageRatio * 100)}%`)}
@@ -367,9 +362,9 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
 
       <div className="panel" style={{ marginBottom: 24 }}>
         <div className="spread">
-          <div>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontWeight: 650 }}>{t("dash.codexAutoStart")}</div>
-            <div className="muted" style={{ fontSize: 13, marginTop: 3 }}>{t("dash.codexAutoStartHint")}</div>
+            <div className="muted setting-hint">{t("dash.codexAutoStartHint")}</div>
           </div>
           <button
             className={`switch ${settings?.codexAutoStart ?? true ? "on" : ""}`}
@@ -384,12 +379,12 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       </div>
 
       <div className="panel" style={{ marginBottom: 12 }}>
-        <div className="spread" style={{ alignItems: "flex-start" }}>
-          <div style={{ flex: 1 }}>
+        <div className="spread setting-row" style={{ alignItems: "flex-start" }}>
+          <div className="setting-copy" style={{ flex: 1 }}>
             <div style={{ fontWeight: 650 }}>{t("dash.searchModel")}</div>
-            <div className="muted" style={{ fontSize: 13, marginTop: 3 }}>{t("dash.searchModelHint")}</div>
+            <div className="muted setting-hint">{t("dash.searchModelHint")}</div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div className="setting-controls" style={{ display: "flex", gap: 8 }}>
             <select
               id="sidecar-web-search-model"
               name="sidecarWebSearchModel"
@@ -415,10 +410,10 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       </div>
 
       <div className="panel" style={{ marginBottom: 24 }}>
-        <div className="spread">
-          <div style={{ flex: 1 }}>
+        <div className="spread setting-row">
+          <div className="setting-copy" style={{ flex: 1 }}>
             <div style={{ fontWeight: 650 }}>{t("dash.visionModel")}</div>
-            <div className="muted" style={{ fontSize: 13, marginTop: 3 }}>{t("dash.visionModelHint")}</div>
+            <div className="muted setting-hint">{t("dash.visionModelHint")}</div>
           </div>
           <select
             id="sidecar-vision-model"

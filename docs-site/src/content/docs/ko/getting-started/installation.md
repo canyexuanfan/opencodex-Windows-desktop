@@ -12,7 +12,13 @@ opencodex는 단일 CLI인 `ocx`로 제공됩니다. 작은 로컬 HTTP 서버(B
 | --- | --- |
 | **[Node](https://nodejs.org) ≥ 18** | `ocx`는 Bun 런타임에서 실행되지만, 런타임이 `npm install` 시 자동으로 번들되므로 Bun을 직접 설치할 필요가 **없습니다**. |
 | **[OpenAI Codex](https://openai.com/codex)**(CLI, App, 또는 SDK) | opencodex가 앞단에 위치하는 클라이언트입니다. opencodex는 `$CODEX_HOME/config.toml`(기본값 `~/.codex/config.toml`)에 기록합니다. |
-| 프로바이더 계정 또는 API 키 | Anthropic, xAI, Kimi, Ollama Cloud, OpenRouter, OpenAI 호환 엔드포인트, 또는 ChatGPT 로그인. |
+| 프로바이더 계정 또는 API 키 | Anthropic, xAI, Kimi, Ollama Cloud, OpenRouter, OpenAI API 키, OpenAI 호환 엔드포인트, 또는 ChatGPT 로그인. |
+
+:::note[GPT-5.6 preview]
+Sol, Terra, Luna 지원은 이 릴리스에서 rollout-ready 상태이지만 일반 공개를 의미하지는 않습니다.
+설치 방법은 동일하며, 실제 호출 가능 여부는 ChatGPT/Codex 계정, OpenAI API 키, 또는 OpenRouter
+계정에 preview 권한이 있는지에 따라 결정됩니다.
+:::
 
 ## 설치
 
@@ -34,7 +40,7 @@ opencodex 자체를 직접 수정하며 작업하려면:
 git clone https://github.com/lidge-jun/opencodex.git
 cd opencodex
 bun install
-bun run dev:proxy   # 개발 모드로 프록시 API 시작 (src/cli.ts start)
+bun run dev:proxy   # 개발 모드로 프록시 API 시작 (src/cli/index.ts start)
 bun run dev:gui     # 대시보드 dev 서버 시작 (다른 터미널)
 ```
 

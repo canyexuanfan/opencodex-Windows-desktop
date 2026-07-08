@@ -6,7 +6,7 @@ Date: 2026-06-20
 > documentation. For up-to-date behavior see the published docs at
 > [lidge-jun.github.io/opencodex](https://lidge-jun.github.io/opencodex/) and the
 > maintainer source-of-truth under [`structure/`](../structure). The current injected
-> provider table name is `"OpenCodex Proxy"` (see `src/codex-inject.ts`).
+> provider table name is `"OpenCodex Proxy"` (see `src/codex/inject.ts`).
 
 This document records why opencodex routed models can appear in Codex App's model picker without
 patching Codex App itself.

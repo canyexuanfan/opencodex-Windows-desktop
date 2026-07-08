@@ -4,7 +4,8 @@
  * Direct WebCrypto + REST implementation (no `google-auth-library`). Sources, in priority order:
  *   1. `GOOGLE_APPLICATION_CREDENTIALS` env → file with `type: "service_account"` (RS256 JWT
  *      exchange) or `type: "authorized_user"` (refresh-token exchange).
- *   2. `~/.config/gcloud/application_default_credentials.json` (user ADC; authorized_user flow).
+ *   2. gcloud user ADC (`CLOUDSDK_CONFIG`, else `%APPDATA%\gcloud` on Windows, else
+ *      `~/.config/gcloud`) `application_default_credentials.json` (authorized_user flow).
  *   3. GCE / Cloud Run metadata server.
  *
  * Tokens are cached per source key and refreshed `GOOGLE_VERTEX_REFRESH_SKEW_MS` (default 60s)
@@ -65,8 +66,18 @@ function getRefreshSkewMs(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : 60_000;
 }
 
+/** gcloud config dir, matching the SDK's own resolution order. */
+function gcloudConfigDir(): string {
+  const explicit = process.env.CLOUDSDK_CONFIG?.trim();
+  if (explicit) return explicit;
+  if (process.platform === "win32" && process.env.APPDATA) {
+    return path.join(process.env.APPDATA, "gcloud");
+  }
+  return path.join(os.homedir(), ".config", "gcloud");
+}
+
 function userAdcPath(): string {
-  return path.join(os.homedir(), ".config", "gcloud", "application_default_credentials.json");
+  return path.join(gcloudConfigDir(), "application_default_credentials.json");
 }
 
 /**

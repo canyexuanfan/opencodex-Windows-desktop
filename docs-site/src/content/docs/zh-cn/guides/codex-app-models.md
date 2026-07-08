@@ -51,6 +51,17 @@ visibility = "list"
 克隆的条目会保留 reasoning 级别、shell 类型、API 支持标志和 base instructions 等严格解析字段。
 因此每个路由条目都像一个有效的、可在选择器中显示的 Codex 模型。
 
+## GPT-5.6 rollout metadata
+
+GPT-5.6 Sol、Terra、Luna 按 preview-gated rollout 处理。即使已安装的 Codex 目录暂时落后,
+opencodex 也可以作为 documented native additions 添加 `gpt-5.6-sol`、`gpt-5.6-terra`、
+`gpt-5.6-luna`。这些条目的 `context_window` 与 `max_context_window` 固定为 372,000 usable tokens,
+`auto_compact_token_limit` 按其 90% 计算。
+
+这三个原生条目以及 OpenAI API key/OpenRouter routed fallback 条目都会把 `max` reasoning 作为独立
+tier 暴露。模型名出现在选择器中只表示 opencodex 已准备好目录；实际请求是否成功仍取决于连接账号或
+provider 的 preview 权限。
+
 ## Subagent 选择
 
 Codex 的 `spawn_agent` 只会展示目录中优先级最高的前 5 个模型。你可以通过 `subagentModels` 或

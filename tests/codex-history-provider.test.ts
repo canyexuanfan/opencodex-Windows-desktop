@@ -2,8 +2,15 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, utimesSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import { describe, expect, test } from "bun:test";
-import { isRecoverableHistoryError, restoreLegacyOpenaiHistory, syncCodexHistoryProvider, withHistoryRetry } from "../src/codex-history-provider";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
+import { countPendingOpencodexHistory, isRecoverableHistoryError, migrateHistoryToOpenai, restoreLegacyOpenaiHistory, setHistoryDbBusyTimeoutForTests, syncCodexHistoryProvider, withHistoryRetry } from "../src/codex/history-provider";
+
+// Windows CI: a transient file lock can consume the full production 5s busy timeout, tripping
+// bun's 5s default per-test timeout by itself. Fail fast into withHistoryRetry instead.
+setHistoryDbBusyTimeoutForTests(250);
+// Windows CI runners also have slow filesystems: legitimate sqlite open/fsync cycles in this
+// file measure 5-7s there (vs <100ms locally), straddling bun's 5s default. Explicit headroom.
+setDefaultTimeout(30_000);
 
 /** Read the LAST session_meta payload, mirroring the app's last-writer-wins fold over rollout lines. */
 function latestSessionMetaPayload(path: string): Record<string, unknown> {
@@ -330,5 +337,121 @@ describe("history lock retry", () => {
       }, { sleepFn: () => {} }),
     ).toThrow("malformed database schema");
     expect(calls).toBe(1);
+  });
+});
+
+describe("Design B migration helpers", () => {
+  const busy = () => Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+
+  test("withHistoryRetry honors a custom attempts budget", () => {
+    let calls = 0;
+    const result = withHistoryRetry(() => {
+      calls++;
+      if (calls < 4) throw busy();
+      return "ok";
+    }, { sleepFn: () => {}, attempts: 4 });
+
+    expect(result).toBe("ok");
+    expect(calls).toBe(4);
+  });
+
+  test("withHistoryRetry attempts:1 never sleeps and fails fast", () => {
+    const sleeps: number[] = [];
+    let calls = 0;
+    const result = withHistoryRetry(() => {
+      calls++;
+      throw busy();
+    }, { sleepFn: ms => sleeps.push(ms), attempts: 1 });
+
+    expect(result).toBeNull();
+    expect(calls).toBe(1);
+    expect(sleeps.length).toBe(0);
+  });
+
+  test("countPendingOpencodexHistory mirrors the eject predicate and reaches 0 after migration", () => {
+    const { dbPath, backupPath } = makeFixture({ includeExec: true, includeLegacy: true });
+
+    const before = countPendingOpencodexHistory(dbPath, backupPath);
+    expect(before.failed).toBeUndefined();
+    expect(before.pendingRows).toBe(2); // exec + legacy rows, both with non-empty first_user_message
+
+    const migrated = migrateHistoryToOpenai(dbPath, backupPath);
+    expect(migrated.failed).toBeUndefined();
+    expect((migrated.rows ?? 0) + (migrated.ejectedRows ?? 0)).toBeGreaterThan(0);
+
+    const after = countPendingOpencodexHistory(dbPath, backupPath);
+    expect(after.pendingRows).toBe(0);
+    expect(after.backupEntries).toBe(0);
+
+    // Idempotent: a second migration is a no-op.
+    const again = migrateHistoryToOpenai(dbPath, backupPath);
+    expect(again.rows).toBe(0);
+    expect(again.ejectedRows ?? 0).toBe(0);
+  });
+
+  test("countPendingOpencodexHistory returns zeros for a missing DB", () => {
+    const missing = join(tmpdir(), `ocx-none-${Date.now()}`, "state_5.sqlite");
+    const result = countPendingOpencodexHistory(missing, join(tmpdir(), "no-backup.json"));
+    expect(result).toEqual({ pendingRows: 0, backupEntries: 0 });
+  });
+
+  // Byte-identity covers the rollout and the main DB file; the no-write guarantee itself
+  // lives in the code path (the gate returns before withHistoryRetry ever opens a writer).
+  test("migrateHistoryToOpenai steady state leaves rollouts and the main DB file byte-identical", () => {
+    const { dbPath, backupPath, rollout } = makeFixture(); // only an openai-tagged row, no backup
+    const rolloutBefore = readFileSync(rollout, "utf8");
+    const dbBefore = readFileSync(dbPath);
+
+    const result = migrateHistoryToOpenai(dbPath, backupPath);
+
+    expect(result).toEqual({ rows: 0, files: 0 });
+    expect(readFileSync(rollout, "utf8")).toBe(rolloutBefore);
+    expect(readFileSync(dbPath).equals(dbBefore)).toBe(true);
+  });
+
+  test("migrateHistoryToOpenai still migrates through the steady-state gate when work is pending", () => {
+    const { dbPath, backupPath } = makeFixture({ includeLegacy: true });
+
+    const result = migrateHistoryToOpenai(dbPath, backupPath);
+
+    expect(result.failed).toBeUndefined();
+    expect(result.ejectedRows).toBe(1);
+    const db = new Database(dbPath);
+    expect(db.query("SELECT model_provider FROM threads WHERE id = 'thread-3'").get()).toEqual({ model_provider: "openai" });
+    db.close();
+  });
+
+  test("a missing DB with a leftover backup manifest does not satisfy the steady-state gate", () => {
+    const dir = join(tmpdir(), `ocx-reinstall-${process.pid}-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    const missingDb = join(dir, "state_5.sqlite");
+    const backupPath = join(dir, "codex-history-backup.json");
+    writeFileSync(backupPath, JSON.stringify({
+      version: 1,
+      entries: { "thread-1": { id: "thread-1", rolloutPath: join(dir, "r.jsonl"), modelProvider: "openai", source: "cli", hasUserEvent: 1 } },
+    }));
+
+    const pending = countPendingOpencodexHistory(missingDb, backupPath);
+    expect(pending.backupEntries).toBe(1); // gate must see this and NOT report a provable no-op
+
+    // migrateHistoryToOpenai keeps its missing-DB early return (no crash, no manifest consumption).
+    const result = migrateHistoryToOpenai(missingDb, backupPath);
+    expect(result).toEqual({ rows: 0, files: 0 });
+    expect(existsSync(backupPath)).toBe(true);
+  });
+
+  test("syncCodexHistoryProvider openai with skipWhenProvablyNoop skips writes in steady state but still restores pending rows", () => {
+    const steady = makeFixture();
+    const steadyBefore = readFileSync(steady.rollout, "utf8");
+    const skipped = syncCodexHistoryProvider("openai", steady.dbPath, steady.backupPath, { skipWhenProvablyNoop: true });
+    expect(skipped).toEqual({ rows: 0, files: 0 });
+    expect(readFileSync(steady.rollout, "utf8")).toBe(steadyBefore);
+
+    const pending = makeFixture({ includeLegacy: true });
+    const restored = syncCodexHistoryProvider("openai", pending.dbPath, pending.backupPath, { skipWhenProvablyNoop: true });
+    expect(restored.ejectedRows).toBe(1);
+    const db = new Database(pending.dbPath);
+    expect(db.query("SELECT model_provider FROM threads WHERE id = 'thread-3'").get()).toEqual({ model_provider: "openai" });
+    db.close();
   });
 });

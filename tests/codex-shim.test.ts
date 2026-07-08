@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildUnixCodexShim, buildWindowsCodexShim, buildWindowsPowerShellCodexShim, installCodexShim, uninstallCodexShim } from "../src/codex-shim";
+import { buildUnixCodexShim, buildWindowsCodexShim, buildWindowsPowerShellCodexShim, findCodexOnPath, installCodexShim, isWindowsInteropDir, lastCodexDiscoveryError, uninstallCodexShim } from "../src/codex/shim";
 
 const SHIM_MARKER = "opencodex codex autostart shim";
 
@@ -71,13 +71,13 @@ describe("Codex autostart shim", () => {
   });
 
   test("PowerShell shim is written with a UTF-8 BOM (Windows PowerShell 5.1 decodes BOM-less ps1 as ANSI)", async () => {
-    const source = readFileSync(join(import.meta.dir, "..", "src", "codex-shim.ts"), "utf8");
+    const source = readFileSync(join(import.meta.dir, "..", "src", "codex", "shim.ts"), "utf8");
 
     expect(source).toContain("`\\uFEFF${buildWindowsPowerShellCodexShim(realCodexPath, bun, cli)}`");
   });
 
   test("Windows target discovery includes the extensionless Git-Bash launcher and writeShim emits a forward-slash sh shim for it", () => {
-    const source = readFileSync(join(import.meta.dir, "..", "src", "codex-shim.ts"), "utf8");
+    const source = readFileSync(join(import.meta.dir, "..", "src", "codex", "shim.ts"), "utf8");
 
     expect(source).toContain('const gitBashLauncher = join(dir, "codex");');
     expect(source).toContain("for (const path of [cmd, ps1, gitBashLauncher])");
@@ -290,5 +290,55 @@ describe("Codex autostart shim", () => {
       rmSync(dir, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+describe("WSL PATH interop guard", () => {
+  const fakeFs = (files: string[]) => ({
+    exists: (p: string) => files.includes(p),
+    isShimFile: () => false,
+    isDirectory: () => false,
+  });
+
+  test("isWindowsInteropDir matches /mnt drive prefixes only", () => {
+    expect(isWindowsInteropDir("/mnt/c/Users/example/AppData/Roaming/npm")).toBe(true);
+    expect(isWindowsInteropDir("/mnt/d")).toBe(true);
+    expect(isWindowsInteropDir("/mnt/wsl")).toBe(false);
+    expect(isWindowsInteropDir("/usr/local/bin")).toBe(false);
+    expect(isWindowsInteropDir("/home/example/mnt/c")).toBe(false);
+  });
+
+  test("on WSL, a Windows codex reached via interop is skipped with guidance", () => {
+    const interop = "/mnt/c/Users/example/AppData/Roaming/npm";
+    const found = findCodexOnPath({
+      pathValue: `/usr/local/bin:${interop}`,
+      wsl: true,
+      ...fakeFs([`${interop}/codex`, `${interop}/codex.exe`]),
+    });
+    expect(found).toBeNull();
+    expect(lastCodexDiscoveryError()).toContain("WSL PATH interop");
+    expect(lastCodexDiscoveryError()).toContain(`${interop}/codex`);
+  });
+
+  test("on WSL, a Linux-side codex is preferred and returned", () => {
+    const interop = "/mnt/c/Users/example/AppData/Roaming/npm";
+    const linuxBin = "/usr/local/bin";
+    const found = findCodexOnPath({
+      pathValue: `${interop}:${linuxBin}`,
+      wsl: true,
+      ...fakeFs([`${interop}/codex`, `${linuxBin}/codex`]),
+    });
+    expect(found).toBe(`${linuxBin}/codex`);
+  });
+
+  test("off WSL, /mnt-like dirs are scanned normally", () => {
+    const dir = "/mnt/c/tools";
+    const found = findCodexOnPath({
+      pathValue: dir,
+      wsl: false,
+      posixPaths: true,
+      ...fakeFs([`${dir}/codex`]),
+    });
+    expect(found).toBe(`${dir}/codex`);
   });
 });

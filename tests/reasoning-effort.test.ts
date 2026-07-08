@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildCatalogEntries } from "../src/codex-catalog";
+import { buildCatalogEntries } from "../src/codex/catalog";
 import { createAnthropicAdapter } from "../src/adapters/anthropic";
 import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
 import { routeModel } from "../src/router";
@@ -39,34 +39,32 @@ function buildBody(provider: OcxProviderConfig, modelId: string, options: OcxPar
 describe("provider-specific reasoning effort mapping", () => {
   test("Codex catalog advertises only the efforts actually supported by a routed model", () => {
     const entries = buildCatalogEntries(nativeTemplate(), [], [
-      { provider: "neuralwatt", id: "glm-5.2", reasoningEfforts: ["low", "medium", "high", "xhigh"] },
+      { provider: "neuralwatt", id: "glm-5.2", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
       { provider: "moonshot", id: "kimi-k2.7-code", reasoningEfforts: [] },
     ]);
 
     const neuralwatt = entries.find(e => e.slug === "neuralwatt/glm-5.2");
     const kimi = entries.find(e => e.slug === "moonshot/kimi-k2.7-code");
 
-    expect((neuralwatt?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh"]);
+    expect((neuralwatt?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(neuralwatt?.default_reasoning_level).toBe("medium");
     expect(kimi?.supported_reasoning_levels).toEqual([]);
     expect(kimi).not.toHaveProperty("default_reasoning_level");
   });
 
-  test("Z.AI GLM-5.2 maps Codex xhigh to the upstream max effort", () => {
+  test("Z.AI GLM-5.2 keeps xhigh and max as distinct upstream efforts", () => {
     const provider: OcxProviderConfig = {
       adapter: "openai-chat",
       baseUrl: "https://api.z.ai/api/coding/paas/v4",
-      modelReasoningEfforts: { "glm-5.2": ["low", "medium", "high", "xhigh"] },
-      modelReasoningEffortMap: {
-        "glm-5.2": { none: "none", minimal: "none", low: "high", medium: "high", high: "high", xhigh: "max", max: "max" },
-      },
+      modelReasoningEfforts: { "glm-5.2": ["low", "medium", "high", "xhigh", "max"] },
     };
 
-    expect(buildBody(provider, "glm-5.2", { reasoning: "xhigh" }).reasoning_effort).toBe("max");
-    expect(buildBody(provider, "glm-5.2", { reasoning: "medium" }).reasoning_effort).toBe("high");
+    expect(buildBody(provider, "glm-5.2", { reasoning: "xhigh" }).reasoning_effort).toBe("xhigh");
+    expect(buildBody(provider, "glm-5.2", { reasoning: "max" }).reasoning_effort).toBe("max");
+    expect(buildBody(provider, "glm-5.2", { reasoning: "medium" }).reasoning_effort).toBe("medium");
   });
 
-  test("low/medium/high-only models clamp stale xhigh requests to high", () => {
+  test("low/medium/high-only models clamp stale xhigh and max requests to high", () => {
     const provider: OcxProviderConfig = {
       adapter: "openai-chat",
       baseUrl: "https://api.neuralwatt.com/v1",
@@ -74,16 +72,14 @@ describe("provider-specific reasoning effort mapping", () => {
     };
 
     expect(buildBody(provider, "glm-5.2", { reasoning: "xhigh" }).reasoning_effort).toBe("high");
+    expect(buildBody(provider, "glm-5.2", { reasoning: "max" }).reasoning_effort).toBe("high");
   });
 
-  test("Neuralwatt GLM-5.2 maps Codex xhigh to max and preserves reasoning history", () => {
+  test("Neuralwatt GLM-5.2 sends direct max and preserves reasoning history", () => {
     const provider: OcxProviderConfig = {
       adapter: "openai-chat",
       baseUrl: "https://api.neuralwatt.com/v1",
-      modelReasoningEfforts: { "glm-5.2": ["low", "medium", "high", "xhigh"] },
-      modelReasoningEffortMap: {
-        "glm-5.2": { none: "none", minimal: "none", low: "high", medium: "high", high: "high", xhigh: "max", max: "max" },
-      },
+      modelReasoningEfforts: { "glm-5.2": ["low", "medium", "high", "xhigh", "max"] },
       preserveReasoningContentModels: ["glm-5.2"],
     };
 
@@ -100,7 +96,7 @@ describe("provider-specific reasoning effort mapping", () => {
         ],
       },
       stream: false,
-      options: { reasoning: "xhigh" },
+      options: { reasoning: "max" },
     });
     const body = JSON.parse(req.body as string) as { reasoning_effort?: string; messages: Record<string, unknown>[] };
 
@@ -360,9 +356,9 @@ describe("provider-specific reasoning effort mapping", () => {
     expect(body.tool_choice).toEqual({ type: "any" });
   });
 
-  test("sanitizeCodexReasoningEfforts strips non-Codex labels like 'max' from the catalog", () => {
+  test("sanitizeCodexReasoningEfforts keeps max and strips unknown catalog labels", () => {
     const entries = buildCatalogEntries(nativeTemplate(), [], [
-      { provider: "test", id: "model-with-max", reasoningEfforts: ["low", "max", "high"] },
+      { provider: "test", id: "model-with-max", reasoningEfforts: ["low", "max", "turbo", "high"] },
       { provider: "test", id: "model-clean", reasoningEfforts: ["low", "medium", "high", "xhigh"] },
       { provider: "test", id: "model-empty", reasoningEfforts: [] },
     ]);
@@ -371,13 +367,66 @@ describe("provider-specific reasoning effort mapping", () => {
     const clean = entries.find(e => e.slug === "test/model-clean");
     const empty = entries.find(e => e.slug === "test/model-empty");
 
-    // "max" must never appear in catalog — Codex parser rejects it
     const withMaxEfforts = (withMax?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort);
-    expect(withMaxEfforts).toEqual(["low", "high"]);
-    expect(withMaxEfforts).not.toContain("max");
+    expect(withMaxEfforts).toEqual(["low", "high", "max"]);
 
     expect((clean?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh"]);
 
     expect(empty?.supported_reasoning_levels).toEqual([]);
+  });
+});
+
+describe("thinking-toggle models (260707)", () => {
+  const toggleProvider: OcxProviderConfig = {
+    adapter: "openai-chat",
+    baseUrl: "https://opencode.ai/zen/go/v1",
+    thinkingToggleModels: ["mimo-v2.5", "glm-5"],
+    modelReasoningEfforts: { "mimo-v2.5": ["low", "high"], "glm-5": ["low", "high"] },
+    modelReasoningEffortMap: {
+      "mimo-v2.5": { none: "disabled", minimal: "disabled", low: "disabled", medium: "enabled", high: "enabled", xhigh: "enabled", max: "enabled" },
+      "glm-5": { none: "disabled", minimal: "disabled", low: "disabled", medium: "enabled", high: "enabled", xhigh: "enabled", max: "enabled" },
+    },
+  };
+
+  test("high effort emits thinking enabled, never reasoning_effort", () => {
+    const body = buildBody(toggleProvider, "mimo-v2.5", { reasoning: "high" });
+    expect(body.thinking).toEqual({ type: "enabled" });
+    expect(body).not.toHaveProperty("reasoning_effort");
+  });
+
+  test("low effort emits thinking disabled", () => {
+    const body = buildBody(toggleProvider, "glm-5", { reasoning: "low" });
+    expect(body.thinking).toEqual({ type: "disabled" });
+    expect(body).not.toHaveProperty("reasoning_effort");
+  });
+
+  test("no requested effort sends neither knob", () => {
+    const body = buildBody(toggleProvider, "mimo-v2.5", {});
+    expect(body).not.toHaveProperty("thinking");
+    expect(body).not.toHaveProperty("reasoning_effort");
+  });
+
+  test("non-toggle models on the same provider keep the reasoning_effort wire", () => {
+    const body = buildBody({ ...toggleProvider, modelReasoningEfforts: {}, modelReasoningEffortMap: {} }, "glm-5.2", { reasoning: "high" });
+    expect(body.reasoning_effort).toBe("high");
+    expect(body).not.toHaveProperty("thinking");
+  });
+
+  test("opencode-go registry routes mimo/glm5 through the toggle with a two-step ladder", () => {
+    const config = {
+      port: 10100,
+      defaultProvider: "opencode-go",
+      providers: { "opencode-go": { adapter: "openai-chat", baseUrl: "https://opencode.ai/zen/go/v1", apiKey: "k" } },
+    } as unknown as OcxConfig;
+    const route = routeModel(config, "opencode-go/mimo-v2.5");
+    expect(route.provider.thinkingToggleModels).toContain("mimo-v2.5");
+    expect(route.provider.modelReasoningEfforts?.["mimo-v2.5"]).toEqual(["low", "high"]);
+    const body = buildBody(route.provider, "mimo-v2.5", { reasoning: "xhigh" });
+    expect(body.thinking).toEqual({ type: "enabled" });
+    // kimi stays fully unadvertised (no fake knob).
+    const kimiRoute = routeModel(config, "opencode-go/kimi-k2.7-code");
+    const kimiBody = buildBody(kimiRoute.provider, "kimi-k2.7-code", { reasoning: "high" });
+    expect(kimiBody).not.toHaveProperty("thinking");
+    expect(kimiBody).not.toHaveProperty("reasoning_effort");
   });
 });

@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../i18n";
+import { formatTokens } from "../format-tokens";
 
 type Range = "all" | "30d" | "7d";
 
@@ -67,32 +68,6 @@ interface UsageResponse {
   models: UsageModel[];
   providers: UsageProvider[];
   error?: string;
-}
-
-function formatTokens(n: number): string {
-  if (n < 1000) return String(n);
-  if (n < 10_000) return String(n);
-  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}K`;
-  return `${(n / 1_000_000).toFixed(2)}M`;
-}
-
-// Total-tokens card only: Western locales extend K/M with B (billion) and T (trillion); CJK locales
-// (ko/zh) use the myriad (1e4) scale — ko 만/억/조/경, zh 万/亿/兆/京 — which reads naturally there.
-function formatTotalTokens(n: number, locale: string): string {
-  if (locale === "ko" || locale === "zh") {
-    const units = locale === "ko"
-      ? [{ v: 1e16, s: "경" }, { v: 1e12, s: "조" }, { v: 1e8, s: "억" }, { v: 1e4, s: "만" }]
-      : [{ v: 1e16, s: "京" }, { v: 1e12, s: "兆" }, { v: 1e8, s: "亿" }, { v: 1e4, s: "万" }];
-    for (const u of units) {
-      if (n >= u.v) return `${(n / u.v).toFixed(2)}${u.s}`;
-    }
-    return String(n);
-  }
-  if (n < 10_000) return String(n);
-  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}K`;
-  if (n < 1_000_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
-  if (n < 1_000_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
-  return `${(n / 1_000_000_000_000).toFixed(2)}T`;
 }
 
 function formatPct(ratio: number): string {
@@ -233,6 +208,18 @@ export default function Usage({ apiBase }: { apiBase: string }) {
   }, [apiBase, range]);
 
   const heatmap = useMemo(() => buildHeatmap(data?.days ?? []), [data?.days]);
+  // Keep the heatmap scrolled to the right edge (most recent weeks): cells are fixed-size,
+  // so on narrow panels the grid overflows and the ResizeObserver re-pins the right edge.
+  const heatmapRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = heatmapRef.current;
+    if (!el) return;
+    const pinRight = () => { el.scrollLeft = el.scrollWidth; };
+    pinRight();
+    const observer = new ResizeObserver(pinRight);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [heatmap, range, loading]);
   const weekBars = useMemo(() => lastSevenDays(data?.days ?? []), [data?.days]);
   const activeDays = useMemo(() => (data?.days ?? []).filter(d => d.requests > 0).length, [data?.days]);
   const filteredModels = useMemo(() => {
@@ -268,11 +255,11 @@ export default function Usage({ apiBase }: { apiBase: string }) {
         <div className="empty">{t("usage.empty")}</div>
       ) : (
         <>
-          <div className="usage-cards">
+          <div className="usage-cards usage-cards-3x2">
             <div className="stat"><div className="muted">{t("usage.card.requests")}</div><div className="stat-value">{data.summary.requests}</div></div>
             <div className="stat"><div className="muted">{t("usage.card.measured")}</div><div className="stat-value">{data.summary.measuredRequests}</div></div>
-            <div className="stat"><div className="muted">{t("usage.card.totalTokens")}</div><div className="stat-value">{formatTotalTokens(data.summary.totalTokens, locale)}</div></div>
-            <div className="stat"><div className="muted">{t("usage.card.cachedTokens")}</div><div className="stat-value">{formatTotalTokens(data.summary.cachedInputTokens, locale)}</div></div>
+            <div className="stat"><div className="muted">{t("usage.card.totalTokens")}</div><div className="stat-value">{formatTokens(data.summary.totalTokens, locale)}</div></div>
+            <div className="stat"><div className="muted">{t("usage.card.cachedTokens")}</div><div className="stat-value">{formatTokens(data.summary.cachedInputTokens, locale)}</div></div>
             <div className="stat"><div className="muted">{t("usage.card.coverage")}</div><div className="stat-value">{formatPct(data.summary.coverageRatio)}</div></div>
             <div className="stat"><div className="muted">{t("usage.card.activeDays")}</div><div className="stat-value">{activeDays}</div></div>
           </div>
@@ -282,8 +269,8 @@ export default function Usage({ apiBase }: { apiBase: string }) {
             {range === "7d" ? (
               <div className="daybars">
                 {weekBars.map((d, i) => {
-                  const max = Math.max(1, ...weekBars.map(x => x.requests));
-                  const pct = Math.round((d.requests / max) * 100);
+                  const max = Math.max(1, ...weekBars.map(x => x.totalTokens));
+                  const pct = Math.round((d.totalTokens / max) * 100);
                   const label = d.date.slice(5);
                   return (
                     <div key={i} className="daybar"
@@ -294,36 +281,36 @@ export default function Usage({ apiBase }: { apiBase: string }) {
                           {d.models.map(m => (
                             <div key={`${m.provider}/${m.model}`} className="daybar-seg"
                               style={{
-                                flexGrow: m.requests,
+                                flexGrow: m.totalTokens,
                                 background: modelColor(m.model, m.provider),
                               }} />
                           ))}
-                          {d.models.length === 0 && d.requests > 0 && (
+                          {d.models.length === 0 && d.totalTokens > 0 && (
                             <div className="daybar-seg" style={{ flexGrow: 1, background: "var(--green)" }} />
                           )}
                         </div>
                       </div>
-                      {hoverDay === i && d.requests > 0 && (
+                      {hoverDay === i && d.totalTokens > 0 && (
                         <div className="daybar-tip">
                           <div className="daybar-tip-date">{d.date}</div>
                           {d.models.slice(0, 8).map(m => (
                             <div key={`${m.provider}/${m.model}`} className="daybar-tip-row">
                               <span className="daybar-tip-swatch" style={{ background: modelColor(m.model, m.provider) }} />
                               <span className="daybar-tip-name">{m.model}</span>
-                              <span className="daybar-tip-val">{m.requests}</span>
+                              <span className="daybar-tip-val">{formatTokens(m.totalTokens, locale)}</span>
                             </div>
                           ))}
                         </div>
                       )}
-                      <span className="daybar-count">{d.requests}</span>
+                      <span className="daybar-count">{formatTokens(d.totalTokens, locale)}</span>
                       <span className="daybar-label muted">{label}</span>
                     </div>
                   );
                 })}
               </div>
             ) : (
-            <div className="heatmap">
-              <div className="heatmap-months" style={{ gridTemplateColumns: `28px repeat(${heatmap.weeks.length}, 1fr)` }}>
+            <div className="heatmap" ref={heatmapRef}>
+              <div className="heatmap-months" style={{ gridTemplateColumns: `28px repeat(${heatmap.weeks.length}, calc(var(--hm-cell) + var(--hm-gap)))` }}>
                 <span className="heatmap-day-spacer" />
                 {heatmap.months.map((m, i) => (
                   <span key={i} className="heatmap-month" style={{ gridColumn: m.col + 2 }}>{m.label}</span>
@@ -333,13 +320,13 @@ export default function Usage({ apiBase }: { apiBase: string }) {
                 <div className="heatmap-days">
                   <span /><span>Mon</span><span /><span>Wed</span><span /><span>Fri</span><span />
                 </div>
-                <div className="heatmap-grid" style={{ gridTemplateColumns: `repeat(${heatmap.weeks.length}, 1fr)` }}>
+                <div className="heatmap-grid" style={{ gridTemplateColumns: `repeat(${heatmap.weeks.length}, var(--hm-cell))` }}>
                   {heatmap.weeks.map((week, wi) => (
                     <div key={wi} className="heatmap-week">
                       {week.map((cell, di) => (
                         <div key={`${wi}-${di}`}
                           className={`heatmap-cell heatmap-cell-${cell.level}`}
-                          title={cell.date ? `${cell.date}: ${cell.requests} req · ${formatTokens(cell.totalTokens)} tokens` : ""} />
+                          title={cell.date ? `${cell.date}: ${cell.requests} req · ${formatTokens(cell.totalTokens, locale)} tokens` : ""} />
                       ))}
                     </div>
                   ))}
@@ -379,7 +366,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
                       <td className="muted">{m.provider}</td>
                       <td className="num">{m.requests}</td>
                       <td className="num">{m.measuredRequests}</td>
-                      <td className="num mono">{formatTokens(m.totalTokens)}</td>
+                      <td className="num mono">{formatTokens(m.totalTokens, locale)}</td>
                       <td><div className="usage-bar"><div className="usage-bar-fill" style={{ width: `${Math.round(m.shareRatio * 100)}%` }} /></div></td>
                     </tr>
                   ))}
@@ -407,7 +394,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
                       <td className="mono">{p.provider}</td>
                       <td className="num">{p.requests}</td>
                       <td className="num">{p.measuredRequests}</td>
-                      <td className="num mono">{formatTokens(p.totalTokens)}</td>
+                      <td className="num mono">{formatTokens(p.totalTokens, locale)}</td>
                       <td><div className="usage-bar"><div className="usage-bar-fill" style={{ width: `${Math.round(p.shareRatio * 100)}%` }} /></div></td>
                     </tr>
                   ))}
@@ -418,7 +405,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
 
           <section className="panel" style={{ marginTop: 16 }}>
             <h3 className="panel-title">{t("usage.section.coverage")}</h3>
-            <div className="usage-cards">
+            <div className="usage-cards usage-cards-3x2">
               <div className="stat"><div className="muted">{t("usage.coverage.measured")}</div><div className="stat-value">{data.summary.measuredRequests}</div></div>
               <div className="stat"><div className="muted">{t("usage.coverage.reported")}</div><div className="stat-value">{data.summary.reportedRequests}</div></div>
               <div className="stat"><div className="muted">{t("usage.coverage.estimated")}</div><div className="stat-value">{data.summary.estimatedRequests}</div></div>

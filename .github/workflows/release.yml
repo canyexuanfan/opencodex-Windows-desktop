@@ -286,8 +286,15 @@ jobs:
             git push origin "refs/tags/${release_tag}"
           fi
 
+          # Preview builds must be marked prerelease so GitHub "latest" keeps pointing at the
+          # stable channel (matching npm dist-tags); see issue #64.
+          prerelease_flag=""
+          if [[ "$RELEASE_VERSION" == *-preview.* ]]; then
+            prerelease_flag="--prerelease"
+          fi
+
           if gh release view "$release_tag" >/dev/null 2>&1; then
-            gh release edit "$release_tag" --title "$release_tag" --notes-file "$notes_file"
+            gh release edit "$release_tag" --title "$release_tag" --notes-file "$notes_file" ${prerelease_flag:+$prerelease_flag}
           else
-            gh release create "$release_tag" --target "$GITHUB_SHA" --title "$release_tag" --notes-file "$notes_file"
+            gh release create "$release_tag" --target "$GITHUB_SHA" --title "$release_tag" --notes-file "$notes_file" ${prerelease_flag:+$prerelease_flag}
           fi

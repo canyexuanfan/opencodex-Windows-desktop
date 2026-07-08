@@ -24,6 +24,12 @@ ocx init
 
 The result is saved to `~/.opencodex/config.json`.
 
+:::note[GPT-5.6 preview]
+On the preview channel, the wizard/catalog presets know about GPT-5.6 Sol/Terra/Luna. Use ChatGPT
+passthrough, OpenAI (API key), or OpenRouter only when that upstream account already has access; the
+synced Codex entries include `max` reasoning and 372,000 usable-token context metadata.
+:::
+
 ## 2. Start the proxy
 
 ```bash

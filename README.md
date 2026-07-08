@@ -141,6 +141,15 @@ When you omit the `provider/` prefix, opencodex routes to the default provider �
 
 Routed models also appear in the **Codex App** model picker with per-model reasoning effort controls:
 
+Current Codex builds can expose `low`, `medium`, `high`, `xhigh`, and `max` reasoning controls when a
+model advertises them. opencodex keeps `xhigh` and `max` distinct unless a provider config explicitly
+maps one to the other.
+
+GPT-5.6 Sol/Terra/Luna are seeded as rollout-ready catalog entries for the OpenAI API key and
+OpenRouter presets (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`; OpenRouter uses
+`openai/...`). They remain preview-gated by upstream availability; opencodex only prepares the
+routing and catalog metadata for accounts and providers that can serve them.
+
 <p align="center">
   <img src="assets/codex-app-picker.png" alt="Codex App showing opencodex routed models with reasoning effort picker" width="480">
 </p>
@@ -168,9 +177,11 @@ next Codex session. opencodex keeps two separate behaviors:
   can auto-pick a lower-usage account from the pool, with quota refresh and non-PII request labels.
 - **Log in once, skip the API key.** OAuth support for xAI, Anthropic, and Kimi means you can authenticate with your existing account. Tokens auto-refresh. Or forward your `codex login`, paste an API key, or use `${ENV_VAR}` references — your call.
 - **Works everywhere Codex does.** Injects into Codex CLI, TUI, App, and SDK automatically. Routed models show up in Codex's model picker just like native ones.
+- **History-safe injection.** On local installs the proxy points Codex's own built-in `openai` provider at itself via a single `openai_base_url` line — new threads keep their native provider tag, so ongoing chat history is never remapped and an unclean shutdown can't hide it. (Threads re-tagged by older versions are migrated back once on the first start; remote/LAN binds use a dedicated provider entry instead, since they need an API-key header.)
 - **Delegate to the right model.** Feature up to five routed or native models in Codex's subagent picker from the dashboard or config — route complex tasks to a reasoning model, fast tasks to a cheap one.
+- **Prepare for preview-gated OpenAI rollouts.** GPT-5.6 Sol/Terra/Luna fallback entries are ready for OpenAI API key and OpenRouter routes, with `max` reasoning and 372k usable-context metadata when upstream access is available.
 - **Give any model superpowers.** Non-OpenAI models get real web search and image understanding via a `gpt-5.4-mini` sidecar over your ChatGPT login.
-- **See what's happening.** The web dashboard shows providers, OAuth status, model selection, and a live request log — no more guessing why a request failed.
+- **See what's happening.** The web dashboard shows providers, OAuth status, model selection, and a live request log, including cached/cache-write token counts when upstream reports them — no more guessing why a request failed.
 - **Runs in the background.** Install as a system service (launchd / systemd / Task Scheduler) and forget about it. The proxy starts on boot and stays out of your way.
 - **Clean exit, zero residue.** `ocx stop` (or the dashboard's Stop button) shuts down the proxy, stops the background service if one is installed, and restores Codex to its original configuration. Plain `codex` works exactly as it did before — no leftover config, no orphaned processes.
 
@@ -285,7 +296,9 @@ Provider entries can also annotate routed catalog metadata. Use `contextWindow` 
 Codex-visible context cap, `modelContextWindows` for model-specific caps, and
 `modelInputModalities` for model-specific catalog input hints such as `["text"]` or
 `["text", "image"]`. Context values cap live `/models` metadata; they never raise a smaller live
-context window. See the configuration reference for the full field list.
+context window. The bundled GPT-5.6 Sol/Terra/Luna fallback metadata uses a 372,000-token usable
+context window for OpenAI API key and OpenRouter catalog entries; it does not bypass upstream preview
+access. See the configuration reference for the full field list.
 
 > **GLM-5.2 1M context via Z.AI:** through the `openai-chat` adapter, both `glm-5.2`
 > and `glm-5.2[1m]` work — opencodex strips the trailing `[1m]` suffix before

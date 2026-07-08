@@ -25,7 +25,7 @@ description: opencodex 如何决定由哪个提供商来服务给定的模型 id
    | 前缀 | 提供商 |
    | --- | --- |
    | `claude-`、`claude-sonnet-`、`claude-opus-`、`claude-haiku-` | `anthropic` |
-   | `gpt-`、`o1-`、`o3-`、`o4-` | `openai` |
+   | `gpt-`、`o1-`、`o3-`、`o4-` | `chatgpt` |
    | `llama-`、`mixtral-`、`gemma-` | `groq` |
 
 5. **默认提供商** —— 如果没有任何匹配，id 将原样发送给 `config.defaultProvider`。（如果未配置默认提供商，路由会抛出异常。）

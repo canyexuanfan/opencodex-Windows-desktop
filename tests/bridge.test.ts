@@ -93,7 +93,7 @@ describe("Responses bridge reasoning and usage parity", () => {
     const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
     expect(completed.usage).toMatchObject({
       input_tokens: 78_600,
-      input_tokens_details: { cached_tokens: 78_000 },
+      input_tokens_details: { cached_tokens: 78_000, cache_write_tokens: 1_000 },
       output_tokens: 20,
       total_tokens: 78_620,
     });
@@ -169,7 +169,7 @@ describe("Responses bridge reasoning and usage parity", () => {
     const json = buildResponseJSON([
       { type: "reasoning_raw_delta", text: "raw json" },
       { type: "text_delta", text: "answer" },
-      { type: "done", usage: { inputTokens: 4, outputTokens: 6, cachedInputTokens: 1, reasoningOutputTokens: 2 } },
+      { type: "done", usage: { inputTokens: 4, outputTokens: 6, cachedInputTokens: 1, cacheCreationInputTokens: 2, reasoningOutputTokens: 2 } },
     ], "routed/model");
 
     const output = json.output as Record<string, unknown>[];
@@ -178,8 +178,10 @@ describe("Responses bridge reasoning and usage parity", () => {
       content: [{ type: "reasoning_text", text: "raw json" }],
     });
     expect(json.usage).toMatchObject({
-      input_tokens_details: { cached_tokens: 1 },
+      input_tokens: 6,
+      input_tokens_details: { cached_tokens: 1, cache_write_tokens: 2 },
       output_tokens_details: { reasoning_tokens: 2 },
+      total_tokens: 12,
     });
   });
 
@@ -217,6 +219,32 @@ describe("Responses bridge reasoning and usage parity", () => {
     expect(output[0].type).toBe("custom_tool_call");
     expect(output[0].input).toBe("patch data");
     expect(output[1].type).toBe("tool_search_call");
+  });
+
+  test("streaming freeform tool call emits unwrapped custom_tool_call_input deltas", async () => {
+    const frames = await collectSse(bridgeToResponsesSSE(replay([
+      { type: "tool_call_start", id: "c1", name: "apply_patch" },
+      // JSON wrapper split across chunks, incl. an escape split at a boundary.
+      { type: "tool_call_delta", arguments: "{\"inp" },
+      { type: "tool_call_delta", arguments: "ut\":\"line1\\" },
+      { type: "tool_call_delta", arguments: "nline2\"}" },
+      { type: "tool_call_end" },
+      { type: "done" },
+    ]), "model", undefined, new Set(["apply_patch"])));
+
+    const deltas = frames.filter(f => f.event === "response.custom_tool_call_input.delta").map(f => f.data.delta);
+    expect(deltas.join("")).toBe("line1\nline2");
+    // No raw JSON wrapper fragments leak into the preview stream.
+    for (const d of deltas) expect(String(d)).not.toContain("{\"inp");
+
+    const doneEvt = frames.find(f => f.event === "response.custom_tool_call_input.done")?.data;
+    expect(doneEvt).toMatchObject({ input: "line1\nline2" });
+
+    const item = frames.find(f => f.event === "response.output_item.done")?.data.item as Record<string, unknown>;
+    expect(item).toMatchObject({ type: "custom_tool_call", input: "line1\nline2", status: "completed" });
+    // Freeform calls must NOT emit function_call_arguments events.
+    expect(frames.some(f => f.event === "response.function_call_arguments.delta")).toBe(false);
+    expect(frames.some(f => f.event === "response.function_call_arguments.done")).toBe(false);
   });
 
   test("non-streaming error produces failed status", () => {

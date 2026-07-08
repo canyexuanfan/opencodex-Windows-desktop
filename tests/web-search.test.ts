@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { parseRequest } from "../src/responses/parser";
 import { planWebSearch } from "../src/web-search";
 import { runWithWebSearch } from "../src/web-search/loop";
-import { headersForCodexAuthContext } from "../src/codex-auth-context";
+import { headersForCodexAuthContext } from "../src/codex/auth-context";
 import type { AdapterEvent, OcxConfig, OcxProviderConfig } from "../src/types";
 import type { ProviderAdapter } from "../src/adapters/base";
 import type { OcxMessage, OcxParsedRequest } from "../src/types";
@@ -139,6 +139,158 @@ function scriptedAdapter(firstPass: AdapterEvent[]): ProviderAdapter {
 }
 
 describe("web-search sidecar native web_search_call emission", () => {
+  test("loop 429 triggers on429 rotation and succeeds with the rebuilt adapter", async () => {
+    globalThis.fetch = (() => Promise.resolve(new Response(
+      'event: response.completed\ndata: {"type":"response.completed"}\n\n',
+      { headers: { "Content-Type": "text/event-stream" } },
+    ))) as typeof fetch;
+
+    // First adapter always 429s via fetchResponse; the rotated adapter answers.
+    const firstAdapter: ProviderAdapter = {
+      name: "mock-429",
+      buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
+      fetchResponse: async () => new Response("rate limited", { status: 429, headers: { "retry-after": "30" } }),
+      async *parseStream() { /* unused */ },
+      async parseResponse() { return [{ type: "text_delta", text: "should not reach" }, { type: "done" }] as AdapterEvent[]; },
+    };
+    const rotatedAdapter: ProviderAdapter = {
+      name: "mock-rotated",
+      buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
+      fetchResponse: async () => new Response("{}", { status: 200 }),
+      async *parseStream() { /* unused */ },
+      async parseResponse() { return [{ type: "text_delta", text: "answer from rotated key" }, { type: "done" }] as AdapterEvent[]; },
+    };
+    let rotations = 0;
+
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: firstAdapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+      on429: retryAfter => {
+        rotations++;
+        expect(retryAfter).toBe("30");
+        return rotatedAdapter;
+      },
+    });
+    expect(response.status).toBe(200);
+    const frames = await collectSse(response.body!);
+    const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
+    const output = completed.output as { type: string; content?: { text?: string }[] }[];
+    expect(output.find(o => o.type === "message")?.content?.[0]?.text).toBe("answer from rotated key");
+    expect(rotations).toBe(1);
+  });
+
+  test("loop 429 with exhausted pool (on429 null) surfaces the provider error", async () => {
+    const firstAdapter: ProviderAdapter = {
+      name: "mock-429",
+      buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
+      fetchResponse: async () => new Response("rate limited", { status: 429 }),
+      async *parseStream() { /* unused */ },
+      async parseResponse() { return [{ type: "done" }] as AdapterEvent[]; },
+    };
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: firstAdapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+      on429: () => null,
+    });
+    expect(response.status).toBe(429);
+    const body = await response.json() as { error?: { message?: string } };
+    expect(body.error?.message ?? "").toContain("429");
+  });
+
+  test("loop per-iteration timeout surfaces 504 instead of hanging", async () => {
+    const hangingAdapter: ProviderAdapter = {
+      name: "mock-hang",
+      buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
+      fetchResponse: (_req, opts?: { abortSignal?: AbortSignal }) => new Promise((_resolve, reject) => {
+        opts?.abortSignal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      }),
+      async *parseStream() { /* unused */ },
+      async parseResponse() { return [{ type: "done" }] as AdapterEvent[]; },
+    };
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: hangingAdapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+      connectTimeoutMs: 100,
+    });
+    expect(response.status).toBe(504);
+    const body = await response.json() as { error?: { message?: string } };
+    expect(body.error?.message ?? "").toContain("timeout");
+  });
+
+  test("signed thinking before a web_search call survives into the replayed assistant turn", async () => {
+    globalThis.fetch = ((input) => {
+      const url = String(input);
+      if (url.startsWith("https://routed.test/")) return Promise.resolve(new Response("{}", { status: 200 }));
+      return Promise.resolve(new Response(
+        'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"docs say X"}\n\n' +
+          'event: response.completed\ndata: {"type":"response.completed"}\n\n',
+        { headers: { "Content-Type": "text/event-stream" } },
+      ));
+    }) as typeof fetch;
+
+    const seenBodies: OcxMessage[][] = [];
+    let pass = 0;
+    const adapter: ProviderAdapter = {
+      name: "mock",
+      buildRequest: (p: OcxParsedRequest) => {
+        seenBodies.push(p.context.messages);
+        return { url: "https://routed.test/v1/chat/completions", method: "POST", headers: {}, body: "{}" };
+      },
+      async *parseStream() { /* unused */ },
+      async parseResponse() {
+        pass++;
+        if (pass === 1) {
+          return [
+            { type: "thinking_delta", thinking: "I should search" },
+            { type: "thinking_signature", signature: "RealSig1234567890==" },
+            { type: "tool_call_start", id: "call_t", name: "web_search" },
+            { type: "tool_call_delta", arguments: JSON.stringify({ query: "docs" }) },
+            { type: "tool_call_end" },
+            { type: "done" },
+          ] as AdapterEvent[];
+        }
+        return [{ type: "text_delta", text: "final" }, { type: "done" }] as AdapterEvent[];
+      },
+    };
+
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "look up docs", stream: true, tools: [{ type: "web_search" }] }),
+      adapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 2,
+    });
+    await collectSse(response.body!);
+
+    // The second iteration's request must replay the assistant turn as [thinking, toolCall].
+    const replayMessages = seenBodies.at(-1)!;
+    const assistant = replayMessages.find(m => m.role === "assistant"
+      && Array.isArray(m.content) && (m.content as { type: string }[]).some(c => c.type === "toolCall"));
+    expect(assistant).toBeDefined();
+    const content = assistant!.content as { type: string; thinking?: string; signature?: string }[];
+    expect(content[0].type).toBe("thinking");
+    expect(content[0].thinking).toBe("I should search");
+    expect(content[0].signature).toBe("RealSig1234567890==");
+    expect(content[1].type).toBe("toolCall");
+  });
+
   test("an executed search emits a web_search_call item ahead of the assistant message", async () => {
     globalThis.fetch = ((input) => {
       const url = String(input);

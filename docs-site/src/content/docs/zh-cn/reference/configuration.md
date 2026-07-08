@@ -65,6 +65,10 @@ token 会用常量时间比较（`timingSafeEqual`）以避免 timing side-chann
 | `contextWindow?` | `number` | 路由 catalog 条目的 provider 级上下文窗口上限。实时 metadata 小于该值时会保留实时值。 |
 | `modelContextWindows?` | `Record<string,number>` | 模型级上下文窗口上限。匹配模型时优先于 `contextWindow`,且不会抬高更小的实时 metadata。 |
 | `modelInputModalities?` | `Record<string,string[]>` | 模型级 catalog 输入提示,例如 `["text"]` 或 `["text", "image"]`。 |
+| `reasoningEfforts?` | `string[]` | provider 级要广告的 Codex reasoning tier（`low`、`medium`、`high`、`xhigh`、`max`）。 |
+| `modelReasoningEfforts?` | `Record<string,string[]>` | 模型级 reasoning tier override。空数组会隐藏该模型的 effort 控件。 |
+| `reasoningEffortMap?` | `Record<string,string>` | 将 Codex tier 转成上游 wire 值的 provider 级 alias map。默认情况下 `xhigh` 与 `max` 是不同 tier。 |
+| `modelReasoningEffortMap?` | `Record<string,Record<string,string>>` | 模型级 reasoning alias map。 |
 | `headers?` | `Record<string,string>` | 发送到上游的额外 HTTP 头。 |
 | `authMode?` | `"key" \| "forward" \| "oauth"` | 认证方式(默认 `key`)。见 [Providers](/opencodex/zh-cn/guides/providers/#auth-modes)。 |
 | `noReasoningModels?` | `string[]` | 会拒绝 reasoning/thinking 参数的模型 —— adapter 会为它们丢弃 `reasoning_effort`。 |
@@ -91,6 +95,17 @@ token 会用常量时间比较（`timingSafeEqual`）以避免 timing side-chann
   }
 }
 ```
+
+## GPT-5.6 seed/fallback 模型
+
+内置 **OpenAI (API key)** provider 使用 OpenAI Responses API(`https://api.openai.com/v1`),并在
+fallback 模型列表中包含 `gpt-5.5`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`。OpenRouter
+会以 `openai/gpt-5.6-sol`、`openai/gpt-5.6-terra`、`openai/gpt-5.6-luna` 名称 seed 同一组
+preview 模型。三款 GPT-5.6 模型的 `modelContextWindows` 值均为 `372000`,且 `max` reasoning tier
+会与 `xhigh` 分开保留。
+
+这些值是 rollout 准备 metadata。实际调用只有在连接的 OpenAI API key、OpenRouter 账号或原生
+ChatGPT/Codex 账号拥有 GPT-5.6 preview 权限时才会成功。
 
 ## Sidecars
 

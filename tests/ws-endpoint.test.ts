@@ -9,7 +9,7 @@ import {
   sendResponsesJsonAsEvents,
   sendResponseToWebSocket,
   type WsData,
-} from "../src/ws-bridge";
+} from "../src/server/ws-bridge";
 import type { ServerWebSocket } from "bun";
 
 function mockWs(sendResult = 1): { ws: ServerWebSocket<WsData>; sent: string[] } {
@@ -37,7 +37,7 @@ function sseStream(frames: string[], onCancel?: () => void): ReadableStream<Uint
 
 describe("WS endpoint re-framer (120/132)", () => {
   test("server config declares explicit websocket idle timeout policy", () => {
-    const source = readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
+    const source = readFileSync(new URL("../src/server/index.ts", import.meta.url), "utf8");
     expect(source).toContain("const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;");
     expect(source).toContain("websocket: {");
     expect(source).toContain("idleTimeout: WEBSOCKET_IDLE_TIMEOUT_SECONDS,");
@@ -86,6 +86,18 @@ describe("WS endpoint re-framer (120/132)", () => {
       'event: response.failed\ndata: {"type":"response.failed","response":{"status":"failed"}}\n\n',
     ]), { onTerminal: status => terminals.push(status) });
     expect(terminals).toEqual(["failed"]);
+  });
+
+  test("observes SSE payloads while pumping to WebSocket", async () => {
+    const { ws, sent } = mockWs();
+    const payloads: string[] = [];
+    await pumpResponsesSseToWebSocket(ws, sseStream([
+      'event: response.created\ndata: {"type":"response.created"}\n\n',
+      'event: response.completed\ndata: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":9,"output_tokens":4}}}\n\n',
+    ]), { onSsePayload: payload => payloads.push(payload) });
+
+    expect(sent.map(f => JSON.parse(f).type)).toEqual(["response.created", "response.completed"]);
+    expect(payloads.map(payload => JSON.parse(payload).type)).toEqual(["response.created", "response.completed"]);
   });
 
   test("reports incomplete when SSE ends before a terminal event", async () => {
@@ -337,18 +349,29 @@ describe("WS endpoint re-framer (120/132)", () => {
   test("converts application/json 200 responses into event sequence", async () => {
     const { ws, sent } = mockWs();
     const terminals: string[] = [];
+    const payloads: string[] = [];
     await sendResponseToWebSocket(ws, Response.json({
       id: "json",
       object: "response",
+      usage: { input_tokens: 11, output_tokens: 7 },
       status: "completed",
       output: [{ type: "message", id: "msg", role: "assistant", status: "completed", content: [] }],
-    }), () => true, { onTerminal: status => terminals.push(status) });
+    }), () => true, {
+      onTerminal: status => terminals.push(status),
+      onSsePayload: payload => payloads.push(payload),
+    });
     expect(sent.map(f => JSON.parse(f).type)).toEqual([
       "response.created",
       "response.output_item.done",
       "response.completed",
     ]);
     expect(terminals).toEqual(["completed"]);
+    expect(payloads.map(payload => JSON.parse(payload).type)).toEqual([
+      "response.created",
+      "response.output_item.done",
+      "response.completed",
+    ]);
+    expect(JSON.parse(payloads.at(-1)!).response.usage).toEqual({ input_tokens: 11, output_tokens: 7 });
   });
 
   test("unexpected successful HTML and empty 204 become standalone protocol errors", async () => {

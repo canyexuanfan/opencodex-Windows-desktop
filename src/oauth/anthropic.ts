@@ -137,8 +137,8 @@ export async function loginAnthropic(
     } else if (importLocal === "only") {
       throw new Error(
         process.platform === "darwin"
-          ? "No Claude Code token found in the keychain. Run 'ocx login anthropic' for browser OAuth."
-          : "Claude Code auto-import is macOS-only. Run 'ocx login anthropic' for browser OAuth.",
+          ? "No Claude Code token found (Keychain or ~/.claude/.credentials.json). Run 'ocx login anthropic' for browser OAuth."
+          : "No Claude Code token found (~/.claude/.credentials.json). Run 'ocx login anthropic' for browser OAuth.",
       );
     }
   }

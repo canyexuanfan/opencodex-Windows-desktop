@@ -1,15 +1,36 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { buildResponseJSON } from "../src/bridge";
 import { parseRequest } from "../src/responses/parser";
 import {
   clearResponseStateForTests,
+  clearResponseStateMemoryForTests,
   expandPreviousResponseInput,
+  flushResponseState,
   previousResponseConversationId,
   rememberResponseState,
 } from "../src/responses/state";
 
 describe("Responses previous_response_id state", () => {
-  afterEach(() => clearResponseStateForTests());
+  // Sandbox OPENCODEX_HOME: the state store now snapshots to disk, and these tests must never
+  // touch the real ~/.opencodex.
+  let home: string;
+  const priorHome = process.env["OPENCODEX_HOME"];
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "ocx-state-test-"));
+    process.env["OPENCODEX_HOME"] = home;
+    clearResponseStateMemoryForTests();
+  });
+
+  afterEach(() => {
+    clearResponseStateForTests();
+    rmSync(home, { recursive: true, force: true });
+    if (priorHome === undefined) delete process.env["OPENCODEX_HOME"];
+    else process.env["OPENCODEX_HOME"] = priorHome;
+  });
 
   test("expands later input with stored prior input and output", () => {
     const firstBody = { model: "cursor/auto", input: "use ping", store: true };
@@ -73,6 +94,132 @@ describe("Responses previous_response_id state", () => {
     };
 
     expect(expandPreviousResponseInput(second)).toEqual(second);
+  });
+
+  test("force records despite store:false (passthrough continuation cache)", () => {
+    const firstBody = { model: "gpt-5.5", input: "hello", store: false };
+    const first = buildResponseJSON([
+      { type: "text_delta", text: "hi there" },
+      { type: "done" },
+    ], "gpt-5.5");
+    rememberResponseState(firstBody, first, undefined, { force: true });
+
+    const expanded = expandPreviousResponseInput({
+      model: "gpt-5.5",
+      previous_response_id: first.id,
+      input: [{ role: "user", content: "next" }],
+    }) as { input: unknown[] };
+
+    expect(expanded.input).toEqual([
+      { role: "user", content: "hello" },
+      (first.output as unknown[])[0],
+      { role: "user", content: "next" },
+    ]);
+  });
+
+  test("snapshot survives a simulated restart (memory clear + disk load)", () => {
+    const firstBody = { model: "gpt-5.5", input: "hello" };
+    const first = buildResponseJSON([
+      { type: "text_delta", text: "hi" },
+      { type: "done" },
+    ], "gpt-5.5");
+    rememberResponseState(firstBody, first, "cursor_conv_9");
+    flushResponseState();
+
+    // Simulate restart: wipe memory, keep the snapshot file.
+    clearResponseStateMemoryForTests();
+
+    const expanded = expandPreviousResponseInput({
+      model: "gpt-5.5",
+      previous_response_id: first.id,
+      input: [{ role: "user", content: "next" }],
+    }) as { input: unknown[] };
+
+    expect(expanded.input).toEqual([
+      { role: "user", content: "hello" },
+      (first.output as unknown[])[0],
+      { role: "user", content: "next" },
+    ]);
+    expect(previousResponseConversationId(first.id as string)).toBe("cursor_conv_9");
+  });
+
+  test("stale snapshot entries are pruned on load", () => {
+    const first = buildResponseJSON([
+      { type: "text_delta", text: "old" },
+      { type: "done" },
+    ], "gpt-5.5");
+    rememberResponseState({ model: "gpt-5.5", input: "old turn" }, first);
+    flushResponseState();
+    clearResponseStateMemoryForTests();
+
+    // Rewrite the snapshot with an expired createdAt (2h ago > 1h TTL).
+    const path = join(home, "responses-state.json");
+    const snapshot = JSON.parse(readFileSync(path, "utf-8")) as {
+      states: [string, { createdAt: number }][];
+    };
+    for (const [, state] of snapshot.states) state.createdAt = Date.now() - 2 * 60 * 60 * 1_000;
+    writeFileSync(path, JSON.stringify(snapshot));
+
+    const second = {
+      model: "gpt-5.5",
+      previous_response_id: first.id,
+      input: "next",
+    };
+    expect(expandPreviousResponseInput(second)).toEqual(second);
+  });
+
+  test("corrupt snapshot file is ignored", () => {
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "responses-state.json"), "{not json!!");
+
+    const second = {
+      model: "gpt-5.5",
+      previous_response_id: "resp_nope",
+      input: "next",
+    };
+    expect(expandPreviousResponseInput(second)).toEqual(second);
+
+    // Store still functions after the failed load.
+    const first = buildResponseJSON([
+      { type: "text_delta", text: "fresh" },
+      { type: "done" },
+    ], "gpt-5.5");
+    rememberResponseState({ model: "gpt-5.5", input: "hi" }, first);
+    const expanded = expandPreviousResponseInput({
+      model: "gpt-5.5",
+      previous_response_id: first.id,
+      input: "next",
+    }) as { input: unknown[] };
+    expect(expanded.input).toHaveLength(3);
+  });
+
+  test("oversized entries stay in memory but are skipped on disk", () => {
+    const big = "x".repeat(3 * 1024 * 1024); // > 2MiB per-entry cap
+    const first = buildResponseJSON([
+      { type: "text_delta", text: big },
+      { type: "done" },
+    ], "gpt-5.5");
+    rememberResponseState({ model: "gpt-5.5", input: "big turn" }, first);
+
+    const small = buildResponseJSON([
+      { type: "text_delta", text: "small" },
+      { type: "done" },
+    ], "gpt-5.5");
+    rememberResponseState({ model: "gpt-5.5", input: "small turn" }, small);
+    flushResponseState();
+
+    // In-memory: both expand.
+    expect((expandPreviousResponseInput({
+      model: "gpt-5.5", previous_response_id: first.id, input: "n",
+    }) as { input: unknown[] }).input).toHaveLength(3);
+
+    // After restart: only the small entry survived on disk.
+    clearResponseStateMemoryForTests();
+    const bigMiss = { model: "gpt-5.5", previous_response_id: first.id, input: "n" };
+    expect(expandPreviousResponseInput(bigMiss)).toEqual(bigMiss);
+    expect((expandPreviousResponseInput({
+      model: "gpt-5.5", previous_response_id: small.id, input: "n",
+    }) as { input: unknown[] }).input).toHaveLength(3);
   });
 
   test("stores provider conversation id alongside Responses output state", () => {

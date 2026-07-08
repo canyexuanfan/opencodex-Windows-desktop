@@ -50,7 +50,7 @@ describe("Codex catalog restore", () => {
     }, null, 2) + "\n");
 
     const r = runScript(codexHome, opencodexHome, `
-      const { restoreCodexCatalog } = require("./src/codex-catalog");
+      const { restoreCodexCatalog } = require("./src/codex/catalog");
       const result = restoreCodexCatalog();
       console.log(JSON.stringify(result));
     `);
@@ -81,7 +81,7 @@ describe("Codex catalog restore", () => {
     }, null, 2) + "\n");
 
     const r = runScript(codexHome, opencodexHome, `
-      const { restoreCodexCatalog } = require("./src/codex-catalog");
+      const { restoreCodexCatalog } = require("./src/codex/catalog");
       const result = restoreCodexCatalog();
       console.log(JSON.stringify(result));
     `);
@@ -111,7 +111,7 @@ describe("Codex catalog restore", () => {
     }, null, 2) + "\n");
 
     const r = runScript(codexHome, opencodexHome, `
-      const { restoreCodexCatalog } = require("./src/codex-catalog");
+      const { restoreCodexCatalog } = require("./src/codex/catalog");
       const result = restoreCodexCatalog();
       console.log(JSON.stringify(result));
     `);
@@ -133,7 +133,7 @@ describe("Codex catalog restore", () => {
     }, null, 2) + "\n");
 
     const r = runScript(codexHome, opencodexHome, `
-      const { syncCatalogModels } = require("./src/codex-catalog");
+      const { syncCatalogModels } = require("./src/codex/catalog");
       (async () => {
         const result = await syncCatalogModels({
           port: 10100,
@@ -177,13 +177,13 @@ describe("Codex catalog restore", () => {
     }, null, 2) + "\n");
 
     const r = runScript(codexHome, opencodexHome, `
-      const { syncCatalogModels } = require("./src/codex-catalog");
+      const { syncCatalogModels } = require("./src/codex/catalog");
       (async () => {
         const result = await syncCatalogModels({
           port: 10100,
           providers: {},
           defaultProvider: "openai",
-          subagentModels: ["gpt-5.5", "gpt-5.4", "gpt-5.3-codex-spark"],
+          subagentModels: ["gpt-5.5", "gpt-5.4", "gpt-5.3-codex-spark", "gpt-5.6-sol"],
         });
         console.log(JSON.stringify(result));
       })();
@@ -192,6 +192,9 @@ describe("Codex catalog restore", () => {
     expect(r.status).toBe(0);
     const synced = JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<Record<string, unknown>>;
     expect(synced.map(m => m.slug)).toContain("gpt-5.3-codex-spark");
+    expect(synced.map(m => m.slug)).toContain("gpt-5.6-sol");
+    expect(synced.map(m => m.slug)).toContain("gpt-5.6-terra");
+    expect(synced.map(m => m.slug)).toContain("gpt-5.6-luna");
     expect(synced.find(m => m.slug === "gpt-5.4")?.max_context_window).toBe(1_000_000);
   });
 });

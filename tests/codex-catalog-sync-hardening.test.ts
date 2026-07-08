@@ -63,6 +63,9 @@ describe("Codex catalog sync hardening", () => {
         nativeEntry("gpt-5.4", 1),
         nativeEntry("gpt-5.4-mini", 2),
         nativeEntry("gpt-5.3-codex-spark", 3),
+        nativeEntry("gpt-5.6-sol", 4),
+        nativeEntry("gpt-5.6-terra", 5),
+        nativeEntry("gpt-5.6-luna", 6),
         nativeEntry("gpt-5.3-codex", 104),   // legacy -> drop
         nativeEntry("gpt-5.2", 104),          // legacy -> drop
         nativeEntry("codex-auto-review", 104),// legacy -> drop
@@ -71,7 +74,7 @@ describe("Codex catalog sync hardening", () => {
     }, null, 2) + "\n");
 
     const r = runScript(codexHome, opencodexHome, `
-      const { syncCatalogModels } = require("./src/codex-catalog");
+      const { syncCatalogModels } = require("./src/codex/catalog");
       syncCatalogModels({ providers: {} }).then(res => console.log(JSON.stringify(res)));
     `);
     expect(r.status).toBe(0);
@@ -81,6 +84,9 @@ describe("Codex catalog sync hardening", () => {
     expect(slugs).toContain("gpt-5.4");
     expect(slugs).toContain("gpt-5.4-mini");
     expect(slugs).toContain("gpt-5.3-codex-spark");
+    expect(slugs).toContain("gpt-5.6-sol");
+    expect(slugs).toContain("gpt-5.6-terra");
+    expect(slugs).toContain("gpt-5.6-luna");
     expect(slugs).toContain("user-native");           // genuine user native preserved
     expect(slugs).not.toContain("gpt-5.3-codex");      // legacy dropped
     expect(slugs).not.toContain("gpt-5.2");            // legacy dropped
@@ -100,7 +106,7 @@ describe("Codex catalog sync hardening", () => {
 
     // config has NO providers => gatherRoutedModels returns [] (transient empty fetch).
     const r = runScript(codexHome, opencodexHome, `
-      const { syncCatalogModels } = require("./src/codex-catalog");
+      const { syncCatalogModels } = require("./src/codex/catalog");
       syncCatalogModels({ providers: {} }).then(res => console.log(JSON.stringify(res)));
     `);
     expect(r.status).toBe(0);
@@ -124,7 +130,7 @@ describe("Codex catalog sync hardening", () => {
     }, null, 2) + "\n");
 
     const r = runScript(codexHome, opencodexHome, `
-      const { syncCatalogModels } = require("./src/codex-catalog");
+      const { syncCatalogModels } = require("./src/codex/catalog");
       syncCatalogModels({
         providers: {
           openai: {
@@ -156,7 +162,7 @@ describe("Codex catalog sync hardening", () => {
     }, null, 2) + "\n");
 
     const r = runScript(codexHome, opencodexHome, `
-      const { syncCatalogModels } = require("./src/codex-catalog");
+      const { syncCatalogModels } = require("./src/codex/catalog");
       syncCatalogModels({
         providers: {
           cursor: {
@@ -182,7 +188,7 @@ describe("Codex catalog sync hardening", () => {
     writeFileSync(join(alternateHome, "config.toml"), 'model_catalog_json = "nested/catalog.json"\n', "utf8");
 
     const r = runScript(codexHome, opencodexHome, `
-      const { readCodexCatalogPath } = require("./src/codex-catalog");
+      const { readCodexCatalogPath } = require("./src/codex/catalog");
       process.env.CODEX_HOME = ${JSON.stringify(alternateHome)};
       console.log(readCodexCatalogPath());
     `);

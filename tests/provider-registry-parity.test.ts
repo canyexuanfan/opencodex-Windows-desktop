@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { buildCatalogEntries } from "../src/codex-catalog";
+import { buildCatalogEntries } from "../src/codex/catalog";
 import { getJawcodeModelMetadata, resolveJawcodeProvider } from "../src/generated/jawcode-model-metadata";
-import { buildInitProviders } from "../src/init";
+import { buildInitProviders } from "../src/cli/init";
 import { OAUTH_PROVIDERS } from "../src/oauth";
 import { enrichProviderFromCatalog, KEY_LOGIN_PROVIDERS } from "../src/oauth/key-providers";
 import {
@@ -27,7 +27,7 @@ function nativeTemplate(): Record<string, unknown> {
 }
 
 const EXPECTED_KEY_PROVIDER_IDS = [
-  "openai-apikey", "umans", "opencode-go", "neuralwatt", "openrouter", "groq", "google", "google-vertex", "azure-openai",
+  "anthropic-apikey", "openai-apikey", "umans", "opencode-go", "neuralwatt", "openrouter", "groq", "google", "google-vertex", "azure-openai",
   "deepseek", "cerebras", "together", "fireworks", "firepass", "moonshot",
   "huggingface", "nvidia", "venice", "zai", "nanogpt", "synthetic", "qwen-portal",
   "qianfan", "alibaba", "parallel", "zenmux", "litellm", "ollama-cloud", "mistral",
@@ -54,16 +54,49 @@ describe("provider registry parity", () => {
       escapeBuiltinToolNames: true,
     });
     expect(KEY_LOGIN_PROVIDERS.umans.noVisionModels).toContain("umans-glm-5.2");
+    // Zen Go text-only models are vision-sidecar covered; Kimi K2.7 Code is multimodal and must NOT be listed.
+    expect(KEY_LOGIN_PROVIDERS["opencode-go"].noVisionModels).toEqual([
+      "glm-5.2", "glm-5", "glm-5.1",
+      "deepseek-v4-flash", "deepseek-v4-pro",
+      "mimo-v2-pro", "mimo-v2.5-pro",
+      "minimax-m2.5", "minimax-m2.7",
+      "qwen3.7-max",
+    ]);
+    expect(KEY_LOGIN_PROVIDERS["opencode-go"].noVisionModels).not.toContain("kimi-k2.7-code");
     expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-coder"]).toBe(262_144);
     expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-glm-5.2"]).toBe(405_504);
     expect(KEY_LOGIN_PROVIDERS.umans.modelInputModalities?.["umans-coder"]).toEqual(["text", "image"]);
     expect(KEY_LOGIN_PROVIDERS.umans.modelInputModalities?.["umans-glm-5.2"]).toEqual(["text"]);
+    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].models).toEqual(["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelContextWindows?.["gpt-5.6-sol"]).toBe(372_000);
+    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelContextWindows?.["gpt-5.6-terra"]).toBe(372_000);
+    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelContextWindows?.["gpt-5.6-luna"]).toBe(372_000);
     expect(KEY_LOGIN_PROVIDERS.openrouter.models).toContain("anthropic/claude-sonnet-5");
+    expect(KEY_LOGIN_PROVIDERS.openrouter.models).toContain("openai/gpt-5.6-sol");
+    expect(KEY_LOGIN_PROVIDERS.openrouter.models).toContain("openai/gpt-5.6-terra");
+    expect(KEY_LOGIN_PROVIDERS.openrouter.models).toContain("openai/gpt-5.6-luna");
     expect(KEY_LOGIN_PROVIDERS.openrouter.modelContextWindows?.["anthropic/claude-sonnet-5"]).toBe(1_000_000);
+    expect(KEY_LOGIN_PROVIDERS.openrouter.modelContextWindows?.["openai/gpt-5.6-sol"]).toBe(372_000);
+    expect(KEY_LOGIN_PROVIDERS.openrouter.modelContextWindows?.["openai/gpt-5.6-terra"]).toBe(372_000);
+    expect(KEY_LOGIN_PROVIDERS.openrouter.modelContextWindows?.["openai/gpt-5.6-luna"]).toBe(372_000);
     expect(KEY_LOGIN_PROVIDERS.deepseek.models).toContain("deepseek-v4-pro");
     expect(KEY_LOGIN_PROVIDERS.deepseek.modelReasoningEfforts?.["deepseek-v4-pro"]).toEqual(["high", "xhigh"]);
     expect(KEY_LOGIN_PROVIDERS.deepseek.modelReasoningEffortMap?.["deepseek-v4-pro"]?.xhigh).toBe("max");
     expect(KEY_LOGIN_PROVIDERS.deepseek.preserveReasoningContentModels).toEqual(["deepseek-v4-pro", "deepseek-v4-flash"]);
+  });
+
+  test("Anthropic API-key provider mirrors the OAuth entry's models on the key flow", () => {
+    const anthropicOauth = PROVIDER_REGISTRY.find(entry => entry.id === "anthropic");
+    expect(KEY_LOGIN_PROVIDERS["anthropic-apikey"]).toMatchObject({
+      label: "Anthropic (API key)",
+      adapter: "anthropic",
+      baseUrl: "https://api.anthropic.com",
+      dashboardUrl: "https://console.anthropic.com/settings/keys",
+      defaultModel: "claude-sonnet-4-6",
+      liveModels: true,
+    });
+    expect(KEY_LOGIN_PROVIDERS["anthropic-apikey"].models).toEqual(anthropicOauth?.models);
+    expect(KEY_LOGIN_PROVIDERS["anthropic-apikey"].modelContextWindows).toEqual(anthropicOauth?.modelContextWindows);
   });
 
   test("CLI init providers are derived from the registry", () => {
@@ -160,7 +193,7 @@ describe("provider registry parity", () => {
   test("GUI preset projection preserves current featured set plus key catalog and custom", () => {
     const featured = deriveFeaturedProviderIds();
     expect(featured).toEqual([
-      "openai", "xai", "anthropic", "kimi", "openai-apikey", "umans", "opencode-go", "openrouter",
+      "openai", "xai", "anthropic", "anthropic-apikey", "kimi", "openai-apikey", "umans", "opencode-go", "openrouter",
       "groq", "google", "azure-openai", "ollama", "vllm", "lm-studio",
     ]);
 
@@ -213,6 +246,8 @@ describe("provider registry parity", () => {
     expect(deriveJawcodeAliases()).toEqual({
       xai: "xai",
       anthropic: "anthropic",
+      "anthropic-apikey": "anthropic",
+      "anthropic-key": "anthropic",
       kimi: "moonshot",
       "opencode-go": "opencode-go",
       openrouter: "openrouter",

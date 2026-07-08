@@ -39,8 +39,14 @@ export function detectGrokCliToken(): OAuthCredentials | null {
   }
 }
 
-/** Read the Claude Code OAuth credential from macOS Keychain. Windows/Linux: use `ocx login`. */
-function readClaudeSecureStorage(): string | null {
+/** Claude Code config dir: `CLAUDE_CONFIG_DIR` override, else `~/.claude`. */
+function claudeConfigDir(): string {
+  const explicit = process.env.CLAUDE_CONFIG_DIR?.trim();
+  return explicit ? explicit : join(homedir(), ".claude");
+}
+
+/** Read the Claude Code OAuth credential from the macOS Keychain (darwin only). */
+function readClaudeKeychain(): string | null {
   if (process.platform !== "darwin") return null;
   try {
     return execSync(`security find-generic-password -s "${CLAUDE_KEYCHAIN_SERVICE}" -w`, {
@@ -51,9 +57,28 @@ function readClaudeSecureStorage(): string | null {
   }
 }
 
-export function detectClaudeCodeToken(): OAuthCredentials | null {
-  const raw = readClaudeSecureStorage();
-  if (!raw) return null;
+/**
+ * Read the Claude Code credential file (`<config-dir>/.credentials.json`).
+ * Claude Code writes this on Linux/Windows (and on macOS when the Keychain is
+ * unavailable); it carries the same `claudeAiOauth` payload as the Keychain item.
+ * Exported for tests.
+ */
+export function readClaudeCredentialsFile(): string | null {
+  const path = join(claudeConfigDir(), ".credentials.json");
+  try {
+    if (!existsSync(path)) return null;
+    return readFileSync(path, "utf8").trim();
+  } catch {
+    return null;
+  }
+}
+
+/** Keychain first on macOS, then the cross-platform credentials file. */
+function readClaudeSecureStorage(): string | null {
+  return readClaudeKeychain() ?? readClaudeCredentialsFile();
+}
+
+export function parseClaudeOauthPayload(raw: string): OAuthCredentials | null {
   try {
     const data = JSON.parse(raw) as { claudeAiOauth?: { accessToken?: string; refreshToken?: string; expiresAt?: number } };
     const o = data.claudeAiOauth;
@@ -62,4 +87,10 @@ export function detectClaudeCodeToken(): OAuthCredentials | null {
   } catch {
     return null;
   }
+}
+
+export function detectClaudeCodeToken(): OAuthCredentials | null {
+  const raw = readClaudeSecureStorage();
+  if (!raw) return null;
+  return parseClaudeOauthPayload(raw);
 }

@@ -1,6 +1,6 @@
 {
   "name": "@bitkyc08/opencodex",
-  "version": "2.6.25",
+  "version": "2.6.31-preview.20260707",
   "description": "Universal provider proxy for OpenAI Codex — use any LLM with Codex CLI/App/SDK",
   "type": "module",
   "main": "./bin/package-main.mjs",
@@ -32,10 +32,10 @@
     "bun"
   ],
   "scripts": {
-    "dev": "bun run src/cli.ts start",
-    "dev:proxy": "bun run src/cli.ts start",
+    "dev": "bun run src/cli/index.ts start",
+    "dev:proxy": "bun run src/cli/index.ts start",
     "dev:gui": "cd gui && bun run dev",
-    "start": "bun run src/cli.ts start",
+    "start": "bun run src/cli/index.ts start",
     "test": "bun test ./tests/",
     "typecheck": "bun x tsc --noEmit",
     "privacy:scan": "bun scripts/privacy-scan.ts",

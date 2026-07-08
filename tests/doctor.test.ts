@@ -8,10 +8,11 @@ import {
   collectConfiguredProxy,
   collectProxyEnv,
   collectRunningProxyEnv,
+  collectWslDualInstall,
   parseProcessEnvBlock,
   probeWham,
   resolveCodexHomeDir,
-} from "../src/doctor";
+} from "../src/cli/doctor";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-doctor-test");
 const TEST_CODEX_HOME = join(TEST_DIR, "codex");
@@ -76,7 +77,7 @@ describe("doctor", () => {
     delete process.env.CODEX_HOME;
     const wslHome = join(TEST_DIR, "wsl-home");
     const usersRoot = join(TEST_DIR, "mnt-c", "Users");
-    const windowsCodexHome = join(usersRoot, "jun", ".codex");
+    const windowsCodexHome = join(usersRoot, "example", ".codex");
     mkdirSync(windowsCodexHome, { recursive: true });
     writeFileSync(join(windowsCodexHome, "config.toml"), "model_provider = \"opencodex\"\n");
 
@@ -93,7 +94,7 @@ describe("doctor", () => {
     const wslHome = join(TEST_DIR, "wsl-home");
     const linuxCodexHome = join(wslHome, ".codex");
     const usersRoot = join(TEST_DIR, "mnt-c", "Users");
-    const windowsCodexHome = join(usersRoot, "jun", ".codex");
+    const windowsCodexHome = join(usersRoot, "example", ".codex");
     mkdirSync(linuxCodexHome, { recursive: true });
     mkdirSync(windowsCodexHome, { recursive: true });
     writeFileSync(join(linuxCodexHome, "config.toml"), "model_provider = \"linux\"\n");
@@ -105,6 +106,66 @@ describe("doctor", () => {
       homedir: () => wslHome,
       usersRoot,
     })).toBe(linuxCodexHome);
+  });
+
+  test("collectWslDualInstall reports both sides plus interop codex on PATH", () => {
+    delete process.env.CODEX_HOME;
+    const wslHome = join(TEST_DIR, "wsl-home");
+    const linuxCodexHome = join(wslHome, ".codex");
+    const usersRoot = join(TEST_DIR, "mnt-c", "Users");
+    const windowsCodexHome = join(usersRoot, "example", ".codex");
+    mkdirSync(linuxCodexHome, { recursive: true });
+    mkdirSync(windowsCodexHome, { recursive: true });
+    writeFileSync(join(linuxCodexHome, "config.toml"), "model_provider = \"linux\"\n");
+    writeFileSync(join(windowsCodexHome, "config.toml"), "model_provider = \"windows\"\n");
+
+    const interopBin = "/mnt/c/Users/example/AppData/Roaming/npm";
+    const diag = collectWslDualInstall({
+      env: { WSL_DISTRO_NAME: "Ubuntu" },
+      platform: "linux",
+      homedir: () => wslHome,
+      usersRoot,
+      effectiveCodexHome: linuxCodexHome,
+      pathValue: interopBin,
+      existsSync: (p: string) => p.startsWith(interopBin) ? p === `${interopBin}/codex.exe` : existsSync(p),
+    });
+
+    expect(diag.wsl).toBe(true);
+    expect(diag.dualInstall).toBe(true);
+    expect(diag.linuxCodexConfigured).toBe(true);
+    expect(diag.windowsCodexHomes).toEqual([windowsCodexHome]);
+    expect(diag.effectiveIsWindowsMount).toBe(false);
+    expect(diag.interopCodexOnPath).toBe(`${interopBin}/codex.exe`);
+  });
+
+  test("collectWslDualInstall is inert off WSL", () => {
+    const diag = collectWslDualInstall({ platform: "darwin", effectiveCodexHome: TEST_CODEX_HOME });
+    expect(diag.wsl).toBe(false);
+    expect(diag.dualInstall).toBe(false);
+    expect(diag.interopCodexOnPath).toBeNull();
+  });
+
+  test("collectWslDualInstall honors a custom wsl.conf automount root", () => {
+    delete process.env.CODEX_HOME;
+    const wslHome = join(TEST_DIR, "wsl-home-root");
+    const linuxCodexHome = join(wslHome, ".codex");
+    mkdirSync(linuxCodexHome, { recursive: true });
+    writeFileSync(join(linuxCodexHome, "config.toml"), "model_provider = \"linux\"\n");
+
+    const interopBin = "/win/c/Users/example/AppData/Roaming/npm";
+    const diag = collectWslDualInstall({
+      env: { WSL_DISTRO_NAME: "Ubuntu" },
+      platform: "linux",
+      homedir: () => wslHome,
+      wslConf: "[automount]\nroot = /win/\n",
+      effectiveCodexHome: linuxCodexHome,
+      pathValue: interopBin,
+      existsSync: (p: string) => p.startsWith("/win/") ? p === `${interopBin}/codex` : existsSync(p),
+      readdirSync: (p: string) => p === "/win/c/Users" ? [] : [],
+    });
+
+    expect(diag.automountRoot).toBe("/win");
+    expect(diag.interopCodexOnPath).toBe(`${interopBin}/codex`);
   });
 
   test("detectFsType flags /mnt drvfs mounts and leaves ext4 home alone", () => {

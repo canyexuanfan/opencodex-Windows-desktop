@@ -114,7 +114,7 @@ describe("request log metadata", () => {
         usage: {
           input_tokens: 100,
           output_tokens: 23,
-          input_tokens_details: { cached_tokens: 7 },
+          input_tokens_details: { cached_tokens: 7, cache_write_tokens: 3 },
           output_tokens_details: { reasoning_tokens: 5 },
         },
       }), { status: 200, headers: { "content-type": "application/json" } }),
@@ -128,11 +128,12 @@ describe("request log metadata", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
       usageStatus: "reported",
-      totalTokens: 123,
+      totalTokens: 126,
       usage: {
         inputTokens: 100,
         outputTokens: 23,
         cachedInputTokens: 7,
+        cacheCreationInputTokens: 3,
         reasoningOutputTokens: 5,
       },
     });

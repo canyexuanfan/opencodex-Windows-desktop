@@ -89,11 +89,14 @@ describe.skipIf(!runnable)("ocx launcher graceful shutdown", () => {
         let exited = false;
         child.on("exit", () => { exited = true; });
 
-        // 1. Proxy comes up + injected the Codex config.
+        // 1. Proxy comes up + injected the Codex config (Design B root override on loopback).
         const up = await waitUntil(() => healthy(port), 20_000);
         expect(up).toBe(true);
         expect(existsSync(join(home, "ocx.pid"))).toBe(true);
-        expect(readFileSync(codexConfig, "utf8")).toContain("model_providers.opencodex");
+        const injected = readFileSync(codexConfig, "utf8");
+        expect(injected).toContain("# Auto-injected by opencodex");
+        expect(injected).toContain(`openai_base_url = "http://127.0.0.1:${port}/v1"`);
+        expect(injected).not.toContain("model_providers.opencodex");
 
         // 2. Signal ONLY the launcher PID (the exact orphan trigger).
         child.kill(signal);

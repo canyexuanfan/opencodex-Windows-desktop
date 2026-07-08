@@ -154,8 +154,9 @@ function credentialsFromPayload(payload: GoogleTokenPayload, refreshFallback = "
 
 class AntigravityOAuthFlow extends OAuthCallbackFlow {
   #verifier = "";
+  #forceAccountSelect: boolean;
 
-  constructor(ctrl: OAuthController) {
+  constructor(ctrl: OAuthController, opts?: { forceAccountSelect?: boolean }) {
     super(ctrl, {
       preferredPort: CALLBACK_PORT,
       callbackPath: CALLBACK_PATH,
@@ -163,6 +164,7 @@ class AntigravityOAuthFlow extends OAuthCallbackFlow {
       callbackBindHostname: "127.0.0.1",
       redirectUri: `http://127.0.0.1:${CALLBACK_PORT}${CALLBACK_PATH}`,
     } satisfies OAuthCallbackFlowOptions);
+    this.#forceAccountSelect = opts?.forceAccountSelect === true;
   }
 
   async generateAuthUrl(state: string, redirectUri: string): Promise<{ url: string; instructions?: string }> {
@@ -176,7 +178,8 @@ class AntigravityOAuthFlow extends OAuthCallbackFlow {
       code_challenge: pkce.challenge,
       code_challenge_method: "S256",
       access_type: "offline",
-      prompt: "consent",
+      // select_account lets the user pick a DIFFERENT Google account when adding a second one.
+      prompt: this.#forceAccountSelect ? "consent select_account" : "consent",
       state,
     });
     return {
@@ -207,8 +210,8 @@ class AntigravityOAuthFlow extends OAuthCallbackFlow {
   }
 }
 
-export async function loginAntigravity(ctrl: OAuthController): Promise<OAuthCredentials> {
-  return new AntigravityOAuthFlow(ctrl).login();
+export async function loginAntigravity(ctrl: OAuthController, opts?: { forceAccountSelect?: boolean }): Promise<OAuthCredentials> {
+  return new AntigravityOAuthFlow(ctrl, opts).login();
 }
 
 export async function refreshAntigravityToken(refreshToken: string, signal?: AbortSignal): Promise<OAuthCredentials> {

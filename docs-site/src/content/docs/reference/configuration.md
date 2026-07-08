@@ -81,6 +81,10 @@ network. Only do this on trusted networks, and always set a strong `OPENCODEX_AP
 | `contextWindow?` | `number` | Provider-wide Codex-visible context-window cap for routed catalog entries. Live metadata below this value is kept. |
 | `modelContextWindows?` | `Record<string,number>` | Model-specific context-window caps. These override `contextWindow` for matching model ids and never raise smaller live metadata. |
 | `modelInputModalities?` | `Record<string,string[]>` | Model-specific catalog input hints such as `["text"]` or `["text", "image"]`. |
+| `reasoningEfforts?` | `string[]` | Provider-wide Codex reasoning labels to advertise and send (`low`, `medium`, `high`, `xhigh`, `max`). |
+| `modelReasoningEfforts?` | `Record<string,string[]>` | Model-specific reasoning labels. An empty list hides the effort control for that model. |
+| `reasoningEffortMap?` | `Record<string,string>` | Provider-wide wire aliases for reasoning labels. Use only when the upstream expects a different value. |
+| `modelReasoningEffortMap?` | `Record<string,Record<string,string>>` | Model-specific wire aliases for reasoning labels. |
 | `headers?` | `Record<string,string>` | Extra HTTP headers sent upstream. |
 | `authMode?` | `"key" \| "forward" \| "oauth"` | How to authenticate (default `key`). See [Providers](/opencodex/guides/providers/#auth-modes). |
 | `noReasoningModels?` | `string[]` | Models that reject a reasoning/thinking param — the adapter drops `reasoning_effort` for them. |
@@ -94,6 +98,13 @@ want Codex to see only the models pinned in `models`:
 
 When `liveModels` is `false` and `models` is empty or omitted, opencodex exposes no routed models
 for that provider.
+
+Preview GPT-5.6 fallback entries use the same mechanism. The OpenAI API-key preset seeds
+`gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`; the OpenRouter preset seeds the same models as
+`openai/gpt-5.6-sol`, `openai/gpt-5.6-terra`, and `openai/gpt-5.6-luna`. Both presets attach
+model-specific `modelContextWindows` values of `372000`, and the synced Codex catalog advertises
+`max` reasoning while keeping `xhigh` distinct. Leave `liveModels` on to merge live provider results
+with those explicit additions, or set it to `false` to expose only `models`.
 
 ```json
 {

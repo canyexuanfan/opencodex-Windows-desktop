@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import AddProviderModal from "../components/AddProviderModal";
 import { Notice } from "../ui";
-import { IconPlus, IconTrash, IconLock, IconExternal, IconPower } from "../icons";
+import { IconPlus, IconTrash, IconLock, IconExternal, IconPower, IconChevron } from "../icons";
 import { useT } from "../i18n";
 import type { AccountQuota } from "../codex-quota-utils";
 import QuotaBars from "../components/QuotaBars";
@@ -15,6 +15,8 @@ interface Config {
 
 interface OAuthStatus { loggedIn: boolean; email?: string; error?: string }
 interface ProviderQuotaReport { provider: string; quota: AccountQuota; source: string; updatedAt: number }
+interface OAuthAccount { id: string; email?: string; active: boolean; needsReauth?: boolean; expiresAt?: number }
+interface ApiKeyEntry { id: string; label?: string; masked: string; active: boolean }
 
 // Friendly labels for the OAuth providers the proxy supports.
 const OAUTH_LABELS: Record<string, string> = {
@@ -37,6 +39,11 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const [quotaReports, setQuotaReports] = useState<Record<string, ProviderQuotaReport>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [loginInfo, setLoginInfo] = useState<{ provider: string; url?: string; instructions?: string } | null>(null);
+  const [accountSets, setAccountSets] = useState<Record<string, { activeAccountId: string | null; accounts: OAuthAccount[] }>>({});
+  const [openAccounts, setOpenAccounts] = useState<Record<string, boolean>>({});
+  const [keyPools, setKeyPools] = useState<Record<string, ApiKeyEntry[]>>({});
+  const [addingKeyFor, setAddingKeyFor] = useState<string | null>(null);
+  const [newKeyValue, setNewKeyValue] = useState("");
   const aliveRef = useRef(true);
 
   const notify = (msg: string, ok: boolean) => { setStatus(msg); setStatusOk(ok); };
@@ -76,11 +83,126 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     }
   };
 
+  // Multiauth: per-provider logged-in account lists for the card dropdowns (oauth cards only;
+  // the Codex/ChatGPT passthrough pool has its own page).
+  const fetchAccountSets = async (providers: string[]) => {
+    const entries = await Promise.all(providers.map(async p => {
+      const data = await fetch(`${apiBase}/api/oauth/accounts?provider=${p}`).then(r => r.json()).catch(() => null) as { activeAccountId?: string | null; accounts?: OAuthAccount[] } | null;
+      return [p, { activeAccountId: data?.activeAccountId ?? null, accounts: data?.accounts ?? [] }] as const;
+    }));
+    setAccountSets(Object.fromEntries(entries));
+  };
+
+  const switchAccount = async (provider: string, account: OAuthAccount) => {
+    if (account.active) return;
+    const res = await fetch(`${apiBase}/api/oauth/accounts/active`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, accountId: account.id }),
+    });
+    if (res.ok) {
+      notify(t("prov.accountSwitched", { email: account.email ?? account.id }), true);
+      fetchAccountSets(Object.keys(accountSets));
+      fetchOauth();
+      fetchProviderQuotas(true);
+    } else {
+      const data = await res.json().catch(() => ({}));
+      notify(data.error || t("prov.accountSwitchFail"), false);
+    }
+  };
+
+  // Multi-key pool (API-key twin of OAuth multiauth): list masked keys per key-auth provider.
+  const fetchKeyPools = async (providers: string[]) => {
+    const entries = await Promise.all(providers.map(async name => {
+      const data = await fetch(`${apiBase}/api/providers/keys?name=${encodeURIComponent(name)}`).then(r => r.json()).catch(() => null) as { keys?: ApiKeyEntry[] } | null;
+      return [name, data?.keys ?? []] as const;
+    }));
+    setKeyPools(Object.fromEntries(entries));
+  };
+
+  const switchApiKey = async (provider: string, entry: ApiKeyEntry) => {
+    if (entry.active) return;
+    const res = await fetch(`${apiBase}/api/providers/keys/active`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: provider, id: entry.id }),
+    });
+    if (res.ok) {
+      notify(t("prov.keySwitched", { key: entry.label ?? entry.masked }), true);
+      fetchKeyPools(Object.keys(keyPools));
+      fetchProviderQuotas(true);
+    } else {
+      const data = await res.json().catch(() => ({}));
+      notify(data.error || t("prov.keySwitchFail"), false);
+    }
+  };
+
+  const removeApiKey = async (provider: string, entry: ApiKeyEntry) => {
+    if (!window.confirm(t("prov.keyRemoveConfirm", { key: entry.label ?? entry.masked }))) return;
+    const res = await fetch(`${apiBase}/api/providers/keys?name=${encodeURIComponent(provider)}&id=${encodeURIComponent(entry.id)}`, { method: "DELETE" });
+    if (res.ok) {
+      notify(t("prov.keyRemoved", { key: entry.label ?? entry.masked }), true);
+      fetchKeyPools(Object.keys(keyPools));
+      fetchConfig();
+      fetchProviderQuotas(true);
+    }
+  };
+
+  const addApiKey = async (provider: string) => {
+    const key = newKeyValue.trim();
+    if (!key) return;
+    const res = await fetch(`${apiBase}/api/providers/keys`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: provider, key }),
+    });
+    if (res.ok) {
+      notify(t("prov.keyAdded", { name: provider }), true);
+      setNewKeyValue("");
+      setAddingKeyFor(null);
+      fetchKeyPools(Object.keys(keyPools).includes(provider) ? Object.keys(keyPools) : [...Object.keys(keyPools), provider]);
+      fetchConfig();
+      fetchProviderQuotas(true);
+    } else {
+      const data = await res.json().catch(() => ({}));
+      notify(data.error || t("prov.keyAddFail"), false);
+    }
+  };
+
+  const removeAccount = async (provider: string, account: OAuthAccount) => {
+    if (!window.confirm(t("prov.accountRemoveConfirm", { email: account.email ?? account.id }))) return;
+    const res = await fetch(`${apiBase}/api/oauth/accounts?provider=${provider}&id=${encodeURIComponent(account.id)}`, { method: "DELETE" });
+    if (res.ok) {
+      notify(t("prov.accountRemoved", { email: account.email ?? account.id }), true);
+      fetchAccountSets(Object.keys(accountSets));
+      fetchOauth();
+      fetchProviderQuotas(true);
+    }
+  };
+
   useEffect(() => {
     fetchConfig();
     fetchOauth();
     fetchProviderQuotas();
   }, [apiBase]);
+
+  // Load account sets once config tells us which providers are oauth-backed.
+  const oauthCardProviders = config ? Object.entries(config.providers).filter(([, p]) => p.authMode === "oauth").map(([n]) => n) : [];
+  const oauthCardKey = oauthCardProviders.join(",");
+  useEffect(() => {
+    if (oauthCardProviders.length > 0) fetchAccountSets(oauthCardProviders);
+  }, [apiBase, oauthCardKey]);
+
+  // Load key pools for key-auth providers that already have a key configured.
+  const keyCardProviders = config
+    ? Object.entries(config.providers)
+        .filter(([, p]) => p.hasApiKey && p.authMode !== "oauth" && p.authMode !== "forward")
+        .map(([n]) => n)
+    : [];
+  const keyCardKey = keyCardProviders.join(",");
+  useEffect(() => {
+    if (keyCardProviders.length > 0) fetchKeyPools(keyCardProviders);
+  }, [apiBase, keyCardKey]);
 
   const saveConfig = async () => {
     try {
@@ -103,7 +225,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     }
   };
 
-  const loginOAuth = async (provider: string) => {
+  const loginOAuth = async (provider: string, addAccount = false) => {
     setBusy(provider);
     setStatus("");
     setLoginInfo(null);
@@ -111,22 +233,26 @@ export default function Providers({ apiBase }: { apiBase: string }) {
       const res = await fetch(`${apiBase}/api/oauth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider }),
+        body: JSON.stringify(addAccount ? { provider, addAccount: true } : { provider }),
       });
       const data = await res.json();
       if (!res.ok) { notify(data.error || t("prov.loginFailStart", { provider: oauthLabel(provider) }), false); return; }
       // The server opens the browser itself (popup-safe). Show the URL/device code as a fallback.
       if (data.url || data.instructions) setLoginInfo({ provider, url: data.url, instructions: data.instructions });
+      const baselineCount = accountSets[provider]?.accounts.length ?? 0;
       // Poll until the loopback callback (or device flow) completes.
       for (let i = 0; i < 150 && aliveRef.current; i++) {
         await new Promise(r => setTimeout(r, 2000));
-        const s: OAuthStatus | null = await fetch(`${apiBase}/api/oauth/status?provider=${provider}`).then(r => r.json()).catch(() => null);
+        const s: (OAuthStatus & { accounts?: OAuthAccount[] }) | null = await fetch(`${apiBase}/api/oauth/status?provider=${provider}`).then(r => r.json()).catch(() => null);
         if (!s) continue;
-        if (s.loggedIn) {
+        // For add-account flows the provider is already "logged in": wait for the account count to grow.
+        const completed = addAccount ? (s.accounts?.length ?? 0) > baselineCount : s.loggedIn;
+        if (completed) {
           setOauthStatus(prev => ({ ...prev, [provider]: s }));
           notify(t("prov.loginOk", { provider: oauthLabel(provider), cmd: "ocx sync" }), true);
           setLoginInfo(null);
           fetchConfig();
+          fetchAccountSets(Object.keys(accountSets).includes(provider) ? Object.keys(accountSets) : [...Object.keys(accountSets), provider]);
           fetchProviderQuotas(true);
           break;
         }
@@ -173,6 +299,11 @@ export default function Providers({ apiBase }: { apiBase: string }) {
 
   if (!config) return <div className="muted">{t("prov.loadingConfig")}</div>;
 
+  // API-key providers shown alongside OAuth logins in the account panel.
+  const keyProviders = Object.entries(config.providers)
+    .filter(([name, prov]) => prov.hasApiKey && prov.authMode !== "oauth" && prov.authMode !== "forward" && !oauthProviders.includes(name))
+    .map(([name]) => name);
+
   return (
     <>
       <div className="page-head">
@@ -201,36 +332,59 @@ export default function Providers({ apiBase }: { apiBase: string }) {
           <IconLock style={{ width: 16, height: 16, color: "var(--accent)" }} />
           <span style={{ fontWeight: 600 }}>{t("prov.accountLogin")}</span>
         </div>
-        <div className="stack" style={{ gap: 12 }}>
-          {oauthProviders.length === 0 && <span className="muted" style={{ fontSize: 13 }}>{t("prov.noOauth")}</span>}
+        <div className="oauth-grid">
+          {oauthProviders.length === 0 && keyProviders.length === 0 && (
+            <span className="muted" style={{ fontSize: 13, gridColumn: "1 / -1" }}>{t("prov.noOauth")}</span>
+          )}
           {oauthProviders.map(p => {
             const st = oauthStatus[p] ?? { loggedIn: false };
             const isBusy = busy === p;
+            const icon = providerIconSrc(p);
             return (
-              <div key={p} className="row" style={{ flexWrap: "wrap" }}>
-                <span style={{ fontSize: 13, minWidth: 170, display: "inline-flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontWeight: 600 }}>{oauthLabel(p)}</span>
+              <div key={p} className="oauth-row">
+                <span className="oauth-name" title={oauthLabel(p)}>
+                  <span className="provider-icon provider-icon-sm">{icon && <img src={icon} alt="" aria-hidden="true" />}</span>
+                  <span className="oauth-name-text">{p}</span>
+                </span>
+                <span className="oauth-status">
+                  <span className={`dot ${st.loggedIn ? "dot-green" : "dot-muted"}`} />
                   {st.loggedIn ? (
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "var(--green)" }}>
-                      <span className="dot dot-green" />{t("prov.loggedIn")}{st.email ? ` (${st.email})` : ""}
-                    </span>
+                    <span className="oauth-email" style={{ color: "var(--green)" }}>{st.email ?? t("prov.loggedIn")}</span>
                   ) : (
-                    <span className="muted">{t("prov.notLoggedIn")}</span>
+                    <span className="oauth-email muted">{t("prov.notLoggedIn")}</span>
                   )}
                 </span>
-                {st.loggedIn ? (
-                  <button className="btn btn-ghost btn-sm" onClick={() => logoutOAuth(p)}>{t("prov.logout")}</button>
-                ) : (
-                  <button className="btn btn-primary btn-sm" onClick={() => loginOAuth(p)} disabled={isBusy}>
-                    {isBusy ? <><span className="spin" />{t("prov.waitingBrowser")}</> : <><IconLock />{t("prov.loginWith", { provider: oauthLabel(p) })}</>}
-                  </button>
-                )}
+                <span className="oauth-actions">
+                  {st.loggedIn ? (
+                    <button className="btn btn-ghost btn-sm" onClick={() => logoutOAuth(p)}>{t("prov.logout")}</button>
+                  ) : (
+                    <button className="btn btn-primary btn-sm" onClick={() => loginOAuth(p)} disabled={isBusy}>
+                      {isBusy ? <><span className="spin" />{t("prov.waitingBrowser")}</> : <><IconLock />{t("prov.login")}</>}
+                    </button>
+                  )}
+                </span>
                 {loginInfo?.provider === p && (loginInfo.url || loginInfo.instructions) && (
-                  <span className="muted" style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  <span className="oauth-login-hint muted">
                     {loginInfo.url && <a href={loginInfo.url} target="_blank" rel="noreferrer" className="link-btn" style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><IconExternal />{t("prov.didntOpen")}</a>}
                     {loginInfo.instructions && <span>{loginInfo.instructions}</span>}
                   </span>
                 )}
+              </div>
+            );
+          })}
+          {keyProviders.map(name => {
+            const icon = providerIconSrc(name);
+            return (
+              <div key={name} className="oauth-row">
+                <span className="oauth-name" title={name}>
+                  <span className="provider-icon provider-icon-sm">{icon && <img src={icon} alt="" aria-hidden="true" />}</span>
+                  <span className="oauth-name-text">{name}</span>
+                </span>
+                <span className="oauth-status">
+                  <span className="dot dot-green" />
+                  <span className="oauth-email muted">{t("prov.hasApiKey")}</span>
+                </span>
+                <span className="oauth-actions" aria-hidden="true" />
               </div>
             );
           })}
@@ -254,6 +408,12 @@ export default function Providers({ apiBase }: { apiBase: string }) {
             const isDisabled = prov.disabled === true;
             const quota = quotaReports[name]?.quota ?? null;
             const icon = providerIconSrc(name);
+            const accountSet = prov.authMode === "oauth" ? accountSets[name] : undefined;
+            const isKeyAuth = prov.authMode !== "oauth" && prov.authMode !== "forward";
+            const keyPool = isKeyAuth && prov.hasApiKey ? (keyPools[name] ?? []) : [];
+            const showAccounts = (!!accountSet && accountSet.accounts.length > 0) || keyPool.length > 0;
+            const accountsOpen = openAccounts[name] === true;
+            const dropdownCount = accountSet?.accounts.length ?? keyPool.length;
             return (
               <div key={name} className={`card prov-card${isDisabled ? " prov-card-disabled" : ""}`}>
                 <div className="prov-card-main">
@@ -291,6 +451,90 @@ export default function Providers({ apiBase }: { apiBase: string }) {
                   </div>
                 </div>
                 {quota && <QuotaBars quota={quota} threshold={80} t={t} className="provider-quota" />}
+                {showAccounts && (
+                  <>
+                    <button
+                      className={`prov-accounts-toggle${accountsOpen ? " open" : ""}`}
+                      onClick={() => setOpenAccounts(prev => ({ ...prev, [name]: !accountsOpen }))}
+                      aria-expanded={accountsOpen}
+                      aria-label={t("prov.accountsAria", { name })}
+                    >
+                      {t("prov.accounts", { n: String(dropdownCount) })}
+                      <span className="chev"><IconChevron /></span>
+                    </button>
+                    {accountsOpen && (
+                      <div className="prov-accounts-list">
+                        {(accountSet?.accounts ?? []).map(account => (
+                          <button
+                            key={account.id}
+                            className={`prov-account-row${account.active ? " active" : ""}`}
+                            onClick={() => switchAccount(name, account)}
+                            title={account.active ? undefined : t("prov.accountSwitchTitle")}
+                          >
+                            <span className={`dot ${account.needsReauth ? "dot-amber" : account.active ? "dot-green" : "dot-muted"}`} />
+                            <span className="prov-account-email">{account.email ?? t("prov.accountNoLabel", { id: account.id })}</span>
+                            {account.needsReauth && <span className="badge badge-amber">{t("prov.accountReauth")}</span>}
+                            {account.active && <span className="badge badge-primary">{t("prov.accountActive")}</span>}
+                            <span
+                              className="prov-account-remove"
+                              role="button"
+                              aria-label={t("prov.accountRemoveAria", { email: account.email ?? account.id })}
+                              onClick={e => { e.stopPropagation(); removeAccount(name, account); }}
+                            >
+                              <IconTrash style={{ width: 13, height: 13 }} />
+                            </span>
+                          </button>
+                        ))}
+                        {keyPool.map(entry => (
+                          <button
+                            key={entry.id}
+                            className={`prov-account-row${entry.active ? " active" : ""}`}
+                            onClick={() => switchApiKey(name, entry)}
+                            title={entry.active ? undefined : t("prov.keySwitchTitle")}
+                          >
+                            <span className={`dot ${entry.active ? "dot-green" : "dot-muted"}`} />
+                            <span className="prov-account-email mono">{entry.label ? `${entry.label} · ${entry.masked}` : entry.masked}</span>
+                            {entry.active && <span className="badge badge-primary">{t("prov.accountActive")}</span>}
+                            <span
+                              className="prov-account-remove"
+                              role="button"
+                              aria-label={t("prov.keyRemoveAria", { key: entry.label ?? entry.masked })}
+                              onClick={e => { e.stopPropagation(); removeApiKey(name, entry); }}
+                            >
+                              <IconTrash style={{ width: 13, height: 13 }} />
+                            </span>
+                          </button>
+                        ))}
+                        {accountSet ? (
+                          <button className="prov-account-row prov-account-add" onClick={() => loginOAuth(name, true)} disabled={busy === name}>
+                            {busy === name ? <><span className="spin" />{t("prov.waitingBrowser")}</> : <><IconPlus style={{ width: 13, height: 13 }} />{t("prov.accountAdd")}</>}
+                          </button>
+                        ) : addingKeyFor === name ? (
+                          <div className="prov-account-row prov-account-keyform">
+                            <input
+                              className="input input-sm mono"
+                              type="password"
+                              autoFocus
+                              placeholder={t("prov.keyPlaceholder")}
+                              value={newKeyValue}
+                              onChange={e => setNewKeyValue(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === "Enter") addApiKey(name);
+                                if (e.key === "Escape") { setAddingKeyFor(null); setNewKeyValue(""); }
+                              }}
+                            />
+                            <button className="btn btn-primary btn-sm" onClick={() => addApiKey(name)} disabled={!newKeyValue.trim()}>{t("common.save")}</button>
+                            <button className="btn btn-ghost btn-sm" onClick={() => { setAddingKeyFor(null); setNewKeyValue(""); }}>{t("common.cancel")}</button>
+                          </div>
+                        ) : (
+                          <button className="prov-account-row prov-account-add" onClick={() => { setAddingKeyFor(name); setNewKeyValue(""); }}>
+                            <IconPlus style={{ width: 13, height: 13 }} />{t("prov.keyAdd")}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
             );
           })}

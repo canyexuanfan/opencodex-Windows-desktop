@@ -13,14 +13,17 @@
  */
 import { loadConfig } from "../config";
 import type { OcxConfig, OcxTokenGuardianConfig } from "../types";
-import { getCredential } from "./store";
-import { getValidAccessToken, listOAuthProviders, resolveRefreshPolicy } from "./index";
+import { listAccounts } from "./store";
+import { getValidAccessTokenForAccount, listOAuthProviders, OAuthLoginRequiredError, resolveRefreshPolicy } from "./index";
 import {
   getValidCodexToken,
   listCodexAccountIds,
+  markCodexAccountValidated,
+  markCodexAccountValidationFailed,
   readCodexAccountRecord,
   TokenRefreshError,
-} from "../codex-account-store";
+} from "../codex/account-store";
+import { codexWarmupFailureReason, warmCodexAccount } from "../codex/warmup";
 
 export interface TokenGuardianHandle {
   stop(): void;
@@ -29,6 +32,7 @@ export interface TokenGuardianHandle {
 export interface GuardianSweepResult {
   enabled: boolean;
   refreshed: string[];
+  warmed: string[];
   failed: string[];
   skippedBackoff: string[];
 }
@@ -40,6 +44,8 @@ const DEFAULTS = {
   leadSeconds: 900,
   failureBackoffBaseSeconds: 300,
   failureBackoffMaxSeconds: 3600,
+  codexWarmupMaxAgeSeconds: 691_200, // 8d — matches Codex managed-auth last_refresh cadence.
+  codexWarmupModel: "gpt-5.4-mini",
 };
 
 interface BackoffEntry {
@@ -67,6 +73,9 @@ function resolved(g: OcxTokenGuardianConfig | undefined) {
     leadSeconds: num(g?.leadSeconds, DEFAULTS.leadSeconds, 0),
     backoffBaseSeconds: num(g?.failureBackoffBaseSeconds, DEFAULTS.failureBackoffBaseSeconds, 0),
     backoffMaxSeconds: num(g?.failureBackoffMaxSeconds, DEFAULTS.failureBackoffMaxSeconds, 0),
+    codexWarmupEnabled: g?.codexWarmupEnabled === true,
+    codexWarmupMaxAgeSeconds: num(g?.codexWarmupMaxAgeSeconds, DEFAULTS.codexWarmupMaxAgeSeconds, 60),
+    codexWarmupModel: g?.codexWarmupModel?.trim() || DEFAULTS.codexWarmupModel,
   };
 }
 
@@ -106,50 +115,70 @@ async function runWithConcurrency(tasks: Array<() => Promise<void>>, limit: numb
 export async function guardianSweep(nowMs: number = Date.now()): Promise<GuardianSweepResult> {
   const config: OcxConfig = loadConfig();
   const g = config.tokenGuardian;
-  const result: GuardianSweepResult = { enabled: !!g?.enabled, refreshed: [], failed: [], skippedBackoff: [] };
+  const result: GuardianSweepResult = { enabled: !!g?.enabled, refreshed: [], warmed: [], failed: [], skippedBackoff: [] };
   if (!g?.enabled) return result;
 
   const opts = resolved(g);
   const horizonMs = (opts.tickSeconds + opts.leadSeconds) * 1000;
   const tasks: Array<() => Promise<void>> = [];
 
-  // A) single-account OAuth providers
+  // A) OAuth providers — every account in each provider's set (multiauth keep-alive),
+  // skipping accounts already marked needsReauth (terminal; only a re-login fixes them).
   for (const provider of listOAuthProviders()) {
     if (resolveRefreshPolicy(provider, config) !== "proactive") continue;
-    const cred = getCredential(provider);
-    if (!cred) continue;
-    if (cred.expires > nowMs + horizonMs) continue;
-    const key = `oauth:${provider}`;
-    if (inBackoff(key, nowMs)) { result.skippedBackoff.push(key); continue; }
-    tasks.push(async () => {
-      try {
-        await getValidAccessToken(provider);
-        backoff.delete(key);
-        result.refreshed.push(key);
-      } catch {
-        // Single-account refresh throws generic errors; treat as transient (exponential backoff).
-        recordFailure(key, nowMs, opts.backoffBaseSeconds, opts.backoffMaxSeconds, false);
-        result.failed.push(key);
-      }
-    });
+    for (const account of listAccounts(provider)) {
+      if (account.needsReauth) continue;
+      if (account.credential.expires > nowMs + horizonMs) continue;
+      const key = `oauth:${provider}:${account.id}`;
+      if (inBackoff(key, nowMs)) { result.skippedBackoff.push(key); continue; }
+      tasks.push(async () => {
+        try {
+          await getValidAccessTokenForAccount(provider, account.id);
+          backoff.delete(key);
+          result.refreshed.push(key);
+        } catch (err) {
+          // Terminal grant failures surface as OAuthLoginRequiredError (account marked
+          // needsReauth by the resolver) — back off at the ceiling; transient errors backoff exponentially.
+          const permanent = err instanceof OAuthLoginRequiredError;
+          recordFailure(key, nowMs, opts.backoffBaseSeconds, opts.backoffMaxSeconds, permanent);
+          result.failed.push(key);
+        }
+      });
+    }
   }
 
   // B) multi-account Codex pool (gated on the chatgpt provider's policy)
   if (resolveRefreshPolicy("chatgpt", config) === "proactive") {
     for (const id of listCodexAccountIds()) {
       const record = readCodexAccountRecord(id);
-      const cred = record?.deletedAt == null ? record?.credential : undefined;
+      if (!record || record.deletedAt != null) continue;
+      const cred = record.credential;
       if (!cred) continue;
-      if (cred.expiresAt > nowMs + horizonMs) continue;
+      const needsRefresh = cred.expiresAt <= nowMs + horizonMs;
+      const needsWarmup = opts.codexWarmupEnabled
+        && (record.lastCodexValidatedAt === undefined || nowMs - record.lastCodexValidatedAt > opts.codexWarmupMaxAgeSeconds * 1000);
+      if (!needsRefresh && !needsWarmup) continue;
       const key = `codex:${id}`;
       if (inBackoff(key, nowMs)) { result.skippedBackoff.push(key); continue; }
       tasks.push(async () => {
         try {
-          await getValidCodexToken(id);
+          const token = await getValidCodexToken(id);
+          if (needsRefresh) result.refreshed.push(key);
+          if (needsWarmup) {
+            await warmCodexAccount({
+              accessToken: token.accessToken,
+              chatgptAccountId: token.chatgptAccountId,
+              model: opts.codexWarmupModel,
+            });
+            markCodexAccountValidated(id, Date.now());
+            result.warmed.push(key);
+          }
           backoff.delete(key);
-          result.refreshed.push(key);
         } catch (err) {
           const permanent = err instanceof TokenRefreshError && (err.reason === "revoked" || err.reason === "expired");
+          if (needsWarmup && !(err instanceof TokenRefreshError)) {
+            markCodexAccountValidationFailed(id, codexWarmupFailureReason(err));
+          }
           recordFailure(key, nowMs, opts.backoffBaseSeconds, opts.backoffMaxSeconds, permanent);
           result.failed.push(key);
         }
@@ -182,8 +211,8 @@ export function startTokenGuardian(): TokenGuardianHandle {
   const runSweep = () => {
     void guardianSweep()
       .then(r => {
-        if (r.enabled && (r.refreshed.length || r.failed.length)) {
-          console.log(`🛡️  token-guardian: refreshed ${r.refreshed.length}, failed ${r.failed.length}`);
+        if (r.enabled && (r.refreshed.length || r.warmed.length || r.failed.length)) {
+          console.log(`🛡️  token-guardian: refreshed ${r.refreshed.length}, warmed ${r.warmed.length}, failed ${r.failed.length}`);
         }
       })
       .catch(err => console.log(`token-guardian sweep error: ${err instanceof Error ? err.message : String(err)}`))

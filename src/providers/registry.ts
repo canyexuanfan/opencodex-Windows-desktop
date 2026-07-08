@@ -39,6 +39,7 @@ export interface ProviderRegistryEntry {
   noPenaltyModels?: string[];
   autoToolChoiceOnlyModels?: string[];
   preserveReasoningContentModels?: string[];
+  thinkingToggleModels?: string[];
   escapeBuiltinToolNames?: boolean;
   oauthId?: string;
   jawcodeBundle?: string;
@@ -55,24 +56,50 @@ export type ProviderConfigSeed = Pick<
   | "liveModels" | "contextWindow" | "modelContextWindows" | "modelInputModalities"
   | "reasoningEfforts" | "modelReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap"
   | "noVisionModels" | "noReasoningModels" | "noTemperatureModels" | "noTopPModels" | "noPenaltyModels"
-  | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "escapeBuiltinToolNames"
+  | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "thinkingToggleModels" | "escapeBuiltinToolNames"
   | "googleMode" | "project" | "location"
 >;
 
-
-const OLLAMA_REASONING_MAP: Record<string, string> = { xhigh: "max" };
+// Shared between the OAuth (Claude account) and API-key Anthropic entries so both expose the
+// same static model seed.
+const ANTHROPIC_MODELS = ["claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"];
+const ANTHROPIC_MODEL_CONTEXT_WINDOWS: Record<string, number> = { "claude-sonnet-5": 1_000_000 };
 
 const ZAI_GLM_52_MODELS = ["glm-5.2", "glm-5.2[1m]"];
-const ZAI_GLM_52_REASONING_EFFORTS = ["low", "medium", "high", "xhigh"];
-const ZAI_GLM_52_REASONING_MAP: Record<string, string> = {
-  none: "none",
-  minimal: "none",
-  low: "high",
-  medium: "high",
-  high: "high",
-  xhigh: "max",
-  max: "max",
+const ZAI_GLM_52_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const OPENAI_GPT56_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+const OPENAI_GPT56_CONTEXT_WINDOW = 372_000;
+const OPENAI_GPT56_CONTEXT_WINDOWS = {
+  "gpt-5.6-sol": OPENAI_GPT56_CONTEXT_WINDOW,
+  "gpt-5.6-terra": OPENAI_GPT56_CONTEXT_WINDOW,
+  "gpt-5.6-luna": OPENAI_GPT56_CONTEXT_WINDOW,
 };
+const OPENROUTER_GPT56_MODELS = OPENAI_GPT56_MODELS.map(id => `openai/${id}`);
+const OPENROUTER_GPT56_CONTEXT_WINDOWS = {
+  "openai/gpt-5.6-sol": OPENAI_GPT56_CONTEXT_WINDOW,
+  "openai/gpt-5.6-terra": OPENAI_GPT56_CONTEXT_WINDOW,
+  "openai/gpt-5.6-luna": OPENAI_GPT56_CONTEXT_WINDOW,
+};
+
+/**
+ * Vendor thinking-toggle models (MiMo v2.x, GLM 5/5.1 on Zen Go): the wire knob is
+ * `thinking: {type: enabled|disabled}` — a binary. Advertise a two-step Codex ladder
+ * (low = thinking off, high = thinking on) and map efforts onto the toggle. Zen Go
+ * pass-through probed live 2026-07-07 (glm-5.2 toggle verified; mimo/minimax accept shape).
+ */
+const THINKING_TOGGLE_EFFORTS = ["low", "high"];
+const THINKING_TOGGLE_MAP: Record<string, string> = {
+  none: "disabled",
+  minimal: "disabled",
+  low: "disabled",
+  medium: "enabled",
+  high: "enabled",
+  xhigh: "enabled",
+  max: "enabled",
+};
+const OPENCODE_GO_THINKING_TOGGLE_MODELS = [
+  "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2-omni", "mimo-v2-pro", "glm-5", "glm-5.1",
+];
 const DEEPSEEK_THINKING_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"];
 const DEEPSEEK_THINKING_EFFORTS = ["high", "xhigh"];
 const DEEPSEEK_THINKING_REASONING_MAP: Record<string, string> = {
@@ -98,17 +125,8 @@ const UMANS_MODELS = [
   "umans-glm-5.1",
   "umans-qwen3.6-35b-a3b",
 ];
-const UMANS_REASONING_EFFORTS = ["low", "medium", "high", "xhigh"];
-const UMANS_GLM_REASONING_EFFORTS = ["high", "xhigh"];
-const UMANS_GLM_REASONING_MAP: Record<string, string> = {
-  none: "high",
-  minimal: "high",
-  low: "high",
-  medium: "high",
-  high: "high",
-  xhigh: "max",
-  max: "max",
-};
+const UMANS_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const UMANS_GLM_REASONING_EFFORTS = ["high", "xhigh", "max"];
 const UMANS_TEXT_ONLY_MODELS = ["umans-glm-5.2", "umans-glm-5.1"];
 const UMANS_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "umans-coder": 262_144,
@@ -148,6 +166,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelContextWindows: cursorModelContextWindows(CURSOR_STATIC_MODELS),
     modelInputModalities: cursorModelInputModalities(CURSOR_STATIC_MODELS),
     modelReasoningEfforts: cursorModelReasoningEfforts(CURSOR_STATIC_MODELS),
+    // Cursor's wire protocol never forwards image parts (request-builder emits an unsupported-
+    // content marker), so the vision sidecar covers ALL cursor models regardless of what the
+    // upstream model could natively do. Live-discovered models outside the static list fall back
+    // to the same marker until they appear here.
+    noVisionModels: cursorModelIds(CURSOR_STATIC_MODELS),
   },
   {
     id: "xai",
@@ -174,8 +197,24 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     oauthId: "anthropic",
     jawcodeBundle: "anthropic",
     note: "Log in with your Claude account",
-    models: ["claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
-    modelContextWindows: { "claude-sonnet-5": 1_000_000 },
+    models: [...ANTHROPIC_MODELS],
+    modelContextWindows: { ...ANTHROPIC_MODEL_CONTEXT_WINDOWS },
+    defaultModel: "claude-sonnet-4-6",
+  },
+  {
+    id: "anthropic-apikey",
+    label: "Anthropic (API key)",
+    adapter: "anthropic",
+    baseUrl: "https://api.anthropic.com",
+    authKind: "key",
+    featured: true,
+    dashboardUrl: "https://console.anthropic.com/settings/keys",
+    jawcodeBundle: "anthropic",
+    extraMetadataAliases: ["anthropic-key"],
+    note: "Direct Anthropic API billing — no Claude subscription",
+    models: [...ANTHROPIC_MODELS],
+    liveModels: true,
+    modelContextWindows: { ...ANTHROPIC_MODEL_CONTEXT_WINDOWS },
     defaultModel: "claude-sonnet-4-6",
   },
   {
@@ -213,7 +252,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelContextWindows: KIRO_MODEL_CONTEXT_WINDOWS,
     modelReasoningEfforts: KIRO_MODEL_REASONING_EFFORTS,
   },
-  { id: "openai-apikey", label: "OpenAI (API key)", adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", authKind: "key", featured: true, dashboardUrl: "https://platform.openai.com/api-keys", defaultModel: "gpt-5.5" },
+  { id: "openai-apikey", label: "OpenAI (API key)", adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", authKind: "key", featured: true, dashboardUrl: "https://platform.openai.com/api-keys", defaultModel: "gpt-5.5", models: ["gpt-5.5", ...OPENAI_GPT56_MODELS], modelContextWindows: OPENAI_GPT56_CONTEXT_WINDOWS },
   {
     id: "umans",
     label: "Umans AI Coding Plan",
@@ -231,14 +270,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "umans-coder": UMANS_REASONING_EFFORTS,
       "umans-kimi-k2.7": UMANS_REASONING_EFFORTS,
       "umans-kimi-k2.6": UMANS_REASONING_EFFORTS,
-      "umans-flash": ["low", "medium", "high"],
+      "umans-flash": UMANS_REASONING_EFFORTS,
       "umans-glm-5.2": UMANS_GLM_REASONING_EFFORTS,
       "umans-glm-5.1": UMANS_GLM_REASONING_EFFORTS,
-      "umans-qwen3.6-35b-a3b": ["low", "medium", "high"],
-    },
-    modelReasoningEffortMap: {
-      "umans-glm-5.2": UMANS_GLM_REASONING_MAP,
-      "umans-glm-5.1": UMANS_GLM_REASONING_MAP,
+      "umans-qwen3.6-35b-a3b": UMANS_REASONING_EFFORTS,
     },
     noVisionModels: UMANS_TEXT_ONLY_MODELS,
     escapeBuiltinToolNames: true,
@@ -251,9 +286,25 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
       "kimi-k2.7-code": [],
       "kimi-k2.7-code-highspeed": [],
+      ...Object.fromEntries(OPENCODE_GO_THINKING_TOGGLE_MODELS.map(id => [id, THINKING_TOGGLE_EFFORTS])),
     },
-    modelReasoningEffortMap: { "glm-5.2": ZAI_GLM_52_REASONING_MAP },
+    // glm-5.2 uses identity labels now that `max` is a native Codex level (no alias map);
+    // the thinking-toggle map is a REAL wire alias (effort -> enabled/disabled) and stays.
+    modelReasoningEffortMap: {
+      ...Object.fromEntries(OPENCODE_GO_THINKING_TOGGLE_MODELS.map(id => [id, THINKING_TOGGLE_MAP])),
+    },
+    thinkingToggleModels: OPENCODE_GO_THINKING_TOGGLE_MODELS,
     noReasoningModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
+    // Text-only Zen Go models (jawcode metadata) — the vision sidecar describes images for
+    // every model listed here (and the catalog advertises image input on their behalf).
+    // Kimi K2.7 Code accepts text+image+video: do NOT list it here.
+    noVisionModels: [
+      "glm-5.2", "glm-5", "glm-5.1",
+      "deepseek-v4-flash", "deepseek-v4-pro",
+      "mimo-v2-pro", "mimo-v2.5-pro",
+      "minimax-m2.5", "minimax-m2.7",
+      "qwen3.7-max",
+    ],
     noTemperatureModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
     noTopPModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
     noPenaltyModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
@@ -283,12 +334,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "kimi-k2.6": [],
       "kimi-k2.6-fast": [],
       "kimi-k2.7-code": [],
-      "qwen3.5-397b": ["low", "medium", "high"],
+      "qwen3.5-397b": ["low", "medium", "high", "xhigh", "max"],
       "qwen3.5-397b-fast": [],
-      "qwen3.6-35b": ["low", "medium", "high"],
+      "qwen3.6-35b": ["low", "medium", "high", "xhigh", "max"],
       "qwen3.6-35b-fast": [],
     },
-    modelReasoningEffortMap: { "glm-5.2": ZAI_GLM_52_REASONING_MAP },
     noReasoningModels: ["glm-5.2-fast", "kimi-k2.5-fast", "kimi-k2.6-fast", "qwen3.5-397b-fast", "qwen3.6-35b-fast"],
     noVisionModels: ["glm-5.2", "glm-5.2-fast", "qwen3.5-397b", "qwen3.5-397b-fast"],
     noTemperatureModels: ["kimi-k2.7-code"],
@@ -297,13 +347,13 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     autoToolChoiceOnlyModels: ["kimi-k2.7-code"],
     preserveReasoningContentModels: NEURALWATT_REASONING_HISTORY_MODELS,
   },
-  { id: "openrouter", label: "OpenRouter", adapter: "openai-chat", baseUrl: "https://openrouter.ai/api/v1", authKind: "key", featured: true, dashboardUrl: "https://openrouter.ai/keys", jawcodeBundle: "openrouter", models: ["anthropic/claude-sonnet-5"], modelContextWindows: { "anthropic/claude-sonnet-5": 1_000_000 } },
+  { id: "openrouter", label: "OpenRouter", adapter: "openai-chat", baseUrl: "https://openrouter.ai/api/v1", authKind: "key", featured: true, dashboardUrl: "https://openrouter.ai/keys", jawcodeBundle: "openrouter", models: ["anthropic/claude-sonnet-5", ...OPENROUTER_GPT56_MODELS], modelContextWindows: { "anthropic/claude-sonnet-5": 1_000_000, ...OPENROUTER_GPT56_CONTEXT_WINDOWS } },
   { id: "groq", label: "Groq", adapter: "openai-chat", baseUrl: "https://api.groq.com/openai/v1", authKind: "key", featured: true, dashboardUrl: "https://console.groq.com/keys" },
   { id: "google", label: "Google Gemini", adapter: "google", baseUrl: "https://generativelanguage.googleapis.com", authKind: "key", featured: true, dashboardUrl: "https://aistudio.google.com/apikey", defaultModel: "gemini-3-pro", jawcodeBundle: "google", extraMetadataAliases: ["gemini"] },
   { id: "google-vertex", label: "Google Vertex AI", adapter: "google", baseUrl: "https://aiplatform.googleapis.com", authKind: "key", dashboardUrl: "https://console.cloud.google.com/vertex-ai", defaultModel: "gemini-3-pro", googleMode: "vertex", jawcodeBundle: "google", extraMetadataAliases: ["gemini-vertex"] },
   { id: "google-antigravity", label: "Google Antigravity", adapter: "google", baseUrl: "https://daily-cloudcode-pa.googleapis.com", authKind: "oauth", dashboardUrl: "https://antigravity.google", models: ANTIGRAVITY_MODELS, defaultModel: "gemini-3.5-flash-low", modelContextWindows: ANTIGRAVITY_MODEL_CONTEXT_WINDOWS, googleMode: "cloud-code-assist", jawcodeBundle: "google", extraMetadataAliases: ["antigravity", "gemini-antigravity"] },
   { id: "azure-openai", label: "Azure OpenAI", adapter: "azure-openai", baseUrl: "https://{resource}.openai.azure.com/openai", authKind: "key", featured: true, dashboardUrl: "https://portal.azure.com" },
-  { id: "ollama", label: "Ollama (local)", adapter: "openai-chat", baseUrl: "http://localhost:11434/v1", authKind: "local", featured: true, note: "Local — key usually blank", reasoningEffortMap: OLLAMA_REASONING_MAP },
+  { id: "ollama", label: "Ollama (local)", adapter: "openai-chat", baseUrl: "http://localhost:11434/v1", authKind: "local", featured: true, note: "Local — key usually blank" },
   { id: "vllm", label: "vLLM (local)", adapter: "openai-chat", baseUrl: "http://localhost:8000/v1", authKind: "local", featured: true, note: "Local — key usually blank" },
   { id: "lm-studio", label: "LM Studio (local)", adapter: "openai-chat", baseUrl: "http://localhost:1234/v1", authKind: "local", featured: true, note: "Local — no key needed" },
   {
@@ -350,7 +400,6 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     models: ["glm-5.2", "glm-5.2[1m]", "glm-5.1", "glm-5", "glm-4.6"],
     noVisionModels: ZAI_GLM_52_MODELS,
     modelReasoningEfforts: Object.fromEntries(ZAI_GLM_52_MODELS.map(id => [id, ZAI_GLM_52_REASONING_EFFORTS])),
-    modelReasoningEffortMap: Object.fromEntries(ZAI_GLM_52_MODELS.map(id => [id, ZAI_GLM_52_REASONING_MAP])),
     preserveReasoningContentModels: ZAI_GLM_52_MODELS,
   },
   { id: "nanogpt", label: "NanoGPT", baseUrl: "https://nano-gpt.com/api/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://nano-gpt.com/api" },
@@ -368,7 +417,6 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     adapter: "openai-chat",
     authKind: "key",
     dashboardUrl: "https://ollama.com/settings/keys",
-    reasoningEffortMap: OLLAMA_REASONING_MAP,
     models: ["glm-5.2", "deepseek-v4-pro", "qwen3-coder", "gpt-oss:120b", "kimi-k2.6", "minimax-m3", "qwen3.5", "gemma4"],
     defaultModel: "glm-5.2",
     noVisionModels: [

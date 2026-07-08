@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { augmentRoutedModelsWithJawcodeMetadata, buildCatalogEntries, filterSupportedNativeSlugs, gatherRoutedModels, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, normalizeRoutedCatalogEntry } from "../src/codex-catalog";
+import { augmentRoutedModelsWithJawcodeMetadata, buildCatalogEntries, filterSupportedNativeSlugs, gatherRoutedModels, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, normalizeRoutedCatalogEntry } from "../src/codex/catalog";
 import {
   CURSOR_STATIC_MODELS,
   cursorModelContextWindows,
@@ -11,7 +11,7 @@ import {
   cursorModelReasoningEfforts,
 } from "../src/adapters/cursor/discovery";
 import { getJawcodeModelMetadata, resolveJawcodeProvider } from "../src/generated/jawcode-model-metadata";
-import { clearModelCache, setCached } from "../src/model-cache";
+import { clearModelCache, setCached } from "../src/codex/model-cache";
 
 const originalFetch = globalThis.fetch;
 
@@ -146,7 +146,7 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.auto_compact_token_limit).toBe(244_800);
   });
 
-  test("native gpt-5.4 preserves Codex long-context max window metadata", () => {
+  test("native gpt-5.4 uses its 1M context window override", () => {
     const template = {
       ...nativeTemplate(),
       context_window: 272_000,
@@ -155,9 +155,9 @@ describe("Codex catalog routed normalization", () => {
     const entries = buildCatalogEntries(template, ["gpt-5.4"], []);
     const native = entries.find(e => e.slug === "gpt-5.4");
 
-    expect(native?.context_window).toBe(272_000);
+    expect(native?.context_window).toBe(1_000_000);
     expect(native?.max_context_window).toBe(1_000_000);
-    expect(native?.auto_compact_token_limit).toBe(244_800);
+    expect(native?.auto_compact_token_limit).toBe(900_000);
   });
 
   test("native gpt-5.3-codex-spark uses its 128k context window instead of inherited codex max", () => {
@@ -172,6 +172,26 @@ describe("Codex catalog routed normalization", () => {
     expect(native?.context_window).toBe(128_000);
     expect(native?.max_context_window).toBe(128_000);
     expect(native?.auto_compact_token_limit).toBe(115_200);
+  });
+
+  test("native GPT-5.6 entries add max reasoning even when cloned from an older template", () => {
+    const entries = buildCatalogEntries({
+      ...nativeTemplate(),
+      context_window: 272_000,
+      max_context_window: 1_000_000,
+    }, ["gpt-5.6-sol", "gpt-5.5"], []);
+    const gpt56 = entries.find(e => e.slug === "gpt-5.6-sol");
+    const gpt55 = entries.find(e => e.slug === "gpt-5.5");
+
+    expect((gpt56?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual([
+      "low", "medium", "high", "xhigh", "max",
+    ]);
+    expect(gpt56?.context_window).toBe(372_000);
+    expect(gpt56?.max_context_window).toBe(372_000);
+    expect(gpt56?.auto_compact_token_limit).toBe(334_800);
+    expect((gpt55?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual([
+      "low", "medium", "high", "xhigh",
+    ]);
   });
 
   test("routed entries still cap stale native max context to their active context window", () => {
@@ -919,6 +939,19 @@ describe("native slug allowlist", () => {
 
     expect(filterSupportedNativeSlugs(liveModels)).toEqual([
       "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark",
+    ]);
+  });
+
+  test("keeps GPT-5.6 native preview slugs from a live Codex catalog", () => {
+    const liveModels = [
+      { slug: "gpt-5.6-sol", visibility: "list" },
+      { slug: "gpt-5.6-terra", visibility: "list" },
+      { slug: "gpt-5.6-luna", visibility: "list" },
+      { slug: "gpt-5.6-internal", visibility: "list" },
+    ];
+
+    expect(filterSupportedNativeSlugs(liveModels)).toEqual([
+      "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
     ]);
   });
 });

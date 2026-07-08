@@ -35,6 +35,9 @@ Only a curated set of headers is forwarded (`FORWARD_HEADERS`: authorization, Ch
 OpenAI beta/originator/session — see [Adapters](/opencodex/reference/adapters/)). This path is also
 what powers the [web-search and vision sidecars](/opencodex/guides/sidecars/).
 
+In preview builds, the ChatGPT passthrough catalog also layers in the bare GPT-5.6 Sol/Terra/Luna
+slugs (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`) for accounts that can use them.
+
 ## 2. Account login (OAuth)
 
 Three providers support real account login. opencodex stores the credential in `~/.opencodex/auth.json`
@@ -55,6 +58,13 @@ ocx logout <provider>
 
 You can also start OAuth from the [web dashboard](/opencodex/guides/web-dashboard/).
 
+### Multiple OAuth accounts
+
+OAuth providers can keep more than one logged-in account. The Providers page shows the stored
+accounts in a dropdown, lets you add another account with a fresh login, and switches the active
+account without logging the others out. Tokens stay in `~/.opencodex/auth.json`; the management API
+exposes only masked account metadata through `/api/oauth/accounts`.
+
 ## 3. API-key catalog
 
 opencodex ships a catalog of key-based providers (mostly OpenAI-compatible, a few
@@ -63,6 +73,8 @@ validates the key, and stores it. Notable entries:
 
 | Provider | Base URL |
 | --- | --- |
+| **OpenAI (API key)** | `https://api.openai.com/v1` |
+| **OpenRouter** | `https://openrouter.ai/api/v1` |
 | **Ollama Cloud** | `https://ollama.com/v1` |
 | Mistral | `https://api.mistral.ai/v1` |
 | MiniMax · MiniMax (CN) | `https://api.minimax.io/v1` · `https://api.minimaxi.com/v1` |
@@ -83,6 +95,28 @@ validates the key, and stores it. Notable entries:
 
 Most use the `openai-chat` adapter with a bearer key; a few that expose only an Anthropic-compatible
 endpoint (e.g. **Xiaomi MiMo**) use the `anthropic` adapter (`x-api-key`).
+
+### Multiple API keys
+
+Key-based providers can also keep a small key pool. Adding a key through the Providers page stores it
+under `provider.apiKeyPool`, makes it active, and mirrors it to `provider.apiKey` so routing and
+adapters continue to read the same field as before. The same dropdown can switch or remove keys; the
+management API is `/api/providers/keys` and returns masked keys only.
+
+### GPT-5.6 preview paths
+
+Preview builds seed GPT-5.6 Sol/Terra/Luna in the provider fallback lists so `ocx sync` can keep the
+models visible even while live `/models` catalogs lag:
+
+| Route | Seeded model ids |
+| --- | --- |
+| ChatGPT login passthrough | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` |
+| OpenAI (API key) | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` |
+| OpenRouter | `openai/gpt-5.6-sol`, `openai/gpt-5.6-terra`, `openai/gpt-5.6-luna` |
+
+All three paths carry 372,000 usable-token context metadata and expose `max` reasoning in the Codex
+catalog. Availability remains upstream-gated; opencodex only routes models your provider account can
+actually call.
 
 :::note[Gateways & subscription proxies]
 A provider is included whenever it speaks a standard streaming API opencodex can proxy

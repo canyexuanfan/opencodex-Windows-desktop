@@ -1,5 +1,7 @@
 import type { IncomingMeta, ProviderAdapter } from "./base";
 import type { AdapterEvent, OcxParsedRequest, OcxProviderConfig } from "../types";
+import { decodeCompactionSummary, SUMMARY_PREFIX } from "../responses/compaction";
+import { OCX_REASONING_PREFIX } from "../responses/reasoning-envelope";
 
 // Headers relayed verbatim from the caller in OAuth-passthrough ("forward") mode.
 // Exported so the web-search sidecar reuses the exact same forwarded-auth set for its ChatGPT call.
@@ -31,15 +33,48 @@ function sanitizeReasoningInputContent(body: unknown): unknown {
   const input = raw.input.map(item => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return item;
     const rec = item as Record<string, unknown>;
-    if (rec.type !== "reasoning" || !Array.isArray(rec.content) || rec.content.length === 0) return item;
+    if (rec.type !== "reasoning") return item;
+    const hasRawContent = Array.isArray(rec.content) && rec.content.length > 0;
+    // ocxr1 envelopes are proxy-minted (Anthropic signatures), not OpenAI encryption — the native
+    // backend cannot decrypt them and would reject the request. Strip regardless of content shape.
+    const hasOcxEnvelope = typeof rec.encrypted_content === "string" && rec.encrypted_content.startsWith(OCX_REASONING_PREFIX);
+    if (!hasRawContent && !hasOcxEnvelope) return item;
     changed = true;
     // Routed models can produce raw `reasoning_text` output items. Codex echoes those in later
     // native GPT requests, but ChatGPT's Responses backend accepts reasoning input only with empty
     // `content`; keep summaries/ids and drop the raw content so native passthrough does not 400.
-    return { ...rec, content: [] };
+    const next: Record<string, unknown> = { ...rec, content: [] };
+    if (hasOcxEnvelope) delete next.encrypted_content;
+    return next;
   });
 
   return changed ? { ...raw, input } : body;
+}
+
+/**
+ * Replace proxy-minted compaction items (`encrypted_content` starting with `ocx1:`) with plain
+ * user messages before forwarding to the ChatGPT backend. Our envelope is transparent base64, not
+ * OpenAI encryption — the native backend cannot decrypt it and would reject the request. Real
+ * OpenAI-encrypted compaction items are forwarded untouched.
+ */
+function scrubOcxCompactionItems(body: unknown): unknown {
+  if (!isPlainObject(body) || !Array.isArray(body.input)) return body;
+
+  let changed = false;
+  const input = body.input.map(item => {
+    if (!isPlainObject(item)) return item;
+    if (item.type !== "compaction" && item.type !== "compaction_summary" && item.type !== "context_compaction") return item;
+    const decoded = typeof item.encrypted_content === "string" ? decodeCompactionSummary(item.encrypted_content) : null;
+    if (decoded === null) return item;
+    changed = true;
+    return {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: `${SUMMARY_PREFIX}\n\n${decoded}` }],
+    };
+  });
+
+  return changed ? { ...body, input } : body;
 }
 
 /**
@@ -56,6 +91,87 @@ const UNSUPPORTED_HOSTED_TOOLS: ReadonlyArray<{ match: (model: string) => boolea
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+/** Flatten a Responses tool-output `output` value (string or content-part array) to plain text. */
+function toolOutputText(output: unknown): string {
+  if (typeof output === "string") return output;
+  if (!Array.isArray(output)) return JSON.stringify(output ?? "");
+  return output.map(part => {
+    if (!isPlainObject(part)) return "";
+    if (typeof part.text === "string") return part.text;
+    if (part.type === "refusal" && typeof part.refusal === "string") return `[refusal] ${part.refusal}`;
+    return "";
+  }).filter(Boolean).join("\n");
+}
+
+/**
+ * Repair a forward-mode input array whose continuation context was lost. When the replay
+ * expansion misses (proxy restart, unrecorded prior turn), previous_response_id is stripped
+ * (the ChatGPT backend rejects it), so the delta may carry items that reference now-absent
+ * prior items and 400 upstream:
+ * - `function_call_output`/`custom_tool_call_output` without their paired call item
+ *   ("No tool call found for function call output with call_id ..."). Converted to user
+ *   messages so the result text survives. `function_call_output` also pairs with
+ *   `local_shell_call` (codex-rs emits shell outputs as function_call_output).
+ * - `reasoning` items ("Item 'rs_*' ... was provided without its required following item").
+ *   Dropped, but only when `dropReasoning` (unexpanded miss): on a replay hit the prior
+ *   reasoning chain is intact and must be preserved.
+ * Runs on every forward request; with intact pairs it returns the original reference.
+ */
+function repairOrphanedInputItems(body: unknown, dropReasoning: boolean): unknown {
+  if (!isPlainObject(body) || !Array.isArray(body.input)) return body;
+  const input = body.input;
+
+  const functionCallIds = new Set<string>();
+  const customCallIds = new Set<string>();
+  for (const item of input) {
+    if (!isPlainObject(item) || typeof item.call_id !== "string") continue;
+    if (item.type === "function_call" || item.type === "local_shell_call") functionCallIds.add(item.call_id);
+    else if (item.type === "custom_tool_call") customCallIds.add(item.call_id);
+  }
+
+  let changed = false;
+  const repaired: unknown[] = [];
+  for (const item of input) {
+    if (!isPlainObject(item)) { repaired.push(item); continue; }
+    if (dropReasoning && item.type === "reasoning") { changed = true; continue; }
+    const isFnOutput = item.type === "function_call_output";
+    const isCustomOutput = item.type === "custom_tool_call_output";
+    if (isFnOutput || isCustomOutput) {
+      const callId = typeof item.call_id === "string" ? item.call_id : "";
+      const paired = isFnOutput ? functionCallIds.has(callId) : customCallIds.has(callId);
+      if (!paired) {
+        changed = true;
+        repaired.push({
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: `[tool output for ${callId || "unknown call"}]\n${toolOutputText(item.output)}` }],
+        });
+        continue;
+      }
+    }
+    repaired.push(item);
+  }
+
+  return changed ? { ...body, input: repaired } : body;
+}
+
+/**
+ * Remove `previous_response_id` before forwarding. Two triggers:
+ * - the proxy expanded the request into a full input replay (the id is now redundant), or
+ * - the target is the ChatGPT backend (`authMode: "forward"`), whose Codex REST endpoint
+ *   categorically rejects the parameter with `{"detail":"Unsupported parameter:
+ *   previous_response_id"}` (strict allowlist; it also rejects `metadata` and
+ *   `max_output_tokens`). Codex only sends the id on WS turns, and ocx converts those to
+ *   internal HTTP requests, so forwarding it upstream is a guaranteed 400 — stripping is
+ *   strictly better even when the local replay state missed. API-key mode keeps the field on
+ *   unexpanded requests: the platform `/v1/responses` supports real server-side storage.
+ */
+function stripPreviousResponseId(body: unknown, strip: boolean): unknown {
+  if (!strip || !isPlainObject(body) || !Object.prototype.hasOwnProperty.call(body, "previous_response_id")) return body;
+  const { previous_response_id: _previousResponseId, ...rest } = body;
+  return rest;
 }
 
 /**
@@ -113,11 +229,18 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         if (provider.headers) Object.assign(headers, provider.headers);
       }
 
+      const forward = provider.authMode === "forward";
+      const unexpandedMiss = !!parsed.previousResponseId && parsed._previousResponseInputExpanded !== true;
+      let outBody = stripPreviousResponseId(
+        parsed._rawBody,
+        forward || parsed._previousResponseInputExpanded === true,
+      );
+      if (forward) outBody = repairOrphanedInputItems(outBody, unexpandedMiss);
       return {
         url,
         method: "POST",
         headers,
-        body: JSON.stringify(stripUnsupportedHostedTools(sanitizeReasoningInputContent(parsed._rawBody))),
+        body: JSON.stringify(stripUnsupportedHostedTools(sanitizeReasoningInputContent(scrubOcxCompactionItems(outBody)))),
       };
     },
 
