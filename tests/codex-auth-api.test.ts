@@ -9,7 +9,7 @@ import {
   markAccountNeedsReauth, isAccountNeedsReauth, clearAccountNeedsReauth, clearAccountQuota,
   maskEmail,
 } from "../src/codex/auth-api";
-import { getCodexAccountCredential, saveCodexAccountCredential } from "../src/codex/account-store";
+import { getCodexAccountCredential, readCodexAccountRecord, saveCodexAccountCredential } from "../src/codex/account-store";
 import {
   getCodexUpstreamHealth,
   recordCodexUpstreamOutcome,
@@ -29,6 +29,7 @@ const MANUAL_IMPORT_ENV = "OPENCODEX_ENABLE_UNVERIFIED_CODEX_IMPORT";
 let previousOpencodexHome: string | undefined;
 let previousCodexHome: string | undefined;
 let previousManualImportEnv: string | undefined;
+let previousFetch: typeof fetch;
 
 function makeConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
   return {
@@ -53,6 +54,24 @@ function manualImportBody(overrides: Record<string, unknown> = {}): Record<strin
     chatgptAccountId: "acct-manual-test",
     ...overrides,
   };
+}
+
+function mockCodexWarmupSuccess(): { calls: () => number } {
+  let calls = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === "https://chatgpt.com/backend-api/codex/responses") {
+      calls += 1;
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body).toMatchObject({ model: "gpt-5.4-mini", input: "hi", stream: true, store: false });
+      expect(body).not.toHaveProperty("max_output_tokens");
+      return new Response('event: response.completed\ndata: {"type":"response.completed"}\n\n', {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    }
+    return previousFetch(input, init);
+  }) as typeof fetch;
+  return { calls: () => calls };
 }
 
 function seedPoolAccount(
@@ -83,6 +102,7 @@ beforeEach(() => {
   previousOpencodexHome = process.env.OPENCODEX_HOME;
   previousCodexHome = process.env.CODEX_HOME;
   previousManualImportEnv = process.env[MANUAL_IMPORT_ENV];
+  previousFetch = globalThis.fetch;
   if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
   mkdirSync(TEST_CODEX_HOME, { recursive: true });
   process.env.OPENCODEX_HOME = TEST_DIR;
@@ -95,6 +115,7 @@ beforeEach(() => {
 afterEach(() => {
   clearAccountQuota();
   clearCodexWebSocketRegistry();
+  globalThis.fetch = previousFetch;
   if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousOpencodexHome;
   if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
@@ -540,6 +561,7 @@ describe("codex-auth API", () => {
 
   test("POST /api/codex-auth/accounts imports only when manual import is explicitly enabled", async () => {
     enableManualImport();
+    const warmup = mockCodexWarmupSuccess();
     const config = makeConfig();
     const req = new Request("http://localhost/api/codex-auth/accounts", {
       method: "POST",
@@ -556,10 +578,14 @@ describe("codex-auth API", () => {
       refreshToken: "refresh-manual-test",
       chatgptAccountId: "acct-manual-test",
     });
+    expect(readCodexAccountRecord("manual-enabled")?.lastCodexValidationStatus).toBe("ok");
+    expect(readCodexAccountRecord("manual-enabled")?.lastCodexValidatedAt).toBeNumber();
+    expect(warmup.calls()).toBe(1);
   });
 
   test("POST /api/codex-auth/accounts allows a pool account matching the main login", async () => {
     enableManualImport();
+    mockCodexWarmupSuccess();
     writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
       tokens: {
         access_token: "not-a-jwt",
@@ -580,6 +606,30 @@ describe("codex-auth API", () => {
     expect(resp!.status).toBe(200);
     expect(config.codexAccounts?.map(a => a.id)).toEqual(["manual-main-match"]);
     expect(getCodexAccountCredential("manual-main-match")?.chatgptAccountId).toBe("acct-main-login");
+  });
+
+  test("POST /api/codex-auth/accounts rejects manual import when Codex warmup fails", async () => {
+    enableManualImport();
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input) === "https://chatgpt.com/backend-api/codex/responses") {
+        return new Response("raw upstream token-like text", { status: 401 });
+      }
+      return previousFetch(input);
+    }) as typeof fetch;
+    const config = makeConfig();
+    const req = new Request("http://localhost/api/codex-auth/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(manualImportBody({ id: "manual-warmup-fail" })),
+    });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const body = await resp!.json() as { error: string; code: string; reason: string };
+
+    expect(resp!.status).toBe(401);
+    expect(body).toMatchObject({ code: "codex_warmup_failed", reason: "http_status:401" });
+    expect(JSON.stringify(body)).not.toContain("raw upstream token-like text");
+    expect(config.codexAccounts?.map(a => a.id)).toEqual([]);
+    expect(getCodexAccountCredential("manual-warmup-fail")).toBeNull();
   });
 
   test("POST /api/codex-auth/accounts rejects duplicate runtime alias before writing credentials", async () => {

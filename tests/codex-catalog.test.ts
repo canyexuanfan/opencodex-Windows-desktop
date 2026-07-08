@@ -174,6 +174,26 @@ describe("Codex catalog routed normalization", () => {
     expect(native?.auto_compact_token_limit).toBe(115_200);
   });
 
+  test("native GPT-5.6 entries add max reasoning even when cloned from an older template", () => {
+    const entries = buildCatalogEntries({
+      ...nativeTemplate(),
+      context_window: 272_000,
+      max_context_window: 1_000_000,
+    }, ["gpt-5.6-sol", "gpt-5.5"], []);
+    const gpt56 = entries.find(e => e.slug === "gpt-5.6-sol");
+    const gpt55 = entries.find(e => e.slug === "gpt-5.5");
+
+    expect((gpt56?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual([
+      "low", "medium", "high", "xhigh", "max",
+    ]);
+    expect(gpt56?.context_window).toBe(372_000);
+    expect(gpt56?.max_context_window).toBe(372_000);
+    expect(gpt56?.auto_compact_token_limit).toBe(334_800);
+    expect((gpt55?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual([
+      "low", "medium", "high", "xhigh",
+    ]);
+  });
+
   test("routed entries still cap stale native max context to their active context window", () => {
     const template = {
       ...nativeTemplate(),
@@ -919,6 +939,19 @@ describe("native slug allowlist", () => {
 
     expect(filterSupportedNativeSlugs(liveModels)).toEqual([
       "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark",
+    ]);
+  });
+
+  test("keeps GPT-5.6 native preview slugs from a live Codex catalog", () => {
+    const liveModels = [
+      { slug: "gpt-5.6-sol", visibility: "list" },
+      { slug: "gpt-5.6-terra", visibility: "list" },
+      { slug: "gpt-5.6-luna", visibility: "list" },
+      { slug: "gpt-5.6-internal", visibility: "list" },
+    ];
+
+    expect(filterSupportedNativeSlugs(liveModels)).toEqual([
+      "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
     ]);
   });
 });

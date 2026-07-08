@@ -13,7 +13,7 @@ ocx init
 
 `ocx init` 会引导你完成:
 
-1. **选择一个 provider** —— 选择一个预设(opencode zen、Anthropic、OpenAI、OpenRouter、Groq、Google、
+1. **选择一个 provider** —— 选择一个预设(opencode zen、Anthropic、OpenAI、OpenAI API key、OpenRouter、Groq、Google、
    Azure),或选择 `custom` 来输入 base URL 和 adapter。
 2. **API key** —— 粘贴一个 key,或引用一个环境变量,例如 `${ANTHROPIC_API_KEY}`。
 3. **默认模型** —— 当某个请求未匹配到其他 provider 时所使用的模型。
@@ -57,6 +57,15 @@ codex -m "anthropic/claude-opus-4-8" "Explain this stack trace"
 codex -m "ollama-cloud/glm-5.2"      "Write a SQL migration"
 ```
 
+GPT-5.6 Sol/Terra/Luna 只在拥有 preview 权限的账号或 provider 上可用。具备权限时,原生 ChatGPT
+路径使用裸模型名,API key 和 OpenRouter 路径使用显式 `provider/model` 形式:
+
+```bash
+codex -m "gpt-5.6-sol"                    "Plan a risky refactor"
+codex -m "openai-apikey/gpt-5.6-terra"    "Review this architecture"
+codex -m "openrouter/openai/gpt-5.6-luna" "Summarize this trace"
+```
+
 ## 登录而非粘贴 key
 
 部分 provider 支持真正的账号登录(OAuth,自动刷新):
@@ -66,8 +75,10 @@ ocx login xai          # or: anthropic, kimi
 ocx logout xai
 ```
 
-OpenAI 本身**无需 key** —— 默认 provider 会直接转发你现有的 `codex login`
-凭据(参见 [Provider](/opencodex/zh-cn/guides/providers/))。
+默认 OpenAI 路径**无需 key** —— 它会直接转发你现有的 `codex login` 凭据。若要使用 OpenAI
+API key,请添加 `openai-apikey` provider。该路径会为具备 preview 权限的 API key 提供
+`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` seed/fallback 模型名
+(参见 [Provider](/opencodex/zh-cn/guides/providers/))。
 
 ## 停止与恢复
 

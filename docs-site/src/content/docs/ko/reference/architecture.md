@@ -98,8 +98,8 @@ Codex 컨텍스트 compaction은 라우팅된 모델에서도 동작합니다. `
 ## Reasoning effort
 
 `reasoning-effort.ts`는 Codex의 reasoning 레이블을 각 프로바이더의 와이어 값으로 변환합니다.
-Codex 카탈로그는 Codex가 수용하는 레이블(`low` / `medium` / `high` / `xhigh`)만 광고하지만,
-업스트림 프로바이더는 다른 이름(예: `max`)을 사용하거나 더 작은 하위 집합을 지원할 수 있습니다.
+Codex 카탈로그는 Codex가 수용하는 레이블(`low` / `medium` / `high` / `xhigh` / `max`)을
+광고하지만, 업스트림 프로바이더는 더 작은 하위 집합만 지원하거나 실제 alias가 필요할 수 있습니다.
 이 모듈은:
 
 - 표준 `CODEX_REASONING_LEVELS`와 그 정렬 순서를 정의합니다.

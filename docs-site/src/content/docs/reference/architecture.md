@@ -98,8 +98,8 @@ history, while `responses/parser.ts` and `bridge.ts` handle remote compaction v2
 ## Reasoning effort
 
 `reasoning-effort.ts` translates Codex's reasoning labels into each provider's wire values. The
-Codex catalog only advertises labels Codex accepts (`low` / `medium` / `high` / `xhigh`), but
-upstream providers may use different names (e.g. `max`) or support a smaller subset. The module:
+Codex catalog advertises labels Codex accepts (`low` / `medium` / `high` / `xhigh` / `max`), but
+upstream providers may support only a smaller subset or require a real alias. The module:
 
 - Defines the canonical `CODEX_REASONING_LEVELS` and their sort order.
 - Clamps a requested effort to the closest supported tier when the exact level is unavailable.

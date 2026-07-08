@@ -93,7 +93,7 @@ describe("Responses bridge reasoning and usage parity", () => {
     const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
     expect(completed.usage).toMatchObject({
       input_tokens: 78_600,
-      input_tokens_details: { cached_tokens: 78_000 },
+      input_tokens_details: { cached_tokens: 78_000, cache_write_tokens: 1_000 },
       output_tokens: 20,
       total_tokens: 78_620,
     });
@@ -169,7 +169,7 @@ describe("Responses bridge reasoning and usage parity", () => {
     const json = buildResponseJSON([
       { type: "reasoning_raw_delta", text: "raw json" },
       { type: "text_delta", text: "answer" },
-      { type: "done", usage: { inputTokens: 4, outputTokens: 6, cachedInputTokens: 1, reasoningOutputTokens: 2 } },
+      { type: "done", usage: { inputTokens: 4, outputTokens: 6, cachedInputTokens: 1, cacheCreationInputTokens: 2, reasoningOutputTokens: 2 } },
     ], "routed/model");
 
     const output = json.output as Record<string, unknown>[];
@@ -178,8 +178,10 @@ describe("Responses bridge reasoning and usage parity", () => {
       content: [{ type: "reasoning_text", text: "raw json" }],
     });
     expect(json.usage).toMatchObject({
-      input_tokens_details: { cached_tokens: 1 },
+      input_tokens: 6,
+      input_tokens_details: { cached_tokens: 1, cache_write_tokens: 2 },
       output_tokens_details: { reasoning_tokens: 2 },
+      total_tokens: 12,
     });
   });
 

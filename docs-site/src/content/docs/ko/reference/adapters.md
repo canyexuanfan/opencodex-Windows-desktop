@@ -30,9 +30,9 @@ interface ProviderAdapter {
   `tool_choice`(`auto`/`none`/`required` 또는 명명된 함수)로 매핑합니다.
 - **Codex의 GPT-5 정체성 프롬프트를 다시 작성**하여 모델 비종속적인 인트로로 바꿉니다. 따라서 라우팅된
   모델이 자신을 OpenAI라고 주장하지 않습니다.
-- **`reasoning_effort`를 클램핑**하여 대부분의 프로바이더가 받아들이는 값으로 맞추고
-  (`minimal`→`low`, `xhigh`/`max`→`high`), `provider.noReasoningModels`에 있는 id에 대해서는
-  **완전히 생략**합니다.
+- **`reasoning_effort`를 클램핑**하여 정확한 tier가 없을 때 모델이 광고한 하위 집합에 맞춥니다.
+  `xhigh`와 `max`는 프로바이더가 명시적으로 alias를 설정하지 않는 한 서로 다른 레이블로 유지되며,
+  `provider.noReasoningModels`에 있는 id에 대해서는 **완전히 생략**합니다.
 - `delta.content`(텍스트), `delta.reasoning_content`(thinking), `delta.tool_calls[]`를
   스트리밍하고, `usage`를 수집합니다.
 

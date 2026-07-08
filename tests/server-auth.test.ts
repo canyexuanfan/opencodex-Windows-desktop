@@ -1362,11 +1362,13 @@ describe("server local API auth", () => {
         terminalStatus: "completed",
         closeReason: "terminal",
         usageStatus: "reported",
-        totalTokens: 29,
+        // display total includes cache-write tokens (25 + 4 + 2) since cache_write_tokens support
+        totalTokens: 31,
         usage: {
           inputTokens: 25,
           outputTokens: 4,
           cachedInputTokens: 5,
+          cacheCreationInputTokens: 2,
         },
       });
     } finally {

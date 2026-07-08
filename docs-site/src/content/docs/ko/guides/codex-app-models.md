@@ -52,6 +52,17 @@ visibility = "list"
 복제된 항목은 reasoning 레벨, shell 타입, API 지원 플래그, base instructions 같은 엄격한 파서
 필드를 유지합니다. 그래서 각 라우팅 항목은 선택기에 표시 가능한 유효한 Codex 모델처럼 보입니다.
 
+## GPT-5.6 rollout metadata
+
+GPT-5.6 Sol, Terra, Luna는 preview-gated rollout으로 처리됩니다. opencodex는 설치된 Codex 카탈로그가
+아직 뒤처져 있어도 documented native additions로 `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`를
+추가할 수 있습니다. 이 항목들은 `context_window`와 `max_context_window`를 372,000 usable tokens로
+고정하고, `auto_compact_token_limit`은 그 90%로 계산합니다.
+
+이 세 native 항목과 OpenAI API key/OpenRouter routed fallback 항목은 `max` reasoning을 별도 tier로
+노출합니다. 이름이 선택기에 보인다는 뜻은 opencodex가 카탈로그를 준비했다는 의미이며, 실제 요청 성공은
+연결된 계정 또는 프로바이더의 preview 권한에 달려 있습니다.
+
 ## 서브에이전트 선택
 
 Codex의 `spawn_agent`는 카탈로그에서 우선순위가 높은 처음 5개 모델만 노출합니다. `subagentModels`

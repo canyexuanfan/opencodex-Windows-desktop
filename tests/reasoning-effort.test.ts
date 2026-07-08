@@ -39,34 +39,32 @@ function buildBody(provider: OcxProviderConfig, modelId: string, options: OcxPar
 describe("provider-specific reasoning effort mapping", () => {
   test("Codex catalog advertises only the efforts actually supported by a routed model", () => {
     const entries = buildCatalogEntries(nativeTemplate(), [], [
-      { provider: "neuralwatt", id: "glm-5.2", reasoningEfforts: ["low", "medium", "high", "xhigh"] },
+      { provider: "neuralwatt", id: "glm-5.2", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
       { provider: "moonshot", id: "kimi-k2.7-code", reasoningEfforts: [] },
     ]);
 
     const neuralwatt = entries.find(e => e.slug === "neuralwatt/glm-5.2");
     const kimi = entries.find(e => e.slug === "moonshot/kimi-k2.7-code");
 
-    expect((neuralwatt?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh"]);
+    expect((neuralwatt?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(neuralwatt?.default_reasoning_level).toBe("medium");
     expect(kimi?.supported_reasoning_levels).toEqual([]);
     expect(kimi).not.toHaveProperty("default_reasoning_level");
   });
 
-  test("Z.AI GLM-5.2 maps Codex xhigh to the upstream max effort", () => {
+  test("Z.AI GLM-5.2 keeps xhigh and max as distinct upstream efforts", () => {
     const provider: OcxProviderConfig = {
       adapter: "openai-chat",
       baseUrl: "https://api.z.ai/api/coding/paas/v4",
-      modelReasoningEfforts: { "glm-5.2": ["low", "medium", "high", "xhigh"] },
-      modelReasoningEffortMap: {
-        "glm-5.2": { none: "none", minimal: "none", low: "high", medium: "high", high: "high", xhigh: "max", max: "max" },
-      },
+      modelReasoningEfforts: { "glm-5.2": ["low", "medium", "high", "xhigh", "max"] },
     };
 
-    expect(buildBody(provider, "glm-5.2", { reasoning: "xhigh" }).reasoning_effort).toBe("max");
-    expect(buildBody(provider, "glm-5.2", { reasoning: "medium" }).reasoning_effort).toBe("high");
+    expect(buildBody(provider, "glm-5.2", { reasoning: "xhigh" }).reasoning_effort).toBe("xhigh");
+    expect(buildBody(provider, "glm-5.2", { reasoning: "max" }).reasoning_effort).toBe("max");
+    expect(buildBody(provider, "glm-5.2", { reasoning: "medium" }).reasoning_effort).toBe("medium");
   });
 
-  test("low/medium/high-only models clamp stale xhigh requests to high", () => {
+  test("low/medium/high-only models clamp stale xhigh and max requests to high", () => {
     const provider: OcxProviderConfig = {
       adapter: "openai-chat",
       baseUrl: "https://api.neuralwatt.com/v1",
@@ -74,16 +72,14 @@ describe("provider-specific reasoning effort mapping", () => {
     };
 
     expect(buildBody(provider, "glm-5.2", { reasoning: "xhigh" }).reasoning_effort).toBe("high");
+    expect(buildBody(provider, "glm-5.2", { reasoning: "max" }).reasoning_effort).toBe("high");
   });
 
-  test("Neuralwatt GLM-5.2 maps Codex xhigh to max and preserves reasoning history", () => {
+  test("Neuralwatt GLM-5.2 sends direct max and preserves reasoning history", () => {
     const provider: OcxProviderConfig = {
       adapter: "openai-chat",
       baseUrl: "https://api.neuralwatt.com/v1",
-      modelReasoningEfforts: { "glm-5.2": ["low", "medium", "high", "xhigh"] },
-      modelReasoningEffortMap: {
-        "glm-5.2": { none: "none", minimal: "none", low: "high", medium: "high", high: "high", xhigh: "max", max: "max" },
-      },
+      modelReasoningEfforts: { "glm-5.2": ["low", "medium", "high", "xhigh", "max"] },
       preserveReasoningContentModels: ["glm-5.2"],
     };
 
@@ -100,7 +96,7 @@ describe("provider-specific reasoning effort mapping", () => {
         ],
       },
       stream: false,
-      options: { reasoning: "xhigh" },
+      options: { reasoning: "max" },
     });
     const body = JSON.parse(req.body as string) as { reasoning_effort?: string; messages: Record<string, unknown>[] };
 
@@ -360,9 +356,9 @@ describe("provider-specific reasoning effort mapping", () => {
     expect(body.tool_choice).toEqual({ type: "any" });
   });
 
-  test("sanitizeCodexReasoningEfforts strips non-Codex labels like 'max' from the catalog", () => {
+  test("sanitizeCodexReasoningEfforts keeps max and strips unknown catalog labels", () => {
     const entries = buildCatalogEntries(nativeTemplate(), [], [
-      { provider: "test", id: "model-with-max", reasoningEfforts: ["low", "max", "high"] },
+      { provider: "test", id: "model-with-max", reasoningEfforts: ["low", "max", "turbo", "high"] },
       { provider: "test", id: "model-clean", reasoningEfforts: ["low", "medium", "high", "xhigh"] },
       { provider: "test", id: "model-empty", reasoningEfforts: [] },
     ]);
@@ -371,10 +367,8 @@ describe("provider-specific reasoning effort mapping", () => {
     const clean = entries.find(e => e.slug === "test/model-clean");
     const empty = entries.find(e => e.slug === "test/model-empty");
 
-    // "max" must never appear in catalog — Codex parser rejects it
     const withMaxEfforts = (withMax?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort);
-    expect(withMaxEfforts).toEqual(["low", "high"]);
-    expect(withMaxEfforts).not.toContain("max");
+    expect(withMaxEfforts).toEqual(["low", "high", "max"]);
 
     expect((clean?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh"]);
 

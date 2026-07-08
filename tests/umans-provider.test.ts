@@ -73,8 +73,8 @@ describe("Umans provider", () => {
       escapeBuiltinToolNames: true,
     });
     expect(provider.models).toContain("umans-kimi-k2.7");
-    expect(provider.modelReasoningEfforts?.["umans-glm-5.2"]).toEqual(["high", "xhigh"]);
-    expect(provider.modelReasoningEffortMap?.["umans-glm-5.2"]?.xhigh).toBe("max");
+    expect(provider.modelReasoningEfforts?.["umans-glm-5.2"]).toEqual(["high", "xhigh", "max"]);
+    expect(provider.modelReasoningEffortMap).toBeUndefined();
     expect(provider.noVisionModels).toContain("umans-glm-5.1");
     expect(provider.modelContextWindows?.["umans-glm-5.1"]).toBe(202_752);
     expect(provider.modelInputModalities?.["umans-glm-5.1"]).toEqual(["text"]);

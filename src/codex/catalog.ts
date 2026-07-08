@@ -78,9 +78,13 @@ function isDefaultCatalogPath(path: string): boolean {
  */
 export const NATIVE_OPENAI_MODELS = [
   "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark",
+  "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
 ];
 
-const DOCUMENTED_NATIVE_OPENAI_ADDITIONS = ["gpt-5.3-codex-spark"];
+const DOCUMENTED_NATIVE_OPENAI_ADDITIONS = [
+  "gpt-5.3-codex-spark",
+  "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+];
 
 /**
  * The ONLY native OpenAI/Codex slugs opencodex advertises. A user's installed Codex ships extra
@@ -102,10 +106,15 @@ function isUnsupportedOpenAiNativeSlug(slug: string): boolean {
   return /^(?:gpt|codex)-/.test(slug);
 }
 
+const NATIVE_GPT56_CONTEXT_WINDOW = 372_000;
+
 const NATIVE_OPENAI_CONTEXT_OVERRIDES: Record<string, { contextWindow?: number; maxContextWindow?: number }> = {
   "gpt-5.5": { contextWindow: 272_000, maxContextWindow: 272_000 },
   "gpt-5.4": { contextWindow: 1_000_000, maxContextWindow: 1_000_000 },
   "gpt-5.3-codex-spark": { contextWindow: 128_000, maxContextWindow: 128_000 },
+  "gpt-5.6-sol": { contextWindow: NATIVE_GPT56_CONTEXT_WINDOW, maxContextWindow: NATIVE_GPT56_CONTEXT_WINDOW },
+  "gpt-5.6-terra": { contextWindow: NATIVE_GPT56_CONTEXT_WINDOW, maxContextWindow: NATIVE_GPT56_CONTEXT_WINDOW },
+  "gpt-5.6-luna": { contextWindow: NATIVE_GPT56_CONTEXT_WINDOW, maxContextWindow: NATIVE_GPT56_CONTEXT_WINDOW },
 };
 
 /**
@@ -466,8 +475,8 @@ export function loadCatalogTemplate(): RawEntry | null {
 }
 
 /**
- * Codex only accepts its native labels in the catalog. Provider-specific wire values (e.g. Z.AI
- * `max`) are mapped at request time by src/reasoning-effort.ts, never advertised directly here.
+ * Codex accepts its native labels plus model-defined effort strings such as `max` in current builds.
+ * Provider-specific aliases still map at request time by src/reasoning-effort.ts.
  */
 const ROUTED_REASONING_LEVELS = CODEX_REASONING_LEVELS;
 
@@ -501,6 +510,20 @@ function applyReasoningLevels(entry: RawEntry, effortsOverride?: string[]): void
   entry.default_reasoning_level = efforts.includes("medium") ? "medium" : efforts.includes("high") ? "high" : efforts[0];
 }
 
+function isGpt56NativeSlug(slug: string): boolean {
+  return !slug.includes("/") && slug.startsWith("gpt-5.6-");
+}
+
+function ensureMaxReasoningLevel(entry: RawEntry): void {
+  const levels = Array.isArray(entry.supported_reasoning_levels)
+    ? entry.supported_reasoning_levels as Array<{ effort?: string }>
+    : [];
+  if (levels.some(level => level.effort === "max")) return;
+  const maxLevel = ROUTED_REASONING_LEVELS.find(level => level.effort === "max")
+    ?? { effort: "max", description: "Maximum reasoning for the hardest problems" };
+  entry.supported_reasoning_levels = [...levels, maxLevel];
+}
+
 function deriveEntry(template: RawEntry | null, slug: string, desc: string, priority: number, model?: CatalogModel): RawEntry {
   if (template) {
     const e = JSON.parse(JSON.stringify(template)) as RawEntry;
@@ -512,7 +535,7 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
     if ("upgrade" in e) e.upgrade = null;
     delete e.availability_nux; // don't replay another model's "now available" NUX
     // Routed (namespaced) models inherit the gpt template — correct its OpenAI/GPT identity
-    // and advertise the reasoning ladder Codex accepts (low/medium/high/xhigh).
+    // and advertise the reasoning ladder Codex accepts.
     if (slug.includes("/")) {
       const modelName = slug.slice(slug.indexOf("/") + 1);
       if (typeof e.base_instructions === "string") {
@@ -529,6 +552,7 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
       applyCatalogModelMetadata(e, model);
     } else {
       applyNativeOpenAiContextOverride(e);
+      if (isGpt56NativeSlug(slug)) ensureMaxReasoningLevel(e);
     }
     return ensureStrictCatalogFields(normalizeServiceTiers(e));
   }
@@ -540,7 +564,7 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
     ...(slug.includes("/") ? { web_search_tool_type: "text_and_image", supports_search_tool: true } : {}),
   };
   if (slug.includes("/")) applyReasoningLevels(entry, model?.reasoningEfforts);
-  else applyReasoningLevels(entry);
+  else applyReasoningLevels(entry, isGpt56NativeSlug(slug) ? undefined : ["low", "medium", "high", "xhigh"]);
   applyJawcodeCatalogMetadata(entry, slug, model?.contextCap);
   applyCatalogModelMetadata(entry, model);
   applyNativeOpenAiContextOverride(entry);
@@ -744,8 +768,8 @@ function catalogHintsFromModelsApiItem(providerName: string, item: ProviderModel
   const reasoningEfforts = capabilities && typeof capabilities.reasoning_effort === "boolean"
     ? (capabilities.reasoning_effort
       ? ((providerName === "neuralwatt" || providerName === "zai") && isGlm52ModelId(item.id)
-        ? ["low", "medium", "high", "xhigh"]
-        : ["low", "medium", "high"])
+        ? ["low", "medium", "high", "xhigh", "max"]
+        : ["low", "medium", "high", "xhigh", "max"])
       : [])
     : undefined;
   const inputModalities = capabilities && typeof capabilities.vision === "boolean"

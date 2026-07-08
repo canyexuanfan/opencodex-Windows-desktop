@@ -79,9 +79,9 @@ Codex context compaction 也适用于路由模型。`server/responses.ts` 处理
 
 ## Reasoning effort
 
-`reasoning-effort.ts` 将 Codex 的推理标签翻译为每个 provider 的线上值。Codex 目录只广告 Codex
-自身接受的标签（`low` / `medium` / `high` / `xhigh`），但上游 provider 可能使用不同的名称（如
-`max`）或支持更小的子集。该模块：
+`reasoning-effort.ts` 将 Codex 的推理标签翻译为每个 provider 的线上值。Codex 目录会广告 Codex
+自身接受的标签（`low` / `medium` / `high` / `xhigh` / `max`），但上游 provider 可能只支持更小的子集,
+或需要真实的 alias。该模块：
 
 - 定义了标准的 `CODEX_REASONING_LEVELS` 及其排序顺序。
 - 当精确级别不可用时，将请求的 effort 钳位到最接近的受支持层级。

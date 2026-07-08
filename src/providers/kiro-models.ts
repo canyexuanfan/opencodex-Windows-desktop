@@ -38,10 +38,10 @@ export const KIRO_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "qwen3-coder-next": 256_000,
 };
 
-const KIRO_REASONING_EFFORTS = ["low", "medium", "high", "xhigh"];
+const KIRO_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
-// Codex does not accept raw "max" in catalog metadata; Kiro xhigh already maps to the maximum
-// fake-thinking budget in src/adapters/kiro.ts.
+// Kiro has no upstream reasoning_effort enum; these labels map to fake-thinking budgets in
+// src/adapters/kiro.ts.
 export const KIRO_MODEL_REASONING_EFFORTS: Record<string, string[]> = Object.fromEntries(
   KIRO_MODELS.map(id => [id, KIRO_REASONING_EFFORTS]),
 );

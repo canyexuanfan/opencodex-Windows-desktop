@@ -26,6 +26,19 @@ Verify the binary is on your `PATH`:
 ocx --help
 ```
 
+### Preview channel
+
+GPT-5.6 Sol/Terra/Luna support is preview-gated until the rollout graduates. Install the preview tag
+for a fresh setup, or keep an existing preview install on the preview channel:
+
+```bash
+npm install -g @bitkyc08/opencodex@preview
+ocx update --tag preview
+```
+
+Preview builds seed the GPT-5.6 model ids and Codex catalog metadata; they do not grant upstream
+model access by themselves.
+
 ## Run from source
 
 To hack on opencodex itself:

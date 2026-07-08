@@ -29,7 +29,7 @@ Codex가 모델을 요청하면 `router.ts`가 이를 정확히 하나의 설정
    | 프리픽스 | 프로바이더 |
    | --- | --- |
    | `claude-`, `claude-sonnet-`, `claude-opus-`, `claude-haiku-` | `anthropic` |
-   | `gpt-`, `o1-`, `o3-`, `o4-` | `openai` |
+   | `gpt-`, `o1-`, `o3-`, `o4-` | `chatgpt` |
    | `llama-`, `mixtral-`, `gemma-` | `groq` |
 
 5. **기본 프로바이더** — 어느 것도 일치하지 않으면 id는 변경 없이 `config.defaultProvider`로 전송됩니다.

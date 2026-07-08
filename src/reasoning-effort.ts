@@ -6,6 +6,7 @@ export const CODEX_REASONING_LEVELS: { effort: string; description: string }[] =
   { effort: "medium", description: "Balances speed and reasoning depth" },
   { effort: "high", description: "Greater reasoning depth for complex problems" },
   { effort: "xhigh", description: "Extended reasoning for the hardest problems" },
+  { effort: "max", description: "Maximum reasoning for the hardest problems" },
 ];
 
 const CODEX_REASONING_ORDER = CODEX_REASONING_LEVELS.map(l => l.effort);
@@ -53,7 +54,6 @@ export function configuredReasoningEfforts(provider: OcxProviderConfig, modelId:
 function requestToCodexEffort(requested: string): string | undefined {
   if (requested === "none") return undefined;
   if (requested === "minimal") return "low";
-  if (requested === "max") return "xhigh";
   return CODEX_REASONING_SET.has(requested) ? requested : undefined;
 }
 
@@ -82,9 +82,8 @@ export function reasoningEffortMapFor(provider: OcxProviderConfig, modelId: stri
 }
 
 /**
- * Translate Codex's reasoning label into the provider's real wire value. The Codex catalog must only
- * advertise labels Codex itself accepts (`low`/`medium`/`high`/`xhigh`), but some upstreams use
- * different values (`max`) or a smaller subset (`low`/`medium`/`high`).
+ * Translate Codex's reasoning label into the provider's real wire value. Prefer identity labels
+ * (`xhigh` stays `xhigh`, `max` stays `max`); provider maps are only for real upstream aliases.
  */
 export function mapReasoningEffort(provider: OcxProviderConfig, modelId: string, requested: string | undefined): string | undefined {
   if (!requested) return undefined;

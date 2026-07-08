@@ -20,8 +20,15 @@ function responsesUsage(usage: OcxUsage | undefined): Record<string, unknown> {
     output_tokens: usage.outputTokens,
     total_tokens: usageDisplayTotalTokens(usage) ?? inputTokens + usage.outputTokens,
   };
+  const inputDetails: Record<string, number> = {};
   if (usage.cachedInputTokens !== undefined) {
-    out.input_tokens_details = { cached_tokens: usage.cachedInputTokens };
+    inputDetails.cached_tokens = usage.cachedInputTokens;
+  }
+  if (usage.cacheCreationInputTokens !== undefined) {
+    inputDetails.cache_write_tokens = usage.cacheCreationInputTokens;
+  }
+  if (Object.keys(inputDetails).length > 0) {
+    out.input_tokens_details = inputDetails;
   }
   if (usage.reasoningOutputTokens !== undefined) {
     out.output_tokens_details = { reasoning_tokens: usage.reasoningOutputTokens };

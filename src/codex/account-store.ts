@@ -44,7 +44,10 @@ function isCredentialRecord(value: unknown): value is CodexAccountCredentialReco
     && (value.credential === undefined || isCredential(value.credential))
     && (value.refreshGrantFingerprint === undefined || typeof value.refreshGrantFingerprint === "string")
     && (value.deletedAt === undefined || typeof value.deletedAt === "number")
-    && (value.replacedAt === undefined || typeof value.replacedAt === "number");
+    && (value.replacedAt === undefined || typeof value.replacedAt === "number")
+    && (value.lastCodexValidatedAt === undefined || typeof value.lastCodexValidatedAt === "number")
+    && (value.lastCodexValidationStatus === undefined || value.lastCodexValidationStatus === "ok" || value.lastCodexValidationStatus === "failed")
+    && (value.lastCodexValidationError === undefined || typeof value.lastCodexValidationError === "string");
 }
 
 export function refreshGrantFingerprintForToken(refreshToken: string): string {
@@ -98,6 +101,17 @@ function persist(store: CodexAccountStore): void {
   atomicWriteFile(codexAccountsPath(), JSON.stringify(store, null, 2) + "\n");
 }
 
+function preservedValidationMetadata(record: CodexAccountCredentialRecord | undefined): Pick<
+  CodexAccountCredentialRecord,
+  "lastCodexValidatedAt" | "lastCodexValidationStatus" | "lastCodexValidationError"
+> {
+  return {
+    ...(record?.lastCodexValidatedAt !== undefined ? { lastCodexValidatedAt: record.lastCodexValidatedAt } : {}),
+    ...(record?.lastCodexValidationStatus !== undefined ? { lastCodexValidationStatus: record.lastCodexValidationStatus } : {}),
+    ...(record?.lastCodexValidationError !== undefined ? { lastCodexValidationError: record.lastCodexValidationError } : {}),
+  };
+}
+
 export function getCodexAccountCredential(id: string): CodexAccountCredentials | null {
   const record = readCodexAccountRecord(id);
   if (!record || record.deletedAt != null) return null;
@@ -115,6 +129,32 @@ export function saveCodexAccountCredential(id: string, cred: CodexAccountCredent
     generation: (current?.generation ?? 0) + 1,
     refreshGrantFingerprint,
     replacedAt: current ? Date.now() : undefined,
+    ...preservedValidationMetadata(current),
+  };
+  persist(store);
+}
+
+export function markCodexAccountValidated(id: string, atMs: number = Date.now()): void {
+  const store = loadCodexAccountRecordStore();
+  const current = store[id];
+  if (!current || current.deletedAt != null || !current.credential) return;
+  store[id] = {
+    ...current,
+    lastCodexValidatedAt: atMs,
+    lastCodexValidationStatus: "ok",
+    lastCodexValidationError: undefined,
+  };
+  persist(store);
+}
+
+export function markCodexAccountValidationFailed(id: string, reason: string): void {
+  const store = loadCodexAccountRecordStore();
+  const current = store[id];
+  if (!current || current.deletedAt != null || !current.credential) return;
+  store[id] = {
+    ...current,
+    lastCodexValidationStatus: "failed",
+    lastCodexValidationError: reason,
   };
   persist(store);
 }
@@ -154,6 +194,7 @@ export function saveCodexAccountCredentialIfGeneration(
     generation: generation + 1,
     refreshGrantFingerprint,
     replacedAt: current.replacedAt,
+    ...preservedValidationMetadata(current),
   };
   persist(store);
   return true;

@@ -32,7 +32,7 @@ describe("routeModel registry effort defaults", () => {
     });
   });
 
-  test("hydrates registry reasoning effort maps for stale persisted ollama-cloud configs", () => {
+  test("does not hydrate legacy xhigh to max maps for stale persisted ollama-cloud configs", () => {
     const config: OcxConfig = {
       port: 10100,
       defaultProvider: "ollama-cloud",
@@ -48,8 +48,9 @@ describe("routeModel registry effort defaults", () => {
 
     const route = routeModel(config, "ollama-cloud/glm-5.2");
 
-    expect(route.provider.reasoningEffortMap).toEqual({ xhigh: "max" });
-    expect(mapReasoningEffort(route.provider, route.modelId, "xhigh")).toBe("max");
+    expect(route.provider.reasoningEffortMap).toBeUndefined();
+    expect(mapReasoningEffort(route.provider, route.modelId, "xhigh")).toBe("xhigh");
+    expect(mapReasoningEffort(route.provider, route.modelId, "max")).toBe("max");
   });
 
   test("preserves user reasoning effort map overrides", () => {
@@ -91,7 +92,7 @@ describe("routeModel registry effort defaults", () => {
     expect(route.provider.modelReasoningEffortMap).toBeUndefined();
   });
 
-  test("hydrates nested modelReasoningEffortMap for stale persisted configs", () => {
+  test("does not hydrate legacy nested xhigh to max maps for stale persisted configs", () => {
     const config: OcxConfig = {
       port: 10100,
       defaultProvider: "opencode-go",
@@ -106,9 +107,11 @@ describe("routeModel registry effort defaults", () => {
 
     const route = routeModel(config, "opencode-go/glm-5.2");
 
-    // The registry per-model map for glm-5.2 is layered in (xhigh -> max).
-    expect(route.provider.modelReasoningEffortMap?.["glm-5.2"]?.xhigh).toBe("max");
-    expect(mapReasoningEffort(route.provider, route.modelId, "xhigh")).toBe("max");
+    // glm-5.2 itself must have NO alias map (identity labels incl. native `max`); the provider
+    // still carries thinking-toggle alias maps for mimo/glm-5.x models, which is unrelated.
+    expect(route.provider.modelReasoningEffortMap?.["glm-5.2"]).toBeUndefined();
+    expect(mapReasoningEffort(route.provider, route.modelId, "xhigh")).toBe("xhigh");
+    expect(mapReasoningEffort(route.provider, route.modelId, "max")).toBe("max");
   });
 
   test("hydrates registry model capability metadata for stale persisted Umans configs", () => {
@@ -130,10 +133,10 @@ describe("routeModel registry effort defaults", () => {
     expect(route.provider.modelContextWindows?.["umans-kimi-k2.7"]).toBe(262_144);
     expect(route.provider.modelInputModalities?.["umans-kimi-k2.7"]).toEqual(["text", "image"]);
     expect(route.provider.noVisionModels).toContain("umans-glm-5.2");
-    expect(route.provider.modelReasoningEfforts?.["umans-kimi-k2.7"]).toEqual(["low", "medium", "high", "xhigh"]);
+    expect(route.provider.modelReasoningEfforts?.["umans-kimi-k2.7"]).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
 
-  test("user per-model override wins while registry keys are preserved (nested merge)", () => {
+  test("user per-model effort-map override is preserved without registry aliases", () => {
     const config: OcxConfig = {
       port: 10100,
       defaultProvider: "opencode-go",
@@ -149,10 +152,8 @@ describe("routeModel registry effort defaults", () => {
 
     const route = routeModel(config, "opencode-go/glm-5.2");
 
-    // User override wins for the key it sets...
     expect(mapReasoningEffort(route.provider, route.modelId, "xhigh")).toBe("high");
-    // ...but registry keys the user did not set survive the nested merge.
-    expect(mapReasoningEffort(route.provider, route.modelId, "minimal")).toBe("none");
+    expect(mapReasoningEffort(route.provider, route.modelId, "max")).toBe("max");
   });
 
   test("registry model limitation lists are preserved alongside user additions", () => {
