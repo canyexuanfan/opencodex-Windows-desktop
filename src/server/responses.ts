@@ -36,7 +36,7 @@ import {
 } from "../codex/routing";
 import { fetchWithResetRetry } from "../lib/upstream-retry";
 import { isUsageDebugEnabled } from "../usage/debug";
-import { readJsonRequestBody, UnsupportedContentEncodingError } from "./request-decompress";
+import { readJsonRequestBody, DecompressedBodyTooLargeError, UnsupportedContentEncodingError } from "./request-decompress";
 import { resolveAdapter, resolveWireProtocolOverride } from "./adapter-resolve";
 import { hasKeyPoolFailover, rotateKeyOn429 } from "../providers/key-failover";
 import type { WsData } from "./ws-bridge";
@@ -102,6 +102,24 @@ export function codexForwardTerminalOutcomeRecorder(
   return status => recordCodexUpstreamOutcome(config, authCtx.accountId, status === "completed" ? 200 : 502);
 }
 
+/**
+ * Map a request-body read failure to an honest error response. `readJsonRequestBody` can fail three
+ * ways and they must not all collapse into "Invalid JSON body": an unsupported content-encoding
+ * (415), a body that inflates past the decompression cap (413 — the image-heavy case Codex hits when
+ * zstd-compressed screenshot history exceeds the limit), or a genuine JSON syntax error (400). The
+ * real decode error was previously swallowed, so log it before returning the generic 400.
+ */
+function decodeRequestErrorResponse(err: unknown, label: string): Response {
+  if (err instanceof UnsupportedContentEncodingError) {
+    return formatErrorResponse(415, "invalid_request_error", err.message);
+  }
+  if (err instanceof DecompressedBodyTooLargeError) {
+    return formatErrorResponse(413, "invalid_request_error", err.message);
+  }
+  console.warn(`[${label}] request body decode/parse failed: ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`);
+  return formatErrorResponse(400, "invalid_request_error", "Invalid JSON body");
+}
+
 export async function handleResponses(
   req: Request,
   config: OcxConfig,
@@ -121,10 +139,7 @@ export async function handleResponses(
   try {
     body = await readJsonRequestBody(req);
   } catch (err) {
-    if (err instanceof UnsupportedContentEncodingError) {
-      return formatErrorResponse(415, "invalid_request_error", err.message);
-    }
-    return formatErrorResponse(400, "invalid_request_error", "Invalid JSON body");
+    return decodeRequestErrorResponse(err, "responses");
   }
   const originalBody = body;
   body = expandPreviousResponseInput(body);
@@ -637,10 +652,7 @@ export async function handleResponsesCompact(req: Request, config: OcxConfig): P
   try {
     body = await readJsonRequestBody(req);
   } catch (err) {
-    if (err instanceof UnsupportedContentEncodingError) {
-      return formatErrorResponse(415, "invalid_request_error", err.message);
-    }
-    return formatErrorResponse(400, "invalid_request_error", "Invalid JSON body");
+    return decodeRequestErrorResponse(err, "responses-compact");
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return formatErrorResponse(400, "invalid_request_error", "Invalid compaction request body");

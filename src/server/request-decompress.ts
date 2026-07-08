@@ -9,8 +9,14 @@
  * `content-encoding: zstd` bodies that `req.json()` cannot parse.
  */
 
-/** Cap decompressed request bodies (a compressed bomb must not inflate unbounded). */
-export const MAX_DECOMPRESSED_BODY_BYTES = 64 * 1024 * 1024;
+/**
+ * Cap decompressed request bodies (a compressed bomb must not inflate unbounded). Codex compresses
+ * EVERY responses request with zstd (no size threshold), and image-heavy histories inflate fast:
+ * ~12 full-res screenshots as base64 already cross 64MB decompressed. The proxy is fed by the user's
+ * own local Codex over loopback, so the bomb threat is weak; this cap is really an OOM guard. Keep it
+ * generous enough that ordinary multi-image sessions decode, while still bounding a runaway body.
+ */
+export const MAX_DECOMPRESSED_BODY_BYTES = 256 * 1024 * 1024;
 
 export class UnsupportedContentEncodingError extends Error {
   constructor(readonly encoding: string) {

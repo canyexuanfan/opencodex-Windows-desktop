@@ -53,6 +53,17 @@ describe("decodeRequestBody", () => {
     const compressed = Bun.zstdCompressSync(big);
     expect(() => decodeRequestBody(compressed, "zstd")).toThrow(DecompressedBodyTooLargeError);
   });
+
+  test("decodes image-heavy bodies that exceed the old 64MB cap (regression)", () => {
+    // The reported "Invalid JSON body" failure: ~12 screenshots inflate past the former 64MB cap.
+    // 100MB is over the old limit and under the current one, so it must now decode.
+    const OLD_CAP = 64 * 1024 * 1024;
+    const between = new Uint8Array(OLD_CAP + 36 * 1024 * 1024); // ~100MB, < MAX_DECOMPRESSED_BODY_BYTES
+    expect(between.byteLength).toBeGreaterThan(OLD_CAP);
+    expect(between.byteLength).toBeLessThan(MAX_DECOMPRESSED_BODY_BYTES);
+    const compressed = Bun.zstdCompressSync(between);
+    expect(decodeRequestBody(compressed, "zstd").byteLength).toBe(between.byteLength);
+  });
 });
 
 describe("readJsonRequestBody", () => {
@@ -90,5 +101,15 @@ describe("readJsonRequestBody", () => {
       body: PAYLOAD_BYTES,
     });
     await expect(readJsonRequestBody(req)).rejects.toBeInstanceOf(UnsupportedContentEncodingError);
+  });
+
+  test("surfaces DecompressedBodyTooLargeError (mapped to 413, not a generic 400) for oversized bodies", async () => {
+    const big = Bun.zstdCompressSync(new Uint8Array(MAX_DECOMPRESSED_BODY_BYTES + 1024));
+    const req = new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-encoding": "zstd" },
+      body: big,
+    });
+    await expect(readJsonRequestBody(req)).rejects.toBeInstanceOf(DecompressedBodyTooLargeError);
   });
 });

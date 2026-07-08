@@ -482,9 +482,31 @@ function toolsToAnthropicFormat(parsed: OcxParsedRequest, toolNames: { toWire: (
   const converted = tools.map(t => ({
     name: toolNames.toWire(namespacedToolName(t.namespace, t.name)),
     description: t.description,
-    input_schema: t.parameters,
+    input_schema: toAnthropicInputSchema(t.parameters),
   }));
   return converted;
+}
+
+/**
+ * Normalize a tool's JSON-Schema `parameters` into a valid Anthropic `input_schema`. Anthropic
+ * requires every custom tool's `input_schema` to be an object schema with `type: "object"`
+ * ("tools.N.custom.input_schema.type: Field required" 400 otherwise). Some tools reach the adapter
+ * with empty (`{}`) or type-less parameters — e.g. a parameterless function tool the parser filled
+ * with `parameters: {}` (see responses/parser.ts pushFn) — so force the root object type and keep a
+ * `properties` map present. Existing valid schemas pass through untouched.
+ */
+function toAnthropicInputSchema(parameters: Record<string, unknown> | undefined): Record<string, unknown> {
+  const schema = parameters && typeof parameters === "object" && !Array.isArray(parameters)
+    ? parameters
+    : {};
+  if (schema.type === "object" && typeof schema.properties === "object" && schema.properties !== null) {
+    return schema;
+  }
+  return {
+    ...schema,
+    type: "object",
+    properties: (typeof schema.properties === "object" && schema.properties !== null) ? schema.properties : {},
+  };
 }
 
 export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetention?: "none" | "short" | "long"): ProviderAdapter {
