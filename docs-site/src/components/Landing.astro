@@ -4,6 +4,14 @@
 // media band, quickstart terminal, bento feature slab, docs link row.
 // Styling lives in src/styles/custom.css under the `.lp` namespace.
 import { Image } from 'astro:assets';
+import {
+	siAnthropic,
+	siDeepseek,
+	siGoogle,
+	siMoonshotai,
+	siOllama,
+	siOpenrouter,
+} from 'simple-icons';
 import demo from '../assets/demo.gif';
 import dashboard from '../assets/dashboard.png';
 import picker from '../assets/codex-app-picker.png';
@@ -35,9 +43,19 @@ const icons: Record<string, string> = {
 	folder: 'M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z',
 };
 
-const providers = [
-	'Anthropic', 'Google', 'xAI', 'Kimi', 'Ollama Cloud', 'Groq',
-	'OpenRouter', 'Azure', 'DeepSeek', 'GLM',
+// Official monochrome marks from simple-icons where the brand exists in the
+// library; brands missing from it stay text-only (no generic substitutes).
+const providers: { label: string; path?: string }[] = [
+	{ label: 'Anthropic', path: siAnthropic.path },
+	{ label: 'Google', path: siGoogle.path },
+	{ label: 'xAI' },
+	{ label: 'Kimi', path: siMoonshotai.path },
+	{ label: 'Ollama Cloud', path: siOllama.path },
+	{ label: 'Groq' },
+	{ label: 'OpenRouter', path: siOpenrouter.path },
+	{ label: 'Azure' },
+	{ label: 'DeepSeek', path: siDeepseek.path },
+	{ label: 'GLM' },
 ];
 
 const quickstart = [
@@ -117,8 +135,17 @@ const docsMap = [
 				</a>
 				<a class="lp-btn-ghost" href="https://github.com/lidge-jun/opencodex">GitHub</a>
 			</div>
-			<ul class="lp-chips" aria-label={t('Supported providers', '지원 프로바이더', '支持的 provider')}>
-				{providers.map((p) => <li>{p}</li>)}
+		<ul class="lp-chips" aria-label={t('Supported providers', '지원 프로바이더', '支持的 provider')}>
+				{providers.map((p) => (
+					<li>
+						{p.path && (
+							<svg class="lp-chip-mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+								<path d={p.path} />
+							</svg>
+						)}
+						{p.label}
+					</li>
+				))}
 				<li class="lp-chip-more"><a href={`${prefix}guides/providers/`}>{t('40+ providers', '프로바이더 40+', '40+ providers')}</a></li>
 			</ul>
 		</div>

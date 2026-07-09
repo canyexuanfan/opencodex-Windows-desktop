@@ -34,7 +34,7 @@
 
   /* glass material (chrome layers only) */
   --ocx-glass-rail: rgba(23, 23, 23, 0.55);
-  --ocx-glass-panel: rgba(38, 38, 38, 0.82);
+  --ocx-glass-panel: rgba(38, 38, 38, 0.96);
   --ocx-glass-blur: saturate(1.5) blur(40px);
   --ocx-surface: #262626;
   --ocx-raised: #303030;
@@ -78,7 +78,7 @@
   --sl-color-backdrop-overlay: rgba(249, 249, 249, 0.5);
 
   --ocx-glass-rail: rgba(249, 249, 249, 0.55);
-  --ocx-glass-panel: rgba(255, 255, 255, 0.78);
+  --ocx-glass-panel: rgba(255, 255, 255, 0.96);
   --ocx-surface: #ffffff;
   --ocx-raised: #f4f4f4;
   --ocx-hover: rgba(13, 13, 13, 0.04);
@@ -256,6 +256,8 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
   max-width: 72rem;
   margin-inline: auto;
   padding-inline: clamp(0.5rem, 2vw, 1.5rem);
+  /* animated slide-in transforms must never widen the page */
+  overflow-x: clip;
 }
 .lp section { margin-top: 0 !important; }
 
@@ -314,16 +316,21 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
 .lp-hero-copy {
   padding: clamp(2.25rem, 6vh, 4.5rem) clamp(1.25rem, 4vw, 3.5rem) 0;
   max-width: 60rem;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
 }
 .lp-hero-copy h1 {
   margin: 0;
   font-size: clamp(2.25rem, 5.5vw, 4rem);
-  font-weight: 650;
+  font-weight: 440;
   line-height: 1.08;
   letter-spacing: 0;
   color: #0d0d0d;
   text-wrap: balance;
-  max-width: 16ch;
+  max-width: 18ch;
 }
 .lp-sub {
   margin: 1.125rem 0 0;
@@ -344,6 +351,7 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
 .lp-cta {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 0.75rem;
   margin-top: 1.75rem;
 }
@@ -355,7 +363,7 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
   border-radius: var(--ocx-radius-pill);
   background-color: #0d0d0d;
   color: #ffffff;
-  font-weight: 600;
+  font-weight: 500;
   font-size: var(--sl-text-base);
   text-decoration: none;
   white-space: nowrap;
@@ -366,7 +374,7 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
   padding: 0.7rem 1.4rem;
   border-radius: var(--ocx-radius-pill);
   border: 0;
-  background-color: rgba(255, 255, 255, 0.92);
+  background-color: #ffffff;
   color: #0d0d0d;
   font-weight: 500;
   font-size: var(--sl-text-base);
@@ -394,30 +402,35 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
 /* dark chips: keep readable near-opaque, slightly dimmed */
 :root[data-theme='dark'] .lp-chips li,
 :root:not([data-theme='light']) .lp-chips li {
-  background-color: rgba(255, 255, 255, 0.88);
+  background-color: rgba(255, 255, 255, 0.94);
 }
 
 /* provider chips: near-opaque white pills over the field (aside pattern) */
 .lp-chips {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   gap: 0.5rem;
   list-style: none;
   margin: 2.25rem 0 0;
   padding: 0;
-  max-width: 40rem;
+  max-width: 44rem;
 }
 .lp-chips li {
   padding: 0.35rem 0.9rem;
   border-radius: var(--ocx-radius-pill);
   border: 0;
-  background-color: rgba(255, 255, 255, 0.85);
+  background-color: rgba(255, 255, 255, 0.95);
   color: #1a1a1a;
   font-size: var(--sl-text-sm);
   font-weight: 500;
   white-space: nowrap;
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.06);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
 }
+.lp-chip-mark { width: 15px; height: 15px; flex: none; opacity: 0.9; }
 .lp-chip-more { padding: 0 !important; background-color: rgba(255, 255, 255, 0.6) !important; }
 .lp-chip-more a {
   display: inline-block;
@@ -553,6 +566,8 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
   object-fit: cover;
   object-position: center top;
 }
+/* the demo capture's action lives at the bottom of the frame */
+.lp-cell-providers img { object-position: center bottom; }
 .lp-cell-picker img { object-position: center; }
 .lp-cell-providers { grid-area: prov; }
 .lp-cell-picker { grid-area: pick; flex-direction: column; }
@@ -648,6 +663,19 @@ footer.sl-flex .meta { color: var(--sl-color-gray-4); }
   .lp-sub { animation-delay: 0.07s; }
   .lp-cta { animation-delay: 0.14s; }
   .lp-chips { animation-delay: 0.21s; }
+  /* per-chip stagger on top of the group entrance */
+  .lp-chips li { animation: ocx-fade-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; }
+  .lp-chips li:nth-child(1) { animation-delay: 0.22s; }
+  .lp-chips li:nth-child(2) { animation-delay: 0.26s; }
+  .lp-chips li:nth-child(3) { animation-delay: 0.3s; }
+  .lp-chips li:nth-child(4) { animation-delay: 0.34s; }
+  .lp-chips li:nth-child(5) { animation-delay: 0.38s; }
+  .lp-chips li:nth-child(6) { animation-delay: 0.42s; }
+  .lp-chips li:nth-child(7) { animation-delay: 0.46s; }
+  .lp-chips li:nth-child(8) { animation-delay: 0.5s; }
+  .lp-chips li:nth-child(9) { animation-delay: 0.54s; }
+  .lp-chips li:nth-child(10) { animation-delay: 0.58s; }
+  .lp-chips li:nth-child(11) { animation-delay: 0.62s; }
   .lp-stage-in img { animation-delay: 0.28s; }
 
   /* interactive lift */
@@ -668,11 +696,11 @@ footer.sl-flex .meta { color: var(--sl-color-gray-4); }
   /* scroll-driven reveal: progressive enhancement only */
   @supports (animation-timeline: view()) {
     @keyframes ocx-slide-left {
-      from { opacity: 0; transform: translateX(-22px); }
+      from { opacity: 0; transform: translateX(-38px); }
       to { opacity: 1; transform: translateX(0); }
     }
     @keyframes ocx-slide-right {
-      from { opacity: 0; transform: translateX(22px); }
+      from { opacity: 0; transform: translateX(38px); }
       to { opacity: 1; transform: translateX(0); }
     }
     .lp-cell {
@@ -688,10 +716,15 @@ footer.sl-flex .meta { color: var(--sl-color-gray-4); }
       animation-timeline: view();
       animation-range: entry 0% entry 42%;
     }
+    /* terminal: cinematic wipe-in from the left edge */
+    @keyframes ocx-terminal-reveal {
+      from { opacity: 0; transform: translateX(28px); clip-path: inset(0 35% 0 0 round 12px); }
+      to { opacity: 1; transform: translateX(0); clip-path: inset(0 0 0 0 round 12px); }
+    }
     .lp-terminal {
-      animation: ocx-slide-right linear both;
+      animation: ocx-terminal-reveal linear both;
       animation-timeline: view();
-      animation-range: entry 0% entry 42%;
+      animation-range: entry 0% entry 48%;
     }
     /* section titles + link rows ride the same reveal */
     .lp-bento-title,
@@ -704,7 +737,7 @@ footer.sl-flex .meta { color: var(--sl-color-gray-4); }
     }
     /* the product stage settles into place as it enters */
     @keyframes ocx-stage-settle {
-      from { opacity: 0.4; transform: translateY(28px) scale(0.985); }
+      from { opacity: 0.3; transform: translateY(46px) scale(0.965); }
       to { opacity: 1; transform: translateY(0) scale(1); }
     }
     .lp-stage-in img {
@@ -718,6 +751,30 @@ footer.sl-flex .meta { color: var(--sl-color-gray-4); }
       animation: ocx-fade-up linear both;
       animation-timeline: view();
       animation-range: entry 0% entry 40%;
+    }
+  }
+
+  /* cinematic scroll choreography (scroll-linked, landing only) */
+  @supports (animation-timeline: scroll()) {
+    /* hero copy recedes with depth as the page scrolls away */
+    @keyframes ocx-hero-away {
+      to { opacity: 0.1; transform: translateY(-52px) scale(0.96); }
+    }
+    .lp-hero-copy {
+      animation: ocx-hero-away linear both;
+      animation-timeline: scroll(root block);
+      animation-range: 0vh 90vh;
+      transform-origin: 50% 100%;
+    }
+    /* the field photo settles from a slow zoom while scrolling */
+    @keyframes ocx-field-zoom {
+      from { transform: scale(1.07); }
+      to { transform: scale(1); }
+    }
+    .lp-field-bg img {
+      animation: ocx-field-zoom linear both;
+      animation-timeline: scroll(root block);
+      animation-range: 0vh 130vh;
     }
   }
 }

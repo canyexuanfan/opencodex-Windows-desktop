@@ -9,6 +9,9 @@ import SocialIcons from '@astrojs/starlight/components/SocialIcons.astro';
 import ThemeSelect from '@astrojs/starlight/components/ThemeSelect.astro';
 
 const { locale } = Astro.locals.starlightRoute;
+// Splash pages have no Starlight sidebar/hamburger, so the pill carries its own
+// menu below the desktop-nav breakpoint.
+const isSplash = Astro.locals.starlightRoute.entry.data.template === 'splash';
 // Root locale is `undefined`; BASE_URL already ends with a slash.
 const base = import.meta.env.BASE_URL.replace(/\/?$/, '/');
 const prefix = locale ? `${base}${locale}/` : base;
@@ -99,6 +102,35 @@ const contributing: NavLink = {
 		<ThemeSelect />
 		<LanguageSelect />
 	</div>
+	{isSplash && (
+		<div class="lp-menu print:hidden">
+			<button
+				type="button"
+				class="lp-menu-btn"
+				aria-haspopup="true"
+				aria-expanded="false"
+				aria-controls="lp-menu-panel"
+				aria-label={t('Menu', '메뉴', '菜单')}
+			>
+				<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+					<path d="M4 6h16M4 12h16M4 18h16" />
+				</svg>
+			</button>
+			<div class="lp-menu-panel" id="lp-menu-panel">
+				{groups.map((group) => (
+					<div class="lp-menu-group">
+						<span>{group.label}</span>
+						<ul>
+							{group.links.map((link) => (
+								<li><a href={link.href}>{link.label}</a></li>
+							))}
+						</ul>
+					</div>
+				))}
+				<a class="lp-menu-contrib" href={contributing.href}>{contributing.label}</a>
+			</div>
+		</div>
+	)}
 </div>
 
 <style>
@@ -243,12 +275,93 @@ const contributing: NavLink = {
 			transition: none;
 		}
 	}
+
+	/* ---- splash hamburger (below the desktop-nav breakpoint) ---- */
+	.lp-menu { display: none; position: relative; }
+	@media (max-width: 71.99rem) {
+		.lp-menu { display: block; }
+	}
+	.lp-menu-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 2.25rem;
+		height: 2.25rem;
+		border: 0;
+		border-radius: var(--ocx-radius-pill, 999px);
+		background: transparent;
+		color: var(--sl-color-gray-2);
+		cursor: pointer;
+		transition: background-color 0.12s, color 0.12s;
+	}
+	.lp-menu-btn:hover,
+	.lp-menu-btn[aria-expanded='true'] {
+		background-color: var(--ocx-hover, rgba(128, 128, 128, 0.1));
+		color: var(--sl-color-white);
+	}
+	.lp-menu-panel {
+		position: absolute;
+		top: calc(100% + 0.75rem);
+		inset-inline-end: 0;
+		min-width: 17rem;
+		max-height: min(72dvh, 34rem);
+		overflow-y: auto;
+		padding: 0.875rem;
+		border: 1px solid var(--sl-color-gray-5);
+		border-radius: var(--ocx-radius, 12px);
+		background-color: var(--ocx-glass-panel, canvas);
+		backdrop-filter: var(--ocx-glass-blur, blur(40px));
+		-webkit-backdrop-filter: var(--ocx-glass-blur, blur(40px));
+		box-shadow: var(--ocx-shadow, 0 10px 28px rgb(0 0 0 / 0.2));
+		opacity: 0;
+		visibility: hidden;
+		translate: 0 -4px;
+		transition: opacity 0.16s ease, visibility 0.16s, translate 0.16s ease;
+		z-index: var(--sl-z-index-navbar);
+	}
+	.lp-menu:has(> .lp-menu-btn[aria-expanded='true']) .lp-menu-panel {
+		opacity: 1;
+		visibility: visible;
+		translate: 0 0;
+	}
+	.lp-menu-group + .lp-menu-group { margin-top: 0.75rem; }
+	.lp-menu-group > span {
+		display: block;
+		margin-bottom: 0.25rem;
+		font-size: var(--sl-text-2xs);
+		font-weight: 650;
+		color: var(--sl-color-gray-3);
+	}
+	.lp-menu-group ul { list-style: none; margin: 0; padding: 0; }
+	.lp-menu-group a,
+	.lp-menu-contrib {
+		display: block;
+		padding: 0.4rem 0.5rem;
+		border-radius: var(--ocx-radius-sm, 8px);
+		color: var(--sl-color-gray-2);
+		font-size: var(--sl-text-sm);
+		text-decoration: none;
+		transition: background-color 0.12s, color 0.12s;
+	}
+	.lp-menu-contrib { margin-top: 0.75rem; font-weight: 600; color: var(--sl-color-white); }
+	.lp-menu-group a:hover,
+	.lp-menu-group a:focus-visible,
+	.lp-menu-contrib:hover,
+	.lp-menu-contrib:focus-visible {
+		background-color: var(--ocx-hover, rgba(128, 128, 128, 0.1));
+		color: var(--sl-color-white);
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.lp-menu-panel { transition: none; }
+	}
 </style>
 
 <script>
 	// Click/Enter/Space toggles the dropdowns (hover and focus-within still work
 	// via CSS); Escape or an outside click closes any open menu.
-	const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('.glass-nav .nav-link[aria-haspopup]'));
+	const buttons = Array.from(
+		document.querySelectorAll<HTMLButtonElement>('.glass-nav .nav-link[aria-haspopup], .lp-menu-btn'),
+	);
 	const closeAll = (except?: HTMLButtonElement) => {
 		for (const b of buttons) if (b !== except) b.setAttribute('aria-expanded', 'false');
 	};
@@ -260,7 +373,7 @@ const contributing: NavLink = {
 		});
 	}
 	document.addEventListener('click', (e) => {
-		if (!(e.target instanceof Element) || !e.target.closest('.glass-nav')) closeAll();
+		if (!(e.target instanceof Element) || !e.target.closest('.glass-nav, .lp-menu')) closeAll();
 	});
 	document.addEventListener('keydown', (e) => {
 		if (e.key === 'Escape') closeAll();

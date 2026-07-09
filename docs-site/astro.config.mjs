@@ -39,6 +39,9 @@ export default defineConfig({
   site: "https://lidge-jun.github.io",
   base: "/opencodex",
   trailingSlash: "ignore",
+  // lightningcss merges animation-timeline into the `animation` shorthand,
+  // which Chrome cannot parse — the scroll-driven animations die silently.
+  vite: { build: { cssMinify: "esbuild" } },
   integrations: [
     starlight({
       title: "opencodex",
