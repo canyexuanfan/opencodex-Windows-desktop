@@ -234,4 +234,26 @@ describe("3-state multi-agent mode", () => {
     expect(multiAgentModeLine("default")).toContain("default");
     expect(multiAgentModeLine("v2")).toContain("v2");
   });
+
+  test("mode default restores upstream pins after a prior forced v2 (stale-clear regression)", () => {
+    // Simulate: disk entries were synced while mode=v2 (all entries stamped v2),
+    // then mode switched to default. mergeCatalogEntriesForSync must clear the
+    // stale forced value and restore upstream pins.
+    const diskSol = { ...template(), slug: "gpt-5.6-sol", display_name: "GPT-5.6 Sol", multi_agent_version: "v2" };
+    const diskLuna = { ...template(), slug: "gpt-5.6-luna", display_name: "GPT-5.6 Luna", multi_agent_version: "v2" }; // was forced
+    const diskNative = { ...template(), slug: "gpt-5.5", display_name: "gpt-5.5", multi_agent_version: "v2" }; // was forced
+    const merged = mergeCatalogEntriesForSync(
+      [diskSol as never, diskLuna as never, diskNative as never],
+      [], new Map(), [], false, new Set(), null, new Set(), new Set(), "default",
+    );
+    const sol = merged.find(e => e.slug === "gpt-5.6-sol")!;
+    const luna = merged.find(e => e.slug === "gpt-5.6-luna")!;
+    const native = merged.find(e => e.slug === "gpt-5.5")!;
+    // sol upstream pin is v2 — restored
+    expect(sol.multi_agent_version).toBe("v2");
+    // luna upstream pin is v1 — restored from snapshot, NOT stale v2
+    expect(luna.multi_agent_version).toBe("v1");
+    // gpt-5.5 has no upstream pin — cleared (codex flag decides)
+    expect(native.multi_agent_version).toBeUndefined();
+  });
 });

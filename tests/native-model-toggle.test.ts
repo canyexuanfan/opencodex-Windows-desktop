@@ -38,9 +38,11 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
 
   test("visibleNativeSlugs omits disabled natives from the bare availability list", () => {
     const all = visibleNativeSlugs({ disabledModels: [] });
-    const filtered = visibleNativeSlugs({ disabledModels: ["gpt-5.4", "cursor/gpt-5.4"] });
-    expect(all).toContain("gpt-5.4");
-    expect(filtered).not.toContain("gpt-5.4");
+    // Use gpt-5.6-sol: guaranteed present (documented native addition, always in the list
+    // regardless of whether a live catalog exists — CI has no catalog file).
+    const filtered = visibleNativeSlugs({ disabledModels: ["gpt-5.6-sol", "cursor/gpt-5.4"] });
+    expect(all).toContain("gpt-5.6-sol");
+    expect(filtered).not.toContain("gpt-5.6-sol");
     // Routed blocklist entries never affect the native list.
     expect(filtered.length).toBe(all.length - 1);
   });

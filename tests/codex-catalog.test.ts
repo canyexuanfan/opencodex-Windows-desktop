@@ -303,7 +303,9 @@ describe("Codex catalog routed normalization", () => {
     expect(native).toBeDefined();
     expect(native).toHaveProperty("model_messages");
     expect(native?.tool_mode).toBe("code");
-    expect(native?.multi_agent_version).toBe("v2");
+    // Default mode clears multi_agent_version on non-pinned natives (gpt-5.5
+    // has no upstream pin — codex feature flag decides the surface).
+    expect(native?.multi_agent_version).toBeUndefined();
     expect(native?.use_responses_lite).toBe(true);
     // WebSocket advertisement is opt-in; templates must not leak it by default.
     expect(native).not.toHaveProperty("supports_websockets");

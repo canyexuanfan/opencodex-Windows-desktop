@@ -418,11 +418,27 @@ export type MultiAgentMode = "v1" | "default" | "v2";
 /**
  * Apply the 3-state multi-agent surface override to catalog entries.
  * - "v1": force multi_agent_version = "v1" on ALL entries (override upstream pins)
- * - "default": leave entries as-is (upstream pins respected: sol/terra=v2, luna=v1, rest=codex flag)
+ * - "default": RESTORE upstream pins — clear stale forced values so entries that were
+ *   previously forced to v1/v2 revert to their natural state (upstream-pinned natives
+ *   get their snapshot pin, others get null so the codex feature flag decides)
  * - "v2": force multi_agent_version = "v2" on ALL entries (override upstream pins)
  */
 function applyMultiAgentMode(entries: RawEntry[], mode: MultiAgentMode): RawEntry[] {
-  if (mode === "default") return entries;
+  if (mode === "default") {
+    // Restore upstream defaults: clear any stale forced multi_agent_version and
+    // re-apply upstream pins from the snapshot for native entries that have one.
+    for (const entry of entries) {
+      const slug = typeof entry.slug === "string" ? entry.slug : "";
+      const upstream = UPSTREAM_NATIVE_ENTRIES.get(slug);
+      const upstreamPin = upstream?.multi_agent_version;
+      if (typeof upstreamPin === "string") {
+        entry.multi_agent_version = upstreamPin;
+      } else {
+        delete entry.multi_agent_version;
+      }
+    }
+    return entries;
+  }
   for (const entry of entries) {
     entry.multi_agent_version = mode;
   }
