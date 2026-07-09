@@ -100,6 +100,21 @@ describe("injectDeveloperMessage", () => {
     expect((parsed._rawBody as { input: unknown }).input).toBe("plain");
     expect(parsed.context.messages.at(-1)!.content).toBe("note");
   });
+
+  test("inserts BEFORE compaction_trigger so it stays the final input item", () => {
+    const parsed = parsedFixture({ reasoning: "max" });
+    const rawBody = parsed._rawBody as { input: unknown[] };
+    rawBody.input = [
+      { type: "message", role: "user", content: "long conversation" },
+      { type: "compaction_trigger" },
+    ];
+    injectDeveloperMessage(parsed, "guidance text");
+    const input = rawBody.input;
+    expect(input).toHaveLength(3);
+    expect((input[1] as { type: string }).type).toBe("message");
+    expect((input[1] as { role: string }).role).toBe("developer");
+    expect((input[2] as { type: string }).type).toBe("compaction_trigger");
+  });
 });
 
 describe("sanitizeEncryptedContentInPlace", () => {

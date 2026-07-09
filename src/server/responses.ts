@@ -122,7 +122,15 @@ export function injectDeveloperMessage(parsed: OcxParsedRequest, text: string): 
   parsed.context.messages.push({ role: "developer", content: text, timestamp: Date.now() });
   const raw = parsed._rawBody as { input?: unknown } | undefined;
   if (raw && Array.isArray(raw.input)) {
-    raw.input.push({ type: "message", role: "developer", content: [{ type: "input_text", text }] });
+    const devItem = { type: "message", role: "developer", content: [{ type: "input_text", text }] };
+    // compaction_trigger must remain the final input item (codex-rs + ChatGPT backend both
+    // validate this). Insert the developer message BEFORE the trigger when present.
+    const last = raw.input[raw.input.length - 1];
+    if (last && typeof last === "object" && (last as { type?: string }).type === "compaction_trigger") {
+      raw.input.splice(raw.input.length - 1, 0, devItem);
+    } else {
+      raw.input.push(devItem);
+    }
   }
 }
 
