@@ -143,7 +143,7 @@ async function tryWarmup(options: CodexWarmupOptions, model: string): Promise<vo
       body: JSON.stringify({
         model,
         instructions: "Reply with OK.",
-        input: "hi",
+        input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
         stream: true,
         store: false,
       }),
@@ -190,4 +190,3 @@ export async function warmCodexAccount(options: CodexWarmupOptions): Promise<voi
     throw lastErr;
   }
 }
-

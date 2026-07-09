@@ -31,7 +31,7 @@ describe("codex warmup", () => {
     expect(body).toMatchObject({
       model: "gpt-5.4-mini",
       instructions: "Reply with OK.",
-      input: "hi",
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
       stream: true,
       store: false,
     });
