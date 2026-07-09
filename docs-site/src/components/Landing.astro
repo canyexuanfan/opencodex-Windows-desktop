@@ -58,6 +58,11 @@ const providers: { label: string; path?: string }[] = [
 	{ label: 'GLM' },
 ];
 
+const quickstartMini = [
+	{ cmd: 'npm install -g @bitkyc08/opencodex', note: t('Install', '설치', '安装') },
+	{ cmd: 'ocx start', note: t('Start the proxy', '프록시 시작', '启动代理') },
+];
+
 const quickstart = [
 	{ cmd: 'npm install -g @bitkyc08/opencodex', note: t('Install', '설치', '安装') },
 	{ cmd: 'ocx init', note: t('Inject a provider into Codex', 'Codex에 프로바이더 주입', '向 Codex 注入 provider') },
@@ -112,9 +117,13 @@ const docsMap = [
 ---
 
 <div class="lp not-content">
-	<!-- hero field: rounded organic wash container; copy + chips + product stage
-	     all live inside (aside.com grammar: expressive field, functional pills) -->
-	<section class="lp-hero-field">
+	<!-- scene stack: hero -> quickstart -> horizontal rail. Each wrapper owns a
+	     named view-timeline; its sticky inner stage pins under the pill header
+	     while the next scene rides over it (motion.md sticky stacking +
+	     scale-depth morph). -->
+	<div class="lp-scenes">
+	<section class="lp-scene lp-scene-hero">
+	<div class="lp-scene-inner lp-hero-field">
 		<div class="lp-field-bg" aria-hidden="true">
 			<Image src={heroFieldLight} alt="" class="lp-field-light" loading="eager" widths={[1024, 2048]} sizes="100vw" />
 			<Image src={heroFieldDark} alt="" class="lp-field-dark" loading="lazy" widths={[1024, 2048]} sizes="100vw" />
@@ -156,26 +165,39 @@ const docsMap = [
 				'opencodex 控制台 —— 实时代理状态、路由的 provider 与可用模型'
 			)} loading="eager" />
 		</div>
+	</div>
 	</section>
 
-	<!-- quickstart terminal band -->
-	<section class="lp-quick">
-		<div class="lp-quick-copy">
-			<h2>{t('Four commands to switch.', '네 줄이면 끝납니다.', '四条命令完成切换。')}</h2>
-			<p>
-				{t(
-					'ocx init writes a provider into your Codex config and shares one model catalog with Codex CLI, TUI, App, and SDK. ocx stop restores native Codex cleanly.',
-					'ocx init이 Codex 설정에 프로바이더를 기록하고 CLI, TUI, App, SDK가 같은 모델 카탈로그를 공유합니다. ocx stop이면 네이티브 Codex로 깔끔하게 복원됩니다.',
-					'ocx init 将 provider 写入 Codex 配置，CLI、TUI、App 与 SDK 共享同一模型目录。ocx stop 可干净地恢复原生 Codex。'
-				)}
-			</p>
+	<!-- quickstart sheet scene -->
+	<section class="lp-scene lp-scene-quick">
+	<div class="lp-scene-inner lp-quick">
+		<div class="lp-kinetic" aria-label={t('Install. Start. Codex, rerouted.', '설치. 시작. Codex는 그대로.', '安装。启动。Codex 即刻改道。')}>
+			<p class="lp-kline">{t('Install.', '설치.', '安装。')}</p>
+			<p class="lp-kline">{t('Start.', '시작.', '启动。')}</p>
+			<p class="lp-kline lp-kline-accent">{t('Codex, rerouted.', 'Codex는 그대로.', 'Codex 即刻改道。')}</p>
+		</div>
+		<div class="lp-quick-side">
+			<div class="lp-terminal">
+				<div class="lp-terminal-bar"><span>zsh</span></div>
+				<pre>{quickstartMini.map((line) => (<code><span class="lp-prompt">$ </span>{line.cmd}<span class="lp-note">  # {line.note}</span>{'\n'}</code>))}</pre>
+			</div>
 			<a class="lp-inline-link" href={`${prefix}getting-started/quickstart/`}>{t('Full quickstart', '전체 퀵스타트', '完整快速开始')} →</a>
 		</div>
-		<div class="lp-terminal">
-			<div class="lp-terminal-bar"><span>zsh</span></div>
-			<pre>{quickstart.map((line) => (<code><span class="lp-prompt">$ </span>{line.cmd}<span class="lp-note">  # {line.note}</span>{'\n'}</code>))}</pre>
-		</div>
+	</div>
 	</section>
+
+	<!-- demo scrub: the capture plays through, driven by scroll -->
+	<section class="lp-scene lp-scene-scrub">
+	<div class="lp-scene-inner lp-scrub">
+		<h2 class="lp-scrub-title">{t('Watch Codex run on a routed model.', '라우팅된 모델 위의 Codex를 그대로.', '看 Codex 跑在路由模型上。')}</h2>
+		<div class="lp-scrub-stage">
+			<canvas class="lp-scrub-canvas" data-base={base} data-count="158" width="960" height="856" aria-label={t('Codex App running a task on a routed non-OpenAI model', '라우팅된 비 OpenAI 모델에서 작업 중인 Codex App', 'Codex App 在路由的非 OpenAI 模型上执行任务')}></canvas>
+			<Image src={demo} alt={t('Codex App running a task on a routed non-OpenAI model', '라우팅된 비 OpenAI 모델에서 작업 중인 Codex App', 'Codex App 在路由的非 OpenAI 模型上执行任务')} loading="lazy" class="lp-scrub-poster" />
+		</div>
+		<p class="lp-scrub-caption">{t('One task, streamed end to end through opencodex.', '작업 하나가 opencodex를 관통해 끝까지 스트리밍됩니다.', '一个任务，经 opencodex 全程流式完成。')}</p>
+	</div>
+	</section>
+	</div>
 
 	<!-- feature bento: dominant cell + content-weighted spans -->
 	<section class="lp-bento">
@@ -190,11 +212,6 @@ const docsMap = [
 						'五个适配器覆盖 Anthropic Messages、Google Gemini、Azure、OpenAI Responses passthrough，以及所有 OpenAI 兼容的 Chat Completions 端点 —— 内置 40+ provider。'
 					)}
 				</p>
-				<Image src={demo} alt={t(
-					'Codex App running a task on a routed non-OpenAI model through opencodex',
-					'opencodex로 라우팅된 비 OpenAI 모델에서 작업을 실행 중인 Codex App',
-					'Codex App 通过 opencodex 在路由的非 OpenAI 模型上执行任务'
-				)} loading="lazy" />
 			</article>
 			<article class="lp-cell">
 				<h3><svg class="lp-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={icons.key} /></svg>{t('OAuth or API key', 'OAuth 또는 API 키', 'OAuth 或 API key')}</h3>
@@ -219,7 +236,7 @@ const docsMap = [
 					'라우팅된 모델이 추론 강도 레벨과 함께 Codex App 선택기에 네이티브 모델과 나란히 표시됩니다.',
 					'路由模型带推理强度等级出现在 Codex App 中，与原生模型并列。'
 				)}</p>
-				<Image src={picker} alt={t('Codex App model picker showing opencodex routed models with reasoning effort levels', '추론 강도와 함께 opencodex 라우팅 모델을 보여주는 Codex App 모델 선택기', 'Codex App 模型选择器显示带推理强度的 opencodex 路由模型')} loading="lazy" />
+				<Image src={picker} alt={t('Codex App model picker with reasoning effort levels', '추론 강도 레벨이 있는 Codex App 모델 선택기', '带推理强度等级的 Codex App 模型选择器')} loading="lazy" />
 			</article>
 			<article class="lp-cell">
 				<h3><svg class="lp-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={icons.bot} /></svg>{t('Sub-agents', '서브에이전트', '子代理')}</h3>
@@ -236,6 +253,18 @@ const docsMap = [
 					'gpt-5.4-mini 사이드카로 비 OpenAI 모델에 실제 웹 검색과 이미지 이해를 붙입니다.',
 					'通过 gpt-5.4-mini 边车，让非 OpenAI 模型获得真实的网页搜索与图像理解能力。'
 				)}</p>
+			</article>
+			<article class="lp-cell lp-cell-terminal">
+				<h3><svg class="lp-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={icons.code} /></svg>{t('Quickstart', '퀵스타트', '快速开始')}</h3>
+				<p>{t(
+					'ocx init writes a provider into your Codex config and shares one model catalog with Codex CLI, TUI, App, and SDK. ocx stop restores native Codex cleanly.',
+					'ocx init이 Codex 설정에 프로바이더를 기록하고 CLI, TUI, App, SDK가 같은 모델 카탈로그를 공유합니다. ocx stop이면 네이티브 Codex로 깔끔하게 복원됩니다.',
+					'ocx init 将 provider 写入 Codex 配置，CLI、TUI、App 与 SDK 共享同一模型目录。ocx stop 可干净地恢复原生 Codex。'
+				)}</p>
+				<div class="lp-terminal">
+					<div class="lp-terminal-bar"><span>zsh</span></div>
+					<pre>{quickstart.map((line) => (<code><span class="lp-prompt">$ </span>{line.cmd}<span class="lp-note">  # {line.note}</span>{'\n'}</code>))}</pre>
+				</div>
 			</article>
 		</div>
 	</section>
@@ -265,3 +294,84 @@ const docsMap = [
 		)}
 	</p>
 </div>
+
+<script>
+	// Frame-sequence scrub (motion.md): the demo capture plays through as the
+	// scrub scene scrolls. Short-circuits under reduced motion / small screens
+	// (the animated poster stays); progressive checkpoint loading.
+	const canvas = document.querySelector<HTMLCanvasElement>('.lp-scrub-canvas');
+	const section = document.querySelector<HTMLElement>('.lp-scene-scrub');
+	const poster = document.querySelector<HTMLImageElement>('.lp-scrub-poster');
+	const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+	const wide = matchMedia('(min-width: 48rem)').matches;
+	if (canvas && section && poster && !reduce && wide) {
+		const ctx = canvas.getContext('2d');
+		const count = Number(canvas.dataset.count || '0');
+		const base = canvas.dataset.base || '/';
+		const url = (i: number) => `${base}demo-frames/${String(i + 1).padStart(3, '0')}.webp`;
+		const frames: (HTMLImageElement | undefined)[] = new Array(count);
+		let started = false;
+		let current = -1;
+		let raf = 0;
+		const load = (i: number) =>
+			new Promise<void>((resolve) => {
+				if (frames[i]) return resolve();
+				const img = new Image();
+				img.onload = () => { frames[i] = img; resolve(); };
+				img.onerror = () => resolve();
+				img.src = url(i);
+			});
+		const nearestLoaded = (i: number) => {
+			for (let d = 0; d < count; d++) {
+				if (frames[i - d]?.complete) return i - d;
+				if (frames[i + d]?.complete) return i + d;
+			}
+			return -1;
+		};
+		const draw = (i: number) => {
+			const j = nearestLoaded(Math.max(0, Math.min(count - 1, i)));
+			if (j < 0 || j === current || !ctx) return;
+			current = j;
+			const img = frames[j]!;
+			if (canvas.width !== img.naturalWidth) {
+				canvas.width = img.naturalWidth;
+				canvas.height = img.naturalHeight;
+			}
+			ctx.clearRect(0, 0, canvas.width, canvas.height);
+			ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+			poster.style.display = 'none';
+			canvas.style.display = 'block';
+		};
+		const update = () => {
+			raf = 0;
+			const rect = section.getBoundingClientRect();
+			const travel = section.offsetHeight - innerHeight;
+			if (travel <= 0) return;
+			const progress = Math.min(1, Math.max(0, -rect.top / travel));
+			draw(Math.round(progress * (count - 1)));
+		};
+		const start = async () => {
+			if (started) return;
+			started = true;
+			await load(0);
+			draw(0);
+			// checkpoints first, then fill in idle time
+			const checkpoints = [count - 1, Math.floor(count / 2), Math.floor(count / 4), Math.floor((3 * count) / 4)];
+			await Promise.all(checkpoints.map(load));
+			update();
+			const fill = (i: number) => {
+				if (i >= count) return;
+				load(i).then(() => {
+					const next = () => fill(i + 1);
+					'requestIdleCallback' in window ? requestIdleCallback(next) : setTimeout(next, 16);
+				});
+			};
+			fill(0);
+			addEventListener('scroll', () => { raf ||= requestAnimationFrame(update); }, { passive: true });
+			addEventListener('resize', () => { raf ||= requestAnimationFrame(update); }, { passive: true });
+		};
+		new IntersectionObserver((entries, obs) => {
+			if (entries.some((e) => e.isIntersecting)) { obs.disconnect(); start(); }
+		}, { rootMargin: '100% 0px' }).observe(section);
+	}
+</script>

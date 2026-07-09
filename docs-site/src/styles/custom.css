@@ -454,14 +454,52 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
   box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.14);
 }
 
-/* quickstart band: copy left, terminal right; stacks on mobile */
-.lp-quick {
-  display: grid;
-  grid-template-columns: minmax(16rem, 2fr) 3fr;
-  gap: clamp(1.5rem, 4vw, 3.5rem);
-  align-items: center;
-  padding-block: clamp(3rem, 8vh, 5rem);
+/* ---- scene stack (motion.md: sticky stacking + scale-depth morph) --------
+   Base = normal stacked flow (fallback for reduced-motion / no timeline
+   support / mobile). The pinned scrolltelling lives in the gated block in
+   the motion section below. */
+.lp-scenes { display: flex; flex-direction: column; gap: 1rem; }
+.lp-scene { position: relative; }
+.lp-scene-inner { position: relative; }
+/* opaque sheet surfaces so stacking reads as window transitions */
+.lp-quick,
+.lp-rail {
+  background-color: var(--ocx-surface);
+  border: 1px solid var(--sl-color-hairline-light);
+  border-radius: 24px;
+  overflow: hidden;
 }
+
+/* quickstart sheet: kinetic type over the terminal, one column */
+.lp-quick {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(1.5rem, 4vh, 2.5rem);
+  padding: clamp(2rem, 6vh, 4rem) clamp(1.25rem, 4vw, 3.5rem);
+}
+/* kinetic typography (motion.md text mask & reveal; wipe runs on the scene
+   timeline in the gated block below — base state is fully visible) */
+.lp-kinetic { display: flex; flex-direction: column; gap: 0.25rem; text-align: center; }
+.lp-kline {
+  margin: 0;
+  font-size: clamp(2.5rem, 5.5vw, 4.5rem);
+  font-weight: 460;
+  line-height: 1.12;
+  letter-spacing: 0;
+  color: var(--sl-color-white);
+  text-wrap: balance;
+}
+.lp-kline-accent { color: var(--sl-color-gray-3); }
+:lang(ko) .lp-kline, :lang(zh-CN) .lp-kline { word-break: keep-all; }
+.lp-quick-side {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  width: min(44rem, 100%);
+}
+.lp-quick-side .lp-terminal { width: 100%; }
 .lp-quick h2 {
   margin: 0;
   font-size: var(--sl-text-3xl);
@@ -511,6 +549,51 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
 .lp-prompt { color: #6e6e6e; }
 .lp-note { color: #8f8f8f; }
 
+/* ---- demo scrub scene (motion.md frame-sequence scrolltelling) ----------- */
+.lp-scrub {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  padding: clamp(1.5rem, 4vh, 2.5rem) clamp(1.25rem, 3vw, 2.5rem);
+}
+.lp-scrub-title {
+  margin: 0;
+  font-size: var(--sl-text-3xl);
+  font-weight: 500;
+  color: var(--sl-color-white);
+  text-wrap: balance;
+  text-align: center;
+}
+.lp-scrub-stage {
+  display: flex;
+  justify-content: center;
+  min-height: 0;
+  width: 100%;
+}
+.lp-scrub-canvas {
+  display: none;
+  max-width: min(58rem, 100%);
+  width: 100%;
+  height: auto;
+  border-radius: var(--ocx-radius);
+  border: 1px solid var(--sl-color-hairline-light);
+}
+.lp-scrub-poster {
+  display: block;
+  max-width: min(58rem, 100%);
+  width: 100%;
+  height: auto;
+  border-radius: var(--ocx-radius);
+  border: 1px solid var(--sl-color-hairline-light);
+}
+.lp-scrub-caption {
+  margin: 0;
+  color: var(--sl-color-gray-3);
+  font-size: var(--sl-text-sm);
+  text-align: center;
+}
+
 /* bento: dominant providers cell + picker cell, aligned edges, no orphan */
 .lp-bento { padding-block: 0 clamp(2.5rem, 6vh, 4rem); }
 .lp-bento-title {
@@ -522,11 +605,12 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
 }
 .lp-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   grid-template-areas:
-    "prov prov auth pool"
-    "prov prov pick pick"
-    "sub  side pick pick";
+    "prov prov pick"
+    "auth pool pick"
+    "sub  side pick"
+    "term term term";
   gap: 0.875rem;
 }
 .lp-cell {
@@ -562,36 +646,49 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
   height: auto;
   border-radius: var(--ocx-radius-sm);
   border: 1px solid var(--sl-color-hairline-light);
-  max-height: 20rem;
+  max-height: 15rem;
   object-fit: cover;
   object-position: center top;
 }
 /* the demo capture's action lives at the bottom of the frame */
 .lp-cell-providers img { object-position: center bottom; }
 .lp-cell-picker img { object-position: center; }
+/* asymmetric slab: image cell runs tall down the right rail */
 .lp-cell-providers { grid-area: prov; }
-.lp-cell-picker { grid-area: pick; flex-direction: column; }
+.lp-cell-picker { grid-area: pick; }
 .lp-grid > .lp-cell:nth-child(2) { grid-area: auth; }
 .lp-grid > .lp-cell:nth-child(3) { grid-area: pool; }
 .lp-grid > .lp-cell:nth-child(5) { grid-area: sub; }
 .lp-grid > .lp-cell:nth-child(6) { grid-area: side; }
-
+.lp-cell-picker img {
+  max-height: none;
+  height: 100%;
+  min-height: 0;
+  flex: 1;
+  object-fit: cover;
+  object-position: center top;
+}
+/* full-width quickstart cell closes the grid without an orphan tail */
+.lp-cell-terminal { grid-area: term; }
+.lp-cell-terminal .lp-terminal { margin-top: 0.25rem; }
 @media (max-width: 64rem) {
   .lp-grid {
     grid-template-columns: repeat(2, 1fr);
     grid-template-areas:
       "prov prov"
-      "pick pick"
       "auth pool"
-      "sub  side";
+      "pick sub"
+      "pick side"
+      "term term";
   }
   .lp-quick { grid-template-columns: 1fr; }
 }
 @media (max-width: 40rem) {
   .lp-grid {
     grid-template-columns: 1fr;
-    grid-template-areas: "prov" "pick" "auth" "pool" "sub" "side";
+    grid-template-areas: "prov" "auth" "pool" "pick" "sub" "side" "term";
   }
+  .lp-cell-picker img { max-height: 22rem; height: auto; }
   .lp-cta { flex-direction: column; width: 100%; }
   .lp-btn-primary, .lp-btn-ghost { width: 100%; justify-content: center; }
 }
@@ -680,8 +777,7 @@ footer.sl-flex .meta { color: var(--sl-color-gray-4); }
 
   /* interactive lift */
   article.card,
-  .sl-link-card,
-  .lp-cell {
+  .sl-link-card {
     transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
       border-color 0.18s, box-shadow 0.18s;
   }
@@ -693,40 +789,8 @@ footer.sl-flex .meta { color: var(--sl-color-gray-4); }
   .lp-btn-primary, .lp-btn-ghost { transition: transform 0.15s, opacity 0.15s, border-color 0.15s; }
   .lp-btn-primary:hover, .lp-btn-ghost:hover { transform: translateY(-1px); }
 
-  /* scroll-driven reveal: progressive enhancement only */
+  /* quiet below-scene reveals (sections after the scene stack) */
   @supports (animation-timeline: view()) {
-    @keyframes ocx-slide-left {
-      from { opacity: 0; transform: translateX(-38px); }
-      to { opacity: 1; transform: translateX(0); }
-    }
-    @keyframes ocx-slide-right {
-      from { opacity: 0; transform: translateX(38px); }
-      to { opacity: 1; transform: translateX(0); }
-    }
-    .lp-cell {
-      animation: ocx-fade-up linear both;
-      animation-timeline: view();
-      animation-range: entry 0% entry 42%;
-    }
-    /* alternating box directions across the bento */
-    .lp-grid > .lp-cell:nth-child(odd) { animation-name: ocx-slide-left; }
-    .lp-grid > .lp-cell:nth-child(even) { animation-name: ocx-slide-right; }
-    .lp-quick-copy {
-      animation: ocx-slide-left linear both;
-      animation-timeline: view();
-      animation-range: entry 0% entry 42%;
-    }
-    /* terminal: cinematic wipe-in from the left edge */
-    @keyframes ocx-terminal-reveal {
-      from { opacity: 0; transform: translateX(28px); clip-path: inset(0 35% 0 0 round 12px); }
-      to { opacity: 1; transform: translateX(0); clip-path: inset(0 0 0 0 round 12px); }
-    }
-    .lp-terminal {
-      animation: ocx-terminal-reveal linear both;
-      animation-timeline: view();
-      animation-range: entry 0% entry 48%;
-    }
-    /* section titles + link rows ride the same reveal */
     .lp-bento-title,
     .lp-next h2,
     .lp-next-grid,
@@ -735,46 +799,58 @@ footer.sl-flex .meta { color: var(--sl-color-gray-4); }
       animation-timeline: view();
       animation-range: entry 0% entry 45%;
     }
-    /* the product stage settles into place as it enters */
-    @keyframes ocx-stage-settle {
-      from { opacity: 0.3; transform: translateY(46px) scale(0.965); }
-      to { opacity: 1; transform: translateY(0) scale(1); }
-    }
-    .lp-stage-in img {
-      animation: ocx-stage-settle linear both;
-      animation-delay: 0s;
-      animation-timeline: view();
-      animation-range: entry 0% entry 55%;
-    }
-    /* hero chips drift up slightly later than the copy */
-    .lp-quick h2 {
-      animation: ocx-fade-up linear both;
-      animation-timeline: view();
-      animation-range: entry 0% entry 40%;
-    }
   }
 
-  /* cinematic scroll choreography (scroll-linked, landing only) */
-  @supports (animation-timeline: scroll()) {
-    /* hero copy recedes with depth as the page scrolls away */
-    @keyframes ocx-hero-away {
-      to { opacity: 0.1; transform: translateY(-52px) scale(0.96); }
-    }
-    .lp-hero-copy {
-      animation: ocx-hero-away linear both;
-      animation-timeline: scroll(root block);
-      animation-range: 0vh 90vh;
-      transform-origin: 50% 100%;
-    }
-    /* the field photo settles from a slow zoom while scrolling */
-    @keyframes ocx-field-zoom {
-      from { transform: scale(1.07); }
-      to { transform: scale(1); }
-    }
-    .lp-field-bg img {
-      animation: ocx-field-zoom linear both;
-      animation-timeline: scroll(root block);
-      animation-range: 0vh 130vh;
+  /* ---- scene scrolltelling (motion.md): sticky stacking + morph + rail ----
+     Desktop only; base flow + native snap rail everywhere else. */
+  @media (min-width: 48rem) {
+    @supports (animation-timeline: view()) {
+      .lp-scenes { gap: 0; }
+      .lp-scene { view-timeline: --scene block; }
+      .lp-scene-hero, .lp-scene-quick { height: 150dvh; }
+      /* long travel = slow frame rate feel on the scrub */
+      .lp-scene-scrub { height: 480dvh; }
+      .lp-scene-inner {
+        position: sticky;
+        top: calc(var(--sl-nav-height) + 0.5rem);
+        height: calc(100dvh - var(--sl-nav-height) - 1rem);
+        overflow: hidden;
+        transform-origin: 50% 15%;
+        box-shadow: 0 -12px 48px rgba(0, 0, 0, 0.12);
+        animation: ocx-scene-sink linear both;
+        animation-timeline: --scene;
+        animation-range: exit 5% exit 100%;
+      }
+      /* the inner IS the sheet: center its content vertically in the stage */
+      .lp-scene-inner.lp-quick { justify-content: center; }
+      .lp-scene-inner.lp-scrub { justify-content: center; }
+      /* kinetic type wipes in line by line while the sheet settles */
+      .lp-kline {
+        clip-path: inset(0 100% 0 0);
+        animation: ocx-text-wipe linear both;
+        animation-timeline: --scene;
+      }
+      .lp-kline:nth-child(1) { animation-range: cover 22% cover 38%; }
+      .lp-kline:nth-child(2) { animation-range: cover 30% cover 46%; }
+      .lp-kline:nth-child(3) { animation-range: cover 38% cover 54%; }
+      @keyframes ocx-text-wipe { to { clip-path: inset(0 0 0 0); } }
+      @keyframes ocx-scene-sink {
+        to { opacity: 0.12; transform: scale(0.94) translateY(-1.5%); }
+      }
+      /* the field photo pushes in while the hero scene sinks */
+      .lp-field-bg img {
+        animation: ocx-field-push linear both;
+        animation-timeline: --scene;
+        animation-range: exit 0% exit 100%;
+      }
+      @keyframes ocx-field-push { to { transform: scale(1.08); } }
+      /* scrub canvas fills the stage height without overflowing the sheet */
+      .lp-scene-inner.lp-scrub .lp-scrub-canvas,
+      .lp-scene-inner.lp-scrub .lp-scrub-poster {
+        max-height: calc(100dvh - var(--sl-nav-height) - 12rem);
+        width: auto;
+        max-width: 100%;
+      }
     }
   }
 }
