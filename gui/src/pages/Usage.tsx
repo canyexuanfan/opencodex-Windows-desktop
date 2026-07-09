@@ -227,13 +227,19 @@ export default function Usage({ apiBase }: { apiBase: string }) {
   const filteredModels = useMemo(() => {
     const q = modelQuery.trim().toLowerCase();
     const models = data?.models ?? [];
-    if (!q) return models.slice(0, 100);
-    return models.filter(m =>
+    const sorted = [...models].sort((a, b) => b.totalTokens - a.totalTokens);
+    if (!q) return sorted.slice(0, 100);
+    return sorted.filter(m =>
       m.model.toLowerCase().includes(q) ||
       m.provider.toLowerCase().includes(q) ||
       (m.resolvedModel ?? "").toLowerCase().includes(q),
     ).slice(0, 100);
   }, [data?.models, modelQuery]);
+
+  const sortedProviders = useMemo(() =>
+    [...(data?.providers ?? [])].sort((a, b) => b.totalTokens - a.totalTokens),
+    [data?.providers],
+  );
 
   return (
     <>
@@ -407,7 +413,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.providers.map(p => (
+                  {sortedProviders.map(p => (
                     <tr key={p.provider}>
                       <td className="mono">{p.provider}</td>
                       <td className="num">{p.requests}</td>
