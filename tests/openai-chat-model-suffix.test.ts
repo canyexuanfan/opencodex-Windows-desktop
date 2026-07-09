@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { createOpenAIChatAdapter, stripBracketedModelSuffix } from "../src/adapters/openai-chat";
 import { createAnthropicAdapter } from "../src/adapters/anthropic";
-import type { OcxParsedRequest, OcxProviderConfig } from "../src/types";
+import { routeModel } from "../src/router";
+import type { OcxConfig, OcxParsedRequest, OcxProviderConfig } from "../src/types";
 
 function parsed(modelId: string): OcxParsedRequest {
   return {
@@ -16,7 +17,22 @@ function openaiChatProvider(): OcxProviderConfig {
   return {
     adapter: "openai-chat",
     baseUrl: "https://api.z.ai/api/paas/v4",
+    modelSuffixBracketStrip: true,
   };
+}
+
+function routedZaiProvider(): OcxProviderConfig {
+  const config: OcxConfig = {
+    port: 10100,
+    defaultProvider: "zai",
+    providers: {
+      zai: {
+        adapter: "openai-chat",
+        baseUrl: "https://api.z.ai/api/coding/paas/v4",
+      },
+    },
+  };
+  return routeModel(config, "zai/glm-5.2[1m]").provider;
 }
 
 function anthropicProvider(): OcxProviderConfig {
@@ -61,6 +77,20 @@ describe("openai-chat adapter wire model normalization", () => {
 
   test("bare glm-5.2 passes through unchanged", () => {
     const req = createOpenAIChatAdapter(openaiChatProvider()).buildRequest(parsed("glm-5.2"));
+    expect(wireModel(req)).toBe("glm-5.2");
+  });
+
+  test("an unflagged provider sends glm-5.2[1m] verbatim", () => {
+    const provider: OcxProviderConfig = {
+      adapter: "openai-chat",
+      baseUrl: "https://example.test/v1",
+    };
+    const req = createOpenAIChatAdapter(provider).buildRequest(parsed("glm-5.2[1m]"));
+    expect(wireModel(req)).toBe("glm-5.2[1m]");
+  });
+
+  test("a routed zai config strips glm-5.2[1m]", () => {
+    const req = createOpenAIChatAdapter(routedZaiProvider()).buildRequest(parsed("glm-5.2[1m]"));
     expect(wireModel(req)).toBe("glm-5.2");
   });
 });

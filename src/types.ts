@@ -415,6 +415,8 @@ export interface OcxProviderConfig {
   authMode?: "key" | "forward" | "oauth";
   /** Allow an explicitly key/oauth provider to run without a credential (for keyless local proxies). */
   keyOptional?: boolean;
+  /** Strip one trailing bracketed suffix from model ids before sending them upstream. */
+  modelSuffixBracketStrip?: boolean;
   /**
    * Override the guardian's proactive-refresh policy for this provider. When unset, the provider's
    * built-in risk-tiered default applies (see OAUTH_PROVIDERS in src/oauth/index.ts). Set "proactive"

@@ -14,8 +14,9 @@ import {
 } from "../src/providers/derive";
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
 import { applyProviderConfigHints } from "../src/codex/catalog";
+import { routeModel } from "../src/router";
 import { resolveAdapter } from "../src/server";
-import type { OcxProviderConfig } from "../src/types";
+import type { OcxConfig, OcxProviderConfig } from "../src/types";
 
 function nativeTemplate(): Record<string, unknown> {
   return {
@@ -46,7 +47,7 @@ describe("provider registry parity", () => {
     expect(KEY_LOGIN_PROVIDERS).toEqual(deriveKeyLoginMap());
     expect(Object.keys(KEY_LOGIN_PROVIDERS)).toEqual(EXPECTED_KEY_PROVIDER_IDS);
     expect(Object.keys(deriveKeyLoginMap())).toEqual(EXPECTED_KEY_PROVIDER_IDS);
-    expect(KEY_LOGIN_PROVIDERS.minimax.defaultModel).toBe("MiniMax-M2.5");
+    expect(KEY_LOGIN_PROVIDERS.minimax.defaultModel).toBe("MiniMax-M3");
     expect(KEY_LOGIN_PROVIDERS.umans).toMatchObject({
       label: "Umans AI Coding Plan",
       adapter: "anthropic",
@@ -85,6 +86,60 @@ describe("provider registry parity", () => {
     expect(KEY_LOGIN_PROVIDERS.deepseek.modelReasoningEffortMap?.["deepseek-v4-pro"]?.xhigh).toBe("max");
     expect(KEY_LOGIN_PROVIDERS.deepseek.modelReasoningEffortMap?.["deepseek-v4-pro"]?.max).toBe("max");
     expect(KEY_LOGIN_PROVIDERS.deepseek.preserveReasoningContentModels).toEqual(["deepseek-v4-pro", "deepseek-v4-flash"]);
+  });
+
+  test("CN provider defaults and context windows match the audited registry refresh", () => {
+    const deepseek = PROVIDER_REGISTRY.find(entry => entry.id === "deepseek");
+    expect(deepseek).toMatchObject({
+      adapter: "openai-chat",
+      baseUrl: "https://api.deepseek.com",
+      defaultModel: "deepseek-v4-flash",
+      modelContextWindows: {
+        "deepseek-v4-flash": 1_000_000,
+        "deepseek-v4-pro": 1_000_000,
+      },
+    });
+
+    const minimaxModels = [
+      "MiniMax-M3",
+      "MiniMax-M2.7", "MiniMax-M2.7-highspeed",
+      "MiniMax-M2.5", "MiniMax-M2.5-highspeed",
+      "MiniMax-M2.1", "MiniMax-M2.1-highspeed",
+      "MiniMax-M2",
+    ];
+    for (const providerId of ["minimax", "minimax-cn"]) {
+      const entry = PROVIDER_REGISTRY.find(provider => provider.id === providerId);
+      expect(entry?.adapter).toBe("openai-chat");
+      expect(entry?.baseUrl).toBe(providerId === "minimax" ? "https://api.minimax.io/v1" : "https://api.minimaxi.com/v1");
+      expect(entry?.defaultModel).toBe("MiniMax-M3");
+      expect(entry?.models).toEqual(minimaxModels);
+      expect(entry?.modelContextWindows?.["MiniMax-M3"]).toBe(1_000_000);
+      for (const modelId of minimaxModels.slice(1)) {
+        expect(entry?.modelContextWindows?.[modelId]).toBe(204_800);
+      }
+    }
+  });
+
+  test("Z.AI alone seeds and routes bracket-suffix stripping", () => {
+    const zai = PROVIDER_REGISTRY.find(entry => entry.id === "zai");
+    const optedInProviders = PROVIDER_REGISTRY
+      .filter(entry => entry.modelSuffixBracketStrip)
+      .map(entry => entry.id);
+    expect(zai?.modelContextWindows).toEqual({ "glm-5.2": 1_000_000, "glm-5.2[1m]": 1_000_000 });
+    expect(providerConfigSeed(zai!).modelSuffixBracketStrip).toBe(true);
+    expect(optedInProviders).toEqual(["zai"]);
+
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "zai",
+      providers: {
+        zai: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.z.ai/api/coding/paas/v4",
+        },
+      },
+    };
+    expect(routeModel(config, "zai/glm-5.2[1m]").provider.modelSuffixBracketStrip).toBe(true);
   });
 
   test("Anthropic API-key provider mirrors the OAuth entry's models on the key flow", () => {
