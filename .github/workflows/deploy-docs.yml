@@ -1,46 +1,35 @@
 name: Deploy Docs to GitHub Pages
 
 on:
-  # Rebuild when the docs site or this workflow changes on main.
   push:
     branches: [main]
     paths:
-      - "docs-site/**"
+      - "docs/**"
       - ".github/workflows/deploy-docs.yml"
-  # Allow manual runs from the Actions tab.
   workflow_dispatch:
 
-# Least-privilege token needed to publish to GitHub Pages.
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# Never run two Pages deploys at once; let an in-flight deploy finish.
 concurrency:
   group: pages
   cancel-in-progress: false
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-      - name: Build with Astro
-        uses: withastro/action@v3
-        with:
-          path: ./docs-site
-          node-version: 22 # Astro 6 requires Node >= 22.12.0 (the action defaults to 20)
-          package-manager: bun@latest
-
   deploy:
-    needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
