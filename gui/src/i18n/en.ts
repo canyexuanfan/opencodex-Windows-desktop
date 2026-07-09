@@ -7,6 +7,7 @@ export const en = {
   "nav.models": "Models",
   "nav.subagents": "Subagents",
   "nav.logs": "Logs",
+  "nav.debug": "Debug",
   "nav.usage": "Usage",
   "common.github": "GitHub",
   "common.save": "Save",
@@ -231,6 +232,22 @@ export const en = {
   "logs.details": "Details",
   "logs.detailTitle": "Request details",
   "logs.detailRaw": "Raw log entry",
+
+  // debug page
+  "debug.title": "Debug",
+  "debug.subtitle": "Opt-in provider transport and usage-extraction diagnostics. Request errors and 502s stay on Logs.",
+  "debug.debug": "Provider debug",
+  "debug.usage": "Usage extraction",
+  "debug.reset": "Clear runtime overrides",
+  "debug.refresh": "Refresh",
+  "debug.follow": "Follow",
+  "debug.streamProvider": "Provider",
+  "debug.streamUsage": "Usage",
+  "debug.loading": "Loading debug settings…",
+  "debug.emptyTitle": "Debug logging is off",
+  "debug.empty": "Turn on Provider debug or Usage extraction in the card above. Lines appear here after you send a request through the proxy.",
+  "debug.noLinesTitle": "Waiting for lines",
+  "debug.noLines": "Debug is on but nothing has been captured yet. Send a chat/request through Codex, or run ocx debug provider logs -f in a terminal.",
 
   // usage page
   "usage.title": "Usage",

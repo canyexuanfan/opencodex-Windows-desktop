@@ -24,8 +24,17 @@ import { deriveProviderPresets } from "../providers/derive";
 import { fetchProviderQuotaReports } from "../providers/quota";
 import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../providers/context-cap";
 import { readUsageEntries } from "../usage/log";
+import { getUsageDebugLogEntries } from "../usage/debug";
 import { parseRange, summarizeUsage } from "../usage/summary";
 import { stripCodexRuntimeProviderFields } from "../codex/auth-context";
+import { getDebugLogEntries } from "../lib/debug-log-buffer";
+import {
+  clearDebugSettings,
+  clearDebugSetting,
+  getDebugSettings,
+  setDebugSettings,
+  type DebugFlag,
+} from "../lib/debug-settings";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 import { drainAndShutdown } from "./lifecycle";
 import { filterRequestLogs, getRequestLogEntries } from "./request-log";
@@ -40,6 +49,15 @@ export const VERSION = (() => {
     return "0.0.0";
   }
 })();
+
+function parseDebugLogQuery(url: URL): { after: number; limit: number } {
+  const after = Number(url.searchParams.get("after") ?? url.searchParams.get("since") ?? "0");
+  const limit = Number(url.searchParams.get("limit") ?? "500");
+  return {
+    after: Number.isFinite(after) && after > 0 ? after : 0,
+    limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 2000) : 500,
+  };
+}
 
 export async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): Promise<Response | null> {
   if (!isAllowedRequestOrigin(req, config)) {
@@ -167,6 +185,38 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
 
   if (url.pathname === "/api/logs" && req.method === "GET") {
     return jsonResponse(filterRequestLogs(getRequestLogEntries(), url.searchParams));
+  }
+
+  if (url.pathname === "/api/debug" && req.method === "GET") {
+    return jsonResponse(getDebugSettings());
+  }
+
+  if (url.pathname === "/api/debug/logs" && req.method === "GET") {
+    const { after, limit } = parseDebugLogQuery(url);
+    return jsonResponse(getDebugLogEntries({ after, limit }));
+  }
+
+  if (url.pathname === "/api/debug/usage-logs" && req.method === "GET") {
+    const { after, limit } = parseDebugLogQuery(url);
+    return jsonResponse(getUsageDebugLogEntries({ after, limit }));
+  }
+
+  if (url.pathname === "/api/debug" && req.method === "PUT") {
+    let body: { debug?: unknown; usage?: unknown; reset?: unknown };
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (body.reset === true) return jsonResponse(clearDebugSettings());
+    if (body.reset === "debug" || body.reset === "provider") return jsonResponse(clearDebugSetting("debug"));
+    if (body.reset === "usage") return jsonResponse(clearDebugSetting("usage"));
+    const partial: Partial<Record<DebugFlag, boolean>> = {};
+    for (const key of ["debug", "usage"] as const) {
+      if (body[key] === undefined) continue;
+      if (typeof body[key] !== "boolean") return jsonResponse({ error: `${key} must be a boolean` }, 400);
+      partial[key] = body[key];
+    }
+    if (Object.keys(partial).length === 0) {
+      return jsonResponse({ error: "provide debug/usage booleans or reset:true" }, 400);
+    }
+    return jsonResponse(setDebugSettings(partial));
   }
 
   if (url.pathname === "/api/usage" && req.method === "GET") {
