@@ -49,7 +49,7 @@ export const KIRO_MODEL_REASONING_EFFORTS: Record<string, string[]> = Object.fro
 export function normalizeKiroModelId(id: string): string {
   let model = id.trim().toLowerCase();
   model = model.replace(/^kiro\//, "").replace(/^kiro-/, "");
-  if (model === "auto" || model === "kiro-auto") return "auto";
+  if (model === "auto") return "auto";
 
   model = model.replace(/-\d{8}$/, "");
   model = model.replace(/-(low|medium|high|xhigh|max)$/, "");

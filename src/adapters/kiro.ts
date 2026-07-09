@@ -445,15 +445,17 @@ export async function* parseKiroStream(
           break;
         }
         case "tool_stop": {
-          if (open) {
-            const input = open.chunks.join("");
-            if (!isCompleteKiroToolInput(input)) {
-              open = null;
-              yield { type: "error", message: kiroTruncationErrorMessage("incomplete tool input JSON") };
-              return;
-            }
-            yield* flushTool();
+          if (!open) {
+            yield { type: "error", message: "Kiro response protocol error: tool stop received without an open tool call" };
+            return;
           }
+          const input = open.chunks.join("");
+          if (!isCompleteKiroToolInput(input)) {
+            open = null;
+            yield { type: "error", message: kiroTruncationErrorMessage("incomplete tool input JSON") };
+            return;
+          }
+          yield* flushTool();
           break;
         }
         case "truncation":
@@ -496,11 +498,14 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
   return {
     name: "kiro",
     buildRequest(parsed: OcxParsedRequest) {
+      if (typeof provider.apiKey !== "string" || provider.apiKey.trim() === "") {
+        throw new Error("kiro token missing — run ocx login kiro");
+      }
       const region = resolveKiroApiRegion();
       const profileArn = resolveKiroProfileArn();
       const fp = fingerprint().slice(0, 64);
       const headers: Record<string, string> = {
-        authorization: `Bearer ${provider.apiKey ?? ""}`,
+        authorization: `Bearer ${provider.apiKey}`,
         "content-type": "application/x-amz-json-1.0",
         accept: "application/vnd.amazon.eventstream",
         "x-amz-target": AMZ_TARGET,

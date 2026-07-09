@@ -44,6 +44,15 @@ function parsedWith(messages: unknown[], tools?: unknown[], modelId = "claude-so
 }
 
 describe("kiro adapter — buildRequest", () => {
+  test("rejects missing and blank Kiro tokens before building a request", () => {
+    for (const apiKey of [undefined, "", "   "]) {
+      const keyless = { ...provider, apiKey } as unknown as OcxProviderConfig;
+      expect(() => createKiroAdapter(keyless).buildRequest(parsedWith([{ role: "user", content: "hi" }]))).toThrow(
+        "kiro token missing — run ocx login kiro",
+      );
+    }
+  });
+
   test("headers carry Bearer token + CW targets", () => {
     const { url, method, headers } = createKiroAdapter(provider).buildRequest(parsedWith([{ role: "user", content: "hi" }]));
     expect(url).toBe("https://runtime.us-east-1.kiro.dev/");

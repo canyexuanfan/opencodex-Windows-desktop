@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,7 +14,14 @@ const origCredsFile = process.env.KIRO_CREDS_FILE;
 const origCredentialsFile = process.env.KIRO_CREDENTIALS_FILE;
 const origCliDbFile = process.env.KIRO_CLI_DB_FILE;
 const origFetch = globalThis.fetch;
+const warnSpies: Array<ReturnType<typeof spyOn>> = [];
 let tmp: string;
+
+function silenceWarn(): ReturnType<typeof spyOn> {
+  const warning = spyOn(console, "warn").mockImplementation(() => {});
+  warnSpies.push(warning);
+  return warning;
+}
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "kiro-oauth-"));
@@ -28,6 +35,7 @@ beforeEach(() => {
   delete process.env.KIRO_CLI_DB_FILE;
 });
 afterEach(() => {
+  for (const warning of warnSpies.splice(0)) warning.mockRestore();
   if (origHome === undefined) delete process.env.HOME;
   else process.env.HOME = origHome;
   if (origEnvTok === undefined) delete process.env.KIRO_ACCESS_TOKEN;
@@ -113,6 +121,54 @@ describe("kiro oauth — import-first", () => {
     expect(resolveKiroProfileArn()).toBe("arn:aws:codewhisperer:ap-northeast-1:123456789012:profile/demo");
     expect(resolveKiroRegion()).toBe("us-west-2");
     expect(resolveKiroApiRegion()).toBe("eu-central-1");
+  });
+
+  test("malformed imported expiry with a refresh token is warned and treated as expired", async () => {
+    const warning = silenceWarn();
+    const file = join(tmp, "kiro-malformed-refresh-expiry.json");
+    writeFileSync(file, JSON.stringify({
+      accessToken: "aoa-json",
+      refreshToken: "rt-json",
+      expiresAt: "not-a-date",
+    }));
+    process.env.KIRO_CREDS_FILE = file;
+
+    const cred = await loginKiro({});
+
+    expect(cred.refresh).toBe("rt-json");
+    expect(cred.expires).toBe(0);
+    expect(warning).toHaveBeenCalledTimes(1);
+    expect(String(warning.mock.calls[0]?.[0])).toContain("credential expiry is present but unparseable");
+  });
+
+  test("malformed imported expiry without a refresh token is warned and receives the default TTL", async () => {
+    const warning = silenceWarn();
+    const file = join(tmp, "kiro-malformed-access-only-expiry.json");
+    writeFileSync(file, JSON.stringify({ accessToken: "aoa-json", expiresAt: "not-a-date" }));
+    process.env.KIRO_CREDS_FILE = file;
+    const before = Date.now();
+
+    const cred = await loginKiro({});
+
+    expect(cred.refresh).toBe("");
+    expect(cred.expires).toBeGreaterThanOrEqual(before + 3600_000);
+    expect(cred.expires).toBeLessThanOrEqual(Date.now() + 3600_000);
+    expect(warning).toHaveBeenCalledTimes(1);
+    expect(String(warning.mock.calls[0]?.[0])).toContain("no refresh token is available");
+  });
+
+  test("missing imported expiry receives the default TTL without warning", async () => {
+    const warning = silenceWarn();
+    const file = join(tmp, "kiro-missing-expiry.json");
+    writeFileSync(file, JSON.stringify({ accessToken: "aoa-json", refreshToken: "rt-json" }));
+    process.env.KIRO_CREDS_FILE = file;
+    const before = Date.now();
+
+    const cred = await loginKiro({});
+
+    expect(cred.expires).toBeGreaterThanOrEqual(before + 3600_000);
+    expect(cred.expires).toBeLessThanOrEqual(Date.now() + 3600_000);
+    expect(warning).not.toHaveBeenCalled();
   });
 
   test("loginKiro falls back to KIRO_ACCESS_TOKEN env when no SQLite token", async () => {

@@ -28,6 +28,49 @@ function mockFetch(responses: Array<Response | Error>): { calls: RequestInit[] }
 }
 
 describe("kiro retry fetch", () => {
+  test("retries connection resets and broken pipes", async () => {
+    for (const code of ["ECONNRESET", "EPIPE"]) {
+      const error = Object.assign(new Error(`network failure: ${code}`), { code });
+      const mock = mockFetch([error, new Response("ok", { status: 200 })]);
+
+      const res = await fetchKiroWithRetry(request, { timeoutMs: 5_000 });
+
+      expect(res.status).toBe(200);
+      expect(mock.calls).toHaveLength(2);
+    }
+  });
+
+  test("retries the per-attempt TimeoutError raised by AbortSignal.timeout", async () => {
+    let calls = 0;
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      calls += 1;
+      if (calls > 1) return new Response("ok", { status: 200 });
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) throw new Error("expected per-attempt signal");
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    }) as typeof fetch;
+
+    const res = await fetchKiroWithRetry(request, { timeoutMs: 1 });
+
+    expect(res.status).toBe(200);
+    expect(calls).toBe(2);
+  });
+
+  test("rethrows deterministic fetch and URL errors without retrying", async () => {
+    for (const error of [
+      new TypeError("fetch input rejected"),
+      new TypeError("Invalid URL"),
+      new Error("TLS configuration rejected"),
+    ]) {
+      const mock = mockFetch([error, new Response("unexpected retry", { status: 200 })]);
+
+      await expect(fetchKiroWithRetry(request, { timeoutMs: 5_000 })).rejects.toThrow(error.message);
+      expect(mock.calls).toHaveLength(1);
+    }
+  });
+
   test("retries 429 then returns the successful response", async () => {
     const mock = mockFetch([
       new Response("rate limited", { status: 429, headers: { "Retry-After": "0" } }),

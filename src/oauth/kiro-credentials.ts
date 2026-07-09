@@ -57,11 +57,19 @@ function stringField(data: JsonObject, ...keys: string[]): string | undefined {
   return undefined;
 }
 
-function parseExpires(value: unknown): number {
+function parseExpires(value: unknown, present: boolean, hasRefreshToken: boolean): number {
   if (typeof value === "number" && Number.isFinite(value)) return value < 10_000_000_000 ? value * 1000 : value;
   if (typeof value === "string" && value.length > 0) {
     const parsed = Date.parse(value);
     if (Number.isFinite(parsed)) return parsed;
+  }
+  if (present) {
+    console.warn(
+      `[ocx:kiro:credentials] credential expiry is present but unparseable; ${
+        hasRefreshToken ? "treating credential as expired" : "using the default TTL because no refresh token is available"
+      }`,
+    );
+    if (hasRefreshToken) return 0;
   }
   return Date.now() + DEFAULT_EXPIRES_MS;
 }
@@ -110,10 +118,12 @@ function credentialFromJson(data: JsonObject, source: KiroCredentialSource): Imp
   const apiRegion = stringField(data, "apiRegion", "api_region") || inferRegionFromProfileArn(profileArn) || ssoRegion;
   const clientId = stringField(data, "clientId", "client_id");
   const clientSecret = stringField(data, "clientSecret", "client_secret");
+  const refresh = stringField(data, "refreshToken", "refresh_token") || "";
+  const expiryPresent = Object.hasOwn(data, "expiresAt") || Object.hasOwn(data, "expires_at");
   return {
     access,
-    refresh: stringField(data, "refreshToken", "refresh_token") || "",
-    expires: parseExpires(data.expiresAt ?? data.expires_at),
+    refresh,
+    expires: parseExpires(data.expiresAt ?? data.expires_at, expiryPresent, refresh.length > 0),
     source,
     authType: clientId && clientSecret ? "aws_sso_oidc" : "kiro_desktop",
     ...(profileArn ? { profileArn } : {}),

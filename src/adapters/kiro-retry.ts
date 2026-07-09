@@ -1,6 +1,6 @@
 import type { AdapterFetchContext, AdapterRequest } from "./base";
 import { safeKiroHttpErrorMessage } from "./kiro-errors";
-import { abortError, sleepWithAbort } from "../lib/upstream-retry";
+import { abortError, isConnectionResetError, sleepWithAbort } from "../lib/upstream-retry";
 
 const KIRO_RETRY_ATTEMPTS = 3;
 const KIRO_RETRY_BASE_MS = 250;
@@ -30,6 +30,10 @@ function retryDelayMs(attempt: number, headers?: Headers): number {
 function signalWithAttemptTimeout(parent: AbortSignal | undefined, timeoutMs: number): AbortSignal {
   const timeout = AbortSignal.timeout(timeoutMs);
   return parent ? AbortSignal.any([parent, timeout]) : timeout;
+}
+
+function retryableKiroFetchError(err: unknown): boolean {
+  return isConnectionResetError(err) || (err instanceof Error && err.name === "TimeoutError");
 }
 
 async function normalizeFinalKiroHttpError(res: Response): Promise<Response> {
@@ -62,8 +66,8 @@ export async function fetchKiroWithRetry(request: AdapterRequest, ctx: AdapterFe
       await sleepWithAbort(retryDelayMs(attempt, res.headers), ctx.abortSignal);
     } catch (err) {
       if (ctx.abortSignal?.aborted) throw err;
+      if (!retryableKiroFetchError(err) || attempt === KIRO_RETRY_ATTEMPTS - 1) throw err;
       lastError = err;
-      if (attempt === KIRO_RETRY_ATTEMPTS - 1) throw err;
       await sleepWithAbort(retryDelayMs(attempt), ctx.abortSignal);
     }
   }

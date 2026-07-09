@@ -191,6 +191,20 @@ describe("kiro adapter — parseStream", () => {
     expect(JSON.parse(args)).toEqual({ command: "pwd" });
   });
 
+  test("tool stop without an open tool emits an adapter error", async () => {
+    const frame = eventFrame({ name: "bash", stop: true, toolUseId: "t1" });
+    const out: string[] = [];
+
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(frame)))) {
+      out.push(e.type === "error" ? `error:${e.message}` : e.type);
+    }
+
+    expect(out).toEqual([
+      "error:Kiro response protocol error: tool stop received without an open tool call",
+    ]);
+    expect(out).not.toContain("done");
+  });
+
   test("explicit Kiro truncation marker fails without done", async () => {
     const frame = eventFrame({ finish_reason: "max_tokens" });
     const out: string[] = [];
