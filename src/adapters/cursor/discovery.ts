@@ -71,12 +71,12 @@ export const CURSOR_STATIC_MODELS: readonly CursorModelInfo[] = normalizeCursorM
   { id: "claude-4.6-opus", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
   { id: "claude-4.6-sonnet", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
   { id: "claude-opus-4-7", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
+  // opus-4-7-fast: effort-suffix tiers unverified -> no tier picker; sent bare like live-only ids.
+  { id: "claude-opus-4-7-fast", contextWindow: CONTEXT_200K },
   { id: "claude-opus-4-8", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
   { id: "claude-fable-5", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
 
   { id: "composer-1", contextWindow: CONTEXT_200K },
-  { id: "composer-1.5", contextWindow: CONTEXT_200K },
-  { id: "composer-2", contextWindow: CONTEXT_200K },
   { id: "composer-2.5", contextWindow: CONTEXT_200K },
   { id: "composer-2.5-fast", contextWindow: CONTEXT_200K },
 
@@ -101,15 +101,16 @@ export const CURSOR_STATIC_MODELS: readonly CursorModelInfo[] = normalizeCursorM
   { id: "gpt-5.4-mini", contextWindow: CONTEXT_272K, supportsReasoningEffort: true },
   { id: "gpt-5.4-nano", contextWindow: CONTEXT_272K, supportsReasoningEffort: true },
   { id: "gpt-5.5", contextWindow: CONTEXT_272K, supportsReasoningEffort: true },
+  // gpt-5.5-extra: absent from cursor.com docs but SURVIVES the live GetUsableModels filter
+  // (account-verified 260709, devlog/model_update/260709_model_refresh/004_live_snapshot.md).
   { id: "gpt-5.5-extra", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
 
-  { id: "grok-4.3", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
-  { id: "grok-4.20", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
-  { id: "grok-build-0.1", contextWindow: CONTEXT_256K },
-  { id: "grok-code-fast-1", contextWindow: CONTEXT_256K },
+  // 260709 refresh: stale grok/composer/kimi/gpt ids dropped per current cursor.com docs; the
+  // grok-4.5 addition is DEFERRED until live GetUsableModels confirms its id form (dot vs dash) —
+  // see devlog/model_update/260709_model_refresh/010_phase1_static_update.md (A fold-back B1).
 
-  { id: "glm-5.2", contextWindow: CONTEXT_200K },
-  { id: "kimi-k2.5", contextWindow: CONTEXT_262K },
+  { id: "glm-5.2", contextWindow: CONTEXT_1M },
+  { id: "kimi-k2.7-code", contextWindow: CONTEXT_262K },
 ]);
 
 export function cursorModelIds(models: readonly CursorModelInfo[] = CURSOR_STATIC_MODELS): string[] {

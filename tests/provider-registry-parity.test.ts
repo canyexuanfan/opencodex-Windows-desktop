@@ -13,6 +13,7 @@ import {
   providerConfigSeed,
 } from "../src/providers/derive";
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
+import { applyProviderConfigHints } from "../src/codex/catalog";
 import { resolveAdapter } from "../src/server";
 import type { OcxProviderConfig } from "../src/types";
 
@@ -92,7 +93,7 @@ describe("provider registry parity", () => {
       adapter: "anthropic",
       baseUrl: "https://api.anthropic.com",
       dashboardUrl: "https://console.anthropic.com/settings/keys",
-      defaultModel: "claude-sonnet-4-6",
+      defaultModel: "claude-sonnet-5",
       liveModels: true,
     });
     expect(KEY_LOGIN_PROVIDERS["anthropic-apikey"].models).toEqual(anthropicOauth?.models);
@@ -120,14 +121,15 @@ describe("provider registry parity", () => {
     expect(cursor?.note).toContain("live model discovery");
     expect(cursor?.note).toContain("provider.unsafeAllowNativeLocalExec");
     expect(cursor?.models).toContain("auto");
-    expect(cursor?.models?.length).toBeGreaterThanOrEqual(40);
+    expect(cursor?.models?.length).toBeGreaterThanOrEqual(38);
     expect(cursor?.models).toContain("claude-sonnet-5");
     expect(cursor?.models).toContain("composer-2.5");
     expect(cursor?.models).toContain("gemini-3-pro-image-preview");
     expect(cursor?.models).toContain("gemini-3.5-flash");
     expect(cursor?.models).toContain("gpt-5-codex");
     expect(cursor?.models).toContain("glm-5.2");
-    expect(cursor?.models).toContain("grok-4.3");
+    expect(cursor?.models).toContain("kimi-k2.7-code");
+    expect(cursor?.models).not.toContain("grok-4.3");
     expect(deriveFeaturedProviderIds()).not.toContain("cursor");
     expect(Object.keys(deriveKeyLoginMap())).not.toContain("cursor");
     expect(deriveProviderPresets().find(preset => preset.id === "cursor")).toMatchObject({
@@ -148,10 +150,10 @@ describe("provider registry parity", () => {
     expect(seed.models).toContain("gemini-3-pro-image-preview");
     expect(seed.models).toContain("gpt-5-codex");
     expect(seed.models).toContain("gpt-5.5");
-    expect(seed.models).toContain("kimi-k2.5");
+    expect(seed.models).toContain("kimi-k2.7-code");
     expect(seed.modelContextWindows?.auto).toBe(200_000);
     expect(seed.modelContextWindows?.["gemini-3.5-flash"]).toBe(200_000);
-    expect(seed.modelReasoningEfforts?.["grok-4.3"]).toEqual(["low", "medium", "high"]);
+    expect(seed.modelReasoningEfforts?.["gpt-5.5"]).toEqual(["low", "medium", "high"]);
 
     const savedCursor: OcxProviderConfig = { adapter: "cursor", baseUrl: "https://api2.cursor.sh" };
     enrichProviderFromCatalog("cursor", savedCursor);
@@ -161,7 +163,7 @@ describe("provider registry parity", () => {
     });
     expect(savedCursor.models).toContain("auto");
     expect(savedCursor.models).toContain("composer-2.5");
-    expect(savedCursor.models).toContain("grok-4.3");
+    expect(savedCursor.models).toContain("kimi-k2.7-code");
 
     const initCursor = buildInitProviders().find(provider => provider.id === "cursor");
     expect(initCursor).toMatchObject({
@@ -179,10 +181,15 @@ describe("provider registry parity", () => {
 
   test("OAuth provider configs use canonical registry values", () => {
     expect(OAUTH_PROVIDERS.kimi.providerConfig.baseUrl).toBe("https://api.kimi.com/coding/v1");
-    expect(OAUTH_PROVIDERS.anthropic.providerConfig.defaultModel).toBe("claude-sonnet-4-6");
+    expect(OAUTH_PROVIDERS.anthropic.providerConfig.defaultModel).toBe("claude-sonnet-5");
     expect(OAUTH_PROVIDERS.anthropic.providerConfig.models).toContain("claude-sonnet-5");
+    expect(OAUTH_PROVIDERS.anthropic.providerConfig.models).toContain("claude-fable-5");
     expect(OAUTH_PROVIDERS.anthropic.providerConfig.modelContextWindows?.["claude-sonnet-5"]).toBe(1_000_000);
-    expect(OAUTH_PROVIDERS.xai.providerConfig.defaultModel).toBe("grok-4.3");
+    expect(OAUTH_PROVIDERS.xai.providerConfig.defaultModel).toBe("grok-4.5");
+    expect(OAUTH_PROVIDERS.xai.providerConfig.liveModels).toBe(true);
+    expect(OAUTH_PROVIDERS.xai.providerConfig.models).toContain("grok-4.5");
+    expect(OAUTH_PROVIDERS.xai.providerConfig.modelContextWindows?.["grok-4.5"]).toBe(500_000);
+    expect(OAUTH_PROVIDERS.xai.providerConfig.modelReasoningEfforts?.["grok-4.5"]).toEqual(["low", "medium", "high"]);
     expect(OAUTH_PROVIDERS.xai.providerConfig.noVisionModels).toContain("grok-build-0.1");
     expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).toContain("gemini-3.5-flash-mid");
     expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).toContain("gemini-3.5-flash-high");
@@ -205,7 +212,7 @@ describe("provider registry parity", () => {
       defaultModel: "auto",
     });
     expect(presets.find(p => p.id === "kimi")?.baseUrl).toBe("https://api.kimi.com/coding/v1");
-    expect(presets.find(p => p.id === "anthropic")?.defaultModel).toBe("claude-sonnet-4-6");
+    expect(presets.find(p => p.id === "anthropic")?.defaultModel).toBe("claude-sonnet-5");
     expect(presets.find(p => p.id === "umans")).toMatchObject({
       adapter: "anthropic",
       baseUrl: "https://api.code.umans.ai",
@@ -286,5 +293,20 @@ describe("provider registry parity", () => {
     const routed = entries.find(e => e.slug === "minimax/minimax-m2.5");
     expect(routed?.context_window).toBe(204_800);
     expect(routed?.max_context_window).toBe(204_800);
+  });
+
+  test("grok-4.5 flows from the xai registry seed into a built catalog entry (260709 refresh)", () => {
+    const xai = PROVIDER_REGISTRY.find(entry => entry.id === "xai");
+    const seed = providerConfigSeed(xai!);
+    const model = applyProviderConfigHints("xai", seed, { id: "grok-4.5", provider: "xai" });
+    expect(model.contextWindow).toBe(500_000);
+    expect(model.reasoningEfforts).toEqual(["low", "medium", "high"]);
+
+    const entries = buildCatalogEntries(nativeTemplate() as never, [], [model]);
+    const entry = entries.find(e => e.slug === "xai/grok-4.5");
+    expect(entry).toBeTruthy();
+    expect(entry?.context_window).toBe(500_000);
+    expect((entry?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort))
+      .toEqual(["low", "medium", "high"]);
   });
 });

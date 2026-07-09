@@ -64,8 +64,9 @@ describe("Cursor static Codex catalog", () => {
     expect(namespaced).toContain("cursor/gemini-3.5-flash");
     expect(namespaced).toContain("cursor/gpt-5-codex");
     expect(namespaced).toContain("cursor/glm-5.2");
-    expect(namespaced).toContain("cursor/grok-4.20");
-    expect(namespaced).toContain("cursor/grok-4.3");
+    expect(namespaced).toContain("cursor/kimi-k2.7-code");
+    expect(namespaced).not.toContain("cursor/grok-4.20");
+    expect(namespaced).not.toContain("cursor/grok-4.3");
 
     const entries = buildCatalogEntries(nativeTemplate(), [], models);
     expect(entries.find(item => item.slug === "cursor/claude-sonnet-5")).toBeTruthy();
@@ -77,9 +78,9 @@ describe("Cursor static Codex catalog", () => {
     expect(entries.find(item => item.slug === "cursor/gemini-3-pro")?.context_window).toBe(1_048_576);
     expect(entries.find(item => item.slug === "cursor/gemini-3.5-flash")?.context_window).toBe(200_000);
     expect(entries.find(item => item.slug === "cursor/gpt-5-codex")?.context_window).toBe(272_000);
-    expect(entries.find(item => item.slug === "cursor/glm-5.2")?.context_window).toBe(200_000);
+    expect(entries.find(item => item.slug === "cursor/glm-5.2")?.context_window).toBe(1_000_000);
     expect(entries.find(item => item.slug === "cursor/composer-2.5-fast")?.context_window).toBe(200_000);
-    expect(entries.find(item => item.slug === "cursor/grok-4.3")?.supported_reasoning_levels)
+    expect(entries.find(item => item.slug === "cursor/gpt-5.5")?.supported_reasoning_levels)
       .toMatchObject([{ effort: "low" }, { effort: "medium" }, { effort: "high" }]);
   });
 });

@@ -14,7 +14,7 @@ describe("Cursor discovery metadata", () => {
   test("static seed includes Cursor's public model families plus the safe auto model", () => {
     const ids = cursorModelIds(CURSOR_STATIC_MODELS);
 
-    expect(ids.length).toBeGreaterThanOrEqual(40);
+    expect(ids.length).toBeGreaterThanOrEqual(38);
     expect(ids).toContain("auto");
     expect(ids).toContain("claude-sonnet-5");
     expect(ids).toContain("composer-2.5");
@@ -26,9 +26,15 @@ describe("Cursor discovery metadata", () => {
     expect(ids).toContain("gpt-5-codex");
     expect(ids).toContain("gpt-5.5");
     expect(ids).toContain("glm-5.2");
-    expect(ids).toContain("grok-4.20");
-    expect(ids).toContain("grok-4.3");
-    expect(ids).toContain("kimi-k2.5");
+    expect(ids).toContain("kimi-k2.7-code");
+    expect(ids).toContain("claude-opus-4-7-fast");
+    // 260709 refresh: stale ids dropped from the static seed (cursor.com docs); gpt-5.5-extra
+    // stays — it survives the live GetUsableModels filter (004_live_snapshot.md).
+    expect(ids).not.toContain("grok-4.20");
+    expect(ids).not.toContain("grok-4.3");
+    expect(ids).not.toContain("kimi-k2.5");
+    expect(ids).toContain("gpt-5.5-extra");
+    expect(ids).not.toContain("composer-2");
     // `auto` mirrors the jawcode SOT `default` entry (200k), not the generic fallback window.
     expect(cursorModelContextWindows(CURSOR_STATIC_MODELS).auto).toBe(200_000);
     expect(cursorModelContextWindows(CURSOR_STATIC_MODELS)["composer-2.5-fast"]).toBe(200_000);
