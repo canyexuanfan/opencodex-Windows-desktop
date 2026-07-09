@@ -27,7 +27,7 @@ export { clearAccountQuota, getAccountQuota, parseUsageQuota, updateAccountQuota
 import { extractAccountId, decodeJwtPayload } from "../oauth/chatgpt";
 import { MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from "./main-account";
 import { maskEmail } from "../lib/privacy";
-import { codexWarmupFailureReason, warmCodexAccount } from "./warmup";
+import { CodexWarmupError, codexWarmupFailureReason, warmCodexAccount } from "./warmup";
 export { maskEmail } from "../lib/privacy";
 import type { CodexAccount, OcxConfig } from "../types";
 
@@ -149,12 +149,16 @@ async function verifyCodexAccountWarmup(
     await warmCodexAccount({ accessToken, chatgptAccountId });
     return { ok: true, validatedAt: Date.now() };
   } catch (err) {
+    const reason = codexWarmupFailureReason(err);
+    const upstream = err instanceof CodexWarmupError ? err.upstreamDetail : undefined;
     return {
       ok: false,
       response: jsonResponse({
-        error: "Codex account warmup failed. Reauthenticate the account and try again.",
+        error: upstream
+          ? `Codex account warmup failed: ${upstream}`
+          : "Codex account warmup failed. Reauthenticate the account and try again.",
         code: "codex_warmup_failed",
-        reason: codexWarmupFailureReason(err),
+        reason,
         accountId,
       }, 401),
     };

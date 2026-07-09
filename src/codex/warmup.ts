@@ -1,16 +1,19 @@
 export class CodexWarmupError extends Error {
   code: "http_status" | "missing_body" | "stream_failed" | "stream_incomplete" | "stream_error" | "invalid_sse" | "no_terminal" | "transport";
   status?: number;
+  /** Upstream error detail extracted from the response body (truncated to 512 chars). */
+  upstreamDetail?: string;
 
   constructor(
     code: CodexWarmupError["code"],
     message = "Codex warmup failed",
-    options: { status?: number; cause?: unknown } = {},
+    options: { status?: number; cause?: unknown; upstreamDetail?: string } = {},
   ) {
     super(message);
     this.name = "CodexWarmupError";
     this.code = code;
     this.status = options.status;
+    this.upstreamDetail = options.upstreamDetail;
     if (options.cause !== undefined) this.cause = options.cause;
   }
 }
@@ -24,11 +27,39 @@ export interface CodexWarmupOptions {
 
 const CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
 const DEFAULT_MODEL = "gpt-5.4-mini";
+const FALLBACK_MODELS = ["gpt-5.5"];
 const DEFAULT_TIMEOUT_MS = 30_000;
+const MAX_ERROR_BODY_BYTES = 2048;
+
+/** Read the first MAX_ERROR_BODY_BYTES of a response body and extract an error message. */
+async function readErrorDetail(res: Response): Promise<string | undefined> {
+  try {
+    const text = await res.text();
+    const trimmed = text.slice(0, MAX_ERROR_BODY_BYTES);
+    try {
+      const json = JSON.parse(trimmed) as Record<string, unknown>;
+      // ChatGPT backend error shape: { error: { message: "..." } } or { detail: "..." }
+      const nested = json.error;
+      if (nested && typeof nested === "object" && typeof (nested as Record<string, unknown>).message === "string") {
+        return ((nested as Record<string, unknown>).message as string).slice(0, 512);
+      }
+      if (typeof json.detail === "string") return json.detail.slice(0, 512);
+      if (typeof json.error === "string") return (json.error as string).slice(0, 512);
+      if (typeof json.message === "string") return json.message.slice(0, 512);
+    } catch {
+      // Non-JSON response body may contain sensitive data (tokens, credentials).
+      // Only surface structured error messages, never raw text.
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 function safeWarmupReason(err: unknown): string {
   if (err instanceof CodexWarmupError) {
-    return err.status ? `${err.code}:${err.status}` : err.code;
+    const base = err.status ? `${err.code}:${err.status}` : err.code;
+    return err.upstreamDetail ? `${base} — ${err.upstreamDetail}` : base;
   }
   return "transport";
 }
@@ -99,7 +130,7 @@ async function drainWarmupSse(body: ReadableStream<Uint8Array>): Promise<void> {
   }
 }
 
-export async function warmCodexAccount(options: CodexWarmupOptions): Promise<void> {
+async function tryWarmup(options: CodexWarmupOptions, model: string): Promise<void> {
   let res: Response;
   try {
     res = await fetch(CODEX_RESPONSES_URL, {
@@ -110,7 +141,7 @@ export async function warmCodexAccount(options: CodexWarmupOptions): Promise<voi
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: options.model?.trim() || DEFAULT_MODEL,
+        model,
         instructions: "Reply with OK.",
         input: "hi",
         stream: true,
@@ -123,8 +154,11 @@ export async function warmCodexAccount(options: CodexWarmupOptions): Promise<voi
   }
 
   if (!res.ok) {
-    await res.body?.cancel().catch(() => {});
-    throw new CodexWarmupError("http_status", "Codex warmup was rejected", { status: res.status });
+    const upstreamDetail = await readErrorDetail(res);
+    throw new CodexWarmupError("http_status", "Codex warmup was rejected", {
+      status: res.status,
+      upstreamDetail,
+    });
   }
   if (!res.body) throw new CodexWarmupError("missing_body");
 
@@ -132,6 +166,28 @@ export async function warmCodexAccount(options: CodexWarmupOptions): Promise<voi
     await drainWarmupSse(res.body);
   } finally {
     await res.body?.cancel().catch(() => {});
+  }
+}
+
+export async function warmCodexAccount(options: CodexWarmupOptions): Promise<void> {
+  const primaryModel = options.model?.trim() || DEFAULT_MODEL;
+  try {
+    await tryWarmup(options, primaryModel);
+    return;
+  } catch (err) {
+    // Retry with fallback models on 400 (model may not be available for this account).
+    if (!(err instanceof CodexWarmupError) || err.status !== 400) throw err;
+    let lastErr = err;
+    for (const fallback of FALLBACK_MODELS) {
+      if (fallback === primaryModel) continue;
+      try {
+        await tryWarmup(options, fallback);
+        return;
+      } catch (retryErr) {
+        if (retryErr instanceof CodexWarmupError) lastErr = retryErr;
+      }
+    }
+    throw lastErr;
   }
 }
 
