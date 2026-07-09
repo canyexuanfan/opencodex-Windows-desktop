@@ -69,6 +69,7 @@ export {
   addFinalRequestLog,
   filterRequestLogs,
   httpStatusForTerminalStatus,
+  httpStatusFromTerminalError,
   nextRequestLogId,
   requestLogErrorCode,
   requestLogSpeedLabel,
