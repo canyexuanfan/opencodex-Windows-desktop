@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Switch, Notice, EmptyState } from "../ui";
+import { Switch, Notice, EmptyState, Select } from "../ui";
 import { IconChevron, IconBoxes } from "../icons";
 import { useT } from "../i18n";
 
@@ -367,26 +367,25 @@ export default function Models({ apiBase }: { apiBase: string }) {
           {v2.enabled && (
             <>
               <span className="muted" style={{ fontSize: 13, marginLeft: 8 }}>{t("models.v2ThreadsLabel")}</span>
-              <select
-                className="select-sm"
+              <Select
                 value={showThreadsCustom
                   ? CUSTOM_OPTION
                   : (v2.maxConcurrentThreadsPerSession !== null && v2.maxConcurrentThreadsPerSession !== undefined
                     ? (THREAD_OPTIONS.includes(v2.maxConcurrentThreadsPerSession) ? String(v2.maxConcurrentThreadsPerSession) : CUSTOM_OPTION)
                     : "")}
-                onChange={e => onSelectThreads(e.target.value)}
+                options={[
+                  ...(v2.maxConcurrentThreadsPerSession === null || v2.maxConcurrentThreadsPerSession === undefined
+                    ? [{ value: "", label: t("models.v2ThreadsDefault") }] : []),
+                  ...(v2.maxConcurrentThreadsPerSession !== null && v2.maxConcurrentThreadsPerSession !== undefined
+                    && !THREAD_OPTIONS.includes(v2.maxConcurrentThreadsPerSession) && !showThreadsCustom
+                    ? [{ value: CUSTOM_OPTION, label: String(v2.maxConcurrentThreadsPerSession) }] : []),
+                  ...THREAD_OPTIONS.map(v => ({ value: String(v), label: String(v) })),
+                  { value: CUSTOM_OPTION, label: t("models.custom") },
+                ]}
+                onChange={v => onSelectThreads(v)}
                 disabled={v2Busy}
-              >
-                {(v2.maxConcurrentThreadsPerSession === null || v2.maxConcurrentThreadsPerSession === undefined) && (
-                  <option value="">{t("models.v2ThreadsDefault")}</option>
-                )}
-                {v2.maxConcurrentThreadsPerSession !== null && v2.maxConcurrentThreadsPerSession !== undefined
-                  && !THREAD_OPTIONS.includes(v2.maxConcurrentThreadsPerSession) && !showThreadsCustom && (
-                  <option value={CUSTOM_OPTION}>{v2.maxConcurrentThreadsPerSession}</option>
-                )}
-                {THREAD_OPTIONS.map(v => <option key={v} value={String(v)}>{v}</option>)}
-                <option value={CUSTOM_OPTION}>{t("models.custom")}</option>
-              </select>
+                label={t("models.v2ThreadsLabel")}
+              />
               {showThreadsCustom && (
                 <>
                   <input
@@ -415,18 +414,18 @@ export default function Models({ apiBase }: { apiBase: string }) {
 
       <div className="row" style={{ gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
         <span className="muted" style={{ fontSize: 13 }}>{t("models.contextCapLabel")}</span>
-        <select
-          className="select-sm"
+        <Select
           value={showCustom ? CUSTOM_OPTION : (CAP_OPTIONS.includes(contextCapValue) ? String(contextCapValue) : CUSTOM_OPTION)}
-          onChange={e => onSelectCap(e.target.value)}
+          options={[
+            ...(!CAP_OPTIONS.includes(contextCapValue) && !showCustom
+              ? [{ value: String(contextCapValue), label: fmtK(contextCapValue) }] : []),
+            ...CAP_OPTIONS.map(v => ({ value: String(v), label: fmtK(v) })),
+            { value: CUSTOM_OPTION, label: t("models.custom") },
+          ]}
+          onChange={v => onSelectCap(v)}
           disabled={busy}
-        >
-          {!CAP_OPTIONS.includes(contextCapValue) && !showCustom && (
-            <option value={String(contextCapValue)}>{fmtK(contextCapValue)}</option>
-          )}
-          {CAP_OPTIONS.map(v => <option key={v} value={String(v)}>{fmtK(v)}</option>)}
-          <option value={CUSTOM_OPTION}>{t("models.custom")}</option>
-        </select>
+          label={t("models.contextCapLabel")}
+        />
         {showCustom && (
           <>
             <input
