@@ -163,7 +163,7 @@ describe("Codex catalog routed normalization", () => {
     expect(native?.auto_compact_token_limit).toBe(900_000);
   });
 
-  test("native gpt-5.3-codex-spark uses its 128k context window instead of inherited codex max", () => {
+  test("native gpt-5.3-codex-spark uses its 100k context window instead of inherited codex max", () => {
     const template = {
       ...nativeTemplate(),
       context_window: 272_000,
@@ -172,9 +172,9 @@ describe("Codex catalog routed normalization", () => {
     const entries = buildCatalogEntries(template, ["gpt-5.3-codex-spark"], []);
     const native = entries.find(e => e.slug === "gpt-5.3-codex-spark");
 
-    expect(native?.context_window).toBe(128_000);
-    expect(native?.max_context_window).toBe(128_000);
-    expect(native?.auto_compact_token_limit).toBe(115_200);
+    expect(native?.context_window).toBe(100_000);
+    expect(native?.max_context_window).toBe(100_000);
+    expect(native?.auto_compact_token_limit).toBe(90_000);
   });
 
   test("native GPT-5.6 entries add max and ultra reasoning even when cloned from an older template", () => {

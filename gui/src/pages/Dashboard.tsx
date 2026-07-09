@@ -49,7 +49,7 @@ interface UpdateJob {
   restarted?: boolean;
 }
 
-const SIDECAR_MODELS = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+const SIDECAR_MODELS = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 const REASONING_LEVELS = ["low", "medium", "high"];
 
 function defaultUpdateChannel(version: string | undefined): UpdateChannel {
