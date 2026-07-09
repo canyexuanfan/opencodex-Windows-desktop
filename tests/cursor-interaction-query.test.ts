@@ -67,19 +67,17 @@ describe("planInteractionQueryReply", () => {
     expect(value.result.case).toBe("rejected");
   });
 
-  test("setupVmEnvironment replies success (schema has no error case)", () => {
-    const plan = planInteractionQueryReply(query(5, {
+  test("setupVmEnvironment fails the turn instead of fabricating success", () => {
+    expect(() => planInteractionQueryReply(query(5, {
       case: "setupVmEnvironmentArgs",
       value: create(SetupVmEnvironmentArgsSchema, { installCommand: "true", startCommand: "true" }),
-    }));
-    expect(plan.response.id).toBe(5);
-    expect(plan.response.result.case).toBe("setupVmEnvironmentResult");
+    }))).toThrow("Cursor setupVmEnvironment is not supported");
   });
 
-  test("id 0 is echoed for unknown query cases", () => {
-    const plan = planInteractionQueryReply(query(0, { case: undefined, value: undefined } as InteractionQuery["query"]));
-    expect(plan.response.id).toBe(0);
-    expect(plan.replyCase).toBe("empty");
+  test("unknown interaction query cases fail the turn", () => {
+    expect(() => planInteractionQueryReply(
+      query(0, { case: undefined, value: undefined } as InteractionQuery["query"]),
+    )).toThrow("Unsupported Cursor interaction query case: unknown");
   });
 });
 

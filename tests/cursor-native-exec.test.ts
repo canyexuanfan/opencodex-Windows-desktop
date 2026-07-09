@@ -11,6 +11,7 @@ import {
   ComputerUseResultSchema,
   ComputerUseSuccessSchema,
   DeleteArgsSchema,
+  DiagnosticsArgsSchema,
   ExecServerMessageSchema,
   FetchArgsSchema,
   GrepArgsSchema,
@@ -181,18 +182,40 @@ describe("Cursor native exec bridge", () => {
     }
   });
 
-  test("keeps allowNativeLocalExec as a deprecated transition alias", async () => {
+  test("keeps the removed allowNativeLocalExec key inert", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ocx-cursor-alias-"));
     const shell = decode((await handleCursorNativeExec(execMessage({
       case: "shellArgs",
       value: create(ShellArgsSchema, { command: "printf alias-ok", workingDirectory: dir }),
-    }), { allowNativeLocalExec: true }))[0]);
+    }), { allowNativeLocalExec: true } as unknown as NonNullable<Parameters<typeof handleCursorNativeExec>[1]>))[0]);
 
     expect(shell.message.case).toBe("shellResult");
-    expect(shell.message.value.result.case).toBe("success");
-    if (shell.message.value.result.case === "success") {
-      expect(shell.message.value.result.value.stdout).toBe("alias-ok");
+    expect(shell.message.value.result.case).toBe("failure");
+    if (shell.message.value.result.case === "failure") {
+      expect(shell.message.value.result.value.stdout).toBe("");
+      expect(shell.message.value.result.value.stderr).toContain("provider.unsafeAllowNativeLocalExec=true");
     }
+  });
+
+  test("returns a typed error for unsupported diagnostics", async () => {
+    const diagnostics = decode((await handleCursorNativeExec(execMessage({
+      case: "diagnosticsArgs",
+      value: create(DiagnosticsArgsSchema, { path: "/tmp/example.ts" }),
+    })))[0]);
+
+    expect(diagnostics.message.case).toBe("diagnosticsResult");
+    expect(diagnostics.message.value.result.case).toBe("error");
+    if (diagnostics.message.value.result.case === "error") {
+      expect(diagnostics.message.value.result.value.path).toBe("/tmp/example.ts");
+      expect(diagnostics.message.value.result.value.error).toContain("not supported");
+    }
+  });
+
+  test("throws for unknown exec cases so the live handler fails the turn", async () => {
+    await expect(handleCursorNativeExec(execMessage({
+      case: undefined,
+      value: undefined,
+    }))).rejects.toThrow("Unsupported Cursor native exec case: unknown");
   });
 
   test("rejects native write and delete when apply_patch is available", async () => {

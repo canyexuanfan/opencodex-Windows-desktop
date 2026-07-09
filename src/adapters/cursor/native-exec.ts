@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { create } from "@bufbuild/protobuf";
 import {
+  DiagnosticsErrorSchema,
   DiagnosticsResultSchema,
-  DiagnosticsSuccessSchema,
   GetBlobResultSchema,
   KvClientMessageSchema,
   McpErrorSchema,
@@ -63,14 +63,12 @@ export interface CursorNativeExecContext extends CursorNativeExecDeps {
   clientToolDefs?: McpToolDefinition[];
   /** Unsafe opt-in escape hatch for Cursor server-driven local fs/shell/fetch execution. */
   unsafeAllowNativeLocalExec?: boolean;
-  /** @deprecated Use unsafeAllowNativeLocalExec. Kept as a transition alias for local experiments. */
-  allowNativeLocalExec?: boolean;
   /** apply_patch is visible for this request; Cursor-native write/delete must not bypass Codex. */
   rejectNativeFileMutations?: boolean;
 }
 
-export function cursorUnsafeNativeLocalExecEnabled(input: Pick<CursorNativeExecContext, "unsafeAllowNativeLocalExec" | "allowNativeLocalExec"> = {}): boolean {
-  return input.unsafeAllowNativeLocalExec === true || input.allowNativeLocalExec === true;
+export function cursorUnsafeNativeLocalExecEnabled(input: Pick<CursorNativeExecContext, "unsafeAllowNativeLocalExec"> = {}): boolean {
+  return input.unsafeAllowNativeLocalExec === true;
 }
 
 /**
@@ -183,10 +181,16 @@ export async function handleCursorNativeExec(execMsg: ExecServerMessage, deps: C
   if (execCase === "diagnosticsArgs") {
     const path = execMsg.message.value.path;
     return [execBytes(execMsg, "diagnosticsResult", create(DiagnosticsResultSchema, {
-      result: { case: "success", value: create(DiagnosticsSuccessSchema, { path, diagnostics: [], totalDiagnostics: 0 }) },
+      result: {
+        case: "error",
+        value: create(DiagnosticsErrorSchema, {
+          path,
+          error: "Diagnostics are not supported by the opencodex Cursor transport.",
+        }),
+      },
     }))];
   }
-  return [];
+  throw new Error(`Unsupported Cursor native exec case: ${execCase ?? "unknown"}`);
 }
 
 

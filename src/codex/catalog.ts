@@ -1065,13 +1065,16 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
     // plan (e.g. claude-fable-5) drop out instead of failing ERROR_BAD_MODEL_NAME. Fall back to the seed.
     const cachedCursor = getFreshCached(name, ttlMs);
     if (cachedCursor) return applyConfigHintsToCachedModels(name, prov, cachedCursor);
-    const liveIds = await fetchCursorUsableModels({ apiKey, baseUrl: prov.baseUrl });
-    if (liveIds) {
-      const available = filterCursorConfiguredModelsByLiveDiscovery(configured, liveIds);
+    const liveResult = await fetchCursorUsableModels({ apiKey, baseUrl: prov.baseUrl });
+    if (liveResult.ok) {
+      const available = filterCursorConfiguredModelsByLiveDiscovery(configured, liveResult.models);
       const result = available.length > 0 ? available : configured;
       setCached(name, result);
       return result;
     }
+    console.warn(
+      `[opencodex] Cursor model discovery for "${name}" failed [${liveResult.error}]${liveResult.detail ? `: ${liveResult.detail}` : ""}; using stale/static catalog degradation.`,
+    );
     const staleCursor = getStaleCached(name);
     return staleCursor ? applyConfigHintsToCachedModels(name, prov, staleCursor) : configured;
   }

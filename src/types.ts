@@ -502,8 +502,6 @@ export interface OcxProviderConfig {
    * controlled by their own opt-in config.
    */
   unsafeAllowNativeLocalExec?: boolean;
-  /** @deprecated Use unsafeAllowNativeLocalExec. Kept as a transition alias for local experiments. */
-  allowNativeLocalExec?: boolean;
 }
 
 export interface CodexAccount {

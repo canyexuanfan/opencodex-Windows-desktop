@@ -19,8 +19,6 @@ import {
   ExaSearchRequestResponseSchema,
   ExaSearchRequestResponse_RejectedSchema,
   InteractionResponseSchema,
-  SetupVmEnvironmentResultSchema,
-  SetupVmEnvironmentSuccessSchema,
   SwitchModeRequestResponseSchema,
   SwitchModeRequestResponse_RejectedSchema,
   WebSearchRequestResponseSchema,
@@ -270,18 +268,9 @@ export function planInteractionQueryReply(query: InteractionQuery): { response: 
     };
   }
   if (q.case === "setupVmEnvironmentArgs") {
-    return {
-      response: respond({
-        case: "setupVmEnvironmentResult",
-        value: create(SetupVmEnvironmentResultSchema, {
-          result: { case: "success", value: create(SetupVmEnvironmentSuccessSchema, {}) },
-        }),
-      }),
-      replyCase: "setupVmEnvironmentResult:success",
-    };
+    throw new Error("Cursor setupVmEnvironment is not supported by opencodex");
   }
-  // Unknown/future query case: an empty response still unblocks the matching id.
-  return { response: respond({ case: undefined, value: undefined } as InteractionResponse["result"]), replyCase: "empty" };
+  throw new Error(`Unsupported Cursor interaction query case: ${q.case ?? "unknown"}`);
 }
 
 /**
@@ -354,8 +343,8 @@ class LiveCursorTransport implements CursorTransport {
   /**
    * Connect MCP servers and compute the tool definitions advertised to the Cursor server.
    * MUST complete before the first `requestContextArgs` (the server only calls MCP tools it was
-   * told about), so `run()` awaits this before opening the stream. Best-effort: any failure
-   * leaves an empty tool list and MCP disabled for the stream, never blocking the conversation.
+   * told about), so `run()` awaits this before opening the stream. Preparation failures reject the
+   * turn instead of silently running with MCP disabled.
    */
   private prepareMcp(): Promise<void> {
     if (!this.mcpManager) return Promise.resolve();
@@ -370,8 +359,7 @@ class LiveCursorTransport implements CursorTransport {
             unsafeAllowNativeLocalExec: cursorUnsafeNativeLocalExecEnabled(this.input.provider),
           };
         } catch (err) {
-          console.warn(`[cursor-mcp] preparation failed, MCP disabled for this stream: ${err instanceof Error ? err.message : String(err)}`);
-          this.execContext = { ...this.desktopDeps, unsafeAllowNativeLocalExec: cursorUnsafeNativeLocalExecEnabled(this.input.provider) };
+          throw new Error(`Cursor MCP preparation failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
         }
       })();
     }

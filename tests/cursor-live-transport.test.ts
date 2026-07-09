@@ -26,6 +26,33 @@ describe("Cursor live transport", () => {
     expect(JSON.stringify(transport)).not.toContain("secret-cursor-token");
     transport.close?.();
   });
+
+  test("fails the turn when MCP preparation rejects", async () => {
+    const transport = createLiveCursorTransport({
+      provider: { adapter: "cursor", baseUrl: "https://api2.cursor.sh", apiKey: "test-token" },
+      headers: new Headers(),
+    });
+    const internals = transport as unknown as {
+      mcpManager?: {
+        listToolHandles(): Promise<never>;
+        dispose(): Promise<void>;
+      };
+    };
+    internals.mcpManager = {
+      listToolHandles: () => Promise.reject(new Error("fixture discovery failed")),
+      dispose: () => Promise.resolve(),
+    };
+
+    const iterator = transport.run({
+      modelId: "auto",
+      conversationId: "mcp-preparation-failure",
+      system: [],
+      messages: [{ role: "user", content: "hello" }],
+    })[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).rejects.toThrow("Cursor MCP preparation failed: fixture discovery failed");
+    await transport.close?.();
+  });
 });
 
 describe("Cursor end-stream classification", () => {

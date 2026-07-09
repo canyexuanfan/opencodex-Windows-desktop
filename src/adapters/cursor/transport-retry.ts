@@ -68,8 +68,7 @@ export async function runCursorTurnWithRetry(
   signal: AbortSignal | undefined,
   onEvent: (message: CursorServerMessage, transport: CursorTransport) => void,
 ): Promise<void> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < CURSOR_RETRY_ATTEMPTS; attempt++) {
+  for (let attempt = 0; ; attempt++) {
     if (signal?.aborted) throw abortError(signal);
     const transport = makeTransport(input);
     let emittedAny = false;
@@ -80,7 +79,6 @@ export async function runCursorTurnWithRetry(
       }
       return;
     } catch (err) {
-      lastError = err;
       const canRetry =
         !emittedAny &&
         attempt < CURSOR_RETRY_ATTEMPTS - 1 &&
@@ -108,7 +106,6 @@ export async function runCursorTurnWithRetry(
       await transport.close?.();
     }
   }
-  throw lastError ?? new Error("Cursor transport failed");
 }
 
 export type { CursorTransportFactory };
