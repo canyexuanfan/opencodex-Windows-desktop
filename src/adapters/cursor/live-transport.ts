@@ -328,8 +328,10 @@ class LiveCursorTransport implements CursorTransport {
   // close; safe to read after a stream failure because open() owns the only writer before run().
   private turnStartedAt = 0;
   private framesReceived = 0;
-  private firstFrameAt?: number;
-  private firstFrameLogged = false;
+ private firstFrameAt?: number;
+ private firstFrameLogged = false;
+  /** Stable session identifier sent as x-session-id; mirrors IDE session semantics. */
+  private readonly sessionId = crypto.randomUUID();
 
   constructor(private readonly input: CursorTransportFactoryInput) {
     this.token = resolveCursorToken(input.provider, input.headers);
@@ -584,6 +586,7 @@ class LiveCursorTransport implements CursorTransport {
       "x-cursor-client-version": CURSOR_CLIENT_VERSION,
       "x-cursor-client-type": "cli",
       "x-request-id": crypto.randomUUID(),
+      "x-session-id": this.sessionId,
     });
 
     // Single owner of the pre-first-frame deadline. Cleared by the first server frame/end-stream and

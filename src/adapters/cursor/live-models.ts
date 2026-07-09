@@ -66,6 +66,7 @@ export async function fetchCursorUsableModels(opts: CursorUsableModelsOptions): 
       "x-ghost-mode": "true",
       "x-cursor-client-version": opts.clientVersion ?? CURSOR_DISCOVERY_CLIENT_VERSION,
       "x-cursor-client-type": "cli",
+      "x-session-id": crypto.randomUUID(),
     });
 
     let status = 0;
