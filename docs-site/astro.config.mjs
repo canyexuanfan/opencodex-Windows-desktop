@@ -4,6 +4,37 @@ import starlight from "@astrojs/starlight";
 
 // Project GitHub Pages site: https://lidge-jun.github.io/opencodex
 // `site` + `base` make Starlight emit correct absolute URLs and asset paths under the repo subpath.
+const SITE_URL = "https://lidge-jun.github.io/opencodex";
+
+// JSON-LD: WebSite + SoftwareApplication (docs SEO baseline; canonical/og/sitemap
+// are emitted by Starlight itself).
+const jsonLd = JSON.stringify({
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": `${SITE_URL}/#website`,
+      url: `${SITE_URL}/`,
+      name: "opencodex",
+      description:
+        "Universal provider proxy for OpenAI Codex — use any LLM with Codex CLI, App, and SDK.",
+      inLanguage: ["en", "ko", "zh-CN"],
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": `${SITE_URL}/#software`,
+      name: "opencodex",
+      alternateName: "ocx",
+      applicationCategory: "DeveloperApplication",
+      operatingSystem: "macOS, Linux, Windows",
+      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+      softwareHelp: { "@type": "CreativeWork", url: `${SITE_URL}/` },
+      downloadUrl: "https://www.npmjs.com/package/@bitkyc08/opencodex",
+      url: "https://github.com/lidge-jun/opencodex",
+    },
+  ],
+});
+
 export default defineConfig({
   site: "https://lidge-jun.github.io",
   base: "/opencodex",
@@ -20,12 +51,24 @@ export default defineConfig({
         replacesTitle: false,
       },
       favicon: "/favicon.png",
+      customCss: [
+        "@fontsource-variable/geist",
+        "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css",
+        "./src/styles/custom.css",
+      ],
+      components: {
+        Header: "./src/components/Header.astro",
+        PageTitle: "./src/components/PageTitle.astro",
+      },
       head: [
         { tag: "meta", attrs: { property: "og:image", content: "https://lidge-jun.github.io/opencodex/og.png" } },
         { tag: "meta", attrs: { property: "og:image:width", content: "1200" } },
         { tag: "meta", attrs: { property: "og:image:height", content: "630" } },
         { tag: "meta", attrs: { name: "twitter:card", content: "summary_large_image" } },
         { tag: "meta", attrs: { name: "twitter:image", content: "https://lidge-jun.github.io/opencodex/og.png" } },
+        { tag: "meta", attrs: { name: "theme-color", media: "(prefers-color-scheme: light)", content: "#ffffff" } },
+        { tag: "meta", attrs: { name: "theme-color", media: "(prefers-color-scheme: dark)", content: "#212121" } },
+        { tag: "script", attrs: { type: "application/ld+json" }, content: jsonLd },
       ],
       social: [
         { icon: "github", label: "GitHub", href: "https://github.com/lidge-jun/opencodex" },

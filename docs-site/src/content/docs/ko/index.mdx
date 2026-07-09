@@ -1,102 +1,15 @@
 ---
-title: opencodex
+title: Codex를 어떤 LLM 위에서든
 description: OpenAI Codex를 위한 범용 프로바이더 프록시 — Codex CLI, App, SDK에서 어떤 LLM이든 사용하세요.
 template: splash
-hero:
-  tagline: OpenAI Codex와 함께 어떤 LLM이든 사용하세요 — Anthropic, Google, xAI, Kimi, Ollama Cloud, 그리고 모든 OpenAI 호환 엔드포인트. 프록시 하나면 충분하며, Codex에 패치는 필요 없습니다.
-  actions:
-    - text: 시작하기
-      link: /opencodex/ko/getting-started/installation/
-      icon: right-arrow
-      variant: primary
-    - text: 작동 방식
-      link: /opencodex/ko/getting-started/how-it-works/
-      icon: open-book
-    - text: GitHub
-      link: https://github.com/lidge-jun/opencodex
-      icon: external
-      variant: minimal
+head:
+  - tag: meta
+    attrs:
+      property: og:locale
+      content: ko_KR
+tableOfContents: false
 ---
 
-import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import Landing from '../../../components/Landing.astro';
 
-**opencodex**(`ocx`)는 [OpenAI Codex](https://openai.com/codex)와 모든 LLM 프로바이더 사이에 위치하는
-로컬 프록시입니다. Codex는 오직 **Responses API**(`/v1/responses`)만 사용하는데, opencodex는
-이 프로토콜을 — 스트리밍, tool call, reasoning, 이미지를 포함해 양방향으로 — 프로바이더가 기대하는
-어떤 wire 포맷으로든 변환한 뒤, 응답을 다시 변환해 돌려줍니다.
-
-Codex의 네이티브 ChatGPT 인증 경로에는 **멀티 계정 풀**도 사용할 수 있습니다. 기존 thread는
-처음 선택된 계정을 계속 사용하므로 SSH, tmux, 모바일 연결로 이어지는 긴 세션이 중간에 다른 계정으로
-바뀌지 않습니다. 새 세션은 할당량을 조회한 뒤 사용량이 더 낮고 정상인 계정으로 자동 라우팅할 수 있습니다.
-
-현재 GPT-5.6 Sol/Terra/Luna 롤아웃은 **preview-gated**입니다. opencodex는 권한이 있는
-ChatGPT/Codex 카탈로그, OpenAI API 키(`openai-apikey`: `gpt-5.6-sol`, `gpt-5.6-terra`,
-`gpt-5.6-luna`), OpenRouter(`openai/gpt-5.6-*`) 경로에서 이 모델명을 광고할 준비를 하며,
-세 모델 모두 372,000 usable token 컨텍스트와 별도 `max` reasoning tier를 유지합니다. 호출 성공
-여부는 사용하는 계정 또는 프로바이더의 preview 권한에 따라 달라집니다.
-
-```
-Codex CLI / App / SDK ──/v1/responses──▶ opencodex ──▶ Any provider
-                                              │
-                  Anthropic · Google · xAI · Kimi · Ollama Cloud · Groq
-                  OpenRouter · Azure · DeepSeek · GLM · …and OpenAI itself
-```
-
-<CardGrid stagger>
-  <Card title="어떤 프로바이더든" icon="puzzle">
-    다섯 개의 adapter가 Anthropic Messages, Google Gemini, Azure, OpenAI Responses 패스스루,
-    그리고 **모든 OpenAI 호환 Chat Completions** 엔드포인트를 지원합니다 — 즉 기본 제공 **40개 이상의 프로바이더**입니다.
-  </Card>
-  <Card title="OAuth 또는 API 키" icon="approve-check">
-    xAI, Anthropic, Kimi 계정으로 로그인하거나(OAuth, 자동 갱신), ChatGPT 로그인을
-    포워딩하거나, API 키를 붙여넣으세요. 키는 `${ENV_VARS}`로 지정할 수 있습니다.
-  </Card>
-  <Card title="ChatGPT 계정 풀" icon="puzzle">
-    여러 Codex/ChatGPT 계정을 추가하고, 대시보드에서 5시간 / 주간 / 30일 할당량을 한 번에
-    다시 조회한 뒤, 새 세션을 사용량이 가장 낮은 정상 계정으로 자동 라우팅할 수 있습니다.
-  </Card>
-  <Card title="Codex에 바로 연결" icon="rocket">
-    `ocx init`은 프로바이더를 `$CODEX_HOME/config.toml`(기본값 `~/.codex/config.toml`)에 주입하고,
-    공유 Codex 카탈로그를 작성하여 Codex CLI, TUI, App, SDK가 같은 라우팅 모델과 subagent 선택을 보게 합니다.
-    `ocx stop`은 네이티브 Codex를 깔끔하게 복원합니다.
-  </Card>
-  <Card title="서브에이전트와 전송 방식" icon="puzzle">
-    Codex `spawn_agent`에 최대 5개의 라우팅/네이티브 모델을 우선 노출할 수 있습니다.
-    기본 전송은 HTTP/SSE이며, Responses WebSocket은 `websockets: true`일 때만 광고됩니다.
-  </Card>
-  <Card title="GPT-5.6 preview 준비" icon="rocket">
-    Sol, Terra, Luna 모델명은 native ChatGPT 경로와 OpenAI API 키/OpenRouter fallback 목록에
-    preview-gated로 포함됩니다. 카탈로그에는 372k usable context와 `max` reasoning이 표시됩니다.
-  </Card>
-  <Card title="Sidecar" icon="magnifier">
-    OpenAI가 아닌 모델에도 실제 **웹 검색**과 **이미지 이해** 기능을 제공하세요. 해당 기능들을
-    ChatGPT 로그인을 통한 `gpt-5.4-mini` sidecar로 라우팅하면 됩니다.
-  </Card>
-</CardGrid>
-
-## 빠른 시작
-
-```bash
-# Install
-npm install -g @bitkyc08/opencodex
-
-# Interactive setup (writes config + injects into Codex)
-ocx init
-
-# Start the proxy
-ocx start
-
-# Use Codex normally — it now routes through opencodex
-codex "Write a hello world in Rust"
-```
-
-## 다음으로 볼 내용
-
-<CardGrid>
-  <LinkCard title="설치" href="/opencodex/ko/getting-started/installation/" description="ocx 설치, 사전 요구 사항, 동작 확인." />
-  <LinkCard title="작동 방식" href="/opencodex/ko/getting-started/how-it-works/" description="전체 요청 수명 주기: parse → route → adapter → bridge → SSE." />
-  <LinkCard title="프로바이더" href="/opencodex/ko/guides/providers/" description="OAuth, API 키 카탈로그, forward/passthrough, 그리고 전체 프로바이더 표." />
-  <LinkCard title="Codex App 모델 선택기" href="/opencodex/ko/guides/codex-app-models/" description="라우팅된 opencodex 모델이 공유 카탈로그를 통해 Codex App에 표시되는 방식." />
-  <LinkCard title="웹 대시보드" href="/opencodex/ko/guides/web-dashboard/" description="프로바이더, OAuth, 모델 표시 여부, 서브에이전트, 로그를 관리합니다." />
-  <LinkCard title="CLI 레퍼런스" href="/opencodex/ko/reference/cli/" description="모든 ocx 명령어와 플래그." />
-</CardGrid>
+<Landing locale="ko" />
