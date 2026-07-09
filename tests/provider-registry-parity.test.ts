@@ -118,7 +118,9 @@ describe("provider registry parity", () => {
     });
     expect(cursor?.note).toContain("Live transport");
     expect(cursor?.note).toContain("live model discovery");
-    expect(cursor?.note).toContain("provider.unsafeAllowNativeLocalExec");
+    expect(cursor?.note).toContain("unsafeAllowNativeLocalExec");
+    expect(cursor?.note).toContain("~/.opencodex/config.json");
+    expect(cursor?.note).toContain("Providers → Cursor → Edit JSON");
     expect(cursor?.models).toContain("auto");
     expect(cursor?.models?.length).toBeGreaterThanOrEqual(40);
     expect(cursor?.models).toContain("claude-sonnet-5");
