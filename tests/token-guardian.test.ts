@@ -11,6 +11,7 @@ import type { OcxConfig, OcxProviderConfig } from "../src/types";
 const origHome = process.env.HOME;
 const origOcxHome = process.env.OPENCODEX_HOME;
 const origFetch = globalThis.fetch;
+const WARMUP_INPUT = [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }];
 let tmp: string;
 
 // kimi refresh is a single token POST (no OAuth discovery hop), so a blanket 200 mock exercises the
@@ -181,7 +182,7 @@ describe("token guardian", () => {
 
     expect(res.refreshed).toEqual([]);
     expect(res.warmed).toContain("codex:acct-warm");
-    expect(mock.body()).toMatchObject({ model: "gpt-5.4-mini", input: "hi", stream: true, store: false });
+    expect(mock.body()).toMatchObject({ model: "gpt-5.4-mini", input: WARMUP_INPUT, stream: true, store: false });
     expect(readCodexAccountRecord("acct-warm")?.lastCodexValidationStatus).toBe("ok");
     expect(readCodexAccountRecord("acct-warm")?.lastCodexValidatedAt).toBeGreaterThan(Date.now() - 30_000);
   });

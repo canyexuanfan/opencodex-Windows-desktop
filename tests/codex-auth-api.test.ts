@@ -26,6 +26,7 @@ import type { WsData } from "../src/server/ws-bridge";
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-auth-api-test");
 const TEST_CODEX_HOME = join(TEST_DIR, "codex");
 const MANUAL_IMPORT_ENV = "OPENCODEX_ENABLE_UNVERIFIED_CODEX_IMPORT";
+const WARMUP_INPUT = [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }];
 let previousOpencodexHome: string | undefined;
 let previousCodexHome: string | undefined;
 let previousManualImportEnv: string | undefined;
@@ -62,7 +63,7 @@ function mockCodexWarmupSuccess(): { calls: () => number } {
     if (String(input) === "https://chatgpt.com/backend-api/codex/responses") {
       calls += 1;
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-      expect(body).toMatchObject({ model: "gpt-5.4-mini", input: "hi", stream: true, store: false });
+      expect(body).toMatchObject({ model: "gpt-5.4-mini", input: WARMUP_INPUT, stream: true, store: false });
       expect(body).not.toHaveProperty("max_output_tokens");
       return new Response('event: response.completed\ndata: {"type":"response.completed"}\n\n', {
         status: 200,
