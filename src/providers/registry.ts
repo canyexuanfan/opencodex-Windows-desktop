@@ -384,7 +384,20 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   },
   { id: "openrouter", label: "OpenRouter", adapter: "openai-chat", baseUrl: "https://openrouter.ai/api/v1", authKind: "key", featured: true, dashboardUrl: "https://openrouter.ai/keys", jawcodeBundle: "openrouter", models: ["anthropic/claude-sonnet-5", ...OPENROUTER_GPT56_MODELS], modelContextWindows: { "anthropic/claude-sonnet-5": 1_000_000, ...OPENROUTER_GPT56_CONTEXT_WINDOWS } },
   { id: "groq", label: "Groq", adapter: "openai-chat", baseUrl: "https://api.groq.com/openai/v1", authKind: "key", featured: true, dashboardUrl: "https://console.groq.com/keys" },
-  { id: "google", label: "Google Gemini", adapter: "google", baseUrl: "https://generativelanguage.googleapis.com", authKind: "key", featured: true, dashboardUrl: "https://aistudio.google.com/apikey", defaultModel: "gemini-3-pro", jawcodeBundle: "google", extraMetadataAliases: ["gemini"] },
+  // 2026-07-10 Gemini API refresh: Tier-2 ai.google.dev evidence recorded in
+  // devlog/_plan/260710_provider_hardening/001_research_frontier.md.
+  {
+    id: "google", label: "Google Gemini", adapter: "google", baseUrl: "https://generativelanguage.googleapis.com", authKind: "key", featured: true,
+    dashboardUrl: "https://aistudio.google.com/apikey", defaultModel: "gemini-3.5-flash", models: ["gemini-3.5-flash", "gemini-3.1-pro-preview"],
+    modelContextWindows: { "gemini-3.5-flash": 1_000_000 },
+    modelReasoningEfforts: {
+      "gemini-3.5-flash": ["minimal", "low", "medium", "high"],
+      "gemini-3.1-pro-preview": ["low", "medium", "high"],
+    },
+    jawcodeBundle: "google", extraMetadataAliases: ["gemini"],
+  },
+  // 2026-07-10: defaultModel is frozen pending Vertex-specific Tier-2 evidence; Gemini API
+  // evidence from ai.google.dev does not establish Vertex publisher availability.
   { id: "google-vertex", label: "Google Vertex AI", adapter: "google", baseUrl: "https://aiplatform.googleapis.com", authKind: "key", dashboardUrl: "https://console.cloud.google.com/vertex-ai", defaultModel: "gemini-3-pro", googleMode: "vertex", jawcodeBundle: "google", extraMetadataAliases: ["gemini-vertex"] },
   { id: "google-antigravity", label: "Google Antigravity", adapter: "google", baseUrl: "https://daily-cloudcode-pa.googleapis.com", authKind: "oauth", dashboardUrl: "https://antigravity.google", models: ANTIGRAVITY_MODELS, defaultModel: "gemini-3.5-flash-low", modelContextWindows: ANTIGRAVITY_MODEL_CONTEXT_WINDOWS, googleMode: "cloud-code-assist", jawcodeBundle: "google", extraMetadataAliases: ["antigravity", "gemini-antigravity"] },
   { id: "azure-openai", label: "Azure OpenAI", adapter: "azure-openai", baseUrl: "https://{resource}.openai.azure.com/openai", authKind: "key", featured: true, dashboardUrl: "https://portal.azure.com" },

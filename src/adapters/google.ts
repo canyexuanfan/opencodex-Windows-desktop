@@ -231,7 +231,10 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
 
       if (provider.googleMode === "cloud-code-assist") {
         // Google Antigravity (Cloud Code Assist): wrap the flat Gemini body in the CCA envelope.
-        const base = provider.baseUrl || "https://daily-cloudcode-pa.googleapis.com";
+        const token = provider.apiKey?.trim();
+        if (!token) throw new Error("google-antigravity oauth token missing — run ocx login google-antigravity");
+        const base = provider.baseUrl?.trim();
+        if (!base) throw new Error("google-antigravity requires a non-empty baseUrl");
         const url = `${base}/v1internal:${method}${streamParam}`;
         const project = provider.project;
         if (!project) throw new Error("Antigravity requires a discovered Cloud Code Assist project id (re-run `ocx login google-antigravity`).");
@@ -271,7 +274,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
           request,
         };
         headers["User-Agent"] = ANTIGRAVITY_REQUEST_UA;
-        if (provider.apiKey) headers["Authorization"] = `Bearer ${provider.apiKey}`;
+        headers["Authorization"] = `Bearer ${token}`;
         return { url, method: "POST", headers, body: JSON.stringify(envelope) };
       }
 
@@ -296,7 +299,9 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
 
       // ai-studio (default): Generative Language API + x-goog-api-key.
       const url = `${provider.baseUrl}/v1beta/models/${parsed.modelId}:${method}${streamParam}`;
-      if (provider.apiKey) headers["x-goog-api-key"] = provider.apiKey;
+      const apiKey = provider.apiKey?.trim();
+      if (!apiKey) throw new Error("google (AI Studio) requires a non-empty API key");
+      headers["x-goog-api-key"] = apiKey;
 
       return { url, method: "POST", headers, body: JSON.stringify(body) };
     },
@@ -345,9 +350,15 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
             }
 
             // Antigravity (CCA) nests the standard Gemini payload under `response`.
-            const root = (provider.googleMode === "cloud-code-assist"
-              ? (chunk.response as Record<string, unknown> | undefined) ?? chunk
-              : chunk);
+            let root = chunk;
+            if (provider.googleMode === "cloud-code-assist") {
+              const wrapped = chunk.response;
+              if (!wrapped || typeof wrapped !== "object" || Array.isArray(wrapped)) {
+                yield { type: "error", message: "google-antigravity response missing response wrapper" };
+                return;
+              }
+              root = wrapped as Record<string, unknown>;
+            }
             // usageMetadata is a top-level field independent of candidates; read it BEFORE the
             // candidates guard so a usage-only final chunk is not dropped.
             const usageMeta = root.usageMetadata as Record<string, number> | undefined;
@@ -397,13 +408,25 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
 
     async parseResponse(response: Response): Promise<AdapterEvent[]> {
       const raw = await response.json() as Record<string, unknown>;
+      if (raw.error) {
+        const err = raw.error as { message?: string };
+        return [{ type: "error", message: err.message ?? "upstream error" }];
+      }
       // Antigravity (CCA) nests the standard Gemini payload under `response`; unwrap it.
-      const json = (provider.googleMode === "cloud-code-assist"
-        ? (raw.response as Record<string, unknown> | undefined) ?? raw
-        : raw);
+      let json = raw;
+      if (provider.googleMode === "cloud-code-assist") {
+        const wrapped = raw.response;
+        if (!wrapped || typeof wrapped !== "object" || Array.isArray(wrapped)) {
+          return [{ type: "error", message: "google-antigravity response missing response wrapper" }];
+        }
+        json = wrapped as Record<string, unknown>;
+      }
       const events: AdapterEvent[] = [];
 
       const candidates = json.candidates as { content?: { parts?: { text?: string; functionCall?: { name: string; args: unknown } }[] }; finishReason?: string }[] | undefined;
+      if (!candidates?.length) {
+        return [{ type: "error", message: "google response contained no candidates" }];
+      }
       let toolCallsStarted = 0;
       if (candidates?.[0]?.content?.parts) {
         // Non-streaming CCA: observe thoughtSignatures for the next turn, same as the stream path.
