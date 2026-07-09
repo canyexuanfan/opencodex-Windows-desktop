@@ -239,8 +239,11 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 /* ---- stat cards (metric tiles) ---- */
 /* Flex-wrap stat grid: items fill rows evenly. min-width forces wrap; flex-basis
    33% means a wrap always moves ≥2 items to the next row (3+3 or 4+2, never 5+1). */
-.stat-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 28px; }
+/* Explicit column counts for balanced rows at every width */
+.stat-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 28px; }
 .stat-row > .stat { min-height: 80px; display: flex; flex-direction: column; justify-content: center; }
+@media (max-width: 1100px) { .stat-row { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 640px) { .stat-row { grid-template-columns: repeat(2, 1fr); } }
 .stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; transition: border-color 0.12s; }
 .stat:hover { border-color: var(--faint); }
 .stat .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; display: flex; align-items: center; gap: 6px; font-weight: 500; }

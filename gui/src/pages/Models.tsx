@@ -532,7 +532,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
               {t("models.v2Help")}
             </div>
             <div style={{ marginTop: 12 }}>
-              <a href="https://lidge-jun.github.io/opencodex/" target="_blank" rel="noreferrer" style={{ fontSize: 13, color: "var(--accent)" }}>
+              <a href="https://lidge-jun.github.io/opencodex/#sub-agent-surface" target="_blank" rel="noreferrer" style={{ fontSize: 13, color: "var(--accent)" }}>
                 {t("models.v2DocsLink")}
               </a>
             </div>
