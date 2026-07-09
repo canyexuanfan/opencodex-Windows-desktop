@@ -1,5 +1,4 @@
 import type { ProviderAdapter } from "./base";
-import { debugDroppedFrame } from "../lib/debug";
 import type { AdapterEvent, OcxAssistantMessage, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTextContent, OcxThinkingContent, OcxToolCall, OcxUsage } from "../types";
 import { isAllowedToolChoice, modelInList, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
 import { mapReasoningEffort } from "../reasoning-effort";
@@ -125,7 +124,7 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
 function safeToolName(name: string | undefined): string {
   const raw = name && name.trim().length > 0 ? name : "tool_result";
   const sanitized = raw.replace(/[^A-Za-z0-9_-]/g, "_");
-  return sanitized.length > 0 ? sanitized : "tool_result";
+  return sanitized;
 }
 
 function toolsToChatFormat(parsed: OcxParsedRequest): unknown[] | undefined {
@@ -187,6 +186,11 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
     name: "openai-chat",
 
     buildRequest(parsed: OcxParsedRequest) {
+      const hasCredential = typeof provider.apiKey === "string" && provider.apiKey.trim().length > 0;
+      if ((provider.authMode === "key" || provider.authMode === "oauth") && !provider.keyOptional && !hasCredential) {
+        throw new Error(`${provider.adapter} requires a non-empty credential (authMode: ${provider.authMode})`);
+      }
+
       const messages = messagesToChatFormat(parsed, provider);
       const tools = toolsToChatFormat(parsed);
       const toolChoice = toolChoiceToChatFormat(parsed.options.toolChoice, parsed.context.tools);
@@ -247,7 +251,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
 
       const url = `${provider.baseUrl}/chat/completions`;
       const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (provider.apiKey) headers["Authorization"] = `Bearer ${provider.apiKey}`;
+      if (hasCredential) headers["Authorization"] = `Bearer ${provider.apiKey}`;
       if (provider.headers) Object.assign(headers, provider.headers);
 
       return { url, method: "POST", headers, body: JSON.stringify(body) };
@@ -306,8 +310,8 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         try {
           chunk = JSON.parse(payload) as Record<string, unknown>;
         } catch {
-          debugDroppedFrame("openai-chat", payload);
-          return "continue";
+          yield { type: "error", message: "malformed upstream SSE data frame" };
+          return "terminate";
         }
 
         // A 200/OK chat-completions stream may carry an inline provider error envelope
@@ -416,25 +420,33 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
 
     async parseResponse(response: Response): Promise<AdapterEvent[]> {
       const json = await response.json() as Record<string, unknown>;
+      if (json.error) {
+        const upstreamError = json.error as { message?: unknown };
+        return [{
+          type: "error",
+          message: typeof upstreamError.message === "string" ? upstreamError.message : "upstream error",
+        }];
+      }
+
       const events: AdapterEvent[] = [];
       const choices = json.choices as { message?: Record<string, unknown> }[] | undefined;
-      if (choices && choices.length > 0) {
-        const msg = choices[0].message;
-        if (msg) {
-          if (typeof msg.content === "string") {
-            events.push({ type: "text_delta", text: msg.content });
-          }
-          if (typeof msg.reasoning_content === "string" && msg.reasoning_content.length > 0) {
-            events.push({ type: "reasoning_raw_delta", text: msg.reasoning_content });
-          }
-          const toolCalls = msg.tool_calls as { id: string; function: { name: string; arguments: string } }[] | undefined;
-          if (toolCalls) {
-            for (const tc of toolCalls) {
-              events.push({ type: "tool_call_start", id: tc.id, name: tc.function.name });
-              events.push({ type: "tool_call_delta", arguments: tc.function.arguments });
-              events.push({ type: "tool_call_end" });
-            }
-          }
+      if (!Array.isArray(choices) || choices.length === 0 || !choices[0].message) {
+        return [{ type: "error", message: "upstream response contained no choices" }];
+      }
+
+      const msg = choices[0].message;
+      if (typeof msg.content === "string") {
+        events.push({ type: "text_delta", text: msg.content });
+      }
+      if (typeof msg.reasoning_content === "string" && msg.reasoning_content.length > 0) {
+        events.push({ type: "reasoning_raw_delta", text: msg.reasoning_content });
+      }
+      const toolCalls = msg.tool_calls as { id: string; function: { name: string; arguments: string } }[] | undefined;
+      if (toolCalls) {
+        for (const tc of toolCalls) {
+          events.push({ type: "tool_call_start", id: tc.id, name: tc.function.name });
+          events.push({ type: "tool_call_delta", arguments: tc.function.arguments });
+          events.push({ type: "tool_call_end" });
         }
       }
       const usage = json.usage as Record<string, unknown> | undefined;

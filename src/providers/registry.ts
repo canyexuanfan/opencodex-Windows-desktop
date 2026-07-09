@@ -18,6 +18,7 @@ export interface ProviderRegistryEntry {
   adapter: string;
   baseUrl: string;
   authKind: ProviderAuthKind;
+  keyOptional?: boolean;
   featured?: boolean;
   dashboardPreset?: boolean;
   note?: string;
@@ -55,7 +56,7 @@ export interface ProviderRegistryEntry {
 
 export type ProviderConfigSeed = Pick<
   OcxProviderConfig,
-  "adapter" | "baseUrl" | "authMode" | "defaultModel" | "models"
+  "adapter" | "baseUrl" | "authMode" | "keyOptional" | "defaultModel" | "models"
   | "liveModels" | "contextWindow" | "modelContextWindows" | "modelInputModalities"
   | "reasoningEfforts" | "modelReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap"
   | "noVisionModels" | "noReasoningModels" | "noTemperatureModels" | "noTopPModels" | "noPenaltyModels"
@@ -122,8 +123,19 @@ const DEEPSEEK_THINKING_REASONING_MAP: Record<string, string> = {
   xhigh: "max",
   max: "max",
 };
-const KIMI_THINKING_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"];
-const KIMI_LOCKED_PARAMETER_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"];
+// 260710 Kimi model aliases and context windows: Tier-2 evidence in
+// devlog/_plan/260710_provider_hardening/002_research_cn.md.
+const KIMI_API_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"];
+const KIMI_CODING_MODELS = [...KIMI_API_MODELS, "kimi-for-coding"];
+const KIMI_THINKING_MODELS = KIMI_CODING_MODELS;
+const KIMI_LOCKED_PARAMETER_MODELS = KIMI_CODING_MODELS;
+const KIMI_AUTO_TOOL_CHOICE_ONLY_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-for-coding"];
+const KIMI_API_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEntries(
+  KIMI_API_MODELS.map(id => [id, 262_144]),
+);
+const KIMI_CODING_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEntries(
+  KIMI_CODING_MODELS.map(id => [id, 262_144]),
+);
 const NEURALWATT_REASONING_HISTORY_MODELS = [
   "glm-5.2",
   "moonshotai/Kimi-K2.5", "kimi-k2.6", "kimi-k2.7-code",
@@ -258,15 +270,16 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     oauthId: "kimi",
     jawcodeBundle: "moonshot",
     note: "Log in with your Kimi account",
-    models: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"],
+    models: KIMI_CODING_MODELS,
     defaultModel: "kimi-k2.7-code",
+    modelContextWindows: KIMI_CODING_MODEL_CONTEXT_WINDOWS,
     // Kimi thinking is controlled by Kimi's `thinking` extension, not OpenAI `reasoning_effort`.
     noReasoningModels: KIMI_THINKING_MODELS,
     modelReasoningEfforts: Object.fromEntries(KIMI_THINKING_MODELS.map(id => [id, []])),
     noTemperatureModels: KIMI_LOCKED_PARAMETER_MODELS,
     noTopPModels: KIMI_LOCKED_PARAMETER_MODELS,
     noPenaltyModels: KIMI_LOCKED_PARAMETER_MODELS,
-    autoToolChoiceOnlyModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
+    autoToolChoiceOnlyModels: KIMI_AUTO_TOOL_CHOICE_ONLY_MODELS,
     preserveReasoningContentModels: KIMI_THINKING_MODELS,
   },
   {
@@ -425,18 +438,23 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   { id: "cerebras", label: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://cloud.cerebras.ai/platform/apikeys", defaultModel: "llama-3.3-70b" },
   { id: "together", label: "Together", baseUrl: "https://api.together.xyz/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://api.together.xyz/settings/api-keys" },
   { id: "fireworks", label: "Fireworks", baseUrl: "https://api.fireworks.ai/inference/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://fireworks.ai/account/api-keys" },
-  { id: "firepass", label: "Fire Pass (Fireworks Kimi)", baseUrl: "https://api.fireworks.ai/inference/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://fireworks.ai/account/api-keys" },
+  {
+    id: "firepass", label: "Fire Pass (Fireworks Kimi)", baseUrl: "https://api.fireworks.ai/inference/v1", adapter: "openai-chat", authKind: "key",
+    dashboardUrl: "https://fireworks.ai/account/api-keys",
+    note: "Model data frozen pending Tier-2 entitlement proof",
+  },
   {
     id: "moonshot", label: "Moonshot (Kimi API)", baseUrl: "https://api.moonshot.ai/v1", adapter: "openai-chat", authKind: "key",
     dashboardUrl: "https://platform.moonshot.ai/console/api-keys", defaultModel: "kimi-k2.7-code", jawcodeBundle: "moonshot",
-    models: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"],
-    noReasoningModels: KIMI_THINKING_MODELS,
-    modelReasoningEfforts: Object.fromEntries(KIMI_THINKING_MODELS.map(id => [id, []])),
-    noTemperatureModels: KIMI_LOCKED_PARAMETER_MODELS,
-    noTopPModels: KIMI_LOCKED_PARAMETER_MODELS,
-    noPenaltyModels: KIMI_LOCKED_PARAMETER_MODELS,
+    models: KIMI_API_MODELS,
+    modelContextWindows: KIMI_API_MODEL_CONTEXT_WINDOWS,
+    noReasoningModels: KIMI_API_MODELS,
+    modelReasoningEfforts: Object.fromEntries(KIMI_API_MODELS.map(id => [id, []])),
+    noTemperatureModels: KIMI_API_MODELS,
+    noTopPModels: KIMI_API_MODELS,
+    noPenaltyModels: KIMI_API_MODELS,
     autoToolChoiceOnlyModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
-    preserveReasoningContentModels: KIMI_THINKING_MODELS,
+    preserveReasoningContentModels: KIMI_API_MODELS,
   },
   { id: "huggingface", label: "Hugging Face", baseUrl: "https://router.huggingface.co/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://huggingface.co/settings/tokens" },
   { id: "nvidia", label: "NVIDIA NIM", baseUrl: "https://integrate.api.nvidia.com/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://build.nvidia.com" },
@@ -457,7 +475,12 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   { id: "alibaba", label: "Alibaba Coding Plan", baseUrl: "https://coding-intl.dashscope.aliyuncs.com/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://dashscope.console.aliyun.com/apiKey" },
   { id: "parallel", label: "Parallel", baseUrl: "https://platform.parallel.ai", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://platform.parallel.ai" },
   { id: "zenmux", label: "ZenMux", baseUrl: "https://zenmux.ai/api/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://zenmux.ai" },
-  { id: "litellm", label: "LiteLLM (self-hosted)", baseUrl: "http://localhost:4000/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://docs.litellm.ai/docs/proxy/quick_start" },
+  {
+    id: "litellm", label: "LiteLLM (self-hosted)", baseUrl: "http://localhost:4000/v1", adapter: "openai-chat", authKind: "key",
+    dashboardUrl: "https://docs.litellm.ai/docs/proxy/quick_start",
+    // A self-hosted proxy may legitimately run without a master key.
+    keyOptional: true,
+  },
   {
     id: "ollama-cloud",
     label: "Ollama Cloud",
@@ -481,13 +504,14 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   {
     id: "kimi-code", label: "Kimi (coding)", baseUrl: "https://api.kimi.com/coding/v1", adapter: "openai-chat", authKind: "key",
     dashboardUrl: "https://platform.moonshot.cn/console/api-keys", defaultModel: "kimi-k2.7-code",
-    models: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"],
+    models: KIMI_CODING_MODELS,
+    modelContextWindows: KIMI_CODING_MODEL_CONTEXT_WINDOWS,
     noReasoningModels: KIMI_THINKING_MODELS,
     modelReasoningEfforts: Object.fromEntries(KIMI_THINKING_MODELS.map(id => [id, []])),
     noTemperatureModels: KIMI_LOCKED_PARAMETER_MODELS,
     noTopPModels: KIMI_LOCKED_PARAMETER_MODELS,
     noPenaltyModels: KIMI_LOCKED_PARAMETER_MODELS,
-    autoToolChoiceOnlyModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
+    autoToolChoiceOnlyModels: KIMI_AUTO_TOOL_CHOICE_ONLY_MODELS,
     preserveReasoningContentModels: KIMI_THINKING_MODELS,
   },
   { id: "opencode-zen", label: "opencode zen", baseUrl: "https://opencode.ai/zen/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://opencode.ai/auth" },

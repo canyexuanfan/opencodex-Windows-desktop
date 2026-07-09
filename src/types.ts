@@ -413,6 +413,8 @@ export interface OcxProviderConfig {
    * Only the openai-responses adapter implements "forward"; openai-chat uses its own key/token.
    */
   authMode?: "key" | "forward" | "oauth";
+  /** Allow an explicitly key/oauth provider to run without a credential (for keyless local proxies). */
+  keyOptional?: boolean;
   /**
    * Override the guardian's proactive-refresh policy for this provider. When unset, the provider's
    * built-in risk-tiered default applies (see OAUTH_PROVIDERS in src/oauth/index.ts). Set "proactive"

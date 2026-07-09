@@ -101,6 +101,61 @@ describe("provider registry parity", () => {
     expect(KEY_LOGIN_PROVIDERS["anthropic-apikey"].modelContextWindows).toEqual(anthropicOauth?.modelContextWindows);
   });
 
+  test("Kimi coding aliases preserve model context and capability parity", () => {
+    const codingModels = [
+      "kimi-k2.7-code",
+      "kimi-k2.7-code-highspeed",
+      "kimi-k2.6",
+      "kimi-k2.5",
+      "kimi-for-coding",
+    ];
+    const parityLists = [
+      "noReasoningModels",
+      "noTemperatureModels",
+      "noTopPModels",
+      "noPenaltyModels",
+      "autoToolChoiceOnlyModels",
+      "preserveReasoningContentModels",
+    ] as const;
+
+    for (const providerId of ["kimi", "kimi-code"]) {
+      const entry = PROVIDER_REGISTRY.find(provider => provider.id === providerId);
+      expect(entry?.models).toEqual(codingModels);
+      for (const modelId of codingModels) {
+        expect(entry?.modelContextWindows?.[modelId]).toBe(262_144);
+      }
+      for (const field of parityLists) {
+        expect(entry?.[field]).toContain("kimi-k2.7-code");
+        expect(entry?.[field]).toContain("kimi-for-coding");
+      }
+      expect(entry?.modelReasoningEfforts?.["kimi-for-coding"]).toEqual([]);
+    }
+
+    const moonshot = PROVIDER_REGISTRY.find(provider => provider.id === "moonshot");
+    expect(moonshot?.models).not.toContain("kimi-for-coding");
+    expect(moonshot?.modelContextWindows).toEqual({
+      "kimi-k2.7-code": 262_144,
+      "kimi-k2.7-code-highspeed": 262_144,
+      "kimi-k2.6": 262_144,
+      "kimi-k2.5": 262_144,
+    });
+  });
+
+  test("LiteLLM is the only registry seed with optional key authentication", () => {
+    const litellm = PROVIDER_REGISTRY.find(entry => entry.id === "litellm");
+    const optionalKeyProviders = PROVIDER_REGISTRY.filter(entry => entry.keyOptional).map(entry => entry.id);
+
+    expect(litellm?.authKind).toBe("key");
+    expect(providerConfigSeed(litellm!).keyOptional).toBe(true);
+    expect(optionalKeyProviders).toEqual(["litellm"]);
+  });
+
+  test("Fire Pass model data is explicitly frozen pending entitlement proof", () => {
+    const firepass = PROVIDER_REGISTRY.find(entry => entry.id === "firepass");
+
+    expect(firepass?.note).toContain("Tier-2 entitlement proof");
+  });
+
   test("CLI init providers are derived from the registry", () => {
     expect(buildInitProviders()).toEqual(deriveInitProviders());
     expect(buildInitProviders().find(p => p.id === "azure-openai")?.adapter).toBe("azure-openai");
