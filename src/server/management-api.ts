@@ -138,8 +138,8 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     const ws = config.webSearchSidecar ?? {};
     const vs = config.visionSidecar ?? {};
     return jsonResponse({
-      webSearch: { model: ws.model ?? "gpt-5.4-mini", reasoning: ws.reasoning ?? "low" },
-      vision: { model: vs.model ?? "gpt-5.4-mini" },
+      webSearch: { model: ws.model ?? "gpt-5.6-luna", reasoning: ws.reasoning ?? "low" },
+      vision: { model: vs.model ?? "gpt-5.6-luna" },
     });
   }
 
@@ -160,8 +160,8 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     const vs = config.visionSidecar ?? {};
     return jsonResponse({
       ok: true,
-      webSearch: { model: ws.model ?? "gpt-5.4-mini", reasoning: ws.reasoning ?? "low" },
-      vision: { model: vs.model ?? "gpt-5.4-mini" },
+      webSearch: { model: ws.model ?? "gpt-5.6-luna", reasoning: ws.reasoning ?? "low" },
+      vision: { model: vs.model ?? "gpt-5.6-luna" },
     });
   }
 

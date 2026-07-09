@@ -6,7 +6,7 @@ import type { CodexAuthContext } from "../codex/auth-context";
 export { runWithWebSearch } from "./loop";
 export { buildWebSearchTool, extractHostedWebSearch, WEB_SEARCH_TOOL_NAME } from "./synthetic-tool";
 
-const DEFAULT_SIDECAR_MODEL = "gpt-5.4-mini";
+const DEFAULT_SIDECAR_MODEL = "gpt-5.6-luna";
 // "low" is the lightest effort the ChatGPT backend allows with web_search ("minimal" is rejected:
 // "tools cannot be used with reasoning.effort 'minimal'") — keeps the sidecar fast/cheap.
 const DEFAULT_SIDECAR_REASONING = "low";

@@ -112,7 +112,7 @@ describe("Phase 100 Codex-native parity smoke", () => {
     expect(searchPlan).toMatchObject({
       forwardProvider,
       settings: {
-        model: "gpt-5.4-mini",
+        model: "gpt-5.6-luna",
         describeImages: true,
       },
     });

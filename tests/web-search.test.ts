@@ -65,7 +65,7 @@ describe("web-search sidecar planning", () => {
     expect(plan).toBeDefined();
     expect(plan?.forwardProvider).toBe(forwardProvider);
     expect(plan?.hostedTool).toEqual(parsed._webSearch);
-    expect(plan?.settings.model).toBe("gpt-5.4-mini");
+    expect(plan?.settings.model).toBe("gpt-5.6-luna");
   });
 
   test("planWebSearch activates for pool-selected headers even when raw inbound auth would be main", () => {

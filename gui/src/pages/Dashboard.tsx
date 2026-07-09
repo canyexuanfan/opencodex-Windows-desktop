@@ -49,7 +49,8 @@ interface UpdateJob {
   restarted?: boolean;
 }
 
-const SIDECAR_MODELS = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+const SEARCH_SIDECAR_MODELS = ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-5.6-sol", "gpt-5.6-terra"];
+const VISION_SIDECAR_MODELS = ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra"];
 const REASONING_LEVELS = ["low", "medium", "high"];
 
 function defaultUpdateChannel(version: string | undefined): UpdateChannel {
@@ -440,8 +441,8 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
           </div>
           <div className="setting-controls" style={{ display: "flex", gap: 8 }}>
             <Select
-              value={sidecar?.webSearch.model ?? "gpt-5.4-mini"}
-              options={SIDECAR_MODELS.map(m => ({ value: m, label: m }))}
+              value={sidecar?.webSearch.model ?? "gpt-5.6-luna"}
+              options={SEARCH_SIDECAR_MODELS.map(m => ({ value: m, label: m }))}
               onChange={v => saveSidecar({ webSearch: { model: v, reasoning: sidecar!.webSearch.reasoning } })}
               disabled={!sidecar || sidecarSaving}
               label={t("dash.searchModel")}
@@ -464,8 +465,8 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             <div className="muted setting-hint">{t("dash.visionModelHint")}</div>
           </div>
           <Select
-            value={sidecar?.vision.model ?? "gpt-5.4-mini"}
-            options={SIDECAR_MODELS.map(m => ({ value: m, label: m }))}
+            value={sidecar?.vision.model ?? "gpt-5.6-luna"}
+            options={VISION_SIDECAR_MODELS.map(m => ({ value: m, label: m }))}
             onChange={v => saveSidecar({ vision: { model: v } })}
             disabled={!sidecar || sidecarSaving}
             label={t("dash.visionModel")}
