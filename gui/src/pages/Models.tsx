@@ -341,7 +341,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
       {v2 && (
         <div className="row" style={{ gap: 8, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
           <span className="muted" style={{ fontSize: 13 }}>{t("models.v2Label")}</span>
-          <div className="segmented" role="radiogroup" aria-label={t("models.v2Label")} style={{ display: "inline-flex", borderRadius: 999, overflow: "hidden", border: "1px solid var(--border)", padding: 2 }}>
+          <div className="segmented" role="radiogroup" aria-label={t("models.v2Label")} style={{ display: "inline-flex", borderRadius: 999, background: "var(--surface-soft, var(--raised))", padding: 3, gap: 2 }}>
             {(["v1", "default", "v2"] as const).map(mode => (
               <button
                 key={mode}
@@ -349,7 +349,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
                 role="radio"
                 aria-checked={(v2.multiAgentMode ?? "default") === mode}
                 className={`btn btn-sm${(v2.multiAgentMode ?? "default") === mode ? " btn-primary" : " btn-ghost"}`}
-                style={{ borderRadius: 999, minWidth: 64, fontSize: 12, padding: "5px 12px" }}
+                style={{ borderRadius: 999, minWidth: 64, fontSize: 12, padding: "5px 12px", border: "none", background: (v2.multiAgentMode ?? "default") === mode ? undefined : "transparent", color: (v2.multiAgentMode ?? "default") === mode ? undefined : "var(--muted)" }}
                 disabled={v2Busy}
                 onClick={() => void setMultiAgentMode(mode)}
               >

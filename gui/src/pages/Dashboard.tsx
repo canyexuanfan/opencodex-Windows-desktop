@@ -335,7 +335,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             >?</button>
           </div>
           <div className="value" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <div role="radiogroup" aria-label={t("dash.multiAgent")} style={{ display: "inline-flex", borderRadius: 999, overflow: "hidden", border: "1px solid var(--border)", padding: 2 }}>
+            <div role="radiogroup" aria-label={t("dash.multiAgent")} style={{ display: "inline-flex", borderRadius: 999, background: "var(--surface-soft, var(--raised))", padding: 3, gap: 2 }}>
               {(["v1", "default", "v2"] as const).map(mode => (
                 <button
                   key={mode}
@@ -343,7 +343,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
                   role="radio"
                   aria-checked={maMode === mode}
                   className={`btn btn-sm${maMode === mode ? " btn-primary" : " btn-ghost"}`}
-                  style={{ borderRadius: 999, minWidth: 36, fontSize: 11, padding: "5px 10px" }}
+                  style={{ borderRadius: 999, minWidth: 36, fontSize: 11, padding: "5px 10px", border: "none", background: maMode === mode ? undefined : "transparent", color: maMode === mode ? undefined : "var(--muted)" }}
                   disabled={maBusy}
                   onClick={() => void switchMaMode(mode)}
                 >{mode === "default" ? "base" : mode}</button>
