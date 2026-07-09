@@ -1,23 +1,42 @@
 /**
- * Global model display-name mapping: prepends a visual icon for recognized model slugs.
- * Used across all GUI surfaces (dropdowns, tables, badges) so the 5.6 trio is instantly
- * distinguishable.
+ * Global model display-name mapping: renders an inline SVG icon for recognized
+ * model slugs. Used across all GUI surfaces (dropdowns, tables, badges) so the
+ * 5.6 trio is instantly distinguishable. No emoji — Lucide-style SVG only.
  */
+import { createElement, type ReactNode } from "react";
+import { IconSun, IconGlobe, IconMoon } from "./icons";
 
-const MODEL_ICONS: Record<string, string> = {
-  "gpt-5.6-sol": "\u2600\uFE0F",   // ☀️ sun
-  "gpt-5.6-terra": "\uD83C\uDF0D", // 🌍 earth
-  "gpt-5.6-luna": "\uD83C\uDF19",  // 🌙 moon
+type IconComponent = typeof IconSun;
+
+const MODEL_ICON_MAP: Record<string, IconComponent> = {
+  "gpt-5.6-sol": IconSun,
+  "gpt-5.6-terra": IconGlobe,
+  "gpt-5.6-luna": IconMoon,
 };
 
-/** Return a display label with an icon prefix for recognized slugs, else the raw slug. */
-export function modelLabel(slug: string): string {
-  // Check bare slug first, then try the tail after a provider prefix (e.g. "openrouter/openai/gpt-5.6-sol").
-  const icon = MODEL_ICONS[slug] ?? MODEL_ICONS[slug.slice(slug.lastIndexOf("/") + 1)];
-  return icon ? `${icon} ${slug}` : slug;
+const ICON_STYLE = { width: 14, height: 14, flexShrink: 0, verticalAlign: "text-bottom" as const, marginRight: 4 };
+
+/** Resolve the bare slug from a potentially provider-prefixed id. */
+function bareSlug(slug: string): string {
+  return slug.slice(slug.lastIndexOf("/") + 1);
 }
 
-/** Return just the icon for a slug, or empty string if none. */
-export function modelIcon(slug: string): string {
-  return MODEL_ICONS[slug] ?? MODEL_ICONS[slug.slice(slug.lastIndexOf("/") + 1)] ?? "";
+/** Return the icon component for a model slug, or null. */
+function resolveIcon(slug: string): IconComponent | null {
+  return MODEL_ICON_MAP[slug] ?? MODEL_ICON_MAP[bareSlug(slug)] ?? null;
+}
+
+/** Render a model name with an inline SVG icon prefix (ReactNode). Falls back to plain text. */
+export function modelLabel(slug: string): ReactNode {
+  const Icon = resolveIcon(slug);
+  if (!Icon) return slug;
+  return createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 4 } },
+    createElement(Icon, { style: ICON_STYLE }),
+    slug,
+  );
+}
+
+/** True when this slug has a visual icon. */
+export function hasModelIcon(slug: string): boolean {
+  return resolveIcon(slug) !== null;
 }

@@ -21,7 +21,7 @@ export function Notice({ tone, children }: { tone: "ok" | "err"; children: React
   );
 }
 
-export interface SelectOption { value: string; label: string }
+export interface SelectOption { value: string; label: React.ReactNode }
 
 export function Select({ value, options, onChange, disabled, label, style }: {
   value: string;
