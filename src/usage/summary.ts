@@ -183,7 +183,7 @@ function buildDayGrid(range: UsageRange, since: number | null, now: number, entr
   return out;
 }
 
-function buildModels(entries: PersistedUsageEntry[], totalRequests: number): UsageModel[] {
+function buildModels(entries: PersistedUsageEntry[], totalTokens: number): UsageModel[] {
   const byKey = new Map<string, UsageModel>();
   for (const entry of entries) {
     const providerKey = baseProviderLabel(entry.provider);
@@ -219,11 +219,11 @@ function buildModels(entries: PersistedUsageEntry[], totalRequests: number): Usa
     }
   }
   const models = [...byKey.values()];
-  for (const m of models) m.shareRatio = totalRequests === 0 ? 0 : m.requests / totalRequests;
+  for (const m of models) m.shareRatio = totalTokens === 0 ? 0 : m.totalTokens / totalTokens;
   return models.sort((a, b) => b.requests - a.requests);
 }
 
-function buildProviders(entries: PersistedUsageEntry[], totalRequests: number): UsageProvider[] {
+function buildProviders(entries: PersistedUsageEntry[], totalTokens: number): UsageProvider[] {
   const byKey = new Map<string, UsageProvider>();
   for (const entry of entries) {
     const providerKey = baseProviderLabel(entry.provider);
@@ -249,7 +249,7 @@ function buildProviders(entries: PersistedUsageEntry[], totalRequests: number): 
     }
   }
   const providers = [...byKey.values()];
-  for (const p of providers) p.shareRatio = totalRequests === 0 ? 0 : p.requests / totalRequests;
+  for (const p of providers) p.shareRatio = totalTokens === 0 ? 0 : p.totalTokens / totalTokens;
   return providers.sort((a, b) => b.requests - a.requests);
 }
 
@@ -268,7 +268,7 @@ export function summarizeUsage(entries: PersistedUsageEntry[], range: UsageRange
     generatedAt: now,
     summary: totals,
     days: buildDayGrid(range, since, now, inRange),
-    models: buildModels(inRange, totals.requests),
-    providers: buildProviders(inRange, totals.requests),
+    models: buildModels(inRange, totals.totalTokens),
+    providers: buildProviders(inRange, totals.totalTokens),
   };
 }

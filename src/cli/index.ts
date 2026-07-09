@@ -468,6 +468,11 @@ switch (command) {
     await syncModelsToCodex((await findLiveProxy())?.port);
     break;
   }
+  case "v2": {
+    const { cmdV2 } = await import("./v2");
+    process.exitCode = await cmdV2(args.slice(1), {}, async () => (await findLiveProxy())?.port);
+    break;
+  }
   case "sync-cache": {
     const { invalidateCodexModelsCache } = await import("../codex/catalog");
     invalidateCodexModelsCache();

@@ -51,6 +51,32 @@ orphan `toolResult` messages by inserting a synthetic assistant `tool_call` befo
 These compatibility guards are covered by focused tests and should stay close to the adapters that
 need them.
 
+## Parallel tool calls (default-on for chat providers)
+
+The openai-chat adapter buffers ALL streamed `tool_calls` deltas (keyed by `index`, falling back to
+`id`, then last-seen) and flushes them as atomic start/delta/end sequences at the terminal signal.
+This is required by the bridge's sequential tool-call contract and makes interleaved parallel
+deltas, id-only-first-chunk continuations, and whole-chunk multi-call frames all safe.
+
+Parallel tool calls are DEFAULT-ON for openai-chat providers: the adapter follows Codex's
+request-level `parallel_tool_calls` bit (default true) and routed catalog entries advertise
+`supports_parallel_tool_calls`. `OcxProviderConfig.parallelToolCalls: false` is the per-provider
+opt-out (registry-seeded, router-backfilled; an explicit user value always wins). Non-chat
+adapters advertise the catalog bit only on explicit `true`; cursor keeps its own special-casing.
+Providers with flaky parallel streaming can be opted out individually. Evidence and provider
+ledger: `devlog/_plan/260709_parallel_tool_calls/`.
+
+## Reasoning display parity (hideThinkingSummary)
+
+`hideThinkingSummary` (request reasoning summary absent/"none" — the routed catalog default) is
+honored by BOTH reasoning paths: anthropic `thinking_delta` AND raw `reasoning_raw_delta`
+(openai-chat `reasoning_content`, kiro tags). Hidden reasoning emits an envelope-only reasoning
+item (`summary: []`, txt-only `ocxr1:` `encrypted_content`, no text deltas) — invisible in the
+Codex app, so tool cells group like native models — while the text still round-trips for
+`preserveReasoningContentModels` replay. Visible mode (summary "auto") keeps the raw
+`content[reasoning_text]` shape. Diagnosis and codex-rs grouping evidence:
+`devlog/_plan/260709_native_response_pattern/`.
+
 ## Upstream reset retry
 
 `src/lib/upstream-retry.ts` guards upstream fetches against stale pooled keep-alive sockets
