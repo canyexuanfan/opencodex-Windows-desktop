@@ -478,7 +478,9 @@ export function loadCatalogTemplate(): RawEntry | null {
  * Codex accepts its native labels plus model-defined effort strings such as `max` in current builds.
  * Provider-specific aliases still map at request time by src/reasoning-effort.ts.
  */
-const ROUTED_REASONING_LEVELS = CODEX_REASONING_LEVELS;
+// Routed models default to the low..max ladder: upstream bundled catalogs advertise no "ultra"
+// either — it stays per-model opt-in via `reasoningEfforts` config (sanitize accepts it).
+const ROUTED_REASONING_LEVELS = CODEX_REASONING_LEVELS.filter(l => l.effort !== "ultra");
 
 function applyCatalogModelMetadata(entry: RawEntry, model?: CatalogModel): void {
   if (!model) return;
@@ -501,7 +503,9 @@ function applyReasoningLevels(entry: RawEntry, effortsOverride?: string[]): void
   entry.supported_reasoning_levels = efforts.map(effort => {
     const native = byEffort.get(effort);
     if (native) return native;
-    return ROUTED_REASONING_LEVELS.find(l => l.effort === effort) ?? { effort, description: `${effort} reasoning` };
+    // Description lookup uses the FULL ladder so an opt-in effort outside the routed default
+    // (e.g. "ultra") still renders its canonical description.
+    return CODEX_REASONING_LEVELS.find(l => l.effort === effort) ?? { effort, description: `${effort} reasoning` };
   });
   if (efforts.length === 0) {
     delete entry.default_reasoning_level;
@@ -514,14 +518,23 @@ function isGpt56NativeSlug(slug: string): boolean {
   return !slug.includes("/") && slug.startsWith("gpt-5.6-");
 }
 
-function ensureMaxReasoningLevel(entry: RawEntry): void {
+/**
+ * GPT-5.6 native entries are cloned from an older template (gpt-5.5) whose ladder stops at
+ * xhigh. The current-gen models support "max" and the upstream ultra selection (df1199fdd:
+ * ultra = max reasoning + proactive multi-agent delegation, converted to max on the wire by
+ * the client), so append both in upstream rank order when absent.
+ */
+function ensureGpt56ReasoningLevels(entry: RawEntry): void {
   const levels = Array.isArray(entry.supported_reasoning_levels)
     ? entry.supported_reasoning_levels as Array<{ effort?: string }>
     : [];
-  if (levels.some(level => level.effort === "max")) return;
-  const maxLevel = ROUTED_REASONING_LEVELS.find(level => level.effort === "max")
-    ?? { effort: "max", description: "Maximum reasoning for the hardest problems" };
-  entry.supported_reasoning_levels = [...levels, maxLevel];
+  const out = [...levels];
+  for (const effort of ["max", "ultra"]) {
+    if (out.some(level => level.effort === effort)) continue;
+    out.push(CODEX_REASONING_LEVELS.find(level => level.effort === effort)
+      ?? { effort, description: `${effort} reasoning` });
+  }
+  entry.supported_reasoning_levels = out;
 }
 
 function deriveEntry(template: RawEntry | null, slug: string, desc: string, priority: number, model?: CatalogModel): RawEntry {
@@ -552,7 +565,7 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
       applyCatalogModelMetadata(e, model);
     } else {
       applyNativeOpenAiContextOverride(e);
-      if (isGpt56NativeSlug(slug)) ensureMaxReasoningLevel(e);
+      if (isGpt56NativeSlug(slug)) ensureGpt56ReasoningLevels(e);
     }
     return ensureStrictCatalogFields(normalizeServiceTiers(e));
   }
@@ -564,7 +577,10 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
     ...(slug.includes("/") ? { web_search_tool_type: "text_and_image", supports_search_tool: true } : {}),
   };
   if (slug.includes("/")) applyReasoningLevels(entry, model?.reasoningEfforts);
-  else applyReasoningLevels(entry, isGpt56NativeSlug(slug) ? undefined : ["low", "medium", "high", "xhigh"]);
+  else {
+    applyReasoningLevels(entry, isGpt56NativeSlug(slug) ? undefined : ["low", "medium", "high", "xhigh"]);
+    if (isGpt56NativeSlug(slug)) ensureGpt56ReasoningLevels(entry);
+  }
   applyJawcodeCatalogMetadata(entry, slug, model?.contextCap);
   applyCatalogModelMetadata(entry, model);
   applyNativeOpenAiContextOverride(entry);

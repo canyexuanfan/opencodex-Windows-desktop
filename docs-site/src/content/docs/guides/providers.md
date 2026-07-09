@@ -114,8 +114,9 @@ models visible even while live `/models` catalogs lag:
 | OpenAI (API key) | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` |
 | OpenRouter | `openai/gpt-5.6-sol`, `openai/gpt-5.6-terra`, `openai/gpt-5.6-luna` |
 
-All three paths carry 372,000 usable-token context metadata and expose `max` reasoning in the Codex
-catalog. Availability remains upstream-gated; opencodex only routes models your provider account can
+All three paths carry 372,000 usable-token context metadata and expose `max` and `ultra` reasoning
+in the Codex catalog (`ultra` is converted to `max` on the wire, matching upstream Codex).
+Availability remains upstream-gated; opencodex only routes models your provider account can
 actually call.
 
 :::note[Gateways & subscription proxies]

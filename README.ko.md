@@ -139,9 +139,11 @@ codex -m "ollama/llama3" "이 함수를 리팩터링해 줘"
 
 라우팅된 모델은 **Codex App** 모델 선택기에도 모델별 reasoning effort 컨트롤과 함께 나타납니다:
 
-현재 Codex 빌드는 모델이 광고하는 경우 `low`, `medium`, `high`, `xhigh`, `max` reasoning 컨트롤을
-노출할 수 있습니다. opencodex는 프로바이더 config가 명시적으로 alias를 지정하지 않는 한 `xhigh`와
-`max`를 서로 다른 단계로 유지합니다.
+현재 Codex 빌드는 모델이 광고하는 경우 `low`, `medium`, `high`, `xhigh`, `max`, `ultra` reasoning
+컨트롤을 노출할 수 있습니다. opencodex는 프로바이더 config가 명시적으로 alias를 지정하지 않는 한
+`xhigh`와 `max`를 서로 다른 단계로 유지합니다. `ultra`는 업스트림 Codex와 같은 의미입니다:
+클라이언트에서 최대 reasoning과 능동적 멀티에이전트 위임을 켜고, 실제 요청은 `max`로 변환되어
+나갑니다. 라우팅된 모델은 `reasoningEfforts` config로 옵트인한 경우에만 `ultra`를 광고합니다.
 
 GPT-5.6 Sol/Terra/Luna는 OpenAI API key 및 OpenRouter preset에서 rollout-ready catalog 항목으로
 seed됩니다(`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`; OpenRouter는 `openai/...` 사용). 실제

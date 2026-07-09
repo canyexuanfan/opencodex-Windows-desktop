@@ -174,7 +174,7 @@ describe("Codex catalog routed normalization", () => {
     expect(native?.auto_compact_token_limit).toBe(115_200);
   });
 
-  test("native GPT-5.6 entries add max reasoning even when cloned from an older template", () => {
+  test("native GPT-5.6 entries add max and ultra reasoning even when cloned from an older template", () => {
     const entries = buildCatalogEntries({
       ...nativeTemplate(),
       context_window: 272_000,
@@ -184,7 +184,7 @@ describe("Codex catalog routed normalization", () => {
     const gpt55 = entries.find(e => e.slug === "gpt-5.5");
 
     expect((gpt56?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual([
-      "low", "medium", "high", "xhigh", "max",
+      "low", "medium", "high", "xhigh", "max", "ultra",
     ]);
     expect(gpt56?.context_window).toBe(372_000);
     expect(gpt56?.max_context_window).toBe(372_000);

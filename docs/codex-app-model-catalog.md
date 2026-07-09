@@ -78,6 +78,21 @@ Cloning a native entry preserves fields Codex's strict parser expects, including
 
 This is why routed entries can behave like normal picker-visible Codex models.
 
+### Reasoning effort ladder
+
+The recognized Codex effort ladder is `low < medium < high < xhigh < max < ultra`
+(`src/reasoning-effort.ts` `CODEX_REASONING_LEVELS`), matching the upstream codex-rs
+`ReasoningEffort` enum order. Semantics ported from upstream (df1199fdd, 80f54d126):
+
+- `ultra` is a client-facing selection: maximum reasoning plus proactive multi-agent delegation
+  (derived in codex-rs core, not by the proxy). Upstream converts it to `max` at the inference
+  boundary; ocx mirrors that in two places — the Responses parser normalizes `ultra -> max` at
+  ingest, and `mapReasoningEffort` converts any direct `ultra` caller to the `max` wire value.
+- Routed models default to the `low..max` ladder. `ultra` is per-model opt-in via the
+  `reasoningEfforts` provider config; when opted in it renders its canonical description.
+- Native `gpt-5.6-*` slugs are cloned from an older template whose ladder stops at `xhigh`;
+  `ensureGpt56ReasoningLevels` appends `max` and `ultra` in upstream rank order.
+
 ## Fast tier handling
 
 Codex uses a split between config spelling and runtime/catalog spelling:

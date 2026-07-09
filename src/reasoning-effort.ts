@@ -7,6 +7,7 @@ export const CODEX_REASONING_LEVELS: { effort: string; description: string }[] =
   { effort: "high", description: "Greater reasoning depth for complex problems" },
   { effort: "xhigh", description: "Extended reasoning for the hardest problems" },
   { effort: "max", description: "Maximum reasoning for the hardest problems" },
+  { effort: "ultra", description: "Maximum reasoning that may proactively delegate work to multiple agents" },
 ];
 
 const CODEX_REASONING_ORDER = CODEX_REASONING_LEVELS.map(l => l.effort);
@@ -89,13 +90,20 @@ export function mapReasoningEffort(provider: OcxProviderConfig, modelId: string,
   if (!requested) return undefined;
   if (modelInList(provider.noReasoningModels, modelId)) return undefined;
 
+  // Upstream codex-rs converts ultra -> max before ANY provider request (core/src/client.rs
+  // `reasoning_effort_for_request`), so "ultra" must never influence the provider wire — not even
+  // through a raw alias. Apply the boundary before alias/clamp resolution.
+  const boundary = requested === "ultra" ? "max" : requested;
+
   const wireMap = reasoningEffortMapFor(provider, modelId);
-  if (wireMap && Object.prototype.hasOwnProperty.call(wireMap, requested)) return wireMap[requested];
+  if (wireMap && Object.prototype.hasOwnProperty.call(wireMap, boundary)) return wireMap[boundary];
 
   const supported = configuredReasoningEfforts(provider, modelId);
-  const codexEffort = supported !== undefined ? clampToSupportedCodexEffort(requested, supported) : requestToCodexEffort(requested);
+  const codexEffort = supported !== undefined ? clampToSupportedCodexEffort(boundary, supported) : requestToCodexEffort(boundary);
   if (!codexEffort) return undefined;
 
-  if (wireMap && Object.prototype.hasOwnProperty.call(wireMap, codexEffort)) return wireMap[codexEffort];
-  return codexEffort;
+  // Belt for the odd config where the supported ladder is ultra-only and the clamp lands on it.
+  const wire = codexEffort === "ultra" ? "max" : codexEffort;
+  if (wireMap && Object.prototype.hasOwnProperty.call(wireMap, wire)) return wireMap[wire];
+  return wire;
 }

@@ -223,4 +223,14 @@ describe("codex-rs compat surface (260707)", () => {
     expect(result?.isError).toBe(true);
     expect(result?.content as string).toContain("failed");
   });
+
+  test("normalizes ultra reasoning effort to max like the upstream client boundary", () => {
+    const parsed = parseRequest({ model: "p/m", input: "hi", reasoning: { effort: "ultra" } });
+    expect(parsed.options.reasoning).toBe("max");
+  });
+
+  test("still drops unknown reasoning efforts instead of forwarding them", () => {
+    const parsed = parseRequest({ model: "p/m", input: "hi", reasoning: { effort: "banana" } });
+    expect(parsed.options.reasoning).toBeUndefined();
+  });
 });

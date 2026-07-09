@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { buildCatalogEntries } from "../src/codex/catalog";
 import { createAnthropicAdapter } from "../src/adapters/anthropic";
 import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
+import { mapReasoningEffort, sanitizeCodexReasoningEfforts } from "../src/reasoning-effort";
 import { routeModel } from "../src/router";
 import type { OcxConfig, OcxParsedRequest, OcxProviderConfig } from "../src/types";
 
@@ -428,5 +429,54 @@ describe("thinking-toggle models (260707)", () => {
     const kimiBody = buildBody(kimiRoute.provider, "kimi-k2.7-code", { reasoning: "high" });
     expect(kimiBody).not.toHaveProperty("thinking");
     expect(kimiBody).not.toHaveProperty("reasoning_effort");
+  });
+});
+
+describe("ultra reasoning effort (upstream codex-rs parity)", () => {
+  const base: OcxProviderConfig = { adapter: "openai-chat", baseUrl: "https://provider.example/v1" };
+
+  test("sanitize accepts ultra, dedupes, and orders it above max", () => {
+    expect(sanitizeCodexReasoningEfforts(["ultra", "low", "max", "ultra"])).toEqual(["low", "max", "ultra"]);
+  });
+
+  test("clamps ultra down to the highest supported effort", () => {
+    expect(mapReasoningEffort({ ...base, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] }, "m", "ultra")).toBe("max");
+    expect(mapReasoningEffort({ ...base, reasoningEfforts: ["low", "high"] }, "m", "ultra")).toBe("high");
+    expect(mapReasoningEffort({ ...base, reasoningEfforts: [] }, "m", "ultra")).toBeUndefined();
+  });
+
+  test("defensive direct-call boundary: ultra never reaches the wire even when advertised", () => {
+    // The Responses parser normalizes ultra->max at ingest; this covers direct callers, mirroring
+    // upstream core/src/client.rs reasoning_effort_for_request (Ultra => Max).
+    expect(mapReasoningEffort({ ...base, reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"] }, "m", "ultra")).toBe("max");
+    expect(mapReasoningEffort(base, "m", "ultra")).toBe("max");
+  });
+
+  test("a max wire alias applies to converted ultra; a raw ultra alias never bypasses the boundary", () => {
+    expect(mapReasoningEffort({ ...base, reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"], reasoningEffortMap: { max: "think-hard" } }, "m", "ultra")).toBe("think-hard");
+    // Upstream never lets "ultra" influence the provider wire; the alias table is consulted with
+    // the converted "max" value, so an ultra-keyed alias is inert.
+    expect(mapReasoningEffort({ ...base, reasoningEffortMap: { ultra: "ultra-native" } }, "m", "ultra")).toBe("max");
+  });
+
+  test("routed opt-in ultra renders the canonical description; default routed ladder stays ultra-free", () => {
+    const entries = buildCatalogEntries(nativeTemplate(), [], [
+      { provider: "p", id: "m-ultra", reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { provider: "p", id: "m-default" },
+    ]);
+    const opted = entries.find(e => e.slug === "p/m-ultra");
+    const dflt = entries.find(e => e.slug === "p/m-default");
+    const levels = opted?.supported_reasoning_levels as { effort: string; description: string }[];
+    expect(levels.map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(levels[levels.length - 1]?.description).toBe("Maximum reasoning that may proactively delegate work to multiple agents");
+    expect((dflt?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+  });
+
+  test("no-template native GPT-5.6 fallback entries also advertise max and ultra", () => {
+    const entries = buildCatalogEntries(null, ["gpt-5.6-sol", "gpt-5.5"], []);
+    const gpt56 = entries.find(e => e.slug === "gpt-5.6-sol");
+    const gpt55 = entries.find(e => e.slug === "gpt-5.5");
+    expect((gpt56?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect((gpt55?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh"]);
   });
 });

@@ -148,8 +148,10 @@ codex -m "ollama/llama3" "重构这个函数"
 
 路由模型也会出现在 **Codex App** 模型选择器中，并带有按模型的 reasoning effort 控制：
 
-当前 Codex 构建在模型声明支持时可显示 `low`、`medium`、`high`、`xhigh` 和 `max` reasoning 控制。
-除非 provider config 明确设置 alias，opencodex 会把 `xhigh` 与 `max` 保持为不同档位。
+当前 Codex 构建在模型声明支持时可显示 `low`、`medium`、`high`、`xhigh`、`max` 和 `ultra` reasoning 控制。
+除非 provider config 明确设置 alias，opencodex 会把 `xhigh` 与 `max` 保持为不同档位。`ultra` 与上游
+Codex 语义一致：客户端启用最大 reasoning 并主动委派多智能体，实际请求会转换为 `max` 发送。
+路由模型仅在 provider config 通过 `reasoningEfforts` 显式开启时才会广告 `ultra`。
 
 GPT-5.6 Sol/Terra/Luna 已在 OpenAI API key 和 OpenRouter 预设中作为 rollout-ready 目录条目预置
 （`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`；OpenRouter 使用 `openai/...`）。可用性仍受上游
