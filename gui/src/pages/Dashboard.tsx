@@ -3,7 +3,7 @@ import { formatUptime } from "../formatUptime";
 import { IconAlert, IconExternal, IconRefresh, IconX } from "../icons";
 import { useI18n, Trans } from "../i18n";
 import { formatTokens } from "../format-tokens";
-import { EmptyState } from "../ui";
+import { EmptyState, Select } from "../ui";
 
 interface HealthData { status: string; version: string; uptime: number }
 interface ProviderInfo { name: string; adapter: string; baseUrl: string; defaultModel?: string; hasApiKey: boolean }
@@ -439,26 +439,20 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             <div className="muted setting-hint">{t("dash.searchModelHint")}</div>
           </div>
           <div className="setting-controls" style={{ display: "flex", gap: 8 }}>
-            <select
-              id="sidecar-web-search-model"
-              name="sidecarWebSearchModel"
-              className="select-sm"
-              aria-label={t("dash.searchModel")}
+            <Select
               value={sidecar?.webSearch.model ?? "gpt-5.4-mini"}
+              options={SIDECAR_MODELS.map(m => ({ value: m, label: m }))}
+              onChange={v => saveSidecar({ webSearch: { model: v, reasoning: sidecar!.webSearch.reasoning } })}
               disabled={!sidecar || sidecarSaving}
-              onChange={e => saveSidecar({ webSearch: { model: e.target.value, reasoning: sidecar!.webSearch.reasoning } })}>
-              {SIDECAR_MODELS.map(m => <option key={m} value={m}>{m}</option>)}
-            </select>
-            <select
-              id="sidecar-web-search-reasoning"
-              name="sidecarWebSearchReasoning"
-              className="select-sm"
-              aria-label={`${t("dash.searchModel")} reasoning`}
+              label={t("dash.searchModel")}
+            />
+            <Select
               value={sidecar?.webSearch.reasoning ?? "low"}
+              options={REASONING_LEVELS.map(r => ({ value: r, label: r }))}
+              onChange={v => saveSidecar({ webSearch: { model: sidecar!.webSearch.model, reasoning: v } })}
               disabled={!sidecar || sidecarSaving}
-              onChange={e => saveSidecar({ webSearch: { model: sidecar!.webSearch.model, reasoning: e.target.value } })}>
-              {REASONING_LEVELS.map(r => <option key={r} value={r}>{r}</option>)}
-            </select>
+              label={t("dash.searchReasoning")}
+            />
           </div>
         </div>
       </div>
@@ -469,16 +463,13 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             <div style={{ fontWeight: 650 }}>{t("dash.visionModel")}</div>
             <div className="muted setting-hint">{t("dash.visionModelHint")}</div>
           </div>
-          <select
-            id="sidecar-vision-model"
-            name="sidecarVisionModel"
-            className="select-sm"
-            aria-label={t("dash.visionModel")}
+          <Select
             value={sidecar?.vision.model ?? "gpt-5.4-mini"}
+            options={SIDECAR_MODELS.map(m => ({ value: m, label: m }))}
+            onChange={v => saveSidecar({ vision: { model: v } })}
             disabled={!sidecar || sidecarSaving}
-            onChange={e => saveSidecar({ vision: { model: e.target.value } })}>
-            {SIDECAR_MODELS.map(m => <option key={m} value={m}>{m}</option>)}
-          </select>
+            label={t("dash.visionModel")}
+          />
         </div>
       </div>
 
@@ -538,16 +529,13 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             <div className="modal-desc">{t("dash.updateDesc")}</div>
             <div className="update-row">
               <label className="field-label" htmlFor="update-channel">{t("dash.updateChannel")}</label>
-              <select
-                id="update-channel"
-                className="select-sm"
+              <Select
                 value={updateChannel}
+                options={[{ value: "latest", label: "latest" }, { value: "preview", label: "preview" }]}
+                onChange={v => changeUpdateChannel(v as UpdateChannel)}
                 disabled={updateLoading}
-                onChange={e => changeUpdateChannel(e.target.value as UpdateChannel)}
-              >
-                <option value="latest">latest</option>
-                <option value="preview">preview</option>
-              </select>
+                label={t("dash.updateChannel")}
+              />
             </div>
             {updateLoading && <EmptyState className="update-empty" icon={<span className="spin" />} title={t("dash.updateChecking")} />}
             {updateError && (
