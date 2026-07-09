@@ -47,7 +47,12 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const [contextCapValue, setContextCapValue] = useState(350_000);
   const [customCap, setCustomCap] = useState("");
   const [showCustom, setShowCustom] = useState(false);
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem("ocx-models-collapsed");
+      return saved ? new Set(JSON.parse(saved) as string[]) : new Set();
+    } catch { return new Set(); }
+  });
   const [status, setStatus] = useState("");
   const [ok, setOk] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -178,7 +183,12 @@ export default function Models({ apiBase }: { apiBase: string }) {
     }
   };
   const toggleCollapse = (p: string) => {
-    setCollapsed(prev => { const n = new Set(prev); if (n.has(p)) n.delete(p); else n.add(p); return n; });
+    setCollapsed(prev => {
+      const n = new Set(prev);
+      if (n.has(p)) n.delete(p); else n.add(p);
+      try { localStorage.setItem("ocx-models-collapsed", JSON.stringify([...n])); } catch { /* quota */ }
+      return n;
+    });
   };
 
   const putCap = async (body: Record<string, unknown>) => {
@@ -351,27 +361,9 @@ export default function Models({ apiBase }: { apiBase: string }) {
             type="button"
             className="btn btn-ghost btn-sm"
             style={{ width: 22, height: 22, padding: 0, borderRadius: 999, fontSize: 12, fontWeight: 700, color: "var(--muted)" }}
-            onClick={() => setV2HelpOpen(o => !o)}
+            onClick={() => setV2HelpOpen(true)}
             aria-label="Help"
-            title={t(`models.v2ModeDesc_${v2.multiAgentMode ?? "default"}` as keyof typeof import("../i18n/en").en)}
           >?</button>
-          {v2HelpOpen && (
-            <div style={{ position: "relative" }}>
-              <div
-                style={{
-                  position: "absolute", top: 4, left: 0, zIndex: 10,
-                  background: "var(--card-bg, var(--bg))", border: "1px solid var(--border)",
-                  borderRadius: 8, padding: "12px 16px", maxWidth: 360, fontSize: 13,
-                  lineHeight: 1.5, whiteSpace: "pre-line", boxShadow: "0 4px 16px rgba(0,0,0,.12)",
-                }}
-              >
-                {t("models.v2Help")}
-                <div style={{ marginTop: 8, textAlign: "right" }}>
-                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setV2HelpOpen(false)} style={{ fontSize: 11 }}>OK</button>
-                </div>
-              </div>
-            </div>
-          )}
           {v2.enabled && (
             <>
               <span className="muted" style={{ fontSize: 13, marginLeft: 8 }}>{t("models.v2ThreadsLabel")}</span>
@@ -528,6 +520,23 @@ export default function Models({ apiBase }: { apiBase: string }) {
         <EmptyState icon={<IconBoxes />} title={t("models.noRouted")}>
           {t("models.noRoutedHint")}
         </EmptyState>
+      )}
+
+      {v2HelpOpen && (
+        <div className="modal-overlay" onClick={() => setV2HelpOpen(false)}>
+          <div className="modal-card" onClick={e => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>{t("models.v2Label")}</h3>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setV2HelpOpen(false)} aria-label="Close">&times;</button>
+            </div>
+            <div className="modal-desc" style={{ whiteSpace: "pre-line", lineHeight: 1.6 }}>
+              {t("models.v2Help")}
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="btn btn-primary" onClick={() => setV2HelpOpen(false)}>OK</button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );
