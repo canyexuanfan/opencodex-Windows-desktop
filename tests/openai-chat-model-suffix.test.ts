@@ -23,6 +23,7 @@ function anthropicProvider(): OcxProviderConfig {
   return {
     adapter: "anthropic",
     baseUrl: "https://api.z.ai/api/coding/paas/v4",
+    apiKey: "test-key",
   };
 }
 

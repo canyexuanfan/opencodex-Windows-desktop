@@ -241,7 +241,7 @@ function usesNativeAnthropicEndpoint(provider: OcxProviderConfig): boolean {
   try {
     return new URL(provider.baseUrl).hostname === "api.anthropic.com";
   } catch {
-    return false;
+    throw new Error(`anthropic provider has malformed baseUrl: ${provider.baseUrl}`);
   }
 }
 
@@ -555,6 +555,13 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
     name: "anthropic",
 
     buildRequest(parsed: OcxParsedRequest) {
+      if (typeof provider.apiKey !== "string" || provider.apiKey.trim() === "") {
+        if (isOAuth) {
+          throw new Error("anthropic oauth token missing — run ocx login anthropic");
+        }
+        throw new Error("anthropic provider requires a non-empty apiKey (authMode: key)");
+      }
+
       const { system, messages } = messagesToAnthropicFormat(parsed, toolNames);
       // Anthropic rejects many-image requests (>20 images) carrying any image over
       // 2000px per side; see anthropic-image-guard.ts for the full limit policy.
@@ -618,6 +625,10 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
 
       const base = provider.baseUrl.replace(/\/v1\/?$/, "");
       const url = `${base}/v1/messages`;
+      const unresolvedPlaceholder = url.match(/\{[^}]*\}/)?.[0];
+      if (unresolvedPlaceholder) {
+        throw new Error(`anthropic baseUrl contains unresolved ${unresolvedPlaceholder}`);
+      }
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
         "anthropic-version": "2023-06-01",
@@ -625,7 +636,7 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
         "User-Agent": "@anthropic-ai/sdk/0.74.0",
       };
       if (isOAuth) {
-        if (provider.apiKey) headers["Authorization"] = `Bearer ${provider.apiKey}`;
+        headers["Authorization"] = `Bearer ${provider.apiKey}`;
         headers["anthropic-beta"] = ANTHROPIC_OAUTH_BETA;
         // Match the real Claude Code CLI request fingerprint: a valid OAuth token with an empty
         // header set is a non-first-party signature. (cch billing-header signing is intentionally
@@ -633,7 +644,7 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
         Object.assign(headers, CLAUDE_CODE_HEADERS);
         headers["X-Claude-Code-Session-Id"] = claudeCodeSessionId(provider.apiKey);
         headers["x-client-request-id"] = crypto.randomUUID();
-      } else if (provider.apiKey) {
+      } else {
         headers["x-api-key"] = provider.apiKey;
       }
       if (provider.headers) Object.assign(headers, provider.headers);

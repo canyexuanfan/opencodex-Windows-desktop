@@ -336,6 +336,7 @@ describe("provider-specific reasoning effort mapping", () => {
     const provider: OcxProviderConfig = {
       adapter: "anthropic",
       baseUrl: "https://api.anthropic.com/v1",
+      apiKey: "test-key",
     };
 
     const req = createAnthropicAdapter(provider).buildRequest({

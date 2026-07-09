@@ -72,7 +72,7 @@ export async function validateApiKey(provider: KeyLoginProvider, key: string): P
           "x-api-key": key,
         },
         body: JSON.stringify({
-          model: provider.defaultModel ?? "claude-sonnet-4-6",
+          model: provider.defaultModel ?? "claude-haiku-4-5",
           max_tokens: 1,
           messages: [{ role: "user", content: "ping" }],
         }),
