@@ -206,7 +206,6 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     }
   };
 
-  const toggleCodexAutoStart = async () => {
   const switchMaMode = async (mode: "v1" | "default" | "v2") => {
     if (maBusy || maMode === mode) return;
     setMaBusy(true);
@@ -221,6 +220,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     finally { setMaBusy(false); }
   };
 
+  const toggleCodexAutoStart = async () => {
     if (!settings || settingsSaving) return;
     const next = !settings.codexAutoStart;
     setSettingsSaving(true);
