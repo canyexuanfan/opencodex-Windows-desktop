@@ -142,18 +142,49 @@ function looksLikeBackendCiphertext(payload: string): boolean {
 }
 
 /**
+ * Backend-minted ciphertext runs are Fernet tokens (base64url, version byte 0x80 ->
+ * literal "gAAAA" prefix). Used to carve embedded blobs out of MIXED slots: plugin
+ * hooks (e.g. codexclaw's leaf guard) prepend plaintext preambles to spawn messages
+ * whose task body is already backend-encrypted, producing a slot that is neither
+ * decryptable (backend) nor readable (model) as a whole.
+ */
+const FERNET_TOKEN_RUN = /gAAAA[A-Za-z0-9_-]{60,}={0,2}/g;
+
+/**
+ * Split a non-ciphertext encrypted slot into ordered parts: prose becomes input_text,
+ * embedded Fernet blobs stay encrypted_content so the backend can still decrypt the
+ * real task body. A slot with no embedded blob degrades to a single input_text part.
+ */
+function encryptedSlotParts(payload: string): Array<Record<string, string>> {
+  const parts: Array<Record<string, string>> = [];
+  let last = 0;
+  for (const match of payload.matchAll(FERNET_TOKEN_RUN)) {
+    const index = match.index ?? 0;
+    const before = payload.slice(last, index);
+    if (before.trim().length > 0) parts.push({ type: "input_text", text: before });
+    parts.push({ type: "encrypted_content", encrypted_content: match[0] });
+    last = index + match[0].length;
+  }
+  const rest = payload.slice(last);
+  if (rest.trim().length > 0) parts.push({ type: "input_text", text: rest });
+  return parts.length > 0 ? parts : [{ type: "input_text", text: payload }];
+}
+
+/**
  * Rewrite non-ciphertext `{type:"encrypted_content"}` parts into `{type:"input_text"}`
  * throughout a native-bound request's input items (message content and
  * function_call_output content arrays share the part shape, codex-rs protocol/models.rs).
- * Genuine backend blobs are left byte-identical so replay/cache semantics survive.
- * Returns the number of parts rewritten.
+ * Genuine backend blobs are left byte-identical so replay/cache semantics survive, and
+ * MIXED slots (plaintext preamble + embedded Fernet task body) are split so the backend
+ * decrypts the blob while the prose passes as text. Returns the number of parts rewritten.
  */
 export function sanitizeEncryptedContentInPlace(input: unknown): number {
   if (!Array.isArray(input)) return 0;
   let rewritten = 0;
   const visit = (node: unknown): void => {
     if (Array.isArray(node)) {
-      node.forEach((child, i) => {
+      for (let i = 0; i < node.length; i += 1) {
+        const child = node[i] as unknown;
         if (
           child && typeof child === "object"
           && (child as { type?: unknown }).type === "encrypted_content"
@@ -161,13 +192,15 @@ export function sanitizeEncryptedContentInPlace(input: unknown): number {
         ) {
           const payload = (child as { encrypted_content: string }).encrypted_content;
           if (!looksLikeBackendCiphertext(payload)) {
-            node[i] = { type: "input_text", text: payload };
+            const parts = encryptedSlotParts(payload);
+            node.splice(i, 1, ...parts);
+            i += parts.length - 1;
             rewritten += 1;
-            return;
+            continue;
           }
         }
         visit(child);
-      });
+      }
       return;
     }
     if (node && typeof node === "object") {

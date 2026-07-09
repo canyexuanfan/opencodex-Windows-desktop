@@ -128,4 +128,30 @@ describe("sanitizeEncryptedContentInPlace", () => {
     expect(sanitizeEncryptedContentInPlace("plain")).toBe(0);
     expect(sanitizeEncryptedContentInPlace(undefined)).toBe(0);
   });
+
+  test("mixed slot (hook preamble + embedded Fernet task) splits into text + encrypted parts", () => {
+    const fernet = "gAAAA" + "Ab1_-".repeat(20) + "==";
+    const input = [
+      { type: "message", role: "user", content: [
+        { type: "encrypted_content", encrypted_content: `[CXC-LEAF-GUARD] follow the rules.\n\n${fernet}` },
+      ] },
+    ];
+    expect(sanitizeEncryptedContentInPlace(input)).toBe(1);
+    const parts = (input[0] as { content: Array<Record<string, unknown>> }).content;
+    expect(parts).toHaveLength(2);
+    expect(parts[0]).toEqual({ type: "input_text", text: "[CXC-LEAF-GUARD] follow the rules.\n\n" });
+    expect(parts[1]).toEqual({ type: "encrypted_content", encrypted_content: fernet });
+  });
+
+  test("pure Fernet slot stays byte-identical", () => {
+    const fernet = "gAAAA" + "Ab1_-".repeat(20) + "==";
+    const input = [
+      { type: "message", role: "user", content: [
+        { type: "encrypted_content", encrypted_content: fernet },
+      ] },
+    ];
+    expect(sanitizeEncryptedContentInPlace(input)).toBe(0);
+    const parts = (input[0] as { content: Array<Record<string, unknown>> }).content;
+    expect(parts[0]).toEqual({ type: "encrypted_content", encrypted_content: fernet });
+  });
 });
