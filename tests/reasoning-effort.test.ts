@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { buildCatalogEntries } from "../src/codex/catalog";
 import { createAnthropicAdapter } from "../src/adapters/anthropic";
 import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
+import { configuredReasoningEfforts, mapReasoningEffort, sanitizeCodexReasoningEfforts } from "../src/reasoning-effort";
 import { routeModel } from "../src/router";
+import { resolveWireProtocolOverride } from "../src/server/adapter-resolve";
 import type { OcxConfig, OcxParsedRequest, OcxProviderConfig } from "../src/types";
 
 function nativeTemplate(): Record<string, unknown> {
@@ -46,7 +48,7 @@ describe("provider-specific reasoning effort mapping", () => {
     const neuralwatt = entries.find(e => e.slug === "neuralwatt/glm-5.2");
     const kimi = entries.find(e => e.slug === "moonshot/kimi-k2.7-code");
 
-    expect((neuralwatt?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect((neuralwatt?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
     expect(neuralwatt?.default_reasoning_level).toBe("medium");
     expect(kimi?.supported_reasoning_levels).toEqual([]);
     expect(kimi).not.toHaveProperty("default_reasoning_level");
@@ -147,7 +149,7 @@ describe("provider-specific reasoning effort mapping", () => {
     expect(body.messages[1].reasoning_content).toBe("I need to inspect files before answering.");
     expect(body.messages[1]).toMatchObject({
       role: "assistant",
-      content: null,
+      content: "",
       tool_calls: [{
         id: "call_1",
         type: "function",
@@ -368,9 +370,9 @@ describe("provider-specific reasoning effort mapping", () => {
     const empty = entries.find(e => e.slug === "test/model-empty");
 
     const withMaxEfforts = (withMax?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort);
-    expect(withMaxEfforts).toEqual(["low", "high", "max"]);
+    expect(withMaxEfforts).toEqual(["low", "high", "max", "ultra"]);
 
-    expect((clean?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh"]);
+    expect((clean?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
 
     expect(empty?.supported_reasoning_levels).toEqual([]);
   });
@@ -381,7 +383,7 @@ describe("thinking-toggle models (260707)", () => {
     adapter: "openai-chat",
     baseUrl: "https://opencode.ai/zen/go/v1",
     thinkingToggleModels: ["mimo-v2.5", "glm-5"],
-    modelReasoningEfforts: { "mimo-v2.5": ["low", "high"], "glm-5": ["low", "high"] },
+    modelReasoningEfforts: { "mimo-v2.5": ["low", "medium", "high", "xhigh", "max"], "glm-5": ["low", "medium", "high", "xhigh", "max"] },
     modelReasoningEffortMap: {
       "mimo-v2.5": { none: "disabled", minimal: "disabled", low: "disabled", medium: "enabled", high: "enabled", xhigh: "enabled", max: "enabled" },
       "glm-5": { none: "disabled", minimal: "disabled", low: "disabled", medium: "enabled", high: "enabled", xhigh: "enabled", max: "enabled" },
@@ -412,7 +414,7 @@ describe("thinking-toggle models (260707)", () => {
     expect(body).not.toHaveProperty("thinking");
   });
 
-  test("opencode-go registry routes mimo/glm5 through the toggle with a two-step ladder", () => {
+  test("opencode-go registry routes mimo/glm5 through the toggle with a five-step picker ladder", () => {
     const config = {
       port: 10100,
       defaultProvider: "opencode-go",
@@ -420,7 +422,9 @@ describe("thinking-toggle models (260707)", () => {
     } as unknown as OcxConfig;
     const route = routeModel(config, "opencode-go/mimo-v2.5");
     expect(route.provider.thinkingToggleModels).toContain("mimo-v2.5");
-    expect(route.provider.modelReasoningEfforts?.["mimo-v2.5"]).toEqual(["low", "high"]);
+    expect(route.provider.modelReasoningEfforts?.["mimo-v2.5"]).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    const mediumBody = buildBody(route.provider, "mimo-v2.5", { reasoning: "medium" });
+    expect(mediumBody.thinking).toEqual({ type: "enabled" });
     const body = buildBody(route.provider, "mimo-v2.5", { reasoning: "xhigh" });
     expect(body.thinking).toEqual({ type: "enabled" });
     // kimi stays fully unadvertised (no fake knob).
@@ -428,5 +432,157 @@ describe("thinking-toggle models (260707)", () => {
     const kimiBody = buildBody(kimiRoute.provider, "kimi-k2.7-code", { reasoning: "high" });
     expect(kimiBody).not.toHaveProperty("thinking");
     expect(kimiBody).not.toHaveProperty("reasoning_effort");
+  });
+});
+
+describe("thinking-budget models (260709)", () => {
+  const budgetProvider: OcxProviderConfig = {
+    adapter: "openai-chat",
+    baseUrl: "https://api.neuralwatt.com/v1",
+    thinkingBudgetModels: ["qwen3.5-397b"],
+    modelReasoningEfforts: { "qwen3.5-397b": ["low", "medium", "high", "xhigh", "max"] },
+  };
+
+  test("Qwen thinking_budget maps five Codex levels to output-token fractions", () => {
+    const cases = [
+      ["low", 2000],
+      ["medium", 5000],
+      ["high", 7500],
+      ["xhigh", 9000],
+      ["max", 10000],
+    ] as const;
+
+    for (const [reasoning, budget] of cases) {
+      const body = buildBody(budgetProvider, "qwen3.5-397b", { reasoning, maxOutputTokens: 10000 });
+      expect(body.thinking_budget).toBe(budget);
+      expect(body).not.toHaveProperty("reasoning_effort");
+      expect(body).not.toHaveProperty("thinking");
+    }
+  });
+
+  test("Qwen thinking_budget uses the default max budget when max output tokens are absent", () => {
+    const body = buildBody(budgetProvider, "qwen3.5-397b", { reasoning: "medium" });
+    expect(body.thinking_budget).toBe(16384);
+    expect(body).not.toHaveProperty("reasoning_effort");
+  });
+
+  test("minimal Qwen reasoning maps to a zero budget", () => {
+    const body = buildBody(budgetProvider, "qwen3.5-397b", { reasoning: "minimal", maxOutputTokens: 10000 });
+    expect(body.thinking_budget).toBe(0);
+    expect(body).not.toHaveProperty("reasoning_effort");
+  });
+
+  test("routed Qwen models advertise five levels and send thinking_budget over openai-chat", () => {
+    const config = {
+      port: 10100,
+      defaultProvider: "opencode-go",
+      providers: { "opencode-go": { adapter: "openai-chat", baseUrl: "https://opencode.ai/zen/go/v1", apiKey: "k" } },
+    } as unknown as OcxConfig;
+    const route = routeModel(config, "opencode-go/qwen3.7-max");
+
+    expect(route.provider.adapter).toBe("openai-chat");
+    expect(route.provider.thinkingBudgetModels).toContain("qwen3.7-max");
+    expect(route.provider.modelReasoningEfforts?.["qwen3.7-max"]).toEqual(["low", "medium", "high", "xhigh", "max"]);
+
+    const body = buildBody(route.provider, route.modelId, { reasoning: "max", maxOutputTokens: 65536 });
+    expect(body.thinking_budget).toBe(65536);
+    expect(body).not.toHaveProperty("reasoning_effort");
+  });
+
+  test("opencode-go Qwen models are no longer pinned to the Anthropic wire", () => {
+    const provider: OcxProviderConfig = { adapter: "openai-chat", baseUrl: "https://opencode.ai/zen/go/v1" };
+
+    expect(resolveWireProtocolOverride("opencode-go", "qwen3.7-max", provider).adapter).toBe("openai-chat");
+    expect(resolveWireProtocolOverride("opencode-go", "minimax-m3", provider).adapter).toBe("anthropic");
+  });
+
+  test("Neuralwatt Qwen registry restores the five-level ladder", () => {
+    const config = {
+      port: 10100,
+      defaultProvider: "neuralwatt",
+      providers: { neuralwatt: { adapter: "openai-chat", baseUrl: "https://api.neuralwatt.com/v1", apiKey: "k" } },
+    } as unknown as OcxConfig;
+    const route = routeModel(config, "neuralwatt/qwen3.5-397b");
+
+    expect(route.provider.thinkingBudgetModels).toContain("qwen3.5-397b");
+    expect(route.provider.modelReasoningEfforts?.["qwen3.5-397b"]).toEqual(["low", "medium", "high", "xhigh", "max"]);
+  });
+});
+
+describe("ultra reasoning effort (upstream codex-rs parity)", () => {
+  const base: OcxProviderConfig = { adapter: "openai-chat", baseUrl: "https://provider.example/v1" };
+
+  test("sanitize accepts ultra, dedupes, and orders it above max", () => {
+    expect(sanitizeCodexReasoningEfforts(["ultra", "low", "max", "ultra"])).toEqual(["low", "max", "ultra"]);
+  });
+
+  test("clamps ultra down to the highest supported effort", () => {
+    expect(mapReasoningEffort({ ...base, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] }, "m", "ultra")).toBe("max");
+    expect(mapReasoningEffort({ ...base, reasoningEfforts: ["low", "high"] }, "m", "ultra")).toBe("high");
+    expect(mapReasoningEffort({ ...base, reasoningEfforts: [] }, "m", "ultra")).toBeUndefined();
+  });
+
+  test("defensive direct-call boundary: ultra never reaches the wire even when advertised", () => {
+    // The Responses parser normalizes ultra->max at ingest; this covers direct callers, mirroring
+    // upstream core/src/client.rs reasoning_effort_for_request (Ultra => Max).
+    expect(mapReasoningEffort({ ...base, reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"] }, "m", "ultra")).toBe("max");
+    expect(mapReasoningEffort(base, "m", "ultra")).toBe("max");
+  });
+
+  test("a max wire alias applies to converted ultra; a raw ultra alias never bypasses the boundary", () => {
+    expect(mapReasoningEffort({ ...base, reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"], reasoningEffortMap: { max: "think-hard" } }, "m", "ultra")).toBe("think-hard");
+    // Upstream never lets "ultra" influence the provider wire; the alias table is consulted with
+    // the converted "max" value, so an ultra-keyed alias is inert.
+    expect(mapReasoningEffort({ ...base, reasoningEffortMap: { ultra: "ultra-native" } }, "m", "ultra")).toBe("max");
+  });
+
+  test("routed opt-in ultra renders the canonical description; default routed ladder stays ultra-free", () => {
+    const entries = buildCatalogEntries(nativeTemplate(), [], [
+      { provider: "p", id: "m-ultra", reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { provider: "p", id: "m-default" },
+    ]);
+    const opted = entries.find(e => e.slug === "p/m-ultra");
+    const dflt = entries.find(e => e.slug === "p/m-default");
+    const levels = opted?.supported_reasoning_levels as { effort: string; description: string }[];
+    expect(levels.map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(levels[levels.length - 1]?.description).toBe("Maximum reasoning with automatic task delegation");
+    expect((dflt?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+  });
+
+  test("no-template native GPT-5.6 fallback entries also advertise max and ultra", () => {
+    const entries = buildCatalogEntries(null, ["gpt-5.6-sol", "gpt-5.5"], []);
+    const gpt56 = entries.find(e => e.slug === "gpt-5.6-sol");
+    const gpt55 = entries.find(e => e.slug === "gpt-5.5");
+    expect((gpt56?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect((gpt55?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+  });
+});
+
+describe("stale-ladder max self-heal (260709)", () => {
+  const base: OcxProviderConfig = { baseUrl: "https://x", apiKey: "k" };
+
+  test("ladder stopping at xhigh gains max when the wire map routes xhigh -> max", () => {
+    const prov: OcxProviderConfig = {
+      ...base,
+      modelReasoningEfforts: { "glm-5.2": ["low", "medium", "high", "xhigh"] },
+      modelReasoningEffortMap: { "glm-5.2": { low: "high", medium: "high", high: "high", xhigh: "max", max: "max" } },
+    };
+    expect(configuredReasoningEfforts(prov, "glm-5.2")).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    // A healed max request rides the wire map to "max", not a clamp down to xhigh.
+    expect(mapReasoningEffort(prov, "glm-5.2", "max")).toBe("max");
+  });
+
+  test("thinking-toggle ladders can advertise five steps while the map emits enabled, never max", () => {
+    const prov: OcxProviderConfig = {
+      ...base,
+      modelReasoningEfforts: { "mimo-v2.5": ["low", "medium", "high", "xhigh", "max"] },
+      modelReasoningEffortMap: { "mimo-v2.5": { low: "disabled", medium: "enabled", high: "enabled", xhigh: "enabled", max: "enabled" } },
+    };
+    expect(configuredReasoningEfforts(prov, "mimo-v2.5")).toEqual(["low", "medium", "high", "xhigh", "max"]);
+  });
+
+  test("no wire map means no heal — an xhigh-top ladder without max evidence is preserved", () => {
+    const prov: OcxProviderConfig = { ...base, modelReasoningEfforts: { m: ["low", "medium", "high", "xhigh"] } };
+    expect(configuredReasoningEfforts(prov, "m")).toEqual(["low", "medium", "high", "xhigh"]);
   });
 });

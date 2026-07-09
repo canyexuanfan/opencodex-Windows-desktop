@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { augmentRoutedModelsWithJawcodeMetadata, buildCatalogEntries, filterSupportedNativeSlugs, gatherRoutedModels, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, normalizeRoutedCatalogEntry } from "../src/codex/catalog";
 import {
   CURSOR_STATIC_MODELS,
+  filterCursorConfiguredModelsByLiveDiscovery,
   cursorModelContextWindows,
   cursorModelIds,
   cursorModelInputModalities,
@@ -104,6 +105,8 @@ describe("Codex catalog routed normalization", () => {
     expect(routed).toBeDefined();
     expect(routed).not.toHaveProperty("model_messages");
     expect(routed).not.toHaveProperty("tool_mode");
+    // Routed entries do not inherit a native template's surface pin; the global
+    // Codex v2 flag can choose the surface freely unless upstream pins the model.
     expect(routed).not.toHaveProperty("multi_agent_version");
     expect(routed).not.toHaveProperty("use_responses_lite");
     expect(routed).not.toHaveProperty("supports_websockets");
@@ -160,7 +163,7 @@ describe("Codex catalog routed normalization", () => {
     expect(native?.auto_compact_token_limit).toBe(900_000);
   });
 
-  test("native gpt-5.3-codex-spark uses its 128k context window instead of inherited codex max", () => {
+  test("native gpt-5.3-codex-spark uses its 100k context window instead of inherited codex max", () => {
     const template = {
       ...nativeTemplate(),
       context_window: 272_000,
@@ -169,12 +172,12 @@ describe("Codex catalog routed normalization", () => {
     const entries = buildCatalogEntries(template, ["gpt-5.3-codex-spark"], []);
     const native = entries.find(e => e.slug === "gpt-5.3-codex-spark");
 
-    expect(native?.context_window).toBe(128_000);
-    expect(native?.max_context_window).toBe(128_000);
-    expect(native?.auto_compact_token_limit).toBe(115_200);
+    expect(native?.context_window).toBe(100_000);
+    expect(native?.max_context_window).toBe(100_000);
+    expect(native?.auto_compact_token_limit).toBe(90_000);
   });
 
-  test("native GPT-5.6 entries add max reasoning even when cloned from an older template", () => {
+  test("native GPT-5.6 entries add max and ultra reasoning even when cloned from an older template", () => {
     const entries = buildCatalogEntries({
       ...nativeTemplate(),
       context_window: 272_000,
@@ -184,14 +187,97 @@ describe("Codex catalog routed normalization", () => {
     const gpt55 = entries.find(e => e.slug === "gpt-5.5");
 
     expect((gpt56?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual([
-      "low", "medium", "high", "xhigh", "max",
+      "low", "medium", "high", "xhigh", "max", "ultra",
     ]);
     expect(gpt56?.context_window).toBe(372_000);
     expect(gpt56?.max_context_window).toBe(372_000);
     expect(gpt56?.auto_compact_token_limit).toBe(334_800);
     expect((gpt55?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual([
-      "low", "medium", "high", "xhigh",
+      "low", "medium", "high", "xhigh", "max", "ultra",
     ]);
+  });
+
+  test("gpt-5.6 natives come from the pinned upstream snapshot (PR #31684) with exact per-slug specs", () => {
+    const entries = buildCatalogEntries(nativeTemplate(), ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"], []);
+    const sol = entries.find(e => e.slug === "gpt-5.6-sol");
+    const terra = entries.find(e => e.slug === "gpt-5.6-terra");
+    const luna = entries.find(e => e.slug === "gpt-5.6-luna");
+
+    // Exact ladders: sol/terra advertise ultra, luna does NOT (upstream models.json).
+    expect((sol?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort))
+      .toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect((terra?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort))
+      .toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect((luna?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort))
+      .toEqual(["low", "medium", "high", "xhigh", "max"]);
+
+    // Default efforts: sol=low, terra/luna=medium.
+    expect(sol?.default_reasoning_level).toBe("low");
+    expect(terra?.default_reasoning_level).toBe("medium");
+    expect(luna?.default_reasoning_level).toBe("medium");
+
+    // Real identity, not slug-stamped synthesis.
+    expect(sol?.display_name).toBe("GPT-5.6-Sol");
+    expect(terra?.display_name).toBe("GPT-5.6-Terra");
+    expect(luna?.display_name).toBe("GPT-5.6-Luna");
+    expect(sol?.description).toBe("Latest frontier agentic coding model.");
+    expect(sol?.availability_nux).toBeDefined();
+
+    // Per-slug multi-agent generation: sol/terra v2, luna v1.
+    expect(sol?.multi_agent_version).toBe("v2");
+    expect(terra?.multi_agent_version).toBe("v2");
+    expect(luna?.multi_agent_version).toBe("v1");
+
+    // ocx adaptations: client-version gate stripped; ws preference gated off by default.
+    for (const e of [sol, terra, luna]) {
+      expect(e).not.toHaveProperty("minimal_client_version");
+      expect(e).not.toHaveProperty("prefer_websockets");
+      expect(e).not.toHaveProperty("supports_websockets");
+      expect(e?.context_window).toBe(372_000);
+      expect(e?.tool_mode).toBe("code_mode_only");
+      expect(e?.use_responses_lite).toBe(true);
+    }
+  });
+
+  test("gpt-5.6 snapshot entries keep prefer_websockets when websockets are enabled", () => {
+    const entries = buildCatalogEntries(nativeTemplate(), ["gpt-5.6-sol"], [], undefined, true);
+    const sol = entries.find(e => e.slug === "gpt-5.6-sol");
+    expect(sol?.prefer_websockets).toBe(true);
+    expect(sol?.supports_websockets).toBe(true);
+  });
+
+  test("catalog sync upgrades fallback-quality gpt-5.6 entries but preserves genuine ones", () => {
+    // Fallback-quality: display_name stamped with the bare slug (ocx synthesis signature),
+    // wrong ladder (ultra on luna) left by an older ocx version.
+    const synthesizedLuna = {
+      ...nativeTemplate(),
+      slug: "gpt-5.6-luna",
+      display_name: "gpt-5.6-luna",
+      priority: 9,
+      supported_reasoning_levels: [
+        { effort: "low", description: "l" }, { effort: "max", description: "m" }, { effort: "ultra", description: "u" },
+      ],
+    };
+    // Genuine: real display name — must be preserved untouched (installed codex is SoT once
+    // it catches up), marker field proves no replacement happened.
+    const genuineSol = {
+      ...nativeTemplate(),
+      slug: "gpt-5.6-sol",
+      display_name: "GPT-5.6-Sol",
+      priority: 1,
+      genuine_marker: "from-installed-catalog",
+    };
+
+    const merged = mergeCatalogEntriesForSync([synthesizedLuna, genuineSol], [], new Map(), [], false);
+    const luna = merged.find(e => e.slug === "gpt-5.6-luna");
+    const sol = merged.find(e => e.slug === "gpt-5.6-sol");
+
+    expect(luna?.display_name).toBe("GPT-5.6-Luna");
+    expect((luna?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort))
+      .toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(luna?.priority).toBe(3); // upstream priority restored for the upgraded entry
+    expect(sol?.genuine_marker).toBe("from-installed-catalog");
+    expect(sol?.priority).toBe(1);
   });
 
   test("routed entries still cap stale native max context to their active context window", () => {
@@ -217,7 +303,9 @@ describe("Codex catalog routed normalization", () => {
     expect(native).toBeDefined();
     expect(native).toHaveProperty("model_messages");
     expect(native?.tool_mode).toBe("code");
-    expect(native?.multi_agent_version).toBe("v2");
+    // Default mode clears multi_agent_version on non-pinned natives (gpt-5.5
+    // has no upstream pin — codex feature flag decides the surface).
+    expect(native?.multi_agent_version).toBeUndefined();
     expect(native?.use_responses_lite).toBe(true);
     // WebSocket advertisement is opt-in; templates must not leak it by default.
     expect(native).not.toHaveProperty("supports_websockets");
@@ -388,6 +476,14 @@ describe("Codex catalog routed normalization", () => {
       globalThis.fetch = originalFetch;
       clearModelCache("cursor");
     }
+  });
+
+  test("Cursor live discovery keeps auto even when GetUsableModels omits it", () => {
+    const configured = [{ id: "auto" }, { id: "gpt-5.4" }, { id: "claude-fable-5" }];
+    expect(filterCursorConfiguredModelsByLiveDiscovery(configured, ["gpt-5.4-high"]).map(model => model.id)).toEqual([
+      "auto",
+      "gpt-5.4",
+    ]);
   });
 
   test("liveModels false ignores a fresh live-model cache", async () => {

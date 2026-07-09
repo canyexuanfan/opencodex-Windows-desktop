@@ -18,33 +18,92 @@ function toolsOf(tools: OcxTool[]): Array<{ name: string; input_schema: Record<s
   return parsedBody.tools;
 }
 
-describe("anthropic tool input_schema normalization", () => {
-  test("a parameterless tool (empty schema) gets a valid object input_schema", () => {
-    const [tool] = toolsOf([{ name: "get_time", description: "current time", parameters: {} }]);
-    expect(tool.input_schema.type).toBe("object");
-    expect(tool.input_schema.properties).toEqual({});
-  });
+function toolSchema(parameters: unknown): Record<string, unknown> {
+  const [tool] = toolsOf([{ name: "sample_tool", description: "Sample", parameters } as OcxTool]);
+  return tool.input_schema;
+}
 
-  test("a schema missing type gains type:object while keeping properties", () => {
-    const [tool] = toolsOf([{
-      name: "search",
-      description: "search",
-      parameters: { properties: { q: { type: "string" } }, required: ["q"] },
-    }]);
-    expect(tool.input_schema.type).toBe("object");
-    expect(tool.input_schema.properties).toEqual({ q: { type: "string" } });
-    expect(tool.input_schema.required).toEqual(["q"]);
+describe("anthropic tool input_schema normalization", () => {
+  test("parameterless and type-less tools become valid object schemas", () => {
+    expect(toolSchema({})).toEqual({ type: "object", properties: {} });
+    expect(toolSchema({ properties: { query: { type: "string" } }, required: ["query"] })).toEqual({
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"],
+    });
   });
 
   test("an already-valid object schema passes through untouched", () => {
     const schema = { type: "object", properties: { path: { type: "string" } }, required: ["path"] };
-    const [tool] = toolsOf([{ name: "read_file", description: "read", parameters: { ...schema } }]);
-    expect(tool.input_schema).toEqual(schema);
+    expect(toolSchema({ ...schema })).toEqual(schema);
   });
 
   test("object schema with type but no properties gains an empty properties map", () => {
-    const [tool] = toolsOf([{ name: "noop", description: "noop", parameters: { type: "object" } }]);
-    expect(tool.input_schema.type).toBe("object");
-    expect(tool.input_schema.properties).toEqual({});
+    expect(toolSchema({ type: "object" })).toEqual({ type: "object", properties: {} });
+  });
+
+  test("root oneOf and anyOf are flattened without promoting branch required fields", () => {
+    const anyOf = toolSchema({
+      anyOf: [
+        { type: "object", properties: { a: { type: "string" } }, required: ["a"] },
+        { type: "object", properties: { b: { type: "number" } }, required: ["b"] },
+      ],
+    });
+    expect(anyOf.anyOf).toBeUndefined();
+    expect(anyOf.oneOf).toBeUndefined();
+    expect(anyOf.allOf).toBeUndefined();
+    expect(anyOf).toEqual({
+      type: "object",
+      properties: { a: { type: "string" }, b: { type: "number" } },
+    });
+
+    expect(toolSchema({
+      oneOf: [
+        { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+      ],
+    })).toEqual({
+      type: "object",
+      properties: { path: { type: "string" } },
+    });
+  });
+
+  test("root allOf merges required fields and preserves sibling schema metadata", () => {
+    expect(toolSchema({
+      title: "Search options",
+      additionalProperties: false,
+      properties: { existing: { type: "string" } },
+      required: ["existing"],
+      allOf: [
+        { type: "object", properties: { limit: { type: "number" } }, required: ["limit"] },
+        { type: "object", properties: { sort: { type: "string" } } },
+      ],
+    })).toEqual({
+      title: "Search options",
+      additionalProperties: false,
+      type: "object",
+      properties: {
+        existing: { type: "string" },
+        limit: { type: "number" },
+        sort: { type: "string" },
+      },
+      required: ["existing", "limit"],
+    });
+  });
+
+  test("nested composition under properties is preserved", () => {
+    expect(toolSchema({
+      properties: {
+        value: {
+          anyOf: [{ type: "string" }, { type: "number" }],
+        },
+      },
+    })).toEqual({
+      type: "object",
+      properties: {
+        value: {
+          anyOf: [{ type: "string" }, { type: "number" }],
+        },
+      },
+    });
   });
 });

@@ -74,6 +74,174 @@ export function buildToolBridgeMaps(parsed: OcxParsedRequest): {
   return { toolNsMap, freeformToolNames, toolSearchToolNames };
 }
 
+/** Verbatim upstream Proactive text (codex-rs core/src/context/multi_agent_mode_instructions.rs). */
+const PROACTIVE_MULTI_AGENT_MODE_TEXT = [
+  "Proactive multi-agent delegation is active.",
+  "Any earlier instruction requiring an explicit user request before spawning sub-agents no longer applies.",
+  "Delegate independent sub-tasks to sub-agents whenever parallel work would materially improve speed or quality — do not serialize work that can run concurrently.",
+  "Each sub-agent runs in its own context and can use all available tools; prefer spawning specialists over doing everything yourself.",
+  "This mode remains active until a later multi-agent mode developer message changes it.",
+].join(" ");
+
+/**
+ * True when this turn runs the v1 collab surface, judged from the request's own tool list
+ * (codex registers exactly one surface per thread, core/src/tools/spec_plan.rs): v1 ships
+ * spawn_agent inside a namespace plus v1-only names (send_input/close_agent); v2 ships a
+ * flat spawn_agent. A flat spawn_agent vetoes so an ambiguous mix never counts as v1.
+ */
+export function isV1CollabSurface(parsed: OcxParsedRequest): boolean {
+  let namespacedSpawn = false;
+  let flatSpawn = false;
+  let v1Only = false;
+  for (const t of parsed.context.tools ?? []) {
+    if (t.name === "spawn_agent") {
+      if (t.namespace) namespacedSpawn = true;
+      else flatSpawn = true;
+    } else if (t.name === "send_input" || t.name === "close_agent") v1Only = true;
+  }
+  return (namespacedSpawn || v1Only) && !flatSpawn;
+}
+
+/**
+ * Multi-agent guidance for this turn, or null when nothing applies.
+ *
+ * codex-rs only emits its Proactive delegation developer message on the v2 surface,
+ * so when a v1-surface turn arrives at the synthetic top tier (codex converts
+ * ultra -> max on the wire, so max arrival means the user picked the top rung) the
+ * proxy supplies the same one-liner, wrapped in codex's own <multi_agent_mode> tags
+ * (v1 turns never carry that fragment, so there is nothing to collide with).
+ * Ultra is always advertised, so the guidance fires regardless of the multi_agent_v2
+ * toggle.
+ *
+ * Dynamic model injection: when the user has configured a specific injectionModel,
+ * the prompt names it so the agent knows which routed model to delegate to.
+ *
+ * Effort gate relaxation: when an injectionModel is set, the prompt fires at every
+ * effort level, not just max/ultra — the user opted into delegation.
+ */
+export async function multiAgentGuidanceText(parsed: OcxParsedRequest, injectionModel?: string): Promise<string | null> {
+  if (!isV1CollabSurface(parsed)) return null;
+  const effort = parsed.options.reasoning;
+  // When the user has selected a specific injection model, fire the delegation prompt
+  // at ANY effort level. Otherwise preserve the original gate: top tier only (max/ultra).
+  if (!injectionModel && effort !== "max" && effort !== "ultra") return null;
+
+  let text = PROACTIVE_MULTI_AGENT_MODE_TEXT;
+
+  // Append the selected model when the user has configured a specific injection target.
+  if (injectionModel) {
+    text += `\n\nA preferred sub-agent model is configured: "${injectionModel}". `
+      + `When delegating, call spawn_agent and set its model argument to exactly "${injectionModel}". `
+      + "Use it for independent sub-tasks unless the user explicitly asks for another model.";
+  }
+
+  return `<multi_agent_mode>${text}</multi_agent_mode>`;
+}
+
+/**
+ * Append a developer message to BOTH request shapes: parsed.context.messages feeds the
+ * routed adapters, while the ChatGPT passthrough serializes _rawBody verbatim (same
+ * dual-write contract as the mock-max clamp in handleResponses).
+ */
+export function injectDeveloperMessage(parsed: OcxParsedRequest, text: string): void {
+  parsed.context.messages.push({ role: "developer", content: text, timestamp: Date.now() });
+  const raw = parsed._rawBody as { input?: unknown } | undefined;
+  if (raw && Array.isArray(raw.input)) {
+    const devItem = { type: "message", role: "developer", content: [{ type: "input_text", text }] };
+    // compaction_trigger must remain the final input item (codex-rs + ChatGPT backend both
+    // validate this). Insert the developer message BEFORE the trigger when present.
+    const last = raw.input[raw.input.length - 1];
+    if (last && typeof last === "object" && (last as { type?: string }).type === "compaction_trigger") {
+      raw.input.splice(raw.input.length - 1, 0, devItem);
+    } else {
+      raw.input.push(devItem);
+    }
+  }
+}
+
+/**
+ * True when an encrypted_content payload plausibly came from the ChatGPT backend
+ * (opaque base64-ish blob). codex-rs's `InterAgentCommunication::new_encrypted` performs
+ * NO local crypto — it just parks plaintext in the encrypted slot and relies on the
+ * backend to swap in real ciphertext. Under a routed (ocx-served) parent the backend
+ * never sees the parent turn, so the slot still holds plaintext when a native child
+ * replays it — and the backend then fails the turn with "Encrypted function output
+ * content could not be decrypted or decoded" (observed 260709 as 502 retry loops).
+ */
+function looksLikeBackendCiphertext(payload: string): boolean {
+  return payload.length >= 64 && /^[A-Za-z0-9+/=_-]+$/.test(payload);
+}
+
+/**
+ * Backend-minted ciphertext runs are Fernet tokens (base64url, version byte 0x80 ->
+ * literal "gAAAA" prefix). Used to carve embedded blobs out of MIXED slots: plugin
+ * hooks (e.g. codexclaw's leaf guard) prepend plaintext preambles to spawn messages
+ * whose task body is already backend-encrypted, producing a slot that is neither
+ * decryptable (backend) nor readable (model) as a whole.
+ */
+const FERNET_TOKEN_RUN = /gAAAA[A-Za-z0-9_-]{60,}={0,2}/g;
+
+/**
+ * Split a non-ciphertext encrypted slot into ordered parts: prose becomes input_text,
+ * embedded Fernet blobs stay encrypted_content so the backend can still decrypt the
+ * real task body. A slot with no embedded blob degrades to a single input_text part.
+ */
+function encryptedSlotParts(payload: string): Array<Record<string, string>> {
+  const parts: Array<Record<string, string>> = [];
+  let last = 0;
+  for (const match of payload.matchAll(FERNET_TOKEN_RUN)) {
+    const index = match.index ?? 0;
+    const before = payload.slice(last, index);
+    if (before.trim().length > 0) parts.push({ type: "input_text", text: before });
+    parts.push({ type: "encrypted_content", encrypted_content: match[0] });
+    last = index + match[0].length;
+  }
+  const rest = payload.slice(last);
+  if (rest.trim().length > 0) parts.push({ type: "input_text", text: rest });
+  return parts.length > 0 ? parts : [{ type: "input_text", text: payload }];
+}
+
+/**
+ * Rewrite non-ciphertext `{type:"encrypted_content"}` parts into `{type:"input_text"}`
+ * throughout a native-bound request's input items (message content and
+ * function_call_output content arrays share the part shape, codex-rs protocol/models.rs).
+ * Genuine backend blobs are left byte-identical so replay/cache semantics survive, and
+ * MIXED slots (plaintext preamble + embedded Fernet task body) are split so the backend
+ * decrypts the blob while the prose passes as text. Returns the number of parts rewritten.
+ */
+export function sanitizeEncryptedContentInPlace(input: unknown): number {
+  if (!Array.isArray(input)) return 0;
+  let rewritten = 0;
+  const visit = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i += 1) {
+        const child = node[i] as unknown;
+        if (
+          child && typeof child === "object"
+          && (child as { type?: unknown }).type === "encrypted_content"
+          && typeof (child as { encrypted_content?: unknown }).encrypted_content === "string"
+        ) {
+          const payload = (child as { encrypted_content: string }).encrypted_content;
+          if (!looksLikeBackendCiphertext(payload)) {
+            const parts = encryptedSlotParts(payload);
+            node.splice(i, 1, ...parts);
+            i += parts.length - 1;
+            rewritten += 1;
+            continue;
+          }
+        }
+        visit(child);
+      }
+      return;
+    }
+    if (node && typeof node === "object") {
+      for (const value of Object.values(node)) visit(value);
+    }
+  };
+  visit(input);
+  return rewritten;
+}
+
 export function sidecarOutcomeRecorder(config: OcxConfig, authCtx: CodexAuthContext): ((outcome: CodexUpstreamOutcome) => void) | undefined {
   return authCtx.kind === "pool" || authCtx.kind === "main-pool"
     ? outcome => recordCodexUpstreamOutcome(config, authCtx.accountId, outcome)
@@ -178,6 +346,47 @@ export async function handleResponses(
   }
   logCtx.model = route.modelId;
   logCtx.provider = route.providerName;
+
+  // Multi-agent guidance shim: codex-rs emits its Proactive delegation developer
+  // message only on the v2 surface. If the request's own tool list proves this
+  // is a v1 collab surface, preserve that top-tier behavior for legacy/v1 threads.
+  // Runs BEFORE the mock-max clamp below so the synthetic top tier (ultra arrives
+  // as max on the codex wire) is still visible. Both request shapes are rewritten.
+  {
+    const requestedModelId = logCtx.requestedModel ?? route.modelId;
+    // Cross-provider spawn poison fix: native-bound requests may carry plaintext parked in
+    // encrypted_content slots (spawn messages minted under a routed parent). Rewrite them
+    // to input_text before the passthrough serializes _rawBody verbatim.
+    if (!requestedModelId.includes("/")) {
+      const raw = parsed._rawBody as { input?: unknown } | undefined;
+      const rewritten = sanitizeEncryptedContentInPlace(raw?.input);
+      if (rewritten > 0) console.warn(`[opencodex] ${route.modelId}: rewrote ${rewritten} plaintext encrypted_content part(s) to input_text (routed-parent spawn compatibility)`);
+    }
+    const guidance = await multiAgentGuidanceText(parsed, config.injectionModel);
+    if (guidance) injectDeveloperMessage(parsed, guidance);
+  }
+
+  // Mock-max clamp: native models whose real ladder stops below max (gpt-5.5/5.4/…)
+  // receive `max` when the user picks Ultra (codex converts ultra->max client-side).
+  // Clamp to the model's highest real effort BEFORE any adapter — the ChatGPT
+  // passthrough serializes _rawBody verbatim, so both shapes must be rewritten.
+  // GUARD: judge nativeness by the ORIGINALLY REQUESTED id (logCtx.requestedModel),
+  // never by route.modelId — routing strips the "<provider>/" namespace, so a routed
+  // model (anthropic/claude-opus-4-6, real max) would masquerade as an off-snapshot
+  // bare native and get wrongly clamped. Routed efforts belong to their adapters.
+  {
+    const requestedModelId = logCtx.requestedModel ?? route.modelId;
+    const { nativeEffortClamp } = await import("../codex/catalog");
+    const clamped = requestedModelId.includes("/")
+      ? null
+      : nativeEffortClamp(route.modelId, parsed.options.reasoning);
+    if (clamped) {
+      parsed.options.reasoning = clamped;
+      const raw = parsed._rawBody as { reasoning?: { effort?: string } } | undefined;
+      if (raw?.reasoning && typeof raw.reasoning === "object") raw.reasoning.effort = clamped;
+      logCtx.requestedEffort = `${logCtx.requestedEffort ?? "max"}->${clamped}`;
+    }
+  }
   logCtx.modelSupportsServiceTier = catalogModelSupportsServiceTier(
     route.modelId,
     logCtx.requestedServiceTier ?? logCtx.configuredServiceTier,

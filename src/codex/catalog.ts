@@ -14,7 +14,9 @@ import { getJawcodeModelMetadata, getJawcodeModelMetadataCaseInsensitive, listJa
 import { enrichProviderFromRegistry, shouldCaseFoldMetadataModelId } from "../providers/derive";
 import { applyProviderContextCap, providerContextCap } from "../providers/context-cap";
 import { CODEX_GPT5_IDENTITY_LINE } from "../adapters/identity";
+import { filterCursorConfiguredModelsByLiveDiscovery } from "../adapters/cursor/discovery";
 import { fetchCursorUsableModels } from "../adapters/cursor/live-models";
+import upstreamModelsSnapshot from "./data/upstream-models.json";
 
 const BUNDLED_CATALOG_CACHE_MS = 60_000;
 let bundledCatalogCache: { expiresAt: number; value: RawCatalog | null } | null = null;
@@ -111,11 +113,146 @@ const NATIVE_GPT56_CONTEXT_WINDOW = 372_000;
 const NATIVE_OPENAI_CONTEXT_OVERRIDES: Record<string, { contextWindow?: number; maxContextWindow?: number }> = {
   "gpt-5.5": { contextWindow: 272_000, maxContextWindow: 272_000 },
   "gpt-5.4": { contextWindow: 1_000_000, maxContextWindow: 1_000_000 },
-  "gpt-5.3-codex-spark": { contextWindow: 128_000, maxContextWindow: 128_000 },
+  "gpt-5.3-codex-spark": { contextWindow: 100_000, maxContextWindow: 100_000 },
   "gpt-5.6-sol": { contextWindow: NATIVE_GPT56_CONTEXT_WINDOW, maxContextWindow: NATIVE_GPT56_CONTEXT_WINDOW },
   "gpt-5.6-terra": { contextWindow: NATIVE_GPT56_CONTEXT_WINDOW, maxContextWindow: NATIVE_GPT56_CONTEXT_WINDOW },
   "gpt-5.6-luna": { contextWindow: NATIVE_GPT56_CONTEXT_WINDOW, maxContextWindow: NATIVE_GPT56_CONTEXT_WINDOW },
 };
+
+/** Known context window for a supported native OpenAI slug (management API display). */
+export function nativeOpenAiContextWindow(slug: string): number | undefined {
+  return NATIVE_OPENAI_CONTEXT_OVERRIDES[slug]?.contextWindow
+    ?? (typeof UPSTREAM_NATIVE_ENTRIES.get(slug)?.context_window === "number"
+      ? UPSTREAM_NATIVE_ENTRIES.get(slug)!.context_window as number
+      : undefined);
+}
+
+/**
+ * Bare (slash-free) entries of `disabledModels` — the native GPT half of the single
+ * enable/disable choke point. Routed ids are always namespaced `provider/id`, so bare
+ * slugs can never collide with them.
+ */
+export function disabledNativeSlugs(config: Pick<OcxConfig, "disabledModels">): Set<string> {
+  return new Set((config.disabledModels ?? []).filter(id => !id.includes("/")));
+}
+
+/**
+ * Native slugs to expose on bare availability surfaces (the OpenAI list shape of
+ * /v1/models): the advertised set minus config-disabled natives. Catalog-shaped
+ * emissions keep disabled entries with `visibility: "hide"` instead (codex-rs hides
+ * them from the picker itself), so sync/restore stays symmetric.
+ */
+export function visibleNativeSlugs(config: Pick<OcxConfig, "disabledModels">): string[] {
+  const disabled = disabledNativeSlugs(config);
+  return nativeOpenAiSlugs().filter(slug => !disabled.has(slug));
+}
+
+/**
+ * Native GPT rows for the management dashboard. Sourced from the STATIC supported set —
+ * independent of catalog visibility flips, so a disabled model stays listed and can be
+ * re-enabled from the GUI.
+ */
+export function nativeModelRows(config: Pick<OcxConfig, "disabledModels">): Array<{ slug: string; disabled: boolean; contextWindow?: number }> {
+  const disabled = disabledNativeSlugs(config);
+  return NATIVE_OPENAI_MODELS.map(slug => {
+    const contextWindow = nativeOpenAiContextWindow(slug);
+    return { slug, disabled: disabled.has(slug), ...(contextWindow !== undefined ? { contextWindow } : {}) };
+  });
+}
+
+/**
+ * Central visibility flip for supported native entries in catalog-shaped output:
+ * disabled -> "hide" (entry preserved for template/backup/restore), enabled -> "list".
+ * Unsupported natives and routed entries are untouched.
+ */
+export function applyNativeVisibility(entries: RawEntry[], disabledNative: Set<string>): RawEntry[] {
+  for (const entry of entries) {
+    const slug = typeof entry.slug === "string" ? entry.slug : "";
+    if (!slug || slug.includes("/") || !SUPPORTED_NATIVE_OPENAI_SLUGS.has(slug)) continue;
+    entry.visibility = disabledNative.has(slug) ? "hide" : "list";
+  }
+  return entries;
+}
+
+/**
+ * Pinned upstream models.json snapshot (openai/codex PR #31684, codex-rs/models-manager/models.json)
+ * providing the REAL catalog entries for supported native slugs the installed Codex binary may
+ * predate (gpt-5.6-sol/terra/luna). Restricted to supported gpt-5.6 slugs ONLY: for
+ * gpt-5.5/5.4/5.4-mini the installed catalog's live entries are RICHER than this bundled
+ * fallback (the snapshot ships gpt-5.5 with tool_mode null / use_responses_lite false /
+ * comp_hash 2911), so substituting them would downgrade real entries. gpt-5.6 has no real
+ * installed entry to downgrade — the alternative is gpt-5.5-template synthesis, which this
+ * snapshot strictly improves on (exact ladders: luna has NO ultra; sol defaults to low).
+ */
+const UPSTREAM_NATIVE_ENTRIES: Map<string, RawEntry> = new Map(
+  ((upstreamModelsSnapshot as unknown as { models?: RawEntry[] }).models ?? [])
+    .filter(m => typeof m.slug === "string"
+      && SUPPORTED_NATIVE_OPENAI_SLUGS.has(m.slug as string)
+      && (m.slug as string).startsWith("gpt-5.6-"))
+    .map(m => [m.slug as string, m]),
+);
+
+/**
+ * Deep clone of the pinned upstream entry for a native slug, adapted for ocx emission:
+ * `minimal_client_version` is stripped (a pinned client-version gate would hide the model from
+ * older installed clients; ocx targets whatever client is installed, matching the synthesis
+ * path which never emits the field). `prefer_websockets` is left in place — the central
+ * websocket overrides in buildCatalogEntries/mergeCatalogEntriesForSync gate it with
+ * supports_websockets.
+ */
+export function upstreamNativeEntry(slug: string): RawEntry | null {
+  const entry = UPSTREAM_NATIVE_ENTRIES.get(slug);
+  if (!entry) return null;
+  const clone = JSON.parse(JSON.stringify(entry)) as RawEntry;
+  delete clone.minimal_client_version;
+  return clone;
+}
+
+/**
+ * Mock-max wire clamp (devlog/260709_v2_gated_ultra): the catalog advertises `ultra`
+ * on natives whose REAL upstream ladder stops below max (gpt-5.5/5.4/…); codex-rs
+ * converts ultra -> max at its inference boundary, and the ChatGPT backend then
+ * rejects `max` for those models ("Invalid value: 'max'"). Returns the model's
+ * highest real effort when the requested top-tier effort (max/ultra) is not in the
+ * native ladder; null when no clamp is needed (routed slugs, real-max natives,
+ * ordinary efforts, unknown slugs).
+ */
+export function nativeEffortClamp(slug: string, effort: string | undefined): string | null {
+  if (!effort || (effort !== "max" && effort !== "ultra")) return null;
+  if (slug.includes("/")) return null; // routed models map efforts in their adapters
+  const entry = UPSTREAM_NATIVE_ENTRIES.get(slug);
+  const levels = Array.isArray(entry?.supported_reasoning_levels)
+    ? entry.supported_reasoning_levels as Array<{ effort?: string }>
+    : [];
+  if (levels.length === 0) {
+    // Not snapshot-covered. gpt-5.6 natives have a REAL max rung (ensureGpt56ReasoningLevels
+    // restores it even off-snapshot) -> never clamp. Every other bare native (gpt-5.5/5.4/
+    // 5.4-mini/5.3-codex-spark and future old-ladder slugs) really stops at xhigh — the
+    // ChatGPT backend error names exactly none..xhigh — so clamp the synthetic top tier.
+    return isGpt56NativeSlug(slug) ? null : "xhigh";
+  }
+  const supported = levels.flatMap(l => typeof l.effort === "string" ? [l.effort] : []);
+  if (supported.includes(effort)) return null;
+  const rank = ["minimal", "low", "medium", "high", "xhigh", "max"];
+  const highest = supported
+    .filter(e => rank.includes(e))
+    .sort((a, b) => rank.indexOf(a) - rank.indexOf(b))
+    .at(-1);
+  return highest ?? null;
+}
+
+/**
+ * True when a preserved catalog entry for a snapshot-covered slug should be UPGRADED to the
+ * pinned upstream entry. Discriminator: `display_name === slug` — both ocx synthesis and the
+ * codex-rs model_info fallback stamp the bare slug as display name, while genuine upstream
+ * entries always carry marketing names ("GPT-5.6-Sol"). Fallback-quality entries are
+ * intentionally overwritten; a real newer catalog entry is preserved untouched.
+ */
+function shouldUpgradeToUpstreamEntry(entry: RawEntry): boolean {
+  return typeof entry.slug === "string"
+    && UPSTREAM_NATIVE_ENTRIES.has(entry.slug)
+    && entry.display_name === entry.slug;
+}
 
 /**
  * The native (passthrough) OpenAI slugs to advertise — the LIVE Codex catalog's own bare slugs when
@@ -136,6 +273,8 @@ export interface CatalogModel {
   contextCap?: number;
   contextCapped?: boolean;
   inputModalities?: string[];
+  /** Provider opted into parallel tool calls (OcxProviderConfig.parallelToolCalls). */
+  parallelToolCalls?: boolean;
 }
 type RawEntry = Record<string, unknown>;
 type RawCatalog = { models?: RawEntry[]; [k: string]: unknown };
@@ -273,7 +412,40 @@ function ensureStrictCatalogFields(entry: RawEntry): RawEntry {
   return ensureAutoCompactTokenLimit(entry);
 }
 
-export function normalizeRoutedCatalogEntry(entry: RawEntry): RawEntry {
+/** Multi-agent surface mode — see OcxConfig.multiAgentMode. */
+export type MultiAgentMode = "v1" | "default" | "v2";
+
+/**
+ * Apply the 3-state multi-agent surface override to catalog entries.
+ * - "v1": force multi_agent_version = "v1" on ALL entries (override upstream pins)
+ * - "default": RESTORE upstream pins — clear stale forced values so entries that were
+ *   previously forced to v1/v2 revert to their natural state (upstream-pinned natives
+ *   get their snapshot pin, others get null so the codex feature flag decides)
+ * - "v2": force multi_agent_version = "v2" on ALL entries (override upstream pins)
+ */
+function applyMultiAgentMode(entries: RawEntry[], mode: MultiAgentMode): RawEntry[] {
+  if (mode === "default") {
+    // Restore upstream defaults: clear any stale forced multi_agent_version and
+    // re-apply upstream pins from the snapshot for native entries that have one.
+    for (const entry of entries) {
+      const slug = typeof entry.slug === "string" ? entry.slug : "";
+      const upstream = UPSTREAM_NATIVE_ENTRIES.get(slug);
+      const upstreamPin = upstream?.multi_agent_version;
+      if (typeof upstreamPin === "string") {
+        entry.multi_agent_version = upstreamPin;
+      } else {
+        delete entry.multi_agent_version;
+      }
+    }
+    return entries;
+  }
+  for (const entry of entries) {
+    entry.multi_agent_version = mode;
+  }
+  return entries;
+}
+
+export function normalizeRoutedCatalogEntry(entry: RawEntry, parallelToolCalls = false): RawEntry {
   delete entry.model_messages;
   delete entry.tool_mode;
   delete entry.multi_agent_version;
@@ -297,7 +469,10 @@ export function normalizeRoutedCatalogEntry(entry: RawEntry): RawEntry {
   }
   // Cursor's transport already serializes overlapping tool calls into atomic Responses tool events.
   // Advertising parallel calls lets Codex send the same native capability bit it sends for OpenAI.
-  entry.supports_parallel_tool_calls = isCursorEntry;
+  // Opt-in providers (OcxProviderConfig.parallelToolCalls, e.g. xAI) advertise it too: the
+  // openai-chat adapter stops forcing parallel_tool_calls:false and the buffered stream parser
+  // assembles multi-call turns (devlog/_plan/260709_parallel_tool_calls).
+  entry.supports_parallel_tool_calls = isCursorEntry || parallelToolCalls === true;
   return ensureStrictCatalogFields(entry);
 }
 
@@ -478,7 +653,10 @@ export function loadCatalogTemplate(): RawEntry | null {
  * Codex accepts its native labels plus model-defined effort strings such as `max` in current builds.
  * Provider-specific aliases still map at request time by src/reasoning-effort.ts.
  */
-const ROUTED_REASONING_LEVELS = CODEX_REASONING_LEVELS;
+// Routed models default to the low..max ladder: upstream bundled catalogs advertise no "ultra"
+// either — but opencodex exposes ultra universally so routed models can use the auto-delegation
+// mode (codex-rs converts ultra → max on the wire before any provider request).
+const ROUTED_REASONING_LEVELS = [...CODEX_REASONING_LEVELS];
 
 function applyCatalogModelMetadata(entry: RawEntry, model?: CatalogModel): void {
   if (!model) return;
@@ -493,7 +671,19 @@ function applyCatalogModelMetadata(entry: RawEntry, model?: CatalogModel): void 
 }
 
 function applyReasoningLevels(entry: RawEntry, effortsOverride?: string[]): void {
-  const efforts = sanitizeCodexReasoningEfforts(effortsOverride) ?? ROUTED_REASONING_LEVELS.map(l => l.effort);
+  let efforts = sanitizeCodexReasoningEfforts(effortsOverride) ?? ROUTED_REASONING_LEVELS.map(l => l.effort);
+  // Mock top tiers (user decision 260709): every reasoning-capable model advertises `max`
+  // even when the provider ladder stops lower — subagent spawns pass `max` DIRECTLY
+  // (no ultra->max client conversion) and codex-rs validates it by catalog membership,
+  // so a missing max rung hard-fails spawn_agent effort overrides. The wire stays honest:
+  // routed adapters clamp via clampToSupportedCodexEffort and natives via
+  // nativeEffortClamp (max -> the model's real top rung).
+  if (efforts.length > 0) {
+    const additions: string[] = [];
+    if (!efforts.includes("max")) additions.push("max");
+    if (!efforts.includes("ultra")) additions.push("ultra");
+    if (additions.length > 0) efforts = sanitizeCodexReasoningEfforts([...efforts, ...additions]) ?? efforts;
+  }
   const byEffort = new Map(
     (Array.isArray(entry.supported_reasoning_levels) ? entry.supported_reasoning_levels : [])
       .map((l: { effort?: string }) => [l.effort, l]),
@@ -501,7 +691,9 @@ function applyReasoningLevels(entry: RawEntry, effortsOverride?: string[]): void
   entry.supported_reasoning_levels = efforts.map(effort => {
     const native = byEffort.get(effort);
     if (native) return native;
-    return ROUTED_REASONING_LEVELS.find(l => l.effort === effort) ?? { effort, description: `${effort} reasoning` };
+    // Description lookup uses the FULL ladder so an opt-in effort outside the routed default
+    // (e.g. "ultra") still renders its canonical description.
+    return CODEX_REASONING_LEVELS.find(l => l.effort === effort) ?? { effort, description: `${effort} reasoning` };
   });
   if (efforts.length === 0) {
     delete entry.default_reasoning_level;
@@ -514,17 +706,72 @@ function isGpt56NativeSlug(slug: string): boolean {
   return !slug.includes("/") && slug.startsWith("gpt-5.6-");
 }
 
-function ensureMaxReasoningLevel(entry: RawEntry): void {
+/**
+ * Fallback ladder fix for a gpt-5.6 native slug NOT covered by the upstream snapshot (a future
+ * variant the snapshot predates): entries cloned from an older template (gpt-5.5) stop at xhigh,
+ * so append max+ultra in upstream rank order when absent. Snapshot-covered slugs never reach
+ * this — deriveEntry returns their real entry first.
+ */
+function ensureGpt56ReasoningLevels(entry: RawEntry): void {
   const levels = Array.isArray(entry.supported_reasoning_levels)
     ? entry.supported_reasoning_levels as Array<{ effort?: string }>
     : [];
-  if (levels.some(level => level.effort === "max")) return;
-  const maxLevel = ROUTED_REASONING_LEVELS.find(level => level.effort === "max")
-    ?? { effort: "max", description: "Maximum reasoning for the hardest problems" };
-  entry.supported_reasoning_levels = [...levels, maxLevel];
+  const out = [...levels];
+  // max is a real native rung on the 5.6 family — always restored; ultra always advertised.
+  for (const effort of ["max", "ultra"]) {
+    if (out.some(level => level.effort === effort)) continue;
+    out.push(CODEX_REASONING_LEVELS.find(level => level.effort === effort)
+      ?? { effort, description: `${effort} reasoning` });
+  }
+  entry.supported_reasoning_levels = out;
+}
+
+/**
+ * Ensure the mock top tiers on a native model's advertised ladder: `max` and `ultra`
+ * are always advertised (subagent spawns pass max directly and codex-rs validates by
+ * catalog membership — the ocx wire clamp routes it to the model's real top rung).
+ */
+function ensureUltraReasoningLevel(entry: RawEntry): void {
+  const levels = Array.isArray(entry.supported_reasoning_levels)
+    ? entry.supported_reasoning_levels as Array<{ effort?: string }>
+    : [];
+  if (levels.length === 0) return;
+  const wanted = ["max", "ultra"];
+  for (const effort of wanted) {
+    if (levels.some(level => level.effort === effort)) continue;
+    levels.push(
+      CODEX_REASONING_LEVELS.find(level => level.effort === effort)
+        ?? { effort, description: `${effort} reasoning` },
+    );
+  }
+  entry.supported_reasoning_levels = levels;
+}
+
+/**
+ * Native entry from the pinned upstream snapshot, finished for emission. Keeps the entry's
+ * OWN identity (display_name, description, priority, availability_nux — it is the model's own
+ * NUX, not another model's) instead of the caller's generic passthrough blurb. The caller's
+ * `priority` wins only when it is a deliberate override (featured rank / push-down), i.e. not
+ * the native default 9.
+ */
+function finishUpstreamNativeEntry(clone: RawEntry, priority: number): RawEntry {
+  if (priority !== 9) clone.priority = priority;
+  applyNativeOpenAiContextOverride(clone);
+  // GPT-5.6 natives keep their exact upstream ladders (e.g. luna has max but no ultra).
+  // Older natives (gpt-5.5 / 5.4 / 5.4-mini / 5.3-codex-spark) get mock max + ultra
+  // (wire-clamped to xhigh). Ultra is always advertised regardless of v2 toggle.
+  if (!isGpt56NativeSlug(String(clone.slug ?? ""))) ensureUltraReasoningLevel(clone);
+  return ensureStrictCatalogFields(normalizeServiceTiers(clone));
 }
 
 function deriveEntry(template: RawEntry | null, slug: string, desc: string, priority: number, model?: CatalogModel): RawEntry {
+  if (!slug.includes("/")) {
+    // Supported native slug covered by the upstream snapshot: use the REAL entry (exact
+    // reasoning ladder — e.g. luna has no ultra — default effort, identity, model_messages)
+    // instead of cloning an older template.
+    const upstream = upstreamNativeEntry(slug);
+    if (upstream) return finishUpstreamNativeEntry(upstream, priority);
+  }
   if (template) {
     const e = JSON.parse(JSON.stringify(template)) as RawEntry;
     e.slug = slug;
@@ -547,12 +794,13 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
         );
       }
       applyReasoningLevels(e, model?.reasoningEfforts);
-      normalizeRoutedCatalogEntry(e);
+      normalizeRoutedCatalogEntry(e, model?.parallelToolCalls === true);
       applyJawcodeCatalogMetadata(e, slug, model?.contextCap);
       applyCatalogModelMetadata(e, model);
     } else {
       applyNativeOpenAiContextOverride(e);
-      if (isGpt56NativeSlug(slug)) ensureMaxReasoningLevel(e);
+      if (isGpt56NativeSlug(slug)) ensureGpt56ReasoningLevels(e);
+      else ensureUltraReasoningLevel(e);
     }
     return ensureStrictCatalogFields(normalizeServiceTiers(e));
   }
@@ -564,7 +812,10 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
     ...(slug.includes("/") ? { web_search_tool_type: "text_and_image", supports_search_tool: true } : {}),
   };
   if (slug.includes("/")) applyReasoningLevels(entry, model?.reasoningEfforts);
-  else applyReasoningLevels(entry, isGpt56NativeSlug(slug) ? undefined : ["low", "medium", "high", "xhigh"]);
+  else {
+    applyReasoningLevels(entry, isGpt56NativeSlug(slug) ? undefined : ["low", "medium", "high", "xhigh"]);
+    if (isGpt56NativeSlug(slug)) ensureGpt56ReasoningLevels(entry);
+  }
   applyJawcodeCatalogMetadata(entry, slug, model?.contextCap);
   applyCatalogModelMetadata(entry, model);
   applyNativeOpenAiContextOverride(entry);
@@ -576,7 +827,7 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
  * catalog sync and the proxy `/v1/models?client_version` branch.
  * Native gpt slugs stay bare; routed models are namespaced `<provider>/<model>`.
  */
-export function buildCatalogEntries(template: RawEntry | null, gptSlugs: string[], goModels: CatalogModel[], featured?: string[], wsEnabled = false): RawEntry[] {
+export function buildCatalogEntries(template: RawEntry | null, gptSlugs: string[], goModels: CatalogModel[], featured?: string[], wsEnabled = false, multiAgentMode: MultiAgentMode = "default"): RawEntry[] {
   // Codex's models-manager sorts by `priority` ASC and advertises the first 5 picker-visible
   // models to spawn_agent (sort_by_key(priority) + MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT=5). Catalog
   // ARRAY order is discarded — so "featuring" a model = giving it the LOWEST priority (0..N-1) so
@@ -599,9 +850,14 @@ export function buildCatalogEntries(template: RawEntry | null, gptSlugs: string[
   // leak (deriveEntry clones the template as-is for native slugs).
   for (const entry of out) {
     if (wsEnabled) entry.supports_websockets = true;
-    else delete entry.supports_websockets;
+    else {
+      delete entry.supports_websockets;
+      // Snapshot-backed native entries carry prefer_websockets: never advertise a preference
+      // for an endpoint ocx has disabled.
+      delete entry.prefer_websockets;
+    }
   }
-  return out;
+  return applyMultiAgentMode(out, multiAgentMode);
 }
 
 /** Bare picker-visible native slugs in the live Codex catalog (drives the subagent picker UI). */
@@ -734,6 +990,11 @@ export function applyProviderConfigHints(name: string, prov: OcxProviderConfig, 
       : {}),
     ...(inputModalities ? { inputModalities } : {}),
     ...(reasoningEfforts !== undefined ? { reasoningEfforts } : {}),
+    // Default-on for openai-chat providers (explicit false opts out); other adapters
+    // advertise only on explicit opt-in.
+    ...(prov.parallelToolCalls === true || (prov.adapter === "openai-chat" && prov.parallelToolCalls !== false)
+      ? { parallelToolCalls: true }
+      : {}),
   };
   const capped = applyProviderContextCap(hinted.contextWindow, providerCap);
   if (providerCap !== undefined && capped !== hinted.contextWindow) {
@@ -765,14 +1026,14 @@ function catalogHintsFromModelsApiItem(providerName: string, item: ProviderModel
       : typeof item.context_length === "number" ? item.context_length
       : typeof item.max_model_len === "number" ? item.max_model_len
         : undefined;
-  const reasoningEfforts = capabilities && typeof capabilities.reasoning_effort === "boolean"
-    ? (capabilities.reasoning_effort
-      ? ((providerName === "neuralwatt" || providerName === "zai") && isGlm52ModelId(item.id)
-        ? ["low", "medium", "high", "xhigh", "max"]
-        : ["low", "medium", "high", "xhigh", "max"])
-      : [])
-    : undefined;
-  const inputModalities = capabilities && typeof capabilities.vision === "boolean"
+ const reasoningEfforts = capabilities && typeof capabilities.reasoning_effort === "boolean"
+   ? (capabilities.reasoning_effort
+     ? ((providerName === "neuralwatt" || providerName === "zai") && isGlm52ModelId(item.id)
+       ? ["low", "medium", "high", "xhigh", "max"]
+       : ["low", "medium", "high", "xhigh"])
+     : [])
+   : undefined;
+ const inputModalities = capabilities && typeof capabilities.vision === "boolean"
     ? (capabilities.vision ? ["text", "image"] : ["text"])
     : undefined;
   return {
@@ -806,7 +1067,7 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
     if (cachedCursor) return applyConfigHintsToCachedModels(name, prov, cachedCursor);
     const liveIds = await fetchCursorUsableModels({ apiKey, baseUrl: prov.baseUrl });
     if (liveIds) {
-      const available = configured.filter(m => liveIds.some(id => id === m.id || id.startsWith(`${m.id}-`)));
+      const available = filterCursorConfiguredModelsByLiveDiscovery(configured, liveIds);
       const result = available.length > 0 ? available : configured;
       setCached(name, result);
       return result;
@@ -972,11 +1233,13 @@ export function mergeCatalogEntriesForSync(
   wsEnabled: boolean,
   goIds: Set<string> = new Set(),
   template: RawEntry | null = null,
+  disabledNative: Set<string> = new Set(),
   gatheredProviderNames: Set<string> = new Set(routedEntries.flatMap(entry => {
     const slug = typeof entry.slug === "string" ? entry.slug : "";
     const slash = slug.indexOf("/");
     return slash > 0 ? [slug.slice(0, slash)] : [];
   })),
+  multiAgentMode: MultiAgentMode = "default",
 ): RawEntry[] {
   const rank = new Map(featured.map((slug, i) => [slug, i] as const));
   const native = catalogModels
@@ -994,7 +1257,26 @@ export function mergeCatalogEntriesForSync(
         : featured.length > 0
           ? Math.max(typeof baselinePriority === "number" ? baselinePriority : 9, featured.length + 100)
           : baselinePriority;
-      return normalizeServiceTiers({ ...m, priority });
+      // Fallback-quality entries (ocx synthesis / codex-rs model_info fallback: display_name
+      // stamped with the bare slug) are upgraded to the pinned upstream snapshot entry so a
+      // previously synthesized ladder (e.g. luna advertising ultra) self-heals on sync. A
+      // genuine catalog entry (real display name) is preserved untouched.
+      if (shouldUpgradeToUpstreamEntry(m)) {
+        const upstream = upstreamNativeEntry(slug)!;
+        const upgradePriority = rank.has(slug)
+          ? rank.get(slug)!
+          : featured.length > 0
+            ? Math.max(typeof upstream.priority === "number" ? upstream.priority : 9, featured.length + 100)
+            : typeof upstream.priority === "number" ? upstream.priority : priority;
+        const finished = finishUpstreamNativeEntry(upstream, 9);
+        finished.priority = upgradePriority;
+        return finished;
+      }
+      const preserved = normalizeServiceTiers({ ...m, priority });
+      // Older natives kept from disk still need the mock top tiers (max + ultra always
+      // for subagent max spawns; wire-clamped to the model's real top rung).
+      if (!isGpt56NativeSlug(slug)) ensureUltraReasoningLevel(preserved);
+      return preserved;
     });
 
   // Backfill any native OpenAI slug that the on-disk catalog is missing (e.g. gpt-5.5), so a
@@ -1025,14 +1307,34 @@ export function mergeCatalogEntriesForSync(
     finalRoutedEntries = [...routedEntries, ...preservedForeignRouted];
   }
 
-  return [...native, ...finalRoutedEntries].map(m => {
+  const mergedEntries = [...native, ...finalRoutedEntries].map(m => {
     const normalized = normalizeServiceTiers(m);
     applyNativeOpenAiContextOverride(normalized);
     const e = ensureStrictCatalogFields(normalized);
+    // Mock-max universality (260709): preserved routed entries from disk may predate
+    // the max rung — ensure it here so subagent max spawns validate on every
+    // reasoning-capable entry. max only: 5.6 exact ladders (luna: no ultra) stay intact.
+    {
+      const levels = Array.isArray(e.supported_reasoning_levels)
+        ? e.supported_reasoning_levels as Array<{ effort?: string }>
+        : [];
+      if (levels.length > 0 && !levels.some(level => level.effort === "max")) {
+        levels.push(CODEX_REASONING_LEVELS.find(level => level.effort === "max")
+          ?? { effort: "max", description: "Maximum reasoning depth for the hardest problems" });
+        e.supported_reasoning_levels = levels;
+      }
+    }
     if (wsEnabled) e.supports_websockets = true;
-    else delete e.supports_websockets;
+    else {
+      delete e.supports_websockets;
+      // Match buildCatalogEntries: never advertise a websocket preference while WS is off.
+      delete e.prefer_websockets;
+    }
     return e;
   });
+  // Native enable/disable (single choke point: bare slugs in `disabledModels`). Runs as the
+  // LAST pass so the upstream-upgrade branch above can never clobber a hide flag back to list.
+  return applyMultiAgentMode(applyNativeVisibility(mergedEntries, disabledNative), multiAgentMode);
 }
 
 /**
@@ -1063,7 +1365,8 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
   const enabledGo = filterCatalogVisibleModels(goModels, config);
   const featured = config.subagentModels ?? [];
   const orderedGoModels = orderForSubagents(enabledGo, featured); // stable tie-break among equal priorities
-  const goEntries = buildCatalogEntries(template ? JSON.parse(JSON.stringify(template)) : null, [], orderedGoModels, featured, websocketsEnabled(config));
+  const multiAgentMode: MultiAgentMode = config.multiAgentMode === "v1" || config.multiAgentMode === "v2" ? config.multiAgentMode : "default";
+  const goEntries = buildCatalogEntries(template ? JSON.parse(JSON.stringify(template)) : null, [], orderedGoModels, featured, websocketsEnabled(config), multiAgentMode);
   // Keep genuine native entries (gpt-*, codex-*) with their real per-model fields and append
   // routed providers as namespaced slugs. Cursor and other adopted providers can expose model ids
   // like `gpt-5.5`; those must not delete the native OpenAI/Codex base row.
@@ -1078,7 +1381,7 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
   // native AND routed so the advertised flag matches the implemented endpoint (phase 120.4) and a
   // native template can never leak supports_websockets while the flag is off.
   const wsEnabled = websocketsEnabled(config);
-  catalog.models = mergeCatalogEntriesForSync(catalog.models ?? [], goEntries, baseline, featured, wsEnabled, goIds, template, gatheredProviderNames);
+  catalog.models = mergeCatalogEntriesForSync(catalog.models ?? [], goEntries, baseline, featured, wsEnabled, goIds, template, disabledNativeSlugs(config), gatheredProviderNames, multiAgentMode);
 
   atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2) + "\n");
   return { added: goEntries.length, path: catalogPath };

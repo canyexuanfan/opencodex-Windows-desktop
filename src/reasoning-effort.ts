@@ -1,12 +1,14 @@
 import type { OcxProviderConfig } from "./types";
 import { modelInList } from "./types";
 
+// Descriptions mirror the upstream bundled models.json canonical wording (openai/codex PR #31684).
 export const CODEX_REASONING_LEVELS: { effort: string; description: string }[] = [
   { effort: "low", description: "Fast responses with lighter reasoning" },
-  { effort: "medium", description: "Balances speed and reasoning depth" },
+  { effort: "medium", description: "Balances speed and reasoning depth for everyday tasks" },
   { effort: "high", description: "Greater reasoning depth for complex problems" },
-  { effort: "xhigh", description: "Extended reasoning for the hardest problems" },
-  { effort: "max", description: "Maximum reasoning for the hardest problems" },
+  { effort: "xhigh", description: "Extra high reasoning depth for complex problems" },
+  { effort: "max", description: "Maximum reasoning depth for the hardest problems" },
+  { effort: "ultra", description: "Maximum reasoning with automatic task delegation" },
 ];
 
 const CODEX_REASONING_ORDER = CODEX_REASONING_LEVELS.map(l => l.effort);
@@ -46,9 +48,23 @@ export function sanitizeCodexReasoningEfforts(efforts: readonly string[] | undef
 export function configuredReasoningEfforts(provider: OcxProviderConfig, modelId: string): string[] | undefined {
   if (modelInList(provider.noReasoningModels, modelId)) return [];
   const modelEfforts = modelRecordValue(provider.modelReasoningEfforts, modelId);
-  if (modelEfforts !== undefined) return sanitizeCodexReasoningEfforts(modelEfforts) ?? [];
-  if (provider.reasoningEfforts !== undefined) return sanitizeCodexReasoningEfforts(provider.reasoningEfforts) ?? [];
+  if (modelEfforts !== undefined) return healMaxTier(provider, modelId, sanitizeCodexReasoningEfforts(modelEfforts) ?? []);
+  if (provider.reasoningEfforts !== undefined) return healMaxTier(provider, modelId, sanitizeCodexReasoningEfforts(provider.reasoningEfforts) ?? []);
   return undefined;
+}
+
+/**
+ * Stale-ladder self-heal: saved configs seeded before `max` became a native Codex level can
+ * advertise a ladder that stops at `xhigh` while the wire map already routes xhigh -> max
+ * (e.g. opencode-go glm-5.2, deepseek thinking models). When the map proves the provider
+ * accepts wire `max`, append `max` so the picker actually shows the top tier. Thinking-toggle
+ * maps (xhigh -> "enabled") never match, so binary-toggle models stay two-step.
+ */
+function healMaxTier(provider: OcxProviderConfig, modelId: string, efforts: string[]): string[] {
+  if (efforts.includes("max") || !efforts.includes("xhigh")) return efforts;
+  const wireMap = reasoningEffortMapFor(provider, modelId);
+  if (wireMap?.xhigh !== "max" && wireMap?.max !== "max") return efforts;
+  return sanitizeCodexReasoningEfforts([...efforts, "max"]) ?? efforts;
 }
 
 function requestToCodexEffort(requested: string): string | undefined {
@@ -89,13 +105,20 @@ export function mapReasoningEffort(provider: OcxProviderConfig, modelId: string,
   if (!requested) return undefined;
   if (modelInList(provider.noReasoningModels, modelId)) return undefined;
 
+  // Upstream codex-rs converts ultra -> max before ANY provider request (core/src/client.rs
+  // `reasoning_effort_for_request`), so "ultra" must never influence the provider wire — not even
+  // through a raw alias. Apply the boundary before alias/clamp resolution.
+  const boundary = requested === "ultra" ? "max" : requested;
+
   const wireMap = reasoningEffortMapFor(provider, modelId);
-  if (wireMap && Object.prototype.hasOwnProperty.call(wireMap, requested)) return wireMap[requested];
+  if (wireMap && Object.prototype.hasOwnProperty.call(wireMap, boundary)) return wireMap[boundary];
 
   const supported = configuredReasoningEfforts(provider, modelId);
-  const codexEffort = supported !== undefined ? clampToSupportedCodexEffort(requested, supported) : requestToCodexEffort(requested);
+  const codexEffort = supported !== undefined ? clampToSupportedCodexEffort(boundary, supported) : requestToCodexEffort(boundary);
   if (!codexEffort) return undefined;
 
-  if (wireMap && Object.prototype.hasOwnProperty.call(wireMap, codexEffort)) return wireMap[codexEffort];
-  return codexEffort;
+  // Belt for the odd config where the supported ladder is ultra-only and the clamp lands on it.
+  const wire = codexEffort === "ultra" ? "max" : codexEffort;
+  if (wireMap && Object.prototype.hasOwnProperty.call(wireMap, wire)) return wireMap[wire];
+  return wire;
 }

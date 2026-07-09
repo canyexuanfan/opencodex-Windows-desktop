@@ -8,17 +8,18 @@ import type {
 } from "../../types";
 import { namespacedToolName } from "../../types";
 import type { CursorRequestMessage, CursorRunRequest } from "./types";
+import { cursorCodexToWireModelId } from "./discovery";
 import { cursorEffortSuffix } from "./effort-map";
 
 /**
  * Resolve a `cursor/<model>` selection + Codex reasoning effort to the actual Cursor model id. Cursor
- * encodes the effort as a per-model suffix (`claude-4.6-opus-high`); `cursorEffortSuffix` picks the
- * right tier for that specific model (top effort → the model's top tier, e.g. `-max`/`-xhigh`) or
- * `undefined` for non-reasoning models like `composer-2.5`. A fully-qualified id (one that isn't a
- * known effort base) passes through unchanged.
+* encodes the effort as a per-model suffix (`claude-4.6-opus-high`); `cursorEffortSuffix` picks the
+ * right tier for that specific model (literal pass-through, with rank clamp fallback) or
+* `undefined` for non-reasoning models like `composer-2.5`. A fully-qualified id (one that isn't a
+* known effort base) passes through unchanged.
  */
 function normalizeCursorModelId(modelId: string, reasoning?: string): string {
-  const id = modelId.startsWith("cursor/") ? modelId.slice("cursor/".length) : modelId;
+  const id = cursorCodexToWireModelId(modelId);
   const suffix = cursorEffortSuffix(id, reasoning);
   return suffix ? `${id}-${suffix}` : id;
 }

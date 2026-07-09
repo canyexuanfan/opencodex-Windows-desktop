@@ -464,8 +464,13 @@ export function parseRequest(body: unknown): OcxParsedRequest {
   const tc = mapToolChoice(data.tool_choice);
   if (tc !== undefined) options.toolChoice = tc;
   if (data.parallel_tool_calls !== undefined) options.parallelToolCalls = data.parallel_tool_calls;
-  if (data.reasoning?.effort && REASONING_EFFORTS.has(data.reasoning.effort)) {
-    options.reasoning = data.reasoning.effort;
+  // Upstream codex-rs converts "ultra" to "max" at the inference boundary (core/src/client.rs
+  // `reasoning_effort_for_request`), so current clients never send it — but a catalog that
+  // advertises ultra plus an older/direct caller can. Degrade it to max like upstream instead of
+  // silently dropping reasoning altogether.
+  const requestedEffort = data.reasoning?.effort === "ultra" ? "max" : data.reasoning?.effort;
+  if (requestedEffort && REASONING_EFFORTS.has(requestedEffort)) {
+    options.reasoning = requestedEffort;
   }
   const summaryMode = data.reasoning?.summary;
   if (!summaryMode || summaryMode === "none") options.hideThinkingSummary = true;

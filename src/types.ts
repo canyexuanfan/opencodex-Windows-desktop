@@ -244,8 +244,21 @@ export interface OcxConfig {
    * Codex's spawn_agent only advertises the first 5 routed models, so this picks which 5 appear.
    */
   subagentModels?: string[];
-  /** Routed model ids ("<provider>/<model>") hidden from Codex (excluded from the catalog + /v1/models). */
+  injectionModel?: string;
+  /**
+   * Models hidden from Codex. Routed ids are namespaced ("<provider>/<model>") and are excluded
+   * from the catalog + /v1/models entirely. BARE ids (no "/") are native GPT passthrough slugs:
+   * their catalog entries flip to visibility "hide" (entry preserved, picker-hidden) and they
+   * are omitted from the bare /v1/models list.
+   */
   disabledModels?: string[];
+  /**
+   * 3-state multi-agent surface override:
+   * - "v1": force ALL models to v1 surface (override upstream pins)
+   * - "default" | undefined: respect upstream model pins (sol/terra=v2, luna=v1, rest=codex flag)
+   * - "v2": force ALL models to v2 surface (override upstream pins)
+   */
+  multiAgentMode?: "v1" | "default" | "v2";
   /** Provider-level Codex-visible context caps. Values only lower known model context windows. */
   providerContextCaps?: Record<string, number>;
   /** Global Codex-visible context cap value (tokens). Falls back to DEFAULT_PROVIDER_CONTEXT_CAP. */
@@ -423,6 +436,14 @@ export interface OcxProviderConfig {
   noTopPModels?: string[];
   /** Model ids that reject caller-specified presence/frequency penalty values. */
   noPenaltyModels?: string[];
+  /**
+   * Allow multiple tool calls per completion. DEFAULT-ON for openai-chat providers (the
+   * buffered stream parser assembles interleaved/fragmented multi-call turns safely);
+   * set `false` to force `parallel_tool_calls:false` upstream and drop the catalog's
+   * `supports_parallel_tool_calls` bit for that provider. Non-chat adapters advertise
+   * only on explicit `true`. See devlog/_plan/260709_parallel_tool_calls.
+   */
+  parallelToolCalls?: boolean;
   /** Model ids whose tool_choice only accepts `auto` or `none`; forced/named choices are downgraded. */
   autoToolChoiceOnlyModels?: string[];
   /** Model ids that expect prior assistant `reasoning_content` to be preserved in chat history. */
@@ -433,6 +454,12 @@ export interface OcxProviderConfig {
    * The openai-chat adapter translates the mapped effort into the thinking toggle for these.
    */
   thinkingToggleModels?: string[];
+  /**
+   * Model ids whose reasoning is a `thinking_budget` integer on the chat-completions wire
+   * (Qwen3.x style), NOT an OpenAI `reasoning_effort` ladder. The openai-chat adapter maps the
+   * Codex effort to a budget fraction.
+   */
+  thinkingBudgetModels?: string[];
   /** Anthropic-compatible gateways that need custom tool names escaped on the wire. */
   escapeBuiltinToolNames?: boolean;
   /**

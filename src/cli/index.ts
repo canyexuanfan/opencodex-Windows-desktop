@@ -449,6 +449,11 @@ switch (command) {
     await runDoctor();
     break;
   }
+  case "debug": {
+    const { handleDebugCommand } = await import("./debug");
+    await handleDebugCommand(args.slice(1));
+    break;
+  }
   case "ensure":
     await handleEnsure();
     break;
@@ -466,6 +471,11 @@ switch (command) {
   }
   case "sync": {
     await syncModelsToCodex((await findLiveProxy())?.port);
+    break;
+  }
+  case "v2": {
+    const { cmdV2 } = await import("./v2");
+    process.exitCode = await cmdV2(args.slice(1), {}, async () => (await findLiveProxy())?.port);
     break;
   }
   case "sync-cache": {

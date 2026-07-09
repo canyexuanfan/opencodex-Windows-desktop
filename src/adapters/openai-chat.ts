@@ -76,7 +76,9 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
             type: "function",
             function: { name: namespacedToolName(tc.namespace, tc.name), arguments: JSON.stringify(tc.arguments) },
           }));
-          if (!chatMsg.content) chatMsg.content = null;
+          // "" instead of null: strict validators (xAI: "Each message must have at least one
+          // content element", langchain#34140) reject content-less assistant history entries.
+          if (!chatMsg.content) chatMsg.content = "";
         }
         if (chatMsg.reasoning_content !== undefined && chatMsg.content === undefined && chatMsg.tool_calls === undefined) {
           chatMsg.content = "";
@@ -97,7 +99,7 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
           const name = safeToolName(msg.toolName);
           out.push({
             role: "assistant",
-            content: null,
+            content: "",
             tool_calls: [{
               id: toolCallId,
               type: "function",
@@ -166,6 +168,20 @@ function usageFromOpenAIChat(usage: Record<string, unknown> | undefined): OcxUsa
   };
 }
 
+function thinkingBudgetForEffort(parsed: OcxParsedRequest, reasoningEffort: string): number | undefined {
+  if (parsed.options.reasoning === "minimal") return 0;
+  const maxBudget = parsed.options.maxOutputTokens ?? 32768;
+  const fractions: Record<string, number> = {
+    low: 0.20,
+    medium: 0.50,
+    high: 0.75,
+    xhigh: 0.90,
+    max: 1.0,
+  };
+  const fraction = fractions[reasoningEffort];
+  return fraction === undefined ? undefined : Math.max(1, Math.floor(maxBudget * fraction));
+}
+
 export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAdapter {
   return {
     name: "openai-chat",
@@ -196,7 +212,10 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       if (parsed.options.stopSequences !== undefined) body.stop = parsed.options.stopSequences;
       const reasoningEffort = mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning);
       if (reasoningEffort !== undefined) {
-        if (modelInList(provider.thinkingToggleModels, parsed.modelId)) {
+        if (modelInList(provider.thinkingBudgetModels, parsed.modelId)) {
+          const budget = thinkingBudgetForEffort(parsed, reasoningEffort);
+          if (budget !== undefined) body.thinking_budget = budget;
+        } else if (modelInList(provider.thinkingToggleModels, parsed.modelId)) {
           // Vendor thinking-toggle wire (MiMo v2.x, GLM 5/5.1): the mapped value is the toggle
           // state, sent as `thinking: {type}` — these models ignore/reject reasoning_effort.
           if (reasoningEffort === "enabled" || reasoningEffort === "disabled") {
@@ -213,7 +232,15 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         body.frequency_penalty = parsed.options.frequencyPenalty;
       }
 
-      if (tools) body.parallel_tool_calls = false;
+      if (tools) {
+        // Default-ON for chat-completions providers (user decision 260709): the buffered
+        // parser assembles multi-call streams safely, so `parallelToolCalls: false` is the
+        // only per-provider opt-out; Codex's request bit can still force false per request.
+        // Rationale + provider evidence: devlog/_plan/260709_parallel_tool_calls.
+        body.parallel_tool_calls = provider.parallelToolCalls === false
+          ? false
+          : parsed.options.parallelToolCalls !== false;
+      }
       if (parsed.stream) {
         body.stream_options = { include_usage: true };
       }
@@ -235,8 +262,26 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let currentToolCallId = "";
-      let currentToolCallName = "";
+      // Streamed tool calls are BUFFERED until a terminal signal, then flushed as atomic
+      // start/delta/end sequences. The bridge treats text/reasoning deltas as barriers that
+      // close an open tool-call item (bridge.ts closeCurrentToolCall on text_delta), so
+      // emitting calls incrementally would orphan later argument deltas whenever a provider
+      // interleaves content — and parallel tool calls (multiple ids, index-keyed continuation
+      // chunks, whole-chunk calls) cannot be represented live without overlapping sequences.
+      // Keyed by `index` (OpenAI wire standard), falling back to `id`, falling back to the
+      // last-seen call for providers that omit both on continuation chunks.
+      interface PendingToolCall { key: string; id: string; name: string; args: string }
+      const pendingToolCalls: PendingToolCall[] = [];
+      let toolCallSeq = 0;
+      const flushToolCalls = function* (): Generator<AdapterEvent> {
+        for (const call of pendingToolCalls) {
+          if (!call.id) call.id = `call_${++toolCallSeq}`;
+          yield { type: "tool_call_start", id: call.id, name: call.name };
+          if (call.args.length > 0) yield { type: "tool_call_delta", arguments: call.args };
+          yield { type: "tool_call_end" };
+        }
+        pendingToolCalls.length = 0;
+      };
       let pendingUsage: OcxUsage | undefined;
       // Track terminal signals so a socket EOF without any terminator can fail closed instead of
       // being reported as a clean completion (silent truncation). A graceful close is either an
@@ -252,10 +297,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         if (!line.startsWith("data: ")) return "continue";
         const payload = line.slice(6).trim();
         if (payload === "[DONE]") {
-          if (currentToolCallId) {
-            yield { type: "tool_call_end" };
-            currentToolCallId = "";
-          }
+          yield* flushToolCalls();
           yield { type: "done", usage: pendingUsage };
           return "terminate";
         }
@@ -273,7 +315,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         // classified response.failed (bridge case "error") — never a truncated completion.
         if (chunk.error) {
           const err = chunk.error as { message?: string } | undefined;
-          if (currentToolCallId) yield { type: "tool_call_end" };
+          yield* flushToolCalls();
           yield { type: "error", message: err?.message ?? "upstream error" };
           return "terminate";
         }
@@ -302,25 +344,34 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
             yield { type: "reasoning_raw_delta", text: delta.reasoning_content };
           }
 
-          const toolCalls = delta.tool_calls as { index: number; id?: string; function?: { name?: string; arguments?: string } }[] | undefined;
+          const toolCalls = delta.tool_calls as { index?: number; id?: string; function?: { name?: string; arguments?: string } }[] | undefined;
           if (toolCalls) {
             for (const tc of toolCalls) {
-              if (tc.id && tc.id !== currentToolCallId) {
-                if (currentToolCallId) yield { type: "tool_call_end" };
-                currentToolCallId = tc.id;
-                currentToolCallName = tc.function?.name ?? "";
-                yield { type: "tool_call_start", id: tc.id, name: currentToolCallName };
+              const key = typeof tc.index === "number"
+                ? `i:${tc.index}`
+                : tc.id
+                ? `id:${tc.id}`
+                : pendingToolCalls[pendingToolCalls.length - 1]?.key;
+              let call = key !== undefined ? pendingToolCalls.find(c => c.key === key) : undefined;
+              // Mixed keying rescue: a call opened under an index key must still absorb an
+              // id-only continuation for the same provider id (and vice versa) instead of
+              // splitting into two calls that share one call_id downstream.
+              if (!call && tc.id) call = pendingToolCalls.find(c => c.id === tc.id);
+              if (!call) {
+                call = { key: key ?? `seq:${pendingToolCalls.length}`, id: "", name: "", args: "" };
+                pendingToolCalls.push(call);
               }
-              if (tc.function?.arguments) {
-                yield { type: "tool_call_delta", arguments: tc.function.arguments };
-              }
+              if (tc.id && !call.id) call.id = tc.id;
+              if (tc.function?.name && !call.name) call.name = tc.function.name;
+              if (tc.function?.arguments) call.args += tc.function.arguments;
             }
           }
         }
 
-        if (choices[0].finish_reason === "tool_calls" && currentToolCallId) {
-          yield { type: "tool_call_end" };
-          currentToolCallId = "";
+        // Any non-empty finish_reason ends the generation: flush assembled tool calls as
+        // atomic sequences (covers "tool_calls" AND providers that close tool turns with "stop").
+        if (typeof choices[0].finish_reason === "string" && choices[0].finish_reason) {
+          yield* flushToolCalls();
         }
         return "continue";
       };
@@ -347,9 +398,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         if (buffer.length > 0) {
           if ((yield* handleDataLine(buffer)) === "terminate") return;
         }
-        if (currentToolCallId) {
-          yield { type: "tool_call_end" };
-        }
+        yield* flushToolCalls();
         // Reader EOF. A graceful close shows at least one terminal signal: `[DONE]` (returns above),
         // a non-null finish_reason (sawFinish), or a trailing usage chunk (providers emit usage only
         // at end-of-generation). If NONE of those were seen, the stream was cut mid-flight — fail

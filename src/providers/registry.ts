@@ -37,9 +37,12 @@ export interface ProviderRegistryEntry {
   noTemperatureModels?: string[];
   noTopPModels?: string[];
   noPenaltyModels?: string[];
+  /** Opt this provider into parallel tool calls (see OcxProviderConfig.parallelToolCalls). */
+  parallelToolCalls?: boolean;
   autoToolChoiceOnlyModels?: string[];
   preserveReasoningContentModels?: string[];
   thinkingToggleModels?: string[];
+  thinkingBudgetModels?: string[];
   escapeBuiltinToolNames?: boolean;
   oauthId?: string;
   jawcodeBundle?: string;
@@ -56,14 +59,16 @@ export type ProviderConfigSeed = Pick<
   | "liveModels" | "contextWindow" | "modelContextWindows" | "modelInputModalities"
   | "reasoningEfforts" | "modelReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap"
   | "noVisionModels" | "noReasoningModels" | "noTemperatureModels" | "noTopPModels" | "noPenaltyModels"
-  | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "thinkingToggleModels" | "escapeBuiltinToolNames"
+  | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "thinkingToggleModels" | "thinkingBudgetModels" | "escapeBuiltinToolNames"
   | "googleMode" | "project" | "location"
 >;
 
 // Shared between the OAuth (Claude account) and API-key Anthropic entries so both expose the
 // same static model seed.
-const ANTHROPIC_MODELS = ["claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"];
-const ANTHROPIC_MODEL_CONTEXT_WINDOWS: Record<string, number> = { "claude-sonnet-5": 1_000_000 };
+// 260709 refresh: claude-fable-5 added (official models overview); evidence in
+// devlog/model_update/260709_model_refresh/002_cursor_registry_drift.md.
+const ANTHROPIC_MODELS = ["claude-fable-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"];
+const ANTHROPIC_MODEL_CONTEXT_WINDOWS: Record<string, number> = { "claude-sonnet-5": 1_000_000, "claude-fable-5": 1_000_000 };
 
 const ZAI_GLM_52_MODELS = ["glm-5.2", "glm-5.2[1m]"];
 const ZAI_GLM_52_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
@@ -83,11 +88,11 @@ const OPENROUTER_GPT56_CONTEXT_WINDOWS = {
 
 /**
  * Vendor thinking-toggle models (MiMo v2.x, GLM 5/5.1 on Zen Go): the wire knob is
- * `thinking: {type: enabled|disabled}` — a binary. Advertise a two-step Codex ladder
- * (low = thinking off, high = thinking on) and map efforts onto the toggle. Zen Go
+ * `thinking: {type: enabled|disabled}` — a binary. Advertise the full Codex picker ladder
+ * and map efforts onto the toggle. Zen Go
  * pass-through probed live 2026-07-07 (glm-5.2 toggle verified; mimo/minimax accept shape).
  */
-const THINKING_TOGGLE_EFFORTS = ["low", "high"];
+const THINKING_TOGGLE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const THINKING_TOGGLE_MAP: Record<string, string> = {
   none: "disabled",
   minimal: "disabled",
@@ -100,8 +105,16 @@ const THINKING_TOGGLE_MAP: Record<string, string> = {
 const OPENCODE_GO_THINKING_TOGGLE_MODELS = [
   "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2-omni", "mimo-v2-pro", "glm-5", "glm-5.1",
 ];
+const THINKING_BUDGET_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const THINKING_BUDGET_MODELS = [
+  "qwen3.5-397b", "qwen3.6-35b",
+  "qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus",
+];
+const OPENCODE_GO_THINKING_BUDGET_MODELS = ["qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus"];
 const DEEPSEEK_THINKING_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"];
-const DEEPSEEK_THINKING_EFFORTS = ["high", "xhigh"];
+// "max" is advertised too: the wire map routes xhigh->max and max->max, so the picker
+// should surface the max tier instead of hiding it behind xhigh.
+const DEEPSEEK_THINKING_EFFORTS = ["high", "xhigh", "max"];
 const DEEPSEEK_THINKING_REASONING_MAP: Record<string, string> = {
   low: "high",
   medium: "high",
@@ -109,7 +122,7 @@ const DEEPSEEK_THINKING_REASONING_MAP: Record<string, string> = {
   xhigh: "max",
   max: "max",
 };
-const KIMI_THINKING_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5", "kimi-k2-0905-preview"];
+const KIMI_THINKING_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"];
 const KIMI_LOCKED_PARAMETER_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"];
 const NEURALWATT_REASONING_HISTORY_MODELS = [
   "glm-5.2",
@@ -119,7 +132,6 @@ const NEURALWATT_REASONING_HISTORY_MODELS = [
 const UMANS_MODELS = [
   "umans-coder",
   "umans-kimi-k2.7",
-  "umans-kimi-k2.6",
   "umans-flash",
   "umans-glm-5.2",
   "umans-glm-5.1",
@@ -131,7 +143,6 @@ const UMANS_TEXT_ONLY_MODELS = ["umans-glm-5.2", "umans-glm-5.1"];
 const UMANS_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "umans-coder": 262_144,
   "umans-kimi-k2.7": 262_144,
-  "umans-kimi-k2.6": 262_144,
   "umans-flash": 262_144,
   "umans-glm-5.2": 405_504,
   "umans-glm-5.1": 202_752,
@@ -182,9 +193,29 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     oauthId: "xai",
     jawcodeBundle: "xai",
     note: "Log in with your Grok account",
-    models: ["grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-build-0.1", "grok-composer-2.5-fast"],
-    defaultModel: "grok-4.3",
-    noReasoningModels: ["grok-build-0.1", "grok-composer-2.5-fast"],
+    // Parallel tool calls: officially supported and default-on per docs.x.ai function-calling
+    // (verified 260709, devlog/_plan/260709_parallel_tool_calls). Streamed calls arrive whole
+    // per chunk, so the buffered parser assembles them losslessly.
+    parallelToolCalls: true,
+    // Live /v1/models discovery is the authoritative lineup (verified 260709: returns grok-4.5);
+    // the static list below is the logged-out fallback seed.
+    liveModels: true,
+    // 260709 refresh: lineup + metadata from official docs.x.ai (grok-4.5 announced 07-08);
+    // grok-composer-2.5-fast kept as account-verified (absent from public docs). Evidence:
+    // devlog/model_update/260709_model_refresh/001_xai_lineup.md.
+    models: ["grok-4.5", "grok-4.3", "grok-4.20-multi-agent-0309", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-build-0.1", "grok-composer-2.5-fast"],
+    defaultModel: "grok-4.5",
+    noReasoningModels: ["grok-4.20-0309-non-reasoning", "grok-build-0.1", "grok-composer-2.5-fast"],
+    // grok-4.5 reasoning is always-on with low/medium/high control (no off tier upstream).
+    modelReasoningEfforts: { "grok-4.5": ["low", "medium", "high"] },
+    modelContextWindows: {
+      "grok-4.5": 500_000,
+      "grok-4.3": 1_000_000,
+      "grok-4.20-multi-agent-0309": 1_000_000,
+      "grok-4.20-0309-reasoning": 1_000_000,
+      "grok-4.20-0309-non-reasoning": 1_000_000,
+      "grok-build-0.1": 256_000,
+    },
     noVisionModels: ["grok-build-0.1", "grok-composer-2.5-fast"],
   },
   {
@@ -199,7 +230,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     note: "Log in with your Claude account",
     models: [...ANTHROPIC_MODELS],
     modelContextWindows: { ...ANTHROPIC_MODEL_CONTEXT_WINDOWS },
-    defaultModel: "claude-sonnet-4-6",
+    defaultModel: "claude-sonnet-5",
   },
   {
     id: "anthropic-apikey",
@@ -215,7 +246,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     models: [...ANTHROPIC_MODELS],
     liveModels: true,
     modelContextWindows: { ...ANTHROPIC_MODEL_CONTEXT_WINDOWS },
-    defaultModel: "claude-sonnet-4-6",
+    defaultModel: "claude-sonnet-5",
   },
   {
     id: "kimi",
@@ -252,7 +283,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelContextWindows: KIRO_MODEL_CONTEXT_WINDOWS,
     modelReasoningEfforts: KIRO_MODEL_REASONING_EFFORTS,
   },
-  { id: "openai-apikey", label: "OpenAI (API key)", adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", authKind: "key", featured: true, dashboardUrl: "https://platform.openai.com/api-keys", defaultModel: "gpt-5.5", models: ["gpt-5.5", ...OPENAI_GPT56_MODELS], modelContextWindows: OPENAI_GPT56_CONTEXT_WINDOWS },
+  { id: "openai-apikey", label: "OpenAI (API key)", adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", authKind: "key", featured: true, dashboardUrl: "https://platform.openai.com/api-keys", defaultModel: "gpt-5.5", models: ["gpt-5.5", ...OPENAI_GPT56_MODELS], liveModels: true, modelContextWindows: OPENAI_GPT56_CONTEXT_WINDOWS },
   {
     id: "umans",
     label: "Umans AI Coding Plan",
@@ -269,7 +300,6 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelReasoningEfforts: {
       "umans-coder": UMANS_REASONING_EFFORTS,
       "umans-kimi-k2.7": UMANS_REASONING_EFFORTS,
-      "umans-kimi-k2.6": UMANS_REASONING_EFFORTS,
       "umans-flash": UMANS_REASONING_EFFORTS,
       "umans-glm-5.2": UMANS_GLM_REASONING_EFFORTS,
       "umans-glm-5.1": UMANS_GLM_REASONING_EFFORTS,
@@ -287,6 +317,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "kimi-k2.7-code": [],
       "kimi-k2.7-code-highspeed": [],
       ...Object.fromEntries(OPENCODE_GO_THINKING_TOGGLE_MODELS.map(id => [id, THINKING_TOGGLE_EFFORTS])),
+      ...Object.fromEntries(OPENCODE_GO_THINKING_BUDGET_MODELS.map(id => [id, THINKING_BUDGET_EFFORTS])),
     },
     // glm-5.2 uses identity labels now that `max` is a native Codex level (no alias map);
     // the thinking-toggle map is a REAL wire alias (effort -> enabled/disabled) and stays.
@@ -294,6 +325,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       ...Object.fromEntries(OPENCODE_GO_THINKING_TOGGLE_MODELS.map(id => [id, THINKING_TOGGLE_MAP])),
     },
     thinkingToggleModels: OPENCODE_GO_THINKING_TOGGLE_MODELS,
+    thinkingBudgetModels: THINKING_BUDGET_MODELS,
     noReasoningModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
     // Text-only Zen Go models (jawcode metadata) — the vision sidecar describes images for
     // every model listed here (and the catalog advertises image input on their behalf).
@@ -334,11 +366,14 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "kimi-k2.6": [],
       "kimi-k2.6-fast": [],
       "kimi-k2.7-code": [],
-      "qwen3.5-397b": ["low", "medium", "high", "xhigh", "max"],
+      // Qwen3.x uses thinking_budget, NOT graded reasoning_effort; the adapter maps the five
+      // Codex picker levels onto budget fractions.
+      "qwen3.5-397b": THINKING_BUDGET_EFFORTS,
       "qwen3.5-397b-fast": [],
-      "qwen3.6-35b": ["low", "medium", "high", "xhigh", "max"],
+      "qwen3.6-35b": THINKING_BUDGET_EFFORTS,
       "qwen3.6-35b-fast": [],
     },
+    thinkingBudgetModels: THINKING_BUDGET_MODELS,
     noReasoningModels: ["glm-5.2-fast", "kimi-k2.5-fast", "kimi-k2.6-fast", "qwen3.5-397b-fast", "qwen3.6-35b-fast"],
     noVisionModels: ["glm-5.2", "glm-5.2-fast", "qwen3.5-397b", "qwen3.5-397b-fast"],
     noTemperatureModels: ["kimi-k2.7-code"],
@@ -381,7 +416,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   {
     id: "moonshot", label: "Moonshot (Kimi API)", baseUrl: "https://api.moonshot.ai/v1", adapter: "openai-chat", authKind: "key",
     dashboardUrl: "https://platform.moonshot.ai/console/api-keys", defaultModel: "kimi-k2.7-code", jawcodeBundle: "moonshot",
-    models: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5", "kimi-k2-0905-preview"],
+    models: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"],
     noReasoningModels: KIMI_THINKING_MODELS,
     modelReasoningEfforts: Object.fromEntries(KIMI_THINKING_MODELS.map(id => [id, []])),
     noTemperatureModels: KIMI_LOCKED_PARAMETER_MODELS,

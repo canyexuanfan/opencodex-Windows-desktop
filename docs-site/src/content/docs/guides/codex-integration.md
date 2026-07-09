@@ -86,7 +86,7 @@ so they sort first:
   "subagentModels": [
     "anthropic/claude-opus-4-8",
     "ollama-cloud/glm-5.2",
-    "xai/grok-4.3"
+    "xai/grok-4.5"
   ]
 }
 ```

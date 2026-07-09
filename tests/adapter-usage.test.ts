@@ -363,7 +363,7 @@ describe("openai-chat tool history repair", () => {
     expect(body.messages).toHaveLength(2);
     expect(body.messages[0]).toMatchObject({
       role: "assistant",
-      content: null,
+      content: "",
       tool_calls: [{
         id: "call_1",
         type: "function",

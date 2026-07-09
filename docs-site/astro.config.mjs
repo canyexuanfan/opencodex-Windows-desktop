@@ -4,10 +4,44 @@ import starlight from "@astrojs/starlight";
 
 // Project GitHub Pages site: https://lidge-jun.github.io/opencodex
 // `site` + `base` make Starlight emit correct absolute URLs and asset paths under the repo subpath.
+const SITE_URL = "https://lidge-jun.github.io/opencodex";
+
+// JSON-LD: WebSite + SoftwareApplication (docs SEO baseline; canonical/og/sitemap
+// are emitted by Starlight itself).
+const jsonLd = JSON.stringify({
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": `${SITE_URL}/#website`,
+      url: `${SITE_URL}/`,
+      name: "opencodex",
+      description:
+        "Universal provider proxy for OpenAI Codex — use any LLM with Codex CLI, App, and SDK.",
+      inLanguage: ["en", "ko", "zh-CN"],
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": `${SITE_URL}/#software`,
+      name: "opencodex",
+      alternateName: "ocx",
+      applicationCategory: "DeveloperApplication",
+      operatingSystem: "macOS, Linux, Windows",
+      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+      softwareHelp: { "@type": "CreativeWork", url: `${SITE_URL}/` },
+      downloadUrl: "https://www.npmjs.com/package/@bitkyc08/opencodex",
+      url: "https://github.com/lidge-jun/opencodex",
+    },
+  ],
+});
+
 export default defineConfig({
   site: "https://lidge-jun.github.io",
   base: "/opencodex",
   trailingSlash: "ignore",
+  // lightningcss merges animation-timeline into the `animation` shorthand,
+  // which Chrome cannot parse — the scroll-driven animations die silently.
+  vite: { build: { cssMinify: "esbuild" } },
   integrations: [
     starlight({
       title: "opencodex",
@@ -20,12 +54,24 @@ export default defineConfig({
         replacesTitle: false,
       },
       favicon: "/favicon.png",
+      customCss: [
+        "@fontsource-variable/geist",
+        "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css",
+        "./src/styles/custom.css",
+      ],
+      components: {
+        Header: "./src/components/Header.astro",
+        PageTitle: "./src/components/PageTitle.astro",
+      },
       head: [
         { tag: "meta", attrs: { property: "og:image", content: "https://lidge-jun.github.io/opencodex/og.png" } },
         { tag: "meta", attrs: { property: "og:image:width", content: "1200" } },
         { tag: "meta", attrs: { property: "og:image:height", content: "630" } },
         { tag: "meta", attrs: { name: "twitter:card", content: "summary_large_image" } },
         { tag: "meta", attrs: { name: "twitter:image", content: "https://lidge-jun.github.io/opencodex/og.png" } },
+        { tag: "meta", attrs: { name: "theme-color", media: "(prefers-color-scheme: light)", content: "#ffffff" } },
+        { tag: "meta", attrs: { name: "theme-color", media: "(prefers-color-scheme: dark)", content: "#212121" } },
+        { tag: "script", attrs: { type: "application/ld+json" }, content: jsonLd },
       ],
       social: [
         { icon: "github", label: "GitHub", href: "https://github.com/lidge-jun/opencodex" },
@@ -61,6 +107,7 @@ export default defineConfig({
             { label: "Codex App Model Picker", translations: { ko: "Codex App 모델 선택기", "zh-CN": "Codex App 模型选择器" }, slug: "guides/codex-app-models" },
             { label: "Sidecars: Web Search & Vision", translations: { ko: "사이드카: 웹 검색 & 비전", "zh-CN": "边车：网络搜索与视觉" }, slug: "guides/sidecars" },
             { label: "Web Dashboard", translations: { ko: "웹 대시보드", "zh-CN": "网页控制台" }, slug: "guides/web-dashboard" },
+            { label: "Sub-agent Surface", translations: { ko: "서브에이전트 서피스", "zh-CN": "子代理界面" }, slug: "guides/sub-agent-surface" },
           ],
         },
         {

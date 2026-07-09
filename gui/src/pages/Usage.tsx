@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { formatTokens } from "../format-tokens";
+import { EmptyState } from "../ui";
+import { modelLabel } from "../model-display";
 
 type Range = "all" | "30d" | "7d";
 
@@ -131,7 +133,7 @@ interface HeatmapCell {
 }
 
 function buildHeatmap(days: UsageDay[]): { weeks: HeatmapCell[][]; months: { label: string; col: number }[]; buckets: number[] } {
-  const buckets = quantileBuckets(days.map(d => d.requests));
+  const buckets = quantileBuckets(days.map(d => d.totalTokens));
   const dayMap = new Map(days.map(d => [d.date, d]));
 
   const today = new Date();
@@ -162,7 +164,7 @@ function buildHeatmap(days: UsageDay[]): { weeks: HeatmapCell[][]; months: { lab
       date: iso,
       requests: d?.requests ?? 0,
       totalTokens: d?.totalTokens ?? 0,
-      level: d ? bucketLevel(d.requests, buckets) : 0,
+      level: d ? bucketLevel(d.totalTokens, buckets) : 0,
       dayOfWeek: cursor.getDay(),
     });
     if (cursor.getDay() === 6) {
@@ -187,6 +189,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
   const [loading, setLoading] = useState(true);
   const [modelQuery, setModelQuery] = useState("");
   const [hoverDay, setHoverDay] = useState<number | null>(null);
+  const [hoverCell, setHoverCell] = useState<{ wi: number; di: number; x: number; y: number } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -225,13 +228,19 @@ export default function Usage({ apiBase }: { apiBase: string }) {
   const filteredModels = useMemo(() => {
     const q = modelQuery.trim().toLowerCase();
     const models = data?.models ?? [];
-    if (!q) return models.slice(0, 100);
-    return models.filter(m =>
+    const sorted = [...models].sort((a, b) => b.totalTokens - a.totalTokens);
+    if (!q) return sorted.slice(0, 100);
+    return sorted.filter(m =>
       m.model.toLowerCase().includes(q) ||
       m.provider.toLowerCase().includes(q) ||
       (m.resolvedModel ?? "").toLowerCase().includes(q),
     ).slice(0, 100);
   }, [data?.models, modelQuery]);
+
+  const sortedProviders = useMemo(() =>
+    [...(data?.providers ?? [])].sort((a, b) => b.totalTokens - a.totalTokens),
+    [data?.providers],
+  );
 
   return (
     <>
@@ -250,9 +259,9 @@ export default function Usage({ apiBase }: { apiBase: string }) {
       <p className="page-sub">{t("usage.subtitle")}</p>
 
       {loading && !data ? (
-        <div className="empty">{t("usage.loading")}</div>
+        <EmptyState title={t("usage.loading")} />
       ) : !data || data.summary.requests === 0 ? (
-        <div className="empty">{t("usage.empty")}</div>
+        <EmptyState title={t("usage.empty")} />
       ) : (
         <>
           <div className="usage-cards usage-cards-3x2">
@@ -296,7 +305,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
                           {d.models.slice(0, 8).map(m => (
                             <div key={`${m.provider}/${m.model}`} className="daybar-tip-row">
                               <span className="daybar-tip-swatch" style={{ background: modelColor(m.model, m.provider) }} />
-                              <span className="daybar-tip-name">{m.model}</span>
+                              <span className="daybar-tip-name">{modelLabel(m.model)}</span>
                               <span className="daybar-tip-val">{formatTokens(m.totalTokens, locale)}</span>
                             </div>
                           ))}
@@ -326,12 +335,28 @@ export default function Usage({ apiBase }: { apiBase: string }) {
                       {week.map((cell, di) => (
                         <div key={`${wi}-${di}`}
                           className={`heatmap-cell heatmap-cell-${cell.level}`}
-                          title={cell.date ? `${cell.date}: ${cell.requests} req · ${formatTokens(cell.totalTokens, locale)} tokens` : ""} />
+                          onMouseEnter={e => {
+                            if (!cell.date) return;
+                            const rect = (e.target as HTMLElement).getBoundingClientRect();
+                            setHoverCell({ wi, di, x: rect.left + rect.width / 2, y: rect.top });
+                          }}
+                          onMouseLeave={() => setHoverCell(h => (h?.wi === wi && h?.di === di ? null : h))} />
                       ))}
                     </div>
                   ))}
                 </div>
               </div>
+              {hoverCell && (() => {
+                const cell = heatmap.weeks[hoverCell.wi]?.[hoverCell.di];
+                if (!cell?.date) return null;
+                return (
+                  <div className="heatmap-tip" style={{ left: hoverCell.x, top: hoverCell.y }}>
+                    <div className="heatmap-tip-date">{cell.date}</div>
+                    <div className="heatmap-tip-val">{formatTokens(cell.totalTokens, locale)} tokens</div>
+                    <div className="heatmap-tip-req muted">{cell.requests} requests</div>
+                  </div>
+                );
+              })()}
               <div className="heatmap-legend muted">
                 <span>{t("usage.heatmap.less")}</span>
                 {[0, 1, 2, 3, 4].map(l => <span key={l} className={`heatmap-cell heatmap-cell-${l}`} />)}
@@ -362,7 +387,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
                 <tbody>
                   {filteredModels.map(m => (
                     <tr key={`${m.provider}/${m.model}/${m.resolvedModel ?? ""}`}>
-                      <td className="mono">{m.resolvedModel ?? m.model}</td>
+                      <td className="mono">{modelLabel(m.resolvedModel ?? m.model)}</td>
                       <td className="muted">{m.provider}</td>
                       <td className="num">{m.requests}</td>
                       <td className="num">{m.measuredRequests}</td>
@@ -389,7 +414,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.providers.map(p => (
+                  {sortedProviders.map(p => (
                     <tr key={p.provider}>
                       <td className="mono">{p.provider}</td>
                       <td className="num">{p.requests}</td>

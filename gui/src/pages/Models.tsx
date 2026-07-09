@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Switch, Notice } from "../ui";
+import { Switch, Notice, EmptyState, Select } from "../ui";
 import { IconChevron, IconBoxes } from "../icons";
 import { useT } from "../i18n";
+import { modelLabel } from "../model-display";
 
 interface ModelRow {
   provider: string;
   id: string;
   namespaced: string;
   disabled: boolean;
+  native?: boolean;
   contextWindow?: number;
   contextCap?: number;
   contextCapped?: boolean;
@@ -19,13 +21,16 @@ interface ProviderContextCapsResponse {
   caps?: Record<string, number>;
 }
 
-interface SelectedModelsResponse {
-  selected?: Record<string, string[]>;
-  available?: Record<string, string[]>;
+interface V2Status {
+  enabled: boolean;
+  agentsMaxThreadsConflict: boolean;
+  maxConcurrentThreadsPerSession?: number | null;
+  multiAgentMode?: "v1" | "default" | "v2";
 }
 
 const CAP_OPTIONS = Array.from({ length: 18 }, (_, i) => 100_000 + i * 50_000); // 100k … 950k
 const CUSTOM_OPTION = "custom";
+const THREAD_OPTIONS = [4, 8, 16, 32, 64, 128, 256, 500, 1000];
 const PAGE = 60; // rows rendered per provider before a "show more" (keeps 1000s-of-models providers usable)
 
 function fmtK(n: number): string {
@@ -36,46 +41,68 @@ function fmtK(n: number): string {
 export default function Models({ apiBase }: { apiBase: string }) {
   const t = useT();
   const [models, setModels] = useState<ModelRow[]>([]);
-  const [disabled, setDisabled] = useState<Set<string>>(new Set());
-  const [selected, setSelected] = useState<Record<string, string[]>>({});
-  const [allowlistOn, setAllowlistOn] = useState<Set<string>>(new Set());
-  const [search, setSearch] = useState<Record<string, string>>({});
+ const [disabled, setDisabled] = useState<Set<string>>(new Set());
+ const [search, setSearch] = useState<Record<string, string>>({});
   const [limit, setLimit] = useState<Record<string, number>>({});
   const [contextCaps, setContextCaps] = useState<Record<string, number>>({});
   const [contextCapValue, setContextCapValue] = useState(350_000);
   const [customCap, setCustomCap] = useState("");
   const [showCustom, setShowCustom] = useState(false);
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem("ocx-models-collapsed");
+      return saved ? new Set(JSON.parse(saved) as string[]) : new Set();
+    } catch { return new Set(); }
+  });
   const [status, setStatus] = useState("");
   const [ok, setOk] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
+  // multi_agent_v2 / ultra gate. null = endpoint unavailable (older proxy build) -> section hidden.
+  const [v2, setV2] = useState<V2Status | null>(null);
+  const [v2Busy, setV2Busy] = useState(false);
+  const [v2Note, setV2Note] = useState("");
+  const v2BusyRef = useRef(false);
+  const [threadsCustom, setThreadsCustom] = useState("");
+  const [showThreadsCustom, setShowThreadsCustom] = useState(false);
+  const [v2HelpOpen, setV2HelpOpen] = useState(false);
+
+  const loadV2 = async () => {
+    // Never let a toggle in flight be clobbered by the poll (same single-flight rule as models).
+    if (v2BusyRef.current) return;
+    try {
+      const r = await fetch(`${apiBase}/api/v2`);
+      if (!r.ok || !(r.headers.get("content-type") ?? "").includes("application/json")) { setV2(null); return; }
+      const data = await r.json() as V2Status;
+      if (typeof data.enabled === "boolean") {
+        setV2({
+          enabled: data.enabled,
+          agentsMaxThreadsConflict: data.agentsMaxThreadsConflict === true,
+          maxConcurrentThreadsPerSession: typeof data.maxConcurrentThreadsPerSession === "number" ? data.maxConcurrentThreadsPerSession : null,
+          multiAgentMode: data.multiAgentMode === "v1" || data.multiAgentMode === "v2" ? data.multiAgentMode : "default",
+        });
+      }
+    } catch {
+      setV2(null); // old server / network: hide the section instead of guessing
+    }
+  };
 
   const load = async () => {
     try {
-      const [data, capsData, sel] = await Promise.all([
-        fetch(`${apiBase}/api/models`).then(r => r.json()) as Promise<ModelRow[]>,
-        fetch(`${apiBase}/api/provider-context-caps`).then(r => r.json()) as Promise<ProviderContextCapsResponse>,
-        fetch(`${apiBase}/api/selected-models`).then(r => r.json()).catch(() => ({})) as Promise<SelectedModelsResponse>,
-      ]);
-      setModels(data);
-      setDisabled(new Set(data.filter(m => m.disabled).map(m => m.namespaced)));
+     const [data, capsData] = await Promise.all([
+       fetch(`${apiBase}/api/models`).then(r => r.json()) as Promise<ModelRow[]>,
+       fetch(`${apiBase}/api/provider-context-caps`).then(r => r.json()) as Promise<ProviderContextCapsResponse>,
+     ]);
+     void loadV2(); // best-effort, independent of the models fetch
+     setModels(data);
+     setDisabled(new Set(data.filter(m => m.disabled).map(m => m.namespaced)));
       const value = typeof capsData.value === "number" && Number.isFinite(capsData.value) && capsData.value > 0
         ? capsData.value
         : (typeof capsData.cap === "number" && Number.isFinite(capsData.cap) && capsData.cap > 0 ? capsData.cap : undefined);
       if (value !== undefined) setContextCapValue(value);
-      setContextCaps(capsData.caps ?? {});
-      const selMap = sel.selected ?? {};
-      setSelected(selMap);
-      // Reveal the allowlist editor for providers that already have a selection; keep any the user
-      // toggled on this session (don't clobber a just-opened, still-empty editor on the 10s refresh).
-      setAllowlistOn(prev => {
-        const next = new Set(prev);
-        for (const [p, ids] of Object.entries(selMap)) if (ids.length > 0) next.add(p);
-        return next;
-      });
-    } catch {
+     setContextCaps(capsData.caps ?? {});
+   } catch {
       setOk(false); setStatus(t("models.loadFail"));
     } finally {
       setLoading(false);
@@ -93,7 +120,13 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const groups = useMemo(() => {
     const g: Record<string, ModelRow[]> = {};
     for (const m of models) (g[m.provider] ??= []).push(m);
-    return Object.entries(g).sort(([a], [b]) => a.localeCompare(b));
+    // Native GPT passthrough group ("openai") pins first; routed providers stay alphabetical.
+    return Object.entries(g).sort(([a, rowsA], [b, rowsB]) => {
+      const nativeA = rowsA.every(r => r.native);
+      const nativeB = rowsB.every(r => r.native);
+      if (nativeA !== nativeB) return nativeA ? -1 : 1;
+      return a.localeCompare(b);
+    });
   }, [models]);
 
   const apply = async (next: Set<string>) => {
@@ -120,38 +153,6 @@ export default function Models({ apiBase }: { apiBase: string }) {
     const next = new Set(disabled);
     if (next.has(ns)) next.delete(ns); else next.add(ns);
     apply(next);
-  };
-
-  const putSelected = async (provider: string, ids: string[]) => {
-    setBusy(true);
-    busyRef.current = true;
-    setStatus("");
-    try {
-      const r = await fetch(`${apiBase}/api/selected-models`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, models: ids }),
-      });
-      if (r.ok) { setSelected(prev => ({ ...prev, [provider]: ids })); setOk(true); setStatus(t("models.applied")); }
-      else { setOk(false); setStatus(t("models.saveFailed")); }
-    } catch {
-      setOk(false); setStatus(t("models.networkError"));
-    } finally {
-      setBusy(false);
-      busyRef.current = false;
-    }
-  };
-
-  const toggleAllowlist = (provider: string) => {
-    const wasOn = allowlistOn.has(provider);
-    setAllowlistOn(prev => { const n = new Set(prev); if (n.has(provider)) n.delete(provider); else n.add(provider); return n; });
-    if (wasOn) void putSelected(provider, []); // turning the allowlist off clears it (revert to all)
-  };
-
-  const toggleSelected = (provider: string, id: string) => {
-    const cur = new Set(selected[provider] ?? []);
-    if (cur.has(id)) cur.delete(id); else cur.add(id);
-    void putSelected(provider, [...cur]);
   };
 
   const toggleProviderCap = async (provider: string) => {
@@ -183,7 +184,12 @@ export default function Models({ apiBase }: { apiBase: string }) {
     }
   };
   const toggleCollapse = (p: string) => {
-    setCollapsed(prev => { const n = new Set(prev); if (n.has(p)) n.delete(p); else n.add(p); return n; });
+    setCollapsed(prev => {
+      const n = new Set(prev);
+      if (n.has(p)) n.delete(p); else n.add(p);
+      try { localStorage.setItem("ocx-models-collapsed", JSON.stringify([...n])); } catch { /* quota */ }
+      return n;
+    });
   };
 
   const putCap = async (body: Record<string, unknown>) => {
@@ -235,10 +241,91 @@ export default function Models({ apiBase }: { apiBase: string }) {
   };
 
   const allCapped = useMemo(
-    () => models.length > 0 && groups.every(([provider]) => contextCaps[provider] === contextCapValue),
-    [groups, contextCaps, contextCapValue, models.length],
+    () => {
+      // Cap aggregate counts routed providers only — the native group has no cap switch.
+      const routed = groups.filter(([, rows]) => !rows.every(r => r.native));
+      return routed.length > 0 && routed.every(([provider]) => contextCaps[provider] === contextCapValue);
+    },
+    [groups, contextCaps, contextCapValue],
   );
   const setAll = () => { void putCap({ setAll: !allCapped }); };
+
+  const setMultiAgentMode = async (mode: "v1" | "default" | "v2") => {
+    if (!v2 || v2BusyRef.current) return;
+    if (v2.multiAgentMode === mode) return;
+    setV2Busy(true);
+    v2BusyRef.current = true;
+    setV2Note("");
+    setStatus("");
+    try {
+      const r = await fetch(`${apiBase}/api/v2`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ multiAgentMode: mode }),
+      });
+      const data = await r.json().catch(() => null) as V2Status & { warnings?: string[]; error?: string } | null;
+      if (r.ok && data) {
+        void loadV2();
+        setOk(true);
+        setStatus(t("models.v2Applied"));
+        setV2Note((data.warnings ?? []).join(" "));
+      } else {
+        setOk(false);
+        setStatus(data?.error ?? t("models.saveFailed"));
+      }
+    } catch {
+      setOk(false); setStatus(t("models.networkError"));
+    } finally {
+      setV2Busy(false);
+      v2BusyRef.current = false;
+    }
+  };
+
+  const putV2Threads = async (value: number) => {
+    // Same guards as the flag toggle: single-flight + server-side idempotence
+    // (setMaxConcurrentThreads no-ops on equal value), so a re-selected current
+    // value or a double click can never double-write config.toml.
+    if (!v2 || v2BusyRef.current) return;
+    if (!Number.isInteger(value) || value < 1) { setOk(false); setStatus(t("models.v2ThreadsInvalid")); return; }
+    if (v2.maxConcurrentThreadsPerSession === value) return;
+    setV2Busy(true);
+    v2BusyRef.current = true;
+    setV2Note("");
+    setStatus("");
+    try {
+      const r = await fetch(`${apiBase}/api/v2`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxConcurrentThreadsPerSession: value }),
+      });
+      const data = await r.json().catch(() => null) as V2Status & { warnings?: string[]; error?: string } | null;
+      if (r.ok && data && typeof data.enabled === "boolean") {
+      setV2({
+          enabled: data.enabled,
+          agentsMaxThreadsConflict: data.agentsMaxThreadsConflict === true,
+          maxConcurrentThreadsPerSession: typeof data.maxConcurrentThreadsPerSession === "number" ? data.maxConcurrentThreadsPerSession : null,
+          multiAgentMode: data.multiAgentMode === "v1" || data.multiAgentMode === "v2" ? data.multiAgentMode : "default",
+        });
+        setOk(true);
+        setStatus(t("models.v2ThreadsApplied"));
+        setShowThreadsCustom(false);
+      } else {
+        setOk(false);
+        setStatus(data?.error ?? t("models.saveFailed"));
+      }
+    } catch {
+      setOk(false); setStatus(t("models.networkError"));
+    } finally {
+      setV2Busy(false);
+      v2BusyRef.current = false;
+    }
+  };
+
+  const onSelectThreads = (raw: string) => {
+    if (raw === CUSTOM_OPTION) { setShowThreadsCustom(true); setThreadsCustom(String(v2?.maxConcurrentThreadsPerSession ?? "")); return; }
+    setShowThreadsCustom(false);
+    void putV2Threads(Number(raw));
+  };
 
   if (loading) return <div className="row muted"><span className="spin" /> {t("models.loading")}</div>;
 
@@ -252,20 +339,94 @@ export default function Models({ apiBase }: { apiBase: string }) {
       <p className="page-sub">{t("models.subtitle")}</p>
       {status && <Notice tone={ok ? "ok" : "err"}>{status}</Notice>}
 
+      {v2 && (
+        <div className="row" style={{ gap: 8, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <span className="muted" style={{ fontSize: 13 }}>{t("models.v2Label")}</span>
+          <div className="segmented" role="radiogroup" aria-label={t("models.v2Label")} style={{ display: "inline-flex", borderRadius: 999, background: "var(--surface-soft, var(--raised))", padding: 3, gap: 2 }}>
+            {(["v1", "default", "v2"] as const).map(mode => (
+              <button
+                key={mode}
+                type="button"
+                role="radio"
+                aria-checked={(v2.multiAgentMode ?? "default") === mode}
+                className={`btn btn-sm${(v2.multiAgentMode ?? "default") === mode ? " btn-primary" : " btn-ghost"}`}
+                style={{ borderRadius: 999, minWidth: 64, fontSize: 12, padding: "5px 12px", border: "none", background: (v2.multiAgentMode ?? "default") === mode ? undefined : "transparent", color: (v2.multiAgentMode ?? "default") === mode ? undefined : "var(--muted)" }}
+                disabled={v2Busy}
+                onClick={() => void setMultiAgentMode(mode)}
+              >
+                {t(`models.v2Mode_${mode}` as keyof typeof import("../i18n/en").en)}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            style={{ width: 22, height: 22, padding: 0, borderRadius: 999, fontSize: 12, fontWeight: 700, color: "var(--muted)" }}
+            onClick={() => setV2HelpOpen(true)}
+            aria-label="Help"
+          >?</button>
+          {v2.enabled && (
+            <>
+              <span className="muted" style={{ fontSize: 13, marginLeft: 8 }}>{t("models.v2ThreadsLabel")}</span>
+              <Select
+                value={showThreadsCustom
+                  ? CUSTOM_OPTION
+                  : (v2.maxConcurrentThreadsPerSession !== null && v2.maxConcurrentThreadsPerSession !== undefined
+                    ? (THREAD_OPTIONS.includes(v2.maxConcurrentThreadsPerSession) ? String(v2.maxConcurrentThreadsPerSession) : CUSTOM_OPTION)
+                    : "")}
+                options={[
+                  ...(v2.maxConcurrentThreadsPerSession === null || v2.maxConcurrentThreadsPerSession === undefined
+                    ? [{ value: "", label: t("models.v2ThreadsDefault") }] : []),
+                  ...(v2.maxConcurrentThreadsPerSession !== null && v2.maxConcurrentThreadsPerSession !== undefined
+                    && !THREAD_OPTIONS.includes(v2.maxConcurrentThreadsPerSession) && !showThreadsCustom
+                    ? [{ value: CUSTOM_OPTION, label: String(v2.maxConcurrentThreadsPerSession) }] : []),
+                  ...THREAD_OPTIONS.map(v => ({ value: String(v), label: String(v) })),
+                  { value: CUSTOM_OPTION, label: t("models.custom") },
+                ]}
+                onChange={v => onSelectThreads(v)}
+                disabled={v2Busy}
+                label={t("models.v2ThreadsLabel")}
+              />
+              {showThreadsCustom && (
+                <>
+                  <input
+                    className="input"
+                    style={{ width: 100 }}
+                    inputMode="numeric"
+                    value={threadsCustom}
+                    onChange={e => setThreadsCustom(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") void putV2Threads(Number(threadsCustom.replace(/[_,\s]/g, ""))); }}
+                    disabled={v2Busy}
+                  />
+                  <button type="button" className="btn btn-sm" disabled={v2Busy}
+                    onClick={() => { void putV2Threads(Number(threadsCustom.replace(/[_,\s]/g, ""))); }}>
+                    {t("models.v2ThreadsApply")}
+                  </button>
+                </>
+              )}
+            </>
+          )}
+          {v2.agentsMaxThreadsConflict && (
+            <span className="mono" style={{ fontSize: 12, color: "var(--err, #e5484d)" }}>{t("models.v2Conflict")}</span>
+          )}
+          {v2Note && <span className="muted" style={{ fontSize: 12 }}>{v2Note}</span>}
+        </div>
+      )}
+
       <div className="row" style={{ gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
         <span className="muted" style={{ fontSize: 13 }}>{t("models.contextCapLabel")}</span>
-        <select
-          className="select-sm"
+        <Select
           value={showCustom ? CUSTOM_OPTION : (CAP_OPTIONS.includes(contextCapValue) ? String(contextCapValue) : CUSTOM_OPTION)}
-          onChange={e => onSelectCap(e.target.value)}
+          options={[
+            ...(!CAP_OPTIONS.includes(contextCapValue) && !showCustom
+              ? [{ value: String(contextCapValue), label: fmtK(contextCapValue) }] : []),
+            ...CAP_OPTIONS.map(v => ({ value: String(v), label: fmtK(v) })),
+            { value: CUSTOM_OPTION, label: t("models.custom") },
+          ]}
+          onChange={v => onSelectCap(v)}
           disabled={busy}
-        >
-          {!CAP_OPTIONS.includes(contextCapValue) && !showCustom && (
-            <option value={String(contextCapValue)}>{fmtK(contextCapValue)}</option>
-          )}
-          {CAP_OPTIONS.map(v => <option key={v} value={String(v)}>{fmtK(v)}</option>)}
-          <option value={CUSTOM_OPTION}>{t("models.custom")}</option>
-        </select>
+          label={t("models.contextCapLabel")}
+        />
         {showCustom && (
           <>
             <input
@@ -286,60 +447,59 @@ export default function Models({ apiBase }: { apiBase: string }) {
         <span className="muted mono" style={{ fontSize: 12 }}>{t("models.setAll")}</span>
       </div>
 
-      {groups.map(([provider, rows]) => {
-        const isCollapsed = collapsed.has(provider);
-        const activeCount = rows.filter(m => !disabled.has(m.namespaced)).length;
-        const capOn = contextCaps[provider] === contextCapValue;
-        const isAllowlist = allowlistOn.has(provider);
-        const sel = new Set(selected[provider] ?? []);
-        const q = (search[provider] ?? "").trim().toLowerCase();
-        const filtered = q ? rows.filter(m => m.id.toLowerCase().includes(q)) : rows;
-        const shown = limit[provider] ?? PAGE;
-        const visible = filtered.slice(0, shown);
-        const remaining = filtered.length - visible.length;
-        return (
-          <div key={provider} className="card" style={{ marginBottom: 8, overflow: "hidden" }}>
-            <div onClick={() => toggleCollapse(provider)}
-              className="row" style={{ padding: "10px 12px", background: "var(--raised)", cursor: "pointer" }}>
-              <IconChevron style={{ width: 14, height: 14, color: "var(--muted)", transform: isCollapsed ? "none" : "rotate(90deg)", transition: "transform .12s" }} />
-              <span style={{ fontWeight: 600, fontSize: 14 }}>{provider}</span>
-              <span className="muted mono" style={{ fontSize: 12 }}>{t("models.active", { active: activeCount, total: rows.length })}</span>
-              {isAllowlist && sel.size > 0 && <span className="muted mono" style={{ fontSize: 12 }}>· {t("models.selectedCount", { n: sel.size })}</span>}
-              <div style={{ flex: 1 }} />
+     {groups.map(([provider, rows]) => {
+       const isCollapsed = collapsed.has(provider);
+       const activeCount = rows.filter(m => !disabled.has(m.namespaced)).length;
+       const capOn = contextCaps[provider] === contextCapValue;
+       const isNative = rows.every(m => m.native);
+       const q = (search[provider] ?? "").trim().toLowerCase();
+       const filtered = q ? rows.filter(m => m.id.toLowerCase().includes(q)) : rows;
+       const shown = limit[provider] ?? PAGE;
+       const visible = filtered.slice(0, shown);
+       const remaining = filtered.length - visible.length;
+        const allOn = rows.every(m => !disabled.has(m.namespaced));
+        const allOff = rows.every(m => disabled.has(m.namespaced));
+        const bulkToggle = (enable: boolean) => {
+          const next = new Set(disabled);
+          for (const m of rows) { if (enable) next.delete(m.namespaced); else next.add(m.namespaced); }
+          apply(next);
+        };
+       return (
+         <div key={provider} className="card" style={{ marginBottom: 8, overflow: "hidden" }}>
+          <div onClick={() => toggleCollapse(provider)}
+             className={`row group-head${isCollapsed ? "" : " open"}`}>
+             <IconChevron style={{ width: 14, height: 14, color: "var(--muted)", transform: isCollapsed ? "none" : "rotate(90deg)", transition: "transform .12s" }} />
+             <span style={{ fontWeight: 600, fontSize: 14 }}>{provider}</span>
+             {isNative && <span className="muted mono" style={{ fontSize: 11, padding: "1px 6px", border: "1px solid var(--border)", borderRadius: 999 }}>{t("models.nativeGroupLabel")}</span>}
+             <span className="muted mono" style={{ fontSize: 12 }}>{t("models.active", { active: activeCount, total: rows.length })}</span>
+             <div style={{ flex: 1 }} />
               <div className="row" onClick={e => e.stopPropagation()} style={{ gap: 6 }}>
-                <Switch on={isAllowlist} onClick={() => toggleAllowlist(provider)} disabled={busy} label={t("models.allowlistLabel")} />
-                <span className="muted mono" style={{ fontSize: 12 }}>{t("models.allowlistLabel")}</span>
-                <Switch on={capOn} onClick={() => toggleProviderCap(provider)} disabled={busy} label={t("models.capValue", { value: fmtK(contextCapValue) })} />
-                <span className="muted mono" style={{ fontSize: 12 }}>{t("models.capValue", { value: fmtK(contextCapValue) })}</span>
+                <button className="btn btn-ghost btn-sm" disabled={busy || allOn} onClick={() => bulkToggle(true)} style={{ fontSize: 11, padding: "2px 8px" }}>{t("models.allOn")}</button>
+                <button className="btn btn-ghost btn-sm" disabled={busy || allOff} onClick={() => bulkToggle(false)} style={{ fontSize: 11, padding: "2px 8px" }}>{t("models.allOff")}</button>
+                {!isNative && <>
+                  <Switch on={capOn} onClick={() => toggleProviderCap(provider)} disabled={busy} label={t("models.capValue", { value: fmtK(contextCapValue) })} />
+                  <span className="muted mono" style={{ fontSize: 12 }}>{t("models.capValue", { value: fmtK(contextCapValue) })}</span>
+                </>}
               </div>
-            </div>
-            {!isCollapsed && (
-              <div style={{ padding: "6px 12px" }}>
-                {rows.length > PAGE / 2 && (
-                  <input
-                    className="input"
-                    style={{ width: "100%", marginBottom: 6 }}
-                    placeholder={t("models.search")}
-                    value={search[provider] ?? ""}
-                    onChange={e => setSearch(prev => ({ ...prev, [provider]: e.target.value }))}
-                  />
-                )}
-                {isAllowlist && <p className="muted" style={{ fontSize: 12, margin: "2px 0 6px" }}>{t("models.allowlistHint")}</p>}
+           </div>
+           {!isCollapsed && (
+             <div style={{ padding: "6px 12px" }}>
+               {isNative && <p className="muted" style={{ fontSize: 12, margin: "2px 0 6px" }}>{t("models.nativeHint")}</p>}
+               {rows.length > PAGE / 2 && (
+                 <input
+                   className="input"
+                   style={{ width: "100%", marginBottom: 6 }}
+                   placeholder={t("models.search")}
+                   value={search[provider] ?? ""}
+                   onChange={e => setSearch(prev => ({ ...prev, [provider]: e.target.value }))}
+                 />
+               )}
                 {visible.map(m => {
                   const off = disabled.has(m.namespaced);
-                  if (isAllowlist) {
-                    const on = sel.has(m.id);
-                    return (
-                      <label key={m.namespaced} className="row" style={{ padding: "5px 0", cursor: "pointer", gap: 8 }}>
-                        <input type="checkbox" checked={on} disabled={busy} onChange={() => toggleSelected(provider, m.id)} />
-                        <code className="mono" style={{ fontSize: 13, color: on ? "var(--text)" : "var(--faint)" }}>{m.id}</code>
-                      </label>
-                    );
-                  }
                   return (
                     <div key={m.namespaced} className="row" style={{ padding: "5px 0" }}>
                       <Switch on={!off} onClick={() => toggle(m.namespaced)} disabled={busy} label={m.id} />
-                      <code className="mono" style={{ fontSize: 13, color: off ? "var(--faint)" : "var(--text)", textDecoration: off ? "line-through" : "none" }}>{m.id}</code>
+                      <code className="mono" style={{ fontSize: 13, color: off ? "var(--faint)" : "var(--text)", textDecoration: off ? "line-through" : "none" }}>{modelLabel(m.id)}</code>
                       {m.contextCapped && <span className="muted mono" style={{ fontSize: 11, padding: "1px 6px", border: "1px solid var(--border)", borderRadius: 999 }}>{t("models.contextCappedValue", { value: fmtK(m.contextCap ?? contextCapValue) })}</span>}
                     </div>
                   );
@@ -357,10 +517,30 @@ export default function Models({ apiBase }: { apiBase: string }) {
         );
       })}
       {groups.length === 0 && (
-        <div className="empty">
-          <IconBoxes />
-          <div className="title">{t("models.noRouted")}</div>
-          <div style={{ fontSize: 13 }}>{t("models.noRoutedHint")}</div>
+        <EmptyState icon={<IconBoxes />} title={t("models.noRouted")}>
+          {t("models.noRoutedHint")}
+        </EmptyState>
+      )}
+
+      {v2HelpOpen && (
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={t("models.v2Label")} onClick={() => setV2HelpOpen(false)} onKeyDown={e => { if (e.key === "Escape") setV2HelpOpen(false); }}>
+          <div className="modal-card" onClick={e => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>{t("models.v2Label")}</h3>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setV2HelpOpen(false)} aria-label="Close">&times;</button>
+            </div>
+            <div className="modal-desc" style={{ whiteSpace: "pre-line", lineHeight: 1.6 }}>
+              {t("models.v2Help")}
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <a href="https://lidge-jun.github.io/opencodex/guides/sub-agent-surface/" target="_blank" rel="noreferrer" style={{ fontSize: 13, color: "var(--accent)" }}>
+                {t("models.v2DocsLink")}
+              </a>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="btn btn-primary" onClick={() => setV2HelpOpen(false)}>OK</button>
+            </div>
+          </div>
         </div>
       )}
     </>

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { CatalogModel } from "../codex/catalog";
-import { invalidateCodexModelsCache } from "../codex/catalog";
+import { invalidateCodexModelsCache, nativeModelRows } from "../codex/catalog";
 import {
   DEFAULT_SUBAGENT_MODELS,
   codexAutoStartEnabled,
@@ -24,8 +24,17 @@ import { deriveProviderPresets } from "../providers/derive";
 import { fetchProviderQuotaReports } from "../providers/quota";
 import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../providers/context-cap";
 import { readUsageEntries } from "../usage/log";
+import { getUsageDebugLogEntries } from "../usage/debug";
 import { parseRange, summarizeUsage } from "../usage/summary";
 import { stripCodexRuntimeProviderFields } from "../codex/auth-context";
+import { getDebugLogEntries } from "../lib/debug-log-buffer";
+import {
+  clearDebugSettings,
+  clearDebugSetting,
+  getDebugSettings,
+  setDebugSettings,
+  type DebugFlag,
+} from "../lib/debug-settings";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 import { drainAndShutdown } from "./lifecycle";
 import { filterRequestLogs, getRequestLogEntries } from "./request-log";
@@ -40,6 +49,15 @@ export const VERSION = (() => {
     return "0.0.0";
   }
 })();
+
+function parseDebugLogQuery(url: URL): { after: number; limit: number } {
+  const after = Number(url.searchParams.get("after") ?? url.searchParams.get("since") ?? "0");
+  const limit = Number(url.searchParams.get("limit") ?? "500");
+  return {
+    after: Number.isFinite(after) && after > 0 ? after : 0,
+    limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 2000) : 500,
+  };
+}
 
 export async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): Promise<Response | null> {
   if (!isAllowedRequestOrigin(req, config)) {
@@ -87,6 +105,12 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     config.codexAutoStart = body.codexAutoStart;
     saveConfig(config);
     return jsonResponse({ ok: true, codexAutoStart: codexAutoStartEnabled(config) });
+  }
+
+  if (url.pathname === "/api/diagnostics/project-config" && req.method === "GET") {
+    const { getCachedProjectConfigDiagnostics } = await import("../codex/project-config-warnings");
+    const { warnings, grouped } = getCachedProjectConfigDiagnostics();
+    return jsonResponse({ warnings, grouped });
   }
 
   if (url.pathname === "/api/sync" && req.method === "POST") {
@@ -138,8 +162,8 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     const ws = config.webSearchSidecar ?? {};
     const vs = config.visionSidecar ?? {};
     return jsonResponse({
-      webSearch: { model: ws.model ?? "gpt-5.4-mini", reasoning: ws.reasoning ?? "low" },
-      vision: { model: vs.model ?? "gpt-5.4-mini" },
+      webSearch: { model: ws.model ?? "gpt-5.6-luna", reasoning: ws.reasoning ?? "low" },
+      vision: { model: vs.model ?? "gpt-5.6-luna" },
     });
   }
 
@@ -160,13 +184,45 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     const vs = config.visionSidecar ?? {};
     return jsonResponse({
       ok: true,
-      webSearch: { model: ws.model ?? "gpt-5.4-mini", reasoning: ws.reasoning ?? "low" },
-      vision: { model: vs.model ?? "gpt-5.4-mini" },
+      webSearch: { model: ws.model ?? "gpt-5.6-luna", reasoning: ws.reasoning ?? "low" },
+      vision: { model: vs.model ?? "gpt-5.6-luna" },
     });
   }
 
   if (url.pathname === "/api/logs" && req.method === "GET") {
     return jsonResponse(filterRequestLogs(getRequestLogEntries(), url.searchParams));
+  }
+
+  if (url.pathname === "/api/debug" && req.method === "GET") {
+    return jsonResponse(getDebugSettings());
+  }
+
+  if (url.pathname === "/api/debug/logs" && req.method === "GET") {
+    const { after, limit } = parseDebugLogQuery(url);
+    return jsonResponse(getDebugLogEntries({ after, limit }));
+  }
+
+  if (url.pathname === "/api/debug/usage-logs" && req.method === "GET") {
+    const { after, limit } = parseDebugLogQuery(url);
+    return jsonResponse(getUsageDebugLogEntries({ after, limit }));
+  }
+
+  if (url.pathname === "/api/debug" && req.method === "PUT") {
+    let body: { debug?: unknown; usage?: unknown; reset?: unknown };
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (body.reset === true) return jsonResponse(clearDebugSettings());
+    if (body.reset === "debug" || body.reset === "provider") return jsonResponse(clearDebugSetting("debug"));
+    if (body.reset === "usage") return jsonResponse(clearDebugSetting("usage"));
+    const partial: Partial<Record<DebugFlag, boolean>> = {};
+    for (const key of ["debug", "usage"] as const) {
+      if (body[key] === undefined) continue;
+      if (typeof body[key] !== "boolean") return jsonResponse({ error: `${key} must be a boolean` }, 400);
+      partial[key] = body[key];
+    }
+    if (Object.keys(partial).length === 0) {
+      return jsonResponse({ error: "provide debug/usage booleans or reset:true" }, 400);
+    }
+    return jsonResponse(setDebugSettings(partial));
   }
 
   if (url.pathname === "/api/usage" && req.method === "GET") {
@@ -284,7 +340,17 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   if (url.pathname === "/api/models" && req.method === "GET") {
     const models = await fetchAllModels(config);
     const disabled = new Set(config.disabledModels ?? []);
-    return jsonResponse(models.map(m => {
+    // Native GPT passthrough rows lead (provider "openai", bare-slug namespaced ids): sourced
+    // from the static supported set so a disabled model stays listed and re-enableable.
+    const native = nativeModelRows(config).map(row => ({
+      provider: "openai",
+      id: row.slug,
+      namespaced: row.slug,
+      disabled: row.disabled,
+      native: true,
+      ...(row.contextWindow !== undefined ? { contextWindow: row.contextWindow } : {}),
+    }));
+    return jsonResponse([...native, ...models.map(m => {
       const namespaced = `${m.provider}/${m.id}`;
       const contextCap = providerContextCap(config, m.provider);
       return {
@@ -293,7 +359,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
         disabled: disabled.has(namespaced),
         ...(contextCap !== undefined ? { contextCap, contextCapped: m.contextCapped === true } : {}),
       };
-    }));
+    })]);
   }
 
   if (url.pathname === "/api/provider-context-caps" && req.method === "GET") {
@@ -365,6 +431,76 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     return jsonResponse({ ok: true, disabled });
   }
 
+  // multi_agent_v2 surface toggle. GET reports the flag + the agents.max_threads
+  // boot conflict; PUT flips it via the official `codex features` CLI and RESYNCS
+  // the catalog so multi-agent surface metadata stays fresh. The catalog build
+  // itself never writes config — this endpoint is the only server-side mutation
+  // surface for the flag.
+  if (url.pathname === "/api/v2" && req.method === "GET") {
+    const { isMultiAgentV2Enabled, hasAgentsMaxThreads, getMaxConcurrentThreads } = await import("../codex/features");
+    return jsonResponse({
+      enabled: isMultiAgentV2Enabled(),
+      agentsMaxThreadsConflict: hasAgentsMaxThreads(),
+      maxConcurrentThreadsPerSession: getMaxConcurrentThreads(),
+      multiAgentMode: config.multiAgentMode ?? "default",
+    });
+  }
+  if (url.pathname === "/api/v2" && req.method === "PUT") {
+    let body: { enabled?: unknown; maxConcurrentThreadsPerSession?: unknown; multiAgentMode?: unknown };
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    const wantsFlag = body.enabled !== undefined;
+    const wantsThreads = body.maxConcurrentThreadsPerSession !== undefined;
+    const wantsMode = body.multiAgentMode !== undefined;
+    if (!wantsFlag && !wantsThreads && !wantsMode) return jsonResponse({ error: "body must set enabled, multiAgentMode, and/or maxConcurrentThreadsPerSession" }, 400);
+    if (wantsFlag && typeof body.enabled !== "boolean") return jsonResponse({ error: "body.enabled must be a boolean" }, 400);
+    if (wantsMode && body.multiAgentMode !== "v1" && body.multiAgentMode !== "default" && body.multiAgentMode !== "v2") {
+      return jsonResponse({ error: "body.multiAgentMode must be 'v1', 'default', or 'v2'" }, 400);
+    }
+    if (wantsThreads && (typeof body.maxConcurrentThreadsPerSession !== "number" || !Number.isInteger(body.maxConcurrentThreadsPerSession) || body.maxConcurrentThreadsPerSession < 1)) {
+      return jsonResponse({ error: "body.maxConcurrentThreadsPerSession must be an integer >= 1" }, 400);
+    }
+    const { isMultiAgentV2Enabled, hasAgentsMaxThreads, getMaxConcurrentThreads, setMaxConcurrentThreads } = await import("../codex/features");
+    const warnings: string[] = [];
+    if (wantsFlag && isMultiAgentV2Enabled() !== body.enabled) {
+      const { execFileSync } = await import("node:child_process");
+      const command = process.env.CODEX_CLI_PATH?.trim() || "codex";
+      try {
+        execFileSync(command, ["features", body.enabled ? "enable" : "disable", "multi_agent_v2"],
+          { stdio: ["ignore", "pipe", "pipe"], timeout: 15_000, windowsHide: true });
+      } catch (err) {
+        return jsonResponse({ error: `codex features ${body.enabled ? "enable" : "disable"} failed: ${err instanceof Error ? err.message : String(err)}` }, 502);
+      }
+      await refreshCodexCatalogBestEffort();
+    }
+    if (wantsThreads) {
+      // setMaxConcurrentThreads is idempotent (equal value -> no write) and refuses
+      // when the [features.multi_agent_v2] table is missing, so a threads-only PUT
+      // against a never-enabled config fails loudly instead of inventing state.
+      const result = setMaxConcurrentThreads(body.maxConcurrentThreadsPerSession as number);
+      if (!result.ok) return jsonResponse({ error: result.error }, 409);
+      if (result.changed) warnings.push("Thread limit applies to new sessions.");
+    }
+    if (wantsMode) {
+      const mode = body.multiAgentMode as "v1" | "default" | "v2";
+      if (mode === "default") delete config.multiAgentMode;
+      else config.multiAgentMode = mode;
+      saveConfig(config);
+      await refreshCodexCatalogBestEffort();
+      warnings.push(`Multi-agent mode set to '${mode}'. Applies to new sessions.`);
+    }
+    if ((wantsFlag ? body.enabled === true : isMultiAgentV2Enabled()) && hasAgentsMaxThreads()) {
+      warnings.push("[agents] max_threads is set — codex refuses to start while multi_agent_v2 is enabled; remove it (features.multi_agent_v2.max_concurrent_threads_per_session replaces it).");
+    }
+    if (wantsFlag) warnings.push("Applies to new sessions; restart the Codex app or wait out its picker cache to see the ladder change.");
+    return jsonResponse({
+      ok: true,
+      enabled: isMultiAgentV2Enabled(),
+      maxConcurrentThreadsPerSession: getMaxConcurrentThreads(),
+      multiAgentMode: config.multiAgentMode ?? "default",
+      warnings,
+    });
+  }
+
   // Which providers support real OAuth login (drives the GUI's "Log in with …" buttons).
   if (url.pathname === "/api/oauth/providers" && req.method === "GET") {
     return jsonResponse({ providers: listOAuthProviders() });
@@ -379,6 +515,31 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   // standalone Vite package, so it consumes this runtime view instead of importing repo-root src.
   if (url.pathname === "/api/provider-presets" && req.method === "GET") {
     return jsonResponse({ providers: deriveProviderPresets() });
+  }
+
+  // Subagent prompt injection model: single native or routed model whose info is
+  // dynamically injected into the v1 proactive prompt. GET returns the current pick
+  // + available models; PUT sets or clears the pick.
+  if (url.pathname === "/api/injection-model" && req.method === "GET") {
+    const models = await fetchAllModels(config);
+    const disabled = new Set(config.disabledModels ?? []);
+    const { listCatalogNativeSlugs } = await import("../codex/catalog");
+    const nativeModels = listCatalogNativeSlugs()
+      .filter(slug => !disabled.has(slug))
+      .map(slug => ({ provider: "openai", model: slug, namespaced: slug }));
+    const routedModels = models
+      .map(m => ({ provider: m.provider, model: m.id, namespaced: `${m.provider}/${m.id}` }))
+      .filter(m => !disabled.has(m.namespaced));
+    return jsonResponse({ model: config.injectionModel ?? null, available: [...nativeModels, ...routedModels] });
+  }
+  if (url.pathname === "/api/injection-model" && req.method === "PUT") {
+    let body: { model?: unknown };
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    const model = typeof body.model === "string" && body.model.length > 0 ? body.model : undefined;
+    if (model) config.injectionModel = model;
+    else delete config.injectionModel;
+    saveConfig(config);
+    return jsonResponse({ ok: true, model: config.injectionModel ?? null });
   }
 
   // Subagent model picker: which ≤5 routed models Codex's spawn_agent advertises (it shows the

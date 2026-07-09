@@ -482,31 +482,70 @@ function toolsToAnthropicFormat(parsed: OcxParsedRequest, toolNames: { toWire: (
   const converted = tools.map(t => ({
     name: toolNames.toWire(namespacedToolName(t.namespace, t.name)),
     description: t.description,
-    input_schema: toAnthropicInputSchema(t.parameters),
+    input_schema: normalizeAnthropicInputSchema(t.parameters),
   }));
   return converted;
 }
 
-/**
- * Normalize a tool's JSON-Schema `parameters` into a valid Anthropic `input_schema`. Anthropic
- * requires every custom tool's `input_schema` to be an object schema with `type: "object"`
- * ("tools.N.custom.input_schema.type: Field required" 400 otherwise). Some tools reach the adapter
- * with empty (`{}`) or type-less parameters — e.g. a parameterless function tool the parser filled
- * with `parameters: {}` (see responses/parser.ts pushFn) — so force the root object type and keep a
- * `properties` map present. Existing valid schemas pass through untouched.
- */
-function toAnthropicInputSchema(parameters: Record<string, unknown> | undefined): Record<string, unknown> {
-  const schema = parameters && typeof parameters === "object" && !Array.isArray(parameters)
-    ? parameters
+function normalizeAnthropicInputSchema(schema: unknown): Record<string, unknown> {
+  const obj = schema && typeof schema === "object" && !Array.isArray(schema)
+    ? schema as Record<string, unknown>
     : {};
-  if (schema.type === "object" && typeof schema.properties === "object" && schema.properties !== null) {
-    return schema;
+  // Anthropic rejects root-level missing type and oneOf/anyOf/allOf in input_schema.
+  // Normalize the root only: ensure type:"object" + properties, flatten root composition
+  // while preserving nested schemas. Mirrors kiro-tools.ts ensureRootObjectType.
+  // Known limitation: Object.assign on branch properties means later branches overwrite
+  // earlier ones when the same property name appears with different schemas.
+  const compositionKeys = ["oneOf", "anyOf", "allOf"] as const;
+  const hasRootComposition = compositionKeys.some(key => Array.isArray(obj[key]));
+  const type = obj.type;
+  const rootObjectType = type === "object" || (Array.isArray(type) && type.includes("object"));
+
+  if (!hasRootComposition) {
+    const normalized: Record<string, unknown> = rootObjectType && type === "object"
+      ? { ...obj }
+      : { ...obj, type: "object" };
+    if (normalized.properties === undefined || normalized.properties === null) {
+      normalized.properties = {};
+    }
+    return normalized;
   }
-  return {
-    ...schema,
-    type: "object",
-    properties: (typeof schema.properties === "object" && schema.properties !== null) ? schema.properties : {},
-  };
+
+  const properties: Record<string, unknown> = {};
+  const required = new Set<string>();
+  if (obj.properties && typeof obj.properties === "object" && !Array.isArray(obj.properties)) {
+    Object.assign(properties, obj.properties as Record<string, unknown>);
+  }
+  if (Array.isArray(obj.required)) {
+    for (const item of obj.required) if (typeof item === "string") required.add(item);
+  }
+
+  for (const key of compositionKeys) {
+    const variants = obj[key];
+    if (!Array.isArray(variants)) continue;
+    const mergeRequired = key === "allOf";
+    for (const variant of variants) {
+      if (!variant || typeof variant !== "object" || Array.isArray(variant)) continue;
+      const v = variant as Record<string, unknown>;
+      if (v.properties && typeof v.properties === "object" && !Array.isArray(v.properties)) {
+        Object.assign(properties, v.properties as Record<string, unknown>);
+      }
+      if (mergeRequired && Array.isArray(v.required)) {
+        for (const item of v.required) if (typeof item === "string") required.add(item);
+      }
+    }
+  }
+
+  const normalized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (key === "oneOf" || key === "anyOf" || key === "allOf") continue;
+    if (key === "type" || key === "properties" || key === "required") continue;
+    normalized[key] = value;
+  }
+  normalized.type = "object";
+  normalized.properties = properties;
+  if (required.size > 0) normalized.required = [...required];
+  return normalized;
 }
 
 export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetention?: "none" | "short" | "long"): ProviderAdapter {

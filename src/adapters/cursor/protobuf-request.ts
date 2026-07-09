@@ -22,6 +22,8 @@ import {
   McpToolResultSchema,
   ModelDetailsSchema,
   ResumeActionSchema,
+  RequestContextSchema,
+  RequestContextEnvSchema,
   ThinkingMessageSchema,
   ToolCallSchema,
   UserMessageActionSchema,
@@ -38,6 +40,24 @@ import {
 } from "./tool-definitions";
 
 const encoder = new TextEncoder();
+
+/** Runtime timezone for protobuf RequestContextEnv (dynamic, never hardcoded). */
+function runtimeTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
+/** Builds a RequestContext with env.timeZone populated dynamically. */
+function buildRequestContext() {
+  return create(RequestContextSchema, {
+    env: create(RequestContextEnvSchema, {
+      timeZone: runtimeTimeZone(),
+    }),
+  });
+}
 
 function jsonBlob(value: unknown): Uint8Array {
   return encoder.encode(JSON.stringify(value));
@@ -307,11 +327,14 @@ export function encodeCursorRunRequest(request: CursorRunRequest): Uint8Array {
               text,
               messageId: crypto.randomUUID(),
             }),
+            requestContext: buildRequestContext(),
           }),
         }
       : {
           case: "resumeAction",
-          value: create(ResumeActionSchema, {}),
+          value: create(ResumeActionSchema, {
+            requestContext: buildRequestContext(),
+          }),
         },
   });
 

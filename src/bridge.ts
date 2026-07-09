@@ -1,5 +1,5 @@
 import type { AdapterEvent, OcxUsage } from "./types";
-import { classifyError, type OcxErrorPayload } from "./lib/errors";
+import { adapterFailureFromMessage, classifyError, type OcxErrorPayload } from "./lib/errors";
 import { encodeCompactionSummary } from "./responses/compaction";
 import { encodeReasoningEnvelope, type ReasoningEnvelope } from "./responses/reasoning-envelope";
 import { usageDisplayTotalTokens, usageInputTokensWithCacheDetail } from "./usage/totals";
@@ -39,6 +39,8 @@ function responsesUsage(usage: OcxUsage | undefined): Record<string, unknown> {
 function responseError(status: number, type: string, message: string): OcxErrorPayload {
   return classifyError(status, type, message);
 }
+
+export { adapterFailureFromMessage } from "./lib/errors";
 
 /**
  * Build the native `WebSearchAction::Search` payload from the queries that ran. codex-rs prefers a
@@ -184,6 +186,7 @@ export function bridgeToResponsesSSE(
           if (currentMsg) closeCurrentMessage();
           if (currentReasoning) closeCurrentReasoning();
           if (currentRawReasoning) closeCurrentRawReasoning();
+          flushHiddenRawReasoning();
           if (currentToolCall) closeCurrentToolCall();
           if (currentWebSearch) closeCurrentWebSearch("failed", []);
           emit("response.incomplete", {
@@ -229,6 +232,23 @@ export function bridgeToResponsesSSE(
         const encrypted = takeReasoningEnvelope(hiddenThinkingText || undefined);
         hiddenThinkingText = "";
         if (!encrypted) return;
+        const itemId = `rs_${uuid()}`;
+        const item = { type: "reasoning", id: itemId, summary: [] as never[], encrypted_content: encrypted };
+        emit("response.output_item.added", { output_index: outputIndex, item });
+        emit("response.output_item.done", { output_index: outputIndex, item });
+        finishedItems.push(item as OutputItem);
+        outputIndex++;
+      };
+      // hideThinkingSummary for RAW reasoning (openai-chat reasoning_content, kiro tags): no
+      // visible reasoning item is emitted — the app renders nothing, so tool cells keep grouping
+      // like native models — but the text still round-trips in a txt-only ocxr1 envelope so
+      // preserveReasoningContentModels replay (GLM interleaved thinking) keeps working. Direct
+      // encodeReasoningEnvelope: takeReasoningEnvelope's sig/red guard would drop txt-only.
+      let hiddenRawReasoningText = "";
+      const flushHiddenRawReasoning = () => {
+        if (!hiddenRawReasoningText) return;
+        const encrypted = encodeReasoningEnvelope({ txt: hiddenRawReasoningText });
+        hiddenRawReasoningText = "";
         const itemId = `rs_${uuid()}`;
         const item = { type: "reasoning", id: itemId, summary: [] as never[], encrypted_content: encrypted };
         emit("response.output_item.added", { output_index: outputIndex, item });
@@ -392,6 +412,7 @@ export function bridgeToResponsesSSE(
             case "text_delta": {
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
+              flushHiddenRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
               if (!currentMsg) {
                 const itemId = `msg_${uuid()}`;
@@ -417,6 +438,7 @@ export function bridgeToResponsesSSE(
               if (options?.hideThinkingSummary) { hiddenThinkingText += event.thinking; break; }
               if (currentMsg) closeCurrentMessage();
               if (currentRawReasoning) closeCurrentRawReasoning();
+              flushHiddenRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
               if (!currentReasoning) {
                 const itemId = `rs_${uuid()}`;
@@ -448,6 +470,7 @@ export function bridgeToResponsesSSE(
               break;
             }
             case "reasoning_raw_delta": {
+              if (options?.hideThinkingSummary) { hiddenRawReasoningText += event.text; break; }
               if (currentMsg) closeCurrentMessage();
               if (currentReasoning) closeCurrentReasoning();
               if (currentToolCall) closeCurrentToolCall();
@@ -468,6 +491,7 @@ export function bridgeToResponsesSSE(
               if (currentMsg) closeCurrentMessage();
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
+              flushHiddenRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
               const itemId = `fc_${uuid()}`;
               const mapped = toolNsMap?.get(event.name);
@@ -522,6 +546,7 @@ export function bridgeToResponsesSSE(
               if (currentMsg) closeCurrentMessage();
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
+              flushHiddenRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
               if (currentWebSearch) closeCurrentWebSearch("completed", []);
               emit("response.output_item.added", {
@@ -556,6 +581,7 @@ export function bridgeToResponsesSSE(
               if (currentMsg) closeCurrentMessage();
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
+              flushHiddenRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
               if (currentWebSearch) closeCurrentWebSearch("completed", []);
               // Redacted-only turns (or hidden thinking without a trailing signature event) still
@@ -584,16 +610,18 @@ export function bridgeToResponsesSSE(
               if (currentMsg) closeCurrentMessage();
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
+              flushHiddenRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
               if (currentWebSearch) closeCurrentWebSearch("failed", []);
+              const failure = adapterFailureFromMessage(event.message);
               emit("response.failed", {
                 response: {
                   ...responseSnapshot("failed", finishedItems),
                   // Partial consumption from a mid-stream upstream failure: surfaced so the request
                   // log can record real tokens instead of usageStatus "unreported" with 0.
                   ...(event.usage ? { usage: responsesUsage(event.usage) } : {}),
-                  error: responseError(502, "upstream_error", event.message),
-                  last_error: responseError(502, "upstream_error", event.message),
+                  error: failure.error,
+                  last_error: failure.error,
                 },
               });
               reportTerminal("failed");
@@ -603,6 +631,7 @@ export function bridgeToResponsesSSE(
           }
         }
       } catch (err) {
+        flushHiddenRawReasoning();
         if (currentWebSearch) closeCurrentWebSearch("failed", []);
         emit("response.failed", {
           response: {
@@ -623,6 +652,7 @@ export function bridgeToResponsesSSE(
         if (currentMsg) closeCurrentMessage();
         if (currentReasoning) closeCurrentReasoning();
         if (currentRawReasoning) closeCurrentRawReasoning();
+        flushHiddenRawReasoning();
         if (currentToolCall) closeCurrentToolCall();
         if (currentWebSearch) closeCurrentWebSearch("failed", []);
         emit("response.incomplete", {
@@ -723,6 +753,15 @@ export function buildResponseJSON(
   };
   const flushRawReasoning = () => {
     if (!currentRawReasoning) return;
+    if (options?.hideThinkingSummary === true) {
+      // Same contract as the streaming path: no visible reasoning, txt-only envelope round-trip.
+      output.push({
+        type: "reasoning", id: `rs_${uuid()}`, summary: [],
+        encrypted_content: encodeReasoningEnvelope({ txt: currentRawReasoning }),
+      });
+      currentRawReasoning = "";
+      return;
+    }
     output.push({
       type: "reasoning", id: `rs_${uuid()}`, summary: [],
       content: [{ type: "reasoning_text", text: currentRawReasoning }],

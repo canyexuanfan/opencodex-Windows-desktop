@@ -213,7 +213,7 @@ describe("summarizeUsage", () => {
     expect(sum.models[0].requests).toBe(2);
     expect(sum.models[0].totalTokens).toBe(9);
     expect(sum.providers[0].provider).toBe("openai");
-    expect(sum.providers[0].shareRatio).toBeCloseTo(2 / 3);
+    expect(sum.providers[0].shareRatio).toBeCloseTo(1);
   });
 
   test("merges OpenAI passthrough and ChatGPT main/pool usage into one provider/model row", () => {

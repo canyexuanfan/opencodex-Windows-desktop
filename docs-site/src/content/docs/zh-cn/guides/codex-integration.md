@@ -75,7 +75,7 @@ Codex 的 `spawn_agent` 只会展示目录中**前 5 个路由模型**。`subage
   "subagentModels": [
     "anthropic/claude-opus-4-8",
     "ollama-cloud/glm-5.2",
-    "xai/grok-4.3"
+    "xai/grok-4.5"
   ]
 }
 ```

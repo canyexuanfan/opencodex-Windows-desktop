@@ -57,9 +57,20 @@ jobs:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
 
-      # Trusted Publishing (OIDC) needs npm >= 11.5.1 — the runner's bundled npm may be older.
-      - name: Use latest npm
-        run: npm install -g npm@latest
+      # Trusted Publishing (OIDC) needs npm >= 11.5.1. Node 24 runners already
+      # provide a compatible npm; avoid replacing the bundled npm because global
+      # npm self-updates can lose publish-time dependencies such as sigstore.
+      - name: Verify npm version
+        run: |
+          npm_version="$(npm --version)"
+          echo "npm=${npm_version}"
+          node -e '
+            const [major, minor] = process.argv[1].split(".").map(Number);
+            if (major < 11 || (major === 11 && minor < 5)) {
+              console.error(`npm ${process.argv[1]} is too old for trusted publishing; need >= 11.5.1`);
+              process.exit(1);
+            }
+          ' "$npm_version"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile

@@ -3,6 +3,7 @@ import { formatUptime } from "../formatUptime";
 import { IconAlert, IconExternal, IconRefresh, IconX } from "../icons";
 import { useI18n, Trans } from "../i18n";
 import { formatTokens } from "../format-tokens";
+import { EmptyState, Select } from "../ui";
 
 interface HealthData { status: string; version: string; uptime: number }
 interface ProviderInfo { name: string; adapter: string; baseUrl: string; defaultModel?: string; hasApiKey: boolean }
@@ -22,6 +23,18 @@ interface SyncResult {
   message: string;
   warning?: string;
   staleAppServerHint?: string;
+  projectConfigWarnings?: ProjectCodexConfigWarning[];
+}
+interface ProjectCodexConfigWarning {
+  path: string;
+  code: string;
+  detail: string;
+  message: string;
+}
+interface ProjectCodexConfigGroup {
+  path: string;
+  issues: string[];
+  bypass: string;
 }
 interface UpdateCheckData {
   currentVersion: string;
@@ -48,7 +61,10 @@ interface UpdateJob {
   restarted?: boolean;
 }
 
-const SIDECAR_MODELS = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.3-codex-spark"];
+import { modelLabel } from "../model-display";
+
+const SEARCH_SIDECAR_MODELS = ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-5.6-sol", "gpt-5.6-terra"];
+const VISION_SIDECAR_MODELS = ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra"];
 const REASONING_LEVELS = ["low", "medium", "high"];
 
 function defaultUpdateChannel(version: string | undefined): UpdateChannel {
@@ -67,8 +83,15 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [maMode, setMaMode] = useState<"v1" | "default" | "v2">("default");
+  const [maBusy, setMaBusy] = useState(false);
+  const [maHelpOpen, setMaHelpOpen] = useState(false);
+  const [injectionModel, setInjectionModel] = useState<string>("");
+  const [injectionAvailable, setInjectionAvailable] = useState<Array<{ provider: string; model: string; namespaced: string }>>([]);
+  const [injectionSaving, setInjectionSaving] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [projectConfigWarnings, setProjectConfigWarnings] = useState<ProjectCodexConfigGroup[]>([]);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [updateChannel, setUpdateChannel] = useState<UpdateChannel>("latest");
   const [updateRestart, setUpdateRestart] = useState(true);
@@ -95,12 +118,44 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         setSidecar(await scRes.json());
         try { setUsage30d(uRes.ok ? await uRes.json() : null); } catch { setUsage30d(null); }
         setError(false);
+        // Best-effort v2 mode fetch (independent of core health)
+        try {
+          const v2Res = await fetch(`${apiBase}/api/v2`);
+          if (v2Res.ok) {
+            const v2Data = await v2Res.json();
+            if (v2Data.multiAgentMode === "v1" || v2Data.multiAgentMode === "v2") setMaMode(v2Data.multiAgentMode);
+            else setMaMode("default");
+          }
+        } catch { /* old server */ }
+        try {
+          const imRes = await fetch(`${apiBase}/api/injection-model`);
+          if (imRes.ok) {
+            const imData = await imRes.json() as { model?: string | null; available?: Array<{ provider: string; model: string; namespaced: string }> };
+            setInjectionModel(imData.model ?? "");
+            setInjectionAvailable(imData.available ?? []);
+          }
+        } catch { /* old server */ }
       } catch {
         setError(true);
       }
     };
     fetchData();
     const interval = setInterval(fetchData, 5000);
+    return () => clearInterval(interval);
+  }, [apiBase]);
+
+  useEffect(() => {
+    const fetchDiagnostics = async () => {
+      try {
+        const pcRes = await fetch(`${apiBase}/api/diagnostics/project-config`);
+        const pcData = pcRes.ok ? await pcRes.json() as { grouped?: ProjectCodexConfigGroup[] } : null;
+        setProjectConfigWarnings(pcData?.grouped ?? []);
+      } catch {
+        setProjectConfigWarnings([]);
+      }
+    };
+    void fetchDiagnostics();
+    const interval = setInterval(() => void fetchDiagnostics(), 30_000);
     return () => clearInterval(interval);
   }, [apiBase]);
 
@@ -161,11 +216,10 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
 
   if (error) {
     return (
-      <div className="empty" style={{ marginTop: 40 }}>
-        <IconAlert />
-        <div className="title" style={{ color: "var(--red)" }}>{t("dash.cannotConnect")}</div>
-        <div style={{ fontSize: 13 }}><Trans k="dash.runStart" cmd="ocx start" /></div>
-      </div>
+      <EmptyState style={{ marginTop: 40 }} icon={<IconAlert />}
+        title={<span style={{ color: "var(--red)" }}>{t("dash.cannotConnect")}</span>}>
+        <Trans k="dash.runStart" cmd="ocx start" />
+      </EmptyState>
     );
   }
 
@@ -193,6 +247,20 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     } finally {
       setSidecarSaving(false);
     }
+  };
+
+  const switchMaMode = async (mode: "v1" | "default" | "v2") => {
+    if (maBusy || maMode === mode) return;
+    setMaBusy(true);
+    try {
+      const r = await fetch(`${apiBase}/api/v2`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ multiAgentMode: mode }),
+      });
+      if (r.ok) setMaMode(mode);
+    } catch { /* ignore */ }
+    finally { setMaBusy(false); }
   };
 
   const toggleCodexAutoStart = async () => {
@@ -227,6 +295,8 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       const data = await res.json() as SyncResult | { error?: string };
       if (!res.ok) throw new Error("error" in data && data.error ? data.error : "sync failed");
       setSyncResult(data as SyncResult);
+      const grouped = (data as SyncResult & { projectConfigGrouped?: ProjectCodexConfigGroup[] }).projectConfigGrouped;
+      if (grouped) setProjectConfigWarnings(grouped);
     } catch (err) {
       setSyncError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -298,6 +368,34 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
 
       <div className="stat-row">
         <div className="stat">
+          <div className="label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {t("dash.multiAgent")}
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              style={{ width: 18, height: 18, padding: 0, borderRadius: 999, fontSize: 11, fontWeight: 700, color: "var(--muted)", lineHeight: 1 }}
+              onClick={() => setMaHelpOpen(true)}
+              aria-label="Help"
+            >?</button>
+          </div>
+          <div className="value" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div role="radiogroup" aria-label={t("dash.multiAgent")} style={{ display: "inline-flex", borderRadius: 999, background: "var(--surface-soft, var(--raised))", padding: 3, gap: 2 }}>
+              {(["v1", "default", "v2"] as const).map(mode => (
+                <button
+                  key={mode}
+                  type="button"
+                  role="radio"
+                  aria-checked={maMode === mode}
+                  className={`btn btn-sm${maMode === mode ? " btn-primary" : " btn-ghost"}`}
+                  style={{ borderRadius: 999, minWidth: 36, fontSize: 11, padding: "5px 10px", border: "none", background: maMode === mode ? undefined : "transparent", color: maMode === mode ? undefined : "var(--muted)" }}
+                  disabled={maBusy}
+                  onClick={() => void switchMaMode(mode)}
+                >{mode === "default" ? "base" : mode}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="stat">
           <div className="label">{t("dash.status")}</div>
           <div className="value" style={{ display: "flex", alignItems: "center", gap: 9, color: online ? "var(--green)" : "var(--red)" }}>
             <span className={`dot ${online ? "dot-green" : "dot-red"}`} />{online ? t("dash.online") : t("dash.offline")}
@@ -315,6 +413,58 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             </div>
           )}
         </div>
+      </div>
+
+      {projectConfigWarnings.length > 0 && (
+        <div className="notice notice-err maintenance-notice" style={{ marginBottom: 24 }} role="alert">
+          <IconAlert />
+          <div>
+            <div style={{ fontWeight: 650 }}>{t("dash.projectConfigTitle")}</div>
+            <div className="muted" style={{ fontSize: 13, marginTop: 4 }}>{t("dash.projectConfigHint")}</div>
+            <ul style={{ margin: "10px 0 0", paddingLeft: 18, fontSize: 13 }}>
+              {projectConfigWarnings.map(g => (
+                <li key={g.path} style={{ marginBottom: 8 }}>
+                  <code>{g.path}</code> — {g.issues.join(", ")}
+                  <div className="muted" style={{ marginTop: 2 }}>{g.bypass}</div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
+      <div className="panel" style={{ marginBottom: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontWeight: 650 }}>{t("dash.injectionLabel")}</span>
+          <Select
+            value={injectionModel}
+            options={[
+              { value: "", label: t("dash.injectionNone") },
+              ...injectionAvailable.map(m => ({ value: m.namespaced, label: `${m.provider} / ${m.model}` })),
+            ]}
+            onChange={async (v) => {
+              if (injectionSaving) return;
+              setInjectionSaving(true);
+              setInjectionModel(v);
+              try {
+                const res = await fetch(`${apiBase}/api/injection-model`, {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ model: v || null }),
+                });
+                if (res.ok) {
+                  const data = await res.json() as { model?: string | null };
+                  setInjectionModel(data.model ?? "");
+                }
+              } catch { /* ignore */ }
+              finally { setInjectionSaving(false); }
+            }}
+            disabled={injectionSaving}
+            label={t("dash.injectionLabel")}
+          />
+          {injectionModel && <span className="badge badge-green" style={{ fontSize: 10 }}>{t("dash.injectionActive")}</span>}
+        </div>
+        <div className="muted" style={{ fontSize: 13, marginTop: 6 }}>{t("dash.injectionHint")}</div>
       </div>
 
       <div className="panel maintenance-panel" style={{ marginBottom: 24 }}>
@@ -385,26 +535,20 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             <div className="muted setting-hint">{t("dash.searchModelHint")}</div>
           </div>
           <div className="setting-controls" style={{ display: "flex", gap: 8 }}>
-            <select
-              id="sidecar-web-search-model"
-              name="sidecarWebSearchModel"
-              className="select-sm"
-              aria-label={t("dash.searchModel")}
-              value={sidecar?.webSearch.model ?? "gpt-5.4-mini"}
+            <Select
+              value={sidecar?.webSearch.model ?? "gpt-5.6-luna"}
+              options={SEARCH_SIDECAR_MODELS.map(m => ({ value: m, label: modelLabel(m) }))}
+              onChange={v => saveSidecar({ webSearch: { model: v, reasoning: sidecar!.webSearch.reasoning } })}
               disabled={!sidecar || sidecarSaving}
-              onChange={e => saveSidecar({ webSearch: { model: e.target.value, reasoning: sidecar!.webSearch.reasoning } })}>
-              {SIDECAR_MODELS.map(m => <option key={m} value={m}>{m}</option>)}
-            </select>
-            <select
-              id="sidecar-web-search-reasoning"
-              name="sidecarWebSearchReasoning"
-              className="select-sm"
-              aria-label={`${t("dash.searchModel")} reasoning`}
+              label={t("dash.searchModel")}
+            />
+            <Select
               value={sidecar?.webSearch.reasoning ?? "low"}
+              options={REASONING_LEVELS.map(r => ({ value: r, label: r }))}
+              onChange={v => saveSidecar({ webSearch: { model: sidecar!.webSearch.model, reasoning: v } })}
               disabled={!sidecar || sidecarSaving}
-              onChange={e => saveSidecar({ webSearch: { model: sidecar!.webSearch.model, reasoning: e.target.value } })}>
-              {REASONING_LEVELS.map(r => <option key={r} value={r}>{r}</option>)}
-            </select>
+              label={t("dash.searchReasoning")}
+            />
           </div>
         </div>
       </div>
@@ -415,22 +559,19 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             <div style={{ fontWeight: 650 }}>{t("dash.visionModel")}</div>
             <div className="muted setting-hint">{t("dash.visionModelHint")}</div>
           </div>
-          <select
-            id="sidecar-vision-model"
-            name="sidecarVisionModel"
-            className="select-sm"
-            aria-label={t("dash.visionModel")}
-            value={sidecar?.vision.model ?? "gpt-5.4-mini"}
+          <Select
+            value={sidecar?.vision.model ?? "gpt-5.6-luna"}
+            options={VISION_SIDECAR_MODELS.map(m => ({ value: m, label: modelLabel(m) }))}
+            onChange={v => saveSidecar({ vision: { model: v } })}
             disabled={!sidecar || sidecarSaving}
-            onChange={e => saveSidecar({ vision: { model: e.target.value } })}>
-            {SIDECAR_MODELS.map(m => <option key={m} value={m}>{m}</option>)}
-          </select>
+            label={t("dash.visionModel")}
+          />
         </div>
       </div>
 
       <div className="h-section">{t("dash.activeProviders")} <span className="count">{providers.length}</span></div>
       {providers.length === 0 ? (
-        <div className="empty"><Trans k="dash.noProviders" cmd="ocx init" /></div>
+        <EmptyState title={<Trans k="dash.noProviders" cmd="ocx init" />} />
       ) : (
         <div className="tbl-wrap">
           <table className="tbl">
@@ -454,7 +595,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         {modelsLoading && <span className="spin" style={{ marginLeft: 4 }} />}
       </div>
       {models.length === 0 && !modelsLoading ? (
-        <div className="empty">{t("dash.noModels")}</div>
+        <EmptyState title={t("dash.noModels")} />
       ) : (
         <div className="stack" style={{ gap: 16 }}>
           {grouped.map(([provider, rows]) => (
@@ -484,18 +625,15 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             <div className="modal-desc">{t("dash.updateDesc")}</div>
             <div className="update-row">
               <label className="field-label" htmlFor="update-channel">{t("dash.updateChannel")}</label>
-              <select
-                id="update-channel"
-                className="select-sm"
+              <Select
                 value={updateChannel}
+                options={[{ value: "latest", label: "latest" }, { value: "preview", label: "preview" }]}
+                onChange={v => changeUpdateChannel(v as UpdateChannel)}
                 disabled={updateLoading}
-                onChange={e => changeUpdateChannel(e.target.value as UpdateChannel)}
-              >
-                <option value="latest">latest</option>
-                <option value="preview">preview</option>
-              </select>
+                label={t("dash.updateChannel")}
+              />
             </div>
-            {updateLoading && <div className="empty update-empty"><span className="spin" /> {t("dash.updateChecking")}</div>}
+            {updateLoading && <EmptyState className="update-empty" icon={<span className="spin" />} title={t("dash.updateChecking")} />}
             {updateError && (
               <div className="notice notice-err" role="status"><IconAlert /><span>{updateError}</span></div>
             )}
@@ -550,6 +688,28 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
               >
                 {t("dash.runUpdate")}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {maHelpOpen && (
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={t("dash.multiAgent")} onClick={() => setMaHelpOpen(false)} onKeyDown={e => { if (e.key === "Escape") setMaHelpOpen(false); }}>
+          <div className="modal-card" onClick={e => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>{t("dash.multiAgent")}</h3>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setMaHelpOpen(false)} aria-label="Close">&times;</button>
+            </div>
+            <div className="modal-desc" style={{ whiteSpace: "pre-line", lineHeight: 1.6 }}>
+              {t("models.v2Help")}
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <a href="https://lidge-jun.github.io/opencodex/guides/sub-agent-surface/" target="_blank" rel="noreferrer" style={{ fontSize: 13, color: "var(--accent)" }}>
+                {t("models.v2DocsLink")}
+              </a>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="btn btn-primary" onClick={() => setMaHelpOpen(false)}>OK</button>
             </div>
           </div>
         </div>

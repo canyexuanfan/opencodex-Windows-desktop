@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { Notice } from "../ui";
+import { Notice, EmptyState } from "../ui";
 import { IconArrowUp, IconArrowDown, IconX, IconCheck, IconSearch, IconBot } from "../icons";
 import { useT, Trans } from "../i18n";
+import { modelLabel } from "../model-display";
 
 export default function Subagents({ apiBase }: { apiBase: string }) {
   const t = useT();
@@ -76,13 +77,13 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
 
       <div className="h-section">{t("sub.featured")} <span className="count">{chosen.length}/5</span></div>
       {chosen.length === 0 ? (
-        <div className="empty">{t("sub.noneSelected")}</div>
+        <EmptyState title={t("sub.noneSelected")} />
       ) : (
         <div className="stack" style={{ gap: 8 }}>
           {chosen.map((m, i) => (
             <div key={m} className="card panel-accent row" style={{ padding: "8px 12px", gap: 10 }}>
               <span className="mono" style={{ width: 18, color: "var(--accent)", fontWeight: 700 }}>{i + 1}</span>
-              <code className="mono" style={{ flex: 1, color: "var(--text)" }}>{m}</code>
+              <code className="mono" style={{ flex: 1, color: "var(--text)" }}>{modelLabel(m)}</code>
               <button className="btn btn-ghost btn-icon btn-sm" onClick={() => move(i, -1)} disabled={i === 0} aria-label={t("sub.moveUp", { m })}>
                 <IconArrowUp />
               </button>
@@ -134,12 +135,12 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
                 {sel && <IconCheck style={{ width: 16, height: 16 }} />}
               </span>
               <IconBot style={{ width: 15, height: 15, color: "var(--faint)", flexShrink: 0 }} />
-              <code className="mono" style={{ color: "var(--text)" }}>{m}</code>
+              <code className="mono" style={{ color: "var(--text)" }}>{modelLabel(m)}</code>
             </button>
           );
         })}
         {filtered.length === 0 && (
-          <div className="empty">{t("sub.noModels")}</div>
+          <EmptyState title={t("sub.noModels")} />
         )}
       </div>
     </>
