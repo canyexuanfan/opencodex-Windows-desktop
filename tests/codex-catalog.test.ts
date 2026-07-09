@@ -96,7 +96,7 @@ describe("Codex catalog routed normalization", () => {
     expect(entry.supports_search_tool).toBe(true);
   });
 
-  test("buildCatalogEntries strips routed entries cloned from native templates and defaults them to v1", () => {
+  test("buildCatalogEntries strips routed entries cloned from native templates", () => {
     const entries = buildCatalogEntries(nativeTemplate(), ["gpt-5.5"], [
       { provider: "anthropic", id: "claude-sonnet-4-6", owned_by: "anthropic" },
     ]);
@@ -105,7 +105,9 @@ describe("Codex catalog routed normalization", () => {
     expect(routed).toBeDefined();
     expect(routed).not.toHaveProperty("model_messages");
     expect(routed).not.toHaveProperty("tool_mode");
-    expect(routed?.multi_agent_version).toBe("v1");
+    // Routed entries do not inherit a native template's surface pin; the global
+    // Codex v2 flag can choose the surface freely unless upstream pins the model.
+    expect(routed).not.toHaveProperty("multi_agent_version");
     expect(routed).not.toHaveProperty("use_responses_lite");
     expect(routed).not.toHaveProperty("supports_websockets");
     expect(routed).not.toHaveProperty("additional_speed_tiers");
@@ -244,12 +246,6 @@ describe("Codex catalog routed normalization", () => {
     expect(sol?.supports_websockets).toBe(true);
   });
 
-  test("unpinned native entries default to v1", () => {
-    const entries = buildCatalogEntries(nativeTemplate(), ["gpt-5.5", "gpt-5.4"], []);
-    expect(entries.find(e => e.slug === "gpt-5.5")?.multi_agent_version).toBe("v1");
-    expect(entries.find(e => e.slug === "gpt-5.4")?.multi_agent_version).toBe("v1");
-  });
-
   test("catalog sync upgrades fallback-quality gpt-5.6 entries but preserves genuine ones", () => {
     // Fallback-quality: display_name stamped with the bare slug (ocx synthesis signature),
     // wrong ladder (ultra on luna) left by an older ocx version.
@@ -300,14 +296,14 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.auto_compact_token_limit).toBe(244_800);
   });
 
-  test("buildCatalogEntries preserves native bare GPT template fields while defaulting unpinned models to v1", () => {
+  test("buildCatalogEntries preserves native bare GPT template fields", () => {
     const entries = buildCatalogEntries(nativeTemplate(), ["gpt-5.5"], []);
     const native = entries.find(e => e.slug === "gpt-5.5");
 
     expect(native).toBeDefined();
     expect(native).toHaveProperty("model_messages");
     expect(native?.tool_mode).toBe("code");
-    expect(native?.multi_agent_version).toBe("v1");
+    expect(native?.multi_agent_version).toBe("v2");
     expect(native?.use_responses_lite).toBe(true);
     // WebSocket advertisement is opt-in; templates must not leak it by default.
     expect(native).not.toHaveProperty("supports_websockets");

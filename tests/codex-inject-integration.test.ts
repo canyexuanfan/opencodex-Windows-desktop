@@ -140,4 +140,15 @@ describe("injectCodexConfig integration (Design B)", () => {
     expect(config).toContain("openai_base_url");
     expect(config).not.toContain("\r");
   });
+
+  test("inject does not turn on multi_agent_v2; fresh installs stay on Codex's default v1 surface until the user opts in", () => {
+    writeFileSync(join(codexHome, "config.toml"), 'model = "gpt-5.5"\n', "utf8");
+
+    expect(runInject(codexHome, ocxHome).status).toBe(0);
+    const config = readFileSync(join(codexHome, "config.toml"), "utf8");
+
+    expect(config).not.toContain("[features.multi_agent_v2]");
+    expect(config).not.toContain("multi_agent_v2 = true");
+    expect(config).not.toContain("multi_agent_v2 = {");
+  });
 });

@@ -444,23 +444,6 @@ export function normalizeRoutedCatalogEntry(entry: RawEntry, parallelToolCalls =
   return ensureStrictCatalogFields(entry);
 }
 
-/**
- * Default collaboration surface pin: upstream-pinned entries keep their exact surface
- * (`gpt-5.6-sol/terra` v2, `gpt-5.6-luna` v1), and every unpinned picker model defaults
- * to v1 so thread creation does not depend on the global multi_agent_v2 flag.
- */
-function applyDefaultMultiAgentVersion(entry: RawEntry): void {
-  const slug = typeof entry.slug === "string" ? entry.slug : "";
-  if (!slug || slug === "codex-auto-review") return;
-  if (entry.multi_agent_version === "disabled") return;
-  const upstreamPin = UPSTREAM_NATIVE_ENTRIES.get(slug)?.multi_agent_version;
-  if (upstreamPin === "v1" || upstreamPin === "v2") {
-    entry.multi_agent_version = upstreamPin;
-    return;
-  }
-  entry.multi_agent_version = "v1";
-}
-
 function applyJawcodeCatalogMetadata(entry: RawEntry, slug: string, contextCap?: number): void {
   const slash = slug.indexOf("/");
   if (slash < 0) return;
@@ -871,7 +854,6 @@ export function buildCatalogEntries(template: RawEntry | null, gptSlugs: string[
       // for an endpoint ocx has disabled.
       delete entry.prefer_websockets;
     }
-    applyDefaultMultiAgentVersion(entry);
   }
   return out;
 }
@@ -1350,7 +1332,6 @@ export function mergeCatalogEntriesForSync(
       // Match buildCatalogEntries: never advertise a websocket preference while WS is off.
       delete e.prefer_websockets;
     }
-    applyDefaultMultiAgentVersion(e);
     return e;
   });
   // Native enable/disable (single choke point: bare slugs in `disabledModels`). Runs as the
