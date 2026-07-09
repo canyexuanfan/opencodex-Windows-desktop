@@ -532,6 +532,11 @@ export default function Models({ apiBase }: { apiBase: string }) {
             <div className="modal-desc" style={{ whiteSpace: "pre-line", lineHeight: 1.6 }}>
               {t("models.v2Help")}
             </div>
+            <div style={{ marginTop: 12 }}>
+              <a href="https://lidge-jun.github.io/opencodex/" target="_blank" rel="noreferrer" style={{ fontSize: 13, color: "var(--accent)" }}>
+                {t("models.v2DocsLink")}
+              </a>
+            </div>
             <div className="modal-actions">
               <button type="button" className="btn btn-primary" onClick={() => setV2HelpOpen(false)}>OK</button>
             </div>

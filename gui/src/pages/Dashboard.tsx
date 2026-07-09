@@ -70,6 +70,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   const [syncing, setSyncing] = useState(false);
   const [maMode, setMaMode] = useState<"v1" | "default" | "v2">("default");
   const [maBusy, setMaBusy] = useState(false);
+  const [maHelpOpen, setMaHelpOpen] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
@@ -324,8 +325,8 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       <div className="stat-row">
         <div className="stat">
           <div className="label">{t("dash.multiAgent")}</div>
-          <div className="value" style={{ display: "flex", gap: 4 }}>
-            <div role="radiogroup" aria-label={t("dash.multiAgent")} style={{ display: "inline-flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
+          <div className="value" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+            <div role="radiogroup" aria-label={t("dash.multiAgent")} style={{ display: "inline-flex", borderRadius: 999, overflow: "hidden", border: "1px solid var(--border)" }}>
               {(["v1", "default", "v2"] as const).map(mode => (
                 <button
                   key={mode}
@@ -333,12 +334,19 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
                   role="radio"
                   aria-checked={maMode === mode}
                   className={`btn btn-sm${maMode === mode ? " btn-primary" : " btn-ghost"}`}
-                  style={{ borderRadius: 0, minWidth: 28, fontSize: 11, padding: "3px 6px" }}
+                  style={{ borderRadius: 0, minWidth: 32, fontSize: 11, padding: "4px 8px" }}
                   disabled={maBusy}
                   onClick={() => void switchMaMode(mode)}
                 >{mode === "default" ? "base" : mode}</button>
               ))}
             </div>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              style={{ width: 22, height: 22, padding: 0, borderRadius: 999, fontSize: 12, fontWeight: 700, color: "var(--muted)" }}
+              onClick={() => setMaHelpOpen(true)}
+              aria-label="Help"
+            >?</button>
           </div>
         </div>
         <div className="stat">
@@ -594,6 +602,28 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
               >
                 {t("dash.runUpdate")}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {maHelpOpen && (
+        <div className="modal-overlay" onClick={() => setMaHelpOpen(false)}>
+          <div className="modal-card" onClick={e => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>{t("dash.multiAgent")}</h3>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setMaHelpOpen(false)} aria-label="Close">&times;</button>
+            </div>
+            <div className="modal-desc" style={{ whiteSpace: "pre-line", lineHeight: 1.6 }}>
+              {t("models.v2Help")}
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <a href="https://lidge-jun.github.io/opencodex/" target="_blank" rel="noreferrer" style={{ fontSize: 13, color: "var(--accent)" }}>
+                {t("models.v2DocsLink")}
+              </a>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="btn btn-primary" onClick={() => setMaHelpOpen(false)}>OK</button>
             </div>
           </div>
         </div>
