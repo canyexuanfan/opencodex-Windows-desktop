@@ -330,11 +330,13 @@ export default function Models({ apiBase }: { apiBase: string }) {
       {v2 && (
         <div className="row" style={{ gap: 8, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
           <span className="muted" style={{ fontSize: 13 }}>{t("models.v2Label")}</span>
-          <div className="segmented" style={{ display: "inline-flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
+          <div className="segmented" role="radiogroup" aria-label={t("models.v2Label")} style={{ display: "inline-flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
             {(["v1", "default", "v2"] as const).map(mode => (
               <button
                 key={mode}
                 type="button"
+                role="radio"
+                aria-checked={(v2.multiAgentMode ?? "default") === mode}
                 className={`btn btn-sm${(v2.multiAgentMode ?? "default") === mode ? " btn-primary" : " btn-ghost"}`}
                 style={{ borderRadius: 0, minWidth: 64, fontSize: 12, padding: "4px 10px" }}
                 disabled={v2Busy}
