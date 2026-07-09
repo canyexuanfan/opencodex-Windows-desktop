@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "docs/**"
+      - "docs-site/**"
       - ".github/workflows/deploy-docs.yml"
   workflow_dispatch:
 
@@ -18,18 +18,25 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Build with Astro
+        uses: withastro/action@v3
+        with:
+          path: ./docs-site
+          node-version: 22
+          package-manager: bun@latest
+
   deploy:
+    needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

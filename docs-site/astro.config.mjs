@@ -61,6 +61,7 @@ export default defineConfig({
             { label: "Codex App Model Picker", translations: { ko: "Codex App 모델 선택기", "zh-CN": "Codex App 模型选择器" }, slug: "guides/codex-app-models" },
             { label: "Sidecars: Web Search & Vision", translations: { ko: "사이드카: 웹 검색 & 비전", "zh-CN": "边车：网络搜索与视觉" }, slug: "guides/sidecars" },
             { label: "Web Dashboard", translations: { ko: "웹 대시보드", "zh-CN": "网页控制台" }, slug: "guides/web-dashboard" },
+            { label: "Sub-agent Surface", translations: { ko: "서브에이전트 서피스", "zh-CN": "子代理界面" }, slug: "guides/sub-agent-surface" },
           ],
         },
         {
