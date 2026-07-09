@@ -238,41 +238,6 @@ export default function Models({ apiBase }: { apiBase: string }) {
   );
   const setAll = () => { void putCap({ setAll: !allCapped }); };
 
-  const toggleV2 = async () => {
-    // Idempotence guards: single-flight (ref + disabled switch), and the server PUT
-    // itself no-ops when the requested state already matches config.toml — an
-    // "already on" click can never double-enable or re-append ultra.
-    if (!v2 || v2BusyRef.current) return;
-    setV2Busy(true);
-    v2BusyRef.current = true;
-    setV2Note("");
-    setStatus("");
-    try {
-      const r = await fetch(`${apiBase}/api/v2`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: !v2.enabled }),
-      });
-      const data = await r.json().catch(() => null) as { enabled?: boolean; warnings?: string[]; error?: string } | null;
-      if (r.ok && data && typeof data.enabled === "boolean") {
-        // Trust the server's post-toggle read, never the optimistic flip.
-        setV2({ enabled: data.enabled, agentsMaxThreadsConflict: false });
-        void loadV2();
-        setOk(true);
-        setStatus(t("models.v2Applied"));
-        setV2Note((data.warnings ?? []).join(" "));
-      } else {
-        setOk(false);
-        setStatus(data?.error ?? t("models.saveFailed"));
-      }
-    } catch {
-      setOk(false); setStatus(t("models.networkError"));
-    } finally {
-      setV2Busy(false);
-      v2BusyRef.current = false;
-    }
-  };
-
   const setMultiAgentMode = async (mode: "v1" | "default" | "v2") => {
     if (!v2 || v2BusyRef.current) return;
     if (v2.multiAgentMode === mode) return;
@@ -323,10 +288,11 @@ export default function Models({ apiBase }: { apiBase: string }) {
       });
       const data = await r.json().catch(() => null) as V2Status & { warnings?: string[]; error?: string } | null;
       if (r.ok && data && typeof data.enabled === "boolean") {
-        setV2({
+      setV2({
           enabled: data.enabled,
           agentsMaxThreadsConflict: data.agentsMaxThreadsConflict === true,
           maxConcurrentThreadsPerSession: typeof data.maxConcurrentThreadsPerSession === "number" ? data.maxConcurrentThreadsPerSession : null,
+          multiAgentMode: data.multiAgentMode === "v1" || data.multiAgentMode === "v2" ? data.multiAgentMode : "default",
         });
         setOk(true);
         setStatus(t("models.v2ThreadsApplied"));
