@@ -47,7 +47,7 @@ function parsedFixture(over: {
 
 describe("multiAgentGuidanceText", () => {
   test("v1 tool surface + max injects the tagged Proactive text", async () => {
-    codexHomeFixture(V2_ON);
+    codexHomeFixture(V2_OFF); // guidance fires regardless of v2 flag
     const text = await multiAgentGuidanceText(parsedFixture({
       reasoning: "max",
       tools: [{ name: "spawn_agent", namespace: "agents" }, { name: "send_input", namespace: "agents" }],
@@ -57,24 +57,25 @@ describe("multiAgentGuidanceText", () => {
   });
 
   test("v1 tool surface below the top tier stays silent", async () => {
-    codexHomeFixture(V2_ON);
+    codexHomeFixture(V2_OFF);
     const v1Tools = [{ name: "spawn_agent", namespace: "agents" }];
     expect(await multiAgentGuidanceText(parsedFixture({ reasoning: "high", tools: v1Tools }))).toBeNull();
     expect(await multiAgentGuidanceText(parsedFixture({ tools: v1Tools }))).toBeNull();
   });
 
   test("v2 or non-agent tool surfaces stay silent even at max", async () => {
-    codexHomeFixture(V2_ON);
+    codexHomeFixture(V2_OFF);
     expect(await multiAgentGuidanceText(parsedFixture({ reasoning: "max", tools: [{ name: "spawn_agent" }] }))).toBeNull();
     expect(await multiAgentGuidanceText(parsedFixture({ reasoning: "max", tools: [{ name: "shell" }] }))).toBeNull();
   });
 
-  test("v2 flag off disables all guidance", async () => {
+  test("v2 flag off still fires guidance (ultra is always-on)", async () => {
     codexHomeFixture(V2_OFF);
-    expect(await multiAgentGuidanceText(parsedFixture({
+    const text = await multiAgentGuidanceText(parsedFixture({
       reasoning: "max",
       tools: [{ name: "spawn_agent", namespace: "agents" }],
-    }))).toBeNull();
+    }));
+    expect(text).toContain("<multi_agent_mode>");
   });
 });
 

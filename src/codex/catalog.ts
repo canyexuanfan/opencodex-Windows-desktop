@@ -4,7 +4,6 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 
 import { delimiter, dirname, join, resolve } from "node:path";
 import { atomicWriteFile, expandUserPath, getConfigDir, websocketsEnabled } from "../config";
 import { CODEX_CONFIG_PATH, CODEX_MODELS_CACHE_PATH, DEFAULT_CATALOG_PATH, readRootTomlString, resolveCodexConfigPath } from "./paths";
-import { isMultiAgentV2Enabled } from "./features";
 import { DEFAULT_MODEL_CACHE_TTL_MS, getFreshCached, getStaleCached, isModelsFetchCoolingDown, markModelsFetchFailure, setCached } from "./model-cache";
 import { buildModelsRequest, resolveModelsAuthToken } from "../oauth";
 import { effectiveGoogleMode } from "../providers/registry";
@@ -638,28 +637,7 @@ function applyCatalogModelMetadata(entry: RawEntry, model?: CatalogModel): void 
   }
 }
 
-/**
- * v2-gated ultra (devlog/260709_v2_gated_ultra): remove the `ultra` rung from an
- * entry's advertised ladder and repair default_reasoning_level if it pointed at it.
- * Native `max` rungs are never touched. Called only when the gate is OFF.
- */
-export function stripUltraReasoningLevel(entry: RawEntry): void {
-  const levels = Array.isArray(entry.supported_reasoning_levels)
-    ? entry.supported_reasoning_levels as Array<{ effort?: string }>
-    : [];
-  if (!levels.some(level => level.effort === "ultra")) return;
-  const kept = levels.filter(level => level.effort !== "ultra");
-  entry.supported_reasoning_levels = kept;
-  if (entry.default_reasoning_level === "ultra") {
-    const efforts = kept.flatMap(level => typeof level.effort === "string" ? [level.effort] : []);
-    entry.default_reasoning_level = efforts.includes("medium") ? "medium"
-      : efforts.includes("high") ? "high"
-      : efforts[0];
-    if (entry.default_reasoning_level === undefined) delete entry.default_reasoning_level;
-  }
-}
-
-function applyReasoningLevels(entry: RawEntry, effortsOverride?: string[], ultraEnabled = true): void {
+function applyReasoningLevels(entry: RawEntry, effortsOverride?: string[]): void {
   let efforts = sanitizeCodexReasoningEfforts(effortsOverride) ?? ROUTED_REASONING_LEVELS.map(l => l.effort);
   // Mock top tiers (user decision 260709): every reasoning-capable model advertises `max`
   // even when the provider ladder stops lower — subagent spawns pass `max` DIRECTLY
@@ -667,14 +645,12 @@ function applyReasoningLevels(entry: RawEntry, effortsOverride?: string[], ultra
   // so a missing max rung hard-fails spawn_agent effort overrides. The wire stays honest:
   // routed adapters clamp via clampToSupportedCodexEffort and natives via
   // nativeEffortClamp (max -> the model's real top rung).
-  // v2 gate applies to ULTRA only: advertised while multi_agent_v2 is on, stripped when off.
   if (efforts.length > 0) {
     const additions: string[] = [];
     if (!efforts.includes("max")) additions.push("max");
-    if (ultraEnabled && !efforts.includes("ultra")) additions.push("ultra");
+    if (!efforts.includes("ultra")) additions.push("ultra");
     if (additions.length > 0) efforts = sanitizeCodexReasoningEfforts([...efforts, ...additions]) ?? efforts;
   }
-  if (!ultraEnabled) efforts = efforts.filter(effort => effort !== "ultra");
   const byEffort = new Map(
     (Array.isArray(entry.supported_reasoning_levels) ? entry.supported_reasoning_levels : [])
       .map((l: { effort?: string }) => [l.effort, l]),
@@ -703,13 +679,13 @@ function isGpt56NativeSlug(slug: string): boolean {
  * so append max+ultra in upstream rank order when absent. Snapshot-covered slugs never reach
  * this — deriveEntry returns their real entry first.
  */
-function ensureGpt56ReasoningLevels(entry: RawEntry, ultraEnabled = true): void {
+function ensureGpt56ReasoningLevels(entry: RawEntry): void {
   const levels = Array.isArray(entry.supported_reasoning_levels)
     ? entry.supported_reasoning_levels as Array<{ effort?: string }>
     : [];
   const out = [...levels];
-  // max is a real native rung on the 5.6 family — always restored; ultra is v2-gated.
-  for (const effort of ultraEnabled ? ["max", "ultra"] : ["max"]) {
+  // max is a real native rung on the 5.6 family — always restored; ultra always advertised.
+  for (const effort of ["max", "ultra"]) {
     if (out.some(level => level.effort === effort)) continue;
     out.push(CODEX_REASONING_LEVELS.find(level => level.effort === effort)
       ?? { effort, description: `${effort} reasoning` });
@@ -718,17 +694,16 @@ function ensureGpt56ReasoningLevels(entry: RawEntry, ultraEnabled = true): void 
 }
 
 /**
- * Ensure the mock top tiers on a native model's advertised ladder: `max` ALWAYS
- * (subagent spawns pass max directly and codex-rs validates by catalog membership —
- * the ocx wire clamp routes it to the model's real top rung), `ultra` only while
- * multi_agent_v2 is enabled (auto-delegation is dead weight without V2).
+ * Ensure the mock top tiers on a native model's advertised ladder: `max` and `ultra`
+ * are always advertised (subagent spawns pass max directly and codex-rs validates by
+ * catalog membership — the ocx wire clamp routes it to the model's real top rung).
  */
-function ensureUltraReasoningLevel(entry: RawEntry, ultraEnabled = true): void {
+function ensureUltraReasoningLevel(entry: RawEntry): void {
   const levels = Array.isArray(entry.supported_reasoning_levels)
     ? entry.supported_reasoning_levels as Array<{ effort?: string }>
     : [];
   if (levels.length === 0) return;
-  const wanted = ultraEnabled ? ["max", "ultra"] : ["max"];
+  const wanted = ["max", "ultra"];
   for (const effort of wanted) {
     if (levels.some(level => level.effort === effort)) continue;
     levels.push(
@@ -746,25 +721,23 @@ function ensureUltraReasoningLevel(entry: RawEntry, ultraEnabled = true): void {
  * `priority` wins only when it is a deliberate override (featured rank / push-down), i.e. not
  * the native default 9.
  */
-function finishUpstreamNativeEntry(clone: RawEntry, priority: number, ultraEnabled = true): RawEntry {
+function finishUpstreamNativeEntry(clone: RawEntry, priority: number): RawEntry {
   if (priority !== 9) clone.priority = priority;
   applyNativeOpenAiContextOverride(clone);
   // GPT-5.6 natives keep their exact upstream ladders (e.g. luna has max but no ultra).
-  // Older natives (gpt-5.5 / 5.4 / 5.4-mini / 5.3-codex-spark) get mock max (always,
-  // for subagent max spawns; wire-clamped to xhigh) plus ultra while v2 is on.
-  if (!isGpt56NativeSlug(String(clone.slug ?? ""))) ensureUltraReasoningLevel(clone, ultraEnabled);
-  // v2 gate: upstream snapshots carry NATIVE ultra (5.6-sol/terra) — strip it when off.
-  if (!ultraEnabled) stripUltraReasoningLevel(clone);
+  // Older natives (gpt-5.5 / 5.4 / 5.4-mini / 5.3-codex-spark) get mock max + ultra
+  // (wire-clamped to xhigh). Ultra is always advertised regardless of v2 toggle.
+  if (!isGpt56NativeSlug(String(clone.slug ?? ""))) ensureUltraReasoningLevel(clone);
   return ensureStrictCatalogFields(normalizeServiceTiers(clone));
 }
 
-function deriveEntry(template: RawEntry | null, slug: string, desc: string, priority: number, model?: CatalogModel, ultraEnabled = true): RawEntry {
+function deriveEntry(template: RawEntry | null, slug: string, desc: string, priority: number, model?: CatalogModel): RawEntry {
   if (!slug.includes("/")) {
     // Supported native slug covered by the upstream snapshot: use the REAL entry (exact
     // reasoning ladder — e.g. luna has no ultra — default effort, identity, model_messages)
     // instead of cloning an older template.
     const upstream = upstreamNativeEntry(slug);
-    if (upstream) return finishUpstreamNativeEntry(upstream, priority, ultraEnabled);
+    if (upstream) return finishUpstreamNativeEntry(upstream, priority);
   }
   if (template) {
     const e = JSON.parse(JSON.stringify(template)) as RawEntry;
@@ -787,18 +760,15 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
           `You are a coding agent powered by the ${modelName} model. Do not claim to be GPT-5 or made by OpenAI.`,
         );
       }
-      applyReasoningLevels(e, model?.reasoningEfforts, ultraEnabled);
+      applyReasoningLevels(e, model?.reasoningEfforts);
       normalizeRoutedCatalogEntry(e, model?.parallelToolCalls === true);
       applyJawcodeCatalogMetadata(e, slug, model?.contextCap);
       applyCatalogModelMetadata(e, model);
     } else {
       applyNativeOpenAiContextOverride(e);
-      if (isGpt56NativeSlug(slug)) ensureGpt56ReasoningLevels(e, ultraEnabled);
-      else ensureUltraReasoningLevel(e, ultraEnabled);
+      if (isGpt56NativeSlug(slug)) ensureGpt56ReasoningLevels(e);
+      else ensureUltraReasoningLevel(e);
     }
-    // Belt-and-braces: the cloned template itself may carry ultra from an earlier
-    // v2-on sync — the gate must hold regardless of template provenance.
-    if (!ultraEnabled) stripUltraReasoningLevel(e);
     return ensureStrictCatalogFields(normalizeServiceTiers(e));
   }
   // Fallback when no template is available (best-effort; strict parser may need more).
@@ -808,15 +778,14 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
     priority, base_instructions: "You are a helpful coding assistant.",
     ...(slug.includes("/") ? { web_search_tool_type: "text_and_image", supports_search_tool: true } : {}),
   };
-  if (slug.includes("/")) applyReasoningLevels(entry, model?.reasoningEfforts, ultraEnabled);
+  if (slug.includes("/")) applyReasoningLevels(entry, model?.reasoningEfforts);
   else {
-    applyReasoningLevels(entry, isGpt56NativeSlug(slug) ? undefined : ["low", "medium", "high", "xhigh"], ultraEnabled);
-    if (isGpt56NativeSlug(slug)) ensureGpt56ReasoningLevels(entry, ultraEnabled);
+    applyReasoningLevels(entry, isGpt56NativeSlug(slug) ? undefined : ["low", "medium", "high", "xhigh"]);
+    if (isGpt56NativeSlug(slug)) ensureGpt56ReasoningLevels(entry);
   }
   applyJawcodeCatalogMetadata(entry, slug, model?.contextCap);
   applyCatalogModelMetadata(entry, model);
   applyNativeOpenAiContextOverride(entry);
-  if (!ultraEnabled) stripUltraReasoningLevel(entry);
   return ensureStrictCatalogFields(normalizeServiceTiers(entry));
 }
 
@@ -825,7 +794,7 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
  * catalog sync and the proxy `/v1/models?client_version` branch.
  * Native gpt slugs stay bare; routed models are namespaced `<provider>/<model>`.
  */
-export function buildCatalogEntries(template: RawEntry | null, gptSlugs: string[], goModels: CatalogModel[], featured?: string[], wsEnabled = false, ultraEnabled = true): RawEntry[] {
+export function buildCatalogEntries(template: RawEntry | null, gptSlugs: string[], goModels: CatalogModel[], featured?: string[], wsEnabled = false): RawEntry[] {
   // Codex's models-manager sorts by `priority` ASC and advertises the first 5 picker-visible
   // models to spawn_agent (sort_by_key(priority) + MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT=5). Catalog
   // ARRAY order is discarded — so "featuring" a model = giving it the LOWEST priority (0..N-1) so
@@ -833,13 +802,13 @@ export function buildCatalogEntries(template: RawEntry | null, gptSlugs: string[
   const rank = new Map((featured ?? []).map((slug, i) => [slug, i] as const));
   const out: RawEntry[] = [];
   for (const slug of gptSlugs) {
-    const e = deriveEntry(template, slug, "OpenAI native model (Codex OAuth passthrough).", 9, undefined, ultraEnabled);
+    const e = deriveEntry(template, slug, "OpenAI native model (Codex OAuth passthrough).", 9);
     if (rank.has(slug)) e.priority = rank.get(slug)!;
     out.push(e);
   }
   for (const m of goModels) {
     const slug = `${m.provider}/${m.id}`;
-    const e = deriveEntry(template, slug, `Routed via opencodex → ${m.provider} (${m.owned_by ?? m.provider}).`, 5, m, ultraEnabled);
+    const e = deriveEntry(template, slug, `Routed via opencodex → ${m.provider} (${m.owned_by ?? m.provider}).`, 5, m);
     if (rank.has(slug)) e.priority = rank.get(slug)!;
     out.push(e);
   }
@@ -1237,7 +1206,6 @@ export function mergeCatalogEntriesForSync(
     const slash = slug.indexOf("/");
     return slash > 0 ? [slug.slice(0, slash)] : [];
   })),
-  ultraEnabled = true,
 ): RawEntry[] {
   const rank = new Map(featured.map((slug, i) => [slug, i] as const));
   const native = catalogModels
@@ -1266,14 +1234,14 @@ export function mergeCatalogEntriesForSync(
           : featured.length > 0
             ? Math.max(typeof upstream.priority === "number" ? upstream.priority : 9, featured.length + 100)
             : typeof upstream.priority === "number" ? upstream.priority : priority;
-        const finished = finishUpstreamNativeEntry(upstream, 9, ultraEnabled);
+        const finished = finishUpstreamNativeEntry(upstream, 9);
         finished.priority = upgradePriority;
         return finished;
       }
       const preserved = normalizeServiceTiers({ ...m, priority });
-      // Older natives kept from disk still need the mock top tiers (max always for
-      // subagent max spawns; ultra while v2 is on).
-      if (!isGpt56NativeSlug(slug)) ensureUltraReasoningLevel(preserved, ultraEnabled);
+      // Older natives kept from disk still need the mock top tiers (max + ultra always
+      // for subagent max spawns; wire-clamped to the model's real top rung).
+      if (!isGpt56NativeSlug(slug)) ensureUltraReasoningLevel(preserved);
       return preserved;
     });
 
@@ -1288,7 +1256,7 @@ export function mergeCatalogEntriesForSync(
       : featured.length > 0
         ? featured.length + 100
         : 9;
-    native.push(deriveEntry(template ? JSON.parse(JSON.stringify(template)) : null, slug, "OpenAI native model (Codex OAuth passthrough).", priority, undefined, ultraEnabled));
+    native.push(deriveEntry(template ? JSON.parse(JSON.stringify(template)) : null, slug, "OpenAI native model (Codex OAuth passthrough).", priority));
   }
 
   let finalRoutedEntries = routedEntries;
@@ -1309,10 +1277,6 @@ export function mergeCatalogEntriesForSync(
     const normalized = normalizeServiceTiers(m);
     applyNativeOpenAiContextOverride(normalized);
     const e = ensureStrictCatalogFields(normalized);
-    // v2 gate choke point (A-gate blocker 1): preserved genuine natives, the
-    // empty-fetch routed fallback and preservedForeignRouted all reach disk ONLY
-    // through this map — strip here so no bypass branch can ship a dead ultra rung.
-    if (!ultraEnabled) stripUltraReasoningLevel(e);
     // Mock-max universality (260709): preserved routed entries from disk may predate
     // the max rung — ensure it here so subagent max spawns validate on every
     // reasoning-capable entry. max only: 5.6 exact ladders (luna: no ultra) stay intact.
@@ -1367,10 +1331,7 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
   const enabledGo = filterCatalogVisibleModels(goModels, config);
   const featured = config.subagentModels ?? [];
   const orderedGoModels = orderForSubagents(enabledGo, featured); // stable tie-break among equal priorities
-  // v2-gated ultra: the flag is read HERE, at the fs boundary, and threaded down as a
-  // parameter — buildCatalogEntries/mergeCatalogEntriesForSync stay pure (A-gate blocker 3).
-  const ultraEnabled = isMultiAgentV2Enabled();
-  const goEntries = buildCatalogEntries(template ? JSON.parse(JSON.stringify(template)) : null, [], orderedGoModels, featured, websocketsEnabled(config), ultraEnabled);
+  const goEntries = buildCatalogEntries(template ? JSON.parse(JSON.stringify(template)) : null, [], orderedGoModels, featured, websocketsEnabled(config));
   // Keep genuine native entries (gpt-*, codex-*) with their real per-model fields and append
   // routed providers as namespaced slugs. Cursor and other adopted providers can expose model ids
   // like `gpt-5.5`; those must not delete the native OpenAI/Codex base row.
@@ -1385,7 +1346,7 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
   // native AND routed so the advertised flag matches the implemented endpoint (phase 120.4) and a
   // native template can never leak supports_websockets while the flag is off.
   const wsEnabled = websocketsEnabled(config);
-  catalog.models = mergeCatalogEntriesForSync(catalog.models ?? [], goEntries, baseline, featured, wsEnabled, goIds, template, disabledNativeSlugs(config), gatheredProviderNames, ultraEnabled);
+  catalog.models = mergeCatalogEntriesForSync(catalog.models ?? [], goEntries, baseline, featured, wsEnabled, goIds, template, disabledNativeSlugs(config), gatheredProviderNames);
 
   atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2) + "\n");
   return { added: goEntries.length, path: catalogPath };

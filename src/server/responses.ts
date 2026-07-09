@@ -103,15 +103,13 @@ export function isV1CollabSurface(parsed: OcxParsedRequest): boolean {
  * arrives at the synthetic top tier (codex converts ultra -> max on the wire, so max
  * arrival means the user picked the top rung) the proxy supplies the same one-liner,
  * wrapped in codex's own <multi_agent_mode> tags (v1 turns never carry that fragment, so
- * there is nothing to collide with). Requires the multi_agent_v2 flag: with it off the
- * ultra rung does not exist and max means a plain effort pick.
+ * there is nothing to collide with). Ultra is always advertised, so the guidance fires
+ * regardless of the multi_agent_v2 toggle.
  */
 export async function multiAgentGuidanceText(parsed: OcxParsedRequest): Promise<string | null> {
   if (!isV1CollabSurface(parsed)) return null;
   const effort = parsed.options.reasoning;
   if (effort !== "max" && effort !== "ultra") return null;
-  const { isMultiAgentV2Enabled } = await import("../codex/features");
-  if (!isMultiAgentV2Enabled()) return null;
   return `<multi_agent_mode>${PROACTIVE_MULTI_AGENT_MODE_TEXT}</multi_agent_mode>`;
 }
 

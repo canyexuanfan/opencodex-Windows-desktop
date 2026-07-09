@@ -375,6 +375,62 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     return jsonResponse({ ok: true, disabled });
   }
 
+  // multi_agent_v2 surface toggle. GET reports the flag + the agents.max_threads
+  // boot conflict; PUT flips it via the official `codex features` CLI and RESYNCS
+  // the catalog so multi-agent surface metadata stays fresh. The catalog build
+  // itself never writes config — this endpoint is the only server-side mutation
+  // surface for the flag.
+  if (url.pathname === "/api/v2" && req.method === "GET") {
+    const { isMultiAgentV2Enabled, hasAgentsMaxThreads, getMaxConcurrentThreads } = await import("../codex/features");
+    return jsonResponse({
+      enabled: isMultiAgentV2Enabled(),
+      agentsMaxThreadsConflict: hasAgentsMaxThreads(),
+      maxConcurrentThreadsPerSession: getMaxConcurrentThreads(),
+    });
+  }
+  if (url.pathname === "/api/v2" && req.method === "PUT") {
+    let body: { enabled?: unknown; maxConcurrentThreadsPerSession?: unknown };
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    const wantsFlag = body.enabled !== undefined;
+    const wantsThreads = body.maxConcurrentThreadsPerSession !== undefined;
+    if (!wantsFlag && !wantsThreads) return jsonResponse({ error: "body must set enabled and/or maxConcurrentThreadsPerSession" }, 400);
+    if (wantsFlag && typeof body.enabled !== "boolean") return jsonResponse({ error: "body.enabled must be a boolean" }, 400);
+    if (wantsThreads && (typeof body.maxConcurrentThreadsPerSession !== "number" || !Number.isInteger(body.maxConcurrentThreadsPerSession) || body.maxConcurrentThreadsPerSession < 1)) {
+      return jsonResponse({ error: "body.maxConcurrentThreadsPerSession must be an integer >= 1" }, 400);
+    }
+    const { isMultiAgentV2Enabled, hasAgentsMaxThreads, getMaxConcurrentThreads, setMaxConcurrentThreads } = await import("../codex/features");
+    const warnings: string[] = [];
+    if (wantsFlag && isMultiAgentV2Enabled() !== body.enabled) {
+      const { execFileSync } = await import("node:child_process");
+      const command = process.env.CODEX_CLI_PATH?.trim() || "codex";
+      try {
+        execFileSync(command, ["features", body.enabled ? "enable" : "disable", "multi_agent_v2"],
+          { stdio: ["ignore", "pipe", "pipe"], timeout: 15_000, windowsHide: true });
+      } catch (err) {
+        return jsonResponse({ error: `codex features ${body.enabled ? "enable" : "disable"} failed: ${err instanceof Error ? err.message : String(err)}` }, 502);
+      }
+      await refreshCodexCatalogBestEffort();
+    }
+    if (wantsThreads) {
+      // setMaxConcurrentThreads is idempotent (equal value -> no write) and refuses
+      // when the [features.multi_agent_v2] table is missing, so a threads-only PUT
+      // against a never-enabled config fails loudly instead of inventing state.
+      const result = setMaxConcurrentThreads(body.maxConcurrentThreadsPerSession as number);
+      if (!result.ok) return jsonResponse({ error: result.error }, 409);
+      if (result.changed) warnings.push("Thread limit applies to new sessions.");
+    }
+    if ((wantsFlag ? body.enabled === true : isMultiAgentV2Enabled()) && hasAgentsMaxThreads()) {
+      warnings.push("[agents] max_threads is set — codex refuses to start while multi_agent_v2 is enabled; remove it (features.multi_agent_v2.max_concurrent_threads_per_session replaces it).");
+    }
+    if (wantsFlag) warnings.push("Applies to new sessions; restart the Codex app or wait out its picker cache to see the ladder change.");
+    return jsonResponse({
+      ok: true,
+      enabled: isMultiAgentV2Enabled(),
+      maxConcurrentThreadsPerSession: getMaxConcurrentThreads(),
+      warnings,
+    });
+  }
+
   // Which providers support real OAuth login (drives the GUI's "Log in with …" buttons).
   if (url.pathname === "/api/oauth/providers" && req.method === "GET") {
     return jsonResponse({ providers: listOAuthProviders() });
