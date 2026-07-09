@@ -10,24 +10,26 @@
 
 ## Planned repository delta
 
-- Add only this implementation unit before publication.
+- Add this implementation unit, the Windows timeout repair in `020_phase2_windows_timeout.md`, and the requested injection-effort slice in `030_phase3_injection_effort.md`.
 - Do not rerun `scripts/release.ts` with the same version because `package.json` is already bumped and the helper would attempt a second version-bump commit.
-- Do not modify application code, tests, workflow YAML, lockfiles, or package metadata.
+- Modify only the web-search timeout regressions described in Phase 2; do not modify workflow YAML, lockfiles, or package metadata. Do not increase the CI timeout.
 
 ## Execution
 
 1. Audit the target version, branch/tag pairing, unused public metadata, and recovery plan.
-2. Commit the two release-record files and push `preview`.
-3. Capture the resulting HEAD. Because a devlog-only push matches neither workflow's path filters, explicitly dispatch both prerequisite workflows from `preview`:
+2. Commit the initial release-record files and push `preview` (`69d8ec7c`, completed).
+3. After CI run `29039366674` exposed the Windows timeout hang, execute and verify `020_phase2_windows_timeout.md`.
+4. Audit and verify `030_phase3_injection_effort.md`, then commit and push the combined changes plus amended records.
+5. Capture the resulting final HEAD. Explicitly dispatch both prerequisite workflows from `preview`:
 
    ```bash
    gh workflow run ci.yml --ref preview
    gh workflow run service-lifecycle.yml --ref preview
    ```
 
-4. Identify both new runs by branch, exact HEAD, and creation time; require each to finish with conclusion `success`.
-5. Confirm `origin/preview` still equals that SHA.
-6. Dispatch:
+6. Identify both new runs by branch, exact HEAD, and creation time; require each to finish with conclusion `success`.
+7. Confirm `origin/preview` still equals that SHA.
+8. Dispatch:
 
    ```bash
    gh workflow run release.yml --ref preview \
@@ -36,8 +38,8 @@
      -f dry-run=false
    ```
 
-7. Identify the newly dispatched Release run by branch, commit, and creation time; watch it to completion with exit status enforcement.
-8. Query npm, the remote Git tag, and the GitHub Release independently after the workflow succeeds.
+9. Identify the newly dispatched Release run by branch, commit, and creation time; watch it to completion with exit status enforcement.
+10. Query npm, the remote Git tag, and the GitHub Release independently after the workflow succeeds.
 
 ## Gate activation evidence
 

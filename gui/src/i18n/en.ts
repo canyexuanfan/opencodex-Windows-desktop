@@ -56,6 +56,8 @@ export const en = {
   "dash.injectionHint": "Pick a routed model to inject into the delegation prompt. The agent will be told to use it for sub-tasks.",
   "dash.injectionActive": "Active",
   "dash.injectionNone": "None",
+  "dash.injectionEffortLabel": "Reasoning effort",
+  "dash.injectionEffortNone": "Model default",
   "dash.maintenance": "Maintenance",
   "dash.maintenanceHint": "Refresh Codex's model catalog or install a newer opencodex release.",
   "dash.syncModels": "Sync models",

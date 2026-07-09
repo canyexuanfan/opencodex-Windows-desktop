@@ -14,6 +14,11 @@ export const CODEX_REASONING_LEVELS: { effort: string; description: string }[] =
 const CODEX_REASONING_ORDER = CODEX_REASONING_LEVELS.map(l => l.effort);
 const CODEX_REASONING_SET = new Set(CODEX_REASONING_ORDER);
 
+/** True when `effort` is a member of the Codex reasoning ladder (low..ultra). */
+export function isCodexReasoningEffort(effort: string): boolean {
+  return CODEX_REASONING_SET.has(effort);
+}
+
 export function modelRecordValue<T>(record: Record<string, T> | undefined, modelId: string): T | undefined {
   if (!record) return undefined;
   if (Object.prototype.hasOwnProperty.call(record, modelId)) return record[modelId];

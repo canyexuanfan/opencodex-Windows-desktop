@@ -3,7 +3,7 @@ import type { AdapterEvent, OcxMessage, OcxParsedRequest, OcxProviderConfig, Ocx
 import { namespacedToolName } from "../types";
 import { bridgeToResponsesSSE } from "../bridge";
 import { runWebSearch, type SidecarOutcome, type SidecarOutcomeRecorder, type SidecarSettings } from "./executor";
-import { cancelBodyOnAbort } from "../lib/abort";
+import { cancelBodyOnAbort, signalWithTimeout } from "../lib/abort";
 import { fetchWithResetRetry } from "../lib/upstream-retry";
 import { formatWebSearchResults } from "./format-result";
 import { WEB_SEARCH_TOOL_NAME } from "./synthetic-tool";
@@ -245,63 +245,68 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
     };
     // Per-iteration deadline: routed calls elsewhere carry connectTimeoutMs; without it a hung
     // upstream would stall the whole loop until the client gives up.
-    const iterationSignal = deps.connectTimeoutMs
-      ? AbortSignal.any([signal, AbortSignal.timeout(deps.connectTimeoutMs)])
-      : signal;
-    const fetchOnce = async (): Promise<Response> => {
-      const request = await adapter.buildRequest(iterParsed, { headers: selectedForwardHeaders });
-      try {
-        return adapter.fetchResponse
-          ? await adapter.fetchResponse(request, { abortSignal: iterationSignal, ...(deps.connectTimeoutMs ? { timeoutMs: deps.connectTimeoutMs } : {}) })
-          : await fetchWithResetRetry(
-              () => fetch(request.url, {
-                method: request.method,
-                headers: request.headers,
-                body: request.body,
-                signal: iterationSignal,
-              }),
-              { abortSignal: iterationSignal, label: "web-search-loop" },
-            );
-      } catch (e) {
-        if (!signal.aborted && iterationSignal.aborted) {
-          throw new LoopError(504, `Provider timeout after ${deps.connectTimeoutMs}ms during web-search`);
-        }
-        throw new LoopError(502, `Provider unreachable: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    };
-    let resp = await fetchOnce();
-    // 429 key-failover parity with the normal routed path: rotate pool keys until one responds
-    // or the pool is exhausted (deps.on429 returns null — cooldown map guarantees termination).
-    while (resp.status === 429 && deps.on429) {
-      const rotated = deps.on429(resp.headers.get("retry-after"));
-      if (!rotated?.parseResponse) break;
-      try { void resp.body?.cancel(); } catch { /* already consumed */ }
-      adapter = rotated;
-      // Stall-watchdog seam between bounded retry fetches (audit 011 B3).
-      yield { type: "heartbeat" };
-      resp = await fetchOnce();
-    }
-    if (!resp.ok) {
-      const t = await resp.text().catch(() => "");
-      throw new LoopError(resp.status, `Provider error ${resp.status}: ${t.slice(0, 400)}`);
-    }
-    // The fetch above carries `signal`; when the turn is superseded/cancelled, Bun aborts the
-    // response body stream. If parseResponse hasn't attached a reader yet, the body's pending read is
-    // orphaned off the awaited path and surfaces as `unhandledRejection: TypeError: null is not an
-    // object` (native-only stack). Proactively cancel the body on abort so WE settle it, and guard
-    // the drain so a mid-decode abort/stream error ends cleanly instead of throwing.
-    const detachBodyGuard = cancelBodyOnAbort(resp.body, signal);
-    let events: AdapterEvent[];
+    const iterationTimeout = deps.connectTimeoutMs
+      ? signalWithTimeout(deps.connectTimeoutMs, signal)
+      : null;
+    const iterationSignal = iterationTimeout?.signal ?? signal;
     try {
-      events = await adapter.parseResponse!(resp);
-    } catch (e) {
-      await resp.body?.cancel().catch(() => {});
-      if (signal.aborted) throw new LoopError(499, "client closed request during web-search");
-      throw new LoopError(502, `Provider stream error: ${e instanceof Error ? e.message : String(e)}`);
+      const fetchOnce = async (): Promise<Response> => {
+        const request = await adapter.buildRequest(iterParsed, { headers: selectedForwardHeaders });
+        try {
+          return adapter.fetchResponse
+            ? await adapter.fetchResponse(request, { abortSignal: iterationSignal, ...(deps.connectTimeoutMs ? { timeoutMs: deps.connectTimeoutMs } : {}) })
+            : await fetchWithResetRetry(
+                () => fetch(request.url, {
+                  method: request.method,
+                  headers: request.headers,
+                  body: request.body,
+                  signal: iterationSignal,
+                }),
+                { abortSignal: iterationSignal, label: "web-search-loop" },
+              );
+        } catch (e) {
+          if (!signal.aborted && iterationSignal.aborted) {
+            throw new LoopError(504, `Provider timeout after ${deps.connectTimeoutMs}ms during web-search`);
+          }
+          throw new LoopError(502, `Provider unreachable: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      };
+      let resp = await fetchOnce();
+      // 429 key-failover parity with the normal routed path: rotate pool keys until one responds
+      // or the pool is exhausted (deps.on429 returns null — cooldown map guarantees termination).
+      while (resp.status === 429 && deps.on429) {
+        const rotated = deps.on429(resp.headers.get("retry-after"));
+        if (!rotated?.parseResponse) break;
+        try { void resp.body?.cancel(); } catch { /* already consumed */ }
+        adapter = rotated;
+        // Stall-watchdog seam between bounded retry fetches (audit 011 B3).
+        yield { type: "heartbeat" };
+        resp = await fetchOnce();
+      }
+      if (!resp.ok) {
+        const t = await resp.text().catch(() => "");
+        throw new LoopError(resp.status, `Provider error ${resp.status}: ${t.slice(0, 400)}`);
+      }
+      // The fetch above carries `signal`; when the turn is superseded/cancelled, Bun aborts the
+      // response body stream. If parseResponse hasn't attached a reader yet, the body's pending read is
+      // orphaned off the awaited path and surfaces as `unhandledRejection: TypeError: null is not an
+      // object` (native-only stack). Proactively cancel the body on abort so WE settle it, and guard
+      // the drain so a mid-decode abort/stream error ends cleanly instead of throwing.
+      const detachBodyGuard = cancelBodyOnAbort(resp.body, signal);
+      let events: AdapterEvent[];
+      try {
+        events = await adapter.parseResponse!(resp);
+      } catch (e) {
+        await resp.body?.cancel().catch(() => {});
+        if (signal.aborted) throw new LoopError(499, "client closed request during web-search");
+        throw new LoopError(502, `Provider stream error: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        detachBodyGuard();
+      }
+      return scanEventsForWebSearch(events);
     } finally {
-      detachBodyGuard();
+      iterationTimeout?.cleanup();
     }
-    return scanEventsForWebSearch(events);
   };
 
   // Drain an iteration OUTSIDE the bridge (eager first call): the stall deadline is not armed
@@ -431,15 +436,9 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
           // Stall-watchdog seam before each in-stream iteration (placeholder search turns emit no
           // cell, so consecutive non-streaming iterations would otherwise be one silent span).
           yield { type: "heartbeat" };
-          // Manual consumption (not for-await): re-yield seam heartbeats into the bridge AND
-          // capture the generator's RETURN value (the scanned split).
-          const it = runIterationEvents(forceAnswer);
-          let r = await it.next();
-          while (!r.done) {
-            yield r.value;
-            r = await it.next();
-          }
-          split = r.value;
+          // Delegate so seam heartbeats reach the bridge, the scanned split returns here, and an
+          // outer consumer close propagates into the iteration generator's cleanup.
+          split = yield* runIterationEvents(forceAnswer);
         } catch (e) {
           yield { type: "error", message: e instanceof LoopError ? e.message : (e instanceof Error ? e.message : String(e)) };
           return;

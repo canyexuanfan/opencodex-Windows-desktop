@@ -56,6 +56,8 @@ export const zh: Record<TKey, string> = {
   "dash.injectionHint": "选择要注入委托提示的路由模型。代理将被告知在子任务中使用它。",
   "dash.injectionActive": "已激活",
   "dash.injectionNone": "无",
+  "dash.injectionEffortLabel": "推理强度",
+  "dash.injectionEffortNone": "模型默认",
     "dash.maintenance": "维护",
   "dash.maintenanceHint": "刷新 Codex 模型目录，或安装新的 opencodex 版本。",
   "dash.syncModels": "同步模型",

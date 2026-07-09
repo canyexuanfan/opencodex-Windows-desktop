@@ -518,28 +518,49 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   }
 
   // Subagent prompt injection model: single native or routed model whose info is
-  // dynamically injected into the v1 proactive prompt. GET returns the current pick
-  // + available models; PUT sets or clears the pick.
+  // dynamically injected into the v1 proactive prompt, plus an optional reasoning
+  // effort the prompt tells the agent to pass to spawn_agent. GET returns the current
+  // picks + available models/efforts; PUT sets or clears them.
   if (url.pathname === "/api/injection-model" && req.method === "GET") {
     const models = await fetchAllModels(config);
     const disabled = new Set(config.disabledModels ?? []);
     const { listCatalogNativeSlugs } = await import("../codex/catalog");
+    const { CODEX_REASONING_LEVELS } = await import("../reasoning-effort");
     const nativeModels = listCatalogNativeSlugs()
       .filter(slug => !disabled.has(slug))
       .map(slug => ({ provider: "openai", model: slug, namespaced: slug }));
     const routedModels = models
       .map(m => ({ provider: m.provider, model: m.id, namespaced: `${m.provider}/${m.id}` }))
       .filter(m => !disabled.has(m.namespaced));
-    return jsonResponse({ model: config.injectionModel ?? null, available: [...nativeModels, ...routedModels] });
+    return jsonResponse({
+      model: config.injectionModel ?? null,
+      effort: config.injectionEffort ?? null,
+      efforts: CODEX_REASONING_LEVELS.map(l => l.effort),
+      available: [...nativeModels, ...routedModels],
+    });
   }
   if (url.pathname === "/api/injection-model" && req.method === "PUT") {
-    let body: { model?: unknown };
+    let body: { model?: unknown; effort?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    const { isCodexReasoningEffort } = await import("../reasoning-effort");
     const model = typeof body.model === "string" && body.model.length > 0 ? body.model : undefined;
+    let effort = config.injectionEffort;
+    // `effort` key semantics: absent -> unchanged; null/"" -> clear; ladder value -> set;
+    // anything else -> 400. Clearing the model always clears the effort (it is meaningless alone).
+    if ("effort" in body) {
+      const requestedEffort = typeof body.effort === "string" && body.effort.length > 0 ? body.effort : undefined;
+      if (requestedEffort !== undefined && !isCodexReasoningEffort(requestedEffort)) {
+        return jsonResponse({ error: `unknown reasoning effort "${requestedEffort}"` }, 400);
+      }
+      effort = requestedEffort;
+    }
+    if (!model) effort = undefined;
     if (model) config.injectionModel = model;
     else delete config.injectionModel;
+    if (effort) config.injectionEffort = effort;
+    else delete config.injectionEffort;
     saveConfig(config);
-    return jsonResponse({ ok: true, model: config.injectionModel ?? null });
+    return jsonResponse({ ok: true, model: config.injectionModel ?? null, effort: config.injectionEffort ?? null });
   }
 
   // Subagent model picker: which ≤5 routed models Codex's spawn_agent advertises (it shows the

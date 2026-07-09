@@ -246,6 +246,12 @@ export interface OcxConfig {
   subagentModels?: string[];
   injectionModel?: string;
   /**
+   * Optional reasoning effort the delegation prompt tells the agent to pass in spawn_agent calls
+   * (`reasoning_effort` argument). Only meaningful while `injectionModel` is set; validated against
+   * the Codex ladder (src/reasoning-effort.ts CODEX_REASONING_LEVELS) at the API boundary.
+   */
+  injectionEffort?: string;
+  /**
    * Models hidden from Codex. Routed ids are namespaced ("<provider>/<model>") and are excluded
    * from the catalog + /v1/models entirely. BARE ids (no "/") are native GPT passthrough slugs:
    * their catalog entries flip to visibility "hide" (entry preserved, picker-hidden) and they

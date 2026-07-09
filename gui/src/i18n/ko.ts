@@ -56,6 +56,8 @@ export const ko: Record<TKey, string> = {
   "dash.injectionHint": "위임 프롬프트에 주입할 라우팅 모델을 선택합니다. 에이전트가 서브태스크에 이 모델을 사용하도록 안내됩니다.",
   "dash.injectionActive": "활성",
   "dash.injectionNone": "없음",
+  "dash.injectionEffortLabel": "추론 강도",
+  "dash.injectionEffortNone": "모델 기본값",
     "dash.maintenance": "유지보수",
   "dash.maintenanceHint": "Codex 모델 카탈로그를 새로고침하거나 최신 opencodex 릴리스를 설치합니다.",
   "dash.syncModels": "모델 동기화",

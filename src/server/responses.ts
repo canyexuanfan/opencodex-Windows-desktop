@@ -118,8 +118,14 @@ export function isV1CollabSurface(parsed: OcxParsedRequest): boolean {
  *
  * Effort gate relaxation: when an injectionModel is set, the prompt fires at every
  * effort level, not just max/ultra — the user opted into delegation.
+ *
+ * Reasoning-effort injection: when an injectionEffort is configured alongside the
+ * model, the prompt also tells the agent to pass `reasoning_effort` in spawn_agent
+ * calls (codex-rs validates spawn efforts by catalog membership; unsupported rungs
+ * are clamped on the wire). An effort WITHOUT a model changes nothing — the gate
+ * and the base prompt stay exactly as before.
  */
-export async function multiAgentGuidanceText(parsed: OcxParsedRequest, injectionModel?: string): Promise<string | null> {
+export async function multiAgentGuidanceText(parsed: OcxParsedRequest, injectionModel?: string, injectionEffort?: string): Promise<string | null> {
   if (!isV1CollabSurface(parsed)) return null;
   const effort = parsed.options.reasoning;
   // When the user has selected a specific injection model, fire the delegation prompt
@@ -133,6 +139,10 @@ export async function multiAgentGuidanceText(parsed: OcxParsedRequest, injection
     text += `\n\nA preferred sub-agent model is configured: "${injectionModel}". `
       + `When delegating, call spawn_agent and set its model argument to exactly "${injectionModel}". `
       + "Use it for independent sub-tasks unless the user explicitly asks for another model.";
+    if (injectionEffort) {
+      text += ` A preferred sub-agent reasoning effort is also configured: "${injectionEffort}". `
+        + `Set the reasoning_effort argument of spawn_agent to exactly "${injectionEffort}" for those sub-agents.`;
+    }
   }
 
   return `<multi_agent_mode>${text}</multi_agent_mode>`;
@@ -362,7 +372,7 @@ export async function handleResponses(
       const rewritten = sanitizeEncryptedContentInPlace(raw?.input);
       if (rewritten > 0) console.warn(`[opencodex] ${route.modelId}: rewrote ${rewritten} plaintext encrypted_content part(s) to input_text (routed-parent spawn compatibility)`);
     }
-    const guidance = await multiAgentGuidanceText(parsed, config.injectionModel);
+    const guidance = await multiAgentGuidanceText(parsed, config.injectionModel, config.injectionEffort);
     if (guidance) injectDeveloperMessage(parsed, guidance);
   }
 

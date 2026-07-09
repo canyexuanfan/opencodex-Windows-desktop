@@ -124,6 +124,36 @@ describe("multiAgentGuidanceText", () => {
     expect(await multiAgentGuidanceText(parsedFixture({ reasoning: "medium", tools: v1Tools }))).toBeNull();
     expect(await multiAgentGuidanceText(parsedFixture({ reasoning: "max", tools: v1Tools }))).not.toBeNull();
   });
+
+  test("injectionEffort is named alongside the model", async () => {
+    codexHomeFixture(V2_OFF);
+    const text = await multiAgentGuidanceText(
+      parsedFixture({ reasoning: "high", tools: [{ name: "spawn_agent", namespace: "agents" }] }),
+      "openai/gpt-5.6-sol",
+      "xhigh",
+    );
+    expect(text).toContain('"openai/gpt-5.6-sol"');
+    expect(text).toContain('reasoning_effort argument of spawn_agent to exactly "xhigh"');
+  });
+
+  test("no injectionEffort leaves the model section unchanged", async () => {
+    codexHomeFixture(V2_OFF);
+    const text = await multiAgentGuidanceText(
+      parsedFixture({ reasoning: "max", tools: [{ name: "spawn_agent", namespace: "agents" }] }),
+      "openai/gpt-5.6-sol",
+    );
+    expect(text).toContain('"openai/gpt-5.6-sol"');
+    expect(text).not.toContain("reasoning_effort");
+  });
+
+  test("injectionEffort without a model does not relax the gate or alter the base prompt", async () => {
+    codexHomeFixture(V2_OFF);
+    const v1Tools = [{ name: "spawn_agent", namespace: "agents" }];
+    expect(await multiAgentGuidanceText(parsedFixture({ reasoning: "high", tools: v1Tools }), undefined, "xhigh")).toBeNull();
+    const atMax = await multiAgentGuidanceText(parsedFixture({ reasoning: "max", tools: v1Tools }), undefined, "xhigh");
+    expect(atMax).toContain("Proactive multi-agent delegation is active");
+    expect(atMax).not.toContain("reasoning_effort");
+  });
 });
 
 describe("injectDeveloperMessage", () => {

@@ -87,6 +87,8 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   const [maBusy, setMaBusy] = useState(false);
   const [maHelpOpen, setMaHelpOpen] = useState(false);
   const [injectionModel, setInjectionModel] = useState<string>("");
+  const [injectionEffort, setInjectionEffort] = useState<string>("");
+  const [injectionEfforts, setInjectionEfforts] = useState<string[]>([]);
   const [injectionAvailable, setInjectionAvailable] = useState<Array<{ provider: string; model: string; namespaced: string }>>([]);
   const [injectionSaving, setInjectionSaving] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
@@ -130,8 +132,10 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         try {
           const imRes = await fetch(`${apiBase}/api/injection-model`);
           if (imRes.ok) {
-            const imData = await imRes.json() as { model?: string | null; available?: Array<{ provider: string; model: string; namespaced: string }> };
+            const imData = await imRes.json() as { model?: string | null; effort?: string | null; efforts?: string[]; available?: Array<{ provider: string; model: string; namespaced: string }> };
             setInjectionModel(imData.model ?? "");
+            setInjectionEffort(imData.effort ?? "");
+            setInjectionEfforts(imData.efforts ?? []);
             setInjectionAvailable(imData.available ?? []);
           }
         } catch { /* old server */ }
@@ -434,8 +438,8 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       )}
 
       <div className="panel" style={{ marginBottom: 24 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontWeight: 650 }}>{t("dash.injectionLabel")}</span>
+        <div className="injection-head">
+          <span className="injection-label">{t("dash.injectionLabel")}</span>
           <Select
             value={injectionModel}
             options={[
@@ -445,16 +449,16 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             onChange={async (v) => {
               if (injectionSaving) return;
               setInjectionSaving(true);
-              setInjectionModel(v);
               try {
                 const res = await fetch(`${apiBase}/api/injection-model`, {
                   method: "PUT",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ model: v || null }),
+                  body: JSON.stringify({ model: v || null, effort: injectionEffort || null }),
                 });
                 if (res.ok) {
-                  const data = await res.json() as { model?: string | null };
+                  const data = await res.json() as { model?: string | null; effort?: string | null };
                   setInjectionModel(data.model ?? "");
+                  setInjectionEffort(data.effort ?? "");
                 }
               } catch { /* ignore */ }
               finally { setInjectionSaving(false); }
@@ -462,6 +466,34 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             disabled={injectionSaving}
             label={t("dash.injectionLabel")}
           />
+          {injectionModel && injectionEfforts.length > 0 && (
+            <Select
+              value={injectionEffort}
+              options={[
+                { value: "", label: t("dash.injectionEffortNone") },
+                ...injectionEfforts.map(e => ({ value: e, label: e })),
+              ]}
+              onChange={async (v) => {
+                if (injectionSaving) return;
+                setInjectionSaving(true);
+                try {
+                  const res = await fetch(`${apiBase}/api/injection-model`, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ model: injectionModel || null, effort: v || null }),
+                  });
+                  if (res.ok) {
+                    const data = await res.json() as { model?: string | null; effort?: string | null };
+                    setInjectionModel(data.model ?? "");
+                    setInjectionEffort(data.effort ?? "");
+                  }
+                } catch { /* ignore */ }
+                finally { setInjectionSaving(false); }
+              }}
+              disabled={injectionSaving}
+              label={t("dash.injectionEffortLabel")}
+            />
+          )}
           {injectionModel && <span className="badge badge-green" style={{ fontSize: 10 }}>{t("dash.injectionActive")}</span>}
         </div>
         <div className="muted" style={{ fontSize: 13, marginTop: 6 }}>{t("dash.injectionHint")}</div>

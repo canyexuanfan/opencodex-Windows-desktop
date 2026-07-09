@@ -65,10 +65,11 @@
 
 html, body, #root { height: 100%; }
 
-html { background: var(--bg); }
+html { overflow-x: hidden; background: var(--bg); }
 
 body {
   margin: 0;
+  overflow-x: hidden;
   background: transparent;
   color: var(--text);
   font-family: var(--font);
@@ -235,6 +236,15 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .update-box { display: flex; flex-direction: column; gap: 12px; }
 .update-command { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
 .update-restart { border-top: 1px solid var(--border-soft); padding-top: 12px; }
+.injection-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.injection-label { font-weight: 650; }
+
+@media (max-width: 800px) {
+  .injection-head { gap: 8px; }
+  .injection-label { order: 1; flex: 1 0 calc(100% - 70px); }
+  .injection-head > .badge { order: 1; margin-left: auto; }
+  .injection-head > .custom-select { order: 2; }
+}
 
 /* ---- stat cards (metric tiles) ---- */
 /* Flex-wrap stat grid: items fill rows evenly. min-width forces wrap; flex-basis

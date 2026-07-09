@@ -4,7 +4,7 @@ import { planWebSearch, webSearchStallTimeoutSec } from "../src/web-search";
 import { runWithWebSearch } from "../src/web-search/loop";
 import { headersForCodexAuthContext } from "../src/codex/auth-context";
 import type { AdapterEvent, OcxConfig, OcxProviderConfig } from "../src/types";
-import type { ProviderAdapter } from "../src/adapters/base";
+import type { AdapterFetchContext, ProviderAdapter } from "../src/adapters/base";
 import type { OcxMessage, OcxParsedRequest } from "../src/types";
 
 const routedProvider: OcxProviderConfig = {
@@ -123,6 +123,21 @@ async function collectSse(stream: ReadableStream<Uint8Array>): Promise<{ event?:
     });
 }
 
+function hangUntilAbort(ctx?: AdapterFetchContext): Promise<Response> {
+  const signal = ctx?.abortSignal;
+  return new Promise((_resolve, reject) => {
+    const rejectAborted = () => {
+      const reason = signal?.reason;
+      reject(reason instanceof Error ? reason : new Error(reason ? String(reason) : "aborted"));
+    };
+    if (signal?.aborted) {
+      rejectAborted();
+      return;
+    }
+    signal?.addEventListener("abort", rejectAborted, { once: true });
+  });
+}
+
 /** Adapter whose first non-stream pass returns the events, and every later (forceAnswer) pass a text answer. */
 function scriptedAdapter(firstPass: AdapterEvent[]): ProviderAdapter {
   let pass = 0;
@@ -211,9 +226,7 @@ describe("web-search sidecar native web_search_call emission", () => {
     const hangingAdapter: ProviderAdapter = {
       name: "mock-hang",
       buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
-      fetchResponse: (_req, opts?: { abortSignal?: AbortSignal }) => new Promise((_resolve, reject) => {
-        opts?.abortSignal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-      }),
+      fetchResponse: (_req, ctx) => hangUntilAbort(ctx),
       async *parseStream() { /* unused */ },
       async parseResponse() { return [{ type: "done" }] as AdapterEvent[]; },
     };
@@ -230,7 +243,82 @@ describe("web-search sidecar native web_search_call emission", () => {
     expect(response.status).toBe(504);
     const body = await response.json() as { error?: { message?: string } };
     expect(body.error?.message ?? "").toContain("timeout");
-  });
+  }, 1_000);
+
+  test("loop reuses one iteration deadline signal across 429 rotation", async () => {
+    let firstSignal: AbortSignal | undefined;
+    const firstAdapter: ProviderAdapter = {
+      name: "mock-429",
+      buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
+      fetchResponse: async (_req, ctx) => {
+        firstSignal = ctx?.abortSignal;
+        return new Response("rate limited", { status: 429 });
+      },
+      async *parseStream() { /* unused */ },
+      async parseResponse() { return [{ type: "done" }] as AdapterEvent[]; },
+    };
+    const rotatedAdapter: ProviderAdapter = {
+      name: "mock-rotated-hang",
+      buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
+      fetchResponse: (_req, ctx) => {
+        expect(ctx?.abortSignal).toBe(firstSignal);
+        return hangUntilAbort(ctx);
+      },
+      async *parseStream() { /* unused */ },
+      async parseResponse() { return [{ type: "done" }] as AdapterEvent[]; },
+    };
+
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: firstAdapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+      connectTimeoutMs: 100,
+      on429: () => rotatedAdapter,
+    });
+    expect(response.status).toBe(504);
+    const body = await response.json() as { error?: { message?: string } };
+    expect(body.error?.message ?? "").toContain("timeout");
+  }, 1_000);
+
+  test("loop propagates parent abort into a hanging iteration", async () => {
+    const parent = new AbortController();
+    let resolveSignal!: (signal: AbortSignal) => void;
+    const receivedSignal = new Promise<AbortSignal>(resolve => { resolveSignal = resolve; });
+    const hangingAdapter: ProviderAdapter = {
+      name: "mock-parent-abort",
+      buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
+      fetchResponse: (_req, ctx) => {
+        if (ctx?.abortSignal) resolveSignal(ctx.abortSignal);
+        return hangUntilAbort(ctx);
+      },
+      async *parseStream() { /* unused */ },
+      async parseResponse() { return [{ type: "done" }] as AdapterEvent[]; },
+    };
+
+    const pending = runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: hangingAdapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+      connectTimeoutMs: 30_000,
+      abortSignal: parent.signal,
+    });
+    const iterationSignal = await receivedSignal;
+    parent.abort(new DOMException("superseded", "AbortError"));
+
+    const response = await pending;
+    expect(iterationSignal.aborted).toBe(true);
+    expect(response.status).toBe(502);
+    const body = await response.json() as { error?: { message?: string } };
+    expect(body.error?.message ?? "").toContain("superseded");
+  }, 1_000);
 
   test("signed thinking before a web_search call survives into the replayed assistant turn", async () => {
     globalThis.fetch = ((input) => {
