@@ -324,9 +324,18 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
 
       <div className="stat-row">
         <div className="stat">
-          <div className="label">{t("dash.multiAgent")}</div>
-          <div className="value" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-            <div role="radiogroup" aria-label={t("dash.multiAgent")} style={{ display: "inline-flex", borderRadius: 999, overflow: "hidden", border: "1px solid var(--border)" }}>
+          <div className="label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {t("dash.multiAgent")}
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              style={{ width: 18, height: 18, padding: 0, borderRadius: 999, fontSize: 11, fontWeight: 700, color: "var(--muted)", lineHeight: 1 }}
+              onClick={() => setMaHelpOpen(true)}
+              aria-label="Help"
+            >?</button>
+          </div>
+          <div className="value" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div role="radiogroup" aria-label={t("dash.multiAgent")} style={{ display: "inline-flex", borderRadius: 999, overflow: "hidden", border: "1px solid var(--border)", padding: 2 }}>
               {(["v1", "default", "v2"] as const).map(mode => (
                 <button
                   key={mode}
@@ -334,19 +343,12 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
                   role="radio"
                   aria-checked={maMode === mode}
                   className={`btn btn-sm${maMode === mode ? " btn-primary" : " btn-ghost"}`}
-                  style={{ borderRadius: 0, minWidth: 32, fontSize: 11, padding: "4px 8px" }}
+                  style={{ borderRadius: 999, minWidth: 36, fontSize: 11, padding: "5px 10px" }}
                   disabled={maBusy}
                   onClick={() => void switchMaMode(mode)}
                 >{mode === "default" ? "base" : mode}</button>
               ))}
             </div>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              style={{ width: 22, height: 22, padding: 0, borderRadius: 999, fontSize: 12, fontWeight: 700, color: "var(--muted)" }}
-              onClick={() => setMaHelpOpen(true)}
-              aria-label="Help"
-            >?</button>
           </div>
         </div>
         <div className="stat">
