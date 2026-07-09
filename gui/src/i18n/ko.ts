@@ -146,7 +146,9 @@ export const ko: Record<TKey, string> = {
   "prov.defaultCannotDisable": "기본 프로바이더는 비활성화할 수 없습니다",
 
   // models
-  "models.subtitle": "Codex가 보는 라우팅된 모델을 프로바이더별로 묶어 켜고 끕니다(헤더를 클릭하면 접힘). 비활성화된 모델은 카탈로그와 모델 선택기에서 숨겨집니다. 변경 사항은 다음 Codex 턴에 적용됩니다 — opencodex가 Codex의 5분 모델 캐시를 무효화하므로 재시작이 필요 없습니다.",
+  "models.subtitle": "Codex가 보는 모델을 켜고 끕니다 — 네이티브 GPT passthrough와 라우팅된 모델을 프로바이더별로 묶어 보여줍니다(헤더를 클릭하면 접힘). 비활성화된 모델은 카탈로그와 모델 선택기에서 숨겨집니다. 변경 사항은 다음 Codex 턴에 적용됩니다 — opencodex가 Codex의 5분 모델 캐시를 무효화하므로 재시작이 필요 없습니다.",
+  "models.nativeGroupLabel": "OpenAI 네이티브",
+  "models.nativeHint": "ChatGPT 로그인으로 서빙되는 passthrough 모델입니다. 끄면 Codex 선택기에서 숨겨지고, 카탈로그 항목은 유지되므로 다시 켜면 그대로 복원됩니다.",
   "models.active": "{active}/{total} 활성",
   "models.allOn": "모두 켜기",
   "models.allOff": "모두 끄기",

@@ -244,7 +244,12 @@ export interface OcxConfig {
    * Codex's spawn_agent only advertises the first 5 routed models, so this picks which 5 appear.
    */
   subagentModels?: string[];
-  /** Routed model ids ("<provider>/<model>") hidden from Codex (excluded from the catalog + /v1/models). */
+  /**
+   * Models hidden from Codex. Routed ids are namespaced ("<provider>/<model>") and are excluded
+   * from the catalog + /v1/models entirely. BARE ids (no "/") are native GPT passthrough slugs:
+   * their catalog entries flip to visibility "hide" (entry preserved, picker-hidden) and they
+   * are omitted from the bare /v1/models list.
+   */
   disabledModels?: string[];
   /** Provider-level Codex-visible context caps. Values only lower known model context windows. */
   providerContextCaps?: Record<string, number>;

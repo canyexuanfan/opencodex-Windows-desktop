@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { CatalogModel } from "../codex/catalog";
-import { invalidateCodexModelsCache } from "../codex/catalog";
+import { invalidateCodexModelsCache, nativeModelRows } from "../codex/catalog";
 import {
   DEFAULT_SUBAGENT_MODELS,
   codexAutoStartEnabled,
@@ -284,7 +284,17 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   if (url.pathname === "/api/models" && req.method === "GET") {
     const models = await fetchAllModels(config);
     const disabled = new Set(config.disabledModels ?? []);
-    return jsonResponse(models.map(m => {
+    // Native GPT passthrough rows lead (provider "openai", bare-slug namespaced ids): sourced
+    // from the static supported set so a disabled model stays listed and re-enableable.
+    const native = nativeModelRows(config).map(row => ({
+      provider: "openai",
+      id: row.slug,
+      namespaced: row.slug,
+      disabled: row.disabled,
+      native: true,
+      ...(row.contextWindow !== undefined ? { contextWindow: row.contextWindow } : {}),
+    }));
+    return jsonResponse([...native, ...models.map(m => {
       const namespaced = `${m.provider}/${m.id}`;
       const contextCap = providerContextCap(config, m.provider);
       return {
@@ -293,7 +303,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
         disabled: disabled.has(namespaced),
         ...(contextCap !== undefined ? { contextCap, contextCapped: m.contextCapped === true } : {}),
       };
-    }));
+    })]);
   }
 
   if (url.pathname === "/api/provider-context-caps" && req.method === "GET") {

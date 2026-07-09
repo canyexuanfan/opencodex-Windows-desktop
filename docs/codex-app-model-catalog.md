@@ -144,6 +144,22 @@ $CODEX_HOME/models_cache.json
 After changing providers, hidden models, featured models, or service-tier metadata, opencodex should
 delete that cache so the next Codex process or model refresh sees the updated catalog.
 
+## Native GPT enable/disable
+
+`disabledModels` is the single enable/disable choke point for BOTH model families:
+
+- Routed ids stay namespaced (`provider/model`) and are excluded from the catalog and
+  `/v1/models` entirely.
+- Bare ids (no `/`) are native GPT passthrough slugs. Their catalog entries are NOT removed —
+  the on-disk sync and the `/v1/models?client_version` shape flip them to `visibility: "hide"`
+  (codex-rs keeps hidden entries out of the picker itself), so the template/backup/restore
+  paths survive and re-enabling restores the exact entry. Only the bare OpenAI list shape of
+  `/v1/models` omits disabled natives.
+- The dashboard Models page lists natives from the static supported set
+  (`nativeModelRows`), independent of catalog visibility, so a disabled model stays visible
+  in the GUI for re-enabling. The visibility flip runs as the LAST sync pass
+  (`applyNativeVisibility`) so the gpt-5.6 snapshot-upgrade branch can never clobber it.
+
 ## Verification
 
 Useful probes:

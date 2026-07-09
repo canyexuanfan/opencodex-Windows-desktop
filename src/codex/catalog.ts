@@ -128,6 +128,53 @@ export function nativeOpenAiContextWindow(slug: string): number | undefined {
 }
 
 /**
+ * Bare (slash-free) entries of `disabledModels` — the native GPT half of the single
+ * enable/disable choke point. Routed ids are always namespaced `provider/id`, so bare
+ * slugs can never collide with them.
+ */
+export function disabledNativeSlugs(config: Pick<OcxConfig, "disabledModels">): Set<string> {
+  return new Set((config.disabledModels ?? []).filter(id => !id.includes("/")));
+}
+
+/**
+ * Native slugs to expose on bare availability surfaces (the OpenAI list shape of
+ * /v1/models): the advertised set minus config-disabled natives. Catalog-shaped
+ * emissions keep disabled entries with `visibility: "hide"` instead (codex-rs hides
+ * them from the picker itself), so sync/restore stays symmetric.
+ */
+export function visibleNativeSlugs(config: Pick<OcxConfig, "disabledModels">): string[] {
+  const disabled = disabledNativeSlugs(config);
+  return nativeOpenAiSlugs().filter(slug => !disabled.has(slug));
+}
+
+/**
+ * Native GPT rows for the management dashboard. Sourced from the STATIC supported set —
+ * independent of catalog visibility flips, so a disabled model stays listed and can be
+ * re-enabled from the GUI.
+ */
+export function nativeModelRows(config: Pick<OcxConfig, "disabledModels">): Array<{ slug: string; disabled: boolean; contextWindow?: number }> {
+  const disabled = disabledNativeSlugs(config);
+  return NATIVE_OPENAI_MODELS.map(slug => {
+    const contextWindow = nativeOpenAiContextWindow(slug);
+    return { slug, disabled: disabled.has(slug), ...(contextWindow !== undefined ? { contextWindow } : {}) };
+  });
+}
+
+/**
+ * Central visibility flip for supported native entries in catalog-shaped output:
+ * disabled -> "hide" (entry preserved for template/backup/restore), enabled -> "list".
+ * Unsupported natives and routed entries are untouched.
+ */
+export function applyNativeVisibility(entries: RawEntry[], disabledNative: Set<string>): RawEntry[] {
+  for (const entry of entries) {
+    const slug = typeof entry.slug === "string" ? entry.slug : "";
+    if (!slug || slug.includes("/") || !SUPPORTED_NATIVE_OPENAI_SLUGS.has(slug)) continue;
+    entry.visibility = disabledNative.has(slug) ? "hide" : "list";
+  }
+  return entries;
+}
+
+/**
  * Pinned upstream models.json snapshot (openai/codex PR #31684, codex-rs/models-manager/models.json)
  * providing the REAL catalog entries for supported native slugs the installed Codex binary may
  * predate (gpt-5.6-sol/terra/luna). Restricted to supported gpt-5.6 slugs ONLY: for
@@ -1070,6 +1117,7 @@ export function mergeCatalogEntriesForSync(
   wsEnabled: boolean,
   goIds: Set<string> = new Set(),
   template: RawEntry | null = null,
+  disabledNative: Set<string> = new Set(),
   gatheredProviderNames: Set<string> = new Set(routedEntries.flatMap(entry => {
     const slug = typeof entry.slug === "string" ? entry.slug : "";
     const slash = slug.indexOf("/");
@@ -1138,7 +1186,7 @@ export function mergeCatalogEntriesForSync(
     finalRoutedEntries = [...routedEntries, ...preservedForeignRouted];
   }
 
-  return [...native, ...finalRoutedEntries].map(m => {
+  const mergedEntries = [...native, ...finalRoutedEntries].map(m => {
     const normalized = normalizeServiceTiers(m);
     applyNativeOpenAiContextOverride(normalized);
     const e = ensureStrictCatalogFields(normalized);
@@ -1150,6 +1198,9 @@ export function mergeCatalogEntriesForSync(
     }
     return e;
   });
+  // Native enable/disable (single choke point: bare slugs in `disabledModels`). Runs as the
+  // LAST pass so the upstream-upgrade branch above can never clobber a hide flag back to list.
+  return applyNativeVisibility(mergedEntries, disabledNative);
 }
 
 /**
@@ -1195,7 +1246,7 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
   // native AND routed so the advertised flag matches the implemented endpoint (phase 120.4) and a
   // native template can never leak supports_websockets while the flag is off.
   const wsEnabled = websocketsEnabled(config);
-  catalog.models = mergeCatalogEntriesForSync(catalog.models ?? [], goEntries, baseline, featured, wsEnabled, goIds, template, gatheredProviderNames);
+  catalog.models = mergeCatalogEntriesForSync(catalog.models ?? [], goEntries, baseline, featured, wsEnabled, goIds, template, disabledNativeSlugs(config), gatheredProviderNames);
 
   atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2) + "\n");
   return { added: goEntries.length, path: catalogPath };

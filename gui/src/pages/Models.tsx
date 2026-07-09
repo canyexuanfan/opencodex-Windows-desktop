@@ -8,6 +8,7 @@ interface ModelRow {
   id: string;
   namespaced: string;
   disabled: boolean;
+  native?: boolean;
   contextWindow?: number;
   contextCap?: number;
   contextCapped?: boolean;
@@ -93,7 +94,13 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const groups = useMemo(() => {
     const g: Record<string, ModelRow[]> = {};
     for (const m of models) (g[m.provider] ??= []).push(m);
-    return Object.entries(g).sort(([a], [b]) => a.localeCompare(b));
+    // Native GPT passthrough group ("openai") pins first; routed providers stay alphabetical.
+    return Object.entries(g).sort(([a, rowsA], [b, rowsB]) => {
+      const nativeA = rowsA.every(r => r.native);
+      const nativeB = rowsB.every(r => r.native);
+      if (nativeA !== nativeB) return nativeA ? -1 : 1;
+      return a.localeCompare(b);
+    });
   }, [models]);
 
   const apply = async (next: Set<string>) => {
@@ -235,8 +242,12 @@ export default function Models({ apiBase }: { apiBase: string }) {
   };
 
   const allCapped = useMemo(
-    () => models.length > 0 && groups.every(([provider]) => contextCaps[provider] === contextCapValue),
-    [groups, contextCaps, contextCapValue, models.length],
+    () => {
+      // Cap aggregate counts routed providers only — the native group has no cap switch.
+      const routed = groups.filter(([, rows]) => !rows.every(r => r.native));
+      return routed.length > 0 && routed.every(([provider]) => contextCaps[provider] === contextCapValue);
+    },
+    [groups, contextCaps, contextCapValue],
   );
   const setAll = () => { void putCap({ setAll: !allCapped }); };
 
@@ -290,7 +301,8 @@ export default function Models({ apiBase }: { apiBase: string }) {
         const isCollapsed = collapsed.has(provider);
         const activeCount = rows.filter(m => !disabled.has(m.namespaced)).length;
         const capOn = contextCaps[provider] === contextCapValue;
-        const isAllowlist = allowlistOn.has(provider);
+        const isNative = rows.every(m => m.native);
+        const isAllowlist = !isNative && allowlistOn.has(provider);
         const sel = new Set(selected[provider] ?? []);
         const q = (search[provider] ?? "").trim().toLowerCase();
         const filtered = q ? rows.filter(m => m.id.toLowerCase().includes(q)) : rows;
@@ -303,18 +315,22 @@ export default function Models({ apiBase }: { apiBase: string }) {
               className="row" style={{ padding: "10px 12px", background: "var(--raised)", cursor: "pointer" }}>
               <IconChevron style={{ width: 14, height: 14, color: "var(--muted)", transform: isCollapsed ? "none" : "rotate(90deg)", transition: "transform .12s" }} />
               <span style={{ fontWeight: 600, fontSize: 14 }}>{provider}</span>
+              {isNative && <span className="muted mono" style={{ fontSize: 11, padding: "1px 6px", border: "1px solid var(--border)", borderRadius: 999 }}>{t("models.nativeGroupLabel")}</span>}
               <span className="muted mono" style={{ fontSize: 12 }}>{t("models.active", { active: activeCount, total: rows.length })}</span>
               {isAllowlist && sel.size > 0 && <span className="muted mono" style={{ fontSize: 12 }}>· {t("models.selectedCount", { n: sel.size })}</span>}
               <div style={{ flex: 1 }} />
-              <div className="row" onClick={e => e.stopPropagation()} style={{ gap: 6 }}>
-                <Switch on={isAllowlist} onClick={() => toggleAllowlist(provider)} disabled={busy} label={t("models.allowlistLabel")} />
-                <span className="muted mono" style={{ fontSize: 12 }}>{t("models.allowlistLabel")}</span>
-                <Switch on={capOn} onClick={() => toggleProviderCap(provider)} disabled={busy} label={t("models.capValue", { value: fmtK(contextCapValue) })} />
-                <span className="muted mono" style={{ fontSize: 12 }}>{t("models.capValue", { value: fmtK(contextCapValue) })}</span>
-              </div>
+              {!isNative && (
+                <div className="row" onClick={e => e.stopPropagation()} style={{ gap: 6 }}>
+                  <Switch on={isAllowlist} onClick={() => toggleAllowlist(provider)} disabled={busy} label={t("models.allowlistLabel")} />
+                  <span className="muted mono" style={{ fontSize: 12 }}>{t("models.allowlistLabel")}</span>
+                  <Switch on={capOn} onClick={() => toggleProviderCap(provider)} disabled={busy} label={t("models.capValue", { value: fmtK(contextCapValue) })} />
+                  <span className="muted mono" style={{ fontSize: 12 }}>{t("models.capValue", { value: fmtK(contextCapValue) })}</span>
+                </div>
+              )}
             </div>
             {!isCollapsed && (
               <div style={{ padding: "6px 12px" }}>
+                {isNative && <p className="muted" style={{ fontSize: 12, margin: "2px 0 6px" }}>{t("models.nativeHint")}</p>}
                 {rows.length > PAGE / 2 && (
                   <input
                     className="input"

@@ -146,7 +146,9 @@ export const en = {
   "prov.defaultCannotDisable": "Default provider can't be disabled",
 
   // models
-  "models.subtitle": "Toggle which routed models Codex sees, grouped by provider (click a header to collapse). Disabled models are hidden from the catalog + model picker. Changes apply on the next Codex turn — opencodex invalidates Codex's 5-min model cache so no restart is needed.",
+  "models.subtitle": "Toggle which models Codex sees — native GPT passthrough and routed providers, grouped by provider (click a header to collapse). Disabled models are hidden from the catalog + model picker. Changes apply on the next Codex turn — opencodex invalidates Codex's 5-min model cache so no restart is needed.",
+  "models.nativeGroupLabel": "OpenAI native",
+  "models.nativeHint": "Passthrough models served over your ChatGPT login. Toggling one off hides it from the Codex picker (the catalog entry is kept, so re-enabling restores it exactly).",
   "models.active": "{active}/{total} active",
   "models.allOn": "All on",
   "models.allOff": "All off",

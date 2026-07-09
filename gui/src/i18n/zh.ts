@@ -146,7 +146,9 @@ export const zh: Record<TKey, string> = {
   "prov.defaultCannotDisable": "默认提供方不能被禁用",
 
   // models
-  "models.subtitle": "按提供方分组开关 Codex 可见的已路由模型（点击标题可折叠）。已禁用的模型会从目录和模型选择器中隐藏。更改在下一个 Codex 回合生效 — opencodex 会使 Codex 的 5 分钟模型缓存失效，因此无需重启。",
+  "models.subtitle": "开关 Codex 可见的模型 — 原生 GPT passthrough 与已路由模型按提供方分组（点击标题可折叠）。已禁用的模型会从目录和模型选择器中隐藏。更改在下一个 Codex 回合生效 — opencodex 会使 Codex 的 5 分钟模型缓存失效，因此无需重启。",
+  "models.nativeGroupLabel": "OpenAI 原生",
+  "models.nativeHint": "通过你的 ChatGPT 登录提供的 passthrough 模型。关闭后会从 Codex 选择器中隐藏（目录条目保留，重新开启即可完整恢复）。",
   "models.active": "{active}/{total} 已启用",
   "models.allOn": "全部开启",
   "models.allOff": "全部关闭",
