@@ -1,5 +1,5 @@
 /* Shared UI primitives built on the design-system classes in styles.css. */
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { IconCheck, IconAlert } from "./icons";
 
 export function Switch({ on, onClick, disabled, label }: { on: boolean; onClick: () => void; disabled?: boolean; label?: string }) {
@@ -20,9 +20,9 @@ export function Notice({ tone, children }: { tone: "ok" | "err"; children: React
   );
 }
 
-export function EmptyState({ icon, title, children }: { icon?: ReactNode; title: string; children?: ReactNode }) {
+export function EmptyState({ icon, title, children, className, style }: { icon?: ReactNode; title: ReactNode; children?: ReactNode; className?: string; style?: CSSProperties }) {
   return (
-    <div className="empty">
+    <div className={className ? `empty ${className}` : "empty"} style={style}>
       {icon}
       <div className="title">{title}</div>
       {children && <div style={{ fontSize: 13 }}>{children}</div>}

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useT, type TFn } from "../i18n";
 import { IconLock, IconPlus, IconX, IconAlert, IconRefresh, IconTicket } from "../icons";
-import { Notice } from "../ui";
+import { Notice, EmptyState } from "../ui";
 import AddCodexAccountModal from "../components/AddCodexAccountModal";
 import type { AccountQuota } from "../codex-quota-utils";
 import QuotaBars from "../components/QuotaBars";
@@ -176,7 +176,7 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
         </button>
       </div>
 
-      {pool.length === 0 && <p className="empty">{t("codexAuth.noPool")}</p>}
+      {pool.length === 0 && <EmptyState title={t("codexAuth.noPool")} />}
 
       {pool.map(a => (
         <div key={a.id} className={`card ${isNext(a.id) ? "card-active" : ""}`}
@@ -209,7 +209,8 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
           <strong>{t("codexAuth.autoSwitch")}</strong>
           <div className="card-sub">{t("codexAuth.autoSwitchDesc")}</div>
         </div>
-        <button className={`toggle ${autoThreshold > 0 ? "on" : ""}`} onClick={toggleAuto}>
+        <button className={`toggle ${autoThreshold > 0 ? "on" : ""}`} onClick={toggleAuto}
+          aria-pressed={autoThreshold > 0} aria-label={t("codexAuth.autoSwitch")} title={t("codexAuth.autoSwitch")}>
           <span className="toggle-knob" />
         </button>
       </div>

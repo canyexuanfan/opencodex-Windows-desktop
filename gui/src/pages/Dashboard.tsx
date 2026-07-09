@@ -3,6 +3,7 @@ import { formatUptime } from "../formatUptime";
 import { IconAlert, IconExternal, IconRefresh, IconX } from "../icons";
 import { useI18n, Trans } from "../i18n";
 import { formatTokens } from "../format-tokens";
+import { EmptyState } from "../ui";
 
 interface HealthData { status: string; version: string; uptime: number }
 interface ProviderInfo { name: string; adapter: string; baseUrl: string; defaultModel?: string; hasApiKey: boolean }
@@ -48,7 +49,7 @@ interface UpdateJob {
   restarted?: boolean;
 }
 
-const SIDECAR_MODELS = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.3-codex-spark"];
+const SIDECAR_MODELS = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 const REASONING_LEVELS = ["low", "medium", "high"];
 
 function defaultUpdateChannel(version: string | undefined): UpdateChannel {
@@ -161,11 +162,10 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
 
   if (error) {
     return (
-      <div className="empty" style={{ marginTop: 40 }}>
-        <IconAlert />
-        <div className="title" style={{ color: "var(--red)" }}>{t("dash.cannotConnect")}</div>
-        <div style={{ fontSize: 13 }}><Trans k="dash.runStart" cmd="ocx start" /></div>
-      </div>
+      <EmptyState style={{ marginTop: 40 }} icon={<IconAlert />}
+        title={<span style={{ color: "var(--red)" }}>{t("dash.cannotConnect")}</span>}>
+        <Trans k="dash.runStart" cmd="ocx start" />
+      </EmptyState>
     );
   }
 
@@ -430,7 +430,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
 
       <div className="h-section">{t("dash.activeProviders")} <span className="count">{providers.length}</span></div>
       {providers.length === 0 ? (
-        <div className="empty"><Trans k="dash.noProviders" cmd="ocx init" /></div>
+        <EmptyState title={<Trans k="dash.noProviders" cmd="ocx init" />} />
       ) : (
         <div className="tbl-wrap">
           <table className="tbl">
@@ -454,7 +454,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         {modelsLoading && <span className="spin" style={{ marginLeft: 4 }} />}
       </div>
       {models.length === 0 && !modelsLoading ? (
-        <div className="empty">{t("dash.noModels")}</div>
+        <EmptyState title={t("dash.noModels")} />
       ) : (
         <div className="stack" style={{ gap: 16 }}>
           {grouped.map(([provider, rows]) => (
@@ -495,7 +495,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
                 <option value="preview">preview</option>
               </select>
             </div>
-            {updateLoading && <div className="empty update-empty"><span className="spin" /> {t("dash.updateChecking")}</div>}
+            {updateLoading && <EmptyState className="update-empty" icon={<span className="spin" />} title={t("dash.updateChecking")} />}
             {updateError && (
               <div className="notice notice-err" role="status"><IconAlert /><span>{updateError}</span></div>
             )}

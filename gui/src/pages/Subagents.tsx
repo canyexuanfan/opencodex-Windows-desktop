@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Notice } from "../ui";
+import { Notice, EmptyState } from "../ui";
 import { IconArrowUp, IconArrowDown, IconX, IconCheck, IconSearch, IconBot } from "../icons";
 import { useT, Trans } from "../i18n";
 
@@ -76,7 +76,7 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
 
       <div className="h-section">{t("sub.featured")} <span className="count">{chosen.length}/5</span></div>
       {chosen.length === 0 ? (
-        <div className="empty">{t("sub.noneSelected")}</div>
+        <EmptyState title={t("sub.noneSelected")} />
       ) : (
         <div className="stack" style={{ gap: 8 }}>
           {chosen.map((m, i) => (
@@ -139,7 +139,7 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
           );
         })}
         {filtered.length === 0 && (
-          <div className="empty">{t("sub.noModels")}</div>
+          <EmptyState title={t("sub.noModels")} />
         )}
       </div>
     </>

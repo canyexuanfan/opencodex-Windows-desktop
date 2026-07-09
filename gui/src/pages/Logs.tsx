@@ -3,6 +3,7 @@ import { useI18n, LOCALES } from "../i18n";
 import { formatTokens } from "../format-tokens";
 import { statusCodeInfo } from "../status-codes";
 import { IconX } from "../icons";
+import { EmptyState } from "../ui";
 
 interface UsageBreakdown {
   inputTokens: number;
@@ -123,7 +124,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
       <p className="page-sub">{t("logs.subtitle")}</p>
 
       {logs.length === 0 ? (
-        <div className="empty">{t("logs.noRequests")}</div>
+        <EmptyState title={t("logs.noRequests")} />
       ) : (
         <div className="tbl-wrap">
           <table className="tbl">
