@@ -130,6 +130,9 @@ describe("provider registry parity", () => {
     expect(cursor?.models).toContain("gemini-3-pro-image-preview");
     expect(cursor?.models).toContain("gemini-3.5-flash");
     expect(cursor?.models).toContain("gpt-5-codex");
+    expect(cursor?.models).toContain("gpt-5.6-sol");
+    expect(cursor?.models).toContain("gpt-5.6-terra");
+    expect(cursor?.models).toContain("gpt-5.6-luna");
     expect(cursor?.models).toContain("glm-5.2");
     expect(cursor?.models).toContain("kimi-k2.7-code");
     expect(cursor?.models).not.toContain("grok-4.3");
@@ -153,10 +156,17 @@ describe("provider registry parity", () => {
     expect(seed.models).toContain("gemini-3-pro-image-preview");
     expect(seed.models).toContain("gpt-5-codex");
     expect(seed.models).toContain("gpt-5.5");
+    expect(seed.models).toContain("gpt-5.6-sol");
+    expect(seed.models).toContain("gpt-5.6-terra");
+    expect(seed.models).toContain("gpt-5.6-luna");
     expect(seed.models).toContain("kimi-k2.7-code");
     expect(seed.modelContextWindows?.auto).toBe(200_000);
     expect(seed.modelContextWindows?.["gemini-3.5-flash"]).toBe(200_000);
+    expect(seed.modelContextWindows?.["gpt-5.6-sol"]).toBe(1_000_000);
+    expect(seed.modelContextWindows?.["gpt-5.6-terra"]).toBe(1_000_000);
+    expect(seed.modelContextWindows?.["gpt-5.6-luna"]).toBe(1_000_000);
     expect(seed.modelReasoningEfforts?.["gpt-5.5"]).toEqual(["low", "medium", "high"]);
+    expect(seed.modelReasoningEfforts?.["gpt-5.6-sol"]).toEqual(["low", "medium", "high", "xhigh", "max"]);
 
     const savedCursor: OcxProviderConfig = { adapter: "cursor", baseUrl: "https://api2.cursor.sh" };
     enrichProviderFromCatalog("cursor", savedCursor);

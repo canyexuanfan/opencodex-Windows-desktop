@@ -23,6 +23,7 @@ export function inferCursorContextWindow(modelId: string): number {
   if (id.includes("1m")) return CONTEXT_1M;
   if (id.startsWith("gemini-")) return CONTEXT_1M;
   if (id === "glm-5.2") return CONTEXT_1M;
+  if (id.startsWith("gpt-5.6-")) return CONTEXT_1M;
   if (id.startsWith("gpt-5") || id === "gpt-5-codex") return CONTEXT_272K;
   if (id.startsWith("grok-4.5")) return 500_000;
   if (id.startsWith("grok-")) return CONTEXT_256K;
@@ -143,6 +144,9 @@ export const CURSOR_STATIC_MODELS: readonly CursorModelInfo[] = normalizeCursorM
   // gpt-5.5-extra: absent from cursor.com docs but SURVIVES the live GetUsableModels filter
   // (account-verified 260709, devlog/model_update/260709_model_refresh/004_live_snapshot.md).
   { id: "gpt-5.5-extra", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
+  { id: "gpt-5.6-sol", contextWindow: CONTEXT_1M, supportsReasoningEffort: true },
+  { id: "gpt-5.6-terra", contextWindow: CONTEXT_1M, supportsReasoningEffort: true },
+  { id: "gpt-5.6-luna", contextWindow: CONTEXT_1M, supportsReasoningEffort: true },
 
   // 260709 refresh: stale grok/composer/kimi/gpt ids dropped per current cursor.com docs; the
   // 260709 note: grok-4.5 was deferred; confirmed live 260708 (cursor.com/models, xAI launch).

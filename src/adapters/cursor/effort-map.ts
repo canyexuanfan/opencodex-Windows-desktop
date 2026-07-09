@@ -41,6 +41,9 @@ const CURSOR_MODEL_EFFORT_TIERS: Record<string, readonly string[]> = {
   "gpt-5.4-nano": ["low", "medium", "high", "xhigh"],
   "gpt-5.5": ["low", "medium", "high"],
   "gpt-5.5-extra": ["high"],
+  "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max"],
+  "gpt-5.6-terra": ["low", "medium", "high", "xhigh", "max"],
+  "gpt-5.6-luna": ["low", "medium", "high", "xhigh", "max"],
 };
 
 const CANONICAL_CODEX_EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"] as const;
