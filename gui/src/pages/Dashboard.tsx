@@ -333,7 +333,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
                   role="radio"
                   aria-checked={maMode === mode}
                   className={`btn btn-sm${maMode === mode ? " btn-primary" : " btn-ghost"}`}
-                  style={{ borderRadius: 0, minWidth: 44, fontSize: 11, padding: "3px 8px" }}
+                  style={{ borderRadius: 0, minWidth: 28, fontSize: 11, padding: "3px 6px" }}
                   disabled={maBusy}
                   onClick={() => void switchMaMode(mode)}
                 >{mode === "default" ? "base" : mode}</button>
