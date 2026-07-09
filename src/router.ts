@@ -96,6 +96,7 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
   const autoToolChoiceOnlyModels = mergeStringArray(registryEntry.autoToolChoiceOnlyModels, provider.autoToolChoiceOnlyModels);
   const preserveReasoningContentModels = mergeStringArray(registryEntry.preserveReasoningContentModels, provider.preserveReasoningContentModels);
   const thinkingToggleModels = mergeStringArray(registryEntry.thinkingToggleModels, provider.thinkingToggleModels);
+  const thinkingBudgetModels = mergeStringArray(registryEntry.thinkingBudgetModels, provider.thinkingBudgetModels);
 
   return {
     ...provider,
@@ -112,6 +113,9 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
     ...(provider.contextWindow === undefined && registryEntry.contextWindow !== undefined ? { contextWindow: registryEntry.contextWindow } : {}),
     ...(provider.reasoningEfforts === undefined && registryEntry.reasoningEfforts !== undefined ? { reasoningEfforts: registryEntry.reasoningEfforts } : {}),
     ...(provider.escapeBuiltinToolNames === undefined && registryEntry.escapeBuiltinToolNames !== undefined ? { escapeBuiltinToolNames: registryEntry.escapeBuiltinToolNames } : {}),
+    // Scalar backfill: a persisted config created before the flag shipped inherits the registry
+    // opt-in, while an explicit user `false` keeps overriding registry `true`.
+    ...(provider.parallelToolCalls === undefined && registryEntry.parallelToolCalls !== undefined ? { parallelToolCalls: registryEntry.parallelToolCalls } : {}),
     ...(modelContextWindows ? { modelContextWindows } : {}),
     ...(modelInputModalities ? { modelInputModalities } : {}),
     ...(modelReasoningEfforts ? { modelReasoningEfforts } : {}),
@@ -125,6 +129,7 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
     ...(autoToolChoiceOnlyModels ? { autoToolChoiceOnlyModels } : {}),
     ...(preserveReasoningContentModels ? { preserveReasoningContentModels } : {}),
     ...(thinkingToggleModels ? { thinkingToggleModels } : {}),
+    ...(thinkingBudgetModels ? { thinkingBudgetModels } : {}),
   };
 }
 

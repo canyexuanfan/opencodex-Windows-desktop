@@ -428,6 +428,14 @@ export interface OcxProviderConfig {
   noTopPModels?: string[];
   /** Model ids that reject caller-specified presence/frequency penalty values. */
   noPenaltyModels?: string[];
+  /**
+   * Allow multiple tool calls per completion. DEFAULT-ON for openai-chat providers (the
+   * buffered stream parser assembles interleaved/fragmented multi-call turns safely);
+   * set `false` to force `parallel_tool_calls:false` upstream and drop the catalog's
+   * `supports_parallel_tool_calls` bit for that provider. Non-chat adapters advertise
+   * only on explicit `true`. See devlog/_plan/260709_parallel_tool_calls.
+   */
+  parallelToolCalls?: boolean;
   /** Model ids whose tool_choice only accepts `auto` or `none`; forced/named choices are downgraded. */
   autoToolChoiceOnlyModels?: string[];
   /** Model ids that expect prior assistant `reasoning_content` to be preserved in chat history. */
@@ -438,6 +446,12 @@ export interface OcxProviderConfig {
    * The openai-chat adapter translates the mapped effort into the thinking toggle for these.
    */
   thinkingToggleModels?: string[];
+  /**
+   * Model ids whose reasoning is a `thinking_budget` integer on the chat-completions wire
+   * (Qwen3.x style), NOT an OpenAI `reasoning_effort` ladder. The openai-chat adapter maps the
+   * Codex effort to a budget fraction.
+   */
+  thinkingBudgetModels?: string[];
   /** Anthropic-compatible gateways that need custom tool names escaped on the wire. */
   escapeBuiltinToolNames?: boolean;
   /**

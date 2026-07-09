@@ -149,12 +149,14 @@ const configSchema = z.object({
 
 /**
  * Default featured subagent models (native GPT) seeded on a fresh install and when `subagentModels`
- * is unset. Codex's spawn_agent advertises the first 5 featured catalog entries; these are the GPT
- * natives the installed Codex actually ships. The user can remove any in the GUI — once they set the
- * list (even to []), it is respected, so removals persist (start-up only seeds the UNSET case).
- * Kept to ids ChatGPT accepts; the start-up seed prefers the live catalog's native slugs.
+ * is unset. Codex's spawn_agent advertises the first 5 featured catalog entries, so this seed is a
+ * deliberate 5-list: frontier gpt-5.5 first, the gpt-5.6 preview trio, and gpt-5.4-mini as the cheap
+ * tier. gpt-5.4 / gpt-5.3-codex-spark stay selectable in the GUI's available list. The user can
+ * remove any in the GUI — once they set the list (even to []), it is respected, so removals persist
+ * (start-up only seeds the UNSET case). Kept to ids ChatGPT accepts; the start-up seed prefers the
+ * live catalog's native slugs.
  */
-export const DEFAULT_SUBAGENT_MODELS = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"];
+export const DEFAULT_SUBAGENT_MODELS = ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini"];
 
 export function getConfigDir(): string {
   return resolveConfigDir();

@@ -37,9 +37,12 @@ export interface ProviderRegistryEntry {
   noTemperatureModels?: string[];
   noTopPModels?: string[];
   noPenaltyModels?: string[];
+  /** Opt this provider into parallel tool calls (see OcxProviderConfig.parallelToolCalls). */
+  parallelToolCalls?: boolean;
   autoToolChoiceOnlyModels?: string[];
   preserveReasoningContentModels?: string[];
   thinkingToggleModels?: string[];
+  thinkingBudgetModels?: string[];
   escapeBuiltinToolNames?: boolean;
   oauthId?: string;
   jawcodeBundle?: string;
@@ -56,7 +59,7 @@ export type ProviderConfigSeed = Pick<
   | "liveModels" | "contextWindow" | "modelContextWindows" | "modelInputModalities"
   | "reasoningEfforts" | "modelReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap"
   | "noVisionModels" | "noReasoningModels" | "noTemperatureModels" | "noTopPModels" | "noPenaltyModels"
-  | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "thinkingToggleModels" | "escapeBuiltinToolNames"
+  | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "thinkingToggleModels" | "thinkingBudgetModels" | "escapeBuiltinToolNames"
   | "googleMode" | "project" | "location"
 >;
 
@@ -85,11 +88,11 @@ const OPENROUTER_GPT56_CONTEXT_WINDOWS = {
 
 /**
  * Vendor thinking-toggle models (MiMo v2.x, GLM 5/5.1 on Zen Go): the wire knob is
- * `thinking: {type: enabled|disabled}` — a binary. Advertise a two-step Codex ladder
- * (low = thinking off, high = thinking on) and map efforts onto the toggle. Zen Go
+ * `thinking: {type: enabled|disabled}` — a binary. Advertise the full Codex picker ladder
+ * and map efforts onto the toggle. Zen Go
  * pass-through probed live 2026-07-07 (glm-5.2 toggle verified; mimo/minimax accept shape).
  */
-const THINKING_TOGGLE_EFFORTS = ["low", "high"];
+const THINKING_TOGGLE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const THINKING_TOGGLE_MAP: Record<string, string> = {
   none: "disabled",
   minimal: "disabled",
@@ -102,8 +105,16 @@ const THINKING_TOGGLE_MAP: Record<string, string> = {
 const OPENCODE_GO_THINKING_TOGGLE_MODELS = [
   "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2-omni", "mimo-v2-pro", "glm-5", "glm-5.1",
 ];
+const THINKING_BUDGET_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const THINKING_BUDGET_MODELS = [
+  "qwen3.5-397b", "qwen3.6-35b",
+  "qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus",
+];
+const OPENCODE_GO_THINKING_BUDGET_MODELS = ["qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus"];
 const DEEPSEEK_THINKING_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"];
-const DEEPSEEK_THINKING_EFFORTS = ["high", "xhigh"];
+// "max" is advertised too: the wire map routes xhigh->max and max->max, so the picker
+// should surface the max tier instead of hiding it behind xhigh.
+const DEEPSEEK_THINKING_EFFORTS = ["high", "xhigh", "max"];
 const DEEPSEEK_THINKING_REASONING_MAP: Record<string, string> = {
   low: "high",
   medium: "high",
@@ -182,6 +193,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     oauthId: "xai",
     jawcodeBundle: "xai",
     note: "Log in with your Grok account",
+    // Parallel tool calls: officially supported and default-on per docs.x.ai function-calling
+    // (verified 260709, devlog/_plan/260709_parallel_tool_calls). Streamed calls arrive whole
+    // per chunk, so the buffered parser assembles them losslessly.
+    parallelToolCalls: true,
     // Live /v1/models discovery is the authoritative lineup (verified 260709: returns grok-4.5);
     // the static list below is the logged-out fallback seed.
     liveModels: true,
@@ -302,6 +317,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "kimi-k2.7-code": [],
       "kimi-k2.7-code-highspeed": [],
       ...Object.fromEntries(OPENCODE_GO_THINKING_TOGGLE_MODELS.map(id => [id, THINKING_TOGGLE_EFFORTS])),
+      ...Object.fromEntries(OPENCODE_GO_THINKING_BUDGET_MODELS.map(id => [id, THINKING_BUDGET_EFFORTS])),
     },
     // glm-5.2 uses identity labels now that `max` is a native Codex level (no alias map);
     // the thinking-toggle map is a REAL wire alias (effort -> enabled/disabled) and stays.
@@ -309,6 +325,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       ...Object.fromEntries(OPENCODE_GO_THINKING_TOGGLE_MODELS.map(id => [id, THINKING_TOGGLE_MAP])),
     },
     thinkingToggleModels: OPENCODE_GO_THINKING_TOGGLE_MODELS,
+    thinkingBudgetModels: THINKING_BUDGET_MODELS,
     noReasoningModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
     // Text-only Zen Go models (jawcode metadata) — the vision sidecar describes images for
     // every model listed here (and the catalog advertises image input on their behalf).
@@ -349,11 +366,14 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "kimi-k2.6": [],
       "kimi-k2.6-fast": [],
       "kimi-k2.7-code": [],
-      "qwen3.5-397b": ["low", "medium", "high", "xhigh", "max"],
+      // Qwen3.x uses thinking_budget, NOT graded reasoning_effort; the adapter maps the five
+      // Codex picker levels onto budget fractions.
+      "qwen3.5-397b": THINKING_BUDGET_EFFORTS,
       "qwen3.5-397b-fast": [],
-      "qwen3.6-35b": ["low", "medium", "high", "xhigh", "max"],
+      "qwen3.6-35b": THINKING_BUDGET_EFFORTS,
       "qwen3.6-35b-fast": [],
     },
+    thinkingBudgetModels: THINKING_BUDGET_MODELS,
     noReasoningModels: ["glm-5.2-fast", "kimi-k2.5-fast", "kimi-k2.6-fast", "qwen3.5-397b-fast", "qwen3.6-35b-fast"],
     noVisionModels: ["glm-5.2", "glm-5.2-fast", "qwen3.5-397b", "qwen3.5-397b-fast"],
     noTemperatureModels: ["kimi-k2.7-code"],
