@@ -237,7 +237,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .update-restart { border-top: 1px solid var(--border-soft); padding-top: 12px; }
 
 /* ---- stat cards (metric tiles) ---- */
-.stat-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 28px; }
+.stat-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 28px; }
 .stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; transition: border-color 0.12s; }
 .stat:hover { border-color: var(--faint); }
 .stat .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; display: flex; align-items: center; gap: 6px; font-weight: 500; }
@@ -530,7 +530,7 @@ select.input { appearance: none; }
   .setting-row > .select-sm { width: 100%; }
   .api-form-row { align-items: stretch; flex-direction: column; }
   .api-form-row .btn { width: 100%; min-height: 40px; }
-  .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stat-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .tbl { min-width: 460px; }   /* keep columns readable; .tbl-wrap scrolls horizontally */
   .usage-cards { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
   .provider-quota { padding-left: 16px; }
