@@ -61,7 +61,7 @@ export function Select({ value, options, onChange, disabled, label, style, align
         <IconChevron style={{ width: 12, height: 12, color: "var(--muted)", transform: open ? "rotate(90deg)" : "none", transition: "transform .12s" }} />
       </button>
       {open && (
-        <div className="select-dropdown" role="listbox" aria-label={label} style={{ ...(align === "right" ? { left: "auto", right: 0 } : {}), ...dropdownStyle }}>
+        <div className={`select-dropdown${align === "right" ? " select-dropdown-right" : ""}`} role="listbox" aria-label={label} style={dropdownStyle}>
           {options.map(o => (
             <button
               key={o.value}

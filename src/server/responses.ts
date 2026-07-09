@@ -130,9 +130,9 @@ export async function multiAgentGuidanceText(parsed: OcxParsedRequest, injection
 
   // Append the selected model when the user has configured a specific injection target.
   if (injectionModel) {
-    text += `\n\nA routed model is configured as the preferred sub-agent: "${injectionModel}". `
-      + "To delegate work to it, use spawn_agent with this model id. "
-      + "Use it for tasks that benefit from this model's strengths.";
+    text += `\n\nA preferred sub-agent model is configured: "${injectionModel}". `
+      + `When delegating, call spawn_agent and set its model argument to exactly "${injectionModel}". `
+      + "Use it for independent sub-tasks unless the user explicitly asks for another model.";
   }
 
   return `<multi_agent_mode>${text}</multi_agent_mode>`;

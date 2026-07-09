@@ -434,14 +434,8 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       )}
 
       <div className="panel" style={{ marginBottom: 24 }}>
-        <div className="spread setting-row" style={{ alignItems: "flex-start" }}>
-          <div className="setting-copy" style={{ flex: 1 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontWeight: 650 }}>{t("dash.injectionLabel")}</span>
-              {injectionModel && <span className="badge badge-green" style={{ fontSize: 10 }}>{t("dash.injectionActive")}</span>}
-            </div>
-            <div className="muted setting-hint">{t("dash.injectionHint")}</div>
-          </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontWeight: 650 }}>{t("dash.injectionLabel")}</span>
           <Select
             value={injectionModel}
             options={[
@@ -468,7 +462,9 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             disabled={injectionSaving}
             label={t("dash.injectionLabel")}
           />
+          {injectionModel && <span className="badge badge-green" style={{ fontSize: 10 }}>{t("dash.injectionActive")}</span>}
         </div>
+        <div className="muted" style={{ fontSize: 13, marginTop: 6 }}>{t("dash.injectionHint")}</div>
       </div>
 
       <div className="panel maintenance-panel" style={{ marginBottom: 24 }}>

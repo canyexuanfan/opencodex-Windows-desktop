@@ -517,9 +517,9 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     return jsonResponse({ providers: deriveProviderPresets() });
   }
 
-  // Subagent prompt injection model: single routed model whose info is dynamically
-  // injected into the v1 ultra proactive prompt. GET returns the current pick + available
-  // routed models; PUT sets or clears the pick.
+  // Subagent prompt injection model: single native or routed model whose info is
+  // dynamically injected into the v1 proactive prompt. GET returns the current pick
+  // + available models; PUT sets or clears the pick.
   if (url.pathname === "/api/injection-model" && req.method === "GET") {
     const models = await fetchAllModels(config);
     const disabled = new Set(config.disabledModels ?? []);
