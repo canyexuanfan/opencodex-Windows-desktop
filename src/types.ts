@@ -251,6 +251,13 @@ export interface OcxConfig {
    * are omitted from the bare /v1/models list.
    */
   disabledModels?: string[];
+  /**
+   * 3-state multi-agent surface override:
+   * - "v1": force ALL models to v1 surface (override upstream pins)
+   * - "default" | undefined: respect upstream model pins (sol/terra=v2, luna=v1, rest=codex flag)
+   * - "v2": force ALL models to v2 surface (override upstream pins)
+   */
+  multiAgentMode?: "v1" | "default" | "v2";
   /** Provider-level Codex-visible context caps. Values only lower known model context windows. */
   providerContextCaps?: Record<string, number>;
   /** Global Codex-visible context cap value (tokens). Falls back to DEFAULT_PROVIDER_CONTEXT_CAP. */

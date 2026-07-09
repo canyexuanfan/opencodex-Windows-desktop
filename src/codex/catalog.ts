@@ -412,6 +412,23 @@ function ensureStrictCatalogFields(entry: RawEntry): RawEntry {
   return ensureAutoCompactTokenLimit(entry);
 }
 
+/** Multi-agent surface mode — see OcxConfig.multiAgentMode. */
+export type MultiAgentMode = "v1" | "default" | "v2";
+
+/**
+ * Apply the 3-state multi-agent surface override to catalog entries.
+ * - "v1": force multi_agent_version = "v1" on ALL entries (override upstream pins)
+ * - "default": leave entries as-is (upstream pins respected: sol/terra=v2, luna=v1, rest=codex flag)
+ * - "v2": force multi_agent_version = "v2" on ALL entries (override upstream pins)
+ */
+function applyMultiAgentMode(entries: RawEntry[], mode: MultiAgentMode): RawEntry[] {
+  if (mode === "default") return entries;
+  for (const entry of entries) {
+    entry.multi_agent_version = mode;
+  }
+  return entries;
+}
+
 export function normalizeRoutedCatalogEntry(entry: RawEntry, parallelToolCalls = false): RawEntry {
   delete entry.model_messages;
   delete entry.tool_mode;
@@ -794,7 +811,7 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
  * catalog sync and the proxy `/v1/models?client_version` branch.
  * Native gpt slugs stay bare; routed models are namespaced `<provider>/<model>`.
  */
-export function buildCatalogEntries(template: RawEntry | null, gptSlugs: string[], goModels: CatalogModel[], featured?: string[], wsEnabled = false): RawEntry[] {
+export function buildCatalogEntries(template: RawEntry | null, gptSlugs: string[], goModels: CatalogModel[], featured?: string[], wsEnabled = false, multiAgentMode: MultiAgentMode = "default"): RawEntry[] {
   // Codex's models-manager sorts by `priority` ASC and advertises the first 5 picker-visible
   // models to spawn_agent (sort_by_key(priority) + MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT=5). Catalog
   // ARRAY order is discarded — so "featuring" a model = giving it the LOWEST priority (0..N-1) so
@@ -824,7 +841,7 @@ export function buildCatalogEntries(template: RawEntry | null, gptSlugs: string[
       delete entry.prefer_websockets;
     }
   }
-  return out;
+  return applyMultiAgentMode(out, multiAgentMode);
 }
 
 /** Bare picker-visible native slugs in the live Codex catalog (drives the subagent picker UI). */
@@ -1206,6 +1223,7 @@ export function mergeCatalogEntriesForSync(
     const slash = slug.indexOf("/");
     return slash > 0 ? [slug.slice(0, slash)] : [];
   })),
+  multiAgentMode: MultiAgentMode = "default",
 ): RawEntry[] {
   const rank = new Map(featured.map((slug, i) => [slug, i] as const));
   const native = catalogModels
@@ -1300,7 +1318,7 @@ export function mergeCatalogEntriesForSync(
   });
   // Native enable/disable (single choke point: bare slugs in `disabledModels`). Runs as the
   // LAST pass so the upstream-upgrade branch above can never clobber a hide flag back to list.
-  return applyNativeVisibility(mergedEntries, disabledNative);
+  return applyMultiAgentMode(applyNativeVisibility(mergedEntries, disabledNative), multiAgentMode);
 }
 
 /**
@@ -1331,7 +1349,8 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
   const enabledGo = filterCatalogVisibleModels(goModels, config);
   const featured = config.subagentModels ?? [];
   const orderedGoModels = orderForSubagents(enabledGo, featured); // stable tie-break among equal priorities
-  const goEntries = buildCatalogEntries(template ? JSON.parse(JSON.stringify(template)) : null, [], orderedGoModels, featured, websocketsEnabled(config));
+  const multiAgentMode: MultiAgentMode = config.multiAgentMode === "v1" || config.multiAgentMode === "v2" ? config.multiAgentMode : "default";
+  const goEntries = buildCatalogEntries(template ? JSON.parse(JSON.stringify(template)) : null, [], orderedGoModels, featured, websocketsEnabled(config), multiAgentMode);
   // Keep genuine native entries (gpt-*, codex-*) with their real per-model fields and append
   // routed providers as namespaced slugs. Cursor and other adopted providers can expose model ids
   // like `gpt-5.5`; those must not delete the native OpenAI/Codex base row.
@@ -1346,7 +1365,7 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
   // native AND routed so the advertised flag matches the implemented endpoint (phase 120.4) and a
   // native template can never leak supports_websockets while the flag is off.
   const wsEnabled = websocketsEnabled(config);
-  catalog.models = mergeCatalogEntriesForSync(catalog.models ?? [], goEntries, baseline, featured, wsEnabled, goIds, template, disabledNativeSlugs(config), gatheredProviderNames);
+  catalog.models = mergeCatalogEntriesForSync(catalog.models ?? [], goEntries, baseline, featured, wsEnabled, goIds, template, disabledNativeSlugs(config), gatheredProviderNames, multiAgentMode);
 
   atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2) + "\n");
   return { added: goEntries.length, path: catalogPath };

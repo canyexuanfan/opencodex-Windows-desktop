@@ -386,15 +386,20 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       enabled: isMultiAgentV2Enabled(),
       agentsMaxThreadsConflict: hasAgentsMaxThreads(),
       maxConcurrentThreadsPerSession: getMaxConcurrentThreads(),
+      multiAgentMode: config.multiAgentMode ?? "default",
     });
   }
   if (url.pathname === "/api/v2" && req.method === "PUT") {
-    let body: { enabled?: unknown; maxConcurrentThreadsPerSession?: unknown };
+    let body: { enabled?: unknown; maxConcurrentThreadsPerSession?: unknown; multiAgentMode?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     const wantsFlag = body.enabled !== undefined;
     const wantsThreads = body.maxConcurrentThreadsPerSession !== undefined;
-    if (!wantsFlag && !wantsThreads) return jsonResponse({ error: "body must set enabled and/or maxConcurrentThreadsPerSession" }, 400);
+    const wantsMode = body.multiAgentMode !== undefined;
+    if (!wantsFlag && !wantsThreads && !wantsMode) return jsonResponse({ error: "body must set enabled, multiAgentMode, and/or maxConcurrentThreadsPerSession" }, 400);
     if (wantsFlag && typeof body.enabled !== "boolean") return jsonResponse({ error: "body.enabled must be a boolean" }, 400);
+    if (wantsMode && body.multiAgentMode !== "v1" && body.multiAgentMode !== "default" && body.multiAgentMode !== "v2") {
+      return jsonResponse({ error: "body.multiAgentMode must be 'v1', 'default', or 'v2'" }, 400);
+    }
     if (wantsThreads && (typeof body.maxConcurrentThreadsPerSession !== "number" || !Number.isInteger(body.maxConcurrentThreadsPerSession) || body.maxConcurrentThreadsPerSession < 1)) {
       return jsonResponse({ error: "body.maxConcurrentThreadsPerSession must be an integer >= 1" }, 400);
     }
@@ -419,6 +424,14 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       if (!result.ok) return jsonResponse({ error: result.error }, 409);
       if (result.changed) warnings.push("Thread limit applies to new sessions.");
     }
+    if (wantsMode) {
+      const mode = body.multiAgentMode as "v1" | "default" | "v2";
+      if (mode === "default") delete config.multiAgentMode;
+      else config.multiAgentMode = mode;
+      saveConfig(config);
+      await refreshCodexCatalogBestEffort();
+      warnings.push(`Multi-agent mode set to '${mode}'. Applies to new sessions.`);
+    }
     if ((wantsFlag ? body.enabled === true : isMultiAgentV2Enabled()) && hasAgentsMaxThreads()) {
       warnings.push("[agents] max_threads is set — codex refuses to start while multi_agent_v2 is enabled; remove it (features.multi_agent_v2.max_concurrent_threads_per_session replaces it).");
     }
@@ -427,6 +440,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       ok: true,
       enabled: isMultiAgentV2Enabled(),
       maxConcurrentThreadsPerSession: getMaxConcurrentThreads(),
+      multiAgentMode: config.multiAgentMode ?? "default",
       warnings,
     });
   }

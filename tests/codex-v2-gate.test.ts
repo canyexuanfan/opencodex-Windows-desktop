@@ -8,9 +8,9 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { buildCatalogEntries, mergeCatalogEntriesForSync, nativeEffortClamp } from "../src/codex/catalog";
+import { buildCatalogEntries, mergeCatalogEntriesForSync, nativeEffortClamp, type MultiAgentMode } from "../src/codex/catalog";
 import { getMaxConcurrentThreads, hasAgentsMaxThreads, isMultiAgentV2Enabled, setMaxConcurrentThreads } from "../src/codex/features";
-import { v2StatusLine } from "../src/cli/v2";
+import { v2StatusLine, multiAgentModeLine } from "../src/cli/v2";
 
 function template(): Record<string, unknown> {
   return {
@@ -185,5 +185,53 @@ describe("mock-max wire clamp (nativeEffortClamp)", () => {
     // off-snapshot bare native = old low..xhigh ladder -> clamp; future 5.6 variants stay free
     expect(nativeEffortClamp("gpt-totally-unknown", "max")).toBe("xhigh");
     expect(nativeEffortClamp("gpt-5.6-future", "max")).toBe(null);
+  });
+});
+
+describe("3-state multi-agent mode", () => {
+  test("mode v1: ALL entries get multi_agent_version = v1 (overrides upstream pins)", () => {
+    const entries = buildCatalogEntries(template(), ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5"], [], [], false, "v1");
+    for (const e of entries) {
+      expect(e.multi_agent_version).toBe("v1");
+    }
+  });
+
+  test("mode v2: ALL entries get multi_agent_version = v2 (overrides upstream pins)", () => {
+    const entries = buildCatalogEntries(template(), ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5"], [], [], false, "v2");
+    for (const e of entries) {
+      expect(e.multi_agent_version).toBe("v2");
+    }
+  });
+
+  test("mode default: upstream pins preserved (sol=v2, luna=v1, others=null)", () => {
+    const entries = buildCatalogEntries(template(), ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5"], [], [], false, "default");
+    const sol = entries.find(e => e.slug === "gpt-5.6-sol")!;
+    const luna = entries.find(e => e.slug === "gpt-5.6-luna")!;
+    const native = entries.find(e => e.slug === "gpt-5.5")!;
+    expect(sol.multi_agent_version).toBe("v2");
+    expect(luna.multi_agent_version).toBe("v1");
+    // gpt-5.5 follows codex flag (null in catalog → codex decides)
+    expect(native.multi_agent_version).toBeUndefined();
+  });
+
+  test("mode v1 in mergeCatalogEntriesForSync overrides preserved genuine native", () => {
+    const diskSol = {
+      ...template(),
+      slug: "gpt-5.6-sol",
+      display_name: "GPT-5.6 Sol",
+      multi_agent_version: "v2",
+    };
+    const merged = mergeCatalogEntriesForSync(
+      [diskSol as never], [], new Map(), [], false,
+      new Set(), null, new Set(), new Set(), "v1",
+    );
+    const sol = merged.find(e => e.slug === "gpt-5.6-sol")!;
+    expect(sol.multi_agent_version).toBe("v1");
+  });
+
+  test("cli multiAgentModeLine describes each state", () => {
+    expect(multiAgentModeLine("v1")).toContain("v1");
+    expect(multiAgentModeLine("default")).toContain("default");
+    expect(multiAgentModeLine("v2")).toContain("v2");
   });
 });

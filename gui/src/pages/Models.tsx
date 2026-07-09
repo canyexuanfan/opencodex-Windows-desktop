@@ -24,6 +24,7 @@ interface V2Status {
   enabled: boolean;
   agentsMaxThreadsConflict: boolean;
   maxConcurrentThreadsPerSession?: number | null;
+  multiAgentMode?: "v1" | "default" | "v2";
 }
 
 const CAP_OPTIONS = Array.from({ length: 18 }, (_, i) => 100_000 + i * 50_000); // 100k … 950k
@@ -72,6 +73,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
           enabled: data.enabled,
           agentsMaxThreadsConflict: data.agentsMaxThreadsConflict === true,
           maxConcurrentThreadsPerSession: typeof data.maxConcurrentThreadsPerSession === "number" ? data.maxConcurrentThreadsPerSession : null,
+          multiAgentMode: data.multiAgentMode === "v1" || data.multiAgentMode === "v2" ? data.multiAgentMode : "default",
         });
       }
     } catch {
@@ -271,6 +273,37 @@ export default function Models({ apiBase }: { apiBase: string }) {
     }
   };
 
+  const setMultiAgentMode = async (mode: "v1" | "default" | "v2") => {
+    if (!v2 || v2BusyRef.current) return;
+    if (v2.multiAgentMode === mode) return;
+    setV2Busy(true);
+    v2BusyRef.current = true;
+    setV2Note("");
+    setStatus("");
+    try {
+      const r = await fetch(`${apiBase}/api/v2`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ multiAgentMode: mode }),
+      });
+      const data = await r.json().catch(() => null) as V2Status & { warnings?: string[]; error?: string } | null;
+      if (r.ok && data) {
+        void loadV2();
+        setOk(true);
+        setStatus(t("models.v2Applied"));
+        setV2Note((data.warnings ?? []).join(" "));
+      } else {
+        setOk(false);
+        setStatus(data?.error ?? t("models.saveFailed"));
+      }
+    } catch {
+      setOk(false); setStatus(t("models.networkError"));
+    } finally {
+      setV2Busy(false);
+      v2BusyRef.current = false;
+    }
+  };
+
   const putV2Threads = async (value: number) => {
     // Same guards as the flag toggle: single-flight + server-side idempotence
     // (setMaxConcurrentThreads no-ops on equal value), so a re-selected current
@@ -331,9 +364,22 @@ export default function Models({ apiBase }: { apiBase: string }) {
       {v2 && (
         <div className="row" style={{ gap: 8, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
           <span className="muted" style={{ fontSize: 13 }}>{t("models.v2Label")}</span>
-          <Switch on={v2.enabled} onClick={() => { void toggleV2(); }} disabled={v2Busy} label="multi_agent_v2" />
+          <div className="segmented" style={{ display: "inline-flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
+            {(["v1", "default", "v2"] as const).map(mode => (
+              <button
+                key={mode}
+                type="button"
+                className={`btn btn-sm${(v2.multiAgentMode ?? "default") === mode ? " btn-primary" : " btn-ghost"}`}
+                style={{ borderRadius: 0, minWidth: 64, fontSize: 12, padding: "4px 10px" }}
+                disabled={v2Busy}
+                onClick={() => void setMultiAgentMode(mode)}
+              >
+                {t(`models.v2Mode_${mode}` as keyof typeof import("../i18n/en").en)}
+              </button>
+            ))}
+          </div>
           <span className="muted mono" style={{ fontSize: 12 }}>
-            {v2.enabled ? t("models.v2On") : t("models.v2Off")}
+            {t(`models.v2ModeDesc_${v2.multiAgentMode ?? "default"}` as keyof typeof import("../i18n/en").en)}
           </span>
           {v2.enabled && (
             <>
