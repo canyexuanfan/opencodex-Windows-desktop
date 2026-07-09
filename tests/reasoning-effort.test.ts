@@ -468,7 +468,7 @@ describe("ultra reasoning effort (upstream codex-rs parity)", () => {
     const dflt = entries.find(e => e.slug === "p/m-default");
     const levels = opted?.supported_reasoning_levels as { effort: string; description: string }[];
     expect(levels.map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
-    expect(levels[levels.length - 1]?.description).toBe("Maximum reasoning that may proactively delegate work to multiple agents");
+    expect(levels[levels.length - 1]?.description).toBe("Maximum reasoning with automatic task delegation");
     expect((dflt?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
 

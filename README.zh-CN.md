@@ -100,7 +100,7 @@ npm install -g @bitkyc08/opencodex   # 不要加 --ignore-scripts、--omit=optio
 - **登录一次，免填 API key。** xAI、Anthropic、Kimi 支持 OAuth，可用现有账户认证，token 自动刷新。也可以转发 `codex login`、粘贴 API key，或使用 `${ENV_VAR}` 引用 —— 随你选择。
 - **Codex 在哪里能用，它就在哪里能用。** 自动注入 Codex CLI、TUI、App 和 SDK。路由模型像原生模型一样出现在 Codex 的模型选择器里。
 - **委派给合适的模型。** 在仪表盘或 config 中把最多 5 个路由/原生模型放进 Codex 的 subagent 选择器 —— 复杂任务交给 reasoning 模型，快速任务交给便宜模型。
-- **为 preview-gated OpenAI rollout 做好准备。** GPT-5.6 Sol/Terra/Luna fallback 条目已可用于 OpenAI API key 和 OpenRouter 路由；当上游访问可用时，会带有 `max` reasoning 和 372k usable-context 元数据。
+- **为 preview-gated OpenAI rollout 做好准备。** GPT-5.6 Sol/Terra/Luna 条目采用与 upstream 完全一致的规格（Sol/Terra 到 `ultra`，Luna 到 `max`；372k 可用上下文），覆盖 ChatGPT passthrough、OpenAI API key 和 OpenRouter 路由。
 - **给任意模型超能力。** 非 OpenAI 模型也能通过你的 ChatGPT 登录上运行的 `gpt-5.4-mini` sidecar 获得真正的网页搜索和图片理解。
 - **看清正在发生什么。** Web 仪表盘展示 provider、OAuth 状态、模型选择和实时请求日志；当上游返回时，也会包含 cached/cache-write token 计数 —— 不必再猜测请求为何失败。
 - **后台运行。** 安装为系统服务（launchd / systemd / Task Scheduler）后开机自启，无需操心。
@@ -154,7 +154,9 @@ Codex 语义一致：客户端启用最大 reasoning 并主动委派多智能体
 路由模型仅在 provider config 通过 `reasoningEfforts` 显式开启时才会广告 `ultra`。
 
 GPT-5.6 Sol/Terra/Luna 已在 OpenAI API key 和 OpenRouter 预设中作为 rollout-ready 目录条目预置
-（`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`；OpenRouter 使用 `openai/...`）。可用性仍受上游
+（`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`；OpenRouter 使用 `openai/...`）。
+规格与 upstream models.json 快照一致 —— Sol/Terra 提供到 `ultra`，Luna 到 `max`，Sol 默认
+reasoning 为 `low`。可用性仍受上游
 preview gate 限制；opencodex 只是准备好你的账户/provider 可访问时所需的路由和目录元数据。
 
 <p align="center">

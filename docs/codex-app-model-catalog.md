@@ -90,8 +90,24 @@ The recognized Codex effort ladder is `low < medium < high < xhigh < max < ultra
   ingest, and `mapReasoningEffort` converts any direct `ultra` caller to the `max` wire value.
 - Routed models default to the `low..max` ladder. `ultra` is per-model opt-in via the
   `reasoningEfforts` provider config; when opted in it renders its canonical description.
-- Native `gpt-5.6-*` slugs are cloned from an older template whose ladder stops at `xhigh`;
-  `ensureGpt56ReasoningLevels` appends `max` and `ultra` in upstream rank order.
+- Native `gpt-5.6-*` slugs are emitted from the pinned upstream models.json snapshot
+  (`src/codex/data/upstream-models.json`, openai/codex PR #31684): exact per-slug ladders
+  (`sol`/`terra` end at `ultra`, `luna` ends at `max` — no ultra), default efforts
+  (`sol` = `low`, `terra`/`luna` = `medium`), real display names/descriptions/NUX, and
+  `multi_agent_version` (`sol`/`terra` v2, `luna` v1). ocx adaptations: `minimal_client_version`
+  is stripped (it would hide the model from older installed clients) and
+  `prefer_websockets`/`supports_websockets` follow the central websocket gate. A future
+  `gpt-5.6-*` slug the snapshot predates falls back to template synthesis plus
+  `ensureGpt56ReasoningLevels` (appends `max`+`ultra`).
+- Snapshot scope is deliberately gpt-5.6-only: the bundled upstream entries for
+  `gpt-5.5`/`gpt-5.4` are staler than the installed catalog's live entries (e.g. snapshot
+  gpt-5.5 carries `tool_mode: null`), so substituting them would downgrade real data. On-disk
+  sync also self-heals fallback-quality 5.6 entries (display_name stamped with the bare slug)
+  by upgrading them to the snapshot entry; genuine entries from a newer installed codex are
+  preserved untouched.
+- Snapshot refresh: replace `src/codex/data/upstream-models.json` with the latest
+  `codex-rs/models-manager/models.json` from openai/codex (e.g. the periodic
+  "Update models.json" bot PR) and re-run the catalog test suite.
 
 ## Fast tier handling
 

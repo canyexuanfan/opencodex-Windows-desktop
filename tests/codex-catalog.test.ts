@@ -195,6 +195,89 @@ describe("Codex catalog routed normalization", () => {
     ]);
   });
 
+  test("gpt-5.6 natives come from the pinned upstream snapshot (PR #31684) with exact per-slug specs", () => {
+    const entries = buildCatalogEntries(nativeTemplate(), ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"], []);
+    const sol = entries.find(e => e.slug === "gpt-5.6-sol");
+    const terra = entries.find(e => e.slug === "gpt-5.6-terra");
+    const luna = entries.find(e => e.slug === "gpt-5.6-luna");
+
+    // Exact ladders: sol/terra advertise ultra, luna does NOT (upstream models.json).
+    expect((sol?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort))
+      .toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect((terra?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort))
+      .toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect((luna?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort))
+      .toEqual(["low", "medium", "high", "xhigh", "max"]);
+
+    // Default efforts: sol=low, terra/luna=medium.
+    expect(sol?.default_reasoning_level).toBe("low");
+    expect(terra?.default_reasoning_level).toBe("medium");
+    expect(luna?.default_reasoning_level).toBe("medium");
+
+    // Real identity, not slug-stamped synthesis.
+    expect(sol?.display_name).toBe("GPT-5.6-Sol");
+    expect(terra?.display_name).toBe("GPT-5.6-Terra");
+    expect(luna?.display_name).toBe("GPT-5.6-Luna");
+    expect(sol?.description).toBe("Latest frontier agentic coding model.");
+    expect(sol?.availability_nux).toBeDefined();
+
+    // Per-slug multi-agent generation: sol/terra v2, luna v1.
+    expect(sol?.multi_agent_version).toBe("v2");
+    expect(terra?.multi_agent_version).toBe("v2");
+    expect(luna?.multi_agent_version).toBe("v1");
+
+    // ocx adaptations: client-version gate stripped; ws preference gated off by default.
+    for (const e of [sol, terra, luna]) {
+      expect(e).not.toHaveProperty("minimal_client_version");
+      expect(e).not.toHaveProperty("prefer_websockets");
+      expect(e).not.toHaveProperty("supports_websockets");
+      expect(e?.context_window).toBe(372_000);
+      expect(e?.tool_mode).toBe("code_mode_only");
+      expect(e?.use_responses_lite).toBe(true);
+    }
+  });
+
+  test("gpt-5.6 snapshot entries keep prefer_websockets when websockets are enabled", () => {
+    const entries = buildCatalogEntries(nativeTemplate(), ["gpt-5.6-sol"], [], undefined, true);
+    const sol = entries.find(e => e.slug === "gpt-5.6-sol");
+    expect(sol?.prefer_websockets).toBe(true);
+    expect(sol?.supports_websockets).toBe(true);
+  });
+
+  test("catalog sync upgrades fallback-quality gpt-5.6 entries but preserves genuine ones", () => {
+    // Fallback-quality: display_name stamped with the bare slug (ocx synthesis signature),
+    // wrong ladder (ultra on luna) left by an older ocx version.
+    const synthesizedLuna = {
+      ...nativeTemplate(),
+      slug: "gpt-5.6-luna",
+      display_name: "gpt-5.6-luna",
+      priority: 9,
+      supported_reasoning_levels: [
+        { effort: "low", description: "l" }, { effort: "max", description: "m" }, { effort: "ultra", description: "u" },
+      ],
+    };
+    // Genuine: real display name — must be preserved untouched (installed codex is SoT once
+    // it catches up), marker field proves no replacement happened.
+    const genuineSol = {
+      ...nativeTemplate(),
+      slug: "gpt-5.6-sol",
+      display_name: "GPT-5.6-Sol",
+      priority: 1,
+      genuine_marker: "from-installed-catalog",
+    };
+
+    const merged = mergeCatalogEntriesForSync([synthesizedLuna, genuineSol], [], new Map(), [], false);
+    const luna = merged.find(e => e.slug === "gpt-5.6-luna");
+    const sol = merged.find(e => e.slug === "gpt-5.6-sol");
+
+    expect(luna?.display_name).toBe("GPT-5.6-Luna");
+    expect((luna?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort))
+      .toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(luna?.priority).toBe(3); // upstream priority restored for the upgraded entry
+    expect(sol?.genuine_marker).toBe("from-installed-catalog");
+    expect(sol?.priority).toBe(1);
+  });
+
   test("routed entries still cap stale native max context to their active context window", () => {
     const template = {
       ...nativeTemplate(),

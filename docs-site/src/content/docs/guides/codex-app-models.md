@@ -64,8 +64,10 @@ Codex catalog to ship those slugs:
 | OpenAI (API key) | `openai-apikey/gpt-5.6-sol`, `openai-apikey/gpt-5.6-terra`, `openai-apikey/gpt-5.6-luna` |
 | OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` |
 
-Each entry advertises the current GPT-5.6 context metadata (372,000 usable tokens) and keeps `xhigh`,
-`max`, and `ultra` as separate reasoning choices. `ultra` follows upstream Codex semantics — maximum
+Each entry advertises the current GPT-5.6 context metadata (372,000 usable tokens) with the exact
+upstream reasoning ladder per slug: Sol and Terra keep `xhigh`, `max`, and `ultra` as separate
+choices, while Luna ends at `max` (upstream ships no `ultra` for Luna). Sol defaults to `low`
+reasoning; Terra and Luna default to `medium`. `ultra` follows upstream Codex semantics — maximum
 reasoning with proactive multi-agent delegation, sent to the backend as `max`. If the upstream
 account is not enabled for the model, the request still fails upstream normally.
 

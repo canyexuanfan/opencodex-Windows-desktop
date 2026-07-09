@@ -1,13 +1,14 @@
 import type { OcxProviderConfig } from "./types";
 import { modelInList } from "./types";
 
+// Descriptions mirror the upstream bundled models.json canonical wording (openai/codex PR #31684).
 export const CODEX_REASONING_LEVELS: { effort: string; description: string }[] = [
   { effort: "low", description: "Fast responses with lighter reasoning" },
-  { effort: "medium", description: "Balances speed and reasoning depth" },
+  { effort: "medium", description: "Balances speed and reasoning depth for everyday tasks" },
   { effort: "high", description: "Greater reasoning depth for complex problems" },
-  { effort: "xhigh", description: "Extended reasoning for the hardest problems" },
-  { effort: "max", description: "Maximum reasoning for the hardest problems" },
-  { effort: "ultra", description: "Maximum reasoning that may proactively delegate work to multiple agents" },
+  { effort: "xhigh", description: "Extra high reasoning depth for complex problems" },
+  { effort: "max", description: "Maximum reasoning depth for the hardest problems" },
+  { effort: "ultra", description: "Maximum reasoning with automatic task delegation" },
 ];
 
 const CODEX_REASONING_ORDER = CODEX_REASONING_LEVELS.map(l => l.effort);

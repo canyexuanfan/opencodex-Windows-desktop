@@ -146,7 +146,9 @@ codex -m "ollama/llama3" "이 함수를 리팩터링해 줘"
 나갑니다. 라우팅된 모델은 `reasoningEfforts` config로 옵트인한 경우에만 `ultra`를 광고합니다.
 
 GPT-5.6 Sol/Terra/Luna는 OpenAI API key 및 OpenRouter preset에서 rollout-ready catalog 항목으로
-seed됩니다(`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`; OpenRouter는 `openai/...` 사용). 실제
+seed됩니다(`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`; OpenRouter는 `openai/...` 사용).
+스펙은 upstream models.json 스냅샷을 그대로 따릅니다 — Sol/Terra는 `ultra`까지, Luna는 `max`까지
+광고하고, Sol의 기본 reasoning은 `low`입니다. 실제
 사용 가능 여부는 upstream preview gate를 따르며, opencodex는 계정/프로바이더가 제공할 때 쓸
 routing/catalog metadata를 준비해 둡니다.
 
@@ -175,7 +177,7 @@ opencodex는 두 가지 동작을 분리해서 유지합니다:
 - **한 번 로그인하면 API 키는 생략.** xAI, Anthropic, Kimi는 OAuth를 지원하므로 기존 계정으로 인증할 수 있고 토큰은 자동 갱신됩니다. 또는 `codex login`을 forward 하거나, API 키를 붙여넣거나, `${ENV_VAR}` 참조를 쓸 수 있습니다 — 선택은 자유입니다.
 - **Codex가 동작하는 모든 곳에서.** Codex CLI, TUI, App, SDK에 자동으로 주입됩니다. 라우팅된 모델이 네이티브 모델처럼 Codex 모델 선택기에 나타납니다.
 - **알맞은 모델에 위임.** 대시보드나 config에서 최대 5개의 라우팅/네이티브 모델을 Codex 서브에이전트 선택기에 노출해, 복잡한 작업은 reasoning 모델로, 빠른 작업은 저렴한 모델로 보낼 수 있습니다.
-- **프리뷰 게이트된 OpenAI rollout에 대비.** GPT-5.6 Sol/Terra/Luna fallback 항목은 OpenAI API key와 OpenRouter route용으로 준비되어 있으며, upstream access가 있을 때 `max` reasoning과 372k usable-context metadata를 사용합니다.
+- **프리뷰 게이트된 OpenAI rollout에 대비.** GPT-5.6 Sol/Terra/Luna 항목은 upstream 스펙 그대로(Sol/Terra는 `ultra`까지, Luna는 `max`까지; 372k usable context) ChatGPT passthrough, OpenAI API key, OpenRouter route에 준비되어 있습니다.
 - **어떤 모델에도 초능력을.** OpenAI가 아닌 모델도 ChatGPT 로그인 위에서 도는 `gpt-5.4-mini` sidecar로 실제 웹 검색과 이미지 이해를 사용합니다.
 - **무슨 일이 일어나는지 보이게.** 웹 대시보드가 프로바이더, OAuth 상태, 모델 선택, upstream이 보고한 cached/cache-write 토큰 수를 포함한 실시간 요청 로그를 보여줍니다 — 왜 요청이 실패했는지 더는 추측하지 않아도 됩니다.
 - **백그라운드 실행.** 시스템 서비스(launchd / systemd / Task Scheduler)로 설치하면 부팅 시 자동 시작되어 신경 쓸 필요가 없습니다.

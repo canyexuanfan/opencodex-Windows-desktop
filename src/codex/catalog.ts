@@ -16,6 +16,7 @@ import { applyProviderContextCap, providerContextCap } from "../providers/contex
 import { CODEX_GPT5_IDENTITY_LINE } from "../adapters/identity";
 import { filterCursorConfiguredModelsByLiveDiscovery } from "../adapters/cursor/discovery";
 import { fetchCursorUsableModels } from "../adapters/cursor/live-models";
+import upstreamModelsSnapshot from "./data/upstream-models.json";
 
 const BUNDLED_CATALOG_CACHE_MS = 60_000;
 let bundledCatalogCache: { expiresAt: number; value: RawCatalog | null } | null = null;
@@ -117,6 +118,61 @@ const NATIVE_OPENAI_CONTEXT_OVERRIDES: Record<string, { contextWindow?: number; 
   "gpt-5.6-terra": { contextWindow: NATIVE_GPT56_CONTEXT_WINDOW, maxContextWindow: NATIVE_GPT56_CONTEXT_WINDOW },
   "gpt-5.6-luna": { contextWindow: NATIVE_GPT56_CONTEXT_WINDOW, maxContextWindow: NATIVE_GPT56_CONTEXT_WINDOW },
 };
+
+/** Known context window for a supported native OpenAI slug (management API display). */
+export function nativeOpenAiContextWindow(slug: string): number | undefined {
+  return NATIVE_OPENAI_CONTEXT_OVERRIDES[slug]?.contextWindow
+    ?? (typeof UPSTREAM_NATIVE_ENTRIES.get(slug)?.context_window === "number"
+      ? UPSTREAM_NATIVE_ENTRIES.get(slug)!.context_window as number
+      : undefined);
+}
+
+/**
+ * Pinned upstream models.json snapshot (openai/codex PR #31684, codex-rs/models-manager/models.json)
+ * providing the REAL catalog entries for supported native slugs the installed Codex binary may
+ * predate (gpt-5.6-sol/terra/luna). Restricted to supported gpt-5.6 slugs ONLY: for
+ * gpt-5.5/5.4/5.4-mini the installed catalog's live entries are RICHER than this bundled
+ * fallback (the snapshot ships gpt-5.5 with tool_mode null / use_responses_lite false /
+ * comp_hash 2911), so substituting them would downgrade real entries. gpt-5.6 has no real
+ * installed entry to downgrade — the alternative is gpt-5.5-template synthesis, which this
+ * snapshot strictly improves on (exact ladders: luna has NO ultra; sol defaults to low).
+ */
+const UPSTREAM_NATIVE_ENTRIES: Map<string, RawEntry> = new Map(
+  ((upstreamModelsSnapshot as unknown as { models?: RawEntry[] }).models ?? [])
+    .filter(m => typeof m.slug === "string"
+      && SUPPORTED_NATIVE_OPENAI_SLUGS.has(m.slug as string)
+      && (m.slug as string).startsWith("gpt-5.6-"))
+    .map(m => [m.slug as string, m]),
+);
+
+/**
+ * Deep clone of the pinned upstream entry for a native slug, adapted for ocx emission:
+ * `minimal_client_version` is stripped (a pinned client-version gate would hide the model from
+ * older installed clients; ocx targets whatever client is installed, matching the synthesis
+ * path which never emits the field). `prefer_websockets` is left in place — the central
+ * websocket overrides in buildCatalogEntries/mergeCatalogEntriesForSync gate it with
+ * supports_websockets.
+ */
+export function upstreamNativeEntry(slug: string): RawEntry | null {
+  const entry = UPSTREAM_NATIVE_ENTRIES.get(slug);
+  if (!entry) return null;
+  const clone = JSON.parse(JSON.stringify(entry)) as RawEntry;
+  delete clone.minimal_client_version;
+  return clone;
+}
+
+/**
+ * True when a preserved catalog entry for a snapshot-covered slug should be UPGRADED to the
+ * pinned upstream entry. Discriminator: `display_name === slug` — both ocx synthesis and the
+ * codex-rs model_info fallback stamp the bare slug as display name, while genuine upstream
+ * entries always carry marketing names ("GPT-5.6-Sol"). Fallback-quality entries are
+ * intentionally overwritten; a real newer catalog entry is preserved untouched.
+ */
+function shouldUpgradeToUpstreamEntry(entry: RawEntry): boolean {
+  return typeof entry.slug === "string"
+    && UPSTREAM_NATIVE_ENTRIES.has(entry.slug)
+    && entry.display_name === entry.slug;
+}
 
 /**
  * The native (passthrough) OpenAI slugs to advertise — the LIVE Codex catalog's own bare slugs when
@@ -520,10 +576,10 @@ function isGpt56NativeSlug(slug: string): boolean {
 }
 
 /**
- * GPT-5.6 native entries are cloned from an older template (gpt-5.5) whose ladder stops at
- * xhigh. The current-gen models support "max" and the upstream ultra selection (df1199fdd:
- * ultra = max reasoning + proactive multi-agent delegation, converted to max on the wire by
- * the client), so append both in upstream rank order when absent.
+ * Fallback ladder fix for a gpt-5.6 native slug NOT covered by the upstream snapshot (a future
+ * variant the snapshot predates): entries cloned from an older template (gpt-5.5) stop at xhigh,
+ * so append max+ultra in upstream rank order when absent. Snapshot-covered slugs never reach
+ * this — deriveEntry returns their real entry first.
  */
 function ensureGpt56ReasoningLevels(entry: RawEntry): void {
   const levels = Array.isArray(entry.supported_reasoning_levels)
@@ -538,7 +594,27 @@ function ensureGpt56ReasoningLevels(entry: RawEntry): void {
   entry.supported_reasoning_levels = out;
 }
 
+/**
+ * Native entry from the pinned upstream snapshot, finished for emission. Keeps the entry's
+ * OWN identity (display_name, description, priority, availability_nux — it is the model's own
+ * NUX, not another model's) instead of the caller's generic passthrough blurb. The caller's
+ * `priority` wins only when it is a deliberate override (featured rank / push-down), i.e. not
+ * the native default 9.
+ */
+function finishUpstreamNativeEntry(clone: RawEntry, priority: number): RawEntry {
+  if (priority !== 9) clone.priority = priority;
+  applyNativeOpenAiContextOverride(clone);
+  return ensureStrictCatalogFields(normalizeServiceTiers(clone));
+}
+
 function deriveEntry(template: RawEntry | null, slug: string, desc: string, priority: number, model?: CatalogModel): RawEntry {
+  if (!slug.includes("/")) {
+    // Supported native slug covered by the upstream snapshot: use the REAL entry (exact
+    // reasoning ladder — e.g. luna has no ultra — default effort, identity, model_messages)
+    // instead of cloning an older template.
+    const upstream = upstreamNativeEntry(slug);
+    if (upstream) return finishUpstreamNativeEntry(upstream, priority);
+  }
   if (template) {
     const e = JSON.parse(JSON.stringify(template)) as RawEntry;
     e.slug = slug;
@@ -616,7 +692,12 @@ export function buildCatalogEntries(template: RawEntry | null, gptSlugs: string[
   // leak (deriveEntry clones the template as-is for native slugs).
   for (const entry of out) {
     if (wsEnabled) entry.supports_websockets = true;
-    else delete entry.supports_websockets;
+    else {
+      delete entry.supports_websockets;
+      // Snapshot-backed native entries carry prefer_websockets: never advertise a preference
+      // for an endpoint ocx has disabled.
+      delete entry.prefer_websockets;
+    }
   }
   return out;
 }
@@ -1011,6 +1092,21 @@ export function mergeCatalogEntriesForSync(
         : featured.length > 0
           ? Math.max(typeof baselinePriority === "number" ? baselinePriority : 9, featured.length + 100)
           : baselinePriority;
+      // Fallback-quality entries (ocx synthesis / codex-rs model_info fallback: display_name
+      // stamped with the bare slug) are upgraded to the pinned upstream snapshot entry so a
+      // previously synthesized ladder (e.g. luna advertising ultra) self-heals on sync. A
+      // genuine catalog entry (real display name) is preserved untouched.
+      if (shouldUpgradeToUpstreamEntry(m)) {
+        const upstream = upstreamNativeEntry(slug)!;
+        const upgradePriority = rank.has(slug)
+          ? rank.get(slug)!
+          : featured.length > 0
+            ? Math.max(typeof upstream.priority === "number" ? upstream.priority : 9, featured.length + 100)
+            : typeof upstream.priority === "number" ? upstream.priority : priority;
+        const finished = finishUpstreamNativeEntry(upstream, 9);
+        finished.priority = upgradePriority;
+        return finished;
+      }
       return normalizeServiceTiers({ ...m, priority });
     });
 
@@ -1047,7 +1143,11 @@ export function mergeCatalogEntriesForSync(
     applyNativeOpenAiContextOverride(normalized);
     const e = ensureStrictCatalogFields(normalized);
     if (wsEnabled) e.supports_websockets = true;
-    else delete e.supports_websockets;
+    else {
+      delete e.supports_websockets;
+      // Match buildCatalogEntries: never advertise a websocket preference while WS is off.
+      delete e.prefer_websockets;
+    }
     return e;
   });
 }
