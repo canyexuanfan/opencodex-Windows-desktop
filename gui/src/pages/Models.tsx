@@ -523,7 +523,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
       )}
 
       {v2HelpOpen && (
-        <div className="modal-overlay" onClick={() => setV2HelpOpen(false)}>
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={t("models.v2Label")} onClick={() => setV2HelpOpen(false)} onKeyDown={e => { if (e.key === "Escape") setV2HelpOpen(false); }}>
           <div className="modal-card" onClick={e => e.stopPropagation()}>
             <div className="modal-head">
               <h3>{t("models.v2Label")}</h3>

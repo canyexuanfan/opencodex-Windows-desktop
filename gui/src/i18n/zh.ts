@@ -157,7 +157,7 @@ export const zh: Record<TKey, string> = {
   "models.capSaveFailed": "保存上下文限制失败",
   "models.contextCapped": "350k 限制",
   "models.contextCapLabel": "上下文限制",
-  "models.v2Label": "多代理",
+  "models.v2Label": "子代理",
   "models.v2Mode_v1": "v1",
   "models.v2Mode_default": "base",
   "models.v2Mode_v2": "v2",

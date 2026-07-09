@@ -157,7 +157,7 @@ export const en = {
   "models.capSaveFailed": "Failed to save context cap",
   "models.contextCapped": "350k cap",
   "models.contextCapLabel": "Context cap",
-  "models.v2Label": "Multi-agent",
+  "models.v2Label": "Sub-agent",
   "models.v2DocsLink": "What is v1 / v2?",
   "models.v2Mode_v1": "v1",
   "models.v2Mode_default": "base",

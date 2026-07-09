@@ -610,7 +610,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       )}
 
       {maHelpOpen && (
-        <div className="modal-overlay" onClick={() => setMaHelpOpen(false)}>
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={t("dash.multiAgent")} onClick={() => setMaHelpOpen(false)} onKeyDown={e => { if (e.key === "Escape") setMaHelpOpen(false); }}>
           <div className="modal-card" onClick={e => e.stopPropagation()}>
             <div className="modal-head">
               <h3>{t("dash.multiAgent")}</h3>

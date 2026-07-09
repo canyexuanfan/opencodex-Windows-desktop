@@ -157,7 +157,7 @@ export const ko: Record<TKey, string> = {
   "models.capSaveFailed": "컨텍스트 제한 저장 실패",
   "models.contextCapped": "350k 제한",
   "models.contextCapLabel": "컨텍스트 제한",
-  "models.v2Label": "멀티에이전트",
+  "models.v2Label": "서브에이전트",
   "models.v2Mode_v1": "v1",
   "models.v2Mode_default": "base",
   "models.v2Mode_v2": "v2",

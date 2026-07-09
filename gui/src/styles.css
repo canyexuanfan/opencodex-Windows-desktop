@@ -315,6 +315,7 @@ select.input { appearance: none; }
   transition: border-color 0.12s, box-shadow 0.12s;
 }
 .select-sm:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+.select-sm:hover:not(:disabled) { border-color: var(--faint); box-shadow: 0 2px 12px rgb(0 0 0 / 0.10); }
 .select-sm:disabled { opacity: 0.5; cursor: default; backdrop-filter: none; -webkit-backdrop-filter: none; }
 
 /* ---- switch ---- */
