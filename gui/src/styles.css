@@ -237,7 +237,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .update-restart { border-top: 1px solid var(--border-soft); padding-top: 12px; }
 
 /* ---- stat cards (metric tiles) ---- */
-.stat-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 28px; }
+/* Flex-wrap stat grid: items fill rows evenly. min-width forces wrap; flex-basis
+   33% means a wrap always moves ≥2 items to the next row (3+3 or 4+2, never 5+1). */
+.stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 28px; }
+.stat-row > .stat { flex: 1 1 calc(16.6% - 10px); min-width: 130px; }
 .stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; transition: border-color 0.12s; }
 .stat:hover { border-color: var(--faint); }
 .stat .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; display: flex; align-items: center; gap: 6px; font-weight: 500; }
@@ -354,8 +357,8 @@ select.input { appearance: none; }
 }
 
 /* ---- modal ---- */
-.modal-overlay { position: fixed; inset: 0; background: light-dark(rgba(17, 19, 28, 0.30), rgba(0, 0, 0, 0.45)); backdrop-filter: blur(10px) saturate(1.2); -webkit-backdrop-filter: blur(10px) saturate(1.2); display: flex; align-items: flex-start; justify-content: center; padding: 8vh 16px; z-index: 50; }
-.modal-card { background: var(--glass-panel); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); border: 1px solid var(--border); border-radius: 16px; padding: 20px; width: 100%; max-width: 520px; box-shadow: var(--shadow); max-height: 84vh; overflow-y: auto; }
+.modal-overlay { position: fixed; inset: 0; background: light-dark(rgba(17, 19, 28, 0.55), rgba(0, 0, 0, 0.60)); backdrop-filter: blur(24px) saturate(1.4); -webkit-backdrop-filter: blur(24px) saturate(1.4); display: flex; align-items: flex-start; justify-content: center; padding: 8vh 16px; z-index: 50; }
+.modal-card { background: light-dark(rgba(255, 255, 255, 0.82), rgba(30, 32, 40, 0.85)); backdrop-filter: blur(40px) saturate(1.6); -webkit-backdrop-filter: blur(40px) saturate(1.6); border: 1px solid light-dark(rgba(255,255,255,0.5), rgba(255,255,255,0.08)); border-radius: 16px; padding: 20px; width: 100%; max-width: 520px; box-shadow: 0 8px 32px rgba(0,0,0,0.18), 0 0 0 0.5px light-dark(rgba(0,0,0,0.06), rgba(255,255,255,0.06)); max-height: 84vh; overflow-y: auto; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .modal-head h3 { font-size: 16px; }
 
@@ -530,7 +533,7 @@ select.input { appearance: none; }
   .setting-row > .select-sm { width: 100%; }
   .api-form-row { align-items: stretch; flex-direction: column; }
   .api-form-row .btn { width: 100%; min-height: 40px; }
-  .stat-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .stat-row > .stat { min-width: 100px; }
   .tbl { min-width: 460px; }   /* keep columns readable; .tbl-wrap scrolls horizontally */
   .usage-cards { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
   .provider-quota { padding-left: 16px; }
