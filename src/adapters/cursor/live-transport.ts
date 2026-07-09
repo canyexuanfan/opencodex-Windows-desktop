@@ -391,7 +391,7 @@ class LiveCursorTransport implements CursorTransport {
     // operator can see how far the turn got and how it was classified without re-scanning every
     // frame. Gated behind provider debug (`ocx debug provider on`).
     const summarizeFailure = (err: Error): Error => {
-      if (!failureLogged && !isCursorBenignCancelError(err)) {
+      if (!failureLogged && !(this.expectedClose && isCursorBenignCancelError(err))) {
         failureLogged = true;
         debugProviderDiagnostic("cursor", "turn-failed", {
           committed: this.committed,
@@ -457,7 +457,9 @@ class LiveCursorTransport implements CursorTransport {
         if (message) yield message;
       }
       if (failure) {
-        if (isCursorBenignCancelError(failure)) return;
+        // A CANCEL is benign only on the client-tool suspend path (expectedClose); an
+        // unexpected server-side NGHTTP2_CANCEL must surface as a real transport error.
+        if (this.expectedClose && isCursorBenignCancelError(failure)) return;
         throw attachPartialUsage(summarizeFailure(failure), state);
       }
       if (done) break;
@@ -466,7 +468,7 @@ class LiveCursorTransport implements CursorTransport {
       });
     }
     if (failure) {
-      if (isCursorBenignCancelError(failure)) return;
+      if (this.expectedClose && isCursorBenignCancelError(failure)) return;
       throw attachPartialUsage(summarizeFailure(failure), state);
     }
   }

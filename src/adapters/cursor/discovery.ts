@@ -51,12 +51,18 @@ export function normalizeCursorModels(models: readonly CursorModelInfo[]): Curso
   return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
+// Live GetUsableModels ids append effort tiers to the base id (`claude-4.6-opus-high`). Only
+// these suffixes may activate a base model — otherwise a sibling model like `claude-4-sonnet-1m`
+// would falsely activate `claude-4-sonnet` (PR #73 review finding).
+const LIVE_EFFORT_SUFFIXES = ["low", "medium", "high", "max", "xhigh"] as const;
+
 /**
  * True when a configured Cursor base model should remain exposed after live GetUsableModels filtering.
  * Live ids are full effort-suffixed variants (`claude-4.6-opus-high`); base ids match exactly or by prefix.
  */
 export function isCursorModelAvailableForAccount(modelId: string, liveIds: readonly string[]): boolean {
-  return liveIds.some(id => id === modelId || id.startsWith(`${modelId}-`));
+  return liveIds.some(id =>
+    id === modelId || LIVE_EFFORT_SUFFIXES.some(suffix => id === `${modelId}-${suffix}`));
 }
 
 /** Codex-facing id for Cursor's auto-router. Always kept in the catalog even when live discovery omits it. */

@@ -48,6 +48,10 @@ describe("Cursor discovery metadata", () => {
     expect(isCursorModelAvailableForAccount("gpt-5.4", ["gpt-5.4-high"])).toBe(true);
     expect(isCursorModelAvailableForAccount("claude-fable-5", ["gpt-5.4-high"])).toBe(false);
     expect(isCursorModelAvailableForAccount("auto", ["default"])).toBe(false);
+    // Sibling model ids must not activate a different base: only effort suffixes count.
+    expect(isCursorModelAvailableForAccount("claude-4-sonnet", ["claude-4-sonnet-1m"])).toBe(false);
+    expect(isCursorModelAvailableForAccount("gpt-5.5", ["gpt-5.5-extra-high"])).toBe(false);
+    expect(isCursorModelAvailableForAccount("gpt-5.5-extra", ["gpt-5.5-extra-high"])).toBe(true);
 
     const filtered = filterCursorConfiguredModelsByLiveDiscovery(
       [{ id: "gpt-5.4" }, { id: "claude-fable-5" }],
