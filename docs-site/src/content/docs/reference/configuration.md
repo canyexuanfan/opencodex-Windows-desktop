@@ -15,20 +15,38 @@ console warning, and starts with defaults. Missing files also fall back to a def
 | --- | --- | --- | --- |
 | `port` | `number` | `10100` | Port the proxy listens on. |
 | `hostname?` | `string` | `"127.0.0.1"` | Bind address. Set `"0.0.0.0"` to expose on the LAN (requires `OPENCODEX_API_AUTH_TOKEN`; see [Remote access](#remote-access) below). |
+| `proxy?` | `string` | — | Outbound HTTP(S) proxy URL or `${ENV_VAR}` reference. Applied to `HTTP_PROXY` / `HTTPS_PROXY` when those env vars are unset; loopback stays in `NO_PROXY`. |
 | `providers` | `Record<string, OcxProviderConfig>` | — | Map of provider name → config. |
 | `defaultProvider` | `string` | `"openai"` | Provider used when routing finds no better match. |
-| `subagentModels?` | `string[]` | — | Up to 5 `provider/model` ids featured first in Codex's subagent picker. |
+| `subagentModels?` | `string[]` | `gpt-5.5`, GPT-5.6 trio, `gpt-5.4-mini` | Up to 5 native slugs or `provider/model` ids featured first in Codex's subagent picker. An explicit empty list is preserved. |
+| `injectionModel?` | `string` | — | Preferred native or routed model injected into v1 multi-agent guidance; delegation is told to pass this exact model to `spawn_agent`. |
+| `injectionEffort?` | `string` | — | Preferred `spawn_agent` reasoning effort (`low` through `ultra`). Only meaningful with `injectionModel`. |
 | `disabledModels?` | `string[]` | — | Models hidden from Codex. Routed `provider/model` ids are excluded from the catalog and `/v1/models`; bare native GPT slugs (e.g. `gpt-5.4`) flip their catalog entry to `visibility: "hide"` and drop from the bare `/v1/models` list. Toggleable per model from the dashboard Models page. |
 | `multiAgentMode?` | `"v1" \| "default" \| "v2"` | `"default"` | 3-state multi-agent surface override. `"v1"` forces all models to the v1 surface (overrides upstream pins); `"default"` respects upstream model pins (sol/terra=v2, luna=v1); `"v2"` forces all models to v2. Settable from the dashboard Models page or `ocx v2 mode`. |
+| `providerContextCaps?` | `Record<string,number>` | `{}` | Per-provider Codex-visible context caps. A cap only lowers known context windows. |
+| `contextCapValue?` | `number` | `350000` | Value used by the dashboard's context-cap controls; changing it updates every enabled entry in `providerContextCaps`. |
+| `stallTimeoutSec?` | `number` | `90` | Seconds without upstream data before the bridge aborts and emits `response.incomplete`. Minimum 1. |
+| `connectTimeoutMs?` | `number` | `200000` | Per-attempt deadline for DNS/TCP/TLS and response headers. |
+| `shutdownTimeoutMs?` | `number` | `5000` | Graceful drain deadline before active turns are aborted. |
 | `websockets?` | `boolean` | `false` | Advertise `supports_websockets` so Codex uses the Responses WebSocket path. Omit or set `false` to keep HTTP/SSE. |
+| `apiKeys?` | `OcxApiKey[]` | `[]` | Additional generated `ocx_…` credentials accepted by management and data-plane auth on non-loopback binds. Managed by the dashboard; entry fields are listed below. |
+| `codexAutoStart?` | `boolean` | `true` | Let the Codex shim run `ocx ensure` before launching Codex. `false` makes `ocx ensure` a no-op. |
 | `syncResumeHistory?` | `boolean` | `true` | Reversible Codex App history compatibility mode. opencodex backs up original Codex thread metadata, remaps old OpenAI interactive rows to `opencodex`, and temporarily promotes opencodex-created `exec` rows to an app-visible source. `ocx stop` / `ocx restore` restore backed-up OpenAI rows and eject remaining opencodex user threads to OpenAI so native Codex can resume them after the proxy is removed from `config.toml`. Set `false` to opt out. |
 | `codexAccounts?` | `CodexAccount[]` | `[]` | ChatGPT/Codex pool account metadata managed by the Codex Auth dashboard. Secrets live separately in `codex-accounts.json`. |
 | `activeCodexAccountId?` | `string` | — | Pool account used for the next new Codex thread. Existing thread affinities keep their original account. |
 | `autoSwitchThreshold?` | `number` | `80` | Usage percent threshold for new-session auto-switching. The score uses the hottest known 5h, weekly, or 30d quota window. Set `0` to disable quota auto-switching. |
 | `upstreamFailoverThreshold?` | `number` | `3` | Consecutive transient upstream failures before future new sessions fail over to another eligible pool account. Set `0` to disable failure failover. |
 | `modelCacheTtlMs?` | `number` | `300000` | Freshness window for the per-provider `/models` cache (5 min). |
+| `cacheRetention?` | `"none" \| "short" \| "long"` | `"short"` | Anthropic prompt-cache policy: disabled, 5-minute ephemeral, or 1-hour extended. |
 | `webSearchSidecar?` | `OcxWebSearchSidecarConfig` | on | Web-search sidecar options (see below). |
 | `visionSidecar?` | `OcxVisionSidecarConfig` | on | Vision sidecar options (see below). |
+| `tokenGuardian?` | `OcxTokenGuardianConfig` | off | Optional proactive OAuth refresh and Codex-account warmup policy; fields are listed below. |
+| `corsAllowOrigins?` | `string[]` | `[]` | Additional exact origins allowed by CORS. Loopback origins are always allowed. |
+
+`maxConcurrentThreadsPerSession` is the camel-case field used by `PUT /api/v2`, not a
+`config.json` key. `ocx v2 threads <n>` persists the corresponding
+`max_concurrent_threads_per_session` value under `[features.multi_agent_v2]` in Codex's
+`$CODEX_HOME/config.toml`; enable v2 first so that table exists.
 
 If an older development build already ran `syncResumeHistory` before backup support existed, you can
 also force the same native-provider recovery with `ocx recover-history --legacy-openai`.
@@ -39,6 +57,28 @@ non-secret account metadata only; access and refresh tokens are kept in the hard
 credential store. Existing thread ids keep account affinity, while new sessions can auto-route based
 on quota, cooldown, and health.
 :::
+
+### Managed record shapes
+
+`apiKeys[]` entries contain `id: string`, `name: string`, the generated `key: string`, and an ISO
+`createdAt: string`. `codexAccounts[]` entries contain required `id`, `email`, and `isMain` fields,
+plus optional `plan`, `chatgptAccountId`, and privacy-safe `logLabel` strings. These records are
+normally dashboard-managed.
+
+### `tokenGuardian` (`OcxTokenGuardianConfig`)
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `enabled?` | `boolean` | `false` | Global proactive-refresh switch. |
+| `tickSeconds?` | `number` | `21600` | Sweep interval (6 hours, minimum 60 seconds). |
+| `jitterSeconds?` | `number` | `300` | Random delay added before a sweep. |
+| `concurrency?` | `number` | `3` | Maximum simultaneous refreshes per sweep. |
+| `leadSeconds?` | `number` | `900` | Extra refresh lead time beyond one tick. |
+| `failureBackoffBaseSeconds?` | `number` | `300` | Initial transient-failure backoff. |
+| `failureBackoffMaxSeconds?` | `number` | `3600` | Backoff ceiling and permanent-failure delay. |
+| `codexWarmupEnabled?` | `boolean` | `false` | Opt into synthetic Codex pool-account validation. |
+| `codexWarmupMaxAgeSeconds?` | `number` | `691200` | Revalidate an account after 8 days. |
+| `codexWarmupModel?` | `string` | `gpt-5.4-mini` | Native model used for optional warmup. |
 
 ## Remote access
 
@@ -62,7 +102,9 @@ systemd, or Task Scheduler receives it. Clients must include the token in every 
 x-opencodex-api-key: your-secret-token
 ```
 
-The token is compared in constant time (`timingSafeEqual`) to prevent timing side-channels.
+An `Authorization: Bearer …` header is also accepted. Dashboard-generated `apiKeys` may be used in
+place of the environment token after startup; all candidates are compared in constant time
+(`timingSafeEqual`) to prevent timing side-channels.
 
 :::caution[LAN exposure]
 Binding to `0.0.0.0` exposes your proxy — and all configured provider credentials — to the local
@@ -73,24 +115,41 @@ network. Only do this on trusted networks, and always set a strong `OPENCODEX_AP
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `adapter` | `string` | One of `openai-chat`, `openai-responses`, `anthropic`, `google`, `azure-openai`, `cursor`. |
+| `adapter` | `string` | One of `openai-chat`, `openai-responses`, `anthropic`, `google`, `kiro`, `cursor`, `azure-openai` (or alias `azure`). |
 | `baseUrl` | `string` | Upstream API base URL. |
+| `disabled?` | `boolean` | Keep the provider on disk but exclude it from routing and model/catalog listings. |
 | `apiKey?` | `string` | API key, or an `${ENV_VAR}` / `$ENV_VAR` reference resolved at request time. |
+| `apiKeyPool?` | `ApiKeyPoolEntry[]` | Multi-key pool. `apiKey` mirrors the active entry; each item has `id`, `key`, optional `label`, and optional numeric `addedAt`. |
 | `defaultModel?` | `string` | Model used when this provider is selected without an explicit model. |
-| `models?` | `string[]` | Seed/fallback model list. Also becomes the exact catalog allowlist when `liveModels` is `false`. |
+| `models?` | `string[]` | Seed/fallback model list. When `liveModels` is `false`, these are the only discovered models. |
 | `liveModels?` | `boolean` | Fetch the provider's live `/models` catalog on start/sync (default `true`). Set `false` to use only configured `models`. |
+| `selectedModels?` | `string[]` | Catalog allowlist applied after discovery. A non-empty list exposes only those ids to Codex; empty/omitted exposes all discovered models. |
 | `contextWindow?` | `number` | Provider-wide Codex-visible context-window cap for routed catalog entries. Live metadata below this value is kept. |
 | `modelContextWindows?` | `Record<string,number>` | Model-specific context-window caps. These override `contextWindow` for matching model ids and never raise smaller live metadata. |
 | `modelInputModalities?` | `Record<string,string[]>` | Model-specific catalog input hints such as `["text"]` or `["text", "image"]`. |
-| `reasoningEfforts?` | `string[]` | Provider-wide Codex reasoning labels to advertise and send (`low`, `medium`, `high`, `xhigh`, `max`). |
+| `headers?` | `Record<string,string>` | Extra upstream headers. Authorization, cookies, API-key headers, embedded newlines, and invalid header names are rejected. |
+| `authMode?` | `"key" \| "forward" \| "oauth"` | How to authenticate (default `key`). See [Providers](/opencodex/guides/providers/#auth-modes). |
+| `refreshPolicy?` | `"proactive" \| "lazy-only" \| "disabled"` | Override this OAuth provider's Token Guardian policy. |
+| `reasoningEfforts?` | `string[]` | Provider-wide Codex reasoning labels to advertise and send (`low`, `medium`, `high`, `xhigh`, `max`, `ultra`). |
 | `modelReasoningEfforts?` | `Record<string,string[]>` | Model-specific reasoning labels. An empty list hides the effort control for that model. |
 | `reasoningEffortMap?` | `Record<string,string>` | Provider-wide wire aliases for reasoning labels. Use only when the upstream expects a different value. |
 | `modelReasoningEffortMap?` | `Record<string,Record<string,string>>` | Model-specific wire aliases for reasoning labels. |
-| `headers?` | `Record<string,string>` | Extra HTTP headers sent upstream. |
-| `authMode?` | `"key" \| "forward" \| "oauth"` | How to authenticate (default `key`). See [Providers](/opencodex/guides/providers/#auth-modes). |
 | `noReasoningModels?` | `string[]` | Models that reject a reasoning/thinking param — the adapter drops `reasoning_effort` for them. |
+| `noTemperatureModels?` | `string[]` | Models that reject caller-specified `temperature`. |
+| `noTopPModels?` | `string[]` | Models that reject caller-specified `top_p`. |
+| `noPenaltyModels?` | `string[]` | Models that reject presence/frequency penalties. |
+| `parallelToolCalls?` | `boolean` | Enable/disable parallel tool calls. OpenAI Chat defaults on; non-chat adapters advertise support only on explicit `true`. |
+| `autoToolChoiceOnlyModels?` | `string[]` | Models whose `tool_choice` accepts only `auto` or `none`; forced/named choices are downgraded. |
+| `preserveReasoningContentModels?` | `string[]` | Models that require prior assistant `reasoning_content` to remain in chat history. |
+| `thinkingToggleModels?` | `string[]` | Chat models using a vendor `thinking.enabled` toggle instead of an effort ladder. |
+| `thinkingBudgetModels?` | `string[]` | Chat models using an integer `thinking_budget`; effort is mapped to a budget fraction. |
 | `noVisionModels?` | `string[]` | Text-only models — the [vision sidecar](/opencodex/guides/sidecars/) describes images for them. Matching tolerates an Ollama `:size` tag. |
 | `escapeBuiltinToolNames?` | `boolean` | Anthropic-compatible gateways such as Umans can require tool-name escaping on the wire; opencodex strips the prefix before returning tool calls to Codex. |
+| `googleMode?` | `"ai-studio" \| "vertex" \| "cloud-code-assist"` | Google transport/auth mode. Default `ai-studio`. |
+| `project?` | `string` | Vertex project id or Antigravity Cloud Code Assist project id. |
+| `location?` | `string` | Vertex location; environment fallback is `GOOGLE_CLOUD_LOCATION`. |
+| `mcpServers?` | `Record<string,CursorMcpServerConfig>` | **Cursor only.** MCP servers started over stdio or reached over Streamable HTTP; fields are listed below. |
+| `desktopExecutor?` | `DesktopExecutorConfig` | **Cursor only.** External computer-use/record-screen commands; fields are listed below. |
 | `unsafeAllowNativeLocalExec?` | `boolean` | **Cursor adapter only.** Opt-in escape hatch for Cursor server-driven local `read` / `write` / `delete` / `ls` / `grep` / `shell` / `fetch` execution. Defaults to `false` so remote Cursor messages cannot bypass Codex approval and sandbox enforcement. See [Cursor provider](#cursor-provider-adapter-cursor) below. |
 
 ## Cursor provider (`adapter: "cursor"`)
@@ -124,9 +183,19 @@ You can also set it from the [web dashboard](/opencodex/guides/web-dashboard/): 
 Cursor → Edit JSON**, add `"unsafeAllowNativeLocalExec": true`, save, then restart the proxy
 (`ocx restart` or `ocx stop` + `ocx start`).
 
-The older `allowNativeLocalExec` spelling is still accepted as a deprecated transition alias.
-MCP, screen recording, and computer-use use separate executor config (`mcpExecutor`,
-`desktopExecutor`) and are not controlled by this flag.
+MCP, screen recording, and computer-use use separate `mcpServers` / `desktopExecutor` config and are
+not controlled by this flag.
+
+### Cursor integration records
+
+Each `mcpServers.<name>` value accepts either `command` (stdio) or `url` (Streamable HTTP). Stdio
+entries also accept `args?: string[]`, `env?: Record<string,string>`, and `cwd?: string`; HTTP entries
+accept `headers?: Record<string,string>`. Both forms support `enabled?: boolean` (default true) and
+`toolPrefix?: string`.
+
+`desktopExecutor` accepts `computerUseCommand?`, `recordScreenCommand?`, `cwd?`,
+`env?: Record<string,string>`, and `timeoutMs?` (default `30000`). Commands run through `sh -c`, read
+one JSON request from stdin, and must write one JSON result to stdout.
 
 :::caution[Security]
 Leave `unsafeAllowNativeLocalExec` unset or `false` unless you explicitly want Cursor-native local
@@ -140,6 +209,10 @@ want Codex to see only the models pinned in `models`:
 
 When `liveModels` is `false` and `models` is empty or omitted, opencodex exposes no routed models
 for that provider.
+
+Use `selectedModels` for a different purpose: discovery still runs, but only the selected ids are
+published to Codex's catalog and `/v1/models`. The dashboard's full model list remains available so
+the allowlist can be changed later.
 
 Preview GPT-5.6 fallback entries use the same mechanism. The OpenAI API-key preset seeds
 `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`; the OpenRouter preset seeds the same models as
@@ -169,10 +242,10 @@ with those explicit additions, or set it to `false` to expose only `models`.
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `enabled?` | `boolean` | on when a forward provider + login exist | Master switch. |
-| `model?` | `string` | `gpt-5.4-mini` | The sidecar model running real `web_search` (must be a native ChatGPT model). |
+| `model?` | `string` | `gpt-5.6-luna` | The sidecar model running real `web_search` (must be a native ChatGPT model). Explicit legacy `gpt-5.4-mini` values are migrated on start. |
 | `reasoning?` | `string` | `low` | Reasoning effort for the sidecar (`minimal` is rejected with web search). |
 | `maxSearchesPerTurn?` | `number` | `3` | Total real searches per main-model turn (loop guard). |
-| `timeoutMs?` | `number` | `30000` | Sidecar fetch timeout. |
+| `timeoutMs?` | `number` | `200000` | Sidecar fetch timeout. |
 
 ### `visionSidecar` (`OcxVisionSidecarConfig`)
 

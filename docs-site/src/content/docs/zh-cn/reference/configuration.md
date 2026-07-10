@@ -1,87 +1,216 @@
 ---
 title: 配置参考
-description: ~/.opencodex/config.json 中的每一个字段 —— 顶层选项、providers 以及 sidecars。
+description: ~/.opencodex/config.json 的所有字段 —— 顶层选项、provider 与 sidecar。
 ---
 
-opencodex 通过 `~/.opencodex/config.json` 进行配置。它由 `ocx init` 和仪表盘写入,但你也可以直接编辑它;代理会在启动时重新加载它。缺失或无效的文件会回退到默认配置(单个 `openai` forward provider)。
+opencodex 使用 `~/.opencodex/config.json` 配置。`ocx init` 和仪表盘会写入该文件，你也可以直接
+编辑；代理会在启动时重新加载。如果文件无法解析（例如被截断或不是有效 JSON），opencodex 会将
+其备份为 `config.json.invalid-<timestamp>`，在 console 中警告，再以默认值启动。文件缺失时也会
+回退到默认配置（单个 `openai` forward provider）。
 
-## 顶层(`OcxConfig`)
+## 顶层（`OcxConfig`）
 
 | Field | Type | Default | 含义 |
 | --- | --- | --- | --- |
-| `port` | `number` | `10100` | 代理监听的端口。 |
-| `providers` | `Record<string, OcxProviderConfig>` | — | provider 名称 → 配置的映射。 |
-| `defaultProvider` | `string` | `"openai"` | 当路由找不到更优匹配时使用的 provider。 |
-| `subagentModels?` | `string[]` | — | 最多 5 个 `provider/model` id,会在 Codex 的 subagent 选择器中优先展示。 |
-| `disabledModels?` | `string[]` | — | 从 Codex 中隐藏的模型。已路由 `provider/model` id 会从目录和 `/v1/models` 中排除；bare 原生 GPT slug（如 `gpt-5.4`）的目录条目会翻转为 `visibility: "hide"`，并从 bare `/v1/models` 列表中移除。可在仪表盘 Models 页面按模型开关。 |
-| `multiAgentMode?` | `"v1" \| "default" \| "v2"` | `"default"` | 三态 multi-agent surface override。`"v1"` 会强制所有模型使用 v1 surface（覆盖 upstream pins）；`"default"` 遵循 upstream model pins（sol/terra=v2,luna=v1）；`"v2"` 会强制所有模型使用 v2。可从仪表盘 Models 页面或 `ocx v2 mode` 设置。 |
+| `port` | `number` | `10100` | 代理监听端口。 |
 | `hostname?` | `string` | `"127.0.0.1"` | 绑定地址。设为 `"0.0.0.0"` 可暴露到 LAN（需要 `OPENCODEX_API_AUTH_TOKEN`；见下文 [远程访问](#远程访问)）。 |
-| `websockets?` | `boolean` | `false` | 广告 `supports_websockets`，让 Codex 使用 Responses WebSocket 路径。省略或设为 `false` 会保持 HTTP/SSE。 |
-| `syncResumeHistory?` | `boolean` | `false` | Codex App 历史兼容模式。启用后,opencodex 会备份原始 Codex thread metadata,把旧的 OpenAI interactive row remap 到 `opencodex`,并临时把 opencodex 创建的 `exec` row 提升为 App 可见的 source。`ocx stop` / `ocx restore` 会恢复已备份的 OpenAI row,并把剩余的 opencodex user thread eject 到 OpenAI,这样在 `config.toml` 中移除 proxy provider 后 native Codex 仍可 resume。 |
-| `modelCacheTtlMs?` | `number` | `300000` | 每个 provider 的 `/models` 缓存的有效期(5 分钟)。 |
-| `webSearchSidecar?` | `OcxWebSearchSidecarConfig` | 开启 | 网络搜索 sidecar 选项(见下文)。 |
-| `visionSidecar?` | `OcxVisionSidecarConfig` | 开启 | 视觉 sidecar 选项(见下文)。 |
+| `proxy?` | `string` | — | 出站 HTTP(S) proxy URL 或 `${ENV_VAR}` 引用。对应 env 未设置时应用到 `HTTP_PROXY` / `HTTPS_PROXY`；loopback 会保留在 `NO_PROXY` 中。 |
+| `providers` | `Record<string, OcxProviderConfig>` | — | provider 名称 → 配置的映射。 |
+| `defaultProvider` | `string` | `"openai"` | 路由找不到更优匹配时使用的 provider。 |
+| `subagentModels?` | `string[]` | `gpt-5.5`、三款 GPT-5.6、`gpt-5.4-mini` | 最多 5 个原生 slug 或 `provider/model` id，优先显示在 Codex subagent picker 中。显式空数组会被保留。 |
+| `injectionModel?` | `string` | — | 注入 v1 multi-agent 指南的首选原生或路由模型；委派指南会要求把该模型原样传给 `spawn_agent`。 |
+| `injectionEffort?` | `string` | — | 首选 `spawn_agent` reasoning effort（`low` 到 `ultra`）。只有与 `injectionModel` 一起使用才有意义。 |
+| `disabledModels?` | `string[]` | — | 从 Codex 隐藏的模型。路由 `provider/model` id 会从目录和 `/v1/models` 排除；bare 原生 GPT slug（如 `gpt-5.4`）的目录条目会改成 `visibility: "hide"`，并从 bare `/v1/models` 列表移除。可在仪表盘 Models 页面按模型切换。 |
+| `multiAgentMode?` | `"v1" \| "default" \| "v2"` | `"default"` | 三态 multi-agent surface override。`"v1"` 覆盖 upstream pin，强制全部模型使用 v1；`"default"` 遵循 upstream model pin（sol/terra=v2，luna=v1）；`"v2"` 强制全部模型使用 v2。可在仪表盘 Models 页面或 `ocx v2 mode` 中设置。 |
+| `providerContextCaps?` | `Record<string,number>` | `{}` | provider 级 Codex 可见 context cap。只会降低已知 context window。 |
+| `contextCapValue?` | `number` | `350000` | 仪表盘 context-cap 控件使用的值；修改后会更新 `providerContextCaps` 中所有已启用条目。 |
+| `stallTimeoutSec?` | `number` | `90` | 上游无数据后 bridge 中止并发出 `response.incomplete` 前等待的秒数。最小值 1。 |
+| `connectTimeoutMs?` | `number` | `200000` | 每次尝试等待 DNS/TCP/TLS 和响应 header 的 deadline。 |
+| `shutdownTimeoutMs?` | `number` | `5000` | 中止活跃 turn 前的 graceful drain deadline。 |
+| `websockets?` | `boolean` | `false` | 公布 `supports_websockets`，让 Codex 使用 Responses WebSocket 路径。省略或设为 `false` 会保持 HTTP/SSE。 |
+| `apiKeys?` | `OcxApiKey[]` | `[]` | 非 loopback 绑定下，management 和 data-plane 认证额外接受的生成式 `ocx_…` credential。由仪表盘管理；条目字段见下文。 |
+| `codexAutoStart?` | `boolean` | `true` | 允许 Codex shim 在启动 Codex 前运行 `ocx ensure`。`false` 会让 `ocx ensure` 不执行任何操作。 |
+| `syncResumeHistory?` | `boolean` | `true` | 可逆的 Codex App 历史兼容模式。opencodex 会备份原始 Codex thread metadata，把旧 OpenAI interactive row 重映射到 `opencodex`，并暂时把 opencodex 创建的 `exec` row 提升成 App 可见 source。`ocx stop` / `ocx restore` 会恢复已备份的 OpenAI row，并把剩余 opencodex user thread 转回 OpenAI，使原生 Codex 在从 `config.toml` 移除代理后仍能继续这些 thread。设为 `false` 可退出该模式。 |
+| `codexAccounts?` | `CodexAccount[]` | `[]` | Codex Auth 仪表盘管理的 ChatGPT/Codex pool account metadata。secret 单独存放在 `codex-accounts.json`。 |
+| `activeCodexAccountId?` | `string` | — | 下一个新 Codex thread 使用的 pool account。已有 thread affinity 继续保留原账号。 |
+| `autoSwitchThreshold?` | `number` | `80` | 新 session 自动切换的 usage 百分比 threshold。分数取已知 5 小时、周或 30 天 quota window 中最高的一项。设为 `0` 可禁用 quota 自动切换。 |
+| `upstreamFailoverThreshold?` | `number` | `3` | 连续发生多少次临时上游失败后，让后续新 session failover 到其他合格 pool account。设为 `0` 可禁用失败切换。 |
+| `modelCacheTtlMs?` | `number` | `300000` | 每个 provider 的 `/models` 缓存新鲜度窗口（5 分钟）。 |
+| `cacheRetention?` | `"none" \| "short" \| "long"` | `"short"` | Anthropic prompt-cache 策略：禁用、5 分钟 ephemeral 或 1 小时 extended。 |
+| `webSearchSidecar?` | `OcxWebSearchSidecarConfig` | 开启 | 网络搜索 sidecar 选项（见下文）。 |
+| `visionSidecar?` | `OcxVisionSidecarConfig` | 开启 | 视觉 sidecar 选项（见下文）。 |
+| `tokenGuardian?` | `OcxTokenGuardianConfig` | 关闭 | 可选的 proactive OAuth 刷新和 Codex account warmup 策略；字段见下文。 |
+| `corsAllowOrigins?` | `string[]` | `[]` | CORS 额外允许的精确 origin。loopback origin 始终允许。 |
 
-如果旧的开发构建在备份支持出现之前已经运行过 `syncResumeHistory`,也可以显式运行
-`ocx recover-history --legacy-openai` 执行同样的 native-provider 恢复。
+`maxConcurrentThreadsPerSession` 是 `PUT /api/v2` 使用的 camel-case 字段，不是 `config.json` key。
+`ocx v2 threads <n>` 会把对应的 `max_concurrent_threads_per_session` 值写入 Codex
+`$CODEX_HOME/config.toml` 的 `[features.multi_agent_v2]` 下；请先启用 v2，确保该 table 存在。
+
+如果旧开发构建在支持备份前已运行 `syncResumeHistory`，也可用
+`ocx recover-history --legacy-openai` 强制执行相同的 native-provider 恢复。
+
+:::note[Codex 账号池]
+请在仪表盘 **Codex Auth** 页面添加 pool account 并刷新 quota。配置只保存非 secret account
+metadata；access/refresh token 存放在加固的 Codex account credential store 中。已有 thread id 会
+保留 account affinity，新 session 可按 quota、cooldown 和 health 自动路由。
+:::
+
+### 受管 record 形状
+
+`apiKeys[]` 条目包含 `id: string`、`name: string`、生成的 `key: string` 和 ISO 格式的
+`createdAt: string`。`codexAccounts[]` 条目包含必需的 `id`、`email`、`isMain`，以及可选的
+`plan`、`chatgptAccountId` 和不含隐私的 `logLabel` 字符串。这些 record 通常由仪表盘管理。
+
+### `tokenGuardian`（`OcxTokenGuardianConfig`）
+
+| Field | Type | Default | 含义 |
+| --- | --- | --- | --- |
+| `enabled?` | `boolean` | `false` | proactive refresh 总开关。 |
+| `tickSeconds?` | `number` | `21600` | sweep 间隔（6 小时，最少 60 秒）。 |
+| `jitterSeconds?` | `number` | `300` | sweep 前增加的随机延迟。 |
+| `concurrency?` | `number` | `3` | 每次 sweep 最多同时刷新多少项。 |
+| `leadSeconds?` | `number` | `900` | 在一个 tick 之外额外预留的刷新提前量。 |
+| `failureBackoffBaseSeconds?` | `number` | `300` | 首次临时失败 backoff。 |
+| `failureBackoffMaxSeconds?` | `number` | `3600` | backoff 上限和永久失败延迟。 |
+| `codexWarmupEnabled?` | `boolean` | `false` | 选择启用合成 Codex pool-account 验证。 |
+| `codexWarmupMaxAgeSeconds?` | `number` | `691200` | 账号在 8 天后重新验证。 |
+| `codexWarmupModel?` | `string` | `gpt-5.4-mini` | 可选 warmup 使用的原生模型。 |
 
 ## 远程访问
 
-默认情况下 opencodex 只绑定到 `127.0.0.1`（loopback）。当 `hostname` 设置为 `0.0.0.0`
-等非 loopback 地址时,opencodex 会对管理 API（`/api/*`）和 data-plane（`/v1/responses`）
-都强制启用 token 认证。
+opencodex 默认只绑定到 `127.0.0.1`（loopback）。当 `hostname` 设置为 `0.0.0.0` 等非 loopback
+地址时，management API（`/api/*`）和 data plane（`/v1/responses`）都会强制 token 认证。
 
-启动前设置 `OPENCODEX_API_AUTH_TOKEN`:
+启动前设置 `OPENCODEX_API_AUTH_TOKEN`：
 
 ```bash
 export OPENCODEX_API_AUTH_TOKEN="your-secret-token"
 ocx start
 ```
 
-非 loopback 绑定缺少该变量时,proxy 会拒绝启动。如果要为 LAN 访问安装后台服务,也需要先在同一个
-shell 中 export 该变量,再运行 `ocx service install`,这样 launchd、systemd 或 Task Scheduler
-才能收到 token。客户端必须在每个请求中通过 `x-opencodex-api-key` 头传入 token:
+非 loopback 绑定缺少该变量时，代理会拒绝启动。若要为 LAN 访问安装后台服务，也应先 export
+同一变量，再运行 `ocx service install`，让 launchd、systemd 或 Task Scheduler 收到 token。
+客户端必须在每个请求的 `x-opencodex-api-key` header 中提供 token：
 
 ```
 x-opencodex-api-key: your-secret-token
 ```
 
-token 会用常量时间比较（`timingSafeEqual`）以避免 timing side-channel。
+也可以使用 `Authorization: Bearer …` header。启动后，仪表盘生成的 `apiKeys` 可代替环境 token。
+所有候选值均用常量时间（`timingSafeEqual`）比较，避免 timing side-channel。
 
 :::caution[LAN 暴露]
-绑定到 `0.0.0.0` 会把 proxy 和已配置的 provider credential 暴露到本地网络。只应在可信网络中这样做,
-并始终设置强 `OPENCODEX_API_AUTH_TOKEN`。
+绑定到 `0.0.0.0` 会把代理和所有已配置 provider credential 暴露到本地网络。只应在可信网络中
+使用，并始终设置强 `OPENCODEX_API_AUTH_TOKEN`。
 :::
 
-## Providers(`OcxProviderConfig`)
+## Providers（`OcxProviderConfig`）
 
 | Field | Type | 含义 |
 | --- | --- | --- |
-| `adapter` | `string` | `openai-chat`、`openai-responses`、`anthropic`、`google`、`azure-openai` 之一。 |
-| `baseUrl` | `string` | 上游 API 的基础 URL。 |
-| `apiKey?` | `string` | API key,或在请求时解析的 `${ENV_VAR}` / `$ENV_VAR` 引用。 |
-| `defaultModel?` | `string` | 当选中该 provider 但未指定明确模型时使用的模型。 |
-| `models?` | `string[]` | 种子/回退模型列表。当 `liveModels` 为 `false` 时,它也是 Codex 目录中精确暴露的 allowlist。 |
-| `liveModels?` | `boolean` | 启动/同步时获取 provider 的实时 `/models` 目录(默认 `true`)。设为 `false` 时只使用配置的 `models`。 |
-| `contextWindow?` | `number` | 路由 catalog 条目的 provider 级上下文窗口上限。实时 metadata 小于该值时会保留实时值。 |
-| `modelContextWindows?` | `Record<string,number>` | 模型级上下文窗口上限。匹配模型时优先于 `contextWindow`,且不会抬高更小的实时 metadata。 |
-| `modelInputModalities?` | `Record<string,string[]>` | 模型级 catalog 输入提示,例如 `["text"]` 或 `["text", "image"]`。 |
-| `reasoningEfforts?` | `string[]` | provider 级要广告的 Codex reasoning tier（`low`、`medium`、`high`、`xhigh`、`max`）。 |
-| `modelReasoningEfforts?` | `Record<string,string[]>` | 模型级 reasoning tier override。空数组会隐藏该模型的 effort 控件。 |
-| `reasoningEffortMap?` | `Record<string,string>` | 将 Codex tier 转成上游 wire 值的 provider 级 alias map。默认情况下 `xhigh` 与 `max` 是不同 tier。 |
-| `modelReasoningEffortMap?` | `Record<string,Record<string,string>>` | 模型级 reasoning alias map。 |
-| `headers?` | `Record<string,string>` | 发送到上游的额外 HTTP 头。 |
-| `authMode?` | `"key" \| "forward" \| "oauth"` | 认证方式(默认 `key`)。见 [Providers](/opencodex/zh-cn/guides/providers/#auth-modes)。 |
-| `noReasoningModels?` | `string[]` | 会拒绝 reasoning/thinking 参数的模型 —— adapter 会为它们丢弃 `reasoning_effort`。 |
-| `noVisionModels?` | `string[]` | 纯文本模型 —— [视觉 sidecar](/opencodex/zh-cn/guides/sidecars/) 会为它们描述图像。匹配时可容忍 Ollama 的 `:size` 标签。 |
-| `escapeBuiltinToolNames?` | `boolean` | Umans 等 Anthropic 兼容网关可能要求在 wire 上转义工具名；opencodex 会在把 tool call 返回给 Codex 前移除前缀。 |
+| `adapter` | `string` | `openai-chat`、`openai-responses`、`anthropic`、`google`、`kiro`、`cursor`、`azure-openai`（或别名 `azure`）之一。 |
+| `baseUrl` | `string` | 上游 API base URL。 |
+| `disabled?` | `boolean` | 配置保留在磁盘上，但从路由和模型/目录列表排除。 |
+| `apiKey?` | `string` | API key，或在请求时解析的 `${ENV_VAR}` / `$ENV_VAR` 引用。 |
+| `apiKeyPool?` | `ApiKeyPoolEntry[]` | 多 key pool。`apiKey` 映射当前活动条目；每项包含 `id`、`key`、可选 `label` 和可选数字 `addedAt`。 |
+| `defaultModel?` | `string` | 选中该 provider 但未指定明确模型时使用的模型。 |
+| `models?` | `string[]` | seed/fallback 模型列表。`liveModels` 为 `false` 时，只会发现这些模型。 |
+| `liveModels?` | `boolean` | 启动/同步时获取 provider 的实时 `/models` 目录（默认 `true`）。设为 `false` 时只使用配置的 `models`。 |
+| `selectedModels?` | `string[]` | 模型发现后应用的目录 allowlist。非空时只向 Codex 暴露这些 id；为空或省略时暴露所有发现的模型。 |
+| `contextWindow?` | `number` | 路由目录条目的 provider 级 Codex 可见 context-window cap。实时 metadata 更小时保留实时值。 |
+| `modelContextWindows?` | `Record<string,number>` | 模型级 context-window cap。匹配模型时优先于 `contextWindow`，且不会抬高更小的实时 metadata。 |
+| `modelInputModalities?` | `Record<string,string[]>` | 模型级目录 input hint，如 `["text"]` 或 `["text", "image"]`。 |
+| `headers?` | `Record<string,string>` | 额外上游 header。Authorization、cookie、API-key header、包含换行的值和无效 header 名称会被拒绝。 |
+| `authMode?` | `"key" \| "forward" \| "oauth"` | 认证方式（默认 `key`）。参见 [Providers](/opencodex/zh-cn/guides/providers/#认证模式)。 |
+| `refreshPolicy?` | `"proactive" \| "lazy-only" \| "disabled"` | 覆盖该 OAuth provider 的 Token Guardian 策略。 |
+| `reasoningEfforts?` | `string[]` | provider 级需要公布和发送的 Codex reasoning label（`low`、`medium`、`high`、`xhigh`、`max`、`ultra`）。 |
+| `modelReasoningEfforts?` | `Record<string,string[]>` | 模型级 reasoning label。空数组会隐藏该模型的 effort 控件。 |
+| `reasoningEffortMap?` | `Record<string,string>` | provider 级 reasoning label wire alias。只在上游需要不同值时使用。 |
+| `modelReasoningEffortMap?` | `Record<string,Record<string,string>>` | 模型级 reasoning label wire alias。 |
+| `noReasoningModels?` | `string[]` | 拒绝 reasoning/thinking 参数的模型；adapter 会为它们移除 `reasoning_effort`。 |
+| `noTemperatureModels?` | `string[]` | 拒绝调用方指定 `temperature` 的模型。 |
+| `noTopPModels?` | `string[]` | 拒绝调用方指定 `top_p` 的模型。 |
+| `noPenaltyModels?` | `string[]` | 拒绝 presence/frequency penalty 的模型。 |
+| `parallelToolCalls?` | `boolean` | 启用或禁用并行工具调用。OpenAI Chat 默认开启；非 chat adapter 只有显式为 `true` 时才公布支持。 |
+| `autoToolChoiceOnlyModels?` | `string[]` | `tool_choice` 只接受 `auto` 或 `none` 的模型；forced/named 选择会降级。 |
+| `preserveReasoningContentModels?` | `string[]` | 要求在 chat history 中保留先前 assistant `reasoning_content` 的模型。 |
+| `thinkingToggleModels?` | `string[]` | 使用 vendor `thinking.enabled` toggle，而不是 effort ladder 的 chat 模型。 |
+| `thinkingBudgetModels?` | `string[]` | 使用整数 `thinking_budget` 的 chat 模型；effort 会映射成 budget 比例。 |
+| `noVisionModels?` | `string[]` | 纯文本模型；[视觉 sidecar](/opencodex/zh-cn/guides/sidecars/) 会为它们描述图像。匹配时容忍 Ollama `:size` 标签。 |
+| `escapeBuiltinToolNames?` | `boolean` | Umans 等 Anthropic 兼容 gateway 可能要求在 wire 上转义工具名；opencodex 会在把 tool call 返回 Codex 前移除 prefix。 |
+| `googleMode?` | `"ai-studio" \| "vertex" \| "cloud-code-assist"` | Google transport/auth mode。默认 `ai-studio`。 |
+| `project?` | `string` | Vertex project id 或 Antigravity Cloud Code Assist project id。 |
+| `location?` | `string` | Vertex location；env fallback 为 `GOOGLE_CLOUD_LOCATION`。 |
+| `mcpServers?` | `Record<string,CursorMcpServerConfig>` | **仅 Cursor。** 通过 stdio 启动或 Streamable HTTP 连接的 MCP server；字段见下文。 |
+| `desktopExecutor?` | `DesktopExecutorConfig` | **仅 Cursor。** 外部 computer-use/record-screen 命令；字段见下文。 |
+| `unsafeAllowNativeLocalExec?` | `boolean` | **仅 Cursor adapter。** 允许 Cursor server 驱动本地 `read` / `write` / `delete` / `ls` / `grep` / `shell` / `fetch` 的 opt-in escape hatch。默认 `false`，防止远程 Cursor message 绕过 Codex 审批与 sandbox。见下文 [Cursor provider](#cursor-provideradapter-cursor)。 |
+
+## Cursor provider（`adapter: "cursor"`）
+
+Cursor bridge 仍属实验功能。运行 `ocx login cursor` 后，在
+`~/.opencodex/config.json`（Windows：`%USERPROFILE%\.opencodex\config.json`）的 `providers` 下
+添加或编辑 `cursor` 条目。
+
+Cursor server 驱动的原生本地工具默认保持**禁用**。Codex 继续按自身审批和 sandbox policy 使用
+`apply_patch`、`exec_command` 等工具。只有在可信本地实验中，且你接受 Cursor 绕过 Codex 审批
+读取、写入、删除、列出、grep、shell 或 fetch 本机内容时，才设置
+`unsafeAllowNativeLocalExec`。
+
+```json
+{
+  "providers": {
+    "cursor": {
+      "adapter": "cursor",
+      "baseUrl": "https://api2.cursor.sh",
+      "authMode": "oauth",
+      "defaultModel": "auto",
+      "unsafeAllowNativeLocalExec": true
+    }
+  }
+}
+```
+
+该 flag 应放在 **provider 对象**（`providers.cursor`）上，而不是 `config.json` 顶层。
+
+也可在 [Web 仪表盘](/opencodex/zh-cn/guides/web-dashboard/) 中设置：进入 **Providers → Cursor →
+Edit JSON**，添加 `"unsafeAllowNativeLocalExec": true`，保存后重启代理
+（`ocx restart` 或 `ocx stop` + `ocx start`）。
+
+MCP、屏幕录制和 computer-use 使用独立的 `mcpServers` / `desktopExecutor` 配置，不受该 flag 控制。
+
+### Cursor 集成 record
+
+每个 `mcpServers.<name>` 值接受 `command`（stdio）或 `url`（Streamable HTTP）之一。stdio 条目还
+接受 `args?: string[]`、`env?: Record<string,string>`、`cwd?: string`；HTTP 条目接受
+`headers?: Record<string,string>`。两种形式都支持 `enabled?: boolean`（默认 true）和
+`toolPrefix?: string`。
+
+`desktopExecutor` 接受 `computerUseCommand?`、`recordScreenCommand?`、`cwd?`、
+`env?: Record<string,string>` 和 `timeoutMs?`（默认 `30000`）。命令经 `sh -c` 运行，从 stdin
+读取一个 JSON 请求，并必须向 stdout 写出一个 JSON 结果。
+
+:::caution[安全]
+除非你明确需要绕过 Codex 审批与 sandbox 语义的 Cursor 原生本地执行，否则请省略
+`unsafeAllowNativeLocalExec` 或保持为 `false`。
+:::
 
 ## 静态模型 allowlist
 
-有些 provider 的实时模型目录非常大或响应较慢。如果只希望 Codex 看到 `models` 中固定的模型,
-可以将 `liveModels` 设为 `false`。
+部分 provider 的实时模型目录非常大或很慢。若只想让 Codex 看到 `models` 中固定的模型，请把
+`liveModels` 设为 `false`。
 
-当 `liveModels` 为 `false` 且 `models` 为空或省略时,opencodex 不会为该 provider 暴露 routed model。
+当 `liveModels` 为 `false` 且 `models` 为空或省略时，opencodex 不会为该 provider 暴露任何
+路由模型。
+
+`selectedModels` 的用途不同：模型发现仍会运行，但只有选中的 id 会发布到 Codex 目录和
+`/v1/models`。仪表盘仍保留完整模型列表，因此之后可以修改 allowlist。
+
+Preview GPT-5.6 fallback 条目采用相同机制。OpenAI API-key preset 会 seed `gpt-5.6-sol`、
+`gpt-5.6-terra`、`gpt-5.6-luna`；OpenRouter preset 则以 `openai/gpt-5.6-sol`、
+`openai/gpt-5.6-terra`、`openai/gpt-5.6-luna` seed 同一组模型。两种 preset 都设置模型级
+`modelContextWindows: 372000`；同步后的 Codex 目录会公布 `max` reasoning，同时与 `xhigh` 保持
+区分。保持 `liveModels` 开启可把实时 provider 结果与这些显式条目合并；设为 `false` 则只暴露
+`models`。
 
 ```json
 {
@@ -97,36 +226,25 @@ token 会用常量时间比较（`timingSafeEqual`）以避免 timing side-chann
 }
 ```
 
-## GPT-5.6 seed/fallback 模型
-
-内置 **OpenAI (API key)** provider 使用 OpenAI Responses API(`https://api.openai.com/v1`),并在
-fallback 模型列表中包含 `gpt-5.5`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`。OpenRouter
-会以 `openai/gpt-5.6-sol`、`openai/gpt-5.6-terra`、`openai/gpt-5.6-luna` 名称 seed 同一组
-preview 模型。三款 GPT-5.6 模型的 `modelContextWindows` 值均为 `372000`,且 `max` reasoning tier
-会与 `xhigh` 分开保留。
-
-这些值是 rollout 准备 metadata。实际调用只有在连接的 OpenAI API key、OpenRouter 账号或原生
-ChatGPT/Codex 账号拥有 GPT-5.6 preview 权限时才会成功。
-
 ## Sidecars
 
-### `webSearchSidecar`(`OcxWebSearchSidecarConfig`)
+### `webSearchSidecar`（`OcxWebSearchSidecarConfig`）
 
 | Field | Type | Default | 含义 |
 | --- | --- | --- | --- |
-| `enabled?` | `boolean` | 当存在 forward provider + 登录时开启 | 总开关。 |
-| `model?` | `string` | `gpt-5.4-mini` | 运行真实 `web_search` 的 sidecar 模型(必须是原生 ChatGPT 模型)。 |
-| `reasoning?` | `string` | `low` | sidecar 的推理强度(在网络搜索时 `minimal` 会被拒绝)。 |
-| `maxSearchesPerTurn?` | `number` | `3` | 每个主模型轮次的真实搜索总次数(循环保护)。 |
-| `timeoutMs?` | `number` | `30000` | sidecar 的请求超时时间。 |
+| `enabled?` | `boolean` | 存在 forward provider + 登录时开启 | 总开关。 |
+| `model?` | `string` | `gpt-5.6-luna` | 运行真实 `web_search` 的 sidecar 模型（必须是原生 ChatGPT 模型）。显式保留的旧 `gpt-5.4-mini` 值会在启动时迁移。 |
+| `reasoning?` | `string` | `low` | sidecar reasoning effort（网络搜索会拒绝 `minimal`）。 |
+| `maxSearchesPerTurn?` | `number` | `3` | 每个主模型 turn 的真实搜索总次数（loop guard）。 |
+| `timeoutMs?` | `number` | `200000` | sidecar fetch timeout。 |
 
-### `visionSidecar`(`OcxVisionSidecarConfig`)
+### `visionSidecar`（`OcxVisionSidecarConfig`）
 
 | Field | Type | Default | 含义 |
 | --- | --- | --- | --- |
-| `enabled?` | `boolean` | 当存在 forward provider + 登录时开启 | 总开关。 |
-| `model?` | `string` | `gpt-5.4-mini` | 描述图像的视觉模型(必须接受图像输入)。 |
-| `timeoutMs?` | `number` | `45000` | sidecar 的请求超时时间。 |
+| `enabled?` | `boolean` | 存在 forward provider + 登录时开启 | 总开关。 |
+| `model?` | `string` | `gpt-5.4-mini` | 描述图像的视觉模型（必须接受图像输入）。 |
+| `timeoutMs?` | `number` | `45000` | sidecar fetch timeout。 |
 
 ## 完整示例
 
@@ -163,11 +281,12 @@ ChatGPT/Codex 账号拥有 GPT-5.6 preview 权限时才会成功。
 ```
 
 :::tip[密钥]
-建议为 key 使用 `${ENV_VAR}` 引用,这样 `config.json` 中就不会包含密钥。OAuth 和 forward provider 完全不存储任何 key。
+建议为 key 使用 `${ENV_VAR}` 引用，避免 `config.json` 包含 secret。OAuth 和 forward provider
+完全不存储 key。
 :::
 
 :::note[原子写入]
-所有配置和目录文件（`config.toml`、`opencodex-catalog.json`）均通过 `atomicWriteFile`（临时文件 + 重命名）
-进行原子写入。这可以防止并发写入者（例如 `ocx stop` 和 proxy 的自身关闭处理器同时恢复 Codex 时）产生
-写了一半的文件。
+所有配置和目录文件（`config.toml`、`opencodex-catalog.json`）都会经 `atomicWriteFile`（临时文件 +
+重命名）原子写入。这样即使多个 writer（例如 `ocx stop` 与代理自身的 shutdown handler）同时
+恢复 Codex，也不会留下只写了一半的文件。
 :::

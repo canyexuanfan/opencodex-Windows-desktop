@@ -212,8 +212,7 @@ Provider picker as a local config with Cursor's static public model catalog. Liv
 HTTP/2 transport is enabled when a Cursor access token is configured. Cursor server-driven native
 read/write/delete/ls/grep/shell/fetch execution is disabled by default because it bypasses Codex's
 approval and sandbox path; set `unsafeAllowNativeLocalExec: true` only for trusted local
-experiments. The older `allowNativeLocalExec` spelling is accepted as a deprecated transition
-alias.
+experiments.
 MCP, screen recording, and computer-use are exposed through executor hooks; when no local executor
 is configured, opencodex returns typed no-executor results instead of policy-blocking the request.
 Cursor OAuth and live model discovery are enabled for the experimental Cursor adapter.

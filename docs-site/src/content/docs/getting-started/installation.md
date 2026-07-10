@@ -3,8 +3,9 @@ title: Installation
 description: Install the opencodex (ocx) proxy, its prerequisites, and verify it runs.
 ---
 
-opencodex ships as a single CLI, `ocx`. It runs as a small local HTTP server (built on Bun) and never
-sends your traffic anywhere except the provider you configure.
+opencodex installs two equivalent command names, `ocx` and `opencodex`. Both launch the same small
+local HTTP server (built on Bun). Model requests go to the provider selected by routing; optional
+vision and web-search sidecars can also use your ChatGPT login when a routed model needs them.
 
 ## Prerequisites
 
@@ -20,24 +21,24 @@ sends your traffic anywhere except the provider you configure.
 npm install -g @bitkyc08/opencodex
 ```
 
-Verify the binary is on your `PATH`:
+Verify both command aliases are on your `PATH`:
 
 ```bash
-ocx --help
+ocx --version
+opencodex --version
 ```
 
-### Preview channel
+### Release channels
 
-GPT-5.6 Sol/Terra/Luna support is preview-gated until the rollout graduates. Install the preview tag
-for a fresh setup, or keep an existing preview install on the preview channel:
+The stable `latest` channel already includes GPT-5.6 Sol/Terra/Luna catalog support for ChatGPT,
+OpenAI API-key, OpenRouter, and experimental Cursor routes. Upstream access is still account-gated;
+the catalog entries do not grant access by themselves. Use the preview channel only to test
+unreleased opencodex builds:
 
 ```bash
 npm install -g @bitkyc08/opencodex@preview
 ocx update --tag preview
 ```
-
-Preview builds seed the GPT-5.6 model ids and Codex catalog metadata; they do not grant upstream
-model access by themselves.
 
 ## Run from source
 
@@ -58,13 +59,19 @@ has produced `gui/dist`. While hacking on the dashboard, run the frontend separa
 
 ## What gets created
 
+opencodex state lives under `$OPENCODEX_HOME` (default `~/.opencodex`). Codex integration files live
+under `$CODEX_HOME` (default `~/.codex`).
+
 | Path | Purpose |
 | --- | --- |
-| `~/.opencodex/config.json` | Your providers, default provider, port, and options. |
-| `~/.opencodex/ocx.pid` | PID of the running proxy (single-instance guard). |
-| `~/.opencodex/auth.json` | Stored OAuth credentials (when you `ocx login`). |
-| `~/.opencodex/catalog-backup.json` | Pristine Codex model catalog, backed up before any edit. |
-| `$CODEX_HOME/config.toml` | opencodex appends a `[model_providers.opencodex]` table here on `ocx init` (defaults to `~/.codex/config.toml`). |
+| `$OPENCODEX_HOME/config.json` | Your providers, default provider, port, and options. |
+| `$OPENCODEX_HOME/ocx.pid` | PID of the running proxy (single-instance guard). |
+| `$OPENCODEX_HOME/runtime-port.json` | The live PID, hostname, and port, including an automatically selected fallback port. |
+| `$OPENCODEX_HOME/auth.json` | Stored OAuth credentials (when you `ocx login`). |
+| `$OPENCODEX_HOME/catalog-backup*.json` | Codex model catalog backups made before opencodex edits it. |
+| `$CODEX_HOME/config.toml` | On loopback, opencodex adds a marker-owned root `openai_base_url`; non-loopback binds use `model_provider = "opencodex"` plus `[model_providers.opencodex]` so Codex can send the API-auth header. |
+| `$CODEX_HOME/opencodex.config.toml` | Fallback/reference profile written alongside the main Codex config. |
+| `$CODEX_HOME/opencodex-catalog.json` | Synced native and routed model catalog used by Codex. |
 
 :::note
 opencodex never deletes your Codex config. Every injection is reversible — `ocx stop`, `ocx restore`,

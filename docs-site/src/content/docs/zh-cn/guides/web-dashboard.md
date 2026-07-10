@@ -1,52 +1,98 @@
 ---
 title: Web 仪表盘
-description: opencodex 的 GUI——proxy 状态、提供商管理、模型选择器和请求日志。
+description: 用于管理代理健康状态、provider、模型、委派指引、认证池、usage 和日志的 opencodex GUI。
 ---
 
-opencodex 内置了一个本地 web 仪表盘（位于 `gui/` 下的 Vite/React 应用），由 proxy 提供服务。这是添加提供商、用 OAuth 登录、选择 subagent 模型以及观察流量的最简便方式。
+opencodex 内置了一个由代理提供服务的本地 web 仪表盘（`gui/` 下的 Vite/React 应用）。你可以在
+这里快速管理 provider、Codex/ChatGPT 账号、目录模型、sidecar、子代理设置和请求流量。
 
-## 打开它
+## 打开仪表盘
 
 ```bash
 ocx gui
 ```
 
-这会在你的浏览器中打开 `http://localhost:<port>`（如有需要会先自动启动 proxy）。在开发环境中，你可以针对正在运行的 proxy 单独运行 GUI 开发服务器：
+该命令会在浏览器中打开 `http://localhost:<port>`；如果代理尚未运行，会先自动启动。开发时也可
+让 GUI dev server 单独连接到正在运行的代理：
 
 ```bash
 ocx start
 bun run dev:gui
 ```
 
-## 你可以做什么
+## 可以完成哪些操作
 
 | 区域 | 作用 |
 | --- | --- |
-| **Status** | 实时的 proxy 状态、端口、运行时长和 PID。 |
-| **Providers** | 添加、编辑、启用/禁用以及移除提供商。 |
-| **Add provider** | 一个可搜索的预设选择器——OAuth 登录（xAI / Anthropic / Kimi）、ChatGPT forward、API 密钥目录（含 Ollama Cloud）、本地服务器以及 Custom。 |
-| **OAuth login** | 打开提供商的认证页面并轮询，直到令牌到位；或导入已有的本地 CLI/钥匙串令牌。 |
-| **Subagent models** | 选择 Codex 的 `spawn_agent` 所展示的 ≤5 个路由模型。 |
-| **Models** | 启用/禁用单个路由模型（被隐藏的模型会从目录和 `/v1/models` 中排除）。 |
-| **Multi-agent mode** | Models 页面上的三段选择器（All v1 / Default / All v2），用于强制所有模型的 multi-agent surface。Default 会遵循 upstream pins（sol/terra=v2,luna=v1）。 |
-| **Request log** | 自动刷新的近期请求视图（模型、提供商、状态）。 |
-| **Stop** | 侧栏按钮，可一键优雅地关闭 proxy、停止后台服务（如已安装）并恢复原生 Codex（`POST /api/stop`）。 |
+| **Dashboard 摘要** | 显示 multi-agent 模式、在线状态、版本、运行时间、provider 数量、30 天 token 总量、活动 provider 和可用的原生/路由模型。 |
+| **Sub-agent delegation** | 为 v1 委派 prompt 选择原生或路由模型，并可指定 reasoning 强度。它不是逐次生成的路由器，详见下文。 |
+| **Sidecar** | 选择 web-search 模型及强度，以及图像描述模型；更改从下一次请求开始生效。 |
+| **Maintenance** | 重新同步 Codex 模型目录，查看项目级配置绕过警告，检查 latest/preview 版本，并可在更新后重启代理。 |
+| **Codex 自动启动** | 启用或禁用 Codex launcher shim；该 shim 会在 Codex CLI/App 启动前运行 `ocx ensure`。 |
+| **Providers** | 添加、编辑、启用/禁用、删除 provider，并在支持时管理 OAuth 账号池和 API key 池。 |
+| **Add provider** | 搜索 registry preset，选择账号登录、API key 服务、本地服务器或自定义 endpoint。 |
+| **Codex Auth** | 添加 ChatGPT/Codex 池账号，选择下一 session 的账号，刷新 5h / 每周 / 30d 配额，并设置配额自动切换和临时故障 failover。 |
+| **Subagents** | 在 `spawn_agent` override 列表中置顶最多五个原生或路由模型。 |
+| **Models** | 开关原生 GPT 与路由模型，配置 provider allowlist、上下文上限、v1/base/v2 以及 v2 thread 数量。 |
+| **Logs** | 自动刷新近期请求，显示 token、请求强度、实际模型、provider、状态、request id、耗时和错误详情。 |
+| **Usage / Debug** | 查看 token usage 覆盖率与趋势，或启用可选的 provider transport 和 usage 提取诊断。 |
+| **Stop** | 优雅地停止代理和已安装的后台服务，恢复原生 Codex 并退出（`POST /api/stop`）。 |
 
-## 仪表盘如何与 proxy 通信
+## 委派选择器与生成路由的区别
 
-GUI 是 proxy 管理 API 之上的一个轻量客户端。常用端点（均为 JSON）：
+Dashboard 的 **Sub-agent delegation** 选择器会保存 `injectionModel`，以及可选的
+`injectionEffort`。在 v1 turn 中，opencodex 会注入一段指引，告诉父代理调用 `spawn_agent` 时应
+传入哪个精确模型和 reasoning 强度。只要选定模型，无论父代理当前使用何种 reasoning 强度，都会
+启用这段指引；清除模型时也会清除已保存的强度。
 
-| 端点 | 用途 |
+:::caution
+该选择器是面向 v1 兼容界面的委派指引。在 `multi_agent_v2` 中，当前代理不会附加 v1 注入消息，
+而且所有生成的子代理都会继承父 session 的模型。它不是代理侧的跨模型路由器。v1/base/v2 的
+权威说明见 [子代理界面](/opencodex/zh-cn/guides/sub-agent-surface/)。
+:::
+
+选择器会列出已启用的原生与路由模型，以及全局 Codex reasoning 阶梯。API 会先验证所选强度是否
+属于全局阶梯；Codex 仍会根据目标目录条目再次校验该 spawn 强度。
+
+## Codex Auth 与账号池
+
+**Codex Auth** 页面用于管理原生 ChatGPT/Codex 路由：
+
+- 手动选择账号会影响下一次新建的 Codex session；已经绑定账号的 thread 不会因为这次手动切换而
+  在中途转移。
+- Thread affinity 可避免每个请求都来回切换账号。启用配额自动切换后，长时间运行的 thread 会被
+  定期重新评估；当相关 usage 达到阈值，并且存在使用率确实更低的可用账号时，该 thread 可能会
+  重新绑定。
+- 新 session 可以选择 usage 最低的可用账号。付费计划按已知 5h、每周、30d 窗口中的最高使用率
+  评分；Go/Free 计划只使用 30d 窗口。
+- **Refresh quotas** 会立即重新读取账号 usage，使路由逻辑与页面上的账号卡片使用同一份数据。
+- 池账号的请求日志使用 `p3fa91c` 这类不透明标签，不会记录账号邮箱。
+
+## 仪表盘如何与代理通信
+
+GUI 是代理 JSON 管理 API 之上的轻量客户端。常用 endpoint 包括：
+
+| Endpoint | 用途 |
 | --- | --- |
-| `GET /api/providers` | 列出已配置的提供商。 |
-| `POST /api/providers` | 添加或覆盖一个提供商（目录条目会自动附带其模型分类信息）。 |
-| `DELETE /api/providers?name=…` | 移除一个提供商。 |
-| `GET /api/key-providers` | API 密钥目录（含 Ollama Cloud）。 |
-| `GET /api/oauth/providers` | 哪些提供商支持 OAuth 登录。 |
-| `POST /api/oauth/login` · `GET /api/oauth/status` | 启动一次 OAuth 流程并轮询其完成情况。 |
-| `GET` / `PUT /api/subagent-models` | 读取 / 设置置顶的 subagent 模型。 |
-| `POST /api/stop` | 优雅地停止 proxy（以及已安装的后台服务），恢复原生 Codex，然后退出。 |
+| `GET` / `PUT /api/settings` | 读取设置或切换 Codex 自动启动。 |
+| `POST /api/sync` | 重建共享模型目录，并把 Codex 模型缓存标记为过期。 |
+| `GET /api/update/check` · `POST /api/update/run` · `GET /api/update/status` | 检查、运行和监控自更新任务。 |
+| `GET` / `PUT /api/sidecar-settings` | 读取或设置 search/vision sidecar 模型。 |
+| `GET` / `PUT /api/injection-model` | 读取或设置 v1 委派指引模型及可选强度。 |
+| `GET` / `PUT /api/v2` | 读取或设置界面模式、Codex feature flag 和 v2 thread 上限。 |
+| `GET /api/providers` · `POST /api/providers` · `PATCH /api/providers?name=...` · `DELETE /api/providers?name=...` | 列出、添加/替换、启用/禁用或删除 provider。 |
+| `GET /api/models` · `PUT /api/disabled-models` | 列出原生/路由模型，并更新共享的 disabled-model 集合。 |
+| `GET /api/key-providers` · `GET /api/oauth/providers` | 读取 API key 和 OAuth provider 目录。 |
+| `POST /api/oauth/login` · `GET /api/oauth/status` | 启动 provider OAuth 流程并轮询完成状态。 |
+| `GET /api/codex-auth/accounts?refresh=1` | 列出主账号与池账号，并强制刷新配额。 |
+| `PUT /api/codex-auth/active` · `PUT /api/codex-auth/auto-switch` · `PUT /api/codex-auth/failover` | 选择下一 session 的账号并配置账号池路由。 |
+| `POST /api/codex-auth/login` · `GET /api/codex-auth/login-status` | 通过浏览器登录添加池账号。 |
+| `GET /api/logs?tail=50&provider=...&status=5xx` | 使用 tail、provider、精确状态码或状态类别筛选近期请求元数据。 |
+| `GET` / `PUT /api/subagent-models` | 读取或设置五个置顶的 `spawn_agent` override 模型。 |
+| `POST /api/stop` | 停止代理/服务，恢复原生 Codex 并退出。 |
 
 :::tip
-从仪表盘添加 **Ollama Cloud**（或任何目录提供商）时，会自动将其文本与视觉模型分类信息复制到你的配置中，因此 [vision sidecar](/opencodex/zh-cn/guides/sidecars/) 会被正确地按条件启用，无需任何手动设置。
+从仪表盘添加 **Ollama Cloud** 或其他目录型 provider 时，其文本/视觉模型分类会写入保存的
+provider 配置。因此无需手动分类，[vision sidecar](/opencodex/zh-cn/guides/sidecars/) 也能在正确
+条件下启用。
 :::

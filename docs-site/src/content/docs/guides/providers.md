@@ -8,13 +8,14 @@ mode, and an optional model list. Providers live under `providers` in `~/.openco
 
 ## Auth modes
 
-Every provider has an `authMode` (default `key`):
+Provider configs accept three `authMode` values (`key` is the default). The built-in registry also
+labels local presets separately; those normally omit both `authMode` and `apiKey`.
 
 | `authMode` | How it authenticates | Used by |
 | --- | --- | --- |
 | `key` | Sends your API key (`Authorization: Bearer …`, or `x-api-key` / `api-key` per adapter). The key may be a literal or an `${ENV_VAR}` reference. | Most providers. |
 | `forward` | Relays **your incoming Codex auth headers** verbatim to the provider — no key stored. This is the ChatGPT-login passthrough. | OpenAI (`openai-responses` adapter). |
-| `oauth` | Resolves a stored OAuth access token (auto-refreshed before expiry) and uses it as the bearer key. | xAI, Anthropic, Kimi. |
+| `oauth` | Resolves a stored OAuth access token (auto-refreshed before expiry) and uses it as the bearer key. | xAI, Anthropic, Kimi, Kiro, Google Antigravity, Cursor. |
 
 ## 1. ChatGPT login (forward / passthrough)
 
@@ -35,47 +36,60 @@ Only a curated set of headers is forwarded (`FORWARD_HEADERS`: authorization, Ch
 OpenAI beta/originator/session — see [Adapters](/opencodex/reference/adapters/)). This path is also
 what powers the [web-search and vision sidecars](/opencodex/guides/sidecars/).
 
-In preview builds, the ChatGPT passthrough catalog also layers in the bare GPT-5.6 Sol/Terra/Luna
-slugs (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`) for accounts that can use them.
+The ChatGPT passthrough catalog also layers in the bare GPT-5.6 Sol/Terra/Luna slugs
+(`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`) for accounts that can use them.
 
 ## 2. Account login (OAuth)
 
-Three providers support real account login. opencodex stores the credential in `~/.opencodex/auth.json`
-and refreshes it automatically:
+Six provider presets use OAuth login. opencodex stores their credentials in
+`~/.opencodex/auth.json` and refreshes them automatically. `chatgpt` is also accepted by the login
+CLI; it acquires a ChatGPT credential while creating a `forward`-mode provider entry.
 
 ```bash
 ocx login xai          # xAI Grok
 ocx login anthropic    # Anthropic Claude (Pro/Max)
 ocx login kimi         # Moonshot Kimi
+ocx login kiro         # import kiro-cli credentials (or token fallback)
+ocx login google-antigravity
+ocx login cursor       # standalone Cursor PKCE login
+ocx login chatgpt      # standalone ChatGPT OAuth login
 ocx logout <provider>
 ```
 
 | Provider | Adapter | Base URL | Notes |
 | --- | --- | --- | --- |
-| `xai` | `openai-chat` | `https://api.x.ai/v1` | Grok models; some have no reasoning param (handled automatically). |
+| `xai` | `openai-chat` | `https://api.x.ai/v1` | Live-first Grok catalog; `grok-4.5` is the fallback default. |
 | `anthropic` | `anthropic` | `https://api.anthropic.com` | Claude models; live model list fetched from `/v1/models`. |
-| `kimi` | `openai-chat` | `https://api.kimi.com/coding/v1` | Kimi K2 family. |
+| `kimi` | `openai-chat` | `https://api.kimi.com/coding/v1` | Kimi K2.7/K2.6/K2.5 coding models. |
+| `kiro` | `kiro` | `https://runtime.us-east-1.kiro.dev` | Import-first login reuses the installed `kiro-cli` session. |
+| `google-antigravity` | `google` | `https://daily-cloudcode-pa.googleapis.com` | Google OAuth over the Cloud Code Assist wire. |
+| `cursor` | `cursor` | `https://api2.cursor.sh` | Experimental PKCE login, live HTTP/2 transport, and account-filtered model discovery. |
 
 You can also start OAuth from the [web dashboard](/opencodex/guides/web-dashboard/).
 
 ### Multiple OAuth accounts
 
-OAuth providers can keep more than one logged-in account. The Providers page shows the stored
-accounts in a dropdown, lets you add another account with a fresh login, and switches the active
-account without logging the others out. Tokens stay in `~/.opencodex/auth.json`; the management API
-exposes only masked account metadata through `/api/oauth/accounts`.
+OAuth providers whose credentials include a stable account id or email can keep more than one
+login. The Providers page shows those accounts in a dropdown, lets you add another, and switches the
+active account without logging the others out. Identity-less Kimi and Kiro credentials replace their
+active slot, while `chatgpt` is always single-slot because Codex pool accounts have a separate ledger.
+Tokens stay in `~/.opencodex/auth.json`; `/api/oauth/accounts` returns masked metadata only.
 
 ## 3. API-key catalog
 
-opencodex ships a catalog of key-based providers (mostly OpenAI-compatible, a few
-Anthropic-compatible). The dashboard's **Add provider** picker opens the provider's key dashboard,
+opencodex v2.7.1 ships 50 built-in presets: 40 key-based, six OAuth, three local, and the default
+ChatGPT-forward preset. The dashboard's **Add provider** picker opens a key provider's dashboard,
 validates the key, and stores it. Notable entries:
 
 | Provider | Base URL |
 | --- | --- |
 | **OpenAI (API key)** | `https://api.openai.com/v1` |
+| **Anthropic (API key)** | `https://api.anthropic.com` |
 | **OpenRouter** | `https://openrouter.ai/api/v1` |
 | **Ollama Cloud** | `https://ollama.com/v1` |
+| Google Gemini · Google Vertex AI | `https://generativelanguage.googleapis.com` · `https://aiplatform.googleapis.com` |
+| Azure OpenAI | `https://{resource}.openai.azure.com/openai` |
+| Umans AI · Neuralwatt | `https://api.code.umans.ai` · `https://api.neuralwatt.com/v1` |
 | Mistral | `https://api.mistral.ai/v1` |
 | MiniMax · MiniMax (CN) | `https://api.minimax.io/v1` · `https://api.minimaxi.com/v1` |
 | DeepSeek | `https://api.deepseek.com` |
@@ -90,7 +104,7 @@ validates the key, and stores it. Notable entries:
 | Xiaomi MiMo | `https://api.xiaomimimo.com/anthropic` |
 | Kilo | `https://api.kilo.ai/api/gateway` |
 | GitHub Copilot · GitLab Duo | `https://api.githubcopilot.com` · `https://cloud.gitlab.com/ai/v1/proxy/openai/v1` |
-| Cloudflare AI Gateway | `https://gateway.ai.cloudflare.com/v1/{account}/{gateway}/anthropic` |
+| Cloudflare AI Gateway | `https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway}/anthropic` |
 | …and more | opencode zen, Vercel AI Gateway, Venice, NanoGPT, Synthetic, Qianfan, Alibaba, Parallel, ZenMux, LiteLLM |
 
 Most use the `openai-chat` adapter with a bearer key; a few that expose only an Anthropic-compatible
@@ -98,32 +112,34 @@ endpoint (e.g. **Xiaomi MiMo**) use the `anthropic` adapter (`x-api-key`).
 
 ### Multiple API keys
 
-Key-based providers can also keep a small key pool. Adding a key through the Providers page stores it
+Key-based providers can also keep multiple keys. Adding a key through the Providers page stores it
 under `provider.apiKeyPool`, makes it active, and mirrors it to `provider.apiKey` so routing and
 adapters continue to read the same field as before. The same dropdown can switch or remove keys; the
 management API is `/api/providers/keys` and returns masked keys only.
 
 ### GPT-5.6 preview paths
 
-Preview builds seed GPT-5.6 Sol/Terra/Luna in the provider fallback lists so `ocx sync` can keep the
-models visible even while live `/models` catalogs lag:
+GPT-5.6 Sol/Terra/Luna are seeded in provider fallback lists so `ocx sync` can keep the models
+visible even while live catalogs lag:
 
-| Route | Seeded model ids |
-| --- | --- |
-| ChatGPT login passthrough | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` |
-| OpenAI (API key) | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` |
-| OpenRouter | `openai/gpt-5.6-sol`, `openai/gpt-5.6-terra`, `openai/gpt-5.6-luna` |
+| Codex route | Seeded model ids | Codex-visible context |
+| --- | --- | --- |
+| ChatGPT login passthrough | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | 372,000 |
+| OpenAI (API key) | `openai-apikey/gpt-5.6-sol`, `openai-apikey/gpt-5.6-terra`, `openai-apikey/gpt-5.6-luna` | 372,000 |
+| OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` | 372,000 |
+| Cursor | `cursor/gpt-5.6-sol`, `cursor/gpt-5.6-terra`, `cursor/gpt-5.6-luna` | 1,000,000 |
 
-All three paths carry 372,000 usable-token context metadata and expose `max` and `ultra` reasoning
-in the Codex catalog (`ultra` is converted to `max` on the wire, matching upstream Codex).
-Availability remains upstream-gated; opencodex only routes models your provider account can
-actually call.
+The native GPT-5.6 entries preserve the pinned upstream reasoning ladders (for example, Luna has
+`max` but no `ultra`). Routed entries use their provider metadata and reasoning mappings. All four
+paths remain upstream-gated; Cursor's live discovery additionally filters its static seed to models
+the logged-in account can use.
 
 :::note[Gateways & subscription proxies]
-A provider is included whenever it speaks a standard streaming API opencodex can proxy
-(`openai-completions`, `anthropic-messages`, `openai-responses`, Azure, or Gemini) — **not** based on
-whether it's an "agent" product. Providers on a proprietary protocol with no opencodex adapter are
-excluded: Gemini CLI / Antigravity, Vertex AI, Amazon Bedrock, and the Codex backend itself.
+A provider is included when opencodex has a matching wire adapter, **not** based on whether it is an
+"agent" product. The current adapter ids are `openai-chat`, `openai-responses`, `anthropic`, `google`
+(AI Studio, Vertex, and Antigravity/Cloud Code Assist modes), `azure` / `azure-openai`, `kiro`, and
+`cursor`. A proprietary API without one of these implementations, such as native Amazon Bedrock,
+is not supported directly.
 **GitHub Copilot** and **GitLab Duo** are multi-model gateways mapped to their universal
 OpenAI-compatible endpoint; they authenticate with a Bearer **subscription token** (not a plain API
 key), and Copilot may need a `User-Agent` header set via the provider's `headers`. **Cloudflare AI
@@ -131,14 +147,15 @@ Gateway** needs your account + gateway ids filled into the URL.
 
 Cursor is tracked separately as an experimental adapter. `adapter: "cursor"` appears in `ocx init`
 and the dashboard Add Provider picker as an experimental local config entry with Cursor's static
-public model catalog metadata. When a Cursor access token is configured, opencodex uses Cursor's
-live HTTP/2 transport. Cursor server-driven native read/write/delete/ls/grep/shell/fetch execution
+fallback model catalog metadata. When a Cursor access token is configured, opencodex uses Cursor's
+live HTTP/2 transport. Its v2.7.1 fallback seed includes `gpt-5.6-sol` / `terra` / `luna` (1M context)
+plus `grok-4.5` / `grok-4.5-fast` (500K); live discovery decides which remain visible for the
+account. Cursor server-driven native read/write/delete/ls/grep/shell/fetch execution
 is disabled by default because it bypasses Codex's approval and sandbox path; set
 `unsafeAllowNativeLocalExec: true` on the `providers.cursor` object in `~/.opencodex/config.json`
 only for trusted local experiments (or via **Providers → Cursor → Edit JSON** in the dashboard).
-The older `allowNativeLocalExec` spelling is accepted as a deprecated transition alias. See the
-[Configuration reference](/opencodex/reference/configuration/#cursor-provider-adapter-cursor) for a
-full example. MCP, screen recording, and computer-use are available as executor hooks; without a
+See the [Configuration reference](/opencodex/reference/configuration/#cursor-provider-adapter-cursor)
+for a full example. MCP, screen recording, and computer-use are available as executor hooks; without a
 configured local executor, opencodex returns typed no-executor results instead of policy-blocking
 the request. Cursor OAuth and live model discovery are enabled for this experimental adapter;
 Cursor is still not shown in key-login lists.

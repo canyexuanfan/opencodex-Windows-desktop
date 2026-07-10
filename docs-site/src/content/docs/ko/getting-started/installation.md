@@ -3,8 +3,9 @@ title: 설치
 description: opencodex(ocx) 프록시와 사전 요구 사항을 설치하고, 정상 실행되는지 확인합니다.
 ---
 
-opencodex는 단일 CLI인 `ocx`로 제공됩니다. 작은 로컬 HTTP 서버(Bun 기반)로 실행되며, 설정한
-프로바이더 외에는 어디로도 트래픽을 전송하지 않습니다.
+opencodex를 설치하면 같은 실행 파일을 가리키는 `ocx`와 `opencodex` 명령이 함께 제공됩니다.
+둘 다 Bun 기반의 작은 로컬 HTTP 서버를 실행합니다. 모델 요청은 라우팅으로 선택된 프로바이더에
+전달되며, 필요할 때 vision 및 웹 검색 sidecar가 ChatGPT 로그인을 사용할 수도 있습니다.
 
 ## 사전 요구 사항
 
@@ -14,22 +15,28 @@ opencodex는 단일 CLI인 `ocx`로 제공됩니다. 작은 로컬 HTTP 서버(B
 | **[OpenAI Codex](https://openai.com/codex)**(CLI, App, 또는 SDK) | opencodex가 앞단에 위치하는 클라이언트입니다. opencodex는 `$CODEX_HOME/config.toml`(기본값 `~/.codex/config.toml`)에 기록합니다. |
 | 프로바이더 계정 또는 API 키 | Anthropic, xAI, Kimi, Ollama Cloud, OpenRouter, OpenAI API 키, OpenAI 호환 엔드포인트, 또는 ChatGPT 로그인. |
 
-:::note[GPT-5.6 preview]
-Sol, Terra, Luna 지원은 이 릴리스에서 rollout-ready 상태이지만 일반 공개를 의미하지는 않습니다.
-설치 방법은 동일하며, 실제 호출 가능 여부는 ChatGPT/Codex 계정, OpenAI API 키, 또는 OpenRouter
-계정에 preview 권한이 있는지에 따라 결정됩니다.
-:::
-
 ## 설치
 
 ```bash
 npm install -g @bitkyc08/opencodex
 ```
 
-바이너리가 `PATH`에 있는지 확인합니다:
+두 명령이 모두 `PATH`에 잡히는지 확인합니다:
 
 ```bash
-ocx --help
+ocx --version
+opencodex --version
+```
+
+### 배포 채널
+
+안정화 채널인 `latest`에도 ChatGPT, OpenAI API 키, OpenRouter, 실험 단계의 Cursor 경로를 위한
+GPT-5.6 Sol/Terra/Luna 카탈로그 정보가 이미 들어 있습니다. 다만 모델 사용 권한까지 생기는 것은
+아닙니다. 아직 정식 배포되지 않은 opencodex 빌드를 시험할 때만 preview 채널을 사용하세요:
+
+```bash
+npm install -g @bitkyc08/opencodex@preview
+ocx update --tag preview
 ```
 
 ## 소스에서 실행
@@ -51,13 +58,19 @@ bun run dev:gui     # 대시보드 dev 서버 시작 (다른 터미널)
 
 ## 생성되는 항목
 
+opencodex 상태 파일은 `$OPENCODEX_HOME`(기본값 `~/.opencodex`) 아래에, Codex 연동 파일은
+`$CODEX_HOME`(기본값 `~/.codex`) 아래에 저장됩니다.
+
 | 경로 | 용도 |
 | --- | --- |
-| `~/.opencodex/config.json` | 프로바이더, 기본 프로바이더, 포트, 옵션. |
-| `~/.opencodex/ocx.pid` | 실행 중인 프록시의 PID(단일 인스턴스 가드). |
-| `~/.opencodex/auth.json` | 저장된 OAuth 자격 증명(`ocx login` 시). |
-| `~/.opencodex/catalog-backup.json` | 변경 전에 백업해 둔 원본 Codex 모델 카탈로그. |
-| `$CODEX_HOME/config.toml` | opencodex가 `ocx init` 시 여기에 `[model_providers.opencodex]` 테이블을 추가합니다(기본값 `~/.codex/config.toml`). |
+| `$OPENCODEX_HOME/config.json` | 프로바이더, 기본 프로바이더, 포트, 옵션. |
+| `$OPENCODEX_HOME/ocx.pid` | 실행 중인 프록시의 PID(단일 인스턴스 가드). |
+| `$OPENCODEX_HOME/runtime-port.json` | 자동으로 고른 대체 포트를 포함한 현재 PID, 호스트명, 포트. |
+| `$OPENCODEX_HOME/auth.json` | 저장된 OAuth 자격 증명(`ocx login` 시). |
+| `$OPENCODEX_HOME/catalog-backup*.json` | opencodex가 수정하기 전에 만든 Codex 모델 카탈로그 백업. |
+| `$CODEX_HOME/config.toml` | 로컬 전용 구성에서는 opencodex가 관리하는 루트 `openai_base_url`을 추가합니다. 로컬이 아닌 주소에 바인딩할 때는 Codex가 API 인증 헤더를 보낼 수 있도록 `model_provider = "opencodex"`와 `[model_providers.opencodex]`를 사용합니다. |
+| `$CODEX_HOME/opencodex.config.toml` | 기본 Codex 설정과 함께 생성되는 참고용 fallback 프로필. |
+| `$CODEX_HOME/opencodex-catalog.json` | Codex가 사용하는 네이티브 및 라우팅 모델 카탈로그. |
 
 :::note
 opencodex는 절대 Codex 설정을 삭제하지 않습니다. 모든 주입은 되돌릴 수 있습니다 — `ocx stop`, `ocx restore`,

@@ -9,32 +9,50 @@ idempotent and reversible.
 
 ## Config injection
 
-`ocx init` (and `ocx sync`) call the injector, which writes:
+`ocx init`, `ocx start`, and `ocx sync` call the injector. On the default loopback bind, it keeps
+Codex's built-in `openai` provider id and points that provider at opencodex:
 
 ```toml
-# at the document root — Codex reads this as the active provider
+# root keys, before the first table
+model_catalog_json = "/absolute/path/to/opencodex-catalog.json"
+# Auto-injected by opencodex
+openai_base_url = "http://127.0.0.1:10100/v1"
+
+[features]
+fast_mode = true
+```
+
+The proxy listens on port `10100` by default and serves `POST /v1/responses`,
+`POST /v1/responses/compact`, `GET /v1/models`, `GET /healthz`, and the `/api/*` management surface.
+
+For a non-loopback `hostname`, Codex must send the generated API auth header. The injector therefore
+uses a dedicated provider instead:
+
+```toml
+# root keys
 model_provider = "opencodex"
 model_catalog_json = "/absolute/path/to/opencodex-catalog.json"
 
-# appended at end of file (TOML tables are position-independent)
+# appended at the end of the file
+# Auto-injected by opencodex
 [model_providers.opencodex]
 name = "OpenCodex Proxy"
-base_url = "http://127.0.0.1:10100/v1"
+base_url = "http://your-host:10100/v1"
 wire_api = "responses"
 requires_openai_auth = true
+env_http_headers = { "x-opencodex-api-key" = "OPENCODEX_API_AUTH_TOKEN" }
 # supports_websockets = true   # only when config.websockets is true
 ```
 
-It also writes an optional profile at `$CODEX_HOME/opencodex.config.toml` so you can opt in explicitly:
-
-```bash
-codex --profile opencodex "…"
-```
+In both modes opencodex writes `$CODEX_HOME/opencodex.config.toml` as a reference/fallback config.
+On loopback it contains the root keys you can merge manually if automatic injection was removed;
+on non-loopback it contains the dedicated provider form.
 
 :::caution
-The root `model_provider` key **must** sit before the first `[table]` header, or Codex parses it as
-part of a table and ignores it. The injector guarantees this placement and strips any stray or
-duplicate copies before re-writing — so re-running `ocx init` / `ocx sync` never produces duplicates.
+Root keys such as `openai_base_url`, `model_provider`, and `model_catalog_json` **must** sit before the
+first `[table]` header. The injector guarantees that placement, removes its own stale/duplicate
+copies, and never overwrites a user-owned root `openai_base_url`; if one exists, sync updates the
+catalog but reports that routing was not injected.
 :::
 
 ## Shared model catalog
@@ -54,9 +72,19 @@ checks for a single Windows Codex Desktop home at `/mnt/c/Users/*/.codex/config.
 one candidate exists, it uses that directory so WSL app-server mode and Windows Codex Desktop share
 the same config and auth files. Set `CODEX_HOME` explicitly to override this detection.
 
-`requires_openai_auth = true` keeps Codex App/TUI account-gated surfaces aligned with native Codex.
-WebSocket transport is different: opencodex serves `/v1/responses` over WebSocket, but only advertises
-`supports_websockets = true` when `"websockets": true` is set in `~/.opencodex/config.json`.
+In dedicated-provider mode, `requires_openai_auth = true` keeps Codex App/TUI account-gated surfaces
+aligned with native Codex. opencodex also serves `/v1/responses` over WebSocket. The dedicated
+provider advertises `supports_websockets = true` only when `"websockets": true`; on loopback Codex's
+built-in provider may try WebSocket first, and a disabled proxy returns `426` so Codex falls back to
+HTTP/SSE.
+
+## Thread identity and history
+
+The default loopback form keeps new threads tagged with Codex's native `openai` provider, so normal
+resume history needs no remapping. On first sync it also migrates threads tagged by older opencodex
+builds back to `openai`. Non-loopback dedicated-provider mode still mirrors history under the
+`opencodex` provider while active and restores the backed-up metadata on exit. Set
+`syncResumeHistory: false` to leave history untouched.
 
 ## Model catalog sync
 
@@ -65,34 +93,48 @@ start and on `ocx sync`, opencodex:
 
 1. **Backs up** the pristine catalog once to `~/.opencodex/catalog-backup.json` (so featuring is
    reversible).
-2. **Fetches** each provider's live `/models` list (cached ~5 min; falls back to the last good list,
-   then to the provider's configured `models[]`).
+2. **Fetches** eligible providers' live model catalogs (cached ~5 min; falls back to the last good
+   list, then configured `models[]`). Forward auth has no model endpoint, and Cursor uses its
+   `GetUsableModels` RPC rather than `/models`.
 3. **Merges** routed models in as namespaced entries (`provider/model`), cloned from a native Codex
    catalog template so Codex's strict parser accepts them.
-4. **Filters** anything in `config.disabledModels`.
+4. **Filters** `config.disabledModels` and each provider's non-empty `selectedModels` allowlist.
 5. **Re-ranks** so featured models sort first (see below), then writes the merged catalog back.
 
-Routed catalog entries also get their GPT-5 identity rewritten to the real upstream model name, and
-only expose `low | medium | high` reasoning levels.
+Routed catalog entries also get their GPT-5 identity rewritten to the real upstream model name.
+Reasoning controls come from provider/model metadata across Codex's `low | medium | high | xhigh |
+max | ultra` ladder; unsupported values are mapped or clamped before the upstream request.
 
 ## The subagent picker
 
-Codex's `spawn_agent` only advertises the **first 5 routed models** in the catalog. `subagentModels`
-(up to 5 `provider/model` ids) controls which 5 those are by giving them the lowest priority numbers
-so they sort first:
+Codex's `spawn_agent` advertises the first **5 picker-visible catalog models** after sorting by
+priority. `subagentModels` accepts up to five ids, either bare native GPT slugs or namespaced
+`provider/model` routes, and gives them priorities 0–4 so they sort first:
 
 ```json
 {
   "subagentModels": [
+    "gpt-5.5",
+    "gpt-5.6-sol",
     "anthropic/claude-opus-4-8",
-    "ollama-cloud/glm-5.2",
-    "xai/grok-4.5"
+    "xai/grok-4.5",
+    "cursor/gpt-5.6-terra"
   ]
 }
 ```
 
 Priority ranking: featured (0–4) < other routed (5) < native (9). You can also manage this from the
 [web dashboard](/opencodex/guides/web-dashboard/).
+
+## Codex account warmup
+
+When a ChatGPT account is added to the Codex account pool, opencodex verifies it before persistence
+with a small streaming request to the Codex Responses backend. The request uses a real Responses
+item array (`input: [{ type: "message", ... }]`), waits for `response.completed`, and defaults to
+`gpt-5.4-mini`. If that model returns HTTP 400, it retries with `gpt-5.5`; structured upstream error
+details are surfaced without exposing raw response bodies. Background revalidation is separate and
+off by default; it runs only when Token Guardian is enabled, the `chatgpt` refresh policy is
+`proactive`, and `tokenGuardian.codexWarmupEnabled` is true.
 
 ## Restoring native Codex
 
@@ -103,6 +145,7 @@ routed catalog entry so plain `codex` works exactly as if opencodex was never th
 ```bash
 ocx stop       # stop the proxy + service, restore native Codex
 ocx restore    # restore without stopping  (alias: ocx eject)
+ocx restore back # point plain Codex at the running proxy again
 ```
 
 When opencodex runs as a managed [background service](/opencodex/reference/cli/#ocx-service), it sets

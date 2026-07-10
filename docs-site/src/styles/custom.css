@@ -269,12 +269,11 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
   border: 1px solid var(--sl-color-hairline-light);
   overflow: hidden;
   position: relative;
-  /* soft-focus daylight sky */
+  /* dusk routing-field sky (loading fallback under the photographic plate) */
   background:
-    radial-gradient(90% 70% at 80% 105%, rgba(255, 244, 228, 0.85), transparent 65%),
-    radial-gradient(70% 55% at 12% 88%, rgba(255, 255, 255, 0.9), transparent 70%),
-    radial-gradient(60% 45% at 55% 30%, rgba(255, 255, 255, 0.55), transparent 75%),
-    linear-gradient(180deg, #bcd6f5 0%, #d8e7f9 45%, #f2ede2 100%);
+    radial-gradient(90% 60% at 50% 100%, rgba(214, 108, 44, 0.55), transparent 65%),
+    radial-gradient(70% 55% at 12% 88%, rgba(84, 104, 150, 0.35), transparent 70%),
+    linear-gradient(180deg, #17223d 0%, #24314f 55%, #3a3040 100%);
 }
 /* ima2-generated soft-focus photographic field; gradients above stay as the
    loading fallback. Light/dark variants toggle with the theme. */
@@ -301,16 +300,15 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
 :root[data-theme='dark'] .lp-hero-field,
 :root:not([data-theme='light']) .lp-hero-field {
   background:
-    radial-gradient(90% 70% at 80% 105%, rgba(196, 138, 84, 0.28), transparent 65%),
-    radial-gradient(70% 55% at 12% 88%, rgba(120, 140, 180, 0.25), transparent 70%),
-    linear-gradient(180deg, #232b3d 0%, #2a3040 55%, #33302e 100%);
+    radial-gradient(90% 55% at 50% 102%, rgba(196, 108, 52, 0.4), transparent 60%),
+    radial-gradient(70% 55% at 12% 88%, rgba(90, 110, 160, 0.22), transparent 70%),
+    linear-gradient(180deg, #0a0f1e 0%, #101a30 55%, #1d1a22 100%);
 }
 :root[data-theme='light'] .lp-hero-field {
   background:
-    radial-gradient(90% 70% at 80% 105%, rgba(255, 244, 228, 0.85), transparent 65%),
-    radial-gradient(70% 55% at 12% 88%, rgba(255, 255, 255, 0.9), transparent 70%),
-    radial-gradient(60% 45% at 55% 30%, rgba(255, 255, 255, 0.55), transparent 75%),
-    linear-gradient(180deg, #bcd6f5 0%, #d8e7f9 45%, #f2ede2 100%);
+    radial-gradient(90% 60% at 50% 100%, rgba(214, 108, 44, 0.55), transparent 65%),
+    radial-gradient(70% 55% at 12% 88%, rgba(84, 104, 150, 0.35), transparent 70%),
+    linear-gradient(180deg, #17223d 0%, #24314f 55%, #3a3040 100%);
 }
 
 .lp-hero-copy {
@@ -342,10 +340,10 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
 }
 :root[data-theme='dark'] .lp-hero-copy h1,
 :root:not([data-theme='light']) .lp-hero-copy h1 { color: #f4f4f4; }
-:root[data-theme='light'] .lp-hero-copy h1 { color: #0d0d0d; }
+:root[data-theme='light'] .lp-hero-copy h1 { color: #f7f5f2; }
 :root[data-theme='dark'] .lp-sub,
 :root:not([data-theme='light']) .lp-sub { color: rgba(244, 244, 244, 0.78); }
-:root[data-theme='light'] .lp-sub { color: rgba(13, 13, 13, 0.72); }
+:root[data-theme='light'] .lp-sub { color: rgba(247, 245, 242, 0.82); }
 :lang(ko) .lp-hero-copy h1, :lang(zh-CN) .lp-hero-copy h1 { word-break: keep-all; }
 :lang(ko) .lp-sub, :lang(zh-CN) .lp-sub { word-break: keep-all; }
 .lp-cta {
@@ -397,8 +395,13 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
 }
 :root[data-theme='dark'] .lp-btn-ghost:hover,
 :root:not([data-theme='light']) .lp-btn-ghost:hover { background-color: rgba(255, 255, 255, 0.22); }
-:root[data-theme='light'] .lp-btn-primary { background-color: #0d0d0d; color: #ffffff; }
-:root[data-theme='light'] .lp-btn-ghost { background-color: rgba(255, 255, 255, 0.92); color: #0d0d0d; }
+:root[data-theme='light'] .lp-btn-primary { background-color: #f7f5f2; color: #0d0d0d; }
+:root[data-theme='light'] .lp-btn-ghost {
+  background-color: rgba(255, 255, 255, 0.16);
+  color: #f7f5f2;
+  box-shadow: none;
+}
+:root[data-theme='light'] .lp-btn-ghost:hover { background-color: rgba(255, 255, 255, 0.26); }
 /* dark chips: keep readable near-opaque, slightly dimmed */
 :root[data-theme='dark'] .lp-chips li,
 :root:not([data-theme='light']) .lp-chips li {

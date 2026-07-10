@@ -1,6 +1,6 @@
 ---
 title: 贡献指南
-description: 开发 opencodex —— 环境搭建、目录结构、约定,以及如何添加 provider 或 adapter。
+description: opencodex 的开发环境、结构、约定，以及添加 provider 或 adapter 的方法。
 ---
 
 ## 环境搭建
@@ -10,14 +10,33 @@ git clone https://github.com/lidge-jun/opencodex.git
 cd opencodex
 bun install
 bun run dev:proxy    # 开发模式代理 API
-bun run dev:gui      # 仪表盘 dev 服务器 (另一个终端)
-bun x tsc --noEmit   # typecheck (must be clean)
+bun run dev:gui      # 仪表盘 dev 服务器（另一个终端）
+bun run typecheck    # bun x tsc --noEmit
+bun run test         # bun test ./tests/
 ```
 
-`bun run dev` 作为 `bun run dev:proxy` 的别名保留。仪表盘 dev 服务器是 `bun run dev:gui`;
-`GET /` 的打包仪表盘由 `bun run build:gui`(`gui/dist`)生成。
+`bun run dev` 继续作为 `bun run dev:proxy` 的别名。仪表盘 dev 服务器使用 `bun run dev:gui`；
+`GET /` 提供的打包仪表盘由 `bun run build:gui` 构建到 `gui/dist`。
 
-你正在阅读的文档站点位于 `docs-site/`(Astro + Starlight):
+## 构建与测试命令
+
+根 package 是 Bun-native TypeScript，没有单独的 server compile 步骤。请使用仓库内的 script，
+确保本地命令与 CI 一致：
+
+```bash
+bun run typecheck                 # 严格 TypeScript 检查
+bun run test                      # 完整 tests/ suite
+bun test tests/router.test.ts     # 聚焦单个测试文件
+bun run build:gui                 # Vite GUI 构建 + package 准备
+bun run privacy:scan              # CI 使用的 credential/privacy 扫描
+bun run prepare:package           # 刷新 package launcher/asset
+```
+
+大多数测试是平铺在 `tests/*.test.ts` 下的 Bun test。`tests/helpers/` 存放共享 fixture，
+`tests/e2e-style/` 存放范围更广的原生一致性场景。请在对应 subsystem 的现有测试附近加入聚焦的
+回归测试；若改动涉及共享 routing、adapter、config 或 server 行为，还应运行完整 suite。
+
+你正在阅读的文档站点位于 `docs-site/`（Astro + Starlight）：
 
 ```bash
 cd docs-site && bun install && bun dev
@@ -26,8 +45,8 @@ cd docs-site && bun install && bun dev
 ## 文档发布
 
 公开文档发布到 GitHub Pages：<https://lidge-jun.github.io/opencodex/zh-cn/>。
-`.github/workflows/deploy-docs.yml` 会在 `main` 分支中 `docs-site/**` 或该 workflow 自身发生变化时运行，
-构建 `docs-site` 并部署生成的网站。推送文档变更前请运行：
+`.github/workflows/deploy-docs.yml` 会在 `main` push 中 `docs-site/**` 或 workflow 本身发生变化时
+运行，构建 `docs-site` 并部署生成的网站。推送文档变更前请运行：
 
 ```bash
 cd docs-site
@@ -37,53 +56,69 @@ bun run build
 
 ## CI 与发布
 
-GitHub Actions 会刻意保持短小:
+GitHub Actions 有意只保留必要步骤：
 
-- **Cross-platform CI**(`.github/workflows/ci.yml`) 会在改动 runtime、tests、package、scripts、
-  TypeScript 或 workflow 文件的 pull request 与 `main` push 上运行。它在 Linux 和 Windows 上验证
-  install、typecheck、tests、release helper build smoke 以及 `ocx help`。
-- **Release**(`.github/workflows/release.yml`) 只能手动触发。它不是第二套完整 CI；在 dry-run 或
-  publish 前,它会要求精确的发布提交(`GITHUB_SHA`)已经有一次成功的 Cross-platform CI run。
+- **Cross-platform CI**（`.github/workflows/ci.yml`）会在改动 runtime、test、package、script、
+  TypeScript 或 workflow 文件的 pull request 与 `main` push 上运行。Bun matrix 覆盖 Linux、
+  Windows 和 macOS，执行 install、typecheck、test、privacy scan、release-helper build smoke、GUI
+  build 和 `ocx help`。另一个三系统 lane 使用 package 内置 runtime，验证无需单独安装 Bun 也能
+  完成 npm global install。
+- **Release**（`.github/workflows/release.yml`）只能手动运行。它不是第二套完整 CI；dry-run 或
+  publish 前，精确的 release commit（`GITHUB_SHA`）必须已有成功的 Cross-platform CI run。
 
-发布请使用 helper:
+发布请使用 helper：
 
 ```bash
-bun run release <version>           # 会提交/推送版本 bump；publish workflow 默认 dry-run
-bun run release <version> --publish # 理解 CI-gated dry-run 后再真正 publish
+bun run release <version>           # commit/push 版本 bump；publish workflow 默认 dry-run
+bun run release <version> --publish # 确认 CI-gated dry-run 后真正 publish
 bun run release:watch               # 观察最新的 Release workflow run
 ```
 
 ## 约定
 
-- **仅使用 ES Modules**(`import`/`export`)、TypeScript、`strict` 模式。保持 `bun x tsc --noEmit` 无报错。
-- **每个文件最多约 500 行** —— 按职责拆分(`web-search/` 和 `vision/` sidecar 就是隐藏在单个 `index.ts` 背后的小而专注模块的良好范例)。
-- **在边界处处理异步错误** —— sidecar 绝不向请求路径抛出异常;它们会优雅地降级为一个标记。
-- **Structure SOT** —— 当前维护者不变量放在 `structure/`。公开用户流程放在 `docs-site/`，
-  历史调查/诊断笔记放在 `docs/`。
-- **保留导出(exports)** —— 其他模块可能依赖它们。
+- **仅使用 ES Modules**（`import`/`export`）、TypeScript 和 `strict` mode。保持
+  `bun x tsc --noEmit` 无报错。
+- **每个文件最多约 500 行** —— 按职责拆分。`web-search/` 和 `vision/` sidecar 是很好的例子：
+  小而专注的 module 位于单一 `index.ts` 之后。
+- **在边界处理异步错误** —— sidecar 不会把异常抛进请求路径，而会降级成合适的 marker。
+- **Structure SOT** —— 当前维护者不变量放在 `structure/`；公开用户流程放在 `docs-site/`；
+  历史调查/诊断记录放在 `docs/`。
+- **保留 export** —— 其他 module 可能依赖它们。
 
 ## 向目录中添加 provider
 
-大多数 provider 只是 API-key 目录(`src/oauth/key-providers.ts`)中的一个条目:
+所有 provider picker 与 seed 都来自 canonical registry（`src/providers/registry.ts`）：
 
 ```ts
-"my-provider": {
+{
+  id: "my-provider",
   label: "My Provider",
   baseUrl: "https://api.example.com/v1",
   adapter: "openai-chat",
+  authKind: "key",
   dashboardUrl: "https://example.com/keys",
   models: ["model-a", "model-b"],
   defaultModel: "model-a",
   noVisionModels: ["model-a"],   // text-only models → vision sidecar describes images
-}
+},
 ```
 
-`enrichProviderFromCatalog()` 会将 `models` / `noVisionModels` / `noReasoningModels` 复制到创建出的 provider 配置上,因此这些分类会自动生效。对于 OAuth provider,请改为添加到 `src/oauth/index.ts` 中的 `OAUTH_PROVIDERS`。
+`src/providers/derive.ts` 会把该条目提供给 `ocx init`、`ocx provider`、仪表盘 preset、API-key
+登录和 OAuth config seed。`enrichProviderFromCatalog()` 会把模型 metadata 与 capability 分类复制到
+保存的 provider 配置。OAuth protocol 实现仍位于 `src/oauth/`；只有 registry metadata 并不会
+自动形成 OAuth flow。
 
 ## 添加 adapter
 
-在 `src/adapters/` 中实现 `ProviderAdapter`(见 [Adapters](/opencodex/zh-cn/reference/adapters/)),在 adapter 解析器中注册它,并将其输出桥接为内部的 `AdapterEvent`。图像处理请复用 `image.ts`,流式输出 + 工具调用请以 `openai-chat.ts` 作为参考。
+在 `src/adapters/` 中实现 `ProviderAdapter`（参见
+[Adapters](/opencodex/zh-cn/reference/adapters/)），在 `src/server/adapter-resolve.ts` 注册其名称，
+并把输出桥接成内部 `AdapterEvent`。图像处理请复用 `image.ts`；普通 streaming/tool call 以
+`openai-chat.ts` 为参考。只有 adapter 自己负责 transport retry 时才使用 `fetchResponse`；Cursor
+这类真正的双向 transport 应使用 `runTurn`。在 `tests/` 中添加聚焦测试；如果 factory 属于 public
+package API，还要从 `src/index.ts` export。
 
 ## 在声称完成前先验证
 
-运行能够证明你的更改的最小命令 —— 类型用 `bun x tsc --noEmit`,行为用一个聚焦的运行时探测。opencodex 倾向于小而可验证的提交,而非大批量提交。
+先运行能证明改动的最小命令：类型检查用 `bun run typecheck`，行为检查用聚焦的
+`bun test tests/<name>.test.ts` 或 runtime probe，然后再执行适合影响范围的更宽 gate。
+opencodex 倾向于小而可验证的 commit，而不是大批量改动。

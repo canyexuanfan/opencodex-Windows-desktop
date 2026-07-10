@@ -3,8 +3,9 @@ title: 安装
 description: 安装 opencodex(ocx)代理及其前置条件,并验证它能够运行。
 ---
 
-opencodex 以单个 CLI `ocx` 的形式发布。它作为一个小型本地 HTTP 服务器运行(基于 Bun 构建),除了你所配置的
-provider 之外,绝不会把你的流量发送到任何地方。
+安装 opencodex 后会得到 `ocx` 和 `opencodex` 两个等价命令，它们都指向同一个基于 Bun 的
+小型本地 HTTP 服务器。模型请求会发往路由所选的 provider；当已路由模型需要时，可选的
+vision 和网络搜索 sidecar 也可以使用你的 ChatGPT 登录凭据。
 
 ## 前置条件
 
@@ -14,21 +15,28 @@ provider 之外,绝不会把你的流量发送到任何地方。
 | **[OpenAI Codex](https://openai.com/codex)**(CLI、App 或 SDK) | opencodex 所代理的客户端。opencodex 会写入 `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`）。 |
 | 一个 provider 账号或 API key | Anthropic、xAI、Kimi、Ollama Cloud、OpenRouter、OpenAI API key、一个 OpenAI 兼容端点,或你的 ChatGPT 登录凭据。 |
 
-:::note[GPT-5.6 preview]
-Sol、Terra、Luna 支持在本次发布中是 rollout-ready,但这不表示已经普遍开放。安装方式相同；
-实际能否调用取决于你的 ChatGPT/Codex 账号、OpenAI API key 或 OpenRouter 账号是否拥有 preview 权限。
-:::
-
 ## 安装
 
 ```bash
 npm install -g @bitkyc08/opencodex
 ```
 
-验证该二进制文件已在你的 `PATH` 中:
+确认两个命令都已加入 `PATH`：
 
 ```bash
-ocx --help
+ocx --version
+opencodex --version
+```
+
+### 发布渠道
+
+稳定的 `latest` 渠道已经包含 ChatGPT、OpenAI API key、OpenRouter 以及实验性 Cursor 路由所需的
+GPT-5.6 Sol/Terra/Luna 目录信息，但这些条目本身不会授予上游模型权限。只有在测试尚未正式发布的
+opencodex 构建时，才需要使用 preview 渠道：
+
+```bash
+npm install -g @bitkyc08/opencodex@preview
+ocx update --tag preview
 ```
 
 ## 从源码运行
@@ -49,13 +57,19 @@ bun run dev:gui     # 启动仪表盘 dev 服务器 (另一个终端)
 
 ## 会创建哪些内容
 
+opencodex 状态文件位于 `$OPENCODEX_HOME`（默认 `~/.opencodex`），Codex 集成文件位于
+`$CODEX_HOME`（默认 `~/.codex`）。
+
 | 路径 | 用途 |
 | --- | --- |
-| `~/.opencodex/config.json` | 你的 provider、默认 provider、端口及选项。 |
-| `~/.opencodex/ocx.pid` | 正在运行的代理的 PID(单实例保护)。 |
-| `~/.opencodex/auth.json` | 已存储的 OAuth 凭据(当你执行 `ocx login` 时)。 |
-| `~/.opencodex/catalog-backup.json` | 原始的 Codex 模型目录,在任何编辑前备份。 |
-| `$CODEX_HOME/config.toml` | 在 `ocx init` 时,opencodex 会在此追加一个 `[model_providers.opencodex]` 表（默认 `~/.codex/config.toml`）。 |
+| `$OPENCODEX_HOME/config.json` | 你的 provider、默认 provider、端口及选项。 |
+| `$OPENCODEX_HOME/ocx.pid` | 正在运行的代理的 PID（单实例保护）。 |
+| `$OPENCODEX_HOME/runtime-port.json` | 当前 PID、主机名和端口，包括自动选择的备用端口。 |
+| `$OPENCODEX_HOME/auth.json` | 执行 `ocx login` 后保存的 OAuth 凭据。 |
+| `$OPENCODEX_HOME/catalog-backup*.json` | opencodex 修改 Codex 模型目录前创建的备份。 |
+| `$CODEX_HOME/config.toml` | 仅监听回环地址时，opencodex 会添加由自身标记管理的根级 `openai_base_url`；监听非回环地址时，则使用 `model_provider = "opencodex"` 和 `[model_providers.opencodex]`，以便 Codex 发送 API 认证 header。 |
+| `$CODEX_HOME/opencodex.config.toml` | 与 Codex 主配置一同写入的备用/参考 profile。 |
+| `$CODEX_HOME/opencodex-catalog.json` | 供 Codex 使用的原生与已路由模型目录。 |
 
 :::note
 opencodex 绝不会删除你的 Codex 配置。每次注入都是可逆的 —— `ocx stop`、`ocx restore`

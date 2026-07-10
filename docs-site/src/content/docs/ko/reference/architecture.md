@@ -15,8 +15,9 @@ src/
 ├── server/             # Bun.serve, /v1/* proxy, /api/* management API, WS bridge
 ├── codex/              # Codex config injection, catalog sync, auth/account integration
 ├── providers/          # provider metadata, API-key pool, quota and labels
-├── adapters/           # base + openai-chat, openai-responses, anthropic, google, azure, image
+├── adapters/           # 7개 wire adapter, 공통 guard/util, Cursor protobuf transport
 ├── oauth/              # OAuth providers, API-key catalog, token store/refresh
+├── usage/              # usage extraction, JSONL logs, summaries, totals
 ├── lib/                # runtime, process, retry, privacy, token estimate helpers
 ├── web-search/         # web-search sidecar (synthetic tool, loop, executor, parser)
 ├── vision/             # vision sidecar (describe + plan)
@@ -33,6 +34,27 @@ src/
 └── index.ts            # public entry
 ```
 
+## 요청 처리 흐름
+
+HTTP 경계는 `server/index.ts`가 맡고, Responses 데이터 플레인은 `server/responses.ts`로 넘깁니다.
+
+1. `server/index.ts`에서 CORS와 API 인증을 확인하고, 종료 대기 중이면 새 요청을 거부한 뒤 요청 수명
+   주기를 기록합니다. 여기서 `GET /v1/models`, `POST /v1/responses`,
+   `POST /v1/responses/compact`, `/v1/responses`의 선택적 WebSocket 업그레이드를 제공합니다.
+2. `server/responses.ts`가 압축을 풀고 JSON을 읽습니다. 기억해 둔 `previous_response_id` 입력이 있으면
+   펼친 다음 `responses/parser.ts`로 넘깁니다.
+3. `router.ts`가 일반 모델 id 또는 `provider/model` id를 해석합니다. 이어서 Codex 계정 affinity를
+   결정하고, 필요하면 프로바이더 OAuth를 갱신해 선택된 자격 증명을 route에 적용합니다.
+4. 본 요청 전에 `vision/`이 `noVisionModels` 모델용 이미지 설명을 만듭니다. 안전한 사이드카 경로가
+   없으면 텍스트 전용 업스트림에 이미지를 보내지 않고 제거합니다.
+5. `server/adapter-resolve.ts`가 모델별 wire override를 적용하고 7개 어댑터 중 하나를 만듭니다.
+   Responses passthrough는 원본 body를 중계하고, Cursor는 양방향 `runTurn` transport를 사용하며,
+   나머지 변환형 어댑터는 업스트림 요청을 build/fetch/parse합니다.
+6. 라우팅 모델이 호스티드 `web_search`를 요청하면 `web-search/`가 합성 함수를 노출합니다. 실제 검색은
+   ChatGPT 사이드카로 실행하고 결과를 라우팅 모델에 다시 넣으며, 설정된 횟수 안에서 반복합니다.
+7. `bridge.ts`가 Responses SSE 또는 JSON을 만듭니다. `server/request-log.ts`와 `usage/`는 응답을
+   건드리지 않은 채 종료 상태, 지연 시간, 프로바이더/모델, 최선 추정 토큰 사용량을 기록합니다.
+
 ## 파서
 
 `responses/parser.ts`는 들어오는 요청을 `responses/schema.ts`(Zod)로 검증한 다음
@@ -47,8 +69,8 @@ src/
   제거되며, 이를 처리할 사이드카가 있을 경우에만 다시 주입됩니다.
 - **Images** — 실제 content 파트(data URL 또는 원격 https)로 보존되며, 절대 텍스트로 인라인되지
   않습니다.
-- **Feature flags** — `_webSearch`(호스티드 웹 검색 요청됨)와 `_structuredOutput`(`text.format`이
-  json_schema / json_object).
+- **Feature flags** — `_webSearch`(호스티드 웹 검색 요청), `_structuredOutput`(`text.format`이
+  json_schema / json_object), `_compactionRequest`(remote compaction v2).
 
 ## 브리지
 
@@ -59,16 +81,20 @@ src/
 | --- | --- |
 | `text_delta` | `response.output_text.delta` → `…done`, `response.content_part.done`, `response.output_item.done` |
 | `thinking_delta` | `response.reasoning_summary_text.delta` → `…done`, item close |
+| `reasoning_raw_delta` | raw `reasoning_text` 항목 또는 숨김 왕복 envelope |
+| `thinking_signature` / `redacted_thinking` | `encrypted_content` reasoning envelope에 보존 |
 | `tool_call_start` | `response.output_item.added` (type: `function_call` / `custom_tool_call` / `tool_search_call`) |
 | `tool_call_delta` | `response.function_call_arguments.delta` (skipped for freeform / tool_search) |
 | `tool_call_end` | `response.function_call_arguments.done` → `response.output_item.done` |
+| `web_search_call_begin` / `web_search_call_end` | 실시간 `web_search_call` 항목 하나와 URL citation |
+| `heartbeat` | 업스트림 활동 표시. 사용자에게 보이는 출력 항목은 없음 |
 | `done` | `response.completed` (with usage) |
 | `error` | `response.failed` (with `last_error`) |
 
-브리지는 또한 **하트비트 킵얼라이브**(RC3)를 실행합니다: 업스트림 침묵 시, 2초마다 파서에서
-무시되는 `response.heartbeat` SSE 이벤트를 내보내 Codex의 유휴 타이머를 재설정합니다. **스톨
-데드라인** 150틱(기본 2초 간격에서 5분)이 경과하면 프로바이더가 재개하지 않을 경우 업스트림을
-중단하고 스트림을 닫습니다 — Codex를 무기한 차단하는 행 커넥션을 방지합니다.
+브리지는 **하트비트 킵얼라이브**(RC3)도 실행합니다. 업스트림에서 데이터가 오지 않을 때 2초마다
+파서가 무시하는 `response.heartbeat` SSE 이벤트를 보내 Codex의 유휴 타이머를 다시 시작합니다.
+기본 **stall deadline**은 90초(`stallTimeoutSec`)입니다. 이 시간을 넘기면 업스트림을 중단하고
+이유가 `upstream_stall_timeout`인 `response.incomplete`를 내보내 연결이 끝없이 매달리지 않게 합니다.
 
 툴 호출은 파서가 캡처한 네임스페이스 맵, freeform 집합, tool-search 집합을 사용하여 세 가지
 Responses 항목 타입으로 구분됩니다 — 따라서 MCP 네임스페이스, `apply_patch` 스타일의 freeform

@@ -11,11 +11,31 @@ cd opencodex
 bun install
 bun run dev:proxy    # proxy API in dev mode
 bun run dev:gui      # dashboard dev server (another terminal)
-bun x tsc --noEmit   # typecheck (must be clean)
+bun run typecheck    # bun x tsc --noEmit
+bun run test         # bun test ./tests/
 ```
 
 `bun run dev` remains an alias for `bun run dev:proxy`. The dashboard dev server is `bun run dev:gui`;
 the packaged dashboard at `GET /` is produced by `bun run build:gui` (`gui/dist`).
+
+## Build and test commands
+
+The root package is Bun-native TypeScript; there is no separate server compile step. Use the checked-in
+scripts so local commands match CI:
+
+```bash
+bun run typecheck                 # strict TypeScript check
+bun run test                      # complete tests/ suite
+bun test tests/router.test.ts     # focused test file
+bun run build:gui                 # Vite GUI build + package preparation
+bun run privacy:scan              # credential/privacy scan used by CI
+bun run prepare:package           # refresh package launchers/assets
+```
+
+Most tests are flat `tests/*.test.ts` Bun tests. `tests/helpers/` contains shared fixtures and
+`tests/e2e-style/` contains broader native-parity scenarios. Keep a focused regression near the
+existing tests for the subsystem you change; run the full suite for shared routing, adapters, config,
+or server behavior.
 
 The docs site you're reading lives in `docs-site/` (Astro + Starlight):
 
@@ -41,8 +61,10 @@ bun run build
 GitHub Actions intentionally stay small:
 
 - **Cross-platform CI** (`.github/workflows/ci.yml`) runs on pull requests and `main` pushes that
-  touch runtime, tests, package, script, TypeScript, or workflow files. It verifies Linux and Windows
-  with install, typecheck, tests, a release-helper build smoke, and `ocx help`.
+  touch runtime, tests, package, script, TypeScript, or workflow files. Its Bun matrix covers Linux,
+  Windows, and macOS with install, typecheck, tests, privacy scan, a release-helper build smoke, GUI
+  build, and `ocx help`. A second three-OS lane proves npm global install works without a separately
+  installed Bun by using the package's bundled runtime.
 - **Release** (`.github/workflows/release.yml`) is manual. It does not act as a second full CI
   pipeline; before dry-run or publish it requires the exact release commit (`GITHUB_SHA`) to already
   have a successful Cross-platform CI run.
@@ -68,31 +90,38 @@ bun run release:watch               # watch the newest Release workflow run
 
 ## Adding a provider to the catalog
 
-Most providers are just an entry in the API-key catalog (`src/oauth/key-providers.ts`):
+All provider pickers and seeds derive from the canonical registry (`src/providers/registry.ts`):
 
 ```ts
-"my-provider": {
+{
+  id: "my-provider",
   label: "My Provider",
   baseUrl: "https://api.example.com/v1",
   adapter: "openai-chat",
+  authKind: "key",
   dashboardUrl: "https://example.com/keys",
   models: ["model-a", "model-b"],
   defaultModel: "model-a",
   noVisionModels: ["model-a"],   // text-only models → vision sidecar describes images
-}
+},
 ```
 
-`enrichProviderFromCatalog()` copies `models` / `noVisionModels` / `noReasoningModels` onto the
-created provider config, so classifications take effect automatically. For OAuth providers, add to
-`OAUTH_PROVIDERS` in `src/oauth/index.ts` instead.
+`src/providers/derive.ts` feeds that entry into `ocx init`, `ocx provider`, dashboard presets,
+API-key login, and OAuth config seeds. `enrichProviderFromCatalog()` copies model metadata and
+capability classifications onto the saved provider config. OAuth protocol implementations still
+live in `src/oauth/`; registry metadata alone is not an OAuth flow.
 
 ## Adding an adapter
 
 Implement `ProviderAdapter` (see [Adapters](/opencodex/reference/adapters/)) in `src/adapters/`,
-register it in the adapter resolver, and bridge its output to internal `AdapterEvent`s. Reuse
-`image.ts` for image handling and follow `openai-chat.ts` as the reference for streaming + tool calls.
+register its name in `src/server/adapter-resolve.ts`, and bridge its output to internal
+`AdapterEvent`s. Reuse `image.ts` for image handling and follow `openai-chat.ts` for ordinary
+streaming/tool calls; use `fetchResponse` only when the adapter owns transport retries, or `runTurn`
+for a genuinely bidirectional transport such as Cursor. Add focused tests under `tests/` and export
+the factory from `src/index.ts` when it belongs to the public package API.
 
 ## Verify before you claim done
 
-Run the narrowest command that proves your change — `bun x tsc --noEmit` for types, a focused runtime
-probe for behavior. opencodex favors small, verifiable commits over large batches.
+Run the narrowest command that proves your change — `bun run typecheck` for types, a focused
+`bun test tests/<name>.test.ts` or runtime probe for behavior, then the broader gates appropriate to
+the affected surface. opencodex favors small, verifiable commits over large batches.

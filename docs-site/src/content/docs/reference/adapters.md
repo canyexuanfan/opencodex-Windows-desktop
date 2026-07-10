@@ -1,6 +1,6 @@
 ---
 title: Adapters
-description: The five provider adapters — what each targets, how it builds requests, and its quirks.
+description: The seven provider adapters — what each targets, how it builds requests, and its quirks.
 ---
 
 An **adapter** translates between opencodex's internal request/response model and one provider wire
@@ -9,16 +9,19 @@ format. Every adapter implements the `ProviderAdapter` interface (`src/adapters/
 ```ts
 interface ProviderAdapter {
   name: string;
-  buildRequest(parsed, incoming?): { url; method; headers; body };
+  buildRequest(parsed, incoming?): AdapterRequest | Promise<AdapterRequest>;
+  fetchResponse?(request, context): Promise<Response>;   // custom retry/transport
   parseStream(response): AsyncGenerator<AdapterEvent>;
   parseResponse?(response): Promise<AdapterEvent[]>;   // non-streaming
-  passthrough?: true;                                   // pipe raw, skip translation
+  runTurn?(parsed, incoming, emit): Promise<void>;      // bidirectional transport
 }
 ```
 
 `buildRequest` lowers an `OcxParsedRequest` into an upstream HTTP request; `parseStream` /
-`parseResponse` lift the provider's reply back into internal `AdapterEvent`s, which
-[`bridge.ts`](/opencodex/reference/architecture/#the-bridge) turns into Responses SSE.
+`parseResponse` lift the provider's reply back into internal `AdapterEvent`s. `fetchResponse` lets an
+adapter own retries/timeouts, while `runTurn` supports transports that cannot be represented as one
+HTTP fetch followed by one response stream. [`bridge.ts`](/opencodex/reference/architecture/#the-bridge)
+then turns the events into Responses SSE.
 
 ## `openai-chat`
 
@@ -62,20 +65,51 @@ streams the response back **untranslated**.
 
 ## `google`
 
-**Targets:** Google **Gemini** (`/v1beta/models/{model}:streamGenerateContent`).
-**Auth:** `key` (`x-goog-api-key`).
+**Targets:** Google **Gemini**, **Vertex AI**, and Antigravity **Cloud Code Assist**. AI Studio uses
+`/v1beta/models/{model}:streamGenerateContent`; the other modes use their native Google endpoints.
+**Auth:** API key, Vertex ADC, or Google Antigravity OAuth, selected by `googleMode`.
 
 - System prompt → `systemInstruction`; messages → `contents[]` (assistant → `model`); tools →
   `functionDeclarations`. Data-URL images → `inline_data`.
-- No native reasoning; tool-call ids are synthesized (Gemini doesn't return them).
+- Tool-call ids are synthesized when Gemini omits them. Antigravity preserves and replays real
+  `thoughtSignature` values so reasoning continuity survives later turns.
 
-## `azure-openai`
+## `kiro`
+
+**Targets:** the Amazon CodeWhisperer Streaming `GenerateAssistantResponse` service used by Kiro
+(`https://runtime.{region}.kiro.dev/`).
+**Auth:** Kiro OAuth access token as Bearer, with region/profile metadata from the Kiro credential.
+
+- Builds Kiro `conversationState`, maps Codex tools and tool results, and sends image blocks supported
+  by the Kiro wire.
+- Decodes `application/vnd.amazon.eventstream`, reconstructs text/thinking/tool events, detects
+  truncated tool JSON, and estimates usage because the upstream does not return token counts.
+- Owns bounded retries and classified/redacted errors through `fetchResponse`; its non-streaming
+  parser drains the same event stream for the web-search loop.
+
+## `cursor`
+
+**Targets:** Cursor's `agent.v1.AgentService/Run` over HTTP/2 Connect streaming at `api2.cursor.sh`.
+**Auth:** Cursor OAuth/access token from `provider.apiKey` or the forwarded authorization header.
+
+- Uses `runTurn` rather than the ordinary fetch/parse path. Requests, server events, tool arguments,
+  usage checkpoints, and client replies are encoded with `@bufbuild/protobuf` schemas in
+  `cursor/gen/agent_pb.ts` and framed as Connect messages.
+- Replays conversation state through content-addressed blobs, maps server tool calls back to Codex,
+  discovers live Cursor models through the protobuf `GetUsableModels` RPC, and retries only before a
+  run request is committed to the wire.
+- Cursor-native local filesystem/shell/network execution is denied by default. Explicit `mcpServers`
+  and `desktopExecutor` integrations have separate opt-ins; `unsafeAllowNativeLocalExec` enables the
+  broader built-in executor and bypasses Codex approval/sandbox semantics.
+
+## `azure-openai` (alias: `azure`)
 
 **Targets:** **Azure OpenAI**. Wraps `openai-responses` (so also `passthrough: true`).
 **Auth:** `key` via the `api-key` header (not Bearer).
 
-- Delegates request building to the Responses passthrough, then swaps `Authorization` for `api-key`
-  and appends an `api-version` query param (default `2025-04-01-preview`).
+- Delegates request building to the Responses passthrough, validates that `baseUrl` contains no
+  unresolved template placeholder, and replaces `Authorization` with `api-key`. The configured URL
+  targets Azure's v1 Responses API directly, so the adapter does not append `api-version`.
 
 ## Image utilities (`image.ts`)
 

@@ -5,15 +5,16 @@ description: The full opencodex request lifecycle — parse, route, adapt, bridg
 
 import { Steps } from '@astrojs/starlight/components';
 
-Codex speaks exactly one protocol: the OpenAI **Responses API** (`POST /v1/responses`, Server-Sent
-Events). opencodex accepts that request, translates it to your provider's wire format, and translates
-the streamed answer back into Responses events — so Codex never knows it isn't talking to OpenAI.
+Codex speaks the OpenAI **Responses API**. opencodex accepts `POST /v1/responses` over HTTP with
+Server-Sent Events, plus an opt-in WebSocket upgrade on the same path. It translates the request to
+your provider's wire format and the answer back into Responses events — so Codex never knows it
+isn't talking to OpenAI.
 
 ```
             ┌──────────────────────────── opencodex ────────────────────────────┐
             │                                                                     │
  Codex ──▶  │  parser ──▶ router ──▶ [vision] ──▶ adapter ──▶ provider           │  ──▶ Codex
- (/v1/      │     │          │          │            │           │                │     (SSE)
+ (/v1/      │     │          │          │            │           │                │   (SSE / WS)
   responses)│   OcxParsed  provider   describe    buildRequest  parseStream       │
             │   Request    +adapter   images       + fetch      AdapterEvent[]    │
             │                                          │           │              │
@@ -38,6 +39,14 @@ account before the request is forwarded upstream. The rule is intentionally spli
   `GET /api/codex-auth/accounts?refresh=1`; successful upstream responses capture quota headers,
   429 puts an account in cooldown, and 401/403 marks it for reauthentication.
 
+## Sub-agent model selection
+
+On a fresh install, `subagentModels` features `gpt-5.5`, the GPT-5.6 Sol/Terra/Luna trio, and
+`gpt-5.4-mini` in Codex's sub-agent picker. The dashboard can reorder or replace up to five entries
+with native or routed models. For v1 collaboration requests, optional `injectionModel` and
+`injectionEffort` settings add developer guidance that tells `spawn_agent` which model and reasoning
+effort to use; v2 requests keep Codex's native multi-agent guidance.
+
 ## The lifecycle
 
 <Steps>
@@ -50,8 +59,8 @@ account before the request is forwarded upstream. The rule is intentionally spli
    base64 text.
 
 2. **Route** — `router.ts` maps the requested model id to a configured provider using a fixed
-   precedence: explicit `provider/model` → a provider's `defaultModel` → a provider's `models[]` →
-   built-in prefix patterns (`claude-`, `gpt-`, `o1-`/`o3-`/`o4-`, `llama-`/`mixtral-`/`gemma-`) →
+   precedence: explicit `provider/model` → a provider's `defaultModel` → built-in prefix patterns
+   (`claude-`, `gpt-`, `o1-`/`o3-`/`o4-`, `llama-`/`mixtral-`/`gemma-`) → a provider's `models[]` →
    the `defaultProvider` fallback. See [Model Routing](/opencodex/guides/model-routing/).
 
 3. **Authenticate** — for an `oauth` provider, opencodex swaps in a fresh, auto-refreshed access
@@ -60,26 +69,31 @@ account before the request is forwarded upstream. The rule is intentionally spli
    to continue if the required pool credential is unavailable.
 
 4. **Vision sidecar (optional)** — if the routed model is listed in `provider.noVisionModels` and the
-   request carries an image, opencodex describes each image with a `gpt-5.4-mini` vision model over
-   your ChatGPT login and replaces it with text, so a text-only model can still reason about it.
+   request carries an image, opencodex describes each image with the configured ChatGPT vision
+   sidecar and replaces it with text, so a text-only model can still reason about it.
    See [Sidecars](/opencodex/guides/sidecars/).
 
-5. **Passthrough fast path** — if the adapter is a passthrough (`openai-responses` in `forward` mode,
-   or `azure-openai`), the raw request body is piped straight to the provider and the response streamed back
-   untouched. No translation happens.
+5. **Passthrough fast path** — if the adapter is a Responses passthrough (`openai-responses` or
+   `azure-openai`), opencodex keeps the Responses body, applies targeted routing and compatibility
+   rewrites, then relays the provider's response without converting it through `AdapterEvent`s.
 
 6. **Web-search sidecar (optional)** — if Codex enabled hosted `web_search` but the routed model is
    non-OpenAI, opencodex exposes a synthetic `web_search` function tool and runs the model in a small
-   agentic loop, executing real searches through `gpt-5.4-mini` over your ChatGPT login and injecting
-   the results back as tool results.
+   agentic loop, executing real searches through `gpt-5.6-luna` by default over your ChatGPT login
+   and injecting the results back as tool results.
 
-7. **Adapt** — otherwise the chosen adapter's `buildRequest()` produces the upstream HTTP request
+7. **Compact (when requested)** — Codex v1 calls `POST /v1/responses/compact`; v2 adds a
+   `compaction_trigger` to a Responses turn. Native passthrough routes compaction upstream, while a
+   routed model runs as a tool-free summarizer and returns the replacement history shape Codex expects.
+
+8. **Adapt** — otherwise the chosen adapter's `buildRequest()` produces the upstream HTTP request
    (URL, headers, body) in the provider's native format, and opencodex `fetch`es it.
 
-8. **Bridge** — the adapter's `parseStream()` (or `parseResponse()`) yields internal `AdapterEvent`s
+9. **Bridge** — the adapter's `parseStream()` (or `parseResponse()`) yields internal `AdapterEvent`s
    (text, reasoning, tool-call start/delta/end, done, error). `bridge.ts` converts that stream back
    into Responses SSE events — `response.output_text.delta`, `response.reasoning_summary_text.delta`,
-   `response.function_call_arguments.delta`, `response.completed`, and so on — which Codex consumes.
+   `response.function_call_arguments.delta`, `response.completed`, and so on. The optional WebSocket
+   transport sends the same event payloads as text frames.
 
 </Steps>
 

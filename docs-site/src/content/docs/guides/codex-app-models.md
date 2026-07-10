@@ -19,29 +19,34 @@ $CODEX_HOME/opencodex-catalog.json
 $CODEX_HOME/models_cache.json
 ```
 
-The active provider is installed as a root config key:
+On the default loopback bind, Codex keeps its built-in `openai` provider id. opencodex installs root
+keys that point the provider and model catalog at the proxy:
 
 ```toml
-model_provider = "opencodex"
 model_catalog_json = "/absolute/path/to/opencodex-catalog.json"
+openai_base_url = "http://127.0.0.1:10100/v1"
 ```
 
-The provider itself is registered as a Responses-compatible endpoint:
+For a non-loopback hostname, Codex also needs the generated API-auth header. That mode uses a root
+`model_provider = "opencodex"` key and a dedicated Responses-compatible provider:
 
 ```toml
 [model_providers.opencodex]
 name = "OpenCodex Proxy"
-base_url = "http://127.0.0.1:10100/v1"
+base_url = "http://your-host:10100/v1"
 wire_api = "responses"
 requires_openai_auth = true
+env_http_headers = { "x-opencodex-api-key" = "OPENCODEX_API_AUTH_TOKEN" }
 ```
 
-`websockets` is off by default. opencodex only advertises `supports_websockets = true` in the
-provider table and catalog entries when `"websockets": true` is set.
+`websockets` is off by default. Dedicated-provider and catalog entries advertise
+`supports_websockets = true` only when `"websockets": true`; on loopback, Codex's built-in provider
+may probe WebSocket first, and a disabled proxy returns `426` so Codex falls back to HTTP/SSE. See
+[Codex Integration](/opencodex/guides/codex-integration/) for the full injection and restore flow.
 
 ## Why routed models show up
 
-Codex's model picker expects Codex-shaped catalog entries. opencodex builds those entries by cloning
+Codex's model picker expects Codex-shaped catalog entries. opencodex builds routed entries by cloning
 a native Codex model template, then replacing the routed model identity:
 
 ```text
@@ -51,49 +56,80 @@ visibility = "list"
 ```
 
 The clone keeps strict-parser fields such as reasoning levels, shell type, API support flags, and
-base instructions. That makes each routed entry look like a valid picker-visible Codex model.
+base instructions. opencodex then removes native-only capabilities that the route cannot honor,
+including OpenAI service-tier metadata.
 
-## GPT-5.6 preview entries
+## Model coverage in v2.7.1
 
-Preview builds add GPT-5.6 Sol/Terra/Luna to the synced catalog without waiting for every installed
-Codex catalog to ship those slugs:
+The native fallback set includes `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`,
+`gpt-5.3-codex-spark`, and GPT-5.6 Sol/Terra/Luna. For the GPT-5.5/5.4 family, opencodex preserves
+the installed Codex catalog's richer live entries and only synthesizes a missing entry. The bundled
+upstream snapshot is used only for GPT-5.6, where it supplies the real per-model identity and
+metadata instead of an older-template approximation.
 
-| Route | Picker id |
+| Route | Picker ids and catalog metadata |
 | --- | --- |
-| ChatGPT passthrough | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` |
-| OpenAI (API key) | `openai-apikey/gpt-5.6-sol`, `openai-apikey/gpt-5.6-terra`, `openai-apikey/gpt-5.6-luna` |
-| OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` |
+| ChatGPT passthrough | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (372,000-token catalog window) |
+| OpenAI (API key) | `openai-apikey/gpt-5.6-sol`, `openai-apikey/gpt-5.6-terra`, `openai-apikey/gpt-5.6-luna` (372,000) |
+| OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` (372,000) |
+| Cursor | Static fallback includes `cursor/gpt-5.6-sol`, `cursor/gpt-5.6-terra`, and `cursor/gpt-5.6-luna` (1,000,000), plus `cursor/grok-4.5` and `cursor/grok-4.5-fast` (500,000); live account discovery decides which remain visible. |
+| xAI | Live discovery is authoritative; the fallback catalog defaults to `xai/grok-4.5` with a 500,000-token window and `low` / `medium` / `high` reasoning controls. |
 
-Each entry advertises the current GPT-5.6 context metadata (372,000 usable tokens) with the exact
-upstream reasoning ladder per slug: Sol and Terra keep `xhigh`, `max`, and `ultra` as separate
-choices, while Luna ends at `max` (upstream ships no `ultra` for Luna). Sol defaults to `low`
-reasoning; Terra and Luna default to `medium`. `ultra` follows upstream Codex semantics — maximum
-reasoning with proactive multi-agent delegation, sent to the backend as `max`. If the upstream
-account is not enabled for the model, the request still fails upstream normally.
+The pinned GPT-5.6 entries preserve the exact upstream ladder. Sol and Terra expose `low` through
+`ultra`; Luna stops at `max`. Sol defaults to `low`, while Terra and Luna default to `medium`.
+`ultra` is a client-facing choice for maximum reasoning plus proactive delegation and reaches the
+backend as `max`. A picker entry only means the catalog is ready: the connected account or API key
+must still be entitled to use that model.
+
+## Native and routed model toggles
+
+The dashboard Models page uses `disabledModels` for both model families:
+
+- Routed ids are namespaced (`provider/model`). Disabling one excludes it from the synced catalog
+  and `/v1/models`.
+- Native GPT ids are bare slugs. Disabling one keeps its catalog entry but changes
+  `visibility` to `hide`, preserving the exact entry for a later re-enable; the bare OpenAI list
+  shape omits it while disabled.
+- Native rows come from the supported static set, so a disabled native model stays visible in the
+  dashboard and can be turned back on.
+
+The visibility pass runs after snapshot upgrades, and the management API refreshes the catalog and
+forces Codex's model cache stale after a toggle.
 
 ## Multi-agent surface mode
 
-opencodex adds a 3-state multi-agent surface override that controls the `multi_agent_version` field
-on every catalog entry:
+opencodex adds a 3-state override for the `multi_agent_version` field on every catalog entry:
 
 | Mode | Effect |
 | --- | --- |
-| **All v1** | Force every model to the v1 multi-agent surface, overriding upstream pins (including sol/terra). |
-| **Default** (install default) | Respect upstream model pins: sol/terra use v2, luna uses v1, everything else follows the codex `multi_agent_v2` feature flag. |
-| **All v2** | Force every model to the v2 multi-agent surface, overriding upstream pins (including luna). |
+| **v1** | Force every model to the v1 multi-agent surface, overriding upstream pins (including Sol/Terra). |
+| **base** (install default) | Restore upstream pins: Sol/Terra use v2, Luna uses v1, and unpinned models follow the Codex `multi_agent_v2` feature flag. |
+| **v2** | Force every model to the v2 multi-agent surface, overriding upstream pins (including Luna). |
 
-Set the mode from the dashboard Models page (segmented control), `ocx v2 mode v1|default|v2`, or
-`PUT /api/v2` with `{ "multiAgentMode": "v1" }`. Changes apply to new Codex sessions.
+Set the mode from the Dashboard or Models page, `ocx v2 mode v1|default|v2`, or `PUT /api/v2`
+with `{ "multiAgentMode": "v1" }`. Changes apply to new Codex sessions.
 
-## Ultra reasoning
+:::caution
+On the v2 (`multi_agent_v2`) surface, spawned sub-agents inherit the parent session's model. The
+dashboard's delegation model/effort picker is v1 prompt guidance, not a proxy-side per-spawn
+cross-model router. See [Sub-agent Surface](/opencodex/guides/sub-agent-surface/) for the canonical
+behavior.
+:::
 
-Ultra is always advertised in the catalog regardless of the `multi_agent_v2` toggle state. The v2
-toggle controls only the multi-agent collab surface, not ultra visibility. On the wire, opencodex
-clamps ultra to each model's real top rung (e.g. gpt-5.5 ultra becomes xhigh) via `nativeEffortClamp`.
+## Reasoning top tiers
+
+Reasoning-tier visibility is independent of the v1/base/v2 surface mode. Generated reasoning-capable
+entries advertise `max` so direct sub-agent effort overrides validate; current generated routed
+entries and older native GPT entries also advertise `ultra`. Exact upstream GPT-5.6 ladders are
+preserved, so Luna has `max` but no `ultra`.
+
+On the wire, routed adapters map or clamp unsupported tiers. For older native models whose real
+ladder stops at `xhigh`, `nativeEffortClamp` maps a direct `max` or an `ultra` selection to `xhigh`
+(for example, GPT-5.5). Sol, Terra, and Luna have a real `max` rung.
 
 ## Fast tier rules
 
-Codex currently stores fast mode as:
+Codex stores fast mode as:
 
 ```toml
 service_tier = "fast"
@@ -102,21 +138,19 @@ service_tier = "fast"
 fast_mode = true
 ```
 
-But the model catalog and runtime request tier id use:
-
-```text
-priority
-```
-
-opencodex preserves that split. Native OpenAI passthrough models keep fast support; routed
-non-OpenAI models strip service-tier metadata so the fast option is not advertised where it cannot
-be honored.
+But the model catalog and runtime request tier id use `priority`. opencodex preserves that split.
+Native OpenAI passthrough models keep fast support; routed non-OpenAI models strip service-tier
+metadata so the fast option is not advertised where it cannot be honored.
 
 ## Subagent selection
 
-Codex's `spawn_agent` advertises the highest-priority first 5 catalog models. Pick up to five
-`provider/model` or native ids through `subagentModels` or the web dashboard; opencodex sorts those
-entries to the front of the shared catalog.
+Codex sorts picker-visible catalog entries by ascending `priority` and advertises the first five as
+`spawn_agent` model overrides. Pick up to five bare native ids or namespaced `provider/model` ids
+through `subagentModels` or the dashboard Subagents page; opencodex gives those entries priorities
+0-4 in the chosen order. Other models remain callable by exact id.
+
+The featured-model list is separate from the Dashboard's **Sub-agent delegation** guidance. In
+particular, featured model overrides do not bypass v2's parent-model inheritance rule.
 
 ## Refreshing model state
 
@@ -126,5 +160,5 @@ If the picker still shows stale entries, refresh the catalog and restart the tar
 ocx sync
 ```
 
-opencodex also invalidates Codex's `models_cache.json` when it changes routed model visibility or
-catalog metadata.
+opencodex rewrites `models_cache.json` with a deliberately stale cache wrapper whenever catalog
+visibility, priority, or metadata changes, so the next Codex model refresh reads the new catalog.
