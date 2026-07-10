@@ -38,4 +38,74 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("scheduled task or proxy survived uninstall");
     expect(workflow).not.toMatch(/uses:\s+\S+@(?:v\d+|main|master)\b/);
   });
+
+  test("release workflow gates the exact SHA, channel, and service surface without injection", async () => {
+    const workflow = await readText(".github/workflows/release.yml");
+
+    // Least privilege + never cancel a publish mid-flight.
+    expect(workflow).toContain("actions: read");
+    expect(workflow).toContain("id-token: write");
+    expect(workflow).toContain("cancel-in-progress: false");
+    expect(workflow).toContain("timeout-minutes: 15");
+
+    // Dry-run first by default; tokenless trusted publishing only.
+    expect(workflow).toMatch(/dry-run:[\s\S]*?default: true/);
+    expect(workflow).not.toContain("secrets.NPM_TOKEN");
+    expect(workflow).not.toContain("NODE_AUTH_TOKEN:");
+
+    // Immutable action references.
+    expect(workflow).toContain("actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0");
+    expect(workflow).toContain("oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6");
+    expect(workflow).toContain("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020");
+    expect(workflow).not.toMatch(/uses:\s+\S+@(?:v\d+|main|master)\b/);
+
+    // Workflow-dispatch inputs must reach shell code via env, never by direct
+    // interpolation into run: source (script-injection hardening).
+    const runBlocks = workflow.split(/\n {6,}- name: /).filter(block => block.includes("run: |"));
+    for (const block of runBlocks) {
+      const runSource = block.slice(block.indexOf("run: |"));
+      expect(runSource).not.toContain("${{ inputs.");
+    }
+
+    // The service gate must cover the post-restructure service surface and stay
+    // in sync with every service-lifecycle.yml push trigger path.
+    const gateMatch = workflow.match(/grep -Eq '(\^\([^']+\)\$)'/);
+    expect(gateMatch).not.toBeNull();
+    const gate = new RegExp(gateMatch![1]!);
+    const lifecycle = await readText(".github/workflows/service-lifecycle.yml");
+    const pushPaths = lifecycle
+      .split("push:")[1]!
+      .split("workflow_dispatch:")[0]!
+      .split("\n")
+      .map(line => line.trim())
+      .filter(line => line.startsWith('- "'))
+      .map(line => line.slice(3, -1));
+    expect(pushPaths.length).toBeGreaterThanOrEqual(6);
+    for (const path of pushPaths) {
+      expect(gate.test(path)).toBe(true);
+    }
+    expect(gate.test("src/cli/index.ts")).toBe(true);
+    expect(gate.test("src/lib/bun-runtime.ts")).toBe(true);
+    expect(gate.test("src/cli.ts")).toBe(true);
+    expect(gate.test("src/router.ts")).toBe(false);
+    expect(gate.test("docs-site/src/pages/index.astro")).toBe(false);
+
+    // Channel guards stay branch-exact.
+    expect(workflow).toContain("Release must run from main or preview");
+    expect(workflow).toContain("main releases must use a stable semver version");
+    expect(workflow).toContain("preview releases must use a preview prerelease version");
+  });
+
+  test("docs deployment is pinned, bounded, and scoped to Pages", async () => {
+    const workflow = await readText(".github/workflows/deploy-docs.yml");
+
+    expect(workflow).toContain("permissions:\n  contents: read\n  pages: write\n  id-token: write");
+    expect(workflow).toContain("cancel-in-progress: false");
+    expect(workflow).toContain("timeout-minutes: 15");
+    expect(workflow).toContain("timeout-minutes: 10");
+    expect(workflow).toContain("actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0");
+    expect(workflow).toContain("withastro/action@56781b97402ce0487b7e61ce2cb960c0e2cc5289");
+    expect(workflow).toContain("actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e");
+    expect(workflow).not.toMatch(/uses:\s+\S+@(?:v\d+|main|master)\b/);
+  });
 });
