@@ -254,7 +254,7 @@ test("relays search upstream error status and body verbatim", async () => {
   }
 });
 
-test("a hung search upstream times out with 504 after config.connectTimeoutMs", async () => {
+test("a hung search upstream times out with 504 after config.search.timeoutMs", async () => {
   const upstream = Bun.serve({
     port: 0,
     fetch(req) {
@@ -265,7 +265,7 @@ test("a hung search upstream times out with 504 after config.connectTimeoutMs", 
   });
   saveConfig({
     ...forwardConfig(upstream.url.toString().replace(/\/$/, "")),
-    connectTimeoutMs: 100,
+    search: { timeoutMs: 100 },
   } as OcxConfig);
 
   const server = startServer(0);
@@ -278,6 +278,37 @@ test("a hung search upstream times out with 504 after config.connectTimeoutMs", 
     expect(response.status).toBe(504);
     const json = await response.json() as { error: { message: string } };
     expect(json.error.message).toContain("timed out");
+  } finally {
+    await server.stop(true);
+    await upstream.stop(true);
+  }
+}, 5_000);
+
+test("a short connectTimeoutMs does NOT cut a slow search (total deadline is search.timeoutMs)", async () => {
+  // Regression: alpha/search is non-streaming, so its headers arrive only when the search
+  // completes. Reusing connectTimeoutMs as the relay deadline killed every search longer than
+  // the header-arrival budget (often ~10s in real configs).
+  const upstream = Bun.serve({
+    port: 0,
+    async fetch() {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      return Response.json({ output: "slow but fine" });
+    },
+  });
+  saveConfig({
+    ...forwardConfig(upstream.url.toString().replace(/\/$/, "")),
+    connectTimeoutMs: 50,
+  } as OcxConfig);
+
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/alpha/search", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer chatgpt-user-token" },
+      body: JSON.stringify({ id: "search-session", model: "gpt-test" }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ output: "slow but fine" });
   } finally {
     await server.stop(true);
     await upstream.stop(true);

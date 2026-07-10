@@ -328,6 +328,8 @@ export interface OcxConfig {
   visionSidecar?: OcxVisionSidecarConfig;
   /** /v1/images relay for codex's built-in image_gen tool. */
   images?: OcxImagesConfig;
+  /** /v1/alpha/search relay for codex's built-in web search client. */
+  search?: OcxSearchConfig;
   /** Codex multi-account pool. */
   codexAccounts?: CodexAccount[];
   /** Active pool account id for next session. undefined = main (passthrough as-is). */
@@ -375,6 +377,15 @@ export interface OcxTokenGuardianConfig {
 
 export interface OcxImagesConfig {
   /** Upstream timeout (ms) for one /v1/images relay. Default 300000 — generation is slow. */
+  timeoutMs?: number;
+}
+
+export interface OcxSearchConfig {
+  /**
+   * Total upstream deadline (ms) for one /v1/alpha/search relay. Default 200000. The endpoint
+   * is non-streaming JSON (headers arrive only when the search completes), so this is a whole-
+   * request budget — deliberately NOT connectTimeoutMs, which is a header-arrival budget.
+   */
   timeoutMs?: number;
 }
 

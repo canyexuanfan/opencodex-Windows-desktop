@@ -26,6 +26,13 @@ import { readJsonRequestBody } from "./request-decompress";
 import type { RequestLogContext } from "./request-log";
 import { codexLogAccountId, decodeRequestErrorResponse, sidecarOutcomeRecorder } from "./responses";
 
+/**
+ * Default TOTAL deadline for one search relay. alpha/search is non-streaming JSON — response
+ * headers arrive only when the search finishes — so the budget must cover the whole request.
+ * Overridable via config.search.timeoutMs; never config.connectTimeoutMs, whose documented
+ * contract is the DNS/TCP/TLS/header-arrival budget (a 10s connect budget would kill every
+ * long-running search).
+ */
 const SEARCH_UPSTREAM_TIMEOUT_MS = 200_000;
 const SEARCH_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
 
@@ -103,7 +110,7 @@ export async function handleSearch(
   if (upstream.provider.headers) Object.assign(headers, upstream.provider.headers);
   for (const [name, value] of authHeaders) headers[name] = value;
   const url = `${upstream.provider.baseUrl}/alpha/search`;
-  const timeoutMs = config.connectTimeoutMs ?? SEARCH_UPSTREAM_TIMEOUT_MS;
+  const timeoutMs = config.search?.timeoutMs ?? SEARCH_UPSTREAM_TIMEOUT_MS;
   const linkedSignal = signalWithTimeout(timeoutMs, req.signal);
   const sidecarExit = sidecarEnter("search");
   try {
