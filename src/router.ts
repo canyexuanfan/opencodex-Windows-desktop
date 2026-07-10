@@ -98,11 +98,15 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
   const thinkingToggleModels = mergeStringArray(registryEntry.thinkingToggleModels, provider.thinkingToggleModels);
   const thinkingBudgetModels = mergeStringArray(registryEntry.thinkingBudgetModels, provider.thinkingBudgetModels);
   const registryBaseUrlIsTemplate = /\{[^}]*\}/.test(registryEntry.baseUrl);
-  const userBaseUrlIsResolved = typeof provider.baseUrl === "string"
-    && provider.baseUrl.trim().length > 0
-    && !/\{[^}]*\}/.test(provider.baseUrl);
-  // Registry template URLs are presets; a resolved user URL is the canonical endpoint for them.
-  const baseUrl = registryBaseUrlIsTemplate && userBaseUrlIsResolved ? provider.baseUrl : registryEntry.baseUrl;
+  const userBaseUrl = typeof provider.baseUrl === "string" ? provider.baseUrl.trim() : "";
+  const userBaseUrlIsResolved = userBaseUrl.length > 0 && !/\{[^}]*\}/.test(userBaseUrl);
+  if (registryEntry.allowBaseUrlOverride && !userBaseUrlIsResolved) {
+    throw new Error(`Invalid baseUrl for provider "${providerName}": expected a nonblank URL without unresolved placeholders`);
+  }
+  // Registry template URLs are presets; local/self-hosted entries opt in explicitly.
+  const baseUrl = (registryBaseUrlIsTemplate || registryEntry.allowBaseUrlOverride) && userBaseUrlIsResolved
+    ? userBaseUrl
+    : registryEntry.baseUrl;
 
   return {
     ...provider,

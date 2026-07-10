@@ -232,6 +232,29 @@ describe("provider registry parity", () => {
     expect(optionalKeyProviders).toEqual(["litellm"]);
   });
 
+  test("base URL override permission is registry-only and limited to local/self-hosted providers", () => {
+    const optedIn = PROVIDER_REGISTRY.filter(entry => entry.allowBaseUrlOverride);
+
+    expect(optedIn.map(entry => entry.id)).toEqual(["ollama", "vllm", "lm-studio", "litellm"]);
+    for (const entry of optedIn) {
+      expect(providerConfigSeed(entry)).not.toHaveProperty("allowBaseUrlOverride");
+    }
+  });
+
+  test("Ollama Cloud uses the three live tagged IDs without retaining bare aliases", () => {
+    const ollamaCloud = PROVIDER_REGISTRY.find(entry => entry.id === "ollama-cloud");
+
+    expect(ollamaCloud?.models).toEqual([
+      "glm-5.2", "deepseek-v4-pro", "qwen3-coder:480b", "gpt-oss:120b",
+      "kimi-k2.6", "minimax-m3", "qwen3.5:397b", "gemma4:31b",
+    ]);
+    expect(ollamaCloud?.models).not.toContain("qwen3-coder");
+    expect(ollamaCloud?.models).not.toContain("qwen3.5");
+    expect(ollamaCloud?.models).not.toContain("gemma4");
+    expect(ollamaCloud?.noVisionModels).toContain("qwen3-coder:480b");
+    expect(ollamaCloud?.noVisionModels).not.toContain("qwen3-coder");
+  });
+
   test("Fire Pass model data is explicitly frozen pending entitlement proof", () => {
     const firepass = PROVIDER_REGISTRY.find(entry => entry.id === "firepass");
 
