@@ -233,6 +233,7 @@ export const de = {
   "debug.subtitle": "Opt-in-Diagnose für Provider-Transport und Nutzungs-Extraktion. Anfragefehler und 502er bleiben unter Protokolle.",
   "debug.debug": "Provider-Diagnose",
   "debug.usage": "Nutzungs-Extraktion",
+  "debug.injection": "Injektions-Log",
   "debug.reset": "Laufzeit-Überschreibungen löschen",
   "debug.refresh": "Aktualisieren",
   "debug.follow": "Folgen",

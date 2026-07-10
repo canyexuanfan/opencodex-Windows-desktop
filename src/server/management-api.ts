@@ -208,19 +208,20 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   }
 
   if (url.pathname === "/api/debug" && req.method === "PUT") {
-    let body: { debug?: unknown; usage?: unknown; reset?: unknown };
+    let body: { debug?: unknown; usage?: unknown; injection?: unknown; reset?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     if (body.reset === true) return jsonResponse(clearDebugSettings());
     if (body.reset === "debug" || body.reset === "provider") return jsonResponse(clearDebugSetting("debug"));
     if (body.reset === "usage") return jsonResponse(clearDebugSetting("usage"));
+    if (body.reset === "injection") return jsonResponse(clearDebugSetting("injection"));
     const partial: Partial<Record<DebugFlag, boolean>> = {};
-    for (const key of ["debug", "usage"] as const) {
+    for (const key of ["debug", "usage", "injection"] as const) {
       if (body[key] === undefined) continue;
       if (typeof body[key] !== "boolean") return jsonResponse({ error: `${key} must be a boolean` }, 400);
       partial[key] = body[key];
     }
     if (Object.keys(partial).length === 0) {
-      return jsonResponse({ error: "provide debug/usage booleans or reset:true" }, 400);
+      return jsonResponse({ error: "provide debug/usage/injection booleans or reset:true" }, 400);
     }
     return jsonResponse(setDebugSettings(partial));
   }

@@ -247,6 +247,7 @@ export const en = {
   "debug.subtitle": "Opt-in provider transport and usage-extraction diagnostics. Request errors and 502s stay on Logs.",
   "debug.debug": "Provider debug",
   "debug.usage": "Usage extraction",
+  "debug.injection": "Injection log",
   "debug.reset": "Clear runtime overrides",
   "debug.refresh": "Refresh",
   "debug.follow": "Follow",

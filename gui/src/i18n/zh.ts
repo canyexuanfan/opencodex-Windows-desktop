@@ -246,6 +246,7 @@ export const zh: Record<TKey, string> = {
   "debug.subtitle": "可选的 provider transport 与 usage 提取诊断。请求错误和 502 在 Logs 页面。",
   "debug.debug": "Provider debug",
   "debug.usage": "Usage 提取",
+  "debug.injection": "注入日志",
   "debug.reset": "清除运行时覆盖",
   "debug.refresh": "刷新",
   "debug.follow": "跟随滚动",

@@ -9,6 +9,7 @@ import { buildCompactV1Output, COMPACT_PROMPT, decodeCompactionSummary, extractC
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
 import { expandPreviousResponseInput, previousResponseConversationId, rememberResponseState } from "../responses/state";
 import { routeModel } from "../router";
+import { isInjectionDebugEnabled } from "../lib/debug-settings";
 import { modelInList, namespacedToolName } from "../types";
 import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig } from "../types";
 import {
@@ -463,8 +464,8 @@ export async function handleResponses(
     const guidance = await multiAgentGuidanceText(parsed, config.injectionModel, config.injectionEffort, config.subagentModels, config.injectionPrompt);
     if (guidance) {
       injectDeveloperMessage(parsed, guidance);
-      console.log(`[opencodex] ${route.modelId}: multi-agent guidance injected (surface=${collabSurface(parsed)}, ${guidance.length} chars)`);
-    } else if (collabSurface(parsed) !== null) {
+      if (isInjectionDebugEnabled()) console.log(`[opencodex] ${route.modelId}: multi-agent guidance injected (surface=${collabSurface(parsed)}, ${guidance.length} chars)`);
+    } else if (isInjectionDebugEnabled() && collabSurface(parsed) !== null) {
       console.log(`[opencodex] ${route.modelId}: collab surface=${collabSurface(parsed)}, guidance silent (effort=${parsed.options.reasoning ?? "unset"}, injectionModel=${config.injectionModel ?? "unset"})`);
     }
   }

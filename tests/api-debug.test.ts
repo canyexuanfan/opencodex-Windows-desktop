@@ -66,6 +66,7 @@ describe("management API /api/debug", () => {
       expect(body).toMatchObject({
         enabled: false,
         usage: false,
+        injection: false,
       });
       expect(body).toHaveProperty("runtimeOverride");
       expect(body).toHaveProperty("env");
@@ -81,10 +82,10 @@ describe("management API /api/debug", () => {
       const on = await fetch(new URL("/api/debug", server.url), {
         method: "PUT",
         headers: { "content-type": "application/json", origin },
-        body: JSON.stringify({ debug: true, usage: true }),
+        body: JSON.stringify({ debug: true, usage: true, injection: true }),
       });
       expect(on.status).toBe(200);
-      expect(await on.json()).toMatchObject({ enabled: true, usage: true });
+      expect(await on.json()).toMatchObject({ enabled: true, usage: true, injection: true });
 
       const reset = await fetch(new URL("/api/debug", server.url), {
         method: "PUT",
@@ -92,7 +93,29 @@ describe("management API /api/debug", () => {
         body: JSON.stringify({ reset: true }),
       });
       expect(reset.status).toBe(200);
-      expect(await reset.json()).toMatchObject({ enabled: false, usage: false });
+      expect(await reset.json()).toMatchObject({ enabled: false, usage: false, injection: false });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("injection scope: PUT toggles and scoped reset clears only it", async () => {
+    const server = startServer(0);
+    const origin = loopbackOrigin(server);
+    try {
+      const on = await fetch(new URL("/api/debug", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json", origin },
+        body: JSON.stringify({ injection: true }),
+      });
+      expect(await on.json()).toMatchObject({ injection: true, enabled: false, usage: false });
+
+      const reset = await fetch(new URL("/api/debug", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json", origin },
+        body: JSON.stringify({ reset: "injection" }),
+      });
+      expect(await reset.json()).toMatchObject({ injection: false });
     } finally {
       await server.stop(true);
     }

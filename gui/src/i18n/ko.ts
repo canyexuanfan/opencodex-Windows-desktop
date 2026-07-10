@@ -246,6 +246,7 @@ export const ko: Record<TKey, string> = {
   "debug.subtitle": "선택적 provider transport 및 usage 추출 진단. 요청 오류와 502는 Logs에 표시됩니다.",
   "debug.debug": "Provider debug",
   "debug.usage": "Usage 추출",
+  "debug.injection": "주입 로그",
   "debug.reset": "런타임 재정의 해제",
   "debug.refresh": "새로고침",
   "debug.follow": "Follow",

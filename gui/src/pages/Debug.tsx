@@ -6,8 +6,9 @@ import { Switch } from "../ui";
 interface DebugSettings {
   enabled: boolean;
   usage: boolean;
-  runtimeOverride: Partial<Record<"debug" | "usage", boolean>>;
-  env: Record<"debug" | "usage", boolean>;
+  injection: boolean;
+  runtimeOverride: Partial<Record<"debug" | "usage" | "injection", boolean>>;
+  env: Record<"debug" | "usage" | "injection", boolean>;
 }
 
 interface DebugLogEntry {
@@ -90,7 +91,7 @@ export default function Debug({ apiBase }: { apiBase: string }) {
     logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [lines, follow]);
 
-  const setDebugFlag = async (flag: "debug" | "usage", enabled: boolean) => {
+  const setDebugFlag = async (flag: "debug" | "usage" | "injection", enabled: boolean) => {
     setDebugBusy(true);
     try {
       const res = await fetch(`${apiBase}/api/debug`, {
@@ -145,8 +146,8 @@ export default function Debug({ apiBase }: { apiBase: string }) {
         <div className="card" style={{ marginBottom: 16, padding: "12px 14px" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
-              {(["debug", "usage"] as const).map(flag => {
-                const checked = flag === "debug" ? debug.enabled : debug.usage;
+              {(["debug", "usage", "injection"] as const).map(flag => {
+                const checked = flag === "debug" ? debug.enabled : flag === "usage" ? debug.usage : debug.injection;
                 return (
                   <div key={flag} style={{ display: "inline-flex", alignItems: "center", gap: 10, minWidth: 220 }}>
                     <Switch
