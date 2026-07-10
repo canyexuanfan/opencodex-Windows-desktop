@@ -23,7 +23,24 @@ fast_mode = true
 ```
 
 The proxy listens on port `10100` by default and serves `POST /v1/responses`,
-`POST /v1/responses/compact`, `GET /v1/models`, `GET /healthz`, and the `/api/*` management surface.
+`POST /v1/responses/compact`, `POST /v1/images/generations`, `POST /v1/images/edits`,
+`GET /v1/models`, `GET /healthz`, and the `/api/*` management surface.
+
+### Built-in image generation (`image_gen`)
+
+Codex's built-in `image_gen` tool does not go through `/v1/responses` — the codex-rs extension
+POSTs `{base_url}/images/generations` (or `/images/edits` when reference images are attached)
+directly, with the same ChatGPT bearer auth it uses for chat. Because the injected `base_url`
+points at opencodex, the proxy relays those calls to the OpenAI upstream:
+
+- **ChatGPT login (default):** the request is forwarded to `chatgpt.com/backend-api/codex` with
+  the caller's OAuth token (or the routed multi-account pool token). No API key is needed.
+- **OpenAI API-key provider:** if no ChatGPT auth is available on the request, the relay falls
+  back to a configured `openai-responses` API-key provider (e.g. `api.openai.com`).
+- **Neither:** the proxy returns a clear error instead of a generic 404. Routed providers
+  (Cursor, Gemini, Kiro, …) cannot serve image generation; if you don't want the tool offered at
+  all, disable it in Codex with `codex features disable image_generation`
+  (`[features] image_generation = false` in `config.toml`).
 
 For a non-loopback `hostname`, Codex must send the generated API auth header. The injector therefore
 uses a dedicated provider instead:

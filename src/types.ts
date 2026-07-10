@@ -312,6 +312,8 @@ export interface OcxConfig {
   webSearchSidecar?: OcxWebSearchSidecarConfig;
   /** Vision sidecar: describe images via a gpt vision model so text-only models can "see" them. */
   visionSidecar?: OcxVisionSidecarConfig;
+  /** /v1/images relay for codex's built-in image_gen tool. */
+  images?: OcxImagesConfig;
   /** Codex multi-account pool. */
   codexAccounts?: CodexAccount[];
   /** Active pool account id for next session. undefined = main (passthrough as-is). */
@@ -355,6 +357,11 @@ export interface OcxTokenGuardianConfig {
   codexWarmupMaxAgeSeconds?: number;
   /** Model used for optional Codex pool warmup. Default gpt-5.4-mini. */
   codexWarmupModel?: string;
+}
+
+export interface OcxImagesConfig {
+  /** Upstream timeout (ms) for one /v1/images relay. Default 300000 — generation is slow. */
+  timeoutMs?: number;
 }
 
 export interface OcxVisionSidecarConfig {
