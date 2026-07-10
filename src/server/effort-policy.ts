@@ -49,6 +49,26 @@ export function effortCapFor(config: OcxConfig, subagent: boolean): string | und
 }
 
 /**
+ * Whether the effort caps apply to this turn at all. Caps are a V2-surface feature
+ * (v1 sub-agents are pinned via explicit spawn args + injectionEffort prompting, so
+ * the ultra-default leak this module intercepts is v2-specific):
+ *  - multiAgentMode "v1" disables caps entirely (mirrors the GUI hiding the panel).
+ *  - a main turn qualifies when its own tool list carries the v2 collab surface.
+ *  - a CHILD turn carries no collab tools (surface null) — its discriminator is the
+ *    spawned-child header pair (isSubagentRequest), so the subagent cap still lands
+ *    on exactly the turns it targets.
+ *  - a v1-surface turn never qualifies.
+ */
+export function effortCapAppliesTo(
+  surface: "v1" | "v2" | null,
+  headers: Headers,
+  config: OcxConfig,
+): boolean {
+  if (config.multiAgentMode === "v1") return false;
+  return surface === "v2" || (surface === null && isSubagentRequest(headers));
+}
+
+/**
  * The routed model's supported effort ladder for cap resolution, from the ROUTE's
  * registry-merged provider (router.ts routedProviderConfig) — the persisted
  * config.providers entry misses registry seeds, and bare ids can route via

@@ -98,6 +98,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   const [maMode, setMaMode] = useState<"v1" | "default" | "v2">("default");
   const [maBusy, setMaBusy] = useState(false);
   const [maHelpOpen, setMaHelpOpen] = useState(false);
+  const [effortCapHelpOpen, setEffortCapHelpOpen] = useState(false);
   const [injectionModel, setInjectionModel] = useState<string>("");
   const [injectionEffort, setInjectionEffort] = useState<string>("");
   const [injectionEfforts, setInjectionEfforts] = useState<string[]>([]);
@@ -508,9 +509,43 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         </div>
       )}
 
-      <div className="panel" style={{ marginBottom: 24 }}>
-        <div className="injection-head">
-          <span className="injection-label">{t("dash.effortCapLabel")}</span>
+      {maMode !== "v1" && (
+        <div className="panel" style={{ marginBottom: 24 }}>
+          <div className="injection-head">
+            <span className="injection-label" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              {t("dash.effortCapLabel")}
+              <span style={{ position: "relative", display: "inline-flex" }}>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  style={{ width: 22, height: 22, minWidth: 22, padding: 0, borderRadius: 999, color: "var(--muted)" }}
+                  onClick={() => setEffortCapHelpOpen(open => !open)}
+                  aria-label={t("dash.effortCapLabel")}
+                  aria-expanded={effortCapHelpOpen}
+                  aria-haspopup="dialog"
+                >
+                  <IconInfo width={13} height={13} aria-hidden="true" />
+                </button>
+                {effortCapHelpOpen && (
+                  <div
+                    role="dialog"
+                    className="help-popup"
+                    style={{ position: "absolute", top: "calc(100% + 8px)", left: 0, width: "min(360px, calc(100vw - 48px))", padding: "12px 16px", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg)", boxShadow: "0 8px 24px rgba(0, 0, 0, 0.14)", color: "var(--text)", fontSize: 13, fontWeight: 400, lineHeight: 1.5, zIndex: 10 }}
+                  >
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-icon"
+                      style={{ position: "absolute", top: 4, right: 4, width: 24, height: 24, minWidth: 24 }}
+                      onClick={() => setEffortCapHelpOpen(false)}
+                      aria-label="Close"
+                    >
+                      <IconX width={14} height={14} />
+                    </button>
+                    <div style={{ paddingRight: 16 }}>{t("dash.effortCapHelp")}</div>
+                  </div>
+                )}
+              </span>
+            </span>
           <Select
             value={effortCap}
             options={[
@@ -563,8 +598,9 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             disabled={effortCapSaving}
             label={t("dash.subagentEffortCapLabel")}
           />
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="panel" style={{ marginBottom: 24 }}>
         <div className="injection-head">

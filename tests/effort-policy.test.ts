@@ -7,7 +7,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyEffortCap, effortCapFor, isSubagentRequest, resolveCappedEffort, supportedLadderFor } from "../src/server/effort-policy";
+import { applyEffortCap, effortCapAppliesTo, effortCapFor, isSubagentRequest, resolveCappedEffort, supportedLadderFor } from "../src/server/effort-policy";
+import { collabSurface } from "../src/server/responses";
 import { handleManagementAPI } from "../src/server/management-api";
 import { routeModel } from "../src/router";
 import { mapReasoningEffort } from "../src/reasoning-effort";
@@ -278,6 +279,67 @@ describe("supportedLadderFor (real routeModel routes)", () => {
     } as Partial<OcxConfig>);
     const route = routeModel(config, "gpt-5.4");
     expect(supportedLadderFor(route)).toEqual(["low", "medium", "high", "xhigh"]);
+  });
+});
+
+describe("effortCapAppliesTo (caps are a v2-feature gate)", () => {
+  function parsedWithTools(tools: Array<{ name: string; namespace?: string }>, reasoning?: string): OcxParsedRequest {
+    return {
+      modelId: "gpt-5.6-sol",
+      context: {
+        messages: [{ role: "user", content: "hi", timestamp: 1 }],
+        tools: tools as never,
+      },
+      stream: true,
+      options: reasoning ? { reasoning: reasoning as never } : {},
+      _rawBody: { model: "gpt-5.6-sol", reasoning: reasoning ? { effort: reasoning } : undefined },
+    };
+  }
+
+  test("v2 flat spawn_agent surface is classified v2 — caps apply", () => {
+    const parsed = parsedWithTools([{ name: "spawn_agent" }], "max");
+    expect(collabSurface(parsed)).toBe("v2");
+    const config = makeConfig({ effortCap: "high" });
+    expect(effortCapAppliesTo("v2", new Headers(), config)).toBe(true);
+    expect(applyEffortCap(parsed, new Headers(), config)).toEqual({ from: "max", to: "high", subagent: false });
+  });
+
+  test("v1 namespaced spawn + send_input is classified v1 — gate refuses", () => {
+    const parsed = parsedWithTools([
+      { name: "spawn_agent", namespace: "agents" },
+      { name: "send_input", namespace: "agents" },
+    ], "max");
+    expect(collabSurface(parsed)).toBe("v1");
+    // applyEffortCap itself is surface-unaware; handleResponses consults the gate.
+    expect(effortCapAppliesTo("v1", new Headers(), makeConfig({ effortCap: "high" }))).toBe(false);
+  });
+
+  test("plain main turn (no collab tools, no child headers) — gate refuses", () => {
+    const parsed = parsedWithTools([{ name: "shell" }], "max");
+    expect(collabSurface(parsed)).toBeNull();
+    expect(effortCapAppliesTo(null, new Headers(), makeConfig({ effortCap: "high", subagentEffortCap: "medium" }))).toBe(false);
+  });
+
+  test("child turn carries no collab tools — the spawned-child header still admits the cap", () => {
+    // Regression guard: children never carry spawn_agent, so a surface-only gate would
+    // skip exactly the turns subagentEffortCap exists for.
+    const parsed = parsedWithTools([{ name: "shell" }], "max");
+    expect(collabSurface(parsed)).toBeNull();
+    const config = makeConfig({ subagentEffortCap: "medium" });
+    const childHeaders = new Headers({ "x-openai-subagent": "collab_spawn" });
+    expect(effortCapAppliesTo(null, childHeaders, config)).toBe(true);
+    expect(applyEffortCap(parsed, childHeaders, config)).toEqual({ from: "max", to: "medium", subagent: true });
+  });
+
+  test("turn-metadata subagent_kind alone admits the cap for a child turn", () => {
+    const headers = new Headers({ "x-codex-turn-metadata": JSON.stringify({ subagent_kind: "thread_spawn" }) });
+    expect(effortCapAppliesTo(null, headers, makeConfig({ subagentEffortCap: "medium" }))).toBe(true);
+  });
+
+  test("multiAgentMode v1 disables the gate entirely, even for v2 surfaces and child headers", () => {
+    const config = makeConfig({ effortCap: "high", subagentEffortCap: "medium", multiAgentMode: "v1" });
+    expect(effortCapAppliesTo("v2", new Headers(), config)).toBe(false);
+    expect(effortCapAppliesTo(null, new Headers({ "x-openai-subagent": "collab_spawn" }), config)).toBe(false);
   });
 });
 

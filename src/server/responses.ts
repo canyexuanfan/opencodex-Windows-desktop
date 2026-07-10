@@ -475,14 +475,22 @@ export async function handleResponses(
   // ultra-tier default on bare spawns (see src/server/effort-policy.ts). Runs BEFORE the
   // mock-max clamp so a capped effort is what nativeness clamping then validates; rewrites
   // both request shapes (same dual-write contract as the clamp below).
+  // GATE: v2 feature only (effortCapAppliesTo) — v2-surface main turns plus header-marked
+  // child turns (children carry no collab tools, so tool sniffing alone would skip the very
+  // turns subagentEffortCap targets); multiAgentMode "v1" disables caps entirely.
   {
-    const { applyEffortCap, supportedLadderFor } = await import("./effort-policy");
-    const capped = applyEffortCap(parsed, req.headers, config, supportedLadderFor(route));
-    if (capped) {
-      logCtx.requestedEffort = `${capped.from}->${capped.to}`;
-      if (isInjectionDebugEnabled()) {
-        console.log(`[opencodex] ${route.modelId}: effort cap applied (${capped.from} -> ${capped.to}, ${capped.subagent ? "sub-agent" : "main"} turn)`);
+    const { applyEffortCap, effortCapAppliesTo, supportedLadderFor } = await import("./effort-policy");
+    const surface = collabSurface(parsed);
+    if (effortCapAppliesTo(surface, req.headers, config)) {
+      const capped = applyEffortCap(parsed, req.headers, config, supportedLadderFor(route));
+      if (capped) {
+        logCtx.requestedEffort = `${capped.from}->${capped.to}`;
+        if (isInjectionDebugEnabled()) {
+          console.log(`[opencodex] ${route.modelId}: effort cap applied (${capped.from} -> ${capped.to}, ${capped.subagent ? "sub-agent" : "main"} turn)`);
+        }
       }
+    } else if (isInjectionDebugEnabled() && (config.effortCap || config.subagentEffortCap)) {
+      console.log(`[opencodex] ${route.modelId}: effort cap skipped (surface=${surface ?? "none"}, v2 feature only)`);
     }
   }
 
