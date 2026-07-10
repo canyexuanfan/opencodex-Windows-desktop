@@ -608,6 +608,9 @@ select.input { appearance: none; }
   .prov-meta .chip ~ span:not(:last-child) { display: none; }
   /* account login grid: let name/status truncate with ellipsis instead of wrapping */
   .oauth-grid { grid-template-columns: minmax(0, auto) minmax(0, 1fr) max-content; column-gap: 8px; }
+  /* language menu: the sidebar foot is a horizontal top-bar row here, so opening the
+     menu beside the row clips at the viewport edge — drop it below, end-aligned. */
+  .lang-toggle .select-dropdown-beside { top: calc(100% + 6px); left: auto; right: 0; }
 }
 
 .usage-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 8px; }
