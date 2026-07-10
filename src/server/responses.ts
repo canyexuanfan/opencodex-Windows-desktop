@@ -470,6 +470,22 @@ export async function handleResponses(
     }
   }
 
+  // Hard effort caps (effortCap / subagentEffortCap): enforcement companion to the advisory
+  // injection above — spawn-arg prompting cannot stop codex-rs from inheriting the parent's
+  // ultra-tier default on bare spawns (see src/server/effort-policy.ts). Runs BEFORE the
+  // mock-max clamp so a capped effort is what nativeness clamping then validates; rewrites
+  // both request shapes (same dual-write contract as the clamp below).
+  {
+    const { applyEffortCap, supportedLadderFor } = await import("./effort-policy");
+    const capped = applyEffortCap(parsed, req.headers, config, supportedLadderFor(route));
+    if (capped) {
+      logCtx.requestedEffort = `${capped.from}->${capped.to}`;
+      if (isInjectionDebugEnabled()) {
+        console.log(`[opencodex] ${route.modelId}: effort cap applied (${capped.from} -> ${capped.to}, ${capped.subagent ? "sub-agent" : "main"} turn)`);
+      }
+    }
+  }
+
   // Mock-max clamp: native models whose real ladder stops below max (gpt-5.5/5.4/…)
   // receive `max` when the user picks Ultra (codex converts ultra->max client-side).
   // Clamp to the model's highest real effort BEFORE any adapter — the ChatGPT

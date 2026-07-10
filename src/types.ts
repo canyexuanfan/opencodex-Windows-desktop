@@ -260,6 +260,20 @@ export interface OcxConfig {
    */
   injectionPrompt?: string;
   /**
+   * Global hard ceiling for the reasoning effort of EVERY proxied turn (main agent AND
+   * sub-agents). Ladder value "low".."max"; incoming efforts ranking above it are rewritten
+   * in both request shapes before any adapter or clamp. Unset = no cap. codex-rs converts
+   * ultra -> max client-side, so e.g. a "high" cap sends ultra/max-tier turns as high.
+   */
+  effortCap?: string;
+  /**
+   * Hard ceiling applied ONLY to sub-agent turns — requests carrying codex-rs's spawned-child
+   * markers (`x-openai-subagent` header, or `subagent_kind` inside `x-codex-turn-metadata`).
+   * Lets the main agent keep its tier while delegated children are capped. When both caps are
+   * set, the lower one wins for sub-agents. See src/server/effort-policy.ts.
+   */
+  subagentEffortCap?: string;
+  /**
    * Models hidden from Codex. Routed ids are namespaced ("<provider>/<model>") and are excluded
    * from the catalog + /v1/models entirely. BARE ids (no "/") are native GPT passthrough slugs:
    * their catalog entries flip to visibility "hide" (entry preserved, picker-hidden) and they

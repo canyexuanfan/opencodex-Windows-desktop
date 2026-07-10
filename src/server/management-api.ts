@@ -572,6 +572,34 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     return jsonResponse({ ok: true, model: config.injectionModel ?? null, effort: config.injectionEffort ?? null, prompt: config.injectionPrompt ?? null });
   }
 
+  // Hard reasoning-effort caps (devlog/260710_subagent_effort_intercept): a global ceiling and a
+  // sub-agent-only ceiling, enforced per-request in handleResponses (src/server/effort-policy.ts).
+  // Key semantics per field: absent -> unchanged; null/"" -> clear; ladder value -> set; else 400.
+  if (url.pathname === "/api/effort-caps" && req.method === "GET") {
+    const { CODEX_REASONING_LEVELS } = await import("../reasoning-effort");
+    return jsonResponse({
+      effortCap: config.effortCap ?? null,
+      subagentEffortCap: config.subagentEffortCap ?? null,
+      efforts: CODEX_REASONING_LEVELS.map(l => l.effort),
+    });
+  }
+  if (url.pathname === "/api/effort-caps" && req.method === "PUT") {
+    let body: { effortCap?: unknown; subagentEffortCap?: unknown };
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    const { isCodexReasoningEffort } = await import("../reasoning-effort");
+    for (const key of ["effortCap", "subagentEffortCap"] as const) {
+      if (!(key in body)) continue;
+      const value = body[key];
+      if (value === null || value === "") { delete config[key]; continue; }
+      if (typeof value !== "string" || !isCodexReasoningEffort(value)) {
+        return jsonResponse({ error: `unknown reasoning effort "${String(value)}"` }, 400);
+      }
+      config[key] = value;
+    }
+    saveConfig(config);
+    return jsonResponse({ ok: true, effortCap: config.effortCap ?? null, subagentEffortCap: config.subagentEffortCap ?? null });
+  }
+
   // Subagent model picker: which ≤5 routed models Codex's spawn_agent advertises (it shows the
   // first 5 routed catalog entries). PUT reorders the injected catalog so the chosen ones lead.
   if (url.pathname === "/api/subagent-models" && req.method === "GET") {

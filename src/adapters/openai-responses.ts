@@ -21,6 +21,7 @@ export const FORWARD_HEADERS = [
   "x-codex-turn-state",
   "x-codex-window-id",
   "x-oai-attestation",
+  "x-openai-subagent",
   "x-responsesapi-include-timing-metrics",
 ];
 

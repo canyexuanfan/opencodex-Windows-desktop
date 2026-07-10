@@ -66,6 +66,7 @@ import { modelLabel } from "../model-display";
 const SEARCH_SIDECAR_MODELS = ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-5.6-sol", "gpt-5.6-terra"];
 const VISION_SIDECAR_MODELS = ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra"];
 const REASONING_LEVELS = ["low", "medium", "high"];
+const EFFORT_CAP_LEVELS = ["low", "medium", "high", "xhigh"];
 const UPDATE_CHECK_MAX_AUTO_RETRIES = 2;
 const UPDATE_CHECK_RETRY_BASE_MS = 800;
 
@@ -102,6 +103,9 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   const [injectionEfforts, setInjectionEfforts] = useState<string[]>([]);
   const [injectionAvailable, setInjectionAvailable] = useState<Array<{ provider: string; model: string; namespaced: string }>>([]);
   const [injectionSaving, setInjectionSaving] = useState(false);
+  const [effortCap, setEffortCap] = useState<string>("");
+  const [subagentEffortCap, setSubagentEffortCap] = useState<string>("");
+  const [effortCapSaving, setEffortCapSaving] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [projectConfigWarnings, setProjectConfigWarnings] = useState<ProjectCodexConfigGroup[]>([]);
@@ -159,6 +163,14 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             setInjectionEffort(imData.effort ?? "");
             setInjectionEfforts(imData.efforts ?? []);
             setInjectionAvailable(imData.available ?? []);
+          }
+        } catch { /* old server */ }
+        try {
+          const ecRes = await fetch(`${apiBase}/api/effort-caps`);
+          if (ecRes.ok) {
+            const ecData = await ecRes.json() as { effortCap?: string | null; subagentEffortCap?: string | null; efforts?: string[] };
+            setEffortCap(ecData.effortCap ?? "");
+            setSubagentEffortCap(ecData.subagentEffortCap ?? "");
           }
         } catch { /* old server */ }
       } catch {
@@ -495,6 +507,64 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
           </div>
         </div>
       )}
+
+      <div className="panel" style={{ marginBottom: 24 }}>
+        <div className="injection-head">
+          <span className="injection-label">{t("dash.effortCapLabel")}</span>
+          <Select
+            value={effortCap}
+            options={[
+              { value: "", label: t("dash.effortCapNone") },
+              ...EFFORT_CAP_LEVELS.map(e => ({ value: e, label: e })),
+            ]}
+            onChange={async (v) => {
+              if (effortCapSaving) return;
+              setEffortCapSaving(true);
+              try {
+                const res = await fetch(`${apiBase}/api/effort-caps`, {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ effortCap: v || null }),
+                });
+                if (res.ok) {
+                  const data = await res.json() as { ok: boolean; effortCap?: string | null; subagentEffortCap?: string | null };
+                  setEffortCap(data.effortCap ?? "");
+                  setSubagentEffortCap(data.subagentEffortCap ?? "");
+                }
+              } catch { /* ignore */ }
+              finally { setEffortCapSaving(false); }
+            }}
+            disabled={effortCapSaving}
+            label={t("dash.effortCapLabel")}
+          />
+          <Select
+            value={subagentEffortCap}
+            options={[
+              { value: "", label: t("dash.effortCapNone") },
+              ...EFFORT_CAP_LEVELS.map(e => ({ value: e, label: e })),
+            ]}
+            onChange={async (v) => {
+              if (effortCapSaving) return;
+              setEffortCapSaving(true);
+              try {
+                const res = await fetch(`${apiBase}/api/effort-caps`, {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ subagentEffortCap: v || null }),
+                });
+                if (res.ok) {
+                  const data = await res.json() as { ok: boolean; effortCap?: string | null; subagentEffortCap?: string | null };
+                  setEffortCap(data.effortCap ?? "");
+                  setSubagentEffortCap(data.subagentEffortCap ?? "");
+                }
+              } catch { /* ignore */ }
+              finally { setEffortCapSaving(false); }
+            }}
+            disabled={effortCapSaving}
+            label={t("dash.subagentEffortCapLabel")}
+          />
+        </div>
+      </div>
 
       <div className="panel" style={{ marginBottom: 24 }}>
         <div className="injection-head">

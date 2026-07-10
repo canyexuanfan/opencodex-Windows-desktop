@@ -1,0 +1,353 @@
+/**
+ * Hard effort caps (devlog/260710_subagent_effort_intercept): sub-agent request
+ * classification from codex-rs spawn markers, cap resolution, dual-shape rewrite,
+ * and the /api/effort-caps management roundtrip.
+ */
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { applyEffortCap, effortCapFor, isSubagentRequest, resolveCappedEffort, supportedLadderFor } from "../src/server/effort-policy";
+import { handleManagementAPI } from "../src/server/management-api";
+import { routeModel } from "../src/router";
+import { mapReasoningEffort } from "../src/reasoning-effort";
+import { nativeEffortClamp } from "../src/codex/catalog";
+import type { OcxConfig, OcxParsedRequest } from "../src/types";
+
+const savedHome = process.env.OPENCODEX_HOME;
+const savedCodexHome = process.env.CODEX_HOME;
+let tempHome: string | null = null;
+let tempCodexHome: string | null = null;
+
+afterEach(() => {
+  if (savedHome === undefined) delete process.env.OPENCODEX_HOME;
+  else process.env.OPENCODEX_HOME = savedHome;
+  if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+  else process.env.CODEX_HOME = savedCodexHome;
+  if (tempHome) { rmSync(tempHome, { recursive: true, force: true }); tempHome = null; }
+  if (tempCodexHome) { rmSync(tempCodexHome, { recursive: true, force: true }); tempCodexHome = null; }
+});
+
+function makeConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
+  return { port: 10100, providers: {}, defaultProvider: "openai", ...overrides } as OcxConfig;
+}
+
+function makeParsed(reasoning?: string): OcxParsedRequest {
+  return {
+    modelId: "gpt-5.6-sol",
+    context: { messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+    stream: true,
+    options: reasoning ? { reasoning: reasoning as never } : {},
+    _rawBody: { model: "gpt-5.6-sol", reasoning: reasoning ? { effort: reasoning, summary: "auto" } : undefined },
+  };
+}
+
+const SUBAGENT_HEADERS = new Headers({ "x-openai-subagent": "collab_spawn" });
+const TURN_META_HEADERS = new Headers({
+  "x-codex-turn-metadata": JSON.stringify({ turn_id: "t1", subagent_kind: "thread_spawn" }),
+});
+const MAIN_HEADERS = new Headers({
+  "x-codex-turn-metadata": JSON.stringify({ turn_id: "t1" }),
+});
+
+describe("isSubagentRequest", () => {
+  test("x-openai-subagent marker classifies as sub-agent", () => {
+    expect(isSubagentRequest(SUBAGENT_HEADERS)).toBe(true);
+  });
+
+  test("subagent_kind inside x-codex-turn-metadata classifies as sub-agent", () => {
+    expect(isSubagentRequest(TURN_META_HEADERS)).toBe(true);
+  });
+
+  test("main-agent turn metadata and bare headers stay main", () => {
+    expect(isSubagentRequest(MAIN_HEADERS)).toBe(false);
+    expect(isSubagentRequest(new Headers())).toBe(false);
+  });
+
+  test("malformed turn metadata never classifies as sub-agent", () => {
+    expect(isSubagentRequest(new Headers({ "x-codex-turn-metadata": "{not json" }))).toBe(false);
+  });
+});
+
+describe("effortCapFor", () => {
+  test("subagent cap applies only to sub-agents; lower of both caps wins", () => {
+    const config = makeConfig({ effortCap: "high", subagentEffortCap: "medium" });
+    expect(effortCapFor(config, false)).toBe("high");
+    expect(effortCapFor(config, true)).toBe("medium");
+  });
+
+  test("global cap lower than subagent cap wins for sub-agents too", () => {
+    const config = makeConfig({ effortCap: "low", subagentEffortCap: "high" });
+    expect(effortCapFor(config, true)).toBe("low");
+  });
+
+  test("no caps or invalid ladder values -> undefined", () => {
+    expect(effortCapFor(makeConfig(), true)).toBeUndefined();
+    expect(effortCapFor(makeConfig({ effortCap: "banana" }), false)).toBeUndefined();
+  });
+});
+
+describe("applyEffortCap", () => {
+  test("caps a sub-agent max turn to the subagent ceiling in BOTH shapes", () => {
+    const config = makeConfig({ subagentEffortCap: "high" });
+    const parsed = makeParsed("max");
+    const applied = applyEffortCap(parsed, SUBAGENT_HEADERS, config);
+    expect(applied).toEqual({ from: "max", to: "high", subagent: true });
+    expect(parsed.options.reasoning).toBe("high");
+    expect((parsed._rawBody as { reasoning: { effort: string } }).reasoning.effort).toBe("high");
+  });
+
+  test("main-agent turn passes a subagent-only cap untouched", () => {
+    const config = makeConfig({ subagentEffortCap: "high" });
+    const parsed = makeParsed("max");
+    expect(applyEffortCap(parsed, MAIN_HEADERS, config)).toBeNull();
+    expect(parsed.options.reasoning).toBe("max");
+  });
+
+  test("global cap lowers main-agent turns (ultra arrives as max)", () => {
+    const config = makeConfig({ effortCap: "high" });
+    const parsed = makeParsed("max");
+    expect(applyEffortCap(parsed, new Headers(), config)).toEqual({ from: "max", to: "high", subagent: false });
+    expect(parsed.options.reasoning).toBe("high");
+  });
+
+  test("efforts at or below the cap and absent efforts pass through", () => {
+    const config = makeConfig({ effortCap: "high", subagentEffortCap: "high" });
+    const low = makeParsed("medium");
+    expect(applyEffortCap(low, SUBAGENT_HEADERS, config)).toBeNull();
+    expect(low.options.reasoning).toBe("medium");
+    const none = makeParsed(undefined);
+    expect(applyEffortCap(none, SUBAGENT_HEADERS, config)).toBeNull();
+    expect(none.options.reasoning).toBeUndefined();
+  });
+
+  test("raw body without a reasoning object is tolerated", () => {
+    const config = makeConfig({ effortCap: "medium" });
+    const parsed = makeParsed("max");
+    (parsed._rawBody as { reasoning?: unknown }).reasoning = undefined;
+    expect(applyEffortCap(parsed, new Headers(), config)).toEqual({ from: "max", to: "medium", subagent: false });
+    expect(parsed.options.reasoning).toBe("medium");
+  });
+});
+
+describe("resolveCappedEffort (ladder-aware resolution)", () => {
+  test("undefined ladder -> cap as-is", () => {
+    expect(resolveCappedEffort("high", undefined)).toBe("high");
+  });
+
+  test("cap already in the ladder -> cap", () => {
+    expect(resolveCappedEffort("high", ["low", "medium", "high"])).toBe("high");
+  });
+
+  test("cap absent -> snap DOWN to highest rung at or below (high -> medium)", () => {
+    expect(resolveCappedEffort("high", ["low", "medium", "xhigh"])).toBe("medium");
+  });
+
+  test("cap unfulfillable (all rankable rungs above cap) -> strip, never raise", () => {
+    expect(resolveCappedEffort("medium", ["xhigh"])).toBeNull();
+    expect(resolveCappedEffort("low", ["medium", "high", "max"])).toBeNull();
+  });
+
+  test("empty ladder (no effort control) -> strip", () => {
+    expect(resolveCappedEffort("high", [])).toBeNull();
+  });
+
+  test("non-rankable-only ladder (e.g. thinking toggle) -> unknown, cap as-is", () => {
+    expect(resolveCappedEffort("high", ["enabled"])).toBe("high");
+  });
+
+  test("mixed rankable/non-rankable ladder ranks only Codex rungs", () => {
+    expect(resolveCappedEffort("high", ["enabled", "medium", "default"])).toBe("medium");
+  });
+});
+
+describe("applyEffortCap strip paths", () => {
+  test("no-effort model strips even a below-cap effort from BOTH shapes, keeping summary", () => {
+    const config = makeConfig({ effortCap: "high" });
+    const parsed = makeParsed("low");
+    const applied = applyEffortCap(parsed, new Headers(), config, []);
+    expect(applied).toEqual({ from: "low", to: "none", subagent: false });
+    expect(parsed.options.reasoning).toBeUndefined();
+    const raw = parsed._rawBody as { reasoning: { effort?: string; summary?: string } };
+    expect(raw.reasoning.effort).toBeUndefined();
+    expect(raw.reasoning.summary).toBe("auto");
+  });
+
+  test("cap-unfulfillable ladder strips instead of raising (cap medium, ladder [xhigh])", () => {
+    const config = makeConfig({ subagentEffortCap: "medium" });
+    const parsed = makeParsed("max");
+    const applied = applyEffortCap(parsed, SUBAGENT_HEADERS, config, ["xhigh"]);
+    expect(applied).toEqual({ from: "max", to: "none", subagent: true });
+    expect(parsed.options.reasoning).toBeUndefined();
+  });
+
+  test("strip with no incoming effort is a silent no-op", () => {
+    const config = makeConfig({ effortCap: "high" });
+    const parsed = makeParsed(undefined);
+    expect(applyEffortCap(parsed, new Headers(), config, [])).toBeNull();
+  });
+
+  test("snap-down applies through applyEffortCap and stays only-lowering", () => {
+    const config = makeConfig({ effortCap: "high" });
+    const ladder = ["low", "medium", "xhigh"];
+    const capped = makeParsed("max");
+    expect(applyEffortCap(capped, new Headers(), config, ladder)).toEqual({ from: "max", to: "medium", subagent: false });
+    const below = makeParsed("low");
+    expect(applyEffortCap(below, new Headers(), config, ladder)).toBeNull();
+    expect(below.options.reasoning).toBe("low");
+  });
+});
+
+describe("supportedLadderFor (real routeModel routes)", () => {
+  test("registry-merged provider ladder is visible from a minimal persisted config", () => {
+    // Persisted config carries NO ladder metadata; the registry seeds xai's
+    // modelReasoningEfforts for grok-4.5 and noReasoningModels for the fast models.
+    const config = makeConfig({
+      providers: { xai: { adapter: "openai-chat", baseUrl: "https://api.x.ai/v1", authMode: "oauth" } },
+    } as Partial<OcxConfig>);
+    const route = routeModel(config, "xai/grok-4.5");
+    expect(supportedLadderFor(route)).toEqual(["low", "medium", "high"]);
+    const noReasoning = routeModel(config, "xai/grok-composer-2.5-fast");
+    expect(supportedLadderFor(noReasoning)).toEqual([]);
+  });
+
+  test("bare id routed via defaultModel resolves the ROUTED provider ladder", () => {
+    const config = makeConfig({
+      providers: {
+        custom: {
+          adapter: "openai-chat", baseUrl: "https://example.com/v1", apiKey: "k",
+          defaultModel: "my-model", modelReasoningEfforts: { "my-model": ["low", "medium"] },
+        },
+      },
+      defaultProvider: "custom",
+    } as Partial<OcxConfig>);
+    const route = routeModel(config, "my-model");
+    expect(route.providerName).toBe("custom");
+    expect(supportedLadderFor(route)).toEqual(["low", "medium"]);
+  });
+
+  test("raw non-rankable ladder (['enabled']) stays UNKNOWN, never strip", () => {
+    const config = makeConfig({
+      providers: {
+        toggle: {
+          adapter: "openai-chat", baseUrl: "https://example.com/v1", apiKey: "k",
+          defaultModel: "t-model", modelReasoningEfforts: { "t-model": ["enabled"] },
+        },
+      },
+      defaultProvider: "toggle",
+    } as Partial<OcxConfig>);
+    expect(supportedLadderFor(routeModel(config, "toggle/t-model"))).toBeUndefined();
+  });
+
+  test("collision: custom key-mode openai-responses provider with native-looking id -> undefined", () => {
+    tempCodexHome = mkdtempSync(join(tmpdir(), "ocx-effort-catalog-"));
+    process.env.CODEX_HOME = tempCodexHome;
+    writeFileSync(join(tempCodexHome, "opencodex-catalog.json"), JSON.stringify({
+      models: [{ slug: "gpt-5.4", display_name: "gpt-5.4", supported_reasoning_levels: [
+        { effort: "low", description: "low" }, { effort: "medium", description: "medium" },
+      ] }],
+    }));
+    const config = makeConfig({
+      providers: {
+        selfhosted: {
+          adapter: "openai-responses", baseUrl: "https://example.com/v1", authMode: "key",
+          apiKey: "k", models: ["gpt-5.4"],
+        },
+      },
+      defaultProvider: "selfhosted",
+    } as Partial<OcxConfig>);
+    const route = routeModel(config, "gpt-5.4");
+    expect(route.providerName).toBe("selfhosted");
+    expect(supportedLadderFor(route)).toBeUndefined();
+  });
+
+  test("native forward-mode passthrough reads the injected catalog ladder", () => {
+    tempCodexHome = mkdtempSync(join(tmpdir(), "ocx-effort-catalog-"));
+    process.env.CODEX_HOME = tempCodexHome;
+    writeFileSync(join(tempCodexHome, "opencodex-catalog.json"), JSON.stringify({
+      models: [{ slug: "gpt-5.4", display_name: "gpt-5.4", supported_reasoning_levels: [
+        { effort: "low", description: "low" }, { effort: "medium", description: "medium" },
+        { effort: "high", description: "high" }, { effort: "xhigh", description: "xhigh" },
+      ] }],
+    }));
+    const config = makeConfig({
+      providers: {
+        openai: { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" },
+      },
+      defaultProvider: "openai",
+    } as Partial<OcxConfig>);
+    const route = routeModel(config, "gpt-5.4");
+    expect(supportedLadderFor(route)).toEqual(["low", "medium", "high", "xhigh"]);
+  });
+});
+
+describe("cap composition with downstream clamps", () => {
+  test("snapped ordinary rung passes mapReasoningEffort unchanged for a supporting provider", () => {
+    const provider = {
+      adapter: "openai-chat", baseUrl: "https://example.com/v1", apiKey: "k",
+      modelReasoningEfforts: { "m": ["low", "medium", "xhigh"] },
+    } as never;
+    // Cap high snaps to medium; the adapter-level map keeps medium as-is.
+    expect(resolveCappedEffort("high", ["low", "medium", "xhigh"])).toBe("medium");
+    expect(mapReasoningEffort(provider, "m", "medium")).toBe("medium");
+  });
+
+  test("synthetic native top rung is still lowered by nativeEffortClamp after the cap block", () => {
+    // gpt-5.4's real ladder stops at xhigh: an uncapped (or xhigh-capped) max/ultra
+    // arrival is repaired by the native clamp that runs AFTER applyEffortCap.
+    expect(nativeEffortClamp("gpt-5.4", "max")).toBe("xhigh");
+    expect(nativeEffortClamp("gpt-5.4", "ultra")).toBe("xhigh");
+    expect(nativeEffortClamp("gpt-5.4", "medium")).toBeNull();
+  });
+});
+
+describe("/api/effort-caps", () => {
+  function isolatedHome(): void {
+    tempHome = mkdtempSync(join(tmpdir(), "ocx-effort-caps-"));
+    process.env.OPENCODEX_HOME = tempHome;
+  }
+
+  async function put(config: OcxConfig, body: unknown): Promise<Response> {
+    const req = new Request("http://localhost/api/effort-caps", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const res = await handleManagementAPI(req, new URL(req.url), config);
+    expect(res).not.toBeNull();
+    return res!;
+  }
+
+  test("PUT sets both caps; GET surfaces them with the ladder", async () => {
+    isolatedHome();
+    const config = makeConfig();
+    const putRes = await put(config, { effortCap: "high", subagentEffortCap: "medium" });
+    expect(await putRes.json()).toEqual({ ok: true, effortCap: "high", subagentEffortCap: "medium" });
+    expect(config.effortCap).toBe("high");
+    expect(config.subagentEffortCap).toBe("medium");
+
+    const getRes = await handleManagementAPI(
+      new Request("http://localhost/api/effort-caps"), new URL("http://localhost/api/effort-caps"), config,
+    );
+    const data = await getRes!.json() as { effortCap: string; subagentEffortCap: string; efforts: string[] };
+    expect(data.effortCap).toBe("high");
+    expect(data.subagentEffortCap).toBe("medium");
+    expect(data.efforts).toContain("ultra");
+  });
+
+  test("absent key unchanged; null clears; invalid ladder value -> 400", async () => {
+    isolatedHome();
+    const config = makeConfig({ effortCap: "high", subagentEffortCap: "medium" });
+    const keep = await put(config, { subagentEffortCap: "low" });
+    expect(keep.status).toBe(200);
+    expect(config.effortCap).toBe("high");
+    expect(config.subagentEffortCap).toBe("low");
+
+    await put(config, { effortCap: null });
+    expect(config.effortCap).toBeUndefined();
+
+    const bad = await put(config, { subagentEffortCap: "hyper" });
+    expect(bad.status).toBe(400);
+    expect(config.subagentEffortCap).toBe("low");
+  });
+});
