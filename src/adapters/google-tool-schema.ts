@@ -4,11 +4,16 @@ type Schema = Record<string, unknown>;
 // emits full JSON-Schema (draft 2020-12) tool definitions, so passing them through verbatim makes
 // CCA reject the whole request with "Request contains an invalid argument" / "Unknown name ...".
 // Every keyword below was confirmed live against the Antigravity backend to trigger a 400.
+// `encrypted` is Codex's Responses-only marker (openai/codex 5f4d06ef, PR #26210) stamped on v2
+// collaboration tool schemas (spawn_agent/send_message/followup_task `message`); CCA rejects it
+// with 400 "Unknown name \"encrypted\"" (issue #85). It is an annotation for the ChatGPT backend
+// only, so dropping it never changes tool behavior.
 const DROPPED_SCHEMA_KEYS = new Set([
   "$schema", "$id", "$comment", "$ref", "$defs", "definitions",
   "examples", "patternProperties", "if", "then", "else",
   "uniqueItems", "additionalItems", "unevaluatedProperties", "unevaluatedItems",
   "dependentRequired", "dependentSchemas", "propertyNames", "contains",
+  "encrypted",
 ]);
 
 const MAX_DEREF_DEPTH = 64;

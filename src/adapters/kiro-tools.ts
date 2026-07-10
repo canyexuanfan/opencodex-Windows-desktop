@@ -41,6 +41,10 @@ const KIRO_REJECTED_SCHEMA_KEYS = new Set([
   "contains",
   "unevaluatedProperties",
   "unevaluatedItems",
+  // Codex's Responses-only `encrypted: true` marker (openai/codex 5f4d06ef) stamped on v2
+  // collaboration tool schemas. Kiro/Bedrock validators reject a narrower, undocumented schema
+  // subset (issue #85 class); the marker is a ChatGPT-backend annotation with no meaning here.
+  "encrypted",
 ]);
 
 // Keys whose values are maps of *property/definition name -> schema* (not schema keywords). Their

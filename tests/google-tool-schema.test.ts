@@ -29,6 +29,33 @@ describe("sanitizeGeminiToolParameters", () => {
     expect((props.b.items as Record<string, unknown>).type).toBe("string");
   });
 
+  test("drops Codex's Responses-only encrypted marker recursively (issue #85)", () => {
+    // Upstream codex stamps `encrypted: true` on v2 collaboration tool schemas
+    // (spawn_agent/send_message/followup_task `message`); CCA 400s on the unknown name.
+    const input = {
+      type: "object",
+      properties: {
+        message: { type: "string", description: "...", encrypted: true },
+        nested: {
+          type: "object",
+          properties: { inner: { type: "string", encrypted: false } },
+        },
+        list: { type: "array", items: { type: "string", encrypted: true } },
+      },
+      required: ["message"],
+    };
+    const before = JSON.stringify(input);
+    const out = sanitizeGeminiToolParameters(input);
+    const props = out.properties as Record<string, Record<string, unknown>>;
+    expect(props.message.encrypted).toBeUndefined();
+    expect(props.message.type).toBe("string");
+    const inner = (props.nested.properties as Record<string, Record<string, unknown>>).inner;
+    expect(inner.encrypted).toBeUndefined(); // `encrypted: false` is equally unsupported
+    expect((props.list.items as Record<string, unknown>).encrypted).toBeUndefined();
+    expect(out.required).toEqual(["message"]);
+    expect(JSON.stringify(input)).toBe(before); // input object is never mutated
+  });
+
   test("collapses type arrays to a single nullable type", () => {
     const out = sanitizeGeminiToolParameters({
       type: "object",
