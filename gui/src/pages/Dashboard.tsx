@@ -66,6 +66,8 @@ import { modelLabel } from "../model-display";
 const SEARCH_SIDECAR_MODELS = ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-5.6-sol", "gpt-5.6-terra"];
 const VISION_SIDECAR_MODELS = ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra"];
 const REASONING_LEVELS = ["low", "medium", "high"];
+const UPDATE_CHECK_MAX_AUTO_RETRIES = 2;
+const UPDATE_CHECK_RETRY_BASE_MS = 800;
 
 function defaultUpdateChannel(version: string | undefined): UpdateChannel {
   return version?.includes("-preview.") ? "preview" : "latest";
@@ -99,11 +101,21 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   const [updateRestart, setUpdateRestart] = useState(true);
   const [updateLoading, setUpdateLoading] = useState(false);
   const updateRetryRef = useRef(0);
+  const updateRetryTimerRef = useRef<number | null>(null);
+  const updateRequestEpochRef = useRef(0);
   const [updateCheck, setUpdateCheck] = useState<UpdateCheckData | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [updateJob, setUpdateJob] = useState<UpdateJob | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
   const [error, setError] = useState(false);
+
+  useEffect(() => () => {
+    updateRequestEpochRef.current += 1;
+    if (updateRetryTimerRef.current !== null) {
+      window.clearTimeout(updateRetryTimerRef.current);
+      updateRetryTimerRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -309,7 +321,13 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     }
   };
 
-  const fetchUpdateCheck = async (channel: UpdateChannel) => {
+  const fetchUpdateCheck = async (channel: UpdateChannel, resetRetry = false) => {
+    if (resetRetry) updateRetryRef.current = 0;
+    if (updateRetryTimerRef.current !== null) {
+      window.clearTimeout(updateRetryTimerRef.current);
+      updateRetryTimerRef.current = null;
+    }
+    const requestEpoch = ++updateRequestEpochRef.current;
     setUpdateLoading(true);
     setUpdateError(null);
     setUpdateCheck(null);
@@ -317,37 +335,53 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       const res = await fetch(`${apiBase}/api/update/check?tag=${channel}`);
       const data = await res.json() as UpdateCheckData | { error?: string };
       if (!res.ok) throw new Error("error" in data && data.error ? data.error : "update check failed");
-      setUpdateCheck(data as UpdateCheckData);
-      updateRetryRef.current = 0;
-    } catch (err) {
-      setUpdateError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setUpdateLoading(false);
+      if (requestEpoch !== updateRequestEpochRef.current) return;
 
-      setUpdateCheck(prev => {
-        if (!prev || prev.reason !== "latest_unavailable") return prev;
-        const max = 2;
-        if (updateRetryRef.current >= max) return prev;
-        updateRetryRef.current += 1;
-        setTimeout(() => { void fetchUpdateCheck(channel); }, 800 * updateRetryRef.current);
-        return prev;
-      });
+      const check = data as UpdateCheckData;
+      setUpdateCheck(check);
+      if (
+        check.reason === "latest_unavailable"
+        && updateRetryRef.current < UPDATE_CHECK_MAX_AUTO_RETRIES
+      ) {
+        const retry = ++updateRetryRef.current;
+        updateRetryTimerRef.current = window.setTimeout(() => {
+          if (requestEpoch !== updateRequestEpochRef.current) return;
+          updateRetryTimerRef.current = null;
+          void fetchUpdateCheck(channel);
+        }, UPDATE_CHECK_RETRY_BASE_MS * retry);
+        return;
+      }
+
+      if (check.reason !== "latest_unavailable") updateRetryRef.current = 0;
+      setUpdateLoading(false);
+    } catch (err) {
+      if (requestEpoch !== updateRequestEpochRef.current) return;
+      setUpdateError(err instanceof Error ? err.message : String(err));
+      setUpdateLoading(false);
     }
   };
 
+  const closeUpdateDialog = () => {
+    updateRequestEpochRef.current += 1;
+    if (updateRetryTimerRef.current !== null) {
+      window.clearTimeout(updateRetryTimerRef.current);
+      updateRetryTimerRef.current = null;
+    }
+    setUpdateLoading(false);
+    setUpdateOpen(false);
+  };
+
   const openUpdateDialog = () => {
-    updateRetryRef.current = 0;
     const channel = defaultUpdateChannel(health?.version);
     setUpdateChannel(channel);
     setUpdateRestart(true);
     setUpdateOpen(true);
-    fetchUpdateCheck(channel);
+    void fetchUpdateCheck(channel, true);
   };
 
   const changeUpdateChannel = (channel: UpdateChannel) => {
-    updateRetryRef.current = 0;
     setUpdateChannel(channel);
-    fetchUpdateCheck(channel);
+    void fetchUpdateCheck(channel, true);
   };
 
   const runUpdate = async () => {
@@ -363,7 +397,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       if (!res.ok || !data.job) throw new Error(data.error ?? "update failed to start");
       setUpdateJob(data.job);
       setReconnecting(false);
-      setUpdateOpen(false);
+      closeUpdateDialog();
     } catch (err) {
       setUpdateError(err instanceof Error ? err.message : String(err));
     }
@@ -666,7 +700,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
           <div className="modal-card">
             <div className="modal-head">
               <h3 id="update-title">{t("dash.updateTitle")}</h3>
-              <button type="button" className="btn-icon" onClick={() => setUpdateOpen(false)} aria-label={t("common.cancel")}>
+              <button type="button" className="btn-icon" onClick={closeUpdateDialog} aria-label={t("common.cancel")}>
                 <IconX />
               </button>
             </div>
@@ -711,7 +745,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
                       type="button"
                       className="btn btn-ghost btn-sm"
                       disabled={updateLoading}
-                      onClick={() => { void fetchUpdateCheck(updateChannel); }}
+                      onClick={() => { void fetchUpdateCheck(updateChannel, true); }}
                       style={{ marginLeft: 12 }}
                     >
                       <IconRefresh /> {t("dash.updateRetry")}
@@ -738,7 +772,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
               </div>
             )}
             <div className="modal-actions">
-              <button type="button" className="btn btn-ghost" onClick={() => setUpdateOpen(false)}>{t("common.cancel")}</button>
+              <button type="button" className="btn btn-ghost" onClick={closeUpdateDialog}>{t("common.cancel")}</button>
               <button
                 type="button"
                 className="btn btn-primary"
