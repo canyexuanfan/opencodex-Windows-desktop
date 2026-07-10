@@ -24,7 +24,6 @@ import { formatCodexProviderForLog } from "../codex/routing";
 import { resolveEnvValue } from "../config";
 import { signalWithTimeout } from "../lib/abort";
 import { sidecarEnter } from "../lib/sidecar-tracker";
-import { fetchWithResetRetry } from "../lib/upstream-retry";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 import { isProxyAdmissionSecret } from "./auth-cors";
 import { readJsonRequestBody } from "./request-decompress";
@@ -35,6 +34,13 @@ export type ImagesEndpoint = "generations" | "edits";
 
 /** Image generation is slow (tens of seconds); bound a hung upstream, not a working one. */
 const IMAGES_UPSTREAM_TIMEOUT_MS = 300_000;
+
+/**
+ * Cap for the buffered upstream response body (100 MiB). Images responses are JSON documents
+ * containing base64-encoded images — typically a few MB. This prevents an oversized or malicious
+ * response from exhausting process memory.
+ */
+const IMAGES_RESPONSE_MAX_BYTES = 100 * 1024 * 1024;
 
 interface NamedProvider {
   name: string;
@@ -168,18 +174,21 @@ export async function handleImages(
   const linkedSignal = signalWithTimeout(timeoutMs, req.signal);
   const sidecarExit = sidecarEnter("images");
   try {
-    const upstreamResponse = await fetchWithResetRetry(
-      () => fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: linkedSignal.signal,
-      }),
-      { abortSignal: linkedSignal.signal, label: "images-relay" },
-    );
-    // Buffer rather than stream: the payload is one JSON document (base64 image, a few MB),
-    // and buffering keeps the timeout window covering the whole exchange.
+    // Images POSTs create paid, non-idempotent work. One fetch only: no reset retry without a
+    // source-proven idempotency contract.
+    const upstreamResponse = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: linkedSignal.signal,
+    });
+    // Buffer rather than stream: the payload is one JSON document (base64 image, typically a few
+    // MB), and buffering keeps the timeout window covering the whole exchange. Cap the size to
+    // prevent an oversized response from exhausting process memory.
     const payload = await upstreamResponse.arrayBuffer();
+    if (payload.byteLength > IMAGES_RESPONSE_MAX_BYTES) {
+      return formatErrorResponse(502, "upstream_error", `image ${endpoint} response too large (${payload.byteLength} bytes)`);
+    }
     recordOutcome?.(upstreamResponse.status);
     const relayHeaders: Record<string, string> = {};
     const contentType = upstreamResponse.headers.get("content-type");
