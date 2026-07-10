@@ -254,6 +254,30 @@ function shouldUpgradeToUpstreamEntry(entry: RawEntry): boolean {
 }
 
 /**
+ * Reasoning efforts each requested slug advertises in the INJECTED on-disk catalog —
+ * the exact list codex-rs validates spawn_agent `reasoning_effort` arguments against
+ * (unsupported rungs are then clamped on the wire, nativeEffortClamp/adapters).
+ * Slugs missing from the catalog are omitted from the result. Used by the delegation
+ * prompt to advertise the featured sub-agent roster with honest effort ladders.
+ */
+export function catalogModelEfforts(slugs: readonly string[]): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  if (slugs.length === 0) return out;
+  const catalog = readCatalog(readCodexCatalogPath());
+  if (!catalog) return out;
+  const wanted = new Set(slugs);
+  for (const entry of catalog.models ?? []) {
+    if (typeof entry.slug !== "string" || !wanted.has(entry.slug)) continue;
+    const levels = Array.isArray(entry.supported_reasoning_levels)
+      ? entry.supported_reasoning_levels as Array<{ effort?: string }>
+      : [];
+    const efforts = levels.flatMap(l => typeof l.effort === "string" ? [l.effort] : []);
+    if (efforts.length > 0) out.set(entry.slug, efforts);
+  }
+  return out;
+}
+
+/**
  * The native (passthrough) OpenAI slugs to advertise — the LIVE Codex catalog's own bare slugs when
  * available, with documented Codex-native additions layered in, else the static fallback above.
  * Single source for the /v1/models native list and the subagent-default seed.

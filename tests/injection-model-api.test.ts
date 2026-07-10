@@ -45,7 +45,7 @@ describe("/api/injection-model reasoning effort", () => {
     isolatedHome();
     const config = makeConfig();
     const putRes = await put(config, { model: "openai/gpt-5.6-sol", effort: "xhigh" });
-    expect(await putRes.json()).toEqual({ ok: true, model: "openai/gpt-5.6-sol", effort: "xhigh" });
+    expect(await putRes.json()).toEqual({ ok: true, model: "openai/gpt-5.6-sol", effort: "xhigh", prompt: null });
     expect(config.injectionEffort).toBe("xhigh");
 
     const getRes = await handleManagementAPI(
@@ -55,6 +55,23 @@ describe("/api/injection-model reasoning effort", () => {
     expect(data.model).toBe("openai/gpt-5.6-sol");
     expect(data.effort).toBe("xhigh");
     expect(data.efforts).toEqual(CODEX_REASONING_LEVELS.map(l => l.effort));
+  });
+
+  test("prompt key: set, keep-when-absent, clear, reject non-string", async () => {
+    isolatedHome();
+    const config = makeConfig();
+    const setRes = await put(config, { model: "openai/gpt-5.6-sol", prompt: "RULES {{model}} {{roster}}" });
+    expect(((await setRes.json()) as { prompt: string | null }).prompt).toBe("RULES {{model}} {{roster}}");
+    expect(config.injectionPrompt).toBe("RULES {{model}} {{roster}}");
+    // absent key leaves it unchanged
+    await put(config, { model: "openai/gpt-5.6-sol", effort: "xhigh" });
+    expect(config.injectionPrompt).toBe("RULES {{model}} {{roster}}");
+    // null clears
+    await put(config, { model: "openai/gpt-5.6-sol", prompt: null });
+    expect(config.injectionPrompt).toBeUndefined();
+    // non-string rejected
+    const bad = await put(config, { model: "openai/gpt-5.6-sol", prompt: 42 });
+    expect(bad.status).toBe(400);
   });
 
   test("invalid effort is rejected with 400 and leaves config untouched", async () => {
@@ -70,7 +87,7 @@ describe("/api/injection-model reasoning effort", () => {
     isolatedHome();
     const config = makeConfig({ injectionModel: "openai/gpt-5.6-sol", injectionEffort: "max" });
     const res = await put(config, { model: "openai/gpt-5.6-sol", effort: null });
-    expect(await res.json()).toEqual({ ok: true, model: "openai/gpt-5.6-sol", effort: null });
+    expect(await res.json()).toEqual({ ok: true, model: "openai/gpt-5.6-sol", effort: null, prompt: null });
     expect(config.injectionEffort).toBeUndefined();
   });
 
@@ -78,7 +95,7 @@ describe("/api/injection-model reasoning effort", () => {
     isolatedHome();
     const config = makeConfig({ injectionModel: "openai/gpt-5.6-sol", injectionEffort: "max" });
     const res = await put(config, { model: null });
-    expect(await res.json()).toEqual({ ok: true, model: null, effort: null });
+    expect(await res.json()).toEqual({ ok: true, model: null, effort: null, prompt: null });
     expect(config.injectionModel).toBeUndefined();
     expect(config.injectionEffort).toBeUndefined();
   });
@@ -87,6 +104,6 @@ describe("/api/injection-model reasoning effort", () => {
     isolatedHome();
     const config = makeConfig({ injectionModel: "openai/gpt-5.6-sol", injectionEffort: "ultra" });
     const res = await put(config, { model: "anthropic/claude-sonnet-5" });
-    expect(await res.json()).toEqual({ ok: true, model: "anthropic/claude-sonnet-5", effort: "ultra" });
+    expect(await res.json()).toEqual({ ok: true, model: "anthropic/claude-sonnet-5", effort: "ultra", prompt: null });
   });
 });

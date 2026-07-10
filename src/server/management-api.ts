@@ -535,12 +535,13 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     return jsonResponse({
       model: config.injectionModel ?? null,
       effort: config.injectionEffort ?? null,
+      prompt: config.injectionPrompt ?? null,
       efforts: CODEX_REASONING_LEVELS.map(l => l.effort),
       available: [...nativeModels, ...routedModels],
     });
   }
   if (url.pathname === "/api/injection-model" && req.method === "PUT") {
-    let body: { model?: unknown; effort?: unknown };
+    let body: { model?: unknown; effort?: unknown; prompt?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     const { isCodexReasoningEffort } = await import("../reasoning-effort");
     const model = typeof body.model === "string" && body.model.length > 0 ? body.model : undefined;
@@ -559,8 +560,15 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     else delete config.injectionModel;
     if (effort) config.injectionEffort = effort;
     else delete config.injectionEffort;
+    // `prompt` key semantics mirror `effort`: absent -> unchanged; null/"" -> clear;
+    // non-empty string -> set (custom <multi_agent_mode> body, {{model}}/{{effort}}/{{roster}} placeholders).
+    if ("prompt" in body) {
+      if (typeof body.prompt === "string" && body.prompt.trim().length > 0) config.injectionPrompt = body.prompt;
+      else if (body.prompt === null || body.prompt === "") delete config.injectionPrompt;
+      else return jsonResponse({ error: "prompt must be a string or null" }, 400);
+    }
     saveConfig(config);
-    return jsonResponse({ ok: true, model: config.injectionModel ?? null, effort: config.injectionEffort ?? null });
+    return jsonResponse({ ok: true, model: config.injectionModel ?? null, effort: config.injectionEffort ?? null, prompt: config.injectionPrompt ?? null });
   }
 
   // Subagent model picker: which ≤5 routed models Codex's spawn_agent advertises (it shows the

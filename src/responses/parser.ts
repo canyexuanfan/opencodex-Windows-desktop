@@ -250,6 +250,18 @@ export function parseRequest(body: unknown): OcxParsedRequest {
         continue;
       }
 
+      if (effectiveType === "additional_tools") {
+        // Codex Desktop responses_lite WS path: tools ride INSIDE input as an
+        // `additional_tools` item ({type, role, tools:[...]}) instead of body.tools.
+        // Same spec wire shapes (function/namespace/custom/tool_search) — collect and
+        // merge through the exact buildTools path so surface detection (collabSurface)
+        // and chat-model tool listing see them. The item itself never becomes a message;
+        // the native passthrough keeps it verbatim in _rawBody.
+        const at = item as { tools?: unknown[] };
+        if (Array.isArray(at.tools)) loadedToolSpecs.push(...at.tools);
+        continue;
+      }
+
       if (effectiveType === "compaction" || effectiveType === "compaction_summary" || effectiveType === "context_compaction") {
         // A stored summary from a previous compaction. Decode our ocx1 envelope into plain text so
         // the routed model keeps the compacted context; real OpenAI-encrypted blobs degrade to a note.

@@ -90,16 +90,44 @@ const PROACTIVE_MULTI_AGENT_MODE_TEXT = [
  * flat spawn_agent. A flat spawn_agent vetoes so an ambiguous mix never counts as v1.
  */
 export function isV1CollabSurface(parsed: OcxParsedRequest): boolean {
+  return collabSurface(parsed) === "v1";
+}
+
+/**
+ * Which multi-agent collab surface this turn carries, judged from the request's own
+ * tool list. Real wire shapes (codex-rs spec_plan.rs add_collaboration_tools):
+ *  - v1: tools under the "multi_agent_v1" namespace, always accompanied by v1-only
+ *    names (send_input / resume_agent / close_agent).
+ *  - v2 on namespace_tools providers (e.g. the ChatGPT backend): tools under the
+ *    "collaboration" namespace (config.multi_agent_v2.tool_namespace — user-settable,
+ *    so the name is not hardcoded here), with v2-only companions (send_message /
+ *    followup_task / interrupt_agent / list_agents).
+ *  - v2 without namespace support: a flat spawn_agent.
+ * Companion tools are the primary discriminator; a companionless namespaced spawn
+ * falls back to "v1" (legacy behavior) and a companionless flat spawn to "v2".
+ * Contradictory markers count as neither — never inject on unclear ground.
+ */
+export function collabSurface(parsed: OcxParsedRequest): "v1" | "v2" | null {
   let namespacedSpawn = false;
   let flatSpawn = false;
   let v1Only = false;
+  let v2Only = false;
   for (const t of parsed.context.tools ?? []) {
     if (t.name === "spawn_agent") {
       if (t.namespace) namespacedSpawn = true;
       else flatSpawn = true;
-    } else if (t.name === "send_input" || t.name === "close_agent") v1Only = true;
+    } else if (t.name === "send_input" || t.name === "resume_agent" || t.name === "close_agent") {
+      v1Only = true;
+    } else if (t.name === "send_message" || t.name === "followup_task" || t.name === "interrupt_agent" || t.name === "list_agents") {
+      v2Only = true;
+    }
   }
-  return (namespacedSpawn || v1Only) && !flatSpawn;
+  if (!namespacedSpawn && !flatSpawn) return null; // no spawn_agent -> no collab surface
+  if (namespacedSpawn && flatSpawn) return null;   // contradictory spawn shapes
+  if (v1Only && v2Only) return null;               // contradictory companions
+  if (v1Only) return "v1";
+  if (v2Only) return "v2";
+  return namespacedSpawn ? "v1" : "v2"; // companionless fallbacks (legacy defaults)
 }
 
 /**
@@ -124,13 +152,83 @@ export function isV1CollabSurface(parsed: OcxParsedRequest): boolean {
  * calls (codex-rs validates spawn efforts by catalog membership; unsupported rungs
  * are clamped on the wire). An effort WITHOUT a model changes nothing — the gate
  * and the base prompt stay exactly as before.
+ *
+ * V2 surface (flat spawn_agent — sol/terra under the default mode, EVERY model when
+ * `ocx v2 mode v2` forces the pins): codex-rs already emits its own Proactive text
+ * there, so the proxy never duplicates it — it adds only model-designation guidance,
+ * and only when it has something to designate: an injectionModel and/or a
+ * subagentModels roster entry that resolves in the injected catalog. v2 rejects
+ * model/effort overrides on a full-history fork (multi_agents_v2/spawn.rs
+ * reject_full_fork_spawn_overrides), so the prompt mandates fork_turns "none" or a
+ * partial fork plus a self-contained task message.
+ * The published spawn_agent schema HIDES model/reasoning_effort by
+ * default (hide_spawn_agent_metadata=true upstream — and it must STAY hidden: the
+ * ChatGPT backend treats collaboration.spawn_agent as a reserved function and
+ * rejects any request whose declared schema deviates, "Invalid Value: 'tools'").
+ * That is prompt-workable: SpawnAgentArgs always parses model/reasoning_effort
+ * regardless of the flag (spawn.rs), so the prompt tells the model to pass the
+ * arguments even though the schema does not list them.
+ *
+ * Prompt structure follows the OpenAI prompt-engineering guidance (developers.openai.com):
+ * explicit rule lists first, a concrete few-shot example call, reference context (the
+ * roster) last. A user-configured `injectionPrompt` replaces the built-in body with
+ * {{model}}/{{effort}}/{{roster}} placeholder substitution; firing gates are unchanged.
+ *
+ * Featured roster: whenever guidance fires (either surface), the configured
+ * `subagentModels` (the 5-list the catalog features for spawn_agent) are appended
+ * with the effort ladder each advertises in the injected catalog — the same list
+ * codex-rs validates spawn efforts against — so the agent can pick per-task models
+ * and honest effort rungs instead of flying blind behind the hidden schema.
  */
-export async function multiAgentGuidanceText(parsed: OcxParsedRequest, injectionModel?: string, injectionEffort?: string): Promise<string | null> {
-  if (!isV1CollabSurface(parsed)) return null;
+export async function multiAgentGuidanceText(parsed: OcxParsedRequest, injectionModel?: string, injectionEffort?: string, subagentModels?: string[], injectionPrompt?: string): Promise<string | null> {
+  const surface = collabSurface(parsed);
+  if (surface === null) return null;
+
+  if (surface === "v2") {
+    // codex-rs supplies the Proactive text on v2; the proxy only adds model-designation
+    // guidance, and only when there is something concrete to designate: a configured
+    // injectionModel and/or a roster entry that resolves in the injected catalog.
+    const roster = await subagentRosterText(subagentModels);
+    if (!injectionModel && roster === "") return null;
+    if (injectionPrompt) {
+      return `<multi_agent_mode>${applyInjectionPlaceholders(injectionPrompt, injectionModel, injectionEffort, roster)}</multi_agent_mode>`;
+    }
+    const rules = [
+      "- This spawn_agent tool ACCEPTS optional \"model\" and \"reasoning_effort\" string arguments even though its published schema does not list them. The runtime parses and applies both. Never claim sub-agent models cannot be selected.",
+      "- When the user names a sub-agent model, pass it in the \"model\" argument exactly as given.",
+      "- Any spawn_agent call that sets \"model\" or \"reasoning_effort\" MUST also set \"fork_turns\" to \"none\" (or a positive integer string such as \"3\" for a partial fork); overrides are rejected on a full-history fork.",
+      "- With fork_turns \"none\", the child receives NO parent context: write a fully self-contained task message with paths, goals, and constraints.",
+    ];
+    if (injectionModel) {
+      rules.push(`- A preferred sub-agent model is configured: "${injectionModel}". Use it for independent sub-tasks unless the user explicitly asks for another model.`);
+    }
+    if (injectionEffort) {
+      rules.push(`- A preferred sub-agent reasoning effort is configured: "${injectionEffort}". Pass it in the "reasoning_effort" argument of those spawn_agent calls.`);
+    }
+    const exampleModel = injectionModel ?? "gpt-5.6-terra";
+    const example = "## Example spawn_agent call\n"
+      + "```json\n"
+      + JSON.stringify({
+        task_name: "example_task",
+        message: "Self-contained task description with paths, goals, and constraints.",
+        fork_turns: "none",
+        model: exampleModel,
+        ...(injectionEffort ? { reasoning_effort: injectionEffort } : {}),
+      }, null, 2)
+      + "\n```";
+    const text = `## Sub-agent model selection rules\n${rules.join("\n")}\n\n${example}${roster}`;
+    return `<multi_agent_mode>${text}</multi_agent_mode>`;
+  }
+
   const effort = parsed.options.reasoning;
   // When the user has selected a specific injection model, fire the delegation prompt
   // at ANY effort level. Otherwise preserve the original gate: top tier only (max/ultra).
   if (!injectionModel && effort !== "max" && effort !== "ultra") return null;
+
+  if (injectionPrompt) {
+    const roster = await subagentRosterText(subagentModels);
+    return `<multi_agent_mode>${applyInjectionPlaceholders(injectionPrompt, injectionModel, injectionEffort, roster)}</multi_agent_mode>`;
+  }
 
   let text = PROACTIVE_MULTI_AGENT_MODE_TEXT;
 
@@ -145,7 +243,35 @@ export async function multiAgentGuidanceText(parsed: OcxParsedRequest, injection
     }
   }
 
+  text += await subagentRosterText(subagentModels);
   return `<multi_agent_mode>${text}</multi_agent_mode>`;
+}
+
+/** {{model}}/{{effort}}/{{roster}} substitution for the user-configured injectionPrompt. */
+function applyInjectionPlaceholders(prompt: string, model?: string, effort?: string, roster?: string): string {
+  return prompt
+    .replaceAll("{{model}}", model ?? "")
+    .replaceAll("{{effort}}", effort ?? "")
+    .replaceAll("{{roster}}", roster ?? "");
+}
+
+/**
+ * "\n\nOther available sub-agent models..." roster block, or "" when no configured
+ * model resolves to a catalog entry. Efforts come from the injected catalog
+ * (catalogModelEfforts) so only rungs codex-rs will actually accept are advertised.
+ */
+async function subagentRosterText(subagentModels?: string[]): Promise<string> {
+  const featured = (subagentModels ?? []).filter(id => typeof id === "string" && id.trim().length > 0);
+  if (featured.length === 0) return "";
+  const { catalogModelEfforts } = await import("../codex/catalog");
+  const efforts = catalogModelEfforts(featured);
+  const lines = featured
+    .filter(id => efforts.has(id))
+    .map(id => `- "${id}" (reasoning_effort options: ${efforts.get(id)!.join(", ")})`);
+  if (lines.length === 0) return "";
+  return "\n\nConfigured sub-agent model roster (valid values for spawn_agent's \"model\" argument, "
+    + "with the reasoning_effort each supports):\n"
+    + lines.join("\n");
 }
 
 /**
@@ -358,8 +484,10 @@ export async function handleResponses(
   logCtx.provider = route.providerName;
 
   // Multi-agent guidance shim: codex-rs emits its Proactive delegation developer
-  // message only on the v2 surface. If the request's own tool list proves this
-  // is a v1 collab surface, preserve that top-tier behavior for legacy/v1 threads.
+  // message only on the v2 surface. The proxy fills both gaps: the Proactive text
+  // for v1 collab surfaces at the top tier, and the sub-agent model designation on
+  // BOTH surfaces when an injectionModel is configured (v2 additionally gets the
+  // fork_turns override rules). The surface is judged from the request's own tool list.
   // Runs BEFORE the mock-max clamp below so the synthetic top tier (ultra arrives
   // as max on the codex wire) is still visible. Both request shapes are rewritten.
   {
@@ -372,8 +500,13 @@ export async function handleResponses(
       const rewritten = sanitizeEncryptedContentInPlace(raw?.input);
       if (rewritten > 0) console.warn(`[opencodex] ${route.modelId}: rewrote ${rewritten} plaintext encrypted_content part(s) to input_text (routed-parent spawn compatibility)`);
     }
-    const guidance = await multiAgentGuidanceText(parsed, config.injectionModel, config.injectionEffort);
-    if (guidance) injectDeveloperMessage(parsed, guidance);
+    const guidance = await multiAgentGuidanceText(parsed, config.injectionModel, config.injectionEffort, config.subagentModels, config.injectionPrompt);
+    if (guidance) {
+      injectDeveloperMessage(parsed, guidance);
+      console.log(`[opencodex] ${route.modelId}: multi-agent guidance injected (surface=${collabSurface(parsed)}, ${guidance.length} chars)`);
+    } else if (collabSurface(parsed) !== null) {
+      console.log(`[opencodex] ${route.modelId}: collab surface=${collabSurface(parsed)}, guidance silent (effort=${parsed.options.reasoning ?? "unset"}, injectionModel=${config.injectionModel ?? "unset"})`);
+    }
   }
 
   // Mock-max clamp: native models whose real ladder stops below max (gpt-5.5/5.4/…)

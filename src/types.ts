@@ -252,6 +252,14 @@ export interface OcxConfig {
    */
   injectionEffort?: string;
   /**
+   * Custom override for the injected multi-agent guidance body (the text inside the
+   * <multi_agent_mode> tags). When set, it replaces the built-in prompt on whichever
+   * collab surface would have fired; firing gates are unchanged. Placeholders:
+   * `{{model}}` -> injectionModel, `{{effort}}` -> injectionEffort, `{{roster}}` ->
+   * the resolved sub-agent roster block ("" when nothing resolves).
+   */
+  injectionPrompt?: string;
+  /**
    * Models hidden from Codex. Routed ids are namespaced ("<provider>/<model>") and are excluded
    * from the catalog + /v1/models entirely. BARE ids (no "/") are native GPT passthrough slugs:
    * their catalog entries flip to visibility "hide" (entry preserved, picker-hidden) and they
