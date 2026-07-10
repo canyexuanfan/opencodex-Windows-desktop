@@ -5,8 +5,8 @@ description: Control how Codex spawns and manages sub-agents across all models.
 
 opencodex lets you choose the multi-agent collaboration surface for every model in the catalog. The **Sub-agent** toggle in the dashboard and Models page controls this globally.
 
-:::caution
-**On the v2 surface (`multi_agent_v2`), a spawned sub-agent always inherits the parent session's model. `spawn_agent` model overrides are not honored, so v2 cannot spawn a sub-agent on a different model. Cross-model spawning is available only on the v1 surface.**
+:::note
+On the v2 surface (`multi_agent_v2`), a spawned sub-agent inherits the parent model **by default**: `fork_turns` defaults to `all`, and full-history forks reject overrides. Since v2.7.2 opencodex injects guidance that teaches the model how to break inheritance — a `spawn_agent` call that sets `fork_turns` to `"none"` (or a partial fork such as `"3"`) can pass `model` / `reasoning_effort` arguments, which the Codex runtime parses and applies even though the published tool schema hides them.
 :::
 
 ## Modes
@@ -15,7 +15,7 @@ opencodex lets you choose the multi-agent collaboration surface for every model 
 | --- | --- | --- |
 | **v1** | `multi_agent_v1` | Classic namespaced agent tools with `send_input` / `close_agent` / `resume_agent`. A `spawn_agent` model override can start a sub-agent on a different model. |
 | **base** (default) | Upstream pins | Restores upstream model pins: gpt-5.6-sol and gpt-5.6-terra use v2, gpt-5.6-luna uses v1, and unpinned models follow the Codex `multi_agent_v2` feature flag. Spawn behavior follows the surface that resolves for that model. |
-| **v2** | `multi_agent_v2` | Flat `spawn_agent` tools with concurrent sessions and `send_message` / `followup_task` / `wait_agent` / `interrupt_agent`. Every child inherits the parent model; model overrides are ignored. |
+| **v2** | `multi_agent_v2` | Flat `spawn_agent` tools with concurrent sessions and `send_message` / `followup_task` / `wait_agent` / `interrupt_agent`. Children inherit the parent model on full-history forks; `fork_turns: "none"` (or a partial fork) accepts `model` / `reasoning_effort` overrides. |
 
 ## How it works
 
@@ -29,11 +29,15 @@ The override is the final pass in both the live `/v1/models` catalog response an
 
 ### Delegation model and effort
 
-The dashboard's **Sub-agent delegation** picker stores an `injectionModel` and, optionally, an `injectionEffort`. These are delegation guidance settings, not a proxy-side spawn router.
+The dashboard's **Sub-agent delegation** picker stores an `injectionModel` and, optionally, an `injectionEffort`. These are delegation guidance settings, not a proxy-side spawn router. An optional `injectionPrompt` replaces the built-in guidance text entirely.
 
-`multiAgentGuidanceText` identifies the surface from the request's tools. On a **v1** turn, setting an injection model makes the proxy add proactive delegation guidance at any parent effort, name the exact model to pass to `spawn_agent`, and, when configured, name the exact `reasoning_effort`. Without an injection model, an injection effort has no effect.
+`multiAgentGuidanceText` identifies the surface from the request's tools — including the Codex Desktop WebSocket path (`responses_lite`), where tools arrive inside an `additional_tools` input item instead of the request's `tools` array.
 
-On **v2**, Codex supplies its own proactive delegation guidance and the opencodex helper returns without injecting its v1 compatibility message. The current proxy therefore does not append `injectionModel` or `injectionEffort` to v2 turns. If v2 delegation guidance presents either preference, it remains advisory: there is no per-spawn cross-model request or proxy rewrite, and the child still runs on the parent session's model. The v2 surface can nevertheless apply a `reasoning_effort` actually passed to `spawn_agent`; effort is independent of the inherit-only model rule.
+On a **v2** turn (Sol/Terra in base mode, every model in v2 mode), the proxy injects a compact guidance block — budgeted to 700 characters — whenever an injection model is set or the configured sub-agent roster resolves in the catalog. The block teaches `spawn_agent`'s hidden `model` / `reasoning_effort` arguments, mandates `fork_turns: "none"` (or a partial fork) for overrides, names the preferred model and effort, and lists the `subagentModels` roster with the effort ladder each advertises in the injected catalog — the same list Codex validates spawn efforts against.
+
+On a **v1** turn the proxy only mirrors upstream's Proactive delegation text at the top effort tier (max / ultra). No model designation, roster, or custom prompt is added there — v1 stays lean by design.
+
+To replace the built-in v2 guidance, set `injectionPrompt` (config key, or `PUT /api/injection-model` with a `prompt` value). The placeholders `{{model}}`, `{{effort}}`, and `{{roster}}` are substituted with the configured injection model, effort, and the resolved roster line. Firing gates are unchanged: a custom prompt never makes a turn fire that would otherwise stay silent.
 
 ## Changing the mode
 
@@ -42,7 +46,7 @@ On **v2**, Codex supplies its own proactive delegation guidance and the opencode
 - **Dashboard** → first stat cell: click **v1**, **base**, or **v2**.
 - **Models** page → top-row segmented control.
 - Both pages have a **?** button that opens a help modal with a link back here.
-- **Dashboard** → **Sub-agent delegation**: choose a preferred model and optional reasoning effort. On v2, remember that the model choice is guidance-only and cannot override inheritance.
+- **Dashboard** → **Sub-agent delegation**: choose a preferred model and optional reasoning effort. On v2 the injected guidance instructs the agent to spawn with `fork_turns: "none"` so the choice actually takes effect.
 
 ### CLI
 
@@ -78,17 +82,22 @@ curl -X PUT http://localhost:10100/api/injection-model \
   -H 'Content-Type: application/json' \
   -d '{"model": "anthropic/claude-sonnet-5", "effort": "xhigh"}'
 
+# Set a custom guidance prompt ({{model}}/{{effort}}/{{roster}} placeholders)
+curl -X PUT http://localhost:10100/api/injection-model \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "anthropic/claude-sonnet-5", "prompt": "Delegate to {{model}}.{{roster}}"}'
+
 # Clear both values
 curl -X PUT http://localhost:10100/api/injection-model \
   -H 'Content-Type: application/json' \
   -d '{"model": null}'
 ```
 
-`GET /api/injection-model` returns `model`, `effort`, the global `efforts` ladder, and enabled native/routed `available` models. For PUT, omitting `effort` keeps its current value, `null` clears it, and clearing `model` always clears the effort too. The API validates effort against the global Codex ladder; Codex still validates a spawn effort against the target catalog entry.
+`GET /api/injection-model` returns `model`, `effort`, `prompt`, the global `efforts` ladder, and enabled native/routed `available` models. For PUT, omitting `effort` or `prompt` keeps the current value, `null` clears it, and clearing `model` always clears the effort too. The API validates effort against the global Codex ladder; Codex still validates a spawn effort against the target catalog entry.
 
 ## Reasoning effort
 
-The optional sub-agent effort setting is stored as `injectionEffort` and is meaningful only with an injection model. In the current proxy path it adds a `reasoning_effort` instruction to the v1 guidance; it does not change the parent session's effort. Independently, v2 can honor a `reasoning_effort` supplied to `spawn_agent` while still inheriting the parent model.
+The optional sub-agent effort setting is stored as `injectionEffort` and is meaningful only with an injection model. It adds a `reasoning_effort` instruction to the injected v2 guidance; it does not change the parent session's effort. On any fork that accepts overrides, Codex applies a `reasoning_effort` passed to `spawn_agent` directly.
 
 `ultra` ranks above `max` in the Codex catalog and adds automatic-delegation semantics, but it never reaches a provider as a literal wire value. Codex converts `ultra` to `max` at the client boundary. opencodex then keeps the provider request valid:
 
