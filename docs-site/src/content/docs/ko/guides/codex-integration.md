@@ -22,7 +22,24 @@ fast_mode = true
 ```
 
 프록시의 기본 포트는 `10100`입니다. `POST /v1/responses`, `POST /v1/responses/compact`,
-`GET /v1/models`, `GET /healthz`, `/api/*` 관리 API를 제공합니다.
+`POST /v1/images/generations`, `POST /v1/images/edits`, `GET /v1/models`, `GET /healthz`,
+`/api/*` 관리 API를 제공합니다.
+
+### 내장 이미지 생성 (`image_gen`)
+
+Codex의 내장 `image_gen` 도구는 `/v1/responses`를 거치지 않습니다. codex-rs 확장이
+`{base_url}/images/generations`(참조 이미지가 있으면 `/images/edits`)를 채팅과 동일한
+ChatGPT bearer 인증으로 직접 POST합니다. 주입된 `base_url`이 opencodex를 가리키므로,
+프록시가 이 호출을 OpenAI 업스트림으로 중계합니다.
+
+- **ChatGPT 로그인(기본):** 호출자의 OAuth 토큰(또는 멀티 계정 풀에서 선택된 계정의 토큰)으로
+  `chatgpt.com/backend-api/codex`에 전달합니다. API 키가 필요 없습니다.
+- **OpenAI API 키 프로바이더:** 요청에 사용할 ChatGPT 인증이 없으면, 설정된 `openai-responses`
+  API 키 프로바이더(예: `api.openai.com`)로 대신 전달합니다.
+- **둘 다 없음:** 모호한 404 대신 명확한 오류를 반환합니다. 라우팅되는 다른 프로바이더(Cursor,
+  Gemini, Kiro 등)는 이미지 생성을 제공할 수 없습니다. 도구 자체를 끄고 싶다면 Codex에서
+  `codex features disable image_generation`(`config.toml`의 `[features] image_generation = false`)을
+  사용하세요.
 
 `hostname`이 loopback 주소가 아니면 Codex가 자동 생성된 API 인증 헤더를 보내야 합니다. 이때는 전용
 프로바이더를 주입합니다.

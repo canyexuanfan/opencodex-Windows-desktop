@@ -115,6 +115,7 @@ export {
   safeConfigDTO,
 } from "./auth-cors";
 import { disableResponsesRequestTimeout, handleResponses, handleResponsesCompact } from "./responses";
+import { handleImages } from "./images";
 export { disableResponsesRequestTimeout, linkAbortSignal } from "./responses";
 import { fetchAllModels, handleManagementAPI, VERSION } from "./management-api";
 
@@ -341,9 +342,31 @@ export function startServer(port?: number) {
         return withCors(responseWithDeferredRequestLog(response, requestId, start, logCtx), req, config);
       }
 
+      // codex-rs's standalone image_gen extension POSTs {base_url}/images/{generations,edits}
+      // client-side with its ChatGPT bearer auth (issue #83); under Design B injection base_url
+      // is this proxy. Relay to the OpenAI-family upstream — the only backend that can serve it.
+      if ((url.pathname === "/v1/images/generations" || url.pathname === "/v1/images/edits") && req.method === "POST") {
+        disableResponsesRequestTimeout(req, requestServer);
+        if (isDraining()) {
+          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
+        }
+        const apiAuthError = requireApiAuth(req, config, "data-plane");
+        if (apiAuthError) return withCors(apiAuthError, req, config);
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
+        }
+        const start = Date.now();
+        const requestId = nextRequestLogId(start);
+        const logCtx: RequestLogContext = { model: "image_gen", provider: "unknown" };
+        const endpoint = url.pathname.endsWith("/edits") ? "edits" as const : "generations" as const;
+        const response = await handleImages(req, config, endpoint, logCtx);
+        addFinalRequestLog(requestId, start, logCtx, response.status, response.status === 499 ? { closeReason: "client_cancel" } : undefined);
+        return withCors(response, req, config);
+      }
+
       // Data-plane guard: unknown /v1/* paths must fail with JSON 404, never fall through to the
       // GUI static handler (extensionless paths would get index.html with HTTP 200 and codex-rs
-      // endpoint clients — alpha/search, images/*, memories/*, realtime/* — would surface confusing
+      // endpoint clients — alpha/search, memories/*, realtime/* — would surface confusing
       // serde decode errors instead of a clean not-found).
       if (url.pathname.startsWith("/v1/")) {
         return withCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
