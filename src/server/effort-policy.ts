@@ -18,20 +18,25 @@ import { codexEffortRank, configuredReasoningEfforts, isCodexReasoningEffort, mo
 import { catalogModelEfforts } from "../codex/catalog";
 
 /**
- * True when the request carries codex-rs's spawned-child markers. Source of truth
- * (openai/codex @ 6138909d): every collab-spawned child turn sends
+ * True when the request carries codex-rs's spawned-child markers, matched EXACTLY.
+ * Source of truth (openai/codex @ 6138909d): every collab-spawned child turn sends
  * `x-openai-subagent: collab_spawn` (core/src/responses_metadata.rs) and embeds
  * `"subagent_kind":"thread_spawn"` in the JSON `x-codex-turn-metadata` compatibility
  * header. Both are checked: the WS bridge rebuilds internal requests from the
  * FORWARD_HEADERS allowlist, so either header alone is sufficient evidence.
+ *
+ * Exact matching matters: upstream emits `x-openai-subagent` for OTHER internal
+ * turn categories too (review, compact, memory_consolidation, arbitrary "other"
+ * sources — responses_metadata.rs subagent_source). Those are maintenance turns,
+ * not spawned children, and must never trip subagentEffortCap.
  */
-export function isSubagentRequest(headers: Headers): boolean {
-  if (headers.get("x-openai-subagent")) return true;
+export function isThreadSpawnRequest(headers: Headers): boolean {
+  if (headers.get("x-openai-subagent") === "collab_spawn") return true;
   const turnMeta = headers.get("x-codex-turn-metadata");
   if (!turnMeta) return false;
   try {
     const parsed = JSON.parse(turnMeta) as { subagent_kind?: unknown };
-    return typeof parsed.subagent_kind === "string" && parsed.subagent_kind.length > 0;
+    return parsed.subagent_kind === "thread_spawn";
   } catch {
     return false;
   }
@@ -52,20 +57,26 @@ export function effortCapFor(config: OcxConfig, subagent: boolean): string | und
  * Whether the effort caps apply to this turn at all. Caps are a V2-surface feature
  * (v1 sub-agents are pinned via explicit spawn args + injectionEffort prompting, so
  * the ultra-default leak this module intercepts is v2-specific):
+ *  - compaction turns are maintenance, not agent turns: they bypass caps entirely so
+ *    native /v1/responses/compact (forwarded, never enters handleResponses) and routed
+ *    compaction (synthesized internal request) get identical cap semantics.
  *  - multiAgentMode "v1" disables caps entirely (mirrors the GUI hiding the panel).
  *  - a main turn qualifies when its own tool list carries the v2 collab surface.
- *  - a CHILD turn carries no collab tools (surface null) — its discriminator is the
- *    spawned-child header pair (isSubagentRequest), so the subagent cap still lands
- *    on exactly the turns it targets.
- *  - a v1-surface turn never qualifies.
+ *  - a CHILD turn is admitted by its spawned-child markers (isThreadSpawnRequest)
+ *    REGARDLESS of tool surface: depth-limited leaves carry no collab tools (surface
+ *    null) while children below the spawn-depth limit retain collab tools (spec_plan.rs
+ *    leaf guard), so tool sniffing alone would cap siblings inconsistently.
+ *  - a v1-surface MAIN turn (no child markers) never qualifies.
  */
 export function effortCapAppliesTo(
   surface: "v1" | "v2" | null,
   headers: Headers,
   config: OcxConfig,
+  compaction = false,
 ): boolean {
+  if (compaction) return false;
   if (config.multiAgentMode === "v1") return false;
-  return surface === "v2" || (surface === null && isSubagentRequest(headers));
+  return surface === "v2" || isThreadSpawnRequest(headers);
 }
 
 /**
@@ -141,7 +152,7 @@ export function applyEffortCap(
   config: OcxConfig,
   supported?: readonly string[] | undefined,
 ): { from: string; to: string; subagent: boolean } | null {
-  const subagent = isSubagentRequest(headers);
+  const subagent = isThreadSpawnRequest(headers);
   const cap = effortCapFor(config, subagent);
   if (!cap) return null;
   const resolved = resolveCappedEffort(cap, supported);

@@ -476,12 +476,15 @@ export async function handleResponses(
   // mock-max clamp so a capped effort is what nativeness clamping then validates; rewrites
   // both request shapes (same dual-write contract as the clamp below).
   // GATE: v2 feature only (effortCapAppliesTo) — v2-surface main turns plus header-marked
-  // child turns (children carry no collab tools, so tool sniffing alone would skip the very
-  // turns subagentEffortCap targets); multiAgentMode "v1" disables caps entirely.
+  // child turns admitted regardless of tool surface (depth-limited leaves carry no collab
+  // tools while shallower children do, so tool sniffing alone would cap siblings
+  // inconsistently); multiAgentMode "v1" disables caps entirely; compaction turns bypass
+  // caps so routed compaction matches native /v1/responses/compact (which never enters
+  // handleResponses).
   {
     const { applyEffortCap, effortCapAppliesTo, supportedLadderFor } = await import("./effort-policy");
     const surface = collabSurface(parsed);
-    if (effortCapAppliesTo(surface, req.headers, config)) {
+    if (effortCapAppliesTo(surface, req.headers, config, parsed._compactionRequest === true)) {
       const capped = applyEffortCap(parsed, req.headers, config, supportedLadderFor(route));
       if (capped) {
         logCtx.requestedEffort = `${capped.from}->${capped.to}`;

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyEffortCap, effortCapAppliesTo, effortCapFor, isSubagentRequest, resolveCappedEffort, supportedLadderFor } from "../src/server/effort-policy";
+import { applyEffortCap, effortCapAppliesTo, effortCapFor, isThreadSpawnRequest, resolveCappedEffort, supportedLadderFor } from "../src/server/effort-policy";
 import { collabSurface } from "../src/server/responses";
 import { handleManagementAPI } from "../src/server/management-api";
 import { routeModel } from "../src/router";
@@ -51,22 +51,33 @@ const MAIN_HEADERS = new Headers({
   "x-codex-turn-metadata": JSON.stringify({ turn_id: "t1" }),
 });
 
-describe("isSubagentRequest", () => {
-  test("x-openai-subagent marker classifies as sub-agent", () => {
-    expect(isSubagentRequest(SUBAGENT_HEADERS)).toBe(true);
+describe("isThreadSpawnRequest", () => {
+  test("x-openai-subagent: collab_spawn classifies as spawned child", () => {
+    expect(isThreadSpawnRequest(SUBAGENT_HEADERS)).toBe(true);
   });
 
-  test("subagent_kind inside x-codex-turn-metadata classifies as sub-agent", () => {
-    expect(isSubagentRequest(TURN_META_HEADERS)).toBe(true);
+  test("subagent_kind: thread_spawn inside x-codex-turn-metadata classifies as spawned child", () => {
+    expect(isThreadSpawnRequest(TURN_META_HEADERS)).toBe(true);
   });
 
   test("main-agent turn metadata and bare headers stay main", () => {
-    expect(isSubagentRequest(MAIN_HEADERS)).toBe(false);
-    expect(isSubagentRequest(new Headers())).toBe(false);
+    expect(isThreadSpawnRequest(MAIN_HEADERS)).toBe(false);
+    expect(isThreadSpawnRequest(new Headers())).toBe(false);
   });
 
-  test("malformed turn metadata never classifies as sub-agent", () => {
-    expect(isSubagentRequest(new Headers({ "x-codex-turn-metadata": "{not json" }))).toBe(false);
+  test("non-spawn subagent categories never classify as spawned children", () => {
+    // Upstream emits x-openai-subagent for review/compact/memory-consolidation/"other"
+    // maintenance turns too (responses_metadata.rs) — only collab_spawn is a child.
+    for (const kind of ["review", "compact", "memory_consolidation", "other", "anything"]) {
+      expect(isThreadSpawnRequest(new Headers({ "x-openai-subagent": kind }))).toBe(false);
+      const meta = new Headers({ "x-codex-turn-metadata": JSON.stringify({ subagent_kind: kind }) });
+      expect(isThreadSpawnRequest(meta)).toBe(false);
+    }
+  });
+
+  test("malformed turn metadata never classifies as spawned child", () => {
+    expect(isThreadSpawnRequest(new Headers({ "x-codex-turn-metadata": "{not json" }))).toBe(false);
+    expect(isThreadSpawnRequest(new Headers({ "x-codex-turn-metadata": JSON.stringify({ subagent_kind: 42 }) }))).toBe(false);
   });
 });
 
@@ -320,15 +331,39 @@ describe("effortCapAppliesTo (caps are a v2-feature gate)", () => {
     expect(effortCapAppliesTo(null, new Headers(), makeConfig({ effortCap: "high", subagentEffortCap: "medium" }))).toBe(false);
   });
 
-  test("child turn carries no collab tools — the spawned-child header still admits the cap", () => {
-    // Regression guard: children never carry spawn_agent, so a surface-only gate would
-    // skip exactly the turns subagentEffortCap exists for.
+  test("depth-limited child turn carries no collab tools — the spawned-child header still admits the cap", () => {
+    // Regression guard: depth-limited leaf children carry no collab tools (surface
+    // null), so a surface-only gate would skip exactly the turns subagentEffortCap
+    // exists for.
     const parsed = parsedWithTools([{ name: "shell" }], "max");
     expect(collabSurface(parsed)).toBeNull();
     const config = makeConfig({ subagentEffortCap: "medium" });
     const childHeaders = new Headers({ "x-openai-subagent": "collab_spawn" });
     expect(effortCapAppliesTo(null, childHeaders, config)).toBe(true);
     expect(applyEffortCap(parsed, childHeaders, config)).toEqual({ from: "max", to: "medium", subagent: true });
+  });
+
+  test("header-marked child with a v1 tool surface is still admitted (surface-agnostic child gate)", () => {
+    // Children below the spawn-depth limit retain collab tools (spec_plan.rs leaf
+    // guard) — two siblings must not get different cap treatment based on depth.
+    const childHeaders = new Headers({ "x-openai-subagent": "collab_spawn" });
+    const config = makeConfig({ subagentEffortCap: "medium" });
+    expect(effortCapAppliesTo("v1", childHeaders, config)).toBe(true);
+    expect(effortCapAppliesTo("v2", childHeaders, config)).toBe(true);
+  });
+
+  test("non-spawn subagent markers do not admit the cap", () => {
+    const config = makeConfig({ effortCap: "high", subagentEffortCap: "medium" });
+    expect(effortCapAppliesTo(null, new Headers({ "x-openai-subagent": "review" }), config)).toBe(false);
+    expect(effortCapAppliesTo(null, new Headers({ "x-openai-subagent": "compact" }), config)).toBe(false);
+    expect(effortCapAppliesTo(null, new Headers({ "x-openai-subagent": "memory_consolidation" }), config)).toBe(false);
+    const otherMeta = new Headers({ "x-codex-turn-metadata": JSON.stringify({ subagent_kind: "other" }) });
+    expect(effortCapAppliesTo(null, otherMeta, config)).toBe(false);
+  });
+
+  test("malformed turn metadata never admits the cap", () => {
+    const config = makeConfig({ effortCap: "high", subagentEffortCap: "medium" });
+    expect(effortCapAppliesTo(null, new Headers({ "x-codex-turn-metadata": "{not json" }), config)).toBe(false);
   });
 
   test("turn-metadata subagent_kind alone admits the cap for a child turn", () => {
@@ -340,6 +375,24 @@ describe("effortCapAppliesTo (caps are a v2-feature gate)", () => {
     const config = makeConfig({ effortCap: "high", subagentEffortCap: "medium", multiAgentMode: "v1" });
     expect(effortCapAppliesTo("v2", new Headers(), config)).toBe(false);
     expect(effortCapAppliesTo(null, new Headers({ "x-openai-subagent": "collab_spawn" }), config)).toBe(false);
+  });
+
+  test("explicit default and forced-v2 modes keep the gate open for v2 surfaces and marked children", () => {
+    for (const mode of ["default", "v2"] as const) {
+      const config = makeConfig({ effortCap: "high", multiAgentMode: mode });
+      expect(effortCapAppliesTo("v2", new Headers(), config)).toBe(true);
+      expect(effortCapAppliesTo(null, new Headers({ "x-openai-subagent": "collab_spawn" }), config)).toBe(true);
+      // A plain main turn stays out even under forced v2 — no collab tools, no markers.
+      expect(effortCapAppliesTo(null, new Headers(), config)).toBe(false);
+    }
+  });
+
+  test("compaction turns bypass the cap regardless of surface or markers", () => {
+    // Native /v1/responses/compact never enters handleResponses; routed compaction
+    // must not diverge from it, so the gate refuses when the compaction flag is set.
+    const config = makeConfig({ effortCap: "high", subagentEffortCap: "medium" });
+    expect(effortCapAppliesTo("v2", new Headers(), config, true)).toBe(false);
+    expect(effortCapAppliesTo(null, new Headers({ "x-openai-subagent": "collab_spawn" }), config, true)).toBe(false);
   });
 });
 
