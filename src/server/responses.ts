@@ -133,25 +133,12 @@ export function collabSurface(parsed: OcxParsedRequest): "v1" | "v2" | null {
 /**
  * Multi-agent guidance for this turn, or null when nothing applies.
  *
- * codex-rs only emits its Proactive delegation developer message on the v2 surface,
- * so when a v1-surface turn arrives at the synthetic top tier (codex converts
- * ultra -> max on the wire, so max arrival means the user picked the top rung) the
- * proxy supplies the same one-liner, wrapped in codex's own <multi_agent_mode> tags
- * (v1 turns never carry that fragment, so there is nothing to collide with).
- * Ultra is always advertised, so the guidance fires regardless of the multi_agent_v2
- * toggle.
- *
- * Dynamic model injection: when the user has configured a specific injectionModel,
- * the prompt names it so the agent knows which routed model to delegate to.
- *
- * Effort gate relaxation: when an injectionModel is set, the prompt fires at every
- * effort level, not just max/ultra — the user opted into delegation.
- *
- * Reasoning-effort injection: when an injectionEffort is configured alongside the
- * model, the prompt also tells the agent to pass `reasoning_effort` in spawn_agent
- * calls (codex-rs validates spawn efforts by catalog membership; unsupported rungs
- * are clamped on the wire). An effort WITHOUT a model changes nothing — the gate
- * and the base prompt stay exactly as before.
+ * V1 surface: codex-rs only emits its Proactive delegation developer message on the
+ * v2 surface, so when a v1-surface turn arrives at the synthetic top tier (codex
+ * converts ultra -> max on the wire, so max arrival means the user picked the top
+ * rung) the proxy supplies the same one-liner, wrapped in codex's own
+ * <multi_agent_mode> tags. That is ALL v1 gets — no model designation, no roster
+ * (kept lean by request, devlog 260710): ultra-tier injection is sufficient there.
  *
  * V2 surface (flat spawn_agent — sol/terra under the default mode, EVERY model when
  * `ocx v2 mode v2` forces the pins): codex-rs already emits its own Proactive text
@@ -169,16 +156,12 @@ export function collabSurface(parsed: OcxParsedRequest): "v1" | "v2" | null {
  * regardless of the flag (spawn.rs), so the prompt tells the model to pass the
  * arguments even though the schema does not list them.
  *
- * Prompt structure follows the OpenAI prompt-engineering guidance (developers.openai.com):
- * explicit rule lists first, a concrete few-shot example call, reference context (the
- * roster) last. A user-configured `injectionPrompt` replaces the built-in body with
- * {{model}}/{{effort}}/{{roster}} placeholder substitution; firing gates are unchanged.
- *
- * Featured roster: whenever guidance fires (either surface), the configured
- * `subagentModels` (the 5-list the catalog features for spawn_agent) are appended
- * with the effort ladder each advertises in the injected catalog — the same list
- * codex-rs validates spawn efforts against — so the agent can pick per-task models
- * and honest effort rungs instead of flying blind behind the hidden schema.
+ * The v2 body is budgeted to <= 700 chars (V2_GUIDANCE_CHAR_BUDGET): rules first,
+ * then the preferred model, then the compact roster of configured `subagentModels`
+ * with the effort ladder each advertises in the injected catalog (the list codex-rs
+ * validates spawn efforts against). A user-configured `injectionPrompt` replaces the
+ * v2 body with {{model}}/{{effort}}/{{roster}} placeholder substitution (own length,
+ * user-owned); firing gates are unchanged.
  */
 export async function multiAgentGuidanceText(parsed: OcxParsedRequest, injectionModel?: string, injectionEffort?: string, subagentModels?: string[], injectionPrompt?: string): Promise<string | null> {
   const surface = collabSurface(parsed);
@@ -193,59 +176,32 @@ export async function multiAgentGuidanceText(parsed: OcxParsedRequest, injection
     if (injectionPrompt) {
       return `<multi_agent_mode>${applyInjectionPlaceholders(injectionPrompt, injectionModel, injectionEffort, roster)}</multi_agent_mode>`;
     }
-    const rules = [
-      "- This spawn_agent tool ACCEPTS optional \"model\" and \"reasoning_effort\" string arguments even though its published schema does not list them. The runtime parses and applies both. Never claim sub-agent models cannot be selected.",
-      "- When the user names a sub-agent model, pass it in the \"model\" argument exactly as given.",
-      "- Any spawn_agent call that sets \"model\" or \"reasoning_effort\" MUST also set \"fork_turns\" to \"none\" (or a positive integer string such as \"3\" for a partial fork); overrides are rejected on a full-history fork.",
-      "- With fork_turns \"none\", the child receives NO parent context: write a fully self-contained task message with paths, goals, and constraints.",
-    ];
+    let text = "spawn_agent also accepts hidden \"model\" and \"reasoning_effort\" string arguments "
+      + "(not in the schema, but parsed and applied) — never claim sub-agent models cannot be selected. "
+      + "When setting either, set fork_turns to \"none\" (or e.g. \"3\"; full-history forks reject overrides) "
+      + "and make the message self-contained.";
     if (injectionModel) {
-      rules.push(`- A preferred sub-agent model is configured: "${injectionModel}". Use it for independent sub-tasks unless the user explicitly asks for another model.`);
+      text += ` Preferred sub-agent: model "${injectionModel}"`
+        + (injectionEffort ? `, reasoning_effort "${injectionEffort}"` : "")
+        + " — use it unless the user names another.";
     }
-    if (injectionEffort) {
-      rules.push(`- A preferred sub-agent reasoning effort is configured: "${injectionEffort}". Pass it in the "reasoning_effort" argument of those spawn_agent calls.`);
+    text += roster;
+    if (text.length > V2_GUIDANCE_CHAR_BUDGET) {
+      // Roster is the only unbounded part — drop it before breaking the budget.
+      text = text.slice(0, text.length - roster.length);
     }
-    const exampleModel = injectionModel ?? "gpt-5.6-terra";
-    const example = "## Example spawn_agent call\n"
-      + "```json\n"
-      + JSON.stringify({
-        task_name: "example_task",
-        message: "Self-contained task description with paths, goals, and constraints.",
-        fork_turns: "none",
-        model: exampleModel,
-        ...(injectionEffort ? { reasoning_effort: injectionEffort } : {}),
-      }, null, 2)
-      + "\n```";
-    const text = `## Sub-agent model selection rules\n${rules.join("\n")}\n\n${example}${roster}`;
     return `<multi_agent_mode>${text}</multi_agent_mode>`;
   }
 
   const effort = parsed.options.reasoning;
-  // When the user has selected a specific injection model, fire the delegation prompt
-  // at ANY effort level. Otherwise preserve the original gate: top tier only (max/ultra).
-  if (!injectionModel && effort !== "max" && effort !== "ultra") return null;
-
-  if (injectionPrompt) {
-    const roster = await subagentRosterText(subagentModels);
-    return `<multi_agent_mode>${applyInjectionPlaceholders(injectionPrompt, injectionModel, injectionEffort, roster)}</multi_agent_mode>`;
-  }
-
-  let text = PROACTIVE_MULTI_AGENT_MODE_TEXT;
-
-  // Append the selected model when the user has configured a specific injection target.
-  if (injectionModel) {
-    text += `\n\nA preferred sub-agent model is configured: "${injectionModel}". `
-      + `When delegating, call spawn_agent and set its model argument to exactly "${injectionModel}". `
-      + "Use it for independent sub-tasks unless the user explicitly asks for another model.";
-    if (injectionEffort) {
-      text += ` A preferred sub-agent reasoning effort is also configured: "${injectionEffort}". `
-        + `Set the reasoning_effort argument of spawn_agent to exactly "${injectionEffort}" for those sub-agents.`;
-    }
-  }
-
-  text += await subagentRosterText(subagentModels);
-  return `<multi_agent_mode>${text}</multi_agent_mode>`;
+  // v1 keeps only the upstream-parity behavior: Proactive text at the top tier
+  // (ultra arrives as max on the wire). No designation/roster payload here.
+  if (effort !== "max" && effort !== "ultra") return null;
+  return `<multi_agent_mode>${PROACTIVE_MULTI_AGENT_MODE_TEXT}</multi_agent_mode>`;
 }
+
+/** Hard budget for the built-in v2 guidance body (user request: keep injection lean). */
+export const V2_GUIDANCE_CHAR_BUDGET = 700;
 
 /** {{model}}/{{effort}}/{{roster}} substitution for the user-configured injectionPrompt. */
 function applyInjectionPlaceholders(prompt: string, model?: string, effort?: string, roster?: string): string {
@@ -256,7 +212,7 @@ function applyInjectionPlaceholders(prompt: string, model?: string, effort?: str
 }
 
 /**
- * "\n\nOther available sub-agent models..." roster block, or "" when no configured
+ * Compact one-line roster of configured sub-agent models, or "" when no configured
  * model resolves to a catalog entry. Efforts come from the injected catalog
  * (catalogModelEfforts) so only rungs codex-rs will actually accept are advertised.
  */
@@ -265,13 +221,17 @@ async function subagentRosterText(subagentModels?: string[]): Promise<string> {
   if (featured.length === 0) return "";
   const { catalogModelEfforts } = await import("../codex/catalog");
   const efforts = catalogModelEfforts(featured);
-  const lines = featured
-    .filter(id => efforts.has(id))
-    .map(id => `- "${id}" (reasoning_effort options: ${efforts.get(id)!.join(", ")})`);
-  if (lines.length === 0) return "";
-  return "\n\nConfigured sub-agent model roster (valid values for spawn_agent's \"model\" argument, "
-    + "with the reasoning_effort each supports):\n"
-    + lines.join("\n");
+  const resolved = featured.filter(id => efforts.has(id));
+  if (resolved.length === 0) return "";
+  const ladders = new Set(resolved.map(id => efforts.get(id)!.join("/")));
+  if (ladders.size === 1) {
+    // Shared ladder (the common case: the injected catalog advertises one rung set)
+    // -> state it once instead of per model, keeping the roster inside the budget.
+    const ids = resolved.map(id => `"${id}"`).join(", ");
+    return ` Available models (reasoning_effort ${[...ladders][0]}): ${ids}.`;
+  }
+  const entries = resolved.map(id => `"${id}" (${efforts.get(id)!.join("/")})`);
+  return ` Available models (valid reasoning_effort): ${entries.join(", ")}.`;
 }
 
 /**

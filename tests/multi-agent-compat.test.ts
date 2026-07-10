@@ -93,8 +93,7 @@ describe("multiAgentGuidanceText", () => {
     expect(text).toContain("fork_turns");
     expect(text).toContain('"none"');
     // schema hides model on native backends — the prompt must pre-empt schema doubt
-    expect(text).toContain("even though its published schema does not list them");
-    expect(text).toContain("Never claim sub-agent models cannot be selected");
+    expect(text).toContain("never claim sub-agent models cannot be selected");
     // codex-rs supplies the Proactive text on v2 — the proxy must NOT duplicate it.
     expect(text).not.toContain("Proactive multi-agent delegation is active");
   });
@@ -153,8 +152,8 @@ describe("multiAgentGuidanceText", () => {
     const names = (parsed.context.tools ?? []).map(t => (t.namespace ? `${t.namespace}.${t.name}` : t.name));
     expect(names).toContain("collaboration.spawn_agent");
     const text = await multiAgentGuidanceText(parsed, "gpt-5.6-sol", "xhigh", ["gpt-5.6-terra"]);
-    expect(text).toContain("Never claim sub-agent models cannot be selected");
-    expect(text).toContain('- "gpt-5.6-terra" (reasoning_effort options: high, max, ultra)');
+    expect(text).toContain("never claim sub-agent models cannot be selected");
+    expect(text).toContain('(reasoning_effort high/max/ultra): "gpt-5.6-terra"');
   });
 
   test("v1 wire shape (multi_agent_v1 namespace + send_input) still classifies v1", async () => {
@@ -169,7 +168,7 @@ describe("multiAgentGuidanceText", () => {
     expect(text).toContain("Proactive multi-agent delegation is active");
   });
 
-  test("subagentModels roster lists catalog efforts on BOTH surfaces", async () => {
+  test("subagentModels roster: per-model ladders on v2; v1 carries NO roster", async () => {
     const dir = codexHomeFixture(V2_ON);
     catalogFixture(dir, [
       { slug: "gpt-5.6-sol", efforts: ["high", "max", "ultra"] },
@@ -180,8 +179,9 @@ describe("multiAgentGuidanceText", () => {
       parsedFixture({ tools: [{ name: "spawn_agent" }] }),
       "anthropic/claude-sonnet-5", undefined, roster,
     );
-    expect(v2).toContain('- "gpt-5.6-sol" (reasoning_effort options: high, max, ultra)');
-    expect(v2).toContain('- "anthropic/claude-sonnet-5" (reasoning_effort options: low, medium, high, xhigh)');
+    // differing ladders -> per-model annotation
+    expect(v2).toContain('"gpt-5.6-sol" (high/max/ultra)');
+    expect(v2).toContain('"anthropic/claude-sonnet-5" (low/medium/high/xhigh)');
     expect(v2).not.toContain("missing/model"); // not in the catalog -> omitted
 
     const v1 = await multiAgentGuidanceText(
@@ -189,17 +189,15 @@ describe("multiAgentGuidanceText", () => {
       undefined, undefined, roster,
     );
     expect(v1).toContain("Proactive multi-agent delegation is active");
-    expect(v1).toContain('- "gpt-5.6-sol" (reasoning_effort options: high, max, ultra)');
+    expect(v1).not.toContain("Available models"); // v1 stays lean: Proactive text only
   });
 
-  test("roster is silent when unset, empty, or nothing resolves in the catalog", async () => {
+  test("roster is silent when unset or nothing resolves in the catalog", async () => {
     const dir = codexHomeFixture(V2_ON);
     catalogFixture(dir, [{ slug: "gpt-5.5", efforts: ["low", "medium"] }]);
     const v1Tools = [{ name: "spawn_agent", namespace: "multi_agent_v1" }, { name: "send_input", namespace: "multi_agent_v1" }];
     const unset = await multiAgentGuidanceText(parsedFixture({ reasoning: "max", tools: v1Tools }));
-    expect(unset).not.toContain("roster");
-    const unresolved = await multiAgentGuidanceText(parsedFixture({ reasoning: "max", tools: v1Tools }), undefined, undefined, ["nope/none"]);
-    expect(unresolved).not.toContain("roster");
+    expect(unset).not.toContain("Available models");
     // an UNRESOLVED roster does not fire guidance on v2 either
     expect(await multiAgentGuidanceText(parsedFixture({ tools: [{ name: "spawn_agent" }] }), undefined, undefined, ["nope/none"])).toBeNull();
   });
@@ -211,15 +209,10 @@ describe("multiAgentGuidanceText", () => {
       "opencode-go/glm-5.2",
       "xhigh",
     );
-    expect(text).toContain('"opencode-go/glm-5.2"');
-    expect(text).toContain('A preferred sub-agent reasoning effort is configured: "xhigh"');
-    // the few-shot example embeds both overrides
-    expect(text).toContain('"model": "opencode-go/glm-5.2"');
-    expect(text).toContain('"reasoning_effort": "xhigh"');
-    expect(text).toContain('"fork_turns": "none"');
+    expect(text).toContain('Preferred sub-agent: model "opencode-go/glm-5.2", reasoning_effort "xhigh"');
   });
 
-  test("injectionPrompt override replaces the body with placeholder substitution on both surfaces", async () => {
+  test("injectionPrompt override replaces the v2 body with placeholder substitution", async () => {
     const dir = codexHomeFixture(V2_ON);
     catalogFixture(dir, [{ slug: "gpt-5.6-terra", efforts: ["high", "max"] }]);
     const custom = "CUSTOM RULES model={{model}} effort={{effort}}{{roster}}";
@@ -228,13 +221,14 @@ describe("multiAgentGuidanceText", () => {
       "gpt-5.6-terra", "max", ["gpt-5.6-terra"], custom,
     );
     expect(v2).toBe("<multi_agent_mode>CUSTOM RULES model=gpt-5.6-terra effort=max"
-      + "\n\nConfigured sub-agent model roster (valid values for spawn_agent's \"model\" argument, "
-      + "with the reasoning_effort each supports):\n- \"gpt-5.6-terra\" (reasoning_effort options: high, max)</multi_agent_mode>");
+      + " Available models (reasoning_effort high/max): \"gpt-5.6-terra\".</multi_agent_mode>");
     const v1 = await multiAgentGuidanceText(
       parsedFixture({ reasoning: "max", tools: [{ name: "spawn_agent", namespace: "multi_agent_v1" }, { name: "send_input", namespace: "multi_agent_v1" }] }),
       undefined, undefined, undefined, "V1 BODY {{model}}|{{effort}}|{{roster}}",
     );
-    expect(v1).toBe("<multi_agent_mode>V1 BODY ||</multi_agent_mode>");
+    // v1 ignores injectionPrompt entirely — it only mirrors the upstream Proactive text
+    expect(v1).toContain("Proactive multi-agent delegation is active");
+    expect(v1).not.toContain("V1 BODY");
     // gates unchanged: custom prompt does NOT make a bare v2 surface fire
     expect(await multiAgentGuidanceText(parsedFixture({ tools: [{ name: "spawn_agent" }] }), undefined, undefined, undefined, custom)).toBeNull();
   });
@@ -254,9 +248,9 @@ describe("multiAgentGuidanceText", () => {
       parsedFixture({ reasoning: "medium", tools: [{ name: "spawn_agent" }] }),
       undefined, undefined, ["gpt-5.6-terra"],
     );
-    expect(text).toContain("Never claim sub-agent models cannot be selected");
-    expect(text).toContain('- "gpt-5.6-terra" (reasoning_effort options: high, max, ultra)');
-    expect(text).not.toContain("A preferred sub-agent model is configured");
+    expect(text).toContain("never claim sub-agent models cannot be selected");
+    expect(text).toContain('(reasoning_effort high/max/ultra): "gpt-5.6-terra"');
+    expect(text).not.toContain("Preferred sub-agent");
   });
 
   test("ambiguous mixed surface (both spawn shapes) stays silent even with injectionModel", async () => {
@@ -281,43 +275,23 @@ describe("multiAgentGuidanceText", () => {
     expect(text).toContain("<multi_agent_mode>");
   });
 
-  test("injectionModel is named in the dynamic section", async () => {
+  test("v1 at max carries ONLY the Proactive text — no designation payload", async () => {
     codexHomeFixture(V2_OFF);
     const text = await multiAgentGuidanceText(
       parsedFixture({ reasoning: "max", tools: [{ name: "spawn_agent", namespace: "agents" }] }),
-      "anthropic/claude-sonnet-5",
+      "anthropic/claude-sonnet-5", "xhigh", ["anthropic/claude-sonnet-5"],
     );
     expect(text).toContain("Proactive multi-agent delegation is active");
-    expect(text).toContain('"anthropic/claude-sonnet-5"');
-    expect(text).toContain("spawn_agent");
+    expect(text).not.toContain("anthropic/claude-sonnet-5");
+    expect(text).not.toContain("Preferred sub-agent");
+    expect(text).not.toContain("Available models");
   });
 
-  test("no injectionModel produces base prompt only at max", async () => {
+  test("v1 injectionModel does NOT relax the top-tier gate", async () => {
     codexHomeFixture(V2_OFF);
-    const text = await multiAgentGuidanceText(
-      parsedFixture({ reasoning: "max", tools: [{ name: "spawn_agent", namespace: "agents" }] }),
-    );
-    expect(text).toContain("Proactive multi-agent delegation is active");
-    expect(text).not.toContain("routed model");
-  });
-
-  test("injectionModel fires prompt even at low effort", async () => {
-    codexHomeFixture(V2_OFF);
-    const text = await multiAgentGuidanceText(
-      parsedFixture({ reasoning: "high", tools: [{ name: "spawn_agent", namespace: "agents" }] }),
-      "opencode-go/glm-5.2",
-    );
-    expect(text).toContain("Proactive multi-agent delegation is active");
-    expect(text).toContain('"opencode-go/glm-5.2"');
-  });
-
-  test("injectionModel fires prompt even without effort set", async () => {
-    codexHomeFixture(V2_OFF);
-    const text = await multiAgentGuidanceText(
-      parsedFixture({ tools: [{ name: "spawn_agent", namespace: "agents" }] }),
-      "anthropic/claude-opus-4-6",
-    );
-    expect(text).toContain("Proactive multi-agent delegation is active");
+    const v1Tools = [{ name: "spawn_agent", namespace: "agents" }];
+    expect(await multiAgentGuidanceText(parsedFixture({ reasoning: "high", tools: v1Tools }), "opencode-go/glm-5.2")).toBeNull();
+    expect(await multiAgentGuidanceText(parsedFixture({ tools: v1Tools }), "anthropic/claude-opus-4-6")).toBeNull();
   });
 
   test("without injectionModel, low effort stays silent", async () => {
@@ -328,34 +302,23 @@ describe("multiAgentGuidanceText", () => {
     expect(await multiAgentGuidanceText(parsedFixture({ reasoning: "max", tools: v1Tools }))).not.toBeNull();
   });
 
-  test("injectionEffort is named alongside the model", async () => {
-    codexHomeFixture(V2_OFF);
+  test("v2 body stays within the 700-char budget with a full 5-model roster", async () => {
+    const dir = codexHomeFixture(V2_ON);
+    catalogFixture(dir, [
+      { slug: "gpt-5.5", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "opencode-go/glm-5.2", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "anthropic/claude-opus-4-6", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "gpt-5.6-sol", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "gpt-5.6-terra", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+    ]);
     const text = await multiAgentGuidanceText(
-      parsedFixture({ reasoning: "high", tools: [{ name: "spawn_agent", namespace: "agents" }] }),
-      "openai/gpt-5.6-sol",
-      "xhigh",
+      parsedFixture({ reasoning: "high", tools: [{ name: "spawn_agent" }] }),
+      "gpt-5.6-sol", "xhigh",
+      ["gpt-5.5", "opencode-go/glm-5.2", "anthropic/claude-opus-4-6", "gpt-5.6-sol", "gpt-5.6-terra"],
     );
-    expect(text).toContain('"openai/gpt-5.6-sol"');
-    expect(text).toContain('reasoning_effort argument of spawn_agent to exactly "xhigh"');
-  });
-
-  test("no injectionEffort leaves the model section unchanged", async () => {
-    codexHomeFixture(V2_OFF);
-    const text = await multiAgentGuidanceText(
-      parsedFixture({ reasoning: "max", tools: [{ name: "spawn_agent", namespace: "agents" }] }),
-      "openai/gpt-5.6-sol",
-    );
-    expect(text).toContain('"openai/gpt-5.6-sol"');
-    expect(text).not.toContain("reasoning_effort");
-  });
-
-  test("injectionEffort without a model does not relax the gate or alter the base prompt", async () => {
-    codexHomeFixture(V2_OFF);
-    const v1Tools = [{ name: "spawn_agent", namespace: "agents" }];
-    expect(await multiAgentGuidanceText(parsedFixture({ reasoning: "high", tools: v1Tools }), undefined, "xhigh")).toBeNull();
-    const atMax = await multiAgentGuidanceText(parsedFixture({ reasoning: "max", tools: v1Tools }), undefined, "xhigh");
-    expect(atMax).toContain("Proactive multi-agent delegation is active");
-    expect(atMax).not.toContain("reasoning_effort");
+    const body = text!.replace(/^<multi_agent_mode>/, "").replace(/<\/multi_agent_mode>$/, "");
+    expect(body.length).toBeLessThanOrEqual(700);
+    expect(body).toContain("Available models"); // roster fits inside the budget
   });
 });
 
