@@ -84,6 +84,58 @@ describe("server 429 key failover (end-to-end)", () => {
     }
   });
 
+  test("network failure after a 429 key rotation surfaces the retry error", async () => {
+    const originalFetch = globalThis.fetch;
+    let upstreamAttempts = 0;
+    globalThis.fetch = (async (input, init) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://fault-injected.example/v1/chat/completions") {
+        upstreamAttempts += 1;
+        if (upstreamAttempts === 1) {
+          return new Response(JSON.stringify({ error: { message: "original rate limit" } }), {
+            status: 429,
+            headers: { "retry-after": "30", "content-type": "application/json" },
+          });
+        }
+        throw new TypeError("rotated retry socket reset");
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    const config: OcxConfig = {
+      port: 0, hostname: "127.0.0.1", defaultProvider: "pooled-network-failure",
+      providers: {
+        "pooled-network-failure": {
+          adapter: "openai-chat",
+          baseUrl: "https://fault-injected.example/v1",
+          apiKey: "key-alpha-000111222333",
+          apiKeyPool: [
+            { id: "k1", key: "key-alpha-000111222333", addedAt: 1 },
+            { id: "k2", key: "key-beta-444555666777", addedAt: 2 },
+          ],
+        },
+      },
+    } as OcxConfig;
+    saveConfig(config);
+    const server = startServer(0);
+    try {
+      const res = await fetch(new URL("/v1/responses", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "pooled-network-failure/some-model", input: "hello", stream: false }),
+      });
+      const json = await res.json() as { error?: { message?: string } };
+
+      expect(upstreamAttempts).toBe(2);
+      expect(res.status).toBe(502);
+      expect(json.error?.message).toContain("rotated retry socket reset");
+      expect(json.error?.message).not.toContain("original rate limit");
+    } finally {
+      server.stop(true);
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("noVisionModels model with no sidecar plan gets images stripped fail-closed", async () => {
     let upstreamBody = "";
     upstream = Bun.serve({

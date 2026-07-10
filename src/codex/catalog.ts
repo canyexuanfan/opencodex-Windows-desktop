@@ -6,7 +6,6 @@ import { atomicWriteFile, expandUserPath, getConfigDir, websocketsEnabled } from
 import { CODEX_CONFIG_PATH, CODEX_MODELS_CACHE_PATH, DEFAULT_CATALOG_PATH, readRootTomlString, resolveCodexConfigPath } from "./paths";
 import { DEFAULT_MODEL_CACHE_TTL_MS, getFreshCached, getStaleCached, isModelsFetchCoolingDown, markModelsFetchFailure, setCached } from "./model-cache";
 import { buildModelsRequest, resolveModelsAuthToken } from "../oauth";
-import { effectiveGoogleMode } from "../providers/registry";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 import { modelInList } from "../types";
 import { CODEX_REASONING_LEVELS, configuredReasoningEfforts, modelRecordValue, sanitizeCodexReasoningEfforts } from "../reasoning-effort";
@@ -937,23 +936,14 @@ type ProviderModelsApiItem = {
   };
 };
 
-/** Generative Language API `models.list` item (`{ models: [...] }`, not OpenAI's `{ data }`). */
-type GoogleModelsApiModel = {
-  name?: string;
-  inputTokenLimit?: number;
-  supportedGenerationMethods?: string[];
-};
-
-function googleModelsToApiItems(models: GoogleModelsApiModel[]): ProviderModelsApiItem[] {
-  return models
-    // Keep chat-capable models only; a model missing the field stays (defensive).
-    .filter(m => m.supportedGenerationMethods?.includes("generateContent") ?? true)
-    .map(m => ({
-      id: (m.name ?? "").replace(/^models\//, ""),
-      owned_by: "google",
-      ...(typeof m.inputTokenLimit === "number" && m.inputTokenLimit > 0 ? { context_length: m.inputTokenLimit } : {}),
-    }))
-    .filter(m => m.id.length > 0);
+function isProviderModelsApiItems(value: unknown): value is ProviderModelsApiItem[] {
+  return Array.isArray(value) && value.every(item =>
+    item !== null
+    && typeof item === "object"
+    && !Array.isArray(item)
+    && typeof (item as { id?: unknown }).id === "string"
+    && (item as { id: string }).id.trim().length > 0
+  );
 }
 
 function configuredContextWindow(prov: OcxProviderConfig, id: string): number | undefined {
@@ -1045,9 +1035,10 @@ function catalogHintsFromModelsApiItem(providerName: string, item: ProviderModel
 
 /**
  * Fetch a provider's `/models` (openai-chat style) with a TTL cache + stale fallback. Skips
- * forward-auth providers. Fresh cache → no network; live fetch → cache the merged result;
- * fetch failure → last-known-good cache (so a provider blip doesn't drop its models), else the
- * static config list. This is the per-provider half of jawcode's "always latest" resolver.
+ * forward-auth providers. Fresh cache → no network; schema-valid live fetch → cache the
+ * authoritative result; fetch failure or malformed data → last-known-good cache (so a provider
+ * blip doesn't drop its models), else the static config list. This is the per-provider half of
+ * jawcode's "always latest" resolver.
  */
 async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs: number, contextCap?: number): Promise<CatalogModel[]> {
   if (prov.authMode === "forward") return []; // ChatGPT backend has no /models
@@ -1098,10 +1089,19 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
       const stale = getStaleCached(name);
       return stale ? applyConfigHintsToCachedModels(name, prov, stale, contextCap) : configured;
     }
-    const json = await res.json() as { data?: ProviderModelsApiItem[]; models?: GoogleModelsApiModel[] };
-    const items: ProviderModelsApiItem[] = effectiveGoogleMode(name, prov) === "ai-studio" && Array.isArray(json.models)
-      ? googleModelsToApiItems(json.models)
-      : (json.data ?? []);
+    const json = await res.json() as unknown;
+    const data = json !== null && typeof json === "object" && !Array.isArray(json)
+      ? (json as { data?: unknown }).data
+      : undefined;
+    if (!isProviderModelsApiItems(data)) {
+      markModelsFetchFailure(name);
+      console.warn(
+        `[opencodex] Provider model discovery for "${name}" returned malformed 2xx data; using stale/static catalog degradation.`,
+      );
+      const stale = getStaleCached(name);
+      return stale ? applyConfigHintsToCachedModels(name, prov, stale, contextCap) : configured;
+    }
+    const items = data;
     const live = items.map(m => applyProviderConfigHints(name, prov, {
       id: m.id,
       provider: name,
@@ -1109,10 +1109,18 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
       ...catalogHintsFromModelsApiItem(name, m),
     }, contextCap));
     const liveIds = new Set(live.map(m => m.id));
-    // Merge explicit config additions (e.g. a model not in the provider's /models, like a new endpoint).
-    const merged = [...live, ...configured.filter(m => !liveIds.has(m.id))];
-    setCached(name, merged);
-    return merged;
+    const droppedConfiguredIds = configured.filter(m => !liveIds.has(m.id)).map(m => m.id);
+    if (live.length === 0) {
+      console.warn(
+        `[opencodex] Provider model discovery for "${name}" returned an authoritative empty catalog; ${droppedConfiguredIds.length > 0 ? `dropping configured model ids: ${droppedConfiguredIds.join(", ")}` : "no models will be exposed"}.`,
+      );
+    } else if (droppedConfiguredIds.length > 0) {
+      console.warn(
+        `[opencodex] Provider model discovery for "${name}" omitted configured model ids; dropping them from the authoritative live catalog: ${droppedConfiguredIds.join(", ")}.`,
+      );
+    }
+    setCached(name, live);
+    return live;
   } catch {
     markModelsFetchFailure(name);
     const stale = getStaleCached(name);

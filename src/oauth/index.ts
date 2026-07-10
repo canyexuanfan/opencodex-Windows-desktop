@@ -248,9 +248,10 @@ export async function resolveModelsAuthToken(name: string, prov: OcxProviderConf
  * LIVE catalog correctly per adapter. Anthropic is the special case: its endpoint is `/v1/models`
  * (not `/models`), it needs `anthropic-version`, and it authenticates with `x-api-key` (key) or
  * `Authorization: Bearer` + the OAuth beta (oauth) — not a bare Bearer. Google (ai-studio mode)
- * is the other special case: `x-goog-api-key` + `/v1beta/models`, returning `{ models: [...] }`
- * (parsed by the caller). Everyone else uses the OpenAI-style `/models` + Bearer with a
- * `{ data: [{ id, owned_by? }] }` response.
+ * is the other special case: `x-goog-api-key` + `/v1beta/models`, returning `{ models: [...] }`.
+ * The catalog authority gate intentionally degrades that non-OpenAI shape to stale/static data.
+ * Everyone else uses the OpenAI-style `/models` + Bearer with a `{ data: [{ id, owned_by? }] }`
+ * response.
  */
 export function buildModelsRequest(prov: OcxProviderConfig, apiKey: string | undefined, providerName = ""): { url: string; headers: Record<string, string> } {
   const headers: Record<string, string> = { ...(prov.headers ?? {}) };

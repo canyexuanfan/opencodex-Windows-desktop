@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { gatherRoutedModels } from "../src/codex/catalog";
 import { buildModelsRequest } from "../src/oauth";
-import { clearModelCache } from "../src/codex/model-cache";
+import { clearModelCache, getStaleCached } from "../src/codex/model-cache";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 
 const originalFetch = globalThis.fetch;
@@ -50,8 +50,9 @@ describe("buildModelsRequest google routing", () => {
 });
 
 describe("google models listing via catalog", () => {
-  test("parses { models } shape, strips models/ prefix, filters non-chat models", async () => {
+  test("treats a { models } 2xx shape as malformed and degrades to the static seed", async () => {
     clearModelCache("google");
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
     const seen: { url: string; headers: Record<string, string> }[] = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       seen.push({ url: String(input), headers: (init?.headers ?? {}) as Record<string, string> });
@@ -64,20 +65,26 @@ describe("google models listing via catalog", () => {
       }), { status: 200, headers: { "content-type": "application/json" } });
     }) as typeof fetch;
 
-    const models = await gatherRoutedModels(configWith("google", {
-      adapter: "google",
-      authMode: "key",
-      apiKey: "gk-123",
-      baseUrl: "https://generativelanguage.googleapis.com",
-    }));
+    try {
+      const models = await gatherRoutedModels(configWith("google", {
+        adapter: "google",
+        authMode: "key",
+        apiKey: "gk-123",
+        baseUrl: "https://generativelanguage.googleapis.com",
+      }));
 
-    expect(seen).toHaveLength(1);
-    expect(seen[0].url).toBe("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000");
-    expect(seen[0].headers["x-goog-api-key"]).toBe("gk-123");
-    const ids = models.filter(m => m.provider === "google").map(m => m.id);
-    expect(ids).toContain("gemini-3-pro");
-    expect(ids).toContain("gemini-3-flash");
-    expect(ids).not.toContain("text-embedding-004");
+      expect(seen).toHaveLength(1);
+      expect(seen[0].url).toBe("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000");
+      expect(seen[0].headers["x-goog-api-key"]).toBe("gk-123");
+      const ids = models.filter(m => m.provider === "google").map(m => m.id);
+      expect(ids).toEqual(["gemini-3.1-pro-preview", "gemini-3.5-flash"]);
+      expect(ids).not.toContain("gemini-3-pro");
+      expect(ids).not.toContain("gemini-3-flash");
+      expect(getStaleCached("google")).toBeNull();
+      expect(warning.mock.calls.flat().join(" ")).toContain("google");
+    } finally {
+      warning.mockRestore();
+    }
   });
 });
 

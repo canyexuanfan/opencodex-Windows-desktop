@@ -788,8 +788,13 @@ export async function handleResponses(
           : await fetchWithHeaderTimeout(retryRequest.url, {
               method: retryRequest.method, headers: retryRequest.headers, body: retryRequest.body,
             }, upstream.signal, connectMs);
-      } catch {
-        break; // network failure on the retry: fall through to the original error path
+      } catch (err) {
+        cleanupUpstreamAbort();
+        upstream.abort();
+        const msg = err instanceof Error && err.name === "TimeoutError"
+          ? `Provider connect timeout after ${connectMs}ms`
+          : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
+        return formatErrorResponse(502, "upstream_error", msg);
       }
     }
     if (!upstreamResponse.ok) {

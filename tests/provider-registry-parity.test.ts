@@ -78,9 +78,9 @@ describe("provider registry parity", () => {
     expect(KEY_LOGIN_PROVIDERS.openrouter.models).toContain("openai/gpt-5.6-terra");
     expect(KEY_LOGIN_PROVIDERS.openrouter.models).toContain("openai/gpt-5.6-luna");
     expect(KEY_LOGIN_PROVIDERS.openrouter.modelContextWindows?.["anthropic/claude-sonnet-5"]).toBe(1_000_000);
-    expect(KEY_LOGIN_PROVIDERS.openrouter.modelContextWindows?.["openai/gpt-5.6-sol"]).toBe(372_000);
-    expect(KEY_LOGIN_PROVIDERS.openrouter.modelContextWindows?.["openai/gpt-5.6-terra"]).toBe(372_000);
-    expect(KEY_LOGIN_PROVIDERS.openrouter.modelContextWindows?.["openai/gpt-5.6-luna"]).toBe(372_000);
+    expect(KEY_LOGIN_PROVIDERS.openrouter.modelContextWindows?.["openai/gpt-5.6-sol"]).toBe(1_050_000);
+    expect(KEY_LOGIN_PROVIDERS.openrouter.modelContextWindows?.["openai/gpt-5.6-terra"]).toBe(1_050_000);
+    expect(KEY_LOGIN_PROVIDERS.openrouter.modelContextWindows?.["openai/gpt-5.6-luna"]).toBe(1_050_000);
     expect(KEY_LOGIN_PROVIDERS.deepseek.models).toContain("deepseek-v4-pro");
     expect(KEY_LOGIN_PROVIDERS.deepseek.modelReasoningEfforts?.["deepseek-v4-pro"]).toEqual(["high", "xhigh", "max"]);
     expect(KEY_LOGIN_PROVIDERS.deepseek.modelReasoningEffortMap?.["deepseek-v4-pro"]?.xhigh).toBe("max");
@@ -118,6 +118,33 @@ describe("provider registry parity", () => {
         expect(entry?.modelContextWindows?.[modelId]).toBe(204_800);
       }
     }
+  });
+
+  test("aggregator defaults and Neuralwatt seeds match the audited live catalogs", () => {
+    const cerebras = PROVIDER_REGISTRY.find(entry => entry.id === "cerebras");
+    expect(cerebras?.defaultModel).toBe("gpt-oss-120b");
+
+    const neuralwatt = PROVIDER_REGISTRY.find(entry => entry.id === "neuralwatt");
+    expect(neuralwatt?.models).toEqual([
+      "glm-5.2", "glm-5.2-fast", "glm-5.2-short", "glm-5.2-short-fast",
+      "kimi-k2.6", "kimi-k2.6-fast", "kimi-k2.7-code",
+      "qwen3.5-397b", "qwen3.5-397b-fast", "qwen3.6-35b", "qwen3.6-35b-fast",
+    ]);
+    expect(neuralwatt?.models).not.toContain("moonshotai/Kimi-K2.5");
+    expect(neuralwatt?.models).not.toContain("kimi-k2.5-fast");
+    expect(neuralwatt?.modelReasoningEfforts?.["glm-5.2-short"])
+      .toEqual(neuralwatt?.modelReasoningEfforts?.["glm-5.2"]);
+    expect(neuralwatt?.modelReasoningEfforts?.["glm-5.2-short-fast"]).toEqual([]);
+    expect(neuralwatt?.modelReasoningEfforts).not.toHaveProperty("moonshotai/Kimi-K2.5");
+    expect(neuralwatt?.modelReasoningEfforts).not.toHaveProperty("kimi-k2.5-fast");
+    expect(neuralwatt?.noReasoningModels).toContain("glm-5.2-short-fast");
+    expect(neuralwatt?.noReasoningModels).not.toContain("kimi-k2.5-fast");
+    expect(neuralwatt?.noVisionModels).toEqual([
+      "glm-5.2", "glm-5.2-fast", "glm-5.2-short", "glm-5.2-short-fast",
+      "qwen3.5-397b", "qwen3.5-397b-fast",
+    ]);
+    expect(neuralwatt?.preserveReasoningContentModels).toContain("glm-5.2-short");
+    expect(neuralwatt?.preserveReasoningContentModels).not.toContain("moonshotai/Kimi-K2.5");
   });
 
   test("Z.AI alone seeds and routes bracket-suffix stripping", () => {

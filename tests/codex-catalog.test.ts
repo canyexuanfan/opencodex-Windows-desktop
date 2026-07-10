@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,7 +12,7 @@ import {
   cursorModelReasoningEfforts,
 } from "../src/adapters/cursor/discovery";
 import { getJawcodeModelMetadata, resolveJawcodeProvider } from "../src/generated/jawcode-model-metadata";
-import { clearModelCache, setCached } from "../src/codex/model-cache";
+import { clearModelCache, getStaleCached, setCached } from "../src/codex/model-cache";
 
 const originalFetch = globalThis.fetch;
 
@@ -511,9 +511,10 @@ describe("Codex catalog routed normalization", () => {
     }
   });
 
-  test("liveModels false does not poison the live-model cache when toggled back on", async () => {
+  test("successful live discovery after a static toggle drops configured ghosts with a warning", async () => {
     clearModelCache("static-toggle");
     const originalFetch = globalThis.fetch;
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
     let fetchCalls = 0;
     globalThis.fetch = (async () => {
       fetchCalls += 1;
@@ -555,13 +556,125 @@ describe("Codex catalog routed normalization", () => {
       });
 
       expect(fetchCalls).toBe(1);
-      expect(new Set(liveModels.map(m => `${m.provider}/${m.id}`))).toEqual(new Set([
+      expect(liveModels.map(m => `${m.provider}/${m.id}`)).toEqual([
         "static-toggle/live-after-toggle",
-        "static-toggle/configured-only",
-      ]));
+      ]);
+      const warningText = warning.mock.calls.flat().join(" ");
+      expect(warningText).toContain("static-toggle");
+      expect(warningText).toContain("configured-only");
     } finally {
+      warning.mockRestore();
       globalThis.fetch = originalFetch;
       clearModelCache("static-toggle");
+    }
+  });
+
+  test("malformed 2xx discovery keeps the stale catalog and does not cache the response", async () => {
+    const provider = "malformed-stale";
+    setCached(provider, [{ provider, id: "last-known-good" }]);
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      return new Response(JSON.stringify({ data: [{ id: 42 }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const models = await gatherRoutedModels({
+        modelCacheTtlMs: 0,
+        providers: {
+          [provider]: {
+            adapter: "openai-chat",
+            baseUrl: "https://malformed-stale.test/v1",
+            apiKey: "sk-test",
+            models: ["static-fallback"],
+          },
+        },
+      });
+
+      expect(fetchCalls).toBe(1);
+      expect(models.map(m => `${m.provider}/${m.id}`)).toEqual([
+        `${provider}/last-known-good`,
+      ]);
+      expect(getStaleCached(provider)).toEqual([{ provider, id: "last-known-good" }]);
+    } finally {
+      warning.mockRestore();
+      clearModelCache(provider);
+    }
+  });
+
+  test("malformed Google-style 2xx discovery keeps the static catalog", async () => {
+    const provider = "malformed-static";
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      models: [{ name: "models/not-openai-shaped" }],
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+
+    try {
+      const models = await gatherRoutedModels({
+        providers: {
+          [provider]: {
+            adapter: "openai-chat",
+            baseUrl: "https://malformed-static.test/v1",
+            apiKey: "sk-test",
+            models: ["static-fallback"],
+          },
+        },
+      });
+
+      expect(models.map(m => `${m.provider}/${m.id}`)).toEqual([
+        `${provider}/static-fallback`,
+      ]);
+      expect(getStaleCached(provider)).toBeNull();
+    } finally {
+      warning.mockRestore();
+      clearModelCache(provider);
+    }
+  });
+
+  test("schema-valid empty discovery is authoritative, warned, and cached", async () => {
+    const provider = "authoritative-empty";
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const config = {
+      providers: {
+        [provider]: {
+          adapter: "openai-chat",
+          baseUrl: "https://authoritative-empty.test/v1",
+          apiKey: "sk-test",
+          models: ["configured-ghost"],
+        },
+      },
+    };
+
+    try {
+      const first = await gatherRoutedModels(config);
+      const second = await gatherRoutedModels(config);
+
+      expect(first).toEqual([]);
+      expect(second).toEqual([]);
+      expect(fetchCalls).toBe(1);
+      expect(getStaleCached(provider)).toEqual([]);
+      const warningText = warning.mock.calls.flat().join(" ");
+      expect(warningText).toContain(provider);
+      expect(warningText).toContain("configured-ghost");
+      expect(warningText).toContain("authoritative empty catalog");
+    } finally {
+      warning.mockRestore();
+      clearModelCache(provider);
     }
   });
 

@@ -94,10 +94,13 @@ const OPENAI_GPT56_CONTEXT_WINDOWS = {
   "gpt-5.6-luna": OPENAI_GPT56_CONTEXT_WINDOW,
 };
 const OPENROUTER_GPT56_MODELS = OPENAI_GPT56_MODELS.map(id => `openai/${id}`);
+// OpenRouter's live /endpoints routes report 1,050,000; keep this separate from the
+// unverified OpenAI API-key seed. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
+const OPENROUTER_GPT56_CONTEXT_WINDOW = 1_050_000;
 const OPENROUTER_GPT56_CONTEXT_WINDOWS = {
-  "openai/gpt-5.6-sol": OPENAI_GPT56_CONTEXT_WINDOW,
-  "openai/gpt-5.6-terra": OPENAI_GPT56_CONTEXT_WINDOW,
-  "openai/gpt-5.6-luna": OPENAI_GPT56_CONTEXT_WINDOW,
+  "openai/gpt-5.6-sol": OPENROUTER_GPT56_CONTEXT_WINDOW,
+  "openai/gpt-5.6-terra": OPENROUTER_GPT56_CONTEXT_WINDOW,
+  "openai/gpt-5.6-luna": OPENROUTER_GPT56_CONTEXT_WINDOW,
 };
 
 /**
@@ -150,8 +153,8 @@ const KIMI_CODING_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEnt
   KIMI_CODING_MODELS.map(id => [id, 262_144]),
 );
 const NEURALWATT_REASONING_HISTORY_MODELS = [
-  "glm-5.2",
-  "moonshotai/Kimi-K2.5", "kimi-k2.6", "kimi-k2.7-code",
+  "glm-5.2", "glm-5.2-short",
+  "kimi-k2.6", "kimi-k2.7-code",
   "qwen3.5-397b", "qwen3.6-35b",
 ];
 const UMANS_MODELS = [
@@ -377,9 +380,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     authKind: "key",
     dashboardUrl: "https://portal.neuralwatt.com",
     defaultModel: "glm-5.2",
+    // 2026-07-10 live /v1/models: K2.5 rows were removed and GLM-5.2 short variants added.
+    // Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md and https://api.neuralwatt.com/v1/models.
     models: [
-      "glm-5.2", "glm-5.2-fast",
-      "moonshotai/Kimi-K2.5", "kimi-k2.5-fast", "kimi-k2.6", "kimi-k2.6-fast",
+      "glm-5.2", "glm-5.2-fast", "glm-5.2-short", "glm-5.2-short-fast",
+      "kimi-k2.6", "kimi-k2.6-fast",
       "kimi-k2.7-code",
       "qwen3.5-397b", "qwen3.5-397b-fast", "qwen3.6-35b", "qwen3.6-35b-fast",
     ],
@@ -387,8 +392,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelReasoningEfforts: {
       "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
       "glm-5.2-fast": [],
-      "moonshotai/Kimi-K2.5": [],
-      "kimi-k2.5-fast": [],
+      "glm-5.2-short": ZAI_GLM_52_REASONING_EFFORTS,
+      "glm-5.2-short-fast": [],
       "kimi-k2.6": [],
       "kimi-k2.6-fast": [],
       "kimi-k2.7-code": [],
@@ -400,8 +405,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "qwen3.6-35b-fast": [],
     },
     thinkingBudgetModels: THINKING_BUDGET_MODELS,
-    noReasoningModels: ["glm-5.2-fast", "kimi-k2.5-fast", "kimi-k2.6-fast", "qwen3.5-397b-fast", "qwen3.6-35b-fast"],
-    noVisionModels: ["glm-5.2", "glm-5.2-fast", "qwen3.5-397b", "qwen3.5-397b-fast"],
+    noReasoningModels: ["glm-5.2-fast", "glm-5.2-short-fast", "kimi-k2.6-fast", "qwen3.5-397b-fast", "qwen3.6-35b-fast"],
+    noVisionModels: ["glm-5.2", "glm-5.2-fast", "glm-5.2-short", "glm-5.2-short-fast", "qwen3.5-397b", "qwen3.5-397b-fast"],
     noTemperatureModels: ["kimi-k2.7-code"],
     noTopPModels: ["kimi-k2.7-code"],
     noPenaltyModels: ["kimi-k2.7-code"],
@@ -451,7 +456,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelReasoningEffortMap: Object.fromEntries(DEEPSEEK_THINKING_MODELS.map(id => [id, DEEPSEEK_THINKING_REASONING_MAP])),
     preserveReasoningContentModels: DEEPSEEK_THINKING_MODELS,
   },
-  { id: "cerebras", label: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://cloud.cerebras.ai/platform/apikeys", defaultModel: "llama-3.3-70b" },
+  // llama-3.3-70b was deprecated by Cerebras on 2026-02-16. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
+  { id: "cerebras", label: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://cloud.cerebras.ai/platform/apikeys", defaultModel: "gpt-oss-120b" },
+  // FREEZE 2026-07-10: exact serverless ids remain auth-gated/unverified. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "together", label: "Together", baseUrl: "https://api.together.xyz/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://api.together.xyz/settings/api-keys" },
   { id: "fireworks", label: "Fireworks", baseUrl: "https://api.fireworks.ai/inference/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://fireworks.ai/account/api-keys" },
   {
@@ -497,7 +504,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   { id: "qianfan", label: "Qianfan (Baidu)", baseUrl: "https://qianfan.baidubce.com/v2", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://console.bce.baidu.com/iam/#/iam/apikey/list" },
   // 2026-07-10: docs unverified; model data frozen. Evidence: devlog/_plan/260710_provider_hardening/002_research_cn.md.
   { id: "alibaba", label: "Alibaba Coding Plan", baseUrl: "https://coding-intl.dashscope.aliyuncs.com/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://dashscope.console.aliyun.com/apiKey" },
+  // NEEDS_HUMAN 2026-07-10: kept for config compatibility, but this is a dashboard URL,
+  // no /models endpoint is documented, and tools are silently ignored upstream per docs.parallel.ai.
+  // Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "parallel", label: "Parallel", baseUrl: "https://platform.parallel.ai", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://platform.parallel.ai" },
+  // FREEZE 2026-07-10: model ids remain unverified. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "zenmux", label: "ZenMux", baseUrl: "https://zenmux.ai/api/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://zenmux.ai" },
   {
     id: "litellm", label: "LiteLLM (self-hosted)", baseUrl: "http://localhost:4000/v1", adapter: "openai-chat", authKind: "key",
@@ -522,6 +533,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "gpt-oss", "qwen3-coder",
     ],
   },
+  // FREEZE 2026-07-10: codestral-latest is unconfirmed behind auth. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "mistral", label: "Mistral", baseUrl: "https://api.mistral.ai/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://console.mistral.ai/api-keys", defaultModel: "codestral-latest" },
   {
     id: "minimax", label: "MiniMax — Coding Plan", baseUrl: "https://api.minimax.io/v1", adapter: "openai-chat", authKind: "key",
@@ -553,7 +565,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   { id: "xiaomi", label: "Xiaomi MiMo", baseUrl: "https://api.xiaomimimo.com/anthropic", adapter: "anthropic", authKind: "key", dashboardUrl: "https://xiaomimimo.com", defaultModel: "mimo-v2.5-pro" },
   { id: "kilo", label: "Kilo", baseUrl: "https://api.kilo.ai/api/gateway", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://kilo.ai" },
   { id: "cloudflare-ai-gateway", label: "Cloudflare AI Gateway", baseUrl: "https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway}/anthropic", adapter: "anthropic", authKind: "key", dashboardUrl: "https://dash.cloudflare.com/?to=/:account/ai/ai-gateway" },
+  // FREEZE 2026-07-10: /models is auth-gated, so ids remain unverified. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "github-copilot", label: "GitHub Copilot", baseUrl: "https://api.githubcopilot.com", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://github.com/settings/copilot" },
+  // FREEZE 2026-07-10: no public OpenAI-compatible endpoint is documented. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "gitlab-duo", label: "GitLab Duo", baseUrl: "https://cloud.gitlab.com/ai/v1/proxy/openai/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://gitlab.com/-/user_settings/personal_access_tokens" },
 ];
 
