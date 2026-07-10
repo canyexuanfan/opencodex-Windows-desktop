@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Switch, Notice, EmptyState, Select } from "../ui";
-import { IconChevron, IconBoxes } from "../icons";
+import { IconChevron, IconBoxes, IconInfo } from "../icons";
 import { useT } from "../i18n";
 import { modelLabel } from "../model-display";
 
@@ -361,10 +361,13 @@ export default function Models({ apiBase }: { apiBase: string }) {
           <button
             type="button"
             className="btn btn-ghost btn-sm"
-            style={{ width: 22, height: 22, padding: 0, borderRadius: 999, fontSize: 12, fontWeight: 700, color: "var(--muted)" }}
+            style={{ width: 24, height: 24, minWidth: 24, flex: "0 0 24px", padding: 0, borderRadius: 999, color: "var(--muted)" }}
             onClick={() => setV2HelpOpen(true)}
-            aria-label="Help"
-          >?</button>
+            aria-label={t("models.v2Label")}
+            aria-haspopup="dialog"
+          >
+            <IconInfo width={14} height={14} aria-hidden="true" />
+          </button>
           {v2.enabled && (
             <>
               <span className="muted" style={{ fontSize: 13, marginLeft: 8 }}>{t("models.v2ThreadsLabel")}</span>

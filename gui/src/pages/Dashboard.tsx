@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { formatUptime } from "../formatUptime";
-import { IconAlert, IconExternal, IconRefresh, IconX } from "../icons";
+import { IconAlert, IconExternal, IconInfo, IconRefresh, IconX } from "../icons";
 import { useI18n, Trans } from "../i18n";
 import { formatTokens } from "../format-tokens";
 import { EmptyState, Select } from "../ui";
@@ -377,10 +377,13 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             <button
               type="button"
               className="btn btn-ghost btn-sm"
-              style={{ width: 18, height: 18, padding: 0, borderRadius: 999, fontSize: 11, fontWeight: 700, color: "var(--muted)", lineHeight: 1 }}
+              style={{ width: 24, height: 24, minWidth: 24, flex: "0 0 24px", padding: 0, borderRadius: 999, color: "var(--muted)" }}
               onClick={() => setMaHelpOpen(true)}
-              aria-label="Help"
-            >?</button>
+              aria-label={t("dash.multiAgent")}
+              aria-haspopup="dialog"
+            >
+              <IconInfo width={14} height={14} aria-hidden="true" />
+            </button>
           </div>
           <div className="value" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
             <div role="radiogroup" aria-label={t("dash.multiAgent")} style={{ display: "inline-flex", borderRadius: 999, background: "var(--surface-soft, var(--raised))", padding: 3, gap: 2 }}>
