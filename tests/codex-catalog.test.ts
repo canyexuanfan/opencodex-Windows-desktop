@@ -734,6 +734,9 @@ describe("Codex catalog routed normalization", () => {
     expect(slugs.has("opencode-go/glm-5.2")).toBe(true);
     expect(slugs.has("opencode-go/qwen3.5-plus")).toBe(true);
     expect(slugs.has("opencode-go/qwen3.6-plus")).toBe(true);
+    // Issue #82: hy3-preview was dropped from the Zen Go lite list upstream; the
+    // generated bundle must not resurrect it as a selectable model.
+    expect(slugs.has("opencode-go/hy3-preview")).toBe(false);
     expect(models.filter(m => `${m.provider}/${m.id}` === "opencode-go/glm-5.2")).toHaveLength(1);
   });
 

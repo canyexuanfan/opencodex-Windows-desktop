@@ -348,11 +348,13 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "kimi-k2.7-code-highspeed": [],
       ...Object.fromEntries(OPENCODE_GO_THINKING_TOGGLE_MODELS.map(id => [id, THINKING_TOGGLE_EFFORTS])),
       ...Object.fromEntries(OPENCODE_GO_THINKING_BUDGET_MODELS.map(id => [id, THINKING_BUDGET_EFFORTS])),
+      ...Object.fromEntries(DEEPSEEK_THINKING_MODELS.map(id => [id, DEEPSEEK_THINKING_EFFORTS])),
     },
     // glm-5.2 uses identity labels now that `max` is a native Codex level (no alias map);
     // the thinking-toggle map is a REAL wire alias (effort -> enabled/disabled) and stays.
     modelReasoningEffortMap: {
       ...Object.fromEntries(OPENCODE_GO_THINKING_TOGGLE_MODELS.map(id => [id, THINKING_TOGGLE_MAP])),
+      ...Object.fromEntries(DEEPSEEK_THINKING_MODELS.map(id => [id, DEEPSEEK_THINKING_REASONING_MAP])),
     },
     thinkingToggleModels: OPENCODE_GO_THINKING_TOGGLE_MODELS,
     thinkingBudgetModels: THINKING_BUDGET_MODELS,
@@ -371,7 +373,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     noTopPModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
     noPenaltyModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
     autoToolChoiceOnlyModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
-    preserveReasoningContentModels: ["glm-5.2", "kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
+    // Issue #78: DeepSeek V4 thinking mode requires reasoning_content replay on tool-call turns.
+    preserveReasoningContentModels: ["glm-5.2", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", ...DEEPSEEK_THINKING_MODELS],
   },
   {
     id: "neuralwatt",
