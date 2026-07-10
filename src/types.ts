@@ -260,6 +260,20 @@ export interface OcxConfig {
    */
   injectionPrompt?: string;
   /**
+   * Global hard ceiling for the reasoning effort of EVERY proxied turn (main agent AND
+   * sub-agents). Ladder value "low".."max"; incoming efforts ranking above it are rewritten
+   * in both request shapes before any adapter or clamp. Unset = no cap. codex-rs converts
+   * ultra -> max client-side, so e.g. a "high" cap sends ultra/max-tier turns as high.
+   */
+  effortCap?: string;
+  /**
+   * Hard ceiling applied ONLY to sub-agent turns — requests carrying codex-rs's spawned-child
+   * markers (`x-openai-subagent` header, or `subagent_kind` inside `x-codex-turn-metadata`).
+   * Lets the main agent keep its tier while delegated children are capped. When both caps are
+   * set, the lower one wins for sub-agents. See src/server/effort-policy.ts.
+   */
+  subagentEffortCap?: string;
+  /**
    * Models hidden from Codex. Routed ids are namespaced ("<provider>/<model>") and are excluded
    * from the catalog + /v1/models entirely. BARE ids (no "/") are native GPT passthrough slugs:
    * their catalog entries flip to visibility "hide" (entry preserved, picker-hidden) and they
@@ -314,6 +328,8 @@ export interface OcxConfig {
   visionSidecar?: OcxVisionSidecarConfig;
   /** /v1/images relay for codex's built-in image_gen tool. */
   images?: OcxImagesConfig;
+  /** /v1/alpha/search relay for codex's built-in web search client. */
+  search?: OcxSearchConfig;
   /** Codex multi-account pool. */
   codexAccounts?: CodexAccount[];
   /** Active pool account id for next session. undefined = main (passthrough as-is). */
@@ -361,6 +377,15 @@ export interface OcxTokenGuardianConfig {
 
 export interface OcxImagesConfig {
   /** Upstream timeout (ms) for one /v1/images relay. Default 300000 — generation is slow. */
+  timeoutMs?: number;
+}
+
+export interface OcxSearchConfig {
+  /**
+   * Total upstream deadline (ms) for one /v1/alpha/search relay. Default 200000. The endpoint
+   * is non-streaming JSON (headers arrive only when the search completes), so this is a whole-
+   * request budget — deliberately NOT connectTimeoutMs, which is a header-arrival budget.
+   */
   timeoutMs?: number;
 }
 

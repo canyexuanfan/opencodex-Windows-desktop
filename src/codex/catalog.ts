@@ -569,6 +569,18 @@ function codexCommandCandidates(): string[] {
   return unique(candidates);
 }
 
+/**
+ * Windows probe guard: only PE/batch launchers can be spawned as processes. Anything
+ * else pulled from the shim state (the extensionless Git-Bash sh backup
+ * `codex.opencodex-real`, `.ps1` scripts) risks falling through to the cmd/ShellExecute
+ * document-association path — Windows then OPENS the file in the user's editor
+ * (e.g. VS Code) on every `codex` launch instead of executing it.
+ */
+export function isSpawnableCodexCandidate(path: string, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform !== "win32") return true;
+  return /\.(cmd|bat|exe|com)$/i.test(path);
+}
+
 function codexShimCommandCandidates(): string[] {
   try {
     const state = JSON.parse(readFileSync(join(getConfigDir(), "codex-shim.json"), "utf8")) as {
@@ -582,7 +594,7 @@ function codexShimCommandCandidates(): string[] {
     for (const file of files) {
       for (const value of [file.backupPath, file.originalPath, file.wrapperPath]) {
         if (typeof value !== "string" || value.length === 0) continue;
-        if (process.platform === "win32" && value.toLowerCase().endsWith(".ps1")) continue;
+        if (!isSpawnableCodexCandidate(value)) continue;
         out.push(value);
       }
     }

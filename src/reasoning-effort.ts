@@ -19,6 +19,11 @@ export function isCodexReasoningEffort(effort: string): boolean {
   return CODEX_REASONING_SET.has(effort);
 }
 
+/** Position of `effort` in the Codex ladder (low=0 .. ultra=5), or -1 when not a ladder member. */
+export function codexEffortRank(effort: string): number {
+  return CODEX_REASONING_ORDER.indexOf(effort);
+}
+
 export function modelRecordValue<T>(record: Record<string, T> | undefined, modelId: string): T | undefined {
   if (!record) return undefined;
   if (Object.prototype.hasOwnProperty.call(record, modelId)) return record[modelId];

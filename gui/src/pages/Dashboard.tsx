@@ -66,11 +66,21 @@ import { modelLabel } from "../model-display";
 const SEARCH_SIDECAR_MODELS = ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-5.6-sol", "gpt-5.6-terra"];
 const VISION_SIDECAR_MODELS = ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra"];
 const REASONING_LEVELS = ["low", "medium", "high"];
+const EFFORT_CAP_LEVELS = ["low", "medium", "high", "xhigh"];
 const UPDATE_CHECK_MAX_AUTO_RETRIES = 2;
 const UPDATE_CHECK_RETRY_BASE_MS = 800;
 
 function defaultUpdateChannel(version: string | undefined): UpdateChannel {
   return version?.includes("-preview.") ? "preview" : "latest";
+}
+
+function updateReasonLabel(reason: string | undefined, t: (key: import("../i18n").TKey) => string): string {
+  switch (reason) {
+    case "source_checkout": return t("dash.updateReason.source_checkout");
+    case "latest_unavailable": return t("dash.updateReason.latest_unavailable");
+    case "already_latest": return t("dash.updateReason.already_latest");
+    default: return t("dash.updateReason.unknown");
+  }
 }
 
 export default function Dashboard({ apiBase }: { apiBase: string }) {
@@ -88,11 +98,15 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   const [maMode, setMaMode] = useState<"v1" | "default" | "v2">("default");
   const [maBusy, setMaBusy] = useState(false);
   const [maHelpOpen, setMaHelpOpen] = useState(false);
+  const [effortCapHelpOpen, setEffortCapHelpOpen] = useState(false);
   const [injectionModel, setInjectionModel] = useState<string>("");
   const [injectionEffort, setInjectionEffort] = useState<string>("");
   const [injectionEfforts, setInjectionEfforts] = useState<string[]>([]);
   const [injectionAvailable, setInjectionAvailable] = useState<Array<{ provider: string; model: string; namespaced: string }>>([]);
   const [injectionSaving, setInjectionSaving] = useState(false);
+  const [effortCap, setEffortCap] = useState<string>("");
+  const [subagentEffortCap, setSubagentEffortCap] = useState<string>("");
+  const [effortCapSaving, setEffortCapSaving] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [projectConfigWarnings, setProjectConfigWarnings] = useState<ProjectCodexConfigGroup[]>([]);
@@ -150,6 +164,14 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             setInjectionEffort(imData.effort ?? "");
             setInjectionEfforts(imData.efforts ?? []);
             setInjectionAvailable(imData.available ?? []);
+          }
+        } catch { /* old server */ }
+        try {
+          const ecRes = await fetch(`${apiBase}/api/effort-caps`);
+          if (ecRes.ok) {
+            const ecData = await ecRes.json() as { effortCap?: string | null; subagentEffortCap?: string | null; efforts?: string[] };
+            setEffortCap(ecData.effortCap ?? "");
+            setSubagentEffortCap(ecData.subagentEffortCap ?? "");
           }
         } catch { /* old server */ }
       } catch {
@@ -487,6 +509,99 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         </div>
       )}
 
+      {maMode !== "v1" && (
+        <div className="panel" style={{ marginBottom: 24 }}>
+          <div className="injection-head">
+            <span className="injection-label" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              {t("dash.effortCapLabel")}
+              <span style={{ position: "relative", display: "inline-flex" }}>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  style={{ width: 22, height: 22, minWidth: 22, padding: 0, borderRadius: 999, color: "var(--muted)" }}
+                  onClick={() => setEffortCapHelpOpen(open => !open)}
+                  aria-label={t("dash.effortCapLabel")}
+                  aria-expanded={effortCapHelpOpen}
+                  aria-haspopup="dialog"
+                >
+                  <IconInfo width={13} height={13} aria-hidden="true" />
+                </button>
+                {effortCapHelpOpen && (
+                  <div
+                    role="dialog"
+                    className="help-popup"
+                    style={{ position: "absolute", top: "calc(100% + 8px)", left: 0, width: "min(360px, calc(100vw - 48px))", padding: "12px 16px", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg)", boxShadow: "0 8px 24px rgba(0, 0, 0, 0.14)", color: "var(--text)", fontSize: 13, fontWeight: 400, lineHeight: 1.5, zIndex: 10 }}
+                  >
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-icon"
+                      style={{ position: "absolute", top: 4, right: 4, width: 24, height: 24, minWidth: 24 }}
+                      onClick={() => setEffortCapHelpOpen(false)}
+                      aria-label="Close"
+                    >
+                      <IconX width={14} height={14} />
+                    </button>
+                    <div style={{ paddingRight: 16 }}>{t("dash.effortCapHelp")}</div>
+                  </div>
+                )}
+              </span>
+            </span>
+          <Select
+            value={effortCap}
+            options={[
+              { value: "", label: t("dash.effortCapNone") },
+              ...EFFORT_CAP_LEVELS.map(e => ({ value: e, label: e })),
+            ]}
+            onChange={async (v) => {
+              if (effortCapSaving) return;
+              setEffortCapSaving(true);
+              try {
+                const res = await fetch(`${apiBase}/api/effort-caps`, {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ effortCap: v || null }),
+                });
+                if (res.ok) {
+                  const data = await res.json() as { ok: boolean; effortCap?: string | null; subagentEffortCap?: string | null };
+                  setEffortCap(data.effortCap ?? "");
+                  setSubagentEffortCap(data.subagentEffortCap ?? "");
+                }
+              } catch { /* ignore */ }
+              finally { setEffortCapSaving(false); }
+            }}
+            disabled={effortCapSaving}
+            label={t("dash.effortCapLabel")}
+          />
+          <Select
+            value={subagentEffortCap}
+            options={[
+              { value: "", label: t("dash.effortCapNone") },
+              ...EFFORT_CAP_LEVELS.map(e => ({ value: e, label: e })),
+            ]}
+            onChange={async (v) => {
+              if (effortCapSaving) return;
+              setEffortCapSaving(true);
+              try {
+                const res = await fetch(`${apiBase}/api/effort-caps`, {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ subagentEffortCap: v || null }),
+                });
+                if (res.ok) {
+                  const data = await res.json() as { ok: boolean; effortCap?: string | null; subagentEffortCap?: string | null };
+                  setEffortCap(data.effortCap ?? "");
+                  setSubagentEffortCap(data.subagentEffortCap ?? "");
+                }
+              } catch { /* ignore */ }
+              finally { setEffortCapSaving(false); }
+            }}
+            disabled={effortCapSaving}
+            label={t("dash.subagentEffortCapLabel")}
+          />
+          </div>
+        </div>
+      )}
+
       <div className="panel" style={{ marginBottom: 24 }}>
         <div className="injection-head">
           <span className="injection-label">{t("dash.injectionLabel")}</span>
@@ -700,7 +815,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
           <div className="modal-card">
             <div className="modal-head">
               <h3 id="update-title">{t("dash.updateTitle")}</h3>
-              <button type="button" className="btn-icon" onClick={closeUpdateDialog} aria-label={t("common.cancel")}>
+              <button type="button" className="btn btn-ghost btn-icon" onClick={closeUpdateDialog} aria-label={t("common.cancel")}>
                 <IconX />
               </button>
             </div>
@@ -752,6 +867,21 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
                     </button>
                   </div>
                 )}
+                {!updateCheck.canUpdate && updateCheck.reason !== "latest_unavailable" && updateCheck.reason !== "source_checkout" && (
+                  <div className="update-recheck">
+                    <span className="muted update-recheck-reason">
+                      {t("dash.updateCannotAuto", { reason: updateReasonLabel(updateCheck.reason, t) })}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      disabled={updateLoading}
+                      onClick={() => { void fetchUpdateCheck(updateChannel, true); }}
+                    >
+                      <IconRefresh /> {updateLoading ? t("dash.updateChecking") : t("dash.updateRecheck")}
+                    </button>
+                  </div>
+                )}
                 {updateCheck.canUpdate && (
                   <div className="spread update-restart">
                     <div>
@@ -791,7 +921,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
           <div className="modal-card" onClick={e => e.stopPropagation()}>
             <div className="modal-head">
               <h3>{t("dash.multiAgent")}</h3>
-              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setMaHelpOpen(false)} aria-label="Close">&times;</button>
+              <button type="button" className="btn btn-ghost btn-icon" onClick={() => setMaHelpOpen(false)} aria-label="Close"><IconX /></button>
             </div>
             <div className="modal-desc" style={{ whiteSpace: "pre-line", lineHeight: 1.6 }}>
               {t("models.v2Help")}
