@@ -374,7 +374,7 @@ export function codexForwardTerminalOutcomeRecorder(
  * zstd-compressed screenshot history exceeds the limit), or a genuine JSON syntax error (400). The
  * real decode error was previously swallowed, so log it before returning the generic 400.
  */
-function decodeRequestErrorResponse(err: unknown, label: string): Response {
+export function decodeRequestErrorResponse(err: unknown, label: string): Response {
   if (err instanceof UnsupportedContentEncodingError) {
     return formatErrorResponse(415, "invalid_request_error", err.message);
   }
@@ -810,6 +810,7 @@ export async function handleResponses(
       abortSignal: options.abortSignal,
       recordSidecarOutcome,
       connectTimeoutMs: config.connectTimeoutMs ?? 200_000,
+      routedModelStallTimeoutMs: wsPlan.routedModelStallTimeoutMs,
       stallTimeoutSec: wsPlan.stallTimeoutSec,
       on429: retryAfter => {
         const rotated = rotateKeyOn429(config, route.providerName, retryAfter, Date.now(), route.provider.apiKey);

@@ -83,6 +83,29 @@ describe("google adapter — tool result images", () => {
 });
 
 describe("google adapter — tool-call ids on the wire", () => {
+  test("v2 collaboration encrypted marker never reaches functionDeclarations (issue #85)", async () => {
+    // Codex Desktop v2 stamps `encrypted: true` on collaboration message properties; CCA/Gemini
+    // rejects the whole request with 400 "Unknown name". The sanitizer must strip it end-to-end.
+    const collabParams = {
+      type: "object",
+      properties: {
+        target: { type: "string", description: "Agent id." },
+        message: { type: "string", description: "Message text.", encrypted: true },
+      },
+      required: ["target", "message"],
+      additionalProperties: false,
+    };
+    const body = await geminiBody(parsedWith(
+      [{ role: "user", content: "hi" }],
+      [{ name: "followup_task", namespace: "collaboration", description: "Send follow-up", parameters: collabParams }],
+    ));
+    const decls = (body.tools as { functionDeclarations: Record<string, unknown>[] }[])[0].functionDeclarations;
+    expect(decls.length).toBe(1);
+    expect(JSON.stringify(decls)).not.toContain("encrypted");
+    const params = decls[0].parameters as { properties: Record<string, Record<string, unknown>> };
+    expect(params.properties.message.type).toBe("string");
+  });
+
   test("systemInstruction includes the non-OpenAI tool catalog nudge when tools are present", async () => {
     const body = await geminiBody(parsedWith(
       [{ role: "user", content: "find files" }],

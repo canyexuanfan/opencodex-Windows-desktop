@@ -40,7 +40,9 @@ src/
 
 1. `server/index.ts` 应用 CORS 和 API 认证，在 drain 期间拒绝新请求，并记录请求生命周期
    metadata。它提供 `GET /v1/models`、`POST /v1/responses`、
-   `POST /v1/responses/compact`，以及 `/v1/responses` 上可选的 WebSocket upgrade。
+   `POST /v1/responses/compact`、`POST /v1/images/generations` / `POST /v1/images/edits`
+   （供 Codex 内置 `image_gen` 工具使用——由 `server/images.ts` 中继到 OpenAI 系上游），
+   以及 `/v1/responses` 上可选的 WebSocket upgrade。
 2. `server/responses.ts` 解压并解析 JSON；如果本地记住了对应输入，则展开
    `previous_response_id`，随后调用 `responses/parser.ts`。
 3. `router.ts` 解析 bare id 或 `provider/model` id。server 随后确定 Codex account affinity，

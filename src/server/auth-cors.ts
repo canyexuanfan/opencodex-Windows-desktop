@@ -117,29 +117,32 @@ export function assertServerAuthConfig(config: OcxConfig): void {
   }
 }
 
+/** Whether `token` is one of the proxy's own admission secrets (env token or config API keys). */
+export function isProxyAdmissionSecret(token: string, config: OcxConfig): boolean {
+  const actual = token.trim();
+  if (!actual) return false;
+  const enc = new TextEncoder();
+  const actualBytes = enc.encode(actual);
+  // Check env-based token
+  const expected = configuredApiAuthToken(config);
+  if (expected) {
+    const expectedBytes = enc.encode(expected);
+    if (expectedBytes.length === actualBytes.length && timingSafeEqual(actualBytes, expectedBytes)) return true;
+  }
+  // Check config-based API keys
+  for (const k of config.apiKeys ?? []) {
+    const keyBytes = enc.encode(k.key);
+    if (keyBytes.length === actualBytes.length && timingSafeEqual(actualBytes, keyBytes)) return true;
+  }
+  return false;
+}
+
 export function hasValidApiAuth(req: Request, config: OcxConfig): boolean {
   if (!isApiAuthRequired(config)) return true;
   const actual = req.headers.get("x-opencodex-api-key")?.trim()
     || req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
   if (!actual) return false;
-  // Check env-based token
-  const expected = configuredApiAuthToken(config);
-  if (expected) {
-    const enc = new TextEncoder();
-    const expectedBytes = enc.encode(expected);
-    const actualBytes = enc.encode(actual);
-    if (expectedBytes.length === actualBytes.length && timingSafeEqual(actualBytes, expectedBytes)) return true;
-  }
-  // Check config-based API keys
-  if (config.apiKeys?.length) {
-    const enc = new TextEncoder();
-    const actualBytes = enc.encode(actual);
-    for (const k of config.apiKeys) {
-      const keyBytes = enc.encode(k.key);
-      if (keyBytes.length === actualBytes.length && timingSafeEqual(actualBytes, keyBytes)) return true;
-    }
-  }
-  return false;
+  return isProxyAdmissionSecret(actual, config);
 }
 
 export function requireApiAuth(req: Request, config: OcxConfig, kind: "management" | "data-plane"): Response | null {

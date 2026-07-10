@@ -312,6 +312,8 @@ export interface OcxConfig {
   webSearchSidecar?: OcxWebSearchSidecarConfig;
   /** Vision sidecar: describe images via a gpt vision model so text-only models can "see" them. */
   visionSidecar?: OcxVisionSidecarConfig;
+  /** /v1/images relay for codex's built-in image_gen tool. */
+  images?: OcxImagesConfig;
   /** Codex multi-account pool. */
   codexAccounts?: CodexAccount[];
   /** Active pool account id for next session. undefined = main (passthrough as-is). */
@@ -357,6 +359,11 @@ export interface OcxTokenGuardianConfig {
   codexWarmupModel?: string;
 }
 
+export interface OcxImagesConfig {
+  /** Upstream timeout (ms) for one /v1/images relay. Default 300000 — generation is slow. */
+  timeoutMs?: number;
+}
+
 export interface OcxVisionSidecarConfig {
   /** Master switch. Default: enabled when a forward (ChatGPT) provider exists and the caller is logged in. */
   enabled?: boolean;
@@ -377,6 +384,11 @@ export interface OcxWebSearchSidecarConfig {
   maxSearchesPerTurn?: number;
   /** Sidecar fetch timeout (ms). */
   timeoutMs?: number;
+  /**
+   * Config-file-only deadline (ms) for continuous routed-model response-body raw-byte inactivity
+   * during a web-search turn. Default 200000. Must be an integer from 1 through 2147483647.
+   */
+  routedModelStallTimeoutMs?: number;
 }
 
 export interface OcxProviderConfig {

@@ -303,6 +303,31 @@ describe("kiro adapter — buildRequest", () => {
     expect(schema.required).toEqual(["filename", "note"]);
   });
 
+  test("Codex's Responses-only encrypted marker is stripped from v2 collaboration schemas", () => {
+    // openai/codex 5f4d06ef stamps `encrypted: true` on spawn_agent/send_message/followup_task
+    // `message` properties (issue #85 class). Kiro/Bedrock validators reject unknown keywords, and
+    // the marker only means something to the ChatGPT Responses backend.
+    const parameters = {
+      type: "object",
+      properties: {
+        target: { type: "string" },
+        message: { type: "string", description: "Message text.", encrypted: true },
+        // A property literally named "encrypted" must survive as a property.
+        encrypted: { type: "boolean" },
+      },
+      required: ["target", "message"],
+    };
+    const { body } = createKiroAdapter(provider).buildRequest(
+      parsedWith([{ role: "user", content: "hi" }], [{ name: "followup_task", namespace: "collaboration", description: "Send follow-up", parameters }]),
+    );
+    const schema = JSON.parse(body).conversationState.currentMessage.userInputMessage.userInputMessageContext.tools[0].toolSpecification.inputSchema.json;
+
+    expect(schema.properties.message.encrypted).toBeUndefined();
+    expect(schema.properties.message.type).toBe("string");
+    expect(schema.properties.encrypted).toEqual({ type: "boolean" });
+    expect(schema.required).toEqual(["target", "message"]);
+  });
+
   test("validation-only applicator keywords are dropped while $defs are preserved", () => {
     const parameters = {
       type: "object",

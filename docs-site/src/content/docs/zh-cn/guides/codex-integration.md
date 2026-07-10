@@ -21,7 +21,24 @@ fast_mode = true
 ```
 
 proxy 的默认端口为 `10100`，提供 `POST /v1/responses`、`POST /v1/responses/compact`、
-`GET /v1/models`、`GET /healthz` 以及 `/api/*` 管理 API。
+`POST /v1/images/generations`、`POST /v1/images/edits`、`GET /v1/models`、`GET /healthz`
+以及 `/api/*` 管理 API。
+
+### 内置图像生成（`image_gen`）
+
+Codex 的内置 `image_gen` 工具不经过 `/v1/responses`——codex-rs 扩展直接 POST
+`{base_url}/images/generations`（附带参考图像时为 `/images/edits`），使用与聊天相同的
+ChatGPT bearer 认证。由于注入的 `base_url` 指向 opencodex，proxy 会把这些调用中继到
+OpenAI 上游：
+
+- **ChatGPT 登录（默认）：** 请求会携带调用方的 OAuth token（或多账户池选中账户的 token）
+  转发到 `chatgpt.com/backend-api/codex`，无需 API key。
+- **OpenAI API key 提供商：** 如果请求中没有可用的 ChatGPT 认证，中继会退回到已配置的
+  `openai-responses` API key 提供商（例如 `api.openai.com`）。
+- **两者都没有：** proxy 返回明确的错误而不是含糊的 404。其他路由提供商（Cursor、Gemini、
+  Kiro 等）无法提供图像生成；如果想完全关闭该工具，可在 Codex 中执行
+  `codex features disable image_generation`（即 `config.toml` 的
+  `[features] image_generation = false`）。
 
 如果 `hostname` 不是 loopback 地址，Codex 必须发送自动生成的 API 认证请求头。此时注入器会改用
 专用提供商：

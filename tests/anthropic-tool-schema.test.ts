@@ -106,4 +106,79 @@ describe("anthropic tool input_schema normalization", () => {
       },
     });
   });
+
+  test("strips Codex's Responses-only encrypted marker from collaboration schemas", () => {
+    const inputSchema = toolSchema({
+      type: "object",
+      properties: {
+        message: { type: "string", encrypted: true },
+      },
+      required: ["message"],
+    });
+
+    expect(JSON.stringify(inputSchema)).not.toContain('"encrypted"');
+    expect(inputSchema.properties).toEqual({ message: { type: "string" } });
+    expect(inputSchema.required).toEqual(["message"]);
+  });
+
+  test("preserves a property literally named encrypted", () => {
+    expect(toolSchema({
+      type: "object",
+      properties: { encrypted: { type: "boolean" } },
+    }).properties).toEqual({ encrypted: { type: "boolean" } });
+  });
+
+  test("strips the marker under items, nested properties, and flattened root anyOf branches", () => {
+    const inputSchema = toolSchema({
+      type: "object",
+      properties: {
+        list: { type: "array", items: { type: "string", encrypted: true } },
+        outer: {
+          type: "object",
+          properties: { nested: { type: "number", encrypted: true } },
+        },
+      },
+      anyOf: [
+        { type: "object", properties: { fromBranch: { type: "boolean", encrypted: true } } },
+      ],
+    });
+
+    const properties = inputSchema.properties as Record<string, Record<string, unknown>>;
+    expect((properties.list.items as Record<string, unknown>).encrypted).toBeUndefined();
+    expect(((properties.outer.properties as Record<string, Record<string, unknown>>).nested).encrypted).toBeUndefined();
+    expect(properties.fromBranch.encrypted).toBeUndefined();
+  });
+
+  test("preserves literal encrypted values, required names, and encrypted definition names", () => {
+    const inputSchema = toolSchema({
+      type: "object",
+      default: { encrypted: true },
+      required: ["encrypted"],
+      $defs: { encrypted: { type: "string" } },
+      properties: {
+        constant: { const: { encrypted: true } },
+        choices: { enum: [{ encrypted: true }] },
+      },
+    });
+
+    expect(inputSchema.default).toEqual({ encrypted: true });
+    expect(inputSchema.required).toEqual(["encrypted"]);
+    expect(inputSchema.$defs).toEqual({ encrypted: { type: "string" } });
+    expect(inputSchema.properties).toEqual({
+      constant: { const: { encrypted: true } },
+      choices: { enum: [{ encrypted: true }] },
+    });
+  });
+
+  test("does not mutate the input schema", () => {
+    const schema = {
+      type: "object",
+      properties: { message: { type: "string", encrypted: true } },
+    };
+    const before = structuredClone(schema);
+
+    toolSchema(schema);
+
+    expect(schema).toEqual(before);
+  });
 });
