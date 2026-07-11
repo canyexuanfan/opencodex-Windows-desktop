@@ -107,6 +107,25 @@ describe("claude inbound translation", () => {
       .toEqual({ type: "function", name: "Read" });
   });
 
+  test("system role messages fold into instructions (real Claude Code sends them; native backend rejects system items)", () => {
+    const body = anthropicToResponsesBody({
+      model: "m", max_tokens: 10,
+      system: "top-level",
+      messages: [
+        { role: "system", content: "be terse" },
+        { role: "system", content: [{ type: "text", text: "block form" }] },
+        { role: "user", content: "hi" },
+      ],
+    }) as any;
+    expect(body.instructions).toBe("top-level\n\nbe terse\n\nblock form");
+    // No system message items in input — native ChatGPT backend 400s on them.
+    expect((body.input as any[]).every(item => item.role !== "system")).toBe(true);
+    expect(body.input).toHaveLength(1);
+    expect(body.input[0].role).toBe("user");
+    expect(() => responsesRequestSchema.parse(body)).not.toThrow();
+    expect(() => parseRequest(body)).not.toThrow();
+  });
+
   test("tool_result is_error and string content", () => {
     const body = anthropicToResponsesBody({
       model: "m", max_tokens: 10,
@@ -130,7 +149,9 @@ describe("claude inbound translation", () => {
   test("error cases: no model, empty messages, bad role, bad tool_result", () => {
     expect(() => anthropicToResponsesBody({ max_tokens: 1, messages: [{ role: "user", content: "x" }] })).toThrow(AnthropicRequestError);
     expect(() => anthropicToResponsesBody({ model: "m", max_tokens: 1, messages: [] })).toThrow(AnthropicRequestError);
-    expect(() => anthropicToResponsesBody({ model: "m", max_tokens: 1, messages: [{ role: "system", content: "x" }] })).toThrow(AnthropicRequestError);
+    // system role is ACCEPTED (real Claude Code sends it); truly unknown roles still 400.
+    expect(() => anthropicToResponsesBody({ model: "m", max_tokens: 1, messages: [{ role: "system", content: "x" }] })).not.toThrow();
+    expect(() => anthropicToResponsesBody({ model: "m", max_tokens: 1, messages: [{ role: "tool", content: "x" }] })).toThrow(AnthropicRequestError);
     expect(() => anthropicToResponsesBody({
       model: "m", max_tokens: 1,
       messages: [{ role: "user", content: [{ type: "tool_result" }] }],

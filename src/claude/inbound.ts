@@ -92,6 +92,23 @@ function pushUserMessage(input: Rec[], blocks: Rec[]): void {
   input.push({ type: "message", role: "user", content: blocks });
 }
 
+/**
+ * Claude Code (observed 2026-07-11, real CLI smoke) sends `role:"system"` entries in
+ * `messages` despite the published API having no system role. Map them to Responses
+ * instructions text: the native ChatGPT backend rejects system message items in
+ * `input` ("System messages are not allowed", verified live), so folding into
+ * `instructions` is the only shape that works on every route.
+ */
+function systemMessageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const raw of content) {
+    if (isRec(raw) && raw.type === "text" && typeof raw.text === "string") parts.push(raw.text);
+  }
+  return parts.join("\n\n");
+}
+
 function userMessageToItems(content: unknown, input: Rec[]): void {
   if (typeof content === "string") {
     if (content.length > 0) pushUserMessage(input, [{ type: "input_text", text: content }]);
@@ -223,10 +240,17 @@ export function anthropicToResponsesBody(raw: unknown, cc?: OcxClaudeCodeConfig)
   }
 
   const input: Rec[] = [];
+  const systemParts: string[] = [];
+  const topLevelSystem = systemToInstructions(raw.system);
+  if (topLevelSystem !== undefined) systemParts.push(topLevelSystem);
   for (const msg of raw.messages) {
     if (!isRec(msg)) throw new AnthropicRequestError("each message must be an object");
     if (msg.role === "user") userMessageToItems(msg.content, input);
     else if (msg.role === "assistant") assistantMessageToItems(msg.content, input);
+    else if (msg.role === "system") {
+      const text = systemMessageText(msg.content);
+      if (text.length > 0) systemParts.push(text);
+    }
     else throw new AnthropicRequestError(`unsupported message role: ${String(msg.role)}`);
   }
 
@@ -237,8 +261,7 @@ export function anthropicToResponsesBody(raw: unknown, cc?: OcxClaudeCodeConfig)
     stream: raw.stream === true,
   };
 
-  const instructions = systemToInstructions(raw.system);
-  if (instructions !== undefined) body.instructions = instructions;
+  if (systemParts.length > 0) body.instructions = systemParts.join("\n\n");
 
   const tools = toolsToResponses(raw.tools);
   if (tools) body.tools = tools;

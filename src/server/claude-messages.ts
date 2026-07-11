@@ -16,6 +16,7 @@ import {
   responsesSseToAnthropicSse,
 } from "../claude/outbound";
 import { estimateTokens } from "../lib/token-estimate";
+import { routeModel } from "../router";
 import type { OcxConfig } from "../types";
 import { readJsonRequestBody } from "./request-decompress";
 import type { RequestLogContext } from "./request-log";
@@ -58,10 +59,39 @@ export async function handleClaudeMessages(req: Request, config: OcxConfig, logC
   // the translated Anthropic SSE into a message JSON for non-streaming clients.
   internalBody.stream = true;
 
+  // Native ChatGPT passthrough (openai-responses forward) accepts only Codex-shaped
+  // bodies: it 400s on sampling params ("Unsupported parameter: max_output_tokens",
+  // verified live 2026-07-11). Strip them for that route; routed providers keep them.
+  let nativeRoute = false;
+  try {
+    const route = routeModel(config, internalBody.model as string);
+    if (route.provider.adapter === "openai-responses") {
+      nativeRoute = true;
+      delete internalBody.max_output_tokens;
+      delete internalBody.temperature;
+      delete internalBody.top_p;
+      delete internalBody.stop;
+      delete internalBody.user;
+    }
+  } catch { /* unknown model: let handleResponses shape the 404 */ }
+
   const headers = new Headers({ "content-type": "application/json" });
   for (const name of FORWARD_HEADERS) {
+    // The caller's bearer is the proxy admission token (ocx claude placeholder), never a
+    // ChatGPT credential — forwarding it upstream turns into {"detail":"Unauthorized"}.
+    if (name === "authorization") continue;
     const value = req.headers.get(name);
     if (value) headers.set(name, value);
+  }
+  if (nativeRoute) {
+    // No forwarded ChatGPT auth exists on this surface. Attach the main codex login
+    // (read-only auth.json token); account-pool rotation still overrides downstream.
+    const { getMainAccountToken } = await import("../codex/main-account");
+    const token = getMainAccountToken();
+    if (token) {
+      headers.set("authorization", `Bearer ${token.accessToken}`);
+      headers.set("chatgpt-account-id", token.chatgptAccountId);
+    }
   }
   const internalReq = new Request("http://localhost/v1/responses", {
     method: "POST",
@@ -75,8 +105,15 @@ export async function handleClaudeMessages(req: Request, config: OcxConfig, logC
     // Re-shape the OpenAI-style error envelope into the Anthropic one, preserving status.
     let message = `upstream error (${response.status})`;
     try {
-      const parsed = await response.json() as { error?: { message?: string } };
-      if (parsed?.error?.message) message = parsed.error.message;
+      const text = await response.text();
+      try {
+        const parsed = JSON.parse(text) as { error?: { message?: string; type?: string } | string; message?: string };
+        const nested = typeof parsed?.error === "object" && parsed.error ? parsed.error.message : undefined;
+        const flat = typeof parsed?.error === "string" ? parsed.error : parsed?.message;
+        message = nested || flat || (text ? `upstream error (${response.status}): ${text.slice(0, 400)}` : message);
+      } catch {
+        if (text) message = `upstream error (${response.status}): ${text.slice(0, 400)}`;
+      }
     } catch { /* keep fallback message */ }
     const retryAfter = response.headers.get("retry-after");
     const out = new Response(JSON.stringify(anthropicErrorBody(response.status, message)), {
