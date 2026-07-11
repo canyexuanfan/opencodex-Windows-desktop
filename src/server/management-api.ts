@@ -50,6 +50,11 @@ export const VERSION = (() => {
   }
 })();
 
+export interface ManagementApiDeps {
+  toggleCodexMultiAgentV2?: (enabled: boolean) => void;
+  refreshCodexCatalog?: () => Promise<void>;
+}
+
 function parseDebugLogQuery(url: URL): { after: number; limit: number } {
   const after = Number(url.searchParams.get("after") ?? url.searchParams.get("since") ?? "0");
   const limit = Number(url.searchParams.get("limit") ?? "500");
@@ -59,7 +64,7 @@ function parseDebugLogQuery(url: URL): { after: number; limit: number } {
   };
 }
 
-export async function handleManagementAPI(req: Request, url: URL, config: OcxConfig): Promise<Response | null> {
+export async function handleManagementAPI(req: Request, url: URL, config: OcxConfig, deps: ManagementApiDeps = {}): Promise<Response | null> {
   if (!isAllowedRequestOrigin(req, config)) {
     return jsonResponse({ error: "cross-origin request blocked" }, 403, req, config);
   }
@@ -72,6 +77,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     }
   }
   async function refreshCodexCatalogBestEffort(): Promise<void> {
+    if (deps.refreshCodexCatalog) return deps.refreshCodexCatalog();
     try {
       const { refreshCodexModelCatalog } = await import("../codex/refresh");
       await refreshCodexModelCatalog(config);
@@ -438,11 +444,12 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   // itself never writes config — this endpoint is the only server-side mutation
   // surface for the flag.
   if (url.pathname === "/api/v2" && req.method === "GET") {
-    const { isMultiAgentV2Enabled, hasAgentsMaxThreads, getMaxConcurrentThreads } = await import("../codex/features");
+    const { isMultiAgentV2Enabled, hasAgentsMaxThreads, getLogicalMaxThreads } = await import("../codex/features");
+    const enabled = isMultiAgentV2Enabled();
     return jsonResponse({
-      enabled: isMultiAgentV2Enabled(),
-      agentsMaxThreadsConflict: hasAgentsMaxThreads(),
-      maxConcurrentThreadsPerSession: getMaxConcurrentThreads(),
+      enabled,
+      agentsMaxThreadsConflict: enabled && hasAgentsMaxThreads(),
+      maxConcurrentThreadsPerSession: getLogicalMaxThreads(),
       multiAgentMode: config.multiAgentMode ?? "default",
     });
   }
@@ -460,43 +467,45 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     if (wantsThreads && (typeof body.maxConcurrentThreadsPerSession !== "number" || !Number.isInteger(body.maxConcurrentThreadsPerSession) || body.maxConcurrentThreadsPerSession < 1)) {
       return jsonResponse({ error: "body.maxConcurrentThreadsPerSession must be an integer >= 1" }, 400);
     }
-    const { isMultiAgentV2Enabled, hasAgentsMaxThreads, getMaxConcurrentThreads, setMaxConcurrentThreads } = await import("../codex/features");
-    const warnings: string[] = [];
-    if (wantsFlag && isMultiAgentV2Enabled() !== body.enabled) {
-      const { execFileSync } = await import("node:child_process");
-      const command = process.env.CODEX_CLI_PATH?.trim() || "codex";
-      try {
-        execFileSync(command, ["features", body.enabled ? "enable" : "disable", "multi_agent_v2"],
-          { stdio: ["ignore", "pipe", "pipe"], timeout: 15_000, windowsHide: true });
-      } catch (err) {
-        return jsonResponse({ error: `codex features ${body.enabled ? "enable" : "disable"} failed: ${err instanceof Error ? err.message : String(err)}` }, 502);
-      }
-      await refreshCodexCatalogBestEffort();
+    const mode = wantsMode ? body.multiAgentMode as "v1" | "default" | "v2" : undefined;
+    const modeFlag = mode === "v2" ? true : mode === "v1" ? false : undefined;
+    if (wantsFlag && modeFlag !== undefined && body.enabled !== modeFlag) {
+      return jsonResponse({ error: `body.enabled conflicts with multiAgentMode '${mode}'` }, 400);
     }
-    if (wantsThreads) {
-      // setMaxConcurrentThreads is idempotent (equal value -> no write) and refuses
-      // when the [features.multi_agent_v2] table is missing, so a threads-only PUT
-      // against a never-enabled config fails loudly instead of inventing state.
-      const result = setMaxConcurrentThreads(body.maxConcurrentThreadsPerSession as number);
-      if (!result.ok) return jsonResponse({ error: result.error }, 409);
-      if (result.changed) warnings.push("Thread limit applies to new sessions.");
+    const { isMultiAgentV2Enabled, hasAgentsMaxThreads, getLogicalMaxThreads, transitionMultiAgentV2 } = await import("../codex/features");
+    const warnings: string[] = [];
+    const requestedFlag = wantsFlag ? body.enabled as boolean : modeFlag;
+    if (requestedFlag !== undefined || wantsThreads) {
+      const targetFlag = requestedFlag ?? isMultiAgentV2Enabled();
+      let toggle = deps.toggleCodexMultiAgentV2;
+      if (!toggle) {
+        const { execFileSync } = await import("node:child_process");
+        toggle = (enabled: boolean) => {
+          const command = process.env.CODEX_CLI_PATH?.trim() || "codex";
+          execFileSync(command, ["features", enabled ? "enable" : "disable", "multi_agent_v2"],
+            { stdio: ["ignore", "pipe", "pipe"], timeout: 15_000, windowsHide: true });
+        };
+      }
+      const result = transitionMultiAgentV2(targetFlag, toggle, {
+        ...(wantsThreads ? { threadLimit: body.maxConcurrentThreadsPerSession as number } : {}),
+      });
+      if (!result.ok) return jsonResponse({ error: `multi_agent_v2 transition failed: ${result.error}` }, 502);
+      if (result.changed && result.threadLimit !== null) warnings.push(`Thread limit ${result.threadLimit} preserved for ${targetFlag ? "v2" : "v1"}.`);
     }
     if (wantsMode) {
-      const mode = body.multiAgentMode as "v1" | "default" | "v2";
       if (mode === "default") delete config.multiAgentMode;
       else config.multiAgentMode = mode;
       saveConfig(config);
-      await refreshCodexCatalogBestEffort();
       warnings.push(`Multi-agent mode set to '${mode}'. Applies to new sessions.`);
     }
-    if ((wantsFlag ? body.enabled === true : isMultiAgentV2Enabled()) && hasAgentsMaxThreads()) {
-      warnings.push("[agents] max_threads is set — codex refuses to start while multi_agent_v2 is enabled; remove it (features.multi_agent_v2.max_concurrent_threads_per_session replaces it).");
-    }
-    if (wantsFlag) warnings.push("Applies to new sessions; restart the Codex app or wait out its picker cache to see the ladder change.");
+    await refreshCodexCatalogBestEffort();
+    if (requestedFlag !== undefined) warnings.push("Applies to new sessions; restart the Codex app or wait out its picker cache to see the ladder change.");
+    const enabled = isMultiAgentV2Enabled();
     return jsonResponse({
       ok: true,
-      enabled: isMultiAgentV2Enabled(),
-      maxConcurrentThreadsPerSession: getMaxConcurrentThreads(),
+      enabled,
+      agentsMaxThreadsConflict: enabled && hasAgentsMaxThreads(),
+      maxConcurrentThreadsPerSession: getLogicalMaxThreads(),
       multiAgentMode: config.multiAgentMode ?? "default",
       warnings,
     });

@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useI18n, LOCALES } from "../i18n";
 import { formatTokens } from "../format-tokens";
 import { statusCodeInfo } from "../status-codes";
@@ -50,7 +51,7 @@ function tokensTitle(log: LogEntry): string | undefined {
   if (typeof log.usage.cacheReadInputTokens === "number") parts.push(`cacheRead=${log.usage.cacheReadInputTokens}`);
   if (typeof log.usage.cacheCreationInputTokens === "number") parts.push(`cacheCreate=${log.usage.cacheCreationInputTokens}`);
   if (typeof log.usage.reasoningOutputTokens === "number") parts.push(`reasoning=${log.usage.reasoningOutputTokens}`);
-  return parts.join(" · ");
+  return parts.join(" \xC2\xB7 ");
 }
 
 function displayTokenTotal(log: LogEntry): number | undefined {
@@ -86,7 +87,7 @@ function modelTitle(log: LogEntry): string {
     log.responseServiceTier ? `responseTier=${log.responseServiceTier}` : undefined,
     log.modelSupportsServiceTier !== undefined ? `supportsTier=${log.modelSupportsServiceTier}` : undefined,
   ].filter(Boolean);
-  return details.join(" · ");
+  return details.join(" \xC2\xB7 ");
 }
 
 export default function Logs({ apiBase }: { apiBase: string }) {
@@ -94,6 +95,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [detail, setDetail] = useState<LogEntry | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const localeTag = LOCALES.find(l => l.code === locale)?.htmlLang;
 
   useEffect(() => {
@@ -113,6 +115,18 @@ export default function Logs({ apiBase }: { apiBase: string }) {
 
   const detailInfo = detail ? statusCodeInfo(detail.status, locale) : null;
 
+  const rowVirtualizer = useVirtualizer({
+    count: logs.length,
+    getScrollElement: () => scrollContainerRef.current,
+    estimateSize: () => 44,
+    overscan: 15,
+  });
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0;
+  const paddingBottom = virtualRows.length > 0
+    ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end
+    : 0;
+
   return (
     <>
       <div className="page-head">
@@ -127,9 +141,9 @@ export default function Logs({ apiBase }: { apiBase: string }) {
       {logs.length === 0 ? (
         <EmptyState title={t("logs.noRequests")} />
       ) : (
-        <div className="tbl-wrap">
+        <div ref={scrollContainerRef} className="tbl-wrap" style={{ overflowY: "auto", maxHeight: "calc(100vh - 260px)" }}>
           <table className="tbl">
-            <thead>
+            <thead style={{ position: "sticky", top: 0, zIndex: 1, background: "var(--surface)" }}>
              <tr>
                <th>{t("logs.col.time")}</th>
                 <th className="num log-col-tokens">{t("logs.col.tokens")}</th>
@@ -142,8 +156,19 @@ export default function Logs({ apiBase }: { apiBase: string }) {
              </tr>
             </thead>
             <tbody>
-              {[...logs].reverse().map((log, i) => (
-               <tr key={log.requestId ?? `${log.timestamp}-${i}`}>
+              {paddingTop > 0 && (
+                <tr>
+                  <td colSpan={8} style={{ height: paddingTop, padding: 0, border: 0 }} />
+                </tr>
+              )}
+              {virtualRows.map(virtualRow => {
+                const log = logs[logs.length - 1 - virtualRow.index];
+                return (
+               <tr
+                 key={log.requestId ?? `${log.timestamp}-${virtualRow.index}`}
+                 data-index={virtualRow.index}
+                 ref={rowVirtualizer.measureElement}
+               >
                  <td className="muted mono">{new Date(log.timestamp).toLocaleTimeString(localeTag)}</td>
                   <td className="num mono log-col-tokens" title={tokensTitle(log)}>
                     {(() => {
@@ -184,7 +209,13 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                   <td className="muted mono"><span className="log-reqid" title={log.requestId}>{log.requestId ?? "-"}</span></td>
                  <td className="num">{log.durationMs}ms</td>
                 </tr>
-              ))}
+                );
+              })}
+              {paddingBottom > 0 && (
+                <tr>
+                  <td colSpan={8} style={{ height: paddingBottom, padding: 0, border: 0 }} />
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

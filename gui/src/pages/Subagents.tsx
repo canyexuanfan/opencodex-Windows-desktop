@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Notice, EmptyState } from "../ui";
-import { IconArrowUp, IconArrowDown, IconX, IconCheck, IconSearch, IconBot } from "../icons";
+import { IconArrowUp, IconArrowDown, IconX, IconCheck, IconSearch, IconBot, IconInfo } from "../icons";
 import { useT, Trans } from "../i18n";
 import { modelLabel } from "../model-display";
 
@@ -76,6 +76,10 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
       {status && <Notice tone={ok ? "ok" : "err"}>{status}</Notice>}
 
       <div className="h-section">{t("sub.featured")} <span className="count">{chosen.length}/5</span></div>
+      <div className="row muted" style={{ alignItems: "flex-start", gap: 8, margin: "-2px 0 10px", maxWidth: "80ch", fontSize: 12.5, lineHeight: 1.5 }}>
+        <IconInfo width={15} height={15} aria-hidden="true" style={{ flexShrink: 0, marginTop: 2 }} />
+        <span><Trans k="sub.orderHint" cmd="spawn_agent" /></span>
+      </div>
       {chosen.length === 0 ? (
         <EmptyState title={t("sub.noneSelected")} />
       ) : (

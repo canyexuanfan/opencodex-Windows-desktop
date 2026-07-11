@@ -144,10 +144,10 @@ Manage the Codex `multi_agent_v2` feature flag and the 3-state multi-agent surfa
 | `status` (default) | Report the current v2 flag, multi-agent mode, and thread concurrency. |
 | `on` | Enable the `multi_agent_v2` feature in `$CODEX_HOME/config.toml` and resync the catalog. |
 | `off` | Disable the `multi_agent_v2` feature and resync. |
-| `mode v1` | Force ALL models to the v1 multi-agent surface (overrides upstream pins). |
+| `mode v1` | Force ALL models to v1, disable native v2, and preserve the thread limit under `[agents] max_threads`. |
 | `mode default` | Respect upstream model pins (sol/terra=v2, luna=v1, rest=codex flag). Install default. |
-| `mode v2` | Force ALL models to the v2 multi-agent surface (overrides upstream pins). |
-| `threads <n>` | Set `max_concurrent_threads_per_session` (integer >= 1, v2 only). |
+| `mode v2` | Force ALL models to v2, enable native v2, and migrate the same thread limit to the v2 key. |
+| `threads <n>` | Set the active v1/v2 thread limit (integer >= 1). |
 
 ```bash
 ocx v2 status
@@ -158,7 +158,9 @@ ocx v2 threads 16
 ```
 
 The `mode` subcommand writes `multiAgentMode` to the opencodex config and resyncs the Codex catalog.
-The `on`/`off` subcommands flip the codex-rs feature flag via `codex features enable|disable`.
+`mode v1`/`mode v2` and `on`/`off` move the current numeric thread limit between the valid v1/v2
+Codex keys while flipping the native feature through `codex features enable|disable`. A failed
+transition restores the original `config.toml`.
 Changes apply to new Codex sessions; running sessions keep their pinned surface.
 
 ### `ocx models [--provider <name>] [--json]`

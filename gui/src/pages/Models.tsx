@@ -409,7 +409,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
               )}
             </>
           )}
-          {v2.agentsMaxThreadsConflict && (
+          {v2.enabled && v2.agentsMaxThreadsConflict && (
             <span className="mono" style={{ fontSize: 12, color: "var(--err, #e5484d)" }}>{t("models.v2Conflict")}</span>
           )}
           {v2Note && <span className="muted" style={{ fontSize: 12 }}>{v2Note}</span>}
@@ -448,6 +448,11 @@ export default function Models({ apiBase }: { apiBase: string }) {
         <div style={{ flex: 1 }} />
         <Switch on={allCapped} onClick={setAll} disabled={busy} label={t("models.setAll")} />
         <span className="muted mono" style={{ fontSize: 12 }}>{t("models.setAll")}</span>
+      </div>
+
+      <div className="row muted" style={{ alignItems: "flex-start", gap: 8, marginBottom: 12, maxWidth: "80ch", fontSize: 12.5, lineHeight: 1.5 }}>
+        <IconInfo width={15} height={15} aria-hidden="true" style={{ flexShrink: 0, marginTop: 2 }} />
+        <span>{t("models.orderHint")}</span>
       </div>
 
      {groups.map(([provider, rows]) => {

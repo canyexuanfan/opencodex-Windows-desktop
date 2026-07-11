@@ -212,10 +212,12 @@ export const ko: Record<TKey, string> = {
   "models.allowlistLabel": "선택만 노출",
   "models.allowlistHint": "체크한 모델만 카탈로그에 노출돼요 (비우면 전체). 수천 개 모델을 노출하는 프로바이더에 유용해요.",
   "models.selectedCount": "{n}개 선택",
+  "models.orderHint": "피커 순서: Subagents에서 지정한 순서 → 나머지 라우팅 모델(프로바이더, 모델 ID 순 알파벳 정렬) → 네이티브 모델. 노출 토글은 모델을 필터링할 뿐 이 순서를 바꾸지 않습니다.",
 
   // subagents
   "sub.subtitle": "Codex의 {cmd} 는 우선순위 상위 5개 모델만 오버라이드로 노출합니다. 여기서 최대 5개를 선택하면 — 네이티브 gpt 또는 라우팅된 모델 — opencodex가 카탈로그 우선순위를 설정해 정확히 이들이 앞에 옵니다. 다른 모델도 정확한 이름으로 호출할 수 있으며, 이 설정은 표시 항목만 제어합니다.",
   "sub.featured": "추천",
+  "sub.orderHint": "여기서 선택해 표시된 순서가 Codex 모델 피커 최상단 1~5위와 {cmd}의 기본 모델 후보를 결정합니다.",
   "sub.noneSelected": "선택된 항목 없음 — 아래 목록에서 선택하세요.",
   "sub.models": "모델",
   "sub.search": "모델 검색(네이티브 gpt + 라우팅)…",

@@ -141,10 +141,10 @@ opencodex 本地配置。`remove` 是 `uninstall` 的别名。
 | `status`（默认） | 报告当前 v2 flag、multi-agent mode 和 thread concurrency。 |
 | `on` | 在 `$CODEX_HOME/config.toml` 中启用 `multi_agent_v2` feature，并重新同步目录。 |
 | `off` | 禁用 `multi_agent_v2` feature，并重新同步目录。 |
-| `mode v1` | 强制所有模型使用 v1 multi-agent surface（覆盖 upstream pin）。 |
+| `mode v1` | 强制所有模型使用 v1、关闭 native v2，并把 thread limit 保存在 `[agents] max_threads`。 |
 | `mode default` | 遵循 upstream model pin（sol/terra=v2，luna=v1，其余模型跟随 Codex flag）。这是安装默认值。 |
-| `mode v2` | 强制所有模型使用 v2 multi-agent surface（覆盖 upstream pin）。 |
-| `threads <n>` | 设置 `max_concurrent_threads_per_session`（大于等于 1 的整数，仅限 v2）。 |
+| `mode v2` | 强制所有模型使用 v2、开启 native v2，并把同一个 thread limit 迁移到 v2 key。 |
+| `threads <n>` | 设置当前 v1/v2 thread limit（大于等于 1 的整数）。 |
 
 ```bash
 ocx v2 status
@@ -155,7 +155,8 @@ ocx v2 threads 16
 ```
 
 `mode` subcommand 会把 `multiAgentMode` 写入 opencodex 配置并重新同步 Codex 目录。
-`on`/`off` 会用 `codex features enable|disable` 切换 codex-rs feature flag。变更从新的 Codex
+`mode v1`/`mode v2` 与 `on`/`off` 会在有效的 v1/v2 配置 key 之间迁移当前数值，同时用
+`codex features enable|disable` 切换 codex-rs feature flag；失败时恢复原始 `config.toml`。变更从新的 Codex
 session 开始生效，正在运行的 session 保持已固定的 surface。
 
 ### `ocx models [--provider <name>] [--json]`

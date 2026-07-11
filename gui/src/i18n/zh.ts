@@ -212,10 +212,12 @@ export const zh: Record<TKey, string> = {
   "models.allowlistLabel": "仅所选",
   "models.allowlistHint": "仅勾选的模型进入目录（留空 = 全部）。适用于暴露成千上万模型的提供商。",
   "models.selectedCount": "已选 {n} 个",
+  "models.orderHint": "选择器顺序：Subagents 中的选择（按所选顺序）→ 其余已路由模型（依次按提供方、模型 ID 字母排序）→ 原生模型。可见性开关仅用于筛选，不会改变此顺序。",
 
   // subagents
   "sub.subtitle": "Codex 的 {cmd} 仅将优先级最高的前 5 个模型作为覆盖项公开。在此最多选择 5 个 — 原生 gpt 或已路由模型 — opencodex 会设置它们的目录优先级，使其正好排在前面。其他模型仍可按确切名称调用；此设置仅控制显示项。",
   "sub.featured": "精选",
+  "sub.orderHint": "此处所选并显示的顺序决定 Codex 模型选择器顶部第 1–5 位，以及 {cmd} 的默认模型候选。",
   "sub.noneSelected": "未选择 — 请从下方列表选择。",
   "sub.models": "模型",
   "sub.search": "搜索模型（原生 gpt + 已路由）…",

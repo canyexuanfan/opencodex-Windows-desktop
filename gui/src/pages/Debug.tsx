@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useI18n } from "../i18n";
 import { IconRefresh } from "../icons";
 import { Switch } from "../ui";
@@ -28,7 +29,14 @@ export default function Debug({ apiBase }: { apiBase: string }) {
   const [follow, setFollow] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const afterRef = useRef(0);
-  const logRef = useRef<HTMLPreElement | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  const lineVirtualizer = useVirtualizer({
+    count: lines.length,
+    getScrollElement: () => scrollContainerRef.current,
+    estimateSize: () => 20,
+    overscan: 30,
+  });
 
   useEffect(() => {
     const fetchDebug = async () => {
@@ -87,9 +95,10 @@ export default function Debug({ apiBase }: { apiBase: string }) {
   }, [follow, streamEnabled, fetchLogs]);
 
   useEffect(() => {
-    if (!follow || !logRef.current) return;
-    logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [lines, follow]);
+    if (follow && lines.length > 0) {
+      lineVirtualizer.scrollToIndex(lines.length - 1, { align: 'end' });
+    }
+  }, [lines, follow, lineVirtualizer]);
 
   const setDebugFlag = async (flag: "debug" | "usage" | "injection", enabled: boolean) => {
     setDebugBusy(true);
@@ -202,7 +211,36 @@ export default function Debug({ apiBase }: { apiBase: string }) {
           <div className="muted" style={{ fontSize: 13, maxWidth: 560 }}>{t("debug.noLines")}</div>
         </div>
       ) : debug && streamEnabled ? (
-        <pre ref={logRef} className="log-detail-json" style={{ maxHeight: "calc(100vh - 280px)" }}>{lines.join("\n")}</pre>
+        <div
+          ref={scrollContainerRef}
+          className="log-detail-json"
+          style={{ maxHeight: "calc(100vh - 280px)", overflow: "auto" }}
+        >
+          <div
+            style={{
+              position: "relative",
+              height: lineVirtualizer.getTotalSize(),
+              width: "100%",
+            }}
+          >
+            {lineVirtualizer.getVirtualItems().map(virtualRow => (
+              <div
+                key={virtualRow.key}
+                ref={lineVirtualizer.measureElement}
+                data-index={virtualRow.index}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "100%",
+                  transform: `translateY(${virtualRow.start}px)`,
+                }}
+              >
+                {lines[virtualRow.index]}
+              </div>
+            ))}
+          </div>
+        </div>
       ) : null}
     </>
   );
