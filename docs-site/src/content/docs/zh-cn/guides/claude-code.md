@@ -24,6 +24,17 @@ ocx claude
 
 你自己导出的变量始终优先。额外参数原样传递：`ocx claude -p "hello"`。
 
+## 系统环境集成
+
+在 macOS 上运行 `ocx start` 时，opencodex 会通过 `launchctl setenv` 在系统范围内自动设置
+`ANTHROPIC_BASE_URL` 及相关 Claude Code 环境变量。因此，新打开的终端窗口和标签页中的普通
+`claude` 命令也会通过代理路由，无需使用 `ocx claude` 包装器。已经打开的 shell 不受影响，
+需要重新打开才能获取这些更改。
+
+运行 `ocx stop` 或关闭代理时，环境变量会恢复到之前的状态。可以在配置中设置
+`claudeCode.systemEnv: false`，或使用 GUI 开关禁用此功能。此功能仅支持 macOS；在其他平台上，
+请使用 `ocx claude` 启动带有代理环境的 Claude Code。
+
 ## 原生 Claude 直通（订阅穿透）
 
 未设置认证覆盖时，Claude Code 保持 claude.ai OAuth 登录并将其发送给代理。未被别名或模型映射

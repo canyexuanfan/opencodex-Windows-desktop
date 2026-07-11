@@ -25,6 +25,17 @@ ocx claude
 
 Variables you export yourself always win. Extra arguments pass through: `ocx claude -p "hello"`.
 
+## System Environment Integration
+
+On macOS, `ocx start` automatically sets `ANTHROPIC_BASE_URL` and the related Claude Code
+environment variables system-wide with `launchctl setenv`. New terminal windows and tabs therefore
+route plain `claude` commands through the proxy without requiring the `ocx claude` wrapper.
+Already-open shells are unaffected and must be reopened to pick up the change.
+
+`ocx stop` and proxy shutdown restore the previous environment. Disable this integration with
+`claudeCode.systemEnv: false` in the configuration or with the GUI toggle. This feature is macOS-only;
+on other platforms, use `ocx claude` to launch Claude Code with the proxy environment.
+
 ## Native Claude passthrough (subscription pierce)
 
 With no auth override set, Claude Code keeps its claude.ai OAuth login and sends it to the proxy.

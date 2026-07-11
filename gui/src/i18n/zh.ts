@@ -436,6 +436,8 @@ export const zh: Record<TKey, string> = {
   "claude.subtitle": "在 Claude Code 中使用任意路由模型 — 本代理在同一端口提供 Anthropic Messages API。",
   "claude.enabledLabel": "Claude 入站",
   "claude.enabledHint": "提供 POST /v1/messages（+ count_tokens）和网关模型发现。关闭后 Claude Code 请求将收到 403。",
+  "claude.systemEnv": "系统环境变量",
+  "claude.systemEnvDesc": "注入环境变量，使直接运行 claude 时通过代理路由。",
   "claude.quickstart": "快速开始",
   "claude.quickstartHint": "{cmd} 会按需启动代理，并注入基础 URL + 模型发现后启动 Claude Code；你的 claude.ai 登录和连接器保持有效。",
   "claude.manualEnv": "手动配置（不使用 ocx）",

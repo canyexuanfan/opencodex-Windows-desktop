@@ -25,6 +25,17 @@ ocx claude
 
 직접 export한 변수가 항상 우선합니다. 추가 인자는 그대로 전달됩니다: `ocx claude -p "hello"`.
 
+## 시스템 환경 통합
+
+macOS에서 `ocx start`를 실행하면 `launchctl setenv`를 통해 `ANTHROPIC_BASE_URL`과 관련 Claude Code
+환경변수를 시스템 전역에 자동으로 설정합니다. 따라서 새 터미널 창과 탭에서는 `ocx claude`
+래퍼 없이 일반 `claude` 명령도 프록시를 통해 라우팅됩니다. 이미 열려 있던 셸에는 변경 사항이
+적용되지 않으므로 새로 열어야 합니다.
+
+`ocx stop` 또는 프록시 종료 시 환경변수는 이전 상태로 복원됩니다. 설정에서
+`claudeCode.systemEnv: false`를 지정하거나 GUI 토글을 사용해 이 기능을 끌 수 있습니다. 이 기능은
+macOS 전용이며, 다른 플랫폼에서는 `ocx claude`로 Claude Code를 실행하세요.
+
 ## 네이티브 Claude 패스스루 (구독 관통)
 
 인증 오버라이드가 없으면 Claude Code는 claude.ai OAuth 로그인을 유지한 채 프록시로 보냅니다.

@@ -661,18 +661,23 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       model: config.claudeCode?.model ?? "",
       smallFastModel: config.claudeCode?.smallFastModel ?? "",
       modelMap: config.claudeCode?.modelMap ?? {},
+      systemEnv: config.claudeCode?.systemEnv !== false,
       available,
       aliases,
       port: config.port,
     });
   }
   if (url.pathname === "/api/claude-code" && req.method === "PUT") {
-    let body: { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown };
+    let body: { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; systemEnv?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     const next = { ...(config.claudeCode ?? {}) };
     if (body.enabled !== undefined) {
       if (typeof body.enabled !== "boolean") return jsonResponse({ error: "enabled must be a boolean" }, 400);
       next.enabled = body.enabled;
+    }
+    if (body.systemEnv !== undefined) {
+      if (typeof body.systemEnv !== "boolean") return jsonResponse({ error: "systemEnv must be a boolean" }, 400);
+      next.systemEnv = body.systemEnv;
     }
     for (const field of ["model", "smallFastModel"] as const) {
       const value = body[field];

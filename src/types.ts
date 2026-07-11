@@ -264,6 +264,12 @@ export interface OcxClaudeCodeConfig {
   smallFastModel?: string;
   /** Inbound model id remaps: exact id first, then date-stripped (`-\d{8}$`). */
   modelMap?: Record<string, string>;
+  /**
+   * Inject ANTHROPIC_BASE_URL etc. into the macOS user domain via `launchctl setenv`
+   * so plain `claude` commands route through the proxy without `ocx claude`. Reverted
+   * on stop/shutdown. Default: true when `enabled` is not false. macOS only.
+   */
+  systemEnv?: boolean;
 }
 
 export interface OcxConfig {

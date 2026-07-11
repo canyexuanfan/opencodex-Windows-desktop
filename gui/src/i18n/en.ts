@@ -437,6 +437,8 @@ export const en = {
   "claude.subtitle": "Use any routed model from Claude Code — this proxy speaks the Anthropic Messages API on the same port.",
   "claude.enabledLabel": "Claude inbound",
   "claude.enabledHint": "Serves POST /v1/messages (+ count_tokens) and gateway model discovery. When off, Claude Code requests get 403.",
+  "claude.systemEnv": "System Environment",
+  "claude.systemEnvDesc": "Inject environment variables so plain claude routes through the proxy.",
   "claude.quickstart": "Quickstart",
   "claude.quickstartHint": "{cmd} starts the proxy if needed and launches Claude Code wired to it (base URL + model discovery); your claude.ai login and connectors stay active.",
   "claude.manualEnv": "Manual setup (without ocx)",

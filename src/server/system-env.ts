@@ -1,0 +1,158 @@
+import { execSync } from "node:child_process";
+import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { getConfigDir } from "../config";
+import type { OcxConfig } from "../types";
+
+const SYSTEM_ENV_NAMES = [
+  "ANTHROPIC_BASE_URL",
+  "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+  "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
+  "ANTHROPIC_AUTH_TOKEN",
+] as const;
+
+interface SystemEnvTracking {
+  pid: number;
+  port: number;
+  injectedAt: string;
+  /** Keys that were actually set by injection (revert only unsets these). */
+  injectedKeys?: string[];
+}
+
+type SystemEnvResult = { injected: boolean; reason?: string };
+type RevertResult = { reverted: boolean; reason?: string };
+type CleanupResult = { cleaned: boolean; reason?: string };
+
+export function getSystemEnvTrackingPath(): string {
+  return join(getConfigDir(), "system-env-port");
+}
+
+export function launchctlGetenv(name: string): string | undefined {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return undefined;
+  try {
+    const value = execSync(`launchctl getenv ${name}`, { encoding: "utf8" }).trim();
+    return value || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readTracking(): SystemEnvTracking | undefined {
+  try {
+    const tracking = JSON.parse(readFileSync(getSystemEnvTrackingPath(), "utf8")) as Partial<SystemEnvTracking>;
+    if (!Number.isInteger(tracking.port) || typeof tracking.pid !== "number" || typeof tracking.injectedAt !== "string") {
+      return undefined;
+    }
+    return tracking as SystemEnvTracking;
+  } catch {
+    return undefined;
+  }
+}
+
+function shellArg(value: string): string {
+  return /^[A-Za-z0-9_./:-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+function setLaunchctlEnv(name: string, value: string): void {
+  execSync(`launchctl setenv ${name} ${shellArg(value)}`);
+}
+
+function unsetLaunchctlEnv(name: string): void {
+  execSync(`launchctl unsetenv ${name}`);
+}
+
+function ownedBaseUrl(port: number): string {
+  return `http://127.0.0.1:${port}`;
+}
+
+export async function injectSystemEnv(port: number, config: OcxConfig): Promise<SystemEnvResult> {
+  if (process.platform !== "darwin") return { injected: false, reason: "not macOS" };
+  if (config.claudeCode?.enabled === false) return { injected: false, reason: "claude disabled" };
+
+  if (config.claudeCode?.systemEnv === false) return { injected: false, reason: "systemEnv disabled" };
+
+  await cleanStaleSystemEnv();
+
+  const currentBaseUrl = launchctlGetenv("ANTHROPIC_BASE_URL");
+  if (currentBaseUrl && !/^http:\/\/127\.0\.0\.1:\d+$/.test(currentBaseUrl)) {
+    return { injected: false, reason: "user has custom ANTHROPIC_BASE_URL" };
+  }
+  // After stale cleanup, if a tracking file still exists with a DIFFERENT port,
+  // another live instance owns the env — don't overwrite it.
+  const existingTracking = readTracking();
+  if (existingTracking && existingTracking.port !== port) {
+    return { injected: false, reason: `another instance owns env (port ${existingTracking.port})` };
+  }
+
+  setLaunchctlEnv("ANTHROPIC_BASE_URL", ownedBaseUrl(port));
+  setLaunchctlEnv("_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL", "1");
+  setLaunchctlEnv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "1");
+  const injectedKeys = [
+    "ANTHROPIC_BASE_URL",
+    "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+    "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
+  ];
+  if (config.apiKeys?.length) {
+    setLaunchctlEnv("ANTHROPIC_AUTH_TOKEN", config.apiKeys[0].key);
+    injectedKeys.push("ANTHROPIC_AUTH_TOKEN");
+  }
+
+  mkdirSync(getConfigDir(), { recursive: true, mode: 0o700 });
+  writeFileSync(getSystemEnvTrackingPath(), JSON.stringify({
+    pid: process.pid,
+    port,
+    injectedAt: new Date().toISOString(),
+    injectedKeys,
+  }), { encoding: "utf8", mode: 0o600 });
+
+  return { injected: true };
+}
+
+export function revertSystemEnv(): RevertResult {
+  if (process.platform !== "darwin") return { reverted: false, reason: "not macOS" };
+
+  const tracking = readTracking();
+  if (!tracking) return { reverted: false, reason: "no tracking file" };
+
+  try {
+    if (launchctlGetenv("ANTHROPIC_BASE_URL") !== ownedBaseUrl(tracking.port)) {
+      return { reverted: false, reason: "ownership mismatch" };
+    }
+
+    // Only unset keys that were actually injected (preserves pre-existing user tokens).
+    const keysToUnset = tracking.injectedKeys ?? SYSTEM_ENV_NAMES as unknown as string[];
+    for (const name of keysToUnset) {
+      try {
+        unsetLaunchctlEnv(name);
+      } catch {
+        // Continue removing the remaining variables during shutdown.
+      }
+    }
+    try {
+      unlinkSync(getSystemEnvTrackingPath());
+    } catch {
+      // The environment was reverted even if the tracking file disappeared concurrently.
+    }
+    return { reverted: true };
+  } catch {
+    return { reverted: false, reason: "revert failed" };
+  }
+}
+
+export async function cleanStaleSystemEnv(): Promise<CleanupResult> {
+  const tracking = readTracking();
+  if (!tracking) return { cleaned: false, reason: "no tracking file" };
+
+  try {
+    const response = await fetch(`${ownedBaseUrl(tracking.port)}/healthz`, {
+      signal: AbortSignal.timeout(1_000),
+    });
+    if (response.ok) return { cleaned: false, reason: "proxy still alive" };
+  } catch {
+    // A failed or timed-out health check means the tracked proxy is stale.
+  }
+
+  const reverted = revertSystemEnv();
+  if (!reverted.reverted) return { cleaned: false, reason: reverted.reason };
+  return { cleaned: true };
+}

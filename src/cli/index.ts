@@ -27,6 +27,7 @@ import { findLiveProxy, probeHostname, type LiveProxy } from "../server/proxy-li
 import { stopProxy } from "../lib/process-control";
 import { serviceCommand, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "../service";
 import { drainAndShutdown, startServer } from "../server";
+import { injectSystemEnv, revertSystemEnv } from "../server/system-env";
 import { startTokenGuardian } from "../oauth/token-guardian";
 import { startHistoryMigrationGuardian } from "../codex/history-migration-guardian";
 import { maybeShowStarPrompt } from "./star-prompt";
@@ -152,6 +153,7 @@ async function handleStart(options: { block?: boolean } = {}) {
     cleaned = true;
     try { guardian.stop(); } catch { /* best-effort */ }
     try { historyGuardian?.stop(); } catch { /* best-effort */ }
+    try { revertSystemEnv(); } catch { /* best-effort */ }
     removePid(process.pid);
     removeRuntimePort(process.pid);
     if (!process.env.OCX_SERVICE) { try { restoreNativeCodex(); } catch { /* best-effort restore */ } }
@@ -191,6 +193,10 @@ async function handleStart(options: { block?: boolean } = {}) {
   // gracefully here so it drains + cleans up instead of a default immediate kill.
   process.on("SIGHUP", shutdown);
   process.on("exit", syncCleanup);
+
+  // System-wide env injection AFTER signal handlers are registered (crash safety:
+  // syncCleanup reverts even if injection itself or subsequent startup steps fail).
+  await injectSystemEnv(port, config).catch(() => {});
 
   await maybeShowStarPrompt(); // once-only [Y/n] GitHub-star prompt on first interactive start
   await syncModelsToCodex(port).catch(() => {});
@@ -284,6 +290,9 @@ async function handleStop() {
   }
   const r = restoreNativeCodex();
   console.log(`↩️  ${r.message}`);
+  // Safety net: revert system env vars even if the daemon's syncCleanup didn't run
+  // (e.g. SIGKILL). revertSystemEnv is ownership-checked and idempotent.
+  try { revertSystemEnv(); } catch { /* best-effort */ }
   if (stopFailed) process.exit(1);
 }
 
@@ -317,6 +326,11 @@ async function handleUninstall() {
   await runStep("native Codex restored", () => {
     const r = restoreNativeCodex();
     if (!r.success) throw new Error(r.message);
+  });
+
+  await runStep("system env vars reverted", () => {
+    const r = revertSystemEnv();
+    if (!r.reverted && r.reason !== "no tracking file" && r.reason !== "not macOS") throw new Error(r.reason ?? "revert failed");
   });
 
   try {

@@ -6,6 +6,7 @@ import { modelLabel } from "../model-display";
 
 interface ClaudeCodeState {
   enabled: boolean;
+  systemEnv: boolean;
   model: string;
   smallFastModel: string;
   modelMap: Record<string, string>;
@@ -27,7 +28,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   const load = async () => {
     try {
       const r = await fetch(`${apiBase}/api/claude-code`).then(res => res.json());
-      setState(r);
+      setState({ ...r, systemEnv: r.systemEnv !== false });
       setRows(Object.entries(r.modelMap ?? {}).map(([from, to]) => ({ from, to: String(to) })));
     } catch {
       setOk(false);
@@ -56,6 +57,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           enabled: state.enabled,
+          systemEnv: state.systemEnv,
           model: state.model,
           smallFastModel: state.smallFastModel,
           modelMap,
@@ -106,6 +108,18 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
         </span>
       </div>
       <p className="muted" style={{ fontSize: 12.5, margin: "6px 2px 0" }}>{t("claude.enabledHint")}</p>
+
+      <div className="card row" style={{ padding: "10px 14px", gap: 12, alignItems: "center", marginTop: 10 }}>
+        <label className="row" style={{ gap: 10, alignItems: "center", cursor: "pointer", flex: 1 }}>
+          <input
+            type="checkbox"
+            checked={state.systemEnv}
+            onChange={e => setState({ ...state, systemEnv: e.target.checked })}
+          />
+          <span style={{ fontWeight: 600 }}>{t("claude.systemEnv")}</span>
+        </label>
+      </div>
+      <p className="muted" style={{ fontSize: 12.5, margin: "6px 2px 0" }}>{t("claude.systemEnvDesc")}</p>
 
       <div className="h-section">{t("claude.quickstart")}</div>
       <p className="muted" style={{ fontSize: 12.5, margin: "0 0 8px" }}><Trans k="claude.quickstartHint" cmd="ocx claude" /></p>

@@ -436,6 +436,8 @@ export const ko: Record<TKey, string> = {
   "claude.subtitle": "Claude Code에서 라우팅된 모든 모델을 사용하세요 — 이 프록시가 같은 포트에서 Anthropic Messages API를 제공합니다.",
   "claude.enabledLabel": "Claude 인바운드",
   "claude.enabledHint": "POST /v1/messages(+ count_tokens)와 게이트웨이 모델 디스커버리를 제공합니다. 끄면 Claude Code 요청은 403을 받습니다.",
+  "claude.systemEnv": "시스템 환경 변수",
+  "claude.systemEnvDesc": "일반 claude 명령이 프록시를 통하도록 환경 변수를 주입합니다.",
   "claude.quickstart": "빠른 시작",
   "claude.quickstartHint": "{cmd} 실행 시 필요하면 프록시를 시작하고, 베이스 URL + 모델 디스커버리를 주입해 Claude Code를 실행합니다. claude.ai 로그인과 커넥터는 그대로 유지됩니다.",
   "claude.manualEnv": "수동 설정 (ocx 없이)",
