@@ -15,11 +15,12 @@
  *  - created_at is a fixed constant; max_input_tokens is authoritative-or-null;
  *    max_tokens is always null (no authoritative output limit exists proxy-side).
  */
-import { catalogModelEfforts, nativeEffortClamp, type CatalogModel } from "../codex/catalog";
+import { catalogModelEfforts, nativeEffortClamp, nativeOpenAiContextWindow, type CatalogModel } from "../codex/catalog";
 import { desktop3pAlias } from "./desktop-3p";
 
 const MODEL_INFO_CREATED_AT = "2026-01-01T00:00:00Z";
 const ANTHROPIC_EFFORT_RUNGS = new Set(["low", "medium", "high", "xhigh", "max"]);
+const ONE_MILLION = 1_000_000;
 
 interface CapabilitySupport { supported: boolean }
 
@@ -94,11 +95,25 @@ function modelInfo(id: string, displayName: string, ladder: readonly string[], i
 export function buildAnthropicModelInfos(nativeSlugs: readonly string[], routedModels: readonly CatalogModel[]): AnthropicModelInfo[] {
   const out: AnthropicModelInfo[] = [];
   const seen = new Set<string>();
+  // [1m] picker variant (devlog 260712 B1): Claude Code accounts exactly 1M for ids
+  // carrying the marker (2.1.207 binary: /\[1m\]/i → 1e6, compaction preserved), so
+  // models with an authoritative >=1M window get a second selectable row. Guards
+  // (audit R1#11): same dedupe set, never double-suffix.
+  const push1mVariant = (base: AnthropicModelInfo, contextWindow: number | undefined) => {
+    if (typeof contextWindow !== "number" || contextWindow < ONE_MILLION) return;
+    if (base.id.includes("[1m]")) return;
+    const id = `${base.id}[1m]`;
+    if (seen.has(id)) return;
+    seen.add(id);
+    out.push({ ...base, id, display_name: `${base.display_name} · 1M`, max_input_tokens: ONE_MILLION });
+  };
   for (const slug of nativeSlugs) {
     const id = desktop3pAlias("native", slug);
     if (seen.has(id)) continue;
     seen.add(id);
-    out.push(modelInfo(id, `${slug} (native)`, nativeEffectiveLadder(slug), true));
+    const info = modelInfo(id, `${slug} (native)`, nativeEffectiveLadder(slug), true);
+    out.push(info);
+    push1mVariant(info, nativeOpenAiContextWindow(slug));
   }
   for (const m of routedModels) {
     const id = desktop3pAlias(m.provider, m.id);
@@ -106,7 +121,9 @@ export function buildAnthropicModelInfos(nativeSlugs: readonly string[], routedM
     seen.add(id);
     const ladder = Array.isArray(m.reasoningEfforts) ? m.reasoningEfforts : [];
     const imageInput = Array.isArray(m.inputModalities) ? m.inputModalities.includes("image") : false;
-    out.push(modelInfo(id, `${m.id} (${m.provider})`, ladder, imageInput, m.contextWindow));
+    const info = modelInfo(id, `${m.id} (${m.provider})`, ladder, imageInput, m.contextWindow);
+    out.push(info);
+    push1mVariant(info, m.contextWindow);
   }
   return out;
 }

@@ -283,6 +283,13 @@ export interface OcxClaudeCodeConfig {
    * forcing effort on every request can leak reasoning params to non-reasoning routes.
    */
   alwaysEnableEffort?: boolean;
+  /**
+   * Subagent tier slots (devlog 260712 B2): injected as ANTHROPIC_DEFAULT_*_MODEL so
+   * Claude Code's Agent-tool aliases (opus/sonnet/haiku/fable + parent-inherit) route
+   * to proxy models. haiku falls back to smallFastModel (one effective value feeds
+   * both ANTHROPIC_DEFAULT_HAIKU_MODEL and legacy ANTHROPIC_SMALL_FAST_MODEL).
+   */
+  tierModels?: { opus?: string; sonnet?: string; haiku?: string; fable?: string };
 }
 
 export interface OcxConfig {

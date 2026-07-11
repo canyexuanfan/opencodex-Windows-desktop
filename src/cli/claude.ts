@@ -7,6 +7,7 @@
  */
 import { spawn } from "node:child_process";
 import { loadConfig } from "../config";
+import { effectiveModelEnv } from "../claude/context-windows";
 import { findLiveProxy } from "../server/proxy-liveness";
 import type { OcxConfig } from "../types";
 
@@ -19,7 +20,7 @@ export interface ClaudeLaunchEnv {
  * token vars triggers Claude Code's auth-conflict warning, 003 E1), and never
  * overrides variables the user already exported.
  */
-export function buildClaudeEnv(config: OcxConfig, port: number, base: ClaudeLaunchEnv): ClaudeLaunchEnv {
+export function buildClaudeEnv(config: OcxConfig, port: number, base: ClaudeLaunchEnv, contextWindows: Record<string, number> = {}): ClaudeLaunchEnv {
   const env: ClaudeLaunchEnv = { ...base };
   const setDefault = (name: string, value: string | undefined) => {
     if (value === undefined || value.length === 0) return;
@@ -54,11 +55,37 @@ export function buildClaudeEnv(config: OcxConfig, port: number, base: ClaudeLaun
     setDefault("CLAUDE_CODE_MAX_CONTEXT_TOKENS", String(Math.floor(maxCtx)));
     setDefault("DISABLE_COMPACT", "1");
   }
-  setDefault("ANTHROPIC_MODEL", config.claudeCode?.model);
-  // Current slot var + deprecated legacy name for older Claude Code versions.
-  setDefault("ANTHROPIC_DEFAULT_HAIKU_MODEL", config.claudeCode?.smallFastModel);
-  setDefault("ANTHROPIC_SMALL_FAST_MODEL", config.claudeCode?.smallFastModel);
+  // Model slots (devlog 260712 B2): default + four tier defaults + legacy small-fast,
+  // with automatic [1m] context-variant marking when the slot's target model has an
+  // authoritative >=1M window (Claude Code then accounts 1M, compaction preserved).
+  for (const [name, value] of Object.entries(effectiveModelEnv(config.claudeCode, contextWindows))) {
+    setDefault(name, value);
+  }
   return env;
+}
+
+/**
+ * Context-window map from the RUNNING proxy's management API (warm TTL cache; the
+ * daemon registers every selector form — audit R3#1). 3s bound + auth header
+ * (OPENCODEX_API_AUTH_TOKEN first, config key fallback — audit R4#1). Failure → {}
+ * (no [1m] marking, conservative).
+ */
+export async function fetchClaudeContextWindows(config: OcxConfig, port: number, timeoutMs = 3_000): Promise<Record<string, number>> {
+  try {
+    const headers = new Headers();
+    const token = process.env.OPENCODEX_API_AUTH_TOKEN || config.apiKeys?.[0]?.key;
+    if (token) headers.set("x-opencodex-api-key", token);
+    const res = await fetch(`http://127.0.0.1:${port}/api/claude-code`, {
+      headers,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) return {};
+    const body = await res.json() as { contextWindows?: Record<string, number> };
+    return body.contextWindows && typeof body.contextWindows === "object" ? body.contextWindows : {};
+  } catch {
+    console.error("⚠ 모델 컨텍스트 정보를 불러오지 못했습니다 — 1M 자동 표시는 이번 실행에서 생략됩니다.");
+    return {};
+  }
 }
 
 async function ensureProxyForClaude(): Promise<number | null> {
@@ -91,7 +118,8 @@ export async function cmdClaude(args: string[]): Promise<number> {
     console.error("❌ Proxy did not become healthy after starting.");
     return 1;
   }
-  const env = buildClaudeEnv(config, port, process.env);
+  const contextWindows = await fetchClaudeContextWindows(config, port);
+  const env = buildClaudeEnv(config, port, process.env, contextWindows);
   return await new Promise<number>(resolve => {
     const child = spawn("claude", args, { stdio: "inherit", env: env as NodeJS.ProcessEnv });
     child.on("error", (err: NodeJS.ErrnoException) => {

@@ -234,4 +234,28 @@ describe("prompt cache key provenance (devlog 130 B3)", () => {
       expect(key.toLowerCase()).not.toContain("cachekeysource");
     }
   });
+
+  test("cache cohort key: model and full tool schemas participate, wire order preserved (devlog 260712 B4)", () => {
+    const tool = (desc: string) => ({ name: "Read", description: desc, input_schema: { type: "object", properties: { a: { type: "string" }, b: { type: "number" } } } });
+    const base = { max_tokens: 1, messages, system: "be nice" };
+    const k = (body: Record<string, unknown>) => anthropicToResponsesTranslation(body).body.prompt_cache_key as string;
+    // model differs -> cohort differs.
+    expect(k({ ...base, model: "m1" })).not.toBe(k({ ...base, model: "m2" }));
+    // same name, different schema/description -> cohort differs (audit R1#4).
+    expect(k({ ...base, model: "m", tools: [tool("v1")] })).not.toBe(k({ ...base, model: "m", tools: [tool("v2")] }));
+    // identical schema with different key ORDER -> same cohort (audit R2#5).
+    const orderedA = { name: "Read", description: "d", input_schema: { type: "object", properties: { a: { type: "string" }, b: { type: "number" } } } };
+    const orderedB = { name: "Read", input_schema: { properties: { b: { type: "number" }, a: { type: "string" } }, type: "object" }, description: "d" };
+    expect(k({ ...base, model: "m", tools: [orderedA] })).toBe(k({ ...base, model: "m", tools: [orderedB] }));
+    // different WIRE ORDER of the tool array -> different cohort (Pro review: the key
+    // must correspond to the actual outbound prefix, so array order participates).
+    const t1 = { name: "A", description: "a", input_schema: { type: "object" } };
+    const t2 = { name: "B", description: "b", input_schema: { type: "object" } };
+    expect(k({ ...base, model: "m", tools: [t1, t2] })).not.toBe(k({ ...base, model: "m", tools: [t2, t1] }));
+  });
+
+  test("[1m] strip works for both alias families before decode", () => {
+    // Legacy claude-ocx-* (pure decode, no registry needed).
+    expect(resolveInboundModel("claude-ocx-cursor--gpt-5.6-luna[1m]")).toBe("cursor/gpt-5.6-luna");
+  });
 });

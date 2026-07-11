@@ -61,10 +61,22 @@ Each entry carries an honest display name such as `gemini-3-pro (gemini)`, plus 
 capabilities (reasoning-effort ladder, thinking types) in the official ModelInfo shape so Claude
 Desktop's third-party gateway mode can offer its effort selector. Real Anthropic models keep their
 canonical ids. Legacy `claude-ocx-<provider>--<model>` ids from older configs still resolve.
+Models with an authoritative 1M context window get an extra `…[1m]` picker row: selecting it makes
+Claude Code account a full 1M context for that model (auto-compaction stays on) — the proxy strips
+the marker before routing.
 Selecting one persists it to Claude Code's `settings.json` `model` field; inbound requests resolve
 the alias back to the routed model. On older Claude Code versions the picker stays native — set
 slots via
 `ANTHROPIC_MODEL` or type any routed id with `/model` (Claude Code passes strings through).
+
+## Subagent tier models
+
+Claude Code subagents choose models by tier alias (`opus` / `sonnet` / `haiku` / `fable`). The
+Claude page lets you map each tier to a routed model; `ocx claude` (and the system-wide env
+option) injects them as `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`,
+`ANTHROPIC_DEFAULT_HAIKU_MODEL` (fed by the small/fast slot unless overridden) and
+`ANTHROPIC_DEFAULT_FABLE_MODEL`. 1M-context targets are marked `[1m]` automatically. Values you
+export yourself always win.
 
 ## GUI
 

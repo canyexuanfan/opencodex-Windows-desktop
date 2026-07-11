@@ -62,4 +62,37 @@ describe("anthropic-flavor ModelInfo discovery entries (devlog 130 B4b)", () => 
     ]);
     expect(infos).toHaveLength(1);
   });
+
+  test("[1m] picker variants: only >=1M models get a second row (devlog 260712 B1)", () => {
+    const infos = buildAnthropicModelInfos([], [
+      { provider: "cursor", id: "gpt-5.6-luna", contextWindow: 1_000_000, reasoningEfforts: ["low", "high", "max"] },
+      { provider: "mock", id: "small-model", contextWindow: 128_000 },
+    ]);
+    const ids = infos.map(i => i.id);
+    const lunaBase = ids.find(id => !id.includes("[1m]") && id !== ids[0]) ?? ids[0];
+    const variants = infos.filter(i => i.id.endsWith("[1m]"));
+    expect(variants).toHaveLength(1);
+    expect(variants[0]!.id).toBe(`${infos[0]!.id}[1m]`);
+    expect(variants[0]!.display_name.endsWith("· 1M")).toBe(true);
+    expect(variants[0]!.max_input_tokens).toBe(1_000_000);
+    // capabilities are shared with the base row.
+    expect(variants[0]!.capabilities.effort.max.supported).toBe(true);
+    expect(String(lunaBase)).toBeDefined();
+  });
+
+  test("[1m] variants cover 1M NATIVES too (audit R1#1) — and skip sub-1M natives", () => {
+    const infos = buildAnthropicModelInfos(["gpt-5.4", "gpt-5.6-sol"], []);
+    const variants = infos.filter(i => i.id.endsWith("[1m]"));
+    expect(variants).toHaveLength(1); // gpt-5.4 (1M) only; gpt-5.6-sol native is 372k
+  });
+
+  test("[1m] variant never double-suffixes or duplicates (audit R1#11)", () => {
+    const infos = buildAnthropicModelInfos([], [
+      // Anthropic passthrough keeps its id verbatim, so an id already carrying the
+      // marker must not grow a second one.
+      { provider: "anthropic", id: "claude-opus-4-6[1m]", contextWindow: 1_000_000 },
+    ]);
+    expect(infos.filter(i => i.id.includes("[1m][1m]")).length).toBe(0);
+    expect(infos).toHaveLength(1);
+  });
 });

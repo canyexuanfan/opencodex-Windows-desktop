@@ -76,6 +76,37 @@ describe("ocx claude env assembly", () => {
     }
   });
 
+  test("tier slots inject ANTHROPIC_DEFAULT_*_MODEL with [1m] auto-marking (devlog 260712 B2)", () => {
+    const windows = { "cursor/gpt-5.6-luna": 1_000_000, "mock/small": 128_000 };
+    const env = buildClaudeEnv(cfg({
+      claudeCode: {
+        model: "cursor/gpt-5.6-luna",
+        smallFastModel: "mock/small",
+        tierModels: { opus: "cursor/gpt-5.6-luna", sonnet: "mock/small", fable: "cursor/gpt-5.6-luna[1m]" },
+      },
+    }), 10100, {}, windows);
+    expect(env.ANTHROPIC_MODEL).toBe("cursor/gpt-5.6-luna[1m]");
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("cursor/gpt-5.6-luna[1m]");
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("mock/small");
+    // already-marked value passes through unchanged (no double suffix).
+    expect(env.ANTHROPIC_DEFAULT_FABLE_MODEL).toBe("cursor/gpt-5.6-luna[1m]");
+    // effective-haiku feeds both variables.
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("mock/small");
+    expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe("mock/small");
+  });
+
+  test("user-exported tier slots win over config tier slots", () => {
+    const env = buildClaudeEnv(cfg({
+      claudeCode: { tierModels: { opus: "cursor/gpt-5.6-luna" } },
+    }), 10100, { ANTHROPIC_DEFAULT_OPUS_MODEL: "my-own" }, { "cursor/gpt-5.6-luna": 1_000_000 });
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("my-own");
+  });
+
+  test("no context map -> no [1m] marking (conservative fallback)", () => {
+    const env = buildClaudeEnv(cfg({ claudeCode: { model: "cursor/gpt-5.6-luna" } }), 10100, {});
+    expect(env.ANTHROPIC_MODEL).toBe("cursor/gpt-5.6-luna");
+  });
+
   test("user-exported env always wins; unset slots stay unset", () => {
     const env = buildClaudeEnv(cfg(), 10100, {
       ANTHROPIC_BASE_URL: "http://my-own-gateway:9",

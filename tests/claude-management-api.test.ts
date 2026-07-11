@@ -124,6 +124,44 @@ test("PUT/GET round-trips the context/effort levers (devlog 136 B6)", async () =
   }
 });
 
+test("PUT/GET round-trips tierModels and GET exposes contextWindows + effectiveModelEnv (devlog 260712 B2)", async () => {
+  const server = startServer(0);
+  try {
+    const put = await fetch(new URL("/api/claude-code", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tierModels: { opus: "mock/test-model", haiku: " mock/other-model " } }),
+    });
+    expect(put.status).toBe(200);
+    const persisted = loadConfig();
+    expect(persisted.claudeCode?.tierModels).toEqual({ opus: "mock/test-model", haiku: "mock/other-model" });
+
+    const get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, any>;
+    expect(get.tierModels).toEqual({ opus: "mock/test-model", haiku: "mock/other-model" });
+    expect(typeof get.contextWindows).toBe("object");
+    expect(get.effectiveModelEnv.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("mock/test-model");
+    expect(get.effectiveModelEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("mock/other-model");
+    expect(get.effectiveModelEnv.ANTHROPIC_SMALL_FAST_MODEL).toBe("mock/other-model");
+
+    // Clearing with empty strings deletes the block; bad shapes 400.
+    const clear = await fetch(new URL("/api/claude-code", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tierModels: { opus: "", haiku: "" } }),
+    });
+    expect(clear.status).toBe(200);
+    expect(loadConfig().claudeCode?.tierModels).toBeUndefined();
+    const bad = await fetch(new URL("/api/claude-code", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tierModels: { opus: 5 } }),
+    });
+    expect(bad.status).toBe(400);
+  } finally {
+    server.stop(true);
+  }
+});
+
 test("PUT validation rejects bad shapes", async () => {
   const server = startServer(0);
   try {

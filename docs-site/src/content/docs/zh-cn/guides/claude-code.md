@@ -56,9 +56,18 @@ claude-opus-4-8-<code>             由路由派生的 3 字符代码（例：cla
 每个条目带有诚实的显示名（如 `gemini-3-pro (gemini)`），并以官方 ModelInfo 形态附带模型能力
 信息（推理强度梯度、thinking 类型），使 Claude Desktop 的第三方网关模式能够启用推理强度选择
 UI。真实 Anthropic 模型保留其原始 id。旧配置中的 `claude-ocx-<provider>--<model>` 别名仍可
-解析。选中后会保存到 Claude Code 的 `settings.json` `model` 字段；入站请求会将别名解析回路由
+解析。拥有 1M 上下文的模型会多出一行 `…[1m]`：选中后 Claude Code 会按 1M 计算该模型的上下文
+（自动压缩保留，代理在路由前去掉该标记）。选中后会保存到 Claude Code 的 `settings.json`
+`model` 字段；入站请求会将别名解析回路由
 模型。旧版 Claude Code 中选择器保持原生 — 通过 `ANTHROPIC_MODEL` 设置槽位，或直接在 `/model`
 中输入任意路由 id（Claude Code 会原样传递字符串）。
+
+## 子代理层级模型
+
+Claude Code 子代理按层级别名（`opus` / `sonnet` / `haiku` / `fable`）选择模型。在 Claude 页面
+为每个别名指定路由模型后，`ocx claude`（及系统环境变量选项）会注入对应的
+`ANTHROPIC_DEFAULT_*_MODEL`。haiku 跟随小型/快速槽位；1M 模型自动加 `[1m]`。你自己导出的值
+始终优先。
 
 ## GUI
 

@@ -337,3 +337,24 @@ test("defensive [1m] strip: a leaked context-variant marker still routes to the 
     upstream.stop(true);
   }
 });
+
+test("count_tokens is CJK-aware: Korean body counts more tokens than equal-length English (devlog 260712 B3)", async () => {
+  saveConfig(mockConfig("http://127.0.0.1:1/v1"));
+  const server = startServer(0);
+  try {
+    const count = async (content: string) => {
+      const res = await fetch(new URL("/v1/messages/count_tokens", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": "placeholder" },
+        body: JSON.stringify({ model: "mock/test-model", messages: [{ role: "user", content }] }),
+      });
+      return (await res.json() as { input_tokens: number }).input_tokens;
+    };
+    const korean = "가나다라마바사아자차카타파하".repeat(40);
+    const english = "abcdefghijklmn".repeat(40); // same char length
+    expect(korean.length).toBe(english.length);
+    expect(await count(korean)).toBeGreaterThan(await count(english));
+  } finally {
+    server.stop(true);
+  }
+});

@@ -653,6 +653,8 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     const models = await fetchAllModels(config);
     const { listCatalogNativeSlugs } = await import("../codex/catalog");
     const { desktop3pAlias } = await import("../claude/desktop-3p");
+    const { buildClaudeContextWindows, effectiveModelEnv } = await import("../claude/context-windows");
+    const { visibleNativeSlugs } = await import("../codex/catalog");
     const disabled = new Set(config.disabledModels ?? []);
     const available = [
       ...listCatalogNativeSlugs(),
@@ -666,22 +668,26 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       if (disabled.has(`${m.provider}/${m.id}`)) continue;
       aliases.push({ id: desktop3pAlias(m.provider, m.id), display_name: `${m.id} (${m.provider})` });
     }
+    const contextWindows = buildClaudeContextWindows([...visibleNativeSlugs(config)], models);
     return jsonResponse({
       enabled: config.claudeCode?.enabled !== false,
       model: config.claudeCode?.model ?? "",
       smallFastModel: config.claudeCode?.smallFastModel ?? "",
+      tierModels: config.claudeCode?.tierModels ?? {},
       modelMap: config.claudeCode?.modelMap ?? {},
       systemEnv: config.claudeCode?.systemEnv === true,
       maxContextTokens: config.claudeCode?.maxContextTokens ?? null,
       alwaysEnableEffort: config.claudeCode?.alwaysEnableEffort === true,
       fastMode: config.fastMode,
+      contextWindows,
+      effectiveModelEnv: effectiveModelEnv(config.claudeCode, contextWindows),
       available,
       aliases,
       port: config.port,
     });
   }
   if (url.pathname === "/api/claude-code" && req.method === "PUT") {
-    let body: { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; systemEnv?: unknown; fastMode?: unknown; maxContextTokens?: unknown; alwaysEnableEffort?: unknown };
+    let body: { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; systemEnv?: unknown; fastMode?: unknown; maxContextTokens?: unknown; alwaysEnableEffort?: unknown; tierModels?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     const next = { ...(config.claudeCode ?? {}) };
     if (body.enabled !== undefined) {
@@ -706,6 +712,20 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       } else {
         next.maxContextTokens = body.maxContextTokens;
       }
+    }
+    if (body.tierModels !== undefined) {
+      if (!body.tierModels || typeof body.tierModels !== "object" || Array.isArray(body.tierModels)) {
+        return jsonResponse({ error: "tierModels must be an object" }, 400);
+      }
+      const tiers: Record<string, string> = {};
+      for (const tier of ["opus", "sonnet", "haiku", "fable"] as const) {
+        const value = (body.tierModels as Record<string, unknown>)[tier];
+        if (value === undefined || value === null) continue;
+        if (typeof value !== "string") return jsonResponse({ error: `tierModels.${tier} must be a string` }, 400);
+        if (value.trim() !== "") tiers[tier] = value.trim();
+      }
+      if (Object.keys(tiers).length > 0) next.tierModels = tiers;
+      else delete next.tierModels;
     }
     if (body.fastMode !== undefined) {
       if (body.fastMode !== true && body.fastMode !== false && body.fastMode !== null) {

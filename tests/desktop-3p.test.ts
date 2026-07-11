@@ -66,6 +66,11 @@ describe("Claude Desktop 3P models", () => {
     expect(resolveInboundModel("claude-fable-5")).toBe("claude-fable-5");
   });
 
+  test("[1m] strip resolves registry-backed desktop aliases (audit R2#6)", () => {
+    buildDesktop3pRegistry(["gpt-5.6-sol"], []);
+    expect(resolveInboundModel("claude-opus-4-8-ncb[1m]")).toBe("gpt-5.6-sol");
+  });
+
   test("resolves aliases from the current registry", () => {
     const registry = buildDesktop3pRegistry(
       ["gpt-5.6-sol"],

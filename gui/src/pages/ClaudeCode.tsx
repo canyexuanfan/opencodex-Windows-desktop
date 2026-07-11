@@ -12,6 +12,8 @@ interface ClaudeCodeState {
   alwaysEnableEffort: boolean;
   model: string;
   smallFastModel: string;
+  tierModels: { opus?: string; sonnet?: string; haiku?: string; fable?: string };
+  effectiveModelEnv: Record<string, string>;
   modelMap: Record<string, string>;
   available: string[];
   aliases: { id: string; display_name: string }[];
@@ -31,7 +33,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   const load = async () => {
     try {
       const r = await fetch(`${apiBase}/api/claude-code`).then(res => res.json());
-      setState({ ...r, systemEnv: r.systemEnv !== false, fastMode: r.fastMode ?? null, maxContextTokens: r.maxContextTokens ?? null, alwaysEnableEffort: r.alwaysEnableEffort === true });
+      setState({ ...r, systemEnv: r.systemEnv !== false, fastMode: r.fastMode ?? null, maxContextTokens: r.maxContextTokens ?? null, alwaysEnableEffort: r.alwaysEnableEffort === true, tierModels: r.tierModels ?? {}, effectiveModelEnv: r.effectiveModelEnv ?? {} });
       setRows(Object.entries(r.modelMap ?? {}).map(([from, to]) => ({ from, to: String(to) })));
     } catch {
       setOk(false);
@@ -66,6 +68,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
           alwaysEnableEffort: state.alwaysEnableEffort,
           model: state.model,
           smallFastModel: state.smallFastModel,
+          tierModels: state.tierModels,
           modelMap,
         }),
       });
@@ -83,12 +86,15 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   if (!state) return <Notice tone="err">{status || t("claude.loadFail")}</Notice>;
 
   const baseUrl = `http://127.0.0.1:${state.port}`;
+  // Effective values ([1m] auto-marking applied server-side) — audit R3#5/R4#4.
+  const env = state.effectiveModelEnv;
   const manualEnv = [
     `export ANTHROPIC_BASE_URL=${baseUrl}`,
     "# no ANTHROPIC_AUTH_TOKEN: your claude.ai login (and connectors) stay active",
     "export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1",
-    ...(state.model ? [`export ANTHROPIC_MODEL=${state.model}`] : []),
-    ...(state.smallFastModel ? [`export ANTHROPIC_DEFAULT_HAIKU_MODEL=${state.smallFastModel}`] : []),
+    ...(["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL"]
+      .filter(name => env[name])
+      .map(name => `export ${name}=${env[name]}`)),
     "claude",
   ].join("\n");
 
@@ -197,6 +203,20 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
         label={t("claude.smallFastModel")}
         style={{ maxWidth: 420 }}
       />
+
+      <div className="h-section">{t("claude.tierModels")}</div>
+      <p className="muted" style={{ fontSize: 12.5, margin: "0 0 8px" }}>{t("claude.tierModelsHint")}</p>
+      {(["opus", "sonnet", "fable"] as const).map(tier => (
+        <div key={tier} style={{ marginBottom: 8 }}>
+          <Select
+            value={state.tierModels[tier] ?? ""}
+            options={modelOptions}
+            onChange={v => setState({ ...state, tierModels: { ...state.tierModels, [tier]: v || undefined } })}
+            label={t(`claude.tier.${tier}`)}
+            style={{ maxWidth: 420 }}
+          />
+        </div>
+      ))}
 
       <div className="h-section">{t("claude.modelMap")} <span className="count">{rows.length}</span></div>
       <p className="muted" style={{ fontSize: 12.5, margin: "0 0 8px" }}>{t("claude.modelMapHint")}</p>

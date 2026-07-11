@@ -60,9 +60,18 @@ claude-opus-4-8-<code>             라우트에서 유도한 3자 코드 (예: c
 능력 정보(추론 강도 사다리, thinking 타입)를 실어 보냅니다 — Claude Desktop의 서드파티
 게이트웨이 모드가 추론 강도 선택 UI를 열 수 있게 하기 위해서입니다. 실제 Anthropic 모델은
 원래 id를 그대로 유지합니다. 구버전 설정의 `claude-ocx-<provider>--<model>` 별칭도 계속
-해석됩니다. 선택하면 Claude Code의 `settings.json` `model` 필드에 저장되고, 인바운드 요청에서
+해석됩니다. 컨텍스트가 1M인 모델에는 `…[1m]` 행이 하나 더 생깁니다 — 이걸 고르면 Claude
+Code가 그 모델의 컨텍스트를 1M로 계산합니다(자동 요약 유지, 프록시가 표식을 떼고 라우팅).
+선택하면 Claude Code의 `settings.json` `model` 필드에 저장되고, 인바운드 요청에서
 별칭이 라우팅 모델로 되돌려집니다. 구버전 Claude Code에서는 `ANTHROPIC_MODEL`로 슬롯을
 지정하거나 `/model`에 라우팅 id를 직접 입력하세요 (Claude Code는 문자열을 그대로 통과시킵니다).
+
+## 서브에이전트 티어 모델
+
+Claude Code 서브에이전트는 `opus` / `sonnet` / `haiku` / `fable` 별칭으로 모델을 고릅니다.
+Claude 페이지에서 각 별칭이 어떤 라우팅 모델을 뜻할지 정하면 `ocx claude`(및 시스템 환경
+변수 옵션)가 `ANTHROPIC_DEFAULT_*_MODEL`로 주입합니다. haiku는 소형/고속 슬롯을 따르고,
+1M 모델에는 `[1m]`이 자동으로 붙습니다. 직접 export한 값이 항상 우선합니다.
 
 ## GUI
 

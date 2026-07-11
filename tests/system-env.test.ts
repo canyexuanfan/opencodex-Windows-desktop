@@ -226,4 +226,22 @@ describe("systemEnv lever keys (devlog 136 B6)", () => {
     const shellWrite = writes.find(w => w.path.includes("claude-env.sh"));
     expect(shellWrite!.data).not.toContain("DISABLE_COMPACT");
   });
+
+  test("tier slots inject ANTHROPIC_DEFAULT_*_MODEL via launchctl and conditional shell exports", async () => {
+    const writes = capturedWrites();
+    const tierConfig = {
+      ...baseConfig,
+      claudeCode: { systemEnv: true, tierModels: { opus: "cursor/gpt-5.6-luna", sonnet: "mock/small" } },
+    } satisfies OcxConfig;
+    expect(await injectSystemEnv(4096, tierConfig)).toEqual({ injected: true });
+    const setCalls = execSpy.mock.calls.map(call => String(call[0]));
+    expect(setCalls.some(c => c.startsWith("launchctl setenv ANTHROPIC_DEFAULT_OPUS_MODEL"))).toBe(true);
+    expect(setCalls.some(c => c.startsWith("launchctl setenv ANTHROPIC_DEFAULT_SONNET_MODEL"))).toBe(true);
+    const trackingWrite = writes.filter(w => w.path.includes("system-env-port")).at(-1);
+    expect(JSON.parse(trackingWrite!.data).injectedKeys).toEqual(expect.arrayContaining([
+      "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    ]));
+    const shellWrite = writes.find(w => w.path.includes("claude-env.sh"));
+    expect(shellWrite!.data).toContain('[ -z "${ANTHROPIC_DEFAULT_OPUS_MODEL+x}" ] && export ANTHROPIC_DEFAULT_OPUS_MODEL=');
+  });
 });

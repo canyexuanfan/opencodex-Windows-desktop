@@ -1,6 +1,24 @@
 import { describe, expect, test } from "bun:test";
 import { charsPerToken, estimateTokens } from "../src/lib/token-estimate";
 
+describe("CJK-aware ratio (devlog 260712 B3)", () => {
+  const korean = "한국어 텍스트는 토큰 밀도가 높아서 영어 기준 추정이 과소계산됩니다 ".repeat(10);
+  const english = "English text estimates fine at the default four chars per token ratio ".repeat(10);
+
+  test("CJK-heavy text clamps DOWN to 2.5 chars/token (more tokens than English ratio)", () => {
+    expect(estimateTokens(korean, "gpt-5.6-sol")).toBe(Math.ceil(korean.length / 2.5));
+  });
+
+  test("Claude-shaped models clamp min(3.5, 2.5) -> 2.5 for CJK; keep 3.5 for English (audit R2#7)", () => {
+    expect(estimateTokens(korean, "claude-sonnet-4-6")).toBe(Math.ceil(korean.length / 2.5));
+    expect(estimateTokens(english, "claude-sonnet-4-6")).toBe(Math.ceil(english.length / 3.5));
+  });
+
+  test("English text keeps the model ratio (no CJK trigger)", () => {
+    expect(estimateTokens(english, "gpt-5.6-sol")).toBe(Math.ceil(english.length / 4));
+  });
+});
+
 describe("token-estimate sidecar", () => {
   test("empty string is 0 tokens", () => {
     expect(estimateTokens("", "claude-opus-4.8")).toBe(0);

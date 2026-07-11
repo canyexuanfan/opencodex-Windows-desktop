@@ -253,6 +253,16 @@ function toolChoiceToResponses(choice: unknown, body: Rec): void {
   }
 }
 
+/** Recursive canonical JSON (keys sorted at every depth) — stable cache-cohort input. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Rec).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
 /** Provenance of the generated prompt_cache_key (never serialized into the wire body). */
 export type ClaudeCacheKeySource = "metadata" | "system" | null;
 
@@ -331,11 +341,24 @@ export function anthropicToResponsesTranslation(raw: unknown, cc?: OcxClaudeCode
   } else if (systemParts.length > 0) {
     // Claude Desktop sends no metadata.user_id (H1, devlog 130): without any key the
     // ChatGPT/OpenAI backends reported cached_tokens:0 on every turn. Fall back to a
-    // system-prompt hash — prompt caching is exact-prefix matched, so conversations
-    // sharing this key can never read each other's content; the key only steers cache
-    // routing affinity. Callers must NOT synthesize a session_id header from this
-    // fallback (audit 133 R2#3): cacheKeySource distinguishes the two.
-    body.prompt_cache_key = createHash("sha256").update(systemParts.join("\n\n")).digest("hex").slice(0, 32);
+    // cache-cohort hash (devlog 260712 B4 + Pro review 012): fingerprint what the
+    // upstream actually receives — resolved model, post-translation system, and the
+    // FULL translated tool definitions in WIRE ORDER (sorting the hash while sending
+    // a different order would break the key↔prefix correspondence). canonical JSON
+    // (recursive key sort) + a version field so future normalization changes never
+    // mix cohorts. system-only keys herded different models/toolsets into one key
+    // and burned OpenAI's ~15 RPM per-key routing budget (audit R1#4/R2#5/R1#10).
+    // Exact-prefix matching still isolates content; the key only steers routing
+    // affinity. Callers must NOT synthesize a session_id header from this fallback
+    // (audit 133 R2#3).
+    body.prompt_cache_key = createHash("sha256")
+      .update(canonicalJson({
+        version: 2,
+        model: body.model,
+        system: systemParts,
+        tools: Array.isArray(body.tools) ? body.tools : [],
+      }))
+      .digest("hex").slice(0, 32);
     cacheKeySource = "system";
   }
 
