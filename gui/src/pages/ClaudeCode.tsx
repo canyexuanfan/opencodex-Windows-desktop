@@ -95,55 +95,49 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
 
       {status && <Notice tone={ok ? "ok" : "err"}>{status}</Notice>}
 
-      <div className="card row" style={{ padding: "10px 14px", gap: 12, alignItems: "center" }}>
-        <label className="row" style={{ gap: 10, alignItems: "center", cursor: "pointer", flex: 1 }}>
-          <input
-            type="checkbox"
-            checked={state.enabled}
-            onChange={e => setState({ ...state, enabled: e.target.checked })}
-            aria-label={t("claude.toggleAria")}
-          />
-          <span style={{ fontWeight: 600 }}>{t("claude.enabledLabel")}</span>
-        </label>
-        <span className="mono" style={{ color: state.enabled ? "var(--accent)" : "var(--faint)", fontWeight: 700, fontSize: 12 }}>
-          {state.enabled ? "Claude ON" : "Claude OFF"}
-        </span>
-      </div>
-      <p className="muted" style={{ fontSize: 12.5, margin: "6px 2px 0" }}>{t("claude.enabledHint")}</p>
+      <div className="card" style={{ overflow: "hidden" }}>
+        <div className="setting-row">
+          <div className="setting-label">
+            <span className="title">{t("claude.enabledLabel")}</span>
+            <span className="desc">{t("claude.enabledHint")}</span>
+          </div>
+          <label className="toggle">
+            <input type="checkbox" checked={state.enabled} onChange={e => setState({ ...state, enabled: e.target.checked })} />
+            <span className="slider" />
+          </label>
+        </div>
 
-      <div className="card row" style={{ padding: "10px 14px", gap: 12, alignItems: "center", marginTop: 10 }}>
-        <label className="row" style={{ gap: 10, alignItems: "center", cursor: "pointer", flex: 1 }}>
-         <input
-           type="checkbox"
-          checked={state.systemEnv}
-            onChange={e => setState({ ...state, systemEnv: e.target.checked })}
-          />
-          <span style={{ fontWeight: 600 }}>{t("claude.systemEnv")}</span>
-        </label>
-      </div>
-     <p className="muted" style={{ fontSize: 12.5, margin: "6px 2px 0" }}>
-      {t("claude.systemEnvDesc")}
-     </p>
-     <p style={{ fontSize: 12, margin: "4px 2px 0", color: "var(--red)", fontWeight: 500 }}>{t("claude.systemEnvWarn")}</p>
+        <div className="setting-row">
+          <div className="setting-label">
+            <span className="title">{t("claude.systemEnv")}</span>
+            <span className="desc">{t("claude.systemEnvDesc")}</span>
+            {state.systemEnv && <span className="desc" style={{ color: "var(--red)" }}>{t("claude.systemEnvWarn")}</span>}
+          </div>
+          <label className="toggle">
+            <input type="checkbox" checked={state.systemEnv} onChange={e => setState({ ...state, systemEnv: e.target.checked })} />
+            <span className="slider" />
+          </label>
+        </div>
 
-      <div className="card row" style={{ padding: "10px 14px", gap: 12, alignItems: "center", marginTop: 10 }}>
-        <label className="row" style={{ gap: 10, alignItems: "center", cursor: "pointer", flex: 1 }}>
+        <div className="setting-row">
+          <div className="setting-label">
+            <span className="title">{t("claude.fastMode")}</span>
+            <span className="desc">{t("claude.fastModeDesc")}</span>
+          </div>
           <select
             value={state.fastMode === null ? "auto" : state.fastMode ? "on" : "off"}
             onChange={e => {
               const v = e.target.value;
               setState({ ...state, fastMode: v === "auto" ? null : v === "on" });
             }}
-            style={{ padding: "4px 8px" }}
+            style={{ padding: "5px 10px", borderRadius: "var(--radius-xs)", border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontSize: 12.5, fontWeight: 500 }}
           >
             <option value="auto">{t("claude.fastAuto")}</option>
             <option value="on">{t("claude.fastOn")}</option>
             <option value="off">{t("claude.fastOff")}</option>
           </select>
-          <span style={{ fontWeight: 600 }}>{t("claude.fastMode")}</span>
-        </label>
+        </div>
       </div>
-      <p className="muted" style={{ fontSize: 12.5, margin: "6px 2px 0" }}>{t("claude.fastModeDesc")}</p>
 
       <div className="h-section">{t("claude.quickstart")}</div>
       <p className="muted" style={{ fontSize: 12.5, margin: "0 0 8px" }}><Trans k="claude.quickstartHint" cmd="ocx claude" /></p>
