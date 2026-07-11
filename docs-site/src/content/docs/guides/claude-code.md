@@ -18,12 +18,22 @@ ocx claude
 | Variable | Value |
 | --- | --- |
 | `ANTHROPIC_BASE_URL` | `http://127.0.0.1:<port>` |
-| `ANTHROPIC_AUTH_TOKEN` | Your opencodex API key, or a local placeholder |
+| `ANTHROPIC_AUTH_TOKEN` | Only when the proxy requires an API key — otherwise it is NOT set, so your claude.ai login (subscription + connectors) stays active |
 | `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | `1` (native `/model` picker discovery) |
 | `ANTHROPIC_MODEL` | `claudeCode.model` (optional) |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `claudeCode.smallFastModel` (optional, legacy `ANTHROPIC_SMALL_FAST_MODEL` too) |
 
 Variables you export yourself always win. Extra arguments pass through: `ocx claude -p "hello"`.
+
+## Native Claude passthrough (subscription pierce)
+
+With no auth override set, Claude Code keeps its claude.ai OAuth login and sends it to the proxy.
+Requests for genuine `claude*`/`anthropic*` models that no alias or model map claims are forwarded
+**verbatim** to `api.anthropic.com` with your own credential and all end-to-end headers — betas,
+thinking signatures, prompt caching and billing identity stay fully native, and routed models keep
+working in the same session via the picker aliases. This also means the
+"claude.ai connectors are disabled" warning no longer appears with `ocx claude`.
+Disable with `claudeCode.nativePassthrough: false`; point elsewhere with `claudeCode.anthropicBaseUrl`.
 
 ## The /model picker ("From gateway")
 
@@ -70,13 +80,13 @@ Lookup order: discovery alias, exact id, id with the date suffix stripped (`-202
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:10100
-export ANTHROPIC_AUTH_TOKEN=opencodex-local
 export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
 claude
 ```
 
-Or persist it in `~/.claude/settings.json` under the `env` key. Do not set both
-`ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` — Claude Code reports an auth conflict.
+Or persist it in `~/.claude/settings.json` under the `env` key. Leave `ANTHROPIC_AUTH_TOKEN` /
+`ANTHROPIC_API_KEY` unset unless the proxy requires an admission key — any auth override disables
+claude.ai connectors and replaces your subscription login.
 
 ## Notes and limits
 

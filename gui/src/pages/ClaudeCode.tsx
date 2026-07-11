@@ -77,7 +77,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   const baseUrl = `http://127.0.0.1:${state.port}`;
   const manualEnv = [
     `export ANTHROPIC_BASE_URL=${baseUrl}`,
-    "export ANTHROPIC_AUTH_TOKEN=opencodex-local",
+    "# no ANTHROPIC_AUTH_TOKEN: your claude.ai login (and connectors) stay active",
     "export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1",
     ...(state.model ? [`export ANTHROPIC_MODEL=${state.model}`] : []),
     ...(state.smallFastModel ? [`export ANTHROPIC_DEFAULT_HAIKU_MODEL=${state.smallFastModel}`] : []),

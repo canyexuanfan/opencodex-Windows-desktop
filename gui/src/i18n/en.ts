@@ -426,7 +426,7 @@ export const en = {
   "claude.enabledLabel": "Claude inbound",
   "claude.enabledHint": "Serves POST /v1/messages (+ count_tokens) and gateway model discovery. When off, Claude Code requests get 403.",
   "claude.quickstart": "Quickstart",
-  "claude.quickstartHint": "{cmd} starts the proxy if needed and launches Claude Code fully wired (base URL, auth token, model discovery).",
+  "claude.quickstartHint": "{cmd} starts the proxy if needed and launches Claude Code wired to it (base URL + model discovery); your claude.ai login and connectors stay active.",
   "claude.manualEnv": "Manual setup (without ocx)",
   "claude.defaultModel": "Default model (ANTHROPIC_MODEL)",
   "claude.smallFastModel": "Small/fast model (ANTHROPIC_DEFAULT_HAIKU_MODEL)",

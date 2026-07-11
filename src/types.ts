@@ -242,6 +242,13 @@ export interface OcxUsage {
 export interface OcxClaudeCodeConfig {
   /** Kill switch for the /v1/messages inbound (GUI "Claude ON" toggle). Default: enabled. */
   enabled?: boolean;
+  /**
+   * Verbatim passthrough of unmapped claude/anthropic models to api.anthropic.com with the
+   * caller's own sk-ant-* credential (Claude Code subscription OAuth). Default: enabled.
+   */
+  nativePassthrough?: boolean;
+  /** Upstream for the native passthrough (tests/enterprise gateways). Default: https://api.anthropic.com */
+  anthropicBaseUrl?: string;
   /** Default model slot injected as ANTHROPIC_MODEL by `ocx claude`. */
   model?: string;
   /** Haiku/small-fast slot injected as ANTHROPIC_DEFAULT_HAIKU_MODEL (+ legacy SMALL_FAST). */

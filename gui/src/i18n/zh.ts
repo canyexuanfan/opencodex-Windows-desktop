@@ -425,7 +425,7 @@ export const zh: Record<TKey, string> = {
   "claude.enabledLabel": "Claude 入站",
   "claude.enabledHint": "提供 POST /v1/messages（+ count_tokens）和网关模型发现。关闭后 Claude Code 请求将收到 403。",
   "claude.quickstart": "快速开始",
-  "claude.quickstartHint": "{cmd} 会按需启动代理，并注入环境变量（基础 URL、认证令牌、模型发现）后启动 Claude Code。",
+  "claude.quickstartHint": "{cmd} 会按需启动代理，并注入基础 URL + 模型发现后启动 Claude Code；你的 claude.ai 登录和连接器保持有效。",
   "claude.manualEnv": "手动配置（不使用 ocx）",
   "claude.defaultModel": "默认模型 (ANTHROPIC_MODEL)",
   "claude.smallFastModel": "小型/快速模型 (ANTHROPIC_DEFAULT_HAIKU_MODEL)",

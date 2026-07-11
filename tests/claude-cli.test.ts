@@ -12,12 +12,14 @@ function cfg(extra?: Partial<OcxConfig>): OcxConfig {
 }
 
 describe("ocx claude env assembly", () => {
-  test("injects base URL, auth token, discovery flag and model slots", () => {
+  test("injects base URL, discovery flag and model slots — NO auth token by default (subscription mode)", () => {
     const env = buildClaudeEnv(cfg({
       claudeCode: { model: "claude-ocx-gemini--gemini-3-pro", smallFastModel: "gemini/gemini-3-flash" },
     }), 10123, {});
     expect(env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:10123");
-    expect(env.ANTHROPIC_AUTH_TOKEN).toBe("opencodex-local");
+    // Setting ANTHROPIC_AUTH_TOKEN disables claude.ai connectors and kills subscription
+    // OAuth — the launcher must leave it unset on an open loopback proxy.
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
     expect(env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY).toBe("1");
     expect(env.ANTHROPIC_MODEL).toBe("claude-ocx-gemini--gemini-3-pro");
     expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("gemini/gemini-3-flash");
@@ -26,7 +28,7 @@ describe("ocx claude env assembly", () => {
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
   });
 
-  test("configured API key becomes the auth token", () => {
+  test("configured API key becomes the auth token (admission required)", () => {
     const env = buildClaudeEnv(cfg({
       apiKeys: [{ id: "1", name: "main", key: "sk-ocx-123", createdAt: "2026-01-01" }],
     }), 10100, {});

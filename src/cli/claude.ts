@@ -27,8 +27,14 @@ export function buildClaudeEnv(config: OcxConfig, port: number, base: ClaudeLaun
     env[name] = value;
   };
   setDefault("ANTHROPIC_BASE_URL", `http://127.0.0.1:${port}`);
-  const authToken = config.apiKeys?.[0]?.key ?? process.env.OPENCODEX_API_AUTH_TOKEN ?? "opencodex-local";
-  setDefault("ANTHROPIC_AUTH_TOKEN", authToken);
+  // Subscription-preserving default (teamclaude --no-mitm / Vercel gateway pattern):
+  // setting ANTHROPIC_AUTH_TOKEN/API_KEY disables claude.ai connectors and overrides
+  // the user's Claude login. Only inject a token when the proxy actually requires an
+  // admission key; otherwise Claude Code keeps its own OAuth and sends it to us —
+  // native claude models then pass through verbatim (see server/claude-messages.ts).
+  if ((config.apiKeys?.length ?? 0) > 0) {
+    setDefault("ANTHROPIC_AUTH_TOKEN", config.apiKeys![0].key);
+  }
   // Native /model picker discovery ("From gateway", Claude Code >= 2.1.129).
   setDefault("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "1");
   setDefault("ANTHROPIC_MODEL", config.claudeCode?.model);

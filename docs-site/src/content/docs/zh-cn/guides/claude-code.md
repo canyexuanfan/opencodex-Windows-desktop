@@ -17,12 +17,20 @@ ocx claude
 | 变量 | 值 |
 | --- | --- |
 | `ANTHROPIC_BASE_URL` | `http://127.0.0.1:<port>` |
-| `ANTHROPIC_AUTH_TOKEN` | 你的 opencodex API 密钥，或本地占位符 |
+| `ANTHROPIC_AUTH_TOKEN` | 仅当代理要求 API 密钥时 — 否则不设置，保持 claude.ai 登录（订阅 + 连接器）有效 |
 | `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | `1`（原生 `/model` 选择器发现） |
 | `ANTHROPIC_MODEL` | `claudeCode.model`（可选） |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `claudeCode.smallFastModel`（可选，含旧版 `ANTHROPIC_SMALL_FAST_MODEL`） |
 
 你自己导出的变量始终优先。额外参数原样传递：`ocx claude -p "hello"`。
+
+## 原生 Claude 直通（订阅穿透）
+
+未设置认证覆盖时，Claude Code 保持 claude.ai OAuth 登录并将其发送给代理。未被别名或模型映射
+占用的真正 `claude*`/`anthropic*` 模型请求会带着你自己的凭证和全部端到端头 **原样** 转发到
+`api.anthropic.com` — beta、thinking 签名、提示缓存和计费身份完全原生，同一会话中路由模型仍可
+通过选择器别名使用。因此 `ocx claude` 不再出现 "claude.ai connectors are disabled" 警告。
+关闭：`claudeCode.nativePassthrough: false`；更改目标：`claudeCode.anthropicBaseUrl`。
 
 ## /model 选择器（"From gateway"）
 
@@ -67,13 +75,13 @@ claude-ocx-native--<slug>          例：claude-ocx-native--gpt-5.5（原生 Ope
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:10100
-export ANTHROPIC_AUTH_TOKEN=opencodex-local
 export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
 claude
 ```
 
-或持久化到 `~/.claude/settings.json` 的 `env` 键。不要同时设置 `ANTHROPIC_API_KEY` 和
-`ANTHROPIC_AUTH_TOKEN` — Claude Code 会报告认证冲突。
+或持久化到 `~/.claude/settings.json` 的 `env` 键。除非代理要求准入密钥，否则不要设置
+`ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` — 任何认证覆盖都会禁用 claude.ai 连接器并取代
+你的订阅登录。
 
 ## 注意事项与限制
 

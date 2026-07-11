@@ -7,7 +7,7 @@
  * unchanged. The Responses output (SSE or JSON) is converted back to Anthropic shape.
  */
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
-import { AnthropicRequestError, anthropicToResponsesBody } from "../claude/inbound";
+import { AnthropicRequestError, anthropicToResponsesBody, resolveInboundModel } from "../claude/inbound";
 import {
   anthropicErrorBody,
   anthropicErrorResponse,
@@ -25,6 +25,10 @@ import { handleResponses } from "./responses";
 
 type Rec = Record<string, unknown>;
 
+function isRec(v: unknown): v is Rec {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
 function claudeInboundDisabled(config: OcxConfig): Response | null {
   if (config.claudeCode?.enabled === false) {
     return anthropicErrorResponse(403, "Claude inbound is disabled (GUI: Claude ON toggle / config.claudeCode.enabled)", "permission_error");
@@ -38,6 +42,168 @@ async function readAnthropicBody(req: Request): Promise<unknown> {
   } catch (err) {
     throw new AnthropicRequestError(err instanceof Error && err.message ? err.message : "Invalid JSON body");
   }
+}
+
+// ── Native Anthropic passthrough (subscription OAuth pierce) ──────────────────────
+// When Claude Code runs with ONLY ANTHROPIC_BASE_URL set (subscription mode — the
+// connectors warning stays off), it sends its OWN claude.ai OAuth Bearer to us.
+// Requests for genuine claude/anthropic models that no alias/modelMap claims are
+// forwarded VERBATIM to api.anthropic.com with the caller's credential and all
+// end-to-end headers, so betas/thinking signatures/billing identity stay native.
+// (Evidence: teamclaude --no-mitm + Vercel gateway docs, devlog 003/060.)
+
+const PASSTHROUGH_STRIP_HEADERS = new Set([
+  "connection", "keep-alive", "transfer-encoding", "upgrade", "te", "trailer",
+  "proxy-authenticate", "proxy-authorization", "host", "content-length",
+  "accept-encoding", "x-opencodex-api-key", "origin",
+]);
+
+function hasAnthropicNativeCredential(req: Request): boolean {
+  const bearer = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim() ?? "";
+  const apiKey = req.headers.get("x-api-key")?.trim() ?? "";
+  return bearer.startsWith("sk-ant-") || apiKey.startsWith("sk-ant-");
+}
+
+function wantsNativePassthrough(req: Request, config: OcxConfig, model: unknown): model is string {
+  if (config.claudeCode?.nativePassthrough === false) return false;
+  if (typeof model !== "string" || !/^(claude|anthropic)/i.test(model)) return false;
+  if (!hasAnthropicNativeCredential(req)) return false;
+  // An alias or modelMap hit means the user asked for a ROUTED model: translate instead.
+  return resolveInboundModel(model, config.claudeCode) === model;
+}
+
+function anthropicUsageToOcx(usage: Rec | undefined): { inputTokens: number; outputTokens: number; cachedInputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number } | undefined {
+  if (!usage) return undefined;
+  const num = (v: unknown) => typeof v === "number" ? v : 0;
+  const hasCache = usage.cache_read_input_tokens !== undefined || usage.cache_creation_input_tokens !== undefined;
+  return {
+    inputTokens: num(usage.input_tokens),
+    outputTokens: num(usage.output_tokens),
+    ...(hasCache ? {
+      cachedInputTokens: num(usage.cache_read_input_tokens) + num(usage.cache_creation_input_tokens),
+      cacheReadInputTokens: num(usage.cache_read_input_tokens),
+      cacheCreationInputTokens: num(usage.cache_creation_input_tokens),
+    } : {}),
+  };
+}
+
+/** Tap an Anthropic-vocabulary SSE stream for the request log (usage + terminal). */
+function tapAnthropicSseForLog(
+  upstream: ReadableStream<Uint8Array>,
+  logCtx: RequestLogContext,
+  finalize: (status: number, meta: { closeReason: "terminal" | "client_cancel" }) => void,
+): ReadableStream<Uint8Array> {
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let usageAcc: Rec = {};
+  const inspect = (chunk: Uint8Array) => {
+    buffer += decoder.decode(chunk, { stream: true });
+    let sep: number;
+    while ((sep = buffer.indexOf("\n\n")) !== -1) {
+      const frame = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+      const dataLine = frame.split("\n").filter(l => l.startsWith("data: ")).map(l => l.slice(6)).join("");
+      if (!dataLine) continue;
+      let data: unknown;
+      try { data = JSON.parse(dataLine); } catch { continue; }
+      if (!isRec(data)) continue;
+      if (data.type === "message_start" && isRec(data.message) && isRec(data.message.usage)) {
+        usageAcc = { ...usageAcc, ...data.message.usage };
+      } else if (data.type === "message_delta" && isRec(data.usage)) {
+        usageAcc = { ...usageAcc, ...data.usage };
+      }
+    }
+  };
+  const reader = upstream.getReader();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          logCtx.usage = anthropicUsageToOcx(Object.keys(usageAcc).length > 0 ? usageAcc : undefined);
+          finalize(200, { closeReason: "terminal" });
+          controller.close();
+          return;
+        }
+        inspect(value);
+        controller.enqueue(value);
+      } catch (err) {
+        finalize(200, { closeReason: "terminal" });
+        try { controller.error(err); } catch { /* torn down */ }
+      }
+    },
+    cancel(reason) {
+      finalize(499, { closeReason: "client_cancel" });
+      reader.cancel(reason).catch(() => {});
+    },
+  });
+}
+
+async function anthropicNativePassthrough(
+  req: Request,
+  config: OcxConfig,
+  logCtx: RequestLogContext,
+  logIds: { requestId: string; start: number } | undefined,
+  body: Rec,
+  pathname: string,
+): Promise<Response> {
+  const model = typeof body.model === "string" ? body.model : "unknown";
+  logCtx.model = model;
+  logCtx.provider = "anthropic-native";
+  logCtx.requestedModel = model;
+  let logged = false;
+  const finalize = (status: number, meta: { closeReason: "terminal" | "client_cancel" | "non_stream" }) => {
+    if (!logIds || logged) return;
+    logged = true;
+    addFinalRequestLog(logIds.requestId, logIds.start, logCtx, status, meta);
+  };
+
+  const base = (config.claudeCode?.anthropicBaseUrl ?? "https://api.anthropic.com").replace(/\/$/, "");
+  const search = new URL(req.url).search;
+  const headers = new Headers();
+  req.headers.forEach((value, name) => {
+    if (!PASSTHROUGH_STRIP_HEADERS.has(name.toLowerCase())) headers.set(name, value);
+  });
+  headers.set("content-type", "application/json");
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(`${base}${pathname}${search}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: req.signal,
+    });
+  } catch (err) {
+    finalize(502, { closeReason: "non_stream" });
+    return anthropicErrorResponse(502, `anthropic passthrough failed: ${err instanceof Error ? err.message : String(err)}`, "api_error");
+  }
+
+  const contentType = upstream.headers.get("content-type") ?? "application/json";
+  if (upstream.ok && contentType.includes("text/event-stream") && upstream.body) {
+    return new Response(tapAnthropicSseForLog(upstream.body, logCtx, finalize), {
+      status: upstream.status,
+      headers: {
+        "Content-Type": contentType,
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+      },
+    });
+  }
+  // Non-stream (count_tokens, errors, stream:false): relay verbatim, log on the spot.
+  const text = await upstream.text();
+  if (upstream.ok) {
+    try {
+      const parsed = JSON.parse(text) as { usage?: Rec };
+      if (isRec(parsed?.usage)) logCtx.usage = anthropicUsageToOcx(parsed.usage);
+    } catch { /* count_tokens etc. */ }
+  }
+  finalize(upstream.status, { closeReason: "non_stream" });
+  const retryAfter = upstream.headers.get("retry-after");
+  return new Response(text, {
+    status: upstream.status,
+    headers: { "Content-Type": contentType, ...(retryAfter ? { "Retry-After": retryAfter } : {}) },
+  });
 }
 
 export async function handleClaudeMessages(
@@ -56,6 +222,9 @@ export async function handleClaudeMessages(
   let internalBody: Rec;
   try {
     anthropicBody = await readAnthropicBody(req);
+    if (isRec(anthropicBody) && wantsNativePassthrough(req, config, anthropicBody.model)) {
+      return await anthropicNativePassthrough(req, config, logCtx, logIds, anthropicBody, "/v1/messages");
+    }
     internalBody = anthropicToResponsesBody(anthropicBody, config.claudeCode);
   } catch (err) {
     const status = err instanceof AnthropicRequestError ? 400 : 500;
@@ -221,6 +390,9 @@ export async function handleClaudeCountTokens(req: Request, config: OcxConfig): 
   const raw = body as Rec;
   if (typeof raw.model !== "string" || raw.model.length === 0) {
     return anthropicErrorResponse(400, "model is required");
+  }
+  if (wantsNativePassthrough(req, config, raw.model)) {
+    return await anthropicNativePassthrough(req, config, { model: raw.model, provider: "anthropic-native" }, undefined, raw, "/v1/messages/count_tokens");
   }
   const parts: string[] = [];
   if (raw.system !== undefined) parts.push(typeof raw.system === "string" ? raw.system : JSON.stringify(raw.system));

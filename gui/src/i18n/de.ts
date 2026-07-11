@@ -405,7 +405,7 @@ export const de = {
   "claude.enabledLabel": "Claude-Inbound",
   "claude.enabledHint": "Stellt POST /v1/messages (+ count_tokens) und Gateway-Modellerkennung bereit. Wenn aus, erhalten Claude-Code-Anfragen 403.",
   "claude.quickstart": "Schnellstart",
-  "claude.quickstartHint": "{cmd} startet bei Bedarf den Proxy und öffnet Claude Code fertig verdrahtet (Basis-URL, Auth-Token, Modellerkennung).",
+  "claude.quickstartHint": "{cmd} startet bei Bedarf den Proxy und öffnet Claude Code damit verbunden (Basis-URL + Modellerkennung); dein claude.ai-Login und die Connectors bleiben aktiv.",
   "claude.manualEnv": "Manuelle Einrichtung (ohne ocx)",
   "claude.defaultModel": "Standardmodell (ANTHROPIC_MODEL)",
   "claude.smallFastModel": "Kleines/schnelles Modell (ANTHROPIC_DEFAULT_HAIKU_MODEL)",

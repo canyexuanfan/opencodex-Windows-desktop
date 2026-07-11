@@ -425,7 +425,7 @@ export const ko: Record<TKey, string> = {
   "claude.enabledLabel": "Claude 인바운드",
   "claude.enabledHint": "POST /v1/messages(+ count_tokens)와 게이트웨이 모델 디스커버리를 제공합니다. 끄면 Claude Code 요청은 403을 받습니다.",
   "claude.quickstart": "빠른 시작",
-  "claude.quickstartHint": "{cmd} 실행 시 필요하면 프록시를 시작하고, 환경변수(베이스 URL, 인증 토큰, 모델 디스커버리)를 주입해 Claude Code를 실행합니다.",
+  "claude.quickstartHint": "{cmd} 실행 시 필요하면 프록시를 시작하고, 베이스 URL + 모델 디스커버리를 주입해 Claude Code를 실행합니다. claude.ai 로그인과 커넥터는 그대로 유지됩니다.",
   "claude.manualEnv": "수동 설정 (ocx 없이)",
   "claude.defaultModel": "기본 모델 (ANTHROPIC_MODEL)",
   "claude.smallFastModel": "소형/고속 모델 (ANTHROPIC_DEFAULT_HAIKU_MODEL)",
