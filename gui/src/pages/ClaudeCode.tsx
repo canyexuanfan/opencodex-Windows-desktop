@@ -113,23 +113,16 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
         <label className="row" style={{ gap: 10, alignItems: "center", cursor: "pointer", flex: 1 }}>
          <input
            type="checkbox"
-           checked={state.systemEnv}
-            onChange={e => {
-              const enabling = e.target.checked;
-              if (enabling) {
-                const ok = window.confirm(t("claude.systemEnvWarning"));
-                if (!ok) return;
-              }
-              setState({ ...state, systemEnv: enabling });
-            }}
+          checked={state.systemEnv}
+            onChange={e => setState({ ...state, systemEnv: e.target.checked })}
           />
           <span style={{ fontWeight: 600 }}>{t("claude.systemEnv")}</span>
         </label>
       </div>
-      <p className="muted" style={{ fontSize: 12.5, margin: "6px 2px 0" }}>
-        {t("claude.systemEnvDesc")}
-        {state.systemEnv && <><br/><strong style={{ color: "var(--warning)" }}>⚠ {t("claude.systemEnvRestart")}</strong></>}
+     <p className="muted" style={{ fontSize: 12.5, margin: "6px 2px 0" }}>
+       {t("claude.systemEnvDesc")}
       </p>
+      <p style={{ fontSize: 12, margin: "4px 2px 0", color: "var(--red)", fontWeight: 500 }}>{t("claude.systemEnvWarn")}</p>
 
       <div className="h-section">{t("claude.quickstart")}</div>
       <p className="muted" style={{ fontSize: 12.5, margin: "0 0 8px" }}><Trans k="claude.quickstartHint" cmd="ocx claude" /></p>
