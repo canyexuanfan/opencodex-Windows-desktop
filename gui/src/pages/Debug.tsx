@@ -44,8 +44,17 @@ export default function Debug({ apiBase }: { apiBase: string }) {
 
   useEffect(() => {
     if (!debug) return;
-    if (debug.enabled && stream === "usage" && !debug.usage) setStream("provider");
-    if (debug.usage && stream === "provider" && !debug.enabled) setStream("usage");
+    const nextStream =
+      debug.enabled && stream === "usage" && !debug.usage
+        ? "provider"
+        : debug.usage && stream === "provider" && !debug.enabled
+          ? "usage"
+          : stream;
+    if (nextStream === stream) return;
+    const timeout = window.setTimeout(() => {
+      setStream(nextStream);
+    }, 0);
+    return () => window.clearTimeout(timeout);
   }, [debug, stream]);
 
   const streamEnabled = stream === "provider" ? !!debug?.enabled : !!debug?.usage;
@@ -76,8 +85,11 @@ export default function Debug({ apiBase }: { apiBase: string }) {
 
   useEffect(() => {
     afterRef.current = 0;
-    setLines([]);
-    void fetchLogs(true);
+    const timeout = window.setTimeout(() => {
+      setLines([]);
+      void fetchLogs(true);
+    }, 0);
+    return () => window.clearTimeout(timeout);
   }, [stream, streamEnabled, fetchLogs]);
 
   useEffect(() => {

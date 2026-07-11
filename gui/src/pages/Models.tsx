@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Switch, Notice, EmptyState, Select } from "../ui";
 import { IconChevron, IconBoxes, IconInfo } from "../icons";
 import { useT } from "../i18n";
@@ -68,7 +68,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const [showThreadsCustom, setShowThreadsCustom] = useState(false);
   const [v2HelpOpen, setV2HelpOpen] = useState(false);
 
-  const loadV2 = async () => {
+  const loadV2 = useCallback(async () => {
     // Never let a toggle in flight be clobbered by the poll (same single-flight rule as models).
     if (v2BusyRef.current) return;
     try {
@@ -86,36 +86,45 @@ export default function Models({ apiBase }: { apiBase: string }) {
     } catch {
       setV2(null); // old server / network: hide the section instead of guessing
     }
-  };
+  }, [apiBase]);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
-     const [data, capsData] = await Promise.all([
-       fetch(`${apiBase}/api/models`).then(r => r.json()) as Promise<ModelRow[]>,
-       fetch(`${apiBase}/api/provider-context-caps`).then(r => r.json()) as Promise<ProviderContextCapsResponse>,
-     ]);
-     void loadV2(); // best-effort, independent of the models fetch
-     setModels(data);
-     setDisabled(new Set(data.filter(m => m.disabled).map(m => m.namespaced)));
+      const [data, capsData] = await Promise.all([
+        fetch(`${apiBase}/api/models`).then(r => r.json()) as Promise<ModelRow[]>,
+        fetch(`${apiBase}/api/provider-context-caps`).then(r => r.json()) as Promise<ProviderContextCapsResponse>,
+      ]);
+      void loadV2(); // best-effort, independent of the models fetch
+      setModels(data);
+      setDisabled(new Set(data.filter(m => m.disabled).map(m => m.namespaced)));
       const value = typeof capsData.value === "number" && Number.isFinite(capsData.value) && capsData.value > 0
         ? capsData.value
         : (typeof capsData.cap === "number" && Number.isFinite(capsData.cap) && capsData.cap > 0 ? capsData.cap : undefined);
       if (value !== undefined) setContextCapValue(value);
-     setContextCaps(capsData.caps ?? {});
-   } catch {
+      setContextCaps(capsData.caps ?? {});
+    } catch {
       setOk(false); setStatus(t("models.loadFail"));
     } finally {
       setLoading(false);
     }
-  };
+  }, [apiBase, loadV2, t]);
   useEffect(() => {
-    load();
+    const timeout = window.setTimeout(() => {
+      void load();
+    }, 0);
     // Provider models resolve lazily (live /models + OAuth tokens), so a provider that wasn't ready
     // on first load (e.g. anthropic right after login) would otherwise stay missing until a manual
     // remove/re-add. Re-poll to pick it up; skip while a toggle PUT is in flight to avoid clobbering.
-    const timer = setInterval(() => { if (!busyRef.current) load(); }, 10000);
-    return () => clearInterval(timer);
-  }, [apiBase]);
+    const timer = window.setInterval(() => {
+      if (!busyRef.current) {
+        void load();
+      }
+    }, 10000);
+    return () => {
+      window.clearTimeout(timeout);
+      window.clearInterval(timer);
+    };
+  }, [load]);
 
   const groups = useMemo(() => {
     const g: Record<string, ModelRow[]> = {};

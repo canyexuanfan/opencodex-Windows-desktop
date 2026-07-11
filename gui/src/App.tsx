@@ -56,7 +56,6 @@ function readStoredTheme(): Theme {
 
 export default function App() {
   const [page, setPageState] = useState<Page>(readPageFromHash);
-  const setPage = (p: Page) => { location.hash = p; setPageState(p); };
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
   const [runtimeVersion, setRuntimeVersion] = useState<string | null>(null);
   const { locale, setLocale } = useI18n();
@@ -67,6 +66,13 @@ export default function App() {
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+
+  useEffect(() => {
+    const nextHash = `#${page}`;
+    if (window.location.hash !== nextHash) {
+      window.location.hash = page;
+    }
+  }, [page]);
 
   useEffect(() => {
     const el = document.documentElement;
@@ -112,7 +118,7 @@ export default function App() {
         </div>
         <nav>
           {NAV.map(({ id, tkey, Icon }) => (
-            <button key={id} className={`nav-item${page === id ? " active" : ""}`} data-page={id} onClick={() => setPage(id)}
+            <button key={id} className={`nav-item${page === id ? " active" : ""}`} data-page={id} onClick={() => setPageState(id)}
               aria-current={page === id ? "page" : undefined}>
               <Icon /> {t(tkey)}
             </button>

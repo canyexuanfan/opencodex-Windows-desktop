@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { formatTokens } from "../format-tokens";
 import { EmptyState } from "../ui";
@@ -191,24 +191,25 @@ export default function Usage({ apiBase }: { apiBase: string }) {
   const [hoverDay, setHoverDay] = useState<number | null>(null);
   const [hoverCell, setHoverCell] = useState<{ wi: number; di: number; x: number; y: number } | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
+  const fetchUsage = useCallback(async (nextRange: Range) => {
     setLoading(true);
-    const fetchUsage = async () => {
-      try {
-        const res = await fetch(`${apiBase}/api/usage?range=${range}`);
-        if (!res.ok) throw new Error("fetch failed");
-        const json = await res.json() as UsageResponse;
-        if (!cancelled) setData(json);
-      } catch {
-        if (!cancelled) setData(null);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-    fetchUsage();
-    return () => { cancelled = true; };
-  }, [apiBase, range]);
+    try {
+      const res = await fetch(`${apiBase}/api/usage?range=${nextRange}`);
+      if (!res.ok) throw new Error("fetch failed");
+      setData(await res.json() as UsageResponse);
+    } catch {
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [apiBase]);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      void fetchUsage(range);
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [fetchUsage, range]);
 
   const heatmap = useMemo(() => buildHeatmap(data?.days ?? []), [data?.days]);
   // Keep the heatmap scrolled to the right edge (most recent weeks): cells are fixed-size,

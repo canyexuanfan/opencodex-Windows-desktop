@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatUptime } from "../formatUptime";
 import { IconAlert, IconExternal, IconInfo, IconRefresh, IconX } from "../icons";
 import { useI18n, Trans } from "../i18n";
@@ -198,14 +198,25 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     return () => clearInterval(interval);
   }, [apiBase]);
 
+  const fetchModels = useCallback(async () => {
+    setModelsLoading(true);
+    try {
+      const response = await fetch(`${apiBase}/api/models`);
+      setModels(await response.json());
+    } catch {
+      // Keep the previous models list on transient failures.
+    } finally {
+      setModelsLoading(false);
+    }
+  }, [apiBase]);
+
   useEffect(() => {
     if (error) return;
-    setModelsLoading(true);
-    fetch(`${apiBase}/api/models`)
-      .then(r => r.json())
-      .then((data: ModelInfo[]) => { setModels(data); setModelsLoading(false); })
-      .catch(() => setModelsLoading(false));
-  }, [apiBase, error]);
+    const timeout = window.setTimeout(() => {
+      void fetchModels();
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [error, fetchModels]);
 
   useEffect(() => {
     if (!updateJob?.id || !updateJob.restart) return;

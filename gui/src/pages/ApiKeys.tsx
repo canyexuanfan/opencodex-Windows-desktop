@@ -31,7 +31,12 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
     } catch { /* proxy down */ }
   }, [apiBase]);
 
-  useEffect(() => { fetchKeys(); }, [fetchKeys]);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      void fetchKeys();
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [fetchKeys]);
 
   const responseEndpoint = endpoint || "http://127.0.0.1:10100/v1/responses";
 

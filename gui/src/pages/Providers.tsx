@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AddProviderModal from "../components/AddProviderModal";
 import { Notice } from "../ui";
 import { IconPlus, IconTrash, IconLock, IconExternal, IconPower, IconChevron } from "../icons";
@@ -50,7 +50,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
 
   useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false; }; }, []);
 
-  const fetchConfig = async () => {
+  const fetchConfig = useCallback(async () => {
     try {
       const res = await fetch(`${apiBase}/api/config`);
       const data = await res.json();
@@ -59,10 +59,10 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     } catch {
       notify(t("prov.loadConfigFail"), false);
     }
-  };
+  }, [apiBase, t]);
 
   // Load the list of OAuth-capable providers, then each one's login status.
-  const fetchOauth = async () => {
+  const fetchOauth = useCallback(async () => {
     try {
       const provs: string[] = (await fetch(`${apiBase}/api/oauth/providers`).then(r => r.json())).providers ?? [];
       setOauthProviders(provs);
@@ -72,26 +72,26 @@ export default function Providers({ apiBase }: { apiBase: string }) {
       }));
       setOauthStatus(Object.fromEntries(entries));
     } catch { /* ignore */ }
-  };
+  }, [apiBase]);
 
-  const fetchProviderQuotas = async (refresh = false) => {
+  const fetchProviderQuotas = useCallback(async (refresh = false) => {
     try {
       const data = await fetch(`${apiBase}/api/provider-quotas${refresh ? "?refresh=1" : ""}`).then(r => r.json()) as { reports?: ProviderQuotaReport[] };
       setQuotaReports(Object.fromEntries((data.reports ?? []).map(report => [report.provider, report])));
     } catch {
       setQuotaReports({});
     }
-  };
+  }, [apiBase]);
 
   // Multiauth: per-provider logged-in account lists for the card dropdowns (oauth cards only;
   // the Codex/ChatGPT passthrough pool has its own page).
-  const fetchAccountSets = async (providers: string[]) => {
+  const fetchAccountSets = useCallback(async (providers: string[]) => {
     const entries = await Promise.all(providers.map(async p => {
       const data = await fetch(`${apiBase}/api/oauth/accounts?provider=${p}`).then(r => r.json()).catch(() => null) as { activeAccountId?: string | null; accounts?: OAuthAccount[] } | null;
       return [p, { activeAccountId: data?.activeAccountId ?? null, accounts: data?.accounts ?? [] }] as const;
     }));
     setAccountSets(Object.fromEntries(entries));
-  };
+  }, [apiBase]);
 
   const switchAccount = async (provider: string, account: OAuthAccount) => {
     if (account.active) return;
@@ -112,13 +112,13 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   };
 
   // Multi-key pool (API-key twin of OAuth multiauth): list masked keys per key-auth provider.
-  const fetchKeyPools = async (providers: string[]) => {
+  const fetchKeyPools = useCallback(async (providers: string[]) => {
     const entries = await Promise.all(providers.map(async name => {
       const data = await fetch(`${apiBase}/api/providers/keys?name=${encodeURIComponent(name)}`).then(r => r.json()).catch(() => null) as { keys?: ApiKeyEntry[] } | null;
       return [name, data?.keys ?? []] as const;
     }));
     setKeyPools(Object.fromEntries(entries));
-  };
+  }, [apiBase]);
 
   const switchApiKey = async (provider: string, entry: ApiKeyEntry) => {
     if (entry.active) return;
@@ -181,28 +181,43 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   };
 
   useEffect(() => {
-    fetchConfig();
-    fetchOauth();
-    fetchProviderQuotas();
-  }, [apiBase]);
+    const timeout = window.setTimeout(() => {
+      void fetchConfig();
+      void fetchOauth();
+      void fetchProviderQuotas();
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [fetchConfig, fetchOauth, fetchProviderQuotas]);
 
   // Load account sets once config tells us which providers are oauth-backed.
-  const oauthCardProviders = config ? Object.entries(config.providers).filter(([, p]) => p.authMode === "oauth").map(([n]) => n) : [];
-  const oauthCardKey = oauthCardProviders.join(",");
+  const oauthCardProviders = useMemo(
+    () => config ? Object.entries(config.providers).filter(([, p]) => p.authMode === "oauth").map(([n]) => n) : [],
+    [config],
+  );
   useEffect(() => {
-    if (oauthCardProviders.length > 0) fetchAccountSets(oauthCardProviders);
-  }, [apiBase, oauthCardKey]);
+    if (oauthCardProviders.length === 0) return;
+    const timeout = window.setTimeout(() => {
+      void fetchAccountSets(oauthCardProviders);
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [fetchAccountSets, oauthCardProviders]);
 
   // Load key pools for key-auth providers that already have a key configured.
-  const keyCardProviders = config
-    ? Object.entries(config.providers)
-        .filter(([, p]) => p.hasApiKey && p.authMode !== "oauth" && p.authMode !== "forward")
-        .map(([n]) => n)
-    : [];
-  const keyCardKey = keyCardProviders.join(",");
+  const keyCardProviders = useMemo(
+    () => config
+      ? Object.entries(config.providers)
+          .filter(([, p]) => p.hasApiKey && p.authMode !== "oauth" && p.authMode !== "forward")
+          .map(([n]) => n)
+      : [],
+    [config],
+  );
   useEffect(() => {
-    if (keyCardProviders.length > 0) fetchKeyPools(keyCardProviders);
-  }, [apiBase, keyCardKey]);
+    if (keyCardProviders.length === 0) return;
+    const timeout = window.setTimeout(() => {
+      void fetchKeyPools(keyCardProviders);
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [fetchKeyPools, keyCardProviders]);
 
   const saveConfig = async () => {
     try {
