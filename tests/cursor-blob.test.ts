@@ -40,6 +40,13 @@ function actionText(bytes: Uint8Array): string | undefined {
   return action?.case === "userMessageAction" ? action.value.userMessage?.text : undefined;
 }
 
+/** The `toolName`s advertised in the top-level AgentRunRequest.mcp_tools channel (undefined when unset). */
+function mcpToolNames(bytes: Uint8Array): string[] | undefined {
+  const msg = fromBinary(AgentClientMessageSchema, bytes);
+  const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
+  return run?.mcpTools?.mcpTools.map(def => def.toolName);
+}
+
 describe("Cursor blob handshake", () => {
   test("storeCursorBlob returns the SHA-256 blob id (32 bytes)", () => {
     const data = new TextEncoder().encode('{"role":"system","content":"hi"}');
@@ -256,5 +263,58 @@ describe("Cursor blob handshake", () => {
     // the tool result carried as structured history (mcpToolCall.result above). The action must be
     // ResumeAction, NOT a UserMessageAction that would re-inject the tool result as user text.
     expect(run?.action?.action.case).toBe("resumeAction");
+  });
+});
+
+describe("Cursor AgentRunRequest.mcp_tools channel", () => {
+  test("populates mcp_tools with the client tool defs for a normal prompt", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "gpt-5.6-luna-high",
+      conversationId: "c1",
+      system: ["You are helpful."],
+      messages: [{ role: "user", content: "use node_repl to compute 1+1" }],
+      tools: [{ name: "js", namespace: "mcp__node_repl", description: "Run JS", parameters: {} }],
+    });
+    expect(mcpToolNames(bytes)).toEqual(["mcp__node_repl__js"]);
+  });
+
+  test("mcp_tools respects the cursorToolsForActivePrompt filter (generic tool-count prompt -> exec only)", () => {
+    // A generic tool-count-demo prompt narrows the visible client tools to bare exec_command.
+    // mcp_tools MUST use the same filtered set as RequestContext.tools / the event-state names,
+    // or a call to an extra advertised tool would be rejected as an unknown Responses tool.
+    const bytes = encodeCursorRunRequest({
+      modelId: "gpt-5.6-luna-high",
+      conversationId: "c1",
+      system: ["You are helpful."],
+      messages: [{ role: "user", content: "use any 3 tools" }],
+      tools: [
+        { name: "exec_command", description: "Run a command", parameters: { type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"] } },
+        { name: "js", namespace: "mcp__node_repl", description: "Run JS", parameters: {} },
+      ],
+    });
+    expect(mcpToolNames(bytes)).toEqual(["exec_command"]);
+  });
+
+  test("leaves mcp_tools unset when tools are empty", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "gpt-5.6-luna-high",
+      conversationId: "c1",
+      system: ["You are helpful."],
+      messages: [{ role: "user", content: "hi" }],
+      tools: [],
+    });
+    expect(mcpToolNames(bytes)).toBeUndefined();
+  });
+
+  test("leaves mcp_tools unset when toolChoice is none", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "gpt-5.6-luna-high",
+      conversationId: "c1",
+      system: ["You are helpful."],
+      messages: [{ role: "user", content: "use node_repl" }],
+      toolChoice: "none",
+      tools: [{ name: "js", namespace: "mcp__node_repl", description: "Run JS", parameters: {} }],
+    });
+    expect(mcpToolNames(bytes)).toBeUndefined();
   });
 });

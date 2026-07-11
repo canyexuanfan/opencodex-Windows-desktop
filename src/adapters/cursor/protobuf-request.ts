@@ -371,8 +371,14 @@ export function encodeCursorRunRequest(request: CursorRunRequest): Uint8Array {
     // this but assigned the field with the wrong shape and crashed Cursor's binary parser ("illegal
     // tag"); the correct `McpTools` wrapper is wire-compatible (verified — no parse crash on either
     // model family). See devlog/260711_cursor_browser_bridge/004.
+    //
+    // Use the SAME `cursorToolsForActivePrompt`-filtered visible set that RequestContext.tools and
+    // the event-state `clientToolNames` use (live-transport.ts). Advertising the raw `request.tools`
+    // here would let mcp_tools expose a tool that the event state does not recognize for a generic
+    // tool-count prompt, so a call to it would be rejected as an unknown Responses tool.
     ...(() => {
-      const mcpToolDefs = buildCursorToolDefinitions(request.tools, request.toolChoice);
+      const visibleTools = cursorToolsForActivePrompt(request.tools, activePromptText(request), request.toolChoice);
+      const mcpToolDefs = buildCursorToolDefinitions(visibleTools, request.toolChoice);
       return mcpToolDefs.length > 0 ? { mcpTools: create(McpToolsSchema, { mcpTools: mcpToolDefs }) } : {};
     })(),
   });
