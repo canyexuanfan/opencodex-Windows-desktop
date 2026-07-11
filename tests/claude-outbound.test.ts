@@ -110,7 +110,7 @@ describe("claude outbound SSE", () => {
     expect(events.at(-1)!.data).toEqual({ type: "error", error: { type: "rate_limit_error", message: "rate limited" } });
   });
 
-  test("incomplete(max_output_tokens) -> max_tokens; EOF w/o terminal -> clean end_turn close", async () => {
+  test("incomplete(max_output_tokens) -> max_tokens; EOF w/o terminal fails closed", async () => {
     const incomplete = [
       sse("response.created", { response: {} }),
       sse("response.output_text.delta", { delta: "x" }),
@@ -121,10 +121,40 @@ describe("claude outbound SSE", () => {
     expect(md1.delta.stop_reason).toBe("max_tokens");
     expect(e1.at(-1)!.name).toBe("message_stop");
 
+    // Truncation must surface as a retryable Anthropic error event, not a polite
+    // end_turn close (devlog 100: silent-truncation gateway failure pattern).
     const eof = sse("response.created", { response: {} }) + sse("response.output_text.delta", { delta: "y" });
     const e2 = await collectEvents(responsesSseToAnthropicSse(streamFrom(eof), "m"));
-    expect(e2.map(e => e.name)).toEqual(["message_start", "ping", "content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop"]);
-    expect(e2.find(e => e.name === "message_delta")!.data.delta.stop_reason).toBe("end_turn");
+    expect(e2.map(e => e.name)).toEqual(["message_start", "ping", "content_block_start", "content_block_delta", "content_block_stop", "error"]);
+    expect(e2.at(-1)!.data).toMatchObject({ type: "error", error: { type: "api_error" } });
+  });
+
+  test("incomplete(content_filter) -> refusal stop_reason", async () => {
+    const upstream = [
+      sse("response.created", { response: {} }),
+      sse("response.output_text.delta", { delta: "I can" }),
+      sse("response.incomplete", { response: { status: "incomplete", incomplete_details: { reason: "content_filter" }, usage: { input_tokens: 5, output_tokens: 2 } } }),
+    ].join("");
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
+    expect(events.find(e => e.name === "message_delta")!.data.delta.stop_reason).toBe("refusal");
+    expect(events.at(-1)!.name).toBe("message_stop");
+  });
+
+  test("idle keepalive pings flow during upstream silence", async () => {
+    // Upstream: created frame, 90ms of silence, then a clean completion.
+    const encoder = new TextEncoder();
+    const upstream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(encoder.encode(sse("response.created", { response: {} })));
+        await new Promise(r => setTimeout(r, 90));
+        controller.enqueue(encoder.encode(sse("response.completed", { response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1 } } })));
+        controller.close();
+      },
+    });
+    const events = await collectEvents(responsesSseToAnthropicSse(upstream, "m", { pingIntervalMs: 25 }));
+    const pings = events.filter(e => e.name === "ping").length;
+    expect(pings).toBeGreaterThanOrEqual(3); // startup ping + >=2 idle pings
+    expect(events.at(-1)!.name).toBe("message_stop");
   });
 
   test("no-output completed still emits a valid empty message", async () => {
@@ -158,10 +188,13 @@ describe("claude outbound non-stream + helpers", () => {
   test("error taxonomy table", () => {
     expect(anthropicErrorType(400)).toBe("invalid_request_error");
     expect(anthropicErrorType(401)).toBe("authentication_error");
+    expect(anthropicErrorType(402)).toBe("billing_error");
     expect(anthropicErrorType(403)).toBe("permission_error");
     expect(anthropicErrorType(404)).toBe("not_found_error");
+    expect(anthropicErrorType(409)).toBe("conflict_error");
     expect(anthropicErrorType(413)).toBe("request_too_large");
     expect(anthropicErrorType(429)).toBe("rate_limit_error");
+    expect(anthropicErrorType(504)).toBe("timeout_error");
     expect(anthropicErrorType(500)).toBe("api_error");
     expect(anthropicErrorType(502)).toBe("api_error");
     expect(anthropicErrorType(529)).toBe("overloaded_error");

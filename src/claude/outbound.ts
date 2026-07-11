@@ -20,15 +20,18 @@ function uuid(): string {
   return crypto.randomUUID().replace(/-/g, "");
 }
 
-/** HTTP status -> Anthropic error taxonomy (010 amendment #4). */
+/** HTTP status -> Anthropic error taxonomy (010 amendment #4; full official table per devlog 100). */
 export function anthropicErrorType(status: number): string {
   switch (status) {
     case 400: return "invalid_request_error";
     case 401: return "authentication_error";
+    case 402: return "billing_error";
     case 403: return "permission_error";
     case 404: return "not_found_error";
+    case 409: return "conflict_error";
     case 413: return "request_too_large";
     case 429: return "rate_limit_error";
+    case 504: return "timeout_error";
     case 529: return "overloaded_error";
     default: return status >= 500 ? "api_error" : "invalid_request_error";
   }
@@ -91,7 +94,12 @@ interface OpenBlock {
 }
 
 /** Streaming: Responses SSE bytes -> Anthropic Messages SSE bytes. */
-export function responsesSseToAnthropicSse(upstream: ReadableStream<Uint8Array>, model: string): ReadableStream<Uint8Array> {
+export function responsesSseToAnthropicSse(
+  upstream: ReadableStream<Uint8Array>,
+  model: string,
+  opts?: { pingIntervalMs?: number },
+): ReadableStream<Uint8Array> {
+  const pingIntervalMs = opts?.pingIntervalMs ?? 20_000;
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   let buffer = "";
@@ -100,6 +108,7 @@ export function responsesSseToAnthropicSse(upstream: ReadableStream<Uint8Array>,
   let blockIndex = 0;
   let open: OpenBlock | null = null;
   let sawToolUse = false;
+  let pingTimer: ReturnType<typeof setInterval> | undefined;
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -110,6 +119,18 @@ export function responsesSseToAnthropicSse(upstream: ReadableStream<Uint8Array>,
         emit("message_start", { type: "message_start", message: messageSnapshot(model) });
         emit("ping", { type: "ping" });
       };
+      // Idle keepalive (devlog 100): real Anthropic streams may interleave pings anywhere;
+      // synthesizing one during upstream silence protects remote deployments behind
+      // LB/NAT idle timeouts and covers slow first tokens. Cheap and spec-legal.
+      if (pingIntervalMs > 0) {
+        pingTimer = setInterval(() => {
+          if (terminated) return;
+          try {
+            ensureStarted();
+            emit("ping", { type: "ping" });
+          } catch { /* controller torn down; the read loop is ending anyway */ }
+        }, pingIntervalMs);
+      }
       const closeOpenBlock = () => {
         if (!open) return;
         if (open.kind === "thinking") {
@@ -228,6 +249,7 @@ export function responsesSseToAnthropicSse(upstream: ReadableStream<Uint8Array>,
             const response = isRec(data.response) ? data.response : {};
             const details = isRec(response.incomplete_details) ? response.incomplete_details : {};
             const reason = details.reason === "max_output_tokens" ? "max_tokens"
+              : details.reason === "content_filter" ? "refusal"
               : sawToolUse ? "tool_use" : "end_turn";
             finish(reason, response.usage);
             break;
@@ -269,16 +291,21 @@ export function responsesSseToAnthropicSse(upstream: ReadableStream<Uint8Array>,
             handleFrame(eventName, data);
           }
         }
-        // EOF without a terminal frame: close politely so Claude Code never hangs.
-        finish(sawToolUse ? "tool_use" : "end_turn", undefined);
+        // EOF without a terminal frame is a TRUNCATION, not success (devlog 100:
+        // gateways that close such streams politely hand Claude Code an empty/partial
+        // turn with no retryable error — CLIProxyAPI#2189 failure pattern). Fail closed
+        // with a mid-stream Anthropic error event so the client can retry.
+        fail(502, "upstream stream ended before a terminal frame (truncated response)");
       } catch (err) {
         fail(500, err instanceof Error ? err.message : String(err));
       } finally {
+        if (pingTimer !== undefined) clearInterval(pingTimer);
         reader.releaseLock();
         controller.close();
       }
     },
     cancel(reason) {
+      if (pingTimer !== undefined) clearInterval(pingTimer);
       return upstream.cancel(reason);
     },
   });
