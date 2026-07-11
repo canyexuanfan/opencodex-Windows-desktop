@@ -32,7 +32,8 @@ import { debugProviderDiagnostic } from "../../lib/debug";
 import { classifyCursorError, isCursorBenignCancelError, safeCursorErrorMessage } from "./cursor-errors";
 import { mcpArgsFromToolCall } from "./protobuf-events";
 import { OCX_RESPONSES_TOOL_PROVIDER } from "./tool-definitions";
-import { cursorUnsafeNativeLocalExecEnabled, handleCursorNativeExec, handleCursorNativeKv, type CursorNativeExecContext } from "./native-exec";
+import { handleCursorNativeExec, handleCursorNativeKv, type CursorNativeExecContext } from "./native-exec";
+import { effectiveCursorNativeExecAllow } from "./exec-policy";
 import { resolveMcpServers } from "./mcp-config";
 import { CursorMcpManager } from "./mcp-manager";
 import { buildMcpToolDefinitions, mcpDepsFromManager } from "./native-exec-mcp";
@@ -331,7 +332,7 @@ class LiveCursorTransport implements CursorTransport {
     this.activeClientToolFinalizeGraceMs = this.clientToolFinalizeGraceMs;
     // Desktop (computer-use / record-screen) executors are available even with no MCP servers.
     this.desktopDeps = desktopDepsFromConfig(input.provider.desktopExecutor);
-    this.execContext = { ...this.desktopDeps, unsafeAllowNativeLocalExec: cursorUnsafeNativeLocalExecEnabled(input.provider) };
+    this.execContext = { ...this.desktopDeps, unsafeAllowNativeLocalExec: effectiveCursorNativeExecAllow(input.provider, input.requestDeclaresFullAccess === true) };
     const servers = resolveMcpServers(input.provider);
     if (servers.length > 0) {
       this.mcpManager = new CursorMcpManager(servers, {
@@ -356,7 +357,7 @@ class LiveCursorTransport implements CursorTransport {
             ...this.desktopDeps,
             ...mcpDepsFromManager(this.mcpManager!),
             mcpToolDefs,
-            unsafeAllowNativeLocalExec: cursorUnsafeNativeLocalExecEnabled(this.input.provider),
+            unsafeAllowNativeLocalExec: effectiveCursorNativeExecAllow(this.input.provider, this.input.requestDeclaresFullAccess === true),
           };
         } catch (err) {
           throw new Error(`Cursor MCP preparation failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });

@@ -568,6 +568,19 @@ export interface OcxProviderConfig {
    * controlled by their own opt-in config.
    */
   unsafeAllowNativeLocalExec?: boolean;
+  /**
+   * Cursor adapter only: native local exec policy mode (exec-policy.ts).
+   * "off" (default) rejects all server-driven local exec; "on" always allows
+   * (same as legacy unsafeAllowNativeLocalExec:true); "codex-sandbox" allows only
+   * when the request's instructions/developer text declares the Codex
+   * danger-full-access sandbox. NOTE: the declaration is CALLER-CONTROLLED prose —
+   * the proxy cannot verify it. Enable "codex-sandbox" only where every client
+   * that can reach the data plane is trusted: the default loopback bind admits
+   * ANY process on this host without auth (including other local users on
+   * multi-user machines), and isAllowedRequestOrigin blocks non-loopback
+   * browser origins by default but not loopback-origin or origin-less callers.
+   */
+  nativeLocalExec?: "off" | "codex-sandbox" | "on";
 }
 
 export interface CodexAccount {

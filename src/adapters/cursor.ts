@@ -1,6 +1,6 @@
 import type { AdapterEvent, OcxProviderConfig } from "../types";
 import type { ProviderAdapter } from "./base";
-import { cursorExecDeniedMessage } from "./cursor/exec-policy";
+import { cursorExecDeniedMessage, cursorRequestDeclaresFullAccess } from "./cursor/exec-policy";
 import { isCursorBenignCancelError, safeCursorErrorMessage } from "./cursor/cursor-errors";
 import { createCursorKvStore, type CursorKvStore } from "./cursor/kv-store";
 import { mapCursorServerMessage } from "./cursor/message-mapper";
@@ -73,7 +73,7 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
         const request = createCursorRequest(_parsed);
         await runCursorTurnWithRetry(
           makeTransport,
-          { provider, headers: incoming.headers },
+          { provider, headers: incoming.headers, requestDeclaresFullAccess: cursorRequestDeclaresFullAccess(request) },
           request,
           incoming.abortSignal,
           (message, activeTransport) => {

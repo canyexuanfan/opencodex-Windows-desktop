@@ -23,6 +23,11 @@ export interface CursorTransportFactoryInput {
    * announced in a later receive chunk can revoke a premature finalize. Defaults to 50ms.
    */
   clientToolFinalizeGraceMs?: number;
+  /**
+   * True when the inbound request's system/developer text declares the Codex full-access
+   * sandbox; consumed by nativeLocalExec:"codex-sandbox" policy (exec-policy.ts).
+   */
+  requestDeclaresFullAccess?: boolean;
 }
 
 export type CursorTransportFactory = (input: CursorTransportFactoryInput) => CursorTransport;
