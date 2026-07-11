@@ -581,6 +581,10 @@ switch (command) {
     handleModels(args.slice(1));
     break;
   }
+  case "claude": {
+    const { cmdClaude } = await import("./claude");
+    process.exit(await cmdClaude(args.slice(1)));
+  }
     case "help":
   case "--help":
   case "-h":

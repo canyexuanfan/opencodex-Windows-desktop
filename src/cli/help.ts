@@ -84,6 +84,17 @@ const helpEntries: Record<string, HelpEntry> = {
     summary: "List available models from configured providers.",
     details: ["Shows statically configured models. Providers with liveModels may have additional models at runtime."],
   },
+  claude: {
+    usage: "ocx claude [claude args...]",
+    summary: "Launch Claude Code wired to the proxy (env injection + gateway model discovery).",
+    details: [
+      "Ensures the proxy is running, then execs `claude` with ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN,",
+      "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 and model slots from config.claudeCode.",
+      "Routed models appear in the native /model picker as claude-ocx-<provider>--<model> (Claude Code >= 2.1.129).",
+      "Older versions: pick models via ANTHROPIC_MODEL or /model <id> directly (any string passes through).",
+      "User-exported ANTHROPIC_* variables always take precedence.",
+    ],
+  },
   restart: {
     usage: "ocx restart",
     summary: "Stop the proxy and restart it (background). Equivalent to stop + ensure.",
@@ -134,6 +145,7 @@ Usage:
   ocx health [--json]          Check proxy health (exit 0=healthy, 1=not)
   ocx provider <sub>          Manage providers (list|add|remove|show|set-default)
   ocx models [--json]         List available models from configured providers
+  ocx claude [args...]        Launch Claude Code wired to the proxy (model discovery on)
   ocx help [command]          Show help
   ocx --version | -v          Print version
 

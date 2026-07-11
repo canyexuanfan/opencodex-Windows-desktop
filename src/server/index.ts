@@ -119,6 +119,7 @@ import { disableResponsesRequestTimeout, handleResponses, handleResponsesCompact
 export { disableResponsesRequestTimeout, linkAbortSignal } from "./responses";
 import { handleClaudeCountTokens, handleClaudeMessages } from "./claude-messages";
 import { anthropicErrorResponse } from "../claude/outbound";
+import { aliasForNative, aliasForRoute } from "../claude/alias";
 import { handleImages } from "./images";
 import { handleSearch } from "./search";
 import { fetchAllModels, handleManagementAPI, VERSION } from "./management-api";
@@ -275,6 +276,26 @@ export function startServer(port?: number) {
         const nativeSlugs = nativeOpenAiSlugs();
         const goEnabled = filterCatalogVisibleModels(goModels, config);
         const goOrdered = orderForSubagents(goEnabled, config.subagentModels);
+        // Claude Code gateway model discovery (GET /v1/models?limit=1000 with Anthropic-style
+        // headers; 003 G1-G8). Minimal contract: { data: [{ id, display_name? }] } — ids must
+        // begin with "claude"/"anthropic", hence the reversible claude-ocx- aliases. Detection:
+        // anthropic-version header (Claude Code sends it) or explicit ?flavor=anthropic.
+        // Codex catalog (client_version) and the OpenAI list shape below stay byte-identical.
+        const wantsAnthropicList = req.headers.get("anthropic-version") !== null
+          || url.searchParams.get("flavor") === "anthropic";
+        if (wantsAnthropicList && !url.searchParams.has("client_version")) {
+          if (config.claudeCode?.enabled === false) return jsonResponse({ data: [] }, 200, req, config);
+          const data: { id: string; display_name: string }[] = [];
+          for (const slug of visibleNativeSlugs(config)) {
+            const id = aliasForNative(slug);
+            if (id) data.push({ id, display_name: `${slug} (native)` });
+          }
+          for (const m of goOrdered) {
+            const id = aliasForRoute(m.provider, m.id);
+            if (id) data.push({ id, display_name: `${m.id} (${m.provider})` });
+          }
+          return jsonResponse({ data }, 200, req, config);
+        }
         if (url.searchParams.has("client_version")) {
           // Codex client → Codex catalog shape: native gpt + namespaced routed models,
           // cloned from a native template so required fields (base_instructions, etc.) are present.

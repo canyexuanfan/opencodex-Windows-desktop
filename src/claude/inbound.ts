@@ -10,6 +10,7 @@
  *  - top_k is accepted and silently dropped (no Responses equivalent, CCR parity).
  */
 import type { OcxClaudeCodeConfig } from "../types";
+import { resolveAlias } from "./alias";
 
 export class AnthropicRequestError extends Error {}
 
@@ -19,8 +20,10 @@ function isRec(v: unknown): v is Rec {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
 
-/** modelMap lookup: exact id, then date-suffix-stripped (`-\d{8}$`), else passthrough. */
+/** Alias first, then modelMap: exact id, then date-suffix-stripped (`-\d{8}$`), else passthrough. */
 export function resolveInboundModel(model: string, cc?: OcxClaudeCodeConfig): string {
+  const aliased = resolveAlias(model);
+  if (aliased) return aliased;
   const map = cc?.modelMap ?? {};
   const exact = map[model];
   if (typeof exact === "string" && exact.length > 0) return exact;
