@@ -11,6 +11,7 @@
  */
 import type { OcxClaudeCodeConfig } from "../types";
 import { resolveAlias } from "./alias";
+import { resolveDesktop3pAlias } from "./desktop-3p";
 import { createHash } from "node:crypto";
 
 export class AnthropicRequestError extends Error {}
@@ -25,6 +26,14 @@ function isRec(v: unknown): v is Rec {
 export function resolveInboundModel(model: string, cc?: OcxClaudeCodeConfig): string {
   const aliased = resolveAlias(model);
   if (aliased) return aliased;
+  // Desktop 3P aliases: claude-opus-4-{code} → provider/model route key
+  const desktop3p = resolveDesktop3pAlias(model);
+  if (desktop3p) {
+    // Native pseudo-provider returns bare slug; routed returns provider/model
+    const sep = desktop3p.indexOf("/");
+    if (sep > 0 && desktop3p.slice(0, sep) === "native") return desktop3p.slice(sep + 1);
+    return desktop3p;
+  }
   const map = cc?.modelMap ?? {};
   const exact = map[model];
   if (typeof exact === "string" && exact.length > 0) return exact;

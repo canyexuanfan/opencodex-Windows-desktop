@@ -607,6 +607,29 @@ switch (command) {
   }
   case "claude": {
     const { cmdClaude } = await import("./claude");
+    // "ocx claude desktop" → write Desktop 3P config
+    if (args[1] === "desktop") {
+      const config = loadConfig();
+      const { fetchAllModels } = await import("../server/management-api");
+      const { visibleNativeSlugs } = await import("../codex/catalog");
+      const { writeDesktop3pConfig } = await import("../claude/desktop-3p");
+      const live = await findLiveProxy();
+      const port = live?.port ?? config.port ?? 10100;
+      const models = await fetchAllModels(config);
+      const nativeSlugs = visibleNativeSlugs(config);
+      const routedModels = models.map(m => ({ provider: m.provider, id: m.id }));
+      const result = writeDesktop3pConfig(port, nativeSlugs, routedModels);
+      if (result.written) {
+        console.log(`✅ Claude Desktop 3P 설정 완료: ${result.path}`);
+        console.log(`   Gateway: http://127.0.0.1:${port}`);
+        console.log(`   모델 ${nativeSlugs.length + models.length}개 등록 (전부 opus tier)`);
+        console.log(`   Claude Desktop을 재시작하면 적용됩니다.`);
+      } else {
+        console.error(`❌ 설정 실패: ${result.reason}`);
+        process.exit(1);
+      }
+      break;
+    }
     process.exit(await cmdClaude(args.slice(1)));
   }
     case "help":
