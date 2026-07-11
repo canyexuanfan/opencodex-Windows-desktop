@@ -76,13 +76,17 @@ function anthropicUsageToOcx(usage: Rec | undefined): { inputTokens: number; out
   if (!usage) return undefined;
   const num = (v: unknown) => typeof v === "number" ? v : 0;
   const hasCache = usage.cache_read_input_tokens !== undefined || usage.cache_creation_input_tokens !== undefined;
+  const read = num(usage.cache_read_input_tokens);
+  const write = num(usage.cache_creation_input_tokens);
+  // Anthropic input_tokens excludes cache read/write; normalize to the canonical
+  // inclusive convention (types.ts OcxUsage / devlog 070). cached = READS only.
   return {
-    inputTokens: num(usage.input_tokens),
+    inputTokens: num(usage.input_tokens) + read + write,
     outputTokens: num(usage.output_tokens),
     ...(hasCache ? {
-      cachedInputTokens: num(usage.cache_read_input_tokens) + num(usage.cache_creation_input_tokens),
-      cacheReadInputTokens: num(usage.cache_read_input_tokens),
-      cacheCreationInputTokens: num(usage.cache_creation_input_tokens),
+      cachedInputTokens: read,
+      cacheReadInputTokens: read,
+      cacheCreationInputTokens: write,
     } : {}),
   };
 }

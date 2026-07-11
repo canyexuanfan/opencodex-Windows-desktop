@@ -76,14 +76,15 @@ describe("Responses bridge reasoning and usage parity", () => {
     });
   });
 
-  test("Anthropic cache read and write tokens count toward Responses input totals", async () => {
+  test("Anthropic cache read and write tokens pass through Responses usage without re-adding", async () => {
     const frames = await collectSse(bridgeToResponsesSSE(replay([
       {
         type: "done",
         usage: {
-          inputTokens: 600,
+          // canonical convention: inputTokens already includes cache read + write
+          inputTokens: 78_600,
           outputTokens: 20,
-          cachedInputTokens: 78_000,
+          cachedInputTokens: 77_000,
           cacheReadInputTokens: 77_000,
           cacheCreationInputTokens: 1_000,
         },
@@ -93,7 +94,7 @@ describe("Responses bridge reasoning and usage parity", () => {
     const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
     expect(completed.usage).toMatchObject({
       input_tokens: 78_600,
-      input_tokens_details: { cached_tokens: 78_000, cache_write_tokens: 1_000 },
+      input_tokens_details: { cached_tokens: 77_000, cache_write_tokens: 1_000 },
       output_tokens: 20,
       total_tokens: 78_620,
     });
@@ -169,7 +170,8 @@ describe("Responses bridge reasoning and usage parity", () => {
     const json = buildResponseJSON([
       { type: "reasoning_raw_delta", text: "raw json" },
       { type: "text_delta", text: "answer" },
-      { type: "done", usage: { inputTokens: 4, outputTokens: 6, cachedInputTokens: 1, cacheCreationInputTokens: 2, reasoningOutputTokens: 2 } },
+      // canonical convention: inputTokens already includes cache read (1) + write (2)
+      { type: "done", usage: { inputTokens: 6, outputTokens: 6, cachedInputTokens: 1, cacheCreationInputTokens: 2, reasoningOutputTokens: 2 } },
     ], "routed/model");
 
     const output = json.output as Record<string, unknown>[];

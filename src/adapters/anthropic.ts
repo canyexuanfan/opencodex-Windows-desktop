@@ -291,13 +291,17 @@ function adaptiveEffort(effort: string): string {
 function usageFromAnthropic(usage: Record<string, number> | undefined): OcxUsage | undefined {
   if (!usage) return undefined;
   const hasCache = usage.cache_read_input_tokens !== undefined || usage.cache_creation_input_tokens !== undefined;
+  const read = usage.cache_read_input_tokens ?? 0;
+  const write = usage.cache_creation_input_tokens ?? 0;
+  // Anthropic reports input_tokens EXCLUSIVE of cache read/write; normalize to the
+  // canonical inclusive convention (types.ts OcxUsage / devlog 070).
   return {
-    inputTokens: usage.input_tokens ?? 0,
+    inputTokens: (usage.input_tokens ?? 0) + read + write,
     outputTokens: usage.output_tokens ?? 0,
     ...(hasCache ? {
-      cachedInputTokens: (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
-      cacheReadInputTokens: usage.cache_read_input_tokens ?? 0,
-      cacheCreationInputTokens: usage.cache_creation_input_tokens ?? 0,
+      cachedInputTokens: read,
+      cacheReadInputTokens: read,
+      cacheCreationInputTokens: write,
     } : {}),
   };
 }
@@ -308,11 +312,9 @@ function mergeAnthropicUsage(
 ): Record<string, number> | undefined {
   if (!next) return base;
   if (!base) return { ...next };
-  const merged = { ...base };
-  for (const [k, v] of Object.entries(next)) {
-    merged[k] = (merged[k] ?? 0) + v;
-  }
-  return merged;
+  // Anthropic `message_delta.usage` values are CUMULATIVE; adding them to the
+  // message_start snapshot double-counted output tokens. Later frames win per key.
+  return { ...base, ...next };
 }
 
 function buildToolNameTransforms(provider: OcxProviderConfig): { toWire: (name: string) => string; fromWire: (name: string) => string } {

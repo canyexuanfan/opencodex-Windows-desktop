@@ -87,10 +87,10 @@ describe("claude outbound SSE", () => {
     expect(events[10].data.content_block).toMatchObject({ type: "tool_use", id: "toolu_9", name: "Read", input: {} });
     expect(events[11].data.delta).toEqual({ type: "input_json_delta", partial_json: "{\"file_path\":" });
 
-    // message_delta: tool_use stop reason + mapped usage (input minus cached)
+    // message_delta: tool_use stop reason + mapped usage (input minus cache read+write)
     const md = events[names.indexOf("message_delta")].data;
     expect(md.delta).toEqual({ stop_reason: "tool_use", stop_sequence: null });
-    expect(md.usage).toEqual({ input_tokens: 20, output_tokens: 30, cache_read_input_tokens: 100, cache_creation_input_tokens: 5 });
+    expect(md.usage).toEqual({ input_tokens: 15, output_tokens: 30, cache_read_input_tokens: 100, cache_creation_input_tokens: 5 });
 
     // monotonic block indexes
     const startIndexes = events.filter(e => e.name === "content_block_start").map(e => e.data.index);

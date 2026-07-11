@@ -94,9 +94,10 @@ describe("adapter reasoning and usage details", () => {
     expect(events?.at(-1)).toEqual({
       type: "done",
       usage: {
-        inputTokens: 20,
+        // canonical convention: inputTokens is inclusive of cache read + write
+        inputTokens: 30,
         outputTokens: 8,
-        cachedInputTokens: 10,
+        cachedInputTokens: 4,
         cacheReadInputTokens: 4,
         cacheCreationInputTokens: 6,
       },
@@ -304,9 +305,10 @@ describe("usage and content retention (F2)", () => {
     expect(dones[0]).toEqual({
       type: "done",
       usage: {
-        inputTokens: 20,
+        // canonical convention: inputTokens is inclusive of cache read + write
+        inputTokens: 25,
         outputTokens: 4,
-        cachedInputTokens: 5,
+        cachedInputTokens: 3,
         cacheReadInputTokens: 3,
         cacheCreationInputTokens: 2,
       },

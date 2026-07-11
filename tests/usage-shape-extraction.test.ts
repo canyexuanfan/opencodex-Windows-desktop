@@ -26,6 +26,7 @@ describe("usageFromResponsesPayload", () => {
       outputTokens: 23,
       totalTokens: 150,
       cachedInputTokens: 7,
+      cacheReadInputTokens: 7,
       cacheCreationInputTokens: 3,
       reasoningOutputTokens: 5,
     });
@@ -44,6 +45,7 @@ describe("usageFromResponsesPayload", () => {
       outputTokens: 7,
       totalTokens: 60,
       cachedInputTokens: 11,
+      cacheReadInputTokens: 11,
       cacheCreationInputTokens: 2,
       reasoningOutputTokens: 3,
     });

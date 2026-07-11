@@ -16,6 +16,8 @@ interface UsageSummaryTotals {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
   reasoningOutputTokens: number;
   totalTokens: number;
   coverageRatio: number;
@@ -268,7 +270,15 @@ export default function Usage({ apiBase }: { apiBase: string }) {
             <div className="stat"><div className="muted">{t("usage.card.requests")}</div><div className="stat-value">{data.summary.requests}</div></div>
             <div className="stat"><div className="muted">{t("usage.card.measured")}</div><div className="stat-value">{data.summary.measuredRequests}</div></div>
             <div className="stat"><div className="muted">{t("usage.card.totalTokens")}</div><div className="stat-value">{formatTokens(data.summary.totalTokens, locale)}</div></div>
-            <div className="stat"><div className="muted">{t("usage.card.cachedTokens")}</div><div className="stat-value">{formatTokens(data.summary.cachedInputTokens, locale)}</div></div>
+            <div className="stat" title={t("usage.card.cachedTokensHint")}>
+              <div className="muted">{t("usage.card.cachedTokens")}</div>
+              <div className="stat-value">{formatTokens(data.summary.cacheReadInputTokens ?? data.summary.cachedInputTokens, locale)}</div>
+              {(data.summary.cacheCreationInputTokens ?? 0) > 0 && (
+                <div className="muted" style={{ fontSize: 11 }}>
+                  {t("usage.card.cacheWriteTokens")}: {formatTokens(data.summary.cacheCreationInputTokens ?? 0, locale)}
+                </div>
+              )}
+            </div>
             <div className="stat"><div className="muted">{t("usage.card.coverage")}</div><div className="stat-value">{formatPct(data.summary.coverageRatio)}</div></div>
             <div className="stat"><div className="muted">{t("usage.card.activeDays")}</div><div className="stat-value">{activeDays}</div></div>
           </div>

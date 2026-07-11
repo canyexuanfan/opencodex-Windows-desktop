@@ -2,7 +2,7 @@ import type { AdapterEvent, OcxUsage } from "./types";
 import { adapterFailureFromMessage, classifyError, type OcxErrorPayload } from "./lib/errors";
 import { encodeCompactionSummary } from "./responses/compaction";
 import { encodeReasoningEnvelope, type ReasoningEnvelope } from "./responses/reasoning-envelope";
-import { usageDisplayTotalTokens, usageInputTokensWithCacheDetail } from "./usage/totals";
+import { usageDisplayTotalTokens } from "./usage/totals";
 
 function uuid(): string {
   return crypto.randomUUID().replace(/-/g, "");
@@ -14,7 +14,8 @@ function sseEvent(name: string, data: Record<string, unknown>): string {
 
 function responsesUsage(usage: OcxUsage | undefined): Record<string, unknown> {
   if (!usage) return { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
-  const inputTokens = usageInputTokensWithCacheDetail(usage);
+  // inputTokens is already inclusive of cache read/write (types.ts convention).
+  const inputTokens = usage.inputTokens;
   const out: Record<string, unknown> = {
     input_tokens: inputTokens,
     output_tokens: usage.outputTokens,
@@ -22,6 +23,7 @@ function responsesUsage(usage: OcxUsage | undefined): Record<string, unknown> {
   };
   const inputDetails: Record<string, number> = {};
   if (usage.cachedInputTokens !== undefined) {
+    // cached_tokens carries cache READS only, matching OpenAI semantics.
     inputDetails.cached_tokens = usage.cachedInputTokens;
   }
   if (usage.cacheCreationInputTokens !== undefined) {

@@ -109,16 +109,17 @@ describe("summarizeUsage", () => {
     expect(sum.summary.estimatedRequests).toBe(1);
   });
 
-  test("Anthropic cache read and write tokens contribute to display totals", () => {
+  test("Anthropic cache read and write tokens split without inflating display totals", () => {
     const entries: PersistedUsageEntry[] = [
       entry({
         ts: FIXED_NOW - 1000,
         provider: "anthropic",
         usageStatus: "reported",
         usage: {
+          // canonical convention: inputTokens is inclusive of cache read + write
           inputTokens: 100,
           outputTokens: 20,
-          cachedInputTokens: 70,
+          cachedInputTokens: 50,
           cacheReadInputTokens: 50,
           cacheCreationInputTokens: 20,
         },
@@ -127,11 +128,39 @@ describe("summarizeUsage", () => {
     ];
     const sum = summarizeUsage(entries, "30d", FIXED_NOW);
 
-    expect(sum.summary.cachedInputTokens).toBe(70);
-    expect(sum.summary.totalTokens).toBe(190);
-    expect(sum.days.find(day => day.requests === 1)?.totalTokens).toBe(190);
-    expect(sum.models[0].totalTokens).toBe(190);
-    expect(sum.providers[0].totalTokens).toBe(190);
+    expect(sum.summary.cachedInputTokens).toBe(50);
+    expect(sum.summary.cacheReadInputTokens).toBe(50);
+    expect(sum.summary.cacheCreationInputTokens).toBe(20);
+    expect(sum.summary.totalTokens).toBe(120);
+    expect(sum.days.find(day => day.requests === 1)?.totalTokens).toBe(120);
+    expect(sum.models[0].totalTokens).toBe(120);
+    expect(sum.providers[0].totalTokens).toBe(120);
+  });
+
+  test("legacy combined cachedInputTokens rows recover reads by subtracting the write share", () => {
+    // Pre-070 claude-route rows stored cachedInputTokens = read + write with only the
+    // creation split present (devlog 070).
+    const entries: PersistedUsageEntry[] = [
+      entry({
+        ts: FIXED_NOW - 1000,
+        provider: "anthropic",
+        usageStatus: "reported",
+        usage: {
+          inputTokens: 744002,
+          outputTokens: 1875,
+          totalTokens: 745877,
+          cachedInputTokens: 743998,
+          cacheCreationInputTokens: 743998,
+        },
+        totalTokens: 1489875,
+      }),
+    ];
+    const sum = summarizeUsage(entries, "30d", FIXED_NOW);
+
+    expect(sum.summary.cacheReadInputTokens).toBe(0);
+    expect(sum.summary.cacheCreationInputTokens).toBe(743998);
+    // the inflated outer total is healed by the inner usage.totalTokens
+    expect(sum.summary.totalTokens).toBe(745877);
   });
 
   test("Kiro estimated totals count as measured for coverage and model rows", () => {

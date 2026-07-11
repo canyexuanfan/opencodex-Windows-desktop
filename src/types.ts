@@ -224,6 +224,15 @@ export interface OcxUrlCitation {
   title?: string;
 }
 
+/**
+ * Canonical usage convention (devlog/260711_claude_inbound/070):
+ * - `inputTokens` is the TOTAL prompt size, INCLUDING cache reads and cache writes
+ *   (OpenAI Responses convention). Anthropic parse sites normalize into this shape.
+ * - `cachedInputTokens` is cache READ tokens only (a subset of `inputTokens`).
+ * - `cacheReadInputTokens`/`cacheCreationInputTokens` carry the read/write split when
+ *   the provider reports both; reads mirror `cachedInputTokens`.
+ * - `totalTokens` = inputTokens + outputTokens. Never re-add cache detail on top.
+ */
 export interface OcxUsage {
   inputTokens: number;
   outputTokens: number;

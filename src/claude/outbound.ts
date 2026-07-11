@@ -45,7 +45,12 @@ export function anthropicErrorResponse(status: number, message: string, type?: s
   });
 }
 
-/** Responses usage -> Anthropic usage (input excludes cache reads; 010 design). */
+/**
+ * Responses usage -> Anthropic usage. Responses `input_tokens` is INCLUSIVE of cache
+ * read+write (types.ts convention); Anthropic `input_tokens` excludes both, so
+ * subtract the full cache detail (devlog 070 — subtracting reads only inflated the
+ * non-cached input Claude Code displays by the write share).
+ */
 export function anthropicUsage(usage: unknown): Rec {
   const u = isRec(usage) ? usage : {};
   const details = isRec(u.input_tokens_details) ? u.input_tokens_details : {};
@@ -54,7 +59,7 @@ export function anthropicUsage(usage: unknown): Rec {
   const input = typeof u.input_tokens === "number" ? u.input_tokens : 0;
   const output = typeof u.output_tokens === "number" ? u.output_tokens : 0;
   return {
-    input_tokens: Math.max(0, input - cached),
+    input_tokens: Math.max(0, input - cached - cacheWrite),
     output_tokens: output,
     cache_read_input_tokens: cached,
     cache_creation_input_tokens: cacheWrite,

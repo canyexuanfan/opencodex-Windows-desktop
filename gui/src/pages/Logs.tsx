@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useI18n, LOCALES } from "../i18n";
+import { useI18n, LOCALES, type TFn } from "../i18n";
 import { formatTokens } from "../format-tokens";
 import { statusCodeInfo } from "../status-codes";
 import { IconX } from "../icons";
@@ -41,35 +41,39 @@ interface LogEntry {
   totalTokens?: number;
 }
 
-function tokensTitle(log: LogEntry): string | undefined {
+function tokensTitle(log: LogEntry, t: TFn): string | undefined {
   if (!log.usage) return undefined;
+  const split = cacheSplit(log);
   const parts = [
-    `in=${log.usage.inputTokens}`,
-    `out=${log.usage.outputTokens}`,
+    `${t("logs.tokens.input")}=${log.usage.inputTokens}`,
+    `${t("logs.tokens.output")}=${log.usage.outputTokens}`,
   ];
-  if (typeof log.usage.cachedInputTokens === "number") parts.push(`cached=${log.usage.cachedInputTokens}`);
-  if (typeof log.usage.cacheReadInputTokens === "number") parts.push(`cacheRead=${log.usage.cacheReadInputTokens}`);
-  if (typeof log.usage.cacheCreationInputTokens === "number") parts.push(`cacheCreate=${log.usage.cacheCreationInputTokens}`);
-  if (typeof log.usage.reasoningOutputTokens === "number") parts.push(`reasoning=${log.usage.reasoningOutputTokens}`);
+  if (split.read !== undefined) parts.push(`${t("logs.tokens.cacheRead")}=${split.read}`);
+  if (split.write !== undefined) parts.push(`${t("logs.tokens.cacheWrite")}=${split.write}`);
+  if (typeof log.usage.reasoningOutputTokens === "number") parts.push(`${t("logs.tokens.reasoning")}=${log.usage.reasoningOutputTokens}`);
   return parts.join(" \xC2\xB7 ");
 }
 
 function displayTokenTotal(log: LogEntry): number | undefined {
   if (!log.usage) return typeof log.totalTokens === "number" ? log.totalTokens : undefined;
+  // inputTokens is inclusive of cache read/write (canonical convention, devlog 070);
+  // never re-add cache detail. max() keeps legacy pre-070 rows honest.
   const baseTotal = log.usage.inputTokens + log.usage.outputTokens;
   const explicitTotal = log.usage.totalTokens ?? log.totalTokens;
-  const hasRead = typeof log.usage.cacheReadInputTokens === "number";
-  const hasCreate = typeof log.usage.cacheCreationInputTokens === "number";
-  if (hasRead || hasCreate) {
-    const detailedTotal = baseTotal + (log.usage.cacheReadInputTokens ?? 0) + (log.usage.cacheCreationInputTokens ?? 0);
-    return typeof explicitTotal === "number" ? Math.max(explicitTotal, detailedTotal) : detailedTotal;
-  }
-  if (typeof explicitTotal === "number") return explicitTotal;
-  return baseTotal;
+  return typeof explicitTotal === "number" ? Math.max(explicitTotal, baseTotal) : baseTotal;
 }
 
-function cachedTokenTotal(log: LogEntry): number | undefined {
-  return typeof log.usage?.cachedInputTokens === "number" ? log.usage.cachedInputTokens : undefined;
+/** Cache read/write split; recovers reads from legacy rows that stored read+write combined. */
+function cacheSplit(log: LogEntry): { read?: number; write?: number } {
+  const u = log.usage;
+  if (!u) return {};
+  const write = typeof u.cacheCreationInputTokens === "number" ? u.cacheCreationInputTokens : undefined;
+  const read = typeof u.cacheReadInputTokens === "number"
+    ? u.cacheReadInputTokens
+    : typeof u.cachedInputTokens === "number" && write !== undefined
+      ? Math.max(0, u.cachedInputTokens - write)
+      : u.cachedInputTokens;
+  return { read, write };
 }
 
 function speedLabel(log: LogEntry): string | undefined {
@@ -170,17 +174,22 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                  ref={rowVirtualizer.measureElement}
                >
                  <td className="muted mono">{new Date(log.timestamp).toLocaleTimeString(localeTag)}</td>
-                  <td className="num mono log-col-tokens" title={tokensTitle(log)}>
+                  <td className="num mono log-col-tokens" title={tokensTitle(log, t)}>
                     {(() => {
                       const tokenTotal = displayTokenTotal(log);
-                      const cachedTotal = cachedTokenTotal(log);
+                      const { read, write } = cacheSplit(log);
                       return tokenTotal !== undefined
                         ? (
                             <span style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
                               <span>{formatTokens(tokenTotal, locale)}</span>
-                              {cachedTotal !== undefined && (
+                              {(read !== undefined && read > 0) && (
                                 <span className="muted" style={{ fontSize: 11, lineHeight: 1 }}>
-                                  c {formatTokens(cachedTotal, locale)}
+                                  c {formatTokens(read, locale)}
+                                </span>
+                              )}
+                              {(write !== undefined && write > 0) && (
+                                <span className="muted" style={{ fontSize: 11, lineHeight: 1 }}>
+                                  w {formatTokens(write, locale)}
                                 </span>
                               )}
                             </span>

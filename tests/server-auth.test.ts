@@ -1363,12 +1363,12 @@ describe("server local API auth", () => {
         terminalStatus: "completed",
         closeReason: "terminal",
         usageStatus: "reported",
-        // display total includes cache-write tokens (25 + 4 + 2) since cache_write_tokens support
-        totalTokens: 31,
+        // inputTokens (25) is already inclusive of cache read (3) + write (2); total = 25 + 4
+        totalTokens: 29,
         usage: {
           inputTokens: 25,
           outputTokens: 4,
-          cachedInputTokens: 5,
+          cachedInputTokens: 3,
           cacheCreationInputTokens: 2,
         },
       });

@@ -183,7 +183,10 @@ export function usageFromResponsesPayload(usage: unknown): OcxUsage | undefined 
       outputTokens: raw.output_tokens,
       ...(typeof raw.total_tokens === "number" ? { totalTokens: raw.total_tokens } : {}),
       ...(typeof raw.input_tokens_details?.cached_tokens === "number"
-        ? { cachedInputTokens: raw.input_tokens_details.cached_tokens }
+        ? {
+            cachedInputTokens: raw.input_tokens_details.cached_tokens,
+            cacheReadInputTokens: raw.input_tokens_details.cached_tokens,
+          }
         : {}),
       ...(typeof raw.input_tokens_details?.cache_write_tokens === "number"
         ? { cacheCreationInputTokens: raw.input_tokens_details.cache_write_tokens }
@@ -199,7 +202,10 @@ export function usageFromResponsesPayload(usage: unknown): OcxUsage | undefined 
       outputTokens: raw.completion_tokens,
       ...(typeof raw.total_tokens === "number" ? { totalTokens: raw.total_tokens } : {}),
       ...(typeof raw.prompt_tokens_details?.cached_tokens === "number"
-        ? { cachedInputTokens: raw.prompt_tokens_details.cached_tokens }
+        ? {
+            cachedInputTokens: raw.prompt_tokens_details.cached_tokens,
+            cacheReadInputTokens: raw.prompt_tokens_details.cached_tokens,
+          }
         : {}),
       ...(typeof raw.prompt_tokens_details?.cache_write_tokens === "number"
         ? { cacheCreationInputTokens: raw.prompt_tokens_details.cache_write_tokens }

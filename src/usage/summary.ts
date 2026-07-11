@@ -14,6 +14,8 @@ export interface UsageSummaryTotals {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
   reasoningOutputTokens: number;
   totalTokens: number;
   coverageRatio: number;
@@ -108,6 +110,8 @@ function blankTotals(): UsageSummaryTotals {
     inputTokens: 0,
     outputTokens: 0,
     cachedInputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
     reasoningOutputTokens: 0,
     totalTokens: 0,
     coverageRatio: 0,
@@ -131,7 +135,20 @@ function addTokens(totals: UsageSummaryTotals, entry: PersistedUsageEntry): void
   if (!entry.usage) return;
   totals.inputTokens += entry.usage.inputTokens;
   totals.outputTokens += entry.usage.outputTokens;
-  if (typeof entry.usage.cachedInputTokens === "number") totals.cachedInputTokens += entry.usage.cachedInputTokens;
+  // Prefer the explicit read/write split; legacy claude-route rows stored read+write
+  // combined in cachedInputTokens with only the creation split present (devlog 070),
+  // so recover reads by subtracting the write share for those rows.
+  const creation = entry.usage.cacheCreationInputTokens;
+  const read = typeof entry.usage.cacheReadInputTokens === "number"
+    ? entry.usage.cacheReadInputTokens
+    : typeof entry.usage.cachedInputTokens === "number" && typeof creation === "number"
+      ? Math.max(0, entry.usage.cachedInputTokens - creation)
+      : entry.usage.cachedInputTokens;
+  if (typeof read === "number") {
+    totals.cachedInputTokens += read;
+    totals.cacheReadInputTokens += read;
+  }
+  if (typeof creation === "number") totals.cacheCreationInputTokens += creation;
   if (typeof entry.usage.reasoningOutputTokens === "number") totals.reasoningOutputTokens += entry.usage.reasoningOutputTokens;
   totals.totalTokens += usageDisplayTotalTokens(entry.usage, entry.totalTokens) ?? 0;
 }

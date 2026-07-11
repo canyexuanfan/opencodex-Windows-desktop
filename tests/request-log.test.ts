@@ -129,11 +129,13 @@ describe("request log metadata", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
       usageStatus: "reported",
-      totalTokens: 126,
+      // input_tokens is inclusive of cache detail; total is input+output, never re-added
+      totalTokens: 123,
       usage: {
         inputTokens: 100,
         outputTokens: 23,
         cachedInputTokens: 7,
+        cacheReadInputTokens: 7,
         cacheCreationInputTokens: 3,
         reasoningOutputTokens: 5,
       },

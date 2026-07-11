@@ -288,8 +288,22 @@ export function buildCursorToolDefinitions(
   toolChoice?: OcxRequestOptions["toolChoice"],
 ): McpToolDefinition[] {
   if (!tools?.length) return [];
+  // THROWAWAY PROBE SCAFFOLD (env-gated; reverted before commit). When
+  // OCX_CURSOR_PROBE_PROVIDER is set, advertise client tools under that provider
+  // identity with the `mcp_<provider>_<tool>` name convention used by working
+  // reference bridges, to test whether the provider identity is the routability gate.
+  const probeProvider = process.env.OCX_CURSOR_PROBE_PROVIDER;
   return tools.filter(tool => toolChoiceAllows(tool, toolChoice)).map(tool => {
     const wireName = cursorToolWireName(tool);
+    if (probeProvider) {
+      return create(McpToolDefinitionSchema, {
+        name: `mcp_${probeProvider}_${wireName}`,
+        toolName: wireName,
+        providerIdentifier: probeProvider,
+        description: tool.description,
+        inputSchema: encodeCursorInputSchema(cursorToolInputSchema(tool)),
+      });
+    }
     return create(McpToolDefinitionSchema, {
       name: wireName,
       toolName: wireName,

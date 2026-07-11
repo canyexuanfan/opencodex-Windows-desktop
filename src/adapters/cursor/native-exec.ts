@@ -137,6 +137,14 @@ export function storeCursorBlob(data: Uint8Array): Uint8Array {
 
 export async function handleCursorNativeExec(execMsg: ExecServerMessage, deps: CursorNativeExecContext = {}): Promise<Uint8Array[]> {
   const execCase = execMsg.message.case;
+  // THROWAWAY PROBE SCAFFOLD (env-gated; reverted before commit): observe every exec
+  // frame so a model tool-call under any providerIdentifier is visible even when the
+  // OCX_RESPONSES surfacing filter would hide it from run()'s CursorServerMessage stream.
+  if (process.env.OCX_CURSOR_PROBE_PROVIDER) {
+    const v = execMsg.message.value as { providerIdentifier?: string; toolName?: string; name?: string } | undefined;
+    const extra = execCase === "mcpArgs" ? ` provider=${v?.providerIdentifier} name=${v?.toolName || v?.name}` : "";
+    console.error(`[PROBE] execCase=${execCase}${extra}`);
+  }
   if (execCase === "requestContextArgs") {
     const tools = [...(deps.mcpToolDefs ?? []), ...(deps.clientToolDefs ?? [])];
     return [execBytes(execMsg, "requestContextResult", create(RequestContextResultSchema, {
