@@ -117,6 +117,8 @@ export {
 } from "./auth-cors";
 import { disableResponsesRequestTimeout, handleResponses, handleResponsesCompact } from "./responses";
 export { disableResponsesRequestTimeout, linkAbortSignal } from "./responses";
+import { handleClaudeCountTokens, handleClaudeMessages } from "./claude-messages";
+import { anthropicErrorResponse } from "../claude/outbound";
 import { handleImages } from "./images";
 import { handleSearch } from "./search";
 import { fetchAllModels, handleManagementAPI, VERSION } from "./management-api";
@@ -393,6 +395,40 @@ export function startServer(port?: number) {
             finalizeNativePassthroughLog(499, { closeReason: "client_cancel" });
           },
         });
+        return withCors(responseWithDeferredRequestLog(response, requestId, start, logCtx), req, config);
+      }
+
+      // Anthropic Messages inbound (Claude Code). count_tokens FIRST (longer path).
+      // Claude Code posts `/v1/messages?beta=true` — pathname match ignores the query (003 G9).
+      if (url.pathname === "/v1/messages/count_tokens" && req.method === "POST") {
+        if (isDraining()) {
+          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
+        }
+        if (!hasValidApiAuth(req, config)) {
+          return withCors(anthropicErrorResponse(401, "opencodex API key required", "authentication_error"), req, config);
+        }
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(anthropicErrorResponse(403, "cross-origin data-plane request blocked", "permission_error"), req, config);
+        }
+        const response = await handleClaudeCountTokens(req, config);
+        return withCors(response, req, config);
+      }
+
+      if (url.pathname === "/v1/messages" && req.method === "POST") {
+        disableResponsesRequestTimeout(req, requestServer);
+        if (isDraining()) {
+          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
+        }
+        if (!hasValidApiAuth(req, config)) {
+          return withCors(anthropicErrorResponse(401, "opencodex API key required", "authentication_error"), req, config);
+        }
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(anthropicErrorResponse(403, "cross-origin data-plane request blocked", "permission_error"), req, config);
+        }
+        const start = Date.now();
+        const requestId = nextRequestLogId(start);
+        const logCtx: RequestLogContext = { model: "unknown", provider: "unknown" };
+        const response = await handleClaudeMessages(req, config, logCtx);
         return withCors(responseWithDeferredRequestLog(response, requestId, start, logCtx), req, config);
       }
 

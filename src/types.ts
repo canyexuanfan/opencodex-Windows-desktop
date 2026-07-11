@@ -235,10 +235,27 @@ export interface OcxUsage {
   estimated?: boolean;
 }
 
+/**
+ * Claude Code inbound settings (devlog/260711_claude_inbound). Consumed by the
+ * /v1/messages surface, the `ocx claude` launcher, and the GUI Claude page.
+ */
+export interface OcxClaudeCodeConfig {
+  /** Kill switch for the /v1/messages inbound (GUI "Claude ON" toggle). Default: enabled. */
+  enabled?: boolean;
+  /** Default model slot injected as ANTHROPIC_MODEL by `ocx claude`. */
+  model?: string;
+  /** Haiku/small-fast slot injected as ANTHROPIC_DEFAULT_HAIKU_MODEL (+ legacy SMALL_FAST). */
+  smallFastModel?: string;
+  /** Inbound model id remaps: exact id first, then date-stripped (`-\d{8}$`). */
+  modelMap?: Record<string, string>;
+}
+
 export interface OcxConfig {
   port: number;
   providers: Record<string, OcxProviderConfig>;
   defaultProvider: string;
+  /** Claude Code inbound + launcher settings. */
+  claudeCode?: OcxClaudeCodeConfig;
   /**
    * Up to 5 routed model ids ("<provider>/<model>") to feature FIRST in the injected Codex catalog.
    * Codex's spawn_agent only advertises the first 5 routed models, so this picks which 5 appear.

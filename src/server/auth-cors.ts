@@ -73,7 +73,7 @@ export function corsHeaders(req?: Request, config?: OcxConfig): Record<string, s
   return {
     "Access-Control-Allow-Origin": allowOrigin,
     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-OpenCodex-API-Key",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-OpenCodex-API-Key, X-Api-Key, Anthropic-Version, Anthropic-Beta",
     "Vary": "Origin",
   };
 }
@@ -140,7 +140,9 @@ export function isProxyAdmissionSecret(token: string, config: OcxConfig): boolea
 export function hasValidApiAuth(req: Request, config: OcxConfig): boolean {
   if (!isApiAuthRequired(config)) return true;
   const actual = req.headers.get("x-opencodex-api-key")?.trim()
-    || req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+    || req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim()
+    // Anthropic-SDK clients (Claude Code with ANTHROPIC_API_KEY) authenticate via x-api-key.
+    || req.headers.get("x-api-key")?.trim();
   if (!actual) return false;
   return isProxyAdmissionSecret(actual, config);
 }
