@@ -99,6 +99,41 @@ describe("claude inbound translation", () => {
     expect(effortForThinkingBudget(30000)).toBe("high");
   });
 
+  test("adaptive /effort wire: output_config.effort maps to reasoning.effort (devlog 080)", () => {
+    const base = { model: "m", max_tokens: 10, messages: [{ role: "user", content: "hi" }] };
+    const reasoningOf = (body: unknown) => (body as { reasoning?: Record<string, unknown> }).reasoning;
+    // Real claude 2.1.207 capture: thinking adaptive + output_config effort
+    expect(reasoningOf(anthropicToResponsesBody({
+      ...base,
+      thinking: { type: "adaptive", display: "omitted" },
+      output_config: { effort: "high" },
+    }))).toEqual({ summary: "auto", effort: "high" });
+    // effort passes through the whole known ladder
+    for (const effort of ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]) {
+      expect(reasoningOf(anthropicToResponsesBody({
+        ...base, thinking: { type: "adaptive" }, output_config: { effort },
+      }))).toEqual({ summary: "auto", effort });
+    }
+    // output_config alone (adaptive-default models may omit thinking) still carries effort
+    expect(reasoningOf(anthropicToResponsesBody({
+      ...base, output_config: { effort: "medium" },
+    }))).toEqual({ summary: "auto", effort: "medium" });
+    // output_config wins over a legacy budget when both appear
+    expect(reasoningOf(anthropicToResponsesBody({
+      ...base,
+      thinking: { type: "enabled", budget_tokens: 1024 },
+      output_config: { effort: "xhigh" },
+    }))).toEqual({ summary: "auto", effort: "xhigh" });
+    // disabled thinking suppresses effort entirely (subagent wire, claude-code#65863)
+    expect(reasoningOf(anthropicToResponsesBody({
+      ...base, thinking: { type: "disabled" }, output_config: { effort: "high" },
+    }))).toBeUndefined();
+    // unknown effort strings are dropped so downstream defaults win
+    expect(reasoningOf(anthropicToResponsesBody({
+      ...base, thinking: { type: "adaptive" }, output_config: { effort: "turbo" },
+    }))).toEqual({ summary: "auto" });
+  });
+
   test("tool_choice any/tool/none", () => {
     const base = { model: "m", max_tokens: 10, messages: [{ role: "user", content: "hi" }] };
     expect((anthropicToResponsesBody({ ...base, tool_choice: { type: "any" } }) as any).tool_choice).toBe("required");

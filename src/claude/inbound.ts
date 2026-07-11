@@ -40,6 +40,19 @@ export function effortForThinkingBudget(budget: number): string {
   return "high";
 }
 
+/**
+ * Adaptive-thinking wire (devlog 080): Claude Code /effort sends
+ * `thinking:{type:"adaptive"}` + `output_config:{effort:"..."}` (verified by local
+ * capture of claude 2.1.207 and CLIProxyAPI#1540). Forward the level verbatim when it
+ * is a known Responses effort; unknown strings are dropped so downstream defaults win.
+ */
+const OUTPUT_CONFIG_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+export function effortFromOutputConfig(outputConfig: unknown): string | undefined {
+  if (!isRec(outputConfig)) return undefined;
+  const effort = outputConfig.effort;
+  return typeof effort === "string" && OUTPUT_CONFIG_EFFORTS.has(effort) ? effort : undefined;
+}
+
 function systemToInstructions(system: unknown): string | undefined {
   if (typeof system === "string") return system.length > 0 ? system : undefined;
   if (Array.isArray(system)) {
@@ -277,9 +290,14 @@ export function anthropicToResponsesBody(raw: unknown, cc?: OcxClaudeCodeConfig)
   if (isRec(raw.metadata) && typeof raw.metadata.user_id === "string") body.user = raw.metadata.user_id;
 
   const thinking = raw.thinking;
-  if (isRec(thinking) && thinking.type !== "disabled") {
+  const outputConfigEffort = effortFromOutputConfig(raw.output_config);
+  const thinkingDisabled = isRec(thinking) && thinking.type === "disabled";
+  if (!thinkingDisabled && (isRec(thinking) || outputConfigEffort !== undefined)) {
     const reasoning: Rec = { summary: "auto" };
-    if (thinking.type === "enabled" && typeof thinking.budget_tokens === "number") {
+    if (outputConfigEffort !== undefined) {
+      // Adaptive wire: /effort arrives as output_config.effort (devlog 080).
+      reasoning.effort = outputConfigEffort;
+    } else if (isRec(thinking) && thinking.type === "enabled" && typeof thinking.budget_tokens === "number") {
       reasoning.effort = effortForThinkingBudget(thinking.budget_tokens);
     }
     body.reasoning = reasoning;
