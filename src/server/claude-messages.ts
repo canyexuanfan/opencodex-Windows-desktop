@@ -72,6 +72,12 @@ function wantsNativePassthrough(req: Request, config: OcxConfig, model: unknown)
   return resolveInboundModel(model, config.claudeCode) === model;
 }
 
+/** Format a 32-hex cache key as a uuid-shaped session id (version/variant nibbles forced). */
+function uuidFromHex(hex32: string): string {
+  const h = (hex32 + "0".repeat(32)).slice(0, 32);
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+
 function anthropicUsageToOcx(usage: Rec | undefined): { inputTokens: number; outputTokens: number; cachedInputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number } | undefined {
   if (!usage) return undefined;
   const num = (v: unknown) => typeof v === "number" ? v : 0;
@@ -274,6 +280,13 @@ export async function handleClaudeMessages(
     if (token) {
       headers.set("authorization", `Bearer ${token.accessToken}`);
       headers.set("chatgpt-account-id", token.chatgptAccountId);
+    }
+    // ChatGPT-backend prompt-cache affinity rides the session_id HEADER (codex
+    // clients always send their session uuid; devlog 090 follow-up: body-level
+    // prompt_cache_key alone still yielded cached_tokens:0). Claude Code never sends
+    // the header, so synthesize a stable per-session uuid from the same cache key.
+    if (!headers.has("session_id") && typeof internalBody.prompt_cache_key === "string") {
+      headers.set("session_id", uuidFromHex(internalBody.prompt_cache_key));
     }
   }
   const internalReq = new Request("http://localhost/v1/responses", {

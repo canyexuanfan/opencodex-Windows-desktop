@@ -135,6 +135,62 @@ test("non-streaming /v1/messages returns an Anthropic message JSON", async () =>
   }
 });
 
+test("native openai-responses route carries prompt_cache_key + synthesized session_id header", async () => {
+  const capture: { headers?: Record<string, string>; body?: Record<string, any> } = {};
+  const upstream = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const url = new URL(req.url);
+      if (!url.pathname.endsWith("/responses")) {
+        return Response.json({ error: { message: `unexpected path ${url.pathname}` } }, { status: 404 });
+      }
+      capture.headers = Object.fromEntries(req.headers);
+      capture.body = await req.json() as Record<string, any>;
+      const frames = [
+        `event: response.created\ndata: ${JSON.stringify({ response: { id: "resp_1", status: "in_progress" } })}\n\n`,
+        `event: response.output_text.delta\ndata: ${JSON.stringify({ delta: "Hello" })}\n\n`,
+        `event: response.completed\ndata: ${JSON.stringify({ response: { status: "completed", usage: { input_tokens: 10, output_tokens: 2 } } })}\n\n`,
+      ];
+      return new Response(frames.join(""), { headers: { "Content-Type": "text/event-stream" } });
+    },
+  });
+  saveConfig({
+    port: 0,
+    defaultProvider: "native",
+    providers: {
+      native: { adapter: "openai-responses", baseUrl: `${upstream.url.toString().replace(/\/$/, "")}/v1`, authMode: "forward" },
+    },
+  } as OcxConfig);
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/messages", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "native/gpt-test",
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hi" }],
+        metadata: { user_id: "user_abc123_account__session_11111111-2222-3333-4444-555555555555" },
+        thinking: { type: "adaptive", display: "omitted" },
+        output_config: { effort: "high" },
+      }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    // Native ChatGPT route: sampling params + user are stripped, but the cache-affinity
+    // pair survives — prompt_cache_key in the body and a synthesized session_id header
+    // (devlog 090: without the header the backend reported cached_tokens: 0 every turn).
+    expect(capture.body?.prompt_cache_key).toMatch(/^[0-9a-f]{32}$/);
+    expect(capture.body?.user).toBeUndefined();
+    expect(capture.body?.max_output_tokens).toBeUndefined();
+    expect(capture.body?.reasoning?.effort).toBe("high");
+    expect(capture.headers?.["session_id"]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/);
+  } finally {
+    server.stop(true);
+    upstream.stop(true);
+  }
+});
+
 test("bad body -> Anthropic-shaped 400; unknown /v1 path guard intact", async () => {
   saveConfig(mockConfig("http://127.0.0.1:1/v1"));
   const server = startServer(0);
