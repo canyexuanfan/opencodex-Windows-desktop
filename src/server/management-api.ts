@@ -662,13 +662,14 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       smallFastModel: config.claudeCode?.smallFastModel ?? "",
       modelMap: config.claudeCode?.modelMap ?? {},
       systemEnv: config.claudeCode?.systemEnv === true,
+      fastMode: config.fastMode,
       available,
       aliases,
       port: config.port,
     });
   }
   if (url.pathname === "/api/claude-code" && req.method === "PUT") {
-    let body: { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; systemEnv?: unknown };
+    let body: { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; systemEnv?: unknown; fastMode?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     const next = { ...(config.claudeCode ?? {}) };
     if (body.enabled !== undefined) {
@@ -678,6 +679,12 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     if (body.systemEnv !== undefined) {
       if (typeof body.systemEnv !== "boolean") return jsonResponse({ error: "systemEnv must be a boolean" }, 400);
       next.systemEnv = body.systemEnv;
+    }
+    if (body.fastMode !== undefined) {
+      if (body.fastMode !== true && body.fastMode !== false && body.fastMode !== null) {
+        return jsonResponse({ error: "fastMode must be true, false, or null" }, 400);
+      }
+      config.fastMode = body.fastMode === null ? undefined : body.fastMode;
     }
     for (const field of ["model", "smallFastModel"] as const) {
       const value = body[field];

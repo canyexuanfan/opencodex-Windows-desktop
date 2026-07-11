@@ -291,6 +291,12 @@ export interface OcxConfig {
    */
   injectionEffort?: string;
   /**
+   * When true, OpenAI-routed requests include `service_tier: "priority"` (fast inference).
+   * When false, service_tier is stripped so requests use default speed.
+   * Undefined = passthrough (don't modify what the client sends).
+   */
+  fastMode?: boolean;
+  /**
    * Custom override for the injected multi-agent guidance body (the text inside the
    * <multi_agent_mode> tags). When set, it replaces the built-in prompt on whichever
    * collab surface would have fired; firing gates are unchanged. Placeholders:

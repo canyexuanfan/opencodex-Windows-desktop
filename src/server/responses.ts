@@ -482,6 +482,17 @@ export async function handleResponses(
   logCtx.model = route.modelId;
   logCtx.provider = route.providerName;
 
+  // Fast mode override: when config.fastMode is explicitly set, inject or strip
+  // service_tier for OpenAI-routed models. Undefined = passthrough (client decides).
+  if (config.fastMode !== undefined && route.provider.adapter === "openai-responses") {
+    const tier = config.fastMode ? "priority" : undefined;
+    if (parsed._rawBody && typeof parsed._rawBody === "object") {
+      if (tier) (parsed._rawBody as Record<string, unknown>).service_tier = tier;
+      else delete (parsed._rawBody as Record<string, unknown>).service_tier;
+    }
+    parsed.options.serviceTier = tier;
+  }
+
   // Multi-agent guidance shim: codex-rs emits its Proactive delegation developer
   // message only on the v2 surface. The proxy fills both gaps: the Proactive text
   // for v1 collab surfaces at the top tier, and the sub-agent model designation on

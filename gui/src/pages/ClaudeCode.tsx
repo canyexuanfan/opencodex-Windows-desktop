@@ -7,6 +7,7 @@ import { modelLabel } from "../model-display";
 interface ClaudeCodeState {
   enabled: boolean;
   systemEnv: boolean;
+  fastMode: boolean | null;
   model: string;
   smallFastModel: string;
   modelMap: Record<string, string>;
@@ -28,7 +29,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   const load = async () => {
     try {
       const r = await fetch(`${apiBase}/api/claude-code`).then(res => res.json());
-      setState({ ...r, systemEnv: r.systemEnv !== false });
+      setState({ ...r, systemEnv: r.systemEnv !== false, fastMode: r.fastMode ?? null });
       setRows(Object.entries(r.modelMap ?? {}).map(([from, to]) => ({ from, to: String(to) })));
     } catch {
       setOk(false);
@@ -58,6 +59,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
         body: JSON.stringify({
           enabled: state.enabled,
           systemEnv: state.systemEnv,
+          fastMode: state.fastMode,
           model: state.model,
           smallFastModel: state.smallFastModel,
           modelMap,
@@ -120,9 +122,28 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
         </label>
       </div>
      <p className="muted" style={{ fontSize: 12.5, margin: "6px 2px 0" }}>
-       {t("claude.systemEnvDesc")}
-      </p>
-      <p style={{ fontSize: 12, margin: "4px 2px 0", color: "var(--red)", fontWeight: 500 }}>{t("claude.systemEnvWarn")}</p>
+      {t("claude.systemEnvDesc")}
+     </p>
+     <p style={{ fontSize: 12, margin: "4px 2px 0", color: "var(--red)", fontWeight: 500 }}>{t("claude.systemEnvWarn")}</p>
+
+      <div className="card row" style={{ padding: "10px 14px", gap: 12, alignItems: "center", marginTop: 10 }}>
+        <label className="row" style={{ gap: 10, alignItems: "center", cursor: "pointer", flex: 1 }}>
+          <select
+            value={state.fastMode === null ? "auto" : state.fastMode ? "on" : "off"}
+            onChange={e => {
+              const v = e.target.value;
+              setState({ ...state, fastMode: v === "auto" ? null : v === "on" });
+            }}
+            style={{ padding: "4px 8px" }}
+          >
+            <option value="auto">{t("claude.fastAuto")}</option>
+            <option value="on">{t("claude.fastOn")}</option>
+            <option value="off">{t("claude.fastOff")}</option>
+          </select>
+          <span style={{ fontWeight: 600 }}>{t("claude.fastMode")}</span>
+        </label>
+      </div>
+      <p className="muted" style={{ fontSize: 12.5, margin: "6px 2px 0" }}>{t("claude.fastModeDesc")}</p>
 
       <div className="h-section">{t("claude.quickstart")}</div>
       <p className="muted" style={{ fontSize: 12.5, margin: "0 0 8px" }}><Trans k="claude.quickstartHint" cmd="ocx claude" /></p>
