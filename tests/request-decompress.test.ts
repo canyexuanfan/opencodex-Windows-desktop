@@ -17,6 +17,18 @@ describe("decodeRequestBody", () => {
     expect(decodeRequestBody(PAYLOAD_BYTES, "identity")).toBe(PAYLOAD_BYTES);
   });
 
+  test("allows identity bodies exactly at the shared byte cap", () => {
+    const exact = new Uint8Array(MAX_DECOMPRESSED_BODY_BYTES);
+    expect(decodeRequestBody(exact, "identity")).toBe(exact);
+    expect(decodeRequestBody(exact, null)).toBe(exact);
+  });
+
+  test("rejects identity bodies over the shared byte cap", () => {
+    const over = new Uint8Array(MAX_DECOMPRESSED_BODY_BYTES + 1);
+    expect(() => decodeRequestBody(over, "identity")).toThrow(DecompressedBodyTooLargeError);
+    expect(() => decodeRequestBody(over, null)).toThrow(DecompressedBodyTooLargeError);
+  });
+
   test("round-trips zstd (the codex enable_request_compression encoding)", () => {
     const compressed = Bun.zstdCompressSync(PAYLOAD_BYTES);
     expect(new TextDecoder().decode(decodeRequestBody(compressed, "zstd"))).toBe(JSON.stringify(PAYLOAD));
@@ -111,5 +123,32 @@ describe("readJsonRequestBody", () => {
       body: big,
     });
     await expect(readJsonRequestBody(req)).rejects.toBeInstanceOf(DecompressedBodyTooLargeError);
+  });
+
+  test("surfaces DecompressedBodyTooLargeError for oversized identity bodies too", async () => {
+    const req = new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: new Uint8Array(MAX_DECOMPRESSED_BODY_BYTES + 1),
+    });
+    await expect(readJsonRequestBody(req)).rejects.toBeInstanceOf(DecompressedBodyTooLargeError);
+  });
+
+  test("preserves SyntaxError for malformed identity JSON", async () => {
+    const req = new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{\"model\":",
+    });
+    await expect(readJsonRequestBody(req)).rejects.toBeInstanceOf(SyntaxError);
+  });
+
+  test("preserves SyntaxError for malformed compressed JSON", async () => {
+    const req = new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-encoding": "zstd" },
+      body: Bun.zstdCompressSync(new TextEncoder().encode("{\"model\":")),
+    });
+    await expect(readJsonRequestBody(req)).rejects.toBeInstanceOf(SyntaxError);
   });
 });

@@ -20,6 +20,8 @@ import {
   writePid,
 } from "../src/config";
 
+import * as windowsAcl from "../src/lib/windows-secret-acl";
+import { hardenConfigDir, hardenExistingSecret, saveConfig } from "../src/config";
 let testDir = "";
 
 beforeEach(() => {
@@ -434,5 +436,123 @@ describe("opencodex config defaults", () => {
     writeFileSync(getRuntimePortPath(), JSON.stringify({ pid: 1234, port: 99999 }), "utf-8");
 
     expect(readRuntimePort()).toBeNull();
+  });
+});
+
+describe("config.ts – Windows ACL hardening integration", () => {
+  test("hardenConfigDir delegates to hardenSecretDir with required:false on win32", () => {
+    const origPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      const spy = spyOn(windowsAcl, "hardenSecretDir").mockReturnValue({ ok: true });
+      mkdirSync(testDir, { recursive: true });
+      hardenConfigDir();
+      expect(spy).toHaveBeenCalledWith(testDir, { required: false });
+      spy.mockRestore();
+    } finally {
+      Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
+    }
+  });
+
+  test("hardenConfigDir does not call hardenSecretDir on non-Windows", () => {
+    const origPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    try {
+      const spy = spyOn(windowsAcl, "hardenSecretDir");
+      mkdirSync(testDir, { recursive: true });
+      hardenConfigDir();
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+    } finally {
+      Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
+    }
+  });
+
+  test("hardenExistingSecret delegates to hardenSecretPath with required:false on win32", () => {
+    const origPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      const spy = spyOn(windowsAcl, "hardenSecretPath").mockReturnValue({ ok: true });
+      const filePath = join(testDir, "auth.json");
+      writeFileSync(filePath, "{}", "utf-8");
+      hardenExistingSecret(filePath);
+      expect(spy).toHaveBeenCalledWith(filePath, { required: false });
+      spy.mockRestore();
+    } finally {
+      Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
+    }
+  });
+
+  test("hardenExistingSecret does not throw when ACL helper returns ok:false on win32", () => {
+    const origPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      const spy = spyOn(windowsAcl, "hardenSecretPath").mockReturnValue({
+        ok: false,
+        diagnostics: "ACL hardening not supported on this filesystem",
+      });
+      const filePath = join(testDir, "auth.json");
+      writeFileSync(filePath, "{}", "utf-8");
+      expect(() => hardenExistingSecret(filePath)).not.toThrow();
+      spy.mockRestore();
+    } finally {
+      Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
+    }
+  });
+
+  test("saveConfig applies hardenSecretDir with required:true on win32", () => {
+    const origPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      const spy = spyOn(windowsAcl, "hardenSecretDir").mockReturnValue({ ok: true });
+      saveConfig(getDefaultConfig());
+      expect(spy).toHaveBeenCalledWith(testDir, { required: true });
+      expect(existsSync(getConfigPath())).toBe(true);
+      spy.mockRestore();
+    } finally {
+      Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
+    }
+  });
+
+  test("saveConfig throws when hardenSecretDir fails in required mode on win32", () => {
+    const origPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      const spy = spyOn(windowsAcl, "hardenSecretDir").mockImplementation((_path, opts) => {
+        if (opts?.required) throw new Error("ACL hardening failed: access denied");
+        return { ok: true };
+      });
+      expect(() => saveConfig(getDefaultConfig())).toThrow(/ACL/i);
+      spy.mockRestore();
+    } finally {
+      Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
+    }
+  });
+
+  test("loadConfig does not throw when ACL helper fails non-fatally on win32", () => {
+    const origPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const spy1 = spyOn(windowsAcl, "hardenSecretDir").mockReturnValue({
+      ok: false,
+      diagnostics: "ACL hardening failed — filesystem may not support per-user ACLs",
+    });
+    const spy2 = spyOn(windowsAcl, "hardenSecretPath").mockReturnValue({ ok: false, diagnostics: "ACL unavailable" });
+    try {
+      const config = loadConfig();
+      expect(config).toEqual(getDefaultConfig());
+    } finally {
+      spy1.mockRestore();
+      spy2.mockRestore();
+      Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
+    }
+  });
+
+  test("saveConfig does not call hardenSecretDir on non-Windows", () => {
+    if (process.platform === "win32") return;
+    const spy = spyOn(windowsAcl, "hardenSecretDir");
+    saveConfig(getDefaultConfig());
+    expect(spy).not.toHaveBeenCalled();
+    expect(existsSync(getConfigPath())).toBe(true);
+    spy.mockRestore();
   });
 });

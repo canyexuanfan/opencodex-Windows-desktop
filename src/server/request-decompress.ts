@@ -30,23 +30,27 @@ export class DecompressedBodyTooLargeError extends Error {
   }
 }
 
-export function decodeRequestBody(raw: Uint8Array<ArrayBuffer>, contentEncoding: string | null): Uint8Array {
+function assertBodySizeWithinLimit(body: Uint8Array): Uint8Array {
+  if (body.byteLength > MAX_DECOMPRESSED_BODY_BYTES) throw new DecompressedBodyTooLargeError(body.byteLength);
+  return body;
+}
+
+export function decodeRequestBody(raw: Uint8Array, contentEncoding: string | null): Uint8Array {
   const encoding = (contentEncoding ?? "").trim().toLowerCase();
-  if (encoding === "" || encoding === "identity") return raw;
+  if (encoding === "" || encoding === "identity") return assertBodySizeWithinLimit(raw);
+  const compressed = raw as Uint8Array<ArrayBuffer>;
   let decoded: Uint8Array;
-  if (encoding === "zstd") decoded = Bun.zstdDecompressSync(raw);
-  else if (encoding === "gzip" || encoding === "x-gzip") decoded = Bun.gunzipSync(raw);
-  else if (encoding === "deflate") decoded = Bun.inflateSync(raw);
+  if (encoding === "zstd") decoded = Bun.zstdDecompressSync(compressed);
+  else if (encoding === "gzip" || encoding === "x-gzip") decoded = Bun.gunzipSync(compressed);
+  else if (encoding === "deflate") decoded = Bun.inflateSync(compressed);
   // Multi-codings ("zstd, gzip") and unknown tokens are rejected rather than guessed.
   else throw new UnsupportedContentEncodingError(encoding);
-  if (decoded.byteLength > MAX_DECOMPRESSED_BODY_BYTES) throw new DecompressedBodyTooLargeError(decoded.byteLength);
-  return decoded;
+  return assertBodySizeWithinLimit(decoded);
 }
 
 /** Parse a JSON request body, transparently decoding compressed payloads. */
 export async function readJsonRequestBody(req: Request): Promise<unknown> {
   const encoding = req.headers.get("content-encoding");
-  if (!encoding || encoding.trim().toLowerCase() === "identity") return await req.json();
   const decoded = decodeRequestBody(new Uint8Array(await req.arrayBuffer()), encoding);
   return JSON.parse(new TextDecoder().decode(decoded));
 }

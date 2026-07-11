@@ -373,6 +373,96 @@ describe("server local API auth", () => {
     }
   });
 
+  test("provider management rejects private-network destinations without explicit opt-in", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig(config("127.0.0.1"));
+
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "custom-local",
+          provider: {
+            adapter: "openai-chat",
+            baseUrl: "http://127.0.0.1:11434/v1",
+          },
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: expect.stringContaining("allowPrivateNetwork"),
+      });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("provider management allows private-network destinations only with explicit opt-in", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig(config("127.0.0.1"));
+
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "custom-local",
+          provider: {
+            adapter: "openai-chat",
+            baseUrl: "http://127.0.0.1:11434/v1",
+            allowPrivateNetwork: true,
+          },
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const saved = await fetch(new URL("/api/config", server.url)).then(r => r.json()) as {
+        providers: Record<string, { allowPrivateNetwork?: boolean }>;
+      };
+      expect(saved.providers["custom-local"].allowPrivateNetwork).toBe(true);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("provider management always rejects metadata endpoints", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig(config("127.0.0.1"));
+
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "metadata-hop",
+          provider: {
+            adapter: "openai-chat",
+            baseUrl: "http://169.254.169.254/latest/meta-data",
+            allowPrivateNetwork: true,
+          },
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: expect.stringContaining("metadata"),
+      });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("provider management rejects sensitive or injectable provider headers", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
@@ -951,7 +1041,7 @@ describe("server local API auth", () => {
     saveConfig({
       port: 0, websockets: false, defaultProvider: "routed-fb",
       providers: {
-        "routed-fb": { adapter: "openai-chat", baseUrl: `http://127.0.0.1:${upstream.port}/v1`, apiKey: "key-fb-000111222333" },
+        "routed-fb": { adapter: "openai-chat", baseUrl: `http://127.0.0.1:${upstream.port}/v1`, allowPrivateNetwork: true, apiKey: "key-fb-000111222333" },
       },
     } as never);
 
@@ -994,7 +1084,7 @@ describe("server local API auth", () => {
     saveConfig({
       port: 0, defaultProvider: "routed-cmp",
       providers: {
-        "routed-cmp": { adapter: "openai-chat", baseUrl: `http://127.0.0.1:${upstream.port}/v1`, apiKey: "key-cmp-000111222333" },
+        "routed-cmp": { adapter: "openai-chat", baseUrl: `http://127.0.0.1:${upstream.port}/v1`, allowPrivateNetwork: true, apiKey: "key-cmp-000111222333" },
       },
     } as never);
 
@@ -1062,6 +1152,7 @@ describe("server local API auth", () => {
         "anthropic-test": {
           adapter: "anthropic",
           baseUrl: upstream.url.toString().replace(/\/$/, ""),
+          allowPrivateNetwork: true,
           apiKey: "provider-key",
           defaultModel: "claude-fable-5",
         },
@@ -1125,6 +1216,7 @@ describe("server local API auth", () => {
         chatgpt: {
           adapter: "openai-responses",
           baseUrl: `${upstream.url}backend-api/codex`,
+          allowPrivateNetwork: true,
           authMode: "forward",
         },
       },
@@ -1217,6 +1309,7 @@ describe("server local API auth", () => {
         chatgpt: {
           adapter: "openai-responses",
           baseUrl: `${upstream.url}backend-api/codex`,
+          allowPrivateNetwork: true,
           authMode: "forward",
         },
       },
@@ -1317,6 +1410,7 @@ describe("server local API auth", () => {
         "anthropic-test": {
           adapter: "anthropic",
           baseUrl: upstream.url.toString().replace(/\/$/, ""),
+          allowPrivateNetwork: true,
           apiKey: "provider-key",
           defaultModel: "claude-fable-5",
         },
@@ -1393,6 +1487,7 @@ describe("server local API auth", () => {
         chatgpt: {
           adapter: "openai-responses",
           baseUrl: "http://127.0.0.1:9/backend-api/codex",
+          allowPrivateNetwork: true,
           authMode: "forward",
         },
       },
@@ -1459,6 +1554,7 @@ describe("server local API auth", () => {
         chatgpt: {
           adapter: "openai-responses",
           baseUrl: `${upstream.url}backend-api/codex`,
+          allowPrivateNetwork: true,
           authMode: "forward",
         },
       },
@@ -1535,6 +1631,7 @@ describe("server local API auth", () => {
         "test-openai": {
           adapter: "openai-responses",
           baseUrl: upstream.url.toString(),
+          allowPrivateNetwork: true,
           apiKey: "provider-key",
           defaultModel: "gpt-5.5",
         },
@@ -1689,6 +1786,7 @@ describe("server local API auth", () => {
         "test-openai": {
           adapter: "openai-chat",
           baseUrl: `${upstream.url}v1`,
+          allowPrivateNetwork: true,
           apiKey: "provider-key",
           defaultModel: "gpt-test",
         },

@@ -267,6 +267,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     return jsonResponse(Object.entries(config.providers).map(([name, p]) => ({
       name, adapter: p.adapter, baseUrl: publicProviderBaseUrl(p.baseUrl), defaultModel: p.defaultModel,
       hasApiKey: !!p.apiKey,
+      allowPrivateNetwork: p.allowPrivateNetwork === true,
       disabled: p.disabled === true,
     })));
   }
