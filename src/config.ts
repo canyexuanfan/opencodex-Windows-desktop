@@ -8,6 +8,36 @@ import { providerDestinationConfigError } from "./lib/destination-policy";
 import type { OcxConfig } from "./types";
 
 let _atomicSeq = 0;
+
+interface AtomicRenameIO {
+  platform: NodeJS.Platform;
+  rename: (source: string, destination: string) => void;
+  sleep: (milliseconds: number) => void;
+}
+
+export function renameAtomicFile(
+  source: string,
+  destination: string,
+  io: AtomicRenameIO = {
+    platform: process.platform,
+    rename: renameSync,
+    sleep: Bun.sleepSync,
+  },
+): void {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      io.rename(source, destination);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const transientWindowsError = io.platform === "win32"
+        && (code === "EBUSY" || code === "EPERM" || code === "EACCES");
+      if (!transientWindowsError || attempt >= 2) throw error;
+      io.sleep(25 * (attempt + 1));
+    }
+  }
+}
+
 /**
  * Write a file atomically (temp + rename) so concurrent writers — e.g. `ocx stop` and the
  * proxy's own shutdown handler both restoring Codex — can never leave a half-written file.
@@ -15,7 +45,7 @@ let _atomicSeq = 0;
 export function atomicWriteFile(path: string, content: string): void {
   const tmp = `${path}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
   writeFileSync(tmp, content, { encoding: "utf-8", mode: 0o600 });
-  renameSync(tmp, path);
+  renameAtomicFile(tmp, path);
 }
 
 /**

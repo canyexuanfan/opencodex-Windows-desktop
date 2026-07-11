@@ -21,7 +21,7 @@ import {
 } from "../src/config";
 
 import * as windowsAcl from "../src/lib/windows-secret-acl";
-import { hardenConfigDir, hardenExistingSecret, saveConfig } from "../src/config";
+import { hardenConfigDir, hardenExistingSecret, renameAtomicFile, saveConfig } from "../src/config";
 let testDir = "";
 
 beforeEach(() => {
@@ -48,6 +48,34 @@ function writeConfig(content: unknown): void {
 }
 
 describe("opencodex config defaults", () => {
+  test("atomic rename retries transient Windows sharing violations", () => {
+    const sleeps: number[] = [];
+    let attempts = 0;
+    renameAtomicFile("source.tmp", "config.json", {
+      platform: "win32",
+      rename: () => {
+        attempts += 1;
+        if (attempts < 3) throw Object.assign(new Error("locked"), { code: "EPERM" });
+      },
+      sleep: ms => sleeps.push(ms),
+    });
+
+    expect(attempts).toBe(3);
+    expect(sleeps).toEqual([25, 50]);
+  });
+
+  test("atomic rename does not retry non-transient errors", () => {
+    let attempts = 0;
+    expect(() => renameAtomicFile("source.tmp", "config.json", {
+      platform: "win32",
+      rename: () => {
+        attempts += 1;
+        throw Object.assign(new Error("invalid"), { code: "EINVAL" });
+      },
+      sleep: () => {},
+    })).toThrow("invalid");
+    expect(attempts).toBe(1);
+  });
   test("Codex autostart is enabled by default", () => {
     expect(getDefaultConfig().codexAutoStart).toBe(true);
     expect(codexAutoStartEnabled({})).toBe(true);
