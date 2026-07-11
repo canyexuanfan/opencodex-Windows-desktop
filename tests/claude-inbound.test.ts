@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { AnthropicRequestError, anthropicToResponsesBody, effortForThinkingBudget, resolveInboundModel } from "../src/claude/inbound";
+import { AnthropicRequestError, anthropicToResponsesBody, anthropicToResponsesTranslation, effortForThinkingBudget, resolveInboundModel } from "../src/claude/inbound";
 import { parseRequest } from "../src/responses/parser";
 import { responsesRequestSchema } from "../src/responses/schema";
 
@@ -194,5 +194,44 @@ describe("claude inbound translation", () => {
       messages: [{ role: "user", content: [{ type: "tool_result" }] }],
     })).toThrow(AnthropicRequestError);
     expect(() => anthropicToResponsesBody("nope")).toThrow(AnthropicRequestError);
+  });
+});
+
+describe("prompt cache key provenance (devlog 130 B3)", () => {
+  const messages = [{ role: "user", content: "hi" }];
+
+  test("metadata.user_id wins: key derived from it, source=metadata", () => {
+    const { body, cacheKeySource } = anthropicToResponsesTranslation({
+      model: "m", max_tokens: 1, messages,
+      system: "be nice",
+      metadata: { user_id: "user-abc" },
+    });
+    expect(cacheKeySource).toBe("metadata");
+    expect(body.prompt_cache_key).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  test("no metadata + system present: fallback key from system hash, source=system", () => {
+    const a = anthropicToResponsesTranslation({ model: "m", max_tokens: 1, messages, system: "be nice" });
+    const b = anthropicToResponsesTranslation({ model: "m", max_tokens: 1, messages, system: "be nice" });
+    const c = anthropicToResponsesTranslation({ model: "m", max_tokens: 1, messages, system: "be terse" });
+    expect(a.cacheKeySource).toBe("system");
+    expect(a.body.prompt_cache_key).toMatch(/^[0-9a-f]{32}$/);
+    // Stable per system prompt, distinct across different system prompts.
+    expect(a.body.prompt_cache_key).toBe(b.body.prompt_cache_key as string);
+    expect(a.body.prompt_cache_key).not.toBe(c.body.prompt_cache_key as string);
+  });
+
+  test("no metadata + no system: no key at all, source=null", () => {
+    const { body, cacheKeySource } = anthropicToResponsesTranslation({ model: "m", max_tokens: 1, messages });
+    expect(cacheKeySource).toBeNull();
+    expect(body.prompt_cache_key).toBeUndefined();
+  });
+
+  test("cacheKeySource never leaks into the serialized wire body", () => {
+    const { body } = anthropicToResponsesTranslation({ model: "m", max_tokens: 1, messages, system: "be nice" });
+    const wire = JSON.parse(JSON.stringify(body)) as Record<string, unknown>;
+    for (const key of Object.keys(wire)) {
+      expect(key.toLowerCase()).not.toContain("cachekeysource");
+    }
   });
 });

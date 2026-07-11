@@ -38,6 +38,9 @@ export interface RequestLogContext {
   usageDebugBodyKind?: UsageDebugBodyKind;
   usageDebugBodySample?: string;
   usageDebugContentType?: string;
+  /** Route adapter type ("cursor"/"kiro"/"anthropic"/…): drives estimated-usage detection
+   *  independent of the user-chosen provider NAME (devlog 130 B2). */
+  providerAdapter?: string;
   /** Secret-redacted upstream error reason (e.g. the granular Cursor "rate limit exceeded…"
    * message) extracted from a `response.failed` SSE payload or non-streaming error body, so the
    * request log / GUI shows the actual upstream failure rather than only the HTTP-mapped code. */
@@ -357,12 +360,15 @@ export function addFinalRequestLog(
   addLog: (entry: RequestLogEntry) => void = addRequestLog,
 ): void {
   const errorCode = requestLogErrorCode(status);
-  const finalUsage = usageForFinalLog(logCtx.provider, logCtx.usage);
+  // Estimated-usage detection prefers the route ADAPTER: configured provider names
+  // ("cursor-mykey") broke the old exact-name match and cursor rows logged as
+  // accurately "reported" (devlog 130 B2).
+  const finalUsage = usageForFinalLog(logCtx.providerAdapter ?? logCtx.provider, logCtx.usage);
   const usageFallback = !finalUsage && typeof logCtx.usageLogInputTokens === "number"
     ? { inputTokens: logCtx.usageLogInputTokens, outputTokens: 0, estimated: true }
     : undefined;
   const loggedUsage = finalUsage && typeof logCtx.usageLogInputTokens === "number"
-    ? { ...finalUsage, inputTokens: Math.max(finalUsage.inputTokens, logCtx.usageLogInputTokens) }
+    ? { ...finalUsage, inputTokens: Math.max(finalUsage.inputTokens, logCtx.usageLogInputTokens), estimated: true }
     : (finalUsage ?? usageFallback);
   const usageStatus = usageStatusForFinalLog(loggedUsage);
   const totalTokens = usageTotalTokens(loggedUsage);

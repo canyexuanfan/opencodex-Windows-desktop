@@ -50,17 +50,24 @@ test("anthropic-version header flips /v1/models to the discovery contract", asyn
       headers: { "anthropic-version": "2023-06-01", "authorization": "Bearer placeholder" },
     });
     expect(response.status).toBe(200);
-    const json = await response.json() as { data: { id: string; display_name?: string }[] };
+    const { desktop3pAlias } = await import("../src/claude/desktop-3p");
+    const json = await response.json() as { data: { id: string; display_name?: string; type?: string; created_at?: string; capabilities?: Record<string, unknown>; max_tokens?: unknown }[] };
     expect(Array.isArray(json.data)).toBe(true);
-    const routed = json.data.filter(m => m.id.includes("--mock--") || m.id.includes("mock--"));
+    const mockAlias = desktop3pAlias("mock", "test-model");
     const ids = json.data.map(m => m.id);
-    expect(ids).toContain("claude-ocx-mock--test-model");
+    expect(mockAlias).toMatch(/^claude-opus-4-8-[a-z][0-9a-z]{2}$/);
+    expect(ids).toContain(mockAlias);
     // Every entry must satisfy the picker prefix rule (003 G3).
     for (const entry of json.data) {
       expect(entry.id.startsWith("claude") || entry.id.startsWith("anthropic")).toBe(true);
       expect(typeof entry.display_name).toBe("string");
+      // Full ModelInfo contract (devlog 130 B4b): capabilities ride discovery.
+      expect(entry.type).toBe("model");
+      expect(entry.created_at).toBe("2026-01-01T00:00:00Z");
+      expect(entry.capabilities).toBeDefined();
+      expect(entry.max_tokens).toBeNull();
     }
-    expect(routed.find(m => m.id === "claude-ocx-mock--test-model")?.display_name).toBe("test-model (mock)");
+    expect(json.data.find(m => m.id === mockAlias)?.display_name).toBe("test-model (mock)");
     // Contract shape only: no OpenAI list fields on the top level.
     expect((json as Record<string, unknown>).object).toBeUndefined();
   } finally {
@@ -74,7 +81,8 @@ test("?flavor=anthropic works without the header; disabled -> empty data", async
   try {
     const response = await fetch(new URL("/v1/models?flavor=anthropic", server.url));
     const json = await response.json() as { data: { id: string }[] };
-    expect(json.data.some(m => m.id === "claude-ocx-mock--other-model")).toBe(true);
+    const { desktop3pAlias } = await import("../src/claude/desktop-3p");
+    expect(json.data.some(m => m.id === desktop3pAlias("mock", "other-model"))).toBe(true);
   } finally {
     server.stop(true);
   }

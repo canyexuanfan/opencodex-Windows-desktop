@@ -39,6 +39,49 @@ describe("request log metadata", () => {
     expect(entries[0]).toMatchObject({ surface: "claude" });
   });
 
+  test("cursor rows: adapter drives estimated status and the input estimate fills in:0 (devlog 130 B2)", () => {
+    const entries: RequestLogEntry[] = [];
+    addFinalRequestLog(
+      "ocx-test-cursor",
+      Date.now(),
+      {
+        model: "gpt-5.6-luna",
+        provider: "cursor-pb51d9b",
+        providerAdapter: "cursor",
+        surface: "claude",
+        usage: { inputTokens: 0, outputTokens: 98 },
+        usageLogInputTokens: 44000,
+      },
+      200,
+      { closeReason: "terminal" },
+      entry => entries.push(entry),
+    );
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.usageStatus).toBe("estimated");
+    expect(entries[0]!.usage).toMatchObject({ inputTokens: 44000, outputTokens: 98, estimated: true });
+  });
+
+  test("accurate providers stay untouched when no input estimate is stashed", () => {
+    const entries: RequestLogEntry[] = [];
+    addFinalRequestLog(
+      "ocx-test-anthropic",
+      Date.now(),
+      {
+        model: "claude-fable-5",
+        provider: "anthropic-pb51d9b",
+        providerAdapter: "anthropic",
+        surface: "claude",
+        usage: { inputTokens: 353000, outputTokens: 2033, cachedInputTokens: 350000, cacheReadInputTokens: 350000, cacheCreationInputTokens: 1200 },
+      },
+      200,
+      { closeReason: "terminal" },
+      entry => entries.push(entry),
+    );
+    expect(entries[0]!.usageStatus).toBe("reported");
+    expect(entries[0]!.usage).toMatchObject({ inputTokens: 353000, cacheReadInputTokens: 350000 });
+    expect(entries[0]!.usage!.estimated).toBeUndefined();
+  });
+
   test("generates compact request ids", () => {
     expect(nextRequestLogId(1_700_000_000_000)).toMatch(/^ocx-[a-z0-9]+-[a-z0-9]+$/);
     expect(nextRequestLogId(1_700_000_000_000)).not.toBe(nextRequestLogId(1_700_000_000_000));

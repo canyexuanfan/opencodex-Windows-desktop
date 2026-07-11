@@ -50,14 +50,15 @@ Claude Code 2.1.129+ 可以发现网关模型：它调用 `GET /v1/models?limit=
 opencodex 将路由模型暴露为稳定、可逆的别名：
 
 ```
-claude-ocx-<provider>--<model>     例：claude-ocx-gemini--gemini-3-pro
-claude-ocx-native--<slug>          例：claude-ocx-native--gpt-5.5（原生 OpenAI 模型）
+claude-opus-4-8-<code>             由路由派生的 3 字符代码（例：claude-opus-4-8-ncb）
 ```
 
-每个条目带有诚实的显示名，如 `gemini-3-pro (gemini)`。选中后会保存到 Claude Code 的
-`settings.json` `model` 字段；入站请求会将别名解析回路由模型。旧版 Claude Code 中选择器保持
-原生 — 通过 `ANTHROPIC_MODEL` 设置槽位，或直接在 `/model` 中输入任意路由 id（Claude Code 会
-原样传递字符串）。
+每个条目带有诚实的显示名（如 `gemini-3-pro (gemini)`），并以官方 ModelInfo 形态附带模型能力
+信息（推理强度梯度、thinking 类型），使 Claude Desktop 的第三方网关模式能够启用推理强度选择
+UI。真实 Anthropic 模型保留其原始 id。旧配置中的 `claude-ocx-<provider>--<model>` 别名仍可
+解析。选中后会保存到 Claude Code 的 `settings.json` `model` 字段；入站请求会将别名解析回路由
+模型。旧版 Claude Code 中选择器保持原生 — 通过 `ANTHROPIC_MODEL` 设置槽位，或直接在 `/model`
+中输入任意路由 id（Claude Code 会原样传递字符串）。
 
 ## GUI
 

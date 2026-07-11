@@ -7,7 +7,8 @@
  * unchanged. The Responses output (SSE or JSON) is converted back to Anthropic shape.
  */
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
-import { AnthropicRequestError, anthropicToResponsesBody, resolveInboundModel } from "../claude/inbound";
+import { AnthropicRequestError, anthropicToResponsesTranslation, resolveInboundModel, type ClaudeCacheKeySource } from "../claude/inbound";
+import { captureClaudeInbound } from "../claude/inbound-debug";
 import {
   anthropicErrorBody,
   anthropicErrorResponse,
@@ -231,12 +232,24 @@ export async function handleClaudeMessages(
 
   let anthropicBody: unknown;
   let internalBody: Rec;
+  let cacheKeySource: ClaudeCacheKeySource = null;
   try {
     anthropicBody = await readAnthropicBody(req);
+    // Debug capture (opt-in allowlist scalars) BEFORE the passthrough branch so
+    // native, routed, and disabled-alias paths are all observable (devlog 130 B1).
+    captureClaudeInbound(
+      "messages",
+      anthropicBody,
+      isRec(anthropicBody) && typeof anthropicBody.model === "string"
+        ? resolveInboundModel(anthropicBody.model, config.claudeCode)
+        : undefined,
+    );
     if (isRec(anthropicBody) && wantsNativePassthrough(req, config, anthropicBody.model)) {
       return await anthropicNativePassthrough(req, config, logCtx, logIds, anthropicBody, "/v1/messages");
     }
-    internalBody = anthropicToResponsesBody(anthropicBody, config.claudeCode);
+    const translation = anthropicToResponsesTranslation(anthropicBody, config.claudeCode);
+    internalBody = translation.body;
+    cacheKeySource = translation.cacheKeySource;
   } catch (err) {
     const status = err instanceof AnthropicRequestError ? 400 : 500;
     if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, status, { closeReason: "non_stream" });
@@ -263,6 +276,18 @@ export async function handleClaudeMessages(
       delete internalBody.stop;
       delete internalBody.user;
     }
+    // Estimated-usage adapters (cursor/kiro) report no per-turn input tokens; stash a
+    // request-side estimate so the log's in:0 rows get a floor. NEVER set this for
+    // accurate-usage adapters — the request-log merge is max(reported, estimate) and
+    // would overwrite real usage (audit 133 R1#7).
+    if (route.provider.adapter === "cursor" || route.provider.adapter === "kiro") {
+      const raw = anthropicBody as Rec;
+      const parts: string[] = [];
+      if (raw.system !== undefined) parts.push(typeof raw.system === "string" ? raw.system : JSON.stringify(raw.system));
+      if (raw.messages !== undefined) parts.push(JSON.stringify(raw.messages));
+      if (raw.tools !== undefined) parts.push(JSON.stringify(raw.tools));
+      logCtx.usageLogInputTokens = Math.max(1, estimateTokens(parts.join("\n"), requestedModel));
+    }
   } catch { /* unknown model: let handleResponses shape the 404 */ }
 
   const headers = new Headers({ "content-type": "application/json" });
@@ -285,8 +310,11 @@ export async function handleClaudeMessages(
     // ChatGPT-backend prompt-cache affinity rides the session_id HEADER (codex
     // clients always send their session uuid; devlog 090 follow-up: body-level
     // prompt_cache_key alone still yielded cached_tokens:0). Claude Code never sends
-    // the header, so synthesize a stable per-session uuid from the same cache key.
-    if (!headers.has("session_id") && typeof internalBody.prompt_cache_key === "string") {
+    // the header, so synthesize a stable per-session uuid from the same cache key —
+    // but ONLY for a real per-session key (metadata.user_id). The system-hash fallback
+    // key is shared across Desktop conversations, and a shared session_id's backend
+    // semantics are unproven (audit 133 R2#3): body prompt_cache_key only there.
+    if (cacheKeySource === "metadata" && !headers.has("session_id") && typeof internalBody.prompt_cache_key === "string") {
       headers.set("session_id", uuidFromHex(internalBody.prompt_cache_key));
     }
   }
@@ -409,6 +437,7 @@ export async function handleClaudeCountTokens(req: Request, config: OcxConfig): 
   if (typeof raw.model !== "string" || raw.model.length === 0) {
     return anthropicErrorResponse(400, "model is required");
   }
+  captureClaudeInbound("count_tokens", raw, resolveInboundModel(raw.model, config.claudeCode));
   if (wantsNativePassthrough(req, config, raw.model)) {
     return await anthropicNativePassthrough(req, config, { model: raw.model, provider: "anthropic-native", surface: "claude" }, undefined, raw, "/v1/messages/count_tokens");
   }

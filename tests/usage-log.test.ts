@@ -143,6 +143,10 @@ describe("usage log", () => {
     const usage = { inputTokens: 4, outputTokens: 6 };
     expect(usageForFinalLog("kiro", usage)).toEqual({ ...usage, estimated: true });
     expect(usageForFinalLog("kiro-p9d8524", usage)).toEqual({ ...usage, estimated: true });
+    // cursor: adapter name AND configured-provider-name prefixes both count (devlog 130 B2 —
+    // "cursor-pb51d9b" rows previously logged as accurately "reported").
+    expect(usageForFinalLog("cursor", usage)).toEqual({ ...usage, estimated: true });
+    expect(usageForFinalLog("cursor-pb51d9b", usage)).toEqual({ ...usage, estimated: true });
     expect(usageForFinalLog("openai", usage)).toEqual(usage);
     expect(usageForFinalLog("openai", { ...usage, estimated: true })).toEqual({ ...usage, estimated: true });
   });

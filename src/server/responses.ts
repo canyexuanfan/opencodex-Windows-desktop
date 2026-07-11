@@ -481,6 +481,7 @@ export async function handleResponses(
   }
   logCtx.model = route.modelId;
   logCtx.provider = route.providerName;
+  logCtx.providerAdapter = route.provider.adapter;
 
   // Fast mode override: when config.fastMode is explicitly set, inject or strip
   // service_tier for OpenAI-routed models. Undefined = passthrough (client decides).

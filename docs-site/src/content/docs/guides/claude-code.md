@@ -54,13 +54,16 @@ beginning with `claude` or `anthropic`, opencodex exposes routed models as stabl
 aliases:
 
 ```
-claude-ocx-<provider>--<model>     e.g. claude-ocx-gemini--gemini-3-pro
-claude-ocx-native--<slug>          e.g. claude-ocx-native--gpt-5.5   (native OpenAI models)
+claude-opus-4-8-<code>             3-char code derived from the route (e.g. claude-opus-4-8-ncb)
 ```
 
-Each entry carries an honest display name such as `gemini-3-pro (gemini)`. Selecting one persists
-it to Claude Code's `settings.json` `model` field; inbound requests resolve the alias back to the
-routed model. On older Claude Code versions the picker stays native — set slots via
+Each entry carries an honest display name such as `gemini-3-pro (gemini)`, plus full model
+capabilities (reasoning-effort ladder, thinking types) in the official ModelInfo shape so Claude
+Desktop's third-party gateway mode can offer its effort selector. Real Anthropic models keep their
+canonical ids. Legacy `claude-ocx-<provider>--<model>` ids from older configs still resolve.
+Selecting one persists it to Claude Code's `settings.json` `model` field; inbound requests resolve
+the alias back to the routed model. On older Claude Code versions the picker stays native — set
+slots via
 `ANTHROPIC_MODEL` or type any routed id with `/model` (Claude Code passes strings through).
 
 ## GUI

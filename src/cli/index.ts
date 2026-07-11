@@ -204,7 +204,7 @@ async function handleStart(options: { block?: boolean } = {}) {
 
   await maybeShowStarPrompt(); // once-only [Y/n] GitHub-star prompt on first interactive start
   await syncModelsToCodex(port).catch(() => {});
-  // Build Desktop 3P alias registry so inbound claude-opus-4-{code} aliases decode correctly.
+  // Build Desktop 3P alias registry so inbound claude-opus-4-8-{code} aliases (and legacy claude-opus-4-{code}) decode correctly.
   try {
     const { fetchAllModels } = await import("../server/management-api");
     const { visibleNativeSlugs, filterCatalogVisibleModels } = await import("../codex/catalog");
@@ -630,11 +630,19 @@ switch (command) {
       const models = filterCatalogVisibleModels(allModels, config);
       const nativeSlugs = [...visibleNativeSlugs(config)];
       const routedModels = models.map(m => ({ provider: m.provider, id: m.id }));
-      const result = writeDesktop3pConfig(port, nativeSlugs, routedModels);
+      // Default = discovery mode: Desktop pulls the picker (incl. effort/thinking
+      // capabilities) live from /v1/models. --static writes the old pinned list.
+      const mode = args.includes("--static") ? "static" as const : "discovery" as const;
+      const result = writeDesktop3pConfig(port, nativeSlugs, routedModels, undefined, mode);
       if (result.written) {
         console.log(`✅ Claude Desktop 3P 설정 완료: ${result.path}`);
         console.log(`   Gateway: http://127.0.0.1:${port}`);
-        console.log(`   모델 ${nativeSlugs.length + models.length}개 등록 (전부 opus tier)`);
+        if (mode === "discovery") {
+          console.log(`   모델 목록: 자동 발견 (프록시 /v1/models에서 ${nativeSlugs.length + models.length}개, 추론 강도 정보 포함)`);
+          console.log(`   고정 목록이 필요하면: ocx claude desktop --static`);
+        } else {
+          console.log(`   모델 ${nativeSlugs.length + models.length}개 고정 등록 (전부 opus tier)`);
+        }
         console.log(`   Claude Desktop을 재시작하면 적용됩니다.`);
       } else {
         console.error(`❌ 설정 실패: ${result.reason}`);

@@ -249,11 +249,28 @@ function toolChoiceToResponses(choice: unknown, body: Rec): void {
   }
 }
 
+/** Provenance of the generated prompt_cache_key (never serialized into the wire body). */
+export type ClaudeCacheKeySource = "metadata" | "system" | null;
+
+export interface ClaudeInboundTranslation {
+  body: Rec;
+  cacheKeySource: ClaudeCacheKeySource;
+}
+
 /**
  * Translate an Anthropic Messages request body into a /v1/responses request body.
  * Throws AnthropicRequestError (-> 400 invalid_request_error) on malformed input.
  */
 export function anthropicToResponsesBody(raw: unknown, cc?: OcxClaudeCodeConfig): Rec {
+  return anthropicToResponsesTranslation(raw, cc).body;
+}
+
+/**
+ * Full translation result: the wire body plus the prompt-cache-key provenance as an
+ * OUT-OF-BODY tuple (audit 133 R3#1 — an in-body marker would leak upstream through
+ * the native Responses forward and 400).
+ */
+export function anthropicToResponsesTranslation(raw: unknown, cc?: OcxClaudeCodeConfig): ClaudeInboundTranslation {
   if (!isRec(raw)) throw new AnthropicRequestError("request body must be a JSON object");
   if (typeof raw.model !== "string" || raw.model.length === 0) {
     throw new AnthropicRequestError("model is required");
@@ -297,6 +314,7 @@ export function anthropicToResponsesBody(raw: unknown, cc?: OcxClaudeCodeConfig)
   if (Array.isArray(raw.stop_sequences) && raw.stop_sequences.length > 0) {
     body.stop = raw.stop_sequences.filter((s): s is string => typeof s === "string");
   }
+  let cacheKeySource: ClaudeCacheKeySource = null;
   if (isRec(raw.metadata) && typeof raw.metadata.user_id === "string") {
     body.user = raw.metadata.user_id;
     // OpenAI-side prompt caching is routed by prompt_cache_key (Codex clients send
@@ -305,6 +323,16 @@ export function anthropicToResponsesBody(raw: unknown, cc?: OcxClaudeCodeConfig)
     // metadata.user_id embeds the session uuid, so hashing it yields a stable
     // per-session key with a bounded length/charset.
     body.prompt_cache_key = createHash("sha256").update(raw.metadata.user_id).digest("hex").slice(0, 32);
+    cacheKeySource = "metadata";
+  } else if (systemParts.length > 0) {
+    // Claude Desktop sends no metadata.user_id (H1, devlog 130): without any key the
+    // ChatGPT/OpenAI backends reported cached_tokens:0 on every turn. Fall back to a
+    // system-prompt hash — prompt caching is exact-prefix matched, so conversations
+    // sharing this key can never read each other's content; the key only steers cache
+    // routing affinity. Callers must NOT synthesize a session_id header from this
+    // fallback (audit 133 R2#3): cacheKeySource distinguishes the two.
+    body.prompt_cache_key = createHash("sha256").update(systemParts.join("\n\n")).digest("hex").slice(0, 32);
+    cacheKeySource = "system";
   }
 
   const thinking = raw.thinking;
@@ -321,5 +349,5 @@ export function anthropicToResponsesBody(raw: unknown, cc?: OcxClaudeCodeConfig)
     body.reasoning = reasoning;
   }
 
-  return body;
+  return { body, cacheKeySource };
 }

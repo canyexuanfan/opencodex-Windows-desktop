@@ -53,14 +53,16 @@ Claude Code 2.1.129+는 게이트웨이 모델을 디스커버리합니다: `GET
 시작하는 id만 받아들이므로, opencodex는 라우팅 모델을 안정적이고 가역적인 별칭으로 노출합니다:
 
 ```
-claude-ocx-<provider>--<model>     예: claude-ocx-gemini--gemini-3-pro
-claude-ocx-native--<slug>          예: claude-ocx-native--gpt-5.5   (네이티브 OpenAI 모델)
+claude-opus-4-8-<code>             라우트에서 유도한 3자 코드 (예: claude-opus-4-8-ncb)
 ```
 
-각 항목은 `gemini-3-pro (gemini)` 같은 정직한 표시 이름을 가집니다. 선택하면 Claude Code의
-`settings.json` `model` 필드에 저장되고, 인바운드 요청에서 별칭이 라우팅 모델로 되돌려집니다.
-구버전 Claude Code에서는 `ANTHROPIC_MODEL`로 슬롯을 지정하거나 `/model`에 라우팅 id를 직접
-입력하세요 (Claude Code는 문자열을 그대로 통과시킵니다).
+각 항목은 `gemini-3-pro (gemini)` 같은 정직한 표시 이름과 함께, 공식 ModelInfo 형태의 모델
+능력 정보(추론 강도 사다리, thinking 타입)를 실어 보냅니다 — Claude Desktop의 서드파티
+게이트웨이 모드가 추론 강도 선택 UI를 열 수 있게 하기 위해서입니다. 실제 Anthropic 모델은
+원래 id를 그대로 유지합니다. 구버전 설정의 `claude-ocx-<provider>--<model>` 별칭도 계속
+해석됩니다. 선택하면 Claude Code의 `settings.json` `model` 필드에 저장되고, 인바운드 요청에서
+별칭이 라우팅 모델로 되돌려집니다. 구버전 Claude Code에서는 `ANTHROPIC_MODEL`로 슬롯을
+지정하거나 `/model`에 라우팅 id를 직접 입력하세요 (Claude Code는 문자열을 그대로 통과시킵니다).
 
 ## GUI
 

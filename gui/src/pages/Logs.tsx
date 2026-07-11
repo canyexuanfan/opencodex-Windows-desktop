@@ -52,6 +52,10 @@ function tokensTitle(log: LogEntry, t: TFn): string | undefined {
   if (split.read !== undefined) parts.push(`${t("logs.tokens.cacheRead")}=${split.read}`);
   if (split.write !== undefined) parts.push(`${t("logs.tokens.cacheWrite")}=${split.write}`);
   if (typeof log.usage.reasoningOutputTokens === "number") parts.push(`${t("logs.tokens.reasoning")}=${log.usage.reasoningOutputTokens}`);
+  if (log.usageStatus === "estimated") parts.push(t("logs.tokens.estimatedNote"));
+  if (log.usageStatus === "estimated" && split.read === undefined && split.write === undefined) {
+    parts.push(t("logs.tokens.noCacheNote"));
+  }
   return parts.join(" \xC2\xB7 ");
 }
 
@@ -206,7 +210,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                       return tokenTotal !== undefined
                         ? (
                             <span style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
-                              <span>{formatTokens(tokenTotal, locale)}</span>
+                              <span>{log.usageStatus === "estimated" ? "~" : ""}{formatTokens(tokenTotal, locale)}</span>
                               {(read !== undefined && read > 0) && (
                                 <span className="muted" style={{ fontSize: 11, lineHeight: 1 }}>
                                   c {formatTokens(read, locale)}
@@ -215,6 +219,11 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                               {(write !== undefined && write > 0) && (
                                 <span className="muted" style={{ fontSize: 11, lineHeight: 1 }}>
                                   w {formatTokens(write, locale)}
+                                </span>
+                              )}
+                              {(log.usageStatus === "estimated" && read === undefined && write === undefined) && (
+                                <span className="muted" style={{ fontSize: 11, lineHeight: 1 }}>
+                                  {t("logs.tokens.noCache")}
                                 </span>
                               )}
                             </span>

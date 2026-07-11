@@ -213,21 +213,33 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     return jsonResponse(getUsageDebugLogEntries({ after, limit }));
   }
 
+  if (url.pathname === "/api/claude/inbound-debug" && req.method === "GET") {
+    const { getClaudeInboundDebugEntries } = await import("../claude/inbound-debug");
+    const { isClaudeDebugEnabled } = await import("../lib/debug-settings");
+    return jsonResponse({ enabled: isClaudeDebugEnabled(), entries: getClaudeInboundDebugEntries() });
+  }
+
   if (url.pathname === "/api/debug" && req.method === "PUT") {
-    let body: { debug?: unknown; usage?: unknown; injection?: unknown; reset?: unknown };
+    let body: { debug?: unknown; usage?: unknown; injection?: unknown; claude?: unknown; reset?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     if (body.reset === true) return jsonResponse(clearDebugSettings());
     if (body.reset === "debug" || body.reset === "provider") return jsonResponse(clearDebugSetting("debug"));
     if (body.reset === "usage") return jsonResponse(clearDebugSetting("usage"));
     if (body.reset === "injection") return jsonResponse(clearDebugSetting("injection"));
+    if (body.reset === "claude") return jsonResponse(clearDebugSetting("claude"));
     const partial: Partial<Record<DebugFlag, boolean>> = {};
-    for (const key of ["debug", "usage", "injection"] as const) {
+    for (const key of ["debug", "usage", "injection", "claude"] as const) {
       if (body[key] === undefined) continue;
       if (typeof body[key] !== "boolean") return jsonResponse({ error: `${key} must be a boolean` }, 400);
       partial[key] = body[key];
     }
     if (Object.keys(partial).length === 0) {
-      return jsonResponse({ error: "provide debug/usage/injection booleans or reset:true" }, 400);
+      return jsonResponse({ error: "provide debug/usage/injection/claude booleans or reset:true" }, 400);
+    }
+    // Turning capture off should also flush already-captured entries (privacy contract).
+    if (partial.claude === false) {
+      const { clearClaudeInboundDebug } = await import("../claude/inbound-debug");
+      clearClaudeInboundDebug();
     }
     return jsonResponse(setDebugSettings(partial));
   }
@@ -640,7 +652,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   if (url.pathname === "/api/claude-code" && req.method === "GET") {
     const models = await fetchAllModels(config);
     const { listCatalogNativeSlugs } = await import("../codex/catalog");
-    const { aliasForNative, aliasForRoute } = await import("../claude/alias");
+    const { desktop3pAlias } = await import("../claude/desktop-3p");
     const disabled = new Set(config.disabledModels ?? []);
     const available = [
       ...listCatalogNativeSlugs(),
@@ -648,13 +660,11 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     ].filter(ns => !disabled.has(ns));
     const aliases: { id: string; display_name: string }[] = [];
     for (const slug of listCatalogNativeSlugs()) {
-      const id = aliasForNative(slug);
-      if (id && !disabled.has(slug)) aliases.push({ id, display_name: `${slug} (native)` });
+      if (!disabled.has(slug)) aliases.push({ id: desktop3pAlias("native", slug), display_name: `${slug} (native)` });
     }
     for (const m of models) {
       if (disabled.has(`${m.provider}/${m.id}`)) continue;
-      const id = aliasForRoute(m.provider, m.id);
-      if (id) aliases.push({ id, display_name: `${m.id} (${m.provider})` });
+      aliases.push({ id: desktop3pAlias(m.provider, m.id), display_name: `${m.id} (${m.provider})` });
     }
     return jsonResponse({
       enabled: config.claudeCode?.enabled !== false,

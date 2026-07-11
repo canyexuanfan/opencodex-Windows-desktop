@@ -8,14 +8,32 @@ interface DebugSettings {
   enabled: boolean;
   usage: boolean;
   injection: boolean;
-  runtimeOverride: Partial<Record<"debug" | "usage" | "injection", boolean>>;
-  env: Record<"debug" | "usage" | "injection", boolean>;
+  claude: boolean;
+  runtimeOverride: Partial<Record<"debug" | "usage" | "injection" | "claude", boolean>>;
+  env: Record<"debug" | "usage" | "injection" | "claude", boolean>;
 }
 
 interface DebugLogEntry {
   seq: number;
   at: number;
   line: string;
+}
+
+interface ClaudeInboundEntry {
+  at: number;
+  endpoint: string;
+  model: string;
+  resolvedModel?: string;
+  stream?: boolean;
+  maxTokens?: number;
+  thinkingType?: string;
+  thinkingBudgetTokens?: number;
+  outputConfigEffort?: string;
+  metadataKeys?: string[];
+  hasMetadataUserId: boolean;
+  hasSystem: boolean;
+  userIdTag?: string;
+  systemTag?: string;
 }
 
 type LogStream = "provider" | "usage";
@@ -28,6 +46,7 @@ export default function Debug({ apiBase }: { apiBase: string }) {
   const [lines, setLines] = useState<string[]>([]);
   const [follow, setFollow] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [claudeEntries, setClaudeEntries] = useState<ClaudeInboundEntry[]>([]);
   const afterRef = useRef(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -100,7 +119,26 @@ export default function Debug({ apiBase }: { apiBase: string }) {
     }
   }, [lines, follow, lineVirtualizer]);
 
-  const setDebugFlag = async (flag: "debug" | "usage" | "injection", enabled: boolean) => {
+  useEffect(() => {
+    if (!debug?.claude) {
+      setClaudeEntries([]);
+      return;
+    }
+    const fetchClaude = async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/claude/inbound-debug`);
+        if (res.ok) {
+          const data = await res.json() as { entries?: ClaudeInboundEntry[] };
+          setClaudeEntries(Array.isArray(data.entries) ? data.entries : []);
+        }
+      } catch { /* ignore */ }
+    };
+    void fetchClaude();
+    const interval = setInterval(() => void fetchClaude(), 2000);
+    return () => clearInterval(interval);
+  }, [apiBase, debug?.claude]);
+
+  const setDebugFlag = async (flag: "debug" | "usage" | "injection" | "claude", enabled: boolean) => {
     setDebugBusy(true);
     try {
       const res = await fetch(`${apiBase}/api/debug`, {
@@ -155,8 +193,8 @@ export default function Debug({ apiBase }: { apiBase: string }) {
         <div className="card" style={{ marginBottom: 16, padding: "12px 14px" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
-              {(["debug", "usage", "injection"] as const).map(flag => {
-                const checked = flag === "debug" ? debug.enabled : flag === "usage" ? debug.usage : debug.injection;
+              {(["debug", "usage", "injection", "claude"] as const).map(flag => {
+                const checked = flag === "debug" ? debug.enabled : flag === "usage" ? debug.usage : flag === "injection" ? debug.injection : debug.claude;
                 return (
                   <div key={flag} style={{ display: "inline-flex", alignItems: "center", gap: 10, minWidth: 220 }}>
                     <Switch
@@ -195,6 +233,55 @@ export default function Debug({ apiBase }: { apiBase: string }) {
                   {t("debug.streamUsage")}
                 </button>
               )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {debug?.claude && (
+        <div className="card" style={{ marginBottom: 16, padding: "12px 14px" }}>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>{t("debug.claudeInbound.title")}</div>
+          <div className="muted" style={{ fontSize: 13, marginBottom: 10 }}>{t("debug.claudeInbound.sub")}</div>
+          {claudeEntries.length === 0 ? (
+            <div className="muted" style={{ fontSize: 13 }}>{t("debug.claudeInbound.empty")}</div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table className="table" style={{ fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    <th>{t("debug.claudeInbound.time")}</th>
+                    <th>{t("debug.claudeInbound.endpoint")}</th>
+                    <th>{t("debug.claudeInbound.model")}</th>
+                    <th>thinking</th>
+                    <th>effort</th>
+                    <th>metadata</th>
+                    <th>system</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {claudeEntries.map((entry, i) => (
+                    <tr key={`${entry.at}-${i}`}>
+                      <td className="muted mono">{new Date(entry.at).toLocaleTimeString()}</td>
+                      <td className="mono">{entry.endpoint}</td>
+                      <td className="mono" title={entry.resolvedModel}>
+                        {entry.model}
+                        {entry.resolvedModel && entry.resolvedModel !== entry.model && (
+                          <span className="muted"> → {entry.resolvedModel}</span>
+                        )}
+                      </td>
+                      <td className="mono">
+                        {entry.thinkingType ?? "-"}
+                        {entry.thinkingBudgetTokens !== undefined && <span className="muted"> ({entry.thinkingBudgetTokens})</span>}
+                      </td>
+                      <td className="mono">{entry.outputConfigEffort ?? "-"}</td>
+                      <td className="mono" title={entry.metadataKeys?.join(", ")}>
+                        {entry.hasMetadataUserId ? `user_id ${entry.userIdTag ?? ""}` : t("debug.claudeInbound.none")}
+                      </td>
+                      <td className="mono">{entry.hasSystem ? entry.systemTag ?? "yes" : t("debug.claudeInbound.none")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </div>

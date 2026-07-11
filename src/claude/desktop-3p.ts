@@ -10,6 +10,8 @@ export interface Desktop3pModelEntry {
   isFamilyDefault?: boolean;
 }
 
+export type Desktop3pConfigMode = "discovery" | "static";
+
 interface Desktop3pMetadataEntry {
   id: string;
   name: string;
@@ -33,8 +35,21 @@ export function deriveDesktop3pCode(route: string): string {
   return first + rest;
 }
 
-function desktopAlias(provider: string, modelId: string): string {
+/**
+ * Alias for one proxy model. Real Anthropic models pass through unchanged (they must
+ * keep hitting the sk-ant native passthrough); everything else gets a Claude-shaped
+ * `claude-opus-4-8-{code}` id. Opus 4.8 is chosen deliberately: Desktop's effort
+ * selector is an allowlist keyed on exact supported model ids (Opus 4.8/4.7/4.6,
+ * Sonnet 4.6 — devlog 131), and 4.6+ canonical ids are dateless, so the letter-first
+ * 3-char suffix can never collide with a real id or a legacy date suffix.
+ */
+export function desktop3pAlias(provider: string, modelId: string): string {
   if (provider === "anthropic" && modelId.startsWith("claude-")) return modelId;
+  return `claude-opus-4-8-${deriveDesktop3pCode(`${provider}/${modelId}`)}`;
+}
+
+/** Pre-rename alias shape (claude-opus-4-{code}) — still decoded for stale Desktop configs. */
+export function legacyDesktop3pAlias(provider: string, modelId: string): string {
   return `claude-opus-4-${deriveDesktop3pCode(`${provider}/${modelId}`)}`;
 }
 
@@ -63,7 +78,18 @@ function collectDesktop3pModels(
 
   for (const { provider, id } of candidates) {
     const route = `${provider}/${id}`;
-    const alias = desktopAlias(provider, id);
+    const alias = desktop3pAlias(provider, id);
+    if (alias === id) {
+      // Real Anthropic model: keep it OUT of the decode registry — registering it would
+      // make resolveInboundModel() non-identity and kill the sk-ant native passthrough
+      // (audit 133 #1). It still appears in the static Desktop model list below.
+      models.push({
+        name: alias,
+        labelOverride: `${displayModelId(id)} (${provider})`,
+        anthropicFamilyTier: "opus",
+      });
+      continue;
+    }
     const existingRoute = registry.get(alias);
     if (existingRoute !== undefined) {
       console.warn(`[opencodex] Claude Desktop 3P alias collision: ${alias} maps to both ${existingRoute} and ${route}; skipping ${route}`);
@@ -71,6 +97,9 @@ function collectDesktop3pModels(
     }
 
     registry.set(alias, route);
+    // Back-compat decode for Desktop configs written before the opus-4-8 rename.
+    const legacy = legacyDesktop3pAlias(provider, id);
+    if (!registry.has(legacy)) registry.set(legacy, route);
     models.push({
       name: alias,
       labelOverride: `${displayModelId(id)} (${provider})`,
@@ -107,18 +136,35 @@ export function resolveDesktop3pAlias(alias: string): string | null {
   return desktop3pRegistry.get(alias) ?? null;
 }
 
-/** Generate the complete Claude Desktop 3P gateway config. */
+/**
+ * Generate the complete Claude Desktop 3P gateway config.
+ *
+ * Default mode is "discovery": Desktop populates its picker from GET /v1/models,
+ * which is the ONLY channel that can carry per-model `capabilities` (effort ladder,
+ * thinking types) — the static `inferenceModels` schema has no capability fields
+ * (devlog 131). "static" keeps the old pinned list (anthropicFamilyTier/isFamilyDefault)
+ * for users who need tier aliases more than the effort UI.
+ */
 export function generateDesktop3pConfig(
   port: number,
   nativeSlugs: string[],
   routedModels: Array<{ provider: string; id: string }>,
   apiKey = "ocx",
+  mode: Desktop3pConfigMode = "discovery",
 ): object {
-  return {
+  const base = {
     inferenceProvider: "gateway",
     inferenceCredentialKind: "static",
     inferenceGatewayBaseUrl: `http://127.0.0.1:${port}`,
     inferenceGatewayApiKey: apiKey,
+  };
+  if (mode === "discovery") {
+    // Build/refresh the decode registry even though no static list is emitted.
+    buildDesktop3pRegistry(nativeSlugs, routedModels);
+    return { ...base, modelDiscoveryEnabled: true };
+  }
+  return {
+    ...base,
     modelDiscoveryEnabled: false,
     inferenceModels: generateDesktop3pModels(nativeSlugs, routedModels),
   };
@@ -137,6 +183,7 @@ export function writeDesktop3pConfig(
   nativeSlugs: string[],
   routedModels: Array<{ provider: string; id: string }>,
   apiKey?: string,
+  mode: Desktop3pConfigMode = "discovery",
 ): { written: boolean; path: string; reason?: string } {
   const libraryPath = join(homedir(), "Library", "Application Support", "Claude-3p", "configLibrary");
   const metadataPath = join(libraryPath, "_meta.json");
@@ -153,7 +200,7 @@ export function writeDesktop3pConfig(
       ? metadata.entries.map(current => current === existing ? entry : current)
       : [...metadata.entries, entry];
 
-    writeFileSync(configPath, JSON.stringify(generateDesktop3pConfig(port, nativeSlugs, routedModels, apiKey), null, 2) + "\n", {
+    writeFileSync(configPath, JSON.stringify(generateDesktop3pConfig(port, nativeSlugs, routedModels, apiKey, mode), null, 2) + "\n", {
       encoding: "utf8",
       mode: 0o600,
     });

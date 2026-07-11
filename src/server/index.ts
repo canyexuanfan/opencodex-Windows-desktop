@@ -119,7 +119,6 @@ import { disableResponsesRequestTimeout, handleResponses, handleResponsesCompact
 export { disableResponsesRequestTimeout, linkAbortSignal } from "./responses";
 import { handleClaudeCountTokens, handleClaudeMessages } from "./claude-messages";
 import { anthropicErrorResponse } from "../claude/outbound";
-import { aliasForNative, aliasForRoute } from "../claude/alias";
 import { buildDesktop3pRegistry } from "../claude/desktop-3p";
 import { handleImages } from "./images";
 import { handleSearch } from "./search";
@@ -277,24 +276,20 @@ export function startServer(port?: number) {
         const nativeSlugs = nativeOpenAiSlugs();
         const goEnabled = filterCatalogVisibleModels(goModels, config);
         const goOrdered = orderForSubagents(goEnabled, config.subagentModels);
-        // Claude Code gateway model discovery (GET /v1/models?limit=1000 with Anthropic-style
-        // headers; 003 G1-G8). Minimal contract: { data: [{ id, display_name? }] } — ids must
-        // begin with "claude"/"anthropic", hence the reversible claude-ocx- aliases. Detection:
+        // Claude Code / Claude Desktop gateway model discovery (GET /v1/models with
+        // Anthropic-style headers; 003 G1-G8 + devlog 131). Entries use the official
+        // ModelInfo shape incl. capabilities (effort ladder / thinking) — Desktop 3P can
+        // only learn capabilities through discovery, and Claude Code 2.1.207 strips the
+        // extra fields (backward-safe). Ids are the claude-opus-4-8-{code} Desktop
+        // aliases; legacy claude-ocx-* ids keep decoding via resolveAlias. Detection:
         // anthropic-version header (Claude Code sends it) or explicit ?flavor=anthropic.
         // Codex catalog (client_version) and the OpenAI list shape below stay byte-identical.
         const wantsAnthropicList = req.headers.get("anthropic-version") !== null
           || url.searchParams.get("flavor") === "anthropic";
         if (wantsAnthropicList && !url.searchParams.has("client_version")) {
           if (config.claudeCode?.enabled === false) return jsonResponse({ data: [] }, 200, req, config);
-          const data: { id: string; display_name: string }[] = [];
-          for (const slug of visibleNativeSlugs(config)) {
-            const id = aliasForNative(slug);
-            if (id) data.push({ id, display_name: `${slug} (native)` });
-          }
-          for (const m of goOrdered) {
-            const id = aliasForRoute(m.provider, m.id);
-            if (id) data.push({ id, display_name: `${m.id} (${m.provider})` });
-          }
+          const { buildAnthropicModelInfos } = await import("../claude/model-info");
+          const data = buildAnthropicModelInfos([...visibleNativeSlugs(config)], goOrdered);
           // Build Desktop 3P registry so inbound alias resolution works for subsequent requests.
           buildDesktop3pRegistry(
             [...visibleNativeSlugs(config)],
