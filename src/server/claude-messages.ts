@@ -19,7 +19,8 @@ import { estimateTokens } from "../lib/token-estimate";
 import { routeModel } from "../router";
 import type { OcxConfig } from "../types";
 import { readJsonRequestBody } from "./request-decompress";
-import type { RequestLogContext } from "./request-log";
+import { addFinalRequestLog, httpStatusForTerminalStatus, type RequestLogContext, type RequestLogEntry } from "./request-log";
+import { responseWithDeferredRequestLog } from "./relay";
 import { handleResponses } from "./responses";
 
 type Rec = Record<string, unknown>;
@@ -39,9 +40,17 @@ async function readAnthropicBody(req: Request): Promise<unknown> {
   }
 }
 
-export async function handleClaudeMessages(req: Request, config: OcxConfig, logCtx: RequestLogContext): Promise<Response> {
+export async function handleClaudeMessages(
+  req: Request,
+  config: OcxConfig,
+  logCtx: RequestLogContext,
+  logIds?: { requestId: string; start: number },
+): Promise<Response> {
   const disabled = claudeInboundDisabled(config);
-  if (disabled) return disabled;
+  if (disabled) {
+    if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 403, { closeReason: "non_stream" });
+    return disabled;
+  }
 
   let anthropicBody: unknown;
   let internalBody: Rec;
@@ -49,8 +58,9 @@ export async function handleClaudeMessages(req: Request, config: OcxConfig, logC
     anthropicBody = await readAnthropicBody(req);
     internalBody = anthropicToResponsesBody(anthropicBody, config.claudeCode);
   } catch (err) {
-    if (err instanceof AnthropicRequestError) return anthropicErrorResponse(400, err.message);
-    return anthropicErrorResponse(500, err instanceof Error ? err.message : String(err));
+    const status = err instanceof AnthropicRequestError ? 400 : 500;
+    if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, status, { closeReason: "non_stream" });
+    return anthropicErrorResponse(status, err instanceof Error ? err.message : String(err));
   }
 
   const requestedModel = (anthropicBody as Rec).model as string;
@@ -99,7 +109,22 @@ export async function handleClaudeMessages(req: Request, config: OcxConfig, logC
     body: JSON.stringify(internalBody),
   });
 
-  const response = await handleResponses(internalReq, config, logCtx, { abortSignal: req.signal });
+  // Request-log wiring mirrors the /v1/responses route: native passthrough finalizes
+  // via the terminal callbacks; routed streams get the Responses-vocabulary log tap
+  // BEFORE translation (the translated Anthropic stream has no response.completed
+  // frame, so tapping it records a bogus 502 with no usage/cache detail).
+  let nativeLogged = false;
+  const finalizeNativeLog = (status: number, meta: { terminalStatus?: RequestLogEntry["terminalStatus"]; closeReason: "terminal" | "client_cancel" }) => {
+    if (!logIds || nativeLogged) return;
+    nativeLogged = true;
+    addFinalRequestLog(logIds.requestId, logIds.start, logCtx, status, meta);
+  };
+  const upstream = await handleResponses(internalReq, config, logCtx, {
+    abortSignal: req.signal,
+    onNativePassthroughTerminal: status => finalizeNativeLog(httpStatusForTerminalStatus(status), { terminalStatus: status, closeReason: "terminal" }),
+    onNativePassthroughCancel: () => finalizeNativeLog(499, { closeReason: "client_cancel" }),
+  });
+  const response = logIds ? responseWithDeferredRequestLog(upstream, logIds.requestId, logIds.start, logCtx) : upstream;
 
   if (!response.ok) {
     // Re-shape the OpenAI-style error envelope into the Anthropic one, preserving status.

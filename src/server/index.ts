@@ -449,8 +449,11 @@ export function startServer(port?: number) {
         const start = Date.now();
         const requestId = nextRequestLogId(start);
         const logCtx: RequestLogContext = { model: "unknown", provider: "unknown" };
-        const response = await handleClaudeMessages(req, config, logCtx);
-        return withCors(responseWithDeferredRequestLog(response, requestId, start, logCtx), req, config);
+        // Logging is finalized inside handleClaudeMessages (Responses-vocab tap on the
+        // pre-translation stream + native passthrough callbacks) — do not re-wrap the
+        // translated Anthropic stream here.
+        const response = await handleClaudeMessages(req, config, logCtx, { requestId, start });
+        return withCors(response, req, config);
       }
 
       // Data-plane guard: unknown /v1/* paths must fail with JSON 404, never fall through to the

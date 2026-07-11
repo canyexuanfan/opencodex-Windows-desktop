@@ -88,6 +88,18 @@ test("POST /v1/messages?beta=true streams an Anthropic-shaped turn end to end", 
     expect(text).toContain("\"text_delta\"");
     expect(text).toContain("Hello");
     expect(text).toContain("\"stop_reason\":\"end_turn\"");
+
+    // Request log regression (live smoke round 2): the tap must see the PRE-translation
+    // Responses stream — the translated Anthropic stream has no response.completed, which
+    // used to record a bogus 502 with no usage.
+    const logs = await (await fetch(new URL("/api/logs", server.url))).json() as {
+      status: number; model: string; usage?: { inputTokens: number; outputTokens: number }; usageStatus: string;
+    }[];
+    const row = logs.find(l => l.model === "test-model" || l.model === "mock/test-model");
+    expect(row).toBeDefined();
+    expect(row!.status).toBe(200);
+    expect(row!.usage?.inputTokens).toBe(12);
+    expect(row!.usage?.outputTokens).toBe(3);
   } finally {
     server.stop(true);
     upstream.stop(true);
