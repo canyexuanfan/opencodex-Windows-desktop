@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { fetchWithResetRetry, isConnectionResetError } from "../src/lib/upstream-retry";
+import {
+  fetchWithResetRetry,
+  isConnectionResetError,
+  retryBackoffDelayMs,
+} from "../src/lib/upstream-retry";
 
 function bunResetError(): Error {
   // Shape of Bun's fetch rejection on a stale pooled socket.
@@ -134,5 +138,44 @@ describe("fetchWithResetRetry", () => {
       throw bunResetError();
     };
     await expect(fetchWithResetRetry(doFetch, { abortSignal: ac.signal })).rejects.toThrow("socket connection was closed unexpectedly");
+  });
+});
+
+describe("retryBackoffDelayMs", () => {
+  test("honors Retry-After seconds before exponential jitter", () => {
+    const headers = new Headers({ "Retry-After": "3" });
+    expect(retryBackoffDelayMs(0, {
+      baseDelayMs: 250,
+      maxDelayMs: 5_000,
+      headers,
+    })).toBe(3_000);
+  });
+
+  test("parses Retry-After HTTP dates and caps them", () => {
+    const nowSpy = spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+    try {
+      const headers = new Headers({
+        "Retry-After": new Date(1_700_000_004_000).toUTCString(),
+      });
+      expect(retryBackoffDelayMs(0, {
+        baseDelayMs: 250,
+        maxDelayMs: 2_000,
+        headers,
+      })).toBe(2_000);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  test("falls back to capped exponential jitter when Retry-After is absent", () => {
+    const randomSpy = spyOn(Math, "random").mockReturnValue(0);
+    try {
+      expect(retryBackoffDelayMs(2, {
+        baseDelayMs: 250,
+        maxDelayMs: 2_000,
+      })).toBe(800);
+    } finally {
+      randomSpy.mockRestore();
+    }
   });
 });

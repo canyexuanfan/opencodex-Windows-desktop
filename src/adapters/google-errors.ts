@@ -1,14 +1,4 @@
-import { redactSecretString } from "../lib/redact";
-
-const ABSOLUTE_PATH_PATTERN = /(?:\/Users\/[^ "';,]+|\/home\/[^ "';,]+|\/root\/[^ "';,]*|[A-Za-z]:\\Users\\[^ "';,]+)/g;
-
-function sanitizeGoogleErrorText(value: string): string {
-  return redactSecretString(value).replace(ABSOLUTE_PATH_PATTERN, "[REDACTED_PATH]");
-}
-
-function safeString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
+import { parseUpstreamJsonPayload, safeUpstreamErrorString, sanitizeUpstreamErrorText } from "./upstream-http-error";
 
 /** Pull the human detail out of the Google API error envelope `{error:{message,status,code}}`. */
 function googleErrorDetail(payloadText: string): { message?: string; status?: string } {
@@ -16,13 +6,13 @@ function googleErrorDetail(payloadText: string): { message?: string; status?: st
   if (!trimmed || (!trimmed.startsWith("{") && !trimmed.startsWith("["))) {
     return { message: trimmed || undefined };
   }
-  try {
-    const parsed = JSON.parse(trimmed) as { error?: { message?: unknown; status?: unknown } };
-    const err = parsed.error;
-    return { message: safeString(err?.message), status: safeString(err?.status) };
-  } catch {
-    return {};
-  }
+  const parsed = parseUpstreamJsonPayload(trimmed);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const err = (parsed as { error?: { message?: unknown; status?: unknown } }).error;
+  return {
+    message: safeUpstreamErrorString(err?.message),
+    status: safeUpstreamErrorString(err?.status),
+  };
 }
 
 function classifyGoogle(label: string, status: number | undefined, enumStatus: string | undefined, text: string): string {
@@ -59,7 +49,7 @@ function classifyGoogle(label: string, status: number | undefined, enumStatus: s
 export function safeGoogleHttpErrorMessage(label: string, status: number, payloadText: string): string {
   const { message, status: enumStatus } = googleErrorDetail(payloadText);
   const prefix = classifyGoogle(label, status, enumStatus, [message, enumStatus].filter(Boolean).join(" "));
-  const detail = message ? sanitizeGoogleErrorText(message).slice(0, 500) : `HTTP ${status}`;
+  const detail = message ? sanitizeUpstreamErrorText(message).slice(0, 500) : `HTTP ${status}`;
   return `${prefix}: ${detail}`;
 }
 
