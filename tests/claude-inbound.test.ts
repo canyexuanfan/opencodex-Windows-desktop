@@ -64,6 +64,8 @@ describe("claude inbound translation", () => {
     expect(body.top_k).toBeUndefined(); // documented drop
     expect(body.stop).toEqual(["STOP"]);
     expect(body.user).toBe("user-abc");
+    // Stable per-session cache-affinity key derived from metadata.user_id (devlog 090)
+    expect(body.prompt_cache_key).toMatch(/^[0-9a-f]{32}$/);
     expect(body.store).toBe(false);
     expect(body.stream).toBe(true);
     expect(body.parallel_tool_calls).toBe(false);

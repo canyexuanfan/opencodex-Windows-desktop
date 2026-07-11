@@ -11,6 +11,7 @@
  */
 import type { OcxClaudeCodeConfig } from "../types";
 import { resolveAlias } from "./alias";
+import { createHash } from "node:crypto";
 
 export class AnthropicRequestError extends Error {}
 
@@ -287,7 +288,15 @@ export function anthropicToResponsesBody(raw: unknown, cc?: OcxClaudeCodeConfig)
   if (Array.isArray(raw.stop_sequences) && raw.stop_sequences.length > 0) {
     body.stop = raw.stop_sequences.filter((s): s is string => typeof s === "string");
   }
-  if (isRec(raw.metadata) && typeof raw.metadata.user_id === "string") body.user = raw.metadata.user_id;
+  if (isRec(raw.metadata) && typeof raw.metadata.user_id === "string") {
+    body.user = raw.metadata.user_id;
+    // OpenAI-side prompt caching is routed by prompt_cache_key (Codex clients send
+    // their session id; without it consecutive /v1/messages turns reported
+    // cached_tokens: 0 on the ChatGPT backend — devlog 090). Claude Code's
+    // metadata.user_id embeds the session uuid, so hashing it yields a stable
+    // per-session key with a bounded length/charset.
+    body.prompt_cache_key = createHash("sha256").update(raw.metadata.user_id).digest("hex").slice(0, 32);
+  }
 
   const thinking = raw.thinking;
   const outputConfigEffort = effortFromOutputConfig(raw.output_config);
