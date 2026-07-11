@@ -76,6 +76,31 @@ is intentionally the same in every language) that flips the inbound on and off.
 
 Lookup order: discovery alias, exact id, id with the date suffix stripped (`-20250514`), passthrough.
 
+## Reasoning effort
+
+Claude Code's `/effort` setting is preserved across the adapter. The adaptive wire format
+(`thinking: { type: "adaptive" }` plus `output_config: { effort }`) passes its effort through
+directly. Legacy `thinking.enabled` requests map `budget_tokens` to `low` at 4096 or below,
+`medium` at 16384 or below, and `high` above that. When thinking is disabled, as it commonly is
+for subagents, no reasoning effort is sent. The resolved value appears in the request log's
+**Reasoning effort** column.
+
+## Prompt caching
+
+- On Anthropic-routed requests, the adapter manages cache breakpoints for tools, system content,
+  and the penultimate user message, plus top-level automatic `cache_control`. Stable turns normally
+  produce about a 99.9% cache hit rate.
+- Native OpenAI/ChatGPT routing derives a session-scoped `prompt_cache_key` and `session_id` header
+  to keep cache affinity.
+- `CLAUDE.md` is injected only into the first user message, so it does not invalidate the prompt
+  cache on every turn.
+
+## Token usage in Logs and Usage
+
+The request log total is input (including cached input) plus output. A `c` suffix marks cache reads
+(hits), while `w` marks cache writes (creation). The Usage page also reports cache hits and cache
+creation separately.
+
 ## Manual setup (without ocx)
 
 ```bash
@@ -88,15 +113,19 @@ Or persist it in `~/.claude/settings.json` under the `env` key. Leave `ANTHROPIC
 `ANTHROPIC_API_KEY` unset unless the proxy requires an admission key — any auth override disables
 claude.ai connectors and replaces your subscription login.
 
-## Notes and limits
+## Production notes
 
 - **Streaming first.** The inbound always streams internally; non-streaming clients get the folded
   message JSON.
 - **Thinking.** Reasoning streams to Claude Code as `thinking` blocks (with a synthetic signature);
   thinking blocks replayed by Claude Code are dropped before routing — providers carry reasoning in
   their own envelopes.
-- **count_tokens is an estimate.** Claude Code's context meter uses a character-based
-  approximation; the endpoint is optional in the gateway protocol.
+- **Errors.** Upstream failures are mapped to Anthropic's error taxonomy: 400, 401, 403 and 404;
+  `rate_limit_error` for 429; `overloaded_error` for 529; and `api_error` for other 5xx responses.
+  `Retry-After` is preserved.
+- **count_tokens follows routing.** Routed models use an approximation. Native Anthropic models
+  with an `sk-ant` credential pass the request through to the real Anthropic API.
+- **SSE streaming.** Streaming responses use server-sent events and include `ping` events.
 - **Kill switch.** `claudeCode.enabled: false` (GUI: Claude ON toggle) answers `/v1/messages` with
   403 and empties the discovery list.
 - Requests appear in the Logs/Usage pages like any other routed traffic.
