@@ -26,8 +26,8 @@ describe("ocx claude env assembly", () => {
     expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe("gemini/gemini-3-flash");
     // Never both token vars (Claude Code auth-conflict warning, 003 E1).
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
-    // First-party bypass keeps connectors/Design/Files API alive through proxy.
-    expect(env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL).toBe("1");
+    // Do NOT set _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL — it disables gateway model discovery.
+    expect(env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL).toBeUndefined();
   });
 
   test("configured API key becomes the auth token (admission required)", () => {
@@ -50,11 +50,4 @@ describe("ocx claude env assembly", () => {
     expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBeUndefined();
   });
 
-  test("user can override the first-party bypass", () => {
-    const env = buildClaudeEnv(cfg(), 10100, {
-      _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "0",
-    });
-    // User-exported env always wins.
-    expect(env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL).toBe("0");
-  });
 });

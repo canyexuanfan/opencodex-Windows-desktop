@@ -35,10 +35,11 @@ export function buildClaudeEnv(config: OcxConfig, port: number, base: ClaudeLaun
   if ((config.apiKeys?.length ?? 0) > 0) {
     setDefault("ANTHROPIC_AUTH_TOKEN", config.apiKeys![0].key);
   }
-  // Force first-party detection: Claude Code checks `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL`
-  // before checking whether ANTHROPIC_BASE_URL resolves to api.anthropic.com. Setting this
-  // keeps connectors, Design, Files API, and Remote Control enabled through the proxy.
-  setDefault("_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL", "1");
+  // NOTE: do NOT set _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL here. While it enables
+  // Design/Remote Control, it DISABLES gateway model discovery (Claude Code's eligibility
+  // check returns false when isFirstPartyBaseUrl() is true). Model routing through the
+  // proxy is essential; Design/Remote Control are secondary features.
+  // Connectors still work because they check OAuth state ($o()), not base URL (Gd()).
   // Native /model picker discovery ("From gateway", Claude Code >= 2.1.129).
   setDefault("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "1");
   setDefault("ANTHROPIC_MODEL", config.claudeCode?.model);

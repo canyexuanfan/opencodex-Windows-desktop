@@ -73,7 +73,6 @@ describe("system environment injection", () => {
 
     const commands = execSpy.mock.calls.map(call => call[0]);
     expect(commands).toContain("launchctl setenv ANTHROPIC_BASE_URL http://127.0.0.1:4567");
-    expect(commands).toContain("launchctl setenv _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL 1");
     expect(commands).toContain("launchctl setenv CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY 1");
     // Two writes: shell env file + tracking file
     expect(writeSpy).toHaveBeenCalledTimes(2);
@@ -139,7 +138,6 @@ describe("system environment cleanup", () => {
     expect(revertSystemEnv()).toEqual({ reverted: true });
     for (const name of [
       "ANTHROPIC_BASE_URL",
-      "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
       "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
       "ANTHROPIC_AUTH_TOKEN",
     ]) {
