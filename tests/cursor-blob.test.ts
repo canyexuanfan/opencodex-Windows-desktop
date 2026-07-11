@@ -66,10 +66,12 @@ describe("Cursor blob handshake", () => {
     // The first root is the blob id of the system-prompt JSON exactly.
     const sysJson = new TextEncoder().encode(JSON.stringify({ role: "system", content: "You are helpful." }));
     expect(Array.from(roots[0]!)).toEqual(Array.from(sha256(sysJson)));
-    // Client Responses tools are intentionally advertised via native exec RequestContext.tools,
-    // not mirrored into the initial AgentRunRequest.mcp_tools payload. The top-level field is
-    // not wire-compatible with the live Cursor Connect parser for this client path.
-    expect(run?.mcpTools).toBeUndefined();
+    // Client Responses tools are mirrored into the top-level AgentRunRequest.mcp_tools payload
+    // (McpTools wrapper) so cursor models register them as callable. Advertising only via native
+    // exec RequestContext.tools left them unavailable to the model. The wrapper shape IS
+    // wire-compatible (the earlier crash was a wrong-shape assignment, since corrected).
+    expect(run?.mcpTools?.mcpTools.length).toBe(1);
+    expect(run?.mcpTools?.mcpTools[0]?.toolName).toBe("mcp__fs__read_file");
   });
 
   test("adds Cursor exact-tool guidance to system prompt blobs when tools are advertised", () => {

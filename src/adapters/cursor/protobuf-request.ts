@@ -20,6 +20,7 @@ import {
   McpToolCallSchema,
   McpToolResultContentItemSchema,
   McpToolResultSchema,
+  McpToolsSchema,
   ModelDetailsSchema,
   ResumeActionSchema,
   RequestContextSchema,
@@ -34,6 +35,7 @@ import {
   appendCursorShellAliasHint,
   cursorToolsForActivePrompt,
   buildCursorToolGuidanceSystemNote,
+  buildCursorToolDefinitions,
   cursorRequestHasShellAlias,
   CURSOR_SHELL_ALIAS_SYSTEM_NOTE,
   OCX_RESPONSES_TOOL_PROVIDER,
@@ -361,6 +363,18 @@ export function encodeCursorRunRequest(request: CursorRunRequest): Uint8Array {
       displayNameShort: request.modelId,
       aliases: [],
     }),
+    // Mirror the client (Responses) tool definitions into the top-level AgentRunRequest.mcp_tools
+    // channel. Advertising them ONLY via native-exec `requestContextArgs` (RequestContext.tools) is
+    // insufficient: cursor models report those tools as unavailable and fall back to native tools.
+    // Populating mcp_tools registers them into the model's callable catalog (verified live: the
+    // model actually calls the injected tool on gpt-5.6-luna and claude-4.5-sonnet). Phase 42 tried
+    // this but assigned the field with the wrong shape and crashed Cursor's binary parser ("illegal
+    // tag"); the correct `McpTools` wrapper is wire-compatible (verified — no parse crash on either
+    // model family). See devlog/260711_cursor_browser_bridge/004.
+    ...(() => {
+      const mcpToolDefs = buildCursorToolDefinitions(request.tools, request.toolChoice);
+      return mcpToolDefs.length > 0 ? { mcpTools: create(McpToolsSchema, { mcpTools: mcpToolDefs }) } : {};
+    })(),
   });
 
   const message = create(AgentClientMessageSchema, {
