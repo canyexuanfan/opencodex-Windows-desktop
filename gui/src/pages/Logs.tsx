@@ -24,6 +24,7 @@ interface LogEntry {
   timestamp: number;
   model: string;
   provider: string;
+  surface?: "claude";
   requestedEffort?: string;
   requestedServiceTier?: string;
   requestedSpeedLabel?: string;
@@ -99,6 +100,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [detail, setDetail] = useState<LogEntry | null>(null);
+  const [surfaceFilter, setSurfaceFilter] = useState<"all" | "claude" | "codex">("all");
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const localeTag = LOCALES.find(l => l.code === locale)?.htmlLang;
 
@@ -118,9 +120,13 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   const statusColor = (s: number) => s >= 200 && s < 300 ? "var(--green)" : s >= 400 ? "var(--red)" : "var(--amber)";
 
   const detailInfo = detail ? statusCodeInfo(detail.status, locale) : null;
+  const filteredLogs = logs.filter(log => (
+    surfaceFilter === "all"
+    || (surfaceFilter === "claude" ? log.surface === "claude" : log.surface !== "claude")
+  ));
 
   const rowVirtualizer = useVirtualizer({
-    count: logs.length,
+    count: filteredLogs.length,
     getScrollElement: () => scrollContainerRef.current,
     estimateSize: () => 44,
     overscan: 15,
@@ -142,7 +148,26 @@ export default function Logs({ apiBase }: { apiBase: string }) {
       </div>
       <p className="page-sub">{t("logs.subtitle")}</p>
 
-      {logs.length === 0 ? (
+      <div className="row" style={{ gap: 8, marginBottom: 12, alignItems: "center" }}>
+        <span className="muted" style={{ fontSize: 13 }}>{t("logs.filter.surface.label")}</span>
+        <div className="segmented" role="radiogroup" aria-label={t("logs.filter.surface.label")} style={{ display: "inline-flex", borderRadius: 999, background: "var(--surface-soft, var(--raised))", padding: 3, gap: 2 }}>
+          {(["all", "claude", "codex"] as const).map(surface => (
+            <button
+              key={surface}
+              type="button"
+              role="radio"
+              aria-checked={surfaceFilter === surface}
+              className={`btn btn-sm${surfaceFilter === surface ? " btn-primary" : " btn-ghost"}`}
+              style={{ borderRadius: 999, minWidth: 64, fontSize: 12, padding: "5px 12px", border: "none", background: surfaceFilter === surface ? undefined : "transparent", color: surfaceFilter === surface ? undefined : "var(--muted)" }}
+              onClick={() => setSurfaceFilter(surface)}
+            >
+              {t(`logs.filter.surface.${surface}`)}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {filteredLogs.length === 0 ? (
         <EmptyState title={t("logs.noRequests")} />
       ) : (
         <div ref={scrollContainerRef} className="tbl-wrap" style={{ overflowY: "auto", maxHeight: "calc(100vh - 260px)" }}>
@@ -166,7 +191,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                 </tr>
               )}
               {virtualRows.map(virtualRow => {
-                const log = logs[logs.length - 1 - virtualRow.index];
+                const log = filteredLogs[filteredLogs.length - 1 - virtualRow.index];
                 return (
                <tr
                  key={log.requestId ?? `${log.timestamp}-${virtualRow.index}`}
@@ -200,6 +225,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                  <td className="mono log-col-model" title={modelTitle(log)}>
                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                     <span>{modelLabel(log.resolvedModel ?? log.model)}</span>
+                      {log.surface === "claude" && <span className="badge badge-accent">{t("logs.badge.claude")}</span>}
                       {speedLabel(log) && <span className="badge badge-amber">{speedLabel(log)}</span>}
                     </span>
                   </td>

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   filterRequestLogs,
+  addFinalRequestLog,
   httpStatusFromTerminalError,
   nextRequestLogId,
   responseWithDeferredRequestLog,
@@ -23,6 +24,21 @@ function log(overrides: Partial<RequestLogEntry>): RequestLogEntry {
 }
 
 describe("request log metadata", () => {
+  test("records the Claude surface on the final log entry", () => {
+    const entries: RequestLogEntry[] = [];
+    addFinalRequestLog(
+      "ocx-test-claude",
+      Date.now(),
+      { model: "claude-sonnet-4-5", provider: "openai", surface: "claude" },
+      200,
+      { closeReason: "non_stream" },
+      entry => entries.push(entry),
+    );
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ surface: "claude" });
+  });
+
   test("generates compact request ids", () => {
     expect(nextRequestLogId(1_700_000_000_000)).toMatch(/^ocx-[a-z0-9]+-[a-z0-9]+$/);
     expect(nextRequestLogId(1_700_000_000_000)).not.toBe(nextRequestLogId(1_700_000_000_000));

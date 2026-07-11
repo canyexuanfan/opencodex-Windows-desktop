@@ -222,6 +222,7 @@ export async function handleClaudeMessages(
   logCtx: RequestLogContext,
   logIds?: { requestId: string; start: number },
 ): Promise<Response> {
+  logCtx.surface = "claude";
   const disabled = claudeInboundDisabled(config);
   if (disabled) {
     if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 403, { closeReason: "non_stream" });
@@ -409,7 +410,7 @@ export async function handleClaudeCountTokens(req: Request, config: OcxConfig): 
     return anthropicErrorResponse(400, "model is required");
   }
   if (wantsNativePassthrough(req, config, raw.model)) {
-    return await anthropicNativePassthrough(req, config, { model: raw.model, provider: "anthropic-native" }, undefined, raw, "/v1/messages/count_tokens");
+    return await anthropicNativePassthrough(req, config, { model: raw.model, provider: "anthropic-native", surface: "claude" }, undefined, raw, "/v1/messages/count_tokens");
   }
   const parts: string[] = [];
   if (raw.system !== undefined) parts.push(typeof raw.system === "string" ? raw.system : JSON.stringify(raw.system));

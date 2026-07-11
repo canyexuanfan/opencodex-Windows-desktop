@@ -23,6 +23,7 @@ import {
 export interface RequestLogContext {
   model: string;
   provider: string;
+  surface?: "claude";
   requestedModel?: string;
   requestedEffort?: string;
   requestedServiceTier?: string;
@@ -50,6 +51,7 @@ export interface RequestLogEntry {
   timestamp: number;
   model: string;
   provider: string;
+  surface?: "claude";
   requestedModel?: string;
   requestedEffort?: string;
   requestedServiceTier?: string;
@@ -369,6 +371,7 @@ export function addFinalRequestLog(
     timestamp: start,
     model: logCtx.model,
     provider: logCtx.provider,
+    ...(logCtx.surface ? { surface: logCtx.surface } : {}),
     ...(logCtx.requestedModel ? { requestedModel: logCtx.requestedModel } : {}),
     ...(logCtx.requestedEffort ? { requestedEffort: logCtx.requestedEffort } : {}),
     ...(logCtx.requestedServiceTier ? { requestedServiceTier: logCtx.requestedServiceTier } : {}),
