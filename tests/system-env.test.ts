@@ -165,3 +165,65 @@ describe("system environment cleanup", () => {
     expect(unlinkSpy).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("systemEnv lever keys (devlog 136 B6)", () => {
+  const leverConfig = {
+    ...baseConfig,
+    claudeCode: { systemEnv: true, maxContextTokens: 1_000_000, alwaysEnableEffort: true },
+  } satisfies OcxConfig;
+
+  function capturedWrites(): Array<{ path: string; data: string }> {
+    const writes: Array<{ path: string; data: string }> = [];
+    writeSpy.mockImplementation(((...args: unknown[]) => {
+      writes.push({ path: String(args[0]), data: String(args[1]) });
+      trackingFile = String(args[1]);
+    }) as typeof fs.writeFileSync);
+    return writes;
+  }
+
+  test("injects lever keys, tracks them, and shell file uses conditional exports", async () => {
+    const writes = capturedWrites();
+    expect(await injectSystemEnv(4096, leverConfig)).toEqual({ injected: true });
+    const setCalls = execSpy.mock.calls.map(call => String(call[0]));
+    expect(setCalls).toContain("launchctl setenv CLAUDE_CODE_MAX_CONTEXT_TOKENS 1000000");
+    expect(setCalls).toContain("launchctl setenv DISABLE_COMPACT 1");
+    expect(setCalls).toContain("launchctl setenv CLAUDE_CODE_ALWAYS_ENABLE_EFFORT 1");
+    const trackingWrite = writes.find(w => w.path.includes("system-env-port"));
+    expect(JSON.parse(trackingWrite!.data).injectedKeys).toEqual(expect.arrayContaining([
+      "CLAUDE_CODE_MAX_CONTEXT_TOKENS", "DISABLE_COMPACT", "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT",
+    ]));
+    // Shell env file: lever keys are CONDITIONAL exports so a shell-only user value wins.
+    const shellWrite = writes.find(w => w.path.includes("claude-env.sh"));
+    expect(shellWrite!.data).toContain('[ -z "${CLAUDE_CODE_MAX_CONTEXT_TOKENS+x}" ] && export CLAUDE_CODE_MAX_CONTEXT_TOKENS="1000000"');
+    expect(shellWrite!.data).toContain('[ -z "${DISABLE_COMPACT+x}" ] && export DISABLE_COMPACT="1"');
+    expect(shellWrite!.data).toContain('[ -z "${CLAUDE_CODE_ALWAYS_ENABLE_EFFORT+x}" ] && export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT="1"');
+  });
+
+  test("user-preset launchctl values are skipped and never tracked (revert cannot delete them)", async () => {
+    const writes = capturedWrites();
+    execSpy.mockImplementation(((command: string) => {
+      if (command === "launchctl getenv ANTHROPIC_BASE_URL") return launchctlBaseUrl ?? "";
+      if (command === "launchctl getenv CLAUDE_CODE_MAX_CONTEXT_TOKENS") return "777000";
+      if (command.startsWith("launchctl getenv")) return "";
+      return Buffer.alloc(0);
+    }) as typeof childProcess.execSync);
+    expect(await injectSystemEnv(4096, leverConfig)).toEqual({ injected: true });
+    const setCalls = execSpy.mock.calls.map(call => String(call[0]));
+    expect(setCalls).not.toContain("launchctl setenv CLAUDE_CODE_MAX_CONTEXT_TOKENS 1000000");
+    expect(setCalls).toContain("launchctl setenv DISABLE_COMPACT 1");
+    const trackingWrite = writes.filter(w => w.path.includes("system-env-port")).at(-1);
+    const keys = JSON.parse(trackingWrite!.data).injectedKeys as string[];
+    expect(keys).not.toContain("CLAUDE_CODE_MAX_CONTEXT_TOKENS");
+    expect(keys).toContain("DISABLE_COMPACT");
+  });
+
+  test("levers disabled: no lever keys injected or exported", async () => {
+    const writes = capturedWrites();
+    expect(await injectSystemEnv(4096, baseConfig)).toEqual({ injected: true });
+    const setCalls = execSpy.mock.calls.map(call => String(call[0]));
+    expect(setCalls.some(c => c.includes("CLAUDE_CODE_MAX_CONTEXT_TOKENS"))).toBe(false);
+    expect(setCalls.some(c => c.includes("CLAUDE_CODE_ALWAYS_ENABLE_EFFORT"))).toBe(false);
+    const shellWrite = writes.find(w => w.path.includes("claude-env.sh"));
+    expect(shellWrite!.data).not.toContain("DISABLE_COMPACT");
+  });
+});

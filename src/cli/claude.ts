@@ -42,6 +42,18 @@ export function buildClaudeEnv(config: OcxConfig, port: number, base: ClaudeLaun
   // Connectors still work because they check OAuth state ($o()), not base URL (Gd()).
   // Native /model picker discovery ("From gateway", Claude Code >= 2.1.129).
   setDefault("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "1");
+  // Opt-in effort forcing (devlog 136 B6): opus-shaped aliases already carry
+  // output_config.effort, so this is OFF unless the user enables it in config.
+  if (config.claudeCode?.alwaysEnableEffort === true) {
+    setDefault("CLAUDE_CODE_ALWAYS_ENABLE_EFFORT", "1");
+  }
+  // Context-window override: the official pair — MAX_CONTEXT_TOKENS alone is ignored
+  // for recognized claude-shaped ids unless DISABLE_COMPACT=1 rides along (devlog 135).
+  const maxCtx = config.claudeCode?.maxContextTokens;
+  if (typeof maxCtx === "number" && Number.isFinite(maxCtx) && maxCtx > 0) {
+    setDefault("CLAUDE_CODE_MAX_CONTEXT_TOKENS", String(Math.floor(maxCtx)));
+    setDefault("DISABLE_COMPACT", "1");
+  }
   setDefault("ANTHROPIC_MODEL", config.claudeCode?.model);
   // Current slot var + deprecated legacy name for older Claude Code versions.
   setDefault("ANTHROPIC_DEFAULT_HAIKU_MODEL", config.claudeCode?.smallFastModel);

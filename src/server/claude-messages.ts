@@ -235,6 +235,11 @@ export async function handleClaudeMessages(
   let cacheKeySource: ClaudeCacheKeySource = null;
   try {
     anthropicBody = await readAnthropicBody(req);
+    // Defensive [1m] strip (devlog 138): clients normally remove the context-variant
+    // marker themselves; the 1M signal we act on is the anthropic-beta header.
+    if (isRec(anthropicBody) && typeof anthropicBody.model === "string" && anthropicBody.model.endsWith("[1m]")) {
+      anthropicBody.model = anthropicBody.model.slice(0, -4);
+    }
     // Debug capture (opt-in allowlist scalars) BEFORE the passthrough branch so
     // native, routed, and disabled-alias paths are all observable (devlog 130 B1).
     captureClaudeInbound(
@@ -243,6 +248,7 @@ export async function handleClaudeMessages(
       isRec(anthropicBody) && typeof anthropicBody.model === "string"
         ? resolveInboundModel(anthropicBody.model, config.claudeCode)
         : undefined,
+      req.headers.get("anthropic-beta") ?? undefined,
     );
     if (isRec(anthropicBody) && wantsNativePassthrough(req, config, anthropicBody.model)) {
       return await anthropicNativePassthrough(req, config, logCtx, logIds, anthropicBody, "/v1/messages");
@@ -287,6 +293,16 @@ export async function handleClaudeMessages(
       if (raw.messages !== undefined) parts.push(JSON.stringify(raw.messages));
       if (raw.tools !== undefined) parts.push(JSON.stringify(raw.tools));
       logCtx.usageLogInputTokens = Math.max(1, estimateTokens(parts.join("\n"), requestedModel));
+    }
+    // Effort safety valve (devlog 136 B6, audit 139 R2#2): opus-shaped aliases make
+    // every routed model look like a reasoning model to Claude clients, so a forced
+    // effort (CLAUDE_CODE_ALWAYS_ENABLE_EFFORT) would leak reasoning params to routes
+    // that affirmatively expose NO effort control. Strip only on a definitive [] from
+    // supportedLadderFor; unknown (undefined) passes through untouched.
+    if (internalBody.reasoning !== undefined) {
+      const { supportedLadderFor } = await import("./effort-policy");
+      const ladder = supportedLadderFor({ provider: route.provider, modelId: route.modelId });
+      if (ladder !== undefined && ladder.length === 0) delete internalBody.reasoning;
     }
   } catch { /* unknown model: let handleResponses shape the 404 */ }
 
@@ -437,15 +453,20 @@ export async function handleClaudeCountTokens(req: Request, config: OcxConfig): 
   if (typeof raw.model !== "string" || raw.model.length === 0) {
     return anthropicErrorResponse(400, "model is required");
   }
-  captureClaudeInbound("count_tokens", raw, resolveInboundModel(raw.model, config.claudeCode));
-  if (wantsNativePassthrough(req, config, raw.model)) {
-    return await anthropicNativePassthrough(req, config, { model: raw.model, provider: "anthropic-native", surface: "claude" }, undefined, raw, "/v1/messages/count_tokens");
+  let model = raw.model;
+  if (model.endsWith("[1m]")) {
+    model = model.slice(0, -4);
+    raw.model = model;
+  }
+  captureClaudeInbound("count_tokens", raw, resolveInboundModel(model, config.claudeCode), req.headers.get("anthropic-beta") ?? undefined);
+  if (wantsNativePassthrough(req, config, model)) {
+    return await anthropicNativePassthrough(req, config, { model, provider: "anthropic-native", surface: "claude" }, undefined, raw, "/v1/messages/count_tokens");
   }
   const parts: string[] = [];
   if (raw.system !== undefined) parts.push(typeof raw.system === "string" ? raw.system : JSON.stringify(raw.system));
   if (raw.messages !== undefined) parts.push(JSON.stringify(raw.messages));
   if (raw.tools !== undefined) parts.push(JSON.stringify(raw.tools));
-  const inputTokens = Math.max(1, estimateTokens(parts.join("\n"), raw.model));
+  const inputTokens = Math.max(1, estimateTokens(parts.join("\n"), model));
   return new Response(JSON.stringify({ input_tokens: inputTokens }), {
     status: 200,
     headers: { "Content-Type": "application/json" },

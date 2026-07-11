@@ -74,4 +74,11 @@ describe("claude inbound debug capture (devlog 130 B1)", () => {
     expect(entry!.thinkingBudgetTokens).toBe(10000);
     expect(entry!.outputConfigEffort).toBeUndefined();
   });
+
+  test("anthropic-beta header is captured verbatim (context-1m / effort betas)", () => {
+    setDebugSettings({ claude: true });
+    captureClaudeInbound("messages", body, undefined, "context-1m-2025-08-07,effort-2025-11-24");
+    const [entry] = getClaudeInboundDebugEntries();
+    expect(entry!.anthropicBeta).toBe("context-1m-2025-08-07,effort-2025-11-24");
+  });
 });

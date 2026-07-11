@@ -270,6 +270,19 @@ export interface OcxClaudeCodeConfig {
    * on stop/shutdown. Default: true when `enabled` is not false. macOS only.
    */
   systemEnv?: boolean;
+  /**
+   * Context-window override for Claude Code/Desktop clients (devlog 136 B6):
+   * injected as CLAUDE_CODE_MAX_CONTEXT_TOKENS + DISABLE_COMPACT=1 (the official
+   * env pair — recognized claude-shaped ids need both). WARNING: DISABLE_COMPACT
+   * turns off auto-compaction. Unset = client defaults.
+   */
+  maxContextTokens?: number;
+  /**
+   * Opt-in CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1 injection. Default OFF: opus-shaped
+   * aliases already carry output_config.effort on the wire (devlog 136 실측), and
+   * forcing effort on every request can leak reasoning params to non-reasoning routes.
+   */
+  alwaysEnableEffort?: boolean;
 }
 
 export interface OcxConfig {

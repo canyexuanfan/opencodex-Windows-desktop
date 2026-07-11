@@ -92,12 +92,49 @@ test("PUT round-trips settings and persists to config", async () => {
   }
 });
 
+test("PUT/GET round-trips the context/effort levers (devlog 136 B6)", async () => {
+  const server = startServer(0);
+  try {
+    const put = await fetch(new URL("/api/claude-code", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ maxContextTokens: 1_000_000, alwaysEnableEffort: true }),
+    });
+    expect(put.status).toBe(200);
+    let persisted = loadConfig();
+    expect(persisted.claudeCode?.maxContextTokens).toBe(1_000_000);
+    expect(persisted.claudeCode?.alwaysEnableEffort).toBe(true);
+
+    const get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
+    expect(get.maxContextTokens).toBe(1_000_000);
+    expect(get.alwaysEnableEffort).toBe(true);
+
+    // null clears the context override; alwaysEnableEffort:false deletes the flag.
+    const clear = await fetch(new URL("/api/claude-code", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ maxContextTokens: null, alwaysEnableEffort: false }),
+    });
+    expect(clear.status).toBe(200);
+    persisted = loadConfig();
+    expect(persisted.claudeCode?.maxContextTokens).toBeUndefined();
+    expect(persisted.claudeCode?.alwaysEnableEffort).toBeUndefined();
+  } finally {
+    server.stop(true);
+  }
+});
+
 test("PUT validation rejects bad shapes", async () => {
   const server = startServer(0);
   try {
     const cases: [Record<string, unknown>, string][] = [
       [{ enabled: "yes" }, "enabled must be a boolean"],
       [{ model: 5 }, "model must be a string"],
+      [{ maxContextTokens: 0 }, "maxContextTokens must be a positive integer or null"],
+      [{ maxContextTokens: -1 }, "maxContextTokens must be a positive integer or null"],
+      [{ maxContextTokens: 1.5 }, "maxContextTokens must be a positive integer or null"],
+      [{ maxContextTokens: "1000000" }, "maxContextTokens must be a positive integer or null"],
+      [{ alwaysEnableEffort: "on" }, "alwaysEnableEffort must be a boolean"],
       [{ modelMap: ["a"] }, "modelMap must be an object of string->string"],
       [{ modelMap: { "": "x" } }, "modelMap entries must be non-empty strings"],
       [{ modelMap: { a: "" } }, "modelMap entries must be non-empty strings"],

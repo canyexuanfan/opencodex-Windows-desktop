@@ -293,7 +293,7 @@ export function startServer(port?: number) {
           // Build Desktop 3P registry so inbound alias resolution works for subsequent requests.
           buildDesktop3pRegistry(
             [...visibleNativeSlugs(config)],
-            goOrdered.map(m => ({ provider: m.provider, id: m.id })),
+            goOrdered.map(m => ({ provider: m.provider, id: m.id, contextWindow: m.contextWindow })),
           );
           return jsonResponse({ data }, 200, req, config);
         }

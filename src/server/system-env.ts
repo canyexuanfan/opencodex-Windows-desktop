@@ -26,6 +26,18 @@ function writeShellEnvFile(port: number, config: OcxConfig): void {
   if (config.claudeCode?.model) {
     lines.push(`export ANTHROPIC_MODEL="${config.claudeCode.model}"`);
   }
+  // New lever keys are CONDITIONAL exports (audit 139 R2#1): a value the user already
+  // exported in their shell wins even though launchctl knows nothing about it.
+  const conditional = (name: string, value: string) =>
+    `[ -z "\${${name}+x}" ] && export ${name}="${value.replace(/"/g, '\\"')}"`;
+  const maxCtx = config.claudeCode?.maxContextTokens;
+  if (typeof maxCtx === "number" && Number.isFinite(maxCtx) && maxCtx > 0) {
+    lines.push(conditional("CLAUDE_CODE_MAX_CONTEXT_TOKENS", String(Math.floor(maxCtx))));
+    lines.push(conditional("DISABLE_COMPACT", "1"));
+  }
+  if (config.claudeCode?.alwaysEnableEffort === true) {
+    lines.push(conditional("CLAUDE_CODE_ALWAYS_ENABLE_EFFORT", "1"));
+  }
   mkdirSync(getConfigDir(), { recursive: true, mode: 0o700 });
   writeFileSync(getShellEnvFilePath(), lines.join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
 }
@@ -165,6 +177,22 @@ export async function injectSystemEnv(port: number, config: OcxConfig): Promise<
   if (config.apiKeys?.length) {
     setLaunchctlEnv("ANTHROPIC_AUTH_TOKEN", config.apiKeys[0].key);
     injectedKeys.push("ANTHROPIC_AUTH_TOKEN");
+  }
+  // Lever keys (devlog 136 B6): user-wins — skip any key the user already set in the
+  // launchd domain, and track ONLY the keys we actually injected so revert cannot
+  // delete a pre-existing user value (audit 139 #3).
+  const injectLever = (name: string, value: string) => {
+    if (launchctlGetenv(name) !== undefined) return;
+    setLaunchctlEnv(name, value);
+    injectedKeys.push(name);
+  };
+  const maxCtx = config.claudeCode?.maxContextTokens;
+  if (typeof maxCtx === "number" && Number.isFinite(maxCtx) && maxCtx > 0) {
+    injectLever("CLAUDE_CODE_MAX_CONTEXT_TOKENS", String(Math.floor(maxCtx)));
+    injectLever("DISABLE_COMPACT", "1");
+  }
+  if (config.claudeCode?.alwaysEnableEffort === true) {
+    injectLever("CLAUDE_CODE_ALWAYS_ENABLE_EFFORT", "1");
   }
 
   // Shell-hook env file: works for new shells in already-running Terminal.app.

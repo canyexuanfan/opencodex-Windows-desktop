@@ -6,6 +6,7 @@ import {
   generateDesktop3pConfig,
   generateDesktop3pModels,
   legacyDesktop3pAlias,
+  parseDesktop3pModeArgs,
   resolveDesktop3pAlias,
 } from "../src/claude/desktop-3p";
 import { resolveInboundModel } from "../src/claude/inbound";
@@ -96,11 +97,11 @@ describe("Claude Desktop 3P models", () => {
     }
   });
 
-  test("generates a discovery-mode config by default", () => {
+  test("generates a static config by default (list overrides discovery — no merge, devlog 138)", () => {
     const config = generateDesktop3pConfig(
       4096,
       ["gpt-5.6-sol"],
-      [{ provider: "anthropic", id: "claude-opus-4-6" }],
+      [{ provider: "anthropic", id: "claude-opus-4-6" }, { provider: "cursor", id: "gpt-5.6-luna", contextWindow: 1_000_000 }],
       "test-key",
     );
     const reparsed = JSON.parse(JSON.stringify(config));
@@ -109,11 +110,46 @@ describe("Claude Desktop 3P models", () => {
       inferenceCredentialKind: "static",
       inferenceGatewayBaseUrl: "http://127.0.0.1:4096",
       inferenceGatewayApiKey: "test-key",
-      modelDiscoveryEnabled: true,
+      modelDiscoveryEnabled: false,
     });
-    expect(reparsed.inferenceModels).toBeUndefined();
-    // Discovery mode still refreshes the decode registry.
+    // Static list carries the pinned entries.
+    expect(reparsed.inferenceModels.map((m: { name: string }) => m.name)).toEqual([
+      "claude-opus-4-8-ncb",
+      "claude-opus-4-6",
+      desktop3pAlias("cursor", "gpt-5.6-luna"),
+    ]);
+    // supports1m ONLY where an authoritative contextWindow >= 1M was provided.
+    const byName = new Map(reparsed.inferenceModels.map((m: { name: string }) => [m.name, m]));
+    expect((byName.get(desktop3pAlias("cursor", "gpt-5.6-luna")) as { supports1m?: boolean }).supports1m).toBe(true);
+    expect((byName.get("claude-opus-4-8-ncb") as { supports1m?: boolean }).supports1m).toBeUndefined();
+    expect((byName.get("claude-opus-4-6") as { supports1m?: boolean }).supports1m).toBeUndefined();
     expect(resolveDesktop3pAlias("claude-opus-4-8-ncb")).toBe("native/gpt-5.6-sol");
+  });
+
+  test("hybrid mode keeps the static list AND discovery on (CCR-defensive)", () => {
+    const config = generateDesktop3pConfig(4096, ["gpt-5.6-sol"], [], "test-key", "hybrid");
+    const reparsed = JSON.parse(JSON.stringify(config));
+    expect(reparsed.modelDiscoveryEnabled).toBe(true);
+    expect(reparsed.inferenceModels.map((m: { name: string }) => m.name)).toEqual(["claude-opus-4-8-ncb"]);
+  });
+
+  test("generates a discovery-only config with --discovery-only", () => {
+    const config = generateDesktop3pConfig(4096, ["gpt-5.6-sol"], [], "test-key", "discovery");
+    const reparsed = JSON.parse(JSON.stringify(config));
+    expect(reparsed.modelDiscoveryEnabled).toBe(true);
+    expect(reparsed.inferenceModels).toBeUndefined();
+    expect(resolveDesktop3pAlias("claude-opus-4-8-ncb")).toBe("native/gpt-5.6-sol");
+  });
+
+  test("parses desktop mode flags with mutual exclusion and unknown-flag rejection", () => {
+    expect(parseDesktop3pModeArgs([])).toEqual({ mode: "static" });
+    expect(parseDesktop3pModeArgs(["--static"])).toEqual({ mode: "static" });
+    expect(parseDesktop3pModeArgs(["--hybrid"])).toEqual({ mode: "hybrid" });
+    expect(parseDesktop3pModeArgs(["--discovery-only"])).toEqual({ mode: "discovery" });
+    expect("error" in parseDesktop3pModeArgs(["--static", "--discovery-only"])).toBe(true);
+    expect("error" in parseDesktop3pModeArgs(["--hybrid", "--static"])).toBe(true);
+    expect(parseDesktop3pModeArgs(["--static", "--static"])).toEqual({ mode: "static" });
+    expect("error" in parseDesktop3pModeArgs(["--wat"])).toBe(true);
   });
 
   test("generates a valid static gateway config with --static", () => {

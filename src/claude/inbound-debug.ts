@@ -28,6 +28,8 @@ export interface ClaudeInboundDebugEntry {
   metadataKeys?: string[];
   hasMetadataUserId: boolean;
   hasSystem: boolean;
+  /** Raw anthropic-beta header (comma list) — carries context-1m / effort betas. */
+  anthropicBeta?: string;
   /** Ephemeral equality tags (process-salted HMAC, 8 chars) — run-local identity only. */
   userIdTag?: string;
   systemTag?: string;
@@ -60,7 +62,12 @@ function systemText(system: unknown): string | undefined {
 }
 
 /** Record one inbound request. No-op (and ring flush) when the claude debug flag is off. */
-export function captureClaudeInbound(endpoint: "messages" | "count_tokens", body: unknown, resolvedModel?: string): void {
+export function captureClaudeInbound(
+  endpoint: "messages" | "count_tokens",
+  body: unknown,
+  resolvedModel?: string,
+  anthropicBeta?: string,
+): void {
   const enabled = isClaudeDebugEnabled();
   if (!enabled) {
     if (lastEnabled) ring.length = 0; // flag turned off: drop captured entries
@@ -87,6 +94,7 @@ export function captureClaudeInbound(endpoint: "messages" | "count_tokens", body
     ...(metadata ? { metadataKeys: Object.keys(metadata) } : {}),
     hasMetadataUserId: userId !== undefined,
     hasSystem: system !== undefined,
+    ...(anthropicBeta ? { anthropicBeta } : {}),
     ...(userId !== undefined ? { userIdTag: tag(userId) } : {}),
     ...(system !== undefined ? { systemTag: tag(system) } : {}),
   };

@@ -32,6 +32,7 @@ interface ClaudeInboundEntry {
   metadataKeys?: string[];
   hasMetadataUserId: boolean;
   hasSystem: boolean;
+  anthropicBeta?: string;
   userIdTag?: string;
   systemTag?: string;
 }
@@ -254,6 +255,7 @@ export default function Debug({ apiBase }: { apiBase: string }) {
                     <th>{t("debug.claudeInbound.model")}</th>
                     <th>thinking</th>
                     <th>effort</th>
+                    <th>beta</th>
                     <th>metadata</th>
                     <th>system</th>
                   </tr>
@@ -274,6 +276,7 @@ export default function Debug({ apiBase }: { apiBase: string }) {
                         {entry.thinkingBudgetTokens !== undefined && <span className="muted"> ({entry.thinkingBudgetTokens})</span>}
                       </td>
                       <td className="mono">{entry.outputConfigEffort ?? "-"}</td>
+                      <td className="mono" title={entry.anthropicBeta} style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{entry.anthropicBeta ?? "-"}</td>
                       <td className="mono" title={entry.metadataKeys?.join(", ")}>
                         {entry.hasMetadataUserId ? `user_id ${entry.userIdTag ?? ""}` : t("debug.claudeInbound.none")}
                       </td>

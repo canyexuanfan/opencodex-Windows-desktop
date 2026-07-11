@@ -672,6 +672,8 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       smallFastModel: config.claudeCode?.smallFastModel ?? "",
       modelMap: config.claudeCode?.modelMap ?? {},
       systemEnv: config.claudeCode?.systemEnv === true,
+      maxContextTokens: config.claudeCode?.maxContextTokens ?? null,
+      alwaysEnableEffort: config.claudeCode?.alwaysEnableEffort === true,
       fastMode: config.fastMode,
       available,
       aliases,
@@ -679,7 +681,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     });
   }
   if (url.pathname === "/api/claude-code" && req.method === "PUT") {
-    let body: { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; systemEnv?: unknown; fastMode?: unknown };
+    let body: { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; systemEnv?: unknown; fastMode?: unknown; maxContextTokens?: unknown; alwaysEnableEffort?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     const next = { ...(config.claudeCode ?? {}) };
     if (body.enabled !== undefined) {
@@ -689,6 +691,21 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     if (body.systemEnv !== undefined) {
       if (typeof body.systemEnv !== "boolean") return jsonResponse({ error: "systemEnv must be a boolean" }, 400);
       next.systemEnv = body.systemEnv;
+    }
+    if (body.alwaysEnableEffort !== undefined) {
+      if (typeof body.alwaysEnableEffort !== "boolean") return jsonResponse({ error: "alwaysEnableEffort must be a boolean" }, 400);
+      if (body.alwaysEnableEffort) next.alwaysEnableEffort = true;
+      else delete next.alwaysEnableEffort;
+    }
+    if (body.maxContextTokens !== undefined) {
+      // null clears; otherwise a positive integer (devlog 136 B6).
+      if (body.maxContextTokens === null) {
+        delete next.maxContextTokens;
+      } else if (typeof body.maxContextTokens !== "number" || !Number.isInteger(body.maxContextTokens) || body.maxContextTokens <= 0) {
+        return jsonResponse({ error: "maxContextTokens must be a positive integer or null" }, 400);
+      } else {
+        next.maxContextTokens = body.maxContextTokens;
+      }
     }
     if (body.fastMode !== undefined) {
       if (body.fastMode !== true && body.fastMode !== false && body.fastMode !== null) {

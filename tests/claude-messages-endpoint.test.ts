@@ -27,13 +27,19 @@ afterEach(() => {
 });
 
 function mockChatUpstream() {
-  return Bun.serve({
+  return mockChatUpstreamCapturing().server;
+}
+
+function mockChatUpstreamCapturing() {
+  const captured: Array<Record<string, unknown>> = [];
+  const server = Bun.serve({
     port: 0,
     async fetch(req) {
       const url = new URL(req.url);
       if (!url.pathname.endsWith("/chat/completions")) {
         return Response.json({ error: { message: `unexpected path ${url.pathname}` } }, { status: 404 });
       }
+      try { captured.push(await req.json() as Record<string, unknown>); } catch { /* keep streaming */ }
       const frames = [
         `data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: "assistant", content: "Hello" } }] })}\n\n`,
         `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: " from mock" } }] })}\n\n`,
@@ -43,6 +49,7 @@ function mockChatUpstream() {
       return new Response(frames.join(""), { headers: { "Content-Type": "text/event-stream" } });
     },
   });
+  return { server, captured };
 }
 
 function mockConfig(baseUrl: string, claudeCode?: OcxConfig["claudeCode"]): OcxConfig {
@@ -250,5 +257,83 @@ test("claudeCode.enabled=false -> 403 permission_error on both routes", async ()
     }
   } finally {
     server.stop(true);
+  }
+});
+
+async function postMessages(serverUrl: string, body: Record<string, unknown>): Promise<Response> {
+  return fetch(new URL("/v1/messages", serverUrl), {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": "placeholder", "anthropic-version": "2023-06-01" },
+    body: JSON.stringify(body),
+  });
+}
+
+test("effort safety valve: routes with a definitive no-effort ladder get reasoning stripped (devlog 136 B6)", async () => {
+  const { server: upstream, captured } = mockChatUpstreamCapturing();
+  const base = `${upstream.url.toString().replace(/\/$/, "")}/v1`;
+  const config = mockConfig(base);
+  (config.providers.mock as Record<string, unknown>).noReasoningModels = ["test-model"];
+  saveConfig(config);
+  const server = startServer(0);
+  try {
+    const response = await postMessages(server.url.toString(), {
+      model: "mock/test-model",
+      max_tokens: 64,
+      stream: true,
+      thinking: { type: "adaptive" },
+      output_config: { effort: "low" },
+      messages: [{ role: "user", content: "hi" }],
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(captured.length).toBe(1);
+    expect(captured[0]!.reasoning_effort).toBeUndefined();
+  } finally {
+    server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+test("unknown-ladder routes keep the requested effort (no false stripping)", async () => {
+  const { server: upstream, captured } = mockChatUpstreamCapturing();
+  saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
+  const server = startServer(0);
+  try {
+    const response = await postMessages(server.url.toString(), {
+      model: "mock/test-model",
+      max_tokens: 64,
+      stream: true,
+      thinking: { type: "adaptive" },
+      output_config: { effort: "low" },
+      messages: [{ role: "user", content: "hi" }],
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(captured.length).toBe(1);
+    expect(captured[0]!.reasoning_effort).toBe("low");
+  } finally {
+    server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+test("defensive [1m] strip: a leaked context-variant marker still routes to the bare model (devlog 138)", async () => {
+  const { server: upstream, captured } = mockChatUpstreamCapturing();
+  saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
+  const server = startServer(0);
+  try {
+    const response = await postMessages(server.url.toString(), {
+      model: "mock/test-model[1m]",
+      max_tokens: 64,
+      stream: true,
+      messages: [{ role: "user", content: "hi" }],
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(captured.length).toBe(1);
+    expect(captured[0]!.model).toBe("test-model");
+  } finally {
+    server.stop(true);
+    upstream.stop(true);
   }
 });

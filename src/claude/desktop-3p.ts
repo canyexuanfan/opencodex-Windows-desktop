@@ -8,9 +8,43 @@ export interface Desktop3pModelEntry {
   labelOverride: string;
   anthropicFamilyTier: "opus";
   isFamilyDefault?: boolean;
+  /**
+   * Desktop's documented 1M-context capability assertion. Set ONLY from an
+   * authoritative routed contextWindow >= 1M — never guessed (devlog 136 B5).
+   */
+  supports1m?: true;
 }
 
-export type Desktop3pConfigMode = "discovery" | "static";
+/**
+ * static (default, Pro-verified devlog 138): pinned inferenceModels with
+ * modelDiscoveryEnabled:false — a static list OVERRIDES discovery (no merge), so
+ * this is the deterministic shape. hybrid keeps discovery:true alongside the list
+ * (claude-code-router's version-defensive pattern). discovery: /v1/models only.
+ */
+export type Desktop3pConfigMode = "hybrid" | "discovery" | "static";
+
+export interface Desktop3pRoutedModel {
+  provider: string;
+  id: string;
+  /** Authoritative context window (CatalogModel.contextWindow); optional. */
+  contextWindow?: number;
+}
+
+const SUPPORTS_1M_THRESHOLD = 1_000_000;
+
+/** CLI arg parsing for `ocx claude desktop` mode flags (mutually exclusive). */
+export function parseDesktop3pModeArgs(flags: string[]): { mode: Desktop3pConfigMode } | { error: string } {
+  const known = new Map<string, Desktop3pConfigMode>([
+    ["--static", "static"],
+    ["--hybrid", "hybrid"],
+    ["--discovery-only", "discovery"],
+  ]);
+  const unknown = flags.filter(a => !known.has(a));
+  if (unknown.length > 0) return { error: `알 수 없는 옵션: ${unknown.join(" ")} (지원: --static, --hybrid, --discovery-only)` };
+  const picked = [...new Set(flags.map(a => known.get(a)!))];
+  if (picked.length > 1) return { error: "모드 옵션은 하나만 쓸 수 있습니다 (--static | --hybrid | --discovery-only)." };
+  return { mode: picked[0] ?? "static" };
+}
 
 interface Desktop3pMetadataEntry {
   id: string;
@@ -67,18 +101,21 @@ function displayModelId(modelId: string): string {
 
 function collectDesktop3pModels(
   nativeSlugs: string[],
-  routedModels: Array<{ provider: string; id: string }>,
+  routedModels: Array<Desktop3pRoutedModel>,
 ): { models: Desktop3pModelEntry[]; registry: Map<string, string> } {
   const registry = new Map<string, string>();
   const models: Desktop3pModelEntry[] = [];
-  const candidates = [
+  const candidates: Desktop3pRoutedModel[] = [
     ...nativeSlugs.map(id => ({ provider: "native", id })),
     ...routedModels,
   ];
 
-  for (const { provider, id } of candidates) {
+  for (const { provider, id, contextWindow } of candidates) {
     const route = `${provider}/${id}`;
     const alias = desktop3pAlias(provider, id);
+    const supports1m = typeof contextWindow === "number" && contextWindow >= SUPPORTS_1M_THRESHOLD
+      ? { supports1m: true as const }
+      : {};
     if (alias === id) {
       // Real Anthropic model: keep it OUT of the decode registry — registering it would
       // make resolveInboundModel() non-identity and kill the sk-ant native passthrough
@@ -87,6 +124,7 @@ function collectDesktop3pModels(
         name: alias,
         labelOverride: `${displayModelId(id)} (${provider})`,
         anthropicFamilyTier: "opus",
+        ...supports1m,
       });
       continue;
     }
@@ -104,6 +142,7 @@ function collectDesktop3pModels(
       name: alias,
       labelOverride: `${displayModelId(id)} (${provider})`,
       anthropicFamilyTier: "opus",
+      ...supports1m,
     });
   }
 
@@ -114,7 +153,7 @@ function collectDesktop3pModels(
 /** Build and install the registry used to decode Desktop aliases. */
 export function buildDesktop3pRegistry(
   nativeSlugs: string[],
-  routedModels: Array<{ provider: string; id: string }>,
+  routedModels: Array<Desktop3pRoutedModel>,
 ): Map<string, string> {
   const { registry } = collectDesktop3pModels(nativeSlugs, routedModels);
   desktop3pRegistry = registry;
@@ -124,7 +163,7 @@ export function buildDesktop3pRegistry(
 /** Generate Claude Desktop 3P model entries from the proxy's available models. */
 export function generateDesktop3pModels(
   nativeSlugs: string[],
-  routedModels: Array<{ provider: string; id: string }>,
+  routedModels: Array<Desktop3pRoutedModel>,
 ): Desktop3pModelEntry[] {
   const { models, registry } = collectDesktop3pModels(nativeSlugs, routedModels);
   desktop3pRegistry = registry;
@@ -139,18 +178,17 @@ export function resolveDesktop3pAlias(alias: string): string | null {
 /**
  * Generate the complete Claude Desktop 3P gateway config.
  *
- * Default mode is "discovery": Desktop populates its picker from GET /v1/models,
- * which is the ONLY channel that can carry per-model `capabilities` (effort ladder,
- * thinking types) — the static `inferenceModels` schema has no capability fields
- * (devlog 131). "static" keeps the old pinned list (anthropicFamilyTier/isFamilyDefault)
- * for users who need tier aliases more than the effort UI.
+ * Default mode is "static" (Pro-verified, devlog 138): the static list is the ONLY
+ * channel for supports1m/tier pins and it overrides discovery anyway (no merge), so
+ * discovery stays off for determinism. supports1m makes Desktop offer a separate 1M
+ * row; selecting it sends the bare id + `anthropic-beta: context-1m-2025-08-07`.
  */
 export function generateDesktop3pConfig(
   port: number,
   nativeSlugs: string[],
-  routedModels: Array<{ provider: string; id: string }>,
+  routedModels: Array<Desktop3pRoutedModel>,
   apiKey = "ocx",
-  mode: Desktop3pConfigMode = "discovery",
+  mode: Desktop3pConfigMode = "static",
 ): object {
   const base = {
     inferenceProvider: "gateway",
@@ -165,7 +203,7 @@ export function generateDesktop3pConfig(
   }
   return {
     ...base,
-    modelDiscoveryEnabled: false,
+    modelDiscoveryEnabled: mode === "hybrid",
     inferenceModels: generateDesktop3pModels(nativeSlugs, routedModels),
   };
 }
@@ -181,9 +219,9 @@ function parseMetadata(path: string): Desktop3pMetadata {
 export function writeDesktop3pConfig(
   port: number,
   nativeSlugs: string[],
-  routedModels: Array<{ provider: string; id: string }>,
+  routedModels: Array<Desktop3pRoutedModel>,
   apiKey?: string,
-  mode: Desktop3pConfigMode = "discovery",
+  mode: Desktop3pConfigMode = "static",
 ): { written: boolean; path: string; reason?: string } {
   const libraryPath = join(homedir(), "Library", "Application Support", "Claude-3p", "configLibrary");
   const metadataPath = join(libraryPath, "_meta.json");

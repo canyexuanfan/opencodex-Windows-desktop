@@ -24,6 +24,10 @@ function isRec(v: unknown): v is Rec {
 
 /** Alias first, then modelMap: exact id, then date-suffix-stripped (`-\d{8}$`), else passthrough. */
 export function resolveInboundModel(model: string, cc?: OcxClaudeCodeConfig): string {
+  // Defensive: Desktop/CLI strip the [1m] context-variant marker client-side, but a
+  // leaking build must not break alias decode (devlog 138 — the 1M signal is the
+  // anthropic-beta header, never the id).
+  if (model.endsWith("[1m]")) model = model.slice(0, -4);
   const aliased = resolveAlias(model);
   if (aliased) return aliased;
   // Desktop 3P aliases: claude-opus-4-{code} → provider/model route key

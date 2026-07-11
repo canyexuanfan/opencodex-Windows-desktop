@@ -37,6 +37,45 @@ describe("ocx claude env assembly", () => {
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe("sk-ocx-123");
   });
 
+  test("lever env defaults OFF: no effort forcing, no context override (devlog 136 B6)", () => {
+    const env = buildClaudeEnv(cfg({ claudeCode: {} }), 10100, {});
+    expect(env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT).toBeUndefined();
+    expect(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBeUndefined();
+    expect(env.DISABLE_COMPACT).toBeUndefined();
+  });
+
+  test("opt-in levers: alwaysEnableEffort=1, maxContextTokens injects the official pair", () => {
+    const env = buildClaudeEnv(cfg({
+      claudeCode: { alwaysEnableEffort: true, maxContextTokens: 1_000_000 },
+    }), 10100, {});
+    expect(env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT).toBe("1");
+    expect(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBe("1000000");
+    // MAX_CONTEXT_TOKENS alone is ignored for recognized claude-shaped ids; the
+    // official pair requires DISABLE_COMPACT (exact name, no CLAUDE_CODE_ prefix).
+    expect(env.DISABLE_COMPACT).toBe("1");
+  });
+
+  test("user-exported lever values win over config levers", () => {
+    const env = buildClaudeEnv(cfg({
+      claudeCode: { alwaysEnableEffort: true, maxContextTokens: 1_000_000 },
+    }), 10100, {
+      CLAUDE_CODE_MAX_CONTEXT_TOKENS: "500000",
+      DISABLE_COMPACT: "0",
+      CLAUDE_CODE_ALWAYS_ENABLE_EFFORT: "0",
+    });
+    expect(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBe("500000");
+    expect(env.DISABLE_COMPACT).toBe("0");
+    expect(env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT).toBe("0");
+  });
+
+  test("invalid maxContextTokens values inject nothing", () => {
+    for (const bad of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const env = buildClaudeEnv(cfg({ claudeCode: { maxContextTokens: bad } }), 10100, {});
+      expect(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBeUndefined();
+      expect(env.DISABLE_COMPACT).toBeUndefined();
+    }
+  });
+
   test("user-exported env always wins; unset slots stay unset", () => {
     const env = buildClaudeEnv(cfg(), 10100, {
       ANTHROPIC_BASE_URL: "http://my-own-gateway:9",
