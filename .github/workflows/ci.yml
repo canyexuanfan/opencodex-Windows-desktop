@@ -65,7 +65,7 @@ jobs:
         run: bun x tsc --noEmit
 
       - name: Test
-        run: bun test tests
+        run: bun test --isolate tests
 
       - name: Privacy scan
         run: bun run privacy:scan

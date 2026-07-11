@@ -237,7 +237,7 @@ await assertUnusedReleaseVersion(packageName, version);
 console.log("→ typecheck");
 await $`bun x tsc --noEmit`;
 console.log("→ test suite");
-await $`bun test tests`;
+await $`bun test --isolate tests`;
 console.log("→ privacy scan");
 await $`bun run privacy:scan`;
 
