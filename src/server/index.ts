@@ -120,6 +120,7 @@ export { disableResponsesRequestTimeout, linkAbortSignal } from "./responses";
 import { handleClaudeCountTokens, handleClaudeMessages } from "./claude-messages";
 import { anthropicErrorResponse } from "../claude/outbound";
 import { aliasForNative, aliasForRoute } from "../claude/alias";
+import { buildDesktop3pRegistry } from "../claude/desktop-3p";
 import { handleImages } from "./images";
 import { handleSearch } from "./search";
 import { fetchAllModels, handleManagementAPI, VERSION } from "./management-api";
@@ -294,6 +295,11 @@ export function startServer(port?: number) {
             const id = aliasForRoute(m.provider, m.id);
             if (id) data.push({ id, display_name: `${m.id} (${m.provider})` });
           }
+          // Build Desktop 3P registry so inbound alias resolution works for subsequent requests.
+          buildDesktop3pRegistry(
+            [...visibleNativeSlugs(config)],
+            goOrdered.map(m => ({ provider: m.provider, id: m.id })),
+          );
           return jsonResponse({ data }, 200, req, config);
         }
         if (url.searchParams.has("client_version")) {

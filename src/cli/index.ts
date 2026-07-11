@@ -28,6 +28,7 @@ import { stopProxy } from "../lib/process-control";
 import { serviceCommand, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "../service";
 import { drainAndShutdown, startServer } from "../server";
 import { injectSystemEnv, revertSystemEnv } from "../server/system-env";
+import { buildDesktop3pRegistry } from "../claude/desktop-3p";
 import { installShellHook, uninstallShellHook } from "../server/system-env";
 import { startTokenGuardian } from "../oauth/token-guardian";
 import { startHistoryMigrationGuardian } from "../codex/history-migration-guardian";
@@ -203,6 +204,16 @@ async function handleStart(options: { block?: boolean } = {}) {
 
   await maybeShowStarPrompt(); // once-only [Y/n] GitHub-star prompt on first interactive start
   await syncModelsToCodex(port).catch(() => {});
+  // Build Desktop 3P alias registry so inbound claude-opus-4-{code} aliases decode correctly.
+  try {
+    const { fetchAllModels } = await import("../server/management-api");
+    const { visibleNativeSlugs, filterCatalogVisibleModels } = await import("../codex/catalog");
+    const models = filterCatalogVisibleModels(await fetchAllModels(config), config);
+    buildDesktop3pRegistry(
+      [...visibleNativeSlugs(config)],
+      models.map(m => ({ provider: m.provider, id: m.id })),
+    );
+  } catch { /* best-effort — registry rebuilds on first /v1/models call */ }
   if (options.block ?? true) {
     setInterval(() => {}, 60_000);
     await new Promise<void>(() => {});
@@ -611,12 +622,13 @@ switch (command) {
     if (args[1] === "desktop") {
       const config = loadConfig();
       const { fetchAllModels } = await import("../server/management-api");
-      const { visibleNativeSlugs } = await import("../codex/catalog");
+      const { visibleNativeSlugs, filterCatalogVisibleModels } = await import("../codex/catalog");
       const { writeDesktop3pConfig } = await import("../claude/desktop-3p");
       const live = await findLiveProxy();
       const port = live?.port ?? config.port ?? 10100;
-      const models = await fetchAllModels(config);
-      const nativeSlugs = visibleNativeSlugs(config);
+      const allModels = await fetchAllModels(config);
+      const models = filterCatalogVisibleModels(allModels, config);
+      const nativeSlugs = [...visibleNativeSlugs(config)];
       const routedModels = models.map(m => ({ provider: m.provider, id: m.id }));
       const result = writeDesktop3pConfig(port, nativeSlugs, routedModels);
       if (result.written) {
