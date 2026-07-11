@@ -96,6 +96,7 @@ npm install -g @bitkyc08/opencodex   # 不要加 --ignore-scripts、--omit=optio
 ## 亮点
 
 - **在 Codex 中使用任意 LLM。** 5 种协议 adapter 覆盖 Anthropic Messages、Google Gemini、Azure、OpenAI Responses 直通，以及所有 OpenAI 兼容 Chat Completions 端点 —— 即开箱即用的 **40+ provider**。
+- **在 Claude Code 中也能使用任意 LLM。** 同一个守护进程提供 Anthropic Messages API（`/v1/messages` + `count_tokens`）：`ocx claude` 启动完全接线的 Claude Code，路由模型通过网关模型发现出现在原生 `/model` 选择器中（`claude-ocx-<provider>--<model>` 别名，Claude Code 2.1.129+）。槽位和模型映射在仪表盘的 Claude 页面配置。
 - **安全地池化 ChatGPT 账户。** 现有 Codex 线程保持在一个账户上，而新会话可以从池中自动挑选使用量更低的账户，并带有配额刷新和非 PII 请求标签。
 - **登录一次，免填 API key。** xAI、Anthropic、Kimi 支持 OAuth，可用现有账户认证，token 自动刷新。也可以转发 `codex login`、粘贴 API key，或使用 `${ENV_VAR}` 引用 —— 随你选择。
 - **Codex 在哪里能用，它就在哪里能用。** 自动注入 Codex CLI、TUI、App 和 SDK。路由模型像原生模型一样出现在 Codex 的模型选择器里。
@@ -209,6 +210,7 @@ ocx status                     # 查看代理是否在运行
 ocx login <xai|anthropic|kimi> # OAuth 登录
 ocx logout <provider>          # 移除已保存的登录
 ocx gui                        # 打开 Web 仪表盘
+ocx claude [args...]           # 启动接入代理的 Claude Code（模型发现已开启）
 ocx codex-shim install         # 运行 codex 时自动启动代理
 ocx service [install|start|stop|status|uninstall]   # 安装/更新/启动后台服务
 ocx update [--tag preview]     # 更新 opencodex；preview 安装保持 @preview

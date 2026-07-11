@@ -634,6 +634,71 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     return jsonResponse({ ok: true, applied: chosen });
   }
 
+  // Claude Code inbound settings (GUI "Claude ON" toggle + Claude page).
+  if (url.pathname === "/api/claude-code" && req.method === "GET") {
+    const models = await fetchAllModels(config);
+    const { listCatalogNativeSlugs } = await import("../codex/catalog");
+    const { aliasForNative, aliasForRoute } = await import("../claude/alias");
+    const disabled = new Set(config.disabledModels ?? []);
+    const available = [
+      ...listCatalogNativeSlugs(),
+      ...models.map(m => `${m.provider}/${m.id}`),
+    ].filter(ns => !disabled.has(ns));
+    const aliases: { id: string; display_name: string }[] = [];
+    for (const slug of listCatalogNativeSlugs()) {
+      const id = aliasForNative(slug);
+      if (id && !disabled.has(slug)) aliases.push({ id, display_name: `${slug} (native)` });
+    }
+    for (const m of models) {
+      if (disabled.has(`${m.provider}/${m.id}`)) continue;
+      const id = aliasForRoute(m.provider, m.id);
+      if (id) aliases.push({ id, display_name: `${m.id} (${m.provider})` });
+    }
+    return jsonResponse({
+      enabled: config.claudeCode?.enabled !== false,
+      model: config.claudeCode?.model ?? "",
+      smallFastModel: config.claudeCode?.smallFastModel ?? "",
+      modelMap: config.claudeCode?.modelMap ?? {},
+      available,
+      aliases,
+      port: config.port,
+    });
+  }
+  if (url.pathname === "/api/claude-code" && req.method === "PUT") {
+    let body: { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown };
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    const next = { ...(config.claudeCode ?? {}) };
+    if (body.enabled !== undefined) {
+      if (typeof body.enabled !== "boolean") return jsonResponse({ error: "enabled must be a boolean" }, 400);
+      next.enabled = body.enabled;
+    }
+    for (const field of ["model", "smallFastModel"] as const) {
+      const value = body[field];
+      if (value === undefined) continue;
+      if (typeof value !== "string") return jsonResponse({ error: `${field} must be a string` }, 400);
+      if (value.trim() === "") delete next[field];
+      else next[field] = value.trim();
+    }
+    if (body.modelMap !== undefined) {
+      if (!body.modelMap || typeof body.modelMap !== "object" || Array.isArray(body.modelMap)) {
+        return jsonResponse({ error: "modelMap must be an object of string->string" }, 400);
+      }
+      const map: Record<string, string> = {};
+      for (const [k, v] of Object.entries(body.modelMap as Record<string, unknown>)) {
+        if (typeof v !== "string" || k.trim() === "" || v.trim() === "") {
+          return jsonResponse({ error: "modelMap entries must be non-empty strings" }, 400);
+        }
+        map[k.trim()] = v.trim();
+      }
+      if (Object.keys(map).length > 0) next.modelMap = map;
+      else delete next.modelMap;
+    }
+    config.claudeCode = next;
+    const { saveConfig: save } = await import("../config");
+    save(config);
+    return jsonResponse({ ok: true, enabled: next.enabled !== false });
+  }
+
   // Per-provider catalog allowlist (issue #52): when a provider has a non-empty selectedModels list,
   // only those ids ship to Codex's catalog / /v1/models. GET returns the CURRENT selection plus the
   // FULL available set per provider (unfiltered — the picker needs everything to choose from).

@@ -8,17 +8,18 @@ import Debug from "./pages/Debug";
 import Usage from "./pages/Usage";
 import CodexAuth from "./pages/CodexAuth";
 import ApiKeys from "./pages/ApiKeys";
-import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconTerminal, IconActivity, IconKey, IconGithub, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower } from "./icons";
+import ClaudeCode from "./pages/ClaudeCode";
+import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconTerminal, IconActivity, IconKey, IconGithub, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle } from "./icons";
 import { useI18n, useT, LOCALES, type Locale, type TKey } from "./i18n";
 import { Select } from "./ui";
 import { installApiAuthFetch } from "./api";
 
 installApiAuthFetch();
 
-type Page = "dashboard" | "providers" | "models" | "subagents" | "logs" | "debug" | "usage" | "codex-auth" | "api";
+type Page = "dashboard" | "providers" | "models" | "subagents" | "logs" | "debug" | "usage" | "codex-auth" | "api" | "claude";
 type Theme = "light" | "dark" | "system";
 
-const VALID_PAGES = new Set<Page>(["dashboard", "providers", "models", "subagents", "logs", "debug", "usage", "codex-auth", "api"]);
+const VALID_PAGES = new Set<Page>(["dashboard", "providers", "models", "subagents", "logs", "debug", "usage", "codex-auth", "api", "claude"]);
 
 function readPageFromHash(): Page {
   const raw = location.hash.replace(/^#\/?/, "");
@@ -38,6 +39,7 @@ const NAV: { id: Page; tkey: TKey; Icon: typeof IconGrid }[] = [
   { id: "usage", tkey: "nav.usage", Icon: IconActivity },
   { id: "codex-auth", tkey: "nav.codexAuth", Icon: IconKey },
   { id: "api", tkey: "nav.api", Icon: IconGlobe },
+  { id: "claude", tkey: "nav.claude", Icon: IconSparkle },
 ];
 
 const THEME_ICON = { light: IconSun, dark: IconMoon, system: IconMonitor } as const;
@@ -96,6 +98,33 @@ export default function App() {
   const displayedVersion = runtimeVersion ?? __APP_VERSION__;
 
   const [stopping, setStopping] = useState(false);
+  // Sidebar "Claude ON" toggle — literal label in every locale (product name).
+  const [claudeEnabled, setClaudeEnabled] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_BASE}/api/claude-code`)
+      .then(res => res.json())
+      .then(d => { if (!cancelled && typeof d.enabled === "boolean") setClaudeEnabled(d.enabled); })
+      .catch(() => { /* toggle stays hidden until the API answers */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  const toggleClaude = async () => {
+    if (claudeEnabled === null) return;
+    const next = !claudeEnabled;
+    setClaudeEnabled(next); // optimistic
+    try {
+      const res = await fetch(`${API_BASE}/api/claude-code`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: next }),
+      });
+      if (!res.ok) setClaudeEnabled(!next);
+    } catch {
+      setClaudeEnabled(!next);
+    }
+  };
   const handleStop = async () => {
     if (!confirm(t("dash.stopConfirm"))) return;
     setStopping(true);
@@ -119,6 +148,13 @@ export default function App() {
           ))}
         </nav>
         <div className="sidebar-foot">
+          {claudeEnabled !== null && (
+            <button type="button" className="theme-toggle" onClick={toggleClaude}
+              aria-pressed={claudeEnabled} aria-label={t("claude.toggleAria")} title={t("claude.toggleAria")}
+              style={claudeEnabled ? { color: "var(--accent)" } : undefined}>
+              <IconSparkle /> <span className="mode">{claudeEnabled ? "Claude ON" : "Claude OFF"}</span>
+            </button>
+          )}
           <div className="lang-toggle">
             <IconGlobe aria-hidden />
             <Select
@@ -155,6 +191,7 @@ export default function App() {
           {page === "usage" && <Usage apiBase={API_BASE} />}
           {page === "codex-auth" && <CodexAuth apiBase={API_BASE} />}
           {page === "api" && <ApiKeys apiBase={API_BASE} />}
+          {page === "claude" && <ClaudeCode apiBase={API_BASE} />}
         </div>
       </main>
     </div>
