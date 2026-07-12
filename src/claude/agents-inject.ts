@@ -189,10 +189,10 @@ export function injectClaudeAgentDefs(config: OcxConfig, windows: Record<string,
   return syncClaudeAgentDefs(buildClaudeAgentDefs(config, windows, configDir), configDir);
 }
 /**
- * Dispatcher directive appended to every ocx-* description: the Agent tool's
- * `model` enum is OPTIONAL but overrides the definition when set — a dispatcher
- * that habitually fills it would break the pinned/inherit routing (live repro:
- * ocx-self dispatched as "fable"). The description is the only per-agent surface
- * the DISPATCHING model reads, so the contract lives here.
+ * Dispatcher directive appended to every ocx-* description. The ocx-route body
+ * directive makes the Agent tool's `model` argument INERT (the proxy overrides
+ * the request model before routing — live-proven), so instead of asking the
+ * dispatcher to omit it (which caused schema-anxiety loops), we hand it a fixed
+ * placeholder: any value works, "sonnet" is the cheap canonical one.
  */
-const NO_MODEL_ARG = "IMPORTANT: invoke WITHOUT the `model` argument — this agent's definition already pins its model; any override breaks the routing.";
+const NO_MODEL_ARG = "NOTE: this agent's real model is pinned by the opencodex proxy — the `model` argument is ignored. Pass model: \"sonnet\" as a placeholder (or omit it); routing is unaffected either way.";

@@ -33,7 +33,7 @@ describe("buildClaudeAgentDefs (devlog 070 + audit 071)", () => {
     expect(byName["ocx-self"]!.model).toBe("claude-ocx-native--gpt-5.6-sol[1m]");
     expect(defs).toHaveLength(3);
     // Dispatcher directive (live repro: model:"fable" override broke inherit).
-    for (const d of defs) expect(d.description).toContain("WITHOUT the `model` argument");
+    for (const d of defs) expect(d.description).toContain("`model` argument is ignored");
   });
 
   test("unset roster seeds the defaults; explicit [] respected; no default model -> no self", () => {
