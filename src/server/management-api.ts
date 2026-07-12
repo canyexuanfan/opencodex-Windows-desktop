@@ -652,7 +652,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   if (url.pathname === "/api/claude-code" && req.method === "GET") {
     const models = await fetchAllModels(config);
     const { listCatalogNativeSlugs } = await import("../codex/catalog");
-    const { desktop3pAlias } = await import("../claude/desktop-3p");
+    const { claudeCodeAlias, claudeCodeNativeAlias } = await import("../claude/alias");
     const { buildClaudeContextWindows, effectiveModelEnv } = await import("../claude/context-windows");
     const { visibleNativeSlugs } = await import("../codex/catalog");
     const disabled = new Set(config.disabledModels ?? []);
@@ -662,11 +662,13 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     ].filter(ns => !disabled.has(ns));
     const aliases: { id: string; display_name: string }[] = [];
     for (const slug of listCatalogNativeSlugs()) {
-      if (!disabled.has(slug)) aliases.push({ id: desktop3pAlias("native", slug), display_name: `${slug} (native)` });
+      // Readable CLI-surface alias with hash fallback (devlog 050 / audit 051 #2) —
+      // the same shared helper the /v1/models ?ids=cli path uses.
+      if (!disabled.has(slug)) aliases.push({ id: claudeCodeNativeAlias(slug), display_name: `${slug} (native)` });
     }
     for (const m of models) {
       if (disabled.has(`${m.provider}/${m.id}`)) continue;
-      aliases.push({ id: desktop3pAlias(m.provider, m.id), display_name: `${m.id} (${m.provider})` });
+      aliases.push({ id: claudeCodeAlias(m.provider, m.id), display_name: `${m.id} (${m.provider})` });
     }
     const contextWindows = buildClaudeContextWindows([...visibleNativeSlugs(config)], models);
     return jsonResponse({

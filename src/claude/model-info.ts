@@ -16,6 +16,7 @@
  *    max_tokens is always null (no authoritative output limit exists proxy-side).
  */
 import { catalogModelEfforts, nativeEffortClamp, nativeOpenAiContextWindow, type CatalogModel } from "../codex/catalog";
+import { claudeCodeAlias, claudeCodeNativeAlias } from "./alias";
 import { desktop3pAlias } from "./desktop-3p";
 import { AUTO_CONTEXT_OFF, shouldMarkOneMillion, type AutoContextMode } from "./context-windows";
 
@@ -92,8 +93,16 @@ function modelInfo(id: string, displayName: string, ladder: readonly string[], i
   };
 }
 
+/**
+ * Which id family the discovery list carries (devlog 050): Claude Code (CLI)
+ * gets readable `claude-ocx-*` ids; Claude Desktop keeps the hashed
+ * `claude-opus-4-8-<code>` family its 3P config was written with. Both families
+ * decode in resolveInboundModel regardless of the style served here.
+ */
+export type AnthropicIdStyle = "desktop3p" | "readable";
+
 /** Build the full anthropic-flavor discovery list (ids are Desktop 3P aliases). */
-export function buildAnthropicModelInfos(nativeSlugs: readonly string[], routedModels: readonly CatalogModel[], auto: AutoContextMode = AUTO_CONTEXT_OFF): AnthropicModelInfo[] {
+export function buildAnthropicModelInfos(nativeSlugs: readonly string[], routedModels: readonly CatalogModel[], auto: AutoContextMode = AUTO_CONTEXT_OFF, idStyle: AnthropicIdStyle = "desktop3p"): AnthropicModelInfo[] {
   const out: AnthropicModelInfo[] = [];
   const seen = new Set<string>();
   // [1m] picker variant (devlog 260712 B1): Claude Code accounts exactly 1M for ids
@@ -113,7 +122,7 @@ export function buildAnthropicModelInfos(nativeSlugs: readonly string[], routedM
     out.push({ ...base, id, display_name: `${base.display_name} · ${label}`, max_input_tokens: Math.min(window, ONE_MILLION) });
   };
   for (const slug of nativeSlugs) {
-    const id = desktop3pAlias("native", slug);
+    const id = idStyle === "readable" ? claudeCodeNativeAlias(slug) : desktop3pAlias("native", slug);
     if (seen.has(id)) continue;
     seen.add(id);
     const info = modelInfo(id, `${slug} (native)`, nativeEffectiveLadder(slug), true);
@@ -121,7 +130,7 @@ export function buildAnthropicModelInfos(nativeSlugs: readonly string[], routedM
     push1mVariant(info, nativeOpenAiContextWindow(slug));
   }
   for (const m of routedModels) {
-    const id = desktop3pAlias(m.provider, m.id);
+    const id = idStyle === "readable" ? claudeCodeAlias(m.provider, m.id) : desktop3pAlias(m.provider, m.id);
     if (seen.has(id)) continue;
     seen.add(id);
     const ladder = Array.isArray(m.reasoningEfforts) ? m.reasoningEfforts : [];

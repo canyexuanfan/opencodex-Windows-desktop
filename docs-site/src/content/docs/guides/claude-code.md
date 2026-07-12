@@ -51,16 +51,25 @@ Disable with `claudeCode.nativePassthrough: false`; point elsewhere with `claude
 Claude Code 2.1.129+ can discover gateway models: it calls `GET /v1/models?limit=1000` and lists
 entries in the native `/model` picker, labeled "From gateway". Because the picker only accepts ids
 beginning with `claude` or `anthropic`, opencodex exposes routed models as stable, reversible
-aliases:
+aliases — a different family per surface:
 
 ```
-claude-opus-4-8-<code>             3-char code derived from the route (e.g. claude-opus-4-8-ncb)
+claude-ocx-<provider>--<model>     Claude Code CLI (readable, e.g. claude-ocx-native--gpt-5.6-sol)
+claude-opus-4-8-<code>             Claude Desktop 3P (hashed, e.g. claude-opus-4-8-ncb)
 ```
+
+The proxy picks the family per request: `?ids=cli|desktop` wins, otherwise the Claude Code
+discovery user-agent (`claude-code/<version>`) gets the readable form and every other client keeps
+the hashed Desktop family. Both families (plus bare routed ids via `--model gpt-5.6-sol`) decode
+forever, so a model saved in `settings.json` under either form keeps working — after this change an
+old hashed selection just shows as a custom entry until you re-pick it from the refreshed list.
+Routes the readable form cannot express (provider names containing `--` or `/`) fall back to the
+hashed alias so no model disappears.
 
 Each entry carries an honest display name such as `gemini-3-pro (gemini)`, plus full model
 capabilities (reasoning-effort ladder, thinking types) in the official ModelInfo shape so Claude
 Desktop's third-party gateway mode can offer its effort selector. Real Anthropic models keep their
-canonical ids. Legacy `claude-ocx-<provider>--<model>` ids from older configs still resolve.
+canonical ids on both surfaces.
 Models with an authoritative 1M context window get an extra `…[1m]` picker row: selecting it makes
 Claude Code account a full 1M context for that model (auto-compaction stays on) — the proxy strips
 the marker before routing.

@@ -15,6 +15,8 @@
  *    the bare slug; a real provider named "native" is therefore never aliased.
  */
 
+import { desktop3pAlias } from "./desktop-3p";
+
 export const CLAUDE_ALIAS_PREFIX = "claude-ocx-";
 const NATIVE_PSEUDO_PROVIDER = "native";
 
@@ -44,4 +46,24 @@ export function resolveAlias(id: string): string | null {
   const model = rest.slice(sep + 2);
   if (!model) return null;
   return provider === NATIVE_PSEUDO_PROVIDER ? model : `${provider}/${model}`;
+}
+
+/**
+ * Claude Code (CLI) surface alias — devlog 050 + audit 051 #2.
+ *
+ * The readable `claude-ocx-*` form when representable; otherwise the desktop-3p
+ * hash so the model still appears in discovery (collisions follow the same
+ * first-wins policy as the desktop registry — audit 051 #1). Real Anthropic
+ * models pass through unchanged (they must keep hitting the sk-ant passthrough).
+ * Both families keep decoding forever in resolveInboundModel, so ids persisted
+ * in Claude Code's settings.json never break when the surface style changes.
+ */
+export function claudeCodeAlias(provider: string, modelId: string): string {
+  if (provider === "anthropic" && modelId.startsWith("claude-")) return modelId;
+  return aliasForRoute(provider, modelId) ?? desktop3pAlias(provider, modelId);
+}
+
+/** Claude Code (CLI) surface alias for a native OpenAI slug. */
+export function claudeCodeNativeAlias(slug: string): string {
+  return aliasForNative(slug) ?? desktop3pAlias("native", slug);
 }

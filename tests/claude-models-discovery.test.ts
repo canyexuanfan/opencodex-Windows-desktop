@@ -98,6 +98,35 @@ test("?flavor=anthropic works without the header; disabled -> empty data", async
   }
 });
 
+test("per-surface id style: ?ids= wins, claude-code UA gets readable, unknown UA stays hashed (devlog 050)", async () => {
+  saveConfig(configWithStaticModels());
+  const server = startServer(0);
+  try {
+    const readable = "claude-ocx-mock--test-model";
+    // 1) explicit ?ids=cli -> readable
+    let json = await fetch(new URL("/v1/models?flavor=anthropic&ids=cli", server.url)).then(r => r.json()) as { data: { id: string }[] };
+    expect(json.data.some(m => m.id === readable)).toBe(true);
+    // 2) claude-code discovery UA -> readable
+    json = await fetch(new URL("/v1/models?flavor=anthropic", server.url), {
+      headers: { "user-agent": "claude-code/2.1.207 (external, cli)" },
+    }).then(r => r.json()) as { data: { id: string }[] };
+    expect(json.data.some(m => m.id === readable)).toBe(true);
+    // 3) unknown UA -> hashed desktop family (safe default)
+    json = await fetch(new URL("/v1/models?flavor=anthropic", server.url), {
+      headers: { "user-agent": "Claude/1.0 (Macintosh)" },
+    }).then(r => r.json()) as { data: { id: string }[] };
+    expect(json.data.some(m => m.id === readable)).toBe(false);
+    expect(json.data.some(m => /^claude-opus-4-8-[a-z][0-9a-z]{2}$/.test(m.id))).toBe(true);
+    // 4) query beats UA: ?ids=desktop + claude-code UA -> hashed
+    json = await fetch(new URL("/v1/models?flavor=anthropic&ids=desktop", server.url), {
+      headers: { "user-agent": "claude-code/2.1.207 (external, cli)" },
+    }).then(r => r.json()) as { data: { id: string }[] };
+    expect(json.data.some(m => m.id === readable)).toBe(false);
+  } finally {
+    server.stop(true);
+  }
+});
+
 test("OpenAI list shape and Codex catalog shape stay unchanged", async () => {
   saveConfig(configWithStaticModels());
   const server = startServer(0);

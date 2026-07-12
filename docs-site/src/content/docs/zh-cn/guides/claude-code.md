@@ -47,11 +47,18 @@ ocx claude
 
 Claude Code 2.1.129+ 可以发现网关模型：它调用 `GET /v1/models?limit=1000`，并在原生 `/model`
 选择器中以 "From gateway" 标签列出。由于选择器只接受以 `claude` 或 `anthropic` 开头的 id，
-opencodex 将路由模型暴露为稳定、可逆的别名：
+opencodex 将路由模型暴露为稳定、可逆的别名——每个界面使用不同的家族：
 
 ```
-claude-opus-4-8-<code>             由路由派生的 3 字符代码（例：claude-opus-4-8-ncb）
+claude-ocx-<provider>--<model>     Claude Code CLI（可读形式，例：claude-ocx-native--gpt-5.6-sol）
+claude-opus-4-8-<code>             Claude Desktop 3P（哈希形式，例：claude-opus-4-8-ncb）
 ```
+
+家族按请求决定：`?ids=cli|desktop` 优先；否则 Claude Code 的发现 user-agent
+（`claude-code/<版本>`）获得可读形式，其他客户端保持哈希形式。两个家族（以及
+`--model gpt-5.6-sol` 这样的裸 id）都会永久解码，因此 `settings.json` 中无论保存哪种形式都
+继续工作——本次变更后，旧的哈希选择在重新挑选前只会显示为自定义条目。可读形式无法表达的
+路由（提供商名含 `--` 或 `/`）会回退为哈希别名，模型不会消失。
 
 每个条目带有诚实的显示名（如 `gemini-3-pro (gemini)`），并以官方 ModelInfo 形态附带模型能力
 信息（推理强度梯度、thinking 类型），使 Claude Desktop 的第三方网关模式能够启用推理强度选择

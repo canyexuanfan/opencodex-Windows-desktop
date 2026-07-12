@@ -50,11 +50,20 @@ thinking 서명, 프롬프트 캐싱, 과금 정체성이 전부 네이티브로
 
 Claude Code 2.1.129+는 게이트웨이 모델을 디스커버리합니다: `GET /v1/models?limit=1000`을 호출해
 네이티브 `/model` 피커에 "From gateway" 라벨로 표시합니다. 피커는 `claude` 또는 `anthropic`으로
-시작하는 id만 받아들이므로, opencodex는 라우팅 모델을 안정적이고 가역적인 별칭으로 노출합니다:
+시작하는 id만 받아들이므로, opencodex는 라우팅 모델을 안정적이고 가역적인 별칭으로 노출합니다 —
+표면마다 다른 계열을 씁니다:
 
 ```
-claude-opus-4-8-<code>             라우트에서 유도한 3자 코드 (예: claude-opus-4-8-ncb)
+claude-ocx-<provider>--<model>     Claude Code CLI (가독형, 예: claude-ocx-native--gpt-5.6-sol)
+claude-opus-4-8-<code>             Claude Desktop 3P (해시형, 예: claude-opus-4-8-ncb)
 ```
+
+계열은 요청마다 정해집니다: `?ids=cli|desktop`이 최우선이고, 없으면 Claude Code 디스커버리
+user-agent(`claude-code/<버전>`)는 가독형을, 그 외 클라이언트는 해시형을 받습니다. 두 계열
+모두(그리고 `--model gpt-5.6-sol` 같은 bare id도) 영구히 디코드되므로 `settings.json`에 어떤
+형태로 저장돼 있든 계속 동작합니다 — 이번 변경 후 예전 해시형 선택값은 목록에서 다시
+고르기 전까지 커스텀 항목으로 보일 뿐입니다. 가독형으로 표현 불가한 라우트(프로바이더
+이름에 `--`나 `/` 포함)는 해시형으로 폴백해 모델이 사라지지 않습니다.
 
 각 항목은 `gemini-3-pro (gemini)` 같은 정직한 표시 이름과 함께, 공식 ModelInfo 형태의 모델
 능력 정보(추론 강도 사다리, thinking 타입)를 실어 보냅니다 — Claude Desktop의 서드파티

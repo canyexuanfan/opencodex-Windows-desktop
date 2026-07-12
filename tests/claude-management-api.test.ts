@@ -44,8 +44,8 @@ test("GET /api/claude-code returns defaults + available + aliases", async () => 
     expect(d.smallFastModel).toBe("");
     expect(d.modelMap).toEqual({});
     expect(d.available).toContain("mock/test-model");
-    const { desktop3pAlias } = await import("../src/claude/desktop-3p");
-    expect(d.aliases.some((a: { id: string }) => a.id === desktop3pAlias("mock", "test-model"))).toBe(true);
+    // Aliases preview uses the readable CLI-surface family (devlog 050 / audit 051 #2).
+    expect(d.aliases.some((a: { id: string }) => a.id === "claude-ocx-mock--test-model")).toBe(true);
     expect(typeof d.port).toBe("number");
   } finally {
     server.stop(true);

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { aliasForNative, aliasForRoute, CLAUDE_ALIAS_PREFIX, resolveAlias } from "../src/claude/alias";
+import { aliasForNative, aliasForRoute, CLAUDE_ALIAS_PREFIX, claudeCodeAlias, claudeCodeNativeAlias, resolveAlias } from "../src/claude/alias";
 import { resolveInboundModel } from "../src/claude/inbound";
 
 describe("claude discovery aliases", () => {
@@ -61,5 +61,37 @@ describe("claude discovery aliases", () => {
   test("inbound resolution prefers alias over modelMap, before date-strip", () => {
     const cc = { modelMap: { [`${CLAUDE_ALIAS_PREFIX}gemini--gemini-3-pro`]: "should-not-win" } };
     expect(resolveInboundModel(`${CLAUDE_ALIAS_PREFIX}gemini--gemini-3-pro`, cc)).toBe("gemini/gemini-3-pro");
+  });
+});
+
+describe("claudeCodeAlias — readable-or-hash shared helper (devlog 050 / audit 051 #2)", () => {
+  test("readable form when representable; both forms decode to the same route", () => {
+    expect(claudeCodeAlias("gemini", "gemini-3-pro")).toBe("claude-ocx-gemini--gemini-3-pro");
+    expect(claudeCodeNativeAlias("gpt-5.6-sol")).toBe("claude-ocx-native--gpt-5.6-sol");
+    expect(resolveInboundModel(claudeCodeAlias("gemini", "gemini-3-pro"), undefined)).toBe("gemini/gemini-3-pro");
+    expect(resolveInboundModel(claudeCodeNativeAlias("gpt-5.6-sol"), undefined)).toBe("gpt-5.6-sol");
+    // Readable id with the [1m] context marker (picker variant row) decodes too —
+    // strip happens before alias resolution, case-insensitively (audit 051 #4).
+    expect(resolveInboundModel("claude-ocx-native--gpt-5.6-sol[1m]", undefined)).toBe("gpt-5.6-sol");
+    expect(resolveInboundModel("claude-ocx-gemini--gemini-3-pro[1M]", undefined)).toBe("gemini/gemini-3-pro");
+  });
+
+  test("anthropic canonical ids pass through unchanged (native passthrough preserved)", () => {
+    expect(claudeCodeAlias("anthropic", "claude-opus-4-8")).toBe("claude-opus-4-8");
+    expect(claudeCodeAlias("anthropic", "claude-fable-5")).toBe("claude-fable-5");
+  });
+
+  test("unrepresentable shapes fall back to the desktop-3p hash — model never disappears", () => {
+    // provider literally "native", provider with separators, model id with "/",
+    // native slug with "--" (audit 051 #2 null-case coverage).
+    for (const id of [
+      claudeCodeAlias("native", "gpt-5.6-sol"),
+      claudeCodeAlias("weird--provider", "m1"),
+      claudeCodeAlias("a/b", "m2"),
+      claudeCodeAlias("mock", "path/model"),
+      claudeCodeNativeAlias("slug--with-sep"),
+    ]) {
+      expect(id).toMatch(/^claude-opus-4-8-[a-z][0-9a-z]{2}$/);
+    }
   });
 });

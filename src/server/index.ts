@@ -290,7 +290,17 @@ export function startServer(port?: number) {
           if (config.claudeCode?.enabled === false) return jsonResponse({ data: [] }, 200, req, config);
           const { buildAnthropicModelInfos } = await import("../claude/model-info");
           const { resolveAutoContext } = await import("../claude/context-windows");
-          const data = buildAnthropicModelInfos([...visibleNativeSlugs(config)], goOrdered, resolveAutoContext(config.claudeCode));
+          // Per-surface id family (devlog 050): explicit ?ids= wins; otherwise the
+          // Claude Code CLI discovery UA (`claude-code/<version>`, binary n_()) gets
+          // readable claude-ocx ids and every other client (Desktop 3P) keeps the
+          // hashed family its config was written with. Unknown UA -> hashed (safe).
+          const idsParam = url.searchParams.get("ids");
+          const idStyle = idsParam === "cli"
+            ? "readable" as const
+            : idsParam === "desktop"
+              ? "desktop3p" as const
+              : (/^claude-code\//i.test(req.headers.get("user-agent") ?? "") ? "readable" as const : "desktop3p" as const);
+          const data = buildAnthropicModelInfos([...visibleNativeSlugs(config)], goOrdered, resolveAutoContext(config.claudeCode), idStyle);
           // Build Desktop 3P registry so inbound alias resolution works for subsequent requests.
           buildDesktop3pRegistry(
             [...visibleNativeSlugs(config)],

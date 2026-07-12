@@ -136,6 +136,9 @@ describe("auto-context (devlog 260712 020 + audit 021)", () => {
     const windows = buildClaudeContextWindows(["gpt-5.6-sol"], []);
     const env = effectiveModelEnv({ model: "gpt-5.6-sol" }, windows);
     expect(env.ANTHROPIC_MODEL).toBe("gpt-5.6-sol[1m]");
+    // Readable-alias slot value gets the same marking (audit 051 #4).
+    const readable = effectiveModelEnv({ model: "claude-ocx-native--gpt-5.6-sol" }, windows);
+    expect(readable.ANTHROPIC_MODEL).toBe("claude-ocx-native--gpt-5.6-sol[1m]");
     // Explicit off: no marking below 1M.
     const off = effectiveModelEnv({ model: "gpt-5.6-sol", autoContext: false }, windows);
     expect(off.ANTHROPIC_MODEL).toBe("gpt-5.6-sol");

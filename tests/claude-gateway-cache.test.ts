@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeConfigDir, writeGatewayModelCache } from "../src/claude/gateway-cache";
+import { claudeConfigDir, refreshGatewayModelCacheFromProxy, writeGatewayModelCache } from "../src/claude/gateway-cache";
 
 const dirs: string[] = [];
 function tempDir(): string {
@@ -49,6 +49,26 @@ describe("Claude Code gateway-model cache pre-write (devlog 260712 030)", () => 
     } finally {
       if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
       else process.env.CLAUDE_CONFIG_DIR = prev;
+    }
+  });
+
+  test("proxy refresh pins the readable id family with ?ids=cli (audit 051 #5)", async () => {
+    const dir = tempDir();
+    const originalFetch = globalThis.fetch;
+    let requestedUrl = "";
+    try {
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        requestedUrl = String(input);
+        return new Response(JSON.stringify({ data: [{ id: "claude-ocx-native--gpt-5.6-sol", display_name: "gpt-5.6-sol (native)" }] }), {
+          headers: { "content-type": "application/json" },
+        });
+      }) as typeof fetch;
+      const path = await refreshGatewayModelCacheFromProxy(10100, 1000, dir);
+      expect(requestedUrl).toContain("ids=cli");
+      const body = JSON.parse(readFileSync(path!, "utf8"));
+      expect(body.models[0].id).toBe("claude-ocx-native--gpt-5.6-sol");
+    } finally {
+      globalThis.fetch = originalFetch;
     }
   });
 });
