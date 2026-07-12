@@ -341,17 +341,6 @@ export async function handleClaudeMessages(
     headers,
     body: JSON.stringify(internalBody),
   });
-  // TEMP diagnostic (devlog 260712 040): marker-file-gated dump of the translated
-  // internal body to size-profile the 170k stable-prefix inflation. Enable with
-  // `mkdir /tmp/ocx-claude-dump`. Remove after diagnosis.
-  try {
-    const { existsSync, writeFileSync } = await import("node:fs");
-    if (existsSync("/tmp/ocx-claude-dump")) {
-      const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      writeFileSync(`/tmp/ocx-claude-dump/claude-internal-${stamp}.json`, JSON.stringify(internalBody));
-      writeFileSync(`/tmp/ocx-claude-dump/claude-anthropic-${stamp}.json`, JSON.stringify(anthropicBody));
-    }
-  } catch { /* diagnostic only */ }
 
   // Request-log wiring mirrors the /v1/responses route: native passthrough finalizes
   // via the terminal callbacks; routed streams get the Responses-vocabulary log tap
