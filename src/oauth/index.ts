@@ -12,6 +12,7 @@ import { loginAntigravity, refreshAntigravityToken } from "./google-antigravity"
 import { loginCursor, refreshCursorToken } from "./cursor";
 import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers/derive";
 import { effectiveGoogleMode } from "../providers/registry";
+import { resolveProviderTransport } from "../providers/xai-transport";
 
 const REFRESH_SKEW_MS = 60_000;
 const tokenRefreshes = new Map<string, Promise<string>>();
@@ -254,27 +255,28 @@ export async function resolveModelsAuthToken(name: string, prov: OcxProviderConf
  * response.
  */
 export function buildModelsRequest(prov: OcxProviderConfig, apiKey: string | undefined, providerName = ""): { url: string; headers: Record<string, string> } {
-  const headers: Record<string, string> = { ...(prov.headers ?? {}) };
-  if (effectiveGoogleMode(providerName, prov) === "ai-studio") {
+  const effectiveProvider = resolveProviderTransport(providerName, prov);
+  const headers: Record<string, string> = { ...(effectiveProvider.headers ?? {}) };
+  if (effectiveGoogleMode(providerName, effectiveProvider) === "ai-studio") {
     // Generative Language API: API key goes in x-goog-api-key (never Authorization: Bearer),
     // models live under /v1beta (v1 misses preview models), and pageSize maxes at 1000 —
     // enough to list everything without a pageToken loop. Vertex/antigravity keep the
     // generic branch (they fall back to their static model lists).
     if (apiKey) headers["x-goog-api-key"] = apiKey;
-    return { url: `${prov.baseUrl}/v1beta/models?pageSize=1000`, headers };
+    return { url: `${effectiveProvider.baseUrl}/v1beta/models?pageSize=1000`, headers };
   }
-  if (prov.adapter === "anthropic") {
+  if (effectiveProvider.adapter === "anthropic") {
     headers["anthropic-version"] = "2023-06-01";
-    if (prov.authMode === "oauth") {
+    if (effectiveProvider.authMode === "oauth") {
       headers["anthropic-beta"] = ANTHROPIC_OAUTH_BETA;
       if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
     } else if (apiKey) {
       headers["x-api-key"] = apiKey;
     }
-    return { url: `${prov.baseUrl}/v1/models?limit=1000`, headers };
+    return { url: `${effectiveProvider.baseUrl}/v1/models?limit=1000`, headers };
   }
   if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-  return { url: `${prov.baseUrl}/models`, headers };
+  return { url: `${effectiveProvider.baseUrl}/models`, headers };
 }
 
 /**
