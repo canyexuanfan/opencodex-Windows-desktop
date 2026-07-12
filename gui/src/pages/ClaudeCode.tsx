@@ -42,7 +42,12 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); }, [apiBase]);
+  useEffect(() => {
+    // Deferred initial load (matches Models/Usage): avoids synchronous setState
+    // inside the effect, per the react-hooks/set-state-in-effect lint gate.
+    const timeout = window.setTimeout(() => { void load(); }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [apiBase]);
 
   const modelOptions = useMemo(() => {
     const options = (state?.available ?? []).map(m => ({ value: m, label: modelLabel(m) }));

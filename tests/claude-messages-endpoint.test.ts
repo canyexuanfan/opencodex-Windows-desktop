@@ -57,7 +57,7 @@ function mockConfig(baseUrl: string, claudeCode?: OcxConfig["claudeCode"]): OcxC
     port: 0,
     defaultProvider: "mock",
     providers: {
-      mock: { adapter: "openai-chat", baseUrl, apiKey: "k" },
+      mock: { adapter: "openai-chat", baseUrl, apiKey: "k", allowPrivateNetwork: true },
     },
     ...(claudeCode ? { claudeCode } : {}),
   } as OcxConfig;
@@ -165,7 +165,7 @@ test("native openai-responses route carries prompt_cache_key + synthesized sessi
     port: 0,
     defaultProvider: "native",
     providers: {
-      native: { adapter: "openai-responses", baseUrl: `${upstream.url.toString().replace(/\/$/, "")}/v1`, authMode: "forward" },
+      native: { adapter: "openai-responses", baseUrl: `${upstream.url.toString().replace(/\/$/, "")}/v1`, authMode: "forward", allowPrivateNetwork: true },
     },
   } as OcxConfig);
   const server = startServer(0);
