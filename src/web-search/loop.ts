@@ -3,6 +3,7 @@ import type { AdapterEvent, OcxMessage, OcxParsedRequest, OcxProviderConfig, Ocx
 import { namespacedToolName } from "../types";
 import { bridgeToResponsesSSE } from "../bridge";
 import { runWebSearch, type SidecarOutcome, type SidecarOutcomeRecorder, type SidecarSettings } from "./executor";
+import { runAnthropicWebSearch } from "./anthropic-executor";
 import { clearableDeadline } from "../lib/abort";
 import { readBoundedResponseBody } from "../lib/bounded-body";
 import { fetchWithResetRetry } from "../lib/upstream-retry";
@@ -162,7 +163,12 @@ class LoopError extends Error {
 export interface WebSearchLoopDeps {
   parsed: OcxParsedRequest;
   adapter: ProviderAdapter;
-  forwardProvider: OcxProviderConfig;
+  /** Which executor runs searches. Defaults to "openai" so existing callers keep the ChatGPT path (audit F4). */
+  backend?: "openai" | "anthropic";
+  /** Required for the openai backend; unused (and typically undefined) for the anthropic backend. */
+  forwardProvider?: OcxProviderConfig;
+  /** Required for the anthropic backend: the stored-OAuth provider that runs web_search_20250305. */
+  anthropicSidecar?: { providerName: string; provider: OcxProviderConfig };
   hostedTool: Record<string, unknown>;
   selectedForwardHeaders: Headers;
   settings: SidecarSettings;
@@ -195,6 +201,8 @@ export interface WebSearchLoopDeps {
  */
 export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Response> {
   const { parsed, selectedForwardHeaders, forwardProvider, hostedTool, settings, maxSearches, abortSignal, recordSidecarOutcome } = deps;
+  const backend = deps.backend ?? "openai";
+  const anthropicSidecar = deps.anthropicSidecar;
   // Mutable: 429 key-failover (deps.on429) can swap in a rebuilt adapter mid-loop.
   let adapter = deps.adapter;
 
@@ -399,7 +407,11 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
           beganCell = true;
           yield { type: "web_search_call_begin", id: call.id };
         }
-        outcome = await runWebSearch(query, hostedTool, forwardProvider, selectedForwardHeaders, settings, signal, recordSidecarOutcome);
+        // F5: the anthropic sidecar authenticates with its own stored OAuth — it never touches the
+        // ChatGPT forward headers and must NOT record a Codex/OpenAI pool outcome.
+        outcome = backend === "anthropic" && anthropicSidecar
+          ? await runAnthropicWebSearch(query, anthropicSidecar.providerName, anthropicSidecar.provider, settings, signal)
+          : await runWebSearch(query, hostedTool, forwardProvider!, selectedForwardHeaders, settings, signal, recordSidecarOutcome);
         searchesExecuted++;
         executedSearchCount++;
         if (outcome.error) failedQueries.add(normalizeQuery(query));

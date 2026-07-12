@@ -496,6 +496,13 @@ export interface OcxVisionSidecarConfig {
 export interface OcxWebSearchSidecarConfig {
   /** Master switch. Default: enabled when a forward (ChatGPT) provider exists and the caller is logged in. */
   enabled?: boolean;
+  /**
+   * Which backend actually runs the server-side search. "openai" replays the hosted web_search via
+   * the ChatGPT forward provider (gpt-mini sidecar); "anthropic" runs web_search_20250305 on a Claude
+   * model authenticated by the STORED anthropic OAuth credential. Unset resolves to "anthropic" when a
+   * usable anthropic OAuth credential exists, else "openai".
+   */
+  backend?: "openai" | "anthropic";
   /** Sidecar model that runs the real server-side web_search (must be a native ChatGPT model). */
   model?: string;
   /** Reasoning effort for the sidecar — "minimal" (non-thinking) keeps it fast/cheap. */

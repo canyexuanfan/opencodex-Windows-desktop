@@ -870,7 +870,9 @@ export async function handleResponses(
     parsed.context.tools = [...(parsed.context.tools ?? []), buildWebSearchTool()];
     const wsResponse = await runWithWebSearch({
       parsed, adapter,
+      backend: wsPlan.backend,
       forwardProvider: wsPlan.forwardProvider,
+      anthropicSidecar: wsPlan.anthropicSidecar,
       hostedTool: wsPlan.hostedTool,
       selectedForwardHeaders,
       settings: wsPlan.settings,

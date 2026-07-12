@@ -2,11 +2,15 @@ import type { OcxConfig, OcxParsedRequest, OcxProviderConfig } from "../types";
 import { modelInList } from "../types";
 import type { SidecarSettings } from "./executor";
 import type { CodexAuthContext } from "../codex/auth-context";
+import { getAccountSet } from "../oauth/store";
 
 export { runWithWebSearch } from "./loop";
 export { buildWebSearchTool, extractHostedWebSearch, WEB_SEARCH_TOOL_NAME } from "./synthetic-tool";
+export { runAnthropicWebSearch, parseAnthropicSidecarSSE } from "./anthropic-executor";
 
 const DEFAULT_SIDECAR_MODEL = "gpt-5.6-luna";
+// Default Claude model for the anthropic-backed sidecar (used when cfg.model is unset).
+const DEFAULT_ANTHROPIC_SIDECAR_MODEL = "claude-sonnet-5";
 // "low" is the lightest effort the ChatGPT backend allows with web_search ("minimal" is rejected:
 // "tools cannot be used with reasoning.effort 'minimal'") — keeps the sidecar fast/cheap.
 const DEFAULT_SIDECAR_REASONING = "low";
@@ -70,8 +74,45 @@ export function findForwardProvider(config: OcxConfig): OcxProviderConfig | unde
   return undefined;
 }
 
+/** A configured anthropic-adapter OAuth provider whose ACTIVE stored account is usable (not needs-reauth). */
+export interface AnthropicSidecarProvider {
+  providerName: string;
+  provider: OcxProviderConfig;
+}
+
+/**
+ * First enabled anthropic-adapter OAuth provider whose ACTIVE account holds a usable credential — the
+ * only path that can run web_search_20250305 without a ChatGPT forward provider. Presence is decided by
+ * getAccountSet + the active account's `needsReauth` marker (audit F1: getCredential alone can pick a
+ * terminally-invalid account); token refresh happens later at executor time.
+ */
+export function findAnthropicSidecarProvider(config: OcxConfig): AnthropicSidecarProvider | undefined {
+  for (const [name, prov] of Object.entries(config.providers)) {
+    if (prov.disabled === true) continue;
+    if (prov.adapter !== "anthropic" || prov.authMode !== "oauth") continue;
+    const set = getAccountSet(name);
+    const active = set?.accounts.find(a => a.id === set.activeAccountId);
+    if (active && active.needsReauth !== true) return { providerName: name, provider: prov };
+  }
+  return undefined;
+}
+
+/** Precedence (audit F4/F7): explicit config wins; unset resolves to anthropic when a usable credential exists, else openai. */
+export function resolveSidecarBackend(
+  explicit: "openai" | "anthropic" | undefined,
+  anthropicSidecar: AnthropicSidecarProvider | undefined,
+): "openai" | "anthropic" {
+  if (explicit === "anthropic" || explicit === "openai") return explicit;
+  return anthropicSidecar ? "anthropic" : "openai";
+}
+
 export interface SidecarPlan {
-  forwardProvider: OcxProviderConfig;
+  /** Which executor runs the search. Anthropic does not require a forward provider. */
+  backend: "openai" | "anthropic";
+  /** Present for the openai backend (ChatGPT forward path); undefined for anthropic. */
+  forwardProvider?: OcxProviderConfig;
+  /** Present for the anthropic backend (stored-OAuth /v1/messages path); undefined for openai. */
+  anthropicSidecar?: AnthropicSidecarProvider;
   hostedTool: Record<string, unknown>;
   settings: SidecarSettings;
   maxSearches: number;
@@ -99,30 +140,51 @@ export function planWebSearch(
   if (!parsed._webSearch || isPassthrough) return undefined;
   const cfg = config.webSearchSidecar ?? {};
   if (cfg.enabled === false) return undefined;
-  if (authContext.kind === "main" && !incomingHeaders.get("authorization")) return undefined; // not logged into ChatGPT → sidecar can't run
-  const forwardProvider = findForwardProvider(config);
-  if (!forwardProvider) return undefined;
   const timeoutMs = cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const routedModelStallTimeoutMs = resolveRoutedModelStallTimeoutMs(cfg.routedModelStallTimeoutMs);
   // Same `?? 200_000` default the server applies when threading connectTimeoutMs into the loop.
   const connectTimeoutMs = config.connectTimeoutMs ?? 200_000;
+  const anthropicSidecar = findAnthropicSidecarProvider(config);
+  const backend = resolveSidecarBackend(cfg.backend, anthropicSidecar);
+  const maxSearches = cfg.maxSearchesPerTurn ?? DEFAULT_MAX_SEARCHES;
+  const stallTimeoutSec = webSearchStallTimeoutSec(
+    config.stallTimeoutSec,
+    connectTimeoutMs,
+    routedModelStallTimeoutMs,
+    timeoutMs,
+  );
+  // The routed model being text-only means the search model must verbalize image results (either backend).
+  const describeImages = modelInList(provider.noVisionModels, modelId);
+  const reasoning = cfg.reasoning ?? DEFAULT_SIDECAR_REASONING;
+
+  // Anthropic backend authenticates with the STORED credential — no forward provider or ChatGPT login gate.
+  // resolveSidecarBackend only returns "anthropic" when it was explicitly configured OR a usable credential
+  // exists; an EXPLICIT anthropic choice with no usable credential FAILS CLOSED (no plan) rather than
+  // silently borrowing ChatGPT credentials (audit round-2 F1).
+  if (backend === "anthropic") {
+    if (!anthropicSidecar) return undefined;
+    return {
+      backend: "anthropic",
+      anthropicSidecar,
+      hostedTool: parsed._webSearch,
+      settings: { model: cfg.model ?? DEFAULT_ANTHROPIC_SIDECAR_MODEL, reasoning, timeoutMs, describeImages },
+      maxSearches,
+      routedModelStallTimeoutMs,
+      stallTimeoutSec,
+    };
+  }
+
+  // OpenAI backend: needs a ChatGPT login (main) and a forward provider to reach server-side web_search.
+  if (authContext.kind === "main" && !incomingHeaders.get("authorization")) return undefined;
+  const forwardProvider = findForwardProvider(config);
+  if (!forwardProvider) return undefined;
   return {
+    backend: "openai",
     forwardProvider,
     hostedTool: parsed._webSearch,
-    settings: {
-      model: cfg.model ?? DEFAULT_SIDECAR_MODEL,
-      reasoning: cfg.reasoning ?? DEFAULT_SIDECAR_REASONING,
-      timeoutMs,
-      // The routed model is text-only → have the search model verbalize image results.
-      describeImages: modelInList(provider.noVisionModels, modelId),
-    },
-    maxSearches: cfg.maxSearchesPerTurn ?? DEFAULT_MAX_SEARCHES,
+    settings: { model: cfg.model ?? DEFAULT_SIDECAR_MODEL, reasoning, timeoutMs, describeImages },
+    maxSearches,
     routedModelStallTimeoutMs,
-    stallTimeoutSec: webSearchStallTimeoutSec(
-      config.stallTimeoutSec,
-      connectTimeoutMs,
-      routedModelStallTimeoutMs,
-      timeoutMs,
-    ),
+    stallTimeoutSec,
   };
 }

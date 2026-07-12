@@ -18,11 +18,13 @@ export interface SidecarSettings {
   describeImages?: boolean;
 }
 
-const BASE_INSTRUCTION =
+// Shared with the anthropic-backed executor (single source; audit F3). The instruction is
+// backend-agnostic — both the gpt-mini sidecar and a Claude sidecar answer the same way.
+export const BASE_INSTRUCTION =
   "You are a web-search assistant. Use the web_search tool to find current information for the " +
   "user's query, then reply with a concise, factual answer. End your reply with a `Sources:` " +
   "section listing each source you used on its own line as `- Title: URL` (one per line).";
-const IMAGE_INSTRUCTION =
+export const IMAGE_INSTRUCTION =
   " The model that will read your answer is TEXT-ONLY and cannot see images: if the results include " +
   "relevant images, describe what they show in words and include their source URLs in your answer.";
 
