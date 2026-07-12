@@ -244,12 +244,20 @@ with those explicit additions, or set it to `false` to expose only `models`.
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `enabled?` | `boolean` | on when a forward provider + login exist | Master switch. |
-| `model?` | `string` | `gpt-5.6-luna` | The sidecar model running real `web_search` (must be a native ChatGPT model). Explicit legacy `gpt-5.4-mini` values are migrated on start. |
+| `enabled?` | `boolean` | on when the selected backend is usable | Master switch. Set `false` to disable web-search sidecars. |
+| `backend?` | `"openai" \| "anthropic"` | auto | Executor backend. Explicit config wins; when omitted, a usable stored Anthropic OAuth account selects `anthropic`, otherwise `openai`. |
+| `model?` | `string` | backend-dependent | Search model: `gpt-5.6-luna` for `openai`, `claude-sonnet-5` for `anthropic`. Explicit legacy `gpt-5.4-mini` values are migrated on start. |
 | `reasoning?` | `string` | `low` | Reasoning effort for the sidecar (`minimal` is rejected with web search). |
 | `maxSearchesPerTurn?` | `number` | `3` | Total real searches per main-model turn (loop guard). |
 | `routedModelStallTimeoutMs?` | `number` | `200000` | Config-file-only continuous raw response-byte inactivity deadline for each routed-model iteration. Must be an integer from `1` through `2147483647`; every non-empty response-body chunk resets it. |
 | `timeoutMs?` | `number` | `200000` | Separate deadline for one hosted web-search request. |
+
+The `openai` backend runs hosted search through an enabled ChatGPT `forward` provider, so it needs
+both a ChatGPT login and that provider. On Claude-inbound routed replays, opencodex injects the main
+ChatGPT auth into the internal sidecar request so this path remains reachable. The `anthropic`
+backend uses the active stored credential from an enabled Anthropic OAuth provider and runs
+Claude's `web_search_20250305` tool. If `backend: "anthropic"` is explicit but no active account is
+usable (including `needsReauth`), the sidecar fails closed instead of falling back to OpenAI.
 
 The web-search path has four clocks: the base bridge event-stall budget (`stallTimeoutSec`), the
 DNS/TCP/TLS/final-header budget (`connectTimeoutMs`), routed-model raw-byte inactivity
@@ -261,9 +269,25 @@ stall is an inactivity guard, not a total generation timeout.
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `enabled?` | `boolean` | on when a forward provider + login exist | Master switch. |
-| `model?` | `string` | `gpt-5.4-mini` | Vision model that describes images (must accept image input). |
+| `enabled?` | `boolean` | on when the selected backend is usable | Master switch. Set `false` to disable image descriptions. |
+| `backend?` | `"openai" \| "anthropic"` | auto | Executor backend. Uses the same explicit-first, Anthropic-credential-aware resolution as web search. |
+| `model?` | `string` | backend-dependent | Image-description model: `gpt-5.4-mini` for `openai`, `claude-sonnet-5` for `anthropic`. |
+| `maxDescriptionsPerTurn?` | `number` | `8` | Maximum new description cache misses admitted in one main-model turn. `0` disables description calls; invalid values use the default. |
 | `timeoutMs?` | `number` | `45000` | Sidecar fetch timeout. |
+
+Vision activates only for images sent to a model matched by its provider's `noVisionModels` list.
+The OpenAI backend has the same login + forward-provider requirements as web search; the Anthropic
+backend uses stored OAuth and fails closed when explicitly selected without a usable credential.
+Successful `data:` image descriptions are cached in a bounded process-level cache keyed by backend,
+model, detail, image bytes, and normalized message context. Cache hits and same-turn duplicates do
+not consume `maxDescriptionsPerTurn`. Remote `https:` images and failed/empty descriptions are not
+cached.
+
+Anthropic-OAuth search and image-description requests reuse opencodex's existing Claude Code OAuth
+fingerprint. This is within the repository's existing OAuth precedent, but should be soak-tested
+with the intended account and workload.
+
+<!-- TODO(WP5 GUI): Add the sidecar settings-screen walkthrough after the GUI controls ship. -->
 
 ## Complete example
 

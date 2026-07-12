@@ -3,15 +3,15 @@ title: "Sidecar：Web Search 与 Vision"
 description: 通过原生 ChatGPT sidecar，让路由模型获得真实 web search，并让纯文本模型理解图像。
 ---
 
-某些能力只存在于 OpenAI 托管后端，例如真正的服务端 **web search** 和原生**图像输入**。
-opencodex 通过两个 sidecar 为路由模型补齐这些能力；它们会使用 ChatGPT 登录（`forward`）
-provider 下的原生模型。只要存在已启用的 forward provider 和可用的 ChatGPT 认证，二者都会默认
-开启。Sidecar 错误会转换成长度受限的工具结果或图像提示，不会让整个 turn 失败。
+不同路由模型对托管 **Web Search** 和原生**图像输入**的支持并不相同。opencodex 通过两个
+sidecar 补齐这些能力；它们可以使用 ChatGPT 登录（`forward`）provider，也可以使用已存储的
+Anthropic OAuth provider。Sidecar 错误会转换成长度受限的工具结果或图像提示，不会让整个 turn
+失败。
 
-:::note[需要 forward provider]
-Sidecar 通过 `forward`（ChatGPT 透传）路径运行，该路径支持托管 web search 和原生 vision。
-如果没有可用的 ChatGPT 认证，web search 会走普通路径；对于声明为纯文本的模型，图像会替换成
-明确的“已省略”提示。
+:::note[自动选择后端]
+显式 `backend` 配置优先。省略时，如果已启用 Anthropic OAuth provider 的活动账户未标记
+`needsReauth`，则使用 `anthropic`；否则使用 `openai`。显式选择 `anthropic` 但没有可用凭据时
+会关闭失败。`openai` 同时需要 ChatGPT 登录和已启用的 `forward` provider。
 :::
 
 ## Web-search sidecar
@@ -20,9 +20,9 @@ Sidecar 通过 `forward`（ChatGPT 透传）路径运行，该路径支持托管
 
 1. **移除**托管的 `web_search` 工具，改为向路由模型提供一个合成的
    `web_search(query)` function 工具。原托管工具的选项会保留并用于 sidecar 调用。
-2. 让路由模型在一个小型 **agentic 循环**中运行。模型调用 `web_search` 时，opencodex 默认通过
-   forward 后端调用 `gpt-5.6-luna`，并启用托管 `web_search` 和
-   `reasoning.effort: "low"`，随后把 streaming 答案及引用解析为工具结果。
+2. 让路由模型在一个小型 **agentic 循环**中运行。模型调用 `web_search` 时，opencodex 使用所选
+   后端：OpenAI 默认以 `gpt-5.6-luna` 运行托管 `web_search`；Anthropic 默认以
+   `claude-sonnet-5` 运行 `web_search_20250305`。Streaming 答案及引用会解析为工具结果。
 3. **循环**直到模型回答，或真实查询总数达到 `maxSearchesPerTurn`（默认 3）。达到上限后会移除
    search 工具并强制生成最终答案。如果模型调用 `apply_patch` 或 shell 等真实客户端工具，当前
    turn 会结束，以便这些调用到达 Codex。
@@ -39,7 +39,8 @@ Sidecar 通过 `forward`（ChatGPT 透传）路径运行，该路径支持托管
 {
   "webSearchSidecar": {
     "enabled": true,
-    "model": "gpt-5.6-luna",
+    "backend": "anthropic",
+    "model": "claude-sonnet-5",
     "reasoning": "low",
     "maxSearchesPerTurn": 3,
     "routedModelStallTimeoutMs": 200000,
@@ -80,12 +81,17 @@ Sidecar 通过 `forward`（ChatGPT 透传）路径运行，该路径支持托管
   `gpt-oss:120b`。
 - 如果描述失败，模型会收到简短的处理错误提示。若根本无法建立 sidecar plan，原始图像会被
   移除，而不会继续转发给纯文本后端。
+- `maxDescriptionsPerTurn`（默认 8）限制每个主模型 turn 的新增描述次数。缓存命中和同一 turn
+  的重复请求不会消耗配额。成功的 `data:` 图像描述会按后端、模型、detail、图像字节和消息上下文
+  缓存；内容可变的 `https:` 图像不会缓存。
 
 ```json
 {
   "visionSidecar": {
     "enabled": true,
-    "model": "gpt-5.6-luna",
+    "backend": "anthropic",
+    "model": "claude-sonnet-5",
+    "maxDescriptionsPerTurn": 8,
     "timeoutMs": 45000
   }
 }
@@ -107,8 +113,9 @@ Sidecar 通过 `forward`（ChatGPT 透传）路径运行，该路径支持托管
 
 ## 仪表盘设置与禁用
 
-Dashboard 页面可以选择 web search 模型及 reasoning 强度，也可以选择图像描述模型。这些控件
-使用 `GET` / `PUT /api/sidecar-settings`，从下一次请求开始生效。
+<!-- TODO(WP5 GUI): GUI 控件完成后补充 sidecar 设置页面操作说明。 -->
 
-如需禁用某个 sidecar，请在 `config.json` 中把对应的 `enabled` 设为 `false`。所有字段见
+配置文件字段现在即可使用。如需禁用某个 sidecar，请在 `config.json` 中把对应的 `enabled` 设为
+`false`。Anthropic OAuth 搜索和图像描述沿用现有 Claude Code OAuth fingerprint 先例，但仍应使用
+目标账户和实际负载充分 soak test。所有字段见
 [配置参考](/opencodex/zh-cn/reference/configuration/#sidecars)。

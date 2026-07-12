@@ -179,6 +179,61 @@ entirely). The stub keeps tool call/result pairing intact.
 
 Lookup order: discovery alias → exact id → id with date suffix stripped (`-20250514`) → passthrough.
 
+## Sidecar matrix: web search and image understanding
+
+Routed models do not all have the same hosted tools or image support. opencodex fills those gaps
+before the main model answers:
+
+- The **web-search sidecar** runs the real hosted search, then gives the routed model the answer and
+  sources as a tool result.
+- The **vision sidecar** describes an attached image before calling a model listed in
+  `noVisionModels`, then replaces the image with that description.
+
+Both sidecars can use either backend:
+
+| Backend | How it runs | What it requires |
+| --- | --- | --- |
+| `openai` | A small GPT model through the ChatGPT `forward` provider | A ChatGPT login and an enabled `authMode: "forward"` provider |
+| `anthropic` | Claude through stored Anthropic OAuth; web search uses `web_search_20250305` and vision sends the image to Claude for description | An enabled `adapter: "anthropic"`, `authMode: "oauth"` provider whose active stored account is not marked `needsReauth` |
+
+An explicit `backend` always wins. When it is omitted, opencodex selects `anthropic` if a usable
+stored Anthropic OAuth account exists; otherwise it selects `openai`. Explicitly selecting
+`anthropic` without a usable credential **fails closed**: opencodex does not silently borrow
+ChatGPT credentials or switch backends. The OpenAI backend likewise stays off without both login
+auth and a forward provider.
+
+Claude-inbound routed replays attach the main ChatGPT login to the internal request, so OpenAI
+sidecars remain reachable even though Claude Code's inbound bearer is only the proxy credential.
+That bearer is never forwarded to the routed main provider.
+
+```json
+{
+  "webSearchSidecar": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-5",
+    "maxSearchesPerTurn": 3
+  },
+  "visionSidecar": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-5",
+    "maxDescriptionsPerTurn": 8
+  }
+}
+```
+
+`maxDescriptionsPerTurn` limits new image descriptions in one main-model turn. Cache hits and
+duplicate in-flight descriptions do not consume the cap. Successful descriptions for `data:`
+images are cached by backend, model, detail, image bytes, and request context, so the same
+image-and-context pair is not described again on every replay. Remote `https:` images are never
+cached because their contents can change.
+
+See the [configuration reference](/opencodex/reference/configuration/#sidecars) for every key.
+Anthropic-OAuth web search and image description reuse the repository's existing Claude Code OAuth
+fingerprint precedent, but should still be soak-tested with your account and workload before you
+depend on them for long unattended runs.
+
+<!-- TODO(WP5 GUI): Add the sidecar settings-screen walkthrough after the GUI controls ship. -->
+
 ## Reasoning effort
 
 Claude Code's `/effort` setting is preserved across the adapter:
@@ -283,6 +338,16 @@ available route ids, aliases, and port. `PUT /api/claude-code` is partial and pr
 fields; `null` resets context/blocklist/compact-window values.
 
 ## Troubleshooting
+
+**Claude Code says "Did 0 searches"** — Current builds translate completed Responses
+`web_search_call` items into paired Anthropic `server_tool_use` and `web_search_tool_result` blocks,
+including `usage.server_tool_use.web_search_requests`. Update opencodex if an older build completed
+the search but Claude Code still counted zero.
+
+**A sidecar does not activate** — For `backend: "openai"`, confirm you are logged into ChatGPT and
+have an enabled `authMode: "forward"` provider. For `backend: "anthropic"`, confirm the active stored
+Anthropic OAuth account is not marked `needsReauth`. An explicit Anthropic selection without that
+credential intentionally fails closed.
 
 **"claude.ai connectors are disabled"** — An `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` is set
 in your shell. `ocx claude` deliberately does NOT set `ANTHROPIC_API_KEY`; if you have it exported,

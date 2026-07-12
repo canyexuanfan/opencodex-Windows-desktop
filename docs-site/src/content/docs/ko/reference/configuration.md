@@ -243,12 +243,20 @@ reasoning을 알리되 `xhigh`와 구분합니다. 실시간 프로바이더 결
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `enabled?` | `boolean` | forward 프로바이더 + 로그인이 있을 때 on | 전체 스위치. |
-| `model?` | `string` | `gpt-5.6-luna` | 실제 `web_search`를 실행할 사이드카 모델(네이티브 ChatGPT 모델이어야 함). 명시적으로 남은 기존 `gpt-5.4-mini` 값은 시작할 때 마이그레이션합니다. |
+| `enabled?` | `boolean` | 선택한 백엔드를 쓸 수 있을 때 on | 전체 스위치. 웹 검색 사이드카를 끄려면 `false`로 설정합니다. |
+| `backend?` | `"openai" \| "anthropic"` | 자동 | 실행 백엔드. 명시한 값이 우선하며, 생략하면 쓸 수 있는 Anthropic OAuth 계정이 있을 때 `anthropic`, 없을 때 `openai`를 선택합니다. |
+| `model?` | `string` | 백엔드별 기본값 | 검색 모델. `openai`는 `gpt-5.6-luna`, `anthropic`은 `claude-sonnet-5`를 씁니다. 명시적으로 남은 기존 `gpt-5.4-mini` 값은 시작할 때 마이그레이션합니다. |
 | `reasoning?` | `string` | `low` | 사이드카 reasoning effort(`minimal`은 웹 검색과 함께 쓸 수 없음). |
 | `maxSearchesPerTurn?` | `number` | `3` | 메인 모델 한 turn에서 실행할 실제 검색 총횟수(loop guard). |
 | `routedModelStallTimeoutMs?` | `number` | `200000` | 설정 파일에서만 지정할 수 있는 라우팅 모델 반복별 원시 응답 byte 연속 무활동 deadline. `1`부터 `2147483647`까지의 정수여야 하며, 비어 있지 않은 응답 body chunk가 올 때마다 다시 시작됩니다. |
 | `timeoutMs?` | `number` | `200000` | 호스팅 웹 검색 요청 하나를 제한하는 별도 deadline. |
+
+`openai` 백엔드는 활성화된 ChatGPT `forward` 프로바이더에서 호스팅 검색을 실행하므로 ChatGPT
+로그인과 해당 프로바이더가 모두 필요합니다. Claude Code에서 들어온 라우팅 요청은 내부 사이드카
+호출에 메인 ChatGPT 인증을 주입하므로 이 경로에 연결할 수 있습니다. `anthropic` 백엔드는
+활성화된 Anthropic OAuth 프로바이더의 저장된 활성 자격 증명으로 Claude의
+`web_search_20250305` 도구를 실행합니다. `backend: "anthropic"`을 명시했는데 활성 계정을 쓸 수
+없거나 `needsReauth` 상태라면 OpenAI로 바꾸지 않고 실패 후 중단합니다.
 
 웹 검색 경로에는 네 가지 clock이 있습니다. 기본 bridge event stall 예산(`stallTimeoutSec`),
 DNS/TCP/TLS/최종 header 예산(`connectTimeoutMs`), 라우팅 모델의 원시 byte 무활동
@@ -260,9 +268,25 @@ stall은 무활동 감시 장치이며 전체 생성 timeout이 아닙니다.
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `enabled?` | `boolean` | forward 프로바이더 + 로그인이 있을 때 on | 전체 스위치. |
-| `model?` | `string` | `gpt-5.4-mini` | 이미지를 설명할 비전 모델(이미지 입력을 받아야 함). |
+| `enabled?` | `boolean` | 선택한 백엔드를 쓸 수 있을 때 on | 전체 스위치. 이미지 설명을 끄려면 `false`로 설정합니다. |
+| `backend?` | `"openai" \| "anthropic"` | 자동 | 실행 백엔드. 웹 검색과 같은 명시값 우선, Anthropic 자격 증명 감지 규칙을 사용합니다. |
+| `model?` | `string` | 백엔드별 기본값 | 이미지 설명 모델. `openai`는 `gpt-5.4-mini`, `anthropic`은 `claude-sonnet-5`를 씁니다. |
+| `maxDescriptionsPerTurn?` | `number` | `8` | 메인 모델 한 turn에서 새로 실행할 설명(cache miss)의 최대 개수. `0`이면 설명 호출을 하지 않으며, 잘못된 값은 기본값을 씁니다. |
 | `timeoutMs?` | `number` | `45000` | 사이드카 fetch timeout. |
+
+비전 사이드카는 프로바이더의 `noVisionModels` 목록에 해당하는 모델로 이미지가 들어올 때만
+작동합니다. OpenAI 백엔드는 웹 검색과 마찬가지로 ChatGPT 로그인과 forward 프로바이더가 모두
+필요합니다. Anthropic 백엔드는 저장된 OAuth를 사용하며, 사용할 수 있는 자격 증명 없이 명시하면
+실패 후 중단합니다. 성공한 `data:` 이미지 설명은 백엔드, 모델, detail, 이미지 바이트, 정규화한
+메시지 문맥을 키로 삼아 크기가 제한된 프로세스 캐시에 저장합니다. 캐시 적중과 같은 turn의 중복
+요청은 `maxDescriptionsPerTurn` 한도를 쓰지 않습니다. 원격 `https:` 이미지와 실패하거나 빈 설명은
+캐시하지 않습니다.
+
+Anthropic OAuth 검색과 이미지 설명 요청은 opencodex에서 이미 사용 중인 Claude Code OAuth
+fingerprint 방식을 그대로 따릅니다. 저장소의 기존 OAuth 선례 안에 있지만, 실제로 사용할 계정과
+작업량으로 충분히 soak test하는 편이 좋습니다.
+
+<!-- TODO(WP5 GUI): GUI 컨트롤이 완성되면 사이드카 설정 화면 안내를 추가하세요. -->
 
 ## 전체 예시
 

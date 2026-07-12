@@ -235,12 +235,19 @@ Preview GPT-5.6 fallback 条目采用相同机制。OpenAI API-key preset 会 se
 
 | Field | Type | Default | 含义 |
 | --- | --- | --- | --- |
-| `enabled?` | `boolean` | 存在 forward provider + 登录时开启 | 总开关。 |
-| `model?` | `string` | `gpt-5.6-luna` | 运行真实 `web_search` 的 sidecar 模型（必须是原生 ChatGPT 模型）。显式保留的旧 `gpt-5.4-mini` 值会在启动时迁移。 |
+| `enabled?` | `boolean` | 所选后端可用时开启 | 总开关。设为 `false` 可禁用 Web Search sidecar。 |
+| `backend?` | `"openai" \| "anthropic"` | 自动 | 执行后端。显式配置优先；省略时，有可用的 Anthropic OAuth 活动账户则选 `anthropic`，否则选 `openai`。 |
+| `model?` | `string` | 因后端而异 | 搜索模型：`openai` 默认 `gpt-5.6-luna`，`anthropic` 默认 `claude-sonnet-5`。显式保留的旧 `gpt-5.4-mini` 值会在启动时迁移。 |
 | `reasoning?` | `string` | `low` | sidecar reasoning effort（网络搜索会拒绝 `minimal`）。 |
 | `maxSearchesPerTurn?` | `number` | `3` | 每个主模型 turn 的真实搜索总次数（loop guard）。 |
 | `routedModelStallTimeoutMs?` | `number` | `200000` | 仅可在配置文件中设置的路由模型迭代原始响应 byte 连续无活动 deadline。必须是 `1` 到 `2147483647` 的整数；每个非空响应 body chunk 都会重置该计时器。 |
 | `timeoutMs?` | `number` | `200000` | 单次托管 web-search 请求的独立 deadline。 |
+
+`openai` 后端通过已启用的 ChatGPT `forward` provider 执行托管搜索，因此同时需要 ChatGPT 登录
+和该 provider。Claude 入站的路由重放会把主 ChatGPT 认证注入内部 sidecar 请求，使该路径仍可
+访问。`anthropic` 后端使用已启用 Anthropic OAuth provider 的活动存储凭据，并运行 Claude 的
+`web_search_20250305` 工具。若显式设置 `backend: "anthropic"`，但没有可用活动账户（包括
+`needsReauth` 状态），sidecar 会关闭失败，而不会回退到 OpenAI。
 
 Web-search 路径有四个时钟：基础 bridge event-stall 预算（`stallTimeoutSec`）、DNS/TCP/TLS/最终
 header 预算（`connectTimeoutMs`）、路由模型原始 byte 无活动期限
@@ -252,9 +259,22 @@ header 预算（`connectTimeoutMs`）、路由模型原始 byte 无活动期限
 
 | Field | Type | Default | 含义 |
 | --- | --- | --- | --- |
-| `enabled?` | `boolean` | 存在 forward provider + 登录时开启 | 总开关。 |
-| `model?` | `string` | `gpt-5.4-mini` | 描述图像的视觉模型（必须接受图像输入）。 |
+| `enabled?` | `boolean` | 所选后端可用时开启 | 总开关。设为 `false` 可禁用图像描述。 |
+| `backend?` | `"openai" \| "anthropic"` | 自动 | 执行后端。使用与 Web Search 相同的显式优先、Anthropic 凭据感知解析规则。 |
+| `model?` | `string` | 因后端而异 | 图像描述模型：`openai` 默认 `gpt-5.4-mini`，`anthropic` 默认 `claude-sonnet-5`。 |
+| `maxDescriptionsPerTurn?` | `number` | `8` | 一个主模型 turn 中允许新增的描述缓存 miss 数。`0` 禁用描述调用；无效值使用默认值。 |
 | `timeoutMs?` | `number` | `45000` | sidecar fetch timeout。 |
+
+Vision sidecar 仅在图像发送给 provider 的 `noVisionModels` 列表所匹配模型时启用。OpenAI 后端与
+Web Search 一样，需要 ChatGPT 登录和 forward provider；Anthropic 后端使用已存储 OAuth，显式
+选择但没有可用凭据时会关闭失败。成功的 `data:` 图像描述会存入有界进程级缓存，缓存键包含后端、
+模型、detail、图像字节和规范化消息上下文。缓存命中和同一 turn 的重复请求不会消耗
+`maxDescriptionsPerTurn`。远程 `https:` 图像以及失败或空的描述不会缓存。
+
+Anthropic OAuth 搜索和图像描述请求沿用 opencodex 已有的 Claude Code OAuth fingerprint。它处于
+仓库既有 OAuth 先例范围内，但仍应使用目标账户和实际负载进行充分 soak test。
+
+<!-- TODO(WP5 GUI): GUI 控件完成后补充 sidecar 设置页面操作说明。 -->
 
 ## 完整示例
 

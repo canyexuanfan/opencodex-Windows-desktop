@@ -3,16 +3,16 @@ title: "Sidecars: Web Search & Vision"
 description: Give routed models real web search and text-only models image understanding through native ChatGPT sidecars.
 ---
 
-Some capabilities only exist on OpenAI's hosted backend: real server-side **web search** and native
-**image input**. opencodex backfills them for routed models with two sidecars that use a native model
-over your ChatGPT-login (`forward`) provider. Both are on by default when an enabled forward provider
-and usable ChatGPT auth are available. Sidecar errors become bounded tool results or image markers
-instead of failing the whole turn.
+Routed models do not all expose hosted **web search** or native **image input**. opencodex backfills
+those capabilities with two sidecars. Each can run through a ChatGPT-login (`forward`) provider or a
+stored Anthropic OAuth provider. Sidecar errors become bounded tool results or image markers instead
+of failing the whole turn.
 
-:::note[Requires a forward provider]
-Sidecars run through the `forward` (ChatGPT passthrough) path, which has hosted web search and native
-vision. Without usable ChatGPT auth, web search takes the normal route and images for a declared
-text-only model are replaced with an explicit omitted-image marker.
+:::note[Automatic backend selection]
+Explicit `backend` config wins. When unset, opencodex uses `anthropic` if an enabled Anthropic OAuth
+provider has an active account not marked `needsReauth`; otherwise it uses `openai`. Explicit
+`anthropic` without that credential fails closed. `openai` requires both ChatGPT login auth and an
+enabled `forward` provider.
 :::
 
 ## Web-search sidecar
@@ -21,9 +21,10 @@ When Codex requests hosted `web_search` for a non-passthrough routed model, open
 
 1. **Drops** the hosted `web_search` tool and exposes a synthetic `web_search(query)` function tool
    to the routed model instead. The original hosted-tool options are retained for the sidecar call.
-2. Runs the routed model in a small **agentic loop**. When it calls `web_search`, opencodex calls
-   `gpt-5.6-luna` by default over the forward backend with hosted `web_search` and
-   `reasoning.effort: "low"`, then parses the streamed answer and citations into a tool result.
+2. Runs the routed model in a small **agentic loop**. When it calls `web_search`, opencodex uses the
+   selected sidecar backend: OpenAI runs hosted `web_search` with `gpt-5.6-luna` by default;
+   Anthropic runs `web_search_20250305` with `claude-sonnet-5` by default. The streamed answer and
+   citations become a tool result.
 3. **Loops** until the model answers or the total real-query budget reaches `maxSearchesPerTurn`
    (default 3), then removes the search tool and forces a final answer. Real client tools such as
    `apply_patch` or shell finalize the turn so those calls reach Codex.
@@ -42,7 +43,8 @@ relevant images in words and include their source URLs.
 {
   "webSearchSidecar": {
     "enabled": true,
-    "model": "gpt-5.6-luna",
+    "backend": "anthropic",
+    "model": "claude-sonnet-5",
     "reasoning": "low",
     "maxSearchesPerTurn": 3,
     "routedModelStallTimeoutMs": 200000,
@@ -86,12 +88,17 @@ the vision execution path still has a `gpt-5.4-mini` code fallback.
   `gpt-oss:120b`.
 - If description fails, the model receives a short processing-error marker. If no sidecar plan is
   available, the raw image is stripped rather than forwarded to a text-only backend.
+- `maxDescriptionsPerTurn` (default 8) limits new descriptions per main-model turn. Cache hits and
+  same-turn duplicates do not consume it. Successful `data:` image descriptions are cached by
+  backend, model, detail, image bytes, and message context; mutable `https:` images are not cached.
 
 ```json
 {
   "visionSidecar": {
     "enabled": true,
-    "model": "gpt-5.6-luna",
+    "backend": "anthropic",
+    "model": "claude-sonnet-5",
+    "maxDescriptionsPerTurn": 8,
     "timeoutMs": 45000
   }
 }
@@ -113,8 +120,10 @@ A model is marked text-only per provider:
 
 ## Dashboard controls and disabling
 
-The Dashboard page lets you choose the search model and reasoning effort plus the vision model.
-Those controls use `GET` / `PUT /api/sidecar-settings` and apply on the next request.
+<!-- TODO(WP5 GUI): Add the sidecar settings-screen walkthrough after the GUI controls ship. -->
 
-Set `enabled: false` on either sidecar in `config.json` to disable it. See the
-[Configuration reference](/opencodex/reference/configuration/#sidecars) for every field.
+The config-file keys are available now. Set `enabled: false` on either sidecar in `config.json` to
+disable it. Anthropic-OAuth search and image description reuse the existing Claude Code OAuth
+fingerprint precedent, but should be soak-tested with the intended account and workload.
+
+See the [Configuration reference](/opencodex/reference/configuration/#sidecars) for every field.
