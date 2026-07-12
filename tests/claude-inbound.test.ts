@@ -307,4 +307,41 @@ describe("bundled-skill elision for routed models (devlog 260712 060)", () => {
     const { body } = requestWithSkill("My-Custom-Skill", { blockedSkills: ["my-custom-skill"] });
     expect(String(outputFor(body, "call_skill_1"))).toContain("elided");
   });
+
+  // Live-capture carrier (2.1.207): the bundle rides a sibling TEXT block whose first
+  // line is "Base directory for this skill: <dir>/<name>" — not the tool_result.
+  function requestWithSkillTextBlock(skillDirName: string, textLen: number, cc?: { blockedSkills?: string[] }) {
+    const bundle = `Base directory for this skill: /private/tmp/claude-501/bundled-skills/2.1.207/abc/${skillDirName}\n\n` + "DOCS ".repeat(Math.ceil(textLen / 5));
+    return anthropicToResponsesTranslation({
+      model: "gemini/gemini-3-pro",
+      max_tokens: 100,
+      messages: [
+        { role: "assistant", content: [{ type: "tool_use", id: "call_s", name: "Skill", input: { skill: skillDirName, args: "" } }] },
+        { role: "user", content: [
+          { type: "tool_result", tool_use_id: "call_s", content: [{ type: "text", text: `Launching skill: ${skillDirName}` }] },
+          { type: "text", text: bundle },
+        ] },
+      ],
+    }, cc as never).body;
+  }
+  function userTexts(body: Record<string, unknown>): string[] {
+    const items = body.input as Array<Record<string, unknown>>;
+    return items.filter(i => i.type === "message" && i.role === "user")
+      .flatMap(i => (i.content as Array<Record<string, unknown>>).map(c => String(c.text ?? "")));
+  }
+
+  test("text-block bundle carrier is stubbed for blocked skills (live 2.1.207 shape)", () => {
+    const texts = userTexts(requestWithSkillTextBlock("claude-api", 500_000));
+    expect(texts.some(t => t.includes("elided") && t.includes("claude-api"))).toBe(true);
+    expect(texts.every(t => t.length < 10_000)).toBe(true);
+  });
+
+  test("text-block carrier: non-blocked skill and small payloads pass through", () => {
+    const kept = userTexts(requestWithSkillTextBlock("pdf-tools", 500_000));
+    expect(kept.some(t => t.length > 400_000)).toBe(true);
+    const small = userTexts(requestWithSkillTextBlock("claude-api", 2_000));
+    expect(small.some(t => t.startsWith("Base directory"))).toBe(true);
+    const off = userTexts(requestWithSkillTextBlock("claude-api", 500_000, { blockedSkills: [] }));
+    expect(off.some(t => t.length > 400_000)).toBe(true);
+  });
 });

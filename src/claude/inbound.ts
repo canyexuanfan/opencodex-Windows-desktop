@@ -130,6 +130,37 @@ function pushUserMessage(input: Rec[], blocks: Rec[]): void {
  */
 export const DEFAULT_BLOCKED_SKILLS = ["claude-api"];
 
+/** Injected-skill payloads below this size are never stubbed (not worth it). */
+const SKILL_ELISION_MIN_CHARS = 10_000;
+const SKILL_TEXT_MARKER = "Base directory for this skill: ";
+
+interface SkillElisionContext {
+  /** Skill-tool call ids whose input names a blocked skill (result-body carrier). */
+  callIds: ReadonlySet<string>;
+  /** Lowercased blocked skill names (text-block carrier). */
+  names: readonly string[];
+}
+
+const NO_ELISION: SkillElisionContext = { callIds: new Set(), names: [] };
+
+/**
+ * Claude Code 2.1.207 (live capture, devlog 060 follow-up): the Skill tool_result is
+ * a tiny "Launching skill: <name>" note; the actual ~570k-char document bundle rides
+ * as a SEPARATE text block in the same user message, whose first line is
+ * `Base directory for this skill: <dir>/<skill-name>`. Stub that block when the
+ * directory basename matches a blocked skill.
+ */
+function maybeElideSkillText(text: string, names: readonly string[]): string {
+  if (names.length === 0 || text.length < SKILL_ELISION_MIN_CHARS) return text;
+  if (!text.startsWith(SKILL_TEXT_MARKER)) return text;
+  const firstLineEnd = text.indexOf("\n");
+  const dir = text.slice(SKILL_TEXT_MARKER.length, firstLineEnd === -1 ? text.length : firstLineEnd).trim();
+  const base = dir.split("/").filter(Boolean).pop()?.toLowerCase() ?? "";
+  if (!names.includes(base)) return text;
+  return `[opencodex] '${base}' skill document bundle (${text.length} chars) elided for routed models `
+    + "(claudeCode.blockedSkills). The skill is loaded; answer from general knowledge instead of citing the bundle.";
+}
+
 function skillElisionStub(callId: string): string {
   return "[opencodex] Skill document bundle elided for routed models (claudeCode.blockedSkills). "
     + `The skill loaded, but its reference documents were removed to save context (call ${callId}). `
@@ -171,7 +202,7 @@ function systemMessageText(content: unknown): string {
   return parts.join("\n\n");
 }
 
-function userMessageToItems(content: unknown, input: Rec[], elideCallIds: ReadonlySet<string> = new Set()): void {
+function userMessageToItems(content: unknown, input: Rec[], elide: SkillElisionContext = NO_ELISION): void {
   if (typeof content === "string") {
     if (content.length > 0) pushUserMessage(input, [{ type: "input_text", text: content }]);
     return;
@@ -184,7 +215,7 @@ function userMessageToItems(content: unknown, input: Rec[], elideCallIds: Readon
     if (!isRec(raw)) continue;
     switch (raw.type) {
       case "text":
-        if (typeof raw.text === "string") pending.push({ type: "input_text", text: raw.text });
+        if (typeof raw.text === "string") pending.push({ type: "input_text", text: maybeElideSkillText(raw.text, elide.names) });
         break;
       case "image": {
         const img = imageBlockToInputImage(raw);
@@ -201,7 +232,7 @@ function userMessageToItems(content: unknown, input: Rec[], elideCallIds: Readon
           type: "function_call_output",
           call_id: raw.tool_use_id,
           // Blocked-skill bundles are stubbed out for routed models (devlog 060).
-          output: elideCallIds.has(raw.tool_use_id) ? skillElisionStub(raw.tool_use_id) : toolResultOutput(raw),
+          output: elide.callIds.has(raw.tool_use_id) ? skillElisionStub(raw.tool_use_id) : toolResultOutput(raw),
         });
         break;
       }
@@ -337,10 +368,14 @@ export function anthropicToResponsesTranslation(raw: unknown, cc?: OcxClaudeCode
   const systemParts: string[] = [];
   const topLevelSystem = systemToInstructions(raw.system);
   if (topLevelSystem !== undefined) systemParts.push(topLevelSystem);
-  const elideCallIds = blockedSkillCallIds(raw.messages, cc?.blockedSkills ?? DEFAULT_BLOCKED_SKILLS);
+  const blockedNames = (cc?.blockedSkills ?? DEFAULT_BLOCKED_SKILLS).map(n => n.toLowerCase()).filter(n => n.length > 0);
+  const elide: SkillElisionContext = {
+    callIds: blockedSkillCallIds(raw.messages, blockedNames),
+    names: blockedNames,
+  };
   for (const msg of raw.messages) {
     if (!isRec(msg)) throw new AnthropicRequestError("each message must be an object");
-    if (msg.role === "user") userMessageToItems(msg.content, input, elideCallIds);
+    if (msg.role === "user") userMessageToItems(msg.content, input, elide);
     else if (msg.role === "assistant") assistantMessageToItems(msg.content, input);
     else if (msg.role === "system") {
       const text = systemMessageText(msg.content);
