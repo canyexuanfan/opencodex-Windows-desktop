@@ -332,6 +332,15 @@ export async function handleClaudeMessages(
     const value = req.headers.get(name);
     if (value) headers.set(name, value);
   }
+  if (!nativeRoute) {
+    // Routed replays need main ChatGPT auth so OpenAI-backed sidecars remain reachable.
+    const { getMainAccountToken } = await import("../codex/main-account");
+    const token = getMainAccountToken();
+    if (token) {
+      headers.set("authorization", `Bearer ${token.accessToken}`);
+      headers.set("chatgpt-account-id", token.chatgptAccountId);
+    }
+  }
   if (nativeRoute) {
     // No forwarded ChatGPT auth exists on this surface. Attach the main codex login
     // (read-only auth.json token); account-pool rotation still overrides downstream.

@@ -58,6 +58,11 @@ export interface ManagementApiDeps {
   refreshCodexCatalog?: () => Promise<void>;
 }
 
+/** Narrow an unknown JSON value to a plain (non-array) object for strict request-body validation. */
+function isPlainRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
 function parseDebugLogQuery(url: URL): { after: number; limit: number } {
   const after = Number(url.searchParams.get("after") ?? url.searchParams.get("since") ?? "0");
   const limit = Number(url.searchParams.get("limit") ?? "500");
@@ -194,13 +199,36 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     const vs = config.visionSidecar ?? {};
     return jsonResponse({
       webSearch: { model: ws.model ?? "gpt-5.6-luna", reasoning: ws.reasoning ?? "low" },
-      vision: { model: vs.model ?? "gpt-5.6-luna" },
+      vision: {
+        model: vs.model ?? "gpt-5.6-luna",
+        backend: vs.backend,
+        maxDescriptionsPerTurn: vs.maxDescriptionsPerTurn,
+      },
     });
   }
 
   if (url.pathname === "/api/sidecar-settings" && req.method === "PUT") {
-    let body: { webSearch?: { model?: string; reasoning?: string }; vision?: { model?: string } };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    let raw: unknown;
+    try { raw = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    // Strict shape (review F2): reject non-object bodies and non-object sections instead of throwing
+    // on `null` or silently accepting arrays/strings as no-op updates.
+    if (!isPlainRecord(raw)) return jsonResponse({ error: "body must be a JSON object" }, 400);
+    if (raw.webSearch !== undefined && !isPlainRecord(raw.webSearch)) return jsonResponse({ error: "webSearch must be an object" }, 400);
+    if (raw.vision !== undefined && !isPlainRecord(raw.vision)) return jsonResponse({ error: "vision must be an object" }, 400);
+    const body = raw as {
+      webSearch?: { model?: unknown; reasoning?: unknown };
+      vision?: { model?: unknown; backend?: unknown; maxDescriptionsPerTurn?: unknown };
+    };
+    if (body.vision && body.vision.backend !== undefined
+      && body.vision.backend !== "openai" && body.vision.backend !== "anthropic") {
+      return jsonResponse({ error: "vision.backend must be openai or anthropic" }, 400);
+    }
+    if (body.vision && body.vision.maxDescriptionsPerTurn !== undefined
+      && (typeof body.vision.maxDescriptionsPerTurn !== "number"
+        || !Number.isInteger(body.vision.maxDescriptionsPerTurn)
+        || body.vision.maxDescriptionsPerTurn <= 0)) {
+      return jsonResponse({ error: "vision.maxDescriptionsPerTurn must be a positive integer" }, 400);
+    }
     if (body.webSearch) {
       config.webSearchSidecar = { ...config.webSearchSidecar };
       if (typeof body.webSearch.model === "string") config.webSearchSidecar.model = body.webSearch.model;
@@ -209,6 +237,12 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     if (body.vision) {
       config.visionSidecar = { ...config.visionSidecar };
       if (typeof body.vision.model === "string") config.visionSidecar.model = body.vision.model;
+      if (body.vision.backend === "openai" || body.vision.backend === "anthropic") {
+        config.visionSidecar.backend = body.vision.backend;
+      }
+      if (typeof body.vision.maxDescriptionsPerTurn === "number") {
+        config.visionSidecar.maxDescriptionsPerTurn = body.vision.maxDescriptionsPerTurn;
+      }
     }
     saveConfig(config);
     const ws = config.webSearchSidecar ?? {};
@@ -216,7 +250,11 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     return jsonResponse({
       ok: true,
       webSearch: { model: ws.model ?? "gpt-5.6-luna", reasoning: ws.reasoning ?? "low" },
-      vision: { model: vs.model ?? "gpt-5.6-luna" },
+      vision: {
+        model: vs.model ?? "gpt-5.6-luna",
+        backend: vs.backend,
+        maxDescriptionsPerTurn: vs.maxDescriptionsPerTurn,
+      },
     });
   }
 

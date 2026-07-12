@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
@@ -195,6 +195,129 @@ test("native openai-responses route carries prompt_cache_key + synthesized sessi
   } finally {
     server.stop(true);
     upstream.stop(true);
+  }
+});
+
+test("routed Claude requests give OpenAI sidecars main auth without leaking it to the routed provider", async () => {
+  const mainAccessToken = "main-chatgpt-access";
+  const mainAccountId = "main-chatgpt-account";
+  const imageBytes = "aGVsbG8taW1hZ2UtYnl0ZXM=";
+  const visionCaption = "A red OPENCODEX logo on a white background.";
+  const sidecarCalls: Array<{ headers: Headers; body: Record<string, any>; kind: "vision" | "web-search" }> = [];
+  const routedCalls: Array<{ authorization: string | null; body: Record<string, any> }> = [];
+
+  const forward = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const body = await req.json() as Record<string, any>;
+      const kind = Array.isArray(body.tools) && body.tools.some((tool: Record<string, unknown>) => tool.type === "web_search")
+        ? "web-search"
+        : "vision";
+      sidecarCalls.push({ headers: new Headers(req.headers), body, kind });
+      const text = kind === "vision" ? visionCaption : "OpenCodex search results are available.";
+      return new Response([
+        `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: text })}\n\n`,
+        `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { status: "completed" } })}\n\n`,
+      ].join(""), { headers: { "content-type": "text/event-stream" } });
+    },
+  });
+  const routed = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const body = await req.json() as Record<string, any>;
+      routedCalls.push({ authorization: req.headers.get("authorization"), body });
+      const choosesWebSearch = routedCalls.length === 1
+        && Array.isArray(body.tools)
+        && body.tools.some((tool: Record<string, any>) => tool.function?.name === "web_search");
+      const frames = choosesWebSearch
+        ? [
+            { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_search", function: { name: "web_search", arguments: '{"query":"latest opencodex"}' } }] } }] },
+            { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+          ]
+        : [
+            { choices: [{ index: 0, delta: { content: "Routed answer" } }] },
+            { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+          ];
+      return new Response(
+        frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join("") + "data: [DONE]\n\n",
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    },
+  });
+
+  const config = {
+    port: 0,
+    defaultProvider: "routed",
+    providers: {
+      forward: {
+        adapter: "openai-responses",
+        authMode: "forward",
+        baseUrl: `${forward.url.toString().replace(/\/$/, "")}/v1`,
+        allowPrivateNetwork: true,
+      },
+      routed: {
+        adapter: "openai-chat",
+        baseUrl: `${routed.url.toString().replace(/\/$/, "")}/v1`,
+        apiKey: "routed-provider-key",
+        allowPrivateNetwork: true,
+        noVisionModels: ["text-model"],
+      },
+    },
+    webSearchSidecar: { backend: "openai" },
+    visionSidecar: { backend: "openai" },
+  } as OcxConfig;
+  saveConfig(config);
+  writeFileSync(join(isolatedCodexHome!.path, "auth.json"), JSON.stringify({
+    tokens: { access_token: mainAccessToken, account_id: mainAccountId },
+  }));
+  const server = startServer(0);
+  const requestBody = {
+    model: "routed/text-model",
+    max_tokens: 128,
+    stream: false,
+    tools: [{ type: "web_search_20250305", name: "web_search" }],
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: "Search for OpenCodex and inspect this logo." },
+        { type: "image", source: { type: "base64", media_type: "image/png", data: imageBytes } },
+      ],
+    }],
+  };
+  try {
+    const authenticated = await postMessages(server.url.toString(), requestBody);
+    expect(authenticated.status).toBe(200);
+    await authenticated.text();
+
+    expect(sidecarCalls.map(call => call.kind).sort()).toEqual(["vision", "web-search"]);
+    for (const call of sidecarCalls) {
+      expect(call.headers.get("authorization")).toBe(`Bearer ${mainAccessToken}`);
+      expect(call.headers.get("chatgpt-account-id")).toBe(mainAccountId);
+    }
+    expect(sidecarCalls.find(call => call.kind === "vision")?.body.input).toEqual(expect.any(Array));
+    expect(sidecarCalls.find(call => call.kind === "web-search")?.body.tools?.[0]?.type).toBe("web_search");
+    expect(routedCalls.length).toBe(2);
+    expect(routedCalls.every(call => call.authorization === "Bearer routed-provider-key")).toBe(true);
+    const authenticatedRoutedBodies = JSON.stringify(routedCalls.map(call => call.body));
+    expect(authenticatedRoutedBodies).toContain(visionCaption);
+    expect(authenticatedRoutedBodies).not.toContain("[image omitted:");
+    expect(authenticatedRoutedBodies).not.toContain(imageBytes);
+
+    rmSync(join(isolatedCodexHome!.path, "auth.json"));
+    const sidecarCountBeforeNoLogin = sidecarCalls.length;
+    const noLogin = await postMessages(server.url.toString(), requestBody);
+    expect(noLogin.status).toBe(200);
+    await noLogin.text();
+
+    expect(sidecarCalls.length).toBe(sidecarCountBeforeNoLogin);
+    expect(routedCalls.at(-1)?.authorization).toBe("Bearer routed-provider-key");
+    const noLoginBody = JSON.stringify(routedCalls.at(-1)?.body);
+    expect(noLoginBody).toContain("[image omitted: this model is text-only and the vision sidecar is unavailable (no ChatGPT login)]");
+    expect(noLoginBody).not.toContain(imageBytes);
+  } finally {
+    server.stop(true);
+    forward.stop(true);
+    routed.stop(true);
   }
 });
 

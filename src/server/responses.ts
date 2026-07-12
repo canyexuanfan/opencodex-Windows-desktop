@@ -613,13 +613,13 @@ export async function handleResponses(
     }
   }
 
-  // Vision sidecar: the routed model can't see images (provider.noVisionModels). Give it "eyes" —
-  // describe each attached image with a gpt vision model via the ChatGPT passthrough and replace it
-  // with text BEFORE the main call, so the text-only model can reason about it.
+  // Vision sidecar: the routed model can't see images (provider.noVisionModels). Describe each
+  // attached image through the selected sidecar backend and replace it with text BEFORE the main
+  // call, so the text-only model can reason about it.
   const visionPlan = planVisionSidecar(config, route.provider, route.modelId, parsed, selectedForwardHeaders, authCtx);
   const recordSidecarOutcome = sidecarOutcomeRecorder(config, authCtx);
   if (visionPlan) {
-    await describeImagesInPlace(parsed, visionPlan.forwardProvider, selectedForwardHeaders, visionPlan.settings, options.abortSignal, recordSidecarOutcome);
+    await describeImagesInPlace(parsed, visionPlan, selectedForwardHeaders, options.abortSignal, recordSidecarOutcome);
   } else if (modelInList(route.provider.noVisionModels, route.modelId)) {
     // Sidecar-covered model but NO plan (no forward provider / missing forwarded auth / sidecar
     // disabled): fail closed — never forward raw images to a text-only upstream.

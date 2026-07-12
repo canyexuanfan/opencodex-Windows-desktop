@@ -485,10 +485,14 @@ export interface OcxSearchConfig {
 }
 
 export interface OcxVisionSidecarConfig {
-  /** Master switch. Default: enabled when a forward (ChatGPT) provider exists and the caller is logged in. */
+  /** Master switch. Default: enabled when the selected backend has a usable credential. */
   enabled?: boolean;
-  /** Vision model that describes images (must be a native ChatGPT model with image input). */
+  /** Description backend. Unset prefers a usable stored Anthropic OAuth credential, else OpenAI. */
+  backend?: "openai" | "anthropic";
+  /** Vision model that describes images. */
   model?: string;
+  /** Max description cache misses admitted in one main-model turn. Zero disables description calls. */
+  maxDescriptionsPerTurn?: number;
   /** Sidecar fetch timeout (ms). */
   timeoutMs?: number;
 }
