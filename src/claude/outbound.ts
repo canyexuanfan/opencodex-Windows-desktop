@@ -54,7 +54,7 @@ export function anthropicErrorResponse(status: number, message: string, type?: s
  * subtract the full cache detail (devlog 070 — subtracting reads only inflated the
  * non-cached input Claude Code displays by the write share).
  */
-export function anthropicUsage(usage: unknown): Rec {
+export function anthropicUsage(usage: unknown, webSearchRequests = 0): Rec {
   const u = isRec(usage) ? usage : {};
   const details = isRec(u.input_tokens_details) ? u.input_tokens_details : {};
   const cached = typeof details.cached_tokens === "number" ? details.cached_tokens : 0;
@@ -66,11 +66,44 @@ export function anthropicUsage(usage: unknown): Rec {
     output_tokens: output,
     cache_read_input_tokens: cached,
     cache_creation_input_tokens: cacheWrite,
+    // Only successful searches are billed/counted (Anthropic contract; Claude Code cost accounting).
+    ...(webSearchRequests > 0 ? { server_tool_use: { web_search_requests: webSearchRequests } } : {}),
   };
 }
 
 function sseFrame(name: string, data: Rec): string {
   return `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+/**
+ * Map a Responses `web_search_call` item to its Anthropic pair: the server_tool_use
+ * input (query/queries) and the web_search_tool_result content (hits, or the error
+ * object when the search failed). Shared by the SSE and JSON translation paths.
+ */
+function webSearchPairFromItem(item: Rec): { id: string; input: Rec; resultContent: unknown; completed: boolean } {
+  const action = isRec(item.action) ? item.action : {};
+  const queries = Array.isArray(action.queries)
+    ? action.queries.filter((q): q is string => typeof q === "string" && q.length > 0)
+    : [];
+  const query = typeof action.query === "string" ? action.query : "";
+  const input: Rec = queries.length > 1 ? { queries } : { query: queries[0] ?? query };
+  const completed = item.status !== "failed";
+  let resultContent: unknown;
+  if (completed) {
+    const hits: Rec[] = [];
+    if (Array.isArray(item.sources)) {
+      for (const s of item.sources) {
+        if (isRec(s) && typeof s.url === "string" && s.url.length > 0) {
+          hits.push({ type: "web_search_result", title: typeof s.title === "string" ? s.title : "", url: s.url });
+        }
+      }
+    }
+    resultContent = hits;
+  } else {
+    resultContent = { type: "web_search_tool_result_error", error_code: "unavailable" };
+  }
+  const id = typeof item.id === "string" && item.id.length > 0 ? item.id : `srvtoolu_${uuid()}`;
+  return { id, input, resultContent, completed };
 }
 
 function messageSnapshot(model: string): Rec {
@@ -109,6 +142,7 @@ export function responsesSseToAnthropicSse(
   let blockIndex = 0;
   let open: OpenBlock | null = null;
   let sawToolUse = false;
+  let webSearchRequests = 0;
   let pingTimer: ReturnType<typeof setInterval> | undefined;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
@@ -164,7 +198,7 @@ export function responsesSseToAnthropicSse(
         emit("message_delta", {
           type: "message_delta",
           delta: { stop_reason: stopReason, stop_sequence: null },
-          usage: anthropicUsage(usage),
+          usage: anthropicUsage(usage, webSearchRequests),
         });
         emit("message_stop", { type: "message_stop" });
       };
@@ -234,7 +268,35 @@ export function responsesSseToAnthropicSse(
           }
           case "response.output_item.done": {
             const item = isRec(data.item) ? data.item : null;
-            if (!open || !item) break;
+            if (!item) break;
+            // Server-side web search (native passthrough or sidecar bridge): translate the
+            // finished call into the Anthropic pair Claude Code natively parses —
+            // server_tool_use (query via input_json_delta) + web_search_tool_result.
+            // Never marks sawToolUse (stop_reason stays end_turn unless a real tool ran).
+            if (item.type === "web_search_call") {
+              ensureStarted();
+              closeOpenBlock();
+              const pair = webSearchPairFromItem(item);
+              const toolIndex = blockIndex++;
+              emit("content_block_start", {
+                type: "content_block_start", index: toolIndex,
+                content_block: { type: "server_tool_use", id: pair.id, name: "web_search" },
+              });
+              emit("content_block_delta", {
+                type: "content_block_delta", index: toolIndex,
+                delta: { type: "input_json_delta", partial_json: JSON.stringify(pair.input) },
+              });
+              emit("content_block_stop", { type: "content_block_stop", index: toolIndex });
+              const resultIndex = blockIndex++;
+              emit("content_block_start", {
+                type: "content_block_start", index: resultIndex,
+                content_block: { type: "web_search_tool_result", tool_use_id: pair.id, content: pair.resultContent },
+              });
+              emit("content_block_stop", { type: "content_block_stop", index: resultIndex });
+              if (pair.completed) webSearchRequests++;
+              break;
+            }
+            if (!open) break;
             // Close the matching open block (message/reasoning items close implicitly on
             // the next block; function_call items must close here so tool input parses).
             if (open.kind === "tool_use" && item.type === "function_call") closeOpenBlock();
@@ -322,6 +384,7 @@ export function responsesJsonToAnthropicMessage(json: unknown, model: string): R
   const output = Array.isArray(body.output) ? body.output : [];
   const content: Rec[] = [];
   let sawToolUse = false;
+  let webSearchRequests = 0;
 
   for (const raw of output) {
     if (!isRec(raw)) continue;
@@ -366,6 +429,14 @@ export function responsesJsonToAnthropicMessage(json: unknown, model: string): R
         });
         break;
       }
+      case "web_search_call": {
+        // Server-side search: emit the Anthropic pair. Does NOT set sawToolUse.
+        const pair = webSearchPairFromItem(raw);
+        content.push({ type: "server_tool_use", id: pair.id, name: "web_search", input: pair.input });
+        content.push({ type: "web_search_tool_result", tool_use_id: pair.id, content: pair.resultContent });
+        if (pair.completed) webSearchRequests++;
+        break;
+      }
       default:
         break;
     }
@@ -384,7 +455,7 @@ export function responsesJsonToAnthropicMessage(json: unknown, model: string): R
     model,
     stop_reason: stopReason,
     stop_sequence: null,
-    usage: anthropicUsage(body.usage),
+    usage: anthropicUsage(body.usage, webSearchRequests),
   };
 }
 
@@ -407,7 +478,8 @@ export async function collectAnthropicMessage(stream: ReadableStream<Uint8Array>
 
   const closeBlock = () => {
     if (!openBlock) return;
-    if (openBlock.type === "tool_use") {
+    // server_tool_use streams its query via input_json_delta exactly like tool_use (audit F3).
+    if (openBlock.type === "tool_use" || openBlock.type === "server_tool_use") {
       try { openBlock.input = toolJson.length > 0 ? JSON.parse(toolJson) : {}; } catch { openBlock.input = {}; }
     }
     content.push(openBlock);

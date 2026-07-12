@@ -379,11 +379,14 @@ export function bridgeToResponsesSSE(
       // Finalize an open web-search cell. `status` is "completed" on a normal end, or "failed" when
       // the stream terminates (error/incomplete) while a search was still in flight, so Codex never
       // leaves a "Searching the web" spinner spinning forever.
-      const closeCurrentWebSearch = (status: "completed" | "failed", queries: string[]) => {
+      // `sources` rides on the done item (additive field; codex-rs serde ignores unknown fields) so
+      // downstream translators (claude outbound) can fill web_search_tool_result content.
+      const closeCurrentWebSearch = (status: "completed" | "failed", queries: string[], sources?: { url: string; title?: string }[]) => {
         if (!currentWebSearch) return;
         const item = {
           type: "web_search_call", id: currentWebSearch.itemId, status,
           action: webSearchAction(queries),
+          ...(sources && sources.length > 0 ? { sources } : {}),
         };
         emit("response.output_item.done", { output_index: currentWebSearch.outputIndex, item });
         finishedItems.push(item as OutputItem);
@@ -569,7 +572,7 @@ export function bridgeToResponsesSSE(
                 });
                 currentWebSearch = { itemId: event.id, outputIndex };
               }
-              closeCurrentWebSearch(event.status ?? "completed", event.queries);
+              closeCurrentWebSearch(event.status ?? "completed", event.queries, event.sources);
               // Queue this search's sources for the next assistant message (dedup by URL).
               if (event.sources) {
                 const seen = new Set(pendingWebSources.map(s => s.url));
@@ -861,6 +864,7 @@ export function buildResponseJSON(
         output.push({
           type: "web_search_call", id: e.id, status: e.status ?? "completed",
           action: webSearchAction(e.queries),
+          ...(e.sources && e.sources.length > 0 ? { sources: e.sources } : {}),
         });
         if (e.sources) {
           const seen = new Set(pendingWebSources.map(s => s.url));

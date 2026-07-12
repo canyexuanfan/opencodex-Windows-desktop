@@ -3,6 +3,7 @@ import {
   anthropicErrorBody,
   anthropicErrorType,
   anthropicUsage,
+  collectAnthropicMessage,
   responsesJsonToAnthropicMessage,
   responsesSseToAnthropicSse,
 } from "../src/claude/outbound";
@@ -205,5 +206,146 @@ describe("claude outbound non-stream + helpers", () => {
   test("usage mapping tolerates missing fields", () => {
     expect(anthropicUsage(undefined)).toEqual({ input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
     expect(anthropicUsage({ input_tokens: 7, output_tokens: 2 })).toEqual({ input_tokens: 7, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
+  });
+});
+
+describe("claude outbound web_search translation", () => {
+  const wsItem = (over: Record<string, unknown> = {}) => ({
+    type: "web_search_call", id: "ws_1", status: "completed",
+    action: { type: "search", query: "latest bun release" },
+    sources: [
+      { url: "https://bun.sh/blog", title: "Bun Blog" },
+      { url: "https://github.com/oven-sh/bun/releases" },
+    ],
+    ...over,
+  });
+
+  test("T1 single search -> server_tool_use + web_search_tool_result pair with usage count", async () => {
+    const upstream = [
+      sse("response.created", { response: { id: "r", status: "in_progress" } }),
+      sse("response.output_item.added", { output_index: 0, item: { type: "web_search_call", id: "ws_1", status: "in_progress" } }),
+      sse("response.output_item.done", { output_index: 0, item: wsItem() }),
+      sse("response.output_item.added", { output_index: 1, item: { type: "message", id: "m1" } }),
+      sse("response.output_text.delta", { item_id: "m1", output_index: 1, content_index: 0, delta: "answer" }),
+      sse("response.output_item.done", { output_index: 1, item: { type: "message", id: "m1" } }),
+      sse("response.completed", { response: { status: "completed", usage: { input_tokens: 9, output_tokens: 3 } } }),
+    ].join("");
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
+    expect(events.map(e => e.name)).toEqual([
+      "message_start", "ping",
+      "content_block_start", "content_block_delta", "content_block_stop", // server_tool_use
+      "content_block_start", "content_block_stop", // web_search_tool_result
+      "content_block_start", "content_block_delta", "content_block_stop", // text
+      "message_delta", "message_stop",
+    ]);
+    // server_tool_use start has no inline input; query arrives via input_json_delta.
+    expect(events[2].data.content_block).toEqual({ type: "server_tool_use", id: "ws_1", name: "web_search" });
+    expect(events[3].data.delta).toEqual({ type: "input_json_delta", partial_json: JSON.stringify({ query: "latest bun release" }) });
+    const result = events[5].data.content_block;
+    expect(result.type).toBe("web_search_tool_result");
+    expect(result.tool_use_id).toBe("ws_1");
+    expect(result.content).toEqual([
+      { type: "web_search_result", title: "Bun Blog", url: "https://bun.sh/blog" },
+      { type: "web_search_result", title: "", url: "https://github.com/oven-sh/bun/releases" },
+    ]);
+    const usage = events[10].data.usage;
+    expect(usage.server_tool_use).toEqual({ web_search_requests: 1 });
+    // stop_reason stays end_turn: server_tool_use is not a client tool call.
+    expect(events[10].data.delta.stop_reason).toBe("end_turn");
+  });
+
+  test("T2 multi-search -> two pairs, usage 2, monotonic indexes", async () => {
+    const upstream = [
+      sse("response.created", { response: {} }),
+      sse("response.output_item.done", { output_index: 0, item: wsItem() }),
+      sse("response.output_item.done", { output_index: 1, item: wsItem({ id: "ws_2", action: { type: "search", queries: ["a", "b"] }, sources: [] }) }),
+      sse("response.completed", { response: { status: "completed", usage: {} } }),
+    ].join("");
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
+    const starts = events.filter(e => e.name === "content_block_start");
+    expect(starts.map(e => e.data.content_block.type)).toEqual([
+      "server_tool_use", "web_search_tool_result", "server_tool_use", "web_search_tool_result",
+    ]);
+    const indexes = starts.map(e => e.data.index);
+    expect(indexes).toEqual([0, 1, 2, 3]);
+    // Batched queries keep the plural form in input.
+    const secondDelta = events.filter(e => e.name === "content_block_delta")[1];
+    expect(secondDelta.data.delta.partial_json).toBe(JSON.stringify({ queries: ["a", "b"] }));
+    const msgDelta = events.find(e => e.name === "message_delta")!;
+    expect(msgDelta.data.usage.server_tool_use).toEqual({ web_search_requests: 2 });
+  });
+
+  test("T3 failed search -> error-shaped content, NOT counted in usage", async () => {
+    const upstream = [
+      sse("response.created", { response: {} }),
+      sse("response.output_item.done", { output_index: 0, item: wsItem({ status: "failed", sources: undefined }) }),
+      sse("response.completed", { response: { status: "completed", usage: {} } }),
+    ].join("");
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
+    const result = events.filter(e => e.name === "content_block_start")[1].data.content_block;
+    expect(result.content).toEqual({ type: "web_search_tool_result_error", error_code: "unavailable" });
+    const msgDelta = events.find(e => e.name === "message_delta")!;
+    expect(msgDelta.data.usage.server_tool_use).toBeUndefined();
+  });
+
+  test("T4 no sources -> empty hits array still emits the pair (search count registers)", async () => {
+    const upstream = [
+      sse("response.created", { response: {} }),
+      sse("response.output_item.done", { output_index: 0, item: wsItem({ sources: undefined }) }),
+      sse("response.completed", { response: { status: "completed", usage: {} } }),
+    ].join("");
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
+    const result = events.filter(e => e.name === "content_block_start")[1].data.content_block;
+    expect(result.content).toEqual([]);
+    expect(events.find(e => e.name === "message_delta")!.data.usage.server_tool_use).toEqual({ web_search_requests: 1 });
+  });
+
+  test("T5 JSON path: pair emitted, stop_reason preserved, failed not counted", () => {
+    const msg = responsesJsonToAnthropicMessage({
+      status: "completed",
+      output: [
+        wsItem(),
+        wsItem({ id: "ws_9", status: "failed" }),
+        { type: "message", id: "m", role: "assistant", content: [{ type: "output_text", text: "done" }] },
+      ],
+      usage: { input_tokens: 5, output_tokens: 1 },
+    }, "claude-ocx-x") as Record<string, any>;
+    expect(msg.stop_reason).toBe("end_turn");
+    expect(msg.content[0]).toEqual({ type: "server_tool_use", id: "ws_1", name: "web_search", input: { query: "latest bun release" } });
+    expect(msg.content[1]).toMatchObject({ type: "web_search_tool_result", tool_use_id: "ws_1" });
+    expect(msg.content[1].content).toHaveLength(2);
+    expect(msg.content.map((c: Record<string, unknown>) => c.type)).toEqual([
+      "server_tool_use", "web_search_tool_result", "server_tool_use", "web_search_tool_result", "text",
+    ]);
+    expect(msg.content[3]).toMatchObject({ type: "web_search_tool_result", tool_use_id: "ws_9" });
+    expect(msg.content[3].content).toEqual({ type: "web_search_tool_result_error", error_code: "unavailable" });
+    expect(msg.usage.server_tool_use).toEqual({ web_search_requests: 1 });
+  });
+
+  test("T6 regression: turn without web_search emits no server_tool_use and no usage field", async () => {
+    const upstream = [
+      sse("response.created", { response: {} }),
+      sse("response.output_item.added", { output_index: 0, item: { type: "message", id: "m1" } }),
+      sse("response.output_text.delta", { item_id: "m1", output_index: 0, content_index: 0, delta: "plain" }),
+      sse("response.completed", { response: { status: "completed", usage: { input_tokens: 2, output_tokens: 1 } } }),
+    ].join("");
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
+    expect(events.some(e => e.name === "content_block_start" && e.data.content_block.type === "server_tool_use")).toBe(false);
+    expect(events.find(e => e.name === "message_delta")!.data.usage.server_tool_use).toBeUndefined();
+  });
+
+  test("T7 collect path: server_tool_use input survives aggregation, usage passthrough", async () => {
+    const upstream = [
+      sse("response.created", { response: {} }),
+      sse("response.output_item.done", { output_index: 0, item: wsItem() }),
+      sse("response.output_text.delta", { item_id: "m1", output_index: 1, content_index: 0, delta: "hi" }),
+      sse("response.completed", { response: { status: "completed", usage: { input_tokens: 4, output_tokens: 2 } } }),
+    ].join("");
+    const anthropicSse = responsesSseToAnthropicSse(streamFrom(upstream), "m");
+    const msg = await collectAnthropicMessage(anthropicSse, "m") as Record<string, any>;
+    expect(msg.content.map((c: Record<string, unknown>) => c.type)).toEqual(["server_tool_use", "web_search_tool_result", "text"]);
+    expect(msg.content[0].input).toEqual({ query: "latest bun release" });
+    expect(msg.content[1].tool_use_id).toBe("ws_1");
+    expect(msg.usage.server_tool_use).toEqual({ web_search_requests: 1 });
   });
 });
