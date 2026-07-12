@@ -191,24 +191,32 @@ export default function Usage({ apiBase }: { apiBase: string }) {
   const [hoverDay, setHoverDay] = useState<number | null>(null);
   const [hoverCell, setHoverCell] = useState<{ wi: number; di: number; x: number; y: number } | null>(null);
 
-  const fetchUsage = useCallback(async (nextRange: Range) => {
+  const fetchUsage = useCallback(async (nextRange: Range, signal: AbortSignal) => {
     setLoading(true);
     try {
-      const res = await fetch(`${apiBase}/api/usage?range=${nextRange}`);
+      const res = await fetch(`${apiBase}/api/usage?range=${nextRange}`, { signal });
       if (!res.ok) throw new Error("fetch failed");
-      setData(await res.json() as UsageResponse);
+      const json = await res.json() as UsageResponse;
+      if (signal.aborted) return;
+      setData(json);
     } catch {
+      // A stale request (range/apiBase changed, or unmount) must not overwrite newer state.
+      if (signal.aborted) return;
       setData(null);
     } finally {
-      setLoading(false);
+      if (!signal.aborted) setLoading(false);
     }
   }, [apiBase]);
 
   useEffect(() => {
+    const controller = new AbortController();
     const timeout = window.setTimeout(() => {
-      void fetchUsage(range);
+      void fetchUsage(range, controller.signal);
     }, 0);
-    return () => window.clearTimeout(timeout);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
   }, [fetchUsage, range]);
 
   const heatmap = useMemo(() => buildHeatmap(data?.days ?? []), [data?.days]);
