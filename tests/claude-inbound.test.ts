@@ -259,3 +259,52 @@ describe("prompt cache key provenance (devlog 130 B3)", () => {
     expect(resolveInboundModel("claude-ocx-cursor--gpt-5.6-luna[1m]")).toBe("cursor/gpt-5.6-luna");
   });
 });
+
+describe("bundled-skill elision for routed models (devlog 260712 060)", () => {
+  const BIG = "ANTHROPIC DOC BUNDLE ".repeat(500);
+  function requestWithSkill(skillName: string, cc?: { blockedSkills?: string[] }) {
+    return {
+      body: anthropicToResponsesTranslation({
+        model: "gemini/gemini-3-pro",
+        max_tokens: 100,
+        messages: [
+          { role: "user", content: "load it" },
+          { role: "assistant", content: [{ type: "tool_use", id: "call_skill_1", name: "Skill", input: { command: skillName } }] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "call_skill_1", content: [{ type: "text", text: BIG }] }] },
+          { role: "assistant", content: [{ type: "tool_use", id: "call_other", name: "Bash", input: { command: "ls" } }] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "call_other", content: [{ type: "text", text: "file.txt" }] }] },
+        ],
+      }, cc as never).body,
+    };
+  }
+  function outputFor(body: Record<string, unknown>, callId: string): unknown {
+    const items = body.input as Array<Record<string, unknown>>;
+    return items.find(i => i.type === "function_call_output" && i.call_id === callId)?.output;
+  }
+
+  test("claude-api result body is stubbed by default; pairing and other tools intact", () => {
+    const { body } = requestWithSkill("claude-api");
+    const skillOut = outputFor(body, "call_skill_1");
+    expect(typeof skillOut).toBe("string");
+    expect(String(skillOut)).toContain("elided");
+    expect(String(skillOut).length).toBeLessThan(500);
+    // Non-blocked tool result untouched; the translated body still parses.
+    const bashOut = outputFor(body, "call_other") as Array<Record<string, unknown>>;
+    expect(bashOut[0]?.text).toBe("file.txt");
+    expect(() => parseRequest(body)).not.toThrow();
+  });
+
+  test("non-blocked skills keep their content; empty blockedSkills disables the default", () => {
+    const { body } = requestWithSkill("pdf-tools");
+    const out = outputFor(body, "call_skill_1") as Array<Record<string, unknown>>;
+    expect(out[0]?.text).toBe(BIG);
+    const { body: off } = requestWithSkill("claude-api", { blockedSkills: [] });
+    const offOut = outputFor(off, "call_skill_1") as Array<Record<string, unknown>>;
+    expect(offOut[0]?.text).toBe(BIG);
+  });
+
+  test("custom blocklist matches case-insensitively inside the Skill input", () => {
+    const { body } = requestWithSkill("My-Custom-Skill", { blockedSkills: ["my-custom-skill"] });
+    expect(String(outputFor(body, "call_skill_1"))).toContain("elided");
+  });
+});

@@ -131,30 +131,34 @@ test("PUT/GET round-trips auto-context (devlog 260712 020)", async () => {
     let get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
     expect(get.autoContext).toBe(true);
     expect(get.autoCompactWindow).toBeNull();
+    expect(get.blockedSkills).toBeNull(); // null = built-in default (claude-api)
 
     const put = await fetch(new URL("/api/claude-code", server.url), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ autoContext: false, autoCompactWindow: 400_000 }),
+      body: JSON.stringify({ autoContext: false, autoCompactWindow: 400_000, blockedSkills: ["claude-api", "my-skill"] }),
     });
     expect(put.status).toBe(200);
     let persisted = loadConfig();
     expect(persisted.claudeCode?.autoContext).toBe(false);
     expect(persisted.claudeCode?.autoCompactWindow).toBe(400_000);
+    expect(persisted.claudeCode?.blockedSkills).toEqual(["claude-api", "my-skill"]);
     get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
     expect(get.autoContext).toBe(false);
     expect(get.autoCompactWindow).toBe(400_000);
+    expect(get.blockedSkills).toEqual(["claude-api", "my-skill"]);
 
     // true drops the key (default-on); null resets the window to default.
     const clear = await fetch(new URL("/api/claude-code", server.url), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ autoContext: true, autoCompactWindow: null }),
+      body: JSON.stringify({ autoContext: true, autoCompactWindow: null, blockedSkills: null }),
     });
     expect(clear.status).toBe(200);
     persisted = loadConfig();
     expect(persisted.claudeCode?.autoContext).toBeUndefined();
     expect(persisted.claudeCode?.autoCompactWindow).toBeUndefined();
+    expect(persisted.claudeCode?.blockedSkills).toBeUndefined();
   } finally {
     server.stop(true);
   }
@@ -210,6 +214,9 @@ test("PUT validation rejects bad shapes", async () => {
       [{ maxContextTokens: "1000000" }, "maxContextTokens must be a positive integer or null"],
       [{ alwaysEnableEffort: "on" }, "alwaysEnableEffort must be a boolean"],
       [{ autoContext: "on" }, "autoContext must be a boolean"],
+      [{ blockedSkills: "claude-api" }, "blockedSkills must be an array of non-empty strings, or null"],
+      [{ blockedSkills: [""] }, "blockedSkills must be an array of non-empty strings, or null"],
+      [{ blockedSkills: [1] }, "blockedSkills must be an array of non-empty strings, or null"],
       [{ autoCompactWindow: 50_000 }, "autoCompactWindow must be an integer between 100000 and 1000000, or null"],
       [{ autoCompactWindow: 2_000_000 }, "autoCompactWindow must be an integer between 100000 and 1000000, or null"],
       [{ autoCompactWindow: 350_000.5 }, "autoCompactWindow must be an integer between 100000 and 1000000, or null"],

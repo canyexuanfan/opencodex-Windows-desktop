@@ -106,7 +106,19 @@ Claude 페이지에서 각 별칭이 어떤 라우팅 모델을 뜻할지 정하
 미리보기. 사이드바에는 **Claude ON** 토글도 있습니다 (라벨은 의도적으로 모든 언어에서
 동일합니다) — 인바운드를 켜고 끕니다.
 
+## 번들 스킬 차단 (blockedSkills)
+
+Claude Code의 번들 `claude-api` 스킬은 로드되는 순간 약 840KB(약 13.6만 토큰)의 Anthropic
+문서 뭉치를 대화에 주입하고, Claude 모델 이름을 지나가듯 언급만 해도 자동 발동합니다
+(anthropics/claude-code#74473, #63566, #69164). 타사 라우팅 모델은 이 문서로 학습되지
+않았으므로, opencodex는 기본적으로 라우팅 요청에서 해당 스킬의 tool 결과 본문을 짧은
+안내문으로 치환합니다. 네이티브 Anthropic 패스스루는 건드리지 않아 Claude 모델은 전체
+내용을 그대로 받습니다. `claudeCode.blockedSkills`로 설정합니다 (기본 `["claude-api"]`,
+`[]`이면 끔, 이름을 추가하면 확장). 치환은 tool 호출/결과 짝을 유지하므로 재전송이
+깨지지 않습니다.
+
 ## 모델 매핑
+
 
 `claudeCode.modelMap`은 인바운드 Anthropic 모델 id를 라우팅 전에 재작성합니다:
 

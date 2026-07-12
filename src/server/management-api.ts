@@ -682,6 +682,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       alwaysEnableEffort: config.claudeCode?.alwaysEnableEffort === true,
       autoContext: config.claudeCode?.autoContext !== false,
       autoCompactWindow: config.claudeCode?.autoCompactWindow ?? null,
+      blockedSkills: config.claudeCode?.blockedSkills ?? null,
       fastMode: config.fastMode,
       contextWindows,
       effectiveModelEnv: effectiveModelEnv(config.claudeCode, contextWindows),
@@ -691,7 +692,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     });
   }
   if (url.pathname === "/api/claude-code" && req.method === "PUT") {
-    let body: { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; systemEnv?: unknown; fastMode?: unknown; maxContextTokens?: unknown; alwaysEnableEffort?: unknown; tierModels?: unknown; autoContext?: unknown; autoCompactWindow?: unknown };
+    let body: { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; systemEnv?: unknown; fastMode?: unknown; maxContextTokens?: unknown; alwaysEnableEffort?: unknown; tierModels?: unknown; autoContext?: unknown; autoCompactWindow?: unknown; blockedSkills?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     const next = { ...(config.claudeCode ?? {}) };
     if (body.enabled !== undefined) {
@@ -732,6 +733,17 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
         return jsonResponse({ error: "autoCompactWindow must be an integer between 100000 and 1000000, or null" }, 400);
       } else {
         next.autoCompactWindow = body.autoCompactWindow;
+      }
+    }
+    if (body.blockedSkills !== undefined) {
+      // null resets to the default (["claude-api"]); an array (possibly empty = off)
+      // must contain non-empty strings (devlog 060).
+      if (body.blockedSkills === null) {
+        delete next.blockedSkills;
+      } else if (!Array.isArray(body.blockedSkills) || body.blockedSkills.some(s => typeof s !== "string" || s.trim() === "")) {
+        return jsonResponse({ error: "blockedSkills must be an array of non-empty strings, or null" }, 400);
+      } else {
+        next.blockedSkills = (body.blockedSkills as string[]).map(s => s.trim());
       }
     }
     if (body.tierModels !== undefined) {

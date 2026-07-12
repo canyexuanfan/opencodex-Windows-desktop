@@ -121,6 +121,40 @@ function pushUserMessage(input: Rec[], blocks: Rec[]): void {
 }
 
 /**
+ * Bundled-skill elision for routed models (devlog 060). Claude Code loads a skill
+ * by calling the `Skill` tool; the ~136k-token document bundle then rides the
+ * paired tool_result on EVERY subsequent turn. Third-party models are not trained
+ * on these Anthropic bundles, so for blocked skills we substitute the result body
+ * with a short stub — the function_call_output item itself stays (pairing intact).
+ * Native Anthropic passthrough never reaches this translation.
+ */
+export const DEFAULT_BLOCKED_SKILLS = ["claude-api"];
+
+function skillElisionStub(callId: string): string {
+  return "[opencodex] Skill document bundle elided for routed models (claudeCode.blockedSkills). "
+    + `The skill loaded, but its reference documents were removed to save context (call ${callId}). `
+    + "Answer from general knowledge instead of citing the bundle.";
+}
+
+/** Collect Skill-tool call ids whose input names a blocked skill. */
+function blockedSkillCallIds(messages: readonly unknown[], blocked: readonly string[]): Set<string> {
+  const ids = new Set<string>();
+  if (blocked.length === 0) return ids;
+  const needles = blocked.map(name => name.toLowerCase()).filter(name => name.length > 0);
+  if (needles.length === 0) return ids;
+  for (const msg of messages) {
+    if (!isRec(msg) || msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+    for (const block of msg.content) {
+      if (!isRec(block) || block.type !== "tool_use" || block.name !== "Skill") continue;
+      if (typeof block.id !== "string" || block.id.length === 0) continue;
+      const inputJson = JSON.stringify(block.input ?? {}).toLowerCase();
+      if (needles.some(name => inputJson.includes(name))) ids.add(block.id);
+    }
+  }
+  return ids;
+}
+
+/**
  * Claude Code (observed 2026-07-11, real CLI smoke) sends `role:"system"` entries in
  * `messages` despite the published API having no system role. Map them to Responses
  * instructions text: the native ChatGPT backend rejects system message items in
@@ -137,7 +171,7 @@ function systemMessageText(content: unknown): string {
   return parts.join("\n\n");
 }
 
-function userMessageToItems(content: unknown, input: Rec[]): void {
+function userMessageToItems(content: unknown, input: Rec[], elideCallIds: ReadonlySet<string> = new Set()): void {
   if (typeof content === "string") {
     if (content.length > 0) pushUserMessage(input, [{ type: "input_text", text: content }]);
     return;
@@ -163,7 +197,12 @@ function userMessageToItems(content: unknown, input: Rec[]): void {
         if (typeof raw.tool_use_id !== "string" || raw.tool_use_id.length === 0) {
           throw new AnthropicRequestError("tool_result requires tool_use_id");
         }
-        input.push({ type: "function_call_output", call_id: raw.tool_use_id, output: toolResultOutput(raw) });
+        input.push({
+          type: "function_call_output",
+          call_id: raw.tool_use_id,
+          // Blocked-skill bundles are stubbed out for routed models (devlog 060).
+          output: elideCallIds.has(raw.tool_use_id) ? skillElisionStub(raw.tool_use_id) : toolResultOutput(raw),
+        });
         break;
       }
       case "document":
@@ -298,9 +337,10 @@ export function anthropicToResponsesTranslation(raw: unknown, cc?: OcxClaudeCode
   const systemParts: string[] = [];
   const topLevelSystem = systemToInstructions(raw.system);
   if (topLevelSystem !== undefined) systemParts.push(topLevelSystem);
+  const elideCallIds = blockedSkillCallIds(raw.messages, cc?.blockedSkills ?? DEFAULT_BLOCKED_SKILLS);
   for (const msg of raw.messages) {
     if (!isRec(msg)) throw new AnthropicRequestError("each message must be an object");
-    if (msg.role === "user") userMessageToItems(msg.content, input);
+    if (msg.role === "user") userMessageToItems(msg.content, input, elideCallIds);
     else if (msg.role === "assistant") assistantMessageToItems(msg.content, input);
     else if (msg.role === "system") {
       const text = systemMessageText(msg.content);

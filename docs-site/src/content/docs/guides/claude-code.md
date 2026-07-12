@@ -112,6 +112,17 @@ quickstart and manual env block, default/small-fast slot pickers, a model map ed
 of the aliases the picker will discover. The sidebar also carries a **Claude ON** toggle (the label
 is intentionally the same in every language) that flips the inbound on and off.
 
+## Bundled-skill elision (blockedSkills)
+
+Claude Code's bundled `claude-api` skill injects an ~840KB Anthropic documentation bundle
+(~136k tokens) into the conversation the moment it loads — and it auto-triggers on casual
+mentions of Claude models (see anthropics/claude-code#74473, #63566, #69164). Third-party
+routed models are not trained on that bundle, so by default opencodex replaces the skill's
+tool-result body with a short stub on ROUTED requests. Native Anthropic passthrough is
+untouched — Claude models keep the full content. Configure with `claudeCode.blockedSkills`
+(default `["claude-api"]`; `[]` turns the elision off; add more skill names to widen it).
+The stub keeps the tool call/result pairing intact, so nothing breaks on replay.
+
 ## Model map
 
 `claudeCode.modelMap` rewrites inbound Anthropic model ids to routed models before routing:

@@ -302,6 +302,16 @@ export interface OcxClaudeCodeConfig {
   autoContext?: boolean;
   /** Compact-window tokens for auto-context. Default 350_000. */
   autoCompactWindow?: number;
+  /**
+   * Bundled-skill content elision for ROUTED (non-Anthropic) models (devlog 260712
+   * 060): Skill-tool results whose skill name matches an entry here are replaced
+   * with a short stub in the anthropic->responses translation. Third-party models
+   * are not trained on these Anthropic doc bundles, and claude-api alone injects
+   * ~136k tokens (GitHub anthropics/claude-code#74473). Native Anthropic
+   * passthrough never goes through the translation, so Claude models keep the
+   * full content. Default: ["claude-api"]. Empty array = explicitly off.
+   */
+  blockedSkills?: string[];
 }
 
 export interface OcxConfig {
