@@ -28,6 +28,7 @@ import { getUsageDebugLogEntries } from "../usage/debug";
 import { parseRange, summarizeUsage } from "../usage/summary";
 import { stripCodexRuntimeProviderFields } from "../codex/auth-context";
 import { getDebugLogEntries } from "../lib/debug-log-buffer";
+import { getInjectionDebugLogEntries } from "../lib/injection-debug-log";
 import {
   clearDebugSettings,
   clearDebugSetting,
@@ -205,6 +206,11 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   if (url.pathname === "/api/debug/usage-logs" && req.method === "GET") {
     const { after, limit } = parseDebugLogQuery(url);
     return jsonResponse(getUsageDebugLogEntries({ after, limit }));
+  }
+
+  if (url.pathname === "/api/debug/injection-logs" && req.method === "GET") {
+    const { after, limit } = parseDebugLogQuery(url);
+    return jsonResponse(getInjectionDebugLogEntries({ after, limit }));
   }
 
   if (url.pathname === "/api/debug" && req.method === "PUT") {
