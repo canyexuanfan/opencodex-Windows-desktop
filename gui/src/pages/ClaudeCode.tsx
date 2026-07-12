@@ -12,6 +12,7 @@ interface ClaudeCodeState {
   alwaysEnableEffort: boolean;
   autoContext: boolean;
   autoCompactWindow: number | null;
+  injectAgents: boolean;
   model: string;
   smallFastModel: string;
   tierModels: { opus?: string; sonnet?: string; haiku?: string; fable?: string };
@@ -35,7 +36,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   const load = async () => {
     try {
       const r = await fetch(`${apiBase}/api/claude-code`).then(res => res.json());
-      setState({ ...r, systemEnv: r.systemEnv !== false, fastMode: r.fastMode ?? null, maxContextTokens: r.maxContextTokens ?? null, alwaysEnableEffort: r.alwaysEnableEffort === true, autoContext: r.autoContext !== false, autoCompactWindow: r.autoCompactWindow ?? null, tierModels: r.tierModels ?? {}, effectiveModelEnv: r.effectiveModelEnv ?? {} });
+      setState({ ...r, systemEnv: r.systemEnv !== false, fastMode: r.fastMode ?? null, maxContextTokens: r.maxContextTokens ?? null, alwaysEnableEffort: r.alwaysEnableEffort === true, autoContext: r.autoContext !== false, autoCompactWindow: r.autoCompactWindow ?? null, injectAgents: r.injectAgents !== false, tierModels: r.tierModels ?? {}, effectiveModelEnv: r.effectiveModelEnv ?? {} });
       setRows(Object.entries(r.modelMap ?? {}).map(([from, to]) => ({ from, to: String(to) })));
     } catch {
       setOk(false);
@@ -83,6 +84,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
           alwaysEnableEffort: state.alwaysEnableEffort,
           autoContext: state.autoContext,
           autoCompactWindow: state.autoCompactWindow,
+          injectAgents: state.injectAgents,
           model: state.model,
           smallFastModel: state.smallFastModel,
           tierModels: state.tierModels,
@@ -226,6 +228,17 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
           </div>
           <label className="toggle">
             <input type="checkbox" checked={state.alwaysEnableEffort} onChange={e => setState({ ...state, alwaysEnableEffort: e.target.checked })} />
+            <span className="slider" />
+          </label>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-label">
+            <span className="title">{t("claude.injectAgents")}</span>
+            <span className="desc">{t("claude.injectAgentsDesc")}</span>
+          </div>
+          <label className="toggle">
+            <input type="checkbox" checked={state.injectAgents} onChange={e => setState({ ...state, injectAgents: e.target.checked })} />
             <span className="slider" />
           </label>
         </div>

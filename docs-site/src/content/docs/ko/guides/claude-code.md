@@ -106,6 +106,16 @@ Claude 페이지에서 각 별칭이 어떤 라우팅 모델을 뜻할지 정하
 미리보기. 사이드바에는 **Claude ON** 토글도 있습니다 (라벨은 의도적으로 모든 언어에서
 동일합니다) — 인바운드를 켜고 끕니다.
 
+## 로스터 에이전트 (injectAgents)
+
+Agent 도구의 `model` 인자는 4개 티어 별칭만 받지만, 에이전트 정의 파일은 어떤 모델이든
+받습니다. 그래서 `ocx claude`(및 시스템 env 데몬)가 '서브에이전트' 탭에서 고른 모델(최대
+5개)과 항상 포함되는 `ocx-self`(model: `inherit`)를 `~/.claude/agents/ocx-*.md`로 동기화
+합니다. `subagent_type: "ocx-gpt-5-6-sol"`처럼 어떤 라우팅 모델이든 파견할 수 있고, 1M급
+모델에는 `[1m]`이 자동으로 붙습니다. 마커로 검증된 `ocx-*.md`만 덮어쓰거나 정리하며 직접
+만든 에이전트는 절대 건드리지 않습니다. `claudeCode.injectAgents: false`로 끄면 소유
+파일이 정리됩니다.
+
 ## 번들 스킬 차단 (blockedSkills)
 
 Claude Code의 번들 `claude-api` 스킬은 로드되는 순간 약 840KB(약 13.6만 토큰)의 Anthropic

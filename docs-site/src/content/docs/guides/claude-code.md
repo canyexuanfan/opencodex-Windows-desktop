@@ -112,6 +112,16 @@ quickstart and manual env block, default/small-fast slot pickers, a model map ed
 of the aliases the picker will discover. The sidebar also carries a **Claude ON** toggle (the label
 is intentionally the same in every language) that flips the inbound on and off.
 
+## Roster agents (injectAgents)
+
+The Agent tool's `model` argument only accepts the four tier aliases, but agent DEFINITIONS
+accept any model. So `ocx claude` (and the system-env daemon) syncs your featured subagent
+roster (Subagents tab, up to 5 models) plus an always-present `ocx-self` (model: `inherit`)
+into `~/.claude/agents/ocx-*.md`. Dispatch any routed model with
+`subagent_type: "ocx-gpt-5-6-sol"` — 1M-capable targets carry `[1m]` automatically. Only
+marker-verified `ocx-*.md` files are ever overwritten or pruned; your own agents are never
+touched. Turn it off with `claudeCode.injectAgents: false` (owned files are pruned).
+
 ## Bundled-skill elision (blockedSkills)
 
 Claude Code's bundled `claude-api` skill injects an ~840KB Anthropic documentation bundle

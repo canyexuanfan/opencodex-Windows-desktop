@@ -466,6 +466,8 @@ export const zh: Record<TKey, string> = {
   "claude.autoCompactDefault": "350k（默认）",
   "claude.autoCompactWindowDesc": "对话达到该 token 数时自动摘要旧内容。",
   "claude.autoCompactWindowWarn": "修改该值可能导致 GPT 模型异常——若超过模型真实上限，会在摘要触发前报错。",
+  "claude.injectAgents": "自动注册子代理",
+  "claude.injectAgentsDesc": "将“子代理”页选中的模型（以及当前默认模型）注册为 Claude Code 可派遣的代理（ocx-*）。从下一个会话开始生效。",
   "claude.alwaysEffort": "始终发送推理强度",
   "claude.alwaysEffortDesc": "强制在每个请求上附加推理强度。通常不需要——仅当强度设置似乎被忽略时开启。",
   "claude.tierModels": "子代理层级模型",

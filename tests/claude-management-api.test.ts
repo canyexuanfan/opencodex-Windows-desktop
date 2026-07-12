@@ -214,6 +214,7 @@ test("PUT validation rejects bad shapes", async () => {
       [{ maxContextTokens: "1000000" }, "maxContextTokens must be a positive integer or null"],
       [{ alwaysEnableEffort: "on" }, "alwaysEnableEffort must be a boolean"],
       [{ autoContext: "on" }, "autoContext must be a boolean"],
+      [{ injectAgents: "on" }, "injectAgents must be a boolean"],
       [{ blockedSkills: "claude-api" }, "blockedSkills must be an array of non-empty strings, or null"],
       [{ blockedSkills: [""] }, "blockedSkills must be an array of non-empty strings, or null"],
       [{ blockedSkills: [1] }, "blockedSkills must be an array of non-empty strings, or null"],

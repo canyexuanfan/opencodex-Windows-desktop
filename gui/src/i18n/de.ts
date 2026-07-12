@@ -446,6 +446,8 @@ export const de = {
   "claude.autoCompactDefault": "350k (Standard)",
   "claude.autoCompactWindowDesc": "Erreicht der Chat diese Tokenzahl, werden ältere Nachrichten automatisch zusammengefasst.",
   "claude.autoCompactWindowWarn": "Eine Änderung kann GPT-Modelle stören — liegt der Wert über dem echten Modelllimit, kommt es vor der Zusammenfassung zu Fehlern.",
+  "claude.injectAgents": "Subagenten automatisch registrieren",
+  "claude.injectAgentsDesc": "Registriert die im Subagenten-Tab gewählten Modelle (plus das aktuelle Standardmodell) als aufrufbare Claude-Code-Agenten (ocx-*). Gilt ab der nächsten Sitzung.",
   "claude.alwaysEffort": "Effort immer senden",
   "claude.alwaysEffortDesc": "Erzwingt die Effort-Einstellung bei jeder Anfrage. Meist unnötig – nur aktivieren, wenn Änderungen ignoriert scheinen.",
   "claude.tierModels": "Subagent-Tier-Modelle",

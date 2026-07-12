@@ -467,6 +467,8 @@ export const en = {
   "claude.autoCompactDefault": "350k (default)",
   "claude.autoCompactWindowDesc": "When the chat reaches this many tokens, older messages are summarized automatically.",
   "claude.autoCompactWindowWarn": "Changing this can break GPT models — set higher than a model's real limit, chats will error before the summary kicks in.",
+  "claude.injectAgents": "Auto-register subagents",
+  "claude.injectAgentsDesc": "Registers the models picked on the Subagents tab (plus the current default model) as dispatchable Claude Code agents (ocx-*). Applies from the next session.",
   "claude.alwaysEffort": "Always send effort",
   "claude.alwaysEffortDesc": "Force the effort setting onto every request. Usually not needed - leave off unless effort changes seem ignored.",
   "claude.tierModels": "Subagent tier models",

@@ -312,6 +312,14 @@ export interface OcxClaudeCodeConfig {
    * full content. Default: ["claude-api"]. Empty array = explicitly off.
    */
   blockedSkills?: string[];
+  /**
+   * Sync the featured subagent roster (config.subagentModels + main model) into
+   * ~/.claude/agents/ocx-*.md custom agent definitions at launch (devlog 260712
+   * 070) so any routed model is dispatchable as a subagent_type — the Agent
+   * tool's model argument is a hard 4-alias enum, but definition frontmatter is
+   * free. Only ocx-*.md files are owned/pruned. Default: enabled.
+   */
+  injectAgents?: boolean;
 }
 
 export interface OcxConfig {

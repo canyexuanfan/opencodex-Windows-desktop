@@ -163,13 +163,13 @@ function ownedBaseUrl(port: number): string {
  * In-process effective model-env (default + tier slots, [1m] applied) under the shared
  * 3s bound (audit R4#3). Returns {} on timeout/failure so injection degrades safely.
  */
-async function computeEffectiveModelEnv(config: OcxConfig, auto?: AutoContextMode): Promise<Record<string, string>> {
+async function computeEffectiveModelEnv(config: OcxConfig, auto?: AutoContextMode): Promise<{ modelEnv: Record<string, string>; windows: Record<string, number> }> {
   const { boundedContextWindows, buildClaudeContextWindows, effectiveModelEnv } = await import("../claude/context-windows");
   const windows = await boundedContextWindows(async () => {
     const { gatherRoutedModels, visibleNativeSlugs } = await import("../codex/catalog");
     return buildClaudeContextWindows([...visibleNativeSlugs(config)], await gatherRoutedModels(config));
   });
-  return effectiveModelEnv(config.claudeCode, windows ?? {}, auto);
+  return { modelEnv: effectiveModelEnv(config.claudeCode, windows ?? {}, auto), windows: windows ?? {} };
 }
 
 export async function injectSystemEnv(port: number, config: OcxConfig): Promise<SystemEnvResult> {
@@ -218,7 +218,7 @@ export async function injectSystemEnv(port: number, config: OcxConfig): Promise<
   // check below keeps that value untouched.
   const userAutoCompact = launchctlGetenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW");
   const auto = resolveAutoContext(config.claudeCode, userAutoCompact);
-  const modelEnv = await computeEffectiveModelEnv(config, auto);
+  const { modelEnv, windows } = await computeEffectiveModelEnv(config, auto);
   for (const [name, value] of Object.entries(modelEnv)) {
     if (name === "ANTHROPIC_MODEL") continue; // legacy slot handled by shell file only (back-compat)
     injectLever(name, value);
@@ -243,6 +243,13 @@ export async function injectSystemEnv(port: number, config: OcxConfig): Promise<
   try {
     const { refreshGatewayModelCacheFromProxy } = await import("../claude/gateway-cache");
     await refreshGatewayModelCacheFromProxy(port);
+  } catch { /* best-effort */ }
+
+  // Roster agent definitions (devlog 070): same launch-time sync for plain `claude`.
+  // Reuses the window map computed above (audit 071 #5 — no second acquisition).
+  try {
+    const { injectClaudeAgentDefs } = await import("../claude/agents-inject");
+    injectClaudeAgentDefs(config, windows);
   } catch { /* best-effort */ }
 
   mkdirSync(getConfigDir(), { recursive: true, mode: 0o700 });

@@ -683,6 +683,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       autoContext: config.claudeCode?.autoContext !== false,
       autoCompactWindow: config.claudeCode?.autoCompactWindow ?? null,
       blockedSkills: config.claudeCode?.blockedSkills ?? null,
+      injectAgents: config.claudeCode?.injectAgents !== false,
       fastMode: config.fastMode,
       contextWindows,
       effectiveModelEnv: effectiveModelEnv(config.claudeCode, contextWindows),
@@ -692,7 +693,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     });
   }
   if (url.pathname === "/api/claude-code" && req.method === "PUT") {
-    let body: { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; systemEnv?: unknown; fastMode?: unknown; maxContextTokens?: unknown; alwaysEnableEffort?: unknown; tierModels?: unknown; autoContext?: unknown; autoCompactWindow?: unknown; blockedSkills?: unknown };
+    let body: { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; systemEnv?: unknown; fastMode?: unknown; maxContextTokens?: unknown; alwaysEnableEffort?: unknown; tierModels?: unknown; autoContext?: unknown; autoCompactWindow?: unknown; blockedSkills?: unknown; injectAgents?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     const next = { ...(config.claudeCode ?? {}) };
     if (body.enabled !== undefined) {
@@ -723,6 +724,12 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       if (typeof body.autoContext !== "boolean") return jsonResponse({ error: "autoContext must be a boolean" }, 400);
       if (body.autoContext) delete next.autoContext;
       else next.autoContext = false;
+    }
+    if (body.injectAgents !== undefined) {
+      // Default-on boolean (devlog 260712 070): true = drop the key, false = store.
+      if (typeof body.injectAgents !== "boolean") return jsonResponse({ error: "injectAgents must be a boolean" }, 400);
+      if (body.injectAgents) delete next.injectAgents;
+      else next.injectAgents = false;
     }
     if (body.autoCompactWindow !== undefined) {
       // null resets to the 350k default; otherwise the binary-accepted range
@@ -790,6 +797,15 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     config.claudeCode = next;
     const { saveConfig: save } = await import("../config");
     save(config);
+    // Immediate prune when injection turns off (audit 071 #3): stale ocx-* agent
+    // definitions must stop loading in future sessions without waiting for the
+    // next launch hook. Best-effort; the disabled gate inside prunes owned files.
+    if (next.injectAgents === false || next.enabled === false) {
+      try {
+        const { injectClaudeAgentDefs } = await import("../claude/agents-inject");
+        injectClaudeAgentDefs(config, {});
+      } catch { /* best-effort */ }
+    }
     return jsonResponse({ ok: true, enabled: next.enabled !== false });
   }
 

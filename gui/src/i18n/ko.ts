@@ -466,6 +466,8 @@ export const ko: Record<TKey, string> = {
   "claude.autoCompactDefault": "350k (기본값)",
   "claude.autoCompactWindowDesc": "대화가 이 토큰 수에 다다르면 오래된 내용을 자동으로 요약합니다.",
   "claude.autoCompactWindowWarn": "값을 직접 바꾸면 GPT 모델들이 제대로 동작하지 않을 수 있어요 — 모델의 실제 한도보다 크게 잡으면 요약이 되기 전에 대화가 오류로 멈춥니다.",
+  "claude.injectAgents": "서브에이전트 자동 등록",
+  "claude.injectAgentsDesc": "위 '서브에이전트' 탭에서 고른 모델들(+현재 기본 모델)을 Claude Code의 파견 가능한 에이전트(ocx-*)로 자동 등록합니다. 새 세션부터 적용돼요.",
   "claude.alwaysEffort": "추론 강도 항상 보내기",
   "claude.alwaysEffortDesc": "모든 요청에 추론 강도를 강제로 붙입니다. 보통은 필요 없어요 — 강도 변경이 무시되는 것 같을 때만 켜세요.",
   "claude.tierModels": "서브에이전트 티어 모델",
