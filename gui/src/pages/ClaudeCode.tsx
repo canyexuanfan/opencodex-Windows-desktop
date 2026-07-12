@@ -15,7 +15,6 @@ interface ClaudeCodeState {
   injectAgents: boolean;
   model: string;
   smallFastModel: string;
-  tierModels: { opus?: string; sonnet?: string; haiku?: string; fable?: string };
   effectiveModelEnv: Record<string, string>;
   modelMap: Record<string, string>;
   available: string[];
@@ -36,7 +35,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   const load = async () => {
     try {
       const r = await fetch(`${apiBase}/api/claude-code`).then(res => res.json());
-      setState({ ...r, systemEnv: r.systemEnv !== false, fastMode: r.fastMode ?? null, maxContextTokens: r.maxContextTokens ?? null, autoContext: r.autoContext !== false, autoCompactWindow: r.autoCompactWindow ?? null, injectAgents: r.injectAgents !== false, tierModels: r.tierModels ?? {}, effectiveModelEnv: r.effectiveModelEnv ?? {} });
+      setState({ ...r, systemEnv: r.systemEnv !== false, fastMode: r.fastMode ?? null, maxContextTokens: r.maxContextTokens ?? null, autoContext: r.autoContext !== false, autoCompactWindow: r.autoCompactWindow ?? null, injectAgents: r.injectAgents !== false, effectiveModelEnv: r.effectiveModelEnv ?? {} });
       setRows(Object.entries(r.modelMap ?? {}).map(([from, to]) => ({ from, to: String(to) })));
     } catch {
       setOk(false);
@@ -83,9 +82,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
           autoContext: state.autoContext,
           autoCompactWindow: state.autoCompactWindow,
           injectAgents: state.injectAgents,
-          model: state.model,
           smallFastModel: state.smallFastModel,
-          tierModels: state.tierModels,
           modelMap,
         }),
       });
@@ -216,15 +213,8 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
       <div className="muted" style={{ fontSize: 12.5, margin: "10px 2px 4px" }}>{t("claude.manualEnv")}</div>
       <pre className="mono card" style={{ padding: "10px 14px", overflowX: "auto", margin: 0, fontSize: 12 }}>{manualEnv}</pre>
 
-      <div className="h-section">{t("claude.defaultModel")}</div>
-      <Select
-        value={state.model}
-        options={modelOptions}
-        onChange={v => setState({ ...state, model: v })}
-        label={t("claude.defaultModel")}
-        style={{ maxWidth: 420 }}
-      />
       <div className="h-section">{t("claude.smallFastModel")}</div>
+      <p className="muted" style={{ fontSize: 12.5, margin: "0 0 8px" }}>{t("claude.smallFastModelHint")}</p>
       <Select
         value={state.smallFastModel}
         options={modelOptions}
@@ -232,20 +222,6 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
         label={t("claude.smallFastModel")}
         style={{ maxWidth: 420 }}
       />
-
-      <div className="h-section">{t("claude.tierModels")}</div>
-      <p className="muted" style={{ fontSize: 12.5, margin: "0 0 8px" }}>{t("claude.tierModelsHint")}</p>
-      {(["opus", "sonnet", "fable"] as const).map(tier => (
-        <div key={tier} style={{ marginBottom: 8 }}>
-          <Select
-            value={state.tierModels[tier] ?? ""}
-            options={modelOptions}
-            onChange={v => setState({ ...state, tierModels: { ...state.tierModels, [tier]: v || undefined } })}
-            label={t(`claude.tier.${tier}`)}
-            style={{ maxWidth: 420 }}
-          />
-        </div>
-      ))}
 
       <div className="h-section">{t("claude.modelMap")} <span className="count">{rows.length}</span></div>
       <p className="muted" style={{ fontSize: 12.5, margin: "0 0 8px" }}>{t("claude.modelMapHint")}</p>
