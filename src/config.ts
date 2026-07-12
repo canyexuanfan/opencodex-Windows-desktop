@@ -3,9 +3,41 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSy
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import * as z from "zod/v4";
+import { hardenSecretDir, hardenSecretPath } from "./lib/windows-secret-acl";
+import { providerDestinationConfigError } from "./lib/destination-policy";
 import type { OcxConfig } from "./types";
 
 let _atomicSeq = 0;
+
+interface AtomicRenameIO {
+  platform: NodeJS.Platform;
+  rename: (source: string, destination: string) => void;
+  sleep: (milliseconds: number) => void;
+}
+
+export function renameAtomicFile(
+  source: string,
+  destination: string,
+  io: AtomicRenameIO = {
+    platform: process.platform,
+    rename: renameSync,
+    sleep: Bun.sleepSync,
+  },
+): void {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      io.rename(source, destination);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const transientWindowsError = io.platform === "win32"
+        && (code === "EBUSY" || code === "EPERM" || code === "EACCES");
+      if (!transientWindowsError || attempt >= 2) throw error;
+      io.sleep(25 * (attempt + 1));
+    }
+  }
+}
+
 /**
  * Write a file atomically (temp + rename) so concurrent writers — e.g. `ocx stop` and the
  * proxy's own shutdown handler both restoring Codex — can never leave a half-written file.
@@ -13,7 +45,7 @@ let _atomicSeq = 0;
 export function atomicWriteFile(path: string, content: string): void {
   const tmp = `${path}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
   writeFileSync(tmp, content, { encoding: "utf-8", mode: 0o600 });
-  renameSync(tmp, path);
+  renameAtomicFile(tmp, path);
 }
 
 /**
@@ -54,6 +86,7 @@ const warnedConfigFallbacks = new Set<string>();
 const providerConfigSchema = z.object({
   adapter: z.string().min(1),
   baseUrl: z.string().min(1),
+  allowPrivateNetwork: z.boolean().optional(),
 }).passthrough();
 
 const RESERVED_PROVIDER_NAMES = new Set(["__proto__", "prototype", "constructor"]);
@@ -128,6 +161,15 @@ const configSchema = z.object({
         path: ["providers", name, "baseUrl"],
         message: baseUrlError,
       });
+    } else {
+      const destinationError = providerDestinationConfigError(name, provider);
+      if (destinationError) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["providers", name, "baseUrl"],
+          message: destinationError,
+        });
+      }
     }
     const headersError = providerHeadersConfigError((provider as { headers?: unknown }).headers);
     if (headersError) {
@@ -178,15 +220,20 @@ export function hardenConfigDir(): void {
   const dir = getConfigDir();
   if (existsSync(dir)) {
     try { chmodSync(dir, 0o700); } catch { /* best-effort */ }
+    if (process.platform === "win32") {
+      hardenSecretDir(dir, { required: false });
+    }
   }
 }
 
 export function hardenExistingSecret(path: string): void {
   if (existsSync(path)) {
     try { chmodSync(path, 0o600); } catch { /* best-effort */ }
+    if (process.platform === "win32") {
+      hardenSecretPath(path, { required: false });
+    }
   }
 }
-
 export function loadConfig(): OcxConfig {
   const dir = getConfigDir();
   const configPath = getConfigPath();
@@ -305,7 +352,11 @@ export function saveConfig(config: OcxConfig): void {
   } else {
     try { chmodSync(dir, 0o700); } catch { /* best-effort on existing dir */ }
   }
-  atomicWriteFile(getConfigPath(), JSON.stringify(config, null, 2) + "\n");
+  if (process.platform === "win32") {
+    hardenSecretDir(dir, { required: true });
+  }
+  const configPath = getConfigPath();
+  atomicWriteFile(configPath, JSON.stringify(config, null, 2) + "\n");
 }
 
 export function websocketsEnabled(config: Pick<OcxConfig, "websockets">): boolean {

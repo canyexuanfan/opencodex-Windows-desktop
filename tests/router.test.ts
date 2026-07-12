@@ -92,6 +92,69 @@ describe("routeModel registry effort defaults", () => {
     expect(route.provider.modelReasoningEffortMap).toBeUndefined();
   });
 
+  test("blocks custom private-network providers without explicit opt-in before routing", () => {
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "custom-local",
+      providers: {
+        "custom-local": {
+          adapter: "openai-chat",
+          baseUrl: "http://127.0.0.1:11434/v1",
+          models: ["glm-5.2"],
+          apiKey: "sk-test",
+        },
+      },
+    };
+
+    expect(() => routeModel(config, "custom-local/glm-5.2")).toThrow("allowPrivateNetwork");
+  });
+
+  test("allows trusted self-hosted presets and explicit private-network opt-in", () => {
+    const trustedPreset: OcxConfig = {
+      port: 10100,
+      defaultProvider: "litellm",
+      providers: {
+        litellm: {
+          adapter: "openai-chat",
+          baseUrl: "http://192.168.1.9:4000/v1",
+          models: ["gpt-4.1-mini"],
+        },
+      },
+    };
+    expect(routeModel(trustedPreset, "litellm/gpt-4.1-mini").provider.baseUrl).toBe("http://192.168.1.9:4000/v1");
+
+    const optedIn: OcxConfig = {
+      port: 10100,
+      defaultProvider: "custom-private",
+      providers: {
+        "custom-private": {
+          adapter: "openai-chat",
+          baseUrl: "http://192.168.1.9:8080/v1",
+          allowPrivateNetwork: true,
+          models: ["glm-5.2"],
+        },
+      },
+    };
+    expect(routeModel(optedIn, "custom-private/glm-5.2").provider.baseUrl).toBe("http://192.168.1.9:8080/v1");
+  });
+
+  test("blocks metadata endpoints even when private-network access is opted in", () => {
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "custom-metadata",
+      providers: {
+        "custom-metadata": {
+          adapter: "openai-chat",
+          baseUrl: "http://169.254.169.254/latest/meta-data",
+          allowPrivateNetwork: true,
+          models: ["glm-5.2"],
+        },
+      },
+    };
+
+    expect(() => routeModel(config, "custom-metadata/glm-5.2")).toThrow("metadata");
+  });
+
   test("does not hydrate legacy nested xhigh to max maps for stale persisted configs", () => {
     const config: OcxConfig = {
       port: 10100,

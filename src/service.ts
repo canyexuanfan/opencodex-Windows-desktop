@@ -16,6 +16,7 @@ import { isWslRuntime } from "./codex/home";
 import { durableBunPath, durableBunRuntime } from "./lib/bun-runtime";
 import { isProcessAlive, stopProxy } from "./lib/process-control";
 import { serviceApiTokenFilePath } from "./lib/service-secrets";
+import { hardenSecretDir, hardenSecretPath } from "./lib/windows-secret-acl";
 import { windowsEnvIndirectBatchPathList, windowsEnvIndirectBatchValue } from "./lib/win-paths";
 
 const LABEL = "com.opencodex.proxy";
@@ -103,6 +104,7 @@ function writeServiceInstallState(): void {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
     writeFileSync(path, JSON.stringify(state, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
     try { chmodSync(path, 0o600); } catch { /* best-effort */ }
+    if (process.platform === "win32") hardenSecretPath(path, { required: true });
   }
 }
 
@@ -169,8 +171,10 @@ function writeServiceApiTokenFile(): string | null {
   const path = serviceApiTokenFilePath();
   const dir = getConfigDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (process.platform === "win32") hardenSecretDir(dir, { required: true });
   writeFileSync(path, `${token}\n`, { encoding: "utf8", mode: 0o600 });
   try { chmodSync(path, 0o600); } catch { /* best-effort */ }
+  if (process.platform === "win32") hardenSecretPath(path, { required: true });
   return path;
 }
 

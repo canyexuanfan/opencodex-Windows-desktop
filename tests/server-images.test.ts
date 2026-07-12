@@ -75,7 +75,7 @@ function forwardConfig(baseUrl: string): OcxConfig {
     port: 0,
     defaultProvider: "chatgpt",
     providers: {
-      chatgpt: { adapter: "openai-responses", baseUrl, authMode: "forward" },
+      chatgpt: { adapter: "openai-responses", baseUrl, authMode: "forward", allowPrivateNetwork: true },
     },
   } as OcxConfig;
 }
@@ -93,10 +93,11 @@ const unreachableChatgptProvider = {
   adapter: "openai-responses",
   baseUrl: "http://127.0.0.1:1/backend-api/codex",
   authMode: "forward",
+  allowPrivateNetwork: true,
 } as const;
 
 function keyedProvider(baseUrl: string) {
-  return { adapter: "openai-responses", baseUrl, apiKey: "sk-platform-key" };
+  return { adapter: "openai-responses", baseUrl, allowPrivateNetwork: true, apiKey: "sk-platform-key" };
 }
 
 test("POST /v1/images/generations relays to the ChatGPT forward provider with forwarded auth", async () => {

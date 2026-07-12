@@ -57,6 +57,7 @@ describe("server 429 key failover (end-to-end)", () => {
         pooled: {
           adapter: "openai-chat",
           baseUrl: `http://127.0.0.1:${upstream.port}/v1`,
+          allowPrivateNetwork: true,
           apiKey: "key-alpha-000111222333",
           apiKeyPool: [
             { id: "k1", key: "key-alpha-000111222333", addedAt: 1 },
@@ -155,6 +156,7 @@ describe("server 429 key failover (end-to-end)", () => {
         textonly: {
           adapter: "openai-chat",
           baseUrl: `http://127.0.0.1:${upstream.port}/v1`,
+          allowPrivateNetwork: true,
           apiKey: "key-alpha-000111222333",
           noVisionModels: ["blind-model"],
         },

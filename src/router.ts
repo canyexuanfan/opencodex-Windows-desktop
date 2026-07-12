@@ -1,5 +1,6 @@
 import type { OcxConfig, OcxProviderConfig } from "./types";
 import { hasOwnProvider, resolveEnvValue } from "./config";
+import { assertProviderDestinationAllowed } from "./lib/destination-policy";
 import { PROVIDER_REGISTRY } from "./providers/registry";
 
 interface RouteResult {
@@ -79,7 +80,10 @@ function mergeStringArrayRecord(
 
 function routedProviderConfig(providerName: string, provider: OcxProviderConfig): OcxProviderConfig {
   const registryEntry = PROVIDER_REGISTRY.find(entry => entry.id === providerName);
-  if (!registryEntry) return { ...provider, apiKey: resolveEnvValue(provider.apiKey) };
+  if (!registryEntry) {
+    assertProviderDestinationAllowed(providerName, provider);
+    return { ...provider, apiKey: resolveEnvValue(provider.apiKey) };
+  }
   const canonicalAuthMode = registryEntry.authKind === "forward" || registryEntry.authKind === "oauth"
     ? registryEntry.authKind
     : provider.authMode === "forward" ? undefined : provider.authMode;
@@ -107,6 +111,7 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
   const baseUrl = (registryBaseUrlIsTemplate || registryEntry.allowBaseUrlOverride) && userBaseUrlIsResolved
     ? userBaseUrl
     : registryEntry.baseUrl;
+  assertProviderDestinationAllowed(providerName, { baseUrl, allowPrivateNetwork: provider.allowPrivateNetwork });
 
   return {
     ...provider,

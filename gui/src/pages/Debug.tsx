@@ -37,14 +37,19 @@ interface ClaudeInboundEntry {
   systemTag?: string;
 }
 
-type LogStream = "provider" | "usage";
+type LogStream = "provider" | "usage" | "injection";
+
+const STREAMS = ["provider", "usage", "injection"] as const;
+
+const formatLogTime = (at: number): string =>
+  at > 0 ? `[${new Date(at).toLocaleTimeString()}] ` : "";
 
 export default function Debug({ apiBase }: { apiBase: string }) {
   const { t } = useI18n();
   const [debug, setDebug] = useState<DebugSettings | null>(null);
   const [debugBusy, setDebugBusy] = useState(false);
   const [stream, setStream] = useState<LogStream>("provider");
-  const [lines, setLines] = useState<string[]>([]);
+  const [entries, setEntries] = useState<DebugLogEntry[]>([]);
   const [follow, setFollow] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [claudeEntries, setClaudeEntries] = useState<ClaudeInboundEntry[]>([]);
@@ -52,7 +57,7 @@ export default function Debug({ apiBase }: { apiBase: string }) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const lineVirtualizer = useVirtualizer({
-    count: lines.length,
+    count: entries.length,
     getScrollElement: () => scrollContainerRef.current,
     estimateSize: () => 20,
     overscan: 30,
@@ -70,18 +75,31 @@ export default function Debug({ apiBase }: { apiBase: string }) {
     return () => clearInterval(interval);
   }, [apiBase]);
 
-  useEffect(() => {
-    if (!debug) return;
-    if (debug.enabled && stream === "usage" && !debug.usage) setStream("provider");
-    if (debug.usage && stream === "provider" && !debug.enabled) setStream("usage");
-  }, [debug, stream]);
+  const streamIsOn = useCallback(
+    (s: LogStream): boolean =>
+      s === "provider" ? !!debug?.enabled : s === "usage" ? !!debug?.usage : !!debug?.injection,
+    [debug],
+  );
 
-  const streamEnabled = stream === "provider" ? !!debug?.enabled : !!debug?.usage;
-  const logsPath = stream === "provider" ? `${apiBase}/api/debug/logs` : `${apiBase}/api/debug/usage-logs`;
+  useEffect(() => {
+    if (!debug || streamIsOn(stream)) return;
+    const next = STREAMS.find(streamIsOn);
+    if (!next) return;
+    const timeout = window.setTimeout(() => setStream(next), 0);
+    return () => window.clearTimeout(timeout);
+  }, [debug, stream, streamIsOn]);
+
+  const streamEnabled = streamIsOn(stream);
+  const logsPath =
+    stream === "provider"
+      ? `${apiBase}/api/debug/logs`
+      : stream === "usage"
+        ? `${apiBase}/api/debug/usage-logs`
+        : `${apiBase}/api/debug/injection-logs`;
 
   const fetchLogs = useCallback(async (initial: boolean) => {
     if (!streamEnabled) {
-      setLines([]);
+      setEntries([]);
       afterRef.current = 0;
       return;
     }
@@ -91,12 +109,10 @@ export default function Debug({ apiBase }: { apiBase: string }) {
       if (!initial && afterRef.current > 0) params.set("after", String(afterRef.current));
       const res = await fetch(`${logsPath}?${params}`);
       if (!res.ok) return;
-      const entries = await res.json() as DebugLogEntry[];
-      if (entries.length === 0) return;
-      setLines(prev => initial
-        ? entries.map(entry => entry.line)
-        : [...prev, ...entries.map(entry => entry.line)].slice(-2000));
-      afterRef.current = entries[entries.length - 1]!.seq;
+      const next = await res.json() as DebugLogEntry[];
+      if (next.length === 0) return;
+      setEntries(prev => (initial ? next : [...prev, ...next]).slice(-2000));
+      afterRef.current = next[next.length - 1]!.seq;
     } catch { /* ignore */ } finally {
       setRefreshing(false);
     }
@@ -104,8 +120,11 @@ export default function Debug({ apiBase }: { apiBase: string }) {
 
   useEffect(() => {
     afterRef.current = 0;
-    setLines([]);
-    void fetchLogs(true);
+    const timeout = window.setTimeout(() => {
+      setEntries([]);
+      void fetchLogs(true);
+    }, 0);
+    return () => window.clearTimeout(timeout);
   }, [stream, streamEnabled, fetchLogs]);
 
   useEffect(() => {
@@ -115,10 +134,10 @@ export default function Debug({ apiBase }: { apiBase: string }) {
   }, [follow, streamEnabled, fetchLogs]);
 
   useEffect(() => {
-    if (follow && lines.length > 0) {
-      lineVirtualizer.scrollToIndex(lines.length - 1, { align: 'end' });
+    if (follow && entries.length > 0) {
+      lineVirtualizer.scrollToIndex(entries.length - 1, { align: 'end' });
     }
-  }, [lines, follow, lineVirtualizer]);
+  }, [entries, follow, lineVirtualizer]);
 
   useEffect(() => {
     if (!debug?.claude) {
@@ -214,7 +233,7 @@ export default function Debug({ apiBase }: { apiBase: string }) {
             </button>
           </div>
 
-          {(debug.enabled || debug.usage) && (
+          {(debug.enabled || debug.usage || debug.injection) && (
             <div style={{ display: "inline-flex", gap: 6, marginTop: 12 }}>
               {debug.enabled && (
                 <button
@@ -232,6 +251,15 @@ export default function Debug({ apiBase }: { apiBase: string }) {
                   onClick={() => setStream("usage")}
                 >
                   {t("debug.streamUsage")}
+                </button>
+              )}
+              {debug.injection && (
+                <button
+                  type="button"
+                  className={`btn btn-sm${stream === "injection" ? " btn-primary" : " btn-ghost"}`}
+                  onClick={() => setStream("injection")}
+                >
+                  {t("debug.streamInjection")}
                 </button>
               )}
             </div>
@@ -293,12 +321,12 @@ export default function Debug({ apiBase }: { apiBase: string }) {
       {debug && !streamEnabled ? (
         <div className="empty">
           <div style={{ fontWeight: 600, marginBottom: 6 }}>{t("debug.emptyTitle")}</div>
-          <div className="muted" style={{ fontSize: 13, maxWidth: 560 }}>{t("debug.empty")}</div>
+          <div className="muted" style={{ fontSize: 13, maxWidth: 560, marginInline: "auto" }}>{t("debug.empty")}</div>
         </div>
-      ) : debug && streamEnabled && lines.length === 0 ? (
+      ) : debug && streamEnabled && entries.length === 0 ? (
         <div className="empty">
           <div style={{ fontWeight: 600, marginBottom: 6 }}>{t("debug.noLinesTitle")}</div>
-          <div className="muted" style={{ fontSize: 13, maxWidth: 560 }}>{t("debug.noLines")}</div>
+          <div className="muted" style={{ fontSize: 13, maxWidth: 560, marginInline: "auto" }}>{t(`debug.noLines.${stream}`)}</div>
         </div>
       ) : debug && streamEnabled ? (
         <div
@@ -326,7 +354,7 @@ export default function Debug({ apiBase }: { apiBase: string }) {
                   transform: `translateY(${virtualRow.start}px)`,
                 }}
               >
-                {lines[virtualRow.index]}
+                {`${formatLogTime(entries[virtualRow.index]!.at)}${entries[virtualRow.index]!.line}`}
               </div>
             ))}
           </div>

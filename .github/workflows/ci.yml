@@ -65,7 +65,7 @@ jobs:
         run: bun x tsc --noEmit
 
       - name: Test
-        run: bun test tests
+        run: bun test --isolate tests
 
       - name: Privacy scan
         run: bun run privacy:scan
@@ -73,8 +73,16 @@ jobs:
       - name: Check release helper syntax
         run: bun build scripts/release.ts --target=bun --outdir=.tmp/ci-release-script-check
 
+      - name: GUI lint
+        run: |
+          cd gui
+          bun install --frozen-lockfile
+          bun run lint
+
       - name: GUI build
-        run: cd gui && bun install --frozen-lockfile && bun run build
+        run: |
+          cd gui
+          bun run build
 
       - name: CLI help smoke
         run: bun run src/cli/index.ts help
