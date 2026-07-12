@@ -45,7 +45,9 @@ describe("Claude Code gateway-model cache pre-write (devlog 260712 030)", () => 
       process.env.CLAUDE_CONFIG_DIR = "/tmp/custom-claude";
       expect(claudeConfigDir()).toBe("/tmp/custom-claude");
       delete process.env.CLAUDE_CONFIG_DIR;
-      expect(claudeConfigDir().endsWith("/.claude")).toBe(true);
+      // Platform-correct separator (Windows CI joins with backslash).
+      const { homedir } = require("node:os") as typeof import("node:os");
+      expect(claudeConfigDir()).toBe(join(homedir(), ".claude"));
     } finally {
       if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
       else process.env.CLAUDE_CONFIG_DIR = prev;

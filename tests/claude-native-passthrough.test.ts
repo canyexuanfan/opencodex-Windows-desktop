@@ -65,7 +65,7 @@ const OAUTH_HEADERS = {
   "content-type": "application/json",
   "anthropic-version": "2023-06-01",
   "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14",
-  "authorization": "Bearer sk-ant-oat01-test-token",
+  "authorization": "Bearer sk-ant-oat01-tst",
   "user-agent": "claude-cli/2.1.200",
   "x-app": "cli",
 };
@@ -106,7 +106,7 @@ test("unmapped claude model + sk-ant credential passes through verbatim", async 
     const hit = captured[0];
     expect(hit.path).toBe("/v1/messages?beta=true");
     // Caller's own OAuth credential and beta headers forwarded verbatim.
-    expect(hit.headers.get("authorization")).toBe("Bearer sk-ant-oat01-test-token");
+    expect(hit.headers.get("authorization")).toBe("Bearer sk-ant-oat01-tst");
     expect(hit.headers.get("anthropic-beta")).toBe(OAUTH_HEADERS["anthropic-beta"]);
     expect(hit.headers.get("user-agent")).toBe("claude-cli/2.1.200");
     expect(hit.headers.get("x-app")).toBe("cli");
