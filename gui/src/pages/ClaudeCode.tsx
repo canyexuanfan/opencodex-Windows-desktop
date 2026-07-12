@@ -13,10 +13,8 @@ interface ClaudeCodeState {
   autoContext: boolean;
   autoCompactWindow: number | null;
   injectAgents: boolean;
-  model: string;
   smallFastModel: string;
   effectiveModelEnv: Record<string, string>;
-  modelMap: Record<string, string>;
   available: string[];
   aliases: { id: string; display_name: string }[];
   port: number;
@@ -210,8 +208,11 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
       <div className="h-section">{t("claude.quickstart")}</div>
       <p className="muted" style={{ fontSize: 12.5, margin: "0 0 8px" }}><Trans k="claude.quickstartHint" cmd="ocx claude" /></p>
       <pre className="mono card" style={{ padding: "10px 14px", overflowX: "auto", margin: 0 }}>ocx claude</pre>
-      <div className="muted" style={{ fontSize: 12.5, margin: "10px 2px 4px" }}>{t("claude.manualEnv")}</div>
-      <pre className="mono card" style={{ padding: "10px 14px", overflowX: "auto", margin: 0, fontSize: 12 }}>{manualEnv}</pre>
+      {/* Advanced manual setup: collapsed by default (audit 080 UX-1). */}
+      <details style={{ margin: "10px 0 0" }}>
+        <summary className="muted" style={{ fontSize: 12.5, cursor: "pointer", padding: "2px 2px" }}>{t("claude.manualEnv")}</summary>
+        <pre className="mono card" style={{ padding: "10px 14px", overflowX: "auto", margin: "6px 0 0", fontSize: 12 }}>{manualEnv}</pre>
+      </details>
 
       <div className="h-section">{t("claude.smallFastModel")}</div>
       <p className="muted" style={{ fontSize: 12.5, margin: "0 0 8px" }}>{t("claude.smallFastModelHint")}</p>
@@ -265,11 +266,26 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
       {state.aliases.length === 0 ? (
         <div className="muted" style={{ fontSize: 12.5 }}>{t("claude.none")}</div>
       ) : (
-        <div className="stack" style={{ gap: 6, maxHeight: 300, overflowY: "auto" }}>
-          {state.aliases.map(a => (
-            <div key={a.id} className="card row" style={{ padding: "6px 12px", gap: 10 }}>
-              <code className="mono" style={{ flex: 1, fontSize: 12 }}>{a.id}</code>
-              <span className="muted" style={{ fontSize: 12 }}>{a.display_name}</span>
+        // Grouped by provider (audit 080 UX-2): one scroll area, group labels first.
+        <div className="stack" style={{ gap: 6, maxHeight: 320, overflowY: "auto" }}>
+          {Array.from(
+            state.aliases.reduce((groups, a) => {
+              const m = /\(([^)]+)\)\s*$/.exec(a.display_name);
+              const provider = m ? m[1]! : "etc";
+              (groups.get(provider) ?? groups.set(provider, []).get(provider)!).push(a);
+              return groups;
+            }, new Map<string, { id: string; display_name: string }[]>()),
+          ).map(([provider, rows]) => (
+            <div key={provider}>
+              <div className="muted" style={{ fontSize: 11.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0, margin: "6px 2px 4px" }}>{provider} · {rows.length}</div>
+              <div className="stack" style={{ gap: 4 }}>
+                {rows.map(a => (
+                  <div key={a.id} className="card row" style={{ padding: "6px 12px", gap: 10 }}>
+                    <code className="mono" style={{ flex: 1, fontSize: 12 }}>{a.id}</code>
+                    <span className="muted" style={{ fontSize: 12 }}>{a.display_name}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           ))}
         </div>

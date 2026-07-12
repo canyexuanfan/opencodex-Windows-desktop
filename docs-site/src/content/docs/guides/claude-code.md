@@ -99,8 +99,9 @@ slots via
 ## Subagent tier models
 
 Claude Code subagents choose models by tier alias (`opus` / `sonnet` / `haiku` / `fable`). The
-Claude page lets you map each tier to a routed model; `ocx claude` (and the system-wide env
-option) injects them as `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`,
+roster agents above (`ocx-*`) are the preferred way to dispatch specific routed models, so the
+tier mapping is CONFIG-ONLY now (`claudeCode.tierModels` — no GUI control); when set, `ocx claude`
+(and the system-wide env option) injects `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`,
 `ANTHROPIC_DEFAULT_HAIKU_MODEL` (fed by the small/fast slot unless overridden) and
 `ANTHROPIC_DEFAULT_FABLE_MODEL`. 1M-context targets are marked `[1m]` automatically. Values you
 export yourself always win.
@@ -108,17 +109,23 @@ export yourself always win.
 ## GUI
 
 The dashboard has a dedicated **Claude** page (below API in the sidebar): the inbound kill switch,
-quickstart and manual env block, default/small-fast slot pickers, a model map editor, and a preview
+quickstart and manual env block, the background-helper model picker, the model interception
+(modelMap) editor, and a preview
 of the aliases the picker will discover. The sidebar also carries a **Claude ON** toggle (the label
 is intentionally the same in every language) that flips the inbound on and off.
+The default main model is owned by Claude Code's own `/model` picker (persisted to its
+`settings.json`), so the page no longer duplicates it.
 
 ## Roster agents (injectAgents)
 
-The Agent tool's `model` argument only accepts the four tier aliases, but agent DEFINITIONS
-accept any model. So `ocx claude` (and the system-env daemon) syncs your featured subagent
-roster (Subagents tab, up to 5 models) plus an always-present `ocx-self` (model: `inherit`)
-into `~/.claude/agents/ocx-*.md`. Dispatch any routed model with
-`subagent_type: "ocx-gpt-5-6-sol"` — 1M-capable targets carry `[1m]` automatically. Only
+`ocx claude` (and the system-env daemon) syncs your featured subagent roster (Subagents tab,
+up to 5 models) plus `ocx-self` — pinned to your `/model` picker default (falling back to
+`claudeCode.model`; omitted when neither exists) — into `~/.claude/agents/ocx-*.md`. Dispatch
+any routed model with `subagent_type: "ocx-gpt-5-6-sol"`. Because Claude Code ignores custom
+gateway ids in agent frontmatter, each body carries an `<!-- ocx-route: ... -->` directive the
+proxy uses to pin the real route — the Agent tool's `model` argument is therefore inert for
+these agents (pass `"sonnet"` as a placeholder or omit it). 1M-capable targets carry `[1m]`
+automatically. Only
 marker-verified `ocx-*.md` files are ever overwritten or pruned; your own agents are never
 touched. Turn it off with `claudeCode.injectAgents: false` (owned files are pruned).
 
@@ -156,7 +163,8 @@ Claude Code's `/effort` setting is preserved across the adapter. The adaptive wi
 (`thinking: { type: "adaptive" }` plus `output_config: { effort }`) passes its effort through
 directly. Legacy `thinking.enabled` requests map `budget_tokens` to `low` at 4096 or below,
 `medium` at 16384 or below, and `high` above that. When thinking is disabled, as it commonly is
-for subagents, no reasoning effort is sent. The resolved value appears in the request log's
+for subagents, THE PROXY omits reasoning parameters for that request (deliberate: routed
+providers must not receive reasoning knobs the client turned off). The resolved value appears in the request log's
 **Reasoning effort** column.
 
 ## Prompt caching

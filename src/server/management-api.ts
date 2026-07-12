@@ -693,6 +693,12 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     });
   }
   if (url.pathname === "/api/claude-code" && req.method === "PUT") {
+    // NOTE: model / tierModels / maxContextTokens / alwaysEnableEffort are
+    // CONFIG-ONLY back-compat fields — the GUI no longer offers controls for them
+    // (default model is owned by Claude Code's /model picker; roster agents
+    // supersede tiers; auto-context supersedes the max-context pair; effort rides
+    // regardless on 2.1.207). PUT keeps validating them so hand-written configs
+    // and older GUIs stay safe; GUI saves omit them and the spread preserves them.
     let body: { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; systemEnv?: unknown; fastMode?: unknown; maxContextTokens?: unknown; alwaysEnableEffort?: unknown; tierModels?: unknown; autoContext?: unknown; autoCompactWindow?: unknown; blockedSkills?: unknown; injectAgents?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     const next = { ...(config.claudeCode ?? {}) };
@@ -710,6 +716,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       else delete next.alwaysEnableEffort;
     }
     if (body.maxContextTokens !== undefined) {
+      // CONFIG-ONLY back-compat (GUI control removed — superseded by auto-context):
       // null clears; otherwise a positive integer (devlog 136 B6).
       if (body.maxContextTokens === null) {
         delete next.maxContextTokens;
@@ -754,6 +761,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       }
     }
     if (body.tierModels !== undefined) {
+      // CONFIG-ONLY back-compat (GUI pickers removed — roster agents supersede tiers).
       if (!body.tierModels || typeof body.tierModels !== "object" || Array.isArray(body.tierModels)) {
         return jsonResponse({ error: "tierModels must be an object" }, 400);
       }
