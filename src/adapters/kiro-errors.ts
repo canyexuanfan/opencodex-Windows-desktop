@@ -1,35 +1,22 @@
-import { redactSecretString } from "../lib/redact";
-
-const ABSOLUTE_PATH_PATTERN = /(?:\/Users\/[^ "';,]+|\/home\/[^ "';,]+|[A-Za-z]:\\Users\\[^ "';,]+)/g;
+import { parseUpstreamJsonPayload, safeUpstreamErrorString, sanitizeUpstreamErrorText } from "./upstream-http-error";
 const DETAIL_KEYS = ["__type", "code", "error", "name", "message", "Message", "errorMessage"];
 
-function sanitizeKiroErrorText(value: string): string {
-  return redactSecretString(value).replace(ABSOLUTE_PATH_PATTERN, "[REDACTED_PATH]");
-}
-
-function safeString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
 function headerValue(headers: Headers | Record<string, unknown>, name: string): string | undefined {
-  if (headers instanceof Headers) return name.startsWith(":") ? undefined : safeString(headers.get(name));
-  return safeString(headers[name]) || safeString(headers[name.toLowerCase()]);
+  if (headers instanceof Headers) return name.startsWith(":") ? undefined : safeUpstreamErrorString(headers.get(name));
+  return safeUpstreamErrorString(headers[name]) || safeUpstreamErrorString(headers[name.toLowerCase()]);
 }
 
 function payloadDetails(payloadText: string): string[] {
   const trimmed = payloadText.trim();
   if (!trimmed) return [];
   if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return [trimmed];
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const obj = parsed as Record<string, unknown>;
-      return DETAIL_KEYS.map(key => safeString(obj[key])).filter((v): v is string => !!v);
-    }
-    if (typeof parsed === "string" && parsed.trim()) return [parsed.trim()];
-  } catch {
-    return [];
+  const parsed = parseUpstreamJsonPayload(trimmed);
+  if (parsed === undefined) return [];
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const obj = parsed as Record<string, unknown>;
+    return DETAIL_KEYS.map(key => safeUpstreamErrorString(obj[key])).filter((v): v is string => !!v);
   }
+  if (typeof parsed === "string" && parsed.trim()) return [parsed.trim()];
   return [];
 }
 
@@ -87,7 +74,7 @@ function classifyKiroText(status: number | undefined, text: string): string {
 function normalizedKiroErrorMessage(headers: Headers | Record<string, unknown>, payloadText: string, status?: number): string {
   const headerType = headerValue(headers, ":exception-type") || headerValue(headers, ":error-type");
   const parts = [headerType, ...payloadDetails(payloadText)].filter((part): part is string => !!part);
-  const detail = parts.length > 0 ? sanitizeKiroErrorText(parts.join(": ")).slice(0, 500) : status ? `HTTP ${status}` : "";
+  const detail = parts.length > 0 ? sanitizeUpstreamErrorText(parts.join(": ")).slice(0, 500) : status ? `HTTP ${status}` : "";
   const prefix = classifyKiroText(status, [detail, headerType].filter(Boolean).join(" "));
   return detail ? `${prefix}: ${detail}` : prefix;
 }

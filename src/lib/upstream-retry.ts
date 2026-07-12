@@ -14,11 +14,18 @@
  * MUST stay a leaf module: imports nothing from server.ts or adapters (kiro-retry imports
  * the shared abort helpers from here).
  */
+import { clearableDeadline } from "./abort";
 
 // 1 initial + 2 retries: the pool may hold more than one stale socket.
 const RESET_RETRY_MAX_ATTEMPTS = 3;
 const RESET_RETRY_BASE_DELAY_MS = 150;
 const RESET_RETRY_MAX_DELAY_MS = 1_000;
+
+export interface RetryBackoffOptions {
+  baseDelayMs: number;
+  maxDelayMs: number;
+  headers?: Headers;
+}
 
 export function abortError(signal?: AbortSignal): unknown {
   return signal?.reason ?? new DOMException("The operation was aborted", "AbortError");
@@ -56,9 +63,49 @@ export function isConnectionResetError(err: unknown): boolean {
     || msg.includes("connection reset by peer");
 }
 
-function retryDelayMs(attempt: number): number {
-  const exp = Math.min(RESET_RETRY_BASE_DELAY_MS * (2 ** attempt), RESET_RETRY_MAX_DELAY_MS);
+function retryAfterDelayMs(headers: Headers): number | undefined {
+  const raw = headers.get("retry-after")?.trim();
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const dateMs = Date.parse(raw);
+  if (!Number.isFinite(dateMs)) return undefined;
+  return Math.max(0, dateMs - Date.now());
+}
+
+export function retryBackoffDelayMs(attempt: number, opts: RetryBackoffOptions): number {
+  const retryAfter = opts.headers ? retryAfterDelayMs(opts.headers) : undefined;
+  if (retryAfter !== undefined) return Math.min(retryAfter, opts.maxDelayMs);
+  const exp = Math.min(opts.baseDelayMs * (2 ** attempt), opts.maxDelayMs);
   return Math.floor(exp * (0.8 + Math.random() * 0.4));
+}
+
+export function cancelResponseBodyBestEffort(res: Response): void {
+  try {
+    const cancellation = res.body?.cancel();
+    if (cancellation) void cancellation.catch(() => {});
+  } catch {
+    // Cancellation is cleanup only; retries must not wait for or fail because of it.
+  }
+}
+
+export async function fetchWithAttemptDeadline(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  abortSignal?: AbortSignal,
+): Promise<Response> {
+  const attemptTimeout = clearableDeadline(timeoutMs, abortSignal);
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: attemptTimeout.signal,
+    });
+  } finally {
+    // Only the header timer is cleared. The composed signal still contains the parent, so a
+    // caller abort after headers continue to cancel consumption of the returned response body.
+    attemptTimeout.clear();
+  }
 }
 
 export interface ResetRetryOptions {
@@ -89,7 +136,10 @@ export async function fetchWithResetRetry(
       console.warn(
         `[upstream-retry] connection reset${opts.label ? ` (${opts.label})` : ""} — retrying (${attempt + 2}/${attempts})`,
       );
-      await sleepWithAbort(retryDelayMs(attempt), opts.abortSignal);
+      await sleepWithAbort(retryBackoffDelayMs(attempt, {
+        baseDelayMs: RESET_RETRY_BASE_DELAY_MS,
+        maxDelayMs: RESET_RETRY_MAX_DELAY_MS,
+      }), opts.abortSignal);
     }
   }
   throw lastError ?? new Error("upstream fetch failed");

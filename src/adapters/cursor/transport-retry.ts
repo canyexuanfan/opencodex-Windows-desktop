@@ -1,6 +1,6 @@
 import type { CursorRunRequest, CursorServerMessage } from "./types";
 import type { CursorTransport, CursorTransportFactory, CursorTransportFactoryInput } from "./transport";
-import { abortError, sleepWithAbort } from "../../lib/upstream-retry";
+import { abortError, retryBackoffDelayMs, sleepWithAbort } from "../../lib/upstream-retry";
 import { debugProviderDiagnostic } from "../../lib/debug";
 import { safeCursorErrorMessage } from "./cursor-errors";
 
@@ -40,8 +40,10 @@ export function isRetryableCursorError(err: unknown): boolean {
 }
 
 export function cursorRetryDelayMs(attempt: number): number {
-  const exp = Math.min(CURSOR_RETRY_BASE_MS * 2 ** attempt, CURSOR_RETRY_MAX_MS);
-  return Math.floor(exp * (0.8 + Math.random() * 0.4));
+  return retryBackoffDelayMs(attempt, {
+    baseDelayMs: CURSOR_RETRY_BASE_MS,
+    maxDelayMs: CURSOR_RETRY_MAX_MS,
+  });
 }
 
 /**
