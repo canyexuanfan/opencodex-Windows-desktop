@@ -346,6 +346,50 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
 :root[data-theme='light'] .lp-sub { color: rgba(247, 245, 242, 0.82); }
 :lang(ko) .lp-hero-copy h1, :lang(zh-CN) .lp-hero-copy h1 { word-break: keep-all; }
 :lang(ko) .lp-sub, :lang(zh-CN) .lp-sub { word-break: keep-all; }
+
+/* hero product-word drum: a 4-face rotateX cylinder cycling Codex -> Claude.
+   The inline-grid stacks every face in one cell, so the slot width equals the
+   widest word and the sentence never shifts (CLS 0). Faces sit on a prism
+   (rotateX steps of 90deg around a shared axis); the drum turns -360deg per
+   cycle with holds so each word is readable. */
+.lp-drum {
+  display: inline-grid;
+  position: relative;
+  vertical-align: baseline;
+  perspective: 24rem;
+}
+.lp-drum-spin {
+  grid-area: 1 / 1;
+  display: inline-grid;
+  justify-items: center;
+  transform-style: preserve-3d;
+  animation: lp-drum-turn 12s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+.lp-drum-face {
+  grid-area: 1 / 1;
+  backface-visibility: hidden;
+  /* r = (line box height / 2) / tan(45deg); 0.56em keeps adjacent faces from
+     poking through the visible one at this line-height. */
+  transform: rotateX(0deg) translateZ(0.56em);
+}
+.lp-drum-face:nth-child(2) { transform: rotateX(-90deg) translateZ(0.56em); }
+.lp-drum-face:nth-child(3) { transform: rotateX(-180deg) translateZ(0.56em); }
+.lp-drum-face:nth-child(4) { transform: rotateX(-270deg) translateZ(0.56em); }
+.lp-drum-claude { color: #e08b6d; }
+:root[data-theme='light'] .lp-drum-claude { color: #f0a284; }
+.lp-drum-static { display: none; grid-area: 1 / 1; }
+.lp-drum-static .lp-drum-dot { opacity: 0.45; }
+@keyframes lp-drum-turn {
+  0%, 21% { transform: rotateX(0deg); }
+  25%, 46% { transform: rotateX(90deg); }
+  50%, 71% { transform: rotateX(180deg); }
+  75%, 96% { transform: rotateX(270deg); }
+  100% { transform: rotateX(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lp-drum-spin { display: none; }
+  .lp-drum-static { display: inline; }
+}
 .lp-cta {
   display: flex;
   align-items: center;
@@ -613,6 +657,7 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
     "prov prov pick"
     "auth pool pick"
     "sub  side pick"
+    "cl   cl   cl"
     "term term term";
   gap: 0.875rem;
 }
@@ -659,10 +704,11 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
 /* asymmetric slab: image cell runs tall down the right rail */
 .lp-cell-providers { grid-area: prov; }
 .lp-cell-picker { grid-area: pick; }
+.lp-cell-claude { grid-area: cl; }
 .lp-grid > .lp-cell:nth-child(2) { grid-area: auth; }
 .lp-grid > .lp-cell:nth-child(3) { grid-area: pool; }
 .lp-grid > .lp-cell:nth-child(5) { grid-area: sub; }
-.lp-grid > .lp-cell:nth-child(6) { grid-area: side; }
+.lp-grid > .lp-cell:nth-child(7) { grid-area: side; }
 .lp-cell-picker img {
   max-height: none;
   height: 100%;
@@ -682,6 +728,7 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
       "auth pool"
       "pick sub"
       "pick side"
+      "cl   cl"
       "term term";
   }
   .lp-quick { grid-template-columns: 1fr; }
@@ -689,7 +736,7 @@ main:has(.lp) .content-panel:first-child { padding-block: 0; }
 @media (max-width: 40rem) {
   .lp-grid {
     grid-template-columns: 1fr;
-    grid-template-areas: "prov" "auth" "pool" "pick" "sub" "side" "term";
+    grid-template-areas: "prov" "auth" "pool" "pick" "sub" "side" "cl" "term";
   }
   .lp-cell-picker img { max-height: 22rem; height: auto; }
   .lp-cta { flex-direction: column; width: 100%; }

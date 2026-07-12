@@ -40,6 +40,7 @@ const icons: Record<string, string> = {
 	rocket: 'M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09ZM12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2Zm-3-3H4s.55-3.03 2-4c1.62-1.08 5 0 5 0m0 9v5s3.03-.55 4-2c1.08-1.62 0-5 0-5',
 	book: 'M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20',
 	code: 'M16 18l6-6-6-6M8 6l-6 6 6 6',
+	terminal: 'M4 17l6-6-6-6M12 19h8',
 	folder: 'M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z',
 };
 
@@ -89,6 +90,7 @@ const docsMap = [
 			{ label: t('Model Routing', '모델 라우팅', '模型路由'), href: `${prefix}guides/model-routing/` },
 			{ label: t('Codex Integration', 'Codex 통합', 'Codex 集成'), href: `${prefix}guides/codex-integration/` },
 			{ label: t('Codex App Model Picker', 'Codex App 모델 선택기', 'Codex App 模型选择器'), href: `${prefix}guides/codex-app-models/` },
+			{ label: 'Claude Code', href: `${prefix}guides/claude-code/` },
 			{ label: t('Sidecars: Search & Vision', '사이드카: 검색 & 비전', '边车：搜索与视觉'), href: `${prefix}guides/sidecars/` },
 			{ label: t('Web Dashboard', '웹 대시보드', '网页控制台'), href: `${prefix}guides/web-dashboard/` },
 			{ label: t('Sub-agent Surface', '서브에이전트 서피스', '子代理界面'), href: `${prefix}guides/sub-agent-surface/` },
@@ -129,12 +131,25 @@ const docsMap = [
 			<Image src={heroFieldDark} alt="" class="lp-field-dark" loading="lazy" widths={[1024, 2048]} sizes="100vw" />
 		</div>
 		<div class="lp-hero-copy">
-			<h1 id="_top">{t('Run Codex on any LLM.', 'Codex를 어떤 LLM 위에서든.', '让 Codex 跑在任意 LLM 上。')}</h1>
+			{/* Product-word drum: the H1 performs the claim — the proxy serves both
+			    Codex and Claude Code. 4-face rotateX cylinder, fixed slot width via
+			    inline-grid stacking; reduced-motion collapses to a static pairing. */}
+			<h1 id="_top">
+				{t('Run ', '', '让 ')}<span class="lp-drum" aria-label="Codex and Claude">
+					<span class="lp-drum-spin" aria-hidden="true">
+						<span class="lp-drum-face lp-drum-codex">Codex</span>
+						<span class="lp-drum-face lp-drum-claude">Claude</span>
+						<span class="lp-drum-face lp-drum-codex">Codex</span>
+						<span class="lp-drum-face lp-drum-claude">Claude</span>
+					</span>
+					<span class="lp-drum-static" aria-hidden="true">Codex<span class="lp-drum-dot"> · </span>Claude</span>
+				</span>{t(' on any LLM.', '를 어떤 LLM 위에서든.', ' 跑在任意 LLM 上。')}
+			</h1>
 			<p class="lp-sub">
 				{t(
-					'opencodex is a local proxy that translates the Codex Responses API to any provider wire format — streaming, tool calls, reasoning, and images, in both directions. Zero Codex patches.',
-					'opencodex는 Codex의 Responses API를 어떤 프로바이더 wire 포맷으로든 양방향 변환하는 로컬 프록시입니다 — 스트리밍, tool call, reasoning, 이미지까지. Codex 패치는 없습니다.',
-					'opencodex 是一个本地代理，将 Codex 的 Responses API 双向翻译为任意 provider 的线路格式 —— 包括流式、工具调用、推理与图像。无需修补 Codex。'
+					'opencodex is a local proxy that serves Codex and Claude Code from one port — translating each wire format to any provider, with streaming, tool calls, reasoning, and images in both directions. Zero client patches.',
+					'opencodex는 포트 하나로 Codex와 Claude Code를 함께 서빙하는 로컬 프록시입니다 — 각 wire 포맷을 어떤 프로바이더로든 양방향 변환하고, 스트리밍·tool call·reasoning·이미지까지 그대로 통과시킵니다. 클라이언트 패치는 없습니다.',
+					'opencodex 是一个本地代理，用同一个端口同时服务 Codex 与 Claude Code —— 将各自的线路格式双向翻译为任意 provider，支持流式、工具调用、推理与图像。无需修补客户端。'
 				)}
 			</p>
 			<div class="lp-cta">
@@ -244,6 +259,14 @@ const docsMap = [
 					'Pin up to five routed or native models for Codex spawn_agent, and switch the v1 / base / v2 surface globally.',
 					'Codex spawn_agent용으로 라우팅·네이티브 모델을 최대 5개 고정하고, v1 / base / v2 서피스를 전역으로 전환합니다.',
 					'为 Codex spawn_agent 固定最多五个路由或原生模型，并全局切换 v1 / base / v2 界面。'
+				)}</p>
+			</article>
+			<article class="lp-cell lp-cell-claude">
+				<h3><svg class="lp-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={icons.terminal} /></svg>Claude Code</h3>
+				<p>{t(
+					'ocx claude launches Claude Code against the same port — every routed model in the /model picker, auto-context up to 1M, roster sub-agents, and your claude.ai login stays active.',
+					'ocx claude가 같은 포트로 Claude Code를 띄웁니다 — 라우팅된 모든 모델이 /model 선택기에 뜨고, 최대 1M auto-context, 로스터 서브에이전트, claude.ai 로그인은 그대로 유지됩니다.',
+					'ocx claude 让 Claude Code 连接同一端口 —— 所有路由模型出现在 /model 选择器中，auto-context 最高 1M，roster 子代理，claude.ai 登录保持不变。'
 				)}</p>
 			</article>
 			<article class="lp-cell">
