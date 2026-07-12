@@ -5,35 +5,8 @@
  * Codex on a service-managed restart (the restarted instance re-injects); explicit stop/uninstall
  * restore it via the command.
  */
- Sautéed for 15s
-
-❯ ocx self 호출해봐
-
-  Thought for 3s
-
-⏺ ocx-self(Test self subagent) Fable 5
-Done (0 tool uses · 40.2k tokens · 9s)
-
-
-  Thought for 3s
-
-첫 호출에서 제가 model: fable 오버라이드를 잘못 넣어서 진짜 동일 모델 복제 검증은 아니었어요. ocx-self를 오버라이드 없이 다시 정확히 호출할게요.
-
-⏺ ocx-self(Verify true self clone) Opus 4.8 (1M context)
-Done (0 tool uses · 23.1k tokens · 3s)
-
-
-  Thought for 4s
-
-ocx-self 호출 자체는 정상 작동했어요 ✅
-
-다만 결과는 예상과 조금 달랐어요.
-
-- 첫 호출: Fable 5로 실행
-- 재호출: Claude Opus 4.8로 실행
-- 현재 메인 세션: GPT-5.6-sol
-
-즉, 서브에이전트 호출과 OpenCodeX inherit 라우팅은 정상이지만, 현재 Agent 도구가 model 값을 필수로 요구해서 ocx-self가 메인 세션 모델을 그대로 복제하지 못하고 도구의 모델 지정에 영향을 받는 것으로 보여요. 저장소 변경은 없었습니다. 
+import { execFileSync, execSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { expandUserPath, getConfigDir, readPid, removePid, removeRuntimePort } from "./config";
