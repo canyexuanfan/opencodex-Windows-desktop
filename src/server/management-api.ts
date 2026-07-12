@@ -19,6 +19,7 @@ import {
   upsertOAuthProvider,
 } from "../oauth";
 import { removeCredential } from "../oauth/store";
+import { providerDestinationResolvedError } from "../lib/destination-policy";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "../oauth/key-providers";
 import { deriveProviderPresets } from "../providers/derive";
 import { fetchProviderQuotaReports } from "../providers/quota";
@@ -294,6 +295,10 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     }
     const providerError = providerManagementConfigError(name, prov);
     if (providerError) return jsonResponse({ error: providerError }, 400);
+    // Hostname destinations additionally get a DNS-resolved SSRF check at write time —
+    // the sync check above only classifies literal IPs (review finding, PR #96).
+    const resolvedError = await providerDestinationResolvedError(name, prov);
+    if (resolvedError) return jsonResponse({ error: resolvedError }, 400);
     // Catalog providers (e.g. ollama-cloud) carry a models + vision/reasoning classification the GUI
     // doesn't send — merge it in so the sidecars are gated correctly.
     enrichProviderFromCatalog(name, prov);
