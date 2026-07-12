@@ -341,17 +341,17 @@ export async function handleClaudeMessages(
     headers,
     body: JSON.stringify(internalBody),
   });
-  // TEMP diagnostic (devlog 260712 040): env-gated dump of the translated internal
-  // body to size-profile the 170k stable-prefix inflation. Remove after diagnosis.
-  if (process.env.OCX_CLAUDE_DUMP_DIR) {
-    try {
-      const { writeFileSync, mkdirSync } = await import("node:fs");
-      mkdirSync(process.env.OCX_CLAUDE_DUMP_DIR, { recursive: true });
+  // TEMP diagnostic (devlog 260712 040): marker-file-gated dump of the translated
+  // internal body to size-profile the 170k stable-prefix inflation. Enable with
+  // `mkdir /tmp/ocx-claude-dump`. Remove after diagnosis.
+  try {
+    const { existsSync, writeFileSync } = await import("node:fs");
+    if (existsSync("/tmp/ocx-claude-dump")) {
       const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      writeFileSync(`${process.env.OCX_CLAUDE_DUMP_DIR}/claude-internal-${stamp}.json`, JSON.stringify(internalBody));
-      writeFileSync(`${process.env.OCX_CLAUDE_DUMP_DIR}/claude-anthropic-${stamp}.json`, JSON.stringify(anthropicBody));
-    } catch { /* diagnostic only */ }
-  }
+      writeFileSync(`/tmp/ocx-claude-dump/claude-internal-${stamp}.json`, JSON.stringify(internalBody));
+      writeFileSync(`/tmp/ocx-claude-dump/claude-anthropic-${stamp}.json`, JSON.stringify(anthropicBody));
+    }
+  } catch { /* diagnostic only */ }
 
   // Request-log wiring mirrors the /v1/responses route: native passthrough finalizes
   // via the terminal callbacks; routed streams get the Responses-vocabulary log tap
