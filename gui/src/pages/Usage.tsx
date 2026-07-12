@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { formatTokens } from "../format-tokens";
 import { EmptyState } from "../ui";
@@ -191,24 +191,33 @@ export default function Usage({ apiBase }: { apiBase: string }) {
   const [hoverDay, setHoverDay] = useState<number | null>(null);
   const [hoverCell, setHoverCell] = useState<{ wi: number; di: number; x: number; y: number } | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
+  const fetchUsage = useCallback(async (nextRange: Range, signal: AbortSignal) => {
     setLoading(true);
-    const fetchUsage = async () => {
-      try {
-        const res = await fetch(`${apiBase}/api/usage?range=${range}`);
-        if (!res.ok) throw new Error("fetch failed");
-        const json = await res.json() as UsageResponse;
-        if (!cancelled) setData(json);
-      } catch {
-        if (!cancelled) setData(null);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+    try {
+      const res = await fetch(`${apiBase}/api/usage?range=${nextRange}`, { signal });
+      if (!res.ok) throw new Error("fetch failed");
+      const json = await res.json() as UsageResponse;
+      if (signal.aborted) return;
+      setData(json);
+    } catch {
+      // A stale request (range/apiBase changed, or unmount) must not overwrite newer state.
+      if (signal.aborted) return;
+      setData(null);
+    } finally {
+      if (!signal.aborted) setLoading(false);
+    }
+  }, [apiBase]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => {
+      void fetchUsage(range, controller.signal);
+    }, 0);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
     };
-    fetchUsage();
-    return () => { cancelled = true; };
-  }, [apiBase, range]);
+  }, [fetchUsage, range]);
 
   const heatmap = useMemo(() => buildHeatmap(data?.days ?? []), [data?.days]);
   // Keep the heatmap scrolled to the right edge (most recent weeks): cells are fixed-size,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Notice, EmptyState } from "../ui";
 import { IconArrowUp, IconArrowDown, IconX, IconCheck, IconSearch, IconBot } from "../icons";
 import { useT, Trans } from "../i18n";
@@ -13,7 +13,7 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
   const [ok, setOk] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       const r = await fetch(`${apiBase}/api/subagent-models`).then(res => res.json());
       const avail: string[] = r.available ?? [];
@@ -25,8 +25,13 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
     } finally {
       setLoading(false);
     }
-  };
-  useEffect(() => { load(); }, [apiBase]);
+  }, [apiBase, t]);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      void load();
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [load]);
 
   const toggle = (m: string) => {
     setStatus("");

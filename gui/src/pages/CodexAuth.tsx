@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useT, type TFn } from "../i18n";
 import { IconLock, IconPlus, IconX, IconAlert, IconRefresh, IconTicket } from "../icons";
 import { Notice, EmptyState } from "../ui";
@@ -6,8 +6,6 @@ import AddCodexAccountModal from "../components/AddCodexAccountModal";
 import type { AccountQuota } from "../codex-quota-utils";
 import QuotaBars from "../components/QuotaBars";
 
-export { normalizeQuotaForPlan, isThirtyDayOnlyPlan } from "../codex-quota-utils";
-export type { AccountQuota } from "../codex-quota-utils";
 interface AccountEntry {
   id: string; email: string; plan?: string; isMain: boolean;
   hasCredential: boolean; quota: AccountQuota | null;
@@ -29,7 +27,7 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
   const [creditDetails, setCreditDetails] = useState<{ granted_at: string; expires_at: string }[] | null>(null);
   const [creditDetailsLoading, setCreditDetailsLoading] = useState(false);
 
-  const load = async (refreshQuota = false) => {
+  const load = useCallback(async (refreshQuota = false) => {
     try {
       const [accts, active] = await Promise.all([
         fetch(`${apiBase}/api/codex-auth/accounts${refreshQuota ? "?refresh=1" : ""}`).then(r => r.json()),
@@ -42,8 +40,19 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
     } catch {
       return false;
     }
-  };
-  useEffect(() => { load(); const iv = setInterval(load, 30_000); return () => clearInterval(iv); }, [apiBase]);
+  }, [apiBase]);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      void load();
+    }, 0);
+    const iv = window.setInterval(() => {
+      void load();
+    }, 30_000);
+    return () => {
+      window.clearTimeout(timeout);
+      window.clearInterval(iv);
+    };
+  }, [load]);
 
   const setActive = async (id: string | null) => {
     await fetch(`${apiBase}/api/codex-auth/active`, {

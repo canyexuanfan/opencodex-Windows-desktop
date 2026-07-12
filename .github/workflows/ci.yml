@@ -73,6 +73,17 @@ jobs:
       - name: Check release helper syntax
         run: bun build scripts/release.ts --target=bun --outdir=.tmp/ci-release-script-check
 
+      - name: GUI lint
+        run: |
+          cd gui
+          bun install --frozen-lockfile
+          bun run lint
+
+      - name: GUI build
+        run: |
+          cd gui
+          bun run build
+
       - name: CLI help smoke
         run: bun run src/cli/index.ts help
 
