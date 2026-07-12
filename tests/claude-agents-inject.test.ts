@@ -30,6 +30,8 @@ describe("buildClaudeAgentDefs (devlog 070 + audit 071)", () => {
     // Self is ALWAYS emitted with inherit (audit 071 #1) — no identity guessing.
     expect(byName["ocx-self"]!.model).toBe("inherit");
     expect(defs).toHaveLength(3);
+    // Dispatcher directive (live repro: model:"fable" override broke inherit).
+    for (const d of defs) expect(d.description).toContain("WITHOUT the `model` argument");
   });
 
   test("unset roster seeds the defaults; explicit [] is respected (audit 071 #6)", () => {

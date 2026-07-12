@@ -70,7 +70,7 @@ export function buildClaudeAgentDefs(config: OcxConfig, windows: Record<string, 
   for (const entry of roster.slice(0, 5)) {
     if (typeof entry !== "string" || entry.trim() === "") continue;
     const { alias, id, provider } = entryParts(entry.trim());
-    push(sanitizeName(id), alias, `Delegate work to ${id} (${provider}) via opencodex routing. General-purpose worker/explorer on that model.`);
+    push(sanitizeName(id), alias, `Delegate work to ${id} (${provider}) via opencodex routing. General-purpose worker/explorer on that model. ${NO_MODEL_ARG}`);
   }
 
   // Self-clone slot (audit 071 #1, Kant-measured): frontmatter accepts
@@ -80,7 +80,7 @@ export function buildClaudeAgentDefs(config: OcxConfig, windows: Record<string, 
     file: `${OWNED_PREFIX}self.md`,
     name: `${OWNED_PREFIX}self`,
     model: "inherit",
-    description: "Self-clone: delegate to the SAME model the main session is running right now.",
+    description: `Self-clone: delegate to the SAME model the main session is running right now (model: inherit). ${NO_MODEL_ARG}`,
   });
   return defs;
 }
@@ -159,3 +159,11 @@ export function injectClaudeAgentDefs(config: OcxConfig, windows: Record<string,
   }
   return syncClaudeAgentDefs(buildClaudeAgentDefs(config, windows), configDir);
 }
+/**
+ * Dispatcher directive appended to every ocx-* description: the Agent tool's
+ * `model` enum is OPTIONAL but overrides the definition when set — a dispatcher
+ * that habitually fills it would break the pinned/inherit routing (live repro:
+ * ocx-self dispatched as "fable"). The description is the only per-agent surface
+ * the DISPATCHING model reads, so the contract lives here.
+ */
+const NO_MODEL_ARG = "IMPORTANT: invoke WITHOUT the `model` argument — this agent's definition already pins its model; any override breaks the routing.";
