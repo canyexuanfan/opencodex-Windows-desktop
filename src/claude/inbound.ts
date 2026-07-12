@@ -130,6 +130,31 @@ function pushUserMessage(input: Rec[], blocks: Rec[]): void {
  */
 export const DEFAULT_BLOCKED_SKILLS = ["claude-api"];
 
+/**
+ * ocx-route directive (devlog 072): injected agent-definition bodies carry
+ * `<!-- ocx-route: <model> -->` because Claude Code 2.1.207 ignores custom
+ * gateway ids in agent frontmatter (live-proven fallback to sonnet). The body
+ * rides the subagent's system prompt, so the proxy re-routes here. Only the
+ * FIRST directive wins; the scan is bounded to the system field.
+ */
+const OCX_ROUTE_RE = /<!--\s*ocx-route:\s*([^\s]+)\s*-->/;
+
+export function extractOcxRouteDirective(body: unknown): string | null {
+  if (!isRec(body)) return null;
+  const system = body.system;
+  let text: string | undefined;
+  if (typeof system === "string") text = system;
+  else if (Array.isArray(system)) {
+    text = system
+      .filter((b): b is Rec => isRec(b) && b.type === "text" && typeof b.text === "string")
+      .map(b => b.text as string)
+      .join("\n");
+  }
+  if (!text) return null;
+  const match = OCX_ROUTE_RE.exec(text);
+  return match ? match[1]! : null;
+}
+
 /** Injected-skill payloads below this size are never stubbed (not worth it). */
 const SKILL_ELISION_MIN_CHARS = 10_000;
 const SKILL_TEXT_MARKER = "Base directory for this skill: ";

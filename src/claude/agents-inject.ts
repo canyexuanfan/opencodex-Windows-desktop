@@ -115,6 +115,11 @@ function renderAgentDef(def: ClaudeAgentDef): string {
     "---",
     "",
     `<!-- ${GENERATED_MARKER} -->`,
+    // Proxy routing directive (devlog 072): 2.1.207 does not honor custom gateway
+    // ids in agent frontmatter (falls back to sonnet — live-proven), but the agent
+    // BODY rides the subagent's system prompt verbatim. The proxy detects this
+    // directive and overrides the request model before routing/passthrough.
+    `<!-- ocx-route: ${def.model} -->`,
     "",
     `You are a delegated worker running on \`${def.model}\` through the local opencodex proxy.`,
     "Complete the dispatched task directly and report results concisely. This file is",

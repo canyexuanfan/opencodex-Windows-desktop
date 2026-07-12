@@ -7,7 +7,7 @@
  * unchanged. The Responses output (SSE or JSON) is converted back to Anthropic shape.
  */
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
-import { AnthropicRequestError, anthropicToResponsesTranslation, resolveInboundModel, type ClaudeCacheKeySource } from "../claude/inbound";
+import { AnthropicRequestError, anthropicToResponsesTranslation, extractOcxRouteDirective, resolveInboundModel, type ClaudeCacheKeySource } from "../claude/inbound";
 import { stripOneMillionMarker } from "../claude/context-windows";
 import { captureClaudeInbound } from "../claude/inbound-debug";
 import {
@@ -242,6 +242,16 @@ export async function handleClaudeMessages(
     if (isRec(anthropicBody) && typeof anthropicBody.model === "string") {
       anthropicBody.model = stripOneMillionMarker(anthropicBody.model);
     }
+    // ocx-route override (devlog 072): injected agent bodies pin their model via a
+    // system-prompt directive because 2.1.207 ignores custom ids in agent
+    // frontmatter. Must run BEFORE the native-passthrough branch — the CLI sends
+    // these subagent turns under a fallback claude model id.
+    if (isRec(anthropicBody)) {
+      const routeOverride = extractOcxRouteDirective(anthropicBody);
+      if (routeOverride && typeof anthropicBody.model === "string") {
+        anthropicBody.model = stripOneMillionMarker(routeOverride);
+      }
+    }
     // Debug capture (opt-in allowlist scalars) BEFORE the passthrough branch so
     // native, routed, and disabled-alias paths are all observable (devlog 130 B1).
     captureClaudeInbound(
@@ -460,6 +470,12 @@ export async function handleClaudeCountTokens(req: Request, config: OcxConfig): 
   const stripped = stripOneMillionMarker(model);
   if (stripped !== model) {
     model = stripped;
+    raw.model = model;
+  }
+  // ocx-route override (devlog 072): keep count_tokens consistent with messages.
+  const countRoute = extractOcxRouteDirective(raw);
+  if (countRoute) {
+    model = stripOneMillionMarker(countRoute);
     raw.model = model;
   }
   captureClaudeInbound("count_tokens", raw, resolveInboundModel(model, config.claudeCode), req.headers.get("anthropic-beta") ?? undefined);

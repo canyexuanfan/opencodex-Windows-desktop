@@ -345,3 +345,25 @@ describe("bundled-skill elision for routed models (devlog 260712 060)", () => {
     expect(off.some(t => t.length > 400_000)).toBe(true);
   });
 });
+
+describe("ocx-route directive (devlog 072)", () => {
+  const { extractOcxRouteDirective } = require("../src/claude/inbound") as typeof import("../src/claude/inbound");
+
+  test("extracts from string and block-array system; first directive wins", () => {
+    expect(extractOcxRouteDirective({ system: "intro\n<!-- ocx-route: claude-ocx-native--gpt-5.6-sol[1m] -->\nrest" }))
+      .toBe("claude-ocx-native--gpt-5.6-sol[1m]");
+    expect(extractOcxRouteDirective({
+      system: [
+        { type: "text", text: "You are a delegated worker" },
+        { type: "text", text: "<!-- ocx-route: gemini/gemini-3-pro --> and <!-- ocx-route: other -->" },
+      ],
+    })).toBe("gemini/gemini-3-pro");
+  });
+
+  test("absent or malformed directives return null", () => {
+    expect(extractOcxRouteDirective({ system: "no directive here" })).toBeNull();
+    expect(extractOcxRouteDirective({ system: [{ type: "text", text: "<!-- ocx-route: -->" }] })).toBeNull();
+    expect(extractOcxRouteDirective({})).toBeNull();
+    expect(extractOcxRouteDirective(null)).toBeNull();
+  });
+});
