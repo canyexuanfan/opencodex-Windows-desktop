@@ -22,6 +22,17 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).not.toMatch(/uses:\s+\S+@(?:v\d+|main|master)\b/);
   });
 
+  test("cross-platform CI keeps the GUI lint and build gates", async () => {
+    // Review finding (PR #97): the GUI build gate was silently dropped once; assert the
+    // enhanced gate (PR #99) stays wired so broken GUI builds cannot merge unnoticed.
+    const workflow = await readText(".github/workflows/ci.yml");
+
+    expect(workflow).toContain("- name: GUI lint");
+    expect(workflow).toContain("bun run lint");
+    expect(workflow).toContain("- name: GUI build");
+    expect(workflow).toContain("bun run build");
+  });
+
   test("service lifecycle is least-privilege, bounded, and cannot swallow health failures", async () => {
     const workflow = await readText(".github/workflows/service-lifecycle.yml");
 
