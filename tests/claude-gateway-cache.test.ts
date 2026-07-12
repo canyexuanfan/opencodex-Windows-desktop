@@ -34,9 +34,12 @@ describe("Claude Code gateway-model cache pre-write (devlog 260712 030)", () => 
     ]);
   });
 
-  test("no usable models -> nothing written (never blanks a good cache)", () => {
+  test("no usable models -> authoritative empty written (stale cache cleared)", () => {
     const dir = tempDir();
-    expect(writeGatewayModelCache("http://127.0.0.1:10100", [{ id: "gpt-only" }], dir)).toBeNull();
+    const path = writeGatewayModelCache("http://127.0.0.1:10100", [{ id: "gpt-only" }], dir);
+    expect(path).not.toBeNull();
+    const cached = JSON.parse(readFileSync(path!, "utf8"));
+    expect(cached.models).toEqual([]);
   });
 
   test("claudeConfigDir honors CLAUDE_CONFIG_DIR", () => {

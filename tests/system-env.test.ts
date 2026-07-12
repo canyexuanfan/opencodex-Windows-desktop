@@ -191,15 +191,15 @@ describe("systemEnv lever keys (devlog 136 B6)", () => {
     expect(setCalls).toContain("launchctl setenv CLAUDE_CODE_MAX_CONTEXT_TOKENS 1000000");
     expect(setCalls).toContain("launchctl setenv DISABLE_COMPACT 1");
     expect(setCalls).toContain("launchctl setenv CLAUDE_CODE_ALWAYS_ENABLE_EFFORT 1");
-    const trackingWrite = writes.find(w => w.path.includes("system-env-port"));
+    const trackingWrite = writes.filter(w => w.path.includes("system-env-port")).at(-1);
     expect(JSON.parse(trackingWrite!.data).injectedKeys).toEqual(expect.arrayContaining([
       "CLAUDE_CODE_MAX_CONTEXT_TOKENS", "DISABLE_COMPACT", "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT",
     ]));
     // Shell env file: lever keys are CONDITIONAL exports so a shell-only user value wins.
     const shellWrite = writes.find(w => w.path.includes("claude-env.sh"));
-    expect(shellWrite!.data).toContain('[ -z "${CLAUDE_CODE_MAX_CONTEXT_TOKENS+x}" ] && export CLAUDE_CODE_MAX_CONTEXT_TOKENS="1000000"');
-    expect(shellWrite!.data).toContain('[ -z "${DISABLE_COMPACT+x}" ] && export DISABLE_COMPACT="1"');
-    expect(shellWrite!.data).toContain('[ -z "${CLAUDE_CODE_ALWAYS_ENABLE_EFFORT+x}" ] && export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT="1"');
+    expect(shellWrite!.data).toContain(`[ -z "\${CLAUDE_CODE_MAX_CONTEXT_TOKENS+x}" ] && export CLAUDE_CODE_MAX_CONTEXT_TOKENS='1000000'`);
+    expect(shellWrite!.data).toContain(`[ -z "\${DISABLE_COMPACT+x}" ] && export DISABLE_COMPACT='1'`);
+    expect(shellWrite!.data).toContain(`[ -z "\${CLAUDE_CODE_ALWAYS_ENABLE_EFFORT+x}" ] && export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT='1'`);
   });
 
   test("user-preset launchctl values are skipped and never tracked (revert cannot delete them)", async () => {
@@ -238,7 +238,7 @@ describe("systemEnv lever keys (devlog 136 B6)", () => {
     const trackingWrite = writes.filter(w => w.path.includes("system-env-port")).at(-1);
     expect(JSON.parse(trackingWrite!.data).injectedKeys).toContain("CLAUDE_CODE_AUTO_COMPACT_WINDOW");
     const shellWrite = writes.find(w => w.path.includes("claude-env.sh"));
-    expect(shellWrite!.data).toContain('[ -z "${CLAUDE_CODE_AUTO_COMPACT_WINDOW+x}" ] && export CLAUDE_CODE_AUTO_COMPACT_WINDOW="350000"');
+    expect(shellWrite!.data).toContain(`[ -z "\${CLAUDE_CODE_AUTO_COMPACT_WINDOW+x}" ] && export CLAUDE_CODE_AUTO_COMPACT_WINDOW='350000'`);
   });
 
   test("auto-context: user-preset launchctl value is respected and untracked (audit 021 #2)", async () => {

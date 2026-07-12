@@ -41,6 +41,7 @@ import type { OcxConfig, OcxProviderConfig } from "../types";
 import { drainAndShutdown } from "./lifecycle";
 import { filterRequestLogs, getRequestLogEntries } from "./request-log";
 import { isAllowedRequestOrigin, jsonResponse, providerManagementConfigError, publicProviderBaseUrl, safeConfigDTO } from "./auth-cors";
+import { applySystemEnvToggle } from "./system-env";
 
 // Single source of truth = package.json (../ from src/), so /healthz + the GUI badge match the
 // installed npm version instead of a stale hardcode.
@@ -734,8 +735,15 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     // supersede tiers; auto-context supersedes the max-context pair; effort rides
     // regardless on 2.1.207). PUT keeps validating them so hand-written configs
     // and older GUIs stay safe; GUI saves omit them and the spread preserves them.
-    let body: { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; systemEnv?: unknown; fastMode?: unknown; maxContextTokens?: unknown; alwaysEnableEffort?: unknown; tierModels?: unknown; autoContext?: unknown; autoCompactWindow?: unknown; blockedSkills?: unknown; injectAgents?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    let parsedBody: unknown;
+    try { parsedBody = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    const isPlainObject = (value: unknown): value is Record<string, unknown> => {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+      const prototype = Object.getPrototypeOf(value);
+      return prototype === Object.prototype || prototype === null;
+    };
+    if (!isPlainObject(parsedBody)) return jsonResponse({ error: "body must be an object" }, 400);
+    const body = parsedBody as { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; systemEnv?: unknown; fastMode?: unknown; maxContextTokens?: unknown; alwaysEnableEffort?: unknown; tierModels?: unknown; autoContext?: unknown; autoCompactWindow?: unknown; blockedSkills?: unknown; injectAgents?: unknown };
     const next = { ...(config.claudeCode ?? {}) };
     if (body.enabled !== undefined) {
       if (typeof body.enabled !== "boolean") return jsonResponse({ error: "enabled must be a boolean" }, 400);
@@ -797,18 +805,23 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     }
     if (body.tierModels !== undefined) {
       // CONFIG-ONLY back-compat (GUI pickers removed — roster agents supersede tiers).
-      if (!body.tierModels || typeof body.tierModels !== "object" || Array.isArray(body.tierModels)) {
-        return jsonResponse({ error: "tierModels must be an object" }, 400);
+      if (body.tierModels === null) {
+        delete next.tierModels;
+      } else if (!isPlainObject(body.tierModels)) {
+        return jsonResponse({ error: "tierModels must be an object with string values, or null" }, 400);
+      } else {
+        for (const [tier, value] of Object.entries(body.tierModels)) {
+          if (typeof value !== "string") return jsonResponse({ error: `tierModels.${tier} must be a string` }, 400);
+        }
+        const tierModels = body.tierModels as Record<string, string>;
+        const tiers: Record<string, string> = {};
+        for (const tier of ["opus", "sonnet", "haiku", "fable"] as const) {
+          const value = tierModels[tier];
+          if (value !== undefined && value.trim() !== "") tiers[tier] = value.trim();
+        }
+        if (Object.keys(tiers).length > 0) next.tierModels = tiers;
+        else delete next.tierModels;
       }
-      const tiers: Record<string, string> = {};
-      for (const tier of ["opus", "sonnet", "haiku", "fable"] as const) {
-        const value = (body.tierModels as Record<string, unknown>)[tier];
-        if (value === undefined || value === null) continue;
-        if (typeof value !== "string") return jsonResponse({ error: `tierModels.${tier} must be a string` }, 400);
-        if (value.trim() !== "") tiers[tier] = value.trim();
-      }
-      if (Object.keys(tiers).length > 0) next.tierModels = tiers;
-      else delete next.tierModels;
     }
     if (body.fastMode !== undefined) {
       if (body.fastMode !== true && body.fastMode !== false && body.fastMode !== null) {
@@ -824,26 +837,38 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       else next[field] = value.trim();
     }
     if (body.modelMap !== undefined) {
-      if (!body.modelMap || typeof body.modelMap !== "object" || Array.isArray(body.modelMap)) {
-        return jsonResponse({ error: "modelMap must be an object of string->string" }, 400);
-      }
-      const map: Record<string, string> = {};
-      for (const [k, v] of Object.entries(body.modelMap as Record<string, unknown>)) {
-        if (typeof v !== "string" || k.trim() === "" || v.trim() === "") {
-          return jsonResponse({ error: "modelMap entries must be non-empty strings" }, 400);
+      if (body.modelMap === null) {
+        delete next.modelMap;
+      } else {
+        if (!isPlainObject(body.modelMap)) {
+          return jsonResponse({ error: "modelMap must be an object of string->string, or null" }, 400);
         }
-        map[k.trim()] = v.trim();
+        const map: Record<string, string> = {};
+        for (const [k, v] of Object.entries(body.modelMap)) {
+          if (typeof v !== "string" || k.trim() === "" || v.trim() === "") {
+            return jsonResponse({ error: "modelMap entries must be non-empty strings" }, 400);
+          }
+          map[k.trim()] = v.trim();
+        }
+        if (Object.keys(map).length > 0) next.modelMap = map;
+        else delete next.modelMap;
       }
-      if (Object.keys(map).length > 0) next.modelMap = map;
-      else delete next.modelMap;
     }
     config.claudeCode = next;
     const { saveConfig: save } = await import("../config");
     save(config);
+    const warnings: string[] = [];
+    if (body.systemEnv !== undefined) {
+      try {
+        await applySystemEnvToggle(config, config.port);
+      } catch (err) {
+        warnings.push(`Failed to apply system environment setting: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     // Keep the file-backed live registry symmetric: OFF prunes immediately, while
     // ON and config changes restore definitions without requiring a restart.
     await syncClaudeAgentDefsBestEffort();
-    return jsonResponse({ ok: true, enabled: next.enabled !== false });
+    return jsonResponse({ ok: true, enabled: next.enabled !== false, warnings });
   }
 
   // Per-provider catalog allowlist (issue #52): when a provider has a non-empty selectedModels list,

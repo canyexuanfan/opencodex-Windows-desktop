@@ -73,7 +73,9 @@ test("PUT round-trips settings and persists to config", async () => {
       }),
     });
     expect(put.status).toBe(200);
-    expect(await put.json()).toEqual({ ok: true, enabled: false });
+    const putBody = await put.json() as Record<string, unknown>;
+    expect(putBody.ok).toBe(true);
+    expect(putBody.enabled).toBe(false);
 
     const persisted = loadConfig();
     expect(persisted.claudeCode).toEqual({
@@ -269,7 +271,7 @@ test("PUT validation rejects bad shapes", async () => {
       [{ autoCompactWindow: 2_000_000 }, "autoCompactWindow must be an integer between 100000 and 1000000, or null"],
       [{ autoCompactWindow: 350_000.5 }, "autoCompactWindow must be an integer between 100000 and 1000000, or null"],
       [{ autoCompactWindow: "350000" }, "autoCompactWindow must be an integer between 100000 and 1000000, or null"],
-      [{ modelMap: ["a"] }, "modelMap must be an object of string->string"],
+      [{ modelMap: ["a"] }, "modelMap must be an object of string->string, or null"],
       [{ modelMap: { "": "x" } }, "modelMap entries must be non-empty strings"],
       [{ modelMap: { a: "" } }, "modelMap entries must be non-empty strings"],
       [{ modelMap: { a: 3 } }, "modelMap entries must be non-empty strings"],

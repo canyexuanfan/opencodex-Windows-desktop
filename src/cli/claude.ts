@@ -3,7 +3,8 @@
  *
  * Mirrors `ccr code` UX (devlog/260711_claude_inbound/020, 003 E1/E2/E5/G1):
  * ensures the proxy is running, injects the Anthropic env slots, then execs the
- * `claude` CLI with stdio inherited. User-exported env always wins.
+ * `claude` CLI with stdio inherited. User-exported env wins except when a stale
+ * loopback opencodex base URL points at a different proxy port.
  */
 import { spawn } from "node:child_process";
 import { loadConfig } from "../config";
@@ -20,7 +21,8 @@ export interface ClaudeLaunchEnv {
 /**
  * Pure env assembly (unit-tested): never sets ANTHROPIC_API_KEY (setting both
  * token vars triggers Claude Code's auth-conflict warning, 003 E1), and never
- * overrides variables the user already exported.
+ * overrides variables the user already exported, apart from stale loopback
+ * ANTHROPIC_BASE_URL values owned by a previous opencodex launch.
  */
 export function buildClaudeEnv(config: OcxConfig, port: number, base: ClaudeLaunchEnv, contextWindows: Record<string, number> = {}): ClaudeLaunchEnv {
   const env: ClaudeLaunchEnv = { ...base };
@@ -30,6 +32,20 @@ export function buildClaudeEnv(config: OcxConfig, port: number, base: ClaudeLaun
     env[name] = value;
   };
   setDefault("ANTHROPIC_BASE_URL", `http://127.0.0.1:${port}`);
+  const existingBaseUrl = env.ANTHROPIC_BASE_URL;
+  if (existingBaseUrl) {
+    try {
+      const parsed = new URL(existingBaseUrl);
+      const isLoopback = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+      if (isLoopback && parsed.port !== "" && Number(parsed.port) !== port) {
+        const replacement = `http://127.0.0.1:${port}`;
+        console.error(`⚠ Replacing stale opencodex ANTHROPIC_BASE_URL ${existingBaseUrl} with ${replacement}.`);
+        env.ANTHROPIC_BASE_URL = replacement;
+      }
+    } catch {
+      // Preserve user-provided values that are not parseable URLs.
+    }
+  }
   // Subscription-preserving default (teamclaude --no-mitm / Vercel gateway pattern):
   // setting ANTHROPIC_AUTH_TOKEN/API_KEY disables claude.ai connectors and overrides
   // the user's Claude login. Only inject a token when the proxy actually requires an
@@ -137,9 +153,25 @@ export async function cmdClaude(args: string[]): Promise<number> {
   const env = buildClaudeEnv(config, port, process.env, contextWindows);
   // Pre-write the CLI's gateway-model cache (devlog 030): without a token the CLI
   // never refreshes it, so the picker would keep showing yesterday's aliases.
-  await refreshGatewayModelCacheFromProxy(port);
+  try {
+    const cachePath = await refreshGatewayModelCacheFromProxy(port);
+    if (cachePath === null) {
+      console.error("⚠ Gateway model cache could not be refreshed; the model picker may be stale.");
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`⚠ Gateway model cache could not be refreshed: ${message}`);
+  }
   // Sync roster agents (devlog 070): subagentModels + self -> ~/.claude/agents/ocx-*.md.
-  injectClaudeAgentDefs(config, contextWindows);
+  try {
+    const written = injectClaudeAgentDefs(config, contextWindows);
+    if (written === null) {
+      console.error("⚠ Claude agent definitions could not be synced; check ~/.claude/agents permissions.");
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`⚠ Claude agent definitions could not be synced: ${message}`);
+  }
   return await new Promise<number>(resolve => {
     const child = spawn("claude", args, { stdio: "inherit", env: env as NodeJS.ProcessEnv });
     child.on("error", (err: NodeJS.ErrnoException) => {

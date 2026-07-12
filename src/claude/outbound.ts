@@ -105,13 +105,15 @@ export function responsesSseToAnthropicSse(
   let buffer = "";
   let started = false;
   let terminated = false;
+  let cancelled = false;
   let blockIndex = 0;
   let open: OpenBlock | null = null;
   let sawToolUse = false;
   let pingTimer: ReturnType<typeof setInterval> | undefined;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
   return new ReadableStream<Uint8Array>({
-    async start(controller) {
+    start(controller) {
       const emit = (name: string, data: Rec) => controller.enqueue(encoder.encode(sseFrame(name, data)));
       const ensureStarted = () => {
         if (started) return;
@@ -267,46 +269,49 @@ export function responsesSseToAnthropicSse(
         }
       };
 
-      const reader = upstream.getReader();
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let sep: number;
-          while ((sep = buffer.indexOf("\n\n")) !== -1) {
-            const rawFrame = buffer.slice(0, sep);
-            buffer = buffer.slice(sep + 2);
-            let eventName = "";
-            let dataLine = "";
-            for (const line of rawFrame.split("\n")) {
-              if (line.startsWith("event: ")) eventName = line.slice(7).trim();
-              else if (line.startsWith("data: ")) dataLine += line.slice(6);
+      reader = upstream.getReader();
+      void (async () => {
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let sep: number;
+            while ((sep = buffer.indexOf("\n\n")) !== -1) {
+              const rawFrame = buffer.slice(0, sep);
+              buffer = buffer.slice(sep + 2);
+              let eventName = "";
+              let dataLine = "";
+              for (const line of rawFrame.split("\n")) {
+                if (line.startsWith("event: ")) eventName = line.slice(7).trim();
+                else if (line.startsWith("data: ")) dataLine += line.slice(6);
+              }
+              if (!eventName || !dataLine) continue;
+              let data: unknown;
+              try { data = JSON.parse(dataLine); } catch { continue; }
+              if (!isRec(data)) continue;
+              if (terminated) continue;
+              handleFrame(eventName, data);
             }
-            if (!eventName || !dataLine) continue;
-            let data: unknown;
-            try { data = JSON.parse(dataLine); } catch { continue; }
-            if (!isRec(data)) continue;
-            if (terminated) continue;
-            handleFrame(eventName, data);
           }
+          // EOF without a terminal frame is a TRUNCATION, not success (devlog 100:
+          // gateways that close such streams politely hand Claude Code an empty/partial
+          // turn with no retryable error — CLIProxyAPI#2189 failure pattern). Fail closed
+          // with a mid-stream Anthropic error event so the client can retry.
+          if (!cancelled) fail(502, "upstream stream ended before a terminal frame (truncated response)");
+        } catch (err) {
+          fail(500, err instanceof Error ? err.message : String(err));
+        } finally {
+          if (pingTimer !== undefined) clearInterval(pingTimer);
+          reader.releaseLock();
+          if (!cancelled) controller.close();
         }
-        // EOF without a terminal frame is a TRUNCATION, not success (devlog 100:
-        // gateways that close such streams politely hand Claude Code an empty/partial
-        // turn with no retryable error — CLIProxyAPI#2189 failure pattern). Fail closed
-        // with a mid-stream Anthropic error event so the client can retry.
-        fail(502, "upstream stream ended before a terminal frame (truncated response)");
-      } catch (err) {
-        fail(500, err instanceof Error ? err.message : String(err));
-      } finally {
-        if (pingTimer !== undefined) clearInterval(pingTimer);
-        reader.releaseLock();
-        controller.close();
-      }
+      })();
     },
     cancel(reason) {
+      cancelled = true;
       if (pingTimer !== undefined) clearInterval(pingTimer);
-      return upstream.cancel(reason);
+      return reader?.cancel(reason);
     },
   });
 }

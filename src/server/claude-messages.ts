@@ -178,15 +178,21 @@ async function anthropicNativePassthrough(
   });
   headers.set("content-type", "application/json");
 
+  const timeoutSignal = AbortSignal.timeout(config.connectTimeoutMs ?? 120_000);
+  const upstreamSignal = AbortSignal.any([req.signal, timeoutSignal]);
   let upstream: Response;
   try {
     upstream = await fetch(`${base}${pathname}${search}`, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
-      signal: req.signal,
+      signal: upstreamSignal,
     });
   } catch (err) {
+    if (timeoutSignal.aborted && upstreamSignal.reason === timeoutSignal.reason) {
+      finalize(504, { closeReason: "non_stream" });
+      return anthropicErrorResponse(504, "anthropic passthrough timed out waiting for response headers", "timeout_error");
+    }
     finalize(502, { closeReason: "non_stream" });
     return anthropicErrorResponse(502, `anthropic passthrough failed: ${err instanceof Error ? err.message : String(err)}`, "api_error");
   }

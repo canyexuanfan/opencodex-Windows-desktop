@@ -30,7 +30,6 @@ export function writeGatewayModelCache(baseUrl: string, models: readonly Gateway
   try {
     // Mirror the CLI's usable-id filter so our file matches what it would cache.
     const usable = models.filter(m => /^(claude|anthropic)/i.test(m.id));
-    if (usable.length === 0) return null;
     const cacheDir = join(configDir, "cache");
     mkdirSync(cacheDir, { recursive: true });
     const path = join(cacheDir, "gateway-models.json");
@@ -56,8 +55,9 @@ export async function refreshGatewayModelCacheFromProxy(port: number, timeoutMs 
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) return null;
-    const body = await res.json() as { data?: Array<Record<string, unknown>> };
-    const models: GatewayModelRow[] = (Array.isArray(body.data) ? body.data : [])
+    const body = await res.json() as { data?: unknown };
+    if (!Array.isArray(body.data)) return null;
+    const models: GatewayModelRow[] = body.data
       .filter(m => typeof m.id === "string" && (m.id as string).length > 0)
       .map(m => ({
         id: m.id as string,
