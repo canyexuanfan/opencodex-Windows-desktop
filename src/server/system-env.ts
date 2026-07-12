@@ -237,6 +237,14 @@ export async function injectSystemEnv(port: number, config: OcxConfig): Promise<
   // Shell-hook env file: works for new shells in already-running Terminal.app.
   writeShellEnvFile(port, config, modelEnv, auto);
 
+  // Gateway-model cache pre-write (devlog 030): plain `claude` sessions read the
+  // picker list from ~/.claude/cache/gateway-models.json and cannot refresh it
+  // without a token — keep it in sync with this proxy's /v1/models. Best-effort.
+  try {
+    const { refreshGatewayModelCacheFromProxy } = await import("../claude/gateway-cache");
+    await refreshGatewayModelCacheFromProxy(port);
+  } catch { /* best-effort */ }
+
   mkdirSync(getConfigDir(), { recursive: true, mode: 0o700 });
   writeFileSync(getSystemEnvTrackingPath(), JSON.stringify({
     pid: process.pid,

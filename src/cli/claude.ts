@@ -8,6 +8,7 @@
 import { spawn } from "node:child_process";
 import { loadConfig } from "../config";
 import { effectiveModelEnv, resolveAutoContext } from "../claude/context-windows";
+import { refreshGatewayModelCacheFromProxy } from "../claude/gateway-cache";
 import { findLiveProxy } from "../server/proxy-liveness";
 import type { OcxConfig } from "../types";
 
@@ -133,6 +134,9 @@ export async function cmdClaude(args: string[]): Promise<number> {
   }
   const contextWindows = await fetchClaudeContextWindows(config, port);
   const env = buildClaudeEnv(config, port, process.env, contextWindows);
+  // Pre-write the CLI's gateway-model cache (devlog 030): without a token the CLI
+  // never refreshes it, so the picker would keep showing yesterday's aliases.
+  await refreshGatewayModelCacheFromProxy(port);
   return await new Promise<number>(resolve => {
     const child = spawn("claude", args, { stdio: "inherit", env: env as NodeJS.ProcessEnv });
     child.on("error", (err: NodeJS.ErrnoException) => {
