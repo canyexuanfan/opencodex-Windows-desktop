@@ -86,6 +86,28 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     }
   }
 
+  async function syncClaudeAgentDefsBestEffort(): Promise<void> {
+    try {
+      const { injectClaudeAgentDefs } = await import("../claude/agents-inject");
+      if (config.claudeCode?.enabled === false || config.claudeCode?.injectAgents === false) {
+        injectClaudeAgentDefs(config, {});
+        return;
+      }
+      try {
+        const [models, { buildClaudeContextWindows }, { visibleNativeSlugs }] = await Promise.all([
+          fetchAllModels(config),
+          import("../claude/context-windows"),
+          import("../codex/catalog"),
+        ]);
+        injectClaudeAgentDefs(config, buildClaudeContextWindows([...visibleNativeSlugs(config)], models));
+      } catch {
+        // Keep routes available through a provider-discovery blip. A later
+        // launch-time sync restores any context markers missing from this pass.
+        injectClaudeAgentDefs(config, {});
+      }
+    } catch { /* best-effort */ }
+  }
+
   if (url.pathname === "/api/config" && req.method === "GET") {
     return jsonResponse(safeConfigDTO(config));
   }
@@ -645,6 +667,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     const { saveConfig: save } = await import("../config");
     save(config);
     await refreshCodexCatalogBestEffort();
+    await syncClaudeAgentDefsBestEffort();
     return jsonResponse({ ok: true, applied: chosen });
   }
 
@@ -805,15 +828,9 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     config.claudeCode = next;
     const { saveConfig: save } = await import("../config");
     save(config);
-    // Immediate prune when injection turns off (audit 071 #3): stale ocx-* agent
-    // definitions must stop loading in future sessions without waiting for the
-    // next launch hook. Best-effort; the disabled gate inside prunes owned files.
-    if (next.injectAgents === false || next.enabled === false) {
-      try {
-        const { injectClaudeAgentDefs } = await import("../claude/agents-inject");
-        injectClaudeAgentDefs(config, {});
-      } catch { /* best-effort */ }
-    }
+    // Keep the file-backed live registry symmetric: OFF prunes immediately, while
+    // ON and config changes restore definitions without requiring a restart.
+    await syncClaudeAgentDefsBestEffort();
     return jsonResponse({ ok: true, enabled: next.enabled !== false });
   }
 

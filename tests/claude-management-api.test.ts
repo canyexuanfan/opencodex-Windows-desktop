@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, saveConfig } from "../src/config";
@@ -9,13 +9,18 @@ import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isol
 
 let testDir = "";
 let previousHome: string | undefined;
+let previousClaudeConfigDir: string | undefined;
 let isolatedCodexHome: IsolatedCodexHome | null = null;
 
 beforeEach(() => {
   previousHome = process.env.OPENCODEX_HOME;
+  previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
   isolatedCodexHome = installIsolatedCodexHome("ocx-claude-mgmt-");
   testDir = mkdtempSync(join(tmpdir(), "ocx-claude-mgmt-"));
   process.env.OPENCODEX_HOME = testDir;
+  // These API tests intentionally toggle agent injection off. Never let that
+  // prune the developer's real ~/.claude/agents directory.
+  process.env.CLAUDE_CONFIG_DIR = join(testDir, "claude");
   saveConfig({
     port: 0,
     defaultProvider: "mock",
@@ -28,6 +33,8 @@ beforeEach(() => {
 afterEach(() => {
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
+  if (previousClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+  else process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
   isolatedCodexHome?.restore();
   isolatedCodexHome = null;
   if (testDir) rmSync(testDir, { recursive: true, force: true });
@@ -87,6 +94,46 @@ test("PUT round-trips settings and persists to config", async () => {
     expect(after.claudeCode?.model).toBeUndefined();
     expect(after.claudeCode?.smallFastModel).toBe("mock/test-model");
     expect(after.claudeCode?.enabled).toBe(false);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("PUT immediately restores generated agents after re-enable and roster changes", async () => {
+  const server = startServer(0);
+  const agentsDir = join(process.env.CLAUDE_CONFIG_DIR!, "agents");
+  try {
+    const enable = await fetch(new URL("/api/claude-code", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ injectAgents: true }),
+    });
+    expect(enable.status).toBe(200);
+    expect(readdirSync(agentsDir).some(name => name === "ocx-gpt-5-6-sol.md")).toBe(true);
+
+    const disable = await fetch(new URL("/api/claude-code", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ injectAgents: false }),
+    });
+    expect(disable.status).toBe(200);
+    expect(readdirSync(agentsDir)).toEqual([]);
+
+    const reenable = await fetch(new URL("/api/claude-code", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ injectAgents: true }),
+    });
+    expect(reenable.status).toBe(200);
+    expect(readdirSync(agentsDir).some(name => name === "ocx-gpt-5-6-sol.md")).toBe(true);
+
+    const roster = await fetch(new URL("/api/subagent-models", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ models: ["gpt-5.6-terra"] }),
+    });
+    expect(roster.status).toBe(200);
+    expect(readdirSync(agentsDir)).toEqual(["ocx-gpt-5-6-terra.md"]);
   } finally {
     server.stop(true);
   }
