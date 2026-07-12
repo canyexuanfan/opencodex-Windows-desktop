@@ -35,6 +35,21 @@ function sanitizeName(value: string): string {
   return cleaned.length > 0 ? cleaned : "model";
 }
 
+/**
+ * The user's default model as saved by the /model picker (settings.json `model`).
+ * `model: "inherit"` in agent frontmatter is DISPROVEN on 2.1.207 (live: a
+ * no-model ocx-self dispatch fell back to claude-fable-5 — devlog 072), so the
+ * self-clone pins this value instead, refreshed at every launch-time sync.
+ */
+function pickerDefaultModel(configDir: string): string | null {
+  try {
+    const parsed = JSON.parse(readFileSync(join(configDir, "settings.json"), "utf8")) as Record<string, unknown>;
+    return typeof parsed.model === "string" && parsed.model.trim() !== "" ? parsed.model.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Roster entry -> alias + display parts. Entries are bare native slugs or "provider/id". */
 function entryParts(entry: string): { alias: string; id: string; provider: string } {
   const slash = entry.indexOf("/");
@@ -46,7 +61,7 @@ function entryParts(entry: string): { alias: string; id: string; provider: strin
   return { alias: claudeCodeNativeAlias(entry), id: entry, provider: "native" };
 }
 
-export function buildClaudeAgentDefs(config: OcxConfig, windows: Record<string, number>): ClaudeAgentDef[] {
+export function buildClaudeAgentDefs(config: OcxConfig, windows: Record<string, number>, configDir = claudeConfigDir()): ClaudeAgentDef[] {
   const auto = resolveAutoContext(config.claudeCode);
   const defs: ClaudeAgentDef[] = [];
   const usedNames = new Set<string>();
@@ -73,15 +88,20 @@ export function buildClaudeAgentDefs(config: OcxConfig, windows: Record<string, 
     push(sanitizeName(id), alias, `Delegate work to ${id} (${provider}) via opencodex routing. General-purpose worker/explorer on that model. ${NO_MODEL_ARG}`);
   }
 
-  // Self-clone slot (audit 071 #1, Kant-measured): frontmatter accepts
-  // `model: inherit` — a TRUE self-clone regardless of --model/env overrides, so
-  // no identity guessing and no dedup needed. Always emitted.
-  defs.push({
-    file: `${OWNED_PREFIX}self.md`,
-    name: `${OWNED_PREFIX}self`,
-    model: "inherit",
-    description: `Self-clone: delegate to the SAME model the main session is running right now (model: inherit). ${NO_MODEL_ARG}`,
-  });
+  // Self-clone slot: pin the picker-saved default (settings.json), falling back to
+  // config.claudeCode.model. `inherit` is NOT honored by 2.1.207 (live-disproven,
+  // devlog 072); a session started with a divergent --model stays divergent until
+  // the next launch sync — documented limit. No resolvable default -> no self def.
+  const selfModel = pickerDefaultModel(configDir) ?? (config.claudeCode?.model?.trim() || null);
+  if (selfModel) {
+    const marked = withOneMillionMarker(selfModel, windows, auto) ?? selfModel;
+    defs.push({
+      file: `${OWNED_PREFIX}self.md`,
+      name: `${OWNED_PREFIX}self`,
+      model: marked,
+      description: `Self-clone: delegate to your default main model (${marked}), synced from the /model picker at launch. ${NO_MODEL_ARG}`,
+    });
+  }
   return defs;
 }
 
@@ -157,7 +177,7 @@ export function injectClaudeAgentDefs(config: OcxConfig, windows: Record<string,
     // in future sessions (audit 071 #3).
     return syncClaudeAgentDefs([], configDir);
   }
-  return syncClaudeAgentDefs(buildClaudeAgentDefs(config, windows), configDir);
+  return syncClaudeAgentDefs(buildClaudeAgentDefs(config, windows, configDir), configDir);
 }
 /**
  * Dispatcher directive appended to every ocx-* description: the Agent tool's
