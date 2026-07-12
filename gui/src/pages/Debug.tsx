@@ -61,6 +61,9 @@ export default function Debug({ apiBase }: { apiBase: string }) {
     getScrollElement: () => scrollContainerRef.current,
     estimateSize: () => 20,
     overscan: 30,
+    // Rows are a rolling 2000-entry window: key by the server-assigned seq so
+    // cached measurements track entry identity when the head is trimmed.
+    getItemKey: index => entries[index]!.seq,
   });
 
   useEffect(() => {

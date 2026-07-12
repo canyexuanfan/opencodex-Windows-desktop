@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Notice, Select } from "../ui";
 import { IconPlus, IconX } from "../icons";
 import { useT, Trans } from "../i18n";
@@ -30,7 +30,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   const [ok, setOk] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       const r = await fetch(`${apiBase}/api/claude-code`).then(res => res.json());
       setState({ ...r, systemEnv: r.systemEnv !== false, fastMode: r.fastMode ?? null, maxContextTokens: r.maxContextTokens ?? null, autoContext: r.autoContext !== false, autoCompactWindow: r.autoCompactWindow ?? null, injectAgents: r.injectAgents !== false, effectiveModelEnv: r.effectiveModelEnv ?? {} });
@@ -41,13 +41,13 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [apiBase, t]);
   useEffect(() => {
     // Deferred initial load (matches Models/Usage): avoids synchronous setState
     // inside the effect, per the react-hooks/set-state-in-effect lint gate.
     const timeout = window.setTimeout(() => { void load(); }, 0);
     return () => window.clearTimeout(timeout);
-  }, [apiBase]);
+  }, [load]);
 
   const modelOptions = useMemo(() => {
     const options = (state?.available ?? []).map(m => ({ value: m, label: modelLabel(m) }));
