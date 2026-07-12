@@ -8,8 +8,8 @@ interface ClaudeCodeState {
   enabled: boolean;
   systemEnv: boolean;
   fastMode: boolean | null;
+  /** Legacy config override (no GUI control anymore) — still disables auto-context when hand-set. */
   maxContextTokens: number | null;
-  alwaysEnableEffort: boolean;
   autoContext: boolean;
   autoCompactWindow: number | null;
   injectAgents: boolean;
@@ -36,7 +36,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   const load = async () => {
     try {
       const r = await fetch(`${apiBase}/api/claude-code`).then(res => res.json());
-      setState({ ...r, systemEnv: r.systemEnv !== false, fastMode: r.fastMode ?? null, maxContextTokens: r.maxContextTokens ?? null, alwaysEnableEffort: r.alwaysEnableEffort === true, autoContext: r.autoContext !== false, autoCompactWindow: r.autoCompactWindow ?? null, injectAgents: r.injectAgents !== false, tierModels: r.tierModels ?? {}, effectiveModelEnv: r.effectiveModelEnv ?? {} });
+      setState({ ...r, systemEnv: r.systemEnv !== false, fastMode: r.fastMode ?? null, maxContextTokens: r.maxContextTokens ?? null, autoContext: r.autoContext !== false, autoCompactWindow: r.autoCompactWindow ?? null, injectAgents: r.injectAgents !== false, tierModels: r.tierModels ?? {}, effectiveModelEnv: r.effectiveModelEnv ?? {} });
       setRows(Object.entries(r.modelMap ?? {}).map(([from, to]) => ({ from, to: String(to) })));
     } catch {
       setOk(false);
@@ -80,8 +80,6 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
           enabled: state.enabled,
           systemEnv: state.systemEnv,
           fastMode: state.fastMode,
-          maxContextTokens: state.maxContextTokens,
-          alwaysEnableEffort: state.alwaysEnableEffort,
           autoContext: state.autoContext,
           autoCompactWindow: state.autoCompactWindow,
           injectAgents: state.injectAgents,
@@ -173,27 +171,6 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
 
         <div className="setting-row">
           <div className="setting-label">
-            <span className="title">{t("claude.maxContext")}</span>
-            <span className="desc">{t("claude.maxContextDesc")}</span>
-            {state.maxContextTokens !== null && <span className="desc" style={{ color: "var(--red)" }}>{t("claude.maxContextWarn")}</span>}
-          </div>
-          <input
-            type="number"
-            min={1}
-            step={1000}
-            placeholder={t("claude.maxContextPlaceholder")}
-            value={state.maxContextTokens ?? ""}
-            onChange={e => {
-              const raw = e.target.value.trim();
-              const parsed = raw === "" ? null : Number(raw);
-              setState({ ...state, maxContextTokens: parsed !== null && Number.isInteger(parsed) && parsed > 0 ? parsed : null });
-            }}
-            style={{ width: 140, padding: "5px 10px", borderRadius: "var(--radius-xs)", border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontSize: 12.5 }}
-          />
-        </div>
-
-        <div className="setting-row">
-          <div className="setting-label">
             <span className="title">{t("claude.autoContext")}</span>
             <span className="desc">{t("claude.autoContextDesc")}</span>
             {state.maxContextTokens !== null && <span className="desc" style={{ color: "var(--muted)" }}>{t("claude.autoContextInert")}</span>}
@@ -220,17 +197,6 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
             />
           </div>
         )}
-
-        <div className="setting-row">
-          <div className="setting-label">
-            <span className="title">{t("claude.alwaysEffort")}</span>
-            <span className="desc">{t("claude.alwaysEffortDesc")}</span>
-          </div>
-          <label className="toggle">
-            <input type="checkbox" checked={state.alwaysEnableEffort} onChange={e => setState({ ...state, alwaysEnableEffort: e.target.checked })} />
-            <span className="slider" />
-          </label>
-        </div>
 
         <div className="setting-row">
           <div className="setting-label">
