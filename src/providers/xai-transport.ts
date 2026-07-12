@@ -35,6 +35,16 @@ function hasHeaderCaseInsensitive(headers: Record<string, string> | undefined, n
   return Object.keys(headers).some(key => key.toLowerCase() === target);
 }
 
+/** Drop default entries the user already overrides under any header-name casing. */
+function withoutUserOverridden(defaults: Readonly<Record<string, string>>, userHeaders: Record<string, string> | undefined): Record<string, string> {
+  if (!userHeaders) return { ...defaults };
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(defaults)) {
+    if (!hasHeaderCaseInsensitive(userHeaders, key)) out[key] = value;
+  }
+  return out;
+}
+
 export function deriveXaiConvId(promptCacheKey: string): string {
   return createHash("sha256").update(promptCacheKey).digest("hex").slice(0, 32);
 }
@@ -71,7 +81,7 @@ export function resolveProviderTransport(
     ...provider,
     baseUrl: XAI_GROK_CLI_BASE_URL,
     headers: {
-      ...XAI_GROK_CLI_HEADERS,
+      ...withoutUserOverridden(XAI_GROK_CLI_HEADERS, provider.headers),
       ...convIdHeaders,
       ...(provider.headers ?? {}),
     },

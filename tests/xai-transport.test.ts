@@ -141,6 +141,18 @@ describe("xAI prompt-cache conv-id affinity", () => {
     const convIdKeys = Object.keys(mixedResolved.headers ?? {}).filter(k => k.toLowerCase() === XAI_CONV_ID_HEADER);
     expect(convIdKeys).toHaveLength(1);
   });
+
+  test("mixed-case user override of a Grok CLI default header suppresses the default", () => {
+    const custom = provider("oauth");
+    custom.headers = { "X-Grok-Client-Version": "0.2.94" };
+
+    const resolved = resolveProviderTransport("xai", custom);
+    const versionKeys = Object.keys(resolved.headers ?? {}).filter(k => k.toLowerCase() === "x-grok-client-version");
+    expect(versionKeys).toEqual(["X-Grok-Client-Version"]);
+    expect(resolved.headers?.["X-Grok-Client-Version"]).toBe("0.2.94");
+    // Untouched defaults still apply.
+    expect(resolved.headers?.["x-grok-client-identifier"]).toBe("opencodex");
+  });
 });
 
 describe("xAI reasoning_content cache preservation", () => {
