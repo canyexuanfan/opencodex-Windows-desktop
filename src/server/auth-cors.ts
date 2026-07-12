@@ -5,6 +5,7 @@ import {
   providerBaseUrlConfigError,
   providerHeadersConfigError,
 } from "../config";
+import { providerDestinationConfigError } from "../lib/destination-policy";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 
 let _corsOrigin = "http://localhost:10100";
@@ -154,6 +155,8 @@ export function requireApiAuth(req: Request, config: OcxConfig, kind: "managemen
 export function providerManagementConfigError(name: string, provider: OcxProviderConfig): string | null {
   const baseUrlError = providerBaseUrlConfigError(provider.baseUrl);
   if (baseUrlError) return `provider ${name} ${baseUrlError}`;
+  const destinationError = providerDestinationConfigError(name, provider);
+  if (destinationError) return `provider ${name} ${destinationError}`;
   const headersError = providerHeadersConfigError(provider.headers);
   if (headersError) return `provider ${name} ${headersError}`;
   if (provider.authMode === "forward") {
@@ -203,6 +206,7 @@ export function safeConfigDTO(config: OcxConfig): unknown {
     for (const key of [
       "defaultModel",
       "disabled",
+      "allowPrivateNetwork",
       "authMode",
       "liveModels",
       "models",

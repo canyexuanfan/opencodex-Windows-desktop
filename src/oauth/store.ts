@@ -54,6 +54,7 @@ function persist(store: AuthStore): void {
   } else {
     try { chmodSync(dir, 0o700); } catch { /* best-effort on existing dir */ }
   }
+  hardenConfigDir();
   atomicWriteFile(authPath(), JSON.stringify(store, null, 2) + "\n");
 }
 

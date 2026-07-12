@@ -419,6 +419,11 @@ export interface OcxWebSearchSidecarConfig {
 export interface OcxProviderConfig {
   adapter: string;
   baseUrl: string;
+  /**
+   * Explicit opt-in for non-registry private-network destinations such as localhost, RFC1918,
+   * link-local, or unique-local upstreams. Metadata endpoints remain blocked.
+   */
+  allowPrivateNetwork?: boolean;
   /** Keep provider settings on disk but exclude it from routing and model/catalog listings. */
   disabled?: boolean;
   apiKey?: string;

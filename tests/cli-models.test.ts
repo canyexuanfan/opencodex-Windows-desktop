@@ -29,6 +29,7 @@ function freshConfig(extra?: Record<string, unknown>) {
       test: {
         adapter: "openai-chat",
         baseUrl: "http://localhost:8080/v1",
+        allowPrivateNetwork: true,
         defaultModel: "test-model-1",
         models: ["test-model-1", "test-model-2", "test-model-3"],
       },
@@ -128,6 +129,7 @@ describe("ocx models richer metadata", () => {
         test: {
           adapter: "openai-chat",
           baseUrl: "http://localhost:8080/v1",
+          allowPrivateNetwork: true,
           defaultModel: "model-a",
           models: ["model-a", "model-b"],
           modelContextWindows: { "model-a": 128000, "model-b": 32000 },
