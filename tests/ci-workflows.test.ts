@@ -18,7 +18,19 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0");
     expect(workflow).toContain("oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6");
     expect(workflow).toContain("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020");
+    expect(workflow).toContain("bun test --isolate tests");
     expect(workflow).not.toMatch(/uses:\s+\S+@(?:v\d+|main|master)\b/);
+  });
+
+  test("cross-platform CI keeps the GUI lint and build gates", async () => {
+    // Review finding (PR #97): the GUI build gate was silently dropped once; assert the
+    // enhanced gate (PR #99) stays wired so broken GUI builds cannot merge unnoticed.
+    const workflow = await readText(".github/workflows/ci.yml");
+
+    expect(workflow).toContain("- name: GUI lint");
+    expect(workflow).toContain("bun run lint");
+    expect(workflow).toContain("- name: GUI build");
+    expect(workflow).toContain("bun run build");
   });
 
   test("service lifecycle is least-privilege, bounded, and cannot swallow health failures", async () => {
