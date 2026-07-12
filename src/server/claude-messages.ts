@@ -8,6 +8,7 @@
  */
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
 import { AnthropicRequestError, anthropicToResponsesTranslation, resolveInboundModel, type ClaudeCacheKeySource } from "../claude/inbound";
+import { stripOneMillionMarker } from "../claude/context-windows";
 import { captureClaudeInbound } from "../claude/inbound-debug";
 import {
   anthropicErrorBody,
@@ -237,8 +238,9 @@ export async function handleClaudeMessages(
     anthropicBody = await readAnthropicBody(req);
     // Defensive [1m] strip (devlog 138): clients normally remove the context-variant
     // marker themselves; the 1M signal we act on is the anthropic-beta header.
-    if (isRec(anthropicBody) && typeof anthropicBody.model === "string" && anthropicBody.model.endsWith("[1m]")) {
-      anthropicBody.model = anthropicBody.model.slice(0, -4);
+    // Case-insensitive — the CLI matches /\[1m\]/i (audit 021 #7).
+    if (isRec(anthropicBody) && typeof anthropicBody.model === "string") {
+      anthropicBody.model = stripOneMillionMarker(anthropicBody.model);
     }
     // Debug capture (opt-in allowlist scalars) BEFORE the passthrough branch so
     // native, routed, and disabled-alias paths are all observable (devlog 130 B1).
@@ -454,8 +456,10 @@ export async function handleClaudeCountTokens(req: Request, config: OcxConfig): 
     return anthropicErrorResponse(400, "model is required");
   }
   let model = raw.model;
-  if (model.endsWith("[1m]")) {
-    model = model.slice(0, -4);
+  // Case-insensitive [1m] strip (audit 021 #7 — the CLI matches /\[1m\]/i).
+  const stripped = stripOneMillionMarker(model);
+  if (stripped !== model) {
+    model = stripped;
     raw.model = model;
   }
   captureClaudeInbound("count_tokens", raw, resolveInboundModel(model, config.claudeCode), req.headers.get("anthropic-beta") ?? undefined);

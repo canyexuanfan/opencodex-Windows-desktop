@@ -10,6 +10,8 @@ interface ClaudeCodeState {
   fastMode: boolean | null;
   maxContextTokens: number | null;
   alwaysEnableEffort: boolean;
+  autoContext: boolean;
+  autoCompactWindow: number | null;
   model: string;
   smallFastModel: string;
   tierModels: { opus?: string; sonnet?: string; haiku?: string; fable?: string };
@@ -33,7 +35,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   const load = async () => {
     try {
       const r = await fetch(`${apiBase}/api/claude-code`).then(res => res.json());
-      setState({ ...r, systemEnv: r.systemEnv !== false, fastMode: r.fastMode ?? null, maxContextTokens: r.maxContextTokens ?? null, alwaysEnableEffort: r.alwaysEnableEffort === true, tierModels: r.tierModels ?? {}, effectiveModelEnv: r.effectiveModelEnv ?? {} });
+      setState({ ...r, systemEnv: r.systemEnv !== false, fastMode: r.fastMode ?? null, maxContextTokens: r.maxContextTokens ?? null, alwaysEnableEffort: r.alwaysEnableEffort === true, autoContext: r.autoContext !== false, autoCompactWindow: r.autoCompactWindow ?? null, tierModels: r.tierModels ?? {}, effectiveModelEnv: r.effectiveModelEnv ?? {} });
       setRows(Object.entries(r.modelMap ?? {}).map(([from, to]) => ({ from, to: String(to) })));
     } catch {
       setOk(false);
@@ -48,6 +50,19 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
     const options = (state?.available ?? []).map(m => ({ value: m, label: modelLabel(m) }));
     return [{ value: "", label: t("claude.slotUnset") }, ...options];
   }, [state?.available, t]);
+
+  // Auto-compact window presets (devlog 020 + user request): dropdown like the model
+  // pickers. "" = 350k default; a saved off-ladder value is surfaced as its own option.
+  const autoCompactOptions = useMemo(() => {
+    const ladder = [100_000, 200_000, 250_000, 300_000, 350_000, 400_000, 500_000, 600_000, 750_000, 900_000, 1_000_000];
+    const fmt = (v: number) => (v >= 1_000_000 ? "1M" : `${Math.round(v / 1_000)}k`);
+    const current = state?.autoCompactWindow ?? null;
+    const values = current !== null && !ladder.includes(current) ? [...ladder, current].sort((a, b) => a - b) : ladder;
+    return [
+      { value: "", label: t("claude.autoCompactDefault") },
+      ...values.map(v => ({ value: String(v), label: fmt(v) })),
+    ];
+  }, [state?.autoCompactWindow, t]);
 
   const save = async () => {
     if (!state) return;
@@ -66,6 +81,8 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
           fastMode: state.fastMode,
           maxContextTokens: state.maxContextTokens,
           alwaysEnableEffort: state.alwaysEnableEffort,
+          autoContext: state.autoContext,
+          autoCompactWindow: state.autoCompactWindow,
           model: state.model,
           smallFastModel: state.smallFastModel,
           tierModels: state.tierModels,
@@ -88,10 +105,14 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   const baseUrl = `http://127.0.0.1:${state.port}`;
   // Effective values ([1m] auto-marking applied server-side) — audit R3#5/R4#4.
   const env = state.effectiveModelEnv;
+  // Auto-context export (audit 021 #4): the manual path must carry the compact
+  // window, or picker [1m] variants would account 1M with no safety net.
+  const autoCompactActive = state.autoContext && state.maxContextTokens === null;
   const manualEnv = [
     `export ANTHROPIC_BASE_URL=${baseUrl}`,
     "# no ANTHROPIC_AUTH_TOKEN: your claude.ai login (and connectors) stay active",
     "export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1",
+    ...(autoCompactActive ? [`export CLAUDE_CODE_AUTO_COMPACT_WINDOW=${state.autoCompactWindow ?? 350000}`] : []),
     ...(["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL"]
       .filter(name => env[name])
       .map(name => `export ${name}=${env[name]}`)),
@@ -168,6 +189,35 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
             style={{ width: 140, padding: "5px 10px", borderRadius: "var(--radius-xs)", border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontSize: 12.5 }}
           />
         </div>
+
+        <div className="setting-row">
+          <div className="setting-label">
+            <span className="title">{t("claude.autoContext")}</span>
+            <span className="desc">{t("claude.autoContextDesc")}</span>
+            {state.maxContextTokens !== null && <span className="desc" style={{ color: "var(--muted)" }}>{t("claude.autoContextInert")}</span>}
+          </div>
+          <label className="toggle">
+            <input type="checkbox" checked={state.autoContext} onChange={e => setState({ ...state, autoContext: e.target.checked })} />
+            <span className="slider" />
+          </label>
+        </div>
+
+        {state.autoContext && (
+          <div className="setting-row">
+            <div className="setting-label">
+              <span className="title">{t("claude.autoCompactWindow")}</span>
+              <span className="desc">{t("claude.autoCompactWindowDesc")}</span>
+              {state.autoCompactWindow !== null && <span className="desc" style={{ color: "var(--red)" }}>{t("claude.autoCompactWindowWarn")}</span>}
+            </div>
+            <Select
+              value={state.autoCompactWindow === null ? "" : String(state.autoCompactWindow)}
+              options={autoCompactOptions}
+              onChange={v => setState({ ...state, autoCompactWindow: v === "" ? null : Number(v) })}
+              label={t("claude.autoCompactWindow")}
+              style={{ minWidth: 130 }}
+            />
+          </div>
+        )}
 
         <div className="setting-row">
           <div className="setting-label">

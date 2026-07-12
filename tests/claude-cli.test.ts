@@ -42,6 +42,8 @@ describe("ocx claude env assembly", () => {
     expect(env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT).toBeUndefined();
     expect(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBeUndefined();
     expect(env.DISABLE_COMPACT).toBeUndefined();
+    // Auto-context IS on by default (devlog 020): compact window injected at 350k.
+    expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("350000");
   });
 
   test("opt-in levers: alwaysEnableEffort=1, maxContextTokens injects the official pair", () => {
@@ -53,6 +55,8 @@ describe("ocx claude env assembly", () => {
     // MAX_CONTEXT_TOKENS alone is ignored for recognized claude-shaped ids; the
     // official pair requires DISABLE_COMPACT (exact name, no CLAUDE_CODE_ prefix).
     expect(env.DISABLE_COMPACT).toBe("1");
+    // Legacy override wins rule-1 inside the CLI -> auto-context stays inert.
+    expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
   });
 
   test("user-exported lever values win over config levers", () => {
@@ -105,6 +109,56 @@ describe("ocx claude env assembly", () => {
   test("no context map -> no [1m] marking (conservative fallback)", () => {
     const env = buildClaudeEnv(cfg({ claudeCode: { model: "cursor/gpt-5.6-luna" } }), 10100, {});
     expect(env.ANTHROPIC_MODEL).toBe("cursor/gpt-5.6-luna");
+  });
+
+  test("auto-context: 372k slot gets [1m] + compact window rides along (devlog 020)", () => {
+    const windows = { "mock/big": 372_000, "mock/small": 128_000 };
+    const env = buildClaudeEnv(cfg({
+      claudeCode: { model: "mock/big", smallFastModel: "mock/small" },
+    }), 10100, {}, windows);
+    expect(env.ANTHROPIC_MODEL).toBe("mock/big[1m]");
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("mock/small"); // below floor, unmarked
+    expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("350000");
+  });
+
+  test("auto-context: custom window moves both the env and the marking threshold", () => {
+    const windows = { "mock/big": 372_000 };
+    const env = buildClaudeEnv(cfg({
+      claudeCode: { model: "mock/big", autoCompactWindow: 380_000 },
+    }), 10100, {}, windows);
+    // 372k real < 380k threshold -> marking would strand the safety net: no [1m].
+    expect(env.ANTHROPIC_MODEL).toBe("mock/big");
+    expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("380000");
+  });
+
+  test("auto-context: user-exported env value drives the predicate (audit 021 #2)", () => {
+    const windows = { "mock/big": 372_000 };
+    // User exported 500k: 372k model must NOT be marked (threshold beyond real window).
+    const env = buildClaudeEnv(cfg({
+      claudeCode: { model: "mock/big" },
+    }), 10100, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "500000" }, windows);
+    expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("500000"); // user wins
+    expect(env.ANTHROPIC_MODEL).toBe("mock/big");
+    // Invalid user value: CLI would ignore it -> auto marking fully disabled.
+    const env2 = buildClaudeEnv(cfg({
+      claudeCode: { model: "mock/big" },
+    }), 10100, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "banana" }, windows);
+    expect(env2.ANTHROPIC_MODEL).toBe("mock/big");
+    expect(env2.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("banana"); // untouched (user wins)
+    // >=1M models still get marked even with an invalid override (non-auto path).
+    const env3 = buildClaudeEnv(cfg({
+      claudeCode: { model: "mock/huge" },
+    }), 10100, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "banana" }, { "mock/huge": 1_000_000 });
+    expect(env3.ANTHROPIC_MODEL).toBe("mock/huge[1m]");
+  });
+
+  test("auto-context off: no env injection, no sub-1M marking", () => {
+    const windows = { "mock/big": 372_000 };
+    const env = buildClaudeEnv(cfg({
+      claudeCode: { model: "mock/big", autoContext: false },
+    }), 10100, {}, windows);
+    expect(env.ANTHROPIC_MODEL).toBe("mock/big");
+    expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
   });
 
   test("user-exported env always wins; unset slots stay unset", () => {

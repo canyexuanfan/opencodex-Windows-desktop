@@ -17,6 +17,7 @@
  */
 import { catalogModelEfforts, nativeEffortClamp, nativeOpenAiContextWindow, type CatalogModel } from "../codex/catalog";
 import { desktop3pAlias } from "./desktop-3p";
+import { AUTO_CONTEXT_OFF, shouldMarkOneMillion, type AutoContextMode } from "./context-windows";
 
 const MODEL_INFO_CREATED_AT = "2026-01-01T00:00:00Z";
 const ANTHROPIC_EFFORT_RUNGS = new Set(["low", "medium", "high", "xhigh", "max"]);
@@ -92,20 +93,24 @@ function modelInfo(id: string, displayName: string, ladder: readonly string[], i
 }
 
 /** Build the full anthropic-flavor discovery list (ids are Desktop 3P aliases). */
-export function buildAnthropicModelInfos(nativeSlugs: readonly string[], routedModels: readonly CatalogModel[]): AnthropicModelInfo[] {
+export function buildAnthropicModelInfos(nativeSlugs: readonly string[], routedModels: readonly CatalogModel[], auto: AutoContextMode = AUTO_CONTEXT_OFF): AnthropicModelInfo[] {
   const out: AnthropicModelInfo[] = [];
   const seen = new Set<string>();
   // [1m] picker variant (devlog 260712 B1): Claude Code accounts exactly 1M for ids
   // carrying the marker (2.1.207 binary: /\[1m\]/i → 1e6, compaction preserved), so
-  // models with an authoritative >=1M window get a second selectable row. Guards
+  // models with an authoritative >=1M window get a second selectable row. In
+  // auto-context mode (devlog 020) the predicate widens to windows > 200k that can
+  // host the compact window — display stays honest (real window, not "1M"). Guards
   // (audit R1#11): same dedupe set, never double-suffix.
-  const push1mVariant = (base: AnthropicModelInfo, contextWindow: number | undefined) => {
-    if (typeof contextWindow !== "number" || contextWindow < ONE_MILLION) return;
+  const push1mVariant = (base: AnthropicModelInfo, contextWindow: number | undefined, mode: AutoContextMode = auto) => {
+    if (!shouldMarkOneMillion(contextWindow, mode)) return;
     if (base.id.includes("[1m]")) return;
     const id = `${base.id}[1m]`;
     if (seen.has(id)) return;
     seen.add(id);
-    out.push({ ...base, id, display_name: `${base.display_name} · 1M`, max_input_tokens: ONE_MILLION });
+    const window = contextWindow as number;
+    const label = window >= ONE_MILLION ? "1M" : `${Math.round(window / 1_000)}k`;
+    out.push({ ...base, id, display_name: `${base.display_name} · ${label}`, max_input_tokens: Math.min(window, ONE_MILLION) });
   };
   for (const slug of nativeSlugs) {
     const id = desktop3pAlias("native", slug);
@@ -123,7 +128,9 @@ export function buildAnthropicModelInfos(nativeSlugs: readonly string[], routedM
     const imageInput = Array.isArray(m.inputModalities) ? m.inputModalities.includes("image") : false;
     const info = modelInfo(id, `${m.id} (${m.provider})`, ladder, imageInput, m.contextWindow);
     out.push(info);
-    push1mVariant(info, m.contextWindow);
+    // Anthropic passthrough guard (audit 021 #3): never auto-widen canonical claude
+    // routes — only a genuine >=1M window earns the variant row there.
+    push1mVariant(info, m.contextWindow, m.provider === "anthropic" ? AUTO_CONTEXT_OFF : auto);
   }
   return out;
 }

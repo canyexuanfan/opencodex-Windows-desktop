@@ -7,7 +7,7 @@
  */
 import { spawn } from "node:child_process";
 import { loadConfig } from "../config";
-import { effectiveModelEnv } from "../claude/context-windows";
+import { effectiveModelEnv, resolveAutoContext } from "../claude/context-windows";
 import { findLiveProxy } from "../server/proxy-liveness";
 import type { OcxConfig } from "../types";
 
@@ -55,10 +55,23 @@ export function buildClaudeEnv(config: OcxConfig, port: number, base: ClaudeLaun
     setDefault("CLAUDE_CODE_MAX_CONTEXT_TOKENS", String(Math.floor(maxCtx)));
     setDefault("DISABLE_COMPACT", "1");
   }
+  // Auto-context (devlog 260712 020): min(believed window, env) inside the CLI means
+  // one global env acts as a per-model floor — [1m]-marked models compact here while
+  // unmarked (200k-accounted) models keep their default behavior. Inert when the
+  // legacy maxContextTokens pair above is set (resolveAutoContext handles that).
+  // A user-exported value drives the marking predicate too (audit 021 #2) so the
+  // [1m] marker and the compaction threshold can never separate.
+  const userAutoCompact = typeof base.CLAUDE_CODE_AUTO_COMPACT_WINDOW === "string" && base.CLAUDE_CODE_AUTO_COMPACT_WINDOW !== ""
+    ? base.CLAUDE_CODE_AUTO_COMPACT_WINDOW
+    : undefined;
+  const auto = resolveAutoContext(config.claudeCode, userAutoCompact);
+  if (auto.enabled) {
+    setDefault("CLAUDE_CODE_AUTO_COMPACT_WINDOW", String(auto.compactWindow));
+  }
   // Model slots (devlog 260712 B2): default + four tier defaults + legacy small-fast,
   // with automatic [1m] context-variant marking when the slot's target model has an
   // authoritative >=1M window (Claude Code then accounts 1M, compaction preserved).
-  for (const [name, value] of Object.entries(effectiveModelEnv(config.claudeCode, contextWindows))) {
+  for (const [name, value] of Object.entries(effectiveModelEnv(config.claudeCode, contextWindows, auto))) {
     setDefault(name, value);
   }
   return env;

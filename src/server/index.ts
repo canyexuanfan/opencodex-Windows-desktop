@@ -289,7 +289,8 @@ export function startServer(port?: number) {
         if (wantsAnthropicList && !url.searchParams.has("client_version")) {
           if (config.claudeCode?.enabled === false) return jsonResponse({ data: [] }, 200, req, config);
           const { buildAnthropicModelInfos } = await import("../claude/model-info");
-          const data = buildAnthropicModelInfos([...visibleNativeSlugs(config)], goOrdered);
+          const { resolveAutoContext } = await import("../claude/context-windows");
+          const data = buildAnthropicModelInfos([...visibleNativeSlugs(config)], goOrdered, resolveAutoContext(config.claudeCode));
           // Build Desktop 3P registry so inbound alias resolution works for subsequent requests.
           buildDesktop3pRegistry(
             [...visibleNativeSlugs(config)],

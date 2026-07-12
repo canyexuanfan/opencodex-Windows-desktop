@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { boundedContextWindows, buildClaudeContextWindows, effectiveModelEnv, withOneMillionMarker } from "../src/claude/context-windows";
+import { AUTO_COMPACT_WINDOW_DEFAULT, boundedContextWindows, buildClaudeContextWindows, effectiveModelEnv, resolveAutoContext, shouldMarkOneMillion, withOneMillionMarker } from "../src/claude/context-windows";
 import { desktop3pAlias } from "../src/claude/desktop-3p";
 
 describe("claude context-window map (devlog 260712 B2)", () => {
@@ -75,5 +75,75 @@ describe("claude context-window map (devlog 260712 B2)", () => {
     expect(await boundedContextWindows(slow, 20)).toBeNull();
     expect(await boundedContextWindows(async () => ({ y: 2 }), 1_000)).toEqual({ y: 2 });
     expect(await boundedContextWindows(async () => { throw new Error("boom"); }, 1_000)).toBeNull();
+  });
+});
+
+describe("auto-context (devlog 260712 020 + audit 021)", () => {
+  test("resolveAutoContext: default on at 350k, valid custom, range fallback, off switches", () => {
+    expect(resolveAutoContext(undefined)).toEqual({ enabled: true, compactWindow: AUTO_COMPACT_WINDOW_DEFAULT });
+    expect(resolveAutoContext({ autoCompactWindow: 300_000 })).toEqual({ enabled: true, compactWindow: 300_000 });
+    // Out-of-range config (hand-edit) falls back to the default (API rejects these).
+    expect(resolveAutoContext({ autoCompactWindow: 50_000 }).compactWindow).toBe(AUTO_COMPACT_WINDOW_DEFAULT);
+    expect(resolveAutoContext({ autoCompactWindow: 2_000_000 }).compactWindow).toBe(AUTO_COMPACT_WINDOW_DEFAULT);
+    expect(resolveAutoContext({ autoContext: false }).enabled).toBe(false);
+    // Legacy maxContextTokens pair takes rule-1 precedence -> auto inert.
+    expect(resolveAutoContext({ maxContextTokens: 400_000 }).enabled).toBe(false);
+  });
+
+  test("user env override drives the predicate; invalid override disables auto (audit #2)", () => {
+    expect(resolveAutoContext({}, "500000")).toEqual({ enabled: true, compactWindow: 500_000 });
+    // Invalid or out-of-range env: the CLI would ignore it -> marking sub-1M is unsafe.
+    expect(resolveAutoContext({}, "50").enabled).toBe(false);
+    expect(resolveAutoContext({}, "9999999").enabled).toBe(false);
+    expect(resolveAutoContext({}, "abc").enabled).toBe(false);
+    // autoContext=false still wins over a user env value.
+    expect(resolveAutoContext({ autoContext: false }, "500000").enabled).toBe(false);
+  });
+
+  test("shouldMarkOneMillion: >=1M always; auto widens only windows that host the compact window", () => {
+    const auto = { enabled: true, compactWindow: 350_000 };
+    expect(shouldMarkOneMillion(1_000_000, { enabled: false, compactWindow: 350_000 })).toBe(true);
+    expect(shouldMarkOneMillion(372_000, auto)).toBe(true);
+    expect(shouldMarkOneMillion(372_000, { enabled: true, compactWindow: 380_000 })).toBe(false); // real < threshold
+    expect(shouldMarkOneMillion(200_000, auto)).toBe(false); // floor is exclusive
+    expect(shouldMarkOneMillion(128_000, auto)).toBe(false);
+    expect(shouldMarkOneMillion(undefined, auto)).toBe(false);
+  });
+
+  test("anthropic sub-1M routes stay out of the map; >=1M anthropic stays in (audit #3)", () => {
+    const map = buildClaudeContextWindows([], [
+      { provider: "anthropic", id: "claude-opus-4-8", contextWindow: 500_000 },
+      { provider: "anthropic", id: "claude-big-5", contextWindow: 1_000_000 },
+    ]);
+    expect(map["anthropic/claude-opus-4-8"]).toBeUndefined();
+    expect(map["anthropic/claude-big-5"]).toBe(1_000_000);
+  });
+
+  test("bare routed ids register only when unambiguous across providers (audit #5)", () => {
+    const map = buildClaudeContextWindows(["gpt-5.6-sol"], [
+      { provider: "cursor", id: "gpt-5.6-luna", contextWindow: 400_000 },
+      { provider: "a", id: "shared-model", contextWindow: 300_000 },
+      { provider: "b", id: "shared-model", contextWindow: 900_000 },
+      // Routed model whose bare id collides with a native slug: native wins (first-wins).
+      { provider: "c", id: "gpt-5.6-sol", contextWindow: 999_000 },
+    ]);
+    expect(map["gpt-5.6-luna"]).toBe(400_000);
+    expect(map["shared-model"]).toBeUndefined();
+    expect(map["gpt-5.6-sol"]).toBe(372_000); // native override, not 999k
+  });
+
+  test("effectiveModelEnv auto-marks a 372k native slot under the default auto mode", () => {
+    const windows = buildClaudeContextWindows(["gpt-5.6-sol"], []);
+    const env = effectiveModelEnv({ model: "gpt-5.6-sol" }, windows);
+    expect(env.ANTHROPIC_MODEL).toBe("gpt-5.6-sol[1m]");
+    // Explicit off: no marking below 1M.
+    const off = effectiveModelEnv({ model: "gpt-5.6-sol", autoContext: false }, windows);
+    expect(off.ANTHROPIC_MODEL).toBe("gpt-5.6-sol");
+  });
+
+  test("[1m] handling is case-insensitive (audit #7)", () => {
+    const windows = { "cursor/gpt-5.6-luna": 1_000_000 };
+    expect(withOneMillionMarker("cursor/gpt-5.6-luna[1M]", windows)).toBe("cursor/gpt-5.6-luna[1M]");
+    expect(shouldMarkOneMillion(windows["cursor/gpt-5.6-luna"], { enabled: false, compactWindow: 350_000 })).toBe(true);
   });
 });

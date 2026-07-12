@@ -11,6 +11,7 @@
  */
 import type { OcxClaudeCodeConfig } from "../types";
 import { resolveAlias } from "./alias";
+import { stripOneMillionMarker } from "./context-windows";
 import { resolveDesktop3pAlias } from "./desktop-3p";
 import { createHash } from "node:crypto";
 
@@ -26,8 +27,8 @@ function isRec(v: unknown): v is Rec {
 export function resolveInboundModel(model: string, cc?: OcxClaudeCodeConfig): string {
   // Defensive: Desktop/CLI strip the [1m] context-variant marker client-side, but a
   // leaking build must not break alias decode (devlog 138 — the 1M signal is the
-  // anthropic-beta header, never the id).
-  if (model.endsWith("[1m]")) model = model.slice(0, -4);
+  // anthropic-beta header, never the id). Case-insensitive: the CLI matches /\[1m\]/i.
+  model = stripOneMillionMarker(model);
   const aliased = resolveAlias(model);
   if (aliased) return aliased;
   // Desktop 3P aliases: claude-opus-4-{code} → provider/model route key

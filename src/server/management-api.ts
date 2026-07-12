@@ -678,6 +678,8 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       systemEnv: config.claudeCode?.systemEnv === true,
       maxContextTokens: config.claudeCode?.maxContextTokens ?? null,
       alwaysEnableEffort: config.claudeCode?.alwaysEnableEffort === true,
+      autoContext: config.claudeCode?.autoContext !== false,
+      autoCompactWindow: config.claudeCode?.autoCompactWindow ?? null,
       fastMode: config.fastMode,
       contextWindows,
       effectiveModelEnv: effectiveModelEnv(config.claudeCode, contextWindows),
@@ -687,7 +689,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     });
   }
   if (url.pathname === "/api/claude-code" && req.method === "PUT") {
-    let body: { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; systemEnv?: unknown; fastMode?: unknown; maxContextTokens?: unknown; alwaysEnableEffort?: unknown; tierModels?: unknown };
+    let body: { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; systemEnv?: unknown; fastMode?: unknown; maxContextTokens?: unknown; alwaysEnableEffort?: unknown; tierModels?: unknown; autoContext?: unknown; autoCompactWindow?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     const next = { ...(config.claudeCode ?? {}) };
     if (body.enabled !== undefined) {
@@ -711,6 +713,23 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
         return jsonResponse({ error: "maxContextTokens must be a positive integer or null" }, 400);
       } else {
         next.maxContextTokens = body.maxContextTokens;
+      }
+    }
+    if (body.autoContext !== undefined) {
+      // Default-on boolean (devlog 260712 020): true = drop the key, false = store.
+      if (typeof body.autoContext !== "boolean") return jsonResponse({ error: "autoContext must be a boolean" }, 400);
+      if (body.autoContext) delete next.autoContext;
+      else next.autoContext = false;
+    }
+    if (body.autoCompactWindow !== undefined) {
+      // null resets to the 350k default; otherwise the binary-accepted range
+      // 100_000..1_000_000 (2.1.207 pSo/yDs — audit 021 #1).
+      if (body.autoCompactWindow === null) {
+        delete next.autoCompactWindow;
+      } else if (typeof body.autoCompactWindow !== "number" || !Number.isInteger(body.autoCompactWindow) || body.autoCompactWindow < 100_000 || body.autoCompactWindow > 1_000_000) {
+        return jsonResponse({ error: "autoCompactWindow must be an integer between 100000 and 1000000, or null" }, 400);
+      } else {
+        next.autoCompactWindow = body.autoCompactWindow;
       }
     }
     if (body.tierModels !== undefined) {

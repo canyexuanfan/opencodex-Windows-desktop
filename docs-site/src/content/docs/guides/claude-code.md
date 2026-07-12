@@ -64,6 +64,24 @@ canonical ids. Legacy `claude-ocx-<provider>--<model>` ids from older configs st
 Models with an authoritative 1M context window get an extra `…[1m]` picker row: selecting it makes
 Claude Code account a full 1M context for that model (auto-compaction stays on) — the proxy strips
 the marker before routing.
+
+### Auto context (big-context models without the 200k ceiling)
+
+Claude Code accounts 200k tokens for any model it does not recognize — even when the routed model
+really holds 372k or 400k. **Auto context** (on by default) fixes that with two moves:
+
+1. Models whose real window is above 200k **and** at least the auto-summarize point get the
+   `[1m]` marker on their picker rows and env slots (Claude Code then accounts 1M for them).
+2. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (default `350000`) is injected so the conversation is
+   auto-summarized at that point. Claude Code applies `min(accounted window, this value)`, so the
+   one env value acts like a per-model floor: marked models compact at 350k, unmarked 200k models
+   keep their normal behavior.
+
+The value is adjustable on the Claude page (accepted range 100000–1000000). **Warning:** raising
+it past a model's real window breaks that model — the chat errors out before the summary can fire.
+Sub-1M native Anthropic models are never auto-marked, and values you export yourself always win
+(the proxy then uses YOUR value to decide which models are safe to mark). Setting the legacy
+`maxContextTokens` override disables auto context entirely.
 Selecting one persists it to Claude Code's `settings.json` `model` field; inbound requests resolve
 the alias back to the routed model. On older Claude Code versions the picker stays native — set
 slots via

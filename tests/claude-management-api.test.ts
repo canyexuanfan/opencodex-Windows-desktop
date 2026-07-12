@@ -124,6 +124,42 @@ test("PUT/GET round-trips the context/effort levers (devlog 136 B6)", async () =
   }
 });
 
+test("PUT/GET round-trips auto-context (devlog 260712 020)", async () => {
+  const server = startServer(0);
+  try {
+    // Defaults: on, window null (GUI shows the 350000 placeholder).
+    let get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
+    expect(get.autoContext).toBe(true);
+    expect(get.autoCompactWindow).toBeNull();
+
+    const put = await fetch(new URL("/api/claude-code", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ autoContext: false, autoCompactWindow: 400_000 }),
+    });
+    expect(put.status).toBe(200);
+    let persisted = loadConfig();
+    expect(persisted.claudeCode?.autoContext).toBe(false);
+    expect(persisted.claudeCode?.autoCompactWindow).toBe(400_000);
+    get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
+    expect(get.autoContext).toBe(false);
+    expect(get.autoCompactWindow).toBe(400_000);
+
+    // true drops the key (default-on); null resets the window to default.
+    const clear = await fetch(new URL("/api/claude-code", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ autoContext: true, autoCompactWindow: null }),
+    });
+    expect(clear.status).toBe(200);
+    persisted = loadConfig();
+    expect(persisted.claudeCode?.autoContext).toBeUndefined();
+    expect(persisted.claudeCode?.autoCompactWindow).toBeUndefined();
+  } finally {
+    server.stop(true);
+  }
+});
+
 test("PUT/GET round-trips tierModels and GET exposes contextWindows + effectiveModelEnv (devlog 260712 B2)", async () => {
   const server = startServer(0);
   try {
@@ -173,6 +209,11 @@ test("PUT validation rejects bad shapes", async () => {
       [{ maxContextTokens: 1.5 }, "maxContextTokens must be a positive integer or null"],
       [{ maxContextTokens: "1000000" }, "maxContextTokens must be a positive integer or null"],
       [{ alwaysEnableEffort: "on" }, "alwaysEnableEffort must be a boolean"],
+      [{ autoContext: "on" }, "autoContext must be a boolean"],
+      [{ autoCompactWindow: 50_000 }, "autoCompactWindow must be an integer between 100000 and 1000000, or null"],
+      [{ autoCompactWindow: 2_000_000 }, "autoCompactWindow must be an integer between 100000 and 1000000, or null"],
+      [{ autoCompactWindow: 350_000.5 }, "autoCompactWindow must be an integer between 100000 and 1000000, or null"],
+      [{ autoCompactWindow: "350000" }, "autoCompactWindow must be an integer between 100000 and 1000000, or null"],
       [{ modelMap: ["a"] }, "modelMap must be an object of string->string"],
       [{ modelMap: { "": "x" } }, "modelMap entries must be non-empty strings"],
       [{ modelMap: { a: "" } }, "modelMap entries must be non-empty strings"],

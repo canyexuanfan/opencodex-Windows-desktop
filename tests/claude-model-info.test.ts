@@ -95,4 +95,30 @@ describe("anthropic-flavor ModelInfo discovery entries (devlog 130 B4b)", () => 
     expect(infos.filter(i => i.id.includes("[1m][1m]")).length).toBe(0);
     expect(infos).toHaveLength(1);
   });
+
+  test("auto-context widens variants to safe sub-1M rows with honest labels (devlog 020)", () => {
+    const auto = { enabled: true, compactWindow: 350_000 };
+    const infos = buildAnthropicModelInfos(["gpt-5.4", "gpt-5.6-sol"], [
+      { provider: "mock", id: "small-model", contextWindow: 128_000 },
+      { provider: "mock", id: "mid-model", contextWindow: 300_000 }, // < compact window: unsafe, no row
+    ], auto);
+    const variants = infos.filter(i => i.id.endsWith("[1m]"));
+    expect(variants).toHaveLength(2); // gpt-5.4 (1M) + gpt-5.6-sol (372k)
+    const sol = variants.find(v => v.display_name.includes("gpt-5.6-sol"))!;
+    expect(sol.display_name.endsWith("· 372k")).toBe(true); // honest real window, not "1M"
+    expect(sol.max_input_tokens).toBe(372_000);
+    const five4 = variants.find(v => v.display_name.includes("gpt-5.4"))!;
+    expect(five4.display_name.endsWith("· 1M")).toBe(true);
+  });
+
+  test("auto-context never widens anthropic passthrough rows (audit 021 #3)", () => {
+    const auto = { enabled: true, compactWindow: 350_000 };
+    const infos = buildAnthropicModelInfos([], [
+      { provider: "anthropic", id: "claude-opus-4-8", contextWindow: 500_000 },
+      { provider: "anthropic", id: "claude-big-5", contextWindow: 1_000_000 },
+    ], auto);
+    const variants = infos.filter(i => i.id.endsWith("[1m]"));
+    expect(variants).toHaveLength(1); // only the genuine 1M anthropic row
+    expect(variants[0]!.display_name.includes("claude-big-5")).toBe(true);
+  });
 });

@@ -227,6 +227,39 @@ describe("systemEnv lever keys (devlog 136 B6)", () => {
     expect(shellWrite!.data).not.toContain("DISABLE_COMPACT");
   });
 
+  test("auto-context default lever: AUTO_COMPACT_WINDOW 350000 injected, tracked, conditionally exported (devlog 020)", async () => {
+    const writes = capturedWrites();
+    expect(await injectSystemEnv(4096, baseConfig)).toEqual({ injected: true });
+    const setCalls = execSpy.mock.calls.map(call => String(call[0]));
+    expect(setCalls).toContain("launchctl setenv CLAUDE_CODE_AUTO_COMPACT_WINDOW 350000");
+    const trackingWrite = writes.filter(w => w.path.includes("system-env-port")).at(-1);
+    expect(JSON.parse(trackingWrite!.data).injectedKeys).toContain("CLAUDE_CODE_AUTO_COMPACT_WINDOW");
+    const shellWrite = writes.find(w => w.path.includes("claude-env.sh"));
+    expect(shellWrite!.data).toContain('[ -z "${CLAUDE_CODE_AUTO_COMPACT_WINDOW+x}" ] && export CLAUDE_CODE_AUTO_COMPACT_WINDOW="350000"');
+  });
+
+  test("auto-context: user-preset launchctl value is respected and untracked (audit 021 #2)", async () => {
+    const writes = capturedWrites();
+    execSpy.mockImplementation(((command: string) => {
+      if (command === "launchctl getenv ANTHROPIC_BASE_URL") return launchctlBaseUrl ?? "";
+      if (command === "launchctl getenv CLAUDE_CODE_AUTO_COMPACT_WINDOW") return "500000";
+      if (command.startsWith("launchctl getenv")) return "";
+      return Buffer.alloc(0);
+    }) as typeof childProcess.execSync);
+    expect(await injectSystemEnv(4096, baseConfig)).toEqual({ injected: true });
+    const setCalls = execSpy.mock.calls.map(call => String(call[0]));
+    expect(setCalls.some(c => c.startsWith("launchctl setenv CLAUDE_CODE_AUTO_COMPACT_WINDOW"))).toBe(false);
+    const trackingWrite = writes.filter(w => w.path.includes("system-env-port")).at(-1);
+    expect(JSON.parse(trackingWrite!.data).injectedKeys).not.toContain("CLAUDE_CODE_AUTO_COMPACT_WINDOW");
+  });
+
+  test("auto-context stays inert while the maxContextTokens lever is set", async () => {
+    capturedWrites();
+    expect(await injectSystemEnv(4096, leverConfig)).toEqual({ injected: true });
+    const setCalls = execSpy.mock.calls.map(call => String(call[0]));
+    expect(setCalls.some(c => c.startsWith("launchctl setenv CLAUDE_CODE_AUTO_COMPACT_WINDOW"))).toBe(false);
+  });
+
   test("tier slots inject ANTHROPIC_DEFAULT_*_MODEL via launchctl and conditional shell exports", async () => {
     const writes = capturedWrites();
     const tierConfig = {

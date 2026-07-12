@@ -290,6 +290,18 @@ export interface OcxClaudeCodeConfig {
    * both ANTHROPIC_DEFAULT_HAIKU_MODEL and legacy ANTHROPIC_SMALL_FAST_MODEL).
    */
   tierModels?: { opus?: string; sonnet?: string; haiku?: string; fable?: string };
+  /**
+   * Auto-context (devlog 260712 020): when not false, routed/native models whose
+   * authoritative window is > 200k AND >= the compact window get the [1m] marker
+   * (Claude Code then accounts 1M) and CLAUDE_CODE_AUTO_COMPACT_WINDOW is injected
+   * so compaction fires at the real budget. 2.1.207 semantics (binary-verified):
+   * effective compact window = min(believed window, env) — one global env behaves
+   * like a per-model floor. Default: enabled. Inert while maxContextTokens is set
+   * (the legacy DISABLE_COMPACT pair takes rule-1 precedence in the CLI).
+   */
+  autoContext?: boolean;
+  /** Compact-window tokens for auto-context. Default 350_000. */
+  autoCompactWindow?: number;
 }
 
 export interface OcxConfig {
