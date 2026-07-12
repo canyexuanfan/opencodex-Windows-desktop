@@ -320,6 +320,10 @@ export interface OcxClaudeCodeConfig {
    * free. Only ocx-*.md files are owned/pruned. Default: enabled.
    */
   injectAgents?: boolean;
+  /** Claude-originated web-search override. Unset fields inherit the global sidecar settings. */
+  webSearchSidecar?: { backend?: "openai" | "anthropic"; model?: string };
+  /** Claude-originated vision override. Unset fields inherit the global sidecar settings. */
+  visionSidecar?: { backend?: "openai" | "anthropic"; model?: string };
 }
 
 export interface OcxConfig {

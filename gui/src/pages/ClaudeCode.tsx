@@ -4,6 +4,9 @@ import { IconPlus, IconX } from "../icons";
 import { useT, Trans } from "../i18n";
 import { modelLabel } from "../model-display";
 
+type SidecarBackend = "openai" | "anthropic";
+interface SidecarOverride { backend?: SidecarBackend; model?: string }
+
 interface ClaudeCodeState {
   enabled: boolean;
   systemEnv: boolean;
@@ -17,6 +20,8 @@ interface ClaudeCodeState {
   effectiveModelEnv: Record<string, string>;
   available: string[];
   aliases: { id: string; display_name: string }[];
+  webSearchSidecar?: SidecarOverride;
+  visionSidecar?: SidecarOverride;
   port: number;
 }
 
@@ -87,6 +92,12 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
           injectAgents: state.injectAgents,
           smallFastModel: state.smallFastModel,
           modelMap,
+          webSearchSidecar: state.webSearchSidecar
+            ? { backend: state.webSearchSidecar.backend ?? null, model: state.webSearchSidecar.model ?? "" }
+            : null,
+          visionSidecar: state.visionSidecar
+            ? { backend: state.visionSidecar.backend ?? null, model: state.visionSidecar.model ?? "" }
+            : null,
         }),
       });
       const d = await r.json();
@@ -208,6 +219,47 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
             <span className="slider" />
           </label>
         </div>
+
+        {(["webSearchSidecar", "visionSidecar"] as const).map(key => {
+          const override = state[key];
+          const titleKey = key === "webSearchSidecar" ? "claude.webSearchSidecar" : "claude.visionSidecar";
+          const hintKey = key === "webSearchSidecar" ? "claude.webSearchSidecarHint" : "claude.visionSidecarHint";
+          return (
+            <div className="setting-row" key={key} style={{ alignItems: "flex-start" }}>
+              <div className="setting-label setting-copy" style={{ flex: 1 }}>
+                <span className="title">{t(titleKey)}</span>
+                <span className="desc">{t(hintKey)}</span>
+              </div>
+              <div className="setting-controls" style={{ display: "flex", gap: 8 }}>
+                <Select
+                  value={!override ? "inherit" : override.backend ?? "auto"}
+                  options={[
+                    { value: "inherit", label: t("claude.useMainSetting") },
+                    { value: "auto", label: t("dash.backendAuto") },
+                    { value: "openai", label: t("dash.backendOpenAI") },
+                    { value: "anthropic", label: t("dash.backendAnthropic") },
+                  ]}
+                  onChange={value => setState({
+                    ...state,
+                    [key]: value === "inherit"
+                      ? undefined
+                      : { ...override, backend: value === "auto" ? undefined : value as SidecarBackend },
+                  })}
+                  label={t("dash.sidecarBackend")}
+                />
+                <input
+                  className="input mono"
+                  value={override?.model ?? ""}
+                  onChange={e => setState({ ...state, [key]: { ...override, model: e.target.value } })}
+                  placeholder={t("claude.sidecarModelPlaceholder")}
+                  disabled={!override}
+                  aria-label={t("dash.sidecarModel")}
+                  style={{ minWidth: 210 }}
+                />
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       <div className="h-section">{t("claude.quickstart")}</div>

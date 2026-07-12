@@ -31,6 +31,21 @@ function isRec(v: unknown): v is Rec {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
 
+/** Resolve Claude-only sidecar overrides without mutating the shared server config. */
+export function buildClaudeReplayConfig(config: OcxConfig): OcxConfig {
+  return {
+    ...config,
+    webSearchSidecar: {
+      ...config.webSearchSidecar,
+      ...config.claudeCode?.webSearchSidecar,
+    },
+    visionSidecar: {
+      ...config.visionSidecar,
+      ...config.claudeCode?.visionSidecar,
+    },
+  };
+}
+
 function claudeInboundDisabled(config: OcxConfig): Response | null {
   if (config.claudeCode?.enabled === false) {
     return anthropicErrorResponse(403, "Claude inbound is disabled (GUI: Claude ON toggle / config.claudeCode.enabled)", "permission_error");
@@ -377,7 +392,7 @@ export async function handleClaudeMessages(
     nativeLogged = true;
     addFinalRequestLog(logIds.requestId, logIds.start, logCtx, status, meta);
   };
-  const upstream = await handleResponses(internalReq, config, logCtx, {
+  const upstream = await handleResponses(internalReq, buildClaudeReplayConfig(config), logCtx, {
     abortSignal: req.signal,
     onNativePassthroughTerminal: status => finalizeNativeLog(httpStatusForTerminalStatus(status), { terminalStatus: status, closeReason: "terminal" }),
     onNativePassthroughCancel: () => finalizeNativeLog(499, { closeReason: "client_cancel" }),

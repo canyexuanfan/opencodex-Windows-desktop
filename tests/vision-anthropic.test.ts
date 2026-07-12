@@ -231,7 +231,10 @@ describe("Anthropic vision planning and management config", () => {
         new Request("http://localhost/api/sidecar-settings", {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ vision: { model: "claude-sonnet-5", backend: "anthropic", maxDescriptionsPerTurn: 4 } }),
+          body: JSON.stringify({
+            webSearch: { model: "claude-search", backend: "anthropic", reasoning: "high" },
+            vision: { model: "claude-sonnet-5", backend: "anthropic", maxDescriptionsPerTurn: 4 },
+          }),
         }),
         new URL("http://localhost/api/sidecar-settings"),
         config,
@@ -242,17 +245,39 @@ describe("Anthropic vision planning and management config", () => {
         backend: "anthropic",
         maxDescriptionsPerTurn: 4,
       });
+      expect(config.webSearchSidecar).toEqual({ model: "claude-search", backend: "anthropic", reasoning: "high" });
 
       const get = await handleManagementAPI(
         new Request("http://localhost/api/sidecar-settings"),
         new URL("http://localhost/api/sidecar-settings"),
         config,
       );
-      expect((await get!.json()).vision).toEqual({
+      const getBody = await get!.json() as Record<string, any>;
+      expect(getBody.webSearch).toEqual({ model: "claude-search", backend: "anthropic" });
+      expect(getBody.vision).toEqual({
         model: "claude-sonnet-5",
         backend: "anthropic",
         maxDescriptionsPerTurn: 4,
       });
+
+      const clear = await handleManagementAPI(
+        new Request("http://localhost/api/sidecar-settings", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            webSearch: { backend: null, model: "" },
+            vision: { backend: null, model: "" },
+          }),
+        }),
+        new URL("http://localhost/api/sidecar-settings"),
+        config,
+      );
+      expect(clear.status).toBe(200);
+      const clearBody = await clear.json() as Record<string, any>;
+      expect(clearBody.webSearch).toEqual({ model: "gpt-5.6-luna" });
+      expect(clearBody.vision).toEqual({ model: "gpt-5.6-luna", maxDescriptionsPerTurn: 4 });
+      expect(config.webSearchSidecar).toEqual({ reasoning: "high" });
+      expect(config.visionSidecar).toEqual({ maxDescriptionsPerTurn: 4 });
 
       for (const vision of [
         { backend: "other" },
@@ -271,11 +296,18 @@ describe("Anthropic vision planning and management config", () => {
         );
         expect(invalid?.status).toBe(400);
       }
-      expect(config.visionSidecar).toEqual({
-        model: "claude-sonnet-5",
-        backend: "anthropic",
-        maxDescriptionsPerTurn: 4,
-      });
+      const invalidWebBackend = await handleManagementAPI(
+        new Request("http://localhost/api/sidecar-settings", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ webSearch: { backend: "other" } }),
+        }),
+        new URL("http://localhost/api/sidecar-settings"),
+        config,
+      );
+      expect(invalidWebBackend?.status).toBe(400);
+      expect(config.webSearchSidecar).toEqual({ reasoning: "high" });
+      expect(config.visionSidecar).toEqual({ maxDescriptionsPerTurn: 4 });
     } finally {
       if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
       else process.env.OPENCODEX_HOME = previousHome;

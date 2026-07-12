@@ -37,7 +37,7 @@ import {
   setDebugSettings,
   type DebugFlag,
 } from "../lib/debug-settings";
-import type { OcxConfig, OcxProviderConfig } from "../types";
+import type { OcxClaudeCodeConfig, OcxConfig, OcxProviderConfig } from "../types";
 import { drainAndShutdown } from "./lifecycle";
 import { filterRequestLogs, getRequestLogEntries } from "./request-log";
 import { isAllowedRequestOrigin, jsonResponse, providerManagementConfigError, publicProviderBaseUrl, safeConfigDTO } from "./auth-cors";
@@ -198,7 +198,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     const ws = config.webSearchSidecar ?? {};
     const vs = config.visionSidecar ?? {};
     return jsonResponse({
-      webSearch: { model: ws.model ?? "gpt-5.6-luna", reasoning: ws.reasoning ?? "low" },
+      webSearch: { model: ws.model ?? "gpt-5.6-luna", backend: ws.backend },
       vision: {
         model: vs.model ?? "gpt-5.6-luna",
         backend: vs.backend,
@@ -216,12 +216,16 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     if (raw.webSearch !== undefined && !isPlainRecord(raw.webSearch)) return jsonResponse({ error: "webSearch must be an object" }, 400);
     if (raw.vision !== undefined && !isPlainRecord(raw.vision)) return jsonResponse({ error: "vision must be an object" }, 400);
     const body = raw as {
-      webSearch?: { model?: unknown; reasoning?: unknown };
+      webSearch?: { model?: unknown; backend?: unknown; reasoning?: unknown };
       vision?: { model?: unknown; backend?: unknown; maxDescriptionsPerTurn?: unknown };
     };
+    if (body.webSearch && body.webSearch.backend !== undefined && body.webSearch.backend !== null
+      && body.webSearch.backend !== "openai" && body.webSearch.backend !== "anthropic") {
+      return jsonResponse({ error: "webSearch.backend must be openai, anthropic, or null" }, 400);
+    }
     if (body.vision && body.vision.backend !== undefined
-      && body.vision.backend !== "openai" && body.vision.backend !== "anthropic") {
-      return jsonResponse({ error: "vision.backend must be openai or anthropic" }, 400);
+      && body.vision.backend !== null && body.vision.backend !== "openai" && body.vision.backend !== "anthropic") {
+      return jsonResponse({ error: "vision.backend must be openai, anthropic, or null" }, 400);
     }
     if (body.vision && body.vision.maxDescriptionsPerTurn !== undefined
       && (typeof body.vision.maxDescriptionsPerTurn !== "number"
@@ -231,13 +235,24 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     }
     if (body.webSearch) {
       config.webSearchSidecar = { ...config.webSearchSidecar };
-      if (typeof body.webSearch.model === "string") config.webSearchSidecar.model = body.webSearch.model;
+      if (typeof body.webSearch.model === "string") {
+        if (body.webSearch.model === "") delete config.webSearchSidecar.model;
+        else config.webSearchSidecar.model = body.webSearch.model;
+      }
+      if (body.webSearch.backend === null) delete config.webSearchSidecar.backend;
+      else if (body.webSearch.backend === "openai" || body.webSearch.backend === "anthropic") {
+        config.webSearchSidecar.backend = body.webSearch.backend;
+      }
       if (typeof body.webSearch.reasoning === "string") config.webSearchSidecar.reasoning = body.webSearch.reasoning;
     }
     if (body.vision) {
       config.visionSidecar = { ...config.visionSidecar };
-      if (typeof body.vision.model === "string") config.visionSidecar.model = body.vision.model;
-      if (body.vision.backend === "openai" || body.vision.backend === "anthropic") {
+      if (typeof body.vision.model === "string") {
+        if (body.vision.model === "") delete config.visionSidecar.model;
+        else config.visionSidecar.model = body.vision.model;
+      }
+      if (body.vision.backend === null) delete config.visionSidecar.backend;
+      else if (body.vision.backend === "openai" || body.vision.backend === "anthropic") {
         config.visionSidecar.backend = body.vision.backend;
       }
       if (typeof body.vision.maxDescriptionsPerTurn === "number") {
@@ -249,7 +264,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     const vs = config.visionSidecar ?? {};
     return jsonResponse({
       ok: true,
-      webSearch: { model: ws.model ?? "gpt-5.6-luna", reasoning: ws.reasoning ?? "low" },
+      webSearch: { model: ws.model ?? "gpt-5.6-luna", backend: ws.backend },
       vision: {
         model: vs.model ?? "gpt-5.6-luna",
         backend: vs.backend,
@@ -745,6 +760,8 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       aliases.push({ id: claudeCodeAlias(m.provider, m.id), display_name: `${m.id} (${m.provider})` });
     }
     const contextWindows = buildClaudeContextWindows([...visibleNativeSlugs(config)], models);
+    const webSearchOverride = config.claudeCode?.webSearchSidecar;
+    const visionOverride = config.claudeCode?.visionSidecar;
     return jsonResponse({
       enabled: config.claudeCode?.enabled !== false,
       model: config.claudeCode?.model ?? "",
@@ -758,6 +775,12 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       autoCompactWindow: config.claudeCode?.autoCompactWindow ?? null,
       blockedSkills: config.claudeCode?.blockedSkills ?? null,
       injectAgents: config.claudeCode?.injectAgents !== false,
+      ...(webSearchOverride && Object.keys(webSearchOverride).length > 0
+        ? { webSearchSidecar: { backend: webSearchOverride.backend, model: webSearchOverride.model } }
+        : {}),
+      ...(visionOverride && Object.keys(visionOverride).length > 0
+        ? { visionSidecar: { backend: visionOverride.backend, model: visionOverride.model } }
+        : {}),
       fastMode: config.fastMode,
       contextWindows,
       effectiveModelEnv: effectiveModelEnv(config.claudeCode, contextWindows),
@@ -781,8 +804,36 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       return prototype === Object.prototype || prototype === null;
     };
     if (!isPlainObject(parsedBody)) return jsonResponse({ error: "body must be an object" }, 400);
-    const body = parsedBody as { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; systemEnv?: unknown; fastMode?: unknown; maxContextTokens?: unknown; alwaysEnableEffort?: unknown; tierModels?: unknown; autoContext?: unknown; autoCompactWindow?: unknown; blockedSkills?: unknown; injectAgents?: unknown };
+    const body = parsedBody as { enabled?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; systemEnv?: unknown; fastMode?: unknown; maxContextTokens?: unknown; alwaysEnableEffort?: unknown; tierModels?: unknown; autoContext?: unknown; autoCompactWindow?: unknown; blockedSkills?: unknown; injectAgents?: unknown; webSearchSidecar?: unknown; visionSidecar?: unknown };
+    for (const field of ["webSearchSidecar", "visionSidecar"] as const) {
+      const section = body[field];
+      if (section === undefined || section === null) continue;
+      if (!isPlainObject(section)) return jsonResponse({ error: `${field} must be an object or null` }, 400);
+      if (section.backend !== undefined && section.backend !== null
+        && section.backend !== "openai" && section.backend !== "anthropic") {
+        return jsonResponse({ error: `${field}.backend must be openai, anthropic, or null` }, 400);
+      }
+      if (section.model !== undefined && typeof section.model !== "string") {
+        return jsonResponse({ error: `${field}.model must be a string` }, 400);
+      }
+    }
     const next = { ...(config.claudeCode ?? {}) };
+    for (const field of ["webSearchSidecar", "visionSidecar"] as const) {
+      const section = body[field];
+      if (section === undefined) continue;
+      if (section === null || Object.keys(section as Record<string, unknown>).length === 0) {
+        delete next[field];
+        continue;
+      }
+      const requested = section as { backend?: "openai" | "anthropic" | null; model?: string };
+      const override: NonNullable<OcxClaudeCodeConfig[typeof field]> = { ...next[field] };
+      if (requested.backend === null) delete override.backend;
+      else if (requested.backend !== undefined) override.backend = requested.backend;
+      if (requested.model === "") delete override.model;
+      else if (requested.model !== undefined) override.model = requested.model;
+      if (Object.keys(override).length > 0) next[field] = override;
+      else delete next[field];
+    }
     if (body.enabled !== undefined) {
       if (typeof body.enabled !== "boolean") return jsonResponse({ error: "enabled must be a boolean" }, 400);
       next.enabled = body.enabled;

@@ -101,6 +101,68 @@ test("PUT round-trips settings and persists to config", async () => {
   }
 });
 
+test("Claude sidecar overrides round-trip, partially update, clear, and reject unknown backends", async () => {
+  const server = startServer(0);
+  const put = (body: unknown) => fetch(new URL("/api/claude-code", server.url), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  try {
+    let response = await put({
+      webSearchSidecar: { backend: "anthropic", model: "claude-search" },
+      visionSidecar: { backend: "openai", model: "gpt-vision" },
+    });
+    expect(response.status).toBe(200);
+    expect(loadConfig().claudeCode).toMatchObject({
+      webSearchSidecar: { backend: "anthropic", model: "claude-search" },
+      visionSidecar: { backend: "openai", model: "gpt-vision" },
+    });
+
+    let get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
+    expect(get.webSearchSidecar).toEqual({ backend: "anthropic", model: "claude-search" });
+    expect(get.visionSidecar).toEqual({ backend: "openai", model: "gpt-vision" });
+
+    // Nested partial updates preserve omitted fields and omitted sections.
+    response = await put({ webSearchSidecar: { model: "claude-search-2" } });
+    expect(response.status).toBe(200);
+    expect(loadConfig().claudeCode?.webSearchSidecar).toEqual({ backend: "anthropic", model: "claude-search-2" });
+    expect(loadConfig().claudeCode?.visionSidecar).toEqual({ backend: "openai", model: "gpt-vision" });
+
+    // null backend is the explicit Auto/inherit transition; empty model deletes only model.
+    response = await put({
+      webSearchSidecar: { backend: null },
+      visionSidecar: { backend: null, model: "" },
+    });
+    expect(response.status).toBe(200);
+    expect(loadConfig().claudeCode?.webSearchSidecar).toEqual({ model: "claude-search-2" });
+    expect(loadConfig().claudeCode?.visionSidecar).toBeUndefined();
+    get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
+    expect(get.webSearchSidecar).toEqual({ model: "claude-search-2" });
+    expect(get.visionSidecar).toBeUndefined();
+
+    // null and empty sections both clear the whole override.
+    response = await put({ webSearchSidecar: null, visionSidecar: {} });
+    expect(response.status).toBe(200);
+    expect(loadConfig().claudeCode?.webSearchSidecar).toBeUndefined();
+    expect(loadConfig().claudeCode?.visionSidecar).toBeUndefined();
+
+    await put({ webSearchSidecar: { backend: "openai", model: "stable" } });
+    const beforeInvalid = loadConfig().claudeCode;
+    for (const body of [
+      { webSearchSidecar: { backend: "other" } },
+      { visionSidecar: { backend: "other" } },
+      { webSearchSidecar: [] },
+    ]) {
+      response = await put(body);
+      expect(response.status).toBe(400);
+      expect(loadConfig().claudeCode).toEqual(beforeInvalid);
+    }
+  } finally {
+    server.stop(true);
+  }
+});
+
 test("PUT immediately restores generated agents after re-enable and roster changes", async () => {
   const server = startServer(0);
   const agentsDir = join(process.env.CLAUDE_CONFIG_DIR!, "agents");

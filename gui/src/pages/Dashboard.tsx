@@ -9,7 +9,13 @@ interface HealthData { status: string; version: string; uptime: number }
 interface ProviderInfo { name: string; adapter: string; baseUrl: string; defaultModel?: string; hasApiKey: boolean }
 interface ModelInfo { id: string; provider: string; owned_by?: string }
 interface SettingsData { codexAutoStart: boolean; port: number; hostname: string }
-interface SidecarData { webSearch: { model: string; reasoning: string }; vision: { model: string } }
+type SidecarBackend = "openai" | "anthropic";
+interface SidecarSetting { backend?: SidecarBackend; model: string }
+interface SidecarData { webSearch: SidecarSetting; vision: SidecarSetting }
+interface SidecarPatch {
+  webSearch?: { backend?: SidecarBackend | null; model?: string };
+  vision?: { backend?: SidecarBackend | null; model?: string };
+}
 interface UsageSummary30d { summary: { requests: number; totalTokens: number; coverageRatio: number } }
 type UpdateChannel = "latest" | "preview";
 type Installer = "npm" | "bun" | "source";
@@ -65,7 +71,6 @@ import { modelLabel } from "../model-display";
 
 const SEARCH_SIDECAR_MODELS = ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-5.6-sol", "gpt-5.6-terra"];
 const VISION_SIDECAR_MODELS = ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra"];
-const REASONING_LEVELS = ["low", "medium", "high"];
 const EFFORT_CAP_LEVELS = ["low", "medium", "high", "xhigh"];
 const UPDATE_CHECK_MAX_AUTO_RETRIES = 2;
 const UPDATE_CHECK_RETRY_BASE_MS = 800;
@@ -275,11 +280,18 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
 
   const online = health?.status === "ok";
 
-  const saveSidecar = async (patch: Partial<SidecarData>) => {
+  const saveSidecar = async (patch: SidecarPatch) => {
     if (!sidecar || sidecarSaving) return;
+    const mergeSetting = (current: SidecarSetting, update?: { backend?: SidecarBackend | null; model?: string }): SidecarSetting => {
+      const merged = { ...current };
+      if (update?.model !== undefined) merged.model = update.model;
+      if (update?.backend === null) delete merged.backend;
+      else if (update?.backend !== undefined) merged.backend = update.backend;
+      return merged;
+    };
     const next = {
-      webSearch: { ...sidecar.webSearch, ...patch.webSearch },
-      vision: { ...sidecar.vision, ...patch.vision },
+      webSearch: mergeSetting(sidecar.webSearch, patch.webSearch),
+      vision: mergeSetting(sidecar.vision, patch.vision),
     };
     setSidecarSaving(true);
     setSidecar(next);
@@ -287,7 +299,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       const res = await fetch(`${apiBase}/api/sidecar-settings`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(next),
+        body: JSON.stringify(patch),
       });
       if (!res.ok) throw new Error("save failed");
       const data = await res.json();
@@ -739,24 +751,34 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       <div className="panel" style={{ marginBottom: 12 }}>
         <div className="spread setting-row" style={{ alignItems: "flex-start" }}>
           <div className="setting-copy" style={{ flex: 1 }}>
-            <div style={{ fontWeight: 650 }}>{t("dash.searchModel")}</div>
-            <div className="muted setting-hint">{t("dash.searchModelHint")}</div>
+            <div style={{ fontWeight: 650 }}>{t("dash.webSearchSidecar")}</div>
+            <div className="muted setting-hint">{t("dash.webSearchSidecarHint")}</div>
           </div>
           <div className="setting-controls" style={{ display: "flex", gap: 8 }}>
             <Select
-              value={sidecar?.webSearch.model ?? "gpt-5.6-luna"}
-              options={SEARCH_SIDECAR_MODELS.map(m => ({ value: m, label: modelLabel(m) }))}
-              onChange={v => saveSidecar({ webSearch: { model: v, reasoning: sidecar!.webSearch.reasoning } })}
+              value={sidecar?.webSearch.backend ?? ""}
+              options={[
+                { value: "", label: t("dash.backendAuto") },
+                { value: "openai", label: t("dash.backendOpenAI") },
+                { value: "anthropic", label: t("dash.backendAnthropic") },
+              ]}
+              onChange={v => saveSidecar({ webSearch: { backend: v === "" ? null : v as SidecarBackend } })}
               disabled={!sidecar || sidecarSaving}
-              label={t("dash.searchModel")}
+              label={t("dash.sidecarBackend")}
             />
-            <Select
-              value={sidecar?.webSearch.reasoning ?? "low"}
-              options={REASONING_LEVELS.map(r => ({ value: r, label: r }))}
-              onChange={v => saveSidecar({ webSearch: { model: sidecar!.webSearch.model, reasoning: v } })}
+            <input
+              className="input mono"
+              value={sidecar?.webSearch.model ?? ""}
+              list="search-sidecar-models"
+              onChange={e => setSidecar(current => current ? { ...current, webSearch: { ...current.webSearch, model: e.target.value } } : current)}
+              onBlur={e => saveSidecar({ webSearch: { model: e.target.value } })}
               disabled={!sidecar || sidecarSaving}
-              label={t("dash.searchReasoning")}
+              aria-label={t("dash.sidecarModel")}
+              style={{ minWidth: 210 }}
             />
+            <datalist id="search-sidecar-models">
+              {SEARCH_SIDECAR_MODELS.map(m => <option key={m} value={m}>{modelLabel(m)}</option>)}
+            </datalist>
           </div>
         </div>
       </div>
@@ -764,16 +786,35 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       <div className="panel" style={{ marginBottom: 24 }}>
         <div className="spread setting-row">
           <div className="setting-copy" style={{ flex: 1 }}>
-            <div style={{ fontWeight: 650 }}>{t("dash.visionModel")}</div>
-            <div className="muted setting-hint">{t("dash.visionModelHint")}</div>
+            <div style={{ fontWeight: 650 }}>{t("dash.visionSidecar")}</div>
+            <div className="muted setting-hint">{t("dash.visionSidecarHint")}</div>
           </div>
-          <Select
-            value={sidecar?.vision.model ?? "gpt-5.6-luna"}
-            options={VISION_SIDECAR_MODELS.map(m => ({ value: m, label: modelLabel(m) }))}
-            onChange={v => saveSidecar({ vision: { model: v } })}
-            disabled={!sidecar || sidecarSaving}
-            label={t("dash.visionModel")}
-          />
+          <div className="setting-controls" style={{ display: "flex", gap: 8 }}>
+            <Select
+              value={sidecar?.vision.backend ?? ""}
+              options={[
+                { value: "", label: t("dash.backendAuto") },
+                { value: "openai", label: t("dash.backendOpenAI") },
+                { value: "anthropic", label: t("dash.backendAnthropic") },
+              ]}
+              onChange={v => saveSidecar({ vision: { backend: v === "" ? null : v as SidecarBackend } })}
+              disabled={!sidecar || sidecarSaving}
+              label={t("dash.sidecarBackend")}
+            />
+            <input
+              className="input mono"
+              value={sidecar?.vision.model ?? ""}
+              list="vision-sidecar-models"
+              onChange={e => setSidecar(current => current ? { ...current, vision: { ...current.vision, model: e.target.value } } : current)}
+              onBlur={e => saveSidecar({ vision: { model: e.target.value } })}
+              disabled={!sidecar || sidecarSaving}
+              aria-label={t("dash.sidecarModel")}
+              style={{ minWidth: 210 }}
+            />
+            <datalist id="vision-sidecar-models">
+              {VISION_SIDECAR_MODELS.map(m => <option key={m} value={m}>{modelLabel(m)}</option>)}
+            </datalist>
+          </div>
         </div>
       </div>
 
