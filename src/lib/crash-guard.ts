@@ -156,10 +156,20 @@ const BENIGN_LOG_INTERVAL_MS = 5 * 60_000;
  * cancellation cannot fully close the runtime-internal window. Treat this exact shape as benign:
  * keep the process alive, drop the alarmist banner, and fold repeats into a rate-limited summary so
  * crash.log stays readable for genuinely novel faults.
+ *
+ * Second known shape (260712): `TypeError: Invalid state: ReadableStream is locked`
+ * (code ERR_INVALID_STATE, native-only stack ending in onSinkClose*). When a client
+ * disconnects mid-SSE on the tee()'d passthrough path (responses.ts Bun#32111
+ * workaround), Bun's sink-close teardown tries to cancel the tee-locked source body
+ * and rejects off-path. Request lifecycle is already settled at that point; same
+ * benign handling applies.
  */
 export function isBenignAbortTeardown(err: unknown): boolean {
   if (!(err instanceof TypeError)) return false;
-  if (err.message !== "null is not an object") return false; // bare form only (no `(evaluating …)`)
+  const bareNullTeardown = err.message === "null is not an object"; // bare form only (no `(evaluating …)`)
+  const lockedStreamTeardown = err.message === "Invalid state: ReadableStream is locked"
+    && (err as { code?: unknown }).code === "ERR_INVALID_STATE";
+  if (!bareNullTeardown && !lockedStreamTeardown) return false;
   const stack = err.stack ?? "";
   // Native-only: no JS source frame. A real app TypeError would carry a `(file:line:col)` frame.
   return !/\((?!native:)[^)]*:\d+:\d+\)/.test(stack);

@@ -113,4 +113,22 @@ describe("benign abort-teardown classification", () => {
     expect(isBenignAbortTeardown(null)).toBe(false);
     expect(isBenignAbortTeardown("null is not an object")).toBe(false);
   });
+
+  test("flags the native-only locked-ReadableStream sink-close teardown as benign (260712)", () => {
+    const err = new TypeError("Invalid state: ReadableStream is locked");
+    (err as { code?: string }).code = "ERR_INVALID_STATE";
+    err.stack = "TypeError: Invalid state: ReadableStream is locked\n    at unknown\n    at <anonymous> (native:1:11)\n    at onSinkClose2 (native:5:32)";
+    expect(isBenignAbortTeardown(err)).toBe(true);
+  });
+
+  test("locked-ReadableStream shape needs the code AND a native-only stack", () => {
+    const noCode = new TypeError("Invalid state: ReadableStream is locked");
+    noCode.stack = "TypeError: ...\n    at onSinkClose2 (native:5:32)";
+    expect(isBenignAbortTeardown(noCode)).toBe(false);
+
+    const jsFrame = new TypeError("Invalid state: ReadableStream is locked");
+    (jsFrame as { code?: string }).code = "ERR_INVALID_STATE";
+    jsFrame.stack = "TypeError: ...\n    at relay (/abs/src/server/relay.ts:88:7)";
+    expect(isBenignAbortTeardown(jsFrame)).toBe(false);
+  });
 });

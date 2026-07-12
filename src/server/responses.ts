@@ -938,7 +938,7 @@ export async function handleResponses(
       if (!rotated) break;
       // Release the failed response's socket before retrying; unread bodies otherwise linger
       // until runtime cleanup (one per rotated key under a rate-limit storm).
-      try { void upstreamResponse.body?.cancel(); } catch { /* already consumed/closed */ }
+      try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
       route.provider = rotated;
       const retryAdapter = resolveAdapter(
         resolveWireProtocolOverride(route.providerName, route.modelId, rotated),
