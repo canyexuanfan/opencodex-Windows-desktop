@@ -41,6 +41,7 @@ import { isUsageDebugEnabled } from "../usage/debug";
 import { readJsonRequestBody, DecompressedBodyTooLargeError, UnsupportedContentEncodingError } from "./request-decompress";
 import { resolveAdapter, resolveWireProtocolOverride } from "./adapter-resolve";
 import { hasKeyPoolFailover, rotateKeyOn429 } from "../providers/key-failover";
+import { resolveProviderTransport } from "../providers/xai-transport";
 import type { WsData } from "./ws-bridge";
 import { registerTurn, trackStreamLifetime, unregisterTurn } from "./lifecycle";
 import { redactSecretString } from "../lib/redact";
@@ -612,6 +613,7 @@ export async function handleResponses(
       return formatErrorResponse(401, "authentication_error", err instanceof Error ? err.message : String(err));
     }
   }
+  route.provider = resolveProviderTransport(route.providerName, route.provider);
 
   // Vision sidecar: the routed model can't see images (provider.noVisionModels). Describe each
   // attached image through the selected sidecar backend and replace it with text BEFORE the main
