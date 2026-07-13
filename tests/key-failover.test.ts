@@ -7,7 +7,9 @@ import {
   getKeyCooldownUntil,
   hasKeyPoolFailover,
   rotateKeyOn429,
+  rotateProviderTransportOn429,
 } from "../src/providers/key-failover";
+import { deriveXaiConvId } from "../src/providers/xai-transport";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 
 let home: string;
@@ -124,5 +126,33 @@ describe("rotateKeyOn429", () => {
     expect(getKeyCooldownUntil("p", "k1", now)).not.toBeNull();
     // A REAL beta failure afterwards still rotates to gamma.
     expect(rotateKeyOn429(config, "p", null, now, "key-beta-444555666777")?.apiKey).toBe("key-gamma-888999000111");
+  });
+});
+
+describe("rotateProviderTransportOn429", () => {
+  test("re-applies xAI cache affinity without OAuth CLI headers after key rotation", () => {
+    const promptCacheKey = "stable-conversation-429";
+    const config = makeConfig({
+      authMode: "key",
+      apiKey: "key-alpha-000111222333",
+      apiKeyPool: pool3(),
+    });
+    config.providers.xai = config.providers.p;
+    delete config.providers.p;
+
+    const rotated = rotateProviderTransportOn429(config, "xai", {
+      now: 1_000_000,
+      attemptedKey: "key-alpha-000111222333",
+      promptCacheKey,
+    });
+
+    expect(rotated?.apiKey).toBe("key-beta-444555666777");
+    expect(rotated?.headers).toEqual({
+      "x-grok-conv-id": deriveXaiConvId(promptCacheKey),
+    });
+    expect(rotated?.headers?.["x-grok-client-identifier"]).toBeUndefined();
+    expect(rotated?.headers?.["x-grok-client-version"]).toBeUndefined();
+    expect(rotated?.headers?.["x-xai-token-auth"]).toBeUndefined();
+    expect(JSON.stringify(rotated?.headers)).not.toContain(promptCacheKey);
   });
 });

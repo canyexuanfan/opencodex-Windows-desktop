@@ -10,6 +10,7 @@
  */
 import { saveConfig } from "../config";
 import type { OcxConfig, OcxProviderConfig } from "../types";
+import { resolveProviderTransport } from "./xai-transport";
 
 // ---- cooldown state (in-memory, same as codex/routing.ts) ----
 
@@ -123,6 +124,31 @@ export function rotateKeyOn429(
   // All keys in cooldown
   console.warn(`[key-failover] ${providerName}: all ${pool.length} keys in cooldown; returning 429 to client`);
   return null;
+}
+
+interface RotateProviderTransportOptions {
+  retryAfter?: string | null;
+  now?: number;
+  attemptedKey?: string;
+  promptCacheKey?: string;
+}
+
+/** Rotate a failed key and re-apply provider-specific transport metadata to the replacement. */
+export function rotateProviderTransportOn429(
+  config: OcxConfig,
+  providerName: string,
+  options: RotateProviderTransportOptions = {},
+): OcxProviderConfig | null {
+  const rotated = rotateKeyOn429(
+    config,
+    providerName,
+    options.retryAfter,
+    options.now,
+    options.attemptedKey,
+  );
+  return rotated
+    ? resolveProviderTransport(providerName, rotated, options.promptCacheKey)
+    : null;
 }
 
 /** Clear cooldown state for a provider (e.g. after manual key management). */

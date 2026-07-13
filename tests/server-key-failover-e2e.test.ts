@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { clearKeyCooldowns } from "../src/providers/key-failover";
+import { deriveXaiConvId } from "../src/providers/xai-transport";
 import { startServer } from "../src/server";
 import type { OcxConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
@@ -33,6 +34,86 @@ afterEach(() => {
 });
 
 describe("server 429 key failover (end-to-end)", () => {
+  test("xAI API-key rotation preserves cache affinity and never adds OAuth CLI headers", async () => {
+    const originalFetch = globalThis.fetch;
+    const promptCacheKey = "codex-session-high-entropy-429-e2e";
+    const seenHeaders: Headers[] = [];
+    globalThis.fetch = (async (input, init) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://api.x.ai/v1/chat/completions") {
+        const headers = new Headers(init?.headers);
+        seenHeaders.push(headers);
+        if (seenHeaders.length === 1) {
+          return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+            status: 429,
+            headers: { "retry-after": "30", "content-type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({
+          id: "chatcmpl-xai-rotate",
+          object: "chat.completion",
+          choices: [{ index: 0, message: { role: "assistant", content: "ok after rotate" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+        }), { headers: { "content-type": "application/json" } });
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    let server: ReturnType<typeof startServer> | null = null;
+    try {
+      const config: OcxConfig = {
+        port: 0,
+        hostname: "127.0.0.1",
+        defaultProvider: "xai",
+        providers: {
+          xai: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.x.ai/v1",
+            authMode: "key",
+            apiKey: "key-alpha-000111222333",
+            apiKeyPool: [
+              { id: "k1", key: "key-alpha-000111222333", addedAt: 1 },
+              { id: "k2", key: "key-beta-444555666777", addedAt: 2 },
+            ],
+          },
+        },
+      } as OcxConfig;
+      saveConfig(config);
+      server = startServer(0);
+      const res = await originalFetch(new URL("/v1/responses", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "xai/grok-4.5",
+          input: "hello",
+          stream: false,
+          prompt_cache_key: promptCacheKey,
+        }),
+      });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { output?: { type: string; content?: { text?: string }[] }[] };
+      expect(json.output?.find(o => o.type === "message")?.content?.[0]?.text).toBe("ok after rotate");
+      expect(seenHeaders).toHaveLength(2);
+      expect(seenHeaders.map(headers => headers.get("authorization"))).toEqual([
+        "Bearer key-alpha-000111222333",
+        "Bearer key-beta-444555666777",
+      ]);
+      for (const headers of seenHeaders) {
+        expect(headers.get("x-grok-conv-id")).toBe(deriveXaiConvId(promptCacheKey));
+        expect(headers.get("x-grok-client-identifier")).toBeNull();
+        expect(headers.get("x-grok-client-version")).toBeNull();
+        expect(headers.get("x-xai-token-auth")).toBeNull();
+        for (const [name, value] of headers.entries()) {
+          expect(name).not.toContain(promptCacheKey);
+          expect(value).not.toContain(promptCacheKey);
+        }
+      }
+    } finally {
+      server?.stop(true);
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("routed 429 rotates to the pool's next key and succeeds", async () => {
     const seenAuth: string[] = [];
     upstream = Bun.serve({

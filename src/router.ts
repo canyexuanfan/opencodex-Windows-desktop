@@ -84,8 +84,13 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
     assertProviderDestinationAllowed(providerName, provider);
     return { ...provider, apiKey: resolveEnvValue(provider.apiKey) };
   }
-  const canonicalAuthMode = registryEntry.authKind === "forward" || registryEntry.authKind === "oauth"
-    ? registryEntry.authKind
+  const explicitKeyOverride = registryEntry.authKind === "oauth"
+    && registryEntry.allowKeyAuthOverride === true
+    && provider.authMode === "key";
+  const canonicalAuthMode = explicitKeyOverride
+    ? "key"
+    : registryEntry.authKind === "forward" || registryEntry.authKind === "oauth"
+      ? registryEntry.authKind
     : provider.authMode === "forward" ? undefined : provider.authMode;
   const reasoningEffortMap = mergeRecord(registryEntry.reasoningEffortMap, provider.reasoningEffortMap);
   const modelReasoningEffortMap = mergeNestedRecord(registryEntry.modelReasoningEffortMap, provider.modelReasoningEffortMap);

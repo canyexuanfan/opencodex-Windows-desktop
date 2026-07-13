@@ -18,6 +18,8 @@ export interface ProviderRegistryEntry {
   adapter: string;
   baseUrl: string;
   authKind: ProviderAuthKind;
+  /** OAuth preset may explicitly honor a persisted API-key billing mode. */
+  allowKeyAuthOverride?: boolean;
   allowPrivateNetworkByDefault?: boolean;
   keyOptional?: boolean;
   allowBaseUrlOverride?: boolean;
@@ -219,6 +221,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     adapter: "openai-chat",
     baseUrl: "https://api.x.ai/v1",
     authKind: "oauth",
+    allowKeyAuthOverride: true,
     featured: true,
     oauthId: "xai",
     jawcodeBundle: "xai",

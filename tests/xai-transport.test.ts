@@ -108,7 +108,12 @@ describe("xAI prompt-cache conv-id affinity", () => {
     expect(request.url).toBe("https://api.x.ai/v1/chat/completions");
     expect(effective.headers?.[XAI_CONV_ID_HEADER]).toBe(deriveXaiConvId("codex-session-abc"));
     expect(effective.headers?.["x-grok-client-identifier"]).toBeUndefined();
+    expect(effective.headers?.["x-grok-client-version"]).toBeUndefined();
     expect(effective.headers?.["x-xai-token-auth"]).toBeUndefined();
+    for (const [name, value] of Object.entries(request.headers)) {
+      expect(name).not.toContain("codex-session-abc");
+      expect(value).not.toContain("codex-session-abc");
+    }
   });
 
   test("missing, empty, and whitespace-only cache keys never emit a conv-id", () => {

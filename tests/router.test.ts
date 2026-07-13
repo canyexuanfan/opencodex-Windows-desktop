@@ -4,6 +4,41 @@ import { routeModel } from "../src/router";
 import type { OcxConfig } from "../src/types";
 
 describe("routeModel registry effort defaults", () => {
+  test("allows only opted-in OAuth presets to use explicit API-key billing", () => {
+    const xaiKey: OcxConfig = {
+      port: 10100,
+      defaultProvider: "xai",
+      providers: {
+        xai: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.x.ai/v1",
+          authMode: "key",
+          apiKey: "xai-test-key",
+        },
+      },
+    };
+    const xaiDefault: OcxConfig = {
+      ...xaiKey,
+      providers: { xai: { ...xaiKey.providers.xai, authMode: undefined } },
+    };
+    const cursorKeyAttempt: OcxConfig = {
+      port: 10100,
+      defaultProvider: "cursor",
+      providers: {
+        cursor: {
+          adapter: "cursor",
+          baseUrl: "https://api2.cursor.sh",
+          authMode: "key",
+          apiKey: "cursor-test-key",
+        },
+      },
+    };
+
+    expect(routeModel(xaiKey, "xai/grok-4.5").provider.authMode).toBe("key");
+    expect(routeModel(xaiDefault, "xai/grok-4.5").provider.authMode).toBe("oauth");
+    expect(routeModel(cursorKeyAttempt, "cursor/auto").provider.authMode).toBe("oauth");
+  });
+
   test("routes bare OpenAI/Codex model ids to OpenAI before adopted Cursor model lists", () => {
     const config: OcxConfig = {
       port: 10100,

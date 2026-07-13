@@ -40,7 +40,7 @@ import { fetchWithResetRetry } from "../lib/upstream-retry";
 import { isUsageDebugEnabled } from "../usage/debug";
 import { readJsonRequestBody, DecompressedBodyTooLargeError, UnsupportedContentEncodingError } from "./request-decompress";
 import { resolveAdapter, resolveWireProtocolOverride } from "./adapter-resolve";
-import { hasKeyPoolFailover, rotateKeyOn429 } from "../providers/key-failover";
+import { hasKeyPoolFailover, rotateProviderTransportOn429 } from "../providers/key-failover";
 import { resolveProviderTransport } from "../providers/xai-transport";
 import type { WsData } from "./ws-bridge";
 import { registerTurn, trackStreamLifetime, unregisterTurn } from "./lifecycle";
@@ -886,11 +886,14 @@ export async function handleResponses(
       routedModelStallTimeoutMs: wsPlan.routedModelStallTimeoutMs,
       stallTimeoutSec: wsPlan.stallTimeoutSec,
       on429: retryAfter => {
-        const rotated = rotateKeyOn429(config, route.providerName, retryAfter, Date.now(), route.provider.apiKey);
+        const rotated = rotateProviderTransportOn429(config, route.providerName, {
+          retryAfter,
+          now: Date.now(),
+          attemptedKey: route.provider.apiKey,
+          promptCacheKey: parsed.options.promptCacheKey,
+        });
         if (!rotated) return null;
-        // Re-resolve the auth-mode transport so the conv-id / subscription headers derived at
-        // line ~616 survive the key rotation (rotated providers come from raw config).
-        route.provider = resolveProviderTransport(route.providerName, rotated, parsed.options.promptCacheKey);
+        route.provider = rotated;
         return resolveAdapter(
           resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
           config.cacheRetention,
@@ -941,14 +944,17 @@ export async function handleResponses(
     // request once per remaining key. OAuth/forward providers and single-key pools return null
     // immediately, so this stays a no-op for them (src/providers/key-failover.ts).
     while (upstreamResponse.status === 429 && hasKeyPoolFailover(route.provider)) {
-      const rotated = rotateKeyOn429(config, route.providerName, upstreamResponse.headers.get("retry-after"), Date.now(), route.provider.apiKey);
+      const rotated = rotateProviderTransportOn429(config, route.providerName, {
+        retryAfter: upstreamResponse.headers.get("retry-after"),
+        now: Date.now(),
+        attemptedKey: route.provider.apiKey,
+        promptCacheKey: parsed.options.promptCacheKey,
+      });
       if (!rotated) break;
       // Release the failed response's socket before retrying; unread bodies otherwise linger
       // until runtime cleanup (one per rotated key under a rate-limit storm).
       try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
-      // Same transport re-resolution as the streaming on429 path: keep conv-id + subscription
-      // headers on the retried request instead of silently reverting to the raw config provider.
-      route.provider = resolveProviderTransport(route.providerName, rotated, parsed.options.promptCacheKey);
+      route.provider = rotated;
       const retryAdapter = resolveAdapter(
         resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
         config.cacheRetention,

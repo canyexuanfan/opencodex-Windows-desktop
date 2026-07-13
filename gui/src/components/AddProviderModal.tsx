@@ -1,13 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { IconX, IconLock, IconKey, IconExternal } from "../icons";
+import { buildProviderPayload, type ProviderPayload } from "../provider-payload";
 
-export interface ProviderConfig {
-  adapter: string;
-  baseUrl: string;
-  apiKey?: string;
-  defaultModel?: string;
-  authMode?: "key" | "forward" | "oauth";
-}
+export type ProviderConfig = ProviderPayload;
 
 interface Preset {
   id: string;
@@ -100,10 +95,7 @@ export default function AddProviderModal({
     const name = form.name.trim();
     if (!name) { setError("Provider name is required"); return; }
     if (!form.baseUrl.trim()) { setError("Base URL is required"); return; }
-    const provider: ProviderConfig = { adapter: form.adapter.trim(), baseUrl: form.baseUrl.trim() };
-    if (form.authMode === "forward") provider.authMode = "forward";
-    else if (form.apiKey.trim()) provider.apiKey = form.apiKey.trim();
-    if (form.defaultModel.trim()) provider.defaultModel = form.defaultModel.trim();
+    const provider = buildProviderPayload(form);
 
     setSaving(true);
     setError("");
