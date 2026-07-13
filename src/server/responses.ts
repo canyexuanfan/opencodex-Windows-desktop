@@ -681,7 +681,7 @@ export async function handleResponses(
           method: request.method,
           headers: request.headers,
           body: request.body,
-        }, upstream.signal, connectMs),
+        }, upstream.signal, connectMs, parsed.stream),
         { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
       );
     } catch (err) {
@@ -927,7 +927,7 @@ export async function handleResponses(
       : await fetchWithResetRetry(
           () => fetchWithHeaderTimeout(request.url, {
             method: request.method, headers: request.headers, body: request.body,
-          }, upstream.signal, connectMs),
+          }, upstream.signal, connectMs, parsed.stream),
           { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
         );
   } catch (err) {
@@ -965,7 +965,7 @@ export async function handleResponses(
           ? await retryAdapter.fetchResponse(retryRequest, { abortSignal: upstream.signal, timeoutMs: connectMs })
           : await fetchWithHeaderTimeout(retryRequest.url, {
               method: retryRequest.method, headers: retryRequest.headers, body: retryRequest.body,
-            }, upstream.signal, connectMs);
+            }, upstream.signal, connectMs, parsed.stream);
       } catch (err) {
         cleanupUpstreamAbort();
         upstream.abort();
@@ -1174,20 +1174,22 @@ export async function fetchWithHeaderTimeout(
   init: Omit<RequestInit, "signal">,
   abortSignal: AbortSignal,
   timeoutMs: number,
+  preferIdentityEncoding = false,
 ): Promise<Response> {
   const timeout = new AbortController();
   const timer = setTimeout(() => {
     if (!timeout.signal.aborted) timeout.abort(new DOMException("Timeout elapsed", "TimeoutError"));
   }, timeoutMs);
+  const headers = new Headers(init.headers);
+  // Compressed SSE can be held until the decompressor has a complete block. Streaming calls
+  // default to identity for low-latency frame delivery, while an explicit caller choice wins.
+  if (preferIdentityEncoding && !headers.has("accept-encoding")) {
+    headers.set("accept-encoding", "identity");
+  }
   try {
     return await fetch(url, {
       ...init,
-      // Suppress automatic content-encoding negotiation (Bun adds Accept-Encoding: br,gzip,...
-      // by default; providers like OpenRouter respond with Brotli/gzip which Bun decompresses
-      // in blocks — causing SSE frames to be buffered until a full decompression block is ready
-      // rather than being yielded token-by-token). Requesting identity ensures chunks arrive
-      // unencoded and are forwarded to the client immediately.
-      headers: { "Accept-Encoding": "identity", ...init.headers },
+      headers,
       signal: AbortSignal.any([abortSignal, timeout.signal]),
     });
   } finally {
