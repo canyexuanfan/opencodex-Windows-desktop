@@ -46,6 +46,12 @@ const CURSOR_MODEL_EFFORT_TIERS: Record<string, readonly string[]> = {
   "gpt-5.6-luna": ["low", "medium", "high", "xhigh", "max"],
 };
 
+/** All effort suffixes accepted when matching live Cursor model ids to configured base ids. */
+export const CANONICAL_EFFORT_SUFFIXES: ReadonlySet<string> = new Set([
+  "none",
+  ...Object.values(CURSOR_MODEL_EFFORT_TIERS).flat(),
+]);
+
 const CANONICAL_CODEX_EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"] as const;
 
 function normalizeRequestedEffort(reasoning: string | undefined): string | undefined {

@@ -7,6 +7,7 @@ import {
   cursorModelInputModalities,
   cursorModelReasoningEfforts,
 } from "../src/adapters/cursor/discovery";
+import { cursorModelHasEffortTiers } from "../src/adapters/cursor/effort-map";
 import { clearModelCache } from "../src/codex/model-cache";
 
 const originalFetch = globalThis.fetch;
@@ -31,6 +32,19 @@ function nativeTemplate(): Record<string, unknown> {
 }
 
 describe("Cursor static Codex catalog", () => {
+  test("reasoning-effort models have explicit effort tiers", () => {
+    const reasoningEffortModels = CURSOR_STATIC_MODELS.filter(
+      model => model.supportsReasoningEffort === true,
+    );
+
+    for (const model of reasoningEffortModels) {
+      expect(
+        cursorModelHasEffortTiers(model.id),
+        `Cursor model ${model.id} advertises reasoning effort without explicit effort tiers`,
+      ).toBe(true);
+    }
+  });
+
   test("expanded Cursor static metadata reaches routed models and catalog without live fetch", async () => {
     let fetchCalls = 0;
     globalThis.fetch = (() => {

@@ -1,4 +1,4 @@
-import { cursorModelEffortLadder } from "./effort-map";
+import { CANONICAL_EFFORT_SUFFIXES, cursorModelEffortLadder } from "./effort-map";
 
 export interface CursorModelInfo {
   id: string;
@@ -55,11 +55,6 @@ export function normalizeCursorModels(models: readonly CursorModelInfo[]): Curso
   return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
-// Live GetUsableModels ids append effort tiers to the base id (`claude-4.6-opus-high`). Only
-// these suffixes may activate a base model — otherwise a sibling model like `claude-4-sonnet-1m`
-// would falsely activate `claude-4-sonnet` (PR #73 review finding).
-const LIVE_EFFORT_SUFFIXES = ["low", "medium", "high", "xhigh", "max"] as const;
-
 /**
  * Strip the `cursor-` wire prefix that some Cursor GetUsableModels responses prepend to model ids
  * (e.g. `cursor-grok-4.5-high` instead of `grok-4.5-high`). Applied at the comparison boundary
@@ -76,7 +71,9 @@ function stripCursorWirePrefix(id: string): string {
 export function isCursorModelAvailableForAccount(modelId: string, liveIds: readonly string[]): boolean {
   return liveIds.some(raw => {
     const id = stripCursorWirePrefix(raw);
-    return id === modelId || LIVE_EFFORT_SUFFIXES.some(suffix => id === `${modelId}-${suffix}`);
+    if (id === modelId) return true;
+    const effortPrefix = `${modelId}-`;
+    return id.startsWith(effortPrefix) && CANONICAL_EFFORT_SUFFIXES.has(id.slice(effortPrefix.length));
   });
 }
 

@@ -94,9 +94,17 @@ export async function fetchCursorUsableModels(opts: CursorUsableModelsOptions): 
         const response = fromBinary(GetUsableModelsResponseSchema, new Uint8Array(Buffer.concat(chunks)));
         // Account filtering uses wire `model_id` values only. Aliases like `composer-2-5` must not
         // make stale configured ids such as `composer-2` look activated.
-        const ids = (response.models ?? [])
-          .map(model => (model as { modelId?: string }).modelId)
-          .filter((id): id is string => typeof id === "string" && id.length > 0);
+        const ids: string[] = [];
+        const seenIds = new Set<string>();
+        for (const model of response.models ?? []) {
+          const rawId = (model as { modelId?: string }).modelId;
+          if (typeof rawId !== "string") continue;
+          const id = rawId.trim();
+          if (id.length === 0 || /[\x00-\x1f]/.test(id) || seenIds.has(id)) continue;
+          seenIds.add(id);
+          ids.push(id);
+          if (ids.length === 500) break;
+        }
         close(ids.length > 0 ? { ok: true, models: ids } : { ok: false, error: "empty" });
       } catch {
         close({ ok: false, error: "decode", detail: "Invalid GetUsableModels protobuf response" });
