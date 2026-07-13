@@ -271,14 +271,19 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
               abortSignal: headerDeadline.signal,
               timeoutMs: connectTimeoutMs,
               returnRawErrors: true,
+              stream: true,
             })
           : await fetchWithResetRetry(
-              () => fetch(request.url, {
-                method: request.method,
-                headers: request.headers,
-                body: request.body,
-                signal: headerDeadline.signal,
-              }),
+              () => {
+                const h = new Headers(request.headers);
+                if (!h.has("accept-encoding")) h.set("accept-encoding", "identity");
+                return fetch(request.url, {
+                  method: request.method,
+                  headers: h,
+                  body: request.body,
+                  signal: headerDeadline.signal,
+                });
+              },
               { abortSignal: headerDeadline.signal, label: "web-search-loop" },
             );
         return { response, responseAdapter: requestAdapter };
