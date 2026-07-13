@@ -211,11 +211,12 @@ describe("Cursor native exec bridge", () => {
     }
   });
 
-  test("throws for unknown exec cases so the live handler fails the turn", async () => {
-    await expect(handleCursorNativeExec(execMessage({
+  test("unknown exec cases return empty reply instead of throwing (#116 hardening)", async () => {
+    const result = await handleCursorNativeExec(execMessage({
       case: undefined,
       value: undefined,
-    }))).rejects.toThrow("Unsupported Cursor native exec case: unknown");
+    }));
+    expect(result).toEqual([]);
   });
 
   test("rejects native write and delete when apply_patch is available", async () => {

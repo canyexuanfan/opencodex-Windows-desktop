@@ -28,6 +28,7 @@ import {
   rejectWriteExecForPolicy,
   writeExec,
 } from "./native-exec-fs";
+import { debugProviderDiagnostic } from "../../lib/debug";
 import { fetchExec, rejectFetchExecForPolicy, type CursorNativeNetworkDeps } from "./native-exec-network";
 import {
   backgroundShellSpawnExec,
@@ -190,7 +191,11 @@ export async function handleCursorNativeExec(execMsg: ExecServerMessage, deps: C
       },
     }))];
   }
-  throw new Error(`Unsupported Cursor native exec case: ${execCase ?? "unknown"}`);
+  // Unknown exec case — Cursor added a new native exec type that our protobuf definition does not
+  // include yet. Return an empty reply so the stream stays alive instead of throwing (which kills
+  // the entire gRPC connection via failAndClear). Same class of bug as #116.
+  debugProviderDiagnostic("cursor", "unknown-exec-case", { execCase: execCase ?? "unknown", execId: execMsg.execId });
+  return [];
 }
 
 
