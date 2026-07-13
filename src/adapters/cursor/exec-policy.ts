@@ -10,7 +10,7 @@ export const CURSOR_SANDBOX_FULL_ACCESS_RE = /sandbox_mode[^\n]{0,80}danger-full
 export function resolveCursorNativeExecMode(provider: OcxProviderConfig): CursorNativeExecMode {
   const mode = provider.nativeLocalExec;
   if (mode === "off" || mode === "codex-sandbox" || mode === "on") return mode;
-  return provider.unsafeAllowNativeLocalExec === true ? "on" : "off";
+  return provider.unsafeAllowNativeLocalExec === true ? "on" : "codex-sandbox";
 }
 
 /**

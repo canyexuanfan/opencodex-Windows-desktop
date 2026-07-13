@@ -63,7 +63,7 @@ describe("Cursor native exec sandbox policy", () => {
   test.each([
     ["explicit off beats legacy true", { ...baseProvider, nativeLocalExec: "off", unsafeAllowNativeLocalExec: true }, "off"],
     ["legacy true alone", { ...baseProvider, unsafeAllowNativeLocalExec: true }, "on"],
-    ["no setting", baseProvider, "off"],
+    ["no setting", baseProvider, "codex-sandbox"],
     ["explicit codex-sandbox", { ...baseProvider, nativeLocalExec: "codex-sandbox" }, "codex-sandbox"],
   ] as const)("resolves mode: %s", (_name, provider, expected) => {
     expect(resolveCursorNativeExecMode(provider)).toBe(expected);
