@@ -1,7 +1,7 @@
 {
   "name": "@bitkyc08/opencodex",
-  "version": "2.7.13",
-  "description": "Universal provider proxy for OpenAI Codex — use any LLM with Codex CLI/App/SDK",
+  "version": "2.7.14",
+  "description": "Universal provider proxy for OpenAI Codex \u2014 use any LLM with Codex CLI/App/SDK",
   "type": "module",
   "main": "./bin/package-main.mjs",
   "exports": {
