@@ -269,9 +269,21 @@ export function planInteractionQueryReply(query: InteractionQuery): { response: 
     };
   }
   if (q.case === "setupVmEnvironmentArgs") {
-    throw new Error("Cursor setupVmEnvironment is not supported by opencodex");
+    // setupVmEnvironment is not supported — reply with an empty InteractionResponse so the stream
+    // stays alive instead of throwing (which kills the entire gRPC connection via failAndClear).
+    return {
+      response: respond({ case: undefined, value: undefined }),
+      replyCase: "unsupported:setupVmEnvironment",
+    };
   }
-  throw new Error(`Unsupported Cursor interaction query case: ${q.case ?? "unknown"}`);
+  // Unknown interaction query case — Cursor added a new query type that our protobuf definition
+  // does not include yet. Gracefully reply with an empty InteractionResponse (matching id, no
+  // result) so the server unblocks and the stream stays alive. Previously this threw, which
+  // propagated through .catch → failAndClear and killed the entire connection (#116).
+  return {
+    response: respond({ case: undefined, value: undefined }),
+    replyCase: `unsupported:${q.case ?? "unknown"}`,
+  };
 }
 
 /**
