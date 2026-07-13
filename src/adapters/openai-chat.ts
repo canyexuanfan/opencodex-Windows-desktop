@@ -125,7 +125,49 @@ function safeToolName(name: string | undefined): string {
   return sanitized;
 }
 
-function toolsToChatFormat(parsed: OcxParsedRequest): unknown[] | undefined {
+const XAI_SCHEMA_BASE_URLS = new Set(["api.x.ai", "cli-chat-proxy.grok.com"]);
+
+function isXaiSchemaTarget(provider: OcxProviderConfig): boolean {
+  try {
+    return XAI_SCHEMA_BASE_URLS.has(new URL(provider.baseUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function expandXaiRootObjectSchemas(schema: unknown): Record<string, unknown>[] | undefined {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return undefined;
+  const obj = schema as Record<string, unknown>;
+  const compositionKey = ["oneOf", "anyOf"].find(key => Array.isArray(obj[key]));
+  if (!compositionKey) {
+    if (obj.type !== undefined && obj.type !== "object") return undefined;
+    return [{ ...obj, type: "object" }];
+  }
+
+  const siblings = Object.fromEntries(Object.entries(obj).filter(([key]) => key !== compositionKey));
+  const branches = obj[compositionKey];
+  if (!Array.isArray(branches)) return undefined;
+  const expanded: Record<string, unknown>[] = [];
+  for (const branch of branches) {
+    const variants = expandXaiRootObjectSchemas(branch);
+    if (!variants) return undefined;
+    for (const variant of variants) expanded.push({ ...siblings, ...variant });
+  }
+  return expanded.length > 0 ? expanded : undefined;
+}
+
+function normalizeXaiToolParameters(parameters: unknown): Record<string, unknown> | undefined {
+  const variants = expandXaiRootObjectSchemas(parameters);
+  if (!variants) return undefined;
+  if (variants.length === 1) return variants[0];
+  const root = parameters && typeof parameters === "object" && !Array.isArray(parameters)
+    ? parameters as Record<string, unknown>
+    : {};
+  const metadata = Object.fromEntries(Object.entries(root).filter(([key]) => key !== "oneOf" && key !== "anyOf" && key !== "type"));
+  return { ...metadata, type: "object", oneOf: variants };
+}
+
+function toolsToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] | undefined {
   if (!parsed.context.tools || parsed.context.tools.length === 0) return undefined;
   const allowed = isAllowedToolChoice(parsed.options.toolChoice)
     ? new Set(parsed.options.toolChoice.allowedTools)
@@ -134,15 +176,21 @@ function toolsToChatFormat(parsed: OcxParsedRequest): unknown[] | undefined {
     ? parsed.context.tools.filter(t => toolAllowedByChoice(t, allowed))
     : parsed.context.tools;
   if (tools.length === 0) return undefined;
-  return tools.map(t => ({
+  const xaiTarget = isXaiSchemaTarget(provider);
+  const formatted = tools.flatMap(t => {
+    const parameters = xaiTarget ? normalizeXaiToolParameters(t.parameters) : t.parameters;
+    if (parameters === undefined) return [];
+    return [{
     type: "function",
     function: {
       name: namespacedToolName(t.namespace, t.name),
       description: t.description,
-      parameters: t.parameters,
+      parameters,
       ...(t.strict !== undefined ? { strict: t.strict } : {}),
     },
-  }));
+    }];
+  });
+  return formatted.length > 0 ? formatted : undefined;
 }
 
 function toolChoiceToChatFormat(tc: OcxParsedRequest["options"]["toolChoice"], tools: OcxParsedRequest["context"]["tools"]): unknown {
@@ -190,7 +238,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       }
 
       const messages = messagesToChatFormat(parsed, provider);
-      const tools = toolsToChatFormat(parsed);
+      const tools = toolsToChatFormat(parsed, provider);
       const toolChoice = toolChoiceToChatFormat(parsed.options.toolChoice, parsed.context.tools);
 
       const body: Record<string, unknown> = {
