@@ -53,6 +53,14 @@ describe("Cursor discovery metadata", () => {
     expect(isCursorModelAvailableForAccount("gpt-5.5", ["gpt-5.5-extra-high"])).toBe(false);
     expect(isCursorModelAvailableForAccount("gpt-5.5-extra", ["gpt-5.5-extra-high"])).toBe(true);
 
+    // Issue #117: Cursor GetUsableModels may return ids with a `cursor-` wire prefix.
+    expect(isCursorModelAvailableForAccount("grok-4.5", ["cursor-grok-4.5-high"])).toBe(true);
+    expect(isCursorModelAvailableForAccount("grok-4.5-fast", ["cursor-grok-4.5-fast-medium"])).toBe(true);
+    expect(isCursorModelAvailableForAccount("gpt-5.4", ["cursor-gpt-5.4-high"])).toBe(true);
+    // Prefixed sibling rejection: cursor- prefix must not bypass sibling-model checks.
+    expect(isCursorModelAvailableForAccount("gpt-5.5", ["cursor-gpt-5.5-extra-high"])).toBe(false);
+    expect(isCursorModelAvailableForAccount("claude-4-sonnet", ["cursor-claude-4-sonnet-1m"])).toBe(false);
+
     const filtered = filterCursorConfiguredModelsByLiveDiscovery(
       [{ id: "gpt-5.4" }, { id: "claude-fable-5" }],
       ["gpt-5.4-high"],

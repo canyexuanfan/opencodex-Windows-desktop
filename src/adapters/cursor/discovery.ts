@@ -61,12 +61,23 @@ export function normalizeCursorModels(models: readonly CursorModelInfo[]): Curso
 const LIVE_EFFORT_SUFFIXES = ["low", "medium", "high", "xhigh", "max"] as const;
 
 /**
+ * Strip the `cursor-` wire prefix that some Cursor GetUsableModels responses prepend to model ids
+ * (e.g. `cursor-grok-4.5-high` instead of `grok-4.5-high`). Applied at the comparison boundary
+ * so upstream wire ids stay verbatim everywhere else (issue #117).
+ */
+function stripCursorWirePrefix(id: string): string {
+  return id.startsWith("cursor-") ? id.slice("cursor-".length) : id;
+}
+
+/**
  * True when a configured Cursor base model should remain exposed after live GetUsableModels filtering.
  * Live ids are full effort-suffixed variants (`claude-4.6-opus-high`); base ids match exactly or by prefix.
  */
 export function isCursorModelAvailableForAccount(modelId: string, liveIds: readonly string[]): boolean {
-  return liveIds.some(id =>
-    id === modelId || LIVE_EFFORT_SUFFIXES.some(suffix => id === `${modelId}-${suffix}`));
+  return liveIds.some(raw => {
+    const id = stripCursorWirePrefix(raw);
+    return id === modelId || LIVE_EFFORT_SUFFIXES.some(suffix => id === `${modelId}-${suffix}`);
+  });
 }
 
 /** Codex-facing id for Cursor's auto-router. Always kept in the catalog even when live discovery omits it. */
