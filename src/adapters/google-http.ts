@@ -36,7 +36,7 @@ export async function fetchGoogleWithRetry(label: string, request: AdapterReques
         method: request.method,
         headers: request.headers,
         body: request.body,
-      }, timeoutMs, ctx.abortSignal);
+      }, timeoutMs, ctx.abortSignal, ctx.stream);
       if (!retryableGoogleStatus(res.status) || attempt === GOOGLE_RETRY_ATTEMPTS - 1) {
         return ctx.returnRawErrors ? res : normalizeFinalGoogleError(label, res, ctx.abortSignal);
       }

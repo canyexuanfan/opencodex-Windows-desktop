@@ -51,4 +51,6 @@ export interface AdapterFetchContext {
   timeoutMs?: number;
   /** Return final non-2xx responses untouched so the caller can own the error-body read. */
   returnRawErrors?: boolean;
+  stream?: boolean;
+
 }

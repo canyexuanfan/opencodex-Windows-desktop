@@ -39,7 +39,7 @@ export async function fetchKiroWithRetry(request: AdapterRequest, ctx: AdapterFe
         method: request.method,
         headers: request.headers,
         body: request.body,
-      }, timeoutMs, ctx.abortSignal);
+      }, timeoutMs, ctx.abortSignal, ctx.stream);
       if (!retryableKiroStatus(res.status) || attempt === KIRO_RETRY_ATTEMPTS - 1) {
         return ctx.returnRawErrors ? res : normalizeFinalKiroHttpError(res, ctx.abortSignal);
       }

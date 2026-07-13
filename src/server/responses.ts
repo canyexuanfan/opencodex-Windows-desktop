@@ -923,7 +923,7 @@ export async function handleResponses(
   let upstreamResponse: Response;
   try {
     upstreamResponse = adapter.fetchResponse
-      ? await adapter.fetchResponse(request, { abortSignal: upstream.signal, timeoutMs: connectMs })
+      ? await adapter.fetchResponse(request, { abortSignal: upstream.signal, timeoutMs: connectMs, stream: parsed.stream })
       : await fetchWithResetRetry(
           () => fetchWithHeaderTimeout(request.url, {
             method: request.method, headers: request.headers, body: request.body,
@@ -962,7 +962,7 @@ export async function handleResponses(
       const retryRequest = await retryAdapter.buildRequest(parsed, { headers: selectedForwardHeaders });
       try {
         upstreamResponse = retryAdapter.fetchResponse
-          ? await retryAdapter.fetchResponse(retryRequest, { abortSignal: upstream.signal, timeoutMs: connectMs })
+          ? await retryAdapter.fetchResponse(retryRequest, { abortSignal: upstream.signal, timeoutMs: connectMs, stream: parsed.stream })
           : await fetchWithHeaderTimeout(retryRequest.url, {
               method: retryRequest.method, headers: retryRequest.headers, body: retryRequest.body,
             }, upstream.signal, connectMs, parsed.stream);
