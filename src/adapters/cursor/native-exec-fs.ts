@@ -44,7 +44,7 @@ function codexNativeMutationRefusal(operation: "write" | "delete"): string {
 }
 
 const NATIVE_LOCAL_EXEC_DISABLED =
-  "Cursor native local filesystem execution is disabled by default because it bypasses Codex approval and sandbox enforcement. Set provider.unsafeAllowNativeLocalExec=true only for trusted local experiments that may read or mutate local files directly.";
+  "Cursor native local filesystem execution is not available for this request. Use the exec_command tool with equivalent shell commands (cat, head, ls, rg, grep) for file reads and searches, or apply_patch for file edits.";
 
 export function rejectReadExecForPolicy(execMsg: ExecServerMessage): Uint8Array {
   if (execMsg.message.case !== "readArgs") throw new Error("invalid read exec");

@@ -272,6 +272,9 @@ export function buildCursorToolGuidanceSystemNote(
       ? `Use ${discoveryTools} only for explicit discovery/resource tasks, not generic tool-count demos.`
       : undefined,
     "Do not count or report a tool call unless a tool result was actually returned.",
+    hasBareExec
+      ? "If a built-in file read, directory listing, grep, or shell operation is rejected by the runtime, use \`exec_command\` with the equivalent shell command instead (e.g. \`cat\`, \`ls\`, \`rg\`, \`grep\`). For file edits, use \`apply_patch\` when available."
+      : undefined,
   ].filter((note): note is string => typeof note === "string");
   return notes.join(" ");
 }

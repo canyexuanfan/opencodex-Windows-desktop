@@ -99,7 +99,7 @@ describe("Cursor native exec sandbox policy", () => {
       unsafeAllowNativeLocalExec: effectiveCursorNativeExecAllow(provider, false),
     }))[0]);
     const deniedText = stringify(denied);
-    expect(deniedText).toContain("Cursor native local filesystem execution is disabled by default");
+    expect(deniedText).toContain("Cursor native local filesystem execution is not available for this request");
     expect(deniedText).not.toContain(content);
   });
 

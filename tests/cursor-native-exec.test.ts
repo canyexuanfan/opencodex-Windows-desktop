@@ -104,7 +104,7 @@ describe("Cursor native exec bridge", () => {
     expect(deniedRead.message.case).toBe("readResult");
     expect(deniedRead.message.value.result.case).toBe("error");
     if (deniedRead.message.value.result.case === "error") {
-      expect(deniedRead.message.value.result.value.error).toContain("bypasses Codex approval and sandbox");
+      expect(deniedRead.message.value.result.value.error).toContain("not available for this request");
     }
 
     const deniedShell = decode((await handleCursorNativeExec(execMessage({
@@ -114,7 +114,7 @@ describe("Cursor native exec bridge", () => {
     expect(deniedShell.message.case).toBe("shellResult");
     expect(deniedShell.message.value.result.case).toBe("failure");
     if (deniedShell.message.value.result.case === "failure") {
-      expect(deniedShell.message.value.result.value.stderr).toContain("provider.unsafeAllowNativeLocalExec=true");
+      expect(deniedShell.message.value.result.value.stderr).toContain("exec_command");
     }
 
     const deniedStream = await handleCursorNativeExec(execMessage({
@@ -126,7 +126,7 @@ describe("Cursor native exec bridge", () => {
       .flatMap(msg => (msg.message.case === "execClientMessage" ? [msg.message.value] : []))
       .flatMap(frame => (frame.message.case === "shellStream" && frame.message.value.event.case === "stderr" ? [frame.message.value.event.value.data] : []))
       .join("\n");
-    expect(streamText).toContain("provider.unsafeAllowNativeLocalExec=true");
+    expect(streamText).toContain("exec_command");
 
     const deniedBackground = decode((await handleCursorNativeExec(execMessage({
       case: "backgroundShellSpawnArgs",
@@ -135,7 +135,7 @@ describe("Cursor native exec bridge", () => {
     expect(deniedBackground.message.case).toBe("backgroundShellSpawnResult");
     expect(deniedBackground.message.value.result.case).toBe("error");
     if (deniedBackground.message.value.result.case === "error") {
-      expect(deniedBackground.message.value.result.value.error).toContain("provider.unsafeAllowNativeLocalExec=true");
+      expect(deniedBackground.message.value.result.value.error).toContain("exec_command");
     }
 
     const deniedStdin = decode((await handleCursorNativeExec(execMessage({
@@ -145,7 +145,7 @@ describe("Cursor native exec bridge", () => {
     expect(deniedStdin.message.case).toBe("writeShellStdinResult");
     expect(deniedStdin.message.value.result.case).toBe("error");
     if (deniedStdin.message.value.result.case === "error") {
-      expect(deniedStdin.message.value.result.value.error).toContain("provider.unsafeAllowNativeLocalExec=true");
+      expect(deniedStdin.message.value.result.value.error).toContain("exec_command");
     }
 
     const deniedFetch = decode((await handleCursorNativeExec(execMessage({
@@ -155,7 +155,7 @@ describe("Cursor native exec bridge", () => {
     expect(deniedFetch.message.case).toBe("fetchResult");
     expect(deniedFetch.message.value.result.case).toBe("error");
     if (deniedFetch.message.value.result.case === "error") {
-      expect(deniedFetch.message.value.result.value.error).toContain("bypasses Codex approval and sandbox");
+      expect(deniedFetch.message.value.result.value.error).toContain("not available for this request");
     }
   });
 
@@ -193,7 +193,7 @@ describe("Cursor native exec bridge", () => {
     expect(shell.message.value.result.case).toBe("failure");
     if (shell.message.value.result.case === "failure") {
       expect(shell.message.value.result.value.stdout).toBe("");
-      expect(shell.message.value.result.value.stderr).toContain("provider.unsafeAllowNativeLocalExec=true");
+      expect(shell.message.value.result.value.stderr).toContain("exec_command");
     }
   });
 

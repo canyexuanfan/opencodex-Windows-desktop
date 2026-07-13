@@ -24,7 +24,7 @@ const backgroundShells = new Map<number, { child: ChildProcessWithoutNullStreams
 let nextShellId = 1;
 
 const NATIVE_SHELL_DISABLED =
-  "Cursor native shell execution is disabled by default because it bypasses Codex approval and sandbox enforcement. Set provider.unsafeAllowNativeLocalExec=true only for trusted local experiments that may run local commands directly.";
+  "Cursor native shell execution is not available for this request. Use the exec_command tool to run shell commands instead.";
 
 function rejectedShellResult(command: string, cwd: string, started: number) {
   return create(ShellResultSchema, {

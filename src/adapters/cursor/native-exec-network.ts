@@ -7,7 +7,7 @@ export interface CursorNativeNetworkDeps {
 }
 
 const NATIVE_FETCH_DISABLED =
-  "Cursor native fetch execution is disabled by default because it bypasses Codex approval and sandbox enforcement. Set provider.unsafeAllowNativeLocalExec=true only for trusted local experiments that may make local network requests directly.";
+  "Cursor native fetch execution is not available for this request. Use the exec_command tool with curl or wget to make network requests instead.";
 
 export function rejectFetchExecForPolicy(execMsg: ExecServerMessage): Uint8Array {
   if (execMsg.message.case !== "fetchArgs") throw new Error("invalid fetch exec");
