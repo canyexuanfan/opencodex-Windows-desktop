@@ -101,7 +101,7 @@ describe("xAI auth-mode transport selection", () => {
     });
     const xaiParameters = (JSON.parse(request.body) as { tools: Array<{ function: { parameters: Record<string, unknown> } }> }).tools[0].function.parameters;
 
-    expect(xaiParameters.type).toBe("object");
+    expect(xaiParameters.type).toBeUndefined();
     expect(xaiParameters.oneOf).toHaveLength(3);
     expect((xaiParameters.oneOf as Record<string, unknown>[]).every(branch => branch.type === "object")).toBe(true);
     expect(xaiParameters.$defs).toEqual(schema.$defs);

@@ -164,7 +164,7 @@ function normalizeXaiToolParameters(parameters: unknown): Record<string, unknown
     ? parameters as Record<string, unknown>
     : {};
   const metadata = Object.fromEntries(Object.entries(root).filter(([key]) => key !== "oneOf" && key !== "anyOf" && key !== "type"));
-  return { ...metadata, type: "object", oneOf: variants };
+  return { ...metadata, oneOf: variants };
 }
 
 function toolsToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] | undefined {
