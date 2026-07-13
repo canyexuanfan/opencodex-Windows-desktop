@@ -13,3 +13,4 @@ devlog/
 
 # Test-generated artifacts
 tests/.tmp-*/
+.claude/
