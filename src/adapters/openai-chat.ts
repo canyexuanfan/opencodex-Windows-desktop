@@ -2,6 +2,7 @@ import type { ProviderAdapter } from "./base";
 import type { AdapterEvent, OcxAssistantMessage, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTextContent, OcxThinkingContent, OcxToolCall, OcxUsage } from "../types";
 import { isAllowedToolChoice, modelInList, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
 import { mapReasoningEffort } from "../reasoning-effort";
+import { redactSecretString } from "../lib/redact";
 import { contentPartsToText } from "./image";
 import { neutralizeIdentity } from "./identity";
 import { buildNonOpenAIToolCatalogNudgeForTools, shouldInjectNonOpenAIToolCatalogNudge } from "./tool-catalog-nudge";
@@ -11,6 +12,52 @@ import { buildNonOpenAIToolCatalogNudgeForTools, shouldInjectNonOpenAIToolCatalo
 // unflagged OpenAI-compatible providers and the Anthropic adapter keep ids verbatim.
 export function stripBracketedModelSuffix(modelId: string): string {
   return modelId.replace(/\[[^\]]*\]\s*$/, "");
+}
+
+// 260715 (issue #126): surface upstream error detail through the web-search sidecar loop.
+// loop.ts only appends a suffix to "Provider error N" when the adapter exposes
+// formatErrorBody; without it, strict OpenAI-compatible backends (NVIDIA NIM pydantic
+// validation, "This model only supports single tool-calls at once!", etc.) were reduced
+// to a bare status code. JSON-only extraction: recognized string fields are returned,
+// HTML/non-JSON bodies yield "" so raw markup is never echoed to the client.
+export function formatOpenAIChatErrorBody(status: number, _headers: Headers, payloadText: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payloadText);
+  } catch {
+    return "";
+  }
+  const detail = extractErrorDetail(parsed);
+  if (!detail) return "";
+  return redactSecretString(detail).slice(0, 400);
+}
+
+function extractErrorDetail(parsed: unknown): string | undefined {
+  if (typeof parsed === "string") return parsed.trim() || undefined;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const obj = parsed as Record<string, unknown>;
+  // OpenAI shape: { error: { message } } or { error: "..." }
+  const err = obj.error;
+  if (typeof err === "string" && err.trim()) return err.trim();
+  if (err !== null && typeof err === "object" && !Array.isArray(err)) {
+    const msg = (err as Record<string, unknown>).message;
+    if (typeof msg === "string" && msg.trim()) return msg.trim();
+  }
+  // FastAPI/pydantic shape (NVIDIA NIM): { detail: "..." } or { detail: [{ msg, loc }, ...] }
+  const det = obj.detail;
+  if (typeof det === "string" && det.trim()) return det.trim();
+  if (Array.isArray(det)) {
+    const msgs = det
+      .map(item => (item !== null && typeof item === "object" && typeof (item as Record<string, unknown>).msg === "string"
+        ? ((item as Record<string, unknown>).msg as string).trim()
+        : ""))
+      .filter(m => m.length > 0);
+    if (msgs.length > 0) return msgs.join("; ");
+  }
+  // Generic fallbacks: { message } / RFC7807 { title }
+  if (typeof obj.message === "string" && obj.message.trim()) return obj.message.trim();
+  if (typeof obj.title === "string" && obj.title.trim()) return obj.title.trim();
+  return undefined;
 }
 
 function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] {
@@ -230,6 +277,8 @@ function thinkingBudgetForEffort(parsed: OcxParsedRequest, reasoningEffort: stri
 export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAdapter {
   return {
     name: "openai-chat",
+
+    formatErrorBody: formatOpenAIChatErrorBody,
 
     buildRequest(parsed: OcxParsedRequest) {
       const hasCredential = typeof provider.apiKey === "string" && provider.apiKey.trim().length > 0;

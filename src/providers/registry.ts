@@ -153,6 +153,17 @@ const KIMI_AUTO_TOOL_CHOICE_ONLY_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-hig
 const KIMI_API_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEntries(
   KIMI_API_MODELS.map(id => [id, 262_144]),
 );
+
+// 260715 NVIDIA NIM kimi family (issue #126): documented served ids on integrate
+// chat/completions per docs.api.nvidia.com/nim/reference/llm-apis; live /v1/models
+// currently lists only kimi-k2.6 but the list is dynamic, so carry the documented family.
+const NVIDIA_NIM_KIMI_THINKING_MODELS = [
+  "moonshotai/kimi-k2.6", "moonshotai/kimi-k2.5", "moonshotai/kimi-k2-thinking",
+];
+const NVIDIA_NIM_KIMI_MODELS = [
+  ...NVIDIA_NIM_KIMI_THINKING_MODELS,
+  "moonshotai/kimi-k2-instruct", "moonshotai/kimi-k2-instruct-0905",
+];
 const KIMI_CODING_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEntries(
   KIMI_CODING_MODELS.map(id => [id, 262_144]),
 );
@@ -497,7 +508,21 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     preserveReasoningContentModels: KIMI_API_MODELS,
   },
   { id: "huggingface", label: "Hugging Face", baseUrl: "https://router.huggingface.co/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://huggingface.co/settings/tokens" },
-  { id: "nvidia", label: "NVIDIA NIM", baseUrl: "https://integrate.api.nvidia.com/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://build.nvidia.com" },
+  // 260715 NIM hardening (issue #126, devlog/_plan/260715_issue126_nim_kimi):
+  // - NIM kimi rejects `parallel_tool_calls: true` with 400 "This model only supports single
+  //   tool-calls at once!" (openclaw#37048). NVIDIA's own function-calling docs default the
+  //   Boolean to false, so provider-wide `false` is the documented-safe wire value.
+  // - `reasoning_effort` is not portable on NIM (models use chat_template_kwargs); the kimi
+  //   family is live-discovered with no capability metadata, so Codex would otherwise send
+  //   reasoning_effort=medium. Exact-id lists per modelInList semantics; gpt-oss on NIM keeps
+  //   its working reasoning_effort. Future kimi ids must be appended individually.
+  {
+    id: "nvidia", label: "NVIDIA NIM", baseUrl: "https://integrate.api.nvidia.com/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://build.nvidia.com",
+    parallelToolCalls: false,
+    noReasoningModels: NVIDIA_NIM_KIMI_MODELS,
+    modelReasoningEfforts: Object.fromEntries(NVIDIA_NIM_KIMI_MODELS.map(id => [id, []])),
+    preserveReasoningContentModels: NVIDIA_NIM_KIMI_THINKING_MODELS,
+  },
   { id: "venice", label: "Venice", baseUrl: "https://api.venice.ai/api/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://venice.ai/settings/api" },
   // 260710 GLM-5.2 context and path-specific ids: Tier-2 evidence in
   // devlog/_plan/260710_provider_hardening/002_research_cn.md.
