@@ -27,16 +27,20 @@ describe("OpenAI Responses passthrough sanitization", () => {
     expect(input[0]).not.toHaveProperty("id");
   });
 
-  test("strips only non-msg ids from serialized message input items", () => {
+  test("strips invalid type-specific ids from serialized input items", () => {
     const adapter = createResponsesPassthroughAdapter(provider);
     const encryptedContent = "opaque-openai-encrypted-content";
-    const input = [
-      { type: "message", id: "019f5e7f-ac31-7610-b69c-43ae41759fce", role: "user", content: "first" },
-      { type: "message", id: "msg_abc", role: "assistant", content: "second" },
-      { type: "reasoning", id: "rs_1", summary: [], encrypted_content: encryptedContent },
-      { type: "function_call", id: "fc_1", call_id: "call_1", name: "ping", arguments: "{}" },
-      { type: "function_call_output", call_id: "call_1", output: "pong" },
+    const cases = [
+      { item: { type: "message", id: "019f5e7f-ac31-7610-b69c-43ae41759fce", role: "user", content: "first" }, expectedId: undefined },
+      { item: { type: "message", id: "msg_abc", role: "assistant", content: "second" }, expectedId: "msg_abc" },
+      { item: { type: "custom_tool_call", id: "fc_old", call_id: "call_1", name: "patch", input: "old" }, expectedId: undefined },
+      { item: { type: "custom_tool_call", id: "ctc_1", call_id: "call_2", name: "patch", input: "new" }, expectedId: "ctc_1" },
+      { item: { type: "function_call", id: "fc_1", call_id: "call_3", name: "ping", arguments: "{}" }, expectedId: "fc_1" },
+      { item: { type: "reasoning", id: "rs_1", summary: [], encrypted_content: encryptedContent }, expectedId: "rs_1" },
+      { item: { type: "tool_search_call", id: "fc_old_search", call_id: "call_4", execution: "client", arguments: {} }, expectedId: undefined },
+      { item: { type: "tool_search_call", id: "tsc_1", call_id: "call_5", execution: "client", arguments: {} }, expectedId: "tsc_1" },
     ];
+    const input = cases.map(({ item }) => item);
     const request = adapter.buildRequest({
       modelId: "gpt-5.5",
       context: { messages: [] },
@@ -46,11 +50,11 @@ describe("OpenAI Responses passthrough sanitization", () => {
     }, { headers: new Headers({ authorization: "Bearer token" }) });
     const body = JSON.parse(request.body) as { input: Record<string, unknown>[] };
 
-    expect(body.input[0]).not.toHaveProperty("id");
-    expect(body.input[1].id).toBe("msg_abc");
-    expect(body.input[2]).toMatchObject({ id: "rs_1", encrypted_content: encryptedContent });
-    expect(body.input[3]).toMatchObject({ id: "fc_1", call_id: "call_1" });
-    expect(body.input[4]).toMatchObject({ type: "function_call_output", call_id: "call_1" });
+    cases.forEach(({ expectedId }, index) => {
+      if (expectedId === undefined) expect(body.input[index]).not.toHaveProperty("id");
+      else expect(body.input[index].id).toBe(expectedId);
+    });
+    expect(body.input[5]).toEqual(input[5]);
   });
 
   test("drops raw reasoning input content before native GPT passthrough", () => {

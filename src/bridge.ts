@@ -498,12 +498,12 @@ export function bridgeToResponsesSSE(
               if (currentRawReasoning) closeCurrentRawReasoning();
               flushHiddenRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
-              const itemId = `fc_${uuid()}`;
               const mapped = toolNsMap?.get(event.name);
               const realName = mapped?.name ?? event.name;
               const ns = mapped?.namespace;
               const toolSearch = toolSearchToolNames?.has(realName) ?? false;
               const freeform = !toolSearch && (freeformToolNames?.has(realName) ?? false);
+              const itemId = `${toolSearch ? "tsc" : freeform ? "ctc" : "fc"}_${uuid()}`;
               const item = toolSearch
                 ? { type: "tool_search_call", id: itemId, call_id: event.id, execution: "client", arguments: {}, status: "in_progress" }
                 : freeform
@@ -782,13 +782,13 @@ export function buildResponseJSON(
     const freeform = !toolSearch && (options?.freeformToolNames?.has(realName) ?? false);
     if (toolSearch) {
       output.push({
-        type: "tool_search_call", id: `fc_${uuid()}`,
+        type: "tool_search_call", id: `tsc_${uuid()}`,
         call_id: currentToolCallId, execution: "client",
         arguments: parseArgsObj(currentToolCallArgs), status: "completed",
       });
     } else if (freeform) {
       output.push({
-        type: "custom_tool_call", id: `fc_${uuid()}`,
+        type: "custom_tool_call", id: `ctc_${uuid()}`,
         call_id: currentToolCallId, name: realName,
         input: freeformInput(currentToolCallArgs), status: "completed",
       });

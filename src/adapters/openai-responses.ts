@@ -52,13 +52,22 @@ function sanitizeReasoningInputContent(body: unknown): unknown {
   return changed ? { ...raw, input } : body;
 }
 
-function stripInvalidMessageIds(body: unknown): unknown {
+function stripInvalidItemIds(body: unknown): unknown {
   if (!isPlainObject(body) || !Array.isArray(body.input)) return body;
 
+  const validPrefixes: Record<string, string> = {
+    message: "msg_",
+    reasoning: "rs_",
+    function_call: "fc_",
+    custom_tool_call: "ctc_",
+    tool_search_call: "tsc_",
+  };
   let changed = false;
   const input = body.input.map(item => {
-    if (!isPlainObject(item) || item.type !== "message") return item;
-    if (typeof item.id === "string" && item.id.startsWith("msg_")) return item;
+    if (!isPlainObject(item) || typeof item.type !== "string") return item;
+    const validPrefix = validPrefixes[item.type];
+    if (!validPrefix) return item;
+    if (typeof item.id === "string" && item.id.startsWith(validPrefix)) return item;
     if (!("id" in item)) return item;
     changed = true;
     const next = { ...item };
@@ -299,7 +308,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         url,
         method: "POST",
         headers,
-        body: JSON.stringify(stripInvalidMessageIds(stripUnsupportedHostedTools(sanitizeReasoningInputContent(scrubOcxCompactionItems(outBody))))),
+        body: JSON.stringify(stripInvalidItemIds(stripUnsupportedHostedTools(sanitizeReasoningInputContent(scrubOcxCompactionItems(outBody))))),
       };
     },
 
