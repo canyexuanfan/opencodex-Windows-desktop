@@ -74,4 +74,13 @@ describe("opencode-free provider", () => {
     expect(entry?.note?.toLowerCase()).toContain("no key needed");
     expect(entry?.note?.toLowerCase()).toContain("bearer public");
   });
+
+  test("deriveProviderPresets exposes keyOptional for GUI picker", () => {
+    const { deriveProviderPresets } = require("../src/providers/derive");
+    const presets = deriveProviderPresets();
+    const preset = presets.find((p: { id: string }) => p.id === "opencode-free");
+    expect(preset).toBeDefined();
+    expect(preset.keyOptional).toBe(true);
+    expect(preset.note).toBeDefined();
+  });
 });

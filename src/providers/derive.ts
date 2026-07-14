@@ -48,6 +48,7 @@ export interface DerivedProviderPreset {
   oauthProvider?: string;
   dashboardUrl?: string;
   note?: string;
+  keyOptional?: boolean;
 }
 
 export function listRegistryEntries(): readonly ProviderRegistryEntry[] {
@@ -229,6 +230,7 @@ function entryToPreset(entry: ProviderRegistryEntry): DerivedProviderPreset {
     ...(entry.authKind === "oauth" ? { oauthProvider: entry.oauthId ?? entry.id } : {}),
     ...(entry.dashboardUrl ? { dashboardUrl: entry.dashboardUrl } : {}),
     ...(entry.note ? { note: entry.note } : {}),
+    ...(entry.keyOptional ? { keyOptional: true } : {}),
   };
 }
 
