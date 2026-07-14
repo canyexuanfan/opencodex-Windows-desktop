@@ -52,6 +52,23 @@ function sanitizeReasoningInputContent(body: unknown): unknown {
   return changed ? { ...raw, input } : body;
 }
 
+function stripInvalidMessageIds(body: unknown): unknown {
+  if (!isPlainObject(body) || !Array.isArray(body.input)) return body;
+
+  let changed = false;
+  const input = body.input.map(item => {
+    if (!isPlainObject(item) || item.type !== "message") return item;
+    if (typeof item.id === "string" && item.id.startsWith("msg_")) return item;
+    if (!("id" in item)) return item;
+    changed = true;
+    const next = { ...item };
+    delete next.id;
+    return next;
+  });
+
+  return changed ? { ...body, input } : body;
+}
+
 /**
  * Replace proxy-minted compaction items (`encrypted_content` starting with `ocx1:`) with plain
  * user messages before forwarding to the ChatGPT backend. Our envelope is transparent base64, not
@@ -282,7 +299,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         url,
         method: "POST",
         headers,
-        body: JSON.stringify(stripUnsupportedHostedTools(sanitizeReasoningInputContent(scrubOcxCompactionItems(outBody)))),
+        body: JSON.stringify(stripInvalidMessageIds(stripUnsupportedHostedTools(sanitizeReasoningInputContent(scrubOcxCompactionItems(outBody))))),
       };
     },
 

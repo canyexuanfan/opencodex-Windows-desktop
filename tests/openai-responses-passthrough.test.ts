@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createResponsesPassthroughAdapter } from "../src/adapters/openai-responses";
+import { sanitizeEncryptedContentInPlace } from "../src/server/responses";
 
 const provider = {
   adapter: "openai-responses",
@@ -8,6 +9,50 @@ const provider = {
 };
 
 describe("OpenAI Responses passthrough sanitization", () => {
+  test("agent_message conversion removes its non-OpenAI item id", () => {
+    const input = [{
+      type: "agent_message",
+      id: "019f5e7f-ac31-7610-b69c-43ae41759fce",
+      author: "/root",
+      recipient: "/root/worker",
+      content: [{ type: "encrypted_content", encrypted_content: "delegated task" }],
+    }];
+
+    expect(sanitizeEncryptedContentInPlace(input)).toBe(1);
+    expect(input[0]).toEqual({
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "delegated task" }],
+    });
+    expect(input[0]).not.toHaveProperty("id");
+  });
+
+  test("strips only non-msg ids from serialized message input items", () => {
+    const adapter = createResponsesPassthroughAdapter(provider);
+    const encryptedContent = "opaque-openai-encrypted-content";
+    const input = [
+      { type: "message", id: "019f5e7f-ac31-7610-b69c-43ae41759fce", role: "user", content: "first" },
+      { type: "message", id: "msg_abc", role: "assistant", content: "second" },
+      { type: "reasoning", id: "rs_1", summary: [], encrypted_content: encryptedContent },
+      { type: "function_call", id: "fc_1", call_id: "call_1", name: "ping", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_1", output: "pong" },
+    ];
+    const request = adapter.buildRequest({
+      modelId: "gpt-5.5",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: { model: "gpt-5.5", input },
+    }, { headers: new Headers({ authorization: "Bearer token" }) });
+    const body = JSON.parse(request.body) as { input: Record<string, unknown>[] };
+
+    expect(body.input[0]).not.toHaveProperty("id");
+    expect(body.input[1].id).toBe("msg_abc");
+    expect(body.input[2]).toMatchObject({ id: "rs_1", encrypted_content: encryptedContent });
+    expect(body.input[3]).toMatchObject({ id: "fc_1", call_id: "call_1" });
+    expect(body.input[4]).toMatchObject({ type: "function_call_output", call_id: "call_1" });
+  });
+
   test("drops raw reasoning input content before native GPT passthrough", () => {
     const adapter = createResponsesPassthroughAdapter(provider);
     const request = adapter.buildRequest({

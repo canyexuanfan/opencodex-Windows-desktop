@@ -346,9 +346,10 @@ export function sanitizeEncryptedContentInPlace(input: unknown): number {
           && (child as { type?: unknown }).type === "agent_message"
           && !hasEncryptedContentPart((child as { content?: unknown }).content)
         ) {
-          const message = child as { type: string; role?: string; author?: unknown; recipient?: unknown };
+          const message = child as { type: string; role?: string; id?: unknown; author?: unknown; recipient?: unknown };
           message.type = "message";
           message.role = "user";
+          delete message.id;
           delete message.author;
           delete message.recipient;
         }
