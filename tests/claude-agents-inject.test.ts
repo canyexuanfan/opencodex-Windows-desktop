@@ -89,7 +89,12 @@ describe("syncClaudeAgentDefs ownership contract (audit 071 #2/#3)", () => {
     mkdirSync(agentsDir, { recursive: true });
     const victim = join(dir, "victim.md");
     writeFileSync(victim, "precious");
-    symlinkSync(victim, join(agentsDir, "ocx-linked.md"));
+    try {
+      symlinkSync(victim, join(agentsDir, "ocx-linked.md"));
+    } catch (e: unknown) {
+      if ((e as NodeJS.ErrnoException).code === "EPERM") return; // skip on Windows without elevated symlink rights
+      throw e;
+    }
     syncClaudeAgentDefs([], dir); // prune pass
     expect(readFileSync(victim, "utf8")).toBe("precious");
     expect(readdirSync(agentsDir)).toContain("ocx-linked.md");
