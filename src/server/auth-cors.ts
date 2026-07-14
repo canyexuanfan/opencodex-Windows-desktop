@@ -210,6 +210,7 @@ export function safeConfigDTO(config: OcxConfig): unknown {
       "disabled",
       "allowPrivateNetwork",
       "authMode",
+      "keyOptional",
       "liveModels",
       "models",
       "contextWindow",

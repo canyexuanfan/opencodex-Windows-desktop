@@ -149,6 +149,29 @@ describe("server local API auth", () => {
     expect(dto.providers.openai.disabled).toBeUndefined();
   });
 
+  test("safeConfigDTO exposes keyOptional for saved free-tier providers", () => {
+    const dto = safeConfigDTO({
+      ...config("127.0.0.1"),
+      providers: {
+        "mimo-free": {
+          adapter: "mimo-free",
+          baseUrl: "https://api.xiaomimimo.com/api/free-ai/openai/chat",
+          authMode: "key",
+          keyOptional: true,
+        },
+      },
+    } as OcxConfig) as {
+      providers: Record<string, Record<string, unknown>>;
+    };
+
+    expect(dto.providers["mimo-free"]).toMatchObject({
+      adapter: "mimo-free",
+      authMode: "key",
+      keyOptional: true,
+      hasApiKey: false,
+    });
+  });
+
   test("safeConfigDTO strips URL-embedded provider secrets", () => {
     const dto = safeConfigDTO({
       ...config("127.0.0.1"),
