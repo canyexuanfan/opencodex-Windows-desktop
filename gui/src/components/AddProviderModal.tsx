@@ -261,24 +261,9 @@ export default function AddProviderModal({
                   No API key is stored. This adds Cursor's static public model catalog for Codex, but live Cursor transport and native file/shell execution remain disabled until audited.
                 </div>
               ) : preset.keyOptional ? (
-                <>
-                  <div style={{ fontSize: 12, color: "var(--green)", background: "var(--green-soft)", border: "1px solid var(--green)", borderRadius: "var(--radius-sm)", padding: "10px 12px", lineHeight: 1.6 }}>
-                    <strong>Free tier</strong> — {preset.note ?? "No API key required. Works out of the box."}
-                  </div>
-                  <details style={{ marginTop: 2 }}>
-                    <summary style={{ fontSize: 12, color: "var(--muted)", cursor: "pointer", userSelect: "none" }}>Use your own API key instead (optional)</summary>
-                    <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-                      {preset.dashboardUrl && (
-                        <a href={preset.dashboardUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}>
-                          <IconKey style={{ width: 14, height: 14 }} />Get a {preset.label} key<IconExternal style={{ width: 13, height: 13 }} />
-                        </a>
-                      )}
-                      <Field label="API key (optional)">
-                        <input className="input" type="password" value={form.apiKey} onChange={e => setForm({ ...form, apiKey: e.target.value })} placeholder="Overrides the free public token" />
-                      </Field>
-                    </div>
-                  </details>
-                </>
+                <div style={{ fontSize: 12, color: "var(--green)", background: "var(--green-soft)", border: "1px solid var(--green)", borderRadius: "var(--radius-sm)", padding: "10px 12px", lineHeight: 1.6 }}>
+                  <strong>Free tier</strong> — {preset.note ?? "No API key required. Works out of the box."}
+                </div>
               ) : (
                 <>
                   {preset.dashboardUrl && (

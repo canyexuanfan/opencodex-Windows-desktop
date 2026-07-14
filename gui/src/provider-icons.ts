@@ -27,6 +27,7 @@ const PROVIDER_ICON_ALIASES: Record<string, string> = {
   "ollama-cloud": "ollama-color.svg",
   openai: "openai.svg",
   "openai-apikey": "openai.svg",
+  "opencode-free": "opencode.svg",
   "opencode-go": "opencode.svg",
   "opencode-zen": "opencode.svg",
   openrouter: "openrouter-color.svg",
@@ -35,6 +36,7 @@ const PROVIDER_ICON_ALIASES: Record<string, string> = {
   "vercel-ai-gateway": "vercel-ai-gateway-color.svg",
   vllm: "vllm-color.svg",
   xai: "grok-color.svg",
+  "mimo-free": "xiaomi-color.svg",
   xiaomi: "xiaomi-color.svg",
 };
 
