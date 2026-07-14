@@ -151,7 +151,7 @@ export function createMimoFreeAdapter(provider: OcxProviderConfig): ProviderAdap
         method: request.method,
         headers: request.headers as Record<string, string>,
         body: request.body,
-        signal: ctx?.signal,
+        signal: ctx?.abortSignal,
       });
 
       // On auth failure, flush JWT cache and retry once with a fresh token.
@@ -166,7 +166,7 @@ export function createMimoFreeAdapter(provider: OcxProviderConfig): ProviderAdap
           method: request.method,
           headers: retryHeaders,
           body: request.body,
-          signal: ctx?.signal,
+          signal: ctx?.abortSignal,
         });
       }
 
