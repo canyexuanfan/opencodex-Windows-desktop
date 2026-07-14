@@ -48,6 +48,9 @@ export default function AddProviderModal({
   const [oauthSupported, setOauthSupported] = useState<string[]>([]);
   const [oauthBusy, setOauthBusy] = useState(false);
   const [oauthMsg, setOauthMsg] = useState("");
+  const [manualCode, setManualCode] = useState("");
+  const [manualCodeBusy, setManualCodeBusy] = useState(false);
+  const [manualCodeMsg, setManualCodeMsg] = useState("");
   const [presets, setPresets] = useState<Preset[]>(FALLBACK_PRESETS);
   const searchRef = useRef<HTMLInputElement>(null);
   const aliveRef = useRef(true);
@@ -122,6 +125,8 @@ export default function AddProviderModal({
   const loginOAuth = async (providerId: string) => {
     setOauthBusy(true);
     setOauthMsg("");
+    setManualCode("");
+    setManualCodeMsg("");
     try {
       const res = await fetch(`${apiBase}/api/oauth/login`, {
         method: "POST",
@@ -154,6 +159,32 @@ export default function AddProviderModal({
       if (aliveRef.current) setOauthMsg("Network error — is the proxy running?");
     } finally {
       if (aliveRef.current) setOauthBusy(false);
+    }
+  };
+
+  const submitManualCode = async (providerId: string) => {
+    const input = manualCode.trim();
+    if (!input || manualCodeBusy) return;
+    setManualCodeBusy(true);
+    setManualCodeMsg("");
+    try {
+      const res = await fetch(`${apiBase}/api/oauth/login/code`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: providerId, input }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!aliveRef.current) return;
+      if (!res.ok) {
+        setManualCodeMsg(data.error || "Could not submit code");
+        return;
+      }
+      setManualCode("");
+      setManualCodeMsg("Code submitted — finishing login…");
+    } catch {
+      if (aliveRef.current) setManualCodeMsg("Network error — is the proxy running?");
+    } finally {
+      if (aliveRef.current) setManualCodeBusy(false);
     }
   };
 
@@ -213,8 +244,47 @@ export default function AddProviderModal({
                 </div>
               )}
               {oauthMsg && <div style={{ fontSize: 12, color: /error|update|timed/.test(oauthMsg) ? "var(--amber)" : "var(--accent-hover)" }}>{oauthMsg}</div>}
+              {oauthBusy && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <div className="muted" style={{ fontSize: 12 }}>
+                    If the browser cannot reach this machine, paste the final redirect URL or authorization code:
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input
+                      className="input"
+                      type="text"
+                      autoComplete="off"
+                      spellCheck={false}
+                      value={manualCode}
+                      onChange={e => setManualCode(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === "Enter" && preset.oauthProvider) {
+                          e.preventDefault();
+                          void submitManualCode(preset.oauthProvider);
+                        }
+                      }}
+                      placeholder="Paste redirect URL or code"
+                      disabled={manualCodeBusy}
+                      style={{ flex: 1, fontSize: 12 }}
+                    />
+                    <button
+                      className="btn btn-ghost"
+                      type="button"
+                      disabled={manualCodeBusy || !manualCode.trim() || !preset.oauthProvider}
+                      onClick={() => preset.oauthProvider && void submitManualCode(preset.oauthProvider)}
+                    >
+                      {manualCodeBusy ? "Submitting…" : "Submit"}
+                    </button>
+                  </div>
+                  {manualCodeMsg && (
+                    <div style={{ fontSize: 12, color: /error|Could not|Network/.test(manualCodeMsg) ? "var(--amber)" : "var(--accent-hover)" }}>
+                      {manualCodeMsg}
+                    </div>
+                  )}
+                </div>
+              )}
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 2 }}>
-                <button className="link-btn" onClick={() => { setForm({ ...form, authMode: "key" }); setOauthMsg(""); }}>Use an API key instead</button>
+                <button className="link-btn" onClick={() => { setForm({ ...form, authMode: "key" }); setOauthMsg(""); setManualCode(""); setManualCodeMsg(""); }}>Use an API key instead</button>
                 <div style={{ flex: 1 }} />
                 <button className="btn btn-ghost" onClick={back}>Back</button>
               </div>

@@ -362,9 +362,80 @@ export async function runLogin(provider: string, ctrl: OAuthController, opts?: L
  * GUI async login: start the flow, return the auth URL EARLY (the flow keeps running in the
  * background until the callback server captures the redirect), with a concurrency guard and an
  * error surfaced via getLoginStatus().
+ *
+ * Manual fallback: when the browser cannot reach the loopback callback (remote GUI, SSH, blocked
+ * localhost), the GUI can POST the final redirect URL or authorization code via
+ * submitManualLoginCode(), which feeds OAuthController.onManualCodeInput.
  */
 const loginState = new Map<string, { error?: string; done: boolean }>();
 const loginAbort = new Map<string, AbortController>();
+
+/** Pending paste for a login in progress: either a waiter or a stashed early submission. */
+interface ManualCodeSlot {
+  pendingInput?: string;
+  resolve?: (value: string) => void;
+}
+const loginManual = new Map<string, ManualCodeSlot>();
+
+function clearManualCodeSlot(provider: string): void {
+  loginManual.delete(provider);
+}
+
+function ensureManualCodeSlot(provider: string): ManualCodeSlot {
+  let slot = loginManual.get(provider);
+  if (!slot) {
+    slot = {};
+    loginManual.set(provider, slot);
+  }
+  return slot;
+}
+
+/** Wait for a GUI/CLI paste of the OAuth redirect URL or code (or return a stashed early submit). */
+function waitForManualLoginCode(provider: string, signal: AbortSignal): Promise<string> {
+  if (signal.aborted) {
+    return Promise.reject(new Error(`OAuth callback cancelled: ${signal.reason}`));
+  }
+  const slot = ensureManualCodeSlot(provider);
+  if (slot.pendingInput !== undefined) {
+    const value = slot.pendingInput;
+    slot.pendingInput = undefined;
+    return Promise.resolve(value);
+  }
+  return new Promise<string>((resolve, reject) => {
+    const onAbort = () => {
+      if (slot.resolve === resolve) slot.resolve = undefined;
+      reject(new Error(`OAuth callback cancelled: ${signal.reason}`));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    slot.resolve = (value: string) => {
+      signal.removeEventListener("abort", onAbort);
+      if (slot.resolve === resolve) slot.resolve = undefined;
+      resolve(value);
+    };
+  });
+}
+
+/**
+ * Feed a pasted redirect URL or authorization code into an in-progress GUI login.
+ * Returns ok:false when no login is waiting (or input is empty). Invalid pastes are accepted
+ * here and re-prompted by the OAuth callback loop if they cannot be parsed / fail state checks.
+ */
+export function submitManualLoginCode(provider: string, input: string): { ok: true } | { ok: false; error: string } {
+  const trimmed = input.trim();
+  if (!trimmed) return { ok: false, error: "empty code" };
+  const st = loginState.get(provider);
+  if (!st || st.done) return { ok: false, error: "no login in progress" };
+  const slot = ensureManualCodeSlot(provider);
+  if (slot.resolve) {
+    const resolve = slot.resolve;
+    slot.resolve = undefined;
+    resolve(trimmed);
+  } else {
+    // Race: GUI may POST before the flow reaches onManualCodeInput — stash for the waiter.
+    slot.pendingInput = trimmed;
+  }
+  return { ok: true };
+}
 
 export interface OAuthAccountSummary { id: string; email?: string; active: boolean; needsReauth?: boolean; expiresAt?: number }
 
@@ -400,6 +471,7 @@ export function oauthLoginSummary(): Array<{ provider: string; loggedIn: boolean
 export function clearLoginState(provider: string): void {
   loginAbort.get(provider)?.abort("cleared");
   loginAbort.delete(provider);
+  clearManualCodeSlot(provider);
   loginState.delete(provider);
 }
 
@@ -409,6 +481,7 @@ export function cancelLoginFlow(provider: string): boolean {
   if (!ctrl && (!existing || existing.done)) return false;
   ctrl?.abort("cancelled");
   loginAbort.delete(provider);
+  clearManualCodeSlot(provider);
   loginState.set(provider, { done: true, error: "Login cancelled" });
   return true;
 }
@@ -420,6 +493,7 @@ export async function startLoginFlow(provider: string, opts?: LoginOpts): Promis
   if (existing && !existing.done) {
     throw new Error(`A login for ${provider} is already in progress`);
   }
+  clearManualCodeSlot(provider);
   loginState.set(provider, { done: false });
   const abort = new AbortController();
   loginAbort.set(provider, abort);
@@ -431,12 +505,15 @@ export async function startLoginFlow(provider: string, opts?: LoginOpts): Promis
         resolve({ url, instructions });
       },
       onProgress: () => {},
+      // GUI fallback when the browser cannot hit the loopback callback server.
+      onManualCodeInput: () => waitForManualLoginCode(provider, abort.signal),
       signal: abort.signal,
     };
     // Background: runLogin persists the credential + upserts the provider entry to disk config.
     runLogin(provider, ctrl, opts)
       .then(() => {
         loginAbort.delete(provider);
+        clearManualCodeSlot(provider);
         loginState.set(provider, { done: true });
         // Local-token import (grok-cli / Claude Code keychain) completes WITHOUT firing onAuth —
         // resolve so the GUI call returns instead of hanging.
@@ -444,6 +521,7 @@ export async function startLoginFlow(provider: string, opts?: LoginOpts): Promis
       })
       .catch((e: unknown) => {
         loginAbort.delete(provider);
+        clearManualCodeSlot(provider);
         const msg = e instanceof Error ? e.message : String(e);
         loginState.set(provider, { done: true, error: msg });
         if (!urlResolved) reject(e);
