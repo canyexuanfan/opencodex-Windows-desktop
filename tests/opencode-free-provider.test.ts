@@ -70,6 +70,19 @@ describe("opencode-free provider", () => {
     expect(headers["x-opencode-client"]).toBe("desktop");
   });
 
+  test("registry static headers still apply when a user apiKey is present", () => {
+    const provider: OcxProviderConfig = {
+      ...providerConfigSeed(entry!),
+      apiKey: "user-secret-key",
+    };
+    const adapter = createOpenAIChatAdapter(provider);
+    const req = adapter.buildRequest(minimalRequest());
+    const headers = req.headers as Record<string, string>;
+    expect(headers["Authorization"]).toBe("Bearer user-secret-key");
+    expect(headers["x-opencode-client"]).toBe("desktop");
+    expect(Object.keys(headers)).toContain("Authorization");
+  });
+
   test("provider note mentions no key needed", () => {
     expect(entry?.note?.toLowerCase()).toContain("no key needed");
     expect(entry?.note?.toLowerCase()).toContain("bearer public");
