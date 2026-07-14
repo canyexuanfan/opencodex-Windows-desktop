@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { IconX, IconLock, IconKey, IconExternal } from "../icons";
 import { buildProviderPayload, type ProviderPayload } from "../provider-payload";
 
@@ -17,6 +17,8 @@ interface Preset {
   /** Where to create/copy the API key (for auth === "key" catalog providers). */
   dashboardUrl?: string;
   note?: string;
+  /** API key is optional — provider works without one (free public tier). */
+  keyOptional?: boolean;
 }
 
 const FALLBACK_PRESETS: Preset[] = [
@@ -185,13 +187,18 @@ export default function AddProviderModal({
                     <div className="title">{p.label}</div>
                     <div className="sub"><code className="chip">{p.adapter}</code>{p.note ? ` · ${p.note}` : ""}</div>
                   </div>
-                  {p.auth === "oauth"
-                    ? <span className="badge badge-accent">OAuth</span>
-                    : p.auth === "forward"
-                      ? <span className="badge badge-green">Codex login</span>
-                      : p.auth === "local"
-                        ? <span className="badge badge-amber">Local</span>
-                        : <span className="badge badge-muted">API key</span>}
+                  <div style={{ display: "flex", gap: 4, alignItems: "center", flexShrink: 0 }}>
+                    {p.keyOptional && <span className="badge badge-green">Free</span>}
+                    {p.auth === "oauth"
+                      ? <span className="badge badge-accent">OAuth</span>
+                      : p.auth === "forward"
+                        ? <span className="badge badge-green">Codex login</span>
+                        : p.auth === "local"
+                          ? <span className="badge badge-amber">Local</span>
+                          : !p.keyOptional
+                            ? <span className="badge badge-muted">API key</span>
+                            : null}
+                  </div>
                 </button>
               ))}
               {filtered.length === 0 && <div className="muted" style={{ fontSize: 13, padding: 8 }}>No match.</div>}
@@ -220,9 +227,9 @@ export default function AddProviderModal({
               </div>
             </div>
           ) : (
-            // API key / Codex-forward form
+            // API key / Codex-forward / free-tier form
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {!isCustom && !isLocal && preset.note && (
+              {!isCustom && !isLocal && !preset.keyOptional && preset.note && (
                 <details className="setup-guide">
                   <summary>Setup guide</summary>
                   <ol style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 12, color: "var(--muted)", lineHeight: 1.7 }}>
@@ -253,6 +260,25 @@ export default function AddProviderModal({
                 <div style={{ fontSize: 12, color: "var(--amber)", background: "var(--amber-soft)", border: "1px solid var(--amber)", borderRadius: "var(--radius-sm)", padding: "8px 10px", lineHeight: 1.55 }}>
                   No API key is stored. This adds Cursor's static public model catalog for Codex, but live Cursor transport and native file/shell execution remain disabled until audited.
                 </div>
+              ) : preset.keyOptional ? (
+                <>
+                  <div style={{ fontSize: 12, color: "var(--green)", background: "var(--green-soft)", border: "1px solid var(--green)", borderRadius: "var(--radius-sm)", padding: "10px 12px", lineHeight: 1.6 }}>
+                    <strong>Free tier</strong> — {preset.note ?? "No API key required. Works out of the box."}
+                  </div>
+                  <details style={{ marginTop: 2 }}>
+                    <summary style={{ fontSize: 12, color: "var(--muted)", cursor: "pointer", userSelect: "none" }}>Use your own API key instead (optional)</summary>
+                    <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                      {preset.dashboardUrl && (
+                        <a href={preset.dashboardUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}>
+                          <IconKey style={{ width: 14, height: 14 }} />Get a {preset.label} key<IconExternal style={{ width: 13, height: 13 }} />
+                        </a>
+                      )}
+                      <Field label="API key (optional)">
+                        <input className="input" type="password" value={form.apiKey} onChange={e => setForm({ ...form, apiKey: e.target.value })} placeholder="Overrides the free public token" />
+                      </Field>
+                    </div>
+                  </details>
+                </>
               ) : (
                 <>
                   {preset.dashboardUrl && (
