@@ -15,14 +15,14 @@ import {
   CreatePlanResultSchema,
   CreatePlanSuccessSchema,
   ExaFetchRequestResponseSchema,
-  ExaFetchRequestResponse_RejectedSchema,
+  ExaFetchRequestResponse_ApprovedSchema,
   ExaSearchRequestResponseSchema,
-  ExaSearchRequestResponse_RejectedSchema,
+  ExaSearchRequestResponse_ApprovedSchema,
   InteractionResponseSchema,
   SwitchModeRequestResponseSchema,
   SwitchModeRequestResponse_RejectedSchema,
   WebSearchRequestResponseSchema,
-  WebSearchRequestResponse_RejectedSchema,
+  WebSearchRequestResponse_ApprovedSchema,
   type AgentServerMessage,
   type ExecServerMessage,
   type InteractionQuery,
@@ -181,8 +181,16 @@ export function planMcpArgsHandling(
  *     Codex as visible output so the user still sees it.
  *   - askQuestion: reject with a reason — the agent must proceed autonomously; there is no human to
  *     answer mid-turn. (Future: bridge to a Codex user-input request.)
- *   - switchMode / webSearch / exaSearch / exaFetch: reject (deterministic default; web search has
- *     its own sidecar path outside this transport).
+ *   - webSearch / exaSearch / exaFetch: APPROVE (empty approval). These are approve/reject
+ *     permission gates, not client-run requests — the response schema has no result field, so
+ *     approval delegates the search to Cursor's SERVER, which runs it and injects results into the
+ *     model server-side (the answer then streams back as textDelta; the display-plane
+ *     web_search_tool_call/exa_*_tool_call result frames are native, non-mcp, and safely dropped by
+ *     the event mapper). Rejecting them (the old default) killed the model's web capability on the
+ *     Cursor path. Tradeoff: approval consumes the user's Cursor web-search/Exa quota. The synthetic
+ *     web_search sidecar (src/web-search) is an orthogonal proxy-side path used only when the client
+ *     sends a hosted web_search tool; it does not cover Cursor-native web search.
+ *   - switchMode: reject (deterministic default; no non-interactive mode switch).
  *   - setupVmEnvironment: the result schema has no error case — reply success so the agent is not
  *     left waiting; the command itself was never run locally.
  * Pure (no I/O) for unit testing; `handleServerMessage` writes the frame and emits liveness.
@@ -240,10 +248,10 @@ export function planInteractionQueryReply(query: InteractionQuery): { response: 
       response: respond({
         case: "webSearchRequestResponse",
         value: create(WebSearchRequestResponseSchema, {
-          result: { case: "rejected", value: create(WebSearchRequestResponse_RejectedSchema, { reason: NON_INTERACTIVE_REASON }) },
+          result: { case: "approved", value: create(WebSearchRequestResponse_ApprovedSchema, {}) },
         }),
       }),
-      replyCase: "webSearchRequestResponse:rejected",
+      replyCase: "webSearchRequestResponse:approved",
     };
   }
   if (q.case === "exaSearchRequestQuery") {
@@ -251,10 +259,10 @@ export function planInteractionQueryReply(query: InteractionQuery): { response: 
       response: respond({
         case: "exaSearchRequestResponse",
         value: create(ExaSearchRequestResponseSchema, {
-          result: { case: "rejected", value: create(ExaSearchRequestResponse_RejectedSchema, { reason: NON_INTERACTIVE_REASON }) },
+          result: { case: "approved", value: create(ExaSearchRequestResponse_ApprovedSchema, {}) },
         }),
       }),
-      replyCase: "exaSearchRequestResponse:rejected",
+      replyCase: "exaSearchRequestResponse:approved",
     };
   }
   if (q.case === "exaFetchRequestQuery") {
@@ -262,10 +270,10 @@ export function planInteractionQueryReply(query: InteractionQuery): { response: 
       response: respond({
         case: "exaFetchRequestResponse",
         value: create(ExaFetchRequestResponseSchema, {
-          result: { case: "rejected", value: create(ExaFetchRequestResponse_RejectedSchema, { reason: NON_INTERACTIVE_REASON }) },
+          result: { case: "approved", value: create(ExaFetchRequestResponse_ApprovedSchema, {}) },
         }),
       }),
-      replyCase: "exaFetchRequestResponse:rejected",
+      replyCase: "exaFetchRequestResponse:approved",
     };
   }
   if (q.case === "setupVmEnvironmentArgs") {

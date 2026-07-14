@@ -56,15 +56,28 @@ describe("planInteractionQueryReply", () => {
 
   test.each([
     ["switchModeRequestQuery", SwitchModeRequestQuerySchema, "switchModeRequestResponse"],
-    ["webSearchRequestQuery", WebSearchRequestQuerySchema, "webSearchRequestResponse"],
-    ["exaSearchRequestQuery", ExaSearchRequestQuerySchema, "exaSearchRequestResponse"],
-    ["exaFetchRequestQuery", ExaFetchRequestQuerySchema, "exaFetchRequestResponse"],
   ] as const)("%s is rejected with the matching id", (queryCase, schema, responseCase) => {
     const plan = planInteractionQueryReply(query(11, { case: queryCase, value: create(schema, {}) } as InteractionQuery["query"]));
     expect(plan.response.id).toBe(11);
     expect(plan.response.result.case).toBe(responseCase);
     const value = plan.response.result.value as { result: { case: string } };
     expect(value.result.case).toBe("rejected");
+  });
+
+  // web/exa are approve/reject permission gates: approving delegates the search to Cursor's server
+  // (which injects results into the model), so opencodex APPROVES instead of rejecting — rejecting
+  // killed the model's web capability on the Cursor path.
+  test.each([
+    ["webSearchRequestQuery", WebSearchRequestQuerySchema, "webSearchRequestResponse"],
+    ["exaSearchRequestQuery", ExaSearchRequestQuerySchema, "exaSearchRequestResponse"],
+    ["exaFetchRequestQuery", ExaFetchRequestQuerySchema, "exaFetchRequestResponse"],
+  ] as const)("%s is approved with the matching id", (queryCase, schema, responseCase) => {
+    const plan = planInteractionQueryReply(query(11, { case: queryCase, value: create(schema, {}) } as InteractionQuery["query"]));
+    expect(plan.response.id).toBe(11);
+    expect(plan.response.result.case).toBe(responseCase);
+    const value = plan.response.result.value as { result: { case: string } };
+    expect(value.result.case).toBe("approved");
+    expect(plan.replyCase).toBe(`${responseCase}:approved`);
   });
 
   test("setupVmEnvironment fails the turn instead of fabricating success", () => {
