@@ -146,11 +146,13 @@ export function bridgeToResponsesSSE(
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
+      let emittedSinceYield = false;
       const emit = (name: string, data: Record<string, unknown>) => {
         if (closed) return;
         activity = true;
         try {
           controller.enqueue(encoder.encode(sseEvent(name, { type: name, sequence_number: seq++, ...data })));
+          emittedSinceYield = true;
         } catch {
           closed = true;
         }
@@ -399,9 +401,19 @@ export function bridgeToResponsesSSE(
       // we synthesize response.completed below, so Codex never hits the parser's
       // "stream closed before response.completed" (responses.rs) -> ApiError::Stream.
       let terminated = false;
+      let macrotaskFired = true;
+      let macrotaskTimer: ReturnType<typeof setTimeout> | undefined;
 
       try {
         for await (const event of events) {
+          if (!macrotaskFired && emittedSinceYield) {
+            await new Promise<void>(r => setTimeout(r, 0));
+            macrotaskFired = true;
+          }
+          emittedSinceYield = false;
+          macrotaskFired = false;
+          if (macrotaskTimer !== undefined) clearTimeout(macrotaskTimer);
+          macrotaskTimer = setTimeout(() => { macrotaskFired = true; macrotaskTimer = undefined; }, 0);
           activity = true;
           stallTicks = 0;
           // Compaction turns emit ONLY the synthetic compaction item + response.completed. The
@@ -652,6 +664,7 @@ export function bridgeToResponsesSSE(
       }
 
       if (beat) clearInterval(beat);
+      if (macrotaskTimer !== undefined) clearTimeout(macrotaskTimer);
 
       if (!terminated) {
         // The adapter generator ended without an explicit done/error event. Mark as incomplete
