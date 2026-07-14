@@ -61,6 +61,7 @@ function stripInvalidItemIds(body: unknown): unknown {
     function_call: "fc_",
     custom_tool_call: "ctc_",
     tool_search_call: "tsc_",
+    web_search_call: "ws_",
   };
   let changed = false;
   const input = body.input.map(item => {

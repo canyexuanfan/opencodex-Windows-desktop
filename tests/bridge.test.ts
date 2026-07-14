@@ -351,8 +351,9 @@ describe("Responses bridge web_search_call native item", () => {
     const addedItem = added!.data.item as Record<string, unknown>;
     const doneItem = done!.data.item as Record<string, unknown>;
     // Same id on both frames so codex-rs reconciles the started/completed cell.
-    expect(addedItem.id).toBe("ws_1");
-    expect(doneItem.id).toBe("ws_1");
+    expect(typeof addedItem.id).toBe("string");
+    expect((addedItem.id as string).startsWith("ws_")).toBe(true);
+    expect(doneItem.id).toBe(addedItem.id);
     expect(doneItem.status).toBe("completed");
     expect(doneItem.action).toEqual({ type: "search", query: "current docs" });
 

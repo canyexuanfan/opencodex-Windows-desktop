@@ -264,7 +264,7 @@ export function bridgeToResponsesSSE(
       let currentToolCall: { itemId: string; outputIndex: number; callId: string; name: string; args: string; namespace?: string; freeform?: boolean; toolSearch?: boolean; inputEmitted?: string } | null = null;
       // Open native web-search cell (between begin and end). Holds the output index allocated on
       // begin so the matching done reuses it; closed as `failed` if the stream terminates early.
-      let currentWebSearch: { itemId: string; outputIndex: number } | null = null;
+      let currentWebSearch: { itemId: string; eventId: string; outputIndex: number } | null = null;
       // Sources from completed web searches, awaiting the next assistant message. Attached as
       // url_citation annotations on that message (the desktop app's Sources chip), then cleared so
       // they bind to exactly one message. Deduped by URL across multiple searches in the turn.
@@ -554,23 +554,25 @@ export function bridgeToResponsesSSE(
               flushHiddenRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
               if (currentWebSearch) closeCurrentWebSearch("completed", []);
+              const wsItemId = `ws_${uuid()}`;
               emit("response.output_item.added", {
                 output_index: outputIndex,
-                item: { type: "web_search_call", id: event.id, status: "in_progress" },
+                item: { type: "web_search_call", id: wsItemId, status: "in_progress" },
               });
-              currentWebSearch = { itemId: event.id, outputIndex };
+              currentWebSearch = { itemId: wsItemId, eventId: event.id, outputIndex };
               break;
             }
             case "web_search_call_end": {
               // The sidecar resolved — finalize the cell as "Searched <query>". If no begin opened
               // (defensive), synthesize the added frame first so the done has a matching item.
-              if (!currentWebSearch || currentWebSearch.itemId !== event.id) {
+              if (!currentWebSearch || currentWebSearch.eventId !== event.id) {
                 if (currentWebSearch) closeCurrentWebSearch("completed", []);
+                const wsItemId2 = `ws_${uuid()}`;
                 emit("response.output_item.added", {
                   output_index: outputIndex,
-                  item: { type: "web_search_call", id: event.id, status: "in_progress" },
+                  item: { type: "web_search_call", id: wsItemId2, status: "in_progress" },
                 });
-                currentWebSearch = { itemId: event.id, outputIndex };
+                currentWebSearch = { itemId: wsItemId2, eventId: event.id, outputIndex };
               }
               closeCurrentWebSearch(event.status ?? "completed", event.queries, event.sources);
               // Queue this search's sources for the next assistant message (dedup by URL).
@@ -862,7 +864,7 @@ export function buildResponseJSON(
         if (currentRawReasoning) flushRawReasoning();
         flushToolCall();
         output.push({
-          type: "web_search_call", id: e.id, status: e.status ?? "completed",
+          type: "web_search_call", id: `ws_${uuid()}`, status: e.status ?? "completed",
           action: webSearchAction(e.queries),
           ...(e.sources && e.sources.length > 0 ? { sources: e.sources } : {}),
         });
