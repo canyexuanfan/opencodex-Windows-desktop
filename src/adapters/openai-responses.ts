@@ -80,6 +80,28 @@ function stripInvalidItemIds(body: unknown): unknown {
 }
 
 /**
+ * When `store` is false, the upstream API does not persist response items. Any item ID
+ * forwarded in `input` is then interpreted as a reference to a stored item that does not
+ * exist, producing a 404. Strip all item IDs in this case — `call_id` pairing is unaffected.
+ * Matches codex-rs behavior (core/src/client.rs:918-925).
+ */
+function stripItemIdsWhenUnstored(body: unknown): unknown {
+  if (!isPlainObject(body) || body.store !== false) return body;
+  if (!Array.isArray(body.input)) return body;
+
+  let changed = false;
+  const input = body.input.map(item => {
+    if (!isPlainObject(item) || !("id" in item)) return item;
+    changed = true;
+    const next = { ...item };
+    delete next.id;
+    return next;
+  });
+
+  return changed ? { ...body, input } : body;
+}
+
+/**
  * Replace proxy-minted compaction items (`encrypted_content` starting with `ocx1:`) with plain
  * user messages before forwarding to the ChatGPT backend. Our envelope is transparent base64, not
  * OpenAI encryption — the native backend cannot decrypt it and would reject the request. Real
@@ -309,7 +331,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         url,
         method: "POST",
         headers,
-        body: JSON.stringify(stripInvalidItemIds(stripUnsupportedHostedTools(sanitizeReasoningInputContent(scrubOcxCompactionItems(outBody))))),
+        body: JSON.stringify(stripItemIdsWhenUnstored(stripInvalidItemIds(stripUnsupportedHostedTools(sanitizeReasoningInputContent(scrubOcxCompactionItems(outBody)))))),
       };
     },
 
