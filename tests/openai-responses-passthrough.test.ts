@@ -39,6 +39,8 @@ describe("OpenAI Responses passthrough sanitization", () => {
       { item: { type: "reasoning", id: "rs_1", summary: [], encrypted_content: encryptedContent }, expectedId: "rs_1" },
       { item: { type: "tool_search_call", id: "fc_old_search", call_id: "call_4", execution: "client", arguments: {} }, expectedId: undefined },
       { item: { type: "tool_search_call", id: "tsc_1", call_id: "call_5", execution: "client", arguments: {} }, expectedId: "tsc_1" },
+      { item: { type: "web_search_call", id: "fc_wrong", status: "completed" }, expectedId: undefined },
+      { item: { type: "web_search_call", id: "ws_valid", status: "completed" }, expectedId: "ws_valid" },
     ];
     const input = cases.map(({ item }) => item);
     const request = adapter.buildRequest({
@@ -55,6 +57,43 @@ describe("OpenAI Responses passthrough sanitization", () => {
       else expect(body.input[index].id).toBe(expectedId);
     });
     expect(body.input[5]).toEqual(input[5]);
+  });
+
+  test("strips all item ids when store is false and preserves them otherwise", () => {
+    const adapter = createResponsesPassthroughAdapter(provider);
+    const input = [
+      { type: "message", id: "msg_abc", role: "assistant", content: "hello" },
+      { type: "function_call", id: "fc_xyz", call_id: "call_1", name: "ping", arguments: "{}" },
+      { type: "reasoning", id: "rs_123", summary: [] },
+    ];
+    const unstoredBody = JSON.parse(adapter.buildRequest({
+      modelId: "gpt-5.5",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: { model: "gpt-5.5", store: false, input },
+    }, { headers: new Headers({ authorization: "Bearer token" }) }).body) as { input: Record<string, unknown>[] };
+
+    unstoredBody.input.forEach(item => expect(item).not.toHaveProperty("id"));
+    expect(unstoredBody.input[1].call_id).toBe("call_1");
+
+    const omittedStoreBody = JSON.parse(adapter.buildRequest({
+      modelId: "gpt-5.5",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: { model: "gpt-5.5", input },
+    }, { headers: new Headers({ authorization: "Bearer token" }) }).body) as { input: Record<string, unknown>[] };
+    const storedBody = JSON.parse(adapter.buildRequest({
+      modelId: "gpt-5.5",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: { model: "gpt-5.5", store: true, input },
+    }, { headers: new Headers({ authorization: "Bearer token" }) }).body) as { input: Record<string, unknown>[] };
+
+    expect(omittedStoreBody.input.map(item => item.id)).toEqual(["msg_abc", "fc_xyz", "rs_123"]);
+    expect(storedBody.input.map(item => item.id)).toEqual(["msg_abc", "fc_xyz", "rs_123"]);
   });
 
   test("drops raw reasoning input content before native GPT passthrough", () => {
