@@ -25,7 +25,7 @@ import type {
 } from "../types";
 import type { ProviderAdapter } from "./base";
 import type { AdapterFetchContext, AdapterRequest } from "./base";
-import { extractKiroImages, type KiroImage } from "./kiro-images";
+import { extractKiroImages, normalizeKiroImages, type KiroImage } from "./kiro-images";
 import { fetchKiroWithRetry } from "./kiro-retry";
 import { convertKiroToolContext } from "./kiro-tools";
 import { neutralizeIdentity } from "./identity";
@@ -497,7 +497,7 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
   let toolNameMap: Map<string, string> | undefined;
   return {
     name: "kiro",
-    buildRequest(parsed: OcxParsedRequest) {
+    async buildRequest(parsed: OcxParsedRequest) {
       if (typeof provider.apiKey !== "string" || provider.apiKey.trim() === "") {
         throw new Error("kiro token missing — run ocx login kiro");
       }
@@ -520,6 +520,10 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
       // fake-reasoning contract by injecting effort-derived thinking tags into only the current user turn.
       const built = buildKiroPayload(parsed, profileArn);
       toolNameMap = built.nameMap;
+      // Generous image pipeline (devlog/260714_image_normalization_pipeline/050):
+      // tier-normalize + cap images before serialization so bodyBytes below reflects
+      // the normalized size.
+      await normalizeKiroImages(built.payload);
       const body = JSON.stringify(built.payload);
       debugProviderDiagnostic("kiro", "request", {
         region,

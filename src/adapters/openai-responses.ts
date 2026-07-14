@@ -136,8 +136,134 @@ function scrubOcxCompactionItems(body: unknown): unknown {
  * Extend this when another native slug rejects a hosted tool (e.g. `code_interpreter`).
  */
 const UNSUPPORTED_HOSTED_TOOLS: ReadonlyArray<{ match: (model: string) => boolean; tools: ReadonlySet<string> }> = [
-  { match: model => model.includes("codex-spark"), tools: new Set(["image_generation"]) },
+  { match: model => model.includes("codex-spark"), tools: new Set(["image_generation", "tool_search"]) },
 ];
+
+/**
+ * Strip unsupported `reasoning` sub-parameters for native slugs that reject them (e.g. Spark).
+ * codex-rs injects `reasoning.context` and `reasoning.summary` based on catalog flags; Spark's
+ * backend rejects both. The catalog fix prevents `use_responses_lite` from being set, but this
+ * is a defense-in-depth guard so stale on-disk catalogs don't break until the user runs `ocx sync`.
+ */
+function stripUnsupportedReasoningParams(body: unknown): unknown {
+  if (!isPlainObject(body)) return body;
+  const model = typeof body.model === "string" ? body.model : "";
+  if (!model.includes("codex-spark")) return body;
+  if (!isPlainObject(body.reasoning)) return body;
+  const reasoning = body.reasoning as Record<string, unknown>;
+  // Spark supports reasoning.effort but rejects context, summary, and generate_summary.
+  const { context: _ctx, summary: _sum, generate_summary: _gs, ...rest } = reasoning;
+  if (_ctx === undefined && _sum === undefined && _gs === undefined) return body;
+  return { ...body, reasoning: Object.keys(rest).length > 0 ? rest : undefined };
+}
+
+/**
+ * Comprehensive Spark compatibility layer. codex-rs emits five tool types (function,
+ * namespace, tool_search, web_search, custom) plus extensions (defer_loading,
+ * parallel_tool_calls, tool_search_call/output items). Spark's serving path only
+ * supports flat function tools and hosted web_search. This function:
+ * - Flattens namespace tools → promotes inner functions to top level
+ * - Drops unsupported tool types (tool_search, custom)
+ * - Strips defer_loading from function tools
+ * - Strips namespace from input items
+ * - Drops tool_search_call/tool_search_output input items
+ * - Sets parallel_tool_calls to false
+ */
+function stripSparkCompatibility(body: unknown): unknown {
+  if (!isPlainObject(body)) return body;
+  const model = typeof body.model === "string" ? body.model : "";
+  if (!model.includes("codex-spark")) return body;
+
+  let changed = false;
+
+  const SPARK_SAFE_TOOL_TYPES = new Set(["function", "web_search", "web_search_preview"]);
+
+  let tools = body.tools;
+  if (Array.isArray(tools)) {
+    const flattened: unknown[] = [];
+    for (const t of tools) {
+      if (isPlainObject(t) && t.type === "namespace") {
+        changed = true;
+        if (Array.isArray(t.tools)) {
+          for (const inner of t.tools) flattened.push(inner);
+        }
+      } else if (isPlainObject(t) && typeof t.type === "string" && !SPARK_SAFE_TOOL_TYPES.has(t.type)) {
+        changed = true;
+      } else {
+        flattened.push(t);
+      }
+    }
+    // Strip defer_loading from promoted/remaining function tools.
+    tools = flattened.map(t => {
+      if (isPlainObject(t) && t.type === "function" && "defer_loading" in t) {
+        const { defer_loading: _, ...rest } = t;
+        changed = true;
+        return rest;
+      }
+      return t;
+    });
+  }
+
+  // Clean input items: strip namespace, drop tool_search_call/tool_search_output.
+  const SPARK_UNSUPPORTED_INPUT_TYPES = new Set([
+    "tool_search_call", "tool_search_output",
+    "custom_tool_call", "custom_tool_call_output",
+  ]);
+  let input = body.input;
+  if (Array.isArray(input)) {
+    const cleaned: unknown[] = [];
+    for (const item of input) {
+      if (isPlainObject(item) && typeof item.type === "string" && SPARK_UNSUPPORTED_INPUT_TYPES.has(item.type)) {
+        changed = true;
+        continue;
+      }
+      // Process additional_tools items: filter their inner tools array the same way.
+      if (isPlainObject(item) && item.type === "additional_tools" && Array.isArray(item.tools)) {
+        const innerTools = item.tools as unknown[];
+        const filteredInner: unknown[] = [];
+        for (const t of innerTools) {
+          if (isPlainObject(t) && t.type === "namespace") {
+            changed = true;
+            if (Array.isArray(t.tools)) {
+              for (const fn of t.tools) filteredInner.push(fn);
+            }
+          } else if (isPlainObject(t) && typeof t.type === "string" && !SPARK_SAFE_TOOL_TYPES.has(t.type)) {
+            changed = true; // drop custom, tool_search, etc.
+          } else {
+            filteredInner.push(t);
+          }
+        }
+        // Strip defer_loading from remaining function tools.
+        const cleanedInner = filteredInner.map(t => {
+          if (isPlainObject(t) && t.type === "function" && "defer_loading" in t) {
+            const { defer_loading: _, ...rest } = t;
+            changed = true;
+            return rest;
+          }
+          return t;
+        });
+        cleaned.push({ ...item, tools: cleanedInner });
+        continue;
+      }
+      if (isPlainObject(item) && "namespace" in item) {
+        const { namespace: _, ...rest } = item;
+        changed = true;
+        cleaned.push(rest);
+      } else {
+        cleaned.push(item);
+      }
+    }
+    if (changed) input = cleaned;
+  }
+
+  // Force parallel_tool_calls off for Spark.
+  const extraOverrides: Record<string, unknown> = {};
+  if (body.parallel_tool_calls === true) { extraOverrides.parallel_tool_calls = false; changed = true; }
+
+  return changed
+    ? { ...body, ...(tools !== body.tools ? { tools } : {}), ...(input !== body.input ? { input } : {}), ...extraOverrides }
+    : body;
+}
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
@@ -331,7 +457,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         url,
         method: "POST",
         headers,
-        body: JSON.stringify(stripItemIdsWhenUnstored(stripInvalidItemIds(stripUnsupportedHostedTools(sanitizeReasoningInputContent(scrubOcxCompactionItems(outBody)))))),
+        body: JSON.stringify(stripSparkCompatibility(stripUnsupportedReasoningParams(stripItemIdsWhenUnstored(stripInvalidItemIds(stripUnsupportedHostedTools(sanitizeReasoningInputContent(scrubOcxCompactionItems(outBody)))))))),
       };
     },
 

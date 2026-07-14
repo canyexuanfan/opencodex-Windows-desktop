@@ -54,6 +54,9 @@ export function buildClaudeEnv(config: OcxConfig, port: number, base: ClaudeLaun
   if ((config.apiKeys?.length ?? 0) > 0) {
     setDefault("ANTHROPIC_AUTH_TOKEN", config.apiKeys![0].key);
   }
+  if (!env.ANTHROPIC_AUTH_TOKEN && config.claudeCode?.authMode === "proxy") {
+    env.ANTHROPIC_AUTH_TOKEN = "opencodex-proxy";
+  }
   // NOTE: do NOT set _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL here. While it enables
   // Design/Remote Control, it DISABLES gateway model discovery (Claude Code's eligibility
   // check returns false when isFirstPartyBaseUrl() is true). Model routing through the

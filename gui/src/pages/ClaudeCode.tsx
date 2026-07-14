@@ -9,6 +9,7 @@ interface SidecarOverride { backend?: SidecarBackend; model?: string }
 
 interface ClaudeCodeState {
   enabled: boolean;
+  authMode: "subscription" | "proxy";
   systemEnv: boolean;
   fastMode: boolean | null;
   /** Legacy config override (no GUI control anymore) — still disables auto-context when hand-set. */
@@ -38,7 +39,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   const load = useCallback(async () => {
     try {
       const r = await fetch(`${apiBase}/api/claude-code`).then(res => res.json());
-      setState({ ...r, systemEnv: r.systemEnv !== false, fastMode: r.fastMode ?? null, maxContextTokens: r.maxContextTokens ?? null, autoContext: r.autoContext !== false, autoCompactWindow: r.autoCompactWindow ?? null, injectAgents: r.injectAgents !== false, effectiveModelEnv: r.effectiveModelEnv ?? {} });
+      setState({ ...r, authMode: r.authMode === "proxy" ? "proxy" : "subscription", systemEnv: r.systemEnv !== false, fastMode: r.fastMode ?? null, maxContextTokens: r.maxContextTokens ?? null, autoContext: r.autoContext !== false, autoCompactWindow: r.autoCompactWindow ?? null, injectAgents: r.injectAgents !== false, effectiveModelEnv: r.effectiveModelEnv ?? {} });
       setRows(Object.entries(r.modelMap ?? {}).map(([from, to]) => ({ from, to: String(to) })));
     } catch {
       setOk(false);
@@ -85,6 +86,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           enabled: state.enabled,
+          authMode: state.authMode,
           systemEnv: state.systemEnv,
           fastMode: state.fastMode,
           autoContext: state.autoContext,
@@ -121,7 +123,9 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   const autoCompactActive = state.autoContext && state.maxContextTokens === null;
   const manualEnv = [
     `export ANTHROPIC_BASE_URL=${baseUrl}`,
-    "# no ANTHROPIC_AUTH_TOKEN: your claude.ai login (and connectors) stay active",
+    ...(state.authMode === "proxy"
+      ? ["export ANTHROPIC_AUTH_TOKEN=opencodex-proxy"]
+      : ["# no ANTHROPIC_AUTH_TOKEN: your claude.ai login (and connectors) stay active"]),
     "export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1",
     ...(autoCompactActive ? [`export CLAUDE_CODE_AUTO_COMPACT_WINDOW=${state.autoCompactWindow ?? 350000}`] : []),
     ...(["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL"]
@@ -147,6 +151,23 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
             <input type="checkbox" checked={state.enabled} onChange={e => setState({ ...state, enabled: e.target.checked })} />
             <span className="slider" />
           </label>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-label">
+            <span className="title">{t("claude.authMode")}</span>
+            <span className="desc">{t("claude.authModeHint")}</span>
+          </div>
+          <Select
+            value={state.authMode}
+            options={[
+              { value: "subscription", label: t("claude.authModeSubscription") },
+              { value: "proxy", label: t("claude.authModeProxy") },
+            ]}
+            onChange={v => setState({ ...state, authMode: v as ClaudeCodeState["authMode"] })}
+            label={t("claude.authMode")}
+            style={{ minWidth: 220 }}
+          />
         </div>
 
         <div className="setting-row">

@@ -1,4 +1,4 @@
-import type { ProviderAdapter } from "./base";
+import type { IncomingMeta, ProviderAdapter } from "./base";
 import { debugDroppedFrame } from "../lib/debug";
 import type {
   AdapterEvent,
@@ -17,6 +17,7 @@ import { isAllowedToolChoice, namespacedToolName, resolveToolChoiceWireName, too
 import { ANTHROPIC_OAUTH_BETA, CLAUDE_CODE_SYSTEM_INSTRUCTION, applyClaudeToolPrefix, stripClaudeToolPrefix } from "../oauth/anthropic";
 import { parseDataUrl } from "./image";
 import { enforceAnthropicImageLimits } from "./anthropic-image-guard";
+import { normalizeAnthropicImages } from "./anthropic-image-normalize";
 import { neutralizeIdentity } from "./identity";
 import { CLAUDE_CODE_HEADERS, claudeCodeSessionId } from "./client-fingerprint";
 import { buildNonOpenAIToolCatalogNudgeForTools } from "./tool-catalog-nudge";
@@ -584,7 +585,7 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
   return {
     name: "anthropic",
 
-    buildRequest(parsed: OcxParsedRequest) {
+    async buildRequest(parsed: OcxParsedRequest, incoming?: IncomingMeta) {
       if (typeof provider.apiKey !== "string" || provider.apiKey.trim() === "") {
         if (isOAuth) {
           throw new Error("anthropic oauth token missing — run ocx login anthropic");
@@ -593,6 +594,10 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
       }
 
       const { system, messages } = messagesToAnthropicFormat(parsed, toolNames);
+      // Primary image layer: resize/re-encode to fit Anthropic limits without dropping
+      // (anthropic-image-normalize.ts); the guard below remains the deterministic backstop.
+      // imageTierBias > 0 = upstream-413 tightened retry (030): start every image one tier lower.
+      await normalizeAnthropicImages(messages, { tierBias: incoming?.imageTierBias ?? 0 });
       // Anthropic rejects many-image requests (>20 images) carrying any image over
       // 2000px per side; see anthropic-image-guard.ts for the full limit policy.
       enforceAnthropicImageLimits(messages);

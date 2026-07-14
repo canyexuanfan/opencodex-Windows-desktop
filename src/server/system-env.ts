@@ -25,13 +25,15 @@ function writeShellEnvFile(port: number, config: OcxConfig, modelEnv: Record<str
     `export ANTHROPIC_BASE_URL=${shellValue(`http://127.0.0.1:${port}`)}`,
     `export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=${shellValue("1")}`,
   ];
-  if (config.apiKeys?.length) {
-    lines.push(`export ANTHROPIC_AUTH_TOKEN=${shellValue(config.apiKeys[0].key)}`);
-  }
   // New lever keys are CONDITIONAL exports (audit 139 R2#1): a value the user already
   // exported in their shell wins even though launchctl knows nothing about it.
   const conditional = (name: string, value: string) =>
     `[ -z "\${${name}+x}" ] && export ${name}=${shellValue(value)}`;
+  if (config.apiKeys?.length) {
+    lines.push(`export ANTHROPIC_AUTH_TOKEN=${shellValue(config.apiKeys[0].key)}`);
+  } else if (config.claudeCode?.authMode === "proxy") {
+    lines.push(conditional("ANTHROPIC_AUTH_TOKEN", "opencodex-proxy"));
+  }
   // Model slots (default + tiers + legacy small-fast) with [1m] applied (devlog 260712 B2).
   if (modelEnv.ANTHROPIC_MODEL) {
     lines.push(`export ANTHROPIC_MODEL=${shellValue(modelEnv.ANTHROPIC_MODEL)}`);
@@ -238,6 +240,8 @@ export async function injectSystemEnv(port: number, config: OcxConfig): Promise<
     inject("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "1");
     if (config.apiKeys?.length) {
       inject("ANTHROPIC_AUTH_TOKEN", config.apiKeys[0].key);
+    } else if (config.claudeCode?.authMode === "proxy" && launchctlGetenv("ANTHROPIC_AUTH_TOKEN") === undefined) {
+      inject("ANTHROPIC_AUTH_TOKEN", "opencodex-proxy");
     }
     // Lever keys (devlog 136 B6): user-wins — skip any key the user already set in the
     // launchd domain, and track ONLY the keys we actually injected so revert cannot

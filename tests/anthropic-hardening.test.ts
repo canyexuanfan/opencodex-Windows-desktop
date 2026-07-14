@@ -23,40 +23,40 @@ function provider(overrides: Partial<OcxProviderConfig> = {}): OcxProviderConfig
 }
 
 describe("anthropic provider hardening", () => {
-  test("key mode rejects a blank API key", () => {
+  test("key mode rejects a blank API key", async () => {
     const adapter = createAnthropicAdapter(provider({ apiKey: "   " }));
 
-    expect(() => adapter.buildRequest(parsed())).toThrow(
+    await expect(adapter.buildRequest(parsed())).rejects.toThrow(
       "anthropic provider requires a non-empty apiKey (authMode: key)",
     );
   });
 
-  test("OAuth mode rejects a blank injected token", () => {
+  test("OAuth mode rejects a blank injected token", async () => {
     const adapter = createAnthropicAdapter(provider({ authMode: "oauth", apiKey: "" }));
 
-    expect(() => adapter.buildRequest(parsed())).toThrow(
+    await expect(adapter.buildRequest(parsed())).rejects.toThrow(
       "anthropic oauth token missing — run ocx login anthropic",
     );
   });
 
-  test("rejects an unresolved Cloudflare AI Gateway placeholder", () => {
+  test("rejects an unresolved Cloudflare AI Gateway placeholder", async () => {
     const adapter = createAnthropicAdapter(provider({
       baseUrl: "https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway}/anthropic",
     }));
 
-    expect(() => adapter.buildRequest(parsed())).toThrow(/unresolved \{account-id\}/);
+    await expect(adapter.buildRequest(parsed())).rejects.toThrow(/unresolved \{account-id\}/);
   });
 
-  test("rethrows a malformed baseUrl when prompt caching is enabled", () => {
+  test("rethrows a malformed baseUrl when prompt caching is enabled", async () => {
     const baseUrl = "not a valid URL";
     const adapter = createAnthropicAdapter(provider({ baseUrl }), "short");
 
-    expect(() => adapter.buildRequest(parsed())).toThrow(
+    await expect(adapter.buildRequest(parsed())).rejects.toThrow(
       `anthropic provider has malformed baseUrl: ${baseUrl}`,
     );
   });
 
-  test("publishes audited context windows for current Anthropic aliases", () => {
+  test("publishes audited context windows for current Anthropic aliases", async () => {
     const anthropic = PROVIDER_REGISTRY.find(entry => entry.id === "anthropic");
 
     expect(anthropic?.modelContextWindows?.["claude-opus-4-8"]).toBe(1_000_000);

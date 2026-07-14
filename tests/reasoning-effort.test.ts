@@ -307,7 +307,7 @@ describe("provider-specific reasoning effort mapping", () => {
     expect(body.tool_choice).toBe("required");
   });
 
-  test("named namespaced tool_choice resolves to the chat wire name", () => {
+  test("named namespaced tool_choice resolves to the chat wire name", async () => {
     const provider: OcxProviderConfig = {
       adapter: "openai-chat",
       baseUrl: "https://api.umans.ai/v1",
@@ -332,14 +332,14 @@ describe("provider-specific reasoning effort mapping", () => {
     expect(body.tool_choice.function.name).toBe("functions__exec_command");
   });
 
-  test("Anthropic filters dot-style namespaced allowed_tools without dropping the tool", () => {
+  test("Anthropic filters dot-style namespaced allowed_tools without dropping the tool", async () => {
     const provider: OcxProviderConfig = {
       adapter: "anthropic",
       baseUrl: "https://api.anthropic.com/v1",
       apiKey: "test-key",
     };
 
-    const req = createAnthropicAdapter(provider).buildRequest({
+    const req = await createAnthropicAdapter(provider).buildRequest({
       modelId: "claude-sonnet",
       context: {
         messages: [{ role: "user", content: "run it", timestamp: 0 }],

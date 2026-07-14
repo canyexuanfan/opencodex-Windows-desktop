@@ -306,9 +306,12 @@ describe("Codex catalog routed normalization", () => {
     // Default mode clears multi_agent_version on non-pinned natives (gpt-5.5
     // has no upstream pin — codex feature flag decides the surface).
     expect(native?.multi_agent_version).toBeUndefined();
-    expect(native?.use_responses_lite).toBe(true);
-    // WebSocket advertisement is opt-in; templates must not leak it by default.
-    expect(native).not.toHaveProperty("supports_websockets");
+    // Non-5.6 natives do not support responses-lite: the template may carry it from a
+    // 5.6 entry, but deriveEntry strips it so codex-rs does not inject
+    // reasoning.context: "all_turns" for models that reject it.
+    expect(native?.use_responses_lite).toBeUndefined();
+    // WebSocket + lite flags are stripped for non-5.6 natives.
+    expect(native?.supports_websockets).toBeUndefined();
     expect(native?.web_search_tool_type).toBe("text_and_image");
     expect(native?.supports_search_tool).toBe(true);
     expect(native?.service_tier).toBe("priority");

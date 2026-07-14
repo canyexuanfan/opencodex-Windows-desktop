@@ -271,6 +271,12 @@ export interface OcxClaudeCodeConfig {
    */
   systemEnv?: boolean;
   /**
+   * Auth mode for Claude Code inbound requests. "proxy" injects a dummy
+   * ANTHROPIC_AUTH_TOKEN so Claude Code routes through the proxy without a
+   * real Anthropic key. Default: undefined (no token injection).
+   */
+  authMode?: "proxy";
+  /**
    * Context-window override for Claude Code/Desktop clients (devlog 136 B6):
    * injected as CLAUDE_CODE_MAX_CONTEXT_TOKENS + DISABLE_COMPACT=1 (the official
    * env pair — recognized claude-shaped ids need both). WARNING: DISABLE_COMPACT

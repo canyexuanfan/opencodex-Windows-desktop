@@ -851,6 +851,17 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
       applyNativeOpenAiContextOverride(e);
       if (isGpt56NativeSlug(slug)) ensureGpt56ReasoningLevels(e);
       else ensureUltraReasoningLevel(e);
+     // Non-5.6 natives (5.5, 5.4, 5.4-mini, spark) do not support responses-lite;
+     // the template may carry the flag from a 5.6 entry — strip it so codex-rs does
+     // not inject reasoning.context: "all_turns" for models that reject it.
+     if (!isGpt56NativeSlug(slug)) {
+        // Spark NEEDS use_responses_lite: true — it controls the tool delivery format
+        // (AdditionalTools in input vs top-level tools). The reasoning params that
+        // use_responses_lite triggers (context: "all_turns", summary) are stripped
+        // separately in the passthrough adapter (stripUnsupportedReasoningParams).
+        if (!slug.includes("codex-spark")) delete e.use_responses_lite;
+        delete e.supports_websockets;
+      }
     }
     return ensureStrictCatalogFields(normalizeServiceTiers(e));
   }

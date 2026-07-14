@@ -60,27 +60,27 @@ describe("stripBracketedModelSuffix", () => {
     expect(stripBracketedModelSuffix("glm-5.2[1m] ")).toBe("glm-5.2");
   });
 
-  test("does not strip an interior bracket group", () => {
+  test("does not strip an interior bracket group", async () => {
     expect(stripBracketedModelSuffix("a[b]c")).toBe("a[b]c");
   });
 
-  test("empty bracket group is still stripped", () => {
+  test("empty bracket group is still stripped", async () => {
     expect(stripBracketedModelSuffix("model[]")).toBe("model");
   });
 });
 
 describe("openai-chat adapter wire model normalization", () => {
-  test("glm-5.2[1m] is sent as bare glm-5.2", () => {
+  test("glm-5.2[1m] is sent as bare glm-5.2", async () => {
     const req = createOpenAIChatAdapter(openaiChatProvider()).buildRequest(parsed("glm-5.2[1m]"));
     expect(wireModel(req)).toBe("glm-5.2");
   });
 
-  test("bare glm-5.2 passes through unchanged", () => {
+  test("bare glm-5.2 passes through unchanged", async () => {
     const req = createOpenAIChatAdapter(openaiChatProvider()).buildRequest(parsed("glm-5.2"));
     expect(wireModel(req)).toBe("glm-5.2");
   });
 
-  test("an unflagged provider sends glm-5.2[1m] verbatim", () => {
+  test("an unflagged provider sends glm-5.2[1m] verbatim", async () => {
     const provider: OcxProviderConfig = {
       adapter: "openai-chat",
       baseUrl: "https://example.test/v1",
@@ -89,15 +89,15 @@ describe("openai-chat adapter wire model normalization", () => {
     expect(wireModel(req)).toBe("glm-5.2[1m]");
   });
 
-  test("a routed zai config strips glm-5.2[1m]", () => {
+  test("a routed zai config strips glm-5.2[1m]", async () => {
     const req = createOpenAIChatAdapter(routedZaiProvider()).buildRequest(parsed("glm-5.2[1m]"));
     expect(wireModel(req)).toBe("glm-5.2");
   });
 });
 
 describe("anthropic adapter leaves the bracketed suffix intact", () => {
-  test("glm-5.2[1m] is sent verbatim", () => {
-    const req = createAnthropicAdapter(anthropicProvider()).buildRequest(parsed("glm-5.2[1m]"));
+  test("glm-5.2[1m] is sent verbatim", async () => {
+    const req = await createAnthropicAdapter(anthropicProvider()).buildRequest(parsed("glm-5.2[1m]"));
     const model = (JSON.parse(req.body as string) as Record<string, unknown>).model;
     expect(model).toBe("glm-5.2[1m]");
   });

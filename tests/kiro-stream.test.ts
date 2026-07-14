@@ -67,7 +67,7 @@ async function doneUsage(adapter: ReturnType<typeof createKiroAdapter>, ...frame
 }
 
 describe("kiro adapter — parseStream", () => {
-  test("Kiro event parser preserves usage and context usage frames", () => {
+  test("Kiro event parser preserves usage and context usage frames", async () => {
     expect(parseKiroEvent(enc.encode(JSON.stringify({ usage: 123 })))).toEqual({ type: "usage", usage: 123 });
     expect(parseKiroEvent(enc.encode(JSON.stringify({ contextUsagePercentage: 25.5 })))).toEqual({
       type: "context_usage",
@@ -106,7 +106,7 @@ describe("kiro adapter — parseStream", () => {
       description: "create",
       parameters: { type: "object" },
     };
-    const { body } = adapter.buildRequest(parsedWith([{ role: "user", content: "hi" }], [tool]));
+    const { body } = await adapter.buildRequest(parsedWith([{ role: "user", content: "hi" }], [tool]));
     const sentName = JSON.parse(body).conversationState.currentMessage.userInputMessage.userInputMessageContext.tools[0].toolSpecification.name;
     const wireName = "mcp__codex_apps__workspace_agents__workspace agents_create_agent";
     expect(sentName).not.toBe(wireName);
@@ -362,7 +362,7 @@ describe("kiro adapter — parseStream", () => {
 
   test("done carries heuristic usage (input from current turn, output from streamed text)", async () => {
     const adapter = createKiroAdapter(provider);
-    adapter.buildRequest(parsedWith([{ role: "user", content: "x".repeat(700) }]));
+    await adapter.buildRequest(parsedWith([{ role: "user", content: "x".repeat(700) }]));
     const done = await doneUsage(adapter, eventFrame({ content: "y".repeat(350) }));
     expect(done.inputTokens).toBe(200);
     expect(done.outputTokens).toBe(100);
@@ -371,7 +371,7 @@ describe("kiro adapter — parseStream", () => {
 
   test("Kiro contextUsagePercentage overrides total tokens for fixed-window models", async () => {
     const adapter = createKiroAdapter(provider);
-    adapter.buildRequest(parsedWith([{ role: "user", content: "x".repeat(700) }]));
+    await adapter.buildRequest(parsedWith([{ role: "user", content: "x".repeat(700) }]));
     const done = await doneUsage(
       adapter,
       eventFrame({ content: "y".repeat(350) }),
@@ -386,7 +386,7 @@ describe("kiro adapter — parseStream", () => {
 
   test("Kiro auto ignores provider-level context window and falls back to heuristic totals", async () => {
     const adapter = createKiroAdapter({ ...provider, contextWindow: 200_000 });
-    adapter.buildRequest(parsedWith([{ role: "user", content: "x".repeat(700) }], undefined, "kiro-auto"));
+    await adapter.buildRequest(parsedWith([{ role: "user", content: "x".repeat(700) }], undefined, "kiro-auto"));
     const done = await doneUsage(
       adapter,
       eventFrame({ content: "y".repeat(350) }),
@@ -413,10 +413,10 @@ describe("kiro adapter — parseStream", () => {
       { role: "user", content: latest },
     ];
     const shortAdapter = createKiroAdapter(provider);
-    const shortBody = shortAdapter.buildRequest(parsedWith(shortMessages)).body;
+    const shortBody = (await shortAdapter.buildRequest(parsedWith(shortMessages))).body;
     const shortUsage = await doneUsage(shortAdapter, eventFrame({ content: "ok" }));
     const longAdapter = createKiroAdapter(provider);
-    const longBody = longAdapter.buildRequest(parsedWith(longMessages)).body;
+    const longBody = (await longAdapter.buildRequest(parsedWith(longMessages))).body;
     const longUsage = await doneUsage(longAdapter, eventFrame({ content: "ok" }));
     expect(longBody.length).toBeGreaterThan(shortBody.length + 10_000);
     expect(longUsage.inputTokens).toBe(shortUsage.inputTokens);
@@ -431,7 +431,7 @@ describe("kiro adapter — parseStream", () => {
       { role: "user", content: latest },
     ];
     const adapter = createKiroAdapter(provider);
-    const request = adapter.buildRequest(parsedWith(messages));
+    const request = await adapter.buildRequest(parsedWith(messages));
     const usage = await doneUsage(adapter, eventFrame({ content: "ok" }));
 
     expect(usage.inputTokens).toBe(estimateTokens(latest, "claude-sonnet-4.5"));
@@ -447,12 +447,12 @@ describe("kiro adapter — parseStream", () => {
       { role: "user", content: "another old question" },
       { role: "assistant", content: [{ type: "text", text: "another old answer" }] },
     ];
-    const freshBody = createKiroAdapter(provider).buildRequest(parsedWith([...oldHistory, { role: "user", content: latest }])).body;
+    const freshBody = (await createKiroAdapter(provider).buildRequest(parsedWith([...oldHistory, { role: "user", content: latest }]))).body;
     const resumedAdapter = createKiroAdapter(provider);
-    const resumedBody = resumedAdapter.buildRequest({
+    const resumedBody = (await resumedAdapter.buildRequest({
       ...parsedWith([...oldHistory, { role: "user", content: latest }]),
       previousResponseId: "kiro-prev-1",
-    }).body;
+    })).body;
     const resumedUsage = await doneUsage(resumedAdapter, eventFrame({ content: "ok" }));
     const cs = JSON.parse(resumedBody).conversationState;
     expect(freshBody.length).toBeGreaterThan(resumedBody.length + 10_000);
@@ -469,7 +469,7 @@ describe("kiro adapter — parseStream", () => {
       { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: "done", isError: false },
     ];
     const adapter = createKiroAdapter(provider);
-    const body = adapter.buildRequest(parsedWith(messages)).body;
+    const body = (await adapter.buildRequest(parsedWith(messages))).body;
     const usage = await doneUsage(adapter, eventFrame({ content: "ok" }));
     expect(body).toContain("x".repeat(8000));
     expect(usage.inputTokens).toBeLessThan(50);
@@ -482,7 +482,7 @@ describe("kiro adapter — parseStream", () => {
       { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "pwd" } }] },
       { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: "/tmp", isError: false },
     ];
-    const { body } = createKiroAdapter(provider).buildRequest({ ...parsedWith(messages, [bashTool]), previousResponseId: "kiro-prev-1" });
+    const { body } = await createKiroAdapter(provider).buildRequest({ ...parsedWith(messages, [bashTool]), previousResponseId: "kiro-prev-1" });
     const cs = JSON.parse(body).conversationState;
     expect(cs.history).toHaveLength(2);
     expect(cs.history[0].userInputMessage.content).toBe("run a command");
@@ -502,18 +502,18 @@ describe("kiro adapter — parseStream", () => {
       { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: "done", isError: false },
     ];
     const adapter = createKiroAdapter(provider);
-    adapter.buildRequest({ ...parsedWith(messages), previousResponseId: "kiro-prev-1" });
+    await adapter.buildRequest({ ...parsedWith(messages), previousResponseId: "kiro-prev-1" });
     const usage = await doneUsage(adapter, eventFrame({ content: "ok" }));
     expect(usage.inputTokens).toBeLessThan(50);
     expect(usage.inputTokens).toBeGreaterThan(0);
   });
 
-  test("buildRequest emits only redacted Kiro diagnostic breadcrumbs when enabled", () => {
+  test("buildRequest emits only redacted Kiro diagnostic breadcrumbs when enabled", async () => {
     process.env.OCX_DEBUG_FRAMES = "1";
     process.env.KIRO_PROFILE_ARN = "arn:aws:codewhisperer:us-east-1:123456789012:profile/demo";
     const error = spyOn(console, "error").mockImplementation(() => {});
     try {
-      createKiroAdapter(provider).buildRequest(parsedWith([{ role: "user", content: "secret prompt body" }], [bashTool]));
+      await createKiroAdapter(provider).buildRequest(parsedWith([{ role: "user", content: "secret prompt body" }], [bashTool]));
       expect(error).toHaveBeenCalledTimes(1);
       const line = String(error.mock.calls[0]?.[0] ?? "");
       expect(line).toContain("[ocx:kiro:request]");
@@ -529,7 +529,7 @@ describe("kiro adapter — parseStream", () => {
 });
 
 describe("kiro adapter — parseResponse (web-search sidecar non-streaming path)", () => {
-  test("adapter exposes parseResponse so the web_search sidecar accepts kiro", () => {
+  test("adapter exposes parseResponse so the web_search sidecar accepts kiro", async () => {
     expect(typeof createKiroAdapter(provider).parseResponse).toBe("function");
   });
 

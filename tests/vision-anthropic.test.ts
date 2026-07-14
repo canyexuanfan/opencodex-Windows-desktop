@@ -198,7 +198,7 @@ describe("Anthropic vision executor", () => {
 });
 
 describe("Anthropic vision planning and management config", () => {
-  test("explicit anthropic backend fails closed without a usable stored credential", () => {
+  test("explicit anthropic backend fails closed without a usable stored credential", async () => {
     const routed: OcxProviderConfig = {
       adapter: "openai-chat",
       baseUrl: "https://routed.test/v1",
