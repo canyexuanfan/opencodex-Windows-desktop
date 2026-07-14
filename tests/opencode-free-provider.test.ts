@@ -26,14 +26,14 @@ describe("opencode-free provider", () => {
     expect(entry?.liveModels).toBe(true);
   });
 
-  test("static headers include Bearer public and x-opencode-client", () => {
-    expect(entry?.staticHeaders?.["Authorization"]).toBe("Bearer public");
+  test("static headers include only the public client marker", () => {
+    expect(entry?.staticHeaders?.["Authorization"]).toBeUndefined();
     expect(entry?.staticHeaders?.["x-opencode-client"]).toBe("desktop");
   });
 
   test("providerConfigSeed propagates static headers", () => {
     const seed = providerConfigSeed(entry!);
-    expect(seed.headers?.["Authorization"]).toBe("Bearer public");
+    expect(seed.headers?.["Authorization"]).toBeUndefined();
     expect(seed.headers?.["x-opencode-client"]).toBe("desktop");
     expect(seed.keyOptional).toBe(true);
     expect(seed.liveModels).toBe(true);
@@ -48,17 +48,17 @@ describe("opencode-free provider", () => {
     expect(deriveFeaturedProviderIds()).toContain("opencode-free");
   });
 
-  test("adapter sends Bearer public with no apiKey configured", () => {
+  test("adapter sends no auth header with no apiKey configured", () => {
     const provider: OcxProviderConfig = providerConfigSeed(entry!);
     const adapter = createOpenAIChatAdapter(provider);
     const req = adapter.buildRequest(minimalRequest());
     const headers = req.headers as Record<string, string>;
-    expect(headers["Authorization"]).toBe("Bearer public");
+    expect(headers["Authorization"]).toBeUndefined();
     expect(headers["x-opencode-client"]).toBe("desktop");
     expect(req.url).toBe("https://opencode.ai/zen/v1/chat/completions");
   });
 
-  test("user-supplied apiKey overrides the static Bearer public token", () => {
+  test("user-supplied apiKey is sent when configured", () => {
     const provider: OcxProviderConfig = {
       ...providerConfigSeed(entry!),
       apiKey: "user-secret-key",
@@ -70,7 +70,7 @@ describe("opencode-free provider", () => {
     expect(headers["x-opencode-client"]).toBe("desktop");
   });
 
-  test("registry static headers still apply when a user apiKey is present", () => {
+  test("the provider client marker still applies when a user apiKey is present", () => {
     const provider: OcxProviderConfig = {
       ...providerConfigSeed(entry!),
       apiKey: "user-secret-key",
@@ -85,7 +85,17 @@ describe("opencode-free provider", () => {
 
   test("provider note mentions no key needed", () => {
     expect(entry?.note?.toLowerCase()).toContain("no key needed");
-    expect(entry?.note?.toLowerCase()).toContain("bearer public");
+    expect(entry?.note?.toLowerCase()).not.toContain("bearer public");
+  });
+
+  test("DeepSeek Free preserves reasoning content for tool-call history", () => {
+    const provider: OcxProviderConfig = providerConfigSeed(entry!);
+    const request = adapterRequest("deepseek-v4-flash-free");
+    const body = JSON.parse(createOpenAIChatAdapter(provider).buildRequest(request).body as string) as {
+      messages: Array<Record<string, unknown> & { reasoning_content?: string }>;
+    };
+    expect(body.messages.find(message => message.role === "assistant")?.reasoning_content)
+      .toBe("previous reasoning");
   });
 
   test("deriveProviderPresets exposes keyOptional for GUI picker", () => {
@@ -97,3 +107,32 @@ describe("opencode-free provider", () => {
     expect(preset.note).toBeDefined();
   });
 });
+
+function adapterRequest(modelId: string) {
+  return {
+    modelId,
+    stream: false,
+    context: {
+      messages: [
+        { role: "user" as const, content: "inspect the repo", timestamp: 0 },
+        {
+          role: "assistant" as const,
+          timestamp: 1,
+          content: [
+            { type: "thinking" as const, thinking: "previous reasoning" },
+            { type: "toolCall" as const, id: "call_1", name: "read_file", arguments: { path: "README.md" } },
+          ],
+        },
+        {
+          role: "toolResult" as const,
+          toolCallId: "call_1",
+          toolName: "read_file",
+          content: "contents",
+          isError: false,
+          timestamp: 2,
+        },
+      ],
+    },
+    options: { reasoning: "high" as const },
+  };
+}

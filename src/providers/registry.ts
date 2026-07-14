@@ -135,6 +135,7 @@ const THINKING_BUDGET_MODELS = [
 ];
 const OPENCODE_GO_THINKING_BUDGET_MODELS = ["qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus"];
 const DEEPSEEK_THINKING_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"];
+const OPENCODE_FREE_DEEPSEEK_MODELS = ["deepseek-v4-flash-free"];
 // "max" is advertised too: the wire map routes xhigh->max and max->max, so the picker
 // should surface the max tier instead of hiding it behind xhigh.
 const DEEPSEEK_THINKING_EFFORTS = ["high", "xhigh", "max"];
@@ -594,12 +595,15 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     keyOptional: true,
     featured: true,
     liveModels: true,
-    note: "No key needed — uses the public desktop tier (Bearer public). Models fetched live from opencode.ai.",
+    note: "No key needed — uses the public desktop tier. Models fetched live from opencode.ai.",
     dashboardUrl: "https://opencode.ai",
     staticHeaders: {
-      "Authorization": "Bearer public",
       "x-opencode-client": "desktop",
     },
+    modelReasoningEfforts: Object.fromEntries(OPENCODE_FREE_DEEPSEEK_MODELS.map(id => [id, DEEPSEEK_THINKING_EFFORTS])),
+    modelReasoningEffortMap: Object.fromEntries(OPENCODE_FREE_DEEPSEEK_MODELS.map(id => [id, DEEPSEEK_THINKING_REASONING_MAP])),
+    preserveReasoningContentModels: OPENCODE_FREE_DEEPSEEK_MODELS,
+    noVisionModels: OPENCODE_FREE_DEEPSEEK_MODELS,
   },
   { id: "xiaomi", label: "Xiaomi MiMo", baseUrl: "https://api.xiaomimimo.com/anthropic", adapter: "anthropic", authKind: "key", dashboardUrl: "https://xiaomimimo.com", defaultModel: "mimo-v2.5-pro" },
   { id: "kilo", label: "Kilo", baseUrl: "https://api.kilo.ai/api/gateway", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://kilo.ai" },
