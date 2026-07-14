@@ -178,3 +178,14 @@ describe("mimo-free adapter request building", () => {
     }
   });
 });
+
+describe("mimo-free GUI preset", () => {
+  test("deriveProviderPresets exposes keyOptional for picker", () => {
+    const { deriveProviderPresets } = require("../src/providers/derive");
+    const presets = deriveProviderPresets();
+    const preset = presets.find((p: { id: string }) => p.id === "mimo-free");
+    expect(preset).toBeDefined();
+    expect(preset.keyOptional).toBe(true);
+    expect(preset.note).toMatch(/no key needed/i);
+  });
+});
