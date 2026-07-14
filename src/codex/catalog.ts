@@ -1179,7 +1179,8 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
       provider: name,
       owned_by: m.owned_by,
       ...catalogHintsFromModelsApiItem(name, m),
-    }, contextCap));
+    }, contextCap))
+      .filter(m => shouldExposeProviderModel(name, m.id));
     const liveIds = new Set(live.map(m => m.id));
     // Dated-release aliases (Anthropic pattern): older models may appear in the live catalog
     // ONLY under their dated id (claude-haiku-4-5-20251001) while the config names the
@@ -1211,6 +1212,11 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
     const stale = getStaleCached(name);
     return stale ? applyConfigHintsToCachedModels(name, prov, stale, contextCap) : configured;
   }
+}
+
+function shouldExposeProviderModel(providerName: string, modelId: string): boolean {
+  if (providerName === "opencode-free") return modelId.endsWith("-free");
+  return true;
 }
 
 /**
