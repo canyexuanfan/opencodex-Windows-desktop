@@ -356,6 +356,8 @@ export const zh: Record<TKey, string> = {
   "modal.loginTimeout": "登录超时 — 请重试。",
   "nav.api": "API",
   "nav.codexAuth": "Codex 认证",
+  "nav.openMenu": "打开菜单",
+  "nav.closeMenu": "关闭菜单",
   "codexAuth.mainAccount": "主账号",
   "codexAuth.appLogin": "应用登录",
   "codexAuth.accountPool": "账号池",

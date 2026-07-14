@@ -339,6 +339,8 @@ export const de = {
   "modal.loginTimeout": "Login-Zeitüberschreitung — versuche es erneut.",
   "nav.codexAuth": "Codex-Auth",
   "nav.api": "API",
+  "nav.openMenu": "Menü öffnen",
+  "nav.closeMenu": "Menü schließen",
   "codexAuth.mainAccount": "Hauptkonto",
   "codexAuth.appLogin": "App-Login",
   "codexAuth.accountPool": "Kontopool",

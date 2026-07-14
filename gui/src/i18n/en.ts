@@ -357,6 +357,8 @@ export const en = {
   "modal.loginTimeout": "Login timed out — try again.",
   "nav.codexAuth": "Codex Auth",
   "nav.api": "API",
+  "nav.openMenu": "Open menu",
+  "nav.closeMenu": "Close menu",
   "codexAuth.mainAccount": "Main Account",
   "codexAuth.appLogin": "App login",
   "codexAuth.accountPool": "Account Pool",

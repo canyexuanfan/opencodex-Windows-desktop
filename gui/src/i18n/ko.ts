@@ -356,6 +356,8 @@ export const ko: Record<TKey, string> = {
   "modal.loginTimeout": "로그인 시간 초과 — 다시 시도하세요.",
   "nav.api": "API",
   "nav.codexAuth": "Codex 인증",
+  "nav.openMenu": "메뉴 열기",
+  "nav.closeMenu": "메뉴 닫기",
   "codexAuth.mainAccount": "메인 계정",
   "codexAuth.appLogin": "앱 로그인",
   "codexAuth.accountPool": "계정 풀",
