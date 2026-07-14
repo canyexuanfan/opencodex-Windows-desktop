@@ -69,6 +69,7 @@ export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderCon
     authMode: entry.authKind === "local" ? undefined : entry.authKind,
     ...(entry.keyOptional !== undefined ? { keyOptional: entry.keyOptional } : {}),
     ...(entry.modelSuffixBracketStrip !== undefined ? { modelSuffixBracketStrip: entry.modelSuffixBracketStrip } : {}),
+    ...(entry.staticHeaders ? { headers: { ...entry.staticHeaders } } : {}),
     ...(entry.defaultModel ? { defaultModel: entry.defaultModel } : {}),
     ...(entry.models ? { models: [...entry.models] } : {}),
     ...(entry.liveModels !== undefined ? { liveModels: entry.liveModels } : {}),
@@ -193,6 +194,7 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   if (prov.escapeBuiltinToolNames === undefined && seed.escapeBuiltinToolNames !== undefined) prov.escapeBuiltinToolNames = seed.escapeBuiltinToolNames;
   if (prov.keyOptional === undefined && seed.keyOptional !== undefined) prov.keyOptional = seed.keyOptional;
   if (prov.modelSuffixBracketStrip === undefined && seed.modelSuffixBracketStrip !== undefined) prov.modelSuffixBracketStrip = seed.modelSuffixBracketStrip;
+  if (!prov.headers && seed.headers) prov.headers = { ...seed.headers };
 }
 
 export function deriveFeaturedProviderIds(): string[] {

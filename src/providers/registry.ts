@@ -23,6 +23,8 @@ export interface ProviderRegistryEntry {
   allowPrivateNetworkByDefault?: boolean;
   keyOptional?: boolean;
   allowBaseUrlOverride?: boolean;
+  /** Static headers merged into every upstream request for this provider. */
+  staticHeaders?: Record<string, string>;
   modelSuffixBracketStrip?: boolean;
   featured?: boolean;
   dashboardPreset?: boolean;
@@ -66,7 +68,7 @@ export type ProviderConfigSeed = Pick<
   | "reasoningEfforts" | "modelReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap"
   | "noVisionModels" | "noReasoningModels" | "noTemperatureModels" | "noTopPModels" | "noPenaltyModels"
   | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "thinkingToggleModels" | "thinkingBudgetModels" | "escapeBuiltinToolNames"
-  | "googleMode" | "project" | "location"
+  | "googleMode" | "project" | "location" | "headers"
 >;
 
 // Shared between the OAuth (Claude account) and API-key Anthropic entries so both expose the
@@ -583,6 +585,22 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   },
   { id: "opencode-zen", label: "opencode zen", baseUrl: "https://opencode.ai/zen/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://opencode.ai/auth" },
   { id: "vercel-ai-gateway", label: "Vercel AI Gateway", baseUrl: "https://ai-gateway.vercel.sh/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://vercel.com/dashboard" },
+  {
+    id: "opencode-free",
+    label: "OpenCode Free",
+    adapter: "openai-chat",
+    baseUrl: "https://opencode.ai/zen/v1",
+    authKind: "key",
+    keyOptional: true,
+    featured: true,
+    liveModels: true,
+    note: "No key needed — uses the public desktop tier (Bearer public). Models fetched live from opencode.ai.",
+    dashboardUrl: "https://opencode.ai",
+    staticHeaders: {
+      "Authorization": "Bearer public",
+      "x-opencode-client": "desktop",
+    },
+  },
   { id: "xiaomi", label: "Xiaomi MiMo", baseUrl: "https://api.xiaomimimo.com/anthropic", adapter: "anthropic", authKind: "key", dashboardUrl: "https://xiaomimimo.com", defaultModel: "mimo-v2.5-pro" },
   { id: "kilo", label: "Kilo", baseUrl: "https://api.kilo.ai/api/gateway", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://kilo.ai" },
   { id: "cloudflare-ai-gateway", label: "Cloudflare AI Gateway", baseUrl: "https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway}/anthropic", adapter: "anthropic", authKind: "key", dashboardUrl: "https://dash.cloudflare.com/?to=/:account/ai/ai-gateway" },
