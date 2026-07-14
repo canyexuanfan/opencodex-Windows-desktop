@@ -249,8 +249,8 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
 
       const url = `${provider.baseUrl}/chat/completions`;
       const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (hasCredential) headers["Authorization"] = `Bearer ${provider.apiKey}`;
       if (provider.headers) Object.assign(headers, provider.headers);
+      if (hasCredential) headers["Authorization"] = `Bearer ${provider.apiKey}`;
 
       return { url, method: "POST", headers, body: JSON.stringify(body) };
     },
