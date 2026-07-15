@@ -240,33 +240,32 @@ export default function AddProviderModal({
                   </div>
                 </button>
               ))}
-              {filtered.length === 0 && <div className="muted" style={{ fontSize: 13, padding: 8 }}>No match.</div>}
+              {filtered.length === 0 && <div className="muted text-control" style={{ padding: 8 }}>No match.</div>}
             </div>
           </>
         ) : form && (
           preset.auth === "oauth" && form.authMode === "oauth" ? (
             // OAuth login pane
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              <div className="muted" style={{ fontSize: 13 }}>{preset.note ?? "Log in with your account — no API key needed."}</div>
+              <div className="muted text-control">{preset.note ?? "Log in with your account — no API key needed."}</div>
               {oauthSupported.includes(preset.oauthProvider ?? "") ? (
                 <button className="btn btn-primary" onClick={() => loginOAuth(preset.oauthProvider!)} disabled={oauthBusy}
-                  style={{ width: "100%", padding: "12px 16px", fontSize: 14 }}>
+                  style={{ width: "100%", padding: "12px 16px" }}>
                   <IconLock />{oauthBusy ? "Waiting for browser…" : `Log in with ${preset.label}`}
                 </button>
               ) : (
-                <div style={{ fontSize: 13, color: "var(--amber)", background: "var(--amber-soft)", border: "1px solid var(--amber)", borderRadius: "var(--radius-sm)", padding: "10px 12px" }}>
+                <div className="text-control" style={{ color: "var(--amber)", background: "var(--amber-soft)", border: "1px solid var(--amber)", borderRadius: "var(--radius-sm)", padding: "10px 12px" }}>
                   OAuth login for {preset.label} arrives in the next update. Use an API key for now.
                 </div>
               )}
-              {oauthMsg && <div style={{ fontSize: 12, color: /error|update|timed/.test(oauthMsg) ? "var(--amber)" : "var(--accent-hover)" }}>{oauthMsg}</div>}
+              {oauthMsg && <div className="text-label" style={{ color: /error|update|timed/.test(oauthMsg) ? "var(--amber)" : "var(--accent-hover)" }}>{oauthMsg}</div>}
               {oauthBusy && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <div className="muted" style={{ fontSize: 12 }}>
+                  <div className="muted text-label">
                     {t("prov.pasteRedirectHint")}
                   </div>
                   <div style={{ display: "flex", gap: 8 }}>
                     <input
-                      className="input"
                       type="text"
                       autoComplete="off"
                       spellCheck={false}
@@ -281,7 +280,8 @@ export default function AddProviderModal({
                       placeholder={t("prov.pasteRedirect")}
                       aria-label={t("prov.pasteRedirect")}
                       disabled={manualCodeBusy}
-                      style={{ flex: 1, fontSize: 12 }}
+                      className="input text-label"
+                      style={{ flex: 1 }}
                     />
                     <button
                       className="btn btn-ghost"
@@ -293,7 +293,7 @@ export default function AddProviderModal({
                     </button>
                   </div>
                   {manualCodeMsg && (
-                    <div style={{ fontSize: 12, color: manualCodeOk ? "var(--accent-hover)" : "var(--amber)" }}>
+                    <div className="text-label" style={{ color: manualCodeOk ? "var(--accent-hover)" : "var(--amber)" }}>
                       {manualCodeMsg}
                     </div>
                   )}
@@ -311,18 +311,18 @@ export default function AddProviderModal({
               {!isCustom && !isLocal && !preset.keyOptional && preset.note && (
                 <details className="setup-guide">
                   <summary>Setup guide</summary>
-                  <ol style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 12, color: "var(--muted)", lineHeight: 1.7 }}>
+                  <ol className="text-label leading-relaxed" style={{ margin: "8px 0 0", paddingLeft: 18, color: "var(--muted)" }}>
                     <li>Go to <a href={preset.dashboardUrl} target="_blank" rel="noreferrer">{preset.label} dashboard</a> and copy your API key</li>
                     <li>Paste it in the API key field below</li>
                     <li>Click Add provider — models are auto-discovered</li>
                   </ol>
-                  {preset.note && <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6, fontStyle: "italic" }}>{preset.note}</div>}
+                  {preset.note && <div className="text-label" style={{ color: "var(--muted)", marginTop: 6, fontStyle: "italic" }}>{preset.note}</div>}
                 </details>
               )}
               <Field label="Provider name">
                 <input className="input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. openrouter" />
               </Field>
-              {dup && <div style={{ fontSize: 12, color: "var(--amber)" }}>Provider "{form.name.trim()}" exists and will be overwritten.</div>}
+              {dup && <div className="text-label" style={{ color: "var(--amber)" }}>Provider "{form.name.trim()}" exists and will be overwritten.</div>}
               <Field label="Adapter">
                 <select className="input" value={form.adapter} onChange={e => setForm({ ...form, adapter: e.target.value })}>
                   {["openai-responses", "openai-chat", "anthropic", "google", "azure-openai", "cursor"].map(a => <option key={a} value={a}>{a}</option>)}
@@ -332,21 +332,21 @@ export default function AddProviderModal({
                 <input className="input" value={form.baseUrl} onChange={e => setForm({ ...form, baseUrl: e.target.value })} placeholder="https://..." />
               </Field>
               {form.authMode === "forward" ? (
-                <div style={{ fontSize: 12, color: "var(--green)", background: "var(--green-soft)", border: "1px solid var(--green)", borderRadius: "var(--radius-sm)", padding: "8px 10px" }}>
+                <div className="text-label" style={{ color: "var(--green)", background: "var(--green-soft)", border: "1px solid var(--green)", borderRadius: "var(--radius-sm)", padding: "8px 10px" }}>
                   No key needed — the proxy forwards your <code className="chip">codex login</code> credentials to this provider.
                 </div>
               ) : form.authMode === "local" ? (
-                <div style={{ fontSize: 12, color: "var(--amber)", background: "var(--amber-soft)", border: "1px solid var(--amber)", borderRadius: "var(--radius-sm)", padding: "8px 10px", lineHeight: 1.55 }}>
+                <div className="text-label leading-relaxed" style={{ color: "var(--amber)", background: "var(--amber-soft)", border: "1px solid var(--amber)", borderRadius: "var(--radius-sm)", padding: "8px 10px" }}>
                   No API key is stored. This adds Cursor's static public model catalog for Codex, but live Cursor transport and native file/shell execution remain disabled until audited.
                 </div>
               ) : preset.keyOptional ? (
-                <div style={{ fontSize: 12, color: "var(--green)", background: "var(--green-soft)", border: "1px solid var(--green)", borderRadius: "var(--radius-sm)", padding: "10px 12px", lineHeight: 1.6 }}>
+                <div className="text-label leading-relaxed" style={{ color: "var(--green)", background: "var(--green-soft)", border: "1px solid var(--green)", borderRadius: "var(--radius-sm)", padding: "10px 12px" }}>
                   <strong>Free tier</strong> — {preset.note ?? "No API key required. Works out of the box."}
                 </div>
               ) : (
                 <>
                   {preset.dashboardUrl && (
-                    <a href={preset.dashboardUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}>
+                    <a className="text-label" href={preset.dashboardUrl} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
                       <IconKey style={{ width: 14, height: 14 }} />Get your {preset.label} API key<IconExternal style={{ width: 13, height: 13 }} />
                     </a>
                   )}
@@ -358,7 +358,7 @@ export default function AddProviderModal({
               <Field label="Default model (optional)">
                 <input className="input" value={form.defaultModel} onChange={e => setForm({ ...form, defaultModel: e.target.value })} placeholder="e.g. gpt-5.5" />
               </Field>
-              {error && <div role="alert" style={{ fontSize: 13, color: "var(--red)" }}>{error}</div>}
+              {error && <div className="text-control" role="alert" style={{ color: "var(--red)" }}>{error}</div>}
               <div style={{ display: "flex", gap: 8, marginTop: 4, alignItems: "center" }}>
                 <button className="btn btn-primary" onClick={submit} disabled={saving}>{saving ? "Adding…" : "Add provider"}</button>
                 {preset.auth === "oauth" && <button className="link-btn" onClick={() => { setForm({ ...form, authMode: "oauth" }); setError(""); }}>← Use OAuth login</button>}
