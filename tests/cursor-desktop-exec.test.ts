@@ -20,8 +20,9 @@ function decode(bytes: Uint8Array) {
   return msg.message.value;
 }
 
-// A tiny shell command that prints a fixed JSON payload, ignoring stdin.
-function echoJson(json: string): string {
+// A tiny platform-shell command that drains stdin and prints a fixed JSON payload.
+function echoJson(json: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform === "win32") return `more >nul & echo ${json}`;
   return `cat >/dev/null; printf '%s' '${json}'`;
 }
 
@@ -124,6 +125,10 @@ describe("Cursor desktop executor hooks", () => {
 });
 
 describe("desktop executor platform shell (devlog 260715_cross_platform_audit/020)", () => {
+  test("behavior fixture uses CMD built-ins on win32", () => {
+    expect(echoJson('{"durationMs":42}', "win32")).toBe('more >nul & echo {"durationMs":42}');
+  });
+
   test("POSIX invocation stays byte-identical to sh -c for both configured commands", () => {
     const computerUse = "cat >/dev/null; printf '%s' '{\"durationMs\":42}'";
     const recordScreen = "cat >/dev/null; printf '%s' '{\"startSuccess\":{}}'";

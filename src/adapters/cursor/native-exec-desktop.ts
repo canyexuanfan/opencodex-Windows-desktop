@@ -26,7 +26,7 @@ const DEFAULT_DESKTOP_TIMEOUT_MS = 30_000;
  * command receives the request as JSON on stdin and must print a JSON result on stdout.
  */
 export interface DesktopExecutorConfig {
-  /** Command (run via `sh -c`) handling computer-use. Receives `{toolCallId, actions}` on stdin. */
+  /** Command (run via the platform shell) handling computer-use. Receives `{toolCallId, actions}` on stdin. */
   computerUseCommand?: string;
   /** Command handling record-screen. Receives `{mode, toolCallId, saveAsFilename?}` on stdin. */
   recordScreenCommand?: string;
