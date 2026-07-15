@@ -19,6 +19,7 @@ import {
   responsesJsonToAnthropicMessage,
   responsesSseToAnthropicSse,
 } from "../claude/outbound";
+import { clearableDeadline } from "../lib/abort";
 import { estimateTokens } from "../lib/token-estimate";
 import { routeModel } from "../router";
 import type { OcxConfig } from "../types";
@@ -204,24 +205,24 @@ async function anthropicNativePassthrough(
   });
   headers.set("content-type", "application/json");
 
-  const timeoutSignal = AbortSignal.timeout(config.connectTimeoutMs ?? 120_000);
-  const upstreamSignal = AbortSignal.any([req.signal, timeoutSignal]);
+  const headerDeadline = clearableDeadline(config.connectTimeoutMs ?? 120_000, req.signal);
   let upstream: Response;
   try {
     upstream = await fetch(`${base}${pathname}${search}`, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
-      signal: upstreamSignal,
+      signal: headerDeadline.signal,
     });
   } catch (err) {
-    if (timeoutSignal.aborted && upstreamSignal.reason === timeoutSignal.reason) {
+    if (headerDeadline.didExpire()) {
       finalize(504, { closeReason: "non_stream" });
       return anthropicErrorResponse(504, "anthropic passthrough timed out waiting for response headers", "timeout_error");
     }
     finalize(502, { closeReason: "non_stream" });
     return anthropicErrorResponse(502, `anthropic passthrough failed: ${err instanceof Error ? err.message : String(err)}`, "api_error");
   }
+  headerDeadline.clear();
 
   const contentType = upstream.headers.get("content-type") ?? "application/json";
   if (upstream.ok && contentType.includes("text/event-stream") && upstream.body) {

@@ -158,6 +158,48 @@ test("non-streaming /v1/messages returns an Anthropic message JSON", async () =>
   }
 });
 
+test("native Anthropic passthrough clears the header deadline before streaming the body", async () => {
+  const encoder = new TextEncoder();
+  const upstream = Bun.serve({
+    port: 0,
+    fetch() {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('event: message_start\ndata: {"type":"message_start"}\n\n'));
+          setTimeout(() => {
+            controller.enqueue(encoder.encode('event: message_stop\ndata: {"type":"message_stop"}\n\n'));
+            controller.close();
+          }, 600);
+        },
+      });
+      return new Response(body, { headers: { "content-type": "text/event-stream" } });
+    },
+  });
+  const config = mockConfig("http://127.0.0.1:1/v1", {
+    anthropicBaseUrl: upstream.url.toString().replace(/\/$/, ""),
+  });
+  config.connectTimeoutMs = 200;
+  saveConfig(config);
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/messages", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": "sk-ant-test" },
+      body: JSON.stringify({
+        model: "claude-test",
+        max_tokens: 16,
+        stream: true,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("message_stop");
+  } finally {
+    server.stop(true);
+    upstream.stop(true);
+  }
+});
+
 test("native openai-responses route carries prompt_cache_key + synthesized session_id header", async () => {
   const capture: { headers?: Record<string, string>; body?: Record<string, any> } = {};
   const upstream = Bun.serve({
