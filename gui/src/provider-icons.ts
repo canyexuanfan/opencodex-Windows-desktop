@@ -36,20 +36,14 @@ const PROVIDER_ICON_ALIASES: Record<string, string> = {
   "vercel-ai-gateway": "vercel-ai-gateway-color.svg",
   vllm: "vllm-color.svg",
   xai: "grok-color.svg",
-  "mimo-free": "xiaomi-color.svg",
   xiaomi: "xiaomi-color.svg",
-};
-
-type ProviderIconHints = {
-  adapter?: string;
-  baseUrl?: string;
 };
 
 function providerIconAlias(provider: string): string | undefined {
   return PROVIDER_ICON_ALIASES[provider.toLowerCase()];
 }
 
-export function providerIconSrc(provider: string, hints?: ProviderIconHints): string | undefined {
+export function providerIconSrc(provider: string): string | undefined {
   const icon = providerIconAlias(provider);
   return icon ? `/provider-icons/${icon}` : undefined;
 }

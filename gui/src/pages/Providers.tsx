@@ -392,7 +392,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
           })}
           {keyProviders.map(name => {
             const provider = config?.providers[name];
-            const icon = providerIconSrc(name, provider);
+            const icon = providerIconSrc(name);
             const keylessFree = provider?.keyOptional === true && !provider?.hasApiKey;
             return (
               <div key={name} className="oauth-row">
@@ -427,7 +427,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
             const isDefault = name === config.defaultProvider;
             const isDisabled = prov.disabled === true;
             const quota = quotaReports[name]?.quota ?? null;
-            const icon = providerIconSrc(name, prov);
+            const icon = providerIconSrc(name);
             const accountSet = prov.authMode === "oauth" ? accountSets[name] : undefined;
             const isKeyAuth = prov.authMode !== "oauth" && prov.authMode !== "forward";
             const keyPool = isKeyAuth && prov.hasApiKey ? (keyPools[name] ?? []) : [];
