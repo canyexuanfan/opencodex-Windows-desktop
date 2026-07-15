@@ -386,11 +386,11 @@ export default function Providers({ apiBase }: { apiBase: string }) {
       <div className="panel panel-accent" style={{ marginBottom: 18 }}>
         <div className="row" style={{ marginBottom: 14 }}>
           <IconLock style={{ width: 16, height: 16, color: "var(--accent)" }} />
-          <span style={{ fontWeight: 600 }}>{t("prov.accountLogin")}</span>
+          <span className="font-semibold">{t("prov.accountLogin")}</span>
         </div>
         <div className="oauth-grid">
           {oauthProviders.length === 0 && keyProviders.length === 0 && (
-            <span className="muted" style={{ fontSize: 13, gridColumn: "1 / -1" }}>{t("prov.noOauth")}</span>
+            <span className="muted text-control" style={{ gridColumn: "1 / -1" }}>{t("prov.noOauth")}</span>
           )}
           {oauthProviders.map(p => {
             const st = oauthStatus[p] ?? { loggedIn: false };
@@ -447,7 +447,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
                         {manualCodeBusy ? t("prov.pasteSubmitting") : t("prov.pasteSubmit")}
                       </button>
                     </span>
-                    <span style={{ fontSize: 11 }}>{manualCodeMsg || t("prov.pasteRedirectHint")}</span>
+                    <span className="text-caption">{manualCodeMsg || t("prov.pasteRedirectHint")}</span>
                   </span>
                 )}
               </div>
@@ -483,7 +483,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
         />
       ) : (
         <div className="stack" style={{ gap: 8 }}>
-          <div className="muted" style={{ fontSize: 13, marginBottom: 4 }}>
+          <div className="muted text-control" style={{ marginBottom: 4 }}>
             {t("prov.port")}: <code className="chip">{config.port}</code> · {t("prov.default")}: <code className="chip">{config.defaultProvider}</code>
           </div>
           {Object.entries(config.providers).map(([name, prov]) => {
@@ -504,14 +504,14 @@ export default function Providers({ apiBase }: { apiBase: string }) {
                     {icon && <span className="provider-icon"><img src={icon} alt="" aria-hidden="true" /></span>}
                     <div className="prov-card-copy">
                       <div className="prov-title">
-                        <span style={{ fontWeight: 600 }}>{name}</span>
+                        <span className="font-semibold">{name}</span>
                         {isDefault && <span className="badge badge-primary">{t("prov.defaultBadge")}</span>}
                         {isDisabled ? <span className="badge badge-muted">{t("prov.disabledBadge")}</span> : <span className="badge badge-green">{t("prov.activeBadge")}</span>}
                         {prov.authMode === "oauth" && <span className="badge badge-accent">oauth</span>}
                         {prov.authMode === "forward" && <span className="badge badge-amber">passthrough</span>}
                         {prov.keyOptional && <span className="badge badge-green">Free</span>}
                       </div>
-                      <div className="muted prov-meta" style={{ fontSize: 13 }}>
+                      <div className="muted prov-meta text-control">
                         <code className="chip">{prov.adapter}</code>
                         <span>{prov.baseUrl}</span>
                         {prov.defaultModel && <span>{prov.defaultModel}</span>}
@@ -519,7 +519,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
                         {prov.hasHeaders && <span>{t("prov.hasHeaders")}</span>}
                       </div>
                       {prov.note && (
-                        <div className="muted" style={{ fontSize: 12, marginTop: 4, lineHeight: 1.5 }}>
+                        <div className="muted text-label leading-body" style={{ marginTop: 4 }}>
                           {prov.note}
                         </div>
                       )}
