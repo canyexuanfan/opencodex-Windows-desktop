@@ -108,12 +108,13 @@ function rootPromptMessages(request: CursorRunRequest): Uint8Array[] {
     } else if (message.role === "assistant") {
       const text = assistantRootText(message).trim();
       if (text.length > 0) entries.push(storeCursorBlob(jsonBlob({ role: "assistant", content: [{ type: "text", text }] })));
-      for (const part of message.content) {
-        if (typeof part === "string" || part.type !== "toolCall") continue;
-        const toolName = namespacedToolName(part.namespace, part.name);
-        const callText = `[Tool Call]\ncall_id: ${part.id}\nname: ${toolName}\narguments:\n${JSON.stringify(part.arguments ?? {})}`;
-        entries.push(storeCursorBlob(jsonBlob({ role: "assistant", content: [{ type: "text", text: callText }] })));
-      }
+      // Assistant tool CALLS are intentionally NOT replayed as visible "[Tool Call]" text here.
+      // rootPromptMessagesJson is the model-visible prompt, so a synthetic "[Tool Call]" marker in an
+      // assistant turn gets few-shot-mimicked: the model then emits later (esp. parallel/mixed) tool
+      // calls as inert text instead of real tool frames, halting multi-tool continuations. The paired
+      // tool result below ([Tool Result]/[Tool Error]) carries the call id/name/output Cursor needs to
+      // continue, and conversationTurns replays the native mcpToolCall step. Mirrors request-builder.ts
+      // contentPartToText() which returns undefined for toolCall for the same reason.
     } else if (message.role === "toolResult") {
       const prefix = message.isError ? "[Tool Error]" : "[Tool Result]";
       const text = `${prefix}\n${toolResultToText(message)}`;

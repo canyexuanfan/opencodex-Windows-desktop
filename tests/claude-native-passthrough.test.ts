@@ -207,3 +207,143 @@ test("nativePassthrough:false disables the pierce", async () => {
     upstream.stop(true);
   }
 });
+
+// --- Generous image pipeline on the native branch (devlog 260714 .../040, P1-P5) ---
+
+import { resetNormalizeStateForTests } from "../src/adapters/anthropic-image-normalize";
+import { sniffImageDimensions } from "../src/adapters/anthropic-image-guard";
+
+const ONE_PX_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+async function realPng(width: number, height: number): Promise<string> {
+  const buf = await new Bun.Image(Buffer.from(ONE_PX_PNG, "base64")).resize(width, height).png().toBuffer();
+  return Buffer.from(buf).toString("base64");
+}
+
+function imgBlock(data: string): Record<string, unknown> {
+  return { type: "image", source: { type: "base64", media_type: "image/png", data } };
+}
+
+function imageBody(blocks: unknown[]): Record<string, unknown> {
+  return {
+    model: "claude-fable-5",
+    max_tokens: 1000,
+    stream: true,
+    messages: [{ role: "user", content: [{ type: "text", text: "look" }, ...blocks] }],
+  };
+}
+
+type WireBlock = { type: string; source?: { type?: string; media_type?: string; data?: string; file_id?: string } };
+
+function capturedBlocks(captured: Captured[]): WireBlock[] {
+  const msgs = (captured[0].body as { messages: Array<{ content: unknown }> }).messages;
+  const content = msgs[0].content;
+  return (Array.isArray(content) ? content : []) as WireBlock[];
+}
+
+async function postNative(serverUrl: string, path: string, body: Record<string, unknown>): Promise<Response> {
+  return fetch(new URL(path, serverUrl), { method: "POST", headers: OAUTH_HEADERS, body: JSON.stringify(body) });
+}
+
+test("P1: 30-image history arrives age-tiered — newest pass through, older shrink, none dropped", async () => {
+  resetNormalizeStateForTests();
+  const captured: Captured[] = [];
+  const upstream = mockAnthropicUpstream(captured);
+  saveConfig(cfg(upstream.url.toString().replace(/\/$/, "")));
+  const server = startServer(0);
+  try {
+    const src = await realPng(1500, 1000);
+    const res = await postNative(String(server.url), "/v1/messages", imageBody(Array.from({ length: 30 }, () => imgBlock(src))));
+    expect(res.status).toBe(200);
+    const images = capturedBlocks(captured).filter(b => b.type === "image");
+    expect(images).toHaveLength(30);
+    // Wire order oldest first: 0-9 tier2 (<=700 jpeg), 10-23 tier1 (<=1024), 24-29 tier0 pass-through png.
+    for (let i = 0; i < 10; i++) {
+      expect(images[i].source?.media_type).toBe("image/jpeg");
+      const d = sniffImageDimensions(images[i].source?.data ?? "");
+      expect(Math.max(d!.width, d!.height)).toBeLessThanOrEqual(700);
+    }
+    for (let i = 24; i < 30; i++) {
+      expect(images[i].source?.media_type).toBe("image/png");
+      expect(images[i].source?.data).toBe(src);
+    }
+  } finally {
+    server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+test("P2: dimension-oversized image is re-encoded (normalized), not dropped", async () => {
+  resetNormalizeStateForTests();
+  const captured: Captured[] = [];
+  const upstream = mockAnthropicUpstream(captured);
+  saveConfig(cfg(upstream.url.toString().replace(/\/$/, "")));
+  const server = startServer(0);
+  try {
+    const res = await postNative(String(server.url), "/v1/messages", imageBody([imgBlock(await realPng(4000, 3000))]));
+    expect(res.status).toBe(200);
+    const [img] = capturedBlocks(captured).filter(b => b.type === "image");
+    expect(img.source?.media_type).toBe("image/jpeg");
+    const d = sniffImageDimensions(img.source?.data ?? "");
+    expect(Math.max(d!.width, d!.height)).toBeLessThanOrEqual(2000);
+  } finally {
+    server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+test("P2b: 101 images trip the guard's 100-cap — exactly one oldest textified", async () => {
+  resetNormalizeStateForTests();
+  const captured: Captured[] = [];
+  const upstream = mockAnthropicUpstream(captured);
+  saveConfig(cfg(upstream.url.toString().replace(/\/$/, "")));
+  const server = startServer(0);
+  try {
+    const res = await postNative(String(server.url), "/v1/messages", imageBody(Array.from({ length: 101 }, () => imgBlock(ONE_PX_PNG))));
+    expect(res.status).toBe(200);
+    const blocks = capturedBlocks(captured);
+    expect(blocks.filter(b => b.type === "image")).toHaveLength(100);
+    expect(blocks.filter(b => b.type === "text").length).toBeGreaterThanOrEqual(2); // original text + 1 omitted note
+  } finally {
+    server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+test("P4: count_tokens body is normalized identically to the real send", async () => {
+  resetNormalizeStateForTests();
+  const captured: Captured[] = [];
+  const upstream = mockAnthropicUpstream(captured);
+  saveConfig(cfg(upstream.url.toString().replace(/\/$/, "")));
+  const server = startServer(0);
+  try {
+    const body = imageBody([imgBlock(await realPng(4000, 3000))]);
+    delete body.stream;
+    const res = await postNative(String(server.url), "/v1/messages/count_tokens", body);
+    expect(res.status).toBe(200);
+    const [img] = capturedBlocks(captured).filter(b => b.type === "image");
+    expect(img.source?.media_type).toBe("image/jpeg");
+  } finally {
+    server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+test("P5: Files API image source passes through untouched", async () => {
+  resetNormalizeStateForTests();
+  const captured: Captured[] = [];
+  const upstream = mockAnthropicUpstream(captured);
+  saveConfig(cfg(upstream.url.toString().replace(/\/$/, "")));
+  const server = startServer(0);
+  try {
+    const fileBlock = { type: "image", source: { type: "file", file_id: "file_abc123" } };
+    const res = await postNative(String(server.url), "/v1/messages", imageBody([fileBlock]));
+    expect(res.status).toBe(200);
+    const [img] = capturedBlocks(captured).filter(b => b.type === "image");
+    expect(img.source).toEqual({ type: "file", file_id: "file_abc123" });
+  } finally {
+    server.stop(true);
+    upstream.stop(true);
+  }
+});

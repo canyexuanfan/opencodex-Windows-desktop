@@ -23,6 +23,8 @@ export interface ProviderRegistryEntry {
   allowPrivateNetworkByDefault?: boolean;
   keyOptional?: boolean;
   allowBaseUrlOverride?: boolean;
+  /** Static headers merged into every upstream request for this provider. */
+  staticHeaders?: Record<string, string>;
   modelSuffixBracketStrip?: boolean;
   featured?: boolean;
   dashboardPreset?: boolean;
@@ -66,7 +68,7 @@ export type ProviderConfigSeed = Pick<
   | "reasoningEfforts" | "modelReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap"
   | "noVisionModels" | "noReasoningModels" | "noTemperatureModels" | "noTopPModels" | "noPenaltyModels"
   | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "thinkingToggleModels" | "thinkingBudgetModels" | "escapeBuiltinToolNames"
-  | "googleMode" | "project" | "location"
+  | "googleMode" | "project" | "location" | "headers"
 >;
 
 // Shared between the OAuth (Claude account) and API-key Anthropic entries so both expose the
@@ -133,6 +135,7 @@ const THINKING_BUDGET_MODELS = [
 ];
 const OPENCODE_GO_THINKING_BUDGET_MODELS = ["qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus"];
 const DEEPSEEK_THINKING_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"];
+const OPENCODE_FREE_DEEPSEEK_MODELS = ["deepseek-v4-flash-free"];
 // "max" is advertised too: the wire map routes xhigh->max and max->max, so the picker
 // should surface the max tier instead of hiding it behind xhigh.
 const DEEPSEEK_THINKING_EFFORTS = ["high", "xhigh", "max"];
@@ -153,6 +156,17 @@ const KIMI_AUTO_TOOL_CHOICE_ONLY_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-hig
 const KIMI_API_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEntries(
   KIMI_API_MODELS.map(id => [id, 262_144]),
 );
+
+// 260715 NVIDIA NIM kimi family (issue #126): documented served ids on integrate
+// chat/completions per docs.api.nvidia.com/nim/reference/llm-apis; live /v1/models
+// currently lists only kimi-k2.6 but the list is dynamic, so carry the documented family.
+const NVIDIA_NIM_KIMI_THINKING_MODELS = [
+  "moonshotai/kimi-k2.6", "moonshotai/kimi-k2.5", "moonshotai/kimi-k2-thinking",
+];
+const NVIDIA_NIM_KIMI_MODELS = [
+  ...NVIDIA_NIM_KIMI_THINKING_MODELS,
+  "moonshotai/kimi-k2-instruct", "moonshotai/kimi-k2-instruct-0905",
+];
 const KIMI_CODING_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEntries(
   KIMI_CODING_MODELS.map(id => [id, 262_144]),
 );
@@ -202,7 +216,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     authKind: "oauth",
     featured: false,
     dashboardPreset: true,
-    note: "Experimental Cursor bridge. Live transport and live model discovery are enabled after a standalone PKCE browser login via 'ocx login cursor'; native read/write/delete/shell/fetch execution defaults to codex-sandbox mode (auto-enabled when the request declares Codex danger-full-access sandbox); override with \"nativeLocalExec\": \"on\" (always) or \"codex-sandbox\" (only for requests declaring the Codex danger-full-access sandbox; the declaration is caller-controlled prose the proxy cannot verify, and the auth-free loopback bind admits any process on this host, including other local users — enable only where every data-plane client is trusted) — legacy \"unsafeAllowNativeLocalExec\": true still means \"on\" — on providers.cursor in ~/.opencodex/config.json (dashboard: Providers → Cursor → Edit JSON) for a trusted local experiment.",
+    note: "Experimental Cursor bridge. Live transport and live model discovery are enabled after a standalone PKCE browser login via 'ocx login cursor'; native read/write/delete/shell/fetch execution defaults to codex-sandbox mode (auto-enabled when the request declares Codex danger-full-access sandbox); override with \"nativeLocalExec\": \"on\" (always), \"off\" (never), or \"codex-sandbox\" (only for requests declaring the Codex danger-full-access sandbox; the declaration is caller-controlled prose the proxy cannot verify, and the auth-free loopback bind admits any process on this host, including other local users — enable only where every data-plane client is trusted) — legacy \"unsafeAllowNativeLocalExec\": true still means \"on\" — on providers.cursor in ~/.opencodex/config.json (dashboard: Providers → Cursor → Edit JSON) for a trusted local experiment.",
     models: cursorModelIds(CURSOR_STATIC_MODELS),
     liveModels: true,
     defaultModel: "auto",
@@ -497,7 +511,21 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     preserveReasoningContentModels: KIMI_API_MODELS,
   },
   { id: "huggingface", label: "Hugging Face", baseUrl: "https://router.huggingface.co/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://huggingface.co/settings/tokens" },
-  { id: "nvidia", label: "NVIDIA NIM", baseUrl: "https://integrate.api.nvidia.com/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://build.nvidia.com" },
+  // 260715 NIM hardening (issue #126, devlog/_plan/260715_issue126_nim_kimi):
+  // - NIM kimi rejects `parallel_tool_calls: true` with 400 "This model only supports single
+  //   tool-calls at once!" (openclaw#37048). NVIDIA's own function-calling docs default the
+  //   Boolean to false, so provider-wide `false` is the documented-safe wire value.
+  // - `reasoning_effort` is not portable on NIM (models use chat_template_kwargs); the kimi
+  //   family is live-discovered with no capability metadata, so Codex would otherwise send
+  //   reasoning_effort=medium. Exact-id lists per modelInList semantics; gpt-oss on NIM keeps
+  //   its working reasoning_effort. Future kimi ids must be appended individually.
+  {
+    id: "nvidia", label: "NVIDIA NIM", baseUrl: "https://integrate.api.nvidia.com/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://build.nvidia.com",
+    parallelToolCalls: false,
+    noReasoningModels: NVIDIA_NIM_KIMI_MODELS,
+    modelReasoningEfforts: Object.fromEntries(NVIDIA_NIM_KIMI_MODELS.map(id => [id, []])),
+    preserveReasoningContentModels: NVIDIA_NIM_KIMI_THINKING_MODELS,
+  },
   { id: "venice", label: "Venice", baseUrl: "https://api.venice.ai/api/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://venice.ai/settings/api" },
   // 260710 GLM-5.2 context and path-specific ids: Tier-2 evidence in
   // devlog/_plan/260710_provider_hardening/002_research_cn.md.
@@ -583,8 +611,41 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   },
   { id: "opencode-zen", label: "opencode zen", baseUrl: "https://opencode.ai/zen/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://opencode.ai/auth" },
   { id: "vercel-ai-gateway", label: "Vercel AI Gateway", baseUrl: "https://ai-gateway.vercel.sh/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://vercel.com/dashboard" },
+  {
+    id: "opencode-free",
+    label: "OpenCode Free",
+    adapter: "openai-chat",
+    baseUrl: "https://opencode.ai/zen/v1",
+    authKind: "key",
+    keyOptional: true,
+    featured: true,
+    liveModels: true,
+    note: "No key needed — public desktop tier. OpenCode currently advertises about 200 Big Pickle/free-model requests per 5 hours. Free models are discovered live from Zen. Data use: per OpenCode's Zen docs (https://opencode.ai/docs/zen/), prompts sent to free models may be retained and used for training/improvement — do not send confidential material through this provider.",
+    dashboardUrl: "https://opencode.ai",
+    staticHeaders: {
+      "x-opencode-client": "desktop",
+    },
+    modelReasoningEfforts: Object.fromEntries(OPENCODE_FREE_DEEPSEEK_MODELS.map(id => [id, DEEPSEEK_THINKING_EFFORTS])),
+    modelReasoningEffortMap: Object.fromEntries(OPENCODE_FREE_DEEPSEEK_MODELS.map(id => [id, DEEPSEEK_THINKING_REASONING_MAP])),
+    preserveReasoningContentModels: OPENCODE_FREE_DEEPSEEK_MODELS,
+    noVisionModels: OPENCODE_FREE_DEEPSEEK_MODELS,
+  },
   { id: "xiaomi", label: "Xiaomi MiMo", baseUrl: "https://api.xiaomimimo.com/anthropic", adapter: "anthropic", authKind: "key", dashboardUrl: "https://xiaomimimo.com", defaultModel: "mimo-v2.5-pro" },
   { id: "kilo", label: "Kilo", baseUrl: "https://api.kilo.ai/api/gateway", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://kilo.ai" },
+  {
+    id: "mimo-free",
+    label: "MiMo Free",
+    adapter: "mimo-free",
+    baseUrl: "https://api.xiaomimimo.com/api/free-ai/openai/chat",
+    authKind: "key",
+    keyOptional: true,
+    featured: true,
+    liveModels: true,
+    dashboardUrl: "https://xiaomimimo.com",
+    defaultModel: "mimo-auto",
+    models: ["mimo-auto"],
+    note: "No key needed — uses Xiaomi MiMo's free public tier (limited-time offer). A JWT is bootstrapped automatically with an anonymous random client id stored locally. The endpoint contract mirrors the official MiMoCode client and is not publicly documented — Xiaomi may change or restrict it at any time. Prompts may be processed/retained by Xiaomi; do not send confidential material.",
+  },
   { id: "cloudflare-ai-gateway", label: "Cloudflare AI Gateway", baseUrl: "https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway}/anthropic", adapter: "anthropic", authKind: "key", dashboardUrl: "https://dash.cloudflare.com/?to=/:account/ai/ai-gateway" },
   // FREEZE 2026-07-10: /models is auth-gated, so ids remain unverified. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "github-copilot", label: "GitHub Copilot", baseUrl: "https://api.githubcopilot.com", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://github.com/settings/copilot" },

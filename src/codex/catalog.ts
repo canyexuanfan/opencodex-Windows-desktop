@@ -851,6 +851,17 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
       applyNativeOpenAiContextOverride(e);
       if (isGpt56NativeSlug(slug)) ensureGpt56ReasoningLevels(e);
       else ensureUltraReasoningLevel(e);
+     // Non-5.6 natives (5.5, 5.4, 5.4-mini, spark) do not support responses-lite;
+     // the template may carry the flag from a 5.6 entry — strip it so codex-rs does
+     // not inject reasoning.context: "all_turns" for models that reject it.
+     if (!isGpt56NativeSlug(slug)) {
+        // Spark NEEDS use_responses_lite: true — it controls the tool delivery format
+        // (AdditionalTools in input vs top-level tools). The reasoning params that
+        // use_responses_lite triggers (context: "all_turns", summary) are stripped
+        // separately in the passthrough adapter (stripUnsupportedReasoningParams).
+        if (!slug.includes("codex-spark")) delete e.use_responses_lite;
+        delete e.supports_websockets;
+      }
     }
     return ensureStrictCatalogFields(normalizeServiceTiers(e));
   }
@@ -1179,7 +1190,8 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
       provider: name,
       owned_by: m.owned_by,
       ...catalogHintsFromModelsApiItem(name, m),
-    }, contextCap));
+    }, contextCap))
+      .filter(m => shouldExposeProviderModel(name, m.id));
     const liveIds = new Set(live.map(m => m.id));
     // Dated-release aliases (Anthropic pattern): older models may appear in the live catalog
     // ONLY under their dated id (claude-haiku-4-5-20251001) while the config names the
@@ -1193,6 +1205,8 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
       if (dated) {
         // Reapply config hints so alias-keyed overrides (modelContextWindows etc.) win.
         live.push(applyProviderConfigHints(name, prov, { ...dated, id: m.id }, contextCap));
+      } else if (shouldRetainConfiguredProviderModel(name, m.id)) {
+        live.push(m);
       } else {
         droppedConfiguredIds.push(m.id);
       }
@@ -1211,6 +1225,16 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
     const stale = getStaleCached(name);
     return stale ? applyConfigHintsToCachedModels(name, prov, stale, contextCap) : configured;
   }
+}
+
+function shouldExposeProviderModel(providerName: string, modelId: string): boolean {
+  if (providerName === "opencode-free") return modelId === "big-pickle" || modelId.endsWith("-free");
+  return true;
+}
+
+function shouldRetainConfiguredProviderModel(providerName: string, modelId: string): boolean {
+  if (providerName === "opencode-free") return modelId === "big-pickle" || modelId.endsWith("-free");
+  return false;
 }
 
 /**

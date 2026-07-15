@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { enforceAnthropicImageLimits, sniffImageDimensions } from "../src/adapters/anthropic-image-guard";
+import {
+  enforceAnthropicImageLimits,
+  sniffImageDimensions,
+  MAX_IMAGE_BASE64_LENGTH,
+  TOTAL_IMAGE_BASE64_BUDGET,
+} from "../src/adapters/anthropic-image-guard";
 
 function b64(bytes: number[]): string {
   return Buffer.from(Uint8Array.from(bytes)).toString("base64");
@@ -8,14 +13,26 @@ function b64(bytes: number[]): string {
 function u32be(n: number): number[] { return [(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff]; }
 function u16be(n: number): number[] { return [(n >>> 8) & 0xff, n & 0xff]; }
 
-/** Minimal PNG: signature + IHDR chunk header + width/height. Sniffer reads only the header. */
-function pngBase64(width: number, height: number): string {
-  return b64([
+/** Minimal PNG header bytes: signature + IHDR chunk header + width/height. */
+function pngHeaderBytes(width: number, height: number): number[] {
+  return [
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
     ...u32be(13), 0x49, 0x48, 0x44, 0x52, // len + "IHDR"
     ...u32be(width), ...u32be(height),
     8, 6, 0, 0, 0, // bit depth, color type, etc.
-  ]);
+  ];
+}
+
+/** Minimal PNG: sniffer reads only the header. */
+function pngBase64(width: number, height: number): string {
+  return b64(pngHeaderBytes(width, height));
+}
+
+/** Valid PNG header padded with zero bytes to exactly `decodedBytes` total decoded size. */
+function bigPngBase64(width: number, height: number, decodedBytes: number): string {
+  const buf = Buffer.alloc(decodedBytes);
+  Buffer.from(Uint8Array.from(pngHeaderBytes(width, height))).copy(buf);
+  return buf.toString("base64");
 }
 
 /** Minimal JPEG: SOI + APP1 (EXIF-ish, skipped by length) + SOF0 with dimensions. */
@@ -167,5 +184,99 @@ describe("enforceAnthropicImageLimits", () => {
     const messages = [userMsg([...Array.from({ length: 21 }, () => ({ ...urlImg })), imageBlock(BIG)])];
     enforceAnthropicImageLimits(messages);
     expect(countImages(messages)).toBe(20);
+  });
+});
+
+describe("enforceAnthropicImageLimits — byte limits", () => {
+  // 3MiB decoded (multiple of 3 → no padding) → exactly 4MiB of base64 chars —
+  // safely under the 5MiB per-image base64 cap so only budget rules fire.
+  const MID_DECODED = 3 * 1024 * 1024;
+  const midPng = (): Record<string, unknown> => imageBlock(bigPngBase64(800, 600, MID_DECODED));
+  const textOf = (block: unknown): string => (block as { text?: string }).text ?? "";
+
+  function base64SumOf(messages: unknown[]): number {
+    let sum = 0;
+    const scan = (arr: unknown[]): void => {
+      for (const block of arr) {
+        const b = block as { type?: string; source?: { type?: string; data?: string }; content?: unknown };
+        if (b?.type === "image" && b.source?.type === "base64" && typeof b.source.data === "string") sum += b.source.data.length;
+        else if (b?.type === "tool_result" && Array.isArray(b.content)) scan(b.content);
+      }
+    };
+    for (const m of messages) {
+      const content = (m as { content?: unknown }).content;
+      if (Array.isArray(content)) scan(content);
+    }
+    return sum;
+  }
+
+  test("B1: over-budget total evicts oldest base64 images until under budget, newest survive", () => {
+    // 8 × 4MiB base64 = 32MiB > 20MiB budget → 3 oldest evicted (28 → 24 → 20MiB).
+    const messages = [userMsg(Array.from({ length: 8 }, () => midPng()))];
+    enforceAnthropicImageLimits(messages);
+    const content = (messages[0] as { content: Array<{ type: string }> }).content;
+    for (let i = 0; i < 3; i++) {
+      expect(content[i].type).toBe("text");
+      expect(textOf(content[i])).toContain("older screenshots were dropped");
+      expect(textOf(content[i])).toContain("request limit");
+    }
+    for (let i = 3; i < 8; i++) expect(content[i].type).toBe("image");
+    expect(base64SumOf(messages)).toBeLessThanOrEqual(TOTAL_IMAGE_BASE64_BUDGET);
+  });
+
+  test("B2: under-budget request is untouched by the byte rule", () => {
+    const messages = [userMsg([imageBlock(bigPngBase64(800, 600, 1024 * 1024)), imageBlock(bigPngBase64(800, 600, 1024 * 1024))])];
+    const before = JSON.stringify(messages);
+    enforceAnthropicImageLimits(messages);
+    expect(JSON.stringify(messages)).toBe(before);
+  });
+
+  test("B3: a single image over the 5MiB base64-length cap is textified, siblings intact", () => {
+    // GAP case (devlog 260714_image_normalization_pipeline/010): decoded 4,194,304 bytes
+    // (4MiB, UNDER the old decoded-bytes rule) encodes to 5,592,408 base64 chars — over
+    // the base64-length cap the API actually enforces. Red on the old comparison.
+    const messages = [userMsg([imageBlock(bigPngBase64(800, 600, 4 * 1024 * 1024)), imageBlock(SMALL)])];
+    enforceAnthropicImageLimits(messages);
+    const content = (messages[0] as { content: Array<{ type: string }> }).content;
+    expect(content[0].type).toBe("text");
+    expect(textOf(content[0])).toContain("5MB per-image limit");
+    expect(content[1].type).toBe("image");
+  });
+
+  test("B4: an image at exactly the 5MiB base64-length cap survives", () => {
+    // 3,932,160 decoded bytes (multiple of 3, no padding) → exactly 5,242,880 base64 chars.
+    const b64Data = bigPngBase64(800, 600, 3_932_160);
+    expect(b64Data.length).toBe(MAX_IMAGE_BASE64_LENGTH);
+    const messages = [userMsg([imageBlock(b64Data)])];
+    const before = JSON.stringify(messages);
+    enforceAnthropicImageLimits(messages);
+    expect(JSON.stringify(messages)).toBe(before);
+  });
+
+  test("B5: >8000px image textified by the dimension rule does not count toward the byte budget", () => {
+    // 18MiB decoded (24MiB base64) at 9000px wide → dimension rule kills it first; the
+    // remaining 2 × 4MiB base64 = 8MiB ≤ 20MiB, so no byte-budget eviction fires.
+    const messages = [userMsg([imageBlock(bigPngBase64(9000, 500, 18 * 1024 * 1024)), midPng(), midPng()])];
+    enforceAnthropicImageLimits(messages);
+    const content = (messages[0] as { content: Array<{ type: string }> }).content;
+    expect(content[0].type).toBe("text");
+    expect(textOf(content[0])).toContain("8000px");
+    expect(content[1].type).toBe("image");
+    expect(content[2].type).toBe("image");
+  });
+
+  test("B6: URL images are never evicted by the byte budget; oldest base64 goes instead", () => {
+    // Oldest ref is a URL image, then 6 × 4MiB base64 = 24MiB > 20MiB → exactly one
+    // base64 eviction (the oldest base64, index 1), never the URL.
+    const urlImg = { type: "image", source: { type: "url", url: "https://example.com/a.png" } };
+    const messages = [userMsg([{ ...urlImg }, midPng(), midPng(), midPng(), midPng(), midPng(), midPng()])];
+    enforceAnthropicImageLimits(messages);
+    const content = (messages[0] as { content: Array<{ type: string; source?: { type?: string } }> }).content;
+    expect(content[0].type).toBe("image");
+    expect(content[0].source?.type).toBe("url");
+    expect(content[1].type).toBe("text");
+    expect(textOf(content[1])).toContain("older screenshots were dropped");
+    for (let i = 2; i < 7; i++) expect(content[i].type).toBe("image");
+    expect(base64SumOf(messages)).toBeLessThanOrEqual(TOTAL_IMAGE_BASE64_BUDGET);
   });
 });

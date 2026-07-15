@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createResponsesPassthroughAdapter } from "../src/adapters/openai-responses";
+import { sanitizeEncryptedContentInPlace } from "../src/server/responses";
 
 const provider = {
   adapter: "openai-responses",
@@ -8,6 +9,93 @@ const provider = {
 };
 
 describe("OpenAI Responses passthrough sanitization", () => {
+  test("agent_message conversion removes its non-OpenAI item id", () => {
+    const input = [{
+      type: "agent_message",
+      id: "019f5e7f-ac31-7610-b69c-43ae41759fce",
+      author: "/root",
+      recipient: "/root/worker",
+      content: [{ type: "encrypted_content", encrypted_content: "delegated task" }],
+    }];
+
+    expect(sanitizeEncryptedContentInPlace(input)).toBe(1);
+    expect(input[0]).toEqual({
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "delegated task" }],
+    });
+    expect(input[0]).not.toHaveProperty("id");
+  });
+
+  test("strips invalid type-specific ids from serialized input items", () => {
+    const adapter = createResponsesPassthroughAdapter(provider);
+    const encryptedContent = "opaque-openai-encrypted-content";
+    const cases = [
+      { item: { type: "message", id: "019f5e7f-ac31-7610-b69c-43ae41759fce", role: "user", content: "first" }, expectedId: undefined },
+      { item: { type: "message", id: "msg_abc", role: "assistant", content: "second" }, expectedId: "msg_abc" },
+      { item: { type: "custom_tool_call", id: "fc_old", call_id: "call_1", name: "patch", input: "old" }, expectedId: undefined },
+      { item: { type: "custom_tool_call", id: "ctc_1", call_id: "call_2", name: "patch", input: "new" }, expectedId: "ctc_1" },
+      { item: { type: "function_call", id: "fc_1", call_id: "call_3", name: "ping", arguments: "{}" }, expectedId: "fc_1" },
+      { item: { type: "reasoning", id: "rs_1", summary: [], encrypted_content: encryptedContent }, expectedId: "rs_1" },
+      { item: { type: "tool_search_call", id: "fc_old_search", call_id: "call_4", execution: "client", arguments: {} }, expectedId: undefined },
+      { item: { type: "tool_search_call", id: "tsc_1", call_id: "call_5", execution: "client", arguments: {} }, expectedId: "tsc_1" },
+      { item: { type: "web_search_call", id: "fc_wrong", status: "completed" }, expectedId: undefined },
+      { item: { type: "web_search_call", id: "ws_valid", status: "completed" }, expectedId: "ws_valid" },
+    ];
+    const input = cases.map(({ item }) => item);
+    const request = adapter.buildRequest({
+      modelId: "gpt-5.5",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: { model: "gpt-5.5", input },
+    }, { headers: new Headers({ authorization: "Bearer token" }) });
+    const body = JSON.parse(request.body) as { input: Record<string, unknown>[] };
+
+    cases.forEach(({ expectedId }, index) => {
+      if (expectedId === undefined) expect(body.input[index]).not.toHaveProperty("id");
+      else expect(body.input[index].id).toBe(expectedId);
+    });
+    expect(body.input[5]).toEqual(input[5]);
+  });
+
+  test("strips all item ids when store is false and preserves them otherwise", () => {
+    const adapter = createResponsesPassthroughAdapter(provider);
+    const input = [
+      { type: "message", id: "msg_abc", role: "assistant", content: "hello" },
+      { type: "function_call", id: "fc_xyz", call_id: "call_1", name: "ping", arguments: "{}" },
+      { type: "reasoning", id: "rs_123", summary: [] },
+    ];
+    const unstoredBody = JSON.parse(adapter.buildRequest({
+      modelId: "gpt-5.5",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: { model: "gpt-5.5", store: false, input },
+    }, { headers: new Headers({ authorization: "Bearer token" }) }).body) as { input: Record<string, unknown>[] };
+
+    unstoredBody.input.forEach(item => expect(item).not.toHaveProperty("id"));
+    expect(unstoredBody.input[1].call_id).toBe("call_1");
+
+    const omittedStoreBody = JSON.parse(adapter.buildRequest({
+      modelId: "gpt-5.5",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: { model: "gpt-5.5", input },
+    }, { headers: new Headers({ authorization: "Bearer token" }) }).body) as { input: Record<string, unknown>[] };
+    const storedBody = JSON.parse(adapter.buildRequest({
+      modelId: "gpt-5.5",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: { model: "gpt-5.5", store: true, input },
+    }, { headers: new Headers({ authorization: "Bearer token" }) }).body) as { input: Record<string, unknown>[] };
+
+    expect(omittedStoreBody.input.map(item => item.id)).toEqual(["msg_abc", "fc_xyz", "rs_123"]);
+    expect(storedBody.input.map(item => item.id)).toEqual(["msg_abc", "fc_xyz", "rs_123"]);
+  });
+
   test("drops raw reasoning input content before native GPT passthrough", () => {
     const adapter = createResponsesPassthroughAdapter(provider);
     const request = adapter.buildRequest({

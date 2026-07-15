@@ -75,9 +75,9 @@ describe("identity neutralization — adapters never leak proxy identity", () =>
       rmSync(tmp, { recursive: true, force: true });
     });
 
-    test("system prefix is neutralized, no proxy mention", () => {
+    test("system prefix is neutralized, no proxy mention", async () => {
       const provider = { adapter: "kiro", baseUrl: "https://runtime.us-east-1.kiro.dev", authMode: "oauth", apiKey: "tok-123" } as unknown as OcxProviderConfig;
-      const { body } = createKiroAdapter(provider).buildRequest(parsed("claude-sonnet-4.5", "kiro"));
+      const { body } = await createKiroAdapter(provider).buildRequest(parsed("claude-sonnet-4.5", "kiro"));
       const serialized = typeof body === "string" ? body : JSON.stringify(body);
       expect(serialized).not.toMatch(/opencodex proxy/i);
       expect(serialized).not.toContain(SYS);

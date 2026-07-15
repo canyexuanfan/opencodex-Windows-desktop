@@ -41,6 +41,7 @@ import { isUsageDebugEnabled } from "../usage/debug";
 import { readJsonRequestBody, DecompressedBodyTooLargeError, UnsupportedContentEncodingError } from "./request-decompress";
 import { resolveAdapter, resolveWireProtocolOverride } from "./adapter-resolve";
 import { hasKeyPoolFailover, rotateProviderTransportOn429 } from "../providers/key-failover";
+import { shouldAttemptImageTierRetry } from "./image-retry";
 import { resolveProviderTransport } from "../providers/xai-transport";
 import type { WsData } from "./ws-bridge";
 import { registerTurn, trackStreamLifetime, unregisterTurn } from "./lifecycle";
@@ -346,9 +347,10 @@ export function sanitizeEncryptedContentInPlace(input: unknown): number {
           && (child as { type?: unknown }).type === "agent_message"
           && !hasEncryptedContentPart((child as { content?: unknown }).content)
         ) {
-          const message = child as { type: string; role?: string; author?: unknown; recipient?: unknown };
+          const message = child as { type: string; role?: string; id?: unknown; author?: unknown; recipient?: unknown };
           message.type = "message";
           message.role = "user";
+          delete message.id;
           delete message.author;
           delete message.recipient;
         }
@@ -464,6 +466,22 @@ export async function handleResponses(
   logCtx.requestedSpeedLabel = requestLogSpeedLabel(parsed.options.serviceTier);
   logCtx.configuredServiceTier = readConfiguredCodexServiceTier();
   logCtx.configuredSpeedLabel = requestLogSpeedLabel(logCtx.configuredServiceTier);
+
+  // Shadow call intercept: rewrite Codex Desktop's hard-coded gpt-5.4-mini helper calls
+  const _sci = config.shadowCallIntercept;
+  if (_sci?.enabled && _sci.model && parsed.modelId.startsWith("gpt-5.4-mini")) {
+    const _sciOriginal = parsed.modelId;
+    parsed.modelId = _sci.model;
+    if (parsed._rawBody && typeof parsed._rawBody === "object") {
+      (parsed._rawBody as { model?: string }).model = _sci.model;
+    }
+    // Force effort to low for shadow/helper calls (matching upstream behavior)
+    parsed.options.reasoning = "low";
+    if (parsed._rawBody && typeof parsed._rawBody === "object") {
+      (parsed._rawBody as Record<string, unknown>).reasoning = { effort: "low" };
+    }
+    (logCtx as unknown as Record<string, unknown>).shadowCallRewrittenFrom = _sciOriginal;
+  }
 
   let route;
   try {
@@ -940,29 +958,22 @@ export async function handleResponses(
   }
 
   if (!upstreamResponse.ok) {
-    // Multi-key 429 failover: rotate to the next pool key (cooldown-aware) and retry the SAME
-    // request once per remaining key. OAuth/forward providers and single-key pools return null
-    // immediately, so this stays a no-op for them (src/providers/key-failover.ts).
-    while (upstreamResponse.status === 429 && hasKeyPoolFailover(route.provider)) {
-      const rotated = rotateProviderTransportOn429(config, route.providerName, {
-        retryAfter: upstreamResponse.headers.get("retry-after"),
-        now: Date.now(),
-        attemptedKey: route.provider.apiKey,
-        promptCacheKey: parsed.options.promptCacheKey,
+    // Recovery loop: multi-key 429 failover + at most ONE anthropic 413 tightened retry
+    // (devlog/260714_image_normalization_pipeline/030). One mutable activeAdapter serves
+    // both paths so a 429→413 sequence never rebuilds against a stale pre-rotation
+    // adapter, and imageTierBias — once armed — rides EVERY subsequent rebuild so a
+    // 413→429 rotation cannot silently undo the tightening.
+    let activeAdapter = adapter;
+    let imageTierBias = 0;
+    let imageRetryAttempted = false;
+    const rebuildAndRefetch = async (): Promise<Response | { failed: Response }> => {
+      const retryRequest = await activeAdapter.buildRequest(parsed, {
+        headers: selectedForwardHeaders,
+        ...(imageTierBias > 0 ? { imageTierBias } : {}),
       });
-      if (!rotated) break;
-      // Release the failed response's socket before retrying; unread bodies otherwise linger
-      // until runtime cleanup (one per rotated key under a rate-limit storm).
-      try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
-      route.provider = rotated;
-      const retryAdapter = resolveAdapter(
-        resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
-        config.cacheRetention,
-      );
-      const retryRequest = await retryAdapter.buildRequest(parsed, { headers: selectedForwardHeaders });
       try {
-        upstreamResponse = retryAdapter.fetchResponse
-          ? await retryAdapter.fetchResponse(retryRequest, { abortSignal: upstream.signal, timeoutMs: connectMs, stream: parsed.stream })
+        return activeAdapter.fetchResponse
+          ? await activeAdapter.fetchResponse(retryRequest, { abortSignal: upstream.signal, timeoutMs: connectMs, stream: parsed.stream })
           : await fetchWithHeaderTimeout(retryRequest.url, {
               method: retryRequest.method, headers: retryRequest.headers, body: retryRequest.body,
             }, upstream.signal, connectMs, parsed.stream);
@@ -972,8 +983,50 @@ export async function handleResponses(
         const msg = err instanceof Error && err.name === "TimeoutError"
           ? `Provider connect timeout after ${connectMs}ms`
           : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
-        return formatErrorResponse(502, "upstream_error", msg);
+        return { failed: formatErrorResponse(502, "upstream_error", msg) };
       }
+    };
+    recovery: for (;;) {
+      // Multi-key 429 failover: rotate to the next pool key (cooldown-aware) and retry the
+      // SAME request once per remaining key. OAuth/forward providers and single-key pools
+      // return null immediately, so this stays a no-op for them (src/providers/key-failover.ts).
+      while (upstreamResponse.status === 429 && hasKeyPoolFailover(route.provider)) {
+        const rotated = rotateProviderTransportOn429(config, route.providerName, {
+          retryAfter: upstreamResponse.headers.get("retry-after"),
+          now: Date.now(),
+          attemptedKey: route.provider.apiKey,
+          promptCacheKey: parsed.options.promptCacheKey,
+        });
+        if (!rotated) break;
+        // Release the failed response's socket before retrying; unread bodies otherwise linger
+        // until runtime cleanup (one per rotated key under a rate-limit storm).
+        try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
+        route.provider = rotated;
+        activeAdapter = resolveAdapter(
+          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
+          config.cacheRetention,
+        );
+        const result = await rebuildAndRefetch();
+        if ("failed" in result) return result.failed;
+        upstreamResponse = result;
+      }
+      // Anthropic 413 request_too_large: rebuild once with every image one tier lower
+      // (spiral guard: single attempt). The biased response re-enters the 429 check above.
+      if (shouldAttemptImageTierRetry({
+        status: upstreamResponse.status,
+        adapterName: activeAdapter.name,
+        parsed,
+        alreadyAttempted: imageRetryAttempted,
+      })) {
+        imageRetryAttempted = true;
+        imageTierBias = 1;
+        try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
+        const result = await rebuildAndRefetch();
+        if ("failed" in result) return result.failed;
+        upstreamResponse = result;
+        continue recovery;
+      }
+      break;
     }
     if (!upstreamResponse.ok) {
       const errorText = await upstreamResponse.text().catch(() => "unknown error");

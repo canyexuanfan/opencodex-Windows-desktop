@@ -2,6 +2,7 @@ import type { ProviderAdapter } from "./base";
 import type { AdapterEvent, OcxAssistantMessage, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTextContent, OcxThinkingContent, OcxToolCall, OcxUsage } from "../types";
 import { isAllowedToolChoice, modelInList, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
 import { mapReasoningEffort } from "../reasoning-effort";
+import { redactSecretString } from "../lib/redact";
 import { contentPartsToText } from "./image";
 import { neutralizeIdentity } from "./identity";
 import { buildNonOpenAIToolCatalogNudgeForTools, shouldInjectNonOpenAIToolCatalogNudge } from "./tool-catalog-nudge";
@@ -11,6 +12,52 @@ import { buildNonOpenAIToolCatalogNudgeForTools, shouldInjectNonOpenAIToolCatalo
 // unflagged OpenAI-compatible providers and the Anthropic adapter keep ids verbatim.
 export function stripBracketedModelSuffix(modelId: string): string {
   return modelId.replace(/\[[^\]]*\]\s*$/, "");
+}
+
+// 260715 (issue #126): surface upstream error detail through the web-search sidecar loop.
+// loop.ts only appends a suffix to "Provider error N" when the adapter exposes
+// formatErrorBody; without it, strict OpenAI-compatible backends (NVIDIA NIM pydantic
+// validation, "This model only supports single tool-calls at once!", etc.) were reduced
+// to a bare status code. JSON-only extraction: recognized string fields are returned,
+// HTML/non-JSON bodies yield "" so raw markup is never echoed to the client.
+export function formatOpenAIChatErrorBody(status: number, _headers: Headers, payloadText: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payloadText);
+  } catch {
+    return "";
+  }
+  const detail = extractErrorDetail(parsed);
+  if (!detail) return "";
+  return redactSecretString(detail).slice(0, 400);
+}
+
+function extractErrorDetail(parsed: unknown): string | undefined {
+  if (typeof parsed === "string") return parsed.trim() || undefined;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const obj = parsed as Record<string, unknown>;
+  // OpenAI shape: { error: { message } } or { error: "..." }
+  const err = obj.error;
+  if (typeof err === "string" && err.trim()) return err.trim();
+  if (err !== null && typeof err === "object" && !Array.isArray(err)) {
+    const msg = (err as Record<string, unknown>).message;
+    if (typeof msg === "string" && msg.trim()) return msg.trim();
+  }
+  // FastAPI/pydantic shape (NVIDIA NIM): { detail: "..." } or { detail: [{ msg, loc }, ...] }
+  const det = obj.detail;
+  if (typeof det === "string" && det.trim()) return det.trim();
+  if (Array.isArray(det)) {
+    const msgs = det
+      .map(item => (item !== null && typeof item === "object" && typeof (item as Record<string, unknown>).msg === "string"
+        ? ((item as Record<string, unknown>).msg as string).trim()
+        : ""))
+      .filter(m => m.length > 0);
+    if (msgs.length > 0) return msgs.join("; ");
+  }
+  // Generic fallbacks: { message } / RFC7807 { title }
+  if (typeof obj.message === "string" && obj.message.trim()) return obj.message.trim();
+  if (typeof obj.title === "string" && obj.title.trim()) return obj.title.trim();
+  return undefined;
 }
 
 function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] {
@@ -125,7 +172,131 @@ function safeToolName(name: string | undefined): string {
   return sanitized;
 }
 
-function toolsToChatFormat(parsed: OcxParsedRequest): unknown[] | undefined {
+const ZEN_SCHEMA_MAP_KEYS = new Set(["properties", "$defs", "definitions"]);
+const ZEN_DROPPED_SCHEMA_KEYS = new Set(["encrypted"]);
+
+function sanitizeZenSchemaMap(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return sanitizeZenToolParameters(value);
+  const out: Record<string, unknown> = {};
+  for (const [name, child] of Object.entries(value as Record<string, unknown>)) {
+    out[name] = sanitizeZenToolParameters(child);
+  }
+  return out;
+}
+
+function sanitizeZenToolParameters(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeZenToolParameters);
+  if (!value || typeof value !== "object") return value;
+  const input = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(input)) {
+    if (ZEN_DROPPED_SCHEMA_KEYS.has(key)) continue;
+    if (key === "required" && Array.isArray(child) && child.length === 0) continue;
+    if (key === "type" && Array.isArray(child)) {
+      const nonNull = child.filter(entry => entry !== "null");
+      if (child.includes("null")) out.nullable = true;
+      if (nonNull.length > 0) out.type = nonNull[0];
+      continue;
+    }
+    out[key] = ZEN_SCHEMA_MAP_KEYS.has(key) ? sanitizeZenSchemaMap(child) : sanitizeZenToolParameters(child);
+  }
+  return out;
+}
+
+function ensureZenRootObjectSchema(schema: unknown): Record<string, unknown> {
+  const obj = schema && typeof schema === "object" && !Array.isArray(schema)
+    ? schema as Record<string, unknown>
+    : {};
+  const compositionKeys = ["oneOf", "anyOf", "allOf"] as const;
+  const hasComposition = compositionKeys.some(key => Array.isArray(obj[key]));
+  const rootType = obj.type;
+  const rootObjectType = rootType === "object" || (Array.isArray(rootType) && rootType.includes("object"));
+  if (!hasComposition) {
+    const base = sanitizeZenToolParameters(obj) as Record<string, unknown>;
+    return rootObjectType && base.type === "object" ? base : { ...base, type: "object" };
+  }
+
+  const props: Record<string, unknown> = {};
+  const required = new Set<string>();
+  if (obj.properties && typeof obj.properties === "object") {
+    Object.assign(props, sanitizeZenSchemaMap(obj.properties) as Record<string, unknown>);
+  }
+  if (Array.isArray(obj.required)) {
+    for (const entry of obj.required) if (typeof entry === "string") required.add(entry);
+  }
+  for (const key of compositionKeys) {
+    const variants = obj[key];
+    if (!Array.isArray(variants)) continue;
+    const mergeRequired = key === "allOf";
+    for (const variant of variants) {
+      if (!variant || typeof variant !== "object" || Array.isArray(variant)) continue;
+      const rec = variant as Record<string, unknown>;
+      if (rec.properties && typeof rec.properties === "object") {
+        Object.assign(props, sanitizeZenSchemaMap(rec.properties) as Record<string, unknown>);
+      }
+      if (mergeRequired && Array.isArray(rec.required)) {
+        for (const entry of rec.required) if (typeof entry === "string") required.add(entry);
+      }
+    }
+  }
+
+  const merged = sanitizeZenToolParameters(obj) as Record<string, unknown>;
+  delete merged.oneOf;
+  delete merged.anyOf;
+  delete merged.allOf;
+  merged.type = "object";
+  if (Object.keys(props).length > 0) merged.properties = props;
+  if (required.size > 0) merged.required = [...required];
+  return merged;
+}
+
+function shouldSanitizeZenToolParameters(provider: OcxProviderConfig): boolean {
+  return provider.baseUrl.replace(/\/+$/, "") === "https://opencode.ai/zen/v1";
+}
+
+const XAI_SCHEMA_BASE_URLS = new Set(["api.x.ai", "cli-chat-proxy.grok.com"]);
+
+function isXaiSchemaTarget(provider: OcxProviderConfig): boolean {
+  try {
+    return XAI_SCHEMA_BASE_URLS.has(new URL(provider.baseUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function expandXaiRootObjectSchemas(schema: unknown): Record<string, unknown>[] | undefined {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return undefined;
+  const obj = schema as Record<string, unknown>;
+  const compositionKey = ["oneOf", "anyOf"].find(key => Array.isArray(obj[key]));
+  if (!compositionKey) {
+    if (obj.type !== undefined && obj.type !== "object") return undefined;
+    return [{ ...obj, type: "object" }];
+  }
+
+  const siblings = Object.fromEntries(Object.entries(obj).filter(([key]) => key !== compositionKey));
+  const branches = obj[compositionKey];
+  if (!Array.isArray(branches)) return undefined;
+  const expanded: Record<string, unknown>[] = [];
+  for (const branch of branches) {
+    const variants = expandXaiRootObjectSchemas(branch);
+    if (!variants) return undefined;
+    for (const variant of variants) expanded.push({ ...siblings, ...variant });
+  }
+  return expanded.length > 0 ? expanded : undefined;
+}
+
+function normalizeXaiToolParameters(parameters: unknown): Record<string, unknown> | undefined {
+  const variants = expandXaiRootObjectSchemas(parameters);
+  if (!variants) return undefined;
+  if (variants.length === 1) return variants[0];
+  const root = parameters && typeof parameters === "object" && !Array.isArray(parameters)
+    ? parameters as Record<string, unknown>
+    : {};
+  const metadata = Object.fromEntries(Object.entries(root).filter(([key]) => key !== "oneOf" && key !== "anyOf" && key !== "type"));
+  return { ...metadata, oneOf: variants };
+}
+
+function toolsToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] | undefined {
   if (!parsed.context.tools || parsed.context.tools.length === 0) return undefined;
   const allowed = isAllowedToolChoice(parsed.options.toolChoice)
     ? new Set(parsed.options.toolChoice.allowedTools)
@@ -134,15 +305,38 @@ function toolsToChatFormat(parsed: OcxParsedRequest): unknown[] | undefined {
     ? parsed.context.tools.filter(t => toolAllowedByChoice(t, allowed))
     : parsed.context.tools;
   if (tools.length === 0) return undefined;
-  return tools.map(t => ({
+  const xaiTarget = isXaiSchemaTarget(provider);
+  const formatted = tools.flatMap(t => {
+    const parameters = xaiTarget ? normalizeXaiToolParameters(t.parameters) : t.parameters;
+    if (parameters === undefined) return [];
+    return [{
     type: "function",
     function: {
       name: namespacedToolName(t.namespace, t.name),
       description: t.description,
-      parameters: t.parameters,
+      parameters,
       ...(t.strict !== undefined ? { strict: t.strict } : {}),
     },
-  }));
+    }];
+  });
+  return formatted.length > 0 ? formatted : undefined;
+}
+
+function toolsToChatFormatForProvider(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] | undefined {
+  const base = toolsToChatFormat(parsed, provider);
+  if (!base || !shouldSanitizeZenToolParameters(provider)) return base;
+  return base.map(tool => {
+    if (!tool || typeof tool !== "object") return tool;
+    const functionDef = (tool as { function?: Record<string, unknown> }).function;
+    if (!functionDef || typeof functionDef !== "object") return tool;
+    return {
+      ...tool,
+      function: {
+        ...functionDef,
+        parameters: ensureZenRootObjectSchema(functionDef.parameters ?? {}),
+      },
+    };
+  });
 }
 
 function toolChoiceToChatFormat(tc: OcxParsedRequest["options"]["toolChoice"], tools: OcxParsedRequest["context"]["tools"]): unknown {
@@ -183,6 +377,8 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
   return {
     name: "openai-chat",
 
+    formatErrorBody: formatOpenAIChatErrorBody,
+
     buildRequest(parsed: OcxParsedRequest) {
       const hasCredential = typeof provider.apiKey === "string" && provider.apiKey.trim().length > 0;
       if ((provider.authMode === "key" || provider.authMode === "oauth") && !provider.keyOptional && !hasCredential) {
@@ -190,7 +386,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       }
 
       const messages = messagesToChatFormat(parsed, provider);
-      const tools = toolsToChatFormat(parsed);
+      const tools = toolsToChatFormatForProvider(parsed, provider);
       const toolChoice = toolChoiceToChatFormat(parsed.options.toolChoice, parsed.context.tools);
 
       const body: Record<string, unknown> = {
@@ -249,6 +445,10 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
 
       const url = `${provider.baseUrl}/chat/completions`;
       const headers: Record<string, string> = { "Content-Type": "application/json" };
+      // Precedence preserved from pre-#128 behavior: apiKey Authorization first, then
+      // provider.headers may override (user/registry-configured headers win). Registry
+      // staticHeaders (e.g. opencode-free x-opencode-client) flow in via derive.ts and
+      // never carry Authorization, so keyless providers are unaffected.
       if (hasCredential) headers["Authorization"] = `Bearer ${provider.apiKey}`;
       if (provider.headers) Object.assign(headers, provider.headers);
 

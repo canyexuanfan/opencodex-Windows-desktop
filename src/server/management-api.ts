@@ -16,6 +16,7 @@ import {
   isOAuthProvider,
   listOAuthProviders,
   startLoginFlow,
+  submitManualLoginCode,
   upsertOAuthProvider,
 } from "../oauth";
 import { removeCredential } from "../oauth/store";
@@ -28,6 +29,7 @@ import { readUsageEntries } from "../usage/log";
 import { getUsageDebugLogEntries } from "../usage/debug";
 import { parseRange, summarizeUsage } from "../usage/summary";
 import { stripCodexRuntimeProviderFields } from "../codex/auth-context";
+import { getProviderRegistryEntry } from "../providers/registry";
 import { getDebugLogEntries } from "../lib/debug-log-buffer";
 import { getInjectionDebugLogEntries } from "../lib/injection-debug-log";
 import {
@@ -273,6 +275,33 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     });
   }
 
+  if (url.pathname === "/api/shadow-call-settings" && req.method === "GET") {
+    const sci = config.shadowCallIntercept ?? {};
+    return jsonResponse({ enabled: sci.enabled === true, model: sci.model ?? "" });
+  }
+
+  if (url.pathname === "/api/shadow-call-settings" && req.method === "PUT") {
+    let raw: unknown;
+    try { raw = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (!isPlainRecord(raw)) return jsonResponse({ error: "body must be a JSON object" }, 400);
+    const body = raw as { enabled?: unknown; model?: unknown };
+    if (body.enabled !== undefined && typeof body.enabled !== "boolean") {
+      return jsonResponse({ error: "enabled must be a boolean" }, 400);
+    }
+    if (body.model !== undefined && typeof body.model !== "string") {
+      return jsonResponse({ error: "model must be a string" }, 400);
+    }
+    config.shadowCallIntercept = { ...config.shadowCallIntercept };
+    if (typeof body.enabled === "boolean") config.shadowCallIntercept.enabled = body.enabled;
+    if (typeof body.model === "string") {
+      if (body.model === "") delete config.shadowCallIntercept.model;
+      else config.shadowCallIntercept.model = body.model;
+    }
+    saveConfig(config);
+    const sci = config.shadowCallIntercept;
+    return jsonResponse({ ok: true, enabled: sci.enabled === true, model: sci.model ?? "" });
+  }
+
   if (url.pathname === "/api/logs" && req.method === "GET") {
     return jsonResponse(filterRequestLogs(getRequestLogEntries(), url.searchParams));
   }
@@ -403,7 +432,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     // let the (possibly new) apiKey join the pool as the active entry.
     const existingPool = config.providers[name]?.apiKeyPool;
     if (existingPool && !prov.apiKeyPool) prov.apiKeyPool = existingPool;
-    config.providers[name] = prov;
+    config.providers[name] = stripRegistryOnlyStaticHeaders(name, prov);
     if (body.setDefault) config.defaultProvider = name;
     save(config);
     if (prov.apiKey && prov.apiKeyPool) {
@@ -582,10 +611,11 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       let toggle = deps.toggleCodexMultiAgentV2;
       if (!toggle) {
         const { execFileSync } = await import("node:child_process");
+        const { codexFeaturesInvocation } = await import("../cli/v2");
         toggle = (enabled: boolean) => {
-          const command = process.env.CODEX_CLI_PATH?.trim() || "codex";
-          execFileSync(command, ["features", enabled ? "enable" : "disable", "multi_agent_v2"],
-            { stdio: ["ignore", "pipe", "pipe"], timeout: 15_000, windowsHide: true });
+          const inv = codexFeaturesInvocation(enabled ? "enable" : "disable");
+          execFileSync(inv.file, inv.args,
+            { stdio: ["ignore", "pipe", "pipe"], timeout: 15_000, windowsHide: true, ...inv.options });
         };
       }
       const result = transitionMultiAgentV2(targetFlag, toggle, {
@@ -1016,6 +1046,21 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     }
   }
 
+  // Manual fallback for browser OAuth: paste the final redirect URL (or authorization code)
+  // when the browser cannot reach the loopback callback (remote/SSH/blocked localhost).
+  if (url.pathname === "/api/oauth/login/code" && req.method === "POST") {
+    const body = await req.json().catch(() => ({})) as { provider?: string; input?: string; code?: string };
+    const provider = (body.provider ?? "").trim().toLowerCase();
+    if (!isOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
+    const input = typeof body.input === "string" ? body.input : typeof body.code === "string" ? body.code : "";
+    // Authorization responses are measured in hundreds of bytes; never accept the
+    // generic management-body allowance here.
+    if (input.length > 4096) return jsonResponse({ error: "input too long" }, 400);
+    const result = submitManualLoginCode(provider, input);
+    if (!result.ok) return jsonResponse({ error: result.error }, 409);
+    return jsonResponse({ ok: true });
+  }
+
   if (url.pathname === "/api/oauth/status" && req.method === "GET") {
     const provider = (url.searchParams.get("provider") ?? "").trim().toLowerCase();
     return jsonResponse(getLoginStatus(provider));
@@ -1179,4 +1224,16 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
 export async function fetchAllModels(config: OcxConfig): Promise<CatalogModel[]> {
   const { gatherRoutedModels } = await import("../codex/catalog");
   return gatherRoutedModels(config);
+}
+
+function stripRegistryOnlyStaticHeaders(name: string, provider: OcxProviderConfig): OcxProviderConfig {
+  const entry = getProviderRegistryEntry(name);
+  if (!entry?.staticHeaders || !provider.headers) return provider;
+  const headerEntries = Object.entries(provider.headers);
+  const staticEntries = Object.entries(entry.staticHeaders);
+  if (headerEntries.length !== staticEntries.length) return provider;
+  const matchesRegistryStaticHeaders = staticEntries.every(([key, value]) => provider.headers?.[key] === value);
+  if (!matchesRegistryStaticHeaders) return provider;
+  const { headers: _headers, ...rest } = provider;
+  return rest;
 }

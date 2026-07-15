@@ -4,46 +4,46 @@ import type { OcxParsedRequest, OcxProviderConfig, OcxTool } from "../src/types"
 
 const provider = { adapter: "anthropic", baseUrl: "https://api.anthropic.com", apiKey: "sk-x", authMode: "apiKey" } as unknown as OcxProviderConfig;
 
-function toolsOf(tools: OcxTool[]): Array<{ name: string; input_schema: Record<string, unknown> }> {
+async function toolsOf(tools: OcxTool[]): Promise<Array<{ name: string; input_schema: Record<string, unknown> }>> {
   const parsed: OcxParsedRequest = {
     modelId: "anthropic/claude-sonnet-4.5",
     stream: false,
     options: {},
     context: { messages: [{ role: "user", content: "hi", timestamp: 0 }], tools },
   };
-  const { body } = createAnthropicAdapter(provider).buildRequest(parsed);
+  const { body } = await createAnthropicAdapter(provider).buildRequest(parsed);
   const parsedBody = JSON.parse(typeof body === "string" ? body : JSON.stringify(body)) as {
     tools: Array<{ name: string; input_schema: Record<string, unknown> }>;
   };
   return parsedBody.tools;
 }
 
-function toolSchema(parameters: unknown): Record<string, unknown> {
-  const [tool] = toolsOf([{ name: "sample_tool", description: "Sample", parameters } as OcxTool]);
+async function toolSchema(parameters: unknown): Promise<Record<string, unknown>> {
+  const [tool] = await toolsOf([{ name: "sample_tool", description: "Sample", parameters } as OcxTool]);
   return tool.input_schema;
 }
 
 describe("anthropic tool input_schema normalization", () => {
-  test("parameterless and type-less tools become valid object schemas", () => {
-    expect(toolSchema({})).toEqual({ type: "object", properties: {} });
-    expect(toolSchema({ properties: { query: { type: "string" } }, required: ["query"] })).toEqual({
+  test("parameterless and type-less tools become valid object schemas", async () => {
+    expect(await toolSchema({})).toEqual({ type: "object", properties: {} });
+    expect(await toolSchema({ properties: { query: { type: "string" } }, required: ["query"] })).toEqual({
       type: "object",
       properties: { query: { type: "string" } },
       required: ["query"],
     });
   });
 
-  test("an already-valid object schema passes through untouched", () => {
+  test("an already-valid object schema passes through untouched", async () => {
     const schema = { type: "object", properties: { path: { type: "string" } }, required: ["path"] };
-    expect(toolSchema({ ...schema })).toEqual(schema);
+    expect(await toolSchema({ ...schema })).toEqual(schema);
   });
 
-  test("object schema with type but no properties gains an empty properties map", () => {
-    expect(toolSchema({ type: "object" })).toEqual({ type: "object", properties: {} });
+  test("object schema with type but no properties gains an empty properties map", async () => {
+    expect(await toolSchema({ type: "object" })).toEqual({ type: "object", properties: {} });
   });
 
-  test("root oneOf and anyOf are flattened without promoting branch required fields", () => {
-    const anyOf = toolSchema({
+  test("root oneOf and anyOf are flattened without promoting branch required fields", async () => {
+    const anyOf = await toolSchema({
       anyOf: [
         { type: "object", properties: { a: { type: "string" } }, required: ["a"] },
         { type: "object", properties: { b: { type: "number" } }, required: ["b"] },
@@ -57,7 +57,7 @@ describe("anthropic tool input_schema normalization", () => {
       properties: { a: { type: "string" }, b: { type: "number" } },
     });
 
-    expect(toolSchema({
+    expect(await toolSchema({
       oneOf: [
         { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
       ],
@@ -67,8 +67,8 @@ describe("anthropic tool input_schema normalization", () => {
     });
   });
 
-  test("root allOf merges required fields and preserves sibling schema metadata", () => {
-    expect(toolSchema({
+  test("root allOf merges required fields and preserves sibling schema metadata", async () => {
+    expect(await toolSchema({
       title: "Search options",
       additionalProperties: false,
       properties: { existing: { type: "string" } },
@@ -90,8 +90,8 @@ describe("anthropic tool input_schema normalization", () => {
     });
   });
 
-  test("nested composition under properties is preserved", () => {
-    expect(toolSchema({
+  test("nested composition under properties is preserved", async () => {
+    expect(await toolSchema({
       properties: {
         value: {
           anyOf: [{ type: "string" }, { type: "number" }],
@@ -107,8 +107,8 @@ describe("anthropic tool input_schema normalization", () => {
     });
   });
 
-  test("strips Codex's Responses-only encrypted marker from collaboration schemas", () => {
-    const inputSchema = toolSchema({
+  test("strips Codex's Responses-only encrypted marker from collaboration schemas", async () => {
+    const inputSchema = await toolSchema({
       type: "object",
       properties: {
         message: { type: "string", encrypted: true },
@@ -121,15 +121,15 @@ describe("anthropic tool input_schema normalization", () => {
     expect(inputSchema.required).toEqual(["message"]);
   });
 
-  test("preserves a property literally named encrypted", () => {
-    expect(toolSchema({
+  test("preserves a property literally named encrypted", async () => {
+    expect((await toolSchema({
       type: "object",
       properties: { encrypted: { type: "boolean" } },
-    }).properties).toEqual({ encrypted: { type: "boolean" } });
+    })).properties).toEqual({ encrypted: { type: "boolean" } });
   });
 
-  test("strips the marker under items, nested properties, and flattened root anyOf branches", () => {
-    const inputSchema = toolSchema({
+  test("strips the marker under items, nested properties, and flattened root anyOf branches", async () => {
+    const inputSchema = await toolSchema({
       type: "object",
       properties: {
         list: { type: "array", items: { type: "string", encrypted: true } },
@@ -149,8 +149,8 @@ describe("anthropic tool input_schema normalization", () => {
     expect(properties.fromBranch.encrypted).toBeUndefined();
   });
 
-  test("preserves literal encrypted values, required names, and encrypted definition names", () => {
-    const inputSchema = toolSchema({
+  test("preserves literal encrypted values, required names, and encrypted definition names", async () => {
+    const inputSchema = await toolSchema({
       type: "object",
       default: { encrypted: true },
       required: ["encrypted"],
@@ -170,14 +170,14 @@ describe("anthropic tool input_schema normalization", () => {
     });
   });
 
-  test("does not mutate the input schema", () => {
+  test("does not mutate the input schema", async () => {
     const schema = {
       type: "object",
       properties: { message: { type: "string", encrypted: true } },
     };
     const before = structuredClone(schema);
 
-    toolSchema(schema);
+    await toolSchema(schema);
 
     expect(schema).toEqual(before);
   });

@@ -6,7 +6,15 @@ export type CursorNativeExecMode = "off" | "codex-sandbox" | "on";
 /** Codex permissions template marker, e.g. "`sandbox_mode` is `danger-full-access`". */
 export const CURSOR_SANDBOX_FULL_ACCESS_RE = /sandbox_mode[^\n]{0,80}danger-full-access/i;
 
-/** Config-owner-selected policy; explicit mode wins, legacy boolean maps to "on". */
+/**
+ * Config-owner-selected policy; explicit mode wins, legacy boolean maps to "on".
+ * The UNSET default is "codex-sandbox": native local exec is APPROVED for requests that
+ * declare the Codex danger-full-access sandbox (the normal full-access Codex flow — "approve
+ * most") and DENIED for requests that do not. Set `nativeLocalExec: "off"` to deny all, or
+ * "on" to always allow. Legacy `unsafeAllowNativeLocalExec: true` still maps to "on".
+ * Security note: codex-sandbox trusts a caller-controlled full-access marker the proxy cannot
+ * verify, and the auth-free loopback bind admits any local process — see the src/types.ts doc.
+ */
 export function resolveCursorNativeExecMode(provider: OcxProviderConfig): CursorNativeExecMode {
   const mode = provider.nativeLocalExec;
   if (mode === "off" || mode === "codex-sandbox" || mode === "on") return mode;

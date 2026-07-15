@@ -9,6 +9,7 @@ interface SidecarOverride { backend?: SidecarBackend; model?: string }
 
 interface ClaudeCodeState {
   enabled: boolean;
+  authMode: "subscription" | "proxy";
   systemEnv: boolean;
   fastMode: boolean | null;
   /** Legacy config override (no GUI control anymore) — still disables auto-context when hand-set. */
@@ -38,7 +39,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   const load = useCallback(async () => {
     try {
       const r = await fetch(`${apiBase}/api/claude-code`).then(res => res.json());
-      setState({ ...r, systemEnv: r.systemEnv !== false, fastMode: r.fastMode ?? null, maxContextTokens: r.maxContextTokens ?? null, autoContext: r.autoContext !== false, autoCompactWindow: r.autoCompactWindow ?? null, injectAgents: r.injectAgents !== false, effectiveModelEnv: r.effectiveModelEnv ?? {} });
+      setState({ ...r, authMode: r.authMode === "proxy" ? "proxy" : "subscription", systemEnv: r.systemEnv !== false, fastMode: r.fastMode ?? null, maxContextTokens: r.maxContextTokens ?? null, autoContext: r.autoContext !== false, autoCompactWindow: r.autoCompactWindow ?? null, injectAgents: r.injectAgents !== false, effectiveModelEnv: r.effectiveModelEnv ?? {} });
       setRows(Object.entries(r.modelMap ?? {}).map(([from, to]) => ({ from, to: String(to) })));
     } catch {
       setOk(false);
@@ -86,6 +87,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           enabled: state.enabled,
+          authMode: state.authMode,
           systemEnv: state.systemEnv,
           fastMode: state.fastMode,
           autoContext: state.autoContext,
@@ -123,7 +125,9 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   // Shell snippet for advanced users — keep export lines + comments literal.
   const manualEnv = [
     `export ANTHROPIC_BASE_URL=${baseUrl}`,
-    "# no ANTHROPIC_AUTH_TOKEN: your claude.ai login (and connectors) stay active",
+    ...(state.authMode === "proxy"
+      ? ["export ANTHROPIC_AUTH_TOKEN=opencodex-proxy"]
+      : ["# no ANTHROPIC_AUTH_TOKEN: your claude.ai login (and connectors) stay active"]),
     "export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1",
     ...(autoCompactActive ? [`export CLAUDE_CODE_AUTO_COMPACT_WINDOW=${state.autoCompactWindow ?? 350000}`] : []),
     ...(["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL"]
@@ -153,6 +157,23 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
 
         <div className="setting-row">
           <div className="setting-label">
+            <span className="title">{t("claude.authMode")}</span>
+            <span className="desc">{t("claude.authModeHint")}</span>
+          </div>
+          <Select
+            value={state.authMode}
+            options={[
+              { value: "subscription", label: t("claude.authModeSubscription") },
+              { value: "proxy", label: t("claude.authModeProxy") },
+            ]}
+            onChange={v => setState({ ...state, authMode: v as ClaudeCodeState["authMode"] })}
+            label={t("claude.authMode")}
+            style={{ minWidth: 220 }}
+          />
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-label">
             <span className="title">{t("claude.systemEnv")}</span>
             <span className="desc">{t("claude.systemEnvDesc")}</span>
             {state.systemEnv && <span className="desc" style={{ color: "var(--red)" }}>{t("claude.systemEnvWarn")}</span>}
@@ -174,7 +195,8 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
               const v = e.target.value;
               setState({ ...state, fastMode: v === "auto" ? null : v === "on" });
             }}
-            style={{ padding: "5px 10px", borderRadius: "var(--radius-xs)", border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontSize: 12.5, fontWeight: 500 }}
+            className="text-label font-medium"
+            style={{ padding: "5px 10px", borderRadius: "var(--radius-xs)", border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)" }}
           >
             <option value="auto">{t("claude.fastAuto")}</option>
             <option value="on">{t("claude.fastOn")}</option>
@@ -265,16 +287,16 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
       </div>
 
       <div className="h-section">{t("claude.quickstart")}</div>
-      <p className="muted" style={{ fontSize: 12.5, margin: "0 0 8px" }}><Trans k="claude.quickstartHint" cmd="ocx claude" /></p>
+      <p className="muted text-label" style={{ margin: "0 0 8px" }}><Trans k="claude.quickstartHint" cmd="ocx claude" /></p>
       <pre className="mono card" style={{ padding: "10px 14px", overflowX: "auto", margin: 0 }}>ocx claude</pre>
       {/* Advanced manual setup: collapsed by default (audit 080 UX-1). */}
       <details style={{ margin: "10px 0 0" }}>
-        <summary className="muted" style={{ fontSize: 12.5, cursor: "pointer", padding: "2px 2px" }}>{t("claude.manualEnv")}</summary>
-        <pre className="mono card" style={{ padding: "10px 14px", overflowX: "auto", margin: "6px 0 0", fontSize: 12 }}>{manualEnv}</pre>
+        <summary className="muted text-label" style={{ cursor: "pointer", padding: "2px 2px" }}>{t("claude.manualEnv")}</summary>
+        <pre className="mono card text-label" style={{ padding: "10px 14px", overflowX: "auto", margin: "6px 0 0" }}>{manualEnv}</pre>
       </details>
 
       <div className="h-section">{t("claude.smallFastModel")}</div>
-      <p className="muted" style={{ fontSize: 12.5, margin: "0 0 8px" }}>{t("claude.smallFastModelHint")}</p>
+      <p className="muted text-label" style={{ margin: "0 0 8px" }}>{t("claude.smallFastModelHint")}</p>
       <Select
         value={state.smallFastModel}
         options={modelOptions}
@@ -284,7 +306,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
       />
 
       <div className="h-section">{t("claude.modelMap")} <span className="count">{rows.length}</span></div>
-      <p className="muted" style={{ fontSize: 12.5, margin: "0 0 8px" }}>{t("claude.modelMapHint")}</p>
+      <p className="muted text-label" style={{ margin: "0 0 8px" }}>{t("claude.modelMapHint")}</p>
       <div className="stack" style={{ gap: 8 }}>
         {rows.map((row, i) => (
           <div key={i} className="row" style={{ gap: 8 }}>
@@ -321,9 +343,9 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
       </div>
 
       <div className="h-section">{t("claude.aliases")} <span className="count">{state.aliases.length}</span></div>
-      <p className="muted" style={{ fontSize: 12.5, margin: "0 0 8px" }}>{t("claude.aliasesHint")}</p>
+      <p className="muted text-label" style={{ margin: "0 0 8px" }}>{t("claude.aliasesHint")}</p>
       {state.aliases.length === 0 ? (
-        <div className="muted" style={{ fontSize: 12.5 }}>{t("claude.none")}</div>
+        <div className="muted text-label">{t("claude.none")}</div>
       ) : (
         // Grouped by provider (audit 080 UX-2): one scroll area, group labels first.
         <div className="stack" style={{ gap: 6, maxHeight: 320, overflowY: "auto" }}>
@@ -336,12 +358,12 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
             }, new Map<string, { id: string; display_name: string }[]>()),
           ).map(([provider, rows]) => (
             <div key={provider}>
-              <div className="muted" style={{ fontSize: 11.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0, margin: "6px 2px 4px" }}>{provider} · {rows.length}</div>
+              <div className="muted text-caption font-semibold" style={{ textTransform: "uppercase", letterSpacing: "var(--tracking-wide)", margin: "6px 2px 4px" }}>{provider} · {rows.length}</div>
               <div className="stack" style={{ gap: 4 }}>
                 {rows.map(a => (
                   <div key={a.id} className="card row" style={{ padding: "6px 12px", gap: 10 }}>
-                    <code className="mono" style={{ flex: 1, fontSize: 12 }}>{a.id}</code>
-                    <span className="muted" style={{ fontSize: 12 }}>{a.display_name}</span>
+                    <code className="mono text-label" style={{ flex: 1 }}>{a.id}</code>
+                    <span className="muted text-label">{a.display_name}</span>
                   </div>
                 ))}
               </div>

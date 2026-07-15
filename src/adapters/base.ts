@@ -4,6 +4,12 @@ import type { AdapterEvent, OcxParsedRequest } from "../types";
 export interface IncomingMeta {
   headers: Headers;
   abortSignal?: AbortSignal;
+  /**
+   * Image-normalization ladder bias for upstream-413 tightened retries: every image
+   * starts one tier lower (devlog/260714_image_normalization_pipeline/030). Only the
+   * anthropic adapter consumes it; others ignore it.
+   */
+  imageTierBias?: number;
 }
 
 export interface ProviderAdapter {

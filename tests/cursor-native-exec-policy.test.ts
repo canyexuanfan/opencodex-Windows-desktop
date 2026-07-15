@@ -69,6 +69,16 @@ describe("Cursor native exec sandbox policy", () => {
     expect(resolveCursorNativeExecMode(provider)).toBe(expected);
   });
 
+  // Default "codex-sandbox" (approve most): with neither field set, native local exec is APPROVED
+  // for a request that declares the Codex danger-full-access sandbox and DENIED otherwise. Set
+  // nativeLocalExec "off" to deny all, or "on" to always allow.
+  test.each([
+    ["unset default, declared full-access", true, true],
+    ["unset default, not declared", false, false],
+  ] as const)("unset provider approves declared full-access (%s)", (_name, declared, expected) => {
+    expect(effectiveCursorNativeExecAllow(baseProvider, declared)).toBe(expected);
+  });
+
   test.each([
     ["on", true, true],
     ["on", false, true],

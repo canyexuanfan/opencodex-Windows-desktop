@@ -97,13 +97,16 @@ export function findAnthropicSidecarProvider(config: OcxConfig): AnthropicSideca
   return undefined;
 }
 
-/** Precedence (audit F4/F7): explicit config wins; unset resolves to anthropic when a usable credential exists, else openai. */
+/**
+ * Precedence: explicit config wins; unset defaults to "openai" (ChatGPT forward path). The
+ * anthropic backend (web_search_20250305) is only used when explicitly configured — auto-selecting
+ * it from credential availability caused the sidecar to send incompatible models (e.g. gpt-5.6-luna)
+ * to the Anthropic API.
+ */
 export function resolveSidecarBackend(
   explicit: "openai" | "anthropic" | undefined,
-  anthropicSidecar: AnthropicSidecarProvider | undefined,
 ): "openai" | "anthropic" {
-  if (explicit === "anthropic" || explicit === "openai") return explicit;
-  return anthropicSidecar ? "anthropic" : "openai";
+  return explicit === "anthropic" ? "anthropic" : "openai";
 }
 
 export interface SidecarPlan {
@@ -145,7 +148,7 @@ export function planWebSearch(
   // Same `?? 200_000` default the server applies when threading connectTimeoutMs into the loop.
   const connectTimeoutMs = config.connectTimeoutMs ?? 200_000;
   const anthropicSidecar = findAnthropicSidecarProvider(config);
-  const backend = resolveSidecarBackend(cfg.backend, anthropicSidecar);
+  const backend = resolveSidecarBackend(cfg.backend);
   const maxSearches = cfg.maxSearchesPerTurn ?? DEFAULT_MAX_SEARCHES;
   const stallTimeoutSec = webSearchStallTimeoutSec(
     config.stallTimeoutSec,

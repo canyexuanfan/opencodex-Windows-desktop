@@ -216,6 +216,7 @@ const noHardcodedUiStrings: Rule.RuleModule = {
   create(context) {
     return {
       JSXText(node: JSXText) {
+        if (isInsideNonUiContext(node)) return;
         const value = node.value.replace(/\s+/g, " ").trim();
         if (!value) return;
         reportLiteral(context, node, value, "uiString");

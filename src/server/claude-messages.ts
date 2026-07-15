@@ -7,6 +7,8 @@
  * unchanged. The Responses output (SSE or JSON) is converted back to Anthropic shape.
  */
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
+import { enforceAnthropicImageLimits } from "../adapters/anthropic-image-guard";
+import { normalizeAnthropicImages } from "../adapters/anthropic-image-normalize";
 import { AnthropicRequestError, anthropicToResponsesTranslation, extractOcxRouteDirective, resolveInboundModel, type ClaudeCacheKeySource } from "../claude/inbound";
 import { stripOneMillionMarker } from "../claude/context-windows";
 import { captureClaudeInbound } from "../claude/inbound-debug";
@@ -187,6 +189,15 @@ async function anthropicNativePassthrough(
 
   const base = (config.claudeCode?.anthropicBaseUrl ?? "https://api.anthropic.com").replace(/\/$/, "");
   const search = new URL(req.url).search;
+  // Native passthrough bypasses the anthropic adapter, so the generous image pipeline
+  // (devlog/260714_image_normalization_pipeline/040) must run here: tier-normalize then
+  // guard the already-Anthropic-wire messages before serialization. Applies to
+  // count_tokens too — counts must match what the real send will contain, and the 32MB
+  // body cap applies to it equally. Non-message bodies pass through untouched.
+  if (Array.isArray(body.messages)) {
+    await normalizeAnthropicImages(body.messages);
+    enforceAnthropicImageLimits(body.messages);
+  }
   const headers = new Headers();
   req.headers.forEach((value, name) => {
     if (!PASSTHROUGH_STRIP_HEADERS.has(name.toLowerCase())) headers.set(name, value);

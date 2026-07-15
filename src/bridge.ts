@@ -146,11 +146,13 @@ export function bridgeToResponsesSSE(
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
+      let emittedSinceYield = false;
       const emit = (name: string, data: Record<string, unknown>) => {
         if (closed) return;
         activity = true;
         try {
           controller.enqueue(encoder.encode(sseEvent(name, { type: name, sequence_number: seq++, ...data })));
+          emittedSinceYield = true;
         } catch {
           closed = true;
         }
@@ -264,7 +266,7 @@ export function bridgeToResponsesSSE(
       let currentToolCall: { itemId: string; outputIndex: number; callId: string; name: string; args: string; namespace?: string; freeform?: boolean; toolSearch?: boolean; inputEmitted?: string } | null = null;
       // Open native web-search cell (between begin and end). Holds the output index allocated on
       // begin so the matching done reuses it; closed as `failed` if the stream terminates early.
-      let currentWebSearch: { itemId: string; outputIndex: number } | null = null;
+      let currentWebSearch: { itemId: string; eventId: string; outputIndex: number } | null = null;
       // Sources from completed web searches, awaiting the next assistant message. Attached as
       // url_citation annotations on that message (the desktop app's Sources chip), then cleared so
       // they bind to exactly one message. Deduped by URL across multiple searches in the turn.
@@ -399,9 +401,19 @@ export function bridgeToResponsesSSE(
       // we synthesize response.completed below, so Codex never hits the parser's
       // "stream closed before response.completed" (responses.rs) -> ApiError::Stream.
       let terminated = false;
+      let macrotaskFired = true;
+      let macrotaskTimer: ReturnType<typeof setTimeout> | undefined;
 
       try {
         for await (const event of events) {
+          if (!macrotaskFired && emittedSinceYield) {
+            await new Promise<void>(r => setTimeout(r, 0));
+            macrotaskFired = true;
+          }
+          emittedSinceYield = false;
+          macrotaskFired = false;
+          if (macrotaskTimer !== undefined) clearTimeout(macrotaskTimer);
+          macrotaskTimer = setTimeout(() => { macrotaskFired = true; macrotaskTimer = undefined; }, 0);
           activity = true;
           stallTicks = 0;
           // Compaction turns emit ONLY the synthetic compaction item + response.completed. The
@@ -498,12 +510,12 @@ export function bridgeToResponsesSSE(
               if (currentRawReasoning) closeCurrentRawReasoning();
               flushHiddenRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
-              const itemId = `fc_${uuid()}`;
               const mapped = toolNsMap?.get(event.name);
               const realName = mapped?.name ?? event.name;
               const ns = mapped?.namespace;
               const toolSearch = toolSearchToolNames?.has(realName) ?? false;
               const freeform = !toolSearch && (freeformToolNames?.has(realName) ?? false);
+              const itemId = `${toolSearch ? "tsc" : freeform ? "ctc" : "fc"}_${uuid()}`;
               const item = toolSearch
                 ? { type: "tool_search_call", id: itemId, call_id: event.id, execution: "client", arguments: {}, status: "in_progress" }
                 : freeform
@@ -554,23 +566,25 @@ export function bridgeToResponsesSSE(
               flushHiddenRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
               if (currentWebSearch) closeCurrentWebSearch("completed", []);
+              const wsItemId = `ws_${uuid()}`;
               emit("response.output_item.added", {
                 output_index: outputIndex,
-                item: { type: "web_search_call", id: event.id, status: "in_progress" },
+                item: { type: "web_search_call", id: wsItemId, status: "in_progress" },
               });
-              currentWebSearch = { itemId: event.id, outputIndex };
+              currentWebSearch = { itemId: wsItemId, eventId: event.id, outputIndex };
               break;
             }
             case "web_search_call_end": {
               // The sidecar resolved — finalize the cell as "Searched <query>". If no begin opened
               // (defensive), synthesize the added frame first so the done has a matching item.
-              if (!currentWebSearch || currentWebSearch.itemId !== event.id) {
+              if (!currentWebSearch || currentWebSearch.eventId !== event.id) {
                 if (currentWebSearch) closeCurrentWebSearch("completed", []);
+                const wsItemId2 = `ws_${uuid()}`;
                 emit("response.output_item.added", {
                   output_index: outputIndex,
-                  item: { type: "web_search_call", id: event.id, status: "in_progress" },
+                  item: { type: "web_search_call", id: wsItemId2, status: "in_progress" },
                 });
-                currentWebSearch = { itemId: event.id, outputIndex };
+                currentWebSearch = { itemId: wsItemId2, eventId: event.id, outputIndex };
               }
               closeCurrentWebSearch(event.status ?? "completed", event.queries, event.sources);
               // Queue this search's sources for the next assistant message (dedup by URL).
@@ -650,6 +664,7 @@ export function bridgeToResponsesSSE(
       }
 
       if (beat) clearInterval(beat);
+      if (macrotaskTimer !== undefined) clearTimeout(macrotaskTimer);
 
       if (!terminated) {
         // The adapter generator ended without an explicit done/error event. Mark as incomplete
@@ -782,13 +797,13 @@ export function buildResponseJSON(
     const freeform = !toolSearch && (options?.freeformToolNames?.has(realName) ?? false);
     if (toolSearch) {
       output.push({
-        type: "tool_search_call", id: `fc_${uuid()}`,
+        type: "tool_search_call", id: `tsc_${uuid()}`,
         call_id: currentToolCallId, execution: "client",
         arguments: parseArgsObj(currentToolCallArgs), status: "completed",
       });
     } else if (freeform) {
       output.push({
-        type: "custom_tool_call", id: `fc_${uuid()}`,
+        type: "custom_tool_call", id: `ctc_${uuid()}`,
         call_id: currentToolCallId, name: realName,
         input: freeformInput(currentToolCallArgs), status: "completed",
       });
@@ -862,7 +877,7 @@ export function buildResponseJSON(
         if (currentRawReasoning) flushRawReasoning();
         flushToolCall();
         output.push({
-          type: "web_search_call", id: e.id, status: e.status ?? "completed",
+          type: "web_search_call", id: `ws_${uuid()}`, status: e.status ?? "completed",
           action: webSearchAction(e.queries),
           ...(e.sources && e.sources.length > 0 ? { sources: e.sources } : {}),
         });

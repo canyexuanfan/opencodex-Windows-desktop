@@ -34,7 +34,7 @@ const EXPECTED_KEY_PROVIDER_IDS = [
   "huggingface", "nvidia", "venice", "zai", "nanogpt", "synthetic", "qwen-portal",
   "qianfan", "alibaba", "parallel", "zenmux", "litellm", "ollama-cloud", "mistral",
   "minimax", "minimax-cn", "kimi-code", "opencode-zen", "vercel-ai-gateway",
-  "xiaomi", "kilo", "cloudflare-ai-gateway", "github-copilot", "gitlab-duo",
+  "opencode-free", "xiaomi", "kilo", "mimo-free", "cloudflare-ai-gateway", "github-copilot", "gitlab-duo",
 ];
 
 describe("provider registry parity", () => {
@@ -233,7 +233,7 @@ describe("provider registry parity", () => {
 
     expect(litellm?.authKind).toBe("key");
     expect(providerConfigSeed(litellm!).keyOptional).toBe(true);
-    expect(optionalKeyProviders).toEqual(["litellm"]);
+    expect(optionalKeyProviders).toEqual(["litellm", "opencode-free", "mimo-free"]);
   });
 
   test("base URL override permission is registry-only and limited to local/self-hosted providers", () => {
@@ -378,7 +378,8 @@ describe("provider registry parity", () => {
     const featured = deriveFeaturedProviderIds();
     expect(featured).toEqual([
       "openai", "xai", "anthropic", "anthropic-apikey", "kimi", "openai-apikey", "umans", "opencode-go", "openrouter",
-      "groq", "google", "azure-openai", "ollama", "vllm", "lm-studio",
+      "groq", "google", "azure-openai", "ollama", "vllm", "lm-studio", "opencode-free",
+      "mimo-free",
     ]);
 
     const presets = deriveProviderPresets();
