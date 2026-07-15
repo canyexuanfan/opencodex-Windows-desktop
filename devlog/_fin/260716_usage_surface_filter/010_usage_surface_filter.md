@@ -1,5 +1,7 @@
 # Work-phase 010 — Usage surface filter
 
+Status: completed — 2026-07-16
+
 ## Acceptance contract
 
 1. `surface=all` returns the existing aggregate unchanged.

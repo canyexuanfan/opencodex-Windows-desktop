@@ -127,3 +127,44 @@ Old `usage.jsonl` rows did not persist the request surface. Provider/model value
 - Frontend responsive audit: `FAIL` — the initial radio semantics conflicted with the six-Tab-stop verifier, and moving the filter row alone did not prove 320px containment.
 - Synthesis: accepted every blocker. The plan now uses `role="group"` + `aria-pressed`, translated per-button `aria-label`, `var(--control-touch)` at mobile, and complete group stacking at <=360px; it records legacy ambiguity and adds real Codex/routed Claude/native Claude persistence tests.
 - Re-audit: `PASS` — no blockers. Non-blocking follow-up only: the untouched Logs page retains its older radiogroup pattern.
+
+## Implementation record
+
+- `57c1893 feat(usage): filter aggregates by client surface`
+  - Persists the existing Claude surface marker in the usage allowlist.
+  - Adds typed `all | codex | claude` parsing and filters once before totals, days, models, and providers.
+  - Threads the normalized surface through normal and catch API responses.
+  - Activates the contract through focused, routed Claude, native Claude, and Codex Responses tests.
+- `49e77f3 feat(gui): add responsive usage surface filter`
+  - Adds the source control before the range control and sends both query dimensions.
+  - Uses translated button names, `aria-pressed`, existing OpenAI/Claude SVG marks, 44px mobile targets, and complete group stacking at 320px.
+  - Documents the segmented-filter contract in the GUI design system.
+
+## Check evidence
+
+- Focused persistence/API: `bun test --isolate tests/request-log.test.ts tests/usage-log.test.ts tests/usage-summary.test.ts tests/api-usage.test.ts` — 52 pass, 0 fail.
+- Routed/native request activation: `bun test --isolate tests/claude-messages-endpoint.test.ts tests/claude-native-passthrough.test.ts tests/server-auth.test.ts` — 69 pass, 0 fail.
+- Full regression: `bun test --isolate ./tests/` — 2556 pass, 0 fail across 238 files.
+- Static/build: `bun run typecheck` and `cd gui && bun run build` — exit 0.
+- Lint: `cd gui && bun run lint` — 0 errors; two pre-existing TanStack Virtual compiler warnings in untouched `Debug.tsx` and `Logs.tsx`.
+- Patch integrity: `git diff --check` — exit 0; no assertions deleted, skipped, or weakened.
+- Final independent diff review: `PASS`; no correctness blocker in marker propagation, fallback, aggregate consistency, fetch cancellation, accessibility, or 320px containment.
+
+## Render evidence
+
+- Desktop: `.codexclaw/evidence/usage-surface-filter/usage-1280.png` — both groups show text and marks without overlap.
+- Split-screen/tablet: `usage-css-1024.png` and `usage-css-768.png` — page `scrollWidth` equals viewport width; at 768px both pill groups remain beside the title.
+- Mobile: `usage-css-390.png` — `All + Codex SVG + Claude SVG`, two groups on one line, 44px button height, no page overflow.
+- Narrow: `usage-css-320.png` — groups stack at 274px each inside the 320px viewport, every button is 44px high, no page overflow.
+- Interaction: Codex and Claude clicks swap `aria-pressed` correctly; keyboard focus matches `:focus-visible`; browser console warnings/errors: none.
+- Teardown: temporary Vite proxy QA server on port 5173 stopped after browser finalization.
+
+## D closeout
+
+Terminal outcome: `DONE`.
+
+- All acceptance criteria in `010_usage_surface_filter.md` are met.
+- No production dependency, icon asset, migration, inference rule, or release action was added.
+- No push was performed.
+- What did not improve: historical Claude rows remain indistinguishable because the old JSONL format discarded the surface marker. `All` is exact for history; source-specific attribution is exact for new rows only.
+- Evidence that would invalidate this direction: a real request finalized outside `addFinalRequestLog`, a provider/model combination that is incorrectly used as source evidence, or browser proof of either segmented group clipping below 320px. None appeared in the audited call graph or verification matrix.
