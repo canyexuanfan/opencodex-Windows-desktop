@@ -39,11 +39,14 @@ Two-part oracle (audit blocker 2: a 502-only assertion cannot prove cleanup):
 
 1. Endpoint activation test: upstream at unreachable port, long `connectTimeoutMs`;
    assert 502 — drives the exact reject path (`fetch` catch) the fix touches.
-2. Deterministic cleanup assertion: unit-level test around `clearableDeadline`
-   itself (tests/ for src/lib/abort.ts) or a spyable seam — assert the timer is
-   cleared after the reject path (e.g. `clear()` called / no pending timer). If a
-   seam is disproportionate, a fake-timer or `clearTimeout` spy on the unit level
-   is acceptable; the endpoint test alone does NOT satisfy the criterion.
+2. Deterministic cleanup assertion (WP2-P amendment, concrete seam): extract
+   `fetchWithHeaderDeadline(input, init, timeoutMs, parent?, makeDeadline = clearableDeadline)`
+   in src/server/claude-messages.ts — it owns try/catch/finally and GUARANTEES
+   `deadline.clear()` in `finally`; returns `{upstream} | {expired:true} | {error}`.
+   `anthropicNativePassthrough` consumes it. Unit tests drive the helper directly with
+   a spy `makeDeadline` factory asserting `clear()` fires exactly once on all three
+   paths: success, reject (unreachable port), timeout (didExpire). The endpoint 502
+   test remains as activation evidence for the wired path.
 
 ## PR 137 integration checks
 
@@ -62,6 +65,9 @@ Two-part oracle (audit blocker 2: a 502-only assertion cannot prove cleanup):
   inventory ALL errors, fix each by restoring/adding `t(...)` + locale keys in
   `gui/src/i18n/{en,ko,de,zh}.ts` per PR 137 conventions (allowlist only where PR 137
   itself allowlists). Re-run lint to 0 errors.
+- Delegation (WP2-P amendment): the i18n remediation slice is dispatched to a
+  gpt-5.6-sol worker with write scope gui/** ONLY (disjoint from main agent's
+  src/server + tests/ slice). Main agent owns all git merges/commits/push.
 - `bun run build:gui` must succeed (release prepublishOnly depends on it).
 
 ## Accept criteria
