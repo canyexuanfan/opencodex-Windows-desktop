@@ -130,7 +130,7 @@ export const zh: Record<TKey, string> = {
   "prov.waitingBrowser": "等待浏览器…",
   "prov.didntOpen": "没有打开？点击这里",
   "prov.pasteRedirect": "粘贴重定向 URL 或授权码",
-  "prov.pasteRedirectHint": "如果浏览器无法访问本机，请在此粘贴最终重定向 URL（或授权码）。",
+  "prov.pasteRedirectHint": "如果浏览器显示 localhost 错误，请复制地址栏中的完整 URL 并粘贴到此处（或粘贴授权码）。",
   "prov.pasteSubmit": "提交",
   "prov.pasteSubmitting": "提交中…",
   "prov.pasteOk": "已提交代码 — 正在完成登录…",

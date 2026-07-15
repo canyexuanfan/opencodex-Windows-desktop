@@ -124,7 +124,7 @@ export const de = {
   "prov.waitingBrowser": "Warten auf Browser…",
   "prov.didntOpen": "Hat sich nicht geöffnet? Hier klicken",
   "prov.pasteRedirect": "Redirect-URL oder Code einfügen",
-  "prov.pasteRedirectHint": "Wenn der Browser diesen Rechner nicht erreichen kann, füge hier die endgültige Redirect-URL (oder den Autorisierungscode) ein.",
+  "prov.pasteRedirectHint": "Zeigt der Browser einen localhost-Fehler, kopiere die vollständige URL aus der Adressleiste und füge sie hier ein (oder den Autorisierungscode).",
   "prov.pasteSubmit": "Senden",
   "prov.pasteSubmitting": "Wird gesendet…",
   "prov.pasteOk": "Code gesendet — Anmeldung wird abgeschlossen…",

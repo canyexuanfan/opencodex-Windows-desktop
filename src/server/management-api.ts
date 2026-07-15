@@ -1052,6 +1052,9 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     const provider = (body.provider ?? "").trim().toLowerCase();
     if (!isOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
     const input = typeof body.input === "string" ? body.input : typeof body.code === "string" ? body.code : "";
+    // Authorization responses are measured in hundreds of bytes; never accept the
+    // generic management-body allowance here.
+    if (input.length > 4096) return jsonResponse({ error: "input too long" }, 400);
     const result = submitManualLoginCode(provider, input);
     if (!result.ok) return jsonResponse({ error: result.error }, 409);
     return jsonResponse({ ok: true });

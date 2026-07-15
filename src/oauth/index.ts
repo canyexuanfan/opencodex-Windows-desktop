@@ -1,4 +1,5 @@
 import type { OAuthController, OAuthCredentials } from "./types";
+import { parseCallbackInput } from "./callback-server";
 import type { OcxConfig, OcxProviderConfig, RefreshPolicy } from "../types";
 import { loadConfig, resolveEnvValue, saveConfig } from "../config";
 import { maskEmail } from "../lib/privacy";
@@ -374,6 +375,8 @@ const loginAbort = new Map<string, AbortController>();
 interface ManualCodeSlot {
   pendingInput?: string;
   resolve?: (value: string) => void;
+  /** Registered by the callback flow so submits can validate state synchronously. */
+  expectedState?: string;
 }
 const loginManual = new Map<string, ManualCodeSlot>();
 
@@ -391,11 +394,12 @@ function ensureManualCodeSlot(provider: string): ManualCodeSlot {
 }
 
 /** Wait for a GUI/CLI paste of the OAuth redirect URL or code (or return a stashed early submit). */
-function waitForManualLoginCode(provider: string, signal: AbortSignal): Promise<string> {
+function waitForManualLoginCode(provider: string, signal: AbortSignal, expectedState?: string): Promise<string> {
   if (signal.aborted) {
     return Promise.reject(new Error(`OAuth callback cancelled: ${signal.reason}`));
   }
   const slot = ensureManualCodeSlot(provider);
+  if (expectedState !== undefined) slot.expectedState = expectedState;
   if (slot.pendingInput !== undefined) {
     const value = slot.pendingInput;
     slot.pendingInput = undefined;
@@ -426,6 +430,17 @@ export function submitManualLoginCode(provider: string, input: string): { ok: tr
   const st = loginState.get(provider);
   if (!st || st.done) return { ok: false, error: "no login in progress" };
   const slot = ensureManualCodeSlot(provider);
+  // Synchronous validation (validated request/ack): reject un-parseable input and
+  // authorization responses (url/query kind) whose state is missing or mismatched
+  // once the flow has registered its expected state. Raw codes stay in-session-PKCE
+  // protected. Early posts (flow not yet waiting, no expectedState) are stashed and
+  // re-validated by the callback loop.
+  const parsed = parseCallbackInput(trimmed);
+  if (!parsed.code) return { ok: false, error: "no authorization code found in input" };
+  if (parsed.kind !== "raw" && slot.expectedState !== undefined) {
+    if (parsed.state === undefined) return { ok: false, error: "redirect URL is missing the state parameter" };
+    if (parsed.state !== slot.expectedState) return { ok: false, error: "state mismatch — paste the redirect URL from THIS login attempt" };
+  }
   if (slot.resolve) {
     const resolve = slot.resolve;
     slot.resolve = undefined;
@@ -506,7 +521,7 @@ export async function startLoginFlow(provider: string, opts?: LoginOpts): Promis
       },
       onProgress: () => {},
       // GUI fallback when the browser cannot hit the loopback callback server.
-      onManualCodeInput: () => waitForManualLoginCode(provider, abort.signal),
+      onManualCodeInput: (expectedState?: string) => waitForManualLoginCode(provider, abort.signal, expectedState),
       signal: abort.signal,
     };
     // Background: runLogin persists the credential + upserts the provider entry to disk config.

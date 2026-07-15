@@ -1,6 +1,7 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { IconX, IconLock, IconKey, IconExternal } from "../icons";
 import { buildProviderPayload, type ProviderPayload } from "../provider-payload";
+import { useT } from "../i18n";
 
 export type ProviderConfig = ProviderPayload;
 
@@ -48,11 +49,13 @@ export default function AddProviderModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [oauthSupported, setOauthSupported] = useState<string[]>([]);
+  const t = useT();
   const [oauthBusy, setOauthBusy] = useState(false);
   const [oauthMsg, setOauthMsg] = useState("");
   const [manualCode, setManualCode] = useState("");
   const [manualCodeBusy, setManualCodeBusy] = useState(false);
   const [manualCodeMsg, setManualCodeMsg] = useState("");
+  const [manualCodeOk, setManualCodeOk] = useState(true);
   const [presets, setPresets] = useState<Preset[]>(FALLBACK_PRESETS);
   const searchRef = useRef<HTMLInputElement>(null);
   const aliveRef = useRef(true);
@@ -178,13 +181,18 @@ export default function AddProviderModal({
       const data = await res.json().catch(() => ({}));
       if (!aliveRef.current) return;
       if (!res.ok) {
-        setManualCodeMsg(data.error || "Could not submit code");
+        setManualCodeOk(false);
+        setManualCodeMsg(t("prov.pasteFail", { error: data.error || res.statusText }));
         return;
       }
       setManualCode("");
-      setManualCodeMsg("Code submitted — finishing login…");
+      setManualCodeOk(true);
+      setManualCodeMsg(t("prov.pasteOk"));
     } catch {
-      if (aliveRef.current) setManualCodeMsg("Network error — is the proxy running?");
+      if (aliveRef.current) {
+        setManualCodeOk(false);
+        setManualCodeMsg(t("prov.pasteFail", { error: "network error" }));
+      }
     } finally {
       if (aliveRef.current) setManualCodeBusy(false);
     }
@@ -254,7 +262,7 @@ export default function AddProviderModal({
               {oauthBusy && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   <div className="muted" style={{ fontSize: 12 }}>
-                    If the browser cannot reach this machine, paste the final redirect URL or authorization code:
+                    {t("prov.pasteRedirectHint")}
                   </div>
                   <div style={{ display: "flex", gap: 8 }}>
                     <input
@@ -270,7 +278,8 @@ export default function AddProviderModal({
                           void submitManualCode(preset.oauthProvider);
                         }
                       }}
-                      placeholder="Paste redirect URL or code"
+                      placeholder={t("prov.pasteRedirect")}
+                      aria-label={t("prov.pasteRedirect")}
                       disabled={manualCodeBusy}
                       style={{ flex: 1, fontSize: 12 }}
                     />
@@ -280,11 +289,11 @@ export default function AddProviderModal({
                       disabled={manualCodeBusy || !manualCode.trim() || !preset.oauthProvider}
                       onClick={() => preset.oauthProvider && void submitManualCode(preset.oauthProvider)}
                     >
-                      {manualCodeBusy ? "Submitting…" : "Submit"}
+                      {manualCodeBusy ? t("prov.pasteSubmitting") : t("prov.pasteSubmit")}
                     </button>
                   </div>
                   {manualCodeMsg && (
-                    <div style={{ fontSize: 12, color: /error|Could not|Network/.test(manualCodeMsg) ? "var(--amber)" : "var(--accent-hover)" }}>
+                    <div style={{ fontSize: 12, color: manualCodeOk ? "var(--accent-hover)" : "var(--amber)" }}>
                       {manualCodeMsg}
                     </div>
                   )}
