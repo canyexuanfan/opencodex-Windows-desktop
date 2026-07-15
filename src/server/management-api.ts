@@ -16,6 +16,7 @@ import {
   isOAuthProvider,
   listOAuthProviders,
   startLoginFlow,
+  submitManualLoginCode,
   upsertOAuthProvider,
 } from "../oauth";
 import { removeCredential } from "../oauth/store";
@@ -1042,6 +1043,18 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     } catch (err) {
       return jsonResponse({ error: err instanceof Error ? err.message : String(err) }, 409);
     }
+  }
+
+  // Manual fallback for browser OAuth: paste the final redirect URL (or authorization code)
+  // when the browser cannot reach the loopback callback (remote/SSH/blocked localhost).
+  if (url.pathname === "/api/oauth/login/code" && req.method === "POST") {
+    const body = await req.json().catch(() => ({})) as { provider?: string; input?: string; code?: string };
+    const provider = (body.provider ?? "").trim().toLowerCase();
+    if (!isOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
+    const input = typeof body.input === "string" ? body.input : typeof body.code === "string" ? body.code : "";
+    const result = submitManualLoginCode(provider, input);
+    if (!result.ok) return jsonResponse({ error: result.error }, 409);
+    return jsonResponse({ ok: true });
   }
 
   if (url.pathname === "/api/oauth/status" && req.method === "GET") {

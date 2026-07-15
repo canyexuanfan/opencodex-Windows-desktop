@@ -647,7 +647,10 @@ select.input { appearance: none; }
 .oauth-status { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; min-width: 0; }
 .oauth-email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .oauth-actions { display: inline-flex; justify-content: flex-end; align-items: center; gap: 8px; min-width: 0; }
-.oauth-login-hint { grid-column: 1 / -1; font-size: 12px; display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.oauth-login-hint { grid-column: 1 / -1; font-size: 12px; display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+.oauth-login-hint-links { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.oauth-login-paste { display: flex; gap: 8px; align-items: center; width: 100%; }
+.oauth-login-paste .input { flex: 1; min-width: 0; font-size: 12px; padding: 6px 10px; }
 
 /* responsive: compact sticky top bar (menu + brand + stop) with the desktop sidebar
    reused as an off-canvas drawer — 10 destinations no longer fit an always-visible

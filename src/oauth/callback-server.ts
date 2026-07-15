@@ -239,8 +239,10 @@ export abstract class OAuthCallbackFlow {
               .then((input): CallbackResult | null => {
                 const parsed = parseCallbackInput(input);
                 if (!parsed.code) return null;
-                if (expectedState && parsed.state !== expectedState) return null;
-                return { code: parsed.code, state: parsed.state ?? "" };
+                // Redirect URLs carry state — require a match. A raw authorization code has no
+                // state; accept it in-process (same PKCE session) so CLI/GUI paste fallback works.
+                if (parsed.state !== undefined && expectedState && parsed.state !== expectedState) return null;
+                return { code: parsed.code, state: parsed.state ?? expectedState };
               })
               .catch((): CallbackResult | null => null),
           ]);
