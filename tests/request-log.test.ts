@@ -348,6 +348,22 @@ describe("request log metadata", () => {
     expect(entries[0].upstreamError).toContain("[REDACTED]");
   });
 
+  test("plain-text upstream errors are captured in deferred logging", async () => {
+    const entries: RequestLogEntry[] = [];
+    const response = responseWithDeferredRequestLog(
+      new Response("provider says nope", { status: 400, headers: { "content-type": "text/plain" } }),
+      "ocx-test-plain-upstream-error",
+      Date.now(),
+      { model: "opencode-free/deepseek-v4-flash-free", provider: "opencode-free" },
+      entry => entries.push(entry),
+    );
+
+    const text = await response.text();
+    expect(text).toBe("provider says nope");
+    expect(entries).toHaveLength(1);
+    expect(entries[0].upstreamError).toBe("provider says nope");
+  });
+
   test("deferred SSE logging uses adapter-provided Kiro log input tokens", async () => {
     const entries: RequestLogEntry[] = [];
     const payload = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"kiro/claude-sonnet-4.5\",\"usage\":{\"input_tokens\":9,\"output_tokens\":4}}}";

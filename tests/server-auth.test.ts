@@ -153,9 +153,9 @@ describe("server local API auth", () => {
     const dto = safeConfigDTO({
       ...config("127.0.0.1"),
       providers: {
-        "mimo-free": {
-          adapter: "mimo-free",
-          baseUrl: "https://api.xiaomimimo.com/api/free-ai/openai/chat",
+        "opencode-free": {
+          adapter: "openai-chat",
+          baseUrl: "https://opencode.ai/zen/v1",
           authMode: "key",
           keyOptional: true,
         },
@@ -164,12 +164,13 @@ describe("server local API auth", () => {
       providers: Record<string, Record<string, unknown>>;
     };
 
-    expect(dto.providers["mimo-free"]).toMatchObject({
-      adapter: "mimo-free",
+    expect(dto.providers["opencode-free"]).toMatchObject({
+      adapter: "openai-chat",
       authMode: "key",
       keyOptional: true,
       hasApiKey: false,
     });
+    expect(dto.providers["opencode-free"].note).toBeTruthy();
   });
 
   test("safeConfigDTO strips URL-embedded provider secrets", () => {

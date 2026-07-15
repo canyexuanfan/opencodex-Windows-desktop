@@ -24,6 +24,7 @@ describe("opencode-free provider", () => {
     expect(entry?.keyOptional).toBe(true);
     expect(entry?.featured).toBe(true);
     expect(entry?.liveModels).toBe(true);
+    expect(entry?.models).toBeUndefined();
   });
 
   test("static headers include only the public client marker", () => {
@@ -85,7 +86,8 @@ describe("opencode-free provider", () => {
 
   test("provider note mentions no key needed", () => {
     expect(entry?.note?.toLowerCase()).toContain("no key needed");
-    expect(entry?.note?.toLowerCase()).not.toContain("bearer public");
+    expect(entry?.note?.toLowerCase()).toContain("200");
+    expect(entry?.note?.toLowerCase()).toContain("discovered live from zen");
   });
 
   test("DeepSeek Free preserves reasoning content for tool-call history", () => {
@@ -96,6 +98,48 @@ describe("opencode-free provider", () => {
     };
     expect(body.messages.find(message => message.role === "assistant")?.reasoning_content)
       .toBe("previous reasoning");
+  });
+
+  test("Zen-bound tool schemas are normalized to an object root", () => {
+    const provider: OcxProviderConfig = providerConfigSeed(entry!);
+    const request: OcxParsedRequest = {
+      modelId: "deepseek-v4-flash-free",
+      stream: false,
+      context: {
+        messages: [{ role: "user", content: "hi" }],
+        tools: [
+          {
+            name: "arr",
+            description: "array-root",
+            parameters: { type: ["object", "null"], properties: { a: { type: "string" } } },
+          },
+          {
+            name: "comp",
+            description: "root-oneOf",
+            parameters: {
+              oneOf: [
+                { type: "object", properties: { x: { type: "string" } } },
+                { type: "object", properties: { y: { type: "number" } } },
+              ],
+            },
+          },
+        ],
+      },
+      options: {},
+    };
+
+    const body = JSON.parse(createOpenAIChatAdapter(provider).buildRequest(request).body as string) as {
+      tools: Array<{ function: { parameters: Record<string, unknown> } }>;
+    };
+
+    expect(body.tools[0].function.parameters.type).toBe("object");
+    expect(body.tools[0].function.parameters.properties).toEqual({ a: { type: "string" } });
+    expect(body.tools[1].function.parameters.type).toBe("object");
+    expect(body.tools[1].function.parameters.oneOf).toBeUndefined();
+    expect(body.tools[1].function.parameters.properties).toEqual({
+      x: { type: "string" },
+      y: { type: "number" },
+    });
   });
 
   test("deriveProviderPresets exposes keyOptional for GUI picker", () => {

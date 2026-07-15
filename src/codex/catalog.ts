@@ -1194,6 +1194,8 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
       if (dated) {
         // Reapply config hints so alias-keyed overrides (modelContextWindows etc.) win.
         live.push(applyProviderConfigHints(name, prov, { ...dated, id: m.id }, contextCap));
+      } else if (shouldRetainConfiguredProviderModel(name, m.id)) {
+        live.push(m);
       } else {
         droppedConfiguredIds.push(m.id);
       }
@@ -1215,8 +1217,13 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
 }
 
 function shouldExposeProviderModel(providerName: string, modelId: string): boolean {
-  if (providerName === "opencode-free") return modelId.endsWith("-free");
+  if (providerName === "opencode-free") return modelId === "big-pickle" || modelId.endsWith("-free");
   return true;
+}
+
+function shouldRetainConfiguredProviderModel(providerName: string, modelId: string): boolean {
+  if (providerName === "opencode-free") return modelId === "big-pickle" || modelId.endsWith("-free");
+  return false;
 }
 
 /**

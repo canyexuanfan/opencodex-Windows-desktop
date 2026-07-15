@@ -6,6 +6,7 @@ import {
   providerHeadersConfigError,
 } from "../config";
 import { providerDestinationConfigError } from "../lib/destination-policy";
+import { getProviderRegistryEntry } from "../providers/registry";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 
 let _corsOrigin = "http://localhost:10100";
@@ -228,6 +229,8 @@ export function safeConfigDTO(config: OcxConfig): unknown {
     ] as const) {
       copyIfDefined(dto, provider, key);
     }
+    const registryNote = getProviderRegistryEntry(name)?.note;
+    if (typeof registryNote === "string" && registryNote.trim()) dto.note = registryNote;
     providers[name] = dto;
   }
   return {

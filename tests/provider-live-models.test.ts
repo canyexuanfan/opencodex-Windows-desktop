@@ -124,14 +124,16 @@ describe("live provider model discovery (authority + fallback)", () => {
       .toBe(500_000);
   });
 
-  test("opencode-free live discovery only exposes -free models", async () => {
+  test("opencode-free live discovery exposes big-pickle plus -free ids", async () => {
     globalThis.fetch = (async (url: string | URL | Request) => {
       expect(String(url)).toBe("https://opencode.ai/zen/v1/models");
       return new Response(JSON.stringify({
         data: [
+          { id: "big-pickle" },
           { id: "kimi-k2.7-code" },
           { id: "deepseek-v4-flash-free" },
-          { id: "glm-5.2-free" },
+          { id: "hy3-free" },
+          { id: "mimo-v2.5-free" },
           { id: "gpt-oss:120b" },
         ],
       }), { status: 200, headers: { "content-type": "application/json" } });
@@ -144,14 +146,14 @@ describe("live provider model discovery (authority + fallback)", () => {
           adapter: "openai-chat",
           authMode: "key",
           keyOptional: true,
-          models: ["glm-5.2-free"],
+          models: ["big-pickle", "deepseek-v4-flash-free", "mimo-v2.5-free", "north-mini-code-free"],
           liveModels: true,
         },
       },
     } as unknown as OcxConfig);
 
     const ids = models.filter(m => m.provider === OPENCODE_FREE_PROVIDER).map(m => m.id).sort();
-    expect(ids).toEqual(["deepseek-v4-flash-free", "glm-5.2-free"]);
+    expect(ids).toEqual(["big-pickle", "deepseek-v4-flash-free", "hy3-free", "mimo-v2.5-free", "north-mini-code-free"]);
   });
 
   test("non-ok response also falls back to statics (and cooldown clears via clearModelCache)", async () => {

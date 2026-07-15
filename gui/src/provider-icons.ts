@@ -40,7 +40,16 @@ const PROVIDER_ICON_ALIASES: Record<string, string> = {
   xiaomi: "xiaomi-color.svg",
 };
 
-export function providerIconSrc(provider: string): string | undefined {
-  const icon = PROVIDER_ICON_ALIASES[provider.toLowerCase()];
+type ProviderIconHints = {
+  adapter?: string;
+  baseUrl?: string;
+};
+
+function providerIconAlias(provider: string): string | undefined {
+  return PROVIDER_ICON_ALIASES[provider.toLowerCase()];
+}
+
+export function providerIconSrc(provider: string, hints?: ProviderIconHints): string | undefined {
+  const icon = providerIconAlias(provider);
   return icon ? `/provider-icons/${icon}` : undefined;
 }

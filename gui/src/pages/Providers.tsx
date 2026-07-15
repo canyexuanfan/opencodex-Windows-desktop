@@ -10,7 +10,7 @@ import { providerIconSrc } from "../provider-icons";
 interface Config {
   port: number;
   defaultProvider: string;
-  providers: Record<string, { adapter: string; baseUrl: string; hasApiKey?: boolean; hasHeaders?: boolean; defaultModel?: string; authMode?: string; keyOptional?: boolean; disabled?: boolean }>;
+  providers: Record<string, { adapter: string; baseUrl: string; hasApiKey?: boolean; hasHeaders?: boolean; defaultModel?: string; authMode?: string; keyOptional?: boolean; disabled?: boolean; note?: string }>;
 }
 
 interface OAuthStatus { loggedIn: boolean; email?: string; error?: string; done?: boolean }
@@ -391,8 +391,8 @@ export default function Providers({ apiBase }: { apiBase: string }) {
             );
           })}
           {keyProviders.map(name => {
-            const icon = providerIconSrc(name);
             const provider = config?.providers[name];
+            const icon = providerIconSrc(name, provider);
             const keylessFree = provider?.keyOptional === true && !provider?.hasApiKey;
             return (
               <div key={name} className="oauth-row">
@@ -427,7 +427,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
             const isDefault = name === config.defaultProvider;
             const isDisabled = prov.disabled === true;
             const quota = quotaReports[name]?.quota ?? null;
-            const icon = providerIconSrc(name);
+            const icon = providerIconSrc(name, prov);
             const accountSet = prov.authMode === "oauth" ? accountSets[name] : undefined;
             const isKeyAuth = prov.authMode !== "oauth" && prov.authMode !== "forward";
             const keyPool = isKeyAuth && prov.hasApiKey ? (keyPools[name] ?? []) : [];
@@ -455,6 +455,11 @@ export default function Providers({ apiBase }: { apiBase: string }) {
                         {prov.hasApiKey && <span>{t("prov.hasApiKey")}</span>}
                         {prov.hasHeaders && <span>{t("prov.hasHeaders")}</span>}
                       </div>
+                      {prov.note && (
+                        <div className="muted" style={{ fontSize: 12, marginTop: 4, lineHeight: 1.5 }}>
+                          {prov.note}
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div className="provider-actions">
