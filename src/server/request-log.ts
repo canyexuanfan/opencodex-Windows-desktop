@@ -89,6 +89,7 @@ export function addRequestLog(entry: RequestLogEntry) {
       timestamp: entry.timestamp,
       provider: entry.provider,
       model: entry.model,
+      ...(entry.surface === "claude" ? { surface: entry.surface } : {}),
       ...(entry.resolvedModel ? { resolvedModel: entry.resolvedModel } : {}),
       status: entry.status,
       durationMs: entry.durationMs,
