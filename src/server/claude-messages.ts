@@ -205,24 +205,22 @@ async function anthropicNativePassthrough(
   });
   headers.set("content-type", "application/json");
 
-  const headerDeadline = clearableDeadline(config.connectTimeoutMs ?? 120_000, req.signal);
-  let upstream: Response;
-  try {
-    upstream = await fetch(`${base}${pathname}${search}`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: headerDeadline.signal,
-    });
-  } catch (err) {
-    if (headerDeadline.didExpire()) {
-      finalize(504, { closeReason: "non_stream" });
-      return anthropicErrorResponse(504, "anthropic passthrough timed out waiting for response headers", "timeout_error");
-    }
+  const result = await fetchWithHeaderDeadline(
+    `${base}${pathname}${search}`,
+    { method: "POST", headers, body: JSON.stringify(body) },
+    config.connectTimeoutMs ?? 120_000,
+    req.signal,
+  );
+  if (result.kind === "timeout") {
+    finalize(504, { closeReason: "non_stream" });
+    return anthropicErrorResponse(504, "anthropic passthrough timed out waiting for response headers", "timeout_error");
+  }
+  if (result.kind === "error") {
+    const err = result.error;
     finalize(502, { closeReason: "non_stream" });
     return anthropicErrorResponse(502, `anthropic passthrough failed: ${err instanceof Error ? err.message : String(err)}`, "api_error");
   }
-  headerDeadline.clear();
+  const upstream = result.upstream;
 
   const contentType = upstream.headers.get("content-type") ?? "application/json";
   if (upstream.ok && contentType.includes("text/event-stream") && upstream.body) {
@@ -249,6 +247,43 @@ async function anthropicNativePassthrough(
     status: upstream.status,
     headers: { "Content-Type": contentType, ...(retryAfter ? { "Retry-After": retryAfter } : {}) },
   });
+}
+
+/**
+ * Header-phase fetch guarded by a clearable deadline (PR #136 follow-up hardening).
+ *
+ * The deadline covers ONLY the wait for response headers; once `fetch` settles —
+ * fulfilled OR rejected — the timer must die. The `finally` block guarantees
+ * `clear()` on every path (success, upstream reject, deadline expiry), fixing the
+ * timer leak where a rejected fetch left the deadline running until expiry.
+ * `didExpire()` stays truthful after `clear()` (see src/lib/abort.ts), so timeout
+ * classification inside the catch is unaffected by the finally cleanup.
+ *
+ * `makeDeadline`/`fetchImpl` are injectable for deterministic unit tests.
+ */
+export type HeaderDeadlineFetchResult =
+  | { kind: "response"; upstream: Response }
+  | { kind: "timeout" }
+  | { kind: "error"; error: unknown };
+
+export async function fetchWithHeaderDeadline(
+  input: string | URL,
+  init: RequestInit,
+  timeoutMs: number,
+  parent?: AbortSignal,
+  makeDeadline: typeof clearableDeadline = clearableDeadline,
+  fetchImpl: typeof fetch = fetch,
+): Promise<HeaderDeadlineFetchResult> {
+  const deadline = makeDeadline(timeoutMs, parent);
+  try {
+    const upstream = await fetchImpl(input, { ...init, signal: deadline.signal });
+    return { kind: "response", upstream };
+  } catch (error) {
+    if (deadline.didExpire()) return { kind: "timeout" };
+    return { kind: "error", error };
+  } finally {
+    deadline.clear();
+  }
 }
 
 export async function handleClaudeMessages(
