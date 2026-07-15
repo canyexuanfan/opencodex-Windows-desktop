@@ -56,6 +56,8 @@ export default function Debug({ apiBase }: { apiBase: string }) {
   const afterRef = useRef(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
+  // TanStack Virtual returns unstable function identities; React Compiler skips this call.
+  // eslint-disable-next-line react-hooks/incompatible-library -- known useVirtualizer limitation
   const lineVirtualizer = useVirtualizer({
     count: entries.length,
     getScrollElement: () => scrollContainerRef.current,
