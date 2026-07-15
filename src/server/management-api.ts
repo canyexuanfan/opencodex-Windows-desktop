@@ -611,10 +611,11 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       let toggle = deps.toggleCodexMultiAgentV2;
       if (!toggle) {
         const { execFileSync } = await import("node:child_process");
+        const { codexFeaturesInvocation } = await import("../cli/v2");
         toggle = (enabled: boolean) => {
-          const command = process.env.CODEX_CLI_PATH?.trim() || "codex";
-          execFileSync(command, ["features", enabled ? "enable" : "disable", "multi_agent_v2"],
-            { stdio: ["ignore", "pipe", "pipe"], timeout: 15_000, windowsHide: true });
+          const inv = codexFeaturesInvocation(enabled ? "enable" : "disable");
+          execFileSync(inv.file, inv.args,
+            { stdio: ["ignore", "pipe", "pipe"], timeout: 15_000, windowsHide: true, ...inv.options });
         };
       }
       const result = transitionMultiAgentV2(targetFlag, toggle, {
