@@ -159,6 +159,27 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .nav-item.active svg { color: var(--text); }
 
 .sidebar-foot { margin-top: auto; padding-top: 12px; display: flex; flex-direction: column; gap: 2px; }
+
+/* drawer header row: brand + close button (close is mobile-only) */
+.drawer-head { display: flex; align-items: flex-start; }
+.drawer-head .brand { flex: 1 1 auto; min-width: 0; }
+
+/* mobile drawer chrome: hidden on desktop, activated in the narrow-screen media block */
+.mobile-topbar { display: none; }
+.menu-toggle {
+  display: none; align-items: center; justify-content: center;
+  min-width: 44px; min-height: 44px; padding: 8px;
+  background: none; border: none; border-radius: var(--radius-sm);
+  color: var(--muted); cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.menu-toggle:hover { background: var(--accent-soft); color: var(--text); }
+.menu-toggle svg { width: 20px; height: 20px; }
+.drawer-scrim {
+  display: none; position: fixed; inset: 0; z-index: 30;
+  background: light-dark(rgba(20, 20, 20, 0.32), rgba(0, 0, 0, 0.52));
+}
+
 .sidebar-link { display: flex; align-items: center; gap: 9px; padding: 8px 10px; color: var(--muted); font-size: 13px; border-radius: var(--radius-sm); text-decoration: none; }
 .sidebar-link:hover { background: var(--accent-soft); color: var(--text); text-decoration: none; }
 .sidebar-link svg { width: 16px; height: 16px; }
@@ -628,35 +649,43 @@ select.input { appearance: none; }
 .oauth-actions { display: inline-flex; justify-content: flex-end; align-items: center; gap: 8px; min-width: 0; }
 .oauth-login-hint { grid-column: 1 / -1; font-size: 12px; display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
-/* responsive: sticky top bar (brand + theme) over a horizontal tab strip on narrow screens */
+/* responsive: compact sticky top bar (menu + brand + stop) with the desktop sidebar
+   reused as an off-canvas drawer — 10 destinations no longer fit an always-visible
+   strip or chip grid without eating half the viewport. */
 @media (max-width: 760px) {
-  .app { grid-template-columns: 1fr; }
+  /* rows: topbar auto + main fills — without this, align-content stretch splits the
+     leftover viewport height between the two rows and inflates the top bar */
+  .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .mobile-topbar {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; align-items: center; gap: 2px;
+    padding: 4px 10px; min-width: 0;
+    border-bottom: 1px solid var(--border);
+    background: var(--glass-rail);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+  }
+  .mobile-topbar .brand { flex: 1 1 auto; min-width: 0; padding: 4px; }
+  .mobile-topbar .stop-toggle { width: auto; min-width: 44px; min-height: 44px; justify-content: center; padding: 8px; }
+  .menu-toggle { display: inline-flex; }
+  /* drawer: the desktop sidebar kept intact (nav groups + foot + GitHub link), off-canvas */
   .sidebar {
-    position: sticky; top: 0; z-index: 20; height: auto;
-    flex-flow: row wrap; align-items: center; gap: 0;
-    padding: 0 10px; min-width: 0;   /* grid item: don't let nav content force the column wide */
-    border-right: none; border-bottom: 1px solid var(--border);
-    background: var(--rail);
+    position: fixed; top: 0; left: 0; bottom: 0; z-index: 40;
+    width: min(280px, 84vw); height: 100dvh;
+    padding-bottom: calc(18px + env(safe-area-inset-bottom));
+    /* overlay glass: near-opaque so content behind never reads through — the blur
+       only lets diffused light/color bleed in, not shapes or text */
+    background: light-dark(rgba(249, 249, 249, 0.97), rgba(23, 23, 23, 0.96));
+    transform: translateX(-100%);
+    visibility: hidden;   /* removes the closed drawer from the tab order / a11y tree */
+    transition: transform 0.18s ease, visibility 0.18s;
+    overflow-y: auto; outline: none;
   }
-  .brand { order: 1; flex: 1 1 auto; width: auto; padding: 10px 4px; }
-  .sidebar-foot { order: 2; flex: 0 0 auto; flex-direction: row; gap: 4px; margin: 0; padding: 0; }
-  .sidebar-foot .sidebar-link { display: none; }        /* GitHub link: secondary, hidden on mobile */
-  .theme-toggle { min-height: 44px; min-width: 44px; justify-content: center; padding: 8px; }
-  .theme-toggle .mode { display: none; }                /* icon-only toggle on mobile */
-  /* All pages visible at once: wrap the tabs into a compact chip grid instead of a
-     horizontal scroller (no hidden destinations, no scroll affordance needed). */
-  .sidebar nav {
-    order: 3; flex: 1 1 100%; min-width: 0;
-    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px;
-    padding: 4px 0 8px; margin: 0;
-    border-top: 1px solid var(--border-soft);
+  .sidebar.open {
+    transform: translateX(0); visibility: visible;
+    box-shadow: 0 12px 40px light-dark(rgba(20, 20, 20, 0.22), rgba(0, 0, 0, 0.5));
   }
-  .nav-item {
-    width: auto; min-height: 44px; padding: 6px 4px; font-size: 12px;
-    flex-direction: column; justify-content: center; gap: 3px; text-align: center;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .nav-item svg { width: 16px; height: 16px; }
+  .drawer-scrim { display: block; }
   .main-inner { padding: 22px 18px 48px; }
   /* settings rows: copy takes the full width, controls drop underneath */
   .setting-row { flex-wrap: wrap; }
@@ -674,9 +703,9 @@ select.input { appearance: none; }
   .prov-meta .chip ~ span:not(:last-child) { display: none; }
   /* account login grid: let name/status truncate with ellipsis instead of wrapping */
   .oauth-grid { grid-template-columns: minmax(0, auto) minmax(0, 1fr) max-content; column-gap: 8px; }
-  /* language menu: the sidebar foot is a horizontal top-bar row here, so opening the
-     menu beside the row clips at the viewport edge — drop it below, end-aligned. */
-  .lang-toggle .select-dropdown-beside { top: calc(100% + 6px); left: auto; right: 0; }
+  /* language menu: the drawer scrolls (overflow-y) so the beside-placement would be
+     clipped at the drawer edge — open upward from the foot row instead. */
+  .sidebar .lang-toggle .select-dropdown-beside { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; }
 }
 
 .usage-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 8px; }

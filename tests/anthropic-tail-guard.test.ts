@@ -13,14 +13,14 @@ function parsed(messages: OcxMessage[]): OcxParsedRequest {
   };
 }
 
-function bodyOf(p: OcxParsedRequest): { messages: Array<{ role: string; content: unknown }> } {
-  const { body } = createAnthropicAdapter(provider).buildRequest(p);
+async function bodyOf(p: OcxParsedRequest): Promise<{ messages: Array<{ role: string; content: unknown }> }> {
+  const { body } = await createAnthropicAdapter(provider).buildRequest(p);
   return JSON.parse(typeof body === "string" ? body : JSON.stringify(body)) as { messages: Array<{ role: string; content: unknown }> };
 }
 
 describe("anthropic tail guard", () => {
-  test("appends a user continue nudge when context ends with assistant text", () => {
-    const body = bodyOf(parsed([
+  test("appends a user continue nudge when context ends with assistant text", async () => {
+    const body = await bodyOf(parsed([
       { role: "user", content: "start", timestamp: 0 },
       { role: "assistant", content: [{ type: "text", text: "partial answer" }], model: "claude", timestamp: 0 },
     ]));
@@ -28,8 +28,8 @@ describe("anthropic tail guard", () => {
     expect(body.messages.at(-1)).toEqual({ role: "user", content: "(continue)" });
   });
 
-  test("leaves context ending with user unchanged", () => {
-    const body = bodyOf(parsed([
+  test("leaves context ending with user unchanged", async () => {
+    const body = await bodyOf(parsed([
       { role: "assistant", content: [{ type: "text", text: "answer" }], model: "claude", timestamp: 0 },
       { role: "user", content: "follow up", timestamp: 0 },
     ]));
@@ -40,14 +40,14 @@ describe("anthropic tail guard", () => {
     ]);
   });
 
-  test("turns empty context messages into a single user continue nudge", () => {
-    const body = bodyOf(parsed([]));
+  test("turns empty context messages into a single user continue nudge", async () => {
+    const body = await bodyOf(parsed([]));
 
     expect(body.messages).toEqual([{ role: "user", content: "(continue)" }]);
   });
 
-  test("does not append a nudge after an assistant tool call followed by a tool result", () => {
-    const body = bodyOf(parsed([
+  test("does not append a nudge after an assistant tool call followed by a tool result", async () => {
+    const body = await bodyOf(parsed([
       {
         role: "assistant",
         content: [{ type: "toolCall", id: "call_1", name: "read_file", arguments: { path: "README.md" } }],

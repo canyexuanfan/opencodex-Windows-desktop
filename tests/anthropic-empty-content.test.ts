@@ -13,22 +13,22 @@ function parsed(messages: OcxMessage[]): OcxParsedRequest {
   };
 }
 
-function bodyOf(p: OcxParsedRequest): { messages: Array<{ role: string; content: unknown }> } {
-  const { body } = createAnthropicAdapter(provider).buildRequest(p);
+async function bodyOf(p: OcxParsedRequest): Promise<{ messages: Array<{ role: string; content: unknown }> }> {
+  const { body } = await createAnthropicAdapter(provider).buildRequest(p);
   return JSON.parse(typeof body === "string" ? body : JSON.stringify(body)) as { messages: Array<{ role: string; content: unknown }> };
 }
 
 describe("anthropic empty content block guard", () => {
-  test("user message with empty string content is replaced with placeholder", () => {
-    const body = bodyOf(parsed([
+  test("user message with empty string content is replaced with placeholder", async () => {
+    const body = await bodyOf(parsed([
       { role: "user", content: "", timestamp: 0 },
     ]));
     const msg = body.messages[0] as { role: string; content: string };
     expect(msg.content).toBe("(empty)");
   });
 
-  test("user message with empty text part is filtered out", () => {
-    const body = bodyOf(parsed([
+  test("user message with empty text part is filtered out", async () => {
+    const body = await bodyOf(parsed([
       { role: "user", content: [{ type: "text", text: "" }], timestamp: 0 },
     ]));
     const msg = body.messages[0] as { role: string; content: string };
@@ -36,16 +36,16 @@ describe("anthropic empty content block guard", () => {
     expect(msg.content).toBe("(empty)");
   });
 
-  test("user message with mixed empty and non-empty parts keeps only non-empty", () => {
-    const body = bodyOf(parsed([
+  test("user message with mixed empty and non-empty parts keeps only non-empty", async () => {
+    const body = await bodyOf(parsed([
       { role: "user", content: [{ type: "text", text: "" }, { type: "text", text: "hello" }], timestamp: 0 },
     ]));
     const msg = body.messages[0] as { role: string; content: Array<{ type: string; text: string }> };
     expect(msg.content).toEqual([{ type: "text", text: "hello" }]);
   });
 
-  test("assistant message with empty text part is dropped silently", () => {
-    const body = bodyOf(parsed([
+  test("assistant message with empty text part is dropped silently", async () => {
+    const body = await bodyOf(parsed([
       { role: "user", content: "start", timestamp: 0 },
       { role: "assistant", content: [{ type: "text", text: "" }, { type: "text", text: "visible" }], model: "claude", timestamp: 0 },
     ]));
@@ -53,8 +53,8 @@ describe("anthropic empty content block guard", () => {
     expect(assistantMsg.content).toEqual([{ type: "text", text: "visible" }]);
   });
 
-  test("tool result with empty string content gets a placeholder", () => {
-    const body = bodyOf(parsed([
+  test("tool result with empty string content gets a placeholder", async () => {
+    const body = await bodyOf(parsed([
       { role: "user", content: "start", timestamp: 0 },
       { role: "assistant", content: [{ type: "toolCall", id: "tc1", name: "run", arguments: {} }], model: "claude", timestamp: 0 },
       { role: "toolResult", toolCallId: "tc1", toolName: "run", content: "", isError: false, timestamp: 0 },

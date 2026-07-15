@@ -68,6 +68,25 @@ describe("363-B: tool result reaches the model via rootPromptMessagesJson", () =
     const roots = decodeRoots(bytes) as Array<{ role: string }>;
     expect(roots[0]?.role).toBe("system");
   });
+
+  test("assistant tool CALL is NOT replayed as [Tool Call] text (model-prompt leak guard)", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "composer-2.5",
+      conversationId: "c1",
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "[tool_result]\ncall_id: call_1\nname: mcp__fs__read_file\nis_error: false\noutput:\nFILE CONTENTS HERE" }],
+      rawMessages,
+    });
+    const serialized = JSON.stringify(decodeRoots(bytes));
+    // Regression: a prior assistant tool call MUST NOT leak into the model-visible prompt as literal
+    // "[Tool Call]" text. The model few-shot-mimics that marker and emits later parallel/mixed tool
+    // calls as inert text instead of real tool frames (halting multi-tool continuations).
+    expect(serialized).not.toContain("[Tool Call]");
+    // ...but the tool's model-visible continuation context (call id + output) must still survive via
+    // the paired tool RESULT echo, so the model can continue from it.
+    expect(serialized).toContain("FILE CONTENTS HERE");
+    expect(serialized).toContain("call_1");
+  });
 });
 
 import { create as createPb } from "@bufbuild/protobuf";

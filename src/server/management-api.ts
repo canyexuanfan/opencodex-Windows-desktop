@@ -274,6 +274,33 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     });
   }
 
+  if (url.pathname === "/api/shadow-call-settings" && req.method === "GET") {
+    const sci = config.shadowCallIntercept ?? {};
+    return jsonResponse({ enabled: sci.enabled === true, model: sci.model ?? "" });
+  }
+
+  if (url.pathname === "/api/shadow-call-settings" && req.method === "PUT") {
+    let raw: unknown;
+    try { raw = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (!isPlainRecord(raw)) return jsonResponse({ error: "body must be a JSON object" }, 400);
+    const body = raw as { enabled?: unknown; model?: unknown };
+    if (body.enabled !== undefined && typeof body.enabled !== "boolean") {
+      return jsonResponse({ error: "enabled must be a boolean" }, 400);
+    }
+    if (body.model !== undefined && typeof body.model !== "string") {
+      return jsonResponse({ error: "model must be a string" }, 400);
+    }
+    config.shadowCallIntercept = { ...config.shadowCallIntercept };
+    if (typeof body.enabled === "boolean") config.shadowCallIntercept.enabled = body.enabled;
+    if (typeof body.model === "string") {
+      if (body.model === "") delete config.shadowCallIntercept.model;
+      else config.shadowCallIntercept.model = body.model;
+    }
+    saveConfig(config);
+    const sci = config.shadowCallIntercept;
+    return jsonResponse({ ok: true, enabled: sci.enabled === true, model: sci.model ?? "" });
+  }
+
   if (url.pathname === "/api/logs" && req.method === "GET") {
     return jsonResponse(filterRequestLogs(getRequestLogEntries(), url.searchParams));
   }

@@ -43,7 +43,7 @@ describe("Umans provider", () => {
     globalThis.fetch = originalFetch;
   });
 
-  test("catalog enrichment preserves Anthropic Messages runtime metadata", () => {
+  test("catalog enrichment preserves Anthropic Messages runtime metadata", async () => {
     const provider: OcxProviderConfig = {
       adapter: "anthropic",
       baseUrl: "https://api.code.umans.ai",
@@ -62,7 +62,7 @@ describe("Umans provider", () => {
     expect(provider.escapeBuiltinToolNames).toBe(true);
   });
 
-  test("CLI key-login save payload preserves Umans runtime metadata", () => {
+  test("CLI key-login save payload preserves Umans runtime metadata", async () => {
     const provider = providerConfigFromKeyLoginProvider(KEY_LOGIN_PROVIDERS.umans, "sk-umans");
 
     expect(provider).toMatchObject({
@@ -81,8 +81,8 @@ describe("Umans provider", () => {
     expect(provider.modelInputModalities?.["umans-kimi-k2.7"]).toEqual(["text", "image"]);
   });
 
-  test("Anthropic adapter posts Umans requests to /v1/messages with x-api-key", () => {
-    const req = createAnthropicAdapter(umansProvider()).buildRequest(parsedWithWebSearchTool());
+  test("Anthropic adapter posts Umans requests to /v1/messages with x-api-key", async () => {
+    const req = await createAnthropicAdapter(umansProvider()).buildRequest(parsedWithWebSearchTool());
     const body = JSON.parse(req.body as string) as {
       tools: Array<{ name: string }>;
       tool_choice: { type: string; name: string };
@@ -103,8 +103,8 @@ describe("Umans provider", () => {
     expect(body.tool_choice).toEqual({ type: "tool", name: "cx_web_search" });
   });
 
-  test("Anthropic adapter filters Umans tools for Responses allowed_tools choices", () => {
-    const req = createAnthropicAdapter(umansProvider()).buildRequest({
+  test("Anthropic adapter filters Umans tools for Responses allowed_tools choices", async () => {
+    const req = await createAnthropicAdapter(umansProvider()).buildRequest({
       modelId: "umans-kimi-k2.7",
       context: {
         messages: [{ role: "user", content: "search docs", timestamp: 0 }],

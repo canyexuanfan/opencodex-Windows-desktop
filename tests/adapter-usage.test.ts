@@ -44,9 +44,9 @@ describe("adapter reasoning and usage details", () => {
     });
   });
 
-  test("OpenAI-compatible non-OpenAI providers receive the tool catalog nudge", () => {
+  test("OpenAI-compatible non-OpenAI providers receive the tool catalog nudge", async () => {
     const adapter = createOpenAIChatAdapter(provider);
-    const request = adapter.buildRequest({
+    const request = await adapter.buildRequest({
       modelId: "kimi-k2.7-code",
       context: {
         messages: [{ role: "user", content: "run a command" }],
@@ -62,9 +62,9 @@ describe("adapter reasoning and usage details", () => {
     expect(body.messages[0].content).toContain("Valid tool names for this turn are exactly `exec_command`.");
   });
 
-  test("OpenAI-compatible OpenAI hosts do not receive the non-OpenAI nudge", () => {
+  test("OpenAI-compatible OpenAI hosts do not receive the non-OpenAI nudge", async () => {
     const adapter = createOpenAIChatAdapter({ ...provider, baseUrl: "https://api.openai.com/v1" });
-    const request = adapter.buildRequest({
+    const request = await adapter.buildRequest({
       modelId: "gpt-5.5",
       context: {
         messages: [{ role: "user", content: "run a command" }],
@@ -117,9 +117,9 @@ describe("adapter reasoning and usage details", () => {
     });
   });
 
-  test("Anthropic API-key requests mark system prompt as cacheable", () => {
+  test("Anthropic API-key requests mark system prompt as cacheable", async () => {
     const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic", baseUrl: "https://api.anthropic.com" });
-    const request = adapter.buildRequest({
+    const request = await adapter.buildRequest({
       modelId: "claude-opus-4-1",
       context: {
         systemPrompt: ["stable project instructions"],
@@ -141,14 +141,14 @@ describe("adapter reasoning and usage details", () => {
     expect(body.messages[0].content).toBe("hi");
   });
 
-  test("Anthropic OAuth requests keep Claude identity first and cache user system prompt", () => {
+  test("Anthropic OAuth requests keep Claude identity first and cache user system prompt", async () => {
     const adapter = createAnthropicAdapter({
       ...provider,
       adapter: "anthropic",
       authMode: "oauth",
       baseUrl: "https://api.anthropic.com",
     });
-    const request = adapter.buildRequest({
+    const request = await adapter.buildRequest({
       modelId: "claude-opus-4-1",
       context: {
         systemPrompt: ["stable project instructions"],
@@ -170,9 +170,9 @@ describe("adapter reasoning and usage details", () => {
     });
   });
 
-  test("Anthropic requests mark the final tool definition as cacheable", () => {
+  test("Anthropic requests mark the final tool definition as cacheable", async () => {
     const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic", baseUrl: "https://api.anthropic.com" });
-    const request = adapter.buildRequest({
+    const request = await adapter.buildRequest({
       modelId: "claude-opus-4-1",
       context: {
         messages: [{ role: "user", content: "hi" }],
@@ -205,9 +205,9 @@ describe("adapter reasoning and usage details", () => {
     expect(body.messages[0].content).toBe("hi");
   });
 
-  test("Anthropic native automatic caching reserves one explicit breakpoint slot", () => {
+  test("Anthropic native automatic caching reserves one explicit breakpoint slot", async () => {
     const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic", baseUrl: "https://api.anthropic.com" });
-    const request = adapter.buildRequest({
+    const request = await adapter.buildRequest({
       modelId: "claude-opus-4-1",
       context: {
         systemPrompt: ["stable project instructions"],
@@ -343,9 +343,9 @@ describe("usage and content retention (F2)", () => {
 });
 
 describe("openai-chat tool history repair", () => {
-  test("inserts a synthetic assistant tool_call before orphan tool results", () => {
+  test("inserts a synthetic assistant tool_call before orphan tool results", async () => {
     const adapter = createOpenAIChatAdapter(provider);
-    const request = adapter.buildRequest({
+    const request = await adapter.buildRequest({
       modelId: "deepseek-v4",
       context: {
         messages: [{
@@ -379,9 +379,9 @@ describe("openai-chat tool history repair", () => {
     });
   });
 
-  test("keeps paired tool results attached to the prior assistant tool_call", () => {
+  test("keeps paired tool results attached to the prior assistant tool_call", async () => {
     const adapter = createOpenAIChatAdapter(provider);
-    const request = adapter.buildRequest({
+    const request = await adapter.buildRequest({
       modelId: "deepseek-v4",
       context: {
         messages: [
@@ -424,9 +424,9 @@ describe("openai-chat tool history repair", () => {
 });
 
 describe("anthropic tool result history repair", () => {
-  test("merges adjacent tool results after multiple tool uses into one user message", () => {
+  test("merges adjacent tool results after multiple tool uses into one user message", async () => {
     const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
-    const request = adapter.buildRequest({
+    const request = await adapter.buildRequest({
       modelId: "claude-sonnet",
       context: {
         messages: [
@@ -458,9 +458,9 @@ describe("anthropic tool result history repair", () => {
     ]);
   });
 
-  test("adds an error tool result when history is missing a tool result", () => {
+  test("adds an error tool result when history is missing a tool result", async () => {
     const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
-    const request = adapter.buildRequest({
+    const request = await adapter.buildRequest({
       modelId: "claude-sonnet",
       context: {
         messages: [{
@@ -487,9 +487,9 @@ describe("anthropic tool result history repair", () => {
     });
   });
 
-  test("preserves orphan tool results as text instead of invalid Anthropic tool_result blocks", () => {
+  test("preserves orphan tool results as text instead of invalid Anthropic tool_result blocks", async () => {
     const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
-    const request = adapter.buildRequest({
+    const request = await adapter.buildRequest({
       modelId: "claude-sonnet",
       context: {
         messages: [{
@@ -516,9 +516,9 @@ describe("anthropic tool result history repair", () => {
     }]);
   });
 
-  test("preserves duplicate adjacent tool results as text after the matching result", () => {
+  test("preserves duplicate adjacent tool results as text after the matching result", async () => {
     const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
-    const request = adapter.buildRequest({
+    const request = await adapter.buildRequest({
       modelId: "claude-sonnet",
       context: {
         messages: [
@@ -546,9 +546,9 @@ describe("anthropic tool result history repair", () => {
     });
   });
 
-  test("maps non-string tool result content through Anthropic content blocks", () => {
+  test("maps non-string tool result content through Anthropic content blocks", async () => {
     const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
-    const request = adapter.buildRequest({
+    const request = await adapter.buildRequest({
       modelId: "claude-sonnet",
       context: {
         messages: [
@@ -564,7 +564,7 @@ describe("anthropic tool result history repair", () => {
             toolName: "view_image",
             content: [
               { type: "text", text: "image attached" },
-              { type: "image", imageUrl: "data:image/png;base64,AAAA", detail: "high" },
+              { type: "image", imageUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", detail: "high" },
             ],
             isError: false,
             timestamp: 0,
@@ -583,7 +583,7 @@ describe("anthropic tool result history repair", () => {
         tool_use_id: "call_1",
         content: [
           { type: "text", text: "image attached" },
-          { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" } },
         ],
         cache_control: { type: "ephemeral" },
       }],

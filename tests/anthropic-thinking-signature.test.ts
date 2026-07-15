@@ -117,7 +117,7 @@ describe("bridge ocxr1 envelope emission", () => {
     expect(env?.txt).toBe("hidden chain"); // signed text survives inside the envelope only
   });
 
-  test("JSON: reasoning item carries envelope; redacted blocks included", () => {
+  test("JSON: reasoning item carries envelope; redacted blocks included", async () => {
     const response = buildResponseJSON([
       { type: "redacted_thinking", data: "RED1" },
       ...baseEvents,
@@ -145,7 +145,7 @@ describe("bridge ocxr1 envelope emission", () => {
 });
 
 describe("parser ocxr1 decode + anthropic replay", () => {
-  test("reasoning input with ocxr1 envelope restores the real signature", () => {
+  test("reasoning input with ocxr1 envelope restores the real signature", async () => {
     const encrypted = encodeReasoningEnvelope({ sig: "RealSig1234567890==", red: ["RED1"] });
     const parsed = parseRequest({
       model: "anthropic/claude-x",
@@ -161,7 +161,7 @@ describe("parser ocxr1 decode + anthropic replay", () => {
     expect(thinking?.redacted).toEqual(["RED1"]);
   });
 
-  test("hidden signed text (txt) is restored as the thinking body", () => {
+  test("hidden signed text (txt) is restored as the thinking body", async () => {
     const encrypted = encodeReasoningEnvelope({ sig: "RealSig1234567890==", txt: "the hidden signed text" });
     const parsed = parseRequest({
       model: "anthropic/claude-x",
@@ -175,7 +175,7 @@ describe("parser ocxr1 decode + anthropic replay", () => {
     expect(thinking?.thinking).toBe("the hidden signed text");
   });
 
-  test("native (non-ocxr1) encrypted_content keeps the placeholder signature", () => {
+  test("native (non-ocxr1) encrypted_content keeps the placeholder signature", async () => {
     const parsed = parseRequest({
       model: "anthropic/claude-x",
       input: [
@@ -189,7 +189,7 @@ describe("parser ocxr1 decode + anthropic replay", () => {
     expect(thinking?.signature?.startsWith("{")).toBe(true);
   });
 
-  test("anthropic buildRequest replays thinking + redacted blocks verbatim", () => {
+  test("anthropic buildRequest replays thinking + redacted blocks verbatim", async () => {
     const adapter = createAnthropicAdapter(provider);
     const encrypted = encodeReasoningEnvelope({ sig: "RealSig1234567890==", red: ["REDDATA"] });
     const parsed = parseRequest({
@@ -201,7 +201,7 @@ describe("parser ocxr1 decode + anthropic replay", () => {
         { type: "message", role: "user", content: [{ type: "input_text", text: "next" }] },
       ],
     });
-    const req = adapter.buildRequest(parsed) as { body: string };
+    const req = await adapter.buildRequest(parsed) as { body: string };
     const body = JSON.parse(req.body) as { messages: { role: string; content: unknown }[] };
     const assistant = body.messages.find(m => m.role === "assistant" && Array.isArray(m.content)
       && (m.content as { type: string }[]).some(c => c.type === "thinking"));
@@ -231,7 +231,7 @@ describe("passthrough scrub of ocxr1 envelopes", () => {
       ],
     };
     // Build the outgoing request the adapter would send; the ocxr1 envelope must be stripped.
-    const req = adapter.buildRequest({ _rawBody: body, model: "gpt-5.5", messages: [], options: {} } as never) as { body?: string };
+    const req = await adapter.buildRequest({ _rawBody: body, model: "gpt-5.5", messages: [], options: {} } as never) as { body?: string };
     expect(req.body ?? "").not.toContain(OCX_REASONING_PREFIX);
     expect(req.body ?? "").toContain('"rs_1"'); // reasoning item itself survives
   });

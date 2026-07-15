@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
+import { parseRequest } from "../src/responses/parser";
 import { buildModelsRequest } from "../src/oauth";
 import {
   resolveProviderTransport,
@@ -84,6 +85,67 @@ describe("xAI auth-mode transport selection", () => {
       "x-grok-client-identifier": "opencodex",
       "x-xai-token-auth": "xai-grok-cli",
     });
+  });
+
+  test("flattens nested root tool unions for xAI without changing other providers", () => {
+    const schema = {
+      oneOf: [
+        { type: "object", properties: { mode: { type: "string", enum: ["view"] } } },
+        { oneOf: [{ type: "object", properties: { path: { type: "string" } } }, { type: "object", properties: {} }] },
+      ],
+      $defs: { shared: { type: "string" } },
+    };
+    const request = createOpenAIChatAdapter(provider("key")).buildRequest({
+      ...parsed(),
+      context: { messages: [], tools: [{ name: "automation_update", description: "Update", parameters: schema }] },
+    });
+    const xaiParameters = (JSON.parse(request.body) as { tools: Array<{ function: { parameters: Record<string, unknown> } }> }).tools[0].function.parameters;
+
+    expect(xaiParameters.type).toBeUndefined();
+    expect(xaiParameters.oneOf).toHaveLength(3);
+    expect((xaiParameters.oneOf as Record<string, unknown>[]).every(branch => branch.type === "object")).toBe(true);
+    expect(xaiParameters.$defs).toEqual(schema.$defs);
+
+    const otherRequest = createOpenAIChatAdapter({ ...provider("key"), baseUrl: "https://example.test/v1" }).buildRequest({
+      ...parsed(),
+      context: { messages: [], tools: [{ name: "automation_update", description: "Update", parameters: schema }] },
+    });
+    expect((JSON.parse(otherRequest.body) as { tools: Array<{ function: { parameters: unknown } }> }).tools[0].function.parameters).toEqual(schema);
+  });
+
+  test("omits an xAI tool whose root schema cannot be normalized safely", () => {
+    const request = createOpenAIChatAdapter(provider("key")).buildRequest({
+      ...parsed(),
+      context: { messages: [], tools: [{ name: "unsafe", description: "Unsafe", parameters: { oneOf: [{ type: "string" }] } }] },
+    });
+    expect(JSON.parse(request.body).tools).toBeUndefined();
+  });
+
+  test("normalizes a tool loaded from tool_search history on later turns", () => {
+    const parsedRequest = parseRequest({
+      model: "xai/grok-4.5",
+      input: [
+        { type: "tool_search_call", call_id: "search-1", arguments: { query: "automation" } },
+        {
+          type: "tool_search_output",
+          call_id: "search-1",
+          status: "completed",
+          tools: [{
+            type: "function",
+            name: "automation_update",
+            description: "Update an automation",
+            parameters: { oneOf: [{ type: "object", properties: {} }, { oneOf: [{ type: "object", properties: {} }] }] },
+          }],
+        },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] },
+      ],
+    });
+    const request = createOpenAIChatAdapter(provider("key")).buildRequest(parsedRequest);
+    const body = JSON.parse(request.body) as { tools: Array<{ function: { name: string; parameters: Record<string, unknown> } }> };
+    const tool = body.tools.find(entry => entry.function.name === "automation_update");
+
+    expect(tool?.function.parameters.oneOf).toHaveLength(2);
+    expect((tool?.function.parameters.oneOf as Record<string, unknown>[]).every(branch => branch.type === "object")).toBe(true);
   });
 });
 

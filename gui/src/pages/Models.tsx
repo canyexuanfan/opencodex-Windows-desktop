@@ -28,6 +28,11 @@ interface V2Status {
   multiAgentMode?: "v1" | "default" | "v2";
 }
 
+interface ShadowCallData {
+  enabled: boolean;
+  model: string;
+}
+
 const CAP_OPTIONS = Array.from({ length: 18 }, (_, i) => 100_000 + i * 50_000); // 100k … 950k
 const CUSTOM_OPTION = "custom";
 const THREAD_OPTIONS = [4, 8, 16, 32, 64, 128, 256, 500, 1000];
@@ -67,6 +72,15 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const [threadsCustom, setThreadsCustom] = useState("");
   const [showThreadsCustom, setShowThreadsCustom] = useState(false);
   const [v2HelpOpen, setV2HelpOpen] = useState(false);
+  const [shadowCall, setShadowCall] = useState<ShadowCallData | null>(null);
+  const [shadowCallSaving, setShadowCallSaving] = useState(false);
+
+  const loadShadowCall = useCallback(async () => {
+    try {
+      const r = await fetch(`${apiBase}/api/shadow-call-settings`);
+      if (r.ok) setShadowCall(await r.json() as ShadowCallData);
+    } catch { /* old server / network: keep the section disabled */ }
+  }, [apiBase]);
 
   const loadV2 = useCallback(async () => {
     // Never let a toggle in flight be clobbered by the poll (same single-flight rule as models).
@@ -95,6 +109,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
         fetch(`${apiBase}/api/provider-context-caps`).then(r => r.json()) as Promise<ProviderContextCapsResponse>,
       ]);
       void loadV2(); // best-effort, independent of the models fetch
+      void loadShadowCall();
       setModels(data);
       setDisabled(new Set(data.filter(m => m.disabled).map(m => m.namespaced)));
       const value = typeof capsData.value === "number" && Number.isFinite(capsData.value) && capsData.value > 0
@@ -107,7 +122,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
     } finally {
       setLoading(false);
     }
-  }, [apiBase, loadV2, t]);
+  }, [apiBase, loadShadowCall, loadV2, t]);
   useEffect(() => {
     const timeout = window.setTimeout(() => {
       void load();
@@ -259,6 +274,21 @@ export default function Models({ apiBase }: { apiBase: string }) {
   );
   const setAll = () => { void putCap({ setAll: !allCapped }); };
 
+  const saveShadowCall = async (patch: Partial<ShadowCallData>) => {
+    if (!shadowCall || shadowCallSaving) return;
+    setShadowCallSaving(true);
+    setShadowCall({ ...shadowCall, ...patch });
+    try {
+      await fetch(`${apiBase}/api/shadow-call-settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+    } finally {
+      setShadowCallSaving(false);
+    }
+  };
+
   const setMultiAgentMode = async (mode: "v1" | "default" | "v2") => {
     if (!v2 || v2BusyRef.current) return;
     if (v2.multiAgentMode === mode) return;
@@ -347,6 +377,13 @@ export default function Models({ apiBase }: { apiBase: string }) {
       </div>
       <p className="page-sub">{t("models.subtitle")}</p>
       {status && <Notice tone={ok ? "ok" : "err"}>{status}</Notice>}
+
+      <div className="row muted" style={{ gap: 6, marginBottom: 8, alignItems: "center", fontSize: 13 }}>
+        <span title={t("models.shadowCallInterceptHint")} style={{ cursor: "help" }}>{t("models.shadowCallIntercept")} ⓘ</span>
+        <code style={{ fontSize: 11, opacity: 0.6 }}>⚠ 5.4-mini →</code>
+        <Switch on={shadowCall?.enabled ?? false} onClick={() => void saveShadowCall({ enabled: !shadowCall?.enabled })} disabled={!shadowCall || shadowCallSaving} label={t("models.shadowCallIntercept")} />
+        <Select value={shadowCall?.model ?? ""} options={[{ value: "", label: "\u2014" }, ...models.filter(m => !disabled.has(m.id) && !disabled.has(m.namespaced)).map(m => ({ value: m.namespaced, label: m.namespaced }))]} onChange={v => { setShadowCall(c => c ? { ...c, model: v } : c); void saveShadowCall({ model: v }); }} disabled={!shadowCall || shadowCallSaving || !shadowCall.enabled} label={t("models.shadowCallIntercept")} />
+      </div>
 
       {v2 && (
         <div className="row" style={{ gap: 8, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>

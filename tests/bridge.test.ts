@@ -144,6 +144,7 @@ describe("Responses bridge reasoning and usage parity", () => {
     const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
     const output = completed.output as Record<string, unknown>[];
     expect(output.map(item => item.type)).toEqual(["reasoning", "function_call"]);
+    expect(output[1].id).toStartWith("fc_");
     expect(output[1]).toMatchObject({ name: "read_file", arguments: "{\"path\":\"README.md\"}" });
   });
 
@@ -219,8 +220,10 @@ describe("Responses bridge reasoning and usage parity", () => {
 
     const output = json.output as Record<string, unknown>[];
     expect(output[0].type).toBe("custom_tool_call");
+    expect(output[0].id).toStartWith("ctc_");
     expect(output[0].input).toBe("patch data");
     expect(output[1].type).toBe("tool_search_call");
+    expect(output[1].id).toStartWith("tsc_");
   });
 
   test("streaming freeform tool call emits unwrapped custom_tool_call_input deltas", async () => {
@@ -234,7 +237,9 @@ describe("Responses bridge reasoning and usage parity", () => {
       { type: "done" },
     ]), "model", undefined, new Set(["apply_patch"])));
 
-    const deltas = frames.filter(f => f.event === "response.custom_tool_call_input.delta").map(f => f.data.delta);
+    const added = frames.find(f => f.event === "response.output_item.added")?.data.item as Record<string, unknown>;
+    const deltaEvents = frames.filter(f => f.event === "response.custom_tool_call_input.delta");
+    const deltas = deltaEvents.map(f => f.data.delta);
     expect(deltas.join("")).toBe("line1\nline2");
     // No raw JSON wrapper fragments leak into the preview stream.
     for (const d of deltas) expect(String(d)).not.toContain("{\"inp");
@@ -244,6 +249,13 @@ describe("Responses bridge reasoning and usage parity", () => {
 
     const item = frames.find(f => f.event === "response.output_item.done")?.data.item as Record<string, unknown>;
     expect(item).toMatchObject({ type: "custom_tool_call", input: "line1\nline2", status: "completed" });
+    const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
+    const completedItem = (completed.output as Record<string, unknown>[])[0];
+    expect(added.id).toStartWith("ctc_");
+    expect(deltaEvents.every(f => f.data.item_id === added.id)).toBe(true);
+    expect(doneEvt?.item_id).toBe(added.id);
+    expect(item.id).toBe(added.id);
+    expect(completedItem.id).toBe(added.id);
     // Freeform calls must NOT emit function_call_arguments events.
     expect(frames.some(f => f.event === "response.function_call_arguments.delta")).toBe(false);
     expect(frames.some(f => f.event === "response.function_call_arguments.done")).toBe(false);
@@ -339,8 +351,9 @@ describe("Responses bridge web_search_call native item", () => {
     const addedItem = added!.data.item as Record<string, unknown>;
     const doneItem = done!.data.item as Record<string, unknown>;
     // Same id on both frames so codex-rs reconciles the started/completed cell.
-    expect(addedItem.id).toBe("ws_1");
-    expect(doneItem.id).toBe("ws_1");
+    expect(typeof addedItem.id).toBe("string");
+    expect((addedItem.id as string).startsWith("ws_")).toBe(true);
+    expect(doneItem.id).toBe(addedItem.id);
     expect(doneItem.status).toBe("completed");
     expect(doneItem.action).toEqual({ type: "search", query: "current docs" });
 

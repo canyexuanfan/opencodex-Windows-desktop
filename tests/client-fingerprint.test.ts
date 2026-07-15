@@ -19,13 +19,13 @@ function parsed(): OcxParsedRequest {
 }
 
 describe("client fingerprint — helpers", () => {
-  test("antigravity UA has the real CLI shape, never the literal giveaway", () => {
+  test("antigravity UA has the real CLI shape, never the literal giveaway", async () => {
     const ua = antigravityUserAgent();
     expect(ua).toBe(`antigravity/cli/${ANTIGRAVITY_CLI_VERSION} (aidev_client; os_type=darwin; arch=arm64)`);
     expect(ua).not.toBe("antigravity");
   });
 
-  test("antigravity UA honors an explicit version override", () => {
+  test("antigravity UA honors an explicit version override", async () => {
     expect(antigravityUserAgent("9.9.9")).toBe("antigravity/cli/9.9.9 (aidev_client; os_type=darwin; arch=arm64)");
   });
 
@@ -42,11 +42,11 @@ describe("client fingerprint — helpers", () => {
     }
   });
 
-  test("secondary google api client UA is pinned", () => {
+  test("secondary google api client UA is pinned", async () => {
     expect(ANTIGRAVITY_GOOG_API_CLIENT_UA).toMatch(/^google-api-nodejs-client\/[\d.]+$/);
   });
 
-  test("claude session id is a stable v4-shaped uuid per token", () => {
+  test("claude session id is a stable v4-shaped uuid per token", async () => {
     const a = claudeCodeSessionId("tok-abc");
     const b = claudeCodeSessionId("tok-abc");
     const c = claudeCodeSessionId("tok-xyz");
@@ -55,11 +55,11 @@ describe("client fingerprint — helpers", () => {
     expect(a).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   });
 
-  test("claude session id never echoes the raw token", () => {
+  test("claude session id never echoes the raw token", async () => {
     expect(claudeCodeSessionId("super-secret-token")).not.toContain("super-secret-token");
   });
 
-  test("CLAUDE_CODE_HEADERS carries the first-party Stainless/App signature", () => {
+  test("CLAUDE_CODE_HEADERS carries the first-party Stainless/App signature", async () => {
     expect(CLAUDE_CODE_HEADERS["X-App"]).toBe("cli");
     expect(CLAUDE_CODE_HEADERS["X-Stainless-Runtime"]).toBe("node");
     expect(CLAUDE_CODE_HEADERS["X-Stainless-Lang"]).toBe("js");
@@ -70,8 +70,8 @@ describe("client fingerprint — anthropic OAuth headers", () => {
   const oauthProvider = { adapter: "anthropic", authMode: "oauth", baseUrl: "https://api.anthropic.com", apiKey: "oauth-tok-123" } as unknown as OcxProviderConfig;
   const apiKeyProvider = { adapter: "anthropic", baseUrl: "https://api.anthropic.com", apiKey: "sk-ant-123" } as unknown as OcxProviderConfig;
 
-  test("OAuth request carries the full Claude Code header set", () => {
-    const { headers } = createAnthropicAdapter(oauthProvider).buildRequest(parsed());
+  test("OAuth request carries the full Claude Code header set", async () => {
+    const { headers } = await createAnthropicAdapter(oauthProvider).buildRequest(parsed());
     expect(headers["X-App"]).toBe("cli");
     expect(headers["X-Stainless-Runtime"]).toBe("node");
     expect(headers["X-Stainless-Lang"]).toBe("js");
@@ -82,35 +82,35 @@ describe("client fingerprint — anthropic OAuth headers", () => {
     expect(headers["x-client-request-id"]).toMatch(/^[0-9a-f]{8}-/);
   });
 
-  test("session id is stable across requests with the same OAuth token", () => {
-    const a = createAnthropicAdapter(oauthProvider).buildRequest(parsed()).headers["X-Claude-Code-Session-Id"];
-    const b = createAnthropicAdapter(oauthProvider).buildRequest(parsed()).headers["X-Claude-Code-Session-Id"];
+  test("session id is stable across requests with the same OAuth token", async () => {
+    const a = (await createAnthropicAdapter(oauthProvider).buildRequest(parsed())).headers["X-Claude-Code-Session-Id"];
+    const b = (await createAnthropicAdapter(oauthProvider).buildRequest(parsed())).headers["X-Claude-Code-Session-Id"];
     expect(a).toBe(b);
   });
 
-  test("outgoing session-id header never echoes the raw OAuth token", () => {
+  test("outgoing session-id header never echoes the raw OAuth token", async () => {
     const secretProvider = { adapter: "anthropic", authMode: "oauth", baseUrl: "https://api.anthropic.com", apiKey: "oauth-super-secret-xyz" } as unknown as OcxProviderConfig;
-    const { headers } = createAnthropicAdapter(secretProvider).buildRequest(parsed());
+    const { headers } = await createAnthropicAdapter(secretProvider).buildRequest(parsed());
     expect(headers["X-Claude-Code-Session-Id"]).not.toContain("oauth-super-secret-xyz");
     expect(headers["X-Claude-Code-Session-Id"]).not.toContain("super-secret");
   });
 
-  test("per-request id differs between requests", () => {
-    const a = createAnthropicAdapter(oauthProvider).buildRequest(parsed()).headers["x-client-request-id"];
-    const b = createAnthropicAdapter(oauthProvider).buildRequest(parsed()).headers["x-client-request-id"];
+  test("per-request id differs between requests", async () => {
+    const a = (await createAnthropicAdapter(oauthProvider).buildRequest(parsed())).headers["x-client-request-id"];
+    const b = (await createAnthropicAdapter(oauthProvider).buildRequest(parsed())).headers["x-client-request-id"];
     expect(a).not.toBe(b);
   });
 
-  test("API-key mode does NOT get the Claude Code CLI headers", () => {
-    const { headers } = createAnthropicAdapter(apiKeyProvider).buildRequest(parsed());
+  test("API-key mode does NOT get the Claude Code CLI headers", async () => {
+    const { headers } = await createAnthropicAdapter(apiKeyProvider).buildRequest(parsed());
     expect(headers["x-api-key"]).toBe("sk-ant-123");
     expect(headers["X-App"]).toBeUndefined();
     expect(headers["X-Claude-Code-Session-Id"]).toBeUndefined();
   });
 
-  test("Accept + User-Agent fingerprint headers are sent on both OAuth and API-key paths", () => {
-    const oauth = createAnthropicAdapter(oauthProvider).buildRequest(parsed()).headers;
-    const apiKey = createAnthropicAdapter(apiKeyProvider).buildRequest(parsed()).headers;
+  test("Accept + User-Agent fingerprint headers are sent on both OAuth and API-key paths", async () => {
+    const oauth = (await createAnthropicAdapter(oauthProvider).buildRequest(parsed())).headers;
+    const apiKey = (await createAnthropicAdapter(apiKeyProvider).buildRequest(parsed())).headers;
     for (const headers of [oauth, apiKey]) {
       // Non-stream request advertises a JSON Accept and the pinned first-party SDK UA.
       expect(headers["Accept"]).toBe("application/json");
@@ -118,9 +118,9 @@ describe("client fingerprint — anthropic OAuth headers", () => {
     }
   });
 
-  test("Accept negotiates SSE for a streaming request", () => {
+  test("Accept negotiates SSE for a streaming request", async () => {
     const streaming = { ...parsed(), stream: true } as OcxParsedRequest;
-    const { headers } = createAnthropicAdapter(oauthProvider).buildRequest(streaming);
+    const { headers } = await createAnthropicAdapter(oauthProvider).buildRequest(streaming);
     expect(headers["Accept"]).toBe("text/event-stream");
     expect(headers["User-Agent"]).toBe("@anthropic-ai/sdk/0.74.0");
   });

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Dashboard from "./pages/Dashboard";
 import Providers from "./pages/Providers";
 import Models from "./pages/Models";
@@ -9,7 +9,7 @@ import Usage from "./pages/Usage";
 import CodexAuth from "./pages/CodexAuth";
 import ApiKeys from "./pages/ApiKeys";
 import ClaudeCode from "./pages/ClaudeCode";
-import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconTerminal, IconActivity, IconKey, IconGithub, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle } from "./icons";
+import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconTerminal, IconActivity, IconKey, IconGithub, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle, IconX } from "./icons";
 import { useI18n, useT, LOCALES, type Locale, type TKey } from "./i18n";
 import { Select } from "./ui";
 import { installApiAuthFetch } from "./api";
@@ -63,8 +63,15 @@ export default function App() {
   const { locale, setLocale } = useI18n();
   const t = useT();
 
+  // Narrow screens: the sidebar becomes an off-canvas drawer behind a hamburger toggle.
+  const [navOpen, setNavOpen] = useState(false);
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
+  const navWasOpen = useRef(false);
+
   useEffect(() => {
-    const onHash = () => setPageState(readPageFromHash());
+    // External navigation (hash edit, back/forward) also dismisses the mobile drawer.
+    const onHash = () => { setPageState(readPageFromHash()); setNavOpen(false); };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
@@ -108,6 +115,34 @@ export default function App() {
   const [claudeEnabled, setClaudeEnabled] = useState<boolean | null>(null);
 
   useEffect(() => {
+    if (!navOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setNavOpen(false); };
+    window.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";         // no background scroll behind the drawer
+    return () => { window.removeEventListener("keydown", onKey); document.body.style.overflow = prevOverflow; };
+  }, [navOpen]);
+
+  // Move focus into the drawer on open; hand it back to the toggle on close.
+  useEffect(() => {
+    if (navOpen) {
+      navWasOpen.current = true;
+      // after the 180ms slide-in: while visibility is transitioning, focus() no-ops
+      const timer = setTimeout(() => sidebarRef.current?.focus(), 200);
+      return () => clearTimeout(timer);
+    }
+    if (navWasOpen.current) { navWasOpen.current = false; menuBtnRef.current?.focus(); }
+  }, [navOpen]);
+
+  // Growing the window past the breakpoint dismisses the drawer state.
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 761px)");
+    const onChange = () => { if (mq.matches) setNavOpen(false); };
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     fetch(`${API_BASE}/api/claude-code`)
       .then(res => res.json())
@@ -137,17 +172,42 @@ export default function App() {
     try { await fetch(`${API_BASE}/api/stop`, { method: "POST" }); } catch { /* connection drops */ }
   };
 
+  const brand = (
+    <div className="brand">
+      <span className="brand-logo" role="img" aria-label="opencodex logo" />
+      <span className="name">opencodex</span>
+      <span className="ver">v{displayedVersion}</span>
+    </div>
+  );
+
   return (
     <div className="app">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-logo" role="img" aria-label="opencodex logo" />
-          <span className="name">opencodex</span>
-          <span className="ver">v{displayedVersion}</span>
+      {/* inert while the drawer is open: keeps focus and assistive tech inside the drawer */}
+      <header className="mobile-topbar" inert={navOpen}>
+        <button ref={menuBtnRef} type="button" className="menu-toggle" onClick={() => setNavOpen(o => !o)}
+          aria-expanded={navOpen} aria-controls="app-sidebar"
+          aria-label={t(navOpen ? "nav.closeMenu" : "nav.openMenu")} title={t(navOpen ? "nav.closeMenu" : "nav.openMenu")}>
+          <IconMenu />
+        </button>
+        {brand}
+        <button type="button" className="theme-toggle stop-toggle" onClick={handleStop} disabled={stopping}
+          aria-label={t("dash.stop")} title={t("dash.stop")}>
+          <IconPower />
+        </button>
+      </header>
+      {navOpen && <div className="drawer-scrim" onClick={() => setNavOpen(false)} aria-hidden="true" />}
+      <aside id="app-sidebar" className={`sidebar${navOpen ? " open" : ""}`} ref={sidebarRef} tabIndex={-1}>
+        <div className="drawer-head">
+          {brand}
+          <button type="button" className="menu-toggle drawer-close" onClick={() => setNavOpen(false)}
+            aria-label={t("nav.closeMenu")} title={t("nav.closeMenu")}>
+            <IconX />
+          </button>
         </div>
         <nav>
           {NAV.map(({ id, tkey, Icon }) => (
-            <button key={id} className={`nav-item${page === id ? " active" : ""}`} data-page={id} onClick={() => setPageState(id)}
+            <button key={id} className={`nav-item${page === id ? " active" : ""}`} data-page={id}
+              onClick={() => { setPageState(id); setNavOpen(false); }}
               aria-current={page === id ? "page" : undefined}>
               <Icon /> {t(tkey)}
             </button>
@@ -186,7 +246,7 @@ export default function App() {
         </div>
       </aside>
 
-      <main className="main">
+      <main className="main" inert={navOpen}>
         <div className="main-inner">
           {page === "dashboard" && <Dashboard apiBase={API_BASE} />}
           {page === "providers" && <Providers apiBase={API_BASE} />}

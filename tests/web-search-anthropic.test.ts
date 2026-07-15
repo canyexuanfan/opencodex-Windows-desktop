@@ -46,12 +46,10 @@ function sseResponse(frames: Record<string, unknown>[], opts: { crlf?: boolean; 
 }
 
 describe("web-search anthropic backend resolution", () => {
-  test("resolveSidecarBackend: explicit wins, else credential presence decides", () => {
-    const sidecar = { providerName: "anthropic", provider: anthropicProvider };
-    expect(resolveSidecarBackend("anthropic", undefined)).toBe("anthropic");
-    expect(resolveSidecarBackend("openai", sidecar)).toBe("openai");
-    expect(resolveSidecarBackend(undefined, sidecar)).toBe("anthropic");
-    expect(resolveSidecarBackend(undefined, undefined)).toBe("openai");
+  test("resolveSidecarBackend: explicit wins, unset defaults to openai", () => {
+    expect(resolveSidecarBackend("anthropic")).toBe("anthropic");
+    expect(resolveSidecarBackend("openai")).toBe("openai");
+    expect(resolveSidecarBackend(undefined)).toBe("openai");
   });
 
   test("findAnthropicSidecarProvider ignores providers with no usable stored credential", () => {

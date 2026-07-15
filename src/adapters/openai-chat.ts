@@ -2,6 +2,7 @@ import type { ProviderAdapter } from "./base";
 import type { AdapterEvent, OcxAssistantMessage, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTextContent, OcxThinkingContent, OcxToolCall, OcxUsage } from "../types";
 import { isAllowedToolChoice, modelInList, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
 import { mapReasoningEffort } from "../reasoning-effort";
+import { redactSecretString } from "../lib/redact";
 import { contentPartsToText } from "./image";
 import { neutralizeIdentity } from "./identity";
 import { buildNonOpenAIToolCatalogNudgeForTools, shouldInjectNonOpenAIToolCatalogNudge } from "./tool-catalog-nudge";
@@ -11,6 +12,52 @@ import { buildNonOpenAIToolCatalogNudgeForTools, shouldInjectNonOpenAIToolCatalo
 // unflagged OpenAI-compatible providers and the Anthropic adapter keep ids verbatim.
 export function stripBracketedModelSuffix(modelId: string): string {
   return modelId.replace(/\[[^\]]*\]\s*$/, "");
+}
+
+// 260715 (issue #126): surface upstream error detail through the web-search sidecar loop.
+// loop.ts only appends a suffix to "Provider error N" when the adapter exposes
+// formatErrorBody; without it, strict OpenAI-compatible backends (NVIDIA NIM pydantic
+// validation, "This model only supports single tool-calls at once!", etc.) were reduced
+// to a bare status code. JSON-only extraction: recognized string fields are returned,
+// HTML/non-JSON bodies yield "" so raw markup is never echoed to the client.
+export function formatOpenAIChatErrorBody(status: number, _headers: Headers, payloadText: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payloadText);
+  } catch {
+    return "";
+  }
+  const detail = extractErrorDetail(parsed);
+  if (!detail) return "";
+  return redactSecretString(detail).slice(0, 400);
+}
+
+function extractErrorDetail(parsed: unknown): string | undefined {
+  if (typeof parsed === "string") return parsed.trim() || undefined;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const obj = parsed as Record<string, unknown>;
+  // OpenAI shape: { error: { message } } or { error: "..." }
+  const err = obj.error;
+  if (typeof err === "string" && err.trim()) return err.trim();
+  if (err !== null && typeof err === "object" && !Array.isArray(err)) {
+    const msg = (err as Record<string, unknown>).message;
+    if (typeof msg === "string" && msg.trim()) return msg.trim();
+  }
+  // FastAPI/pydantic shape (NVIDIA NIM): { detail: "..." } or { detail: [{ msg, loc }, ...] }
+  const det = obj.detail;
+  if (typeof det === "string" && det.trim()) return det.trim();
+  if (Array.isArray(det)) {
+    const msgs = det
+      .map(item => (item !== null && typeof item === "object" && typeof (item as Record<string, unknown>).msg === "string"
+        ? ((item as Record<string, unknown>).msg as string).trim()
+        : ""))
+      .filter(m => m.length > 0);
+    if (msgs.length > 0) return msgs.join("; ");
+  }
+  // Generic fallbacks: { message } / RFC7807 { title }
+  if (typeof obj.message === "string" && obj.message.trim()) return obj.message.trim();
+  if (typeof obj.title === "string" && obj.title.trim()) return obj.title.trim();
+  return undefined;
 }
 
 function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] {
@@ -207,7 +254,49 @@ function shouldSanitizeZenToolParameters(provider: OcxProviderConfig): boolean {
   return provider.baseUrl.replace(/\/+$/, "") === "https://opencode.ai/zen/v1";
 }
 
-function toolsToChatFormat(parsed: OcxParsedRequest): unknown[] | undefined {
+const XAI_SCHEMA_BASE_URLS = new Set(["api.x.ai", "cli-chat-proxy.grok.com"]);
+
+function isXaiSchemaTarget(provider: OcxProviderConfig): boolean {
+  try {
+    return XAI_SCHEMA_BASE_URLS.has(new URL(provider.baseUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function expandXaiRootObjectSchemas(schema: unknown): Record<string, unknown>[] | undefined {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return undefined;
+  const obj = schema as Record<string, unknown>;
+  const compositionKey = ["oneOf", "anyOf"].find(key => Array.isArray(obj[key]));
+  if (!compositionKey) {
+    if (obj.type !== undefined && obj.type !== "object") return undefined;
+    return [{ ...obj, type: "object" }];
+  }
+
+  const siblings = Object.fromEntries(Object.entries(obj).filter(([key]) => key !== compositionKey));
+  const branches = obj[compositionKey];
+  if (!Array.isArray(branches)) return undefined;
+  const expanded: Record<string, unknown>[] = [];
+  for (const branch of branches) {
+    const variants = expandXaiRootObjectSchemas(branch);
+    if (!variants) return undefined;
+    for (const variant of variants) expanded.push({ ...siblings, ...variant });
+  }
+  return expanded.length > 0 ? expanded : undefined;
+}
+
+function normalizeXaiToolParameters(parameters: unknown): Record<string, unknown> | undefined {
+  const variants = expandXaiRootObjectSchemas(parameters);
+  if (!variants) return undefined;
+  if (variants.length === 1) return variants[0];
+  const root = parameters && typeof parameters === "object" && !Array.isArray(parameters)
+    ? parameters as Record<string, unknown>
+    : {};
+  const metadata = Object.fromEntries(Object.entries(root).filter(([key]) => key !== "oneOf" && key !== "anyOf" && key !== "type"));
+  return { ...metadata, oneOf: variants };
+}
+
+function toolsToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] | undefined {
   if (!parsed.context.tools || parsed.context.tools.length === 0) return undefined;
   const allowed = isAllowedToolChoice(parsed.options.toolChoice)
     ? new Set(parsed.options.toolChoice.allowedTools)
@@ -216,19 +305,25 @@ function toolsToChatFormat(parsed: OcxParsedRequest): unknown[] | undefined {
     ? parsed.context.tools.filter(t => toolAllowedByChoice(t, allowed))
     : parsed.context.tools;
   if (tools.length === 0) return undefined;
-  return tools.map(t => ({
+  const xaiTarget = isXaiSchemaTarget(provider);
+  const formatted = tools.flatMap(t => {
+    const parameters = xaiTarget ? normalizeXaiToolParameters(t.parameters) : t.parameters;
+    if (parameters === undefined) return [];
+    return [{
     type: "function",
     function: {
       name: namespacedToolName(t.namespace, t.name),
       description: t.description,
-      parameters: t.parameters,
+      parameters,
       ...(t.strict !== undefined ? { strict: t.strict } : {}),
     },
-  }));
+    }];
+  });
+  return formatted.length > 0 ? formatted : undefined;
 }
 
 function toolsToChatFormatForProvider(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] | undefined {
-  const base = toolsToChatFormat(parsed);
+  const base = toolsToChatFormat(parsed, provider);
   if (!base || !shouldSanitizeZenToolParameters(provider)) return base;
   return base.map(tool => {
     if (!tool || typeof tool !== "object") return tool;
@@ -281,6 +376,8 @@ function thinkingBudgetForEffort(parsed: OcxParsedRequest, reasoningEffort: stri
 export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAdapter {
   return {
     name: "openai-chat",
+
+    formatErrorBody: formatOpenAIChatErrorBody,
 
     buildRequest(parsed: OcxParsedRequest) {
       const hasCredential = typeof provider.apiKey === "string" && provider.apiKey.trim().length > 0;
