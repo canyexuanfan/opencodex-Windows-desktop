@@ -25,7 +25,7 @@ gui/src/styles.css
 
 gui/src/ui.tsx
 ├── Switch
-├── Field
+├── Notice
 ├── Select
 └── EmptyState
 
