@@ -2,7 +2,8 @@ import { describe, expect, test, mock, beforeEach } from "bun:test";
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
 import { providerConfigSeed, deriveKeyLoginMap, deriveFeaturedProviderIds } from "../src/providers/derive";
 import {
-  generateMimoFingerprint,
+  getMimoClientId,
+  resetMimoClientIdCache,
   getMimoJwt,
   injectMimoSystemMarker,
   resetMimoJwtCache,
@@ -88,15 +89,54 @@ describe("mimo-free system marker injection", () => {
   });
 });
 
-describe("mimo-free fingerprint", () => {
-  test("generateMimoFingerprint returns a 64-char hex string", () => {
-    const fp = generateMimoFingerprint();
-    expect(typeof fp).toBe("string");
-    expect(fp).toMatch(/^[0-9a-f]{64}$/);
+describe("mimo-free client id", () => {
+  const { mkdtempSync, rmSync, readFileSync: readFs, existsSync: existsFs } = require("node:fs") as typeof import("node:fs");
+  const { tmpdir } = require("node:os") as typeof import("node:os");
+  const { join: joinPath } = require("node:path") as typeof import("node:path");
+
+  test("random UUID persisted under OPENCODEX_HOME and stable across cache resets", () => {
+    const home = mkdtempSync(joinPath(tmpdir(), "ocx-mimo-id-"));
+    const prevHome = process.env["OPENCODEX_HOME"];
+    process.env["OPENCODEX_HOME"] = home;
+    resetMimoClientIdCache();
+    try {
+      const id1 = getMimoClientId();
+      expect(id1).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+      // Persisted to disk under the configured home.
+      const file = joinPath(home, "mimo-client-id");
+      expect(existsFs(file)).toBe(true);
+      expect(readFs(file, "utf8").trim()).toBe(id1);
+      // Stable across calls and across in-process cache resets (re-read from disk).
+      expect(getMimoClientId()).toBe(id1);
+      resetMimoClientIdCache();
+      expect(getMimoClientId()).toBe(id1);
+    } finally {
+      if (prevHome === undefined) delete process.env["OPENCODEX_HOME"];
+      else process.env["OPENCODEX_HOME"] = prevHome;
+      resetMimoClientIdCache();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
-  test("fingerprint is stable across calls", () => {
-    expect(generateMimoFingerprint()).toBe(generateMimoFingerprint());
+  test("client id is not derived from machine attributes (two homes differ)", () => {
+    const homeA = mkdtempSync(joinPath(tmpdir(), "ocx-mimo-a-"));
+    const homeB = mkdtempSync(joinPath(tmpdir(), "ocx-mimo-b-"));
+    const prevHome = process.env["OPENCODEX_HOME"];
+    try {
+      process.env["OPENCODEX_HOME"] = homeA;
+      resetMimoClientIdCache();
+      const idA = getMimoClientId();
+      process.env["OPENCODEX_HOME"] = homeB;
+      resetMimoClientIdCache();
+      const idB = getMimoClientId();
+      expect(idA).not.toBe(idB);
+    } finally {
+      if (prevHome === undefined) delete process.env["OPENCODEX_HOME"];
+      else process.env["OPENCODEX_HOME"] = prevHome;
+      resetMimoClientIdCache();
+      rmSync(homeA, { recursive: true, force: true });
+      rmSync(homeB, { recursive: true, force: true });
+    }
   });
 });
 
@@ -142,6 +182,102 @@ describe("mimo-free JWT cache", () => {
       resetMimoJwtCache();
       await getMimoJwt();
       expect((globalThis.fetch as ReturnType<typeof mock>).mock.calls.length).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetMimoJwtCache();
+    }
+  });
+
+  test("concurrent getMimoJwt callers share one bootstrap (single-flight)", async () => {
+    const fakeJwt = "h." + Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })).toString("base64") + ".s";
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(async () => {
+      await new Promise(r => setTimeout(r, 20)); // force overlap
+      return new Response(JSON.stringify({ jwt: fakeJwt }), { status: 200 });
+    });
+    try {
+      const [a, b, c] = await Promise.all([getMimoJwt(), getMimoJwt(), getMimoJwt()]);
+      expect(a).toBe(fakeJwt);
+      expect(b).toBe(fakeJwt);
+      expect(c).toBe(fakeJwt);
+      expect((globalThis.fetch as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetMimoJwtCache();
+    }
+  });
+
+  test("bootstrap propagates the caller abort signal into fetch", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(async (_url: string | URL | Request, init?: RequestInit) => {
+      if (init?.signal?.aborted) throw new DOMException("The operation was aborted.", "AbortError");
+      return new Response(JSON.stringify({ jwt: "x.y.z" }), { status: 200 });
+    }) as unknown as typeof fetch;
+    try {
+      const aborted = AbortSignal.abort();
+      await expect(getMimoJwt(aborted)).rejects.toThrow(/aborted/i);
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetMimoJwtCache();
+    }
+  });
+});
+
+describe("mimo-free auth retry predicate", () => {
+  beforeEach(() => {
+    resetMimoJwtCache();
+  });
+
+  function adapterForRetry(): ReturnType<typeof createMimoFreeAdapter> {
+    const provider: OcxProviderConfig = providerConfigSeed(PROVIDER_REGISTRY.find(e => e.id === "mimo-free")!);
+    return createMimoFreeAdapter(provider);
+  }
+
+  test("401 retries exactly once with a fresh JWT after draining the first body", async () => {
+    const fakeJwt = "h." + Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })).toString("base64") + ".s";
+    const calls: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/bootstrap")) {
+        calls.push("bootstrap");
+        return new Response(JSON.stringify({ jwt: fakeJwt }), { status: 200 });
+      }
+      calls.push(`chat:${(init?.headers as Record<string, string>)?.["Authorization"] ?? "none"}`);
+      if (calls.filter(c => c.startsWith("chat:")).length === 1) {
+        return new Response("expired", { status: 401 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as unknown as typeof fetch;
+    try {
+      const adapter = adapterForRetry();
+      const res = await adapter.fetchResponse!(
+        { url: MIMO_CHAT_URL, method: "POST", headers: { "Authorization": "Bearer stale" }, body: "{}" },
+        {} as never,
+      );
+      expect(res.status).toBe(200);
+      // Sequence: first chat with stale token -> 401 -> bootstrap -> retry with fresh JWT.
+      expect(calls[0]).toBe("chat:Bearer stale");
+      expect(calls[1]).toBe("bootstrap");
+      expect(calls[2]).toBe(`chat:Bearer ${fakeJwt}`);
+      expect(calls.length).toBe(3);
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetMimoJwtCache();
+    }
+  });
+
+  test("403 (anti-abuse) is returned as-is without retry", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(async () => new Response("Illegal access", { status: 403 })) as unknown as typeof fetch;
+    try {
+      const adapter = adapterForRetry();
+      const res = await adapter.fetchResponse!(
+        { url: MIMO_CHAT_URL, method: "POST", headers: { "Authorization": "Bearer t" }, body: "{}" },
+        {} as never,
+      );
+      expect(res.status).toBe(403);
+      expect((globalThis.fetch as ReturnType<typeof mock>).mock.calls.length).toBe(1);
     } finally {
       globalThis.fetch = originalFetch;
       resetMimoJwtCache();

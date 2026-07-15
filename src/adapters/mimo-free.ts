@@ -1,5 +1,7 @@
-import { createHash } from "node:crypto";
-import os from "node:os";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { getConfigDir } from "../config";
 import type { OcxProviderConfig, OcxParsedRequest } from "../types";
 import { createOpenAIChatAdapter } from "./openai-chat";
 import type { ProviderAdapter, AdapterRequest } from "./base";
@@ -23,22 +25,50 @@ const USER_AGENTS = [
 
 const JWT_FALLBACK_TTL_MS = 3_000_000; // 50 min
 const JWT_EXPIRY_BUFFER_MS = 300_000;  // 5 min early refresh
+const BOOTSTRAP_TIMEOUT_MS = 15_000;
 
 // In-process JWT cache -- survives across requests, reset on restart.
 let cachedJwt: string | null = null;
 let jwtExpiresAt = 0;
+// Single-flight guard: concurrent first requests share one bootstrap.
+let inFlightJwt: Promise<string> | null = null;
 
 function randomUserAgent(): string {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]!;
 }
 
-/** SHA-256 fingerprint of stable machine attributes; stable per machine, not a secret. */
-export function generateMimoFingerprint(): string {
-  let username = "unknown-user";
-  try { username = os.userInfo().username; } catch { /* ignore */ }
-  const cpu = (os.cpus()[0]?.model ?? "unknown-cpu").trim();
-  const seed = `${os.hostname()}|${os.platform()}|${os.arch()}|${cpu}|${username}`;
-  return createHash("sha256").update(seed).digest("hex");
+/**
+ * Anonymous per-install client id for the bootstrap `client` field. A random UUID
+ * persisted under the config dir (OPENCODEX_HOME-aware) — deliberately NOT derived
+ * from machine attributes (hostname/username/CPU), which would be a stable
+ * pseudonymous device fingerprint. Delete the file to rotate the id.
+ */
+let cachedClientId: string | null = null;
+export function getMimoClientId(): string {
+  if (cachedClientId) return cachedClientId;
+  const dir = getConfigDir();
+  const file = join(dir, "mimo-client-id");
+  try {
+    if (existsSync(file)) {
+      const stored = readFileSync(file, "utf8").trim();
+      if (/^[0-9a-f-]{36}$/i.test(stored)) {
+        cachedClientId = stored;
+        return stored;
+      }
+    }
+  } catch { /* fall through to regenerate */ }
+  const fresh = randomUUID();
+  try {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(file, `${fresh}\n`, "utf8");
+  } catch { /* persist best-effort; still usable for this process */ }
+  cachedClientId = fresh;
+  return fresh;
+}
+
+/** Test hook: clear the in-process client-id cache (file state is the test's concern). */
+export function resetMimoClientIdCache(): void {
+  cachedClientId = null;
 }
 
 function parseJwtExp(jwt: string): number {
@@ -54,18 +84,25 @@ function parseJwtExp(jwt: string): number {
 export function resetMimoJwtCache(): void {
   cachedJwt = null;
   jwtExpiresAt = 0;
+  inFlightJwt = null;
 }
 
-async function fetchJwt(): Promise<string> {
+async function fetchJwt(signal?: AbortSignal): Promise<string> {
+  // Bounded bootstrap: request-abort propagates, and a stalled bootstrap can never
+  // hang past BOOTSTRAP_TIMEOUT_MS.
+  const timeout = AbortSignal.timeout(BOOTSTRAP_TIMEOUT_MS);
+  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
   const response = await fetch(BOOTSTRAP_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "User-Agent": randomUserAgent(),
     },
-    body: JSON.stringify({ client: generateMimoFingerprint() }),
+    body: JSON.stringify({ client: getMimoClientId() }),
+    signal: combined,
   });
   if (!response.ok) {
+    try { await response.body?.cancel(); } catch { /* already consumed */ }
     throw new Error(`MiMo bootstrap failed: ${response.status}`);
   }
   const data = await response.json() as { jwt?: string };
@@ -73,14 +110,25 @@ async function fetchJwt(): Promise<string> {
   return data.jwt;
 }
 
-export async function getMimoJwt(): Promise<string> {
+export async function getMimoJwt(signal?: AbortSignal): Promise<string> {
   if (cachedJwt && Date.now() < jwtExpiresAt - JWT_EXPIRY_BUFFER_MS) {
     return cachedJwt;
   }
-  const jwt = await fetchJwt();
-  cachedJwt = jwt;
-  jwtExpiresAt = parseJwtExp(jwt);
-  return jwt;
+  // Single-flight: concurrent callers await the same bootstrap instead of issuing
+  // parallel bootstraps.
+  if (!inFlightJwt) {
+    inFlightJwt = (async () => {
+      try {
+        const jwt = await fetchJwt(signal);
+        cachedJwt = jwt;
+        jwtExpiresAt = parseJwtExp(jwt);
+        return jwt;
+      } finally {
+        inFlightJwt = null;
+      }
+    })();
+  }
+  return inFlightJwt;
 }
 
 /**
@@ -154,10 +202,14 @@ export function createMimoFreeAdapter(provider: OcxProviderConfig): ProviderAdap
         signal: ctx?.abortSignal,
       });
 
-      // On auth failure, flush JWT cache and retry once with a fresh token.
-      if (response.status === 401 || response.status === 403) {
+      // Retry predicate: 401 (expired/invalid JWT) retries ONCE with a fresh token.
+      // 403 is NOT retried — Xiaomi uses it for anti-abuse "Illegal access" and there is
+      // no documented token-expiry signature that would mark a 403 as retryable.
+      if (response.status === 401) {
+        // Drain the first response body before issuing the retry.
+        try { await response.body?.cancel(); } catch { /* already consumed */ }
         resetMimoJwtCache();
-        const freshJwt = await getMimoJwt();
+        const freshJwt = await getMimoJwt(ctx?.abortSignal);
         const retryHeaders = {
           ...(request.headers as Record<string, string>),
           "Authorization": `Bearer ${freshJwt}`,
