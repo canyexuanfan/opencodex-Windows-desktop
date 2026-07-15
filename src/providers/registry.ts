@@ -23,6 +23,8 @@ export interface ProviderRegistryEntry {
   allowPrivateNetworkByDefault?: boolean;
   keyOptional?: boolean;
   allowBaseUrlOverride?: boolean;
+  /** Static headers merged into every upstream request for this provider. */
+  staticHeaders?: Record<string, string>;
   modelSuffixBracketStrip?: boolean;
   featured?: boolean;
   dashboardPreset?: boolean;
@@ -66,7 +68,7 @@ export type ProviderConfigSeed = Pick<
   | "reasoningEfforts" | "modelReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap"
   | "noVisionModels" | "noReasoningModels" | "noTemperatureModels" | "noTopPModels" | "noPenaltyModels"
   | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "thinkingToggleModels" | "thinkingBudgetModels" | "escapeBuiltinToolNames"
-  | "googleMode" | "project" | "location"
+  | "googleMode" | "project" | "location" | "headers"
 >;
 
 // Shared between the OAuth (Claude account) and API-key Anthropic entries so both expose the
@@ -133,6 +135,7 @@ const THINKING_BUDGET_MODELS = [
 ];
 const OPENCODE_GO_THINKING_BUDGET_MODELS = ["qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus"];
 const DEEPSEEK_THINKING_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"];
+const OPENCODE_FREE_DEEPSEEK_MODELS = ["deepseek-v4-flash-free"];
 // "max" is advertised too: the wire map routes xhigh->max and max->max, so the picker
 // should surface the max tier instead of hiding it behind xhigh.
 const DEEPSEEK_THINKING_EFFORTS = ["high", "xhigh", "max"];
@@ -608,6 +611,25 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   },
   { id: "opencode-zen", label: "opencode zen", baseUrl: "https://opencode.ai/zen/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://opencode.ai/auth" },
   { id: "vercel-ai-gateway", label: "Vercel AI Gateway", baseUrl: "https://ai-gateway.vercel.sh/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://vercel.com/dashboard" },
+  {
+    id: "opencode-free",
+    label: "OpenCode Free",
+    adapter: "openai-chat",
+    baseUrl: "https://opencode.ai/zen/v1",
+    authKind: "key",
+    keyOptional: true,
+    featured: true,
+    liveModels: true,
+    note: "No key needed — public desktop tier. OpenCode currently advertises about 200 Big Pickle/free-model requests per 5 hours. Free models are discovered live from Zen.",
+    dashboardUrl: "https://opencode.ai",
+    staticHeaders: {
+      "x-opencode-client": "desktop",
+    },
+    modelReasoningEfforts: Object.fromEntries(OPENCODE_FREE_DEEPSEEK_MODELS.map(id => [id, DEEPSEEK_THINKING_EFFORTS])),
+    modelReasoningEffortMap: Object.fromEntries(OPENCODE_FREE_DEEPSEEK_MODELS.map(id => [id, DEEPSEEK_THINKING_REASONING_MAP])),
+    preserveReasoningContentModels: OPENCODE_FREE_DEEPSEEK_MODELS,
+    noVisionModels: OPENCODE_FREE_DEEPSEEK_MODELS,
+  },
   { id: "xiaomi", label: "Xiaomi MiMo", baseUrl: "https://api.xiaomimimo.com/anthropic", adapter: "anthropic", authKind: "key", dashboardUrl: "https://xiaomimimo.com", defaultModel: "mimo-v2.5-pro" },
   { id: "kilo", label: "Kilo", baseUrl: "https://api.kilo.ai/api/gateway", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://kilo.ai" },
   { id: "cloudflare-ai-gateway", label: "Cloudflare AI Gateway", baseUrl: "https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway}/anthropic", adapter: "anthropic", authKind: "key", dashboardUrl: "https://dash.cloudflare.com/?to=/:account/ai/ai-gateway" },

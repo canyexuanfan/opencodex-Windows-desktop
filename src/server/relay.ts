@@ -212,7 +212,7 @@ export function responseWithDeferredRequestLog(
     return response;
   }
   if (!response.body || !contentType.includes("text/event-stream")) {
-    if (response.body && contentType.includes("application/json")) {
+    if (response.body && (contentType.includes("application/json") || response.status >= 400)) {
       const finalizeJsonLog = async () => {
         const text = await response.text();
         inspectResponseLogJson(logCtx, text);

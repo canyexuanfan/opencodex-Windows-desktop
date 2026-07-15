@@ -27,6 +27,7 @@ const PROVIDER_ICON_ALIASES: Record<string, string> = {
   "ollama-cloud": "ollama-color.svg",
   openai: "openai.svg",
   "openai-apikey": "openai.svg",
+  "opencode-free": "opencode.svg",
   "opencode-go": "opencode.svg",
   "opencode-zen": "opencode.svg",
   openrouter: "openrouter-color.svg",
@@ -35,10 +36,20 @@ const PROVIDER_ICON_ALIASES: Record<string, string> = {
   "vercel-ai-gateway": "vercel-ai-gateway-color.svg",
   vllm: "vllm-color.svg",
   xai: "grok-color.svg",
+  "mimo-free": "xiaomi-color.svg",
   xiaomi: "xiaomi-color.svg",
 };
 
-export function providerIconSrc(provider: string): string | undefined {
-  const icon = PROVIDER_ICON_ALIASES[provider.toLowerCase()];
+type ProviderIconHints = {
+  adapter?: string;
+  baseUrl?: string;
+};
+
+function providerIconAlias(provider: string): string | undefined {
+  return PROVIDER_ICON_ALIASES[provider.toLowerCase()];
+}
+
+export function providerIconSrc(provider: string, hints?: ProviderIconHints): string | undefined {
+  const icon = providerIconAlias(provider);
   return icon ? `/provider-icons/${icon}` : undefined;
 }

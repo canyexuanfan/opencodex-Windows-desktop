@@ -294,7 +294,10 @@ function captureUpstreamError(logCtx: RequestLogContext, text: string | null): v
       logCtx.upstreamError = redactSecretString(incompleteReasonLabel(reason.trim())).slice(0, 500);
     }
   } catch {
-    /* not JSON; nothing to capture */
+    const trimmed = text.trim();
+    if (trimmed) {
+      logCtx.upstreamError = redactSecretString(trimmed).slice(0, 500);
+    }
   }
 }
 

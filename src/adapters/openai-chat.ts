@@ -172,6 +172,88 @@ function safeToolName(name: string | undefined): string {
   return sanitized;
 }
 
+const ZEN_SCHEMA_MAP_KEYS = new Set(["properties", "$defs", "definitions"]);
+const ZEN_DROPPED_SCHEMA_KEYS = new Set(["encrypted"]);
+
+function sanitizeZenSchemaMap(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return sanitizeZenToolParameters(value);
+  const out: Record<string, unknown> = {};
+  for (const [name, child] of Object.entries(value as Record<string, unknown>)) {
+    out[name] = sanitizeZenToolParameters(child);
+  }
+  return out;
+}
+
+function sanitizeZenToolParameters(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeZenToolParameters);
+  if (!value || typeof value !== "object") return value;
+  const input = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(input)) {
+    if (ZEN_DROPPED_SCHEMA_KEYS.has(key)) continue;
+    if (key === "required" && Array.isArray(child) && child.length === 0) continue;
+    if (key === "type" && Array.isArray(child)) {
+      const nonNull = child.filter(entry => entry !== "null");
+      if (child.includes("null")) out.nullable = true;
+      if (nonNull.length > 0) out.type = nonNull[0];
+      continue;
+    }
+    out[key] = ZEN_SCHEMA_MAP_KEYS.has(key) ? sanitizeZenSchemaMap(child) : sanitizeZenToolParameters(child);
+  }
+  return out;
+}
+
+function ensureZenRootObjectSchema(schema: unknown): Record<string, unknown> {
+  const obj = schema && typeof schema === "object" && !Array.isArray(schema)
+    ? schema as Record<string, unknown>
+    : {};
+  const compositionKeys = ["oneOf", "anyOf", "allOf"] as const;
+  const hasComposition = compositionKeys.some(key => Array.isArray(obj[key]));
+  const rootType = obj.type;
+  const rootObjectType = rootType === "object" || (Array.isArray(rootType) && rootType.includes("object"));
+  if (!hasComposition) {
+    const base = sanitizeZenToolParameters(obj) as Record<string, unknown>;
+    return rootObjectType && base.type === "object" ? base : { ...base, type: "object" };
+  }
+
+  const props: Record<string, unknown> = {};
+  const required = new Set<string>();
+  if (obj.properties && typeof obj.properties === "object") {
+    Object.assign(props, sanitizeZenSchemaMap(obj.properties) as Record<string, unknown>);
+  }
+  if (Array.isArray(obj.required)) {
+    for (const entry of obj.required) if (typeof entry === "string") required.add(entry);
+  }
+  for (const key of compositionKeys) {
+    const variants = obj[key];
+    if (!Array.isArray(variants)) continue;
+    const mergeRequired = key === "allOf";
+    for (const variant of variants) {
+      if (!variant || typeof variant !== "object" || Array.isArray(variant)) continue;
+      const rec = variant as Record<string, unknown>;
+      if (rec.properties && typeof rec.properties === "object") {
+        Object.assign(props, sanitizeZenSchemaMap(rec.properties) as Record<string, unknown>);
+      }
+      if (mergeRequired && Array.isArray(rec.required)) {
+        for (const entry of rec.required) if (typeof entry === "string") required.add(entry);
+      }
+    }
+  }
+
+  const merged = sanitizeZenToolParameters(obj) as Record<string, unknown>;
+  delete merged.oneOf;
+  delete merged.anyOf;
+  delete merged.allOf;
+  merged.type = "object";
+  if (Object.keys(props).length > 0) merged.properties = props;
+  if (required.size > 0) merged.required = [...required];
+  return merged;
+}
+
+function shouldSanitizeZenToolParameters(provider: OcxProviderConfig): boolean {
+  return provider.baseUrl.replace(/\/+$/, "") === "https://opencode.ai/zen/v1";
+}
+
 const XAI_SCHEMA_BASE_URLS = new Set(["api.x.ai", "cli-chat-proxy.grok.com"]);
 
 function isXaiSchemaTarget(provider: OcxProviderConfig): boolean {
@@ -240,6 +322,23 @@ function toolsToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig
   return formatted.length > 0 ? formatted : undefined;
 }
 
+function toolsToChatFormatForProvider(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] | undefined {
+  const base = toolsToChatFormat(parsed, provider);
+  if (!base || !shouldSanitizeZenToolParameters(provider)) return base;
+  return base.map(tool => {
+    if (!tool || typeof tool !== "object") return tool;
+    const functionDef = (tool as { function?: Record<string, unknown> }).function;
+    if (!functionDef || typeof functionDef !== "object") return tool;
+    return {
+      ...tool,
+      function: {
+        ...functionDef,
+        parameters: ensureZenRootObjectSchema(functionDef.parameters ?? {}),
+      },
+    };
+  });
+}
+
 function toolChoiceToChatFormat(tc: OcxParsedRequest["options"]["toolChoice"], tools: OcxParsedRequest["context"]["tools"]): unknown {
   if (!tc) return undefined;
   if (isAllowedToolChoice(tc)) return tc.mode === "required" ? "required" : "auto";
@@ -287,7 +386,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       }
 
       const messages = messagesToChatFormat(parsed, provider);
-      const tools = toolsToChatFormat(parsed, provider);
+      const tools = toolsToChatFormatForProvider(parsed, provider);
       const toolChoice = toolChoiceToChatFormat(parsed.options.toolChoice, parsed.context.tools);
 
       const body: Record<string, unknown> = {
@@ -346,8 +445,8 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
 
       const url = `${provider.baseUrl}/chat/completions`;
       const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (hasCredential) headers["Authorization"] = `Bearer ${provider.apiKey}`;
       if (provider.headers) Object.assign(headers, provider.headers);
+      if (hasCredential) headers["Authorization"] = `Bearer ${provider.apiKey}`;
 
       return { url, method: "POST", headers, body: JSON.stringify(body) };
     },

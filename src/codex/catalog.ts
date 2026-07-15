@@ -1190,7 +1190,8 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
       provider: name,
       owned_by: m.owned_by,
       ...catalogHintsFromModelsApiItem(name, m),
-    }, contextCap));
+    }, contextCap))
+      .filter(m => shouldExposeProviderModel(name, m.id));
     const liveIds = new Set(live.map(m => m.id));
     // Dated-release aliases (Anthropic pattern): older models may appear in the live catalog
     // ONLY under their dated id (claude-haiku-4-5-20251001) while the config names the
@@ -1204,6 +1205,8 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
       if (dated) {
         // Reapply config hints so alias-keyed overrides (modelContextWindows etc.) win.
         live.push(applyProviderConfigHints(name, prov, { ...dated, id: m.id }, contextCap));
+      } else if (shouldRetainConfiguredProviderModel(name, m.id)) {
+        live.push(m);
       } else {
         droppedConfiguredIds.push(m.id);
       }
@@ -1222,6 +1225,16 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
     const stale = getStaleCached(name);
     return stale ? applyConfigHintsToCachedModels(name, prov, stale, contextCap) : configured;
   }
+}
+
+function shouldExposeProviderModel(providerName: string, modelId: string): boolean {
+  if (providerName === "opencode-free") return modelId === "big-pickle" || modelId.endsWith("-free");
+  return true;
+}
+
+function shouldRetainConfiguredProviderModel(providerName: string, modelId: string): boolean {
+  if (providerName === "opencode-free") return modelId === "big-pickle" || modelId.endsWith("-free");
+  return false;
 }
 
 /**
