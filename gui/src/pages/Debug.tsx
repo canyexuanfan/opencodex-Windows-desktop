@@ -284,6 +284,7 @@ export default function Debug({ apiBase }: { apiBase: string }) {
                     <th>{t("debug.claudeInbound.time")}</th>
                     <th>{t("debug.claudeInbound.endpoint")}</th>
                     <th>{t("debug.claudeInbound.model")}</th>
+                    {/* Protocol field names from Claude inbound capture — not prose. */}
                     <th>thinking</th>
                     <th>effort</th>
                     <th>beta</th>

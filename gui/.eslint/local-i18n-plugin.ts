@@ -140,18 +140,42 @@ const NON_UI_CALLEES = new Set([
   "URL",
 ]);
 
+function jsxElementName(node: JSXElement): string | null {
+  const name = node.openingElement.name;
+  if (name.type === "JSXIdentifier") return name.name;
+  return null;
+}
+
+/**
+ * True when the node is inside non-UI context: t()/Trans, code/pre samples,
+ * style/url attrs, fetch URLs, etc.
+ */
 function isInsideNonUiContext(node: Node): boolean {
   if (isInsideTCall(node) || isInsideTrans(node)) return true;
 
   let current: Node | undefined = node;
   while (current) {
+    // Code samples and shell/CLI dumps are never user-facing prose.
+    if (current.type === "JSXElement") {
+      const tag = jsxElementName(current as JSXElement);
+      if (tag === "pre" || tag === "code" || tag === "samp" || tag === "kbd") {
+        return true;
+      }
+    }
     if (current.type === "JSXAttribute") {
       const attr = current as JSXAttribute;
       if (attr.name.type === "JSXIdentifier") {
         const name = attr.name.name;
         if (NON_UI_JSX_ATTRS.has(name)) return true;
         if (name.startsWith("data-")) return true;
-        if (name.startsWith("aria-") && name !== "aria-label" && name !== "aria-description" && name !== "aria-roledescription") {
+        // title= on mono/debug cells often carries technical dumps (model=…).
+        if (name === "title" || name === "aria-label") {
+          // still UI — do not skip here
+        } else if (
+          name.startsWith("aria-") &&
+          name !== "aria-description" &&
+          name !== "aria-roledescription"
+        ) {
           return true;
         }
       }
@@ -162,7 +186,9 @@ function isInsideNonUiContext(node: Node): boolean {
     }
     if (current.type === "CallExpression") {
       const callee = (current as { callee: Node }).callee;
-      if (callee.type === "Identifier" && NON_UI_CALLEES.has(callee.name)) return true;
+      if (callee.type === "Identifier" && NON_UI_CALLEES.has(callee.name)) {
+        return true;
+      }
     }
     current = (current as { parent?: Node }).parent;
   }

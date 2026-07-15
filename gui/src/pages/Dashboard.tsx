@@ -560,7 +560,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
                       className="btn btn-ghost btn-icon"
                       style={{ position: "absolute", top: 4, right: 4, width: 24, height: 24, minWidth: 24 }}
                       onClick={() => setEffortCapHelpOpen(false)}
-                      aria-label="Close"
+                      aria-label={t("common.close")}
                     >
                       <IconX width={14} height={14} />
                     </button>
@@ -973,7 +973,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
           <div className="modal-card" onClick={e => e.stopPropagation()}>
             <div className="modal-head">
               <h3>{t("dash.multiAgent")}</h3>
-              <button type="button" className="btn btn-ghost btn-icon" onClick={() => setMaHelpOpen(false)} aria-label="Close"><IconX /></button>
+              <button type="button" className="btn btn-ghost btn-icon" onClick={() => setMaHelpOpen(false)} aria-label={t("common.close")}><IconX /></button>
             </div>
             <div className="modal-desc" style={{ whiteSpace: "pre-line", lineHeight: 1.6 }}>
               {t("models.v2Help")}
@@ -984,7 +984,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
               </a>
             </div>
             <div className="modal-actions">
-              <button type="button" className="btn btn-primary" onClick={() => setMaHelpOpen(false)}>OK</button>
+              <button type="button" className="btn btn-primary" onClick={() => setMaHelpOpen(false)}>{t("common.ok")}</button>
             </div>
           </div>
         </div>

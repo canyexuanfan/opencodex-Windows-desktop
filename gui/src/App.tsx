@@ -141,7 +141,7 @@ export default function App() {
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-logo" role="img" aria-label="opencodex logo" />
+          <span className="brand-logo" role="img" aria-label={t("app.logoAria")} />
           <span className="name">opencodex</span>
           <span className="ver">v{displayedVersion}</span>
         </div>
@@ -187,7 +187,7 @@ export default function App() {
       </aside>
 
       <main className="main">
-        <div className="main-inner">
+        <div className={`main-inner${page === "providers" ? " main-inner--providers" : ""}`}>
           {page === "dashboard" && <Dashboard apiBase={API_BASE} />}
           {page === "providers" && <Providers apiBase={API_BASE} />}
           {page === "models" && <Models apiBase={API_BASE} />}
