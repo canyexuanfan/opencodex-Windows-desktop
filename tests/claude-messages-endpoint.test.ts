@@ -107,6 +107,22 @@ test("POST /v1/messages?beta=true streams an Anthropic-shaped turn end to end", 
     expect(row!.status).toBe(200);
     expect(row!.usage?.inputTokens).toBe(12);
     expect(row!.usage?.outputTokens).toBe(3);
+
+    const claudeUsage = await fetch(new URL("/api/usage?range=all&surface=claude", server.url)).then(res => res.json()) as {
+      surface: string;
+      summary: { requests: number; totalTokens: number };
+      models: Array<{ model: string }>;
+    };
+    expect(claudeUsage.surface).toBe("claude");
+    expect(claudeUsage.summary).toMatchObject({ requests: 1, totalTokens: 15 });
+    expect(claudeUsage.models).toEqual([expect.objectContaining({ model: "test-model" })]);
+
+    const codexUsage = await fetch(new URL("/api/usage?range=all&surface=codex", server.url)).then(res => res.json()) as {
+      surface: string;
+      summary: { requests: number };
+    };
+    expect(codexUsage.surface).toBe("codex");
+    expect(codexUsage.summary.requests).toBe(0);
   } finally {
     server.stop(true);
     upstream.stop(true);

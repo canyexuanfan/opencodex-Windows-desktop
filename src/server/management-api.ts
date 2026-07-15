@@ -27,7 +27,7 @@ import { fetchProviderQuotaReports } from "../providers/quota";
 import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../providers/context-cap";
 import { readUsageEntries } from "../usage/log";
 import { getUsageDebugLogEntries } from "../usage/debug";
-import { parseRange, summarizeUsage } from "../usage/summary";
+import { parseRange, parseUsageSurface, summarizeUsage } from "../usage/summary";
 import { stripCodexRuntimeProviderFields } from "../codex/auth-context";
 import { getProviderRegistryEntry } from "../providers/registry";
 import { getDebugLogEntries } from "../lib/debug-log-buffer";
@@ -358,12 +358,14 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
 
   if (url.pathname === "/api/usage" && req.method === "GET") {
     const range = parseRange(url.searchParams.get("range"));
+    const surface = parseUsageSurface(url.searchParams.get("surface"));
     const now = Date.now();
     try {
-      return jsonResponse(summarizeUsage(readUsageEntries(), range, now));
+      return jsonResponse(summarizeUsage(readUsageEntries(), range, now, surface));
     } catch {
       return jsonResponse({
         range,
+        surface,
         since: null,
         generatedAt: now,
         summary: {
