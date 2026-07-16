@@ -209,7 +209,7 @@ async function anthropicNativePassthrough(
   const result = await fetchWithHeaderDeadline(
     `${base}${pathname}${search}`,
     { method: "POST", headers, body: JSON.stringify(body) },
-    config.connectTimeoutMs ?? 120_000,
+    config.connectTimeoutMs ?? 200_000,
     req.signal,
   );
   if (result.kind === "timeout") {
