@@ -17,6 +17,12 @@ function cfg(extra?: Partial<OcxConfig>): OcxConfig {
   return { port: 10100, defaultProvider: "mock", providers: {}, ...extra } as OcxConfig;
 }
 
+function generatedBodies(config: OcxConfig, dir: string): string[] {
+  const defs = buildClaudeAgentDefs(config, {}, dir);
+  syncClaudeAgentDefs(defs, dir);
+  return defs.map(def => readFileSync(join(dir, "agents", def.file), "utf8"));
+}
+
 describe("buildClaudeAgentDefs (devlog 070 + audit 071)", () => {
   test("roster + pinned self from settings.json; [1m] marking; name collision suffix", () => {
     const windows = { "claude-ocx-native--gpt-5.6-sol": 372_000, "claude-ocx-cursor--gpt-5.6-sol": 1_000_000 };
@@ -63,6 +69,84 @@ describe("buildClaudeAgentDefs (devlog 070 + audit 071)", () => {
     expect(body).toContain(`ocx-route: ${def!.model}`);
     expect(body).toContain("IDENTITY: your ACTUAL underlying model");
   });
+
+  test("generated routed agents refuse the default blocked skill before its bundle expands", () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "settings.json"), JSON.stringify({ model: "claude-ocx-native--gpt-5.6-sol" }));
+    const bodies = generatedBodies(cfg({ subagentModels: ["gpt-5.6-sol"] }), dir);
+    expect(bodies).toHaveLength(2); // roster + ocx-self
+    for (const body of bodies) {
+      expect(body).toContain("Do not invoke blocked Claude Code skills");
+      expect(body).toContain(JSON.stringify("claude-api"));
+    }
+  });
+
+  test("generated blocked-skill guard mirrors custom names and honors explicit opt-out", () => {
+    const customDir = tempDir();
+    writeFileSync(join(customDir, "settings.json"), JSON.stringify({ model: "claude-ocx-native--gpt-5.6-sol" }));
+    const customBodies = generatedBodies(cfg({
+      subagentModels: ["gpt-5.6-sol"],
+      claudeCode: { blockedSkills: [" My-Skill "] },
+    }), customDir);
+    expect(customBodies).toHaveLength(2);
+    for (const body of customBodies) {
+      expect(body).toContain("Do not invoke blocked Claude Code skills");
+      expect(body).toContain(JSON.stringify("my-skill"));
+      expect(body).not.toContain(JSON.stringify("claude-api"));
+    }
+
+    const offDir = tempDir();
+    writeFileSync(join(offDir, "settings.json"), JSON.stringify({ model: "claude-ocx-native--gpt-5.6-sol" }));
+    const offBodies = generatedBodies(cfg({
+      subagentModels: ["gpt-5.6-sol"],
+      claudeCode: { blockedSkills: [] },
+    }), offDir);
+    expect(offBodies).toHaveLength(2);
+    for (const body of offBodies) expect(body).not.toContain("Do not invoke blocked Claude Code skills");
+  });
+
+  test("blocked-skill names cannot inject Markdown structure into generated agents", () => {
+    const dir = tempDir();
+    const hostile = "My\"\n```<!-- injected -->`";
+    const [body] = generatedBodies(cfg({
+      subagentModels: ["gpt-5.6-sol"],
+      claudeCode: { blockedSkills: [hostile] },
+    }), dir);
+    expect(body).toContain("\"my\\\"\\n\\u0060\\u0060\\u0060\\u003c!-- injected --\\u003e\\u0060\"");
+    expect(body).not.toContain(hostile.toLowerCase());
+  });
+
+  test("native Claude self keeps skills; a modelMap-claimed Claude self gets the routed guard", () => {
+    const nativeDir = tempDir();
+    writeFileSync(join(nativeDir, "settings.json"), JSON.stringify({ model: "claude-sonnet-5" }));
+    const [nativeBody] = generatedBodies(cfg({ subagentModels: [] }), nativeDir);
+    expect(nativeBody).not.toContain("Do not invoke blocked Claude Code skills");
+
+    const routedDir = tempDir();
+    writeFileSync(join(routedDir, "settings.json"), JSON.stringify({ model: "claude-sonnet-5" }));
+    const [routedBody] = generatedBodies(cfg({
+      subagentModels: [],
+      claudeCode: { modelMap: { "claude-sonnet-5": "anthropic/claude-sonnet-5" } },
+    }), routedDir);
+    expect(routedBody).toContain("Do not invoke blocked Claude Code skills");
+  });
+
+  test("direct provider self and disabled native passthrough keep the routed guard", () => {
+    const directDir = tempDir();
+    const [directBody] = generatedBodies(cfg({
+      subagentModels: [],
+      claudeCode: { model: "mock/big" },
+    }), directDir);
+    expect(directBody).toContain("Do not invoke blocked Claude Code skills");
+
+    const disabledDir = tempDir();
+    writeFileSync(join(disabledDir, "settings.json"), JSON.stringify({ model: "claude-sonnet-5" }));
+    const [disabledBody] = generatedBodies(cfg({
+      subagentModels: [],
+      claudeCode: { nativePassthrough: false },
+    }), disabledDir);
+    expect(disabledBody).toContain("Do not invoke blocked Claude Code skills");
+  });
 });
 
 describe("syncClaudeAgentDefs ownership contract (audit 071 #2/#3)", () => {
@@ -102,7 +186,15 @@ describe("syncClaudeAgentDefs ownership contract (audit 071 #2/#3)", () => {
     mkdirSync(agentsDir, { recursive: true });
     const victim = join(dir, "victim.md");
     writeFileSync(victim, "precious");
-    symlinkSync(victim, join(agentsDir, "ocx-linked.md"));
+    try {
+      symlinkSync(victim, join(agentsDir, "ocx-linked.md"));
+    } catch (err) {
+      // Windows without Developer Mode / elevated privileges cannot create symlinks.
+      if (process.platform === "win32" && (err as NodeJS.ErrnoException).code === "EPERM") {
+        return;
+      }
+      throw err;
+    }
     syncClaudeAgentDefs([], dir); // prune pass
     expect(readFileSync(victim, "utf8")).toBe("precious");
     expect(readdirSync(agentsDir)).toContain("ocx-linked.md");

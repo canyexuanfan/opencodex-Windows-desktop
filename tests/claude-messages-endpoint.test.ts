@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
+import { clearableDeadline } from "../src/lib/abort";
 import { startServer } from "../src/server";
+import { fetchWithHeaderDeadline } from "../src/server/claude-messages";
 import type { OcxConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 
@@ -107,6 +109,22 @@ test("POST /v1/messages?beta=true streams an Anthropic-shaped turn end to end", 
     expect(row!.status).toBe(200);
     expect(row!.usage?.inputTokens).toBe(12);
     expect(row!.usage?.outputTokens).toBe(3);
+
+    const claudeUsage = await fetch(new URL("/api/usage?range=all&surface=claude", server.url)).then(res => res.json()) as {
+      surface: string;
+      summary: { requests: number; totalTokens: number };
+      models: Array<{ model: string }>;
+    };
+    expect(claudeUsage.surface).toBe("claude");
+    expect(claudeUsage.summary).toMatchObject({ requests: 1, totalTokens: 15 });
+    expect(claudeUsage.models).toEqual([expect.objectContaining({ model: "test-model" })]);
+
+    const codexUsage = await fetch(new URL("/api/usage?range=all&surface=codex", server.url)).then(res => res.json()) as {
+      surface: string;
+      summary: { requests: number };
+    };
+    expect(codexUsage.surface).toBe("codex");
+    expect(codexUsage.summary.requests).toBe(0);
   } finally {
     server.stop(true);
     upstream.stop(true);
@@ -139,6 +157,124 @@ test("non-streaming /v1/messages returns an Anthropic message JSON", async () =>
   } finally {
     server.stop(true);
     upstream.stop(true);
+  }
+});
+
+test("native Anthropic passthrough clears the header deadline before streaming the body", async () => {
+  const encoder = new TextEncoder();
+  const upstream = Bun.serve({
+    port: 0,
+    fetch() {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('event: message_start\ndata: {"type":"message_start"}\n\n'));
+          setTimeout(() => {
+            controller.enqueue(encoder.encode('event: message_stop\ndata: {"type":"message_stop"}\n\n'));
+            controller.close();
+          }, 600);
+        },
+      });
+      return new Response(body, { headers: { "content-type": "text/event-stream" } });
+    },
+  });
+  const config = mockConfig("http://127.0.0.1:1/v1", {
+    anthropicBaseUrl: upstream.url.toString().replace(/\/$/, ""),
+  });
+  config.connectTimeoutMs = 200;
+  saveConfig(config);
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/messages", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": "sk-ant-test" },
+      body: JSON.stringify({
+        model: "claude-test",
+        max_tokens: 16,
+        stream: true,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("message_stop");
+  } finally {
+    server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+// --- PR #136 follow-up hardening: deadline cleanup is guaranteed on EVERY fetch path ---
+
+function spyDeadlineFactory() {
+  const calls = { made: 0, clear: 0 };
+  const factory: typeof clearableDeadline = (timeoutMs, parent) => {
+    calls.made += 1;
+    const real = clearableDeadline(timeoutMs, parent);
+    return {
+      ...real,
+      clear: () => {
+        calls.clear += 1;
+        real.clear();
+      },
+    };
+  };
+  return { factory, calls };
+}
+
+test("fetchWithHeaderDeadline clears the deadline exactly once on the success path", async () => {
+  const { factory, calls } = spyDeadlineFactory();
+  const fetchImpl = (async () => new Response("ok")) as unknown as typeof fetch;
+  const result = await fetchWithHeaderDeadline("http://127.0.0.1:1/x", {}, 60_000, undefined, factory, fetchImpl);
+  expect(result.kind).toBe("response");
+  expect(calls.made).toBe(1);
+  expect(calls.clear).toBe(1);
+});
+
+test("fetchWithHeaderDeadline clears the deadline exactly once when fetch rejects (timer-leak regression)", async () => {
+  const { factory, calls } = spyDeadlineFactory();
+  const fetchImpl = (async () => {
+    throw new Error("connection refused");
+  }) as unknown as typeof fetch;
+  const result = await fetchWithHeaderDeadline("http://127.0.0.1:1/x", {}, 60_000, undefined, factory, fetchImpl);
+  expect(result.kind).toBe("error");
+  expect(calls.made).toBe(1);
+  expect(calls.clear).toBe(1);
+});
+
+test("fetchWithHeaderDeadline classifies expiry as timeout and still clears exactly once", async () => {
+  const { factory, calls } = spyDeadlineFactory();
+  const fetchImpl = ((_input: unknown, init?: RequestInit) =>
+    new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true });
+    })) as unknown as typeof fetch;
+  const result = await fetchWithHeaderDeadline("http://127.0.0.1:1/x", {}, 10, undefined, factory, fetchImpl);
+  expect(result.kind).toBe("timeout");
+  expect(calls.made).toBe(1);
+  expect(calls.clear).toBe(1);
+});
+
+test("native Anthropic passthrough returns 502 when the upstream connection is refused (reject-path activation)", async () => {
+  const config = mockConfig("http://127.0.0.1:1/v1", {
+    anthropicBaseUrl: "http://127.0.0.1:9",
+  });
+  config.connectTimeoutMs = 60_000;
+  saveConfig(config);
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/messages", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": "sk-ant-test" },
+      body: JSON.stringify({
+        model: "claude-test",
+        max_tokens: 16,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    expect(response.status).toBe(502);
+    const json = await response.json() as Record<string, any>;
+    expect(json.error?.type).toBe("api_error");
+    expect(String(json.error?.message)).toContain("anthropic passthrough failed");
+  } finally {
+    server.stop(true);
   }
 });
 
