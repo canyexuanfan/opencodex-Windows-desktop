@@ -36,7 +36,7 @@ import {
   recordCodexUpstreamOutcome,
   type CodexUpstreamOutcome,
 } from "../codex/routing";
-import { fetchWithResetRetry } from "../lib/upstream-retry";
+import { fetchWithResetRetry, fetchWithTransientRetry } from "../lib/upstream-retry";
 import { isUsageDebugEnabled } from "../usage/debug";
 import { readJsonRequestBody, DecompressedBodyTooLargeError, UnsupportedContentEncodingError } from "./request-decompress";
 import { resolveAdapter, resolveWireProtocolOverride } from "./adapter-resolve";
@@ -694,7 +694,10 @@ export async function handleResponses(
     const connectMs = config.connectTimeoutMs ?? 200_000;
     let upstreamResponse: Response;
     try {
-      upstreamResponse = await fetchWithResetRetry(
+      // Transient-5xx pre-stream retry (devlog/_plan/260716_claudecode_hardening/010):
+      // the ChatGPT backend emits transient 502/520s that an immediate retry absorbs.
+      // Body is a replayable string; nothing has streamed to the client yet.
+      upstreamResponse = await fetchWithTransientRetry(
         () => fetchWithHeaderTimeout(request.url, {
           method: request.method,
           headers: request.headers,
