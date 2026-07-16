@@ -68,7 +68,7 @@ export interface RequestLogEntry {
   durationMs: number;
   errorCode?: string;
   terminalStatus?: ResponsesTerminalStatus;
-  closeReason?: "terminal" | "client_cancel" | "non_stream";
+  closeReason?: "terminal" | "client_cancel" | "non_stream" | "body_stall" | "body_overflow";
   /** Secret-redacted upstream error reason, surfaced in /api/logs and the GUI detail modal. */
   upstreamError?: string;
   usageStatus: UsageStatus;

@@ -22,7 +22,7 @@ export interface PersistedUsageEntry {
   // status>=400 or non-completed terminals so incidents survive the in-memory ring buffer.
   errorCode?: string;
   terminalStatus?: string;
-  closeReason?: "terminal" | "client_cancel" | "non_stream";
+  closeReason?: "terminal" | "client_cancel" | "non_stream" | "body_stall" | "body_overflow";
   /** Already redacted + capped at capture (request-log.ts redactSecretString().slice(0,500)). */
   upstreamError?: string;
 }
