@@ -72,4 +72,11 @@ gh run list --branch main --limit 3; gh run list --branch preview --limit 3
 
 ## Evidence (filled at C/D)
 
-- (pending)
+- dev sync: push ee5f6ad2..b676a804 (docs) → ac266d21 (PR merges) → 1dcded66 (amend) → b5e76038 (post-release ff); prepush gate green each push.
+- PR integration: merge 5ca0ba75 (PR #136, head fef332c4) + hardening d83db031 (fetchWithHeaderDeadline, finally-clear, 3 unit + 1 endpoint tests) + merge ac266d21 (PR #137, head b5f62755). i18n remediation = NOOP (merge carried PR 137 source fixes; gui lint exit 0).
+- Verification: bun test 2561 pass / 0 fail; tsc PASS; privacy scan PASS; gui lint 0; build:gui PASS; dev CI run 29459541317 success (6/6 jobs).
+- main: merge f03fabf4 (dev→main), bump b5e76038 = v2.7.21; CI run 29459996500 success; service-lifecycle success for b5e76038; Release run 29460232185 success (publish + registry smoke + GitHub release).
+- preview: merge 070a1a71 (main→preview), bump 0c64ce9d = v2.7.21-preview.20260716; Release run 29460610161 success.
+- npm dist-tags after: `{ preview: '2.7.21-preview.20260716', latest: '2.7.21' }`.
+- PRs: #136 MERGED, #137 MERGED (2026-07-15T23:54:07Z, authors credited via preserved head SHAs).
+- Final branch state: dev == origin/dev == origin/main == b5e76038; origin/preview == 0c64ce9d; tags v2.7.21 + v2.7.21-preview.20260716.
