@@ -501,3 +501,9 @@ The commands follow `package.json` scripts: `test = bun test --isolate ./tests/`
 - [ ] Confirm no implementation writes under `~/.grok`, and that warning output is redacted.
 - [ ] Rehearse rollback with a temporary branch/fixture: revert only the phase commit, retain detached `source:"oauth"` and `needsReauth` state, run focused tests/typecheck, and verify Grok bytes remain unchanged.
 - [ ] Execute every verification command above on the final implementation HEAD and attach exit status/test counts to phase evidence.
+
+## Implementation record (B)
+
+- Implemented the audited local-CLI reconciliation, identity/generation helpers, successful-refresh detach warning/source transition, and six temp-HOME regressions in the phase file map.
+- Deviation: `detectGrokCliToken()` resolves `process.env.HOME` before `homedir()` so each invocation observes temp-HOME fixtures (and runtime HOME changes); the Grok store remains strictly read-only. No other design deviation.
+- Verification: focused OAuth refresh suite `11 pass, 0 fail`; full suite `2602 pass, 0 fail`; `bun run typecheck` exited 0.

@@ -12,6 +12,9 @@ const XAI_OAUTH_CALLBACK_PATH = "/callback";
 const XAI_OAUTH_REFRESH_SKEW_MS = 2 * 60 * 1000;
 const TOKEN_REQUEST_TIMEOUT_MS = 30_000;
 
+export const XAI_LOCAL_CLI_DETACH_WARNING =
+  "[oauth:xai] Grok CLI credential was stale; refreshed into OpenCodex ownership. Grok CLI may require login again.";
+
 interface XaiDiscovery {
   authorizationEndpoint: string;
   tokenEndpoint: string;
@@ -200,7 +203,9 @@ export async function loginXai(
       ctrl.onProgress?.("Found Grok CLI token, importing automatically");
       if (local.expires >= Date.now() + 60_000) return local;
       try {
-        return { ...(await refreshXaiToken(local.refresh, ctrl.signal)), source: "local-cli" };
+        const fresh = await refreshXaiToken(local.refresh, ctrl.signal);
+        ctrl.onProgress?.(XAI_LOCAL_CLI_DETACH_WARNING);
+        return { ...fresh, source: "oauth" };
       } catch (error) {
         if (importLocal === "only") {
           throw new Error(

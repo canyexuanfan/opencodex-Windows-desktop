@@ -4,7 +4,7 @@ import type { OcxConfig, OcxProviderConfig, RefreshPolicy } from "../types";
 import { loadConfig, resolveEnvValue, saveConfig } from "../config";
 import { maskEmail } from "../lib/privacy";
 import { getAccountCredential, getAccountSet, saveAccountCredential, saveCredential, markAccountNeedsReauth, getCredential } from "./store";
-import { loginXai, refreshXaiToken } from "./xai";
+import { loginXai, refreshXaiToken, XAI_LOCAL_CLI_DETACH_WARNING } from "./xai";
 import { ANTHROPIC_OAUTH_BETA, loginAnthropic, refreshAnthropicToken } from "./anthropic";
 import { loginKimi, refreshKimiToken } from "./kimi";
 import { loginKiro, readKiroCliSqlite, refreshKiroToken } from "./kiro";
@@ -14,6 +14,7 @@ import { loginCursor, refreshCursorToken } from "./cursor";
 import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers/derive";
 import { effectiveGoogleMode } from "../providers/registry";
 import { resolveProviderTransport } from "../providers/xai-transport";
+import { detectGrokCliToken, hasComparableGrokIdentity, isSameGrokIdentity, shouldAdoptGrokGeneration } from "./local-token-detect";
 
 const REFRESH_SKEW_MS = 60_000;
 const tokenRefreshes = new Map<string, Promise<string>>();
@@ -197,13 +198,29 @@ async function refreshAndPersistAccessToken(
       return imported.access;
     }
   }
+  if (provider === "xai" && cred.source === "local-cli") {
+    const disk = detectGrokCliToken();
+    const identityMatches = disk !== null && isSameGrokIdentity(cred, disk);
+    const noIdentityActiveBinding =
+      disk !== null && isActive && !hasComparableGrokIdentity(cred, disk);
+    if (
+      disk !== null &&
+      (identityMatches || noIdentityActiveBinding) &&
+      shouldAdoptGrokGeneration(cred, disk, Date.now(), REFRESH_SKEW_MS)
+    ) {
+      saveAccountCredential(provider, accountId, disk);
+      return disk.access;
+    }
+  }
   try {
     const fresh = await def.refresh(cred.refresh);
+    const detachedLocalCli = provider === "xai" && cred.source === "local-cli";
+    if (detachedLocalCli) console.warn(XAI_LOCAL_CLI_DETACH_WARNING);
     // Persist to THIS account (rotation-safe: new refresh token hits disk before use) without
     // touching activeAccountId.
     saveAccountCredential(provider, accountId, {
       ...fresh,
-      source: fresh.source ?? cred.source ?? "oauth",
+      source: detachedLocalCli ? "oauth" : fresh.source ?? cred.source ?? "oauth",
       // Preserve a previously-discovered project id when a refresh-time re-discovery comes back empty
       // (e.g. a transient network blip), so Antigravity does not lose its CCA project across refresh.
       ...(fresh.projectId === undefined && cred.projectId ? { projectId: cred.projectId } : {}),
