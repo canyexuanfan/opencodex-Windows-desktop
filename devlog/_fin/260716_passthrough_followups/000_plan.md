@@ -56,3 +56,18 @@ paying down. Precedent already in-repo: `stallTimeoutSec` (default 90) on the
   tree at `a6db6cc4`-era dev (post-v2.7.21).
 - Sol explorer research (agent Volta) grounds 010; sol reviewer audits the unit
   before it is committed as final (A-gate).
+
+## Implementation evidence (2026-07-16, unit closed)
+
+- 030 → commit `03798a81` (fallback 120s→200s; tsc + 16/16 endpoint tests; Kuhn PASS).
+- 020 → commit `dd5fff89` (src/cli.ts in both paths blocks + PR/push path-set
+  equality contract test; ci-workflows 5/5; Kuhn PASS).
+- 010 → commit `0b006b66` (idleDeadline primitive with pause() — audit round 3 High:
+  timer runs ONLY while a read is pending; tap guard + Anthropic error tail +
+  deterministic client-cancel classification on BOTH stream and non-stream paths —
+  audit round 4 blocker folded; closeReason += body_stall|body_overflow in
+  request-log AND usage/log; config bodyStallSec=90/bodyMaxBytes=64MiB adopted as
+  recommended; A1-A6 activation tests + adapter-fixture terminal proof).
+- Full suite post-implementation: 2590 pass / 0 fail (242 files).
+- Audits: sol reviewer Kuhn rounds 1-4 (PASS, PASS, GO-WITH-FIXES(2H) folded,
+  GO-WITH-FIXES(1) folded).
