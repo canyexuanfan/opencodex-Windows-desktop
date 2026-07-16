@@ -151,14 +151,14 @@ describe("provider registry parity", () => {
     expect(neuralwatt?.preserveReasoningContentModels).not.toContain("moonshotai/Kimi-K2.5");
   });
 
-  test("Z.AI alone seeds and routes bracket-suffix stripping", () => {
+  test("Z.AI and Kimi context aliases route with bracket-suffix stripping", () => {
     const zai = PROVIDER_REGISTRY.find(entry => entry.id === "zai");
     const optedInProviders = PROVIDER_REGISTRY
       .filter(entry => entry.modelSuffixBracketStrip)
       .map(entry => entry.id);
     expect(zai?.modelContextWindows).toEqual({ "glm-5.2": 1_000_000, "glm-5.2[1m]": 1_000_000 });
     expect(providerConfigSeed(zai!).modelSuffixBracketStrip).toBe(true);
-    expect(optedInProviders).toEqual(["zai"]);
+    expect(optedInProviders).toEqual(["kimi", "zai", "kimi-code"]);
 
     const config: OcxConfig = {
       port: 10100,
@@ -190,6 +190,7 @@ describe("provider registry parity", () => {
   test("Kimi coding aliases preserve model context and capability parity", () => {
     const codingModels = [
       "k3",
+      "k3[1m]",
       "kimi-k2.7-code",
       "kimi-k2.7-code-highspeed",
       "kimi-k2.6",
@@ -209,19 +210,25 @@ describe("provider registry parity", () => {
       const entry = PROVIDER_REGISTRY.find(provider => provider.id === providerId);
       expect(entry?.models).toEqual(codingModels);
       for (const modelId of codingModels) {
-        expect(entry?.modelContextWindows?.[modelId]).toBe(modelId === "k3" ? 1_048_576 : 262_144);
+        expect(entry?.modelContextWindows?.[modelId]).toBe(modelId === "k3[1m]" ? 1_048_576 : 262_144);
       }
       for (const field of parityLists) {
         expect(entry?.[field]).toContain("kimi-k2.7-code");
         expect(entry?.[field]).toContain("kimi-for-coding");
       }
+      expect(entry?.modelSuffixBracketStrip).toBe(true);
       expect(entry?.noReasoningModels).not.toContain("k3");
+      expect(entry?.noReasoningModels).not.toContain("k3[1m]");
       expect(entry?.modelReasoningEfforts?.k3).toEqual(["max"]);
+      expect(entry?.modelReasoningEfforts?.["k3[1m]"]).toEqual(["max"]);
       expect(entry?.modelInputModalities?.k3).toEqual(["text", "image"]);
+      expect(entry?.modelInputModalities?.["k3[1m]"]).toEqual(["text", "image"]);
       expect(entry?.noTemperatureModels).toContain("k3");
+      expect(entry?.noTemperatureModels).toContain("k3[1m]");
       expect(entry?.noTopPModels).toContain("k3");
       expect(entry?.noPenaltyModels).toContain("k3");
       expect(entry?.preserveReasoningContentModels).toContain("k3");
+      expect(entry?.preserveReasoningContentModels).toContain("k3[1m]");
       expect(entry?.modelReasoningEfforts?.["kimi-for-coding"]).toEqual([]);
     }
 

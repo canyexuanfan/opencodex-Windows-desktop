@@ -223,7 +223,7 @@ describe("provider-specific reasoning effort mapping", () => {
     expect(body).not.toHaveProperty("tool_choice");
   });
 
-  test("Kimi K3 sends max reasoning while keeping launch sampling controls locked", () => {
+  test("Kimi K3 context aliases share the k3 wire id and max-only launch controls", () => {
     const config: OcxConfig = {
       port: 10100,
       defaultProvider: "kimi",
@@ -236,21 +236,24 @@ describe("provider-specific reasoning effort mapping", () => {
         },
       },
     };
-    const route = routeModel(config, "kimi/k3");
-    const body = buildBody(route.provider, route.modelId, {
-      reasoning: "low",
-      temperature: 0.2,
-      topP: 0.7,
-      presencePenalty: 1,
-      frequencyPenalty: 1,
-    });
+    for (const selector of ["kimi/k3", "kimi/k3[1m]"]) {
+      const route = routeModel(config, selector);
+      const body = buildBody(route.provider, route.modelId, {
+        reasoning: "low",
+        temperature: 0.2,
+        topP: 0.7,
+        presencePenalty: 1,
+        frequencyPenalty: 1,
+      });
 
-    expect(configuredReasoningEfforts(route.provider, route.modelId)).toEqual(["max"]);
-    expect(body.reasoning_effort).toBe("max");
-    expect(body).not.toHaveProperty("temperature");
-    expect(body).not.toHaveProperty("top_p");
-    expect(body).not.toHaveProperty("presence_penalty");
-    expect(body).not.toHaveProperty("frequency_penalty");
+      expect(configuredReasoningEfforts(route.provider, route.modelId)).toEqual(["max"]);
+      expect(body.model).toBe("k3");
+      expect(body.reasoning_effort).toBe("max");
+      expect(body).not.toHaveProperty("temperature");
+      expect(body).not.toHaveProperty("top_p");
+      expect(body).not.toHaveProperty("presence_penalty");
+      expect(body).not.toHaveProperty("frequency_penalty");
+    }
   });
 
   test("OpenAI-compatible chat omits tool_choice when there are no tools", () => {

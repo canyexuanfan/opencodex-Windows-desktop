@@ -146,19 +146,23 @@ const DEEPSEEK_THINKING_REASONING_MAP: Record<string, string> = {
   xhigh: "max",
   max: "max",
 };
-// 260717 Kimi K3: the subscription endpoint uses `k3`, while the Moonshot API uses
-// `kimi-k3`. Both expose native vision, up to 1M context, and max reasoning at launch.
+// 260717 Kimi K3: the subscription endpoint uses one upstream id (`k3`) for both
+// entitlement tiers. Bare `k3` advertises the Moderato 256K ceiling; the local `[1m]`
+// alias advertises Allegretto's 1M ceiling and is stripped before the upstream request.
+// The separately billed Moonshot API uses `kimi-k3`.
 // Evidence: https://www.kimi.com/code/docs/en/kimi-code/models.html
-//           https://www.kimi.com/blog/kimi-k3
-const KIMI_K3_CONTEXT_WINDOW = 1_048_576;
+//           https://www.kimi.com/code/docs/en/kimi-code/error-reference.html
+const KIMI_K3_STANDARD_CONTEXT_WINDOW = 262_144;
+const KIMI_K3_1M_CONTEXT_WINDOW = 1_048_576;
+const KIMI_CODING_K3_MODELS = ["k3", "k3[1m]"];
 const KIMI_LEGACY_API_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"];
 const KIMI_API_MODELS = ["kimi-k3", ...KIMI_LEGACY_API_MODELS];
-const KIMI_CODING_MODELS = ["k3", ...KIMI_LEGACY_API_MODELS, "kimi-for-coding"];
+const KIMI_CODING_MODELS = [...KIMI_CODING_K3_MODELS, ...KIMI_LEGACY_API_MODELS, "kimi-for-coding"];
 const KIMI_THINKING_MODELS = KIMI_CODING_MODELS;
-const KIMI_CODING_NO_REASONING_MODELS = KIMI_CODING_MODELS.filter(id => id !== "k3");
+const KIMI_CODING_NO_REASONING_MODELS = KIMI_CODING_MODELS.filter(id => !KIMI_CODING_K3_MODELS.includes(id));
 const KIMI_API_NO_REASONING_MODELS = KIMI_API_MODELS.filter(id => id !== "kimi-k3");
 const KIMI_CODING_REASONING_EFFORTS = Object.fromEntries(
-  KIMI_CODING_MODELS.map(id => [id, id === "k3" ? ["max"] : []]),
+  KIMI_CODING_MODELS.map(id => [id, KIMI_CODING_K3_MODELS.includes(id) ? ["max"] : []]),
 );
 const KIMI_API_REASONING_EFFORTS = Object.fromEntries(
   KIMI_API_MODELS.map(id => [id, id === "kimi-k3" ? ["max"] : []]),
@@ -166,7 +170,7 @@ const KIMI_API_REASONING_EFFORTS = Object.fromEntries(
 const KIMI_LOCKED_PARAMETER_MODELS = KIMI_CODING_MODELS;
 const KIMI_AUTO_TOOL_CHOICE_ONLY_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-for-coding"];
 const KIMI_API_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEntries(
-  KIMI_API_MODELS.map(id => [id, id === "kimi-k3" ? KIMI_K3_CONTEXT_WINDOW : 262_144]),
+  KIMI_API_MODELS.map(id => [id, id === "kimi-k3" ? KIMI_K3_1M_CONTEXT_WINDOW : 262_144]),
 );
 const KIMI_API_MODEL_INPUT_MODALITIES = { "kimi-k3": ["text", "image"] };
 
@@ -181,9 +185,11 @@ const NVIDIA_NIM_KIMI_MODELS = [
   "moonshotai/kimi-k2-instruct", "moonshotai/kimi-k2-instruct-0905",
 ];
 const KIMI_CODING_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEntries(
-  KIMI_CODING_MODELS.map(id => [id, id === "k3" ? KIMI_K3_CONTEXT_WINDOW : 262_144]),
+  KIMI_CODING_MODELS.map(id => [id, id === "k3[1m]" ? KIMI_K3_1M_CONTEXT_WINDOW : KIMI_K3_STANDARD_CONTEXT_WINDOW]),
 );
-const KIMI_CODING_MODEL_INPUT_MODALITIES = { k3: ["text", "image"] };
+const KIMI_CODING_MODEL_INPUT_MODALITIES = Object.fromEntries(
+  KIMI_CODING_K3_MODELS.map(id => [id, ["text", "image"]]),
+);
 const NEURALWATT_REASONING_HISTORY_MODELS = [
   "glm-5.2", "glm-5.2-short",
   "kimi-k2.6", "kimi-k2.7-code",
@@ -320,6 +326,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     adapter: "openai-chat",
     baseUrl: "https://api.kimi.com/coding/v1",
     authKind: "oauth",
+    modelSuffixBracketStrip: true,
     featured: true,
     oauthId: "kimi",
     jawcodeBundle: "moonshot",
@@ -615,6 +622,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   {
     id: "kimi-code", label: "Kimi (coding)", baseUrl: "https://api.kimi.com/coding/v1", adapter: "openai-chat", authKind: "key",
     dashboardUrl: "https://platform.moonshot.cn/console/api-keys", defaultModel: "kimi-k2.7-code",
+    modelSuffixBracketStrip: true,
     models: KIMI_CODING_MODELS,
     modelContextWindows: KIMI_CODING_MODEL_CONTEXT_WINDOWS,
     modelInputModalities: KIMI_CODING_MODEL_INPUT_MODALITIES,
