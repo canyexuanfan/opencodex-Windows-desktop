@@ -14,8 +14,10 @@ import { injectionDebugLog } from "../lib/injection-debug-log";
 import { modelInList, namespacedToolName } from "../types";
 import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig } from "../types";
 import {
+  forceRefreshOAuthAccessSnapshot,
   getOAuthCredentialProjectId,
-  getValidAccessToken,
+  getValidAccessTokenSnapshot,
+  type OAuthAccessSnapshot,
   UnsupportedOAuthProviderError,
 } from "../oauth";
 import { buildWebSearchTool, planWebSearch, runWithWebSearch } from "../web-search";
@@ -611,9 +613,13 @@ export async function handleResponses(
 
   // OAuth providers: swap in a fresh access token (auto-refreshed) as the Bearer key, so the
   // existing openai-chat / anthropic adapters authenticate with no change.
+  const isXaiOAuthRequest = route.providerName === "xai" && route.provider.authMode === "oauth";
+  let sentOAuthSnapshot: OAuthAccessSnapshot | undefined;
   if (route.provider.authMode === "oauth") {
     try {
-      route.provider = { ...route.provider, apiKey: await getValidAccessToken(route.providerName) };
+      const resolved = await getValidAccessTokenSnapshot(route.providerName);
+      if (isXaiOAuthRequest) sentOAuthSnapshot = resolved;
+      route.provider = { ...route.provider, apiKey: resolved.accessToken };
       // Antigravity (cloud-code-assist) needs the discovered Cloud Code Assist project id in the
       // CCA envelope; the server injects only the bare token, so pull project from the credential.
       if (route.provider.googleMode === "cloud-code-assist" && !route.provider.project) {
@@ -969,6 +975,7 @@ export async function handleResponses(
     let activeAdapter = adapter;
     let imageTierBias = 0;
     let imageRetryAttempted = false;
+    let oauth401ReplayAttempted = false;
     const rebuildAndRefetch = async (): Promise<Response | { failed: Response }> => {
       const retryRequest = await activeAdapter.buildRequest(parsed, {
         headers: selectedForwardHeaders,
@@ -990,6 +997,38 @@ export async function handleResponses(
       }
     };
     recovery: for (;;) {
+      if (
+        upstreamResponse.status === 401
+        && isXaiOAuthRequest
+        && sentOAuthSnapshot
+        && !oauth401ReplayAttempted
+      ) {
+        oauth401ReplayAttempted = true;
+        try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
+        let refreshed: OAuthAccessSnapshot;
+        try {
+          refreshed = await forceRefreshOAuthAccessSnapshot(sentOAuthSnapshot);
+        } catch (err) {
+          cleanupUpstreamAbort();
+          return formatErrorResponse(401, "authentication_error", err instanceof Error ? err.message : String(err));
+        }
+        sentOAuthSnapshot = refreshed;
+        const refreshedProvider = resolveProviderTransport(
+          route.providerName,
+          { ...route.provider, apiKey: refreshed.accessToken },
+          parsed.options.promptCacheKey,
+        );
+        route.provider = refreshedProvider;
+        activeAdapter = resolveAdapter(
+          resolveWireProtocolOverride(route.providerName, route.modelId, refreshedProvider),
+          config.cacheRetention,
+        );
+        const result = await rebuildAndRefetch();
+        if ("failed" in result) return result.failed;
+        upstreamResponse = result;
+        continue recovery;
+      }
+
       // Multi-key 429 failover: rotate to the next pool key (cooldown-aware) and retry the
       // SAME request once per remaining key. OAuth/forward providers and single-key pools
       // return null immediately, so this stays a no-op for them (src/providers/key-failover.ts).

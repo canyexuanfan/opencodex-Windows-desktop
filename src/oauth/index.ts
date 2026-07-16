@@ -17,7 +17,14 @@ import { resolveProviderTransport } from "../providers/xai-transport";
 import { detectGrokCliToken, hasComparableGrokIdentity, isSameGrokIdentity, shouldAdoptGrokGeneration } from "./local-token-detect";
 
 const REFRESH_SKEW_MS = 60_000;
-const tokenRefreshes = new Map<string, Promise<string>>();
+export interface OAuthAccessSnapshot {
+  provider: string;
+  accountId: string;
+  generation: string;
+  accessToken: string;
+}
+
+const tokenRefreshes = new Map<string, Promise<OAuthAccessSnapshot>>();
 const XAI_PERMANENT_FAILURE_TTL_MS=30_000;
 const permanentRefreshFailures=new Map<string,number>();
 interface XaiRefreshDeps { intentLock?:ReturnType<typeof createOAuthRefreshIntentLock>; now?:()=>number; afterPrePersistRead?:()=>void|Promise<void> }
@@ -145,13 +152,63 @@ export class OAuthLoginRequiredError extends Error {
   }
 }
 
-/** Return a valid access token for the ACTIVE account, refreshing + persisting if expired. */
-export async function getValidAccessToken(provider: string): Promise<string> {
+function accessSnapshot(provider: string, accountId: string, cred: OAuthCredentials): OAuthAccessSnapshot {
+  return {
+    provider,
+    accountId,
+    generation: credentialGeneration(cred),
+    accessToken: cred.access,
+  };
+}
+
+async function resolveAccessSnapshotForAccount(
+  provider: string,
+  accountId: string,
+  rejectedGeneration?: string,
+): Promise<OAuthAccessSnapshot> {
   const def = OAUTH_PROVIDERS[provider];
   if (!def) throw new UnsupportedOAuthProviderError(provider);
+  const cred = getAccountCredential(provider, accountId);
+  if (!cred) throw new OAuthLoginRequiredError(provider);
+  const current = accessSnapshot(provider, accountId, cred);
+  if (rejectedGeneration !== undefined && current.generation !== rejectedGeneration) return current;
+  if (rejectedGeneration === undefined && cred.expires > Date.now() + REFRESH_SKEW_MS) return current;
+
+  const key = `${provider}\u0000${accountId}`;
+  const existing = tokenRefreshes.get(key);
+  if (existing) return existing;
+
+  const refresh = (async (): Promise<OAuthAccessSnapshot> => {
+    const accessToken = await refreshAndPersistAccessToken(provider, accountId, def, cred);
+    const persisted = getAccountCredential(provider, accountId);
+    if (!persisted) throw new OAuthLoginRequiredError(provider);
+    if (persisted.access !== accessToken) {
+      throw new Error(`OAuth refresh persisted an unexpected access token for ${provider}`);
+    }
+    return accessSnapshot(provider, accountId, persisted);
+  })().finally(() => {
+    if (tokenRefreshes.get(key) === refresh) tokenRefreshes.delete(key);
+  });
+  tokenRefreshes.set(key, refresh);
+  return refresh;
+}
+
+export async function getValidAccessTokenSnapshot(provider: string): Promise<OAuthAccessSnapshot> {
   const set = getAccountSet(provider);
   if (!set) throw new OAuthLoginRequiredError(provider);
-  return getValidAccessTokenForAccount(provider, set.activeAccountId);
+  return resolveAccessSnapshotForAccount(provider, set.activeAccountId);
+}
+
+export async function forceRefreshOAuthAccessSnapshot(
+  rejected: OAuthAccessSnapshot,
+): Promise<OAuthAccessSnapshot> {
+  if (rejected.provider !== "xai") throw new UnsupportedOAuthProviderError(rejected.provider);
+  return resolveAccessSnapshotForAccount(rejected.provider, rejected.accountId, rejected.generation);
+}
+
+/** Return a valid access token for the ACTIVE account, refreshing + persisting if expired. */
+export async function getValidAccessToken(provider: string): Promise<string> {
+  return (await getValidAccessTokenSnapshot(provider)).accessToken;
 }
 
 /**
@@ -160,19 +217,7 @@ export async function getValidAccessToken(provider: string): Promise<string> {
  * a guardian refresh of a background account never switches the active account.
  */
 export async function getValidAccessTokenForAccount(provider: string, accountId: string): Promise<string> {
-  const def = OAUTH_PROVIDERS[provider];
-  if (!def) throw new UnsupportedOAuthProviderError(provider);
-  const cred = getAccountCredential(provider, accountId);
-  if (!cred) throw new OAuthLoginRequiredError(provider);
-  if (cred.expires > Date.now() + REFRESH_SKEW_MS) return cred.access;
-  const key = `${provider}\u0000${accountId}`;
-  const existing = tokenRefreshes.get(key);
-  if (existing) return existing;
-  const refresh = refreshAndPersistAccessToken(provider, accountId, def, cred).finally(() => {
-    if (tokenRefreshes.get(key) === refresh) tokenRefreshes.delete(key);
-  });
-  tokenRefreshes.set(key, refresh);
-  return refresh;
+  return (await resolveAccessSnapshotForAccount(provider, accountId)).accessToken;
 }
 
 function readFreshKiroCliCredential(): OAuthCredentials | undefined {
