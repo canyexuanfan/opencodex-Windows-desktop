@@ -122,6 +122,14 @@ models_base_url = "http://127.0.0.1:10100/v1"
 ## Opposite direction (for clarity only)
 OpenCodex can import `~/.grok/auth.json` and call `cli-chat-proxy` as an **xAI provider**. That is **OpenCodex using Grok account models**, not this question.
 
+## Live smoke (2026-07-16)
+See [040_live_smoke.md](./040_live_smoke.md).
+
+- **PASS content**: `anthropic/claude-opus-4-8`, `cursor/grok-4.5`, `opencode-go/glm-5.2` returned `OCX_SMOKE_OK` via Grok headless → OpenCodex Responses.
+- **FAIL request**: native `gpt-5.6-sol` / `gpt-5.6-luna` → OpenCodex `System messages are not allowed`.
+- **FAIL backend**: `chat_completions` → `404 Unknown endpoint: POST /v1/chat/completions`.
+- **Friction**: Grok exits non-zero after successful text due to missing usage detail fields on `response.completed`.
+
 ## Residuals
 1. Live smoke: `grok -p "hi" -m ocx-sol` against running OpenCodex (not executed in this docs pass).
 2. Whether Grok’s Responses request shape (tools, reasoning, store flags) always passes OpenCodex parser for every routed provider.
