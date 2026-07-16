@@ -12,6 +12,7 @@ import { normalizeAnthropicImages } from "../adapters/anthropic-image-normalize"
 import { AnthropicRequestError, anthropicToResponsesTranslation, extractOcxRouteDirective, resolveInboundModel, type ClaudeCacheKeySource } from "../claude/inbound";
 import { stripOneMillionMarker } from "../claude/context-windows";
 import { captureClaudeInbound } from "../claude/inbound-debug";
+import { isTransientUpstreamStatus } from "../lib/upstream-retry";
 import {
   anthropicErrorBody,
   anthropicErrorResponse,
@@ -461,9 +462,19 @@ export async function handleClaudeMessages(
       }
     } catch { /* keep fallback message */ }
     const retryAfter = response.headers.get("retry-after");
-    const out = new Response(JSON.stringify(anthropicErrorBody(response.status, message)), {
-      status: response.status,
-      headers: { "Content-Type": "application/json", ...(retryAfter ? { "Retry-After": retryAfter } : {}) },
+    // Transient upstream 5xx (already retried pre-stream, 010): reclassify as Anthropic
+    // 529 overloaded_error so the Claude Code client applies its built-in backoff retry
+    // instead of dying on a fatal api_error (260716 sol-builder incident). The request
+    // log keeps the upstream status (captured in the deferred-log closure before this
+    // rewrite): log = upstream truth, client = retry signal.
+    const transient = isTransientUpstreamStatus(response.status);
+    const outStatus = transient ? 529 : response.status;
+    const out = new Response(JSON.stringify(anthropicErrorBody(outStatus, message)), {
+      status: outStatus,
+      headers: {
+        "Content-Type": "application/json",
+        ...(retryAfter ? { "Retry-After": retryAfter } : (transient ? { "Retry-After": "2" } : {})),
+      },
     });
     return out;
   }
