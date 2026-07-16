@@ -189,6 +189,7 @@ describe("provider registry parity", () => {
 
   test("Kimi coding aliases preserve model context and capability parity", () => {
     const codingModels = [
+      "k3",
       "kimi-k2.7-code",
       "kimi-k2.7-code-highspeed",
       "kimi-k2.6",
@@ -208,23 +209,37 @@ describe("provider registry parity", () => {
       const entry = PROVIDER_REGISTRY.find(provider => provider.id === providerId);
       expect(entry?.models).toEqual(codingModels);
       for (const modelId of codingModels) {
-        expect(entry?.modelContextWindows?.[modelId]).toBe(262_144);
+        expect(entry?.modelContextWindows?.[modelId]).toBe(modelId === "k3" ? 1_048_576 : 262_144);
       }
       for (const field of parityLists) {
         expect(entry?.[field]).toContain("kimi-k2.7-code");
         expect(entry?.[field]).toContain("kimi-for-coding");
       }
+      expect(entry?.noReasoningModels).not.toContain("k3");
+      expect(entry?.modelReasoningEfforts?.k3).toEqual(["max"]);
+      expect(entry?.modelInputModalities?.k3).toEqual(["text", "image"]);
+      expect(entry?.noTemperatureModels).toContain("k3");
+      expect(entry?.noTopPModels).toContain("k3");
+      expect(entry?.noPenaltyModels).toContain("k3");
+      expect(entry?.preserveReasoningContentModels).toContain("k3");
       expect(entry?.modelReasoningEfforts?.["kimi-for-coding"]).toEqual([]);
     }
 
     const moonshot = PROVIDER_REGISTRY.find(provider => provider.id === "moonshot");
+    expect(moonshot?.models).toContain("kimi-k3");
+    expect(moonshot?.models).not.toContain("k3");
     expect(moonshot?.models).not.toContain("kimi-for-coding");
     expect(moonshot?.modelContextWindows).toEqual({
+      "kimi-k3": 1_048_576,
       "kimi-k2.7-code": 262_144,
       "kimi-k2.7-code-highspeed": 262_144,
       "kimi-k2.6": 262_144,
       "kimi-k2.5": 262_144,
     });
+    expect(moonshot?.modelInputModalities?.["kimi-k3"]).toEqual(["text", "image"]);
+    expect(moonshot?.noReasoningModels).not.toContain("kimi-k3");
+    expect(moonshot?.modelReasoningEfforts?.["kimi-k3"]).toEqual(["max"]);
+    expect(moonshot?.preserveReasoningContentModels).toContain("kimi-k3");
   });
 
   test("LiteLLM is the only registry seed with optional key authentication", () => {

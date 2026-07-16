@@ -146,16 +146,29 @@ const DEEPSEEK_THINKING_REASONING_MAP: Record<string, string> = {
   xhigh: "max",
   max: "max",
 };
-// 260710 Kimi model aliases and context windows: Tier-2 evidence in
-// devlog/_plan/260710_provider_hardening/002_research_cn.md.
-const KIMI_API_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"];
-const KIMI_CODING_MODELS = [...KIMI_API_MODELS, "kimi-for-coding"];
+// 260717 Kimi K3: the subscription endpoint uses `k3`, while the Moonshot API uses
+// `kimi-k3`. Both expose native vision, up to 1M context, and max reasoning at launch.
+// Evidence: https://www.kimi.com/code/docs/en/kimi-code/models.html
+//           https://www.kimi.com/blog/kimi-k3
+const KIMI_K3_CONTEXT_WINDOW = 1_048_576;
+const KIMI_LEGACY_API_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"];
+const KIMI_API_MODELS = ["kimi-k3", ...KIMI_LEGACY_API_MODELS];
+const KIMI_CODING_MODELS = ["k3", ...KIMI_LEGACY_API_MODELS, "kimi-for-coding"];
 const KIMI_THINKING_MODELS = KIMI_CODING_MODELS;
+const KIMI_CODING_NO_REASONING_MODELS = KIMI_CODING_MODELS.filter(id => id !== "k3");
+const KIMI_API_NO_REASONING_MODELS = KIMI_API_MODELS.filter(id => id !== "kimi-k3");
+const KIMI_CODING_REASONING_EFFORTS = Object.fromEntries(
+  KIMI_CODING_MODELS.map(id => [id, id === "k3" ? ["max"] : []]),
+);
+const KIMI_API_REASONING_EFFORTS = Object.fromEntries(
+  KIMI_API_MODELS.map(id => [id, id === "kimi-k3" ? ["max"] : []]),
+);
 const KIMI_LOCKED_PARAMETER_MODELS = KIMI_CODING_MODELS;
 const KIMI_AUTO_TOOL_CHOICE_ONLY_MODELS = ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-for-coding"];
 const KIMI_API_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEntries(
-  KIMI_API_MODELS.map(id => [id, 262_144]),
+  KIMI_API_MODELS.map(id => [id, id === "kimi-k3" ? KIMI_K3_CONTEXT_WINDOW : 262_144]),
 );
+const KIMI_API_MODEL_INPUT_MODALITIES = { "kimi-k3": ["text", "image"] };
 
 // 260715 NVIDIA NIM kimi family (issue #126): documented served ids on integrate
 // chat/completions per docs.api.nvidia.com/nim/reference/llm-apis; live /v1/models
@@ -168,8 +181,9 @@ const NVIDIA_NIM_KIMI_MODELS = [
   "moonshotai/kimi-k2-instruct", "moonshotai/kimi-k2-instruct-0905",
 ];
 const KIMI_CODING_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEntries(
-  KIMI_CODING_MODELS.map(id => [id, 262_144]),
+  KIMI_CODING_MODELS.map(id => [id, id === "k3" ? KIMI_K3_CONTEXT_WINDOW : 262_144]),
 );
+const KIMI_CODING_MODEL_INPUT_MODALITIES = { k3: ["text", "image"] };
 const NEURALWATT_REASONING_HISTORY_MODELS = [
   "glm-5.2", "glm-5.2-short",
   "kimi-k2.6", "kimi-k2.7-code",
@@ -313,9 +327,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     models: KIMI_CODING_MODELS,
     defaultModel: "kimi-k2.7-code",
     modelContextWindows: KIMI_CODING_MODEL_CONTEXT_WINDOWS,
-    // Kimi thinking is controlled by Kimi's `thinking` extension, not OpenAI `reasoning_effort`.
-    noReasoningModels: KIMI_THINKING_MODELS,
-    modelReasoningEfforts: Object.fromEntries(KIMI_THINKING_MODELS.map(id => [id, []])),
+    modelInputModalities: KIMI_CODING_MODEL_INPUT_MODALITIES,
+    // K3 accepts reasoning_effort=max; older Kimi models use Kimi's private thinking control.
+    noReasoningModels: KIMI_CODING_NO_REASONING_MODELS,
+    modelReasoningEfforts: KIMI_CODING_REASONING_EFFORTS,
     noTemperatureModels: KIMI_LOCKED_PARAMETER_MODELS,
     noTopPModels: KIMI_LOCKED_PARAMETER_MODELS,
     noPenaltyModels: KIMI_LOCKED_PARAMETER_MODELS,
@@ -502,8 +517,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     dashboardUrl: "https://platform.moonshot.ai/console/api-keys", defaultModel: "kimi-k2.7-code", jawcodeBundle: "moonshot",
     models: KIMI_API_MODELS,
     modelContextWindows: KIMI_API_MODEL_CONTEXT_WINDOWS,
-    noReasoningModels: KIMI_API_MODELS,
-    modelReasoningEfforts: Object.fromEntries(KIMI_API_MODELS.map(id => [id, []])),
+    modelInputModalities: KIMI_API_MODEL_INPUT_MODALITIES,
+    noReasoningModels: KIMI_API_NO_REASONING_MODELS,
+    modelReasoningEfforts: KIMI_API_REASONING_EFFORTS,
     noTemperatureModels: KIMI_API_MODELS,
     noTopPModels: KIMI_API_MODELS,
     noPenaltyModels: KIMI_API_MODELS,
@@ -601,8 +617,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     dashboardUrl: "https://platform.moonshot.cn/console/api-keys", defaultModel: "kimi-k2.7-code",
     models: KIMI_CODING_MODELS,
     modelContextWindows: KIMI_CODING_MODEL_CONTEXT_WINDOWS,
-    noReasoningModels: KIMI_THINKING_MODELS,
-    modelReasoningEfforts: Object.fromEntries(KIMI_THINKING_MODELS.map(id => [id, []])),
+    modelInputModalities: KIMI_CODING_MODEL_INPUT_MODALITIES,
+    noReasoningModels: KIMI_CODING_NO_REASONING_MODELS,
+    modelReasoningEfforts: KIMI_CODING_REASONING_EFFORTS,
     noTemperatureModels: KIMI_LOCKED_PARAMETER_MODELS,
     noTopPModels: KIMI_LOCKED_PARAMETER_MODELS,
     noPenaltyModels: KIMI_LOCKED_PARAMETER_MODELS,
