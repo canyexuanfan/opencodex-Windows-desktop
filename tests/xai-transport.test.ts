@@ -236,29 +236,130 @@ describe("xAI reasoning_content cache preservation", () => {
     }
   });
 
-  test("assistant thinking parts round-trip as reasoning_content on grok-4.5 history", () => {
-    // xAI docs: dropped reasoning_content is the top cause of multi-turn cache misses
-    // (docs.x.ai prompt-caching/multi-turn, 2026-07-13).
+  test("parseRequest folds summary reasoning into one Grok assistant wire message", () => {
     const prov: OcxProviderConfig = {
       ...provider("oauth"),
       preserveReasoningContentModels: getProviderRegistryEntry("xai")?.preserveReasoningContentModels ?? [],
     };
-    const assistant: OcxAssistantMessage = {
-      role: "assistant",
-      content: [
-        { type: "thinking", thinking: "cached chain" },
-        { type: "text", text: "answer" },
+    const req = parseRequest({
+      model: "grok-4.5",
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "q1" }] },
+        { type: "reasoning", id: "r1", summary: [{ type: "summary_text", text: "cached chain" }] },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "answer" }] },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "q2" }] },
       ],
-      timestamp: 0,
-    };
-    const req: OcxParsedRequest = {
-      modelId: "grok-4.5",
-      context: { messages: [{ role: "user", content: "q1", timestamp: 0 }, assistant, { role: "user", content: "q2", timestamp: 0 }] },
-      stream: false,
-      options: {},
-    };
+    });
     const body = JSON.parse(createOpenAIChatAdapter(prov).buildRequest(req).body as string) as { messages: Array<Record<string, unknown>> };
-    const replayed = body.messages.find(m => m.role === "assistant");
-    expect(replayed?.reasoning_content).toBe("cached chain");
+    const assistants = body.messages.filter(message => message.role === "assistant");
+
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]).toMatchObject({ content: "answer", reasoning_content: "cached chain" });
+  });
+
+  test("parseRequest drops opaque encrypted-only reasoning without detaching an assistant wire message", () => {
+    const prov: OcxProviderConfig = {
+      ...provider("oauth"),
+      preserveReasoningContentModels: getProviderRegistryEntry("xai")?.preserveReasoningContentModels ?? [],
+    };
+    const req = parseRequest({
+      model: "grok-4.5",
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "q1" }] },
+        { type: "reasoning", id: "r-opaque", summary: [], encrypted_content: "opaque-native-blob" },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "answer" }] },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "q2" }] },
+      ],
+    });
+    const body = JSON.parse(createOpenAIChatAdapter(prov).buildRequest(req).body as string) as { messages: Array<Record<string, unknown>> };
+    const assistants = body.messages.filter(message => message.role === "assistant");
+
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]).toEqual({ role: "assistant", content: "answer" });
+    expect(assistants[0]).not.toHaveProperty("reasoning_content");
+  });
+
+  test("parseRequest clears pending reasoning at a user boundary", () => {
+    const prov: OcxProviderConfig = {
+      ...provider("oauth"),
+      preserveReasoningContentModels: getProviderRegistryEntry("xai")?.preserveReasoningContentModels ?? [],
+    };
+    const req = parseRequest({
+      model: "grok-4.5",
+      input: [
+        { type: "reasoning", id: "r-orphan", summary: [{ type: "summary_text", text: "must drop" }] },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "new turn" }] },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "answer" }] },
+      ],
+    });
+    const body = JSON.parse(createOpenAIChatAdapter(prov).buildRequest(req).body as string) as { messages: Array<Record<string, unknown>> };
+    const assistants = body.messages.filter(message => message.role === "assistant");
+
+    expect(assistants).toEqual([{ role: "assistant", content: "answer" }]);
+    expect(assistants[0]).not.toHaveProperty("reasoning_content");
+  });
+
+  test("parseRequest folds pending reasoning into the assistant turn that carries the call", () => {
+    const prov: OcxProviderConfig = {
+      ...provider("oauth"),
+      preserveReasoningContentModels: getProviderRegistryEntry("xai")?.preserveReasoningContentModels ?? [],
+    };
+    const req = parseRequest({
+      model: "grok-4.5",
+      input: [
+        { type: "reasoning", id: "r-call", summary: [{ type: "summary_text", text: "call chain" }] },
+        { type: "function_call", call_id: "call_1", name: "lookup", arguments: "{\"q\":\"x\"}" },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "answer" }] },
+      ],
+    });
+    const body = JSON.parse(createOpenAIChatAdapter(prov).buildRequest(req).body as string) as { messages: Array<Record<string, unknown>> };
+    const assistants = body.messages.filter(message => message.role === "assistant");
+
+    expect(assistants).toHaveLength(2);
+    // Grok wire shape: a reasoning model emits reasoning_content and tool_calls on the SAME
+    // assistant message (and Anthropic replay requires thinking before tool_use in one turn).
+    expect(assistants[0]).toMatchObject({
+      reasoning_content: "call chain",
+      tool_calls: [{ id: "call_1", type: "function", function: { name: "lookup", arguments: "{\"q\":\"x\"}" } }],
+    });
+    expect(assistants[1]).toMatchObject({ content: "answer" });
+    expect(assistants[1]).not.toHaveProperty("reasoning_content");
+  });
+
+  test("parseRequest newline-joins reasoning siblings before one assistant", () => {
+    const prov: OcxProviderConfig = {
+      ...provider("oauth"),
+      preserveReasoningContentModels: getProviderRegistryEntry("xai")?.preserveReasoningContentModels ?? [],
+    };
+    const req = parseRequest({
+      model: "grok-4.5",
+      input: [
+        { type: "reasoning", id: "r1", summary: [{ type: "summary_text", text: "first" }] },
+        { type: "reasoning", id: "r2", summary: [{ type: "summary_text", text: "second" }] },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "answer" }] },
+      ],
+    });
+    const body = JSON.parse(createOpenAIChatAdapter(prov).buildRequest(req).body as string) as { messages: Array<Record<string, unknown>> };
+    const assistants = body.messages.filter(message => message.role === "assistant");
+    const parsedAssistant = req.context.messages.find(message => message.role === "assistant") as OcxAssistantMessage;
+    const thinkingParts = parsedAssistant.content.filter(part => part.type === "thinking");
+
+    expect(thinkingParts).toHaveLength(1);
+    expect(thinkingParts[0]).toMatchObject({ thinking: "first\nsecond", itemId: "r2" });
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]).toMatchObject({ content: "answer", reasoning_content: "first\nsecond" });
+  });
+
+  test("parseRequest drops trailing reasoning without creating an assistant", () => {
+    const req = parseRequest({
+      model: "xai/grok-4.5",
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "q1" }] },
+        { type: "reasoning", id: "r-trailing", summary: [{ type: "summary_text", text: "unfinished" }] },
+      ],
+    });
+
+    expect(req.context.messages.filter(message => message.role === "assistant")).toHaveLength(0);
+    expect(req.context.messages).toHaveLength(1);
   });
 });

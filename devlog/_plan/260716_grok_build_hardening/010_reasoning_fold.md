@@ -570,3 +570,15 @@ record that regression explicitly in the revert/commit message.
 - Confirm `decodeReasoningEnvelope` still returns `null` for non-`ocxr1` blobs.
 - Validate all seven proposed request fixtures against the current Responses schema before editing.
 - Re-check current test filenames/imports and `package.json` `test`/`typecheck` scripts.
+
+## Implementation record (B, 2026-07-16)
+
+구현은 본 문서대로 착지했고, 모호했던 "call 항목을 가로지르는 보존"은 다음처럼 확정했다:
+pending reasoning은 tool/function/shell/web/tool_search call이 assistant placeholder를 만들 때
+그 **동일 assistant turn에 폴딩**된다(`assistantHolderWithReasoning` helper). 근거: Grok
+chat-completions wire는 reasoning_content와 tool_calls를 같은 assistant 메시지로 내보내며,
+Anthropic replay는 thinking이 같은 turn의 tool_use 앞에 와야 한다. 이에 따라 초안 테스트
+기대값(다음 text assistant로 skip)과 구계약 픽스처
+`tests/responses-parser-agent-message.test.ts`(경계 앞 reasoning의 detached assistant 유지)를
+신계약으로 갱신했다. 검증: 대상 3개 스위트 33 pass, 풀 스위트 2596 pass / 0 fail,
+`bun run typecheck` 통과.
