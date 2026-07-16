@@ -570,6 +570,13 @@ export async function handleCodexAuthAPI(
       const { startLoginFlow, getLoginStatus } = await import("../oauth");
       const result = await startLoginFlow("chatgpt", { forceLogin: true });
 
+      // Open the browser server-side (same pattern as /api/oauth/login in management-api.ts).
+      // The GUI's window.open is popup-blocked because it runs after an await, not a direct click.
+      if (result.url) {
+        const { openUrl } = await import("../lib/open-url");
+        openUrl(result.url);
+      }
+
       (async () => {
         let completed = false;
         for (let i = 0; i < 150; i++) {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AddProviderModal from "../components/AddProviderModal";
 import { Notice } from "../ui";
-import { IconPlus, IconTrash, IconLock, IconExternal, IconPower, IconChevron } from "../icons";
+import { IconPlus, IconTrash, IconLock, IconExternal, IconPower, IconChevron, IconLink } from "../icons";
 import { useT } from "../i18n";
 import type { AccountQuota } from "../codex-quota-utils";
 import QuotaBars from "../components/QuotaBars";
@@ -39,6 +39,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const [quotaReports, setQuotaReports] = useState<Record<string, ProviderQuotaReport>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [loginInfo, setLoginInfo] = useState<{ provider: string; url?: string; instructions?: string } | null>(null);
+  const [linkCopied, setLinkCopied] = useState(false);
   const [manualCode, setManualCode] = useState("");
   const [manualCodeBusy, setManualCodeBusy] = useState(false);
   const [manualCodeMsg, setManualCodeMsg] = useState("");
@@ -422,7 +423,17 @@ export default function Providers({ apiBase }: { apiBase: string }) {
                 {loginInfo?.provider === p && (loginInfo.url || loginInfo.instructions || isBusy) && (
                   <span className="oauth-login-hint muted">
                     <span className="oauth-login-hint-links">
-                      {loginInfo.url && <a href={loginInfo.url} target="_blank" rel="noreferrer" className="link-btn" style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><IconExternal />{t("prov.didntOpen")}</a>}
+                      {loginInfo.url && <a href={loginInfo.url} target="_blank" rel="noreferrer" className="link-btn" style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><IconExternal width={14} height={14} />{t("prov.didntOpen")}</a>}
+                      <button className="link-btn" onClick={() => {
+                        if (loginInfo?.url) {
+                          navigator.clipboard.writeText(loginInfo.url).then(() => {
+                            setLinkCopied(true);
+                            setTimeout(() => setLinkCopied(false), 2500);
+                          }).catch(() => {});
+                        }
+                      }} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                        <IconLink width={14} height={14} />{linkCopied ? t("prov.linkCopied") : t("prov.copyLink")}
+                      </button>
                       {loginInfo.instructions && <span>{loginInfo.instructions}</span>}
                     </span>
                     <span className="oauth-login-paste">

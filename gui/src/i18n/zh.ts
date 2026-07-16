@@ -129,6 +129,8 @@ export const zh: Record<TKey, string> = {
   "prov.loginWith": "使用 {provider} 登录",
   "prov.waitingBrowser": "等待浏览器…",
   "prov.didntOpen": "没有打开？点击这里",
+  "prov.copyLink": "复制链接",
+  "prov.linkCopied": "已复制",
   "prov.pasteRedirect": "粘贴重定向 URL 或授权码",
   "prov.pasteRedirectHint": "如果浏览器显示 localhost 错误，请复制地址栏中的完整 URL 并粘贴到此处（或粘贴授权码）。",
   "prov.pasteSubmit": "提交",

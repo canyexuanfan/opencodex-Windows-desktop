@@ -134,6 +134,8 @@ export const en = {
   "prov.loginWith": "Login with {provider}",
   "prov.waitingBrowser": "Waiting for browser…",
   "prov.didntOpen": "Didn't open? Click here",
+  "prov.copyLink": "Copy link",
+  "prov.linkCopied": "Copied",
   "prov.pasteRedirect": "Paste redirect URL or code",
   "prov.pasteRedirectHint": "If the browser shows a localhost error, copy the full URL from its address bar and paste it here (or paste the authorization code).",
   "prov.pasteSubmit": "Submit",
