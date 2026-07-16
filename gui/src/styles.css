@@ -700,6 +700,7 @@ select.input { appearance: none; }
 .provider-quota { padding-left: 58px; }
 .provider-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .link-btn { background: none; border: none; color: var(--accent-hover); font: inherit; font-size: var(--text-control); cursor: pointer; padding: 6px 2px; text-decoration: underline; }
+.link-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
 
 /* provider card accounts dropdown (multiauth) */
 .prov-accounts-toggle {
