@@ -84,6 +84,17 @@ export function addRequestLog(entry: RequestLogEntry) {
   requestLog.push(entry);
   if (requestLog.length > MAX_LOG_SIZE) requestLog.shift();
   try {
+    // Failure diagnostics survive the 200-entry ring buffer by riding the persisted
+    // usage entry (devlog/_plan/260716_claudecode_hardening/030). Success rows stay
+    // in their existing shape; the >=400 gate deliberately includes 499 client-cancels.
+    const failureDiagnostics = entry.status >= 400 || (entry.terminalStatus && entry.terminalStatus !== "completed")
+      ? {
+        ...(entry.errorCode ? { errorCode: entry.errorCode } : {}),
+        ...(entry.terminalStatus ? { terminalStatus: entry.terminalStatus } : {}),
+        ...(entry.closeReason ? { closeReason: entry.closeReason } : {}),
+        ...(entry.upstreamError ? { upstreamError: entry.upstreamError } : {}),
+      }
+      : {};
     appendUsageEntry({
       requestId: entry.requestId,
       timestamp: entry.timestamp,
@@ -96,6 +107,7 @@ export function addRequestLog(entry: RequestLogEntry) {
       usageStatus: entry.usageStatus,
       ...(entry.usage ? { usage: entry.usage } : {}),
       ...(entry.totalTokens !== undefined ? { totalTokens: entry.totalTokens } : {}),
+      ...failureDiagnostics,
     });
   } catch {
     /* request logging must never fail a user request */
