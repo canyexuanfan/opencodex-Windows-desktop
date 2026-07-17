@@ -10,6 +10,7 @@
 @import "./styles/provider-catalog.css";
 @import "./styles/provider-quota.css";
 @import "./styles/provider-workspace-shell.css";
+@import "./styles/provider-workspace-settings.css";
 
 :root {
   /* default: follow the OS; [data-theme] below pins color-scheme so light-dark() obeys it */

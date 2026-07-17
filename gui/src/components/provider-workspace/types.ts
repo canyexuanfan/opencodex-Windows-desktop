@@ -23,3 +23,45 @@ export interface ProviderUsageTotals {
   requests?: number;
   totalTokens?: number;
 }
+
+// Auth types consumed by ProviderAuthPanel (WP091).
+export type OAuthAccountRow = {
+  id: string;
+  email?: string;
+  active: boolean;
+  needsReauth?: boolean;
+};
+
+export type ApiKeyRow = {
+  id: string;
+  label?: string;
+  masked: string;
+  active: boolean;
+};
+
+export type LoginHint = {
+  provider: string;
+  url?: string;
+  instructions?: string;
+};
+
+export interface ProviderAuthHandlers {
+  onLogin: (provider: string, addAccount?: boolean) => void;
+  onCancelLogin?: (provider: string) => void;
+  onLogout: (provider: string) => void;
+  onSwitchAccount: (provider: string, account: OAuthAccountRow) => void;
+  onRemoveAccount: (provider: string, account: OAuthAccountRow) => void;
+  onAddApiKey: (provider: string, key: string) => Promise<boolean>;
+  onSwitchApiKey: (provider: string, entry: ApiKeyRow) => void;
+  onRemoveApiKey: (provider: string, entry: ApiKeyRow) => void;
+}
+
+export type ProviderUpdatePatch = {
+  adapter?: string;
+  baseUrl?: string;
+  defaultModel?: string;
+  apiKey?: string;
+  authMode?: string;
+  note?: string;
+  disabled?: boolean;
+};

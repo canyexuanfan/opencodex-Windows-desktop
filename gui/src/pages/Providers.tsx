@@ -453,6 +453,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
               modelsLoadFailed={data.modelsLoadFailed}
               oauthEmail={oauthStatus[item.name]?.email}
               onDeselect={() => setWorkspaceSelected(null)}
+              apiBase={apiBase}
             />
           )}
         />
