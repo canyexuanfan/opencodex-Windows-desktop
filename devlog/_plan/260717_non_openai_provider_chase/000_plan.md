@@ -86,4 +86,11 @@ One work-phase consumes exactly one decade document and runs one full P→A→B�
 - P: current source owners, chase docs, tests, and primary provider documentation inspected; complete `010`–`150` map and durable goalplan registered.
 - A: independent explorer reviewed every scoped file and primary contract. Three blocker rounds fixed fuzzy paths, a phantom owner, and a masked metadata-diff check. Final verdict: `PASS` with no remaining blocker.
 - B: all 18 roadmap documents and five chase source-of-truth files finalized; no production source or test implementation changed.
-- C/D: appended after fresh structural verification and FSM closeout.
+- C: fresh checker confirmed 18 numbered docs, 16 goalplan work-phases, 16 criteria, and zero missing prefixes, links, `MODIFY` paths, required sections, WP mappings, or removed-card terms. `git diff --check HEAD^ HEAD` passed and commit `a8c80cb1` was the clean tracked state.
+- D: docs-only cycle closed to `IDLE` with outcome `DONE`. No provider implementation or live credential smoke was claimed. WP1 (`010` Sakana direct) is selected as the next HITL unit but has not entered P.
+
+## Phase-0 pessimist record
+
+- Not improved yet: no runtime provider behavior changed; WP1-WP15 remain unimplemented by design.
+- Dead hypothesis: direct Amazon Bedrock necessarily starts with a bespoke SigV4 adapter. Current AWS docs establish a lower-cost Mantle Responses lane and Bearer API keys, so native Runtime is conditional on a named Mantle gap.
+- Direction would be wrong if Sakana withdraws its direct Responses contract, live probes contradict a phase's static assumptions, or a provider-specific fixture cannot reproduce the planned branch. The owning work-phase must then end `NOOP`, `BLOCKED`, or `NEEDS_HUMAN` instead of forcing the patch.
