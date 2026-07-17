@@ -321,6 +321,43 @@ describe("provider registry parity", () => {
     expect(optionalKeyProviders).toEqual(["litellm", "opencode-free", "mimo-free"]);
   });
 
+  test("NVIDIA NIM is free-tier priced but still requires an API key", () => {
+    const nvidia = PROVIDER_REGISTRY.find(entry => entry.id === "nvidia");
+    const freeTierProviders = PROVIDER_REGISTRY.filter(entry => entry.freeTier).map(entry => entry.id);
+
+    expect(nvidia?.freeTier).toBe(true);
+    expect(nvidia?.authKind).toBe("key");
+    expect(nvidia?.keyOptional).toBeUndefined();
+    expect(freeTierProviders).toEqual(["nvidia"]);
+  });
+
+  test("freeTier propagates through config seed, enrich backfill, and presets without overwriting user config", async () => {
+    const { enrichProviderFromRegistry } = await import("../src/providers/derive");
+    const nvidia = PROVIDER_REGISTRY.find(entry => entry.id === "nvidia")!;
+
+    // Seed propagation.
+    expect(providerConfigSeed(nvidia).freeTier).toBe(true);
+
+    // Enrich backfills only when the user config leaves freeTier unset.
+    const unset: OcxProviderConfig = { adapter: nvidia.adapter, baseUrl: nvidia.baseUrl };
+    enrichProviderFromRegistry("nvidia", unset);
+    expect(unset.freeTier).toBe(true);
+
+    // A user-set explicit false is preserved.
+    const optedOut: OcxProviderConfig = { adapter: nvidia.adapter, baseUrl: nvidia.baseUrl, freeTier: false };
+    enrichProviderFromRegistry("nvidia", optedOut);
+    expect(optedOut.freeTier).toBe(false);
+
+    // Preset propagation.
+    const preset = deriveProviderPresets().find(p => p.id === "nvidia");
+    expect(preset?.freeTier).toBe(true);
+
+    // Providers without the registry flag stay unset.
+    const venice = PROVIDER_REGISTRY.find(entry => entry.id === "venice")!;
+    expect(providerConfigSeed(venice)).not.toHaveProperty("freeTier");
+    expect(deriveProviderPresets().find(p => p.id === "venice")).not.toHaveProperty("freeTier");
+  });
+
   test("base URL override permission is registry-only and limited to local/self-hosted providers", () => {
     const optedIn = PROVIDER_REGISTRY.filter(entry => entry.allowBaseUrlOverride);
 
