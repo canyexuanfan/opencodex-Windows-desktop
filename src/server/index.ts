@@ -310,7 +310,23 @@ export function startServer(port?: number) {
         if (!isAllowedRequestOrigin(req, config)) {
           return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
         }
-        return withCors(await handleResponsesCompact(req, config), req, config);
+        const start = Date.now();
+        const requestId = nextRequestLogId(start);
+        const logCtx: RequestLogContext = { model: "unknown", provider: "unknown" };
+        let response: Response;
+        try {
+          response = await handleResponsesCompact(req, config, logCtx);
+        } catch {
+          response = formatErrorResponse(500, "server_error", "Unexpected compact request failure");
+        }
+        addFinalRequestLog(
+          requestId,
+          start,
+          logCtx,
+          response.status,
+          response.status === 499 ? { closeReason: "client_cancel" } : undefined,
+        );
+        return withCors(response, req, config);
       }
 
       if (

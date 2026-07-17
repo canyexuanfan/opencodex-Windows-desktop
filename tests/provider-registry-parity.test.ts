@@ -69,13 +69,22 @@ describe("provider registry parity", () => {
     expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-glm-5.2"]).toBe(405_504);
     expect(KEY_LOGIN_PROVIDERS.umans.modelInputModalities?.["umans-coder"]).toEqual(["text", "image"]);
     expect(KEY_LOGIN_PROVIDERS.umans.modelInputModalities?.["umans-glm-5.2"]).toEqual(["text"]);
-    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].models).toEqual(["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol-pro", "gpt-5.6-terra-pro", "gpt-5.6-luna-pro"]);
+    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].models).toEqual(["gpt-5.5", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol-pro", "gpt-5.6-terra-pro", "gpt-5.6-luna-pro"]);
     expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelContextWindows?.["gpt-5.6-sol"]).toBe(1_050_000);
     expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelContextWindows?.["gpt-5.6-terra"]).toBe(1_050_000);
     expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelContextWindows?.["gpt-5.6-luna"]).toBe(1_050_000);
     expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelContextWindows?.["gpt-5.6-sol-pro"]).toBe(1_050_000);
     expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelMaxInputTokens?.["gpt-5.6-sol"]).toBe(922_000);
     expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelInputModalities?.["gpt-5.5"]).toEqual(["text", "image"]);
+    expect((KEY_LOGIN_PROVIDERS["openai-apikey"] as unknown as { virtualModels?: unknown }).virtualModels).toBeUndefined();
+    const apiRegistry = PROVIDER_REGISTRY.find(entry => entry.id === "openai-apikey")!;
+    expect(apiRegistry.models).toHaveLength(8);
+    expect(Object.keys(apiRegistry.virtualModels ?? {}).sort()).toEqual([
+      "gpt-5.6-luna-pro", "gpt-5.6-sol-pro", "gpt-5.6-terra-pro",
+    ]);
+    expect(apiRegistry.models).not.toContain("gpt-5.6-pro");
+    const derived = deriveKeyLoginMap()["openai-apikey"];
+    expect(derived.modelMaxInputTokens).not.toBe(apiRegistry.modelMaxInputTokens);
     expect(KEY_LOGIN_PROVIDERS.openrouter.models).toContain("anthropic/claude-sonnet-5");
     expect(KEY_LOGIN_PROVIDERS.openrouter.models).toContain("openai/gpt-5.6-sol");
     expect(KEY_LOGIN_PROVIDERS.openrouter.models).toContain("openai/gpt-5.6-terra");
@@ -93,6 +102,27 @@ describe("provider registry parity", () => {
     expect(KEY_LOGIN_PROVIDERS.deepseek.noVisionModels).toEqual([
       "deepseek-chat", "deepseek-reasoner", "deepseek-v4-pro", "deepseek-v4-flash",
     ]);
+  });
+
+  test("OpenAI API route max-input metadata is trusted and user values only lower it", () => {
+    const makeConfig = (value: number, context = 2_000_000): OcxConfig => ({
+      port: 10100,
+      defaultProvider: "openai-apikey",
+      providers: {
+        "openai-apikey": {
+          adapter: "openai-responses",
+          baseUrl: "https://api.openai.com/v1",
+          apiKey: "sk-test",
+          modelMaxInputTokens: { "gpt-5.6-sol": value },
+          modelContextWindows: { "gpt-5.6-sol": context },
+        },
+      },
+    });
+    expect(routeModel(makeConfig(1_000_000), "openai-apikey/gpt-5.6-sol").provider.modelMaxInputTokens?.["gpt-5.6-sol"]).toBe(922_000);
+    expect(routeModel(makeConfig(300_000), "openai-apikey/gpt-5.6-sol").provider.modelMaxInputTokens?.["gpt-5.6-sol"]).toBe(300_000);
+    expect(routeModel(makeConfig(922_000), "openai-apikey/gpt-5.6-sol").provider.modelContextWindows?.["gpt-5.6-sol"]).toBe(1_050_000);
+    expect(routeModel(makeConfig(922_000, 350_000), "openai-apikey/gpt-5.6-sol").provider.modelContextWindows?.["gpt-5.6-sol"]).toBe(350_000);
+    expect((routeModel(makeConfig(300_000), "openai-apikey/gpt-5.6-sol").provider as unknown as { virtualModels?: unknown }).virtualModels).toBeUndefined();
   });
 
   test("CN provider defaults and context windows match the audited registry refresh", () => {

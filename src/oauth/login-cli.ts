@@ -71,6 +71,7 @@ export function providerConfigFromKeyLoginProvider(def: KeyLoginProvider, key: s
     ...(def.models ? { models: [...def.models] } : {}),
     ...(def.contextWindow !== undefined ? { contextWindow: def.contextWindow } : {}),
     ...(def.modelContextWindows ? { modelContextWindows: { ...def.modelContextWindows } } : {}),
+    ...(def.modelMaxInputTokens ? { modelMaxInputTokens: { ...def.modelMaxInputTokens } } : {}),
     ...(def.modelInputModalities ? { modelInputModalities: cloneRecordOfArrays(def.modelInputModalities) } : {}),
     ...(def.reasoningEfforts ? { reasoningEfforts: [...def.reasoningEfforts] } : {}),
     ...(def.modelReasoningEfforts ? { modelReasoningEfforts: cloneRecordOfArrays(def.modelReasoningEfforts) } : {}),

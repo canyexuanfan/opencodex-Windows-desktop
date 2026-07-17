@@ -415,6 +415,31 @@ describe("server local API auth", () => {
         });
         expect(response.status).toBe(400);
       }
+
+      const acceptedCustom = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "custom-max-input",
+          provider: { adapter: "openai-chat", baseUrl: "https://api.example.test/v1", modelMaxInputTokens: { model: 1000 } },
+        }),
+      });
+      expect(acceptedCustom.status).toBe(200);
+      for (const invalid of [null, [], { model: 0 }, { model: -1 }, { model: 1.5 }, { model: "1000" }]) {
+        const rejected = await fetch(new URL("/api/providers", server.url), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "custom-max-input",
+            provider: { adapter: "openai-chat", baseUrl: "https://api.example.test/v1", modelMaxInputTokens: invalid },
+          }),
+        });
+        expect(rejected.status).toBe(400);
+      }
+      const preserved = await fetch(new URL("/api/config", server.url)).then(response => response.json()) as {
+        providers: Record<string, { modelMaxInputTokens?: Record<string, number> }>;
+      };
+      expect(preserved.providers["custom-max-input"].modelMaxInputTokens).toEqual({ model: 1000 });
       const legacy = await fetch(new URL("/api/providers", server.url), {
         method: "POST",
         headers: { "content-type": "application/json" },

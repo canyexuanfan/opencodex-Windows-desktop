@@ -112,6 +112,23 @@ describe("summarizeUsage", () => {
     expect(sum.summary.outputTokens).toBe(5);
   });
 
+  test("three OpenAI API Pro selections stay separate from their resolved base models", () => {
+    const entries = ["sol", "terra", "luna"].map((family, index) => entry({
+      ts: FIXED_NOW - index * 1000,
+      provider: "openai-apikey",
+      model: `gpt-5.6-${family}-pro`,
+      resolvedModel: `gpt-5.6-${family}`,
+      usageStatus: "reported",
+      usage: { inputTokens: 1, outputTokens: 1 },
+      totalTokens: 2,
+    }));
+    const sum = summarizeUsage(entries, "30d", FIXED_NOW);
+    expect(sum.models.map(row => row.model).sort()).toEqual([
+      "gpt-5.6-luna-pro", "gpt-5.6-sol-pro", "gpt-5.6-terra-pro",
+    ]);
+    expect(sum.models).toHaveLength(3);
+  });
+
   test("estimated usage is counted separately while still contributing tokens", () => {
     const entries: PersistedUsageEntry[] = [
       entry({ ts: FIXED_NOW - 1000, provider: "kiro", usageStatus: "estimated", usage: { inputTokens: 9, outputTokens: 4, estimated: true }, totalTokens: 13 }),

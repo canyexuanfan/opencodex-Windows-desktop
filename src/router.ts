@@ -63,6 +63,18 @@ function mergeRecordFill<T>(
   return { ...(seed ?? {}), ...(user ?? {}) };
 }
 
+function mergePositiveNumberCaps(
+  seed: Record<string, number> | undefined,
+  user: Record<string, number> | undefined,
+): Record<string, number> | undefined {
+  if (!seed && !user) return undefined;
+  const out = { ...(seed ?? {}) };
+  for (const [key, value] of Object.entries(user ?? {})) {
+    out[key] = typeof out[key] === "number" ? Math.min(out[key]!, value) : value;
+  }
+  return out;
+}
+
 function mergeStringArrayRecord(
   seed: Record<string, string[]> | undefined,
   user: Record<string, string[]> | undefined,
@@ -91,9 +103,11 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
   const reasoningEffortMap = mergeRecord(registryEntry.reasoningEffortMap, provider.reasoningEffortMap);
   const modelReasoningEffortMap = mergeNestedRecord(registryEntry.modelReasoningEffortMap, provider.modelReasoningEffortMap);
   const modelReasoningEfforts = mergeStringArrayRecord(registryEntry.modelReasoningEfforts, provider.modelReasoningEfforts);
-  const modelContextWindows = mergeRecordFill(registryEntry.modelContextWindows, provider.modelContextWindows);
+  const modelContextWindows = providerName === OPENAI_API_PROVIDER_ID
+    ? mergePositiveNumberCaps(registryEntry.modelContextWindows, provider.modelContextWindows)
+    : mergeRecordFill(registryEntry.modelContextWindows, provider.modelContextWindows);
   const modelInputModalities = mergeRecordFill(registryEntry.modelInputModalities, provider.modelInputModalities);
-  const modelMaxInputTokens = mergeRecordFill(registryEntry.modelMaxInputTokens, provider.modelMaxInputTokens);
+  const modelMaxInputTokens = mergePositiveNumberCaps(registryEntry.modelMaxInputTokens, provider.modelMaxInputTokens);
   const noVisionModels = mergeStringArray(registryEntry.noVisionModels, provider.noVisionModels);
   const noReasoningModels = mergeStringArray(registryEntry.noReasoningModels, provider.noReasoningModels);
   const noTemperatureModels = mergeStringArray(registryEntry.noTemperatureModels, provider.noTemperatureModels);

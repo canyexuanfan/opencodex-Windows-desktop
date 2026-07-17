@@ -3,9 +3,10 @@
 ## Objective
 
 Add eight OpenAI API choices total: existing `gpt-5.5` plus seven GPT-5.6 ids,
-of which exactly three are API-only virtual Pro choices. Keep virtual identity on
-all OCX/user surfaces, including HTTP JSON/SSE and real WebSocket response payloads;
-translate only API wire requests and retain the base id separately as resolved identity.
+of which exactly three are API-only virtual Pro choices. Keep virtual identity on OCX
+catalog, selection, request-log, and usage surfaces. Upstream HTTP JSON/SSE and real
+WebSocket response payloads retain the base model unchanged so the Windows native-relay
+safety invariant is preserved; record that base separately as resolved identity.
 
 ## Trusted metadata owners
 
@@ -55,6 +56,10 @@ interface OpenAiVirtualModelResolution {
   reasoningMode: "pro";
 }
 class InvalidOpenAiVirtualModelRegistryError extends Error {}
+validateOpenAiVirtualModelDefinition(
+  selectedModelId: string,
+  definition: unknown,
+): OpenAiVirtualModelResolution;
 resolveOpenAiVirtualModel(
   providerName: string,
   selectedModelId: string,
@@ -70,7 +75,9 @@ resolveOpenAiCompactModel(
 ): OpenAiVirtualModelResolution | undefined;
 ```
 
-The two resolvers are pure. `applyOpenAiVirtualModel` intentionally mutates only the
+The two resolvers and `validateOpenAiVirtualModelDefinition` are pure. The validator is
+the deterministic activation seam for synthetic malformed registry definitions and
+never mutates `PROVIDER_REGISTRY`. `applyOpenAiVirtualModel` intentionally mutates only the
 passed parsed request, route, raw request model/reasoning object, and log context, and
 is idempotent on second application. They read trusted registry metadata only, require
 provider `openai-apikey` and exact keys, return `undefined` on ordinary no-match, throw
@@ -101,13 +108,22 @@ turn reapplies Pro mode.
 - Provider hints read `modelMaxInputTokens`.
 - Routed `auto_compact_token_limit` becomes
   `min(floor(effectiveContextWindow*0.9), maxInputTokens)`; a 350K user cap stays 315K.
-- Add `augmentRoutedModelsWithRegistryOpenAiApiRows` after live/static gathering and
-  before visibility/sort. It deterministically rebuilds all seven registry-owned
+- Add exact
+  `augmentRoutedModelsWithRegistryOpenAiApiRows(models: CatalogModel[], config: OcxConfig): CatalogModel[]`
+  after live/static gathering and before visibility/sort. When API tier is enabled it
+  filters that provider to the exact eight-id trusted allowlist, removes unrelated live
+  OpenAI rows, and deterministically rebuilds `gpt-5.5` plus all seven registry-owned
   GPT-5.6 rows (alias, three bases, three Pro virtuals), including rows omitted by a
-  successful live `/models` response. It replaces same-id live rows with trusted rows
-  and warns once per collision.
+  successful live `/models` response. It is a no-op unless configured `openai-apikey`
+  exists and is enabled.
+- Define the collision signature as provider/id, context window, max-input tokens,
+  sorted unique input modalities, sorted unique reasoning efforts, and owned-by. Object
+  key order and array order/duplicates are nonsemantic. Keep a process-wide warning-key
+  set containing provider/id plus normalized live and trusted signatures: the same
+  mismatch across repeated polls warns once, a changed mismatch warns again, and
+  semantic equality never warns. Export a test-only warning reset seam.
 - Treat registry 1,050,000 context and 922,000 max input as trusted baselines for these
-  seven rows. Existing live metadata cannot lower or raise those baselines. Apply user
+  seven GPT-5.6 rows. Existing live metadata cannot lower or raise those baselines. Apply user
   `modelContextWindows` and `modelMaxInputTokens` only afterward as lowering caps;
   values above official limits never raise them. Do not change global cap semantics for
   nontrusted rows.
@@ -124,10 +140,9 @@ placed on the route provider; the resolver receives provider name explicitly.
 Immediately after `routeModel` and namespace stripping, call
 `applyOpenAiVirtualModel` before effort caps/native clamps. Native clamp continues to
 use original namespaced `requestedModel`, so routed Pro never masquerades as native.
-Rewrite client-visible response `model` back to the selected virtual id for buffered
-HTTP JSON, every HTTP SSE response/event object carrying the upstream base model, and
-the same SSE frames re-framed onto a real WebSocket. This rewrite is response-only;
-record the upstream base as `logCtx.resolvedModel` before rewriting.
+Do not rewrite client response payloads. Preserve the existing direct native relay,
+including its Windows Bun#32111 safety path. HTTP JSON/SSE and real WebSocket payloads
+therefore expose the upstream base model; virtual identity remains in catalog/log/usage.
 Change the compact signature to:
 
 ```ts
@@ -145,14 +160,21 @@ original namespaced id, `logCtx.resolvedModel` to the base id, and
 
 ### MODIFY `src/server/index.ts`
 
-For `POST /responses/compact`, allocate request id/start time and a
+For `POST /v1/responses/compact`, allocate request id/start time and a
 `RequestLogContext` before calling `handleResponsesCompact(req, config, logCtx)`.
 Remove the compact handler's private context. `src/server/index.ts` is the sole
 allocator/finalizer and calls direct `addFinalRequestLog` exactly once after the
-buffered handler returns, or once in its catch. Body decode failure, local 4xx,
-upstream 5xx, success, and cancellation each produce exactly one row with the same
-response-status/error classification as `/responses`. Compact usage may remain
-`unreported`, but the persisted entry preserves all three model identities.
+fully buffered handler returns. The handler passes `req.signal` to upstream fetch and
+uses a local incremental reader with exact `COMPACT_RESPONSE_MAX_BYTES = 32 * 1024 *
+1024`; it never calls unbounded `arrayBuffer()`. A `Content-Length` above the cap cancels
+the reader before reading; chunked input stops as soon as accumulated bytes exceed the
+cap, cancels the reader, and returns 502 `compact_response_too_large` with no partial
+relay. It does not return an unconsumed body. Client abort during fetch/body read returns 499, body-read/connect
+failure returns 502, local body/schema/auth failures keep their 4xx, and upstream 4xx/
+5xx status/body are relayed after buffering. Unexpected throws are caught by index,
+which emits one sanitized 500 and one log row. Every success/failure/cancel outcome
+therefore produces exactly one row after its final status is knowable. Compact usage may
+remain `unreported`, but the persisted entry preserves all three model identities.
 
 ### MODIFY `src/server/request-log.ts` and `src/usage/log.ts`
 
@@ -182,10 +204,15 @@ derived management config.
 
 ### MODIFY `tests/codex-catalog.test.ts`
 
-Assert all seven trusted rows survive successful live discovery that omits the alias
-and Pro ids; one conflicting live row is replaced with one warning. Cover live context
+Assert the exact eight-id allowlist survives successful live discovery that omits
+`gpt-5.5`, the alias, and Pro ids while including an unrelated model; unrelated rows
+are removed and one conflicting trusted row is replaced. Cover live context
 below/above 1.05M and user caps below/above official values: 922K uncapped, 315K at a
-350K context cap, never 945K. Assert Direct/Multi metadata isolation.
+350K context cap, never 945K. Assert absent and disabled API tier expose zero API rows,
+an identical live row emits no warning, repeated semantically identical mismatches warn
+once across polls, differently ordered equivalent arrays do not warn, and a changed
+mismatch signature warns again. Reset the process warning set between tests.
+Assert Direct/Multi metadata isolation.
 
 ### NEW `tests/openai-api-virtual-models.test.ts`
 
@@ -193,8 +220,8 @@ Use `startServer`, exact `globalThis.fetch` URL interception that throws on ever
 unknown URL, and `afterEach` restoration. Capture HTTP, HTTP SSE, and a real WebSocket
 upgrade plus `response.create` for all three Pro ids. Assert API URL/key,
 base wire model, mode Pro, preserved effort, selected log model, namespaced requested
-model, base resolved model, client-visible virtual response model, and zero Codex
-account headers. Base models, other
+model, base resolved model, unchanged client-visible upstream base model, and zero
+Codex account headers. Base models, other
 providers, unknown `-pro`, and forged config maps remain unchanged/rejected.
 
 Capture compact requests for standard and all Pro ids. Assert API key + base model and
@@ -205,10 +232,18 @@ usage status `unreported`.
 
 Add exact resolver tests for match/no-match, other provider, blank/namespaced wire id,
 unsupported mode, omitted/null/conflicting reasoning, effort/summary preservation,
-parser-rejected non-object shapes, and second-application idempotence.
+parser-rejected non-object shapes, and second-application idempotence. Malformed
+definitions use `validateOpenAiVirtualModelDefinition` with synthetic values and never
+mutate the global registry.
+
+Compact tests include abort during fetch, abort during body read, body-read failure,
+local 4xx, upstream 4xx/5xx, and success; each yields exactly one `/api/logs` and JSONL
+row with the final status. Add oversized `Content-Length` and chunked-overflow cases:
+both cancel the reader, return one 502 `compact_response_too_large`, relay no partial
+bytes, and persist exactly one final log row.
 
 ### MODIFY `tests/config.test.ts`, `tests/server-auth.test.ts`,
-`tests/provider-registry-parity.test.ts`, and key-login tests
+`tests/provider-registry-parity.test.ts`, and `tests/umans-provider.test.ts`
 
 Disk and management boundaries accept only plain positive-integer max-input maps and
 preserve old config on every rejection. Key-provider DTO and CLI config contain an
@@ -225,11 +260,11 @@ and routed provider; summaries group by virtual id.
 ## Verification and exit gate
 
 ```sh
-bun test tests/config.test.ts tests/server-auth.test.ts tests/provider-registry-parity.test.ts tests/codex-catalog.test.ts tests/openai-api-virtual-models.test.ts tests/oauth-login-summary.test.ts tests/request-log.test.ts tests/usage-log.test.ts tests/usage-summary.test.ts
+bun test tests/config.test.ts tests/server-auth.test.ts tests/provider-registry-parity.test.ts tests/umans-provider.test.ts tests/codex-catalog.test.ts tests/openai-api-virtual-models.test.ts tests/request-log.test.ts tests/usage-log.test.ts tests/usage-summary.test.ts
 bun x tsc --noEmit
 ```
 
 Accept only when every advertised virtual id has captured HTTP/HTTP-SSE/real-WS/compact
-wire and client-response identity proof; each compact outcome logs exactly once; every
+wire and client-response base identity proof; each compact outcome logs exactly once; every
 fetch URL is exact; and no provider/config/body outside the exact API mappings is
 transformed.

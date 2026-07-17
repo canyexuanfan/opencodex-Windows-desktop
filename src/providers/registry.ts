@@ -68,6 +68,7 @@ export type ProviderConfigSeed = Pick<
   OcxProviderConfig,
   "adapter" | "baseUrl" | "authMode" | "keyOptional" | "modelSuffixBracketStrip" | "defaultModel" | "models"
   | "liveModels" | "contextWindow" | "modelContextWindows" | "modelInputModalities"
+  | "modelMaxInputTokens"
   | "reasoningEfforts" | "modelReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap"
   | "noVisionModels" | "noReasoningModels" | "noTemperatureModels" | "noTopPModels" | "noPenaltyModels"
   | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "thinkingToggleModels" | "thinkingBudgetModels" | "escapeBuiltinToolNames"
@@ -95,7 +96,7 @@ const MINIMAX_MODELS = [
 const MINIMAX_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEntries(
   MINIMAX_MODELS.map(id => [id, id === "MiniMax-M3" ? 1_000_000 : 204_800]),
 );
-const OPENAI_GPT56_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+const OPENAI_GPT56_MODELS = ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 const OPENAI_GPT56_PRO_MODELS = ["gpt-5.6-sol-pro", "gpt-5.6-terra-pro", "gpt-5.6-luna-pro"];
 const OPENAI_API_GPT56_CONTEXT_WINDOW = 1_050_000;
 const OPENAI_CODEX_GPT56_CONTEXT_WINDOW = 372_000;

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { augmentRoutedModelsWithJawcodeMetadata, buildCatalogEntries, filterSupportedNativeSlugs, gatherRoutedModels, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, projectNativeModelsForOpenAiMulti } from "../src/codex/catalog";
+import { augmentRoutedModelsWithJawcodeMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, filterSupportedNativeSlugs, gatherRoutedModels, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, projectNativeModelsForOpenAiMulti, resetOpenAiApiCatalogWarningStateForTests } from "../src/codex/catalog";
 import {
   CURSOR_STATIC_MODELS,
   filterCursorConfiguredModelsByLiveDiscovery,
@@ -13,13 +13,30 @@ import {
 } from "../src/adapters/cursor/discovery";
 import { getJawcodeModelMetadata, resolveJawcodeProvider } from "../src/generated/jawcode-model-metadata";
 import { clearModelCache, getStaleCached, setCached } from "../src/codex/model-cache";
+import type { OcxConfig } from "../src/types";
 
 const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
   clearModelCache();
+  resetOpenAiApiCatalogWarningStateForTests();
 });
+
+function openAiApiCatalogConfig(overrides: Record<string, unknown> = {}): OcxConfig {
+  return {
+    port: 10100,
+    defaultProvider: "openai-apikey",
+    providers: {
+      "openai-apikey": {
+        adapter: "openai-responses",
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: "sk-test",
+        ...overrides,
+      },
+    },
+  };
+}
 
 function nativeTemplate(): Record<string, unknown> {
   return {
@@ -1285,6 +1302,124 @@ describe("Codex catalog routed normalization", () => {
       contextCap: 350_000,
       contextCapped: true,
     });
+  });
+});
+
+describe("OpenAI API trusted catalog augmentation", () => {
+  const exactIds = [
+    "gpt-5.5", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+    "gpt-5.6-sol-pro", "gpt-5.6-terra-pro", "gpt-5.6-luna-pro",
+  ];
+
+  test("rebuilds the exact eight rows after partial/conflicting successful discovery", () => {
+    const rows = augmentRoutedModelsWithRegistryOpenAiApiRows([
+      { provider: "openai-apikey", id: "gpt-5.6-sol", contextWindow: 1, maxInputTokens: 1, inputModalities: ["text"], reasoningEfforts: ["low"], owned_by: "live" },
+      { provider: "openai-apikey", id: "unrelated-live-model", contextWindow: 999 },
+      { provider: "openai", id: "gpt-5.6-sol", contextWindow: 372_000 },
+      { provider: "openai-multi", id: "gpt-5.6-sol", contextWindow: 372_000 },
+    ], openAiApiCatalogConfig());
+
+    expect(rows.filter(row => row.provider === "openai-apikey").map(row => row.id)).toEqual(exactIds);
+    expect(rows.find(row => row.provider === "openai-apikey" && row.id === "gpt-5.6-sol")).toMatchObject({
+      contextWindow: 1_050_000,
+      maxInputTokens: 922_000,
+      inputModalities: ["text", "image"],
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    });
+    expect(rows.find(row => row.provider === "openai" && row.id === "gpt-5.6-sol")?.contextWindow).toBe(372_000);
+    expect(rows.find(row => row.provider === "openai-multi" && row.id === "gpt-5.6-sol")?.contextWindow).toBe(372_000);
+  });
+
+  test("actual live discovery path reconnects omitted rows and removes unrelated models", async () => {
+    const calls: string[] = [];
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    globalThis.fetch = async input => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      calls.push(url);
+      if (url !== "https://api.openai.com/v1/models") throw new Error(`unexpected URL: ${url}`);
+      return Response.json({
+        data: [
+          { id: "gpt-5.6-sol", owned_by: "live-openai", context_length: 123 },
+          { id: "unrelated-live-model", owned_by: "live-openai", context_length: 999 },
+        ],
+      });
+    };
+    try {
+      const rows = await gatherRoutedModels(openAiApiCatalogConfig({ liveModels: true }));
+      const apiRows = rows.filter(row => row.provider === "openai-apikey");
+      expect(calls).toEqual(["https://api.openai.com/v1/models"]);
+      expect(apiRows.map(row => row.id)).toEqual([...exactIds].sort());
+      expect(apiRows.some(row => row.id === "unrelated-live-model")).toBe(false);
+      for (const row of apiRows.filter(row => row.id.startsWith("gpt-5.6"))) {
+        expect(row).toMatchObject({
+          contextWindow: 1_050_000,
+          maxInputTokens: 922_000,
+          inputModalities: ["text", "image"],
+          reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+        });
+      }
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("actual gathering exposes no API rows when the API tier is absent or disabled", async () => {
+    globalThis.fetch = async input => { throw new Error(`unexpected fetch: ${String(input)}`); };
+    const absent: OcxConfig = {
+      port: 10100,
+      defaultProvider: "custom",
+      providers: { custom: { adapter: "openai-chat", baseUrl: "https://example.test/v1", liveModels: false, models: ["model"] } },
+    };
+    const disabled = openAiApiCatalogConfig({ disabled: true });
+    expect((await gatherRoutedModels(absent)).some(row => row.provider === "openai-apikey")).toBe(false);
+    expect((await gatherRoutedModels(disabled)).some(row => row.provider === "openai-apikey")).toBe(false);
+  });
+
+  test("user values only lower trusted context and max-input baselines", () => {
+    const lowered = augmentRoutedModelsWithRegistryOpenAiApiRows([], openAiApiCatalogConfig({
+      modelContextWindows: { "gpt-5.6-sol": 350_000, "gpt-5.6-terra": 2_000_000 },
+      modelMaxInputTokens: { "gpt-5.6-sol": 300_000, "gpt-5.6-terra": 945_000 },
+    }));
+    expect(lowered.find(row => row.id === "gpt-5.6-sol")).toMatchObject({ contextWindow: 350_000, maxInputTokens: 300_000 });
+    expect(lowered.find(row => row.id === "gpt-5.6-terra")).toMatchObject({ contextWindow: 1_050_000, maxInputTokens: 922_000 });
+  });
+
+  test("routed auto-compaction is bounded by max-input after effective context caps", () => {
+    const entries = buildCatalogEntries(nativeTemplate(), [], [
+      { provider: "openai-apikey", id: "gpt-5.6-sol", contextWindow: 1_050_000, maxInputTokens: 922_000 },
+      { provider: "openai-apikey", id: "gpt-5.6-terra", contextWindow: 350_000, maxInputTokens: 922_000 },
+    ]);
+    expect(entries.find(row => row.slug === "openai-apikey/gpt-5.6-sol")?.auto_compact_token_limit).toBe(922_000);
+    expect(entries.find(row => row.slug === "openai-apikey/gpt-5.6-terra")?.auto_compact_token_limit).toBe(315_000);
+  });
+
+  test("is a no-op when API tier is absent or disabled", () => {
+    const source = [{ provider: "other", id: "model" }];
+    const absent: OcxConfig = { port: 10100, defaultProvider: "other", providers: { other: { adapter: "openai-chat", baseUrl: "https://example.test/v1" } } };
+    expect(augmentRoutedModelsWithRegistryOpenAiApiRows(source, absent)).toBe(source);
+    expect(augmentRoutedModelsWithRegistryOpenAiApiRows(source, openAiApiCatalogConfig({ disabled: true }))).toBe(source);
+  });
+
+  test("dedupes semantic collision warnings process-wide and warns again on changed mismatch", () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const equalDifferentOrder = {
+        provider: "openai-apikey", id: "gpt-5.6-sol", contextWindow: 1_050_000, maxInputTokens: 922_000,
+        inputModalities: ["image", "text", "image"], reasoningEfforts: ["max", "low", "xhigh", "medium", "high", "low"], owned_by: "openai-apikey",
+      };
+      augmentRoutedModelsWithRegistryOpenAiApiRows([equalDifferentOrder], openAiApiCatalogConfig());
+      expect(warn).not.toHaveBeenCalled();
+
+      const mismatch = { ...equalDifferentOrder, contextWindow: 1 };
+      augmentRoutedModelsWithRegistryOpenAiApiRows([mismatch], openAiApiCatalogConfig());
+      augmentRoutedModelsWithRegistryOpenAiApiRows([{ ...mismatch, inputModalities: ["text", "image"] }], openAiApiCatalogConfig());
+      expect(warn).toHaveBeenCalledTimes(1);
+      augmentRoutedModelsWithRegistryOpenAiApiRows([{ ...mismatch, contextWindow: 2 }], openAiApiCatalogConfig());
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

@@ -27,6 +27,9 @@ export interface DerivedKeyLoginProvider {
   thinkingToggleModels?: string[];
   thinkingBudgetModels?: string[];
   escapeBuiltinToolNames?: boolean;
+  googleMode?: "ai-studio" | "vertex" | "cloud-code-assist";
+  project?: string;
+  location?: string;
 }
 
 export interface DerivedInitProvider {

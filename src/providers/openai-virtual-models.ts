@@ -1,79 +1,82 @@
 import { PROVIDER_REGISTRY } from "./registry";
-import type { ProviderRegistryEntry } from "./registry";
 import { OPENAI_API_PROVIDER_ID } from "./openai-tiers";
 import type { OcxParsedRequest } from "../types";
 import type { RouteResult } from "../router";
 import type { RequestLogContext } from "../server/request-log";
 
-function getApiRegistry(): ProviderRegistryEntry | undefined {
-  return PROVIDER_REGISTRY.find(e => e.id === OPENAI_API_PROVIDER_ID);
-}
-
-export interface VirtualModelResolution {
+export interface OpenAiVirtualModelResolution {
+  selectedModelId: string;
   wireModelId: string;
   reasoningMode: "pro";
-  selectedModelId: string;
 }
 
-/**
- * Resolve a virtual model id to its wire model and reasoning mode.
- * Returns undefined when the model is not a virtual Pro alias on the API provider.
- */
+export class InvalidOpenAiVirtualModelRegistryError extends Error {
+  constructor(selectedModelId: string) {
+    super(`Invalid OpenAI virtual model registry definition: ${selectedModelId}`);
+    this.name = "InvalidOpenAiVirtualModelRegistryError";
+  }
+}
+
+export function validateOpenAiVirtualModelDefinition(
+  selectedModelId: string,
+  definition: unknown,
+): OpenAiVirtualModelResolution {
+  if (!definition || typeof definition !== "object" || Array.isArray(definition)) {
+    throw new InvalidOpenAiVirtualModelRegistryError(selectedModelId);
+  }
+  const raw = definition as { wireModelId?: unknown; reasoningMode?: unknown };
+  if (
+    typeof raw.wireModelId !== "string"
+    || raw.wireModelId.trim() !== raw.wireModelId
+    || raw.wireModelId.length === 0
+    || raw.wireModelId.includes("/")
+    || raw.wireModelId === selectedModelId
+    || raw.reasoningMode !== "pro"
+  ) {
+    throw new InvalidOpenAiVirtualModelRegistryError(selectedModelId);
+  }
+  return { selectedModelId, wireModelId: raw.wireModelId, reasoningMode: "pro" };
+}
+
 export function resolveOpenAiVirtualModel(
   providerName: string,
   selectedModelId: string,
-): VirtualModelResolution | undefined {
+): OpenAiVirtualModelResolution | undefined {
   if (providerName !== OPENAI_API_PROVIDER_ID) return undefined;
-  const entry = getApiRegistry();
-  if (!entry?.virtualModels) return undefined;
-  const mapping = entry.virtualModels[selectedModelId];
-  if (!mapping) return undefined;
-  if (!mapping.wireModelId || mapping.wireModelId === selectedModelId) return undefined;
-  return { wireModelId: mapping.wireModelId, reasoningMode: mapping.reasoningMode, selectedModelId };
+  const entry = PROVIDER_REGISTRY.find(row => row.id === OPENAI_API_PROVIDER_ID);
+  if (!entry?.virtualModels || !Object.hasOwn(entry.virtualModels, selectedModelId)) return undefined;
+  const definition = entry.virtualModels[selectedModelId];
+  return validateOpenAiVirtualModelDefinition(selectedModelId, definition);
 }
 
-/**
- * Apply virtual model rewriting to a Responses request.
- * Rewrites model id to the base wire model and merges reasoning.mode="pro".
- * Preserves effort and other reasoning fields.
- */
 export function applyOpenAiVirtualModel(
   parsed: OcxParsedRequest,
   route: RouteResult,
   logCtx: RequestLogContext,
-): void {
-  const resolution = resolveOpenAiVirtualModel(route.providerName, route.modelId);
-  if (!resolution) return;
+): OpenAiVirtualModelResolution | undefined {
+  const selectedModelId = logCtx.model && logCtx.model !== route.modelId ? logCtx.model : route.modelId;
+  const resolution = resolveOpenAiVirtualModel(route.providerName, selectedModelId);
+  if (!resolution) return undefined;
 
-  // Record identities: model = selected virtual id, requestedModel already set by caller
   logCtx.model = resolution.selectedModelId;
   logCtx.resolvedModel = resolution.wireModelId;
-
-  // Rewrite model id to base
   route.modelId = resolution.wireModelId;
   parsed.modelId = resolution.wireModelId;
-  if (parsed._rawBody && typeof parsed._rawBody === "object") {
-    (parsed._rawBody as { model?: string }).model = resolution.wireModelId;
-  }
 
-  // Merge reasoning.mode = "pro", preserving existing effort and other fields
-  if (parsed._rawBody && typeof parsed._rawBody === "object") {
+  if (parsed._rawBody && typeof parsed._rawBody === "object" && !Array.isArray(parsed._rawBody)) {
     const raw = parsed._rawBody as Record<string, unknown>;
-    const existing = (raw.reasoning ?? {}) as Record<string, unknown>;
-    raw.reasoning = { ...existing, mode: resolution.reasoningMode };
+    raw.model = resolution.wireModelId;
+    const existing = raw.reasoning;
+    raw.reasoning = existing && typeof existing === "object" && !Array.isArray(existing)
+      ? { ...(existing as Record<string, unknown>), mode: resolution.reasoningMode }
+      : { mode: resolution.reasoningMode };
   }
+  return resolution;
 }
 
-/**
- * Resolve a virtual model for compact requests.
- * Returns the base wire model id, or the original if not virtual.
- * Compact has no reasoning field — mode is not injected.
- */
 export function resolveOpenAiCompactModel(
   providerName: string,
   selectedModelId: string,
-): { wireModelId: string; isVirtual: boolean } {
-  const resolution = resolveOpenAiVirtualModel(providerName, selectedModelId);
-  if (!resolution) return { wireModelId: selectedModelId, isVirtual: false };
-  return { wireModelId: resolution.wireModelId, isVirtual: true };
+): OpenAiVirtualModelResolution | undefined {
+  return resolveOpenAiVirtualModel(providerName, selectedModelId);
 }

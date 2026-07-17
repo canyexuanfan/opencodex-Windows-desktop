@@ -11,11 +11,12 @@ import { modelInList } from "../types";
 import { CODEX_REASONING_LEVELS, configuredReasoningEfforts, modelRecordValue, sanitizeCodexReasoningEfforts } from "../reasoning-effort";
 import { getJawcodeModelMetadata, getJawcodeModelMetadataCaseInsensitive, listJawcodeModelMetadata, resolveJawcodeProvider } from "../generated/jawcode-model-metadata";
 import { enrichProviderFromRegistry, shouldCaseFoldMetadataModelId } from "../providers/derive";
+import { getProviderRegistryEntry } from "../providers/registry";
 import { applyProviderContextCap, providerContextCap } from "../providers/context-cap";
 import { CODEX_GPT5_IDENTITY_LINE } from "../adapters/identity";
 import { filterCursorConfiguredModelsByLiveDiscovery } from "../adapters/cursor/discovery";
 import { fetchCursorUsableModels } from "../adapters/cursor/live-models";
-import { isCanonicalOpenAiForwardProvider, OPENAI_MULTI_PROVIDER_ID } from "../providers/openai-tiers";
+import { isCanonicalOpenAiForwardProvider, OPENAI_API_PROVIDER_ID, OPENAI_MULTI_PROVIDER_ID } from "../providers/openai-tiers";
 import upstreamModelsSnapshot from "./data/upstream-models.json";
 
 const BUNDLED_CATALOG_CACHE_MS = 60_000;
@@ -772,7 +773,10 @@ function applyCatalogModelMetadata(entry: RawEntry, model?: CatalogModel): void 
   if (typeof model.contextWindow === "number" && model.contextWindow > 0) {
     entry.context_window = model.contextWindow;
     entry.max_context_window = model.contextWindow;
-    entry.auto_compact_token_limit = Math.floor(model.contextWindow * 0.9);
+    entry.auto_compact_token_limit = Math.min(
+      Math.floor(model.contextWindow * 0.9),
+      model.maxInputTokens ?? Number.POSITIVE_INFINITY,
+    );
   }
   if (Array.isArray(model.inputModalities) && model.inputModalities.length > 0) {
     entry.input_modalities = model.inputModalities;
@@ -1077,9 +1081,15 @@ function configuredInputModalities(prov: OcxProviderConfig, id: string): string[
   return Array.isArray(modalities) && modalities.length > 0 ? [...modalities] : undefined;
 }
 
+function configuredMaxInputTokens(prov: OcxProviderConfig, id: string): number | undefined {
+  const configured = modelRecordValue(prov.modelMaxInputTokens, id);
+  return typeof configured === "number" && configured > 0 ? configured : undefined;
+}
+
 export function applyProviderConfigHints(name: string, prov: OcxProviderConfig, model: CatalogModel, providerCap?: number): CatalogModel {
   void name;
   const configuredCap = configuredContextWindow(prov, model.id);
+  const configuredMaxInput = configuredMaxInputTokens(prov, model.id);
   let inputModalities = configuredInputModalities(prov, model.id);
   // Vision-sidecar coverage: `noVisionModels` marks models whose images the PROXY describes
   // (src/vision/index.ts). The catalog must still advertise image input for them — the Codex app
@@ -1101,6 +1111,13 @@ export function applyProviderConfigHints(name: string, prov: OcxProviderConfig, 
       : {}),
     ...(inputModalities ? { inputModalities } : {}),
     ...(reasoningEfforts !== undefined ? { reasoningEfforts } : {}),
+    ...(configuredMaxInput !== undefined
+      ? {
+        maxInputTokens: typeof model.maxInputTokens === "number" && model.maxInputTokens > 0
+          ? Math.min(model.maxInputTokens, configuredMaxInput)
+          : configuredMaxInput,
+      }
+      : {}),
     // Default-on for openai-chat providers (explicit false opts out); other adapters
     // advertise only on explicit opt-in.
     ...(prov.parallelToolCalls === true || (prov.adapter === "openai-chat" && prov.parallelToolCalls !== false)
@@ -1270,11 +1287,11 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
         droppedConfiguredIds.push(m.id);
       }
     }
-    if (live.length === 0) {
+    if (live.length === 0 && name !== OPENAI_API_PROVIDER_ID) {
       console.warn(
         `[opencodex] Provider model discovery for "${name}" returned an authoritative empty catalog; ${droppedConfiguredIds.length > 0 ? `dropping configured model ids: ${droppedConfiguredIds.join(", ")}` : "no models will be exposed"}.`,
       );
-    } else if (droppedConfiguredIds.length > 0) {
+    } else if (droppedConfiguredIds.length > 0 && name !== OPENAI_API_PROVIDER_ID) {
       warnDroppedConfiguredIdsOnce(name, droppedConfiguredIds);
     }
     setCached(name, live);
@@ -1349,13 +1366,86 @@ export async function gatherRoutedModels(config: OcxConfig): Promise<CatalogMode
   const multiModels = multiProvider
     ? projectNativeModelsForOpenAiMulti(config, multiProvider[1])
     : [];
-  const all = augmentRoutedModelsWithJawcodeMetadata([...lists.flat(), ...multiModels], activeProviders.map(([name]) => name), config.providers, config)
+  const apiAugmented = augmentRoutedModelsWithRegistryOpenAiApiRows([...lists.flat(), ...multiModels], config);
+  const all = augmentRoutedModelsWithJawcodeMetadata(apiAugmented, activeProviders.map(([name]) => name), config.providers, config)
     // Drop image/video generation models (e.g. Grok image/video) by default. Cursor's static catalog
     // intentionally mirrors Cursor's public model table, including Gemini image preview, so the
     // exposure decision goes through shouldExposeRoutedModel (single choke point).
     .filter(shouldExposeRoutedModel);
   all.sort((a, b) => (a.provider === b.provider ? a.id.localeCompare(b.id) : a.provider.localeCompare(b.provider)));
   return all;
+}
+
+const openAiApiCollisionWarnings = new Set<string>();
+
+function normalizedOpenAiApiSignature(model: CatalogModel): string {
+  const normalized = {
+    provider: model.provider,
+    id: model.id,
+    contextWindow: model.contextWindow ?? null,
+    maxInputTokens: model.maxInputTokens ?? null,
+    inputModalities: [...new Set(model.inputModalities ?? [])].sort(),
+    reasoningEfforts: [...new Set(model.reasoningEfforts ?? [])].sort(),
+    ownedBy: model.owned_by ?? null,
+  };
+  return JSON.stringify(normalized);
+}
+
+export function resetOpenAiApiCatalogWarningStateForTests(): void {
+  openAiApiCollisionWarnings.clear();
+}
+
+export function augmentRoutedModelsWithRegistryOpenAiApiRows(
+  models: CatalogModel[],
+  config: OcxConfig,
+): CatalogModel[] {
+  const configured = config.providers[OPENAI_API_PROVIDER_ID];
+  if (!configured || configured.disabled === true) return models;
+  const entry = getProviderRegistryEntry(OPENAI_API_PROVIDER_ID);
+  if (!entry?.models) return models;
+
+  const existingById = new Map(
+    models.filter(model => model.provider === OPENAI_API_PROVIDER_ID).map(model => [model.id, model]),
+  );
+  const trustedRows = entry.models.map((id): CatalogModel => {
+    const officialContext = entry.modelContextWindows?.[id];
+    const officialMaxInput = entry.modelMaxInputTokens?.[id];
+    const userContext = configured.modelContextWindows?.[id] ?? configured.contextWindow;
+    const userMaxInput = configured.modelMaxInputTokens?.[id];
+    const providerCap = providerContextCap(config, OPENAI_API_PROVIDER_ID);
+    const contextWindow = typeof officialContext === "number"
+      ? Math.min(officialContext, userContext ?? officialContext, providerCap ?? officialContext)
+      : undefined;
+    const maxInputTokens = typeof officialMaxInput === "number"
+      ? Math.min(officialMaxInput, userMaxInput ?? officialMaxInput)
+      : undefined;
+    return {
+      provider: OPENAI_API_PROVIDER_ID,
+      id,
+      owned_by: OPENAI_API_PROVIDER_ID,
+      ...(contextWindow ? { contextWindow } : {}),
+      ...(maxInputTokens ? { maxInputTokens } : {}),
+      ...(entry.modelInputModalities?.[id] ? { inputModalities: [...entry.modelInputModalities[id]!] } : {}),
+      ...(entry.modelReasoningEfforts?.[id] ? { reasoningEfforts: [...entry.modelReasoningEfforts[id]!] } : {}),
+    };
+  });
+
+  for (const trusted of trustedRows) {
+    const live = existingById.get(trusted.id);
+    if (!live) continue;
+    const liveSignature = normalizedOpenAiApiSignature(live);
+    const trustedSignature = normalizedOpenAiApiSignature(trusted);
+    if (liveSignature === trustedSignature) continue;
+    const warningKey = `${trusted.provider}/${trusted.id}\n${liveSignature}\n${trustedSignature}`;
+    if (openAiApiCollisionWarnings.has(warningKey)) continue;
+    openAiApiCollisionWarnings.add(warningKey);
+    console.warn(`[opencodex] replacing conflicting live OpenAI API metadata for ${trusted.provider}/${trusted.id} with trusted registry metadata`);
+  }
+
+  return [
+    ...models.filter(model => model.provider !== OPENAI_API_PROVIDER_ID),
+    ...trustedRows,
+  ];
 }
 
 export function augmentRoutedModelsWithJawcodeMetadata(

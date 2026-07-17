@@ -43,7 +43,7 @@ import {
 import { fetchWithResetRetry, fetchWithTransientRetry } from "../lib/upstream-retry";
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "./auth-cors";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../providers/openai-sidecar";
-import { applyOpenAiVirtualModel } from "../providers/openai-virtual-models";
+import { applyOpenAiVirtualModel, resolveOpenAiCompactModel } from "../providers/openai-virtual-models";
 import { isUsageDebugEnabled } from "../usage/debug";
 import { readJsonRequestBody, DecompressedBodyTooLargeError, UnsupportedContentEncodingError } from "./request-decompress";
 import { resolveAdapter, resolveWireProtocolOverride } from "./adapter-resolve";
@@ -1193,7 +1193,62 @@ export function linkAbortSignal(upstream: AbortController, signal?: AbortSignal)
  * REPLACEMENT history (compact_remote.rs). Passthrough forwards to the real ChatGPT backend;
  * routed models run the same summarizer used for v2 and convert the summary to v1 history items.
  */
-export async function handleResponsesCompact(req: Request, config: OcxConfig): Promise<Response> {
+export const COMPACT_RESPONSE_MAX_BYTES = 32 * 1024 * 1024;
+
+function compactResponseTooLargeError(): Response {
+  return new Response(JSON.stringify({
+    error: {
+      message: "Compact response exceeded 32 MiB",
+      type: "compact_response_too_large",
+      code: "compact_response_too_large",
+    },
+  }), { status: 502, headers: { "Content-Type": "application/json" } });
+}
+
+async function bufferCompactResponse(upstream: Response, signal: AbortSignal): Promise<Response> {
+  const reader = upstream.body?.getReader();
+  const contentType = upstream.headers.get("content-type") ?? "application/json";
+  if (!reader) return new Response(null, { status: upstream.status, headers: { "Content-Type": contentType } });
+  const declaredLength = Number(upstream.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > COMPACT_RESPONSE_MAX_BYTES) {
+    await reader.cancel("compact_response_too_large").catch(() => undefined);
+    return compactResponseTooLargeError();
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      if (signal.aborted) {
+        await reader.cancel(signal.reason).catch(() => undefined);
+        return formatErrorResponse(499, "client_cancelled", "Client cancelled compact request");
+      }
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > COMPACT_RESPONSE_MAX_BYTES) {
+        await reader.cancel("compact_response_too_large").catch(() => undefined);
+        return compactResponseTooLargeError();
+      }
+      chunks.push(value);
+    }
+  } catch {
+    if (signal.aborted) return formatErrorResponse(499, "client_cancelled", "Client cancelled compact request");
+    return formatErrorResponse(502, "upstream_error", "Failed to read compact response");
+  }
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new Response(body, { status: upstream.status, headers: { "Content-Type": contentType } });
+}
+
+export async function handleResponsesCompact(
+  req: Request,
+  config: OcxConfig,
+  logCtx: RequestLogContext,
+): Promise<Response> {
   let body: unknown;
   try {
     body = await readJsonRequestBody(req);
@@ -1213,6 +1268,19 @@ export async function handleResponsesCompact(req: Request, config: OcxConfig): P
     route = routeModel(config, raw.model);
   } catch (err) {
     return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
+  }
+  const selectedModelId = route.modelId;
+  logCtx.requestedModel = raw.model;
+  logCtx.model = selectedModelId;
+  logCtx.provider = route.providerName;
+  logCtx.providerAdapter = route.provider.adapter;
+  const virtual = resolveOpenAiCompactModel(route.providerName, selectedModelId);
+  if (virtual) {
+    route.modelId = virtual.wireModelId;
+    logCtx.model = virtual.selectedModelId;
+    logCtx.resolvedModel = virtual.wireModelId;
+  } else {
+    logCtx.resolvedModel = route.modelId;
   }
 
   if (route.codexAccountMode === "direct") {
@@ -1262,15 +1330,20 @@ export async function handleResponsesCompact(req: Request, config: OcxConfig): P
     }
     const base = (compactProvider.baseUrl ?? "").replace(/\/$/, "");
     if (compactProvider.apiKey) headers.set("authorization", `Bearer ${resolveEnvValue(compactProvider.apiKey)}`);
-    const upstream = await fetch(`${base}/responses/compact`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ ...raw, model: route.modelId }),
-    });
-    return new Response(upstream.body, {
-      status: upstream.status,
-      headers: { "Content-Type": upstream.headers.get("content-type") ?? "application/json" },
-    });
+    const { reasoning: _reasoning, ...compactBody } = raw as typeof raw & { reasoning?: unknown };
+    let upstream: Response;
+    try {
+      upstream = await fetch(`${base}/responses/compact`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ ...compactBody, model: route.modelId }),
+        signal: req.signal,
+      });
+    } catch {
+      if (req.signal.aborted) return formatErrorResponse(499, "client_cancelled", "Client cancelled compact request");
+      return formatErrorResponse(502, "upstream_error", "Failed to connect to compact upstream");
+    }
+    return bufferCompactResponse(upstream, req.signal);
   }
 
   // ROUTED model: run the v2 synthetic-compaction turn internally (appends COMPACT_PROMPT, no
@@ -1291,7 +1364,6 @@ export async function handleResponsesCompact(req: Request, config: OcxConfig): P
     headers: internalHeaders,
     body: JSON.stringify(internalBody),
   });
-  const logCtx: RequestLogContext = { model: route.modelId, provider: route.providerName };
   const response = await handleResponses(internalReq, config, logCtx, { abortSignal: req.signal });
   if (!response.ok) return response;
   let json: { output?: unknown[] };

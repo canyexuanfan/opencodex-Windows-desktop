@@ -339,6 +339,20 @@ export function providerHeadersConfigError(headers: unknown): string | null {
   return null;
 }
 
+export function positiveIntegerRecordConfigError(value: unknown, field: string): string | null {
+  if (value === undefined) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return `${field} must be a plain object`;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return `${field} must be a plain object with own properties`;
+  for (const [key, entry] of Object.entries(value)) {
+    if (!key.trim()) return `${field} keys must be nonblank model ids`;
+    if (typeof entry !== "number" || !Number.isFinite(entry) || !Number.isInteger(entry) || entry <= 0) {
+      return `${field}.${key} must be a positive finite integer`;
+    }
+  }
+  return null;
+}
+
 const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
   providers: z.record(z.string(), providerConfigSchema),
@@ -356,6 +370,13 @@ const configSchema = z.object({
       });
     }
     const provider = config.providers[name];
+    if (Object.hasOwn(provider, "virtualModels")) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers", name, "virtualModels"],
+        message: "virtualModels is registry-only and must not be persisted",
+      });
+    }
     const baseUrlError = providerBaseUrlConfigError(provider.baseUrl);
     if (baseUrlError) {
       ctx.addIssue({
@@ -379,6 +400,17 @@ const configSchema = z.object({
         code: "custom",
         path: ["providers", name, "headers"],
         message: headersError,
+      });
+    }
+    const maxInputError = positiveIntegerRecordConfigError(
+      (provider as { modelMaxInputTokens?: unknown }).modelMaxInputTokens,
+      "modelMaxInputTokens",
+    );
+    if (maxInputError) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers", name, "modelMaxInputTokens"],
+        message: maxInputError,
       });
     }
   }

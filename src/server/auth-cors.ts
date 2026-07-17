@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { formatErrorResponse } from "../bridge";
 import {
   codexAutoStartEnabled,
+  positiveIntegerRecordConfigError,
   providerBaseUrlConfigError,
   providerHeadersConfigError,
 } from "../config";
@@ -216,6 +217,8 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
   if (destinationError) return `provider ${name} ${destinationError}`;
   const headersError = providerHeadersConfigError(typed.headers);
   if (headersError) return `provider ${name} ${headersError}`;
+  const maxInputError = positiveIntegerRecordConfigError(raw.modelMaxInputTokens, "modelMaxInputTokens");
+  if (maxInputError) return `provider ${name} ${maxInputError}`;
   if (typed.authMode === "forward") {
     const normalizedName = name.trim().toLowerCase();
     const base = typed.baseUrl.replace(/\/+$/, "");
@@ -270,6 +273,7 @@ export function safeConfigDTO(config: OcxConfig): unknown {
       "models",
       "contextWindow",
       "modelContextWindows",
+      "modelMaxInputTokens",
       "reasoningEfforts",
       "modelReasoningEfforts",
       "noVisionModels",
