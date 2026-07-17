@@ -305,7 +305,7 @@ Fresh gates:
 
 - `bun test tests/openai-three-tier-e2e.test.ts`: exit 0, 1 pass, 0 fail, 82 assertions.
 - `bun x tsc --noEmit`: exit 0.
-- `bun test --isolate tests`: exit 0, 2,758 pass, 0 fail (authoritative counts in `evidence/050_gate_summary.txt`).
+- `bun test --isolate tests`: exit 0, 2,760 pass, 0 fail (authoritative counts in `evidence/050_gate_summary.txt`).
 - `bun run privacy:scan`: exit 0, `Privacy scan passed`.
 - `cd gui && bun run lint:i18n && bun run build`: exit 0; 51 modules transformed, build completed in 111 ms; only the existing >500 kB chunk advisory remained.
 

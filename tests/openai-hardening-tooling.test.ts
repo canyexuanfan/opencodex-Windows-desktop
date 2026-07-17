@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { evidenceDenyFindings, scanEvidence } from "../scripts/openai-hardening-evidence-scan";
 import { runGateSequence, type GateResult, type GateSpec } from "../scripts/openai-hardening-final-gates";
 import { evaluateLivePolicy, type LiveOutcome } from "../scripts/openai-hardening-live-policy";
 import { buildSanitizedRuntimeEnv } from "../scripts/openai-hardening-runtime-env";
+import { buildUnixCodexShim } from "../src/codex/shim";
 
 const roots: string[] = [];
 
@@ -203,5 +204,26 @@ describe("OpenAI hardening live policy and runtime isolation", () => {
     expect(env.NO_PROXY).toBe("127.0.0.1,localhost,::1");
     expect(env.no_proxy).toBe("127.0.0.1,localhost,::1");
     expect(env.OCX_SHIM_BYPASS).toBe("1");
+  });
+
+  test("keeps the fixture admission token through an installed Unix shim without reading its token file", () => {
+    if (process.platform === "win32") return;
+
+    const root = mkdtempSync(join(tmpdir(), "ocx-runtime-shim-isolation-"));
+    roots.push(root);
+    const tokenFile = join(root, "service-token");
+    const realCodex = join(root, "codex-real");
+    const shim = join(root, "codex");
+    writeFileSync(tokenFile, "real-state-sentinel\n", { mode: 0o600 });
+    writeFileSync(realCodex, "#!/bin/sh\nprintf '%s\\n' \"$OPENCODEX_API_AUTH_TOKEN\"\n", { mode: 0o700 });
+    writeFileSync(shim, buildUnixCodexShim(realCodex, process.execPath, "/fixture/cli.ts", tokenFile), { mode: 0o700 });
+    chmodSync(realCodex, 0o700);
+    chmodSync(shim, 0o700);
+
+    const env = buildSanitizedRuntimeEnv({ PATH: process.env.PATH }, "/tmp/ocx", "/tmp/codex");
+    const result = Bun.spawnSync([shim, "--version"], { env, stdout: "pipe", stderr: "pipe" });
+    expect(result.exitCode).toBe(0);
+    expect(new TextDecoder().decode(result.stdout).trim()).toBe("fixture-admission");
+    expect(new TextDecoder().decode(result.stdout)).not.toContain("real-state-sentinel");
   });
 });
