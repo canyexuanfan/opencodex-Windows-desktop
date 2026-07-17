@@ -28,6 +28,13 @@ import {
   isCatalogProviderId,
   providerBrandColor,
 } from "../gui/src/provider-icons";
+import {
+  bucketPresets,
+  filterPresets,
+  presetTier,
+  sortPresets,
+  type CatalogPreset,
+} from "../gui/src/components/provider-catalog/provider-presets";
 
 /** Base defaults matching a minimal, unconfigured provider value. */
 function prov(overrides: Partial<WorkspaceProvider> = {}): WorkspaceProvider {
@@ -403,5 +410,73 @@ describe("provider-icons", () => {
     expect(providerBrandColor("unknown")).toBeUndefined();
     expect(isCatalogProviderId("openai-multi")).toBe(false);
     expect(isCatalogProviderId("my-proxy")).toBe(false);
+  });
+});
+
+describe("add-provider catalog presets (WP050a)", () => {
+  const preset = (overrides: Partial<CatalogPreset> & { id: string }): CatalogPreset => ({
+    label: overrides.id,
+    adapter: "openai-chat",
+    baseUrl: "https://api.example.com/v1",
+    auth: "key",
+    ...overrides,
+  });
+
+  test("NVIDIA classifies Free while its auth remains key-required", () => {
+    const nvidia = preset({ id: "nvidia", label: "NVIDIA NIM", baseUrl: "https://integrate.api.nvidia.com/v1", freeTier: true });
+    expect(presetTier(nvidia)).toBe("free");
+    // The WP010 distinction: free pricing does NOT imply keyless.
+    expect(nvidia.auth).toBe("key");
+    expect(nvidia.keyOptional).toBeUndefined();
+  });
+
+  test("the canonical openai forward preset classifies Accounts; custom rows default Paid; local classifies Free", () => {
+    const openai = preset({
+      id: "openai",
+      adapter: "openai-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      auth: "forward",
+      codexAccountMode: "pool",
+    });
+    expect(presetTier(openai)).toBe("accounts");
+
+    expect(presetTier(preset({ id: "my-custom" }))).toBe("paid");
+    expect(presetTier(preset({ id: "ollama", auth: "local", baseUrl: "http://localhost:11434/v1" }))).toBe("free");
+    expect(presetTier(preset({ id: "litellm", keyOptional: true }))).toBe("free");
+    expect(presetTier(preset({ id: "xai", auth: "oauth" }))).toBe("paid");
+  });
+
+  test("bucketPresets partitions all three tiers preserving input order", () => {
+    const rows = [
+      preset({ id: "venice" }),
+      preset({ id: "openai", adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", auth: "forward" }),
+      preset({ id: "nvidia", freeTier: true }),
+      preset({ id: "groq" }),
+    ];
+    const buckets = bucketPresets(rows);
+    expect(buckets.accounts.map(p => p.id)).toEqual(["openai"]);
+    expect(buckets.free.map(p => p.id)).toEqual(["nvidia"]);
+    expect(buckets.paid.map(p => p.id)).toEqual(["venice", "groq"]);
+  });
+
+  test("search matches label and id only, never adapter or baseUrl", () => {
+    const rows = [
+      preset({ id: "nvidia", label: "NVIDIA NIM" }),
+      preset({ id: "groq", label: "Groq", adapter: "nvidia-like-adapter", baseUrl: "https://nvidia.example.com" }),
+    ];
+    expect(filterPresets(rows, "nvidia").map(p => p.id)).toEqual(["nvidia"]);
+    expect(filterPresets(rows, "NIM").map(p => p.id)).toEqual(["nvidia"]);
+    expect(filterPresets(rows, "").map(p => p.id)).toEqual(["nvidia", "groq"]);
+  });
+
+  test("sortPresets is deterministic: label case-insensitive, id tiebreak, input not mutated", () => {
+    const rows = [
+      preset({ id: "b-provider", label: "zeta" }),
+      preset({ id: "a-provider", label: "Zeta" }),
+      preset({ id: "c-provider", label: "alpha" }),
+    ];
+    const sorted = sortPresets(rows);
+    expect(sorted.map(p => p.id)).toEqual(["c-provider", "a-provider", "b-provider"]);
+    expect(rows.map(p => p.id)).toEqual(["b-provider", "a-provider", "c-provider"]);
   });
 });
