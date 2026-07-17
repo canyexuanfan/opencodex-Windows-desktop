@@ -138,6 +138,7 @@ Fresh configs and legacy configs without pool intent are not migrated to Multi.
 - [`006_audit_round4.md`](./006_audit_round4.md) — atomic publication and persistence closure.
 - [`007_audit_round5.md`](./007_audit_round5.md) — hard-link post-publication cleanup correction.
 - [`008_audit_final.md`](./008_audit_final.md) — independent Sol PASS and audit closure.
+- [`009_audit_wp010.md`](./009_audit_wp010.md) — Cycle-010 phase audit amendment.
 - Decade documents — exact changes, activation cases, tests, and stop conditions.
 
 ## Stop conditions

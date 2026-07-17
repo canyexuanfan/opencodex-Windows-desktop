@@ -349,6 +349,8 @@ export interface OcxConfig {
   port: number;
   providers: Record<string, OcxProviderConfig>;
   defaultProvider: string;
+  /** One-time migration marker for the canonical Direct/Multi/API OpenAI tier split. */
+  openaiProviderTierVersion?: 1;
   /** Claude Code inbound + launcher settings. */
   claudeCode?: OcxClaudeCodeConfig;
   /**
@@ -711,6 +713,11 @@ export interface OcxProviderConfig {
    */
   nativeLocalExec?: "off" | "codex-sandbox" | "on";
 }
+
+/** Trusted runtime ownership for Codex-account credentials. Never persisted per provider. */
+export type CodexAccountMode = "direct" | "pool";
+
+export const OPENAI_PROVIDER_TIER_VERSION = 1 as const;
 
 export interface CodexAccount {
   id: string;

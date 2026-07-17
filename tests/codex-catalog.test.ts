@@ -2,7 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { augmentRoutedModelsWithJawcodeMetadata, buildCatalogEntries, filterSupportedNativeSlugs, gatherRoutedModels, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, normalizeRoutedCatalogEntry } from "../src/codex/catalog";
+import { augmentRoutedModelsWithJawcodeMetadata, buildCatalogEntries, filterSupportedNativeSlugs, gatherRoutedModels, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, projectNativeModelsForOpenAiMulti } from "../src/codex/catalog";
 import {
   CURSOR_STATIC_MODELS,
   filterCursorConfiguredModelsByLiveDiscovery,
@@ -52,6 +52,100 @@ function nativeTemplate(): Record<string, unknown> {
 }
 
 describe("Codex catalog routed normalization", () => {
+  test("projects a deterministic native snapshot for Multi without API metadata leakage", () => {
+    const rows = projectNativeModelsForOpenAiMulti({
+      port: 10100,
+      providers: {},
+      defaultProvider: "openai",
+      providerContextCaps: { "openai-multi": 350_000 },
+    }, {
+      adapter: "openai-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      authMode: "forward",
+      contextWindow: 1_050_000,
+      modelInputModalities: { "gpt-5.6-sol": ["text", "image"] },
+    }, ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-sol", "not-a-native"], null);
+
+    expect(rows.map(row => `${row.provider}/${row.id}`)).toEqual([
+      "openai-multi/gpt-5.6-sol",
+      "openai-multi/gpt-5.6-luna",
+    ]);
+    expect(rows[0]).toMatchObject({
+      provider: "openai-multi",
+      owned_by: "openai-multi",
+      contextWindow: 350_000,
+      contextCap: 350_000,
+      contextCapped: true,
+      inputModalities: ["text", "image"],
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    });
+    expect(rows[1]?.reasoningEfforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(rows.every(row => row.contextWindow !== 1_050_000)).toBe(true);
+  });
+
+  test("projects context, modalities, and efforts for every native with no installed template", () => {
+    const rows = projectNativeModelsForOpenAiMulti({
+      port: 10100,
+      providers: {},
+      defaultProvider: "openai",
+    }, {
+      adapter: "openai-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      authMode: "forward",
+    }, NATIVE_OPENAI_MODELS, null);
+
+    expect(rows.map(row => row.id)).toEqual(NATIVE_OPENAI_MODELS);
+    for (const row of rows) {
+      expect(row.contextWindow).toBeGreaterThan(0);
+      expect(row.inputModalities?.length).toBeGreaterThan(0);
+      expect(row.reasoningEfforts?.length).toBeGreaterThan(0);
+    }
+    expect(rows.find(row => row.id === "gpt-5.3-codex-spark")).toMatchObject({
+      contextWindow: 100_000,
+      inputModalities: ["text"],
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    });
+  });
+
+  test("projects metadata from a non-null native template without mutating it", () => {
+    const template = nativeTemplate();
+    const before = structuredClone(template);
+    const rows = projectNativeModelsForOpenAiMulti({
+      port: 10100,
+      providers: {},
+      defaultProvider: "openai",
+    }, {
+      adapter: "openai-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      authMode: "forward",
+    }, ["gpt-5.4-mini"], template);
+
+    expect(rows).toEqual([expect.objectContaining({
+      id: "gpt-5.4-mini",
+      provider: "openai-multi",
+      contextWindow: 128_000,
+      inputModalities: ["text"],
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    })]);
+    expect(template).toEqual(before);
+  });
+
+  test("normal routed gathering remains non-activating for Multi", async () => {
+    globalThis.fetch = (() => { throw new Error("forward providers must not fetch /models"); }) as typeof fetch;
+    const rows = await gatherRoutedModels({
+      port: 10100,
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+        },
+      },
+      defaultProvider: "openai",
+    });
+    expect(rows.some(row => row.provider === "openai-multi")).toBe(false);
+  });
+
   test("loads bundled Codex catalog from debug models output", () => {
     const catalog = loadBundledCodexCatalog({
       commandCandidates: () => ["codex"],

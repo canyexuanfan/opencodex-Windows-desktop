@@ -51,30 +51,42 @@ Contracts:
 - `projectOpenAiTierMigration` deep-clones the config and never writes disk.
 - With marker absent, pool intent is true when `codexAccounts` is nonempty or
   `activeCodexAccountId` is set.
-- It removes a canonical configured `chatgpt` row, maps a `chatgpt` default to
+- It removes any own configured `chatgpt` provider row regardless of adapter, auth,
+  base URL, or extra fields, then maps a `chatgpt` default to
   `openai-multi` when pool intent is true and otherwise `openai`, seeds canonical
   Direct, seeds Multi only for pool intent, preserves provider insertion order for
   all non-legacy rows, sets marker 1, and copies no credential values.
+- Removing the provider row never deletes or edits the separate OAuth credential store.
+  API keys/tokens found on a malformed or noncanonical row are discarded with that row
+  and are never copied into Direct, Multi, or any other provider.
 - When pool intent is true and the legacy default is `openai`, it rewrites
   `defaultProvider` to `openai-multi`. This preserves the old pooled behavior. With no
   pool intent, an `openai` default remains Direct.
 - With marker 1, it is a no-op. Deliberately removed Multi is never resurrected.
+- With marker absent and an existing exact canonical `openai-multi` row, preserve it
+  even without inferred pool intent because it is explicit user configuration. If the
+  reserved id has any noncanonical or extra-field shape, throw
+  `OpenAiTierMigrationCollisionError` before projecting; never overwrite or discard
+  that row's credentials/configuration.
 
 ### MODIFY `src/codex/catalog.ts`
 
-Export a pure, currently uncalled helper:
+Export a read-only/no-network, currently uncalled helper:
 
 ```ts
 export function projectNativeModelsForOpenAiMulti(
   config: OcxConfig,
   provider: OcxProviderConfig,
   nativeSlugs?: readonly string[],
+  nativeTemplate?: Record<string, unknown> | null,
 ): CatalogModel[];
 ```
 
 The default `nativeSlugs` value is a snapshot from `nativeOpenAiSlugs()`; tests inject
-a fixed snapshot so native catalog drift cannot make them nondeterministic. Existing
-native context and upstream reasoning metadata helpers build the rows. Output rows use
+a fixed snapshot so native catalog drift cannot make them nondeterministic. The default
+`nativeTemplate` is `loadCatalogTemplate()`; a null test seam exercises the no-installed-
+catalog fallback. Existing `buildCatalogEntries` authoritative/fallback logic plus native
+context and upstream reasoning metadata helpers build the rows. Output rows use
 provider `openai-multi` and retain native context/modalities/efforts; provider context
 caps are applied by the existing hint/cap path. The helper is read-only and performs
 no network request. It does not call ChatGPT `/models` and never reads OpenAI API
@@ -103,18 +115,25 @@ is still route-blind.
 ### NEW `tests/openai-provider-tier-migration.test.ts`
 
 Drive the pure projection with fixtures for fresh config, no-pool legacy config,
-added-account pool, explicit main id, legacy `chatgpt` default, custom default,
-marker 1, removed Multi, provider ordering, and redacted sentinel credentials.
+added-account pool, explicit main id, canonical `chatgpt`, noncanonical key-auth/custom-
+base `chatgpt`, extra-field `chatgpt`, legacy `chatgpt` default, custom default, marker
+1, removed Multi, provider ordering, and redacted sentinel credentials.
 The added-account and explicit-main fixtures both start with
 `defaultProvider: "openai"` and assert projected Multi default; a second projection
 asserts marker-1 idempotence.
-Assert input objects remain byte-identical and projected configs contain no copied
-tokens/API keys beyond their original owner fields.
+Assert projected providers have no own `chatgpt` key, nonlegacy relative order is
+unchanged, default mapping is correct with and without pool intent, input objects remain
+byte-identical, and no row credential sentinel is copied. A separate OAuth-store
+sentinel fixture proves the projection neither receives nor mutates credential storage.
+Add exact-canonical preexisting Multi with no pool intent (preserved) and noncanonical
+key/custom-base/extra-field Multi collisions (typed throw, serialized input and secret
+sentinels unchanged).
 
 ### MODIFY `tests/codex-catalog.test.ts`
 
-Call the helper with an injected fixed native-slug snapshot and prove namespaced ids,
-native-source metadata, provider caps, and API-metadata isolation. Also prove normal
+Call the helper with every supported slug, an injected fixed native-slug snapshot, and
+both real and null native templates. Prove namespaced ids, native-source/fallback
+context-modalities-efforts, provider caps, and API-metadata isolation. Also prove normal
 `gatherRoutedModels` still emits no Multi rows in this cycle.
 
 ## Verification and acceptance
