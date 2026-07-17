@@ -111,21 +111,28 @@ OCX live model parsing accepts ID/owner, context length variants, and limited re
 
 Decision: `ADAPT` consumer-first. Add only a field that a Codex-visible catalog or request adapter consumes, together with precedence and fixture tests. Do not add a lossless passthrough bag merely to mirror OMP.
 
-## 12. Product-boundary rejects
+## 12. Sakana Fugu direct provider
+
+2026-06-22 이후 전제가 바뀌었다. Sakana 공식 setup은 direct base URL `https://api.sakana.ai/v1`, Bearer API key, Responses/Chat Completions, `fugu`와 `fugu-ultra`, `high/xhigh` effort와 `max -> xhigh` 호환을 공개한다.
+
+Decision: standalone direct provider는 `ADAPT`. 기존 `openai-responses` keyed path를 재사용하며, OpenRouter `sakana/fugu-ultra` 노출은 계속 live discovery가 소유한다. 실행 계약은 [`010_fugu_sakana_direct.md`](../../_plan/260717_non_openai_provider_chase/010_fugu_sakana_direct.md)다.
+
+## 13. Product-boundary rejects
 
 The following chase ideas belong to jawcode/OMP agent products and are not direct OCX proxy imports:
 
 - floating model selection and model hub UX;
 - custom role models and task-agent resolution;
 - agent prompt caps and dispatch preprocessing;
-- standalone Fugu/Sakana login without an OCX endpoint/auth requirement.
 
 They are `REJECT` for direct port, not claims that the ideas are intrinsically invalid. A future OCX product requirement must start a separate owner-first design.
 
-## 13. Recommended implementation order
+## 14. Recommended implementation order
 
-1. Probe and centralize Cursor client version.
-2. Probe Antigravity picker retirement while preserving inbound alias compatibility.
-3. Decide whether generated jawcode metadata should be refreshed only, or whether a specific unconsumed field needs a real consumer.
+1. Add direct Sakana Fugu through the existing keyed Responses owner.
+2. Probe and centralize Cursor client version.
+3. Probe Antigravity picker retirement while preserving inbound alias compatibility.
 4. Probe OpenCode Go Kimi base/highspeed effort support separately.
-5. Add Z.AI/LiteLLM/Anthropic changes only from provider-specific fixtures.
+5. Add Z.AI and Anthropic changes only from provider-specific fixtures.
+6. Decide consumer-backed generated metadata fields and precedence.
+7. Add registry-compatible providers before workspace/auth/signing providers; use the full map in [`000_plan.md`](../../_plan/260717_non_openai_provider_chase/000_plan.md).

@@ -32,16 +32,16 @@
 | invalid-prompt/refusal circuit breaker | `chase-only` | 400은 generic transient retry 대상이 아니며 refusal parsing도 존재 | `NOOP` for retry / `RESEARCH` normalization | 반복 retry가 실제 재현되거나 provider별 safety stop 통합 요구가 생길 때 |
 | model hub, floating selection, custom role models | `chase-only` | jawcode agent UI semantics; OCX는 proxy catalog/management API 제품 | `REJECT` direct port | OCX GUI에 같은 사용자 요구가 정의될 때 별도 제품 계획 |
 | prompt cap / agent dispatch guard | `chase-only` | jawcode agent prompt assembly와 OCX proxy context contract가 다름 | `REJECT` direct port | OCX-owned overflow 재현이 있을 때 catalog/context owner에서 설계 |
-| Fugu/Sakana standalone provider/login | `chase-only` | OCX endpoint/auth/product demand 없음 | `REJECT` current scope | endpoint, auth token shape, 사용자 수요 세 가지 필요 |
+| Fugu/Sakana standalone provider/login | `official-source` + user direction | Sakana가 direct endpoint, Bearer auth, Responses/Chat, 두 모델을 공개했고 사용자가 first-class provider를 요청함 | `ADAPT` | registry/Responses fixture + authenticated smoke; [`010`](../../_plan/260717_non_openai_provider_chase/010_fugu_sakana_direct.md) |
 | OpenRouter `sakana/fugu-ultra` | `local-source` | jawcode metadata row는 있으나 OCX는 OpenRouter row를 metadata로 append하지 않음 | `NOOP` static import / `RESEARCH` visibility | OpenRouter live discovery 결과를 권위로 사용 |
 
 ## 다음 코드 작업 후보
 
-현 시점에 가장 명확한 구현 후보는 **Cursor version owner 통합** 하나다. 그러나 값 자체는 아직 `RESEARCH`이므로, 코드 작업은 다음 순서를 지켜야 한다.
+첫 구현 후보는 공식 direct 계약이 확인된 **Sakana Fugu provider**다. 그다음 명확한 hardening 후보는 **Cursor version owner 통합**이며, 값 자체는 여전히 `RESEARCH`다.
 
 1. discovery와 run을 같은 version parameter로 probe한다.
 2. 성공한 값을 공용 owner로 추출한다.
 3. 두 caller와 override behavior를 focused test로 고정한다.
 4. 실패 시 version을 추측해 통일하지 않고 현재 분리를 유지한 채 증거를 기록한다.
 
-나머지는 live fixture나 제품 결정 없이 코드 phase로 승격하지 않는다.
+나머지는 [`260717_non_openai_provider_chase`](../../_plan/260717_non_openai_provider_chase/000_plan.md)의 decade 문서와 live-fixture gate 없이 코드 phase로 승격하지 않는다.

@@ -2,6 +2,8 @@
 
 이 폴더는 OpenCodex가 실제로 소유하는 모델/provider 구조와 변경 절차를 모아 둔 chase 기준점이다. jawcode의 `struct_har/chase/model/`에서 문서 분리 방식을 가져왔지만, 내용은 OpenCodex의 프록시·라우팅·Codex catalog 소유권에 맞춰 다시 작성했다.
 
+현재 OpenAI/xAI 외 provider 구현 로드맵은 [`devlog/_plan/260717_non_openai_provider_chase/000_plan.md`](../../_plan/260717_non_openai_provider_chase/000_plan.md)다. 이 로드맵은 direct Sakana를 첫 work-phase로 두고, 기존 hardening 뒤에 OpenAI-compatible preset, workspace auth, native AWS 순서로 진행한다.
+
 ## 읽는 순서
 
 1. [001_provider_inventory.md](./001_provider_inventory.md) — 현재 provider 수, adapter/auth 분포, 정본 경로.
