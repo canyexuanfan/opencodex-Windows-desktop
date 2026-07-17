@@ -261,4 +261,80 @@ describe("runCursorTurnWithRetry — transport close ordering (WP180)", () => {
     // Attempt 1 closed exactly once; no second transport was ever made.
     expect(log).toEqual(["make1", "run1", "close1"]);
   });
+
+  test("close settles BEFORE the backoff timer is even scheduled", async () => {
+    // Spy on setTimeout: the implementation's only timer here is the backoff sleep.
+    // Under the old close-after-sleep shape the timer is scheduled first, so the log
+    // would read [.., run1, sleep-scheduled, close1-start, ..] and this test fails.
+    const log: string[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const spy = ((fn: Parameters<typeof setTimeout>[0], ms?: number, ...rest: unknown[]) => {
+      log.push("sleep-scheduled");
+      return realSetTimeout(fn, ms, ...rest);
+    }) as typeof setTimeout;
+    globalThis.setTimeout = spy;
+    try {
+      let calls = 0;
+      await runCursorTurnWithRetry(
+        () => {
+          calls++;
+          log.push(`make${calls}`);
+          return {
+            async *run(): AsyncGenerator<CursorServerMessage> {
+              log.push(`run${calls}`);
+              if (calls === 1) throw new Error("connect ECONNREFUSED");
+              yield { type: "text", text: "ok" } as CursorServerMessage;
+            },
+            writeClient() {},
+            async close() {
+              log.push(`close${calls}-start`);
+              // Yield a microtask so an interleaved timer scheduling would be visible.
+              await Promise.resolve();
+              log.push(`close${calls}-end`);
+            },
+            requestCommitted: () => false,
+          } satisfies CursorTransport;
+        },
+        { provider: { adapter: "cursor" } },
+        request,
+        undefined,
+        () => {},
+      );
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+    // close1 fully settled before the backoff timer was scheduled; make2 came after.
+    expect(log.indexOf("close1-end")).toBeGreaterThan(-1);
+    expect(log.indexOf("sleep-scheduled")).toBeGreaterThan(log.indexOf("close1-end"));
+    expect(log.indexOf("make2")).toBeGreaterThan(log.indexOf("sleep-scheduled"));
+  });
+
+  test("a throwing close never replaces the TERMINAL run error", async () => {
+    // Final (non-retryable) attempt: run throws a distinctive error AND its close
+    // throws a different one — the rejection must stay the run error.
+    const log: string[] = [];
+    let closeCalls = 0;
+    await expect(runCursorTurnWithRetry(
+      () => {
+        log.push("make1");
+        return {
+          async *run(): AsyncGenerator<CursorServerMessage> {
+            log.push("run1");
+            throw new Error("Cursor authentication failed: terminal-run-error");
+          },
+          writeClient() {},
+          async close() {
+            closeCalls++;
+            throw new Error("cleanup-error");
+          },
+          requestCommitted: () => false,
+        } satisfies CursorTransport;
+      },
+      { provider: { adapter: "cursor" } },
+      request,
+      undefined,
+      () => {},
+    )).rejects.toThrow("terminal-run-error");
+    expect(closeCalls).toBe(1);
+  });
 });
