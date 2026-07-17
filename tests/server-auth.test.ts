@@ -1051,6 +1051,90 @@ describe("server local API auth", () => {
     });
   });
 
+  test("provider PATCH field-mask edits non-reserved providers and rejects unsafe fields (WP040)", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: { ...canonicalDirect },
+        extra: { adapter: "openai-chat", baseUrl: "https://extra.example.test/v1", apiKey: "sk-existing", note: "old note" },
+        nvidia: { adapter: "openai-chat", baseUrl: "https://integrate.api.nvidia.com/v1", apiKey: "sk-nvidia" },
+        ollama: { adapter: "openai-chat", baseUrl: "http://localhost:11434/v1" },
+      },
+    };
+    saveConfig(liveConfig);
+    const patch = async (name: string, body: unknown) => {
+      const req = new Request(`http://127.0.0.1/api/providers?name=${name}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return handleManagementAPI(req, new URL(req.url), liveConfig, {});
+    };
+
+    // Editor happy path: multiple fields in one call; validation runs on the MERGED provider.
+    const edit = await patch("extra", { defaultModel: "m-1", note: "fresh note", baseUrl: "https://extra2.example.test/v1" });
+    expect(edit?.status).toBe(200);
+    expect(await edit?.json()).toMatchObject({ success: true, name: "extra", hasApiKey: true });
+    expect(liveConfig.providers.extra).toMatchObject({
+      baseUrl: "https://extra2.example.test/v1",
+      defaultModel: "m-1",
+      note: "fresh note",
+      apiKey: "sk-existing", // untouched — keys are not writable through PATCH
+    });
+
+    // Empty defaultModel/note clear the fields.
+    const clear = await patch("extra", { defaultModel: "", note: "" });
+    expect(clear?.status).toBe(200);
+    expect(liveConfig.providers.extra.defaultModel).toBeUndefined();
+    expect(liveConfig.providers.extra.note).toBeUndefined();
+
+    // apiKey is hard-rejected toward the key endpoints.
+    const keyWrite = await patch("extra", { apiKey: "sk-new" });
+    expect(keyWrite?.status).toBe(400);
+    expect(await keyWrite?.json()).toMatchObject({ error: expect.stringContaining("API-key endpoints") });
+    expect(liveConfig.providers.extra.apiKey).toBe("sk-existing");
+
+    // authMode local is guarded by the registry: nvidia (key) → 400; ollama (local) → ok.
+    const nvidiaLocal = await patch("nvidia", { authMode: "local" });
+    expect(nvidiaLocal?.status).toBe(400);
+    expect(await nvidiaLocal?.json()).toMatchObject({ error: expect.stringContaining("local") });
+    const ollamaLocal = await patch("ollama", { authMode: "local" });
+    expect(ollamaLocal?.status).toBe(200);
+    expect(liveConfig.providers.ollama.authMode).toBe("local");
+
+    // codexAccountMode cannot be combined with editor fields (side-effect path stays isolated).
+    const combined = await patch("openai", { codexAccountMode: "pool", note: "x" });
+    expect(combined?.status).toBe(400);
+
+    // Editing the canonical openai shape fails the seed guard.
+    const openaiEdit = await patch("openai", { baseUrl: "https://evil.example.test" });
+    expect(openaiEdit?.status).toBe(400);
+    expect(await openaiEdit?.json()).toMatchObject({ error: expect.stringContaining("canonical") });
+
+    // Unknown-only bodies are rejected.
+    expect((await patch("extra", { bogus: 1 }))?.status).toBe(400);
+  });
+
+  test("safeConfigDTO exposes the freeTier badge flag (WP040)", async () => {
+    const { safeConfigDTO } = await import("../src/server/auth-cors");
+    const dto = safeConfigDTO({
+      port: 0,
+      defaultProvider: "nvidia",
+      providers: {
+        nvidia: { adapter: "openai-chat", baseUrl: "https://integrate.api.nvidia.com/v1", freeTier: true },
+        venice: { adapter: "openai-chat", baseUrl: "https://api.venice.ai/api/v1" },
+      },
+    } as OcxConfig) as { providers: Record<string, { freeTier?: boolean }> };
+    expect(dto.providers.nvidia.freeTier).toBe(true);
+    expect(dto.providers.venice.freeTier).toBeUndefined();
+  });
+
   test("provider context-cap API persists toggles and annotates model rows", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });

@@ -226,6 +226,15 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
   if (headersError) return `provider ${name} ${headersError}`;
   const maxInputError = positiveIntegerRecordConfigError(raw.modelMaxInputTokens, "modelMaxInputTokens");
   if (maxInputError) return `provider ${name} ${maxInputError}`;
+  if (typed.authMode === "local") {
+    // "local" bypasses key-requirement enforcement (api-keys/key-failover treat non-oauth/
+    // forward as key auth; openai-chat skips credential checks for local). Only providers
+    // whose registry entry is genuinely local (Ollama/vLLM/LM Studio) may claim it.
+    const entry = getProviderRegistryEntry(name);
+    if (entry && entry.authKind !== "local") {
+      return `provider ${name} cannot use authMode "local" — its registry entry requires ${entry.authKind} auth`;
+    }
+  }
   if (typed.authMode === "forward") {
     const normalizedName = name.trim().toLowerCase();
     const base = typed.baseUrl.replace(/\/+$/, "");
@@ -276,6 +285,7 @@ export function safeConfigDTO(config: OcxConfig): unknown {
       "allowPrivateNetwork",
       "authMode",
       "keyOptional",
+      "freeTier",
       "liveModels",
       "models",
       "contextWindow",

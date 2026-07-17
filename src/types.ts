@@ -611,8 +611,10 @@ export interface OcxProviderConfig {
    * "forward": relay the caller's incoming auth headers verbatim (OAuth passthrough; gpt only).
    * "oauth": resolve a stored OAuth access token (auto-refreshed) and use it as the Bearer key.
    * Only the openai-responses adapter implements "forward"; openai-chat uses its own key/token.
+   * "local": local runtime (Ollama etc.) — no remote key required. Valid only for
+   * providers whose registry entry declares authKind "local" (management API enforces).
    */
-  authMode?: "key" | "forward" | "oauth";
+  authMode?: "key" | "forward" | "oauth" | "local";
   /** Allow an explicitly key/oauth provider to run without a credential (for keyless local proxies). */
   keyOptional?: boolean;
   /**
