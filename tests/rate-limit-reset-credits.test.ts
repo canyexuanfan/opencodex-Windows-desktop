@@ -153,7 +153,10 @@ describe("rate-limit reset credits", () => {
       const source = await Bun.file("gui/src/pages/CodexAuth.tsx").text();
       expect(source).toContain("className=\"card-badges\"");
       expect(source).toContain("<TicketBadge t={t} account={a} onClick={() => openResetPopup(a)} />");
-      expect(source).toContain("{isNext(a.id) && !a.needsReauth && <span className=\"badge badge-primary\">{t(\"codexAuth.nextSession\")}</span>}");
+      // Since the pool/direct mode split, the next-session badge is conditional on the
+      // account mode (poolPrepared in direct mode) but still renders BESIDE the ticket.
+      expect(source).toContain("{isNext(a.id) && !a.needsReauth && (");
+      expect(source).toContain("{t(accountModeState === \"direct\" ? \"codexAuth.poolPrepared\" : \"codexAuth.nextSession\")}");
       const styles = await Bun.file("gui/src/styles.css").text();
       expect(styles).toContain(".card-badges { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }");
       expect(styles).toContain(".card-badges .badge { flex-shrink: 0; }");
