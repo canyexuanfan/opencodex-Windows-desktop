@@ -1,0 +1,389 @@
+/* Providers workspace shell (WP080b): root grid, rail, filter popover, empty tiles.
+   Shell-owned pws-* names only; the rail row keeps its verbatim source class names. */
+
+.pws-root {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 16px;
+  min-height: 480px;
+}
+
+.pws-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-right: 1px solid var(--border);
+  padding-right: 12px;
+  min-width: 0;
+}
+
+.pws-rail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pws-rail-title {
+  font-weight: 600;
+}
+
+.pws-search-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.pws-search-wrap {
+  position: relative;
+  flex: 1;
+}
+
+.pws-search-icon {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.pws-search-input {
+  width: 100%;
+  padding-left: 28px;
+}
+
+.pws-filter-wrap {
+  position: relative;
+}
+
+.pws-filter-btn {
+  appearance: none;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px;
+  cursor: pointer;
+  color: var(--muted);
+  position: relative;
+}
+
+.pws-filter-btn--active {
+  color: var(--fg);
+  border-color: var(--fg);
+}
+
+.pws-filter-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.pws-filter-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  min-width: 230px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pws-filter-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.pws-filter-head {
+  margin-top: 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.pws-filter-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 2px;
+  cursor: pointer;
+}
+
+.pws-filter-label {
+  flex: 1;
+}
+
+.pws-filter-count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+.pws-sort-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+.pws-sort-btn {
+  appearance: none;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.pws-sort-btn--active {
+  color: var(--fg);
+  border-color: var(--fg);
+}
+
+.pws-filter-footer {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.pws-rail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.pws-rail-empty {
+  font-size: 12px;
+  padding: 8px 4px;
+}
+
+.pws-rail-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pws-rail-group-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 6px 2px 2px;
+}
+
+/* Rail rows keep the verbatim source class names (WP080a exception). */
+.providers-workspace-rail-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  appearance: none;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 7px 8px;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+
+.providers-workspace-rail-row:hover {
+  background: var(--surface);
+}
+
+.providers-workspace-rail-row--selected {
+  background: var(--surface);
+  outline: 1px solid var(--border);
+}
+
+.providers-workspace-rail-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.providers-workspace-rail-icon img,
+.providers-workspace-rail-icon .provider-icon-mask {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.provider-icon-mask {
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+}
+
+.providers-workspace-rail-name {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.providers-workspace-rail-name-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.providers-workspace-rail-name-id {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.providers-workspace-rail-badges {
+  flex-shrink: 0;
+}
+
+.pwi-rail-badge {
+  font-size: 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 6px;
+  color: var(--muted);
+}
+
+.pwi-rail-badge--free {
+  color: var(--green);
+  border-color: var(--green);
+}
+
+.pwi-rail-badge--local {
+  color: var(--amber);
+  border-color: var(--amber);
+}
+
+.providers-workspace-rail-model-count {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.providers-workspace-rail-trail {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.pwi-default-star {
+  color: var(--amber);
+  display: inline-flex;
+}
+
+.providers-workspace-rail-status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.providers-workspace-rail-status--active { background: var(--green); }
+.providers-workspace-rail-status--warning { background: var(--amber); }
+.providers-workspace-rail-status--inactive { background: var(--muted); }
+
+.providers-workspace-rail-chevron {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.pws-main {
+  min-width: 0;
+}
+
+.pws-detail-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 24px 8px;
+}
+
+.pws-empty-root {
+  display: flex;
+  justify-content: center;
+  padding: 48px 16px;
+}
+
+.pws-empty-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  text-align: center;
+  max-width: 640px;
+}
+
+.pws-empty-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.pws-empty-tile {
+  appearance: none;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  color: inherit;
+  font: inherit;
+}
+
+.pws-empty-tile:hover {
+  background: var(--surface);
+}
+
+.pws-empty-tile-label {
+  font-weight: 600;
+}
+
+.pws-empty-tile-desc {
+  font-size: 12px;
+}
+
+@media (max-width: 860px) {
+  .pws-root {
+    grid-template-columns: 1fr;
+  }
+  .pws-rail {
+    border-right: none;
+    padding-right: 0;
+  }
+  .pws-empty-tiles {
+    grid-template-columns: 1fr;
+  }
+}

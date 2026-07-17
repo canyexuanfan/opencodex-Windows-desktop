@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AddProviderModal from "../components/AddProviderModal";
+import ProviderWorkspaceShell, { type AddProviderIntent } from "../components/provider-workspace/ProviderWorkspaceShell";
+import type { WorkspaceProvider } from "../provider-workspace/catalog";
 import { Notice } from "../ui";
 import { IconPlus, IconTrash, IconLock, IconExternal, IconPower, IconChevron, IconLink } from "../icons";
 import { useT } from "../i18n";
@@ -54,11 +56,24 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const [keyPools, setKeyPools] = useState<Record<string, ApiKeyEntry[]>>({});
   const [addingKeyFor, setAddingKeyFor] = useState<string | null>(null);
   const [newKeyValue, setNewKeyValue] = useState("");
+  // Workspace view (WP080b): active when the hash carries the /workspace suffix.
+  const [workspaceView, setWorkspaceView] = useState(() => location.hash.replace(/^#\/?/, "") === "providers/workspace");
+  const [workspaceSelected, setWorkspaceSelected] = useState<string | null>(null);
+  const [addIntent, setAddIntent] = useState<AddProviderIntent | null>(null);
   const aliveRef = useRef(true);
 
   const notify = (msg: string, ok: boolean) => { setStatus(msg); setStatusOk(ok); };
 
   useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false; }; }, []);
+  useEffect(() => {
+    const onHash = () => setWorkspaceView(location.hash.replace(/^#\/?/, "") === "providers/workspace");
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  const toggleWorkspace = () => {
+    // The hash is the source of truth so reload/deep-link restores the view.
+    location.hash = workspaceView ? "#providers" : "#providers/workspace";
+  };
 
   const fetchConfig = useCallback(async () => {
     try {
@@ -408,11 +423,47 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     .filter(([name, prov]) => (prov.hasApiKey || name === "openai-apikey") && prov.authMode !== "oauth" && prov.authMode !== "forward" && !oauthProviders.includes(name))
     .map(([name]) => name);
 
+  if (workspaceView) {
+    return (
+      <>
+        <div className="page-head">
+          <h2>{t("nav.providers")}</h2>
+          <div className="row">
+            <button className="btn btn-ghost btn-sm" onClick={toggleWorkspace}>{t("pws.classicToggle")}</button>
+            <button className="btn btn-primary" onClick={() => setAdding(true)}><IconPlus />{t("prov.add")}</button>
+          </div>
+        </div>
+        {status && <Notice tone={statusOk ? "ok" : "err"}>{status}</Notice>}
+        <ProviderWorkspaceShell
+          providers={config.providers as Record<string, WorkspaceProvider>}
+          apiBase={apiBase}
+          defaultProvider={config.defaultProvider}
+          selectedName={workspaceSelected}
+          onSelect={setWorkspaceSelected}
+          onAddProvider={intent => { setAddIntent(intent ?? null); setAdding(true); }}
+        />
+        {adding && (
+          <AddProviderModal
+            apiBase={apiBase}
+            existingNames={Object.keys(config.providers)}
+            initialTier={addIntent?.tier}
+            initialCustom={addIntent?.custom}
+            onClose={() => { setAdding(false); setAddIntent(null); }}
+            onAdded={(name) => { setAdding(false); setAddIntent(null); notify(t("prov.added", { name, cmd: "ocx sync" }), true); fetchConfig(); fetchOauth(); fetchProviderQuotas(true); }}
+          />
+        )}
+      </>
+    );
+  }
+
   return (
     <>
       <div className="page-head">
         <h2>{t("nav.providers")}</h2>
         <div className="row">
+          <button className="btn btn-ghost btn-sm" onClick={toggleWorkspace}>
+            {workspaceView ? t("pws.classicToggle") : t("pws.workspaceToggle")}
+          </button>
           {editing ? (
             <>
               <button className="btn btn-primary" onClick={saveConfig}>{t("common.save")}</button>

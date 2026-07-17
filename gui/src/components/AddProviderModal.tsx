@@ -19,19 +19,29 @@ type Preset = CatalogPreset;
 type FormState = ProviderPayloadForm;
 
 export default function AddProviderModal({
-  apiBase, existingNames, onClose, onAdded,
+  apiBase, existingNames, onClose, onAdded, initialTier, initialCustom = false,
 }: {
   apiBase: string;
   existingNames: string[];
   onClose: () => void;
   onAdded: (name: string) => void;
+  /** Opening catalog tab (workspace empty-state tiles deep-link here). */
+  initialTier?: "accounts" | "free" | "paid";
+  /** Skip the catalog and open the custom-provider form immediately. */
+  initialCustom?: boolean;
 }) {
   const t = useT();
   const fallbackPresets = useMemo<Preset[]>(() => [
     { id: "custom", label: t("modal.customProvider"), adapter: "openai-chat", baseUrl: "", auth: "key" },
   ], [t]);
-  const [preset, setPreset] = useState<Preset | null>(null);
-  const [form, setForm] = useState<FormState | null>(null);
+  const [preset, setPreset] = useState<Preset | null>(
+    initialCustom ? { id: "custom", label: t("modal.customProvider"), adapter: "openai-chat", baseUrl: "", auth: "key" } : null,
+  );
+  const [form, setForm] = useState<FormState | null>(
+    initialCustom
+      ? { name: "", adapter: "openai-chat", baseUrl: "", authMode: "key", apiKey: "", defaultModel: "" }
+      : null,
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [oauthSupported, setOauthSupported] = useState<string[]>([]);
@@ -249,6 +259,7 @@ export default function AddProviderModal({
             presets={presets}
             usageRank={usageRank}
             presetsLoading={presetsLoading}
+            initialTier={initialTier}
             onSelectPreset={p => choosePreset(p)}
             onSelectCustom={() => choosePreset(fallbackPresets[0]!)}
           />

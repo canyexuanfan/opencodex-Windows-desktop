@@ -23,7 +23,9 @@ const VALID_PAGES = new Set<Page>(["dashboard", "providers", "models", "subagent
 
 function readPageFromHash(): Page {
   const raw = location.hash.replace(/^#\/?/, "");
-  return VALID_PAGES.has(raw as Page) ? (raw as Page) : "dashboard";
+  // Sub-views use a "/" suffix (e.g. #providers/workspace); the first segment is the page id.
+  const pageId = raw.split("/")[0] as Page;
+  return VALID_PAGES.has(pageId) ? pageId : "dashboard";
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
