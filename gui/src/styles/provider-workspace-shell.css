@@ -454,3 +454,100 @@
 .btn-icon-only {
   padding: 4px 6px;
 }
+
+/* Overview 2-column layout (Phase 030) */
+.pws-overview-layout {
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  gap: 24px;
+  align-items: start;
+}
+
+.pws-overview-main {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+.pws-overview-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  align-self: start;
+}
+
+/* Auth summary */
+.pws-auth-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.88rem;
+}
+
+.pws-auth-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green, #22c55e);
+  flex-shrink: 0;
+}
+
+/* Edit settings / View usage links */
+.pws-edit-settings-link,
+.pws-view-usage-link {
+  font-size: 0.82rem;
+  margin-top: 4px;
+}
+
+/* Notes section */
+.pws-notes-section {
+  min-width: 0;
+}
+
+.pws-notes-display {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 0.85rem;
+  color: inherit;
+  cursor: pointer;
+  min-height: 48px;
+  transition: border-color 0.15s;
+}
+
+.pws-notes-display:hover {
+  border-color: var(--border);
+}
+
+.pws-notes-textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--accent, #3b82f6);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.85rem;
+  color: inherit;
+  background: var(--bg);
+  resize: vertical;
+  min-height: 48px;
+}
+
+.pws-notes-textarea:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+}
+
+@media (max-width: 768px) {
+  .pws-overview-layout {
+    grid-template-columns: 1fr;
+  }
+  .pws-overview-sidebar {
+    position: static;
+  }
+}

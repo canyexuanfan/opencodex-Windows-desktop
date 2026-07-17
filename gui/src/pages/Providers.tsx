@@ -3,6 +3,7 @@ import AddProviderModal from "../components/AddProviderModal";
 import ProviderWorkspaceShell, { type AddProviderIntent } from "../components/provider-workspace/ProviderWorkspaceShell";
 import ProviderDetails from "../components/provider-workspace/ProviderDetails";
 import type { WorkspaceProvider } from "../provider-workspace/catalog";
+import type { ProviderUpdatePatch } from "../components/provider-workspace/types";
 import { Notice } from "../ui";
 import { IconPlus, IconTrash, IconLock, IconExternal, IconPower, IconChevron, IconLink } from "../icons";
 import { useT } from "../i18n";
@@ -376,6 +377,24 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     notify(data.error || (disabled ? t("prov.disableFail", { name }) : t("prov.enableFail", { name })), false);
   };
 
+  const updateProvider = async (name: string, patch: ProviderUpdatePatch): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const res = await fetch(`${apiBase}/api/providers?name=${encodeURIComponent(name)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (res.ok) {
+        fetchConfig();
+        return { ok: true };
+      }
+      const data = await res.json().catch(() => ({}));
+      return { ok: false, error: data.error || "Update failed" };
+    } catch {
+      return { ok: false, error: "Network error" };
+    }
+  };
+
   const setOpenAiAccountMode = async (next: OpenAiAccountMode) => {
     if (modeBusy) return;
     setModeBusy(true);
@@ -457,6 +476,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
               isDefault={item.name === config.defaultProvider}
               onRemoveProvider={removeProvider}
               onSetDisabled={setProviderDisabled}
+              onUpdateProvider={updateProvider}
             />
           )}
         />

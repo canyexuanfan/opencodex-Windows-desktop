@@ -143,7 +143,15 @@ export default function ProviderDetails({
         ))}
       </div>
       {tab === "overview" && (
-        <ProviderOverview item={item} usageTotals={usageTotals} quotaReport={quotaReport} oauthEmail={oauthEmail} />
+        <ProviderOverview
+          item={item}
+          usageTotals={usageTotals}
+          quotaReport={quotaReport}
+          oauthEmail={oauthEmail}
+          onEditSettings={() => switchTab("settings")}
+          onViewUsage={() => switchTab("usage")}
+          onUpdateProvider={onUpdateProvider}
+        />
       )}
       {tab === "models" && (
         <ProviderModels
