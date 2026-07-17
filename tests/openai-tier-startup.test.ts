@@ -26,6 +26,9 @@ function virtualBackupIO(initial: Record<string, string>, fail: {
   backupUnlink?: number;
   truncate?: number;
   harden?: number;
+  read?: number;
+  create?: number;
+  write?: number;
   writeAfter?: number;
 } = {}) {
   type Inode = { bytes: Uint8Array; hardened: boolean };
@@ -39,18 +42,30 @@ function virtualBackupIO(initial: Record<string, string>, fail: {
     exists: path => files.has(path),
     read: path => {
       calls.push(`read:${path}`);
+      if ((fail.read ?? 0) > 0) {
+        fail.read!--;
+        throw new Error("read failed");
+      }
       const inode = files.get(path);
       if (!inode) throw Object.assign(new Error("missing"), { code: "ENOENT" });
       return inode.bytes.slice();
     },
     createExclusive: path => {
       calls.push(`create:${path}`);
+      if ((fail.create ?? 0) > 0) {
+        fail.create!--;
+        throw new Error("create failed");
+      }
       if (files.has(path)) throw Object.assign(new Error("exists"), { code: "EEXIST" });
       files.set(path, { bytes: new Uint8Array(), hardened: false });
     },
     write: (path, bytes) => {
       calls.push(`write:${path}`);
       writeCount += 1;
+      if ((fail.write ?? 0) > 0) {
+        fail.write!--;
+        throw new Error("write failed");
+      }
       if (fail.writeAfter !== undefined && writeCount > fail.writeAfter) throw new Error("write failed");
       files.get(path)!.bytes = bytes.slice();
     },
@@ -177,6 +192,26 @@ describe("OpenAI tier startup coordinator", () => {
     })).toThrow(AtomicWriteSecretResidualError);
   });
 
+  test("atomic writer cleans initial write and harden failures without touching the destination", () => {
+    for (const stage of ["write", "harden"] as const) {
+      const files = new Map([["/virtual/config.json", "original"]]);
+      let writeCalls = 0;
+      expect(() => atomicWriteFile("/virtual/config.json", "secret", {
+        write: (path, value) => {
+          writeCalls += 1;
+          if (stage === "write" && writeCalls === 1) throw new Error("write failed");
+          files.set(path, value);
+        },
+        harden: () => { if (stage === "harden") throw new Error("harden failed"); },
+        rename: (source, destination) => { files.set(destination, files.get(source)!); files.delete(source); },
+        truncate: path => { files.set(path, ""); },
+        unlink: path => { files.delete(path); },
+      })).toThrow(`${stage} failed`);
+      expect(files.get("/virtual/config.json")).toBe("original");
+      expect([...files.keys()].filter(path => path.endsWith(".tmp"))).toEqual([]);
+    }
+  });
+
   test("backup creates a hardened no-replace snapshot and removes its hard-link temp", () => {
     const state = virtualBackupIO({ "/virtual/config.json": "original-secret" });
     expect(backupConfigBeforeOpenAiTierMigration("/virtual/config.json", state.io)).toBe("created");
@@ -255,5 +290,23 @@ describe("OpenAI tier startup coordinator", () => {
     expect(() => backupConfigBeforeOpenAiTierMigration("/virtual/config.json", afterRollback.io))
       .toThrow(OpenAiTierBackupSecretResidualError);
     expect(afterRollback.files.has("/virtual/config.json.pre-openai-tiers-v1.bak")).toBe(false);
+    const residual = [...afterRollback.files.entries()].find(([path]) => path.endsWith(".tmp"));
+    expect(new TextDecoder().decode(residual?.[1].bytes)).toBe("backup-secret");
+    expect(afterRollback.calls.filter(call => call.startsWith("unlink:") && call.endsWith(".tmp"))).toHaveLength(4);
+  });
+
+  test("backup aborts cleanly at every pre-publication stage", () => {
+    for (const stage of ["read", "create", "write", "harden", "publish"] as const) {
+      const failure = stage === "publish"
+        ? { publish: new Error("publish failed") }
+        : { [stage]: 1 };
+      const state = virtualBackupIO({ "/virtual/config.json": "original-secret" }, failure);
+      expect(() => backupConfigBeforeOpenAiTierMigration("/virtual/config.json", state.io)).toThrow(`${stage} failed`);
+      expect(new TextDecoder().decode(state.files.get("/virtual/config.json")?.bytes)).toBe("original-secret");
+      expect(state.files.has("/virtual/config.json.pre-openai-tiers-v1.bak")).toBe(false);
+      expect([...state.files.keys()].filter(path => path.endsWith(".tmp"))).toEqual([]);
+      const expectedPrefix = stage === "read" ? ["read:/virtual/config.json"] : ["read:/virtual/config.json", expect.stringContaining("create:")];
+      expect(state.calls.slice(0, expectedPrefix.length)).toEqual(expectedPrefix);
+    }
   });
 });

@@ -401,6 +401,27 @@ describe("server local API auth", () => {
         expect(rejected.status).toBe(400);
       }
 
+      for (const [, provider] of [
+        ["base", { ...canonicalDirect, baseUrl: "https://attacker.example/backend-api/codex" }],
+        ["mode", { ...canonicalDirect, authMode: "key" }],
+        ["map", { ...canonicalDirect, modelContextWindows: { "gpt-5.6": 1 } }],
+        ["header", { ...canonicalDirect, headers: { "x-forged": "value" } }],
+        ["capability", { ...canonicalDirect, noVisionModels: ["gpt-5.6"] }],
+      ] as const) {
+        const response = await fetch(new URL("/api/providers", server.url), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "openai-multi", provider }),
+        });
+        expect(response.status).toBe(400);
+      }
+      const legacy = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "chatgpt", provider: canonicalDirect }),
+      });
+      expect(legacy.status).toBe(400);
+
       const dto = await fetch(new URL("/api/config", server.url)).then(response => response.json()) as {
         providers: Record<string, { codexAccountMode?: string }>;
       };
