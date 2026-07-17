@@ -6,6 +6,11 @@ description: How opencodex decides which provider serves a given model id.
 When Codex asks for a model, `router.ts` resolves it to exactly one configured provider. The rules are
 checked **in order**; the first match wins.
 
+For OpenAI, provider identity is an authority boundary: bare `gpt-*` ids select `openai` Direct,
+`openai-multi/<model>` explicitly selects the main-plus-added account pool, and
+`openai-apikey/<model>` explicitly selects API-key transport. These routes do not fall through to
+one another. The legacy public `chatgpt` provider id is hidden after one-time migration.
+
 ## Precedence
 
 1. **Explicit `provider/model`** — if the id contains `/` and the part before it is the name of a
@@ -29,7 +34,7 @@ checked **in order**; the first match wins.
    | Prefixes | Provider |
    | --- | --- |
    | `claude-`, `claude-sonnet-`, `claude-opus-`, `claude-haiku-` | `anthropic` |
-   | `gpt-`, `o1-`, `o3-`, `o4-` | `openai`, `chatgpt`, or `openai-apikey` |
+   | `gpt-`, `o1-`, `o3-`, `o4-` | `openai` Direct for bare ids; use explicit `openai-multi/` or `openai-apikey/` for the other tiers |
    | `llama-`, `mixtral-`, `gemma-` | `groq` |
 
    This matcher is name-based and, unlike the `defaultModel` / `models[]` scans, currently does not

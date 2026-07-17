@@ -6,8 +6,11 @@
 provider, lets the selected adapter speak the upstream protocol, then bridges adapter events back to
 Responses-compatible streaming output.
 
-Native OpenAI/ChatGPT passthrough uses `openai-responses` with `authMode: "forward"`, forwarding only
-the allowed Codex/OpenAI auth/session headers.
+OpenAI Direct uses `openai-responses` with `authMode: "forward"`, forwarding only the allowed
+Codex/OpenAI auth/session headers from the current request. OpenAI Multi uses the same wire adapter
+but resolves main plus added accounts through affinity/quota/cooldown ownership. OpenAI API uses its
+configured key and canonical API base URL. Missing credentials fail in-tier; no tier falls through
+to another.
 
 `POST /v1/responses/compact` handles remote compaction v1 before the generic `/v1/responses` branch
 and before the `/v1/*` guard. Unknown `/v1/*` paths return JSON 404 errors instead of falling through
@@ -155,8 +158,11 @@ policies; kiro imports the shared abort/sleep helpers from this module.
 
 ## Sidecars
 
-Web search and vision sidecars only run when a forward ChatGPT provider/login exists and the main
+Web search and vision sidecars only run when Direct or Multi forward ChatGPT authority exists and the main
 request needs that capability.
+
+Sidecar forward candidates are deterministic: Direct first, Multi second. API-key OpenAI is not a
+ChatGPT forward sidecar candidate.
 
 | Sidecar | Default model | Activation |
 | --- | --- | --- |

@@ -5,6 +5,10 @@ description: opencodex 如何决定由哪个提供商来服务给定的模型 id
 
 当 Codex 请求某个模型时，`router.ts` 会将其解析为唯一一个已配置的提供商。规则**按顺序**检查；第一个匹配者胜出。
 
+对 OpenAI 而言，provider id 是权限边界：bare `gpt-*` 使用 `openai` Direct，
+`openai-multi/<model>` 显式使用包含主账户和添加账户的池，`openai-apikey/<model>` 显式使用
+API key transport。三条路径互不 fallback，迁移后旧的公开 `chatgpt` id 会被隐藏。
+
 ## 优先级
 
 1. **显式 `provider/model`** —— 如果 id 包含 `/`，且斜杠前的部分是某个已配置提供商的名称，则使用该提供商，并将 id 截取为斜杠之后的部分。
@@ -25,7 +29,7 @@ description: opencodex 如何决定由哪个提供商来服务给定的模型 id
    | 前缀 | 提供商 |
    | --- | --- |
    | `claude-`、`claude-sonnet-`、`claude-opus-`、`claude-haiku-` | `anthropic` |
-   | `gpt-`、`o1-`、`o3-`、`o4-` | `openai`、`chatgpt` 或 `openai-apikey` |
+   | `gpt-`、`o1-`、`o3-`、`o4-` | bare id 使用 `openai` Direct；其他层级显式使用 `openai-multi/` 或 `openai-apikey/` |
    | `llama-`、`mixtral-`、`gemma-` | `groq` |
 
    该匹配器只检查名称。与 `defaultModel` / `models[]` 扫描不同，目前即使匹配提供商的 `disabled`

@@ -27,7 +27,11 @@ display name use `provider/model`.
 
 ## Native passthrough
 
-Native OpenAI entries remain available for ChatGPT passthrough. Routed non-OpenAI models must not
+Native bare OpenAI entries select `openai` Direct. `openai-multi/<model>` creates an explicit routed
+catalog identity for the main-plus-added account pool, and `openai-apikey/<model>` creates an API-key
+identity. The API GPT-5.6 rows use 1,050,000 context / 922,000 max input; their `*-pro` virtual rows
+rewrite to the base upstream model with `reasoning.mode: "pro"` while public state keeps the virtual
+slug. Native OpenAI entries remain available for ChatGPT passthrough. Routed non-OpenAI models must not
 inherit native-only service tier or WebSocket metadata unless the user explicitly enables that
 capability.
 

@@ -8,6 +8,19 @@ opencodex는 `~/.opencodex/config.json`에서 설정을 읽습니다. `ocx init`
 파일을 파싱할 수 없으면 `config.json.invalid-<timestamp>`로 백업하고 콘솔에 경고한 뒤 기본값으로
 시작합니다. 파일이 없어도 기본 설정(단일 `openai` forward 프로바이더)을 사용합니다.
 
+## 예약된 OpenAI 프로바이더
+
+`openai`, `openai-multi`, `openai-apikey`는 고정된 예약 id입니다. Direct는 현재 Codex
+caller/메인 로그인만 사용하고 회전하지 않습니다. Multi는 메인과 추가 계정을 모두 포함하며
+affinity·쿼터·cooldown 선택을 소유합니다. API는 설정된 API key/key pool만 사용합니다. bare 모델,
+`openai-multi/<model>`, `openai-apikey/<model>`로 선택하며 티어 간 fallback은 없습니다.
+API GPT-5.6 metadata는 context 1,050,000 / max input 922,000이고 Pro virtual id는 wire에서 base
+모델과 `reasoning.mode: "pro"`로 변환됩니다.
+
+`openaiProviderTierVersion: 1`은 레거시 projection 완료 마커입니다. projection 전
+`config.json.pre-openai-tiers-v1.bak`을 no-replace로 만들며 풀 설치는 Multi가 기본이 되고 공개
+`chatgpt` id는 숨겨집니다.
+
 ## 최상위 (`OcxConfig`)
 
 | Field | Type | Default | Meaning |
@@ -16,6 +29,7 @@ opencodex는 `~/.opencodex/config.json`에서 설정을 읽습니다. `ocx init`
 | `hostname?` | `string` | `"127.0.0.1"` | 바인드 주소. LAN에 공개하려면 `"0.0.0.0"`으로 설정합니다(`OPENCODEX_API_AUTH_TOKEN` 필요, 아래 [원격 접근](#원격-접근) 참조). |
 | `proxy?` | `string` | — | 외부로 나가는 HTTP(S) 프록시 URL 또는 `${ENV_VAR}` 참조. 해당 환경 변수가 비어 있을 때 `HTTP_PROXY` / `HTTPS_PROXY`에 적용하고, loopback은 `NO_PROXY`에 유지합니다. |
 | `providers` | `Record<string, OcxProviderConfig>` | — | 프로바이더 이름 → 설정 map. |
+| `openaiProviderTierVersion?` | `1` | migration 설정 | Direct/Multi/API projection 완료 마커. |
 | `defaultProvider` | `string` | `"openai"` | 라우팅에서 더 나은 match를 찾지 못했을 때 쓸 프로바이더. |
 | `subagentModels?` | `string[]` | `gpt-5.5`, GPT-5.6 3종, `gpt-5.4-mini` | Codex 서브에이전트 선택기 앞쪽에 표시할 네이티브 slug 또는 `provider/model` id. 최대 5개이며, 명시적인 빈 배열도 그대로 보존합니다. v2 위임 안내에는 사용 가능한 모델 로스터로도 주입되며, 각 항목이 카탈로그에 광고하는 effort 사다리가 함께 표기됩니다. |
 | `injectionModel?` | `string` | — | 주입되는 multi-agent 안내(v2 표면)에 들어갈 네이티브/라우팅 모델. 위임 안내에서 이 모델을 `fork_turns: "none"`과 함께 `spawn_agent`에 넘기게 합니다. |
@@ -216,10 +230,10 @@ Codex 승인과 sandbox 규칙을 우회하는 Cursor 네이티브 로컬 실행
 `/v1/models`에 게시합니다. 대시보드에는 전체 모델 목록이 남으므로 나중에 allowlist를 바꿀 수
 있습니다.
 
-프리뷰 GPT-5.6 fallback 항목도 같은 방식을 씁니다. OpenAI API 키 preset은 `gpt-5.6-sol`,
-`gpt-5.6-terra`, `gpt-5.6-luna`를 seed하고, OpenRouter preset은 각각
-`openai/gpt-5.6-sol`, `openai/gpt-5.6-terra`, `openai/gpt-5.6-luna`로 seed합니다. 두 preset 모두
-모델별 `modelContextWindows`를 `372000`으로 설정합니다. 동기화된 Codex 카탈로그에서는 `max`
+프리뷰 GPT-5.6 fallback 항목도 같은 방식을 씁니다. OpenAI API 키 preset은 base와 Pro id를
+context `1050000`, max input `922000`으로 seed하고, OpenRouter preset은
+`openai/gpt-5.6-sol`, `openai/gpt-5.6-terra`, `openai/gpt-5.6-luna`를 context `1050000`으로
+seed합니다. Direct/Multi Codex catalog 계약은 `372000`입니다. 동기화된 Codex 카탈로그에서는 `max`
 reasoning을 알리되 `xhigh`와 구분합니다. 실시간 프로바이더 결과와 이 명시적 항목을 합치려면
 `liveModels`를 켜 두고, `models`만 노출하려면 `false`로 설정하세요.
 

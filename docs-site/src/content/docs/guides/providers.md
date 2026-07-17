@@ -6,6 +6,24 @@ description: Every way opencodex authenticates and talks to an LLM provider — 
 A **provider** is one upstream LLM endpoint plus how to reach it: an adapter, a base URL, an auth
 mode, and an optional model list. Providers live under `providers` in `~/.opencodex/config.json`.
 
+## OpenAI's three provider tiers
+
+| Provider id | Use | Credential/account rule |
+| --- | --- | --- |
+| `openai` | Codex Direct | Current Codex caller/main login only; never reads or rotates the pool. |
+| `openai-multi` | Codex Multi-account | Main login plus added accounts; affinity, quota, cooldown, and health select an eligible member. |
+| `openai-apikey` | OpenAI API | Configured API key/key pool only; never reads Codex accounts. |
+
+Use `gpt-5.6-sol`, `openai-multi/gpt-5.6-sol`, or `openai-apikey/gpt-5.6-sol` to select Direct,
+Multi, or API respectively. The main account is included in Multi, and tiers never credential-fallback
+into one another. The API tier publishes 1,050,000 context / 922,000 max input metadata. Its
+`sol-pro`, `terra-pro`, and `luna-pro` virtual ids keep their selected public identity while the wire
+uses the base model plus `reasoning.mode: "pro"`.
+
+On first upgrade, legacy pool configs migrate to Multi and the public `chatgpt` provider id is hidden.
+The original config is retained once at `~/.opencodex/config.json.pre-openai-tiers-v1.bak`; restore it
+with `cp ~/.opencodex/config.json.pre-openai-tiers-v1.bak ~/.opencodex/config.json`.
+
 ## Auth modes
 
 Provider configs accept three `authMode` values (`key` is the default). The built-in registry also
@@ -19,7 +37,7 @@ labels local presets separately; those normally omit both `authMode` and `apiKey
 
 ## 1. ChatGPT login (forward / passthrough)
 
-The default provider needs **no API key**. It forwards the credentials from your existing
+The Direct provider needs **no API key**. It forwards the credentials from your existing
 `codex login` straight to the OpenAI Responses backend:
 
 ```json
@@ -124,9 +142,9 @@ visible even while live catalogs lag:
 
 | Codex route | Seeded model ids | Codex-visible context |
 | --- | --- | --- |
-| ChatGPT login passthrough | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | 372,000 |
-| OpenAI (API key) | `openai-apikey/gpt-5.6-sol`, `openai-apikey/gpt-5.6-terra`, `openai-apikey/gpt-5.6-luna` | 372,000 |
-| OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` | 372,000 |
+| Codex Direct / Multi | `gpt-5.6-*` / `openai-multi/gpt-5.6-*` | 372,000 |
+| OpenAI (API key) | `openai-apikey/gpt-5.6-*` plus `*-pro` | 1,050,000 (922,000 max input) |
+| OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` | 1,050,000 |
 | Cursor | `cursor/gpt-5.6-sol`, `cursor/gpt-5.6-terra`, `cursor/gpt-5.6-luna` | 1,000,000 |
 
 The native GPT-5.6 entries preserve the pinned upstream reasoning ladders (for example, Luna has

@@ -13,6 +13,7 @@ for (const key of Object.keys(process.env)) {
 }
 process.env.OPENCODEX_HOME = opencodexHome;
 process.env.CODEX_HOME = codexHome;
+process.env.OPENCODEX_API_AUTH_TOKEN = "fixture-admission";
 process.env.NO_PROXY = "127.0.0.1,localhost,::1";
 process.env.no_proxy = "127.0.0.1,localhost,::1";
 mkdirSync(opencodexHome, { recursive: true, mode: 0o700 });
