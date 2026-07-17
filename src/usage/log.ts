@@ -13,6 +13,7 @@ export interface PersistedUsageEntry {
   model: string;
   surface?: "claude";
   resolvedModel?: string;
+  requestedModel?: string;
   status: number;
   durationMs: number;
   usageStatus: UsageStatus;
@@ -78,6 +79,7 @@ function normalizeUsageEntry(entry: PersistedUsageEntry): PersistedUsageEntry {
     model: entry.model,
     ...(entry.surface === "claude" ? { surface: entry.surface } : {}),
     ...(entry.resolvedModel ? { resolvedModel: entry.resolvedModel } : {}),
+    ...(entry.requestedModel ? { requestedModel: entry.requestedModel } : {}),
     status: entry.status,
     durationMs: entry.durationMs,
     usageStatus: entry.usageStatus,

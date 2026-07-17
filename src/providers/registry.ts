@@ -54,6 +54,8 @@ export interface ProviderRegistryEntry {
   thinkingBudgetModels?: string[];
   escapeBuiltinToolNames?: boolean;
   oauthId?: string;
+  virtualModels?: Record<string, { wireModelId: string; reasoningMode: "pro" }>;
+  modelMaxInputTokens?: Record<string, number>;
   jawcodeBundle?: string;
   extraMetadataAliases?: string[];
   metadataModelIdNormalize?: MetadataModelIdNormalize;
@@ -94,12 +96,28 @@ const MINIMAX_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEntries
   MINIMAX_MODELS.map(id => [id, id === "MiniMax-M3" ? 1_000_000 : 204_800]),
 );
 const OPENAI_GPT56_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
-const OPENAI_GPT56_CONTEXT_WINDOW = 372_000;
+const OPENAI_GPT56_PRO_MODELS = ["gpt-5.6-sol-pro", "gpt-5.6-terra-pro", "gpt-5.6-luna-pro"];
+const OPENAI_API_GPT56_CONTEXT_WINDOW = 1_050_000;
+const OPENAI_CODEX_GPT56_CONTEXT_WINDOW = 372_000;
 const OPENAI_GPT56_CONTEXT_WINDOWS = {
-  "gpt-5.6-sol": OPENAI_GPT56_CONTEXT_WINDOW,
-  "gpt-5.6-terra": OPENAI_GPT56_CONTEXT_WINDOW,
-  "gpt-5.6-luna": OPENAI_GPT56_CONTEXT_WINDOW,
+  "gpt-5.6-sol": OPENAI_CODEX_GPT56_CONTEXT_WINDOW,
+  "gpt-5.6-terra": OPENAI_CODEX_GPT56_CONTEXT_WINDOW,
+  "gpt-5.6-luna": OPENAI_CODEX_GPT56_CONTEXT_WINDOW,
 };
+const OPENAI_API_GPT56_CONTEXT_WINDOWS: Record<string, number> = {
+  ...Object.fromEntries([...OPENAI_GPT56_MODELS, ...OPENAI_GPT56_PRO_MODELS].map(id => [id, OPENAI_API_GPT56_CONTEXT_WINDOW])),
+  "gpt-5.5": OPENAI_API_GPT56_CONTEXT_WINDOW,
+};
+const OPENAI_API_GPT56_MAX_INPUT_TOKENS: Record<string, number> = {
+  ...Object.fromEntries([...OPENAI_GPT56_MODELS, ...OPENAI_GPT56_PRO_MODELS].map(id => [id, 922_000])),
+  "gpt-5.5": 922_000,
+};
+const OPENAI_API_GPT56_VIRTUAL_MODELS: Record<string, { wireModelId: string; reasoningMode: "pro" }> = {
+  "gpt-5.6-sol-pro": { wireModelId: "gpt-5.6-sol", reasoningMode: "pro" },
+  "gpt-5.6-terra-pro": { wireModelId: "gpt-5.6-terra", reasoningMode: "pro" },
+  "gpt-5.6-luna-pro": { wireModelId: "gpt-5.6-luna", reasoningMode: "pro" },
+};
+const OPENAI_API_GPT56_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const OPENROUTER_GPT56_MODELS = OPENAI_GPT56_MODELS.map(id => `openai/${id}`);
 // OpenRouter's live /endpoints routes report 1,050,000; keep this separate from the
 // unverified OpenAI API-key seed. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
@@ -370,7 +388,27 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelContextWindows: KIRO_MODEL_CONTEXT_WINDOWS,
     modelReasoningEfforts: KIRO_MODEL_REASONING_EFFORTS,
   },
-  { id: "openai-apikey", label: "OpenAI API", adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", authKind: "key", featured: true, dashboardUrl: "https://platform.openai.com/api-keys", defaultModel: "gpt-5.5", models: ["gpt-5.5", ...OPENAI_GPT56_MODELS], liveModels: true, modelContextWindows: OPENAI_GPT56_CONTEXT_WINDOWS },
+  {
+    id: "openai-apikey",
+    label: "OpenAI API",
+    adapter: "openai-responses",
+    baseUrl: "https://api.openai.com/v1",
+    authKind: "key",
+    featured: true,
+    dashboardUrl: "https://platform.openai.com/api-keys",
+    defaultModel: "gpt-5.5",
+    models: ["gpt-5.5", ...OPENAI_GPT56_MODELS, ...OPENAI_GPT56_PRO_MODELS],
+    liveModels: true,
+    modelContextWindows: OPENAI_API_GPT56_CONTEXT_WINDOWS,
+    modelMaxInputTokens: OPENAI_API_GPT56_MAX_INPUT_TOKENS,
+    modelInputModalities: Object.fromEntries(
+      ["gpt-5.5", ...OPENAI_GPT56_MODELS, ...OPENAI_GPT56_PRO_MODELS].map(id => [id, ["text", "image"]]),
+    ),
+    modelReasoningEfforts: Object.fromEntries(
+      [...OPENAI_GPT56_MODELS, ...OPENAI_GPT56_PRO_MODELS].map(id => [id, OPENAI_API_GPT56_REASONING_EFFORTS]),
+    ),
+    virtualModels: OPENAI_API_GPT56_VIRTUAL_MODELS,
+  },
   {
     id: "umans",
     label: "Umans AI Coding Plan",

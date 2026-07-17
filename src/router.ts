@@ -93,6 +93,7 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
   const modelReasoningEfforts = mergeStringArrayRecord(registryEntry.modelReasoningEfforts, provider.modelReasoningEfforts);
   const modelContextWindows = mergeRecordFill(registryEntry.modelContextWindows, provider.modelContextWindows);
   const modelInputModalities = mergeRecordFill(registryEntry.modelInputModalities, provider.modelInputModalities);
+  const modelMaxInputTokens = mergeRecordFill(registryEntry.modelMaxInputTokens, provider.modelMaxInputTokens);
   const noVisionModels = mergeStringArray(registryEntry.noVisionModels, provider.noVisionModels);
   const noReasoningModels = mergeStringArray(registryEntry.noReasoningModels, provider.noReasoningModels);
   const noTemperatureModels = mergeStringArray(registryEntry.noTemperatureModels, provider.noTemperatureModels);
@@ -136,6 +137,7 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
     ...(provider.parallelToolCalls === undefined && registryEntry.parallelToolCalls !== undefined ? { parallelToolCalls: registryEntry.parallelToolCalls } : {}),
     ...(modelContextWindows ? { modelContextWindows } : {}),
     ...(modelInputModalities ? { modelInputModalities } : {}),
+    ...(modelMaxInputTokens ? { modelMaxInputTokens } : {}),
     ...(modelReasoningEfforts ? { modelReasoningEfforts } : {}),
     ...(reasoningEffortMap ? { reasoningEffortMap } : {}),
     ...(modelReasoningEffortMap ? { modelReasoningEffortMap } : {}),

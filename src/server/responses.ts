@@ -43,6 +43,7 @@ import {
 import { fetchWithResetRetry, fetchWithTransientRetry } from "../lib/upstream-retry";
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "./auth-cors";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../providers/openai-sidecar";
+import { applyOpenAiVirtualModel } from "../providers/openai-virtual-models";
 import { isUsageDebugEnabled } from "../usage/debug";
 import { readJsonRequestBody, DecompressedBodyTooLargeError, UnsupportedContentEncodingError } from "./request-decompress";
 import { resolveAdapter, resolveWireProtocolOverride } from "./adapter-resolve";
@@ -507,6 +508,10 @@ export async function handleResponses(
   logCtx.model = route.modelId;
   logCtx.provider = route.providerName;
   logCtx.providerAdapter = route.provider.adapter;
+
+  // Virtual model rewriting: Pro aliases → base model + reasoning.mode="pro".
+  // Must run before effort caps/native clamps so the base model gets correct limits.
+  applyOpenAiVirtualModel(parsed, route, logCtx);
 
   // Fast mode override: when config.fastMode is explicitly set, inject or strip
   // service_tier for OpenAI-routed models. Undefined = passthrough (client decides).

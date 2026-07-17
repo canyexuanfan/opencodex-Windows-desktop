@@ -597,6 +597,8 @@ export interface OcxProviderConfig {
   modelContextWindows?: Record<string, number>;
   /** Model-specific Codex catalog input modalities, e.g. ["text"] or ["text", "image"]. */
   modelInputModalities?: Record<string, string[]>;
+  /** Model-specific max input token limits. Values cap auto_compact_token_limit. */
+  modelMaxInputTokens?: Record<string, number>;
   headers?: Record<string, string>;
   /**
    * "key" (default): authenticate upstream with `apiKey`.

@@ -12,6 +12,7 @@ export interface DerivedKeyLoginProvider {
   contextWindow?: number;
   modelContextWindows?: Record<string, number>;
   modelInputModalities?: Record<string, string[]>;
+  modelMaxInputTokens?: Record<string, number>;
   reasoningEfforts?: string[];
   modelReasoningEfforts?: Record<string, string[]>;
   reasoningEffortMap?: Record<string, string>;
@@ -79,6 +80,7 @@ export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderCon
     ...(entry.contextWindow !== undefined ? { contextWindow: entry.contextWindow } : {}),
     ...(entry.modelContextWindows ? { modelContextWindows: { ...entry.modelContextWindows } } : {}),
     ...(entry.modelInputModalities ? { modelInputModalities: cloneRecordOfArrays(entry.modelInputModalities) } : {}),
+    ...(entry.modelMaxInputTokens ? { modelMaxInputTokens: { ...entry.modelMaxInputTokens } } : {}),
     ...(entry.reasoningEfforts ? { reasoningEfforts: [...entry.reasoningEfforts] } : {}),
     ...(entry.modelReasoningEfforts ? { modelReasoningEfforts: cloneRecordOfArrays(entry.modelReasoningEfforts) } : {}),
     ...(entry.reasoningEffortMap ? { reasoningEffortMap: { ...entry.reasoningEffortMap } } : {}),
@@ -116,6 +118,7 @@ export function deriveKeyLoginMap(): Record<string, DerivedKeyLoginProvider> {
       ...(entry.contextWindow !== undefined ? { contextWindow: entry.contextWindow } : {}),
       ...(entry.modelContextWindows ? { modelContextWindows: { ...entry.modelContextWindows } } : {}),
       ...(entry.modelInputModalities ? { modelInputModalities: cloneRecordOfArrays(entry.modelInputModalities) } : {}),
+      ...(entry.modelMaxInputTokens ? { modelMaxInputTokens: { ...entry.modelMaxInputTokens } } : {}),
       ...(entry.reasoningEfforts ? { reasoningEfforts: [...entry.reasoningEfforts] } : {}),
       ...(entry.modelReasoningEfforts ? { modelReasoningEfforts: cloneRecordOfArrays(entry.modelReasoningEfforts) } : {}),
       ...(entry.reasoningEffortMap ? { reasoningEffortMap: { ...entry.reasoningEffortMap } } : {}),

@@ -294,6 +294,7 @@ export interface CatalogModel {
   owned_by?: string;
   reasoningEfforts?: string[];
   contextWindow?: number;
+  maxInputTokens?: number;
   contextCap?: number;
   contextCapped?: boolean;
   inputModalities?: string[];
