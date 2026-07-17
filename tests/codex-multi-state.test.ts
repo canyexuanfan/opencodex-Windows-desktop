@@ -1,19 +1,23 @@
 import { describe, expect, test } from "bun:test";
-import { codexMultiProviderState } from "../gui/src/codex-multi-state";
+import { codexAccountModeState } from "../gui/src/codex-multi-state";
 
-describe("Codex Multi provider presentation state", () => {
-  test("distinguishes absent, enabled, and disabled configurations", () => {
-    expect(codexMultiProviderState({ providers: {} })).toBe("absent");
-    expect(codexMultiProviderState({
-      providers: { "openai-multi": { disabled: false } },
-    })).toBe("enabled");
-    expect(codexMultiProviderState({
-      providers: { "openai-multi": { disabled: true } },
-    })).toBe("disabled");
+describe("OpenAI account-mode presentation state", () => {
+  test("distinguishes absent, disabled, pool, and direct configurations", () => {
+    expect(codexAccountModeState({ providers: {} })).toBe("absent");
+    expect(codexAccountModeState({ providers: { openai: { disabled: true } } })).toBe("disabled");
+    expect(codexAccountModeState({ providers: { openai: { codexAccountMode: "pool" } } })).toBe("pool");
+    expect(codexAccountModeState({ providers: { openai: { codexAccountMode: "direct" } } })).toBe("direct");
+    expect(codexAccountModeState({ providers: { openai: {} } })).toBe("pool");
   });
 
-  test("uses own-property presence instead of inherited provider names", () => {
-    const providers = Object.create({ "openai-multi": { disabled: false } }) as Record<string, unknown>;
-    expect(codexMultiProviderState({ providers })).toBe("absent");
+  test("fails malformed and inherited provider values conservatively", () => {
+    expect(codexAccountModeState({ providers: { openai: "invalid" } })).toBe("absent");
+    expect(codexAccountModeState({ providers: { openai: { codexAccountMode: "invalid" } } })).toBe("absent");
+    const providers = Object.create({ openai: { codexAccountMode: "pool" } }) as Record<string, unknown>;
+    expect(codexAccountModeState({ providers })).toBe("absent");
+  });
+
+  test("does not revive a legacy Multi-only configuration", () => {
+    expect(codexAccountModeState({ providers: { "openai-multi": { disabled: false } } })).toBe("absent");
   });
 });

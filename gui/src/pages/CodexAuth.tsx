@@ -5,7 +5,7 @@ import { Notice, EmptyState } from "../ui";
 import AddCodexAccountModal from "../components/AddCodexAccountModal";
 import type { AccountQuota } from "../codex-quota-utils";
 import QuotaBars from "../components/QuotaBars";
-import { codexMultiProviderState, type CodexMultiProviderState } from "../codex-multi-state";
+import { codexAccountModeState, type CodexAccountModeState } from "../codex-multi-state";
 
 interface AccountEntry {
   id: string; email: string; plan?: string; isMain: boolean;
@@ -27,7 +27,7 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
   const [redeeming, setRedeeming] = useState(false);
   const [creditDetails, setCreditDetails] = useState<{ granted_at: string; expires_at: string }[] | null>(null);
   const [creditDetailsLoading, setCreditDetailsLoading] = useState(false);
-  const [multiProviderState, setMultiProviderState] = useState<CodexMultiProviderState | null>(null);
+  const [accountModeState, setAccountModeState] = useState<CodexAccountModeState | null>(null);
 
   const load = useCallback(async (refreshQuota = false) => {
     try {
@@ -39,7 +39,7 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
       setAccounts(accts.accounts ?? []);
       setActiveId(active.activeCodexAccountId ?? null);
       setAutoThreshold(active.autoSwitchThreshold ?? 80);
-      setMultiProviderState(codexMultiProviderState(config));
+      setAccountModeState(codexAccountModeState(config));
       return true;
     } catch {
       return false;
@@ -66,7 +66,9 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
     setActiveId(id);
     setConfirm(null);
     const label = id && id !== "__main__" ? accounts.find(a => a.id === id)?.email ?? id : "main";
-    setToast(t("codexAuth.switched", { email: label }));
+    setToast(accountModeState === "direct"
+      ? t("codexAuth.poolPreparedToast", { email: label })
+      : t("codexAuth.switched", { email: label }));
     setTimeout(() => setToast(""), 5000);
   };
 
@@ -164,16 +166,27 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
       {toast && <Notice tone="ok">{toast}</Notice>}
 
       <div className="panel" style={{ marginBottom: 16 }}>
-        <strong>{t("codexAuth.multiOwnerTitle")}</strong>
-        <p className="card-sub" style={{ margin: "6px 0 0" }}>{t("codexAuth.multiOwnerDesc")}</p>
-        {multiProviderState === "absent" && (
-          <p className="card-sub" style={{ margin: "8px 0 0" }}>
-            {t("codexAuth.multiMissing")} <a href="#providers">{t("codexAuth.addMultiProvider")}</a>
+        <div className="row">
+          <strong>{t("codexAuth.accountModeTitle")}</strong>
+          {accountModeState === "pool" && <span className="badge badge-accent">{t("codexAuth.accountModePool")}</span>}
+          {accountModeState === "direct" && <span className="badge badge-green">{t("codexAuth.accountModeDirect")}</span>}
+        </div>
+        {accountModeState === "pool" && (
+          <p className="card-sub" style={{ margin: "6px 0 0" }}>{t("codexAuth.accountModePoolDesc")}</p>
+        )}
+        {accountModeState === "direct" && (
+          <p className="card-sub" style={{ margin: "6px 0 0" }}>
+            {t("codexAuth.accountModeDirectDesc")} <a href="#providers">{t("codexAuth.openProviders")}</a>
           </p>
         )}
-        {multiProviderState === "disabled" && (
+        {accountModeState === "absent" && (
           <p className="card-sub" style={{ margin: "8px 0 0" }}>
-            {t("codexAuth.multiDisabled")} <a href="#providers">{t("codexAuth.openProviders")}</a>
+            {t("codexAuth.openaiMissing")} <a href="#providers">{t("codexAuth.openProviders")}</a>
+          </p>
+        )}
+        {accountModeState === "disabled" && (
+          <p className="card-sub" style={{ margin: "8px 0 0" }}>
+            {t("codexAuth.openaiDisabled")} <a href="#providers">{t("codexAuth.openProviders")}</a>
           </p>
         )}
       </div>
@@ -187,7 +200,9 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
           <span className="card-badges">
             {main && <TicketBadge t={t} account={{ ...main, id: "__main__" } as AccountEntry} onClick={() => openResetPopup({ ...main, id: "__main__" } as AccountEntry)} />}
             <span className={`badge ${isMainActive ? "badge-primary" : "badge-muted"}`}>
-              {isMainActive ? t("codexAuth.nextSession") : t("codexAuth.current")}
+              {isMainActive
+                ? t(accountModeState === "direct" ? "codexAuth.poolPrepared" : "codexAuth.nextSession")
+                : t("codexAuth.current")}
             </span>
           </span>
           <span className="card-right"><IconLock width={14} /> {t("codexAuth.appLogin")}</span>
@@ -216,7 +231,11 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
               {a.plan && <span className="badge badge-green">{a.plan}</span>}
               <TicketBadge t={t} account={a} onClick={() => openResetPopup(a)} />
               {a.needsReauth && <span className="badge badge-amber">{t("codexAuth.needsReauth")}</span>}
-              {isNext(a.id) && !a.needsReauth && <span className="badge badge-primary">{t("codexAuth.nextSession")}</span>}
+              {isNext(a.id) && !a.needsReauth && (
+                <span className="badge badge-primary">
+                  {t(accountModeState === "direct" ? "codexAuth.poolPrepared" : "codexAuth.nextSession")}
+                </span>
+              )}
             </span>
             <button
               className="btn-icon btn-icon-danger card-right"
@@ -246,9 +265,13 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
       {confirm && (
         <div className="modal-overlay" onClick={() => setConfirm(null)}>
           <div className="modal-card" onClick={e => e.stopPropagation()}>
-            <h3>{confirm.id === "__main__" ? t("codexAuth.switchBack") : t("codexAuth.switchTitle")}</h3>
+            <h3>{accountModeState === "direct"
+              ? t("codexAuth.preparePoolTitle")
+              : confirm.id === "__main__" ? t("codexAuth.switchBack") : t("codexAuth.switchTitle")}</h3>
             <p className="modal-desc">
-              {confirm.id === "__main__" ? t("codexAuth.switchBackDesc") : t("codexAuth.switchDesc")}
+              {accountModeState === "direct"
+                ? t("codexAuth.preparePoolDesc")
+                : confirm.id === "__main__" ? t("codexAuth.switchBackDesc") : t("codexAuth.switchDesc")}
             </p>
             <div className="card" style={{ margin: "12px 0" }}>
               <strong>{confirm.id === "__main__" ? main?.email : confirm.email}</strong>
@@ -260,7 +283,7 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
             <div className="modal-actions">
               <button className="btn btn-ghost" onClick={() => setConfirm(null)}>{t("codexAuth.cancel")}</button>
               <button className="btn btn-primary" onClick={() => setActive(confirm.id === "__main__" ? "__main__" : confirm.id)}>
-                {t("codexAuth.setAsNext")}
+                {t(accountModeState === "direct" ? "codexAuth.prepareForPool" : "codexAuth.setAsNext")}
               </button>
             </div>
           </div>

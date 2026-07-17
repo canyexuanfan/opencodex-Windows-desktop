@@ -26,7 +26,6 @@ const PROVIDER_ICON_ALIASES: Record<string, string> = {
   ollama: "ollama-color.svg",
   "ollama-cloud": "ollama-color.svg",
   openai: "openai.svg",
-  "openai-multi": "openai.svg",
   "openai-apikey": "openai.svg",
   "opencode-free": "opencode.svg",
   "opencode-go": "opencode.svg",
@@ -49,7 +48,6 @@ const PROVIDER_BRAND_COLORS: Record<string, string> = {
   anthropic: "#D97757",
   "anthropic-apikey": "#D97757",
   openai: "#10A37F",
-  "openai-multi": "#10A37F",
   "openai-apikey": "#10A37F",
   chatgpt: "#10A37F",
   "azure-openai": "#10A37F",
@@ -67,15 +65,13 @@ const PROVIDER_BRAND_COLORS: Record<string, string> = {
 
 /**
  * Canonical brand casing for known provider ids (config keys stay lowercase).
- * Three-tier OpenAI ids follow the registry labels (Codex Direct / Codex
- * Multi-account / OpenAI API); legacy `chatgpt` keeps its historical label.
+ * Current OpenAI ids follow the registry labels; legacy `chatgpt` keeps its historical label.
  */
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   anthropic: "Anthropic Claude",
   "anthropic-apikey": "Anthropic Claude",
   chatgpt: "ChatGPT",
-  openai: "Codex Direct",
-  "openai-multi": "Codex Multi-account",
+  openai: "OpenAI (Codex login)",
   "openai-apikey": "OpenAI API",
   "azure-openai": "Azure OpenAI",
   "cloudflare-ai-gateway": "Cloudflare AI Gateway",

@@ -24,7 +24,10 @@ import { providerDestinationResolvedError } from "../lib/destination-policy";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "../oauth/key-providers";
 import { deriveProviderPresets } from "../providers/derive";
 import { providerCodexAccountMode } from "../providers/registry";
-import { fetchProviderQuotaReports } from "../providers/quota";
+import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../providers/quota";
+import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
+import { clearThreadAccountMap } from "../codex/routing";
+import { primeCodexPoolQuotas } from "../codex/auth-api";
 import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../providers/context-cap";
 import { readUsageEntries } from "../usage/log";
 import { getUsageDebugLogEntries } from "../usage/debug";
@@ -59,6 +62,9 @@ export const VERSION = (() => {
 export interface ManagementApiDeps {
   toggleCodexMultiAgentV2?: (enabled: boolean) => void;
   refreshCodexCatalog?: () => Promise<void>;
+  clearThreadAccountMap?: () => void;
+  clearProviderQuotaCache?: () => void;
+  primeCodexPoolQuotas?: (config: OcxConfig, reason: string) => Promise<void> | void;
 }
 
 /** Narrow an unknown JSON value to a plain (non-array) object for strict request-body validation. */
@@ -81,7 +87,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   }
   // Management bodies are small JSON (provider names, key ids, settings). Reject oversized
   // payloads before any handler buffers them — the data plane has its own decompression cap.
-  if (req.method === "POST" || req.method === "PUT") {
+  if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
     const contentLength = Number(req.headers.get("content-length") ?? "0");
     if (Number.isFinite(contentLength) && contentLength > 2 * 1024 * 1024) {
       return jsonResponse({ error: "request body too large" }, 413, req, config);
@@ -452,17 +458,51 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   if (url.pathname === "/api/providers" && req.method === "PATCH") {
     const name = url.searchParams.get("name")?.trim();
     if (!name || !isValidProviderName(name) || !hasOwnProvider(config.providers, name)) return jsonResponse({ error: "unknown provider" }, 404);
-    let body: { disabled?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
-    if (typeof body.disabled !== "boolean") return jsonResponse({ error: "disabled boolean is required" }, 400);
-    if (body.disabled && name === config.defaultProvider) {
-      return jsonResponse({ error: "cannot disable the default provider; set another default first" }, 400);
+    let rawBody: unknown;
+    try { rawBody = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (!isPlainRecord(rawBody)) return jsonResponse({ error: "provider patch body must be a plain object" }, 400);
+    const keys = Object.keys(rawBody);
+    const hasDisabled = Object.hasOwn(rawBody, "disabled");
+    const hasMode = Object.hasOwn(rawBody, "codexAccountMode");
+    if (keys.length !== 1 || hasDisabled === hasMode) {
+      return jsonResponse({ error: "provide exactly one of disabled or codexAccountMode" }, 400);
+    }
+
+    if (hasDisabled) {
+      if (typeof rawBody.disabled !== "boolean") return jsonResponse({ error: "disabled boolean is required" }, 400);
+      if (rawBody.disabled && name === config.defaultProvider) {
+        return jsonResponse({ error: "cannot disable the default provider; set another default first" }, 400);
+      }
+      const { saveConfig: save } = await import("../config");
+      config.providers[name] = { ...config.providers[name], disabled: rawBody.disabled };
+      save(config);
+      await refreshCodexCatalogBestEffort();
+      return jsonResponse({ success: true, name, disabled: rawBody.disabled });
+    }
+
+    if (name !== "openai") return jsonResponse({ error: "codexAccountMode is valid only for provider openai" }, 400);
+    const mode = rawBody.codexAccountMode;
+    if (mode !== "pool" && mode !== "direct") {
+      return jsonResponse({ error: "codexAccountMode must be pool or direct" }, 400);
+    }
+    const provider = config.providers.openai;
+    if (!provider || !isCanonicalOpenAiForwardProvider(provider)) {
+      return jsonResponse({ error: "provider openai must be the canonical built-in provider" }, 400);
     }
     const { saveConfig: save } = await import("../config");
-    config.providers[name] = { ...config.providers[name], disabled: body.disabled };
+    config.providers.openai = { ...provider, codexAccountMode: mode };
     save(config);
-    await refreshCodexCatalogBestEffort();
-    return jsonResponse({ success: true, name, disabled: body.disabled });
+    (deps.clearProviderQuotaCache ?? clearProviderQuotaCache)();
+    (deps.clearThreadAccountMap ?? clearThreadAccountMap)();
+    if (mode === "pool") {
+      try {
+        const prime = deps.primeCodexPoolQuotas ?? primeCodexPoolQuotas;
+        void Promise.resolve(prime(config, "mode-change")).catch(() => undefined);
+      } catch {
+        // Quota priming is best-effort; the persisted live mode is already authoritative.
+      }
+    }
+    return jsonResponse({ success: true, name: "openai", codexAccountMode: mode });
   }
 
   if (url.pathname === "/api/providers" && req.method === "DELETE") {

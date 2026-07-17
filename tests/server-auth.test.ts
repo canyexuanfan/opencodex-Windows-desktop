@@ -26,6 +26,7 @@ import {
   safeConfigDTO,
   startServer,
 } from "../src/server";
+import { handleManagementAPI } from "../src/server/management-api";
 import type { OcxConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 
@@ -945,8 +946,8 @@ describe("server local API auth", () => {
           },
         }),
       });
-      expect(response.status).toBe(200);
-      expect(await response.json()).toMatchObject({ success: true, name: "openai" });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: expect.stringContaining("codexAccountMode") });
 
       const direct = await fetch(new URL("/api/providers", server.url), {
         method: "POST",
@@ -974,6 +975,80 @@ describe("server local API auth", () => {
     } finally {
       await server.stop(true);
     }
+  });
+
+  test("provider mode PATCH is strict, persists live state, clears caches and affinity, and primes Pool only", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: { ...canonicalDirect, disabled: true },
+        extra: { adapter: "openai-chat", baseUrl: "https://extra.example.test/v1" },
+      },
+    };
+    saveConfig(liveConfig);
+    let affinityClears = 0;
+    let quotaCacheClears = 0;
+    let catalogRefreshes = 0;
+    const primes: string[] = [];
+    const deps = {
+      clearThreadAccountMap: () => { affinityClears += 1; },
+      clearProviderQuotaCache: () => { quotaCacheClears += 1; },
+      refreshCodexCatalog: async () => { catalogRefreshes += 1; },
+      primeCodexPoolQuotas: (_config: OcxConfig, reason: string) => { primes.push(reason); },
+    };
+    const patch = async (name: string, body: unknown) => {
+      const req = new Request(`http://127.0.0.1/api/providers?name=${name}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return handleManagementAPI(req, new URL(req.url), liveConfig, deps);
+    };
+
+    for (const body of [
+      {},
+      { disabled: false, codexAccountMode: "pool" },
+      { codexAccountMode: "pool", unknown: true },
+      { codexAccountMode: 1 },
+      { codexAccountMode: "invalid" },
+    ]) {
+      expect((await patch("openai", body))?.status).toBe(400);
+    }
+    expect((await patch("extra", { codexAccountMode: "pool" }))?.status).toBe(400);
+    expect(affinityClears).toBe(0);
+    expect(quotaCacheClears).toBe(0);
+    expect(primes).toEqual([]);
+    expect(catalogRefreshes).toBe(0);
+
+    const direct = await patch("openai", { codexAccountMode: "direct" });
+    expect(direct?.status).toBe(200);
+    expect(await direct?.json()).toEqual({ success: true, name: "openai", codexAccountMode: "direct" });
+    expect(liveConfig.providers.openai).toMatchObject({ disabled: true, codexAccountMode: "direct" });
+    expect(loadConfig().providers.openai).toMatchObject({ disabled: true, codexAccountMode: "direct" });
+    expect({ affinityClears, quotaCacheClears, catalogRefreshes, primes }).toEqual({
+      affinityClears: 1,
+      quotaCacheClears: 1,
+      catalogRefreshes: 0,
+      primes: [],
+    });
+
+    const pool = await patch("openai", { codexAccountMode: "pool" });
+    expect(pool?.status).toBe(200);
+    expect(await pool?.json()).toEqual({ success: true, name: "openai", codexAccountMode: "pool" });
+    expect(liveConfig.providers.openai).toMatchObject({ disabled: true, codexAccountMode: "pool" });
+    expect(loadConfig().providers.openai).toMatchObject({ disabled: true, codexAccountMode: "pool" });
+    expect({ affinityClears, quotaCacheClears, catalogRefreshes, primes }).toEqual({
+      affinityClears: 2,
+      quotaCacheClears: 2,
+      catalogRefreshes: 0,
+      primes: ["mode-change"],
+    });
   });
 
   test("provider context-cap API persists toggles and annotates model rows", async () => {

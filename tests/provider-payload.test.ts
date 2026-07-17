@@ -49,9 +49,9 @@ describe("provider dashboard payload", () => {
     });
   });
 
-  test.each(["openai", "openai-multi"] as const)("posts the immutable canonical %s seed under its reserved id", id => {
-    const preset = deriveProviderPresets().find(row => row.id === id)!;
-    const registry = PROVIDER_REGISTRY.find(row => row.id === id)!;
+  test("posts the immutable canonical OpenAI Pool seed under its reserved id", () => {
+    const preset = deriveProviderPresets().find(row => row.id === "openai")!;
+    const registry = PROVIDER_REGISTRY.find(row => row.id === "openai")!;
     const originalPreset = structuredClone(preset);
     const form = {
       name: "attacker-name",
@@ -62,19 +62,19 @@ describe("provider dashboard payload", () => {
       defaultModel: "attacker-model",
     };
     const result = buildProviderPostBody(preset, form);
-    expect(result).toEqual({ name: id, provider: providerConfigSeed(registry) });
+    expect(result).toEqual({ name: "openai", provider: providerConfigSeed(registry) });
     expect(preset).toEqual(originalPreset);
     expect(result.provider).not.toBe(preset.provider);
-    expect(result.provider).not.toHaveProperty("codexAccountMode");
+    expect(result.provider.codexAccountMode).toBe("pool");
     expect(result.provider).not.toHaveProperty("virtualModels");
     expect(result.provider).not.toHaveProperty("note");
   });
 
   test.each([
-    ["openai", "prov.openaiDirectDesc"],
-    ["openai-multi", "prov.openaiMultiDesc"],
-  ] as const)("reserved %s uses localized copy and never API-key setup semantics", (id, expectedKey) => {
-    const preset = deriveProviderPresets().find(row => row.id === id)!;
+    ["pool", "prov.openaiPoolDesc"],
+    ["direct", "prov.openaiDirectDesc"],
+  ] as const)("reserved OpenAI %s mode uses localized copy and never API-key setup semantics", (mode, expectedKey) => {
+    const preset = { ...deriveProviderPresets().find(row => row.id === "openai")!, codexAccountMode: mode };
     expect(isReservedCodexForwardPreset(preset)).toBe(true);
     expect(codexPresetDescriptionKey(preset)).toBe(expectedKey);
     for (const locale of [en, ko, de, zh]) {
@@ -84,10 +84,13 @@ describe("provider dashboard payload", () => {
     }
   });
 
-  test("reserved preset ids own detail copy even when mode metadata is absent or forged", () => {
-    expect(codexPresetDescriptionKey({ id: "openai-multi" })).toBe("prov.openaiMultiDesc");
-    expect(codexPresetDescriptionKey({ id: "openai-multi", codexAccountMode: "direct" })).toBe("prov.openaiMultiDesc");
-    expect(codexPresetDescriptionKey({ id: "openai", codexAccountMode: "pool" })).toBe("prov.openaiDirectDesc");
+  test("only OpenAI is reserved and missing mode resolves to Pool copy", () => {
+    expect(isReservedCodexForwardPreset({ id: "openai-multi" })).toBe(false);
+    expect(deriveProviderPresets().find(row => row.id === "openai-multi")).toBeUndefined();
+    expect(codexPresetDescriptionKey({ id: "openai-multi", codexAccountMode: "direct" })).toBeNull();
+    expect(codexPresetDescriptionKey({ id: "openai" })).toBe("prov.openaiPoolDesc");
+    expect(codexPresetDescriptionKey({ id: "openai", codexAccountMode: "pool" })).toBe("prov.openaiPoolDesc");
+    expect(codexPresetDescriptionKey({ id: "openai", codexAccountMode: "direct" })).toBe("prov.openaiDirectDesc");
   });
 
   test("reserved presets fail locally without a canonical seed", () => {

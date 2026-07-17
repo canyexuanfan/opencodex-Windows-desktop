@@ -17,6 +17,11 @@ interface OAuthStatus { loggedIn: boolean; email?: string; error?: string; done?
 interface ProviderQuotaReport { provider: string; quota: AccountQuota; source: string; updatedAt: number }
 interface OAuthAccount { id: string; email?: string; active: boolean; needsReauth?: boolean; expiresAt?: number }
 interface ApiKeyEntry { id: string; label?: string; masked: string; active: boolean }
+type OpenAiAccountMode = "pool" | "direct";
+
+function resolvedOpenAiAccountMode(provider: Config["providers"][string]): OpenAiAccountMode {
+  return provider.codexAccountMode === "direct" ? "direct" : "pool";
+}
 
 // Friendly labels for the OAuth providers the proxy supports.
 const OAUTH_LABELS: Record<string, string> = {
@@ -38,6 +43,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const [oauthStatus, setOauthStatus] = useState<Record<string, OAuthStatus>>({});
   const [quotaReports, setQuotaReports] = useState<Record<string, ProviderQuotaReport>>({});
   const [busy, setBusy] = useState<string | null>(null);
+  const [modeBusy, setModeBusy] = useState(false);
   const [loginInfo, setLoginInfo] = useState<{ provider: string; url?: string; instructions?: string } | null>(null);
   const [linkCopied, setLinkCopied] = useState(false);
   const [manualCode, setManualCode] = useState("");
@@ -354,6 +360,36 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     notify(data.error || (disabled ? t("prov.disableFail", { name }) : t("prov.enableFail", { name })), false);
   };
 
+  const setOpenAiAccountMode = async (next: OpenAiAccountMode) => {
+    if (modeBusy) return;
+    setModeBusy(true);
+    try {
+      const res = await fetch(`${apiBase}/api/providers?name=openai`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ codexAccountMode: next }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        notify(data.error || t("prov.openaiModeSaveFailed"), false);
+        return;
+      }
+      setConfig(current => current ? {
+        ...current,
+        providers: {
+          ...current.providers,
+          openai: { ...current.providers.openai, codexAccountMode: next },
+        },
+      } : current);
+      notify(t("prov.openaiModeSaved", { mode: t(next === "pool" ? "prov.openaiModePool" : "prov.openaiModeDirect") }), true);
+      if (next === "pool") void fetchProviderQuotas(true);
+    } catch {
+      notify(t("prov.openaiModeSaveFailed"), false);
+    } finally {
+      if (aliveRef.current) setModeBusy(false);
+    }
+  };
+
   if (!config) {
     return (
       <>
@@ -522,10 +558,11 @@ export default function Providers({ apiBase }: { apiBase: string }) {
             const showAccounts = (!!accountSet && accountSet.accounts.length > 0) || keyPool.length > 0;
             const accountsOpen = openAccounts[name] === true;
             const dropdownCount = accountSet?.accounts.length ?? keyPool.length;
-            const tierDescription = prov.codexAccountMode === "direct"
+            const openAiMode = name === "openai" ? resolvedOpenAiAccountMode(prov) : null;
+            const tierDescription = openAiMode === "direct"
               ? t("prov.openaiDirectDesc")
-              : prov.codexAccountMode === "pool"
-                ? t("prov.openaiMultiDesc")
+              : openAiMode === "pool"
+                ? t("prov.openaiPoolDesc")
                 : name === "openai-apikey"
                   ? t("prov.openaiApiDesc")
                   : prov.note;
@@ -540,10 +577,10 @@ export default function Providers({ apiBase }: { apiBase: string }) {
                         {isDefault && <span className="badge badge-primary">{t("prov.defaultBadge")}</span>}
                         {isDisabled ? <span className="badge badge-muted">{t("prov.disabledBadge")}</span> : <span className="badge badge-green">{t("prov.activeBadge")}</span>}
                         {prov.authMode === "oauth" && <span className="badge badge-accent">oauth</span>}
-                        {prov.codexAccountMode === "direct" && <span className="badge badge-green">{t("modal.badge.direct")}</span>}
-                        {prov.codexAccountMode === "pool" && <span className="badge badge-accent">{t("modal.badge.multi")}</span>}
+                        {openAiMode === "direct" && <span className="badge badge-green">{t("prov.openaiModeDirect")}</span>}
+                        {openAiMode === "pool" && <span className="badge badge-accent">{t("prov.openaiModePool")}</span>}
                         {name === "openai-apikey" && <span className="badge badge-muted">{t("modal.badge.apiKey")}</span>}
-                        {prov.authMode === "forward" && !prov.codexAccountMode && <span className="badge badge-amber">passthrough</span>}
+                        {name !== "openai" && prov.authMode === "forward" && !prov.codexAccountMode && <span className="badge badge-amber">passthrough</span>}
                         {prov.keyOptional && <span className="badge badge-green">{t("modal.badge.free")}</span>}
                       </div>
                       <div className="muted prov-meta text-control">
@@ -556,7 +593,27 @@ export default function Providers({ apiBase }: { apiBase: string }) {
                       {tierDescription && (
                         <div className="muted text-label leading-body" style={{ marginTop: 4 }}>
                           {tierDescription}
-                          {prov.codexAccountMode === "pool" && <> · <a href="#codex-auth">{t("prov.manageCodexAccounts")}</a></>}
+                          {openAiMode && <> · <a href="#codex-auth">{t("prov.manageCodexAccounts")}</a></>}
+                        </div>
+                      )}
+                      {openAiMode && (
+                        <div className="openai-mode-row">
+                          <span id="openai-account-mode-label" className="text-label font-semibold">{t("prov.openaiAccountMode")}</span>
+                          <div className="usage-segmented openai-mode-control" role="radiogroup" aria-labelledby="openai-account-mode-label">
+                            {(["pool", "direct"] as const).map(mode => (
+                              <button
+                                key={mode}
+                                type="button"
+                                role="radio"
+                                aria-checked={openAiMode === mode}
+                                className={`usage-segmented-btn${openAiMode === mode ? " active" : ""}`}
+                                disabled={modeBusy}
+                                onClick={() => void setOpenAiAccountMode(mode)}
+                              >
+                                {t(mode === "pool" ? "prov.openaiModePool" : "prov.openaiModeDirect")}
+                              </button>
+                            ))}
+                          </div>
                         </div>
                       )}
                     </div>

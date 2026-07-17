@@ -277,7 +277,7 @@ export default function AddProviderModal({
                     {p.codexAccountMode === "direct"
                       ? <span className="badge badge-green">{t("modal.badge.direct")}</span>
                       : p.codexAccountMode === "pool"
-                        ? <span className="badge badge-accent">{t("modal.badge.multi")}</span>
+                        ? <span className="badge badge-accent">{t("modal.badge.pool")}</span>
                         : p.auth === "oauth"
                       ? <span className="badge badge-accent">{t("modal.badge.oauth")}</span>
                       : p.auth === "forward"

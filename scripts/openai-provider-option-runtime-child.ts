@@ -89,6 +89,21 @@ function lifecycle(body: Record<string, unknown>): string {
 const savedFetch = globalThis.fetch;
 globalThis.fetch = (async (input, init) => {
   const request = new Request(input, init);
+  if (request.method === "GET" && request.url === "https://chatgpt.com/backend-api/wham/usage") {
+    const authorization = request.headers.get("authorization");
+    const isPool = authorization === "Bearer fixture-pool-access";
+    return Response.json({
+      email: isPool ? "pool.fixture@example.test" : "runtime@example.test",
+      plan_type: "pro",
+      rate_limit: {
+        secondary_window: {
+          used_percent: isPool ? 23 : 11,
+          reset_at: Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60,
+        },
+      },
+      rate_limit_reset_credits: { available_count: isPool ? 1 : 2 },
+    });
+  }
   if (request.method !== "POST" || ![
     "https://chatgpt.com/backend-api/codex/responses",
     "https://api.openai.com/v1/responses",
@@ -105,12 +120,14 @@ globalThis.fetch = (async (input, init) => {
       : null,
     credentialOwner: authorization === "Bearer fixture-api-key"
       ? "openai-apikey"
-      : authorization === "Bearer fixture-codex-access"
-        ? "openai-multi-main"
-        : authorization === "Bearer fixture-direct-caller"
-          ? "openai-direct-caller"
-          : "unexpected",
-    accountOwner: request.headers.get("chatgpt-account-id") === "fixture-codex-account" ? "main" : null,
+      : authorization === "Bearer fixture-pool-access"
+        ? "openai-pool-added"
+        : authorization === "Bearer fixture-codex-access"
+          ? "openai-pool-main"
+          : authorization === "Bearer fixture-direct-caller"
+            ? "openai-direct-main"
+            : "unexpected",
+    accountOwner: request.headers.get("chatgpt-account-id") ?? null,
   });
   atomicCapture(captures);
   return new Response(lifecycle(body), { headers: { "content-type": "text/event-stream" } });
@@ -127,6 +144,8 @@ try {
     { startServer },
     { syncModelsToCodex },
     { readRootTomlString },
+    { saveCodexAccountCredential },
+    { updateAccountQuota },
   ] = await Promise.all([
     import("../src/config"),
     import("../src/providers/derive"),
@@ -134,6 +153,8 @@ try {
     import("../src/server"),
     import("../src/codex/sync"),
     import("../src/codex/paths"),
+    import("../src/codex/account-store"),
+    import("../src/codex/auth-api"),
   ]);
 
   const seed = (id: string) => providerConfigSeed(PROVIDER_REGISTRY.find(entry => entry.id === id)!);
@@ -143,30 +164,44 @@ try {
   const config = {
     port: 0,
     hostname: "127.0.0.1",
-    defaultProvider: "openai-apikey",
-    openaiProviderTierVersion: 1 as const,
+    defaultProvider: "openai",
+    openaiProviderTierVersion: 2 as const,
     providers: {
       openai: seed("openai"),
-      "openai-multi": seed("openai-multi"),
       "openai-apikey": api,
     },
+    codexAccounts: [{
+      id: "fixture-pool",
+      email: "pool.fixture@example.test",
+      plan: "pro",
+      chatgptAccountId: "fixture-pool-account",
+      isMain: false,
+    }],
+    activeCodexAccountId: "fixture-pool",
+    autoSwitchThreshold: 80,
   };
+  saveCodexAccountCredential("fixture-pool", {
+    accessToken: "fixture-pool-access",
+    refreshToken: "fixture-pool-refresh",
+    expiresAt: Date.now() + 60 * 60_000,
+    chatgptAccountId: "fixture-pool-account",
+  });
+  updateAccountQuota("fixture-pool", 23, Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60);
   saveConfig(config);
 
-  const reservation = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch: () => new Response(null, { status: 503 }),
-  });
-  const reservedPort = reservation.port;
-  await reservation.stop(true);
-  server = startServer(reservedPort);
+  server = startServer(0);
   const port = Number(new URL(server.url).port);
   const sync = await syncModelsToCodex(port, config, null);
   if (!sync.ok || !sync.catalogPath) throw new Error(`runtime catalog sync failed: ${sync.message}`);
   const catalog = JSON.parse(readFileSync(sync.catalogPath, "utf8")) as { models?: Array<{ slug?: string }> };
+  if (!catalog.models?.some(model => model.slug === "gpt-5.6-sol")) {
+    throw new Error("runtime catalog is missing bare gpt-5.6-sol");
+  }
   if (!catalog.models?.some(model => model.slug === "openai-apikey/gpt-5.6-sol-pro")) {
     throw new Error("runtime catalog is missing openai-apikey/gpt-5.6-sol-pro");
+  }
+  if (catalog.models.some(model => model.slug?.startsWith("openai-multi/"))) {
+    throw new Error("runtime catalog unexpectedly exposes the legacy Multi namespace");
   }
   const injected = readFileSync(codexConfigPath, "utf8");
   if (readRootTomlString(injected, "openai_base_url") !== `http://127.0.0.1:${port}/v1`) {

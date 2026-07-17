@@ -13,18 +13,15 @@ export interface ProviderPostPreset {
   provider?: ProviderPayload;
 }
 
-export type CodexPresetDescriptionKey = "prov.openaiDirectDesc" | "prov.openaiMultiDesc";
+export type CodexPresetDescriptionKey = "prov.openaiPoolDesc" | "prov.openaiDirectDesc";
 
 export function isReservedCodexForwardPreset(preset: ProviderPostPreset): boolean {
-  return preset.id === "openai" || preset.id === "openai-multi";
+  return preset.id === "openai";
 }
 
 export function codexPresetDescriptionKey(preset: ProviderPostPreset): CodexPresetDescriptionKey | null {
-  if (preset.id === "openai") return "prov.openaiDirectDesc";
-  if (preset.id === "openai-multi") return "prov.openaiMultiDesc";
-  if (preset.codexAccountMode === "direct") return "prov.openaiDirectDesc";
-  if (preset.codexAccountMode === "pool") return "prov.openaiMultiDesc";
-  return null;
+  if (preset.id !== "openai") return null;
+  return preset.codexAccountMode === "direct" ? "prov.openaiDirectDesc" : "prov.openaiPoolDesc";
 }
 
 export interface ProviderPayload {
@@ -33,6 +30,7 @@ export interface ProviderPayload {
   apiKey?: string;
   defaultModel?: string;
   authMode?: "key" | "forward" | "oauth";
+  codexAccountMode?: "pool" | "direct";
 }
 
 export function buildProviderPayload(form: ProviderPayloadForm): ProviderPayload {

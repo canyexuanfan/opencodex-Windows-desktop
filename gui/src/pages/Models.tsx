@@ -145,7 +145,8 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const groups = useMemo(() => {
     const g: Record<string, ModelRow[]> = {};
     for (const m of models) (g[m.provider] ??= []).push(m);
-    // Native GPT passthrough group ("openai") pins first; routed providers stay alphabetical.
+    // The single native `openai` group pins first. Its credential policy comes from
+    // the Providers-page Pool/Direct option and never changes model identity here.
     return Object.entries(g).sort(([a, rowsA], [b, rowsB]) => {
       const nativeA = rowsA.every(r => r.native);
       const nativeB = rowsB.every(r => r.native);
@@ -267,7 +268,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
 
   const allCapped = useMemo(
     () => {
-      // Cap aggregate counts routed providers only — the native group has no cap switch.
+      // Cap aggregate counts routed providers only; the single native group has no cap switch.
       const routed = groups.filter(([, rows]) => !rows.every(r => r.native));
       return routed.length > 0 && routed.every(([provider]) => contextCaps[provider] === contextCapValue);
     },

@@ -15,8 +15,8 @@
  *  7. hasApiKey === true             -> ready  (key-auth with credential present)
  *  8. everything else                -> needsSetup
  *
- * Tiers (three-way, interview 2026-07-17): "accounts" (canonical OpenAI forward
- * providers), "free" (free pricing), "paid" (everything else). Accounts wins
+ * Tiers (three-way, interview 2026-07-17): "accounts" (the canonical OpenAI forward
+ * provider), "free" (free pricing), "paid" (everything else). Accounts wins
  * over free.
  */
 
@@ -64,11 +64,10 @@ export interface WorkspaceSections {
 const CODEX_FORWARD_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
 /**
- * Canonical OpenAI forward provider names under the three-tier split (+ legacy id).
- * Matched LITERALLY — config keys are lowercase reserved ids; case variants are
- * user-defined providers, not built-ins.
+ * The single canonical OpenAI forward provider id. Legacy ids are migration-only
+ * and must never be revived as account-provider workspace rows.
  */
-const CANONICAL_FORWARD_NAMES = new Set(["openai", "openai-multi", "chatgpt"]);
+const CANONICAL_FORWARD_PROVIDER = "openai";
 
 /**
  * Mirrors src/providers/openai-tiers.ts `normalizedBaseUrl` exactly: strict
@@ -115,11 +114,10 @@ function isCanonicalForwardShape(p: WorkspaceProvider): boolean {
 }
 
 /**
- * True for the OpenAI account-backed providers (Codex Direct / Multi-account and
- * the legacy `chatgpt` id) in their canonical passthrough shape.
+ * True for the single OpenAI account-backed provider in its canonical passthrough shape.
  */
 export function isAccountProvider(name: string, p: WorkspaceProvider): boolean {
-  return CANONICAL_FORWARD_NAMES.has(name) && isCanonicalForwardShape(p);
+  return name === CANONICAL_FORWARD_PROVIDER && isCanonicalForwardShape(p);
 }
 
 /**
@@ -236,24 +234,19 @@ export function hideRedundantChatGptForwardProviders<T extends WorkspaceProvider
   const chatgpt = providers.chatgpt;
   if (!openai || !chatgpt) return providers;
   if (!isAccountProvider("openai", openai)) return providers;
-  if (!isAccountProvider("chatgpt", chatgpt)) return providers;
+  if (!isCanonicalForwardShape(chatgpt)) return providers;
   const rest = { ...providers };
   delete rest.chatgpt;
   return rest;
 }
 
 /**
- * Named successor of the source's `pickChatGptForwardProvider` (focusChatGptAuth
- * deep link). Preference: `openai-multi` first (the deep link serves account-pool
- * auth), then `openai`, then any other canonical forward match.
+ * Resolve the one current Codex-account provider used by account-management links.
+ * Legacy or custom forward-shaped rows are not eligible owners.
  */
 export function pickCanonicalForwardProvider(
   providers: Record<string, WorkspaceProvider>,
 ): string | null {
-  if (providers["openai-multi"] && isAccountProvider("openai-multi", providers["openai-multi"])) return "openai-multi";
   if (providers.openai && isAccountProvider("openai", providers.openai)) return "openai";
-  for (const [name, p] of Object.entries(providers)) {
-    if (isCanonicalForwardShape(p)) return name;
-  }
   return null;
 }

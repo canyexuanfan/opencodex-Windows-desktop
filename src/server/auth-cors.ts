@@ -202,20 +202,20 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
     if (Object.hasOwn(raw, field)) return `provider ${name} must not include runtime field "${field}"`;
   }
   if (name === "chatgpt") return "provider chatgpt is reserved for internal credential compatibility";
+  if (name === "openai-multi") return "provider openai-multi is reserved for legacy config migration";
   if (name === "openai") {
     const entry = getProviderRegistryEntry(name);
     const seed = entry ? providerConfigSeed(entry) : undefined;
-    if (raw.codexAccountMode !== undefined && raw.codexAccountMode !== "pool" && raw.codexAccountMode !== "direct") {
+    if (!Object.hasOwn(raw, "codexAccountMode") || (raw.codexAccountMode !== "pool" && raw.codexAccountMode !== "direct")) {
       return "provider openai codexAccountMode must be pool or direct";
     }
-    if (seed && !Object.hasOwn(raw, "codexAccountMode")) delete seed.codexAccountMode;
-    if (seed && (raw.codexAccountMode === "pool" || raw.codexAccountMode === "direct")) {
-      seed.codexAccountMode = raw.codexAccountMode;
-    }
+    if (seed) seed.codexAccountMode = raw.codexAccountMode;
     const canonical = seed && sameCanonicalProviderSeed(raw, seed);
     if (!canonical) {
       return `provider ${name} must equal the canonical built-in provider seed`;
     }
+  } else if (Object.hasOwn(raw, "codexAccountMode")) {
+    return `provider ${name} must not include codexAccountMode`;
   }
   const typed = provider as unknown as OcxProviderConfig;
   const baseUrlError = providerBaseUrlConfigError(typed.baseUrl);
