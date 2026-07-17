@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AddProviderModal from "../components/AddProviderModal";
 import ProviderWorkspaceShell, { type AddProviderIntent } from "../components/provider-workspace/ProviderWorkspaceShell";
+import ProviderDetails from "../components/provider-workspace/ProviderDetails";
 import type { WorkspaceProvider } from "../provider-workspace/catalog";
 import { Notice } from "../ui";
 import { IconPlus, IconTrash, IconLock, IconExternal, IconPower, IconChevron, IconLink } from "../icons";
@@ -441,6 +442,19 @@ export default function Providers({ apiBase }: { apiBase: string }) {
           selectedName={workspaceSelected}
           onSelect={setWorkspaceSelected}
           onAddProvider={intent => { setAddIntent(intent ?? null); setAdding(true); }}
+          detail={(item, data) => (
+            <ProviderDetails
+              item={item}
+              usageTotals={data.usageTotals}
+              quotaReport={data.quotaReport}
+              availableModels={data.availableModels}
+              selectedModels={data.selectedModels}
+              modelsLoading={data.modelsLoading}
+              modelsLoadFailed={data.modelsLoadFailed}
+              oauthEmail={oauthStatus[item.name]?.email}
+              onDeselect={() => setWorkspaceSelected(null)}
+            />
+          )}
         />
         {adding && (
           <AddProviderModal

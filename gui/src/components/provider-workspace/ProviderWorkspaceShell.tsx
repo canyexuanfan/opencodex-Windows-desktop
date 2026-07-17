@@ -18,12 +18,23 @@ import {
   type WorkspaceSections,
 } from "../../provider-workspace/catalog";
 import { providerKind } from "../../provider-workspace/kind";
-import { countAvailableModels, type ProviderModelCounts } from "../../provider-workspace/usage";
+import { countAvailableModels, parseAvailableModels, parseSelectedModels, type ProviderAvailableModels, type ProviderModelCounts, type ProviderSelectedModels } from "../../provider-workspace/usage";
+import type { ProviderQuotaReportView } from "../../provider-workspace/report";
 import { formatProviderDisplayName } from "../../provider-icons";
 import { RailRow } from "./ProviderRail";
-import type { PricingFilter, StatusFilter, TypeFilter } from "./types";
+import type { PricingFilter, ProviderUsageTotals, StatusFilter, TypeFilter } from "./types";
 
 export type AddProviderIntent = { tier?: "accounts" | "free" | "paid"; custom?: boolean };
+
+/** Detail-slot data plumbed per selected provider (props-down; no shared hook). */
+export interface DetailSlotData {
+  usageTotals?: import("./types").ProviderUsageTotals;
+  quotaReport?: ProviderQuotaReportView;
+  availableModels: string[];
+  selectedModels: string[];
+  modelsLoading: boolean;
+  modelsLoadFailed: boolean;
+}
 
 const SORT_DEFS: { id: ProviderSortMode; labelKey: "pws.sort.az" | "pws.sort.za" | "pws.sort.freePaid" | "pws.sort.paidFree" | "pws.sort.accountsFirst" }[] = [
   { id: "az", labelKey: "pws.sort.az" },
@@ -49,7 +60,7 @@ export default function ProviderWorkspaceShell({
   onSelect: (name: string | null) => void;
   onAddProvider: (intent?: AddProviderIntent) => void;
   /** Detail body for the selected provider (WP090); a placeholder renders when absent. */
-  detail?: (item: WorkspaceItem) => ReactNode;
+  detail?: (item: WorkspaceItem, data: DetailSlotData) => ReactNode;
 }) {
   const t = useT();
   const [search, setSearch] = useState("");
@@ -59,6 +70,12 @@ export default function ProviderWorkspaceShell({
   const [sortMode, setSortMode] = useState<ProviderSortMode>("az");
   const [filterOpen, setFilterOpen] = useState(false);
   const [modelCounts, setModelCounts] = useState<ProviderModelCounts>({});
+  const [availableModels, setAvailableModels] = useState<ProviderAvailableModels>({});
+  const [selectedModels, setSelectedModels] = useState<ProviderSelectedModels>({});
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsLoadFailed, setModelsLoadFailed] = useState(false);
+  const [usageTotals, setUsageTotals] = useState<Record<string, ProviderUsageTotals>>({});
+  const [quotaReports, setQuotaReports] = useState<Record<string, ProviderQuotaReportView>>({});
   const filterWrapRef = useRef<HTMLDivElement>(null);
 
   const sections = useMemo(
@@ -69,8 +86,51 @@ export default function ProviderWorkspaceShell({
   useEffect(() => {
     let cancelled = false;
     fetch(`${apiBase}/api/selected-models`)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
+      .then(data => {
+        if (cancelled) return;
+        setModelCounts(countAvailableModels(data));
+        setAvailableModels(parseAvailableModels(data));
+        setSelectedModels(parseSelectedModels(data));
+        setModelsLoadFailed(false);
+        setModelsLoading(false);
+      })
+      .catch(() => { if (!cancelled) { setModelsLoadFailed(true); setModelsLoading(false); } });
+    return () => { cancelled = true; };
+  }, [apiBase]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${apiBase}/api/usage?range=30d`)
       .then(r => r.ok ? r.json() : null)
-      .then(data => { if (!cancelled && data) setModelCounts(countAvailableModels(data)); })
+      .then((data: { providers?: Array<{ provider: string; requests: number; totalTokens?: number }> } | null) => {
+        if (cancelled || !data) return;
+        const byProvider: Record<string, ProviderUsageTotals> = {};
+        for (const p of data.providers ?? []) byProvider[p.provider] = { requests: p.requests, totalTokens: p.totalTokens };
+        setUsageTotals(byProvider);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [apiBase]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${apiBase}/api/provider-quotas`)
+      .then(r => r.ok ? r.json() : null)
+      .then((data: { reports?: Array<{ provider: string; label?: string; source?: string; updatedAt?: number; quota?: unknown }> } | null) => {
+        if (cancelled || !data) return;
+        const byProvider: Record<string, ProviderQuotaReportView> = {};
+        for (const report of data.reports ?? []) {
+          if (!report?.provider) continue;
+          byProvider[report.provider] = {
+            label: report.label,
+            source: report.source,
+            updatedAt: typeof report.updatedAt === "number" ? report.updatedAt : Date.now(),
+            quota: report.quota,
+          };
+        }
+        setQuotaReports(byProvider);
+      })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [apiBase]);
@@ -317,7 +377,14 @@ export default function ProviderWorkspaceShell({
       </aside>
       <main className="pws-main" aria-label={t("pws.workspaceMainAria")}>
         {selectedItem ? (
-          detail?.(selectedItem) ?? (
+          detail?.(selectedItem, {
+            usageTotals: usageTotals[selectedItem.name],
+            quotaReport: quotaReports[selectedItem.name],
+            availableModels: availableModels[selectedItem.name] ?? [],
+            selectedModels: selectedModels[selectedItem.name] ?? [],
+            modelsLoading,
+            modelsLoadFailed,
+          }) ?? (
             <div className="pws-detail-placeholder">
               <h3>{formatProviderDisplayName(selectedItem.name)}</h3>
               <p className="muted">{t("pws.detailComingSoon")}</p>
