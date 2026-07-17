@@ -451,9 +451,12 @@ export default function Providers({ apiBase }: { apiBase: string }) {
               selectedModels={data.selectedModels}
               modelsLoading={data.modelsLoading}
               modelsLoadFailed={data.modelsLoadFailed}
-              oauthEmail={oauthStatus[item.name]?.email}
+             oauthEmail={oauthStatus[item.name]?.email}
               onDeselect={() => setWorkspaceSelected(null)}
               apiBase={apiBase}
+              isDefault={item.name === config.defaultProvider}
+              onRemoveProvider={removeProvider}
+              onSetDisabled={setProviderDisabled}
             />
           )}
         />
