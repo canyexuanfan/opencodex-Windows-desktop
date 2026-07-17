@@ -65,6 +65,19 @@ describe("provider registry parity", () => {
       "qwen3.7-max",
     ]);
     expect(KEY_LOGIN_PROVIDERS["opencode-go"].noVisionModels).not.toContain("kimi-k2.7-code");
+    expect(KEY_LOGIN_PROVIDERS["opencode-go"]).toMatchObject({
+      modelContextWindows: { "kimi-k3": 262_144 },
+      modelInputModalities: { "kimi-k3": ["text", "image"] },
+      modelReasoningEfforts: { "kimi-k3": ["low", "high", "max"] },
+      modelDefaultReasoningEfforts: { "kimi-k3": "max" },
+      modelReasoningEffortMap: {
+        "kimi-k3": { none: "none", low: "low", medium: "high", high: "high", xhigh: "max", max: "max" },
+      },
+    });
+    expect(KEY_LOGIN_PROVIDERS["opencode-go"].noTemperatureModels).toContain("kimi-k3");
+    expect(KEY_LOGIN_PROVIDERS["opencode-go"].noTopPModels).toContain("kimi-k3");
+    expect(KEY_LOGIN_PROVIDERS["opencode-go"].noPenaltyModels).toContain("kimi-k3");
+    expect(KEY_LOGIN_PROVIDERS["opencode-go"].preserveReasoningContentModels).toContain("kimi-k3");
     expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-coder"]).toBe(262_144);
     expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-glm-5.2"]).toBe(405_504);
     expect(KEY_LOGIN_PROVIDERS.umans.modelInputModalities?.["umans-coder"]).toEqual(["text", "image"]);
@@ -282,8 +295,19 @@ describe("provider registry parity", () => {
       expect(entry?.modelSuffixBracketStrip).toBe(true);
       expect(entry?.noReasoningModels).not.toContain("k3");
       expect(entry?.noReasoningModels).not.toContain("k3[1m]");
-      expect(entry?.modelReasoningEfforts?.k3).toEqual(["max"]);
-      expect(entry?.modelReasoningEfforts?.["k3[1m]"]).toEqual(["max"]);
+      expect(entry?.modelReasoningEfforts?.k3).toEqual(["low", "high", "max"]);
+      expect(entry?.modelReasoningEfforts?.["k3[1m]"]).toEqual(["low", "high", "max"]);
+      for (const modelId of ["k3", "k3[1m]"]) {
+        expect(entry?.modelDefaultReasoningEfforts?.[modelId]).toBe("max");
+        expect(entry?.modelReasoningEffortMap?.[modelId]).toEqual({
+          none: "none",
+          low: "low",
+          medium: "high",
+          high: "high",
+          xhigh: "max",
+          max: "max",
+        });
+      }
       expect(entry?.modelInputModalities?.k3).toEqual(["text", "image"]);
       expect(entry?.modelInputModalities?.["k3[1m]"]).toEqual(["text", "image"]);
       expect(entry?.noTemperatureModels).toContain("k3");
@@ -294,6 +318,11 @@ describe("provider registry parity", () => {
       expect(entry?.preserveReasoningContentModels).toContain("k3[1m]");
       expect(entry?.modelReasoningEfforts?.["kimi-for-coding"]).toEqual([]);
     }
+
+    const kimi = PROVIDER_REGISTRY.find(provider => provider.id === "kimi")!;
+    const kimiModel = applyProviderConfigHints("kimi", providerConfigSeed(kimi), { provider: "kimi", id: "k3" });
+    const kimiEntry = buildCatalogEntries(nativeTemplate(), [], [kimiModel]).find(entry => entry.slug === "kimi/k3");
+    expect(kimiEntry?.default_reasoning_level).toBe("max");
 
     const moonshot = PROVIDER_REGISTRY.find(provider => provider.id === "moonshot");
     expect(moonshot?.models).toContain("kimi-k3");
@@ -309,6 +338,7 @@ describe("provider registry parity", () => {
     expect(moonshot?.modelInputModalities?.["kimi-k3"]).toEqual(["text", "image"]);
     expect(moonshot?.noReasoningModels).not.toContain("kimi-k3");
     expect(moonshot?.modelReasoningEfforts?.["kimi-k3"]).toEqual(["max"]);
+    expect(moonshot?.modelReasoningEffortMap).toBeUndefined();
     expect(moonshot?.preserveReasoningContentModels).toContain("kimi-k3");
   });
 

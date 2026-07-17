@@ -640,6 +640,8 @@ export interface OcxProviderConfig {
   reasoningEfforts?: string[];
   /** Model-specific Codex-visible reasoning tiers. An empty array means “do not expose effort”. */
   modelReasoningEfforts?: Record<string, string[]>;
+  /** Model-specific default Codex reasoning tier; must also be present in the visible tier list. */
+  modelDefaultReasoningEfforts?: Record<string, string>;
   /** Provider-wide mapping from Codex effort labels to upstream `reasoning_effort` values. */
   reasoningEffortMap?: Record<string, string>;
   /** Model-specific mapping from Codex effort labels to upstream `reasoning_effort` values. */

@@ -103,6 +103,7 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
   const reasoningEffortMap = mergeRecord(registryEntry.reasoningEffortMap, provider.reasoningEffortMap);
   const modelReasoningEffortMap = mergeNestedRecord(registryEntry.modelReasoningEffortMap, provider.modelReasoningEffortMap);
   const modelReasoningEfforts = mergeStringArrayRecord(registryEntry.modelReasoningEfforts, provider.modelReasoningEfforts);
+  const modelDefaultReasoningEfforts = mergeRecordFill(registryEntry.modelDefaultReasoningEfforts, provider.modelDefaultReasoningEfforts);
   const modelContextWindows = providerName === OPENAI_API_PROVIDER_ID
     ? mergePositiveNumberCaps(registryEntry.modelContextWindows, provider.modelContextWindows)
     : mergeRecordFill(registryEntry.modelContextWindows, provider.modelContextWindows);
@@ -155,6 +156,7 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
     ...(modelInputModalities ? { modelInputModalities } : {}),
     ...(modelMaxInputTokens ? { modelMaxInputTokens } : {}),
     ...(modelReasoningEfforts ? { modelReasoningEfforts } : {}),
+    ...(modelDefaultReasoningEfforts ? { modelDefaultReasoningEfforts } : {}),
     ...(reasoningEffortMap ? { reasoningEffortMap } : {}),
     ...(modelReasoningEffortMap ? { modelReasoningEffortMap } : {}),
     ...(noVisionModels ? { noVisionModels } : {}),

@@ -44,6 +44,7 @@ export interface ProviderRegistryEntry {
   modelInputModalities?: Record<string, string[]>;
   reasoningEfforts?: string[];
   modelReasoningEfforts?: Record<string, string[]>;
+  modelDefaultReasoningEfforts?: Record<string, string>;
   reasoningEffortMap?: Record<string, string>;
   modelReasoningEffortMap?: Record<string, Record<string, string>>;
   noVisionModels?: string[];
@@ -74,7 +75,7 @@ export type ProviderConfigSeed = Pick<
   "adapter" | "baseUrl" | "authMode" | "keyOptional" | "freeTier" | "modelSuffixBracketStrip" | "defaultModel" | "models"
   | "liveModels" | "contextWindow" | "modelContextWindows" | "modelInputModalities"
   | "modelMaxInputTokens"
-  | "reasoningEfforts" | "modelReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap"
+  | "reasoningEfforts" | "modelReasoningEfforts" | "modelDefaultReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap"
   | "noVisionModels" | "noReasoningModels" | "noTemperatureModels" | "noTopPModels" | "noPenaltyModels"
   | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "thinkingToggleModels" | "thinkingBudgetModels" | "escapeBuiltinToolNames"
   | "googleMode" | "project" | "location" | "headers"
@@ -186,8 +187,23 @@ const KIMI_CODING_MODELS = [...KIMI_CODING_K3_MODELS, ...KIMI_LEGACY_API_MODELS,
 const KIMI_THINKING_MODELS = KIMI_CODING_MODELS;
 const KIMI_CODING_NO_REASONING_MODELS = KIMI_CODING_MODELS.filter(id => !KIMI_CODING_K3_MODELS.includes(id));
 const KIMI_API_NO_REASONING_MODELS = KIMI_API_MODELS.filter(id => id !== "kimi-k3");
+const KIMI_CODING_K3_REASONING_EFFORTS = ["low", "high", "max"];
+const KIMI_CODING_K3_REASONING_EFFORT_MAP: Record<string, string> = {
+  none: "none",
+  low: "low",
+  medium: "high",
+  high: "high",
+  xhigh: "max",
+  max: "max",
+};
 const KIMI_CODING_REASONING_EFFORTS = Object.fromEntries(
-  KIMI_CODING_MODELS.map(id => [id, KIMI_CODING_K3_MODELS.includes(id) ? ["max"] : []]),
+  KIMI_CODING_MODELS.map(id => [id, KIMI_CODING_K3_MODELS.includes(id) ? KIMI_CODING_K3_REASONING_EFFORTS : []]),
+);
+const KIMI_CODING_DEFAULT_REASONING_EFFORTS = Object.fromEntries(
+  KIMI_CODING_K3_MODELS.map(id => [id, "max"]),
+);
+const KIMI_CODING_REASONING_EFFORT_MAPS = Object.fromEntries(
+  KIMI_CODING_K3_MODELS.map(id => [id, KIMI_CODING_K3_REASONING_EFFORT_MAP]),
 );
 const KIMI_API_REASONING_EFFORTS = Object.fromEntries(
   KIMI_API_MODELS.map(id => [id, id === "kimi-k3" ? ["max"] : []]),
@@ -296,20 +312,21 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // 260709 refresh: lineup + metadata from official docs.x.ai (grok-4.5 announced 07-08);
     // grok-composer-2.5-fast kept as account-verified (absent from public docs). Evidence:
     // devlog/model_update/260709_model_refresh/001_xai_lineup.md.
-    models: ["grok-4.5", "grok-4.3", "grok-4.20-multi-agent-0309", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-build-0.1", "grok-composer-2.5-fast"],
+    // grok-4.20-multi-agent-0309 is intentionally absent: the OAuth chat-completions
+    // transport returns 400 ("Multi Agent requests are not allowed on chat completions").
+    models: ["grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-build-0.1", "grok-composer-2.5-fast"],
     defaultModel: "grok-4.5",
     noReasoningModels: ["grok-4.20-0309-non-reasoning", "grok-build-0.1", "grok-composer-2.5-fast"],
     // Replay assistant reasoning_content for grok reasoning models: xAI documents dropped
     // reasoning_content as the top cause of prompt-cache misses on multi-turn conversations
     // (docs.x.ai prompt-caching/multi-turn, verified 2026-07-13 — devlog/_plan/260713_grok_caching).
     // Models that never emit reasoning simply have no thinking parts to replay (no-op).
-    preserveReasoningContentModels: ["grok-4.5", "grok-4.3", "grok-4.20-multi-agent-0309", "grok-4.20-0309-reasoning"],
+    preserveReasoningContentModels: ["grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning"],
     // grok-4.5 reasoning is always-on with low/medium/high control (no off tier upstream).
     modelReasoningEfforts: { "grok-4.5": ["low", "medium", "high"] },
     modelContextWindows: {
       "grok-4.5": 500_000,
       "grok-4.3": 1_000_000,
-      "grok-4.20-multi-agent-0309": 1_000_000,
       "grok-4.20-0309-reasoning": 1_000_000,
       "grok-4.20-0309-non-reasoning": 1_000_000,
       "grok-build-0.1": 256_000,
@@ -361,9 +378,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     defaultModel: "kimi-k2.7-code",
     modelContextWindows: KIMI_CODING_MODEL_CONTEXT_WINDOWS,
     modelInputModalities: KIMI_CODING_MODEL_INPUT_MODALITIES,
-    // K3 accepts reasoning_effort=max; older Kimi models use Kimi's private thinking control.
+    // K3 accepts low/high/max; Codex aliases are normalized by the model-scoped wire map.
     noReasoningModels: KIMI_CODING_NO_REASONING_MODELS,
     modelReasoningEfforts: KIMI_CODING_REASONING_EFFORTS,
+    modelDefaultReasoningEfforts: KIMI_CODING_DEFAULT_REASONING_EFFORTS,
+    modelReasoningEffortMap: KIMI_CODING_REASONING_EFFORT_MAPS,
     noTemperatureModels: KIMI_LOCKED_PARAMETER_MODELS,
     noTopPModels: KIMI_LOCKED_PARAMETER_MODELS,
     noPenaltyModels: KIMI_LOCKED_PARAMETER_MODELS,
@@ -437,17 +456,22 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     id: "opencode-go", label: "opencode go", adapter: "openai-chat", baseUrl: "https://opencode.ai/zen/go/v1",
     authKind: "key", featured: true, dashboardUrl: "https://opencode.ai/auth", defaultModel: "kimi-k2.7-code",
     jawcodeBundle: "opencode-go", note: "GLM, DeepSeek, Kimi, Qwen, MiMo…",
+    modelContextWindows: { "kimi-k3": KIMI_K3_STANDARD_CONTEXT_WINDOW },
+    modelInputModalities: { "kimi-k3": ["text", "image"] },
     modelReasoningEfforts: {
       "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
+      "kimi-k3": KIMI_CODING_K3_REASONING_EFFORTS,
       "kimi-k2.7-code": [],
       "kimi-k2.7-code-highspeed": [],
       ...Object.fromEntries(OPENCODE_GO_THINKING_TOGGLE_MODELS.map(id => [id, THINKING_TOGGLE_EFFORTS])),
       ...Object.fromEntries(OPENCODE_GO_THINKING_BUDGET_MODELS.map(id => [id, THINKING_BUDGET_EFFORTS])),
       ...Object.fromEntries(DEEPSEEK_THINKING_MODELS.map(id => [id, DEEPSEEK_THINKING_EFFORTS])),
     },
+    modelDefaultReasoningEfforts: { "kimi-k3": "max" },
     // glm-5.2 uses identity labels now that `max` is a native Codex level (no alias map);
     // the thinking-toggle map is a REAL wire alias (effort -> enabled/disabled) and stays.
     modelReasoningEffortMap: {
+      "kimi-k3": KIMI_CODING_K3_REASONING_EFFORT_MAP,
       ...Object.fromEntries(OPENCODE_GO_THINKING_TOGGLE_MODELS.map(id => [id, THINKING_TOGGLE_MAP])),
       ...Object.fromEntries(DEEPSEEK_THINKING_MODELS.map(id => [id, DEEPSEEK_THINKING_REASONING_MAP])),
     },
@@ -464,12 +488,12 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "minimax-m2.5", "minimax-m2.7",
       "qwen3.7-max",
     ],
-    noTemperatureModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
-    noTopPModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
-    noPenaltyModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
+    noTemperatureModels: ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
+    noTopPModels: ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
+    noPenaltyModels: ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
     autoToolChoiceOnlyModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
     // Issue #78: DeepSeek V4 thinking mode requires reasoning_content replay on tool-call turns.
-    preserveReasoningContentModels: ["glm-5.2", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", ...DEEPSEEK_THINKING_MODELS],
+    preserveReasoningContentModels: ["glm-5.2", "kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", ...DEEPSEEK_THINKING_MODELS],
   },
   {
     id: "neuralwatt",
@@ -681,6 +705,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelInputModalities: KIMI_CODING_MODEL_INPUT_MODALITIES,
     noReasoningModels: KIMI_CODING_NO_REASONING_MODELS,
     modelReasoningEfforts: KIMI_CODING_REASONING_EFFORTS,
+    modelDefaultReasoningEfforts: KIMI_CODING_DEFAULT_REASONING_EFFORTS,
+    modelReasoningEffortMap: KIMI_CODING_REASONING_EFFORT_MAPS,
     noTemperatureModels: KIMI_LOCKED_PARAMETER_MODELS,
     noTopPModels: KIMI_LOCKED_PARAMETER_MODELS,
     noPenaltyModels: KIMI_LOCKED_PARAMETER_MODELS,

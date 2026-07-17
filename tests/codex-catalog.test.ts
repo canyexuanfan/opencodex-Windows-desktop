@@ -645,6 +645,39 @@ describe("Codex catalog routed normalization", () => {
     }
   });
 
+  test("managed Kimi and xAI catalogs silently drop configured ids omitted by a non-empty live catalog", async () => {
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      data: [{ id: "live-model" }],
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+
+    try {
+      const models = await gatherRoutedModels({
+        providers: Object.fromEntries(["kimi", "xai"].map(provider => [provider, {
+          adapter: "openai-chat",
+          baseUrl: `https://${provider}.example.test/v1`,
+          authMode: "key",
+          apiKey: "sk-test",
+          liveModels: true,
+          models: ["live-model", "configured-ghost"],
+        }])),
+      });
+
+      expect(models.map(model => `${model.provider}/${model.id}`)).toEqual([
+        "kimi/live-model",
+        "xai/live-model",
+      ]);
+      expect(warning.mock.calls.flat().join(" ")).not.toContain("omitted configured model ids");
+    } finally {
+      warning.mockRestore();
+      clearModelCache("kimi");
+      clearModelCache("xai");
+    }
+  });
+
   test("malformed 2xx discovery keeps the stale catalog and does not cache the response", async () => {
     const provider = "malformed-stale";
     setCached(provider, [{ provider, id: "last-known-good" }]);

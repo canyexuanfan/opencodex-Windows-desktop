@@ -15,6 +15,7 @@ export interface DerivedKeyLoginProvider {
   modelMaxInputTokens?: Record<string, number>;
   reasoningEfforts?: string[];
   modelReasoningEfforts?: Record<string, string[]>;
+  modelDefaultReasoningEfforts?: Record<string, string>;
   reasoningEffortMap?: Record<string, string>;
   modelReasoningEffortMap?: Record<string, Record<string, string>>;
   noVisionModels?: string[];
@@ -92,6 +93,7 @@ export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderCon
     ...(entry.modelMaxInputTokens ? { modelMaxInputTokens: { ...entry.modelMaxInputTokens } } : {}),
     ...(entry.reasoningEfforts ? { reasoningEfforts: [...entry.reasoningEfforts] } : {}),
     ...(entry.modelReasoningEfforts ? { modelReasoningEfforts: cloneRecordOfArrays(entry.modelReasoningEfforts) } : {}),
+    ...(entry.modelDefaultReasoningEfforts ? { modelDefaultReasoningEfforts: { ...entry.modelDefaultReasoningEfforts } } : {}),
     ...(entry.reasoningEffortMap ? { reasoningEffortMap: { ...entry.reasoningEffortMap } } : {}),
     ...(entry.modelReasoningEffortMap ? { modelReasoningEffortMap: cloneNestedRecord(entry.modelReasoningEffortMap) } : {}),
     ...(entry.noVisionModels ? { noVisionModels: [...entry.noVisionModels] } : {}),
@@ -130,6 +132,7 @@ export function deriveKeyLoginMap(): Record<string, DerivedKeyLoginProvider> {
       ...(entry.modelMaxInputTokens ? { modelMaxInputTokens: { ...entry.modelMaxInputTokens } } : {}),
       ...(entry.reasoningEfforts ? { reasoningEfforts: [...entry.reasoningEfforts] } : {}),
       ...(entry.modelReasoningEfforts ? { modelReasoningEfforts: cloneRecordOfArrays(entry.modelReasoningEfforts) } : {}),
+      ...(entry.modelDefaultReasoningEfforts ? { modelDefaultReasoningEfforts: { ...entry.modelDefaultReasoningEfforts } } : {}),
       ...(entry.reasoningEffortMap ? { reasoningEffortMap: { ...entry.reasoningEffortMap } } : {}),
       ...(entry.modelReasoningEffortMap ? { modelReasoningEffortMap: cloneNestedRecord(entry.modelReasoningEffortMap) } : {}),
       ...(entry.noVisionModels ? { noVisionModels: [...entry.noVisionModels] } : {}),
@@ -197,6 +200,7 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   if (!prov.modelInputModalities && seed.modelInputModalities) prov.modelInputModalities = cloneRecordOfArrays(seed.modelInputModalities);
   if (!prov.reasoningEfforts && seed.reasoningEfforts) prov.reasoningEfforts = [...seed.reasoningEfforts];
   if (!prov.modelReasoningEfforts && seed.modelReasoningEfforts) prov.modelReasoningEfforts = cloneRecordOfArrays(seed.modelReasoningEfforts);
+  if (!prov.modelDefaultReasoningEfforts && seed.modelDefaultReasoningEfforts) prov.modelDefaultReasoningEfforts = { ...seed.modelDefaultReasoningEfforts };
   if (!prov.reasoningEffortMap && seed.reasoningEffortMap) prov.reasoningEffortMap = { ...seed.reasoningEffortMap };
   if (!prov.modelReasoningEffortMap && seed.modelReasoningEffortMap) prov.modelReasoningEffortMap = cloneNestedRecord(seed.modelReasoningEffortMap);
   if (!prov.noVisionModels && seed.noVisionModels) prov.noVisionModels = [...seed.noVisionModels];

@@ -294,6 +294,7 @@ export interface CatalogModel {
   provider: string;
   owned_by?: string;
   reasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
   contextWindow?: number;
   maxInputTokens?: number;
   contextCap?: number;
@@ -727,7 +728,7 @@ function applyCatalogModelMetadata(entry: RawEntry, model?: CatalogModel): void 
   }
 }
 
-function applyReasoningLevels(entry: RawEntry, effortsOverride?: string[]): void {
+function applyReasoningLevels(entry: RawEntry, effortsOverride?: string[], defaultOverride?: string): void {
   let efforts = sanitizeCodexReasoningEfforts(effortsOverride) ?? ROUTED_REASONING_LEVELS.map(l => l.effort);
   // Mock top tiers (user decision 260709): every reasoning-capable model advertises `max`
   // even when the provider ladder stops lower — subagent spawns pass `max` DIRECTLY
@@ -756,7 +757,9 @@ function applyReasoningLevels(entry: RawEntry, effortsOverride?: string[]): void
     delete entry.default_reasoning_level;
     return;
   }
-  entry.default_reasoning_level = efforts.includes("medium") ? "medium" : efforts.includes("high") ? "high" : efforts[0];
+  entry.default_reasoning_level = defaultOverride && efforts.includes(defaultOverride)
+    ? defaultOverride
+    : efforts.includes("medium") ? "medium" : efforts.includes("high") ? "high" : efforts[0];
 }
 
 function isGpt56NativeSlug(slug: string): boolean {
@@ -850,7 +853,7 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
           `You are a coding agent powered by the ${modelName} model. Do not claim to be GPT-5 or made by OpenAI.`,
         );
       }
-      applyReasoningLevels(e, model?.reasoningEfforts);
+      applyReasoningLevels(e, model?.reasoningEfforts, model?.defaultReasoningEffort);
       normalizeRoutedCatalogEntry(e, model?.parallelToolCalls === true);
       applyJawcodeCatalogMetadata(e, slug, model?.contextCap);
       applyCatalogModelMetadata(e, model);
@@ -879,7 +882,7 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
     priority, base_instructions: "You are a helpful coding assistant.",
     ...(slug.includes("/") ? { web_search_tool_type: "text_and_image", supports_search_tool: true } : {}),
   };
-  if (slug.includes("/")) applyReasoningLevels(entry, model?.reasoningEfforts);
+  if (slug.includes("/")) applyReasoningLevels(entry, model?.reasoningEfforts, model?.defaultReasoningEffort);
   else {
     applyReasoningLevels(entry, isGpt56NativeSlug(slug) ? undefined : ["low", "medium", "high", "xhigh"]);
     if (isGpt56NativeSlug(slug)) ensureGpt56ReasoningLevels(entry);
@@ -1044,6 +1047,7 @@ export function applyProviderConfigHints(name: string, prov: OcxProviderConfig, 
     inputModalities = base.includes("image") ? [...base] : [...base, "image"];
   }
   const reasoningEfforts = configuredReasoningEfforts(prov, model.id);
+  const defaultReasoningEffort = modelRecordValue(prov.modelDefaultReasoningEfforts, model.id) ?? model.defaultReasoningEffort;
   const hinted = {
     ...model,
     ...(configuredCap !== undefined
@@ -1062,6 +1066,7 @@ export function applyProviderConfigHints(name: string, prov: OcxProviderConfig, 
           : configuredMaxInput,
       }
       : {}),
+    ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
     // Default-on for openai-chat providers (explicit false opts out); other adapters
     // advertise only on explicit opt-in.
     ...(prov.parallelToolCalls === true || (prov.adapter === "openai-chat" && prov.parallelToolCalls !== false)
@@ -1097,6 +1102,10 @@ export function isDatedVariantId(liveId: string, configuredId: string): boolean 
 // Same-signature dedupe: Codex polls /v1/models frequently, and an unchanged drop list
 // repeated on every poll is pure noise. Warn once per provider until the id set changes.
 const lastDropWarnSignature = new Map<string, string>();
+// These managed providers intentionally carry compatibility fallback ids while treating their
+// authenticated live catalogs as canonical. A non-empty live response already hides stale ids;
+// repeating that expected reconciliation on every startup only adds noise.
+const QUIET_AUTHORITATIVE_CATALOG_PROVIDERS = new Set(["kimi", "xai"]);
 function warnDroppedConfiguredIdsOnce(name: string, droppedConfiguredIds: string[]): void {
   const signature = [...droppedConfiguredIds].sort().join(",");
   if (lastDropWarnSignature.get(name) === signature) return;
@@ -1235,7 +1244,9 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
       console.warn(
         `[opencodex] Provider model discovery for "${name}" returned an authoritative empty catalog; ${droppedConfiguredIds.length > 0 ? `dropping configured model ids: ${droppedConfiguredIds.join(", ")}` : "no models will be exposed"}.`,
       );
-    } else if (droppedConfiguredIds.length > 0 && name !== OPENAI_API_PROVIDER_ID) {
+    } else if (droppedConfiguredIds.length > 0
+      && name !== OPENAI_API_PROVIDER_ID
+      && !QUIET_AUTHORITATIVE_CATALOG_PROVIDERS.has(name)) {
       warnDroppedConfiguredIdsOnce(name, droppedConfiguredIds);
     }
     setCached(name, live);
