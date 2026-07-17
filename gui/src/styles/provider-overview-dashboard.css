@@ -3,9 +3,9 @@
 .pws-dashboard {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 20px;
   padding: 4px 0;
-  max-width: 720px;
+  max-width: 680px;
 }
 
 .pws-dashboard-header {
@@ -15,20 +15,20 @@
 }
 
 .pws-dashboard-title {
-  font-size: 1.15rem;
+  font-size: 1.1rem;
   font-weight: 600;
   margin: 0;
 }
 
 .pws-dashboard-subtitle {
   margin: 0;
-  font-size: 0.85rem;
+  font-size: 0.82rem;
 }
 
 /* Summary cards */
 .pws-dashboard-summary {
   display: flex;
-  gap: 12px;
+  gap: 10px;
 }
 
 .pws-dashboard-card {
@@ -36,15 +36,15 @@
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  padding: 12px 20px;
+  padding: 12px 22px;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--bg-secondary, var(--bg));
-  min-width: 90px;
+  min-width: 80px;
 }
 
 .pws-dashboard-card-count {
-  font-size: 1.5rem;
+  font-size: 1.25rem;
   font-weight: 700;
   line-height: 1;
 }
@@ -54,41 +54,41 @@
 .pws-dashboard-card--muted .pws-dashboard-card-count { color: var(--fg-muted, #888); }
 
 .pws-dashboard-card-label {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   color: var(--fg-muted, #888);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.02em;
 }
 
 /* Sections (Rate Limits / Recently Used) */
 .pws-dashboard-section {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .pws-dashboard-section-title {
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
   color: var(--fg-muted, #888);
   margin: 0;
+  padding-bottom: 2px;
 }
 
 /* Clickable provider rows */
 .pws-dashboard-rows {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 .pws-dashboard-row {
   display: grid;
-  grid-template-columns: 28px 1fr auto auto;
+  grid-template-columns: 22px 1fr auto auto;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
+  gap: 8px;
+  padding: 8px 6px;
   border-radius: 6px;
   border: none;
   background: none;
@@ -105,8 +105,8 @@
 }
 
 .pws-dashboard-row-icon {
-  width: 24px;
-  height: 24px;
+  width: 20px;
+  height: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -114,8 +114,8 @@
 
 .pws-dashboard-row-icon img,
 .pws-dashboard-row-icon .provider-icon-mask {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
 }
 
 .pws-dashboard-row-info {
@@ -127,24 +127,24 @@
 
 .pws-dashboard-row-name {
   font-weight: 500;
-  font-size: 0.88rem;
+  font-size: 0.85rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .pws-dashboard-row-meta {
-  font-size: 0.75rem;
+  font-size: 0.72rem;
 }
 
 .pws-dashboard-row-count {
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   white-space: nowrap;
 }
 
 .pws-dashboard-row-chevron {
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
   color: var(--fg-muted, #888);
   flex-shrink: 0;
 }
@@ -152,7 +152,7 @@
 /* QuotaBars inside the rate-limit rows */
 .pws-dashboard-row-bars {
   grid-column: 1 / -1;
-  padding-left: 38px;
+  padding-left: 30px;
   padding-top: 2px;
 }
 

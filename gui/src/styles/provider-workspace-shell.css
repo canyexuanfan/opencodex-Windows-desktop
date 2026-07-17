@@ -290,10 +290,16 @@
   flex-shrink: 0;
 }
 
+/* Tighten rail row right side */
+.providers-workspace-rail-row {
+  gap: 6px;
+  padding: 6px 6px 6px 8px;
+}
+
 .providers-workspace-rail-trail {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   flex-shrink: 0;
 }
 
