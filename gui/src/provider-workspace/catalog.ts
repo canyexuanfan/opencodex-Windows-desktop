@@ -84,7 +84,8 @@ function normalizedBaseUrl(value: string): string | undefined {
   }
 }
 
-function hasLoopbackBaseUrl(baseUrl: string): boolean {
+/** Loopback host check shared with the provider-kind classifier (WP080a). */
+export function hasLoopbackBaseUrl(baseUrl: string): boolean {
   try {
     const hostname = new URL(baseUrl).hostname.replace(/^\[|\]$/g, "").toLowerCase();
     return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";

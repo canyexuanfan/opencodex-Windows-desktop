@@ -35,6 +35,7 @@ import {
   sortPresets,
   type CatalogPreset,
 } from "../gui/src/components/provider-catalog/provider-presets";
+import { isLocalProvider, providerKind } from "../gui/src/provider-workspace/kind";
 
 /** Base defaults matching a minimal, unconfigured provider value. */
 function prov(overrides: Partial<WorkspaceProvider> = {}): WorkspaceProvider {
@@ -478,5 +479,32 @@ describe("add-provider catalog presets (WP050a)", () => {
     const sorted = sortPresets(rows);
     expect(sorted.map(p => p.id)).toEqual(["c-provider", "a-provider", "b-provider"]);
     expect(rows.map(p => p.id)).toEqual(["b-provider", "a-provider", "c-provider"]);
+  });
+});
+
+describe("provider kind classification (WP080a)", () => {
+  test("login kind covers oauth AND forward — deliberately wider than the accounts tier", () => {
+    expect(providerKind({ ...prov({ authMode: "oauth" }), name: "xai" })).toBe("login");
+    expect(providerKind({ ...forwardProv(), name: "openai" })).toBe("login");
+    // A non-canonical forward provider is login-kind yet paid-tier: two taxonomies.
+    const customForward = { ...forwardProv(), baseUrl: "https://example.com/v1" };
+    expect(providerKind({ ...customForward, name: "myproxy" })).toBe("login");
+    expect(providerTier("myproxy", customForward)).toBe("paid");
+  });
+
+  test("local: explicit authMode local or loopback base URL", () => {
+    expect(isLocalProvider(prov({ authMode: "local" }))).toBe(true);
+    expect(isLocalProvider(prov({ baseUrl: "http://localhost:11434/v1" }))).toBe(true);
+    expect(isLocalProvider(prov({ baseUrl: "http://[::1]:8000/v1" }))).toBe(true);
+    expect(isLocalProvider(prov())).toBe(false);
+    expect(providerKind({ ...prov({ baseUrl: "http://127.0.0.1:1234/v1" }), name: "lm" })).toBe("local");
+  });
+
+  test("self-hosted hints match name/adapter/baseUrl; everything else is cloud", () => {
+    expect(providerKind({ ...prov(), name: "litellm" })).toBe("selfHosted");
+    expect(providerKind({ ...prov({ baseUrl: "https://vllm.mycorp.dev/v1" }), name: "corp" })).toBe("selfHosted");
+    expect(providerKind({ ...prov(), name: "venice" })).toBe("cloud");
+    // Local wins over self-hosted hints (an ollama on loopback is local, not selfHosted).
+    expect(providerKind({ ...prov({ baseUrl: "http://localhost:11434/v1" }), name: "ollama" })).toBe("local");
   });
 });
