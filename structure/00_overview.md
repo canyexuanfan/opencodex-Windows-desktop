@@ -15,7 +15,7 @@ belong in `docs-site/`; historical investigations belong in `docs/`.
 | [`05_gui-and-management-api.md`](05_gui-and-management-api.md) | Dashboard serving and `/api/*` management surface. |
 | [`06_docs-and-release.md`](06_docs-and-release.md) | Public docs site, GitHub Pages, README ownership, release flow. |
 | [`07_design-methodology.md`](07_design-methodology.md) | Design process discipline for new GUI, CLI, and user-facing surfaces. |
-| [`08_openai-provider-tiers.md`](08_openai-provider-tiers.md) | Direct, Multi-account, and API credential/routing invariants. |
+| [`08_openai-provider-tiers.md`](08_openai-provider-tiers.md) | OpenAI Pool/Direct account-mode and API credential/routing invariants. |
 
 ## Product boundary
 
@@ -29,10 +29,11 @@ Codex CLI / TUI / App / SDK
   -> upstream provider
 ```
 
-The default install keeps native OpenAI/ChatGPT passthrough working through the `openai` Direct
-provider. `openai-multi` explicitly selects the main-plus-added account pool, while
-`openai-apikey` explicitly selects OpenAI API-key transport; the three tiers never credential-fallback
-into one another. Built-in provider presets include Anthropic, Google, Azure, and Neuralwatt Cloud. Additional
+The default install keeps native OpenAI/ChatGPT passthrough working through one option-aware
+`openai` provider. Pool is the default and selects across main plus added accounts; Direct uses only
+the current caller/main login. `openai-apikey` explicitly selects API-key transport, and the two
+credential routes never fall through into one another. Built-in provider presets include Anthropic,
+Google, Azure, and Neuralwatt Cloud. Additional
 providers are routed by explicit `provider/model`, provider model lists, or the configured
 `defaultProvider`.
 
@@ -42,7 +43,7 @@ providers are routed by explicit `provider/model`, provider model lists, or the 
 | --- | --- | --- |
 | `~/.opencodex/config.json` | opencodex | Main config written by `ocx init` and the dashboard. |
 | `~/.opencodex/auth.json` | opencodex | OAuth tokens; not committed. Multiauth shape: `provider -> { activeAccountId, accounts[] }` (legacy single-credential values normalize on load; a one-time `auth.json.pre-multiauth` backup guards downgrades). ChatGPT scratch OAuth stays separate from the Codex account store; identity-less providers (kimi/kiro/cursor) replace their active slot. |
-| `~/.opencodex/codex-accounts.json` | opencodex | Hardened main-plus-added credential store used only by `openai-multi`. |
+| `~/.opencodex/codex-accounts.json` | opencodex | Hardened main-plus-added credential store used by `openai` in Pool mode. |
 | `~/.opencodex/catalog-backup.json` | opencodex | One-time pristine Codex catalog backup for restore. |
 | `~/.opencodex/usage.jsonl` | opencodex | Append-only request usage log (0o600); request metadata + token counts only, never prompts or auth. |
 | `$CODEX_HOME/config.toml` | Codex, edited by opencodex | Active provider and provider table. |
@@ -57,7 +58,7 @@ providers are routed by explicit `provider/model`, provider model lists, or the 
 - `CODEX_HOME` wins over `~/.codex` when present and valid.
 - Root TOML keys such as `model_provider` and `model_catalog_json` must stay before any table.
 - Routed model slugs use `provider/model`.
-- OpenAI has exactly `openai` Direct, `openai-multi`, and `openai-apikey`; Direct never rotates and Multi includes main.
+- OpenAI has one `openai` Codex-login provider with Pool(default)/Direct modes and a separate `openai-apikey`; see [`08_openai-provider-tiers.md`](08_openai-provider-tiers.md).
 - Codex `spawn_agent` visibility depends on the first five featured catalog entries.
 - `ocx stop`, `ocx restore`, and service stop/uninstall must leave native Codex usable.
 

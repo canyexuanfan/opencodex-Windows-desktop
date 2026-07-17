@@ -7,30 +7,31 @@ opencodex does not patch Codex App. It writes the same Codex configuration and m
 Codex CLI/TUI already use. Because Codex App reads that shared state, routed models can appear in the
 App's model picker as normal Codex catalog entries.
 
-OpenAI entries have three stable identities: bare native ids are `openai` Direct,
-`openai-multi/<model>` is the main-plus-added account pool, and `openai-apikey/<model>` is API-key
-transport. Direct never rotates; Multi includes the main account. API GPT-5.6 entries use
+OpenAI entries have two stable identities: one bare native `openai` group whose Pool(default) or
+Direct account selection is controlled by `codexAccountMode`, and namespaced
+`openai-apikey/<model>` API-key transport. Changing the account mode does not change picker ids.
+API GPT-5.6 entries use
 1,050,000 context / 922,000 max input, and `*-pro` picker ids resolve to the base wire model with
 `reasoning.mode: "pro"` while logs, usage, and picker state keep the virtual id.
 The API catalog is fixed to exactly eight ids: `gpt-5.5`, `gpt-5.6`, Sol/Terra/Luna, and their
 three Pro virtual ids; there is no generic `gpt-5.6-pro` alias.
 Compact requests keep the selected tier but send the base model without a reasoning object.
 
-Select a tier explicitly:
+Select a credential route explicitly; change Pool/Direct on the Providers page:
 
 ```text
-gpt-5.6-sol                         # Direct
-openai-multi/gpt-5.6-sol            # Multi-account
+gpt-5.6-sol                         # openai (Pool or Direct option)
 openai-apikey/gpt-5.6-sol           # API key
 ```
 
-Fresh installs default to Direct. Legacy pool configurations migrate to Multi and hide the old
-public `chatgpt` provider id. The one-time original is retained at
-`~/.opencodex/config.json.pre-openai-tiers-v1.bak`; restore it with:
+Fresh installs and configs with no saved mode default to Pool. Current configs use marker 2 and
+retain the shipped v1 source at `~/.opencodex/config.json.pre-openai-tiers-v2.bak`; restore it with:
 
 ```sh
-cp ~/.opencodex/config.json.pre-openai-tiers-v1.bak ~/.opencodex/config.json
+cp ~/.opencodex/config.json.pre-openai-tiers-v2.bak ~/.opencodex/config.json
 ```
+
+Earlier v1 three-provider configurations migrate automatically into the single option-aware row.
 
 ## Integration path
 
@@ -94,8 +95,7 @@ metadata instead of an older-template approximation.
 
 | Route | Picker ids and catalog metadata |
 | --- | --- |
-| Codex Direct | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (372,000-token catalog window) |
-| Codex Multi-account | `openai-multi/gpt-5.6-sol`, `openai-multi/gpt-5.6-terra`, `openai-multi/gpt-5.6-luna` (372,000) |
+| Codex login (Pool or Direct) | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (372,000-token catalog window) |
 | OpenAI (API key) | Exactly eight namespaced rows: `gpt-5.5`, `gpt-5.6`, Sol/Terra/Luna, and the three `*-pro` virtual ids (1,050,000 context; 922,000 max input for all eight) |
 | OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` (1,050,000) |
 | Cursor | Static fallback includes `cursor/gpt-5.6-sol`, `cursor/gpt-5.6-terra`, and `cursor/gpt-5.6-luna` (1,000,000), plus `cursor/grok-4.5` and `cursor/grok-4.5-fast` (500,000); live account discovery decides which remain visible. |

@@ -30,6 +30,11 @@ type Capture = {
   accountOwner: string | null;
 };
 
+type ListenerIdentity = {
+  present: boolean;
+  listeners: Array<{ pid: number; command: string; endpoint: string }>;
+};
+
 function argValue(name: string): string | undefined {
   const index = Bun.argv.indexOf(name);
   return index >= 0 ? Bun.argv[index + 1] : undefined;
@@ -37,13 +42,13 @@ function argValue(name: string): string | undefined {
 
 const repoRoot = resolve(import.meta.dir, "..");
 const unitRootCandidates = [
-  "devlog/_plan/260717_openai_hardening",
-  "devlog/_fin/260717_openai_hardening",
+  "devlog/_plan/260717_openai_single_provider_option",
+  "devlog/_fin/260717_openai_single_provider_option",
 ].map(path => resolve(repoRoot, path));
 const defaultUnitRoot = unitRootCandidates.find(existsSync) ?? unitRootCandidates[0]!;
 const unitRoot = resolve(repoRoot, argValue("--unit-root") ?? defaultUnitRoot);
 const evidenceDir = resolve(repoRoot, argValue("--evidence-dir") ?? join(unitRoot, "evidence"));
-const runtimeEvidencePath = join(evidenceDir, "050_runtime_smoke.json");
+const runtimeEvidencePath = join(evidenceDir, "030_runtime_smoke.json");
 
 function atomicJson(path: string, value: unknown): void {
   mkdirSync(resolve(path, ".."), { recursive: true, mode: 0o700 });
@@ -58,6 +63,32 @@ function resolveConfiguredKey(raw: unknown): string | null {
   const match = /^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))$/.exec(value);
   if (!match) return value;
   return process.env[match[1] ?? match[2] ?? ""]?.trim() || null;
+}
+
+function listenerIdentity10100(): ListenerIdentity {
+  const result = Bun.spawnSync([
+    "lsof", "-nP", "-iTCP@127.0.0.1:10100", "-sTCP:LISTEN", "-Fpcn",
+  ], { stdout: "pipe", stderr: "pipe" });
+  if (result.exitCode !== 0) return { present: false, listeners: [] };
+  const listeners: ListenerIdentity["listeners"] = [];
+  let current: Partial<ListenerIdentity["listeners"][number]> = {};
+  for (const line of new TextDecoder().decode(result.stdout).split(/\r?\n/)) {
+    if (line.startsWith("p")) {
+      if (current.pid !== undefined) listeners.push({
+        pid: current.pid,
+        command: current.command ?? "unknown",
+        endpoint: current.endpoint ?? "127.0.0.1:10100",
+      });
+      current = { pid: Number(line.slice(1)) };
+    } else if (line.startsWith("c")) current.command = line.slice(1);
+    else if (line.startsWith("n")) current.endpoint = line.slice(1);
+  }
+  if (current.pid !== undefined) listeners.push({
+    pid: current.pid,
+    command: current.command ?? "unknown",
+    endpoint: current.endpoint ?? "127.0.0.1:10100",
+  });
+  return { present: listeners.length > 0, listeners };
 }
 
 async function checkLiveKey(): Promise<void> {
@@ -95,7 +126,6 @@ async function checkLiveKey(): Promise<void> {
     }
   }
   const decision = evaluateLivePolicy(Boolean(key), authorized, outcomes);
-
   const existing = existsSync(runtimeEvidencePath)
     ? JSON.parse(readFileSync(runtimeEvidencePath, "utf8")) as Record<string, unknown>
     : { schemaVersion: 1, verdict: "PASS" };
@@ -124,6 +154,7 @@ if (Bun.argv.includes("--check-live-key")) {
     return Object.fromEntries(rows.map(([label, path]) => [label, hashFile(path)]));
   }
 
+  const liveBefore = listenerIdentity10100();
   const realOcxHome = process.env.OPENCODEX_HOME?.trim() || join(homedir(), ".opencodex");
   const realCodexHome = process.env.CODEX_HOME?.trim() || join(homedir(), ".codex");
   const realState = [
@@ -135,7 +166,7 @@ if (Bun.argv.includes("--check-live-key")) {
   ] as const;
   const hashesBefore = stateHashes(realState);
 
-  const root = mkdtempSync(join(tmpdir(), "ocx-runtime-smoke-"));
+  const root = mkdtempSync(join(tmpdir(), "ocx-provider-option-runtime-smoke-"));
   const opencodexHome = join(root, "opencodex");
   const codexHome = join(root, "codex");
   const workdir = join(root, "work");
@@ -147,7 +178,7 @@ if (Bun.argv.includes("--check-live-key")) {
   async function startChild(): Promise<{ child: Bun.Subprocess; ready: ChildReady }> {
     const child = Bun.spawn([
       process.execPath,
-      join(import.meta.dir, "openai-three-tier-runtime-child.ts"),
+      join(import.meta.dir, "openai-provider-option-runtime-child.ts"),
       opencodexHome,
       codexHome,
       capturePath,
@@ -168,9 +199,11 @@ if (Bun.argv.includes("--check-live-key")) {
             const parsed = JSON.parse(line) as Partial<ChildReady>;
             if (parsed.type === "ready" && typeof parsed.pid === "number" && typeof parsed.port === "number"
               && typeof parsed.version === "string" && parsed.catalogReady === true) {
+              if (parsed.port === 10100) throw new Error("isolated runtime selected forbidden live port 10100");
               return parsed as ChildReady;
             }
-          } catch {
+          } catch (error) {
+            if (error instanceof Error && error.message.includes("forbidden live port")) throw error;
             // startServer writes human-readable startup lines before the readiness receipt.
           }
         }
@@ -205,6 +238,18 @@ if (Bun.argv.includes("--check-live-key")) {
     const text = await response.text();
     if (!response.ok || !text.includes("OCX_PROBE_OK")) {
       throw new Error(`runtime ${model} probe failed with status ${response.status}`);
+    }
+  }
+
+  async function patchMode(port: number, mode: "pool" | "direct"): Promise<void> {
+    const response = await fetch(`http://127.0.0.1:${port}/api/providers?name=openai`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", authorization: "Bearer fixture-admission" },
+      body: JSON.stringify({ codexAccountMode: mode }),
+    });
+    const body = await response.json() as { codexAccountMode?: string };
+    if (!response.ok || body.codexAccountMode !== mode) {
+      throw new Error(`runtime mode PATCH failed with status ${response.status}`);
     }
   }
 
@@ -254,20 +299,25 @@ if (Bun.argv.includes("--check-live-key")) {
   try {
     const first = await startChild();
     const firstHealth = await fetch(`http://127.0.0.1:${first.ready.port}/healthz`).then(response => response.json()) as ChildReady;
-    if (firstHealth.pid !== first.ready.pid || firstHealth.port !== first.ready.port || firstHealth.version !== first.ready.version) {
+    if (firstHealth.pid !== first.ready.pid
+      || (firstHealth.port !== first.ready.port && firstHealth.port !== 0)
+      || firstHealth.version !== first.ready.version) {
       throw new Error("first runtime readiness receipt does not match /healthz");
     }
     await stopChild(first.child);
 
     const second = await startChild();
     const secondHealth = await fetch(`http://127.0.0.1:${second.ready.port}/healthz`).then(response => response.json()) as ChildReady;
-    if (secondHealth.pid !== second.ready.pid || secondHealth.port !== second.ready.port || secondHealth.version !== second.ready.version) {
+    if (secondHealth.pid !== second.ready.pid
+      || (secondHealth.port !== second.ready.port && secondHealth.port !== 0)
+      || secondHealth.version !== second.ready.version) {
       throw new Error("second runtime readiness receipt does not match /healthz");
     }
     if (first.ready.pid === second.ready.pid) throw new Error("runtime child PID did not change across cold starts");
 
-    await runtimeProbe(second.ready.port, "gpt-5.6-sol", "Bearer fixture-direct-caller");
-    await runtimeProbe(second.ready.port, "openai-multi/gpt-5.6-terra", "Bearer fixture-admission");
+    await runtimeProbe(second.ready.port, "gpt-5.6-sol", "Bearer fixture-admission");
+    await patchMode(second.ready.port, "direct");
+    await runtimeProbe(second.ready.port, "gpt-5.6-terra", "Bearer fixture-direct-caller");
 
     let codexResult: Awaited<ReturnType<typeof runCodexAttempt>> | null = null;
     const failures: string[] = [];
@@ -281,7 +331,7 @@ if (Bun.argv.includes("--check-live-key")) {
     }
 
     if (!codexResult) {
-      atomicJson(join(evidenceDir, "050_client_history.json"), {
+      atomicJson(join(evidenceDir, "030_client_history.json"), {
         schemaVersion: 1,
         verdict: "FAIL",
         attempts: 2,
@@ -290,8 +340,6 @@ if (Bun.argv.includes("--check-live-key")) {
       throw new Error(`isolated codex exec failed after two attempts: ${failures.join(" | ")}`);
     }
 
-    let clientHistory: Record<string, unknown>;
-    let apiCapture: Capture | undefined;
     const sessionsDir = join(codexHome, "sessions");
     const rolloutPaths = existsSync(sessionsDir)
       ? readdirSync(sessionsDir, { recursive: true, withFileTypes: true })
@@ -303,18 +351,40 @@ if (Bun.argv.includes("--check-live-key")) {
       .map(line => JSON.parse(line) as { type?: string; payload?: Record<string, unknown> });
     const sessionMeta = records.find(record => record.type === "session_meta")?.payload;
     const turnContext = records.find(record => record.type === "turn_context")?.payload;
-    const codexCaptures = JSON.parse(readFileSync(capturePath, "utf8")) as Capture[];
-    apiCapture = codexCaptures.findLast(row => row.credentialOwner === "openai-apikey");
+    const captures = JSON.parse(readFileSync(capturePath, "utf8")) as Capture[];
+    const poolCapture = captures.find(row => row.credentialOwner === "openai-pool-added");
+    const directCapture = captures.find(row => row.credentialOwner === "openai-direct-main");
+    const apiCapture = captures.findLast(row => row.credentialOwner === "openai-apikey");
+    if (!poolCapture || poolCapture.model !== "gpt-5.6-sol" || poolCapture.accountOwner === null) {
+      throw new Error("runtime Pool added-account ownership mismatch");
+    }
+    if (!directCapture || directCapture.model !== "gpt-5.6-terra" || directCapture.accountOwner !== null) {
+      throw new Error("runtime Direct caller ownership mismatch");
+    }
+    if (!apiCapture || apiCapture.model !== "gpt-5.6-sol" || apiCapture.reasoningMode !== "pro") {
+      throw new Error("runtime API-Pro upstream identity mismatch");
+    }
     if (turnContext?.model !== "openai-apikey/gpt-5.6-sol-pro") {
       throw new Error(`unexpected rollout selected model: ${String(turnContext?.model)}`);
     }
     if (sessionMeta?.model_provider !== "openai") {
       throw new Error(`unexpected rollout model provider: ${String(sessionMeta?.model_provider)}`);
     }
-    if (!apiCapture || apiCapture.model !== "gpt-5.6-sol" || apiCapture.reasoningMode !== "pro") {
-      throw new Error("runtime API-Pro upstream identity mismatch");
+
+    const modelRows = await fetch(`http://127.0.0.1:${second.ready.port}/api/models`, {
+      headers: { authorization: "Bearer fixture-admission" },
+    }).then(response => response.json()) as Array<{ provider?: string; id?: string; namespaced?: string; native?: boolean }>;
+    if (!modelRows.some(row => row.provider === "openai" && row.native === true && row.namespaced === row.id)) {
+      throw new Error("runtime catalog is missing the bare OpenAI group");
     }
-    clientHistory = {
+    if (!modelRows.some(row => row.namespaced === "openai-apikey/gpt-5.6-sol-pro")) {
+      throw new Error("runtime catalog is missing the API Pro row");
+    }
+    if (modelRows.some(row => row.namespaced?.startsWith("openai-multi/"))) {
+      throw new Error("runtime catalog exposes the legacy namespace");
+    }
+
+    const clientHistory = {
       schemaVersion: 1,
       verdict: "PASS",
       selectedModel: turnContext.model,
@@ -325,23 +395,24 @@ if (Bun.argv.includes("--check-live-key")) {
       attempts: failures.length + 1,
     };
 
-    const captures = existsSync(capturePath) ? JSON.parse(readFileSync(capturePath, "utf8")) as Capture[] : [];
-    const directCapture = captures.find(row => row.credentialOwner === "openai-direct-caller");
-    const multiCapture = captures.find(row => row.credentialOwner === "openai-multi-main");
-    if (!directCapture || directCapture.model !== "gpt-5.6-sol" || directCapture.accountOwner !== null) {
-      throw new Error("runtime Direct ownership mismatch");
-    }
-    if (!multiCapture || multiCapture.model !== "gpt-5.6-terra" || multiCapture.accountOwner !== "main") {
-      throw new Error("runtime Multi main-account ownership mismatch");
-    }
-
     await stopChild(second.child);
     const hashesAfter = stateHashes(realState);
     if (JSON.stringify(hashesBefore) !== JSON.stringify(hashesAfter)) {
       throw new Error("real user state changed during isolated runtime smoke");
     }
+    const liveAfter = listenerIdentity10100();
+    if (JSON.stringify(liveBefore) !== JSON.stringify(liveAfter)) {
+      throw new Error("live 127.0.0.1:10100 listener identity changed during isolated runtime smoke");
+    }
 
-    atomicJson(join(evidenceDir, "050_client_history.json"), clientHistory);
+    atomicJson(join(evidenceDir, "030_client_history.json"), clientHistory);
+    atomicJson(join(evidenceDir, "live_10100_before_after.json"), {
+      schemaVersion: 1,
+      verdict: "PASS",
+      before: liveBefore,
+      after: liveAfter,
+      unchanged: true,
+    });
     const previousLiveKey = existsSync(runtimeEvidencePath)
       ? (JSON.parse(readFileSync(runtimeEvidencePath, "utf8")) as { liveKey?: unknown }).liveKey
       : undefined;
@@ -354,12 +425,39 @@ if (Bun.argv.includes("--check-live-key")) {
       ],
       distinctPids: true,
       catalogReady: true,
-      direct: { model: directCapture.model, credentialOwner: directCapture.credentialOwner, accountOwner: directCapture.accountOwner },
-      multi: { model: multiCapture.model, credentialOwner: multiCapture.credentialOwner, accountOwner: multiCapture.accountOwner },
-      apiPro: { model: apiCapture.model, reasoningMode: apiCapture.reasoningMode, credentialOwner: apiCapture.credentialOwner },
+      poolDefault: {
+        providerName: "openai",
+        accountMode: "pool",
+        selectedModel: "gpt-5.6-sol",
+        wireModel: poolCapture.model,
+        upstream: poolCapture.upstream,
+        credentialOwner: "added",
+        safeAccountOwner: "added",
+      },
+      direct: {
+        providerName: "openai",
+        accountMode: "direct",
+        selectedModel: "gpt-5.6-terra",
+        wireModel: directCapture.model,
+        upstream: directCapture.upstream,
+        credentialOwner: "caller",
+        safeAccountOwner: null,
+      },
+      apiPro: {
+        providerName: "openai-apikey",
+        accountMode: null,
+        selectedModel: "openai-apikey/gpt-5.6-sol-pro",
+        wireModel: apiCapture.model,
+        reasoningMode: apiCapture.reasoningMode,
+        upstream: apiCapture.upstream,
+        credentialOwner: "api-key",
+        safeAccountOwner: null,
+      },
+      oneOpenAiModelGroup: true,
       clientHistoryVerified: true,
       codexVersion: codexResult.version,
-      userState: hashesAfter,
+      userStateUnchanged: true,
+      live10100Unchanged: true,
       liveKey: previousLiveKey ?? { status: "NOT RUN (live spend not authorized)", liveCalls: 0, outcomes: [] },
     });
     process.stdout.write(JSON.stringify({
@@ -367,14 +465,22 @@ if (Bun.argv.includes("--check-live-key")) {
       pid: second.ready.pid,
       version: second.ready.version,
       port: second.ready.port,
+      poolDefault: "PASS",
+      direct: "PASS",
+      apiPro: "PASS",
       clientHistory: clientHistory.verdict,
+      live10100Unchanged: true,
     }) + "\n");
   } finally {
     for (const child of children) await stopChild(child).catch(() => undefined);
     const hashesAfterFinally = stateHashes(realState);
+    const liveAfterFinally = listenerIdentity10100();
     rmSync(root, { recursive: true, force: true });
     if (JSON.stringify(hashesBefore) !== JSON.stringify(hashesAfterFinally)) {
       throw new Error("real user state changed during runtime-smoke teardown");
+    }
+    if (JSON.stringify(liveBefore) !== JSON.stringify(liveAfterFinally)) {
+      throw new Error("live 127.0.0.1:10100 listener identity changed during runtime-smoke teardown");
     }
   }
 }

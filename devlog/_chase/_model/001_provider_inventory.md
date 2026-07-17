@@ -10,14 +10,14 @@
 
 | 축 | 수치 |
 |---|---|
-| built-in provider | 53 |
-| auth | key 42, oauth 6, local 3, forward 2 |
-| adapter | openai-chat 38, anthropic 5, google 3, openai-responses 3, cursor 1, kiro 1, azure-openai 1, mimo-free 1 |
+| built-in provider | 52 |
+| auth | key 42, oauth 6, local 3, forward 1 |
+| adapter | openai-chat 38, anthropic 5, google 3, openai-responses 2, cursor 1, kiro 1, azure-openai 1, mimo-free 1 |
 
 Provider ID:
 
 ```text
-openai, openai-multi, cursor, xai, anthropic, anthropic-apikey, kimi, kiro, openai-apikey,
+openai, cursor, xai, anthropic, anthropic-apikey, kimi, kiro, openai-apikey,
 umans, opencode-go, neuralwatt, openrouter, groq, google, google-vertex,
 google-antigravity, azure-openai, ollama, vllm, lm-studio, deepseek, cerebras,
 together, fireworks, firepass, moonshot, huggingface, nvidia, venice, zai,
@@ -42,15 +42,15 @@ cloudflare-ai-gateway, github-copilot, gitlab-duo
 
 | 군 | 예 | 주의점 |
 |---|---|---|
-| native passthrough | `openai`, `openai-multi` | Direct는 caller/main만 쓰고 회전하지 않는다. Multi는 메인을 포함한 추가 계정 풀을 소유한다. |
+| native passthrough | `openai` | Pool(기본)은 메인+추가 계정 풀을, Direct는 caller/main만 사용한다. 모드는 provider option이다. |
 | OAuth/product token | `xai`, `anthropic`, `kimi`, `kiro`, `google-antigravity`, `cursor` | registry seed와 `src/oauth/index.ts` 구현이 모두 있어야 한다. |
 | direct API key | `openai-apikey`, `anthropic-apikey`, `google`, `zai`, `openrouter` | 대부분 registry + 기존 adapter로 충분하다. |
 | local/self-hosted | `ollama`, `vllm`, `lm-studio`, `litellm` | private destination 허용과 optional key 정책을 따로 본다. |
 | product-specific adapter | `cursor`, `kiro`, `mimo-free` | OpenAI-compatible로 가정하면 안 된다. |
 | gateway/aggregator | `openrouter`, `vercel-ai-gateway`, `cloudflare-ai-gateway`, `litellm` | upstream model metadata가 서로 다른 형태로 올 수 있다. |
 
-OpenAI의 공개 tier는 정확히 Direct `openai`, 멀티계정 `openai-multi`, API `openai-apikey`다.
-레거시 `chatgpt`는 migration 입력/controller alias일 뿐 public registry provider가 아니다.
+OpenAI의 공개 provider는 Pool/Direct 옵션을 가진 `openai`와 API `openai-apikey`다.
+레거시 `chatgpt`와 과거 Multi id는 migration 입력일 뿐 public registry provider가 아니다.
 
 ## jawcode metadata bridge
 

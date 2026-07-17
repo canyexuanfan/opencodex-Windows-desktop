@@ -158,20 +158,22 @@ routing and catalog metadata for accounts and providers that can serve them.
   <img src="assets/codex-app-picker.png" alt="Codex App showing opencodex routed models with reasoning effort picker" width="480">
 </p>
 
-## OpenAI provider tiers
+## OpenAI provider account modes
 
-| Provider ID | Tier | Credential | Behavior |
+| Provider ID | Route | Credential | Behavior |
 |---|---|---|---|
-| `openai` | Codex Direct | Main Codex login | Single account, no rotation |
-| `openai-multi` | Codex Multi-account | Main + added accounts | Affinity, quota, cooldown, failover |
+| `openai` | Codex login | Main + added Codex accounts | Pool by default; optional Direct mode |
 | `openai-apikey` | OpenAI API | API key/key pool | No Codex account routing |
 
-- The main Codex account participates in Multi-account rotation; it is not an out-of-band fallback.
-- Fresh installs default to Direct (`openai`).
-- Legacy configs with pool accounts are migrated to Multi-account on upgrade.
+- Pool includes the main Codex login and added accounts, with affinity, quota, cooldown, and failover.
+- Direct short-circuits pool state and uses only the current caller/main-login bearer.
+- Fresh installs and configs with no persisted mode default to Pool. Change the mode on the
+  dashboard's **Providers** page; model ids stay bare in either mode.
 - The legacy public provider id `chatgpt` is hidden after migration. The original config is retained
-  once at `~/.opencodex/config.json.pre-openai-tiers-v1.bak`; restore it with
-  `cp ~/.opencodex/config.json.pre-openai-tiers-v1.bak ~/.opencodex/config.json`.
+  once at `~/.opencodex/config.json.pre-openai-tiers-v2.bak`; restore it with
+  `cp ~/.opencodex/config.json.pre-openai-tiers-v2.bak ~/.opencodex/config.json`.
+- Current configs use `openaiProviderTierVersion: 2`. Earlier v1 three-provider configs migrate
+  automatically into the single `openai` row.
 - The API tier includes Pro virtual models (`gpt-5.6-sol-pro`, `gpt-5.6-terra-pro`,
   `gpt-5.6-luna-pro`). At the wire level, each rewrites to its base model with
   `reasoning.mode: "pro"`.
@@ -180,10 +182,11 @@ routing and catalog metadata for accounts and providers that can serve them.
 - Compact requests keep the selected tier but send the base model without a reasoning object.
 - Official API metadata is 1,050,000 context tokens and 922,000 max input tokens.
 
-Select a tier explicitly: `gpt-5.6-sol` uses Direct, `openai-multi/gpt-5.6-sol` uses the account
-pool, and `openai-apikey/gpt-5.6-sol` uses the API key. Tiers never fall through to one another.
+Use `gpt-5.6-sol` for the configured `openai` account mode and
+`openai-apikey/gpt-5.6-sol` for the API key. Codex-login and API credentials never fall through to
+one another.
 
-### Multi-account behavior
+### Pool account behavior
 
 Open **Codex Auth** in the dashboard to add accounts and choose which account should handle the
 next Codex session. opencodex keeps these behaviors:

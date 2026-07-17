@@ -12,15 +12,14 @@ jawcode `models.json`에는 48개 top-level provider key가 있고, OCX `PROVIDE
 
 ### OCX registry에만 있는 ID
 
-`alibaba`, `anthropic-apikey`, `kimi`, `lm-studio`, `mimo-free`, `neuralwatt`, `ollama`, `openai-multi`, `openai-apikey`, `opencode-free`, `parallel`, `umans`, `vllm`
+`alibaba`, `anthropic-apikey`, `kimi`, `lm-studio`, `mimo-free`, `neuralwatt`, `ollama`, `openai-apikey`, `opencode-free`, `parallel`, `umans`, `vllm`
 
 ### 의미상 대응을 먼저 봐야 하는 이름
 
 | OCX | jawcode 쪽 비교 대상 | 주의점 |
 |---|---|---|
 | `alibaba` | `alibaba-coding-plan` | ID가 아니라 endpoint/auth/plan 계약으로 비교 |
-| `openai` | `openai-codex` | OCX `openai`는 forwarded Codex auth |
-| `openai-multi` | `openai-codex` | 같은 wire지만 메인을 포함한 OCX 계정 풀을 명시적으로 선택 |
+| `openai` | `openai-codex` | forwarded Codex auth; Pool(기본)/Direct는 provider option으로 선택 |
 | `openai-apikey` | `openai` | API key Responses transport가 가까움 |
 | `anthropic`, `anthropic-apikey` | `anthropic` | OCX는 auth mode를 provider ID로 분리 |
 | `kimi`, `kimi-code`, `moonshot` | `kimi-code`, `moonshot` | OAuth/code endpoint/API endpoint를 분리해 비교 |

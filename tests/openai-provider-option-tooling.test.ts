@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { evidenceDenyFindings, scanEvidence } from "../scripts/openai-hardening-evidence-scan";
-import { runGateSequence, type GateResult, type GateSpec } from "../scripts/openai-hardening-final-gates";
+import { evidenceDenyFindings, scanEvidence } from "../scripts/openai-provider-option-evidence-scan";
+import { runGateSequence, type GateResult, type GateSpec } from "../scripts/openai-provider-option-final-gates";
 import { evaluateLivePolicy, type LiveOutcome } from "../scripts/openai-hardening-live-policy";
 import { buildSanitizedRuntimeEnv } from "../scripts/openai-hardening-runtime-env";
 import { buildUnixCodexShim } from "../src/codex/shim";
@@ -19,22 +19,23 @@ function writeJson(path: string, value: unknown): void {
 }
 
 function validArtifacts(): { root: string; paths: string[] } {
-  const root = mkdtempSync(join(tmpdir(), "ocx-evidence-tooling-"));
+  const root = mkdtempSync(join(tmpdir(), "ocx-provider-option-evidence-"));
   roots.push(root);
-  writeJson(join(root, "050_e2e.json"), {
+  writeJson(join(root, "030_e2e.json"), {
     schemaVersion: 1,
     verdict: "PASS",
     publicNetworkFallback: false,
-    httpCases: 6,
-    websocketTurns: 4,
-    compactCases: 4,
-    canonicalUrls: ["https://api.openai.com/v1/responses"],
+    poolDefault: "PASS",
+    directIsolation: "PASS",
+    http: "PASS",
+    websocket: "PASS",
+    compact: "PASS",
+    apiProIsolation: "PASS",
     migrationRestore: "PASS",
-    virtualIdentity: "PASS",
-    reverseInsertionOrder: "PASS",
+    oneOpenAiModelGroup: "PASS",
     realClaudeStateUnchanged: true,
   });
-  writeJson(join(root, "050_client_history.json"), {
+  writeJson(join(root, "030_client_history.json"), {
     schemaVersion: 1,
     verdict: "PASS",
     selectedModel: "openai-apikey/gpt-5.6-sol-pro",
@@ -44,24 +45,51 @@ function validArtifacts(): { root: string; paths: string[] } {
     rolloutCount: 1,
     attempts: 1,
   });
-  writeJson(join(root, "050_runtime_smoke.json"), {
+  writeJson(join(root, "030_runtime_smoke.json"), {
     schemaVersion: 1,
     verdict: "PASS",
     instances: [{ pid: 101, version: "test", port: 45001 }, { pid: 102, version: "test", port: 45002 }],
     distinctPids: true,
     catalogReady: true,
-    direct: { model: "gpt-5.6-sol", credentialOwner: "openai-direct-caller", accountOwner: null },
-    multi: { model: "gpt-5.6-terra", credentialOwner: "openai-multi-main", accountOwner: "main" },
-    apiPro: { model: "gpt-5.6-sol", reasoningMode: "pro", credentialOwner: "openai-apikey" },
+    poolDefault: {
+      providerName: "openai",
+      accountMode: "pool",
+      selectedModel: "gpt-5.6-sol",
+      wireModel: "gpt-5.6-sol",
+      upstream: "chatgpt.com/backend-api/codex",
+      credentialOwner: "added",
+      safeAccountOwner: "added",
+    },
+    direct: {
+      providerName: "openai",
+      accountMode: "direct",
+      selectedModel: "gpt-5.6-terra",
+      wireModel: "gpt-5.6-terra",
+      upstream: "chatgpt.com/backend-api/codex",
+      credentialOwner: "caller",
+      safeAccountOwner: null,
+    },
+    apiPro: {
+      providerName: "openai-apikey",
+      accountMode: null,
+      selectedModel: "openai-apikey/gpt-5.6-sol-pro",
+      wireModel: "gpt-5.6-sol",
+      upstream: "api.openai.com/v1",
+      credentialOwner: "api-key",
+      safeAccountOwner: null,
+      reasoningMode: "pro",
+    },
+    oneOpenAiModelGroup: true,
     clientHistoryVerified: true,
     codexVersion: "test",
-    userState: { "opencodex-config": { exists: false, sha256: null } },
+    userStateUnchanged: true,
+    live10100Unchanged: true,
     liveKey: { status: "NOT RUN (credential unavailable)", liveCalls: 0, outcomes: [] },
   });
-  writeFileSync(join(root, "050_gate_summary.txt"), "schemaVersion=1\nverdict=PASS\ncommand[0]=tests|exit=0|pass=3|fail=0|build=na\n");
+  writeFileSync(join(root, "030_gate_summary.txt"), "schemaVersion=1\nverdict=PASS\ncommand[0]=tests|exit=0|pass=3|fail=0|build=na\n");
   return {
     root,
-    paths: ["050_e2e.json", "050_client_history.json", "050_runtime_smoke.json", "050_gate_summary.txt"]
+    paths: ["030_e2e.json", "030_client_history.json", "030_runtime_smoke.json", "030_gate_summary.txt"]
       .map(name => join(root, name)),
   };
 }
@@ -70,18 +98,17 @@ function liveOutcome(selectedId: string, status = 200, resolvedId = "gpt-5.6-sol
   return { status, requestId: null, selectedId, resolvedId };
 }
 
-describe("OpenAI hardening evidence scanner", () => {
-  test("accepts the four strict artifacts and an optional PASS audit", () => {
+describe("OpenAI provider-option evidence scanner", () => {
+  test("accepts the four strict artifacts by path list or evidence directory", () => {
     const fixture = validArtifacts();
     expect(scanEvidence(fixture.paths)).toEqual([]);
-    const audit = join(fixture.root, "051_audit_wp050_implementation.md");
-    writeFileSync(audit, "VERDICT: PASS\n");
-    expect(scanEvidence([...fixture.paths, audit])).toEqual([]);
+    expect(scanEvidence([fixture.root])).toEqual([]);
   });
 
   test("detects every denied evidence class", () => {
     const rows: Array<[string, string]> = [
       ["absolute-home", "/Users/test/private"],
+      ["temporary-path", "/private/var/folders/aa/private"],
       ["email", "owner@example.test"],
       ["bearer", "Bearer bad"],
       ["api-key", "sk-abcdefghijkl"],
@@ -92,37 +119,46 @@ describe("OpenAI hardening evidence scanner", () => {
     for (const [kind, value] of rows) expect(evidenceDenyFindings(value)).toContain(kind);
   });
 
-  test("rejects missing, empty, unknown-key, missing-tri-state, and bad audits", () => {
+  test("rejects missing fields, secret leaks, stale absolute paths, and unknown keys", () => {
     const missing = validArtifacts();
-    rmSync(missing.paths[0]!);
-    expect(scanEvidence(missing.paths).some(error => error.includes("missing"))).toBe(true);
+    const e2e = JSON.parse(readFileSync(missing.paths[0]!, "utf8")) as Record<string, unknown>;
+    delete e2e.poolDefault;
+    writeJson(missing.paths[0]!, e2e);
+    expect(scanEvidence(missing.paths).some(error => error.includes("unknown or missing keys"))).toBe(true);
 
-    const empty = validArtifacts();
-    writeFileSync(empty.paths[1]!, "");
-    expect(scanEvidence(empty.paths).some(error => error.includes("empty"))).toBe(true);
+    const secret = validArtifacts();
+    const runtimeSecret = JSON.parse(readFileSync(secret.paths[2]!, "utf8")) as Record<string, unknown>;
+    (runtimeSecret.poolDefault as Record<string, unknown>).credentialOwner = "fixture-pool-access";
+    writeJson(secret.paths[2]!, runtimeSecret);
+    expect(scanEvidence(secret.paths).some(error => error.includes("fixture-secret"))).toBe(true);
+
+    const pathLeak = validArtifacts();
+    const client = JSON.parse(readFileSync(pathLeak.paths[1]!, "utf8")) as Record<string, unknown>;
+    client.selectedModel = "/Users/test/private/model";
+    writeJson(pathLeak.paths[1]!, client);
+    expect(scanEvidence(pathLeak.paths).some(error => error.includes("absolute-home"))).toBe(true);
 
     const unknown = validArtifacts();
-    const e2e = JSON.parse(readFileSync(unknown.paths[0]!, "utf8")) as Record<string, unknown>;
-    e2e.unexpected = true;
-    writeJson(unknown.paths[0]!, e2e);
+    const unknownE2e = JSON.parse(readFileSync(unknown.paths[0]!, "utf8")) as Record<string, unknown>;
+    unknownE2e.unexpected = true;
+    writeJson(unknown.paths[0]!, unknownE2e);
     expect(scanEvidence(unknown.paths).some(error => error.includes("unknown or missing keys"))).toBe(true);
+  });
 
-    const triState = validArtifacts();
-    const runtime = JSON.parse(readFileSync(triState.paths[2]!, "utf8")) as Record<string, unknown>;
-    delete runtime.liveKey;
-    writeJson(triState.paths[2]!, runtime);
-    expect(scanEvidence(triState.paths).some(error => error.includes("unknown or missing keys"))).toBe(true);
+  test("rejects the wrong live-key policy and a failed gate summary", () => {
+    const policy = validArtifacts();
+    const runtime = JSON.parse(readFileSync(policy.paths[2]!, "utf8")) as Record<string, unknown>;
+    (runtime.liveKey as Record<string, unknown>).liveCalls = 2;
+    writeJson(policy.paths[2]!, runtime);
+    expect(scanEvidence(policy.paths).some(error => error.includes("wrong live-key policy"))).toBe(true);
 
-    const auditFixture = validArtifacts();
-    const audit = join(auditFixture.root, "051_audit_wp050_implementation.md");
-    writeFileSync(audit, "");
-    expect(scanEvidence([...auditFixture.paths, audit]).some(error => error.includes("empty"))).toBe(true);
-    writeFileSync(audit, "VERDICT: BLOCKED\n");
-    expect(scanEvidence([...auditFixture.paths, audit]).some(error => error.includes("missing PASS"))).toBe(true);
+    const summary = validArtifacts();
+    writeFileSync(summary.paths[3]!, "schemaVersion=1\nverdict=FAIL\ncommand[0]=tests|exit=1|pass=0|fail=1|build=na\n");
+    expect(scanEvidence(summary.paths).some(error => error.includes("invalid summary schema"))).toBe(true);
   });
 });
 
-describe("OpenAI hardening final gate runner", () => {
+describe("OpenAI provider-option final gate runner", () => {
   test("runs once in order, writes one sanitized summary, then scans", async () => {
     const order: string[] = [];
     const writes: string[] = [];
@@ -161,7 +197,7 @@ describe("OpenAI hardening final gate runner", () => {
   });
 });
 
-describe("OpenAI hardening live policy and runtime isolation", () => {
+describe("OpenAI provider-option live policy and runtime isolation", () => {
   const base = liveOutcome("openai-apikey/gpt-5.6-sol");
   const pro = liveOutcome("openai-apikey/gpt-5.6-sol-pro");
 
@@ -208,7 +244,6 @@ describe("OpenAI hardening live policy and runtime isolation", () => {
 
   test("keeps the fixture admission token through an installed Unix shim without reading its token file", () => {
     if (process.platform === "win32") return;
-
     const root = mkdtempSync(join(tmpdir(), "ocx-runtime-shim-isolation-"));
     roots.push(root);
     const tokenFile = join(root, "service-token");

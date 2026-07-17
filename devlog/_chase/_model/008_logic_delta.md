@@ -38,9 +38,9 @@ Direct port is `REJECT`; outcome is currently `NOOP`. The jawcode wrapper solves
 
 ## 3. GPT-5.6 policy
 
-jawcode adds curated Luna/Sol/Terra descriptors and constructs 1.05M OpenAI API rows plus 373K Codex rows, then `applyGpt56ContextWindow` resets both to 373K. OCX now has explicit route contracts: Direct `openai` and main-inclusive Multi `openai-multi` use 372K Codex rows; `openai-apikey` uses 1.05M context / 922K max input and static Pro virtual ids.
+jawcode adds curated Luna/Sol/Terra descriptors and constructs 1.05M OpenAI API rows plus 373K Codex rows, then `applyGpt56ContextWindow` resets both to 373K. OCX now has explicit route contracts: Pool(default)/Direct account modes share one bare `openai` 372K group; `openai-apikey` uses 1.05M context / 922K max input and static Pro virtual ids.
 
-Decision: three-tier identity, context, max input, and Pro wire rewrite are `ADAPT` and implemented.
+Decision: account-mode/API identity, context, max input, and Pro wire rewrite are `ADAPT` and implemented.
 Cost remains `REJECT` in current scope. See [007](./007_model_id_delta.md).
 
 ## 4. Antigravity retired model

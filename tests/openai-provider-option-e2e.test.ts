@@ -26,15 +26,25 @@ type Capture = {
 type MigrationReceipt = {
   backupMatchesOriginal: boolean;
   backupMode: number;
+  v1BackupUnchanged: boolean;
   firstProviderIds: string[];
   firstDefaultProvider: string;
+  mode: string;
   hiddenLegacy: boolean;
   marker: number;
+  selectedModels: string[];
+  knownReferencesRewritten: boolean;
+  contextCapsMerged: boolean;
+  warningPathsOnly: boolean;
+  unrelatedProvidersUnchanged: boolean;
+  unrelatedSelectedIdsUnchanged: boolean;
   secondIdempotent: boolean;
+  secondNoSave: boolean;
   restoredByteIdentity: boolean;
   restoredLegacyParse: boolean;
-  backupReused: boolean;
   remigrated: boolean;
+  absencePreserved: boolean;
+  collisionFailsBeforeSave: boolean;
 };
 
 function hashTree(path: string): string {
@@ -95,9 +105,9 @@ function responsesLifecycle(body: Record<string, unknown>): string {
   return frames.map(frame => `event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`).join("");
 }
 
-describe("OpenAI three-tier integration spine", () => {
-  test("keeps Direct, Multi, and API ownership stable across transports and management", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ocx-three-tier-e2e-"));
+describe("OpenAI provider-option integration spine", () => {
+  test("keeps Pool, Direct, and API ownership stable across transports and management", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ocx-provider-option-e2e-"));
     const opencodexHome = join(root, "opencodex");
     const codexHome = join(root, "codex");
     const claudeConfigDir = join(root, "claude");
@@ -116,10 +126,13 @@ describe("OpenAI three-tier integration spine", () => {
 
     const loopbackTuples = new Set([
       "GET /healthz",
+      "GET /api/config",
+      "GET /api/providers",
       "GET /api/models",
       "GET /api/logs",
       "GET /api/subagent-models",
       "GET /api/injection-model",
+      "PATCH /api/providers",
       "PUT /api/disabled-models",
       "PUT /api/subagent-models",
       "PUT /api/injection-model",
@@ -150,8 +163,15 @@ describe("OpenAI three-tier integration spine", () => {
         const request = new Request(input, init);
         const url = new URL(request.url);
         const tuple = `${request.method} ${url.pathname}`;
-        if (loopbackOrigin !== null && url.origin === loopbackOrigin && url.search === "" && loopbackTuples.has(tuple)) {
+        if (loopbackOrigin !== null && url.origin === loopbackOrigin && loopbackTuples.has(tuple)) {
           return savedFetch(request);
+        }
+        if (request.method === "GET" && url.href === "https://chatgpt.com/backend-api/wham/usage") {
+          const isAdded = request.headers.get("authorization") === "Bearer fixture-pool-access";
+          return Response.json({
+            plan_type: "pro",
+            rate_limit: { secondary_window: { used_percent: isAdded ? 10 : 90 } },
+          });
         }
         const upstreamTuple = `${request.method} ${url.href}`;
         if (!upstreamTuples.has(upstreamTuple)) {
@@ -165,9 +185,6 @@ describe("OpenAI three-tier integration spine", () => {
           accountId: request.headers.get("chatgpt-account-id"),
           body,
         });
-        if (JSON.stringify(body.input ?? "").includes("FAIL_FIXTURE")) {
-          return new Response("fixture failure", { status: 500 });
-        }
         if (url.pathname.endsWith("/compact")) {
           return Response.json({ output: [], model: body.model, usage: { input_tokens: 2, output_tokens: 0 } });
         }
@@ -227,25 +244,27 @@ describe("OpenAI three-tier integration spine", () => {
       const seed = (id: string) => deriveModule.providerConfigSeed(
         registryModule.PROVIDER_REGISTRY.find(entry => entry.id === id)!,
       );
-      const direct = seed("openai");
-      const multi = seed("openai-multi");
+      const openai = seed("openai");
+      delete openai.codexAccountMode;
       const api = seed("openai-apikey");
       api.liveModels = false;
       api.apiKey = "fixture-api-key";
       const config = {
         port: 0,
         defaultProvider: "openai",
-        openaiProviderTierVersion: 1 as const,
+        openaiProviderTierVersion: 2 as const,
         websockets: true,
-        providers: { openai: direct, "openai-multi": multi, "openai-apikey": api },
+        autoSwitchThreshold: 80,
+        providers: { openai, "openai-apikey": api },
         codexAccounts: [{
           id: "fixture-pool",
           email: "pool@example.test",
           plan: "plus",
+          logLabel: "p123abc",
           chatgptAccountId: "fixture-pool-account",
           isMain: false,
         }],
-        activeCodexAccountId: "fixture-pool",
+        activeCodexAccountId: mainAccount.MAIN_CODEX_ACCOUNT_ID,
       };
       configModule.saveConfig(config);
       accountStore.saveCodexAccountCredential("fixture-pool", {
@@ -255,14 +274,13 @@ describe("OpenAI three-tier integration spine", () => {
         chatgptAccountId: "fixture-pool-account",
       });
       authApi.updateAccountQuota("fixture-pool", 10, undefined, 10);
-      authApi.updateAccountQuota(mainAccount.MAIN_CODEX_ACCOUNT_ID, 20, undefined, 20);
+      authApi.updateAccountQuota(mainAccount.MAIN_CODEX_ACCOUNT_ID, 90, undefined, 90);
 
-      const reversed = {
-        ...config,
-        providers: { "openai-apikey": api, "openai-multi": multi, openai: direct },
-      };
-      expect(sidecar.listOpenAiForwardSidecarCandidates(reversed).map(row => row.providerName))
-        .toEqual(["openai", "openai-multi"]);
+      expect(registryModule.PROVIDER_REGISTRY.map(entry => entry.id)).toContain("openai");
+      expect(registryModule.PROVIDER_REGISTRY.map(entry => entry.id)).toContain("openai-apikey");
+      expect(registryModule.PROVIDER_REGISTRY.map(entry => entry.id)).not.toContain("openai-multi");
+      expect(deriveModule.deriveProviderPresets().map(entry => entry.id)).not.toContain("openai-multi");
+      expect(sidecar.listOpenAiForwardSidecarCandidates(config).map(row => row.providerName)).toEqual(["openai"]);
 
       server = serverModule.startServer(0);
       loopbackOrigin = new URL(server.url).origin;
@@ -277,44 +295,49 @@ describe("OpenAI three-tier integration spine", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
+      const patchMode = async (mode: "pool" | "direct") => local(`/api/providers?name=openai`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ codexAccountMode: mode }),
+      });
       expect((await local("/healthz")).status).toBe(200);
+      const providerRows = await local("/api/providers").then(response => response.json()) as Array<{ name: string; codexAccountMode?: string }>;
+      expect(providerRows.map(row => row.name).sort()).toEqual(["openai", "openai-apikey"]);
+      expect(providerRows.find(row => row.name === "openai")?.codexAccountMode).toBe("pool");
+      const configDto = await local("/api/config").then(response => response.json()) as { providers: Record<string, { codexAccountMode?: string }> };
+      expect(configDto.providers.openai.codexAccountMode).toBe("pool");
+      expect(configDto.providers["openai-multi"]).toBeUndefined();
 
-      const httpCases = [
-        { selected: "gpt-5.6-sol", wire: "gpt-5.6-sol", url: "https://chatgpt.com/backend-api/codex/responses", auth: "Bearer fixture-caller-main", account: null, mode: undefined },
-        { selected: "openai-multi/gpt-5.6-terra", wire: "gpt-5.6-terra", url: "https://chatgpt.com/backend-api/codex/responses", auth: "Bearer fixture-pool-access", account: "fixture-pool-account", mode: undefined },
-        { selected: "openai-apikey/gpt-5.6", wire: "gpt-5.6", url: "https://api.openai.com/v1/responses", auth: "Bearer fixture-api-key", account: null, mode: undefined },
-        { selected: "openai-apikey/gpt-5.6-sol-pro", wire: "gpt-5.6-sol", url: "https://api.openai.com/v1/responses", auth: "Bearer fixture-api-key", account: null, mode: "pro" },
-        { selected: "openai-apikey/gpt-5.6-terra-pro", wire: "gpt-5.6-terra", url: "https://api.openai.com/v1/responses", auth: "Bearer fixture-api-key", account: null, mode: "pro" },
-        { selected: "openai-apikey/gpt-5.6-luna-pro", wire: "gpt-5.6-luna", url: "https://api.openai.com/v1/responses", auth: "Bearer fixture-api-key", account: null, mode: "pro" },
-      ] as const;
-      for (const row of httpCases) {
-        const before = captures.length;
-        const response = await post("/v1/responses", {
-          model: row.selected,
-          input: "fixture",
-          stream: false,
-          reasoning: { effort: "high" },
-        }, { authorization: "Bearer fixture-caller-main" });
-        expect(response.status).toBe(200);
-        expect(await response.json()).toMatchObject({ model: row.wire });
-        expect(captures).toHaveLength(before + 1);
-        const capture = captures.at(-1)!;
-        expect(capture).toMatchObject({ url: row.url, method: "POST", authorization: row.auth, accountId: row.account });
-        expect(capture.body.model).toBe(row.wire);
-        if (row.mode) expect(capture.body.reasoning).toMatchObject({ effort: "high", mode: row.mode });
-      }
+      const poolHttp = await post("/v1/responses", {
+        model: "gpt-5.6-sol", input: "pool fixture", stream: false,
+      }, { authorization: "Bearer fixture-caller-main" });
+      expect(poolHttp.status).toBe(200);
+      expect(await poolHttp.json()).toMatchObject({ model: "gpt-5.6-sol" });
+      expect(captures.at(-1)).toMatchObject({
+        authorization: "Bearer fixture-pool-access",
+        accountId: "fixture-pool-account",
+        body: { model: "gpt-5.6-sol" },
+      });
+      const poolSse = await post("/v1/responses", {
+        model: "gpt-5.6-terra", input: "pool sse fixture", stream: true,
+      }, { authorization: "Bearer fixture-caller-main" });
+      expect(poolSse.status).toBe(200);
+      expect(await poolSse.text()).toContain("response.completed");
+      expect(captures.at(-1)).toMatchObject({ authorization: "Bearer fixture-pool-access", accountId: "fixture-pool-account" });
+      const poolCompact = await post("/v1/responses/compact", {
+        model: "gpt-5.6-luna", input: [], reasoning: { effort: "high" },
+      }, { authorization: "Bearer fixture-caller-main" });
+      expect(poolCompact.status).toBe(200);
+      expect(await poolCompact.json()).toMatchObject({ model: "gpt-5.6-luna" });
+      expect(captures.at(-1)).toMatchObject({ authorization: "Bearer fixture-pool-access", accountId: "fixture-pool-account" });
+      expect(captures.at(-1)?.body.reasoning).toBeUndefined();
 
       const NativeWebSocket = globalThis.WebSocket;
       const expectedWsUrl = new URL("/v1/responses", server.url);
       expectedWsUrl.protocol = "ws:";
-      const createFixtureSocket = (value: string | URL): WebSocket => {
-        const url = new URL(value);
-        if (url.href !== expectedWsUrl.href) throw new Error(`deny-by-default websocket blocked: ${url.href}`);
-        return new NativeWebSocket(url, {
-          headers: { authorization: "Bearer fixture-caller-main" },
-        } as unknown as string[]);
-      };
-      const ws = createFixtureSocket(expectedWsUrl);
+      const ws = new NativeWebSocket(expectedWsUrl, {
+        headers: { authorization: "Bearer fixture-caller-main" },
+      } as unknown as string[]);
       await new Promise<void>((resolve, reject) => {
         ws.addEventListener("open", () => resolve(), { once: true });
         ws.addEventListener("error", () => reject(new Error("fixture websocket failed to open")), { once: true });
@@ -332,70 +355,143 @@ describe("OpenAI three-tier integration spine", () => {
         ws.addEventListener("message", onMessage);
         ws.send(JSON.stringify({ type: "response.create", model, input: "fixture" }));
       });
-      expect((await wsTurn("gpt-5.6-sol")).authorization).toBe("Bearer fixture-caller-main");
-      expect(websocketRegistry.getTrackedCodexWebSocketCountForAccount("fixture-pool")).toBe(0);
-      expect((await wsTurn("openai-multi/gpt-5.6-terra")).authorization).toBe("Bearer fixture-pool-access");
+      expect(await wsTurn("gpt-5.6-sol")).toMatchObject({
+        authorization: "Bearer fixture-pool-access",
+        accountId: "fixture-pool-account",
+        body: { model: "gpt-5.6-sol" },
+      });
       expect(websocketRegistry.getTrackedCodexWebSocketCountForAccount("fixture-pool")).toBe(1);
-      expect((await wsTurn("openai-apikey/gpt-5.6-sol-pro")).authorization).toBe("Bearer fixture-api-key");
-      expect(websocketRegistry.getTrackedCodexWebSocketCountForAccount("fixture-pool")).toBe(0);
-      expect((await wsTurn("gpt-5.6-luna")).authorization).toBe("Bearer fixture-caller-main");
-      expect(websocketRegistry.getTrackedCodexWebSocketCountForAccount("fixture-pool")).toBe(0);
-      const closed = new Promise<void>(resolve => ws.addEventListener("close", () => resolve(), { once: true }));
-      ws.close();
-      await closed;
 
-      const compactCases = [
-        { selected: "gpt-5.6-sol", wire: "gpt-5.6-sol", url: "https://chatgpt.com/backend-api/codex/responses/compact", auth: "Bearer fixture-caller-main", account: null },
-        { selected: "openai-multi/gpt-5.6-terra", wire: "gpt-5.6-terra", url: "https://chatgpt.com/backend-api/codex/responses/compact", auth: "Bearer fixture-pool-access", account: "fixture-pool-account" },
-        { selected: "openai-apikey/gpt-5.6", wire: "gpt-5.6", url: "https://api.openai.com/v1/responses/compact", auth: "Bearer fixture-api-key", account: null },
-        { selected: "openai-apikey/gpt-5.6-sol-pro", wire: "gpt-5.6-sol", url: "https://api.openai.com/v1/responses/compact", auth: "Bearer fixture-api-key", account: null },
+      const directPatch = await patchMode("direct");
+      expect(directPatch.status).toBe(200);
+      expect(await directPatch.json()).toEqual({ success: true, name: "openai", codexAccountMode: "direct" });
+      expect((await local("/api/config").then(response => response.json()) as typeof configDto).providers.openai.codexAccountMode).toBe("direct");
+      const directBaseline = {
+        config: hashTree(join(opencodexHome, "config.json")),
+        accounts: hashTree(join(opencodexHome, "codex-accounts.json")),
+        active: configModule.loadConfig().activeCodexAccountId,
+        mainQuota: authApi.getAccountQuota(mainAccount.MAIN_CODEX_ACCOUNT_ID),
+        addedQuota: authApi.getAccountQuota("fixture-pool"),
+        mainHealth: routing.getCodexUpstreamHealth(mainAccount.MAIN_CODEX_ACCOUNT_ID),
+        addedHealth: routing.getCodexUpstreamHealth("fixture-pool"),
+      };
+
+      for (const [path, model, stream] of [
+        ["/v1/responses", "gpt-5.6-sol", false],
+        ["/v1/responses", "gpt-5.6-terra", true],
+        ["/v1/responses/compact", "gpt-5.6-luna", false],
+      ] as const) {
+        const response = await post(path, { model, input: path.endsWith("compact") ? [] : "direct fixture", stream }, {
+          authorization: "Bearer fixture-caller-main",
+        });
+        expect(response.status).toBe(200);
+        await response.text();
+        expect(captures.at(-1)).toMatchObject({ authorization: "Bearer fixture-caller-main", accountId: null, body: { model } });
+      }
+      expect(await wsTurn("gpt-5.6-sol")).toMatchObject({
+        authorization: "Bearer fixture-caller-main",
+        accountId: null,
+        body: { model: "gpt-5.6-sol" },
+      });
+      expect(websocketRegistry.getTrackedCodexWebSocketCountForAccount("fixture-pool")).toBe(0);
+      const directAfter = {
+        config: hashTree(join(opencodexHome, "config.json")),
+        accounts: hashTree(join(opencodexHome, "codex-accounts.json")),
+        active: configModule.loadConfig().activeCodexAccountId,
+        mainQuota: authApi.getAccountQuota(mainAccount.MAIN_CODEX_ACCOUNT_ID),
+        addedQuota: authApi.getAccountQuota("fixture-pool"),
+        mainHealth: routing.getCodexUpstreamHealth(mainAccount.MAIN_CODEX_ACCOUNT_ID),
+        addedHealth: routing.getCodexUpstreamHealth("fixture-pool"),
+      };
+      expect(directAfter).toEqual(directBaseline);
+
+      const poolPatch = await patchMode("pool");
+      expect(poolPatch.status).toBe(200);
+      expect(await poolPatch.json()).toEqual({ success: true, name: "openai", codexAccountMode: "pool" });
+      expect((await local("/api/providers").then(response => response.json()) as typeof providerRows)
+        .find(row => row.name === "openai")?.codexAccountMode).toBe("pool");
+      const poolAgain = await post("/v1/responses", {
+        model: "gpt-5.6-terra", input: "pool after flip", stream: false,
+      }, { authorization: "Bearer fixture-caller-main" });
+      expect(poolAgain.status).toBe(200);
+      await poolAgain.text();
+      expect(captures.at(-1)).toMatchObject({ authorization: "Bearer fixture-pool-access", accountId: "fixture-pool-account" });
+
+      const apiHttpCases = [
+        { selected: "openai-apikey/gpt-5.6", wire: "gpt-5.6", mode: undefined },
+        { selected: "openai-apikey/gpt-5.6-sol-pro", wire: "gpt-5.6-sol", mode: "pro" },
+        { selected: "openai-apikey/gpt-5.6-terra-pro", wire: "gpt-5.6-terra", mode: "pro" },
+        { selected: "openai-apikey/gpt-5.6-luna-pro", wire: "gpt-5.6-luna", mode: "pro" },
       ] as const;
-      for (const row of compactCases) {
-        const response = await post("/v1/responses/compact", {
+      for (const row of apiHttpCases) {
+        const response = await post("/v1/responses", {
           model: row.selected,
-          input: [],
-          reasoning: { effort: "high", mode: "pro" },
+          input: "api fixture",
+          stream: false,
+          reasoning: { effort: "high" },
         }, { authorization: "Bearer fixture-caller-main" });
         expect(response.status).toBe(200);
         expect(await response.json()).toMatchObject({ model: row.wire });
         const capture = captures.at(-1)!;
-        expect(capture).toMatchObject({ url: row.url, method: "POST", authorization: row.auth, accountId: row.account });
-        expect(capture.body).toMatchObject({ model: row.wire });
-        expect(capture.body.reasoning).toBeUndefined();
+        expect(capture).toMatchObject({
+          url: "https://api.openai.com/v1/responses",
+          authorization: "Bearer fixture-api-key",
+          accountId: null,
+          body: { model: row.wire },
+        });
+        if (row.mode) expect(capture.body.reasoning).toMatchObject({ effort: "high", mode: row.mode });
       }
-
-      routing.recordCodexUpstreamOutcome(config, "fixture-pool", 429, { retryAfter: "60" });
-      expect(routing.getCodexUpstreamHealth("fixture-pool")).toMatchObject({ lastFailureStatus: 429 });
-      const directWhileCooled = await post("/v1/responses", {
-        model: "gpt-5.6-sol", input: "fixture", stream: false,
-      }, { authorization: "Bearer fixture-caller-main" });
-      expect(directWhileCooled.status).toBe(200);
-      expect(captures.at(-1)?.authorization).toBe("Bearer fixture-caller-main");
-      expect(routing.getCodexUpstreamHealth("fixture-pool")).toMatchObject({ lastFailureStatus: 429 });
-      const cooledMulti = await post("/v1/responses", {
-        model: "openai-multi/gpt-5.6-sol", input: "fixture", stream: false,
-      }, { authorization: "Bearer fixture-caller-main" });
-      expect(cooledMulti.status).toBe(200);
-      expect(captures.at(-1)).toMatchObject({
-        authorization: "Bearer fixture-main-access",
-        accountId: "fixture-main-account",
+      const apiWs = await wsTurn("openai-apikey/gpt-5.6-sol-pro");
+      expect(apiWs).toMatchObject({
+        url: "https://api.openai.com/v1/responses",
+        authorization: "Bearer fixture-api-key",
+        accountId: null,
+        body: { model: "gpt-5.6-sol", reasoning: { mode: "pro" } },
       });
-      routing.clearCodexUpstreamHealth();
+      const apiCompact = await post("/v1/responses/compact", {
+        model: "openai-apikey/gpt-5.6-sol-pro",
+        input: [],
+        reasoning: { effort: "high", mode: "pro" },
+      }, { authorization: "Bearer fixture-caller-main" });
+      expect(apiCompact.status).toBe(200);
+      expect(await apiCompact.json()).toMatchObject({ model: "gpt-5.6-sol" });
+      expect(captures.at(-1)).toMatchObject({
+        url: "https://api.openai.com/v1/responses/compact",
+        authorization: "Bearer fixture-api-key",
+        accountId: null,
+        body: { model: "gpt-5.6-sol" },
+      });
+      expect(captures.at(-1)?.body.reasoning).toBeUndefined();
+
+      const closed = new Promise<void>(resolve => ws.addEventListener("close", () => resolve(), { once: true }));
+      ws.close();
+      await closed;
 
       const selected = "openai-apikey/gpt-5.6-sol-pro";
       expect((await put("/api/disabled-models", { models: [selected] })).status).toBe(200);
-      const modelRows = await local("/api/models").then(response => response.json()) as Array<{ namespaced: string; disabled: boolean }>;
-      expect(modelRows.find(row => row.namespaced === selected)).toEqual({
-        ...modelRows.find(row => row.namespaced === selected),
-        namespaced: selected,
-        disabled: true,
-      });
+      const modelRows = await local("/api/models").then(response => response.json()) as Array<{
+        provider: string;
+        id: string;
+        namespaced: string;
+        disabled: boolean;
+        native?: boolean;
+      }>;
+      expect(modelRows.find(row => row.namespaced === selected)?.disabled).toBe(true);
+      expect(modelRows.some(row => row.provider === "openai" && row.native === true && row.namespaced === row.id)).toBe(true);
+      expect(modelRows.some(row => row.namespaced.startsWith("openai-apikey/"))).toBe(true);
+      expect(modelRows.some(row => row.namespaced.startsWith("openai-multi/"))).toBe(false);
       expect((await put("/api/subagent-models", { models: [selected] })).status).toBe(200);
       expect(await local("/api/subagent-models").then(response => response.json())).toMatchObject({ chosen: [selected] });
       expect((await put("/api/injection-model", { model: selected, effort: "high" })).status).toBe(200);
       expect(await local("/api/injection-model").then(response => response.json())).toMatchObject({ model: selected, effort: "high" });
 
       const logs = await local("/api/logs").then(response => response.json()) as Array<Record<string, unknown>>;
+      expect(logs.some(row => row.provider === "openai-p123abc"
+        && row.requestedModel === "gpt-5.6-sol"
+        && row.resolvedModel === "gpt-5.6-sol")).toBe(true);
+      expect(logs.some(row => row.provider === "openai"
+        && row.requestedModel === "gpt-5.6-sol"
+        && row.resolvedModel === "gpt-5.6-sol")).toBe(true);
       expect(logs.some(row => row.provider === "openai-apikey"
         && row.model === "gpt-5.6-sol-pro"
         && row.requestedModel === selected
@@ -404,16 +500,17 @@ describe("OpenAI three-tier integration spine", () => {
         ? readFileSync(join(opencodexHome, "usage.jsonl"), "utf8").trim().split("\n").filter(Boolean)
           .map(line => JSON.parse(line) as Record<string, unknown>)
         : [];
-      expect(usageLines.some(row => row.provider === "openai-apikey"
-        && row.model === "gpt-5.6-sol-pro"
-        && row.requestedModel === selected
-        && row.resolvedModel === "gpt-5.6-sol")).toBe(true);
+      for (const expected of [
+        { provider: "openai-p123abc", requestedModel: "gpt-5.6-sol", resolvedModel: "gpt-5.6-sol" },
+        { provider: "openai", requestedModel: "gpt-5.6-sol", resolvedModel: "gpt-5.6-sol" },
+        { provider: "openai-apikey", model: "gpt-5.6-sol-pro", requestedModel: selected, resolvedModel: "gpt-5.6-sol" },
+      ]) expect(usageLines.some(row => Object.entries(expected).every(([key, value]) => row[key] === value))).toBe(true);
 
-      const migrationRoot = mkdtempSync(join(tmpdir(), "ocx-three-tier-migration-"));
+      const migrationRoot = mkdtempSync(join(tmpdir(), "ocx-provider-option-migration-"));
       try {
         const child = Bun.spawn([
           process.execPath,
-          join(import.meta.dir, "fixtures/openai-three-tier-migration-child.ts"),
+          join(import.meta.dir, "fixtures/openai-provider-option-migration-child.ts"),
           join(migrationRoot, "opencodex"),
           join(migrationRoot, "codex"),
         ], { stdout: "pipe", stderr: "pipe", env: { ...process.env } });
@@ -427,15 +524,25 @@ describe("OpenAI three-tier integration spine", () => {
         expect(JSON.parse(stdout) as MigrationReceipt).toEqual({
           backupMatchesOriginal: true,
           backupMode: 0o600,
-          firstProviderIds: ["openai", "openai-multi"],
-          firstDefaultProvider: "openai-multi",
+          v1BackupUnchanged: true,
+          firstProviderIds: ["openai", "openai-apikey", "custom"],
+          firstDefaultProvider: "openai",
+          mode: "pool",
           hiddenLegacy: true,
-          marker: 1,
+          marker: 2,
+          selectedModels: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+          knownReferencesRewritten: true,
+          contextCapsMerged: true,
+          warningPathsOnly: true,
+          unrelatedProvidersUnchanged: true,
+          unrelatedSelectedIdsUnchanged: true,
           secondIdempotent: true,
+          secondNoSave: true,
           restoredByteIdentity: true,
           restoredLegacyParse: true,
-          backupReused: true,
           remigrated: true,
+          absencePreserved: true,
+          collisionFailsBeforeSave: true,
         });
       } finally {
         rmSync(migrationRoot, { recursive: true, force: true });
@@ -445,17 +552,18 @@ describe("OpenAI three-tier integration spine", () => {
       const evidenceDir = process.env.OCX_EVIDENCE_DIR;
       if (evidenceDir) {
         mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
-        writeFileSync(join(evidenceDir, "050_e2e.json"), JSON.stringify({
+        writeFileSync(join(evidenceDir, "030_e2e.json"), JSON.stringify({
           schemaVersion: 1,
           verdict: "PASS",
           publicNetworkFallback: false,
-          httpCases: httpCases.length,
-          websocketTurns: 4,
-          compactCases: compactCases.length,
-          canonicalUrls: [...new Set(captures.map(capture => capture.url))].sort(),
+          poolDefault: "PASS",
+          directIsolation: "PASS",
+          http: "PASS",
+          websocket: "PASS",
+          compact: "PASS",
+          apiProIsolation: "PASS",
           migrationRestore: "PASS",
-          virtualIdentity: "PASS",
-          reverseInsertionOrder: "PASS",
+          oneOpenAiModelGroup: "PASS",
           realClaudeStateUnchanged: true,
         }, null, 2) + "\n", { mode: 0o600 });
       }

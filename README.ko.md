@@ -157,26 +157,27 @@ routing/catalog metadata를 준비해 둡니다.
   <img src="assets/codex-app-picker.png" alt="opencodex 라우팅 모델을 reasoning effort 선택기와 함께 보여주는 Codex App" width="480">
 </p>
 
-## OpenAI 프로바이더 티어
+## OpenAI 프로바이더 계정 모드
 
-| 프로바이더 ID | 티어 | 자격증명 | 동작 |
+| 프로바이더 ID | 경로 | 자격증명 | 동작 |
 |---|---|---|---|
-| `openai` | Codex Direct | 현재 Codex의 메인 로그인 | 단일 계정, 풀 조회·회전 없음 |
-| `openai-multi` | Codex 멀티계정 | 메인 + 추가 계정 | affinity, 쿼터, cooldown, failover |
+| `openai` | Codex 로그인 | 메인 + 추가 Codex 계정 | 기본 Pool, 선택 가능한 Direct 모드 |
 | `openai-apikey` | OpenAI API | API key/key pool | Codex 계정 라우팅 없음 |
 
-- 메인 Codex 계정은 Multi 풀에 당연히 포함되며 별도 fallback이 아닙니다.
-- 새 설치의 기본은 Direct(`openai`)입니다. `gpt-5.6-sol`은 Direct,
-  `openai-multi/gpt-5.6-sol`은 Multi, `openai-apikey/gpt-5.6-sol`은 API를 선택합니다.
-- 티어 사이에는 자격증명 fallback이 없습니다.
-- 풀 계정이 있던 레거시 config는 업그레이드 시 Multi로 이관되고, 공개 `chatgpt` 프로바이더 id는
-  숨겨집니다. 원본은 `~/.opencodex/config.json.pre-openai-tiers-v1.bak`에 한 번 보존됩니다.
-  복원: `cp ~/.opencodex/config.json.pre-openai-tiers-v1.bak ~/.opencodex/config.json`
+- Pool은 메인 로그인과 추가 계정을 포함하며 affinity·쿼터·cooldown·failover를 적용합니다.
+- Direct는 풀 상태를 건드리지 않고 현재 caller/메인 로그인 bearer만 사용합니다.
+- 새 설치와 모드가 없는 config는 Pool이 기본입니다. 대시보드 **Providers**에서 모드를 바꿔도
+  `gpt-5.6-sol` 같은 bare 모델 id는 그대로입니다.
+- `openai-apikey/gpt-5.6-sol`은 API를 선택하며 Codex 로그인과 API 자격증명 사이에는 fallback이 없습니다.
+- 현재 marker는 `openaiProviderTierVersion: 2`이고 원본은
+  `~/.opencodex/config.json.pre-openai-tiers-v2.bak`에 보존됩니다.
+  복원: `cp ~/.opencodex/config.json.pre-openai-tiers-v2.bak ~/.opencodex/config.json`
+- 이전 v1 3-provider config는 단일 `openai` 행으로 자동 이관됩니다.
 - API 티어의 GPT-5.6 metadata는 context 1,050,000 / max input 922,000입니다.
   `gpt-5.6-sol-pro`, `terra-pro`, `luna-pro`는 공개 virtual id를 유지하면서 wire에서는 base id와
   `reasoning.mode: "pro"`로 전송됩니다.
 
-### 멀티계정 동작
+### Pool 계정 동작
 
 대시보드의 **Codex Auth**를 열어 풀 계정을 추가하고, 다음 Codex 세션을 어느 계정이 처리할지 고르세요.
 opencodex는 두 가지 동작을 분리해서 유지합니다:

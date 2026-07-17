@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { scanEvidence } from "./openai-hardening-evidence-scan";
+import { scanEvidence } from "./openai-provider-option-evidence-scan";
 
 export interface GateSpec {
   name: string;
@@ -41,33 +41,39 @@ export async function runGateSequence(plan: GateSpec[], deps: GateDeps): Promise
   return summary;
 }
 
-const cycle020 = [
-  "tests/openai-provider-tiers.test.ts", "tests/openai-provider-tier-migration.test.ts", "tests/openai-tier-startup.test.ts",
-  "tests/provider-registry-parity.test.ts", "tests/router.test.ts", "tests/codex-catalog.test.ts",
-  "tests/codex-auth-context.test.ts", "tests/codex-routing.test.ts", "tests/codex-main-rotation.test.ts",
-  "tests/codex-websocket-registry.test.ts", "tests/codex-quota-prime.test.ts", "tests/provider-quota.test.ts",
-  "tests/server-auth.test.ts", "tests/server-search.test.ts", "tests/server-images.test.ts",
-  "tests/web-search-anthropic.test.ts", "tests/vision-anthropic.test.ts", "tests/sidecar-abort.test.ts",
-  "tests/web-search.test.ts", "tests/web-search-timeout-plan.test.ts", "tests/claude-sidecar-override.test.ts",
-  "tests/e2e-style/phase100-native-parity.test.ts", "tests/vision-cache.test.ts", "tests/oauth-public-surface.test.ts",
-  "tests/chatgpt-oauth.test.ts", "tests/oauth-login-summary.test.ts",
+const focusedTests = [
+  "tests/openai-provider-option.test.ts",
+  "tests/openai-provider-option-migration.test.ts",
+  "tests/openai-provider-option-startup.test.ts",
+  "tests/openai-provider-option-e2e.test.ts",
+  "tests/openai-provider-option-tooling.test.ts",
+  "tests/provider-registry-parity.test.ts",
+  "tests/provider-payload.test.ts",
+  "tests/codex-account-mode-state.test.ts",
+  "tests/router.test.ts",
+  "tests/codex-routing.test.ts",
+  "tests/server-auth.test.ts",
+  "tests/codex-catalog.test.ts",
+  "tests/codex-quota-prime.test.ts",
+  "tests/provider-quota.test.ts",
+  "tests/server-images.test.ts",
+  "tests/server-search.test.ts",
 ];
-const cycle030040 = [
-  "tests/openai-api-virtual-models.test.ts", "tests/config.test.ts", "tests/provider-registry-parity.test.ts",
-  "tests/umans-provider.test.ts", "tests/codex-catalog.test.ts", "tests/request-log.test.ts",
-  "tests/usage-log.test.ts", "tests/usage-summary.test.ts", "tests/provider-payload.test.ts",
-  "tests/codex-multi-state.test.ts", "tests/openai-hardening-tooling.test.ts",
-];
+const staleContractPattern = [
+  ["openai", "multi"].join("-"),
+  ["OPENAI", "MULTI", "PROVIDER", "ID"].join("_"),
+  ["Codex", "Multi-account"].join(" "),
+  ["three", "tier"].join("-"),
+].join("|");
 
 export function finalGatePlan(root: string, evidenceDir: string, unitRoot = dirname(evidenceDir)): GateSpec[] {
   const env = { ...process.env, OCX_EVIDENCE_DIR: evidenceDir } as Record<string, string>;
   const unitPath = relative(root, unitRoot);
   return [
-    { name: "openai-three-tier-e2e", command: ["bun", "test", "tests/openai-three-tier-e2e.test.ts"], cwd: root, env },
-    { name: "cycle-020-focused", command: ["bun", "test", ...cycle020], cwd: root },
-    { name: "cycle-030-040-tooling", command: ["bun", "test", ...cycle030040], cwd: root },
-    { name: "isolated-runtime-smoke", command: ["bun", "scripts/openai-three-tier-runtime-smoke.ts", "--evidence-dir", evidenceDir], cwd: root },
-    { name: "live-key-status", command: ["bun", "scripts/openai-three-tier-runtime-smoke.ts", "--check-live-key", "--evidence-dir", evidenceDir], cwd: root },
+    { name: "openai-provider-option-e2e", command: ["bun", "test", "tests/openai-provider-option-e2e.test.ts"], cwd: root, env },
+    { name: "provider-option-focused", command: ["bun", "test", "--isolate", ...focusedTests], cwd: root, env },
+    { name: "isolated-runtime-smoke", command: ["bun", "scripts/openai-provider-option-runtime-smoke.ts", "--unit-root", unitPath, "--evidence-dir", evidenceDir], cwd: root },
+    { name: "live-key-status", command: ["bun", "scripts/openai-provider-option-runtime-smoke.ts", "--check-live-key", "--unit-root", unitPath, "--evidence-dir", evidenceDir], cwd: root },
     { name: "typescript", command: ["bun", "x", "tsc", "--noEmit"], cwd: root },
     { name: "full-isolated-tests", command: ["bun", "test", "--isolate", "tests"], cwd: root },
     { name: "privacy-scan", command: ["bun", "run", "privacy:scan"], cwd: root },
@@ -76,16 +82,21 @@ export function finalGatePlan(root: string, evidenceDir: string, unitRoot = dirn
     { name: "docs-install", command: ["bun", "install", "--frozen-lockfile"], cwd: join(root, "docs-site") },
     { name: "docs-build", command: ["bun", "run", "build"], cwd: join(root, "docs-site") },
     {
+      name: "stale-contract-scan",
+      command: ["rg", "-n", staleContractPattern,
+        "src", "gui/src", "tests", "scripts", "README.md", "README.ko.md", "README.zh-CN.md",
+        "structure", "docs-site/src/content/docs"],
+      cwd: root,
+    },
+    {
       name: "scoped-diff-check",
       command: ["git", "diff", "--check", "--", "README.md", "README.ko.md", "README.zh-CN.md", "structure",
-        "docs-site/src/content/docs", "devlog/_chase/_model", "tests/openai-three-tier-e2e.test.ts",
-        "tests/openai-hardening-tooling.test.ts", "tests/fixtures/openai-three-tier-migration-child.ts",
-        "scripts/openai-three-tier-runtime-child.ts", "scripts/openai-three-tier-runtime-smoke.ts",
-        "scripts/openai-hardening-evidence-scan.ts", "scripts/openai-hardening-final-gates.ts",
+        "docs-site/src/content/docs", "devlog/_chase/_model", "tests/openai-provider-option-e2e.test.ts",
+        "tests/openai-provider-option-tooling.test.ts", "tests/fixtures/openai-provider-option-migration-child.ts",
+        "scripts/openai-provider-option-runtime-child.ts", "scripts/openai-provider-option-runtime-smoke.ts",
+        "scripts/openai-provider-option-evidence-scan.ts", "scripts/openai-provider-option-final-gates.ts",
         "scripts/openai-hardening-live-policy.ts", "scripts/openai-hardening-runtime-env.ts",
-        "src/server/request-log.ts", "src/codex/catalog.ts",
-        join(unitPath, "050_integration_verification.md"),
-        join(unitPath, "190_consolidated_finish_plan.md")],
+        unitPath],
       cwd: root,
     },
   ];
@@ -101,8 +112,8 @@ if (import.meta.main) {
   const unitArg = argValue("--unit-root");
   const evidencePath = evidenceArg ? resolve(root, evidenceArg) : undefined;
   const unitCandidates = [
-    "devlog/_plan/260717_openai_hardening",
-    "devlog/_fin/260717_openai_hardening",
+    "devlog/_plan/260717_openai_single_provider_option",
+    "devlog/_fin/260717_openai_single_provider_option",
   ].map(path => resolve(root, path));
   const unitRoot = unitArg
     ? resolve(root, unitArg)
@@ -110,9 +121,9 @@ if (import.meta.main) {
       ? dirname(evidencePath)
       : unitCandidates.find(existsSync) ?? unitCandidates[0]!;
   const evidenceDir = evidencePath ?? join(unitRoot, "evidence");
-  const summaryPath = join(evidenceDir, "050_gate_summary.txt");
+  const summaryPath = join(evidenceDir, "030_gate_summary.txt");
   mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
-  const paths = ["050_e2e.json", "050_client_history.json", "050_runtime_smoke.json", "050_gate_summary.txt"].map(name => join(evidenceDir, name));
+  const paths = ["030_e2e.json", "030_client_history.json", "030_runtime_smoke.json", "030_gate_summary.txt"].map(name => join(evidenceDir, name));
   const run = async (gate: GateSpec): Promise<GateResult> => {
     process.stdout.write(`[gate] ${gate.name}\n`);
     const child = Bun.spawn(gate.command, {
@@ -141,5 +152,5 @@ if (import.meta.main) {
     writeSummary,
     scan: () => scanEvidence(paths),
   });
-  console.log("OpenAI hardening final gates passed");
+  console.log("OpenAI provider-option final gates passed");
 }
