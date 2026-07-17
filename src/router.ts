@@ -107,7 +107,9 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
     ? mergePositiveNumberCaps(registryEntry.modelContextWindows, provider.modelContextWindows)
     : mergeRecordFill(registryEntry.modelContextWindows, provider.modelContextWindows);
   const modelInputModalities = mergeRecordFill(registryEntry.modelInputModalities, provider.modelInputModalities);
-  const modelMaxInputTokens = mergePositiveNumberCaps(registryEntry.modelMaxInputTokens, provider.modelMaxInputTokens);
+  const modelMaxInputTokens = providerName === OPENAI_API_PROVIDER_ID
+    ? mergePositiveNumberCaps(registryEntry.modelMaxInputTokens, provider.modelMaxInputTokens)
+    : mergeRecordFill(registryEntry.modelMaxInputTokens, provider.modelMaxInputTokens);
   const noVisionModels = mergeStringArray(registryEntry.noVisionModels, provider.noVisionModels);
   const noReasoningModels = mergeStringArray(registryEntry.noReasoningModels, provider.noReasoningModels);
   const noTemperatureModels = mergeStringArray(registryEntry.noTemperatureModels, provider.noTemperatureModels);

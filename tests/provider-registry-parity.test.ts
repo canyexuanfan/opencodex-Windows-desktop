@@ -125,6 +125,36 @@ describe("provider registry parity", () => {
     expect((routeModel(makeConfig(300_000), "openai-apikey/gpt-5.6-sol").provider as unknown as { virtualModels?: unknown }).virtualModels).toBeUndefined();
   });
 
+  test("non-API route max-input metadata keeps user overrides and fills registry defaults", () => {
+    const registryEntry = PROVIDER_REGISTRY.find(entry => entry.id === "zai")!;
+    const originalMaxInputTokens = registryEntry.modelMaxInputTokens;
+    try {
+      registryEntry.modelMaxInputTokens = {
+        "glm-5.2": 100_000,
+        "glm-5.2[1m]": 800_000,
+      };
+      const config: OcxConfig = {
+        port: 10100,
+        defaultProvider: "zai",
+        providers: {
+          zai: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.z.ai/api/coding/paas/v4",
+            modelMaxInputTokens: { "glm-5.2": 200_000 },
+          },
+        },
+      };
+
+      expect(routeModel(config, "zai/glm-5.2").provider.modelMaxInputTokens).toEqual({
+        "glm-5.2": 200_000,
+        "glm-5.2[1m]": 800_000,
+      });
+    } finally {
+      if (originalMaxInputTokens === undefined) delete registryEntry.modelMaxInputTokens;
+      else registryEntry.modelMaxInputTokens = originalMaxInputTokens;
+    }
+  });
+
   test("CN provider defaults and context windows match the audited registry refresh", () => {
     const deepseek = PROVIDER_REGISTRY.find(entry => entry.id === "deepseek");
     expect(deepseek).toMatchObject({

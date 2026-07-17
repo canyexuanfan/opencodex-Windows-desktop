@@ -9,6 +9,7 @@ import {
   resolveOpenAiVirtualModel,
   validateOpenAiVirtualModelDefinition,
 } from "../src/providers/openai-virtual-models";
+import { PROVIDER_REGISTRY } from "../src/providers/registry";
 import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
 import { usageLogPath } from "../src/usage/log";
@@ -148,9 +149,12 @@ describe("validateOpenAiVirtualModelDefinition", () => {
     { definition: { wireModelId: "openai/gpt-5.6-sol", reasoningMode: "pro" } },
     { definition: { wireModelId: 5, reasoningMode: "pro" } },
     { definition: { wireModelId: "gpt-5.6-sol", reasoningMode: "max" } },
+    { definition: { wireModelId: "gpt-5.6-sol-pro", reasoningMode: "pro" } },
   ])("rejects malformed synthetic definitions", ({ definition }) => {
+    const registryBefore = JSON.stringify(PROVIDER_REGISTRY);
     expect(() => validateOpenAiVirtualModelDefinition("gpt-5.6-sol-pro", definition))
       .toThrow(InvalidOpenAiVirtualModelRegistryError);
+    expect(JSON.stringify(PROVIDER_REGISTRY)).toBe(registryBefore);
   });
 });
 
