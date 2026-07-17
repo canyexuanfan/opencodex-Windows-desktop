@@ -52,6 +52,8 @@ export interface DerivedProviderPreset {
   dashboardUrl?: string;
   note?: string;
   keyOptional?: boolean;
+  /** Immutable canonical provider config seed for reserved forward presets (openai, openai-multi). */
+  provider?: OcxProviderConfig;
 }
 
 export function listRegistryEntries(): readonly ProviderRegistryEntry[] {
@@ -233,6 +235,7 @@ function entryToPreset(entry: ProviderRegistryEntry): DerivedProviderPreset {
     baseUrl: entry.baseUrl,
     auth: entry.authKind === "forward" ? "forward" : entry.authKind === "oauth" ? "oauth" : entry.authKind === "local" ? "local" : "key",
     ...(entry.codexAccountMode ? { codexAccountMode: entry.codexAccountMode } : {}),
+    ...(entry.codexAccountMode ? { provider: providerConfigSeed(entry) } : {}),
     ...(entry.defaultModel ? { defaultModel: entry.defaultModel } : {}),
     ...(entry.authKind === "oauth" ? { oauthProvider: entry.oauthId ?? entry.id } : {}),
     ...(entry.dashboardUrl ? { dashboardUrl: entry.dashboardUrl } : {}),

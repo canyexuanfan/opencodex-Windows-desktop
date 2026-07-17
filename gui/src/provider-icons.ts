@@ -26,6 +26,7 @@ const PROVIDER_ICON_ALIASES: Record<string, string> = {
   ollama: "ollama-color.svg",
   "ollama-cloud": "ollama-color.svg",
   openai: "openai.svg",
+  "openai-multi": "openai.svg",
   "openai-apikey": "openai.svg",
   "opencode-free": "opencode.svg",
   "opencode-go": "opencode.svg",
