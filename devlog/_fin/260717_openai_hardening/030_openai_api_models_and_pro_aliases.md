@@ -268,3 +268,10 @@ Accept only when every advertised virtual id has captured HTTP/HTTP-SSE/real-WS/
 wire and client-response base identity proof; each compact outcome logs exactly once; every
 fetch URL is exact; and no provider/config/body outside the exact API mappings is
 transformed.
+
+## Terminal closeout
+
+`done` — landed across `9042f26a` and `42e958fd`; Cycle A closed the remaining activation
+gaps in `df740d84`. Final transport/runtime proof and terminal criteria are indexed in
+[`050_integration_verification.md`](./050_integration_verification.md),
+[`190_consolidated_finish_plan.md`](./190_consolidated_finish_plan.md), and the `051` audit.

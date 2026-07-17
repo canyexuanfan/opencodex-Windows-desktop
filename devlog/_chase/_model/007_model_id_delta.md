@@ -4,7 +4,7 @@
 
 ## Provider namespace
 
-jawcode `models.json`에는 48개 top-level provider key가 있고, OCX `PROVIDER_REGISTRY`에는 52개 provider ID가 있다. 숫자나 문자열 차이는 곧 missing provider가 아니다.
+jawcode `models.json`에는 48개 top-level provider key가 있고, OCX `PROVIDER_REGISTRY`에는 53개 provider ID가 있다. 숫자나 문자열 차이는 곧 missing provider가 아니다.
 
 ### jawcode generated catalog에만 있는 ID
 
@@ -12,7 +12,7 @@ jawcode `models.json`에는 48개 top-level provider key가 있고, OCX `PROVIDE
 
 ### OCX registry에만 있는 ID
 
-`alibaba`, `anthropic-apikey`, `kimi`, `lm-studio`, `mimo-free`, `neuralwatt`, `ollama`, `openai-apikey`, `opencode-free`, `parallel`, `umans`, `vllm`
+`alibaba`, `anthropic-apikey`, `kimi`, `lm-studio`, `mimo-free`, `neuralwatt`, `ollama`, `openai-multi`, `openai-apikey`, `opencode-free`, `parallel`, `umans`, `vllm`
 
 ### 의미상 대응을 먼저 봐야 하는 이름
 
@@ -20,6 +20,7 @@ jawcode `models.json`에는 48개 top-level provider key가 있고, OCX `PROVIDE
 |---|---|---|
 | `alibaba` | `alibaba-coding-plan` | ID가 아니라 endpoint/auth/plan 계약으로 비교 |
 | `openai` | `openai-codex` | OCX `openai`는 forwarded Codex auth |
+| `openai-multi` | `openai-codex` | 같은 wire지만 메인을 포함한 OCX 계정 풀을 명시적으로 선택 |
 | `openai-apikey` | `openai` | API key Responses transport가 가까움 |
 | `anthropic`, `anthropic-apikey` | `anthropic` | OCX는 auth mode를 provider ID로 분리 |
 | `kimi`, `kimi-code`, `moonshot` | `kimi-code`, `moonshot` | OAuth/code endpoint/API endpoint를 분리해 비교 |
@@ -42,7 +43,7 @@ jawcode source `models.json`에는 있으나 현재 OCX generated snapshot에는
 | 분류 | ID | OCX 효과 |
 |---|---|---|
 | 이미 OCX static seed | `openai/gpt-5.6-luna`, `openai/gpt-5.6-sol`, `openai/gpt-5.6-terra` | 이름 추가 불필요. source metadata refresh는 기존 row 보강만 가능 |
-| 신규 tier variant | `openai/gpt-5.6-luna-pro`, `openai/gpt-5.6-sol-pro`, `openai/gpt-5.6-terra-pro` | metadata만으로 append되지 않음. live discovery 또는 static 제품 결정 필요 |
+| OpenRouter source-only tier variant | `openai/gpt-5.6-luna-pro`, `openai/gpt-5.6-sol-pro`, `openai/gpt-5.6-terra-pro` | OpenRouter에는 metadata만으로 append되지 않음. OCX `openai-apikey`에는 별도 static virtual rows가 구현됨 |
 | xAI namespaced/alias | `x-ai/grok-4.5`, `~x-ai/grok-latest` | direct OCX `xai/grok-4.5`와 별개. OpenRouter live result로만 노출 판단 |
 | Aion | `aion-labs/aion-2.0`, `aion-labs/aion-3.0`, `aion-labs/aion-3.0-mini` | discovery-only candidate |
 | Nex AGI | `nex-agi/nex-n2-mini`, `nex-agi/nex-n2-pro` | discovery-only candidate |
@@ -90,11 +91,12 @@ jawcode source `models.json`에는 있으나 현재 OCX generated snapshot에는
 | OCX route | context |
 |---|---:|
 | native Codex catalog | 372,000 |
-| `openai-apikey` | 372,000 |
+| `openai-apikey` base + Pro | 1,050,000 context / 922,000 max input |
 | `openrouter/openai/*` | 1,050,000 |
 | Cursor tier rows | live/registry owner, 현재 test seed 1,000,000 |
 
-372K와 373K를 1K 오타로 단정하지 않는다. usable prompt budget, reserved tokens, provider-advertised context가 서로 다른 개념일 수 있으므로 transport별 live evidence가 필요하다.
+Direct/Multi의 372K Codex 계약과 API/OpenRouter의 1.05M metadata는 transport별로 고정됐다.
+API Pro id는 public selected identity를 보존하고 wire에서 base model + `reasoning.mode: "pro"`로 변환된다.
 
 ### jawcode cost metadata
 

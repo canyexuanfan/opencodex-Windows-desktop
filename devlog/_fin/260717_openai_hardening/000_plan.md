@@ -3,8 +3,14 @@
 Date: 2026-07-17
 PABCD session: `019f6ddf-4d26-7782-8427-721bbb0b98bc`
 Work class: C4 (authentication, routing, and public provider contract)
-Execution: HOTL goal loop; this P response locks the plan only, then the armed loop
-continues through the docs-only Audit/Build/Check/Done and one PABCD cycle per decade doc.
+Historical execution context: this unit opened under a HOTL goal loop, and this P response
+originally locked the plan before the docs-only Audit/Build/Check/Done cycles began.
+
+> **Historical start-state note.** Loop-start instructions below are retained as audit
+> history, not current commands. Terminal execution and evidence are consolidated in
+> [`190_consolidated_finish_plan.md`](./190_consolidated_finish_plan.md),
+> [`050_integration_verification.md`](./050_integration_verification.md), and
+> [`051_audit_wp050_implementation.md`](./051_audit_wp050_implementation.md).
 
 ## Loop spec
 
@@ -82,7 +88,11 @@ out-of-band fallback and must continue to participate in quota scoring and affin
 
 These can be separate units after the three-tier contract is stable.
 
-## Work-phase map
+## Historical 18-cycle work-phase map
+
+This opening map is superseded for finish ordering by
+[`190_consolidated_finish_plan.md`](./190_consolidated_finish_plan.md), which collapsed the
+remaining work into Cycles A, B, and C and records why ten later documents were already done.
 
 | Cycle | Document | Deliverable |
 |---|---|---|
@@ -91,9 +101,22 @@ These can be separate units after the three-tier contract is stable.
 | 3 | [`030_openai_api_models_and_pro_aliases.md`](./030_openai_api_models_and_pro_aliases.md) | official API model metadata and narrow Pro virtual aliases |
 | 4 | [`040_management_gui_and_sidecars.md`](./040_management_gui_and_sidecars.md) | management/GUI presentation and rendered QA |
 | 5 | [`050_integration_verification.md`](./050_integration_verification.md) | cross-tier regression matrix, live smokes, SoT docs, closeout |
+| 6 | [`060_compact_response_hardening.md`](./060_compact_response_hardening.md) | 32 MiB compact reader, overflow cancel, single-log ownership |
+| 7 | [`070_virtual_model_validator.md`](./070_virtual_model_validator.md) | `validateOpenAiVirtualModelDefinition`, fail-closed seam, error class |
+| 8 | [`080_exact_eight_catalog.md`](./080_exact_eight_catalog.md) | exact-eight API catalog augmentation, collision dedupe, signature warnings |
+| 9 | [`090_max_input_validation.md`](./090_max_input_validation.md) | `positiveIntegerRecordConfigError`, disk/management validation, route lowering |
+| 10 | [`100_key_login_metadata_clone.md`](./100_key_login_metadata_clone.md) | key DTO max-input clone, no virtualModels in DTO/CLI config |
+| 11 | [`110_auto_compact_max_input_cap.md`](./110_auto_compact_max_input_cap.md) | auto-compaction `min(0.9*context, maxInput)` formula |
+| 12 | [`120_transport_identity_proof.md`](./120_transport_identity_proof.md) | HTTP JSON/SSE/WS wire+log identity, no Codex account headers on API |
+| 13 | [`130_usage_summary_pro_isolation.md`](./130_usage_summary_pro_isolation.md) | usage summary Pro rows don't collapse into base |
+| 14 | [`140_request_log_three_identities.md`](./140_request_log_three_identities.md) | `model`/`requestedModel`/`resolvedModel` persistence proof |
+| 15 | [`150_config_virtual_map_rejection.md`](./150_config_virtual_map_rejection.md) | disk + management reject forged `virtualModels` |
+| 16 | [`160_router_max_input_lowering.md`](./160_router_max_input_lowering.md) | API tier min-wins merge for context and max-input |
+| 17 | [`170_gpt56_alias_registration.md`](./170_gpt56_alias_registration.md) | `gpt-5.6` generic alias as eighth API model |
+| 18 | [`180_reasoning_merge_contract.md`](./180_reasoning_merge_contract.md) | Pro reasoning merge: mode override, field preservation, compact strip |
 
-Each implementation cycle runs its own P -> A -> B -> C -> D loop. Cycle 1 may
-begin only after this Plan is approved and its Audit gate passes.
+At unit start, each implementation cycle was required to run its own P → A → B → C → D
+loop, and Cycle 1 could begin only after Plan approval and Audit. That gate is historical.
 
 ## Compatibility policy
 
@@ -114,7 +137,11 @@ Legacy configurations that previously used the global Codex account pool through
 
 Fresh configs and legacy configs without pool intent are not migrated to Multi.
 
-## Success criteria
+## Success criteria and terminal result
+
+All criteria below are terminally met. The criterion-to-evidence mapping is in
+[`050_integration_verification.md`](./050_integration_verification.md#criterion-ledger), the
+independent final audit is `051`, and the consolidation rationale is `190`.
 
 - The three tiers are separately addable/selectable in CLI and GUI.
 - Direct requests cannot resolve, refresh, cool down, fail over, or log a pool account.
@@ -140,9 +167,15 @@ Fresh configs and legacy configs without pool intent are not migrated to Multi.
 - [`008_audit_final.md`](./008_audit_final.md) — independent Sol PASS and audit closure.
 - [`009_audit_wp010.md`](./009_audit_wp010.md) — Cycle-010 phase audit amendment.
 - [`019_audit_wp020.md`](./019_audit_wp020.md) — Cycle-020 atomic-activation audit amendments.
+- [`050_integration_verification.md`](./050_integration_verification.md) — final integration,
+  runtime, source-of-truth, and criterion ledger.
+- [`051_audit_wp050_implementation.md`](./051_audit_wp050_implementation.md) — final independent
+  implementation audit.
+- [`190_consolidated_finish_plan.md`](./190_consolidated_finish_plan.md) — audited Cycles A/B/C
+  finish ordering and 060–180 consolidation.
 - Decade documents — exact changes, activation cases, tests, and stop conditions.
 
-## Stop conditions
+## Historical start-state stop conditions
 
 - Do not implement during this docs-first Plan cycle.
 - Do not enter Audit without user confirmation.

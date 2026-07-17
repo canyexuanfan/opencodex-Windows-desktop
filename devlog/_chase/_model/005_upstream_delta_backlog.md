@@ -18,7 +18,7 @@
 | Codex credential rotation/self-heal | `VERIFIED` 기반, delta 확인 필요 | multi-account affinity, cooldown, generation-safe OAuth persist가 이미 별도 구현됨 | OMP 변경을 auth/account outcome 단위로 비교하고 중복 추상화를 피한다. |
 | response terminal/replay 호환 | `PARTIAL` | Responses parser/bridge에 기존 terminal handling이 있으나 OMP `response.done`, Anthropic replay commit과 line-by-line 대조하지 않음 | `src/responses/`, `src/adapters/openai-responses.ts`, Anthropic replay test를 함께 비교한다. |
 | Antigravity `gemini-3.1-pro-high` | `RESEARCH` | jawcode는 picker에서 retire하지만 OCX는 `gemini-pro-agent` 호환 alias로 노출·테스트한다. | picker 제거와 inbound alias 보존을 분리해 인증된 가용성 probe 후 결정한다. |
-| GPT-5.6 context/cost | `RESEARCH` | 세 ID는 이미 존재한다. jawcode 1.05M→373K 정책과 OCX native/API 372K, OpenRouter 1.05M이 다르며 OCX는 jawcode cost를 소비하지 않는다. | transport별 live contract를 확인. 모델명이나 비용을 무조건 복사하지 않는다. |
+| GPT-5.6 context/cost | `ADAPT` implemented / cost `REJECT` | 세 ID와 3-tier 계약이 구현됐다. Direct/Multi는 372K Codex 계약, API는 1.05M context / 922K max input이며 OpenRouter도 1.05M metadata를 유지한다. OCX는 jawcode cost를 소비하지 않는다. | tier/context/max-input 작업은 종료. billing/가격 consumer가 생기기 전에는 jawcode cost를 복사하지 않는다. |
 
 ## 실행 순서
 

@@ -492,3 +492,9 @@ bun x tsc --noEmit
 After the cycle, test snapshots and one local mock smoke must prove: exactly three
 public tiers; Direct never touches pool state; Multi includes main and added accounts;
 API uses key auth; no configured/public/routable `chatgpt` remains.
+
+## Terminal closeout
+
+`done` — landed in `3a9e498f` with audit closure in `005cbb8d`; final cross-tier proof and
+terminal criteria are indexed in [`050_integration_verification.md`](./050_integration_verification.md),
+[`190_consolidated_finish_plan.md`](./190_consolidated_finish_plan.md), and the `051` audit.

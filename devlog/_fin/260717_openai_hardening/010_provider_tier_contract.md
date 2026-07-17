@@ -146,3 +146,9 @@ bun x tsc --noEmit
 Accept only when all pure contracts pass and a catalog/preset snapshot proves no
 user-visible Multi activation. Rollback is deletion of the new module/tests and the
 two additive type members; no config has been persisted.
+
+## Terminal closeout
+
+`done` — landed in `3f6caeb2`; final cross-tier proof and terminal criteria are indexed in
+[`050_integration_verification.md`](./050_integration_verification.md),
+[`190_consolidated_finish_plan.md`](./190_consolidated_finish_plan.md), and the `051` audit.

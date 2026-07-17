@@ -35,7 +35,14 @@ function argValue(name: string): string | undefined {
   return index >= 0 ? Bun.argv[index + 1] : undefined;
 }
 
-const evidenceDir = resolve(argValue("--evidence-dir") ?? "devlog/_plan/260717_openai_hardening/evidence");
+const repoRoot = resolve(import.meta.dir, "..");
+const unitRootCandidates = [
+  "devlog/_plan/260717_openai_hardening",
+  "devlog/_fin/260717_openai_hardening",
+].map(path => resolve(repoRoot, path));
+const defaultUnitRoot = unitRootCandidates.find(existsSync) ?? unitRootCandidates[0]!;
+const unitRoot = resolve(repoRoot, argValue("--unit-root") ?? defaultUnitRoot);
+const evidenceDir = resolve(repoRoot, argValue("--evidence-dir") ?? join(unitRoot, "evidence"));
 const runtimeEvidencePath = join(evidenceDir, "050_runtime_smoke.json");
 
 function atomicJson(path: string, value: unknown): void {
@@ -229,7 +236,7 @@ if (Bun.argv.includes("--check-live-key")) {
     const timeout = setTimeout(() => {
       timedOut = true;
       codex.kill("SIGKILL");
-    }, 35_000);
+    }, 60_000);
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(codex.stdout).text(),
       new Response(codex.stderr).text(),
@@ -240,7 +247,7 @@ if (Bun.argv.includes("--check-live-key")) {
     return {
       ok: false,
       version: codexVersion,
-      failure: timedOut ? "timeout after 35 seconds" : `exit ${exitCode}: ${redactFailure(stderr)}`,
+      failure: timedOut ? "timeout after 60 seconds" : `exit ${exitCode}: ${redactFailure(stderr)}`,
     };
   }
 

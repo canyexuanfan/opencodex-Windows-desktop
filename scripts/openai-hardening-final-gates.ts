@@ -1,5 +1,5 @@
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { scanEvidence } from "./openai-hardening-evidence-scan";
 
 export interface GateSpec {
@@ -59,8 +59,9 @@ const cycle030040 = [
   "tests/codex-multi-state.test.ts", "tests/openai-hardening-tooling.test.ts",
 ];
 
-export function finalGatePlan(root: string, evidenceDir: string): GateSpec[] {
+export function finalGatePlan(root: string, evidenceDir: string, unitRoot = dirname(evidenceDir)): GateSpec[] {
   const env = { ...process.env, OCX_EVIDENCE_DIR: evidenceDir } as Record<string, string>;
+  const unitPath = relative(root, unitRoot);
   return [
     { name: "openai-three-tier-e2e", command: ["bun", "test", "tests/openai-three-tier-e2e.test.ts"], cwd: root, env },
     { name: "cycle-020-focused", command: ["bun", "test", ...cycle020], cwd: root },
@@ -83,8 +84,8 @@ export function finalGatePlan(root: string, evidenceDir: string): GateSpec[] {
         "scripts/openai-hardening-evidence-scan.ts", "scripts/openai-hardening-final-gates.ts",
         "scripts/openai-hardening-live-policy.ts", "scripts/openai-hardening-runtime-env.ts",
         "src/server/request-log.ts", "src/codex/catalog.ts",
-        "devlog/_plan/260717_openai_hardening/050_integration_verification.md",
-        "devlog/_plan/260717_openai_hardening/190_consolidated_finish_plan.md"],
+        join(unitPath, "050_integration_verification.md"),
+        join(unitPath, "190_consolidated_finish_plan.md")],
       cwd: root,
     },
   ];
@@ -92,8 +93,23 @@ export function finalGatePlan(root: string, evidenceDir: string): GateSpec[] {
 
 if (import.meta.main) {
   const root = resolve(import.meta.dir, "..");
-  const argIndex = Bun.argv.indexOf("--evidence-dir");
-  const evidenceDir = resolve(root, argIndex >= 0 ? Bun.argv[argIndex + 1]! : "devlog/_plan/260717_openai_hardening/evidence");
+  const argValue = (name: string): string | undefined => {
+    const index = Bun.argv.indexOf(name);
+    return index >= 0 ? Bun.argv[index + 1] : undefined;
+  };
+  const evidenceArg = argValue("--evidence-dir");
+  const unitArg = argValue("--unit-root");
+  const evidencePath = evidenceArg ? resolve(root, evidenceArg) : undefined;
+  const unitCandidates = [
+    "devlog/_plan/260717_openai_hardening",
+    "devlog/_fin/260717_openai_hardening",
+  ].map(path => resolve(root, path));
+  const unitRoot = unitArg
+    ? resolve(root, unitArg)
+    : evidencePath
+      ? dirname(evidencePath)
+      : unitCandidates.find(existsSync) ?? unitCandidates[0]!;
+  const evidenceDir = evidencePath ?? join(unitRoot, "evidence");
   const summaryPath = join(evidenceDir, "050_gate_summary.txt");
   mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
   const paths = ["050_e2e.json", "050_client_history.json", "050_runtime_smoke.json", "050_gate_summary.txt"].map(name => join(evidenceDir, name));
@@ -120,7 +136,7 @@ if (import.meta.main) {
     writeFileSync(temp, text, { mode: 0o600 });
     renameSync(temp, summaryPath);
   };
-  await runGateSequence(finalGatePlan(root, evidenceDir), {
+  await runGateSequence(finalGatePlan(root, evidenceDir, unitRoot), {
     run,
     writeSummary,
     scan: () => scanEvidence(paths),

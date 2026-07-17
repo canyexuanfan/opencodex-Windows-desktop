@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "verdict": "PASS",
+  "instances": [
+    {
+      "pid": 13822,
+      "version": "2.7.23",
+      "port": 63387
+    },
+    {
+      "pid": 13849,
+      "version": "2.7.23",
+      "port": 63389
+    }
+  ],
+  "distinctPids": true,
+  "catalogReady": true,
+  "direct": {
+    "model": "gpt-5.6-sol",
+    "credentialOwner": "openai-direct-caller",
+    "accountOwner": null
+  },
+  "multi": {
+    "model": "gpt-5.6-terra",
+    "credentialOwner": "openai-multi-main",
+    "accountOwner": "main"
+  },
+  "apiPro": {
+    "model": "gpt-5.6-sol",
+    "reasoningMode": "pro",
+    "credentialOwner": "openai-apikey"
+  },
+  "clientHistoryVerified": true,
+  "codexVersion": "codex-cli 0.144.4",
+  "userState": {
+    "opencodex-config": {
+      "exists": true,
+      "sha256": "cc0a81152be76e62b4306338c7b1e20ca98d882efc75758450ddcdf698da375b"
+    },
+    "opencodex-oauth": {
+      "exists": true,
+      "sha256": "1cadd7cb03239185a5f9b79a2ddc467d18f97b9ded0bdf3d6c6426502592798b"
+    },
+    "opencodex-codex-accounts": {
+      "exists": true,
+      "sha256": "8a2fec3b902261fa1a9371d3616e63c64e40fd9d5b2dc94f3107496844b89207"
+    },
+    "codex-config": {
+      "exists": true,
+      "sha256": "f9a75c163d8f9cd252ad1806ac1e4e7e4016208f5d056d89fa879f95c6e28022"
+    },
+    "codex-auth": {
+      "exists": true,
+      "sha256": "f198c71a8a11e024d8bc0feba5e55b2b5fe71e20ae5b15b33fdc2dafdf0fcb2d"
+    }
+  },
+  "liveKey": {
+    "status": "NOT RUN (credential unavailable)",
+    "liveCalls": 0,
+    "outcomes": []
+  }
+}

@@ -12,7 +12,7 @@
 | Cursor에 사용할 정확한 version | `live-unverified` | 두 값 중 어느 것이 양 endpoint의 현재 계약인지 미확인 | `RESEARCH` | 인증된 discovery와 run이 같은 값으로 성공하는 probe. jawcode의 02 값을 그대로 채택하지 않음 |
 | OpenAI/Azure bounded 429 wrapper | `local-source` | OCX generic retry는 429를 재시도하지 않으며, key pool만 429에서 회전 | `NOOP` / direct port `REJECT` | 향후 SDK retry를 도입하거나 429 지연이 재현될 때만 provider-scoped fixture로 재검토 |
 | GPT-5.6 Luna/Sol/Terra model IDs | `local-source` | 세 ID 모두 native, OpenAI API-key, OpenRouter에 이미 존재 | `NOOP` | 없음. 신규 모델 추가 대상이 아님 |
-| GPT-5.6 context window | `local-source`, `live-unverified` | jawcode 최종 373K, OCX native/API-key 372K, OpenRouter 1.05M | `RESEARCH` | transport별 authenticated catalog/inference 증거와 compact budget 의미 정리 |
+| GPT-5.6 context window | `local-source`, OCX contract implemented | jawcode 최종 373K와 달리 OCX Direct/Multi는 372K, API-key는 1.05M context / 922K max input, OpenRouter는 1.05M | `ADAPT` implemented | 없음. three-tier transport ownership과 compact cap이 테스트로 고정됨 |
 | GPT-5.6 cost rows | `local-source` | OCX model catalog/runtime에 jawcode cost consumer가 없음 | `REJECT` current scope | billing/가격 UI owner가 생기기 전에는 생성물에 필드를 더하지 않음 |
 | Antigravity picker에서 `gemini-3.1-pro-high` retire | `local-source`, `live-unverified` | OCX는 아직 picker seed에 노출 | `RESEARCH` | 인증된 available-models 또는 inference 실패 증거 |
 | Antigravity inbound/wire alias 보존 | `local-source` | `gemini-3.1-pro-high -> gemini-pro-agent`를 테스트로 고정 | `NOOP` now | picker를 retire하더라도 기존 config 호환 alias는 별도 deprecation 없이 삭제하지 않음 |

@@ -135,6 +135,9 @@ Required runs:
 
 Persist observed screenshots:
 
+> Archive note: `_plan/260717_openai_hardening` paths below record the execution-time
+> location; after Cycle C the same relative artifacts live under `_fin/260717_openai_hardening`.
+
 - `devlog/_plan/260717_openai_hardening/evidence/040_providers_en_1280x720.png`
 - `.../040_providers_ko_1280x720.png`
 - `.../040_models_en_1280x720.png`
@@ -186,3 +189,9 @@ Screenshot receipts:
 - The safe DTO activation table now injects API-key pool secrets plus all seven forbidden runtime fields, including a forged raw `codexAccountMode`. It asserts credential/runtime absence and registry-derived `codexAccountMode: direct`.
 - Post-repair standalone browser console capture was empty; `git diff --check` exited 0.
 - The second review found that detail copy still branched directly on optional mode metadata. Detail rendering now calls the same helper as the chooser, and reserved ids take precedence over missing or forged mode metadata. The ID-only/contradictory-mode regression table proves `openai-multi` remains Multi and `openai` remains Direct.
+
+## Terminal closeout
+
+`done` — implementation and browser evidence landed in `9bba3605`; Cycle B confirmed the
+runtime-facing GUI sources remained byte-identical and reused the inspected screenshots.
+See `050`, `190`, and the final `051` audit for terminal integration evidence.

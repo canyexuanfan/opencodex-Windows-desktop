@@ -169,10 +169,19 @@ routing and catalog metadata for accounts and providers that can serve them.
 - The main Codex account participates in Multi-account rotation; it is not an out-of-band fallback.
 - Fresh installs default to Direct (`openai`).
 - Legacy configs with pool accounts are migrated to Multi-account on upgrade.
+- The legacy public provider id `chatgpt` is hidden after migration. The original config is retained
+  once at `~/.opencodex/config.json.pre-openai-tiers-v1.bak`; restore it with
+  `cp ~/.opencodex/config.json.pre-openai-tiers-v1.bak ~/.opencodex/config.json`.
 - The API tier includes Pro virtual models (`gpt-5.6-sol-pro`, `gpt-5.6-terra-pro`,
   `gpt-5.6-luna-pro`). At the wire level, each rewrites to its base model with
   `reasoning.mode: "pro"`.
+- Its catalog is fixed to eight ids: `gpt-5.5`, `gpt-5.6`, Sol/Terra/Luna, and the three
+  corresponding Pro virtual ids. There is no generic `gpt-5.6-pro` alias.
+- Compact requests keep the selected tier but send the base model without a reasoning object.
 - Official API metadata is 1,050,000 context tokens and 922,000 max input tokens.
+
+Select a tier explicitly: `gpt-5.6-sol` uses Direct, `openai-multi/gpt-5.6-sol` uses the account
+pool, and `openai-apikey/gpt-5.6-sol` uses the API key. Tiers never fall through to one another.
 
 ### Multi-account behavior
 
@@ -200,7 +209,7 @@ next Codex session. opencodex keeps these behaviors:
 - **Works everywhere Codex does.** Injects into Codex CLI, TUI, App, and SDK automatically. Routed models show up in Codex's model picker just like native ones.
 - **History-safe injection.** On local installs the proxy points Codex's own built-in `openai` provider at itself via a single `openai_base_url` line — new threads keep their native provider tag, so ongoing chat history is never remapped and an unclean shutdown can't hide it. (Threads re-tagged by older versions are migrated back once on the first start; remote/LAN binds use a dedicated provider entry instead, since they need an API-key header.)
 - **Delegate to the right model.** Feature up to five routed or native models in Codex's subagent picker from the dashboard or config — route complex tasks to a reasoning model, fast tasks to a cheap one. On the v2 multi-agent surface (GPT-5.6 Sol/Terra) the proxy injects compact delegation guidance: a preferred sub-agent model and effort (`injectionModel` / `injectionEffort`), the featured-model roster with the effort ladder each supports, and the `fork_turns` rules that make cross-model `spawn_agent` calls actually stick. Want your own wording? Set `injectionPrompt` with `{{model}}` / `{{effort}}` / `{{roster}}` placeholders.
-- **Prepare for preview-gated OpenAI rollouts.** GPT-5.6 Sol/Terra/Luna entries ship with the exact upstream spec (Sol/Terra reach `ultra`, Luna caps at `max`; 372k usable context) for ChatGPT passthrough, OpenAI API key, and OpenRouter routes when upstream access is available.
+- **Prepare for preview-gated OpenAI rollouts.** GPT-5.6 Sol/Terra/Luna entries preserve the upstream effort ladders. Direct/Multi use the 372k Codex contract; OpenAI API and OpenRouter use 1.05M metadata when upstream access is available.
 - **Give any model superpowers.** Non-OpenAI models get real web search and image understanding via a `gpt-5.4-mini` sidecar over your ChatGPT login.
 - **Generate images natively.** Codex's standalone `image_gen` tool uses `POST /v1/images/generations` for generation and `POST /v1/images/edits` for edits; it is separate from the hosted Responses `image_generation` tool.
 - **See what's happening.** The web dashboard shows providers, OAuth status, model selection, and a live request log, including cached/cache-write token counts when upstream reports them — no more guessing why a request failed.
@@ -318,8 +327,8 @@ Provider entries can also annotate routed catalog metadata. Use `contextWindow` 
 Codex-visible context cap, `modelContextWindows` for model-specific caps, and
 `modelInputModalities` for model-specific catalog input hints such as `["text"]` or
 `["text", "image"]`. Context values cap live `/models` metadata; they never raise a smaller live
-context window. The bundled GPT-5.6 Sol/Terra/Luna fallback metadata uses a 372,000-token usable
-context window for OpenAI API key and OpenRouter catalog entries; it does not bypass upstream preview
+context window. The bundled GPT-5.6 Sol/Terra/Luna fallback metadata uses a 1,050,000-token context
+window for OpenAI API key and OpenRouter catalog entries; it does not bypass upstream preview
 access. See the configuration reference for the full field list.
 
 > **GLM-5.2 1M context via Z.AI:** through the `openai-chat` adapter, both `glm-5.2`
