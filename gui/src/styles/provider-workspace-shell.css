@@ -375,13 +375,21 @@
   font-size: 12px;
 }
 
-@media (max-width: 860px) {
+@media (max-width: 768px) {
   .pws-root {
     grid-template-columns: 1fr;
+    min-height: auto;
   }
   .pws-rail {
     border-right: none;
     padding-right: 0;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 12px;
+    max-height: 320px;
+    overflow-y: auto;
+  }
+  .pws-main {
+    padding-top: 8px;
   }
   .pws-empty-tiles {
     grid-template-columns: 1fr;

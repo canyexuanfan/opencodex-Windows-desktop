@@ -654,7 +654,6 @@ export const zh: Record<TKey, string> = {
   "pws.tab.models": "模型",
   "pws.tab.usage": "用量",
   "pws.tab.settings": "设置",
-  "pws.settingsComingSoon": "设置将在下次更新中提供 — 目前请使用经典视图。",
   "pws.connection": "连接",
   "pws.status.connected": "已连接",
   "pws.cell.auth": "认证",

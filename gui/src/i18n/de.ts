@@ -634,7 +634,6 @@ export const de = {
   "pws.tab.models": "Modelle",
   "pws.tab.usage": "Nutzung",
   "pws.tab.settings": "Einstellungen",
-  "pws.settingsComingSoon": "Einstellungen folgen im nächsten Update — nutze vorerst die klassische Ansicht.",
   "pws.connection": "Verbindung",
   "pws.status.connected": "Verbunden",
   "pws.cell.auth": "Authentifizierung",

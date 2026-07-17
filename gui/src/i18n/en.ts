@@ -487,7 +487,6 @@ export const en = {
   "pws.tab.models": "Models",
   "pws.tab.usage": "Usage",
   "pws.tab.settings": "Settings",
-  "pws.settingsComingSoon": "Settings arrive in the next update — use the classic view for now.",
   "pws.connection": "Connection",
   "pws.status.connected": "Connected",
   "pws.cell.auth": "Authentication",

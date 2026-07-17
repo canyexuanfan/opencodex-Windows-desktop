@@ -654,7 +654,6 @@ export const ko: Record<TKey, string> = {
   "pws.tab.models": "모델",
   "pws.tab.usage": "사용량",
   "pws.tab.settings": "설정",
-  "pws.settingsComingSoon": "설정은 다음 업데이트에서 제공됩니다 — 지금은 클래식 보기를 사용하세요.",
   "pws.connection": "연결",
   "pws.status.connected": "연결됨",
   "pws.cell.auth": "인증",
