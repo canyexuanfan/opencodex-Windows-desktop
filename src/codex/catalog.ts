@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 
 import { delimiter, dirname, join, resolve } from "node:path";
 import { atomicWriteFile, expandUserPath, getConfigDir, websocketsEnabled } from "../config";
 import { CODEX_CONFIG_PATH, CODEX_MODELS_CACHE_PATH, DEFAULT_CATALOG_PATH, readRootTomlString, resolveCodexConfigPath } from "./paths";
-import { DEFAULT_MODEL_CACHE_TTL_MS, getFreshCached, getStaleCached, isModelsFetchCoolingDown, markModelsFetchFailure, setCached } from "./model-cache";
+import { clearModelCache, DEFAULT_MODEL_CACHE_TTL_MS, getFreshCached, getStaleCached, isModelsFetchCoolingDown, markModelsFetchFailure, setCached } from "./model-cache";
 import { buildModelsRequest, resolveModelsAuthToken } from "../oauth";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 import { modelInList } from "../types";
@@ -1393,6 +1393,14 @@ function normalizedOpenAiApiSignature(model: CatalogModel): string {
 
 export function resetOpenAiApiCatalogWarningStateForTests(): void {
   openAiApiCollisionWarnings.clear();
+}
+
+/** Test-only reset for every process-global catalog cache/warning owner. */
+export function resetCatalogRuntimeStateForTests(): void {
+  bundledCatalogCache = null;
+  lastDropWarnSignature.clear();
+  openAiApiCollisionWarnings.clear();
+  clearModelCache();
 }
 
 export function augmentRoutedModelsWithRegistryOpenAiApiRows(

@@ -448,3 +448,9 @@ export function filterRequestLogs(logs: RequestLogEntry[], params: URLSearchPara
 }
 
 export function getRequestLogEntries(): RequestLogEntry[] { return requestLog; }
+
+/** Test-only process-state reset for isolated integration harnesses. */
+export function clearRequestLogsForTests(): void {
+  requestLog.length = 0;
+  requestLogSeq = 0;
+}
