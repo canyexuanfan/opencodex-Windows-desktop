@@ -57,8 +57,25 @@ export default function AddProviderModal({
   const [usageRank, setUsageRank] = useState<Record<string, number>>({});
   const aliveRef = useRef(true);
   const loadedPresetsRef = useRef(false);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => () => { aliveRef.current = false; }, []); // stop the OAuth poll if the modal unmounts
+  // Cleanup + focus-trap: save previous focus on mount, restore on unmount.
+  useEffect(() => {
+    aliveRef.current = true;
+    previousFocusRef.current = document.activeElement as HTMLElement | null;
+    const dialog = dialogRef.current;
+    if (dialog) {
+      const focusable = dialog.querySelector<HTMLElement>(
+        "input:not([disabled]), button:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])"
+      );
+      if (focusable) focusable.focus();
+    }
+    return () => {
+      aliveRef.current = false;
+      previousFocusRef.current?.focus();
+    };
+  }, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -248,7 +265,7 @@ export default function AddProviderModal({
 
   return (
     <div role="dialog" aria-modal="true" aria-label={t("modal.add")} className="modal-overlay" onClick={onClose}>
-      <div className="modal-card" onClick={e => e.stopPropagation()}>
+      <div ref={dialogRef} className="modal-card" onClick={e => e.stopPropagation()}>
         <div className="modal-head">
           <h3>{preset ? t("modal.addNamed", { label: preset.label }) : t("modal.add")}</h3>
           <button className="btn btn-ghost btn-icon" aria-label={t("common.close")} onClick={onClose}><IconX /></button>
