@@ -123,6 +123,29 @@ describe("OpenAI tier migration projection", () => {
     expect(result.config.defaultProvider).toBe(OPENAI_MULTI_PROVIDER_ID);
   });
 
+  test("preserves only managed Multi overlays across migration and marker restarts", () => {
+    const first = projectOpenAiTierMigration(config({
+      providers: {
+        openai: { ...canonicalForward },
+        "openai-multi": {
+          ...canonicalForward,
+          baseUrl: `${canonicalForward.baseUrl}/`,
+          disabled: true,
+          selectedModels: ["gpt-5.6"],
+        },
+      },
+      defaultProvider: "openai",
+    }));
+    expect(first.config.providers[OPENAI_MULTI_PROVIDER_ID]).toEqual({
+      ...canonicalForward,
+      disabled: true,
+      selectedModels: ["gpt-5.6"],
+    });
+    const second = projectOpenAiTierMigration(first.config);
+    expect(second.changed).toBe(false);
+    expect(second.config.providers[OPENAI_MULTI_PROVIDER_ID]).toEqual(first.config.providers[OPENAI_MULTI_PROVIDER_ID]);
+  });
+
   for (const [label, collision] of [
     ["key/custom-base", { adapter: "openai-responses", baseUrl: "https://custom.example/v1", authMode: "key", apiKey: "multi-secret" }],
     ["extra-field", { ...canonicalForward, headers: { "x-multi-secret": "multi-secret" } }],
@@ -162,6 +185,44 @@ describe("OpenAI tier migration projection", () => {
     expect(result.config).not.toBe(input);
     expect(Object.hasOwn(result.config.providers, OPENAI_MULTI_PROVIDER_ID)).toBe(false);
     expect(input).toEqual(before);
+  });
+
+  test("marker 1 still rejects a noncanonical Multi collision before any repair", () => {
+    const input = config({
+      openaiProviderTierVersion: 1,
+      providers: {
+        openai: { ...canonicalForward },
+        "openai-multi": { ...canonicalForward, apiKey: "must-not-survive" },
+        chatgpt: { ...canonicalForward },
+      },
+    });
+    expect(() => projectOpenAiTierMigration(input)).toThrow(OpenAiTierMigrationCollisionError);
+    expect(input.providers.chatgpt).toBeDefined();
+  });
+
+  test("marker 1 removes a reinserted chatgpt row and maps its default by pool intent", () => {
+    const withoutPool = projectOpenAiTierMigration(config({
+      openaiProviderTierVersion: 1,
+      providers: { chatgpt: { ...canonicalForward } },
+      defaultProvider: "chatgpt",
+    }));
+    expect(withoutPool.changed).toBe(true);
+    expect(withoutPool.config.defaultProvider).toBe(OPENAI_DIRECT_PROVIDER_ID);
+    expect(withoutPool.config.providers.chatgpt).toBeUndefined();
+    expect(withoutPool.config.providers.openai).toEqual(canonicalForward);
+    expect(projectOpenAiTierMigration(withoutPool.config).changed).toBe(false);
+
+    const withPool = projectOpenAiTierMigration(config({
+      openaiProviderTierVersion: 1,
+      providers: { chatgpt: { ...canonicalForward } },
+      defaultProvider: "chatgpt",
+      codexAccounts: [{ id: "pool-a", email: "pool@example.test", isMain: false }],
+    }));
+    expect(withPool.changed).toBe(true);
+    expect(withPool.config.defaultProvider).toBe(OPENAI_MULTI_PROVIDER_ID);
+    expect(withPool.config.providers.openai).toEqual(canonicalForward);
+    expect(withPool.config.providers[OPENAI_MULTI_PROVIDER_ID]).toEqual(canonicalForward);
+    expect(projectOpenAiTierMigration(withPool.config).changed).toBe(false);
   });
 
   test("a second projection is marker-idempotent", () => {

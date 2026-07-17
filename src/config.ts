@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, chmodSync } from "node:fs";
+import { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, truncateSync, unlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import * as z from "zod/v4";
@@ -42,10 +42,211 @@ export function renameAtomicFile(
  * Write a file atomically (temp + rename) so concurrent writers — e.g. `ocx stop` and the
  * proxy's own shutdown handler both restoring Codex — can never leave a half-written file.
  */
-export function atomicWriteFile(path: string, content: string): void {
+export interface AtomicWriteIO {
+  write: (path: string, content: string) => void;
+  harden: (path: string) => void;
+  rename: (source: string, destination: string) => void;
+  truncate: (path: string) => void;
+  unlink: (path: string) => void;
+}
+
+export class AtomicWriteResidualTempError extends Error {
+  constructor(readonly tempPath: string, readonly hardened = true, options?: ErrorOptions) {
+    super(`Atomic config write left a ${hardened ? "hardened " : ""}zero-byte temporary file`, options);
+    this.name = "AtomicWriteResidualTempError";
+  }
+}
+
+export class AtomicWriteSecretResidualError extends Error {
+  constructor(readonly tempPath: string, options?: ErrorOptions) {
+    super("Atomic config write could not scrub or remove a secret-bearing temporary file", options);
+    this.name = "AtomicWriteSecretResidualError";
+  }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
+}
+
+export function atomicWriteFile(path: string, content: string, io: AtomicWriteIO = {
+  write: (target, value) => writeFileSync(target, value, { encoding: "utf-8", mode: 0o600 }),
+  harden: target => {
+    try { chmodSync(target, 0o600); } catch { /* platform may ignore chmod */ }
+    if (process.platform === "win32") hardenSecretPath(target, { required: true });
+  },
+  rename: renameAtomicFile,
+  truncate: target => truncateSync(target, 0),
+  unlink: unlinkSync,
+}): void {
   const tmp = `${path}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
-  writeFileSync(tmp, content, { encoding: "utf-8", mode: 0o600 });
-  renameAtomicFile(tmp, path);
+  let hardened = false;
+  try {
+    io.write(tmp, content);
+    io.harden(tmp);
+    hardened = true;
+    io.rename(tmp, path);
+  } catch (cause) {
+    let scrubbed = false;
+    try {
+      io.truncate(tmp);
+      scrubbed = true;
+    } catch (error) {
+      if (isMissingPathError(error)) scrubbed = true;
+      else {
+        try { io.write(tmp, ""); scrubbed = true; } catch { /* removal may still succeed */ }
+      }
+    }
+    let removed = false;
+    try {
+      io.unlink(tmp);
+      removed = true;
+    } catch (error) {
+      if (isMissingPathError(error)) removed = true;
+      else {
+        try { io.unlink(tmp); removed = true; }
+        catch (retryError) { if (isMissingPathError(retryError)) removed = true; }
+      }
+    }
+    if (!removed && !scrubbed) throw new AtomicWriteSecretResidualError(tmp, { cause });
+    if (!removed && !hardened) {
+      try { io.harden(tmp); hardened = true; } catch { /* zero-byte residual is reported honestly */ }
+    }
+    if (!removed) throw new AtomicWriteResidualTempError(tmp, hardened, { cause });
+    throw cause;
+  }
+}
+
+export class OpenAiTierBackupCleanupError extends Error {
+  constructor() { super("OpenAI tier backup temporary cleanup failed"); this.name = "OpenAiTierBackupCleanupError"; }
+}
+
+export class OpenAiTierBackupRollbackError extends Error {
+  constructor() { super("OpenAI tier backup rollback failed"); this.name = "OpenAiTierBackupRollbackError"; }
+}
+
+export class OpenAiTierBackupCollisionError extends Error {
+  constructor() { super("Existing OpenAI tier backup differs from the current config"); this.name = "OpenAiTierBackupCollisionError"; }
+}
+
+export class OpenAiTierBackupSecretResidualError extends Error {
+  constructor(readonly tempPath: string, options?: ErrorOptions) {
+    super("OpenAI tier backup could not scrub or remove a secret-bearing temporary file", options);
+    this.name = "OpenAiTierBackupSecretResidualError";
+  }
+}
+
+export interface OpenAiTierBackupIO {
+  exists(path: string): boolean;
+  read(path: string): Uint8Array;
+  createExclusive(path: string): void;
+  write(path: string, bytes: Uint8Array): void;
+  harden(path: string): void;
+  publishNoReplace(temp: string, backup: string): void;
+  truncate(path: string): void;
+  unlink(path: string): void;
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.byteLength === right.byteLength && left.every((value, index) => value === right[index]);
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === "EEXIST";
+}
+
+export function backupConfigBeforeOpenAiTierMigration(
+  configPath = getConfigPath(),
+  io: OpenAiTierBackupIO = {
+    exists: existsSync,
+    read: target => readFileSync(target),
+    createExclusive: target => { writeFileSync(target, new Uint8Array(), { flag: "wx", mode: 0o600 }); },
+    write: (target, bytes) => writeFileSync(target, bytes),
+    harden: target => {
+      try { chmodSync(target, 0o600); } catch { /* platform may ignore chmod */ }
+      if (process.platform === "win32") hardenSecretPath(target, { required: true });
+    },
+    publishNoReplace: (temp, backup) => linkSync(temp, backup),
+    truncate: target => truncateSync(target, 0),
+    unlink: unlinkSync,
+  },
+): "absent" | "created" | "reused" {
+  const source = configPath;
+  if (!io.exists(source)) return "absent";
+  const original = io.read(source);
+  const backup = `${source}.pre-openai-tiers-v1.bak`;
+  if (io.exists(backup)) {
+    if (!sameBytes(original, io.read(backup))) throw new OpenAiTierBackupCollisionError();
+    return "reused";
+  }
+  const temp = `${backup}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
+  let published = false;
+  let cleanupAttempted = false;
+
+  const scrubUnpublishedTemp = (): void => {
+    cleanupAttempted = true;
+    if (!io.exists(temp)) return;
+    let scrubbed = false;
+    try {
+      io.truncate(temp);
+      scrubbed = true;
+    } catch (error) {
+      if (isMissingPathError(error)) scrubbed = true;
+      else {
+        try { io.write(temp, new Uint8Array()); scrubbed = true; } catch { /* removal may still succeed */ }
+      }
+    }
+    let removed = false;
+    try {
+      io.unlink(temp);
+      removed = true;
+    } catch (error) {
+      if (isMissingPathError(error) || !io.exists(temp)) removed = true;
+      else {
+        try { io.unlink(temp); removed = true; }
+        catch (retryError) {
+          if (isMissingPathError(retryError) || !io.exists(temp)) removed = true;
+        }
+      }
+    }
+    if (!removed && !scrubbed) throw new OpenAiTierBackupSecretResidualError(temp);
+    if (!removed) throw new OpenAiTierBackupCleanupError();
+  };
+
+  try {
+    io.createExclusive(temp);
+    io.write(temp, original);
+    io.harden(temp);
+    try {
+      io.publishNoReplace(temp, backup);
+    } catch (cause) {
+      if (!isAlreadyExistsError(cause)) throw cause;
+      const winner = io.read(backup);
+      if (!sameBytes(original, winner)) throw new OpenAiTierBackupCollisionError();
+      scrubUnpublishedTemp();
+      return "reused";
+    }
+    published = true;
+    try {
+      io.unlink(temp);
+    } catch {
+      try {
+        io.unlink(temp);
+      } catch {
+        // temp and backup are hard links to the same inode. Roll back the backup
+        // link before any truncation so the downgrade snapshot is never zeroed.
+        try { io.unlink(backup); } catch { throw new OpenAiTierBackupRollbackError(); }
+        published = false;
+        scrubUnpublishedTemp();
+        throw new OpenAiTierBackupCleanupError();
+      }
+    }
+    return "created";
+  } catch (cause) {
+    if (!published && !cleanupAttempted) {
+      scrubUnpublishedTemp();
+    }
+    throw cause;
+  }
 }
 
 /**
@@ -142,6 +343,7 @@ const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
   providers: z.record(z.string(), providerConfigSchema),
   defaultProvider: z.string().min(1).default("openai"),
+  openaiProviderTierVersion: z.literal(1).optional(),
   providerContextCaps: z.record(z.string(), z.number().int().positive()).optional(),
   contextCapValue: z.number().int().positive().optional(),
 }).passthrough().superRefine((config, ctx) => {

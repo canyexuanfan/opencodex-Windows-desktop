@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { getDefaultConfig } from "../src/config";
 import { deriveInitProviders, deriveProviderPresets, listRegistryEntries } from "../src/providers/derive";
+import { providerCodexAccountMode } from "../src/providers/registry";
 import {
-  builtInCodexAccountMode,
   isCanonicalOpenAiForwardProvider,
   LEGACY_CHATGPT_PROVIDER_ID,
   OPENAI_API_PROVIDER_ID,
@@ -18,10 +18,10 @@ describe("OpenAI provider tier foundation", () => {
     expect(OPENAI_API_PROVIDER_ID).toBe("openai-apikey");
     expect(LEGACY_CHATGPT_PROVIDER_ID).toBe("chatgpt");
     expect(OPENAI_PROVIDER_TIER_VERSION).toBe(1);
-    expect(builtInCodexAccountMode("openai")).toBe("direct");
-    expect(builtInCodexAccountMode("openai-multi")).toBe("pool");
-    expect(builtInCodexAccountMode("openai-apikey")).toBeUndefined();
-    expect(builtInCodexAccountMode("chatgpt")).toBeUndefined();
+    expect(providerCodexAccountMode("openai")).toBe("direct");
+    expect(providerCodexAccountMode("openai-multi")).toBe("pool");
+    expect(providerCodexAccountMode("openai-apikey")).toBeUndefined();
+    expect(providerCodexAccountMode("chatgpt")).toBeUndefined();
   });
 
   test("accepts only the canonical Codex forward transport", () => {
@@ -39,10 +39,10 @@ describe("OpenAI provider tier foundation", () => {
     expect(isCanonicalOpenAiForwardProvider({ ...canonical, baseUrl: `${canonical.baseUrl}?x=1` })).toBe(false);
   });
 
-  test("does not activate Multi in registry, presets, init, or fresh config", () => {
-    expect(listRegistryEntries().some(entry => entry.id === OPENAI_MULTI_PROVIDER_ID)).toBe(false);
-    expect(deriveProviderPresets().some(entry => entry.id === OPENAI_MULTI_PROVIDER_ID)).toBe(false);
-    expect(deriveInitProviders().some(entry => entry.id === OPENAI_MULTI_PROVIDER_ID)).toBe(false);
+  test("activates Multi in registry surfaces while fresh config remains Direct-only until startup migration", () => {
+    expect(listRegistryEntries().some(entry => entry.id === OPENAI_MULTI_PROVIDER_ID)).toBe(true);
+    expect(deriveProviderPresets().some(entry => entry.id === OPENAI_MULTI_PROVIDER_ID)).toBe(true);
+    expect(deriveInitProviders().some(entry => entry.id === OPENAI_MULTI_PROVIDER_ID)).toBe(true);
     expect(Object.hasOwn(getDefaultConfig().providers, OPENAI_MULTI_PROVIDER_ID)).toBe(false);
   });
 });

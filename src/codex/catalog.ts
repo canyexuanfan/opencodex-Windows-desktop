@@ -15,7 +15,7 @@ import { applyProviderContextCap, providerContextCap } from "../providers/contex
 import { CODEX_GPT5_IDENTITY_LINE } from "../adapters/identity";
 import { filterCursorConfiguredModelsByLiveDiscovery } from "../adapters/cursor/discovery";
 import { fetchCursorUsableModels } from "../adapters/cursor/live-models";
-import { OPENAI_MULTI_PROVIDER_ID } from "../providers/openai-tiers";
+import { isCanonicalOpenAiForwardProvider, OPENAI_MULTI_PROVIDER_ID } from "../providers/openai-tiers";
 import upstreamModelsSnapshot from "./data/upstream-models.json";
 
 const BUNDLED_CATALOG_CACHE_MS = 60_000;
@@ -1343,7 +1343,12 @@ export async function gatherRoutedModels(config: OcxConfig): Promise<CatalogMode
   const lists = await Promise.all(
     activeProviders.map(([name, prov]) => fetchProviderModels(name, prov, ttlMs, providerContextCap(config, name))),
   );
-  const all = augmentRoutedModelsWithJawcodeMetadata(lists.flat(), activeProviders.map(([name]) => name), config.providers, config)
+  const multiProvider = activeProviders.find(([name, provider]) =>
+    name === OPENAI_MULTI_PROVIDER_ID && isCanonicalOpenAiForwardProvider(provider));
+  const multiModels = multiProvider
+    ? projectNativeModelsForOpenAiMulti(config, multiProvider[1])
+    : [];
+  const all = augmentRoutedModelsWithJawcodeMetadata([...lists.flat(), ...multiModels], activeProviders.map(([name]) => name), config.providers, config)
     // Drop image/video generation models (e.g. Grok image/video) by default. Cursor's static catalog
     // intentionally mirrors Cursor's public model table, including Gemini image preview, so the
     // exposure decision goes through shouldExposeRoutedModel (single choke point).

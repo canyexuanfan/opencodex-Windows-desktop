@@ -5,6 +5,7 @@ import { getCredential } from "../oauth/store";
 import { antigravityUserAgent } from "../adapters/client-fingerprint";
 import { getProviderRegistryEntry } from "./registry";
 import type { OcxConfig, OcxProviderConfig } from "../types";
+import { isCanonicalOpenAiForwardProvider, OPENAI_MULTI_PROVIDER_ID } from "./openai-tiers";
 
 const CACHE_TTL_MS = 5 * 60_000;
 const REQUEST_TIMEOUT_MS = 8_000;
@@ -93,12 +94,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function isBuiltInChatGptForwardProvider(name: string, provider: OcxProviderConfig): boolean {
-  const base = provider.baseUrl.replace(/\/+$/, "");
-  const normalizedName = name.toLowerCase();
-  return (normalizedName === "openai" || normalizedName === "chatgpt")
-    && provider.adapter === "openai-responses"
-    && provider.authMode === "forward"
-    && base === "https://chatgpt.com/backend-api/codex";
+  return name === OPENAI_MULTI_PROVIDER_ID && isCanonicalOpenAiForwardProvider(provider);
 }
 
 function report(provider: string, source: string, quota: ProviderQuota): ProviderQuotaReport | null {

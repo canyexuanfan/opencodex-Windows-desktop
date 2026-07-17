@@ -399,12 +399,15 @@ describe("provider registry parity", () => {
   test("GUI preset projection preserves current featured set plus key catalog and custom", () => {
     const featured = deriveFeaturedProviderIds();
     expect(featured).toEqual([
-      "openai", "xai", "anthropic", "anthropic-apikey", "kimi", "openai-apikey", "umans", "opencode-go", "openrouter",
+      "openai", "openai-multi", "xai", "anthropic", "anthropic-apikey", "kimi", "openai-apikey", "umans", "opencode-go", "openrouter",
       "groq", "google", "azure-openai", "ollama", "vllm", "lm-studio", "opencode-free",
       "mimo-free",
     ]);
 
     const presets = deriveProviderPresets();
+    expect(presets.find(p => p.id === "openai")).toMatchObject({ label: "Codex Direct", codexAccountMode: "direct" });
+    expect(presets.find(p => p.id === "openai-multi")).toMatchObject({ label: "Codex Multi-account", codexAccountMode: "pool" });
+    expect(presets.find(p => p.id === "openai-apikey")?.label).toBe("OpenAI API");
     expect(presets.at(-1)?.id).toBe("custom");
     expect(presets.find(p => p.id === "cursor")).toMatchObject({
       adapter: "cursor",

@@ -1,9 +1,9 @@
-# Cycle 040 — Management, GUI, and All Sidecar Callers
+# Cycle 040 — Management and GUI Presentation
 
 ## Objective
 
-Make every management/UI surface describe the same three tiers and centralize
-OpenAI sidecar ownership across standalone and internal callers.
+Make every management/UI surface describe the same three tiers. Runtime sidecar
+ownership is already activated and verified in Cycle 020.
 
 ## Management and GUI file map
 
@@ -78,70 +78,15 @@ Use existing provider grouping. Render Multi and API/Pro selected ids; no wire-i
 Add the same new keys to all four locale modules. `en.ts` remains `TKey` SoT;
 `index.ts` and `shared.ts` require no translation-key edits.
 
-## Central sidecar owner
+## Sidecar dependency
 
-### NEW `src/providers/openai-sidecar.ts`
-
-Export:
-
-```ts
-listOpenAiForwardSidecarCandidates(config): Array<{ providerName; provider; accountMode }>
-resolveFirstUsableOpenAiSidecar(candidates, incomingHeaders, config): Promise<{ providerName; provider; accountMode; authContext; headers; recordOutcome? } | undefined>
-selectOpenAiImagesProvider(config): { forward?; keyed? }
-```
-
-`listOpenAiForwardSidecarCandidates` returns enabled canonical rows in fixed Direct,
-then Multi order, independent of object insertion. `resolveFirstUsableOpenAiSidecar`
-attempts authentication in that order: Direct uses incoming caller headers and, when
-required caller authorization/account headers are absent, is skipped so Multi can
-resolve its own pool context. Multi returns its own headers/outcome recorder, never
-the main model's context. Once a Direct sidecar request is actually sent, an upstream
-401 fails closed; it must not trigger a hidden Multi retry. Keyed API is only an
-images-platform candidate, never a hosted ChatGPT search/vision candidate.
-
-### MODIFY `src/server/search.ts` and `src/server/images.ts`
-
-Replace local provider scans and global auth resolution with the central selectors.
-Standalone search uses Direct then Multi. Images retains forward platform-vs-keyed
-endpoint behavior but each candidate owns its credential type.
-
-### MODIFY `src/web-search/index.ts` and `src/vision/index.ts`
-
-Remove both `findForwardProvider` implementations. `SidecarPlan`/`VisionPlan` carry
-provider name, mode, dedicated auth context, headers, and outcome recorder from the
-central owner instead of combining the main route's auth with another provider.
-
-### MODIFY `src/server/responses.ts`
-
-Resolve sidecar auth lazily only when vision/search activation conditions are met.
-Pass sidecar-specific headers/context/outcome to `describeImagesInPlace` and
-`runWithWebSearch`; main-route `authCtx` is never reused for a different tier.
-
-### MODIFY `src/providers/quota.ts`
-
-Codex account quota labels/cache keys attach to Multi only. API key quota remains
-provider-key-owned; Direct never receives the active pool suffix.
+Central sidecar ownership, standalone/internal caller rewiring, auth-aware fallback,
+and the full activation matrix moved into Cycle 020 because route-aware auth cannot be
+made mandatory atomically while route-blind sidecar callers remain. Cycle 040 only
+updates management/GUI presentation and may refine labels; it does not re-own runtime
+selection.
 
 ## Automated activation matrix
-
-### MODIFY `tests/server-search.test.ts`, `tests/server-images.test.ts`,
-`tests/web-search-anthropic.test.ts`, `tests/vision-anthropic.test.ts`, and
-`tests/sidecar-abort.test.ts`
-
-For standalone and internal paths, permute provider insertion order and trigger:
-
-- Direct enabled + Multi enabled → Direct caller headers, no pool outcome;
-- Direct enabled but incoming caller auth absent + Multi enabled → skip Direct before
-  network I/O and use selected main/added Multi pool headers/outcome;
-- Direct request sent and upstream returns 401 → return/strip according to the caller's
-  existing failure policy, with zero Multi resolution or retry;
-- Direct disabled/absent + Multi enabled → selected main/added pool headers/outcome;
-- API-key only → images keyed path; hosted search/vision unavailable;
-- no usable auth → fail closed/strip behavior;
-- Anthropic explicit backend → existing stored OAuth path unchanged.
-
-Assert endpoint, Authorization, chatgpt-account-id, provider label, outcome target,
-abort propagation, and zero cross-tier credential leakage.
 
 ### MODIFY `tests/server-auth.test.ts`
 
@@ -174,11 +119,11 @@ Persist observed screenshots:
 ## Verification and exit gate
 
 ```sh
-bun test tests/server-search.test.ts tests/server-images.test.ts tests/web-search-anthropic.test.ts tests/vision-anthropic.test.ts tests/sidecar-abort.test.ts tests/server-auth.test.ts tests/provider-payload.test.ts
+bun test tests/server-auth.test.ts tests/provider-payload.test.ts
 bun x tsc --noEmit
 cd gui && bun run lint:i18n && bun run build
 ```
 
-Exit requires automated sidecar matrix success plus one clean post-interaction DOM/
+Exit requires management/payload tests plus one clean post-interaction DOM/
 console observation for each named screenshot. Browser output produced but not read is
 not evidence.

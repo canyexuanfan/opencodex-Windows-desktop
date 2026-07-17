@@ -22,8 +22,14 @@ let previousCodexHome: string | undefined;
 function makeConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
   return {
     port: 10100,
-    providers: {},
-    defaultProvider: "openai",
+    providers: {
+      "openai-multi": {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authMode: "forward",
+      },
+    },
+    defaultProvider: "openai-multi",
     codexAccounts: [],
     ...overrides,
   } as OcxConfig;
@@ -91,6 +97,29 @@ describe("primeCodexPoolQuotas", () => {
       expect(getAccountQuota("p1")).not.toBeNull();
       expect(getAccountQuota("p2")).not.toBeNull();
       expect(getAccountQuota("p1")).toMatchObject({ weeklyPercent: 20 });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("Direct, API-only, and disabled Multi configurations never prime the Codex pool", async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      return whamResponse(20);
+    };
+    try {
+      for (const providers of [
+        { openai: { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" as const } },
+        { "openai-apikey": { adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", apiKey: "sk-test" } },
+        { "openai-multi": { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" as const, disabled: true } },
+      ]) {
+        const cfg = makeConfig({ providers });
+        seedPoolAccount(cfg, `disabled-${calls}-${Object.keys(providers)[0]}`);
+        await primeCodexPoolQuotas(cfg, "disabled-test");
+      }
+      expect(calls).toBe(0);
     } finally {
       globalThis.fetch = originalFetch;
     }

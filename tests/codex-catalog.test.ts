@@ -146,6 +146,23 @@ describe("Codex catalog routed normalization", () => {
     expect(rows.some(row => row.provider === "openai-multi")).toBe(false);
   });
 
+  test("configured enabled canonical Multi is included in the routed catalog without /models fetch", async () => {
+    globalThis.fetch = (() => { throw new Error("forward providers must not fetch /models"); }) as typeof fetch;
+    const rows = await gatherRoutedModels({
+      port: 10100,
+      providers: {
+        "openai-multi": {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+        },
+      },
+      defaultProvider: "openai-multi",
+    });
+    expect(rows.some(row => row.provider === "openai-multi" && row.id === "gpt-5.6-sol")).toBe(true);
+    expect(rows.every(row => row.provider !== "openai-multi" || NATIVE_OPENAI_MODELS.includes(row.id))).toBe(true);
+  });
+
   test("loads bundled Codex catalog from debug models output", () => {
     const catalog = loadBundledCodexCatalog({
       commandCandidates: () => ["codex"],

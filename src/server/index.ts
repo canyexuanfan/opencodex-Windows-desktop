@@ -16,18 +16,11 @@ import {
   saveConfig,
   websocketsEnabled,
 } from "../config";
-import {
-  clearLoginState, getLoginStatus, getOAuthCredentialProjectId, getValidAccessToken, isOAuthProvider,
-  listOAuthProviders, reconcileOAuthProviders, startLoginFlow, UnsupportedOAuthProviderError, upsertOAuthProvider,
-} from "../oauth";
+import { reconcileOAuthProviders } from "../oauth";
 import { invalidateCodexModelsCache } from "../codex/catalog";
+import { runOpenAiTierStartupMigration } from "../providers/openai-tier-startup";
 import {
   CodexAccountCooldownError,
-  CodexAuthContextError,
-  CodexThreadAffinityExpiredError,
-  headersForCodexAuthContext,
-  resolveCodexAuthContext,
-  type CodexAuthContext,
 } from "../codex/auth-context";
 export {
   clearThreadAccountMap,
@@ -102,6 +95,7 @@ import {
   isLoopbackHostname,
   jsonResponse,
   requireApiAuth,
+  requireResponsesApiAuth,
   safeConfigDTO,
   setCorsOrigin,
   withCors,
@@ -147,17 +141,12 @@ const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
 // export function relaySseWithHeartbeat
 
 export function startServer(port?: number) {
-  const config = loadConfig();
+  const config = runOpenAiTierStartupMigration(loadConfig());
   applyProxyEnv(config);
   assertServerAuthConfig(config);
   // Refresh OAuth provider presets (models/noReasoningModels) from the registry so a proxy update
   // adding/dropping models reaches existing configs on start — not just fresh installs.
   reconcileOAuthProviders(config);
-  // Ensure the ChatGPT passthrough provider exists so gpt-* models route correctly.
-  if (!config.providers["chatgpt"]) {
-    upsertOAuthProvider(config, "chatgpt");
-    saveConfig(config);
-  }
   // Seed default featured subagent models on first run only (UNSET → defaults). A user-set list,
   // even [], is left alone so GUI removals persist.
   if (config.subagentModels === undefined) {
@@ -214,7 +203,7 @@ export function startServer(port?: number) {
         if (isDraining()) {
           return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
         }
-        const apiAuthError = requireApiAuth(req, config, "data-plane");
+        const apiAuthError = requireResponsesApiAuth(req, config);
         if (apiAuthError) return withCors(apiAuthError, req, config);
         if (!isAllowedRequestOrigin(req, config)) {
           return withCors(formatErrorResponse(403, "origin_rejected", "WebSocket upgrade blocked: non-local Origin"), req, config);
@@ -227,27 +216,9 @@ export function startServer(port?: number) {
         if (!websocketsEnabled(config)) {
           return withCors(formatErrorResponse(426, "upgrade_required", "Responses WebSocket transport is disabled; use HTTP"), req, config);
         }
-        let authCtx: CodexAuthContext;
-        try {
-          authCtx = await resolveCodexAuthContext(req.headers, config);
-        } catch (err) {
-          if (err instanceof CodexAccountCooldownError) {
-            return withCors(formatErrorResponse(429, "rate_limit_error", "Selected Codex account is cooling down"), req, config);
-          }
-          if (err instanceof CodexThreadAffinityExpiredError) {
-            return withCors(formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session"), req, config);
-          }
-          if (err instanceof CodexAuthContextError) {
-            const safeAccountLabel = formatCodexProviderForLog("chatgpt", err.accountId, config);
-            console.error(`[codex-auth] Pool account ${safeAccountLabel} token failed during websocket upgrade; reauthentication required`);
-            return withCors(formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication"), req, config);
-          }
-          throw err;
-        }
         if (server.upgrade(req, {
           data: {
             headers: selectForwardHeaders(req.headers),
-            authContext: authCtx,
           },
         })) return undefined as unknown as Response;
         return withCors(formatErrorResponse(426, "upgrade_required", "WebSocket upgrade failed"), req, config);
@@ -334,7 +305,7 @@ export function startServer(port?: number) {
         if (isDraining()) {
           return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
         }
-        const apiAuthError = requireApiAuth(req, config, "data-plane");
+        const apiAuthError = requireResponsesApiAuth(req, config);
         if (apiAuthError) return withCors(apiAuthError, req, config);
         if (!isAllowedRequestOrigin(req, config)) {
           return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
@@ -399,7 +370,7 @@ export function startServer(port?: number) {
         if (isDraining()) {
           return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
         }
-        const apiAuthError = requireApiAuth(req, config, "data-plane");
+        const apiAuthError = requireResponsesApiAuth(req, config);
         if (apiAuthError) return withCors(apiAuthError, req, config);
         if (!isAllowedRequestOrigin(req, config)) {
           return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
@@ -521,6 +492,10 @@ export function startServer(port?: number) {
           turnAbort.abort("websocket turn superseded or closed");
         };
         ws.data.cancel = cancelTurn;
+        // A socket may carry several response.create frames. Clear the previous
+        // account before resolving this frame so a failed Multi resolution cannot
+        // leave stale invalidation ownership behind.
+        updateCodexWebSocketAuthContext(ws, undefined);
 
         if (frame.generate === false) {
           for (const payload of buildWarmupCompletionFrames(frame)) {
@@ -548,49 +523,8 @@ export function startServer(port?: number) {
             addFinalRequestLog(requestId, start, logCtx, status, meta);
           };
           const baseHeaders = ws.data.headers ?? new Headers();
-          let authCtx: CodexAuthContext;
-          let selectedForwardHeaders: Headers;
-          try {
-            authCtx = await resolveCodexAuthContext(baseHeaders, config);
-            selectedForwardHeaders = headersForCodexAuthContext(baseHeaders, authCtx);
-            updateCodexWebSocketAuthContext(ws, authCtx);
-          } catch (err) {
-            if (!isCurrent()) return;
-            if (err instanceof CodexAccountCooldownError) {
-              finalizeLog(429);
-              sendJsonFrame(ws, buildWsErrorFrame(429, {
-                type: "rate_limit_error",
-                message: "Selected Codex account is cooling down",
-              }));
-              return;
-            }
-            if (err instanceof CodexThreadAffinityExpiredError) {
-              finalizeLog(409);
-              sendJsonFrame(ws, buildWsErrorFrame(409, {
-                type: "invalid_request_error",
-                message: "Codex thread account affinity expired; start a new session",
-              }));
-              return;
-            }
-            if (err instanceof CodexAuthContextError) {
-              const safeAccountLabel = formatCodexProviderForLog("chatgpt", err.accountId, config);
-              console.error(`[codex-auth] Pool account ${safeAccountLabel} token failed during websocket turn; reauthentication required`);
-              finalizeLog(401);
-              sendJsonFrame(ws, buildWsErrorFrame(401, {
-                type: "authentication_error",
-                message: "Selected Codex account needs reauthentication",
-              }));
-              return;
-            }
-            finalizeLog(502);
-            sendJsonFrame(ws, buildWsErrorFrame(502, {
-              type: "proxy_error",
-              message: err instanceof Error ? err.message : String(err),
-            }));
-            return;
-          }
           const fwd = new Headers({ "content-type": "application/json" });
-          selectedForwardHeaders.forEach((value, key) => fwd.set(key, value));
+          baseHeaders.forEach((value, key) => fwd.set(key, value));
           const req = new Request("http://localhost/v1/responses", {
             method: "POST",
             headers: fwd,
@@ -601,8 +535,7 @@ export function startServer(port?: number) {
             const response = await handleResponses(req, config, logCtx, {
               forceEmptyResponseId: true,
               abortSignal: turnAbort.signal,
-              authContext: authCtx,
-              selectedForwardHeaders,
+              onCodexAuthContextResolved: context => updateCodexWebSocketAuthContext(ws, context),
               recordTerminalOutcomes: false,
               setTerminalOutcomeRecorder: recorder => {
                 terminalRecorder = recorder;
@@ -666,9 +599,11 @@ export function startServer(port?: number) {
   // usage scores from the first routing decision, even when the dashboard is
   // never opened (the common CLI/WSL case). Fire-and-forget: never blocks the
   // listener, and a blocked network silently no-ops (see Phase 30 diagnostics).
-  import("../codex/auth-api")
-    .then(({ primeCodexPoolQuotas }) => primeCodexPoolQuotas(config, "startup"))
-    .catch(() => {});
+  if (config.providers["openai-multi"]?.disabled !== true && config.providers["openai-multi"]) {
+    import("../codex/auth-api")
+      .then(({ primeCodexPoolQuotas }) => primeCodexPoolQuotas(config, "startup"))
+      .catch(() => {});
+  }
 
   return server;
 }

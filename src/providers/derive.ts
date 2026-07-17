@@ -1,4 +1,4 @@
-import type { OcxProviderConfig } from "../types";
+import type { CodexAccountMode, OcxProviderConfig } from "../types";
 import { PROVIDER_REGISTRY, type ProviderRegistryEntry } from "./registry";
 
 export interface DerivedKeyLoginProvider {
@@ -34,6 +34,7 @@ export interface DerivedInitProvider {
   adapter: string;
   baseUrl: string;
   kind: "forward" | "oauth" | "key" | "local";
+  codexAccountMode?: CodexAccountMode;
   dashboardUrl?: string;
   defaultModel?: string;
 }
@@ -45,6 +46,7 @@ export interface DerivedProviderPreset {
   baseUrl: string;
   defaultModel?: string;
   auth: "oauth" | "forward" | "key" | "local";
+  codexAccountMode?: CodexAccountMode;
   oauthProvider?: string;
   dashboardUrl?: string;
   note?: string;
@@ -143,6 +145,7 @@ export function deriveInitProviders(): DerivedInitProvider[] {
     adapter: entry.adapter,
     baseUrl: entry.baseUrl,
     kind: entry.authKind,
+    ...(entry.codexAccountMode ? { codexAccountMode: entry.codexAccountMode } : {}),
     ...(entry.dashboardUrl ? { dashboardUrl: entry.dashboardUrl } : {}),
     ...(entry.defaultModel ? { defaultModel: entry.defaultModel } : {}),
   }));
@@ -226,6 +229,7 @@ function entryToPreset(entry: ProviderRegistryEntry): DerivedProviderPreset {
     adapter: entry.adapter,
     baseUrl: entry.baseUrl,
     auth: entry.authKind === "forward" ? "forward" : entry.authKind === "oauth" ? "oauth" : entry.authKind === "local" ? "local" : "key",
+    ...(entry.codexAccountMode ? { codexAccountMode: entry.codexAccountMode } : {}),
     ...(entry.defaultModel ? { defaultModel: entry.defaultModel } : {}),
     ...(entry.authKind === "oauth" ? { oauthProvider: entry.oauthId ?? entry.id } : {}),
     ...(entry.dashboardUrl ? { dashboardUrl: entry.dashboardUrl } : {}),

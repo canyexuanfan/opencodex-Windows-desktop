@@ -13,7 +13,7 @@ import {
 import {
   clearLoginState,
   getLoginStatus,
-  isOAuthProvider,
+  isPublicOAuthProvider,
   listOAuthProviders,
   startLoginFlow,
   submitManualLoginCode,
@@ -23,6 +23,7 @@ import { removeCredential } from "../oauth/store";
 import { providerDestinationResolvedError } from "../lib/destination-policy";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "../oauth/key-providers";
 import { deriveProviderPresets } from "../providers/derive";
+import { providerCodexAccountMode } from "../providers/registry";
 import { fetchProviderQuotaReports } from "../providers/quota";
 import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../providers/context-cap";
 import { readUsageEntries } from "../usage/log";
@@ -403,6 +404,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       hasApiKey: !!p.apiKey,
       allowPrivateNetwork: p.allowPrivateNetwork === true,
       disabled: p.disabled === true,
+      codexAccountMode: providerCodexAccountMode(name),
     })));
   }
 
@@ -410,18 +412,18 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   // persists — existing providers' real keys are never round-tripped (unlike PUT /api/config,
   // which would re-save the masked keys from GET). Live routing picks it up immediately.
   if (url.pathname === "/api/providers" && req.method === "POST") {
-    let body: { name?: string; provider?: OcxProviderConfig; setDefault?: boolean };
+    let body: { name?: unknown; provider?: unknown; setDefault?: boolean };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
-    const name = body.name?.trim();
-    const prov = body.provider ? stripCodexRuntimeProviderFields(body.provider) : undefined;
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    const providerError = providerManagementConfigError(name, body.provider);
+    if (providerError) return jsonResponse({ error: providerError }, 400);
+    const prov = body.provider ? stripCodexRuntimeProviderFields(body.provider as OcxProviderConfig) : undefined;
     if (!name || !prov?.adapter || !prov?.baseUrl) {
       return jsonResponse({ error: "name, provider.adapter and provider.baseUrl are required" }, 400);
     }
     if (!isValidProviderName(name)) {
       return jsonResponse({ error: "provider name must use letters, numbers, dot, underscore, or hyphen and cannot be a reserved object key" }, 400);
     }
-    const providerError = providerManagementConfigError(name, prov);
-    if (providerError) return jsonResponse({ error: providerError }, 400);
     // Hostname destinations additionally get a DNS-resolved SSRF check at write time —
     // the sync check above only classifies literal IPs (review finding, PR #96).
     const resolvedError = await providerDestinationResolvedError(name, prov);
@@ -1030,7 +1032,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   if (url.pathname === "/api/oauth/login" && req.method === "POST") {
     const body = await req.json().catch(() => ({})) as { provider?: string; addAccount?: boolean };
     const provider = (body.provider ?? "").trim().toLowerCase();
-    if (!isOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
+    if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
     try {
       // addAccount forces a fresh browser identity (skips local-CLI token import) so a
       // SECOND account can be added instead of re-importing the first one.
@@ -1053,7 +1055,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   if (url.pathname === "/api/oauth/login/code" && req.method === "POST") {
     const body = await req.json().catch(() => ({})) as { provider?: string; input?: string; code?: string };
     const provider = (body.provider ?? "").trim().toLowerCase();
-    if (!isOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
+    if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
     const input = typeof body.input === "string" ? body.input : typeof body.code === "string" ? body.code : "";
     // Authorization responses are measured in hundreds of bytes; never accept the
     // generic management-body allowance here.
@@ -1065,12 +1067,13 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
 
   if (url.pathname === "/api/oauth/status" && req.method === "GET") {
     const provider = (url.searchParams.get("provider") ?? "").trim().toLowerCase();
+    if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
     return jsonResponse(getLoginStatus(provider));
   }
 
   if (url.pathname === "/api/oauth/logout" && req.method === "POST") {
     const provider = (url.searchParams.get("provider") ?? "").trim().toLowerCase();
-    if (!isOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
+    if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
     await removeCredential(provider);
     clearLoginState(provider);
     return jsonResponse({ success: true });
@@ -1080,14 +1083,14 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   // one, or remove one. Emails are masked; tokens never leave the store.
   if (url.pathname === "/api/oauth/accounts" && req.method === "GET") {
     const provider = (url.searchParams.get("provider") ?? "").trim().toLowerCase();
-    if (!isOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
+    if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
     const status = getLoginStatus(provider);
     return jsonResponse({ activeAccountId: status.activeAccountId ?? null, accounts: status.accounts ?? [] });
   }
   if (url.pathname === "/api/oauth/accounts/active" && req.method === "PUT") {
     const body = await req.json().catch(() => ({})) as { provider?: string; accountId?: string };
     const provider = (body.provider ?? "").trim().toLowerCase();
-    if (!isOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
+    if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
     if (!body.accountId) return jsonResponse({ error: "missing accountId" }, 400);
     const { setActiveAccount } = await import("../oauth/store");
     if (!(await setActiveAccount(provider, body.accountId))) return jsonResponse({ error: "account not found" }, 404);
@@ -1098,7 +1101,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   if (url.pathname === "/api/oauth/accounts" && req.method === "DELETE") {
     const provider = (url.searchParams.get("provider") ?? "").trim().toLowerCase();
     const id = url.searchParams.get("id") ?? "";
-    if (!isOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
+    if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
     if (!id) return jsonResponse({ error: "missing id" }, 400);
     const { removeAccount, getAccountSet } = await import("../oauth/store");
     if (!(await removeAccount(provider, id))) return jsonResponse({ error: "account not found" }, 404);

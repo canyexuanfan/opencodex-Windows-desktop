@@ -20,13 +20,15 @@ import {
   type OAuthAccessSnapshot,
   UnsupportedOAuthProviderError,
 } from "../oauth";
-import { buildWebSearchTool, planWebSearch, runWithWebSearch } from "../web-search";
-import { describeImagesInPlace, planVisionSidecar, stripImagesInPlace } from "../vision";
+import { buildWebSearchTool, planWebSearch, runWithWebSearch, shouldResolveOpenAiWebSearchSidecar } from "../web-search";
+import { describeImagesInPlace, planVisionSidecar, shouldResolveOpenAiVisionSidecar, stripImagesInPlace } from "../vision";
 import { createAdapterEventQueue } from "../adapters/run-turn-queue";
 import {
   applyCodexAuthContextToProvider,
   CodexAccountCooldownError,
   CodexAuthContextError,
+  CodexDirectAuthenticationError,
+  CodexPoolAuthenticationError,
   CodexThreadAffinityExpiredError,
   headersForCodexAuthContext,
   isCodexAuthContextUsable,
@@ -39,6 +41,8 @@ import {
   type CodexUpstreamOutcome,
 } from "../codex/routing";
 import { fetchWithResetRetry, fetchWithTransientRetry } from "../lib/upstream-retry";
+import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "./auth-cors";
+import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../providers/openai-sidecar";
 import { isUsageDebugEnabled } from "../usage/debug";
 import { readJsonRequestBody, DecompressedBodyTooLargeError, UnsupportedContentEncodingError } from "./request-decompress";
 import { resolveAdapter, resolveWireProtocolOverride } from "./adapter-resolve";
@@ -421,8 +425,7 @@ export async function handleResponses(
   options: {
     forceEmptyResponseId?: boolean;
     abortSignal?: AbortSignal;
-    authContext?: CodexAuthContext;
-    selectedForwardHeaders?: Headers;
+    onCodexAuthContextResolved?: (context: CodexAuthContext | undefined) => void;
     recordTerminalOutcomes?: boolean;
     setTerminalOutcomeRecorder?: (recorder: ((status: ResponsesTerminalStatus) => void) | undefined) => void;
     onNativePassthroughTerminal?: (status: ResponsesTerminalStatus) => void;
@@ -586,11 +589,17 @@ export async function handleResponses(
     logCtx.requestedServiceTier ?? logCtx.configuredServiceTier,
   );
 
-  let authCtx: CodexAuthContext;
+  let authCtx: CodexAuthContext = { kind: "main", accountId: null };
   let selectedForwardHeaders: Headers;
   try {
-    authCtx = options.authContext ?? await resolveCodexAuthContext(req.headers, config);
-    selectedForwardHeaders = options.selectedForwardHeaders ?? headersForCodexAuthContext(req.headers, authCtx);
+    if (route.codexAccountMode === "direct") validateForwardAdmissionCredential(req.headers, config);
+    if (route.codexAccountMode) {
+      authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode);
+      options.onCodexAuthContextResolved?.(authCtx);
+    } else {
+      options.onCodexAuthContextResolved?.(undefined);
+    }
+    selectedForwardHeaders = headersForCodexAuthContext(req.headers, authCtx);
   } catch (err) {
     if (err instanceof CodexAccountCooldownError) {
       return formatErrorResponse(429, "rate_limit_error", "Selected Codex account is cooling down");
@@ -603,12 +612,21 @@ export async function handleResponses(
       console.error(`[codex-auth] Pool account ${safeAccountLabel} token failed; reauthentication required`);
       return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
     }
+    if (err instanceof CodexPoolAuthenticationError) {
+      return formatErrorResponse(401, "authentication_error", err.message);
+    }
+    if (err instanceof CodexDirectAuthenticationError) {
+      return formatErrorResponse(401, "authentication_error", err.message);
+    }
+    if (err instanceof ForwardAdmissionCredentialError) {
+      return formatErrorResponse(401, "authentication_error", err.message);
+    }
     throw err;
   }
   if (!isCodexAuthContextUsable(authCtx, config)) {
     return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
   }
-  route.provider = applyCodexAuthContextToProvider(route.provider, authCtx);
+  route.provider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
   logCtx.provider = formatCodexProviderForLog(route.providerName, codexLogAccountId(authCtx), config);
 
   // OAuth providers: swap in a fresh access token (auto-refreshed) as the Bearer key, so the
@@ -638,22 +656,46 @@ export async function handleResponses(
     }
   }
   route.provider = resolveProviderTransport(route.providerName, route.provider, parsed.options.promptCacheKey);
+  const adapterProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
+  const adapter = resolveAdapter(adapterProvider, config.cacheRetention);
+  const isPassthrough = "passthrough" in adapter && !!adapter.passthrough;
+
+  let openAiSidecar: ResolvedOpenAiForwardSidecar | undefined;
+  const needsOpenAiVision = shouldResolveOpenAiVisionSidecar(config, route.provider, route.modelId, parsed);
+  const needsOpenAiSearch = shouldResolveOpenAiWebSearchSidecar(config, parsed, isPassthrough);
+  if (needsOpenAiVision || needsOpenAiSearch) {
+    try {
+      openAiSidecar = await resolveFirstUsableOpenAiSidecar(
+        listOpenAiForwardSidecarCandidates(config),
+        req.headers,
+        config,
+      );
+    } catch (err) {
+      // Sidecars are optional helpers for an otherwise independent routed turn.
+      // An unavailable/cooling/expired Multi credential disables the helper; it
+      // must not turn a valid routed-provider request into a Codex-auth failure.
+      if (
+        !(err instanceof CodexPoolAuthenticationError)
+        && !(err instanceof CodexAuthContextError)
+        && !(err instanceof CodexAccountCooldownError)
+        && !(err instanceof CodexThreadAffinityExpiredError)
+      ) throw err;
+    }
+  }
 
   // Vision sidecar: the routed model can't see images (provider.noVisionModels). Describe each
   // attached image through the selected sidecar backend and replace it with text BEFORE the main
   // call, so the text-only model can reason about it.
-  const visionPlan = planVisionSidecar(config, route.provider, route.modelId, parsed, selectedForwardHeaders, authCtx);
-  const recordSidecarOutcome = sidecarOutcomeRecorder(config, authCtx);
+  const visionPlan = planVisionSidecar(config, route.provider, route.modelId, parsed, openAiSidecar);
+  const recordSidecarOutcome = openAiSidecar?.recordOutcome;
   if (visionPlan) {
-    await describeImagesInPlace(parsed, visionPlan, selectedForwardHeaders, options.abortSignal, recordSidecarOutcome);
+    await describeImagesInPlace(parsed, visionPlan, openAiSidecar?.headers ?? selectedForwardHeaders, options.abortSignal, recordSidecarOutcome);
   } else if (modelInList(route.provider.noVisionModels, route.modelId)) {
     // Sidecar-covered model but NO plan (no forward provider / missing forwarded auth / sidecar
     // disabled): fail closed — never forward raw images to a text-only upstream.
     stripImagesInPlace(parsed);
   }
 
-  const adapterProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
-  const adapter = resolveAdapter(adapterProvider, config.cacheRetention);
   const recordTerminalOutcomes = options.recordTerminalOutcomes !== false;
 
   // Remote compaction v2 on a ROUTED model: Codex sent `compaction_trigger` and requires exactly
@@ -896,21 +938,21 @@ export async function handleResponses(
   // Web-search sidecar: Codex enabled web_search but this is a routed (non-OpenAI) model that can't
   // run it server-side. Expose web_search as a function tool and run searches via the gpt-mini sidecar
   // through the ChatGPT passthrough, looping until the model answers. Otherwise take the normal path.
-  const wsPlan = planWebSearch(config, parsed, false, selectedForwardHeaders, route.provider, route.modelId, authCtx);
+  const wsPlan = planWebSearch(config, parsed, false, route.provider, route.modelId, openAiSidecar);
   if (wsPlan) {
     parsed.context.tools = [...(parsed.context.tools ?? []), buildWebSearchTool()];
     const wsResponse = await runWithWebSearch({
       parsed, adapter,
       backend: wsPlan.backend,
-      forwardProvider: wsPlan.forwardProvider,
+      forwardProvider: wsPlan.forwardSidecar?.provider,
       anthropicSidecar: wsPlan.anthropicSidecar,
       hostedTool: wsPlan.hostedTool,
-      selectedForwardHeaders,
+      selectedForwardHeaders: wsPlan.forwardSidecar?.headers ?? selectedForwardHeaders,
       settings: wsPlan.settings,
       maxSearches: wsPlan.maxSearches,
       forceEmptyResponseId: true,
       abortSignal: options.abortSignal,
-      recordSidecarOutcome,
+      recordSidecarOutcome: wsPlan.forwardSidecar?.recordOutcome,
       connectTimeoutMs: config.connectTimeoutMs ?? 200_000,
       routedModelStallTimeoutMs: wsPlan.routedModelStallTimeoutMs,
       stallTimeoutSec: wsPlan.stallTimeoutSec,
@@ -1168,6 +1210,14 @@ export async function handleResponsesCompact(req: Request, config: OcxConfig): P
     return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
 
+  if (route.codexAccountMode === "direct") {
+    try { validateForwardAdmissionCredential(req.headers, config); }
+    catch (err) {
+      if (err instanceof ForwardAdmissionCredentialError) return formatErrorResponse(401, "authentication_error", err.message);
+      throw err;
+    }
+  }
+
   if (route.provider.adapter === "openai-responses") {
     // Native ChatGPT/OpenAI model: forward the compact request verbatim to the real backend.
     // Resolve the SAME pool/thread auth context as /v1/responses — forwarding the caller's raw
@@ -1176,25 +1226,34 @@ export async function handleResponsesCompact(req: Request, config: OcxConfig): P
     let compactProvider = route.provider;
     const headers = new Headers({ "content-type": "application/json" });
     try {
-      const authCtx = await resolveCodexAuthContext(req.headers, config);
-      const selected = headersForCodexAuthContext(req.headers, authCtx);
-      compactProvider = applyCodexAuthContextToProvider(route.provider, authCtx);
-      for (const name of FORWARD_HEADERS) {
-        const value = selected.get(name);
-        if (value) headers.set(name, value);
+      if (route.codexAccountMode) {
+        const authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode);
+        const selected = headersForCodexAuthContext(req.headers, authCtx);
+        compactProvider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
+        for (const name of FORWARD_HEADERS) {
+          const value = selected.get(name);
+          if (value) headers.set(name, value);
+        }
+        const override = (compactProvider as { _codexAccountOverride?: { accessToken: string; chatgptAccountId: string } })._codexAccountOverride;
+        if (override) {
+          headers.set("authorization", `Bearer ${override.accessToken}`);
+          headers.set("chatgpt-account-id", override.chatgptAccountId);
+        }
       }
-      const override = (compactProvider as { _codexAccountOverride?: { accessToken: string; chatgptAccountId: string } })._codexAccountOverride;
-      if (override) {
-        headers.set("authorization", `Bearer ${override.accessToken}`);
-        headers.set("chatgpt-account-id", override.chatgptAccountId);
+    } catch (err) {
+      if (err instanceof CodexAccountCooldownError) {
+        return formatErrorResponse(429, "rate_limit_error", "Selected Codex account is cooling down");
       }
-    } catch {
-      // Auth-context failures degrade to raw forwarded headers (pre-existing behavior) rather
-      // than failing the compact turn outright — codex-rs treats compact errors as session-fatal.
-      for (const name of FORWARD_HEADERS) {
-        const value = req.headers.get(name);
-        if (value) headers.set(name, value);
+      if (err instanceof CodexThreadAffinityExpiredError) {
+        return formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session");
       }
+      if (err instanceof CodexAuthContextError) {
+        return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
+      }
+      if (err instanceof CodexPoolAuthenticationError || err instanceof CodexDirectAuthenticationError) {
+        return formatErrorResponse(401, "authentication_error", err.message);
+      }
+      throw err;
     }
     const base = (compactProvider.baseUrl ?? "").replace(/\/$/, "");
     if (compactProvider.apiKey) headers.set("authorization", `Bearer ${resolveEnvValue(compactProvider.apiKey)}`);

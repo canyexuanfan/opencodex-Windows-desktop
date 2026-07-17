@@ -89,7 +89,7 @@ These can be separate units after the three-tier contract is stable.
 | 1 | [`010_provider_tier_contract.md`](./010_provider_tier_contract.md) | non-activating types, pure migration projection, native-catalog projection |
 | 2 | [`020_route_aware_codex_auth.md`](./020_route_aware_codex_auth.md) | atomic tier activation, migration, legacy chatgpt retirement, HTTP/WS/compact auth |
 | 3 | [`030_openai_api_models_and_pro_aliases.md`](./030_openai_api_models_and_pro_aliases.md) | official API model metadata and narrow Pro virtual aliases |
-| 4 | [`040_management_gui_and_sidecars.md`](./040_management_gui_and_sidecars.md) | management/GUI visibility and deterministic sidecar ownership |
+| 4 | [`040_management_gui_and_sidecars.md`](./040_management_gui_and_sidecars.md) | management/GUI presentation and rendered QA |
 | 5 | [`050_integration_verification.md`](./050_integration_verification.md) | cross-tier regression matrix, live smokes, SoT docs, closeout |
 
 Each implementation cycle runs its own P -> A -> B -> C -> D loop. Cycle 1 may
@@ -139,6 +139,7 @@ Fresh configs and legacy configs without pool intent are not migrated to Multi.
 - [`007_audit_round5.md`](./007_audit_round5.md) — hard-link post-publication cleanup correction.
 - [`008_audit_final.md`](./008_audit_final.md) — independent Sol PASS and audit closure.
 - [`009_audit_wp010.md`](./009_audit_wp010.md) — Cycle-010 phase audit amendment.
+- [`019_audit_wp020.md`](./019_audit_wp020.md) — Cycle-020 atomic-activation audit amendments.
 - Decade documents — exact changes, activation cases, tests, and stop conditions.
 
 ## Stop conditions

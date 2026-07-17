@@ -16,9 +16,9 @@ let codexHome: string;
 
 function testConfig(): OcxConfig {
   return {
-    defaultProvider: "openai",
+    defaultProvider: "openai-multi",
     providers: {
-      openai: {
+      "openai-multi": {
         adapter: "openai-responses",
         authMode: "forward",
         baseUrl: "https://chatgpt.com/backend-api/codex",
@@ -139,8 +139,8 @@ describe("fetchProviderQuotaReports", () => {
     const result = await fetchProviderQuotaReports(testConfig(), true);
     const byProvider = Object.fromEntries(result.reports.map(report => [report.provider, report]));
 
-    expect(Object.keys(byProvider).sort()).toEqual(["anthropic", "google-antigravity", "openai", "xai"]);
-    expect(byProvider.openai?.quota.weeklyPercent).toBe(34);
+    expect(Object.keys(byProvider).sort()).toEqual(["anthropic", "google-antigravity", "openai-multi", "xai"]);
+    expect(byProvider["openai-multi"]?.quota.weeklyPercent).toBe(34);
     expect(byProvider.xai?.quota.monthlyPercent).toBe(25);
     expect(byProvider.anthropic?.quota.weeklyPercent).toBe(72);
     expect(byProvider.anthropic?.quota.customWindows).toEqual([

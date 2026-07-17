@@ -1,4 +1,4 @@
-import type { OcxProviderConfig } from "../types";
+import type { CodexAccountMode, OcxProviderConfig } from "../types";
 import { KIRO_MODELS, KIRO_MODEL_CONTEXT_WINDOWS, KIRO_MODEL_REASONING_EFFORTS } from "./kiro-models";
 import { ANTIGRAVITY_MODELS, ANTIGRAVITY_MODEL_CONTEXT_WINDOWS } from "./antigravity-models";
 import {
@@ -18,6 +18,7 @@ export interface ProviderRegistryEntry {
   adapter: string;
   baseUrl: string;
   authKind: ProviderAuthKind;
+  codexAccountMode?: CodexAccountMode;
   /** OAuth preset may explicitly honor a persisted API-key billing mode. */
   allowKeyAuthOverride?: boolean;
   allowPrivateNetworkByDefault?: boolean;
@@ -221,12 +222,23 @@ const UMANS_MODEL_INPUT_MODALITIES: Record<string, string[]> = Object.fromEntrie
 export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   {
     id: "openai",
-    label: "OpenAI (ChatGPT login)",
+    label: "Codex Direct",
     adapter: "openai-responses",
     baseUrl: "https://chatgpt.com/backend-api/codex",
     authKind: "forward",
+    codexAccountMode: "direct",
     featured: true,
-    note: "Uses your codex login — no API key",
+    note: "Uses the caller's main Codex login — no account rotation",
+  },
+  {
+    id: "openai-multi",
+    label: "Codex Multi-account",
+    adapter: "openai-responses",
+    baseUrl: "https://chatgpt.com/backend-api/codex",
+    authKind: "forward",
+    codexAccountMode: "pool",
+    featured: true,
+    note: "Uses main + added Codex accounts with rotation",
   },
   {
     id: "cursor",
@@ -358,7 +370,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelContextWindows: KIRO_MODEL_CONTEXT_WINDOWS,
     modelReasoningEfforts: KIRO_MODEL_REASONING_EFFORTS,
   },
-  { id: "openai-apikey", label: "OpenAI (API key)", adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", authKind: "key", featured: true, dashboardUrl: "https://platform.openai.com/api-keys", defaultModel: "gpt-5.5", models: ["gpt-5.5", ...OPENAI_GPT56_MODELS], liveModels: true, modelContextWindows: OPENAI_GPT56_CONTEXT_WINDOWS },
+  { id: "openai-apikey", label: "OpenAI API", adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", authKind: "key", featured: true, dashboardUrl: "https://platform.openai.com/api-keys", defaultModel: "gpt-5.5", models: ["gpt-5.5", ...OPENAI_GPT56_MODELS], liveModels: true, modelContextWindows: OPENAI_GPT56_CONTEXT_WINDOWS },
   {
     id: "umans",
     label: "Umans AI Coding Plan",
@@ -680,6 +692,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
 
 export function getProviderRegistryEntry(id: string): ProviderRegistryEntry | undefined {
   return PROVIDER_REGISTRY.find(entry => entry.id === id);
+}
+
+/** Registry-owned Codex account policy for a built-in provider id. */
+export function providerCodexAccountMode(id: string): CodexAccountMode | undefined {
+  return getProviderRegistryEntry(id)?.codexAccountMode;
 }
 
 /**

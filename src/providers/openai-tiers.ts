@@ -1,4 +1,4 @@
-import type { CodexAccountMode, OcxConfig, OcxProviderConfig } from "../types";
+import type { OcxConfig, OcxProviderConfig } from "../types";
 import { OPENAI_PROVIDER_TIER_VERSION } from "../types";
 
 export const OPENAI_DIRECT_PROVIDER_ID = "openai";
@@ -27,12 +27,6 @@ function normalizedBaseUrl(value: string): string | undefined {
   }
 }
 
-export function builtInCodexAccountMode(providerName: string): CodexAccountMode | undefined {
-  if (providerName === OPENAI_DIRECT_PROVIDER_ID) return "direct";
-  if (providerName === OPENAI_MULTI_PROVIDER_ID) return "pool";
-  return undefined;
-}
-
 export function isCanonicalOpenAiForwardProvider(provider: OcxProviderConfig): boolean {
   return provider.adapter === "openai-responses"
     && provider.authMode === "forward"
@@ -54,13 +48,19 @@ export class OpenAiTierMigrationCollisionError extends Error {
   }
 }
 
-function isExactCanonicalCodexForwardProvider(provider: OcxProviderConfig): boolean {
-  const keys = Object.keys(provider).sort();
-  return keys.length === 3
-    && keys[0] === "adapter"
-    && keys[1] === "authMode"
-    && keys[2] === "baseUrl"
-    && isCanonicalOpenAiForwardProvider(provider);
+function managedMultiOverlay(provider: OcxProviderConfig): Pick<OcxProviderConfig, "disabled" | "selectedModels"> | null {
+  const allowed = new Set(["adapter", "authMode", "baseUrl", "disabled", "selectedModels"]);
+  if (!Object.keys(provider).every(key => allowed.has(key))) return null;
+  if (!isCanonicalOpenAiForwardProvider(provider)) return null;
+  if (provider.disabled !== undefined && typeof provider.disabled !== "boolean") return null;
+  if (provider.selectedModels !== undefined && (
+    !Array.isArray(provider.selectedModels)
+    || provider.selectedModels.some(model => typeof model !== "string")
+  )) return null;
+  return {
+    ...(provider.disabled !== undefined ? { disabled: provider.disabled } : {}),
+    ...(provider.selectedModels !== undefined ? { selectedModels: [...provider.selectedModels] } : {}),
+  };
 }
 
 export function projectOpenAiTierMigration(config: OcxConfig): OpenAiTierMigrationProjection {
@@ -68,13 +68,39 @@ export function projectOpenAiTierMigration(config: OcxConfig): OpenAiTierMigrati
   const legacyPoolIntent = (projected.codexAccounts?.length ?? 0) > 0
     || typeof projected.activeCodexAccountId === "string";
 
-  if (projected.openaiProviderTierVersion === OPENAI_PROVIDER_TIER_VERSION) {
-    return { config: projected, changed: false, legacyPoolIntent };
+  const existingMulti = projected.providers[OPENAI_MULTI_PROVIDER_ID];
+  const multiOverlay = existingMulti ? managedMultiOverlay(existingMulti) : undefined;
+  if (existingMulti && !multiOverlay) {
+    throw new OpenAiTierMigrationCollisionError();
   }
 
-  const existingMulti = projected.providers[OPENAI_MULTI_PROVIDER_ID];
-  if (existingMulti && !isExactCanonicalCodexForwardProvider(existingMulti)) {
-    throw new OpenAiTierMigrationCollisionError();
+  if (projected.openaiProviderTierVersion === OPENAI_PROVIDER_TIER_VERSION) {
+    let changed = false;
+    if (existingMulti) {
+      const repairedMulti = { ...canonicalCodexForwardProvider(), ...(multiOverlay ?? {}) };
+      if (JSON.stringify(existingMulti) !== JSON.stringify(repairedMulti)) {
+        projected.providers[OPENAI_MULTI_PROVIDER_ID] = repairedMulti;
+        changed = true;
+      }
+    }
+    if (Object.hasOwn(projected.providers, LEGACY_CHATGPT_PROVIDER_ID)) {
+      delete projected.providers[LEGACY_CHATGPT_PROVIDER_ID];
+      changed = true;
+      if (!projected.providers[OPENAI_DIRECT_PROVIDER_ID]) {
+        projected.providers[OPENAI_DIRECT_PROVIDER_ID] = canonicalCodexForwardProvider();
+      }
+      if (legacyPoolIntent && !projected.providers[OPENAI_MULTI_PROVIDER_ID]) {
+        projected.providers[OPENAI_MULTI_PROVIDER_ID] = canonicalCodexForwardProvider();
+      }
+    }
+    if (projected.defaultProvider === LEGACY_CHATGPT_PROVIDER_ID) {
+      if (legacyPoolIntent && !projected.providers[OPENAI_MULTI_PROVIDER_ID]) {
+        projected.providers[OPENAI_MULTI_PROVIDER_ID] = canonicalCodexForwardProvider();
+      }
+      projected.defaultProvider = legacyPoolIntent ? OPENAI_MULTI_PROVIDER_ID : OPENAI_DIRECT_PROVIDER_ID;
+      changed = true;
+    }
+    return { config: projected, changed, legacyPoolIntent };
   }
 
   const previousDefault = projected.defaultProvider;
@@ -95,7 +121,7 @@ export function projectOpenAiTierMigration(config: OcxConfig): OpenAiTierMigrati
       continue;
     }
     if (name === OPENAI_MULTI_PROVIDER_ID) {
-      nextEntries.push([name, canonicalCodexForwardProvider()]);
+      nextEntries.push([name, { ...canonicalCodexForwardProvider(), ...(multiOverlay ?? {}) }]);
       multiInserted = true;
       continue;
     }
