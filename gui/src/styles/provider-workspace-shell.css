@@ -567,3 +567,152 @@
     position: static;
   }
 }
+
+/* ── Detail view (Phase 020/030 polish) ──────────────────── */
+
+.pws-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  max-width: 800px;
+}
+
+.pws-detail-icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.pws-detail-icon img,
+.pws-detail-icon .provider-icon-mask {
+  width: 28px;
+  height: 28px;
+}
+
+.pws-detail-title-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.pws-detail-title {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin: 0;
+  line-height: 1.3;
+}
+
+/* Tabs */
+.pws-detail-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+  margin-top: 8px;
+}
+
+.pws-detail-tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--fg-muted, #888);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.pws-detail-tab:hover {
+  color: var(--fg);
+}
+
+.pws-detail-tab--active {
+  color: var(--fg);
+  border-bottom-color: var(--fg);
+}
+
+/* Section blocks */
+.pws-section {
+  margin-bottom: 16px;
+}
+
+.pws-section-title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted, #888);
+  margin: 0 0 8px 0;
+}
+
+.pws-section--side {
+  margin-bottom: 12px;
+}
+
+/* Key-value pairs */
+.pws-kv {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0;
+}
+
+.pws-kv-row {
+  display: flex;
+  gap: 12px;
+  padding: 5px 0;
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+.pws-kv-row dt {
+  flex-shrink: 0;
+  width: 130px;
+  color: var(--fg-muted, #888);
+  font-weight: 400;
+}
+
+.pws-kv-row dd {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.pws-kv-row dd code {
+  font-size: 0.8rem;
+}
+
+.pws-kv-mono {
+  font-variant-numeric: tabular-nums;
+}
+
+.pws-status-ok {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--green, #22c55e);
+}
+
+.pws-status-warn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--amber, #f59e0b);
+}
+
+.pws-stats-note {
+  font-size: 0.75rem;
+  margin-top: 6px;
+}
+
+.pws-edit-settings-link,
+.pws-view-usage-link {
+  font-size: 0.8rem;
+  margin-top: 8px;
+}
