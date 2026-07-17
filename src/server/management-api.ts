@@ -615,12 +615,16 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       if (!res.ok) {
         return jsonResponse({ ok: false, latencyMs, error: `upstream /models returned ${res.status}` });
       }
-      const json = await res.json().catch(() => null) as { data?: unknown } | null;
-      const data = json && typeof json === "object" && !Array.isArray(json) ? json.data : undefined;
-      const models = Array.isArray(data) ? data.length : 0;
-      if (!Array.isArray(data)) {
+      const json = await res.json().catch(() => null) as { data?: unknown; models?: unknown } | null;
+      // OpenAI-style lists use { data: [...] }; Google's /v1beta/models (the other shape
+      // buildModelsRequest can produce) returns { models: [...] }.
+      const list = json && typeof json === "object" && !Array.isArray(json)
+        ? (Array.isArray(json.data) ? json.data : Array.isArray(json.models) ? json.models : undefined)
+        : undefined;
+      if (!Array.isArray(list)) {
         return jsonResponse({ ok: false, latencyMs, error: "upstream /models returned an unexpected shape" });
       }
+      const models = list.length;
       return jsonResponse({
         ok: true,
         latencyMs,

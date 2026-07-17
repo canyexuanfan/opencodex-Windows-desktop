@@ -116,6 +116,24 @@ describe("POST /api/providers/test (WP040 connectivity probe)", () => {
     expect(body.models).toBe(2);
   });
 
+  test("Google's models-array response shape is accepted (x-goog-api-key path)", async () => {
+    let requestedUrl = "";
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      requestedUrl = String(input);
+      return new Response(JSON.stringify({ models: [{ name: "models/gemini-3-pro" }, { name: "models/gemini-3-flash" }, { name: "models/gemini-3-lite" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const config = baseConfig({
+      google: { adapter: "google", baseUrl: "https://generativelanguage.googleapis.com", apiKey: "g-key" },
+    });
+    const { body } = await probe(config, "google");
+    expect(requestedUrl).toContain("/v1beta/models");
+    expect(body.ok).toBe(true);
+    expect(body.models).toBe(3);
+  });
+
   test("malformed 2xx data is an explicit failure, not a silent pass", async () => {
     globalThis.fetch = (async () => new Response(JSON.stringify({ nope: true }), {
       status: 200,
@@ -156,6 +174,11 @@ describe("POST /api/oauth/login/cancel (WP040)", () => {
 
     const bad = await cancel("not-a-provider");
     expect(bad.status).toBe(400);
+
+    // chatgpt is oauth-internal but NOT publicly startable — the hardened public
+    // predicate must reject it (an isOAuthProvider downgrade mutant fails here).
+    const internal = await cancel("chatgpt");
+    expect(internal.status).toBe(400);
 
     // xai is a public oauth provider; no flow is in progress so cancelled is false.
     const ok = await cancel("xai");
