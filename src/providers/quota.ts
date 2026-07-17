@@ -9,7 +9,8 @@ import { isCanonicalOpenAiForwardProvider, OPENAI_MULTI_PROVIDER_ID } from "./op
 
 const CACHE_TTL_MS = 5 * 60_000;
 const REQUEST_TIMEOUT_MS = 8_000;
-const REFRESH_SKEW_MS = 60_000;
+/** Keep a failed probe's previous row at most this long before dropping it. */
+const LAST_GOOD_MAX_AGE_MS = 30 * 60_000;
 
 export interface ProviderQuotaWindow {
   label: string;
@@ -41,15 +42,19 @@ export interface ProviderQuotaResponse {
 }
 
 let cache: { key: string; ts: number; response: ProviderQuotaResponse } | null = null;
+const inflight = new Map<string, { epoch: number; promise: Promise<ProviderQuotaResponse> }>();
+/** Bumped on cache clear and on force-refresh start; stale-epoch probes lose commit authority. */
+let invalidationEpoch = 0;
 
 /** Invalidate the report cache (e.g. after switching a provider's active account). */
 export function clearProviderQuotaCache(): void {
   cache = null;
+  invalidationEpoch += 1;
 }
 
 function cacheKey(config: OcxConfig): string {
   const providers = Object.entries(config.providers)
-    .map(([name, provider]) => `${name}:${provider.authMode ?? "key"}:${provider.disabled === true ? "off" : "on"}:${provider.baseUrl}`)
+    .map(([name, provider]) => `${name}:${provider.adapter}:${provider.authMode ?? "key"}:${provider.disabled === true ? "off" : "on"}:${provider.baseUrl}`)
     .sort()
     .join("|");
   return `${config.defaultProvider}|${config.activeCodexAccountId ?? ""}|${providers}`;
@@ -161,15 +166,19 @@ function parseClaudeBucket(value: unknown): { percent?: number; resetAt?: number
 }
 
 async function fetchAnthropicQuota(provider: string): Promise<ProviderQuotaReport | null> {
-  const credential = getCredential("anthropic");
-  if (!credential || credential.expires <= Date.now() + REFRESH_SKEW_MS) return null;
+  let accessToken: string;
+  try {
+    accessToken = await getValidAccessToken("anthropic");
+  } catch {
+    return null;
+  }
   const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
     headers: {
       Accept: "application/json, text/plain, */*",
       "Content-Type": "application/json",
       "User-Agent": "claude-cli/2.1.63 (external, cli)",
       "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05",
-      Authorization: `Bearer ${credential.access}`,
+      Authorization: `Bearer ${accessToken}`,
     },
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
@@ -191,6 +200,178 @@ async function fetchAnthropicQuota(provider: string): Promise<ProviderQuotaRepor
     updatedAt: Date.now(),
   };
   return report(provider, "anthropic:oauth-usage", quota);
+}
+
+/** Cursor included usage via api2.cursor.sh (Bearer from OAuth) — unofficial, may change. */
+async function fetchCursorQuota(provider: string): Promise<ProviderQuotaReport | null> {
+  let accessToken: string;
+  try {
+    accessToken = await getValidAccessToken("cursor");
+  } catch {
+    return null;
+  }
+
+  const authHeaders = {
+    Accept: "application/json",
+    Authorization: `Bearer ${accessToken}`,
+    "User-Agent": "opencodex-quota",
+  } as const;
+
+  // Prefer dashboard period usage (Pro/Team/Ultra spend allowance in USD cents).
+  // Field names follow Cursor's Connect RPC shape (limit/remaining/includedSpend), not usedCents.
+  try {
+    const periodRes = await fetch("https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage", {
+      method: "POST",
+      headers: {
+        ...authHeaders,
+        "Content-Type": "application/json",
+        "Connect-Protocol-Version": "1",
+      },
+      body: "{}",
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (periodRes.ok) {
+      const body = asRecord(await periodRes.json().catch(() => null));
+      const planUsage = asRecord(body?.planUsage);
+      if (planUsage) {
+        const resetAt = normalizeResetAt(body?.billingCycleEnd ?? planUsage.billingCycleEnd ?? body?.periodEnd);
+        // Cursor tracks two linked pools: First-party models (Auto/Composer/Grok) and API usage.
+        const autoPercent = normalizePercent(planUsage.autoPercentUsed);
+        const apiPercent = normalizePercent(planUsage.apiPercentUsed);
+        const customWindows: ProviderQuotaWindow[] = [];
+        if (autoPercent !== undefined) {
+          customWindows.push({
+            label: "First-party models",
+            percent: autoPercent,
+            ...(resetAt !== undefined ? { resetAt } : {}),
+          });
+        }
+        if (apiPercent !== undefined) {
+          customWindows.push({
+            label: "API usage",
+            percent: apiPercent,
+            ...(resetAt !== undefined ? { resetAt } : {}),
+          });
+        }
+        if (customWindows.length > 0) {
+          const built = report(provider, "cursor:period-usage", {
+            customWindows,
+            updatedAt: Date.now(),
+          });
+          if (built) return { ...built, reverseEngineered: true };
+        }
+
+        const limit = toFiniteNumber(planUsage.limit ?? planUsage.limitCents ?? planUsage.totalLimitCents);
+        const remaining = toFiniteNumber(planUsage.remaining ?? planUsage.remainingCents);
+        const includedSpend = toFiniteNumber(planUsage.includedSpend ?? planUsage.usedCents ?? planUsage.used);
+        const totalSpend = toFiniteNumber(planUsage.totalSpend);
+        let used: number | undefined;
+        if (includedSpend !== undefined) used = includedSpend;
+        else if (limit !== undefined && remaining !== undefined) used = Math.max(0, limit - remaining);
+        else if (totalSpend !== undefined) used = totalSpend;
+        const totalPercent = normalizePercent(planUsage.totalPercentUsed ?? planUsage.percentUsed);
+        if (limit !== undefined && limit > 0 && used !== undefined) {
+          const percent = totalPercent ?? normalizePercent((used / limit) * 100);
+          if (percent !== undefined) {
+            const built = report(provider, "cursor:period-usage", {
+              monthlyPercent: percent,
+              ...(resetAt !== undefined ? { monthlyResetAt: resetAt } : {}),
+              updatedAt: Date.now(),
+            });
+            if (built) return { ...built, reverseEngineered: true };
+          }
+        } else if (totalPercent !== undefined) {
+          const built = report(provider, "cursor:period-usage", {
+            monthlyPercent: totalPercent,
+            ...(resetAt !== undefined ? { monthlyResetAt: resetAt } : {}),
+            updatedAt: Date.now(),
+          });
+          if (built) return { ...built, reverseEngineered: true };
+        }
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+
+  // /api/usage/summary — same host, sometimes richer than /auth/usage for Team plans.
+  try {
+    const summaryRes = await fetch("https://api2.cursor.sh/api/usage/summary", {
+      headers: authHeaders,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (summaryRes.ok) {
+      const body = asRecord(await summaryRes.json().catch(() => null));
+      const individual = asRecord(body?.individualUsage);
+      const plan = asRecord(individual?.plan);
+      if (plan) {
+        const used = toFiniteNumber(plan.used);
+        const limit = toFiniteNumber(plan.limit);
+        const percent = normalizePercent(plan.totalPercentUsed)
+          ?? (used !== undefined && limit !== undefined && limit > 0
+            ? normalizePercent((used / limit) * 100)
+            : undefined);
+        if (percent !== undefined) {
+          const built = report(provider, "cursor:usage-summary", {
+            monthlyPercent: percent,
+            monthlyResetAt: normalizeResetAt(body?.billingCycleEnd),
+            updatedAt: Date.now(),
+          });
+          if (built) return { ...built, reverseEngineered: true };
+        }
+      }
+    }
+  } catch {
+    /* fall through to /auth/usage */
+  }
+
+  const response = await fetch("https://api2.cursor.sh/auth/usage", {
+    headers: authHeaders,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) return null;
+  const body = asRecord(await response.json().catch(() => null));
+  if (!body) return null;
+
+  // Prefer the gpt-4 bucket (historical "fast requests"); else first model with used+limit.
+  let used: number | undefined;
+  let limit: number | undefined;
+  const gpt4 = asRecord(body["gpt-4"]);
+  if (gpt4) {
+    used = toFiniteNumber(gpt4.numRequests ?? gpt4.used);
+    limit = toFiniteNumber(gpt4.maxRequestUsage ?? gpt4.limit ?? gpt4.maxRequests);
+  }
+  if (used === undefined || limit === undefined || limit <= 0) {
+    for (const [key, value] of Object.entries(body)) {
+      if (key === "startOfMonth" || key === "billingCycleStart") continue;
+      const bucket = asRecord(value);
+      if (!bucket) continue;
+      const bucketUsed = toFiniteNumber(bucket.numRequests ?? bucket.used);
+      const bucketLimit = toFiniteNumber(bucket.maxRequestUsage ?? bucket.limit ?? bucket.maxRequests);
+      if (bucketUsed !== undefined && bucketLimit !== undefined && bucketLimit > 0) {
+        used = bucketUsed;
+        limit = bucketLimit;
+        break;
+      }
+    }
+  }
+  if (used === undefined || limit === undefined || limit <= 0) return null;
+  const percent = normalizePercent((used / limit) * 100);
+  if (percent === undefined) return null;
+  const startOfMonth = normalizeResetAt(body.startOfMonth ?? body.billingCycleStart);
+  // Next reset = same day next month, computed in UTC to avoid timezone-shifted rollover.
+  const monthlyResetAt = startOfMonth !== undefined
+    ? (() => {
+        const start = new Date(startOfMonth);
+        return Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, start.getUTCDate());
+      })()
+    : undefined;
+  const built = report(provider, "cursor:auth-usage", {
+    monthlyPercent: percent,
+    ...(monthlyResetAt !== undefined ? { monthlyResetAt } : {}),
+    updatedAt: Date.now(),
+  });
+  return built ? { ...built, reverseEngineered: true } : null;
 }
 
 function quotaInfoEntries(modelInfo: Record<string, unknown>): Record<string, unknown>[] {
@@ -306,6 +487,7 @@ async function maybeFetchProviderQuota(
     if (isBuiltInChatGptForwardProvider(name, provider)) return fetchChatGptForwardQuota(config, name, forceRefresh);
     if (provider.authMode === "oauth" && name === "xai") return fetchXaiQuota(name);
     if (provider.authMode === "oauth" && name === "anthropic") return fetchAnthropicQuota(name);
+    if (provider.authMode === "oauth" && name === "cursor") return fetchCursorQuota(name);
     if (provider.authMode === "oauth" && name === "google-antigravity") return fetchAntigravityQuota(name, provider);
     return null;
   } catch {
@@ -316,12 +498,46 @@ async function maybeFetchProviderQuota(
 export async function fetchProviderQuotaReports(config: OcxConfig, forceRefresh = false): Promise<ProviderQuotaResponse> {
   const key = cacheKey(config);
   const now = Date.now();
-  if (!forceRefresh && cache && cache.key === key && now - cache.ts < CACHE_TTL_MS) return cache.response;
+  // The cache fast path must not extend a preserved last-good row past its 30-minute bound:
+  // a row preserved at age 29:59 plus a full 5-minute TTL would otherwise serve until ~35min.
+  const cacheFresh = cache && cache.key === key && now - cache.ts < CACHE_TTL_MS
+    && cache.response.reports.every(item => now - item.updatedAt < LAST_GOOD_MAX_AGE_MS);
+  if (!forceRefresh && cacheFresh) return cache!.response;
+  const joinable = inflight.get(key);
+  if (!forceRefresh && joinable && joinable.epoch === invalidationEpoch) return joinable.promise;
+  // A forced probe takes commit authority: older in-flight probes must not overwrite its result.
+  if (forceRefresh) invalidationEpoch += 1;
+  const epoch = invalidationEpoch;
 
-  const reports = (await Promise.all(
-    Object.entries(config.providers).map(([name, provider]) => maybeFetchProviderQuota(name, provider, config, forceRefresh)),
-  )).filter((item): item is ProviderQuotaReport => item !== null);
-  const response = { generatedAt: Date.now(), reports };
-  cache = { key, ts: now, response };
-  return response;
+  const promise = (async (): Promise<ProviderQuotaResponse> => {
+    const previous = cache && cache.key === key ? cache.response.reports : [];
+    const fresh = (await Promise.all(
+      Object.entries(config.providers).map(([name, provider]) => maybeFetchProviderQuota(name, provider, config, forceRefresh)),
+    )).filter((item): item is ProviderQuotaReport => item !== null);
+
+    // Keep bounded last-good rows when a probe fails (e.g. transient upstream flake); never
+    // re-stamp their timestamps, and drop rows older than LAST_GOOD_MAX_AGE_MS.
+    // Note: the cache key encodes the provider set (name/adapter/authMode/disabled/baseUrl),
+    // so previous rows always correspond to currently configured, enabled providers — a
+    // disabled or removed provider changes the key and starts from an empty previous set.
+    const cutoff = Date.now() - LAST_GOOD_MAX_AGE_MS;
+    const byProvider = new Map<string, ProviderQuotaReport>();
+    for (const item of previous) {
+      if (item.updatedAt >= cutoff) byProvider.set(item.provider, item);
+    }
+    for (const item of fresh) byProvider.set(item.provider, item);
+
+    const response = { generatedAt: Date.now(), reports: [...byProvider.values()] };
+    // Commit only when this probe still holds authority (no clear/force superseded it).
+    if (epoch === invalidationEpoch) cache = { key, ts: Date.now(), response };
+    return response;
+  })();
+
+  const entry = { epoch, promise };
+  inflight.set(key, entry);
+  try {
+    return await promise;
+  } finally {
+    if (inflight.get(key) === entry) inflight.delete(key);
+  }
 }

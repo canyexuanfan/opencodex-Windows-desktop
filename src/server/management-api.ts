@@ -1076,6 +1076,9 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
     await removeCredential(provider);
     clearLoginState(provider);
+    // Drop cached/last-good quota rows tied to the removed credential.
+    const { clearProviderQuotaCache } = await import("../providers/quota");
+    clearProviderQuotaCache();
     return jsonResponse({ success: true });
   }
 
