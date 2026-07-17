@@ -1106,6 +1106,25 @@ const lastDropWarnSignature = new Map<string, string>();
 // authenticated live catalogs as canonical. A non-empty live response already hides stale ids;
 // repeating that expected reconciliation on every startup only adds noise.
 const QUIET_AUTHORITATIVE_CATALOG_PROVIDERS = new Set(["kimi", "xai"]);
+// Direct OAuth chat-completions probes on 260718 confirmed these account-scoped ids still work
+// even though the providers omit them from `/models`. Preserve only the proven compatibility
+// ids; unknown configured ids and xAI's chat-incompatible multi-agent model remain hidden.
+const CALLABLE_CONFIGURED_COMPATIBILITY_MODELS: Readonly<Record<string, ReadonlySet<string>>> = {
+  kimi: new Set([
+    "k3[1m]",
+    "kimi-k2.7-code",
+    "kimi-k2.7-code-highspeed",
+    "kimi-k2.6",
+    "kimi-k2.5",
+  ]),
+  xai: new Set([
+    "grok-4.3",
+    "grok-4.20-0309-reasoning",
+    "grok-4.20-0309-non-reasoning",
+    "grok-build-0.1",
+    "grok-composer-2.5-fast",
+  ]),
+};
 function warnDroppedConfiguredIdsOnce(name: string, droppedConfiguredIds: string[]): void {
   const signature = [...droppedConfiguredIds].sort().join(",");
   if (lastDropWarnSignature.get(name) === signature) return;
@@ -1264,6 +1283,7 @@ function shouldExposeProviderModel(providerName: string, modelId: string): boole
 }
 
 function shouldRetainConfiguredProviderModel(providerName: string, modelId: string): boolean {
+  if (CALLABLE_CONFIGURED_COMPATIBILITY_MODELS[providerName]?.has(modelId)) return true;
   if (providerName === "opencode-free") return modelId === "big-pickle" || modelId.endsWith("-free");
   return false;
 }

@@ -645,10 +645,12 @@ describe("Codex catalog routed normalization", () => {
     }
   });
 
-  test("managed Kimi and xAI catalogs silently drop configured ids omitted by a non-empty live catalog", async () => {
+  test("managed Kimi and xAI catalogs preserve callable compatibility ids without omission warnings", async () => {
     const warning = spyOn(console, "warn").mockImplementation(() => {});
-    globalThis.fetch = (async () => new Response(JSON.stringify({
-      data: [{ id: "live-model" }],
+    globalThis.fetch = (async input => new Response(JSON.stringify({
+      data: String(input).includes("kimi.example.test")
+        ? [{ id: "k3" }, { id: "kimi-for-coding" }, { id: "kimi-for-coding-highspeed" }]
+        : [{ id: "grok-4.5" }],
     }), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -656,20 +658,64 @@ describe("Codex catalog routed normalization", () => {
 
     try {
       const models = await gatherRoutedModels({
-        providers: Object.fromEntries(["kimi", "xai"].map(provider => [provider, {
-          adapter: "openai-chat",
-          baseUrl: `https://${provider}.example.test/v1`,
-          authMode: "key",
-          apiKey: "sk-test",
-          liveModels: true,
-          models: ["live-model", "configured-ghost"],
-        }])),
+        providers: {
+          kimi: {
+            adapter: "openai-chat",
+            baseUrl: "https://kimi.example.test/v1",
+            authMode: "key",
+            apiKey: "sk-test",
+            liveModels: true,
+            models: [
+              "k3",
+              "k3[1m]",
+              "kimi-k2.7-code",
+              "kimi-k2.7-code-highspeed",
+              "kimi-k2.6",
+              "kimi-k2.5",
+              "configured-ghost",
+            ],
+            modelSuffixBracketStrip: true,
+            modelContextWindows: { "k3[1m]": 1_048_576 },
+          },
+          xai: {
+            adapter: "openai-chat",
+            baseUrl: "https://xai.example.test/v1",
+            authMode: "key",
+            apiKey: "sk-test",
+            liveModels: true,
+            models: [
+              "grok-4.5",
+              "grok-4.3",
+              "grok-4.20-0309-reasoning",
+              "grok-4.20-0309-non-reasoning",
+              "grok-build-0.1",
+              "grok-composer-2.5-fast",
+              "grok-4.20-multi-agent-0309",
+              "configured-ghost",
+            ],
+          },
+        },
       });
 
       expect(models.map(model => `${model.provider}/${model.id}`)).toEqual([
-        "kimi/live-model",
-        "xai/live-model",
+        "kimi/k3",
+        "kimi/k3[1m]",
+        "kimi/kimi-for-coding",
+        "kimi/kimi-for-coding-highspeed",
+        "kimi/kimi-k2.5",
+        "kimi/kimi-k2.6",
+        "kimi/kimi-k2.7-code",
+        "kimi/kimi-k2.7-code-highspeed",
+        "xai/grok-4.20-0309-non-reasoning",
+        "xai/grok-4.20-0309-reasoning",
+        "xai/grok-4.3",
+        "xai/grok-4.5",
+        "xai/grok-build-0.1",
+        "xai/grok-composer-2.5-fast",
       ]);
+      expect(models.find(model => model.provider === "kimi" && model.id === "k3[1m]")?.contextWindow).toBe(1_048_576);
+      expect(models.some(model => model.id === "grok-4.20-multi-agent-0309")).toBe(false);
+      expect(models.some(model => model.id === "configured-ghost")).toBe(false);
       expect(warning.mock.calls.flat().join(" ")).not.toContain("omitted configured model ids");
     } finally {
       warning.mockRestore();
