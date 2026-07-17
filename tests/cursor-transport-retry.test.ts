@@ -138,3 +138,127 @@ describe("runCursorTurnWithRetry", () => {
     expect(calls).toBe(0);
   });
 });
+
+describe("runCursorTurnWithRetry — transport close ordering (WP180)", () => {
+  function orderedTransport(
+    log: string[],
+    n: number,
+    opts: { fail?: boolean; closeDelayMs?: number; closeError?: unknown; events?: CursorServerMessage[] },
+  ): CursorTransport {
+    return {
+      async *run() {
+        log.push(`run${n}`);
+        for (const event of opts.events ?? []) yield event;
+        if (opts.fail) throw new Error("connect ECONNREFUSED");
+      },
+      writeClient() {},
+      async close() {
+        if (opts.closeDelayMs) await new Promise(resolve => setTimeout(resolve, opts.closeDelayMs));
+        log.push(`close${n}`);
+        if (opts.closeError) throw opts.closeError;
+      },
+      requestCommitted: () => false,
+    };
+  }
+
+  test("a failed attempt closes (even a slow close) before the next transport is constructed", async () => {
+    const log: string[] = [];
+    let calls = 0;
+    await runCursorTurnWithRetry(
+      () => {
+        calls++;
+        log.push(`make${calls}`);
+        if (calls === 1) return orderedTransport(log, 1, { fail: true, closeDelayMs: 30 });
+        return orderedTransport(log, 2, { events: [{ type: "text", text: "ok" }] });
+      },
+      { provider: { adapter: "cursor" } },
+      request,
+      undefined,
+      () => {},
+    );
+    expect(log).toEqual(["make1", "run1", "close1", "make2", "run2", "close2"]);
+  });
+
+  test("a throwing close on the failed attempt neither masks the error nor kills the retry", async () => {
+    const log: string[] = [];
+    let calls = 0;
+    const events: CursorServerMessage[] = [];
+    await runCursorTurnWithRetry(
+      () => {
+        calls++;
+        log.push(`make${calls}`);
+        if (calls === 1) return orderedTransport(log, 1, { fail: true, closeError: new Error("close exploded") });
+        return orderedTransport(log, 2, { events: [{ type: "text", text: "ok" }] });
+      },
+      { provider: { adapter: "cursor" } },
+      request,
+      undefined,
+      message => events.push(message),
+    );
+    // Retry proceeded despite close1 throwing, and the turn succeeded.
+    expect(log).toEqual(["make1", "run1", "close1", "make2", "run2", "close2"]);
+    expect(events).toEqual([{ type: "text", text: "ok" }]);
+  });
+
+  test("a throwing close on the success path never replaces the run outcome", async () => {
+    const log: string[] = [];
+    const events: CursorServerMessage[] = [];
+    await runCursorTurnWithRetry(
+      () => orderedTransport(log, 1, { events: [{ type: "text", text: "done" }], closeError: new Error("cleanup failed") }),
+      { provider: { adapter: "cursor" } },
+      request,
+      undefined,
+      message => events.push(message),
+    );
+    expect(events).toEqual([{ type: "text", text: "done" }]);
+  });
+
+  test("retry exhaustion closes every transport exactly once and propagates the final error", async () => {
+    const log: string[] = [];
+    let calls = 0;
+    await expect(runCursorTurnWithRetry(
+      () => {
+        calls++;
+        log.push(`make${calls}`);
+        return orderedTransport(log, calls, { fail: true });
+      },
+      { provider: { adapter: "cursor" } },
+      request,
+      undefined,
+      () => {},
+    )).rejects.toThrow("ECONNREFUSED");
+
+    const closes = log.filter(entry => entry.startsWith("close"));
+    const makes = log.filter(entry => entry.startsWith("make"));
+    expect(makes.length).toBe(calls);
+    // Every transport closed exactly once — the guard prevents double-close.
+    expect(closes).toEqual(makes.map(m => m.replace("make", "close")));
+    // Ordering held on every round: closeN before makeN+1.
+    for (let n = 1; n < calls; n++) {
+      expect(log.indexOf(`close${n}`)).toBeLessThan(log.indexOf(`make${n + 1}`));
+    }
+  });
+
+  test("abort during the backoff (after the pre-sleep close) propagates without a second close", async () => {
+    const log: string[] = [];
+    const ac = new AbortController();
+    let calls = 0;
+    const pending = runCursorTurnWithRetry(
+      () => {
+        calls++;
+        log.push(`make${calls}`);
+        return orderedTransport(log, calls, { fail: true });
+      },
+      { provider: { adapter: "cursor" } },
+      request,
+      ac.signal,
+      () => {},
+    );
+    // Let attempt 1 fail and enter the backoff, then abort mid-sleep.
+    await new Promise(resolve => setTimeout(resolve, 20));
+    ac.abort("stop");
+    await expect(pending).rejects.toBeDefined();
+    // Attempt 1 closed exactly once; no second transport was ever made.
+    expect(log).toEqual(["make1", "run1", "close1"]);
+  });
+});
