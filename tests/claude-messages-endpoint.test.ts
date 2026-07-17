@@ -599,18 +599,13 @@ test("routed Claude requests give OpenAI sidecars main auth without leaking it t
   const config = {
     port: 0,
     defaultProvider: "routed",
-    openaiProviderTierVersion: 1,
+    openaiProviderTierVersion: 2,
     providers: {
       openai: {
         adapter: "openai-responses",
         authMode: "forward",
         baseUrl: "https://chatgpt.com/backend-api/codex",
-        disabled: true,
-      },
-      "openai-multi": {
-        adapter: "openai-responses",
-        authMode: "forward",
-        baseUrl: "https://chatgpt.com/backend-api/codex",
+        codexAccountMode: "pool",
       },
       routed: {
         adapter: "openai-chat",

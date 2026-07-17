@@ -107,6 +107,38 @@ describe("opencodex config defaults", () => {
     });
   });
 
+  test("accepts OpenAI account mode only on the canonical forward provider", () => {
+    for (const codexAccountMode of ["pool", "direct"] as const) {
+      writeConfig({
+        port: 12345,
+        providers: {
+          openai: {
+            adapter: "openai-responses",
+            baseUrl: "https://chatgpt.com/backend-api/codex",
+            authMode: "forward",
+            codexAccountMode,
+          },
+        },
+        defaultProvider: "openai",
+        openaiProviderTierVersion: 2,
+      });
+      expect(readConfigDiagnostics().config.providers.openai.codexAccountMode).toBe(codexAccountMode);
+      expect(readConfigDiagnostics().error).toBeNull();
+    }
+  });
+
+  test("rejects invalid or noncanonical codexAccountMode placements", () => {
+    for (const [name, provider] of [
+      ["custom", { adapter: "openai-chat", baseUrl: "https://example.test/v1", codexAccountMode: "pool" }],
+      ["openai", { adapter: "openai-chat", baseUrl: "https://example.test/v1", codexAccountMode: "direct" }],
+      ["openai", { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward", codexAccountMode: "random" }],
+    ] as const) {
+      writeConfig({ port: 12345, providers: { [name]: provider }, defaultProvider: name });
+      expect(readConfigDiagnostics().source).toBe("fallback");
+      expect(readConfigDiagnostics().error).toContain("codexAccountMode");
+    }
+  });
+
   test("reads valid config diagnostics without mutation", () => {
     writeConfig({
       port: 12345,

@@ -349,8 +349,8 @@ export interface OcxConfig {
   port: number;
   providers: Record<string, OcxProviderConfig>;
   defaultProvider: string;
-  /** One-time migration marker for the canonical Direct/Multi/API OpenAI tier split. */
-  openaiProviderTierVersion?: 1;
+  /** OpenAI provider-contract migration marker (v2 = single `openai` provider with account mode). */
+  openaiProviderTierVersion?: 1 | 2;
   /** Claude Code inbound + launcher settings. */
   claudeCode?: OcxClaudeCodeConfig;
   /**
@@ -568,6 +568,12 @@ export interface OcxProviderConfig {
   allowPrivateNetwork?: boolean;
   /** Keep provider settings on disk but exclude it from routing and model/catalog listings. */
   disabled?: boolean;
+  /**
+   * Codex account-selection mode. Valid ONLY on the canonical built-in `openai` forward provider.
+   * "pool" (default) rotates main + added Codex accounts through the affinity/quota/cooldown/
+   * failover engine; "direct" pins the caller's main Codex login and never touches pool state.
+   */
+  codexAccountMode?: CodexAccountMode;
   apiKey?: string;
   /**
    * Multi-key pool (API-key twin of OAuth multiauth). `apiKey` always mirrors the ACTIVE
@@ -726,7 +732,7 @@ export interface OcxProviderConfig {
 /** Trusted runtime ownership for Codex-account credentials. Never persisted per provider. */
 export type CodexAccountMode = "direct" | "pool";
 
-export const OPENAI_PROVIDER_TIER_VERSION = 1 as const;
+export const OPENAI_PROVIDER_TIER_VERSION = 2 as const;
 
 export interface CodexAccount {
   id: string;

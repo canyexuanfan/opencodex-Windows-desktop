@@ -88,9 +88,14 @@ function forwardConfig(_baseUrl = ""): OcxConfig {
   return {
     port: 0,
     defaultProvider: "openai",
-    openaiProviderTierVersion: 1,
+    openaiProviderTierVersion: 2,
     providers: {
-      openai: { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" },
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authMode: "forward",
+        codexAccountMode: "direct",
+      },
     },
   } as OcxConfig;
 }
@@ -106,6 +111,7 @@ const canonicalOpenAiProvider = {
   adapter: "openai-responses",
   baseUrl: "https://chatgpt.com/backend-api/codex",
   authMode: "forward",
+  codexAccountMode: "direct",
 } as const;
 
 function keyedProvider(_baseUrl = "") {
@@ -173,10 +179,9 @@ test("a routed pool account's token overrides the caller bearer on the forward r
   const upstream = fakeImagesUpstream(captured);
   saveConfig({
     ...forwardConfig(upstream.url.toString().replace(/\/$/, "")),
-    defaultProvider: "openai-multi",
+    defaultProvider: "openai",
     providers: {
-      openai: { ...canonicalOpenAiProvider, disabled: true },
-      "openai-multi": canonicalOpenAiProvider,
+      openai: { ...canonicalOpenAiProvider, codexAccountMode: "pool" },
     },
     codexAccounts: [
       { id: "main", email: "main@example.test", isMain: true },
@@ -242,7 +247,7 @@ test("falls back to a keyed openai-responses provider when no forward provider e
   saveConfig({
     port: 0,
     defaultProvider: "openai-apikey",
-    openaiProviderTierVersion: 1,
+    openaiProviderTierVersion: 2,
     providers: {
       openai: disabledOpenAiProvider,
       "openai-apikey": keyedProvider(upstream.url.toString().replace(/\/$/, "")),
@@ -277,7 +282,7 @@ test("keyed baseUrl with a /v1 suffix is normalized (no double /v1)", async () =
   saveConfig({
     port: 0,
     defaultProvider: "openai-apikey",
-    openaiProviderTierVersion: 1,
+    openaiProviderTierVersion: 2,
     providers: {
       openai: disabledOpenAiProvider,
       "openai-apikey": keyedProvider(`${upstream.url.toString().replace(/\/$/, "")}/v1`),
@@ -306,7 +311,7 @@ test("an unauthenticated request skips the forward provider when a keyed provide
   saveConfig({
     port: 0,
     defaultProvider: "openai",
-    openaiProviderTierVersion: 1,
+    openaiProviderTierVersion: 2,
     providers: {
       // ENABLED forward provider: an accidental forward relay would fail loudly (port 1).
       openai: canonicalOpenAiProvider,
@@ -334,7 +339,7 @@ test("an unauthenticated request gets 401 when only the forward provider exists"
   saveConfig({
     port: 0,
     defaultProvider: "openai",
-    openaiProviderTierVersion: 1,
+    openaiProviderTierVersion: 2,
     providers: { openai: canonicalOpenAiProvider },
   } as OcxConfig);
 
@@ -353,16 +358,15 @@ test("an unauthenticated request gets 401 when only the forward provider exists"
   }
 });
 
-test("Multi auth failure is not hidden by the keyed API provider", async () => {
+test("pool auth failure is not hidden by the keyed API provider", async () => {
   const captured: CapturedRequest[] = [];
   const upstream = fakeImagesUpstream(captured);
   saveConfig({
     port: 0,
-    defaultProvider: "openai-multi",
-    openaiProviderTierVersion: 1,
+    defaultProvider: "openai",
+    openaiProviderTierVersion: 2,
     providers: {
-      openai: { ...canonicalOpenAiProvider, disabled: true },
-      "openai-multi": canonicalOpenAiProvider,
+      openai: { ...canonicalOpenAiProvider, codexAccountMode: "pool" },
       "openai-apikey": keyedProvider(upstream.url.toString().replace(/\/$/, "")),
     },
     codexAccounts: [
@@ -393,11 +397,10 @@ test("Multi auth failure is not hidden by the keyed API provider", async () => {
 test("forward-auth failure surfaces its own error when no keyed provider exists", async () => {
   saveConfig({
     port: 0,
-    defaultProvider: "openai-multi",
-    openaiProviderTierVersion: 1,
+    defaultProvider: "openai",
+    openaiProviderTierVersion: 2,
     providers: {
-      openai: { ...canonicalOpenAiProvider, disabled: true },
-      "openai-multi": canonicalOpenAiProvider,
+      openai: { ...canonicalOpenAiProvider, codexAccountMode: "pool" },
     },
     codexAccounts: [
       { id: "main", email: "main@example.test", isMain: true },
@@ -425,7 +428,7 @@ test("returns an honest 400 when no OpenAI-family upstream is configured", async
   saveConfig({
     port: 0,
     defaultProvider: "groq",
-    openaiProviderTierVersion: 1,
+    openaiProviderTierVersion: 2,
     providers: {
       openai: disabledOpenAiProvider,
       groq: { adapter: "openai-chat", baseUrl: "https://api.groq.example/v1", apiKey: "gsk-x" },
@@ -565,7 +568,7 @@ test("the proxy admission secret is never relayed to the forward upstream", asyn
     port: 0,
     hostname: "0.0.0.0",
     defaultProvider: "openai",
-    openaiProviderTierVersion: 1,
+    openaiProviderTierVersion: 2,
     providers: {
       openai: canonicalOpenAiProvider,
       "openai-apikey": keyedProvider(upstream.url.toString().replace(/\/$/, "")),

@@ -57,7 +57,7 @@ export interface DerivedProviderPreset {
   keyOptional?: boolean;
   /** Free pricing (may still require a key). */
   freeTier?: boolean;
-  /** Immutable canonical provider config seed for reserved forward presets (openai, openai-multi). */
+  /** Immutable canonical provider config seed for the reserved canonical `openai` forward preset. */
   provider?: OcxProviderConfig;
 }
 
@@ -78,6 +78,7 @@ export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderCon
     adapter: entry.adapter,
     baseUrl: entry.baseUrl,
     authMode: entry.authKind === "local" ? undefined : entry.authKind,
+    ...(entry.codexAccountMode ? { codexAccountMode: entry.codexAccountMode } : {}),
     ...(entry.keyOptional !== undefined ? { keyOptional: entry.keyOptional } : {}),
     ...(entry.freeTier !== undefined ? { freeTier: entry.freeTier } : {}),
     ...(entry.modelSuffixBracketStrip !== undefined ? { modelSuffixBracketStrip: entry.modelSuffixBracketStrip } : {}),
@@ -187,6 +188,8 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   if (!entry) return;
   const seed = providerConfigSeed(entry);
   if (!prov.defaultModel && seed.defaultModel) prov.defaultModel = seed.defaultModel;
+  // Fill mode only when absent: an explicit persisted `direct` must never be overwritten.
+  if (prov.codexAccountMode === undefined && seed.codexAccountMode !== undefined) prov.codexAccountMode = seed.codexAccountMode;
   if (!prov.models && seed.models) prov.models = [...seed.models];
   if (prov.liveModels === undefined && seed.liveModels !== undefined) prov.liveModels = seed.liveModels;
   if (prov.contextWindow === undefined && seed.contextWindow !== undefined) prov.contextWindow = seed.contextWindow;
@@ -268,7 +271,7 @@ function customPreset(): DerivedProviderPreset {
 }
 
 function formatInitLabel(entry: ProviderRegistryEntry): string {
-  if (entry.authKind === "forward") return "OpenAI — ChatGPT login (no key)";
+  if (entry.authKind === "forward") return "OpenAI — ChatGPT login (no key; account pool default, Direct selectable)";
   if (entry.authKind === "oauth") {
     if (entry.id === "xai") return "xAI (Grok) — account login";
     if (entry.id === "anthropic") return "Anthropic (Claude) — account login";

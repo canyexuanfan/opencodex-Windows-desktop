@@ -19,6 +19,8 @@ import {
 import { reconcileOAuthProviders } from "../oauth";
 import { invalidateCodexModelsCache } from "../codex/catalog";
 import { runOpenAiTierStartupMigration } from "../providers/openai-tier-startup";
+import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
+import { providerCodexAccountMode } from "../providers/registry";
 import {
   CodexAccountCooldownError,
 } from "../codex/auth-context";
@@ -615,7 +617,13 @@ export function startServer(port?: number) {
   // usage scores from the first routing decision, even when the dashboard is
   // never opened (the common CLI/WSL case). Fire-and-forget: never blocks the
   // listener, and a blocked network silently no-ops (see Phase 30 diagnostics).
-  if (config.providers["openai-multi"]?.disabled !== true && config.providers["openai-multi"]) {
+  const openAiProvider = config.providers.openai;
+  if (
+    openAiProvider
+    && openAiProvider.disabled !== true
+    && isCanonicalOpenAiForwardProvider(openAiProvider)
+    && providerCodexAccountMode("openai", openAiProvider) === "pool"
+  ) {
     import("../codex/auth-api")
       .then(({ primeCodexPoolQuotas }) => primeCodexPoolQuotas(config, "startup"))
       .catch(() => {});

@@ -182,7 +182,7 @@ export function requireResponsesApiAuth(req: Request, config: OcxConfig): Respon
 }
 
 const FORBIDDEN_PROVIDER_RUNTIME_FIELDS = [
-  "codexAccountMode", "virtualModels", "codexAuthContext", "selectedForwardHeaders",
+  "virtualModels", "codexAuthContext", "selectedForwardHeaders",
   "sidecarOutcomeRecorder", "_codexAccountOverride", "_codexAccountRequired",
 ] as const;
 
@@ -202,9 +202,16 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
     if (Object.hasOwn(raw, field)) return `provider ${name} must not include runtime field "${field}"`;
   }
   if (name === "chatgpt") return "provider chatgpt is reserved for internal credential compatibility";
-  if (name === "openai" || name === "openai-multi") {
+  if (name === "openai") {
     const entry = getProviderRegistryEntry(name);
     const seed = entry ? providerConfigSeed(entry) : undefined;
+    if (raw.codexAccountMode !== undefined && raw.codexAccountMode !== "pool" && raw.codexAccountMode !== "direct") {
+      return "provider openai codexAccountMode must be pool or direct";
+    }
+    if (seed && !Object.hasOwn(raw, "codexAccountMode")) delete seed.codexAccountMode;
+    if (seed && (raw.codexAccountMode === "pool" || raw.codexAccountMode === "direct")) {
+      seed.codexAccountMode = raw.codexAccountMode;
+    }
     const canonical = seed && sameCanonicalProviderSeed(raw, seed);
     if (!canonical) {
       return `provider ${name} must equal the canonical built-in provider seed`;
@@ -222,7 +229,7 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
   if (typed.authMode === "forward") {
     const normalizedName = name.trim().toLowerCase();
     const base = typed.baseUrl.replace(/\/+$/, "");
-    const isBuiltInChatGptForward = (normalizedName === "openai" || normalizedName === "openai-multi")
+    const isBuiltInChatGptForward = normalizedName === "openai"
       && typed.adapter === "openai-responses"
       && base === "https://chatgpt.com/backend-api/codex";
     if (isBuiltInChatGptForward) return null;
@@ -288,7 +295,7 @@ export function safeConfigDTO(config: OcxConfig): unknown {
     }
     const registryNote = getProviderRegistryEntry(name)?.note;
     if (typeof registryNote === "string" && registryNote.trim()) dto.note = registryNote;
-    const codexAccountMode = providerCodexAccountMode(name);
+    const codexAccountMode = providerCodexAccountMode(name, provider);
     if (codexAccountMode) dto.codexAccountMode = codexAccountMode;
     providers[name] = dto;
   }

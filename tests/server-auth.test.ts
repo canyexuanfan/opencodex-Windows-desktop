@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { saveCodexAccountCredential } from "../src/codex/account-store";
 import { getTrackedCodexWebSocketCountForAccount } from "../src/codex/websocket-registry";
-import { clearAccountNeedsReauth, clearAccountQuota, markAccountNeedsReauth, updateAccountQuota } from "../src/codex/auth-api";
+import { clearAccountNeedsReauth, clearAccountQuota, getAccountQuota, isAccountNeedsReauth, markAccountNeedsReauth, updateAccountQuota } from "../src/codex/auth-api";
 import {
   CODEX_THREAD_AFFINITY_IDLE_TTL_MS,
   clearCodexUpstreamHealth,
@@ -56,12 +56,12 @@ const canonicalDirect = {
   adapter: "openai-responses",
   baseUrl: "https://chatgpt.com/backend-api/codex",
   authMode: "forward",
+  codexAccountMode: "direct",
 } as const;
 
 function poolProviders(): OcxConfig["providers"] {
   return {
-    openai: { ...canonicalDirect, disabled: true },
-    "openai-multi": canonicalDirect,
+    openai: { ...canonicalDirect, codexAccountMode: "pool" },
   };
 }
 
@@ -193,7 +193,7 @@ describe("server local API auth", () => {
       defaultModel: "gpt-test",
       hasApiKey: true,
       hasHeaders: true,
-      codexAccountMode: "direct",
+      codexAccountMode: "pool",
     });
     expect(dto.providers.openai).not.toHaveProperty("apiKey");
     expect(dto.providers.openai).not.toHaveProperty("headers");
@@ -372,21 +372,20 @@ describe("server local API auth", () => {
     }
   });
 
-  test("provider management rejects runtime metadata before stripping and accepts only canonical tier seeds", async () => {
+  test("provider management rejects runtime metadata and accepts only canonical OpenAI option seeds", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
     process.env.OPENCODEX_HOME = TEST_DIR;
     saveConfig({
       port: 0,
       defaultProvider: "openai",
-      openaiProviderTierVersion: 1,
+      openaiProviderTierVersion: 2,
       providers: { openai: canonicalDirect },
     });
 
     const server = startServer(0);
     try {
       for (const field of [
-        "codexAccountMode",
         "virtualModels",
         "codexAuthContext",
         "selectedForwardHeaders",
@@ -406,21 +405,21 @@ describe("server local API auth", () => {
         expect(await response.json()).toMatchObject({ error: expect.stringContaining("runtime field") });
       }
 
-      for (const name of ["openai", "openai-multi"]) {
+      for (const mode of ["pool", "direct"] as const) {
         const accepted = await fetch(new URL("/api/providers", server.url), {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ name, provider: canonicalDirect }),
+          body: JSON.stringify({ name: "openai", provider: { ...canonicalDirect, codexAccountMode: mode } }),
         });
         expect(accepted.status).toBe(200);
-
-        const rejected = await fetch(new URL("/api/providers", server.url), {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ name, provider: { ...canonicalDirect, codexAccountMode: name === "openai" ? "direct" : "pool" } }),
-        });
-        expect(rejected.status).toBe(400);
       }
+
+      const legacyMulti = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "openai-multi", provider: canonicalDirect }),
+      });
+      expect(legacyMulti.status).toBe(400);
 
       for (const [, provider] of [
         ["base", { ...canonicalDirect, baseUrl: "https://attacker.example/backend-api/codex" }],
@@ -432,7 +431,7 @@ describe("server local API auth", () => {
         const response = await fetch(new URL("/api/providers", server.url), {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ name: "openai-multi", provider }),
+          body: JSON.stringify({ name: "openai", provider }),
         });
         expect(response.status).toBe(400);
       }
@@ -469,7 +468,7 @@ describe("server local API auth", () => {
         providers: Record<string, { codexAccountMode?: string }>;
       };
       expect(dto.providers.openai.codexAccountMode).toBe("direct");
-      expect(dto.providers["openai-multi"].codexAccountMode).toBe("pool");
+      expect(dto.providers["openai-multi"]).toBeUndefined();
       expect(dto.providers["custom-max-input"]).not.toHaveProperty("modelMaxInputTokens");
 
       const presetResponse = await fetch(new URL("/api/provider-presets", server.url)).then(response => response.json()) as {
@@ -478,9 +477,9 @@ describe("server local API auth", () => {
       const openAiIds = presetResponse.providers
         .map(preset => preset.id)
         .filter(id => id === "chatgpt" || id === "openai" || id.startsWith("openai-"));
-      expect(openAiIds).toEqual(["openai", "openai-multi", "openai-apikey"]);
+      expect(openAiIds).toEqual(["openai", "openai-apikey"]);
       expect(presetResponse.providers.filter(row => !openAiIds.includes(row.id))).toEqual(
-        deriveProviderPresets().filter(row => !["openai", "openai-multi", "openai-apikey"].includes(row.id)),
+        deriveProviderPresets().filter(row => !["openai", "openai-apikey"].includes(row.id)),
       );
     } finally {
       await server.stop(true);
@@ -526,7 +525,7 @@ describe("server local API auth", () => {
     saveConfig({
       port: 0,
       defaultProvider: "openai-apikey",
-      openaiProviderTierVersion: 1,
+      openaiProviderTierVersion: 2,
       providers: {
         "openai-apikey": {
           adapter: "openai-responses",
@@ -916,7 +915,7 @@ describe("server local API auth", () => {
     }
   });
 
-  test("provider management accepts immutable Direct/Multi seeds and rejects Multi overlays", async () => {
+  test("provider management accepts canonical OpenAI modes and rejects legacy Multi", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
     process.env.OPENCODEX_HOME = TEST_DIR;
@@ -949,23 +948,25 @@ describe("server local API auth", () => {
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({ success: true, name: "openai" });
 
-      const canonicalMulti = {
-        adapter: "openai-responses",
-        baseUrl: "https://chatgpt.com/backend-api/codex",
-        authMode: "forward",
-      };
-      const multi = await fetch(new URL("/api/providers", server.url), {
+      const direct = await fetch(new URL("/api/providers", server.url), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: "openai-multi", provider: canonicalMulti }),
+        body: JSON.stringify({ name: "openai", provider: canonicalDirect }),
       });
-      expect(multi.status).toBe(200);
+      expect(direct.status).toBe(200);
+
+      const legacyMulti = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "openai-multi", provider: canonicalDirect }),
+      });
+      expect(legacyMulti.status).toBe(400);
 
       for (const overlay of [{ disabled: true }, { selectedModels: ["gpt-5.6-sol"] }]) {
         const forged = await fetch(new URL("/api/providers", server.url), {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ name: "openai-multi", provider: { ...canonicalMulti, ...overlay } }),
+          body: JSON.stringify({ name: "openai", provider: { ...canonicalDirect, ...overlay } }),
         });
         expect(forged.status).toBe(400);
         expect(await forged.json()).toMatchObject({ error: expect.stringContaining("canonical") });
@@ -1500,7 +1501,7 @@ describe("server local API auth", () => {
     }
   });
 
-  test("OpenAI tier auth matrix keeps Direct, Multi, and API credentials independent", async () => {
+  test("OpenAI option auth matrix keeps direct, pool, and API credentials independent", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
     process.env.OPENCODEX_HOME = TEST_DIR;
@@ -1508,18 +1509,24 @@ describe("server local API auth", () => {
     clearCodexUpstreamHealth();
     process.env.OPENCODEX_API_AUTH_TOKEN = "local-secret";
 
-    const seen: Array<{ host: string; authorization: string | null }> = [];
+    const seen: Array<{ host: string; authorization: string | null; chatgptAccountId: string | null }> = [];
     const upstream = Bun.serve({
       port: 0,
       fetch(req) {
-        seen.push({ host: req.headers.get("x-test-original-host") ?? "", authorization: req.headers.get("authorization") });
+        seen.push({
+          host: req.headers.get("x-test-original-host") ?? "",
+          authorization: req.headers.get("authorization"),
+          chatgptAccountId: req.headers.get("chatgpt-account-id"),
+        });
         return Response.json({ id: "resp_tier", object: "response", status: "completed", output: [] });
       },
     });
+    let whamRequests = 0;
     globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       const url = new URL(requestUrl);
       if (url.hostname === "chatgpt.com" && url.pathname.startsWith("/backend-api/wham/")) {
+        whamRequests += 1;
         return Promise.resolve(Response.json({ rate_limit: { primary_window: { used_percent: 10 } } }));
       }
       if (url.hostname === "chatgpt.com" || url.hostname === "api.openai.com") {
@@ -1531,34 +1538,34 @@ describe("server local API auth", () => {
       return originalGlobalFetch(input, init);
     }) as typeof fetch;
 
-    const request = (server: ReturnType<typeof startServer>, headers?: HeadersInit) => {
+    const request = (server: ReturnType<typeof startServer>, headers?: HeadersInit, model = "gpt-test") => {
       const requestHeaders = new Headers(headers);
       requestHeaders.set("content-type", "application/json");
       requestHeaders.set("x-opencodex-api-key", "local-secret");
       return fetch(new URL("/v1/responses", server.url), {
         method: "POST",
         headers: requestHeaders,
-        body: JSON.stringify({ model: "gpt-test", input: "hello", stream: false }),
+        body: JSON.stringify({ model, input: "hello", stream: false }),
       });
     };
-    const compact = (server: ReturnType<typeof startServer>, headers?: HeadersInit) => {
+    const compact = (server: ReturnType<typeof startServer>, headers?: HeadersInit, model = "gpt-test") => {
       const requestHeaders = new Headers(headers);
       requestHeaders.set("content-type", "application/json");
       requestHeaders.set("x-opencodex-api-key", "local-secret");
       return fetch(new URL("/v1/responses/compact", server.url), {
         method: "POST",
         headers: requestHeaders,
-        body: JSON.stringify({ model: "gpt-test", input: [] }),
+        body: JSON.stringify({ model, input: [] }),
       });
     };
-    const wsTurn = (server: ReturnType<typeof startServer>, headers?: Record<string, string>) => {
+    const wsTurn = (server: ReturnType<typeof startServer>, headers?: Record<string, string>, model = "gpt-test") => {
       const url = new URL("/v1/responses", server.url);
       url.protocol = "ws:";
       const ws = new WebSocket(url, { headers: { "x-opencodex-api-key": "local-secret", ...(headers ?? {}) } } as unknown as string[]);
       return new Promise<string>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error("tier websocket timeout")), 1000);
         ws.addEventListener("open", () => {
-          ws.send(JSON.stringify({ type: "response.create", model: "gpt-test", input: "hello" }));
+          ws.send(JSON.stringify({ type: "response.create", model, input: "hello" }));
         }, { once: true });
         ws.addEventListener("message", event => {
           clearTimeout(timer);
@@ -1571,24 +1578,57 @@ describe("server local API auth", () => {
     };
 
     try {
-      saveConfig({
+      const directConfig = {
         port: 0,
         hostname: "0.0.0.0",
         websockets: true,
         defaultProvider: "openai",
-        openaiProviderTierVersion: 1,
+        openaiProviderTierVersion: 2,
         providers: { openai: canonicalDirect },
-      } as OcxConfig);
+        codexAccounts: [{ id: "direct-unusable", email: "pool@example.test", isMain: false }],
+        activeCodexAccountId: "direct-unusable",
+      } as OcxConfig;
+      saveCodexAccountCredential("direct-unusable", {
+        accessToken: "unusable-pool-token",
+        refreshToken: "unusable-pool-refresh",
+        expiresAt: Date.now() + 300_000,
+        chatgptAccountId: "unusable-pool-account",
+      });
+      updateAccountQuota("direct-unusable", 99);
+      markAccountNeedsReauth("direct-unusable");
+      recordCodexUpstreamOutcome(directConfig, "direct-unusable", 429, { retryAfter: "60" });
+      saveConfig(directConfig);
       const direct = startServer(0);
+      const directBaseline = {
+        config: readFileSync(join(TEST_DIR, "config.json"), "utf8"),
+        accounts: readFileSync(join(TEST_DIR, "codex-accounts.json"), "utf8"),
+        quota: structuredClone(getAccountQuota("direct-unusable")),
+        health: structuredClone(getCodexUpstreamHealth("direct-unusable")),
+        reauth: isAccountNeedsReauth("direct-unusable"),
+        active: loadConfig().activeCodexAccountId,
+        whamRequests,
+      };
       try {
         expect((await request(direct)).status).toBe(401);
         expect((await compact(direct)).status).toBe(401);
         expect(await wsTurn(direct)).toContain("401");
         expect(seen).toHaveLength(0);
+        const directSeenStart = seen.length;
         expect((await request(direct, { authorization: "Bearer caller-codex" })).status).toBe(200);
         expect((await compact(direct, { authorization: "Bearer caller-codex" })).status).toBe(200);
         expect(await wsTurn(direct, { authorization: "Bearer caller-codex" })).toContain("resp_tier");
-        expect(seen.at(-1)).toEqual({ host: "chatgpt.com", authorization: "Bearer caller-codex" });
+        expect(seen.slice(directSeenStart)).toEqual(Array.from({ length: 3 }, () => ({
+          host: "chatgpt.com",
+          authorization: "Bearer caller-codex",
+          chatgptAccountId: null,
+        })));
+        expect(readFileSync(join(TEST_DIR, "config.json"), "utf8")).toBe(directBaseline.config);
+        expect(readFileSync(join(TEST_DIR, "codex-accounts.json"), "utf8")).toBe(directBaseline.accounts);
+        expect(getAccountQuota("direct-unusable")).toEqual(directBaseline.quota);
+        expect(getCodexUpstreamHealth("direct-unusable")).toEqual(directBaseline.health);
+        expect(isAccountNeedsReauth("direct-unusable")).toBe(directBaseline.reauth);
+        expect(loadConfig().activeCodexAccountId).toBe(directBaseline.active);
+        expect(whamRequests).toBe(directBaseline.whamRequests);
       } finally {
         await direct.stop(true);
       }
@@ -1596,8 +1636,8 @@ describe("server local API auth", () => {
       const mainOnlyConfig = (): OcxConfig => ({
         port: 0,
         websockets: true,
-        defaultProvider: "openai-multi",
-        openaiProviderTierVersion: 1,
+        defaultProvider: "openai",
+        openaiProviderTierVersion: 2,
         providers: poolProviders(),
         codexAccounts: [],
         autoSwitchThreshold: 0,
@@ -1634,8 +1674,8 @@ describe("server local API auth", () => {
         port: 0,
         hostname: "0.0.0.0",
         websockets: true,
-        defaultProvider: "openai-multi",
-        openaiProviderTierVersion: 1,
+        defaultProvider: "openai",
+        openaiProviderTierVersion: 2,
         providers: poolProviders(),
         codexAccounts: [{ id: "pool-a", email: "pool@example.test", isMain: false, chatgptAccountId: "acct-pool-a" }],
         activeCodexAccountId: "pool-a",
@@ -1663,7 +1703,7 @@ describe("server local API auth", () => {
       };
       recordCodexUpstreamOutcome({
         port: 0,
-        defaultProvider: "openai-multi",
+        defaultProvider: "openai",
         providers: cooldownCfg,
       } as OcxConfig, "pool-a", 429, { retryAfter: "60" });
       const beforeCooldown = seen.length;
@@ -1680,7 +1720,11 @@ describe("server local API auth", () => {
         expect((await request(multi, { authorization: "Bearer local-secret" })).status).toBe(200);
         expect((await compact(multi, { authorization: "Bearer local-secret" })).status).toBe(200);
         expect(await wsTurn(multi, { authorization: "Bearer local-secret" })).toContain("resp_tier");
-        expect(seen.at(-1)).toEqual({ host: "chatgpt.com", authorization: "Bearer pool-access-token" });
+        expect(seen.at(-1)).toEqual({
+          host: "chatgpt.com",
+          authorization: "Bearer pool-access-token",
+          chatgptAccountId: "acct-pool-a",
+        });
       } finally {
         await multi.stop(true);
       }
@@ -1690,7 +1734,7 @@ describe("server local API auth", () => {
         hostname: "0.0.0.0",
         websockets: true,
         defaultProvider: "openai-apikey",
-        openaiProviderTierVersion: 1,
+        openaiProviderTierVersion: 2,
         providers: {
           openai: { ...canonicalDirect, disabled: true },
           "openai-apikey": { adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", apiKey: "sk-platform" },
@@ -1698,10 +1742,14 @@ describe("server local API auth", () => {
       } as OcxConfig);
       const api = startServer(0);
       try {
-        expect((await request(api, { authorization: "Bearer local-secret" })).status).toBe(200);
-        expect((await compact(api, { authorization: "Bearer local-secret" })).status).toBe(200);
-        expect(await wsTurn(api, { authorization: "Bearer local-secret" })).toContain("resp_tier");
-        expect(seen.at(-1)).toEqual({ host: "api.openai.com", authorization: "Bearer sk-platform" });
+        expect((await request(api, { authorization: "Bearer local-secret" }, "openai-apikey/gpt-test")).status).toBe(200);
+        expect((await compact(api, { authorization: "Bearer local-secret" }, "openai-apikey/gpt-test")).status).toBe(200);
+        expect(await wsTurn(api, { authorization: "Bearer local-secret" }, "openai-apikey/gpt-test")).toContain("resp_tier");
+        expect(seen.at(-1)).toEqual({
+          host: "api.openai.com",
+          authorization: "Bearer sk-platform",
+          chatgptAccountId: null,
+        });
       } finally {
         await api.stop(true);
       }
@@ -1717,10 +1765,9 @@ describe("server local API auth", () => {
         hostname: "0.0.0.0",
         websockets: true,
         defaultProvider: "openai",
-        openaiProviderTierVersion: 1,
+        openaiProviderTierVersion: 2,
         providers: {
-          openai: canonicalDirect,
-          "openai-multi": canonicalDirect,
+          openai: { ...canonicalDirect, codexAccountMode: "pool" },
           "openai-apikey": { adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", apiKey: "sk-platform" },
         },
         codexAccounts: [
@@ -1768,15 +1815,13 @@ describe("server local API auth", () => {
         expect(seen).toHaveLength(beforeHandshake); // handshake performs no upstream request
 
         await sendFrame("openai/gpt-test");
-        expect(seen.at(-1)?.authorization).toBe("Bearer caller-codex");
-        await sendFrame("openai-multi/gpt-test");
         expect(seen.at(-1)?.authorization).toBe("Bearer pool-access-token");
         expect(getTrackedCodexWebSocketCountForAccount("pool-a")).toBe(1);
         await sendFrame("openai-apikey/gpt-test");
         expect(seen.at(-1)?.authorization).toBe("Bearer sk-platform");
         expect(getTrackedCodexWebSocketCountForAccount("pool-a")).toBe(0);
         await sendFrame("openai/gpt-test");
-        expect(seen.at(-1)?.authorization).toBe("Bearer caller-codex");
+        expect(seen.at(-1)?.authorization).toBe("Bearer pool-access-token");
 
         const switched = await fetch(new URL("/api/codex-auth/active", sequential.url), {
           method: "PUT",
@@ -1784,7 +1829,7 @@ describe("server local API auth", () => {
           body: JSON.stringify({ accountId: "pool-b" }),
         });
         expect(switched.status).toBe(200);
-        await sendFrame("openai-multi/gpt-test");
+        await sendFrame("openai/gpt-test");
         expect(seen.at(-1)?.authorization).toBe("Bearer pool-b-access-token");
         expect(getTrackedCodexWebSocketCountForAccount("pool-b")).toBe(1);
       } finally {
@@ -1812,7 +1857,7 @@ describe("server local API auth", () => {
       port: 0,
       hostname: "0.0.0.0",
       defaultProvider: "routed",
-      openaiProviderTierVersion: 1,
+      openaiProviderTierVersion: 2,
       apiKeys: [{ id: "bearer", name: "Bearer admission", key: "bearer-admission-secret", createdAt: "2026-07-17" }],
       providers: {
         routed: {
@@ -1874,8 +1919,8 @@ describe("server local API auth", () => {
     const now = 1_800_000_000_000;
     saveConfig({
       port: 0,
-      defaultProvider: "openai-multi",
-      openaiProviderTierVersion: 1,
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
       websockets: true,
       providers: poolProviders(),
       codexAccounts: [
@@ -1987,8 +2032,8 @@ describe("server local API auth", () => {
     const now = 1_800_000_000_000;
     saveConfig({
       port: 0,
-      defaultProvider: "openai-multi",
-      openaiProviderTierVersion: 1,
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
       websockets: true,
       providers: poolProviders(),
       codexAccounts: [
@@ -2162,8 +2207,8 @@ describe("server local API auth", () => {
     redirectCanonicalCodexTo("http://127.0.0.1:9/");
     saveConfig({
       port: 0,
-      defaultProvider: "openai-multi",
-      openaiProviderTierVersion: 1,
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
       providers: poolProviders(),
       codexAccounts: [
         { id: "main", email: "main@example.test", isMain: true },
@@ -2224,8 +2269,8 @@ describe("server local API auth", () => {
     redirectCanonicalCodexTo(upstream.url.toString());
     const cfg = {
       port: 0,
-      defaultProvider: "openai-multi",
-      openaiProviderTierVersion: 1,
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
       providers: poolProviders(),
       codexAccounts: [
         { id: "main", email: "main@example.test", isMain: true },

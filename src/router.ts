@@ -2,7 +2,7 @@ import type { CodexAccountMode, OcxConfig, OcxProviderConfig } from "./types";
 import { hasOwnProvider, resolveEnvValue } from "./config";
 import { assertProviderDestinationAllowed } from "./lib/destination-policy";
 import { PROVIDER_REGISTRY, providerCodexAccountMode } from "./providers/registry";
-import { LEGACY_CHATGPT_PROVIDER_ID, OPENAI_API_PROVIDER_ID, OPENAI_DIRECT_PROVIDER_ID, OPENAI_MULTI_PROVIDER_ID } from "./providers/openai-tiers";
+import { LEGACY_CHATGPT_PROVIDER_ID, LEGACY_OPENAI_MULTI_PROVIDER_ID, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID } from "./providers/openai-tiers";
 
 export interface RouteResult {
   providerName: string;
@@ -174,12 +174,10 @@ function activeProviderEntries(config: OcxConfig): [string, OcxProviderConfig][]
     .filter(([name, provider]) => name !== LEGACY_CHATGPT_PROVIDER_ID && provider.disabled !== true);
 }
 
-const OPENAI_TIER_ORDER = [OPENAI_DIRECT_PROVIDER_ID, OPENAI_MULTI_PROVIDER_ID, OPENAI_API_PROVIDER_ID] as const;
-
-export class NoEnabledOpenAiTierError extends Error {
+export class NoEnabledOpenAiProviderError extends Error {
   constructor(modelId: string) {
-    super(`No enabled OpenAI provider tier for model: ${modelId}`);
-    this.name = "NoEnabledOpenAiTierError";
+    super(`No enabled canonical OpenAI provider for model: ${modelId}`);
+    this.name = "NoEnabledOpenAiProviderError";
   }
 }
 
@@ -188,7 +186,7 @@ function isBareOpenAiFamilyModel(modelId: string): boolean {
 }
 
 function routeResult(providerName: string, provider: OcxProviderConfig, modelId: string): RouteResult {
-  const codexAccountMode = providerCodexAccountMode(providerName);
+  const codexAccountMode = providerCodexAccountMode(providerName, provider);
   return {
     providerName,
     provider: routedProviderConfig(providerName, provider),
@@ -205,7 +203,9 @@ export function routeModel(config: OcxConfig, modelId: string): RouteResult {
   const slash = modelId.indexOf("/");
   if (slash > 0) {
     const provName = modelId.slice(0, slash);
-    if (provName === LEGACY_CHATGPT_PROVIDER_ID) throw new Error(`No provider configured for model: ${modelId}`);
+    if (provName === LEGACY_CHATGPT_PROVIDER_ID || provName === LEGACY_OPENAI_MULTI_PROVIDER_ID) {
+      throw new Error(`No provider configured for model: ${modelId}`);
+    }
     if (hasOwnProvider(config.providers, provName)) {
       const prov = config.providers[provName];
       if (prov.disabled === true) throw new Error(`Provider is disabled: ${provName}`);
@@ -214,13 +214,9 @@ export function routeModel(config: OcxConfig, modelId: string): RouteResult {
   }
 
   if (isBareOpenAiFamilyModel(modelId)) {
-    for (const providerName of OPENAI_TIER_ORDER) {
-      if (!hasOwnProvider(config.providers, providerName)) continue;
-      const provider = config.providers[providerName];
-      if (provider.disabled === true) continue;
-      return routeResult(providerName, provider, modelId);
-    }
-    throw new NoEnabledOpenAiTierError(modelId);
+    const provider = config.providers[OPENAI_CODEX_PROVIDER_ID];
+    if (provider && provider.disabled !== true) return routeResult(OPENAI_CODEX_PROVIDER_ID, provider, modelId);
+    throw new NoEnabledOpenAiProviderError(modelId);
   }
 
   for (const [provName, prov] of activeProviderEntries(config)) {

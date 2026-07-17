@@ -55,6 +55,7 @@ describe("web-search sidecar planning", () => {
           adapter: "openai-responses",
           baseUrl: "https://chatgpt.com/backend-api/codex",
           authMode: "forward",
+          codexAccountMode: "direct",
         },
       },
       apiKeys: [{ id: "admission", name: "Admission", key: "proxy-secret", createdAt: "2026-07-17" }],
@@ -119,7 +120,7 @@ describe("web-search sidecar planning", () => {
       routedProvider,
       "model",
       {
-        providerName: "openai-multi",
+        providerName: "openai",
         provider: forwardProvider,
         accountMode: "pool",
         authContext: { kind: "pool", accountId: "pool-a", generation: 1, accessToken: "pool-token", chatgptAccountId: "pool_acc" },

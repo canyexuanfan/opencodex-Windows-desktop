@@ -83,7 +83,7 @@ export async function handleSearch(
       return formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session");
     }
     if (err instanceof CodexAuthContextError) {
-      const safeAccountLabel = formatCodexProviderForLog("openai-multi", err.accountId, config);
+      const safeAccountLabel = formatCodexProviderForLog("openai", err.accountId, config);
       console.error(`[search] Pool account ${safeAccountLabel} token failed; reauthentication required`);
       return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
     }

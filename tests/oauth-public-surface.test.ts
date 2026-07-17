@@ -26,8 +26,8 @@ function config(): OcxConfig {
   return {
     port: 10100,
     defaultProvider: "openai",
-    openaiProviderTierVersion: 1,
-    providers: { openai: { ...canonical } },
+    openaiProviderTierVersion: 2,
+    providers: { openai: { ...canonical, codexAccountMode: "pool" } },
   };
 }
 

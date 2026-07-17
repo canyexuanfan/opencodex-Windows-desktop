@@ -22,5 +22,6 @@ export function runOpenAiTierStartupMigration(
   if (!projection.changed) return projection.config;
   deps.backup();
   deps.save(projection.config);
+  for (const warning of projection.warnings) console.warn(`[openai-provider-migration] ${warning}`);
   return projection.config;
 }

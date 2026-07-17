@@ -27,7 +27,6 @@ import {
   formatProviderDisplayName,
   isCatalogProviderId,
   providerBrandColor,
-  providerIconSrc,
 } from "../gui/src/provider-icons";
 
 /** Base defaults matching a minimal, unconfigured provider value. */
@@ -40,7 +39,7 @@ function prov(overrides: Partial<WorkspaceProvider> = {}): WorkspaceProvider {
   };
 }
 
-/** The canonical Codex passthrough shape (three-tier openai / openai-multi). */
+/** The canonical single-provider Codex passthrough shape. */
 function forwardProv(overrides: Partial<WorkspaceProvider> = {}): WorkspaceProvider {
   return prov({
     adapter: "openai-responses",
@@ -104,8 +103,8 @@ describe("catalog: three-way tiers", () => {
   test("forward passthrough is NOT free — it is an account provider", () => {
     expect(isFreeProvider(forwardProv())).toBe(false);
     expect(isAccountProvider("openai", forwardProv())).toBe(true);
-    expect(isAccountProvider("openai-multi", forwardProv())).toBe(true);
-    expect(isAccountProvider("chatgpt", forwardProv())).toBe(true);
+    expect(isAccountProvider("openai-multi", forwardProv())).toBe(false);
+    expect(isAccountProvider("chatgpt", forwardProv())).toBe(false);
     expect(providerTier("openai", forwardProv())).toBe("accounts");
   });
 
@@ -161,14 +160,13 @@ describe("catalog: three-way tiers", () => {
 describe("catalog: sorting", () => {
   const items: WorkspaceItem[] = [
     { ...prov({ authMode: "key", hasApiKey: true }), name: "zeta", tier: "paid" },
-    { ...forwardProv(), name: "openai-multi", tier: "accounts" },
     { ...prov({ freeTier: true }), name: "alpha", tier: "free" },
     { ...forwardProv(), name: "openai", tier: "accounts" },
   ];
 
   test("az / za are name sorts", () => {
-    expect(sortWorkspaceItems(items, "az").map(i => i.name)).toEqual(["alpha", "openai", "openai-multi", "zeta"]);
-    expect(sortWorkspaceItems(items, "za").map(i => i.name)).toEqual(["zeta", "openai-multi", "openai", "alpha"]);
+    expect(sortWorkspaceItems(items, "az").map(i => i.name)).toEqual(["alpha", "openai", "zeta"]);
+    expect(sortWorkspaceItems(items, "za").map(i => i.name)).toEqual(["zeta", "openai", "alpha"]);
   });
 
   test("free-paid puts free first; paid-free inverts; accounts sort with paid in free-paid mode", () => {
@@ -177,7 +175,7 @@ describe("catalog: sorting", () => {
   });
 
   test("accounts-first ranks accounts, then free, then paid", () => {
-    expect(sortWorkspaceItems(items, "accounts-first").map(i => i.name)).toEqual(["openai", "openai-multi", "alpha", "zeta"]);
+    expect(sortWorkspaceItems(items, "accounts-first").map(i => i.name)).toEqual(["openai", "alpha", "zeta"]);
   });
 
   test("does not mutate the input array", () => {
@@ -225,26 +223,15 @@ describe("catalog: chatgpt hiding + canonical picker", () => {
     expect(out).not.toBe(both);
   });
 
-  test("pickCanonicalForwardProvider prefers openai-multi, then openai, then any canonical", () => {
-    expect(pickCanonicalForwardProvider({ "openai-multi": forwardProv(), openai: forwardProv() })).toBe("openai-multi");
+  test("pickCanonicalForwardProvider prefers canonical openai", () => {
+    expect(pickCanonicalForwardProvider({ "openai-multi": forwardProv(), openai: forwardProv() })).toBe("openai");
     expect(pickCanonicalForwardProvider({ openai: forwardProv() })).toBe("openai");
-    expect(pickCanonicalForwardProvider({ chatgpt: forwardProv() })).toBe("chatgpt");
+    expect(pickCanonicalForwardProvider({ chatgpt: forwardProv() })).toBeNull();
     expect(pickCanonicalForwardProvider({ venice: prov({ authMode: "key", hasApiKey: true }) })).toBeNull();
-    // Non-canonical openai-multi shape must not win.
+    // Legacy Multi never wins, regardless of shape.
     expect(pickCanonicalForwardProvider({ "openai-multi": prov({ authMode: "key" }), openai: forwardProv() })).toBe("openai");
-    // Any-canonical fallback: a custom-named provider with the exact canonical shape matches last.
-    expect(pickCanonicalForwardProvider({ "my-forward": forwardProv() })).toBe("my-forward");
+    expect(pickCanonicalForwardProvider({ "my-forward": forwardProv() })).toBeNull();
     expect(pickCanonicalForwardProvider({ "my-forward": forwardProv(), openai: forwardProv() })).toBe("openai");
-  });
-
-  test("hiding is scoped to the openai/chatgpt pair — openai-multi is immune", () => {
-    const withMulti = { "openai-multi": forwardProv(), chatgpt: forwardProv() };
-    expect(Object.keys(hideRedundantChatGptForwardProviders(withMulti)).sort()).toEqual(["chatgpt", "openai-multi"]);
-  });
-
-  test("openai-multi survives hiding even when chatgpt is removed from the full trio", () => {
-    const trio = { openai: forwardProv(), "openai-multi": forwardProv(), chatgpt: forwardProv() };
-    expect(Object.keys(hideRedundantChatGptForwardProviders(trio)).sort()).toEqual(["openai", "openai-multi"]);
   });
 });
 
@@ -399,10 +386,8 @@ describe("usage: count formatting", () => {
 });
 
 describe("provider-icons", () => {
-  test("openai-multi keeps its icon alias and three-tier display names match the registry", () => {
-    expect(providerIconSrc("openai-multi")).toBe("/provider-icons/openai.svg");
-    expect(formatProviderDisplayName("openai")).toBe("Codex Direct");
-    expect(formatProviderDisplayName("openai-multi")).toBe("Codex Multi-account");
+  test("single OpenAI provider display names match the registry", () => {
+    expect(formatProviderDisplayName("openai")).toBe("OpenAI (Codex login)");
     expect(formatProviderDisplayName("openai-apikey")).toBe("OpenAI API");
     expect(formatProviderDisplayName("chatgpt")).toBe("ChatGPT");
   });
@@ -414,9 +399,9 @@ describe("provider-icons", () => {
 
   test("brand colors and catalog membership", () => {
     expect(providerBrandColor("nvidia")).toBe("#76B900");
-    expect(providerBrandColor("openai-multi")).toBe("#10A37F");
+    expect(providerBrandColor("openai-multi")).toBeUndefined();
     expect(providerBrandColor("unknown")).toBeUndefined();
-    expect(isCatalogProviderId("openai-multi")).toBe(true);
+    expect(isCatalogProviderId("openai-multi")).toBe(false);
     expect(isCatalogProviderId("my-proxy")).toBe(false);
   });
 });

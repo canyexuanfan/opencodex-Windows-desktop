@@ -246,23 +246,13 @@ const UMANS_MODEL_INPUT_MODALITIES: Record<string, string[]> = Object.fromEntrie
 export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   {
     id: "openai",
-    label: "Codex Direct",
-    adapter: "openai-responses",
-    baseUrl: "https://chatgpt.com/backend-api/codex",
-    authKind: "forward",
-    codexAccountMode: "direct",
-    featured: true,
-    note: "Uses the caller's main Codex login — no account rotation",
-  },
-  {
-    id: "openai-multi",
-    label: "Codex Multi-account",
+    label: "OpenAI (Codex login)",
     adapter: "openai-responses",
     baseUrl: "https://chatgpt.com/backend-api/codex",
     authKind: "forward",
     codexAccountMode: "pool",
     featured: true,
-    note: "Uses main + added Codex accounts with rotation",
+    note: "Codex login account pool (default) or Direct main-account mode via codexAccountMode",
   },
   {
     id: "cursor",
@@ -745,9 +735,17 @@ export function getProviderRegistryEntry(id: string): ProviderRegistryEntry | un
   return PROVIDER_REGISTRY.find(entry => entry.id === id);
 }
 
-/** Registry-owned Codex account policy for a built-in provider id. */
-export function providerCodexAccountMode(id: string): CodexAccountMode | undefined {
-  return getProviderRegistryEntry(id)?.codexAccountMode;
+/**
+ * Effective Codex account mode for a provider. For canonical `openai`, a valid persisted
+ * `codexAccountMode` on the provider config wins and a missing/invalid value defaults to
+ * `"pool"`. Other providers keep registry-only metadata (there is no mode for `openai-apikey`).
+ */
+export function providerCodexAccountMode(id: string, provider?: OcxProviderConfig): CodexAccountMode | undefined {
+  const registryMode = getProviderRegistryEntry(id)?.codexAccountMode;
+  if (id !== "openai") return registryMode;
+  const persisted = provider?.codexAccountMode;
+  if (persisted === "pool" || persisted === "direct") return persisted;
+  return registryMode ?? "pool";
 }
 
 /**

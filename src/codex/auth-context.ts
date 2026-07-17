@@ -47,7 +47,7 @@ export class CodexAuthContextError extends Error {
 
 export class CodexPoolAuthenticationError extends Error {
   constructor() {
-    super("Codex Multi-account has no usable account credential");
+    super("OpenAI account pool has no usable account credential");
     this.name = "CodexPoolAuthenticationError";
   }
 }

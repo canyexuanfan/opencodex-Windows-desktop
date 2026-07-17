@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { applyEffortCap, effortCapAppliesTo, effortCapFor, isThreadSpawnRequest, resolveCappedEffort, supportedLadderFor } from "../src/server/effort-policy";
 import { collabSurface } from "../src/server/responses";
 import { handleManagementAPI } from "../src/server/management-api";
-import { NoEnabledOpenAiTierError, routeModel } from "../src/router";
+import { NoEnabledOpenAiProviderError, routeModel } from "../src/router";
 import { mapReasoningEffort } from "../src/reasoning-effort";
 import { nativeEffortClamp } from "../src/codex/catalog";
 import type { OcxConfig, OcxParsedRequest } from "../src/types";
@@ -268,7 +268,7 @@ describe("supportedLadderFor (real routeModel routes)", () => {
       },
       defaultProvider: "selfhosted",
     } as Partial<OcxConfig>);
-    expect(() => routeModel(config, "gpt-5.4")).toThrow(NoEnabledOpenAiTierError);
+    expect(() => routeModel(config, "gpt-5.4")).toThrow(NoEnabledOpenAiProviderError);
     const namespaced = routeModel(config, "selfhosted/gpt-5.4");
     expect(namespaced.providerName).toBe("selfhosted");
     expect(supportedLadderFor(namespaced)).toBeUndefined();

@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { clearAccountQuota } from "../src/codex/quota";
+import { saveCodexAccountCredential } from "../src/codex/account-store";
 import { saveCredential } from "../src/oauth/store";
 import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../src/providers/quota";
 import type { OcxConfig } from "../src/types";
@@ -16,12 +17,13 @@ let codexHome: string;
 
 function testConfig(): OcxConfig {
   return {
-    defaultProvider: "openai-multi",
+    defaultProvider: "openai",
     providers: {
-      "openai-multi": {
+      openai: {
         adapter: "openai-responses",
         authMode: "forward",
         baseUrl: "https://chatgpt.com/backend-api/codex",
+        codexAccountMode: "pool",
       },
       xai: {
         adapter: "openai-chat",
@@ -160,8 +162,8 @@ describe("fetchProviderQuotaReports", () => {
     const result = await fetchProviderQuotaReports(testConfig(), true);
     const byProvider = Object.fromEntries(result.reports.map(report => [report.provider, report]));
 
-    expect(Object.keys(byProvider).sort()).toEqual(["anthropic", "cursor", "google-antigravity", "openai-multi", "xai"]);
-    expect(byProvider["openai-multi"]?.quota.weeklyPercent).toBe(34);
+    expect(Object.keys(byProvider).sort()).toEqual(["anthropic", "cursor", "google-antigravity", "openai", "xai"]);
+    expect(byProvider.openai?.quota.weeklyPercent).toBe(34);
     expect(byProvider.xai?.quota.monthlyPercent).toBe(25);
     expect(byProvider.anthropic?.quota.weeklyPercent).toBe(72);
     expect(byProvider.anthropic?.quota.customWindows).toEqual([
@@ -189,6 +191,45 @@ describe("fetchProviderQuotaReports", () => {
     expect(seen.find(row => row.url.includes("anthropic.com"))?.authorization).toBe("Bearer claude-access-secret");
     expect(seen.find(row => row.url.includes("cloudcode-pa.googleapis.com"))?.authorization).toBe("Bearer agy-access-secret");
     expect(seen.find(row => row.url.includes("cloudcode-pa.googleapis.com"))?.body).toBe(JSON.stringify({ project: "agy-project-secret" }));
+  });
+
+  test("pool mode reports the active added account", async () => {
+    saveCodexAccountCredential("added", {
+      accessToken: "added-access",
+      refreshToken: "added-refresh",
+      expiresAt: Date.now() + 3600_000,
+      chatgptAccountId: "added-chatgpt-id",
+    });
+    const config = testConfig();
+    config.codexAccounts = [{ id: "added", email: "a@example.test", isMain: false }];
+    config.activeCodexAccountId = "added";
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      const percent = headers?.["ChatGPT-Account-Id"] === "added-chatgpt-id" ? 77 : 11;
+      return new Response(JSON.stringify({
+        rate_limit: { secondary_window: { used_percent: percent, reset_at: 1_789_000_000 } },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(config, true);
+    expect(result.reports.find(row => row.provider === "openai")?.quota.weeklyPercent).toBe(77);
+  });
+
+  test("direct mode reports main without reading or repairing the added-account store", async () => {
+    const accountStore = join(opencodexHome, "codex-accounts.json");
+    writeFileSync(accountStore, "invalid-added-account-store");
+    const config = testConfig();
+    config.providers.openai.codexAccountMode = "direct";
+    config.codexAccounts = [{ id: "added", email: "a@example.test", isMain: false }];
+    config.activeCodexAccountId = "added";
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      rate_limit: { secondary_window: { used_percent: 12, reset_at: 1_789_000_000 } },
+    }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(config, true);
+    expect(result.reports.find(row => row.provider === "openai")?.quota.weeklyPercent).toBe(12);
+    expect(readFileSync(accountStore, "utf8")).toBe("invalid-added-account-store");
+    expect(existsSync(`${accountStore}.invalid`)).toBe(false);
   });
 
   test("expired Anthropic token attempts a refresh and never calls the usage endpoint on failure", async () => {

@@ -30,7 +30,8 @@ import { maskEmail } from "../lib/privacy";
 import { CodexWarmupError, codexWarmupFailureReason, warmCodexAccount } from "./warmup";
 export { maskEmail } from "../lib/privacy";
 import type { CodexAccount, OcxConfig } from "../types";
-import { isCanonicalOpenAiForwardProvider, OPENAI_MULTI_PROVIDER_ID } from "../providers/openai-tiers";
+import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../providers/openai-tiers";
+import { providerCodexAccountMode } from "../providers/registry";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -211,7 +212,7 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-async function fetchMainAccountInfo(forceRefresh = false): Promise<{ email: string | null; plan: string | null; quota: Omit<StoredAccountQuota, "updatedAt"> | null }> {
+export async function fetchMainAccountInfo(forceRefresh = false): Promise<{ email: string | null; plan: string | null; quota: Omit<StoredAccountQuota, "updatedAt"> | null }> {
   if (!forceRefresh && mainAccountCache && Date.now() - mainAccountCache.ts < MAIN_CACHE_TTL) {
     return mainAccountCache;
   }
@@ -315,8 +316,13 @@ let primeInFlight: Promise<void> | null = null;
  * are swallowed: a blocked WSL network must never crash startup or a request.
  */
 export async function primeCodexPoolQuotas(config: OcxConfig, reason: string): Promise<void> {
-  const multi = config.providers[OPENAI_MULTI_PROVIDER_ID];
-  if (!multi || multi.disabled === true || !isCanonicalOpenAiForwardProvider(multi)) return;
+  const openai = config.providers[OPENAI_CODEX_PROVIDER_ID];
+  if (
+    !openai
+    || openai.disabled === true
+    || !isCanonicalOpenAiForwardProvider(openai)
+    || providerCodexAccountMode(OPENAI_CODEX_PROVIDER_ID, openai) !== "pool"
+  ) return;
   if (primeInFlight) return primeInFlight;
   primeInFlight = (async () => {
     const runtimeConfig = getRuntimeConfig(config);

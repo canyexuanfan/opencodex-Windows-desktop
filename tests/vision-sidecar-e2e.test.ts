@@ -105,7 +105,7 @@ describe("vision sidecar fallback (issue #88, end-to-end)", () => {
     }) as typeof fetch;
 
     const config: OcxConfig = {
-      port: 0, hostname: "127.0.0.1", defaultProvider: "textonly", openaiProviderTierVersion: 1,
+      port: 0, hostname: "127.0.0.1", defaultProvider: "textonly", openaiProviderTierVersion: 2,
       providers: {
         textonly: {
           adapter: "openai-chat",
@@ -114,7 +114,12 @@ describe("vision sidecar fallback (issue #88, end-to-end)", () => {
           apiKey: "key-alpha-000111222333",
           noVisionModels: ["blind-model"],
         },
-        openai: { adapter: "openai-responses", authMode: "forward", baseUrl: "https://chatgpt.com/backend-api/codex" },
+        openai: {
+          adapter: "openai-responses",
+          authMode: "forward",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          codexAccountMode: "direct",
+        },
       },
     } as OcxConfig;
     saveConfig(config);
@@ -149,7 +154,7 @@ describe("vision sidecar fallback (issue #88, end-to-end)", () => {
     sidecar = serveSidecar(() => { sidecarHits += 1; });
 
     const config: OcxConfig = {
-      port: 0, hostname: "127.0.0.1", defaultProvider: "seeing", openaiProviderTierVersion: 1,
+      port: 0, hostname: "127.0.0.1", defaultProvider: "seeing", openaiProviderTierVersion: 2,
       providers: {
         seeing: {
           adapter: "openai-chat",

@@ -404,7 +404,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       hasApiKey: !!p.apiKey,
       allowPrivateNetwork: p.allowPrivateNetwork === true,
       disabled: p.disabled === true,
-      codexAccountMode: providerCodexAccountMode(name),
+      codexAccountMode: providerCodexAccountMode(name, p),
     })));
   }
 

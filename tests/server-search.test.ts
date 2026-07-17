@@ -86,9 +86,14 @@ function forwardConfig(_baseUrl = ""): OcxConfig {
   return {
     port: 0,
     defaultProvider: "openai",
-    openaiProviderTierVersion: 1,
+    openaiProviderTierVersion: 2,
     providers: {
-      openai: { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" },
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authMode: "forward",
+        codexAccountMode: "direct",
+      },
     },
   } as OcxConfig;
 }
@@ -132,10 +137,9 @@ test("a routed pool account's token overrides the caller bearer on the search re
   const upstream = fakeSearchUpstream(captured);
   saveConfig({
     ...forwardConfig(upstream.url.toString().replace(/\/$/, "")),
-    defaultProvider: "openai-multi",
+    defaultProvider: "openai",
     providers: {
-      openai: { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward", disabled: true },
-      "openai-multi": { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" },
+      openai: { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward", codexAccountMode: "pool" },
     },
     codexAccounts: [
       { id: "main", email: "main@example.test", isMain: true },
@@ -216,7 +220,7 @@ test("returns an honest 400 when no ChatGPT forward provider is configured", asy
   saveConfig({
     port: 0,
     defaultProvider: "groq",
-    openaiProviderTierVersion: 1,
+    openaiProviderTierVersion: 2,
     providers: {
       groq: { adapter: "openai-chat", baseUrl: "https://api.groq.example/v1", apiKey: "gsk-x" },
     },

@@ -1,11 +1,11 @@
-import { listCodexAuthAccounts } from "../codex/auth-api";
+import { fetchMainAccountInfo, listCodexAuthAccounts } from "../codex/auth-api";
 import { MAIN_CODEX_ACCOUNT_ID } from "../codex/main-account";
 import { getValidAccessToken } from "../oauth";
 import { getCredential } from "../oauth/store";
 import { antigravityUserAgent } from "../adapters/client-fingerprint";
-import { getProviderRegistryEntry } from "./registry";
+import { getProviderRegistryEntry, providerCodexAccountMode } from "./registry";
 import type { OcxConfig, OcxProviderConfig } from "../types";
-import { isCanonicalOpenAiForwardProvider, OPENAI_MULTI_PROVIDER_ID } from "./openai-tiers";
+import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "./openai-tiers";
 
 const CACHE_TTL_MS = 5 * 60_000;
 const REQUEST_TIMEOUT_MS = 8_000;
@@ -54,7 +54,7 @@ export function clearProviderQuotaCache(): void {
 
 function cacheKey(config: OcxConfig): string {
   const providers = Object.entries(config.providers)
-    .map(([name, provider]) => `${name}:${provider.adapter}:${provider.authMode ?? "key"}:${provider.disabled === true ? "off" : "on"}:${provider.baseUrl}`)
+    .map(([name, provider]) => `${name}:${provider.adapter}:${provider.authMode ?? "key"}:${providerCodexAccountMode(name, provider) ?? "none"}:${provider.disabled === true ? "off" : "on"}:${provider.baseUrl}`)
     .sort()
     .join("|");
   return `${config.defaultProvider}|${config.activeCodexAccountId ?? ""}|${providers}`;
@@ -99,7 +99,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function isBuiltInChatGptForwardProvider(name: string, provider: OcxProviderConfig): boolean {
-  return name === OPENAI_MULTI_PROVIDER_ID && isCanonicalOpenAiForwardProvider(provider);
+  return name === OPENAI_CODEX_PROVIDER_ID && isCanonicalOpenAiForwardProvider(provider);
 }
 
 function report(provider: string, source: string, quota: ProviderQuota): ProviderQuotaReport | null {
@@ -113,7 +113,17 @@ function report(provider: string, source: string, quota: ProviderQuota): Provide
   };
 }
 
-async function fetchChatGptForwardQuota(config: OcxConfig, provider: string, forceRefresh: boolean): Promise<ProviderQuotaReport | null> {
+async function fetchChatGptForwardQuota(
+  config: OcxConfig,
+  provider: string,
+  providerConfig: OcxProviderConfig,
+  forceRefresh: boolean,
+): Promise<ProviderQuotaReport | null> {
+  if (providerCodexAccountMode(provider, providerConfig) === "direct") {
+    const main = await fetchMainAccountInfo(forceRefresh);
+    const quota = main.quota ? { ...main.quota, updatedAt: Date.now() } as ProviderQuota : null;
+    return quota ? report(provider, "chatgpt:wham", quota) : null;
+  }
   const accounts = await listCodexAuthAccounts(config, forceRefresh);
   const activeId = config.activeCodexAccountId || MAIN_CODEX_ACCOUNT_ID;
   const active = accounts.find(account => account.id === activeId)
@@ -484,7 +494,7 @@ async function maybeFetchProviderQuota(
 ): Promise<ProviderQuotaReport | null> {
   if (provider.disabled === true) return null;
   try {
-    if (isBuiltInChatGptForwardProvider(name, provider)) return fetchChatGptForwardQuota(config, name, forceRefresh);
+    if (isBuiltInChatGptForwardProvider(name, provider)) return fetchChatGptForwardQuota(config, name, provider, forceRefresh);
     if (provider.authMode === "oauth" && name === "xai") return fetchXaiQuota(name);
     if (provider.authMode === "oauth" && name === "anthropic") return fetchAnthropicQuota(name);
     if (provider.authMode === "oauth" && name === "cursor") return fetchCursorQuota(name);

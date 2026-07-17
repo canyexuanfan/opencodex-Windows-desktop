@@ -16,7 +16,7 @@ import { applyProviderContextCap, providerContextCap } from "../providers/contex
 import { CODEX_GPT5_IDENTITY_LINE } from "../adapters/identity";
 import { filterCursorConfiguredModelsByLiveDiscovery } from "../adapters/cursor/discovery";
 import { fetchCursorUsableModels } from "../adapters/cursor/live-models";
-import { isCanonicalOpenAiForwardProvider, OPENAI_API_PROVIDER_ID, OPENAI_MULTI_PROVIDER_ID } from "../providers/openai-tiers";
+import { OPENAI_API_PROVIDER_ID } from "../providers/openai-tiers";
 import upstreamModelsSnapshot from "./data/upstream-models.json";
 
 const BUNDLED_CATALOG_CACHE_MS = 60_000;
@@ -303,62 +303,6 @@ export interface CatalogModel {
   parallelToolCalls?: boolean;
 }
 
-/**
- * Read-only/no-network projection of Codex-native models into the Multi provider namespace.
- * The optional slug snapshot makes tests deterministic while production follows the installed
- * native catalog. Public gathering does not call this helper until the atomic Cycle-020 switch.
- */
-export function projectNativeModelsForOpenAiMulti(
-  config: OcxConfig,
-  provider: OcxProviderConfig,
-  nativeSlugs: readonly string[] = nativeOpenAiSlugs(),
-  nativeTemplate: Record<string, unknown> | null = loadCatalogTemplate(),
-): CatalogModel[] {
-  const contextCap = providerContextCap(config, OPENAI_MULTI_PROVIDER_ID);
-  const seen = new Set<string>();
-  const supportedSlugs = nativeSlugs.filter(slug => {
-    if (seen.has(slug) || !SUPPORTED_NATIVE_OPENAI_SLUGS.has(slug)) return false;
-    seen.add(slug);
-    return true;
-  });
-  const metadataBySlug = new Map(
-    buildCatalogEntries(nativeTemplate, supportedSlugs, [])
-      .map(entry => [String(entry.slug ?? ""), entry]),
-  );
-  const models: CatalogModel[] = [];
-
-  for (const slug of supportedSlugs) {
-    const metadata = metadataBySlug.get(slug);
-    const rawEfforts = Array.isArray(metadata?.supported_reasoning_levels)
-      ? (metadata.supported_reasoning_levels as Array<{ effort?: unknown }>)
-        .flatMap(level => typeof level.effort === "string" ? [level.effort] : [])
-      : undefined;
-    const reasoningEfforts = sanitizeCodexReasoningEfforts(rawEfforts);
-    const inputModalities = Array.isArray(metadata?.input_modalities)
-      ? metadata.input_modalities.filter((value): value is string => typeof value === "string")
-      : undefined;
-    const metadataContext = typeof metadata?.context_window === "number" && metadata.context_window > 0
-      ? metadata.context_window
-      : undefined;
-    const contextWindow = nativeOpenAiContextWindow(slug) ?? metadataContext;
-
-    models.push(applyProviderConfigHints(
-      OPENAI_MULTI_PROVIDER_ID,
-      provider,
-      {
-        id: slug,
-        provider: OPENAI_MULTI_PROVIDER_ID,
-        owned_by: OPENAI_MULTI_PROVIDER_ID,
-        ...(reasoningEfforts !== undefined ? { reasoningEfforts } : {}),
-        ...(contextWindow !== undefined ? { contextWindow } : {}),
-        ...(inputModalities && inputModalities.length > 0 ? { inputModalities } : {}),
-      },
-      contextCap,
-    ));
-  }
-
-  return models;
-}
 type RawEntry = Record<string, unknown>;
 type RawCatalog = { models?: RawEntry[]; [k: string]: unknown };
 const JAWCODE_CATALOG_AUGMENT_PROVIDERS = new Set(["opencode-go"]);
@@ -1361,12 +1305,7 @@ export async function gatherRoutedModels(config: OcxConfig): Promise<CatalogMode
   const lists = await Promise.all(
     activeProviders.map(([name, prov]) => fetchProviderModels(name, prov, ttlMs, providerContextCap(config, name))),
   );
-  const multiProvider = activeProviders.find(([name, provider]) =>
-    name === OPENAI_MULTI_PROVIDER_ID && isCanonicalOpenAiForwardProvider(provider));
-  const multiModels = multiProvider
-    ? projectNativeModelsForOpenAiMulti(config, multiProvider[1])
-    : [];
-  const apiAugmented = augmentRoutedModelsWithRegistryOpenAiApiRows([...lists.flat(), ...multiModels], config);
+  const apiAugmented = augmentRoutedModelsWithRegistryOpenAiApiRows(lists.flat(), config);
   const all = augmentRoutedModelsWithJawcodeMetadata(apiAugmented, activeProviders.map(([name]) => name), config.providers, config)
     // Drop image/video generation models (e.g. Grok image/video) by default. Cursor's static catalog
     // intentionally mirrors Cursor's public model table, including Gemini image preview, so the

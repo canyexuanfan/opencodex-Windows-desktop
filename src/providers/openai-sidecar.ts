@@ -12,12 +12,12 @@ import type { CodexAccountMode, OcxConfig, OcxProviderConfig } from "../types";
 import {
   isCanonicalOpenAiForwardProvider,
   OPENAI_API_PROVIDER_ID,
-  OPENAI_DIRECT_PROVIDER_ID,
-  OPENAI_MULTI_PROVIDER_ID,
+  OPENAI_CODEX_PROVIDER_ID,
 } from "./openai-tiers";
+import { providerCodexAccountMode } from "./registry";
 
 export interface OpenAiForwardSidecarCandidate {
-  providerName: typeof OPENAI_DIRECT_PROVIDER_ID | typeof OPENAI_MULTI_PROVIDER_ID;
+  providerName: typeof OPENAI_CODEX_PROVIDER_ID;
   provider: OcxProviderConfig;
   accountMode: CodexAccountMode;
 }
@@ -38,16 +38,13 @@ export interface OpenAiImagesProviderSelection {
 }
 
 export function listOpenAiForwardSidecarCandidates(config: OcxConfig): OpenAiForwardSidecarCandidate[] {
-  const rows: OpenAiForwardSidecarCandidate[] = [];
-  for (const [providerName, accountMode] of [
-    [OPENAI_DIRECT_PROVIDER_ID, "direct"],
-    [OPENAI_MULTI_PROVIDER_ID, "pool"],
-  ] as const) {
-    const provider = config.providers[providerName];
-    if (!provider || provider.disabled === true || !isCanonicalOpenAiForwardProvider(provider)) continue;
-    rows.push({ providerName, provider, accountMode });
-  }
-  return rows;
+  const provider = config.providers[OPENAI_CODEX_PROVIDER_ID];
+  if (!provider || provider.disabled === true || !isCanonicalOpenAiForwardProvider(provider)) return [];
+  return [{
+    providerName: OPENAI_CODEX_PROVIDER_ID,
+    provider,
+    accountMode: providerCodexAccountMode(OPENAI_CODEX_PROVIDER_ID, provider) ?? "pool",
+  }];
 }
 
 export async function resolveFirstUsableOpenAiSidecar(

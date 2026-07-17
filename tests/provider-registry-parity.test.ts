@@ -499,16 +499,16 @@ describe("provider registry parity", () => {
   test("GUI preset projection preserves current featured set plus key catalog and custom", () => {
     const featured = deriveFeaturedProviderIds();
     expect(featured).toEqual([
-      "openai", "openai-multi", "xai", "anthropic", "anthropic-apikey", "kimi", "openai-apikey", "umans", "opencode-go", "openrouter",
+      "openai", "xai", "anthropic", "anthropic-apikey", "kimi", "openai-apikey", "umans", "opencode-go", "openrouter",
       "groq", "google", "azure-openai", "ollama", "vllm", "lm-studio", "opencode-free",
       "mimo-free",
     ]);
 
     const presets = deriveProviderPresets();
     expect(presets.filter(p => p.id === "chatgpt" || p.id === "openai" || p.id.startsWith("openai-")).map(p => p.id))
-      .toEqual(["openai", "openai-multi", "openai-apikey"]);
-    expect(presets.find(p => p.id === "openai")).toMatchObject({ label: "Codex Direct", codexAccountMode: "direct" });
-    expect(presets.find(p => p.id === "openai-multi")).toMatchObject({ label: "Codex Multi-account", codexAccountMode: "pool" });
+      .toEqual(["openai", "openai-apikey"]);
+    expect(presets.find(p => p.id === "openai")).toMatchObject({ label: "OpenAI (Codex login)", codexAccountMode: "pool" });
+    expect(presets.find(p => p.id === "openai-multi")).toBeUndefined();
     expect(presets.find(p => p.id === "openai-apikey")?.label).toBe("OpenAI API");
     expect(presets.at(-1)?.id).toBe("custom");
     expect(presets.find(p => p.id === "cursor")).toMatchObject({

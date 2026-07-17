@@ -108,17 +108,37 @@ function virtualBackupIO(initial: Record<string, string>, fail: {
   return { io, files, calls };
 }
 
-describe("OpenAI tier startup coordinator", () => {
+describe("OpenAI provider option startup coordinator", () => {
   test("uses project -> backup -> save order and returns the projection", () => {
     const calls: string[] = [];
-    const projected = { ...config, openaiProviderTierVersion: 1 as const };
+    const projected = { ...config, openaiProviderTierVersion: 2 as const };
     const result = runOpenAiTierStartupMigration(config, {
-      project: () => { calls.push("project"); return { config: projected, changed: true, legacyPoolIntent: false }; },
+      project: () => { calls.push("project"); return { config: projected, changed: true, resolvedMode: "pool", warnings: [] }; },
       backup: () => { calls.push("backup"); },
       save: value => { calls.push("save"); expect(value).toBe(projected); },
     });
     expect(calls).toEqual(["project", "backup", "save"]);
     expect(result).toBe(projected);
+  });
+
+  test("emits path-only warnings after save succeeds", () => {
+    const calls: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = message => { calls.push(`warn:${String(message)}`); };
+    try {
+      runOpenAiTierStartupMigration(config, {
+        project: () => ({ config: { ...config, openaiProviderTierVersion: 2 }, changed: true, resolvedMode: "pool", warnings: ["providerContextCaps.openai: conflict resolved"] }),
+        backup: () => { calls.push("backup"); },
+        save: () => { calls.push("save"); },
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(calls).toEqual([
+      "backup",
+      "save",
+      "warn:[openai-provider-migration] providerContextCaps.openai: conflict resolved",
+    ]);
   });
 
   test("projection collision performs zero backup/save", () => {
@@ -134,7 +154,7 @@ describe("OpenAI tier startup coordinator", () => {
   test("backup failure performs no save", () => {
     const calls: string[] = [];
     expect(() => runOpenAiTierStartupMigration(config, {
-      project: () => ({ config: { ...config }, changed: true, legacyPoolIntent: false }),
+      project: () => ({ config: { ...config }, changed: true, resolvedMode: "pool", warnings: [] }),
       backup: () => { calls.push("backup"); throw new Error("backup failed"); },
       save: () => { calls.push("save"); },
     })).toThrow("backup failed");
@@ -144,7 +164,7 @@ describe("OpenAI tier startup coordinator", () => {
   test("unchanged projection skips backup and save entirely", () => {
     const calls: string[] = [];
     const result = runOpenAiTierStartupMigration(config, {
-      project: () => { calls.push("project"); return { config: { ...config }, changed: false, legacyPoolIntent: false }; },
+      project: () => { calls.push("project"); return { config: { ...config }, changed: false, resolvedMode: "pool", warnings: [] }; },
       backup: () => { calls.push("backup"); },
       save: () => { calls.push("save"); },
     });
@@ -154,7 +174,7 @@ describe("OpenAI tier startup coordinator", () => {
 
   test("save failure propagates without masking", () => {
     expect(() => runOpenAiTierStartupMigration(config, {
-      project: () => ({ config: { ...config }, changed: true, legacyPoolIntent: false }),
+      project: () => ({ config: { ...config }, changed: true, resolvedMode: "pool", warnings: ["must not emit"] }),
       backup: () => {},
       save: () => { throw new Error("disk full"); },
     })).toThrow("disk full");
@@ -215,23 +235,33 @@ describe("OpenAI tier startup coordinator", () => {
   test("backup creates a hardened no-replace snapshot and removes its hard-link temp", () => {
     const state = virtualBackupIO({ "/virtual/config.json": "original-secret" });
     expect(backupConfigBeforeOpenAiTierMigration("/virtual/config.json", state.io)).toBe("created");
-    const backup = state.files.get("/virtual/config.json.pre-openai-tiers-v1.bak");
+    const backup = state.files.get("/virtual/config.json.pre-openai-tiers-v2.bak");
     expect(new TextDecoder().decode(backup?.bytes)).toBe("original-secret");
     expect(backup?.hardened).toBe(true);
     expect([...state.files.keys()].filter(path => path.endsWith(".tmp"))).toEqual([]);
   });
 
+  test("v2 backup creation never overwrites the historical v1 snapshot", () => {
+    const state = virtualBackupIO({
+      "/virtual/config.json": "three-tier-state",
+      "/virtual/config.json.pre-openai-tiers-v1.bak": "pre-three-tier-state",
+    });
+    expect(backupConfigBeforeOpenAiTierMigration("/virtual/config.json", state.io)).toBe("created");
+    expect(new TextDecoder().decode(state.files.get("/virtual/config.json.pre-openai-tiers-v1.bak")?.bytes)).toBe("pre-three-tier-state");
+    expect(new TextDecoder().decode(state.files.get("/virtual/config.json.pre-openai-tiers-v2.bak")?.bytes)).toBe("three-tier-state");
+  });
+
   test("backup reuses only byte-identical snapshots and rejects collisions", () => {
     const equal = virtualBackupIO({
       "/virtual/config.json": "same",
-      "/virtual/config.json.pre-openai-tiers-v1.bak": "same",
+      "/virtual/config.json.pre-openai-tiers-v2.bak": "same",
     });
     expect(backupConfigBeforeOpenAiTierMigration("/virtual/config.json", equal.io)).toBe("reused");
     expect(equal.calls.some(call => call.startsWith("create:"))).toBe(false);
 
     const different = virtualBackupIO({
       "/virtual/config.json": "current",
-      "/virtual/config.json.pre-openai-tiers-v1.bak": "older",
+      "/virtual/config.json.pre-openai-tiers-v2.bak": "older",
     });
     expect(() => backupConfigBeforeOpenAiTierMigration("/virtual/config.json", different.io))
       .toThrow(OpenAiTierBackupCollisionError);
@@ -254,7 +284,7 @@ describe("OpenAI tier startup coordinator", () => {
     const state = virtualBackupIO({ "/virtual/config.json": "original-secret" }, { tempUnlink: 2 });
     expect(() => backupConfigBeforeOpenAiTierMigration("/virtual/config.json", state.io))
       .toThrow(OpenAiTierBackupCleanupError);
-    expect(state.files.has("/virtual/config.json.pre-openai-tiers-v1.bak")).toBe(false);
+    expect(state.files.has("/virtual/config.json.pre-openai-tiers-v2.bak")).toBe(false);
     expect([...state.files.values()].some(inode => new TextDecoder().decode(inode.bytes).includes("secret"))).toBe(true);
     expect([...state.files.keys()].filter(path => path.endsWith(".tmp"))).toEqual([]);
   });
@@ -289,7 +319,7 @@ describe("OpenAI tier startup coordinator", () => {
     );
     expect(() => backupConfigBeforeOpenAiTierMigration("/virtual/config.json", afterRollback.io))
       .toThrow(OpenAiTierBackupSecretResidualError);
-    expect(afterRollback.files.has("/virtual/config.json.pre-openai-tiers-v1.bak")).toBe(false);
+    expect(afterRollback.files.has("/virtual/config.json.pre-openai-tiers-v2.bak")).toBe(false);
     const residual = [...afterRollback.files.entries()].find(([path]) => path.endsWith(".tmp"));
     expect(new TextDecoder().decode(residual?.[1].bytes)).toBe("backup-secret");
     expect(afterRollback.calls.filter(call => call.startsWith("unlink:") && call.endsWith(".tmp"))).toHaveLength(4);
@@ -303,7 +333,7 @@ describe("OpenAI tier startup coordinator", () => {
       const state = virtualBackupIO({ "/virtual/config.json": "original-secret" }, failure);
       expect(() => backupConfigBeforeOpenAiTierMigration("/virtual/config.json", state.io)).toThrow(`${stage} failed`);
       expect(new TextDecoder().decode(state.files.get("/virtual/config.json")?.bytes)).toBe("original-secret");
-      expect(state.files.has("/virtual/config.json.pre-openai-tiers-v1.bak")).toBe(false);
+      expect(state.files.has("/virtual/config.json.pre-openai-tiers-v2.bak")).toBe(false);
       expect([...state.files.keys()].filter(path => path.endsWith(".tmp"))).toEqual([]);
       const expectedPrefix = stage === "read" ? ["read:/virtual/config.json"] : ["read:/virtual/config.json", expect.stringContaining("create:")];
       expect(state.calls.slice(0, expectedPrefix.length)).toEqual(expectedPrefix);

@@ -88,7 +88,7 @@ export async function handleImages(
       } else if (err instanceof CodexThreadAffinityExpiredError) {
         forwardAuthError = formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session");
       } else if (err instanceof CodexAuthContextError) {
-        const safeAccountLabel = formatCodexProviderForLog("openai-multi", err.accountId, config);
+        const safeAccountLabel = formatCodexProviderForLog("openai", err.accountId, config);
         console.error(`[images] Pool account ${safeAccountLabel} token failed; reauthentication required`);
         forwardAuthError = formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
       } else if (err instanceof CodexPoolAuthenticationError) {
@@ -108,7 +108,7 @@ export async function handleImages(
     // The ChatGPT codex backend takes bare paths (matches the adapter's `${baseUrl}/responses`).
     url = `${provider.baseUrl}/images/${endpoint}`;
   } else if (forwardAuthError) {
-    // A configured Multi tier owns its authentication failure. Do not hide a
+    // A configured OpenAI pool mode owns its authentication failure. Do not hide a
     // broken/expired pool behind separately billed API-key image generation.
     return forwardAuthError;
   } else if (candidates.keyed) {

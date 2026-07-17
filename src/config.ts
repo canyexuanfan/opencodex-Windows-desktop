@@ -173,7 +173,9 @@ export function backupConfigBeforeOpenAiTierMigration(
   const source = configPath;
   if (!io.exists(source)) return "absent";
   const original = io.read(source);
-  const backup = `${source}.pre-openai-tiers-v1.bak`;
+  // v2 snapshot path. The historical `.pre-openai-tiers-v1.bak` is read only by restore
+  // docs/fixtures and is never reused or overwritten as the v2 snapshot.
+  const backup = `${source}.pre-openai-tiers-v2.bak`;
   if (io.exists(backup)) {
     if (!sameBytes(original, io.read(backup))) throw new OpenAiTierBackupCollisionError();
     return "reused";
@@ -288,6 +290,7 @@ const providerConfigSchema = z.object({
   adapter: z.string().min(1),
   baseUrl: z.string().min(1),
   allowPrivateNetwork: z.boolean().optional(),
+  codexAccountMode: z.enum(["pool", "direct"]).optional(),
 }).passthrough();
 
 const RESERVED_PROVIDER_NAMES = new Set(["__proto__", "prototype", "constructor"]);
@@ -357,7 +360,7 @@ const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
   providers: z.record(z.string(), providerConfigSchema),
   defaultProvider: z.string().min(1).default("openai"),
-  openaiProviderTierVersion: z.literal(1).optional(),
+  openaiProviderTierVersion: z.union([z.literal(1), z.literal(2)]).optional(),
   providerContextCaps: z.record(z.string(), z.number().int().positive()).optional(),
   contextCapValue: z.number().int().positive().optional(),
 }).passthrough().superRefine((config, ctx) => {
@@ -412,6 +415,22 @@ const configSchema = z.object({
         path: ["providers", name, "modelMaxInputTokens"],
         message: maxInputError,
       });
+    }
+    if (Object.hasOwn(provider, "codexAccountMode") && provider.codexAccountMode !== undefined) {
+      // Persisted account mode is valid ONLY on the canonical built-in `openai` forward provider.
+      // Old openai-multi rows stay parseable (they never carry a mode) so startup can migrate them.
+      const canonicalOpenAiShape = name === "openai"
+        && provider.adapter === "openai-responses"
+        && (provider as { authMode?: unknown }).authMode === "forward"
+        && typeof provider.baseUrl === "string"
+        && provider.baseUrl.replace(/\/+$/, "") === "https://chatgpt.com/backend-api/codex";
+      if (!canonicalOpenAiShape) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["providers", name, "codexAccountMode"],
+          message: "codexAccountMode is valid only on the canonical built-in openai provider",
+        });
+      }
     }
   }
   if (!hasOwnProvider(config.providers, config.defaultProvider)) {
@@ -612,6 +631,7 @@ export function getDefaultConfig(): OcxConfig {
         adapter: "openai-responses",
         baseUrl: "https://chatgpt.com/backend-api/codex",
         authMode: "forward",
+        codexAccountMode: "pool",
       },
     },
     defaultProvider: "openai",

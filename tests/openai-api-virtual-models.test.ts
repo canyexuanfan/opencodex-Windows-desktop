@@ -46,7 +46,7 @@ describe("OpenAI API virtual model resolution", () => {
   }
 
   // 3. Non-API providers never resolve virtuals
-  for (const provider of ["openai", "openai-multi", "anthropic", "cursor"]) {
+  for (const provider of ["openai", "anthropic", "cursor"]) {
     test(`${provider} never resolves virtual models`, () => {
       expect(resolveOpenAiVirtualModel(provider, "gpt-5.6-sol-pro")).toBeUndefined();
     });
@@ -166,7 +166,7 @@ describe("OpenAI API compact transport", () => {
     saveConfig({
       port: 0,
       defaultProvider: "openai-apikey",
-      openaiProviderTierVersion: 1,
+      openaiProviderTierVersion: 2,
       providers: {
         "openai-apikey": {
           adapter: "openai-responses",
@@ -358,7 +358,7 @@ describe("OpenAI API Pro transport identities", () => {
       port: 0,
       websockets: true,
       defaultProvider: "openai-apikey",
-      openaiProviderTierVersion: 1,
+      openaiProviderTierVersion: 2,
       providers: {
         "openai-apikey": {
           adapter: "openai-responses",
