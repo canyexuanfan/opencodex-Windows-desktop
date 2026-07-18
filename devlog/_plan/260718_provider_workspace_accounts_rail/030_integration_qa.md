@@ -137,3 +137,37 @@ privacy scan + diff check
 - Goalplan tasks done and every met criterion has non-empty captured evidence.
 - `cxc loop validate` passes, FSM closes through D to IDLE, then `update_goal complete` succeeds.
 - Final terminal result names `DONE`, `NOOP`, `BLOCKED`, `UNSAFE`, `NEEDS_HUMAN`, or `BUDGET_EXHAUSTED`; no push occurs without explicit approval.
+
+## C final verification receipt — 2026-07-18
+
+### Automated gates
+
+```text
+focused integration suite
+  133 pass / 0 fail / 462 assertions
+current-worktree full test suite
+  PASS (exit 0; unrelated pre-existing deleted test remains outside goal commits)
+root bun run typecheck
+  PASS
+GUI production build
+  PASS; pre-existing chunk-size warning only
+focused changed-file ESLint
+  PASS (0 errors / 0 warnings)
+GUI full lint / lint:i18n
+  one unchanged baseline error only: ProviderOverview.tsx:152 react-hooks/set-state-in-effect
+privacy scan / git diff --check
+  PASS
+```
+
+### Final browser/runtime proof
+
+- Exact route contract: direct `#providers/workspace` and reload both retained the workspace; `#providers/typo` normalized to `#providers`.
+- Current default viewport: 1600 CSS px, document `1600 == 1600`, workspace `1296 == 1296`, exactly one rail option with `tabIndex=0`, zero console errors/warnings.
+- Final OpenAI Accounts screenshot shows masked main + three pool accounts, explicit `Set as Next Session` buttons on three non-current usable accounts, no clickable card containers, and independent masked remove controls.
+- Anthropic still reports two accounts. Fresh live reads prove both Anthropic and Codex active ids equal the originals captured before mutation; ids were never printed.
+- German and Chinese desktop smoke both retained document/workspace `clientWidth == scrollWidth`; English/System were restored afterward.
+- The earlier full responsive matrix and Korean/light/dark/filter/keyboard screenshots remain valid after the final repair because the repair did not touch layout CSS; direct final metrics reconfirm zero overflow and one rail focus entry.
+
+### Independent review
+
+Terra-high reviewed every changed implementation file and both tests. Its `GO-WITH-FIXES` findings were all implemented in `f5655e9`. The same reviewer was resumed for a repair re-audit but produced no result after four bounded waits (30s, 30s, 30s, 20s) and was retired. Main verification closed each item with source contracts, focused/full suites, and live browser proof; the original reviewer verdict was not misreported as PASS.
