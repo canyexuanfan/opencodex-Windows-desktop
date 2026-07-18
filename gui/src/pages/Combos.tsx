@@ -12,11 +12,31 @@ import { useT } from "../i18n";
 type ProviderOption = {
   name: string;
   disabled?: boolean;
+  hiddenFromPicker?: boolean;
   authMode?: string;
   adapter?: string;
   baseUrl?: string;
 };
 type ModelOption = { provider: string; id: string; namespaced?: string };
+type ProviderDto = {
+  adapter: string;
+  baseUrl: string;
+  disabled?: boolean;
+  defaultModel?: string;
+  authMode?: string;
+};
+type ConfigDto = { providers?: Record<string, ProviderDto> };
+
+function responseError(data: unknown): string | undefined {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
+  const error = (data as { error?: unknown }).error;
+  return typeof error === "string" && error.trim() ? error : undefined;
+}
+
+function responseSucceeded(data: unknown): boolean {
+  return !!data && typeof data === "object" && !Array.isArray(data)
+    && (data as { success?: unknown }).success === true;
+}
 
 export default function Combos({ apiBase }: { apiBase: string }) {
   const t = useT();
@@ -50,16 +70,11 @@ export default function Combos({ apiBase }: { apiBase: string }) {
         fetch(`${apiBase}/api/config`),
         fetch(`${apiBase}/api/models`),
       ]);
+      if (!combosRes.ok || !configRes.ok || !modelsRes.ok) {
+        throw new Error("combo workspace load failed");
+      }
       const combosJson = await combosRes.json();
-      const configJson = await configRes.json() as {
-        providers?: Record<string, {
-          disabled?: boolean;
-          defaultModel?: string;
-          authMode?: string;
-          adapter: string;
-          baseUrl: string;
-        }>;
-      };
+      const configJson = await configRes.json() as ConfigDto;
       // /api/models returns a bare array (not { models: [...] }).
       const modelsRaw = await modelsRes.json() as unknown;
       const modelRows = Array.isArray(modelsRaw)
@@ -70,12 +85,15 @@ export default function Combos({ apiBase }: { apiBase: string }) {
 
       setCombos(parseComboList(combosJson));
 
-      // Same as Providers workspace: hide duplicate chatgpt when openai forward already exists.
-      const visibleProviders = hideRedundantChatGptForwardProviders(configJson.providers ?? {});
+      const allProviders = configJson.providers ?? {};
+      // Collapse canonical forward aliases only in the new-member picker. Validation keeps
+      // every configured provider id, including legacy chatgpt members already in a combo.
+      const visibleProviders = hideRedundantChatGptForwardProviders(allProviders);
       setProviders(
-        Object.entries(visibleProviders).map(([name, p]) => ({
+        Object.entries(allProviders).map(([name, p]) => ({
           name,
           disabled: !!p.disabled,
+          hiddenFromPicker: !Object.hasOwn(visibleProviders, name),
           authMode: p.authMode,
           adapter: p.adapter,
           baseUrl: p.baseUrl,
@@ -87,11 +105,13 @@ export default function Combos({ apiBase }: { apiBase: string }) {
         if (!row || typeof row !== "object") continue;
         const m = row as { provider?: unknown; id?: unknown; namespaced?: unknown; disabled?: unknown };
         if (typeof m.provider !== "string" || typeof m.id !== "string") continue;
-        if (m.provider === "combo") continue; // combos cannot nest other combos as targets
+        const provider = m.provider.trim();
+        const id = m.id.trim();
+        if (!provider || !id || provider === "combo") continue; // combos cannot nest other combos as targets
         if (m.disabled === true) continue;
         fromApi.push({
-          provider: m.provider,
-          id: m.id,
+          provider,
+          id,
           namespaced: typeof m.namespaced === "string" ? m.namespaced : undefined,
         });
       }
@@ -127,14 +147,15 @@ export default function Combos({ apiBase }: { apiBase: string }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(toPutBody(item)),
       });
-      const data = await res.json() as { success?: boolean; error?: string };
-      if (!res.ok || data.error) {
-        const err = data.error || t("cws.saveFailed");
+      const data = await res.json() as unknown;
+      const serverError = responseError(data);
+      if (!res.ok || serverError || !responseSucceeded(data)) {
+        const err = serverError || t("cws.saveFailed");
         notify(err, false);
         return { ok: false as const, error: err };
       }
-      notify(isCreate ? t("cws.created", { model: item.model }) : t("cws.saved"), true);
       await fetchAll();
+      notify(isCreate ? t("cws.created", { model: item.model }) : t("cws.saved"), true);
       return { ok: true as const };
     } catch {
       const err = t("cws.saveFailed");
@@ -146,14 +167,15 @@ export default function Combos({ apiBase }: { apiBase: string }) {
   const removeCombo = async (id: string) => {
     try {
       const res = await fetch(`${apiBase}/api/combos?id=${encodeURIComponent(id)}`, { method: "DELETE" });
-      const data = await res.json() as { success?: boolean; error?: string };
-      if (!res.ok || data.error) {
-        const err = data.error || t("cws.removeFailed");
+      const data = await res.json() as unknown;
+      const serverError = responseError(data);
+      if (!res.ok || serverError || !responseSucceeded(data)) {
+        const err = serverError || t("cws.removeFailed");
         notify(err, false);
         return { ok: false as const, error: err };
       }
-      notify(t("cws.removed", { id }), true);
       await fetchAll();
+      notify(t("cws.removed", { id }), true);
       return { ok: true as const };
     } catch {
       const err = t("cws.removeFailed");
@@ -186,7 +208,6 @@ export default function Combos({ apiBase }: { apiBase: string }) {
       )}
       <div className="combos-workspace-shell-body">
         <ComboWorkspace
-          apiBase={apiBase}
           combos={combos}
           providers={providers}
           models={models}

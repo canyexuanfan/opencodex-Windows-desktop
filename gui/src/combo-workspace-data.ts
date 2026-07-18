@@ -51,9 +51,9 @@ export function normalizeStrategy(raw: unknown): ComboStrategy {
 }
 
 export function normalizeStickyLimit(raw: unknown): number {
-  const n = typeof raw === "number" ? raw : Number(raw);
-  if (!Number.isFinite(n) || n < 1) return 1;
-  return Math.min(100, Math.floor(n));
+  return typeof raw === "number" && Number.isInteger(raw) && raw >= 1 && raw <= 100
+    ? raw
+    : 1;
 }
 
 export function normalizeDefaultEffort(raw: unknown): ComboEffort {
@@ -63,9 +63,9 @@ export function normalizeDefaultEffort(raw: unknown): ComboEffort {
 }
 
 export function normalizeWeight(raw: unknown): number | undefined {
-  const n = typeof raw === "number" ? raw : Number(raw);
-  if (!Number.isFinite(n) || n < 1) return undefined;
-  return Math.min(10000, Math.floor(n));
+  return typeof raw === "number" && Number.isInteger(raw) && raw >= 1 && raw <= 10000
+    ? raw
+    : undefined;
 }
 
 export function parseComboList(payload: unknown): ComboItem[] {
@@ -158,19 +158,15 @@ export function toPutBody(item: ComboItem): {
     defaultEffort: ComboEffort;
   };
 } {
-  const targets = item.targets.map((t) => {
-    const weight = item.strategy === "round-robin" ? normalizeWeight(t.weight ?? 1) : undefined;
-    return weight !== undefined
-      ? { provider: t.provider.trim(), model: t.model.trim(), weight }
-      : { provider: t.provider.trim(), model: t.model.trim() };
-  });
   return {
     id: item.id.trim(),
     combo: {
-      targets,
+      targets: item.targets.map((target) => item.strategy === "round-robin"
+        ? { provider: target.provider.trim(), model: target.model.trim(), weight: target.weight ?? 1 }
+        : { provider: target.provider.trim(), model: target.model.trim() }),
       strategy: item.strategy,
-      defaultEffort: normalizeDefaultEffort(item.defaultEffort),
-      ...(item.strategy === "round-robin" ? { stickyLimit: normalizeStickyLimit(item.stickyLimit) } : {}),
+      defaultEffort: item.defaultEffort,
+      ...(item.strategy === "round-robin" ? { stickyLimit: item.stickyLimit } : {}),
     },
   };
 }
@@ -179,21 +175,56 @@ export type ComboDraftError =
   | "missingId"
   | "invalidId"
   | "duplicateId"
+  | "reservedNamespace"
+  | "providerCollision"
   | "noTargets"
-  | "incompleteTarget";
+  | "incompleteTarget"
+  | "unknownProvider"
+  | "duplicateTarget"
+  | "invalidStickyLimit"
+  | "invalidWeight"
+  | "noEnabledTarget";
 
 export function validateComboDraft(
   item: ComboItem,
-  existingIds: string[],
-  isCreate: boolean,
+  options: {
+    existingIds: readonly string[];
+    isCreate: boolean;
+    providers: Readonly<Record<string, { disabled?: boolean }>>;
+  },
 ): ComboDraftError | null {
   const id = item.id.trim();
   if (!id) return "missingId";
   if (!isValidComboId(id)) return "invalidId";
-  if (isCreate && existingIds.includes(id)) return "duplicateId";
+  if (options.isCreate && options.existingIds.includes(id)) return "duplicateId";
+  if (Object.hasOwn(options.providers, "combo")) return "reservedNamespace";
+  if (Object.hasOwn(options.providers, id)) return "providerCollision";
   if (item.targets.length < 1) return "noTargets";
+
   for (const t of item.targets) {
     if (!t.provider.trim() || !t.model.trim()) return "incompleteTarget";
+    if (!Object.hasOwn(options.providers, t.provider.trim())) return "unknownProvider";
+  }
+
+  const targets = new Set<string>();
+  for (const target of item.targets) {
+    const key = `${target.provider.trim()}/${target.model.trim()}`;
+    if (targets.has(key)) return "duplicateTarget";
+    targets.add(key);
+  }
+
+  if (item.strategy === "round-robin") {
+    if (!Number.isInteger(item.stickyLimit) || item.stickyLimit < 1 || item.stickyLimit > 100) {
+      return "invalidStickyLimit";
+    }
+    for (const target of item.targets) {
+      const weight = target.weight ?? 1;
+      if (!Number.isInteger(weight) || weight < 1 || weight > 10000) return "invalidWeight";
+    }
+  }
+
+  if (!item.targets.some((target) => options.providers[target.provider.trim()]?.disabled !== true)) {
+    return "noEnabledTarget";
   }
   return null;
 }

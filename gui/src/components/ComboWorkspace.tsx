@@ -29,6 +29,7 @@ import { Notice } from "../ui";
 export type ProviderOption = {
   name: string;
   disabled?: boolean;
+  hiddenFromPicker?: boolean;
   authMode?: string;
   adapter?: string;
   baseUrl?: string;
@@ -49,11 +50,12 @@ export interface ComboWorkspaceProps {
   adding: boolean;
   onCloseAdd: () => void;
   onCreated: (id: string) => void;
-  apiBase: string;
 }
 
 function enabledProviders(providers: ProviderOption[]): ProviderOption[] {
-  return providers.filter((p) => !p.disabled).sort((a, b) => a.name.localeCompare(b.name));
+  return providers
+    .filter((p) => !p.disabled && !p.hiddenFromPicker)
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** ChatGPT passthrough has no /models catalog — GPT slugs are listed under provider "openai". */
@@ -178,6 +180,10 @@ function TargetEditor({
   return (
     <div className="cwi-target-list">
       {targets.map((row, index) => {
+        const currentProvider = providers.find((provider) => provider.name === row.provider);
+        const providerOptions = currentProvider && !provs.some((provider) => provider.name === row.provider)
+          ? [...provs, currentProvider]
+          : provs;
         const modelIds = modelsForProvider(models, row.provider, providers);
         const options = row.model && !modelIds.includes(row.model)
           ? [row.model, ...modelIds]
@@ -236,8 +242,10 @@ function TargetEditor({
               }}
             >
               <option value="">{t("cws.target.pickProvider")}</option>
-              {provs.map((p) => (
-                <option key={p.name} value={p.name}>{p.name}</option>
+              {providerOptions.map((p) => (
+                <option key={p.name} value={p.name}>
+                  {p.disabled ? t("cws.target.disabled", { name: p.name }) : p.name}
+                </option>
               ))}
             </select>
             <select
@@ -266,7 +274,7 @@ function TargetEditor({
                 max={10000}
                 value={row.weight ?? 1}
                 aria-label={t("cws.target.weight")}
-                onChange={(e) => update(index, { weight: Number(e.target.value) || 1 })}
+                onChange={(e) => update(index, { weight: Number(e.target.value) })}
               />
             )}
             <div className="cwi-target-actions">
@@ -356,12 +364,14 @@ function UnsavedLeaveDialog({
 
 export function AddComboModal({
   existingIds,
+  providerMap,
   providers,
   models,
   onClose,
   onSubmit,
 }: {
   existingIds: string[];
+  providerMap: Readonly<Record<string, { disabled?: boolean }>>;
   providers: ProviderOption[];
   models: ModelOption[];
   onClose: () => void;
@@ -384,7 +394,11 @@ export function AddComboModal({
   }, [busy, onClose]);
 
   const submit = async () => {
-    const code = validateComboDraft(draft, existingIds, true);
+    const code = validateComboDraft(draft, {
+      existingIds,
+      isCreate: true,
+      providers: providerMap,
+    });
     if (code) {
       setError(t(`cws.err.${code}`));
       return;
@@ -459,7 +473,7 @@ export function AddComboModal({
                 max={100}
                 value={draft.stickyLimit}
                 disabled={busy}
-                onChange={(e) => setDraft((d) => ({ ...d, stickyLimit: Number(e.target.value) || 1 }))}
+                onChange={(e) => setDraft((d) => ({ ...d, stickyLimit: Number(e.target.value) }))}
               />
               <p className="muted" style={{ fontSize: 12, margin: "4px 0 0" }}>
                 {t("cws.field.stickyLimitHint")}
@@ -562,6 +576,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
 
 function DetailPanel({
   baseline,
+  providerMap,
   providers,
   models,
   onBack,
@@ -571,6 +586,7 @@ function DetailPanel({
   onDirtyChange,
 }: {
   baseline: ComboItem;
+  providerMap: Readonly<Record<string, { disabled?: boolean }>>;
   providers: ProviderOption[];
   models: ModelOption[];
   onBack: () => void;
@@ -614,7 +630,11 @@ function DetailPanel({
   };
 
   const save = async () => {
-    const code = validateComboDraft(draft, [], false);
+    const code = validateComboDraft(draft, {
+      existingIds: [],
+      isCreate: false,
+      providers: providerMap,
+    });
     if (code) {
       setMsg({ ok: false, text: t(`cws.err.${code}`) });
       return;
@@ -699,7 +719,7 @@ function DetailPanel({
                   max={100}
                   value={draft.stickyLimit}
                   disabled={busy}
-                  onChange={(e) => setDraft((d) => ({ ...d, stickyLimit: Number(e.target.value) || 1 }))}
+                  onChange={(e) => setDraft((d) => ({ ...d, stickyLimit: Number(e.target.value) }))}
                 />
               </div>
             )}
@@ -742,6 +762,10 @@ export default function ComboWorkspace({
   onCreated,
 }: ComboWorkspaceProps) {
   const t = useT();
+  const providerMap = useMemo(
+    () => Object.fromEntries(providers.map((provider) => [provider.name, { disabled: provider.disabled }])),
+    [providers],
+  );
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pendingSelect, setPendingSelect] = useState<string | null | undefined>(undefined);
@@ -785,6 +809,7 @@ export default function ComboWorkspace({
         {adding && (
           <AddComboModal
             existingIds={combos.map((c) => c.id)}
+            providerMap={providerMap}
             providers={providers}
             models={models}
             onClose={onCloseAdd}
@@ -876,6 +901,7 @@ export default function ComboWorkspace({
           <DetailPanel
             key={baseline.id}
             baseline={baseline}
+            providerMap={providerMap}
             providers={providers}
             models={models}
             onBack={() => trySelect(null)}
@@ -896,6 +922,7 @@ export default function ComboWorkspace({
       {adding && (
         <AddComboModal
           existingIds={combos.map((c) => c.id)}
+          providerMap={providerMap}
           providers={providers}
           models={models}
           onClose={onCloseAdd}
