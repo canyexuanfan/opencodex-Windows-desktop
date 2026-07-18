@@ -2,7 +2,7 @@
  * ProviderOverview — 2-column layout: left (CONNECTION + Auth summary) / right
  * (STATS + Notes). Phase 030 of workspace design parity.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import { useT, useI18n } from "../../i18n";
 import { IconAlert, IconCheck } from "../../icons";
 import { binProviderStatus, type WorkspaceItem } from "../../provider-workspace/catalog";
@@ -143,15 +143,8 @@ function NotesSection({ item, onUpdateProvider }: {
 }) {
   const t = useT();
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(item.note ?? "");
+  const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  /* Sync draft when provider changes or note is updated externally */
-  useEffect(() => {
-    setDraft(item.note ?? "");
-    setEditing(false);
-  }, [item.name, item.note]);
 
   const save = useCallback(async () => {
     if (saving || !onUpdateProvider) return;
@@ -173,7 +166,11 @@ function NotesSection({ item, onUpdateProvider }: {
         <button
           type="button"
           className="pws-notes-display"
-          onClick={() => { if (onUpdateProvider) setEditing(true); }}
+          onClick={() => {
+            if (!onUpdateProvider) return;
+            setDraft(item.note ?? "");
+            setEditing(true);
+          }}
           disabled={!onUpdateProvider}
         >
           {item.note || <span className="muted">{t("pws.notePlaceholder")}</span>}
@@ -186,7 +183,6 @@ function NotesSection({ item, onUpdateProvider }: {
     <section className="pws-section pws-notes-section" aria-label={t("pws.notes")}>
       <h3 className="pws-section-title">{t("pws.notes")}</h3>
       <textarea
-        ref={textareaRef}
         className="pws-notes-textarea"
         value={draft}
         onChange={e => setDraft(e.target.value)}
