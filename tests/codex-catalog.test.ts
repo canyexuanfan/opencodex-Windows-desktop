@@ -2,7 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { augmentRoutedModelsWithJawcodeMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, filterSupportedNativeSlugs, gatherRoutedModels, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, resetOpenAiApiCatalogWarningStateForTests } from "../src/codex/catalog";
+import { augmentRoutedModelsWithJawcodeMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, deriveComboCatalogModel, exactComboCatalogSlugs, filterCatalogVisibleModels, filterSupportedNativeSlugs, gatherRoutedModels, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, resetCatalogRuntimeStateForTests, resetOpenAiApiCatalogWarningStateForTests } from "../src/codex/catalog";
 import {
   CURSOR_STATIC_MODELS,
   filterCursorConfiguredModelsByLiveDiscovery,
@@ -14,6 +14,7 @@ import {
 import { getJawcodeModelMetadata, resolveJawcodeProvider } from "../src/generated/jawcode-model-metadata";
 import { clearModelCache, getStaleCached, setCached } from "../src/codex/model-cache";
 import type { OcxConfig } from "../src/types";
+import type { NormalizedComboConfig } from "../src/combos/types";
 
 const originalFetch = globalThis.fetch;
 
@@ -21,6 +22,215 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
   clearModelCache();
   resetOpenAiApiCatalogWarningStateForTests();
+});
+
+function normalizedCombo(
+  overrides: Partial<NormalizedComboConfig> = {},
+): NormalizedComboConfig {
+  return {
+    strategy: "failover",
+    stickyLimit: 1,
+    defaultEffort: "medium",
+    targets: [
+      { provider: "a", model: "m1", weight: 1 },
+      { provider: "b", model: "m2", weight: 1 },
+    ],
+    ...overrides,
+  };
+}
+
+describe("combo catalog capability intersection", () => {
+  const memberA = {
+    provider: "a",
+    id: "m1",
+    contextWindow: 200_000,
+    maxInputTokens: 180_000,
+    inputModalities: ["text", "image"],
+    reasoningEfforts: ["low", "medium", "high"],
+    parallelToolCalls: true,
+  };
+  const memberB = {
+    provider: "b",
+    id: "m2",
+    contextWindow: 128_000,
+    maxInputTokens: 100_000,
+    inputModalities: ["text"],
+    reasoningEfforts: ["low", "medium"],
+    parallelToolCalls: false,
+  };
+
+  test("derives only capabilities common to every member", () => {
+    const derived = deriveComboCatalogModel(
+      "mixed",
+      normalizedCombo({ defaultEffort: "high" }),
+      [memberA, memberB],
+    );
+
+    expect(derived).toEqual({
+      provider: "combo",
+      id: "mixed",
+      owned_by: "combo",
+      contextWindow: 128_000,
+      maxInputTokens: 100_000,
+      inputModalities: ["text"],
+      reasoningEfforts: ["low", "medium"],
+      defaultReasoningEffort: "medium",
+    });
+  });
+
+  test("handles vision, missing modalities, reasoning defaults, and parallel tools conservatively", () => {
+    expect(deriveComboCatalogModel("vision", normalizedCombo({ defaultEffort: "low" }), [
+      memberA,
+      { ...memberB, inputModalities: ["image", "text"], reasoningEfforts: ["xhigh"], parallelToolCalls: true },
+    ])).toEqual(expect.objectContaining({
+      inputModalities: ["text", "image"],
+      reasoningEfforts: [],
+      parallelToolCalls: true,
+    }));
+    expect(deriveComboCatalogModel("unknown", normalizedCombo(), [
+      memberA,
+      { ...memberB, inputModalities: undefined },
+    ])?.inputModalities).toEqual(["text"]);
+    expect(deriveComboCatalogModel("high", normalizedCombo({ defaultEffort: "low" }), [
+      { ...memberA, reasoningEfforts: ["high"] },
+      { ...memberB, reasoningEfforts: ["high"] },
+    ])?.defaultReasoningEffort).toBe("high");
+    expect(deriveComboCatalogModel("common", normalizedCombo({ defaultEffort: "medium" }), [
+      memberA,
+      { ...memberB, reasoningEfforts: ["medium", "high"] },
+    ])?.defaultReasoningEffort).toBe("medium");
+  });
+
+  test("fails closed for missing members, unknown context, duplicate targets, and empty modalities", () => {
+    expect(deriveComboCatalogModel("missing", normalizedCombo(), [memberA])).toBeNull();
+    expect(deriveComboCatalogModel("context", normalizedCombo(), [
+      memberA,
+      { ...memberB, contextWindow: undefined },
+    ])).toBeNull();
+    expect(deriveComboCatalogModel("modalities", normalizedCombo(), [
+      { ...memberA, inputModalities: ["image"] },
+      { ...memberB, inputModalities: ["text"] },
+    ])).toBeNull();
+    expect(deriveComboCatalogModel("duplicate", normalizedCombo({
+      targets: [
+        { provider: "a", model: "m1", weight: 1 },
+        { provider: "a", model: "m1", weight: 1 },
+      ],
+    }), [memberA, memberA])).toBeNull();
+  });
+
+  test("requires member identity to follow target order", () => {
+    const reversed = normalizedCombo({ targets: [...normalizedCombo().targets].reverse() });
+    expect(deriveComboCatalogModel("ordered", reversed, [memberB, memberA]))
+      .toEqual(expect.objectContaining({ contextWindow: 128_000 }));
+    expect(deriveComboCatalogModel("mismatch", reversed, [memberA, memberB])).toBeNull();
+  });
+
+  test("preserves exact combo ladders and modalities through template, fallback, and sync", () => {
+    const model = deriveComboCatalogModel("mixed", normalizedCombo(), [memberA, memberB])!;
+    const exact = new Set(["combo/mixed"]);
+    for (const template of [nativeTemplate(), null]) {
+      const row = buildCatalogEntries(template, [], [model], undefined, false, "default", exact)
+        .find(entry => entry.slug === "combo/mixed");
+      expect((row?.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort))
+        .toEqual(["low", "medium"]);
+      expect(row?.default_reasoning_level).toBe("medium");
+      expect(row?.input_modalities).toEqual(["text"]);
+    }
+
+    const built = buildCatalogEntries(nativeTemplate(), [], [model], undefined, false, "default", exact);
+    const merged = mergeCatalogEntriesForSync(
+      [], built, new Map(), [], false, new Set(), nativeTemplate(), new Set(),
+      new Set(["combo"]), "default", exact, false,
+    );
+    const row = merged.find(entry => entry.slug === "combo/mixed");
+    expect((row?.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort))
+      .toEqual(["low", "medium"]);
+    expect(row?.input_modalities).toEqual(["text"]);
+  });
+
+  test("never repairs an exact combo with an empty modality intersection", () => {
+    const exact = new Set(["combo/hidden"]);
+    const malformed = {
+      provider: "combo",
+      id: "hidden",
+      contextWindow: 128_000,
+      inputModalities: [],
+      reasoningEfforts: ["low"],
+    };
+    const built = buildCatalogEntries(null, [], [malformed], undefined, false, "default", exact);
+    const merged = mergeCatalogEntriesForSync(
+      [], built, new Map(), [], false, new Set(), null, new Set(), new Set(["combo"]),
+      "default", exact, false,
+    );
+    expect(merged.some(entry => entry.slug === "combo/hidden")).toBe(false);
+  });
+
+  test("uses config identity for physical preservation and stale virtual cleanup", () => {
+    const physical = {
+      slug: "combo/model",
+      supported_reasoning_levels: [{ effort: "low" }],
+      input_modalities: ["text"],
+    };
+    const preserved = mergeCatalogEntriesForSync(
+      [physical], [], new Map(), [], false, new Set(), null, new Set(), new Set(["combo"]),
+      "default", new Set(), true,
+    ).find(entry => entry.slug === "combo/model");
+    expect(preserved).toBeDefined();
+    expect((preserved?.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort))
+      .toEqual(["low", "max"]);
+
+    const stale = { ...physical, slug: "combo/deleted" };
+    expect(mergeCatalogEntriesForSync(
+      [stale], [], new Map(), [], false, new Set(), null, new Set(), new Set(),
+      "default", new Set(), false,
+    ).some(entry => entry.slug === "combo/deleted")).toBe(false);
+    expect(mergeCatalogEntriesForSync(
+      [stale], [], new Map(), [], false, new Set(), null, new Set(), new Set(),
+      "default", new Set(["combo/deleted"]), false,
+    ).some(entry => entry.slug === "combo/deleted")).toBe(false);
+  });
+
+  test("gathers sorted rows, filters disabled combos, and deduplicates redacted warnings until reset", async () => {
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "a",
+      providers: {
+        a: { adapter: "openai-chat", baseUrl: "https://a.example/v1", liveModels: false, models: ["m1"], modelContextWindows: { m1: 200_000 } },
+        b: { adapter: "openai-chat", baseUrl: "https://b.example/v1", liveModels: false, models: ["m2"], modelContextWindows: { m2: 128_000 } },
+      },
+      combos: {
+        mixed: { targets: [{ provider: "a", model: "m1" }, { provider: "b", model: "m2" }] },
+        hidden: { targets: [{ provider: "a", model: "sk-warning-secret-123456" }] },
+      },
+      disabledModels: ["combo/mixed"],
+    };
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const first = await gatherRoutedModels(config);
+      const second = await gatherRoutedModels(config);
+      expect(first.map(model => `${model.provider}/${model.id}`)).toEqual([
+        "a/m1", "b/m2", "combo/mixed",
+      ]);
+      expect(filterCatalogVisibleModels(first, config).some(model => model.id === "mixed")).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain("[REDACTED]");
+      expect(String(warn.mock.calls[0]?.[0])).not.toContain("sk-warning-secret-123456");
+      expect(second).toEqual(first);
+
+      resetCatalogRuntimeStateForTests();
+      await gatherRoutedModels(config);
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("exact combo slugs come only from current config", () => {
+    expect(exactComboCatalogSlugs({ combos: { free: { targets: [{ provider: "a", model: "m1" }] } } }))
+      .toEqual(new Set(["combo/free"]));
+    expect(exactComboCatalogSlugs({})).toEqual(new Set());
+  });
 });
 
 function openAiApiCatalogConfig(overrides: Record<string, unknown> = {}): OcxConfig {
