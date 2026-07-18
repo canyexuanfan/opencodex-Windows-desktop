@@ -86,6 +86,11 @@ with seam heartbeats between bounded units. None of these clocks is a total gene
 Native OpenAI passthrough sanitizes routed reasoning history so `reasoning` input items do not send
 non-empty `content` arrays to upstream models that reject them. Chat Completions bridging repairs
 orphan `toolResult` messages by inserting a synthetic assistant `tool_call` before tool messages.
+It also repairs the opposite direction (260718): an assistant `tool_calls` round left dangling —
+by an intervening user/developer barrier or an interrupted turn — is closed by deferring barrier
+messages until the round completes, reattaching real results to their original call occurrence,
+and synthesizing explicit "no tool result was recorded" answers only when no real result exists
+(Kimi/Moonshot 400 `ocx-mrqaiw05-269`; unit `devlog/_plan/260718_dangling_toolcall_hardening`).
 
 These compatibility guards are covered by focused tests and should stay close to the adapters that
 need them.
