@@ -54,9 +54,9 @@
   pointer-events: none;
 }
 
-.pws-search-input {
+.pws-search-wrap .pws-search-input {
   width: 100%;
-  padding-left: 28px;
+  padding-left: 32px;
 }
 
 .pws-filter-wrap {

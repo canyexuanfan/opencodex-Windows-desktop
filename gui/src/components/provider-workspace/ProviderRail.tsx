@@ -13,7 +13,7 @@ import {
   type WorkspaceProvider,
 } from "../../provider-workspace/catalog";
 import { isLocalProvider } from "../../provider-workspace/kind";
-import { formatProviderDisplayName, providerBrandColor, providerIconSrc } from "../../provider-icons";
+import { formatProviderDisplayName, providerIconSrc } from "../../provider-icons";
 
 export function statusLabel(p: WorkspaceProvider, t: TFn): string {
   const s = binProviderStatus(p);
@@ -46,20 +46,9 @@ export function ProviderIcon({ name, adapter, baseUrl, cls }: {
   cls: string;
 }) {
   const src = providerIconSrc(name, { adapter, baseUrl });
-  const brand = providerBrandColor(name);
   return (
-    <span className={cls} style={brand ? { color: brand } : undefined}>
-      {src && brand ? (
-        <span
-          className="provider-icon-mask"
-          style={{
-            backgroundColor: brand,
-            WebkitMaskImage: `url(${src})`,
-            maskImage: `url(${src})`,
-          }}
-          aria-hidden="true"
-        />
-      ) : src ? (
+    <span className={cls}>
+      {src ? (
         <img src={src} alt="" aria-hidden="true" />
       ) : (
         <IconServer aria-hidden="true" />
