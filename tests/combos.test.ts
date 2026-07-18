@@ -3,12 +3,16 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  advanceComboAfterFailure,
   clearComboSelectionState,
   clearComboTargetCooldowns,
   comboConfigError,
   comboConfigIssues,
   comboDefaultEffort,
+  comboFailureDecision,
+  comboIdFromRawBody,
   comboModelId,
+  concreteComboRequestBody,
   coolComboTarget,
   getCombo,
   isComboTargetInCooldown,
@@ -16,6 +20,7 @@ import {
   listComboIds,
   NoAvailableComboTargetsError,
   noteComboSuccess,
+  noteComboFailure,
   normalizeComboConfig,
   parseComboModelId,
   parseRetryAfterMs,
@@ -152,6 +157,45 @@ describe("combo namespace primitives", () => {
   });
 });
 
+describe("combo request cloning", () => {
+  const target = { provider: "a", model: "m1" };
+
+  test("detects only literal combo model ids in raw request records", () => {
+    expect(comboIdFromRawBody({ model: "combo/free" })).toBe("free");
+    expect(comboIdFromRawBody({ model: "a/m1" })).toBeNull();
+    expect(comboIdFromRawBody({ model: 1 })).toBeNull();
+    expect(comboIdFromRawBody(null)).toBeNull();
+  });
+
+  test("clones the untouched body and injects an omitted combo default", () => {
+    const raw = { model: "combo/free", input: [{ role: "user", content: "hi" }] };
+    const concrete = concreteComboRequestBody(raw, target, "high");
+    expect(concrete).toEqual({
+      model: "a/m1",
+      input: [{ role: "user", content: "hi" }],
+      reasoning: { effort: "high" },
+    });
+    expect(raw).toEqual({ model: "combo/free", input: [{ role: "user", content: "hi" }] });
+    expect(concrete.input).not.toBe(raw.input);
+  });
+
+  test("combo default respects client-owned ignored reasoning values", () => {
+    expect(concreteComboRequestBody({ model: "combo/x", reasoning: null }, target, "high").reasoning).toBeNull();
+    expect(concreteComboRequestBody(
+      { model: "combo/x", reasoning: { effort: "" } }, target, "high",
+    ).reasoning).toEqual({ effort: "" });
+    expect(concreteComboRequestBody(
+      { model: "combo/x", reasoning: { effort: "banana" } }, target, "high",
+    ).reasoning).toEqual({ effort: "banana" });
+    expect(concreteComboRequestBody(
+      { model: "combo/x", reasoning: { effort: null } }, target, "high",
+    ).reasoning).toEqual({ effort: null });
+    expect(concreteComboRequestBody(
+      { model: "combo/x", reasoning: { summary: "concise" } }, target, "high",
+    ).reasoning).toEqual({ summary: "concise", effort: "high" });
+  });
+});
+
 describe("combo target cooldowns", () => {
   const target = { provider: "a", model: "m1" };
 
@@ -181,6 +225,51 @@ describe("combo target cooldowns", () => {
     expect(isComboTargetInCooldown("other", target, 1_050)).toBe(true);
     clearComboTargetCooldowns("other");
     expect(isComboTargetInCooldown("other", target, 1_050)).toBe(false);
+  });
+});
+
+describe("combo failure policy and advancement", () => {
+  test("hops only retryable provider-local failures", () => {
+    for (const status of [401, 403, 404, 408, 429, 500, 503]) {
+      expect(comboFailureDecision(status, "provider failure")).toBe("hop");
+    }
+    expect(comboFailureDecision(400, "context_length_exceeded")).toBe("stop");
+    expect(comboFailureDecision(403, '{"code":"origin_rejected"}')).toBe("stop");
+    expect(comboFailureDecision(413, "request too large")).toBe("stop");
+    expect(comboFailureDecision(409, "conflict")).toBe("stop");
+    expect(comboFailureDecision(499, "client cancelled")).toBe("stop");
+    expect(comboFailureDecision(422, "invalid_api_key")).toBe("hop");
+  });
+
+  test("failure clears the active sticky target without adding a success", () => {
+    const config = rrConfig(2, [1, 1]);
+    const combo = getCombo(config, "free")!;
+    const first = pickComboTarget(config, "free")!;
+    noteComboSuccess("free", combo, first.target);
+    noteComboFailure("free", first.target);
+    expect(pickComboTarget(config, "free")?.target.provider).toBe("b");
+  });
+
+  test("advancement preserves attempted order and attempts each target once", () => {
+    const config = baseConfig({
+      combos: {
+        free: {
+          targets: [
+            { provider: "a", model: "m1" },
+            { provider: "b", model: "m2" },
+            { provider: "c", model: "m3" },
+          ],
+        },
+      },
+    });
+    const first = pickComboTarget(config, "free")!;
+    const second = advanceComboAfterFailure(config, first, { now: 1_000 })!;
+    const third = advanceComboAfterFailure(config, second, { now: 1_000 })!;
+    const exhausted = advanceComboAfterFailure(config, third, { now: 1_000 });
+    expect(first.attempted).toEqual(["a/m1"]);
+    expect(second.attempted).toEqual(["a/m1", "b/m2"]);
+    expect(third.attempted).toEqual(["a/m1", "b/m2", "c/m3"]);
+    expect(exhausted).toBeNull();
   });
 });
 
