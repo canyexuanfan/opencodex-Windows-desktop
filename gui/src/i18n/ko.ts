@@ -591,6 +591,7 @@ export const ko: Record<TKey, string> = {
   "quota.monthlyLimit": "30일 한도",
   "quota.cursorFirstParty": "자사 모델",
   "quota.cursorApiUsage": "API 사용량",
+  "quota.totalSubscriptionCredits": "전체 구독 크레딧",
   "quota.usedPercent": "{pct}% 사용",
   "quota.limitReached": "한도 도달",
   "quota.resetsToday": "오늘 {time} 초기화",

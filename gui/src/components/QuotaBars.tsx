@@ -26,6 +26,8 @@ function localizeCustomQuotaLabel(rawLabel: string, t: TFn): string {
       return t("quota.cursorFirstParty");
     case "API usage":
       return t("quota.cursorApiUsage");
+    case "Total subscription credits":
+      return t("quota.totalSubscriptionCredits");
     default:
       return rawLabel;
   }

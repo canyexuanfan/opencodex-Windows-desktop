@@ -424,6 +424,7 @@ export const en = {
   "quota.monthlyLimit": "30-day limit",
   "quota.cursorFirstParty": "First-party models",
   "quota.cursorApiUsage": "API usage",
+  "quota.totalSubscriptionCredits": "Total subscription credits",
   "quota.usedPercent": "{pct}% used",
   "quota.limitReached": "Limit reached",
   "quota.resetsToday": "Resets today at {time}",

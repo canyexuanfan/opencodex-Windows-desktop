@@ -571,6 +571,7 @@ export const de = {
   "quota.monthlyLimit": "30-Tage-Limit",
   "quota.cursorFirstParty": "Erstanbieter-Modelle",
   "quota.cursorApiUsage": "API-Nutzung",
+  "quota.totalSubscriptionCredits": "Gesamtes Abo-Guthaben",
   "quota.usedPercent": "{pct} % genutzt",
   "quota.limitReached": "Limit erreicht",
   "quota.resetsToday": "Zurücksetzung heute um {time}",
