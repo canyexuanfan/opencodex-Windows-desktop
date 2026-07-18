@@ -3,14 +3,14 @@
   "verdict": "PASS",
   "instances": [
     {
-      "pid": 13822,
+      "pid": 7910,
       "version": "2.7.23",
-      "port": 63387
+      "port": 56910
     },
     {
-      "pid": 13849,
+      "pid": 7913,
       "version": "2.7.23",
-      "port": 63389
+      "port": 56912
     }
   ],
   "distinctPids": true,
@@ -35,11 +35,11 @@
   "userState": {
     "opencodex-config": {
       "exists": true,
-      "sha256": "cc0a81152be76e62b4306338c7b1e20ca98d882efc75758450ddcdf698da375b"
+      "sha256": "25d42a271c02c01049ac3396bd4453b9ef666ded7d5dbf4c5e050a3f7e018375"
     },
     "opencodex-oauth": {
       "exists": true,
-      "sha256": "1cadd7cb03239185a5f9b79a2ddc467d18f97b9ded0bdf3d6c6426502592798b"
+      "sha256": "1e3cdf7b8a221e7a03c8bbf1f6e8179d1b3551aa0885a1eff06c3f657e00895d"
     },
     "opencodex-codex-accounts": {
       "exists": true,
@@ -47,7 +47,7 @@
     },
     "codex-config": {
       "exists": true,
-      "sha256": "f9a75c163d8f9cd252ad1806ac1e4e7e4016208f5d056d89fa879f95c6e28022"
+      "sha256": "5d9ee0e1cc314e11739b83dad59d941bce2f0de53a4fa65a82275a541d508231"
     },
     "codex-auth": {
       "exists": true,
