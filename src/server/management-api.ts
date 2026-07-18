@@ -24,6 +24,7 @@ import { providerDestinationResolvedError } from "../lib/destination-policy";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "../oauth/key-providers";
 import { deriveProviderPresets } from "../providers/derive";
 import { providerCodexAccountMode } from "../providers/registry";
+import { routedSlug, slugEquals } from "../providers/slug-codec";
 import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../providers/quota";
 import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
 import { clearThreadAccountMap } from "../codex/routing";
@@ -678,12 +679,13 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       ...(row.contextWindow !== undefined ? { contextWindow: row.contextWindow } : {}),
     }));
     return jsonResponse([...native, ...models.map(m => {
-      const namespaced = `${m.provider}/${m.id}`;
+      // Codex-facing slug (one "/", slug-codec); disabledModels compares tolerate both forms.
+      const namespaced = routedSlug(m.provider, m.id);
       const contextCap = providerContextCap(config, m.provider);
       return {
         ...m,
         namespaced,
-        disabled: disabled.has(namespaced),
+        disabled: [...disabled].some(stored => slugEquals(stored, m.provider, m.id)),
         ...(contextCap !== undefined ? { contextCap, contextCapped: m.contextCapped === true } : {}),
       };
     })]);
@@ -861,8 +863,8 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       .filter(slug => !disabled.has(slug))
       .map(slug => ({ provider: "openai", model: slug, namespaced: slug }));
     const routedModels = models
-      .map(m => ({ provider: m.provider, model: m.id, namespaced: `${m.provider}/${m.id}` }))
-      .filter(m => !disabled.has(m.namespaced));
+      .map(m => ({ provider: m.provider, model: m.id, namespaced: routedSlug(m.provider, m.id) }))
+      .filter(m => ![...disabled].some(stored => slugEquals(stored, m.provider, m.model)));
     return jsonResponse({
       model: config.injectionModel ?? null,
       effort: config.injectionEffort ?? null,
@@ -938,10 +940,13 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     // Native gpt (passthrough) are also valid subagent picks — they're picker-visible models in the
     // catalog, just buried by priority. List them first so the user can feature them over routed.
     const { listCatalogNativeSlugs } = await import("../codex/catalog");
+    const visibleRouted = models
+      .filter(m => ![...disabled].some(stored => slugEquals(stored, m.provider, m.id)))
+      .map(m => routedSlug(m.provider, m.id));
     const available = [
-      ...listCatalogNativeSlugs(),
-      ...models.map(m => `${m.provider}/${m.id}`),
-    ].filter(ns => !disabled.has(ns));
+      ...listCatalogNativeSlugs().filter(ns => !disabled.has(ns)),
+      ...visibleRouted,
+    ];
     return jsonResponse({ chosen: config.subagentModels ?? [], available });
   }
   if (url.pathname === "/api/subagent-models" && req.method === "PUT") {
@@ -964,10 +969,14 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     const { buildClaudeContextWindows, effectiveModelEnv } = await import("../claude/context-windows");
     const { visibleNativeSlugs } = await import("../codex/catalog");
     const disabled = new Set(config.disabledModels ?? []);
+    const isDisabled = (provider: string, id: string) =>
+      [...disabled].some(stored => slugEquals(stored, provider, id));
     const available = [
-      ...listCatalogNativeSlugs(),
-      ...models.map(m => `${m.provider}/${m.id}`),
-    ].filter(ns => !disabled.has(ns));
+      ...listCatalogNativeSlugs().filter(ns => !disabled.has(ns)),
+      // Claude-facing values stay RAW native selectors (resolved inbound via routeModel,
+      // which accepts the raw full-slash form); only the disabled check goes tolerant.
+      ...models.filter(m => !isDisabled(m.provider, m.id)).map(m => `${m.provider}/${m.id}`),
+    ];
     const aliases: { id: string; display_name: string }[] = [];
     for (const slug of listCatalogNativeSlugs()) {
       // Readable CLI-surface alias with hash fallback (devlog 050 / audit 051 #2) —
@@ -975,7 +984,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       if (!disabled.has(slug)) aliases.push({ id: claudeCodeNativeAlias(slug), display_name: `${slug} (native)` });
     }
     for (const m of models) {
-      if (disabled.has(`${m.provider}/${m.id}`)) continue;
+      if (isDisabled(m.provider, m.id)) continue;
       aliases.push({ id: claudeCodeAlias(m.provider, m.id), display_name: `${m.id} (${m.provider})` });
     }
     const contextWindows = buildClaudeContextWindows([...visibleNativeSlugs(config)], models);

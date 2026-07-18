@@ -653,8 +653,14 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   // no /models endpoint is documented, and tools are silently ignored upstream per docs.parallel.ai.
   // Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "parallel", label: "Parallel", baseUrl: "https://platform.parallel.ai", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://platform.parallel.ai" },
-  // FREEZE 2026-07-10: model ids remain unverified. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
-  { id: "zenmux", label: "ZenMux", baseUrl: "https://zenmux.ai/api/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://zenmux.ai" },
+  // ZenMux native ids are vendor-namespaced (`<vendor>/<model>`), verified live against
+  // https://zenmux.ai/api/v1/models on 2026-07-18. The static seed doubles as the
+  // cold-cache decode source for the Codex slug codec (src/providers/slug-codec.ts);
+  // live discovery still owns the full catalog.
+  {
+    id: "zenmux", label: "ZenMux", baseUrl: "https://zenmux.ai/api/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://zenmux.ai",
+    models: ["moonshotai/kimi-k3-free", "moonshotai/kimi-k3"],
+  },
   {
     id: "litellm", label: "LiteLLM (self-hosted)", baseUrl: "http://localhost:4000/v1", adapter: "openai-chat", authKind: "key",
     dashboardUrl: "https://docs.litellm.ai/docs/proxy/quick_start",

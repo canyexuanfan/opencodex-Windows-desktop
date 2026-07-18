@@ -13,6 +13,7 @@ import { getJawcodeModelMetadata, getJawcodeModelMetadataCaseInsensitive, listJa
 import { enrichProviderFromRegistry, shouldCaseFoldMetadataModelId } from "../providers/derive";
 import { getProviderRegistryEntry } from "../providers/registry";
 import { applyProviderContextCap, providerContextCap } from "../providers/context-cap";
+import { encodeRoutedModelId, routedSlug, slugEquals, slugsEquivalent } from "../providers/slug-codec";
 import { CODEX_GPT5_IDENTITY_LINE } from "../adapters/identity";
 import { filterCursorConfiguredModelsByLiveDiscovery } from "../adapters/cursor/discovery";
 import { fetchCursorUsableModels } from "../adapters/cursor/live-models";
@@ -276,14 +277,17 @@ export function catalogModelEfforts(slugs: readonly string[]): Map<string, strin
   if (slugs.length === 0) return out;
   const catalog = readCatalog(readCodexCatalogPath());
   if (!catalog) return out;
-  const wanted = new Set(slugs);
   for (const entry of catalog.models ?? []) {
-    if (typeof entry.slug !== "string" || !wanted.has(entry.slug)) continue;
+    if (typeof entry.slug !== "string") continue;
+    // Tolerate raw legacy config slugs (`provider/vendor/model`) against the
+    // Codex-facing encoded catalog slug (`provider/vendor-model`).
+    const callerSlug = slugs.find(s => slugsEquivalent(s, entry.slug as string));
+    if (callerSlug === undefined) continue;
     const levels = Array.isArray(entry.supported_reasoning_levels)
       ? entry.supported_reasoning_levels as Array<{ effort?: string }>
       : [];
     const efforts = levels.flatMap(l => typeof l.effort === "string" ? [l.effort] : []);
-    if (efforts.length > 0) out.set(entry.slug, efforts);
+    if (efforts.length > 0) out.set(callerSlug, efforts);
   }
   return out;
 }
@@ -533,11 +537,10 @@ export function normalizeRoutedCatalogEntry(entry: RawEntry, parallelToolCalls =
   return ensureStrictCatalogFields(entry);
 }
 
-function applyJawcodeCatalogMetadata(entry: RawEntry, slug: string, contextCap?: number): void {
-  const slash = slug.indexOf("/");
-  if (slash < 0) return;
-  const provider = slug.slice(0, slash);
-  const modelId = slug.slice(slash + 1);
+// provider + NATIVE model id are passed separately: the Codex-facing slug may carry an
+// encoded alias (`provider/vendor-model`) that must never reach the metadata lookup,
+// whose keys are native ids (openrouter `anthropic/...`, nvidia `moonshotai/...`).
+function applyJawcodeCatalogMetadata(entry: RawEntry, provider: string, modelId: string, contextCap?: number): void {
   const jawcodeProvider = resolveJawcodeProvider(provider);
   if (!jawcodeProvider) return;
   const meta = getJawcodeModelMetadata(jawcodeProvider, modelId)
@@ -878,7 +881,9 @@ function deriveEntry(
     // Routed (namespaced) models inherit the gpt template — correct its OpenAI/GPT identity
     // and advertise the reasoning ladder Codex accepts.
     if (slug.includes("/")) {
-      const modelName = slug.slice(slug.indexOf("/") + 1);
+      // Native id for identity text + metadata lookups — the slug may be an encoded
+      // alias (`provider/vendor-model`); the model object carries the native id.
+      const modelName = model?.id ?? slug.slice(slug.indexOf("/") + 1);
       if (typeof e.base_instructions === "string") {
         // Proxy-neutral: keep the GPT-5/OpenAI disclaimer but never advertise the opencodex proxy
         // (leaking that into base_instructions is a non-first-party signature → ToS risk).
@@ -889,7 +894,7 @@ function deriveEntry(
       }
       applyReasoningLevels(e, model?.reasoningEfforts, model?.defaultReasoningEffort, preserveExact);
       normalizeRoutedCatalogEntry(e, model?.parallelToolCalls === true);
-      applyJawcodeCatalogMetadata(e, slug, model?.contextCap);
+      if (model) applyJawcodeCatalogMetadata(e, model.provider, model.id, model.contextCap);
       applyCatalogModelMetadata(e, model);
     } else {
       applyNativeOpenAiContextOverride(e);
@@ -925,7 +930,7 @@ function deriveEntry(
     applyReasoningLevels(entry, isGpt56NativeSlug(slug) ? undefined : ["low", "medium", "high", "xhigh"]);
     if (isGpt56NativeSlug(slug)) ensureGpt56ReasoningLevels(entry);
   }
-  applyJawcodeCatalogMetadata(entry, slug, model?.contextCap);
+  if (model && slug.includes("/")) applyJawcodeCatalogMetadata(entry, model.provider, model.id, model.contextCap);
   applyCatalogModelMetadata(entry, model);
   applyNativeOpenAiContextOverride(entry);
   return ensureStrictCatalogFields(normalizeServiceTiers(entry), {
@@ -953,13 +958,17 @@ export function buildCatalogEntries(
   // it sorts to the front. This works for native gpt slugs AND routed slugs alike.
   const rank = new Map((featured ?? []).map((slug, i) => [slug, i] as const));
   const out: RawEntry[] = [];
+  const collisionSkipped = resolveSlugAliasCollisions(goModels);
   for (const slug of gptSlugs) {
     const e = deriveEntry(template, slug, "OpenAI native model (Codex OAuth passthrough).", 9);
     if (rank.has(slug)) e.priority = rank.get(slug)!;
     out.push(e);
   }
   for (const m of goModels) {
-    const slug = `${m.provider}/${m.id}`;
+    if (collisionSkipped.has(m)) continue;
+    // Codex-facing slug: exactly one "/" (slug-codec). Codex's models-manager metadata
+    // lookup rejects remainders containing "/", so native slash ids are aliased with "_".
+    const slug = routedSlug(m.provider, m.id);
     const e = deriveEntry(
       template,
       slug,
@@ -968,7 +977,9 @@ export function buildCatalogEntries(
       m,
       exactComboSlugs,
     );
-    if (rank.has(slug)) e.priority = rank.get(slug)!;
+    // Featured picks may be stored raw (legacy) or encoded — honor both.
+    const rankHit = rank.get(slug) ?? rank.get(`${m.provider}/${m.id}`);
+    if (rankHit !== undefined) e.priority = rankHit;
     out.push(e);
   }
   // Central capability override (phase 120.4): the advertised flag must match the implemented WS
@@ -1361,7 +1372,10 @@ export function filterCatalogVisibleModels(
     if (Array.isArray(sel) && sel.length > 0) allowByProvider.set(name, new Set(sel));
   }
   return models.filter(m => {
-    if (disabled.has(`${m.provider}/${m.id}`)) return false;
+    // disabledModels may be stored raw (canonical) or encoded (legacy UI writes).
+    for (const stored of disabled) {
+      if (slugEquals(stored, m.provider, m.id)) return false;
+    }
     const allow = allowByProvider.get(m.provider);
     return !allow || allow.has(m.id);
   });
@@ -1546,12 +1560,51 @@ export function resetOpenAiApiCatalogWarningStateForTests(): void {
   openAiApiCollisionWarnings.clear();
 }
 
+/**
+ * Encode-collision guard (slug-codec): two DISTINCT native ids of one provider mapping
+ * to the same Codex-facing alias (`a/b` vs `a-b`) cannot be decoded bijectively and must
+ * not emit duplicate catalog slugs. The plain-hyphen native id wins (matching decode
+ * precedence: exact native match first); the loser is dropped from the catalog — it stays
+ * callable via its raw full-slash selector — and we warn once per provider+alias.
+ */
+const slugAliasCollisionWarnings = new Set<string>();
+
+function resolveSlugAliasCollisions(goModels: CatalogModel[]): Set<CatalogModel> {
+  const skipped = new Set<CatalogModel>();
+  const winnerByAlias = new Map<string, CatalogModel>();
+  for (const m of goModels) {
+    const key = `${m.provider}/${encodeRoutedModelId(m.id)}`;
+    const winner = winnerByAlias.get(key);
+    if (!winner) {
+      winnerByAlias.set(key, m);
+      continue;
+    }
+    const winnerIsPlainAlias = !winner.id.includes("/");
+    const currentIsPlainAlias = !m.id.includes("/");
+    if (currentIsPlainAlias && !winnerIsPlainAlias) {
+      skipped.add(winner);
+      winnerByAlias.set(key, m);
+    } else {
+      skipped.add(m);
+    }
+    if (!slugAliasCollisionWarnings.has(key)) {
+      slugAliasCollisionWarnings.add(key);
+      console.warn(
+        `[opencodex] slug alias collision on "${key}": multiple native ids encode to the same Codex-facing slug; `
+        + "the plain-hyphen native id is cataloged, the slash id remains callable via its raw selector.",
+      );
+    }
+  }
+  return skipped;
+}
+
 /** Test-only reset for every process-global catalog cache/warning owner. */
 export function resetCatalogRuntimeStateForTests(): void {
   bundledCatalogCache = null;
   lastDropWarnSignature.clear();
   openAiApiCollisionWarnings.clear();
   comboCatalogWarningSignatures.clear();
+  slugAliasCollisionWarnings.clear();
   clearModelCache();
 }
 
@@ -1651,11 +1704,11 @@ export function augmentRoutedModelsWithJawcodeMetadata(
 export function orderForSubagents(goModels: CatalogModel[], featured?: string[]): CatalogModel[] {
   if (!featured || featured.length === 0) return goModels;
   const rank = new Map(featured.map((id, i) => [id, i]));
-  const keyOf = (m: CatalogModel) => `${m.provider}/${m.id}`;
+  // Featured picks may be stored raw (legacy) or encoded — match both forms.
+  const rankOf = (m: CatalogModel) =>
+    rank.get(`${m.provider}/${m.id}`) ?? rank.get(routedSlug(m.provider, m.id)) ?? Number.MAX_SAFE_INTEGER;
   return [...goModels].sort((a, b) => {
-    const ra = rank.has(keyOf(a)) ? rank.get(keyOf(a))! : Number.MAX_SAFE_INTEGER;
-    const rb = rank.has(keyOf(b)) ? rank.get(keyOf(b))! : Number.MAX_SAFE_INTEGER;
-    return ra - rb;
+    return rankOf(a) - rankOf(b);
   });
 }
 

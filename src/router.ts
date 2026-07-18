@@ -4,6 +4,8 @@ import { hasOwnProvider, resolveEnvValue } from "./config";
 import { assertProviderDestinationAllowed } from "./lib/destination-policy";
 import { PROVIDER_REGISTRY, providerCodexAccountMode } from "./providers/registry";
 import { LEGACY_CHATGPT_PROVIDER_ID, LEGACY_OPENAI_MULTI_PROVIDER_ID, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID } from "./providers/openai-tiers";
+import { decodeRoutedModelId, encodeRoutedModelId } from "./providers/slug-codec";
+import { getStaleCached } from "./codex/model-cache";
 
 export interface RouteResult {
   providerName: string;
@@ -27,6 +29,32 @@ const MODEL_PROVIDER_PATTERNS: Array<{ providerNames: string[]; prefixes: string
     ],
   },
 ];
+
+/**
+ * Known native model ids for a provider — the decode source for the Codex slug codec
+ * (src/providers/slug-codec.ts). Union of static config ids, registry seeds, and the
+ * last-known-good live /models cache (may be empty on a cold start; decode then passes
+ * unknown ids through unchanged for an honest upstream error).
+ */
+export function knownModelIdsForProvider(provName: string, prov: OcxProviderConfig): string[] {
+  const ids = new Set<string>();
+  for (const id of prov.models ?? []) ids.add(id);
+  const registry = PROVIDER_REGISTRY.find(entry => entry.id === provName);
+  for (const id of registry?.models ?? []) ids.add(id);
+  // Registry model-keyed hint maps double as known native ids (e.g. NVIDIA carries no
+  // static models list but names `moonshotai/kimi-k2.6` in its effort/window maps).
+  for (const map of [
+    registry?.modelContextWindows,
+    registry?.modelInputModalities,
+    registry?.modelReasoningEfforts,
+    registry?.modelDefaultReasoningEfforts,
+    registry?.modelReasoningEffortMap,
+  ]) {
+    for (const id of Object.keys(map ?? {})) ids.add(id);
+  }
+  for (const cached of getStaleCached(provName) ?? []) ids.add(cached.id);
+  return [...ids];
+}
 
 // Merge registry-default effort maps under user values so built-in provider configs can
 // carry real upstream aliases without a disk migration. User overrides win per-key.
@@ -225,7 +253,9 @@ export function routeModel(config: OcxConfig, modelId: string): RouteResult {
     if (hasOwnProvider(config.providers, provName)) {
       const prov = config.providers[provName];
       if (prov.disabled === true) throw new Error(`Provider is disabled: ${provName}`);
-      return routeResult(provName, prov, modelId.slice(slash + 1));
+      // Codex-facing alias ids (`provider/vendor-model`) decode back to the native
+      // slash id via an exact known-id lookup; raw full-slash selectors keep working.
+      return routeResult(provName, prov, decodeRoutedModelId(modelId.slice(slash + 1), knownModelIdsForProvider(provName, prov)));
     }
   }
 
@@ -236,8 +266,9 @@ export function routeModel(config: OcxConfig, modelId: string): RouteResult {
   }
 
   for (const [provName, prov] of activeProviderEntries(config)) {
-    if (prov.defaultModel === modelId) {
-      return routeResult(provName, prov, modelId);
+    if (prov.defaultModel === modelId
+      || (typeof prov.defaultModel === "string" && encodeRoutedModelId(prov.defaultModel) === modelId)) {
+      return routeResult(provName, prov, prov.defaultModel as string);
     }
   }
 
@@ -245,8 +276,9 @@ export function routeModel(config: OcxConfig, modelId: string): RouteResult {
   if (patternRoute) return patternRoute;
 
   for (const [provName, prov] of activeProviderEntries(config)) {
-    if (prov.models && Array.isArray(prov.models) && (prov.models as string[]).includes(modelId)) {
-      return routeResult(provName, prov, modelId);
+    if (prov.models && Array.isArray(prov.models)) {
+      const hit = (prov.models as string[]).find(id => id === modelId || encodeRoutedModelId(id) === modelId);
+      if (hit !== undefined) return routeResult(provName, prov, hit);
     }
   }
 

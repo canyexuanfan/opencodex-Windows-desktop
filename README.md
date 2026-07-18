@@ -137,6 +137,11 @@ You can also add providers through `ocx init` (interactive CLI) or by editing `~
 
 Target any configured provider and model using the `provider/model` syntax:
 
+Providers whose own model ids contain `/` (zenmux, openrouter, nvidia, …) are exposed to
+Codex with inner slashes aliased to `-` (e.g. `zenmux/moonshotai-kimi-k3-free`); the
+proxy transparently routes them back to the native id, and the raw full-slash form keeps
+working too.
+
 ```bash
 # Use Claude Opus through Anthropic
 codex -m "anthropic/claude-opus-4-8" "Explain this stack trace"
