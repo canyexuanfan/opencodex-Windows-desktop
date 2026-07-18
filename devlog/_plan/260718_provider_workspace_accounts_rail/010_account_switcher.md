@@ -165,3 +165,35 @@ cd gui && bun run build
 git diff --check
   PASS
 ```
+
+## C verification receipt — 2026-07-18
+
+### Automated
+
+```text
+focused account/OAuth/Codex/workspace suite
+  126 pass / 0 fail / 422 assertions
+bun run privacy:scan
+  PASS
+focused touched-file ESLint
+  PASS (0 errors / 0 warnings)
+gui production build
+  PASS
+gui lint:i18n
+  BLOCKED by pre-existing ProviderOverview.tsx:152 react-hooks/set-state-in-effect
+  (outside this slice; the same baseline blocker was recorded before B)
+```
+
+### In-app Browser against Vite -> live `:10100` API
+
+- Anthropic rendered five linked tabs and two masked account rows with exactly one focusable `aria-current` row. ArrowRight moved Accounts -> Settings and Home moved Settings -> Overview.
+- Switched the non-current Anthropic row through the workspace UI, observed its `aria-current=true` state after the authoritative refresh, restored the captured original active account through the same API contract, and verified equality without printing either id.
+- Canonical OpenAI rendered the embedded main + three-account pool with masked labels and quota bars. Switched a non-current account through the confirmation dialog, observed the target card become `card-active`, restored the captured original active account, and verified equality without printing ids.
+- Console contained Vite/React development messages only; zero error/warn entries.
+- Visual review confirmed the account tab itself is legible and aligned. The already-planned wide-shell clipping/duplicate rail controls remain visible at this viewport and are assigned to `provider-rail-polish`; they do not invalidate account selection behavior.
+
+### C judgment
+
+Account selection, failure-safe state ownership, privacy, and keyboard semantics pass. The only open visual defect belongs to the next registered shell/rail work phase.
+
+VERDICT: PASS (account-switcher)
