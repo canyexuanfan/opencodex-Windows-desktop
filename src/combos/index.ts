@@ -21,3 +21,9 @@ export {
   UnknownComboError,
   type ComboPick,
 } from "./resolve";
+export {
+  clearComboTargetCooldowns,
+  coolComboTarget,
+  isComboTargetInCooldown,
+  parseRetryAfterMs,
+} from "./failover";

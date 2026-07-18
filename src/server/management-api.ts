@@ -1417,7 +1417,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       return jsonResponse({ error: "id is required and must be a string" }, 400);
     }
     const id = body.id.trim();
-    const { comboConfigError, normalizeComboConfig, comboModelId, clearComboSelectionState } = await import("../combos");
+    const { comboConfigError, normalizeComboConfig, comboModelId, clearComboSelectionState, clearComboTargetCooldowns } = await import("../combos");
     const error = comboConfigError(id, body.combo, config.providers, {
       requireEnabledTarget: true,
     });
@@ -1426,6 +1426,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     config.combos = { ...(config.combos ?? {}), [id]: normalized };
     saveConfig(config);
     clearComboSelectionState(id);
+    clearComboTargetCooldowns(id);
     await refreshCodexCatalogBestEffort();
     return jsonResponse({ success: true, id, model: comboModelId(id), combo: normalized });
   }
@@ -1436,11 +1437,12 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     if (!Object.hasOwn(config.combos ?? {}, id)) {
       return jsonResponse({ error: "unknown combo" }, 404);
     }
-    const { clearComboSelectionState } = await import("../combos");
+    const { clearComboSelectionState, clearComboTargetCooldowns } = await import("../combos");
     delete config.combos![id];
     if (Object.keys(config.combos!).length === 0) delete config.combos;
     saveConfig(config);
     clearComboSelectionState(id);
+    clearComboTargetCooldowns(id);
     await refreshCodexCatalogBestEffort();
     return jsonResponse({ success: true, id });
   }

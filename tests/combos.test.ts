@@ -4,17 +4,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   clearComboSelectionState,
+  clearComboTargetCooldowns,
   comboConfigError,
   comboConfigIssues,
   comboDefaultEffort,
   comboModelId,
+  coolComboTarget,
   getCombo,
+  isComboTargetInCooldown,
   isValidComboId,
   listComboIds,
   NoAvailableComboTargetsError,
   noteComboSuccess,
   normalizeComboConfig,
   parseComboModelId,
+  parseRetryAfterMs,
   pickComboTarget,
   targetKey,
   tryPickComboModel,
@@ -127,7 +131,10 @@ async function responseJson(response: Response | null): Promise<Record<string, u
   return response!.json() as Promise<Record<string, unknown>>;
 }
 
-afterEach(() => clearComboSelectionState());
+afterEach(() => {
+  clearComboSelectionState();
+  clearComboTargetCooldowns();
+});
 
 describe("combo namespace primitives", () => {
   test("parses and formats combo model ids", () => {
@@ -142,6 +149,38 @@ describe("combo namespace primitives", () => {
     expect(isValidComboId("free.v1_2-x")).toBe(true);
     expect(isValidComboId("-free")).toBe(false);
     expect(targetKey({ provider: "a", model: "m1" })).toBe("a/m1");
+  });
+});
+
+describe("combo target cooldowns", () => {
+  const target = { provider: "a", model: "m1" };
+
+  test("parses numeric and date Retry-After values with exact bounds", () => {
+    const now = Date.parse("2026-07-18T00:00:00.000Z");
+    expect(parseRetryAfterMs("0.001", now)).toBe(1);
+    expect(parseRetryAfterMs("120", now)).toBe(120_000);
+    expect(parseRetryAfterMs("999999", now)).toBe(600_000);
+    expect(parseRetryAfterMs(new Date(now + 90_000).toUTCString(), now)).toBe(90_000);
+    expect(parseRetryAfterMs(new Date(now + 900_000).toUTCString(), now)).toBe(600_000);
+  });
+
+  test("rejects missing malformed zero and expired Retry-After values", () => {
+    const now = Date.parse("2026-07-18T00:00:00.000Z");
+    expect(parseRetryAfterMs(undefined, now)).toBeUndefined();
+    expect(parseRetryAfterMs("", now)).toBeUndefined();
+    expect(parseRetryAfterMs("0", now)).toBeUndefined();
+    expect(parseRetryAfterMs("not-a-date", now)).toBeUndefined();
+    expect(parseRetryAfterMs(new Date(now - 1_000).toUTCString(), now)).toBeUndefined();
+  });
+
+  test("expires cooldowns and clears only the requested combo", () => {
+    coolComboTarget("free", target, { now: 1_000, cooldownMs: 100 });
+    coolComboTarget("other", target, { now: 1_000, cooldownMs: 100 });
+    expect(isComboTargetInCooldown("free", target, 1_099)).toBe(true);
+    expect(isComboTargetInCooldown("free", target, 1_100)).toBe(false);
+    expect(isComboTargetInCooldown("other", target, 1_050)).toBe(true);
+    clearComboTargetCooldowns("other");
+    expect(isComboTargetInCooldown("other", target, 1_050)).toBe(false);
   });
 });
 
@@ -379,6 +418,35 @@ describe("persisted combo config parity", () => {
 });
 
 describe("combo management API", () => {
+  test("PUT and DELETE clear only the mutated combo cooldowns", async () => {
+    await withTempHome(async () => {
+      const config = baseConfig({
+        combos: {
+          free: VALID_COMBO,
+          other: { targets: [{ provider: "b", model: "m2" }] },
+        },
+      });
+      saveConfig(config);
+      const freeTarget = { provider: "a", model: "m1" };
+      const otherTarget = { provider: "b", model: "m2" };
+
+      coolComboTarget("free", freeTarget, { cooldownMs: 60_000 });
+      coolComboTarget("other", otherTarget, { cooldownMs: 60_000 });
+      expect(isComboTargetInCooldown("free", freeTarget)).toBe(true);
+      expect((await comboApi(config, "PUT", "/api/combos", {
+        id: "free",
+        combo: VALID_COMBO,
+      }))?.status).toBe(200);
+      expect(isComboTargetInCooldown("free", freeTarget)).toBe(false);
+      expect(isComboTargetInCooldown("other", otherTarget)).toBe(true);
+
+      coolComboTarget("free", freeTarget, { cooldownMs: 60_000 });
+      expect((await comboApi(config, "DELETE", "/api/combos?id=free"))?.status).toBe(200);
+      expect(isComboTargetInCooldown("free", freeTarget)).toBe(false);
+      expect(isComboTargetInCooldown("other", otherTarget)).toBe(true);
+    });
+  });
+
   test("GET is sorted and PUT upserts normalized whole values", async () => {
     await withTempHome(async () => {
       const config = baseConfig({ combos: undefined });
