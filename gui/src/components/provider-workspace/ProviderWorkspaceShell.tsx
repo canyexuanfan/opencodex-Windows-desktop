@@ -70,6 +70,7 @@ export default function ProviderWorkspaceShell({
   const [typeFilter, setTypeFilter] = useState<TypeFilter>({ cloud: true, local: true, selfHosted: true, login: true });
   const [sortMode, setSortMode] = useState<ProviderSortMode>("az");
   const [filterOpen, setFilterOpen] = useState(false);
+  const [railFocusName, setRailFocusName] = useState<string | null>(null);
   const [modelCounts, setModelCounts] = useState<ProviderModelCounts>({});
   const [availableModels, setAvailableModels] = useState<ProviderAvailableModels>({});
   const [selectedModels, setSelectedModels] = useState<ProviderSelectedModels>({});
@@ -223,6 +224,12 @@ export default function ProviderWorkspaceShell({
     { id: "needs-setup", label: t("pws.status.needsSetup"), count: filteredSections.needsSetup.length, ariaLabel: t("pws.groupNeedsSetup", { count: filteredSections.needsSetup.length }), items: filteredSections.needsSetup },
     { id: "disabled", label: t("prov.disabledBadge"), count: filteredSections.disabled.length, ariaLabel: t("pws.groupDisabled", { count: filteredSections.disabled.length }), items: filteredSections.disabled },
   ];
+  const visibleRailNames = railGroups.flatMap(group => group.items.map(item => item.name));
+  const railTabbableName = railFocusName && visibleRailNames.includes(railFocusName)
+    ? railFocusName
+    : selectedName && visibleRailNames.includes(selectedName)
+      ? selectedName
+      : visibleRailNames[0] ?? null;
 
   return (
     <div className="pws-shell-container">
@@ -356,10 +363,12 @@ export default function ProviderWorkspaceShell({
                     key={item.name}
                     item={item}
                     selected={selectedName === item.name}
+                    tabbable={railTabbableName === item.name}
                     modelCount={modelCounts[item.name]}
                     isDefault={defaultProvider === item.name}
                     showConfigId={duplicateDisplayNames.has(formatProviderDisplayName(item.name))}
                     onClick={() => onSelect(item.name)}
+                    onFocus={() => setRailFocusName(item.name)}
                   />
                 ))}
               </div>

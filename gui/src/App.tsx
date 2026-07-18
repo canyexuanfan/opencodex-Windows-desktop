@@ -28,6 +28,10 @@ function readPageFromHash(): Page {
   return VALID_PAGES.has(pageId) ? pageId : "dashboard";
 }
 
+function hashBelongsToPage(rawHash: string, page: Page): boolean {
+  return rawHash === page || (page === "providers" && rawHash === "providers/workspace");
+}
+
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 const THEME_KEY = "ocx-theme";
 
@@ -73,14 +77,23 @@ export default function App() {
 
   useEffect(() => {
     // External navigation (hash edit, back/forward) also dismisses the mobile drawer.
-    const onHash = () => { setPageState(readPageFromHash()); setNavOpen(false); };
+    const onHash = () => {
+      const nextPage = readPageFromHash();
+      const rawHash = window.location.hash.replace(/^#\/?/, "");
+      setNavOpen(false);
+      if (!hashBelongsToPage(rawHash, nextPage)) {
+        window.location.hash = nextPage;
+        return;
+      }
+      setPageState(nextPage);
+    };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
   useEffect(() => {
-    const nextHash = `#${page}`;
-    if (window.location.hash !== nextHash) {
+    const rawHash = window.location.hash.replace(/^#\/?/, "");
+    if (!hashBelongsToPage(rawHash, page)) {
       window.location.hash = page;
     }
   }, [page]);

@@ -57,14 +57,16 @@ export function ProviderIcon({ name, adapter, baseUrl, cls }: {
   );
 }
 
-export function RailRow({ item, selected, modelCount, isDefault, showConfigId, onClick }: {
+export function RailRow({ item, selected, tabbable, modelCount, isDefault, showConfigId, onClick, onFocus }: {
   item: WorkspaceItem;
   selected: boolean;
+  tabbable: boolean;
   modelCount?: number;
   isDefault?: boolean;
   /** When display names collide (e.g. openai + chatgpt → ChatGPT), show the config id. */
   showConfigId?: boolean;
   onClick: () => void;
+  onFocus: () => void;
 }) {
   const t = useT();
   const free = isFreeProvider(item);
@@ -84,8 +86,10 @@ export function RailRow({ item, selected, modelCount, isDefault, showConfigId, o
       onClick={onClick}
       role="option"
       aria-selected={selected}
+      tabIndex={tabbable ? 0 : -1}
       aria-label={t("pws.rail.selectAria", { name: nameTitle, status, suffix })}
       title={nameTitle}
+      onFocus={onFocus}
     >
       <ProviderIcon
         name={item.name}

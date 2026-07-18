@@ -68,6 +68,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const [addIntent, setAddIntent] = useState<AddProviderIntent | null>(null);
   const aliveRef = useRef(true);
   const accountRequestGenerationRef = useRef<Record<string, number>>({});
+  const switchingAccountRef = useRef<{ provider: string; accountId: string } | null>(null);
 
   const notify = (msg: string, ok: boolean) => { setStatus(msg); setStatusOk(ok); };
 
@@ -124,29 +125,34 @@ export default function Providers({ apiBase }: { apiBase: string }) {
       for (const provider of uniqueProviders) next[provider] = "loading";
       return next;
     });
-    await Promise.all(uniqueProviders.map(async provider => {
+    const results = await Promise.all(uniqueProviders.map(async provider => {
       const generation = (accountRequestGenerationRef.current[provider] ?? 0) + 1;
       accountRequestGenerationRef.current[provider] = generation;
       try {
         const res = await fetch(`${apiBase}/api/oauth/accounts?provider=${encodeURIComponent(provider)}`);
         if (!res.ok) throw new Error(String(res.status));
         const data = await res.json() as { activeAccountId?: string | null; accounts?: OAuthAccount[] };
-        if (!aliveRef.current || accountRequestGenerationRef.current[provider] !== generation) return;
+        if (!aliveRef.current || accountRequestGenerationRef.current[provider] !== generation) return true;
         setAccountSets(current => ({
           ...current,
           [provider]: { activeAccountId: data.activeAccountId ?? null, accounts: data.accounts ?? [] },
         }));
         setAccountLoadStates(current => ({ ...current, [provider]: "ready" }));
+        return true;
       } catch {
-        if (!aliveRef.current || accountRequestGenerationRef.current[provider] !== generation) return;
+        if (!aliveRef.current || accountRequestGenerationRef.current[provider] !== generation) return true;
         setAccountLoadStates(current => ({ ...current, [provider]: "error" }));
+        return false;
       }
     }));
+    return results.every(Boolean);
   }, [apiBase]);
 
   const switchAccount = async (provider: string, account: OAuthAccount) => {
-    if (account.active || account.needsReauth || switchingAccount) return;
-    setSwitchingAccount({ provider, accountId: account.id });
+    if (account.active || account.needsReauth || switchingAccountRef.current) return;
+    const target = { provider, accountId: account.id };
+    switchingAccountRef.current = target;
+    setSwitchingAccount(target);
     const label = oauthAccountDisplayLabel(accountSets[provider]?.accounts ?? [account], account, t);
     try {
       const res = await fetch(`${apiBase}/api/oauth/accounts/active`, {
@@ -158,13 +164,20 @@ export default function Providers({ apiBase }: { apiBase: string }) {
         notify(t("prov.accountSwitchFail"), false);
         return;
       }
-      await fetchAccountSets([provider]);
+      const refreshed = await fetchAccountSets([provider]);
       await Promise.all([fetchOauth(), fetchProviderQuotas(true)]);
+      if (!refreshed) {
+        notify(t("pws.accountsLoadFailed"), false);
+        return;
+      }
       notify(t("prov.accountSwitched", { email: label }), true);
     } catch {
       notify(t("prov.accountSwitchFail"), false);
     } finally {
-      if (aliveRef.current) setSwitchingAccount(current => current?.provider === provider && current.accountId === account.id ? null : current);
+      if (switchingAccountRef.current?.provider === target.provider && switchingAccountRef.current.accountId === target.accountId) {
+        switchingAccountRef.current = null;
+        if (aliveRef.current) setSwitchingAccount(null);
+      }
     }
   };
 
@@ -241,11 +254,17 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const removeAccount = async (provider: string, account: OAuthAccount) => {
     const label = oauthAccountDisplayLabel(accountSets[provider]?.accounts ?? [account], account, t);
     if (!window.confirm(t("prov.accountRemoveConfirm", { email: label }))) return;
-    const res = await fetch(`${apiBase}/api/oauth/accounts?provider=${encodeURIComponent(provider)}&id=${encodeURIComponent(account.id)}`, { method: "DELETE" });
-    if (res.ok) {
+    try {
+      const res = await fetch(`${apiBase}/api/oauth/accounts?provider=${encodeURIComponent(provider)}&id=${encodeURIComponent(account.id)}`, { method: "DELETE" });
+      if (!res.ok) {
+        notify(t("prov.accountRemoveFail", { email: label }), false);
+        return;
+      }
       notify(t("prov.accountRemoved", { email: label }), true);
       await fetchAccountSets([provider]);
       await Promise.all([fetchOauth(), fetchProviderQuotas(true)]);
+    } catch {
+      notify(t("prov.accountRemoveFail", { email: label }), false);
     }
   };
 
@@ -388,11 +407,22 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   };
 
   const logoutOAuth = async (provider: string) => {
-    await fetch(`${apiBase}/api/oauth/logout?provider=${provider}`, { method: "POST" }).catch(() => {});
-    setOauthStatus(prev => ({ ...prev, [provider]: { loggedIn: false } }));
-    notify(t("prov.logoutOk", { provider: oauthLabel(provider) }), true);
-    fetchConfig();
-    fetchProviderQuotas(true);
+    try {
+      const res = await fetch(`${apiBase}/api/oauth/logout?provider=${encodeURIComponent(provider)}`, { method: "POST" });
+      if (!res.ok) {
+        notify(t("prov.logoutFail", { provider: oauthLabel(provider) }), false);
+        return;
+      }
+      await Promise.all([
+        fetchAccountSets([provider]),
+        fetchOauth(),
+        fetchConfig(),
+        fetchProviderQuotas(true),
+      ]);
+      notify(t("prov.logoutOk", { provider: oauthLabel(provider) }), true);
+    } catch {
+      notify(t("prov.logoutFail", { provider: oauthLabel(provider) }), false);
+    }
   };
 
   const removeProvider = async (name: string) => {
@@ -528,7 +558,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
                 onLogout: logoutOAuth,
                 onSwitchAccount: switchAccount,
                 onRemoveAccount: removeAccount,
-                onRetryAccounts: provider => fetchAccountSets([provider]),
+                onRetryAccounts: async provider => { await fetchAccountSets([provider]); },
                 onAddApiKey: addApiKeyValue,
                 onSwitchApiKey: switchApiKey,
                 onRemoveApiKey: removeApiKey,

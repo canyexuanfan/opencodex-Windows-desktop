@@ -113,8 +113,15 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
   const remove = async (id: string) => {
     const label = accounts.find(account => account.id === id)?.email ?? t("pws.accountOrdinal", { count: "1" });
     if (!window.confirm(t("codexAuth.removeConfirm", { id: label }))) return;
-    await fetch(`${apiBase}/api/codex-auth/accounts?id=${encodeURIComponent(id)}`, { method: "DELETE" });
-    load();
+    try {
+      const response = await fetch(`${apiBase}/api/codex-auth/accounts?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (!response.ok) throw new Error(String(response.status));
+      await load();
+    } catch {
+      setToast(t("codexAuth.removeFailed"));
+      setToastError(true);
+      setTimeout(() => setToast(""), 5000);
+    }
   };
 
   const toggleAuto = async () => {
@@ -192,6 +199,15 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
   // Main is the active/next account when no pool account is selected (legacy null) or when
   // it is explicitly set to the rotation id "__main__".
   const isMainActive = !activeId || activeId === "__main__";
+  const mainSwitchEntry: CodexAccountEntry = {
+    id: "__main__",
+    email: main?.email ?? "Codex App",
+    plan: main?.plan,
+    isMain: true,
+    hasCredential: true,
+    quota: main?.quota ?? null,
+  };
+  const switchActionLabel = t(accountModeState === "direct" ? "codexAuth.prepareForPool" : "codexAuth.setAsNext");
 
   return (
     <div>
@@ -218,9 +234,7 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
 
       {banner}
 
-      <div className={`card ${isMainActive ? "card-active" : ""}`}
-        onClick={() => !isMainActive ? setConfirm({ id: "__main__", email: main?.email ?? "Codex App", plan: main?.plan, isMain: true, hasCredential: true, quota: main?.quota ?? null }) : undefined}
-        style={{ cursor: isMainActive ? "default" : "pointer", marginBottom: 12 }}>
+      <div className={`card ${isMainActive ? "card-active" : ""}`} style={{ marginBottom: 12 }}>
         <div className="card-head">
           <span className="dot dot-green" />
           <strong>{t("codexAuth.mainAccount")}</strong>
@@ -232,6 +246,11 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
                 : t("codexAuth.current")}
             </span>
           </span>
+          {!isMainActive && (
+            <button type="button" className="btn btn-ghost btn-sm codex-account-switch" onClick={() => setConfirm(mainSwitchEntry)}>
+              {switchActionLabel}
+            </button>
+          )}
           <span className="card-right"><IconLock width={14} /> {t("codexAuth.appLogin")}</span>
         </div>
         <div className="card-sub">{main?.email ?? "Codex App login"}{main?.plan ? ` · ${main.plan}` : ""}</div>
@@ -249,8 +268,7 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
       {pool.length === 0 && <EmptyState title={t("codexAuth.noPool")} />}
 
       {pool.map(a => (
-        <div key={a.id} className={`card ${isNext(a.id) ? "card-active" : ""}`}
-          onClick={() => !a.needsReauth && setConfirm(a)} style={{ cursor: a.needsReauth ? "default" : "pointer", marginBottom: 8 }}>
+        <div key={a.id} className={`card ${isNext(a.id) ? "card-active" : ""}`} style={{ marginBottom: 8 }}>
           <div className="card-head">
             <span className={`dot ${a.needsReauth ? "dot-amber" : isNext(a.id) ? "dot-blue" : "dot-muted"}`} />
             <strong>{a.email}</strong>
@@ -264,9 +282,15 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
                 </span>
               )}
             </span>
+            {!isNext(a.id) && !a.needsReauth && (
+              <button type="button" className="btn btn-ghost btn-sm codex-account-switch" onClick={() => setConfirm(a)}>
+                {switchActionLabel}
+              </button>
+            )}
             <button
               className="btn-icon btn-icon-danger card-right"
-              aria-label={t("common.remove")}
+              aria-label={`${t("common.remove")} — ${a.email}`}
+              title={`${t("common.remove")} — ${a.email}`}
               onClick={e => { e.stopPropagation(); remove(a.id); }}
             >
               <IconX width={14} />

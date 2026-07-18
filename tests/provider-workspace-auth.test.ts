@@ -68,8 +68,11 @@ describe("workspace account integration seam", () => {
     const source = await Bun.file("gui/src/pages/Providers.tsx").text();
     expect(source).toContain("accountLoadState={accountLoadStates[item.name]");
     expect(source).toContain("switchingAccountId={switchingAccount?.provider === item.name");
-    expect(source).toContain("onRetryAccounts: provider => fetchAccountSets([provider])");
+    expect(source).toContain("onRetryAccounts: async provider => { await fetchAccountSets([provider]); }");
     expect(source).toContain("key={item.name}");
+    expect(source).toContain("switchingAccountRef.current");
+    expect(source).toContain("const refreshed = await fetchAccountSets([provider])");
+    expect(source).toContain("if (!refreshed)");
   });
 
   test("owns an accessible dynamic account panel instead of nesting auth in Settings", async () => {
@@ -90,5 +93,23 @@ describe("workspace account integration seam", () => {
     expect(page).not.toContain("account.email ?? account.id");
     expect(panel).not.toContain("account.email ?? account.id");
     expect(codexPool).not.toContain("?.email ?? id");
+  });
+
+  test("keeps logout and delete failure states honest", async () => {
+    const [page, codexPool] = await Promise.all([
+      Bun.file("gui/src/pages/Providers.tsx").text(),
+      Bun.file("gui/src/components/CodexAccountPool.tsx").text(),
+    ]);
+    expect(page).toContain('notify(t("prov.logoutFail"');
+    expect(page).toContain('notify(t("prov.accountRemoveFail"');
+    expect(page).toContain("await fetchAccountSets([provider])");
+    expect(codexPool).toContain('setToast(t("codexAuth.removeFailed"))');
+  });
+
+  test("gives canonical Codex accounts explicit native switch actions", async () => {
+    const source = await Bun.file("gui/src/components/CodexAccountPool.tsx").text();
+    expect(source).toContain("codex-account-switch");
+    expect(source).not.toContain('onClick={() => !a.needsReauth && setConfirm(a)}');
+    expect(source).not.toContain('onClick={() => !isMainActive ? setConfirm');
   });
 });

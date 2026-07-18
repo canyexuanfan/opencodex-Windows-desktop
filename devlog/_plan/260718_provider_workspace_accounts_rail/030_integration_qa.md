@@ -16,6 +16,52 @@ Prove the account and rail slices together against the latest repository state, 
 - Inspect all commits from both work phases and classify test changes as required/suspicious/unrelated.
 - Record any hypothesis that died or any criterion that did not improve; do not restart from aggregate “looks better” judgment.
 
+### 2026-07-18 current HEAD
+
+- Reviewed `34e34b4..657a2ce`: roadmap-only docs, account implementation/receipt, rail implementation/receipt, and design SoT sync are isolated commits. New tests only add auth-surface/privacy/integration and rail semantic/layout contracts; no assertion deletion, skip, threshold change, or unrelated test rewrite exists.
+- Unrelated dirty-tree deletions/modifications and the pre-existing deleted `tests/codex-multi-state.test.ts` remain outside every staged commit and are not adopted by this goal.
+- Account live QA already restored both captured original active ids and rail QA restored System theme/English locale. A fresh read must confirm those restorations before any final mutation.
+- One integration residual is reproducible: loading or reloading `#providers/workspace` immediately becomes `#providers`. `readPageFromHash()` correctly accepts sub-view suffixes, but the page synchronization effect compares the full hash to `#providers` and overwrites a valid sub-view on mount. This contradicts the existing `Providers.tsx` comment and breaks workspace deep-link/reload continuity.
+
+### Evidence-backed repair amendment
+
+- Add `gui/src/App.tsx` to integration scope only for the hash synchronization effect. Compare the current hash's first segment to `page`; preserve valid suffixes when the segment already matches, while still normalizing empty/invalid/different-page hashes.
+- Add a narrow source contract to `tests/provider-workspace-rail.test.ts` and browser proof that direct navigation/reload retains `#providers/workspace`.
+- No other production edit is authorized unless the verification sequence exposes a new failing path.
+
+### Independent final-review additions
+
+The Terra-high reviewer returned `GO-WITH-FIXES` with complete implementation-file coverage and four findings, all folded into the final repair:
+
+1. Whitelist only the exact `providers/workspace` subroute; a first-segment-only preservation rule would incorrectly keep `providers/typo`.
+2. Generic logout must check `response.ok` and refresh promoted account rows/OAuth/config/quota rather than unconditionally showing logged out.
+3. Generic and Codex account DELETE failures must preserve state and announce failure instead of remaining silent.
+4. Rail options require one roving Tab entry (`focused/selected/first visible`) instead of leaving every native option button at `tabIndex=0`.
+
+Main audit additionally folded a synchronous duplicate-switch ref, post-PUT refresh-success honesty, and explicit native Codex account switch buttons into the same bounded repair. These are all reachable on the new workspace surface and do not change server or deletion policy.
+
+## B repair receipt — 2026-07-18
+
+- Workspace routing now whitelists only exact `providers/workspace`; direct navigation and reload retain it, while a live `providers/typo` hash normalizes to `providers`.
+- Generic account switching uses a synchronous target ref before React state, preventing two same-render clicks. Account refresh returns success; a failed post-PUT GET shows the load error rather than a contradictory success toast.
+- Generic logout checks non-2xx/network failure, refreshes the promoted account set plus OAuth/config/quota on success, and leaves state unchanged on failure.
+- Generic and Codex account deletion now check response status and show localized failure feedback without refreshing or changing visible state after failure.
+- Codex cards are non-interactive containers. Every non-current usable main/pool account has an explicit native `Set as Next Session` button; nested ticket/remove controls retain independent semantics and remove labels include the masked email.
+- Rail focus uses one `tabIndex=0` option selected from the last focused, selected, or first visible row; every other option is `-1`, while Arrow/Home/End updates the focus owner.
+
+### Build evidence
+
+```text
+focused integration suite (8 files)
+  133 pass / 0 fail / 462 assertions
+GUI production build + TypeScript
+  PASS
+focused ESLint (App, Providers, Codex pool, shell, rail)
+  0 errors / 0 warnings
+privacy scan + diff check
+  PASS
+```
+
 ## Verification sequence
 
 1. Contract and focused tests:

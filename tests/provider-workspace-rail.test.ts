@@ -40,6 +40,8 @@ describe("provider rail source contract", () => {
     expect(shell).toContain('className="pws-shell-container"');
     expect(shell).toContain('className="pws-rail-group-label"');
     expect(shell).toContain('className="pws-rail-group-count"');
+    expect(shell).toContain("railTabbableName");
+    expect(shell).toContain("onFocus={() => setRailFocusName(item.name)}");
   });
 
   test("uses icon, two-line copy, and trail without a chevron sibling", async () => {
@@ -60,5 +62,13 @@ describe("provider rail source contract", () => {
     expect(css).toMatch(/\.providers-workspace-rail-name-label\s*\{[^}]*white-space:\s*nowrap[^}]*text-overflow:\s*ellipsis/s);
     expect(css).toMatch(/\.providers-workspace-rail-secondary\s*\{[^}]*white-space:\s*nowrap[^}]*text-overflow:\s*ellipsis/s);
     expect((css.match(/\.providers-workspace-rail-row\s*\{/g) ?? []).length).toBe(1);
+  });
+
+  test("preserves only the exact workspace subroute on page synchronization", async () => {
+    const app = await Bun.file("gui/src/App.tsx").text();
+    expect(app).toContain('rawHash === "providers/workspace"');
+    expect(app).toContain("hashBelongsToPage(rawHash, nextPage)");
+    expect(app).toContain("hashBelongsToPage(rawHash, page)");
+    expect(app).not.toContain("window.location.hash !== nextHash");
   });
 });
