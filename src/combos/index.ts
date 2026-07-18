@@ -15,6 +15,7 @@ export {
 export {
   clearComboSelectionState,
   NoAvailableComboTargetsError,
+  noteComboSuccess,
   pickComboTarget,
   tryPickComboModel,
   UnknownComboError,

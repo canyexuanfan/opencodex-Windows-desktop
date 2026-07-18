@@ -1,5 +1,6 @@
 import type { OcxComboTarget, OcxConfig } from "../types";
 import { getCombo, parseComboModelId, targetKey } from "./types";
+import type { NormalizedComboConfig } from "./types";
 
 export interface ComboPick {
   comboId: string;
@@ -7,6 +8,14 @@ export interface ComboPick {
   targetIndex: number;
   attempted: string[];
 }
+
+interface SelectionState {
+  activeKey?: string;
+  successes: number;
+  currentWeights: Map<string, number>;
+}
+
+const selectionState = new Map<string, SelectionState>();
 
 export class UnknownComboError extends Error {
   constructor(readonly comboId: string) {
@@ -24,6 +33,38 @@ export class NoAvailableComboTargetsError extends Error {
   }
 }
 
+function targetProviderIsUsable(config: OcxConfig, target: OcxComboTarget): boolean {
+  return Object.hasOwn(config.providers, target.provider)
+    && config.providers[target.provider]?.disabled !== true;
+}
+
+function smoothWeightedIndex(
+  targets: Required<OcxComboTarget>[],
+  state: SelectionState,
+  eligible: (target: Required<OcxComboTarget>) => boolean,
+): number {
+  let best = -1;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  let total = 0;
+  for (let i = 0; i < targets.length; i++) {
+    const target = targets[i]!;
+    if (!eligible(target)) continue;
+    const key = targetKey(target);
+    const score = (state.currentWeights.get(key) ?? 0) + target.weight;
+    state.currentWeights.set(key, score);
+    total += target.weight;
+    if (score > bestScore) {
+      best = i;
+      bestScore = score;
+    }
+  }
+  if (best >= 0) {
+    const key = targetKey(targets[best]!);
+    state.currentWeights.set(key, (state.currentWeights.get(key) ?? 0) - total);
+  }
+  return best;
+}
+
 export function pickComboTarget(
   config: OcxConfig,
   comboId: string,
@@ -35,11 +76,36 @@ export function pickComboTarget(
   const combo = getCombo(config, comboId);
   if (!combo) throw new UnknownComboError(comboId);
   const excluded = new Set(options.exclude ?? []);
-  const targetIndex = combo.targets.findIndex(target =>
-    Object.hasOwn(config.providers, target.provider)
-    && config.providers[target.provider]?.disabled !== true
+  const eligible = (target: Required<OcxComboTarget>): boolean =>
+    targetProviderIsUsable(config, target)
     && !excluded.has(targetKey(target))
-    && (options.eligible?.(target) ?? true));
+    && (options.eligible?.(target) ?? true);
+
+  let targetIndex = -1;
+  if (combo.strategy === "round-robin") {
+    let state = selectionState.get(comboId);
+    if (!state) {
+      state = { successes: 0, currentWeights: new Map() };
+      selectionState.set(comboId, state);
+    }
+    if (state.activeKey) {
+      targetIndex = combo.targets.findIndex(target => targetKey(target) === state.activeKey && eligible(target));
+      if (targetIndex < 0) {
+        delete state.activeKey;
+        state.successes = 0;
+      }
+    }
+    if (targetIndex < 0) {
+      targetIndex = smoothWeightedIndex(combo.targets, state, eligible);
+      if (targetIndex >= 0) {
+        state.activeKey = targetKey(combo.targets[targetIndex]!);
+        state.successes = 0;
+      }
+    }
+  } else {
+    targetIndex = combo.targets.findIndex(eligible);
+  }
+
   if (targetIndex < 0) return null;
   const target = combo.targets[targetIndex]!;
   return {
@@ -50,8 +116,27 @@ export function pickComboTarget(
   };
 }
 
-export function clearComboSelectionState(_comboId?: string): void {
-  // Selection is stateless until the deterministic round-robin state lands.
+export function noteComboSuccess(
+  comboId: string,
+  combo: NormalizedComboConfig,
+  target: Required<OcxComboTarget>,
+): void {
+  if (combo.strategy !== "round-robin") return;
+  const state = selectionState.get(comboId);
+  if (!state || state.activeKey !== targetKey(target)) return;
+  state.successes += 1;
+  if (state.successes >= combo.stickyLimit) {
+    delete state.activeKey;
+    state.successes = 0;
+  }
+}
+
+export function clearComboSelectionState(comboId?: string): void {
+  if (comboId === undefined) {
+    selectionState.clear();
+    return;
+  }
+  selectionState.delete(comboId);
 }
 
 export function tryPickComboModel(config: OcxConfig, modelId: string): ComboPick | null {
