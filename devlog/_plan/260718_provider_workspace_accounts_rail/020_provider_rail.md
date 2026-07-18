@@ -121,3 +121,47 @@ focused ESLint (ProviderWorkspaceShell + ProviderRail)
 cd gui && bun run build
   tsc PASS; Vite build PASS; pre-existing chunk-size warning only
 ```
+
+## C verification receipt — 2026-07-18
+
+### Automated
+
+```text
+rail + workspace + account regression suite
+  61 pass / 0 fail / 237 assertions
+focused shell/rail ESLint
+  0 errors / 0 warnings
+gui production build
+  PASS
+bun run privacy:scan
+  PASS
+undefined workspace foreground token scan
+  0 matches
+```
+
+### Browser viewport matrix
+
+The in-app Browser requested dimensions render at a 1.25 CSS scale in this host; both requested and effective dimensions were recorded.
+
+| Requested | Effective CSS | Workspace state | Result |
+|---:|---:|---|---|
+| 1440 | 1800 | wide split | root 1368, rail 280, main 1072, detail 960; all client/scroll widths equal |
+| 819 | 1024 | constrained split | root 710, rail 240, main 458; one-column overview; no vertical URL/text breakup |
+| 768 | 960 | stacked | root/rail/main 646; bounded rail scroll and full-width detail |
+| 312 | 390 | mobile stacked | root 344; actions/search/rows/tabs fit; document overflow zero |
+| 256 | 320 | narrow stacked | root 274; page actions wrap; document/header overflow zero |
+
+### Interaction and locale/theme evidence
+
+- English and Korean narrow screenshots contain no vertical glyph stacks in the rail, no visible Ready/status text inside rows, and no clipped Add Provider action.
+- All visible row text is display name, exception badge, and model/config metadata; readiness remains in the group label and localized option name.
+- Listbox `tabindex` is absent. ArrowDown moved Anthropic -> Cursor and End moved Cursor -> xAI Grok using the option buttons as the single focus model.
+- Original provider `<img>` assets report `filter: none`; light and dark screenshots retain source colors. Selected/focus/status treatment remains visible in both themes.
+- The Korean 320px filter menu measured left 52/right 282 within a 320px viewport and closed with Escape.
+- Browser console contains no error or warning entries. Theme and locale were restored to the original System/English values after QA.
+
+### Design SoT sync
+
+`docs/design-system/components.md` now records the provider rail grammar, container-based split behavior, original-color SVG rule, tab semantics, account states, and no-raw-id privacy contract.
+
+VERDICT: PASS (provider-rail-polish)
