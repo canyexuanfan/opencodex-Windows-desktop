@@ -130,9 +130,7 @@ export function RailRow({ item, selected, modelCount, isDefault, showConfigId, o
             <IconStar width={17} height={17} aria-hidden="true" />
           </span>
         )}
-        <span className={railStatusCls(item)} title={status}>
-          <span className="sr-only">{status}</span>
-        </span>
+        <span className={railStatusCls(item)} title={status} aria-hidden="true" />
       </span>
       <IconChevron className="providers-workspace-rail-chevron" aria-hidden="true" />
     </button>
