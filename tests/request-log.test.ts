@@ -87,7 +87,7 @@ describe("request log metadata", () => {
     expect(nextRequestLogId(1_700_000_000_000)).not.toBe(nextRequestLogId(1_700_000_000_000));
   });
 
-  test("classifies status codes without reading response bodies", () => {
+  test("classifies status codes with optional upstream error context", () => {
     expect(requestLogErrorCode(200)).toBeUndefined();
     expect(requestLogErrorCode(400)).toBe("invalid_request_error");
     expect(requestLogErrorCode(401)).toBe("invalid_api_key");
@@ -97,6 +97,10 @@ describe("request log metadata", () => {
       403,
       "Provider error 403: this model requires a subscription, upgrade for access: https://ollama.com/upgrade",
     )).toBe("subscription_required");
+    expect(requestLogErrorCode(
+      401,
+      "Provider error 401: this model requires a subscription, upgrade for access",
+    )).toBe("invalid_api_key");
     expect(requestLogErrorCode(429)).toBe("rate_limit_exceeded");
     expect(requestLogErrorCode(499)).toBe("client_closed_request");
     expect(requestLogErrorCode(503)).toBe("server_is_overloaded");
@@ -364,6 +368,24 @@ describe("request log metadata", () => {
       code: "rate_limit_exceeded",
       message: "Cursor rate limit exceeded: Cursor Connect error resource_exhausted: too many requests",
     })).toBe(429);
+  });
+
+  test("httpStatusFromTerminalError preserves auth precedence and permission status", () => {
+    expect(httpStatusFromTerminalError({
+      type: "authentication_error",
+      code: "invalid_api_key",
+      message: "upgrade your subscription",
+    })).toBe(401);
+    expect(httpStatusFromTerminalError({
+      type: "permission_error",
+      code: "permission_denied",
+      message: "Access denied",
+    })).toBe(403);
+    expect(httpStatusFromTerminalError({
+      type: "permission_error",
+      code: "subscription_required",
+      message: "this model requires a subscription",
+    })).toBe(403);
   });
 
   test("upstream reason capture redacts secret-shaped error messages", async () => {
