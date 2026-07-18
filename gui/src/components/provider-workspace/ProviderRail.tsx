@@ -5,7 +5,7 @@
  */
 /* eslint-disable react-refresh/only-export-components -- label helpers co-locate with the rail row */
 import { useT, type TFn } from "../../i18n";
-import { IconChevron, IconServer, IconStar } from "../../icons";
+import { IconServer, IconStar } from "../../icons";
 import {
   binProviderStatus,
   isFreeProvider,
@@ -76,6 +76,7 @@ export function RailRow({ item, selected, modelCount, isDefault, showConfigId, o
   const countLabel = modelCount !== undefined && modelCount > 0
     ? (modelCount === 1 ? t("pws.modelCountOne") : t("pws.modelCount", { count: modelCount }))
     : "";
+  const secondaryLabel = [showConfigId ? item.name : "", countLabel].filter(Boolean).join(" · ");
   return (
     <button
       type="button"
@@ -84,6 +85,7 @@ export function RailRow({ item, selected, modelCount, isDefault, showConfigId, o
       role="option"
       aria-selected={selected}
       aria-label={t("pws.rail.selectAria", { name: nameTitle, status, suffix })}
+      title={nameTitle}
     >
       <ProviderIcon
         name={item.name}
@@ -91,23 +93,21 @@ export function RailRow({ item, selected, modelCount, isDefault, showConfigId, o
         baseUrl={item.baseUrl}
         cls="providers-workspace-rail-icon"
       />
-      <span className="providers-workspace-rail-name" title={nameTitle}>
-        <span className="providers-workspace-rail-name-label">{displayName}</span>
-        {showConfigId ? (
-          <span className="providers-workspace-rail-name-id">{item.name}</span>
-        ) : null}
-      </span>
-      <span className="providers-workspace-rail-badges">
-        {/* Only label exceptions (Local / Free). Paid is the unmarked default. */}
-        {local ? (
-          <span className="pwi-rail-badge pwi-rail-badge--local" title={t("pws.localTitle")}>{t("modal.badge.local")}</span>
-        ) : free ? (
-          <span className="pwi-rail-badge pwi-rail-badge--free" title={t("pws.freeTitle")}>{t("modal.badge.free")}</span>
-        ) : null}
-      </span>
-      {/* Model text left of status so an empty count doesn't leave the dot floating mid-row. */}
-      <span className="providers-workspace-rail-model-count" title={countLabel || undefined}>
-        {countLabel}
+      <span className="providers-workspace-rail-copy">
+        <span className="providers-workspace-rail-primary">
+          <span className="providers-workspace-rail-name-label" title={displayName}>{displayName}</span>
+          {/* Only label exceptions (Local / Free). Paid is the unmarked default. */}
+          {local ? (
+            <span className="pwi-rail-badge pwi-rail-badge--local" title={t("pws.localTitle")}>{t("modal.badge.local")}</span>
+          ) : free ? (
+            <span className="pwi-rail-badge pwi-rail-badge--free" title={t("pws.freeTitle")}>{t("modal.badge.free")}</span>
+          ) : null}
+        </span>
+        {secondaryLabel && (
+          <span className="providers-workspace-rail-secondary" title={secondaryLabel}>
+            {secondaryLabel}
+          </span>
+        )}
       </span>
       <span className="providers-workspace-rail-trail">
         {isDefault && (
@@ -121,7 +121,6 @@ export function RailRow({ item, selected, modelCount, isDefault, showConfigId, o
         )}
         <span className={railStatusCls(item)} title={status} aria-hidden="true" />
       </span>
-      <IconChevron className="providers-workspace-rail-chevron" aria-hidden="true" />
     </button>
   );
 }

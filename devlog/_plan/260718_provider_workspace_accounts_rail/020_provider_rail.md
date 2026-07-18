@@ -4,6 +4,18 @@
 
 Replace the rail's horizontal fragment pile with a compact two-line semantic row, remove duplicated page controls, and make split-pane/detail composition adapt before text becomes clipped or vertically stacked.
 
+## P stale check — 2026-07-18
+
+- Account phase commits `360a72c` and `6cab890` only touched shared detail-tab tokens in this slice; the rail DOM, duplicate header/Add action, listbox focus owner, and repeated row declarations remain unchanged.
+- Live Vite/browser review still renders the page-level `Providers/Add Provider` and rail-local `Providers/Add provider` simultaneously.
+- At effective CSS width 1800 the workspace root is only 908px wide (`280px rail + 16px gap + 612px detail`) because the `@media (min-width:1200px)` rule hard-caps the detail track at 800px and the surrounding page max-width centers the root. This is visually sparse but not document overflow.
+- The prior effective 1024/960 observations remain the clipping trigger: the viewport-only 768px rule does not fire while the available workspace area is already below the rail + usable-detail minimum. A shell-local container decision is still required.
+- The row still has six independent horizontal peers plus three separate `.providers-workspace-rail-row` declarations; long names, model count, badge, trail, and chevron compete before name ellipsis can protect the row.
+- Existing original-color provider icons still flow through `providerIconSrc` into an `<img>` and must remain untouched.
+- `--fg` and `--fg-muted` remain in filter/detail actions in the touched stylesheet and are undefined by the current design tokens.
+
+The locked diff plan remains valid. One implementation clarification: the rail secondary line owns both duplicate config id and model count so they cannot remain independent shrink-resistant siblings.
+
 ## Scope boundary
 
 ### IN
@@ -85,3 +97,27 @@ rg -n 'var\(--fg|font-size:\s*[0-9]|font-weight:\s*[0-9]' gui/src/styles/provide
 ```
 
 Browser screenshots and observed DOM metrics are required at desktop, split, tablet, mobile, and narrow widths in English and Korean. Stop after one clean observation per changed state/width; rerender only after a repair.
+
+## B implementation receipt — 2026-07-18
+
+- Added the source/status contract test and observed `1 pass / 3 fail` before production edits. After the DOM/CSS implementation the rail/workspace suite is `53 pass / 0 fail / 213 assertions`.
+- Deleted the rail-local Providers/Add action and removed the listbox's duplicate tab stop. Group labels and tabular counts now have separate visual owners and a full localized group label.
+- Replaced the six-peer row with original-color icon + two-line copy + fixed star/status trail. Model count and collision-only config id share the secondary line; status text remains in the group/accessibility contract and never enters the dot.
+- Consolidated the base row rule, removed the chevron, replaced undefined foreground aliases, and added no-wrap/ellipsis/focus/selected contracts from existing design tokens.
+- Added a named shell container and scoped wide-page expansion. The workspace now consumes 1368px inside an effective 1800px viewport instead of staying at 908px; the detail grows from 596px to a bounded 960px while document and shell scroll widths remain equal to client widths.
+- Container states are derived from actual workspace width: a 710px constrained split uses a 240px rail and one-column overview; a 646px workspace stacks rail/detail. The 320px viewport stacks actions and preserves a 274px overflow-free root.
+
+### Browser-discovered repair during B
+
+The first constrained screenshot still rendered Base URL characters vertically because the overview container override appeared before the later base `.pws-overview-layout` rule. The override was moved after the base declaration; the same effective 1024px viewport then rendered a 452px one-column overview with normal URL wrapping and no overlap.
+
+### Build evidence
+
+```text
+bun test --isolate tests/provider-workspace-rail.test.ts tests/provider-workspace-data.test.ts tests/provider-workspace-state.test.ts
+  53 pass / 0 fail / 213 assertions
+focused ESLint (ProviderWorkspaceShell + ProviderRail)
+  0 errors / 0 warnings
+cd gui && bun run build
+  tsc PASS; Vite build PASS; pre-existing chunk-size warning only
+```

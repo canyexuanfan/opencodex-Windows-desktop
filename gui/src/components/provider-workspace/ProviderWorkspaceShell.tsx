@@ -6,7 +6,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useT } from "../../i18n";
-import { IconFilter, IconPlus, IconSearch, IconBoxes, IconGlobe, IconLock, IconKey } from "../../icons";
+import { IconFilter, IconSearch, IconBoxes, IconGlobe, IconLock, IconKey } from "../../icons";
 import {
   buildProviderWorkspace,
   hideRedundantChatGptForwardProviders,
@@ -219,26 +219,15 @@ export default function ProviderWorkspaceShell({
     { key: "disabled" as const, label: t("prov.disabledBadge"), count: sections.disabled.length },
   ];
   const railGroups = [
-    { id: "ready", title: t("pws.groupReady", { count: filteredSections.ready.length }), items: filteredSections.ready },
-    { id: "needs-setup", title: t("pws.groupNeedsSetup", { count: filteredSections.needsSetup.length }), items: filteredSections.needsSetup },
-    { id: "disabled", title: t("pws.groupDisabled", { count: filteredSections.disabled.length }), items: filteredSections.disabled },
+    { id: "ready", label: t("pws.status.ready"), count: filteredSections.ready.length, ariaLabel: t("pws.groupReady", { count: filteredSections.ready.length }), items: filteredSections.ready },
+    { id: "needs-setup", label: t("pws.status.needsSetup"), count: filteredSections.needsSetup.length, ariaLabel: t("pws.groupNeedsSetup", { count: filteredSections.needsSetup.length }), items: filteredSections.needsSetup },
+    { id: "disabled", label: t("prov.disabledBadge"), count: filteredSections.disabled.length, ariaLabel: t("pws.groupDisabled", { count: filteredSections.disabled.length }), items: filteredSections.disabled },
   ];
 
   return (
-    <div className="pws-root">
-      <aside className="pws-rail" aria-label={t("pws.providerList")}>
-        <div className="pws-rail-header">
-          <span className="pws-rail-title">{t("nav.providers")}</span>
-          <button
-            type="button"
-            className="btn btn-primary btn-sm"
-            onClick={() => onAddProvider()}
-            aria-label={t("modal.add")}
-          >
-            <IconPlus style={{ width: 13, height: 13 }} aria-hidden="true" />
-            {t("modal.add")}
-          </button>
-        </div>
+    <div className="pws-shell-container">
+      <div className="pws-root">
+        <aside className="pws-rail" aria-label={t("pws.providerList")}>
         <div className="pws-search-row">
           <div className="pws-search-wrap">
             <IconSearch className="pws-search-icon" width={14} height={14} aria-hidden="true" />
@@ -333,7 +322,6 @@ export default function ProviderWorkspaceShell({
           className="pws-rail-list"
           role="listbox"
           aria-label={t("pws.providersAria")}
-          tabIndex={0}
           onKeyDown={e => {
             const options = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[role="option"]'));
             if (options.length === 0) return;
@@ -355,11 +343,14 @@ export default function ProviderWorkspaceShell({
               {search ? t("pws.noSearchResults") : filterActive ? t("pws.noMatchFilters") : t("pws.noProvidersConfigured")}
             </span>
           )}
-          {railGroups.map(({ id, title, items }) => {
+          {railGroups.map(({ id, label, count, ariaLabel, items }) => {
             if (items.length === 0) return null;
             return (
-              <div key={id} className="pws-rail-group" role="group" aria-labelledby={`pws-group-${id}`}>
-                <div id={`pws-group-${id}`} className="pws-rail-group-head">{title}</div>
+              <div key={id} className="pws-rail-group" role="group" aria-label={ariaLabel}>
+                <div className="pws-rail-group-head" aria-hidden="true">
+                  <span className="pws-rail-group-label">{label}</span>
+                  <span className="pws-rail-group-count">{count}</span>
+                </div>
                 {items.map(item => (
                   <RailRow
                     key={item.name}
@@ -375,8 +366,8 @@ export default function ProviderWorkspaceShell({
             );
           })}
         </div>
-      </aside>
-      <main className="pws-main" aria-label={t("pws.workspaceMainAria")}>
+        </aside>
+        <main className="pws-main" aria-label={t("pws.workspaceMainAria")}>
         {selectedItem ? (
           detail?.(selectedItem, {
             usageTotals: usageTotals[selectedItem.name],
@@ -402,7 +393,8 @@ export default function ProviderWorkspaceShell({
             onSelectProvider={(name) => onSelect(name)}
           />
         ) : null}
-      </main>
+        </main>
+      </div>
     </div>
   );
 }
