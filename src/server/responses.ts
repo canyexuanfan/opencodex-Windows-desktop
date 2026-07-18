@@ -69,12 +69,18 @@ import { registerTurn, trackStreamLifetime, unregisterTurn } from "./lifecycle";
 import { redactSecretString } from "../lib/redact";
 import { readBoundedResponseBody } from "../lib/bounded-body";
 import {
+  beginRequestAttempt,
   catalogModelSupportsServiceTier,
+  finishRequestAttempt,
   inspectResponseLogJson,
+  noteAttemptSend,
   readConfiguredCodexServiceTier,
   requestLogSpeedLabel,
+  sealRequestAttemptIdentity,
+  usageFromResponsesPayload,
   type RequestLogContext,
 } from "./request-log";
+import type { AttemptRecoveryKind } from "../usage/log";
 import {
   consumeForInspection,
   consumeForResponseLogMetadata,
@@ -483,8 +489,10 @@ async function consumeComboFailure(
 ): Promise<ConsumedComboFailure> {
   const fallback = `Provider error ${response.status}`;
   let classificationText = fallback;
+  let usage: OcxUsage | undefined;
   try {
     const body = await readBoundedResponseBody(response, { signal });
+    usage = usageFromComboFailureText(body.text);
     if (body.displaySafe) {
       const safeText = redactSecretString(body.text).slice(0, 500);
       if (safeText) classificationText = safeText;
@@ -501,7 +509,21 @@ async function consumeComboFailure(
     response: formatErrorResponse(response.status, "upstream_error", message),
     classificationText,
     ...(retryAfter !== undefined ? { retryAfter } : {}),
+    ...(usage ? { usage } : {}),
   };
+}
+
+function usageFromComboFailureText(text: string): OcxUsage | undefined {
+  try {
+    const payload = JSON.parse(text) as Record<string, unknown>;
+    const nested = payload.response;
+    const source = nested && typeof nested === "object" && !Array.isArray(nested)
+      ? nested as Record<string, unknown>
+      : payload;
+    return usageFromResponsesPayload(source.usage);
+  } catch {
+    return undefined;
+  }
 }
 
 function createChildPassthroughCallbackGate(options: HandleResponsesOptions) {
@@ -585,6 +607,25 @@ async function handleComboResponses(
     let resolvedAuth: CodexAuthContext | undefined;
     let terminalRecorder: ((status: ResponsesTerminalStatus) => void) | undefined;
     const started = Date.now();
+    const attempt = beginRequestAttempt(
+      (logCtx.attempts?.length ?? 0) + 1,
+      pick.target.provider,
+      pick.target.model,
+      config.providers[pick.target.provider]!.adapter,
+    );
+    childLog.activeAttempt = attempt;
+    let attemptRetained = false;
+    const retainCancelledAttempt = (): void => {
+      if (attemptRetained) return;
+      sealRequestAttemptIdentity(
+        attempt,
+        childLog.provider,
+        childLog.providerAdapter ?? attempt.adapter,
+      );
+      finishRequestAttempt(attempt, 499, Date.now() - started, childLog.usage);
+      (logCtx.attempts ??= []).push(attempt);
+      attemptRetained = true;
+    };
     let consumedChildFailure: ConsumedComboFailure | undefined;
     const callbackGate = createChildPassthroughCallbackGate(options);
     let response: Response;
@@ -600,18 +641,37 @@ async function handleComboResponses(
       });
     } catch (error) {
       callbackGate.discard();
-      if (options.abortSignal?.aborted) return clientCancelledResponse();
+      if (options.abortSignal?.aborted) {
+        retainCancelledAttempt();
+        return clientCancelledResponse();
+      }
       throw error;
     }
 
     if (options.abortSignal?.aborted) {
       callbackGate.discard();
+      retainCancelledAttempt();
       return clientCancelledResponse();
     }
 
     if (response.ok) {
+      sealRequestAttemptIdentity(
+        attempt,
+        childLog.provider,
+        childLog.providerAdapter ?? attempt.adapter,
+      );
+      (logCtx.attempts ??= []).push(attempt);
+      attemptRetained = true;
       noteComboSuccess(comboId, combo, pick.target);
-      Object.assign(logCtx, childLog, { requestedModel: `combo/${comboId}` });
+      Object.assign(logCtx, childLog, {
+        requestedModel: `combo/${comboId}`,
+        model: `combo/${comboId}`,
+        provider: "combo",
+        attempts: logCtx.attempts,
+        activeAttempt: attempt,
+        activeAttemptStartedAt: started,
+        resolvedModel: childLog.resolvedModel ?? childLog.model,
+      });
       options.onCodexAuthContextResolved?.(resolvedAuth);
       options.setTerminalOutcomeRecorder?.(terminalRecorder);
       callbackGate.commit();
@@ -619,19 +679,48 @@ async function handleComboResponses(
     }
 
     callbackGate.discard();
-    if (response.status === 499) return clientCancelledResponse();
+    if (response.status === 499) {
+      retainCancelledAttempt();
+      return clientCancelledResponse();
+    }
     let failure: ConsumedComboFailure;
     try {
       failure = consumedChildFailure
         ?? await consumeComboFailure(response, options.abortSignal);
     } catch (error) {
-      if (options.abortSignal?.aborted) return clientCancelledResponse();
+      if (options.abortSignal?.aborted) {
+        retainCancelledAttempt();
+        return clientCancelledResponse();
+      }
       throw error;
     }
-    if (options.abortSignal?.aborted) return clientCancelledResponse();
+    if (options.abortSignal?.aborted) {
+      retainCancelledAttempt();
+      return clientCancelledResponse();
+    }
+    sealRequestAttemptIdentity(
+      attempt,
+      childLog.provider,
+      childLog.providerAdapter ?? attempt.adapter,
+    );
+    finishRequestAttempt(
+      attempt,
+      response.status,
+      Date.now() - started,
+      failure.usage,
+    );
+    (logCtx.attempts ??= []).push(attempt);
+    attemptRetained = true;
     lastFailure = failure.response;
     if (comboFailureDecision(response.status, failure.classificationText) === "stop") {
-      Object.assign(logCtx, childLog, { requestedModel: `combo/${comboId}` });
+      Object.assign(logCtx, childLog, {
+        requestedModel: `combo/${comboId}`,
+        model: `combo/${comboId}`,
+        provider: "combo",
+        attempts: logCtx.attempts,
+        activeAttempt: undefined,
+        activeAttemptStartedAt: undefined,
+      });
       return lastFailure;
     }
     console.warn(
@@ -888,6 +977,8 @@ export async function handleResponses(
   route.provider = resolveProviderTransport(route.providerName, route.provider, parsed.options.promptCacheKey);
   const adapterProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
   const adapter = resolveAdapter(adapterProvider, config.cacheRetention);
+  logCtx.providerAdapter = adapter.name;
+  sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, adapter.name);
   const isPassthrough = "passthrough" in adapter && !!adapter.passthrough;
 
   let openAiSidecar: ResolvedOpenAiForwardSidecar | undefined;
@@ -964,6 +1055,12 @@ export async function handleResponses(
       );
     }
     const request = await adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
+    const passthroughEstimate = typeof request.usageLog?.inputTokens === "number"
+      ? request.usageLog.inputTokens
+      : undefined;
+    if (passthroughEstimate !== undefined) {
+      logCtx.usageLogInputTokens = passthroughEstimate;
+    }
     // Abort the upstream if the client disconnects. A directly-relayed body does not propagate the
     // consumer's cancel to a signalled fetch, so we pass the signal and relay through relayWithAbort,
     // whose cancel() aborts the upstream — preventing leaked connections (RC2, passthrough path).
@@ -976,11 +1073,14 @@ export async function handleResponses(
       // the ChatGPT backend emits transient 502/520s that an immediate retry absorbs.
       // Body is a replayable string; nothing has streamed to the client yet.
       upstreamResponse = await fetchWithTransientRetry(
-        () => fetchWithHeaderTimeout(request.url, {
-          method: request.method,
-          headers: request.headers,
-          body: request.body,
-        }, upstream.signal, connectMs, parsed.stream, providerFetch(route.provider)),
+        recovery => {
+          noteAttemptSend(logCtx.activeAttempt, passthroughEstimate, recovery);
+          return fetchWithHeaderTimeout(request.url, {
+            method: request.method,
+            headers: request.headers,
+            body: request.body,
+          }, upstream.signal, connectMs, parsed.stream, providerFetch(route.provider));
+        },
         { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
       );
     } catch (err) {
@@ -1119,6 +1219,7 @@ export async function handleResponses(
     const queue = createAdapterEventQueue();
     const runTurn = async (): Promise<void> => {
       try {
+        noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens);
         await adapter.runTurn?.(
           parsed,
           { headers: selectedForwardHeaders, abortSignal: runTurnAbort.signal },
@@ -1197,6 +1298,7 @@ export async function handleResponses(
   const wsPlan = planWebSearch(config, parsed, false, route.provider, route.modelId, openAiSidecar);
   if (wsPlan) {
     parsed.context.tools = [...(parsed.context.tools ?? []), buildWebSearchTool()];
+    noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens);
     const wsResponse = await runWithWebSearch({
       parsed, adapter,
       backend: wsPlan.backend,
@@ -1244,19 +1346,30 @@ export async function handleResponses(
   const connectMs = config.connectTimeoutMs ?? 200_000;
 
   const request = await adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
-  if (typeof request.usageLog?.inputTokens === "number") {
-    logCtx.usageLogInputTokens = request.usageLog.inputTokens;
-  }
+  const inputTokenEstimate = typeof request.usageLog?.inputTokens === "number"
+    ? request.usageLog.inputTokens
+    : undefined;
+  if (inputTokenEstimate !== undefined) logCtx.usageLogInputTokens = inputTokenEstimate;
   let upstreamResponse: Response;
   try {
-    upstreamResponse = adapter.fetchResponse
-      ? await adapter.fetchResponse(request, { abortSignal: upstream.signal, timeoutMs: connectMs, stream: parsed.stream })
-      : await fetchWithResetRetry(
-          () => fetchWithHeaderTimeout(request.url, {
+    if (adapter.fetchResponse) {
+      noteAttemptSend(logCtx.activeAttempt, inputTokenEstimate);
+      upstreamResponse = await adapter.fetchResponse(request, {
+        abortSignal: upstream.signal,
+        timeoutMs: connectMs,
+        stream: parsed.stream,
+      });
+    } else {
+      upstreamResponse = await fetchWithResetRetry(
+        recovery => {
+          noteAttemptSend(logCtx.activeAttempt, inputTokenEstimate, recovery);
+          return fetchWithHeaderTimeout(request.url, {
             method: request.method, headers: request.headers, body: request.body,
-          }, upstream.signal, connectMs, parsed.stream, providerFetch(route.provider)),
-          { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
-        );
+          }, upstream.signal, connectMs, parsed.stream, providerFetch(route.provider));
+        },
+        { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
+      );
+    }
   } catch (err) {
     cleanupUpstreamAbort();
     upstream.abort();
@@ -1277,11 +1390,20 @@ export async function handleResponses(
     let imageTierBias = 0;
     let imageRetryAttempted = false;
     let oauth401ReplayAttempted = false;
-    const rebuildAndRefetch = async (): Promise<Response | { failed: Response }> => {
+    const rebuildAndRefetch = async (
+      recovery: AttemptRecoveryKind,
+    ): Promise<Response | { failed: Response }> => {
       const retryRequest = await activeAdapter.buildRequest(parsed, {
         headers: selectedForwardHeaders,
         ...(imageTierBias > 0 ? { imageTierBias } : {}),
       });
+      const retryEstimate = typeof retryRequest.usageLog?.inputTokens === "number"
+        ? retryRequest.usageLog.inputTokens
+        : undefined;
+      if (retryEstimate !== undefined) logCtx.usageLogInputTokens = retryEstimate;
+      logCtx.providerAdapter = activeAdapter.name;
+      sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, activeAdapter.name);
+      noteAttemptSend(logCtx.activeAttempt, retryEstimate, recovery);
       try {
         return activeAdapter.fetchResponse
           ? await activeAdapter.fetchResponse(retryRequest, { abortSignal: upstream.signal, timeoutMs: connectMs, stream: parsed.stream })
@@ -1327,7 +1449,7 @@ export async function handleResponses(
           resolveWireProtocolOverride(route.providerName, route.modelId, refreshedProvider),
           config.cacheRetention,
         );
-        const result = await rebuildAndRefetch();
+        const result = await rebuildAndRefetch("oauth-401");
         if ("failed" in result) return result.failed;
         upstreamResponse = result;
         continue recovery;
@@ -1352,7 +1474,7 @@ export async function handleResponses(
           resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
           config.cacheRetention,
         );
-        const result = await rebuildAndRefetch();
+        const result = await rebuildAndRefetch("key-429");
         if ("failed" in result) return result.failed;
         upstreamResponse = result;
       }
@@ -1367,7 +1489,7 @@ export async function handleResponses(
         imageRetryAttempted = true;
         imageTierBias = 1;
         try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
-        const result = await rebuildAndRefetch();
+        const result = await rebuildAndRefetch("image-413");
         if ("failed" in result) return result.failed;
         upstreamResponse = result;
         continue recovery;
