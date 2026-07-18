@@ -3,6 +3,7 @@ import { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import * as z from "zod/v4";
+import { comboConfigIssues } from "./combos/types";
 import { hardenSecretDir, hardenSecretPath } from "./lib/windows-secret-acl";
 import { providerDestinationConfigError } from "./lib/destination-policy";
 import type { OcxConfig } from "./types";
@@ -440,6 +441,22 @@ const configSchema = z.object({
       message: "defaultProvider must exist in providers",
     });
   }
+  const combos = (config as { combos?: unknown }).combos;
+  if (combos !== undefined) {
+    if (!combos || typeof combos !== "object" || Array.isArray(combos)) {
+      ctx.addIssue({ code: "custom", path: ["combos"], message: "combos must be an object" });
+    } else {
+      for (const [id, raw] of Object.entries(combos as Record<string, unknown>)) {
+        for (const issue of comboConfigIssues(id, raw, config.providers)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["combos", id, ...issue.path],
+            message: issue.message,
+          });
+        }
+      }
+    }
+  }
 });
 
 /**
@@ -564,14 +581,12 @@ function mergeConfigDefaults(parsed: unknown): unknown {
   return merged;
 }
 
-function configIssuePaths(error: z.ZodError): string[] {
-  const paths = error.issues.map(issue => issue.path.join(".") || "config");
-  return [...new Set(paths)].sort();
-}
-
 function schemaDiagnosticsError(error: z.ZodError): string {
-  const paths = configIssuePaths(error);
-  return paths.length > 0 ? `schema_invalid: ${paths.join(", ")}` : "schema_invalid";
+  const details = error.issues.map(issue => {
+    const path = issue.path.join(".") || "config";
+    return `${path}: ${issue.message}`;
+  });
+  return details.length > 0 ? `schema_invalid: ${details.join("; ")}` : "schema_invalid";
 }
 
 export function readConfigDiagnostics(): ConfigDiagnostics {

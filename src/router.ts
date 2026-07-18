@@ -1,4 +1,5 @@
 import type { CodexAccountMode, OcxConfig, OcxProviderConfig } from "./types";
+import { COMBO_NAMESPACE, tryPickComboModel, type ComboPick } from "./combos";
 import { hasOwnProvider, resolveEnvValue } from "./config";
 import { assertProviderDestinationAllowed } from "./lib/destination-policy";
 import { PROVIDER_REGISTRY, providerCodexAccountMode } from "./providers/registry";
@@ -9,6 +10,7 @@ export interface RouteResult {
   provider: OcxProviderConfig;
   modelId: string;
   codexAccountMode?: CodexAccountMode;
+  combo?: ComboPick;
 }
 
 const MODEL_PROVIDER_PATTERNS: Array<{ providerNames: string[]; prefixes: string[] }> = [
@@ -198,6 +200,18 @@ function routeResult(providerName: string, provider: OcxProviderConfig, modelId:
 }
 
 export function routeModel(config: OcxConfig, modelId: string): RouteResult {
+  const preservePhysicalComboProvider =
+    hasOwnProvider(config.providers, COMBO_NAMESPACE)
+    && Object.keys(config.combos ?? {}).length === 0;
+  if (!preservePhysicalComboProvider) {
+    const combo = tryPickComboModel(config, modelId);
+    if (combo) {
+      const concrete = `${combo.target.provider}/${combo.target.model}`;
+      const routed = routeModel(config, concrete);
+      return { ...routed, combo };
+    }
+  }
+
   // 0. Explicit "<provider>/<model>" namespace (e.g. "opencode-go/deepseek-v4-pro").
   //    Only triggers when the prefix matches a CONFIGURED provider, so genuine
   //    slash-containing model ids (e.g. "anthropic/claude-...") fall through when

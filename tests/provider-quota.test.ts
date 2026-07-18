@@ -45,6 +45,11 @@ function testConfig(): OcxConfig {
         authMode: "oauth",
         baseUrl: "https://daily-cloudcode-pa.googleapis.com",
       },
+      kimi: {
+        adapter: "openai-chat",
+        authMode: "oauth",
+        baseUrl: "https://api.kimi.com/coding/v1",
+      },
       disabled_xai: {
         adapter: "openai-chat",
         authMode: "oauth",
@@ -86,6 +91,7 @@ describe("fetchProviderQuotaReports", () => {
     await saveCredential("anthropic", { access: "claude-access-secret", refresh: "claude-refresh-secret", expires: Date.now() + 3600_000 });
     await saveCredential("cursor", { access: "cursor-access-secret", refresh: "cursor-refresh-secret", expires: Date.now() + 3600_000 });
     await saveCredential("google-antigravity", { access: "agy-access-secret", refresh: "agy-refresh-secret", expires: Date.now() + 3600_000, projectId: "agy-project-secret" });
+    await saveCredential("kimi", { access: "kimi-access-secret", refresh: "kimi-refresh-secret", expires: Date.now() + 3600_000 });
 
     const seen: { url: string; authorization?: string; body?: string }[] = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -156,13 +162,25 @@ describe("fetchProviderQuotaReports", () => {
           rawToken: "agy-access-secret",
         }), { status: 200, headers: { "content-type": "application/json" } });
       }
+      if (url === "https://api.kimi.com/coding/v1/usages") {
+        return new Response(JSON.stringify({
+          user: { userId: "kimi-user-secret", businessId: "kimi-business-secret" },
+          usage: { limit: "100", used: "15", remaining: "85", resetTime: "2026-07-24T12:20:50.442060Z" },
+          limits: [{
+            window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" },
+            detail: { limit: "100", remaining: "100", resetTime: "2026-07-18T03:20:50.442060Z" },
+          }],
+          totalQuota: { limit: "100", remaining: "99" },
+          subType: "TYPE_PURCHASE",
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
       return new Response("not found", { status: 404 });
     }) as typeof fetch;
 
     const result = await fetchProviderQuotaReports(testConfig(), true);
     const byProvider = Object.fromEntries(result.reports.map(report => [report.provider, report]));
 
-    expect(Object.keys(byProvider).sort()).toEqual(["anthropic", "cursor", "google-antigravity", "openai", "xai"]);
+    expect(Object.keys(byProvider).sort()).toEqual(["anthropic", "cursor", "google-antigravity", "kimi", "openai", "xai"]);
     expect(byProvider.openai?.quota.weeklyPercent).toBe(34);
     expect(byProvider.xai?.quota.monthlyPercent).toBe(25);
     expect(byProvider.anthropic?.quota.weeklyPercent).toBe(72);
@@ -181,16 +199,139 @@ describe("fetchProviderQuotaReports", () => {
       { label: "First-party models", percent: 12.5, resetAt: Date.parse("2026-08-01T00:00:00.000Z") },
       { label: "API usage", percent: 58, resetAt: Date.parse("2026-08-01T00:00:00.000Z") },
     ]);
+    expect(byProvider.kimi?.source).toBe("kimi:usages");
+    expect(byProvider.kimi?.quota).toEqual({
+      fiveHourPercent: 0,
+      fiveHourResetAt: Date.parse("2026-07-18T03:20:50.442060Z"),
+      weeklyPercent: 15,
+      weeklyResetAt: Date.parse("2026-07-24T12:20:50.442060Z"),
+      customWindows: [{ label: "Total subscription credits", percent: 1 }],
+      updatedAt: expect.any(Number),
+    });
+    expect(byProvider.kimi?.quota.monthlyPercent).toBeUndefined();
 
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain("access-secret");
     expect(serialized).not.toContain("refresh-secret");
     expect(serialized).not.toContain("person@example.com");
     expect(serialized).not.toContain("agy-project-secret");
+    expect(serialized).not.toContain("kimi-user-secret");
+    expect(serialized).not.toContain("kimi-business-secret");
+    expect(serialized).not.toContain("TYPE_PURCHASE");
     expect(seen.find(row => row.url.includes("grok.com"))?.authorization).toBe("Bearer xai-access-secret");
     expect(seen.find(row => row.url.includes("anthropic.com"))?.authorization).toBe("Bearer claude-access-secret");
     expect(seen.find(row => row.url.includes("cloudcode-pa.googleapis.com"))?.authorization).toBe("Bearer agy-access-secret");
     expect(seen.find(row => row.url.includes("cloudcode-pa.googleapis.com"))?.body).toBe(JSON.stringify({ project: "agy-project-secret" }));
+    expect(seen.find(row => row.url === "https://api.kimi.com/coding/v1/usages")?.authorization).toBe("Bearer kimi-access-secret");
+  });
+
+  function kimiOnlyConfig(baseUrl = "https://api.kimi.com/coding/v1"): OcxConfig {
+    return {
+      defaultProvider: "kimi",
+      providers: { kimi: { adapter: "openai-chat", authMode: "oauth", baseUrl } },
+    } as OcxConfig;
+  }
+
+  test("Kimi quota never sends OAuth credentials to a non-canonical base URL", async () => {
+    await saveCredential("kimi", { access: "kimi-access-secret", refresh: "kimi-refresh-secret", expires: Date.now() + 3600_000 });
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(kimiOnlyConfig("https://attacker.example/coding/v1"), true);
+
+    expect(result.reports).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
+  test("Kimi quota refreshes an expired OAuth token before calling usages", async () => {
+    await saveCredential("kimi", { access: "expired-kimi-access", refresh: "kimi-refresh-secret", expires: Date.now() - 1 });
+    const seen: Array<{ url: string; authorization?: string }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const headers = init?.headers as Record<string, string> | undefined;
+      seen.push({ url, authorization: headers?.Authorization });
+      if (url === "https://auth.kimi.com/api/oauth/token") {
+        return new Response(JSON.stringify({
+          access_token: "fresh-kimi-access",
+          refresh_token: "fresh-kimi-refresh",
+          expires_in: 3600,
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url === "https://api.kimi.com/coding/v1/usages") {
+        return new Response(JSON.stringify({ usage: { limit: "100", remaining: "75" } }), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(kimiOnlyConfig(), true);
+
+    expect(result.reports[0]?.quota.weeklyPercent).toBe(25);
+    expect(seen.find(row => row.url.endsWith("/coding/v1/usages"))?.authorization).toBe("Bearer fresh-kimi-access");
+  });
+
+  test("Kimi quota skips usages when OAuth refresh fails", async () => {
+    await saveCredential("kimi", { access: "expired-kimi-access", refresh: "kimi-refresh-secret", expires: Date.now() - 1 });
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response("refresh rejected", { status: 500 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(kimiOnlyConfig(), true);
+
+    expect(result.reports).toEqual([]);
+    expect(seen).toContain("https://auth.kimi.com/api/oauth/token");
+    expect(seen).not.toContain("https://api.kimi.com/coding/v1/usages");
+  });
+
+  test("Kimi quota ignores malformed and zero-limit payloads", async () => {
+    await saveCredential("kimi", { access: "kimi-access-secret", refresh: "kimi-refresh-secret", expires: Date.now() + 3600_000 });
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      usage: { limit: "0", used: "1" },
+      limits: [{ window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" }, detail: { limit: "nope", remaining: "1" } }],
+      totalQuota: { remaining: "99" },
+    }), { status: 200 })) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(kimiOnlyConfig(), true);
+
+    expect(result.reports).toEqual([]);
+  });
+
+  test("Kimi quota recognizes a 5h label when window metadata is absent", async () => {
+    await saveCredential("kimi", { access: "kimi-access-secret", refresh: "kimi-refresh-secret", expires: Date.now() + 3600_000 });
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      limits: [{ name: "5h quota", detail: { limit: "200", used: "50", resetAt: "2026-07-18T08:00:00Z" } }],
+    }), { status: 200 })) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(kimiOnlyConfig(), true);
+
+    expect(result.reports[0]?.quota.fiveHourPercent).toBe(25);
+    expect(result.reports[0]?.quota.fiveHourResetAt).toBe(Date.parse("2026-07-18T08:00:00Z"));
+  });
+
+  test("Kimi quota preserves a last-good row after 401 only within the shared age bound", async () => {
+    await saveCredential("kimi", { access: "kimi-access-secret", refresh: "kimi-refresh-secret", expires: Date.now() + 3600_000 });
+    let authorized = true;
+    globalThis.fetch = (async () => authorized
+      ? new Response(JSON.stringify({ usage: { limit: "100", used: "35" } }), { status: 200 })
+      : new Response("unauthorized", { status: 401 })) as typeof fetch;
+
+    const good = await fetchProviderQuotaReports(kimiOnlyConfig(), true);
+    expect(good.reports[0]?.quota.weeklyPercent).toBe(35);
+    const originalUpdatedAt = good.reports[0]!.updatedAt;
+
+    authorized = false;
+    const preserved = await fetchProviderQuotaReports(kimiOnlyConfig(), true);
+    expect(preserved.reports[0]?.quota.weeklyPercent).toBe(35);
+    expect(preserved.reports[0]?.updatedAt).toBe(originalUpdatedAt);
+
+    preserved.reports[0]!.updatedAt = Date.now() - 31 * 60_000;
+    preserved.reports[0]!.quota.updatedAt = Date.now() - 31 * 60_000;
+    const expired = await fetchProviderQuotaReports(kimiOnlyConfig(), true);
+    expect(expired.reports).toEqual([]);
   });
 
   test("pool mode reports the active added account", async () => {

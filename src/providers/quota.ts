@@ -9,6 +9,8 @@ import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "./op
 
 const CACHE_TTL_MS = 5 * 60_000;
 const REQUEST_TIMEOUT_MS = 8_000;
+const KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1";
+const KIMI_CODE_USAGE_URL = `${KIMI_CODE_BASE_URL}/usages`;
 /** Keep a failed probe's previous row at most this long before dropping it. */
 const LAST_GOOD_MAX_AGE_MS = 30 * 60_000;
 
@@ -19,6 +21,8 @@ export interface ProviderQuotaWindow {
 }
 
 export interface ProviderQuota {
+  fiveHourPercent?: number;
+  fiveHourResetAt?: number;
   weeklyPercent?: number;
   weeklyResetAt?: number;
   monthlyPercent?: number;
@@ -62,7 +66,8 @@ function cacheKey(config: OcxConfig): string {
 
 function hasQuotaRows(quota: ProviderQuota | null | undefined): quota is ProviderQuota {
   if (!quota) return false;
-  return typeof quota.weeklyPercent === "number"
+  return typeof quota.fiveHourPercent === "number"
+    || typeof quota.weeklyPercent === "number"
     || typeof quota.monthlyPercent === "number"
     || !!quota.customWindows?.some(window => typeof window.percent === "number");
 }
@@ -210,6 +215,98 @@ async function fetchAnthropicQuota(provider: string): Promise<ProviderQuotaRepor
     updatedAt: Date.now(),
   };
   return report(provider, "anthropic:oauth-usage", quota);
+}
+
+function normalizedBaseUrl(value: string): string | null {
+  try {
+    const url = new URL(value);
+    if (url.search || url.hash) return null;
+    return `${url.origin.toLowerCase()}${url.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return null;
+  }
+}
+
+function quotaResetAt(row: Record<string, unknown>): number | undefined {
+  return normalizeResetAt(row.resetTime ?? row.resetAt ?? row.reset_time ?? row.reset_at);
+}
+
+function parseKimiQuotaRow(value: unknown, resetFallback?: Record<string, unknown>): { percent: number; resetAt?: number } | null {
+  const row = asRecord(value);
+  if (!row) return null;
+  const limit = toFiniteNumber(row.limit);
+  if (limit === undefined || limit <= 0) return null;
+  let used = toFiniteNumber(row.used);
+  if (used === undefined) {
+    const remaining = toFiniteNumber(row.remaining);
+    if (remaining === undefined) return null;
+    used = limit - remaining;
+  }
+  const percent = normalizePercent((used / limit) * 100);
+  if (percent === undefined) return null;
+  const resetAt = quotaResetAt(row) ?? (resetFallback ? quotaResetAt(resetFallback) : undefined);
+  return { percent, ...(resetAt !== undefined ? { resetAt } : {}) };
+}
+
+function isKimiFiveHourLimit(item: Record<string, unknown>, detail: Record<string, unknown>, window: Record<string, unknown>): boolean {
+  const duration = toFiniteNumber(window.duration ?? item.duration ?? detail.duration);
+  const unit = String(window.timeUnit ?? item.timeUnit ?? detail.timeUnit ?? "").toUpperCase();
+  if ((unit.includes("MINUTE") && duration === 300) || (unit.includes("HOUR") && duration === 5)) return true;
+  const label = [item.name, item.title, item.scope, detail.name, detail.title]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLowerCase();
+  return /(^|\b)5\s*(?:h|hour)/.test(label);
+}
+
+function parseKimiQuotaPayload(value: unknown): ProviderQuota | null {
+  const body = asRecord(value);
+  if (!body) return null;
+  const weekly = parseKimiQuotaRow(body.usage);
+  const total = parseKimiQuotaRow(body.totalQuota);
+  let fiveHour: { percent: number; resetAt?: number } | null = null;
+  if (Array.isArray(body.limits)) {
+    for (const rawItem of body.limits) {
+      const item = asRecord(rawItem);
+      if (!item) continue;
+      const detail = asRecord(item.detail) ?? item;
+      const window = asRecord(item.window) ?? {};
+      if (!isKimiFiveHourLimit(item, detail, window)) continue;
+      fiveHour = parseKimiQuotaRow(detail, window);
+      if (fiveHour) break;
+    }
+  }
+  const quota: ProviderQuota = {
+    ...(fiveHour ? {
+      fiveHourPercent: fiveHour.percent,
+      ...(fiveHour.resetAt !== undefined ? { fiveHourResetAt: fiveHour.resetAt } : {}),
+    } : {}),
+    ...(weekly ? {
+      weeklyPercent: weekly.percent,
+      ...(weekly.resetAt !== undefined ? { weeklyResetAt: weekly.resetAt } : {}),
+    } : {}),
+    ...(total ? { customWindows: [{ label: "Total subscription credits", percent: total.percent, ...(total.resetAt !== undefined ? { resetAt: total.resetAt } : {}) }] } : {}),
+    updatedAt: Date.now(),
+  };
+  return hasQuotaRows(quota) ? quota : null;
+}
+
+async function fetchKimiQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaReport | null> {
+  // Never release an OAuth token to a user-edited or lookalike provider host.
+  if (normalizedBaseUrl(config.baseUrl) !== KIMI_CODE_BASE_URL) return null;
+  let accessToken: string;
+  try {
+    accessToken = await getValidAccessToken("kimi");
+  } catch {
+    return null;
+  }
+  const response = await fetch(KIMI_CODE_USAGE_URL, {
+    headers: { Accept: "application/json", Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) return null;
+  const quota = parseKimiQuotaPayload(await response.json().catch(() => null));
+  return quota ? report(provider, "kimi:usages", quota) : null;
 }
 
 /** Cursor included usage via api2.cursor.sh (Bearer from OAuth) — unofficial, may change. */
@@ -499,6 +596,7 @@ async function maybeFetchProviderQuota(
     if (provider.authMode === "oauth" && name === "anthropic") return fetchAnthropicQuota(name);
     if (provider.authMode === "oauth" && name === "cursor") return fetchCursorQuota(name);
     if (provider.authMode === "oauth" && name === "google-antigravity") return fetchAntigravityQuota(name, provider);
+    if (provider.authMode === "oauth" && name === "kimi") return fetchKimiQuota(name, provider);
     return null;
   } catch {
     return null;

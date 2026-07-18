@@ -8,7 +8,7 @@ import { clearModelCache, DEFAULT_MODEL_CACHE_TTL_MS, getFreshCached, getStaleCa
 import { buildModelsRequest, resolveModelsAuthToken } from "../oauth";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 import { modelInList } from "../types";
-import { CODEX_REASONING_LEVELS, configuredReasoningEfforts, modelRecordValue, sanitizeCodexReasoningEfforts } from "../reasoning-effort";
+import { CODEX_REASONING_LEVELS, codexEffortRank, configuredReasoningEfforts, modelRecordValue, sanitizeCodexReasoningEfforts } from "../reasoning-effort";
 import { getJawcodeModelMetadata, getJawcodeModelMetadataCaseInsensitive, listJawcodeModelMetadata, resolveJawcodeProvider } from "../generated/jawcode-model-metadata";
 import { enrichProviderFromRegistry, shouldCaseFoldMetadataModelId } from "../providers/derive";
 import { getProviderRegistryEntry } from "../providers/registry";
@@ -17,6 +17,15 @@ import { CODEX_GPT5_IDENTITY_LINE } from "../adapters/identity";
 import { filterCursorConfiguredModelsByLiveDiscovery } from "../adapters/cursor/discovery";
 import { fetchCursorUsableModels } from "../adapters/cursor/live-models";
 import { OPENAI_API_PROVIDER_ID } from "../providers/openai-tiers";
+import {
+  COMBO_NAMESPACE,
+  comboModelId,
+  getCombo,
+  listComboIds,
+  targetKey,
+} from "../combos";
+import type { NormalizedComboConfig } from "../combos/types";
+import { redactSecretString } from "../lib/redact";
 import upstreamModelsSnapshot from "./data/upstream-models.json";
 
 const BUNDLED_CATALOG_CACHE_MS = 60_000;
@@ -428,7 +437,10 @@ function applyNativeOpenAiContextOverride(entry: RawEntry): void {
   }
 }
 
-function ensureStrictCatalogFields(entry: RawEntry): RawEntry {
+function ensureStrictCatalogFields(
+  entry: RawEntry,
+  options: { preserveExactInputModalities?: boolean } = {},
+): RawEntry {
   if (typeof entry.supports_reasoning_summaries !== "boolean") entry.supports_reasoning_summaries = true;
   if (typeof entry.default_reasoning_summary !== "string") entry.default_reasoning_summary = "none";
   if (typeof entry.support_verbosity !== "boolean") entry.support_verbosity = true;
@@ -440,7 +452,9 @@ function ensureStrictCatalogFields(entry: RawEntry): RawEntry {
   if (typeof entry.supports_parallel_tool_calls !== "boolean") entry.supports_parallel_tool_calls = true;
   if (typeof entry.supports_image_detail_original !== "boolean") entry.supports_image_detail_original = false;
   if (!Array.isArray(entry.experimental_supported_tools)) entry.experimental_supported_tools = [];
-  if (!Array.isArray(entry.input_modalities)) entry.input_modalities = ["text"];
+  if (!Array.isArray(entry.input_modalities) && !options.preserveExactInputModalities) {
+    entry.input_modalities = ["text"];
+  }
   const contextWindow = typeof entry.context_window === "number" && entry.context_window > 0 ? entry.context_window : 128000;
   entry.context_window = contextWindow;
   if (
@@ -728,7 +742,12 @@ function applyCatalogModelMetadata(entry: RawEntry, model?: CatalogModel): void 
   }
 }
 
-function applyReasoningLevels(entry: RawEntry, effortsOverride?: string[], defaultOverride?: string): void {
+function applyReasoningLevels(
+  entry: RawEntry,
+  effortsOverride?: string[],
+  defaultOverride?: string,
+  preserveExact = false,
+): void {
   let efforts = sanitizeCodexReasoningEfforts(effortsOverride) ?? ROUTED_REASONING_LEVELS.map(l => l.effort);
   // Mock top tiers (user decision 260709): every reasoning-capable model advertises `max`
   // even when the provider ladder stops lower — subagent spawns pass `max` DIRECTLY
@@ -736,7 +755,7 @@ function applyReasoningLevels(entry: RawEntry, effortsOverride?: string[], defau
   // so a missing max rung hard-fails spawn_agent effort overrides. The wire stays honest:
   // routed adapters clamp via clampToSupportedCodexEffort and natives via
   // nativeEffortClamp (max -> the model's real top rung).
-  if (efforts.length > 0) {
+  if (!preserveExact && efforts.length > 0) {
     const additions: string[] = [];
     if (!efforts.includes("max")) additions.push("max");
     if (!efforts.includes("ultra")) additions.push("ultra");
@@ -824,7 +843,22 @@ function finishUpstreamNativeEntry(clone: RawEntry, priority: number): RawEntry 
   return ensureStrictCatalogFields(normalizeServiceTiers(clone));
 }
 
-function deriveEntry(template: RawEntry | null, slug: string, desc: string, priority: number, model?: CatalogModel): RawEntry {
+function isExactComboCatalogModel(
+  model: CatalogModel | undefined,
+  exactComboSlugs: ReadonlySet<string>,
+): boolean {
+  return model !== undefined && exactComboSlugs.has(`${model.provider}/${model.id}`);
+}
+
+function deriveEntry(
+  template: RawEntry | null,
+  slug: string,
+  desc: string,
+  priority: number,
+  model?: CatalogModel,
+  exactComboSlugs: ReadonlySet<string> = new Set(),
+): RawEntry {
+  const preserveExact = isExactComboCatalogModel(model, exactComboSlugs);
   if (!slug.includes("/")) {
     // Supported native slug covered by the upstream snapshot: use the REAL entry (exact
     // reasoning ladder — e.g. luna has no ultra — default effort, identity, model_messages)
@@ -853,7 +887,7 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
           `You are a coding agent powered by the ${modelName} model. Do not claim to be GPT-5 or made by OpenAI.`,
         );
       }
-      applyReasoningLevels(e, model?.reasoningEfforts, model?.defaultReasoningEffort);
+      applyReasoningLevels(e, model?.reasoningEfforts, model?.defaultReasoningEffort, preserveExact);
       normalizeRoutedCatalogEntry(e, model?.parallelToolCalls === true);
       applyJawcodeCatalogMetadata(e, slug, model?.contextCap);
       applyCatalogModelMetadata(e, model);
@@ -873,7 +907,9 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
         delete e.supports_websockets;
       }
     }
-    return ensureStrictCatalogFields(normalizeServiceTiers(e));
+    return ensureStrictCatalogFields(normalizeServiceTiers(e), {
+      preserveExactInputModalities: preserveExact,
+    });
   }
   // Fallback when no template is available (best-effort; strict parser may need more).
   const entry: RawEntry = {
@@ -882,7 +918,9 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
     priority, base_instructions: "You are a helpful coding assistant.",
     ...(slug.includes("/") ? { web_search_tool_type: "text_and_image", supports_search_tool: true } : {}),
   };
-  if (slug.includes("/")) applyReasoningLevels(entry, model?.reasoningEfforts, model?.defaultReasoningEffort);
+  if (slug.includes("/")) {
+    applyReasoningLevels(entry, model?.reasoningEfforts, model?.defaultReasoningEffort, preserveExact);
+  }
   else {
     applyReasoningLevels(entry, isGpt56NativeSlug(slug) ? undefined : ["low", "medium", "high", "xhigh"]);
     if (isGpt56NativeSlug(slug)) ensureGpt56ReasoningLevels(entry);
@@ -890,7 +928,9 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
   applyJawcodeCatalogMetadata(entry, slug, model?.contextCap);
   applyCatalogModelMetadata(entry, model);
   applyNativeOpenAiContextOverride(entry);
-  return ensureStrictCatalogFields(normalizeServiceTiers(entry));
+  return ensureStrictCatalogFields(normalizeServiceTiers(entry), {
+    preserveExactInputModalities: preserveExact,
+  });
 }
 
 /**
@@ -898,7 +938,15 @@ function deriveEntry(template: RawEntry | null, slug: string, desc: string, prio
  * catalog sync and the proxy `/v1/models?client_version` branch.
  * Native gpt slugs stay bare; routed models are namespaced `<provider>/<model>`.
  */
-export function buildCatalogEntries(template: RawEntry | null, gptSlugs: string[], goModels: CatalogModel[], featured?: string[], wsEnabled = false, multiAgentMode: MultiAgentMode = "default"): RawEntry[] {
+export function buildCatalogEntries(
+  template: RawEntry | null,
+  gptSlugs: string[],
+  goModels: CatalogModel[],
+  featured?: string[],
+  wsEnabled = false,
+  multiAgentMode: MultiAgentMode = "default",
+  exactComboSlugs: ReadonlySet<string> = new Set(),
+): RawEntry[] {
   // Codex's models-manager sorts by `priority` ASC and advertises the first 5 picker-visible
   // models to spawn_agent (sort_by_key(priority) + MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT=5). Catalog
   // ARRAY order is discarded — so "featuring" a model = giving it the LOWEST priority (0..N-1) so
@@ -912,7 +960,14 @@ export function buildCatalogEntries(template: RawEntry | null, gptSlugs: string[
   }
   for (const m of goModels) {
     const slug = `${m.provider}/${m.id}`;
-    const e = deriveEntry(template, slug, `Routed via opencodex → ${m.provider} (${m.owned_by ?? m.provider}).`, 5, m);
+    const e = deriveEntry(
+      template,
+      slug,
+      `Routed via opencodex → ${m.provider} (${m.owned_by ?? m.provider}).`,
+      5,
+      m,
+      exactComboSlugs,
+    );
     if (rank.has(slug)) e.priority = rank.get(slug)!;
     out.push(e);
   }
@@ -1342,11 +1397,137 @@ export async function gatherRoutedModels(config: OcxConfig): Promise<CatalogMode
     // intentionally mirrors Cursor's public model table, including Gemini image preview, so the
     // exposure decision goes through shouldExposeRoutedModel (single choke point).
     .filter(shouldExposeRoutedModel);
+  const memberByKey = new Map(all.map(model => [`${model.provider}/${model.id}`, model]));
+  for (const id of listComboIds(config)) {
+    const combo = getCombo(config, id);
+    if (!combo) continue;
+    const members = combo.targets
+      .map(target => memberByKey.get(targetKey(target)))
+      .filter((member): member is CatalogModel => member !== undefined);
+    const derived = deriveComboCatalogModel(id, combo, members);
+    if (derived) all.push(derived);
+    else warnUncataloguedComboOnce(id, combo, members);
+  }
   all.sort((a, b) => (a.provider === b.provider ? a.id.localeCompare(b.id) : a.provider.localeCompare(b.provider)));
   return all;
 }
 
 const openAiApiCollisionWarnings = new Set<string>();
+const comboCatalogWarningSignatures = new Map<string, string>();
+
+function intersectStrings(values: readonly string[][]): string[] {
+  if (values.length === 0) return [];
+  const rest = values.slice(1).map(value => new Set(value));
+  return [...new Set(values[0])].filter(value => rest.every(set => set.has(value)));
+}
+
+function effectiveComboDefault(
+  configured: string | undefined,
+  common: readonly string[],
+): string | undefined {
+  if (configured && common.includes(configured)) return configured;
+  const requestedRank = codexEffortRank(configured ?? "medium");
+  const ranked = common
+    .map(effort => ({ effort, rank: codexEffortRank(effort) }))
+    .filter(item => item.rank >= 0)
+    .sort((a, b) => a.rank - b.rank);
+  if (ranked.length === 0) return undefined;
+  const atOrBelow = ranked.filter(item => item.rank <= requestedRank);
+  return atOrBelow.at(-1)?.effort ?? ranked[0]!.effort;
+}
+
+export function deriveComboCatalogModel(
+  id: string,
+  combo: NormalizedComboConfig,
+  members: readonly CatalogModel[],
+): CatalogModel | null {
+  if (combo.targets.length === 0) return null;
+  if (new Set(combo.targets.map(targetKey)).size !== combo.targets.length) return null;
+  if (members.length !== combo.targets.length) return null;
+  if (!members.every((member, index) => (
+    `${member.provider}/${member.id}` === targetKey(combo.targets[index]!)
+  ))) return null;
+  const contexts = members.map(member => member.contextWindow);
+  if (contexts.some(value => typeof value !== "number" || value <= 0)) return null;
+
+  const inputModalities = intersectStrings(
+    members.map(member => member.inputModalities ?? ["text"]),
+  );
+  if (inputModalities.length === 0) return null;
+  const reasoningEfforts = intersectStrings(
+    members.map(member => member.reasoningEfforts ?? []),
+  );
+  const contextWindow = Math.min(...contexts as number[]);
+  const maxInputTokens = Math.min(
+    ...members.map(member => member.maxInputTokens ?? member.contextWindow!),
+  );
+  const defaultReasoningEffort = effectiveComboDefault(
+    combo.defaultEffort,
+    reasoningEfforts,
+  );
+
+  return {
+    provider: COMBO_NAMESPACE,
+    id,
+    owned_by: COMBO_NAMESPACE,
+    contextWindow,
+    maxInputTokens,
+    inputModalities,
+    reasoningEfforts,
+    ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
+    ...(members.every(member => member.parallelToolCalls === true)
+      ? { parallelToolCalls: true }
+      : {}),
+  };
+}
+
+function safeCatalogWarningLabel(value: string): string {
+  return redactSecretString(value)
+    .replace(/[\u0000-\u001f\u007f]/g, "?")
+    .slice(0, 200);
+}
+
+function comboCatalogWarningSignature(
+  combo: NormalizedComboConfig,
+  members: readonly CatalogModel[],
+): string {
+  const discovered = new Map<string, CatalogModel>(members.map(member => [
+    `${member.provider}/${member.id}`,
+    member,
+  ] as const));
+  return JSON.stringify(combo.targets.map(target => {
+    const key = targetKey(target);
+    const member = discovered.get(key);
+    return {
+      key,
+      contextWindow: member?.contextWindow ?? null,
+      maxInputTokens: member?.maxInputTokens ?? null,
+      inputModalities: [...new Set(member?.inputModalities ?? [])].sort(),
+      reasoningEfforts: [...new Set(member?.reasoningEfforts ?? [])].sort(),
+      parallelToolCalls: member?.parallelToolCalls === true,
+    };
+  }).sort((a, b) => a.key.localeCompare(b.key)));
+}
+
+function warnUncataloguedComboOnce(
+  id: string,
+  combo: NormalizedComboConfig,
+  members: readonly CatalogModel[],
+): void {
+  const signature = comboCatalogWarningSignature(combo, members);
+  if (comboCatalogWarningSignatures.get(id) === signature) return;
+  comboCatalogWarningSignatures.set(id, signature);
+  const targets = combo.targets
+    .map(target => safeCatalogWarningLabel(targetKey(target)))
+    .sort((a, b) => a.localeCompare(b));
+  console.warn(
+    `[opencodex] Combo "${safeCatalogWarningLabel(id)}" is omitted from the catalog because member capabilities are incomplete: ${targets.join(", ")}.`,
+  );
+}
+
+export function exactComboCatalogSlugs(config: Pick<OcxConfig, "combos">): Set<string> {
+  return new Set(listComboIds(config).map(comboModelId));
+}
 
 function normalizedOpenAiApiSignature(model: CatalogModel): string {
   const normalized = {
@@ -1370,6 +1551,7 @@ export function resetCatalogRuntimeStateForTests(): void {
   bundledCatalogCache = null;
   lastDropWarnSignature.clear();
   openAiApiCollisionWarnings.clear();
+  comboCatalogWarningSignatures.clear();
   clearModelCache();
 }
 
@@ -1492,6 +1674,8 @@ export function mergeCatalogEntriesForSync(
     return slash > 0 ? [slug.slice(0, slash)] : [];
   })),
   multiAgentMode: MultiAgentMode = "default",
+  exactComboSlugs: ReadonlySet<string> = new Set(),
+  hasPhysicalComboProvider = false,
 ): RawEntry[] {
   const rank = new Map(featured.map((slug, i) => [slug, i] as const));
   const native = catalogModels
@@ -1545,13 +1729,15 @@ export function mergeCatalogEntriesForSync(
     native.push(deriveEntry(template ? JSON.parse(JSON.stringify(template)) : null, slug, "OpenAI native model (Codex OAuth passthrough).", priority));
   }
 
+  const freshSlugs = new Set(
+    routedEntries.flatMap(entry => typeof entry.slug === "string" ? [entry.slug] : []),
+  );
   let finalRoutedEntries = routedEntries;
   const preservingExistingRouted = routedEntries.length === 0
     && catalogModels.some(m => typeof m.slug === "string" && (m.slug as string).includes("/"));
   if (preservingExistingRouted) {
     finalRoutedEntries = catalogModels.filter(m => typeof m.slug === "string" && (m.slug as string).includes("/"));
   } else {
-    const freshSlugs = new Set(routedEntries.flatMap(entry => typeof entry.slug === "string" ? [entry.slug] : []));
     const preservedForeignRouted = catalogModels.filter(m => {
       if (typeof m.slug !== "string" || !m.slug.includes("/")) return false;
       const provider = m.slug.slice(0, m.slug.indexOf("/"));
@@ -1559,6 +1745,17 @@ export function mergeCatalogEntriesForSync(
     });
     finalRoutedEntries = [...routedEntries, ...preservedForeignRouted];
   }
+  if (!hasPhysicalComboProvider) {
+    finalRoutedEntries = finalRoutedEntries.filter(entry => {
+      const slug = typeof entry.slug === "string" ? entry.slug : "";
+      return !slug.startsWith(`${COMBO_NAMESPACE}/`) || freshSlugs.has(slug);
+    });
+  }
+  finalRoutedEntries = finalRoutedEntries.filter(entry => {
+    const slug = typeof entry.slug === "string" ? entry.slug : "";
+    return !exactComboSlugs.has(slug)
+      || (Array.isArray(entry.input_modalities) && entry.input_modalities.length > 0);
+  });
   // Reapply final catalog policy to rows preserved from disk. Those rows bypass
   // gatherRoutedModels, so filtering only the freshly gathered list can resurrect an excluded id.
   finalRoutedEntries = finalRoutedEntries.filter(entry =>
@@ -1571,11 +1768,14 @@ export function mergeCatalogEntriesForSync(
   const mergedEntries = [...native, ...finalRoutedEntries].map(m => {
     const normalized = normalizeServiceTiers(m);
     applyNativeOpenAiContextOverride(normalized);
-    const e = ensureStrictCatalogFields(normalized);
+    const exactCombo = typeof m.slug === "string" && exactComboSlugs.has(m.slug);
+    const e = ensureStrictCatalogFields(normalized, {
+      preserveExactInputModalities: exactCombo,
+    });
     // Mock-max universality (260709): preserved routed entries from disk may predate
     // the max rung — ensure it here so subagent max spawns validate on every
     // reasoning-capable entry. max only: 5.6 exact ladders (luna: no ultra) stay intact.
-    {
+    if (!exactCombo) {
       const levels = Array.isArray(e.supported_reasoning_levels)
         ? e.supported_reasoning_levels as Array<{ effort?: string }>
         : [];
@@ -1627,7 +1827,9 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
   const featured = config.subagentModels ?? [];
   const orderedGoModels = orderForSubagents(enabledGo, featured); // stable tie-break among equal priorities
   const multiAgentMode: MultiAgentMode = config.multiAgentMode === "v1" || config.multiAgentMode === "v2" ? config.multiAgentMode : "default";
-  const goEntries = buildCatalogEntries(template ? JSON.parse(JSON.stringify(template)) : null, [], orderedGoModels, featured, websocketsEnabled(config), multiAgentMode);
+  const exactComboSlugs = exactComboCatalogSlugs(config);
+  const hasPhysicalComboProvider = Object.hasOwn(config.providers, COMBO_NAMESPACE);
+  const goEntries = buildCatalogEntries(template ? JSON.parse(JSON.stringify(template)) : null, [], orderedGoModels, featured, websocketsEnabled(config), multiAgentMode, exactComboSlugs);
   // Keep genuine native entries (gpt-*, codex-*) with their real per-model fields and append
   // routed providers as namespaced slugs. Cursor and other adopted providers can expose model ids
   // like `gpt-5.5`; those must not delete the native OpenAI/Codex base row.
@@ -1642,7 +1844,7 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
   // native AND routed so the advertised flag matches the implemented endpoint (phase 120.4) and a
   // native template can never leak supports_websockets while the flag is off.
   const wsEnabled = websocketsEnabled(config);
-  catalog.models = mergeCatalogEntriesForSync(catalog.models ?? [], goEntries, baseline, featured, wsEnabled, goIds, template, disabledNativeSlugs(config), gatheredProviderNames, multiAgentMode);
+  catalog.models = mergeCatalogEntriesForSync(catalog.models ?? [], goEntries, baseline, featured, wsEnabled, goIds, template, disabledNativeSlugs(config), gatheredProviderNames, multiAgentMode, exactComboSlugs, hasPhysicalComboProvider);
 
   atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2) + "\n");
   return { added: goEntries.length, path: catalogPath };

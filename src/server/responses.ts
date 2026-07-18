@@ -9,10 +9,24 @@ import { buildCompactV1Output, COMPACT_PROMPT, decodeCompactionSummary, extractC
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
 import { expandPreviousResponseInput, previousResponseConversationId, rememberResponseState } from "../responses/state";
 import { routeModel } from "../router";
+import {
+  advanceComboAfterFailure,
+  comboDefaultEffort,
+  comboFailureDecision,
+  comboIdFromRawBody,
+  concreteComboRequestBody,
+  getCombo,
+  isComboTargetInCooldown,
+  NoAvailableComboTargetsError,
+  noteComboSuccess,
+  parseRetryAfterMs,
+  pickComboTarget,
+  targetKey,
+} from "../combos";
 import { isInjectionDebugEnabled } from "../lib/debug-settings";
 import { injectionDebugLog } from "../lib/injection-debug-log";
 import { modelInList, namespacedToolName } from "../types";
-import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig } from "../types";
+import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig, OcxUsage } from "../types";
 import {
   forceRefreshOAuthAccessSnapshot,
   getOAuthCredentialProjectId,
@@ -22,7 +36,7 @@ import {
 } from "../oauth";
 import { buildWebSearchTool, planWebSearch, runWithWebSearch, shouldResolveOpenAiWebSearchSidecar } from "../web-search";
 import { describeImagesInPlace, planVisionSidecar, shouldResolveOpenAiVisionSidecar, stripImagesInPlace } from "../vision";
-import { createAdapterEventQueue } from "../adapters/run-turn-queue";
+import { createAdapterEventQueue, preflightAdapterEvents } from "../adapters/run-turn-queue";
 import {
   applyCodexAuthContextToProvider,
   CodexAccountCooldownError,
@@ -53,13 +67,20 @@ import { resolveProviderTransport } from "../providers/xai-transport";
 import type { WsData } from "./ws-bridge";
 import { registerTurn, trackStreamLifetime, unregisterTurn } from "./lifecycle";
 import { redactSecretString } from "../lib/redact";
+import { readBoundedResponseBody } from "../lib/bounded-body";
 import {
+  beginRequestAttempt,
   catalogModelSupportsServiceTier,
+  finishRequestAttempt,
   inspectResponseLogJson,
+  noteAttemptSend,
   readConfiguredCodexServiceTier,
   requestLogSpeedLabel,
+  sealRequestAttemptIdentity,
+  usageFromResponsesPayload,
   type RequestLogContext,
 } from "./request-log";
+import type { AttemptRecoveryKind } from "../usage/log";
 import {
   consumeForInspection,
   consumeForResponseLogMetadata,
@@ -419,25 +440,315 @@ export function decodeRequestErrorResponse(err: unknown, label: string): Respons
   return formatErrorResponse(400, "invalid_request_error", "Invalid JSON body");
 }
 
+function comboUnavailableResponse(message: string): Response {
+  return new Response(
+    JSON.stringify({
+      error: { message, type: "server_error", code: "combo_unavailable" },
+    }),
+    { status: 503, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+interface ConsumedComboFailure {
+  response: Response;
+  classificationText: string;
+  /** Valid numeric/date value used only for cooldown calculation. */
+  retryAfter?: string;
+  /** Reserved for 040 usage attribution without adding another body read. */
+  usage?: OcxUsage;
+}
+
+interface HandleResponsesOptions {
+  forceEmptyResponseId?: boolean;
+  abortSignal?: AbortSignal;
+  onCodexAuthContextResolved?: (context: CodexAuthContext | undefined) => void;
+  recordTerminalOutcomes?: boolean;
+  setTerminalOutcomeRecorder?: (recorder: ((status: ResponsesTerminalStatus) => void) | undefined) => void;
+  onNativePassthroughTerminal?: (status: ResponsesTerminalStatus) => void;
+  onNativePassthroughCancel?: () => void;
+  /** Internal recursion guard; callers outside this module must not set it. */
+  comboAttempt?: boolean;
+  /** 030-owned handoff when a child consumed the original failure under bounds. */
+  onConsumedComboFailure?: (failure: ConsumedComboFailure) => void;
+}
+
+function clientCancelledResponse(): Response {
+  return formatErrorResponse(499, "client_cancelled", "Client cancelled request");
+}
+
+function sanitizedRetryAfter(value: string | null, now: number): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed.length > 128) return undefined;
+  return parseRetryAfterMs(trimmed, now) !== undefined ? trimmed : undefined;
+}
+
+async function consumeComboFailure(
+  response: Response,
+  signal?: AbortSignal,
+  now = Date.now(),
+): Promise<ConsumedComboFailure> {
+  const fallback = `Provider error ${response.status}`;
+  let classificationText = fallback;
+  let usage: OcxUsage | undefined;
+  try {
+    const body = await readBoundedResponseBody(response, { signal });
+    usage = usageFromComboFailureText(body.text);
+    if (body.displaySafe) {
+      const safeText = redactSecretString(body.text).slice(0, 500);
+      if (safeText) classificationText = safeText;
+    }
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    classificationText = fallback;
+  }
+  const message = classificationText === fallback
+    ? fallback
+    : `${fallback}: ${classificationText}`;
+  const retryAfter = sanitizedRetryAfter(response.headers.get("retry-after"), now);
+  return {
+    response: formatErrorResponse(response.status, "upstream_error", message),
+    classificationText,
+    ...(retryAfter !== undefined ? { retryAfter } : {}),
+    ...(usage ? { usage } : {}),
+  };
+}
+
+function usageFromComboFailureText(text: string): OcxUsage | undefined {
+  try {
+    const payload = JSON.parse(text) as Record<string, unknown>;
+    const nested = payload.response;
+    const source = nested && typeof nested === "object" && !Array.isArray(nested)
+      ? nested as Record<string, unknown>
+      : payload;
+    return usageFromResponsesPayload(source.usage);
+  } catch {
+    return undefined;
+  }
+}
+
+function createChildPassthroughCallbackGate(options: HandleResponsesOptions) {
+  type Pending =
+    | { kind: "terminal"; status: ResponsesTerminalStatus }
+    | { kind: "cancel" };
+  let state: "pending" | "committed" | "discarded" = "pending";
+  let pending: Pending | undefined;
+  let accepted = false;
+  const publish = (value: Pending): void => {
+    if (value.kind === "terminal") options.onNativePassthroughTerminal?.(value.status);
+    else options.onNativePassthroughCancel?.();
+  };
+  const receive = (value: Pending): void => {
+    if (state === "discarded" || accepted) return;
+    accepted = true;
+    if (state === "committed") return publish(value);
+    pending ??= value;
+  };
+  return {
+    onTerminal: (status: ResponsesTerminalStatus) => receive({ kind: "terminal", status }),
+    onCancel: () => receive({ kind: "cancel" }),
+    commit: () => {
+      if (state !== "pending") return;
+      state = "committed";
+      if (pending) publish(pending);
+      pending = undefined;
+    },
+    discard: () => {
+      state = "discarded";
+      pending = undefined;
+    },
+  };
+}
+
+async function handleComboResponses(
+  req: Request,
+  rawBody: unknown,
+  comboId: string,
+  config: OcxConfig,
+  logCtx: RequestLogContext,
+  options: HandleResponsesOptions,
+): Promise<Response> {
+  Object.assign(logCtx, {
+    requestedModel: `combo/${comboId}`,
+    model: `combo/${comboId}`,
+    provider: "combo",
+  });
+  const combo = getCombo(config, comboId);
+  if (!combo) {
+    return formatErrorResponse(404, "invalid_request_error", `Unknown combo: ${comboId}`);
+  }
+
+  const initialNow = Date.now();
+  let pick = pickComboTarget(config, comboId, {
+    eligible: target => !isComboTargetInCooldown(comboId, target, initialNow),
+  });
+  if (!pick) {
+    return comboUnavailableResponse(`No available targets for combo: ${comboId}`);
+  }
+
+  let lastFailure: Response | null = null;
+  while (pick) {
+    if (options.abortSignal?.aborted) return clientCancelledResponse();
+    const childLog: RequestLogContext = {
+      model: pick.target.model,
+      provider: pick.target.provider,
+    };
+    const childBody = concreteComboRequestBody(
+      rawBody,
+      pick.target,
+      comboDefaultEffort(config, comboId),
+    );
+    const childHeaders = new Headers(req.headers);
+    childHeaders.delete("content-length");
+    const childRequest = new Request(req.url, {
+      method: req.method,
+      headers: childHeaders,
+      body: JSON.stringify(childBody),
+    });
+    let resolvedAuth: CodexAuthContext | undefined;
+    let terminalRecorder: ((status: ResponsesTerminalStatus) => void) | undefined;
+    const started = Date.now();
+    const attempt = beginRequestAttempt(
+      (logCtx.attempts?.length ?? 0) + 1,
+      pick.target.provider,
+      pick.target.model,
+      config.providers[pick.target.provider]!.adapter,
+    );
+    childLog.activeAttempt = attempt;
+    let attemptRetained = false;
+    const retainCancelledAttempt = (): void => {
+      if (attemptRetained) return;
+      sealRequestAttemptIdentity(
+        attempt,
+        childLog.provider,
+        childLog.providerAdapter ?? attempt.adapter,
+      );
+      finishRequestAttempt(attempt, 499, Date.now() - started, childLog.usage);
+      (logCtx.attempts ??= []).push(attempt);
+      attemptRetained = true;
+    };
+    let consumedChildFailure: ConsumedComboFailure | undefined;
+    const callbackGate = createChildPassthroughCallbackGate(options);
+    let response: Response;
+    try {
+      response = await handleResponses(childRequest, config, childLog, {
+        ...options,
+        comboAttempt: true,
+        onCodexAuthContextResolved: value => { resolvedAuth = value; },
+        setTerminalOutcomeRecorder: value => { terminalRecorder = value; },
+        onConsumedComboFailure: value => { consumedChildFailure = value; },
+        onNativePassthroughTerminal: callbackGate.onTerminal,
+        onNativePassthroughCancel: callbackGate.onCancel,
+      });
+    } catch (error) {
+      callbackGate.discard();
+      if (options.abortSignal?.aborted) {
+        retainCancelledAttempt();
+        return clientCancelledResponse();
+      }
+      throw error;
+    }
+
+    if (options.abortSignal?.aborted) {
+      callbackGate.discard();
+      retainCancelledAttempt();
+      return clientCancelledResponse();
+    }
+
+    if (response.ok) {
+      sealRequestAttemptIdentity(
+        attempt,
+        childLog.provider,
+        childLog.providerAdapter ?? attempt.adapter,
+      );
+      (logCtx.attempts ??= []).push(attempt);
+      attemptRetained = true;
+      noteComboSuccess(comboId, combo, pick.target);
+      Object.assign(logCtx, childLog, {
+        requestedModel: `combo/${comboId}`,
+        model: `combo/${comboId}`,
+        provider: "combo",
+        attempts: logCtx.attempts,
+        activeAttempt: attempt,
+        activeAttemptStartedAt: started,
+        resolvedModel: childLog.resolvedModel ?? childLog.model,
+      });
+      options.onCodexAuthContextResolved?.(resolvedAuth);
+      options.setTerminalOutcomeRecorder?.(terminalRecorder);
+      callbackGate.commit();
+      return response;
+    }
+
+    callbackGate.discard();
+    if (response.status === 499) {
+      retainCancelledAttempt();
+      return clientCancelledResponse();
+    }
+    let failure: ConsumedComboFailure;
+    try {
+      failure = consumedChildFailure
+        ?? await consumeComboFailure(response, options.abortSignal);
+    } catch (error) {
+      if (options.abortSignal?.aborted) {
+        retainCancelledAttempt();
+        return clientCancelledResponse();
+      }
+      throw error;
+    }
+    if (options.abortSignal?.aborted) {
+      retainCancelledAttempt();
+      return clientCancelledResponse();
+    }
+    sealRequestAttemptIdentity(
+      attempt,
+      childLog.provider,
+      childLog.providerAdapter ?? attempt.adapter,
+    );
+    finishRequestAttempt(
+      attempt,
+      response.status,
+      Date.now() - started,
+      failure.usage,
+    );
+    (logCtx.attempts ??= []).push(attempt);
+    attemptRetained = true;
+    lastFailure = failure.response;
+    if (comboFailureDecision(response.status, failure.classificationText) === "stop") {
+      Object.assign(logCtx, childLog, {
+        requestedModel: `combo/${comboId}`,
+        model: `combo/${comboId}`,
+        provider: "combo",
+        attempts: logCtx.attempts,
+        activeAttempt: undefined,
+        activeAttemptStartedAt: undefined,
+      });
+      return lastFailure;
+    }
+    console.warn(
+      `[combo] ${comboId}: ${targetKey(pick.target)} failed with ${response.status} after ${Date.now() - started}ms`,
+    );
+    pick = advanceComboAfterFailure(config, pick, {
+      retryAfter: failure.retryAfter,
+      now: Date.now(),
+    });
+  }
+  return lastFailure!;
+}
+
 export async function handleResponses(
   req: Request,
   config: OcxConfig,
   logCtx: RequestLogContext,
-  options: {
-    forceEmptyResponseId?: boolean;
-    abortSignal?: AbortSignal;
-    onCodexAuthContextResolved?: (context: CodexAuthContext | undefined) => void;
-    recordTerminalOutcomes?: boolean;
-    setTerminalOutcomeRecorder?: (recorder: ((status: ResponsesTerminalStatus) => void) | undefined) => void;
-    onNativePassthroughTerminal?: (status: ResponsesTerminalStatus) => void;
-    onNativePassthroughCancel?: () => void;
-  } = {},
+  options: HandleResponsesOptions = {},
 ): Promise<Response> {
   let body: unknown;
   try {
     body = await readJsonRequestBody(req);
   } catch (err) {
     return decodeRequestErrorResponse(err, "responses");
+  }
+  const comboId = !options.comboAttempt ? comboIdFromRawBody(body) : null;
+  if (comboId && Object.hasOwn(config.combos ?? {}, comboId)) {
+    return handleComboResponses(req, body, comboId, config, logCtx, options);
   }
   const originalBody = body;
   body = expandPreviousResponseInput(body);
@@ -493,6 +804,9 @@ export async function handleResponses(
   try {
     route = routeModel(config, parsed.modelId);
   } catch (err) {
+    if (err instanceof NoAvailableComboTargetsError) {
+      return comboUnavailableResponse(err.message);
+    }
     return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
 
@@ -663,6 +977,8 @@ export async function handleResponses(
   route.provider = resolveProviderTransport(route.providerName, route.provider, parsed.options.promptCacheKey);
   const adapterProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
   const adapter = resolveAdapter(adapterProvider, config.cacheRetention);
+  logCtx.providerAdapter = adapter.name;
+  sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, adapter.name);
   const isPassthrough = "passthrough" in adapter && !!adapter.passthrough;
 
   let openAiSidecar: ResolvedOpenAiForwardSidecar | undefined;
@@ -739,6 +1055,12 @@ export async function handleResponses(
       );
     }
     const request = await adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
+    const passthroughEstimate = typeof request.usageLog?.inputTokens === "number"
+      ? request.usageLog.inputTokens
+      : undefined;
+    if (passthroughEstimate !== undefined) {
+      logCtx.usageLogInputTokens = passthroughEstimate;
+    }
     // Abort the upstream if the client disconnects. A directly-relayed body does not propagate the
     // consumer's cancel to a signalled fetch, so we pass the signal and relay through relayWithAbort,
     // whose cancel() aborts the upstream — preventing leaked connections (RC2, passthrough path).
@@ -751,15 +1073,19 @@ export async function handleResponses(
       // the ChatGPT backend emits transient 502/520s that an immediate retry absorbs.
       // Body is a replayable string; nothing has streamed to the client yet.
       upstreamResponse = await fetchWithTransientRetry(
-        () => fetchWithHeaderTimeout(request.url, {
-          method: request.method,
-          headers: request.headers,
-          body: request.body,
-        }, upstream.signal, connectMs, parsed.stream, providerFetch(route.provider)),
+        recovery => {
+          noteAttemptSend(logCtx.activeAttempt, passthroughEstimate, recovery);
+          return fetchWithHeaderTimeout(request.url, {
+            method: request.method,
+            headers: request.headers,
+            body: request.body,
+          }, upstream.signal, connectMs, parsed.stream, providerFetch(route.provider));
+        },
         { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
       );
     } catch (err) {
       upstream.abort();
+      if (options.abortSignal?.aborted) return clientCancelledResponse();
       const outcome = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "connect_error";
       if (usesCodexForwardPoolAuth(authCtx, route.provider)) recordCodexUpstreamOutcome(config, authCtx.accountId, outcome);
       const msg = outcome === "timeout"
@@ -821,7 +1147,7 @@ export async function handleResponses(
     // async-pull segfault on Windows. Branch[0] goes directly to the Response (Bun
     // native relay, never enters JS Sink.write); branch[1] is consumed in the
     // background for terminal-outcome/quota inspection only.
-    if (isEventStream && upstreamResponse.body) {
+    if (upstreamResponse.ok && isEventStream && upstreamResponse.body) {
       const [nativeBody, inspectBody] = upstreamResponse.body.tee();
       const turnAc = new AbortController();
       linkAbortSignal(upstream, turnAc.signal);
@@ -860,6 +1186,11 @@ export async function handleResponses(
       }));
     }
     if (headers.get("content-type")?.toLowerCase().includes("application/json")) {
+      if (!upstreamResponse.ok && options.comboAttempt) {
+        const failure = await consumeComboFailure(upstreamResponse, options.abortSignal);
+        options.onConsumedComboFailure?.(failure);
+        return failure.response;
+      }
       const text = await upstreamResponse.text();
       inspectResponseLogJson(logCtx, text);
       if (upstreamResponse.ok && rememberPassthroughResponse) {
@@ -888,6 +1219,7 @@ export async function handleResponses(
     const queue = createAdapterEventQueue();
     const runTurn = async (): Promise<void> => {
       try {
+        noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens);
         await adapter.runTurn?.(
           parsed,
           { headers: selectedForwardHeaders, abortSignal: runTurnAbort.signal },
@@ -906,8 +1238,19 @@ export async function handleResponses(
     const { toolNsMap, freeformToolNames, toolSearchToolNames } = buildToolBridgeMaps(parsed);
     if (parsed.stream) {
       void runTurn();
+      let eventSource: AsyncIterable<AdapterEvent> = queue.stream();
+      if (options.comboAttempt) {
+        const preflight = await preflightAdapterEvents(eventSource);
+        if (preflight.error || preflight.empty) {
+          runTurnAbort.abort();
+          queue.close();
+          const message = preflight.error?.message ?? "Adapter ended before producing a response";
+          return formatErrorResponse(502, "upstream_error", redactSecretString(message));
+        }
+        eventSource = preflight.stream;
+      }
       const sseStream = bridgeToResponsesSSE(
-        queue.stream(), parsed.modelId, toolNsMap, freeformToolNames, toolSearchToolNames,
+        eventSource, parsed.modelId, toolNsMap, freeformToolNames, toolSearchToolNames,
         () => {
           runTurnAbort.abort();
           queue.close();
@@ -929,6 +1272,15 @@ export async function handleResponses(
 
     await runTurn();
     const events = await queue.collect();
+    if (options.comboAttempt) {
+      const firstMeaningful = events.find(event => event.type !== "heartbeat");
+      if (!firstMeaningful || firstMeaningful.type === "error") {
+        const message = firstMeaningful?.type === "error"
+          ? firstMeaningful.message
+          : "Adapter ended before producing a response";
+        return formatErrorResponse(502, "upstream_error", redactSecretString(message));
+      }
+    }
     const json = buildResponseJSON(events, parsed.modelId, {
       hideThinkingSummary: parsed.options.hideThinkingSummary,
       toolNsMap,
@@ -946,6 +1298,7 @@ export async function handleResponses(
   const wsPlan = planWebSearch(config, parsed, false, route.provider, route.modelId, openAiSidecar);
   if (wsPlan) {
     parsed.context.tools = [...(parsed.context.tools ?? []), buildWebSearchTool()];
+    noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens);
     const wsResponse = await runWithWebSearch({
       parsed, adapter,
       backend: wsPlan.backend,
@@ -993,22 +1346,34 @@ export async function handleResponses(
   const connectMs = config.connectTimeoutMs ?? 200_000;
 
   const request = await adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
-  if (typeof request.usageLog?.inputTokens === "number") {
-    logCtx.usageLogInputTokens = request.usageLog.inputTokens;
-  }
+  const inputTokenEstimate = typeof request.usageLog?.inputTokens === "number"
+    ? request.usageLog.inputTokens
+    : undefined;
+  if (inputTokenEstimate !== undefined) logCtx.usageLogInputTokens = inputTokenEstimate;
   let upstreamResponse: Response;
   try {
-    upstreamResponse = adapter.fetchResponse
-      ? await adapter.fetchResponse(request, { abortSignal: upstream.signal, timeoutMs: connectMs, stream: parsed.stream })
-      : await fetchWithResetRetry(
-          () => fetchWithHeaderTimeout(request.url, {
+    if (adapter.fetchResponse) {
+      noteAttemptSend(logCtx.activeAttempt, inputTokenEstimate);
+      upstreamResponse = await adapter.fetchResponse(request, {
+        abortSignal: upstream.signal,
+        timeoutMs: connectMs,
+        stream: parsed.stream,
+      });
+    } else {
+      upstreamResponse = await fetchWithResetRetry(
+        recovery => {
+          noteAttemptSend(logCtx.activeAttempt, inputTokenEstimate, recovery);
+          return fetchWithHeaderTimeout(request.url, {
             method: request.method, headers: request.headers, body: request.body,
-          }, upstream.signal, connectMs, parsed.stream, providerFetch(route.provider)),
-          { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
-        );
+          }, upstream.signal, connectMs, parsed.stream, providerFetch(route.provider));
+        },
+        { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
+      );
+    }
   } catch (err) {
     cleanupUpstreamAbort();
     upstream.abort();
+    if (options.abortSignal?.aborted) return clientCancelledResponse();
     const msg = err instanceof Error && err.name === "TimeoutError"
       ? `Provider connect timeout after ${connectMs}ms`
       : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
@@ -1025,11 +1390,20 @@ export async function handleResponses(
     let imageTierBias = 0;
     let imageRetryAttempted = false;
     let oauth401ReplayAttempted = false;
-    const rebuildAndRefetch = async (): Promise<Response | { failed: Response }> => {
+    const rebuildAndRefetch = async (
+      recovery: AttemptRecoveryKind,
+    ): Promise<Response | { failed: Response }> => {
       const retryRequest = await activeAdapter.buildRequest(parsed, {
         headers: selectedForwardHeaders,
         ...(imageTierBias > 0 ? { imageTierBias } : {}),
       });
+      const retryEstimate = typeof retryRequest.usageLog?.inputTokens === "number"
+        ? retryRequest.usageLog.inputTokens
+        : undefined;
+      if (retryEstimate !== undefined) logCtx.usageLogInputTokens = retryEstimate;
+      logCtx.providerAdapter = activeAdapter.name;
+      sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, activeAdapter.name);
+      noteAttemptSend(logCtx.activeAttempt, retryEstimate, recovery);
       try {
         return activeAdapter.fetchResponse
           ? await activeAdapter.fetchResponse(retryRequest, { abortSignal: upstream.signal, timeoutMs: connectMs, stream: parsed.stream })
@@ -1039,6 +1413,9 @@ export async function handleResponses(
       } catch (err) {
         cleanupUpstreamAbort();
         upstream.abort();
+        if (options.abortSignal?.aborted) {
+          return { failed: clientCancelledResponse() };
+        }
         const msg = err instanceof Error && err.name === "TimeoutError"
           ? `Provider connect timeout after ${connectMs}ms`
           : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
@@ -1072,7 +1449,7 @@ export async function handleResponses(
           resolveWireProtocolOverride(route.providerName, route.modelId, refreshedProvider),
           config.cacheRetention,
         );
-        const result = await rebuildAndRefetch();
+        const result = await rebuildAndRefetch("oauth-401");
         if ("failed" in result) return result.failed;
         upstreamResponse = result;
         continue recovery;
@@ -1097,7 +1474,7 @@ export async function handleResponses(
           resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
           config.cacheRetention,
         );
-        const result = await rebuildAndRefetch();
+        const result = await rebuildAndRefetch("key-429");
         if ("failed" in result) return result.failed;
         upstreamResponse = result;
       }
@@ -1112,7 +1489,7 @@ export async function handleResponses(
         imageRetryAttempted = true;
         imageTierBias = 1;
         try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
-        const result = await rebuildAndRefetch();
+        const result = await rebuildAndRefetch("image-413");
         if ("failed" in result) return result.failed;
         upstreamResponse = result;
         continue recovery;
@@ -1120,6 +1497,12 @@ export async function handleResponses(
       break;
     }
     if (!upstreamResponse.ok) {
+      if (options.comboAttempt) {
+        const failure = await consumeComboFailure(upstreamResponse, options.abortSignal)
+          .finally(cleanupUpstreamAbort);
+        options.onConsumedComboFailure?.(failure);
+        return failure.response;
+      }
       const errorText = await upstreamResponse.text().catch(() => "unknown error");
       cleanupUpstreamAbort();
       // Upstreams occasionally echo request details in error bodies — scrub token-shaped

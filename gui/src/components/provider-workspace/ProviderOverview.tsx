@@ -1,23 +1,28 @@
 /**
- * ProviderOverview — connection card, stats sidebar, and a static auth summary
- * line (WP090). The full auth/accounts card arrives with WP091; until then the
- * summary renders known status only — no links.
+ * ProviderOverview — 2-column layout: left (CONNECTION + Auth summary) / right
+ * (STATS + Notes). Phase 030 of workspace design parity.
  */
-import { useT } from "../../i18n";
-import { useI18n } from "../../i18n";
+import { useCallback, useState } from "react";
+import { useT, useI18n } from "../../i18n";
 import { IconAlert, IconCheck } from "../../icons";
 import { binProviderStatus, type WorkspaceItem } from "../../provider-workspace/catalog";
 import { formatRelativeTime, relativeTimeLabelsFromT, formatRequestCount, formatTokenCount } from "../../provider-workspace/usage";
 import { accountQuotaFromReport, formatQuotaSourceLabel, type ProviderQuotaReportView } from "../../provider-workspace/report";
 import type { ProviderUsageTotals } from "./types";
 import { authModeLabel } from "./ProviderRail";
+import type { ProviderUpdatePatch } from "./types";
 
-export default function ProviderOverview({ item, usageTotals, quotaReport, oauthEmail }: {
+export default function ProviderOverview({
+  item, usageTotals, quotaReport, oauthEmail,
+  onEditSettings, onViewUsage, onUpdateProvider,
+}: {
   item: WorkspaceItem;
   usageTotals?: ProviderUsageTotals;
   quotaReport?: ProviderQuotaReportView;
-  /** Logged-in email when known (classic page oauth status); renders as static text. */
   oauthEmail?: string;
+  onEditSettings?: () => void;
+  onViewUsage?: () => void;
+  onUpdateProvider?: (name: string, patch: ProviderUpdatePatch) => Promise<{ ok: boolean; error?: string }>;
 }) {
   const t = useT();
   const { locale } = useI18n();
@@ -30,7 +35,8 @@ export default function ProviderOverview({ item, usageTotals, quotaReport, oauth
   const tokens = usageTotals?.totalTokens;
   const quota = accountQuotaFromReport(quotaReport);
   return (
-    <div className="pws-overview">
+    <div className="pws-overview-layout">
+      <div className="pws-overview-main">
       <section className="pws-section" aria-label={t("pws.connection")}>
         <h3 className="pws-section-title">{t("pws.connection")}</h3>
         <dl className="pws-kv">
@@ -62,8 +68,32 @@ export default function ProviderOverview({ item, usageTotals, quotaReport, oauth
             </div>
           )}
         </dl>
+        {onEditSettings && (
+          <button type="button" className="link-btn pws-edit-settings-link" onClick={onEditSettings}>
+            {t("pws.editSettings")}
+          </button>
+        )}
       </section>
-      <aside className="pws-section pws-section--side" aria-label={t("pws.statsAria")}>
+
+      <section className="pws-section" aria-label={t("pws.authSummary")}>
+        <h3 className="pws-section-title">{t("pws.authSummary")}</h3>
+        <div className="pws-auth-summary">
+          <span className="pws-auth-dot" />
+          <span>
+            {item.authMode === "forward"
+              ? t("pws.passthrough")
+              : item.authMode === "oauth"
+                ? (oauthEmail ? t("pws.loggedInAs", { email: oauthEmail }) : t("pws.notLoggedIn"))
+                : item.hasApiKey
+                  ? t("pws.apiKeyConfigured")
+                  : authModeLabel(item, t)}
+          </span>
+        </div>
+      </section>
+      </div>
+
+      <aside className="pws-overview-sidebar">
+      <section className="pws-section" aria-label={t("pws.statsAria")}>
         <h3 className="pws-section-title">{t("pws.statsTitle")}</h3>
         <dl className="pws-kv">
           {typeof requests === "number" && (
@@ -93,8 +123,78 @@ export default function ProviderOverview({ item, usageTotals, quotaReport, oauth
             <div className="muted">{t("pws.usageUnavailable")}</div>
           )}
         </dl>
+        {onViewUsage && (
+          <button type="button" className="link-btn pws-view-usage-link" onClick={onViewUsage}>
+            {t("pws.viewUsage")} →
+          </button>
+        )}
         {quota && <div className="muted pws-stats-note">{t("pws.stats.quotaTracked")}</div>}
+      </section>
+
+      <NotesSection item={item} onUpdateProvider={onUpdateProvider} />
       </aside>
     </div>
+  );
+}
+
+function NotesSection({ item, onUpdateProvider }: {
+  item: WorkspaceItem;
+  onUpdateProvider?: (name: string, patch: ProviderUpdatePatch) => Promise<{ ok: boolean; error?: string }>;
+}) {
+  const t = useT();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const save = useCallback(async () => {
+    if (saving || !onUpdateProvider) return;
+    const trimmed = draft.trim();
+    if (trimmed === (item.note ?? "")) {
+      setEditing(false);
+      return;
+    }
+    setSaving(true);
+    await onUpdateProvider(item.name, { note: trimmed || undefined });
+    setSaving(false);
+    setEditing(false);
+  }, [draft, item.name, item.note, onUpdateProvider, saving]);
+
+  if (!editing) {
+    return (
+      <section className="pws-section pws-notes-section" aria-label={t("pws.notes")}>
+        <h3 className="pws-section-title">{t("pws.notes")}</h3>
+        <button
+          type="button"
+          className="pws-notes-display"
+          onClick={() => {
+            if (!onUpdateProvider) return;
+            setDraft(item.note ?? "");
+            setEditing(true);
+          }}
+          disabled={!onUpdateProvider}
+        >
+          {item.note || <span className="muted">{t("pws.notePlaceholder")}</span>}
+        </button>
+      </section>
+    );
+  }
+
+  return (
+    <section className="pws-section pws-notes-section" aria-label={t("pws.notes")}>
+      <h3 className="pws-section-title">{t("pws.notes")}</h3>
+      <textarea
+        className="pws-notes-textarea"
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={() => void save()}
+        onKeyDown={e => {
+          if (e.key === "Escape") { setDraft(item.note ?? ""); setEditing(false); }
+        }}
+        placeholder={t("pws.notePlaceholder")}
+        autoFocus
+        rows={3}
+        disabled={saving}
+      />
+    </section>
   );
 }

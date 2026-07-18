@@ -70,6 +70,7 @@ Requires [Node](https://nodejs.org) 18+. The Bun runtime is bundled automaticall
 
 ```bash
 # Install (bundles the Bun runtime automatically — only Node 18+ required)
+# Prefer a user-owned Node (nvm/fnm) — avoid `sudo npm install -g …`
 npm install -g @bitkyc08/opencodex
 
 # Interactive setup (writes config, injects into Codex, and offers autostart shim install)
@@ -86,18 +87,30 @@ codex "Write a hello world in Rust"
 ```
 
 <details>
-<summary><b>"bundled Bun runtime is missing" error?</b></summary>
+<summary><b>"bundled Bun runtime is missing" / npm blocked Bun install scripts?</b></summary>
 
 <br/>
 
 opencodex bundles the Bun runtime as a dependency and runs it via a Node
 launcher, so you do **not** need to install Bun yourself. If you see a
 "bundled Bun runtime is missing" error, the install skipped lifecycle scripts
-or optional dependencies. Reinstall without those flags:
+(including npm blocking bun's postinstall under `allowScripts`) or optional
+dependencies. Reinstall without those flags, allowing bun's install script:
 
 ```bash
-npm install -g @bitkyc08/opencodex   # no --ignore-scripts, no --omit=optional
+npm install -g --allow-scripts=bun @bitkyc08/opencodex   # no --ignore-scripts, no --omit=optional
+
+# if the original install used sudo, keep using sudo:
+sudo npm install -g --allow-scripts=bun @bitkyc08/opencodex
 ```
+
+npm's own warning suggests an abbreviated command without the package name —
+that would reinstall the current directory, so always pass
+`@bitkyc08/opencodex` explicitly.
+
+If you installed with `sudo` into a root-owned prefix, the sudo reinstall above
+unblocks that prefix — but prefer migrating to a user-owned Node (nvm, fnm, or
+a user npm prefix) when you can.
 
 </details>
 
@@ -211,7 +224,7 @@ next Codex session. opencodex keeps these behaviors:
 - **Log in once, skip the API key.** OAuth support for xAI, Anthropic, and Kimi means you can authenticate with your existing account. Tokens auto-refresh. Or forward your `codex login`, paste an API key, or use `${ENV_VAR}` references — your call.
 - **Works everywhere Codex does.** Injects into Codex CLI, TUI, App, and SDK automatically. Routed models show up in Codex's model picker just like native ones.
 - **History-safe injection.** On local installs the proxy points Codex's own built-in `openai` provider at itself via a single `openai_base_url` line — new threads keep their native provider tag, so ongoing chat history is never remapped and an unclean shutdown can't hide it. (Threads re-tagged by older versions are migrated back once on the first start; remote/LAN binds use a dedicated provider entry instead, since they need an API-key header.)
-- **Delegate to the right model.** Feature up to five routed or native models in Codex's subagent picker from the dashboard or config — route complex tasks to a reasoning model, fast tasks to a cheap one. On the v2 multi-agent surface (GPT-5.6 Sol/Terra) the proxy injects compact delegation guidance: a preferred sub-agent model and effort (`injectionModel` / `injectionEffort`), the featured-model roster with the effort ladder each supports, and the `fork_turns` rules that make cross-model `spawn_agent` calls actually stick. Want your own wording? Set `injectionPrompt` with `{{model}}` / `{{effort}}` / `{{roster}}` placeholders.
+- **Delegate to the right model.** Feature up to five routed or native models in Codex's subagent picker from the dashboard or config — route complex tasks to a reasoning model, fast tasks to a cheap one. On the v2 multi-agent surface (GPT-5.6 Sol/Terra) the proxy injects compact delegation guidance: a preferred sub-agent model and effort (`injectionModel` / `injectionEffort`), the featured-model roster with the effort ladder each supports, and the `fork_turns` rules that let cross-model `spawn_agent` calls apply their overrides. Known limitation: when a native parent spawns a routed child, the task body can currently arrive backend-encrypted and be lost ([#92](https://github.com/lidge-jun/opencodex/issues/92)) — use the v1 surface for reliable cross-provider delegation. Want your own wording? Set `injectionPrompt` with `{{model}}` / `{{effort}}` / `{{roster}}` placeholders.
 - **Prepare for preview-gated OpenAI rollouts.** GPT-5.6 Sol/Terra/Luna entries preserve the upstream effort ladders. Direct/Multi use the 372k Codex contract; OpenAI API and OpenRouter use 1.05M metadata when upstream access is available.
 - **Give any model superpowers.** Non-OpenAI models get real web search and image understanding via a `gpt-5.4-mini` sidecar over your ChatGPT login.
 - **Generate images natively.** Codex's standalone `image_gen` tool uses `POST /v1/images/generations` for generation and `POST /v1/images/edits` for edits; it is separate from the hosted Responses `image_generation` tool.

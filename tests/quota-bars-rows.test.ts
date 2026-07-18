@@ -62,6 +62,13 @@ describe("buildQuotaRows (WP070)", () => {
     expect(rows.map(r => r.label)).toEqual(["codexAuth.monthly", "Gem"]);
   });
 
+  test("Kimi total subscription credits use the localized quota label", () => {
+    const rows = buildQuotaRows(quota({
+      customWindows: [{ label: "Total subscription credits", percent: 1 }],
+    }), null, t);
+    expect(rows.map(r => r.label)).toEqual(["quota.totalSubscriptionCredits"]);
+  });
+
   test("null and empty quotas produce no rows; 30-day plans strip to monthly", () => {
     expect(buildQuotaRows(null, null, t)).toEqual([]);
     expect(buildQuotaRows(quota({}), null, t)).toEqual([]);

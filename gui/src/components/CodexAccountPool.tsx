@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useT, type TFn } from "../i18n";
 import { IconLock, IconPlus, IconX, IconAlert, IconRefresh, IconTicket } from "../icons";
 import { Notice, EmptyState } from "../ui";
@@ -34,24 +34,35 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
   const [confirm, setConfirm] = useState<CodexAccountEntry | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [toast, setToast] = useState("");
+  const [toastError, setToastError] = useState(false);
   const [refreshingQuota, setRefreshingQuota] = useState(false);
   const [resetPopup, setResetPopup] = useState<CodexAccountEntry | null>(null);
   const [resetConfirm, setResetConfirm] = useState(false);
   const [redeeming, setRedeeming] = useState(false);
   const [creditDetails, setCreditDetails] = useState<{ granted_at: string; expires_at: string }[] | null>(null);
   const [creditDetailsLoading, setCreditDetailsLoading] = useState(false);
+  const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
+  const [switchingId, setSwitchingId] = useState<string | null>(null);
+  const loadGenerationRef = useRef(0);
 
   const load = useCallback(async (refreshQuota = false) => {
+    const generation = ++loadGenerationRef.current;
+    if (!refreshQuota) setLoadState("loading");
     try {
-      const [accts, active] = await Promise.all([
-        fetch(`${apiBase}/api/codex-auth/accounts${refreshQuota ? "?refresh=1" : ""}`).then(r => r.json()),
-        fetch(`${apiBase}/api/codex-auth/active`).then(r => r.json()),
+      const [accountsResponse, activeResponse] = await Promise.all([
+        fetch(`${apiBase}/api/codex-auth/accounts${refreshQuota ? "?refresh=1" : ""}`),
+        fetch(`${apiBase}/api/codex-auth/active`),
       ]);
+      if (!accountsResponse.ok || !activeResponse.ok) throw new Error("account load failed");
+      const [accts, active] = await Promise.all([accountsResponse.json(), activeResponse.json()]);
+      if (loadGenerationRef.current !== generation) return false;
       setAccounts(accts.accounts ?? []);
       setActiveId(active.activeCodexAccountId ?? null);
       setAutoThreshold(active.autoSwitchThreshold ?? 80);
+      setLoadState("ready");
       return true;
     } catch {
+      if (loadGenerationRef.current === generation) setLoadState("error");
       return false;
     }
   }, [apiBase]);
@@ -69,23 +80,48 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
   }, [load]);
 
   const setActive = async (id: string | null) => {
-    await fetch(`${apiBase}/api/codex-auth/active`, {
-      method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ accountId: id }),
-    });
-    setActiveId(id);
-    setConfirm(null);
-    const label = id && id !== "__main__" ? accounts.find(a => a.id === id)?.email ?? id : "main";
-    setToast(accountModeState === "direct"
-      ? t("codexAuth.poolPreparedToast", { email: label })
-      : t("codexAuth.switched", { email: label }));
-    setTimeout(() => setToast(""), 5000);
+    if (switchingId) return;
+    setSwitchingId(id ?? "__main__");
+    try {
+      const response = await fetch(`${apiBase}/api/codex-auth/active`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountId: id }),
+      });
+      if (!response.ok) throw new Error("account switch failed");
+      const result = await response.json().catch(() => ({})) as { activeCodexAccountId?: string | null };
+      const selectedId = result.activeCodexAccountId ?? id;
+      setActiveId(selectedId);
+      setConfirm(null);
+      await load();
+      const label = selectedId && selectedId !== "__main__"
+        ? accounts.find(account => account.id === selectedId)?.email ?? t("pws.accountOrdinal", { count: "1" })
+        : t("codexAuth.mainAccount");
+      setToast(accountModeState === "direct"
+        ? t("codexAuth.poolPreparedToast", { email: label })
+        : t("codexAuth.switched", { email: label }));
+      setToastError(false);
+      setTimeout(() => setToast(""), 5000);
+    } catch {
+      setToast(t("codexAuth.switchFailed"));
+      setToastError(true);
+      setTimeout(() => setToast(""), 5000);
+    } finally {
+      setSwitchingId(null);
+    }
   };
 
   const remove = async (id: string) => {
-    if (!window.confirm(t("codexAuth.removeConfirm", { id }))) return;
-    await fetch(`${apiBase}/api/codex-auth/accounts?id=${id}`, { method: "DELETE" });
-    load();
+    const label = accounts.find(account => account.id === id)?.email ?? t("pws.accountOrdinal", { count: "1" });
+    if (!window.confirm(t("codexAuth.removeConfirm", { id: label }))) return;
+    try {
+      const response = await fetch(`${apiBase}/api/codex-auth/accounts?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (!response.ok) throw new Error(String(response.status));
+      await load();
+    } catch {
+      setToast(t("codexAuth.removeFailed"));
+      setToastError(true);
+      setTimeout(() => setToast(""), 5000);
+    }
   };
 
   const toggleAuto = async () => {
@@ -163,6 +199,15 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
   // Main is the active/next account when no pool account is selected (legacy null) or when
   // it is explicitly set to the rotation id "__main__".
   const isMainActive = !activeId || activeId === "__main__";
+  const mainSwitchEntry: CodexAccountEntry = {
+    id: "__main__",
+    email: main?.email ?? "Codex App",
+    plan: main?.plan,
+    isMain: true,
+    hasCredential: true,
+    quota: main?.quota ?? null,
+  };
+  const switchActionLabel = t(accountModeState === "direct" ? "codexAuth.prepareForPool" : "codexAuth.setAsNext");
 
   return (
     <div>
@@ -175,13 +220,21 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
         </div>
       )}
 
-      {toast && <Notice tone="ok">{toast}</Notice>}
+      {toast && <Notice tone={toastError ? "err" : "ok"}>{toast}</Notice>}
+
+      {loadState === "loading" && accounts.length === 0 && (
+        <div className="pwi-auth-state" role="status">{t("pws.accountsLoading")}</div>
+      )}
+      {loadState === "error" && (
+        <div className="pwi-auth-state pwi-auth-state--error" role="alert">
+          <span>{t("codexAuth.loadFailed")}</span>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => void load()}>{t("pws.retryAccounts")}</button>
+        </div>
+      )}
 
       {banner}
 
-      <div className={`card ${isMainActive ? "card-active" : ""}`}
-        onClick={() => !isMainActive ? setConfirm({ id: "__main__", email: main?.email ?? "Codex App", plan: main?.plan, isMain: true, hasCredential: true, quota: main?.quota ?? null }) : undefined}
-        style={{ cursor: isMainActive ? "default" : "pointer", marginBottom: 12 }}>
+      <div className={`card ${isMainActive ? "card-active" : ""}`} style={{ marginBottom: 12 }}>
         <div className="card-head">
           <span className="dot dot-green" />
           <strong>{t("codexAuth.mainAccount")}</strong>
@@ -193,6 +246,11 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
                 : t("codexAuth.current")}
             </span>
           </span>
+          {!isMainActive && (
+            <button type="button" className="btn btn-ghost btn-sm codex-account-switch" onClick={() => setConfirm(mainSwitchEntry)}>
+              {switchActionLabel}
+            </button>
+          )}
           <span className="card-right"><IconLock width={14} /> {t("codexAuth.appLogin")}</span>
         </div>
         <div className="card-sub">{main?.email ?? "Codex App login"}{main?.plan ? ` · ${main.plan}` : ""}</div>
@@ -210,8 +268,7 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
       {pool.length === 0 && <EmptyState title={t("codexAuth.noPool")} />}
 
       {pool.map(a => (
-        <div key={a.id} className={`card ${isNext(a.id) ? "card-active" : ""}`}
-          onClick={() => !a.needsReauth && setConfirm(a)} style={{ cursor: a.needsReauth ? "default" : "pointer", marginBottom: 8 }}>
+        <div key={a.id} className={`card ${isNext(a.id) ? "card-active" : ""}`} style={{ marginBottom: 8 }}>
           <div className="card-head">
             <span className={`dot ${a.needsReauth ? "dot-amber" : isNext(a.id) ? "dot-blue" : "dot-muted"}`} />
             <strong>{a.email}</strong>
@@ -225,9 +282,15 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
                 </span>
               )}
             </span>
+            {!isNext(a.id) && !a.needsReauth && (
+              <button type="button" className="btn btn-ghost btn-sm codex-account-switch" onClick={() => setConfirm(a)}>
+                {switchActionLabel}
+              </button>
+            )}
             <button
               className="btn-icon btn-icon-danger card-right"
-              aria-label={t("common.remove")}
+              aria-label={`${t("common.remove")} — ${a.email}`}
+              title={`${t("common.remove")} — ${a.email}`}
               onClick={e => { e.stopPropagation(); remove(a.id); }}
             >
               <IconX width={14} />
@@ -270,8 +333,8 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
             )}
             <div className="modal-actions">
               <button className="btn btn-ghost" onClick={() => setConfirm(null)}>{t("codexAuth.cancel")}</button>
-              <button className="btn btn-primary" onClick={() => setActive(confirm.id === "__main__" ? "__main__" : confirm.id)}>
-                {t(accountModeState === "direct" ? "codexAuth.prepareForPool" : "codexAuth.setAsNext")}
+              <button className="btn btn-primary" disabled={Boolean(switchingId)} onClick={() => setActive(confirm.id === "__main__" ? "__main__" : confirm.id)}>
+                {switchingId ? t("pws.accountSwitching") : t(accountModeState === "direct" ? "codexAuth.prepareForPool" : "codexAuth.setAsNext")}
               </button>
             </div>
           </div>

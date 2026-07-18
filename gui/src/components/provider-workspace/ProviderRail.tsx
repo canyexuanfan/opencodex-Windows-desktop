@@ -5,7 +5,7 @@
  */
 /* eslint-disable react-refresh/only-export-components -- label helpers co-locate with the rail row */
 import { useT, type TFn } from "../../i18n";
-import { IconChevron, IconServer, IconStar } from "../../icons";
+import { IconServer, IconStar } from "../../icons";
 import {
   binProviderStatus,
   isFreeProvider,
@@ -13,7 +13,7 @@ import {
   type WorkspaceProvider,
 } from "../../provider-workspace/catalog";
 import { isLocalProvider } from "../../provider-workspace/kind";
-import { formatProviderDisplayName, providerBrandColor, providerIconSrc } from "../../provider-icons";
+import { formatProviderDisplayName, providerIconSrc } from "../../provider-icons";
 
 export function statusLabel(p: WorkspaceProvider, t: TFn): string {
   const s = binProviderStatus(p);
@@ -46,20 +46,9 @@ export function ProviderIcon({ name, adapter, baseUrl, cls }: {
   cls: string;
 }) {
   const src = providerIconSrc(name, { adapter, baseUrl });
-  const brand = providerBrandColor(name);
   return (
-    <span className={cls} style={brand ? { color: brand } : undefined}>
-      {src && brand ? (
-        <span
-          className="provider-icon-mask"
-          style={{
-            backgroundColor: brand,
-            WebkitMaskImage: `url(${src})`,
-            maskImage: `url(${src})`,
-          }}
-          aria-hidden="true"
-        />
-      ) : src ? (
+    <span className={cls}>
+      {src ? (
         <img src={src} alt="" aria-hidden="true" />
       ) : (
         <IconServer aria-hidden="true" />
@@ -68,14 +57,16 @@ export function ProviderIcon({ name, adapter, baseUrl, cls }: {
   );
 }
 
-export function RailRow({ item, selected, modelCount, isDefault, showConfigId, onClick }: {
+export function RailRow({ item, selected, tabbable, modelCount, isDefault, showConfigId, onClick, onFocus }: {
   item: WorkspaceItem;
   selected: boolean;
+  tabbable: boolean;
   modelCount?: number;
   isDefault?: boolean;
   /** When display names collide (e.g. openai + chatgpt → ChatGPT), show the config id. */
   showConfigId?: boolean;
   onClick: () => void;
+  onFocus: () => void;
 }) {
   const t = useT();
   const free = isFreeProvider(item);
@@ -87,6 +78,7 @@ export function RailRow({ item, selected, modelCount, isDefault, showConfigId, o
   const countLabel = modelCount !== undefined && modelCount > 0
     ? (modelCount === 1 ? t("pws.modelCountOne") : t("pws.modelCount", { count: modelCount }))
     : "";
+  const secondaryLabel = [showConfigId ? item.name : "", countLabel].filter(Boolean).join(" · ");
   return (
     <button
       type="button"
@@ -94,7 +86,10 @@ export function RailRow({ item, selected, modelCount, isDefault, showConfigId, o
       onClick={onClick}
       role="option"
       aria-selected={selected}
+      tabIndex={tabbable ? 0 : -1}
       aria-label={t("pws.rail.selectAria", { name: nameTitle, status, suffix })}
+      title={nameTitle}
+      onFocus={onFocus}
     >
       <ProviderIcon
         name={item.name}
@@ -102,23 +97,21 @@ export function RailRow({ item, selected, modelCount, isDefault, showConfigId, o
         baseUrl={item.baseUrl}
         cls="providers-workspace-rail-icon"
       />
-      <span className="providers-workspace-rail-name" title={nameTitle}>
-        <span className="providers-workspace-rail-name-label">{displayName}</span>
-        {showConfigId ? (
-          <span className="providers-workspace-rail-name-id">{item.name}</span>
-        ) : null}
-      </span>
-      <span className="providers-workspace-rail-badges">
-        {/* Only label exceptions (Local / Free). Paid is the unmarked default. */}
-        {local ? (
-          <span className="pwi-rail-badge pwi-rail-badge--local" title={t("pws.localTitle")}>{t("modal.badge.local")}</span>
-        ) : free ? (
-          <span className="pwi-rail-badge pwi-rail-badge--free" title={t("pws.freeTitle")}>{t("modal.badge.free")}</span>
-        ) : null}
-      </span>
-      {/* Model text left of status so an empty count doesn't leave the dot floating mid-row. */}
-      <span className="providers-workspace-rail-model-count" title={countLabel || undefined}>
-        {countLabel}
+      <span className="providers-workspace-rail-copy">
+        <span className="providers-workspace-rail-primary">
+          <span className="providers-workspace-rail-name-label" title={displayName}>{displayName}</span>
+          {/* Only label exceptions (Local / Free). Paid is the unmarked default. */}
+          {local ? (
+            <span className="pwi-rail-badge pwi-rail-badge--local" title={t("pws.localTitle")}>{t("modal.badge.local")}</span>
+          ) : free ? (
+            <span className="pwi-rail-badge pwi-rail-badge--free" title={t("pws.freeTitle")}>{t("modal.badge.free")}</span>
+          ) : null}
+        </span>
+        {secondaryLabel && (
+          <span className="providers-workspace-rail-secondary" title={secondaryLabel}>
+            {secondaryLabel}
+          </span>
+        )}
       </span>
       <span className="providers-workspace-rail-trail">
         {isDefault && (
@@ -130,11 +123,8 @@ export function RailRow({ item, selected, modelCount, isDefault, showConfigId, o
             <IconStar width={17} height={17} aria-hidden="true" />
           </span>
         )}
-        <span className={railStatusCls(item)} title={status}>
-          <span className="sr-only">{status}</span>
-        </span>
+        <span className={railStatusCls(item)} title={status} aria-hidden="true" />
       </span>
-      <IconChevron className="providers-workspace-rail-chevron" aria-hidden="true" />
     </button>
   );
 }
