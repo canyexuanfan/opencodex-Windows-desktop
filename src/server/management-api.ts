@@ -644,6 +644,16 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     const name = url.searchParams.get("name")?.trim();
     if (!name || !isValidProviderName(name) || !hasOwnProvider(config.providers, name)) return jsonResponse({ error: "unknown provider" }, 404);
     if (name === config.defaultProvider) return jsonResponse({ error: "cannot delete the default provider; set another default first" }, 400);
+    const dependentCombos = Object.entries(config.combos ?? {})
+      .filter(([, combo]) => combo.targets.some(target => target.provider === name))
+      .map(([id]) => id)
+      .sort((a, b) => a.localeCompare(b));
+    if (dependentCombos.length > 0) {
+      return jsonResponse({
+        error: `cannot delete provider "${name}" while combos depend on it`,
+        combos: dependentCombos,
+      }, 409);
+    }
     const { saveConfig: save } = await import("../config");
     delete config.providers[name];
     setProviderContextCap(config, name, false);
@@ -1385,6 +1395,54 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     config.apiKeys = (config.apiKeys ?? []).filter(k => k.id !== body.id);
     saveConfig(config);
     return jsonResponse({ success: true }, 200, req, config);
+  }
+
+  if (url.pathname === "/api/combos" && req.method === "GET") {
+    const { comboModelId, getCombo, listComboIds } = await import("../combos");
+    return jsonResponse({ combos: listComboIds(config).map(id => ({
+      id,
+      model: comboModelId(id),
+      ...getCombo(config, id)!,
+    })) });
+  }
+
+  if (url.pathname === "/api/combos" && req.method === "PUT") {
+    let rawBody: unknown;
+    try { rawBody = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (!isPlainRecord(rawBody)) {
+      return jsonResponse({ error: "request body must be an object" }, 400);
+    }
+    const body = rawBody;
+    if (typeof body.id !== "string" || !body.id.trim()) {
+      return jsonResponse({ error: "id is required and must be a string" }, 400);
+    }
+    const id = body.id.trim();
+    const { comboConfigError, normalizeComboConfig, comboModelId, clearComboSelectionState } = await import("../combos");
+    const error = comboConfigError(id, body.combo, config.providers, {
+      requireEnabledTarget: true,
+    });
+    if (error) return jsonResponse({ error }, 400);
+    const normalized = normalizeComboConfig(body.combo as import("../types").OcxComboConfig);
+    config.combos = { ...(config.combos ?? {}), [id]: normalized };
+    saveConfig(config);
+    clearComboSelectionState(id);
+    await refreshCodexCatalogBestEffort();
+    return jsonResponse({ success: true, id, model: comboModelId(id), combo: normalized });
+  }
+
+  if (url.pathname === "/api/combos" && req.method === "DELETE") {
+    const id = url.searchParams.get("id")?.trim();
+    if (!id) return jsonResponse({ error: "id query param is required" }, 400);
+    if (!Object.hasOwn(config.combos ?? {}, id)) {
+      return jsonResponse({ error: "unknown combo" }, 404);
+    }
+    const { clearComboSelectionState } = await import("../combos");
+    delete config.combos![id];
+    if (Object.keys(config.combos!).length === 0) delete config.combos;
+    saveConfig(config);
+    clearComboSelectionState(id);
+    await refreshCodexCatalogBestEffort();
+    return jsonResponse({ success: true, id });
   }
 
   if (url.pathname === "/api/stop" && req.method === "POST") {

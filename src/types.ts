@@ -478,22 +478,23 @@ export interface OcxConfig {
 }
 
 export type OcxComboStrategy = "failover" | "round-robin";
+export type OcxComboDefaultEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 export interface OcxComboTarget {
   provider: string;
   model: string;
-  /** Relative round-robin weight. Default 1. */
+  /** Relative SWRR batch weight. Default 1; valid range 1..10000. */
   weight?: number;
 }
 
 export interface OcxComboConfig {
   targets: OcxComboTarget[];
-  /** Ordered failover (default) or weighted round-robin. */
+  /** Ordered failover (default) or deterministic smooth weighted round-robin. */
   strategy?: OcxComboStrategy;
-  /** Successful requests retained on one round-robin target. Default 1. */
+  /** Successful requests retained on one RR selection batch. Default 1; range 1..100. */
   stickyLimit?: number;
   /** Used when the client omits reasoning.effort. Default medium. */
-  defaultEffort?: string;
+  defaultEffort?: OcxComboDefaultEffort;
 }
 
 /**

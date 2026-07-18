@@ -9,6 +9,7 @@ import { buildCompactV1Output, COMPACT_PROMPT, decodeCompactionSummary, extractC
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
 import { expandPreviousResponseInput, previousResponseConversationId, rememberResponseState } from "../responses/state";
 import { routeModel } from "../router";
+import { NoAvailableComboTargetsError } from "../combos";
 import { isInjectionDebugEnabled } from "../lib/debug-settings";
 import { injectionDebugLog } from "../lib/injection-debug-log";
 import { modelInList, namespacedToolName } from "../types";
@@ -419,6 +420,15 @@ export function decodeRequestErrorResponse(err: unknown, label: string): Respons
   return formatErrorResponse(400, "invalid_request_error", "Invalid JSON body");
 }
 
+function comboUnavailableResponse(message: string): Response {
+  return new Response(
+    JSON.stringify({
+      error: { message, type: "server_error", code: "combo_unavailable" },
+    }),
+    { status: 503, headers: { "Content-Type": "application/json" } },
+  );
+}
+
 export async function handleResponses(
   req: Request,
   config: OcxConfig,
@@ -493,6 +503,9 @@ export async function handleResponses(
   try {
     route = routeModel(config, parsed.modelId);
   } catch (err) {
+    if (err instanceof NoAvailableComboTargetsError) {
+      return comboUnavailableResponse(err.message);
+    }
     return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
 

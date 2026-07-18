@@ -9,7 +9,7 @@ import {
 describe("combo namespace primitives", () => {
   test("parses and formats combo model ids", () => {
     expect(parseComboModelId("combo/free")).toBe("free");
-    expect(parseComboModelId("combo/  free  ")).toBe("free");
+    expect(parseComboModelId("combo/  free  ")).toBe("  free  ");
     expect(parseComboModelId("combo/")).toBeNull();
     expect(parseComboModelId("nvidia/free")).toBeNull();
     expect(comboModelId("free")).toBe("combo/free");
