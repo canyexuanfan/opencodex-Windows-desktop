@@ -86,11 +86,17 @@ codex "Write a hello world in Rust"
 
 <br/>
 
-opencodex 把 Bun 运行时作为依赖打包，并通过 Node 启动器运行，所以你**不需要**自己安装 Bun。如果看到 "bundled Bun runtime is missing" 错误，说明安装时跳过了 lifecycle 脚本或 optional 依赖。请不带这些标志重新安装：
+opencodex 把 Bun 运行时作为依赖打包，并通过 Node 启动器运行，所以你**不需要**自己安装 Bun。如果看到 "bundled Bun runtime is missing" 错误，说明安装时跳过了 lifecycle 脚本（包括 npm 通过 `allowScripts` 拦截 bun postinstall 的情况）或 optional 依赖。请允许 bun 安装脚本后重新安装：
 
 ```bash
-npm install -g @bitkyc08/opencodex   # 不要加 --ignore-scripts、--omit=optional
+npm install -g --allow-scripts=bun @bitkyc08/opencodex   # 不要加 --ignore-scripts、--omit=optional
+
+# 如果最初是用 sudo 安装的，请继续使用 sudo：
+sudo npm install -g --allow-scripts=bun @bitkyc08/opencodex
 ```
+
+npm 警告里给出的缩写命令缺少包名，会把当前目录重新安装进去，
+请始终显式写上 `@bitkyc08/opencodex`。
 
 </details>
 

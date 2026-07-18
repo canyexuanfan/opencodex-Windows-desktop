@@ -93,11 +93,19 @@ codex "Write a hello world in Rust"
 opencodex bundles the Bun runtime as a dependency and runs it via a Node
 launcher, so you do **not** need to install Bun yourself. If you see a
 "bundled Bun runtime is missing" error, the install skipped lifecycle scripts
-or optional dependencies. Reinstall without those flags:
+(including npm blocking bun's postinstall under `allowScripts`) or optional
+dependencies. Reinstall without those flags, allowing bun's install script:
 
 ```bash
-npm install -g @bitkyc08/opencodex   # no --ignore-scripts, no --omit=optional
+npm install -g --allow-scripts=bun @bitkyc08/opencodex   # no --ignore-scripts, no --omit=optional
+
+# if the original install used sudo, keep using sudo:
+sudo npm install -g --allow-scripts=bun @bitkyc08/opencodex
 ```
+
+npm's own warning suggests an abbreviated command without the package name —
+that would reinstall the current directory, so always pass
+`@bitkyc08/opencodex` explicitly.
 
 </details>
 
