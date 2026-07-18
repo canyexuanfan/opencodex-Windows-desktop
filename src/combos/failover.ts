@@ -1,3 +1,4 @@
+import { classifyError } from "../lib/errors";
 import type { OcxComboTarget } from "../types";
 import { targetKey } from "./types";
 
@@ -74,4 +75,28 @@ export function clearComboTargetCooldowns(comboId?: string): void {
   for (const key of targetCooldowns.keys()) {
     if (key.startsWith(prefix)) targetCooldowns.delete(key);
   }
+}
+
+export type ComboFailureDecision = "hop" | "stop";
+
+export function comboFailureDecision(status: number, message: string): ComboFailureDecision {
+  if (status === 499) return "stop";
+  if (message.toLowerCase().includes("origin_rejected")) return "stop";
+  const error = classifyError(status, "upstream_error", message);
+  if (["origin_rejected", "context_length_exceeded", "invalid_request_error"].includes(error.code ?? "")) {
+    return "stop";
+  }
+  if ([401, 403, 404, 408, 429].includes(status) || status >= 500) return "hop";
+  if ([
+    "permission_denied",
+    "subscription_required",
+    "invalid_api_key",
+    "insufficient_quota",
+    "rate_limit_exceeded",
+    "server_is_overloaded",
+    "upstream_server_error",
+  ].includes(error.code ?? "")) {
+    return "hop";
+  }
+  return "stop";
 }

@@ -1,4 +1,5 @@
 import type { OcxComboTarget, OcxConfig } from "../types";
+import { coolComboTarget, isComboTargetInCooldown } from "./failover";
 import { getCombo, parseComboModelId, targetKey } from "./types";
 import type { NormalizedComboConfig } from "./types";
 
@@ -129,6 +130,27 @@ export function noteComboSuccess(
     delete state.activeKey;
     state.successes = 0;
   }
+}
+
+export function noteComboFailure(comboId: string, target: OcxComboTarget): void {
+  const state = selectionState.get(comboId);
+  if (state?.activeKey === targetKey(target)) {
+    delete state.activeKey;
+    state.successes = 0;
+  }
+}
+
+export function advanceComboAfterFailure(
+  config: OcxConfig,
+  pick: ComboPick,
+  options: { retryAfter?: string | null; now?: number } = {},
+): ComboPick | null {
+  noteComboFailure(pick.comboId, pick.target);
+  coolComboTarget(pick.comboId, pick.target, options);
+  return pickComboTarget(config, pick.comboId, {
+    exclude: pick.attempted,
+    eligible: target => !isComboTargetInCooldown(pick.comboId, target, options.now),
+  });
 }
 
 export function clearComboSelectionState(comboId?: string): void {

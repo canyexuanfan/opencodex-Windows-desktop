@@ -13,8 +13,10 @@ export {
   targetKey,
 } from "./types";
 export {
+  advanceComboAfterFailure,
   clearComboSelectionState,
   NoAvailableComboTargetsError,
+  noteComboFailure,
   noteComboSuccess,
   pickComboTarget,
   tryPickComboModel,
@@ -26,4 +28,10 @@ export {
   coolComboTarget,
   isComboTargetInCooldown,
   parseRetryAfterMs,
+  comboFailureDecision,
+  type ComboFailureDecision,
 } from "./failover";
+export {
+  comboIdFromRawBody,
+  concreteComboRequestBody,
+} from "./request";
