@@ -65,10 +65,17 @@ describe("provider registry parity", () => {
       "qwen3.7-max",
     ]);
     expect(KEY_LOGIN_PROVIDERS["opencode-go"].noVisionModels).not.toContain("kimi-k2.7-code");
+    expect(KEY_LOGIN_PROVIDERS["opencode-go"].noVisionModels).not.toContain("qwen3.8-max-preview");
     expect(KEY_LOGIN_PROVIDERS["opencode-go"]).toMatchObject({
       modelContextWindows: { "kimi-k3": 262_144 },
-      modelInputModalities: { "kimi-k3": ["text", "image"] },
-      modelReasoningEfforts: { "kimi-k3": ["low", "high", "max"] },
+      modelInputModalities: {
+        "kimi-k3": ["text", "image"],
+        "qwen3.8-max-preview": ["text", "image"],
+      },
+      modelReasoningEfforts: {
+        "kimi-k3": ["low", "high", "max"],
+        "qwen3.8-max-preview": ["low", "medium", "high", "xhigh", "max"],
+      },
       modelDefaultReasoningEfforts: { "kimi-k3": "max" },
       modelReasoningEffortMap: {
         "kimi-k3": { none: "none", low: "low", medium: "high", high: "high", xhigh: "max", max: "max" },

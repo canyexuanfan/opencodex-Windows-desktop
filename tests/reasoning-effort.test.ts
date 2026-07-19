@@ -571,21 +571,24 @@ describe("thinking-budget models (260709)", () => {
       defaultProvider: "opencode-go",
       providers: { "opencode-go": { adapter: "openai-chat", baseUrl: "https://opencode.ai/zen/go/v1", apiKey: "k" } },
     } as unknown as OcxConfig;
-    const route = routeModel(config, "opencode-go/qwen3.7-max");
+    for (const modelId of ["qwen3.7-max", "qwen3.8-max-preview"]) {
+      const route = routeModel(config, `opencode-go/${modelId}`);
 
-    expect(route.provider.adapter).toBe("openai-chat");
-    expect(route.provider.thinkingBudgetModels).toContain("qwen3.7-max");
-    expect(route.provider.modelReasoningEfforts?.["qwen3.7-max"]).toEqual(["low", "medium", "high", "xhigh", "max"]);
+      expect(route.provider.adapter).toBe("openai-chat");
+      expect(route.provider.thinkingBudgetModels).toContain(modelId);
+      expect(route.provider.modelReasoningEfforts?.[modelId]).toEqual(["low", "medium", "high", "xhigh", "max"]);
 
-    const body = buildBody(route.provider, route.modelId, { reasoning: "max", maxOutputTokens: 65536 });
-    expect(body.thinking_budget).toBe(65536);
-    expect(body).not.toHaveProperty("reasoning_effort");
+      const body = buildBody(route.provider, route.modelId, { reasoning: "max", maxOutputTokens: 65536 });
+      expect(body.thinking_budget).toBe(65536);
+      expect(body).not.toHaveProperty("reasoning_effort");
+    }
   });
 
   test("opencode-go Qwen models are no longer pinned to the Anthropic wire", () => {
     const provider: OcxProviderConfig = { adapter: "openai-chat", baseUrl: "https://opencode.ai/zen/go/v1" };
 
     expect(resolveWireProtocolOverride("opencode-go", "qwen3.7-max", provider).adapter).toBe("openai-chat");
+    expect(resolveWireProtocolOverride("opencode-go", "qwen3.8-max-preview", provider).adapter).toBe("openai-chat");
     expect(resolveWireProtocolOverride("opencode-go", "minimax-m3", provider).adapter).toBe("anthropic");
   });
 

@@ -157,9 +157,14 @@ const OPENCODE_GO_THINKING_TOGGLE_MODELS = [
 const THINKING_BUDGET_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const THINKING_BUDGET_MODELS = [
   "qwen3.5-397b", "qwen3.6-35b",
-  "qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus",
+  "qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus", "qwen3.8-max-preview",
 ];
-const OPENCODE_GO_THINKING_BUDGET_MODELS = ["qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus"];
+// 260719: Alibaba's Token Plan docs confirm the preview id plus reasoning and vision.
+// OpenCode Go still rejects it, so pre-wire behavior without forcing an uncallable catalog row.
+// Evidence: https://help.aliyun.com/en/model-studio/token-plan-personal-overview
+const OPENCODE_GO_THINKING_BUDGET_MODELS = [
+  "qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus", "qwen3.8-max-preview",
+];
 const DEEPSEEK_THINKING_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"];
 const OPENCODE_FREE_DEEPSEEK_MODELS = ["deepseek-v4-flash-free"];
 // "max" is advertised too: the wire map routes xhigh->max and max->max, so the picker
@@ -457,7 +462,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     authKind: "key", featured: true, dashboardUrl: "https://opencode.ai/auth", defaultModel: "kimi-k2.7-code",
     jawcodeBundle: "opencode-go", note: "GLM, DeepSeek, Kimi, Qwen, MiMo…",
     modelContextWindows: { "kimi-k3": KIMI_K3_STANDARD_CONTEXT_WINDOW },
-    modelInputModalities: { "kimi-k3": ["text", "image"] },
+    modelInputModalities: {
+      "kimi-k3": ["text", "image"],
+      "qwen3.8-max-preview": ["text", "image"],
+    },
     modelReasoningEfforts: {
       "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
       "kimi-k3": KIMI_CODING_K3_REASONING_EFFORTS,
