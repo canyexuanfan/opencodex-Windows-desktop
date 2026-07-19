@@ -249,8 +249,11 @@ function unwrapKimiQuotaPayload(value: unknown): Record<string, unknown> | null 
   if (!body) return null;
   const nested = asRecord(body.data);
   if (!nested) return body;
-  const outerHasUsage = body.usage !== undefined || body.limits !== undefined || body.totalQuota !== undefined;
-  const nestedHasUsage = nested.usage !== undefined || nested.limits !== undefined || nested.totalQuota !== undefined;
+  // A null/non-usable outer field is a placeholder, not data — an envelope like
+  // { usage: null, data: { usage: {...} } } must still unwrap to the nested payload.
+  const usable = (field: unknown): boolean => field !== undefined && field !== null;
+  const outerHasUsage = usable(body.usage) || usable(body.limits) || usable(body.totalQuota);
+  const nestedHasUsage = usable(nested.usage) || usable(nested.limits) || usable(nested.totalQuota);
   return !outerHasUsage && nestedHasUsage ? nested : body;
 }
 
@@ -340,13 +343,11 @@ async function resolveKimiQuotaBearer(config: OcxProviderConfig): Promise<string
       return null;
     }
   }
+  // ACTIVE key only: silently walking apiKeyPool when the primary env reference is
+  // unresolved would render a quota bar for a DIFFERENT account than the one routing
+  // requests — a wrong meter is worse than no meter.
   const primary = resolveEnvValue(config.apiKey)?.trim();
-  if (primary) return primary;
-  for (const entry of config.apiKeyPool ?? []) {
-    const key = resolveEnvValue(entry.key)?.trim();
-    if (key) return key;
-  }
-  return null;
+  return primary || null;
 }
 
 async function fetchKimiQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaReport | null> {
@@ -642,9 +643,10 @@ async function maybeFetchProviderQuota(
     if (provider.authMode === "oauth" && name === "anthropic") return fetchAnthropicQuota(name);
     if (provider.authMode === "oauth" && name === "cursor") return fetchCursorQuota(name);
     if (provider.authMode === "oauth" && name === "google-antigravity") return fetchAntigravityQuota(name, provider);
-    // Kimi Code `/usages` accepts OAuth or coding-plan API keys, but only on the canonical host.
+    // Kimi Code `/usages` accepts OAuth or coding-plan API keys, but only on the canonical
+    // host and only for real key auth — forward/local modes carry no credential of ours.
     if (provider.authMode === "oauth" && name === "kimi") return fetchKimiQuota(name, provider);
-    if (provider.authMode !== "oauth" && isCanonicalKimiCodeBaseUrl(provider.baseUrl)) {
+    if (provider.authMode === "key" && isCanonicalKimiCodeBaseUrl(provider.baseUrl)) {
       return fetchKimiQuota(name, provider);
     }
     return null;

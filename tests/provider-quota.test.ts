@@ -395,6 +395,66 @@ describe("fetchProviderQuotaReports", () => {
     expect(seen).toEqual([]);
   });
 
+  test("an unresolved active env key never falls back to the pool (wrong-account meter)", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response(JSON.stringify({ usage: { limit: "100", used: "40" } }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports({
+      defaultProvider: "kimi-code",
+      providers: {
+        "kimi-code": {
+          adapter: "openai-chat",
+          authMode: "key",
+          baseUrl: "https://api.kimi.com/coding/v1",
+          apiKey: "${OCX_TEST_MISSING_KIMI_KEY}",
+          apiKeyPool: [{ key: "sk-pool-other-account" }],
+        },
+      },
+    } as OcxConfig, true);
+
+    // No probe at all: attributing the pool key's quota to the active slot would lie.
+    expect(result.reports).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
+  test("forward/local auth modes on the canonical Kimi host are not probed", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response(JSON.stringify({ usage: { limit: "100", used: "40" } }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports({
+      defaultProvider: "kimi-fwd",
+      providers: {
+        "kimi-fwd": {
+          adapter: "openai-chat",
+          authMode: "forward",
+          baseUrl: "https://api.kimi.com/coding/v1",
+        },
+      },
+    } as OcxConfig, true);
+
+    expect(result.reports).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
+  test("a null outer usage placeholder still unwraps the data envelope", async () => {
+    await saveCredential("kimi", { access: "kimi-access-secret", refresh: "kimi-refresh-secret", expires: Date.now() + 3600_000 });
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      usage: null, // placeholder — must not mask the nested payload
+      data: { usage: { limit: "200", used: "50" } },
+    }), { status: 200 })) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(kimiOnlyConfig(), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.quota.weeklyPercent).toBe(25);
+  });
+
   test("Kimi quota preserves a last-good row after 401 only within the shared age bound", async () => {
     await saveCredential("kimi", { access: "kimi-access-secret", refresh: "kimi-refresh-secret", expires: Date.now() + 3600_000 });
     let authorized = true;
