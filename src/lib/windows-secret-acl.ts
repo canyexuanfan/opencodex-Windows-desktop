@@ -39,8 +39,25 @@ export interface HardenOptions {
   required: boolean;
 }
 
-/** Total icacls budget per harden call (all steps share it). */
-const HARDEN_DEADLINE_MS = 5_000;
+/**
+ * Total icacls budget per harden call — ALL steps share it, including the single
+ * timeout retry and the diagnostic verification pass (no per-attempt fresh budget:
+ * loadConfig hardens dir+config+auth sequentially, so per-attempt budgets stack
+ * into multi-minute startup stalls). Override with OPENCODEX_ACL_TIMEOUT_MS
+ * (integer ms, clamped to [1000, 60000]; invalid values fall back to 5000).
+ */
+const HARDEN_DEADLINE_DEFAULT_MS = 5_000;
+const HARDEN_DEADLINE_MIN_MS = 1_000;
+const HARDEN_DEADLINE_MAX_MS = 60_000;
+
+/** Resolve the total harden budget once per call (env mutation cannot change it midway). */
+function resolveHardenDeadlineMs(): number {
+  const raw = env["OPENCODEX_ACL_TIMEOUT_MS"]?.trim();
+  if (!raw) return HARDEN_DEADLINE_DEFAULT_MS;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed)) return HARDEN_DEADLINE_DEFAULT_MS;
+  return Math.min(HARDEN_DEADLINE_MAX_MS, Math.max(HARDEN_DEADLINE_MIN_MS, parsed));
+}
 
 export interface IcaclsResult {
   success: boolean;
@@ -134,15 +151,13 @@ function currentWindowsUser(): string | undefined {
  */
 const BROAD_SIDS = ["*S-1-1-0", "*S-1-5-11", "*S-1-5-32-545"] as const;
 
-function runIcacls(targetPath: string, directory: boolean): void {
+function runIcacls(targetPath: string, directory: boolean, deadline: number): void {
   const user = currentWindowsUser();
   if (!user) {
     throw new Error("Cannot determine current Windows user for ACL hardening");
   }
 
-  // One shared deadline for the whole harden call: per-step 5s budgets used to stack
-  // into ~135s stalls across loadConfig's dir+config+auth sequence when icacls hung.
-  const deadline = nowFn() + HARDEN_DEADLINE_MS;
+  // The deadline is owned by hardenEntry (total budget incl. retry + verification).
   const run = (step: string, args: string[]): IcaclsResult => {
     const remaining = deadline - nowFn();
     if (remaining <= 0) {
@@ -188,16 +203,94 @@ function runIcacls(targetPath: string, directory: boolean): void {
  * sensitive username components or PII from the home directory path).
  */
 function sanitizeDiagnostics(error: unknown): string {
-  // We do not expose the raw error message or any path-like fragments.
-  // Just describe what failed generically.
+  // We do not expose the raw error message or any path-like fragments —
+  // just an honest, code-specific cause (issue #160: a transient icacls stall
+  // must not read like filesystem non-support).
   const code = error instanceof Error && "code" in error ? String((error as NodeJS.ErrnoException).code) : "";
-  const codePart = code ? ` (${code})` : "";
-  return `ACL hardening failed${codePart} — filesystem may not support per-user NTFS ACLs`;
+  switch (code) {
+    case "ETIMEDOUT":
+      return "ACL hardening timed out (ETIMEDOUT) — transient icacls stall; the volume may still support per-user NTFS ACLs";
+    case "EPERM":
+    case "EACCES":
+      return `ACL hardening failed (${code}) — permission denied running icacls`;
+    case "EICACLS":
+      return "ACL hardening failed (EICACLS) — icacls command error; filesystem may not support per-user NTFS ACLs";
+    default:
+      return `ACL hardening failed${code ? ` (${code})` : ""} — filesystem may not support per-user NTFS ACLs`;
+  }
 }
 
 function isTimeoutError(error: unknown): boolean {
   return error instanceof Error && "code" in error
     && String((error as NodeJS.ErrnoException).code) === "ETIMEDOUT";
+}
+
+/**
+ * Diagnostic-only post-timeout probe (never promotes to ok:true — a clean /findsid
+ * does not prove inheritance was disabled or the user grant ran; only a fully
+ * completed harden sequence may enter the hardened cache). Bounded by the remaining
+ * total budget; returns a short state note for the soft-fail diagnostic.
+ */
+function describeAclStateAfterTimeout(targetPath: string, deadline: number): string {
+  try {
+    for (const sid of BROAD_SIDS) {
+      const remaining = deadline - nowFn();
+      if (remaining <= 0) return "ACL state unverified (budget exhausted)";
+      const found = icaclsRunner([targetPath, "/findsid", sid], remaining);
+      if (!found.success) return "ACL state unverified (probe failed)";
+      if (found.stdout.includes(targetPath)) return "broad ACL grants still present";
+    }
+    return "no broad ACL grants detected (hardening still incomplete)";
+  } catch {
+    return "ACL state unverified (probe failed)";
+  }
+}
+
+/**
+ * Shared harden flow for files and directories: one total budget (env-configurable)
+ * covering the initial attempt, ONE timeout retry, and the diagnostic verification.
+ * Real EPERM/EACCES/EICACLS failures stay fail-closed on required paths; only
+ * genuine timeouts soft-fail, with an honest state-annotated diagnostic.
+ */
+function hardenEntry(
+  targetPath: string,
+  directory: boolean,
+  opts: HardenOptions,
+  cache: Set<string>,
+): HardenResult {
+  if (!existsSync(targetPath)) return { ok: true };
+  if (effectivePlatform() !== "win32") return { ok: true };
+  if (cache.has(targetPath)) return { ok: true };
+  if (timedOutPaths.has(targetPath)) {
+    return { ok: false, diagnostics: "ACL hardening skipped — previous attempt timed out" };
+  }
+
+  const deadline = nowFn() + resolveHardenDeadlineMs();
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0 && deadline - nowFn() <= 0) break; // retry only while budget remains
+    try {
+      runIcacls(targetPath, directory, deadline);
+      cache.add(targetPath);
+      return { ok: true };
+    } catch (err) {
+      lastErr = err;
+      if (!isTimeoutError(err)) break; // real failures do not retry
+    }
+  }
+
+  const diagnostics = sanitizeDiagnostics(lastErr);
+  if (isTimeoutError(lastErr)) {
+    timedOutPaths.add(targetPath);
+    const state = describeAclStateAfterTimeout(targetPath, deadline);
+    const annotated = `${diagnostics}; ${state}`;
+    // Timeout-only soft-fail: a hung icacls must not block OAuth/token writes.
+    // chmod is still applied by the caller.
+    console.warn(`[opencodex] ${annotated} — continuing without NTFS ACL harden`);
+    return { ok: false, diagnostics: annotated };
+  }
+  if (opts.required) throw new Error(diagnostics);
+  return { ok: false, diagnostics };
 }
 
 /**
@@ -208,39 +301,7 @@ function isTimeoutError(error: unknown): boolean {
  * @param opts        { required: boolean } — required:true throws on failure.
  */
 export function hardenSecretPath(targetPath: string, opts: HardenOptions): HardenResult {
-  // Skip for missing files — we cannot harden what does not exist yet.
-  if (!existsSync(targetPath)) {
-    return { ok: true };
-  }
-
-  // Non-Windows: no NTFS ACLs; caller handles chmod.
-  if (effectivePlatform() !== "win32") {
-    return { ok: true };
-  }
-
-  if (hardenedPaths.has(targetPath)) return { ok: true };
-  if (timedOutPaths.has(targetPath)) {
-    return { ok: false, diagnostics: "ACL hardening skipped — previous attempt timed out" };
-  }
-
-  try {
-    runIcacls(targetPath, false);
-    hardenedPaths.add(targetPath);
-    return { ok: true };
-  } catch (err) {
-    const diagnostics = sanitizeDiagnostics(err);
-    if (isTimeoutError(err)) {
-      timedOutPaths.add(targetPath);
-      // Timeout-only soft-fail: a hung icacls must not block OAuth/token writes.
-      // chmod is still applied by the caller; real EPERM/EACCES still throw below.
-      console.warn(`[opencodex] ${diagnostics} — continuing without NTFS ACL harden`);
-      return { ok: false, diagnostics };
-    }
-    if (opts.required) {
-      throw new Error(diagnostics);
-    }
-    return { ok: false, diagnostics };
-  }
+  return hardenEntry(targetPath, false, opts, hardenedPaths);
 }
 
 /**
@@ -251,35 +312,5 @@ export function hardenSecretPath(targetPath: string, opts: HardenOptions): Harde
  * @param opts        { required: boolean } — required:true throws on failure.
  */
 export function hardenSecretDir(targetPath: string, opts: HardenOptions): HardenResult {
-  // Skip for missing directories — we cannot harden what does not exist yet.
-  if (!existsSync(targetPath)) {
-    return { ok: true };
-  }
-
-  // Non-Windows: no NTFS ACLs; caller handles chmod.
-  if (effectivePlatform() !== "win32") {
-    return { ok: true };
-  }
-
-  if (hardenedDirectories.has(targetPath)) return { ok: true };
-  if (timedOutPaths.has(targetPath)) {
-    return { ok: false, diagnostics: "ACL hardening skipped — previous attempt timed out" };
-  }
-
-  try {
-    runIcacls(targetPath, true);
-    hardenedDirectories.add(targetPath);
-    return { ok: true };
-  } catch (err) {
-    const diagnostics = sanitizeDiagnostics(err);
-    if (isTimeoutError(err)) {
-      timedOutPaths.add(targetPath);
-      console.warn(`[opencodex] ${diagnostics} — continuing without NTFS ACL harden`);
-      return { ok: false, diagnostics };
-    }
-    if (opts.required) {
-      throw new Error(diagnostics);
-    }
-    return { ok: false, diagnostics };
-  }
+  return hardenEntry(targetPath, true, opts, hardenedDirectories);
 }

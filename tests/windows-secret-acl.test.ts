@@ -310,4 +310,115 @@ describe("icacls failure paths (injected seams)", () => {
     expect(second.diagnostics).toContain("skipped");
     expect(budgets.length).toBe(1);
   });
+
+  test("a timeout diagnostic no longer claims filesystem non-support (issue #160)", () => {
+    setIcaclsRunnerForTests(() => timeout);
+    const result = hardenSecretPath(secretFile(), { required: true });
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toContain("timed out");
+    expect(result.diagnostics).toContain("transient icacls stall");
+    expect(result.diagnostics).not.toContain("may not support per-user NTFS ACLs");
+  });
+
+  test("one timeout retry within the same total budget can still succeed", () => {
+    const filePath = secretFile();
+    let now = 0;
+    let inheritanceCalls = 0;
+    setNowForTests(() => now);
+    setIcaclsRunnerForTests(args => {
+      if (args.includes("/inheritance:r")) {
+        inheritanceCalls += 1;
+        if (inheritanceCalls === 1) {
+          now += 2_000; // first attempt stalls, but budget remains
+          return timeout;
+        }
+      }
+      now += 100;
+      return ok;
+    });
+
+    const result = hardenSecretPath(filePath, { required: true });
+    expect(result).toEqual({ ok: true });
+    expect(inheritanceCalls).toBe(2); // exactly one retry
+    // A successful retry enters the hardened cache: no further runner calls.
+    const before = inheritanceCalls;
+    expect(hardenSecretPath(filePath, { required: true })).toEqual({ ok: true });
+    expect(inheritanceCalls).toBe(before);
+  });
+
+  test("a clean post-timeout probe annotates the diagnostic but never promotes to ok:true", () => {
+    const filePath = secretFile();
+    setIcaclsRunnerForTests(args => {
+      if (args.includes("/findsid")) return { ...ok, stdout: "Successfully processed 1 files\n" };
+      return timeout; // both harden attempts time out
+    });
+
+    const result = hardenSecretPath(filePath, { required: true });
+    expect(result.ok).toBe(false); // clean /findsid is diagnostic-only
+    expect(result.diagnostics).toContain("no broad ACL grants detected");
+    expect(result.diagnostics).toContain("hardening still incomplete");
+
+    // And the path landed in the timed-out cache, not the hardened cache.
+    expect(hardenSecretPath(filePath, { required: true }).diagnostics).toContain("skipped");
+  });
+
+  test("a dirty post-timeout probe reports the remaining broad grants", () => {
+    const filePath = secretFile();
+    setIcaclsRunnerForTests(args => {
+      if (args.includes("/findsid")) return { ...ok, stdout: `SID Found: ${filePath}\n` };
+      return timeout;
+    });
+
+    const result = hardenSecretPath(filePath, { required: true });
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toContain("broad ACL grants still present");
+  });
+
+  test("OPENCODEX_ACL_TIMEOUT_MS overrides the total budget with clamping", () => {
+    const budgets: number[] = [];
+    let now = 0;
+    setNowForTests(() => now);
+    setIcaclsRunnerForTests((_args, timeoutMs) => {
+      budgets.push(timeoutMs);
+      now += 100;
+      return ok;
+    });
+
+    const prev = process.env.OPENCODEX_ACL_TIMEOUT_MS;
+    try {
+      process.env.OPENCODEX_ACL_TIMEOUT_MS = "10000";
+      hardenSecretPath(secretFile("env-a.json"), { required: true });
+      expect(budgets[0]).toBeLessThanOrEqual(10_000);
+      expect(budgets[0]).toBeGreaterThan(5_000);
+
+      budgets.length = 0;
+      process.env.OPENCODEX_ACL_TIMEOUT_MS = "50"; // below floor → clamped to 1000
+      hardenSecretPath(secretFile("env-b.json"), { required: true });
+      expect(budgets[0]).toBeLessThanOrEqual(1_000);
+      expect(budgets[0]).toBeGreaterThan(500);
+
+      budgets.length = 0;
+      process.env.OPENCODEX_ACL_TIMEOUT_MS = "5000ms"; // malformed → default 5000
+      hardenSecretPath(secretFile("env-c.json"), { required: true });
+      expect(budgets[0]).toBeLessThanOrEqual(5_000);
+      expect(budgets[0]).toBeGreaterThan(4_000);
+    } finally {
+      if (prev === undefined) delete process.env.OPENCODEX_ACL_TIMEOUT_MS;
+      else process.env.OPENCODEX_ACL_TIMEOUT_MS = prev;
+    }
+  });
+
+  test("a thrown EPERM error on a required path still fails closed (no retry)", () => {
+    let calls = 0;
+    setIcaclsRunnerForTests(() => {
+      calls += 1;
+      const err = new Error("icacls denied") as NodeJS.ErrnoException;
+      err.code = "EPERM";
+      throw err;
+    });
+
+    expect(() => hardenSecretPath(secretFile(), { required: true })).toThrow(/permission denied/);
+    expect(calls).toBe(1); // real failures do not consume the timeout retry
+  });
 });
