@@ -23,6 +23,9 @@ const DEFAULT_POLL_INTERVAL_MS = 5000;
 const DEFAULT_DEVICE_FLOW_TTL_MS = 15 * 60 * 1000;
 const OAUTH_EXPIRY_SKEW_MS = 2 * 60 * 1000;
 const MIN_POLL_MS = 1000;
+/** OAuth error codes that make a refresh terminally dead (safe to surface verbatim). */
+const TERMINAL_OAUTH_ERROR_CODES = new Set(["invalid_grant", "access_denied", "expired_token"]);
+const IDENTITY_RETRY_DELAY_MS = 500;
 
 /** Honest OpenCodex client fingerprint; VS Code-shaped values only if API requires them later. */
 export const GITHUB_COPILOT_EDITOR_HEADERS: Readonly<Record<string, string>> = {
@@ -183,11 +186,15 @@ async function pollGithubDeviceToken(
   intervalMs: number,
   expiresInMs: number,
   signal?: AbortSignal,
-): Promise<{ access: string; refresh: string }> {
+): Promise<{ access: string; refresh?: string }> {
   const deadline = Date.now() + expiresInMs;
   let waitMs = Math.max(MIN_POLL_MS, intervalMs);
   while (Date.now() < deadline) {
     if (signal?.aborted) throw new Error("Login cancelled");
+    // RFC 8628: wait the interval BEFORE every poll — an immediate first request is a
+    // cadence violation GitHub may answer with slow_down.
+    await sleep(waitMs, signal);
+    if (Date.now() >= deadline) break;
     const response = await fetch(ACCESS_TOKEN_URL, {
       method: "POST",
       headers: {
@@ -200,25 +207,31 @@ async function pollGithubDeviceToken(
         device_code: deviceCode,
         grant_type: "urn:ietf:params:oauth:grant-type:device_code",
       }),
-      signal,
+      // Bound each poll by the remaining lifetime so a hung fetch cannot outlive the flow.
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(Math.max(MIN_POLL_MS, deadline - Date.now()))])
+        : AbortSignal.timeout(Math.max(MIN_POLL_MS, deadline - Date.now())),
     });
     const payload = (await response.json().catch(() => ({}))) as GithubTokenResponse;
-    if (response.ok && payload.access_token && payload.refresh_token) {
-      return { access: payload.access_token, refresh: payload.refresh_token };
+    if (response.ok && payload.access_token) {
+      // Classic OAuth apps issue a non-expiring `gho_` access token with NO refresh token;
+      // expiring-token apps add `ghr_`. Both are valid device-flow successes.
+      return {
+        access: payload.access_token,
+        ...(payload.refresh_token ? { refresh: payload.refresh_token } : {}),
+      };
     }
     const error = payload.error;
     if (error === "authorization_pending") {
-      await sleep(waitMs, signal);
       continue;
     }
     if (error === "slow_down") {
-      // RFC 8628: increase the interval. Prefer server-provided `interval` when present;
-      // otherwise add one second (not five) so CI under load still completes.
+      // RFC 8628 §3.5: slow_down means increase the interval by 5 seconds; the
+      // server-provided `interval` wins when it demands even more.
       const retryAfter = typeof payload.interval === "number" && payload.interval > 0
         ? payload.interval * 1000
-        : waitMs + 1000;
-      waitMs = Math.max(waitMs + 1000, retryAfter);
-      await sleep(waitMs, signal);
+        : 0;
+      waitMs = Math.max(waitMs + 5000, retryAfter);
       continue;
     }
     if (error === "expired_token") throw new Error("GitHub Copilot device authorization expired");
@@ -247,8 +260,18 @@ async function refreshGithubAccessToken(refreshToken: string, signal?: AbortSign
     }),
     signal,
   });
-  if (!response.ok) throw githubCopilotHttpError("token refresh", response.status);
   const payload = (await response.json().catch(() => ({}))) as GithubTokenResponse;
+  if (!response.ok) {
+    // Extract ONLY the allowlisted OAuth error code — never the body or error_description,
+    // which can echo credential material. The code lets the shared terminal-refresh
+    // detector mark the account needsReauth instead of retrying a revoked grant forever.
+    const code = payload.error && TERMINAL_OAUTH_ERROR_CODES.has(payload.error) ? payload.error : undefined;
+    throw new Error(
+      code
+        ? `GitHub Copilot token refresh failed: ${code} (HTTP ${response.status})`
+        : `GitHub Copilot token refresh failed (${response.status})`,
+    );
+  }
   if (!payload.access_token) throw new Error("GitHub Copilot token refresh missing access token");
   return {
     access: payload.access_token,
@@ -290,40 +313,64 @@ async function exchangeCopilotToken(githubAccessToken: string, signal?: AbortSig
   };
 }
 
+async function fetchGithubIdentityOnce(githubAccessToken: string, signal?: AbortSignal): Promise<{
+  email?: string;
+  accountId?: string;
+}> {
+  const response = await fetch(GITHUB_USER_URL, {
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${githubAccessToken}`,
+      "User-Agent": "opencodex",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+    signal,
+  });
+  if (!response.ok) throw githubCopilotHttpError("identity lookup", response.status);
+  const user = (await response.json()) as GithubUserResponse;
+  // Prefer numeric id for multiauth stability. Only persist email when GitHub returns one —
+  // do not fabricate noreply addresses (privacy-scan + PII hygiene).
+  const accountId = typeof user.id === "number"
+    ? String(user.id)
+    : (typeof user.login === "string" && user.login ? user.login : undefined);
+  const email = typeof user.email === "string" && user.email.includes("@") ? user.email : undefined;
+  return {
+    ...(email ? { email } : {}),
+    ...(accountId ? { accountId } : {}),
+  };
+}
+
+/**
+ * Identity is REQUIRED for multi-account safety: an identity-less credential would
+ * replace the active slot in the auth store and clobber another GitHub account. One
+ * retry covers transient /user failures; a persistent failure fails the login rather
+ * than persisting an anonymous credential.
+ */
 async function fetchGithubIdentity(githubAccessToken: string, signal?: AbortSignal): Promise<{
   email?: string;
   accountId?: string;
 }> {
   try {
-    const response = await fetch(GITHUB_USER_URL, {
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${githubAccessToken}`,
-        "User-Agent": "opencodex",
-        "X-GitHub-Api-Version": "2022-11-28",
-      },
-      signal,
-    });
-    if (!response.ok) return {};
-    const user = (await response.json()) as GithubUserResponse;
-    // Prefer numeric id for multiauth stability. Only persist email when GitHub returns one —
-    // do not fabricate noreply addresses (privacy-scan + PII hygiene).
-    const accountId = typeof user.id === "number"
-      ? String(user.id)
-      : (typeof user.login === "string" && user.login ? user.login : undefined);
-    const email = typeof user.email === "string" && user.email.includes("@") ? user.email : undefined;
-    return {
-      ...(email ? { email } : {}),
-      ...(accountId ? { accountId } : {}),
-    };
-  } catch {
-    return {};
+    const identity = await fetchGithubIdentityOnce(githubAccessToken, signal);
+    if (identity.accountId) return identity;
+  } catch { /* retry once below */ }
+  await sleep(IDENTITY_RETRY_DELAY_MS, signal);
+  const identity = await fetchGithubIdentityOnce(githubAccessToken, signal);
+  if (!identity.accountId) {
+    throw new Error("Could not verify GitHub account identity — retry the login");
   }
+  return identity;
 }
 
+/**
+ * The credential `refresh` field carries the DURABLE GitHub grant:
+ * - `ghr_…` refresh token (expiring-token apps) → renewed via the refresh grant;
+ * - `gho_…` access token (classic apps, no refresh token) → re-exchanged directly.
+ * The `access` field always holds the short-lived Copilot API token.
+ */
 async function credentialsFromGithubAccess(
   githubAccess: string,
-  githubRefresh: string,
+  durableGrant: string,
   signal?: AbortSignal,
 ): Promise<OAuthCredentials> {
   const [copilot, identity] = await Promise.all([
@@ -332,7 +379,7 @@ async function credentialsFromGithubAccess(
   ]);
   return {
     access: copilot.access,
-    refresh: githubRefresh,
+    refresh: durableGrant,
     expires: copilot.expires,
     apiBaseUrl: copilot.apiBaseUrl,
     source: "oauth",
@@ -358,19 +405,26 @@ export async function loginGithubCopilot(ctrl: OAuthController): Promise<OAuthCr
     ctrl.signal,
   );
   ctrl.onProgress?.("Exchanging GitHub token for Copilot access…");
-  return credentialsFromGithubAccess(github.access, github.refresh, ctrl.signal);
+  // Access-only responses (classic gho_ tokens) store the access token itself as the
+  // durable grant; expiring-token apps store the ghr_ refresh token.
+  return credentialsFromGithubAccess(github.access, github.refresh ?? github.access, ctrl.signal);
 }
 
 /**
- * Refresh = GitHub OAuth refresh (using stored GitHub refresh token) + Copilot re-exchange.
- * `refreshToken` is the GitHub refresh token stored in credentials.refresh.
+ * Refresh = renew the durable GitHub grant, then Copilot re-exchange.
+ * `refreshToken` is credentials.refresh: a `ghr_` token runs the GitHub refresh grant;
+ * anything else (a durable `gho_` access token) re-exchanges directly — both shapes
+ * recover expiry AND upstream 401s.
  */
 export async function refreshGithubCopilotToken(
   refreshToken: string,
   signal?: AbortSignal,
 ): Promise<OAuthCredentials> {
-  const github = await refreshGithubAccessToken(refreshToken, signal);
-  return credentialsFromGithubAccess(github.access, github.refresh, signal);
+  if (refreshToken.startsWith("ghr_")) {
+    const github = await refreshGithubAccessToken(refreshToken, signal);
+    return credentialsFromGithubAccess(github.access, github.refresh, signal);
+  }
+  return credentialsFromGithubAccess(refreshToken, refreshToken, signal);
 }
 
 /** Test helper: ensure a string does not contain obvious secret material from fixtures. */

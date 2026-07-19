@@ -1,5 +1,9 @@
 import type { OcxProviderConfig } from "../types";
-import { GITHUB_COPILOT_DEFAULT_API_BASE, GITHUB_COPILOT_EDITOR_HEADERS } from "../oauth/github-copilot";
+import {
+  GITHUB_COPILOT_DEFAULT_API_BASE,
+  GITHUB_COPILOT_EDITOR_HEADERS,
+  validateCopilotApiBaseUrl,
+} from "../oauth/github-copilot";
 
 export type OcxProviderTransport = OcxProviderConfig & {
   fetch?: typeof globalThis.fetch;
@@ -36,7 +40,14 @@ export function resolveGithubCopilotTransport(
     ...stableDefaults,
     ...(provider.headers ?? {}),
   };
-  const baseUrl = apiBaseUrl?.trim() || provider.baseUrl || GITHUB_COPILOT_DEFAULT_API_BASE;
+  // Fail closed: the OAuth bearer only ever goes to an allowlisted *.githubcopilot.com
+  // host. A legacy/crafted credential without endpoints.api, or a user-edited baseUrl,
+  // must not redirect the token — fall back to the canonical default instead.
+  const baseUrl = provider.authMode === "oauth"
+    ? validateCopilotApiBaseUrl(apiBaseUrl)
+      ?? validateCopilotApiBaseUrl(provider.baseUrl)
+      ?? GITHUB_COPILOT_DEFAULT_API_BASE
+    : apiBaseUrl?.trim() || provider.baseUrl || GITHUB_COPILOT_DEFAULT_API_BASE;
   return {
     ...provider,
     baseUrl,

@@ -217,10 +217,13 @@ export async function getValidAccessTokenSnapshot(provider: string): Promise<OAu
   return resolveAccessSnapshotForAccount(provider, set.activeAccountId);
 }
 
+/** Providers whose upstream-401 replay path may force a snapshot refresh. */
+const FORCE_REFRESH_PROVIDERS = new Set(["xai", "github-copilot"]);
+
 export async function forceRefreshOAuthAccessSnapshot(
   rejected: OAuthAccessSnapshot,
 ): Promise<OAuthAccessSnapshot> {
-  if (rejected.provider !== "xai") throw new UnsupportedOAuthProviderError(rejected.provider);
+  if (!FORCE_REFRESH_PROVIDERS.has(rejected.provider)) throw new UnsupportedOAuthProviderError(rejected.provider);
   return resolveAccessSnapshotForAccount(rejected.provider, rejected.accountId, rejected.generation);
 }
 
@@ -247,7 +250,12 @@ function readFreshKiroCliCredential(): OAuthCredentials | undefined {
 /** Terminal refresh failures (revoked/rotated-away grants) — retrying cannot succeed. */
 function isTerminalRefreshError(err: unknown): boolean {
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
-  return msg.includes("invalid_grant") || msg.includes("refresh_token_reused") || msg.includes("revoked");
+  return msg.includes("invalid_grant")
+    || msg.includes("refresh_token_reused")
+    || msg.includes("revoked")
+    // GitHub Copilot refresh surfaces allowlisted OAuth codes (github-copilot.ts):
+    || msg.includes("access_denied")
+    || msg.includes("expired_token");
 }
 function terminal(error:unknown):boolean{return error instanceof XaiTokenRequestError?["invalid_grant","refresh_token_reused","revoked_token"].includes(error.oauthError??""):isTerminalRefreshError(error);}
 function authoritative(stored:OAuthCredentials,active:boolean,now:()=>number):OAuthCredentials{if(stored.source!=="local-cli")return stored;const disk=detectGrokCliToken();if(!disk)return stored;const allowed=isSameGrokIdentity(stored,disk)||(active&&!hasComparableGrokIdentity(stored,disk));return allowed&&shouldAdoptGrokGeneration(stored,disk,now(),REFRESH_SKEW_MS)?disk:stored;}

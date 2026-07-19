@@ -805,6 +805,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     baseUrl: "https://api.githubcopilot.com",
     adapter: "openai-chat",
     authKind: "oauth",
+    allowKeyAuthOverride: true,
     featured: false,
     dashboardUrl: "https://github.com/settings/copilot",
     liveModels: true,

@@ -951,12 +951,13 @@ export async function handleResponses(
 
   // OAuth providers: swap in a fresh access token (auto-refreshed) as the Bearer key, so the
   // existing openai-chat / anthropic adapters authenticate with no change.
-  const isXaiOAuthRequest = route.providerName === "xai" && route.provider.authMode === "oauth";
+  const isOAuth401ReplayProvider = (route.providerName === "xai" || route.providerName === "github-copilot")
+    && route.provider.authMode === "oauth";
   let sentOAuthSnapshot: OAuthAccessSnapshot | undefined;
   if (route.provider.authMode === "oauth") {
     try {
       const resolved = await getValidAccessTokenSnapshot(route.providerName);
-      if (isXaiOAuthRequest) sentOAuthSnapshot = resolved;
+      if (isOAuth401ReplayProvider) sentOAuthSnapshot = resolved;
       route.provider = { ...route.provider, apiKey: resolved.accessToken };
       // Antigravity (cloud-code-assist) needs the discovered Cloud Code Assist project id in the
       // CCA envelope; the server injects only the bare token, so pull project from the credential.
@@ -1431,7 +1432,7 @@ export async function handleResponses(
     recovery: for (;;) {
       if (
         upstreamResponse.status === 401
-        && isXaiOAuthRequest
+        && isOAuth401ReplayProvider
         && sentOAuthSnapshot
         && !oauth401ReplayAttempted
       ) {

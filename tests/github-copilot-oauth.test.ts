@@ -151,13 +151,13 @@ describe("github-copilot login + refresh", () => {
           refresh_in: 1500,
         }), { status: 200 });
       }
-      if (url.includes("api.github.com/user")) return new Response("{}", { status: 200 });
+      if (url.includes("api.github.com/user")) return new Response(JSON.stringify({ id: 777, login: "fixture-user" }), { status: 200 });
       return new Response("no", { status: 404 });
     });
     const cred = await loginGithubCopilot({});
     expect(poll).toBeGreaterThanOrEqual(2);
     expect(cred.access).toBe(COPILOT_TOKEN);
-  });
+  }, 15000); // RFC 8628 cadence: slow_down adds a real +5s to the poll interval
 
   test("refresh re-exchanges without leaking tokens on failure", async () => {
     routeFetch((url) => {
@@ -198,7 +198,7 @@ describe("github-copilot login + refresh", () => {
       return new Response("no", { status: 404 });
     });
     await expect(loginGithubCopilot({ signal: ac.signal })).rejects.toThrow("Login cancelled");
-  });
+  }, 15000); // wait-before-poll cadence: the 5s interval elapses before the aborting poll
 
   test("rejects SSRF endpoints.api and falls back to default host", async () => {
     routeFetch((url) => {
@@ -212,10 +212,135 @@ describe("github-copilot login + refresh", () => {
           endpoints: { api: "https://169.254.169.254/latest" },
         }), { status: 200 });
       }
-      if (url.includes("api.github.com/user")) return new Response("{}", { status: 200 });
+      if (url.includes("api.github.com/user")) return new Response(JSON.stringify({ id: 777, login: "fixture-user" }), { status: 200 });
       return new Response("no", { status: 404 });
     });
     const cred = await refreshGithubCopilotToken(GH_REFRESH);
     expect(cred.apiBaseUrl).toBe("https://api.githubcopilot.com");
+  });
+});
+
+describe("github-copilot security repairs (absorb hardening)", () => {
+  test("access-token-only device flow succeeds and stores the gho_ token as durable grant", async () => {
+    routeFetch((url) => {
+      if (url.includes("/login/device/code")) {
+        return new Response(JSON.stringify({
+          user_code: "AAAA-1111", device_code: "device_code_secret", expires_in: 900, interval: 0.001,
+        }), { status: 200 });
+      }
+      if (url.includes("/login/oauth/access_token")) {
+        // Classic OAuth app: access token only, NO refresh_token.
+        return new Response(JSON.stringify({ access_token: GH_ACCESS }), { status: 200 });
+      }
+      if (url.includes("/copilot_internal/v2/token")) {
+        return new Response(JSON.stringify({ token: COPILOT_TOKEN, refresh_in: 1500 }), { status: 200 });
+      }
+      if (url.includes("api.github.com/user")) return new Response(JSON.stringify({ id: 42 }), { status: 200 });
+      return new Response("no", { status: 404 });
+    });
+
+    const cred = await loginGithubCopilot({});
+    expect(cred.access).toBe(COPILOT_TOKEN);
+    expect(cred.refresh).toBe(GH_ACCESS); // durable grant = the gho_ access token itself
+    expect(cred.accountId).toBe("42");
+  });
+
+  test("a gho_ durable grant refreshes by direct re-exchange (no refresh grant call)", async () => {
+    const { calls } = routeFetch((url) => {
+      if (url.includes("/copilot_internal/v2/token")) {
+        return new Response(JSON.stringify({ token: COPILOT_TOKEN, refresh_in: 1500 }), { status: 200 });
+      }
+      if (url.includes("api.github.com/user")) return new Response(JSON.stringify({ id: 42 }), { status: 200 });
+      return new Response("no", { status: 404 });
+    });
+
+    const cred = await refreshGithubCopilotToken(GH_ACCESS);
+    expect(cred.access).toBe(COPILOT_TOKEN);
+    expect(cred.refresh).toBe(GH_ACCESS);
+    expect(calls.some(u => u.includes("/login/oauth/access_token"))).toBe(false);
+  });
+
+  test("terminal refresh errors surface only the allowlisted code, never the description", async () => {
+    const canary = "descr-canary-DO-NOT-LEAK";
+    routeFetch((url) => {
+      if (url.includes("/login/oauth/access_token")) {
+        return new Response(JSON.stringify({ error: "invalid_grant", error_description: canary }), { status: 400 });
+      }
+      return new Response("no", { status: 404 });
+    });
+
+    try {
+      await refreshGithubCopilotToken(GH_REFRESH);
+      throw new Error("expected refresh to fail");
+    } catch (err) {
+      const msg = (err as Error).message;
+      expect(msg).toContain("invalid_grant");
+      expect(msg).not.toContain(canary);
+      expectNoSecretLeak(err as Error);
+    }
+  });
+
+  test("persistent identity failure fails the login instead of persisting an anonymous credential", async () => {
+    routeFetch((url) => {
+      if (url.includes("/copilot_internal/v2/token")) {
+        return new Response(JSON.stringify({ token: COPILOT_TOKEN, refresh_in: 1500 }), { status: 200 });
+      }
+      if (url.includes("api.github.com/user")) return new Response("boom", { status: 500 });
+      return new Response("no", { status: 404 });
+    });
+
+    await expect(refreshGithubCopilotToken(GH_ACCESS)).rejects.toThrow(/identity/i);
+  });
+
+  test("a transient identity failure recovers on the single retry", async () => {
+    let userCalls = 0;
+    routeFetch((url) => {
+      if (url.includes("/copilot_internal/v2/token")) {
+        return new Response(JSON.stringify({ token: COPILOT_TOKEN, refresh_in: 1500 }), { status: 200 });
+      }
+      if (url.includes("api.github.com/user")) {
+        userCalls += 1;
+        if (userCalls === 1) return new Response("flake", { status: 502 });
+        return new Response(JSON.stringify({ id: 99 }), { status: 200 });
+      }
+      return new Response("no", { status: 404 });
+    });
+
+    const cred = await refreshGithubCopilotToken(GH_ACCESS);
+    expect(cred.accountId).toBe("99");
+    expect(userCalls).toBe(2);
+  });
+});
+
+describe("github-copilot transport fail-closed host allowlist", () => {
+  test("an OAuth credential without endpoints.api never sends the bearer to a foreign baseUrl", async () => {
+    const { resolveGithubCopilotTransport } = await import("../src/providers/github-copilot-transport");
+    const resolved = resolveGithubCopilotTransport({
+      adapter: "openai-chat",
+      authMode: "oauth",
+      baseUrl: "https://attacker.example/v1",
+    }, undefined);
+    expect(resolved.baseUrl).toBe("https://api.githubcopilot.com");
+  });
+
+  test("a valid credential apiBaseUrl still wins for OAuth transports", async () => {
+    const { resolveGithubCopilotTransport } = await import("../src/providers/github-copilot-transport");
+    const resolved = resolveGithubCopilotTransport({
+      adapter: "openai-chat",
+      authMode: "oauth",
+      baseUrl: "https://api.githubcopilot.com",
+    }, "https://corp.githubcopilot.com");
+    expect(resolved.baseUrl).toBe("https://corp.githubcopilot.com");
+  });
+});
+
+describe("copilot token redaction", () => {
+  test("the Copilot tid= token grammar and GitHub token prefixes are fully redacted", async () => {
+    const { redactSecretString } = await import("../src/lib/redact");
+    const copilotish = "tid=abc-123;exp=1699999999;sku=copilot_pro;8kp=1:B64sig+value=";
+    const redacted = redactSecretString(`upstream said: ${copilotish} and ${GH_ACCESS} plus body {"token":"${copilotish}"}`);
+    expect(redacted).not.toContain("abc-123");
+    expect(redacted).not.toContain("B64sig");
+    expect(redacted).not.toContain(GH_ACCESS);
   });
 });
