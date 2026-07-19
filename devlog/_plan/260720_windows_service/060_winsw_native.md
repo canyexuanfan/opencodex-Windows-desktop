@@ -54,7 +54,7 @@
      XML 이스케이프는 기존 `taskXmlString` 패턴 재사용(공유 helper로 승격).
    - `ensureWinswBinary(): Promise<string>` — 존재+해시 일치 시 재사용; 아니면
      다운로드→해시 검증→불일치 시 unlink+throw.
-   - `installWinsw()` — `runFileInteractive(winswExePath(), ["install", winswXmlPath(), "/p"])`
+   - `installWinsw()` — `runFileInteractive(winswExePath(), ["install", "/p"])  # v2.12은 args[1]===/p 만 인식; XML은 exe 옆 동명 파일로 자동 발견`
      (stdin inherit) → `sc.exe qc` StartName 검증/롤백 → `winsw start`.
      `startWinsw()/stopWinsw()/uninstallWinsw()` — `runFile(...)`.
    - `statusWinsw()` — WinSW v2 `status`의 정확한 출력(`Started`/`Stopped`/
@@ -65,7 +65,7 @@
    - `ServiceOps` 선택이 backend 인자를 받도록: `platformOps(backend?: "scheduler"|"native")`.
      win32에서 `backend==="native"`면 winsw ops 반환. 기본은 scheduler.
    - `serviceCommand(sub, flags)` 시그니처 확장: `--native`/`--scheduler` 플래그를
-     install에만 허용(다른 서브커맨드는 state에서 backend를 읽음 — 070에서 영속화;
+     install에만 허용(다른 서브커맨드는 state에서 backend를 읽음 — 영속화는 본 WP3에서 v2로 도입;
      **감사 WARN 9 반영 — 스키마 계약을 쪼개지 않는다**: state **v2 스키마와 exported
      accessor(`readServiceBackend()`)를 WP3에서 함께 도입**하고, 070은 update 전파와
      고아/충돌 탐지에 집중하도록 재배치).
