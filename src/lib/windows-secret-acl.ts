@@ -14,16 +14,21 @@
  *   hardenSecretPath(path, { required: false }) — non-fatal read-path mode.
  *     Never throws. Returns { ok, diagnostics? }.
  *   hardenSecretPath(path, { required: true })  — write-path mode.
- *     Throws a sanitized error (no raw path) on Windows ACL failure.
+ *     Throws a sanitized error (no raw path) on Windows ACL failure — EXCEPT a
+ *     genuine icacls timeout, which soft-fails (warn + ok:false) so a hung/slow
+ *     icacls cannot block OAuth logins or token refresh (field report: Kimi auth
+ *     stuck behind ETIMEDOUT). Real EPERM/EACCES/exit-code failures still throw:
+ *     availability never silently overrides confidentiality for those.
  *   hardenSecretDir  — same contract for directories.
  */
 
-import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { env, platform } from "node:process";
 
 const hardenedDirectories = new Set<string>();
 const hardenedPaths = new Set<string>();
+/** Paths whose harden TIMED OUT this process: do not re-stall every loadConfig on them. */
+const timedOutPaths = new Set<string>();
 
 export interface HardenResult {
   ok: boolean;
@@ -32,6 +37,75 @@ export interface HardenResult {
 
 export interface HardenOptions {
   required: boolean;
+}
+
+/** Total icacls budget per harden call (all steps share it). */
+const HARDEN_DEADLINE_MS = 5_000;
+
+export interface IcaclsResult {
+  success: boolean;
+  exitCode: number | null;
+  timedOut: boolean;
+  stdout: string;
+}
+
+type IcaclsRunner = (args: string[], timeoutMs: number) => IcaclsResult;
+
+function defaultIcaclsRunner(args: string[], timeoutMs: number): IcaclsResult {
+  // Bun.spawnSync with windowsHide: Node execFileSync has hung under the GUI/proxy even
+  // with windowsHide, and console-subsystem tools flash a visible window otherwise.
+  const result = Bun.spawnSync(["icacls.exe", ...args], {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "ignore",
+    timeout: timeoutMs,
+    windowsHide: true,
+  });
+  return {
+    success: result.success,
+    exitCode: result.exitCode,
+    timedOut: result.exitedDueToTimeout ?? false,
+    stdout: result.stdout ? result.stdout.toString() : "",
+  };
+}
+
+let icaclsRunner: IcaclsRunner = defaultIcaclsRunner;
+let platformOverride: string | null = null;
+let nowFn: () => number = Date.now;
+
+/** Test seam: replace the icacls process runner. Pass null to restore the default. */
+export function setIcaclsRunnerForTests(runner: IcaclsRunner | null): void {
+  icaclsRunner = runner ?? defaultIcaclsRunner;
+}
+
+/** Test seam: force the platform gate (e.g. "win32") so CI on POSIX reaches the runner. */
+export function setPlatformForTests(value: string | null): void {
+  platformOverride = value;
+}
+
+/** Test seam: injectable clock for deadline tests (no real sleeps). */
+export function setNowForTests(fn: (() => number) | null): void {
+  nowFn = fn ?? Date.now;
+}
+
+/** Test seam: clear memo/failure caches between cases. */
+export function resetHardenedStateForTests(): void {
+  hardenedDirectories.clear();
+  hardenedPaths.clear();
+  timedOutPaths.clear();
+}
+
+function effectivePlatform(): string {
+  return platformOverride ?? platform;
+}
+
+/** Error carrying an honest code: ETIMEDOUT only for real timeouts, EICACLS otherwise. */
+function icaclsError(step: string, result: IcaclsResult): NodeJS.ErrnoException {
+  const err = new Error(
+    result.timedOut ? `icacls ${step} timed out` : `icacls ${step} exited ${result.exitCode ?? "null"}`,
+  ) as NodeJS.ErrnoException;
+  err.code = result.timedOut ? "ETIMEDOUT" : "EICACLS";
+  return err;
 }
 
 /**
@@ -58,43 +132,54 @@ function currentWindowsUser(): string | undefined {
  *
  * Throws the raw child_process error on failure (caller sanitizes).
  */
+const BROAD_SIDS = ["*S-1-1-0", "*S-1-5-11", "*S-1-5-32-545"] as const;
+
 function runIcacls(targetPath: string, directory: boolean): void {
   const user = currentWindowsUser();
   if (!user) {
     throw new Error("Cannot determine current Windows user for ACL hardening");
   }
 
-  // windowsHide: console-subsystem tools (icacls) otherwise flash a visible window per call.
+  // One shared deadline for the whole harden call: per-step 5s budgets used to stack
+  // into ~135s stalls across loadConfig's dir+config+auth sequence when icacls hung.
+  const deadline = nowFn() + HARDEN_DEADLINE_MS;
+  const run = (step: string, args: string[]): IcaclsResult => {
+    const remaining = deadline - nowFn();
+    if (remaining <= 0) {
+      throw icaclsError(step, { success: false, exitCode: null, timedOut: true, stdout: "" });
+    }
+    return icaclsRunner(args, remaining);
+  };
+  const runOrThrow = (step: string, args: string[]): void => {
+    const result = run(step, args);
+    if (!result.success) throw icaclsError(step, result);
+  };
+
   // Step 1: disable inheritance and remove inherited ACEs
-  execFileSync("icacls.exe", [targetPath, "/inheritance:r"], {
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: 5000,
-    shell: false,
-    windowsHide: true,
-  });
+  runOrThrow("/inheritance:r", [targetPath, "/inheritance:r"]);
 
   // Step 2: remove broad explicit grants using stable SIDs (not localized names).
-  execFileSync("icacls.exe", [
-    targetPath,
-    "/remove:g",
-    "*S-1-1-0",
-    "*S-1-5-11",
-    "*S-1-5-32-545",
-  ], {
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: 5000,
-    shell: false,
-    windowsHide: true,
-  });
+  // Missing ACEs can yield a non-zero exit; verify with locale-independent /findsid
+  // before accepting the failure as harmless — a swallowed real failure would leave
+  // Everyone/Users/Authenticated Users grants while reporting hardened.
+  const removal = run("/remove:g", [targetPath, "/remove:g", ...BROAD_SIDS]);
+  if (!removal.success) {
+    if (removal.timedOut) throw icaclsError("/remove:g", removal);
+    for (const sid of BROAD_SIDS) {
+      const found = run("/findsid", [targetPath, "/findsid", sid]);
+      if (!found.success) throw icaclsError("/findsid", found);
+      // icacls /findsid echoes the target path in its "SID Found" line only when the SID
+      // still holds an ACE; the summary lines carry only counts. Matching the path echo —
+      // not the (localized) prose — keeps the check locale-independent.
+      if (found.stdout.includes(targetPath)) {
+        throw icaclsError("/remove:g", removal);
+      }
+    }
+  }
 
   // Step 3: grant current user full control.
   const grant = directory ? `${user}:(OI)(CI)(F)` : `${user}:(F)`;
-  execFileSync("icacls.exe", [targetPath, "/grant:r", grant], {
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: 5000,
-    shell: false,
-    windowsHide: true,
-  });
+  runOrThrow("/grant:r", [targetPath, "/grant:r", grant]);
 }
 
 /**
@@ -108,6 +193,11 @@ function sanitizeDiagnostics(error: unknown): string {
   const code = error instanceof Error && "code" in error ? String((error as NodeJS.ErrnoException).code) : "";
   const codePart = code ? ` (${code})` : "";
   return `ACL hardening failed${codePart} — filesystem may not support per-user NTFS ACLs`;
+}
+
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error && "code" in error
+    && String((error as NodeJS.ErrnoException).code) === "ETIMEDOUT";
 }
 
 /**
@@ -124,11 +214,14 @@ export function hardenSecretPath(targetPath: string, opts: HardenOptions): Harde
   }
 
   // Non-Windows: no NTFS ACLs; caller handles chmod.
-  if (platform !== "win32") {
+  if (effectivePlatform() !== "win32") {
     return { ok: true };
   }
 
   if (hardenedPaths.has(targetPath)) return { ok: true };
+  if (timedOutPaths.has(targetPath)) {
+    return { ok: false, diagnostics: "ACL hardening skipped — previous attempt timed out" };
+  }
 
   try {
     runIcacls(targetPath, false);
@@ -136,6 +229,13 @@ export function hardenSecretPath(targetPath: string, opts: HardenOptions): Harde
     return { ok: true };
   } catch (err) {
     const diagnostics = sanitizeDiagnostics(err);
+    if (isTimeoutError(err)) {
+      timedOutPaths.add(targetPath);
+      // Timeout-only soft-fail: a hung icacls must not block OAuth/token writes.
+      // chmod is still applied by the caller; real EPERM/EACCES still throw below.
+      console.warn(`[opencodex] ${diagnostics} — continuing without NTFS ACL harden`);
+      return { ok: false, diagnostics };
+    }
     if (opts.required) {
       throw new Error(diagnostics);
     }
@@ -157,11 +257,14 @@ export function hardenSecretDir(targetPath: string, opts: HardenOptions): Harden
   }
 
   // Non-Windows: no NTFS ACLs; caller handles chmod.
-  if (platform !== "win32") {
+  if (effectivePlatform() !== "win32") {
     return { ok: true };
   }
 
   if (hardenedDirectories.has(targetPath)) return { ok: true };
+  if (timedOutPaths.has(targetPath)) {
+    return { ok: false, diagnostics: "ACL hardening skipped — previous attempt timed out" };
+  }
 
   try {
     runIcacls(targetPath, true);
@@ -169,6 +272,11 @@ export function hardenSecretDir(targetPath: string, opts: HardenOptions): Harden
     return { ok: true };
   } catch (err) {
     const diagnostics = sanitizeDiagnostics(err);
+    if (isTimeoutError(err)) {
+      timedOutPaths.add(targetPath);
+      console.warn(`[opencodex] ${diagnostics} — continuing without NTFS ACL harden`);
+      return { ok: false, diagnostics };
+    }
     if (opts.required) {
       throw new Error(diagnostics);
     }

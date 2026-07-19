@@ -16,7 +16,12 @@ import { join } from "node:path";
 import {
   hardenSecretDir,
   hardenSecretPath,
+  resetHardenedStateForTests,
+  setIcaclsRunnerForTests,
+  setNowForTests,
+  setPlatformForTests,
   type HardenResult,
+  type IcaclsResult,
 } from "../src/lib/windows-secret-acl";
 
 let testDir = "";
@@ -206,5 +211,103 @@ describe("diagnostics sanitization contract", () => {
       // Must contain "ACL" as a hint (per contract)
       expect(result.diagnostics.toLowerCase()).toMatch(/acl|permission|access/i);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Failure-path activation via injected runner/platform/clock seams.
+// The platform seam forces the win32 gate open so CI on POSIX reaches the
+// runner; every case restores all seams in afterEach.
+// ---------------------------------------------------------------------------
+
+describe("icacls failure paths (injected seams)", () => {
+  const ok: IcaclsResult = { success: true, exitCode: 0, timedOut: false, stdout: "" };
+  const timeout: IcaclsResult = { success: false, exitCode: null, timedOut: true, stdout: "" };
+  const denied: IcaclsResult = { success: false, exitCode: 5, timedOut: false, stdout: "" };
+  let warnings: string[] = [];
+  const realWarn = console.warn;
+
+  beforeEach(() => {
+    setPlatformForTests("win32");
+    resetHardenedStateForTests();
+    process.env.USERNAME ??= "tester";
+    warnings = [];
+    console.warn = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+  });
+
+  afterEach(() => {
+    setPlatformForTests(null);
+    setIcaclsRunnerForTests(null);
+    setNowForTests(null);
+    resetHardenedStateForTests();
+    console.warn = realWarn;
+  });
+
+  function secretFile(name = "secret.json"): string {
+    const filePath = join(testDir, name);
+    writeFileSync(filePath, "data", "utf-8");
+    return filePath;
+  }
+
+  test("a genuine timeout on a required path soft-fails with a warning instead of blocking auth", () => {
+    setIcaclsRunnerForTests(() => timeout);
+    const filePath = secretFile();
+
+    const result = hardenSecretPath(filePath, { required: true });
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toContain("ETIMEDOUT");
+    expect(warnings.some(w => w.includes("continuing without NTFS ACL harden"))).toBe(true);
+  });
+
+  test("a real permission failure on a required path still throws (no blanket soft-fail)", () => {
+    setIcaclsRunnerForTests(() => denied);
+    const filePath = secretFile();
+
+    expect(() => hardenSecretPath(filePath, { required: true })).toThrow(/EICACLS/);
+    expect(warnings).toEqual([]);
+  });
+
+  test("a /remove:g failure with the SID still present propagates; a clean /findsid succeeds", () => {
+    const filePath = secretFile();
+    // Case A: removal fails and /findsid still echoes the path → error propagates.
+    setIcaclsRunnerForTests(args => {
+      if (args.includes("/remove:g")) return denied;
+      if (args.includes("/findsid")) return { ...ok, stdout: `SID Found: ${filePath}\n` };
+      return ok;
+    });
+    expect(() => hardenSecretPath(filePath, { required: true })).toThrow(/EICACLS/);
+
+    // Case B: removal fails but no SID remains (ACE was already absent) → harden succeeds.
+    resetHardenedStateForTests();
+    setIcaclsRunnerForTests(args => {
+      if (args.includes("/remove:g")) return denied;
+      if (args.includes("/findsid")) return { ...ok, stdout: "Successfully processed 1 files\n" };
+      return ok;
+    });
+    expect(hardenSecretPath(filePath, { required: true })).toEqual({ ok: true });
+  });
+
+  test("all icacls steps share one deadline and a timed-out path is not retried this process", () => {
+    const filePath = secretFile();
+    let now = 0;
+    const budgets: number[] = [];
+    setNowForTests(() => now);
+    setIcaclsRunnerForTests((_args, timeoutMs) => {
+      budgets.push(timeoutMs);
+      now += 6_000; // step consumes more than the whole 5s budget
+      return ok;
+    });
+
+    const first = hardenSecretPath(filePath, { required: true });
+    expect(first.ok).toBe(false); // second step hits the exhausted deadline → timeout soft-fail
+    expect(budgets.length).toBe(1); // only step 1 ran; step 2 was cut off by the shared deadline
+    expect(budgets[0]).toBeLessThanOrEqual(5_000);
+
+    // The timed-out path short-circuits without invoking the runner again.
+    const second = hardenSecretPath(filePath, { required: true });
+    expect(second.ok).toBe(false);
+    expect(second.diagnostics).toContain("skipped");
+    expect(budgets.length).toBe(1);
   });
 });
