@@ -231,15 +231,17 @@ export async function installWinswService(entry: WinswEntry, deps: WinswInstallD
     interactive(["install", "/p"]);
     verifyAccount();
   } else {
-    try { run(["stop"]); } catch { /* already stopped */ }
+    // Use `stopwait` (not `stop`) so the SCM service fully stops before `start` — bare
+    // `stop` only sends the stop request; `start` against a STOP_PENDING service fails.
+    try { run(["stopwait"]); } catch { /* already stopped */ }
   }
   run(["start"]);
 }
 
 export function startWinswService(): void { runWinsw(["start"]); }
-export function stopWinswService(): void { try { runWinsw(["stop"]); } catch { /* not running */ } }
+export function stopWinswService(): void { try { runWinsw(["stopwait"]); } catch { /* not running */ } }
 export function uninstallWinswService(): void {
-  try { runWinsw(["stop"]); } catch { /* not running */ }
+  try { runWinsw(["stopwait"]); } catch { /* not running */ }
   try { runWinsw(["uninstall"]); } catch { /* absent */ }
   // exe/xml intentionally retained for credential-free reinstall; `--purge` is out of scope.
 }

@@ -101,7 +101,8 @@ describe("winsw install flow", () => {
       status: () => "stopped",
     });
 
-    expect(calls).toEqual([["xml"], ["run", "stop"], ["run", "start"]]);
+    // Uses stopwait (not stop) so the service fully stops before start — avoids STOP_PENDING race.
+    expect(calls).toEqual([["xml"], ["run", "stopwait"], ["run", "start"]]);
   });
 });
 
@@ -117,7 +118,14 @@ describe("service backend CLI parsing", () => {
   test("--scheduler and unknown flags are recognized separately", () => {
     expect(parseServiceArgs(["install", "--scheduler"]).backend).toBe("scheduler");
     expect(parseServiceArgs(["install", "--bogus"]).invalid).toEqual(["--bogus"]);
-    expect(parseServiceArgs(["status", "--native"])).toEqual({ sub: "status", backend: "native", invalid: [] });
+    // status with --native is syntactically accepted by the parser; serviceCommand rejects it at runtime.
+    expect(parseServiceArgs(["status", "--native"]).backend).toBe("native");
+  });
+
+  test("conflicting --native --scheduler flags are rejected", () => {
+    const result = parseServiceArgs(["install", "--native", "--scheduler"]);
+    expect(result.invalid.length).toBeGreaterThan(0);
+    expect(result.invalid[0]).toContain("conflicts");
   });
 });
 

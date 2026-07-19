@@ -16,7 +16,7 @@ import { isWslRuntime } from "./codex/home";
 import { durableBunPath, durableBunRuntime } from "./lib/bun-runtime";
 import { isProcessAlive, stopProxy } from "./lib/process-control";
 import { serviceApiTokenFilePath } from "./lib/service-secrets";
-import { defaultWinswEntry, installWinswService, startWinswService, stopWinswService, statusWinswRaw, uninstallWinswService, winswStatusSummary, WINSW_SHA256, WINSW_VERSION } from "./lib/winsw";
+import { defaultWinswEntry, installWinswService, startWinswService, stopWinswService, statusWinswRaw, uninstallWinswService, winswStatusSummary, WINSW_SERVICE_ID, WINSW_SHA256, WINSW_VERSION } from "./lib/winsw";
 import { hardenSecretDir, hardenSecretPath } from "./lib/windows-secret-acl";
 import { windowsEnvIndirectBatchPathList, windowsEnvIndirectBatchValue } from "./lib/win-paths";
 
@@ -477,7 +477,14 @@ function installWindows(): void {
   // service first — two live managers would both respawn the proxy (conflict).
   if (statusWinswRaw() !== "nonexistent") {
     console.log("🔁 Removing the native (WinSW) service before installing the Task Scheduler backend...");
-    uninstallWinswService();
+    try {
+      uninstallWinswService();
+    } catch (err) {
+      throw new Error(`Cannot remove the native service before switching to Task Scheduler: ${err instanceof Error ? err.message : String(err)}. Remove it manually with 'sc delete ${WINSW_SERVICE_ID}' or retry.`);
+    }
+    if (statusWinswRaw() !== "nonexistent") {
+      throw new Error("Native service still present after removal attempt — aborting switch. Remove it manually with 'sc delete opencodex-proxy-native'.");
+    }
   }
   // End a running task BEFORE rewriting the assets it is executing — cmd.exe reading the
   // script mid-rewrite runs a torn batch file, and its open handle can fail the write.
@@ -508,7 +515,20 @@ async function installWindowsNative(): Promise<void> {
   if (hadScheduler) {
     console.log("🔁 Removing the Task Scheduler backend before installing the native (WinSW) service...");
     try { stopWindows(); } catch { /* not running */ }
-    uninstallWindows();
+    try {
+      uninstallWindows();
+    } catch (err) {
+      throw new Error(`Cannot remove the Task Scheduler backend before switching to native: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    // Verify removal — schtasks /delete can silently fail if UAC or policy blocks it.
+    try {
+      if (schtasks(["/query", "/tn", TASK]).includes(TASK)) {
+        throw new Error("Task Scheduler backend still present after removal — aborting switch.");
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("still present")) throw e;
+      /* query failure = task absent, which is what we want */
+    }
   }
   try {
     await installWinswService(defaultWinswEntry(import.meta.dir));
@@ -811,8 +831,14 @@ export function parseServiceArgs(args: string[]): ParsedServiceArgs {
   let backend: ServiceBackend | null = null;
   const invalid: string[] = [];
   for (const arg of args) {
-    if (arg === "--native") backend = "native";
-    else if (arg === "--scheduler") backend = "scheduler";
+    if (arg === "--native") {
+      if (backend === "scheduler") { invalid.push("--native (conflicts with --scheduler)"); continue; }
+      backend = "native";
+    }
+    else if (arg === "--scheduler") {
+      if (backend === "native") { invalid.push("--scheduler (conflicts with --native)"); continue; }
+      backend = "scheduler";
+    }
     else if (arg.startsWith("--")) invalid.push(arg);
     else if (sub === undefined) sub = arg;
     else invalid.push(arg);
