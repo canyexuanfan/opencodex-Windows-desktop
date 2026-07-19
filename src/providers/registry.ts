@@ -157,14 +157,9 @@ const OPENCODE_GO_THINKING_TOGGLE_MODELS = [
 const THINKING_BUDGET_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const THINKING_BUDGET_MODELS = [
   "qwen3.5-397b", "qwen3.6-35b",
-  "qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus", "qwen3.8-max-preview",
+  "qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus",
 ];
-// 260719: Alibaba's Token Plan docs confirm the preview id plus reasoning and vision.
-// OpenCode Go still rejects it, so pre-wire behavior without forcing an uncallable catalog row.
-// Evidence: https://help.aliyun.com/en/model-studio/token-plan-personal-overview
-const OPENCODE_GO_THINKING_BUDGET_MODELS = [
-  "qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus", "qwen3.8-max-preview",
-];
+const OPENCODE_GO_THINKING_BUDGET_MODELS = ["qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus"];
 const DEEPSEEK_THINKING_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"];
 const OPENCODE_FREE_DEEPSEEK_MODELS = ["deepseek-v4-flash-free"];
 // "max" is advertised too: the wire map routes xhigh->max and max->max, so the picker
@@ -176,6 +171,25 @@ const DEEPSEEK_THINKING_REASONING_MAP: Record<string, string> = {
   high: "high",
   xhigh: "max",
   max: "max",
+};
+// 260719 Alibaba Token Plan Personal Edition (China/Beijing). Keep it distinct from
+// Coding Plan: the products use different exact allowlists and different base URLs.
+// Evidence: https://help.aliyun.com/en/model-studio/token-plan-personal-overview
+//           https://help.aliyun.com/en/model-studio/token-plan-quickstart
+const ALIBABA_TOKEN_PLAN_MODELS = [
+  "qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
+  "glm-5.2", "deepseek-v4-pro",
+];
+const ALIBABA_TOKEN_PLAN_QWEN_MODELS = [
+  "qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
+];
+const ALIBABA_TOKEN_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
+  "qwen3.8-max-preview": ["text", "image"],
+  "qwen3.7-max": ["text"],
+  "qwen3.7-plus": ["text", "image"],
+  "qwen3.6-flash": ["text", "image"],
+  "glm-5.2": ["text"],
+  "deepseek-v4-pro": ["text"],
 };
 // 260717 Kimi K3: the subscription endpoint uses one upstream id (`k3`) for both
 // entitlement tiers. Bare `k3` advertises the Moderato 256K ceiling; the local `[1m]`
@@ -462,10 +476,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     authKind: "key", featured: true, dashboardUrl: "https://opencode.ai/auth", defaultModel: "kimi-k2.7-code",
     jawcodeBundle: "opencode-go", note: "GLM, DeepSeek, Kimi, Qwen, MiMo…",
     modelContextWindows: { "kimi-k3": KIMI_K3_STANDARD_CONTEXT_WINDOW },
-    modelInputModalities: {
-      "kimi-k3": ["text", "image"],
-      "qwen3.8-max-preview": ["text", "image"],
-    },
+    modelInputModalities: { "kimi-k3": ["text", "image"] },
     modelReasoningEfforts: {
       "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
       "kimi-k3": KIMI_CODING_K3_REASONING_EFFORTS,
@@ -657,6 +668,27 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   { id: "qianfan", label: "Qianfan (Baidu)", baseUrl: "https://qianfan.baidubce.com/v2", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://console.bce.baidu.com/iam/#/iam/apikey/list" },
   // 2026-07-10: docs unverified; model data frozen. Evidence: devlog/_plan/260710_provider_hardening/002_research_cn.md.
   { id: "alibaba", label: "Alibaba Coding Plan", baseUrl: "https://coding-intl.dashscope.aliyuncs.com/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://dashscope.console.aliyun.com/apiKey" },
+  {
+    id: "alibaba-token-plan",
+    label: "Alibaba Token Plan (Beijing)",
+    baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://bailian.console.aliyun.com/cn-beijing?tab=plan",
+    defaultModel: "qwen3.8-max-preview",
+    models: ALIBABA_TOKEN_PLAN_MODELS,
+    liveModels: false,
+    note: "Token Plan Personal Edition · China (Beijing)",
+    modelInputModalities: ALIBABA_TOKEN_PLAN_INPUT_MODALITIES,
+    modelReasoningEfforts: {
+      ...Object.fromEntries(ALIBABA_TOKEN_PLAN_QWEN_MODELS.map(id => [id, THINKING_BUDGET_EFFORTS])),
+      "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
+      "deepseek-v4-pro": DEEPSEEK_THINKING_EFFORTS,
+    },
+    modelReasoningEffortMap: { "deepseek-v4-pro": DEEPSEEK_THINKING_REASONING_MAP },
+    thinkingBudgetModels: ALIBABA_TOKEN_PLAN_QWEN_MODELS,
+    preserveReasoningContentModels: ["glm-5.2", "deepseek-v4-pro"],
+  },
   // NEEDS_HUMAN 2026-07-10: kept for config compatibility, but this is a dashboard URL,
   // no /models endpoint is documented, and tools are silently ignored upstream per docs.parallel.ai.
   // Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
