@@ -223,6 +223,16 @@ export async function saveCredential(provider: string, cred: OAuthCredentials): 
         set.activeAccountId = existing.id;
         return;
       }
+      // Legacy migration: a pre-identity row (no accountId/email) for this provider is the
+      // SAME human re-logging in after the identity extraction shipped — upgrading the
+      // active identity-less row in place prevents a stale duplicate that stays selectable
+      // and would re-refresh into a second row with the same identity.
+      const active = set.accounts.find(a => a.id === set.activeAccountId);
+      if (active && active.credential.accountId === undefined && active.credential.email === undefined) {
+        active.credential = safe;
+        delete active.needsReauth;
+        return;
+      }
       const id = newAccountId(safe);
       set.accounts.push({ id, credential: safe, addedAt: Date.now() });
       set.activeAccountId = id;

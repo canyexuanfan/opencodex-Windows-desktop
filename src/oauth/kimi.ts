@@ -53,29 +53,27 @@ function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-/** Stable multiauth identity from Kimi JWTs (`user_id` preferred; `sub` / `email` fallbacks). */
+/**
+ * Stable multiauth identity from Kimi JWTs. `user_id` is preferred ACROSS both tokens
+ * before falling back to `sub` — the two claims come from the same issuer namespace but
+ * `sub` is the weaker fallback, so a refresh-token `user_id` must beat an access-token
+ * `sub`. Email fills from either token and is lowercased.
+ */
 export function identityFromKimiTokens(accessToken: string, refreshToken?: string): {
   accountId?: string;
   email?: string;
 } {
-  const fromAccess = identityFromPayload(decodeKimiJwtPayload(accessToken));
-  const fromRefresh = refreshToken ? identityFromPayload(decodeKimiJwtPayload(refreshToken)) : {};
-  // Prefer access claims; fill gaps from refresh (opaque/partial access JWTs).
-  const accountId = fromAccess.accountId ?? fromRefresh.accountId;
-  const email = fromAccess.email ?? fromRefresh.email;
+  const access = decodeKimiJwtPayload(accessToken);
+  const refresh = refreshToken ? decodeKimiJwtPayload(refreshToken) : undefined;
+  const accountId =
+    nonEmptyString(access?.user_id) ??
+    nonEmptyString(refresh?.user_id) ??
+    nonEmptyString(access?.sub) ??
+    nonEmptyString(refresh?.sub);
+  const email = (nonEmptyString(access?.email) ?? nonEmptyString(refresh?.email))?.toLowerCase();
   return {
     ...(accountId ? { accountId } : {}),
     ...(email ? { email } : {}),
-  };
-}
-
-function identityFromPayload(payload: KimiJwtPayload | undefined): { accountId?: string; email?: string } {
-  if (!payload) return {};
-  const accountId = nonEmptyString(payload.user_id) ?? nonEmptyString(payload.sub);
-  const emailRaw = nonEmptyString(payload.email);
-  return {
-    ...(accountId ? { accountId } : {}),
-    ...(emailRaw ? { email: emailRaw.toLowerCase() } : {}),
   };
 }
 
