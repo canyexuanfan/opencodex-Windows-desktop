@@ -197,7 +197,8 @@ export async function runUpdate(): Promise<void> {
     // launchd/schtasks/systemd user isn't left with the background proxy down.
     if (serviceWasInstalled) {
       console.log("🔁 Reinstalling the background service with the updated files...");
-      const svc = spawnSync(process.execPath, [process.argv[1], "service", "install"], { stdio: "inherit", windowsHide: true });
+      const { serviceReinstallArgs } = await import("../service");
+      const svc = spawnSync(process.execPath, [process.argv[1], ...serviceReinstallArgs()], { stdio: "inherit", windowsHide: true });
       if (svc.status !== 0) console.warn("⚠️  Service refresh failed — run 'ocx service install' manually.");
     } else {
       console.log("Restart the proxy:  ocx start");
