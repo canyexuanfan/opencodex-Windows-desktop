@@ -48,3 +48,19 @@ dialogs that ARE the overlay; other `.modal-overlay` divs unaffected.
   `:focus-visible` ring on the trigger (screenshot).
   Also observe the overlay itself: no white UA frame, no double dim.
   Record both observations here at D.
+
+## 5. D close-out (2026-07-19)
+
+Landed: `bfdaa3e9` (Wibias pick) + `30782a87` (maintainer repair, input-modality
+tracking). Gates: `bun run typecheck` exit 0; `cd gui && bun run build` exit 0.
+
+Render-grounding (Vite dev server on :5199 proxied to live proxy :10100, driven
+via Chrome CDP):
+
+- Overlay: Sub-agent info modal shows the liquid-glass overlay with NO white UA
+  frame and no double dim (screenshot `screenshot_1784455755124.png`).
+- Pointer close (mouse click on Close): trigger regains focus with NO visible
+  ring (screenshot `screenshot_1784455782387.png`).
+- Keyboard close (Escape): trigger regains focus WITH the visible
+  `:focus-visible` ring (screenshot `screenshot_1784455807236.png`) — the P1
+  a11y repair observed firing.
