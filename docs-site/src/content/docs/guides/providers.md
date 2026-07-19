@@ -97,7 +97,7 @@ Tokens stay in `~/.opencodex/auth.json`; `/api/oauth/accounts` returns masked me
 
 ## 3. API-key catalog
 
-opencodex v2.7.1 ships 50 built-in presets: 39 key-based, seven OAuth, three local, and the default
+opencodex ships 53 built-in presets: 42 key-based, seven OAuth, three local, and the default
 ChatGPT-forward preset. The dashboard's **Add provider** picker opens a key provider's dashboard,
 validates the key, and stores it. Notable entries:
 

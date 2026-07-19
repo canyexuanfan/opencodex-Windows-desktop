@@ -5,7 +5,6 @@
  * This is an unofficial bridge — GitHub may tighten or revoke access. See registry note.
  */
 import type { OAuthController, OAuthCredentials } from "./types";
-import { redactSecretString } from "../lib/redact";
 
 /** VS Code's public GitHub OAuth app — required for copilot_internal/v2/token to succeed. */
 export const GITHUB_COPILOT_OAUTH_CLIENT_ID = "Iv1.b507a08c87ecfe98";
@@ -425,15 +424,4 @@ export async function refreshGithubCopilotToken(
     return credentialsFromGithubAccess(github.access, github.refresh, signal);
   }
   return credentialsFromGithubAccess(refreshToken, refreshToken, signal);
-}
-
-/** Test helper: ensure a string does not contain obvious secret material from fixtures. */
-export function assertNoSecretLeak(message: string, secrets: string[]): void {
-  const lower = message.toLowerCase();
-  for (const secret of secrets) {
-    if (!secret) continue;
-    if (message.includes(secret) || lower.includes(secret.toLowerCase())) {
-      throw new Error(`secret leaked into error message: ${redactSecretString(secret)}`);
-    }
-  }
 }
