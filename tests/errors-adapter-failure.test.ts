@@ -4,6 +4,7 @@ import {
   classifyError,
   parseRetryAfterFromMessage,
 } from "../src/lib/errors";
+import { bufferCompactResponse } from "../src/server/responses";
 
 describe("adapterFailureFromMessage", () => {
   test("maps resource_exhausted to 429 rate_limit_error", () => {
@@ -87,5 +88,35 @@ describe("adapterFailureFromMessage", () => {
       type: "client_cancelled",
       code: "client_cancelled",
     });
+  });
+
+  test("upstream failures that merely mention a closed client stay 502 (matcher is narrow)", () => {
+    // A real upstream error wording — must NOT be reclassified as a client cancel.
+    expect(adapterFailureFromMessage("upstream HTTP client closed idle connection")).toMatchObject({
+      httpStatus: 502,
+      error: { code: "upstream_server_error" },
+    });
+    expect(adapterFailureFromMessage("connection closed by upstream client pool")).toMatchObject({
+      httpStatus: 502,
+    });
+  });
+
+  test("an aborted compact request activates the 499 client_cancelled branch", async () => {
+    // Drive the real compact cancellation path: a mid-stream abort while buffering.
+    const controller = new AbortController();
+    const upstream = new Response(new ReadableStream<Uint8Array>({
+      start(streamController) {
+        streamController.enqueue(new TextEncoder().encode("{\"partial\":"));
+        controller.abort(); // client goes away mid-buffer
+        streamController.enqueue(new TextEncoder().encode("true}"));
+        streamController.close();
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    const response = await bufferCompactResponse(upstream, controller.signal);
+
+    expect(response.status).toBe(499);
+    const body = await response.json() as { error?: { type?: string; code?: string } };
+    expect(body.error).toMatchObject({ type: "client_cancelled", code: "client_cancelled" });
   });
 });

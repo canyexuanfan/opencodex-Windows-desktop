@@ -57,15 +57,20 @@ function isPermissionMessage(text: string): boolean {
   );
 }
 
-/** Client cancelled / closed the turn (web-search abort, SSE cancel, compact cancel, etc.). */
+/**
+ * Client cancelled / closed the turn. Matches ONLY abort phrases this codebase
+ * produces — "client closed request during web-search" (src/web-search/loop.ts),
+ * "Client cancelled request" (src/server/responses.ts) — plus the explicit
+ * "request cancel(l)ed by client" forms. Deliberately narrow: bare "client closed"
+ * would also swallow legitimate upstream failures like "upstream HTTP client
+ * closed idle connection" and turn a real 502 into a 499.
+ */
 export function isClientClosedMessage(text: string): boolean {
   const lower = text.toLowerCase();
   return (
-    lower.includes("client closed") ||
-    lower.includes("client cancelled") ||
-    lower.includes("client canceled") ||
-    lower.includes("canceled by client") ||
-    lower.includes("cancelled by client") ||
+    lower.includes("client closed request") ||
+    lower.includes("client cancelled request") ||
+    lower.includes("client canceled request") ||
     lower.includes("request canceled by client") ||
     lower.includes("request cancelled by client")
   );

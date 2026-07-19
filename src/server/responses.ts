@@ -1588,7 +1588,8 @@ function compactResponseTooLargeError(): Response {
   }), { status: 502, headers: { "Content-Type": "application/json" } });
 }
 
-async function bufferCompactResponse(upstream: Response, signal: AbortSignal): Promise<Response> {
+/** Exported for tests: owns the compact client-cancel branch (499 client_cancelled). */
+export async function bufferCompactResponse(upstream: Response, signal: AbortSignal): Promise<Response> {
   const reader = upstream.body?.getReader();
   const contentType = upstream.headers.get("content-type") ?? "application/json";
   if (!reader) return new Response(null, { status: upstream.status, headers: { "Content-Type": contentType } });
