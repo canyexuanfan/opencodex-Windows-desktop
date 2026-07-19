@@ -38,10 +38,13 @@ describe("update stops the running proxy before replacing files", () => {
 
   test("both paths abort when the stop fails, and reinstall a managed service after success", () => {
     expect(updateSource).toContain("aborting the update");
-    expect(updateSource).toContain('[process.argv[1], "service", "install"]');
+    // The update path now uses serviceReinstallArgs() to preserve the chosen backend.
+    expect(updateSource).toContain("serviceReinstallArgs()");
     expect(launcherSource).toContain("aborting the update");
-    expect(launcherSource).toContain('[launcher, "service", "install"]');
-    expect(launcherSource).toContain('existsSync(join(configDir(), "service-state.json"))');
+    // The launcher reads service-state.json to preserve the backend choice on reinstall.
+    expect(launcherSource).toContain("serviceReinstallArgs");
+    // The launcher reads the state path for both service-installed detection and backend choice.
+    expect(launcherSource).toContain('"service-state.json"');
   });
 
   test("both update paths surface a skipped history restore after the stop", () => {

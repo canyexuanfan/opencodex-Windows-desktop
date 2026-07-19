@@ -242,7 +242,12 @@ export function startWinswService(): void { runWinsw(["start"]); }
 export function stopWinswService(): void { try { runWinsw(["stopwait"]); } catch { /* not running */ } }
 export function uninstallWinswService(): void {
   try { runWinsw(["stopwait"]); } catch { /* not running */ }
-  try { runWinsw(["uninstall"]); } catch { /* absent */ }
+  try { runWinsw(["uninstall"]); } catch (err) {
+    // Surface the failure so the caller can decide; silent swallow hides UAC refusals.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.toLowerCase().includes("nonexistent")) throw new Error(`WinSW uninstall failed: ${msg}`);
+    // "NonExistent" means already absent — that's fine.
+  }
   // exe/xml intentionally retained for credential-free reinstall; `--purge` is out of scope.
 }
 

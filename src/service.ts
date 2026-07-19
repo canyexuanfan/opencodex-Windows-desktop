@@ -901,9 +901,17 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
     case "uninstall":
     case "remove":
       assertServiceEnvironmentMatchesInstall();
-      ops.stop();
+      try { ops.stop(); } catch (err) {
+        console.warn(`⚠️  Service stop failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
       await stopTrackedProxyForServiceCommand();
-      ops.uninstall();
+      try {
+        ops.uninstall();
+      } catch (err) {
+        console.error(`❌ Service uninstall failed: ${err instanceof Error ? err.message : String(err)}`);
+        console.error("The service may still be installed. Check with 'ocx service status' or remove manually.");
+        process.exit(1);
+      }
       {
         const restore = restoreNativeCodex();
         if (!restore.success) {
