@@ -58,7 +58,9 @@ describe("systemd service unit", () => {
 
     const service = await readText("src/service.ts");
     const serviceCommand = service.slice(service.indexOf("export async function serviceCommand"));
-    expect(serviceCommand).toContain("const command = normalizeServiceSubcommand(sub);");
+    // Args flow through parseServiceArgs (which applies the install default) into the switch.
+    expect(serviceCommand).toContain("const parsed = parseServiceArgs(");
+    expect(serviceCommand).toContain("const command = parsed.sub;");
     expect(serviceCommand).toContain("switch (command)");
   });
 
