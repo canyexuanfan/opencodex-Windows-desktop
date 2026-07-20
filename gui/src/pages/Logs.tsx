@@ -138,10 +138,9 @@ function formatTokPerSecond(result: TokPerSecondResult | undefined, localeTag?: 
 function formatEstimatedUsd(result: CostResult | undefined, localeTag?: string): string {
   if (!result || result.kind === "unavailable" || !Number.isFinite(result.estimate.cost.total) || result.estimate.cost.total < 0) return "\u2014";
   const totalUsd = result.estimate.cost.total;
-  const fractionDigits = totalUsd >= 1 ? 2 : totalUsd >= 0.01 ? 4 : 6;
   return `~$${new Intl.NumberFormat(localeTag, {
-    minimumFractionDigits: fractionDigits,
-    maximumFractionDigits: fractionDigits,
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 4,
   }).format(totalUsd)}`;
 }
 
