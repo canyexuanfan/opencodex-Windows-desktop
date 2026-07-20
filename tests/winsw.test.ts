@@ -116,9 +116,20 @@ describe("winsw fail-closed lifecycle", () => {
     // Exit 1060 (or its stderr form) is the ONLY proof of absence.
     expect(probeScmRegistration(() => { const e = new Error("fail") as Error & { status: number }; e.status = 1060; throw e; })).toBe(false);
     expect(probeScmRegistration(() => { const e = new Error("fail") as Error & { status: number; stderr: string }; e.status = 1; e.stderr = "[SC] OpenService FAILED 1060:"; throw e; })).toBe(false);
+    // sc.exe can channel the 1060 line on STDOUT (observed in service-lifecycle CI) —
+    // every captured stream must be scanned, not just stderr.
+    expect(probeScmRegistration(() => { const e = new Error("fail") as Error & { status: number; stdout: string }; e.status = 1; e.stdout = "[SC] OpenService FAILED 1060:"; throw e; })).toBe(false);
     // Access denied / missing sc.exe / any other failure → error, never absence.
     expect(probeScmRegistration(() => { const e = new Error("denied") as Error & { status: number }; e.status = 5; throw e; })).toBe("error");
     expect(probeScmRegistration(() => { throw new Error("spawn sc.exe ENOENT"); })).toBe("error");
+  });
+
+  test("uninstall removes a stale SCM registration via sc.exe when the exe is gone", () => {
+    const winsw = readFileSync(new URL("../src/lib/winsw.ts", import.meta.url), "utf8");
+    const fn = winsw.slice(winsw.indexOf("export function uninstallWinswService"), winsw.indexOf("export function winswStatusSummary"));
+    expect(fn).toContain("!existsSync(winswExePath())");
+    expect(fn).toContain("probeScmRegistration() === true");
+    expect(fn).toContain('["delete", WINSW_SERVICE_ID]');
   });
 });
 

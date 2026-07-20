@@ -206,16 +206,24 @@ export function probeScmRegistration(run: () => string = queryScmForService): bo
     run();
     return true;
   } catch (err) {
-    const e = err as { status?: number | null; stderr?: string | Buffer | null };
-    const stderr = typeof e.stderr === "string" ? e.stderr : "";
-    if (e.status === 1060 || /FAILED 1060/i.test(stderr)) return false;
+    const e = err as { status?: number | null; stderr?: string | Buffer | null; stdout?: string | Buffer | null; message?: string };
+    // sc.exe does not reliably channel the 1060 line — it can land on stderr OR stdout
+    // depending on the host — so scan every captured stream and the error message.
+    const text = [e.stderr, e.stdout, e.message]
+      .map(v => (typeof v === "string" ? v : ""))
+      .join("\n");
+    if (e.status === 1060 || /FAILED 1060/i.test(text)) return false;
     return "error";
   }
 }
 
-function queryScmForService(): string {
+function scExePath(): string {
   const sc = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "sc.exe");
-  return execFileSync(existsSync(sc) ? sc : "sc.exe", ["query", WINSW_SERVICE_ID], {
+  return existsSync(sc) ? sc : "sc.exe";
+}
+
+function queryScmForService(): string {
+  return execFileSync(scExePath(), ["query", WINSW_SERVICE_ID], {
     encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
   });
 }
@@ -285,6 +293,18 @@ export async function installWinswService(entry: WinswEntry, deps: WinswInstallD
 export function startWinswService(): void { runWinsw(["start"]); }
 export function stopWinswService(): void { try { runWinsw(["stopwait"]); } catch { /* not running */ } }
 export function uninstallWinswService(): void {
+  if (!existsSync(winswExePath())) {
+    // The binary is gone but the SCM registration can outlive it (quarantine, partial
+    // uninstall). WinSW can't run without its exe, so remove the stale registration
+    // directly via sc.exe — otherwise the SCM service survives every cleanup path.
+    if (process.platform === "win32" && probeScmRegistration() === true) {
+      try {
+        execFileSync(scExePath(), ["stop", WINSW_SERVICE_ID], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+      } catch { /* not running */ }
+      execFileSync(scExePath(), ["delete", WINSW_SERVICE_ID], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    }
+    return;
+  }
   try { runWinsw(["stopwait"]); } catch { /* not running */ }
   try { runWinsw(["uninstall"]); } catch (err) {
     // Surface the failure so the caller can decide; silent swallow hides UAC refusals.
