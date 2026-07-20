@@ -52,9 +52,22 @@
 | MODIFY | `tests/request-log.test.ts` | native SSE one-shot, final projection, non-stream unset |
 | MODIFY | `tests/usage-log.test.ts` | parent/attempt JSONL roundtrip 및 malformed validation |
 | MODIFY | `tests/server-combo-failover-e2e.test.ts` | `/api/logs` + usage.jsonl combo attempt additive 계약 |
+| MODIFY | `src/web-search/loop.ts` | web-search sidecar의 세 번째 `bridgeToResponsesSSE()` 직접 호출에도 `onFirstOutput` 전달 (감사 blocker #1 fold — WS 경로는 deferred wrapper가 없어 sidecar TTFT가 누락됨) |
 
 `src/server/management-api.ts`는 수정하지 않는다. 현재 `filterRequestLogs(getRequestLogEntries())`
 객체를 그대로 반환하므로 타입/projection 변경만으로 additive 필드가 노출된다.
+
+**감사 fold 노트 (A-round):**
+
+1. (#1 High) production `bridgeToResponsesSSE()` 호출은 responses.ts 2곳 + **web-search
+   sidecar(`src/web-search/loop.ts:541` 부근)** 총 3곳이다. sidecar 호출에도 동일한
+   `onFirstOutput` 옵션을 전달한다(옵션이 상위에서 안 내려오면 no-op이므로 additive).
+2. (#2 Med) combo e2e는 finite 검증만으로는 request-relative/attempt-relative 분리를
+   고정하지 못한다: 지연된 A 실패 → B streaming success fixture에서 **성공 attempt를
+   선택**해 `parent.firstOutputMs > attempt.firstOutputMs`(A 실패 소요시간만큼 parent가
+   더 큼)를 assert한다. 실패 attempt(output 없음)는 unset이어야 한다.
+3. (#3 Low) `NaN`/`Infinity` malformed 검증은 JSON.stringify fixture로는 불가능
+   (Infinity→null 변환). `appendUsageEntry()` direct-input 호출로 별도 assert한다.
 
 ## 3. MODIFY — `src/server/request-log.ts`
 
