@@ -25,6 +25,7 @@ interface UsageSummaryTotals {
   estimatedCostUsd?: number;
   pricedRequests?: number;
   unpricedRequests?: number;
+  unmeteredRequests?: number;
 }
 
 interface UsageDay {
@@ -293,9 +294,9 @@ function UsageSummaryCards({
           <span className="stat-value mono usage-cost-value">
             {formatEstimatedUsdValue(summary.estimatedCostUsd, locale)}
           </span>
-      {(summary.unpricedRequests ?? 0) > 0 && (
+          {((summary.unpricedRequests ?? 0) + (summary.unmeteredRequests ?? 0)) > 0 && (
             <span className="muted text-caption">
-              {t("usage.cost.unpricedNote").replace("{count}", String(summary.unpricedRequests))}
+              {t("usage.cost.unpricedNote").replace("{count}", String((summary.unpricedRequests ?? 0) + (summary.unmeteredRequests ?? 0)))}
             </span>
           )}
         </div>

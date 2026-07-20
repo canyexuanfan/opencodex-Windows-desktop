@@ -471,6 +471,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
         generatedAt: now,
         summary: {
           requests: 0,
+          attemptCount: 0,
           measuredRequests: 0,
           reportedRequests: 0,
           unreportedRequests: 0,
@@ -487,6 +488,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
           estimatedCostUsd: 0,
           pricedRequests: 0,
           unpricedRequests: 0,
+          unmeteredRequests: 0,
         },
         days: [],
         models: [],

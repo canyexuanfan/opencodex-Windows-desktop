@@ -282,7 +282,7 @@ export const de = {
   "logs.metric.tokPerSecTitle": "Ausgabe-Tokens pro Sekunde über die gesamte Anfragedauer",
   "logs.metric.estimatedCostTitle": "Geschätzte Kosten; bei fehlendem Preisabgleich nicht verfügbar",
   "usage.cost.total": "Geschätzte Kosten (dieser Zeitraum)",
-  "usage.cost.unpricedNote": "{count} Anfragen ohne Preisabgleich ausgeschlossen",
+  "usage.cost.unpricedNote": "{count} Anfragen ohne Preis oder Nutzung ausgeschlossen",
   "logs.detail.section.basic": "Grundinformationen",
   "logs.detail.section.performance": "Leistung",
   "logs.detail.section.cost": "Geschätzte Kosten",

@@ -27,7 +27,10 @@ export interface UsageSummaryTotals {
    *  price is unmatched are excluded from the sum and counted separately. */
   estimatedCostUsd: number;
   pricedRequests: number;
+  /** Requests with usage but no matched price anywhere (excluded from the sum). */
   unpricedRequests: number;
+  /** Requests whose usage itself is missing/unsupported, so no cost can be computed. */
+  unmeteredRequests: number;
 }
 
 export interface UsageDay {
@@ -137,6 +140,7 @@ function blankTotals(): UsageSummaryTotals {
     estimatedCostUsd: 0,
     pricedRequests: 0,
     unpricedRequests: 0,
+    unmeteredRequests: 0,
   };
 }
 
@@ -229,6 +233,11 @@ function addEstimatedCost(
   totals: UsageSummaryTotals,
   entry: Pick<PersistedUsageEntry, "provider" | "model" | "usageStatus" | "usage" | "attempts">,
 ): void {
+  if (entry.usageStatus === "unreported" || entry.usageStatus === "unsupported"
+    || (!entry.usage && !entry.attempts?.length)) {
+    totals.unmeteredRequests += 1;
+    return;
+  }
   const estimate = entry.attempts?.length
     ? estimateComboCost(entry.attempts)
     : estimateRequestCost({ provider: entry.provider, model: entry.model, usage: entry.usage, usageStatus: entry.usageStatus });
