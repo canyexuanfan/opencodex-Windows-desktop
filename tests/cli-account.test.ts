@@ -646,14 +646,21 @@ describe("ocx account CLI (issue #180 matrix)", () => {
   });
 
   test("22: remove without --yes prints the re-run hint and sends no request", async () => {
+    // Recording fetchImpl proves no HTTP call is even attempted — the --yes
+    // guard fires at arg-parse time, before resolveBaseUrl (Carver C-gate).
+    const calls: string[] = [];
+    const recordingFetch = (async (input: unknown) => {
+      calls.push(String(input));
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
     const result = await run(
       ["remove", "openai", "chatgpt_1"],
-      { ...defaultDeps(), baseUrl: "http://127.0.0.1:1" },
+      { ...defaultDeps(), fetchImpl: recordingFetch },
     );
 
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("ocx account remove openai chatgpt_1 --yes");
-    expect(requests).toHaveLength(0);
+    expect(calls).toHaveLength(0);
   });
 
   test("23: remove pre-check rejects an unknown id without DELETE", async () => {
@@ -813,6 +820,25 @@ describe("ocx account CLI (issue #180 matrix)", () => {
     for (const command of ["refresh", "auto-switch", "remove", "add-key"]) {
       expect(help).toContain(command);
     }
+  });
+
+  test("C-gate fold: add-key redacts a key containing JSON-escaped characters", async () => {
+    const key = 'sk-"x\\test';
+    const human = await run(
+      ["add-key", "openrouter", "--label", key],
+      { ...defaultDeps(), stdinImpl: stdinFrom(`${key}\n`) },
+    );
+    const machine = await run(
+      ["add-key", "openrouter", "--label", key, "--json"],
+      { ...defaultDeps(), stdinImpl: stdinFrom(`${key}\n`) },
+    );
+
+    expect(human.stdout).toContain("[redacted]");
+    expect(machine.stdout).toContain("[redacted]");
+    // Raw key must not appear in any form — literal or JSON-escaped (Carver Medium).
+    expect(human.output).not.toContain(key);
+    expect(machine.output).not.toContain(key);
+    expect(machine.output).not.toContain('sk-\\"x\\\\test');
   });
 
   test("34: remove reports key promotion, last OAuth removal, and an unchanged Codex pin", async () => {
