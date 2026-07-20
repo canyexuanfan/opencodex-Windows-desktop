@@ -121,6 +121,7 @@ export default defineConfig({
             { label: "Sidecars: Web Search & Vision", translations: { ko: "사이드카: 웹 검색 & 비전", "zh-CN": "边车：网络搜索与视觉" }, slug: "guides/sidecars" },
             { label: "Web Dashboard", translations: { ko: "웹 대시보드", "zh-CN": "网页控制台" }, slug: "guides/web-dashboard" },
             { label: "Sub-agent Surface", translations: { ko: "서브에이전트 서피스", "zh-CN": "子代理界面" }, slug: "guides/sub-agent-surface" },
+            { label: "Benchmarks", translations: { ko: "벤치마크", "zh-CN": "基准测试" }, slug: "guides/benchmarks" },
           ],
         },
         {
