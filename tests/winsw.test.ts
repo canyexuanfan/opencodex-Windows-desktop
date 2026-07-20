@@ -100,7 +100,13 @@ describe("winsw fail-closed lifecycle", () => {
   test("exe missing + non-Windows is confirmed absence; on Windows the SCM is queried", () => {
     // This test host has no WinSW binary installed, so the missing-exe branch runs:
     // off-Windows it must short-circuit to "nonexistent" (no sc.exe exists here).
-    expect(statusWinswRaw()).toBe("nonexistent");
+    if (process.platform !== "win32") {
+      expect(statusWinswRaw()).toBe("nonexistent");
+    } else {
+      // win32 CI runners have no binary either, but the SCM probe result depends on
+      // the live runner state — assert only that the probe never throws.
+      expect(["started", "stopped", "nonexistent", "unknown"]).toContain(statusWinswRaw());
+    }
     // On win32 the same branch must confirm against the SCM — a quarantined/deleted
     // exe does not prove the registration is gone.
     const winsw = readFileSync(new URL("../src/lib/winsw.ts", import.meta.url), "utf8");
