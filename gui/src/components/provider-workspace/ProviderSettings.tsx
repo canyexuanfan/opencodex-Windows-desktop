@@ -53,7 +53,7 @@ export default function ProviderSettings({
     setNote(item.note ?? "");
     setAllowPrivateNetwork(item.allowPrivateNetwork ?? false);
     setMsg(null);
-    setEndpointChoice(matchChoiceId(baseUrlChoices, item.baseUrl));
+    queueMicrotask(() => setEndpointChoice(matchChoiceId(baseUrlChoices, item.baseUrl)));
   }, [item.adapter, item.baseUrl, item.defaultModel, item.authMode, item.keyOptional, item.note, item.allowPrivateNetwork, baseUrlChoices]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
