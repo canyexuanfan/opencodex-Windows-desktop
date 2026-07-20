@@ -217,7 +217,9 @@ export default function ProviderDetails({
         )}
         {tab === "settings" && (
           <ProviderSettings
+            key={item.name}
             item={item}
+            apiBase={apiBase}
             availableModels={availableModels}
             onUpdateProvider={onUpdateProvider}
             onDirtyChange={setSettingsDirty}

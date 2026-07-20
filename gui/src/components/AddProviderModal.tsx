@@ -10,6 +10,7 @@ import {
 } from "../provider-payload";
 import ProviderCatalog from "./provider-catalog/ProviderCatalog";
 import type { CatalogPreset } from "./provider-catalog/provider-presets";
+import { baseUrlForChoice, matchChoiceId, resolvedBaseUrlForChoice } from "../base-url-choice";
 
 export type ProviderConfig = ProviderPayload;
 
@@ -55,6 +56,7 @@ export default function AddProviderModal({
   const [presets, setPresets] = useState<Preset[]>(fallbackPresets);
   const [presetsLoading, setPresetsLoading] = useState(true);
   const [usageRank, setUsageRank] = useState<Record<string, number>>({});
+  const [endpointChoice, setEndpointChoice] = useState("custom");
   const aliveRef = useRef(true);
   const loadedPresetsRef = useRef(false);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -114,10 +116,14 @@ export default function AddProviderModal({
 
   const choosePreset = (p: Preset) => {
     setPreset(p);
+    const choiceId = matchChoiceId(p.baseUrlChoices, p.baseUrl);
+    setEndpointChoice(choiceId);
     setForm({
       name: p.id === "custom" ? "" : p.id,
       adapter: p.adapter,
-      baseUrl: p.baseUrl,
+      baseUrl: p.baseUrlChoices?.length
+        ? baseUrlForChoice(p.baseUrlChoices, choiceId, p.baseUrl)
+        : p.baseUrl,
       authMode: p.auth,
       apiKey: "",
       defaultModel: p.defaultModel ?? "",
@@ -134,6 +140,7 @@ export default function AddProviderModal({
   const back = () => {
     setPreset(null);
     setForm(null);
+    setEndpointChoice("custom");
     setError("");
     setOauthMsg("");
     setOauthMsgTone("ok");
@@ -145,11 +152,15 @@ export default function AddProviderModal({
   const submit = async () => {
     if (!form) return;
     const reserved = preset ? isReservedCodexForwardPreset(preset) : false;
+    const resolvedBaseUrl = preset?.baseUrlChoices?.length
+      ? resolvedBaseUrlForChoice(preset.baseUrlChoices, endpointChoice, form.baseUrl)
+      : form.baseUrl.trim();
     if (!reserved && !form.name.trim()) { setError(t("modal.nameRequired")); return; }
-    if (!reserved && !form.baseUrl.trim()) { setError(t("modal.baseUrlRequired")); return; }
+    if (!reserved && !resolvedBaseUrl) { setError(t("modal.baseUrlRequired")); return; }
+    const submitForm = { ...form, baseUrl: resolvedBaseUrl };
     let postBody: { name: string; provider: ProviderPayload };
     try {
-      postBody = buildProviderPostBody(preset ?? { id: "custom" }, form);
+      postBody = buildProviderPostBody(preset ?? { id: "custom" }, submitForm);
     } catch {
       setError(t("modal.invalidPreset"));
       return;
@@ -388,9 +399,47 @@ export default function AddProviderModal({
                     {["openai-responses", "openai-chat", "anthropic", "google", "azure-openai", "cursor"].map(a => <option key={a} value={a}>{a}</option>)}
                   </select>
                 </Field>
-                <Field label={t("modal.baseUrl")}>
-                  <input className="input" value={form.baseUrl} onChange={e => setForm({ ...form, baseUrl: e.target.value })} placeholder={t("modal.baseUrlPlaceholder")} />
-                </Field>
+                {preset.baseUrlChoices && preset.baseUrlChoices.length > 0 ? (
+                  <>
+                    <Field label={t("modal.endpoint")}>
+                      <select
+                        className="input"
+                        value={endpointChoice}
+                        onChange={e => {
+                          const id = e.target.value;
+                          setEndpointChoice(id);
+                          setForm({
+                            ...form,
+                            baseUrl: baseUrlForChoice(preset.baseUrlChoices, id, form.baseUrl),
+                          });
+                        }}
+                      >
+                        {preset.baseUrlChoices.map(c => (
+                          <option key={c.id} value={c.id}>
+                            {c.id === "token-plan" ? t("modal.endpoint.tokenPlan")
+                              : c.id === "payg" ? t("modal.endpoint.payAsYouGo")
+                              : c.id === "custom" ? t("modal.endpoint.custom")
+                              : c.label}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                    {endpointChoice === "custom" && (
+                      <Field label={t("modal.baseUrl")}>
+                        <input
+                          className="input"
+                          value={form.baseUrl}
+                          onChange={e => setForm({ ...form, baseUrl: e.target.value })}
+                          placeholder={t("modal.baseUrlPlaceholder")}
+                        />
+                      </Field>
+                    )}
+                  </>
+                ) : (
+                  <Field label={t("modal.baseUrl")}>
+                    <input className="input" value={form.baseUrl} onChange={e => setForm({ ...form, baseUrl: e.target.value })} placeholder={t("modal.baseUrlPlaceholder")} />
+                  </Field>
+                )}
                 {(isCustom || isLocal) && (
                   <label className="modal-field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                     <input type="checkbox" checked={form?.allowPrivateNetwork ?? false} onChange={e => setForm(f => f ? { ...f, allowPrivateNetwork: e.target.checked } : f)} />
