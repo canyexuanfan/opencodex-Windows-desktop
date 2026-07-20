@@ -158,11 +158,16 @@ Usage/Workspace 구현은 004 조사 결과에 따라 WP5+로 append (LOOP-UNIT-
 
 ## SSOT 조정 노트 (WP0 D에서 확정)
 
-- **unverified 오버레이 충돌 해소**: 010의 `cost.ts`는 forward-compat으로
-  `status: "unverified"` 분기를 가지되, **등재는 003 §4의 verified/verified-derived만**
-  한다. 즉 `EXPECTED_PRICE_OVERLAYS`에 unverified 행을 넣지 않으므로 런타임에서
-  unverified 경로는 죽은 분기이고 fail-closed(`—`)가 유지된다. 후속 재조사(003 §5)로
+- **unverified 오버레이 충돌 해소 (v3, WP1 A 재감사 반영)**: `ExpectedPriceStatus`는
+  `verified | verified-derived | unverified` 3상태이되, **resolver
+  (`findExpectedPriceOverlay`)가 unverified를 아예 반환하지 않는다** — fail-closed(`—`)를
+  문서 규율이 아니라 코드로 강제한다. 등재는 003 §4의 verified 4쌍 + verified-derived
+  7쌍(계 11쌍)만. verified-derived는 `estimated=true`로 전파된다. 후속 재조사(003 §5)로
   verified 승격 시에만 행이 추가된다.
+- **legacy cachedInputTokens 모호성 (WP1 A 재감사 반영)**: canonical 계약
+  (`cachedInputTokens`=read)을 우선 해석하고, 그 해석이 `R+W>I` 모순일 때만 legacy
+  (read+write 합산형, devlog 070) 복원(cached−creation)을 재시도, 재시도도 모순이면
+  `null`. 두 형태는 필드만으로 구별 불가하다는 재감사 지적의 절충안.
 - **verified-derived**(suffix→기반 모델 매핑, 예: gemini-3.5-flash-high)는 오버레이에
   등재하되 `source`에 derived 근거를 남기고 GUI 상세에서 표시한다.
 - **WP5+ append 예고**(004): WP5 backend(summary.ts 비용/속도 집계), WP6 Usage 페이지,

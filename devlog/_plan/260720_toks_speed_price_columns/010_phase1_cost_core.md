@@ -9,7 +9,10 @@
 - 가격은 과거 청구 재현값이 아니라 표시 시점의 추정치다. GUI는 모든 숫자 비용에 `~$`를 붙인다.
 - 캐시 상세가 하나도 없으면 `R=W=0`으로 input 전액을 계산한다.
 - 부분 상세는 알려진 값만 쓴다: read-only면 `W=0`, write-only면 `R=0`.
-- `R+W>I`, 비정상 usage, 가격 미매칭, all-zero 가격+overlay 부재는 `null`이며 UI의 `—`다.
+- `R+W>I` 모순은 fail-closed(`null`)다. 단 명시적 `cacheReadInputTokens` 없이
+  `cachedInputTokens`만 있는 implicit 형태는 legacy(read+write 합산형) 복원을 한 번
+  재시도한 뒤에도 모순일 때만 `null`이다(§6 normalizeCostTokens). 비정상 usage,
+  가격 미매칭, all-zero 가격+overlay 부재도 `null`이며 UI의 `—`다.
 - 가격 snapshot은 `usage.jsonl`에 저장하지 않는다.
 - combo는 attempt별 단가를 적용한다. 하나라도 가격을 못 찾으면 부분합을 반환하지 않고 `null`이다.
 
@@ -161,7 +164,10 @@ export interface Cost4 {
   cacheWrite: number;
 }
 
-export type ExpectedPriceStatus = "verified" | "unverified";
+export type ExpectedPriceStatus = "verified" | "verified-derived" | "unverified";
+// verified: 공식 페이지 직접 열람. verified-derived: suffix→기반 모델 등 유도 매핑
+// (source에 derivation 근거 필수, GUI 상세에 표시). unverified: lead — 등재 금지,
+// production resolver가 거부한다 (audit blocker #2/#4 fold).
 
 export interface ExpectedPriceOverlay {
   provider: string;
@@ -178,19 +184,37 @@ export interface ExpectedPriceOverlay {
  */
 export const EXPECTED_PRICE_OVERLAYS: readonly ExpectedPriceOverlay[] = [];
 
+// 구현 시 003 §4의 verified/verified-derived 행으로 채운다. exact key 11개
+// (audit blocker #3 fold — provider는 registry의 실제 로그 provider id):
+//   minimax        / MiniMax-M2.1-highspeed          (verified)
+//   minimax-cn     / MiniMax-M2.1-highspeed          (verified)
+//   google-antigravity / gemini-3.1-pro-low          (verified-derived: gemini-3.1-pro ≤200k)
+//   google-antigravity / gemini-3.1-pro-high         (verified-derived)
+//   google-antigravity / gemini-3.5-flash-extra-low  (verified-derived: gemini-3.5-flash)
+//   google-antigravity / gemini-3.5-flash-low        (verified-derived)
+//   google-antigravity / gemini-3.5-flash-mid        (verified-derived)
+//   google-antigravity / gemini-3.5-flash-high       (verified-derived)
+//   google-antigravity / gemini-3-flash-agent        (verified-derived: gemini-3-flash, Agent 과금 원칙)
+//   deepseek       / deepseek-chat                   (verified — 2026-07-24 전환 후 재검증)
+//   deepseek       / deepseek-reasoner               (verified)
+// google-antigravity의 claude-*/gpt-oss-*/gemini-pro-agent/gemini-3-pro는 등재 금지(003 §2).
+
 export function findExpectedPriceOverlay(
   provider: string,
   modelId: string,
   overlays: readonly ExpectedPriceOverlay[] = EXPECTED_PRICE_OVERLAYS,
 ): ExpectedPriceOverlay | undefined {
+  // production 경로는 unverified를 반환하지 않는다(fail-closed를 코드로 강제 —
+  // audit blocker #4 fold). unverified는 문서/백로그 전용 상태다.
   const exact = overlays.filter(row => row.provider === provider && row.modelId === modelId);
   return exact.find(row => row.status === "verified")
-    ?? exact.find(row => row.status === "unverified");
+    ?? exact.find(row => row.status === "verified-derived");
 }
 ```
 
-loader는 provider와 native model ID 모두 exact 비교한다. 동일 key가 verified/unverified 두 건이면
-verified가 이긴다. fuzzy/case-fold/wire-model fallback은 금지한다.
+loader는 provider와 native model ID 모두 exact 비교한다. 우선순위는 verified →
+verified-derived이며 **unverified는 반환하지 않는다**(overlay 배열에 등재하지도 않는다 —
+미검증 가격은 003 §5 조사 백로그에만 기록). fuzzy/case-fold/wire-model fallback은 금지한다.
 
 ## 6. NEW — `src/usage/cost.ts`
 
@@ -233,7 +257,7 @@ export interface MatchedPrice {
   source: "jawcode" | "expected";
   sourceRef?: string;
   verifiedAt?: string;
-  status: "verified" | "unverified";
+  status: "verified" | "verified-derived";
 }
 
 export interface AttemptCostEstimate {
@@ -274,16 +298,31 @@ function hasNonZeroCost(cost: Cost4): boolean {
 export function normalizeCostTokens(usage: OcxUsage): CostTokens | null {
   const input = usage.inputTokens;
   const output = usage.outputTokens;
-  const cacheRead = usage.cacheReadInputTokens ?? usage.cachedInputTokens ?? 0;
   const cacheWrite = usage.cacheCreationInputTokens ?? 0;
-  if (![input, output, cacheRead, cacheWrite].every(finiteNonNegative)) return null;
-  if (cacheRead + cacheWrite > input) return null;
-  return {
-    input: Math.max(0, input - cacheRead - cacheWrite),
-    output,
-    cacheRead,
-    cacheWrite,
-  };
+  // canonical 계약(src/types.ts:231)은 cachedInputTokens 자체가 read다. legacy
+  // claude-route 행만 cachedInputTokens=read+write였다(devlog 070). 두 형태는 필드만으로
+  // 구별 불가하므로(재감사 blocker #2): canonical 해석을 우선 적용하고, 그 해석이
+  // R+W>I 모순을 만들 때만 legacy 복원(cached−creation)을 한 번 재시도한다.
+  // 재시도도 모순이면 fail-closed(null). 정상 canonical 행(read-only mirror 포함)은
+  // 첫 해석으로 통과하므로 과소계산이 없고, legacy 행은 재시도로 복원된다.
+  const primaryRead = usage.cacheReadInputTokens ?? usage.cachedInputTokens ?? 0;
+  const candidates: number[] = [primaryRead];
+  if (typeof usage.cacheReadInputTokens !== "number"
+    && typeof usage.cachedInputTokens === "number"
+    && typeof usage.cacheCreationInputTokens === "number") {
+    candidates.push(Math.max(0, usage.cachedInputTokens - usage.cacheCreationInputTokens));
+  }
+  for (const cacheRead of candidates) {
+    if (![input, output, cacheRead, cacheWrite].every(finiteNonNegative)) return null;
+    if (cacheRead + cacheWrite > input) continue;
+    return {
+      input: Math.max(0, input - cacheRead - cacheWrite),
+      output,
+      cacheRead,
+      cacheWrite,
+    };
+  }
+  return null;
 }
 
 export function calculateCost(tokens: CostTokens, cost4: Cost4): CostBreakdown {
@@ -328,7 +367,7 @@ export function resolveMatchedPrice(
 }
 
 function isEstimated(usage: OcxUsage, usageStatus: UsageStatus, priceStatus: ExpectedPriceStatus): boolean {
-  return usage.estimated === true || usageStatus === "estimated" || priceStatus === "unverified";
+  return usage.estimated === true || usageStatus === "estimated" || priceStatus === "verified-derived";
 }
 
 export function estimateAttemptCost(
@@ -415,11 +454,11 @@ export function tokensPerSecond(outputTokens: number, durationMs: number): numbe
 }
 ```
 
-`resolveMatchedPrice()`의 순서는 고정이다: jawcode exact nonzero → overlay verified → overlay
-unverified → `null`. overlay loader가 verified를 먼저 반환한다. jawcode all-zero는 무료가 아니라
-overlay 후보이며, overlay도 없으면 `null`이다. `estimated`는 usage 추정 또는 unverified price가
-하나라도 있으면 true다. v2 GUI는 true 여부와 무관하게 모든 비용 숫자에 `~$`를 붙이고,
-true는 상세 사유에 사용한다.
+`resolveMatchedPrice()`의 순서는 고정이다: jawcode exact nonzero → overlay verified →
+overlay verified-derived → `null`. **unverified는 resolver가 반환하지 않는다**(fail-closed를
+코드로 강제). jawcode all-zero는 무료가 아니라 overlay 후보이며, overlay도 없으면 `null`이다.
+`estimated`는 usage 추정 또는 verified-derived price가 하나라도 있으면 true다. v2 GUI는
+true 여부와 무관하게 모든 비용 숫자에 `~$`를 붙이고, true는 상세 사유에 사용한다.
 
 ## 7. NEW — `tests/usage-cost.test.ts`
 
@@ -432,19 +471,35 @@ true는 상세 사유에 사용한다.
    `inputTokens=160` 전체에 input rate를 곱한 값이 아님을 별도 assertion한다.
 3. **read-only 부분 상세**: R만 존재하면 W=0, input=`I-R`.
 4. **write-only 부분 상세**: W만 존재하면 R=0, input=`I-W`.
-5. **모순**: `R+W>I`는 `normalizeCostTokens()`가 `null`.
+5. **모순**: 명시적 `cacheReadInputTokens`가 있는 fixture에서 `R+W>I`는 즉시 `null`.
+   implicit(cached만) 형태의 모순 처리는 테스트 13(b)/(c)가 소유한다.
 6. **미매칭**: 존재하지 않는 provider/model exact key는 `null`.
 7. **all-zero**: all-zero jawcode row에 overlays `[]`를 넘기면 `null`; `$0` 금지.
 8. **expected overlay 우선순위**: 같은 exact key의 unverified+verified fixture에서 verified가
-   선택된다. jawcode nonzero key에 overlay를 주면 jawcode가 이긴다. jawcode all-zero/missing에는
-   overlay가 선택되며 unverified이면 estimate의 `estimated=true`다.
+   선택되고, **unverified-only fixture는 선택되지 않는다(`undefined` — fail-closed 강제)**.
+   verified-derived-only fixture는 선택되며 estimate의 `estimated=true`가 된다.
+   jawcode nonzero key에 overlay를 주면 jawcode가 이긴다.
 9. **native slash exact**: `openrouter`의 실제 slash model ID exact 조회는 성공하고,
    slash를 hyphen으로 바꾼 ID는 실패한다.
 10. **combo 합산**: 서로 다른 두 provider/model attempt 비용을 각 rate로 계산해 four-way/total을
-    합산한다. 하나가 usage estimated 또는 unverified overlay면 전체 `estimated=true`다.
+    합산한다. 하나가 usage estimated 또는 verified-derived overlay면 전체 `estimated=true`다.
 11. **combo fail-closed**: 한 attempt 가격이 미매칭이면 반환값 전체가 `null`; matched attempt의
     부분합을 노출하지 않는다.
 12. **tok/s**: `100,2000`→50; output `0`, duration `0`, 음수, `NaN`, `Infinity`는 `null`.
+13. **cachedInputTokens 모호성 처리** (audit blocker #1 + 재감사 #2): (a) canonical-우선 —
+    `I=160, cachedInputTokens=60, cacheCreationInputTokens=20, cacheReadInputTokens` 없음
+    fixture는 첫 해석 `R=60,W=20`이 모순 없으므로 그대로 `input=80` (canonical 계약 존중,
+    이중 차감 `I−R−2W=60` 아님을 별도 assertion). (b) legacy 복원 재시도 — `I=70,
+    cachedInputTokens=60, cacheCreationInputTokens=20` fixture는 첫 해석 `R=60,W=20`이
+    `R+W=80>70` 모순이므로 legacy 재시도 `R=40,W=20` → `input=10`. (c) 재시도도 모순인
+    fixture(`I=50, cached=60, creation=20` → 재시도 R=40, 40+20>50)는 `null`.
+14. **usage 없는 attempt / 0-attempt combo** (audit blocker #5): `usage`가 없는 attempt는
+    `estimateAttemptCost()`가 `null`, attempts 빈 배열 combo는 전체 `null`.
+15. **비유한 usage 값** (audit blocker #5): `inputTokens=NaN`/`Infinity`/음수 각각에서
+    `normalizeCostTokens()`가 `null`.
+16. **오버레이 등재 membership** (audit blocker #3): exported `EXPECTED_PRICE_OVERLAYS`가
+    §5 주석의 11개 exact key를 정확히 포함하고(순서 무관), status가 verified 또는
+    verified-derived뿐이며 unverified 행이 없음을 검증.
 
 테스트 fixture는 외부 network를 쓰지 않는다. jawcode snapshot을 쓰는 exact/all-zero 테스트 외의
 단가 계산은 `calculateCost()`에 명시적 fixture rate를 주어 catalog drift와 분리한다.
@@ -481,6 +536,8 @@ bun test --isolate tests/usage-cost.test.ts
 1. optional tuple 뒤에 cost를 붙이며 `null` hole 타입을 허용하지 않으면 generated TS가 깨진다.
 2. `getJawcodeModelMetadataCaseInsensitive()` 또는 `resolvedModel` fallback을 쓰면 native exact
    정책과 slash ID 안전성이 깨진다.
-3. all-zero를 `$0`으로 처리하거나 combo 부분합을 반환하면 사용자에게 실제 총비용처럼 보인다.
-4. 003에서 검증 못 한 price는 `unverified`로만 넣는다. source/verifiedAt을 꾸며내지 않는다.
-
+3. deepseek 오버레이는 2026-07-24 V4 Flash alias 전환 예정(003 §5) — 등재 시 `source`에
+   전환 예정 비고를 남기고 후속 재검증 백로그에 연결한다.
+4. all-zero를 `$0`으로 처리하거나 combo 부분합을 반환하면 사용자에게 실제 총비용처럼 보인다.
+5. 003에서 검증 못 한 price는 **overlay 배열에 넣지 않는다** — 003 §5 백로그에만 기록하고,
+   verified 승격 후에 등재한다. source/verifiedAt을 꾸며내지 않는다.

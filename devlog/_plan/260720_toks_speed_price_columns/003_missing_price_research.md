@@ -3,11 +3,12 @@
 jawcode `models.json`에 없거나(all-zero 포함) alias가 없는 모델의 공식 단가 조사.
 Luna 3레인(gpt-5.6-luna explorer, cxc-search 첨부) 결과를 메인이 검수해 정리.
 표기: 4튜플 = (input, output, cacheRead, cacheWrite) USD / 1M tokens.
-status: `verified`(공식 페이지 직접 열람) / `unverified`(lead) / `not-published`(공식 미공개).
+status: `verified`(공식 페이지 직접 열람) / `verified-derived`(suffix→기반 모델 등
+유도 매핑, estimated 전파) / `unverified`(lead — 등재 금지) / `not-published`(공식 미공개).
 
-**정책 연결(000 v2 로드맵)**: verified만 expected 오버레이 테이블
+**정책 연결(000 v2 로드맵)**: verified와 verified-derived만 expected 오버레이 테이블
 (`src/usage/expected-prices.ts`, WP1)에 넣는다. not-published/unverified는
-fail-closed `—`. 오버레이 값은 GUI에서 `~$` 접두 유지.
+fail-closed `—`(resolver가 unverified를 반환하지 않음). 오버레이 값은 GUI에서 `~$` 접두 유지.
 
 ## 1. Verified — 오버레이 등재 가능
 
@@ -47,11 +48,17 @@ fail-closed `—`. 오버레이 값은 GUI에서 `~$` 접두 유지.
 
 ## 4. 오버레이 등재 결정 (WP1 입력)
 
-즉시 등재(verified, USD): MiniMax-M2.1-highspeed(2쌍), gemini-3.1-pro 파생 2쌍
-(gemini-3.1-pro-low/high), gemini-3.5-flash 파생 4쌍(extra-low/low/mid/high),
-gemini-3-flash-agent, deepseek-chat/reasoner(현행 ID가 카탈로그에 있으면).
-suffix→기반 모델 매핑은 `status: verified-derived`로 구분(공식이 suffix 동일가를
-명시하지 않음).
+즉시 등재 **11쌍** (provider는 registry의 실제 로그 provider id — `google`이 아니라
+`google-antigravity`; 010 §5 주석의 exact key 목록이 구현 SSOT):
+
+- verified(4): `minimax`/`minimax-cn` × MiniMax-M2.1-highspeed,
+  `deepseek` × deepseek-chat/deepseek-reasoner.
+- verified-derived(7): `google-antigravity` × gemini-3.1-pro-low/high(기반 gemini-3.1-pro
+  ≤200k), gemini-3.5-flash-extra-low/low/mid/high(기반 gemini-3.5-flash),
+  gemini-3-flash-agent(기반 gemini-3-flash + Agent 과금 원칙).
+
+suffix→기반 모델 매핑은 `status: "verified-derived"`로 구분(공식이 suffix 동일가를
+명시하지 않음; estimate는 `estimated=true`로 전파).
 
 보류(`—` 유지): Kimi 전 계열, grok-composer-2.5-fast, openrouter/openai-gpt-5.6,
 Antigravity의 claude/gpt-oss, zai, alibaba-token-plan, cerebras, mistral, xiaomi(CNY),
@@ -59,7 +66,7 @@ kiro, github-copilot(환산표 미확보), gemini-pro-agent(모델 ID 자체 미
 gemini-3-pro(가격표에 별도 항목 없음 — 3.1-pro와 동일시 금지).
 
 비율로 보면: 미매칭 26쌍 + all-zero 3쌍 중 이번 조사로 verified 오버레이 가능
-**약 10쌍**, 나머지는 not-published/unverified로 fail-closed.
+**11쌍**(verified 4 + verified-derived 7), 나머지는 not-published/unverified로 fail-closed.
 
 ## 5. 재조사 백로그
 
