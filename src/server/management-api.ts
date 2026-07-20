@@ -46,7 +46,9 @@ import {
 } from "../lib/debug-settings";
 import type { OcxClaudeCodeConfig, OcxConfig, OcxProviderConfig } from "../types";
 import { drainAndShutdown } from "./lifecycle";
-import { filterRequestLogs, getRequestLogEntries } from "./request-log";
+import { filterRequestLogs, getRequestLogEntries, type RequestLogEntry } from "./request-log";
+import { estimateComboCost, estimateRequestCost, normalizeCostTokens, tokensPerSecond } from "../usage/cost";
+import type { PersistedUsageAttempt } from "../usage/log";
 import { isAllowedRequestOrigin, jsonResponse, providerManagementConfigError, publicProviderBaseUrl, safeConfigDTO } from "./auth-cors";
 import { applySystemEnvToggle } from "./system-env";
 
@@ -79,6 +81,96 @@ function parseDebugLogQuery(url: URL): { after: number; limit: number } {
   return {
     after: Number.isFinite(after) && after > 0 ? after : 0,
     limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 2000) : 500,
+  };
+}
+
+// ---- /api/logs display metrics (devlog/_plan/260720_toks_speed_price_columns/020) ----
+// Derived at response time only; NEVER persisted to the request log or usage.jsonl.
+
+type MetricUnavailableReason =
+  | "usage_missing" | "usage_unsupported" | "output_missing" | "invalid_duration"
+  | "price_unmatched" | "invalid_cache_breakdown"
+  | "invalid_usage" | "combo_attempt_unavailable";
+
+type TokPerSecondResult =
+  | { kind: "value"; value: number; estimated: boolean }
+  | { kind: "unavailable"; reason: MetricUnavailableReason };
+
+type CostEstimateReason = "usage_estimated" | "cache_detail_missing" | "expected_price_overlay";
+
+type CostResult =
+  | { kind: "value"; estimate: NonNullable<ReturnType<typeof estimateRequestCost>>; estimateReasons: CostEstimateReason[] }
+  | { kind: "unavailable"; reason: MetricUnavailableReason };
+
+type MetricSource = Pick<RequestLogEntry, "provider" | "model" | "durationMs" | "usageStatus" | "usage"> & {
+  attempts?: readonly PersistedUsageAttempt[];
+};
+
+function tokPerSecondResult(entry: Pick<MetricSource, "durationMs" | "usageStatus" | "usage">): TokPerSecondResult {
+  if (!entry.usage) return { kind: "unavailable", reason: "usage_missing" };
+  if (entry.usageStatus === "unsupported") return { kind: "unavailable", reason: "usage_unsupported" };
+  const value = tokensPerSecond(entry.usage.outputTokens, entry.durationMs);
+  if (value === null) {
+    return {
+      kind: "unavailable",
+      reason: entry.usage.outputTokens <= 0 ? "output_missing" : "invalid_duration",
+    };
+  }
+  return { kind: "value", value, estimated: entry.usageStatus === "estimated" || entry.usage.estimated === true };
+}
+
+function unavailableCostReason(entry: MetricSource): MetricUnavailableReason {
+  // Normalizer-first classification: the landed normalizer recovers legacy
+  // cachedInputTokens=read+write rows via retry, so a raw read+write>input
+  // pre-check would misclassify recoverable rows (020 audit blocker #2).
+  if (!entry.usage && !entry.attempts?.length) return "usage_missing";
+  if (entry.usageStatus === "unsupported") return "usage_unsupported";
+  if (entry.attempts?.length) return "combo_attempt_unavailable";
+  if (!entry.usage) return "usage_missing";
+  if (!normalizeCostTokens(entry.usage)) {
+    const effectiveRead = entry.usage.cacheReadInputTokens ?? entry.usage.cachedInputTokens ?? 0;
+    const effectiveWrite = entry.usage.cacheCreationInputTokens ?? 0;
+    const finite = [entry.usage.inputTokens, entry.usage.outputTokens, effectiveRead, effectiveWrite]
+      .every(v => Number.isFinite(v) && v >= 0);
+    return finite ? "invalid_cache_breakdown" : "invalid_usage";
+  }
+  return "price_unmatched";
+}
+
+function costResult(entry: MetricSource): CostResult {
+  const estimate = entry.attempts?.length
+    ? estimateComboCost(entry.attempts)
+    : estimateRequestCost({ provider: entry.provider, model: entry.model, usage: entry.usage, usageStatus: entry.usageStatus });
+  if (!estimate) return { kind: "unavailable", reason: unavailableCostReason(entry) };
+  const estimateReasons = [
+    entry.usageStatus === "estimated" || entry.usage?.estimated ? "usage_estimated" as const : undefined,
+    entry.usage && entry.usage.cachedInputTokens === undefined
+      && entry.usage.cacheReadInputTokens === undefined
+      && entry.usage.cacheCreationInputTokens === undefined ? "cache_detail_missing" as const : undefined,
+    estimate.price?.source === "expected" || estimate.attempts?.some(a => a.price.source === "expected")
+      ? "expected_price_overlay" as const : undefined,
+  ].filter((reason): reason is CostEstimateReason => reason !== undefined);
+  return { kind: "value", estimate, estimateReasons };
+}
+
+function requestLogDto(entry: RequestLogEntry): Record<string, unknown> {
+  return {
+    ...entry,
+    displayMetrics: {
+      tokPerSecond: tokPerSecondResult(entry),
+      cost: costResult(entry),
+    },
+    ...(entry.attempts?.length
+      ? {
+        attempts: entry.attempts.map(attempt => ({
+          ...attempt,
+          displayMetrics: {
+            tokPerSecond: tokPerSecondResult(attempt),
+            cost: costResult({ ...attempt, attempts: undefined }),
+          },
+        })),
+      }
+      : {}),
   };
 }
 
@@ -311,7 +403,8 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   }
 
   if (url.pathname === "/api/logs" && req.method === "GET") {
-    return jsonResponse(filterRequestLogs(getRequestLogEntries(), url.searchParams));
+    const logs = filterRequestLogs(getRequestLogEntries(), url.searchParams);
+    return jsonResponse(logs.map(requestLogDto));
   }
 
   if (url.pathname === "/api/debug" && req.method === "GET") {
