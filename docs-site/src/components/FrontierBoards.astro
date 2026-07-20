@@ -11,9 +11,14 @@ import { FRONTIER_STRINGS } from "../data/frontier-i18n";
 
 interface Props {
   locale?: "en" | "ko" | "zh-cn";
+  /** Comma-separated board ids to render; omit for all boards. */
+  boards?: string;
+  /** Show the page-level subtitle (overview pages only). */
+  intro?: boolean;
 }
 
-const { locale = "en" } = Astro.props;
+const { locale = "en", boards: boardsProp, intro = false } = Astro.props;
+const include = boardsProp ? new Set(boardsProp.split(",").map(s => s.trim()).filter(Boolean)) : null;
 const strings = FRONTIER_STRINGS[locale] as Record<string, string>;
 const fallback = FRONTIER_STRINGS.en as Record<string, string>;
 const t = (key: string): string => strings[key] ?? fallback[key] ?? key;
@@ -25,7 +30,7 @@ const SCORE_HEADER: Record<string, string> = { en: "Score", ko: "점수", "zh-cn
 /** Dataset tags are kebab-case; i18n keys are camelCase (cheap-subagent → cheapSubagent). */
 const tagKey = (tag: string): string => tag.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 
-const boards = data.benchmarks.map(board => {
+const boards = data.benchmarks.filter(board => !include || include.has(board.id)).map(board => {
   const allMeasured = board.rows.every(row => row.costKind === "measured");
   const bestValue = allMeasured
     ? board.rows.reduce((best, row) => (row.score / row.avgCostUsd > best.score / best.avgCostUsd ? row : best), board.rows[0])
@@ -49,7 +54,7 @@ const boards = data.benchmarks.map(board => {
 ---
 
 <div class="frontier-root">
-  <p class="frontier-subtitle">{t("frontier.subtitle")}</p>
+  {intro && <p class="frontier-subtitle">{t("frontier.subtitle")}</p>}
   {
     boards.map(board => (
       <section class="frontier-board" aria-label={t(`frontier.board.${board.id}.title`)}>

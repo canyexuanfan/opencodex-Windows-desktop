@@ -22,6 +22,18 @@ PR #144(GUI Frontier 페이지, +5,421줄)를 GUI에 머지하는 대신, 정적
   산점도 외(cost stack/score/efficiency/reasoning), 도메인/필터 UI.
 - 데이터 출처: PR #144 (Wibias) — 이식 사실을 #144에 코멘트로 남긴다.
 
+## Amendment 1 (2026-07-20): 단일 페이지 → 별도 카테고리 분할
+
+사용자 피드백: 한 페이지에 10개 보드를 다 넣지 말고 별도 카테고리로 분리.
+
+- 사이드바에 top-level **Benchmarks** 카테고리(collapsed), Guides 아래 단일
+  항목은 제거.
+- 구조: Overview(`benchmarks/`) + 도메인별 페이지 5개(coding/frontend/terminal/
+  security/intelligence) × 3 로캘. 도메인 매핑은 PR의 frontier-domains.ts 그대로
+  (coding 6보드, 나머지 1보드씩).
+- FrontierBoards.astro에 `boards`(보드 id 필터) + `intro`(서브타이틀 표시 여부)
+  prop 추가. Overview는 차트 없이 도메인 링크 인덱스만.
+
 ## 검증
 
 - `bun run build` (docs-site) 성공.

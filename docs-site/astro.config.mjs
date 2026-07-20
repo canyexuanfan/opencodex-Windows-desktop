@@ -121,7 +121,19 @@ export default defineConfig({
             { label: "Sidecars: Web Search & Vision", translations: { ko: "사이드카: 웹 검색 & 비전", "zh-CN": "边车：网络搜索与视觉" }, slug: "guides/sidecars" },
             { label: "Web Dashboard", translations: { ko: "웹 대시보드", "zh-CN": "网页控制台" }, slug: "guides/web-dashboard" },
             { label: "Sub-agent Surface", translations: { ko: "서브에이전트 서피스", "zh-CN": "子代理界面" }, slug: "guides/sub-agent-surface" },
-            { label: "Benchmarks", translations: { ko: "벤치마크", "zh-CN": "基准测试" }, slug: "guides/benchmarks" },
+          ],
+        },
+        {
+          label: "Benchmarks",
+          translations: { ko: "벤치마크", "zh-CN": "基准测试" },
+          collapsed: true,
+          items: [
+            { label: "Overview", translations: { ko: "개요", "zh-CN": "概览" }, slug: "benchmarks" },
+            { label: "Coding", translations: { ko: "코딩", "zh-CN": "编程" }, slug: "benchmarks/coding" },
+            { label: "Frontend", translations: { ko: "프론트엔드", "zh-CN": "前端" }, slug: "benchmarks/frontend" },
+            { label: "Terminal", translations: { ko: "터미널", "zh-CN": "终端" }, slug: "benchmarks/terminal" },
+            { label: "Security", translations: { ko: "보안", "zh-CN": "安全" }, slug: "benchmarks/security" },
+            { label: "Intelligence", translations: { ko: "인텔리전스", "zh-CN": "智能" }, slug: "benchmarks/intelligence" },
           ],
         },
         {
