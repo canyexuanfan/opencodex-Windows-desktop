@@ -15,7 +15,25 @@
 | MODIFY | `gui/src/i18n/zh.ts` | 중국어 locale 키 |
 | MODIFY | `gui/src/i18n/de.ts` | 독일어 locale 키 |
 
-선행조건은 WP1 완료다. WP1이 생성하는 `src/usage/cost.ts`와 generated cost metadata의 내부 구현은 010 소관이며 이 문서에서 변경하지 않는다. 아래는 concurrent 작성된 010의 public API를 fresh 대조한 **소비 계약**이다 (`010_phase1_cost_core.md:195-255`, `274-415`). 020은 이 API를 rename하거나 확장하지 않고 `/api/logs` 전용 JSON DTO로 변환한다.
+선행조건은 WP1 완료다. WP1이 생성하는 `src/usage/cost.ts`와 generated cost metadata의 내부 구현은 010 소관이며 이 문서에서 변경하지 않는다.
+
+> **WP2 P-phase stale-check (2026-07-20, WP1 landed 커밋 1e5af20b 대조):**
+> 아래 "소비 계약" 블록은 concurrent 작성 시점의 가정이며 실제 landed API와 다음이 다르다.
+> 구현은 landed API를 따른다:
+>
+> 1. `estimateUsageCost()` 단일 함수는 **없다**. landed export는
+>    `estimateRequestCost({provider, model, usage, usageStatus}, overlays?)`(non-combo)와
+>    `estimateComboCost(attempts, overlays?)`(combo)다. `/api/logs` adapter가
+>    `entry.attempts?.length` 유무로 분기해 호출한다.
+> 2. `MatchedPrice.status`는 `"verified" | "verified-derived"`다. `"unverified"`는
+>    resolver가 아예 반환하지 않으므로(fail-closed가 코드로 강제됨) §3-4의
+>    `expected_price_unverified` unavailable 분기와 `matched` 필드는 **삭제**한다 —
+>    unverified는 estimate=null(→`price_unmatched`)로 이미 흡수된다.
+>    DTO의 price.status 타입은 `"verified" | "verified-derived"`로 쓰고,
+>    verified-derived면 `estimate.estimated`가 이미 true로 전파된다.
+> 3. `CostEstimate.price`는 non-combo에만 있고 combo는 `attempts[].price`다(landed와 동일).
+
+아래는 원래의 소비 계약 스케치다(위 stale-check가 우선).
 
 ```ts
 // src/usage/cost.ts — WP1 소유, 020은 아래 export만 소비한다.
@@ -57,9 +75,9 @@ export function estimateUsageCost(input: {
 export function tokensPerSecond(outputTokens: number, durationMs: number): number | null;
 ```
 
-WP1의 `CostEstimate`는 JSON-safe plain data이고 combo top-level 비용을 attempt별 계산 후 합산한다. 하나라도 계산 불가하면 `null`이다. 010은 unverified overlay도 estimate를 반환하도록 명세했지만, 000의 더 상위 SSOT는 미확정 단가를 fail-closed하라고 확정했다 (`000_plan.md:156`). 따라서 020 API adapter는 `price.status === "unverified"` 또는 combo `attempts.some(a => a.price.status === "unverified")`이면 숫자를 내지 않고 `expected_price_unverified`로 `—` 처리한다. cost.ts 내부를 수정하지 않는다.
+WP1의 `CostEstimate`는 JSON-safe plain data이고 combo top-level 비용을 attempt별 계산 후 합산한다. 하나라도 계산 불가하면 `null`이다. **stale-check #2에 따라 unverified 분기는 adapter에 필요 없다** — landed cost.ts가 unverified를 반환하지 않는다. cost.ts 내부를 수정하지 않는다.
 
-020이 소유하는 API DTO는 §4의 `TokPerSecondResult`/`CostResult` discriminated union이다. unavailable/estimate 사유는 WP1 pure result를 다음 순서로 분류한다: usage 상태/부재 → cache 합계 모순 또는 invalid usage → exact price 미매칭 → unverified expected → combo 일부 실패. 이 adapter는 계산식을 복제하지 않고 이유만 분류한다.
+020이 소유하는 API DTO는 §4의 `TokPerSecondResult`/`CostResult` discriminated union이다. unavailable/estimate 사유 분류는 §3 `unavailableCostReason()`이 SSOT다: usage 부재/unsupported → combo(attempt 단위 실패) → normalizer null(비유한 값 vs 양쪽 해석 모순) → exact price 미매칭. **normalizer 성공 여부를 먼저 확정**하고(legacy retry 복원 행을 오분류하지 않기 위해 — 감사 blocker #2) 이 adapter는 계산식을 복제하지 않고 이유만 분류한다.
 
 ## 1. fresh 현행 앵커
 
@@ -105,7 +123,8 @@ after:
 
 ```ts
 import {
-  estimateUsageCost,
+  estimateComboCost,
+  estimateRequestCost,
   normalizeCostTokens,
   tokensPerSecond,
 } from "../usage/cost";
@@ -125,25 +144,33 @@ function tokPerSecondResult(entry: Pick<RequestLogEntry, "durationMs" | "usageSt
 }
 
 function unavailableCostReason(entry: Pick<RequestLogEntry, "provider" | "model" | "usageStatus" | "usage" | "attempts">) {
+  // 감사 blocker #2 fold: normalizeCostTokens() 성공 여부를 먼저 확정한다 —
+  // landed normalizer는 canonical 실패 후 legacy retry로 복원하므로 raw read+write>input
+  // 선검사는 복원 가능한 행을 오분류한다. combo는 attempt 단위로 같은 로직을 적용한
+  // 뒤에도 실패 사유를 특정할 수 없으면 combo_attempt_unavailable로 뭉뚱그린다.
+  if (!entry.usage && !entry.attempts?.length) return "usage_missing" as const;
+  if (entry.usageStatus === "unsupported") return "usage_unsupported" as const;
   if (entry.attempts?.length) return "combo_attempt_unavailable" as const;
   if (!entry.usage) return "usage_missing" as const;
-  if (entry.usageStatus === "unsupported") return "usage_unsupported" as const;
-  const read = entry.usage.cacheReadInputTokens ?? entry.usage.cachedInputTokens ?? 0;
-  const write = entry.usage.cacheCreationInputTokens ?? 0;
-  if (read + write > entry.usage.inputTokens) return "invalid_cache_breakdown" as const;
-  if (!normalizeCostTokens(entry.usage)) return "invalid_usage" as const;
+  if (!normalizeCostTokens(entry.usage)) {
+    // normalizer가 null이면: 비유한/음수 값(invalid_usage) 또는 양쪽 해석 모두 모순
+    // (invalid_cache_breakdown). normalizer가 실제 소비하는 effective 필드 전부의
+    // 비음수 유한성으로 구분한다(재감사 blocker: optional cache 필드 NaN/음수 포함).
+    const effectiveRead = entry.usage.cacheReadInputTokens ?? entry.usage.cachedInputTokens ?? 0;
+    const effectiveWrite = entry.usage.cacheCreationInputTokens ?? 0;
+    const finite = [entry.usage.inputTokens, entry.usage.outputTokens, effectiveRead, effectiveWrite]
+      .every(v => Number.isFinite(v) && v >= 0);
+    return finite ? "invalid_cache_breakdown" as const : "invalid_usage" as const;
+  }
   return "price_unmatched" as const;
 }
 
 function costResult(entry: Pick<RequestLogEntry, "provider" | "model" | "usageStatus" | "usage" | "attempts">) {
-  const estimate = estimateUsageCost(entry);
+  // 감사 blocker #1 fold — landed API 직결: combo는 estimateComboCost, 그 외 estimateRequestCost.
+  const estimate = entry.attempts?.length
+    ? estimateComboCost(entry.attempts)
+    : estimateRequestCost({ provider: entry.provider, model: entry.model, usage: entry.usage, usageStatus: entry.usageStatus });
   if (!estimate) return { kind: "unavailable" as const, reason: unavailableCostReason(entry) };
-  const unverified = estimate.price?.status === "unverified"
-    ? estimate.price
-    : estimate.attempts?.find(attempt => attempt.price.status === "unverified")?.price;
-  if (unverified) {
-    return { kind: "unavailable" as const, reason: "expected_price_unverified" as const, matched: unverified };
-  }
   const estimateReasons = [
     entry.usageStatus === "estimated" || entry.usage?.estimated ? "usage_estimated" as const : undefined,
     entry.usage && entry.usage.cachedInputTokens === undefined
@@ -249,7 +276,7 @@ after:
 ```ts
 type MetricUnavailableReason =
   | "usage_missing" | "usage_unsupported" | "output_missing" | "invalid_duration"
-  | "price_unmatched" | "expected_price_unverified" | "invalid_cache_breakdown"
+  | "price_unmatched" | "invalid_cache_breakdown"
   | "invalid_usage" | "combo_attempt_unavailable";
 
 type TokPerSecondResult =
@@ -262,15 +289,14 @@ type CostResult =
       estimate: {
         cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
         estimated: boolean;
-        price?: { provider: string; modelId: string; jawcodeProvider?: string; source: "jawcode" | "expected"; status: "verified" };
-        attempts?: Array<{ ordinal: number; price: { provider: string; modelId: string; jawcodeProvider?: string; source: "jawcode" | "expected"; status: "verified" } }>;
+        price?: { provider: string; modelId: string; jawcodeProvider?: string; source: "jawcode" | "expected"; status: "verified" | "verified-derived" };
+        attempts?: Array<{ ordinal: number; price: { provider: string; modelId: string; jawcodeProvider?: string; source: "jawcode" | "expected"; status: "verified" | "verified-derived" } }>;
       };
       estimateReasons: Array<"usage_estimated" | "cache_detail_missing" | "expected_price_overlay">;
     }
   | {
       kind: "unavailable";
       reason: MetricUnavailableReason;
-      matched?: { provider: string; modelId: string; jawcodeProvider?: string; source: "expected"; status: "unverified" };
     };
 
 interface LogDisplayMetrics {
