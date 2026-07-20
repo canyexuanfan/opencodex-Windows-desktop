@@ -702,7 +702,7 @@ dialog.modal-overlay::backdrop {
 table.logs-table { min-width: 960px; }
 .log-col-rate { min-width: 7ch; white-space: nowrap; }
 .log-col-cost { min-width: 10ch; white-space: nowrap; }
-.log-status-cell { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.log-status-cell { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 7ch; line-height: var(--leading-tight); }
 .log-detail-btn {
   background: none; border: none; padding: 0; cursor: pointer;
   color: var(--accent-hover); font: inherit; font-size: var(--text-caption); text-decoration: underline;
@@ -710,6 +710,29 @@ table.logs-table { min-width: 960px; }
 }
 .log-detail-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; font-size: var(--text-control); }
 .log-detail-break { word-break: break-all; }
+.log-detail-card { max-width: 760px; }
+.log-detail-section { padding: 14px 0; border-top: 1px solid var(--border-soft); }
+.log-detail-section:first-of-type { padding-top: 0; border-top: 0; }
+.log-detail-section-title {
+  margin: 0 0 10px; font-size: var(--text-label);
+  font-weight: var(--weight-semibold); color: var(--text);
+}
+.log-detail-request-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.log-detail-request-row > span { min-width: 0; }
+.log-detail-notes { margin: 10px 0 0; padding-left: 18px; color: var(--muted); font-size: var(--text-label); }
+.log-detail-notes-line { margin: 8px 0 0; font-size: var(--text-label); }
+.log-detail-attempts-wrap { overflow-x: auto; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); }
+.log-detail-attempts { min-width: 680px; }
+.log-detail-attempts th, .log-detail-attempts td { vertical-align: top; }
+.log-detail-raw { margin-top: 14px; }
+.log-detail-raw > summary { cursor: pointer; color: var(--muted); font-size: var(--text-label); }
+.log-detail-raw[open] > summary { margin-bottom: 6px; }
+@media (max-width: 760px) {
+  .modal-overlay { padding: 16px 10px; }
+  .log-detail-card { max-height: calc(100dvh - 32px); padding: 16px; }
+  .log-detail-grid { grid-template-columns: minmax(7rem, max-content) minmax(0, 1fr); gap: 8px 10px; }
+  .log-detail-request-row { align-items: flex-start; flex-direction: column; }
+}
 .log-detail-json {
   background: var(--raised); border: 1px solid var(--border-soft); border-radius: var(--radius-sm);
   padding: 10px 12px; font-family: var(--font-code); font-size: var(--text-caption); line-height: var(--leading-body);
