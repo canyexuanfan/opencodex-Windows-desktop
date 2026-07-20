@@ -270,9 +270,13 @@ export async function cmdAddKey(args: string[], deps: AccountDeps): Promise<numb
   if (response.status === 0) return proxyUnreachable();
   if (response.status !== 201) return apiError(response.json, `failed to add a key for ${name}`);
   const id = typeof response.json.id === "string" ? response.json.id : null;
-  const result = { ok: true, id, ...(label ? { label } : {}) };
+  // Redact the key inside the label BEFORE serialization — a key containing
+  // JSON-escaped characters (" or \) would otherwise survive the whole-output
+  // pass in escaped form (audit finding, Carver WP3-C).
+  const safeLabel = label ? label.replaceAll(key, "[redacted]") : undefined;
+  const result = { ok: true, id, ...(safeLabel ? { label: safeLabel } : {}) };
   const output = wantsJson ? JSON.stringify(result, null, 2)
-    : `${name}: added API key ${id ?? ""}${label ? ` (${label})` : ""}`.trim();
+    : `${name}: added API key ${id ?? ""}${safeLabel ? ` (${safeLabel})` : ""}`.trim();
   console.log(output.replaceAll(key, "[redacted]"));
   return 0;
 }
