@@ -83,7 +83,7 @@ const helpEntries: Record<string, HelpEntry> = {
     usage: "ocx account <list|current|use> [provider] [id] [--json] [--all]",
     summary: "List and switch provider accounts and API-key pools (GUI parity).",
     details: [
-      "list [provider]     Codex account pool, OAuth accounts and API keys (masked only).",
+      "list [provider]     Codex account pool, OAuth accounts and API keys (identifiers shown masked as the API returns them).",
       "current <provider>  Show the active account or key.",
       "use <provider> <id> Switch the active credential; 'main' selects the Codex App login.",
       "Codex pool switches apply to new sessions; running threads keep their account.",

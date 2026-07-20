@@ -1,18 +1,10 @@
-/**
- * `ocx account` — list and switch Codex pool accounts, OAuth accounts and
- * API-key pools (GUI parity, issue #180).
- * Design: devlog/_plan/260720_issue180_cli_account_parity/010_account_cli_core.md
- *
- * Subcommands:
- *   list [provider] [--json] [--all]        List accounts/keys (masked only)
- *   current <provider> [--json]             Show the active account/key
- *   use <provider> <id|main> [--json]       Switch the active credential
- */
+/** `ocx account` — list and switch provider credentials (issue #180). */
 import { loadConfig } from "../config";
 import { isPublicOAuthProvider } from "../oauth/index";
 import { getProviderRegistryEntry, providerCodexAccountMode } from "../providers/registry";
 import type { OcxConfig } from "../types";
-import { apiJson, fetchRows, resolveBaseUrl, type ApiResult } from "./account-api";
+import { apiError, apiJson, fetchRows, proxyUnreachable, resolveBaseUrl, type ApiResult }
+  from "./account-api";
 
 export type AccountType = "codex" | "oauth" | "api-key";
 
@@ -36,6 +28,7 @@ export interface AccountDeps {
 }
 
 export type ClassifyResult = { type: AccountType } | { error: string };
+type TargetProvenance = "live-oauth-list" | "config" | "codex";
 
 const MAIN_ALIAS = "main";
 const MAIN_CODEX_ID = "__main__";
@@ -49,10 +42,6 @@ const ACCOUNT_USAGE = `Usage:
 
 List and switch provider accounts and API-key pools (masked output only).
 'main' selects the Codex App login for the openai account pool.`;
-
-// ---------------------------------------------------------------------------
-// Arg helpers (same local-copy convention as provider.ts / models.ts)
-// ---------------------------------------------------------------------------
 
 function consumeFlag(args: string[], flag: string): boolean {
   const idx = args.indexOf(flag);
@@ -69,11 +58,6 @@ function leftoverArgsError(args: string[]): string | null {
     ? `Unknown flag(s): ${unknown.join(", ")}`
     : `Unexpected argument(s): ${args.join(", ")}`;
 }
-
-// ---------------------------------------------------------------------------
-// Provider classification (config-first; mirrors isKeyAuthProvider + the GUI's
-// providerAuthSurface — see 010 audit fold R1#1)
-// ---------------------------------------------------------------------------
 
 export function classifyAccount(config: OcxConfig, name: string): ClassifyResult {
   const provider = config.providers?.[name];
@@ -100,21 +84,6 @@ function candidateNames(config: OcxConfig): string {
   return [...names].join(", ");
 }
 
-function proxyUnreachable(): number {
-  console.error("Proxy not reachable. Start it with 'ocx start' or 'ocx ensure'.");
-  return 1;
-}
-
-function apiError(json: Record<string, unknown>, fallback: string): number {
-  const message = typeof json.error === "string" ? json.error : fallback;
-  console.error(`Error: ${message}`);
-  return 1;
-}
-
-// ---------------------------------------------------------------------------
-// Output
-// ---------------------------------------------------------------------------
-
 function displayId(id: string): string {
   return id === MAIN_CODEX_ID ? MAIN_ALIAS : id;
 }
@@ -128,15 +97,14 @@ function statusText(row: AccountRow): string {
 
 export function formatAccountTable(rows: AccountRow[]): string {
   const header = ["PROVIDER", "TYPE", "ID", "PLAN/LABEL", "STATUS"];
-  const data = rows.map(r => [r.provider, r.type, displayId(r.id), r.label ?? "-", statusText(r)]);
+  const data = rows.map(r => {
+    const keyLabel = r.masked && r.label !== r.masked ? `${r.masked} (${r.label})` : r.masked;
+    return [r.provider, r.type, displayId(r.id), r.type === "api-key" ? keyLabel ?? "-" : r.label ?? "-", statusText(r)];
+  });
   const widths = header.map((h, i) => Math.max(h.length, ...data.map(d => d[i]!.length)));
   const line = (cols: string[]) => cols.map((c, i) => c.padEnd(widths[i]!)).join("  ").trimEnd();
   return [line(header), ...data.map(line)].join("\n");
 }
-
-// ---------------------------------------------------------------------------
-// Subcommands
-// ---------------------------------------------------------------------------
 
 async function cmdList(rest: string[], deps: AccountDeps): Promise<number> {
   const wantsJson = consumeFlag(rest, "--json");
@@ -152,30 +120,33 @@ async function cmdList(rest: string[], deps: AccountDeps): Promise<number> {
   const baseUrl = await resolveBaseUrl(deps);
   if (!baseUrl) return proxyUnreachable();
 
-  const targets: { name: string; type: AccountType }[] = [];
+  const targets: { name: string; type: AccountType; provenance: TargetProvenance }[] = [];
   if (name) {
     const c = classifyAccount(config, name);
     if ("error" in c) {
       console.error(`Error: ${c.error}. Known candidates: ${candidateNames(config)}`);
       return 1;
     }
-    targets.push({ name, type: c.type });
+    targets.push({ name, type: c.type, provenance: "config" });
   } else {
     const seen = new Set<string>();
-    const push = (n: string) => {
+    const push = (n: string, provenance: TargetProvenance) => {
       if (seen.has(n)) return;
       seen.add(n);
       const c = classifyAccount(config, n);
       if ("error" in c) return; // fan-out silently skips no-credential providers
-      targets.push({ name: n, type: c.type });
+      targets.push({ name: n, type: c.type, provenance });
     };
-    push("openai");
+    push("openai", "codex");
     const providersRes = await apiJson(deps, baseUrl, "GET", "/api/oauth/providers");
     if (providersRes.status === 0) return proxyUnreachable();
-    if (providersRes.status === 200 && Array.isArray(providersRes.json.providers)) {
-      for (const p of providersRes.json.providers as string[]) push(p);
+    if (providersRes.status !== 200) return apiError(providersRes.json, "failed to list OAuth providers");
+    if (Array.isArray(providersRes.json.providers)) {
+      for (const p of providersRes.json.providers) {
+        if (typeof p === "string") push(p, "live-oauth-list");
+      }
     }
-    for (const n of Object.keys(config.providers ?? {})) push(n);
+    for (const n of Object.keys(config.providers ?? {})) push(n, "config");
   }
 
   const rows: AccountRow[] = [];
@@ -185,7 +156,16 @@ async function cmdList(rest: string[], deps: AccountDeps): Promise<number> {
     if (r.networkDown) return proxyUnreachable();
     if (r.errorJson) {
       if (name) return apiError(r.errorJson, `failed to list ${t.name}`);
-      continue; // fan-out tolerates a provider the proxy does not know
+      const errorText = typeof r.errorJson.error === "string" ? r.errorJson.error : "";
+      const skipUnknownKey = t.type === "api-key"
+        && r.status === 404
+        && errorText.includes("unknown provider");
+      const skipConfigOAuth = t.type === "oauth"
+        && t.provenance === "config"
+        && r.status === 400
+        && errorText.includes("unknown oauth provider");
+      if (skipUnknownKey || skipConfigOAuth) continue;
+      return apiError(r.errorJson, `failed to list ${t.name}`);
     }
     if (r.rows.length === 0) {
       if (showAll) notes.push(`${t.name}: no stored accounts or keys`);

@@ -41,10 +41,23 @@ export async function resolveBaseUrl(deps: AccountDeps): Promise<string | null> 
   return `http://${probeHostname(live.hostname)}:${live.port}`;
 }
 
+export function proxyUnreachable(): number {
+  console.error("Proxy not reachable. Start it with 'ocx start' or 'ocx ensure'.");
+  return 1;
+}
+
+export function apiError(json: Record<string, unknown>, fallback: string): number {
+  const message = typeof json.error === "string" ? json.error : fallback;
+  console.error(`Error: ${message}`);
+  return 1;
+}
+
 export interface FamilyRows {
   rows: AccountRow[];
   activeId: string | null;
   autoSwitchThreshold?: number;
+  /** HTTP status for a completed family read, including failures. */
+  status?: number;
   /** Set when the family endpoint returned an error. */
   errorJson?: Record<string, unknown>;
   networkDown?: boolean;
@@ -63,12 +76,19 @@ async function fetchCodexRows(deps: AccountDeps, baseUrl: string): Promise<Famil
     apiJson(deps, baseUrl, "GET", "/api/codex-auth/accounts"),
     apiJson(deps, baseUrl, "GET", "/api/codex-auth/active"),
   ]);
-  if (accountsRes.status === 0 || activeRes.status === 0) return { rows: [], activeId: null, networkDown: true };
-  if (accountsRes.status !== 200) return { rows: [], activeId: null, errorJson: accountsRes.json };
-  const activeId = activeRes.status === 200 && typeof activeRes.json.activeCodexAccountId === "string"
+  if (accountsRes.status !== 0 && accountsRes.status !== 200) {
+    return { rows: [], activeId: null, status: accountsRes.status, errorJson: accountsRes.json };
+  }
+  if (activeRes.status !== 0 && activeRes.status !== 200) {
+    return { rows: [], activeId: null, status: activeRes.status, errorJson: activeRes.json };
+  }
+  if (accountsRes.status === 0 || activeRes.status === 0) {
+    return { rows: [], activeId: null, status: 0, networkDown: true };
+  }
+  const activeId = typeof activeRes.json.activeCodexAccountId === "string"
     ? activeRes.json.activeCodexAccountId
     : null;
-  const autoSwitchThreshold = activeRes.status === 200 && typeof activeRes.json.autoSwitchThreshold === "number"
+  const autoSwitchThreshold = typeof activeRes.json.autoSwitchThreshold === "number"
     ? activeRes.json.autoSwitchThreshold
     : undefined;
   const accounts = Array.isArray(accountsRes.json.accounts) ? accountsRes.json.accounts as CodexAccountDto[] : [];
@@ -82,7 +102,7 @@ async function fetchCodexRows(deps: AccountDeps, baseUrl: string): Promise<Famil
     active: a.id === activeId,
     needsReauth: a.needsReauth,
   }));
-  return { rows, activeId, autoSwitchThreshold };
+  return { rows, activeId, autoSwitchThreshold, status: 200 };
 }
 
 interface OAuthAccountDto {
@@ -94,8 +114,8 @@ interface OAuthAccountDto {
 
 async function fetchOAuthRows(deps: AccountDeps, baseUrl: string, name: string): Promise<FamilyRows> {
   const res = await apiJson(deps, baseUrl, "GET", `/api/oauth/accounts?provider=${encodeURIComponent(name)}`);
-  if (res.status === 0) return { rows: [], activeId: null, networkDown: true };
-  if (res.status !== 200) return { rows: [], activeId: null, errorJson: res.json };
+  if (res.status === 0) return { rows: [], activeId: null, status: 0, networkDown: true };
+  if (res.status !== 200) return { rows: [], activeId: null, status: res.status, errorJson: res.json };
   const activeId = typeof res.json.activeAccountId === "string" ? res.json.activeAccountId : null;
   const accounts = Array.isArray(res.json.accounts) ? res.json.accounts as OAuthAccountDto[] : [];
   const rows = accounts.map((a, i) => ({
@@ -107,7 +127,7 @@ async function fetchOAuthRows(deps: AccountDeps, baseUrl: string, name: string):
     active: a.active ?? a.id === activeId,
     needsReauth: a.needsReauth,
   }));
-  return { rows, activeId };
+  return { rows, activeId, status: 200 };
 }
 
 interface ApiKeyDto {
@@ -119,8 +139,8 @@ interface ApiKeyDto {
 
 async function fetchKeyRows(deps: AccountDeps, baseUrl: string, name: string): Promise<FamilyRows> {
   const res = await apiJson(deps, baseUrl, "GET", `/api/providers/keys?name=${encodeURIComponent(name)}`);
-  if (res.status === 0) return { rows: [], activeId: null, networkDown: true };
-  if (res.status !== 200) return { rows: [], activeId: null, errorJson: res.json };
+  if (res.status === 0) return { rows: [], activeId: null, status: 0, networkDown: true };
+  if (res.status !== 200) return { rows: [], activeId: null, status: res.status, errorJson: res.json };
   const activeId = typeof res.json.activeId === "string" ? res.json.activeId : null;
   const keys = Array.isArray(res.json.keys) ? res.json.keys as ApiKeyDto[] : [];
   const rows = keys.map(k => ({
@@ -131,7 +151,7 @@ async function fetchKeyRows(deps: AccountDeps, baseUrl: string, name: string): P
     masked: k.masked,
     active: k.active ?? k.id === activeId,
   }));
-  return { rows, activeId };
+  return { rows, activeId, status: 200 };
 }
 
 export function fetchRows(deps: AccountDeps, baseUrl: string, name: string, type: AccountType): Promise<FamilyRows> {

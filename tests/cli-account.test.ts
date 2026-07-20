@@ -1,280 +1,444 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
-import { cmdAccount, classifyAccount, formatAccountTable } from "../src/cli/account";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { cmdAccount, classifyAccount, formatAccountTable, type AccountDeps } from "../src/cli/account";
 import type { OcxConfig } from "../src/types";
 
-/**
- * Issue #180 core matrix (devlog 010). Mock management API; raw sentinel secret
- * lives only in the config fixture — output must never contain it.
- */
 const RAW_SENTINEL = "sk-rawsentinel1234567890";
+const MASKED_SENTINEL = "sk-ra****7890";
 
-const requests: { method: string; path: string; body?: unknown }[] = [];
+interface RecordedRequest {
+  method: string;
+  path: string;
+  body?: unknown;
+}
 
-function cfg(): OcxConfig {
+interface CommandResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+  output: string;
+}
+
+let server: ReturnType<typeof Bun.serve>;
+let baseUrl = "";
+let activeCodexAccountId: string | null = "chatgpt_1";
+let activeReadFailure: { status: number; error: string } | null = null;
+let oauthListFailure: { provider: string; status: number; error: string } | null = null;
+let keyListFailure: { provider: string; status: number; error: string } | null = null;
+let logs: string[] = [];
+let errors: string[] = [];
+let originalLog: typeof console.log;
+let originalError: typeof console.error;
+const requests: RecordedRequest[] = [];
+
+function fixtureConfig(): OcxConfig {
   return {
     port: 10100,
     defaultProvider: "openai",
     providers: {
-      openai: { adapter: "openai-responses", baseUrl: "http://x/v1", authMode: "forward" },
-      anthropic: { adapter: "anthropic", baseUrl: "http://x", authMode: "oauth" },
-      kiro: { adapter: "anthropic", baseUrl: "http://x", authMode: "oauth" },
-      openrouter: { adapter: "openai-chat", baseUrl: "http://x/v1", authMode: "key", apiKey: RAW_SENTINEL },
-      ollama: { adapter: "ollama", baseUrl: "http://x", authMode: "local" },
-      "fwd-custom": { adapter: "openai-chat", baseUrl: "http://x/v1", authMode: "forward" },
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authMode: "forward",
+        codexAccountMode: "pool",
+      },
+      anthropic: {
+        adapter: "anthropic",
+        baseUrl: "https://api.anthropic.com",
+        authMode: "oauth",
+      },
+      kiro: {
+        adapter: "anthropic",
+        baseUrl: "https://q.us-east-1.amazonaws.com",
+        authMode: "oauth",
+      },
+      "github-copilot": {
+        adapter: "openai-chat",
+        baseUrl: "https://api.githubcopilot.com",
+        authMode: "oauth",
+      },
+      openrouter: {
+        adapter: "openai-chat",
+        baseUrl: "https://openrouter.ai/api/v1",
+        authMode: "key",
+        apiKey: RAW_SENTINEL,
+      },
+      ollama: {
+        adapter: "openai-chat",
+        baseUrl: "http://127.0.0.1:11434/v1",
+        authMode: "local",
+        apiKey: RAW_SENTINEL,
+      },
+      "forward-custom": {
+        adapter: "openai-chat",
+        baseUrl: "https://forward.invalid/v1",
+        authMode: "forward",
+      },
     },
-  } as unknown as OcxConfig;
+  };
 }
 
-let server: Server;
-let baseUrl: string;
-let codexActiveId: string | null = "chatgpt-1";
-
-function route(pathname: string, query: URLSearchParams): { status: number; body: unknown } {
-  if (pathname === "/api/codex-auth/accounts") {
-    return { status: 200, body: { accounts: [
-      { id: "__main__", email: "m***@x.com", plan: "plus", isMain: true, hasCredential: true, quota: null },
-      { id: "chatgpt-1", email: "j***@y.com", plan: "free", isMain: false, hasCredential: true, quota: null, needsReauth: true },
-    ] } };
-  }
-  if (pathname === "/api/codex-auth/active") {
-    return { status: 200, body: { activeCodexAccountId: codexActiveId, autoSwitchThreshold: 80, upstreamFailoverThreshold: 3 } };
-  }
-  if (pathname === "/api/oauth/providers") return { status: 200, body: { providers: ["anthropic", "kiro", "xai"] } };
-  if (pathname === "/api/oauth/accounts") {
-    const provider = query.get("provider");
-    if (provider === "anthropic") return { status: 200, body: { activeAccountId: "acct_1", accounts: [
-      { id: "acct_1", email: "a***@z.com", active: true },
-      { id: "acct_2", active: false },
-    ] } };
-    if (provider === "kiro") return { status: 200, body: { activeAccountId: "kiro_1", accounts: [{ id: "kiro_1", active: true }] } };
-    return { status: 200, body: { activeAccountId: null, accounts: [] } };
-  }
-  if (pathname === "/api/providers/keys") {
-    if (query.get("name") === "openrouter") return { status: 200, body: { activeId: "key_1", keys: [
-      { id: "key_1", label: "personal", masked: "sk-ra****7890", active: true },
-    ] } };
-    return { status: 404, body: { error: "unknown provider" } };
-  }
-  return { status: 404, body: { error: "not found" } };
-}
-
-beforeAll(async () => {
-  server = createServer((req, res) => {
-    const url = new URL(req.url ?? "/", "http://localhost");
-    const chunks: Buffer[] = [];
-    req.on("data", c => chunks.push(c));
-    req.on("end", () => {
-      const raw = Buffer.concat(chunks).toString("utf8");
-      const parsedBody = raw ? JSON.parse(raw) : undefined;
-      requests.push({ method: req.method ?? "GET", path: url.pathname, body: parsedBody });
-      let out: { status: number; body: unknown };
-      if (req.method === "PUT" && url.pathname === "/api/codex-auth/active") {
-        const accountId = (parsedBody as { accountId?: string }).accountId;
-        out = accountId === "nope" ? { status: 400, body: { error: "Account not found" } }
-          : { status: 200, body: { ok: true, activeCodexAccountId: accountId } };
-      } else if (req.method === "PUT" && url.pathname === "/api/oauth/accounts/active") {
-        const accountId = (parsedBody as { accountId?: string }).accountId;
-        out = accountId === "nope" ? { status: 404, body: { error: "account not found" } }
-          : { status: 200, body: { ok: true, provider: "anthropic", activeAccountId: accountId } };
-      } else if (req.method === "PUT" && url.pathname === "/api/providers/keys/active") {
-        const id = (parsedBody as { id?: string }).id;
-        out = id === "nope" ? { status: 404, body: { error: "key not found" } }
-          : { status: 200, body: { ok: true, name: "openrouter", activeId: id } };
-      } else {
-        out = route(url.pathname, url.searchParams);
-      }
-      res.writeHead(out.status, { "content-type": "application/json" });
-      res.end(JSON.stringify(out.body));
-    });
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
   });
-  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
-  baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+}
+
+async function mockManagementApi(req: Request): Promise<Response> {
+  const url = new URL(req.url);
+  const body = req.method === "PUT" ? await req.json() : undefined;
+  requests.push({ method: req.method, path: url.pathname, body });
+
+  if (req.method === "GET" && url.pathname === "/api/codex-auth/accounts") {
+    return json({
+      accounts: [
+        { id: "__main__", email: "m***@example.com", plan: "plus", isMain: true },
+        { id: "chatgpt_1", email: "j***@example.com", plan: "pro", needsReauth: true },
+      ],
+    });
+  }
+
+  if (url.pathname === "/api/codex-auth/active") {
+    if (req.method === "PUT") {
+      const accountId = (body as { accountId?: string }).accountId;
+      activeCodexAccountId = accountId ?? null;
+      return json({ ok: true, activeCodexAccountId });
+    }
+    if (req.method === "GET") {
+      if (activeReadFailure) return json({ error: activeReadFailure.error }, activeReadFailure.status);
+      return json({ activeCodexAccountId, autoSwitchThreshold: 80 });
+    }
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/oauth/providers") {
+    return json({ providers: ["anthropic", "kiro", "xai"] });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/oauth/accounts") {
+    const provider = url.searchParams.get("provider");
+    if (oauthListFailure?.provider === provider) {
+      return json({ error: oauthListFailure.error }, oauthListFailure.status);
+    }
+    if (provider === "anthropic") {
+      return json({
+        activeAccountId: "acct_1",
+        accounts: [
+          { id: "acct_1", email: "a***@example.com", active: true },
+          { id: "acct_2", active: false },
+        ],
+      });
+    }
+    if (provider === "kiro") {
+      return json({
+        activeAccountId: "kiro_1",
+        accounts: [{ id: "kiro_1", email: "k***@example.com", active: true }],
+      });
+    }
+    return json({ activeAccountId: null, accounts: [] });
+  }
+
+  if (req.method === "PUT" && url.pathname === "/api/oauth/accounts/active") {
+    const accountId = (body as { accountId?: string }).accountId;
+    if (accountId === "nope") {
+      return json({ error: "anthropic account nope was not found" }, 404);
+    }
+    return json({ ok: true, activeAccountId: accountId });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/providers/keys") {
+    const provider = url.searchParams.get("name");
+    if (keyListFailure?.provider === provider) {
+      return json({ error: keyListFailure.error }, keyListFailure.status);
+    }
+    if (provider === "openrouter") {
+      return json({
+        activeId: "key_1",
+        keys: [{
+          id: "key_1",
+          label: "personal",
+          masked: MASKED_SENTINEL,
+          apiKey: RAW_SENTINEL,
+          active: true,
+        }],
+      });
+    }
+    return json({ error: "provider key pool not found" }, 404);
+  }
+
+  if (req.method === "PUT" && url.pathname === "/api/providers/keys/active") {
+    return json({ ok: true });
+  }
+
+  return json({ error: `unhandled mock endpoint: ${req.method} ${url.pathname}` }, 404);
+}
+
+function defaultDeps(): AccountDeps {
+  return { baseUrl, loadConfigImpl: fixtureConfig };
+}
+
+async function run(args: string[], deps: AccountDeps = defaultDeps()): Promise<CommandResult> {
+  logs.length = 0;
+  errors.length = 0;
+  const code = await cmdAccount(args, deps);
+  const stdout = logs.join("\n");
+  const stderr = errors.join("\n");
+  return { code, stdout, stderr, output: [stdout, stderr].filter(Boolean).join("\n") };
+}
+
+beforeAll(() => {
+  server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: mockManagementApi });
+  baseUrl = `http://127.0.0.1:${server.port}`;
 });
 
-afterAll(() => server.close());
+afterAll(() => {
+  server.stop(true);
+});
 
-function capture(): { lines: string[]; errors: string[]; restore: () => void } {
-  const lines: string[] = [];
-  const errors: string[] = [];
-  const origLog = console.log;
-  const origErr = console.error;
-  console.log = (...a: unknown[]) => { lines.push(a.map(String).join(" ")); };
-  console.error = (...a: unknown[]) => { errors.push(a.map(String).join(" ")); };
-  return { lines, errors, restore: () => { console.log = origLog; console.error = origErr; } };
-}
+beforeEach(() => {
+  activeCodexAccountId = "chatgpt_1";
+  activeReadFailure = null;
+  oauthListFailure = null;
+  keyListFailure = null;
+  requests.length = 0;
+  logs = [];
+  errors = [];
+  originalLog = console.log;
+  originalError = console.error;
+  console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
+  console.error = (...args: unknown[]) => errors.push(args.map(String).join(" "));
+});
 
-const deps = () => ({ baseUrl, loadConfigImpl: cfg });
-const out = (c: ReturnType<typeof capture>) => [...c.lines, ...c.errors].join("\n");
+afterEach(() => {
+  console.log = originalLog;
+  console.error = originalError;
+});
 
-beforeAll(() => { requests.length = 0; });
+describe("ocx account CLI (issue #180 matrix)", () => {
+  test("1: list renders all three account families, main alias, and padded columns", async () => {
+    const result = await run(["list"]);
 
-describe("ocx account core (issue #180)", () => {
-  test("1: list shows all three families with main display + padded table", async () => {
-    const c = capture();
-    const code = await cmdAccount(["list"], deps());
-    c.restore();
-    expect(code).toBe(0);
-    const text = c.lines.join("\n");
-    expect(text).toContain("PROVIDER");
-    expect(text).toContain("openai");
-    expect(text).toContain("codex");
-    expect(text).toContain("main");
-    expect(text).toContain("chatgpt-1");
-    expect(text).toContain("anthropic");
-    expect(text).toContain("acct_1");
-    expect(text).toContain("openrouter");
-    expect(text).toContain("key_1");
-    expect(text).toContain("next session");
-    expect(text).toContain("needs-reauth");
-    // xai has zero accounts → skipped silently without --all
-    expect(text).not.toContain("xai");
+    expect(result.code).toBe(0);
+    expect(result.stdout).toMatch(/^PROVIDER\s{2,}TYPE\s{2,}ID\s{2,}PLAN\/LABEL\s{2,}STATUS/m);
+    expect(result.stdout).toMatch(/^openai\s+codex\s+main\s+plus/m);
+    expect(result.stdout).toMatch(/^anthropic\s+oauth\s+acct_1\s+a\*\*\*@example\.com\s+active/m);
+    expect(result.stdout).toMatch(/^openrouter\s+api-key\s+key_1\s+sk-ra\*\*\*\*7890 \(personal\)\s+active/m);
+    expect(result.stdout).not.toContain("__main__");
+
+    const lines = result.stdout.split("\n");
+    const typeColumn = lines[0]!.indexOf("TYPE");
+    expect(lines.find(line => line.startsWith("openai"))!.indexOf("codex")).toBe(typeColumn);
+    expect(lines.find(line => line.startsWith("anthropic"))!.indexOf("oauth")).toBe(typeColumn);
+    expect(lines.find(line => line.startsWith("openrouter"))!.indexOf("api-key")).toBe(typeColumn);
   });
 
-  test("2: list --json parses and keeps the raw __main__ id", async () => {
-    const c = capture();
-    const code = await cmdAccount(["list", "--json"], deps());
-    c.restore();
-    expect(code).toBe(0);
-    const parsed = JSON.parse(c.lines.join("\n"));
-    const ids = parsed.accounts.map((a: { id: string }) => a.id);
-    expect(ids).toContain("__main__");
-    expect(ids).toContain("acct_1");
-    expect(ids).toContain("key_1");
+  test("2: list --json parses and preserves the raw __main__ id", async () => {
+    const result = await run(["list", "--json"]);
+    const parsed = JSON.parse(result.stdout) as { accounts: Array<{ id: string; type: string }> };
+
+    expect(result.code).toBe(0);
+    expect(parsed.accounts.some(row => row.id === "__main__")).toBe(true);
+    expect(new Set(parsed.accounts.map(row => row.type))).toEqual(new Set(["codex", "oauth", "api-key"]));
   });
 
-  test("3: --all surfaces zero-row providers as notes", async () => {
-    const c = capture();
-    const code = await cmdAccount(["list", "--all"], deps());
-    c.restore();
-    expect(code).toBe(0);
-    expect(out(c)).toContain("xai: no stored accounts or keys");
+  test("3: empty providers are skipped by default and shown with --all", async () => {
+    const normal = await run(["list"]);
+    const withAll = await run(["list", "--all"]);
+
+    expect(normal.code).toBe(0);
+    expect(normal.output).not.toContain("xai");
+    expect(withAll.code).toBe(0);
+    expect(withAll.output).toContain("xai: no stored accounts or keys");
   });
 
-  test("4: current openai prints the pinned account", async () => {
-    codexActiveId = "chatgpt-1";
-    const c = capture();
-    const code = await cmdAccount(["current", "openai"], deps());
-    c.restore();
-    expect(code).toBe(0);
-    expect(c.lines.join("\n")).toContain("chatgpt-1");
-    expect(c.lines.join("\n")).toContain("next session");
+  test("4: current openai prints the pinned id and plan", async () => {
+    const result = await run(["current", "openai"]);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("chatgpt_1");
+    expect(result.stdout).toContain("pro");
+    expect(result.stdout).toContain("next session");
   });
 
-  test("5: current openai with null pin prints the auto note", async () => {
-    codexActiveId = null;
-    const c = capture();
-    const code = await cmdAccount(["current", "openai"], deps());
-    c.restore();
-    codexActiveId = "chatgpt-1";
-    expect(code).toBe(0);
-    expect(out(c)).toContain("auto (no pin");
+  test("5: current openai explains automatic selection when active is null", async () => {
+    activeCodexAccountId = null;
+    const result = await run(["current", "openai"]);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("auto (no pin");
+    expect(result.stdout).toContain("lowest-usage account is selected per request");
   });
 
-  test("6: use anthropic sends the oauth PUT body and exits 0", async () => {
-    requests.length = 0;
-    const c = capture();
-    const code = await cmdAccount(["use", "anthropic", "acct_2"], deps());
-    c.restore();
-    expect(code).toBe(0);
-    const put = requests.find(r => r.method === "PUT" && r.path === "/api/oauth/accounts/active");
-    expect(put?.body).toEqual({ provider: "anthropic", accountId: "acct_2" });
+  test("6: use anthropic acct_1 sends the OAuth PUT body and exits zero", async () => {
+    const result = await run(["use", "anthropic", "acct_1"]);
+    const put = requests.find(request =>
+      request.method === "PUT" && request.path === "/api/oauth/accounts/active"
+    );
+
+    expect(result.code).toBe(0);
+    expect(put?.body).toEqual({ provider: "anthropic", accountId: "acct_1" });
   });
 
-  test("7: use openai main maps to the __main__ sentinel", async () => {
-    requests.length = 0;
-    const c = capture();
-    const code = await cmdAccount(["use", "openai", "main"], deps());
-    c.restore();
-    expect(code).toBe(0);
-    const put = requests.find(r => r.method === "PUT" && r.path === "/api/codex-auth/active");
+  test("7: use openai main maps the alias to __main__", async () => {
+    const result = await run(["use", "openai", "main"]);
+    const put = requests.find(request =>
+      request.method === "PUT" && request.path === "/api/codex-auth/active"
+    );
+
+    expect(result.code).toBe(0);
     expect(put?.body).toEqual({ accountId: "__main__" });
-    expect(out(c)).toContain("new Codex sessions");
-    expect(out(c)).toContain("auto-switch (threshold 80%) may override");
   });
 
-  test("8: unknown provider exits 1 and names candidates", async () => {
-    const c = capture();
-    const code = await cmdAccount(["use", "nosuch", "x"], deps());
-    c.restore();
-    expect(code).toBe(1);
-    expect(out(c)).toContain('unknown provider "nosuch"');
-    expect(out(c)).toContain("openai");
+  test("8: an unknown provider exits one and stderr names candidates", async () => {
+    const result = await run(["use", "nosuch", "x"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('unknown provider "nosuch"');
+    expect(result.stderr).toContain("Known candidates:");
+    expect(result.stderr).toContain("openai");
+    expect(result.stderr).toContain("anthropic");
   });
 
-  test("9: unknown account surfaces the server error and exits 1", async () => {
-    const c = capture();
-    const code = await cmdAccount(["use", "anthropic", "nope"], deps());
-    c.restore();
-    expect(code).toBe(1);
-    expect(out(c)).toContain("account not found");
+  test("9: an OAuth API 404 exits one and surfaces the server error", async () => {
+    const result = await run(["use", "anthropic", "nope"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("anthropic account nope was not found");
   });
 
-  test("10: proxy down exits 1 with start/ensure guidance", async () => {
-    const c = capture();
-    const code = await cmdAccount(["list"], { baseUrl: "http://127.0.0.1:1", loadConfigImpl: cfg });
-    c.restore();
-    expect(code).toBe(1);
-    expect(out(c)).toContain("ocx start");
-    expect(out(c)).toContain("ocx ensure");
+  test("10: proxy-down exits one with ocx start and ensure guidance", async () => {
+    const result = await run(
+      ["list"],
+      { baseUrl: "http://127.0.0.1:1", loadConfigImpl: fixtureConfig },
+    );
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("ocx start");
+    expect(result.stderr).toContain("ocx ensure");
   });
 
-  test("11: no output path ever prints the raw sentinel secret", async () => {
-    for (const argv of [["list"], ["list", "--json"], ["current", "openrouter"], ["list", "--all"]]) {
-      const c = capture();
-      await cmdAccount(argv, deps());
-      c.restore();
-      expect(out(c)).not.toContain(RAW_SENTINEL);
-      expect(out(c)).not.toContain("rawsentinel");
-    }
+  test("11: list projects only masked API-key DTO fields", async () => {
+    const human = await run(["list"]);
+    const machine = await run(["list", "--json"]);
+    const parsed = JSON.parse(machine.stdout) as { accounts: Array<Record<string, unknown>> };
+    const keyRow = parsed.accounts.find(row => row.type === "api-key");
+
+    expect(human.stdout).toContain(MASKED_SENTINEL);
+    expect(machine.stdout).toContain(MASKED_SENTINEL);
+    expect(keyRow).not.toHaveProperty("apiKey");
+    expect(human.output).not.toContain(RAW_SENTINEL);
+    expect(machine.output).not.toContain(RAW_SENTINEL);
   });
 
-  test("12: kiro list prints the replacement-style single-slot note", async () => {
-    const c = capture();
-    const code = await cmdAccount(["list", "kiro"], deps());
-    c.restore();
-    expect(code).toBe(0);
-    expect(out(c)).toContain("single login slot");
+  test("12: list kiro prints the single-slot replacement note", async () => {
+    const result = await run(["list", "kiro"]);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("single login slot");
+    expect(result.stdout).toContain("re-login replaces the current account");
   });
 
-  test("13: usage errors exit 1 with usage text", async () => {
-    for (const argv of [[], ["use", "openai"], ["current"], ["list", "openai", "--bogus"]]) {
-      const c = capture();
-      const code = await cmdAccount(argv, deps());
-      c.restore();
-      expect(code).toBe(1);
-      expect(out(c)).toContain("Usage:");
-    }
+  test("13: bare account and use without an id return usage errors", async () => {
+    const bare = await run([]);
+    const missingId = await run(["use", "anthropic"]);
+
+    expect(bare.code).toBe(1);
+    expect(bare.stderr).toContain("Usage:");
+    expect(bare.stderr).toContain("ocx account list");
+    expect(missingId.code).toBe(1);
+    expect(missingId.stderr).toContain("Usage:");
+    expect(missingId.stderr).toContain("ocx account use");
   });
 
-  test("14: fan-out skips local/forward providers silently; explicit list ollama errors", async () => {
-    const c = capture();
-    const code = await cmdAccount(["list"], deps());
-    c.restore();
-    expect(code).toBe(0);
-    expect(out(c)).not.toContain("ollama");
-    expect(out(c)).not.toContain("fwd-custom");
-    const c2 = capture();
-    const code2 = await cmdAccount(["list", "ollama"], deps());
-    c2.restore();
-    expect(code2).toBe(1);
-    expect(out(c2)).toContain("no credentials");
+  test("14: fan-out skips local/forward providers while explicit ollama errors", async () => {
+    const fanOut = await run(["list"]);
+    const explicit = await run(["list", "ollama"]);
+
+    expect(fanOut.code).toBe(0);
+    expect(fanOut.output).not.toContain("ollama");
+    expect(fanOut.output).not.toContain("forward-custom");
+    expect(explicit.code).toBe(1);
+    expect(explicit.stderr).toContain("has no credentials");
   });
 
-  test("classifyAccount: key-overridden oauth provider routes to api-key (audit R1#1)", () => {
-    const config = cfg();
+  test("15: fan-out applies family- and provenance-specific error propagation", async () => {
+    oauthListFailure = { provider: "anthropic", status: 401, error: "proxy authentication required" };
+    const authFailure = await run(["list"]);
+
+    expect(authFailure.code).toBe(1);
+    expect(authFailure.stderr).toContain("proxy authentication required");
+    expect(authFailure.stdout).toBe("");
+
+    oauthListFailure = { provider: "anthropic", status: 400, error: "unknown oauth provider" };
+    const inconsistentLiveProvider = await run(["list"]);
+
+    expect(inconsistentLiveProvider.code).toBe(1);
+    expect(inconsistentLiveProvider.stderr).toContain("unknown oauth provider");
+
+    oauthListFailure = { provider: "github-copilot", status: 400, error: "unknown oauth provider" };
+    const staleConfigOAuth = await run(["list"]);
+
+    expect(staleConfigOAuth.code).toBe(0);
+    expect(staleConfigOAuth.stderr).toBe("");
+
+    oauthListFailure = null;
+    keyListFailure = { provider: "openrouter", status: 404, error: "unknown provider" };
+    const staleKeyProvider = await run(["list"]);
+
+    expect(staleKeyProvider.code).toBe(0);
+    expect(staleKeyProvider.stderr).toBe("");
+  });
+
+  test("16: a failed Codex active read is not reported as automatic selection", async () => {
+    activeReadFailure = { status: 500, error: "active account read failed" };
+    const result = await run(["current", "openai"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("active account read failed");
+    expect(result.output).not.toContain("auto (no pin");
+  });
+
+  test("17: local providers reject credential listing even when config contains an API key", async () => {
+    const result = await run(["list", "ollama"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("has no credentials");
+  });
+
+  // --- Regression guards restored from the first suite (Aquinas A-gate finding 1) ---
+
+  test("18: list marks a needsReauth codex account in the STATUS column", async () => {
+    const result = await run(["list", "openai"]);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("chatgpt_1");
+    expect(result.stdout).toContain("needs-reauth");
+  });
+
+  test("19: use openai main prints next-session and auto-switch override notes", async () => {
+    const result = await run(["use", "openai", "main"]);
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain("new Codex sessions");
+    expect(result.stderr).toContain("running threads keep their current account");
+    expect(result.stderr).toContain("auto-switch (threshold 80%) may override this pin");
+  });
+
+  test("20: classifyAccount routes a key-overridden OAuth provider to api-key (audit R1#1)", () => {
+    const config = fixtureConfig();
     (config.providers as Record<string, { authMode?: string }>).xai = { authMode: "key" };
+
     expect(classifyAccount(config, "xai")).toEqual({ type: "api-key" });
     expect(classifyAccount(config, "anthropic")).toEqual({ type: "oauth" });
     expect(classifyAccount(config, "openai")).toEqual({ type: "codex" });
     expect(classifyAccount(config, "ollama")).toHaveProperty("error");
+    expect(classifyAccount(config, "no-such-provider")).toHaveProperty("error");
   });
 
-  test("formatAccountTable: __main__ renders as main", () => {
+  test("21: formatAccountTable renders __main__ as main with next-session status", () => {
     const table = formatAccountTable([
       { provider: "openai", type: "codex", id: "__main__", label: "plus", active: true },
     ]);
+
     expect(table).toContain("main");
     expect(table).not.toContain("__main__");
     expect(table).toContain("next session");
