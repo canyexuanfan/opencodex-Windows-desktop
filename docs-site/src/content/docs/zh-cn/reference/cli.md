@@ -191,7 +191,7 @@ ocx models --provider anthropic --json
 通过正在运行的代理列出和切换提供商账号及 API key pool。已发布的帮助界面如下：
 
 ```text
-ocx account <list|current|use|refresh|auto-switch|remove|add-key> ...
+Usage: ocx account <list|current|use|refresh|auto-switch|remove|add-key> ...
 
 List and switch provider accounts and API-key pools (GUI parity).
 

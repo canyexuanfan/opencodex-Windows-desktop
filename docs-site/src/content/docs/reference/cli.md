@@ -196,7 +196,7 @@ List and switch provider accounts and API-key pools through the running proxy. T
 surface is:
 
 ```text
-ocx account <list|current|use|refresh|auto-switch|remove|add-key> ...
+Usage: ocx account <list|current|use|refresh|auto-switch|remove|add-key> ...
 
 List and switch provider accounts and API-key pools (GUI parity).
 

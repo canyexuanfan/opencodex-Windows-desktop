@@ -198,7 +198,7 @@ ocx models --provider anthropic --json
 명령 표면은 다음과 같습니다.
 
 ```text
-ocx account <list|current|use|refresh|auto-switch|remove|add-key> ...
+Usage: ocx account <list|current|use|refresh|auto-switch|remove|add-key> ...
 
 List and switch provider accounts and API-key pools (GUI parity).
 
