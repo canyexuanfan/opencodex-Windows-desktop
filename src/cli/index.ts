@@ -582,6 +582,12 @@ switch (command) {
     break;
   }
   case "update": {
+    // `ocx update --help` must print usage and exit WITHOUT side effects — running the
+    // real self-update stops the proxy and drops in-flight routed streams (issue #168).
+    if (hasHelpFlag(args.slice(1))) {
+      printSubcommandUsage("update");
+      break;
+    }
     const { runUpdate } = await import("../update");
     await runUpdate();
     break;

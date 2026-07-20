@@ -232,6 +232,17 @@ function resolveBun() {
   return bin;
 }
 
+// `ocx update --help` prints usage and exits WITHOUT side effects. The npm launcher
+// intercepts `update` before the Bun CLI starts, so the help short-circuit must live
+// here too — otherwise --help runs the real self-update, stops the proxy, and drops
+// in-flight routed streams (issue #168).
+const updateHelpRequested = process.argv[2] === "update" &&
+  process.argv.slice(3).some(a => a === "--help" || a === "-h" || a === "help");
+if (updateHelpRequested) {
+  console.log("Usage: ocx update [--tag latest|preview]\n\nUpdate opencodex. Preview installs stay on the preview tag unless overridden.");
+  process.exit(0);
+}
+
 if (process.argv[2] === "update" && isNodeModulesInstall() && !isBunGlobalInstall()) {
   runNpmSelfUpdate();
 }
