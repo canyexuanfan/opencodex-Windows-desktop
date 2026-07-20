@@ -19,6 +19,43 @@ interface UsageBreakdown {
 
 type LogUsageStatus = "reported" | "unreported" | "unsupported" | "estimated";
 
+type MetricUnavailableReason =
+  | "usage_missing" | "usage_unsupported" | "output_missing" | "invalid_duration"
+  | "price_unmatched" | "invalid_cache_breakdown"
+  | "invalid_usage" | "combo_attempt_unavailable";
+
+type TokPerSecondResult =
+  | { kind: "value"; value: number; estimated: boolean }
+  | { kind: "unavailable"; reason: MetricUnavailableReason };
+
+interface MatchedPriceInfo {
+  provider: string;
+  modelId: string;
+  jawcodeProvider?: string;
+  source: "jawcode" | "expected";
+  sourceRef?: string;
+  verifiedAt?: string;
+  status: "verified" | "verified-derived";
+}
+
+type CostResult =
+  | {
+    kind: "value";
+    estimate: {
+      cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+      estimated: boolean;
+      price?: MatchedPriceInfo;
+      attempts?: Array<{ ordinal: number; price: MatchedPriceInfo }>;
+    };
+    estimateReasons: Array<"usage_estimated" | "cache_detail_missing" | "expected_price_overlay">;
+  }
+  | { kind: "unavailable"; reason: MetricUnavailableReason };
+
+interface LogDisplayMetrics {
+  tokPerSecond: TokPerSecondResult;
+  cost: CostResult;
+}
+
 interface LogEntry {
   requestId?: string;
   timestamp: number;
@@ -40,6 +77,7 @@ interface LogEntry {
   usageStatus?: LogUsageStatus;
   usage?: UsageBreakdown;
   totalTokens?: number;
+  displayMetrics?: LogDisplayMetrics;
 }
 
 function tokensTitle(log: LogEntry, t: TFn): string | undefined {
@@ -85,6 +123,26 @@ function speedLabel(log: LogEntry): string | undefined {
   if (log.requestedSpeedLabel) return log.requestedSpeedLabel;
   if (log.modelSupportsServiceTier && log.configuredSpeedLabel) return log.configuredSpeedLabel;
   return undefined;
+}
+
+function formatTokPerSecond(result: TokPerSecondResult | undefined, localeTag?: string): string {
+  if (!result || result.kind === "unavailable" || !Number.isFinite(result.value) || result.value <= 0) return "\u2014";
+  const digits = result.value >= 100 ? 0 : 1;
+  const value = new Intl.NumberFormat(localeTag, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(result.value);
+  return `${result.estimated ? "~" : ""}${value}`;
+}
+
+function formatEstimatedUsd(result: CostResult | undefined, localeTag?: string): string {
+  if (!result || result.kind === "unavailable" || !Number.isFinite(result.estimate.cost.total) || result.estimate.cost.total < 0) return "\u2014";
+  const totalUsd = result.estimate.cost.total;
+  const fractionDigits = totalUsd >= 1 ? 2 : totalUsd >= 0.01 ? 4 : 6;
+  return `~$${new Intl.NumberFormat(localeTag, {
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  }).format(totalUsd)}`;
 }
 
 function statusColor(status: number): string {
@@ -189,11 +247,13 @@ export default function Logs({ apiBase }: { apiBase: string }) {
         <EmptyState title={t("logs.noRequests")} />
       ) : (
         <div ref={scrollContainerRef} className="tbl-wrap" style={{ overflowY: "auto", maxHeight: "calc(100vh - 260px)" }}>
-          <table className="tbl">
+          <table className="tbl logs-table">
             <thead style={{ position: "sticky", top: 0, zIndex: 1, background: "var(--surface)" }}>
              <tr>
                <th>{t("logs.col.time")}</th>
                 <th className="num log-col-tokens">{t("logs.col.tokens")}</th>
+                <th className="num log-col-rate" title={t("logs.metric.tokPerSecTitle")}>{t("logs.col.tokPerSec")}</th>
+                <th className="num log-col-cost" title={t("logs.metric.estimatedCostTitle")}>{t("logs.col.estimatedCost")}</th>
                <th className="log-col-model">{t("logs.col.model")}</th>
                <th>{t("logs.col.effort")}</th>
                <th>{t("logs.col.provider")}</th>
@@ -205,7 +265,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
             <tbody>
               {paddingTop > 0 && (
                 <tr>
-                  <td colSpan={8} style={{ height: paddingTop, padding: 0, border: 0 }} />
+                  <td colSpan={10} style={{ height: paddingTop, padding: 0, border: 0 }} />
                 </tr>
               )}
               {virtualRows.map(virtualRow => {
@@ -245,6 +305,12 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                         : <span className="muted">{t(`logs.tokens.${log.usageStatus ?? "unreported"}`)}</span>;
                     })()}
                   </td>
+                  <td className="num mono log-col-rate">
+                    {formatTokPerSecond(log.displayMetrics?.tokPerSecond, localeTag)}
+                  </td>
+                  <td className="num mono log-col-cost">
+                    {formatEstimatedUsd(log.displayMetrics?.cost, localeTag)}
+                  </td>
                  <td className="mono log-col-model" title={modelTitle(log)}>
                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                     <span>{modelLabel(log.resolvedModel ?? log.model)}</span>
@@ -271,7 +337,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
               })}
               {paddingBottom > 0 && (
                 <tr>
-                  <td colSpan={8} style={{ height: paddingBottom, padding: 0, border: 0 }} />
+                  <td colSpan={10} style={{ height: paddingBottom, padding: 0, border: 0 }} />
                 </tr>
               )}
             </tbody>

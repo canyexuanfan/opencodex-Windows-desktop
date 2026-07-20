@@ -699,6 +699,9 @@ dialog.modal-overlay::backdrop {
 /* Logs table column tuning: model narrower (two-line OK), tokens wider */
 .log-col-model { max-width: 18ch; overflow-wrap: break-word; word-break: normal; }
 .log-col-tokens { min-width: 10ch; }
+table.logs-table { min-width: 960px; }
+.log-col-rate { min-width: 7ch; white-space: nowrap; }
+.log-col-cost { min-width: 10ch; white-space: nowrap; }
 .log-status-cell { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 2px; }
 .log-detail-btn {
   background: none; border: none; padding: 0; cursor: pointer;
