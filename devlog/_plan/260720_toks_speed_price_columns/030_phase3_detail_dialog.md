@@ -4,6 +4,39 @@
 
 이 문서는 WP3 구현자가 그대로 따라갈 수 있는 diff-level PRD다. 코드 변경 대상은 아래 6개 파일이며, 이 문서 작성 단계에서는 코드를 변경하지 않는다.
 
+> **WP3 P-phase stale-check (2026-07-20, WP2 landed 커밋 70f9af92 + 4자리 fix 대조):**
+>
+> 1. WP2 landed `MetricUnavailableReason`에는 `expected_price_unverified`가 **없다**
+>    (landed resolver가 unverified를 반환하지 않아 삭제됨). 본 문서의
+>    `reason.expected_price_unverified` i18n 행과 §5의 "unverified expected overlay가
+>    matched를 포함하면 ..." 문단은 **구현하지 않는다** — unavailable union과 사유
+>    enum은 WP2 landed 타입이 SSOT다. `logs.detail.verification.unverified` 키는
+>    price.status가 verified-derived일 때의 표시로 대체한다: source/verification 행은
+>    `verified` → "검증됨", `verified-derived` → "기반 모델 유도(derived)"로 표기하고
+>    새 키 `logs.detail.verification.derived`를 4로케일에 추가한다.
+> 2. 사용자 결정(WP2 C 이후): 비용 표기는 **소수 4자리 고정 반올림**. §4의
+>    `formatEstimatedUsdValue`의 가변 자릿수(2/4/6)를 버리고 테이블 formatter와 동일하게
+>    `minimumFractionDigits: 4, maximumFractionDigits: 4`로 통일한다.
+> 3. WP2 landed GUI 타입에서 `CostResult`의 unavailable에는 `matched` 필드가 없다.
+>    §5 unavailable 렌더는 사유 한 행만 표시한다.
+> 4. **(A-round fold, 이 블록이 본문보다 우선한다)** 감사 blocker 정리:
+>    - (H1) 본문에 남은 가변 자릿수 helper(§4), `verified` 고정 출력(§5),
+>      `verification.unverified`/`reason.expected_price_unverified` 키·fixture·close
+>      criterion(§9, §10)은 모두 **무시**하고 이 stale-check 규칙으로 구현한다:
+>      4자리 고정, `price.status` 분기(verified→`logs.detail.verification.verified`,
+>      verified-derived→`logs.detail.verification.derived`), unverified 계열 키 미구현.
+>    - (H2) `type CostEstimateReason = "usage_estimated" | "cache_detail_missing" |
+>      "expected_price_overlay"`를 명명 타입으로 추출해 `CostResult`와 helper가 공유한다.
+>    - (M3) GUI `UsageBreakdown`에 `estimated?: boolean`을 추가한다(서버 OcxUsage spread와
+>      필드 일치).
+>    - (M4) attempt 소테이블의 target 셀 보조 줄(model 아래)에 cost.kind==="value"일 때
+>      `estimate.price`의 matched key(`jawcodeProvider ?? provider`/`modelId`)와
+>      source/verification 라벨을 muted caption으로 렌더한다.
+>    - (M5) close gate rg는 정확 패턴으로 분리: `rg -n 'attempts\?: LogAttempt\[\]'`,
+>      `rg -n 'firstOutputMs\?: number'`, status gate 제거는 수동 JSX 판독으로 확인.
+>    - (L6) 본문 라인 앵커(138/257 계열)는 WP2 landing으로 stale — 구조 diff가 SSOT.
+>    - (L7) `.log-detail-grid dt { font-weight: inherit; }` 추가.
+
 | 구분 | 파일 | 책임 |
 | --- | --- | --- |
 | MODIFY | `gui/src/pages/Logs.tsx` | 모든 행 상세 진입, LogAttempt 타입, 섹션/attempt table 렌더, requestId 복사 |
