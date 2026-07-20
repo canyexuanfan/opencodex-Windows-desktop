@@ -500,8 +500,6 @@ export const en = {
   "modal.tab.paid": "Paid",
   "modal.accountsHint": "Codex account providers forward your ChatGPT login. Manage accounts in",
   "modal.accountsCodexAuthLink": "Codex Auth",
-  "modal.browseAll": "Browse all {count} providers",
-  "modal.browseBack": "Back to top providers",
   "modal.notListed": "Provider not listed? Add a custom one",
   "modal.catalogLoading": "Loading catalog…",
   "modal.accountLogin": "Log in",

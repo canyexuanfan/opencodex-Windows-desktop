@@ -21,6 +21,7 @@ export default function AddCodexAccountModal({
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flowRef = useRef<string | null>(null);
+  const loginAbortRef = useRef<AbortController | null>(null);
   /** Ensures reauth auto-start runs once per account id, even if startOAuth identity changes. */
   const startedReauthRef = useRef<string | null>(null);
   const onAddedRef = useRef(onAdded);
@@ -45,6 +46,8 @@ export default function AddCodexAccountModal({
     flowRef.current = null;
     setAuthUrl("");
     stopPolling();
+    loginAbortRef.current?.abort();
+    loginAbortRef.current = null;
     if (!flowId) return;
     await fetch(`${apiBase}/api/codex-auth/login/cancel`, {
       method: "POST",
@@ -55,6 +58,8 @@ export default function AddCodexAccountModal({
 
   useEffect(() => () => {
     aliveRef.current = false;
+    loginAbortRef.current?.abort();
+    loginAbortRef.current = null;
     const flowId = flowRef.current;
     flowRef.current = null;
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -75,10 +80,14 @@ export default function AddCodexAccountModal({
   }, [step, cancelLogin]);
 
   const startOAuth = useCallback(async (requestedId?: string) => {
+    const controller = new AbortController();
+    loginAbortRef.current?.abort();
+    loginAbortRef.current = controller;
     setError("");
     try {
       const accountId = reauthAccountId ?? requestedId?.trim() ?? "";
       const resp = await fetch(`${apiBase}/api/codex-auth/login`, {
+        signal: controller.signal,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
@@ -88,6 +97,7 @@ export default function AddCodexAccountModal({
         ),
       });
       const data = await resp.json() as { url?: string; flowId?: string; error?: string; status?: string };
+      if (!aliveRef.current) return;
       if (resp.status === 409) {
         setError(t("codexAuth.oauthAlreadyInProgress"));
         return;
@@ -108,6 +118,7 @@ export default function AddCodexAccountModal({
             if (st.status === "done") {
               stopPolling();
               flowRef.current = null;
+              if (!aliveRef.current) return;
               onAddedRef.current();
               onCloseRef.current();
             } else if (st.status === "error" || st.status === "expired") {
@@ -131,7 +142,9 @@ export default function AddCodexAccountModal({
         }, 300_000);
       }
       if (data.error && !data.url) setError(data.error);
-    } catch (e) { setError(String(e)); }
+    } catch (e) {
+      if (aliveRef.current && !(e instanceof Error && e.name === "AbortError")) setError(String(e));
+    }
   }, [apiBase, cancelLogin, reauthAccountId, stopPolling, t]);
 
   useEffect(() => {

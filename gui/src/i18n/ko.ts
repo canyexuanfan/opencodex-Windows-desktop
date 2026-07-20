@@ -672,8 +672,6 @@ export const ko: Record<TKey, string> = {
   "modal.tab.paid": "유료",
   "modal.accountsHint": "Codex 계정 프로바이더는 ChatGPT 로그인을 전달합니다. 계정 관리는",
   "modal.accountsCodexAuthLink": "Codex 인증",
-  "modal.browseAll": "프로바이더 {count}개 모두 보기",
-  "modal.browseBack": "상위 프로바이더로 돌아가기",
   "modal.notListed": "찾는 프로바이더가 없나요? 직접 추가",
   "modal.catalogLoading": "카탈로그 불러오는 중…",
   "modal.accountLogin": "로그인",

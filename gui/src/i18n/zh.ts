@@ -672,8 +672,6 @@ export const zh: Record<TKey, string> = {
   "modal.tab.paid": "付费",
   "modal.accountsHint": "Codex 账户提供商会转发你的 ChatGPT 登录。账户管理请前往",
   "modal.accountsCodexAuthLink": "Codex 认证",
-  "modal.browseAll": "浏览全部 {count} 个提供商",
-  "modal.browseBack": "返回热门提供商",
   "modal.notListed": "没有你要的提供商？添加自定义",
   "modal.catalogLoading": "正在加载目录…",
   "modal.accountLogin": "登录",

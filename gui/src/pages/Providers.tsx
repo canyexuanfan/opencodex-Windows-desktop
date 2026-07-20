@@ -77,7 +77,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const accountRequestGenerationRef = useRef<Record<string, number>>({});
   const switchingAccountRef = useRef<{ provider: string; accountId: string } | null>(null);
   const codexReauthGenerationRef = useRef(0);
-  const oauthLoginGenerationRef = useRef(0);
+  const oauthLoginGenerationRef = useRef<Map<string, number>>(new Map());
 
   const notify = (msg: string, ok: boolean) => { setStatus(msg); setStatusOk(ok); };
 
@@ -377,7 +377,8 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   };
 
   const cancelLoginOAuth = useCallback(async (provider: string) => {
-    oauthLoginGenerationRef.current += 1;
+    const gen = (oauthLoginGenerationRef.current.get(provider) ?? 0) + 1;
+    oauthLoginGenerationRef.current.set(provider, gen);
     try {
       await fetch(`${apiBase}/api/oauth/login/cancel`, {
         method: "POST",
@@ -386,15 +387,19 @@ export default function Providers({ apiBase }: { apiBase: string }) {
       });
     } catch { /* ignore */ }
     if (!aliveRef.current) return;
-    setBusy(current => current === provider ? null : current);
-    setLoginInfo(current => current?.provider === provider ? null : current);
+    if (oauthLoginGenerationRef.current.get(provider) === gen) {
+      setBusy(current => current === provider ? null : current);
+      setLoginInfo(current => current?.provider === provider ? null : current);
+    }
     setManualCode("");
     setManualCodeMsg("");
     notify(t("prov.loginCancelled", { provider: oauthLabel(provider) }), false);
   }, [apiBase, t]);
 
   const loginOAuth = async (provider: string, addAccount = false, accountId?: string) => {
-    const generation = ++oauthLoginGenerationRef.current;
+    const nextGen = (oauthLoginGenerationRef.current.get(provider) ?? 0) + 1;
+    oauthLoginGenerationRef.current.set(provider, nextGen);
+    const generation = nextGen;
     const reauthTargetId = accountId?.trim() || undefined;
     setBusy(provider);
     setStatus("");
@@ -412,7 +417,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
         }),
       });
       const data = await res.json();
-      if (oauthLoginGenerationRef.current !== generation || !aliveRef.current) return;
+      if (oauthLoginGenerationRef.current.get(provider) !== generation || !aliveRef.current) return;
       if (!res.ok) { notify(data.error || t("prov.loginFailStart", { provider: oauthLabel(provider) }), false); return; }
       // The server opens the browser itself (popup-safe). Show the URL + paste fallback.
       if (data.url || data.instructions) setLoginInfo({ provider, url: data.url, instructions: data.instructions });
@@ -420,9 +425,9 @@ export default function Providers({ apiBase }: { apiBase: string }) {
       // Poll until the loopback callback (or device flow / manual paste) completes.
       // Prefer s.done so cancel/timeout/error clear "waiting for browser" instead of hanging.
       let finished = false;
-      for (let i = 0; i < 150 && aliveRef.current && oauthLoginGenerationRef.current === generation; i++) {
+      for (let i = 0; i < 150 && aliveRef.current && oauthLoginGenerationRef.current.get(provider) === generation; i++) {
         await new Promise(r => setTimeout(r, 2000));
-        if (oauthLoginGenerationRef.current !== generation || !aliveRef.current) return;
+        if (oauthLoginGenerationRef.current.get(provider) !== generation || !aliveRef.current) return;
         const s: (OAuthStatus & { accounts?: OAuthAccount[] }) | null = await fetch(`${apiBase}/api/oauth/status?provider=${provider}`).then(r => r.json()).catch(() => null);
         if (!s) continue;
         if (s.error) {
@@ -471,7 +476,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
           break;
         }
       }
-      if (!finished && oauthLoginGenerationRef.current === generation && aliveRef.current) {
+      if (!finished && oauthLoginGenerationRef.current.get(provider) === generation && aliveRef.current) {
         // Browser abandoned / never completed — stop waiting and cancel the server flow.
         await fetch(`${apiBase}/api/oauth/login/cancel`, {
           method: "POST",
@@ -482,11 +487,11 @@ export default function Providers({ apiBase }: { apiBase: string }) {
         setLoginInfo(null);
       }
     } catch {
-      if (oauthLoginGenerationRef.current === generation) {
+      if (oauthLoginGenerationRef.current.get(provider) === generation) {
         notify(t("prov.loginRequestFail", { provider: oauthLabel(provider) }), false);
       }
     } finally {
-      if (aliveRef.current && oauthLoginGenerationRef.current === generation) setBusy(null);
+      if (aliveRef.current && oauthLoginGenerationRef.current.get(provider) === generation) setBusy(null);
     }
   };
 

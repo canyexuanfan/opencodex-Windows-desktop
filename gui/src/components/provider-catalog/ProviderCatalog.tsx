@@ -1,19 +1,16 @@
 /**
  * ProviderCatalog — the browse surface of the add-provider modal: Accounts /
- * Free / Paid tabs, home (top rows) and browse (search) views, and account
- * login rows on the Accounts tab. Presentational: presets/usage arrive via
- * props; view state (tab, query, view) lives here; selection lifts up.
+ * Free / Paid tabs over a single searchable scroll list, and account login
+ * rows on the Accounts tab. Presentational: presets/usage arrive via props;
+ * view state (tab, query) lives here; selection lifts up.
  */
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { useT } from "../../i18n";
 import {
   bucketPresets,
   filterPresets,
   type CatalogPreset,
 } from "./provider-presets";
-
-/** How many rows the home view shows per tab before "browse all". */
-const HOME_SLOT_COUNT = 6;
 
 export type AccountLoginStatus = { loggedIn: boolean; email?: string; error?: string };
 export type AccountLoginRow = {
@@ -55,9 +52,7 @@ export default function ProviderCatalog({
 }) {
   const t = useT();
   const [tier, setTier] = useState<CatalogTier>(initialTier);
-  const [view, setView] = useState<"home" | "browse">("home");
   const [query, setQuery] = useState("");
-  const searchRef = useRef<HTMLInputElement>(null);
 
   const catalog = useMemo(() => presets.filter(p => p.id !== "custom"), [presets]);
 
@@ -71,15 +66,7 @@ export default function ProviderCatalog({
 
   const buckets = useMemo(() => bucketPresets(ranked), [ranked]);
   const tierList = buckets[tier];
-  const homeList = tierList.slice(0, HOME_SLOT_COUNT);
-  const browseList = useMemo(() => filterPresets(tierList, query), [tierList, query]);
-  const rows = view === "browse" ? browseList : homeList;
-
-  const openBrowse = () => {
-    setView("browse");
-    setQuery("");
-    setTimeout(() => searchRef.current?.focus(), 0);
-  };
+  const rows = useMemo(() => filterPresets(tierList, query), [tierList, query]);
 
   const badges = (p: CatalogPreset) => {
     const auth = p.codexAccountMode === "direct" ? <span className="badge badge-green">{t("modal.badge.direct")}</span>
@@ -106,7 +93,7 @@ export default function ProviderCatalog({
             role="tab"
             aria-selected={tier === candidate}
             className={`provider-catalog-tab${tier === candidate ? " active" : ""}`}
-            onClick={() => { setTier(candidate); setView("home"); setQuery(""); }}
+            onClick={() => { setTier(candidate); setQuery(""); }}
           >
             {t(candidate === "accounts" ? "modal.tab.accounts" : candidate === "free" ? "modal.tab.free" : "modal.tab.paid")}
           </button>
@@ -120,15 +107,12 @@ export default function ProviderCatalog({
         </div>
       )}
 
-      {view === "browse" && (
-        <input
-          ref={searchRef}
-          className="input provider-catalog-search"
-          value={query}
-          onChange={e => setQuery(e.target.value)}
-          placeholder={t("modal.search")}
-        />
-      )}
+      <input
+        className="input provider-catalog-search"
+        value={query}
+        onChange={e => setQuery(e.target.value)}
+        placeholder={t("modal.search")}
+      />
 
       <div className="provider-catalog-rows">
         {presetsLoading && rows.length === 0 && (
@@ -175,12 +159,6 @@ export default function ProviderCatalog({
       </div>
 
       <div className="provider-catalog-footer">
-        {view === "home" && tierList.length > HOME_SLOT_COUNT && (
-          <button className="link-btn" onClick={openBrowse}>{t("modal.browseAll", { count: tierList.length })}</button>
-        )}
-        {view === "browse" && (
-          <button className="link-btn" onClick={() => { setView("home"); setQuery(""); }}>{t("modal.browseBack")}</button>
-        )}
         <div style={{ flex: 1 }} />
         {tier !== "accounts" && (
           <button className="link-btn" onClick={onSelectCustom}>{t("modal.notListed")}</button>

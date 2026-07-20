@@ -652,8 +652,6 @@ export const de = {
   "modal.tab.paid": "Bezahlt",
   "modal.accountsHint": "Codex-Konto-Provider leiten deinen ChatGPT-Login weiter. Konten verwalten unter",
   "modal.accountsCodexAuthLink": "Codex Auth",
-  "modal.browseAll": "Alle {count} Provider durchsuchen",
-  "modal.browseBack": "Zurück zu den Top-Providern",
   "modal.notListed": "Provider nicht dabei? Eigenen hinzufügen",
   "modal.catalogLoading": "Katalog wird geladen…",
   "modal.accountLogin": "Anmelden",
