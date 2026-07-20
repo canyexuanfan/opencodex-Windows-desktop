@@ -162,7 +162,7 @@ function scQc(): string {
   });
 }
 
-export type WinswStatus = "started" | "stopped" | "nonexistent";
+export type WinswStatus = "started" | "stopped" | "nonexistent" | "unknown";
 
 /** WinSW v2 `status` prints exactly Started / Stopped / NonExistent. */
 export function parseWinswStatus(output: string): WinswStatus {
@@ -170,16 +170,54 @@ export function parseWinswStatus(output: string): WinswStatus {
   if (normalized.includes("nonexistent")) return "nonexistent";
   if (normalized.includes("started")) return "started";
   if (normalized.includes("stopped")) return "stopped";
-  return "nonexistent";
+  // Anything else is an unparseable result — NOT proof of absence. Callers must
+  // fail closed: only an exact NonExistent may skip stop/uninstall.
+  return "unknown";
 }
 
 export function statusWinswRaw(): WinswStatus {
-  if (!existsSync(winswExePath())) return "nonexistent";
-  try {
-    return parseWinswStatus(runWinsw(["status"]));
-  } catch {
-    return "nonexistent";
+  if (existsSync(winswExePath())) {
+    try {
+      return parseWinswStatus(runWinsw(["status"]));
+    } catch {
+      // The query itself failed (access denied, damaged/quarantined exe, ...). Treat the
+      // service as possibly-installed so lifecycle operations still attempt stop/uninstall
+      // instead of skipping a live SCM service that would keep respawning the proxy.
+      return "unknown";
+    }
   }
+  // A missing exe does NOT prove the SCM registration is gone (quarantined binary,
+  // partial uninstall): a stale opencodex-proxy-native registration can outlive it.
+  // Confirm absence against the SCM itself before reporting "nonexistent".
+  if (process.platform !== "win32") return "nonexistent";
+  const probe = probeScmRegistration();
+  // probe === "error": the SCM could not be queried — fail closed, never claim absence.
+  return probe === false ? "nonexistent" : "unknown";
+}
+
+/**
+ * Probe the SCM for the native service registration.
+ * Returns true (registered), false (confirmed absent — exit 1060 only), or "error"
+ * (query itself failed: access denied, sc.exe missing, ...). Only a confirmed
+ * ERROR_SERVICE_DOES_NOT_EXIST may prove absence to lifecycle callers.
+ */
+export function probeScmRegistration(run: () => string = queryScmForService): boolean | "error" {
+  try {
+    run();
+    return true;
+  } catch (err) {
+    const e = err as { status?: number | null; stderr?: string | Buffer | null };
+    const stderr = typeof e.stderr === "string" ? e.stderr : "";
+    if (e.status === 1060 || /FAILED 1060/i.test(stderr)) return false;
+    return "error";
+  }
+}
+
+function queryScmForService(): string {
+  const sc = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "sc.exe");
+  return execFileSync(existsSync(sc) ? sc : "sc.exe", ["query", WINSW_SERVICE_ID], {
+    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+  });
 }
 
 /**
@@ -224,6 +262,12 @@ export async function installWinswService(entry: WinswEntry, deps: WinswInstallD
   await ensureBinary();
   writeXml(winswXmlPath(), buildWinswXml(entry));
   const existing = status();
+  if (existing === "unknown") {
+    throw new Error(
+      "Could not query the native service state (WinSW status failed or returned an unexpected result). " +
+        "Refusing to guess the install state — check 'ocx service status' and retry.",
+    );
+  }
   if (existing === "nonexistent") {
     // WinSW self-elevates via UAC; a refused prompt aborts install (no silent fallback).
     // v2.12 recognizes prompting only as args[1]: `install /p` (XML is auto-discovered

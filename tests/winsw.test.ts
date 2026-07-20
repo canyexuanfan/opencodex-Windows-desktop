@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { buildWinswXml, ensureWinswBinary, parseWinswStatus, sha256Hex, installWinswService, WINSW_SHA256, WINSW_SERVICE_ID } from "../src/lib/winsw";
+import { buildWinswXml, ensureWinswBinary, parseWinswStatus, probeScmRegistration, sha256Hex, installWinswService, statusWinswRaw, WINSW_SHA256, WINSW_SERVICE_ID } from "../src/lib/winsw";
 import { parseServiceArgs, serviceReinstallArgs } from "../src/service";
 import { loadServiceTokenFromFile } from "../src/lib/service-secrets";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -70,8 +70,55 @@ describe("winsw status parsing", () => {
     expect(parseWinswStatus("Started")).toBe("started");
     expect(parseWinswStatus("Stopped")).toBe("stopped");
     expect(parseWinswStatus("NonExistent")).toBe("nonexistent");
-    // Unknown output is treated as not-installed rather than installed.
-    expect(parseWinswStatus("garbage")).toBe("nonexistent");
+    // Unparseable output is NOT proof of absence — callers fail closed on "unknown".
+    expect(parseWinswStatus("garbage")).toBe("unknown");
+  });
+});
+
+describe("winsw fail-closed lifecycle", () => {
+  test("install refuses to guess when the status query fails", async () => {
+    await expect(
+      installWinswService(entry, {
+        ensureBinary: async () => "exe",
+        writeXml: () => {},
+        interactive: () => {},
+        run: () => "",
+        verifyAccount: () => {},
+        status: () => "unknown",
+      }),
+    ).rejects.toThrow(/Could not query the native service state/);
+  });
+
+  test("a failed status query is treated as possibly-installed by lifecycle consumers", () => {
+    // stopServiceIfInstalled/installWindows gate on `!== "nonexistent"` — "unknown"
+    // must therefore route INTO stop/uninstall attempts, never skip them.
+    const service = readFileSync(new URL("../src/service.ts", import.meta.url), "utf8");
+    expect(service).not.toContain('statusWinswRaw() === "unknown"');
+    expect((service.match(/statusWinswRaw\(\) !== "nonexistent"/g) ?? []).length).toBeGreaterThanOrEqual(3);
+  });
+
+  test("exe missing + non-Windows is confirmed absence; on Windows the SCM is queried", () => {
+    // This test host has no WinSW binary installed, so the missing-exe branch runs:
+    // off-Windows it must short-circuit to "nonexistent" (no sc.exe exists here).
+    expect(statusWinswRaw()).toBe("nonexistent");
+    // On win32 the same branch must confirm against the SCM — a quarantined/deleted
+    // exe does not prove the registration is gone.
+    const winsw = readFileSync(new URL("../src/lib/winsw.ts", import.meta.url), "utf8");
+    const fn = winsw.slice(winsw.indexOf("export function statusWinswRaw"), winsw.indexOf("/**", winsw.indexOf("export function statusWinswRaw")));
+    expect(fn).toContain('process.platform !== "win32"');
+    expect(fn).toContain("probeScmRegistration()");
+    expect(fn).toContain('probe === false ? "nonexistent" : "unknown"');
+  });
+
+  test("SCM probe distinguishes registered / confirmed-absent / query-failure", () => {
+    // Query succeeds → registration exists.
+    expect(probeScmRegistration(() => "STATE : 4 RUNNING")).toBe(true);
+    // Exit 1060 (or its stderr form) is the ONLY proof of absence.
+    expect(probeScmRegistration(() => { const e = new Error("fail") as Error & { status: number }; e.status = 1060; throw e; })).toBe(false);
+    expect(probeScmRegistration(() => { const e = new Error("fail") as Error & { status: number; stderr: string }; e.status = 1; e.stderr = "[SC] OpenService FAILED 1060:"; throw e; })).toBe(false);
+    // Access denied / missing sc.exe / any other failure → error, never absence.
+    expect(probeScmRegistration(() => { const e = new Error("denied") as Error & { status: number }; e.status = 5; throw e; })).toBe("error");
+    expect(probeScmRegistration(() => { throw new Error("spawn sc.exe ENOENT"); })).toBe("error");
   });
 });
 
