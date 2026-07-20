@@ -55,9 +55,8 @@ describe("oauth ToS warning UI seam", () => {
     expect(modal).toContain("!oauthTosPending");
     expect(warn).toContain("oauthTos.acknowledge");
     expect(warn).toContain("disabled={!acknowledged || submitted}");
-    expect(warn).toContain("stopImmediatePropagation");
-    expect(warn).toContain("addEventListener(\"keydown\", onKey, true)");
-    expect(warn).toContain("zIndex: 60");
+    expect(warn).toContain("showModal()");
+    expect(warn).toContain("onCancel={handleCancel}");
     expect(warn).not.toContain('?? "elevated"');
   });
 
