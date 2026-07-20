@@ -628,6 +628,11 @@ switch (command) {
     await handleProviderCommand(args.slice(1));
     break;
   }
+  case "account": {
+    const { cmdAccount } = await import("./account");
+    process.exitCode = await cmdAccount(args.slice(1));
+    break;
+  }
   case "models": {
     const { handleModels } = await import("./models");
     handleModels(args.slice(1));
