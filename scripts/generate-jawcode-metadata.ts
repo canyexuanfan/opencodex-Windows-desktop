@@ -11,6 +11,12 @@ type RawModel = {
   input?: ("text" | "image")[];
   reasoning?: boolean;
   wireModelId?: string;
+  cost?: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+  };
 };
 
 const sourcePath = process.env.JAWCODE_MODELS_JSON
@@ -46,11 +52,12 @@ lines.push("  maxTokens?: number;");
 lines.push("  input?: (\"text\" | \"image\")[];");
 lines.push("  reasoning?: boolean;");
 lines.push("  wireModelId?: string;");
+lines.push("  cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };");
 lines.push("}");
 lines.push("");
 lines.push("const PROVIDER_ALIASES: Record<string, string> = " + JSON.stringify(PROVIDER_ALIASES, null, 2) + " as const;");
 lines.push("");
-lines.push("type Row = readonly [id: string, contextWindow?: number, maxTokens?: number, input?: string, reasoning?: 0 | 1, wireModelId?: string];");
+lines.push("type Row = readonly [id: string, contextWindow?: number | null, maxTokens?: number | null, input?: string | null, reasoning?: 0 | 1 | null, wireModelId?: string | null, costInput?: number | null, costOutput?: number | null, costCacheRead?: number | null, costCacheWrite?: number | null];");
 lines.push("const DATA: Record<string, readonly Row[]> = {");
 
 for (const provider of allowedProviders) {
@@ -64,6 +71,10 @@ for (const provider of allowedProviders) {
       Array.isArray(model.input) ? model.input.join(",") : undefined,
       model.reasoning === undefined ? undefined : (model.reasoning ? 1 : 0),
       model.wireModelId,
+      model.cost?.input,
+      model.cost?.output,
+      model.cost?.cacheRead,
+      model.cost?.cacheWrite,
     ]));
   lines.push(`  ${JSON.stringify(provider)}: ${JSON.stringify(rows)},`);
 }
@@ -92,14 +103,16 @@ lines.push("  return (DATA[provider] ?? []).map(row => rowToMetadata(provider, r
 lines.push("}");
 lines.push("");
 lines.push("function rowToMetadata(provider: string, row: Row): JawcodeModelMetadata {");
-lines.push("  const [id, contextWindow, maxTokens, input, reasoning, wireModelId] = row;");
+lines.push("  const [id, contextWindow, maxTokens, input, reasoning, wireModelId, costInput, costOutput, costCacheRead, costCacheWrite] = row;");
+lines.push("  const hasCost = costInput != null && costOutput != null && costCacheRead != null && costCacheWrite != null;");
 lines.push("  return {");
 lines.push("    provider, id,");
-lines.push("    ...(contextWindow !== undefined ? { contextWindow } : {}),");
-lines.push("    ...(maxTokens !== undefined ? { maxTokens } : {}),");
+lines.push("    ...(contextWindow != null ? { contextWindow } : {}),");
+lines.push("    ...(maxTokens != null ? { maxTokens } : {}),");
 lines.push("    ...(input ? { input: input.split(\",\") as (\"text\" | \"image\")[] } : {}),");
-lines.push("    ...(reasoning !== undefined ? { reasoning: reasoning === 1 } : {}),");
-lines.push("    ...(wireModelId !== undefined ? { wireModelId } : {}),");
+lines.push("    ...(reasoning != null ? { reasoning: reasoning === 1 } : {}),");
+lines.push("    ...(wireModelId != null ? { wireModelId } : {}),");
+lines.push("    ...(hasCost ? { cost: { input: costInput, output: costOutput, cacheRead: costCacheRead, cacheWrite: costCacheWrite } } : {}),");
 lines.push("  };");
 lines.push("}");
 lines.push("");
