@@ -65,6 +65,7 @@ describe("oauth ToS warning UI seam", () => {
     const keys = [
       "oauthTos.highTitle",
       "oauthTos.elevatedTitle",
+      "oauthTos.anthropicBody",
       "oauthTos.highBody",
       "oauthTos.elevatedBody",
       "oauthTos.saferPath",

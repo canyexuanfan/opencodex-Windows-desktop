@@ -46,6 +46,14 @@ export default function OAuthTosWarningModal({
   // Unmarked provider: render nothing (callers must gate with oauthTosRisk).
   if (!level) return null;
 
+  const normalizedProviderId = providerId.trim().toLowerCase();
+  const bodyKey = normalizedProviderId === "anthropic"
+    ? "oauthTos.anthropicBody"
+    : oauthTosRiskBodyKey(level);
+  const showApiKeySaferPath =
+    normalizedProviderId === "anthropic"
+    || normalizedProviderId === "google-antigravity";
+
   const handleContinue = () => {
     if (!acknowledged || submittedRef.current) return;
     submittedRef.current = true;
@@ -61,6 +69,24 @@ export default function OAuthTosWarningModal({
       className="modal-overlay"
       onCancel={handleCancel}
       onClick={onCancel}
+      onKeyDown={e => {
+        if (e.key !== "Tab") return;
+        const dialog = dialogRef.current;
+        if (!dialog) return;
+        const focusable = dialog.querySelectorAll<HTMLElement>(
+          "input:not([disabled]), button:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
+        );
+        if (focusable.length === 0) return;
+        const first = focusable.item(0);
+        const last = focusable.item(focusable.length - 1);
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }}
     >
       <div
         className="modal-card"
@@ -75,12 +101,14 @@ export default function OAuthTosWarningModal({
         >
           <IconAlert width={16} height={16} style={{ flexShrink: 0, marginTop: 2 }} aria-hidden="true" />
           <p className="modal-desc" style={{ margin: 0 }}>
-            {t(oauthTosRiskBodyKey(level), { provider: providerLabel })}
+            {t(bodyKey, { provider: providerLabel })}
           </p>
         </div>
-        <p className="muted text-label" style={{ marginTop: 12 }}>
-          {t("oauthTos.saferPath")}
-        </p>
+        {showApiKeySaferPath && (
+          <p className="muted text-label" style={{ marginTop: 12 }}>
+            {t("oauthTos.saferPath")}
+          </p>
+        )}
         <label className="oauth-tos-ack" style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 14 }}>
           <input
             type="checkbox"
