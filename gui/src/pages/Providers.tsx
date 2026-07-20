@@ -321,7 +321,8 @@ export default function Providers({ apiBase }: { apiBase: string }) {
         fetchConfig();
         fetchProviderQuotas(true);
       } else {
-        notify(t("prov.saveFailed"), false);
+        const d = await res.json().catch(() => ({}));
+        notify(d.error || t("prov.saveFailed"), false);
       }
     } catch {
       notify(t("prov.invalidJson"), false);

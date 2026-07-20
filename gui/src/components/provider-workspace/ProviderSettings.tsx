@@ -27,6 +27,7 @@ export default function ProviderSettings({
   const [defaultModel, setDefaultModel] = useState(item.defaultModel ?? "");
   const [authMode, setAuthMode] = useState(initialAuth);
   const [note, setNote] = useState(item.note ?? "");
+  const [allowPrivateNetwork, setAllowPrivateNetwork] = useState(item.allowPrivateNetwork ?? false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -37,15 +38,17 @@ export default function ProviderSettings({
     setDefaultModel(item.defaultModel ?? "");
     setAuthMode(String(item.authMode ?? (item.keyOptional ? "local" : "key")));
     setNote(item.note ?? "");
+    setAllowPrivateNetwork(item.allowPrivateNetwork ?? false);
     setMsg(null);
-  }, [item.name, item.adapter, item.baseUrl, item.defaultModel, item.authMode, item.keyOptional, item.note]);
+  }, [item.name, item.adapter, item.baseUrl, item.defaultModel, item.authMode, item.keyOptional, item.note, item.allowPrivateNetwork]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const dirty = adapter.trim() !== item.adapter
     || baseUrl.trim() !== item.baseUrl
     || defaultModel.trim() !== (item.defaultModel ?? "")
     || authMode !== String(item.authMode ?? (item.keyOptional ? "local" : "key"))
-    || note.trim() !== (item.note ?? "");
+    || note.trim() !== (item.note ?? "")
+    || allowPrivateNetwork !== (item.allowPrivateNetwork ?? false);
 
   useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); }, [dirty, onDirtyChange]);
 
@@ -68,7 +71,7 @@ export default function ProviderSettings({
     if (!onUpdateProvider) { setMsg({ ok: false, text: t("pws.updatesUnavailable") }); return; }
     if (!adapter.trim() || !baseUrl.trim()) { setMsg({ ok: false, text: t("pws.adapterBaseRequired") }); return; }
     setSaving(true); setMsg(null);
-    const patch: ProviderUpdatePatch = { adapter: adapter.trim(), baseUrl: baseUrl.trim(), defaultModel: defaultModel.trim(), authMode, note: note.trim() };
+    const patch: ProviderUpdatePatch = { adapter: adapter.trim(), baseUrl: baseUrl.trim(), defaultModel: defaultModel.trim(), authMode, note: note.trim(), allowPrivateNetwork };
     const res = await onUpdateProvider(item.name, patch);
     setSaving(false);
     setMsg(res.ok ? { ok: true, text: t("pws.settingsSaved") } : { ok: false, text: res.error || t("prov.saveFailed") });
@@ -77,7 +80,7 @@ export default function ProviderSettings({
   const discard = () => {
     setAdapter(item.adapter); setBaseUrl(item.baseUrl);
     setDefaultModel(item.defaultModel ?? ""); setAuthMode(initialAuth);
-    setNote(item.note ?? ""); setMsg(null);
+    setNote(item.note ?? ""); setAllowPrivateNetwork(item.allowPrivateNetwork ?? false); setMsg(null);
   };
 
   return (
@@ -123,6 +126,10 @@ export default function ProviderSettings({
       <label className="pwi-settings-field">
         <span className="pwi-settings-label">{t("pws.note")}</span>
         <textarea className="input pwi-settings-textarea" value={note} onChange={e => setNote(e.target.value)} rows={2} />
+      </label>
+      <label className="pwi-settings-field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <input type="checkbox" checked={allowPrivateNetwork} onChange={e => setAllowPrivateNetwork(e.target.checked)} />
+        <span className="pwi-settings-label">{t("pws.allowPrivateNetwork")}</span>
       </label>
       {dirty && (
         <div className="pwi-settings-sticky-bar">

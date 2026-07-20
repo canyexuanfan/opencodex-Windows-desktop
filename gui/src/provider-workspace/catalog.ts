@@ -36,6 +36,7 @@ export interface WorkspaceProvider {
   freeTier?: boolean;
   disabled?: boolean;
   note?: string;
+  allowPrivateNetwork?: boolean;
 }
 
 /** Three-way pricing/ownership tier for a ready provider row. */

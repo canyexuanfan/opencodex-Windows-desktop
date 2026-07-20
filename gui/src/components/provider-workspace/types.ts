@@ -67,4 +67,5 @@ export type ProviderUpdatePatch = {
   authMode?: string;
   note?: string;
   disabled?: boolean;
+  allowPrivateNetwork?: boolean;
 };

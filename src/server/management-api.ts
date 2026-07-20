@@ -641,13 +641,19 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
         return jsonResponse({ error: "authMode must be key, forward, oauth, or local" }, 400);
       }
     }
-    if (Object.hasOwn(rawBody, "note")) {
-      if (typeof rawBody.note !== "string") return jsonResponse({ error: "note must be a string" }, 400);
-      const note = rawBody.note.trim();
-      if (note) next.note = note;
-      else delete next.note;
-      touched = true;
-    }
+   if (Object.hasOwn(rawBody, "note")) {
+     if (typeof rawBody.note !== "string") return jsonResponse({ error: "note must be a string" }, 400);
+     const note = rawBody.note.trim();
+     if (note) next.note = note;
+     else delete next.note;
+     touched = true;
+   }
+
+   if (Object.hasOwn(rawBody, "allowPrivateNetwork")) {
+     if (typeof rawBody.allowPrivateNetwork !== "boolean") return jsonResponse({ error: "allowPrivateNetwork must be a boolean" }, 400);
+     next.allowPrivateNetwork = rawBody.allowPrivateNetwork;
+     touched = true;
+   }
 
     if (!touched) return jsonResponse({ error: "no recognized fields to update" }, 400);
 
