@@ -293,6 +293,8 @@ export const zh: Record<TKey, string> = {
   "logs.col.estimatedCost": "~$",
   "logs.metric.tokPerSecTitle": "按完整请求耗时计算的每秒输出 token",
   "logs.metric.estimatedCostTitle": "预估费用；价格未匹配时不显示",
+  "usage.cost.total": "预估费用（当前范围）",
+  "usage.cost.unpricedNote": "已排除 {count} 个价格未匹配的请求",
   "logs.detail.section.basic": "基本信息",
   "logs.detail.section.performance": "性能",
   "logs.detail.section.cost": "预估费用",

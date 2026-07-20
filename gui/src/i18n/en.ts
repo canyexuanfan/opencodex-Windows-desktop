@@ -298,6 +298,8 @@ export const en = {
   "logs.col.estimatedCost": "~$",
   "logs.metric.tokPerSecTitle": "Output tokens per second over the full request duration",
   "logs.metric.estimatedCostTitle": "Estimated cost; unmatched pricing is unavailable",
+  "usage.cost.total": "Estimated cost (this range)",
+  "usage.cost.unpricedNote": "{count} requests excluded (no price match)",
   "logs.detail.section.basic": "Basic information",
   "logs.detail.section.performance": "Performance",
   "logs.detail.section.cost": "Estimated cost",

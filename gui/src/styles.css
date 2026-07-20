@@ -727,6 +727,13 @@ table.logs-table { min-width: 960px; }
 .log-detail-raw { margin-top: 14px; }
 .log-detail-raw > summary { cursor: pointer; color: var(--muted); font-size: var(--text-label); }
 .log-detail-raw[open] > summary { margin-bottom: 6px; }
+.usage-cost-row {
+  display: flex; align-items: baseline; gap: 10px;
+  margin: 10px 0 4px; padding: 10px 14px;
+  border: 1px solid var(--border-soft); border-radius: var(--radius-sm);
+  background: var(--raised);
+}
+.usage-cost-value { font-size: var(--text-lg, 1.15em); }
 @media (max-width: 760px) {
   .modal-overlay { padding: 16px 10px; }
   .log-detail-card { max-height: calc(100dvh - 32px); padding: 16px; }

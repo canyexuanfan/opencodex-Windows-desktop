@@ -293,6 +293,8 @@ export const ko: Record<TKey, string> = {
   "logs.col.estimatedCost": "~$",
   "logs.metric.tokPerSecTitle": "전체 요청 시간 기준 초당 출력 토큰",
   "logs.metric.estimatedCostTitle": "추정 비용이며 가격 미매칭은 표시하지 않음",
+  "usage.cost.total": "추정 비용 (이 기간)",
+  "usage.cost.unpricedNote": "가격 미매칭 {count}건 제외",
   "logs.detail.section.basic": "기본 정보",
   "logs.detail.section.performance": "성능",
   "logs.detail.section.cost": "추정 비용",

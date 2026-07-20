@@ -1,6 +1,7 @@
 import { baseProviderLabel } from "../providers/label";
 import { usageDisplayTotalTokens } from "./totals";
 import type { PersistedUsageEntry, UsageStatus } from "./log";
+import { estimateComboCost, estimateRequestCost } from "./cost";
 
 export type UsageRange = "7d" | "30d" | "all";
 export type UsageSurface = "all" | "codex" | "claude";
@@ -21,6 +22,12 @@ export interface UsageSummaryTotals {
   reasoningOutputTokens: number;
   totalTokens: number;
   coverageRatio: number;
+  /** Display-time estimated cost in USD for the filtered window (WP6, devlog 004).
+   *  Sums per-request estimateRequestCost / per-attempt combo costs; requests whose
+   *  price is unmatched are excluded from the sum and counted separately. */
+  estimatedCostUsd: number;
+  pricedRequests: number;
+  unpricedRequests: number;
 }
 
 export interface UsageDay {
@@ -127,6 +134,9 @@ function blankTotals(): UsageSummaryTotals {
     reasoningOutputTokens: 0,
     totalTokens: 0,
     coverageRatio: 0,
+    estimatedCostUsd: 0,
+    pricedRequests: 0,
+    unpricedRequests: 0,
   };
 }
 
@@ -213,6 +223,21 @@ function addTokens(
 
 function finalizeCoverage(totals: UsageSummaryTotals): void {
   totals.coverageRatio = totals.requests === 0 ? 0 : totals.measuredRequests / totals.requests;
+}
+
+function addEstimatedCost(
+  totals: UsageSummaryTotals,
+  entry: Pick<PersistedUsageEntry, "provider" | "model" | "usageStatus" | "usage" | "attempts">,
+): void {
+  const estimate = entry.attempts?.length
+    ? estimateComboCost(entry.attempts)
+    : estimateRequestCost({ provider: entry.provider, model: entry.model, usage: entry.usage, usageStatus: entry.usageStatus });
+  if (!estimate) {
+    totals.unpricedRequests += 1;
+    return;
+  }
+  totals.pricedRequests += 1;
+  totals.estimatedCostUsd += estimate.cost.total;
 }
 
 function buildDayGrid(range: UsageRange, since: number | null, now: number, entries: PersistedUsageEntry[]): UsageDay[] {
@@ -385,6 +410,7 @@ export function summarizeUsage(
     bumpStatus(totals, entry.usageStatus);
     totals.attemptCount += entry.attempts?.length ?? 1;
     addTokens(totals, entry);
+    addEstimatedCost(totals, entry);
   }
   finalizeCoverage(totals);
   return {
