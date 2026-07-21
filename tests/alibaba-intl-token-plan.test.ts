@@ -46,6 +46,14 @@ describe("alibaba-token-plan-intl registry entry", () => {
     expect(entry!.modelContextWindows?.["qwen3.8-max-preview"]).toBe(983_616);
   });
 
+  test("every international chat model has an explicit context window", () => {
+    const entry = PROVIDER_REGISTRY.find(e => e.id === "alibaba-token-plan-intl");
+    expect(entry!.modelContextWindows?.["deepseek-v3.2"]).toBe(131_072);
+    for (const model of entry!.models ?? []) {
+      expect(entry!.modelContextWindows?.[model]).toBeGreaterThan(0);
+    }
+  });
+
   test("qwen3.8-max-preview reasoning efforts", () => {
     const entry = PROVIDER_REGISTRY.find(e => e.id === "alibaba-token-plan-intl");
     expect(entry!.modelReasoningEfforts?.["qwen3.8-max-preview"]).toEqual(["low", "high", "xhigh"]);
