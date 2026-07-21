@@ -17,7 +17,8 @@ One implementation slice adds Gemini 3.6 to the direct Google provider, replaces
 | `tests/google-models-listing.test.ts` | MODIFY | Update the static-fallback contract to include direct 3.6. |
 | `tests/provider-registry-parity.test.ts` | MODIFY | Prove OAuth projection exposes 3.6 and hides 3.5. |
 | `tests/provider-quota.test.ts` | MODIFY | Refresh the Antigravity quota fixture to a current 3.6 row. |
-| `tests/usage-cost.test.ts` | MODIFY | Prove 3.6 overlay membership and retired-row absence. |
+| `tests/usage-cost.test.ts` | MODIFY | Prove 3.6 overlay membership and hidden old-ID compatibility pricing. |
+| `tests/codex-catalog.test.ts` | MODIFY | Prove the exact Codex-facing reasoning ladder for direct Google 3.6. |
 | `tests/oauth-provider-reconcile.test.ts` | NEW | Prove an existing 3.5 Antigravity preset heals to the 3.6 list/default without credential changes. |
 
 `src/generated/jawcode-model-metadata.ts`, Cursor files/tests, OrcaRouter seed rows, benchmark fixtures, and Vertex configuration are explicitly unchanged.
@@ -115,7 +116,7 @@ const GEMINI_36_FLASH: Cost4 = {
 };
 ```
 
-Update the Google pricing evidence date to 2026-07-22. Add one `verified` row for `google/gemini-3.6-flash` and three `verified-derived` rows for the Antigravity low/medium/high IDs. Remove the four 3.5 Antigravity rows and the legacy `gemini-3-flash-agent` row.
+Update the Google pricing evidence date to 2026-07-22. Add one `verified` row for `google/gemini-3.6-flash` and three `verified-derived` rows for the Antigravity low/medium/high IDs. Keep the five 3.5/legacy Antigravity rows as hidden compatibility price aliases, but replace their old 3.5/3.0 price constants and evidence with the mapped 3.6 tier's price and an explicit compatibility source string. These rows do not affect picker visibility; they preserve exact-key usage pricing for old saved requests because `resolveMatchedPrice` does not consult the Antigravity wire resolver.
 
 Do not create a `tiered` price row while the model remains hidden. Do not modify the generated jawcode file.
 
@@ -150,7 +151,11 @@ Replace the stale fixture's `gemini-3.5-flash-low` row/display name with `gemini
 
 ### `tests/usage-cost.test.ts`
 
-Update the exact overlay count after the source edit, require `google/gemini-3.6-flash` and all three Antigravity 3.6 keys, and assert the five retired Antigravity keys are absent. Add value assertions for 1.5 / 7.5 / 0.15 / 0 and derived status.
+Update the exact overlay count after the source edit, require `google/gemini-3.6-flash`, all three visible Antigravity 3.6 keys, and all five hidden compatibility keys. Add value assertions for 1.5 / 7.5 / 0.15 / 0 and assert compatibility rows now cite 3.6 and remain `verified-derived`.
+
+### `tests/codex-catalog.test.ts`
+
+Build the routed catalog from the canonical direct Google registry config and assert `google/gemini-3.6-flash` exposes exactly the Codex-facing `low`, `medium`, and `high` reasoning ladder. This closes the audit concern that registry `minimal` can travel through different catalog construction paths; `minimal` is accepted as an inbound provider option but is normalized to Codex `low` for the picker.
 
 ### `tests/oauth-provider-reconcile.test.ts` (NEW)
 
@@ -174,9 +179,9 @@ bun test --isolate \
   tests/provider-registry-parity.test.ts \
   tests/provider-quota.test.ts \
   tests/usage-cost.test.ts \
+  tests/codex-catalog.test.ts \
   tests/oauth-provider-reconcile.test.ts
 
-bun test --isolate tests/codex-catalog.test.ts
 bun run typecheck
 ```
 
@@ -209,4 +214,5 @@ The pre-build baseline already completed this matrix successfully with HTTP 200 
 - Runtime model truth remains `src/providers/registry.ts` plus `src/providers/antigravity-models.ts`; no general README currently enumerates model IDs, so no README edit is needed.
 - If jawcode gains an official 3.6 row later, refresh `src/generated/jawcode-model-metadata.ts` mechanically in a separate unit rather than mixing an external snapshot change into this rollout.
 - Move the folder to `devlog/_fin/260722_gemini_36_rollout/` only after implementation and verification are complete.
-- Commit the completed branch, then integrate it into `/Users/jun/Developer/new/700_projects/opencodex` on local `dev`. Preserve the unrelated dirty issue-sweep devlog file exactly; prefer `git merge --ff-only gemini-3.6`, verify the merged SHA and focused smoke test from `dev`, and do not push.
+- Commit the completed branch, then integrate it into `/Users/jun/Developer/new/700_projects/opencodex` on local `dev` with a normal `git merge --no-ff gemini-3.6`. Preserve the unrelated dirty issue-sweep devlog file exactly by comparing its pre/post content hash; verify the merge commit contains the Gemini tip and rerun the focused smoke test from `dev`. Do not push.
+- After all merged-`dev` checks pass, run `git worktree remove /Users/jun/.codex/worktrees/2d67/opencodex` from the main repository. Do not delete the merged branch ref and do not force cleanup over a dirty Gemini worktree.

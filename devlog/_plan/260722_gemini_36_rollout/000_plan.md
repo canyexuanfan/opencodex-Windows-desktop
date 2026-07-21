@@ -97,10 +97,11 @@ The probe emitted no token, project ID, authorization header, or raw upstream er
 - Direct `google` lists `gemini-3.6-flash`, `gemini-3.5-flash`, and `gemini-3.1-pro-preview`; the default remains `gemini-3.5-flash`.
 - Direct 3.6 catalog metadata reports 1,048,576 context, image input, and low/medium/high reasoning choices.
 - Activation scenario for effort wiring: a direct Google 3.6 request with `reasoning: "high"` contains `generationConfig.thinkingConfig.thinkingLevel = "high"`; an unset effort omits `thinkingConfig`.
-- Usage resolution returns the verified 3.6 public price for direct Google and derived prices for all three Antigravity tiers, with no retired 3.5 Antigravity overlay left.
+- Usage resolution returns the verified 3.6 public price for direct Google and derived prices for all three visible Antigravity tiers. Hidden 3.5/legacy compatibility IDs retain exact-key overlays whose prices and evidence point to their mapped 3.6 tiers, because cost matching currently receives the requested ID rather than the resolved wire ID.
 - Cursor and OrcaRouter remain unchanged.
 - Focused tests and typecheck pass; after `ocx restart`, all three 3.6 Antigravity tiers complete a minimal live prompt.
-- The completed Gemini branch is committed and merged into the local `dev` worktree without modifying or staging its unrelated `devlog/_plan/260722_issue_bug_sweep/000_plan.md` change. No remote push is performed.
+- The completed Gemini branch is committed and merged with a normal merge into the local `dev` worktree without modifying or staging its unrelated `devlog/_plan/260722_issue_bug_sweep/000_plan.md` change. No remote push is performed.
+- After merged-`dev` verification passes, the linked `/Users/jun/.codex/worktrees/2d67/opencodex` worktree is removed from the main repository. The merged `gemini-3.6` branch ref is retained unless separately requested.
 
 ## Risks and rollback
 
@@ -108,4 +109,5 @@ The probe emitted no token, project ID, authorization header, or raw upstream er
 - Hiding old IDs without compatibility aliases would break saved combos or manually selected slugs. Compatibility aliases are therefore separated from picker exposure.
 - A live request can consume account quota. Verification uses one minimal prompt per tier and records only status/model identity, never OAuth tokens or raw credential payloads.
 - Rollback restores the old Antigravity visible list/default, removes the direct 3.6 seed and overlays, and reverts the focused tests. No persistent data migration is introduced.
-- Local integration prefers `git merge --ff-only gemini-3.6`. If `dev` advances and is no longer a fast-forward target, re-evaluate overlap and use a normal merge only when unrelated dirty work remains untouched; otherwise stop rather than stash or discard user work.
+- Local integration uses `git merge --no-ff gemini-3.6` as explicitly directed after confirming the branch histories and changed paths. Hash the unrelated dirty file before and after, and stop rather than stash or discard user work if the merge would touch it.
+- Worktree cleanup runs only after the merge commit, post-merge tests, merged-SHA check, and dirty-file preservation check pass. Invoke `git worktree remove` from the main repository so cleanup does not operate from inside the directory being removed.
