@@ -14,6 +14,7 @@ import { useT } from "../i18n";
 import type { AccountQuota } from "../codex-quota-utils";
 import QuotaBars from "../components/QuotaBars";
 import { providerIconSrc } from "../provider-icons";
+import { apiErrorMessage } from "../api-error";
 
 interface Config {
   port: number;
@@ -551,9 +552,14 @@ export default function Providers({ apiBase }: { apiBase: string }) {
 
   const removeProvider = async (name: string) => {
     if (!window.confirm(t("prov.removeConfirm", { name }))) return;
-    const res = await fetch(`${apiBase}/api/providers?name=${encodeURIComponent(name)}`, { method: "DELETE" });
-    if (res.ok) { notify(t("prov.removed", { name }), true); fetchConfig(); fetchOauth(); fetchProviderQuotas(true); }
-    else notify(t("prov.removeFail", { name }), false);
+    const fallback = t("prov.removeFail", { name });
+    try {
+      const res = await fetch(`${apiBase}/api/providers?name=${encodeURIComponent(name)}`, { method: "DELETE" });
+      if (res.ok) { notify(t("prov.removed", { name }), true); fetchConfig(); fetchOauth(); fetchProviderQuotas(true); }
+      else notify(await apiErrorMessage(res, fallback), false);
+    } catch {
+      notify(fallback, false);
+    }
   };
 
   const setProviderDisabled = async (name: string, disabled: boolean) => {
