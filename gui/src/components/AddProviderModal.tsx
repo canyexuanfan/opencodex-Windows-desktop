@@ -11,6 +11,7 @@ import {
 import { oauthTosRisk } from "../oauth-tos-risk";
 import OAuthTosWarningModal from "./OAuthTosWarningModal";
 import ProviderCatalog from "./provider-catalog/ProviderCatalog";
+import type { AccountLoginRow, AccountLoginStatus } from "./provider-catalog/ProviderCatalog";
 import type { CatalogPreset } from "./provider-catalog/provider-presets";
 import { baseUrlForChoice, matchChoiceId, resolvedBaseUrlForChoice } from "../base-url-choice";
 
@@ -23,6 +24,7 @@ type FormState = ProviderPayloadForm;
 
 export default function AddProviderModal({
   apiBase, existingNames, onClose, onAdded, initialTier, initialCustom = false,
+  accountRows, accountStatus, accountBusy, onAccountLogin, onAccountCancelLogin, onAccountLogout, onOpen,
 }: {
   apiBase: string;
   existingNames: string[];
@@ -32,6 +34,13 @@ export default function AddProviderModal({
   initialTier?: "accounts" | "free" | "paid";
   /** Skip the catalog and open the custom-provider form immediately. */
   initialCustom?: boolean;
+  accountRows?: AccountLoginRow[];
+  accountStatus?: Record<string, AccountLoginStatus>;
+  accountBusy?: string | null;
+  onAccountLogin?: (provider: string) => void;
+  onAccountCancelLogin?: (provider: string) => void;
+  onAccountLogout?: (provider: string) => void;
+  onOpen?: () => void;
 }) {
   const t = useT();
   const fallbackPresets = useMemo<Preset[]>(() => [
@@ -65,10 +74,11 @@ export default function AddProviderModal({
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
 
-  // Cleanup + focus-trap: save previous focus on mount, restore on unmount.
+  // Refresh OAuth status once when the modal opens (not when fetchOauth identity changes).
   useEffect(() => {
     aliveRef.current = true;
     previousFocusRef.current = document.activeElement as HTMLElement | null;
+    onOpen?.();
     const dialog = dialogRef.current;
     if (dialog) {
       const focusable = dialog.querySelector<HTMLElement>(
@@ -80,6 +90,7 @@ export default function AddProviderModal({
       aliveRef.current = false;
       previousFocusRef.current?.focus();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only open hook
   }, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -162,7 +173,8 @@ export default function AddProviderModal({
       ? resolvedBaseUrlForChoice(preset.baseUrlChoices, endpointChoice, form.baseUrl)
       : form.baseUrl.trim();
     if (!reserved && !form.name.trim()) { setError(t("modal.nameRequired")); return; }
-    if (!reserved && !resolvedBaseUrl) { setError(t("modal.baseUrlRequired")); return; }
+   if (!reserved && !resolvedBaseUrl) { setError(t("modal.baseUrlRequired")); return; }
+    if (!reserved && /\{[^}]*\}/.test(resolvedBaseUrl)) { setError(t("modal.baseUrlPlaceholderError")); return; }
     const submitForm = { ...form, baseUrl: resolvedBaseUrl };
     let postBody: { name: string; provider: ProviderPayload };
     try {
@@ -307,6 +319,12 @@ export default function AddProviderModal({
             initialTier={initialTier}
             onSelectPreset={p => choosePreset(p)}
             onSelectCustom={() => choosePreset(fallbackPresets[0]!)}
+            accountRows={accountRows}
+            accountStatus={accountStatus}
+            busyProvider={accountBusy}
+            onLogin={onAccountLogin}
+            onCancelLogin={onAccountCancelLogin}
+            onLogout={onAccountLogout}
           />
         ) : form && (
           preset.auth === "oauth" && form.authMode === "oauth" ? (
@@ -402,7 +420,8 @@ export default function AddProviderModal({
                     <li>{t("modal.setupStep2")}</li>
                     <li>{t("modal.setupStep3")}</li>
                   </ol>
-                  {preset.note && <div className="text-label" style={{ color: "var(--muted)", marginTop: 6, fontStyle: "italic" }}>{preset.note}</div>}
+                 {preset.note && <div className="text-label" style={{ color: "var(--muted)", marginTop: 6, fontStyle: "italic" }}>{preset.note}</div>}
+                  {/\{[^}]*\}/.test(form.baseUrl) && (<div className="text-label" style={{ color: "var(--amber)", marginTop: 6 }}>{t("modal.baseUrlPlaceholderHint")}</div>)}
                 </details>
               )}
               <Field label={t("modal.providerName")}>

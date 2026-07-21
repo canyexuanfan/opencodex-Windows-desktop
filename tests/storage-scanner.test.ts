@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scanStorage, type StorageBucket, type StorageReport } from "../src/storage/scanner";
@@ -18,8 +18,7 @@ let previousCodexHome: string | undefined;
  * date-partitioned sessions/, flat archived_sessions/, versioned state / logs
  * sqlite files with WAL siblings, plus non-session dirs for the "other" bucket.
  */
-function buildFixtureHome(): string {
-  const home = mkdtempSync(join(tmpdir(), "ocx-storage-fixture-"));
+function buildFixtureHome(home: string = mkdtempSync(join(tmpdir(), "ocx-storage-fixture-"))): string {
 
   mkdirSync(join(home, "sessions", "2026", "05", "27"), { recursive: true });
   mkdirSync(join(home, "sessions", "2026", "06", "01"), { recursive: true });
@@ -33,19 +32,35 @@ function buildFixtureHome(): string {
   mkdirSync(join(home, "archived_sessions"));
   writeFileSync(join(home, "archived_sessions", "rollout-old.jsonl"), "d".repeat(50));
 
+  // Real state_5.sqlite/logs_2.sqlite are WAL-mode (devlog 20_codex-storage-structure.md: "every
+  // root sqlite has -wal + -shm siblings live while Codex runs"). Checkpoint+truncate here so the
+  // fixture starts sidecar-free, like a state_5.sqlite would look after Codex fully quits — the
+  // exact starting condition that must NOT gain new -wal/-shm files from a "read-only" scan.
   const state = new Database(join(home, "state_5.sqlite"));
+  state.exec("PRAGMA journal_mode=WAL");
   state.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, archived INTEGER)");
   state.exec("INSERT INTO threads VALUES ('t1','sessions/a.jsonl',0),('t2','sessions/b.jsonl',1),('t3','sessions/c.jsonl',0)");
-  state.close();
+ state.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+ state.close();
+  // Checkpoint leaves empty -wal and a -shm behind on some Bun/SQLite combos;
+  // remove them so the fixture matches the "clean quit" state the test asserts.
+  for (const suf of ["-wal", "-shm"]) {
+    try { unlinkSync(join(home, `state_5.sqlite${suf}`)); } catch {}
+  }
   // Older versioned DB + stale WAL sibling: must count toward bucket size, but row
   // counts must come from the newest suffix (state_5), never this one.
   writeFileSync(join(home, "state_4.sqlite"), "e".repeat(64));
   writeFileSync(join(home, "state_4.sqlite-wal"), "f".repeat(32));
 
   const logs = new Database(join(home, "logs_2.sqlite"));
+  logs.exec("PRAGMA journal_mode=WAL");
   logs.exec("CREATE TABLE logs (ts INTEGER, level TEXT, estimated_bytes INTEGER)");
   logs.exec("INSERT INTO logs VALUES (1,'info',10),(2,'info',20),(3,'warn',30),(4,'error',40),(5,'info',50)");
-  logs.close();
+ logs.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+ logs.close();
+  for (const suf of ["-wal", "-shm"]) {
+    try { unlinkSync(join(home, `logs_2.sqlite${suf}`)); } catch {}
+  }
 
   mkdirSync(join(home, "attachments"));
   writeFileSync(join(home, "attachments", "img.png"), "g".repeat(700));
@@ -151,6 +166,21 @@ describe("scanStorage", () => {
     expect(bucket(report, "logs_db").rows).toBe(5);
   });
 
+  test("counts DB rows correctly when CODEX_HOME contains URI-reserved characters", () => {
+   // A literal '#'/'?'/'%' in the path is legal on POSIX filesystems and starts a
+   // fragment/query/escape if the immutable file: URI is built by naive string
+   // concatenation — it must not silently degrade every row count to null.
+   const parent = mkdtempSync(join(tmpdir(), "ocx-storage-uri-"));
+    // '?' is illegal on NTFS; use only chars valid across all CI platforms.
+    const weirdHome = join(parent, "weird#name+with%percent");
+    mkdirSync(weirdHome);
+    fixtureHome = buildFixtureHome(weirdHome);
+
+    const report = scanStorage(fixtureHome);
+    expect(bucket(report, "state_db").rows).toBe(3);
+    expect(bucket(report, "logs_db").rows).toBe(5);
+  });
+
   test("returns null row counts for an unreadable db without throwing", () => {
     fixtureHome = buildFixtureHome();
     // A newer-versioned garbage file shadows state_5: rows must degrade to null,
@@ -162,13 +192,19 @@ describe("scanStorage", () => {
     expect(bucket(report, "logs_db").rows).toBe(5);
   });
 
-  test("returns null row counts while another connection holds an exclusive lock", () => {
+  test("reads through an active writer lock without blocking or writing", () => {
+    // Row counts use an immutable connection (never takes SQLite's lock protocol), so a scan
+    // must complete instantly against the last-checkpointed data instead of blocking on
+    // SQLITE_BUSY — and, same as any other scan, must not create sidecar files.
     fixtureHome = buildFixtureHome();
     const holder = new Database(join(fixtureHome, "state_5.sqlite"));
     holder.exec("PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE");
     try {
+      const before = snapshotTree(fixtureHome);
       const report = scanStorage(fixtureHome);
-      expect(bucket(report, "state_db").rows).toBeNull();
+      expect(bucket(report, "state_db").rows).toBe(3);
+      const after = snapshotTree(fixtureHome);
+      expect([...after.keys()].sort()).toEqual([...before.keys()].sort());
     } finally {
       holder.close();
     }
