@@ -217,11 +217,18 @@ describe("provider registry parity", () => {
       ],
       modelInputModalities: {
         "qwen3.8-max-preview": ["text", "image"],
-        "qwen3.7-max": ["text"],
+        "qwen3.7-max": ["text", "image"],
       },
       modelReasoningEfforts: {
         "qwen3.8-max-preview": ["low", "medium", "high", "xhigh", "max"],
       },
+      modelContextWindows: {
+        "qwen3.8-max-preview": 983_616,
+        "qwen3.7-max": 1_000_000,
+        "deepseek-v4-pro": 1_000_000,
+      },
+      noVisionModels: ["glm-5.2", "deepseek-v4-pro"],
+      preserveReasoningContentModels: expect.arrayContaining(["qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus"]),
     });
     expect(KEY_LOGIN_PROVIDERS["alibaba-token-plan"].thinkingBudgetModels)
       .toContain("qwen3.8-max-preview");
