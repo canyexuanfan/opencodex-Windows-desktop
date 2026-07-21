@@ -54,12 +54,22 @@ describe("antigravity CCA envelope", () => {
   });
 
   test("exposes only Gemini 3.6 Flash tiers while hidden compatibility aliases resolve to them", async () => {
-    expect(ANTIGRAVITY_MODELS).toEqual(expect.arrayContaining([
+    // Collapsed picker: base models only.
+    expect(ANTIGRAVITY_MODELS).toEqual([
+      "gemini-3.6-flash",
+      "gemini-3.1-pro",
+      "claude-sonnet-4-6",
+      "claude-opus-4-6-thinking",
+      "gpt-oss-120b-medium",
+    ]);
+    for (const hidden of [
       "gemini-3.6-flash-low",
       "gemini-3.6-flash-medium",
       "gemini-3.6-flash-high",
-    ]));
-    for (const hidden of [
+      "gemini-3.1-pro-low",
+      "gemini-pro-agent",
+      "gemini-3.1-pro-high",
+      "gemini-3.1-pro-preview",
       "gemini-3.5-flash-extra-low",
       "gemini-3.5-flash-low",
       "gemini-3.5-flash-mid",
