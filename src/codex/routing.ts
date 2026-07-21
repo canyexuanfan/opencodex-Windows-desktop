@@ -25,6 +25,8 @@ export type CodexThreadResolution =
 const threadAccountMap = new Map<string, ThreadAffinityEntry>();
 type CodexUpstreamHealth = {
   consecutiveFailures: number;
+  /** Consecutive healthy terminals observed while recovering from escalation level 2+. */
+  consecutiveSuccesses?: number;
   lastFailureStatus?: number;
   lastFailureAt?: number;
   /** Hard cooldown (quota 429). Survives a later 2xx; blocks auth + selection. */
@@ -42,6 +44,12 @@ const CODEX_MAX_QUOTA_COOLDOWN_MS = 24 * 60 * 60_000;
 export const CODEX_FAILURE_WINDOW_MS = 5 * 60_000;
 /** How long a transient failure keeps the account out of pool selection. */
 export const CODEX_TRANSIENT_SOFT_AVOID_MS = 30_000;
+const CODEX_TRANSIENT_SOFT_AVOID_ESCALATION_MS = [
+  CODEX_TRANSIENT_SOFT_AVOID_MS,
+  2 * 60_000,
+  10 * 60_000,
+  30 * 60_000,
+] as const;
 export const CODEX_THREAD_AFFINITY_IDLE_TTL_MS = 24 * 60 * 60_000;
 export const CODEX_THREAD_AFFINITY_MAX_ENTRIES = 2048;
 // Min interval between quota threshold re-evaluations for a single bound thread.
@@ -449,8 +457,22 @@ export function recordCodexUpstreamOutcome(
   const now = meta.now ?? Date.now();
   const outcomeClass = classifyCodexUpstreamOutcome(outcome);
   if (outcomeClass === "success") {
-    // Soft avoid clears on success; hard quota cooldown intentionally survives.
+    const current = upstreamHealth.get(accountId);
     const cooldownUntil = getCodexAccountCooldownUntil(accountId, now);
+    const failoverEnabled = (config.upstreamFailoverThreshold ?? 3) > 0;
+    if (failoverEnabled && current && current.consecutiveFailures >= 2) {
+      const consecutiveSuccesses = (current.consecutiveSuccesses ?? 0) + 1;
+      if (consecutiveSuccesses < 2) {
+        upstreamHealth.set(accountId, {
+          ...current,
+          consecutiveSuccesses,
+          ...(cooldownUntil ? { cooldownUntil } : {}),
+        });
+        return;
+      }
+    }
+    // Level 1 clears immediately; escalated accounts need two consecutive healthy terminals.
+    // Hard quota cooldown intentionally survives either recovery path.
     if (cooldownUntil) upstreamHealth.set(accountId, { consecutiveFailures: 0, cooldownUntil });
     else upstreamHealth.delete(accountId);
     return;
@@ -491,14 +513,18 @@ export function recordCodexUpstreamOutcome(
   // Soft avoid + affinity clears are part of failover. When threshold is 0, leave
   // sticky sessions alone (same as shouldFailover / applyFailureFailover no-ops).
   const failoverEnabled = (config.upstreamFailoverThreshold ?? 3) > 0;
+  const consecutiveFailures = stale ? 1 : (current?.consecutiveFailures ?? 0) + 1;
+  const escalationMs = CODEX_TRANSIENT_SOFT_AVOID_ESCALATION_MS[
+    Math.min(consecutiveFailures, CODEX_TRANSIENT_SOFT_AVOID_ESCALATION_MS.length) - 1
+  ]!;
   const softAvoidUntil = failoverEnabled
     ? Math.max(
       getCodexAccountSoftAvoidUntil(accountId, now) ?? 0,
-      now + CODEX_TRANSIENT_SOFT_AVOID_MS,
+      now + escalationMs,
     )
     : undefined;
   upstreamHealth.set(accountId, {
-    consecutiveFailures: stale ? 1 : (current?.consecutiveFailures ?? 0) + 1,
+    consecutiveFailures,
     lastFailureStatus,
     lastFailureAt: now,
     ...(hardCooldownUntil ? { cooldownUntil: hardCooldownUntil } : {}),

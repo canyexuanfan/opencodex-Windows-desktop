@@ -62,6 +62,9 @@ export interface RequestLogContext {
   upstreamError?: string;
   /** HTTP status derived from a terminal `response.failed` SSE payload (429/401/503/etc.). */
   terminalHttpStatus?: number;
+  affinity?: "reused" | "new_bind" | "rebound" | "cleared";
+  transportPhase?: "pre_headers" | "mid_stream" | "terminal_sse";
+  terminalSource?: "upstream" | "synthetic";
 }
 
 export interface RequestLogEntry {
@@ -92,6 +95,12 @@ export interface RequestLogEntry {
   usage?: OcxUsage;
   totalTokens?: number;
   attempts?: PersistedUsageAttempt[];
+  /** Codex pool affinity decision for this request (diagnostics for #186). */
+  affinity?: "reused" | "new_bind" | "rebound" | "cleared";
+  /** Where the upstream terminal/failure was observed. */
+  transportPhase?: "pre_headers" | "mid_stream" | "terminal_sse";
+  /** Whether the terminal came from a real upstream SSE event or a proxy synthetic tail. */
+  terminalSource?: "upstream" | "synthetic";
 }
 
 const requestLog: RequestLogEntry[] = [];
@@ -587,6 +596,9 @@ export function addFinalRequestLog(
     ...(loggedUsage ? { usage: loggedUsage } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
     ...(attempts?.length ? { attempts } : {}),
+    ...(logCtx.affinity ? { affinity: logCtx.affinity } : {}),
+    ...(logCtx.transportPhase ? { transportPhase: logCtx.transportPhase } : {}),
+    ...(logCtx.terminalSource ? { terminalSource: logCtx.terminalSource } : {}),
   });
   if (isUsageDebugEnabled()) {
     appendUsageDebug({

@@ -69,6 +69,7 @@ import type { WsData } from "./ws-bridge";
 import { registerTurn, trackStreamLifetime, unregisterTurn } from "./lifecycle";
 import { redactSecretString } from "../lib/redact";
 import { readBoundedResponseBody } from "../lib/bounded-body";
+import { supportedLadderFor } from "./effort-policy";
 import {
   beginRequestAttempt,
   catalogModelSupportsServiceTier,
@@ -622,10 +623,12 @@ async function handleComboResponses(
       model: pick.target.model,
       provider: pick.target.provider,
     };
+    const targetRoute = routeModel(config, `${pick.target.provider}/${pick.target.model}`);
     const childBody = concreteComboRequestBody(
       rawBody,
       pick.target,
       comboDefaultEffort(config, comboId),
+      supportedLadderFor({ provider: targetRoute.provider, modelId: targetRoute.modelId }),
     );
     const childHeaders = new Headers(req.headers);
     childHeaders.delete("content-length");
@@ -1212,8 +1215,8 @@ export async function handleResponses(
         // even if the client has already disconnected: the turn genuinely reached that terminal, so
         // it must log as completed/failed, not be dropped or downgraded to a cancel (#44). A pure
         // client-cancel (no terminal seen) is finalized separately via consumeForInspection's onCancel.
-        const reportNativeTerminal = (status: ResponsesTerminalStatus) => {
-          terminalRecorder?.(status);
+        const reportNativeTerminal = (status: ResponsesTerminalStatus, httpStatusOverride?: number) => {
+          terminalRecorder?.(status, httpStatusOverride);
           options.onNativePassthroughTerminal?.(status);
         };
         consumeForInspection(

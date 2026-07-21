@@ -4,6 +4,7 @@
 - 위험도: 중간~높음 (요청 런타임 핵심 경로 — 오분류 시 건강한 계정 회피/성능 저하)
 - 선행 조건: 없음. 단 구현 순서상 Diff 1(분류)이 Diff 2(escalation)보다 선행 —
   escalation은 올바른 실패 신호 위에서만 의미가 있음.
+- **구현 완료 (2026-07-22)**: relay.ts:409 onTerminal 2-인자 + :509 catch→failed+502(clean-EOF incomplete 유지) + transportPhase/terminalSource 배선; responses.ts reportNativeTerminal override 전달; routing.ts consecutiveSuccesses escalation 30s/2m/10m/30m + level≥2 2연속 복구; request-log.ts 진단 필드 3종(affinity는 type-only — RequestLogContext 미배선, 문서화된 스코프 경계). `ResponsesTerminalStatus` 유니언 불변 확인. 검증: codex-routing 56 + request-log 36 + cancel 3 pass, `bun x tsc --noEmit` exit 0. 커밋: WP-impl-6.
 
 ## 핵심 제약 (리뷰어 blocker 반영)
 

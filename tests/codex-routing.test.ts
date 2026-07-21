@@ -36,6 +36,7 @@ import {
 import { CODEX_UNKNOWN_USAGE_SCORE } from "../src/codex/quota";
 import { MAIN_CODEX_ACCOUNT_ID } from "../src/codex/main-account";
 import { routeModel } from "../src/router";
+import { consumeForInspection } from "../src/server/relay";
 import type { OcxConfig } from "../src/types";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-routing-test");
@@ -63,6 +64,12 @@ function saveTestCredential(id: string): void {
     expiresAt: Date.now() + 5 * 60_000,
     chatgptAccountId: `acct-${id}`,
   });
+}
+
+const inspectionTick = () => new Promise(resolve => setTimeout(resolve, 5));
+
+function pendingInspectionStream(): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({ start() {}, pull() {} });
 }
 
 describe("codex routing", () => {
@@ -339,10 +346,9 @@ describe("codex routing", () => {
     recordCodexUpstreamOutcome(config, "a", 200, { now: now + 1 });
     recordCodexUpstreamOutcome(config, "a", 503, { now: now + 2 });
     recordCodexUpstreamOutcome(config, "a", 503, { now: now + 3 });
-    // 2 failures after a success (streak=2) is under the failover threshold (3),
-    // but soft-avoid still blocks for 30s. After it expires, "a" is selectable.
-    // Soft-avoid was last set at now+3, so it expires at now+3+30s.
-    const afterSoftAvoid = now + 3 + CODEX_TRANSIENT_SOFT_AVOID_MS + 1;
+    // The success reset the old streak, so the next two failures form escalation
+    // level 2 (still below failover threshold 3) and avoid the account for 2m.
+    const afterSoftAvoid = now + 3 + 2 * 60_000 + 1;
     expect(resolveCodexAccountForThread("next", config, afterSoftAvoid)).toBe("a");
   });
 
@@ -354,6 +360,95 @@ describe("codex routing", () => {
     recordCodexUpstreamOutcome(config, "a", 503);
     recordCodexUpstreamOutcome(config, "a", 503);
     expect(resolveCodexAccountForThread("next", config)).toBe("a");
+  });
+
+  test("inspection client cancellation records no terminal outcome or account penalty", async () => {
+    const config = makeConfig();
+    const record = (status: "completed" | "failed" | "incomplete", override?: number) => {
+      recordCodexUpstreamOutcome(config, "a", status === "failed" ? (override ?? 502) : 200);
+    };
+
+    const preAborted = new AbortController();
+    preAborted.abort();
+    consumeForInspection(pendingInspectionStream(), record, preAborted.signal);
+    expect(getCodexUpstreamHealth("a")).toBeNull();
+
+    const midDrain = new AbortController();
+    consumeForInspection(pendingInspectionStream(), record, midDrain.signal);
+    midDrain.abort();
+    await inspectionTick();
+    expect(getCodexUpstreamHealth("a")).toBeNull();
+  });
+
+  test("inspection read rejection reports failed plus synthetic 502 and clears affinity", async () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 20);
+    expect(resolveCodexAccountForThread("reset-thread", config, now)).toBe("a");
+    const terminals: Array<[string, number | undefined]> = [];
+    const resetStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("socket reset"));
+      },
+    });
+
+    consumeForInspection(resetStream, (status, override) => {
+      terminals.push([status, override]);
+      recordCodexUpstreamOutcome(config, "a", override ?? 200, { now: now + 1, threadId: "reset-thread" });
+    });
+    await inspectionTick();
+
+    expect(terminals).toEqual([["failed", 502]]);
+    expect(getCodexUpstreamHealth("a")).toMatchObject({ consecutiveFailures: 1, lastFailureStatus: 502 });
+    expect(resolveCodexAccountForThread("reset-thread", config, now + 2)).toBe("b");
+  });
+
+  test("inspection clean EOF remains incomplete and success-like", async () => {
+    const config = makeConfig();
+    const terminals: Array<[string, number | undefined]> = [];
+    const cleanEof = new ReadableStream<Uint8Array>({ start(controller) { controller.close(); } });
+
+    consumeForInspection(cleanEof, (status, override) => {
+      terminals.push([status, override]);
+      recordCodexUpstreamOutcome(config, "a", status === "failed" ? (override ?? 502) : 200);
+    });
+    await inspectionTick();
+
+    expect(terminals).toEqual([["incomplete", undefined]]);
+    expect(getCodexUpstreamHealth("a")).toBeNull();
+  });
+
+  test("transient cooldown escalates to 2m, 10m, then the 30m cap", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+
+    recordCodexUpstreamOutcome(config, "a", 503, { now });
+    recordCodexUpstreamOutcome(config, "a", 503, { now: now + 1 });
+    expect(getCodexAccountSoftAvoidUntil("a", now + 1)).toBe(now + 1 + 2 * 60_000);
+    recordCodexUpstreamOutcome(config, "a", 503, { now: now + 2 });
+    expect(getCodexAccountSoftAvoidUntil("a", now + 2)).toBe(now + 2 + 10 * 60_000);
+    recordCodexUpstreamOutcome(config, "a", 503, { now: now + 3 });
+    expect(getCodexAccountSoftAvoidUntil("a", now + 3)).toBe(now + 3 + 30 * 60_000);
+    recordCodexUpstreamOutcome(config, "a", 503, { now: now + 4 });
+    expect(getCodexAccountSoftAvoidUntil("a", now + 4)).toBe(now + 4 + 30 * 60_000);
+  });
+
+  test("escalation level 2 requires two consecutive healthy terminals to clear", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    recordCodexUpstreamOutcome(config, "a", 503, { now });
+    recordCodexUpstreamOutcome(config, "a", 503, { now: now + 1 });
+
+    recordCodexUpstreamOutcome(config, "a", 200, { now: now + 2 });
+    expect(getCodexUpstreamHealth("a")).toMatchObject({
+      consecutiveFailures: 2,
+      consecutiveSuccesses: 1,
+    });
+    expect(isCodexAccountSoftAvoided("a", now + 2)).toBe(true);
+
+    recordCodexUpstreamOutcome(config, "a", 200, { now: now + 3 });
+    expect(getCodexUpstreamHealth("a")).toBeNull();
   });
 
   test("stale thread affinity is revalidated before reuse", () => {
@@ -690,9 +785,9 @@ describe("codex routing", () => {
     const firstAvoid = getCodexAccountSoftAvoidUntil("a", now);
     expect(firstAvoid).toBe(now + CODEX_TRANSIENT_SOFT_AVOID_MS);
 
-    // A second failure 10s later extends the window from that point.
+    // A second failure 10s later escalates the window to 2m from that point.
     recordCodexUpstreamOutcome(config, "a", "timeout", { now: now + 10_000 });
-    expect(getCodexAccountSoftAvoidUntil("a", now + 10_001)).toBe(now + 10_000 + CODEX_TRANSIENT_SOFT_AVOID_MS);
+    expect(getCodexAccountSoftAvoidUntil("a", now + 10_001)).toBe(now + 10_000 + 2 * 60_000);
   });
 
   test("soft-avoid is not applied when failover threshold is 0", () => {
