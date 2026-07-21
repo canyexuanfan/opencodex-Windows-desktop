@@ -65,6 +65,8 @@ export interface ProviderRegistryEntry {
   noPenaltyModels?: string[];
   /** Opt this provider into parallel tool calls (see OcxProviderConfig.parallelToolCalls). */
   parallelToolCalls?: boolean;
+  /** Opt this provider into forwarding prompt_cache_key (OpenAI-specific; strict backends reject it). */
+  promptCacheKey?: boolean;
   autoToolChoiceOnlyModels?: string[];
   preserveReasoningContentModels?: string[];
   thinkingToggleModels?: string[];

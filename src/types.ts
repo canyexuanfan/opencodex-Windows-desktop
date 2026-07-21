@@ -692,6 +692,12 @@ export interface OcxProviderConfig {
    * only on explicit `true`. See devlog/_plan/260709_parallel_tool_calls.
    */
   parallelToolCalls?: boolean;
+  /**
+   * Opt-in: forward `prompt_cache_key` to the upstream `/chat/completions` body.
+   * OpenAI-specific extension; strict backends (Groq, Cerebras, etc.) reject unknown
+   * fields. Default off; only enable for providers that document this parameter.
+   */
+  promptCacheKey?: boolean;
   /** Model ids whose tool_choice only accepts `auto` or `none`; forced/named choices are downgraded. */
   autoToolChoiceOnlyModels?: string[];
   /** Model ids that expect prior assistant `reasoning_content` to be preserved in chat history. */
