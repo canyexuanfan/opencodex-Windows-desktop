@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scanStorage, type StorageBucket, type StorageReport } from "../src/storage/scanner";
@@ -40,8 +40,13 @@ function buildFixtureHome(home: string = mkdtempSync(join(tmpdir(), "ocx-storage
   state.exec("PRAGMA journal_mode=WAL");
   state.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, archived INTEGER)");
   state.exec("INSERT INTO threads VALUES ('t1','sessions/a.jsonl',0),('t2','sessions/b.jsonl',1),('t3','sessions/c.jsonl',0)");
-  state.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-  state.close();
+ state.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+ state.close();
+  // Checkpoint leaves empty -wal and a -shm behind on some Bun/SQLite combos;
+  // remove them so the fixture matches the "clean quit" state the test asserts.
+  for (const suf of ["-wal", "-shm"]) {
+    try { unlinkSync(join(home, `state_5.sqlite${suf}`)); } catch {}
+  }
   // Older versioned DB + stale WAL sibling: must count toward bucket size, but row
   // counts must come from the newest suffix (state_5), never this one.
   writeFileSync(join(home, "state_4.sqlite"), "e".repeat(64));
@@ -51,8 +56,11 @@ function buildFixtureHome(home: string = mkdtempSync(join(tmpdir(), "ocx-storage
   logs.exec("PRAGMA journal_mode=WAL");
   logs.exec("CREATE TABLE logs (ts INTEGER, level TEXT, estimated_bytes INTEGER)");
   logs.exec("INSERT INTO logs VALUES (1,'info',10),(2,'info',20),(3,'warn',30),(4,'error',40),(5,'info',50)");
-  logs.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-  logs.close();
+ logs.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+ logs.close();
+  for (const suf of ["-wal", "-shm"]) {
+    try { unlinkSync(join(home, `logs_2.sqlite${suf}`)); } catch {}
+  }
 
   mkdirSync(join(home, "attachments"));
   writeFileSync(join(home, "attachments", "img.png"), "g".repeat(700));
@@ -159,11 +167,12 @@ describe("scanStorage", () => {
   });
 
   test("counts DB rows correctly when CODEX_HOME contains URI-reserved characters", () => {
-    // A literal '#'/'?'/'%' in the path is legal on POSIX filesystems and starts a
-    // fragment/query/escape if the immutable file: URI is built by naive string
-    // concatenation — it must not silently degrade every row count to null.
-    const parent = mkdtempSync(join(tmpdir(), "ocx-storage-uri-"));
-    const weirdHome = join(parent, "weird#name?with%percent");
+   // A literal '#'/'?'/'%' in the path is legal on POSIX filesystems and starts a
+   // fragment/query/escape if the immutable file: URI is built by naive string
+   // concatenation — it must not silently degrade every row count to null.
+   const parent = mkdtempSync(join(tmpdir(), "ocx-storage-uri-"));
+    // '?' is illegal on NTFS; use only chars valid across all CI platforms.
+    const weirdHome = join(parent, "weird#name+with%percent");
     mkdirSync(weirdHome);
     fixtureHome = buildFixtureHome(weirdHome);
 
