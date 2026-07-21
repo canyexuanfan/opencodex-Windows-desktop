@@ -7,8 +7,7 @@ export const ko: Record<TKey, string> = {
   "nav.models": "모델",
   "nav.combos": "콤보",
   "nav.subagents": "서브에이전트",
-  "nav.logs": "로그",
-  "nav.debug": "디버그",
+  "nav.logs": "로그&디버그",
   "nav.usage": "사용량",
   "common.github": "GitHub",
   "common.save": "저장",
@@ -291,6 +290,8 @@ export const ko: Record<TKey, string> = {
 
   // logs
   "logs.title": "요청 로그",
+  "logs.tabLogs": "로그",
+  "logs.tabDebug": "디버그",
   "logs.subtitle": "로컬 opencodex 프록시를 거친 최근 요청입니다. 최신순.",
   "logs.autoRefresh": "자동 새로고침",
   "logs.noRequests": "아직 요청이 없습니다.",
@@ -365,7 +366,7 @@ export const ko: Record<TKey, string> = {
   "logs.detailRaw": "원본 로그",
 
   "debug.title": "디버그",
-  "debug.subtitle": "선택적 provider transport 및 usage 추출 진단. 요청 오류와 502는 Logs에 표시됩니다.",
+  "debug.subtitle": "선택적 provider transport 및 usage 추출 진단. 요청 오류와 502는 로그 탭에 표시됩니다.",
   "debug.debug": "Provider debug",
   "debug.usage": "Usage 추출",
   "debug.injection": "주입 로그",

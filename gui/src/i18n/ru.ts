@@ -9,8 +9,7 @@ export const ru: Record<TKey, string> = {
   "nav.models": "Модели",
   "nav.combos": "Комбо",
   "nav.subagents": "Подагенты",
-  "nav.logs": "Логи",
-  "nav.debug": "Отладка",
+  "nav.logs": "Логи и отладка",
   "nav.usage": "Использование",
   "common.github": "GitHub",
   "common.save": "Сохранить",
@@ -298,6 +297,8 @@ export const ru: Record<TKey, string> = {
 
   // logs
   "logs.title": "Журнал запросов",
+  "logs.tabLogs": "Логи",
+  "logs.tabDebug": "Отладка",
   "logs.subtitle": "Недавние запросы через локальный прокси opencodex, новые сверху.",
   "logs.autoRefresh": "Автообновление",
   "logs.noRequests": "Запросов пока нет.",
@@ -373,7 +374,7 @@ export const ru: Record<TKey, string> = {
 
   // debug page
   "debug.title": "Отладка",
-  "debug.subtitle": "Включаемая по желанию диагностика транспорта провайдеров и извлечения данных использования. Ошибки запросов и 502 остаются в «Журнале запросов».",
+  "debug.subtitle": "Включаемая по желанию диагностика транспорта провайдеров и извлечения данных использования. Ошибки запросов и 502 остаются на вкладке «Логи».",
   "debug.debug": "Отладка провайдера",
   "debug.usage": "Извлечение данных использования",
   "debug.injection": "Лог инъекций",

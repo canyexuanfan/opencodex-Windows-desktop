@@ -106,7 +106,11 @@ export default function Logs({ apiBase }: { apiBase: string }) {
 surfaceFilter state, 폴링 effect, virtualizer)은 `Logs` 본체에 그대로 남긴다.
 React hooks 규칙상 hook은 조기 return 없이 항상 호출되고, 렌더만 `tab`으로 분기한다.
 로그 폴링 effect는 `tab !== "logs"`일 때 폴링을 건너뛰도록 조건을 추가한다
-(디버그 탭에서 /api/logs 2초 폴링 중단).
+(디버그 탭에서 /api/logs 2초 폴링 중단). **감사 2라운드 blocker 반영**: effect 첫 줄에
+`if (tab !== "logs") return;` 그리고 의존성 배열을 `[apiBase, autoRefresh, tab]`으로 확장 —
+tab이 의존성에 없으면 디버그 탭 전환 시 기존 interval이 정리되지 않는다.
+레거시 `#debug` 초기 정규화 가드는 App.tsx의 generic 정규화(`hashBelongsToPage` 검사)보다
+**앞에** 배치한다.
 
 ```tsx
 return (

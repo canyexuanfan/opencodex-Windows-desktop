@@ -7,8 +7,7 @@ export const zh: Record<TKey, string> = {
   "nav.models": "模型",
   "nav.combos": "组合",
   "nav.subagents": "子代理",
-  "nav.logs": "日志",
-  "nav.debug": "调试",
+  "nav.logs": "日志与调试",
   "nav.usage": "用量",
   "common.github": "GitHub",
   "common.save": "保存",
@@ -291,6 +290,8 @@ export const zh: Record<TKey, string> = {
 
   // logs
   "logs.title": "请求日志",
+  "logs.tabLogs": "日志",
+  "logs.tabDebug": "调试",
   "logs.subtitle": "经过本地 opencodex 代理的最近请求，最新在前。",
   "logs.autoRefresh": "自动刷新",
   "logs.noRequests": "暂无请求。",
@@ -365,7 +366,7 @@ export const zh: Record<TKey, string> = {
   "logs.detailRaw": "原始日志",
 
   "debug.title": "调试",
-  "debug.subtitle": "可选的 provider transport 与 usage 提取诊断。请求错误和 502 在 Logs 页面。",
+  "debug.subtitle": "可选的 provider transport 与 usage 提取诊断。请求错误和 502 在“日志”标签页显示。",
   "debug.debug": "Provider debug",
   "debug.usage": "Usage 提取",
   "debug.injection": "注入日志",

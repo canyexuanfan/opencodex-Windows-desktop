@@ -7,8 +7,7 @@ export const en = {
   "nav.models": "Models",
   "nav.combos": "Combos",
   "nav.subagents": "Subagents",
-  "nav.logs": "Logs",
-  "nav.debug": "Debug",
+  "nav.logs": "Logs & Debug",
   "nav.usage": "Usage",
   "common.github": "GitHub",
   "common.save": "Save",
@@ -296,6 +295,8 @@ export const en = {
 
   // logs
   "logs.title": "Request Logs",
+  "logs.tabLogs": "Logs",
+  "logs.tabDebug": "Debug",
   "logs.subtitle": "Recent requests routed through the local opencodex proxy, newest first.",
   "logs.autoRefresh": "Auto-refresh",
   "logs.noRequests": "No requests yet.",
@@ -371,7 +372,7 @@ export const en = {
 
   // debug page
   "debug.title": "Debug",
-  "debug.subtitle": "Opt-in provider transport and usage-extraction diagnostics. Request errors and 502s stay on Logs.",
+  "debug.subtitle": "Opt-in provider transport and usage-extraction diagnostics. Request errors and 502s stay on the Logs tab.",
   "debug.debug": "Provider debug",
   "debug.usage": "Usage extraction",
   "debug.injection": "Injection log",
