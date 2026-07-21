@@ -783,8 +783,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     defaultModel: "qwen3.7-max",
     models: ALIBABA_INTL_TOKEN_PLAN_MODELS,
     liveModels: false,
-    note: "Token Plan Team Edition · Singapore (ap-southeast-1)",
-    modelInputModalities: ALIBABA_INTL_TOKEN_PLAN_INPUT_MODALITIES,
+   note: "Token Plan Team Edition · Singapore (ap-southeast-1)",
+    metadataModelIdNormalize: "case-insensitive",
+   modelInputModalities: ALIBABA_INTL_TOKEN_PLAN_INPUT_MODALITIES,
     modelContextWindows: { "deepseek-v4-pro": 1_000_000, "deepseek-v4-flash": 1_000_000, "glm-5.2": 1_000_000 },
     modelReasoningEfforts: {
       ...Object.fromEntries(ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS.map(id => [id, THINKING_BUDGET_EFFORTS])),
@@ -797,8 +798,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "deepseek-v4-flash": DEEPSEEK_THINKING_REASONING_MAP,
     },
     thinkingBudgetModels: ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS,
-    preserveReasoningContentModels: ["glm-5.2", "deepseek-v4-pro", "deepseek-v4-flash", "qwen3.7-max"],
-    noVisionModels: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3.2", "kimi-k2.7-code", "glm-5.2", "MiniMax-M2.5", "qwen3.7-max"],
+   preserveReasoningContentModels: ["glm-5.2", "deepseek-v4-pro", "deepseek-v4-flash", "qwen3.7-max"],
+   noVisionModels: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3.2", "kimi-k2.7-code", "glm-5.2", "MiniMax-M2.5", "qwen3.7-max"],
+    noReasoningModels: ["kimi-k2.7-code", "deepseek-v3.2", "MiniMax-M2.5"],
   },
   // NEEDS_HUMAN 2026-07-10: kept for config compatibility, but this is a dashboard URL,
   // no /models endpoint is documented, and tools are silently ignored upstream per docs.parallel.ai.

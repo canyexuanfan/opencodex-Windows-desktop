@@ -24,6 +24,9 @@ export const QWEN_CLOUD_BASE_URL_CHOICES: readonly ProviderBaseUrlChoice[] = [
 /**
  * Alibaba Token Plan International (ap-southeast-1) endpoint presets.
  * Same product as the Beijing Token Plan but for international accounts.
+ * Note: ALIBABA_INTL_TOKEN_PLAN_BASE_URL intentionally duplicates
+ * QWEN_CLOUD_TOKEN_PLAN_BASE_URL — same host, different product branding
+ * and model lineup. Kept as a separate constant for clarity.
  */
 export const ALIBABA_INTL_TOKEN_PLAN_BASE_URL =
   "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
