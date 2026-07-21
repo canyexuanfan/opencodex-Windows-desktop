@@ -2,7 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { augmentRoutedModelsWithJawcodeMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, deriveComboCatalogModel, exactComboCatalogSlugs, filterCatalogVisibleModels, filterSupportedNativeSlugs, gatherRoutedModels, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, resetCatalogRuntimeStateForTests, resetOpenAiApiCatalogWarningStateForTests } from "../src/codex/catalog";
+import { augmentRoutedModelsWithJawcodeMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, clampCatalogModelsToCodexSupport, clampEntryToCodexSupportedEfforts, clampedDefaultEffort, deriveComboCatalogModel, exactComboCatalogSlugs, filterCatalogVisibleModels, filterSupportedNativeSlugs, gatherRoutedModels, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, resetCatalogRuntimeStateForTests, resetOpenAiApiCatalogWarningStateForTests } from "../src/codex/catalog";
 import {
   CURSOR_STATIC_MODELS,
   filterCursorConfiguredModelsByLiveDiscovery,
@@ -1710,5 +1710,77 @@ describe("media-generation model filtering", () => {
     ]) {
       expect(isMediaGenerationModelId(id)).toBe(false);
     }
+  });
+});
+
+describe("Codex reasoning-effort capability clamp", () => {
+  function bundledCatalogDeps(efforts: string[]) {
+    return {
+      commandCandidates: () => ["codex"],
+      execFileSync: () => JSON.stringify({
+        models: [{
+          slug: "gpt-5.5",
+          base_instructions: "test",
+          supported_reasoning_levels: efforts.map(effort => ({ effort, description: effort })),
+          default_reasoning_level: "medium",
+        }],
+      }),
+    };
+  }
+
+  function routedEntry() {
+    return {
+      slug: "openrouter/example",
+      supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max", "ultra"]
+        .map(effort => ({ effort, description: effort })),
+      default_reasoning_level: "max",
+    };
+  }
+
+  test("strips max and ultra when the installed Codex ladder stops at xhigh", () => {
+    const models = [routedEntry()];
+
+    clampCatalogModelsToCodexSupport(models, bundledCatalogDeps(["low", "medium", "high", "xhigh"]));
+
+    expect(models[0]!.supported_reasoning_levels.map(level => level.effort))
+      .toEqual(["low", "medium", "high", "xhigh"]);
+  });
+
+  test("preserves max and ultra when the installed Codex ladder includes them", () => {
+    const models = [routedEntry()];
+
+    clampCatalogModelsToCodexSupport(models, bundledCatalogDeps(["low", "medium", "high", "xhigh", "max", "ultra"]));
+
+    expect(models[0]!.supported_reasoning_levels.map(level => level.effort))
+      .toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+  });
+
+  test("falls back to the conservative universal ladder when every advertised effort is unsupported", () => {
+    const entry = {
+      supported_reasoning_levels: [{ effort: "max" }, { effort: "ultra" }],
+      default_reasoning_level: "ultra",
+    };
+
+    clampEntryToCodexSupportedEfforts(entry, new Set(["low", "medium", "high", "xhigh"]));
+
+    expect(entry.supported_reasoning_levels.map(level => level.effort)).toEqual(["low", "medium", "high"]);
+    expect(clampedDefaultEffort("max", [])).toBe("medium");
+  });
+
+  test("repairs an unsupported max default to the highest surviving xhigh rung", () => {
+    const entry = routedEntry();
+
+    clampEntryToCodexSupportedEfforts(entry, new Set(["low", "medium", "high", "xhigh"]));
+
+    expect(entry.default_reasoning_level).toBe("xhigh");
+  });
+
+  test("is a no-op when the installed Codex binary cannot be probed", () => {
+    const models = [routedEntry()];
+    const before = structuredClone(models);
+
+    clampCatalogModelsToCodexSupport(models, { commandCandidates: () => [] });
+
+    expect(models).toEqual(before);
   });
 });

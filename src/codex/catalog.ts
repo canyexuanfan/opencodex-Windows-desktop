@@ -690,7 +690,7 @@ export function materializeBundledCodexCatalog(path: string, deps: BundledCatalo
 
 function loadCatalogForSync(path: string): RawCatalog | null {
   const bundled = isDefaultCatalogPath(path) ? loadBundledCodexCatalog() : null;
-  if (bundled) return bundled;
+  if (bundled) return JSON.parse(JSON.stringify(bundled)) as RawCatalog;
   const catalog = readCatalog(path);
   if (catalog && findNativeTemplate(catalog)) return catalog;
   return readCatalog(catalogBackupPathFor(path))
@@ -827,6 +827,66 @@ function ensureUltraReasoningLevel(entry: RawEntry): void {
     );
   }
   entry.supported_reasoning_levels = levels;
+}
+
+/** Reasoning-effort labels accepted by the installed Codex binary's bundled catalog. */
+export function codexSupportedReasoningEfforts(deps: BundledCatalogDeps = {}): Set<string> | null {
+  const bundled = loadBundledCodexCatalog(deps);
+  if (!bundled) return null;
+  const efforts = new Set<string>();
+  for (const model of bundled.models ?? []) {
+    if (typeof model.slug !== "string" || model.slug.includes("/")) continue;
+    const levels = Array.isArray(model.supported_reasoning_levels) ? model.supported_reasoning_levels : [];
+    for (const level of levels) {
+      const effort = (level as { effort?: unknown })?.effort;
+      if (typeof effort === "string") efforts.add(effort);
+    }
+    if (typeof model.default_reasoning_level === "string") efforts.add(model.default_reasoning_level);
+  }
+  return efforts.size > 0 ? efforts : null;
+}
+
+/** Highest surviving rung at or below the original default, with a conservative empty fallback. */
+export function clampedDefaultEffort(original: string, surviving: readonly string[]): string {
+  if (surviving.length === 0) return "medium";
+  const ranked = [...surviving]
+    .map(effort => ({ effort, rank: codexEffortRank(effort) }))
+    .sort((a, b) => a.rank - b.rank);
+  const originalRank = codexEffortRank(original);
+  const atOrBelow = ranked.filter(item => item.rank >= 0 && item.rank <= originalRank);
+  return (atOrBelow.at(-1) ?? ranked[0]!).effort;
+}
+
+/** Remove reasoning efforts the installed Codex binary cannot deserialize from one entry. */
+export function clampEntryToCodexSupportedEfforts(entry: RawEntry, supported: Set<string> | null): void {
+  if (!supported) return;
+  const levels = Array.isArray(entry.supported_reasoning_levels)
+    ? entry.supported_reasoning_levels as Array<{ effort?: string }>
+    : null;
+  if (levels && levels.length > 0) {
+    const kept = levels.filter(level => typeof level?.effort === "string" && supported.has(level.effort));
+    entry.supported_reasoning_levels = kept.length > 0
+      ? kept
+      : CODEX_REASONING_LEVELS
+        .filter(level => level.effort === "low" || level.effort === "medium" || level.effort === "high")
+        .map(level => ({ ...level }));
+  }
+  const currentDefault = entry.default_reasoning_level;
+  if (typeof currentDefault === "string" && !supported.has(currentDefault)) {
+    const surviving = (Array.isArray(entry.supported_reasoning_levels) ? entry.supported_reasoning_levels : [])
+      .flatMap(level => typeof (level as { effort?: string })?.effort === "string"
+        ? [(level as { effort: string }).effort]
+        : []);
+    entry.default_reasoning_level = clampedDefaultEffort(currentDefault, surviving);
+  }
+}
+
+/** Clamp every catalog entry to the reasoning ladder accepted by the installed Codex binary. */
+export function clampCatalogModelsToCodexSupport(models: RawEntry[], deps: BundledCatalogDeps = {}): RawEntry[] {
+  const supported = codexSupportedReasoningEfforts(deps);
+  if (!supported) return models;
+  for (const entry of models) clampEntryToCodexSupportedEfforts(entry, supported);
+  return models;
 }
 
 /**
@@ -1926,6 +1986,7 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{ added: num
   // native template can never leak supports_websockets while the flag is off.
   const wsEnabled = websocketsEnabled(config);
   catalog.models = mergeCatalogEntriesForSync(catalog.models ?? [], goEntries, baseline, featured, wsEnabled, goIds, template, disabledNativeSlugs(config), gatheredProviderNames, multiAgentMode, exactComboSlugs, hasPhysicalComboProvider);
+  clampCatalogModelsToCodexSupport(catalog.models);
 
   atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2) + "\n");
   return { added: goEntries.length, path: catalogPath };
