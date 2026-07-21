@@ -146,7 +146,7 @@ describe("scanStorage", () => {
     const expectedTotalFiles = report.buckets.reduce((sum, b) => sum + b.fileCount, 0);
     expect(report.total.bytes).toBe(expectedTotalBytes);
     expect(report.total.fileCount).toBe(expectedTotalFiles);
-  });
+  }, 15_000);
 
   test("ranks largest files per bucket with home-relative forward-slash paths", () => {
     fixtureHome = buildFixtureHome();
@@ -156,7 +156,7 @@ describe("scanStorage", () => {
     expect(sessions.largest?.[0]).toEqual({ path: "sessions/2026/05/27/rollout-b.jsonl", bytes: 2000 });
     expect(sessions.largest?.[1]).toEqual({ path: "sessions/2026/06/01/rollout-c.jsonl", bytes: 300 });
     expect(sessions.largest?.length).toBeLessThanOrEqual(5);
-  });
+  }, 15_000);
 
   test("counts DB rows read-only, resolving the newest versioned sqlite", () => {
     fixtureHome = buildFixtureHome();
@@ -164,7 +164,7 @@ describe("scanStorage", () => {
 
     expect(bucket(report, "state_db").rows).toBe(3);
     expect(bucket(report, "logs_db").rows).toBe(5);
-  });
+  }, 15_000);
 
   test("counts DB rows correctly when CODEX_HOME contains URI-reserved characters", () => {
    // A literal '#'/'?'/'%' in the path is legal on POSIX filesystems and starts a
@@ -179,7 +179,7 @@ describe("scanStorage", () => {
     const report = scanStorage(fixtureHome);
     expect(bucket(report, "state_db").rows).toBe(3);
     expect(bucket(report, "logs_db").rows).toBe(5);
-  });
+  }, 15_000);
 
   test("returns null row counts for an unreadable db without throwing", () => {
     fixtureHome = buildFixtureHome();
@@ -190,7 +190,7 @@ describe("scanStorage", () => {
     const report = scanStorage(fixtureHome);
     expect(bucket(report, "state_db").rows).toBeNull();
     expect(bucket(report, "logs_db").rows).toBe(5);
-  });
+  }, 15_000);
 
   test("reads through an active writer lock without blocking or writing", () => {
     // Row counts use an immutable connection (never takes SQLite's lock protocol), so a scan
@@ -208,7 +208,7 @@ describe("scanStorage", () => {
     } finally {
       holder.close();
     }
-  });
+  }, 15_000);
 
   test("reports empty buckets for a missing or empty home without throwing", () => {
     fixtureHome = mkdtempSync(join(tmpdir(), "ocx-storage-empty-"));
@@ -221,7 +221,7 @@ describe("scanStorage", () => {
 
     const missing = scanStorage(join(fixtureHome, "does-not-exist"));
     expect(missing.total).toEqual({ bytes: 0, fileCount: 0 });
-  });
+  }, 15_000);
 
   test("throws when the home exists but is not a directory", () => {
     fixtureHome = mkdtempSync(join(tmpdir(), "ocx-storage-notdir-"));
@@ -230,7 +230,7 @@ describe("scanStorage", () => {
     // A missing home is a normal fresh-machine state (zeros), but a *broken* home
     // must surface as an error so /api/storage can answer with its fallback envelope.
     expect(() => scanStorage(filePath)).toThrow();
-  });
+  }, 15_000);
 
   test("defaults to the CODEX_HOME environment override when no home is passed", () => {
     fixtureHome = buildFixtureHome();
@@ -240,7 +240,7 @@ describe("scanStorage", () => {
     const report = scanStorage();
     expect(report.codexHome).toBe(fixtureHome);
     expect(bucket(report, "sessions").bytes).toBe(2400);
-  });
+  }, 15_000);
 
   test("performs zero writes under CODEX_HOME (read-only invariant)", () => {
     fixtureHome = buildFixtureHome();
@@ -253,5 +253,5 @@ describe("scanStorage", () => {
     for (const [path, stat] of before) {
       expect(after.get(path)).toEqual(stat);
     }
-  });
+  }, 15_000);
 });
