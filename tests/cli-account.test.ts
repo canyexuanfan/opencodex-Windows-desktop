@@ -5,8 +5,8 @@ import type { AccountStdin } from "../src/cli/account-api";
 import { printSubcommandUsage } from "../src/cli/help";
 import type { OcxConfig } from "../src/types";
 
-const RAW_SENTINEL = "sk-rawsentinel1234567890";
-const MASKED_SENTINEL = "sk-ra****7890";
+const RAW_SENTINEL = "test-key-rawsentinel1234567890";
+const MASKED_SENTINEL = "test****7890";
 
 interface RecordedRequest {
   method: string;
@@ -337,7 +337,7 @@ describe("ocx account CLI (issue #180 matrix)", () => {
     expect(result.stdout).toMatch(/^PROVIDER\s{2,}TYPE\s{2,}ID\s{2,}PLAN\/LABEL\s{2,}STATUS/m);
     expect(result.stdout).toMatch(/^openai\s+codex\s+main\s+plus/m);
     expect(result.stdout).toMatch(/^anthropic\s+oauth\s+acct_1\s+a\*\*\*@example\.com\s+active/m);
-    expect(result.stdout).toMatch(/^openrouter\s+api-key\s+key_1\s+sk-ra\*\*\*\*7890 \(personal\)\s+active/m);
+    expect(result.stdout).toMatch(/^openrouter\s+api-key\s+key_1\s+test\*\*\*\*7890 \(personal\)\s+active/m);
     expect(result.stdout).not.toContain("__main__");
 
     const lines = result.stdout.split("\n");
@@ -704,7 +704,7 @@ describe("ocx account CLI (issue #180 matrix)", () => {
   });
 
   test("28: add-key reads a pipe, posts the key and never prints it", async () => {
-    const key = "sk-test-1234567890abcdef";
+    const key = "test-key-1234567890abcdef";
     const result = await run(
       ["add-key", "openrouter", "--label", "production", "--json"],
       { ...defaultDeps(), stdinImpl: stdinFrom(`${key}\n`) },
@@ -751,7 +751,7 @@ describe("ocx account CLI (issue #180 matrix)", () => {
   });
 
   test("31: add-key surfaces POST failure and cleans stdin timeout listeners", async () => {
-    const key = "sk-test-1234567890abcdef";
+    const key = "test-key-1234567890abcdef";
     addKeyFailure = { status: 400, error: "key rejected" };
     const postFailed = await run(
       ["add-key", "openrouter"],
@@ -798,7 +798,7 @@ describe("ocx account CLI (issue #180 matrix)", () => {
   });
 
   test("33: add-key redacts label containment and help lists the full family", async () => {
-    const key = "sk-test-1234567890abcdef";
+    const key = "test-key-1234567890abcdef";
     const label = `prod-${key}-${key}`;
     const human = await run(
       ["add-key", "openrouter", "--label", label],

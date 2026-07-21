@@ -7,7 +7,7 @@
  * Parent should remount on provider change (`key={item.name}`) so choice-loading
  * state resets cleanly without sync setState-in-effect.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { baseUrlForChoice, matchChoiceId, resolvedBaseUrlForChoice } from "../../base-url-choice";
 import { useT } from "../../i18n";
 import { IconLock } from "../../icons";
@@ -21,7 +21,7 @@ const ADAPTERS = ["openai-responses", "openai-chat", "anthropic", "google", "azu
 type ChoicesStatus = "idle" | "loading" | "ready" | "error";
 
 export default function ProviderSettings({
-  item, availableModels = [], apiBase, onUpdateProvider, onDirtyChange,
+  item, availableModels = [], apiBase, onUpdateProvider, onDirtyChange, onRegisterSave,
 }: {
   item: WorkspaceItem;
   availableModels?: string[];
@@ -29,6 +29,8 @@ export default function ProviderSettings({
   apiBase?: string;
   onUpdateProvider?: (name: string, patch: ProviderUpdatePatch) => Promise<{ ok: boolean; error?: string }>;
   onDirtyChange?: (dirty: boolean) => void;
+  /** Lets parent dialogs trigger the same save path as the sticky bar. */
+  onRegisterSave?: (save: (() => Promise<boolean>) | null) => void;
 }) {
   const t = useT();
   const initialAuth = String(item.authMode ?? (item.keyOptional ? "local" : "key"));
@@ -110,18 +112,29 @@ export default function ProviderSettings({
   // On fetch error, keep it editable so allowBaseUrlOverride providers are not trapped.
   const plainBaseUrlLocked = isPreset && choicesStatus !== "error";
 
-  const save = async () => {
-    if (!onUpdateProvider) { setMsg({ ok: false, text: t("pws.updatesUnavailable") }); return; }
+  const save = async (): Promise<boolean> => {
+    if (!onUpdateProvider) { setMsg({ ok: false, text: t("pws.updatesUnavailable") }); return false; }
     const nextBaseUrl = hasEndpointPicker
       ? resolvedBaseUrlForChoice(baseUrlChoices, endpointChoice, baseUrl)
       : baseUrl.trim();
-    if (!adapter.trim() || !nextBaseUrl) { setMsg({ ok: false, text: t("pws.adapterBaseRequired") }); return; }
+    if (!adapter.trim() || !nextBaseUrl) { setMsg({ ok: false, text: t("pws.adapterBaseRequired") }); return false; }
     setSaving(true); setMsg(null);
     const patch: ProviderUpdatePatch = { adapter: adapter.trim(), baseUrl: nextBaseUrl, defaultModel: defaultModel.trim(), authMode, note: note.trim(), allowPrivateNetwork };
     const res = await onUpdateProvider(item.name, patch);
     setSaving(false);
     setMsg(res.ok ? { ok: true, text: t("pws.settingsSaved") } : { ok: false, text: res.error || t("prov.saveFailed") });
+    return res.ok;
   };
+
+  const saveRef = useRef(save);
+  useEffect(() => {
+    saveRef.current = save;
+  });
+  useEffect(() => {
+    if (!onRegisterSave) return;
+    onRegisterSave(() => saveRef.current());
+    return () => onRegisterSave(null);
+  }, [onRegisterSave]);
 
   const discard = () => {
     setAdapter(item.adapter); setBaseUrl(item.baseUrl);

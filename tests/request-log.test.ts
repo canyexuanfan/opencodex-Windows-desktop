@@ -630,12 +630,12 @@ describe("request log metadata", () => {
     });
   });
 
-  test("httpStatusFromTerminalError maps Cursor rate limits to 429", () => {
+  test("httpStatusFromTerminalError maps Cursor tool catalog limits to 400", () => {
     expect(httpStatusFromTerminalError({
-      type: "rate_limit_error",
-      code: "rate_limit_exceeded",
-      message: "Cursor rate limit exceeded: Cursor Connect error resource_exhausted: too many requests",
-    })).toBe(429);
+      type: "invalid_request_error",
+      code: "tool_catalog_too_large",
+      message: "Cursor resource limit exceeded: tool catalog too large",
+    })).toBe(400);
   });
 
   test("httpStatusFromTerminalError maps client-closed web-search aborts to 499", () => {
