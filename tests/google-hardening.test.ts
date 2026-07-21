@@ -166,11 +166,11 @@ describe("google provider hardening", () => {
     expect(vertex?.defaultModel).toBe("gemini-3-pro");
   });
 
-  test("registers gemini-3.5-flash-lite with its text-only context metadata", () => {
+  test("registers gemini-3.5-flash-lite with its multimodal context metadata", () => {
     const google = PROVIDER_REGISTRY.find(entry => entry.id === "google");
 
     expect(google?.models).toContain("gemini-3.5-flash-lite");
     expect(google?.modelContextWindows?.["gemini-3.5-flash-lite"]).toBe(1_048_576);
-    expect(google?.modelInputModalities?.["gemini-3.5-flash-lite"]).toEqual(["text"]);
+    expect(google?.modelInputModalities?.["gemini-3.5-flash-lite"]).toEqual(["text", "image"]);
   });
 });
