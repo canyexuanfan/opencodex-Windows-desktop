@@ -3,6 +3,7 @@
 - 소스 RCA: `002_rca_w_windows_1060.md` (리뷰어 검증 완료)
 - 위험도: 낮음 (탐지 로직 + 메시지, Windows 전용 경로)
 - 선행 조건: 없음 (독립 패치 단위)
+- **구현 완료 (2026-07-22)**: winsw.ts:226 `/\b1060\b/`, service.ts tri-state(:505 재검증 문구/:764 stop-guard/:798 uninstall try-catch), tests/winsw.test.ts +4 회귀. 검증: `bun test tests/winsw.test.ts` 21 pass, `bun x tsc --noEmit` exit 0. 커밋: WP-impl-1.
 
 ## 파일 변경 맵
 

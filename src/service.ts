@@ -503,7 +503,7 @@ function installWindows(): void {
       throw new Error(`Cannot remove the native service before switching to Task Scheduler: ${err instanceof Error ? err.message : String(err)}. Remove it manually with 'sc delete ${WINSW_SERVICE_ID}' or retry.`);
     }
     if (statusWinswRaw() !== "nonexistent") {
-      throw new Error("Native service still present after removal attempt — aborting switch. Remove it manually with 'sc delete opencodex-proxy-native'.");
+      throw new Error(`Native service registration could not be re-verified after the removal attempt — aborting switch. Check 'sc.exe query ${WINSW_SERVICE_ID}' and remove it manually if present.`);
     }
   }
   // End a running task BEFORE rewriting the assets it is executing — cmd.exe reading the
@@ -761,7 +761,9 @@ export function stopServiceIfInstalled(): boolean {
       const q = schtasks(["/query", "/tn", TASK]);
       if (q.includes(TASK)) { stopWindows(); stopped = true; }
     } catch { /* task not found */ }
-    if (statusWinswRaw() !== "nonexistent") { stopWinswService(); stopped = true; }
+    if (statusWinswRaw() !== "nonexistent") {
+      try { stopWinswService(); stopped = true; } catch { /* best-effort */ }
+    }
     if (stopped) return true;
   } else if (process.platform === "linux" && isSystemd() && existsSync(unitPath())) {
     try { stopSystemd(); return true; } catch { return false; }
@@ -793,7 +795,14 @@ export function uninstallServiceIfInstalled(): boolean {
       const q = schtasks(["/query", "/tn", TASK]);
       if (q.includes(TASK)) { uninstallWindows(); removed = true; }
     } catch { /* task not found */ }
-    if (statusWinswRaw() !== "nonexistent") { uninstallWinswService(); removed = true; }
+    if (statusWinswRaw() !== "nonexistent") {
+      try {
+        uninstallWinswService();
+        removed = true;
+      } catch (err) {
+        console.warn(`⚠️  Failed to remove native service: ${err instanceof Error ? err.message : String(err)}. Check 'sc.exe query ${WINSW_SERVICE_ID}'.`);
+      }
+    }
     if (removed) { removeServiceInstallState(); return true; }
   } else if (process.platform === "linux" && existsSync(unitPath())) {
     try { uninstallSystemd(); removeServiceInstallState(); return true; } catch {

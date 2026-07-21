@@ -223,7 +223,13 @@ export function probeScmRegistration(run: () => string = queryScmForService): bo
     const text = [e.stderr, e.stdout, e.message]
       .map(v => (typeof v === "string" ? v : ""))
       .join("\n");
-    if (e.status === 1060 || /FAILED 1060/i.test(text)) return false;
+    // ERROR_SERVICE_DOES_NOT_EXIST: the numeric identifier 1060 is locale-invariant
+    // (FALHA 1060 pt-BR, localized ko output, English FAILED 1060). The query is a
+    // fixed `sc.exe query <service>` so a standalone 1060 in its output is proof of
+    // absence. Bun may deliver e.status as 36 (1060 & 0xff) — status 36 ALONE is
+    // NOT accepted (collides with any status ≡ 36 mod 256); the textual 1060 is
+    // required corroboration and covers those hosts.
+    if (e.status === 1060 || /\b1060\b/.test(text)) return false;
     return "error";
   }
 }
