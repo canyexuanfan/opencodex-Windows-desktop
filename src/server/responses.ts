@@ -941,16 +941,17 @@ export async function handleResponses(
   // receive `max` when the user picks Ultra (codex converts ultra->max client-side).
   // Clamp to the model's highest real effort BEFORE any adapter — the ChatGPT
   // passthrough serializes _rawBody verbatim, so both shapes must be rewritten.
-  // GUARD: judge nativeness by the ORIGINALLY REQUESTED id (logCtx.requestedModel),
-  // never by route.modelId — routing strips the "<provider>/" namespace, so a routed
-  // model (anthropic/claude-opus-4-6, real max) would masquerade as an off-snapshot
-  // bare native and get wrongly clamped. Routed efforts belong to their adapters.
+  // GUARD: judge nativeness by BOTH the originally requested id (logCtx.requestedModel)
+  // and the resolved provider identity. Routing strips the "<provider>/" namespace, and
+  // some third-party providers expose bare `defaultModel` selectors, so route.modelId
+  // alone can make a routed model masquerade as an off-snapshot native. Only the
+  // canonical built-in ChatGPT forward provider should receive the native clamp.
   {
     const requestedModelId = logCtx.requestedModel ?? route.modelId;
-    const { nativeEffortClamp } = await import("../codex/catalog");
-    const clamped = requestedModelId.includes("/")
-      ? null
-      : nativeEffortClamp(route.modelId, parsed.options.reasoning);
+    const { nativeEffortClamp, shouldApplyNativeEffortClamp } = await import("../codex/catalog");
+    const clamped = shouldApplyNativeEffortClamp(route.providerName, route.provider, requestedModelId)
+      ? nativeEffortClamp(route.modelId, parsed.options.reasoning)
+      : null;
     if (clamped) {
       parsed.options.reasoning = clamped;
       const raw = parsed._rawBody as { reasoning?: { effort?: string } } | undefined;

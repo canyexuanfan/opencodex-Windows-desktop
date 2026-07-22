@@ -240,6 +240,29 @@ async function postLogged(
   );
 }
 
+async function postModelLogged(
+  config: OcxConfig,
+  model: string,
+  raw: Record<string, unknown> = {},
+  options: HandleOptions = {},
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  const logCtx: RequestLogContext = { model: "", provider: "" };
+  const start = Date.now();
+  const response = await handleResponses(new Request("http://localhost/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify({ model, input: "hello", stream: false, ...raw }),
+  }), config, logCtx, options);
+  loggedRequestSequence += 1;
+  return responseWithDeferredRequestLog(
+    response,
+    `direct-test-${loggedRequestSequence}`,
+    start,
+    logCtx,
+  );
+}
+
 async function latestAttemptReceipts(config: OcxConfig) {
   const response = await management(config, "GET", "/api/logs?tail=1");
   const logs = await response!.json() as Array<Record<string, unknown>>;
@@ -937,6 +960,62 @@ describe("server combo failover 030 activation matrix", () => {
     }, undefined, { defaultEffort: "high" });
     expect((await post(config)).status).toBe(200);
     expect(backupBody).not.toHaveProperty("reasoning_effort");
+  });
+
+  test("bare third-party defaultModel keeps max off the native clamp path", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    customFetchResponse = async request => {
+      const body = JSON.parse(String(request.body)) as Record<string, unknown>;
+      seen.push(body);
+      return chatSuccess("ok", String(body.model ?? "glm-5.2-fast-preview"));
+    };
+    const config: OcxConfig = {
+      port: 0,
+      defaultProvider: "bailian",
+      providers: {
+        bailian: provider("test-response", "https://test.invalid/v1", "key-b", {
+          defaultModel: "glm-5.2-fast-preview",
+          modelReasoningEfforts: { "glm-5.2-fast-preview": ["low", "medium", "high", "xhigh", "max"] },
+        }),
+      },
+    };
+
+    const bare = await postModelLogged(config, "glm-5.2-fast-preview", { reasoning: { effort: "max" } });
+    expect(bare.status).toBe(200);
+    await bare.text();
+    expect(seen[0]!.reasoning_effort).toBe("max");
+    let { log, usage } = await latestAttemptReceipts(config);
+    expect(log).toMatchObject({
+      provider: "bailian",
+      requestedModel: "glm-5.2-fast-preview",
+      requestedEffort: "max",
+      resolvedModel: "glm-5.2-fast-preview",
+    });
+    expect(usage).toMatchObject({
+      provider: "bailian",
+      requestedModel: "glm-5.2-fast-preview",
+      requestedEffort: "max",
+      resolvedModel: "glm-5.2-fast-preview",
+    });
+
+    seen.length = 0;
+    const prefixed = await postModelLogged(config, "bailian/glm-5.2-fast-preview", { reasoning: { effort: "max" } });
+    expect(prefixed.status).toBe(200);
+    await prefixed.text();
+    expect(seen[0]!.reasoning_effort).toBe("max");
+    ({ log, usage } = await latestAttemptReceipts(config));
+    expect(log).toMatchObject({
+      provider: "bailian",
+      requestedModel: "bailian/glm-5.2-fast-preview",
+      requestedEffort: "max",
+      resolvedModel: "glm-5.2-fast-preview",
+    });
+    expect(usage).toMatchObject({
+      provider: "bailian",
+      requestedModel: "bailian/glm-5.2-fast-preview",
+      requestedEffort: "max",
+      resolvedModel: "glm-5.2-fast-preview",
+    });
   });
 
   test("xAI 401 refresh stays within one target and succeeds without backup", async () => {

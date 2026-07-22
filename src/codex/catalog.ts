@@ -17,7 +17,7 @@ import { routedSlug, slugEquals, slugsEquivalent } from "../providers/slug-codec
 import { CODEX_GPT5_IDENTITY_LINE } from "../adapters/identity";
 import { filterCursorConfiguredModelsByLiveDiscovery } from "../adapters/cursor/discovery";
 import { fetchCursorUsableModels } from "../adapters/cursor/live-models";
-import { OPENAI_API_PROVIDER_ID } from "../providers/openai-tiers";
+import { isCanonicalOpenAiForwardProvider, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID } from "../providers/openai-tiers";
 import {
   COMBO_NAMESPACE,
   comboModelId,
@@ -298,6 +298,22 @@ export function nativeEffortClamp(slug: string, effort: string | undefined): str
     .sort((a, b) => rank.indexOf(a) - rank.indexOf(b))
     .at(-1);
   return highest ?? null;
+}
+
+/**
+ * Request-time guard for `nativeEffortClamp`: only the canonical built-in OpenAI/Codex
+ * forward provider should ever use the native mock-max repair. Bare third-party
+ * `defaultModel` selectors are still routed models whose adapters own effort mapping,
+ * and explicit `provider/model` requests are routed by construction.
+ */
+export function shouldApplyNativeEffortClamp(
+  providerName: string,
+  provider: OcxProviderConfig,
+  requestedModelId: string,
+): boolean {
+  return !requestedModelId.includes("/")
+    && providerName === OPENAI_CODEX_PROVIDER_ID
+    && isCanonicalOpenAiForwardProvider(provider);
 }
 
 /**
