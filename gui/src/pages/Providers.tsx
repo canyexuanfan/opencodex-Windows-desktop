@@ -844,18 +844,6 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     ...[...oauthProviders]
       .sort((a, b) => a.localeCompare(b))
       .map(id => ({ id, label: oauthLabel(id), kind: "oauth" as const })),
-    ...Object.entries(config.providers)
-      .filter(([name, prov]) =>
-        (prov.hasApiKey || prov.keyOptional)
-        && prov.authMode !== "oauth"
-        && prov.authMode !== "forward"
-        && !oauthProviders.includes(name))
-      .map(([name, prov]) => ({
-        id: name,
-        label: name,
-        kind: "key" as const,
-        statusLabel: prov.keyOptional && !prov.hasApiKey ? t("modal.badge.free") : t("prov.hasApiKey"),
-      })),
   ];
 
   const isForwardProvider = (name: string) => config.providers[name]?.authMode === "forward";
