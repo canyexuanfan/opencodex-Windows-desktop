@@ -134,8 +134,9 @@ advertised effort control on those models as proof of upstream-native reasoning 
   `cursor/auto-balance`, and `cursor/auto-intelligence` entries. Explicit levels are encoded in
   `requested_model.parameters` while the legacy `cursor/auto` entry retains the account/team default.
 - Cursor-native local filesystem/shell/network execution is denied by default. Explicit `mcpServers`
-  and `desktopExecutor` integrations have separate opt-ins; `unsafeAllowNativeLocalExec` enables the
-  broader built-in executor and bypasses Codex approval/sandbox semantics.
+  and `desktopExecutor` integrations have separate opt-ins; `nativeLocalExec: "on"` enables the
+  broader built-in executor and bypasses Codex approval/sandbox semantics, and legacy
+  `unsafeAllowNativeLocalExec: true` remains equivalent only when `nativeLocalExec` is unset.
 
 ## `azure-openai` (alias: `azure`)
 
