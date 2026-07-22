@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKiroAdapter } from "../src/adapters/kiro";
+import { applyProviderConfigHints, buildCatalogEntries } from "../src/codex/catalog";
 import { normalizeKiroModelId } from "../src/providers/kiro-models";
 import { configuredReasoningEfforts, mapReasoningEffort } from "../src/reasoning-effort";
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
@@ -637,6 +638,18 @@ describe("kiro adapter — native and emulated reasoning effort", () => {
     expect(configuredReasoningEfforts(kiro, "claude-opus-4.8")).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(configuredReasoningEfforts(kiro, "claude-opus-4.5")).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(configuredReasoningEfforts(kiro, "kiro-auto")).toEqual(["low", "medium", "high", "xhigh", "max"]);
+  });
+
+  test("kiro catalog disables unsupported Responses verbosity controls", () => {
+    const model = applyProviderConfigHints(
+      "kiro",
+      kiro,
+      { provider: "kiro", id: "gpt-5.6-sol" },
+    );
+    const entry = buildCatalogEntries(null, [], [model]).find(candidate => candidate.slug === "kiro/gpt-5.6-sol");
+
+    expect(model.supportsVerbosity).toBe(false);
+    expect(entry?.support_verbosity).toBe(false);
   });
 
   test("mapReasoningEffort keeps xhigh and max as distinct labels", async () => {

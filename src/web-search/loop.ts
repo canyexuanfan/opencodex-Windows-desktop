@@ -364,6 +364,13 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
         inactivityTimeoutMs: routedModelStallTimeoutMs,
       })) {
         if (event.type === "heartbeat") yield event;
+        // Kiro's explicit-completion protocol marks ordinary assistant text as commentary while
+        // it performs a bounded final-answer retry. That text is safe to surface immediately and
+        // is exactly what the native Kiro transport streams. Keeping it in the search scanner made
+        // Codex show only `Working` until both Kiro attempts had finished (often 30-40 seconds).
+        // Tool events remain buffered below, so the decision to invoke the hosted sidecar is still
+        // atomic and no search call can escape before its stream has validated successfully.
+        else if (event.type === "text_delta" && event.phase === "commentary") yield event;
         else events.push(event);
       }
     } catch (error) {

@@ -99,6 +99,8 @@ Kiro text events do not carry a dependable end-turn phase. When an ordinary clie
 opencodex therefore adds a private `codex_kiro_final_answer` tool to the upstream request. Progress
 text streams as commentary and cannot terminate the turn. The adapter consumes the private call,
 emits its answer as final text, and never exposes the private tool to Codex or Claude Code.
+When the web-search sidecar is active, this commentary still streams immediately; only the events
+needed to decide whether the model requested a synthetic search remain buffered.
 
 If Kiro emits progress without calling the completion tool, the adapter makes one continuation. That
 single retry may finish with a validated private completion or plain final text. It cannot recurse:
