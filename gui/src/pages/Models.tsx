@@ -868,7 +868,6 @@ export default function Models({ apiBase }: { apiBase: string }) {
           </>
         )}
         <Switch on={allCapped} onClick={setAll} disabled={busy} label={t("models.setAll")} />
-        <span className="muted mono text-label">{t("models.setAll")}</span>
         <span className="muted text-label leading-body">{t("models.setAllHint", { value: fmtK(contextCapValue) })}</span>
       </div>
 
