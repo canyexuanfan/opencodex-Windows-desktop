@@ -373,7 +373,8 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
       throw new LoopError(502, `Provider stream error: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    const terminalIndexes = events.flatMap((event, index) => event.type === "done" || event.type === "error" ? [index] : []);
+    const terminalIndexes = events.flatMap((event, index) =>
+      event.type === "done" || event.type === "incomplete" || event.type === "error" ? [index] : []);
     if (terminalIndexes.length !== 1 || terminalIndexes[0] !== events.length - 1) {
       throw new LoopError(502, `Web-search adapter stream protocol error: expected one final terminal event, received ${terminalIndexes.length}`);
     }

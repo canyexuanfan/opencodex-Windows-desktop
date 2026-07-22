@@ -174,6 +174,33 @@ describe("kiro adapter — buildRequest", () => {
     expect(ctx.tools[0].toolSpecification.inputSchema.json).toEqual({ type: "object" });
   });
 
+  test("explicit completion is injected only when ordinary tools are effective", async () => {
+    const toolEnabled = JSON.parse((await createKiroAdapter(provider).buildRequest(
+      parsedWith([{ role: "user", content: "hi" }], [bashTool]),
+    )).body).conversationState;
+    const firstUser = toolEnabled.history?.find((entry: { userInputMessage?: unknown }) => entry.userInputMessage)?.userInputMessage
+      ?? toolEnabled.currentMessage.userInputMessage;
+    const toolNames = toolEnabled.currentMessage.userInputMessage.userInputMessageContext.tools
+      .map((tool: { toolSpecification: { name: string } }) => tool.toolSpecification.name);
+    expect(toolNames).toEqual(["bash", "codex_kiro_final_answer"]);
+    expect(firstUser.content).toContain("ordinary assistant text is mid-task commentary");
+    expect(firstUser.content).toContain("call codex_kiro_final_answer exactly once");
+
+    const toolFree = JSON.parse((await createKiroAdapter(provider).buildRequest(
+      parsedWith([{ role: "user", content: "hi" }]),
+    )).body).conversationState.currentMessage.userInputMessage;
+    expect(JSON.stringify(toolFree)).not.toContain("codex_kiro_final_answer");
+
+    const none = {
+      ...parsedWith([{ role: "user", content: "hi" }], [bashTool]),
+      options: { toolChoice: "none" },
+    } as OcxParsedRequest;
+    const disabled = JSON.parse((await createKiroAdapter(provider).buildRequest(none)).body)
+      .conversationState.currentMessage.userInputMessage;
+    expect(disabled.userInputMessageContext?.tools).toBeUndefined();
+    expect(JSON.stringify(disabled)).not.toContain("codex_kiro_final_answer");
+  });
+
   test("namespaced (MCP) tools advertise + replay the full wire name", async () => {
     const adapter = createKiroAdapter(provider);
     // Tool spec advertised to Kiro must carry the full namespaced name so the bridge's toolNsMap

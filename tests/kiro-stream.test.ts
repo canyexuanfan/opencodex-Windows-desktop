@@ -3,6 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKiroAdapter } from "../src/adapters/kiro";
+import {
+  KIRO_COMPLETION_RETRY_MESSAGE,
+  KIRO_COMPLETION_TOOL_NAME,
+} from "../src/adapters/kiro-constants";
 import { parseKiroEvent } from "../src/adapters/kiro-events";
 import { encodeMessage } from "../src/lib/eventstream-decoder";
 import { estimateTokens } from "../src/lib/token-estimate";
@@ -16,6 +20,7 @@ const origArn = process.env.KIRO_PROFILE_ARN;
 const origCredsFile = process.env.KIRO_CREDS_FILE;
 const origCredentialsFile = process.env.KIRO_CREDENTIALS_FILE;
 const origDebugFrames = process.env.OCX_DEBUG_FRAMES;
+const realFetch = globalThis.fetch;
 let tmp: string;
 
 beforeEach(() => {
@@ -29,6 +34,7 @@ beforeEach(() => {
   delete process.env.OCX_DEBUG_FRAMES;
 });
 afterEach(() => {
+  globalThis.fetch = realFetch;
   if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
   if (origRegion === undefined) delete process.env.KIRO_REGION; else process.env.KIRO_REGION = origRegion;
   if (origApiRegion === undefined) delete process.env.KIRO_API_REGION; else process.env.KIRO_API_REGION = origApiRegion;
@@ -55,6 +61,23 @@ function streamOf(...frames: Uint8Array[]): ReadableStream<Uint8Array> {
       else c.close();
     },
   });
+}
+
+async function collectAdapterEvents(events: AsyncGenerator<import("../src/types").AdapterEvent>) {
+  const out: import("../src/types").AdapterEvent[] = [];
+  for await (const event of events) out.push(event);
+  return out;
+}
+
+function completionFrames(answer: string, id = "complete-1"): Uint8Array[] {
+  const encoded = JSON.stringify({ answer });
+  const split = Math.max(1, Math.floor(encoded.length / 2));
+  return [
+    eventFrame({ name: KIRO_COMPLETION_TOOL_NAME, toolUseId: id }),
+    eventFrame({ input: encoded.slice(0, split), name: KIRO_COMPLETION_TOOL_NAME, toolUseId: id }),
+    eventFrame({ input: encoded.slice(split), name: KIRO_COMPLETION_TOOL_NAME, toolUseId: id }),
+    eventFrame({ name: KIRO_COMPLETION_TOOL_NAME, stop: true, toolUseId: id }),
+  ];
 }
 
 async function doneUsage(adapter: ReturnType<typeof createKiroAdapter>, ...frames: Uint8Array[]): Promise<OcxUsage> {
@@ -154,6 +177,260 @@ describe("kiro adapter — parseStream", () => {
       if (e.type === "tool_call_start") restored = e.name;
     }
     expect(restored).toBe(wireName);
+  });
+
+  test("tool-enabled commentary can finish only through a fragmented private completion call", async () => {
+    const adapter = createKiroAdapter(provider);
+    await adapter.buildRequest(parsedWith([{ role: "user", content: "do it" }], [bashTool]));
+
+    const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(
+      eventFrame({ content: "Checking the result." }),
+      ...completionFrames("Task complete."),
+    ))));
+
+    expect(events.filter(event => event.type === "text_delta")).toEqual([
+      { type: "text_delta", text: "Checking the result.", phase: "commentary" },
+      { type: "text_delta", text: "Task complete.", phase: "final_answer" },
+    ]);
+    expect(events.some(event => event.type === "tool_call_start" || event.type === "tool_call_delta")).toBe(false);
+    expect(events.at(-1)).toMatchObject({ type: "done", endTurn: true });
+    expect(JSON.stringify(events)).not.toContain(KIRO_COMPLETION_TOOL_NAME);
+  });
+
+  test("post-tool-result and explicit user follow-up turns still require private completion", async () => {
+    const histories = [
+      [
+        { role: "user", content: "run it" },
+        { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "pwd" } }] },
+        { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: "/tmp", isError: false },
+      ],
+      [
+        { role: "user", content: "run it" },
+        { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "pwd" } }] },
+        { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: "/tmp", isError: false },
+        { role: "user", content: "summarize that" },
+      ],
+    ];
+    for (const history of histories) {
+      const adapter = createKiroAdapter(provider);
+      const request = await adapter.buildRequest(parsedWith(history, [bashTool]));
+      const tools = JSON.parse(request.body).conversationState.currentMessage.userInputMessage.userInputMessageContext.tools;
+      expect(tools.at(-1).toolSpecification.name).toBe(KIRO_COMPLETION_TOOL_NAME);
+      const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(...completionFrames("Done.")))));
+      expect(events.filter(event => event.type === "text_delta")).toEqual([
+        { type: "text_delta", text: "Done.", phase: "final_answer" },
+      ]);
+      expect(events.at(-1)).toMatchObject({ type: "done", endTurn: true });
+    }
+  });
+
+  test("progress-only required response makes exactly one structural text fallback", async () => {
+    const requests: Record<string, any>[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return new Response(streamOf(eventFrame({ content: "Final from fallback." })));
+    }) as typeof fetch;
+    const adapter = createKiroAdapter(provider);
+    await adapter.buildRequest(parsedWith([{ role: "user", content: "do it" }], [bashTool]));
+
+    const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(
+      eventFrame({ content: "I am checking." }),
+      eventFrame({ conversationId: "returned-conversation-42" }),
+    ))));
+
+    expect(requests).toHaveLength(1);
+    const retry = requests[0].conversationState;
+    expect(retry.conversationId).toBe("returned-conversation-42");
+    expect(retry.history.at(-1).assistantResponseMessage).toEqual({ content: "I am checking." });
+    expect(retry.currentMessage.userInputMessage.content).toBe(KIRO_COMPLETION_RETRY_MESSAGE);
+    expect(retry.currentMessage.userInputMessage.userInputMessageContext.tools.map(
+      (tool: { toolSpecification: { name: string } }) => tool.toolSpecification.name,
+    )).toEqual(["bash", KIRO_COMPLETION_TOOL_NAME]);
+    expect(events.filter(event => event.type === "text_delta")).toEqual([
+      { type: "text_delta", text: "I am checking.", phase: "commentary" },
+      { type: "text_delta", text: "Final from fallback.", phase: "final_answer" },
+    ]);
+    expect(events.at(-1)).toMatchObject({
+      type: "done",
+      endTurn: true,
+      providerState: { kiro: { conversationId: "returned-conversation-42" } },
+    });
+  });
+
+  test("reasoning-only required response receives one fallback and can finish in plain text", async () => {
+    let fetches = 0;
+    globalThis.fetch = (async () => {
+      fetches++;
+      return new Response(streamOf(eventFrame({ content: "Reasoning checked; done." })));
+    }) as typeof fetch;
+    const adapter = createKiroAdapter(provider);
+    await adapter.buildRequest(parsedWith([{ role: "user", content: "solve" }], [bashTool]));
+
+    const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(
+      eventFrame({ content: "<thinking>private plan</thinking>" }),
+    ))));
+
+    expect(fetches).toBe(1);
+    expect(events.some(event => event.type === "reasoning_raw_delta")).toBe(true);
+    expect(events.find(event => event.type === "text_delta")).toEqual({
+      type: "text_delta", text: "Reasoning checked; done.", phase: "final_answer",
+    });
+    expect(events.at(-1)).toMatchObject({ type: "done", endTurn: true });
+  });
+
+  test("normal Responses cancellation aborts the adapter-owned fallback without another replay", async () => {
+    const abort = new AbortController();
+    let fetches = 0;
+    let fallbackSignal: AbortSignal | undefined;
+    let markFallbackStarted!: () => void;
+    const fallbackStarted = new Promise<void>(resolve => { markFallbackStarted = resolve; });
+    globalThis.fetch = (async (_input, init) => {
+      fetches++;
+      if (fetches === 1) {
+        return new Response(streamOf(eventFrame({ content: "Still working." })));
+      }
+      fallbackSignal = init?.signal ?? undefined;
+      markFallbackStarted();
+      return new Promise<Response>((_resolve, reject) => {
+        const rejectAbort = () => reject(fallbackSignal?.reason ?? new DOMException("aborted", "AbortError"));
+        if (fallbackSignal?.aborted) rejectAbort();
+        else fallbackSignal?.addEventListener("abort", rejectAbort, { once: true });
+      });
+    }) as typeof fetch;
+
+    const adapter = createKiroAdapter(provider);
+    const request = await adapter.buildRequest(parsedWith([{ role: "user", content: "work" }], [bashTool]));
+    const firstResponse = await adapter.fetchResponse!(request, { abortSignal: abort.signal, stream: true });
+    const collecting = collectAdapterEvents(adapter.parseStream(firstResponse));
+    await fallbackStarted;
+    abort.abort(new DOMException("client closed", "AbortError"));
+    const events = await collecting;
+
+    expect(fetches).toBe(2);
+    expect(fallbackSignal?.aborted).toBe(true);
+    expect(events.at(-1)).toMatchObject({ type: "error", retryable: true });
+  });
+
+  test("real tools never trigger the fallback and always leave endTurn false", async () => {
+    let fetches = 0;
+    globalThis.fetch = (async () => {
+      fetches++;
+      throw new Error("unexpected fallback");
+    }) as typeof fetch;
+    const adapter = createKiroAdapter(provider);
+    await adapter.buildRequest(parsedWith([{ role: "user", content: "run" }], [bashTool]));
+    const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(
+      eventFrame({ name: "bash", toolUseId: "call-1" }),
+      eventFrame({ input: "{\"command\":\"pwd\"}", name: "bash", toolUseId: "call-1" }),
+      eventFrame({ name: "bash", stop: true, toolUseId: "call-1" }),
+    ))));
+    expect(fetches).toBe(0);
+    expect(events.find(event => event.type === "tool_call_start")).toMatchObject({ name: "bash" });
+    expect(events.at(-1)).toMatchObject({ type: "done", endTurn: false });
+  });
+
+  test("a fallback real tool remains incomplete rather than becoming final text", async () => {
+    let fetches = 0;
+    globalThis.fetch = (async () => {
+      fetches++;
+      return new Response(streamOf(
+        eventFrame({ name: "bash", toolUseId: "call-2" }),
+        eventFrame({ input: "{\"command\":\"pwd\"}", name: "bash", toolUseId: "call-2" }),
+        eventFrame({ name: "bash", stop: true, toolUseId: "call-2" }),
+      ));
+    }) as typeof fetch;
+    const adapter = createKiroAdapter(provider);
+    await adapter.buildRequest(parsedWith([{ role: "user", content: "run" }], [bashTool]));
+    const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(
+      eventFrame({ content: "I need one more check." }),
+    ))));
+    expect(fetches).toBe(1);
+    expect(events.find(event => event.type === "tool_call_start")).toMatchObject({ name: "bash" });
+    expect(events.at(-1)).toMatchObject({ type: "done", endTurn: false });
+  });
+
+  test.each([
+    ["empty", [] as Uint8Array[], "empty_kiro_fallback"],
+    ["reasoning-only", [eventFrame({ content: "<thinking>still working</thinking>" })], "reasoning_only_kiro_fallback"],
+  ])("%s fallback is retryable incomplete and never starts a third attempt", async (_label, fallbackFrames, reason) => {
+    let fetches = 0;
+    globalThis.fetch = (async () => {
+      fetches++;
+      return new Response(streamOf(...fallbackFrames));
+    }) as typeof fetch;
+    const adapter = createKiroAdapter(provider);
+    await adapter.buildRequest(parsedWith([{ role: "user", content: "work" }], [bashTool]));
+    const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(
+      eventFrame({ content: "Working." }),
+    ))));
+    expect(fetches).toBe(1);
+    expect(events.at(-1)).toMatchObject({ type: "incomplete", reason, retryable: true, endTurn: false });
+    expect(events.some(event => event.type === "done")).toBe(false);
+  });
+
+  test("empty successful required stream is retryable incomplete without an internal replay", async () => {
+    let fetches = 0;
+    globalThis.fetch = (async () => {
+      fetches++;
+      throw new Error("unexpected fallback");
+    }) as typeof fetch;
+    const adapter = createKiroAdapter(provider);
+    await adapter.buildRequest(parsedWith([{ role: "user", content: "work" }], [bashTool]));
+    const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf())));
+    expect(fetches).toBe(0);
+    expect(events.at(-1)).toMatchObject({ type: "incomplete", reason: "empty_kiro_stream", retryable: true, endTurn: false });
+  });
+
+  test.each([
+    ["empty answer", JSON.stringify({ answer: "   " })],
+    ["malformed JSON", "{\"answer\":"],
+  ])("fallback rejects %s completion as retryable incomplete", async (_label, input) => {
+    globalThis.fetch = (async () => new Response(streamOf(
+      eventFrame({ name: KIRO_COMPLETION_TOOL_NAME, toolUseId: "complete-bad" }),
+      eventFrame({ input, name: KIRO_COMPLETION_TOOL_NAME, toolUseId: "complete-bad" }),
+      eventFrame({ name: KIRO_COMPLETION_TOOL_NAME, stop: true, toolUseId: "complete-bad" }),
+    ))) as typeof fetch;
+    const adapter = createKiroAdapter(provider);
+    await adapter.buildRequest(parsedWith([{ role: "user", content: "work" }], [bashTool]));
+    const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(
+      eventFrame({ content: "Working." }),
+    ))));
+    expect(events.at(-1)).toMatchObject({ type: "incomplete", reason: "malformed_kiro_completion", retryable: true });
+    expect(JSON.stringify(events)).not.toContain(KIRO_COMPLETION_TOOL_NAME);
+  });
+
+  test("duplicate completion and completion mixed with real tools fail closed", async () => {
+    const cases: Uint8Array[][] = [
+      [...completionFrames("one", "complete-1"), ...completionFrames("two", "complete-2")],
+      [
+        eventFrame({ name: "bash", toolUseId: "call-1" }),
+        eventFrame({ input: "{}", name: "bash", toolUseId: "call-1" }),
+        eventFrame({ name: "bash", stop: true, toolUseId: "call-1" }),
+        ...completionFrames("done", "complete-3"),
+      ],
+      [
+        ...completionFrames("done", "complete-4"),
+        eventFrame({ name: "bash", toolUseId: "call-2" }),
+        eventFrame({ input: "{}", name: "bash", toolUseId: "call-2" }),
+        eventFrame({ name: "bash", stop: true, toolUseId: "call-2" }),
+      ],
+    ];
+    for (const frames of cases) {
+      const adapter = createKiroAdapter(provider);
+      await adapter.buildRequest(parsedWith([{ role: "user", content: "work" }], [bashTool]));
+      const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(...frames))));
+      expect(events.at(-1)?.type).toBe("error");
+      expect(events.some(event => event.type === "done")).toBe(false);
+    }
+  });
+
+  test("reserved private completion name never leaks as a client tool in disabled mode", async () => {
+    const events = await collectAdapterEvents(createKiroAdapter(provider).parseStream(new Response(streamOf(
+      eventFrame({ input: JSON.stringify({ answer: "hallucinated" }), name: KIRO_COMPLETION_TOOL_NAME, toolUseId: "bad" }),
+    ))));
+    expect(events.at(-1)?.type).toBe("error");
+    expect(events.some(event => event.type === "tool_call_start")).toBe(false);
+    expect(JSON.stringify(events)).not.toContain('"type":"tool_call_start"');
   });
 
   test("emits error for an exception frame", async () => {

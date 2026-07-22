@@ -29,7 +29,14 @@ import { fetchKiroWithRetry } from "./kiro-retry";
 import { convertKiroToolContext } from "./kiro-tools";
 import { neutralizeIdentity } from "./identity";
 import { buildNonOpenAIToolCatalogNudgeFromNames } from "./tool-catalog-nudge";
-import { KIRO_CONTINUATION_MESSAGE, MAX_KIRO_INJECTED_INSTRUCTION_CHARS } from "./kiro-constants";
+import {
+  KIRO_COMPLETION_INSTRUCTIONS,
+  KIRO_COMPLETION_RETRY_MESSAGE,
+  KIRO_COMPLETION_TOOL_NAME,
+  KIRO_CONTINUATION_MESSAGE,
+  MAX_KIRO_INJECTED_INSTRUCTION_CHARS,
+  type KiroCompletionMode,
+} from "./kiro-constants";
 
 const AMZ_TARGET = "AmazonCodeWhispererStreamingService.GenerateAssistantResponse";
 const SDK_VERSION = "1.0.27";
@@ -231,25 +238,60 @@ function boundedInjectedInstruction(text: string, used: { value: number }): stri
   return result;
 }
 
-export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | undefined): {
+function kiroCompletionTool(): Record<string, unknown> {
+  return {
+    toolSpecification: {
+      name: KIRO_COMPLETION_TOOL_NAME,
+      description: "Finish the task and return the complete user-facing final answer. Call only when no more work or tool calls are needed.",
+      inputSchema: {
+        json: {
+          type: "object",
+          properties: {
+            answer: {
+              type: "string",
+              description: "The complete final answer to show the user.",
+            },
+          },
+          required: ["answer"],
+        },
+      },
+    },
+  };
+}
+
+export function buildKiroPayload(
+  parsed: OcxParsedRequest,
+  profileArn: string | undefined,
+  forcedCompletionMode?: KiroCompletionMode,
+): {
   payload: Record<string, unknown>;
   nameMap: Map<string, string>;
   conversationId: string;
+  completionMode: KiroCompletionMode;
 } {
   validateKiroCapabilities(parsed);
   const modelId = mapModelId(parsed.modelId);
   const registry = createKiroToolNameRegistry();
   const toolContext = convertKiroToolContext(parsed, registry);
-  const kiroTools = toolContext.tools;
+  const ordinaryTools = toolContext.tools;
+  const completionMode: KiroCompletionMode = forcedCompletionMode
+    ?? (ordinaryTools.length > 0 ? "required" : "disabled");
+  const kiroTools = completionMode === "disabled"
+    ? ordinaryTools
+    : [...ordinaryTools, kiroCompletionTool()];
   const nameMap = toolContext.nameMap;
   const systemParts: string[] = [];
   const injectedChars = { value: 0 };
   // Neutralize Codex's GPT-5 identity line so a routed Kiro model never misreports as GPT-5/OpenAI
   // and the proxy identity never leaks upstream.
   if (parsed.context.systemPrompt?.length) systemParts.push(neutralizeIdentity(parsed.context.systemPrompt.join("\n\n")));
-  const toolCatalogNudge = buildNonOpenAIToolCatalogNudgeFromNames(kiroToolWireNames(kiroTools));
+  const toolCatalogNudge = buildNonOpenAIToolCatalogNudgeFromNames(kiroToolWireNames(ordinaryTools));
   const boundedNudge = toolCatalogNudge ? boundedInjectedInstruction(toolCatalogNudge, injectedChars) : undefined;
   if (boundedNudge) systemParts.push(boundedNudge);
+  if (completionMode !== "disabled") {
+    const boundedCompletion = boundedInjectedInstruction(KIRO_COMPLETION_INSTRUCTIONS, injectedChars);
+    if (boundedCompletion) systemParts.push(boundedCompletion);
+  }
   const systemPrefix = systemParts.length > 0 ? `${systemParts.join("\n\n")}\n\n` : "";
   const turns: KiroTurn[] = [];
   const priorCalls = new Map<string, { wireName: string }>();
@@ -319,6 +361,13 @@ export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | 
     }
   }
 
+  // A reasoning-only first attempt has no Kiro-replayable assistant text. Preserve the turn
+  // boundary structurally so the adapter-generated retry is still a user turn after assistant
+  // history, without inventing prose that the model never said.
+  if (completionMode === "text_fallback" && turns.at(-1)?.kind !== "assistant") {
+    pushAssistant("", []);
+  }
+
   if (turns.length === 0 || turns[0].kind === "assistant") {
     turns.unshift({ kind: "user", content: KIRO_CONTINUATION_MESSAGE, images: [], toolResults: [] });
   }
@@ -356,7 +405,9 @@ export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | 
   if (kiroTools.length > 0) {
     currentUim.userInputMessageContext = { ...(currentUim.userInputMessageContext ?? {}), tools: kiroTools };
   }
-  if (!currentUim.userInputMessageContext?.toolResults && currentUim.content !== KIRO_CONTINUATION_MESSAGE) {
+  if (completionMode === "text_fallback") {
+    currentUim.content = KIRO_COMPLETION_RETRY_MESSAGE;
+  } else if (!currentUim.userInputMessageContext?.toolResults && currentUim.content !== KIRO_CONTINUATION_MESSAGE) {
     currentUim.content = injectKiroThinkingTags(currentUim.content, parsed);
   }
 
@@ -377,54 +428,256 @@ export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | 
     payload.additionalModelRequestFields = { reasoning: { effort } };
   }
   if (profileArn) payload.profileArn = profileArn;
-  return { payload, nameMap, conversationId };
+  return { payload, nameMap, conversationId, completionMode };
 }
 
 // Stream parsing (shared by parseStream + parseResponse)
 // CodeWhisperer GenerateAssistantResponse ALWAYS returns an AWS eventstream body (there is no
 // non-streaming mode), so both the streaming bridge and the non-streaming web-search sidecar loop
 // decode the same way — parseResponse just collects what parseStream yields.
-export async function* parseKiroStream(
+interface KiroAttemptResult {
+  terminal?: AdapterEvent;
+  needsFallback?: boolean;
+  usage?: OcxUsage;
+  providerState?: { kiro: { conversationId: string } };
+  assistantText: string;
+  sawReasoning: boolean;
+}
+
+interface KiroFallbackAttempt {
+  response: Response;
+  inputTokens: number;
+  nameMap: Map<string, string>;
+  conversationId: string;
+}
+
+type KiroFallbackFactory = (
+  conversationId: string | undefined,
+  assistantText: string,
+  sawReasoning: boolean,
+) => Promise<KiroFallbackAttempt>;
+
+function mergeKiroUsage(first: OcxUsage | undefined, second: OcxUsage | undefined): OcxUsage | undefined {
+  if (!first) return second;
+  if (!second) return first;
+  const sumOptional = (key: keyof OcxUsage): number | undefined => {
+    const a = first[key];
+    const b = second[key];
+    return typeof a === "number" || typeof b === "number"
+      ? (typeof a === "number" ? a : 0) + (typeof b === "number" ? b : 0)
+      : undefined;
+  };
+  const totalTokens = typeof first.totalTokens === "number" && typeof second.totalTokens === "number"
+    ? first.totalTokens + second.totalTokens
+    : undefined;
+  return {
+    inputTokens: first.inputTokens + second.inputTokens,
+    outputTokens: first.outputTokens + second.outputTokens,
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+    ...(sumOptional("cachedInputTokens") !== undefined ? { cachedInputTokens: sumOptional("cachedInputTokens") } : {}),
+    ...(sumOptional("cacheReadInputTokens") !== undefined ? { cacheReadInputTokens: sumOptional("cacheReadInputTokens") } : {}),
+    ...(sumOptional("cacheCreationInputTokens") !== undefined ? { cacheCreationInputTokens: sumOptional("cacheCreationInputTokens") } : {}),
+    ...(sumOptional("reasoningOutputTokens") !== undefined ? { reasoningOutputTokens: sumOptional("reasoningOutputTokens") } : {}),
+    ...(first.estimated || second.estimated ? { estimated: true } : {}),
+  };
+}
+
+function retryableKiroIncomplete(
+  reason: string,
+  message: string,
+  usage: OcxUsage,
+  providerState: { kiro: { conversationId: string } } | undefined,
+): AdapterEvent {
+  return {
+    type: "incomplete",
+    reason,
+    message,
+    usage,
+    retryable: true,
+    endTurn: false,
+    ...(providerState ? { providerState } : {}),
+  };
+}
+
+async function* parseKiroAttempt(
   response: Response,
-  modelId?: string,
-  inputTokens = 0,
-  contextWindow?: number,
-  nameMap?: Map<string, string>,
-  conversationId?: string,
-): AsyncGenerator<AdapterEvent> {
+  mode: KiroCompletionMode,
+  modelId: string | undefined,
+  inputTokens: number,
+  contextWindow: number | undefined,
+  nameMap: Map<string, string> | undefined,
+  conversationId: string | undefined,
+): AsyncGenerator<AdapterEvent, KiroAttemptResult> {
+  const emptyResult = (): KiroAttemptResult => ({ assistantText: "", sawReasoning: false });
   if (!response.body) {
-    yield { type: "error", message: "Kiro response has no body" };
-    return;
+    return {
+      ...emptyResult(),
+      terminal: { type: "error", message: "Kiro response has no body", status: 502, errorType: "upstream_error" },
+    };
   }
-  let open: { id: string; name: string; chunks: string[] } | null = null;
-  // CW provides no usage; accumulate output chars and emit a heuristic estimate on done so Codex's
-  // usage display + auto-compact engage (see src/lib/token-estimate.ts).
+
+  let open: { id: string; name: string; chunks: string[]; completion: boolean } | null = null;
   let outputChars = "";
   let contextUsagePercentage: number | undefined;
   let returnedConversationId = conversationId;
+  let assistantText = "";
+  let sawText = false;
+  let sawReasoning = false;
+  let sawRealTool = false;
+  let completionAnswer: string | undefined;
+  let completionCalls = 0;
+  const fallbackEvents: AdapterEvent[] = [];
   const thinking = new KiroThinkingParser();
-  const trackContent = (event: AdapterEvent): void => {
-    if ("text" in event) outputChars += event.text;
+
+  const providerState = (): { kiro: { conversationId: string } } | undefined =>
+    returnedConversationId ? { kiro: { conversationId: returnedConversationId } } : undefined;
+
+  const usage = (): OcxUsage => ({
+    inputTokens,
+    outputTokens: estimateTokens(outputChars, modelId),
+    estimated: true,
+  });
+
+  const protocolTerminal = (message: string, malformedCompletion = false): AdapterEvent => {
+    if (mode === "text_fallback" && malformedCompletion) {
+      return retryableKiroIncomplete(
+        "malformed_kiro_completion",
+        message,
+        usage(),
+        providerState(),
+      );
+    }
+    return {
+      type: "error",
+      message,
+      status: 502,
+      errorType: "upstream_error",
+      code: malformedCompletion ? "invalid_kiro_completion" : "kiro_stream_protocol_error",
+      retryable: false,
+      usage: usage(),
+    };
   };
-  function* flushTool(): Generator<AdapterEvent> {
-    if (!open) return;
+
+  const classifyTool = (
+    tool: { id: string; name: string; chunks: string[]; completion: boolean },
+  ): AdapterEvent | undefined => {
+    if (tool.name !== KIRO_COMPLETION_TOOL_NAME) {
+      tool.completion = false;
+      return completionAnswer !== undefined || completionCalls > 0
+        ? protocolTerminal("Kiro returned a real tool call alongside a private final answer")
+        : undefined;
+    }
+    if (mode === "disabled") {
+      return protocolTerminal("Kiro returned the reserved private final-answer tool while explicit completion was disabled");
+    }
+    tool.completion = true;
+    if (completionAnswer !== undefined || completionCalls > 0) {
+      return protocolTerminal("Kiro returned more than one private final-answer tool call", true);
+    }
+    if (sawRealTool) {
+      return protocolTerminal("Kiro returned a private final answer alongside a real tool call");
+    }
+    return undefined;
+  };
+
+  const beginTool = (
+    id: string,
+    name: string,
+  ): { tool?: { id: string; name: string; chunks: string[]; completion: boolean }; terminal?: AdapterEvent } => {
+    const next = { id, name, chunks: [], completion: false };
+    const terminal = classifyTool(next);
+    return terminal ? { terminal } : { tool: next };
+  };
+
+  const stage = (event: AdapterEvent): AdapterEvent[] => {
+    if (event.type === "text_delta") {
+      assistantText += event.text;
+      if (event.text.trim()) sawText = true;
+      outputChars += event.text;
+      const phased = mode === "disabled"
+        ? event
+        : { ...event, phase: "commentary" as const };
+      if (mode === "text_fallback") {
+        fallbackEvents.push(phased);
+        return [];
+      }
+      return [phased];
+    }
+    if (event.type === "reasoning_raw_delta" || event.type === "thinking_delta") {
+      const text = event.type === "reasoning_raw_delta" ? event.text : event.thinking;
+      if (text.trim()) sawReasoning = true;
+      outputChars += text;
+    }
+    if (mode === "text_fallback" && event.type !== "heartbeat") {
+      fallbackEvents.push(event);
+      return [];
+    }
+    return [event];
+  };
+
+  const parseCompletion = (chunks: string[]): string | Error => {
+    const raw = chunks.join("").trim();
+    let value: unknown;
+    try {
+      value = JSON.parse(raw || "{}");
+    } catch {
+      return new Error("Kiro returned invalid JSON for the private final-answer tool");
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return new Error("Kiro returned a non-object value for the private final-answer tool");
+    }
+    const answer = (value as { answer?: unknown }).answer;
+    if (typeof answer !== "string" || !answer.trim()) {
+      return new Error("Kiro returned an empty final answer");
+    }
+    return answer;
+  };
+
+  const flushOpen = (): { events: AdapterEvent[]; terminal?: AdapterEvent } => {
+    if (!open) return { events: [] };
     const tool = open;
     open = null;
-    // Restore the original wire name if it was normalized for Kiro (spaces/length), so the bridge's
-    // toolNsMap (keyed by the original wire name) can route the call back to its MCP namespace.
+    const input = tool.chunks.join("");
+    if (!isCompleteKiroToolInput(input)) {
+      return { events: [], terminal: protocolTerminal(kiroTruncationErrorMessage("incomplete tool input JSON"), tool.completion) };
+    }
+    if (tool.completion) {
+      completionCalls++;
+      if (completionCalls > 1) {
+        return { events: [], terminal: protocolTerminal("Kiro returned more than one private final-answer tool call", true) };
+      }
+      if (sawRealTool) {
+        return { events: [], terminal: protocolTerminal("Kiro returned a private final answer alongside a real tool call") };
+      }
+      const answer = parseCompletion(tool.chunks);
+      if (answer instanceof Error) return { events: [], terminal: protocolTerminal(answer.message, true) };
+      completionAnswer = answer;
+      return { events: [] };
+    }
+    if (completionAnswer !== undefined || completionCalls > 0) {
+      return { events: [], terminal: protocolTerminal("Kiro returned a real tool call alongside a private final answer") };
+    }
+    sawRealTool = true;
     const restored = nameMap?.get(tool.name) ?? tool.name;
-    yield { type: "tool_call_start", id: tool.id, name: restored };
-    for (const chunk of tool.chunks) if (chunk) yield { type: "tool_call_delta", arguments: chunk };
-    yield { type: "tool_call_end" };
-  }
+    return {
+      events: [
+        { type: "tool_call_start", id: tool.id, name: restored },
+        ...tool.chunks.filter(Boolean).map(argumentsChunk => ({ type: "tool_call_delta", arguments: argumentsChunk }) as AdapterEvent),
+        { type: "tool_call_end" },
+      ],
+    };
+  };
+
   try {
     for await (const msg of decodeEventStream(response.body)) {
       const mt = msg.headers[":message-type"];
       if (mt === "exception" || mt === "error") {
-        // Terminal: surface the upstream error and never emit a trailing success-shaped `done`.
         open = null;
-        yield { type: "error", message: safeKiroErrorMessage(msg.headers, new TextDecoder().decode(msg.payload)) };
-        return;
+        return {
+          assistantText,
+          sawReasoning,
+          terminal: { type: "error", message: safeKiroErrorMessage(msg.headers, new TextDecoder().decode(msg.payload)) },
+        };
       }
       if (mt && mt !== "event") continue;
       const ev = parseKiroEvent(msg.payload);
@@ -443,45 +696,60 @@ export async function* parseKiroStream(
         case "content":
           if (open) {
             open = null;
-            yield { type: "error", message: kiroTruncationErrorMessage("content arrived before tool stop") };
-            return;
+            return { assistantText, sawReasoning, terminal: protocolTerminal(kiroTruncationErrorMessage("content arrived before tool stop")) };
           }
           if (ev.data) {
             for (const contentEvent of thinking.feed(ev.data)) {
-              trackContent(contentEvent);
-              yield contentEvent;
+              for (const staged of stage(contentEvent)) yield staged;
             }
           }
           break;
         case "tool_start": {
           for (const contentEvent of thinking.flush()) {
-            trackContent(contentEvent);
-            yield contentEvent;
+            for (const staged of stage(contentEvent)) yield staged;
           }
           const id = ev.toolUseId || fallbackToolUseId();
           const name = ev.name || "unknown";
           if (open) {
             if (open.id !== id || open.name !== name) {
               open = null;
-              yield { type: "error", message: kiroTruncationErrorMessage("new tool started before previous tool stop") };
-              return;
+              return { assistantText, sawReasoning, terminal: protocolTerminal(kiroTruncationErrorMessage("new tool started before previous tool stop")) };
             }
           } else {
-            open = { id, name, chunks: [] };
+            const started = beginTool(id, name);
+            if (started.terminal) return { assistantText, sawReasoning, terminal: started.terminal };
+            open = started.tool!;
           }
           yield { type: "heartbeat" };
           break;
         }
         case "tool_input": {
           for (const contentEvent of thinking.flush()) {
-            trackContent(contentEvent);
-            yield contentEvent;
+            for (const staged of stage(contentEvent)) yield staged;
           }
+          const incomingId = ev.toolUseId;
+          const incomingName = ev.name;
           if (!open) {
-            open = { id: ev.toolUseId || fallbackToolUseId(), name: ev.name || "unknown", chunks: [] };
+            const name = incomingName || "unknown";
+            const started = beginTool(incomingId || fallbackToolUseId(), name);
+            if (started.terminal) return { assistantText, sawReasoning, terminal: started.terminal };
+            open = started.tool!;
+          } else if (
+            (incomingId && incomingId !== open.id)
+            || (incomingName && open.name !== "unknown" && incomingName !== open.name)
+          ) {
+            open = null;
+            return { assistantText, sawReasoning, terminal: protocolTerminal(kiroTruncationErrorMessage("tool input changed identity before stop")) };
+          }
+          if (open && open.name === "unknown" && incomingName) {
+            open.name = incomingName;
+            const terminal = classifyTool(open);
+            if (terminal) {
+              open = null;
+              return { assistantText, sawReasoning, terminal };
+            }
           }
           if (open && ev.input) {
-            if (open.name === "unknown" && ev.name) open.name = ev.name;
             open.chunks.push(ev.input);
             outputChars += ev.input;
           }
@@ -490,53 +758,259 @@ export async function* parseKiroStream(
         }
         case "tool_stop": {
           if (!open) {
-            yield { type: "error", message: "Kiro response protocol error: tool stop received without an open tool call" };
-            return;
+            return { assistantText, sawReasoning, terminal: protocolTerminal("Kiro response protocol error: tool stop received without an open tool call") };
           }
-          const input = open.chunks.join("");
-          if (!isCompleteKiroToolInput(input)) {
+          if (ev.toolUseId && ev.toolUseId !== open.id) {
             open = null;
-            yield { type: "error", message: kiroTruncationErrorMessage("incomplete tool input JSON") };
-            return;
+            return { assistantText, sawReasoning, terminal: protocolTerminal("Kiro response protocol error: tool stop changed tool identity") };
           }
-          yield* flushTool();
+          const flushed = flushOpen();
+          if (flushed.terminal) return { assistantText, sawReasoning, terminal: flushed.terminal };
+          for (const event of flushed.events) {
+            for (const staged of stage(event)) yield staged;
+          }
           break;
         }
         case "truncation":
           open = null;
-          yield { type: "error", message: kiroTruncationErrorMessage(ev.data) };
-          return;
+          return { assistantText, sawReasoning, terminal: protocolTerminal(kiroTruncationErrorMessage(ev.data)) };
       }
     }
+
     for (const contentEvent of thinking.flush()) {
-      trackContent(contentEvent);
-      yield contentEvent;
+      for (const staged of stage(contentEvent)) yield staged;
     }
     if (open) {
       const input = open.chunks.join("");
       if (!isCompleteKiroToolInput(input)) {
+        const privateTool = open.completion;
         open = null;
-        yield { type: "error", message: kiroTruncationErrorMessage("stream ended before tool stop") };
-        return;
+        return {
+          assistantText,
+          sawReasoning,
+          terminal: protocolTerminal(kiroTruncationErrorMessage("stream ended before tool stop"), privateTool),
+        };
       }
-      yield* flushTool();
+      const flushed = flushOpen();
+      if (flushed.terminal) return { assistantText, sawReasoning, terminal: flushed.terminal };
+      for (const event of flushed.events) {
+        for (const staged of stage(event)) yield staged;
+      }
     }
-    const outputTokens = estimateTokens(outputChars, modelId);
-    const usage: OcxUsage = { inputTokens, outputTokens, estimated: true };
+
+    const finalUsage = usage();
+    const finalProviderState = providerState();
     if (contextUsagePercentage !== undefined) {
       debugProviderDiagnostic("kiro", "context_usage", {
         contextUsagePercentage,
         ...(contextWindow ? { configuredContextWindow: contextWindow } : {}),
       });
     }
-    yield {
-      type: "done",
-      usage,
-      ...(returnedConversationId ? { providerState: { kiro: { conversationId: returnedConversationId } } } : {}),
+
+    if (mode === "text_fallback") {
+      if (completionAnswer !== undefined) {
+        for (const event of fallbackEvents) yield event;
+        yield { type: "text_delta", text: completionAnswer, phase: "final_answer" };
+        return {
+          assistantText,
+          sawReasoning,
+          terminal: { type: "done", usage: finalUsage, endTurn: true, ...(finalProviderState ? { providerState: finalProviderState } : {}) },
+        };
+      }
+      if (sawRealTool) {
+        for (const event of fallbackEvents) yield event;
+        return {
+          assistantText,
+          sawReasoning,
+          terminal: { type: "done", usage: finalUsage, endTurn: false, ...(finalProviderState ? { providerState: finalProviderState } : {}) },
+        };
+      }
+      if (sawText) {
+        for (const event of fallbackEvents) {
+          yield event.type === "text_delta" ? { ...event, phase: "final_answer" } : event;
+        }
+        return {
+          assistantText,
+          sawReasoning,
+          terminal: { type: "done", usage: finalUsage, endTurn: true, ...(finalProviderState ? { providerState: finalProviderState } : {}) },
+        };
+      }
+      for (const event of fallbackEvents) yield event;
+      return {
+        assistantText,
+        sawReasoning,
+        terminal: retryableKiroIncomplete(
+          sawReasoning ? "reasoning_only_kiro_fallback" : "empty_kiro_fallback",
+          sawReasoning
+            ? "Kiro produced reasoning but no final answer on its bounded completion retry"
+            : "Kiro produced no final answer on its bounded completion retry",
+          finalUsage,
+          finalProviderState,
+        ),
+      };
+    }
+
+    if (completionAnswer !== undefined) {
+      yield { type: "text_delta", text: completionAnswer, phase: "final_answer" };
+      return {
+        assistantText,
+        sawReasoning,
+        terminal: { type: "done", usage: finalUsage, endTurn: true, ...(finalProviderState ? { providerState: finalProviderState } : {}) },
+      };
+    }
+    if (sawRealTool) {
+      return {
+        assistantText,
+        sawReasoning,
+        terminal: { type: "done", usage: finalUsage, endTurn: false, ...(finalProviderState ? { providerState: finalProviderState } : {}) },
+      };
+    }
+    if (mode === "required" && (sawText || sawReasoning)) {
+      return { assistantText, sawReasoning, needsFallback: true, usage: finalUsage, providerState: finalProviderState };
+    }
+    if (!sawText && !sawReasoning) {
+      return {
+        assistantText,
+        sawReasoning,
+        terminal: retryableKiroIncomplete(
+          "empty_kiro_stream",
+          "Kiro returned a successful but empty response stream",
+          finalUsage,
+          finalProviderState,
+        ),
+      };
+    }
+    return {
+      assistantText,
+      sawReasoning,
+      terminal: {
+        type: "done",
+        usage: finalUsage,
+        endTurn: mode === "disabled" ? sawText : false,
+        ...(finalProviderState ? { providerState: finalProviderState } : {}),
+      },
     };
   } catch (err) {
-    yield { type: "error", message: safeKiroErrorMessage({}, err instanceof Error ? err.message : String(err)) };
+    return {
+      assistantText,
+      sawReasoning,
+      terminal: {
+        type: "error",
+        message: safeKiroErrorMessage({}, err instanceof Error ? err.message : String(err)),
+      },
+    };
   }
+}
+
+export async function* parseKiroStream(
+  response: Response,
+  modelId?: string,
+  inputTokens = 0,
+  contextWindow?: number,
+  nameMap?: Map<string, string>,
+  conversationId?: string,
+  completionMode: KiroCompletionMode = "disabled",
+  fallbackFactory?: KiroFallbackFactory,
+): AsyncGenerator<AdapterEvent> {
+  const first = parseKiroAttempt(
+    response,
+    completionMode,
+    modelId,
+    inputTokens,
+    contextWindow,
+    nameMap,
+    conversationId,
+  );
+  let firstNext = await first.next();
+  while (!firstNext.done) {
+    yield firstNext.value;
+    firstNext = await first.next();
+  }
+  const firstResult = firstNext.value;
+  if (!firstResult.needsFallback) {
+    if (firstResult.terminal) yield firstResult.terminal;
+    return;
+  }
+  if (!fallbackFactory) {
+    yield retryableKiroIncomplete(
+      "uncompleted_kiro_response",
+      "Kiro produced progress without an explicit final answer and no bounded retry transport was available",
+      firstResult.usage ?? { inputTokens, outputTokens: 0, estimated: true },
+      firstResult.providerState,
+    );
+    return;
+  }
+
+  yield { type: "heartbeat" };
+  let fallback: KiroFallbackAttempt;
+  try {
+    fallback = await fallbackFactory(
+      firstResult.providerState?.kiro.conversationId ?? conversationId,
+      firstResult.assistantText,
+      firstResult.sawReasoning,
+    );
+  } catch (err) {
+    yield {
+      type: "error",
+      message: safeKiroErrorMessage({}, err instanceof Error ? err.message : String(err)),
+      status: err instanceof Error && err.name === "TimeoutError" ? 504 : 502,
+      errorType: "upstream_error",
+      retryable: true,
+      usage: firstResult.usage,
+    };
+    return;
+  }
+  if (!fallback.response.ok) {
+    const payload = await fallback.response.text().catch(() => "");
+    yield {
+      type: "error",
+      message: safeKiroHttpErrorMessage(fallback.response.status, fallback.response.headers, payload),
+      status: fallback.response.status,
+      errorType: "upstream_error",
+      retryable: fallback.response.status === 429 || fallback.response.status >= 500,
+      usage: firstResult.usage,
+    };
+    return;
+  }
+
+  const second = parseKiroAttempt(
+    fallback.response,
+    "text_fallback",
+    modelId,
+    fallback.inputTokens,
+    contextWindow,
+    fallback.nameMap,
+    fallback.conversationId,
+  );
+  let secondNext = await second.next();
+  while (!secondNext.done) {
+    yield secondNext.value;
+    secondNext = await second.next();
+  }
+  const secondResult = secondNext.value;
+  if (!secondResult.terminal) {
+    yield retryableKiroIncomplete(
+      "empty_kiro_fallback",
+      "Kiro's bounded completion retry ended without a terminal result",
+      mergeKiroUsage(firstResult.usage, secondResult.usage) ?? { inputTokens, outputTokens: 0, estimated: true },
+      secondResult.providerState ?? firstResult.providerState,
+    );
+    return;
+  }
+  if (secondResult.terminal.type === "done" || secondResult.terminal.type === "incomplete") {
+    yield {
+      ...secondResult.terminal,
+      usage: mergeKiroUsage(firstResult.usage, secondResult.terminal.usage),
+      providerState: secondResult.terminal.providerState ?? firstResult.providerState,
+    };
+    return;
+  }
+  yield {
+    ...secondResult.terminal,
+    ...(secondResult.terminal.type === "error"
+      ? { usage: mergeKiroUsage(firstResult.usage, secondResult.terminal.usage) }
+      : {}),
+  };
 }
 
 // Adapter
@@ -548,65 +1022,139 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
   let contextWindow: number | undefined;
   let toolNameMap: Map<string, string> | undefined;
   let conversationId: string | undefined;
-  return {
-    name: "kiro",
-    async buildRequest(parsed: OcxParsedRequest) {
-      if (typeof provider.apiKey !== "string" || provider.apiKey.trim() === "") {
-        throw new Error("kiro token missing — run ocx login kiro");
-      }
-      const region = resolveKiroApiRegion();
-      const profileArn = resolveKiroProfileArn();
-      const fp = fingerprint().slice(0, 64);
-      const headers: Record<string, string> = {
-        authorization: `Bearer ${provider.apiKey}`,
-        "content-type": "application/x-amz-json-1.0",
-        accept: "application/vnd.amazon.eventstream",
-        "x-amz-target": AMZ_TARGET,
-        "user-agent": `aws-sdk-js/${SDK_VERSION} ua/2.1 os/${osTag()} lang/js md/nodejs#${NODE_VERSION} api/codewhispererstreaming#${SDK_VERSION} m/E KiroIDE-${KIRO_IDE_VERSION}-${fp}`,
-        "x-amz-user-agent": `aws-sdk-js/${SDK_VERSION} KiroIDE-${KIRO_IDE_VERSION}-${fp}`,
-        "x-amzn-codewhisperer-optout": "true",
-        "x-amzn-kiro-agent-mode": "vibe",
-        "amz-sdk-invocation-id": invocationId(),
-      };
-      if (profileArn) headers["x-amzn-kiro-profile-arn"] = profileArn;
-      // CodeWhisperer GenerateAssistantResponse has no reasoning_effort field. Match kiro-gateway's
-      // fake-reasoning contract by injecting effort-derived thinking tags into only the current user turn.
-      const built = buildKiroPayload(parsed, profileArn);
-      toolNameMap = built.nameMap;
-      conversationId = built.conversationId;
-      // Generous image pipeline (devlog/260714_image_normalization_pipeline/050):
-      // tier-normalize + cap images before serialization so bodyBytes below reflects
-      // the normalized size.
-      await normalizeKiroImages(built.payload);
-      const body = JSON.stringify(built.payload);
-      debugProviderDiagnostic("kiro", "request", {
-        region,
-        requestedModel: parsed.modelId,
-        bodyBytes: new TextEncoder().encode(body).length,
-        messageCount: kiroPayloadMessages(parsed).length,
-        toolCount: parsed.context.tools?.length ?? 0,
-        hasProfileArn: Boolean(profileArn),
-        hasPreviousResponseId: Boolean(parsed.previousResponseId),
-      });
-      // CW returns no usage. Codex adds each response's usage into its session total; report only the
-      // current-turn input delta so old history is not repeatedly added to Codex's visible token usage.
-      modelId = parsed.modelId;
-      contextWindow = configuredKiroContextWindow(provider, parsed.modelId);
-      inputTokens = estimateKiroInputTokens(parsed);
-      return {
+  let completionMode: KiroCompletionMode = "disabled";
+  let requestSnapshot: OcxParsedRequest | undefined;
+  let requestAbortSignal: AbortSignal | undefined;
+
+  const build = async (
+    parsed: OcxParsedRequest,
+    forcedCompletionMode?: KiroCompletionMode,
+  ): Promise<{
+    request: AdapterRequest;
+    nameMap: Map<string, string>;
+    conversationId: string;
+    completionMode: KiroCompletionMode;
+    inputTokens: number;
+  }> => {
+    if (typeof provider.apiKey !== "string" || provider.apiKey.trim() === "") {
+      throw new Error("kiro token missing — run ocx login kiro");
+    }
+    const region = resolveKiroApiRegion();
+    const profileArn = resolveKiroProfileArn();
+    const fp = fingerprint().slice(0, 64);
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${provider.apiKey}`,
+      "content-type": "application/x-amz-json-1.0",
+      accept: "application/vnd.amazon.eventstream",
+      "x-amz-target": AMZ_TARGET,
+      "user-agent": `aws-sdk-js/${SDK_VERSION} ua/2.1 os/${osTag()} lang/js md/nodejs#${NODE_VERSION} api/codewhispererstreaming#${SDK_VERSION} m/E KiroIDE-${KIRO_IDE_VERSION}-${fp}`,
+      "x-amz-user-agent": `aws-sdk-js/${SDK_VERSION} KiroIDE-${KIRO_IDE_VERSION}-${fp}`,
+      "x-amzn-codewhisperer-optout": "true",
+      "x-amzn-kiro-agent-mode": "vibe",
+      "amz-sdk-invocation-id": invocationId(),
+    };
+    if (profileArn) headers["x-amzn-kiro-profile-arn"] = profileArn;
+    const built = buildKiroPayload(parsed, profileArn, forcedCompletionMode);
+    await normalizeKiroImages(built.payload);
+    const body = JSON.stringify(built.payload);
+    debugProviderDiagnostic("kiro", "request", {
+      region,
+      requestedModel: parsed.modelId,
+      completionMode: built.completionMode,
+      bodyBytes: new TextEncoder().encode(body).length,
+      messageCount: kiroPayloadMessages(parsed).length,
+      toolCount: parsed.context.tools?.length ?? 0,
+      hasProfileArn: Boolean(profileArn),
+      hasPreviousResponseId: Boolean(parsed.previousResponseId),
+    });
+    return {
+      request: {
         url: `https://runtime.${region}.kiro.dev/`,
         method: "POST",
         headers,
         body,
         usageLog: { inputTokens: estimateKiroLogInputTokens(parsed), estimated: true },
-      };
+      },
+      nameMap: built.nameMap,
+      conversationId: built.conversationId,
+      completionMode: built.completionMode,
+      inputTokens: estimateKiroInputTokens(parsed),
+    };
+  };
+
+  const fallbackFactory: KiroFallbackFactory = async (
+    returnedConversationId,
+    assistantText,
+    sawReasoning,
+  ) => {
+    if (!requestSnapshot) throw new Error("Kiro completion retry lost its request state");
+    if (requestAbortSignal?.aborted) {
+      throw requestAbortSignal.reason instanceof Error
+        ? requestAbortSignal.reason
+        : new DOMException("Kiro request was cancelled", "AbortError");
+    }
+    const retryParsed = structuredClone(requestSnapshot);
+    retryParsed._providerContinuation = {
+      ...(retryParsed._providerContinuation ?? {}),
+      ...(returnedConversationId ? { kiro: { conversationId: returnedConversationId } } : {}),
+    };
+    retryParsed.context.messages.push({
+      role: "assistant",
+      content: [
+        ...(sawReasoning ? [{ type: "thinking" as const, thinking: "" }] : []),
+        ...(assistantText ? [{ type: "text" as const, text: assistantText }] : []),
+      ],
+      phase: "commentary",
+      model: retryParsed.modelId,
+      timestamp: Date.now(),
+    });
+    const retry = await build(retryParsed, "text_fallback");
+    const response = await fetchKiroWithRetry(retry.request, {
+      abortSignal: requestAbortSignal,
+      returnRawErrors: true,
+      stream: true,
+    });
+    return {
+      response,
+      inputTokens: retry.inputTokens,
+      nameMap: retry.nameMap,
+      conversationId: retry.conversationId,
+    };
+  };
+
+  return {
+    name: "kiro",
+    async buildRequest(parsed: OcxParsedRequest, incoming) {
+      const built = await build(parsed);
+      modelId = parsed.modelId;
+      contextWindow = configuredKiroContextWindow(provider, parsed.modelId);
+      inputTokens = built.inputTokens;
+      toolNameMap = built.nameMap;
+      conversationId = built.conversationId;
+      completionMode = built.completionMode;
+      requestSnapshot = structuredClone(parsed);
+      requestAbortSignal = incoming?.abortSignal;
+      return built.request;
     },
 
     parseStream(response: Response): AsyncGenerator<AdapterEvent> {
-      return parseKiroStream(response, modelId, inputTokens, contextWindow, toolNameMap, conversationId);
+      return parseKiroStream(
+        response,
+        modelId,
+        inputTokens,
+        contextWindow,
+        toolNameMap,
+        conversationId,
+        completionMode,
+        completionMode === "required" ? fallbackFactory : undefined,
+      );
     },
 
     fetchResponse(request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response> {
+      // The normal Responses path supplies cancellation at fetch time rather than build time.
+      // Keep it for the adapter-owned bounded continuation so cancelling the client turn aborts
+      // both the first Kiro request and its one allowed completion retry.
+      if (ctx?.abortSignal) requestAbortSignal = ctx.abortSignal;
       return fetchKiroWithRetry(request, ctx);
     },
 
@@ -620,7 +1168,16 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
     // tool failed with "web-search sidecar requires a non-streaming adapter" (kiro-only).
     async parseResponse(response: Response): Promise<AdapterEvent[]> {
       const events: AdapterEvent[] = [];
-      for await (const e of parseKiroStream(response, modelId, inputTokens, contextWindow, toolNameMap, conversationId)) events.push(e);
+      for await (const e of parseKiroStream(
+        response,
+        modelId,
+        inputTokens,
+        contextWindow,
+        toolNameMap,
+        conversationId,
+        completionMode,
+        completionMode === "required" ? fallbackFactory : undefined,
+      )) events.push(e);
       return events;
     },
   };
