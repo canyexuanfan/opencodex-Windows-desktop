@@ -831,7 +831,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
                       {hoveredModel?.namespaced === m.namespaced && (() => {
                         const r = hoveredModel.rect;
                         const tipTop = r.bottom + 4;
-                        const flipUp = tipTop + 280 > window.innerHeight;
+                        const flipUp = tipTop + 360 > window.innerHeight;
                         return (
                           <div
                             className={`model-tip${m.custom ? " has-actions" : ""}${flipUp ? " flip-up" : ""}`}

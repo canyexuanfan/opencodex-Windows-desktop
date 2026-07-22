@@ -24,6 +24,18 @@ export interface ProviderUsageTotals {
   totalTokens?: number;
 }
 
+/** Per-model usage row from /api/usage, filtered by provider. */
+export interface ProviderModelUsageRow {
+  model: string;
+  resolvedModel?: string;
+  requests: number;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  shareRatio: number;
+  estimatedCostUsd?: number;
+}
+
 // Auth types consumed by ProviderAuthPanel (WP091).
 export type OAuthAccountRow = {
   id: string;
