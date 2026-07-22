@@ -259,6 +259,7 @@ export const de = {
   "models.setAllHint": "Wendet das {value}-Kontext-Limit auf alle gerouteten Anbieter an. Native Anbieter bleiben unberührt.",
   "models.collapseAll": "Alle einklappen",
   "models.expandAll": "Alle ausklappen",
+  "models.orderHint": "Reihenfolge in der Modellauswahl: Subagents-Auswahl (in der festgelegten Reihenfolge) → übrige geroutete Modelle alphabetisch nach Anbieter, dann Modell-ID → native Modelle. Sichtbarkeitsschalter filtern nur; sie ändern diese Reihenfolge nicht.",
   "models.custom": "Benutzerdefiniert…",
   "models.customApply": "Anwenden",
   "models.customPlaceholder": "Tokens (z. B. 420000)",

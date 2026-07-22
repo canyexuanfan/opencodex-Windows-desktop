@@ -273,6 +273,7 @@ export const en = {
   "models.setAllHint": "Apply the {value} context cap to every routed provider. Native providers are unaffected.",
   "models.collapseAll": "Collapse all",
   "models.expandAll": "Expand all",
+  "models.orderHint": "Picker order: Subagents picks (in the selected order) → remaining routed models alphabetically by provider, then model ID → native models. Visibility switches only filter models; they do not change this order.",
   "models.custom": "Custom…",
   "models.customApply": "Apply",
   "models.customPlaceholder": "Tokens (e.g. 420000)",

@@ -267,6 +267,7 @@ export const zh: Record<TKey, string> = {
   "models.setAllHint": "将 {value} 上下文上限应用到所有路由提供商。原生提供商不受影响。",
   "models.collapseAll": "全部折叠",
   "models.expandAll": "全部展开",
+  "models.orderHint": "选择器顺序：Subagents 中的选择（按所选顺序）→ 其余已路由模型（依次按提供方、模型 ID 字母排序）→ 原生模型。可见性开关仅用于筛选，不会改变此顺序。",
   "models.custom": "自定义…",
   "models.customApply": "应用",
   "models.customPlaceholder": "令牌 (例如 420000)",

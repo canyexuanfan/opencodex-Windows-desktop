@@ -267,6 +267,7 @@ export const ko: Record<TKey, string> = {
   "models.setAllHint": "{value} 컨텍스트 상한을 모든 라우팅 제공업체에 적용합니다. 네이티브 제공업체는 영향을 받지 않습니다.",
   "models.collapseAll": "모두 접기",
   "models.expandAll": "모두 펼치기",
+  "models.orderHint": "피커 순서: Subagents에서 지정한 순서 → 나머지 라우팅 모델(프로바이더, 모델 ID 순 알파벳 정렬) → 네이티브 모델. 노출 토글은 모델을 필터링할 뿐 이 순서를 바꾸지 않습니다.",
   "models.custom": "직접 입력…",
   "models.customApply": "적용",
   "models.customPlaceholder": "토큰 (예: 420000)",

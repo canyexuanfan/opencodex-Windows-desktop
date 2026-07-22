@@ -265,6 +265,7 @@ export const ja: Record<TKey, string> = {
   "models.setAllHint": "{value} のコンテキスト上限をすべてのルーティング済みプロバイダーに適用します。ネイティブプロバイダーには影響しません。",
   "models.collapseAll": "すべて折りたたむ",
   "models.expandAll": "すべて展開",
+  "models.orderHint": "ピッカーの順序: サブエージェントの選択(選択順) → 残りのルーティングモデルはプロバイダー別、次にモデル ID 別のアルファベット順 → ネイティブモデル。表示切り替えはモデルをフィルタするだけで、この順序は変更しません。",
   "models.custom": "カスタム…",
   "models.customApply": "適用",
   "models.customPlaceholder": "トークン (例: 420000)",

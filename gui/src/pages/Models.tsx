@@ -883,6 +883,10 @@ export default function Models({ apiBase }: { apiBase: string }) {
         );
       })()}
 
+      <div className="row muted text-label leading-body" style={{ alignItems: "flex-start", gap: 8, marginBottom: 12, maxWidth: "80ch" }}>
+        <IconInfo width={15} height={15} aria-hidden="true" style={{ flexShrink: 0, marginTop: 2 }} />
+        <span>{t("models.orderHint")}</span>
+      </div>
     </>
   );
 
