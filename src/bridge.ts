@@ -634,17 +634,26 @@ export function bridgeToResponsesSSE(
                 finishedItems.push(item as OutputItem);
                 outputIndex++;
               }
-              const truncated = event.stopReason === "max_tokens";
-              const response = {
-                ...responseSnapshot(truncated ? "incomplete" : "completed", finishedItems),
-                usage: responsesUsage(event.usage),
-                ...(truncated ? { incomplete_details: { reason: "max_output_tokens" } } : {}),
-              };
-              options?.onCompletedResponse?.(response);
-              emit(truncated ? "response.incomplete" : "response.completed", {
-                response,
-              });
-              reportTerminal(truncated ? "incomplete" : "completed");
+              if (event.stopReason === "max_tokens") {
+                // Upstream hit its output token cap. Surface as incomplete so the client can
+                // distinguish a truncated turn from a genuinely finished one (issue #246).
+                const response = {
+                  ...responseSnapshot("incomplete", finishedItems),
+                  usage: responsesUsage(event.usage),
+                  incomplete_details: { reason: "max_output_tokens" },
+                };
+                // Still cache the partial output so previous_response_id replay works.
+                options?.onCompletedResponse?.(response);
+                emit("response.incomplete", { response });
+                reportTerminal("incomplete");
+              } else {
+                const response = { ...responseSnapshot("completed", finishedItems), usage: responsesUsage(event.usage) };
+                options?.onCompletedResponse?.(response);
+                emit("response.completed", {
+                  response,
+                });
+                reportTerminal("completed");
+              }
               terminated = true;
               break;
             }
@@ -917,7 +926,7 @@ export function buildResponseJSON(
         break;
       case "done":
         usage = e.usage;
-        stopReason = e.stopReason;
+        if (e.stopReason === "max_tokens") stopReason = "max_tokens";
         break;
     }
   }
@@ -935,7 +944,7 @@ export function buildResponseJSON(
     status: errorMessage ? "failed" : stopReason === "max_tokens" ? "incomplete" : "completed",
     model: modelId, output,
     ...(errorMessage ? { error: { message: errorMessage } } : {}),
-    ...(!errorMessage && stopReason === "max_tokens" ? { incomplete_details: { reason: "max_output_tokens" } } : {}),
+    ...(stopReason === "max_tokens" && !errorMessage ? { incomplete_details: { reason: "max_output_tokens" } } : {}),
     usage: responsesUsage(usage),
   };
 }

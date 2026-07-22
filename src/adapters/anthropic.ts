@@ -37,6 +37,9 @@ function toAnthropicContentPart(p: OcxContentPart): unknown {
 const DEFAULT_MAX_TOKENS = 8192;
 /** Safe ceiling for `max_tokens` (thinking + visible output) across current Claude 4.x models. */
 const REASONING_MAX_TOKENS_CEILING = 32_000;
+/** Adaptive-thinking ceiling: max effort budget (32k) + OUTPUT_HEADROOM (8k).
+ *  Must exceed REASONING_MAX_TOKENS_CEILING so effort=max actually preserves visible-output room. */
+const ADAPTIVE_THINKING_CEILING = 40_192;
 /** Anthropic's documented minimum `thinking.budget_tokens`. */
 const MIN_THINKING_BUDGET = 1024;
 /** Visible-output room added above the thinking budget when sizing `max_tokens`. */
@@ -634,11 +637,14 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
           // default 8192-token request can spend everything on thought and return empty text.
           body.thinking = { type: "adaptive" };
           body.output_config = { effort: adaptiveEffort(parsed.options.reasoning) };
-          const maxOut = parsed.options.maxOutputTokens ?? DEFAULT_MAX_TOKENS;
-          body.max_tokens = Math.min(
-            REASONING_MAX_TOKENS_CEILING,
-            Math.max(maxOut, reasoningBudget(adaptiveEffort(parsed.options.reasoning)) + OUTPUT_HEADROOM),
-          );
+          const explicitMaxOut = parsed.options.maxOutputTokens;
+          const wantBudget = reasoningBudget(parsed.options.reasoning);
+          const floor = wantBudget + OUTPUT_HEADROOM;
+          // Preserve explicit caller limits as-is; for omitted limits use the adaptive ceiling
+          // so effort=max (budget=32k) still leaves OUTPUT_HEADROOM tokens for visible output.
+          body.max_tokens = explicitMaxOut !== undefined
+            ? explicitMaxOut
+            : Math.min(ADAPTIVE_THINKING_CEILING, Math.max(DEFAULT_MAX_TOKENS, floor));
         } else {
           // Anthropic requires max_tokens > thinking.budget_tokens (max_tokens caps thinking +
           // visible output) and budget_tokens >= 1024. Codex sends the SAME value for both, which
@@ -854,10 +860,11 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
         }
       }
       const usage = json.usage as Record<string, number> | undefined;
+      const stopReason = typeof json.stop_reason === "string" ? json.stop_reason : undefined;
       events.push({
         type: "done",
         usage: usageFromAnthropic(usage),
-        ...(typeof json.stop_reason === "string" ? { stopReason: json.stop_reason } : {}),
+        ...(stopReason ? { stopReason } : {}),
       });
       return events;
     },

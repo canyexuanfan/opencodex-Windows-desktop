@@ -477,3 +477,55 @@ describe("Responses bridge web_search_call native item", () => {
     }]);
   });
 });
+
+describe("Responses bridge stopReason threading (issue #246)", () => {
+  test("done with stopReason max_tokens emits response.incomplete", async () => {
+    const frames = await collectSse(bridgeToResponsesSSE(replay([
+      { type: "text_delta", text: "partial" },
+      { type: "done", stopReason: "max_tokens" },
+    ]), "routed/model"));
+    const terminal = frames.find(f => f.event === "response.incomplete");
+    expect(terminal).toBeDefined();
+    const response = terminal!.data.response as Record<string, unknown>;
+    expect(response.status).toBe("incomplete");
+    expect(response.incomplete_details).toEqual({ reason: "max_output_tokens" });
+    // Must NOT also emit response.completed
+    expect(frames.find(f => f.event === "response.completed")).toBeUndefined();
+  });
+
+  test("done without stopReason emits response.completed as before", async () => {
+    const frames = await collectSse(bridgeToResponsesSSE(replay([
+      { type: "text_delta", text: "hello" },
+      { type: "done" },
+    ]), "routed/model"));
+    expect(frames.find(f => f.event === "response.completed")).toBeDefined();
+    expect(frames.find(f => f.event === "response.incomplete")).toBeUndefined();
+  });
+
+  test("done with stopReason end_turn emits response.completed", async () => {
+    const frames = await collectSse(bridgeToResponsesSSE(replay([
+      { type: "text_delta", text: "done" },
+      { type: "done", stopReason: "end_turn" },
+    ]), "routed/model"));
+    expect(frames.find(f => f.event === "response.completed")).toBeDefined();
+    expect(frames.find(f => f.event === "response.incomplete")).toBeUndefined();
+  });
+
+  test("batch buildResponseJSON with stopReason max_tokens returns incomplete status", () => {
+    const json = buildResponseJSON([
+      { type: "text_delta", text: "partial" },
+      { type: "done", stopReason: "max_tokens" },
+    ], "routed/model");
+    expect(json.status).toBe("incomplete");
+    expect(json.incomplete_details).toEqual({ reason: "max_output_tokens" });
+  });
+
+  test("batch buildResponseJSON without stopReason returns completed status", () => {
+    const json = buildResponseJSON([
+      { type: "text_delta", text: "hello" },
+      { type: "done" },
+    ], "routed/model");
+    expect(json.status).toBe("completed");
+    expect(json.incomplete_details).toBeUndefined();
+  });
+});
