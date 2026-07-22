@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { KIRO_COMPLETION_TOOL_NAME } from "../src/adapters/kiro-constants";
 import { encodeMessage } from "../src/lib/eventstream-decoder";
 import { saveConfig } from "../src/config";
 import { saveCredential } from "../src/oauth/store";
@@ -64,18 +65,38 @@ function config(): OcxConfig {
   } as OcxConfig;
 }
 
-function eventStream(text: string): Uint8Array {
+function eventFrame(eventType: string, payload: Record<string, unknown>): Uint8Array {
   return encodeMessage(
-    { ":message-type": "event", ":event-type": "assistantResponseEvent" },
-    enc.encode(JSON.stringify({ content: text })),
+    { ":message-type": "event", ":event-type": eventType },
+    enc.encode(JSON.stringify(payload)),
   );
 }
 
-async function post(server: ReturnType<typeof startServer>): Promise<Response> {
+function eventStream(text: string): Uint8Array {
+  return eventFrame("assistantResponseEvent", { content: text });
+}
+
+function completionStream(answer: string): Uint8Array {
+  const id = "completion-1";
+  return Buffer.concat([
+    eventFrame("toolUseEvent", { name: KIRO_COMPLETION_TOOL_NAME, toolUseId: id }),
+    eventFrame("toolUseEvent", { name: KIRO_COMPLETION_TOOL_NAME, toolUseId: id, input: JSON.stringify({ answer }) }),
+    eventFrame("toolUseEvent", { name: KIRO_COMPLETION_TOOL_NAME, toolUseId: id, stop: true }),
+  ]);
+}
+
+async function post(server: ReturnType<typeof startServer>, toolEnabled = false): Promise<Response> {
   return originalFetch(new URL("/v1/responses", server.url), {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: "kiro/claude-sonnet-4.5", input: "hello", stream: false }),
+    body: JSON.stringify({
+      model: "kiro/claude-sonnet-4.5",
+      input: "hello",
+      stream: false,
+      ...(toolEnabled ? {
+        tools: [{ type: "function", name: "bash", description: "Run a command", parameters: { type: "object" } }],
+      } : {}),
+    }),
   });
 }
 
@@ -143,6 +164,53 @@ describe("Kiro OAuth upstream 401 replay", () => {
       expect(response.status).toBe(401);
       expect(observed.refreshCalls()).toBe(1);
       expect(observed.chatAuth).toEqual(["Bearer rejected-access", "Bearer fresh-access"]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("bounded completion fallback keeps the refreshed adapter after replay", async () => {
+    await seedOAuth();
+    saveConfig(config());
+    const chatAuth: string[] = [];
+    let refreshCalls = 0;
+    let chatCalls = 0;
+    globalThis.fetch = (async (input, init) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === REFRESH_ENDPOINT) {
+        refreshCalls += 1;
+        return new Response(JSON.stringify({
+          accessToken: "fresh-access",
+          refreshToken: "fresh-refresh",
+          expiresIn: 3600,
+        }), { headers: { "content-type": "application/json" } });
+      }
+      if (url === CHAT_ENDPOINT) {
+        const authorization = new Headers(init?.headers).get("authorization") ?? "";
+        chatAuth.push(authorization);
+        chatCalls += 1;
+        if (chatCalls === 1) return new Response("rejected", { status: 401 });
+        if (authorization !== "Bearer fresh-access") return new Response("stale token", { status: 401 });
+        return new Response(
+          chatCalls === 2 ? eventStream("working") : completionStream("done"),
+          { headers: { "content-type": "application/vnd.amazon.eventstream" } },
+        );
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    const server = startServer(0);
+    try {
+      const response = await post(server, true);
+      expect(response.status).toBe(200);
+      const json = await response.json() as { output?: Array<{ type: string; phase?: string; content?: Array<{ text?: string }> }> };
+      const messages = json.output?.filter(item => item.type === "message") ?? [];
+      expect(messages.map(item => [item.content?.[0]?.text, item.phase])).toEqual([
+        ["working", "commentary"],
+        ["done", "final_answer"],
+      ]);
+      expect(refreshCalls).toBe(1);
+      expect(chatAuth).toEqual(["Bearer rejected-access", "Bearer fresh-access", "Bearer fresh-access"]);
     } finally {
       server.stop(true);
     }

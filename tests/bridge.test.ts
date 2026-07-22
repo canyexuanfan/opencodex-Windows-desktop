@@ -403,11 +403,21 @@ describe("Responses bridge reasoning and usage parity", () => {
 
   test("non-streaming error produces failed status", () => {
     const json = buildResponseJSON([
-      { type: "error", message: "upstream 500" },
+      {
+        type: "error",
+        message: "",
+        status: 502,
+        errorType: "upstream_error",
+        code: "kiro_stream_error",
+        retryable: true,
+        usage: { inputTokens: 7, outputTokens: 3 },
+      },
     ], "model");
 
     expect(json.status).toBe("failed");
-    expect((json.error as Record<string, unknown>).message).toBe("upstream 500");
+    expect(json.retryable).toBe(true);
+    expect(json.usage).toMatchObject({ input_tokens: 7, output_tokens: 3 });
+    expect(json.error).toMatchObject({ type: "upstream_error", code: "kiro_stream_error", message: "" });
     expect((json.output as unknown[]).length).toBe(0);
   });
 

@@ -179,7 +179,7 @@ describe("kiro adapter — buildRequest", () => {
     const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
     const ctx = current.userInputMessageContext;
     expect(current.content).toContain("Tool contract: use the current tool catalog as ground truth.");
-    expect(current.content).toContain("Valid tool names for this turn are exactly `grep`.");
+    expect(current.content).toContain("Valid tool names for this turn are exactly `grep`, `codex_kiro_final_answer`.");
     expect(ctx.tools[0].toolSpecification.name).toBe("grep");
     expect(ctx.tools[0].toolSpecification.inputSchema.json).toEqual({ type: "object" });
   });
@@ -193,6 +193,7 @@ describe("kiro adapter — buildRequest", () => {
     const toolNames = toolEnabled.currentMessage.userInputMessage.userInputMessageContext.tools
       .map((tool: { toolSpecification: { name: string } }) => tool.toolSpecification.name);
     expect(toolNames).toEqual(["bash", "codex_kiro_final_answer"]);
+    expect(firstUser.content).toContain("Valid tool names for this turn are exactly `bash`, `codex_kiro_final_answer`.");
     expect(firstUser.content).toContain("ordinary assistant text is mid-task commentary");
     expect(firstUser.content).toContain("call codex_kiro_final_answer exactly once");
 

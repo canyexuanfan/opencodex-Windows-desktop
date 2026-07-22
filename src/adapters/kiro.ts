@@ -303,7 +303,7 @@ export function buildKiroPayload(
   // Neutralize Codex's GPT-5 identity line so a routed Kiro model never misreports as GPT-5/OpenAI
   // and the proxy identity never leaks upstream.
   if (parsed.context.systemPrompt?.length) systemParts.push(neutralizeIdentity(parsed.context.systemPrompt.join("\n\n")));
-  const toolCatalogNudge = buildNonOpenAIToolCatalogNudgeFromNames(kiroToolWireNames(ordinaryTools));
+  const toolCatalogNudge = buildNonOpenAIToolCatalogNudgeFromNames(kiroToolWireNames(kiroTools));
   const boundedNudge = toolCatalogNudge ? boundedInjectedInstruction(toolCatalogNudge, injectedChars) : undefined;
   if (boundedNudge) systemParts.push(boundedNudge);
   if (completionMode !== "disabled") {

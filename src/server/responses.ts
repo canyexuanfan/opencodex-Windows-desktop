@@ -1482,17 +1482,18 @@ export async function handleResponses(
   const upstream = new AbortController();
   const cleanupUpstreamAbort = linkAbortSignal(upstream, options.abortSignal);
   const connectMs = config.connectTimeoutMs ?? 200_000;
+  let activeAdapter = adapter;
 
-  const request = await adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
+  const request = await activeAdapter.buildRequest(parsed, { headers: selectedForwardHeaders });
   const inputTokenEstimate = typeof request.usageLog?.inputTokens === "number"
     ? request.usageLog.inputTokens
     : undefined;
   if (inputTokenEstimate !== undefined) logCtx.usageLogInputTokens = inputTokenEstimate;
   let upstreamResponse: Response;
   try {
-    if (adapter.fetchResponse) {
+    if (activeAdapter.fetchResponse) {
       noteAttemptSend(logCtx.activeAttempt, inputTokenEstimate);
-      upstreamResponse = await adapter.fetchResponse(request, {
+      upstreamResponse = await activeAdapter.fetchResponse(request, {
         abortSignal: upstream.signal,
         timeoutMs: connectMs,
         stream: parsed.stream,
@@ -1526,7 +1527,6 @@ export async function handleResponses(
     // both paths so a 429→413 sequence never rebuilds against a stale pre-rotation
     // adapter, and imageTierBias — once armed — rides EVERY subsequent rebuild so a
     // 413→429 rotation cannot silently undo the tightening.
-    let activeAdapter = adapter;
     let imageTierBias = 0;
     let imageRetryAttempted = false;
     let oauth401ReplayAttempted = false;
@@ -1653,7 +1653,7 @@ export async function handleResponses(
   }
 
   if (parsed.stream) {
-    const eventStream = adapter.parseStream(upstreamResponse);
+    const eventStream = activeAdapter.parseStream(upstreamResponse);
     const { toolNsMap, freeformToolNames, toolSearchToolNames } = buildToolBridgeMaps(parsed);
     const sseStream = bridgeToResponsesSSE(
       eventStream, parsed.modelId, toolNsMap, freeformToolNames, toolSearchToolNames,
@@ -1673,7 +1673,7 @@ export async function handleResponses(
               parsed._rawBody,
               response,
               continuationStateForResponse(providerState),
-              adapter.name === "kiro" ? { force: true } : undefined,
+              activeAdapter.name === "kiro" ? { force: true } : undefined,
             ),
         }),
       },
@@ -1685,10 +1685,10 @@ export async function handleResponses(
     });
   }
 
-  if (adapter.parseResponse) {
+  if (activeAdapter.parseResponse) {
     let events: AdapterEvent[];
     try {
-      events = await adapter.parseResponse(upstreamResponse);
+      events = await activeAdapter.parseResponse(upstreamResponse);
     } finally {
       cleanupUpstreamAbort();
     }
@@ -1708,7 +1708,7 @@ export async function handleResponses(
         parsed._rawBody,
         json,
         continuationStateForResponse(providerState),
-        adapter.name === "kiro" ? { force: true } : undefined,
+        activeAdapter.name === "kiro" ? { force: true } : undefined,
       );
     }
     return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });

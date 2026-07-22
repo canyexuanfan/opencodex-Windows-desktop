@@ -791,7 +791,6 @@ export function buildResponseJSON(
   const responseId = `resp_${uuid()}`;
   const output: OutputItem[] = [];
   let usage: OcxUsage | undefined;
-  let errorMessage: string | undefined;
   let errorEvent: Extract<AdapterEvent, { type: "error" }> | undefined;
   let incompleteEvent: Extract<AdapterEvent, { type: "incomplete" }> | undefined;
   let endTurn: boolean | undefined;
@@ -973,8 +972,8 @@ export function buildResponseJSON(
         }
         break;
       case "error":
-        errorMessage = e.message;
         errorEvent = e;
+        usage = e.usage ?? usage;
         break;
       case "incomplete":
         incompleteEvent = e;
@@ -993,12 +992,12 @@ export function buildResponseJSON(
   flushSummaryReasoning();
   flushRawReasoning();
   flushToolCall();
-  if (options?.compaction && !errorMessage) {
+  if (options?.compaction && !errorEvent) {
     output.push({ type: "compaction", id: `cmp_${uuid()}`, encrypted_content: encodeCompactionSummary(compactionText) });
   }
 
   const failure = errorEvent ? adapterFailureFromEvent(errorEvent) : undefined;
-  const status = errorMessage
+  const status = errorEvent
     ? "failed"
     : incompleteEvent || stopReason === "max_tokens"
       ? "incomplete"
@@ -1010,6 +1009,7 @@ export function buildResponseJSON(
     model: modelId, output,
     ...(endTurn !== undefined ? { end_turn: endTurn } : {}),
     ...(failure ? { error: failure.error, last_error: failure.error } : {}),
+    ...(errorEvent?.retryable !== undefined ? { retryable: errorEvent.retryable } : {}),
     ...(incompleteEvent ? {
       incomplete_details: {
         reason: incompleteEvent.reason,
