@@ -25,22 +25,13 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   const [copied, setCopied] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   // Workspace vs Classic: localStorage is the source of truth (same pattern as Providers).
-  const [workspaceView, setWorkspaceView] = useState(() => {
+  const [workspaceView] = useState(() => {
     try {
       return localStorage.getItem("ocx-apikeys-view") === "workspace";
     } catch {
       return false;
     }
   });
-  const toggleWorkspace = () => {
-    const next = !workspaceView;
-    try {
-      localStorage.setItem("ocx-apikeys-view", next ? "workspace" : "classic");
-    } catch {
-      /* ignore */
-    }
-    setWorkspaceView(next);
-  };
 
   const fetchKeys = useCallback(async () => {
     try {
@@ -108,9 +99,6 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
       <section className="api-page">
         <div className="page-head">
           <h2>{t("api.title")}</h2>
-          <div className="row">
-            <button className="btn btn-ghost btn-sm" onClick={toggleWorkspace}>{t("pws.classicToggle")}</button>
-          </div>
         </div>
         <ApiKeysWorkspace
           keys={keys}
@@ -132,9 +120,6 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
     <section className="api-page">
       <div className="page-head">
         <h2>{t("api.title")}</h2>
-        <div className="row">
-          <button className="btn btn-ghost btn-sm" onClick={toggleWorkspace}>{t("pws.workspaceToggle")}</button>
-        </div>
       </div>
       <p className="page-sub">
         {subtitleParts[0]}
