@@ -7,6 +7,7 @@ import {
   type CodexAuthContext,
 } from "../codex/auth-context";
 import { recordCodexUpstreamOutcome, type CodexUpstreamOutcome } from "../codex/routing";
+import { extractAccountId } from "../oauth/chatgpt";
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "../server/auth-cors";
 import type { CodexAccountMode, OcxConfig, OcxProviderConfig } from "../types";
 import {
@@ -47,6 +48,23 @@ export function listOpenAiForwardSidecarCandidates(config: OcxConfig): OpenAiFor
   }];
 }
 
+function directSidecarHeaders(
+  incomingHeaders: Headers,
+): Headers | undefined {
+  const bearer = incomingHeaders.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+  if (!bearer) return undefined;
+  const derivedAccountId = extractAccountId(undefined, bearer);
+  if (!derivedAccountId) return undefined;
+  const requestedAccountId = incomingHeaders.get("chatgpt-account-id")?.trim();
+  // JWT payloads are decoded locally but not signature-verified. Requiring the caller's
+  // explicit account header, and checking it against the token claim, makes forwarding an
+  // intentional ChatGPT-auth operation instead of silently reclassifying any JWT-shaped
+  // provider credential as a Codex bearer.
+  if (!requestedAccountId || requestedAccountId !== derivedAccountId) return undefined;
+  const selected = headersForCodexAuthContext(incomingHeaders, { kind: "main", accountId: null });
+  return selected;
+}
+
 export async function resolveFirstUsableOpenAiSidecar(
   candidates: readonly OpenAiForwardSidecarCandidate[],
   incomingHeaders: Headers,
@@ -60,7 +78,16 @@ export async function resolveFirstUsableOpenAiSidecar(
     callerBearerMayBeForwarded = false;
   }
   for (const candidate of candidates) {
-    if (candidate.accountMode === "direct" && (!callerBearerMayBeForwarded || !hasCallerCodexBearer(incomingHeaders))) continue;
+    if (candidate.accountMode === "direct") {
+      if (!callerBearerMayBeForwarded || !hasCallerCodexBearer(incomingHeaders)) continue;
+      const headers = directSidecarHeaders(incomingHeaders);
+      if (!headers) continue;
+      return {
+        ...candidate,
+        authContext: { kind: "main", accountId: null },
+        headers,
+      };
+    }
     const authContext = await resolveCodexAuthContext(incomingHeaders, config, candidate.accountMode);
     if (!isCodexAuthContextUsable(authContext, config)) continue;
     return {

@@ -1,6 +1,7 @@
 import type { OcxProviderConfig } from "../types";
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
 import { signalWithTimeout, cancelBodyOnAbort } from "../lib/abort";
+import { redactSecretString } from "../lib/redact";
 import { sidecarEnter } from "../lib/sidecar-tracker";
 import { fetchWithResetRetry } from "../lib/upstream-retry";
 import { parseSidecarSSE } from "../web-search/parse";
@@ -99,7 +100,7 @@ export async function describeImage(
     if (!res.ok) {
       const t = await res.text().catch(() => "");
       console.warn(`[vision] sidecar HTTP ${res.status} (${Date.now() - t0}ms)`);
-      return { text: "", error: `vision sidecar HTTP ${res.status}: ${t.slice(0, 200)}` };
+      return { text: "", error: `vision sidecar HTTP ${res.status}: ${redactSecretString(t.slice(0, 200))}` };
     }
     const detachBodyGuard = cancelBodyOnAbort(res.body, linkedSignal.signal);
     let parsed;

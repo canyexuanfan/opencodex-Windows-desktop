@@ -132,6 +132,18 @@ describe("sidecar abort propagation", () => {
     expect(recorded).toEqual([401, "connect_error"]);
   });
 
+  test("web-search sidecar redacts echoed bearer-shaped error bodies", async () => {
+    globalThis.fetch = (() => Promise.resolve(new Response("upstream echoed Bearer sk-secret-sidecar", { status: 401 }))) as typeof fetch;
+    const outcome = await runWebSearch(
+      "current docs",
+      { type: "web_search" },
+      forwardProvider,
+      new Headers({ authorization: "Bearer token" }),
+      { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+    );
+    expect(outcome.error).toBe("sidecar HTTP 401: upstream echoed Bearer [REDACTED]");
+  });
+
   test("web-search loop forwards sidecar outcomes", async () => {
     const recorded: unknown[] = [];
     globalThis.fetch = ((input, init) => {
@@ -237,6 +249,19 @@ describe("sidecar abort propagation", () => {
 
     expect(connectOutcome.error).toBe("vision network down");
     expect(recorded).toEqual([403, "connect_error"]);
+  });
+
+  test("vision sidecar redacts echoed bearer-shaped error bodies", async () => {
+    globalThis.fetch = (() => Promise.resolve(new Response("upstream echoed Bearer sk-secret-sidecar", { status: 403 }))) as typeof fetch;
+    const outcome = await describeImage(
+      "data:image/png;base64,iVBORw0KGgo=",
+      "high",
+      "inspect screenshot",
+      forwardProvider,
+      new Headers({ authorization: "Bearer token" }),
+      { model: "gpt-5.4-mini", timeoutMs: 30_000 },
+    );
+    expect(outcome.error).toBe("vision sidecar HTTP 403: upstream echoed Bearer [REDACTED]");
   });
 
   test("web-search sidecar uses selected pool auth instead of inbound main auth", async () => {

@@ -12,6 +12,7 @@ import { clearCodexUpstreamHealth, clearThreadAccountMap } from "../src/codex/ro
 import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
 import type { OcxConfig } from "../src/types";
+import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 
 const previousApiToken = process.env.OPENCODEX_API_AUTH_TOKEN;
@@ -19,6 +20,7 @@ const previousOpencodexHome = process.env.OPENCODEX_HOME;
 const originalFetch = globalThis.fetch;
 const TEST_DIR = join(import.meta.dir, ".tmp-server-images-test");
 let isolatedCodexHome: IsolatedCodexHome | null = null;
+const DIRECT_CHATGPT_TOKEN = fakeChatGptJwt({ chatgpt_account_id: "acct-123" });
 
 beforeEach(() => {
   if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
@@ -129,7 +131,7 @@ test("POST /v1/images/generations relays to the ChatGPT forward provider with fo
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: "Bearer chatgpt-user-token",
+        authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
         "chatgpt-account-id": "acct-123",
       },
       body: JSON.stringify({ prompt: "a halftone gothic hero", model: "gpt-image-2", size: "auto" }),
@@ -139,7 +141,7 @@ test("POST /v1/images/generations relays to the ChatGPT forward provider with fo
 
     expect(captured).toHaveLength(1);
     expect(captured[0].path).toBe("/images/generations");
-    expect(captured[0].headers.get("authorization")).toBe("Bearer chatgpt-user-token");
+    expect(captured[0].headers.get("authorization")).toBe(`Bearer ${DIRECT_CHATGPT_TOKEN}`);
     expect(captured[0].headers.get("chatgpt-account-id")).toBe("acct-123");
     expect(captured[0].body).toMatchObject({ prompt: "a halftone gothic hero", model: "gpt-image-2" });
   } finally {
@@ -157,7 +159,11 @@ test("POST /v1/images/edits relays to the /images/edits upstream path", async ()
   try {
     const response = await fetch(new URL("/v1/images/edits", server.url), {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: "Bearer chatgpt-user-token" },
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
+        "chatgpt-account-id": "acct-123",
+      },
       body: JSON.stringify({
         prompt: "add gold ink",
         model: "gpt-image-2",
@@ -227,7 +233,8 @@ test("zstd-compressed request bodies are decoded before the relay", async () => 
       headers: {
         "content-type": "application/json",
         "content-encoding": "zstd",
-        authorization: "Bearer chatgpt-user-token",
+        authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
+        "chatgpt-account-id": "acct-123",
       },
       body: Bun.zstdCompressSync(Buffer.from(raw)),
     });
@@ -261,7 +268,7 @@ test("falls back to a keyed openai-responses provider when no forward provider e
       headers: {
         "content-type": "application/json",
         // The caller's ChatGPT OAuth token must NOT reach a platform API-key upstream.
-        authorization: "Bearer chatgpt-user-token",
+        authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
       },
       body: JSON.stringify({ prompt: "a cat", model: "gpt-image-2" }),
     });
@@ -465,7 +472,11 @@ test("relays upstream error status and body verbatim", async () => {
   try {
     const response = await fetch(new URL("/v1/images/generations", server.url), {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: "Bearer chatgpt-user-token" },
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
+        "chatgpt-account-id": "acct-123",
+      },
       body: JSON.stringify({ prompt: "a cat", model: "gpt-image-2" }),
     });
     expect(response.status).toBe(403);
@@ -503,7 +514,11 @@ test("a hung upstream times out with 504 after config.images.timeoutMs", async (
   try {
     const response = await fetch(new URL("/v1/images/generations", server.url), {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: "Bearer chatgpt-user-token" },
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
+        "chatgpt-account-id": "acct-123",
+      },
       body: JSON.stringify({ prompt: "a cat", model: "gpt-image-2" }),
     });
     expect(response.status).toBe(504);

@@ -7,6 +7,7 @@ import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar } f
 import type { AdapterEvent, OcxConfig, OcxProviderConfig } from "../src/types";
 import type { AdapterFetchContext, ProviderAdapter } from "../src/adapters/base";
 import type { OcxMessage, OcxParsedRequest } from "../src/types";
+import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
 
 const routedProvider: OcxProviderConfig = {
   adapter: "openai-chat",
@@ -66,6 +67,74 @@ describe("web-search sidecar planning", () => {
       cfg,
     );
     expect(resolved).toBeUndefined();
+  });
+
+  test("central Direct sidecar selection requires a canonical ChatGPT account-bearing bearer", async () => {
+    const cfg: OcxConfig = {
+      port: 10100,
+      defaultProvider: "routed",
+      providers: {
+        routed: routedProvider,
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "direct",
+        },
+      },
+    };
+    const opaque = await resolveFirstUsableOpenAiSidecar(
+      listOpenAiForwardSidecarCandidates(cfg),
+      new Headers({ authorization: "Bearer sk-provider-secret", "chatgpt-account-id": "acct-forged" }),
+      cfg,
+    );
+    expect(opaque).toBeUndefined();
+
+    const mismatched = await resolveFirstUsableOpenAiSidecar(
+      listOpenAiForwardSidecarCandidates(cfg),
+      new Headers({
+        authorization: `Bearer ${fakeChatGptJwt({ chatgpt_account_id: "acct-jwt" })}`,
+        "chatgpt-account-id": "acct-other",
+      }),
+      cfg,
+    );
+    expect(mismatched).toBeUndefined();
+  });
+
+  test("central Direct sidecar selection requires an explicit matching ChatGPT account header", async () => {
+    const cfg: OcxConfig = {
+      port: 10100,
+      defaultProvider: "routed",
+      providers: {
+        routed: routedProvider,
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "direct",
+        },
+      },
+    };
+    const token = fakeChatGptJwt({ chatgpt_account_id: "acct-jwt" });
+    const missingHeader = await resolveFirstUsableOpenAiSidecar(
+      listOpenAiForwardSidecarCandidates(cfg),
+      new Headers({ authorization: `Bearer ${token}` }),
+      cfg,
+    );
+    expect(missingHeader).toBeUndefined();
+
+    const resolved = await resolveFirstUsableOpenAiSidecar(
+      listOpenAiForwardSidecarCandidates(cfg),
+      new Headers({
+        authorization: `Bearer ${token}`,
+        "chatgpt-account-id": "acct-jwt",
+      }),
+      cfg,
+    );
+    expect(resolved).toBeDefined();
+    expect(resolved?.authContext).toEqual({ kind: "main", accountId: null });
+    expect(resolved?.headers.get("authorization")).toBe(`Bearer ${token}`);
+    expect(resolved?.headers.get("chatgpt-account-id")).toBe("acct-jwt");
   });
 
   test("sidecar auth stays lazy when search is absent, disabled, or native-passthrough", () => {
