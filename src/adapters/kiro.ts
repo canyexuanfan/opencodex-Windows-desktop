@@ -6,10 +6,9 @@ import { KIRO_MODEL_CONTEXT_WINDOWS, normalizeKiroModelId } from "../providers/k
 import { modelRecordValue } from "../reasoning-effort";
 import { parseKiroEvent } from "./kiro-events";
 import { safeKiroErrorMessage, safeKiroHttpErrorMessage } from "./kiro-errors";
-import { appendFallbackText, toolCallFallbackText, toolResultFallbackText } from "./kiro-tool-fallback";
 import { KiroThinkingParser } from "./kiro-thinking";
 import { isCompleteKiroToolInput, kiroTruncationErrorMessage } from "./kiro-truncation";
-import { fallbackToolUseId, fingerprint, invocationId, kiroToolName, mapModelId, normalizeToolId, osTag, stableConversationId } from "./kiro-wire";
+import { createKiroToolNameRegistry, fallbackToolUseId, fingerprint, invocationId, isValidKiroConversationId, mapModelId, normalizeToolId, osTag, stableConversationId } from "./kiro-wire";
 import { namespacedToolName } from "../types";
 import type {
   AdapterEvent,
@@ -30,6 +29,7 @@ import { fetchKiroWithRetry } from "./kiro-retry";
 import { convertKiroToolContext } from "./kiro-tools";
 import { neutralizeIdentity } from "./identity";
 import { buildNonOpenAIToolCatalogNudgeFromNames } from "./tool-catalog-nudge";
+import { KIRO_CONTINUATION_MESSAGE, MAX_KIRO_INJECTED_INSTRUCTION_CHARS } from "./kiro-constants";
 
 const AMZ_TARGET = "AmazonCodeWhispererStreamingService.GenerateAssistantResponse";
 const SDK_VERSION = "1.0.27";
@@ -90,17 +90,8 @@ function serializeForUsage(value: unknown): string {
 function currentTurnUsageMessages(messages: OcxMessage[]): OcxMessage[] {
   return messages.slice(messages.map(m => m.role).lastIndexOf("assistant") + 1).filter(m => m.role !== "assistant");
 }
-function currentTurnPayloadMessages(messages: OcxMessage[]): OcxMessage[] {
-  const roles = messages.map(m => m.role);
-  const lastAssistant = roles.lastIndexOf("assistant");
-  const tail = messages.slice(lastAssistant + 1).filter(m => m.role !== "assistant");
-  if (lastAssistant === -1 || !tail.some(m => m.role === "toolResult")) return tail;
-  const priorAssistant = roles.slice(0, lastAssistant).lastIndexOf("assistant");
-  return messages.slice(priorAssistant + 1);
-}
-
 function kiroPayloadMessages(parsed: OcxParsedRequest): OcxMessage[] {
-  return parsed.previousResponseId ? currentTurnPayloadMessages(parsed.context.messages) : parsed.context.messages;
+  return parsed.context.messages;
 }
 
 function messageUsageText(msg: OcxMessage): string {
@@ -166,9 +157,10 @@ function configuredKiroContextWindow(provider: OcxProviderConfig, modelId: strin
   return typeof window === "number" && Number.isFinite(window) && window > 0 ? window : undefined;
 }
 
-function contextUsageTotalTokens(contextUsagePercentage: number | undefined, contextWindow: number | undefined): number | undefined {
-  if (contextUsagePercentage === undefined || contextUsagePercentage <= 0 || !contextWindow) return undefined;
-  return Math.max(0, Math.floor((contextUsagePercentage / 100) * contextWindow));
+export type KiroReasoningMode = "native" | "emulated";
+
+export function kiroReasoningMode(modelId: string): KiroReasoningMode {
+  return normalizeKiroModelId(modelId) === "gpt-5.6-sol" ? "native" : "emulated";
 }
 
 function kiroThinkingBudget(parsed: OcxParsedRequest): number | undefined {
@@ -188,6 +180,7 @@ function kiroThinkingBudget(parsed: OcxParsedRequest): number | undefined {
 }
 
 function injectKiroThinkingTags(content: string, parsed: OcxParsedRequest): string {
+  if (kiroReasoningMode(parsed.modelId) !== "emulated") return content;
   const budget = kiroThinkingBudget(parsed);
   if (!budget) return content;
   const instruction = [
@@ -204,117 +197,155 @@ function injectKiroThinkingTags(content: string, parsed: OcxParsedRequest): stri
   ].join("\n");
 }
 
-export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | undefined): { payload: Record<string, unknown>; nameMap: Map<string, string> } {
+function validateKiroCapabilities(parsed: OcxParsedRequest): void {
+  const choice = parsed.options.toolChoice;
+  if (choice !== undefined && choice !== "auto" && choice !== "none") {
+    throw new Error("Kiro supports only automatic tool choice or tool_choice:none");
+  }
+  if (parsed.options.parallelToolCalls === true) {
+    throw new Error("Kiro does not support parallel tool calls");
+  }
+  if (parsed.options.serviceTier !== undefined) {
+    throw new Error("Kiro does not support service tiers");
+  }
+  const raw = parsed._rawBody as Record<string, unknown> | undefined;
+  if (parsed._structuredOutput || raw?.text !== undefined) {
+    throw new Error("Kiro does not support Responses text controls or structured output");
+  }
+}
+
+type KiroTurn =
+  | { kind: "user"; content: string; images: KiroImage[]; toolResults: KiroToolResult[] }
+  | { kind: "assistant"; content: string; toolUses: KiroToolUse[] };
+
+function appendTurnText(target: string, next: string): string {
+  if (!next) return target;
+  return target ? `${target}\n\n${next}` : next;
+}
+
+function boundedInjectedInstruction(text: string, used: { value: number }): string | undefined {
+  const remaining = MAX_KIRO_INJECTED_INSTRUCTION_CHARS - used.value;
+  if (remaining <= 0 || !text) return undefined;
+  const result = text.length <= remaining ? text : text.slice(0, remaining);
+  used.value += result.length;
+  return result;
+}
+
+export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | undefined): {
+  payload: Record<string, unknown>;
+  nameMap: Map<string, string>;
+  conversationId: string;
+} {
+  validateKiroCapabilities(parsed);
   const modelId = mapModelId(parsed.modelId);
-  const toolContext = convertKiroToolContext(parsed);
+  const registry = createKiroToolNameRegistry();
+  const toolContext = convertKiroToolContext(parsed, registry);
   const kiroTools = toolContext.tools;
   const nameMap = toolContext.nameMap;
   const systemParts: string[] = [];
+  const injectedChars = { value: 0 };
   // Neutralize Codex's GPT-5 identity line so a routed Kiro model never misreports as GPT-5/OpenAI
   // and the proxy identity never leaks upstream.
-  if (!parsed.previousResponseId && parsed.context.systemPrompt?.length) systemParts.push(neutralizeIdentity(parsed.context.systemPrompt.join("\n\n")));
-  const toolCatalogNudge = !parsed.previousResponseId
-    ? buildNonOpenAIToolCatalogNudgeFromNames(kiroToolWireNames(kiroTools))
-    : undefined;
-  if (toolCatalogNudge) systemParts.push(toolCatalogNudge);
-  if (toolContext.systemAdditions.length > 0) systemParts.push(...toolContext.systemAdditions);
+  if (parsed.context.systemPrompt?.length) systemParts.push(neutralizeIdentity(parsed.context.systemPrompt.join("\n\n")));
+  const toolCatalogNudge = buildNonOpenAIToolCatalogNudgeFromNames(kiroToolWireNames(kiroTools));
+  const boundedNudge = toolCatalogNudge ? boundedInjectedInstruction(toolCatalogNudge, injectedChars) : undefined;
+  if (boundedNudge) systemParts.push(boundedNudge);
   const systemPrefix = systemParts.length > 0 ? `${systemParts.join("\n\n")}\n\n` : "";
-  const structuredToolIds = new Set<string>();
-
-  const mkUser = (content: string, images?: KiroImage[]): KiroHistoryEntry => ({
-    userInputMessage: {
-      content,
-      modelId,
-      origin: "AI_EDITOR",
-      ...(images && images.length > 0 ? { images } : {}),
-    },
-  });
-  const history: KiroHistoryEntry[] = [];
-  const fallbackEntries = new WeakSet<KiroHistoryEntry>();
-  let pending: KiroToolResult[] = [];
-  let pendingImages: KiroImage[] = [];
-  let lastRole = "";
-  const attachPending = (entry: KiroHistoryEntry): void => {
-    if (pending.length === 0) return;
-    const uim = entry.userInputMessage!;
-    uim.userInputMessageContext = { ...(uim.userInputMessageContext ?? {}), toolResults: pending };
-    if (pendingImages.length > 0) uim.images = [...(uim.images ?? []), ...pendingImages];
-    pending = [];
-    pendingImages = [];
-  };
-  const pushUserEntry = (entry: KiroHistoryEntry): void => {
-    if (pending.length === 0 && lastRole === "user") {
-      history.push({ assistantResponseMessage: { content: "(acknowledged)" } });
+  const turns: KiroTurn[] = [];
+  const priorCalls = new Map<string, { wireName: string }>();
+  const pushUser = (content: string, images: KiroImage[] = [], toolResults: KiroToolResult[] = []): void => {
+    const last = turns.at(-1);
+    if (last?.kind === "user") {
+      last.content = appendTurnText(last.content, content);
+      last.images.push(...images);
+      last.toolResults.push(...toolResults);
+    } else {
+      turns.push({ kind: "user", content, images: [...images], toolResults: [...toolResults] });
     }
-    attachPending(entry);
-    history.push(entry);
-    lastRole = "user";
+  };
+  const pushAssistant = (content: string, toolUses: KiroToolUse[]): void => {
+    const last = turns.at(-1);
+    if (last?.kind === "assistant") {
+      last.content = appendTurnText(last.content, content);
+      last.toolUses.push(...toolUses);
+    } else {
+      turns.push({ kind: "assistant", content, toolUses: [...toolUses] });
+    }
   };
 
   for (const msg of kiroPayloadMessages(parsed)) {
     if (msg.role === "user" || msg.role === "developer") {
       const text = userContentText((msg as { content: string | OcxContentPart[] }).content);
       const images = extractKiroImages((msg as { content: string | OcxContentPart[] }).content);
-      pushUserEntry(mkUser(text, images));
+      pushUser(text, images);
     } else if (msg.role === "assistant") {
-      if (pending.length > 0) {
-        const carrier = mkUser("(tool results)");
-        pushUserEntry(carrier);
-      }
       const aMsg = msg as OcxAssistantMessage;
-      let text = (aMsg.content || [])
+      const text = (aMsg.content || [])
         .filter((b): b is OcxTextContent => b.type === "text")
         .map(b => b.text)
         .join("");
       const toolCalls = (aMsg.content || [])
         .filter((b): b is OcxToolCall => b.type === "toolCall");
-      const toolUses: KiroToolUse[] = kiroTools.length > 0
-        ? toolCalls.map(tc => {
-          const toolUseId = normalizeToolId(tc.id);
-          structuredToolIds.add(toolUseId);
-          // Same deterministic normalization as the toolSpecification so the replayed assistant
-          // toolUse name matches what Kiro was told the tool is called.
-          return { name: kiroToolName(namespacedToolName(tc.namespace, tc.name)), input: (tc.arguments ?? {}) as Record<string, unknown>, toolUseId };
-        })
-        : [];
-      if (kiroTools.length === 0) {
-        for (const toolCall of toolCalls) text = appendFallbackText(text, toolCallFallbackText(toolCall));
+      const toolUses: KiroToolUse[] = toolCalls.map(tc => {
+        const toolUseId = normalizeToolId(tc.id);
+        if (!toolUseId) throw new Error("Kiro history contains a tool call with an empty id");
+        if (priorCalls.has(toolUseId)) throw new Error(`Kiro history contains duplicate tool call id ${JSON.stringify(tc.id)}`);
+        const wireName = namespacedToolName(tc.namespace, tc.name);
+        const name = registry.alias(wireName);
+        priorCalls.set(toolUseId, { wireName });
+        return { name, input: (tc.arguments ?? {}) as Record<string, unknown>, toolUseId };
+      });
+      if (!text && toolUses.length === 0) {
+        const hasReasoning = aMsg.content.some(part => part.type === "thinking" && part.thinking.trim());
+        if (hasReasoning) continue;
       }
-      if (lastRole === "assistant") history.push(mkUser("(continue)"));
-      const entry: KiroHistoryEntry = { assistantResponseMessage: { content: text } };
-      if (toolUses.length > 0) entry.assistantResponseMessage!.toolUses = toolUses;
-      history.push(entry);
-      lastRole = "assistant";
+      pushAssistant(text, toolUses);
     } else if (msg.role === "toolResult") {
       const tr = msg as OcxToolResultMessage;
+      if (tr.containsEncryptedContent) {
+        throw new Error(`Kiro cannot translate encrypted output for tool call ${JSON.stringify(tr.toolCallId)}`);
+      }
       const text = userContentText(tr.content);
       const images = extractKiroImages(tr.content);
       const toolUseId = normalizeToolId(tr.toolCallId);
-      if (kiroTools.length > 0 && structuredToolIds.has(toolUseId)) {
-        pending.push({
-          content: [{ text: text || "(empty)" }],
-          status: tr.isError ? "error" : "success",
-          toolUseId,
-        });
-        pendingImages.push(...images);
-      } else {
-        if (pending.length > 0) pushUserEntry(mkUser("(tool results)"));
-        const fallback = mkUser(toolResultFallbackText(tr), images);
-        fallbackEntries.add(fallback);
-        pushUserEntry(fallback);
+      if (!priorCalls.has(toolUseId)) {
+        throw new Error(`Kiro history contains an orphaned tool result for call ${JSON.stringify(tr.toolCallId)}`);
       }
+      pushUser("", images, [{
+        content: [{ text }],
+        status: tr.isError ? "error" : "success",
+        toolUseId,
+      }]);
     }
   }
 
-  let currentEntry: KiroHistoryEntry;
-  if (pending.length > 0) {
-    currentEntry = mkUser("(tool results)");
-    attachPending(currentEntry);
-  } else if (history.length > 0 && history[history.length - 1].userInputMessage) {
-    currentEntry = history.pop()!;
-  } else {
-    currentEntry = mkUser("(continue)");
+  if (turns.length === 0 || turns[0].kind === "assistant") {
+    turns.unshift({ kind: "user", content: KIRO_CONTINUATION_MESSAGE, images: [], toolResults: [] });
   }
+  if (turns.at(-1)?.kind === "assistant") {
+    turns.push({ kind: "user", content: KIRO_CONTINUATION_MESSAGE, images: [], toolResults: [] });
+  }
+
+  const currentTurn = turns.pop();
+  if (!currentTurn || currentTurn.kind !== "user") throw new Error("Kiro request must end with a user turn");
+  const toEntry = (turn: KiroTurn): KiroHistoryEntry => turn.kind === "assistant"
+    ? {
+        assistantResponseMessage: {
+          content: turn.content,
+          ...(turn.toolUses.length > 0 ? { toolUses: turn.toolUses } : {}),
+        },
+      }
+    : {
+        userInputMessage: {
+          content: turn.content,
+          modelId,
+          origin: "AI_EDITOR",
+          ...(turn.images.length > 0 ? { images: turn.images } : {}),
+          ...(turn.toolResults.length > 0 ? { userInputMessageContext: { toolResults: turn.toolResults } } : {}),
+        },
+      };
+  const history = turns.map(toEntry);
+  const currentEntry = toEntry(currentTurn);
   const currentUim = currentEntry.userInputMessage!;
 
   if (systemPrefix) {
@@ -325,20 +356,28 @@ export function buildKiroPayload(parsed: OcxParsedRequest, profileArn: string | 
   if (kiroTools.length > 0) {
     currentUim.userInputMessageContext = { ...(currentUim.userInputMessageContext ?? {}), tools: kiroTools };
   }
-  if (!fallbackEntries.has(currentEntry) && !currentUim.userInputMessageContext?.toolResults && currentUim.content !== "(continue)") {
+  if (!currentUim.userInputMessageContext?.toolResults && currentUim.content !== KIRO_CONTINUATION_MESSAGE) {
     currentUim.content = injectKiroThinkingTags(currentUim.content, parsed);
   }
 
+  const conversationId = stableConversationId(parsed);
   const payload: Record<string, unknown> = {
     conversationState: {
       chatTriggerType: "MANUAL",
-      conversationId: stableConversationId(parsed),
+      conversationId,
       currentMessage: { userInputMessage: currentUim },
       ...(history.length > 0 ? { history } : {}),
     },
   };
+  const effort = parsed.options.reasoning;
+  if (kiroReasoningMode(parsed.modelId) === "native" && effort && effort !== "none") {
+    if (!["low", "medium", "high", "xhigh", "max"].includes(effort)) {
+      throw new Error(`Kiro gpt-5.6-sol does not support reasoning effort ${JSON.stringify(effort)}`);
+    }
+    payload.additionalModelRequestFields = { reasoning: { effort } };
+  }
   if (profileArn) payload.profileArn = profileArn;
-  return { payload, nameMap };
+  return { payload, nameMap, conversationId };
 }
 
 // Stream parsing (shared by parseStream + parseResponse)
@@ -351,6 +390,7 @@ export async function* parseKiroStream(
   inputTokens = 0,
   contextWindow?: number,
   nameMap?: Map<string, string>,
+  conversationId?: string,
 ): AsyncGenerator<AdapterEvent> {
   if (!response.body) {
     yield { type: "error", message: "Kiro response has no body" };
@@ -361,6 +401,7 @@ export async function* parseKiroStream(
   // usage display + auto-compact engage (see src/lib/token-estimate.ts).
   let outputChars = "";
   let contextUsagePercentage: number | undefined;
+  let returnedConversationId = conversationId;
   const thinking = new KiroThinkingParser();
   const trackContent = (event: AdapterEvent): void => {
     if ("text" in event) outputChars += event.text;
@@ -395,6 +436,9 @@ export async function* parseKiroStream(
           if (ev.contextUsagePercentage !== undefined && ev.contextUsagePercentage > 0) {
             contextUsagePercentage = ev.contextUsagePercentage;
           }
+          break;
+        case "message_metadata":
+          if (isValidKiroConversationId(ev.conversationId)) returnedConversationId = ev.conversationId;
           break;
         case "content":
           if (open) {
@@ -479,9 +523,17 @@ export async function* parseKiroStream(
     }
     const outputTokens = estimateTokens(outputChars, modelId);
     const usage: OcxUsage = { inputTokens, outputTokens, estimated: true };
-    const totalTokens = contextUsageTotalTokens(contextUsagePercentage, contextWindow);
-    if (totalTokens !== undefined) usage.totalTokens = totalTokens;
-    yield { type: "done", usage };
+    if (contextUsagePercentage !== undefined) {
+      debugProviderDiagnostic("kiro", "context_usage", {
+        contextUsagePercentage,
+        ...(contextWindow ? { configuredContextWindow: contextWindow } : {}),
+      });
+    }
+    yield {
+      type: "done",
+      usage,
+      ...(returnedConversationId ? { providerState: { kiro: { conversationId: returnedConversationId } } } : {}),
+    };
   } catch (err) {
     yield { type: "error", message: safeKiroErrorMessage({}, err instanceof Error ? err.message : String(err)) };
   }
@@ -495,6 +547,7 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
   let modelId: string | undefined;
   let contextWindow: number | undefined;
   let toolNameMap: Map<string, string> | undefined;
+  let conversationId: string | undefined;
   return {
     name: "kiro",
     async buildRequest(parsed: OcxParsedRequest) {
@@ -520,6 +573,7 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
       // fake-reasoning contract by injecting effort-derived thinking tags into only the current user turn.
       const built = buildKiroPayload(parsed, profileArn);
       toolNameMap = built.nameMap;
+      conversationId = built.conversationId;
       // Generous image pipeline (devlog/260714_image_normalization_pipeline/050):
       // tier-normalize + cap images before serialization so bodyBytes below reflects
       // the normalized size.
@@ -549,7 +603,7 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
     },
 
     parseStream(response: Response): AsyncGenerator<AdapterEvent> {
-      return parseKiroStream(response, modelId, inputTokens, contextWindow, toolNameMap);
+      return parseKiroStream(response, modelId, inputTokens, contextWindow, toolNameMap, conversationId);
     },
 
     fetchResponse(request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response> {
@@ -566,7 +620,7 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
     // tool failed with "web-search sidecar requires a non-streaming adapter" (kiro-only).
     async parseResponse(response: Response): Promise<AdapterEvent[]> {
       const events: AdapterEvent[] = [];
-      for await (const e of parseKiroStream(response, modelId, inputTokens, contextWindow, toolNameMap)) events.push(e);
+      for await (const e of parseKiroStream(response, modelId, inputTokens, contextWindow, toolNameMap, conversationId)) events.push(e);
       return events;
     },
   };

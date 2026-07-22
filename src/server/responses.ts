@@ -1029,6 +1029,14 @@ export async function handleResponses(
   sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, adapter.name);
   const isPassthrough = "passthrough" in adapter && !!adapter.passthrough;
 
+  if (adapter.name === "kiro" && parsed.previousResponseId && !parsed._previousResponseInputExpanded) {
+    return formatErrorResponse(
+      400,
+      "invalid_request_error",
+      "Kiro continuation state is missing; start a new session instead of reusing this previous_response_id.",
+    );
+  }
+
   let openAiSidecar: ResolvedOpenAiForwardSidecar | undefined;
   const needsOpenAiVision = shouldResolveOpenAiVisionSidecar(config, route.provider, route.modelId, parsed);
   const needsOpenAiSearch = shouldResolveOpenAiWebSearchSidecar(config, parsed, isPassthrough);
@@ -1071,12 +1079,18 @@ export async function handleResponses(
     emitted?: OcxProviderContinuationState,
   ): OcxProviderContinuationState | undefined => {
     const cursorConversationId = parsed._cursorConversationId;
-    if (!emitted && !cursorConversationId) return undefined;
+    const inherited = parsed._providerContinuation;
+    if (!emitted && !inherited && !cursorConversationId) return undefined;
     return {
+      ...(inherited ?? {}),
       ...(emitted ?? {}),
+      ...((inherited?.kiro || emitted?.kiro)
+        ? { kiro: { ...(inherited?.kiro ?? {}), ...(emitted?.kiro ?? {}) } }
+        : {}),
       ...(cursorConversationId
         ? {
             cursor: {
+              ...(inherited?.cursor ?? {}),
               ...(emitted?.cursor ?? {}),
               conversationId: cursorConversationId,
             },
@@ -1348,7 +1362,12 @@ export async function handleResponses(
           ...(routedCompaction ? { compaction: true } : {}),
           ...(routedCompaction ? {} : {
             onCompletedResponse: (response: Record<string, unknown>, providerState?: OcxProviderContinuationState) =>
-              rememberResponseState(parsed._rawBody, response, continuationStateForResponse(providerState)),
+              rememberResponseState(
+                parsed._rawBody,
+                response,
+                continuationStateForResponse(providerState),
+                adapter.name === "kiro" ? { force: true } : undefined,
+              ),
           }),
         },
       );
@@ -1379,7 +1398,14 @@ export async function handleResponses(
       ...(routedCompaction ? { compaction: true } : {}),
       onProviderState: state => { providerState = state; },
     });
-    if (!routedCompaction) rememberResponseState(parsed._rawBody, json, continuationStateForResponse(providerState));
+    if (!routedCompaction) {
+      rememberResponseState(
+        parsed._rawBody,
+        json,
+        continuationStateForResponse(providerState),
+        adapter.name === "kiro" ? { force: true } : undefined,
+      );
+    }
     return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
   }
 
@@ -1623,7 +1649,12 @@ export async function handleResponses(
         // giant stale chain Codex just replaced.
         ...(routedCompaction ? {} : {
           onCompletedResponse: (response: Record<string, unknown>, providerState?: OcxProviderContinuationState) =>
-            rememberResponseState(parsed._rawBody, response, continuationStateForResponse(providerState)),
+            rememberResponseState(
+              parsed._rawBody,
+              response,
+              continuationStateForResponse(providerState),
+              adapter.name === "kiro" ? { force: true } : undefined,
+            ),
         }),
       },
     );
@@ -1652,7 +1683,14 @@ export async function handleResponses(
       onProviderState: state => { providerState = state; },
     });
     // See the streaming branch: compaction turns skip the continuation cache.
-    if (!routedCompaction) rememberResponseState(parsed._rawBody, json, continuationStateForResponse(providerState));
+    if (!routedCompaction) {
+      rememberResponseState(
+        parsed._rawBody,
+        json,
+        continuationStateForResponse(providerState),
+        adapter.name === "kiro" ? { force: true } : undefined,
+      );
+    }
     return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
   }
 

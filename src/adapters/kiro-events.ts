@@ -1,13 +1,14 @@
 import { kiroTruncationReason } from "./kiro-truncation";
 
 export interface ParsedKiroEvent {
-  type: "content" | "tool_start" | "tool_input" | "tool_stop" | "truncation" | "usage" | "context_usage";
+  type: "content" | "tool_start" | "tool_input" | "tool_stop" | "truncation" | "usage" | "context_usage" | "message_metadata";
   data?: string;
   contextUsagePercentage?: number;
   usage?: unknown;
   name?: string;
   toolUseId?: string;
   input?: string;
+  conversationId?: string;
 }
 
 export function parseKiroEvent(payload: Uint8Array): ParsedKiroEvent | null {
@@ -26,6 +27,12 @@ export function parseKiroEvent(payload: Uint8Array): ParsedKiroEvent | null {
   }
   const truncationReason = kiroTruncationReason(parsed);
   if (truncationReason) return { type: "truncation", data: truncationReason };
+  const conversationId = typeof parsed.conversationId === "string"
+    ? parsed.conversationId
+    : typeof parsed.utteranceId === "string"
+      ? parsed.utteranceId
+      : undefined;
+  if (conversationId !== undefined) return { type: "message_metadata", conversationId };
   if ("usage" in parsed) return { type: "usage", usage: parsed.usage };
   if (typeof parsed.contextUsagePercentage === "number" && Number.isFinite(parsed.contextUsagePercentage)) {
     return { type: "context_usage", contextUsagePercentage: parsed.contextUsagePercentage };

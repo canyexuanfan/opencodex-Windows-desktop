@@ -118,6 +118,26 @@ describe("Responses previous_response_id state", () => {
     ]);
   });
 
+  test("force records Kiro provider continuation despite store:false", () => {
+    const firstBody = { model: "kiro/gpt-5.6-sol", input: "hello", store: false };
+    const first = buildResponseJSON([
+      { type: "text_delta", text: "done", phase: "final_answer" },
+      { type: "done", endTurn: true },
+    ], "kiro/gpt-5.6-sol");
+    rememberResponseState(firstBody, first, { kiro: { conversationId: "kiro-conv-1" } }, { force: true });
+
+    expect(previousResponseProviderState(first.id as string)).toEqual({
+      kiro: { conversationId: "kiro-conv-1" },
+    });
+    const expanded = expandPreviousResponseInput({
+      model: "kiro/gpt-5.6-sol",
+      previous_response_id: first.id,
+      input: "next",
+      store: false,
+    }) as { input: unknown[] };
+    expect(expanded.input).toHaveLength(3);
+  });
+
   test("snapshot survives a simulated restart (memory clear + disk load)", () => {
     const firstBody = { model: "gpt-5.5", input: "hello" };
     const first = buildResponseJSON([

@@ -73,6 +73,8 @@ export interface OcxToolResultMessage {
   toolNamespace?: string;
   /** Text, or content parts when a tool (e.g. Codex view_image) returns an image in its output. */
   content: string | OcxContentPart[];
+  /** True when the Responses result contained opaque encrypted output Kiro cannot translate. */
+  containsEncryptedContent?: boolean;
   isError: boolean;
   timestamp: number;
 }

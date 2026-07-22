@@ -73,6 +73,37 @@ describe("kiro adapter — parseStream", () => {
       type: "context_usage",
       contextUsagePercentage: 25.5,
     });
+    expect(parseKiroEvent(enc.encode(JSON.stringify({ conversationId: "returned-conversation-1" })))).toEqual({
+      type: "message_metadata",
+      conversationId: "returned-conversation-1",
+    });
+  });
+
+  test("valid returned message metadata replaces the generated continuation id", async () => {
+    const adapter = createKiroAdapter(provider);
+    await adapter.buildRequest(parsedWith([{ role: "user", content: "hi" }]));
+    let providerState: unknown;
+    for await (const event of adapter.parseStream(new Response(streamOf(
+      eventFrame({ content: "done" }),
+      eventFrame({ conversationId: "returned-conversation-1" }),
+    )))) {
+      if (event.type === "done") providerState = event.providerState;
+    }
+    expect(providerState).toEqual({ kiro: { conversationId: "returned-conversation-1" } });
+  });
+
+  test("invalid returned message metadata cannot poison continuation state", async () => {
+    const adapter = createKiroAdapter(provider);
+    const request = await adapter.buildRequest(parsedWith([{ role: "user", content: "hi" }]));
+    const generated = JSON.parse(request.body).conversationState.conversationId;
+    let providerState: unknown;
+    for await (const event of adapter.parseStream(new Response(streamOf(
+      eventFrame({ content: "done" }),
+      eventFrame({ conversationId: "bad id with spaces" }),
+    )))) {
+      if (event.type === "done") providerState = event.providerState;
+    }
+    expect(providerState).toEqual({ kiro: { conversationId: generated } });
   });
 
   test("maps CW events (name repeated on every tool chunk) to AdapterEvents with accumulated args", async () => {
@@ -369,7 +400,7 @@ describe("kiro adapter — parseStream", () => {
     expect(done.estimated).toBe(true);
   });
 
-  test("Kiro contextUsagePercentage overrides total tokens for fixed-window models", async () => {
+  test("Kiro contextUsagePercentage remains diagnostic and does not override totals", async () => {
     const adapter = createKiroAdapter(provider);
     await adapter.buildRequest(parsedWith([{ role: "user", content: "x".repeat(700) }]));
     const done = await doneUsage(
@@ -380,7 +411,7 @@ describe("kiro adapter — parseStream", () => {
 
     expect(done.inputTokens).toBe(200);
     expect(done.outputTokens).toBe(100);
-    expect(done.totalTokens).toBe(50_000);
+    expect(done.totalTokens).toBeUndefined();
     expect(done.estimated).toBe(true);
   });
 
@@ -439,7 +470,7 @@ describe("kiro adapter — parseStream", () => {
     expect(request.usageLog?.inputTokens).toBeGreaterThan(usage.inputTokens + 4000);
   });
 
-  test("resumed payload sends only the current turn instead of repeated history", async () => {
+  test("resumed payload preserves the complete locally expanded history", async () => {
     const latest = "please summarize recent commits";
     const oldHistory = [
       { role: "user", content: "u".repeat(8000) },
@@ -455,8 +486,8 @@ describe("kiro adapter — parseStream", () => {
     })).body;
     const resumedUsage = await doneUsage(resumedAdapter, eventFrame({ content: "ok" }));
     const cs = JSON.parse(resumedBody).conversationState;
-    expect(freshBody.length).toBeGreaterThan(resumedBody.length + 10_000);
-    expect(cs.history).toBeUndefined();
+    expect(resumedBody.length).toBe(freshBody.length);
+    expect(cs.history).toHaveLength(4);
     expect(cs.currentMessage.userInputMessage.content).toBe(latest);
     expect(resumedUsage.inputTokens).toBe(estimateTokens(latest, "claude-sonnet-4.5"));
   });
@@ -485,11 +516,11 @@ describe("kiro adapter — parseStream", () => {
     const { body } = await createKiroAdapter(provider).buildRequest({ ...parsedWith(messages, [bashTool]), previousResponseId: "kiro-prev-1" });
     const cs = JSON.parse(body).conversationState;
     expect(cs.history).toHaveLength(2);
-    expect(cs.history[0].userInputMessage.content).toBe("run a command");
+    expect(cs.history[0].userInputMessage.content).toContain("run a command");
     expect(cs.history[1].assistantResponseMessage.toolUses).toEqual([
       { name: "bash", input: { command: "pwd" }, toolUseId: "call-1" },
     ]);
-    expect(cs.currentMessage.userInputMessage.content).toBe("(tool results)");
+    expect(cs.currentMessage.userInputMessage.content).toBe("");
     expect(cs.currentMessage.userInputMessage.userInputMessageContext.toolResults).toEqual([
       { content: [{ text: "/tmp" }], status: "success", toolUseId: "call-1" },
     ]);
