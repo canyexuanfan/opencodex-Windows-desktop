@@ -72,6 +72,16 @@ describe("kiro adapter — buildRequest", () => {
     expect(url).toBe("https://runtime.ap-northeast-2.kiro.dev/");
   });
 
+  test("a genuinely custom Kiro base URL is honored", async () => {
+    const custom = { ...provider, baseUrl: "https://kiro.internal.example/custom/generate" };
+    const { url } = await createKiroAdapter(custom).buildRequest(parsedWith([{ role: "user", content: "hi" }]));
+    expect(url).toBe("https://kiro.internal.example/custom/generate");
+
+    const canonicalHostCustomPath = { ...provider, baseUrl: "https://runtime.us-east-1.kiro.dev/custom/generate" };
+    const customPath = await createKiroAdapter(canonicalHostCustomPath).buildRequest(parsedWith([{ role: "user", content: "hi" }]));
+    expect(customPath.url).toBe("https://runtime.us-east-1.kiro.dev/custom/generate");
+  });
+
   test("runtime URL rejects host-injection KIRO_API_REGION values", async () => {
     for (const value of ["us-east-1/../../evil", "us-east-1@evil.test", "https://evil.test", "../us-east-1"]) {
       process.env.KIRO_API_REGION = value;

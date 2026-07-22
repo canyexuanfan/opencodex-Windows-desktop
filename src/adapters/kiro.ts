@@ -5,7 +5,14 @@ import { resolveKiroApiRegion, resolveKiroProfileArn } from "../oauth/kiro";
 import { KIRO_MODEL_CONTEXT_WINDOWS, normalizeKiroModelId } from "../providers/kiro-models";
 import { modelRecordValue } from "../reasoning-effort";
 import { parseKiroEvent } from "./kiro-events";
-import { safeKiroErrorMessage, safeKiroHttpErrorMessage } from "./kiro-errors";
+import {
+  classifyKiroEventError,
+  classifyKiroHttpError,
+  classifyKiroStreamError,
+  safeKiroErrorMessage,
+  safeKiroHttpErrorMessage,
+  type KiroErrorClassification,
+} from "./kiro-errors";
 import { KiroThinkingParser } from "./kiro-thinking";
 import { isCompleteKiroToolInput, kiroTruncationErrorMessage } from "./kiro-truncation";
 import { createKiroToolNameRegistry, fallbackToolUseId, fingerprint, invocationId, isValidKiroConversationId, mapModelId, normalizeToolId, osTag, stableConversationId } from "./kiro-wire";
@@ -162,6 +169,17 @@ function configuredKiroContextWindow(provider: OcxProviderConfig, modelId: strin
     ?? modelRecordValue(KIRO_MODEL_CONTEXT_WINDOWS, modelId)
     ?? modelRecordValue(KIRO_MODEL_CONTEXT_WINDOWS, normalizedModelId);
   return typeof window === "number" && Number.isFinite(window) && window > 0 ? window : undefined;
+}
+
+function kiroRuntimeEndpoint(provider: OcxProviderConfig, region: string): string {
+  const configured = new URL(provider.baseUrl);
+  if (
+    /^runtime\.[a-z]{2}(?:-[a-z]+)+-\d\.kiro\.dev$/i.test(configured.hostname)
+    && configured.pathname === "/"
+  ) {
+    return `https://runtime.${region}.kiro.dev/`;
+  }
+  return configured.toString();
 }
 
 export type KiroReasoningMode = "native" | "emulated";
@@ -526,16 +544,27 @@ async function* parseKiroAttempt(
   let sawRealTool = false;
   let completionAnswer: string | undefined;
   let completionCalls = 0;
+  let authoritativeUsage: OcxUsage | undefined;
   const fallbackEvents: AdapterEvent[] = [];
   const thinking = new KiroThinkingParser();
 
   const providerState = (): { kiro: { conversationId: string } } | undefined =>
     returnedConversationId ? { kiro: { conversationId: returnedConversationId } } : undefined;
 
-  const usage = (): OcxUsage => ({
-    inputTokens,
-    outputTokens: estimateTokens(outputChars, modelId),
-    estimated: true,
+  const usage = (): OcxUsage => authoritativeUsage ?? ({
+      inputTokens,
+      outputTokens: estimateTokens(outputChars, modelId),
+      estimated: true,
+    });
+
+  const classifiedTerminal = (failure: KiroErrorClassification): AdapterEvent => ({
+    type: "error",
+    message: failure.message,
+    status: failure.status,
+    errorType: failure.errorType,
+    code: failure.code,
+    retryable: failure.retryable,
+    usage: usage(),
   });
 
   const protocolTerminal = (message: string, malformedCompletion = false): AdapterEvent => {
@@ -676,16 +705,27 @@ async function* parseKiroAttempt(
         return {
           assistantText,
           sawReasoning,
-          terminal: { type: "error", message: safeKiroErrorMessage(msg.headers, new TextDecoder().decode(msg.payload)) },
+          terminal: classifiedTerminal(classifyKiroStreamError(msg.headers, new TextDecoder().decode(msg.payload))),
         };
       }
-      if (mt && mt !== "event") continue;
-      const ev = parseKiroEvent(msg.payload);
+      if (mt !== "event") {
+        open = null;
+        return {
+          assistantText,
+          sawReasoning,
+          terminal: protocolTerminal(`Kiro response protocol error: unsupported Smithy message type ${JSON.stringify(mt ?? "missing")}`),
+        };
+      }
+      const eventType = msg.headers[":event-type"];
+      if (!eventType) {
+        open = null;
+        return { assistantText, sawReasoning, terminal: protocolTerminal("Kiro response protocol error: event is missing :event-type") };
+      }
+      const ev = parseKiroEvent(eventType, msg.payload);
       if (!ev) continue;
       switch (ev.type) {
-        case "usage":
-          break;
-        case "context_usage":
+        case "metadata":
+          if (ev.usage) authoritativeUsage = ev.usage;
           if (ev.contextUsagePercentage !== undefined && ev.contextUsagePercentage > 0) {
             contextUsagePercentage = ev.contextUsagePercentage;
           }
@@ -704,73 +744,64 @@ async function* parseKiroAttempt(
             }
           }
           break;
-        case "tool_start": {
+        case "reasoning":
           for (const contentEvent of thinking.flush()) {
             for (const staged of stage(contentEvent)) yield staged;
           }
-          const id = ev.toolUseId || fallbackToolUseId();
-          const name = ev.name || "unknown";
-          if (open) {
-            if (open.id !== id || open.name !== name) {
-              open = null;
-              return { assistantText, sawReasoning, terminal: protocolTerminal(kiroTruncationErrorMessage("new tool started before previous tool stop")) };
-            }
-          } else {
-            const started = beginTool(id, name);
-            if (started.terminal) return { assistantText, sawReasoning, terminal: started.terminal };
-            open = started.tool!;
+          if (ev.data) {
+            for (const staged of stage({ type: "reasoning_raw_delta", text: ev.data })) yield staged;
           }
-          yield { type: "heartbeat" };
           break;
-        }
-        case "tool_input": {
+        case "tool": {
           for (const contentEvent of thinking.flush()) {
             for (const staged of stage(contentEvent)) yield staged;
           }
-          const incomingId = ev.toolUseId;
-          const incomingName = ev.name;
           if (!open) {
-            const name = incomingName || "unknown";
-            const started = beginTool(incomingId || fallbackToolUseId(), name);
+            if (ev.stop === true) {
+              return { assistantText, sawReasoning, terminal: protocolTerminal("Kiro response protocol error: tool stop received without an open tool call") };
+            }
+            if (!ev.toolUseId || !ev.name) {
+              return { assistantText, sawReasoning, terminal: protocolTerminal("Kiro response protocol error: new tool event is missing toolUseId or name") };
+            }
+            const started = beginTool(ev.toolUseId, ev.name);
             if (started.terminal) return { assistantText, sawReasoning, terminal: started.terminal };
             open = started.tool!;
           } else if (
-            (incomingId && incomingId !== open.id)
-            || (incomingName && open.name !== "unknown" && incomingName !== open.name)
+            (ev.toolUseId && ev.toolUseId !== open.id)
+            || (ev.name && open.name !== "unknown" && ev.name !== open.name)
           ) {
             open = null;
             return { assistantText, sawReasoning, terminal: protocolTerminal(kiroTruncationErrorMessage("tool input changed identity before stop")) };
           }
-          if (open && open.name === "unknown" && incomingName) {
-            open.name = incomingName;
+          if (open && open.name === "unknown" && ev.name) {
+            open.name = ev.name;
             const terminal = classifyTool(open);
             if (terminal) {
               open = null;
               return { assistantText, sawReasoning, terminal };
             }
           }
-          if (open && ev.input) {
+          if (open && ev.input !== undefined) {
             open.chunks.push(ev.input);
             outputChars += ev.input;
           }
-          yield { type: "heartbeat" };
-          break;
-        }
-        case "tool_stop": {
-          if (!open) {
-            return { assistantText, sawReasoning, terminal: protocolTerminal("Kiro response protocol error: tool stop received without an open tool call") };
-          }
-          if (ev.toolUseId && ev.toolUseId !== open.id) {
-            open = null;
-            return { assistantText, sawReasoning, terminal: protocolTerminal("Kiro response protocol error: tool stop changed tool identity") };
-          }
-          const flushed = flushOpen();
-          if (flushed.terminal) return { assistantText, sawReasoning, terminal: flushed.terminal };
-          for (const event of flushed.events) {
-            for (const staged of stage(event)) yield staged;
+          if (ev.stop === true) {
+            const flushed = flushOpen();
+            if (flushed.terminal) return { assistantText, sawReasoning, terminal: flushed.terminal };
+            for (const event of flushed.events) {
+              for (const staged of stage(event)) yield staged;
+            }
+          } else {
+            yield { type: "heartbeat" };
           }
           break;
         }
+        case "invalid_state":
+          open = null;
+          return { assistantText, sawReasoning, terminal: classifiedTerminal(classifyKiroEventError(undefined, ev.message ?? "Kiro entered an invalid state")) };
+        case "error":
+          open = null;
+          return { assistantText, sawReasoning, terminal: classifiedTerminal(classifyKiroEventError(ev.reason, ev.message)) };
         case "truncation":
           open = null;
           return { assistantText, sawReasoning, terminal: protocolTerminal(kiroTruncationErrorMessage(ev.data)) };
@@ -897,6 +928,11 @@ async function* parseKiroAttempt(
       terminal: {
         type: "error",
         message: safeKiroErrorMessage({}, err instanceof Error ? err.message : String(err)),
+        status: 502,
+        errorType: "server_error",
+        code: "kiro_stream_protocol_error",
+        retryable: false,
+        usage: usage(),
       },
     };
   }
@@ -962,12 +998,14 @@ export async function* parseKiroStream(
   }
   if (!fallback.response.ok) {
     const payload = await fallback.response.text().catch(() => "");
+    const failure = classifyKiroHttpError(fallback.response.status, fallback.response.headers, payload);
     yield {
       type: "error",
-      message: safeKiroHttpErrorMessage(fallback.response.status, fallback.response.headers, payload),
-      status: fallback.response.status,
-      errorType: "upstream_error",
-      retryable: fallback.response.status === 429 || fallback.response.status >= 500,
+      message: failure.message,
+      status: failure.status,
+      errorType: failure.errorType,
+      code: failure.code,
+      retryable: failure.retryable,
       usage: firstResult.usage,
     };
     return;
@@ -1069,7 +1107,7 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
     });
     return {
       request: {
-        url: `https://runtime.${region}.kiro.dev/`,
+        url: kiroRuntimeEndpoint(provider, region),
         method: "POST",
         headers,
         body,

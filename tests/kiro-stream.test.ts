@@ -52,7 +52,16 @@ function parsedWith(messages: unknown[], tools?: unknown[], modelId = "claude-so
   return { modelId, stream: true, options: {}, context: { messages, tools } } as unknown as OcxParsedRequest;
 }
 
-const eventFrame = (obj: unknown) => encodeMessage({ ":message-type": "event", ":event-type": "x" }, enc.encode(JSON.stringify(obj)));
+function inferredEventType(obj: unknown): string {
+  const event = obj as Record<string, unknown>;
+  if ("content" in event) return "assistantResponseEvent";
+  if ("conversationId" in event || "utteranceId" in event) return "messageMetadataEvent";
+  if ("tokenUsage" in event || "contextUsagePercentage" in event) return "metadataEvent";
+  if ("name" in event || "toolUseId" in event || "input" in event || "stop" in event) return "toolUseEvent";
+  return "assistantResponseEvent";
+}
+const eventFrame = (obj: unknown, eventType = inferredEventType(obj)) =>
+  encodeMessage({ ":message-type": "event", ":event-type": eventType }, enc.encode(JSON.stringify(obj)));
 function streamOf(...frames: Uint8Array[]): ReadableStream<Uint8Array> {
   let i = 0;
   return new ReadableStream<Uint8Array>({
@@ -91,15 +100,61 @@ async function doneUsage(adapter: ReturnType<typeof createKiroAdapter>, ...frame
 
 describe("kiro adapter — parseStream", () => {
   test("Kiro event parser preserves usage and context usage frames", async () => {
-    expect(parseKiroEvent(enc.encode(JSON.stringify({ usage: 123 })))).toEqual({ type: "usage", usage: 123 });
-    expect(parseKiroEvent(enc.encode(JSON.stringify({ contextUsagePercentage: 25.5 })))).toEqual({
-      type: "context_usage",
+    expect(parseKiroEvent("metadataEvent", enc.encode(JSON.stringify({ contextUsagePercentage: 25.5 })))).toEqual({
+      type: "metadata",
       contextUsagePercentage: 25.5,
     });
-    expect(parseKiroEvent(enc.encode(JSON.stringify({ conversationId: "returned-conversation-1" })))).toEqual({
+    expect(parseKiroEvent("messageMetadataEvent", enc.encode(JSON.stringify({ conversationId: "returned-conversation-1" })))).toEqual({
       type: "message_metadata",
       conversationId: "returned-conversation-1",
     });
+  });
+
+  test("unknown event types are ignored without parsing their payload", async () => {
+    const unknown = encodeMessage(
+      { ":message-type": "event", ":event-type": "futureEvent" },
+      enc.encode("not-json and must not enter diagnostics"),
+    );
+    const events = await collectAdapterEvents(createKiroAdapter(provider).parseStream(new Response(streamOf(
+      unknown,
+      eventFrame({ content: "ok" }),
+    ))));
+    expect(events).toEqual([
+      { type: "text_delta", text: "ok" },
+      expect.objectContaining({ type: "done", endTurn: true }),
+    ]);
+  });
+
+  test("unsupported Smithy message types and malformed known events fail closed", async () => {
+    const unsupported = encodeMessage(
+      { ":message-type": "unexpected", ":event-type": "assistantResponseEvent" },
+      enc.encode(JSON.stringify({ content: "must not leak" })),
+    );
+    const malformed = eventFrame({ text: 42 }, "reasoningContentEvent");
+    for (const [frame, expected] of [
+      [unsupported, "unsupported Smithy message type"],
+      [malformed, "invalid Kiro reasoningContentEvent payload"],
+    ] as const) {
+      const events = await collectAdapterEvents(createKiroAdapter(provider).parseStream(new Response(streamOf(frame))));
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ type: "error", code: "kiro_stream_protocol_error", retryable: false });
+      expect((events[0] as { message: string }).message).toContain(expected);
+      expect(JSON.stringify(events)).not.toContain("must not leak");
+    }
+  });
+
+  test("a new tool event without its Smithy identity fails closed", async () => {
+    const events = await collectAdapterEvents(createKiroAdapter(provider).parseStream(new Response(streamOf(
+      eventFrame({ input: "{}" }, "toolUseEvent"),
+    ))));
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "kiro_stream_protocol_error",
+        retryable: false,
+      }),
+    ]);
+    expect((events[0] as { message: string }).message).toContain("missing toolUseId or name");
   });
 
   test("valid returned message metadata replaces the generated continuation id", async () => {
@@ -514,7 +569,7 @@ describe("kiro adapter — parseStream", () => {
   });
 
   test("explicit Kiro truncation marker fails without done", async () => {
-    const frame = eventFrame({ finish_reason: "max_tokens" });
+    const frame = eventFrame({ finish_reason: "max_tokens" }, "assistantResponseEvent");
     const out: string[] = [];
     for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(frame)))) {
       out.push(e.type === "error" ? `error:${e.message}` : e.type);
@@ -631,6 +686,18 @@ describe("kiro adapter — parseStream", () => {
     expect(out.join("|")).not.toContain("<thinking>");
   });
 
+  test("native reasoningContentEvent is emitted as reasoning, not assistant text", async () => {
+    const events = await collectAdapterEvents(createKiroAdapter(provider).parseStream(new Response(streamOf(
+      eventFrame({ text: "private plan" }, "reasoningContentEvent"),
+      eventFrame({ content: "visible answer" }),
+    ))));
+    expect(events).toEqual([
+      { type: "reasoning_raw_delta", text: "private plan" },
+      { type: "text_delta", text: "visible answer" },
+      expect.objectContaining({ type: "done", endTurn: true }),
+    ]);
+  });
+
   test("thinking tags split across chunks are parsed as reasoning", async () => {
     const frames = [
       eventFrame({ content: "<think" }),
@@ -675,6 +742,70 @@ describe("kiro adapter — parseStream", () => {
     expect(done.inputTokens).toBe(200);
     expect(done.outputTokens).toBe(100);
     expect(done.estimated).toBe(true);
+  });
+
+  test("authoritative metadata token usage overrides estimates and preserves cache splits", async () => {
+    const adapter = createKiroAdapter(provider);
+    await adapter.buildRequest(parsedWith([{ role: "user", content: "x".repeat(700) }]));
+    const done = await doneUsage(
+      adapter,
+      eventFrame({ content: "answer" }),
+      eventFrame({
+        tokenUsage: {
+          uncachedInputTokens: 10,
+          cacheReadInputTokens: 3,
+          cacheWriteInputTokens: 2,
+          outputTokens: 4,
+          totalTokens: 19,
+        },
+      }, "metadataEvent"),
+    );
+    expect(done).toEqual({
+      inputTokens: 15,
+      cachedInputTokens: 3,
+      cacheReadInputTokens: 3,
+      cacheCreationInputTokens: 2,
+      outputTokens: 4,
+      totalTokens: 19,
+    });
+  });
+
+  test("invalid provider token usage is rejected instead of replacing estimates", async () => {
+    const adapter = createKiroAdapter(provider);
+    await adapter.buildRequest(parsedWith([{ role: "user", content: "hi" }]));
+    const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(eventFrame({
+      tokenUsage: {
+        uncachedInputTokens: -1,
+        outputTokens: 4,
+        totalTokens: 3,
+      },
+    }, "metadataEvent")))));
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      code: "kiro_stream_protocol_error",
+      retryable: false,
+    });
+  });
+
+  test("CONTENT_LENGTH_EXCEEDS_THRESHOLD is a permanent structured context error", async () => {
+    const frame = encodeMessage(
+      { ":message-type": "exception", ":exception-type": "ValidationException" },
+      enc.encode(JSON.stringify({
+        message: "Input content length exceeds threshold.",
+        reason: "CONTENT_LENGTH_EXCEEDS_THRESHOLD",
+      })),
+    );
+    const events = await collectAdapterEvents(createKiroAdapter(provider).parseStream(new Response(streamOf(frame))));
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "error",
+        status: 400,
+        errorType: "invalid_request_error",
+        code: "context_length_exceeded",
+        retryable: false,
+      }),
+    ]);
+    expect((events[0] as { message: string }).message).toContain("Compact or reduce the history");
   });
 
   test("Kiro contextUsagePercentage remains diagnostic and does not override totals", async () => {
