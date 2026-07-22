@@ -24,6 +24,7 @@ const ANTIGRAVITY_WIRE_MODELS = [
 export const ANTIGRAVITY_MODEL_EFFORTS: Record<string, string[]> = {
   "gemini-3.6-flash": ["low", "medium", "high"],
   "gemini-3.1-pro": ["low", "high"],
+  "claude-sonnet-4-6": ["low", "medium", "high", "max"],
   "claude-opus-4-6-thinking": ["low", "medium", "high", "max"],
 };
 
@@ -150,8 +151,10 @@ export function resolveAntigravityEffortWireModel(
     return { wireModelId: effortMap[defaultEffort]! };
   }
 
-  // Rule 4: Claude Opus — effort via thinkingConfig only (no suffix variants).
-  if (modelId === "claude-opus-4-6-thinking" && effort) {
+  // Rule 4: Claude models — effort via thinkingConfig only (no suffix variants).
+  // Anthropic adaptive thinking supports low/medium/high/max for both Sonnet 4.6 and Opus 4.6.
+  // CLIProxyAPI proves CCA accepts thinkingConfig on base IDs (validation confirmed).
+  if (/^claude-/.test(modelId) && effort) {
     return { wireModelId: modelId, thinkingLevel: effort };
   }
 

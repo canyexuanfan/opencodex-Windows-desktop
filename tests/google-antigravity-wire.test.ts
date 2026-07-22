@@ -269,8 +269,22 @@ describe("antigravity CCA envelope", () => {
 
   // ── Non-effort models: no thinkingConfig regardless of effort ──
 
-  test("claude-sonnet-4-6 with any effort sends no thinkingConfig", async () => {
+  test("claude-sonnet-4-6 with effort=high sends thinkingConfig", async () => {
     const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("claude-sonnet-4-6", "high"));
+    const env = JSON.parse(req.body);
+    expect(env.model).toBe("claude-sonnet-4-6");
+    expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("high");
+  });
+
+  test("claude-sonnet-4-6 with effort=max sends thinkingConfig max", async () => {
+    const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("claude-sonnet-4-6", "max"));
+    const env = JSON.parse(req.body);
+    expect(env.model).toBe("claude-sonnet-4-6");
+    expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("max");
+  });
+
+  test("claude-sonnet-4-6 with no effort sends no thinkingConfig", async () => {
+    const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("claude-sonnet-4-6"));
     const env = JSON.parse(req.body);
     expect(env.model).toBe("claude-sonnet-4-6");
     expect(env.request.generationConfig?.thinkingConfig).toBeUndefined();
