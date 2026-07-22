@@ -21,6 +21,7 @@ export const en = {
   "app.logoAria": "opencodex logo",
   "app.claudeOn": "Claude ON",
   "app.claudeOff": "Claude OFF",
+  "app.viewMode": "View",
   "theme.label": "Theme",
   "theme.light": "Light",
   "theme.dark": "Dark",

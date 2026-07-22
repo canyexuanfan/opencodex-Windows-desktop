@@ -10,7 +10,7 @@ import Storage from "./pages/Storage";
 import CodexAuth from "./pages/CodexAuth";
 import ApiKeys from "./pages/ApiKeys";
 import ClaudeCode from "./pages/ClaudeCode";
-import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconGithub, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle, IconX } from "./icons";
+import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconGithub, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle, IconX, IconLayoutSidebar } from "./icons";
 import { useI18n, useT, LOCALES, type Locale, type TKey } from "./i18n";
 import { Select } from "./ui";
 import { installApiAuthFetch } from "./api";
@@ -61,6 +61,41 @@ function providersHashForPage(): string {
   return readProvidersViewPreference() === "workspace" ? "providers/workspace" : "providers";
 }
 
+// localStorage keys for every tab that offers a Workspace/Classic view. The
+// sidebar's global toggle writes all of them at once so one click switches the
+// whole app; each page still reads its own key on mount, so per-page toggles
+// keep working and future tabs only need to register their key here.
+const WORKSPACE_VIEW_KEYS: readonly string[] = [
+  "ocx-providers-view",
+  "ocx-subagents-view",
+  "ocx-storage-view",
+  "ocx-codexauth-view",
+  "ocx-apikeys-view",
+  "ocx-claudecode-view",
+  "ocx-usage-view",
+  "ocx-logs-view",
+  "ocx-models-view",
+  "ocx-dashboard-view",
+];
+
+function readGlobalWorkspacePreference(): boolean {
+  try {
+    return WORKSPACE_VIEW_KEYS.some(key => localStorage.getItem(key) === "workspace");
+  } catch {
+    return false;
+  }
+}
+
+function writeGlobalWorkspacePreference(workspace: boolean): void {
+  try {
+    for (const key of WORKSPACE_VIEW_KEYS) {
+      localStorage.setItem(key, workspace ? "workspace" : "classic");
+    }
+  } catch {
+    /* ignore quota / private-mode failures */
+  }
+}
+
 const NAV: { id: Page; tkey: TKey; Icon: typeof IconGrid }[] = [
   { id: "dashboard", tkey: "nav.dashboard", Icon: IconGrid },
   { id: "providers", tkey: "nav.providers", Icon: IconServer },
@@ -100,6 +135,20 @@ export default function App() {
   const menuBtnRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const navWasOpen = useRef(false);
+
+  // Global Workspace/Classic preference. Pages read their own localStorage key on
+  // mount, so toggling here writes every key and bumps `viewBump` to remount the
+  // current page so it re-reads the preference immediately.
+  // Read during render (not stored in state): the value only changes via our own
+  // writes, which bump `viewBump` to re-render, so the label is always accurate —
+  // including after a per-page toggle followed by navigation.
+  const workspaceView = readGlobalWorkspacePreference();
+  const [viewBump, setViewBump] = useState(0);
+  const toggleGlobalWorkspace = () => {
+    const next = !readGlobalWorkspacePreference();
+    writeGlobalWorkspacePreference(next);
+    setViewBump(n => n + 1);
+  };
 
   useEffect(() => {
     // External navigation (hash edit, back/forward) also dismisses the mobile drawer.
@@ -295,6 +344,12 @@ export default function App() {
           ))}
         </nav>
         <div className="sidebar-foot">
+          <button type="button" className="theme-toggle" onClick={toggleGlobalWorkspace}
+            aria-pressed={workspaceView}
+            aria-label={`${t("app.viewMode")}: ${t(workspaceView ? "pws.workspaceToggle" : "pws.classicToggle")}`}
+            title={`${t("app.viewMode")}: ${t(workspaceView ? "pws.workspaceToggle" : "pws.classicToggle")}`}>
+            <IconLayoutSidebar /> <span className="mode">{t(workspaceView ? "pws.workspaceToggle" : "pws.classicToggle")}</span>
+          </button>
           {claudeEnabled !== null && (
             <button type="button" className="theme-toggle" onClick={toggleClaude}
               aria-pressed={claudeEnabled} aria-label={t("claude.toggleAria")} title={t("claude.toggleAria")}
@@ -328,7 +383,7 @@ export default function App() {
       </aside>
 
       <main className="main" inert={navOpen}>
-        <div className={`main-inner${page === "combos" ? " main-inner--combos" : ""}`}>
+        <div key={viewBump} className={`main-inner${page === "combos" ? " main-inner--combos" : ""}`}>
           {page === "dashboard" && <Dashboard apiBase={API_BASE} />}
           {page === "providers" && <Providers apiBase={API_BASE} />}
           {page === "models" && <Models apiBase={API_BASE} />}

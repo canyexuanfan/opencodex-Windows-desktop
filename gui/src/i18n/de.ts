@@ -646,6 +646,7 @@ export const de = {
   "app.logoAria": "opencodex-Logo",
   "app.claudeOn": "Claude AN",
   "app.claudeOff": "Claude AUS",
+  "app.viewMode": "Ansicht",
   "usage.dayMon": "Mo",
   "usage.dayWed": "Mi",
   "usage.dayFri": "Fr",

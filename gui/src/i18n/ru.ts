@@ -21,6 +21,7 @@ export const ru: Record<TKey, string> = {
   "app.logoAria": "Логотип opencodex",
   "app.claudeOn": "Claude ВКЛ",
   "app.claudeOff": "Claude ВЫКЛ",
+  "app.viewMode": "Вид",
   "theme.label": "Тема",
   "theme.light": "Светлая",
   "theme.dark": "Тёмная",
