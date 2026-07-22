@@ -200,6 +200,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   const [maBusy, setMaBusy] = useState(false);
   const [maHelpOpen, setMaHelpOpen] = useState(false);
   const [effortCapHelpOpen, setEffortCapHelpOpen] = useState(false);
+  const [shadowCallHelpOpen, setShadowCallHelpOpen] = useState(false);
   const [injectionModel, setInjectionModel] = useState<string>("");
   const [injectionEffort, setInjectionEffort] = useState<string>("");
   const [injectionEfforts, setInjectionEfforts] = useState<string[]>([]);
@@ -226,9 +227,11 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   const effortCapHelpTriggerRef = useRef<HTMLButtonElement>(null);
   const updateTriggerRef = useRef<HTMLButtonElement>(null);
   const maHelpTriggerRef = useRef<HTMLButtonElement>(null);
+  const shadowCallHelpTriggerRef = useRef<HTMLButtonElement>(null);
   const effortCapHelpDialogRef = useModalDialog(effortCapHelpOpen, effortCapHelpTriggerRef);
   const updateDialogRef = useModalDialog(updateOpen, updateTriggerRef);
   const maHelpDialogRef = useModalDialog(maHelpOpen, maHelpTriggerRef);
+  const shadowCallHelpDialogRef = useModalDialog(shadowCallHelpOpen, shadowCallHelpTriggerRef);
 
   useEffect(() => () => {
     updateRequestEpochRef.current += 1;
@@ -644,40 +647,19 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     <div className="injection-head">
       <span className="injection-label" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
         {t("dash.effortCapLabel")}
-        <span style={{ position: "relative", display: "inline-flex" }}>
-          <button
-            ref={effortCapHelpTriggerRef}
-            type="button"
-            className="btn btn-ghost btn-sm"
-            style={{ width: 22, height: 22, minWidth: 22, padding: 0, borderRadius: "var(--radius-pill)", color: "var(--muted)" }}
-            onClick={() => setEffortCapHelpOpen(open => !open)}
-            aria-label={t("dash.effortCapLabel")}
-            aria-expanded={effortCapHelpOpen}
-            aria-haspopup="dialog"
-            aria-controls="effort-cap-help-dialog"
-          >
-            <IconInfo width={13} height={13} aria-hidden="true" />
-          </button>
-          <dialog
-            ref={effortCapHelpDialogRef}
-            id="effort-cap-help-dialog"
-            className="help-popup text-control font-regular leading-body"
-            style={{ position: "absolute", top: "calc(100% + 8px)", left: 0, width: "min(360px, calc(100vw - 48px))", margin: 0, padding: "12px 16px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", background: "var(--bg)", boxShadow: "0 8px 24px rgba(0, 0, 0, 0.14)", color: "var(--text)", zIndex: 10 }}
-            aria-labelledby="effort-cap-help-text"
-            onCancel={event => { event.preventDefault(); setEffortCapHelpOpen(false); }}
-          >
-            <button
-              type="button"
-              className="btn btn-ghost btn-icon"
-              style={{ position: "absolute", top: 4, right: 4, width: 24, height: 24, minWidth: 24 }}
-              onClick={() => setEffortCapHelpOpen(false)}
-              aria-label={t("common.close")}
-            >
-              <IconX width={14} height={14} />
-            </button>
-            <div id="effort-cap-help-text" style={{ paddingRight: 16 }}>{t("dash.effortCapHelp")}</div>
-          </dialog>
-        </span>
+        <button
+          ref={effortCapHelpTriggerRef}
+          type="button"
+          className="btn btn-ghost btn-sm"
+          style={{ width: 22, height: 22, minWidth: 22, padding: 0, borderRadius: "var(--radius-pill)", color: "var(--muted)" }}
+          onClick={() => setEffortCapHelpOpen(open => !open)}
+          aria-label={t("dash.effortCapLabel")}
+          aria-expanded={effortCapHelpOpen}
+          aria-haspopup="dialog"
+          aria-controls="effort-cap-help-dialog"
+        >
+          <IconInfo width={13} height={13} aria-hidden="true" />
+        </button>
       </span>
     <Select
       value={effortCap}
@@ -910,7 +892,19 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   <div className="spread" style={{ alignItems: "center" }}>
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
       <span className="font-semibold">{t("dash.shadowCallIntercept")}</span>
-      <span title={t("dash.shadowCallTooltip")} style={{ cursor: "help", opacity: 0.5 }}>ⓘ</span>
+      <button
+        ref={shadowCallHelpTriggerRef}
+        type="button"
+        className="btn btn-ghost btn-sm"
+        style={{ width: 22, height: 22, minWidth: 22, padding: 0, borderRadius: "var(--radius-pill)", color: "var(--muted)" }}
+        onClick={() => setShadowCallHelpOpen(open => !open)}
+        aria-label={t("dash.shadowCallIntercept")}
+        aria-expanded={shadowCallHelpOpen}
+        aria-haspopup="dialog"
+        aria-controls="shadow-call-help-dialog"
+      >
+        <IconInfo width={13} height={13} aria-hidden="true" />
+      </button>
       <code className="muted text-caption">⚠ 5.4-mini</code>
     </div>
     <div className="setting-controls" style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -1132,6 +1126,52 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       </div>
       <div className="modal-actions">
         <button type="button" className="btn btn-primary" onClick={() => setMaHelpOpen(false)}>{t("common.ok")}</button>
+      </div>
+    </div>
+</dialog>
+
+<dialog
+  ref={effortCapHelpDialogRef}
+  id="effort-cap-help-dialog"
+  className="modal-overlay"
+  style={{ display: effortCapHelpOpen ? "flex" : "none", border: "none", margin: 0, maxWidth: "none", maxHeight: "none", width: "100%", height: "100%" }}
+  aria-labelledby="effort-cap-help-title"
+  onCancel={event => { event.preventDefault(); setEffortCapHelpOpen(false); }}
+  onClick={event => { if (event.target === event.currentTarget) setEffortCapHelpOpen(false); }}
+>
+    <div className="modal-card" onClick={e => e.stopPropagation()}>
+      <div className="modal-head">
+        <h3 id="effort-cap-help-title">{t("dash.effortCapLabel")}</h3>
+        <button type="button" className="btn btn-ghost btn-icon" onClick={() => setEffortCapHelpOpen(false)} aria-label={t("common.close")}><IconX /></button>
+      </div>
+      <div className="modal-desc leading-relaxed" style={{ whiteSpace: "pre-line" }}>
+        {t("dash.effortCapHelp")}
+      </div>
+      <div className="modal-actions">
+        <button type="button" className="btn btn-primary" onClick={() => setEffortCapHelpOpen(false)}>{t("common.ok")}</button>
+      </div>
+    </div>
+</dialog>
+
+<dialog
+  ref={shadowCallHelpDialogRef}
+  id="shadow-call-help-dialog"
+  className="modal-overlay"
+  style={{ display: shadowCallHelpOpen ? "flex" : "none", border: "none", margin: 0, maxWidth: "none", maxHeight: "none", width: "100%", height: "100%" }}
+  aria-labelledby="shadow-call-help-title"
+  onCancel={event => { event.preventDefault(); setShadowCallHelpOpen(false); }}
+  onClick={event => { if (event.target === event.currentTarget) setShadowCallHelpOpen(false); }}
+>
+    <div className="modal-card" onClick={e => e.stopPropagation()}>
+      <div className="modal-head">
+        <h3 id="shadow-call-help-title">{t("dash.shadowCallIntercept")}</h3>
+        <button type="button" className="btn btn-ghost btn-icon" onClick={() => setShadowCallHelpOpen(false)} aria-label={t("common.close")}><IconX /></button>
+      </div>
+      <div className="modal-desc leading-relaxed" style={{ whiteSpace: "pre-line" }}>
+        {t("dash.shadowCallTooltip")}
+      </div>
+      <div className="modal-actions">
+        <button type="button" className="btn btn-primary" onClick={() => setShadowCallHelpOpen(false)}>{t("common.ok")}</button>
       </div>
     </div>
 </dialog>
