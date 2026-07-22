@@ -911,6 +911,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
               key={item.name}
               item={item}
               usageTotals={data.usageTotals}
+              modelUsage={data.modelUsage}
               quotaReport={data.quotaReport}
               availableModels={data.availableModels}
               selectedModels={data.selectedModels}
