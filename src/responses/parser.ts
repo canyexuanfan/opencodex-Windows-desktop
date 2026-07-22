@@ -323,7 +323,7 @@ export function parseRequest(body: unknown): OcxParsedRequest {
       }
 
       if (effectiveType === "message") {
-        const msg = item as { role?: string; content?: unknown };
+        const msg = item as { role?: string; content?: unknown; phase?: "commentary" | "final_answer" };
         switch (msg.role) {
           case "system": {
             pendingReasoning.length = 0;
@@ -346,6 +346,7 @@ export function parseRequest(body: unknown): OcxParsedRequest {
               content: pendingReasoning.length > 0
                 ? [...pendingReasoning.map(entry => entry.part), ...parts]
                 : parts,
+              ...(msg.phase ? { phase: msg.phase } : {}),
               model: data.model,
               timestamp: now,
             });

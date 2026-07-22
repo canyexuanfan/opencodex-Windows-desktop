@@ -7,7 +7,7 @@ import {
 import { parseRequest } from "../responses/parser";
 import { buildCompactV1Output, COMPACT_PROMPT, decodeCompactionSummary, extractCompactUserMessages } from "../responses/compaction";
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
-import { expandPreviousResponseInput, previousResponseConversationId, rememberResponseState } from "../responses/state";
+import { expandPreviousResponseInput, previousResponseProviderState, rememberResponseState } from "../responses/state";
 import { routeModel } from "../router";
 import {
   advanceComboAfterFailure,
@@ -26,7 +26,7 @@ import {
 import { isInjectionDebugEnabled } from "../lib/debug-settings";
 import { injectionDebugLog } from "../lib/injection-debug-log";
 import { modelInList, namespacedToolName } from "../types";
-import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig, OcxUsage } from "../types";
+import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig, OcxProviderContinuationState, OcxUsage } from "../types";
 import {
   forceRefreshOAuthAccessSnapshot,
   getOAuthCredentialApiBaseUrl,
@@ -814,7 +814,8 @@ export async function handleResponses(
   try {
     parsed = parseRequest(body);
     if (previousResponseInputExpanded) parsed._previousResponseInputExpanded = true;
-    parsed._cursorConversationId = previousResponseConversationId(parsed.previousResponseId);
+    parsed._providerContinuation = previousResponseProviderState(parsed.previousResponseId);
+    parsed._cursorConversationId = parsed._providerContinuation?.cursor?.conversationId;
   } catch (err) {
     return formatErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
@@ -1065,6 +1066,24 @@ export async function handleResponses(
   }
 
   const recordTerminalOutcomes = options.recordTerminalOutcomes !== false;
+
+  const continuationStateForResponse = (
+    emitted?: OcxProviderContinuationState,
+  ): OcxProviderContinuationState | undefined => {
+    const cursorConversationId = parsed._cursorConversationId;
+    if (!emitted && !cursorConversationId) return undefined;
+    return {
+      ...(emitted ?? {}),
+      ...(cursorConversationId
+        ? {
+            cursor: {
+              ...(emitted?.cursor ?? {}),
+              conversationId: cursorConversationId,
+            },
+          }
+        : {}),
+    };
+  };
 
   // Remote compaction v2 on a ROUTED model: Codex sent `compaction_trigger` and requires exactly
   // one `{type:"compaction"}` output item (codex-rs compact_remote_v2.rs). Passthrough handles it
@@ -1327,7 +1346,10 @@ export async function handleResponses(
           hideThinkingSummary: parsed.options.hideThinkingSummary,
           ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
           ...(routedCompaction ? { compaction: true } : {}),
-          ...(routedCompaction ? {} : { onCompletedResponse: (response: Record<string, unknown>) => rememberResponseState(parsed._rawBody, response, parsed._cursorConversationId) }),
+          ...(routedCompaction ? {} : {
+            onCompletedResponse: (response: Record<string, unknown>, providerState?: OcxProviderContinuationState) =>
+              rememberResponseState(parsed._rawBody, response, continuationStateForResponse(providerState)),
+          }),
         },
       );
       const bridgeTurnAc = new AbortController();
@@ -1348,14 +1370,16 @@ export async function handleResponses(
         return formatErrorResponse(502, "upstream_error", redactSecretString(message));
       }
     }
+    let providerState: OcxProviderContinuationState | undefined;
     const json = buildResponseJSON(events, parsed.modelId, {
       hideThinkingSummary: parsed.options.hideThinkingSummary,
       toolNsMap,
       freeformToolNames,
       toolSearchToolNames,
       ...(routedCompaction ? { compaction: true } : {}),
+      onProviderState: state => { providerState = state; },
     });
-    if (!routedCompaction) rememberResponseState(parsed._rawBody, json, parsed._cursorConversationId);
+    if (!routedCompaction) rememberResponseState(parsed._rawBody, json, continuationStateForResponse(providerState));
     return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
   }
 
@@ -1597,7 +1621,10 @@ export async function handleResponses(
         // Compaction turns must NOT enter the continuation cache: _rawBody still holds the full
         // PRE-compaction history, and a later previous_response_id expansion would rehydrate the
         // giant stale chain Codex just replaced.
-        ...(routedCompaction ? {} : { onCompletedResponse: (response: Record<string, unknown>) => rememberResponseState(parsed._rawBody, response, parsed._cursorConversationId) }),
+        ...(routedCompaction ? {} : {
+          onCompletedResponse: (response: Record<string, unknown>, providerState?: OcxProviderContinuationState) =>
+            rememberResponseState(parsed._rawBody, response, continuationStateForResponse(providerState)),
+        }),
       },
     );
     const bridgeTurnAc = new AbortController();
@@ -1615,15 +1642,17 @@ export async function handleResponses(
       cleanupUpstreamAbort();
     }
     const { toolNsMap, freeformToolNames, toolSearchToolNames } = buildToolBridgeMaps(parsed);
+    let providerState: OcxProviderContinuationState | undefined;
     const json = buildResponseJSON(events, parsed.modelId, {
       hideThinkingSummary: parsed.options.hideThinkingSummary,
       toolNsMap,
       freeformToolNames,
       toolSearchToolNames,
       ...(routedCompaction ? { compaction: true } : {}),
+      onProviderState: state => { providerState = state; },
     });
     // See the streaming branch: compaction turns skip the continuation cache.
-    if (!routedCompaction) rememberResponseState(parsed._rawBody, json, parsed._cursorConversationId);
+    if (!routedCompaction) rememberResponseState(parsed._rawBody, json, continuationStateForResponse(providerState));
     return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
   }
 
