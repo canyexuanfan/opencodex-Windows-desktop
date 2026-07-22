@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { zstdCompressSync } from "node:zlib";
 import { readJsonRequestBody } from "../src/server/request-decompress";
+import { buildComboChildHeaders } from "../src/server/responses";
 
 describe("combo child request headers", () => {
   test("strips content-encoding when re-serializing an already-decoded combo body", async () => {
@@ -38,9 +39,9 @@ describe("combo child request headers", () => {
       ),
     ).rejects.toThrow(/Unknown frame descriptor|Invalid JSON|Unexpected token/i);
 
-    const fixedHeaders = new Headers(parent.headers);
-    fixedHeaders.delete("content-length");
-    fixedHeaders.delete("content-encoding");
+    const fixedHeaders = buildComboChildHeaders(parent.headers);
+    expect(fixedHeaders.has("content-length")).toBe(false);
+    expect(fixedHeaders.has("content-encoding")).toBe(false);
     const childDecoded = await readJsonRequestBody(
       new Request(parent.url, {
         method: parent.method,

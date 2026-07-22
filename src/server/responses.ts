@@ -590,6 +590,15 @@ function createChildPassthroughCallbackGate(options: HandleResponsesOptions) {
   };
 }
 
+export function buildComboChildHeaders(parentHeaders: HeadersInit): Headers {
+  const childHeaders = new Headers(parentHeaders);
+  // Combo children re-serialize already-decoded JSON. Keeping transport metadata from
+  // the parent would make the child decoder treat plain JSON as compressed bytes.
+  childHeaders.delete("content-length");
+  childHeaders.delete("content-encoding");
+  return childHeaders;
+}
+
 async function handleComboResponses(
   req: Request,
   rawBody: unknown,
@@ -630,13 +639,7 @@ async function handleComboResponses(
       comboDefaultEffort(config, comboId),
       supportedLadderFor({ provider: targetRoute.provider, modelId: targetRoute.modelId }),
     );
-    const childHeaders = new Headers(req.headers);
-    // Combo children re-serialize already-decoded JSON. Drop transport headers from the
-    // original compressed request or readJsonRequestBody will try to zstd-decompress
-    // uncompressed JSON ("Unknown frame descriptor" -> Invalid JSON body) and combo
-    // failover will stop before trying later targets.
-    childHeaders.delete("content-length");
-    childHeaders.delete("content-encoding");
+    const childHeaders = buildComboChildHeaders(req.headers);
     const childRequest = new Request(req.url, {
       method: req.method,
       headers: childHeaders,
