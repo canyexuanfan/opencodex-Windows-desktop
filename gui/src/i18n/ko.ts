@@ -669,6 +669,7 @@ export const ko: Record<TKey, string> = {
   "app.logoAria": "opencodex 로고",
   "app.claudeOn": "Claude ON",
   "app.claudeOff": "Claude OFF",
+  "app.viewMode": "보기",
   "usage.dayMon": "월",
   "usage.dayWed": "수",
   "usage.dayFri": "금",

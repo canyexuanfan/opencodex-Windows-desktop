@@ -669,6 +669,7 @@ export const zh: Record<TKey, string> = {
   "app.logoAria": "opencodex 徽标",
   "app.claudeOn": "Claude 开",
   "app.claudeOff": "Claude 关",
+  "app.viewMode": "视图",
   "usage.dayMon": "一",
   "usage.dayWed": "三",
   "usage.dayFri": "五",
