@@ -10,6 +10,16 @@ export interface CursorRunRequest {
   tools?: OcxTool[];
   toolChoice?: OcxRequestOptions["toolChoice"];
   parallelToolCalls?: boolean;
+  /**
+   * Clear provider-private context-usage carry-forward before this run. Used when Codex starts or
+   * replays a compacted context epoch, so pre-compaction active-context totals are not over-reported.
+   */
+  contextUsageReset?: boolean;
+  /**
+   * Defaults to true. Set false for compaction summarizer turns: their checkpoints describe the
+   * pre-compaction history being summarized and must not become the next turn's carry-forward total.
+   */
+  contextUsageStoreCheckpoints?: boolean;
 }
 
 export interface CursorRequestMessage {

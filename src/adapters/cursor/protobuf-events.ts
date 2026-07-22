@@ -5,6 +5,101 @@ import { normalizeArgKeys } from "./arg-normalize";
 import { OCX_RESPONSES_TOOL_PROVIDER, normalizeCursorWireName, responsesToolNameFromCursorWire } from "./tool-definitions";
 import type { CursorServerMessage } from "./types";
 
+const DEFAULT_CONTEXT_USAGE_MAX_ENTRIES = 200;
+const DEFAULT_CONTEXT_USAGE_TTL_MS = 60 * 60 * 1_000;
+
+export interface CursorContextUsageControls {
+  /**
+   * Last observed absolute context size for the same Cursor conversation and uncompacted context
+   * epoch. Used only when the current turn produces output but no checkpoint.
+   */
+  carryForwardTokens?: number;
+  /** Persist a fresh checkpoint for later turns in this conversation. */
+  recordContextTokens?: (tokens: number) => void;
+}
+
+export interface CursorContextUsageTracker {
+  controlsForConversation(conversationId: string, options?: { clearPrior?: boolean; storeCheckpoints?: boolean }): CursorContextUsageControls;
+  get(conversationId: string): number | undefined;
+  record(conversationId: string, tokens: number): void;
+  clear(conversationId: string): void;
+  clearAll(): void;
+}
+
+interface CursorContextUsageEntry {
+  tokens: number;
+  updatedAt: number;
+}
+
+/**
+ * Bounded numeric-only carry-forward for Cursor context usage. Cursor checkpoints are absolute
+ * active-context sizes, but client-tool suspension can end a turn before a checkpoint arrives. Keep
+ * only the last known total per provider conversation so a no-checkpoint finalize does not overwrite
+ * a real active-context value with the current turn's tiny output delta. Context text, tool args,
+ * and model output are never stored here.
+ */
+export function createCursorContextUsageTracker(options: { maxEntries?: number; ttlMs?: number; now?: () => number } = {}): CursorContextUsageTracker {
+  const maxEntries = options.maxEntries ?? DEFAULT_CONTEXT_USAGE_MAX_ENTRIES;
+  const ttlMs = options.ttlMs ?? DEFAULT_CONTEXT_USAGE_TTL_MS;
+  const now = options.now ?? (() => Date.now());
+  const entries = new Map<string, CursorContextUsageEntry>();
+
+  const prune = () => {
+    const at = now();
+    for (const [conversationId, entry] of entries) {
+      if (at - entry.updatedAt > ttlMs) entries.delete(conversationId);
+    }
+    while (entries.size > maxEntries) {
+      const oldest = entries.keys().next().value;
+      if (!oldest) break;
+      entries.delete(oldest);
+    }
+  };
+
+  const record = (conversationId: string, tokens: number) => {
+    if (!Number.isFinite(tokens) || tokens <= 0) return;
+    prune();
+    const existing = entries.get(conversationId);
+    if (existing && existing.tokens >= tokens) {
+      entries.delete(conversationId);
+      entries.set(conversationId, { tokens: existing.tokens, updatedAt: now() });
+      return;
+    }
+    entries.delete(conversationId);
+    entries.set(conversationId, { tokens, updatedAt: now() });
+    prune();
+  };
+
+  const get = (conversationId: string): number | undefined => {
+    prune();
+    const entry = entries.get(conversationId);
+    if (!entry) return undefined;
+    entries.delete(conversationId);
+    entries.set(conversationId, { tokens: entry.tokens, updatedAt: now() });
+    return entry.tokens;
+  };
+
+  return {
+    controlsForConversation(conversationId, requestOptions = {}) {
+      if (requestOptions.clearPrior === true) entries.delete(conversationId);
+      const storeCheckpoints = requestOptions.storeCheckpoints !== false;
+      const carryForwardTokens = storeCheckpoints ? get(conversationId) : undefined;
+      return {
+        ...(carryForwardTokens !== undefined ? { carryForwardTokens } : {}),
+        ...(storeCheckpoints ? { recordContextTokens: tokens => record(conversationId, tokens) } : {}),
+      };
+    },
+    get,
+    record,
+    clear(conversationId) {
+      entries.delete(conversationId);
+    },
+    clearAll() {
+      entries.clear();
+    },
+  };
+}
+
 export interface CursorProtobufEventState {
   usage: OcxUsage;
   /**
@@ -16,6 +111,14 @@ export interface CursorProtobufEventState {
    * share one field, or Codex double-counts (e.g. 10000 then 10300 surfacing as 20300).
    */
   contextTokens?: number;
+  /**
+   * Session-level last-known absolute context size for this Cursor conversation. This is a fallback
+   * for no-checkpoint client-tool finalize turns only; any checkpoint observed during the current
+   * turn remains authoritative, with monotonic max semantics unless a compaction boundary reset the
+   * conversation cache before the turn.
+   */
+  contextCarryForwardTokens?: number;
+  recordContextTokens?: (tokens: number) => void;
   openToolCalls: Map<string, { name: string; args: string }>;
   completedToolCalls: Set<string>;
   /** Set once a terminal `done`/truncation has been emitted, so post-terminal frames stay inert. */
@@ -29,7 +132,13 @@ export interface CursorProtobufEventState {
   cursorToolNameMap?: Map<string, string>;
 }
 
-export function createCursorProtobufEventState(options: { clientToolNames?: Iterable<string>; parallelToolCalls?: boolean; toolSchemas?: Map<string, unknown>; cursorToolNameMap?: Map<string, string> } = {}): CursorProtobufEventState {
+export function createCursorProtobufEventState(options: {
+  clientToolNames?: Iterable<string>;
+  parallelToolCalls?: boolean;
+  toolSchemas?: Map<string, unknown>;
+  cursorToolNameMap?: Map<string, string>;
+  contextUsage?: CursorContextUsageControls;
+} = {}): CursorProtobufEventState {
   return {
     // Cursor provides no authoritative usage frame; token counts are heuristic estimates from
     // checkpoint/delta events, so mark estimated from the start.
@@ -41,6 +150,30 @@ export function createCursorProtobufEventState(options: { clientToolNames?: Iter
     startedClientToolCalls: 0,
     ...(options.toolSchemas ? { toolSchemas: options.toolSchemas } : {}),
     ...(options.cursorToolNameMap ? { cursorToolNameMap: options.cursorToolNameMap } : {}),
+    ...(options.contextUsage?.carryForwardTokens !== undefined ? { contextCarryForwardTokens: options.contextUsage.carryForwardTokens } : {}),
+    ...(options.contextUsage?.recordContextTokens ? { recordContextTokens: options.contextUsage.recordContextTokens } : {}),
+  };
+}
+
+function observeContextTokens(state: CursorProtobufEventState, usedTokens: number): void {
+  if (!Number.isFinite(usedTokens) || usedTokens <= 0) return;
+  if (usedTokens > (state.contextTokens ?? 0)) state.contextTokens = usedTokens;
+  state.recordContextTokens?.(usedTokens);
+}
+
+export function reportableContextTokens(state: CursorProtobufEventState): number | undefined {
+  const current = state.contextTokens;
+  const carry = state.contextCarryForwardTokens;
+  if (current === undefined) return carry;
+  if (carry === undefined) return current;
+  return Math.max(current, carry);
+}
+
+export function usageFromContextTokens(state: CursorProtobufEventState, contextTokens: number): OcxUsage {
+  return {
+    ...state.usage,
+    inputTokens: Math.max(0, contextTokens - state.usage.outputTokens),
+    totalTokens: contextTokens,
   };
 }
 
@@ -204,12 +337,14 @@ export function mapCursorProtobufServerMessage(
   serverMessage: AgentServerMessage,
   state: CursorProtobufEventState,
 ): CursorServerMessage[] {
+  if (state.terminated) return [];
+
   if (serverMessage.message.case === "conversationCheckpointUpdate") {
     const usedTokens = serverMessage.message.value.tokenDetails?.usedTokens ?? 0;
     // `usedTokens` is the ABSOLUTE conversation context size, not a per-turn output delta. Track it
     // separately (monotonic max) and surface it as `done.usage.totalTokens`; folding it into
     // `outputTokens` (which also accumulates `tokenDelta`) double-counts in Codex. See contextTokens.
-    if (usedTokens > (state.contextTokens ?? 0)) state.contextTokens = usedTokens;
+    observeContextTokens(state, usedTokens);
     return [];
   }
 
@@ -298,12 +433,9 @@ export function finalizeTurnEvents(state: CursorProtobufEventState): CursorServe
   // render the additive pair instead of total_tokens, so leaving inputTokens at 0 makes a 16k-context
   // first turn display as "9 used". Keep outputTokens as the per-turn delta and clamp the inferred
   // input to 0 in case Cursor reports a checkpoint smaller than the streamed output delta.
-  const usage: OcxUsage = state.contextTokens !== undefined
-    ? {
-        ...state.usage,
-        inputTokens: Math.max(0, state.contextTokens - state.usage.outputTokens),
-        totalTokens: state.contextTokens,
-      }
+  const contextTokens = reportableContextTokens(state);
+  const usage: OcxUsage = contextTokens !== undefined
+    ? usageFromContextTokens(state, contextTokens)
     : { ...state.usage };
   return [{ type: "done", usage }];
 }

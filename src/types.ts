@@ -28,6 +28,12 @@ export interface OcxParsedRequest {
    * (see src/responses/compaction.ts).
    */
   _compactionRequest?: boolean;
+  /**
+   * True when parsed input included a stored compaction summary/marker. Routed adapters receive the
+   * compacted epoch, so provider-private continuation caches must not carry pre-compaction state
+   * across this request.
+   */
+  _contextCompactionBoundary?: boolean;
 }
 
 export interface OcxContext {

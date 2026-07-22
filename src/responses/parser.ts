@@ -248,6 +248,7 @@ export function parseRequest(body: unknown): OcxParsedRequest {
   // Remote compaction v2: the input tail carries `{type:"compaction_trigger"}` and Codex expects a
   // synthetic `{type:"compaction"}` output item (src/responses/compaction.ts). Flagged for the server.
   let compactionRequest = false;
+  let contextCompactionBoundary = false;
 
   if (typeof data.instructions === "string" && data.instructions.length > 0) {
     systemPrompt.push(data.instructions);
@@ -281,7 +282,9 @@ export function parseRequest(body: unknown): OcxParsedRequest {
         // the routed model keeps the compacted context; real OpenAI-encrypted blobs degrade to a note.
         // `context_compaction` (encrypted_content optional) is codex-rs's local-compaction marker;
         // with no payload it is a pure marker (the summary follows as its own user message), so it
-        // is dropped silently. It must NOT flag _compactionRequest.
+        // is dropped silently. It must NOT flag _compactionRequest, but it does mark a context epoch
+        // boundary for provider-private carry-forward state such as Cursor's active-context usage.
+        contextCompactionBoundary = true;
         const encrypted = (item as { encrypted_content?: unknown }).encrypted_content;
         if (effectiveType === "context_compaction" && typeof encrypted !== "string") continue;
         pendingReasoning.length = 0;
@@ -583,6 +586,7 @@ export function parseRequest(body: unknown): OcxParsedRequest {
     ...(webSearch ? { _webSearch: webSearch } : {}),
     ...(structuredOutput ? { _structuredOutput: true } : {}),
     ...(compactionRequest ? { _compactionRequest: true } : {}),
+    ...(contextCompactionBoundary ? { _contextCompactionBoundary: true } : {}),
   };
 }
 

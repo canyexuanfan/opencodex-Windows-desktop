@@ -91,7 +91,7 @@ describe("363-B: tool result reaches the model via rootPromptMessagesJson", () =
 
 import { create as createPb } from "@bufbuild/protobuf";
 import { ExecServerMessageSchema, McpArgsSchema } from "../src/adapters/cursor/gen/agent_pb";
-import { createCursorProtobufEventState } from "../src/adapters/cursor/protobuf-events";
+import { createCursorContextUsageTracker, createCursorProtobufEventState } from "../src/adapters/cursor/protobuf-events";
 import { planMcpArgsHandling, finalizeAfterDrain } from "../src/adapters/cursor/live-transport";
 
 function execMcpArgs(opts: { provider?: string; toolName?: string; toolCallId?: string; args?: Record<string, Uint8Array> }) {
@@ -134,6 +134,20 @@ describe("363-A: turn-1 termination for Responses client tool via exec mcpArgs",
     // When the grace window elapses with the call set still drained, finalize emits exactly one done.
     const finalized = finalizeAfterDrain(state);
     expect(finalized.map(e => e.type)).toEqual(["done"]);
+  });
+
+  test("no-checkpoint client-tool finalize carries forward the last known active context usage", () => {
+    const tracker = createCursorContextUsageTracker();
+    tracker.record("cursor_conv_1", 183_336);
+    const state = createCursorProtobufEventState({
+      clientToolNames: ["mcp__fs__read_file"],
+      contextUsage: tracker.controlsForConversation("cursor_conv_1"),
+    });
+    state.usage.outputTokens = 109;
+
+    expect(finalizeAfterDrain(state)).toEqual([
+      { type: "done", usage: { inputTokens: 183_227, outputTokens: 109, totalTokens: 183_336, estimated: true } },
+    ]);
   });
 
   test("non-Responses mcpArgs is left to native exec (not handled by the bridge)", () => {
