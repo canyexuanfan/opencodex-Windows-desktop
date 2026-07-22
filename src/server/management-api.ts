@@ -917,7 +917,8 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     const contextWindow = typeof body.contextWindow === "number" && body.contextWindow > 0 ? Math.floor(body.contextWindow) : undefined;
     const inputModalities = Array.isArray(body.inputModalities) ? body.inputModalities.filter((m): m is string => typeof m === "string") : undefined;
     const existing = config.customModels ?? [];
-    if (existing.some(cm => cm.provider === provider && cm.modelId === modelId)) {
+    const newSlug = routedSlug(provider, modelId);
+    if (existing.some(cm => routedSlug(cm.provider, cm.modelId) === newSlug)) {
       return jsonResponse({ error: "duplicate model" }, 409);
     }
     const entry: OcxCustomModel = {
@@ -938,7 +939,8 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
 
   const customPutMatch = url.pathname.match(/^\/api\/custom-models\/([^/]+)$/);
   if (customPutMatch && req.method === "PUT") {
-    const id = decodeURIComponent(customPutMatch[1]);
+    let id: string;
+    try { id = decodeURIComponent(customPutMatch[1]); } catch { return jsonResponse({ error: "invalid id encoding" }, 400); }
     let body: { displayName?: unknown; contextWindow?: unknown; inputModalities?: unknown; modelId?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     const list = config.customModels ?? [];
@@ -960,6 +962,10 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     if (body.inputModalities !== undefined) {
       cm.inputModalities = Array.isArray(body.inputModalities) ? body.inputModalities.filter((m): m is string => typeof m === "string") : undefined;
     }
+    const updatedSlug = routedSlug(cm.provider, cm.modelId);
+    if (list.some((other, i) => i !== idx && routedSlug(other.provider, other.modelId) === updatedSlug)) {
+      return jsonResponse({ error: "duplicate model" }, 409);
+    }
     list[idx] = cm;
     config.customModels = list;
     const { saveConfig: save } = await import("../config");
@@ -970,7 +976,8 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
 
   const customDelMatch = url.pathname.match(/^\/api\/custom-models\/([^/]+)$/);
   if (customDelMatch && req.method === "DELETE") {
-    const id = decodeURIComponent(customDelMatch[1]);
+    let id: string;
+    try { id = decodeURIComponent(customDelMatch[1]); } catch { return jsonResponse({ error: "invalid id encoding" }, 400); }
     const list = config.customModels ?? [];
     const idx = list.findIndex(cm => cm.id === id);
     if (idx === -1) return jsonResponse({ error: "not found" }, 404);
