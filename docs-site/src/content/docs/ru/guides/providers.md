@@ -125,6 +125,8 @@ opencodex поставляется с 53 встроенными пресетам
 | NVIDIA NIM | `https://integrate.api.nvidia.com/v1` |
 | Z.AI (GLM Coding) | `https://api.z.ai/api/coding/paas/v4` |
 | Qwen Cloud | Token plan (по умолчанию): `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` · Pay as you go: `https://dashscope.aliyuncs.com/compatible-mode/v1` · или Custom |
+| Tencent Cloud Coding Plan | `https://api.lkeap.cloud.tencent.com/coding/v3` |
+| SiliconFlow | `https://api.siliconflow.cn/v1` |
 | Xiaomi MiMo | `https://api.xiaomimimo.com/anthropic` |
 | Kilo | `https://api.kilo.ai/api/gateway` |
 | GitLab Duo | `https://cloud.gitlab.com/ai/v1/proxy/openai/v1` |
@@ -134,6 +136,10 @@ opencodex поставляется с 53 встроенными пресетам
 Большинство использует адаптер `openai-chat` с bearer-ключом; немногие провайдеры, предоставляющие
 только Anthropic-совместимую конечную точку (например, **Xiaomi MiMo**), используют адаптер
 `anthropic` (`x-api-key`).
+
+> **Ограничение Tencent Cloud Coding Plan:** Tencent разрешает использовать эту подписку только
+> в интерактивных инструментах программирования. Автоматизация общего API, серверы пользовательских
+> приложений и неинтерактивные пакетные вызовы запрещены и могут привести к блокировке ключа плана.
 
 ### Несколько API-ключей
 

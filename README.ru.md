@@ -262,7 +262,7 @@ OpenAI API-ключа и OpenRouter (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-lu
 | Ollama / vLLM / LM Studio (локально) | `openai-chat` | key (обычно пустой) |
 | Любой OpenAI-совместимый эндпоинт | `openai-chat` | key |
 
-А также DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Mistral, Hugging Face, NVIDIA NIM, MiniMax, Qwen Cloud и другие. Полный список — в `ocx init` или в [документации по провайдерам](https://lidge-jun.github.io/opencodex/reference/configuration/).
+А также DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Mistral, Hugging Face, NVIDIA NIM, MiniMax, Qwen Cloud, Tencent Cloud Coding Plan, SiliconFlow и другие. Полный список — в `ocx init` или в [документации по провайдерам](https://lidge-jun.github.io/opencodex/reference/configuration/).
 
 Поддержка Cursor — поэтапный экспериментальный мост: он появляется в `ocx init` и в селекторе
 Add Provider панели управления как локальная конфигурация со статическим публичным каталогом
