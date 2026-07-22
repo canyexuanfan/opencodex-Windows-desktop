@@ -123,7 +123,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
   });
 
   // Workspace vs Classic: localStorage is the source of truth (same pattern as Providers).
-  const [workspaceView, setWorkspaceView] = useState(() => {
+  const [workspaceView] = useState(() => {
     try {
       return localStorage.getItem("ocx-models-view") === "workspace";
     } catch {
@@ -131,15 +131,6 @@ export default function Models({ apiBase }: { apiBase: string }) {
     }
   });
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
-  const toggleWorkspace = () => {
-    const next = !workspaceView;
-    try {
-      localStorage.setItem("ocx-models-view", next ? "workspace" : "classic");
-    } catch {
-      /* ignore */
-    }
-    setWorkspaceView(next);
-  };
   const toggleCombosOpen = () => {
     setCombosOpen(prev => {
       const next = !prev;
@@ -1142,7 +1133,6 @@ export default function Models({ apiBase }: { apiBase: string }) {
           <h2>{t("nav.models")}</h2>
           <div className="row">
             <span className="muted mono text-label">{t("models.active", { active: models.length - disabled.size, total: models.length })}</span>
-            <button className="btn btn-ghost btn-sm" onClick={toggleWorkspace}>{t("pws.classicToggle")}</button>
           </div>
         </div>
         <p className="page-sub">{t("models.subtitle")}</p>
@@ -1200,7 +1190,6 @@ export default function Models({ apiBase }: { apiBase: string }) {
         <h2>{t("nav.models")}</h2>
         <div className="row">
           <span className="muted mono text-label">{t("models.active", { active: models.length - disabled.size, total: models.length })}</span>
-          <button className="btn btn-ghost btn-sm" onClick={toggleWorkspace}>{t("pws.workspaceToggle")}</button>
         </div>
       </div>
       <p className="page-sub">{t("models.subtitle")}</p>

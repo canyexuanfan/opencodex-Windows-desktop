@@ -295,16 +295,6 @@ export const ja: Record<TKey, string> = {
   "sub.moveUp": "{m} を上へ移動",
   "sub.moveDown": "{m} を下へ移動",
   "sub.removeAria": "{m} を削除",
-  "sub.workspace.allModels": "すべてのモデル",
-  "sub.workspace.provider": "プロバイダー",
-  "sub.workspace.modelId": "モデル ID",
-  "sub.workspace.priority": "優先度",
-  "sub.workspace.notFeatured": "未登録",
-  "sub.workspace.addToFeatured": "おすすめに追加",
-  "sub.workspace.removeFromFeatured": "おすすめから削除",
-  "sub.workspace.featuredFull": "おすすめリストがいっぱいです(最大 5)",
-  "sub.workspace.selectModel": "モデルを選択",
-  "sub.workspace.selectModelDesc": "リストからモデルを選ぶと、詳細を確認して spawn_agent 用におすすめ登録できます。",
 
   // logs
   "logs.title": "リクエストログ",
