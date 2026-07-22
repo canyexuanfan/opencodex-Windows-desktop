@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { IconPlus, IconX, IconCheck } from "../icons";
 import { useI18n, LOCALES } from "../i18n/shared";
+import ApiKeysWorkspace from "../components/apikeys-workspace/ApiKeysWorkspace";
 
 interface ApiKeyEntry {
   id: string;
@@ -23,6 +24,23 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   const [newKey, setNewKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  // Workspace vs Classic: localStorage is the source of truth (same pattern as Providers).
+  const [workspaceView, setWorkspaceView] = useState(() => {
+    try {
+      return localStorage.getItem("ocx-apikeys-view") === "workspace";
+    } catch {
+      return false;
+    }
+  });
+  const toggleWorkspace = () => {
+    const next = !workspaceView;
+    try {
+      localStorage.setItem("ocx-apikeys-view", next ? "workspace" : "classic");
+    } catch {
+      /* ignore */
+    }
+    setWorkspaceView(next);
+  };
 
   const fetchKeys = useCallback(async () => {
     try {
@@ -44,13 +62,14 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
 
   const responseEndpoint = endpoint || "http://127.0.0.1:10100/v1/responses";
 
-  const handleCreate = async () => {
+  const handleCreate = async (name?: string) => {
+    const effectiveName = name ?? newName;
     setCreating(true);
     try {
       const res = await fetch(`${apiBase}/api/keys`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newName || "default" }),
+        body: JSON.stringify({ name: effectiveName || "default" }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -84,10 +103,38 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   // Subtitle carries two inline <code> chips; split the localized string on both tokens.
   const subtitleParts = t("api.subtitle").split(/\{authHeader\}|\{altHeader\}/);
 
+  if (workspaceView) {
+    return (
+      <section className="api-page">
+        <div className="page-head">
+          <h2>{t("api.title")}</h2>
+          <div className="row">
+            <button className="btn btn-ghost btn-sm" onClick={toggleWorkspace}>{t("pws.classicToggle")}</button>
+          </div>
+        </div>
+        <ApiKeysWorkspace
+          keys={keys}
+          endpoint={responseEndpoint}
+          localeTag={localeTag}
+          creating={creating}
+          newKey={newKey}
+          copied={copied}
+          onCreate={name => { void handleCreate(name); }}
+          onDismissNewKey={() => setNewKey(null)}
+          onCopyNewKey={copyKey}
+          onDelete={id => { void handleDelete(id); }}
+        />
+      </section>
+    );
+  }
+
   return (
     <section className="api-page">
       <div className="page-head">
         <h2>{t("api.title")}</h2>
+        <div className="row">
+          <button className="btn btn-ghost btn-sm" onClick={toggleWorkspace}>{t("pws.workspaceToggle")}</button>
+        </div>
       </div>
       <p className="page-sub">
         {subtitleParts[0]}
@@ -131,7 +178,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
             onChange={e => setNewName(e.target.value)}
             className="input"
           />
-          <button type="button" className="btn btn-primary" onClick={handleCreate} disabled={creating}>
+          <button type="button" className="btn btn-primary" onClick={() => { void handleCreate(); }} disabled={creating}>
             <IconPlus /> {creating ? t("api.generating") : t("api.generate")}
           </button>
         </div>

@@ -737,6 +737,13 @@ export const ko: Record<TKey, string> = {
   "api.confirm": "확인",
   "api.deleteAria": "API 키 삭제",
   "api.usageTitle": "사용 예시",
+  "api.workspace.overview": "개요",
+  "api.workspace.keyDetails": "키 세부 정보",
+  "api.workspace.keyPrefix": "키 접두사",
+  "api.workspace.deleteKey": "키 삭제",
+  "api.workspace.deleteConfirm": "이 키를 삭제하시겠습니까? 되돌릴 수 없습니다.",
+  "api.workspace.noKeysHint": "아직 API 키가 없습니다. 키를 생성하여 시작하세요.",
+  "api.workspace.selectKeyHint": "목록에서 키를 선택하여 세부 정보를 확인하세요.",
   // Claude Code inbound
   "nav.claude": "Claude",
   "claude.subtitle": "Claude Code에서 GPT, Gemini 등 다른 모델도 쓸 수 있게 해줍니다.",
