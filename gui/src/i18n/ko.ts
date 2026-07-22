@@ -793,6 +793,7 @@ export const ko: Record<TKey, string> = {
   "claude.networkError": "네트워크 오류 — 프록시가 실행 중인가요?",
   "claude.toggleAria": "Claude 인바운드 켜기/끄기",
   "claude.none": "없음",
+  "claude.workspace.settings": "설정",
   "common.close": "닫기",
   "common.ok": "확인",
   "app.logoAria": "opencodex 로고",

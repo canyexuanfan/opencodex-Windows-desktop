@@ -771,6 +771,7 @@ export const de = {
   "claude.networkError": "Netzwerkfehler — läuft der Proxy?",
   "claude.toggleAria": "Claude-Verbindung umschalten",
   "claude.none": "Keine",
+  "claude.workspace.settings": "Einstellungen",
   "common.close": "Schließen",
   "common.ok": "OK",
   "app.logoAria": "opencodex-Logo",
