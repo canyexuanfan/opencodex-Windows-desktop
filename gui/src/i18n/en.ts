@@ -261,7 +261,7 @@ export const en = {
   "models.v2Help": "Controls the multi-agent surface for all models.\n\nv1: Classic single-thread agent. Every model uses the v1 collab surface.\nbase: Upstream defaults — sol/terra use v2, luna uses v1, others follow the codex feature flag.\nv2: Multi-thread agent with spawn_agent. Every model uses the v2 collab surface.\n\nChanges apply to new sessions.",
   "dash.multiAgent": "Sub-agent",
   "models.v2Conflict": "[agents] max_threads is set — codex will refuse to start; remove it from config.toml",
-  "models.v2Applied": "multi_agent_v2 updated — applies to new sessions (restart the Codex app to refresh the picker)",
+  "models.v2Applied": "Sub-agent mode updated — applies to new sessions (restart the Codex app to refresh the picker)",
   "models.v2ThreadsLabel": "Max threads",
   "models.v2ThreadsDefault": "default (4)",
   "models.v2ThreadsApplied": "Thread limit updated — applies to new sessions",

@@ -255,7 +255,7 @@ export const ko: Record<TKey, string> = {
   "models.v2DocsLink": "v1 / v2가 뭔가요?",
   "dash.multiAgent": "서브에이전트",
   "models.v2Conflict": "[agents] max_threads가 남아 있어 codex가 부팅을 거부합니다 — config.toml에서 제거하세요",
-  "models.v2Applied": "multi_agent_v2 변경됨 — 새 세션부터 적용 (피커 갱신은 Codex 앱 재시작)",
+  "models.v2Applied": "서브에이전트 모드 변경됨 — 새 세션부터 적용 (피커 갱신은 Codex 앱 재시작)",
   "models.v2ThreadsLabel": "최대 스레드",
   "models.v2ThreadsDefault": "기본값 (4)",
   "models.v2ThreadsApplied": "스레드 한도 변경됨 — 새 세션부터 적용",

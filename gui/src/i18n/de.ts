@@ -247,7 +247,7 @@ export const de = {
   "models.v2Help": "Steuert die Multi-Agent-Oberfläche für alle Modelle.\n\nv1: Klassischer Single-Thread-Agent. Jedes Modell nutzt die v1-Collab-Oberfläche.\nbase: Upstream-Standard — sol/terra nutzen v2, luna v1, andere folgen dem Codex-Feature-Flag.\nv2: Multi-Thread-Agent mit spawn_agent. Jedes Modell nutzt die v2-Collab-Oberfläche.\n\nÄnderungen gelten für neue Sitzungen.",
   "dash.multiAgent": "Sub-Agent",
   "models.v2Conflict": "[agents] max_threads ist gesetzt — codex verweigert den Start; entferne es aus config.toml",
-  "models.v2Applied": "multi_agent_v2 aktualisiert — gilt für neue Sitzungen (Codex-App neu starten, um die Auswahl zu aktualisieren)",
+  "models.v2Applied": "Sub-Agent-Modus aktualisiert — gilt für neue Sitzungen (Codex-App neu starten, um die Auswahl zu aktualisieren)",
   "models.v2ThreadsLabel": "Max. Threads",
   "models.v2ThreadsDefault": "Standard (4)",
   "models.v2ThreadsApplied": "Thread-Limit aktualisiert — gilt für neue Sitzungen",

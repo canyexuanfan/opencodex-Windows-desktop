@@ -253,7 +253,7 @@ export const ja: Record<TKey, string> = {
   "models.v2Help": "すべてのモデルのマルチエージェントサーフェスを制御します。\n\nv1: クラシックな単一スレッドエージェント。すべてのモデルが v1 コラボサーフェスを使います。\nベース: 上流のデフォルト — sol/terra は v2、luna は v1、それ以外は codex のフィーチャーフラグに従います。\nv2: spawn_agent を備えたマルチスレッドエージェント。すべてのモデルが v2 コラボサーフェスを使います。\n\n変更は新規セッションに適用されます。",
   "dash.multiAgent": "サブエージェント",
   "models.v2Conflict": "[agents] max_threads が設定されています — codex は起動を拒否します; config.toml から削除してください",
-  "models.v2Applied": "multi_agent_v2 を更新しました — 新規セッションに適用(ピッカーを更新するには Codex アプリを再起動)",
+  "models.v2Applied": "サブエージェントモードを更新しました — 新規セッションに適用(ピッカーを更新するには Codex アプリを再起動)",
   "models.v2ThreadsLabel": "最大スレッド数",
   "models.v2ThreadsDefault": "デフォルト (4)",
   "models.v2ThreadsApplied": "スレッド上限を更新しました — 新規セッションに適用",

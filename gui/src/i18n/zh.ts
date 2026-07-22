@@ -255,7 +255,7 @@ export const zh: Record<TKey, string> = {
   "models.v2DocsLink": "v1 / v2 是什么？",
   "dash.multiAgent": "子代理",
   "models.v2Conflict": "[agents] max_threads 仍存在 — codex 将拒绝启动，请从 config.toml 移除",
-  "models.v2Applied": "multi_agent_v2 已更新 — 新会话生效（重启 Codex 应用以刷新选择器）",
+  "models.v2Applied": "子代理模式已更新 — 新会话生效（重启 Codex 应用以刷新选择器）",
   "models.v2ThreadsLabel": "最大线程",
   "models.v2ThreadsDefault": "默认 (4)",
   "models.v2ThreadsApplied": "线程上限已更新 — 新会话生效",
