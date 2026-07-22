@@ -179,8 +179,35 @@ export function backupConfigBeforeOpenAiTierMigration(
   // docs/fixtures and is never reused or overwritten as the v2 snapshot.
   const backup = `${source}.pre-openai-tiers-v2.bak`;
   if (io.exists(backup)) {
-    if (!sameBytes(original, io.read(backup))) throw new OpenAiTierBackupCollisionError();
-    return "reused";
+    if (!sameBytes(original, io.read(backup))) {
+      // The backup differs from the current config. Only treat it as stale when it is
+      // clearly not a user-intentional rollback point:
+      //   - unparseable JSON: written by a different tool or truncated
+      //   - already at tier version 2: the backup is from a post-migration config (e.g.
+      //     ocx init wrote a fresh v2 config, making the old backup obsolete)
+      // A backup that parses as a valid pre-migration (v1) config is kept as-is and
+      // we throw a collision error, because silently replacing a user-created rollback
+      // point would be surprising and potentially destructive.
+      const backupBytes = io.read(backup);
+      let backupIsStale: boolean;
+      try {
+        // Use Buffer.from to ensure proper UTF-8 decoding from Uint8Array/Buffer.
+        const parsed = JSON.parse(Buffer.from(backupBytes).toString("utf8")) as Record<string, unknown>;
+        // If the backup already has openaiProviderTierVersion === 2, it is a post-migration
+        // snapshot; the live config must have been rewritten (e.g. ocx init). Safe to replace.
+        backupIsStale = parsed.openaiProviderTierVersion === 2;
+      } catch {
+        // Unparseable: not a config file we created, treat as stale.
+        backupIsStale = true;
+      }
+      if (!backupIsStale) {
+        throw new OpenAiTierBackupCollisionError();
+      }
+      console.warn("[openai-provider-migration] Replacing stale pre-migration backup (post-migration config was rewritten since last migration).");
+      io.unlink(backup);
+    } else {
+      return "reused";
+    }
   }
   const temp = `${backup}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
   let published = false;
