@@ -1,7 +1,7 @@
 import * as readline from "node:readline";
-import { unlinkSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, unlinkSync } from "node:fs";
 import { injectCodexConfig } from "../codex/inject";
-import { getConfigPath, getDefaultConfig, isValidProviderName, saveConfig } from "../config";
+import { classifyOpenAiTierBackup, getConfigPath, getDefaultConfig, isValidProviderName, saveConfig } from "../config";
 import { enrichProviderFromCatalog } from "../oauth/key-providers";
 import { deriveInitProviders } from "../providers/derive";
 import type { OcxConfig, OcxProviderConfig } from "../types";
@@ -53,6 +53,21 @@ function printMenu(providers: InitProvider[]): void {
 }
 
 const envKeyFor = (id: string) => `${id.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
+
+/** Post-init cleanup of `.pre-openai-tiers-v2.bak` with rollback preservation (issue #257). */
+export function cleanupOpenAiTierBackupAfterInit(configPath = getConfigPath()): void {
+  const backup = `${configPath}.pre-openai-tiers-v2.bak`;
+  try {
+    if (!existsSync(backup)) return;
+    if (classifyOpenAiTierBackup(readFileSync(backup)) === "stale") {
+      unlinkSync(backup);
+      return;
+    }
+    const preserved = `${configPath}.pre-openai-tiers-v1-rollback.${Date.now()}.bak`;
+    renameSync(backup, preserved);
+    console.warn(`⚠️  Kept your pre-migration config rollback snapshot at ${preserved}`);
+  } catch { /* cleanup is best-effort; never block init on backup housekeeping */ }
+}
 
 export async function runInit(): Promise<void> {
   const prompt = createPrompt();
@@ -137,10 +152,13 @@ export async function runInit(): Promise<void> {
   };
 
   saveConfig(config);
-  // Init writes a fresh config, so any pre-migration backup from a previous
-  // installation is orphaned. Remove it so the next `ocx start` does not crash
-  // on a stale-backup collision (issue #257).
-  try { unlinkSync(`${getConfigPath()}.pre-openai-tiers-v2.bak`); } catch { /* absent is fine */ }
+  // Init writes a fresh config, so a stale pre-migration backup from a previous
+  // installation would make the next `ocx start` crash on a stale-backup
+  // collision (issue #257). But only a STALE backup (unparseable, or already a
+  // post-migration v2 snapshot) may be deleted; a backup that still parses as a
+  // valid pre-migration (v1) config is a user-intentional rollback point and is
+  // preserved by renaming it out of the collision path (sol review 260722).
+  cleanupOpenAiTierBackupAfterInit();
   console.log(`\n✅ Config saved to ~/.opencodex/config.json`);
   if (oauthHint) console.log(`🔐 Authenticate this provider with:  ocx login ${providerName}`);
 

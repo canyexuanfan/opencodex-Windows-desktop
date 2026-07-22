@@ -156,6 +156,28 @@ function isAlreadyExistsError(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === "EEXIST";
 }
 
+/**
+ * Classify an existing `.pre-openai-tiers-v2.bak` snapshot.
+ *
+ * - `"stale"`: unparseable JSON (not written by us / truncated) or already a
+ *   post-migration (tier v2) snapshot — safe to delete or replace.
+ * - `"rollback"`: parses as a valid pre-migration (v1) config — a
+ *   user-intentional rollback point that must never be silently destroyed.
+ *
+ * Shared by the startup migration backup path and `ocx init` cleanup so both
+ * apply the same preservation policy (issue #257 / sol review 260722).
+ */
+export function classifyOpenAiTierBackup(backupBytes: Uint8Array): "stale" | "rollback" {
+  try {
+    // Use Buffer.from to ensure proper UTF-8 decoding from Uint8Array/Buffer.
+    const parsed = JSON.parse(Buffer.from(backupBytes).toString("utf8")) as Record<string, unknown>;
+    return parsed.openaiProviderTierVersion === 2 ? "stale" : "rollback";
+  } catch {
+    // Unparseable: not a config file we created, treat as stale.
+    return "stale";
+  }
+}
+
 export function backupConfigBeforeOpenAiTierMigration(
   configPath = getConfigPath(),
   io: OpenAiTierBackupIO = {
@@ -189,18 +211,7 @@ export function backupConfigBeforeOpenAiTierMigration(
       // we throw a collision error, because silently replacing a user-created rollback
       // point would be surprising and potentially destructive.
       const backupBytes = io.read(backup);
-      let backupIsStale: boolean;
-      try {
-        // Use Buffer.from to ensure proper UTF-8 decoding from Uint8Array/Buffer.
-        const parsed = JSON.parse(Buffer.from(backupBytes).toString("utf8")) as Record<string, unknown>;
-        // If the backup already has openaiProviderTierVersion === 2, it is a post-migration
-        // snapshot; the live config must have been rewritten (e.g. ocx init). Safe to replace.
-        backupIsStale = parsed.openaiProviderTierVersion === 2;
-      } catch {
-        // Unparseable: not a config file we created, treat as stale.
-        backupIsStale = true;
-      }
-      if (!backupIsStale) {
+      if (classifyOpenAiTierBackup(backupBytes) === "rollback") {
         throw new OpenAiTierBackupCollisionError();
       }
       console.warn("[openai-provider-migration] Replacing stale pre-migration backup (post-migration config was rewritten since last migration).");
