@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { atomicWriteFile, getConfigDir, loadConfig, readPid, readRuntimePort } from "../config";
 import { killProxy } from "../lib/process-control";
 import { waitForPortAvailable } from "../server/ports";
+import { proxyIdentityAt } from "../server/proxy-liveness";
 import { isServiceInstalled } from "../service";
 import {
   type Channel,
@@ -24,6 +25,8 @@ const RELEASE_NOTES_URL = "https://github.com/lidge-jun/opencodex/releases/lates
 const UPDATE_JOB_FILENAME = "update-job.json";
 const UPDATE_TIMEOUT_MS = 180_000;
 const RESTART_TIMEOUT_MS = 60_000;
+const RESTART_HEALTH_TIMEOUT_MS = 15_000;
+const RESTART_STABILITY_WINDOW_MS = 15_000;
 
 export type UpdateJobStatus = "running" | "restarting" | "succeeded" | "failed";
 
@@ -291,6 +294,9 @@ export interface RestartIo {
   waitForPort?: typeof waitForPortAvailable;
   spawnStart?: (job: UpdateJobState, installer: Installer, port?: number) => void;
   serviceInstalledFn?: () => boolean;
+  probeProxy?: (port: number, hostname?: string) => Promise<boolean>;
+  sleepMs?: (ms: number) => Promise<void>;
+  now?: () => number;
   /** Service-mode install/reinstall command (defaults to spawnSync via runLoggedCommand). */
   runService?: (
     job: UpdateJobState,
@@ -377,6 +383,79 @@ export function restartAfterUpdateForTests(
   return restartAfterUpdate(job, captured, io);
 }
 
+function restartFailureHint(port: number): string {
+  return `Update installed, but the restarted proxy did not stay healthy on port ${port}. `
+    + "Try 'ocx start'. If the update log shows bun postinstall or EPERM warnings, "
+    + "reinstall with 'npm install -g --allow-scripts=bun @bitkyc08/opencodex'.";
+}
+
+/**
+ * Confirm that the detached/service restart really came back and stayed up. The GUI worker
+ * used to mark success immediately after spawning the new process, which hid Windows cases
+ * where npm left the bundled Bun runtime half-updated and the restarted proxy died seconds
+ * later. A healthy /healthz must appear, then remain healthy for one short stability window.
+ */
+async function confirmRestartedProxy(
+  job: UpdateJobState,
+  captured: { port: number; hostname: string },
+  io: RestartIo = {},
+): Promise<boolean> {
+  /* [Decision Log]
+  - 목적과 의도: GUI update job이 detached restart 요청만 보고 성공 처리하지 않도록, 실제 프록시 복귀 여부를 확인한다.
+  - 기존 구현 및 제약 조건: update-job.json은 spawn/service reinstall 직후 `succeeded`로 끝났고, Windows npm/Bun 교체 실패처럼 몇 초 후 죽는 재시작을 잡지 못했다.
+  - 검토한 주요 대안: (1) 포트 점유만 확인 — 외부 프로세스/죽기 직전 프로세스를 성공으로 오인할 수 있다. (2) 무기한 /healthz 폴링 — UX가 느려지고 worker 종료 시점이 불명확하다. (3) 짧은 healthy 등장 + 안정성 창 확인 — 실제 복귀를 확인하면서도 대기 시간을 제한할 수 있다.
+  - 선택한 방식: identity-aware /healthz probe가 일정 시간 안에 나타나고, 추가 안정성 창 동안 유지되는지 확인한다.
+  - 다른 대안 대신 이 방식을 선택한 이유: GUI는 "업데이트가 설치됐지만 재시작은 실패"를 분리해 알려줘야 하며, 이 방식이 가장 적은 오탐으로 그 경계를 만든다.
+  - 장점, 단점 및 영향: 장점은 silent restart failure가 update-job 상태로 드러난다는 점이다. 단점은 성공 판정이 최대 30초 늦어질 수 있다는 점이며, 대신 실제 복귀를 더 정확히 반영한다.
+  */
+  const probe = io.probeProxy ?? (async (port: number, hostname?: string) => (
+    !!(await proxyIdentityAt(port, { hostname }))
+  ));
+  const sleep = io.sleepMs ?? (async (ms: number) => {
+    await new Promise(resolve => setTimeout(resolve, ms));
+  });
+  const now = io.now ?? (() => Date.now());
+  const port = captured.port;
+  const hostname = captured.hostname;
+  const startDeadline = now() + RESTART_HEALTH_TIMEOUT_MS;
+
+  while (now() < startDeadline) {
+    if (await probe(port, hostname)) {
+      updateJob(job, {}, `Proxy reported healthy on ${hostname}:${port}; confirming it stays up...`);
+      const stableUntil = now() + RESTART_STABILITY_WINDOW_MS;
+      while (now() < stableUntil) {
+        if (!(await probe(port, hostname))) {
+          updateJob(job, {
+            status: "failed",
+            restarted: false,
+            error: `proxy restart became unhealthy on ${hostname}:${port}`,
+          }, restartFailureHint(port));
+          return false;
+        }
+        await sleep(500);
+      }
+      updateJob(job, {}, `Proxy stayed healthy for ${Math.trunc(RESTART_STABILITY_WINDOW_MS / 1000)}s after restart.`);
+      return true;
+    }
+    await sleep(250);
+  }
+
+  updateJob(job, {
+    status: "failed",
+    restarted: false,
+    error: `proxy restart never became healthy on ${hostname}:${port}`,
+  }, restartFailureHint(port));
+  return false;
+}
+
+export function confirmRestartAfterUpdateForTests(
+  job: UpdateJobState,
+  captured: { port: number; hostname: string },
+  io: RestartIo,
+): Promise<boolean> {
+  return confirmRestartedProxy(job, captured, io);
+}
+
 export async function runGuiUpdateWorker(jobId: string, channel: Channel, restart: boolean): Promise<void> {
   let job = readUpdateJob(jobId);
   const check = checkForUpdate(channel);
@@ -457,7 +536,8 @@ export async function runGuiUpdateWorker(jobId: string, channel: Channel, restar
     if (restart) {
       job = updateJob(job, { status: "restarting" }, "Update installed. Restarting proxy...");
       await restartAfterUpdate(job, captured);
-      updateJob(job, { status: "succeeded", restarted: true }, "Restart requested.");
+      if (!(await confirmRestartedProxy(job, captured))) return;
+      updateJob(job, { status: "succeeded", restarted: true }, "Restart requested and proxy is healthy.");
       return;
     }
 
