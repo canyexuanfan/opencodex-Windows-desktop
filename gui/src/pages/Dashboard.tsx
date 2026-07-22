@@ -176,7 +176,7 @@ function useModalDialog(open: boolean, triggerRef: RefObject<HTMLButtonElement |
 export default function Dashboard({ apiBase }: { apiBase: string }) {
   const { locale, t } = useI18n();
   // Workspace vs Classic: localStorage is the source of truth (same pattern as Providers).
-  const [workspaceView, setWorkspaceView] = useState(() => {
+  const [workspaceView] = useState(() => {
     try {
       return localStorage.getItem("ocx-dashboard-view") === "workspace";
     } catch {
@@ -184,15 +184,6 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     }
   });
   const [selectedSection, setSelectedSection] = useState("overview");
-  const toggleWorkspace = () => {
-    const next = !workspaceView;
-    try {
-      localStorage.setItem("ocx-dashboard-view", next ? "workspace" : "classic");
-    } catch {
-      /* ignore */
-    }
-    setWorkspaceView(next);
-  };
   const [health, setHealth] = useState<HealthData | null>(null);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -982,20 +973,23 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
 {models.length === 0 && !modelsLoading ? (
   <EmptyState title={t("dash.noModels")} />
 ) : (
-  <div className="stack" style={{ gap: 16 }}>
-    {grouped.map(([provider, rows]) => (
-      <div key={provider} className="model-group">
-        <div className="model-group-head">{provider}<span className="count">{rows.length}</span></div>
-        <div className="model-grid">
-          {rows.map(m => (
-            <div key={`${m.provider}/${m.id}`} className="model-card">
-              <div className="id">{m.id}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-    ))}
+  <>
+  <div className="tbl-wrap">
+    <table className="tbl">
+      <thead><tr><th>{t("dash.col.provider")}</th><th>{t("dash.col.models")}</th><th>{t("dash.col.sampleModels")}</th></tr></thead>
+      <tbody>
+        {grouped.map(([provider, rows]) => (
+          <tr key={provider}>
+            <td className="font-semibold">{provider}</td>
+            <td className="num">{rows.length}</td>
+            <td className="muted mono text-label">{rows.slice(0, 3).map(m => m.id).join(", ")}{rows.length > 3 ? " …" : ""}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   </div>
+  <p className="muted text-label" style={{ marginTop: 8 }}>{t("dash.modelsHint")}</p>
+  </>
 )}
 
     </>
@@ -1155,7 +1149,6 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       <div className="dashboard-workspace-shell">
         <div className="page-head">
           <h2>{t("nav.dashboard")}</h2>
-          <button className="btn btn-ghost btn-sm" onClick={toggleWorkspace}>{t("pws.classicToggle")}</button>
         </div>
         <p className="page-sub">{t("dash.subtitle")}</p>
         <div className="dashboard-workspace-root">
@@ -1187,7 +1180,6 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     <>
       <div className="page-head">
         <h2>{t("nav.dashboard")}</h2>
-        <button className="btn btn-ghost btn-sm" onClick={toggleWorkspace}>{t("pws.workspaceToggle")}</button>
       </div>
       <p className="page-sub">{t("dash.subtitle")}</p>
       {overviewSection}
