@@ -8,7 +8,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
-import { buildCatalogEntries, mergeCatalogEntriesForSync, nativeEffortClamp, type MultiAgentMode } from "../src/codex/catalog";
+import { buildCatalogEntries, mergeCatalogEntriesForSync, nativeEffortClamp, shouldApplyNativeEffortClamp, type MultiAgentMode } from "../src/codex/catalog";
 import {
   getAgentsMaxThreads,
   getLogicalMaxThreads,
@@ -476,6 +476,24 @@ describe("mock-max wire clamp (nativeEffortClamp)", () => {
   test("real-max natives are untouched", () => {
     expect(nativeEffortClamp("gpt-5.6-sol", "max")).toBe(null);
     expect(nativeEffortClamp("gpt-5.6-luna", "max")).toBe(null);
+  });
+
+  test("only the canonical built-in OpenAI forward route enters the native clamp gate", () => {
+    const nativeProvider = {
+      adapter: "openai-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      authMode: "forward",
+    } as const;
+    const routedProvider = {
+      adapter: "openai-chat",
+      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      authMode: "key",
+      apiKey: "dashscope-test",
+    } as const;
+
+    expect(shouldApplyNativeEffortClamp("openai", nativeProvider as never, "gpt-5.5")).toBe(true);
+    expect(shouldApplyNativeEffortClamp("bailian", routedProvider as never, "glm-5.2-fast-preview")).toBe(false);
+    expect(shouldApplyNativeEffortClamp("bailian", routedProvider as never, "bailian/glm-5.2-fast-preview")).toBe(false);
   });
 
   test("ordinary efforts and routed slugs pass through; unknown BARE natives clamp conservatively", () => {
