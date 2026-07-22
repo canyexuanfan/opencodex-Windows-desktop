@@ -42,7 +42,7 @@ const KIND_HEADING: Record<InitKind, string> = {
 };
 
 function printMenu(providers: InitProvider[]): void {
-  console.log("Available providers:");
+  console.log("Choose your default provider (you can add more later):");
   let lastKind: InitKind | null = null;
   providers.forEach((p, i) => {
     if (p.kind !== lastKind) { console.log(`\n  ${KIND_HEADING[p.kind]}:`); lastKind = p.kind; }
@@ -60,7 +60,7 @@ export async function runInit(): Promise<void> {
   const providers = buildInitProviders();
   printMenu(providers);
 
-  const choice = await prompt.ask("\nSelect provider (number): ");
+  const choice = await prompt.ask("\nSelect default provider (number): ");
   const idx = parseInt(choice, 10) - 1;
 
   let providerName: string;
