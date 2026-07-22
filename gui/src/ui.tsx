@@ -35,6 +35,8 @@ export function Select({ value, options, onChange, disabled, label, style, align
   dropdownStyle?: CSSProperties;
 }) {
   const [open, setOpen] = useState(false);
+  const [dropUp, setDropUp] = useState(false);
+  const [maxH, setMaxH] = useState<number | undefined>(undefined);
   const ref = useRef<HTMLDivElement>(null);
   const current = options.find(o => o.value === value);
 
@@ -52,7 +54,22 @@ export function Select({ value, options, onChange, disabled, label, style, align
       <button
         type="button"
         className="select-trigger"
-        onClick={() => !disabled && setOpen(o => !o)}
+        onClick={() => {
+          if (disabled) return;
+          if (!open) {
+            // Viewport-aware placement: flip up when there is no room below,
+            // and cap the height so the list scrolls instead of leaving the window.
+            const rect = ref.current?.getBoundingClientRect();
+            if (rect) {
+              const spaceBelow = window.innerHeight - rect.bottom;
+              const up = placement !== "right" && spaceBelow < 288 && rect.top > spaceBelow;
+              setDropUp(up);
+              const avail = Math.floor((up ? rect.top : spaceBelow) - 12);
+              setMaxH(avail < 280 ? Math.max(120, avail) : undefined);
+            }
+          }
+          setOpen(o => !o);
+        }}
         disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
@@ -62,7 +79,7 @@ export function Select({ value, options, onChange, disabled, label, style, align
         <IconChevron style={{ width: 12, height: 12, color: "var(--muted)", transform: open ? "rotate(90deg)" : "none", transition: "transform .12s" }} />
       </button>
       {open && (
-        <div className={`select-dropdown${align === "right" ? " select-dropdown-right" : ""}${placement === "right" ? " select-dropdown-beside" : ""}`} role="listbox" aria-label={label} style={dropdownStyle}>
+        <div className={`select-dropdown${align === "right" ? " select-dropdown-right" : ""}${placement === "right" ? " select-dropdown-beside" : ""}${dropUp ? " select-dropdown-up" : ""}`} role="listbox" aria-label={label} style={maxH ? { ...dropdownStyle, maxHeight: maxH } : dropdownStyle}>
           {options.map(o => (
             <button
               key={o.value}

@@ -924,6 +924,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         onChange={v => { setShadowCall(c => c ? { ...c, model: v } : c); saveShadowCall({ model: v }); }}
         disabled={!shadowCall || shadowCallSaving || !shadowCall?.enabled}
         label={t("dash.shadowCallModel")}
+        align="right"
       />
     </div>
   </div>

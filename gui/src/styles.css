@@ -557,6 +557,8 @@ select.input { appearance: none; }
 }
 .select-dropdown-right { left: auto !important; right: 0; }
 .select-dropdown-beside { top: 0; left: calc(100% + 6px); right: auto; min-width: 10rem; }
+/* Flips above the trigger when there is no room below (set via JS). */
+.select-dropdown-up { top: auto; bottom: calc(100% + 4px); }
 .select-option {
   display: block; width: 100%; text-align: left;
   padding: 7px 12px; border: none; border-radius: var(--radius-sm);
