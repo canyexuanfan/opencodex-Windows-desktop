@@ -521,6 +521,10 @@ function normalizedKiroAnswer(text: string): string {
   return text.trim().replace(/\s+/g, " ");
 }
 
+function isRepeatedKiroAnswer(text: string, previous?: string): boolean {
+  return normalizedKiroAnswer(text) === normalizedKiroAnswer(previous ?? "");
+}
+
 async function* parseKiroAttempt(
   response: Response,
   mode: KiroCompletionMode,
@@ -846,7 +850,7 @@ async function* parseKiroAttempt(
     if (mode === "text_fallback") {
       if (completionAnswer !== undefined) {
         for (const event of fallbackEvents) yield event;
-        if (normalizedKiroAnswer(completionAnswer) !== normalizedKiroAnswer(previousAssistantText ?? "")) {
+        if (!isRepeatedKiroAnswer(completionAnswer, previousAssistantText)) {
           yield { type: "text_delta", text: completionAnswer, phase: "final_answer" };
         }
         return {
@@ -864,7 +868,7 @@ async function* parseKiroAttempt(
         };
       }
       if (sawText) {
-        const repeated = normalizedKiroAnswer(assistantText) === normalizedKiroAnswer(previousAssistantText ?? "");
+        const repeated = isRepeatedKiroAnswer(assistantText, previousAssistantText);
         for (const event of fallbackEvents) {
           if (event.type !== "text_delta") yield event;
           else if (!repeated) yield { ...event, phase: "final_answer" };
