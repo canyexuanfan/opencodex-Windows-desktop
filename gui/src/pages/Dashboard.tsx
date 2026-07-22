@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { formatUptime } from "../formatUptime";
-import { IconAlert, IconExternal, IconInfo, IconRefresh, IconX } from "../icons";
+import { IconAlert, IconChevron, IconExternal, IconInfo, IconRefresh, IconSearch, IconX } from "../icons";
 import { Trans } from "../i18n/provider";
 import { useI18n, type TKey } from "../i18n/shared";
 import { formatTokens } from "../format-tokens";
@@ -184,6 +184,8 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     }
   });
   const [selectedSection, setSelectedSection] = useState("overview");
+  const [modelQuery, setModelQuery] = useState("");
+  const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
   const [health, setHealth] = useState<HealthData | null>(null);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -377,6 +379,16 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     for (const m of models) (g[m.provider] ??= []).push(m);
     return Object.entries(g).sort(([a], [b]) => a.localeCompare(b));
   }, [models]);
+  const filteredGroups = useMemo(() => {
+    const q = modelQuery.trim().toLowerCase();
+    if (!q) return grouped;
+    const out: Array<[string, ModelInfo[]]> = [];
+    for (const [provider, rows] of grouped) {
+      const hits = rows.filter(m => m.id.toLowerCase().includes(q) || provider.toLowerCase().includes(q));
+      if (hits.length > 0) out.push([provider, hits]);
+    }
+    return out;
+  }, [grouped, modelQuery]);
   const sidecarModels = useMemo(() => sidecarModelOptions(models), [models]);
 
   if (error) {
@@ -969,21 +981,48 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   <EmptyState title={t("dash.noModels")} />
 ) : (
   <>
-  <div className="tbl-wrap">
-    <table className="tbl">
-      <thead><tr><th>{t("dash.col.provider")}</th><th>{t("dash.col.models")}</th><th>{t("dash.col.sampleModels")}</th></tr></thead>
-      <tbody>
-        {grouped.map(([provider, rows]) => (
-          <tr key={provider}>
-            <td className="font-semibold">{provider}</td>
-            <td className="num">{rows.length}</td>
-            <td className="muted mono text-label">{rows.slice(0, 3).map(m => m.id).join(", ")}{rows.length > 3 ? " …" : ""}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+  <div className="pws-search-wrap">
+    <IconSearch className="pws-search-icon" width={14} height={14} aria-hidden="true" />
+    <input
+      type="search"
+      className="input pws-search-input"
+      placeholder={t("models.search")}
+      value={modelQuery}
+      onChange={e => setModelQuery(e.target.value)}
+      aria-label={t("models.search")}
+    />
   </div>
-  <p className="muted text-label" style={{ marginTop: 8 }}>{t("dash.modelsHint")}</p>
+  {filteredGroups.length === 0 ? (
+    <p className="muted text-control" style={{ margin: "4px 0" }}>{t("dash.modelsNoResults")}</p>
+  ) : (
+    <div className="dash-model-acc">
+      {filteredGroups.map(([provider, rows]) => {
+        const q = modelQuery.trim().toLowerCase();
+        const open = q !== "" || expandedProviders.has(provider);
+        return (
+          <div key={provider} className="dash-model-group">
+            <button
+              type="button"
+              className="dash-model-head"
+              onClick={() => setExpandedProviders(prev => { const next = new Set(prev); if (next.has(provider)) next.delete(provider); else next.add(provider); return next; })}
+              aria-expanded={open}
+            >
+              <IconChevron width={12} height={12} style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform .12s", color: "var(--muted)" }} aria-hidden="true" />
+              <span className="font-semibold">{provider}</span>
+              <span className="count">{rows.length}</span>
+            </button>
+            {open && (
+              <div className="dash-model-chips">
+                {rows.map(m => (
+                  <code key={`${m.provider}/${m.id}`} className="dash-model-chip">{m.id}</code>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  )}
   </>
 )}
 

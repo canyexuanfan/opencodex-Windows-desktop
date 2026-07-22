@@ -115,6 +115,67 @@
   gap: var(--space-4);
 }
 
+/* Available models: search + per-provider accordion with model chips */
+.dash-model-acc {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.dash-model-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.dash-model-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 10px 14px;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text);
+  text-align: left;
+  transition: background var(--motion-fast);
+}
+
+.dash-model-head:hover {
+  background: var(--hover);
+}
+
+.dash-model-head .count {
+  font-family: var(--font-code);
+  font-weight: var(--weight-medium);
+  color: var(--faint);
+  font-size: var(--text-label);
+}
+
+.dash-model-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 14px 14px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 12px;
+}
+
+.dash-model-chip {
+  font-family: var(--font-code);
+  font-size: var(--text-label);
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--raised);
+  color: var(--text);
+  white-space: nowrap;
+}
+
 @media (max-width: 768px) {
   .dash-sidecar-grid {
     grid-template-columns: 1fr;
