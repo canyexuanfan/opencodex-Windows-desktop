@@ -263,8 +263,11 @@ test("fetchWithHeaderDeadline classifies expiry as timeout and still clears exac
 });
 
 test("native Anthropic passthrough returns 502 when the upstream connection is refused (reject-path activation)", async () => {
+  const closed = Bun.serve({ port: 0, fetch: () => new Response() });
+  const closedOrigin = closed.url.toString().replace(/\/$/, "");
+  closed.stop(true);
   const config = mockConfig("http://127.0.0.1:1/v1", {
-    anthropicBaseUrl: "http://127.0.0.1:9",
+    anthropicBaseUrl: closedOrigin,
   });
   config.connectTimeoutMs = 60_000;
   saveConfig(config);
