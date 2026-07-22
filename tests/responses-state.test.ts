@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildResponseJSON } from "../src/bridge";
+import { createCursorRequest } from "../src/adapters/cursor/request-builder";
+import { createCursorContextUsageTracker } from "../src/adapters/cursor/protobuf-events";
 import { parseRequest } from "../src/responses/parser";
 import {
   clearResponseStateForTests,
@@ -248,5 +250,51 @@ describe("Responses previous_response_id state", () => {
     // continues the SAME Cursor conversation. The Cursor checkpoint is not reusable (the agent turn
     // was suspended without a real mcpResult), but the conversation id string itself is preserved.
     expect(previousResponseConversationId(first.id as string)).toBe("cursor_conversation_1");
+  });
+
+  test("replayed compaction marker preserves post-compaction Cursor usage while a new marker resets it", () => {
+    const conversationId = "cursor_conversation_1";
+    const firstBody = {
+      model: "cursor/auto",
+      input: [
+        { type: "context_compaction" },
+        { type: "message", role: "user", content: "post-compaction turn" },
+      ],
+    };
+    const first = buildResponseJSON([
+      { type: "text_delta", text: "post-compaction answer" },
+      { type: "done" },
+    ], "cursor/auto");
+    rememberResponseState(firstBody, first, conversationId);
+
+    const tracker = createCursorContextUsageTracker();
+    tracker.record(conversationId, 5_000);
+
+    const replayed = parseRequest(expandPreviousResponseInput({
+      model: "cursor/auto",
+      previous_response_id: first.id,
+      input: [{ type: "message", role: "user", content: "next turn" }],
+    }));
+    const replayedRequest = createCursorRequest({ ...replayed, _cursorConversationId: conversationId });
+    expect(replayed._contextCompactionBoundary).toBeUndefined();
+    expect(replayedRequest.contextUsageReset).toBeUndefined();
+    expect(tracker.controlsForConversation(conversationId, {
+      clearPrior: replayedRequest.contextUsageReset === true,
+    }).carryForwardTokens).toBe(5_000);
+
+    const newlyCompacted = parseRequest(expandPreviousResponseInput({
+      model: "cursor/auto",
+      previous_response_id: first.id,
+      input: [
+        { type: "context_compaction" },
+        { type: "message", role: "user", content: "new compacted epoch" },
+      ],
+    }));
+    const newlyCompactedRequest = createCursorRequest({ ...newlyCompacted, _cursorConversationId: conversationId });
+    expect(newlyCompacted._contextCompactionBoundary).toBe(true);
+    expect(newlyCompactedRequest.contextUsageReset).toBe(true);
+    expect(tracker.controlsForConversation(conversationId, {
+      clearPrior: newlyCompactedRequest.contextUsageReset === true,
+    }).carryForwardTokens).toBeUndefined();
   });
 });

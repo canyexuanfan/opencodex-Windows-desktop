@@ -101,6 +101,29 @@ and synthesizing explicit "no tool result was recorded" answers only when no rea
 These compatibility guards are covered by focused tests and should stay close to the adapters that
 need them.
 
+## Cursor active-context usage
+
+Cursor's `conversationCheckpointUpdate.tokenDetails.usedTokens` is treated as the authoritative
+absolute active-context size for a Cursor conversation. Some client-tool suspension turns must end
+before Cursor emits a new checkpoint; those turns carry forward the last observed total for the same
+Cursor conversation instead of reporting only the tiny current-turn output delta. The carry-forward
+cache is process-local, numeric-only, bounded, and keyed by Cursor conversation id. Compaction
+boundaries clear the carry so pre-compaction totals are not reused after Codex replaces history.
+Historical compaction markers restored by `previous_response_id` expansion are acknowledged as a
+replayed prefix and do not clear a fresh post-compaction checkpoint again on every later turn.
+Compaction summarizer turns may still report their own checkpoint for that response, but their
+pre-compaction checkpoint is not persisted for later carry-forward.
+
+```text
+[Decision Log]
+- 목적과 의도: Keep Codex's visible "context left" indicator aligned with Cursor's active-context usage on client-tool turns that finalize before a checkpoint arrives.
+- 기존 구현 및 제약 조건: Checkpoint turns reported totalTokens correctly, but no-checkpoint client-tool finalize fell back to output-only usage and could overwrite a meaningful prior total with values like 109 tokens.
+- 검토한 주요 대안: Add a longer wait for late checkpoints; infer prior+output totals; store full prompt/history state; carry forward only the last numeric checkpoint per Cursor conversation.
+- 선택한 방식: Carry forward the last numeric absolute checkpoint per Cursor conversation with bounded LRU/TTL storage, update it only from live checkpoint frames, and clear/suppress it once when a newly appended compaction boundary starts an epoch; previous_response replay provenance acknowledges historical markers without serializing private metadata upstream.
+- 다른 대안 대신 이 방식을 선택한 이유: It fixes the UI regression without delaying tool turns, fabricating token growth, storing prompt/tool content, or repeatedly clearing valid post-compaction usage when historical markers replay; one-time compaction resets still prevent stale over-report when history is replaced.
+- 장점, 단점 및 영향: Active-context reporting stays monotonic within an uncompacted Cursor conversation; no-checkpoint turns remain estimated; a process restart loses the numeric cache and safely falls back to current-turn usage until the next checkpoint.
+```
+
 ## OpenRouter provider routing
 
 The canonical OpenRouter `openai-chat` transport may carry optional provider-routing preferences

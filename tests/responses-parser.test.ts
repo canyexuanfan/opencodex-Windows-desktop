@@ -176,6 +176,7 @@ describe("codex-rs compat surface (260707)", () => {
     expect(first.role).toBe("user");
     expect(first.content as string).toContain(summary);
     expect(parsed._compactionRequest).toBeUndefined();
+    expect(parsed._contextCompactionBoundary).toBe(true);
   });
 
   test("context_compaction without payload is a silent marker (no opaque note)", () => {
@@ -185,6 +186,7 @@ describe("codex-rs compat surface (260707)", () => {
     ]});
     expect(parsed.context.messages).toHaveLength(1);
     expect(parsed.context.messages[0].content).toBe("hello");
+    expect(parsed._contextCompactionBoundary).toBe(true);
   });
 
   test("local_shell_call pairs with its function_call_output", () => {

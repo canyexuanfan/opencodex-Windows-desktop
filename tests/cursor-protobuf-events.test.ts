@@ -13,7 +13,12 @@ import {
   ToolCallSchema,
   ToolCallStartedUpdateSchema,
 } from "../src/adapters/cursor/gen/agent_pb";
-import { createCursorProtobufEventState, mapCursorProtobufServerMessage } from "../src/adapters/cursor/protobuf-events";
+import {
+  createCursorContextUsageTracker,
+  createCursorProtobufEventState,
+  finalizeTurnEvents,
+  mapCursorProtobufServerMessage,
+} from "../src/adapters/cursor/protobuf-events";
 
 const encoder = new TextEncoder();
 
@@ -42,6 +47,25 @@ function mcpToolCall(toolName: string, args: Record<string, string>) {
         }),
       }),
     },
+  });
+}
+
+function checkpointUpdate(usedTokens: number) {
+  return create(AgentServerMessageSchema, {
+    message: {
+      case: "conversationCheckpointUpdate",
+      value: create(ConversationStateStructureSchema, {
+        tokenDetails: create(ConversationTokenDetailsSchema, { usedTokens }),
+      }),
+    },
+  });
+}
+
+function turnEndedFrame() {
+  return create(AgentServerMessageSchema, {
+    message: { case: "interactionUpdate", value: create(InteractionUpdateSchema, {
+      message: { case: "turnEnded", value: {} },
+    }) },
   });
 }
 
@@ -486,6 +510,84 @@ describe("Cursor protobuf tool-call events", () => {
     expect(mapCursorProtobufServerMessage(turnEnd, state)).toEqual([
       { type: "done", usage: { inputTokens: 0, outputTokens: 42, totalTokens: 10, estimated: true } },
     ]);
+  });
+
+  test("ordinary checkpoints update the per-conversation carry-forward for later no-checkpoint turns", () => {
+    const tracker = createCursorContextUsageTracker();
+    const first = createCursorProtobufEventState({
+      contextUsage: tracker.controlsForConversation("cursor_conv_1"),
+    });
+    first.usage.outputTokens = 42;
+
+    expect(mapCursorProtobufServerMessage(checkpointUpdate(10_300), first)).toEqual([]);
+    expect(mapCursorProtobufServerMessage(turnEndedFrame(), first)).toEqual([
+      { type: "done", usage: { inputTokens: 10_258, outputTokens: 42, totalTokens: 10_300, estimated: true } },
+    ]);
+    expect(tracker.get("cursor_conv_1")).toBe(10_300);
+
+    const next = createCursorProtobufEventState({
+      contextUsage: tracker.controlsForConversation("cursor_conv_1"),
+    });
+    next.usage.outputTokens = 7;
+    expect(finalizeTurnEvents(next)).toEqual([
+      { type: "done", usage: { inputTokens: 10_293, outputTokens: 7, totalTokens: 10_300, estimated: true } },
+    ]);
+  });
+
+  test("same-session checkpoints cannot regress below a carried context total", () => {
+    const tracker = createCursorContextUsageTracker();
+    tracker.record("cursor_conv_1", 10_300);
+    const state = createCursorProtobufEventState({
+      contextUsage: tracker.controlsForConversation("cursor_conv_1"),
+    });
+    state.usage.outputTokens = 20;
+
+    expect(mapCursorProtobufServerMessage(checkpointUpdate(9_900), state)).toEqual([]);
+    expect(mapCursorProtobufServerMessage(turnEndedFrame(), state)).toEqual([
+      { type: "done", usage: { inputTokens: 10_280, outputTokens: 20, totalTokens: 10_300, estimated: true } },
+    ]);
+    expect(tracker.get("cursor_conv_1")).toBe(10_300);
+  });
+
+  test("late checkpoint after terminal done is inert and does not seed carry-forward", () => {
+    const tracker = createCursorContextUsageTracker();
+    const state = createCursorProtobufEventState({
+      contextUsage: tracker.controlsForConversation("cursor_conv_1"),
+    });
+    state.usage.outputTokens = 5;
+
+    expect(finalizeTurnEvents(state)).toEqual([
+      { type: "done", usage: { inputTokens: 0, outputTokens: 5, estimated: true } },
+    ]);
+    expect(mapCursorProtobufServerMessage(checkpointUpdate(12_000), state)).toEqual([]);
+    expect(state.contextTokens).toBeUndefined();
+    expect(tracker.get("cursor_conv_1")).toBeUndefined();
+  });
+
+  test("compaction boundary controls clear stale carry and can suppress checkpoint persistence", () => {
+    const tracker = createCursorContextUsageTracker();
+    tracker.record("cursor_conv_1", 80_000);
+
+    const postCompaction = createCursorProtobufEventState({
+      contextUsage: tracker.controlsForConversation("cursor_conv_1", { clearPrior: true }),
+    });
+    postCompaction.usage.outputTokens = 6;
+    expect(finalizeTurnEvents(postCompaction)).toEqual([
+      { type: "done", usage: { inputTokens: 0, outputTokens: 6, estimated: true } },
+    ]);
+    expect(tracker.get("cursor_conv_1")).toBeUndefined();
+
+    const summarizer = createCursorProtobufEventState({
+      contextUsage: tracker.controlsForConversation("cursor_conv_1", {
+        clearPrior: true,
+        storeCheckpoints: false,
+      }),
+    });
+    expect(mapCursorProtobufServerMessage(checkpointUpdate(90_000), summarizer)).toEqual([]);
+    expect(mapCursorProtobufServerMessage(turnEndedFrame(), summarizer)).toEqual([
+      { type: "done", usage: { inputTokens: 90_000, outputTokens: 0, totalTokens: 90_000, estimated: true } },
+    ]);
+    expect(tracker.get("cursor_conv_1")).toBeUndefined();
   });
 });
 

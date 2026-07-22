@@ -168,9 +168,39 @@ describe("partialUsageFromEventState", () => {
     expect(partialUsageFromEventState(state)).toEqual({ inputTokens: 0, outputTokens: 7, estimated: true });
   });
 
+  test("carries prior context usage on failure when the current turn had no checkpoint", async () => {
+    const { partialUsageFromEventState } = await import("../src/adapters/cursor/live-transport");
+    const { createCursorContextUsageTracker, createCursorProtobufEventState } = await import("../src/adapters/cursor/protobuf-events");
+    const tracker = createCursorContextUsageTracker();
+    tracker.record("cursor_conv_1", 18_000);
+    const state = createCursorProtobufEventState({
+      contextUsage: tracker.controlsForConversation("cursor_conv_1"),
+    });
+    state.usage.outputTokens = 8;
+    expect(partialUsageFromEventState(state)).toEqual({
+      inputTokens: 17_992,
+      outputTokens: 8,
+      totalTokens: 18_000,
+      estimated: true,
+    });
+  });
+
   test("returns undefined when the stream died before any token signal", async () => {
     const { partialUsageFromEventState } = await import("../src/adapters/cursor/live-transport");
     const { createCursorProtobufEventState } = await import("../src/adapters/cursor/protobuf-events");
     expect(partialUsageFromEventState(createCursorProtobufEventState())).toBeUndefined();
+  });
+
+  test("does not report seeded carry when a fresh turn failed before any token signal", async () => {
+    const { partialUsageFromEventState } = await import("../src/adapters/cursor/live-transport");
+    const { createCursorContextUsageTracker, createCursorProtobufEventState } = await import("../src/adapters/cursor/protobuf-events");
+    const tracker = createCursorContextUsageTracker();
+    tracker.record("cursor_conv_1", 18_000);
+
+    const state = createCursorProtobufEventState({
+      contextUsage: tracker.controlsForConversation("cursor_conv_1"),
+    });
+
+    expect(partialUsageFromEventState(state)).toBeUndefined();
   });
 });
