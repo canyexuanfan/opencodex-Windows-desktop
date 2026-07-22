@@ -1,25 +1,39 @@
 # 070 — PR #255: Fix provider JSON editor save flow
 
 - **Author:** rrmlima
-- **Branch:** agent/fix-provider-json-save → dev
-- **Status:** Draft → needs undraft before merge
+- **Branch:** agent/fix-provider-json-save → dev (draft)
 - **CI:** enforce-target pass (3x)
-- **Decision:** MERGE (undraft first)
-- **Risk:** Medium (GUI + backend save flow change)
+- **Sol Review:** Chandrasekhar — VERDICT: FAIL (3 high blockers)
+- **Decision:** REBUILD_ON_DEV (take the idea, implement properly)
+- **Risk:** High
 
-## Changes
+## Sol Review Summary
 
-1. `gui/src/pages/Providers.tsx`:
-   - Replaces single `PUT /api/config` with per-provider `POST /api/providers` loop.
-   - Deletes providers absent from draft via `DELETE /api/providers?name=...`.
-   - Validates parsed JSON structure before saving.
-   - Blocks port/hostname/websockets changes from JSON editor.
-   - Handles `codexAutoStart` via `PUT /api/settings`.
-2. `src/server/management-api.ts`:
-   - Preserves `apiKey`, `apiKeyPool`, `headers`, `googleMode`, `modelMaxInputTokens` when not provided in update.
-   - Prevents credential loss from browser round-trip of masked values.
+### High — Non-atomic save (H1)
+Per-provider POST loop exposes intermediate routing states. Network interruption
+or concurrent editors can leave partial config committed. Need: single server-side
+batch endpoint with candidate validation + one-shot persist.
 
-## Security Review
+### High — Incomplete field preservation (H2)
+Only 5 fields preserved (apiKey, apiKeyPool, headers, googleMode, modelMaxInputTokens).
+Missing: selectedModels, modelInputModalities, reasoningEffortMap, mcpServers,
+desktopExecutor, nativeLocalExec, and many more. Nested secrets in mcpServers[*].env
+would be silently erased.
 
-- This FIXES a credential safety issue: previously, saving from the GUI JSON editor could erase API keys that were masked in the browser.
-- The preservation list (`apiKey`, `apiKeyPool`, `headers`, etc.) covers known sensitive fields.
+### High — TypeScript compilation failure (H3)
+OcxProviderConfig cast to Record<string,unknown> causes TS2352. Needs typed helper
+function instead of unsafe cast.
+
+### Medium issues
+- Default-provider deletion ordering only conditionally safe
+- `[key: string]: unknown` index signature suppresses type checking
+- Error handling conflates JSON parse errors with network failures
+
+## Rebuild Plan (future work-phase)
+
+Take the core idea: don't let the GUI JSON editor erase server-only fields.
+Implement properly with:
+1. Typed public DTO / private field merge policy (server-owned)
+2. Batch config update endpoint
+3. Type-safe field preservation
+4. Tests for credential retention, deletion rollback, concurrency
