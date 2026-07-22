@@ -812,23 +812,23 @@ export interface OcxProviderConfig {
   desktopExecutor?: import("./adapters/cursor/native-exec-desktop").DesktopExecutorConfig;
   /**
    * Cursor adapter only: unsafe opt-in escape hatch for Cursor server-driven built-in local
-   * read/write/delete/ls/grep/shell/fetch execution. Defaults to false so remote Cursor messages
-   * cannot bypass Codex approval/sandbox semantics. Explicit MCP and desktop executors remain
-   * controlled by their own opt-in config.
+   * read/write/delete/ls/grep/shell/fetch execution. Prefer `nativeLocalExec: "on"` for new
+   * configs; this legacy boolean remains a server-local explicit opt-in for existing operators.
+   * Defaults to false so remote Cursor messages cannot bypass Codex approval/sandbox semantics.
+   * Explicit MCP and desktop executors remain controlled by their own opt-in config.
    */
   unsafeAllowNativeLocalExec?: boolean;
   /**
    * Cursor adapter only: native local exec policy mode (exec-policy.ts).
-   * "codex-sandbox" (default) allows server-driven local exec only when the
-   * request's instructions/developer text declares the Codex danger-full-access
-   * sandbox (approves the normal full-access flow, denies undeclared requests);
-   * "off" rejects all server-driven local exec; "on" always allows (same as legacy
-   * unsafeAllowNativeLocalExec:true). NOTE: the declaration is CALLER-CONTROLLED prose —
-   * the proxy cannot verify it. Enable "codex-sandbox" only where every client
-   * that can reach the data plane is trusted: the default loopback bind admits
-   * ANY process on this host without auth (including other local users on
-   * multi-user machines), and isAllowedRequestOrigin blocks non-loopback
-   * browser origins by default but not loopback-origin or origin-less callers.
+   * "off" (default) rejects server-driven local exec; "on" always allows it for this
+   * provider and should be used only for a trusted local experiment on a host where every
+   * data-plane caller is trusted. "codex-sandbox" is accepted for backwards compatibility
+   * but is fail-closed like "off": Responses instructions/system/developer text is
+   * caller-controlled prose, and opencodex has no trustworthy per-request attestation that it
+   * reflects a real Codex sandbox state. The default loopback bind admits ANY local process
+   * without auth (including other local users on multi-user machines), and
+   * isAllowedRequestOrigin blocks non-loopback browser origins by default but not
+   * loopback-origin or origin-less callers.
    */
   nativeLocalExec?: "off" | "codex-sandbox" | "on";
 }

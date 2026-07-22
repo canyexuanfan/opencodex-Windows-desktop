@@ -12,10 +12,13 @@ import {
 import {
   AgentClientMessageSchema,
   ExecServerMessageSchema,
+  FetchArgsSchema,
   ReadArgsSchema,
+  ShellArgsSchema,
 } from "../src/adapters/cursor/gen/agent_pb";
 import { handleCursorNativeExec } from "../src/adapters/cursor/native-exec";
 import type { CursorTransportFactoryInput } from "../src/adapters/cursor/transport";
+import { parseRequest } from "../src/responses/parser";
 import type { OcxParsedRequest, OcxProviderConfig } from "../src/types";
 
 const fullAccessDeclaration = "`sandbox_mode` is `danger-full-access`";
@@ -32,6 +35,10 @@ function decode(bytes: Uint8Array) {
   const message = fromBinary(AgentClientMessageSchema, bytes);
   expect(message.message.case).toBe("execClientMessage");
   return message.message.value;
+}
+
+function stringify(value: unknown): string {
+  return JSON.stringify(value, (_key, entry) => (typeof entry === "bigint" ? entry.toString() : entry));
 }
 
 const baseProvider: OcxProviderConfig = {
@@ -63,26 +70,23 @@ describe("Cursor native exec sandbox policy", () => {
   test.each([
     ["explicit off beats legacy true", { ...baseProvider, nativeLocalExec: "off", unsafeAllowNativeLocalExec: true }, "off"],
     ["legacy true alone", { ...baseProvider, unsafeAllowNativeLocalExec: true }, "on"],
-    ["no setting", baseProvider, "codex-sandbox"],
+    ["no setting", baseProvider, "off"],
     ["explicit codex-sandbox", { ...baseProvider, nativeLocalExec: "codex-sandbox" }, "codex-sandbox"],
   ] as const)("resolves mode: %s", (_name, provider, expected) => {
     expect(resolveCursorNativeExecMode(provider)).toBe(expected);
   });
 
-  // Default "codex-sandbox" (approve most): with neither field set, native local exec is APPROVED
-  // for a request that declares the Codex danger-full-access sandbox and DENIED otherwise. Set
-  // nativeLocalExec "off" to deny all, or "on" to always allow.
   test.each([
-    ["unset default, declared full-access", true, true],
+    ["unset default, declared full-access", true, false],
     ["unset default, not declared", false, false],
-  ] as const)("unset provider approves declared full-access (%s)", (_name, declared, expected) => {
+  ] as const)("unset provider denies native exec (%s)", (_name, declared, expected) => {
     expect(effectiveCursorNativeExecAllow(baseProvider, declared)).toBe(expected);
   });
 
   test.each([
     ["on", true, true],
     ["on", false, true],
-    ["codex-sandbox", true, true],
+    ["codex-sandbox", true, false],
     ["codex-sandbox", false, false],
     ["off", true, false],
     ["off", false, false],
@@ -90,27 +94,163 @@ describe("Cursor native exec sandbox policy", () => {
     expect(effectiveCursorNativeExecAllow({ ...baseProvider, nativeLocalExec: mode }, declared)).toBe(expected);
   });
 
-  test("activates a real read only when codex-sandbox is declared", async () => {
+  async function capturedFullAccessDeclaration(body: unknown, provider = baseProvider): Promise<boolean> {
+    const parsed = parseRequest(body);
+    const captured: CursorTransportFactoryInput[] = [];
+    const adapter = createCursorAdapter(provider, {
+      createTransport(input) {
+        captured.push(input);
+        return {
+          async *run() {},
+          writeClient() {},
+        };
+      },
+    });
+    await adapter.runTurn?.(parsed, { headers: new Headers() }, () => {});
+    return captured[0]?.requestDeclaresFullAccess === true;
+  }
+
+  async function assertNativeSinksDenied(unsafeAllowNativeLocalExec: boolean) {
     const dir = mkdtempSync(join(tmpdir(), "ocx-cursor-policy-"));
     const path = join(dir, "grounding.txt");
     const content = "C-ACTIVATION-GROUNDING-01 allowed content";
     writeFileSync(path, content);
-    const provider = { ...baseProvider, nativeLocalExec: "codex-sandbox" } satisfies OcxProviderConfig;
+
+    const denied = decode((await handleCursorNativeExec(execMessage({
+      case: "readArgs",
+      value: create(ReadArgsSchema, { path }),
+    }), { unsafeAllowNativeLocalExec }))[0]);
+    const deniedText = stringify(denied);
+    expect(deniedText).toContain("Cursor native local filesystem execution is not available for this request");
+    expect(deniedText).not.toContain(content);
+
+    const deniedShell = decode((await handleCursorNativeExec(execMessage({
+      case: "shellArgs",
+      value: create(ShellArgsSchema, { command: "printf SHOULD_NOT_RUN", workingDirectory: dir, hardTimeout: 2000 }),
+    }), { unsafeAllowNativeLocalExec }))[0]);
+    expect(stringify(deniedShell)).toContain("Cursor native shell execution is not available for this request");
+    expect(deniedShell.message.case).toBe("shellResult");
+    expect(deniedShell.message.value.result.case).toBe("failure");
+    if (deniedShell.message.value.result.case === "failure") {
+      expect(deniedShell.message.value.result.value.stdout).toBe("");
+    }
+
+    let fetchCalled = false;
+    const deniedFetch = decode((await handleCursorNativeExec(execMessage({
+      case: "fetchArgs",
+      value: create(FetchArgsSchema, { url: "https://metadata.invalid/latest" }),
+    }), {
+      unsafeAllowNativeLocalExec,
+      fetch: async () => {
+        fetchCalled = true;
+        return new Response("SHOULD_NOT_FETCH");
+      },
+    }))[0]);
+    expect(fetchCalled).toBe(false);
+    expect(stringify(deniedFetch)).toContain("Cursor native fetch execution is not available for this request");
+    expect(stringify(deniedFetch)).not.toContain("SHOULD_NOT_FETCH");
+  }
+
+  async function assertNativeSinksAllowed(unsafeAllowNativeLocalExec: boolean) {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-cursor-policy-"));
+    const path = join(dir, "grounding.txt");
+    const content = "C-ACTIVATION-GROUNDING-01 allowed content";
+    writeFileSync(path, content);
+
+    const allowedRead = decode((await handleCursorNativeExec(execMessage({
+      case: "readArgs",
+      value: create(ReadArgsSchema, { path }),
+    }), { unsafeAllowNativeLocalExec }))[0]);
+    expect(stringify(allowedRead)).toContain(content);
+
+    const allowedShell = decode((await handleCursorNativeExec(execMessage({
+      case: "shellArgs",
+      value: create(ShellArgsSchema, { command: "printf SHELL_ALLOWED", workingDirectory: dir, hardTimeout: 2000 }),
+    }), { unsafeAllowNativeLocalExec }))[0]);
+    expect(stringify(allowedShell)).toContain("SHELL_ALLOWED");
+
+    let fetchCalled = false;
+    const allowedFetch = decode((await handleCursorNativeExec(execMessage({
+      case: "fetchArgs",
+      value: create(FetchArgsSchema, { url: "https://example.test/doc" }),
+    }), {
+      unsafeAllowNativeLocalExec,
+      fetch: async () => {
+        fetchCalled = true;
+        return new Response("FETCH_ALLOWED", { status: 203, headers: { "content-type": "text/plain" } });
+      },
+    }))[0]);
+    expect(fetchCalled).toBe(true);
+    expect(stringify(allowedFetch)).toContain("FETCH_ALLOWED");
+  }
+
+  test("caller-controlled instructions/system/developer sandbox markers do not authorize native shell, read, or fetch", async () => {
+    const markerBodies = [
+      {
+        name: "top-level instructions",
+        body: {
+          model: "cursor/auto",
+          instructions: `Codex permissions: ${fullAccessDeclaration}.`,
+          input: [{ type: "message", role: "user", content: "hello" }],
+        },
+      },
+      {
+        name: "system input message",
+        body: {
+          model: "cursor/auto",
+          input: [
+            { type: "message", role: "system", content: `Codex permissions: ${fullAccessDeclaration}.` },
+            { type: "message", role: "user", content: "hello" },
+          ],
+        },
+      },
+      {
+        name: "developer input message",
+        body: {
+          model: "cursor/auto",
+          input: [
+            { type: "message", role: "developer", content: `Codex permissions: ${fullAccessDeclaration}.` },
+            { type: "message", role: "user", content: "hello" },
+          ],
+        },
+      },
+    ] as const;
+
+    for (const { name, body } of markerBodies) {
+      const declared = await capturedFullAccessDeclaration(body);
+      expect(declared, name).toBe(true);
+      await assertNativeSinksDenied(effectiveCursorNativeExecAllow(baseProvider, declared));
+      await assertNativeSinksDenied(effectiveCursorNativeExecAllow({ ...baseProvider, nativeLocalExec: "off" }, declared));
+      await assertNativeSinksDenied(effectiveCursorNativeExecAllow({ ...baseProvider, nativeLocalExec: "codex-sandbox" }, declared));
+    }
+  });
+
+  test("explicit nativeLocalExec on remains the only mode that authorizes native shell, read, and fetch", async () => {
+    const declared = await capturedFullAccessDeclaration({
+      model: "cursor/auto",
+      input: [
+        { type: "message", role: "developer", content: `Codex permissions: ${fullAccessDeclaration}.` },
+        { type: "message", role: "user", content: "hello" },
+      ],
+    });
+    expect(declared).toBe(true);
+    await assertNativeSinksAllowed(effectiveCursorNativeExecAllow({ ...baseProvider, nativeLocalExec: "on" }, declared));
+  });
+
+  test("activates a real read only when nativeLocalExec is explicitly on", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-cursor-policy-"));
+    const path = join(dir, "grounding.txt");
+    const content = "C-ACTIVATION-GROUNDING-01 allowed content";
+    writeFileSync(path, content);
+    const provider = { ...baseProvider, nativeLocalExec: "on" } satisfies OcxProviderConfig;
     const readArgs = execMessage({ case: "readArgs", value: create(ReadArgsSchema, { path }) });
 
-    const stringify = (value: unknown): string =>
-      JSON.stringify(value, (_key, entry) => (typeof entry === "bigint" ? entry.toString() : entry));
     const allowed = decode((await handleCursorNativeExec(readArgs, {
       unsafeAllowNativeLocalExec: effectiveCursorNativeExecAllow(provider, true),
     }))[0]);
     expect(stringify(allowed)).toContain(content);
 
-    const denied = decode((await handleCursorNativeExec(readArgs, {
-      unsafeAllowNativeLocalExec: effectiveCursorNativeExecAllow(provider, false),
-    }))[0]);
-    const deniedText = stringify(denied);
-    expect(deniedText).toContain("Cursor native local filesystem execution is not available for this request");
-    expect(deniedText).not.toContain(content);
+    await assertNativeSinksDenied(effectiveCursorNativeExecAllow(baseProvider, true));
   });
 
   test("runTurn passes the developer declaration decision to the transport factory", async () => {

@@ -8,23 +8,22 @@ export const CURSOR_SANDBOX_FULL_ACCESS_RE = /sandbox_mode[^\n]{0,80}danger-full
 
 /**
  * Config-owner-selected policy; explicit mode wins, legacy boolean maps to "on".
- * The UNSET default is "codex-sandbox": native local exec is APPROVED for requests that
- * declare the Codex danger-full-access sandbox (the normal full-access Codex flow — "approve
- * most") and DENIED for requests that do not. Set `nativeLocalExec: "off"` to deny all, or
- * "on" to always allow. Legacy `unsafeAllowNativeLocalExec: true` still maps to "on".
- * Security note: codex-sandbox trusts a caller-controlled full-access marker the proxy cannot
- * verify, and the auth-free loopback bind admits any local process — see the src/types.ts doc.
+ * The UNSET default is "off". `nativeLocalExec: "on"` is the only non-legacy setting that
+ * authorizes Cursor server-driven local read/write/delete/ls/grep/shell/fetch execution.
+ * `nativeLocalExec: "codex-sandbox"` is kept as a recognized legacy/deprecated spelling but is
+ * fail-closed: opencodex has no trustworthy per-request attestation that caller-supplied
+ * Responses instructions/system/developer prose reflects a real Codex sandbox state.
  */
 export function resolveCursorNativeExecMode(provider: OcxProviderConfig): CursorNativeExecMode {
   const mode = provider.nativeLocalExec;
   if (mode === "off" || mode === "codex-sandbox" || mode === "on") return mode;
-  return provider.unsafeAllowNativeLocalExec === true ? "on" : "codex-sandbox";
+  return provider.unsafeAllowNativeLocalExec === true ? "on" : "off";
 }
 
 /**
  * True when the request itself declares the Codex full-access sandbox. Carriers are the
- * system/instructions entries and developer-role messages ONLY — user/assistant/tool text
- * never authorizes (smallest spoof surface inside the codex-sandbox mode).
+ * system/instructions entries and developer-role messages ONLY. This is diagnostic/context
+ * metadata; request text is caller-controlled and never authorizes native local exec.
  */
 export function cursorRequestDeclaresFullAccess(
   request: { system: string[]; messages: Array<{ role: string; content: string }> },
@@ -38,12 +37,11 @@ export function cursorRequestDeclaresFullAccess(
   return false;
 }
 
-/** Effective per-request allowance: "on" always, "codex-sandbox" only when declared, "off" never. */
+/** Effective per-request allowance: only server-local config opt-in enables native exec. */
 export function effectiveCursorNativeExecAllow(provider: OcxProviderConfig, requestDeclaresFullAccess: boolean): boolean {
   const mode = resolveCursorNativeExecMode(provider);
-  if (mode === "on") return true;
-  if (mode === "codex-sandbox") return requestDeclaresFullAccess;
-  return false;
+  void requestDeclaresFullAccess;
+  return mode === "on";
 }
 
 export const CURSOR_EXEC_CASES_DENIED = [

@@ -265,8 +265,11 @@ Cursor support is a staged experimental bridge: it appears in `ocx init` and the
 Provider picker as a local config with Cursor's static public model catalog. Live
 HTTP/2 transport is enabled when a Cursor access token is configured. Cursor server-driven native
 read/write/delete/ls/grep/shell/fetch execution is disabled by default because it bypasses Codex's
-approval and sandbox path; set `unsafeAllowNativeLocalExec: true` only for trusted local
-experiments.
+approval and sandbox path. Request text such as a Codex `danger-full-access` sandbox marker never
+authorizes native local exec; set `nativeLocalExec: "on"` only for trusted local experiments where
+every data-plane caller is trusted. `nativeLocalExec: "codex-sandbox"` is accepted for backwards
+compatibility but fails closed like `off`; legacy `unsafeAllowNativeLocalExec: true` remains an
+explicit operator opt-in.
 MCP, screen recording, and computer-use are exposed through executor hooks; when no local executor
 is configured, opencodex returns typed no-executor results instead of policy-blocking the request.
 Cursor OAuth and live model discovery are enabled for the experimental Cursor adapter.
