@@ -406,3 +406,206 @@ test("POST /v1/chat/completions finalizes native passthrough request logs", asyn
     clearRequestLogsForTests();
   }
 });
+
+
+test("responsesSseToChatCompletionsSse reconciles done-frame final arguments (last-write-wins)", async () => {
+  const { responsesSseToChatCompletionsSse, collectChatCompletion } = await import("../src/chat/outbound");
+  const frames = [
+    `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", item: { type: "function_call", id: "fc_a", call_id: "call_a", name: "alpha", arguments: "" } })}\n\n`,
+    `event: response.function_call_arguments.delta\ndata: ${JSON.stringify({ type: "response.function_call_arguments.delta", item_id: "fc_a", delta: '{"q":"partial' })}\n\n`,
+    // Done frame carries the authoritative final arguments after partial deltas.
+    `event: response.output_item.done\ndata: ${JSON.stringify({ type: "response.output_item.done", item: { type: "function_call", id: "fc_a", call_id: "call_a", name: "alpha", arguments: '{"q":"final"}' } })}\n\n`,
+    `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1 } } })}\n\n`,
+  ];
+  const stream = responsesSseToChatCompletionsSse(new ReadableStream({
+    start(controller) {
+      const enc = new TextEncoder();
+      for (const frame of frames) controller.enqueue(enc.encode(frame));
+      controller.close();
+    },
+  }), "mock/test-model");
+  const completion = await collectChatCompletion(stream, "mock/test-model");
+  const toolCalls = (completion.choices as Array<{ message?: { tool_calls?: Array<{ function?: { arguments?: string } }> } }>)[0]
+    ?.message?.tool_calls ?? [];
+  expect(toolCalls).toHaveLength(1);
+  expect(toolCalls[0]?.function?.arguments).toBe('{"q":"final"}');
+});
+
+test("responsesSseToChatCompletionsSse emits error frame on response.failed (no clean DONE)", async () => {
+  const { responsesSseToChatCompletionsSse, collectChatCompletion, ChatCompletionsStreamError } = await import("../src/chat/outbound");
+  const frames = [
+    `event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_fail" } })}\n\n`,
+    `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "partial" })}\n\n`,
+    `event: response.failed\ndata: ${JSON.stringify({ type: "response.failed", response: { status: "failed", error: { message: "upstream exploded" } } })}\n\n`,
+  ];
+  const stream = responsesSseToChatCompletionsSse(new ReadableStream({
+    start(controller) {
+      const enc = new TextEncoder();
+      for (const frame of frames) controller.enqueue(enc.encode(frame));
+      controller.close();
+    },
+  }), "mock/test-model");
+
+  const text = await new Response(stream).text();
+  expect(text).toContain('"error"');
+  expect(text).toContain("upstream exploded");
+  expect(text).not.toContain("[error]");
+  expect(text).not.toContain("data: [DONE]");
+
+  // Non-stream collectors must surface a typed error, not a 200 completion.
+  const stream2 = responsesSseToChatCompletionsSse(new ReadableStream({
+    start(controller) {
+      const enc = new TextEncoder();
+      for (const frame of frames) controller.enqueue(enc.encode(frame));
+      controller.close();
+    },
+  }), "mock/test-model");
+  await expect(collectChatCompletion(stream2, "mock/test-model")).rejects.toBeInstanceOf(ChatCompletionsStreamError);
+});
+
+test("responsesSseToChatCompletionsSse emits error frame on truncated stream", async () => {
+  const { responsesSseToChatCompletionsSse, collectChatCompletion, ChatCompletionsStreamError } = await import("../src/chat/outbound");
+  const frames = [
+    `event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_trunc" } })}\n\n`,
+    `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "half" })}\n\n`,
+    // No terminal frame — stream ends abruptly.
+  ];
+  const stream = responsesSseToChatCompletionsSse(new ReadableStream({
+    start(controller) {
+      const enc = new TextEncoder();
+      for (const frame of frames) controller.enqueue(enc.encode(frame));
+      controller.close();
+    },
+  }), "mock/test-model");
+
+  const text = await new Response(stream).text();
+  expect(text).toContain("truncated response");
+  expect(text).not.toContain("data: [DONE]");
+  await expect(collectChatCompletion(responsesSseToChatCompletionsSse(new ReadableStream({
+    start(controller) {
+      const enc = new TextEncoder();
+      for (const frame of frames) controller.enqueue(enc.encode(frame));
+      controller.close();
+    },
+  }), "mock/test-model"), "mock/test-model")).rejects.toBeInstanceOf(ChatCompletionsStreamError);
+});
+
+test("non-streaming /v1/chat/completions returns error status on upstream failure", async () => {
+  // Mock openai-chat upstream that streams a Responses-like failure through our adapter
+  // is hard; instead drive handleResponses via a native responses mock that fails.
+  const upstream = Bun.serve({
+    port: 0,
+    fetch() {
+      const frames = [
+        `event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_fail" } })}\n\n`,
+        `event: response.failed\ndata: ${JSON.stringify({ type: "response.failed", response: { status: "failed", error: { message: "provider blew up" } } })}\n\n`,
+      ];
+      return new Response(frames.join(""), { headers: { "Content-Type": "text/event-stream" } });
+    },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    if (url.hostname === "chatgpt.com" && url.pathname.startsWith("/backend-api/codex")) {
+      return originalFetch(new URL(`${url.pathname.slice("/backend-api/codex".length)}${url.search}`, upstream.url), init);
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+  saveConfig({
+    port: 0,
+    defaultProvider: "openai",
+    providers: {
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authMode: "forward",
+        codexAccountMode: "direct",
+      },
+    },
+  } as OcxConfig);
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/chat/completions", server.url), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: ["Bear" + "er", "caller-direct-token"].join(" "),
+      },
+      body: JSON.stringify({
+        model: "gpt-test",
+        stream: false,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    const json = await response.json() as { error?: { message?: string; type?: string }; choices?: unknown };
+    expect(json.error?.message ?? "").toContain("provider blew up");
+    expect(json.choices).toBeUndefined();
+  } finally {
+    server.stop(true);
+    upstream.stop(true);
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("streaming /v1/chat/completions does not clean-DONE after response.failed", async () => {
+  const upstream = Bun.serve({
+    port: 0,
+    fetch() {
+      const frames = [
+        `event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_fail" } })}\n\n`,
+        `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "hi" })}\n\n`,
+        `event: response.failed\ndata: ${JSON.stringify({ type: "response.failed", response: { status: "failed", error: { message: "stream boom" } } })}\n\n`,
+      ];
+      return new Response(frames.join(""), { headers: { "Content-Type": "text/event-stream" } });
+    },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    if (url.hostname === "chatgpt.com" && url.pathname.startsWith("/backend-api/codex")) {
+      return originalFetch(new URL(`${url.pathname.slice("/backend-api/codex".length)}${url.search}`, upstream.url), init);
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+  saveConfig({
+    port: 0,
+    defaultProvider: "openai",
+    providers: {
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authMode: "forward",
+        codexAccountMode: "direct",
+      },
+    },
+  } as OcxConfig);
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/chat/completions", server.url), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: ["Bear" + "er", "caller-direct-token"].join(" "),
+      },
+      body: JSON.stringify({
+        model: "gpt-test",
+        stream: true,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    // Stream opens with 200, then body carries an error frame and ends without [DONE].
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).toContain("stream boom");
+    expect(text).toContain('"error"');
+    expect(text).not.toContain("[error]");
+    expect(text).not.toContain("data: [DONE]");
+  } finally {
+    server.stop(true);
+    upstream.stop(true);
+    globalThis.fetch = originalFetch;
+  }
+});

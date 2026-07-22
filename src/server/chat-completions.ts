@@ -10,6 +10,7 @@ import { ChatCompletionsRequestError, chatCompletionsToResponsesBody } from "../
 import {
   chatCompletionsErrorResponse,
   collectChatCompletion,
+  isChatCompletionsStreamError,
   responsesJsonToChatCompletion,
   responsesSseToChatCompletionsSse,
 } from "../chat/outbound";
@@ -183,6 +184,8 @@ export async function handleChatCompletions(
   if (contentType.includes("text/event-stream") && response.body) {
     const chatSse = responsesSseToChatCompletionsSse(response.body, requestedModel);
     if (stream) {
+      // Stream failures surface as an error SSE frame then abort the body — never a
+      // success completion that embeds `[error] ...` + clean [DONE].
       return new Response(chatSse, {
         status: 200,
         headers: {
@@ -192,11 +195,22 @@ export async function handleChatCompletions(
         },
       });
     }
-    const completion = await collectChatCompletion(chatSse, requestedModel);
-    return new Response(JSON.stringify(completion), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
+    try {
+      const completion = await collectChatCompletion(chatSse, requestedModel);
+      return new Response(JSON.stringify(completion), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (err) {
+      if (isChatCompletionsStreamError(err)) {
+        return chatCompletionsErrorResponse(err.status, err.message, err.type);
+      }
+      return chatCompletionsErrorResponse(
+        502,
+        err instanceof Error ? err.message : String(err),
+        "server_error",
+      );
+    }
   }
 
   // Defensive: JSON despite stream:true.

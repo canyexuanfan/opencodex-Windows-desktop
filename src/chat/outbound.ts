@@ -62,6 +62,42 @@ export function chatCompletionsErrorResponse(status: number, message: string, ty
   });
 }
 
+/** Thrown when a Chat Completions SSE stream ends in a typed failure/truncation. */
+export class ChatCompletionsStreamError extends Error {
+  readonly status: number;
+  readonly type: string;
+  readonly code: string | null;
+
+  constructor(message: string, options: { status?: number; type?: string; code?: string | null } = {}) {
+    super(message);
+    this.name = "ChatCompletionsStreamError";
+    this.status = options.status ?? 502;
+    this.type = options.type ?? "server_error";
+    this.code = options.code ?? null;
+  }
+}
+
+export function isChatCompletionsStreamError(err: unknown): err is ChatCompletionsStreamError {
+  return err instanceof ChatCompletionsStreamError;
+}
+
+function streamErrorStatus(message: string): number {
+  const lower = message.toLowerCase();
+  if (lower.includes("truncated")) return 502;
+  if (lower.includes("rate") || lower.includes("429")) return 429;
+  if (lower.includes("unauthor") || lower.includes("401") || lower.includes("api key")) return 401;
+  if (lower.includes("not found") || lower.includes("404")) return 404;
+  if (lower.includes("invalid") || lower.includes("400")) return 400;
+  return 502;
+}
+
+function streamErrorType(status: number): string {
+  if (status === 401) return "authentication_error";
+  if (status === 429) return "rate_limit_error";
+  if (status >= 500) return "server_error";
+  return "invalid_request_error";
+}
+
 function dataFrame(payload: Rec | "[DONE]"): string {
   if (payload === "[DONE]") return "data: [DONE]\n\n";
   return `data: ${JSON.stringify(payload)}\n\n`;
@@ -101,7 +137,11 @@ export function responsesSseToChatCompletionsSse(
 
   return new ReadableStream<Uint8Array>({
     start(controller) {
-      const emit = (payload: Rec | "[DONE]") => controller.enqueue(encoder.encode(dataFrame(payload)));
+      let failed = false;
+      const emit = (payload: Rec | "[DONE]") => {
+        if (failed) return;
+        controller.enqueue(encoder.encode(dataFrame(payload)));
+      };
       const ensureRole = () => {
         if (started) return;
         started = true;
@@ -137,13 +177,30 @@ export function responsesSseToChatCompletionsSse(
       const fail = (message: string) => {
         if (terminated) return;
         terminated = true;
-        ensureRole();
-        // Mid-stream error as a final frame with finish_reason stop, then DONE.
-        // Clients that only parse deltas still terminate cleanly.
-        const frame = chunkBase(id, model, created);
-        frame.choices = [{ index: 0, delta: { content: `\n\n[error] ${message}` }, finish_reason: "stop" }];
-        emit(frame);
-        emit("[DONE]");
+        failed = true;
+        // OpenAI-compatible clients need a real error event, not a success completion
+        // that embeds `[error] ...` text followed by a clean [DONE].
+        // Deliver the error frame then close the stream abnormally (no [DONE]).
+        // Do not controller.error() — that can drop already-enqueued bytes from consumers
+        // like response.text().
+        const status = streamErrorStatus(message);
+        const type = streamErrorType(status);
+        try {
+          controller.enqueue(encoder.encode(dataFrame({
+            error: {
+              message,
+              type,
+              param: null,
+              code: status === 401 ? "invalid_api_key"
+                : status === 404 ? "model_not_found"
+                : status === 429 ? "rate_limit_exceeded"
+                : null,
+            },
+          })));
+        } catch {
+          /* controller may already be closed */
+        }
+        try { controller.close(); } catch { /* already closed */ }
       };
 
       const handleFrame = (eventName: string, data: Rec) => {
@@ -220,22 +277,34 @@ export function responsesSseToChatCompletionsSse(
               const args = typeof item.arguments === "string" ? item.arguments : "";
               if (!callId) break;
               let toolIndex = toolIndexByCallId.get(callId);
-              if (toolIndex === undefined) {
-                // No prior added event — emit a complete tool call chunk.
+              const isNew = toolIndex === undefined;
+              if (isNew) {
+                // No prior added event — register and emit a complete tool call chunk.
                 toolIndex = nextToolIndex++;
                 toolIndexByCallId.set(callId, toolIndex);
+              }
+              if (typeof item.id === "string") toolIndexByItemId.set(item.id, toolIndex);
+              // Last-write-wins: the done-frame snapshot is authoritative final arguments.
+              // Emit a final arguments snapshot so clients that only saw partial deltas
+              // (or no deltas) still get the correct tool call payload.
+              if (args.length > 0 || isNew) {
                 ensureRole();
+                const toolCall: Rec = {
+                  index: toolIndex,
+                  function: { arguments: args },
+                };
+                if (isNew) {
+                  toolCall.id = callId;
+                  toolCall.type = "function";
+                  (toolCall.function as Rec).name = name;
+                } else if (name) {
+                  // Some providers only put the final name on the done frame.
+                  (toolCall.function as Rec).name = name;
+                }
                 const frame = chunkBase(id, model, created);
                 frame.choices = [{
                   index: 0,
-                  delta: {
-                    tool_calls: [{
-                      index: toolIndex,
-                      id: callId,
-                      type: "function",
-                      function: { name, arguments: args },
-                    }],
-                  },
+                  delta: { tool_calls: [toolCall] },
                   finish_reason: null,
                 }];
                 emit(frame);
@@ -294,14 +363,15 @@ export function responsesSseToChatCompletionsSse(
               handleFrame(eventName, data);
             }
           }
-          if (!cancelled && !terminated) {
-            fail("upstream stream ended before a terminal frame (truncated response)");
-          }
         } catch (err) {
           fail(err instanceof Error ? err.message : String(err));
         } finally {
           reader?.releaseLock();
-          if (!cancelled) {
+          if (!cancelled && !terminated) {
+            fail("upstream stream ended before a terminal frame (truncated response)");
+          }
+          // Success path: close after [DONE]. Failure path closes inside fail().
+          if (!cancelled && terminated && !failed) {
             try { controller.close(); } catch { /* already closed */ }
           }
         }
@@ -395,10 +465,18 @@ export async function collectChatCompletion(
   const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
   let finishReason = "stop";
   let usage: unknown;
+  let streamError: ChatCompletionsStreamError | null = null;
   const reader = stream.getReader();
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      let readResult: ReadableStreamReadResult<Uint8Array>;
+      try {
+        readResult = await reader.read();
+      } catch (err) {
+        if (isChatCompletionsStreamError(err)) throw err;
+        throw new ChatCompletionsStreamError(err instanceof Error ? err.message : String(err));
+      }
+      const { done, value } = readResult;
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       let sep: number;
@@ -412,6 +490,15 @@ export async function collectChatCompletion(
           let parsed: unknown;
           try { parsed = JSON.parse(data); } catch { continue; }
           if (!isRec(parsed)) continue;
+          if (isRec(parsed.error)) {
+            const message = typeof parsed.error.message === "string"
+              ? parsed.error.message
+              : "upstream request failed";
+            const type = typeof parsed.error.type === "string" ? parsed.error.type : "server_error";
+            const status = streamErrorStatus(message);
+            streamError = new ChatCompletionsStreamError(message, { status, type });
+            continue;
+          }
           if (parsed.usage) usage = parsed.usage;
           const choices = Array.isArray(parsed.choices) ? parsed.choices : [];
           const choice = isRec(choices[0]) ? choices[0] : null;
@@ -428,8 +515,15 @@ export async function collectChatCompletion(
               const current = toolCalls.get(index) ?? { id: "", name: "", arguments: "" };
               if (typeof tc.id === "string") current.id = tc.id;
               const fn = isRec(tc.function) ? tc.function : {};
-              if (typeof fn.name === "string") current.name += fn.name;
-              if (typeof fn.arguments === "string") current.arguments += fn.arguments;
+              // Done-frame final arguments are authoritative last-write-wins snapshots.
+              if (typeof fn.name === "string" && fn.name.length > 0) current.name = fn.name;
+              if (typeof fn.arguments === "string") {
+                if (fn.arguments.startsWith("{") || fn.arguments.startsWith("[") || current.arguments.length === 0) {
+                  current.arguments = fn.arguments;
+                } else {
+                  current.arguments += fn.arguments;
+                }
+              }
               toolCalls.set(index, current);
             }
           }
@@ -439,6 +533,7 @@ export async function collectChatCompletion(
   } finally {
     reader.releaseLock();
   }
+  if (streamError) throw streamError;
 
   const message: Rec = {
     role: "assistant",
