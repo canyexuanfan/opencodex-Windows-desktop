@@ -264,18 +264,3 @@ jobs:
               "",
               "Once the report passes the automated checks, it will be reopened automatically unless a maintainer has changed its state.",
             ].join("\n"));
-            // If headings were stripped but the form label is still present,
-            // treat the issue as that kind so contributors cannot bypass
-            // validation by editing out headings after submission.
-            const labelBasedKind = (() => {
-              if (labels.includes("bug")) return "bug";
-              if (labels.includes("provider-compatibility")) return "provider-compatibility";
-              if (labels.includes("documentation")) return "documentation";
-              if (labels.includes("enhancement")) return "feature";
-              return null;
-            })();
-            if (!kind && !labelBasedKind) {
-              core.info("Issue is not a structured form; skipping validation.");
-              return;
-            }
-            const resolvedKind = kind ?? labelBasedKind;
