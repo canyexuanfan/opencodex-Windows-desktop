@@ -64,6 +64,18 @@ Claims awaiting Tier-2 source proof:
 - CLAIM: The official agy CLI exposes only one `Claude Opus 4.6 (Thinking)` entry — no effort variants in the catalog. But CLIProxyAPI translates effort for Claude on Antigravity via `thinkingConfig`.
 - SOURCE: [Google Codelab: Antigravity CLI](https://codelabs.developers.google.com/antigravity-cli-hands-on?hl=en) — TIER 2
 
+### Claude Sonnet 4.6 effort support — CONFIRMED (added post-implementation)
+
+- CLAIM: Sonnet 4.6 supports adaptive thinking with `low/medium/high/max` effort, same as Opus 4.6.
+- SOURCE: [Anthropic Adaptive thinking docs](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking) — TIER 2
+- CLAIM: The agy CLI exposes `Claude Sonnet 4.6 (Thinking)` as a catalog entry alongside the base entry.
+- SOURCE: [Google Antigravity model catalog](https://antigravity.google/docs/models) — TIER 2
+- CLAIM: CLIProxyAPI applies thinkingConfig to Claude models based on capability, not suffix — works for both Sonnet and Opus.
+- SOURCE: [CLIProxyAPI Antigravity applier](https://github.com/router-for-me/CLIProxyAPI/blob/main/internal/thinking/provider/antigravity/apply.go) — TIER 2
+- CLAIM: CCA validates thinking configuration on the base `claude-sonnet-4-6` ID (validation error proves the config reaches the backend).
+- SOURCE: [opencode-antigravity-auth issue #461](https://github.com/NoeFabris/opencode-antigravity-auth/issues/461) — TIER 2
+- Implementation: `claude-sonnet-4-6` added to `ANTIGRAVITY_MODEL_EFFORTS` with `[low, medium, high, max]`; resolver generalized from Opus-only to all Claude models via `/^claude-/` prefix check. Commit `03eecc4a`.
+
 ### CLIProxyAPI routing pattern
 
 - CLAIM: `client suffix/body effort → canonical ThinkingConfig → Antigravity request.generationConfig.thinkingConfig.{thinkingLevel|thinkingBudget}`
