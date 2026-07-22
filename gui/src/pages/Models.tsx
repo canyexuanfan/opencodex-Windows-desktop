@@ -1172,6 +1172,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
           </aside>
           <main className="models-workspace-main">
             {controlsBlock}
+            {combosBlock}
             {
               // eslint-disable-next-line react-hooks/refs -- The hover ref is only read by row event handlers nested in this renderer.
               visibleGroups.map(([provider, rows]) => renderGroup(provider, rows))
