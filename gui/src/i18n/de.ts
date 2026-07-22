@@ -20,6 +20,8 @@ export const de = {
   "theme.system": "System",
   "lang.label": "Sprache",
   "dash.subtitle": "Live-Status des lokalen opencodex-Proxys, seiner Anbieter und der in Codex gerouteten Modelle.",
+  "dash.workspace.overview": "Übersicht",
+  "dash.workspace.sections": "Abschnitte",
   "dash.status": "Status",
   "dash.online": "Online",
   "dash.offline": "Offline",

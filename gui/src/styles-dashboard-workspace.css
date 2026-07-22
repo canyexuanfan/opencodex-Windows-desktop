@@ -1,0 +1,114 @@
+/* ============================================================================
+   dashboard-workspace — isolated stylesheet (mirrors providers-workspace layout DNA)
+   Namespace: dashboard-workspace-  |  widgets: dbw-
+   Uses only design tokens from styles.css. No gradients.
+   ============================================================================ */
+
+.main-inner:has(.dashboard-workspace-shell) {
+  max-width: 1200px;
+}
+
+.dashboard-workspace-shell {
+  width: 100%;
+  min-width: 0;
+}
+
+.dashboard-workspace-root {
+  display: grid;
+  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  gap: var(--space-4);
+  width: 100%;
+  max-width: 100%;
+  min-height: 480px;
+}
+
+/* ── Rail ─────────────────────────────────────────────── */
+
+.dashboard-workspace-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  border-right: 1px solid var(--border);
+  padding-right: var(--space-3);
+  min-width: 0;
+}
+
+.dashboard-workspace-rail-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dashboard-workspace-rail-title {
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  color: var(--text);
+}
+
+.dashboard-workspace-rail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+}
+
+.dashboard-workspace-rail-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  width: 100%;
+  min-height: 46px;
+  appearance: none;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: var(--space-1-5) var(--space-2);
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  overflow: hidden;
+}
+
+.dashboard-workspace-rail-row:hover {
+  background: var(--surface-2);
+}
+
+.dashboard-workspace-rail-row--selected {
+  background: var(--surface-2);
+  outline: 1px solid var(--border);
+}
+
+.dashboard-workspace-rail-name {
+  font-size: var(--text-body);
+  font-weight: var(--weight-medium);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Main pane ────────────────────────────────────────── */
+
+.dashboard-workspace-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+/* ── Responsive ───────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .dashboard-workspace-root {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-workspace-rail {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding-right: 0;
+    padding-bottom: var(--space-3);
+  }
+}

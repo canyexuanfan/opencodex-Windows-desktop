@@ -175,6 +175,24 @@ function useModalDialog(open: boolean, triggerRef: RefObject<HTMLButtonElement |
 
 export default function Dashboard({ apiBase }: { apiBase: string }) {
   const { locale, t } = useI18n();
+  // Workspace vs Classic: localStorage is the source of truth (same pattern as Providers).
+  const [workspaceView, setWorkspaceView] = useState(() => {
+    try {
+      return localStorage.getItem("ocx-dashboard-view") === "workspace";
+    } catch {
+      return false;
+    }
+  });
+  const [selectedSection, setSelectedSection] = useState("overview");
+  const toggleWorkspace = () => {
+    const next = !workspaceView;
+    try {
+      localStorage.setItem("ocx-dashboard-view", next ? "workspace" : "classic");
+    } catch {
+      /* ignore */
+    }
+    setWorkspaceView(next);
+  };
   const [health, setHealth] = useState<HealthData | null>(null);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -555,560 +573,628 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     }
   };
 
-  return (
+  const overviewSection = (
     <>
-      <div className="page-head"><h2>{t("nav.dashboard")}</h2></div>
-      <p className="page-sub">{t("dash.subtitle")}</p>
-
-      <div className="stat-row">
-        <div className="stat">
-          <div className="label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            {t("dash.multiAgent")}
-            <button
-              ref={maHelpTriggerRef}
-              type="button"
-              className="btn btn-ghost btn-sm"
-              style={{ width: 24, height: 24, minWidth: 24, flex: "0 0 24px", padding: 0, borderRadius: "var(--radius-pill)", color: "var(--muted)" }}
-              onClick={() => setMaHelpOpen(true)}
-              aria-label={t("dash.multiAgent")}
-              aria-haspopup="dialog"
-              aria-controls="multi-agent-help-dialog"
-              aria-expanded={maHelpOpen}
-            >
-              <IconInfo width={14} height={14} aria-hidden="true" />
-            </button>
-          </div>
-          <div className="value" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <div role="radiogroup" aria-label={t("dash.multiAgent")} style={{ display: "inline-flex", borderRadius: "var(--radius-pill)", background: "var(--surface-soft, var(--raised))", padding: 3, gap: 2 }}>
-              {(["v1", "default", "v2"] as const).map(mode => (
-                <button
-                  key={mode}
-                  type="button"
-                  role="radio"
-                  aria-checked={maMode === mode}
-                  className={`btn btn-sm text-caption${maMode === mode ? " btn-primary" : " btn-ghost"}`}
-                  style={{ borderRadius: "var(--radius-pill)", minWidth: 36, padding: "5px 10px", border: "none", background: maMode === mode ? undefined : "transparent", color: maMode === mode ? undefined : "var(--muted)" }}
-                  disabled={maBusy}
-                  onClick={() => void switchMaMode(mode)}
-                >{mode === "default" ? "base" : mode}</button>
-              ))}
-            </div>
-          </div>
-        </div>
-        <div className="stat">
-          <div className="label">{t("dash.status")}</div>
-          <div className="value" style={{ display: "flex", alignItems: "center", gap: 9, color: online ? "var(--green)" : "var(--red)" }}>
-            <span className={`dot ${online ? "dot-green" : "dot-red"}`} />{online ? t("dash.online") : t("dash.offline")}
-          </div>
-        </div>
-        <div className="stat"><div className="label">{t("dash.version")}</div><div className="value mono">{health?.version ?? "—"}</div></div>
-        <div className="stat"><div className="label">{t("dash.uptime")}</div><div className="value mono">{health ? formatUptime(health.uptime, locale) : "—"}</div></div>
-        <div className="stat"><div className="label">{t("dash.providers")}</div><div className="value">{providers.length}</div></div>
-        <div className="stat">
-          <div className="label">{t("dash.tokens30d")}</div>
-          <div className="value mono">{usage30d && usage30d.summary.requests > 0 ? formatTokens(usage30d.summary.totalTokens, locale) : "—"}</div>
-          {usage30d && usage30d.summary.requests > 0 && (
-            <div className="muted text-label" style={{ marginTop: 2 }}>
-              {t("dash.coverage").replace("{pct}", `${Math.round(usage30d.summary.coverageRatio * 100)}%`)}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {projectConfigWarnings.length > 0 && (
-        <div className="notice notice-err maintenance-notice" style={{ marginBottom: 24 }} role="alert">
-          <IconAlert />
-          <div>
-            <div className="font-semibold">{t("dash.projectConfigTitle")}</div>
-            <div className="muted text-control" style={{ marginTop: 4 }}>{t("dash.projectConfigHint")}</div>
-            <ul className="text-control" style={{ margin: "10px 0 0", paddingLeft: 18 }}>
-              {projectConfigWarnings.map(g => (
-                <li key={g.path} style={{ marginBottom: 8 }}>
-                  <code>{g.path}</code> — {g.issues.join(", ")}
-                  <div className="muted" style={{ marginTop: 2 }}>{g.bypass}</div>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      )}
-
-      {maMode !== "v1" && (
-        <div className="panel" style={{ marginBottom: 24 }}>
-          <div className="injection-head">
-            <span className="injection-label" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-              {t("dash.effortCapLabel")}
-              <span style={{ position: "relative", display: "inline-flex" }}>
-                <button
-                  ref={effortCapHelpTriggerRef}
-                  type="button"
-                  className="btn btn-ghost btn-sm"
-                  style={{ width: 22, height: 22, minWidth: 22, padding: 0, borderRadius: "var(--radius-pill)", color: "var(--muted)" }}
-                  onClick={() => setEffortCapHelpOpen(open => !open)}
-                  aria-label={t("dash.effortCapLabel")}
-                  aria-expanded={effortCapHelpOpen}
-                  aria-haspopup="dialog"
-                  aria-controls="effort-cap-help-dialog"
-                >
-                  <IconInfo width={13} height={13} aria-hidden="true" />
-                </button>
-                <dialog
-                  ref={effortCapHelpDialogRef}
-                  id="effort-cap-help-dialog"
-                  className="help-popup text-control font-regular leading-body"
-                  style={{ position: "absolute", top: "calc(100% + 8px)", left: 0, width: "min(360px, calc(100vw - 48px))", margin: 0, padding: "12px 16px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", background: "var(--bg)", boxShadow: "0 8px 24px rgba(0, 0, 0, 0.14)", color: "var(--text)", zIndex: 10 }}
-                  aria-labelledby="effort-cap-help-text"
-                  onCancel={event => { event.preventDefault(); setEffortCapHelpOpen(false); }}
-                >
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-icon"
-                    style={{ position: "absolute", top: 4, right: 4, width: 24, height: 24, minWidth: 24 }}
-                    onClick={() => setEffortCapHelpOpen(false)}
-                    aria-label={t("common.close")}
-                  >
-                    <IconX width={14} height={14} />
-                  </button>
-                  <div id="effort-cap-help-text" style={{ paddingRight: 16 }}>{t("dash.effortCapHelp")}</div>
-                </dialog>
-              </span>
-            </span>
-          <Select
-            value={effortCap}
-            options={[
-              { value: "", label: t("dash.effortCapNone") },
-              ...EFFORT_CAP_LEVELS.map(e => ({ value: e, label: e })),
-            ]}
-            onChange={async (v) => {
-              if (effortCapSaving) return;
-              setEffortCapSaving(true);
-              try {
-                const res = await fetch(`${apiBase}/api/effort-caps`, {
-                  method: "PUT",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ effortCap: v || null }),
-                });
-                if (res.ok) {
-                  const data = await res.json() as { ok: boolean; effortCap?: string | null; subagentEffortCap?: string | null };
-                  setEffortCap(data.effortCap ?? "");
-                  setSubagentEffortCap(data.subagentEffortCap ?? "");
-                }
-              } catch { /* ignore */ }
-              finally { setEffortCapSaving(false); }
-            }}
-            disabled={effortCapSaving}
-            label={t("dash.effortCapLabel")}
-          />
-          <Select
-            value={subagentEffortCap}
-            options={[
-              { value: "", label: t("dash.effortCapNone") },
-              ...EFFORT_CAP_LEVELS.map(e => ({ value: e, label: e })),
-            ]}
-            onChange={async (v) => {
-              if (effortCapSaving) return;
-              setEffortCapSaving(true);
-              try {
-                const res = await fetch(`${apiBase}/api/effort-caps`, {
-                  method: "PUT",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ subagentEffortCap: v || null }),
-                });
-                if (res.ok) {
-                  const data = await res.json() as { ok: boolean; effortCap?: string | null; subagentEffortCap?: string | null };
-                  setEffortCap(data.effortCap ?? "");
-                  setSubagentEffortCap(data.subagentEffortCap ?? "");
-                }
-              } catch { /* ignore */ }
-              finally { setEffortCapSaving(false); }
-            }}
-            disabled={effortCapSaving}
-            label={t("dash.subagentEffortCapLabel")}
-          />
-          </div>
-        </div>
-      )}
-
-      <div className="panel" style={{ marginBottom: 24 }}>
-        <div className="injection-head">
-          <span className="injection-label">{t("dash.injectionLabel")}</span>
-          <Select
-            value={injectionModel}
-            options={[
-              { value: "", label: t("dash.injectionNone") },
-              ...injectionAvailable.map(m => ({ value: m.namespaced, label: `${m.provider} / ${m.model}` })),
-            ]}
-            onChange={async (v) => {
-              if (injectionSaving) return;
-              setInjectionSaving(true);
-              try {
-                const res = await fetch(`${apiBase}/api/injection-model`, {
-                  method: "PUT",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ model: v || null, effort: injectionEffort || null }),
-                });
-                if (res.ok) {
-                  const data = await res.json() as { model?: string | null; effort?: string | null };
-                  setInjectionModel(data.model ?? "");
-                  setInjectionEffort(data.effort ?? "");
-                }
-              } catch { /* ignore */ }
-              finally { setInjectionSaving(false); }
-            }}
-            disabled={injectionSaving}
-            label={t("dash.injectionLabel")}
-          />
-          {injectionModel && injectionEfforts.length > 0 && (
-            <Select
-              value={injectionEffort}
-              options={[
-                { value: "", label: t("dash.injectionEffortNone") },
-                ...injectionEfforts.map(e => ({ value: e, label: e })),
-              ]}
-              onChange={async (v) => {
-                if (injectionSaving) return;
-                setInjectionSaving(true);
-                try {
-                  const res = await fetch(`${apiBase}/api/injection-model`, {
-                    method: "PUT",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ model: injectionModel || null, effort: v || null }),
-                  });
-                  if (res.ok) {
-                    const data = await res.json() as { model?: string | null; effort?: string | null };
-                    setInjectionModel(data.model ?? "");
-                    setInjectionEffort(data.effort ?? "");
-                  }
-                } catch { /* ignore */ }
-                finally { setInjectionSaving(false); }
-              }}
-              disabled={injectionSaving}
-              label={t("dash.injectionEffortLabel")}
-            />
-          )}
-          {injectionModel && <span className="badge badge-green text-micro">{t("dash.injectionActive")}</span>}
-        </div>
-        <div className="muted text-control" style={{ marginTop: 6 }}>{t("dash.injectionHint")}</div>
-      </div>
-
-      <div className="panel maintenance-panel" style={{ marginBottom: 24 }}>
-        <div className="spread maintenance-head">
-          <div>
-            <div className="font-semibold">{t("dash.maintenance")}</div>
-            <div className="muted text-control" style={{ marginTop: 3 }}>{t("dash.maintenanceHint")}</div>
-          </div>
-          <div className="maintenance-actions">
-            <button type="button" className="btn btn-ghost" onClick={runSync} disabled={syncing}>
-              <IconRefresh /> {syncing ? t("dash.syncing") : t("dash.syncModels")}
-            </button>
-            <button
-              ref={updateTriggerRef}
-              type="button"
-              className="btn btn-primary"
-              onClick={openUpdateDialog}
-              disabled={updateLoading}
-              aria-haspopup="dialog"
-              aria-controls="dashboard-update-dialog"
-              aria-expanded={updateOpen}
-            >
-              <IconExternal /> {t("dash.checkUpdate")}
-            </button>
-          </div>
-        </div>
-        {syncResult && (
-          <div className="notice notice-ok maintenance-notice" role="status">
-            <IconRefresh />
-            <span>
-              {t("dash.syncOk", { count: syncResult.added })}
-              {syncResult.warning ? ` ${syncResult.warning}` : ""}
-              {syncResult.staleAppServerHint ? ` ${t("dash.syncStaleHint")}` : ""}
-            </span>
-          </div>
-        )}
-        {syncError && (
-          <div className="notice notice-err maintenance-notice" role="status">
-            <IconAlert /><span>{t("dash.syncFailed", { error: syncError })}</span>
-          </div>
-        )}
-        {updateJob && (
-          <div className={`notice ${updateJob.status === "failed" ? "notice-err" : "notice-ok"} maintenance-notice`} role="status">
-            {updateJob.status === "failed" ? <IconAlert /> : <IconRefresh />}
-            <span>
-              {updateJobLabel(updateJob.status, t)}
-              {updateJob.latestVersion ? ` ${updateJob.currentVersion} -> ${updateJob.latestVersion}.` : ""}
-              {reconnecting ? ` ${t("dash.updateReconnecting")}` : ""}
-              {updateJob.error ? ` ${updateJob.error}` : ""}
-            </span>
-          </div>
-        )}
-      </div>
-
-      <div className="panel" style={{ marginBottom: 24 }}>
-        <div className="spread">
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="font-semibold">{t("dash.codexAutoStart")}</div>
-            <div className="muted setting-hint">{t("dash.codexAutoStartHint")}</div>
-          </div>
+<div className="stat-row">
+  <div className="stat">
+    <div className="label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      {t("dash.multiAgent")}
+      <button
+        ref={maHelpTriggerRef}
+        type="button"
+        className="btn btn-ghost btn-sm"
+        style={{ width: 24, height: 24, minWidth: 24, flex: "0 0 24px", padding: 0, borderRadius: "var(--radius-pill)", color: "var(--muted)" }}
+        onClick={() => setMaHelpOpen(true)}
+        aria-label={t("dash.multiAgent")}
+        aria-haspopup="dialog"
+        aria-controls="multi-agent-help-dialog"
+        aria-expanded={maHelpOpen}
+      >
+        <IconInfo width={14} height={14} aria-hidden="true" />
+      </button>
+    </div>
+    <div className="value" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div role="radiogroup" aria-label={t("dash.multiAgent")} style={{ display: "inline-flex", borderRadius: "var(--radius-pill)", background: "var(--surface-soft, var(--raised))", padding: 3, gap: 2 }}>
+        {(["v1", "default", "v2"] as const).map(mode => (
           <button
+            key={mode}
             type="button"
-            className={`switch ${settings?.codexAutoStart ?? true ? "on" : ""}`}
-            onClick={toggleCodexAutoStart}
-            disabled={!settings || settingsSaving}
-            aria-label={t("dash.codexAutoStart")}
-            aria-pressed={settings?.codexAutoStart ?? true}
+            role="radio"
+            aria-checked={maMode === mode}
+            className={`btn btn-sm text-caption${maMode === mode ? " btn-primary" : " btn-ghost"}`}
+            style={{ borderRadius: "var(--radius-pill)", minWidth: 36, padding: "5px 10px", border: "none", background: maMode === mode ? undefined : "transparent", color: maMode === mode ? undefined : "var(--muted)" }}
+            disabled={maBusy}
+            onClick={() => void switchMaMode(mode)}
+          >{mode === "default" ? "base" : mode}</button>
+        ))}
+      </div>
+    </div>
+  </div>
+  <div className="stat">
+    <div className="label">{t("dash.status")}</div>
+    <div className="value" style={{ display: "flex", alignItems: "center", gap: 9, color: online ? "var(--green)" : "var(--red)" }}>
+      <span className={`dot ${online ? "dot-green" : "dot-red"}`} />{online ? t("dash.online") : t("dash.offline")}
+    </div>
+  </div>
+  <div className="stat"><div className="label">{t("dash.version")}</div><div className="value mono">{health?.version ?? "—"}</div></div>
+  <div className="stat"><div className="label">{t("dash.uptime")}</div><div className="value mono">{health ? formatUptime(health.uptime, locale) : "—"}</div></div>
+  <div className="stat"><div className="label">{t("dash.providers")}</div><div className="value">{providers.length}</div></div>
+  <div className="stat">
+    <div className="label">{t("dash.tokens30d")}</div>
+    <div className="value mono">{usage30d && usage30d.summary.requests > 0 ? formatTokens(usage30d.summary.totalTokens, locale) : "—"}</div>
+    {usage30d && usage30d.summary.requests > 0 && (
+      <div className="muted text-label" style={{ marginTop: 2 }}>
+        {t("dash.coverage").replace("{pct}", `${Math.round(usage30d.summary.coverageRatio * 100)}%`)}
+      </div>
+    )}
+  </div>
+</div>
+
+{projectConfigWarnings.length > 0 && (
+  <div className="notice notice-err maintenance-notice" style={{ marginBottom: 24 }} role="alert">
+    <IconAlert />
+    <div>
+      <div className="font-semibold">{t("dash.projectConfigTitle")}</div>
+      <div className="muted text-control" style={{ marginTop: 4 }}>{t("dash.projectConfigHint")}</div>
+      <ul className="text-control" style={{ margin: "10px 0 0", paddingLeft: 18 }}>
+        {projectConfigWarnings.map(g => (
+          <li key={g.path} style={{ marginBottom: 8 }}>
+            <code>{g.path}</code> — {g.issues.join(", ")}
+            <div className="muted" style={{ marginTop: 2 }}>{g.bypass}</div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  </div>
+)}
+
+{maMode !== "v1" && (
+  <div className="panel" style={{ marginBottom: 24 }}>
+    <div className="injection-head">
+      <span className="injection-label" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+        {t("dash.effortCapLabel")}
+        <span style={{ position: "relative", display: "inline-flex" }}>
+          <button
+            ref={effortCapHelpTriggerRef}
+            type="button"
+            className="btn btn-ghost btn-sm"
+            style={{ width: 22, height: 22, minWidth: 22, padding: 0, borderRadius: "var(--radius-pill)", color: "var(--muted)" }}
+            onClick={() => setEffortCapHelpOpen(open => !open)}
+            aria-label={t("dash.effortCapLabel")}
+            aria-expanded={effortCapHelpOpen}
+            aria-haspopup="dialog"
+            aria-controls="effort-cap-help-dialog"
           >
-            <span className="knob" />
+            <IconInfo width={13} height={13} aria-hidden="true" />
           </button>
-        </div>
-      </div>
-
-      <div className="panel" style={{ marginBottom: 12 }}>
-        <div className="spread setting-row" style={{ alignItems: "flex-start" }}>
-          <div className="setting-copy" style={{ flex: 1 }}>
-            <div className="font-semibold">{t("dash.webSearchSidecar")}</div>
-            <div className="muted setting-hint">{t("dash.webSearchSidecarHint")}</div>
-          </div>
-          <div className="setting-controls">
-            <Select
-              value={sidecar?.webSearch.model ?? "gpt-5.6-luna"}
-              options={sidecarModels}
-              onChange={model => { void saveSidecar({ webSearch: { model, backend: sidecarBackendForModel(models, model) } }); }}
-              disabled={!sidecar || sidecarSaving}
-              label={t("dash.sidecarModel")}
-            />
-          </div>
-        </div>
-      </div>
-
-      <div className="panel" style={{ marginBottom: 24 }}>
-        <div className="spread setting-row">
-          <div className="setting-copy" style={{ flex: 1 }}>
-            <div className="font-semibold">{t("dash.visionSidecar")}</div>
-            <div className="muted setting-hint">{t("dash.visionSidecarHint")}</div>
-          </div>
-          <div className="setting-controls">
-            <Select
-              value={sidecar?.vision.model ?? "gpt-5.6-luna"}
-              options={sidecarModels}
-              onChange={model => { void saveSidecar({ vision: { model, backend: sidecarBackendForModel(models, model) } }); }}
-              disabled={!sidecar || sidecarSaving}
-              label={t("dash.sidecarModel")}
-            />
-          </div>
-        </div>
-      </div>
-
-      <div className="panel" style={{ marginBottom: 12 }}>
-        <div className="spread setting-row" style={{ alignItems: "center" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span className="font-semibold">{t("dash.shadowCallIntercept")}</span>
-            <span title={t("dash.shadowCallTooltip")} style={{ cursor: "help", opacity: 0.5 }}>ⓘ</span>
-            <code className="muted text-caption">⚠ 5.4-mini</code>
-          </div>
-          <div className="setting-controls" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <dialog
+            ref={effortCapHelpDialogRef}
+            id="effort-cap-help-dialog"
+            className="help-popup text-control font-regular leading-body"
+            style={{ position: "absolute", top: "calc(100% + 8px)", left: 0, width: "min(360px, calc(100vw - 48px))", margin: 0, padding: "12px 16px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", background: "var(--bg)", boxShadow: "0 8px 24px rgba(0, 0, 0, 0.14)", color: "var(--text)", zIndex: 10 }}
+            aria-labelledby="effort-cap-help-text"
+            onCancel={event => { event.preventDefault(); setEffortCapHelpOpen(false); }}
+          >
             <button
               type="button"
-              className={`switch ${shadowCall?.enabled ? "on" : ""}`}
-              onClick={() => saveShadowCall({ enabled: !shadowCall?.enabled })}
-              disabled={!shadowCall || shadowCallSaving}
-              aria-label={t("dash.shadowCallIntercept")}
-              aria-pressed={shadowCall?.enabled ?? false}
+              className="btn btn-ghost btn-icon"
+              style={{ position: "absolute", top: 4, right: 4, width: 24, height: 24, minWidth: 24 }}
+              onClick={() => setEffortCapHelpOpen(false)}
+              aria-label={t("common.close")}
             >
-              <span className="knob" />
+              <IconX width={14} height={14} />
             </button>
-            <Select
-              value={shadowCall?.model ?? ""}
-              options={[{ value: "", label: "—" }, ...models.map(m => ({ value: m.id, label: `${m.provider}/${m.id}` }))]}
-              onChange={v => { setShadowCall(c => c ? { ...c, model: v } : c); saveShadowCall({ model: v }); }}
-              disabled={!shadowCall || shadowCallSaving || !shadowCall?.enabled}
-              label={t("dash.shadowCallModel")}
-            />
-          </div>
-        </div>
-      </div>
+            <div id="effort-cap-help-text" style={{ paddingRight: 16 }}>{t("dash.effortCapHelp")}</div>
+          </dialog>
+        </span>
+      </span>
+    <Select
+      value={effortCap}
+      options={[
+        { value: "", label: t("dash.effortCapNone") },
+        ...EFFORT_CAP_LEVELS.map(e => ({ value: e, label: e })),
+      ]}
+      onChange={async (v) => {
+        if (effortCapSaving) return;
+        setEffortCapSaving(true);
+        try {
+          const res = await fetch(`${apiBase}/api/effort-caps`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ effortCap: v || null }),
+          });
+          if (res.ok) {
+            const data = await res.json() as { ok: boolean; effortCap?: string | null; subagentEffortCap?: string | null };
+            setEffortCap(data.effortCap ?? "");
+            setSubagentEffortCap(data.subagentEffortCap ?? "");
+          }
+        } catch { /* ignore */ }
+        finally { setEffortCapSaving(false); }
+      }}
+      disabled={effortCapSaving}
+      label={t("dash.effortCapLabel")}
+    />
+    <Select
+      value={subagentEffortCap}
+      options={[
+        { value: "", label: t("dash.effortCapNone") },
+        ...EFFORT_CAP_LEVELS.map(e => ({ value: e, label: e })),
+      ]}
+      onChange={async (v) => {
+        if (effortCapSaving) return;
+        setEffortCapSaving(true);
+        try {
+          const res = await fetch(`${apiBase}/api/effort-caps`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ subagentEffortCap: v || null }),
+          });
+          if (res.ok) {
+            const data = await res.json() as { ok: boolean; effortCap?: string | null; subagentEffortCap?: string | null };
+            setEffortCap(data.effortCap ?? "");
+            setSubagentEffortCap(data.subagentEffortCap ?? "");
+          }
+        } catch { /* ignore */ }
+        finally { setEffortCapSaving(false); }
+      }}
+      disabled={effortCapSaving}
+      label={t("dash.subagentEffortCapLabel")}
+    />
+    </div>
+  </div>
+)}
 
-      <div className="h-section">{t("dash.activeProviders")} <span className="count">{providers.length}</span></div>
-      {providers.length === 0 ? (
-        <EmptyState title={<Trans k="dash.noProviders" cmd="ocx init" />} />
-      ) : (
-        <div className="tbl-wrap">
-          <table className="tbl">
-            <thead><tr><th>{t("dash.col.name")}</th><th>{t("dash.col.adapter")}</th><th>{t("dash.col.baseUrl")}</th><th>{t("dash.col.model")}</th></tr></thead>
-            <tbody>
-              {providers.map(p => (
-                <tr key={p.name}>
-                  <td className="font-semibold">{p.name}</td>
-                  <td><span className="chip">{p.adapter}</span></td>
-                  <td className="muted mono text-label">{p.baseUrl}</td>
-                  <td className="muted">{p.defaultModel ?? "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+<div className="panel" style={{ marginBottom: 24 }}>
+  <div className="injection-head">
+    <span className="injection-label">{t("dash.injectionLabel")}</span>
+    <Select
+      value={injectionModel}
+      options={[
+        { value: "", label: t("dash.injectionNone") },
+        ...injectionAvailable.map(m => ({ value: m.namespaced, label: `${m.provider} / ${m.model}` })),
+      ]}
+      onChange={async (v) => {
+        if (injectionSaving) return;
+        setInjectionSaving(true);
+        try {
+          const res = await fetch(`${apiBase}/api/injection-model`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model: v || null, effort: injectionEffort || null }),
+          });
+          if (res.ok) {
+            const data = await res.json() as { model?: string | null; effort?: string | null };
+            setInjectionModel(data.model ?? "");
+            setInjectionEffort(data.effort ?? "");
+          }
+        } catch { /* ignore */ }
+        finally { setInjectionSaving(false); }
+      }}
+      disabled={injectionSaving}
+      label={t("dash.injectionLabel")}
+    />
+    {injectionModel && injectionEfforts.length > 0 && (
+      <Select
+        value={injectionEffort}
+        options={[
+          { value: "", label: t("dash.injectionEffortNone") },
+          ...injectionEfforts.map(e => ({ value: e, label: e })),
+        ]}
+        onChange={async (v) => {
+          if (injectionSaving) return;
+          setInjectionSaving(true);
+          try {
+            const res = await fetch(`${apiBase}/api/injection-model`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ model: injectionModel || null, effort: v || null }),
+            });
+            if (res.ok) {
+              const data = await res.json() as { model?: string | null; effort?: string | null };
+              setInjectionModel(data.model ?? "");
+              setInjectionEffort(data.effort ?? "");
+            }
+          } catch { /* ignore */ }
+          finally { setInjectionSaving(false); }
+        }}
+        disabled={injectionSaving}
+        label={t("dash.injectionEffortLabel")}
+      />
+    )}
+    {injectionModel && <span className="badge badge-green text-micro">{t("dash.injectionActive")}</span>}
+  </div>
+  <div className="muted text-control" style={{ marginTop: 6 }}>{t("dash.injectionHint")}</div>
+</div>
 
-      <div className="h-section">
-        {t("dash.availableModels")} <span className="count">{models.length}</span>
-        {modelsLoading && <span className="spin" style={{ marginLeft: 4 }} />}
-      </div>
-      {models.length === 0 && !modelsLoading ? (
-        <EmptyState title={t("dash.noModels")} />
-      ) : (
-        <div className="stack" style={{ gap: 16 }}>
-          {grouped.map(([provider, rows]) => (
-            <div key={provider} className="model-group">
-              <div className="model-group-head">{provider}<span className="count">{rows.length}</span></div>
-              <div className="model-grid">
-                {rows.map(m => (
-                  <div key={`${m.provider}/${m.id}`} className="model-card">
-                    <div className="id">{m.id}</div>
-                  </div>
-                ))}
-              </div>
+<div className="panel maintenance-panel" style={{ marginBottom: 24 }}>
+  <div className="spread maintenance-head">
+    <div>
+      <div className="font-semibold">{t("dash.maintenance")}</div>
+      <div className="muted text-control" style={{ marginTop: 3 }}>{t("dash.maintenanceHint")}</div>
+    </div>
+    <div className="maintenance-actions">
+      <button type="button" className="btn btn-ghost" onClick={runSync} disabled={syncing}>
+        <IconRefresh /> {syncing ? t("dash.syncing") : t("dash.syncModels")}
+      </button>
+      <button
+        ref={updateTriggerRef}
+        type="button"
+        className="btn btn-primary"
+        onClick={openUpdateDialog}
+        disabled={updateLoading}
+        aria-haspopup="dialog"
+        aria-controls="dashboard-update-dialog"
+        aria-expanded={updateOpen}
+      >
+        <IconExternal /> {t("dash.checkUpdate")}
+      </button>
+    </div>
+  </div>
+  {syncResult && (
+    <div className="notice notice-ok maintenance-notice" role="status">
+      <IconRefresh />
+      <span>
+        {t("dash.syncOk", { count: syncResult.added })}
+        {syncResult.warning ? ` ${syncResult.warning}` : ""}
+        {syncResult.staleAppServerHint ? ` ${t("dash.syncStaleHint")}` : ""}
+      </span>
+    </div>
+  )}
+  {syncError && (
+    <div className="notice notice-err maintenance-notice" role="status">
+      <IconAlert /><span>{t("dash.syncFailed", { error: syncError })}</span>
+    </div>
+  )}
+  {updateJob && (
+    <div className={`notice ${updateJob.status === "failed" ? "notice-err" : "notice-ok"} maintenance-notice`} role="status">
+      {updateJob.status === "failed" ? <IconAlert /> : <IconRefresh />}
+      <span>
+        {updateJobLabel(updateJob.status, t)}
+        {updateJob.latestVersion ? ` ${updateJob.currentVersion} -> ${updateJob.latestVersion}.` : ""}
+        {reconnecting ? ` ${t("dash.updateReconnecting")}` : ""}
+        {updateJob.error ? ` ${updateJob.error}` : ""}
+      </span>
+    </div>
+  )}
+</div>
+
+<div className="panel" style={{ marginBottom: 24 }}>
+  <div className="spread">
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div className="font-semibold">{t("dash.codexAutoStart")}</div>
+      <div className="muted setting-hint">{t("dash.codexAutoStartHint")}</div>
+    </div>
+    <button
+      type="button"
+      className={`switch ${settings?.codexAutoStart ?? true ? "on" : ""}`}
+      onClick={toggleCodexAutoStart}
+      disabled={!settings || settingsSaving}
+      aria-label={t("dash.codexAutoStart")}
+      aria-pressed={settings?.codexAutoStart ?? true}
+    >
+      <span className="knob" />
+    </button>
+  </div>
+</div>
+
+<div className="panel" style={{ marginBottom: 12 }}>
+  <div className="spread setting-row" style={{ alignItems: "flex-start" }}>
+    <div className="setting-copy" style={{ flex: 1 }}>
+      <div className="font-semibold">{t("dash.webSearchSidecar")}</div>
+      <div className="muted setting-hint">{t("dash.webSearchSidecarHint")}</div>
+    </div>
+    <div className="setting-controls">
+      <Select
+        value={sidecar?.webSearch.model ?? "gpt-5.6-luna"}
+        options={sidecarModels}
+        onChange={model => { void saveSidecar({ webSearch: { model, backend: sidecarBackendForModel(models, model) } }); }}
+        disabled={!sidecar || sidecarSaving}
+        label={t("dash.sidecarModel")}
+      />
+    </div>
+  </div>
+</div>
+
+<div className="panel" style={{ marginBottom: 24 }}>
+  <div className="spread setting-row">
+    <div className="setting-copy" style={{ flex: 1 }}>
+      <div className="font-semibold">{t("dash.visionSidecar")}</div>
+      <div className="muted setting-hint">{t("dash.visionSidecarHint")}</div>
+    </div>
+    <div className="setting-controls">
+      <Select
+        value={sidecar?.vision.model ?? "gpt-5.6-luna"}
+        options={sidecarModels}
+        onChange={model => { void saveSidecar({ vision: { model, backend: sidecarBackendForModel(models, model) } }); }}
+        disabled={!sidecar || sidecarSaving}
+        label={t("dash.sidecarModel")}
+      />
+    </div>
+  </div>
+</div>
+
+<div className="panel" style={{ marginBottom: 12 }}>
+  <div className="spread setting-row" style={{ alignItems: "center" }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <span className="font-semibold">{t("dash.shadowCallIntercept")}</span>
+      <span title={t("dash.shadowCallTooltip")} style={{ cursor: "help", opacity: 0.5 }}>ⓘ</span>
+      <code className="muted text-caption">⚠ 5.4-mini</code>
+    </div>
+    <div className="setting-controls" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <button
+        type="button"
+        className={`switch ${shadowCall?.enabled ? "on" : ""}`}
+        onClick={() => saveShadowCall({ enabled: !shadowCall?.enabled })}
+        disabled={!shadowCall || shadowCallSaving}
+        aria-label={t("dash.shadowCallIntercept")}
+        aria-pressed={shadowCall?.enabled ?? false}
+      >
+        <span className="knob" />
+      </button>
+      <Select
+        value={shadowCall?.model ?? ""}
+        options={[{ value: "", label: "—" }, ...models.map(m => ({ value: m.id, label: `${m.provider}/${m.id}` }))]}
+        onChange={v => { setShadowCall(c => c ? { ...c, model: v } : c); saveShadowCall({ model: v }); }}
+        disabled={!shadowCall || shadowCallSaving || !shadowCall?.enabled}
+        label={t("dash.shadowCallModel")}
+      />
+    </div>
+  </div>
+</div>
+
+    </>
+  );
+
+  const providersSection = (
+    <>
+<div className="h-section">{t("dash.activeProviders")} <span className="count">{providers.length}</span></div>
+{providers.length === 0 ? (
+  <EmptyState title={<Trans k="dash.noProviders" cmd="ocx init" />} />
+) : (
+  <div className="tbl-wrap">
+    <table className="tbl">
+      <thead><tr><th>{t("dash.col.name")}</th><th>{t("dash.col.adapter")}</th><th>{t("dash.col.baseUrl")}</th><th>{t("dash.col.model")}</th></tr></thead>
+      <tbody>
+        {providers.map(p => (
+          <tr key={p.name}>
+            <td className="font-semibold">{p.name}</td>
+            <td><span className="chip">{p.adapter}</span></td>
+            <td className="muted mono text-label">{p.baseUrl}</td>
+            <td className="muted">{p.defaultModel ?? "—"}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+)}
+
+    </>
+  );
+
+  const modelsSection = (
+    <>
+<div className="h-section">
+  {t("dash.availableModels")} <span className="count">{models.length}</span>
+  {modelsLoading && <span className="spin" style={{ marginLeft: 4 }} />}
+</div>
+{models.length === 0 && !modelsLoading ? (
+  <EmptyState title={t("dash.noModels")} />
+) : (
+  <div className="stack" style={{ gap: 16 }}>
+    {grouped.map(([provider, rows]) => (
+      <div key={provider} className="model-group">
+        <div className="model-group-head">{provider}<span className="count">{rows.length}</span></div>
+        <div className="model-grid">
+          {rows.map(m => (
+            <div key={`${m.provider}/${m.id}`} className="model-card">
+              <div className="id">{m.id}</div>
             </div>
           ))}
         </div>
-      )}
+      </div>
+    ))}
+  </div>
+)}
 
-      <dialog
-        ref={updateDialogRef}
-        id="dashboard-update-dialog"
-        className="modal-overlay"
-        style={{ display: updateOpen ? "flex" : "none", border: "none", margin: 0, maxWidth: "none", maxHeight: "none", width: "100%", height: "100%" }}
-        aria-labelledby="update-title"
-        onCancel={event => { event.preventDefault(); closeUpdateDialog(); }}
-      >
-          <div className="modal-card">
-            <div className="modal-head">
-              <h3 id="update-title">{t("dash.updateTitle")}</h3>
-              <button type="button" className="btn btn-ghost btn-icon" onClick={closeUpdateDialog} aria-label={t("common.cancel")}>
-                <IconX />
-              </button>
+    </>
+  );
+
+  const updateDialog = (
+    <>
+<dialog
+  ref={updateDialogRef}
+  id="dashboard-update-dialog"
+  className="modal-overlay"
+  style={{ display: updateOpen ? "flex" : "none", border: "none", margin: 0, maxWidth: "none", maxHeight: "none", width: "100%", height: "100%" }}
+  aria-labelledby="update-title"
+  onCancel={event => { event.preventDefault(); closeUpdateDialog(); }}
+>
+    <div className="modal-card">
+      <div className="modal-head">
+        <h3 id="update-title">{t("dash.updateTitle")}</h3>
+        <button type="button" className="btn btn-ghost btn-icon" onClick={closeUpdateDialog} aria-label={t("common.cancel")}>
+          <IconX />
+        </button>
+      </div>
+      <div className="modal-desc">{t("dash.updateDesc")}</div>
+      <div className="update-row">
+        <label className="field-label" htmlFor="update-channel">{t("dash.updateChannel")}</label>
+        <Select
+          value={updateChannel}
+          options={[{ value: "latest", label: "latest" }, { value: "preview", label: "preview" }]}
+          onChange={v => changeUpdateChannel(v as UpdateChannel)}
+          disabled={updateLoading}
+          label={t("dash.updateChannel")}
+        />
+      </div>
+      {updateLoading && <EmptyState className="update-empty" icon={<span className="spin" />} title={t("dash.updateChecking")} />}
+      {updateError && (
+        <div className="notice notice-err" role="status"><IconAlert /><span>{updateError}</span></div>
+      )}
+      {updateCheck && !updateLoading && (
+        <div className="update-box">
+          <div className="spread">
+            <div>
+              <div className="muted text-label">{t("dash.updateInstalled")}</div>
+              <div className="mono">{updateCheck.currentVersion}</div>
             </div>
-            <div className="modal-desc">{t("dash.updateDesc")}</div>
-            <div className="update-row">
-              <label className="field-label" htmlFor="update-channel">{t("dash.updateChannel")}</label>
-              <Select
-                value={updateChannel}
-                options={[{ value: "latest", label: "latest" }, { value: "preview", label: "preview" }]}
-                onChange={v => changeUpdateChannel(v as UpdateChannel)}
-                disabled={updateLoading}
-                label={t("dash.updateChannel")}
-              />
+            <div>
+              <div className="muted text-label">{t("dash.updateLatest")}</div>
+              <div className="mono">{updateCheck.latestVersion ?? "—"}</div>
             </div>
-            {updateLoading && <EmptyState className="update-empty" icon={<span className="spin" />} title={t("dash.updateChecking")} />}
-            {updateError && (
-              <div className="notice notice-err" role="status"><IconAlert /><span>{updateError}</span></div>
-            )}
-            {updateCheck && !updateLoading && (
-              <div className="update-box">
-                <div className="spread">
-                  <div>
-                    <div className="muted text-label">{t("dash.updateInstalled")}</div>
-                    <div className="mono">{updateCheck.currentVersion}</div>
-                  </div>
-                  <div>
-                    <div className="muted text-label">{t("dash.updateLatest")}</div>
-                    <div className="mono">{updateCheck.latestVersion ?? "—"}</div>
-                  </div>
-                  <span className={`badge ${updateCheck.updateAvailable ? "badge-green" : "badge-muted"}`}>
-                    {updateCheck.updateAvailable ? t("dash.updateAvailable") : t("dash.updateCurrent")}
-                  </span>
-                </div>
-                <div className="muted update-command">{t("dash.updateCommand")} <code className="chip">{updateCheck.command}</code></div>
-                {updateCheck.reason === "source_checkout" && (
-                  <div className="notice-warn" role="status"><IconAlert /> {t("dash.updateSource")}</div>
-                )}
-                {updateCheck.reason === "latest_unavailable" && (
-                  <div className="notice-warn" role="status">
-                    <IconAlert /> {t("dash.updateUnavailable")}
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      disabled={updateLoading}
-                      onClick={() => { void fetchUpdateCheck(updateChannel, true); }}
-                      style={{ marginLeft: 12 }}
-                    >
-                      <IconRefresh /> {t("dash.updateRetry")}
-                    </button>
-                  </div>
-                )}
-                {!updateCheck.canUpdate && updateCheck.reason !== "latest_unavailable" && updateCheck.reason !== "source_checkout" && (
-                  <div className="update-recheck">
-                    <span className="muted update-recheck-reason">
-                      {t("dash.updateCannotAuto", { reason: updateReasonLabel(updateCheck.reason, t) })}
-                    </span>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      disabled={updateLoading}
-                      onClick={() => { void fetchUpdateCheck(updateChannel, true); }}
-                    >
-                      <IconRefresh /> {updateLoading ? t("dash.updateChecking") : t("dash.updateRecheck")}
-                    </button>
-                  </div>
-                )}
-                {updateCheck.canUpdate && (
-                  <div className="spread update-restart">
-                    <div>
-                      <div className="font-semibold">{t("dash.updateRestart")}</div>
-                      <div className="muted text-label">{t("dash.updateRestartHint")}</div>
-                    </div>
-                    <button
-                      type="button"
-                      className={`switch ${updateRestart ? "on" : ""}`}
-                      onClick={() => setUpdateRestart(v => !v)}
-                      aria-label={t("dash.updateRestart")}
-                      aria-pressed={updateRestart}
-                    >
-                      <span className="knob" />
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-            <div className="modal-actions">
-              <button type="button" className="btn btn-ghost" onClick={closeUpdateDialog}>{t("common.cancel")}</button>
+            <span className={`badge ${updateCheck.updateAvailable ? "badge-green" : "badge-muted"}`}>
+              {updateCheck.updateAvailable ? t("dash.updateAvailable") : t("dash.updateCurrent")}
+            </span>
+          </div>
+          <div className="muted update-command">{t("dash.updateCommand")} <code className="chip">{updateCheck.command}</code></div>
+          {updateCheck.reason === "source_checkout" && (
+            <div className="notice-warn" role="status"><IconAlert /> {t("dash.updateSource")}</div>
+          )}
+          {updateCheck.reason === "latest_unavailable" && (
+            <div className="notice-warn" role="status">
+              <IconAlert /> {t("dash.updateUnavailable")}
               <button
                 type="button"
-                className="btn btn-primary"
-                onClick={runUpdate}
-                disabled={!updateCheck?.canUpdate || updateLoading}
+                className="btn btn-ghost btn-sm"
+                disabled={updateLoading}
+                onClick={() => { void fetchUpdateCheck(updateChannel, true); }}
+                style={{ marginLeft: 12 }}
               >
-                {t("dash.runUpdate")}
+                <IconRefresh /> {t("dash.updateRetry")}
               </button>
             </div>
-          </div>
-      </dialog>
+          )}
+          {!updateCheck.canUpdate && updateCheck.reason !== "latest_unavailable" && updateCheck.reason !== "source_checkout" && (
+            <div className="update-recheck">
+              <span className="muted update-recheck-reason">
+                {t("dash.updateCannotAuto", { reason: updateReasonLabel(updateCheck.reason, t) })}
+              </span>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                disabled={updateLoading}
+                onClick={() => { void fetchUpdateCheck(updateChannel, true); }}
+              >
+                <IconRefresh /> {updateLoading ? t("dash.updateChecking") : t("dash.updateRecheck")}
+              </button>
+            </div>
+          )}
+          {updateCheck.canUpdate && (
+            <div className="spread update-restart">
+              <div>
+                <div className="font-semibold">{t("dash.updateRestart")}</div>
+                <div className="muted text-label">{t("dash.updateRestartHint")}</div>
+              </div>
+              <button
+                type="button"
+                className={`switch ${updateRestart ? "on" : ""}`}
+                onClick={() => setUpdateRestart(v => !v)}
+                aria-label={t("dash.updateRestart")}
+                aria-pressed={updateRestart}
+              >
+                <span className="knob" />
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      <div className="modal-actions">
+        <button type="button" className="btn btn-ghost" onClick={closeUpdateDialog}>{t("common.cancel")}</button>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={runUpdate}
+          disabled={!updateCheck?.canUpdate || updateLoading}
+        >
+          {t("dash.runUpdate")}
+        </button>
+      </div>
+    </div>
+</dialog>
 
-      <dialog
-        ref={maHelpDialogRef}
-        id="multi-agent-help-dialog"
-        className="modal-overlay"
-        style={{ display: maHelpOpen ? "flex" : "none", border: "none", margin: 0, maxWidth: "none", maxHeight: "none", width: "100%", height: "100%" }}
-        aria-labelledby="multi-agent-help-title"
-        onCancel={event => { event.preventDefault(); setMaHelpOpen(false); }}
-        onClick={event => { if (event.target === event.currentTarget) setMaHelpOpen(false); }}
-      >
-          <div className="modal-card" onClick={e => e.stopPropagation()}>
-            <div className="modal-head">
-              <h3 id="multi-agent-help-title">{t("dash.multiAgent")}</h3>
-              <button type="button" className="btn btn-ghost btn-icon" onClick={() => setMaHelpOpen(false)} aria-label={t("common.close")}><IconX /></button>
+<dialog
+  ref={maHelpDialogRef}
+  id="multi-agent-help-dialog"
+  className="modal-overlay"
+  style={{ display: maHelpOpen ? "flex" : "none", border: "none", margin: 0, maxWidth: "none", maxHeight: "none", width: "100%", height: "100%" }}
+  aria-labelledby="multi-agent-help-title"
+  onCancel={event => { event.preventDefault(); setMaHelpOpen(false); }}
+  onClick={event => { if (event.target === event.currentTarget) setMaHelpOpen(false); }}
+>
+    <div className="modal-card" onClick={e => e.stopPropagation()}>
+      <div className="modal-head">
+        <h3 id="multi-agent-help-title">{t("dash.multiAgent")}</h3>
+        <button type="button" className="btn btn-ghost btn-icon" onClick={() => setMaHelpOpen(false)} aria-label={t("common.close")}><IconX /></button>
+      </div>
+      <div className="modal-desc leading-relaxed" style={{ whiteSpace: "pre-line" }}>
+        {t("models.v2Help")}
+      </div>
+      <div style={{ marginTop: 12 }}>
+        <a className="text-control" href="https://lidge-jun.github.io/opencodex/guides/sub-agent-surface/" target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
+          {t("models.v2DocsLink")}
+        </a>
+      </div>
+      <div className="modal-actions">
+        <button type="button" className="btn btn-primary" onClick={() => setMaHelpOpen(false)}>{t("common.ok")}</button>
+      </div>
+    </div>
+</dialog>
+    </>
+  );
+
+  if (workspaceView) {
+    const sections = [
+      { id: "overview", label: t("dash.workspace.overview"), body: overviewSection },
+      { id: "providers", label: t("dash.activeProviders"), body: providersSection },
+      { id: "models", label: t("dash.availableModels"), body: modelsSection },
+    ];
+    const selected = sections.find(s => s.id === selectedSection) ?? sections[0];
+    return (
+      <div className="dashboard-workspace-shell">
+        <div className="page-head">
+          <h2>{t("nav.dashboard")}</h2>
+          <button className="btn btn-ghost btn-sm" onClick={toggleWorkspace}>{t("pws.classicToggle")}</button>
+        </div>
+        <p className="page-sub">{t("dash.subtitle")}</p>
+        <div className="dashboard-workspace-root">
+          <aside className="dashboard-workspace-rail" aria-label={t("nav.dashboard")}>
+            <div className="dashboard-workspace-rail-header">
+              <span className="dashboard-workspace-rail-title">{t("dash.workspace.sections")}</span>
             </div>
-            <div className="modal-desc leading-relaxed" style={{ whiteSpace: "pre-line" }}>
-              {t("models.v2Help")}
+            <div className="dashboard-workspace-rail-list">
+              {sections.map(s => (
+                <button
+                  key={s.id}
+                  type="button"
+                  className={`dashboard-workspace-rail-row${selectedSection === s.id ? " dashboard-workspace-rail-row--selected" : ""}`}
+                  onClick={() => setSelectedSection(s.id)}
+                  aria-current={selectedSection === s.id ? "true" : undefined}
+                >
+                  <span className="dashboard-workspace-rail-name">{s.label}</span>
+                </button>
+              ))}
             </div>
-            <div style={{ marginTop: 12 }}>
-              <a className="text-control" href="https://lidge-jun.github.io/opencodex/guides/sub-agent-surface/" target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
-                {t("models.v2DocsLink")}
-              </a>
-            </div>
-            <div className="modal-actions">
-              <button type="button" className="btn btn-primary" onClick={() => setMaHelpOpen(false)}>{t("common.ok")}</button>
-            </div>
-          </div>
-      </dialog>
+          </aside>
+          <main className="dashboard-workspace-main">
+            {selected.body}
+          </main>
+        </div>
+        {updateDialog}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="page-head">
+        <h2>{t("nav.dashboard")}</h2>
+        <button className="btn btn-ghost btn-sm" onClick={toggleWorkspace}>{t("pws.workspaceToggle")}</button>
+      </div>
+      <p className="page-sub">{t("dash.subtitle")}</p>
+      {overviewSection}
+      {providersSection}
+      {modelsSection}
+      {updateDialog}
     </>
   );
 }

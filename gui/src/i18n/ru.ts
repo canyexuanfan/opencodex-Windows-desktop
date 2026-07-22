@@ -29,6 +29,8 @@ export const ru: Record<TKey, string> = {
 
   // dashboard
   "dash.subtitle": "Актуальное состояние локального прокси opencodex, его провайдеров и моделей, маршрутизируемых в Codex.",
+  "dash.workspace.overview": "Обзор",
+  "dash.workspace.sections": "Разделы",
   "dash.status": "Статус",
   "dash.online": "В сети",
   "dash.offline": "Не в сети",

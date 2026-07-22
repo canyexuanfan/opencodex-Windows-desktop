@@ -29,6 +29,8 @@ export const en = {
 
   // dashboard
   "dash.subtitle": "Live status of the local opencodex proxy, its providers, and the models routed into Codex.",
+  "dash.workspace.overview": "Overview",
+  "dash.workspace.sections": "Sections",
   "dash.status": "Status",
   "dash.online": "Online",
   "dash.offline": "Offline",

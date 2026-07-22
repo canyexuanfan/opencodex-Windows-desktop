@@ -29,6 +29,8 @@ export const ja: Record<TKey, string> = {
 
   // dashboard
   "dash.subtitle": "ローカル opencodex プロキシ、そのプロバイダー、Codex にルーティングされるモデルのライブ状態です。",
+  "dash.workspace.overview": "概要",
+  "dash.workspace.sections": "セクション",
   "dash.status": "状態",
   "dash.online": "オンライン",
   "dash.offline": "オフライン",

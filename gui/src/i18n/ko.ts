@@ -24,6 +24,8 @@ export const ko: Record<TKey, string> = {
 
   // dashboard
   "dash.subtitle": "로컬 opencodex 프록시와 프로바이더, 그리고 Codex로 라우팅되는 모델의 실시간 상태입니다.",
+  "dash.workspace.overview": "개요",
+  "dash.workspace.sections": "섹션",
   "dash.status": "상태",
   "dash.online": "온라인",
   "dash.offline": "오프라인",
