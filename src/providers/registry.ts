@@ -221,6 +221,13 @@ const ALIBABA_INTL_TOKEN_PLAN_MODELS = [
 const ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS = [
   "qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash",
 ];
+
+// 260722 Tencent Cloud Coding Plan. The plan's model set is explicitly dynamic; these are the
+// current documented ids and live discovery remains enabled so successful /models responses win.
+// Tencent marks every Coding Plan model as text-only input and restricts plan keys to interactive
+// coding tools (not custom application backends or non-interactive batch automation).
+// Evidence: https://cloud.tencent.cn/document/product/1823/130092
+const TENCENT_CODING_PLAN_MODELS = ["tc-code-latest", "glm-5", "kimi-k2.5", "minimax-m2.5"];
 const ALIBABA_INTL_TOKEN_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
   "qwen3.8-max-preview": ["text", "image"],
   "qwen3.7-max": ["text", "image"],
@@ -745,6 +752,20 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   },
   { id: "nanogpt", label: "NanoGPT", baseUrl: "https://nano-gpt.com/api/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://nano-gpt.com/api" },
   { id: "synthetic", label: "Synthetic", baseUrl: "https://api.synthetic.new/openai/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://synthetic.new" },
+  // SiliconFlow publishes an OpenAI-compatible chat endpoint and a dynamic model catalog. Do not
+  // freeze reasoning controls here: enable_thinking/thinking_budget support and limits vary by
+  // model, so live metadata or an explicit user override must own those capabilities.
+  // Evidence: https://docs.siliconflow.cn/en/api-reference/chat-completions/chat-completions
+  {
+    id: "siliconflow",
+    label: "SiliconFlow",
+    baseUrl: "https://api.siliconflow.cn/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://cloud.siliconflow.cn/account/ak",
+    liveModels: true,
+    note: "OpenAI-compatible live model catalog; reasoning controls vary by model.",
+  },
   // Qwen Cloud: token plan is the preset default; GUI offers pay-as-you-go + custom via baseUrlChoices.
   // Formerly `qwen-portal` / portal.qwen.ai — that host is outdated.
   {
@@ -757,6 +778,20 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     baseUrlChoices: QWEN_CLOUD_BASE_URL_CHOICES,
     dashboardUrl: "https://docs.qwencloud.com",
     note: "Pick token plan, pay as you go, or a custom compatible-mode base URL",
+  },
+  {
+    id: "tencent-coding-plan",
+    label: "Tencent Cloud Coding Plan",
+    baseUrl: "https://api.lkeap.cloud.tencent.com/coding/v3",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://console.cloud.tencent.com/tokenhub/codingplan",
+    defaultModel: "tc-code-latest",
+    models: TENCENT_CODING_PLAN_MODELS,
+    liveModels: true,
+    modelInputModalities: Object.fromEntries(TENCENT_CODING_PLAN_MODELS.map(id => [id, ["text"]])),
+    noVisionModels: TENCENT_CODING_PLAN_MODELS,
+    note: "Coding tools only. Tencent forbids general API automation, custom backends, and non-interactive batch use.",
   },
   // 2026-07-10: docs unverified; model data frozen. Evidence: devlog/_plan/260710_provider_hardening/002_research_cn.md.
   { id: "qianfan", label: "Qianfan (Baidu)", baseUrl: "https://qianfan.baidubce.com/v2", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://console.bce.baidu.com/iam/#/iam/apikey/list" },
