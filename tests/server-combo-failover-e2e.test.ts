@@ -21,6 +21,7 @@ import { readUsageEntries } from "../src/usage/log";
 import { saveCodexAccountCredential } from "../src/codex/account-store";
 import { formatCodexProviderForLog } from "../src/codex/routing";
 import { startServer } from "../src/server";
+import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
 
 const actualResolver = await import("../src/server/adapter-resolve");
 const actualResolveAdapter = actualResolver.resolveAdapter;
@@ -831,7 +832,10 @@ describe("server combo failover 030 activation matrix", () => {
     const response = await post(config, {
       stream: true,
       tools: [{ type: "web_search" }],
-    }, {}, { authorization: "Bearer forwarded-main" });
+    }, {}, {
+      authorization: `Bearer ${fakeChatGptJwt({ chatgpt_account_id: "acct-combo-search" })}`,
+      "chatgpt-account-id": "acct-combo-search",
+    });
     expect(response.status).toBe(200);
     expect(JSON.stringify(await collectSse(response))).toContain("web loop backup");
     expect(modelHits.map(hit => hit.model)).toEqual(["m1", "m2"]);
