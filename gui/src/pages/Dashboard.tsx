@@ -877,8 +877,9 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   </div>
 </div>
 
-<div className="panel" style={{ marginBottom: 12 }}>
-  <div className="spread setting-row" style={{ alignItems: "flex-start" }}>
+<div className="dash-sidecar-grid">
+<div className="panel">
+  <div className="spread" style={{ alignItems: "flex-start" }}>
     <div className="setting-copy" style={{ flex: 1 }}>
       <div className="font-semibold">{t("dash.webSearchSidecar")}</div>
       <div className="muted setting-hint">{t("dash.webSearchSidecarHint")}</div>
@@ -895,8 +896,8 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   </div>
 </div>
 
-<div className="panel" style={{ marginBottom: 24 }}>
-  <div className="spread setting-row">
+<div className="panel">
+  <div className="spread" style={{ alignItems: "flex-start" }}>
     <div className="setting-copy" style={{ flex: 1 }}>
       <div className="font-semibold">{t("dash.visionSidecar")}</div>
       <div className="muted setting-hint">{t("dash.visionSidecarHint")}</div>
@@ -912,9 +913,10 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     </div>
   </div>
 </div>
+</div>
 
-<div className="panel" style={{ marginBottom: 12 }}>
-  <div className="spread setting-row" style={{ alignItems: "center" }}>
+<div className="panel" style={{ marginBottom: 24 }}>
+  <div className="spread" style={{ alignItems: "center" }}>
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
       <span className="font-semibold">{t("dash.shadowCallIntercept")}</span>
       <span title={t("dash.shadowCallTooltip")} style={{ cursor: "help", opacity: 0.5 }}>ⓘ</span>
@@ -1158,9 +1160,6 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         <p className="page-sub">{t("dash.subtitle")}</p>
         <div className="dashboard-workspace-root">
           <aside className="dashboard-workspace-rail" aria-label={t("nav.dashboard")}>
-            <div className="dashboard-workspace-rail-header">
-              <span className="dashboard-workspace-rail-title">{t("dash.workspace.sections")}</span>
-            </div>
             <div className="dashboard-workspace-rail-list">
               {sections.map(s => (
                 <button

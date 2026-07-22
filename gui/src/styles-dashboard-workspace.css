@@ -33,19 +33,6 @@
   min-width: 0;
 }
 
-.dashboard-workspace-rail-header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.dashboard-workspace-rail-title {
-  font-size: var(--text-body);
-  font-weight: var(--weight-semibold);
-  color: var(--text);
-}
-
 .dashboard-workspace-rail-list {
   display: flex;
   flex-direction: column;
@@ -96,6 +83,20 @@
   flex-direction: column;
   gap: var(--space-4);
   min-width: 0;
+}
+
+/* Sidecar settings: two panels side by side, gap matches --space-4 */
+.dash-sidecar-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+@media (max-width: 768px) {
+  .dash-sidecar-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ── Responsive ───────────────────────────────────────── */
