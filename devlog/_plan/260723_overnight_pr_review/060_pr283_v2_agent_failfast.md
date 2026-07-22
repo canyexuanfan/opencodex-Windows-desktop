@@ -1,22 +1,30 @@
 # 060 — PR #283: fix(v2): fail fast on unreadable routed agent tasks
 
-- **Author:** MathiasHeinke (Mathias)
-- **Branch:** codex/v2-encrypted-task-failfast → dev
-- **Status:** Draft → needs undraft before merge
+- **Author:** MathiasHeinke
+- **Branch:** codex/v2-encrypted-task-failfast → dev (draft)
 - **CI:** All pass (8/8 checks)
-- **Decision:** MERGE (undraft first)
-- **Risk:** Medium (touches responses.ts, but well-isolated guard)
+- **Sol Review:** Einstein — VERDICT: FAIL (1 high, 4 medium)
+- **Decision:** REBUILD_ON_DEV (fix mixed-slot bypass, improve Fernet validation)
 
-## Changes
+## Sol Review Summary
 
-1. `src/server/responses.ts`:
-   - `readableAgentMessagePayload()` — extracts readable text from V2 agent message content, stripping routing envelope.
-   - `hasUnreadableEncryptedAgentTask()` — detects Fernet-encrypted agent tasks with no readable payload.
-   - Guard in `handleResponses()`: returns 400 before auth/adapter/network when a non-ChatGPT route receives an undecryptable V2 task.
-2. `tests/v2-agent-message-failfast.test.ts` — 145 lines. Tests: Fernet-only detection, readable payload bypass, non-agent-message bypass, routed vs native provider behavior.
+### High — Mixed encrypted slots bypass the guard (H1)
+When sanitizeEncryptedContentInPlace() splits a mixed slot into input_text
+(control preamble) + encrypted_content (real task), readableAgentMessagePayload()
+treats the preamble as actionable text. The guard returns false and the routed
+provider is called without the task body — preserving the exact failure mode
+the PR claims to stop.
 
-## Security Review
+### Medium issues
+2. FERNET_TOKEN_EXACT regex too loose — accepts structurally impossible tokens
+3. Envelope parsing has false-positive/negative cases
+4. Request-wide scanning can reject readable turns due to encrypted history
+5. Combo routing may stop before reaching a native-compatible target
 
-- This is a security IMPROVEMENT: prevents cost storms from retrying undecryptable tasks.
-- Error message reveals no ciphertext or request content.
-- Uses `isCanonicalOpenAiForwardProvider()` to distinguish native ChatGPT routes.
+## Rebuild Requirements
+- Derive semantic classification from raw content BEFORE mutation
+- Structural Fernet validation (base64url, version byte, minimum length)
+- Pin canonical, mixed-hook, malformed-token, historical-message fixtures
+- Scope guard to newly delivered task items (not expanded history)
+- Filter combo candidates to decrypt-capable routes before 400
+- Add machine-readable error code: unreadable_encrypted_agent_task
