@@ -298,6 +298,13 @@ export default function Models({ apiBase }: { apiBase: string }) {
       return n;
     });
   };
+  const setAllCollapsed = (collapse: boolean) => {
+    setCollapsed(() => {
+      const n = collapse ? new Set(groups.map(([p]) => p)) : new Set<string>();
+      try { localStorage.setItem("ocx-models-collapsed", JSON.stringify([...n])); } catch { /* quota */ }
+      return n;
+    });
+  };
 
   const putCap = async (body: Record<string, unknown>) => {
     setBusy(true);
@@ -745,6 +752,15 @@ export default function Models({ apiBase }: { apiBase: string }) {
 
   const controlsBlock = (
     <>
+      <div className="row" style={{ gap: 6, marginBottom: 8 }}>
+        <button type="button" className="btn btn-ghost btn-sm text-caption" onClick={() => setAllCollapsed(true)} disabled={busy}>
+          <IconChevron width={12} height={12} aria-hidden="true" /> {t("models.collapseAll")}
+        </button>
+        <button type="button" className="btn btn-ghost btn-sm text-caption" onClick={() => setAllCollapsed(false)} disabled={busy}>
+          <IconChevron width={12} height={12} aria-hidden="true" style={{ transform: "rotate(90deg)" }} /> {t("models.expandAll")}
+        </button>
+      </div>
+
       <div className="row muted text-control" style={{ gap: 6, marginBottom: 8, alignItems: "center" }}>
         <span title={t("models.shadowCallInterceptHint")} style={{ cursor: "help" }}>{t("models.shadowCallIntercept")} ⓘ</span>
         <code className="text-caption" style={{ opacity: 0.6 }}>⚠ 5.4-mini →</code>
@@ -862,7 +878,10 @@ export default function Models({ apiBase }: { apiBase: string }) {
         )}
         <div style={{ flex: 1 }} />
         <Switch on={allCapped} onClick={setAll} disabled={busy} label={t("models.setAll")} />
-        <span className="muted mono text-label">{t("models.setAll")}</span>
+        <span className="muted mono text-label" title={t("models.setAllHint", { value: fmtK(contextCapValue) })}>{t("models.setAll")}</span>
+      </div>
+      <div className="row muted text-label leading-body" style={{ alignItems: "flex-start", gap: 8, marginTop: -2, marginBottom: 8, maxWidth: "80ch" }}>
+        <span>{t("models.setAllHint", { value: fmtK(contextCapValue) })}</span>
       </div>
 
       {(() => {
