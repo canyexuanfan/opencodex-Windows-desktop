@@ -574,7 +574,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   };
 
   const overviewSection = (
-    <>
+    <div className="dash-overview-stack">
 <div className="stat-row">
   <div className="stat">
     <div className="label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -631,7 +631,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
 </div>
 
 {projectConfigWarnings.length > 0 && (
-  <div className="notice notice-err maintenance-notice" style={{ marginBottom: 24 }} role="alert">
+  <div className="notice notice-err maintenance-notice" role="alert">
     <IconAlert />
     <div>
       <div className="font-semibold">{t("dash.projectConfigTitle")}</div>
@@ -649,7 +649,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
 )}
 
 {maMode !== "v1" && (
-  <div className="panel" style={{ marginBottom: 24 }}>
+  <div className="panel">
     <div className="injection-head">
       <span className="injection-label" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
         {t("dash.effortCapLabel")}
@@ -744,7 +744,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   </div>
 )}
 
-<div className="panel" style={{ marginBottom: 24 }}>
+<div className="panel">
   <div className="injection-head">
     <span className="injection-label">{t("dash.injectionLabel")}</span>
     <Select
@@ -806,7 +806,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   <div className="muted text-control" style={{ marginTop: 6 }}>{t("dash.injectionHint")}</div>
 </div>
 
-<div className="panel maintenance-panel" style={{ marginBottom: 24 }}>
+<div className="panel maintenance-panel">
   <div className="spread maintenance-head">
     <div>
       <div className="font-semibold">{t("dash.maintenance")}</div>
@@ -858,7 +858,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   )}
 </div>
 
-<div className="panel" style={{ marginBottom: 24 }}>
+<div className="panel">
   <div className="spread">
     <div style={{ flex: 1, minWidth: 0 }}>
       <div className="font-semibold">{t("dash.codexAutoStart")}</div>
@@ -915,7 +915,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
 </div>
 </div>
 
-<div className="panel" style={{ marginBottom: 24 }}>
+<div className="panel">
   <div className="spread" style={{ alignItems: "center" }}>
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
       <span className="font-semibold">{t("dash.shadowCallIntercept")}</span>
@@ -944,7 +944,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   </div>
 </div>
 
-    </>
+    </div>
   );
 
   const providersSection = (
