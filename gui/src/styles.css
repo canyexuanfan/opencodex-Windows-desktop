@@ -1011,6 +1011,8 @@ button.prov-account-row.active { cursor: default; }
   padding: 8px 12px;
   min-width: 220px;
   max-width: 320px;
+  max-height: 280px;
+  overflow-y: auto;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
   pointer-events: none;
   font-size: var(--text-label);
