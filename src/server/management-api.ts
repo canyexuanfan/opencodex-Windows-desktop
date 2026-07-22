@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { CatalogModel } from "../codex/catalog";
 import { invalidateCodexModelsCache, nativeModelRows } from "../codex/catalog";
@@ -46,7 +47,7 @@ import {
   setDebugSettings,
   type DebugFlag,
 } from "../lib/debug-settings";
-import type { OcxClaudeCodeConfig, OcxConfig, OcxProviderConfig } from "../types";
+import type { OcxClaudeCodeConfig, OcxConfig, OcxCustomModel, OcxProviderConfig } from "../types";
 import { drainAndShutdown } from "./lifecycle";
 import { filterRequestLogs, getRequestLogEntries, type RequestLogEntry } from "./request-log";
 import { estimateComboCost, estimateRequestCost, normalizeCostTokens, tokensPerSecond } from "../usage/cost";
@@ -798,9 +799,26 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       native: true,
       ...(row.contextWindow !== undefined ? { contextWindow: row.contextWindow } : {}),
     }));
-    return jsonResponse([...native, ...models.map(m => {
+    const customModels = (config.customModels ?? []).map(cm => {
+      const namespaced = routedSlug(cm.provider, cm.modelId);
+      return {
+        provider: cm.provider,
+        id: cm.modelId,
+        namespaced,
+        disabled: [...disabled].some(stored => slugEquals(stored, cm.provider, cm.modelId)),
+        custom: true,
+        customId: cm.id,
+        displayName: cm.displayName,
+        ...(cm.contextWindow ? { contextWindow: cm.contextWindow } : {}),
+        ...(cm.inputModalities ? { inputModalities: cm.inputModalities } : {}),
+      };
+    });
+    // Custom metadata wins when a live/static routed row resolves to the same Codex-facing slug.
+    const customNamespaced = new Set(customModels.map(c => c.namespaced));
+    const dedupedRouted = models.map(m => {
       // Codex-facing slug (one "/", slug-codec); disabledModels compares tolerate both forms.
       const namespaced = routedSlug(m.provider, m.id);
+      if (customNamespaced.has(namespaced)) return null;
       const contextCap = providerContextCap(config, m.provider);
       return {
         ...m,
@@ -808,7 +826,8 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
         disabled: [...disabled].some(stored => slugEquals(stored, m.provider, m.id)),
         ...(contextCap !== undefined ? { contextCap, contextCapped: m.contextCapped === true } : {}),
       };
-    })]);
+    }).filter(Boolean);
+    return jsonResponse([...native, ...dedupedRouted, ...customModels]);
   }
 
   if (url.pathname === "/api/provider-context-caps" && req.method === "GET") {
@@ -878,6 +897,89 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     save(config);
     await refreshCodexCatalogBestEffort();
     return jsonResponse({ ok: true, disabled });
+  }
+
+  if (url.pathname === "/api/custom-models" && req.method === "GET") {
+    return jsonResponse(config.customModels ?? []);
+  }
+
+  if (url.pathname === "/api/custom-models" && req.method === "POST") {
+    let body: { provider?: unknown; modelId?: unknown; displayName?: unknown; contextWindow?: unknown; inputModalities?: unknown };
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    const provider = typeof body.provider === "string" ? body.provider.trim() : "";
+    const modelId = typeof body.modelId === "string" ? body.modelId.trim() : "";
+    if (!provider || !modelId) return jsonResponse({ error: "provider and modelId are required" }, 400);
+    if (modelId.includes("/")) return jsonResponse({ error: "modelId must not contain /" }, 400);
+    if (!isValidProviderName(provider)) return jsonResponse({ error: "invalid provider name" }, 400);
+    if (!hasOwnProvider(config.providers, provider)) return jsonResponse({ error: "provider not configured" }, 404);
+    const displayName = typeof body.displayName === "string" && body.displayName.trim() ? body.displayName.trim() : undefined;
+    if (displayName?.includes("/")) return jsonResponse({ error: "displayName must not contain /" }, 400);
+    const contextWindow = typeof body.contextWindow === "number" && body.contextWindow > 0 ? Math.floor(body.contextWindow) : undefined;
+    const inputModalities = Array.isArray(body.inputModalities) ? body.inputModalities.filter((m): m is string => typeof m === "string") : undefined;
+    const existing = config.customModels ?? [];
+    if (existing.some(cm => cm.provider === provider && cm.modelId === modelId)) {
+      return jsonResponse({ error: "duplicate model" }, 409);
+    }
+    const entry: OcxCustomModel = {
+      id: randomUUID(),
+      provider,
+      modelId,
+      ...(displayName ? { displayName } : {}),
+      ...(contextWindow ? { contextWindow } : {}),
+      ...(inputModalities && inputModalities.length > 0 ? { inputModalities } : {}),
+      addedAt: new Date().toISOString(),
+    };
+    config.customModels = [...existing, entry];
+    const { saveConfig: save } = await import("../config");
+    save(config);
+    await refreshCodexCatalogBestEffort();
+    return jsonResponse(entry, 201);
+  }
+
+  const customPutMatch = url.pathname.match(/^\/api\/custom-models\/([^/]+)$/);
+  if (customPutMatch && req.method === "PUT") {
+    const id = decodeURIComponent(customPutMatch[1]);
+    let body: { displayName?: unknown; contextWindow?: unknown; inputModalities?: unknown; modelId?: unknown };
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    const list = config.customModels ?? [];
+    const idx = list.findIndex(cm => cm.id === id);
+    if (idx === -1) return jsonResponse({ error: "not found" }, 404);
+    const cm = { ...list[idx] };
+    if (typeof body.modelId === "string" && body.modelId.trim()) {
+      if (body.modelId.includes("/")) return jsonResponse({ error: "modelId must not contain /" }, 400);
+      cm.modelId = body.modelId.trim();
+    }
+    if (body.displayName !== undefined) {
+      const dn = typeof body.displayName === "string" ? body.displayName.trim() : "";
+      if (dn.includes("/")) return jsonResponse({ error: "displayName must not contain /" }, 400);
+      cm.displayName = dn || undefined;
+    }
+    if (body.contextWindow !== undefined) {
+      cm.contextWindow = typeof body.contextWindow === "number" && body.contextWindow > 0 ? Math.floor(body.contextWindow) : undefined;
+    }
+    if (body.inputModalities !== undefined) {
+      cm.inputModalities = Array.isArray(body.inputModalities) ? body.inputModalities.filter((m): m is string => typeof m === "string") : undefined;
+    }
+    list[idx] = cm;
+    config.customModels = list;
+    const { saveConfig: save } = await import("../config");
+    save(config);
+    await refreshCodexCatalogBestEffort();
+    return jsonResponse(cm);
+  }
+
+  const customDelMatch = url.pathname.match(/^\/api\/custom-models\/([^/]+)$/);
+  if (customDelMatch && req.method === "DELETE") {
+    const id = decodeURIComponent(customDelMatch[1]);
+    const list = config.customModels ?? [];
+    const idx = list.findIndex(cm => cm.id === id);
+    if (idx === -1) return jsonResponse({ error: "not found" }, 404);
+    list.splice(idx, 1);
+    config.customModels = list.length > 0 ? list : undefined;
+    const { saveConfig: save } = await import("../config");
+    save(config);
+    await refreshCodexCatalogBestEffort();
+    return jsonResponse({ ok: true });
   }
 
   // multi_agent_v2 surface toggle. GET reports the flag + the agents.max_threads
