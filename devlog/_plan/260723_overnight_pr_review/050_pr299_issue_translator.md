@@ -1,25 +1,14 @@
 # 050 — PR #299: ci: issue translator workflow
-
 - **Author:** Wibias
-- **Branch:** feat/issue-translator → dev
-- **CI:** react-doctor pass
-- **Decision:** MERGE
-- **Risk:** Low (CI-only)
+- **Sol Review:** Sartre — VERDICT: FAIL (1 high, 2 medium, 3 low)
+- **Decision:** REBUILD_ON_DEV
 
-## Changes
+## Key Issues
+1. High — No deterministic translation-before-dedup sequencing
+2. Medium — Job-level concurrency not reliable whole-workflow lock
+3. Medium — Prompt injection can produce trusted-looking bot content (title mutation)
+4. Low — Permissions correctly minimal (best of the three PRs)
+5. Low — Idempotency generally sound
+6. Low — No adversarial tests
 
-1. `.github/workflows/issue-translator.yml` — new workflow. Detects non-English issues, translates title + body to English using `actions/ai-inference` with `gpt-4o-mini`.
-2. Updates issue title (for searchability/dedup compatibility with #298).
-3. Posts marked bot comment with English translation.
-4. 6 commits including CodeRabbit fixes: JSON parsing hardened (try raw first, then strip fences), title clamped to 256 chars, comment pagination.
-
-## Security Review
-
-- Permissions: `issues:write`, `models:read`. Minimal.
-- Pinned `actions/ai-inference@b81b2af` and `actions/github-script@3a2844b`.
-- Issue content treated as untrusted text in system prompt.
-- Title mutation is deliberate and well-motivated (enables cross-language dedup).
-
-## Note
-
-- Missing newline at end of file (minor). Won't block merge.
+## Rebuild: combine with deduplicator, workflow-level concurrency, require maintainer label before title mutation, BOM removal

@@ -1,20 +1,13 @@
 # 020 — PR #301: ci: PR auto-labeler + auto release notes
-
 - **Author:** Wibias
-- **Branch:** feat/auto-release-notes → dev
-- **CI:** All pass (7/7 checks)
-- **Decision:** MERGE
-- **Risk:** Low (CI-only, no runtime changes)
+- **Sol Review:** Sartre — VERDICT: FAIL (1 high, 2 medium, 2 low)
+- **Decision:** REBUILD_ON_DEV
 
-## Changes
+## Key Issues
+1. High — Depends on nonexistent `chore` label (addLabels will fail)
+2. Medium — `--generate-notes` changes release note range behavior (not drop-in replacement)
+3. Medium — Label mutations race against title edits, overwrites manual labels
+4. Low — Permissions broader than necessary
+5. Low — No contract tests
 
-1. `.github/workflows/pr-labeler.yml` — new workflow. Labels PRs from conventional-commit title prefix (feat→enhancement, fix→bug, etc). Uses `actions/github-script@60a0d83` (pinned).
-2. `.github/release.yml` — new config. Maps labels to release note sections.
-3. `.github/workflows/release.yml` — removes manual git-log notes generation, uses `--generate-notes`.
-
-## Security Review
-
-- Permissions: `contents:read`, `pull-requests:write` — minimal.
-- Pinned action ref (SHA, not tag). Good.
-- Modifies release.yml: change is a net REMOVAL of shell scripting in favor of GitHub built-in `--generate-notes`. Safer.
-- NOTE: requires `chore` label to exist. Author left instructions in PR description.
+## Rebuild: create required labels first, explicit range with --notes-start-tag, refetch live title before mutation

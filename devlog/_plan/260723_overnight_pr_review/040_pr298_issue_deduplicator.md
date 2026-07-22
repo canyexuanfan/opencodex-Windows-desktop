@@ -1,19 +1,16 @@
 # 040 — PR #298: ci: issue deduplicator workflow
-
 - **Author:** Wibias
-- **Branch:** feat/issue-deduplicator → dev
-- **CI:** react-doctor pass
-- **Decision:** MERGE
-- **Risk:** Low (CI-only)
+- **Sol Review:** Sartre — VERDICT: FAIL (1 high, 4 medium, 3 low)
+- **Decision:** REBUILD_ON_DEV
 
-## Changes
+## Key Issues
+1. High — No ordering contract between translation (#299) and deduplication
+2. Medium — Prompt injection constrained but not neutralized (500 attacker-controlled issue bodies)
+3. Medium — Inference action receives write-capable token (split permissions)
+4. Medium — Missing `codex-deduplicate` label
+5. Medium — Prompt size unbounded (402K chars theoretical)
+6. Low — Wrong action input name (max-completion-tokens vs max-tokens)
+7. Low — Failed inference treated as successful rescan
+8. Low — Marker ownership too loose
 
-1. `.github/workflows/issue-deduplicator.yml` — new workflow. Triggers on issue opened/labeled. Uses `actions/ai-inference@v1` with `openai/gpt-4o-mini` for semantic duplicate detection. Posts bot comment with up to 5 similar issues.
-2. 5 commits including CodeRabbit review fixes: dropped unused `contents:read`, added concurrency group, pre-fetch bot comment for cleanup, targeted error handling on label removal.
-
-## Security Review
-
-- Permissions: `issues:write`, `models:read`. No secrets beyond GITHUB_TOKEN.
-- Uses `actions/github-script@3a2844b` (pinned SHA).
-- `actions/ai-inference@v1` — not SHA-pinned (tag only). Minor concern but GitHub-owned action. Acceptable.
-- Prompt injection surface: issue body is fed to LLM, but output is constrained to JSON with issue numbers only.
+## Rebuild: combine with translator workflow, split inference/mutation permissions, bound prompt size, create required labels, BOM removal
