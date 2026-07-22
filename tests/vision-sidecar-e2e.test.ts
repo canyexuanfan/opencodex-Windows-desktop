@@ -6,6 +6,7 @@ import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
 import type { OcxConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
+import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
 
 // Issue #88: text-only input models (DeepSeek, ...) get "eyes" — the vision sidecar describes
 // attached images via a vision-capable forward model and replaces them with text BEFORE the main
@@ -91,9 +92,15 @@ describe("vision sidecar fallback (issue #88, end-to-end)", () => {
     let upstreamBody = "";
     let sidecarBody = "";
     let sidecarAuth: string | null = null;
+    let sidecarAccount: string | null = null;
     let sidecarHits = 0;
     upstream = serveUpstream(b => { upstreamBody = b; });
-    sidecar = serveSidecar((req, b) => { sidecarHits += 1; sidecarBody = b; sidecarAuth = req.headers.get("authorization"); });
+    sidecar = serveSidecar((req, b) => {
+      sidecarHits += 1;
+      sidecarBody = b;
+      sidecarAuth = req.headers.get("authorization");
+      sidecarAccount = req.headers.get("chatgpt-account-id");
+    });
     globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       const url = new URL(requestUrl);
@@ -125,16 +132,22 @@ describe("vision sidecar fallback (issue #88, end-to-end)", () => {
     saveConfig(config);
     const server = startServer(0);
     try {
+      const token = fakeChatGptJwt({ chatgpt_account_id: "acct-vision-sidecar" });
       const res = await fetch(new URL("/v1/responses", server.url), {
         method: "POST",
-        headers: { "content-type": "application/json", authorization: "Bearer forward-oauth-token" },
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+          "chatgpt-account-id": "acct-vision-sidecar",
+        },
         body: JSON.stringify(baseRequest("textonly/blind-model")),
       });
       expect(res.status).toBe(200);
 
       // Activation evidence: the sidecar actually ran, got the image + OAuth passthrough.
       expect(sidecarHits).toBe(1);
-      expect(sidecarAuth).toBe("Bearer forward-oauth-token");
+      expect(sidecarAuth).toBe(`Bearer ${token}`);
+      expect(sidecarAccount).toBe("acct-vision-sidecar");
       expect(sidecarBody).toContain("input_image");
       expect(sidecarBody).toContain("aGVsbG8taW1hZ2UtYnl0ZXM=");
 

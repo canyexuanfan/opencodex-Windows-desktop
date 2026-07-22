@@ -3,7 +3,15 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { namespacedToolName, type OcxProviderConfig, type OcxUsage } from "../../types";
 import { CONNECT_FLAG_END_STREAM, decodeAvailableConnectFrames, encodeConnectFrame } from "./framing";
 import { activePromptText, encodeCursorRunRequest } from "./protobuf-request";
-import { createCursorProtobufEventState, finalizeTurnEvents, mapCursorProtobufServerMessage, mapSyntheticMcpExecToToolEvents } from "./protobuf-events";
+import {
+  createCursorContextUsageTracker,
+  createCursorProtobufEventState,
+  finalizeTurnEvents,
+  mapCursorProtobufServerMessage,
+  mapSyntheticMcpExecToToolEvents,
+  reportableContextTokens,
+  usageFromContextTokens,
+} from "./protobuf-events";
 import {
   AgentClientMessageSchema,
   AgentServerMessageSchema,
@@ -60,6 +68,7 @@ const CLIENT_TOOL_FINALIZE_GRACE_MS = 50;
 const GENERIC_TOOL_COUNT_MIN_FINALIZE_GRACE_MS = 750;
 const GENERIC_TOOL_COUNT_MAX_FINALIZE_GRACE_MS = 1_800;
 const GENERIC_TOOL_COUNT_PER_TOOL_GRACE_MS = 125;
+const cursorContextUsageTracker = createCursorContextUsageTracker();
 
 export class CursorMissingCredentialError extends Error {
   readonly code = "cursor_missing_credential";
@@ -452,6 +461,10 @@ class LiveCursorTransport implements CursorTransport {
       parallelToolCalls: request.parallelToolCalls,
       toolSchemas,
       cursorToolNameMap,
+      contextUsage: cursorContextUsageTracker.controlsForConversation(request.conversationId, {
+        clearPrior: request.contextUsageReset === true,
+        storeCheckpoints: request.contextUsageStoreCheckpoints !== false,
+      }),
     });
 
     this.open(request, signal, state, push, err => {
@@ -781,10 +794,15 @@ class LiveCursorTransport implements CursorTransport {
  */
 export function partialUsageFromEventState(state: ReturnType<typeof createCursorProtobufEventState>): OcxUsage | undefined {
   const out = state.usage.outputTokens;
-  const ctx = state.contextTokens;
-  if (ctx === undefined && out <= 0) return undefined;
+  const hasCurrentCheckpoint = Number.isFinite(state.contextTokens) && (state.contextTokens ?? 0) > 0;
+  const hasCurrentOutput = Number.isFinite(out) && out > 0;
+  // A carry-forward value belongs to an earlier successful turn. It can complete current-turn
+  // usage math after this turn emits output, but cannot by itself prove that a first-frame failure
+  // consumed anything.
+  if (!hasCurrentCheckpoint && !hasCurrentOutput) return undefined;
+  const ctx = reportableContextTokens(state);
   return ctx !== undefined
-    ? { ...state.usage, inputTokens: Math.max(0, ctx - out), totalTokens: ctx, estimated: true }
+    ? { ...usageFromContextTokens(state, ctx), estimated: true }
     : { ...state.usage, estimated: true };
 }
 

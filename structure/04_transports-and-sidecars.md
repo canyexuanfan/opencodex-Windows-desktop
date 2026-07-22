@@ -32,6 +32,22 @@ existing account-health state. Unknown Images subpaths still reach the JSON `/v1
 On non-loopback binds, data-plane authentication and origin policy cover both Images routes just as
 they cover `/v1/responses`; clients must send the configured `x-opencodex-api-key`.
 
+## Cursor Native Exec
+
+Cursor's experimental live transport can receive server-driven local read/write/delete/ls/grep,
+shell, and fetch exec frames. These frames are denied by default because they bypass Codex's normal
+approval and sandbox path. `nativeLocalExec: "on"` is the explicit config-owner opt-in for trusted
+local experiments; `off` and the backwards-compatible `codex-sandbox` spelling both fail closed.
+MCP, screen recording, and computer-use stay on their separate explicit executor/MCP config paths.
+
+[Decision Log]
+- 목적과 의도: prevent caller-controlled Responses text from authorizing Cursor native local shell, filesystem, or fetch execution.
+- 기존 구현 및 제약 조건: the adapter preserved top-level `instructions`, system messages, and developer messages, then treated a `sandbox_mode ... danger-full-access` prose marker as an exec allow signal in `codex-sandbox` mode.
+- 검토한 주요 대안: keep marker-based authorization, require a future trustworthy attestation channel, or restrict authorization to server-local config.
+- 선택한 방식: keep marker detection only as diagnostic/context and make `nativeLocalExec: "on"` the only non-legacy mode that enables built-in local exec; unset, `off`, and `codex-sandbox` all deny.
+- 다른 대안 대신 이 방식을 선택한 이유: opencodex has no trustworthy per-request sandbox attestation in request text or headers, so any prompt-carried marker is spoofable by data-plane callers.
+- 장점, 단점 및 영향: this closes prompt-to-native-exec escalation while preserving an explicit operator escape hatch; existing configs that relied on `codex-sandbox` must switch to `nativeLocalExec: "on"` for trusted local experiments.
+
 ## WebSocket
 
 The WebSocket endpoint exists at `/v1/responses`, but discovery is opt-in:
@@ -71,6 +87,12 @@ the client. Only the first iteration's final response headers/status and any 429
 handled eagerly. A failure before downstream SSE starts returns non-2xx JSON; once headers have
 started the final response, a generation failure is emitted as `response.failed` SSE.
 
+Historical `web_search_call` output items from previous Responses turns are not converted into
+assistant text. They are UI/search-cell evidence, not a replayable search result payload; turning
+them into strings risks routed models echoing an internal marker or implying a current search ran
+when the sidecar is unavailable. The active sidecar path is the only place that emits new
+`web_search_call_begin` / `web_search_call_end` events.
+
 Four independent clocks bound this path. `stallTimeoutSec` is the base bridge event-stall budget.
 `connectTimeoutMs` (default 200 s) covers only DNS/TCP/TLS and the wait for final response headers,
 not response-body generation. Config-file-only
@@ -94,6 +116,43 @@ and synthesizing explicit "no tool result was recorded" answers only when no rea
 
 These compatibility guards are covered by focused tests and should stay close to the adapters that
 need them.
+
+## Cursor active-context usage
+
+Cursor's `conversationCheckpointUpdate.tokenDetails.usedTokens` is treated as the authoritative
+absolute active-context size for a Cursor conversation. Some client-tool suspension turns must end
+before Cursor emits a new checkpoint; those turns carry forward the last observed total for the same
+Cursor conversation instead of reporting only the tiny current-turn output delta. The carry-forward
+cache is process-local, numeric-only, bounded, and keyed by Cursor conversation id. Compaction
+boundaries clear the carry so pre-compaction totals are not reused after Codex replaces history.
+Historical compaction markers restored by `previous_response_id` expansion are acknowledged as a
+replayed prefix and do not clear a fresh post-compaction checkpoint again on every later turn.
+Compaction summarizer turns may still report their own checkpoint for that response, but their
+pre-compaction checkpoint is not persisted for later carry-forward.
+
+```text
+[Decision Log]
+- 목적과 의도: Keep Codex's visible "context left" indicator aligned with Cursor's active-context usage on client-tool turns that finalize before a checkpoint arrives.
+- 기존 구현 및 제약 조건: Checkpoint turns reported totalTokens correctly, but no-checkpoint client-tool finalize fell back to output-only usage and could overwrite a meaningful prior total with values like 109 tokens.
+- 검토한 주요 대안: Add a longer wait for late checkpoints; infer prior+output totals; store full prompt/history state; carry forward only the last numeric checkpoint per Cursor conversation.
+- 선택한 방식: Carry forward the last numeric absolute checkpoint per Cursor conversation with bounded LRU/TTL storage, update it only from live checkpoint frames, and clear/suppress it once when a newly appended compaction boundary starts an epoch; previous_response replay provenance acknowledges historical markers without serializing private metadata upstream.
+- 다른 대안 대신 이 방식을 선택한 이유: It fixes the UI regression without delaying tool turns, fabricating token growth, storing prompt/tool content, or repeatedly clearing valid post-compaction usage when historical markers replay; one-time compaction resets still prevent stale over-report when history is replaced.
+- 장점, 단점 및 영향: Active-context reporting stays monotonic within an uncompacted Cursor conversation; no-checkpoint turns remain estimated; a process restart loses the numeric cache and safely falls back to current-turn usage until the next checkpoint.
+```
+
+## OpenRouter provider routing
+
+The canonical OpenRouter `openai-chat` transport may carry optional provider-routing preferences
+from `OcxProviderConfig.openRouterRouting`, with exact model-id replacements in
+`modelOpenRouterRouting`. The adapter maps camel-case config to OpenRouter's request wire
+(`order`, `only`, `allow_fallbacks`) after the Codex-facing routed slug has been decoded to the
+native model id.
+
+Preferences are accepted only for `https://openrouter.ai/api/v1` (an optional trailing slash is
+equivalent) and the `openai-chat` adapter. Alternate ports, credentials, query strings, fragments,
+lookalike hosts, and custom proxy paths fail validation. A model override replaces rather than
+merges the provider-wide default, keeping precedence deterministic. With no preference configured,
+the request body is byte-for-byte unchanged in this area and OpenRouter retains its default routing.
 
 ## xAI Grok hardening (official Grok Build contract parity)
 

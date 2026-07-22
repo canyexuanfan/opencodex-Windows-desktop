@@ -134,6 +134,8 @@ validates the key, and stores it. Notable entries:
 | NVIDIA NIM | `https://integrate.api.nvidia.com/v1` |
 | Z.AI (GLM Coding) | `https://api.z.ai/api/coding/paas/v4` |
 | Qwen Cloud | Token plan (default): `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` · Pay as you go: `https://dashscope.aliyuncs.com/compatible-mode/v1` · or Custom |
+| Tencent Cloud Coding Plan | `https://api.lkeap.cloud.tencent.com/coding/v3` |
+| SiliconFlow | `https://api.siliconflow.cn/v1` |
 | Xiaomi MiMo | `https://api.xiaomimimo.com/anthropic` |
 | Kilo | `https://api.kilo.ai/api/gateway` |
 | GitLab Duo | `https://cloud.gitlab.com/ai/v1/proxy/openai/v1` |
@@ -142,6 +144,10 @@ validates the key, and stores it. Notable entries:
 
 Most use the `openai-chat` adapter with a bearer key; a few that expose only an Anthropic-compatible
 endpoint (e.g. **Xiaomi MiMo**) use the `anthropic` adapter (`x-api-key`).
+
+> **Tencent Cloud Coding Plan usage restriction:** Tencent documents this subscription for
+> interactive coding tools only. General API automation, custom application backends, and
+> non-interactive batch use are prohibited and may cause the plan key to be suspended.
 
 ### Multiple API keys
 

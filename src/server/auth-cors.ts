@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { formatErrorResponse } from "../bridge";
 import {
   codexAutoStartEnabled,
+  positiveIntegerConfigError,
   positiveIntegerRecordConfigError,
   providerBaseUrlConfigError,
   providerHeadersConfigError,
@@ -10,6 +11,7 @@ import { providerDestinationConfigError } from "../lib/destination-policy";
 import { getProviderRegistryEntry, providerCodexAccountMode } from "../providers/registry";
 import { providerConfigSeed } from "../providers/derive";
 import type { OcxConfig, OcxProviderConfig } from "../types";
+import { openRouterRoutingConfigError } from "../providers/openrouter-routing";
 
 let _corsOrigin = "http://localhost:10100";
 export function setCorsOrigin(port: number): void { _corsOrigin = `http://localhost:${port}`; }
@@ -226,6 +228,12 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
   if (headersError) return `provider ${name} ${headersError}`;
   const maxInputError = positiveIntegerRecordConfigError(raw.modelMaxInputTokens, "modelMaxInputTokens");
   if (maxInputError) return `provider ${name} ${maxInputError}`;
+  const defaultMaxOutputError = positiveIntegerConfigError(raw.defaultMaxOutputTokens, "defaultMaxOutputTokens");
+  if (defaultMaxOutputError) return `provider ${name} ${defaultMaxOutputError}`;
+  const maxOutputError = positiveIntegerRecordConfigError(raw.modelMaxOutputTokens, "modelMaxOutputTokens");
+  if (maxOutputError) return `provider ${name} ${maxOutputError}`;
+  const openRouterError = openRouterRoutingConfigError(typed);
+  if (openRouterError) return `provider ${name} ${openRouterError}`;
   if (typed.authMode === "local") {
     // "local" bypasses key-requirement enforcement (api-keys/key-failover treat non-oauth/
     // forward as key auth; openai-chat skips credential checks for local). Only providers
@@ -290,6 +298,10 @@ export function safeConfigDTO(config: OcxConfig): unknown {
       "models",
       "contextWindow",
       "modelContextWindows",
+      "defaultMaxOutputTokens",
+      "modelMaxOutputTokens",
+      "openRouterRouting",
+      "modelOpenRouterRouting",
       "reasoningEfforts",
       "modelReasoningEfforts",
       "noVisionModels",

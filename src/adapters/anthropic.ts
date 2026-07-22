@@ -37,6 +37,9 @@ function toAnthropicContentPart(p: OcxContentPart): unknown {
 const DEFAULT_MAX_TOKENS = 8192;
 /** Safe ceiling for `max_tokens` (thinking + visible output) across current Claude 4.x models. */
 const REASONING_MAX_TOKENS_CEILING = 32_000;
+/** Adaptive-thinking ceiling: max effort budget (32k) + OUTPUT_HEADROOM (8k).
+ *  Must exceed REASONING_MAX_TOKENS_CEILING so effort=max actually preserves visible-output room. */
+const ADAPTIVE_THINKING_CEILING = 40_192;
 /** Anthropic's documented minimum `thinking.budget_tokens`. */
 const MIN_THINKING_BUDGET = 1024;
 /** Visible-output room added above the thinking budget when sizing `max_tokens`. */
@@ -629,9 +632,19 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
       if (typeof parsed.options.reasoning === "string" && parsed.options.reasoning !== "none") {
         if (usesAdaptiveThinking(parsed.modelId)) {
           // Adaptive-thinking models replace the token budget with an effort knob and reject
-          // `thinking.type: "enabled"` outright — no budget/max_tokens re-sizing needed.
+          // `thinking.type: "enabled"` outright. `max_tokens` still caps thinking plus visible
+          // output, so high effort needs the same total-token headroom as budget thinking or a
+          // default 8192-token request can spend everything on thought and return empty text.
           body.thinking = { type: "adaptive" };
           body.output_config = { effort: adaptiveEffort(parsed.options.reasoning) };
+          const explicitMaxOut = parsed.options.maxOutputTokens;
+          const wantBudget = reasoningBudget(parsed.options.reasoning);
+          const floor = wantBudget + OUTPUT_HEADROOM;
+          // Preserve explicit caller limits as-is; for omitted limits use the adaptive ceiling
+          // so effort=max (budget=32k) still leaves OUTPUT_HEADROOM tokens for visible output.
+          body.max_tokens = explicitMaxOut !== undefined
+            ? explicitMaxOut
+            : Math.min(ADAPTIVE_THINKING_CEILING, Math.max(DEFAULT_MAX_TOKENS, floor));
         } else {
           // Anthropic requires max_tokens > thinking.budget_tokens (max_tokens caps thinking +
           // visible output) and budget_tokens >= 1024. Codex sends the SAME value for both, which
@@ -713,12 +726,17 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
       let currentToolCallId = "";
       let currentToolCallName = "";
       let pendingUsage: Record<string, number> | undefined;
+      let pendingStopReason: string | undefined;
       let emittedDone = false;
 
       const emitDone = function* (): Generator<AdapterEvent> {
         if (emittedDone) return;
         emittedDone = true;
-        yield { type: "done", usage: usageFromAnthropic(pendingUsage) };
+        yield {
+          type: "done",
+          usage: usageFromAnthropic(pendingUsage),
+          ...(pendingStopReason ? { stopReason: pendingStopReason } : {}),
+        };
       };
 
       try {
@@ -796,6 +814,8 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
               case "message_delta": {
                 const usage = data.usage as Record<string, number> | undefined;
                 pendingUsage = mergeAnthropicUsage(pendingUsage, usage);
+                const delta = data.delta as { stop_reason?: unknown } | undefined;
+                if (typeof delta?.stop_reason === "string") pendingStopReason = delta.stop_reason;
                 break;
               }
               case "message_stop": {
@@ -840,9 +860,11 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
         }
       }
       const usage = json.usage as Record<string, number> | undefined;
+      const stopReason = typeof json.stop_reason === "string" ? json.stop_reason : undefined;
       events.push({
         type: "done",
         usage: usageFromAnthropic(usage),
+        ...(stopReason ? { stopReason } : {}),
       });
       return events;
     },

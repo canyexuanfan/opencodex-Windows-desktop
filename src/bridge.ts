@@ -650,12 +650,26 @@ export function bridgeToResponsesSSE(
                 finishedItems.push(item as OutputItem);
                 outputIndex++;
               }
-              const response = { ...responseSnapshot("completed", finishedItems, event.endTurn), usage: responsesUsage(event.usage) };
-              options?.onCompletedResponse?.(response, event.providerState);
-              emit("response.completed", {
-                response,
-              });
-              reportTerminal("completed");
+              if (event.stopReason === "max_tokens") {
+                // Upstream hit its output token cap. Surface as incomplete so the client can
+                // distinguish a truncated turn from a genuinely finished one (issue #246).
+                const response = {
+                  ...responseSnapshot("incomplete", finishedItems, event.endTurn),
+                  usage: responsesUsage(event.usage),
+                  incomplete_details: { reason: "max_output_tokens" },
+                };
+                // Still cache the partial output so previous_response_id replay works.
+                options?.onCompletedResponse?.(response, event.providerState);
+                emit("response.incomplete", { response });
+                reportTerminal("incomplete");
+              } else {
+                const response = { ...responseSnapshot("completed", finishedItems, event.endTurn), usage: responsesUsage(event.usage) };
+                options?.onCompletedResponse?.(response, event.providerState);
+                emit("response.completed", {
+                  response,
+                });
+                reportTerminal("completed");
+              }
               terminated = true;
               break;
             }
@@ -781,6 +795,7 @@ export function buildResponseJSON(
   let errorEvent: Extract<AdapterEvent, { type: "error" }> | undefined;
   let incompleteEvent: Extract<AdapterEvent, { type: "incomplete" }> | undefined;
   let endTurn: boolean | undefined;
+  let stopReason: string | undefined;
   let compactionText = "";
 
   let currentText = "";
@@ -970,6 +985,7 @@ export function buildResponseJSON(
         usage = e.usage;
         endTurn = e.endTurn;
         if (e.providerState) options?.onProviderState?.(e.providerState);
+        if (e.stopReason === "max_tokens") stopReason = "max_tokens";
         break;
     }
   }
@@ -982,7 +998,11 @@ export function buildResponseJSON(
   }
 
   const failure = errorEvent ? adapterFailureFromEvent(errorEvent) : undefined;
-  const status = errorMessage ? "failed" : incompleteEvent ? "incomplete" : "completed";
+  const status = errorMessage
+    ? "failed"
+    : incompleteEvent || stopReason === "max_tokens"
+      ? "incomplete"
+      : "completed";
   return {
     id: responseId, object: "response",
     created_at: Math.floor(Date.now() / 1000),
@@ -996,6 +1016,8 @@ export function buildResponseJSON(
         ...(incompleteEvent.message ? { message: incompleteEvent.message } : {}),
         ...(incompleteEvent.retryable !== undefined ? { retryable: incompleteEvent.retryable } : {}),
       },
+    } : stopReason === "max_tokens" ? {
+      incomplete_details: { reason: "max_output_tokens" },
     } : {}),
     usage: responsesUsage(incompleteEvent?.usage ?? usage),
   };

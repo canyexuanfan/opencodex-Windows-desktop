@@ -15,8 +15,8 @@ starts the proxy when needed and opens `http://localhost:<port>`.
 | Config/settings | Read safe config/settings views; mutate supported settings only. Full `PUT /api/config` is disabled so masked secrets are not round-tripped. |
 | Providers | Create/update/delete ordinary provider configs and enrich registry metadata. The reserved `openai` card exposes Pool(default)/Direct account mode; `openai-apikey` remains the separate API route. |
 | Models | Fetch routed model lists, disabled model visibility, and catalog-facing ids. |
-| OAuth | Login/status/logout for OAuth-backed providers, plus multiauth account management: `GET /api/oauth/accounts`, `PUT /api/oauth/accounts/active`, `DELETE /api/oauth/accounts` list masked accounts per provider, switch the active one, and remove one. Login accepts `addAccount: true` to force a fresh browser identity. |
-| Key providers | Expose API-key provider presets for setup and dashboard flows. Multi-key pool per key-auth provider: `GET /api/providers/keys`, `POST /api/providers/keys`, `PUT /api/providers/keys/active`, `DELETE /api/providers/keys` masked list, add (upsert + activate), switch, and remove keys. `provider.apiKey` always mirrors the active pool entry so routing stays single-key. |
+| OAuth | Login/status/logout for OAuth-backed providers, plus multiauth account management: `GET /api/oauth/accounts`, `PUT /api/oauth/accounts/active`, `PUT /api/oauth/accounts/alias`, `DELETE /api/oauth/accounts` list masked accounts per provider, switch the active one, edit its display-only alias, and remove one. Login accepts `addAccount: true` to force a fresh browser identity. Device flows return a structured `deviceCode`; the GUI highlights and copies it before the user opens the verification page. |
+| Key providers | Expose API-key provider presets for setup and dashboard flows. Multi-key pool per key-auth provider: `GET /api/providers/keys`, `POST /api/providers/keys`, `PUT /api/providers/keys/active`, `PUT /api/providers/keys/alias`, `DELETE /api/providers/keys` masked list, add (upsert + activate), switch, rename, and remove keys. `provider.apiKey` always mirrors the active pool entry so routing stays single-key. |
 | OpenAI account mode | Report one OpenAI Codex card with Pool/Direct controls and one API-key card. Mode PATCH persists live without restart or catalog identity changes; Pool owns account/quota controls and Direct uses caller/main login only. |
 | Subagents | Read/write the featured `subagentModels` list capped at five ids. |
 | V2 / Multi-agent mode | `GET/PUT /api/v2` — reports/sets the codex `multi_agent_v2` feature flag, the 3-state `multiAgentMode` override (`v1`/`default`/`v2`), and the logical maximum thread count. Selecting `v2` enables the native flag and migrates `[agents] max_threads` to the v2 key; selecting `v1` disables it and migrates the same value back. `default` leaves the native flag unchanged. PUT accepts `enabled`, `multiAgentMode`, and/or the compatibility-named `maxConcurrentThreadsPerSession`; contradictory mode/flag pairs are rejected before writes. Every transition is rollback-safe and resyncs the catalog. |
@@ -33,6 +33,11 @@ Direct accurately, and keep the main account inside Pool. Public model state kee
 even though transport logs may additionally report the resolved base model. Detailed rules live in
 [`08_openai-provider-tiers.md`](08_openai-provider-tiers.md).
 
+User aliases are display metadata only. Codex pool aliases live on `CodexAccount`, OAuth aliases on
+`ProviderAccount`, and API-key aliases reuse the existing key `label`; account ids, credential
+identity, active selection, and routing never consult these fields. The matching CLI is
+`ocx account alias <provider> <id> <display-name|->` (`rename` is accepted as a synonym).
+
 ## Sidebar stop button
 
 The dashboard sidebar includes a stop button that calls `POST /api/stop`. The button shows a
@@ -43,6 +48,12 @@ endpoint restores native Codex config, stops any installed service to prevent re
 
 The dashboard is a local control surface, not a separate service. It should reflect the same config
 and catalog invariants documented in this folder rather than inventing parallel state.
+
+The `/#codex-auth` add-account modal has a three-step manual-code UX contract on top of the existing
+OAuth polling API: submit request, waiting-for-login completion, and terminal success/failure. Once
+`POST /api/codex-auth/login/code` succeeds, the GUI must keep the input disabled, expose an
+`aria-live` status message that the code was accepted, and surface repeated `login-status` polling
+network failures as a visible warning instead of silently looking idle again.
 
 ## Usage accounting
 

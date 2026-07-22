@@ -12,6 +12,7 @@ import {
   isOcxStartCommandLine,
   loadConfig,
   parsePidFile,
+  positiveIntegerConfigError,
   positiveIntegerRecordConfigError,
   readConfigDiagnostics,
   readRuntimePort,
@@ -137,6 +138,46 @@ describe("opencodex config defaults", () => {
       expect(readConfigDiagnostics().source).toBe("fallback");
       expect(readConfigDiagnostics().error).toContain("codexAccountMode");
     }
+  });
+
+  test("accepts the exact responsesItemIdRepair shape and rejects the old nested placeholderIds proposal", () => {
+    writeConfig({
+      port: 12345,
+      providers: {
+        custom: {
+          adapter: "openai-responses",
+          baseUrl: "https://example.test/v1",
+          responsesItemIdRepair: {
+            reasoning: ["rs_0"],
+            message: ["msg_0"],
+            repairMissingTerminalIds: true,
+          },
+        },
+      },
+      defaultProvider: "custom",
+    });
+    expect(readConfigDiagnostics().error).toBeNull();
+    expect(readConfigDiagnostics().config.providers.custom.responsesItemIdRepair).toEqual({
+      reasoning: ["rs_0"],
+      message: ["msg_0"],
+      repairMissingTerminalIds: true,
+    });
+
+    writeConfig({
+      port: 12345,
+      providers: {
+        custom: {
+          adapter: "openai-responses",
+          baseUrl: "https://example.test/v1",
+          responsesItemIdRepair: {
+            placeholderIds: { reasoning: ["rs_0"] },
+          },
+        },
+      },
+      defaultProvider: "custom",
+    });
+    expect(readConfigDiagnostics().source).toBe("fallback");
+    expect(readConfigDiagnostics().error).toContain("responsesItemIdRepair");
   });
 
   test("reads valid config diagnostics without mutation", () => {
@@ -357,6 +398,40 @@ describe("opencodex config defaults", () => {
     }
   });
 
+  test("output token defaults accept only positive finite integers", () => {
+    expect(positiveIntegerConfigError(128_000, "defaultMaxOutputTokens")).toBeNull();
+    for (const invalid of [null, [], {}, 0, -1, 1.5, "128000", Number.POSITIVE_INFINITY]) {
+      expect(positiveIntegerConfigError(invalid, "defaultMaxOutputTokens")).not.toBeNull();
+    }
+
+    expect(positiveIntegerRecordConfigError({ "glm-5.2": 128_000 }, "modelMaxOutputTokens")).toBeNull();
+    expect(positiveIntegerRecordConfigError({ "glm-5.2": 0 }, "modelMaxOutputTokens")).not.toBeNull();
+  });
+
+  test("disk config rejects malformed output token defaults", () => {
+    writeConfig({
+      port: 10100,
+      providers: {
+        custom: { adapter: "openai-chat", baseUrl: "https://example.test/v1", defaultMaxOutputTokens: 1.5 },
+      },
+      defaultProvider: "custom",
+    });
+    expect(readConfigDiagnostics().source).toBe("fallback");
+    expect(readConfigDiagnostics().error).toContain("providers.custom.defaultMaxOutputTokens");
+
+    rmSync(testDir, { recursive: true, force: true });
+    mkdirSync(testDir, { recursive: true });
+    writeConfig({
+      port: 10100,
+      providers: {
+        custom: { adapter: "openai-chat", baseUrl: "https://example.test/v1", modelMaxOutputTokens: { model: 0 } },
+      },
+      defaultProvider: "custom",
+    });
+    expect(readConfigDiagnostics().source).toBe("fallback");
+    expect(readConfigDiagnostics().error).toContain("providers.custom.modelMaxOutputTokens");
+  });
+
   test("disk config rejects malformed modelMaxInputTokens", () => {
     writeConfig({
       port: 10100,
@@ -367,6 +442,43 @@ describe("opencodex config defaults", () => {
     });
     expect(readConfigDiagnostics().source).toBe("fallback");
     expect(readConfigDiagnostics().error).toContain("providers.custom.modelMaxInputTokens");
+  });
+
+  test("disk config preserves valid OpenRouter routing and rejects invalid destinations", () => {
+    writeConfig({
+      port: 10100,
+      providers: {
+        openrouter: {
+          adapter: "openai-chat",
+          baseUrl: "https://openrouter.ai/api/v1",
+          openRouterRouting: { order: ["deepseek"], allowFallbacks: false },
+          modelOpenRouterRouting: { "anthropic/claude-sonnet-5": { only: ["anthropic"] } },
+        },
+      },
+      defaultProvider: "openrouter",
+    });
+    expect(loadConfig().providers.openrouter).toMatchObject({
+      openRouterRouting: { order: ["deepseek"], allowFallbacks: false },
+      modelOpenRouterRouting: { "anthropic/claude-sonnet-5": { only: ["anthropic"] } },
+    });
+
+    rmSync(testDir, { recursive: true, force: true });
+    mkdirSync(testDir, { recursive: true });
+    writeConfig({
+      port: 10100,
+      providers: {
+        custom: {
+          adapter: "openai-chat",
+          baseUrl: "https://example.test/v1",
+          openRouterRouting: { only: ["deepseek"] },
+        },
+      },
+      defaultProvider: "custom",
+    });
+    expect(readConfigDiagnostics()).toMatchObject({
+      source: "fallback",
+      error: expect.stringContaining("canonical https://openrouter.ai/api/v1"),
+    });
   });
 
   test("disk config rejects forged registry-only virtual model maps", () => {

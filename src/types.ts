@@ -30,6 +30,12 @@ export interface OcxParsedRequest {
    * (see src/responses/compaction.ts).
    */
   _compactionRequest?: boolean;
+  /**
+   * True when the current request newly introduced a stored compaction summary/marker. Historical
+   * markers restored by previous_response_id expansion were already acknowledged and do not reset
+   * provider-private continuation caches again on every later turn.
+   */
+  _contextCompactionBoundary?: boolean;
 }
 
 export interface OcxContext {
@@ -234,7 +240,13 @@ export type AdapterEvent =
   // the SAME output index, so the activity animates instead of flashing completed instantly.
   | { type: "web_search_call_begin"; id: string }
   | { type: "web_search_call_end"; id: string; queries: string[]; status?: "completed" | "failed"; sources?: OcxUrlCitation[] }
-  | { type: "done"; usage?: OcxUsage; endTurn?: boolean; providerState?: OcxProviderContinuationState }
+  | {
+      type: "done";
+      usage?: OcxUsage;
+      stopReason?: string;
+      endTurn?: boolean;
+      providerState?: OcxProviderContinuationState;
+    }
   | {
       type: "incomplete";
       reason: string;
@@ -389,6 +401,24 @@ export interface OcxClaudeCodeConfig {
   visionSidecar?: { backend?: "openai" | "anthropic"; model?: string };
 }
 
+/** 사용자가 대시보드에서 직접 추가한 커스텀 모델 정의. */
+export interface OcxCustomModel {
+  /** 고유 ID (crypto.randomUUID()) */
+  id: string;
+  /** 프로바이더 키 (기존 providers[name]) */
+  provider: string;
+  /** 모델 슬러그 (프로바이더 접두사 없는 bare id) */
+  modelId: string;
+  /** 인간 가독 표시명 (선택, 슬래시 불가) */
+  displayName?: string;
+  /** 컨텍스트 윈도우 (토큰) */
+  contextWindow?: number;
+  /** 입력 모달리티 (선택, 기본 ["text"]) */
+  inputModalities?: string[];
+  /** 추가 시각 (ISO 8601) */
+  addedAt?: string;
+}
+
 export interface OcxConfig {
   port: number;
   providers: Record<string, OcxProviderConfig>;
@@ -444,6 +474,8 @@ export interface OcxConfig {
    * are omitted from the bare /v1/models list.
    */
   disabledModels?: string[];
+  /** 사용자가 대시보드에서 직접 추가한 커스텀 모델 목록. */
+  customModels?: OcxCustomModel[];
   /**
    * Shadow call intercept: redirect Codex Desktop's hard-coded gpt-5.4-mini helper calls
    * (title generation, commit messages, skill orchestration) to a user-chosen model.
@@ -542,6 +574,12 @@ export interface OcxComboConfig {
   stickyLimit?: number;
   /** Used when the client omits reasoning.effort. null/omitted leaves the target default unchanged. */
   defaultEffort?: OcxComboDefaultEffort | null;
+  /**
+   * Optional public model name replacing the default `combo/<id>` slug. Bare names
+   * without "/" are allowed (e.g. "deepseek-v4-flash") so the combo can answer to a
+   * mandated model id; exact-match requests route here before any provider resolution.
+   */
+  alias?: string;
 }
 
 /**
@@ -627,6 +665,24 @@ export interface OcxWebSearchSidecarConfig {
   routedModelStallTimeoutMs?: number;
 }
 
+export interface OpenRouterProviderRouting {
+  /** OpenRouter provider slugs to try first, in priority order. */
+  order?: string[];
+  /** Restrict routing to these OpenRouter provider slugs. */
+  only?: string[];
+  /** Whether OpenRouter may use providers outside `order`. Defaults to OpenRouter's policy. */
+  allowFallbacks?: boolean;
+}
+
+export interface ResponsesItemIdRepairConfig {
+  /** Exact `message` item ids that the proxy should rewrite to request-local canonical ids. */
+  message?: string[];
+  /** Exact `reasoning` item ids that the proxy should rewrite to request-local canonical ids. */
+  reasoning?: string[];
+  /** Backfill missing `output_item.done` / terminal snapshot ids from the matching output_index. */
+  repairMissingTerminalIds?: boolean;
+}
+
 export interface OcxProviderConfig {
   adapter: string;
   baseUrl: string;
@@ -674,7 +730,18 @@ export interface OcxProviderConfig {
   modelInputModalities?: Record<string, string[]>;
   /** Model-specific max input token limits. Values cap auto_compact_token_limit. */
   modelMaxInputTokens?: Record<string, number>;
+  /**
+   * Provider-wide fallback for chat-completions `max_tokens` when the caller omits
+   * Responses `max_output_tokens`. Adapters still let an explicit request win.
+   */
+  defaultMaxOutputTokens?: number;
+  /** Model-specific fallback output token budgets. Exact/model-pattern entries beat the provider default. */
+  modelMaxOutputTokens?: Record<string, number>;
   headers?: Record<string, string>;
+  /** Default provider-routing preferences for models sent through the canonical OpenRouter API. */
+  openRouterRouting?: OpenRouterProviderRouting;
+  /** Exact model-id overrides for `openRouterRouting`. Each matching entry replaces the default. */
+  modelOpenRouterRouting?: Record<string, OpenRouterProviderRouting>;
   /**
    * "key" (default): authenticate upstream with `apiKey`.
    * "forward": relay the caller's incoming auth headers verbatim (OAuth passthrough; gpt only).
@@ -734,6 +801,18 @@ export interface OcxProviderConfig {
    * only on explicit `true`. See devlog/_plan/260709_parallel_tool_calls.
    */
   parallelToolCalls?: boolean;
+  /**
+   * Opt-in: forward `prompt_cache_key` to the upstream `/chat/completions` body.
+   * OpenAI-specific extension; strict backends (Groq, Cerebras, etc.) reject unknown
+   * fields. Default off; only enable for providers that document this parameter.
+   */
+  promptCacheKey?: boolean;
+  /**
+   * Provider-local passthrough SSE repair for broken openai-responses gateways that reuse exact
+   * placeholder message/reasoning ids or omit the terminal id after a stable added event.
+   * Disabled by default; function_call ids and call_id pairing are never rewritten.
+   */
+  responsesItemIdRepair?: ResponsesItemIdRepairConfig;
   /** Model ids whose tool_choice only accepts `auto` or `none`; forced/named choices are downgraded. */
   autoToolChoiceOnlyModels?: string[];
   /** Model ids that expect prior assistant `reasoning_content` to be preserved in chat history. */
@@ -781,23 +860,23 @@ export interface OcxProviderConfig {
   desktopExecutor?: import("./adapters/cursor/native-exec-desktop").DesktopExecutorConfig;
   /**
    * Cursor adapter only: unsafe opt-in escape hatch for Cursor server-driven built-in local
-   * read/write/delete/ls/grep/shell/fetch execution. Defaults to false so remote Cursor messages
-   * cannot bypass Codex approval/sandbox semantics. Explicit MCP and desktop executors remain
-   * controlled by their own opt-in config.
+   * read/write/delete/ls/grep/shell/fetch execution. Prefer `nativeLocalExec: "on"` for new
+   * configs; this legacy boolean remains a server-local explicit opt-in for existing operators.
+   * Defaults to false so remote Cursor messages cannot bypass Codex approval/sandbox semantics.
+   * Explicit MCP and desktop executors remain controlled by their own opt-in config.
    */
   unsafeAllowNativeLocalExec?: boolean;
   /**
    * Cursor adapter only: native local exec policy mode (exec-policy.ts).
-   * "codex-sandbox" (default) allows server-driven local exec only when the
-   * request's instructions/developer text declares the Codex danger-full-access
-   * sandbox (approves the normal full-access flow, denies undeclared requests);
-   * "off" rejects all server-driven local exec; "on" always allows (same as legacy
-   * unsafeAllowNativeLocalExec:true). NOTE: the declaration is CALLER-CONTROLLED prose —
-   * the proxy cannot verify it. Enable "codex-sandbox" only where every client
-   * that can reach the data plane is trusted: the default loopback bind admits
-   * ANY process on this host without auth (including other local users on
-   * multi-user machines), and isAllowedRequestOrigin blocks non-loopback
-   * browser origins by default but not loopback-origin or origin-less callers.
+   * "off" (default) rejects server-driven local exec; "on" always allows it for this
+   * provider and should be used only for a trusted local experiment on a host where every
+   * data-plane caller is trusted. "codex-sandbox" is accepted for backwards compatibility
+   * but is fail-closed like "off": Responses instructions/system/developer text is
+   * caller-controlled prose, and opencodex has no trustworthy per-request attestation that it
+   * reflects a real Codex sandbox state. The default loopback bind admits ANY local process
+   * without auth (including other local users on multi-user machines), and
+   * isAllowedRequestOrigin blocks non-loopback browser origins by default but not
+   * loopback-origin or origin-less callers.
    */
   nativeLocalExec?: "off" | "codex-sandbox" | "on";
 }
@@ -810,6 +889,8 @@ export const OPENAI_PROVIDER_TIER_VERSION = 2 as const;
 export interface CodexAccount {
   id: string;
   email: string;
+  /** User-owned display label; never participates in routing or identity checks. */
+  alias?: string;
   plan?: string;
   chatgptAccountId?: string;
   logLabel?: string;

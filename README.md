@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ru.md">Русский</a> · 📖 <a href="https://lidge-jun.github.io/opencodex/"><b>Full documentation →</b></a>
+  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ru.md">Русский</a> · <a href="README.ja.md">日本語</a> · 📖 <a href="https://lidge-jun.github.io/opencodex/"><b>Full documentation →</b></a>
 </p>
 
 <p align="center">
@@ -158,6 +158,11 @@ codex -m "ollama/llama3" "Refactor this function"
 
 When you omit the `provider/` prefix, opencodex routes to the default provider — or auto-matches based on the model name pattern (e.g., `claude-*` routes to Anthropic, `gpt-*` routes to OpenAI).
 
+Combo aliases are exact public model ids and may be bare names or use a custom namespace. If a
+combo alias exactly matches a configured non-OpenAI `provider/model` selector, the combo
+intentionally takes precedence in routing, `/v1/models`, and the Codex catalog. Renaming that
+alias or deleting the combo immediately restores the physical provider selector.
+
 Routed models also appear in the **Codex App** model picker with per-model reasoning effort controls:
 
 Current Codex builds can expose `low`, `medium`, `high`, `xhigh`, `max`, and `ultra` reasoning
@@ -254,14 +259,17 @@ next Codex session. opencodex keeps these behaviors:
 | Ollama / vLLM / LM Studio (local) | `openai-chat` | key (usually blank) |
 | Any OpenAI-compatible endpoint | `openai-chat` | key |
 
-Plus DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Mistral, Hugging Face, NVIDIA NIM, MiniMax, Qwen Cloud, and more. See the full list with `ocx init` or in the [provider docs](https://lidge-jun.github.io/opencodex/reference/configuration/).
+Plus DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Mistral, Hugging Face, NVIDIA NIM, MiniMax, Qwen Cloud, Tencent Cloud Coding Plan, SiliconFlow, and more. See the full list with `ocx init` or in the [provider docs](https://lidge-jun.github.io/opencodex/reference/configuration/).
 
 Cursor support is a staged experimental bridge: it appears in `ocx init` and the dashboard Add
 Provider picker as a local config with Cursor's static public model catalog. Live
 HTTP/2 transport is enabled when a Cursor access token is configured. Cursor server-driven native
 read/write/delete/ls/grep/shell/fetch execution is disabled by default because it bypasses Codex's
-approval and sandbox path; set `unsafeAllowNativeLocalExec: true` only for trusted local
-experiments.
+approval and sandbox path. Request text such as a Codex `danger-full-access` sandbox marker never
+authorizes native local exec; set `nativeLocalExec: "on"` only for trusted local experiments where
+every data-plane caller is trusted. `nativeLocalExec: "codex-sandbox"` is accepted for backwards
+compatibility but fails closed like `off`; legacy `unsafeAllowNativeLocalExec: true` remains an
+explicit operator opt-in.
 MCP, screen recording, and computer-use are exposed through executor hooks; when no local executor
 is configured, opencodex returns typed no-executor results instead of policy-blocking the request.
 Cursor OAuth and live model discovery are enabled for the experimental Cursor adapter.
@@ -345,13 +353,16 @@ Here's a typical multi-provider setup:
 }
 ```
 
-Provider entries can also annotate routed catalog metadata. Use `contextWindow` for a provider-wide
-Codex-visible context cap, `modelContextWindows` for model-specific caps, and
+Provider entries can also annotate routed catalog metadata and output defaults. Use `contextWindow`
+for a provider-wide Codex-visible context cap, `modelContextWindows` for model-specific caps, and
 `modelInputModalities` for model-specific catalog input hints such as `["text"]` or
-`["text", "image"]`. Context values cap live `/models` metadata; they never raise a smaller live
-context window. The bundled GPT-5.6 Sol/Terra/Luna fallback metadata uses a 1,050,000-token context
-window for OpenAI API key and OpenRouter catalog entries; it does not bypass upstream preview
-access. See the configuration reference for the full field list.
+`["text", "image"]`. For OpenAI-compatible chat providers whose upstream default response budget is
+too small, set `defaultMaxOutputTokens` or per-model `modelMaxOutputTokens`; explicit
+`max_output_tokens` from the client still wins, and unset configs still omit `max_tokens`. Context
+values cap live `/models` metadata; they never raise a smaller live context window. The bundled
+GPT-5.6 Sol/Terra/Luna fallback metadata uses a 1,050,000-token context window for OpenAI API key
+and OpenRouter catalog entries; it does not bypass upstream preview access. See the configuration
+reference for the full field list.
 
 > **GLM-5.2 1M context via Z.AI:** through the `openai-chat` adapter, both `glm-5.2`
 > and `glm-5.2[1m]` work — opencodex strips the trailing `[1m]` suffix before

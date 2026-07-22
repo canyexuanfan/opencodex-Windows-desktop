@@ -125,6 +125,8 @@ opencodex поставляется с 53 встроенными пресетам
 | NVIDIA NIM | `https://integrate.api.nvidia.com/v1` |
 | Z.AI (GLM Coding) | `https://api.z.ai/api/coding/paas/v4` |
 | Qwen Cloud | Token plan (по умолчанию): `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` · Pay as you go: `https://dashscope.aliyuncs.com/compatible-mode/v1` · или Custom |
+| Tencent Cloud Coding Plan | `https://api.lkeap.cloud.tencent.com/coding/v3` |
+| SiliconFlow | `https://api.siliconflow.cn/v1` |
 | Xiaomi MiMo | `https://api.xiaomimimo.com/anthropic` |
 | Kilo | `https://api.kilo.ai/api/gateway` |
 | GitLab Duo | `https://cloud.gitlab.com/ai/v1/proxy/openai/v1` |
@@ -135,6 +137,10 @@ opencodex поставляется с 53 встроенными пресетам
 только Anthropic-совместимую конечную точку (например, **Xiaomi MiMo**), используют адаптер
 `anthropic` (`x-api-key`).
 
+> **Ограничение Tencent Cloud Coding Plan:** Tencent разрешает использовать эту подписку только
+> в интерактивных инструментах программирования. Автоматизация общего API, серверы пользовательских
+> приложений и неинтерактивные пакетные вызовы запрещены и могут привести к блокировке ключа плана.
+
 ### Несколько API-ключей
 
 Провайдеры на основе ключей тоже могут хранить несколько ключей. Ключ, добавленный через страницу
@@ -142,6 +148,13 @@ Providers, сохраняется в `provider.apiKeyPool`, становится
 `provider.apiKey`, чтобы маршрутизация и адаптеры по-прежнему читали то же поле, что и раньше. В том
 же выпадающем списке можно переключать и удалять ключи; API управления — `/api/providers/keys`, он
 возвращает только маскированные ключи.
+
+### Переключение аккаунтов из терминала
+
+Используйте `ocx account list`, `ocx account current` и `ocx account use`, чтобы просматривать и
+переключать те же пулы Codex, OAuth и API-ключей, не открывая дашборд. Команды, JSON-вывод и
+поведение в новых сессиях описаны в разделе
+[Справочник CLI](/opencodex/ru/reference/cli/#ocx-account-subcommand).
 
 ### Превью-маршруты GPT-5.6
 

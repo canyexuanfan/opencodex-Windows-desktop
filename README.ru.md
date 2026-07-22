@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <b>Русский</b> · 📖 <a href="https://lidge-jun.github.io/opencodex/ru/"><b>Полная документация →</b></a>
+  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <b>Русский</b> · <a href="README.ja.md">日本語</a> · 📖 <a href="https://lidge-jun.github.io/opencodex/ru/"><b>Полная документация →</b></a>
 </p>
 
 <p align="center">
@@ -262,7 +262,7 @@ OpenAI API-ключа и OpenRouter (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-lu
 | Ollama / vLLM / LM Studio (локально) | `openai-chat` | key (обычно пустой) |
 | Любой OpenAI-совместимый эндпоинт | `openai-chat` | key |
 
-А также DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Mistral, Hugging Face, NVIDIA NIM, MiniMax, Qwen Cloud и другие. Полный список — в `ocx init` или в [документации по провайдерам](https://lidge-jun.github.io/opencodex/reference/configuration/).
+А также DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Mistral, Hugging Face, NVIDIA NIM, MiniMax, Qwen Cloud, Tencent Cloud Coding Plan, SiliconFlow и другие. Полный список — в `ocx init` или в [документации по провайдерам](https://lidge-jun.github.io/opencodex/reference/configuration/).
 
 Поддержка Cursor — поэтапный экспериментальный мост: он появляется в `ocx init` и в селекторе
 Add Provider панели управления как локальная конфигурация со статическим публичным каталогом
@@ -289,6 +289,7 @@ ocx codex-shim install         # выполнять `ocx ensure` при кажд
 ocx status                     # работает ли прокси?
 ocx login <provider>          # вход через OAuth (xai, anthropic, kimi, cursor, ...)
 ocx logout <provider>          # удалить сохранённый вход
+ocx account <list|current|use> # просмотр/переключение аккаунтов и пулов API-ключей (маскировано; также refresh/auto-switch/remove/add-key)
 ocx gui                        # открыть веб-панель управления
 ocx claude [args...]           # запустить Claude Code, подключённый к прокси (обнаружение моделей включено)
 ocx service [install|start|stop|status|uninstall]   # установить/обновить/запустить фоновую службу

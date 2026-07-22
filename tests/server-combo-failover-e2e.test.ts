@@ -20,6 +20,8 @@ import { responseWithDeferredRequestLog } from "../src/server/relay";
 import { readUsageEntries } from "../src/usage/log";
 import { saveCodexAccountCredential } from "../src/codex/account-store";
 import { formatCodexProviderForLog } from "../src/codex/routing";
+import { startServer } from "../src/server";
+import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
 
 const actualResolver = await import("../src/server/adapter-resolve");
 const actualResolveAdapter = actualResolver.resolveAdapter;
@@ -239,6 +241,29 @@ async function postLogged(
   );
 }
 
+async function postModelLogged(
+  config: OcxConfig,
+  model: string,
+  raw: Record<string, unknown> = {},
+  options: HandleOptions = {},
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  const logCtx: RequestLogContext = { model: "", provider: "" };
+  const start = Date.now();
+  const response = await handleResponses(new Request("http://localhost/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify({ model, input: "hello", stream: false, ...raw }),
+  }), config, logCtx, options);
+  loggedRequestSequence += 1;
+  return responseWithDeferredRequestLog(
+    response,
+    `direct-test-${loggedRequestSequence}`,
+    start,
+    logCtx,
+  );
+}
+
 async function latestAttemptReceipts(config: OcxConfig) {
   const response = await management(config, "GET", "/api/logs?tail=1");
   const logs = await response!.json() as Array<Record<string, unknown>>;
@@ -375,6 +400,127 @@ describe("server combo failover 030 activation matrix", () => {
           { ordinal: 2, provider: "b", model: "m2", status: 200, usage: { inputTokens: 2, outputTokens: 1 } },
         ],
       });
+    }
+  });
+
+  test("bare alias runs full failover and preserves structural combo log identity", async () => {
+    const targetBodies: Array<{ provider: string; model?: unknown }> = [];
+    const a = serve(async request => {
+      const body = await request.json() as { model?: unknown };
+      targetBodies.push({ provider: "a", model: body.model });
+      return Response.json({ error: { message: "overloaded" } }, { status: 503 });
+    });
+    const b = serve(async request => {
+      const body = await request.json() as { model?: unknown };
+      targetBodies.push({ provider: "b", model: body.model });
+      return chatSuccess("alias backup", "m2");
+    });
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(a), "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    }, undefined, { alias: "deepseek-v4-flash" });
+    const response = await postLogged(config, { model: "deepseek-v4-flash" });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("alias backup");
+    expect(targetBodies).toEqual([
+      { provider: "a", model: "m1" },
+      { provider: "b", model: "m2" },
+    ]);
+    const { log, usage } = await latestAttemptReceipts(config);
+    for (const receipt of [log, usage]) {
+      expect(receipt).toMatchObject({
+        provider: "combo",
+        model: "deepseek-v4-flash",
+        requestedModel: "deepseek-v4-flash",
+        attempts: [
+          { ordinal: 1, provider: "a", model: "m1", status: 503 },
+          { ordinal: 2, provider: "b", model: "m2", status: 200 },
+        ],
+      });
+    }
+  });
+
+  test("ordinary /v1/models restores a non-OpenAI selector after combo alias rename and deletion", async () => {
+    const selector = "deepseek/deepseek-chat";
+    const combo = {
+      strategy: "failover" as const,
+      targets: [{ provider: "deepseek", model: "deepseek-chat" }],
+      alias: selector,
+    };
+    const config = comboConfig({
+      deepseek: provider("openai-chat", "http://127.0.0.1:1/v1", "key-deepseek", {
+        liveModels: false,
+        models: ["deepseek-chat"],
+        modelContextWindows: { "deepseek-chat": 128_000 },
+      }),
+    }, combo.targets, { alias: combo.alias });
+    saveConfig(config);
+    const server = startServer(0);
+    try {
+      const publicRows = async () => {
+        const response = await fetch(new URL("/v1/models", server.url));
+        expect(response.status).toBe(200);
+        const payload = await response.json() as {
+          data: Array<{ id: string; owned_by: string }>;
+        };
+        return payload.data;
+      };
+      const updateAlias = async (alias: string) => fetch(new URL("/api/combos", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: "free", combo: { ...combo, alias } }),
+      });
+
+      expect((await publicRows()).filter(model => model.id === selector)).toEqual([
+        { id: selector, object: "model", created: 0, owned_by: "combo" },
+      ]);
+
+      const renamed = await updateAlias("fast-chat");
+      expect(renamed.status).toBe(200);
+      const renamedRows = await publicRows();
+      expect(renamedRows.filter(model => model.id === selector)).toEqual([
+        { id: selector, object: "model", created: 0, owned_by: "deepseek" },
+      ]);
+      expect(renamedRows.filter(model => model.id === "fast-chat")).toEqual([
+        { id: "fast-chat", object: "model", created: 0, owned_by: "combo" },
+      ]);
+
+      const restored = await updateAlias(selector);
+      expect(restored.status).toBe(200);
+      const deleted = await fetch(new URL("/api/combos?id=free", server.url), { method: "DELETE" });
+      expect(deleted.status).toBe(200);
+      const deletedRows = await publicRows();
+      expect(deletedRows.filter(model => model.id === selector)).toEqual([
+        { id: selector, object: "model", created: 0, owned_by: "deepseek" },
+      ]);
+      expect(deletedRows.some(model => model.owned_by === "combo")).toBe(false);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("ordinary /v1/models preserves raw nested selectors while an exact combo alias wins", async () => {
+    const config = comboConfig({
+      a: provider("openai-chat", "http://127.0.0.1:1/v1", "key-a", {
+        liveModels: false,
+        models: ["vendor/model", "vendor-model"],
+        modelContextWindows: { "vendor/model": 128_000, "vendor-model": 128_000 },
+      }),
+    }, [{ provider: "a", model: "vendor/model" }], { alias: "a/vendor-model" });
+    saveConfig(config);
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/v1/models", server.url));
+      expect(response.status).toBe(200);
+      const payload = await response.json() as {
+        data: Array<{ id: string; owned_by: string }>;
+      };
+      expect(payload.data.filter(model => model.id.startsWith("a/vendor")).sort((a, b) => a.id.localeCompare(b.id))).toEqual([
+        { id: "a/vendor-model", object: "model", created: 0, owned_by: "combo" },
+        { id: "a/vendor/model", object: "model", created: 0, owned_by: "a" },
+      ]);
+    } finally {
+      await server.stop(true);
     }
   });
 
@@ -686,7 +832,10 @@ describe("server combo failover 030 activation matrix", () => {
     const response = await post(config, {
       stream: true,
       tools: [{ type: "web_search" }],
-    }, {}, { authorization: "Bearer forwarded-main" });
+    }, {}, {
+      authorization: `Bearer ${fakeChatGptJwt({ chatgpt_account_id: "acct-combo-search" })}`,
+      "chatgpt-account-id": "acct-combo-search",
+    });
     expect(response.status).toBe(200);
     expect(JSON.stringify(await collectSse(response))).toContain("web loop backup");
     expect(modelHits.map(hit => hit.model)).toEqual(["m1", "m2"]);
@@ -815,6 +964,62 @@ describe("server combo failover 030 activation matrix", () => {
     }, undefined, { defaultEffort: "high" });
     expect((await post(config)).status).toBe(200);
     expect(backupBody).not.toHaveProperty("reasoning_effort");
+  });
+
+  test("bare third-party defaultModel keeps max off the native clamp path", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    customFetchResponse = async request => {
+      const body = JSON.parse(String(request.body)) as Record<string, unknown>;
+      seen.push(body);
+      return chatSuccess("ok", String(body.model ?? "glm-5.2-fast-preview"));
+    };
+    const config: OcxConfig = {
+      port: 0,
+      defaultProvider: "bailian",
+      providers: {
+        bailian: provider("test-response", "https://test.invalid/v1", "key-b", {
+          defaultModel: "glm-5.2-fast-preview",
+          modelReasoningEfforts: { "glm-5.2-fast-preview": ["low", "medium", "high", "xhigh", "max"] },
+        }),
+      },
+    };
+
+    const bare = await postModelLogged(config, "glm-5.2-fast-preview", { reasoning: { effort: "max" } });
+    expect(bare.status).toBe(200);
+    await bare.text();
+    expect(seen[0]!.reasoning_effort).toBe("max");
+    let { log, usage } = await latestAttemptReceipts(config);
+    expect(log).toMatchObject({
+      provider: "bailian",
+      requestedModel: "glm-5.2-fast-preview",
+      requestedEffort: "max",
+      resolvedModel: "glm-5.2-fast-preview",
+    });
+    expect(usage).toMatchObject({
+      provider: "bailian",
+      requestedModel: "glm-5.2-fast-preview",
+      requestedEffort: "max",
+      resolvedModel: "glm-5.2-fast-preview",
+    });
+
+    seen.length = 0;
+    const prefixed = await postModelLogged(config, "bailian/glm-5.2-fast-preview", { reasoning: { effort: "max" } });
+    expect(prefixed.status).toBe(200);
+    await prefixed.text();
+    expect(seen[0]!.reasoning_effort).toBe("max");
+    ({ log, usage } = await latestAttemptReceipts(config));
+    expect(log).toMatchObject({
+      provider: "bailian",
+      requestedModel: "bailian/glm-5.2-fast-preview",
+      requestedEffort: "max",
+      resolvedModel: "glm-5.2-fast-preview",
+    });
+    expect(usage).toMatchObject({
+      provider: "bailian",
+      requestedModel: "bailian/glm-5.2-fast-preview",
+      requestedEffort: "max",
+      resolvedModel: "glm-5.2-fast-preview",
+    });
   });
 
   test("xAI 401 refresh stays within one target and succeeds without backup", async () => {

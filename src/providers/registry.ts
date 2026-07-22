@@ -1,6 +1,6 @@
 import type { CodexAccountMode, OcxProviderConfig } from "../types";
 import { KIRO_MODELS, KIRO_MODEL_CONTEXT_WINDOWS, KIRO_MODEL_REASONING_EFFORTS } from "./kiro-models";
-import { ANTIGRAVITY_MODELS, ANTIGRAVITY_MODEL_CONTEXT_WINDOWS } from "./antigravity-models";
+import { ANTIGRAVITY_MODELS, ANTIGRAVITY_MODEL_CONTEXT_WINDOWS, ANTIGRAVITY_MODEL_EFFORTS } from "./antigravity-models";
 import type { ProviderBaseUrlChoice } from "./base-url-choices";
 import {
   QWEN_CLOUD_BASE_URL_CHOICES, QWEN_CLOUD_TOKEN_PLAN_BASE_URL,
@@ -53,6 +53,8 @@ export interface ProviderRegistryEntry {
   contextWindow?: number;
   modelContextWindows?: Record<string, number>;
   modelInputModalities?: Record<string, string[]>;
+  defaultMaxOutputTokens?: number;
+  modelMaxOutputTokens?: Record<string, number>;
   reasoningEfforts?: string[];
   modelReasoningEfforts?: Record<string, string[]>;
   modelDefaultReasoningEfforts?: Record<string, string>;
@@ -65,6 +67,8 @@ export interface ProviderRegistryEntry {
   noPenaltyModels?: string[];
   /** Opt this provider into parallel tool calls (see OcxProviderConfig.parallelToolCalls). */
   parallelToolCalls?: boolean;
+  /** Opt this provider into forwarding prompt_cache_key (OpenAI-specific; strict backends reject it). */
+  promptCacheKey?: boolean;
   autoToolChoiceOnlyModels?: string[];
   preserveReasoningContentModels?: string[];
   thinkingToggleModels?: string[];
@@ -85,7 +89,7 @@ export type ProviderConfigSeed = Pick<
   OcxProviderConfig,
   "adapter" | "baseUrl" | "authMode" | "keyOptional" | "freeTier" | "modelSuffixBracketStrip" | "defaultModel" | "models"
   | "liveModels" | "contextWindow" | "modelContextWindows" | "modelInputModalities"
-  | "modelMaxInputTokens"
+  | "modelMaxInputTokens" | "defaultMaxOutputTokens" | "modelMaxOutputTokens"
   | "reasoningEfforts" | "modelReasoningEfforts" | "modelDefaultReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap"
   | "noVisionModels" | "noReasoningModels" | "noTemperatureModels" | "noTopPModels" | "noPenaltyModels"
   | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "thinkingToggleModels" | "thinkingBudgetModels" | "escapeBuiltinToolNames"
@@ -217,6 +221,13 @@ const ALIBABA_INTL_TOKEN_PLAN_MODELS = [
 const ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS = [
   "qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash",
 ];
+
+// 260722 Tencent Cloud Coding Plan. The plan's model set is explicitly dynamic; these are the
+// current documented ids and live discovery remains enabled so successful /models responses win.
+// Tencent marks every Coding Plan model as text-only input and restricts plan keys to interactive
+// coding tools (not custom application backends or non-interactive batch automation).
+// Evidence: https://cloud.tencent.cn/document/product/1823/130092
+const TENCENT_CODING_PLAN_MODELS = ["tc-code-latest", "glm-5", "kimi-k2.5", "minimax-m2.5"];
 const ALIBABA_INTL_TOKEN_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
   "qwen3.8-max-preview": ["text", "image"],
   "qwen3.7-max": ["text", "image"],
@@ -341,7 +352,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     authKind: "oauth",
     featured: false,
     dashboardPreset: true,
-    note: "Experimental Cursor bridge. Live transport and live model discovery are enabled after a standalone PKCE browser login via 'ocx login cursor'; native read/write/delete/shell/fetch execution defaults to codex-sandbox mode (auto-enabled when the request declares Codex danger-full-access sandbox); override with \"nativeLocalExec\": \"on\" (always), \"off\" (never), or \"codex-sandbox\" (only for requests declaring the Codex danger-full-access sandbox; the declaration is caller-controlled prose the proxy cannot verify, and the auth-free loopback bind admits any process on this host, including other local users — enable only where every data-plane client is trusted) — legacy \"unsafeAllowNativeLocalExec\": true still means \"on\" — on providers.cursor in ~/.opencodex/config.json (dashboard: Providers → Cursor → Edit JSON) for a trusted local experiment.",
+    note: "Experimental Cursor bridge. Live transport and live model discovery are enabled after a standalone PKCE browser login via 'ocx login cursor'; native read/write/delete/shell/fetch execution is disabled by default and request text such as Codex sandbox markers never authorizes it. Set \"nativeLocalExec\": \"on\" on providers.cursor in ~/.opencodex/config.json (dashboard: Providers → Cursor → Edit JSON) only for a trusted local experiment where every data-plane caller is trusted. \"off\" denies all, \"codex-sandbox\" is accepted for backwards compatibility but fails closed, and legacy \"unsafeAllowNativeLocalExec\": true still means explicit operator opt-in.",
     models: cursorModelIds(CURSOR_STATIC_MODELS),
     liveModels: true,
     defaultModel: "auto",
@@ -638,9 +649,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   // devlog/_plan/260710_provider_hardening/001_research_frontier.md.
   {
     id: "google", label: "Google Gemini", adapter: "google", baseUrl: "https://generativelanguage.googleapis.com", authKind: "key", featured: true,
-    dashboardUrl: "https://aistudio.google.com/apikey", defaultModel: "gemini-3.5-flash", models: ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview"],
-    modelContextWindows: { "gemini-3.6-flash": 1_048_576, "gemini-3.5-flash": 1_000_000 },
-    modelInputModalities: { "gemini-3.6-flash": ["text", "image"] },
+    dashboardUrl: "https://aistudio.google.com/apikey", defaultModel: "gemini-3.5-flash", models: ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview"],
+    modelContextWindows: { "gemini-3.6-flash": 1_048_576, "gemini-3.5-flash": 1_000_000, "gemini-3.5-flash-lite": 1_048_576 },
+    modelInputModalities: { "gemini-3.6-flash": ["text", "image"], "gemini-3.5-flash-lite": ["text", "image"] },
     modelReasoningEfforts: {
       "gemini-3.6-flash": ["minimal", "low", "medium", "high"],
       "gemini-3.5-flash": ["minimal", "low", "medium", "high"],
@@ -651,7 +662,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   // 2026-07-10: defaultModel is frozen pending Vertex-specific Tier-2 evidence; Gemini API
   // evidence from ai.google.dev does not establish Vertex publisher availability.
   { id: "google-vertex", label: "Google Vertex AI", adapter: "google", baseUrl: "https://aiplatform.googleapis.com", authKind: "key", dashboardUrl: "https://console.cloud.google.com/vertex-ai", defaultModel: "gemini-3-pro", googleMode: "vertex", jawcodeBundle: "google", extraMetadataAliases: ["gemini-vertex"] },
-  { id: "google-antigravity", label: "Google Antigravity", adapter: "google", baseUrl: "https://daily-cloudcode-pa.googleapis.com", authKind: "oauth", dashboardUrl: "https://antigravity.google", models: ANTIGRAVITY_MODELS, defaultModel: "gemini-3.6-flash-medium", modelContextWindows: ANTIGRAVITY_MODEL_CONTEXT_WINDOWS, googleMode: "cloud-code-assist", jawcodeBundle: "google", extraMetadataAliases: ["antigravity", "gemini-antigravity"] },
+  { id: "google-antigravity", label: "Google Antigravity", adapter: "google", baseUrl: "https://daily-cloudcode-pa.googleapis.com", authKind: "oauth", dashboardUrl: "https://antigravity.google", models: ANTIGRAVITY_MODELS, defaultModel: "gemini-3.6-flash", modelContextWindows: ANTIGRAVITY_MODEL_CONTEXT_WINDOWS, modelReasoningEfforts: ANTIGRAVITY_MODEL_EFFORTS, googleMode: "cloud-code-assist", jawcodeBundle: "google", extraMetadataAliases: ["antigravity", "gemini-antigravity"] },
   { id: "azure-openai", label: "Azure OpenAI", adapter: "azure-openai", baseUrl: "https://{resource}.openai.azure.com/openai", authKind: "key", featured: true, dashboardUrl: "https://portal.azure.com" },
   { id: "ollama", label: "Ollama (local)", adapter: "openai-chat", baseUrl: "http://localhost:11434/v1", authKind: "local", allowPrivateNetworkByDefault: true, allowBaseUrlOverride: true, featured: true, note: "Local — key usually blank" },
   { id: "vllm", label: "vLLM (local)", adapter: "openai-chat", baseUrl: "http://localhost:8000/v1", authKind: "local", allowPrivateNetworkByDefault: true, allowBaseUrlOverride: true, featured: true, note: "Local — key usually blank" },
@@ -741,6 +752,20 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   },
   { id: "nanogpt", label: "NanoGPT", baseUrl: "https://nano-gpt.com/api/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://nano-gpt.com/api" },
   { id: "synthetic", label: "Synthetic", baseUrl: "https://api.synthetic.new/openai/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://synthetic.new" },
+  // SiliconFlow publishes an OpenAI-compatible chat endpoint and a dynamic model catalog. Do not
+  // freeze reasoning controls here: enable_thinking/thinking_budget support and limits vary by
+  // model, so live metadata or an explicit user override must own those capabilities.
+  // Evidence: https://docs.siliconflow.cn/en/api-reference/chat-completions/chat-completions
+  {
+    id: "siliconflow",
+    label: "SiliconFlow",
+    baseUrl: "https://api.siliconflow.cn/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://cloud.siliconflow.cn/account/ak",
+    liveModels: true,
+    note: "OpenAI-compatible live model catalog; reasoning controls vary by model.",
+  },
   // Qwen Cloud: token plan is the preset default; GUI offers pay-as-you-go + custom via baseUrlChoices.
   // Formerly `qwen-portal` / portal.qwen.ai — that host is outdated.
   {
@@ -753,6 +778,20 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     baseUrlChoices: QWEN_CLOUD_BASE_URL_CHOICES,
     dashboardUrl: "https://docs.qwencloud.com",
     note: "Pick token plan, pay as you go, or a custom compatible-mode base URL",
+  },
+  {
+    id: "tencent-coding-plan",
+    label: "Tencent Cloud Coding Plan",
+    baseUrl: "https://api.lkeap.cloud.tencent.com/coding/v3",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://console.cloud.tencent.com/tokenhub/codingplan",
+    defaultModel: "tc-code-latest",
+    models: TENCENT_CODING_PLAN_MODELS,
+    liveModels: true,
+    modelInputModalities: Object.fromEntries(TENCENT_CODING_PLAN_MODELS.map(id => [id, ["text"]])),
+    noVisionModels: TENCENT_CODING_PLAN_MODELS,
+    note: "Coding tools only. Tencent forbids general API automation, custom backends, and non-interactive batch use.",
   },
   // 2026-07-10: docs unverified; model data frozen. Evidence: devlog/_plan/260710_provider_hardening/002_research_cn.md.
   { id: "qianfan", label: "Qianfan (Baidu)", baseUrl: "https://qianfan.baidubce.com/v2", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://console.bce.baidu.com/iam/#/iam/apikey/list" },

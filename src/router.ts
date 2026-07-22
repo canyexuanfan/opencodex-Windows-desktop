@@ -49,6 +49,7 @@ export function knownModelIdsForProvider(provName: string, prov: OcxProviderConf
     registry?.modelReasoningEfforts,
     registry?.modelDefaultReasoningEfforts,
     registry?.modelReasoningEffortMap,
+    registry?.modelMaxOutputTokens,
   ]) {
     for (const id of Object.keys(map ?? {})) ids.add(id);
   }
@@ -141,6 +142,7 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
   const modelMaxInputTokens = providerName === OPENAI_API_PROVIDER_ID
     ? mergePositiveNumberCaps(registryEntry.modelMaxInputTokens, provider.modelMaxInputTokens)
     : mergeRecordFill(registryEntry.modelMaxInputTokens, provider.modelMaxInputTokens);
+  const modelMaxOutputTokens = mergeRecordFill(registryEntry.modelMaxOutputTokens, provider.modelMaxOutputTokens);
   const noVisionModels = mergeStringArray(registryEntry.noVisionModels, provider.noVisionModels);
   const noReasoningModels = mergeStringArray(registryEntry.noReasoningModels, provider.noReasoningModels);
   const noTemperatureModels = mergeStringArray(registryEntry.noTemperatureModels, provider.noTemperatureModels);
@@ -182,9 +184,14 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
     // Scalar backfill: a persisted config created before the flag shipped inherits the registry
     // opt-in, while an explicit user `false` keeps overriding registry `true`.
     ...(provider.parallelToolCalls === undefined && registryEntry.parallelToolCalls !== undefined ? { parallelToolCalls: registryEntry.parallelToolCalls } : {}),
+    ...(provider.promptCacheKey === undefined && registryEntry.promptCacheKey !== undefined ? { promptCacheKey: registryEntry.promptCacheKey } : {}),
+    ...(provider.defaultMaxOutputTokens === undefined && registryEntry.defaultMaxOutputTokens !== undefined
+      ? { defaultMaxOutputTokens: registryEntry.defaultMaxOutputTokens }
+      : {}),
     ...(modelContextWindows ? { modelContextWindows } : {}),
     ...(modelInputModalities ? { modelInputModalities } : {}),
     ...(modelMaxInputTokens ? { modelMaxInputTokens } : {}),
+    ...(modelMaxOutputTokens ? { modelMaxOutputTokens } : {}),
     ...(modelReasoningEfforts ? { modelReasoningEfforts } : {}),
     ...(modelDefaultReasoningEfforts ? { modelDefaultReasoningEfforts } : {}),
     ...(reasoningEffortMap ? { reasoningEffortMap } : {}),
@@ -208,7 +215,7 @@ function activeProviderEntries(config: OcxConfig): [string, OcxProviderConfig][]
 
 export class NoEnabledOpenAiProviderError extends Error {
   constructor(modelId: string) {
-    super(`No enabled canonical OpenAI provider for model: ${modelId}`);
+    super(`No enabled OpenAI provider for model: ${modelId}. Run 'ocx init' to configure a provider, or check that your config has an enabled 'openai' provider.`);
     this.name = "NoEnabledOpenAiProviderError";
   }
 }
@@ -227,15 +234,17 @@ function routeResult(providerName: string, provider: OcxProviderConfig, modelId:
   };
 }
 
-export function routeModel(config: OcxConfig, modelId: string): RouteResult {
+function routeModelInternal(config: OcxConfig, modelId: string, bypassCombos: boolean): RouteResult {
   const preservePhysicalComboProvider =
     hasOwnProvider(config.providers, COMBO_NAMESPACE)
     && Object.keys(config.combos ?? {}).length === 0;
-  if (!preservePhysicalComboProvider) {
+  if (!bypassCombos && !preservePhysicalComboProvider) {
     const combo = tryPickComboModel(config, modelId);
     if (combo) {
       const concrete = `${combo.target.provider}/${combo.target.model}`;
-      const routed = routeModel(config, concrete);
+      // The selected target is already a concrete provider/model reference. Resolve it without
+      // consulting combo aliases again, otherwise an alias that shadows the target can recurse.
+      const routed = routeModelInternal(config, concrete, true);
       return { ...routed, combo };
     }
   }
@@ -297,6 +306,10 @@ export function routeModel(config: OcxConfig, modelId: string): RouteResult {
   }
 
   throw new Error(`No provider configured for model: ${modelId}`);
+}
+
+export function routeModel(config: OcxConfig, modelId: string): RouteResult {
+  return routeModelInternal(config, modelId, false);
 }
 
 function routeByKnownModelPattern(config: OcxConfig, modelId: string): RouteResult | undefined {

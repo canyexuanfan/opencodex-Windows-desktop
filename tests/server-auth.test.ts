@@ -28,6 +28,7 @@ import {
 } from "../src/server";
 import { handleManagementAPI } from "../src/server/management-api";
 import type { OcxConfig } from "../src/types";
+import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 
 const previousApiToken = process.env.OPENCODEX_API_AUTH_TOKEN;
@@ -2080,7 +2081,7 @@ describe("server local API auth", () => {
     }
   });
 
-  test("internal web-search and vision never forward an admission bearer as Direct sidecar auth", async () => {
+  test("internal web-search and vision never forward a non-ChatGPT bearer as Direct sidecar auth", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
     process.env.OPENCODEX_HOME = TEST_DIR;
@@ -2109,27 +2110,104 @@ describe("server local API auth", () => {
     });
     const server = startServer(0);
     try {
-      for (const body of [
-        { model: "routed/text-model", input: "search", tools: [{ type: "web_search" }] },
-        {
-          model: "routed/text-model",
-          input: [{ type: "message", role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,aGk=" }] }],
-        },
+      for (const authorization of [
+        "Bearer bearer-admission-secret",
+        "Bearer sk-provider-secret",
       ]) {
-        const response = await originalGlobalFetch(`http://127.0.0.1:${server.port}/v1/responses`, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-opencodex-api-key": "dedicated-x-key",
-            authorization: "Bearer bearer-admission-secret",
+        for (const body of [
+          { model: "routed/text-model", input: "search", tools: [{ type: "web_search" }] },
+          {
+            model: "routed/text-model",
+            input: [{ type: "message", role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,aGk=" }] }],
           },
-          body: JSON.stringify(body),
-        });
-        expect(response.status).toBe(500);
+        ]) {
+          const response = await originalGlobalFetch(`http://127.0.0.1:${server.port}/v1/responses`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-opencodex-api-key": "dedicated-x-key",
+              authorization,
+              "chatgpt-account-id": "acct-forged",
+            },
+            body: JSON.stringify(body),
+          });
+          expect(response.status).toBe(500);
+        }
       }
-      expect(outbound).toHaveLength(2);
+      expect(outbound).toHaveLength(4);
       expect(outbound.every(row => row.url.startsWith("https://routed.example/"))).toBe(true);
       expect(outbound.every(row => row.authorization === "Bearer routed-key")).toBe(true);
+    } finally {
+      globalThis.fetch = originalGlobalFetch;
+      await server.stop(true);
+    }
+  });
+
+  test("internal vision sidecar still accepts a canonical ChatGPT bearer for Direct sidecar auth", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    process.env.OPENCODEX_API_AUTH_TOKEN = "dedicated-x-key";
+    const outbound: Array<{ url: string; authorization: string | null; accountId: string | null }> = [];
+    globalThis.fetch = (async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      outbound.push({
+        url,
+        authorization: new Headers(init?.headers).get("authorization"),
+        accountId: new Headers(init?.headers).get("chatgpt-account-id"),
+      });
+      if (url.startsWith("https://chatgpt.com/backend-api/codex")) {
+        return new Response([
+          `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "caption" })}`,
+          "",
+          "data: [DONE]",
+          "",
+          "",
+        ].join("\n"), { headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response(JSON.stringify({
+        id: "chatcmpl-sidecar",
+        object: "chat.completion",
+        choices: [{ index: 0, message: { role: "assistant", content: "done" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }), { headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    saveConfig({
+      port: 0,
+      hostname: "0.0.0.0",
+      defaultProvider: "routed",
+      openaiProviderTierVersion: 2,
+      providers: {
+        routed: {
+          adapter: "openai-chat",
+          baseUrl: "https://routed.example/v1",
+          apiKey: "routed-key",
+          noVisionModels: ["text-model"],
+        },
+        openai: canonicalDirect,
+      },
+    });
+    const server = startServer(0);
+    try {
+      const token = fakeChatGptJwt({ chatgpt_account_id: "acct-direct" });
+      const response = await originalGlobalFetch(`http://127.0.0.1:${server.port}/v1/responses`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-opencodex-api-key": "dedicated-x-key",
+          authorization: `Bearer ${token}`,
+          "chatgpt-account-id": "acct-direct",
+        },
+        body: JSON.stringify({
+          model: "routed/text-model",
+          input: [{ type: "message", role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,aGk=" }] }],
+        }),
+      });
+      expect(response.status).toBe(200);
+      const chatgptCalls = outbound.filter(row => row.url.startsWith("https://chatgpt.com/backend-api/codex"));
+      expect(chatgptCalls).toHaveLength(1);
+      expect(chatgptCalls.every(row => row.authorization === `Bearer ${token}`)).toBe(true);
+      expect(chatgptCalls.every(row => row.accountId === "acct-direct")).toBe(true);
     } finally {
       globalThis.fetch = originalGlobalFetch;
       await server.stop(true);

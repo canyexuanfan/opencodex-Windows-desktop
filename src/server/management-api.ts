@@ -1,6 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { CatalogModel } from "../codex/catalog";
-import { invalidateCodexModelsCache, nativeModelRows } from "../codex/catalog";
+import { catalogModelSlug, invalidateCodexModelsCache, nativeModelRows, uniqueCatalogModelsForPublicList } from "../codex/catalog";
 import {
   DEFAULT_SUBAGENT_MODELS,
   codexAutoStartEnabled,
@@ -46,7 +47,7 @@ import {
   setDebugSettings,
   type DebugFlag,
 } from "../lib/debug-settings";
-import type { OcxClaudeCodeConfig, OcxConfig, OcxProviderConfig } from "../types";
+import type { OcxClaudeCodeConfig, OcxConfig, OcxCustomModel, OcxProviderConfig } from "../types";
 import { drainAndShutdown } from "./lifecycle";
 import { filterRequestLogs, getRequestLogEntries, type RequestLogEntry } from "./request-log";
 import { estimateComboCost, estimateRequestCost, normalizeCostTokens, tokensPerSecond } from "../usage/cost";
@@ -798,17 +799,43 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       native: true,
       ...(row.contextWindow !== undefined ? { contextWindow: row.contextWindow } : {}),
     }));
-    return jsonResponse([...native, ...models.map(m => {
+    const customModels = (config.customModels ?? []).map(cm => {
+      const namespaced = routedSlug(cm.provider, cm.modelId);
+      return {
+        provider: cm.provider,
+        id: cm.modelId,
+        namespaced,
+        disabled: [...disabled].some(stored => slugEquals(stored, cm.provider, cm.modelId)),
+        custom: true,
+        customId: cm.id,
+        displayName: cm.displayName,
+        ...(cm.contextWindow ? { contextWindow: cm.contextWindow } : {}),
+        ...(cm.inputModalities ? { inputModalities: cm.inputModalities } : {}),
+      };
+    });
+    const publicModels = uniqueCatalogModelsForPublicList(models);
+    const comboNamespaced = new Set(
+      publicModels.filter(model => model.provider === "combo").map(catalogModelSlug),
+    );
+    const visibleCustomModels = customModels.filter(model => !comboNamespaced.has(model.namespaced));
+    // Custom metadata wins when a physical live/static row resolves to the same Codex-facing
+    // slug, while a combo keeps the same precedence it has in routing and /v1/models.
+    const customNamespaced = new Set(visibleCustomModels.map(c => c.namespaced));
+    const dedupedRouted = publicModels.map(m => {
       // Codex-facing slug (one "/", slug-codec); disabledModels compares tolerate both forms.
-      const namespaced = routedSlug(m.provider, m.id);
+      const namespaced = catalogModelSlug(m);
+      if (m.provider !== "combo" && customNamespaced.has(namespaced)) return null;
       const contextCap = providerContextCap(config, m.provider);
       return {
         ...m,
         namespaced,
-        disabled: [...disabled].some(stored => slugEquals(stored, m.provider, m.id)),
+        disabled: [...disabled].some(stored => (
+          stored === namespaced || slugEquals(stored, m.provider, m.id)
+        )),
         ...(contextCap !== undefined ? { contextCap, contextCapped: m.contextCapped === true } : {}),
       };
-    })]);
+    }).filter(Boolean);
+    return jsonResponse([...native, ...dedupedRouted, ...visibleCustomModels]);
   }
 
   if (url.pathname === "/api/provider-context-caps" && req.method === "GET") {
@@ -878,6 +905,96 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     save(config);
     await refreshCodexCatalogBestEffort();
     return jsonResponse({ ok: true, disabled });
+  }
+
+  if (url.pathname === "/api/custom-models" && req.method === "GET") {
+    return jsonResponse(config.customModels ?? []);
+  }
+
+  if (url.pathname === "/api/custom-models" && req.method === "POST") {
+    let body: { provider?: unknown; modelId?: unknown; displayName?: unknown; contextWindow?: unknown; inputModalities?: unknown };
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    const provider = typeof body.provider === "string" ? body.provider.trim() : "";
+    const modelId = typeof body.modelId === "string" ? body.modelId.trim() : "";
+    if (!provider || !modelId) return jsonResponse({ error: "provider and modelId are required" }, 400);
+    if (modelId.includes("/")) return jsonResponse({ error: "modelId must not contain /" }, 400);
+    if (!isValidProviderName(provider)) return jsonResponse({ error: "invalid provider name" }, 400);
+    if (!hasOwnProvider(config.providers, provider)) return jsonResponse({ error: "provider not configured" }, 404);
+    const displayName = typeof body.displayName === "string" && body.displayName.trim() ? body.displayName.trim() : undefined;
+    if (displayName?.includes("/")) return jsonResponse({ error: "displayName must not contain /" }, 400);
+    const contextWindow = typeof body.contextWindow === "number" && body.contextWindow > 0 ? Math.floor(body.contextWindow) : undefined;
+    const inputModalities = Array.isArray(body.inputModalities) ? body.inputModalities.filter((m): m is string => typeof m === "string") : undefined;
+    const existing = config.customModels ?? [];
+    const newSlug = routedSlug(provider, modelId);
+    if (existing.some(cm => routedSlug(cm.provider, cm.modelId) === newSlug)) {
+      return jsonResponse({ error: "duplicate model" }, 409);
+    }
+    const entry: OcxCustomModel = {
+      id: randomUUID(),
+      provider,
+      modelId,
+      ...(displayName ? { displayName } : {}),
+      ...(contextWindow ? { contextWindow } : {}),
+      ...(inputModalities && inputModalities.length > 0 ? { inputModalities } : {}),
+      addedAt: new Date().toISOString(),
+    };
+    config.customModels = [...existing, entry];
+    const { saveConfig: save } = await import("../config");
+    save(config);
+    await refreshCodexCatalogBestEffort();
+    return jsonResponse(entry, 201);
+  }
+
+  const customPutMatch = url.pathname.match(/^\/api\/custom-models\/([^/]+)$/);
+  if (customPutMatch && req.method === "PUT") {
+    let id: string;
+    try { id = decodeURIComponent(customPutMatch[1]); } catch { return jsonResponse({ error: "invalid id encoding" }, 400); }
+    let body: { displayName?: unknown; contextWindow?: unknown; inputModalities?: unknown; modelId?: unknown };
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    const list = config.customModels ?? [];
+    const idx = list.findIndex(cm => cm.id === id);
+    if (idx === -1) return jsonResponse({ error: "not found" }, 404);
+    const cm = { ...list[idx] };
+    if (typeof body.modelId === "string" && body.modelId.trim()) {
+      if (body.modelId.includes("/")) return jsonResponse({ error: "modelId must not contain /" }, 400);
+      cm.modelId = body.modelId.trim();
+    }
+    if (body.displayName !== undefined) {
+      const dn = typeof body.displayName === "string" ? body.displayName.trim() : "";
+      if (dn.includes("/")) return jsonResponse({ error: "displayName must not contain /" }, 400);
+      cm.displayName = dn || undefined;
+    }
+    if (body.contextWindow !== undefined) {
+      cm.contextWindow = typeof body.contextWindow === "number" && body.contextWindow > 0 ? Math.floor(body.contextWindow) : undefined;
+    }
+    if (body.inputModalities !== undefined) {
+      cm.inputModalities = Array.isArray(body.inputModalities) ? body.inputModalities.filter((m): m is string => typeof m === "string") : undefined;
+    }
+    const updatedSlug = routedSlug(cm.provider, cm.modelId);
+    if (list.some((other, i) => i !== idx && routedSlug(other.provider, other.modelId) === updatedSlug)) {
+      return jsonResponse({ error: "duplicate model" }, 409);
+    }
+    list[idx] = cm;
+    config.customModels = list;
+    const { saveConfig: save } = await import("../config");
+    save(config);
+    await refreshCodexCatalogBestEffort();
+    return jsonResponse(cm);
+  }
+
+  const customDelMatch = url.pathname.match(/^\/api\/custom-models\/([^/]+)$/);
+  if (customDelMatch && req.method === "DELETE") {
+    let id: string;
+    try { id = decodeURIComponent(customDelMatch[1]); } catch { return jsonResponse({ error: "invalid id encoding" }, 400); }
+    const list = config.customModels ?? [];
+    const idx = list.findIndex(cm => cm.id === id);
+    if (idx === -1) return jsonResponse({ error: "not found" }, 404);
+    list.splice(idx, 1);
+    config.customModels = list.length > 0 ? list : undefined;
+    const { saveConfig: save } = await import("../config");
+    save(config);
+    await refreshCodexCatalogBestEffort();
+    return jsonResponse({ ok: true });
   }
 
   // multi_agent_v2 surface toggle. GET reports the flag + the agents.max_threads
@@ -982,9 +1099,11 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     const nativeModels = listCatalogNativeSlugs()
       .filter(slug => !disabled.has(slug))
       .map(slug => ({ provider: "openai", model: slug, namespaced: slug }));
-    const routedModels = models
-      .map(m => ({ provider: m.provider, model: m.id, namespaced: routedSlug(m.provider, m.id) }))
-      .filter(m => ![...disabled].some(stored => slugEquals(stored, m.provider, m.model)));
+    const routedModels = uniqueCatalogModelsForPublicList(models)
+      .map(m => ({ provider: m.provider, model: m.id, namespaced: catalogModelSlug(m) }))
+      .filter(m => ![...disabled].some(stored => (
+        stored === m.namespaced || slugEquals(stored, m.provider, m.model)
+      )));
     return jsonResponse({
       model: config.injectionModel ?? null,
       effort: config.injectionEffort ?? null,
@@ -1060,9 +1179,11 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     // Native gpt (passthrough) are also valid subagent picks — they're picker-visible models in the
     // catalog, just buried by priority. List them first so the user can feature them over routed.
     const { listCatalogNativeSlugs } = await import("../codex/catalog");
-    const visibleRouted = models
-      .filter(m => ![...disabled].some(stored => slugEquals(stored, m.provider, m.id)))
-      .map(m => routedSlug(m.provider, m.id));
+    const visibleRouted = [...new Set(models
+      .filter(m => ![...disabled].some(stored =>
+        stored === catalogModelSlug(m) || slugEquals(stored, m.provider, m.id)
+      ))
+      .map(catalogModelSlug))];
     const available = [
       ...listCatalogNativeSlugs().filter(ns => !disabled.has(ns)),
       ...visibleRouted,
@@ -1375,18 +1496,18 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
         }
       }
       // addAccount / reauth forces a fresh browser identity (skips local-CLI token import).
-      const { url: authUrl, instructions } = await startLoginFlow(provider, {
+      const { url: authUrl, instructions, deviceCode } = await startLoginFlow(provider, {
         forceLogin: body.addAccount === true || reauth,
         ...(accountId ? { reauthAccountId: accountId } : {}),
       });
       upsertOAuthProvider(config, provider); // mutate LIVE config — routing sees it without restart
-      if (authUrl) {
+      if (authUrl && !deviceCode) {
         // Open the browser server-side (the proxy runs on the user's machine) — the GUI's
         // window.open is popup-blocked because it runs after an await, not a direct click.
         const { openUrl } = await import("../lib/open-url");
         openUrl(authUrl);
       }
-      return jsonResponse({ url: authUrl, instructions });
+      return jsonResponse({ url: authUrl, instructions, deviceCode });
     } catch (err) {
       return jsonResponse({ error: err instanceof Error ? err.message : String(err) }, 409);
     }
@@ -1454,6 +1575,20 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     clearProviderQuotaCache();
     return jsonResponse({ ok: true, provider, activeAccountId: body.accountId });
   }
+  if (url.pathname === "/api/oauth/accounts/alias" && req.method === "PUT") {
+    const body = await req.json().catch(() => ({})) as { provider?: unknown; accountId?: unknown; alias?: unknown };
+    const provider = typeof body.provider === "string" ? body.provider.trim().toLowerCase() : "";
+    const accountId = typeof body.accountId === "string" ? body.accountId.trim() : "";
+    const alias = typeof body.alias === "string" ? body.alias.trim() : "";
+    if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
+    if (!accountId) return jsonResponse({ error: "missing accountId" }, 400);
+    if (typeof body.alias !== "string" || alias.length > 80 || /[\x00-\x1f\x7f]/.test(alias)) {
+      return jsonResponse({ error: "alias must be at most 80 printable characters" }, 400);
+    }
+    const { setAccountAlias } = await import("../oauth/store");
+    if (!(await setAccountAlias(provider, accountId, alias || undefined))) return jsonResponse({ error: "account not found" }, 404);
+    return jsonResponse({ ok: true, provider, accountId, alias: alias || null });
+  }
   if (url.pathname === "/api/oauth/accounts" && req.method === "DELETE") {
     const provider = (url.searchParams.get("provider") ?? "").trim().toLowerCase();
     const id = url.searchParams.get("id") ?? "";
@@ -1507,6 +1642,20 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     clearKeyCooldowns(name); // manual key management resets 429 cooldown state
     return jsonResponse({ ok: true, name, activeId: body.id });
   }
+  if (url.pathname === "/api/providers/keys/alias" && req.method === "PUT") {
+    const body = await req.json().catch(() => ({})) as { name?: unknown; id?: unknown; alias?: unknown };
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    const id = typeof body.id === "string" ? body.id.trim() : "";
+    const alias = typeof body.alias === "string" ? body.alias.trim() : "";
+    if (!name || !isValidProviderName(name) || !hasOwnProvider(config.providers, name)) return jsonResponse({ error: "unknown provider" }, 404);
+    if (!id) return jsonResponse({ error: "missing id" }, 400);
+    if (typeof body.alias !== "string" || alias.length > 80 || /[\x00-\x1f\x7f]/.test(alias)) {
+      return jsonResponse({ error: "alias must be at most 80 printable characters" }, 400);
+    }
+    const { setProviderApiKeyLabel } = await import("../providers/api-keys");
+    if (!setProviderApiKeyLabel(config, name, id, alias || undefined)) return jsonResponse({ error: "key not found" }, 404);
+    return jsonResponse({ ok: true, name, id, alias: alias || null });
+  }
   if (url.pathname === "/api/providers/keys" && req.method === "DELETE") {
     const name = (url.searchParams.get("name") ?? "").trim();
     const id = url.searchParams.get("id") ?? "";
@@ -1555,12 +1704,15 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
   }
 
   if (url.pathname === "/api/combos" && req.method === "GET") {
-    const { comboModelId, getCombo, listComboIds } = await import("../combos");
-    return jsonResponse({ combos: listComboIds(config).map(id => ({
-      id,
-      model: comboModelId(id),
-      ...getCombo(config, id)!,
-    })) });
+    const { comboPublicModelId, getCombo, listComboIds } = await import("../combos");
+    return jsonResponse({ combos: listComboIds(config).map(id => {
+      const combo = getCombo(config, id)!;
+      return {
+        id,
+        model: comboPublicModelId(id, combo),
+        ...combo,
+      };
+    }) });
   }
 
   if (url.pathname === "/api/combos" && req.method === "PUT") {
@@ -1574,18 +1726,109 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       return jsonResponse({ error: "id is required and must be a string" }, 400);
     }
     const id = body.id.trim();
-    const { comboConfigError, normalizeComboConfig, comboModelId, clearComboSelectionState, clearComboTargetCooldowns } = await import("../combos");
+    let renameFrom: string | undefined;
+    if (body.renameFrom !== undefined) {
+      if (typeof body.renameFrom !== "string" || !body.renameFrom.trim()) {
+        return jsonResponse({ error: "renameFrom must be a non-empty string" }, 400);
+      }
+      renameFrom = body.renameFrom.trim();
+      if (renameFrom === id) {
+        return jsonResponse({ error: "renameFrom must differ from id" }, 400);
+      }
+      if (!Object.hasOwn(config.combos ?? {}, renameFrom)) {
+        return jsonResponse({ error: `combo "${renameFrom}" does not exist` }, 400);
+      }
+      if (Object.hasOwn(config.combos ?? {}, id)) {
+        return jsonResponse({ error: `combo "${id}" already exists` }, 400);
+      }
+    }
+    const {
+      clearComboSelectionState,
+      clearComboTargetCooldowns,
+      comboConfigError,
+      comboModelId,
+      comboPublicModelId,
+      normalizeComboConfig,
+    } = await import("../combos");
     const error = comboConfigError(id, body.combo, config.providers, {
       requireEnabledTarget: true,
+      combos: config.combos,
+      excludeComboId: renameFrom ?? id,
     });
     if (error) return jsonResponse({ error }, 400);
     const normalized = normalizeComboConfig(body.combo as import("../types").OcxComboConfig);
-    config.combos = { ...(config.combos ?? {}), [id]: normalized };
+    const stored: import("../types").OcxComboConfig = normalized.alias === null
+      ? (({ alias: _alias, ...rest }) => rest)(normalized)
+      : normalized;
+    const sourceId = renameFrom ?? id;
+    const previous = config.combos?.[sourceId];
+    const oldPublicModel = previous ? comboPublicModelId(sourceId, previous) : null;
+    const newPublicModel = comboPublicModelId(id, normalized);
+    const nextCombos = { ...(config.combos ?? {}) };
+    if (renameFrom) delete nextCombos[renameFrom];
+    nextCombos[id] = stored;
+    config.combos = nextCombos;
+    let shouldSyncClaudeAgentDefs = false;
+    const migratedModels = new Set<string>();
+    if (oldPublicModel && oldPublicModel !== newPublicModel) {
+      migratedModels.add(oldPublicModel);
+    }
+    if (renameFrom) migratedModels.add(comboModelId(renameFrom));
+    if (migratedModels.size > 0) {
+      const migrateReference = (model: string): string => (
+        migratedModels.has(model) ? newPublicModel : model
+      );
+      const migrateAgentReference = (model: string): string => {
+        const migrated = migrateReference(model);
+        if (migrated !== model) shouldSyncClaudeAgentDefs = true;
+        return migrated;
+      };
+      const migrateReferences = (models: string[]): string[] => [
+        ...new Set(models.map(migrateReference)),
+      ];
+      if (config.disabledModels) {
+        config.disabledModels = migrateReferences(config.disabledModels);
+      }
+      if (config.subagentModels) {
+        config.subagentModels = [...new Set(config.subagentModels.map(migrateAgentReference))];
+      }
+      if (config.injectionModel && migratedModels.has(config.injectionModel)) {
+        config.injectionModel = newPublicModel;
+      }
+      if (config.shadowCallIntercept?.model && migratedModels.has(config.shadowCallIntercept.model)) {
+        config.shadowCallIntercept = {
+          ...config.shadowCallIntercept,
+          model: newPublicModel,
+        };
+      }
+      if (config.claudeCode) {
+        const claudeCode = { ...config.claudeCode };
+        for (const field of ["model", "smallFastModel"] as const) {
+          if (claudeCode[field]) claudeCode[field] = migrateAgentReference(claudeCode[field]);
+        }
+        if (claudeCode.tierModels) {
+          claudeCode.tierModels = Object.fromEntries(
+            Object.entries(claudeCode.tierModels).map(([tier, model]) => [tier, migrateAgentReference(model)]),
+          );
+        }
+        if (claudeCode.modelMap) {
+          claudeCode.modelMap = Object.fromEntries(
+            Object.entries(claudeCode.modelMap).map(([source, model]) => [source, migrateAgentReference(model)]),
+          );
+        }
+        config.claudeCode = claudeCode;
+      }
+    }
     saveConfig(config);
     clearComboSelectionState(id);
     clearComboTargetCooldowns(id);
+    if (renameFrom) {
+      clearComboSelectionState(renameFrom);
+      clearComboTargetCooldowns(renameFrom);
+    }
     await refreshCodexCatalogBestEffort();
-    return jsonResponse({ success: true, id, model: comboModelId(id), combo: normalized });
+    if (shouldSyncClaudeAgentDefs) await syncClaudeAgentDefsBestEffort();
+    return jsonResponse({ success: true, id, model: newPublicModel, combo: normalized });
   }
 
   if (url.pathname === "/api/combos" && req.method === "DELETE") {

@@ -6,7 +6,8 @@ import * as z from "zod/v4";
 import { comboConfigIssues } from "./combos/types";
 import { hardenSecretDir, hardenSecretPath } from "./lib/windows-secret-acl";
 import { providerDestinationConfigError } from "./lib/destination-policy";
-import type { OcxConfig } from "./types";
+import { openRouterRoutingConfigError } from "./providers/openrouter-routing";
+import { OPENAI_PROVIDER_TIER_VERSION, type OcxConfig } from "./types";
 
 let _atomicSeq = 0;
 
@@ -155,6 +156,28 @@ function isAlreadyExistsError(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === "EEXIST";
 }
 
+/**
+ * Classify an existing `.pre-openai-tiers-v2.bak` snapshot.
+ *
+ * - `"stale"`: unparseable JSON (not written by us / truncated) or already a
+ *   post-migration (tier v2) snapshot — safe to delete or replace.
+ * - `"rollback"`: parses as a valid pre-migration (v1) config — a
+ *   user-intentional rollback point that must never be silently destroyed.
+ *
+ * Shared by the startup migration backup path and `ocx init` cleanup so both
+ * apply the same preservation policy (issue #257 / sol review 260722).
+ */
+export function classifyOpenAiTierBackup(backupBytes: Uint8Array): "stale" | "rollback" {
+  try {
+    // Use Buffer.from to ensure proper UTF-8 decoding from Uint8Array/Buffer.
+    const parsed = JSON.parse(Buffer.from(backupBytes).toString("utf8")) as Record<string, unknown>;
+    return parsed.openaiProviderTierVersion === 2 ? "stale" : "rollback";
+  } catch {
+    // Unparseable: not a config file we created, treat as stale.
+    return "stale";
+  }
+}
+
 export function backupConfigBeforeOpenAiTierMigration(
   configPath = getConfigPath(),
   io: OpenAiTierBackupIO = {
@@ -178,8 +201,24 @@ export function backupConfigBeforeOpenAiTierMigration(
   // docs/fixtures and is never reused or overwritten as the v2 snapshot.
   const backup = `${source}.pre-openai-tiers-v2.bak`;
   if (io.exists(backup)) {
-    if (!sameBytes(original, io.read(backup))) throw new OpenAiTierBackupCollisionError();
-    return "reused";
+    if (!sameBytes(original, io.read(backup))) {
+      // The backup differs from the current config. Only treat it as stale when it is
+      // clearly not a user-intentional rollback point:
+      //   - unparseable JSON: written by a different tool or truncated
+      //   - already at tier version 2: the backup is from a post-migration config (e.g.
+      //     ocx init wrote a fresh v2 config, making the old backup obsolete)
+      // A backup that parses as a valid pre-migration (v1) config is kept as-is and
+      // we throw a collision error, because silently replacing a user-created rollback
+      // point would be surprising and potentially destructive.
+      const backupBytes = io.read(backup);
+      if (classifyOpenAiTierBackup(backupBytes) === "rollback") {
+        throw new OpenAiTierBackupCollisionError();
+      }
+      console.warn("[openai-provider-migration] Replacing stale pre-migration backup (post-migration config was rewritten since last migration).");
+      io.unlink(backup);
+    } else {
+      return "reused";
+    }
   }
   const temp = `${backup}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
   let published = false;
@@ -292,6 +331,11 @@ const providerConfigSchema = z.object({
   baseUrl: z.string().min(1),
   allowPrivateNetwork: z.boolean().optional(),
   codexAccountMode: z.enum(["pool", "direct"]).optional(),
+  responsesItemIdRepair: z.object({
+    message: z.array(z.string().min(1)).optional(),
+    reasoning: z.array(z.string().min(1)).optional(),
+    repairMissingTerminalIds: z.boolean().optional(),
+  }).strict().optional(),
 }).passthrough();
 
 const RESERVED_PROVIDER_NAMES = new Set(["__proto__", "prototype", "constructor"]);
@@ -357,6 +401,14 @@ export function positiveIntegerRecordConfigError(value: unknown, field: string):
   return null;
 }
 
+export function positiveIntegerConfigError(value: unknown, field: string): string | null {
+  if (value === undefined) return null;
+  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+    return `${field} must be a positive finite integer`;
+  }
+  return null;
+}
+
 const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
   providers: z.record(z.string(), providerConfigSchema),
@@ -374,6 +426,20 @@ const configSchema = z.object({
       });
     }
     const provider = config.providers[name];
+    const openRouterRoutingError = openRouterRoutingConfigError(provider);
+    if (openRouterRoutingError) {
+      ctx.addIssue({
+        code: "custom",
+        path: [
+          "providers",
+          name,
+          openRouterRoutingError.startsWith("modelOpenRouterRouting")
+            ? "modelOpenRouterRouting"
+            : "openRouterRouting",
+        ],
+        message: openRouterRoutingError,
+      });
+    }
     if (Object.hasOwn(provider, "virtualModels")) {
       ctx.addIssue({
         code: "custom",
@@ -417,6 +483,28 @@ const configSchema = z.object({
         message: maxInputError,
       });
     }
+    const defaultMaxOutputError = positiveIntegerConfigError(
+      (provider as { defaultMaxOutputTokens?: unknown }).defaultMaxOutputTokens,
+      "defaultMaxOutputTokens",
+    );
+    if (defaultMaxOutputError) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers", name, "defaultMaxOutputTokens"],
+        message: defaultMaxOutputError,
+      });
+    }
+    const maxOutputError = positiveIntegerRecordConfigError(
+      (provider as { modelMaxOutputTokens?: unknown }).modelMaxOutputTokens,
+      "modelMaxOutputTokens",
+    );
+    if (maxOutputError) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers", name, "modelMaxOutputTokens"],
+        message: maxOutputError,
+      });
+    }
     if (Object.hasOwn(provider, "codexAccountMode") && provider.codexAccountMode !== undefined) {
       // Persisted account mode is valid ONLY on the canonical built-in `openai` forward provider.
       // Old openai-multi rows stay parseable (they never carry a mode) so startup can migrate them.
@@ -447,7 +535,12 @@ const configSchema = z.object({
       ctx.addIssue({ code: "custom", path: ["combos"], message: "combos must be an object" });
     } else {
       for (const [id, raw] of Object.entries(combos as Record<string, unknown>)) {
-        for (const issue of comboConfigIssues(id, raw, config.providers)) {
+        // Pass the full map so cross-combo rules (alias uniqueness) apply at load time
+        // too, not just via the management API; each combo is excluded from its own check.
+        for (const issue of comboConfigIssues(id, raw, config.providers, {
+          combos: combos as Record<string, import("./types").OcxComboConfig>,
+          excludeComboId: id,
+        })) {
           ctx.addIssue({
             code: "custom",
             path: ["combos", id, ...issue.path],
@@ -641,6 +734,10 @@ export function getDefaultConfig(): OcxConfig {
   // Adding extra providers (e.g. opencode-go) and switching defaultProvider is a user/runtime choice.
   return {
     port: 10100,
+    // Fresh/re-initialized configs are already written in the current three-tier
+    // OpenAI shape. Mark them as such so startup does not mistake them for a
+    // legacy config and collide with an immutable backup from an earlier setup.
+    openaiProviderTierVersion: OPENAI_PROVIDER_TIER_VERSION,
     providers: {
       openai: {
         adapter: "openai-responses",

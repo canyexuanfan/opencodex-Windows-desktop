@@ -31,7 +31,7 @@ function nativeTemplate(): Record<string, unknown> {
 const EXPECTED_KEY_PROVIDER_IDS = [
   "anthropic-apikey", "openai-apikey", "umans", "opencode-go", "neuralwatt", "openrouter", "orcarouter", "groq", "google", "google-vertex", "azure-openai",
   "deepseek", "cerebras", "together", "fireworks", "firepass", "moonshot",
-  "huggingface", "nvidia", "venice", "zai", "nanogpt", "synthetic", "qwen-cloud",
+  "huggingface", "nvidia", "venice", "zai", "nanogpt", "synthetic", "siliconflow", "qwen-cloud", "tencent-coding-plan",
   "qianfan", "alibaba", "alibaba-token-plan", "alibaba-token-plan-intl", "parallel", "zenmux", "litellm", "ollama-cloud", "mistral",
   "minimax", "minimax-cn", "kimi-code", "opencode-zen", "vercel-ai-gateway",
   "opencode-free", "xiaomi", "kilo", "mimo-free", "cloudflare-ai-gateway", "cloudflare-workers-ai", "gitlab-duo",
@@ -165,6 +165,46 @@ describe("provider registry parity", () => {
     } finally {
       if (originalMaxInputTokens === undefined) delete registryEntry.modelMaxInputTokens;
       else registryEntry.modelMaxInputTokens = originalMaxInputTokens;
+    }
+  });
+
+  test("registry output-token defaults hydrate stale provider configs and keep user overrides", () => {
+    const registryEntry = PROVIDER_REGISTRY.find(entry => entry.id === "zai")!;
+    const originalDefaultMaxOutputTokens = registryEntry.defaultMaxOutputTokens;
+    const originalModelMaxOutputTokens = registryEntry.modelMaxOutputTokens;
+    try {
+      registryEntry.defaultMaxOutputTokens = 32_000;
+      registryEntry.modelMaxOutputTokens = {
+        "glm-5.2": 128_000,
+        "glm-5.2[1m]": 128_000,
+      };
+      const config: OcxConfig = {
+        port: 10100,
+        defaultProvider: "zai",
+        providers: {
+          zai: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.z.ai/api/coding/paas/v4",
+            defaultMaxOutputTokens: 16_000,
+            modelMaxOutputTokens: { "glm-5.2": 64_000 },
+          },
+        },
+      };
+
+      const routed = routeModel(config, "zai/glm-5.2");
+
+      expect(routed.provider.defaultMaxOutputTokens).toBe(16_000);
+      expect(routed.provider.modelMaxOutputTokens).toEqual({
+        "glm-5.2": 64_000,
+        "glm-5.2[1m]": 128_000,
+      });
+      expect(providerConfigSeed(registryEntry).modelMaxOutputTokens?.["glm-5.2"]).toBe(128_000);
+      expect(deriveKeyLoginMap().zai.modelMaxOutputTokens?.["glm-5.2"]).toBe(128_000);
+    } finally {
+      if (originalDefaultMaxOutputTokens === undefined) delete registryEntry.defaultMaxOutputTokens;
+      else registryEntry.defaultMaxOutputTokens = originalDefaultMaxOutputTokens;
+      if (originalModelMaxOutputTokens === undefined) delete registryEntry.modelMaxOutputTokens;
+      else registryEntry.modelMaxOutputTokens = originalModelMaxOutputTokens;
     }
   });
 
@@ -554,13 +594,31 @@ describe("provider registry parity", () => {
     expect(OAUTH_PROVIDERS.xai.providerConfig.modelContextWindows?.["grok-4.5"]).toBe(500_000);
     expect(OAUTH_PROVIDERS.xai.providerConfig.modelReasoningEfforts?.["grok-4.5"]).toEqual(["low", "medium", "high"]);
     expect(OAUTH_PROVIDERS.xai.providerConfig.noVisionModels).toContain("grok-build-0.1");
-    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.defaultModel).toBe("gemini-3.6-flash-medium");
-    for (const tier of ["low", "medium", "high"]) {
-      const modelId = `gemini-3.6-flash-${tier}`;
-      expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).toContain(modelId);
-      expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.modelContextWindows?.[modelId]).toBe(1_048_576);
-    }
+    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.defaultModel).toBe("gemini-3.6-flash");
+    // Collapsed picker: base models only, no effort-suffix variants.
+    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).toContain("gemini-3.6-flash");
+    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).toContain("gemini-3.1-pro");
+    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).toContain("claude-sonnet-4-6");
+    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).toContain("claude-opus-4-6-thinking");
+    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).toContain("gpt-oss-120b-medium");
+    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).toHaveLength(5);
+    // Effort ladders on collapsed base models.
+    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.modelReasoningEfforts?.["gemini-3.6-flash"]).toEqual(["low", "medium", "high"]);
+    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.modelReasoningEfforts?.["gemini-3.1-pro"]).toEqual(["low", "high"]);
+    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.modelReasoningEfforts?.["claude-opus-4-6-thinking"]).toEqual(["low", "medium", "high", "max"]);
+    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.modelReasoningEfforts?.["claude-sonnet-4-6"]).toEqual(["low", "medium", "high", "max"]);
+    // Context windows on collapsed base models.
+    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.modelContextWindows?.["gemini-3.6-flash"]).toBe(1_048_576);
+    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.modelContextWindows?.["gemini-3.1-pro"]).toBe(1_048_576);
+    // Suffix and compat IDs are NOT in the picker list.
     for (const hidden of [
+      "gemini-3.6-flash-low",
+      "gemini-3.6-flash-medium",
+      "gemini-3.6-flash-high",
+      "gemini-3.1-pro-low",
+      "gemini-pro-agent",
+      "gemini-3.1-pro-high",
+      "gemini-3.1-pro-preview",
       "gemini-3.5-flash-extra-low",
       "gemini-3.5-flash-low",
       "gemini-3.5-flash-mid",
@@ -569,8 +627,6 @@ describe("provider registry parity", () => {
     ]) {
       expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).not.toContain(hidden);
     }
-    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).toContain("gemini-3.1-pro-high");
-    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.modelContextWindows?.["gemini-3.1-pro-high"]).toBe(1_048_576);
   });
 
   test("GUI preset projection preserves current featured set plus key catalog and custom", () => {

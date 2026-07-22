@@ -155,7 +155,12 @@ network. Only do this on trusted networks, and always set a strong `OPENCODEX_AP
 | `contextWindow?` | `number` | Provider-wide Codex-visible context-window cap for routed catalog entries. Live metadata below this value is kept. |
 | `modelContextWindows?` | `Record<string,number>` | Model-specific context-window caps. These override `contextWindow` for matching model ids and never raise smaller live metadata. |
 | `modelInputModalities?` | `Record<string,string[]>` | Model-specific catalog input hints such as `["text"]` or `["text", "image"]`. |
+| `modelMaxInputTokens?` | `Record<string,number>` | Model-specific max input token limits used for catalog auto-compaction hints. Values must be positive integers. |
+| `defaultMaxOutputTokens?` | `number` | Provider-wide `openai-chat` fallback for `max_tokens` when the client omits `max_output_tokens`. Explicit requests still win. |
+| `modelMaxOutputTokens?` | `Record<string,number>` | Model-specific `openai-chat` fallback output budgets. Exact/model-pattern matches beat `defaultMaxOutputTokens`; all values must be positive integers. |
 | `headers?` | `Record<string,string>` | Extra upstream headers. Authorization, cookies, API-key headers, embedded newlines, and invalid header names are rejected. |
+| `openRouterRouting?` | `OpenRouterProviderRouting` | Default OpenRouter provider preferences. Supports `order`, `only`, and `allowFallbacks`; valid only with the canonical OpenRouter base URL and `openai-chat` adapter. |
+| `modelOpenRouterRouting?` | `Record<string,OpenRouterProviderRouting>` | Exact model-id overrides for `openRouterRouting`. A matching entry replaces the provider-wide default. |
 | `authMode?` | `"key" \| "forward" \| "oauth"` | How to authenticate (default `key`). See [Providers](/opencodex/guides/providers/#auth-modes). |
 | `codexAccountMode?` | `"pool" \| "direct"` | Only for canonical `openai`; defaults to Pool when omitted. Direct short-circuits pool state. |
 | `refreshPolicy?` | `"proactive" \| "lazy-only" \| "disabled"` | Override this OAuth provider's Token Guardian policy. |
@@ -168,6 +173,7 @@ network. Only do this on trusted networks, and always set a strong `OPENCODEX_AP
 | `noTopPModels?` | `string[]` | Models that reject caller-specified `top_p`. |
 | `noPenaltyModels?` | `string[]` | Models that reject presence/frequency penalties. |
 | `parallelToolCalls?` | `boolean` | Enable/disable parallel tool calls. OpenAI Chat defaults on; non-chat adapters advertise support only on explicit `true`. |
+| `responsesItemIdRepair?` | `{ message?: string[]; reasoning?: string[]; repairMissingTerminalIds?: boolean }` | Provider-local, disabled-by-default passthrough SSE repair for exact `message` / `reasoning` placeholder ids and missing terminal ids. Downstream only; function-call ids and `call_id` are never rewritten. |
 | `autoToolChoiceOnlyModels?` | `string[]` | Models whose `tool_choice` accepts only `auto` or `none`; forced/named choices are downgraded. |
 | `preserveReasoningContentModels?` | `string[]` | Models that require prior assistant `reasoning_content` to remain in chat history. |
 | `thinkingToggleModels?` | `string[]` | Chat models using a vendor `thinking.enabled` toggle instead of an effort ladder. |
@@ -180,6 +186,29 @@ network. Only do this on trusted networks, and always set a strong `OPENCODEX_AP
 | `mcpServers?` | `Record<string,CursorMcpServerConfig>` | **Cursor only.** MCP servers started over stdio or reached over Streamable HTTP; fields are listed below. |
 | `desktopExecutor?` | `DesktopExecutorConfig` | **Cursor only.** External computer-use/record-screen commands; fields are listed below. |
 | `unsafeAllowNativeLocalExec?` | `boolean` | **Cursor adapter only.** Opt-in escape hatch for Cursor server-driven local `read` / `write` / `delete` / `ls` / `grep` / `shell` / `fetch` execution. Defaults to `false` so remote Cursor messages cannot bypass Codex approval and sandbox enforcement. See [Cursor provider](#cursor-provider-adapter-cursor) below. |
+
+For broken `openai-responses` compatibility gateways, `responsesItemIdRepair` belongs on the
+provider object itself, for example:
+
+```json
+{
+  "providers": {
+    "custom-gateway": {
+      "adapter": "openai-responses",
+      "baseUrl": "https://gateway.example/v1",
+      "apiKey": "${GATEWAY_KEY}",
+      "responsesItemIdRepair": {
+        "reasoning": ["rs_0"],
+        "message": ["msg_0"],
+        "repairMissingTerminalIds": true
+      }
+    }
+  }
+}
+```
+
+The placeholder lists are exact string matches only. Leave the field unset for normal/stateful
+Responses providers so passthrough stays byte-for-byte identical to upstream.
 
 ## Cursor provider (`adapter: "cursor"`)
 
@@ -230,6 +259,44 @@ one JSON request from stdin, and must write one JSON result to stdout.
 Leave `unsafeAllowNativeLocalExec` unset or `false` unless you explicitly want Cursor-native local
 execution that bypasses Codex approval and sandbox semantics.
 :::
+
+## OpenRouter provider routing
+
+OpenRouter can serve one model through multiple inference providers. Use `openRouterRouting` to
+keep requests on preferred providers, or `modelOpenRouterRouting` when different models need
+different endpoints. This is especially useful for prompt-cache affinity: cache support, hit rates,
+retention, and pricing can differ substantially between providers, and automatic provider changes
+may turn expected cache hits into full-price uncached requests.
+
+The configuration mirrors OpenRouter's provider-selection fields. Provider names are OpenRouter
+provider slugs. `allowFallbacks: false` makes the preference fail closed; `true` lets OpenRouter use
+other eligible providers after the ordered list. An `only` list is always an allowlist.
+
+```json
+{
+  "providers": {
+    "openrouter": {
+      "adapter": "openai-chat",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKey": "${OPENROUTER_API_KEY}",
+      "openRouterRouting": {
+        "order": ["deepseek"],
+        "allowFallbacks": false
+      },
+      "modelOpenRouterRouting": {
+        "anthropic/claude-sonnet-5": {
+          "only": ["anthropic"],
+          "allowFallbacks": false
+        }
+      }
+    }
+  }
+}
+```
+
+Model keys are exact OpenRouter model ids, without the outer OpenCodex provider prefix. With the
+example above, select `openrouter/anthropic-claude-sonnet-5` in Codex; OpenCodex restores the native
+`anthropic/claude-sonnet-5` id before applying the model-specific rule.
 
 ## Static model allowlists
 

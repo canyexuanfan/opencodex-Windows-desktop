@@ -38,6 +38,14 @@ describe("Cursor request builder", () => {
     expect(request.conversationId).toBe("cursor_stable");
   });
 
+  test("marks Cursor context-usage boundaries for compaction epochs", () => {
+    expect(createCursorRequest({ ...base, _contextCompactionBoundary: true }).contextUsageReset).toBe(true);
+
+    const compactionRequest = createCursorRequest({ ...base, _compactionRequest: true });
+    expect(compactionRequest.contextUsageReset).toBe(true);
+    expect(compactionRequest.contextUsageStoreCheckpoints).toBe(false);
+  });
+
   test("maps system, developer, user, assistant, and tool result text", () => {
     const request = createCursorRequest({
       ...base,

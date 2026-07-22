@@ -24,8 +24,9 @@ export interface CursorTransportFactoryInput {
    */
   clientToolFinalizeGraceMs?: number;
   /**
-   * True when the inbound request's system/developer text declares the Codex full-access
-   * sandbox; consumed by nativeLocalExec:"codex-sandbox" policy (exec-policy.ts).
+   * True when inbound request text carries the legacy Codex full-access sandbox marker.
+   * This is retained as diagnostic/context only; exec-policy.ts does not trust it as
+   * native local exec authorization because the text is caller-controlled.
    */
   requestDeclaresFullAccess?: boolean;
 }

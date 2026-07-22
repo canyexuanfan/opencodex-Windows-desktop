@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   checkForUpdate,
+  confirmRestartAfterUpdateForTests,
+  readUpdateJob,
   restartCommand,
   restartAfterUpdateForTests,
   startUpdateJob,
@@ -182,6 +184,117 @@ describe("GUI update execution decisions", () => {
       if (prev === undefined) delete process.env.OCX_BAKE_PORT;
       else process.env.OCX_BAKE_PORT = prev;
     }
+  });
+
+  test("service reinstall failure falls back to a direct proxy start", async () => {
+    const spawned: Array<{ port: number }> = [];
+    const job: UpdateJobState = {
+      id: "svc-fallback",
+      status: "restarting",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentVersion: "2.7.26",
+      latestVersion: "2.7.28",
+      channel: "latest",
+      installer: "npm",
+      restart: true,
+      command: "",
+      log: [],
+    };
+    writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+    await restartAfterUpdateForTests(job, { port: 19999, hostname: "127.0.0.1" }, {
+      serviceInstalledFn: () => true,
+      waitForPort: async () => true,
+      runService: () => ({ status: 1 }),
+      spawnStart: (_job, _installer, port) => {
+        spawned.push({ port: port ?? 0 });
+      },
+    });
+    // The fallback must fire: direct proxy start instead of throwing.
+    expect(spawned).toEqual([{ port: 19999 }]);
+  });
+
+  test("restart confirmation fails when the proxy never becomes healthy", async () => {
+    let now = 0;
+    const job: UpdateJobState = {
+      id: "restart-health-timeout",
+      status: "restarting",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentVersion: "2.7.32",
+      latestVersion: "2.7.33",
+      channel: "latest",
+      installer: "npm",
+      restart: true,
+      command: "",
+      log: [],
+    };
+    writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+    const ok = await confirmRestartAfterUpdateForTests(job, { port: 10100, hostname: "127.0.0.1" }, {
+      probeProxy: async () => false,
+      now: () => now,
+      sleepMs: async (ms) => { now += ms; },
+    });
+    expect(ok).toBe(false);
+    expect(readUpdateJob(job.id)).toMatchObject({
+      status: "failed",
+      restarted: false,
+      error: "proxy restart never became healthy on 127.0.0.1:10100",
+    });
+  });
+
+  test("restart confirmation fails when the proxy dies during the stability window", async () => {
+    let now = 0;
+    const job: UpdateJobState = {
+      id: "restart-health-flap",
+      status: "restarting",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentVersion: "2.7.32",
+      latestVersion: "2.7.33",
+      channel: "latest",
+      installer: "npm",
+      restart: true,
+      command: "",
+      log: [],
+    };
+    writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+    const ok = await confirmRestartAfterUpdateForTests(job, { port: 10100, hostname: "127.0.0.1" }, {
+      probeProxy: async () => now < 12_000,
+      now: () => now,
+      sleepMs: async (ms) => { now += ms; },
+    });
+    expect(ok).toBe(false);
+    expect(readUpdateJob(job.id)).toMatchObject({
+      status: "failed",
+      restarted: false,
+      error: "proxy restart became unhealthy on 127.0.0.1:10100",
+    });
+  });
+
+  test("restart confirmation succeeds only after the proxy stays healthy through the stability window", async () => {
+    let now = 0;
+    const job: UpdateJobState = {
+      id: "restart-health-ok",
+      status: "restarting",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentVersion: "2.7.32",
+      latestVersion: "2.7.33",
+      channel: "latest",
+      installer: "npm",
+      restart: true,
+      command: "",
+      log: [],
+    };
+    writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+    const ok = await confirmRestartAfterUpdateForTests(job, { port: 10100, hostname: "127.0.0.1" }, {
+      probeProxy: async () => now >= 1_000,
+      now: () => now,
+      sleepMs: async (ms) => { now += ms; },
+    });
+    expect(ok).toBe(true);
+    expect(readUpdateJob(job.id)?.log.some(line => line.includes("stayed healthy for 15s after restart"))).toBe(true);
   });
 
   test("a running job prevents a second update job", () => {

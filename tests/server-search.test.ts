@@ -12,6 +12,7 @@ import { clearCodexUpstreamHealth, clearThreadAccountMap } from "../src/codex/ro
 import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
 import type { OcxConfig } from "../src/types";
+import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 
 const previousApiToken = process.env.OPENCODEX_API_AUTH_TOKEN;
@@ -19,6 +20,7 @@ const previousOpencodexHome = process.env.OPENCODEX_HOME;
 const originalFetch = globalThis.fetch;
 const TEST_DIR = join(import.meta.dir, ".tmp-server-search-test");
 let isolatedCodexHome: IsolatedCodexHome | null = null;
+const DIRECT_CHATGPT_TOKEN = fakeChatGptJwt({ chatgpt_account_id: "acct-123" });
 
 beforeEach(() => {
   if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
@@ -109,7 +111,7 @@ test("POST /v1/alpha/search relays to the ChatGPT forward provider with forwarde
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: "Bearer chatgpt-user-token",
+        authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
         "chatgpt-account-id": "acct-123",
       },
       body: JSON.stringify({
@@ -123,7 +125,7 @@ test("POST /v1/alpha/search relays to the ChatGPT forward provider with forwarde
 
     expect(captured).toHaveLength(1);
     expect(captured[0].path).toBe("/alpha/search");
-    expect(captured[0].headers.get("authorization")).toBe("Bearer chatgpt-user-token");
+    expect(captured[0].headers.get("authorization")).toBe(`Bearer ${DIRECT_CHATGPT_TOKEN}`);
     expect(captured[0].headers.get("chatgpt-account-id")).toBe("acct-123");
     expect(captured[0].body).toMatchObject({ id: "search-session", model: "gpt-test" });
   } finally {
@@ -184,7 +186,8 @@ test("zstd-compressed search request bodies are decoded before the relay", async
       headers: {
         "content-type": "application/json",
         "content-encoding": "zstd",
-        authorization: "Bearer chatgpt-user-token",
+        authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
+        "chatgpt-account-id": "acct-123",
       },
       body: Bun.zstdCompressSync(Buffer.from(raw)),
     });
@@ -253,7 +256,11 @@ test("relays search upstream error status and body verbatim", async () => {
   try {
     const response = await fetch(new URL("/v1/alpha/search", server.url), {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: "Bearer chatgpt-user-token" },
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
+        "chatgpt-account-id": "acct-123",
+      },
       body: JSON.stringify({ id: "search-session", model: "gpt-test" }),
     });
     expect(response.status).toBe(403);
@@ -291,7 +298,11 @@ test("a hung search upstream times out with 504 after config.search.timeoutMs", 
   try {
     const response = await fetch(new URL("/v1/alpha/search", server.url), {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: "Bearer chatgpt-user-token" },
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
+        "chatgpt-account-id": "acct-123",
+      },
       body: JSON.stringify({ id: "search-session", model: "gpt-test" }),
     });
     expect(response.status).toBe(504);
@@ -331,7 +342,11 @@ test("a short connectTimeoutMs does NOT cut a slow search (total deadline is sea
   try {
     const response = await fetch(new URL("/v1/alpha/search", server.url), {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: "Bearer chatgpt-user-token" },
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
+        "chatgpt-account-id": "acct-123",
+      },
       body: JSON.stringify({ id: "search-session", model: "gpt-test" }),
     });
     expect(response.status).toBe(200);

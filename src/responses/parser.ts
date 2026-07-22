@@ -13,6 +13,7 @@ import type {
 import { namespacedToolName } from "../types";
 import { responsesRequestSchema } from "./schema";
 import { compactionItemToText } from "./compaction";
+import { previousResponseReplayPrefixLength } from "./state";
 import { decodeReasoningEnvelope } from "./reasoning-envelope";
 import { extractHostedWebSearch, WEB_SEARCH_TOOL_NAME } from "../web-search/synthetic-tool";
 
@@ -224,6 +225,7 @@ function findToolById(messages: OcxMessage[], callId: string): { name: string; n
 const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 export function parseRequest(body: unknown): OcxParsedRequest {
+  const replayedInputPrefixLength = previousResponseReplayPrefixLength(body);
   const parsed = responsesRequestSchema.safeParse(body);
   if (!parsed.success) {
     throw new Error(`responses parse error: ${parsed.error.message}`);
@@ -252,6 +254,7 @@ export function parseRequest(body: unknown): OcxParsedRequest {
   // Remote compaction v2: the input tail carries `{type:"compaction_trigger"}` and Codex expects a
   // synthetic `{type:"compaction"}` output item (src/responses/compaction.ts). Flagged for the server.
   let compactionRequest = false;
+  let contextCompactionBoundary = false;
 
   if (typeof data.instructions === "string" && data.instructions.length > 0) {
     systemPrompt.push(data.instructions);
@@ -260,7 +263,8 @@ export function parseRequest(body: unknown): OcxParsedRequest {
   if (typeof data.input === "string") {
     messages.push({ role: "user", content: data.input, timestamp: now });
   } else if (data.input) {
-    for (const item of data.input) {
+    for (let inputIndex = 0; inputIndex < data.input.length; inputIndex++) {
+      const item = data.input[inputIndex];
       const effectiveType = (item as { type?: string }).type ?? ("role" in item ? "message" : undefined);
 
       if (effectiveType === "compaction_trigger") {
@@ -285,7 +289,10 @@ export function parseRequest(body: unknown): OcxParsedRequest {
         // the routed model keeps the compacted context; real OpenAI-encrypted blobs degrade to a note.
         // `context_compaction` (encrypted_content optional) is codex-rs's local-compaction marker;
         // with no payload it is a pure marker (the summary follows as its own user message), so it
-        // is dropped silently. It must NOT flag _compactionRequest.
+        // is dropped silently. It must NOT flag _compactionRequest. Only a marker newly appended in
+        // this request starts a provider-private context epoch; markers inside the prefix restored by
+        // previous_response_id were already acknowledged on the turn that introduced them.
+        if (inputIndex >= replayedInputPrefixLength) contextCompactionBoundary = true;
         const encrypted = (item as { encrypted_content?: unknown }).encrypted_content;
         if (effectiveType === "context_compaction" && typeof encrypted !== "string") continue;
         pendingReasoning.length = 0;
@@ -448,13 +455,10 @@ export function parseRequest(body: unknown): OcxParsedRequest {
       }
 
       if (effectiveType === "web_search_call") {
-        // Replayed hosted web-search evidence. Textify it into assistant history so the model
-        // knows the search already ran (prevents re-search loops); there is no output to pair.
-        const call = item as { action?: { type?: string; query?: string } };
-        const query = typeof call.action?.query === "string" ? call.action.query : "";
-        assistantHolderWithReasoning().content.push({
-          type: "text", text: query ? `[web search performed: ${query}]` : "[web search performed]",
-        });
+        // Replayed hosted web-search evidence has no paired result payload that routed providers can
+        // consume. Keep it out of assistant-visible text: the old marker was useful as an internal
+        // loop hint, but when no sidecar is available the model can echo it as a fake answer.
+        pendingReasoning.length = 0;
         continue;
       }
 
@@ -593,6 +597,7 @@ export function parseRequest(body: unknown): OcxParsedRequest {
     ...(webSearch ? { _webSearch: webSearch } : {}),
     ...(structuredOutput ? { _structuredOutput: true } : {}),
     ...(compactionRequest ? { _compactionRequest: true } : {}),
+    ...(contextCompactionBoundary ? { _contextCompactionBoundary: true } : {}),
   };
 }
 

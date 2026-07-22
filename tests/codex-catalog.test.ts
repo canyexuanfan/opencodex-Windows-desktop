@@ -2,7 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { augmentRoutedModelsWithJawcodeMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, deriveComboCatalogModel, exactComboCatalogSlugs, filterCatalogVisibleModels, filterSupportedNativeSlugs, gatherRoutedModels, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, resetCatalogRuntimeStateForTests, resetOpenAiApiCatalogWarningStateForTests } from "../src/codex/catalog";
+import { augmentRoutedModelsWithJawcodeMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, clampCatalogModelsToCodexSupport, clampEntryToCodexSupportedEfforts, clampedDefaultEffort, deriveComboCatalogModel, exactComboCatalogSlugs, filterCatalogVisibleModels, filterSupportedNativeSlugs, gatherRoutedModels, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, resetCatalogRuntimeStateForTests, resetOpenAiApiCatalogWarningStateForTests } from "../src/codex/catalog";
 import {
   CURSOR_STATIC_MODELS,
   filterCursorConfiguredModelsByLiveDiscovery,
@@ -32,6 +32,7 @@ function normalizedCombo(
     strategy: "failover",
     stickyLimit: 1,
     defaultEffort: "medium",
+    alias: null,
     targets: [
       { provider: "a", model: "m1", weight: 1 },
       { provider: "b", model: "m2", weight: 1 },
@@ -148,6 +149,164 @@ describe("combo catalog capability intersection", () => {
     expect((row?.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort))
       .toEqual(["low", "medium"]);
     expect(row?.input_modalities).toEqual(["text"]);
+    expect(row?.owned_by).toBe("combo");
+  });
+
+  test("treats bare and slashed combo aliases as routed catalog rows", () => {
+    for (const alias of ["deepseek-v4-flash", "vendor/deepseek-v4-flash"]) {
+      const model = deriveComboCatalogModel(
+        "mixed",
+        normalizedCombo({ alias }),
+        [memberA, memberB],
+      )!;
+      const row = buildCatalogEntries(nativeTemplate(), [], [model], undefined, false, "default", new Set([alias]))[0]!;
+
+      expect(row.slug).toBe(alias);
+      expect(row.display_name).toBe(alias);
+      expect(row.owned_by).toBe("combo");
+      expect(row.base_instructions).toContain("mixed");
+      expect(row).not.toHaveProperty("model_messages");
+      expect(row).not.toHaveProperty("tool_mode");
+      expect(row.web_search_tool_type).toBe("text_and_image");
+      expect(row.supports_search_tool).toBe(true);
+    }
+  });
+
+  test("preserves exact combo capabilities under an alias", () => {
+    const alias = "deepseek-v4-flash";
+    const model = deriveComboCatalogModel(
+      "mixed",
+      normalizedCombo({ alias }),
+      [memberA, memberB],
+    )!;
+    const row = buildCatalogEntries(null, [], [model], undefined, false, "default", new Set([alias]))[0]!;
+
+    expect((row.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort))
+      .toEqual(["low", "medium"]);
+    expect(row.input_modalities).toEqual(["text"]);
+  });
+
+  test("restores a non-OpenAI catalog row after its shadowing combo alias is renamed or deleted", () => {
+    const alias = "deepseek/deepseek-chat";
+    const provider = { provider: "deepseek", id: "deepseek-chat", owned_by: "deepseek" };
+    const comboFor = (publicAlias: string) => deriveComboCatalogModel(
+      "mixed",
+      normalizedCombo({ alias: publicAlias }),
+      [memberA, memberB],
+    )!;
+    const rowsFor = (comboAlias?: string) => buildCatalogEntries(
+      nativeTemplate(),
+      [],
+      comboAlias ? [provider, comboFor(comboAlias)] : [provider],
+      undefined,
+      false,
+      "default",
+      comboAlias ? new Set([comboAlias]) : new Set(),
+    );
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const collided = rowsFor(alias);
+      expect(collided.filter(row => row.slug === alias)).toHaveLength(1);
+      expect(collided.find(row => row.slug === alias)?.owned_by).toBe("combo");
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      const renamed = rowsFor("fast-chat");
+      expect(renamed.find(row => row.slug === alias)).toMatchObject({
+        slug: alias,
+        description: expect.stringContaining("deepseek"),
+      });
+      expect(renamed.find(row => row.slug === alias)?.owned_by).not.toBe("combo");
+      expect(renamed.find(row => row.slug === "fast-chat")?.owned_by).toBe("combo");
+
+      const deleted = rowsFor();
+      expect(deleted.filter(row => row.slug === alias)).toHaveLength(1);
+      expect(deleted.find(row => row.slug === alias)).toMatchObject({
+        slug: alias,
+        description: expect.stringContaining("deepseek"),
+      });
+      expect(deleted.find(row => row.slug === alias)?.owned_by).not.toBe("combo");
+
+      rowsFor(alias);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("removes stale combo alias rows after removal or rename", () => {
+    for (const slug of ["deepseek-v4-flash", "vendor/deepseek-v4-flash"]) {
+      const stale = {
+        slug,
+        owned_by: "combo",
+        input_modalities: ["text"],
+        supported_reasoning_levels: [{ effort: "low" }],
+      };
+      const merged = mergeCatalogEntriesForSync(
+        [stale], [], new Map(), [], false, new Set(), null, new Set(), new Set(),
+        "default", new Set(), false,
+      );
+      expect(merged.some(entry => entry.slug === slug)).toBe(false);
+    }
+  });
+
+  test("filters aliased combos by public or canonical disabled model ids", () => {
+    const combo = deriveComboCatalogModel(
+      "mixed",
+      normalizedCombo({ alias: "deepseek-v4-flash" }),
+      [memberA, memberB],
+    )!;
+    const provider = { provider: "vendor", id: "deepseek-v4-flash" };
+    const config = (disabledModels: string[]) => ({
+      disabledModels,
+      providers: { vendor: {}, combo: {} },
+    });
+
+    expect(filterCatalogVisibleModels([combo, provider], config(["deepseek-v4-flash"])))
+      .toEqual([provider]);
+    expect(filterCatalogVisibleModels([combo, provider], config(["combo/mixed"])))
+      .toEqual([provider]);
+    expect(filterCatalogVisibleModels([provider], config(["deepseek-v4-flash"])))
+      .toEqual([provider]);
+    expect(filterCatalogVisibleModels([provider], config(["vendor/deepseek-v4-flash"])))
+      .toEqual([]);
+  });
+
+  test("repairs a provider row after its shadowing combo alias is disabled", () => {
+    const alias = "vendor/deepseek-v4-flash";
+    const combo = deriveComboCatalogModel(
+      "mixed",
+      normalizedCombo({ alias }),
+      [memberA, memberB],
+    )!;
+    const provider = {
+      provider: "vendor",
+      id: "deepseek-v4-flash",
+      reasoningEfforts: ["low", "medium"],
+    };
+    const config = {
+      combos: {
+        mixed: { alias, targets: [{ provider: "a", model: "m1" }] },
+      },
+      disabledModels: ["combo/mixed"],
+      providers: { vendor: {}, combo: {} },
+    };
+
+    const visible = filterCatalogVisibleModels([provider, combo], config);
+    const rows = buildCatalogEntries(
+      nativeTemplate(),
+      [],
+      visible,
+      undefined,
+      false,
+      "default",
+      exactComboCatalogSlugs(config),
+    );
+    const levels = (rows.find(row => row.slug === alias)?.supported_reasoning_levels ?? []) as Array<{ effort: string }>;
+    const efforts = levels.map(level => level.effort);
+
+    expect(visible).toEqual([provider]);
+    expect(exactComboCatalogSlugs(config)).toEqual(new Set());
+    expect(efforts).toEqual(["low", "medium", "max", "ultra"]);
   });
 
   test("never repairs an exact combo with an empty modality intersection", () => {
@@ -245,9 +404,96 @@ describe("combo catalog capability intersection", () => {
   });
 
   test("exact combo slugs come only from current config", () => {
-    expect(exactComboCatalogSlugs({ combos: { free: { targets: [{ provider: "a", model: "m1" }] } } }))
-      .toEqual(new Set(["combo/free"]));
+    expect(exactComboCatalogSlugs({ combos: {
+      free: { targets: [{ provider: "a", model: "m1" }] },
+      bare: { alias: "  deepseek-v4-flash  ", targets: [{ provider: "a", model: "m1" }] },
+      slashed: { alias: "vendor/flash", targets: [{ provider: "a", model: "m1" }] },
+      empty: { alias: "   ", targets: [{ provider: "a", model: "m1" }] },
+    } }))
+      .toEqual(new Set(["combo/free", "deepseek-v4-flash", "vendor/flash", "combo/empty"]));
+    expect(exactComboCatalogSlugs({
+      disabledModels: ["combo/free", "deepseek-v4-flash"],
+      combos: {
+        free: { targets: [{ provider: "a", model: "m1" }] },
+        bare: { alias: "deepseek-v4-flash", targets: [{ provider: "a", model: "m1" }] },
+        slashed: { alias: "vendor/flash", targets: [{ provider: "a", model: "m1" }] },
+      },
+    })).toEqual(new Set(["vendor/flash"]));
     expect(exactComboCatalogSlugs({})).toEqual(new Set());
+  });
+
+  test("issue #268: combos with a native OpenAI (Codex-login) target are catalogued", async () => {
+    // The "openai" provider uses forward-auth (Codex login passthrough) — fetchProviderModels
+    // returns [] for it, so native slugs only surface through nativeOpenAiSlugs(). Before the
+    // fix, memberByKey never contained openai/<slug>, so combos with a native-openai target were
+    // silently dropped from the catalog.
+    globalThis.fetch = (() => { throw new Error("forward providers must not fetch /models"); }) as typeof fetch;
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "openai",
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+        },
+        openrouter: {
+          adapter: "openai-chat",
+          baseUrl: "https://openrouter.ai/v1",
+          liveModels: false,
+          models: ["openai/gpt-5.6-sol"],
+          modelContextWindows: { "openai/gpt-5.6-sol": 372_000 },
+          modelInputModalities: { "openai/gpt-5.6-sol": ["text", "image"] },
+          modelReasoningEfforts: { "openai/gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"] },
+        },
+      },
+      combos: {
+        auto: {
+          strategy: "failover",
+          targets: [
+            { provider: "openai", model: "gpt-5.6-sol" },
+            { provider: "openrouter", model: "openai/gpt-5.6-sol" },
+          ],
+        },
+      },
+    };
+    const rows = await gatherRoutedModels(config);
+    const comboRow = rows.find(r => r.provider === "combo" && r.id === "auto");
+    expect(comboRow).toBeDefined();
+    expect(comboRow!.contextWindow).toBe(372_000);
+    expect(comboRow!.inputModalities).toEqual(["text", "image"]);
+    // Reasoning efforts should be the intersection of the two members.
+    expect(comboRow!.reasoningEfforts).toContain("low");
+    expect(comboRow!.reasoningEfforts).toContain("max");
+  });
+
+  test("issue #268: native OpenAI members do not appear as standalone routed rows", async () => {
+    // The synthetic entries are injected into memberByKey for combo resolution only —
+    // they must NOT leak into the returned all[] array (they are already emitted via the
+    // native catalog / /v1/models path).
+    globalThis.fetch = (() => { throw new Error("forward providers must not fetch /models"); }) as typeof fetch;
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "openai",
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+        },
+      },
+      combos: {
+        solo: {
+          strategy: "failover",
+          targets: [{ provider: "openai", model: "gpt-5.6-sol" }],
+        },
+      },
+    };
+    const rows = await gatherRoutedModels(config);
+    // Only the combo row should exist — no openai/gpt-5.6-sol routed row.
+    const openaiRows = rows.filter(r => r.provider === "openai");
+    expect(openaiRows).toEqual([]);
+    expect(rows.some(r => r.provider === "combo" && r.id === "solo")).toBe(true);
   });
 });
 
@@ -1710,5 +1956,77 @@ describe("media-generation model filtering", () => {
     ]) {
       expect(isMediaGenerationModelId(id)).toBe(false);
     }
+  });
+});
+
+describe("Codex reasoning-effort capability clamp", () => {
+  function bundledCatalogDeps(efforts: string[]) {
+    return {
+      commandCandidates: () => ["codex"],
+      execFileSync: () => JSON.stringify({
+        models: [{
+          slug: "gpt-5.5",
+          base_instructions: "test",
+          supported_reasoning_levels: efforts.map(effort => ({ effort, description: effort })),
+          default_reasoning_level: "medium",
+        }],
+      }),
+    };
+  }
+
+  function routedEntry() {
+    return {
+      slug: "openrouter/example",
+      supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max", "ultra"]
+        .map(effort => ({ effort, description: effort })),
+      default_reasoning_level: "max",
+    };
+  }
+
+  test("strips max and ultra when the installed Codex ladder stops at xhigh", () => {
+    const models = [routedEntry()];
+
+    clampCatalogModelsToCodexSupport(models, bundledCatalogDeps(["low", "medium", "high", "xhigh"]));
+
+    expect(models[0]!.supported_reasoning_levels.map(level => level.effort))
+      .toEqual(["low", "medium", "high", "xhigh"]);
+  });
+
+  test("preserves max and ultra when the installed Codex ladder includes them", () => {
+    const models = [routedEntry()];
+
+    clampCatalogModelsToCodexSupport(models, bundledCatalogDeps(["low", "medium", "high", "xhigh", "max", "ultra"]));
+
+    expect(models[0]!.supported_reasoning_levels.map(level => level.effort))
+      .toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+  });
+
+  test("falls back to the conservative universal ladder when every advertised effort is unsupported", () => {
+    const entry = {
+      supported_reasoning_levels: [{ effort: "max" }, { effort: "ultra" }],
+      default_reasoning_level: "ultra",
+    };
+
+    clampEntryToCodexSupportedEfforts(entry, new Set(["low", "medium", "high", "xhigh"]));
+
+    expect(entry.supported_reasoning_levels.map(level => level.effort)).toEqual(["low", "medium", "high"]);
+    expect(clampedDefaultEffort("max", [])).toBe("medium");
+  });
+
+  test("repairs an unsupported max default to the highest surviving xhigh rung", () => {
+    const entry = routedEntry();
+
+    clampEntryToCodexSupportedEfforts(entry, new Set(["low", "medium", "high", "xhigh"]));
+
+    expect(entry.default_reasoning_level).toBe("xhigh");
+  });
+
+  test("is a no-op when the installed Codex binary cannot be probed", () => {
+    const models = [routedEntry()];
+    const before = structuredClone(models);
+
+    clampCatalogModelsToCodexSupport(models, { commandCandidates: () => [] });
+
+    expect(models).toEqual(before);
   });
 });

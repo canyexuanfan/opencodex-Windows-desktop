@@ -176,6 +176,8 @@ export function createCursorRequest(parsed: OcxParsedRequest): CursorRunRequest 
     system: [...(parsed.context.systemPrompt ?? []), ...(limitNote ? [limitNote] : [])],
     messages,
     rawMessages: parsed.context.messages,
+    ...(parsed._compactionRequest === true || parsed._contextCompactionBoundary === true ? { contextUsageReset: true } : {}),
+    ...(parsed._compactionRequest === true ? { contextUsageStoreCheckpoints: false } : {}),
     ...(budget.tools.length ? { tools: budget.tools } : {}),
     ...(parsed.options.toolChoice ? { toolChoice: parsed.options.toolChoice } : {}),
     ...(parsed.options.parallelToolCalls !== undefined ? { parallelToolCalls: parsed.options.parallelToolCalls } : {}),

@@ -1,11 +1,12 @@
 import type { ProviderAdapter } from "./base";
 import type { AdapterEvent, OcxAssistantMessage, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTextContent, OcxThinkingContent, OcxToolCall, OcxUsage } from "../types";
 import { isAllowedToolChoice, modelInList, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
-import { mapReasoningEffort } from "../reasoning-effort";
+import { mapReasoningEffort, modelRecordValue } from "../reasoning-effort";
 import { redactSecretString } from "../lib/redact";
 import { contentPartsToText } from "./image";
 import { neutralizeIdentity } from "./identity";
 import { buildNonOpenAIToolCatalogNudgeForTools, shouldInjectNonOpenAIToolCatalogNudge } from "./tool-catalog-nudge";
+import { openRouterProviderPayload, resolveOpenRouterRouting } from "../providers/openrouter-routing";
 
 // Providers may opt into stripping one trailing "[...]" group from the wire model id.
 // Z.AI needs this because its OpenAI path rejects glm-5.2[1m] with 400 code 1211;
@@ -337,6 +338,28 @@ function isXaiSchemaTarget(provider: OcxProviderConfig): boolean {
   }
 }
 
+function isKimiSchemaTarget(provider: OcxProviderConfig): boolean {
+  try {
+    return new URL(provider.baseUrl).hostname === "api.kimi.com";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Kimi requires function.parameters.type to be exactly "object" at the root.
+ * Codex tools with oneOf/anyOf schemas omit the root type, causing 400 errors.
+ * Add type: "object" at the root while preserving oneOf, $defs, and other schema keys.
+ */
+function ensureKimiRootObjectType(parameters: unknown): Record<string, unknown> {
+  if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
+    return { type: "object", properties: {} };
+  }
+  const obj = parameters as Record<string, unknown>;
+  if (obj.type === "object") return obj;
+  return { ...obj, type: "object" };
+}
+
 function expandXaiRootObjectSchemas(schema: unknown): Record<string, unknown>[] | undefined {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) return undefined;
   const obj = schema as Record<string, unknown>;
@@ -379,8 +402,13 @@ function toolsToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig
     : parsed.context.tools;
   if (tools.length === 0) return undefined;
   const xaiTarget = isXaiSchemaTarget(provider);
+  const kimiTarget = isKimiSchemaTarget(provider);
   const formatted = tools.flatMap(t => {
-    const parameters = xaiTarget ? normalizeXaiToolParameters(t.parameters) : t.parameters;
+    const parameters = xaiTarget
+      ? normalizeXaiToolParameters(t.parameters)
+      : kimiTarget
+        ? ensureKimiRootObjectType(t.parameters)
+        : t.parameters;
     if (parameters === undefined) return [];
     return [{
     type: "function",
@@ -432,9 +460,15 @@ function usageFromOpenAIChat(usage: Record<string, unknown> | undefined): OcxUsa
   };
 }
 
-function thinkingBudgetForEffort(parsed: OcxParsedRequest, reasoningEffort: string): number | undefined {
+function resolveMaxTokens(provider: OcxProviderConfig, parsed: OcxParsedRequest): number | undefined {
+  return parsed.options.maxOutputTokens
+    ?? modelRecordValue(provider.modelMaxOutputTokens, parsed.modelId)
+    ?? provider.defaultMaxOutputTokens;
+}
+
+function thinkingBudgetForEffort(parsed: OcxParsedRequest, reasoningEffort: string, maxOutputTokens?: number): number | undefined {
   if (parsed.options.reasoning === "minimal") return 0;
-  const maxBudget = parsed.options.maxOutputTokens ?? 32768;
+  const maxBudget = maxOutputTokens ?? 32768;
   const fractions: Record<string, number> = {
     low: 0.20,
     medium: 0.50,
@@ -467,13 +501,16 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         messages,
         stream: parsed.stream,
       };
+      const maxTokens = resolveMaxTokens(provider, parsed);
+      const openRouterRouting = resolveOpenRouterRouting(provider, parsed.modelId);
+      if (openRouterRouting) body.provider = openRouterProviderPayload(openRouterRouting);
       if (tools) body.tools = tools;
       if (tools && toolChoice !== undefined) {
         body.tool_choice = modelInList(provider.autoToolChoiceOnlyModels, parsed.modelId)
           ? (toolChoice === "none" ? "none" : "auto")
           : toolChoice;
       }
-      if (parsed.options.maxOutputTokens !== undefined) body.max_tokens = parsed.options.maxOutputTokens;
+      if (maxTokens !== undefined) body.max_tokens = maxTokens;
       if (parsed.options.temperature !== undefined && !modelInList(provider.noTemperatureModels, parsed.modelId)) {
         body.temperature = parsed.options.temperature;
       }
@@ -484,7 +521,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       const reasoningEffort = mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning);
       if (reasoningEffort !== undefined) {
         if (modelInList(provider.thinkingBudgetModels, parsed.modelId)) {
-          const budget = thinkingBudgetForEffort(parsed, reasoningEffort);
+          const budget = thinkingBudgetForEffort(parsed, reasoningEffort, maxTokens);
           if (budget !== undefined) body.thinking_budget = budget;
         } else if (modelInList(provider.thinkingToggleModels, parsed.modelId)) {
           // Vendor thinking-toggle wire (MiMo v2.x, GLM 5/5.1): the mapped value is the toggle
@@ -501,6 +538,11 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       }
       if (parsed.options.frequencyPenalty !== undefined && !modelInList(provider.noPenaltyModels, parsed.modelId)) {
         body.frequency_penalty = parsed.options.frequencyPenalty;
+      }
+      // prompt_cache_key is an OpenAI-specific chat extension; strict backends (Groq,
+      // Cerebras, etc.) reject unknown fields. Only forward when the provider opts in.
+      if (provider.promptCacheKey && parsed.options.promptCacheKey !== undefined) {
+        body.prompt_cache_key = parsed.options.promptCacheKey;
       }
 
       if (tools) {

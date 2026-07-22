@@ -134,6 +134,20 @@ describe("resolveMatchedPrice", () => {
     expect(price?.cost4.input).toBe(0.25);
   });
 
+  test("17f. Alibaba Token Plan Qwen 3.8 uses the temporary Routeway proxy", () => {
+    for (const provider of ["alibaba-token-plan", "alibaba-token-plan-intl"]) {
+      const price = resolveMatchedPrice(provider, "qwen3.8-max-preview");
+      expect(price).toMatchObject({
+        provider,
+        modelId: "qwen3.8-max-preview",
+        cost4: { input: 1.5, output: 5, cacheRead: 0.15, cacheWrite: 0 },
+        source: "expected",
+        status: "verified-derived",
+      });
+      expect(price?.sourceRef).toContain("temporary reseller proxy");
+    }
+  });
+
   test("6. unmatched exact key is null", () => {
     expect(resolveMatchedPrice("no-such-provider", "no-such-model")).toBeNull();
     expect(resolveMatchedPrice("openai", "definitely-not-a-model")).toBeNull();
@@ -174,8 +188,8 @@ describe("resolveMatchedPrice", () => {
     expect(resolveMatchedPrice("openrouter", "anthropic-claude-3.5-sonnet")).toBeNull();
   });
 
-  test("16. shipped overlay membership: 39 keys, including Gemini 3.6 and compatibility prices", () => {
-    expect(EXPECTED_PRICE_OVERLAYS.length).toBe(39);
+  test("16. shipped overlay membership: 43 keys, including Gemini 3.6 and compatibility prices", () => {
+    expect(EXPECTED_PRICE_OVERLAYS.length).toBe(43);
     expect(EXPECTED_PRICE_OVERLAYS.some(row => row.status === "unverified")).toBe(false);
     const keys = new Set(EXPECTED_PRICE_OVERLAYS.map(row => `${row.provider}/${row.modelId}`));
     for (const expected of [
@@ -185,6 +199,8 @@ describe("resolveMatchedPrice", () => {
       "deepseek/deepseek-reasoner",
       "google-antigravity/gemini-3.1-pro-low",
       "google-antigravity/gemini-3.1-pro-high",
+      "google-antigravity/gemini-3.6-flash",
+      "google-antigravity/gemini-3.1-pro",
       "google/gemini-3.6-flash",
       "google-antigravity/gemini-3.6-flash-low",
       "google-antigravity/gemini-3.6-flash-medium",
@@ -217,6 +233,8 @@ describe("resolveMatchedPrice", () => {
       "kimi-code/kimi-k2.6",
       "kimi-code/kimi-k2.5",
       "kimi-code/kimi-for-coding",
+      "alibaba-token-plan/qwen3.8-max-preview",
+      "alibaba-token-plan-intl/qwen3.8-max-preview",
       "cursor/auto",
     ]) {
       expect(keys.has(expected)).toBe(true);
