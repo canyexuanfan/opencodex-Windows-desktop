@@ -85,6 +85,21 @@
   min-width: 0;
 }
 
+/* List sections (Active providers, Available models): keep them compact in
+   workspace view. Rows scroll inside the pane with a pinned header instead of
+   pushing the whole page down. Classic view keeps natural page scroll. */
+.dashboard-workspace-main .tbl-wrap {
+  max-height: 520px;
+  overflow-y: auto;
+}
+
+.dashboard-workspace-main .tbl thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+
 /* Overview stack: uniform vertical rhythm between every box (shared by
    classic + workspace views). Gap matches the sidecar grid gap. */
 .dash-overview-stack {
