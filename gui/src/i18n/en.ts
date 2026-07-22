@@ -315,7 +315,6 @@ export const en = {
   "models.allowlistLabel": "Only selected",
   "models.allowlistHint": "Only checked models ship to the catalog (empty = all). Useful for providers exposing thousands of models.",
   "models.selectedCount": "{n} selected",
-  "models.orderHint": "Picker order: Subagents picks (in the selected order) → remaining routed models alphabetically by provider, then model ID → native models. Visibility switches only filter models; they do not change this order.",
 
   // subagents
   "sub.subtitle": "Codex's {cmd} advertises only the first 5 models (by priority) as overrides. Pick up to 5 here — native gpt or routed — and opencodex sets their catalog priority so exactly these lead. Any other model is still callable by its exact name; this only controls what's shown.",

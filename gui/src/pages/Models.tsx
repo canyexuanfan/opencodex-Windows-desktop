@@ -752,15 +752,6 @@ export default function Models({ apiBase }: { apiBase: string }) {
 
   const controlsBlock = (
     <>
-      <div className="row" style={{ gap: 6, marginBottom: 8 }}>
-        <button type="button" className="btn btn-ghost btn-sm text-caption" onClick={() => setAllCollapsed(true)} disabled={busy}>
-          <IconChevron width={12} height={12} aria-hidden="true" /> {t("models.collapseAll")}
-        </button>
-        <button type="button" className="btn btn-ghost btn-sm text-caption" onClick={() => setAllCollapsed(false)} disabled={busy}>
-          <IconChevron width={12} height={12} aria-hidden="true" style={{ transform: "rotate(90deg)" }} /> {t("models.expandAll")}
-        </button>
-      </div>
-
       <div className="row muted text-control" style={{ gap: 6, marginBottom: 8, alignItems: "center" }}>
         <span title={t("models.shadowCallInterceptHint")} style={{ cursor: "help" }}>{t("models.shadowCallIntercept")} ⓘ</span>
         <code className="text-caption" style={{ opacity: 0.6 }}>⚠ 5.4-mini →</code>
@@ -876,12 +867,9 @@ export default function Models({ apiBase }: { apiBase: string }) {
             <button type="button" onClick={applyCustomCap} disabled={busy} className="btn btn-ghost btn-sm">{t("models.customApply")}</button>
           </>
         )}
-        <div style={{ flex: 1 }} />
         <Switch on={allCapped} onClick={setAll} disabled={busy} label={t("models.setAll")} />
-        <span className="muted mono text-label" title={t("models.setAllHint", { value: fmtK(contextCapValue) })}>{t("models.setAll")}</span>
-      </div>
-      <div className="row muted text-label leading-body" style={{ alignItems: "flex-start", gap: 8, marginTop: -2, marginBottom: 8, maxWidth: "80ch" }}>
-        <span>{t("models.setAllHint", { value: fmtK(contextCapValue) })}</span>
+        <span className="muted mono text-label">{t("models.setAll")}</span>
+        <span className="muted text-label leading-body">{t("models.setAllHint", { value: fmtK(contextCapValue) })}</span>
       </div>
 
       {(() => {
@@ -896,10 +884,6 @@ export default function Models({ apiBase }: { apiBase: string }) {
         );
       })()}
 
-      <div className="row muted text-label leading-body" style={{ alignItems: "flex-start", gap: 8, marginBottom: 12, maxWidth: "80ch" }}>
-        <IconInfo width={15} height={15} aria-hidden="true" style={{ flexShrink: 0, marginTop: 2 }} />
-        <span>{t("models.orderHint")}</span>
-      </div>
     </>
   );
 
@@ -950,6 +934,17 @@ export default function Models({ apiBase }: { apiBase: string }) {
        </div>
      )}
     </>
+  );
+
+  const collapseControls = (
+    <div className="row" style={{ gap: 6, margin: "2px 0 10px" }}>
+      <button type="button" className="btn btn-ghost btn-sm text-caption" onClick={() => setAllCollapsed(true)} disabled={busy}>
+        <IconChevron width={12} height={12} aria-hidden="true" /> {t("models.collapseAll")}
+      </button>
+      <button type="button" className="btn btn-ghost btn-sm text-caption" onClick={() => setAllCollapsed(false)} disabled={busy}>
+        <IconChevron width={12} height={12} aria-hidden="true" style={{ transform: "rotate(90deg)" }} /> {t("models.expandAll")}
+      </button>
+    </div>
   );
 
   const emptyStateBlock = (
@@ -1192,6 +1187,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
           <main className="models-workspace-main">
             {controlsBlock}
             {combosBlock}
+            {collapseControls}
             {
               // eslint-disable-next-line react-hooks/refs -- The hover ref is only read by row event handlers nested in this renderer.
               visibleGroups.map(([provider, rows]) => renderGroup(provider, rows))
@@ -1216,6 +1212,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
       {status && <Notice tone={ok ? "ok" : "err"}>{status}</Notice>}
       {controlsBlock}
       {combosBlock}
+      {collapseControls}
       {
         // eslint-disable-next-line react-hooks/refs -- The hover ref is only read by row event handlers nested in this renderer.
         groups.map(([provider, rows]) => renderGroup(provider, rows))
