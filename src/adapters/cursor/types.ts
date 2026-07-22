@@ -11,8 +11,9 @@ export interface CursorRunRequest {
   toolChoice?: OcxRequestOptions["toolChoice"];
   parallelToolCalls?: boolean;
   /**
-   * Clear provider-private context-usage carry-forward before this run. Used when Codex starts or
-   * replays a compacted context epoch, so pre-compaction active-context totals are not over-reported.
+   * Clear provider-private context-usage carry-forward before this run. Used when Codex starts a
+   * newly observed compacted context epoch, so pre-compaction totals are not over-reported while
+   * historical previous_response_id replay remains idempotent.
    */
   contextUsageReset?: boolean;
   /**

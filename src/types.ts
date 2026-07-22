@@ -29,9 +29,9 @@ export interface OcxParsedRequest {
    */
   _compactionRequest?: boolean;
   /**
-   * True when parsed input included a stored compaction summary/marker. Routed adapters receive the
-   * compacted epoch, so provider-private continuation caches must not carry pre-compaction state
-   * across this request.
+   * True when the current request newly introduced a stored compaction summary/marker. Historical
+   * markers restored by previous_response_id expansion were already acknowledged and do not reset
+   * provider-private continuation caches again on every later turn.
    */
   _contextCompactionBoundary?: boolean;
 }

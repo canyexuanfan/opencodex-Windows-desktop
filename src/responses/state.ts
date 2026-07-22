@@ -18,6 +18,10 @@ interface StoredResponseState {
 }
 
 const states = new Map<string, StoredResponseState>();
+// Expansion provenance must stay proxy-private: a WeakMap distinguishes replayed history from the
+// newly appended input suffix without adding an unknown field that native passthrough could send
+// upstream. The parser uses this boundary to acknowledge historical compaction markers exactly once.
+const replayedInputPrefixLengths = new WeakMap<object, number>();
 let loaded = false;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingPersistPath: string | null = null;
@@ -131,10 +135,18 @@ export function expandPreviousResponseInput(body: unknown): unknown {
   pruneResponses();
   const previous = states.get(previousId);
   if (!previous) return body;
-  return {
+  const expanded = {
     ...request,
     input: [...previous.items, ...inputItems(request.input)],
   };
+  replayedInputPrefixLengths.set(expanded, previous.items.length);
+  return expanded;
+}
+
+/** Number of leading input items restored from previous_response_id state for this exact body. */
+export function previousResponseReplayPrefixLength(body: unknown): number {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return 0;
+  return replayedInputPrefixLengths.get(body) ?? 0;
 }
 
 export function previousResponseConversationId(responseId: string | undefined): string | undefined {

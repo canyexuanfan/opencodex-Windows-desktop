@@ -190,4 +190,17 @@ describe("partialUsageFromEventState", () => {
     const { createCursorProtobufEventState } = await import("../src/adapters/cursor/protobuf-events");
     expect(partialUsageFromEventState(createCursorProtobufEventState())).toBeUndefined();
   });
+
+  test("does not report seeded carry when a fresh turn failed before any token signal", async () => {
+    const { partialUsageFromEventState } = await import("../src/adapters/cursor/live-transport");
+    const { createCursorContextUsageTracker, createCursorProtobufEventState } = await import("../src/adapters/cursor/protobuf-events");
+    const tracker = createCursorContextUsageTracker();
+    tracker.record("cursor_conv_1", 18_000);
+
+    const state = createCursorProtobufEventState({
+      contextUsage: tracker.controlsForConversation("cursor_conv_1"),
+    });
+
+    expect(partialUsageFromEventState(state)).toBeUndefined();
+  });
 });
