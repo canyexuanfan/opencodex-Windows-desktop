@@ -285,13 +285,10 @@ export function responsesSseToChatCompletionsSse(
               const name = typeof item.name === "string" ? item.name : "";
               const args = typeof item.arguments === "string" ? item.arguments : "";
               if (!callId) break;
-              let toolIndex = toolIndexByCallId.get(callId);
-              const isNew = toolIndex === undefined;
-              if (isNew) {
-                // No prior added event — register and emit a complete tool call chunk.
-                toolIndex = nextToolIndex++;
-                toolIndexByCallId.set(callId, toolIndex);
-              }
+              const existingIndex = toolIndexByCallId.get(callId);
+              const isNew = existingIndex === undefined;
+              const toolIndex = existingIndex ?? nextToolIndex++;
+              if (isNew) toolIndexByCallId.set(callId, toolIndex);
               if (typeof item.id === "string") toolIndexByItemId.set(item.id, toolIndex);
               if (name) toolNameByIndex.set(toolIndex, name);
               const finalName = name || toolNameByIndex.get(toolIndex) || "";
@@ -474,15 +471,16 @@ export async function collectChatCompletion(
   const reader = stream.getReader();
   try {
     for (;;) {
-      let readResult: ReadableStreamReadResult<Uint8Array>;
+      let done = false;
+      let value: Uint8Array | undefined;
       try {
-        readResult = await reader.read();
+        ({ done, value } = await reader.read());
       } catch (err) {
         if (isChatCompletionsStreamError(err)) throw err;
         throw new ChatCompletionsStreamError(err instanceof Error ? err.message : String(err));
       }
-      const { done, value } = readResult;
       if (done) break;
+      if (!value) continue;
       buffer += decoder.decode(value, { stream: true });
       let sep: number;
       while ((sep = buffer.indexOf("\n\n")) !== -1) {
