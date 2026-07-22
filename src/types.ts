@@ -211,7 +211,7 @@ export type AdapterEvent =
   // the SAME output index, so the activity animates instead of flashing completed instantly.
   | { type: "web_search_call_begin"; id: string }
   | { type: "web_search_call_end"; id: string; queries: string[]; status?: "completed" | "failed"; sources?: OcxUrlCitation[] }
-  | { type: "done"; usage?: OcxUsage }
+  | { type: "done"; usage?: OcxUsage; stopReason?: string }
   // `usage` carries best-effort partial consumption when a turn dies before a clean done
   // (e.g. cursor upstream 502 mid-stream), so failed requests can log real token counts.
   | { type: "error"; message: string; usage?: OcxUsage };
@@ -807,6 +807,8 @@ export const OPENAI_PROVIDER_TIER_VERSION = 2 as const;
 export interface CodexAccount {
   id: string;
   email: string;
+  /** User-owned display label; never participates in routing or identity checks. */
+  alias?: string;
   plan?: string;
   chatgptAccountId?: string;
   logLabel?: string;

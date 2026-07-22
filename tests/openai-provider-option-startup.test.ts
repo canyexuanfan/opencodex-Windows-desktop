@@ -4,6 +4,7 @@ import {
   AtomicWriteResidualTempError,
   AtomicWriteSecretResidualError,
   backupConfigBeforeOpenAiTierMigration,
+  getDefaultConfig,
   OpenAiTierBackupCleanupError,
   OpenAiTierBackupCollisionError,
   OpenAiTierBackupRollbackError,
@@ -11,7 +12,7 @@ import {
   type OpenAiTierBackupIO,
 } from "../src/config";
 import { runOpenAiTierStartupMigration } from "../src/providers/openai-tier-startup";
-import { OpenAiTierMigrationCollisionError } from "../src/providers/openai-tiers";
+import { OpenAiTierMigrationCollisionError, projectOpenAiTierMigration } from "../src/providers/openai-tiers";
 import type { OcxConfig } from "../src/types";
 
 const config: OcxConfig = {
@@ -109,6 +110,14 @@ function virtualBackupIO(initial: Record<string, string>, fail: {
 }
 
 describe("OpenAI provider option startup coordinator", () => {
+  test("fresh default config is already marked with the current OpenAI tier schema", () => {
+    expect(getDefaultConfig().openaiProviderTierVersion).toBe(2);
+    expect(runOpenAiTierStartupMigration(getDefaultConfig(), {
+      project: projectOpenAiTierMigration,
+      backup: () => { throw new Error("fresh config must not be backed up"); },
+      save: () => { throw new Error("fresh config must not be rewritten"); },
+    }).openaiProviderTierVersion).toBe(2);
+  });
   test("uses project -> backup -> save order and returns the projection", () => {
     const calls: string[] = [];
     const projected = { ...config, openaiProviderTierVersion: 2 as const };

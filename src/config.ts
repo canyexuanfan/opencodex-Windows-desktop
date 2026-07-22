@@ -7,7 +7,7 @@ import { comboConfigIssues } from "./combos/types";
 import { hardenSecretDir, hardenSecretPath } from "./lib/windows-secret-acl";
 import { providerDestinationConfigError } from "./lib/destination-policy";
 import { openRouterRoutingConfigError } from "./providers/openrouter-routing";
-import type { OcxConfig } from "./types";
+import { OPENAI_PROVIDER_TIER_VERSION, type OcxConfig } from "./types";
 
 let _atomicSeq = 0;
 
@@ -656,6 +656,10 @@ export function getDefaultConfig(): OcxConfig {
   // Adding extra providers (e.g. opencode-go) and switching defaultProvider is a user/runtime choice.
   return {
     port: 10100,
+    // Fresh/re-initialized configs are already written in the current three-tier
+    // OpenAI shape. Mark them as such so startup does not mistake them for a
+    // legacy config and collide with an immutable backup from an earlier setup.
+    openaiProviderTierVersion: OPENAI_PROVIDER_TIER_VERSION,
     providers: {
       openai: {
         adapter: "openai-responses",

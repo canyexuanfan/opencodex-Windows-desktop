@@ -1484,18 +1484,18 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
         }
       }
       // addAccount / reauth forces a fresh browser identity (skips local-CLI token import).
-      const { url: authUrl, instructions } = await startLoginFlow(provider, {
+      const { url: authUrl, instructions, deviceCode } = await startLoginFlow(provider, {
         forceLogin: body.addAccount === true || reauth,
         ...(accountId ? { reauthAccountId: accountId } : {}),
       });
       upsertOAuthProvider(config, provider); // mutate LIVE config — routing sees it without restart
-      if (authUrl) {
+      if (authUrl && !deviceCode) {
         // Open the browser server-side (the proxy runs on the user's machine) — the GUI's
         // window.open is popup-blocked because it runs after an await, not a direct click.
         const { openUrl } = await import("../lib/open-url");
         openUrl(authUrl);
       }
-      return jsonResponse({ url: authUrl, instructions });
+      return jsonResponse({ url: authUrl, instructions, deviceCode });
     } catch (err) {
       return jsonResponse({ error: err instanceof Error ? err.message : String(err) }, 409);
     }
@@ -1563,6 +1563,20 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     clearProviderQuotaCache();
     return jsonResponse({ ok: true, provider, activeAccountId: body.accountId });
   }
+  if (url.pathname === "/api/oauth/accounts/alias" && req.method === "PUT") {
+    const body = await req.json().catch(() => ({})) as { provider?: unknown; accountId?: unknown; alias?: unknown };
+    const provider = typeof body.provider === "string" ? body.provider.trim().toLowerCase() : "";
+    const accountId = typeof body.accountId === "string" ? body.accountId.trim() : "";
+    const alias = typeof body.alias === "string" ? body.alias.trim() : "";
+    if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
+    if (!accountId) return jsonResponse({ error: "missing accountId" }, 400);
+    if (typeof body.alias !== "string" || alias.length > 80 || /[\x00-\x1f\x7f]/.test(alias)) {
+      return jsonResponse({ error: "alias must be at most 80 printable characters" }, 400);
+    }
+    const { setAccountAlias } = await import("../oauth/store");
+    if (!(await setAccountAlias(provider, accountId, alias || undefined))) return jsonResponse({ error: "account not found" }, 404);
+    return jsonResponse({ ok: true, provider, accountId, alias: alias || null });
+  }
   if (url.pathname === "/api/oauth/accounts" && req.method === "DELETE") {
     const provider = (url.searchParams.get("provider") ?? "").trim().toLowerCase();
     const id = url.searchParams.get("id") ?? "";
@@ -1615,6 +1629,20 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     const { clearKeyCooldowns } = await import("../providers/key-failover");
     clearKeyCooldowns(name); // manual key management resets 429 cooldown state
     return jsonResponse({ ok: true, name, activeId: body.id });
+  }
+  if (url.pathname === "/api/providers/keys/alias" && req.method === "PUT") {
+    const body = await req.json().catch(() => ({})) as { name?: unknown; id?: unknown; alias?: unknown };
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    const id = typeof body.id === "string" ? body.id.trim() : "";
+    const alias = typeof body.alias === "string" ? body.alias.trim() : "";
+    if (!name || !isValidProviderName(name) || !hasOwnProvider(config.providers, name)) return jsonResponse({ error: "unknown provider" }, 404);
+    if (!id) return jsonResponse({ error: "missing id" }, 400);
+    if (typeof body.alias !== "string" || alias.length > 80 || /[\x00-\x1f\x7f]/.test(alias)) {
+      return jsonResponse({ error: "alias must be at most 80 printable characters" }, 400);
+    }
+    const { setProviderApiKeyLabel } = await import("../providers/api-keys");
+    if (!setProviderApiKeyLabel(config, name, id, alias || undefined)) return jsonResponse({ error: "key not found" }, 404);
+    return jsonResponse({ ok: true, name, id, alias: alias || null });
   }
   if (url.pathname === "/api/providers/keys" && req.method === "DELETE") {
     const name = (url.searchParams.get("name") ?? "").trim();
