@@ -228,6 +228,8 @@ export const ja: Record<TKey, string> = {
   "models.nativeGroupLabel": "OpenAI ネイティブ",
   "models.nativeHint": "パススルーモデルはプロバイダーで選択したプールまたはダイレクトアカウントオプションを使用します。一つオフにすると Codex ピッカーから隠します(カタログエントリは保持されるので、再有効化で正確に復元されます)。",
   "models.active": "{active}/{total} アクティブ",
+  "models.workspace.providers": "プロバイダー",
+  "models.workspace.allProviders": "すべてのプロバイダー",
   "models.combosEmpty": "まだコンボが設定されていません",
   "models.combosSetup": "セットアップ",
   "models.combosAdd": "コンボを追加",

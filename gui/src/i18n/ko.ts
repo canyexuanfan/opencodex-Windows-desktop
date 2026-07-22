@@ -231,6 +231,8 @@ export const ko: Record<TKey, string> = {
   "models.nativeGroupLabel": "OpenAI 네이티브",
   "models.nativeHint": "프로바이더에서 선택한 풀 또는 직접 계정 옵션으로 서빙되는 passthrough 모델입니다. 끄면 Codex 선택기에서 숨겨지고, 카탈로그 항목은 유지되므로 다시 켜면 그대로 복원됩니다.",
   "models.active": "{active}/{total} 활성",
+  "models.workspace.providers": "제공자",
+  "models.workspace.allProviders": "모든 제공자",
   "models.combosEmpty": "아직 설정된 콤보가 없습니다",
   "models.combosSetup": "설정하기",
   "models.combosAdd": "콤보 추가하기",

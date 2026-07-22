@@ -236,6 +236,8 @@ export const ru: Record<TKey, string> = {
   "models.nativeGroupLabel": "Нативные OpenAI",
   "models.nativeHint": "Модели сквозного проброса используют режим аккаунта (пул или прямое подключение), выбранный на странице «Провайдеры». Отключение модели скрывает её из селектора Codex (запись в каталоге сохраняется, поэтому при повторном включении она восстанавливается в точности).",
   "models.active": "{active}/{total} активно",
+  "models.workspace.providers": "Провайдеры",
+  "models.workspace.allProviders": "Все провайдеры",
   "models.combosEmpty": "Комбо ещё не настроены",
   "models.combosSetup": "Настроить",
   "models.combosAdd": "Добавить комбо",

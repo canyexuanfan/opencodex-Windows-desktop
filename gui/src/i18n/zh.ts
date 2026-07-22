@@ -231,6 +231,8 @@ export const zh: Record<TKey, string> = {
   "models.nativeGroupLabel": "OpenAI 原生",
   "models.nativeHint": "Passthrough 模型使用在提供方页面选择的账户池或直连选项。关闭后会从 Codex 选择器中隐藏（目录条目保留，重新开启即可完整恢复）。",
   "models.active": "{active}/{total} 已启用",
+  "models.workspace.providers": "提供商",
+  "models.workspace.allProviders": "所有提供商",
   "models.combosEmpty": "尚未配置组合",
   "models.combosSetup": "设置",
   "models.combosAdd": "添加组合",

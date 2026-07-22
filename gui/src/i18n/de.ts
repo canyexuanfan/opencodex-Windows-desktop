@@ -223,6 +223,8 @@ export const de = {
   "models.nativeGroupLabel": "OpenAI nativ",
   "models.nativeHint": "Passthrough-Modelle verwenden die unter Anbieter gewählte Pool- oder Direkt-Option. Ausblenden entfernt sie aus der Codex-Auswahl (Katalogeintrag bleibt, Reaktivierung stellt exakt wieder her).",
   "models.active": "{active}/{total} aktiv",
+  "models.workspace.providers": "Anbieter",
+  "models.workspace.allProviders": "Alle Anbieter",
   "models.combosEmpty": "Noch keine Kombos konfiguriert",
   "models.combosSetup": "Einrichten",
   "models.combosAdd": "Kombo hinzufügen",

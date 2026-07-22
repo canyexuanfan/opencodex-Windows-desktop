@@ -236,6 +236,8 @@ export const en = {
   "models.nativeGroupLabel": "OpenAI native",
   "models.nativeHint": "Passthrough models use the Pool or Direct account option selected on Providers. Toggling one off hides it from the Codex picker (the catalog entry is kept, so re-enabling restores it exactly).",
   "models.active": "{active}/{total} active",
+  "models.workspace.providers": "Providers",
+  "models.workspace.allProviders": "All providers",
   "models.combosEmpty": "No combos configured yet",
   "models.combosSetup": "Set up",
   "models.combosAdd": "Add combo",
