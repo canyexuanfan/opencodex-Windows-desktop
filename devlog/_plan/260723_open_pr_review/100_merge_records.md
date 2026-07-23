@@ -113,3 +113,29 @@ Local-only stacking of merge-ready PRs. NO push, NO GitHub mutations. Sol subage
 
 Branch: `codex/pr-review-260723` (local only — NOT pushed; GitHub untouched).
 Upstream feedback owed: #309 two blockers; #279 docs contradiction (residual).
+
+## Integration with maintainer dev (a0b9688d) — WP-INT
+
+While our local stack was building, the maintainer advanced origin/dev to a0b9688d:
+upstream merged #307, #309, #279 (as-composed, without our fixups), #303 docs,
+#318 cursor continuation (9cf0abd4, 29cb2dcd), #319 fast-uri 3.1.4, and converged
+v2.7.34 from main.
+
+Reconciliation rationale (per the reasoned-mixing brief):
+
+- **Upstream is base of truth for maintainer decisions.** #309 landed upstream despite
+  our NEEDS_HUMAN audit — respected, not reverted. Our two audit blockers
+  (toolNameCodec cross-request collision nondeterminism; Vertex/AI-Studio allowlist
+  overreach) remain KNOWN-ISSUE feedback for upstream, recorded in WP4 above.
+- **Our side carries verified improvements upstream lacks:** the two #279 fixups
+  (/v1/models back to requireApiAuth — upstream merged the regression; abortable
+  shared SSE decoder replacing the hand-rolled splitter with its CRLF/EOF and
+  idle-cancel defects) and the #304 merge (kiro clean-text-EOF + test isolation,
+  security-reviewed CLEAN; PR still open upstream).
+- Merge mechanics: `git merge --no-ff origin/dev` → **ab72fc10**, zero conflicts;
+  result tree d31cce0d verified byte-equal to the Sol-audited synthetic tree.
+- Sol integration audit (agent 019f8ded): **PASS**, five areas, no blockers, no file
+  requiring manual blending; package.json blend is the intended union (upstream
+  fast-uri override + our scripts/test.ts runner), version stays 2.7.34.
+- Verification: typecheck 0; `bun run test` **3676 pass / 0 fail** across 299 files;
+  privacy scan passed.
