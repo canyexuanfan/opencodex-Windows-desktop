@@ -125,12 +125,17 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("preview releases must use a preview prerelease version");
 
     // Release notes must include PR categories and the full channel commit range
-    // (branch merges + direct commits), for both create and edit paths.
+    // (branch merges + direct commits). Preflight forbids an existing release, so
+    // only create (not edit) is wired.
     expect(workflow).toContain("releases/generate-notes");
     expect(workflow).toContain("## Commits");
     expect(workflow).toContain("git log --pretty=format:'- %s (%h)'");
-    expect(workflow).toContain("--notes-file \"$notes_file\"");
+    expect(workflow).toContain('commit_range="${previous_tag}..${GITHUB_SHA}"');
+    expect(workflow).toMatch(/gh release create[\s\S]*?--notes-file "\$notes_file"/);
+    expect(workflow).not.toContain("gh release edit");
     expect(workflow).not.toContain("--generate-notes");
+    // Fail closed when generate-notes fails (no soft skip).
+    expect(workflow).not.toMatch(/generate-notes[\s\S]*?\|\| true/);
   });
 
   test("docs deployment is pinned, bounded, and scoped to Pages", async () => {

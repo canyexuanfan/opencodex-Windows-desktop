@@ -329,9 +329,10 @@ jobs:
             prerelease_flag="--prerelease"
           fi
 
-          # Build notes once for create and edit: PR categories from generate-notes, plus
-          # every commit in the channel range (branch merges and direct commits that
-          # generate-notes omits because it is PR-only).
+          # Build notes once: PR categories from generate-notes, plus every commit in the
+          # channel range (branch merges and direct commits that generate-notes omits
+          # because it is PR-only). Preflight already rejects an existing GitHub Release
+          # for non-dry runs, so this step only creates.
           notes_file="$(mktemp)"
           generate_notes_api=(
             "repos/${GITHUB_REPOSITORY}/releases/generate-notes"
@@ -341,7 +342,8 @@ jobs:
           if [ -n "$previous_tag" ]; then
             generate_notes_api+=(-f "previous_tag_name=${previous_tag}")
           fi
-          pr_notes="$(gh api "${generate_notes_api[@]}" --jq '.body' 2>/dev/null || true)"
+          # Fail closed: missing PR categories is a broken release note, not a soft skip.
+          pr_notes="$(gh api "${generate_notes_api[@]}" --jq '.body')"
           # Drop generate-notes' trailing compare link; we re-append it after the commit list.
           pr_notes="$(printf '%s\n' "$pr_notes" | sed '/^\*\*Full Changelog\*\*:/d')"
 
@@ -349,6 +351,8 @@ jobs:
             commit_range="${previous_tag}..${GITHUB_SHA}"
             commits="$(git log --pretty=format:'- %s (%h)' "$commit_range")"
           else
+            # First release on a channel has no previous tag; cap history so the notes
+            # body stays within GitHub release size limits.
             commits="$(git log --pretty=format:'- %s (%h)' --max-count=100 "$GITHUB_SHA")"
           fi
 
@@ -367,9 +371,5 @@ jobs:
             fi
           } > "$notes_file"
 
-          if gh release view "$release_tag" >/dev/null 2>&1; then
-            gh release edit "$release_tag" --title "$release_tag" --notes-file "$notes_file" ${prerelease_flag:+$prerelease_flag}
-          else
-            gh release create "$release_tag" --target "$GITHUB_SHA" --title "$release_tag" \
-              --notes-file "$notes_file" ${prerelease_flag:+$prerelease_flag}
-          fi
+          gh release create "$release_tag" --target "$GITHUB_SHA" --title "$release_tag" \
+            --notes-file "$notes_file" ${prerelease_flag:+$prerelease_flag}
