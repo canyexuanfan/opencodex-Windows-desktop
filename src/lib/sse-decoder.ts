@@ -12,12 +12,20 @@ export interface ServerSentEvent {
  */
 export async function* decodeServerSentEvents(
   source: ReadableStream<Uint8Array>,
+  options?: { signal?: AbortSignal },
 ): AsyncGenerator<ServerSentEvent> {
   const reader = source.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let event: string | undefined;
   let dataLines: string[] = [];
+  // Prompt cancellation channel: an abort cancels the underlying reader directly, which
+  // settles any in-flight read() so a consumer's iterator.return() cannot hang behind an
+  // idle upstream (a plain generator return waits for the pending await first).
+  const signal = options?.signal;
+  const onAbort = () => { reader.cancel(signal?.reason).catch(() => { /* already closed */ }); };
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener("abort", onAbort, { once: true });
 
   const dispatch = (): ServerSentEvent | undefined => {
     if (dataLines.length === 0) {
@@ -69,6 +77,7 @@ export async function* decodeServerSentEvents(
       break;
     }
   } finally {
+    signal?.removeEventListener("abort", onAbort);
     try { await reader.cancel(); } catch { /* already closed/errored */ }
     try { reader.releaseLock(); } catch { /* already released */ }
   }

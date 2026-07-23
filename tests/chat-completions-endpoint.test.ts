@@ -717,3 +717,29 @@ test("responsesSseToChatCompletionsSse accepts CRLF-framed SSE with terminal eve
   expect(choice?.message?.content).toBe("hello");
   expect(choice?.finish_reason).toBe("stop");
 });
+
+test("responsesSseToChatCompletionsSse cancel promptly cancels an idle upstream", async () => {
+  const { responsesSseToChatCompletionsSse } = await import("../src/chat/outbound");
+  let upstreamCancelled = false;
+  // Never-ending upstream: enqueues one partial frame then goes silent.
+  const idleUpstream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("event: response.created\n"));
+    },
+    cancel() {
+      upstreamCancelled = true;
+    },
+  });
+  const stream = responsesSseToChatCompletionsSse(idleUpstream, "mock/test-model");
+  const reader = stream.getReader();
+  // Simulate client disconnect while the decoder is parked on an idle read().
+  const cancelled = reader.cancel("client disconnected").then(() => "cancelled");
+  const outcome = await Promise.race([
+    cancelled,
+    new Promise<string>(resolve => setTimeout(() => resolve("hung"), 2000)),
+  ]);
+  expect(outcome).toBe("cancelled");
+  // Give the abort->reader.cancel microtask a beat to reach the source.
+  await new Promise(resolve => setTimeout(resolve, 50));
+  expect(upstreamCancelled).toBe(true);
+});

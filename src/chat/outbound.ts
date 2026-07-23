@@ -135,6 +135,7 @@ export function responsesSseToChatCompletionsSse(
   const toolNameByIndex = new Map<number, string>();
   let nextToolIndex = 0;
   let sseIterator: AsyncGenerator<{ event?: string; data: string }> | undefined;
+  const upstreamAbort = new AbortController();
 
   return new ReadableStream<Uint8Array>({
     start(controller) {
@@ -343,7 +344,7 @@ export function responsesSseToChatCompletionsSse(
       // Shared spec-shaped SSE decoder: handles CRLF framing, arbitrary chunk boundaries,
       // multi-line data, and a terminal event without a trailing blank line (Sol audit
       // blocker 3 — the hand-rolled "\n\n" splitter misreported those as truncation).
-      sseIterator = decodeServerSentEvents(upstream);
+      sseIterator = decodeServerSentEvents(upstream, { signal: upstreamAbort.signal });
       void (async () => {
         try {
           for await (const record of sseIterator!) {
@@ -371,6 +372,10 @@ export function responsesSseToChatCompletionsSse(
     },
     cancel(reason) {
       cancelled = true;
+      // Abort first: it cancels the decoder's underlying reader, settling any in-flight
+      // read() so the generator's return() below resolves promptly instead of hanging
+      // behind an idle upstream (Sol re-verification blocker).
+      upstreamAbort.abort(reason);
       return sseIterator?.return(undefined).then(() => undefined, () => undefined) ?? Promise.resolve(undefined);
     },
   });
