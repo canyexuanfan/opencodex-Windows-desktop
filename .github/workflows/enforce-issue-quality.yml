@@ -40,6 +40,7 @@ jobs:
               detectIssueKind,
               validateIssue,
               shouldReopen,
+              shouldEnforceClosure,
               labelForKind,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-quality.cjs"));
 
@@ -241,20 +242,32 @@ jobs:
               return;
             }
 
-            // Maintainer intentionally reopened — do not close again.
+            // Maintainer intentionally reopened — deactivate enforcement permanently
+            // for this issue so later `edited` runs do not close it again.
             if (eventType === "reopened" && actorIsMaintainer) {
               core.info("Maintainer reopened the issue; respecting their decision.");
-              if (botState?.active) {
-                const doneState = { ...botState, active: false };
-                await upsertComment([
-                  BOT_MARKER,
-                  stateTag(doneState),
-                  "",
-                  "### Maintainer decision respected",
-                  "",
-                  "A maintainer has reopened this issue. The automated closure has been deactivated.",
-                ].join("\n"));
-              }
+              const doneState = {
+                version: 2,
+                active: false,
+                kind: botState?.kind || resolvedKind || null,
+                closedAt: botState?.closedAt || null,
+                stateReason: botState?.stateReason || null,
+                maintainerOverride: true,
+              };
+              await upsertComment([
+                BOT_MARKER,
+                stateTag(doneState),
+                "",
+                "### Maintainer decision respected",
+                "",
+                "A maintainer has reopened this issue. The automated closure has been deactivated.",
+              ].join("\n"));
+              return;
+            }
+
+            // Prior maintainer override — do not re-close on later edits.
+            if (!shouldEnforceClosure(botState)) {
+              core.info("Bot enforcement was deactivated by a maintainer; skipping closure.");
               return;
             }
 

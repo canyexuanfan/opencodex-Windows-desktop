@@ -554,6 +554,20 @@ function validateIssue(issue) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Decide whether the bot may auto-close an invalid issue.
+ *
+ * After a maintainer reopens and deactivates enforcement, later `edited`
+ * events must not close the issue again.
+ *
+ * @param {{ active?: boolean, maintainerOverride?: boolean }|null|undefined} botState
+ * @returns {boolean}
+ */
+function shouldEnforceClosure(botState) {
+  if (botState && botState.maintainerOverride === true) return false;
+  return true;
+}
+
+/**
  * Decide whether the bot may reopen a closed issue.
  *
  * @param {{ active: boolean, closedAt: string|null, stateReason: string }} botState
@@ -586,6 +600,7 @@ module.exports = {
   detectIssueKind,
   validateIssue,
   shouldReopen,
+  shouldEnforceClosure,
   isRawPlaceholder,
   labelForKind,
   KIND_TO_LABEL,

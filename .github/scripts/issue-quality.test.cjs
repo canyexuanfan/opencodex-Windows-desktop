@@ -10,6 +10,7 @@ const {
   detectIssueKind,
   validateIssue,
   shouldReopen,
+  shouldEnforceClosure,
   labelForKind,
 } = require("./issue-quality.cjs");
 
@@ -516,6 +517,52 @@ describe("shouldReopen", () => {
       closed_by: "github-actions[bot]",
     };
     assert.equal(shouldReopen(baseBotState, issue, false), true);
+  });
+});
+
+describe("shouldEnforceClosure", () => {
+  it("enforces when there is no bot state yet", () => {
+    assert.equal(shouldEnforceClosure(null), true);
+  });
+
+  it("enforces while the bot still owns an active closure", () => {
+    assert.equal(
+      shouldEnforceClosure({
+        version: 2,
+        active: true,
+        kind: "feature",
+        closedAt: "2026-07-20T10:00:00Z",
+        stateReason: "not_planned",
+      }),
+      true,
+    );
+  });
+
+  it("does not enforce after a maintainer override", () => {
+    assert.equal(
+      shouldEnforceClosure({
+        version: 2,
+        active: false,
+        kind: "feature",
+        closedAt: "2026-07-20T10:00:00Z",
+        stateReason: "not_planned",
+        maintainerOverride: true,
+      }),
+      false,
+    );
+  });
+
+  it("still enforces after a normal active:false without maintainer override", () => {
+    assert.equal(
+      shouldEnforceClosure({
+        version: 2,
+        active: false,
+        kind: "feature",
+        closedAt: "2026-07-20T10:00:00Z",
+        stateReason: "not_planned",
+      }),
+      true,
+    );
   });
 });
 
