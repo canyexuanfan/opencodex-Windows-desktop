@@ -3,9 +3,9 @@ import { codexAutoStartEnabled, getConfigPath, getPidPath, readConfigDiagnostics
 import { diagnoseCodexBundledPlugins, type CodexPluginsDiagnostic } from "../codex/plugins-doctor";
 import { isOpencodexHealthz, probeHostname } from "../server/proxy-liveness";
 import type { OcxConfig } from "../types";
-import { serviceStatusSummary } from "../service";
+import { diagnoseService } from "../service";
 import { deriveStartupHealth, type StartupHealth } from "../codex/autostart-health";
-import { isCodexRoutingInjected } from "../codex/inject";
+import { getCodexRoutingKind } from "../codex/inject";
 import { diagnoseCodexShim } from "../codex/shim";
 
 type HealthCheck = {
@@ -119,14 +119,20 @@ export async function collectStatus(): Promise<CliStatusView> {
   const listen = selectListenTarget(config, pid, pid ? readRuntimePort(pid) : null);
   const health = await checkProxyHealth(listen);
   const bunRuntime = durableBunRuntime();
-  const serviceSummary = serviceStatusSummary();
+  const service = diagnoseService();
+  const serviceSummary = service.summary;
   const codexShim = diagnoseCodexShim();
   const codexShimSummary = codexShim.summary;
   const startup = deriveStartupHealth({
-    routingInjected: isCodexRoutingInjected(),
+    routingKind: getCodexRoutingKind(),
     autostartEnabled: codexAutoStartEnabled(config),
-    serviceInstalled: serviceSummary.startsWith("installed"),
-    serviceSupported: !serviceSummary.startsWith("unsupported"),
+    serviceInstalled: service.installed,
+    serviceViable: service.viable,
+    serviceEnabled: service.enabled,
+    serviceRunning: service.running,
+    serviceStale: service.stale,
+    serviceConflict: service.conflict,
+    serviceSupported: service.supported,
     shimInstalled: codexShim.installed,
     shimHealthy: codexShim.healthy,
     platform: process.platform,

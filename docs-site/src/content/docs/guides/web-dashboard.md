@@ -30,6 +30,7 @@ bun run dev:gui
 | **Sidecars** | Choose the web-search model and effort plus the vision-description model. Changes apply on the next request. |
 | **Maintenance** | Resync the Codex model catalog, inspect project-local config bypass warnings, check the latest or preview release, and run an update with optional proxy restart. |
 | **Startup safety** | Show whether injected Codex routing survives a restart, with separate service and launcher-shim health plus exact repair commands. |
+| **Windows tray** | Install a per-user login tray for one-click proxy start, stop, restart, dashboard access, and status. The tray is a controller, not a proxy restart service. |
 | **Codex autostart** | Allow an already-installed Codex launcher shim to run `ocx ensure`. This toggle does not install a shim or background service. |
 | **Providers** | Add, edit, enable/disable, and remove providers; manage OAuth account pools and API-key pools where supported. Provider Settings can disable live model discovery for endpoints with missing, slow, or oversized `/models` catalogs. |
 | **Add provider** | Search registry-backed presets for account login, API-key services, local servers, or a custom endpoint. |
@@ -88,6 +89,7 @@ The GUI is a thin client over the proxy's JSON management API. Useful endpoints 
 | --- | --- |
 | `GET` / `PUT /api/settings` | Read settings or toggle Codex autostart. |
 | `GET /api/startup-health` | Read secret-free routing, service, shim, and restart-safety diagnostics. |
+| `GET` / `POST /api/windows-tray` | Read or change the Windows tray installation and visible-process state. POST accepts `install`, `start`, `stop`, or `uninstall`. |
 | `POST /api/sync` | Rebuild the shared model catalog and stale the Codex model cache. |
 | `GET /api/update/check` · `POST /api/update/run` · `GET /api/update/status` | Check, run, and monitor self-update jobs. |
 | `GET` / `PUT /api/sidecar-settings` | Read or set search/vision sidecar model settings. |

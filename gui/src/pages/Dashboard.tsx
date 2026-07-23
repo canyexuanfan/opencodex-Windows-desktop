@@ -15,8 +15,10 @@ interface SettingsData {
   hostname: string;
   startupHealth?: {
     status: "native" | "protected" | "at-risk";
+    routingKind: "native" | "opencodex-local" | "custom-local" | "custom-remote";
     autostartEnabled: boolean;
     shimCoverage: "full" | "cli-only" | "none";
+    diagnosticStale: boolean;
   };
 }
 type SidecarBackend = "openai" | "anthropic";
@@ -626,11 +628,13 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         </div>
       </div>
 
-      {settings?.startupHealth?.status === "at-risk" && (
+      {(settings?.startupHealth?.status === "at-risk" || settings?.startupHealth?.diagnosticStale) && (
         <div className="notice notice-warn" role="alert" style={{ marginTop: -12, marginBottom: 24 }}>
           <IconAlert />
           <span>
-            {t(settings.startupHealth.shimCoverage === "cli-only" ? "startup.riskDetailWindowsShim" : "startup.riskDetail")}{" "}
+            {settings.startupHealth.diagnosticStale
+              ? t("startup.staleData")
+              : t(settings.startupHealth.routingKind === "custom-local" ? "startup.riskDetailCustomLocal" : settings.startupHealth.shimCoverage === "cli-only" ? "startup.riskDetailWindowsShim" : "startup.riskDetail")}{" "}
             <a href="#startup">{t("startup.title")}</a>
           </span>
         </div>

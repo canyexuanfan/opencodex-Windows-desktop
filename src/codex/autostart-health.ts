@@ -1,7 +1,7 @@
 import { codexAutoStartEnabled } from "../config";
-import { serviceStatusSummary } from "../service";
+import { diagnoseService } from "../service";
 import type { OcxConfig } from "../types";
-import { isCodexRoutingInjected } from "./inject";
+import { getCodexRoutingKind, type CodexRoutingKind } from "./inject";
 import { diagnoseCodexShim } from "./shim";
 
 export type StartupProtection = "service" | "shim" | "none";
@@ -9,27 +9,41 @@ export type StartupHealthStatus = "native" | "protected" | "at-risk";
 export type ShimCoverage = "full" | "cli-only" | "none";
 
 export interface StartupHealthInputs {
-  routingInjected: boolean;
+  routingKind: CodexRoutingKind;
   autostartEnabled: boolean;
   serviceInstalled: boolean;
+  serviceViable: boolean;
+  serviceEnabled: boolean;
+  serviceRunning: boolean;
+  serviceStale: boolean;
+  serviceConflict: boolean;
   serviceSupported: boolean;
   shimInstalled: boolean;
   shimHealthy: boolean;
   platform: NodeJS.Platform;
+  diagnosticStale?: boolean;
 }
 
 export interface StartupHealth {
   status: StartupHealthStatus;
+  routingKind: CodexRoutingKind;
   routingInjected: boolean;
+  localRoutingDependency: boolean;
   autostartEnabled: boolean;
   rebootSafe: boolean;
   protection: StartupProtection;
   serviceInstalled: boolean;
+  serviceViable: boolean;
+  serviceEnabled: boolean;
+  serviceRunning: boolean;
+  serviceStale: boolean;
+  serviceConflict: boolean;
   shimInstalled: boolean;
   shimHealthy: boolean;
   shimCoverage: ShimCoverage;
   serviceSupported: boolean;
   platform: NodeJS.Platform;
+  diagnosticStale: boolean;
   recommendedCommand: string | null;
   commands: {
     installService: string;
@@ -46,34 +60,39 @@ const COMMANDS = {
 
 export function deriveStartupHealth(inputs: StartupHealthInputs): StartupHealth {
   const shimEffective = inputs.autostartEnabled && inputs.shimHealthy;
-  // Windows Codex Desktop and exact codex.exe invocations bypass script wrappers.
-  // A healthy shim protects supported CLI launchers there, but not the global
-  // openai_base_url consumed by every Codex surface.
+  const routingInjected = inputs.routingKind === "opencodex-local";
+  const localRoutingDependency = inputs.routingKind === "opencodex-local" || inputs.routingKind === "custom-local";
+  // Script launchers never cover Codex Desktop/app-server surfaces. This is
+  // intentionally conservative on every OS and for WSL-shared Codex homes.
   const shimCoverage: ShimCoverage = !shimEffective
     ? "none"
-    : inputs.platform === "win32"
-      ? "cli-only"
-      : "full";
-  const protection: StartupProtection = inputs.serviceInstalled
+    : "cli-only";
+  // We can only credit an opencodex service/shim for routing that opencodex owns.
+  // An arbitrary localhost gateway has an independent lifecycle that OCX cannot repair.
+  const ownsLocalRouting = inputs.routingKind === "opencodex-local";
+  const protection: StartupProtection = ownsLocalRouting && inputs.serviceViable
     ? "service"
-    : shimEffective
+    : ownsLocalRouting && shimEffective
       ? "shim"
       : "none";
-  const rebootSafe = !inputs.routingInjected || inputs.serviceInstalled || shimCoverage === "full";
-  const status: StartupHealthStatus = !inputs.routingInjected
+  const rebootSafe = !localRoutingDependency || (ownsLocalRouting && inputs.serviceViable);
+  const status: StartupHealthStatus = !localRoutingDependency
     ? "native"
     : rebootSafe
       ? "protected"
       : "at-risk";
   const recommendedCommand = status !== "at-risk"
     ? null
+    : inputs.routingKind === "custom-local"
+      ? COMMANDS.restoreNative
     : inputs.serviceSupported
       ? COMMANDS.installService
-      : inputs.autostartEnabled
-        ? COMMANDS.installShim
-        : COMMANDS.restoreNative;
+      : COMMANDS.restoreNative;
   return {
     ...inputs,
+    diagnosticStale: inputs.diagnosticStale ?? false,
+    routingInjected,
+    localRoutingDependency,
     status,
     rebootSafe,
     protection,
@@ -86,12 +105,17 @@ export function deriveStartupHealth(inputs: StartupHealthInputs): StartupHealth 
 /** Collect current machine state without mutating config, services, or shims. */
 export function collectStartupHealth(config: Pick<OcxConfig, "codexAutoStart">): StartupHealth {
   const shim = diagnoseCodexShim();
-  const serviceSummary = serviceStatusSummary();
+  const service = diagnoseService();
   return deriveStartupHealth({
-    routingInjected: isCodexRoutingInjected(),
+    routingKind: getCodexRoutingKind(),
     autostartEnabled: codexAutoStartEnabled(config),
-    serviceInstalled: serviceSummary.startsWith("installed"),
-    serviceSupported: !serviceSummary.startsWith("unsupported"),
+    serviceInstalled: service.installed,
+    serviceViable: service.viable,
+    serviceEnabled: service.enabled,
+    serviceRunning: service.running,
+    serviceStale: service.stale,
+    serviceConflict: service.conflict,
+    serviceSupported: service.supported,
     shimInstalled: shim.installed,
     shimHealthy: shim.healthy,
     platform: process.platform,
@@ -99,9 +123,14 @@ export function collectStartupHealth(config: Pick<OcxConfig, "codexAutoStart">):
 }
 
 export function startupHealthSummary(health: StartupHealth): string {
-  if (health.status === "native") return "native Codex routing (no opencodex restart dependency)";
+  if (health.status === "native") return health.routingKind === "custom-remote"
+    ? "custom remote Codex routing (no local restart dependency)"
+    : "native Codex routing (no opencodex restart dependency)";
   if (health.protection === "service") return "protected by background service";
-  if (health.shimCoverage === "full") return "protected by Codex launcher shim";
+  if (health.routingKind === "custom-local") return `AT RISK after restart (custom local gateway lifecycle is not managed by opencodex; run '${health.commands.restoreNative}' to restore native routing)`;
   if (health.shimCoverage === "cli-only") return `AT RISK for Codex Desktop after restart (launcher shim covers CLI scripts only; run '${health.commands.installService}' or '${health.commands.restoreNative}')`;
-  return `AT RISK after restart (no service or healthy shim; run '${health.commands.installService}' or '${health.commands.restoreNative}')`;
+  if (health.serviceConflict) return `AT RISK after restart (background service managers conflict; run '${health.commands.installService}' or '${health.commands.restoreNative}')`;
+  if (health.serviceStale) return `AT RISK after restart (background service files are stale; run '${health.commands.installService}' or '${health.commands.restoreNative}')`;
+  if (health.serviceInstalled && !health.serviceViable) return `AT RISK after restart (installed service is disabled, stopped, or unhealthy; run '${health.commands.installService}' or '${health.commands.restoreNative}')`;
+  return `AT RISK after restart (no viable background service; run '${health.commands.installService}' or '${health.commands.restoreNative}')`;
 }

@@ -140,18 +140,31 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+    let latestRequest = 0;
     const readStartupHealth = async () => {
+      const request = ++latestRequest;
       try {
         const res = await fetch(`${API_BASE}/api/startup-health`);
-        if (!res.ok) return;
-        const data = await res.json() as { status?: unknown };
-        if (!cancelled) setStartupAtRisk(data.status === "at-risk");
+        if (!res.ok) {
+          if (!cancelled && request === latestRequest) setStartupAtRisk(true);
+          return;
+        }
+        const data = await res.json() as { status?: unknown; diagnosticStale?: unknown };
+        const valid = data.status === "native" || data.status === "protected" || data.status === "at-risk";
+        if (!cancelled && request === latestRequest) {
+          setStartupAtRisk(!valid || data.status === "at-risk" || data.diagnosticStale === true);
+        }
       } catch {
-        // The proxy may be stopping; keep the last known lifecycle state.
+        // A failed refresh cannot preserve a previously green claim.
+        if (!cancelled && request === latestRequest) setStartupAtRisk(true);
       }
     };
     void readStartupHealth();
-    return () => { cancelled = true; };
+    const timer = window.setInterval(() => { void readStartupHealth(); }, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, []);
 
   useEffect(() => {

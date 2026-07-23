@@ -161,6 +161,63 @@ export function hasInjectedOpenaiBaseUrl(content: string): boolean {
   return false;
 }
 
+export type CodexRoutingKind = "native" | "opencodex-local" | "custom-local" | "custom-remote";
+
+function rootTomlString(content: string, key: string): string | null {
+  const lines = content.split("\n");
+  const firstTable = lines.findIndex(line => /^\s*\[/.test(line));
+  const rootLines = lines.slice(0, firstTable === -1 ? lines.length : firstTable);
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`^\\s*${escaped}\\s*=\\s*[\"']([^\"']+)[\"']\\s*(?:#.*)?$`);
+  for (const line of rootLines) {
+    const match = pattern.exec(line);
+    if (match?.[1]) return match[1].trim();
+  }
+  return null;
+}
+
+function providerTableString(content: string, provider: string, key: string): string | null {
+  const lines = content.split("\n");
+  const header = `[model_providers.${provider}]`;
+  const start = lines.findIndex(line => line.trim() === header);
+  if (start === -1) return null;
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`^\\s*${escaped}\\s*=\\s*[\"']([^\"']+)[\"']\\s*(?:#.*)?$`);
+  for (let index = start + 1; index < lines.length && !/^\s*\[/.test(lines[index]); index += 1) {
+    const match = pattern.exec(lines[index]);
+    if (match?.[1]) return match[1].trim();
+  }
+  return null;
+}
+
+function isLoopbackUrl(value: string): boolean {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  } catch {
+    return false;
+  }
+}
+
+/** Classify actual routing dependency separately from opencodex ownership. */
+export function classifyCodexRouting(content: string): CodexRoutingKind {
+  const rootBaseUrl = rootTomlString(content, "openai_base_url");
+  if (rootBaseUrl) {
+    if (hasInjectedOpenaiBaseUrl(content)) return "opencodex-local";
+    if (!isLoopbackUrl(rootBaseUrl)) return "custom-remote";
+    return "custom-local";
+  }
+  const rootProvider = rootTomlString(content, "model_provider");
+  if (rootProvider) {
+    const providerBaseUrl = providerTableString(content, rootProvider, "base_url");
+    if (providerBaseUrl) {
+      if (rootProvider === "opencodex") return "opencodex-local";
+      return isLoopbackUrl(providerBaseUrl) ? "custom-local" : "custom-remote";
+    }
+  }
+  return "native";
+}
+
 /**
  * True when the active Codex config is owned by opencodex routing. Covers the
  * loopback Design B root override and the legacy/non-loopback provider table.
@@ -168,8 +225,8 @@ export function hasInjectedOpenaiBaseUrl(content: string): boolean {
  */
 export function hasInjectedCodexRouting(content: string): boolean {
   if (hasInjectedOpenaiBaseUrl(content)) return true;
-  return /^\s*model_provider\s*=\s*["']opencodex["']\s*$/m.test(content)
-    && /^\s*\[model_providers\.opencodex\]\s*$/m.test(content);
+  return rootTomlString(content, "model_provider") === "opencodex"
+    && providerTableString(content, "opencodex", "base_url") !== null;
 }
 
 /** Read-only probe used by status, doctor, and the dashboard. */
@@ -180,6 +237,16 @@ export function isCodexRoutingInjected(): boolean {
     return hasInjectedCodexRouting(readFileSync(path, "utf8"));
   } catch {
     return false;
+  }
+}
+
+export function getCodexRoutingKind(): CodexRoutingKind {
+  const path = CODEX_CONFIG_PATH;
+  if (!existsSync(path)) return "native";
+  try {
+    return classifyCodexRouting(readFileSync(path, "utf8"));
+  } catch {
+    return "native";
   }
 }
 

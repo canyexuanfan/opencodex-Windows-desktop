@@ -55,7 +55,8 @@ import { estimateComboCost, estimateRequestCost, normalizeCostTokens, tokensPerS
 import type { PersistedUsageAttempt } from "../../usage/log";
 import { isAllowedRequestOrigin, jsonResponse, providerManagementConfigError, publicProviderBaseUrl, safeConfigDTO } from "../auth-cors";
 import { applySystemEnvToggle } from "../system-env";
-import { collectStartupHealth } from "../../codex/autostart-health";
+import { getCachedStartupHealth, invalidateStartupHealthCache } from "../startup-health-cache";
+import { runWindowsTrayAction } from "../windows-tray-control";
 
 import { isPlainRecord, parseDebugLogQuery, tokPerSecondResult, unavailableCostReason, costResult, requestLogDto, stripRegistryOnlyStaticHeaders, fetchAllModels } from "./shared";
 import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, CostResult, MetricSource } from "./shared";
@@ -76,12 +77,36 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       codexAutoStart: codexAutoStartEnabled(config),
       port: config.port,
       hostname: config.hostname ?? "127.0.0.1",
-      startupHealth: collectStartupHealth(config),
+      startupHealth: await getCachedStartupHealth(config),
     });
   }
 
   if (url.pathname === "/api/startup-health" && req.method === "GET") {
-    return jsonResponse(collectStartupHealth(config));
+    return jsonResponse(await getCachedStartupHealth(config));
+  }
+
+  if (url.pathname === "/api/windows-tray" && req.method === "GET") {
+    if (process.platform !== "win32") return jsonResponse({ supported: false, installed: false, running: false, stale: false, summary: `unsupported on ${process.platform}` });
+    try {
+      return jsonResponse(await runWindowsTrayAction("status"));
+    } catch (error) {
+      return jsonResponse({ error: error instanceof Error ? error.message : String(error) }, 500);
+    }
+  }
+
+  if (url.pathname === "/api/windows-tray" && req.method === "POST") {
+    let body: { action?: unknown };
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (!body || !["install", "start", "stop", "uninstall"].includes(String(body.action))) {
+      return jsonResponse({ error: "action must be install, start, stop, or uninstall" }, 400);
+    }
+    if (process.platform !== "win32") return jsonResponse({ error: "Windows tray is only supported on Windows" }, 400);
+    try {
+      const status = await runWindowsTrayAction(body.action as "install" | "start" | "stop" | "uninstall");
+      return jsonResponse({ ok: true, status });
+    } catch (error) {
+      return jsonResponse({ error: error instanceof Error ? error.message : String(error) }, 500);
+    }
   }
 
   if (url.pathname === "/api/settings" && req.method === "PUT") {
@@ -92,10 +117,11 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     }
     config.codexAutoStart = body.codexAutoStart;
     saveConfig(config);
+    invalidateStartupHealthCache();
     return jsonResponse({
       ok: true,
       codexAutoStart: codexAutoStartEnabled(config),
-      startupHealth: collectStartupHealth(config),
+      startupHealth: await getCachedStartupHealth(config),
     });
   }
 
