@@ -88,6 +88,17 @@ function isShim(path: string): boolean {
   }
 }
 
+function isHealthyShim(path: string, platform: NodeJS.Platform): boolean {
+  try {
+    const content = readFileSync(path, "utf8");
+    if (content.length < 180 || !content.includes(SHIM_MARKER) || !content.includes("ensure")) return false;
+    if (platform !== "win32" && (lstatSync(path).mode & 0o111) === 0) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * A PATH entry that reaches Windows through WSL drive interop
  * (`<automount-root>/<drive>/...`; root defaults to /mnt, configurable via
@@ -345,7 +356,25 @@ exit $LASTEXITCODE
 
 function readState(): ShimState | null {
   try {
-    return JSON.parse(readFileSync(statePath(), "utf8")) as ShimState;
+    const value = JSON.parse(readFileSync(statePath(), "utf8")) as unknown;
+    if (!value || typeof value !== "object") return null;
+    const state = value as Record<string, unknown>;
+    if (typeof state.platform !== "string") return null;
+    const validFile = (item: unknown): item is ShimFileState => {
+      if (!item || typeof item !== "object") return false;
+      const file = item as Record<string, unknown>;
+      return typeof file.wrapperPath === "string"
+        && typeof file.originalPath === "string"
+        && typeof file.backupPath === "string"
+        && (file.realPath === undefined || typeof file.realPath === "string")
+        && (file.preserveOnly === undefined || typeof file.preserveOnly === "boolean");
+    };
+    if (state.wrappers !== undefined) {
+      if (!Array.isArray(state.wrappers) || state.wrappers.length === 0 || !state.wrappers.every(validFile)) return null;
+    } else if (!validFile(state)) {
+      return null;
+    }
+    return state as unknown as ShimState;
   } catch {
     return null;
   }
@@ -504,13 +533,39 @@ export function uninstallCodexShim(): { removed: boolean; message: string } {
 
 /** True if a Codex autostart shim is currently installed (state file present). */
 export function isCodexShimInstalled(): boolean {
-  return readState() !== null;
+  return diagnoseCodexShim().installed;
 }
 
-export function codexShimStatus(): string {
+export interface CodexShimDiagnostic {
+  installed: boolean;
+  healthy: boolean;
+  summary: string;
+}
+
+/** Structured, secret-free shim state for CLI/GUI lifecycle diagnostics. */
+export function diagnoseCodexShim(): CodexShimDiagnostic {
   const state = readState();
-  if (!state) return "Codex autostart shim is not installed.";
-  return stateFiles(state).map(file => {
+  if (!state) {
+    if (existsSync(statePath())) {
+      return {
+        installed: true,
+        healthy: false,
+        summary: `Codex autostart shim state is invalid or corrupt at ${statePath()}. Reinstall or remove the shim.`,
+      };
+    }
+    return {
+      installed: false,
+      healthy: false,
+      summary: "Codex autostart shim is not installed.",
+    };
+  }
+  const files = stateFiles(state);
+  const healthy = files.length > 0 && files.every(file => file.preserveOnly
+    ? existsSync(file.backupPath) && !existsSync(file.originalPath)
+    : existsSync(file.wrapperPath)
+      && (existsSync(file.backupPath) || (file.realPath ? existsSync(file.realPath) : false))
+      && isHealthyShim(file.wrapperPath, state.platform));
+  const summary = files.map(file => {
     const wrapper = existsSync(file.wrapperPath)
       ? isShim(file.wrapperPath)
         ? "shim present"
@@ -519,4 +574,9 @@ export function codexShimStatus(): string {
     const backup = existsSync(file.backupPath) ? "present" : "missing";
     return `Codex autostart shim: wrapper ${wrapper} at ${file.wrapperPath}; original backup ${backup} at ${file.backupPath}.`;
   }).join("\n");
+  return { installed: true, healthy, summary };
+}
+
+export function codexShimStatus(): string {
+  return diagnoseCodexShim().summary;
 }

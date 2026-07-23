@@ -49,6 +49,15 @@ const helpEntries: Record<string, HelpEntry> = {
     summary: "Auto-start the proxy when `codex` launches.",
     details: ["Use `remove` as an alias for `uninstall`."],
   },
+  tray: {
+    usage: "ocx tray <install|start|stop|status|uninstall|remove> [--json] [--no-start]",
+    summary: "Install and control the Windows status tray icon.",
+    details: [
+      "The tray starts at Windows login and provides one-click proxy controls.",
+      "Tray start/stop controls the icon only; use its menu to start or stop the proxy.",
+      "--no-start (install only) installs the tray without launching it immediately.",
+    ],
+  },
   ensure: { usage: "ocx ensure", summary: "Ensure the proxy is running and Codex config/cache are current." },
   sync: { usage: "ocx sync", summary: "Fetch provider models and inject them into Codex config." },
   "sync-cache": { usage: "ocx sync-cache", summary: "Refresh Codex's model cache from the active catalog." },
@@ -164,6 +173,7 @@ Usage:
   ocx uninstall               Remove service/shim/config and restore native Codex (alias: remove)
   ocx service [sub]           Run as a background service (default: install/update/start)
   ocx codex-shim <sub>        Auto-start proxy when \`codex\` launches (install|status|uninstall|remove)
+  ocx tray <sub>              Windows status tray (install|start|stop|status|uninstall)
   ocx ensure                  Ensure the proxy is running and Codex config/cache are current
   ocx sync                    Fetch models from providers and inject into Codex config
   ocx sync-cache              Refresh Codex's model cache from the active catalog

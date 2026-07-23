@@ -3,7 +3,10 @@ import { codexAutoStartEnabled, getConfigPath, getPidPath, readConfigDiagnostics
 import { diagnoseCodexBundledPlugins, type CodexPluginsDiagnostic } from "../codex/plugins-doctor";
 import { isOpencodexHealthz, probeHostname } from "../server/proxy-liveness";
 import type { OcxConfig } from "../types";
-import { serviceStatusSummary } from "../service";
+import { diagnoseService } from "../service";
+import { collectStartupHealth, type StartupHealth } from "../codex/autostart-health";
+import { getCodexRoutingKind } from "../codex/inject";
+import { diagnoseCodexShim } from "../codex/shim";
 
 type HealthCheck = {
   ok: boolean;
@@ -39,6 +42,7 @@ export type CliStatusJson = {
     overrideEnv?: string;
   };
   codexAutostart: boolean;
+  startup: StartupHealth;
   defaultProvider: string | null;
   config: {
     source: "default" | "file" | "fallback";
@@ -115,9 +119,15 @@ export async function collectStatus(): Promise<CliStatusView> {
   const listen = selectListenTarget(config, pid, pid ? readRuntimePort(pid) : null);
   const health = await checkProxyHealth(listen);
   const bunRuntime = durableBunRuntime();
-  const serviceSummary = serviceStatusSummary();
-  const { codexShimStatus } = await import("../codex/shim");
-  const codexShimSummary = codexShimStatus();
+  const service = diagnoseService();
+  const serviceSummary = service.summary;
+  const codexShim = diagnoseCodexShim();
+  const codexShimSummary = codexShim.summary;
+  const startup = collectStartupHealth(config, {
+    service,
+    shim: codexShim,
+    routingKind: getCodexRoutingKind(),
+  });
   const codexPlugins = diagnoseCodexBundledPlugins();
   const proxyLabel = pid && health.ok
     ? `running (PID ${pid})`
@@ -157,6 +167,7 @@ export async function collectStatus(): Promise<CliStatusView> {
         ...(bunRuntime.source === "override" ? { overrideEnv: bunRuntime.overrideEnv } : {}),
       },
       codexAutostart: codexAutoStartEnabled(config),
+      startup,
       defaultProvider: typeof config.defaultProvider === "string" ? config.defaultProvider : null,
       config: {
         source: configDiagnostics.source,

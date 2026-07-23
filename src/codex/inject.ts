@@ -162,7 +162,7 @@ export function stripInjectedOpenaiBaseUrl(content: string): string {
   return lines.filter((_, i) => !drop.has(i)).join("\n");
 }
 
-function hasInjectedOpenaiBaseUrl(content: string): boolean {
+export function hasInjectedOpenaiBaseUrl(content: string): boolean {
   const lines = content.split("\n");
   const firstTable = lines.findIndex(l => /^\s*\[/.test(l));
   const rootEnd = firstTable === -1 ? lines.length : firstTable;
@@ -170,6 +170,137 @@ function hasInjectedOpenaiBaseUrl(content: string): boolean {
     if (isRootOpenaiBaseUrlLine(lines[i]) && lines[i - 1].includes(OCX_SECTION_MARKER)) return true;
   }
   return false;
+}
+
+export type CodexRoutingKind = "native" | "opencodex-local" | "custom-local" | "custom-remote" | "unknown";
+
+function tomlStringPattern(key: string): RegExp {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const keyToken = `(?:${escaped}|\"${escaped}\"|'${escaped}')`;
+  return new RegExp(`^\\s*${keyToken}\\s*=\\s*[\"']([^\"']+)[\"']\\s*(?:#.*)?$`);
+}
+
+function rootTomlString(content: string, key: string): string | null {
+  const lines = content.split("\n");
+  const firstTable = lines.findIndex(line => /^\s*\[/.test(line));
+  const rootLines = lines.slice(0, firstTable === -1 ? lines.length : firstTable);
+  const pattern = tomlStringPattern(key);
+  for (const line of rootLines) {
+    const match = pattern.exec(line);
+    if (match?.[1]) return match[1].trim();
+  }
+  return null;
+}
+
+function providerTableStart(lines: string[], provider: string): number {
+  const escapedProvider = provider.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const providerToken = `(?:${escapedProvider}|\"${escapedProvider}\"|'${escapedProvider}')`;
+  const header = new RegExp(`^\\s*\\[\\s*(?:model_providers|\"model_providers\"|'model_providers')\\s*\\.\\s*${providerToken}\\s*\\]\\s*(?:#.*)?$`);
+  return lines.findIndex(line => header.test(line));
+}
+
+function providerTableString(content: string, provider: string, key: string): string | null {
+  const lines = content.split("\n");
+  const start = providerTableStart(lines, provider);
+  if (start === -1) return null;
+  const pattern = tomlStringPattern(key);
+  for (let index = start + 1; index < lines.length && !/^\s*\[/.test(lines[index]); index += 1) {
+    const match = pattern.exec(lines[index]);
+    if (match?.[1]) return match[1].trim();
+  }
+  return null;
+}
+
+type RoutingEndpointKind = "local" | "remote" | "unknown";
+
+function ipv4Octets(hostname: string): number[] | null {
+  const dotted = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  if (dotted) {
+    const octets = dotted.slice(1).map(Number);
+    return octets.some(octet => octet > 255) ? null : octets;
+  }
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(hostname);
+  if (!mapped) return null;
+  const high = Number.parseInt(mapped[1], 16);
+  const low = Number.parseInt(mapped[2], 16);
+  return [high >>> 8, high & 0xff, low >>> 8, low & 0xff];
+}
+
+function classifyRoutingEndpoint(value: string): RoutingEndpointKind {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "unknown";
+    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+    if (!hostname) return "unknown";
+    if (hostname === "localhost" || hostname.endsWith(".localhost")) return "local";
+    if (hostname === "::" || hostname === "::1" || hostname === "0.0.0.0") return "local";
+    const octets = ipv4Octets(hostname);
+    if (octets) {
+      if (octets.every(octet => octet === 0)) return "local";
+      if (octets[0] === 127) return "local";
+      return "remote";
+    }
+    if (/^::ffff:/i.test(hostname)) return "unknown";
+    return "remote";
+  } catch {
+    return "unknown";
+  }
+}
+
+/** Classify actual routing dependency separately from opencodex ownership. */
+export function classifyCodexRouting(content: string): CodexRoutingKind {
+  const rootBaseUrl = rootTomlString(content, "openai_base_url");
+  if (rootBaseUrl) {
+    const endpoint = classifyRoutingEndpoint(rootBaseUrl);
+    if (endpoint === "unknown") return "unknown";
+    if (hasInjectedOpenaiBaseUrl(content)) return "opencodex-local";
+    return endpoint === "local" ? "custom-local" : "custom-remote";
+  }
+  const rootProvider = rootTomlString(content, "model_provider");
+  if (rootProvider) {
+    const providerTableExists = providerTableStart(content.split("\n"), rootProvider) !== -1;
+    const providerBaseUrl = providerTableString(content, rootProvider, "base_url");
+    if (providerBaseUrl) {
+      const endpoint = classifyRoutingEndpoint(providerBaseUrl);
+      if (endpoint === "unknown") return "unknown";
+      if (rootProvider === "opencodex") return "opencodex-local";
+      return endpoint === "local" ? "custom-local" : "custom-remote";
+    }
+    if (rootProvider === "opencodex" || providerTableExists || rootProvider !== "openai") return "unknown";
+  }
+  return "native";
+}
+
+/**
+ * True when the active Codex config is owned by opencodex routing. Covers the
+ * loopback Design B root override and the legacy/non-loopback provider table.
+ * A user-owned `openai_base_url` is intentionally not classified as injected.
+ */
+export function hasInjectedCodexRouting(content: string): boolean {
+  if (hasInjectedOpenaiBaseUrl(content)) return true;
+  return rootTomlString(content, "model_provider") === "opencodex"
+    && providerTableString(content, "opencodex", "base_url") !== null;
+}
+
+/** Read-only probe used by status, doctor, and the dashboard. */
+export function isCodexRoutingInjected(): boolean {
+  const path = CODEX_CONFIG_PATH;
+  if (!existsSync(path)) return false;
+  try {
+    return hasInjectedCodexRouting(readFileSync(path, "utf8"));
+  } catch {
+    return false;
+  }
+}
+
+export function getCodexRoutingKind(): CodexRoutingKind {
+  const path = CODEX_CONFIG_PATH;
+  if (!existsSync(path)) return "native";
+  try {
+    return classifyCodexRouting(readFileSync(path, "utf8"));
+  } catch {
+    return "unknown";
+  }
 }
 
 /**

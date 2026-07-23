@@ -708,6 +708,49 @@ dialog.modal-overlay::backdrop {
 .toggle.on .toggle-knob { left: 17px; background: var(--toggle-dot-color); }
 .notice-warn { font-size: var(--text-label); line-height: var(--leading-body); padding: 8px 10px; border-radius: var(--radius-sm); background: var(--amber-soft); color: var(--amber); display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
 .notice-warn svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+/* Startup lifecycle health — compact infrastructure status, not a setup wizard. */
+.nav-health-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-round);
+  background: var(--amber);
+  box-shadow: 0 0 0 3px var(--amber-soft);
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+.startup-page-sub { margin-bottom: 0; }
+.startup-hero { display: flex; gap: 16px; align-items: flex-start; margin-bottom: 16px; }
+.startup-hero--safe { border-color: color-mix(in srgb, var(--green) 34%, var(--border)); background: color-mix(in srgb, var(--green-soft) 64%, var(--surface)); }
+.startup-hero--risk { border-color: color-mix(in srgb, var(--amber) 40%, var(--border)); background: color-mix(in srgb, var(--amber-soft) 72%, var(--surface)); }
+.startup-hero--native { border-color: color-mix(in srgb, var(--accent) 20%, var(--border)); }
+.startup-hero-icon { width: 42px; height: 42px; border-radius: var(--radius); display: grid; place-items: center; background: var(--raised); flex: 0 0 auto; }
+.startup-hero-icon svg { width: 21px; height: 21px; }
+.startup-hero-copy h3 { margin: 10px 0 4px; font-size: var(--text-title); }
+.startup-hero-copy p { margin: 0; color: var(--muted); line-height: var(--leading-body); }
+.startup-state-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px; }
+.startup-state-grid .value { font-size: var(--text-subtitle); }
+.startup-details, .startup-actions { margin-bottom: 16px; }
+.startup-actions .panel-head > svg { width: 18px; height: 18px; flex: 0 0 auto; }
+.startup-detail-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-top: 1px solid var(--border-soft); }
+.startup-detail-row > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.startup-detail-row > .startup-detail-actions { flex-direction: row; align-items: center; justify-content: flex-end; flex: 0 0 auto; gap: 8px; }
+.startup-detail-row span:not(.badge) { color: var(--muted); font-size: var(--text-label); line-height: var(--leading-body); }
+.startup-actions > .muted { margin: -4px 0 14px; font-size: var(--text-control); }
+.startup-tray-buttons { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.startup-command-list { border: 1px solid var(--border-soft); border-radius: var(--radius-sm); overflow: hidden; }
+.startup-command-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px; }
+.startup-command-row + .startup-command-row { border-top: 1px solid var(--border-soft); }
+.startup-command-row > div { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.startup-command-row strong { font-size: var(--text-control); }
+.startup-command-row code { color: var(--muted); font-size: var(--text-label); overflow-wrap: anywhere; }
+.startup-action-notice { margin: 14px 0 0; }
+@media (max-width: 700px) {
+  .startup-state-grid { grid-template-columns: 1fr; }
+  .startup-command-row { align-items: flex-start; }
+  .startup-detail-row { align-items: flex-start; }
+  .startup-detail-row > .startup-detail-actions { flex-direction: column; align-items: flex-end; }
+}
 .modal-desc { font-size: var(--text-control); line-height: var(--leading-body); color: var(--muted); margin-bottom: 14px; }
 .modal-actions { display: flex; gap: 8px; margin-top: 16px; }
 .modal-actions .btn { flex: 1; }

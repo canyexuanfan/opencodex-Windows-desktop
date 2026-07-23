@@ -20,13 +20,16 @@ import {
   writeRuntimePort,
 } from "../config";
 import { collectStatus } from "./status";
+import { dispatchInternalCliCommand, type InternalCliCommand } from "./internal-dispatch";
+import { runTrayProxyRestart, runTrayProxyStart } from "./tray-proxy";
 import { installCrashGuards } from "../lib/crash-guard";
 import { hasHelpFlag, printSubcommandUsage, printUsage, printVersion } from "./help";
 import { findAvailablePort, isAddrInUse, PortUnavailableError, shouldPersistSelectedPort, waitForPortAvailable } from "../server/ports";
 import { findLiveProxy, probeHostname, type LiveProxy } from "../server/proxy-liveness";
 import { stopProxy } from "../lib/process-control";
 import { loadServiceTokenFromFile } from "../lib/service-secrets";
-import { serviceCommand, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "../service";
+import { diagnoseService, serviceCommand, serviceStartableFromTray, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "../service";
+import { startupHealthSummary } from "../codex/autostart-health";
 import { drainAndShutdown, startServer } from "../server";
 import { injectSystemEnv, revertSystemEnv } from "../server/system-env";
 import { buildDesktop3pRegistry } from "../claude/desktop-3p";
@@ -305,6 +308,47 @@ async function handleEnsure() {
   console.log(`✅ Proxy running on port ${port}`);
 }
 
+/** Fixed tray action: start the proxy without depending on codexAutoStart. */
+async function handleTrayProxyStart(): Promise<void> {
+  const ok = await runTrayProxyStart({
+    findLive: findLiveProxy,
+    diagnoseService: () => {
+      const service = diagnoseService();
+      return { installed: service.installed, startable: serviceStartableFromTray(service), summary: service.summary };
+    },
+    startService: () => serviceCommand("start"),
+    startDirect: () => {
+      const config = loadConfig();
+      const port = (config.port ?? 10100) > 0 ? (config.port ?? 10100) : 10100;
+      const child = spawn(process.execPath, startArgv(port), {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+        env: { ...process.env, OCX_SERVICE: "1" },
+      });
+      child.unref();
+    },
+    waitForProxy,
+    info: message => console.log(message),
+    error: message => console.error(message),
+  });
+  if (!ok) process.exitCode = 1;
+}
+
+async function handleTrayProxyRestart(): Promise<void> {
+  const ok = await runTrayProxyRestart({
+    stop: async () => {
+      await handleStop();
+      return !process.exitCode || process.exitCode === 0;
+    },
+    start: async () => {
+      await handleTrayProxyStart();
+      return !process.exitCode || process.exitCode === 0;
+    },
+  });
+  if (!ok) process.exitCode = 1;
+}
+
 async function handleStop() {
   const stoppedService = stopServiceIfInstalled();
   if (stoppedService) console.log("🛑 Service manager stopped (won't respawn).");
@@ -385,6 +429,15 @@ async function handleUninstall() {
 
   await runStep("service removed", () => uninstallServiceIfInstalled());
 
+  if (process.platform === "win32") {
+    await runStep("Windows tray removed", async () => {
+      const { getWindowsTrayStatus, uninstallWindowsTray } = await import("../tray/windows");
+      const tray = getWindowsTrayStatus();
+      if (!tray.installed && !tray.stale && !tray.running) return false;
+      uninstallWindowsTray();
+    });
+  }
+
   await runStep("native Codex restored", () => {
     const r = restoreNativeCodex();
     if (!r.success) throw new Error(r.message);
@@ -451,6 +504,7 @@ async function handleStatus() {
   console.log(`   Runtime source: ${status.json.runtime.source}${status.json.runtime.overrideEnv ? ` (${status.json.runtime.overrideEnv})` : ""}`);
   console.log(`   Default provider: ${status.json.defaultProvider}`);
   console.log(`   Codex autostart: ${status.json.codexAutostart ? "enabled" : "disabled"}`);
+  console.log(`   Restart safety: ${startupHealthSummary(status.json.startup)}`);
   console.log(`   Service: ${status.json.service.summary}`);
   console.log(`   ${status.json.codexShim.summary}`);
   if (status.json.codexPlugins.applicable) {
@@ -597,6 +651,11 @@ switch (command) {
   case "service":
     await serviceCommand(...args.slice(1));
     break;
+  case "tray": {
+    const { windowsTrayCommand } = await import("../tray/windows");
+    await windowsTrayCommand(args.slice(1));
+    break;
+  }
   case "codex-shim": {
     const { codexShimStatus, installCodexShim, uninstallCodexShim } = await import("../codex/shim");
     switch (args[1]) {
@@ -637,6 +696,23 @@ switch (command) {
     const { refreshVersionCache } = await import("../update/notify");
     const channel = args[1] === "preview" ? "preview" : "latest";
     await refreshVersionCache(channel);
+    break;
+  }
+  case "__tray-start":
+  case "__tray-restart":
+  case "__startup-health":
+    await dispatchInternalCliCommand(command as InternalCliCommand, {
+      trayStart: handleTrayProxyStart,
+      trayRestart: handleTrayProxyRestart,
+      startupHealth: async () => {
+        const { collectStartupHealth } = await import("../codex/autostart-health");
+        console.log(JSON.stringify(collectStartupHealth(loadConfig())));
+      },
+    });
+    break;
+  case "__tray-host": {
+    const { runWindowsTrayHost } = await import("../tray/windows");
+    await runWindowsTrayHost();
     break;
   }
   case "__gui-update-worker": {

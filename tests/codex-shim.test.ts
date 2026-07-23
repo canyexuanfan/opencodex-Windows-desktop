@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildUnixCodexShim, buildWindowsCodexShim, buildWindowsPowerShellCodexShim, findCodexOnPath, installCodexShim, isWindowsInteropDir, lastCodexDiscoveryError, uninstallCodexShim } from "../src/codex/shim";
+import { buildUnixCodexShim, buildWindowsCodexShim, buildWindowsPowerShellCodexShim, diagnoseCodexShim, findCodexOnPath, installCodexShim, isWindowsInteropDir, lastCodexDiscoveryError, uninstallCodexShim } from "../src/codex/shim";
 
 const SHIM_MARKER = "opencodex codex autostart shim";
 
@@ -301,10 +301,12 @@ describe("Codex autostart shim", () => {
 
       const state = JSON.parse(readFileSync(join(home, "codex-shim.json"), "utf8"));
       expect(state.wrappers).toHaveLength(3);
+      expect(diagnoseCodexShim()).toMatchObject({ installed: true, healthy: true });
 
       const removed = uninstallCodexShim();
 
       expect(removed.removed).toBe(true);
+      expect(diagnoseCodexShim()).toMatchObject({ installed: false, healthy: false });
       expect(readFileSync(cmd, "utf8")).toBe(cmdOriginal);
       expect(readFileSync(ps1, "utf8")).toBe(ps1Original);
       expect(readFileSync(bare, "utf8")).toBe(bareOriginal);

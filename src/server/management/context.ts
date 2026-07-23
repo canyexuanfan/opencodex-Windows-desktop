@@ -1,4 +1,5 @@
 import type { OcxConfig } from "../../types";
+import type { StartupInstallAction } from "../startup-action-control";
 
 export interface ManagementApiDeps {
   toggleCodexMultiAgentV2?: (enabled: boolean) => void;
@@ -6,6 +7,7 @@ export interface ManagementApiDeps {
   clearThreadAccountMap?: () => void;
   clearProviderQuotaCache?: () => void;
   primeCodexPoolQuotas?: (config: OcxConfig, reason: string) => Promise<void> | void;
+  runStartupInstallAction?: (action: StartupInstallAction) => Promise<{ message: string }>;
 }
 
 

@@ -16,6 +16,7 @@ import { resolveCodexHomeDir as resolveCodexHomeDirImpl, isWslRuntime, listWslWi
 import { findCodexOnPath, isWindowsInteropDir } from "../codex/shim";
 import { countPendingOpencodexHistory } from "../codex/history-provider";
 import { collectProjectCodexConfigWarnings, formatProjectCodexConfigWarningsForDoctor } from "../codex/project-config-warnings";
+import { collectStartupHealth, startupHealthSummary } from "../codex/autostart-health";
 export { resolveCodexHomeDir } from "../codex/home";
 
 const WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
@@ -331,6 +332,11 @@ export async function runDoctor(): Promise<void> {
     console.log(`  ${row.exists ? "ok " : "-- "} ${row.label}: ${row.path}${flags ? `  (${flags})` : ""}`);
   }
 
+  const startup = collectStartupHealth(readConfigDiagnostics().config);
+  console.log("\nCodex restart safety");
+  console.log(`  ${startup.rebootSafe ? "ok " : "!! "} ${startupHealthSummary(startup)}`);
+  console.log(`       routing=${startup.routingKind}, service=${startup.serviceViable ? "viable" : startup.serviceInstalled ? "installed-but-unhealthy" : "absent"}, shim=${startup.shimHealthy ? "healthy" : startup.shimInstalled ? "stale" : "absent"}`);
+
   const currentProxyEnv = collectProxyEnv();
   const configuredProxy = collectConfiguredProxy();
   const runningProxyEnv = collectRunningProxyEnv();
@@ -403,6 +409,10 @@ export async function runDoctor(): Promise<void> {
   const hints: string[] = [];
   const anyDrvfs = paths.some(p => detectFsType(p.path, mounts).isDrvfs || detectFsType(p.path, mounts).isMntDrive);
   const noProxy = currentProxyEnv.every(p => !p.present) && !configuredProxy.present;
+  if (!startup.rebootSafe) {
+    const command = startup.recommendedCommand ?? startup.commands.restoreNative;
+    hints.push(`Codex is pinned to the local proxy without persistent startup protection. After restart, requests can reconnect indefinitely. Run '${command}'.`);
+  }
   if (anyDrvfs) {
     hints.push("State dir is on a Windows-mounted (/mnt) drive. Prefer the Linux home (~) under WSL for token/lock reliability.");
   }

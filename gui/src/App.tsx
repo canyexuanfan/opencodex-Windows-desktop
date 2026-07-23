@@ -10,6 +10,7 @@ import Storage from "./pages/Storage";
 import CodexAuth from "./pages/CodexAuth";
 import ApiKeys from "./pages/ApiKeys";
 import ClaudeCode from "./pages/ClaudeCode";
+import Startup from "./pages/Startup";
 import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconGithub, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle, IconX } from "./icons";
 import { useI18n, useT, LOCALES, type Locale, type TKey } from "./i18n";
 import { Select } from "./ui";
@@ -17,10 +18,10 @@ import { installApiAuthFetch } from "./api";
 
 installApiAuthFetch();
 
-type Page = "dashboard" | "providers" | "models" | "combos" | "subagents" | "logs" | "usage" | "storage" | "codex-auth" | "api" | "claude";
+type Page = "dashboard" | "startup" | "providers" | "models" | "combos" | "subagents" | "logs" | "usage" | "storage" | "codex-auth" | "api" | "claude";
 type Theme = "light" | "dark" | "system";
 
-const VALID_PAGES = new Set<Page>(["dashboard", "providers", "models", "combos", "subagents", "logs", "usage", "storage", "codex-auth", "api", "claude"]);
+const VALID_PAGES = new Set<Page>(["dashboard", "startup", "providers", "models", "combos", "subagents", "logs", "usage", "storage", "codex-auth", "api", "claude"]);
 
 function readPageFromHash(): Page {
   const raw = location.hash.replace(/^#\/?/, "");
@@ -63,6 +64,7 @@ function providersHashForPage(): string {
 
 const NAV: { id: Page; tkey: TKey; Icon: typeof IconGrid }[] = [
   { id: "dashboard", tkey: "nav.dashboard", Icon: IconGrid },
+  { id: "startup", tkey: "nav.startup", Icon: IconPower },
   { id: "providers", tkey: "nav.providers", Icon: IconServer },
   { id: "models", tkey: "nav.models", Icon: IconBoxes },
   { id: "subagents", tkey: "nav.subagents", Icon: IconBot },
@@ -92,6 +94,7 @@ export default function App() {
   const [page, setPageState] = useState<Page>(readPageFromHash);
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
   const [runtimeVersion, setRuntimeVersion] = useState<string | null>(null);
+  const [startupAtRisk, setStartupAtRisk] = useState(false);
   const { locale, setLocale } = useI18n();
   const t = useT();
 
@@ -133,6 +136,35 @@ export default function App() {
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let latestRequest = 0;
+    const readStartupHealth = async () => {
+      const request = ++latestRequest;
+      try {
+        const res = await fetch(`${API_BASE}/api/startup-health`);
+        if (!res.ok) {
+          if (!cancelled && request === latestRequest) setStartupAtRisk(true);
+          return;
+        }
+        const data = await res.json() as { status?: unknown; diagnosticStale?: unknown };
+        const valid = data.status === "native" || data.status === "protected" || data.status === "at-risk";
+        if (!cancelled && request === latestRequest) {
+          setStartupAtRisk(!valid || data.status === "at-risk" || data.diagnosticStale === true);
+        }
+      } catch {
+        // A failed refresh cannot preserve a previously green claim.
+        if (!cancelled && request === latestRequest) setStartupAtRisk(true);
+      }
+    };
+    void readStartupHealth();
+    const timer = window.setInterval(() => { void readStartupHealth(); }, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -291,6 +323,9 @@ export default function App() {
               }}
               aria-current={page === id ? "page" : undefined}>
               <Icon /> {t(tkey)}
+              {id === "startup" && startupAtRisk && (
+                <span className="nav-health-dot" title={t("startup.navRisk")} aria-label={t("startup.navRisk")} />
+              )}
             </button>
           ))}
         </nav>
@@ -330,6 +365,7 @@ export default function App() {
       <main className="main" inert={navOpen}>
         <div className={`main-inner${page === "combos" ? " main-inner--combos" : ""}`}>
           {page === "dashboard" && <Dashboard apiBase={API_BASE} />}
+          {page === "startup" && <Startup apiBase={API_BASE} />}
           {page === "providers" && <Providers apiBase={API_BASE} />}
           {page === "models" && <Models apiBase={API_BASE} />}
           {page === "combos" && <Combos apiBase={API_BASE} />}

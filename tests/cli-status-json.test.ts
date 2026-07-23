@@ -53,6 +53,17 @@ describe("CLI status JSON", () => {
         paths?: { config?: unknown; pid?: unknown; runtime?: unknown };
         runtime?: { source?: unknown };
         codexAutostart?: unknown;
+        startup?: {
+          status?: unknown;
+          rebootSafe?: unknown;
+          routingInjected?: unknown;
+          serviceInstalled?: unknown;
+          shimInstalled?: unknown;
+          shimHealthy?: unknown;
+          shimCoverage?: unknown;
+          serviceSupported?: unknown;
+          commands?: unknown;
+        };
         defaultProvider?: unknown;
         config?: { source?: unknown; error?: unknown };
         service?: { summary?: unknown };
@@ -73,6 +84,15 @@ describe("CLI status JSON", () => {
       expect(typeof parsed.paths?.runtime).toBe("string");
       expect(typeof parsed.runtime?.source).toBe("string");
       expect(parsed.codexAutostart).toBe(false);
+      expect(["native", "protected", "at-risk"]).toContain(parsed.startup?.status);
+      expect(typeof parsed.startup?.rebootSafe).toBe("boolean");
+      expect(typeof parsed.startup?.routingInjected).toBe("boolean");
+      expect(typeof parsed.startup?.serviceInstalled).toBe("boolean");
+      expect(typeof parsed.startup?.shimInstalled).toBe("boolean");
+      expect(typeof parsed.startup?.shimHealthy).toBe("boolean");
+      expect(["full", "cli-only", "none"]).toContain(parsed.startup?.shimCoverage);
+      expect(typeof parsed.startup?.serviceSupported).toBe("boolean");
+      expect(typeof parsed.startup?.commands).toBe("object");
       expect(parsed.defaultProvider).toBe("openai");
       expect(parsed.config?.source).toBe("file");
       expect(parsed.config?.error).toBeNull();
