@@ -10,6 +10,7 @@ const {
   detectIssueKind,
   validateIssue,
   shouldReopen,
+  labelForKind,
 } = require("./issue-quality.cjs");
 
 // ---------------------------------------------------------------------------
@@ -515,5 +516,82 @@ describe("shouldReopen", () => {
       closed_by: "github-actions[bot]",
     };
     assert.equal(shouldReopen(baseBotState, issue, false), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Translated / soft-pass / labels
+// ---------------------------------------------------------------------------
+
+describe("translated feature headings and soft-pass", () => {
+  it("accepts Goal / Problem + Expected behaviour as a valid feature", () => {
+    const body = [
+      "### Goal / Problem",
+      "Codex App rejects image paste for noVisionModels before the vision sidecar can run.",
+      "### Expected behaviour",
+      "Catalog should advertise image input when the vision sidecar covers the model.",
+      "### Environment",
+      "opencodex 2.7.36 on macOS with Codex App.",
+    ].join("\n");
+    const result = validateIssue({
+      title: "[Feature]: Auto-advertise image inputModalities for noVisionModels",
+      body,
+      labels: [],
+    });
+    assert.equal(result.kind, "feature");
+    assert.equal(result.valid, true, `Expected valid but got: ${result.reasons.join("; ")}`);
+    assert.equal(result.softPass, false);
+  });
+
+  it("soft-passes [Feature]: with rich custom headings outside the alias map", () => {
+    const body = [
+      "### Concrete user workflow that fails",
+      "User pastes an image in Codex App while a text-only routed model is selected and the App blocks upload.",
+      "### Why this matters",
+      "Vision sidecar is advertised but never reached from the App client path.",
+      "### Verification",
+      "Same proxy config works end-to-end in Claude Code with the sidecar describing the image.",
+    ].join("\n");
+    const result = validateIssue({
+      title: "[Feature]: Vision sidecar unusable from Codex App",
+      body,
+      labels: [],
+    });
+    assert.equal(result.kind, "feature");
+    assert.equal(result.softPass, true);
+    assert.equal(result.valid, false);
+  });
+
+  it("still rejects empty [Feature]: bodies", () => {
+    const result = validateIssue({
+      title: "[Feature]: do something cool",
+      body: "please add this",
+      labels: [],
+    });
+    assert.equal(result.kind, "feature");
+    assert.equal(result.valid, false);
+    assert.equal(result.softPass, false);
+  });
+
+  it("does not treat a title containing problem as a bug", () => {
+    assert.equal(
+      detectIssueKind({
+        title: "Problem with documentation wording",
+        body: "The docs are confusing about install.",
+        labels: [],
+      }),
+      null,
+    );
+  });
+});
+
+describe("labelForKind", () => {
+  it("maps kinds to triage labels", () => {
+    assert.equal(labelForKind("bug"), "bug");
+    assert.equal(labelForKind("feature"), "enhancement");
+    assert.equal(labelForKind("documentation"), "documentation");
+    assert.equal(labelForKind("provider-compatibility"), "provider-compatibility");
+    assert.equal(labelForKind(null), null);
+    assert.equal(labelForKind("unknown"), null);
   });
 });

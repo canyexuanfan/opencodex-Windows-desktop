@@ -36,6 +36,7 @@ jobs:
               detectIssueKind,
               validateIssue,
               shouldReopen,
+              labelForKind,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-quality.cjs"));
 
             const { owner, repo } = context.repo;
@@ -133,6 +134,18 @@ jobs:
             const resolvedKind = kind ?? labelBasedKind;
 
             // -----------------------------------------------------------------
+            // Kind-based label (additive only)
+            // -----------------------------------------------------------------
+            const kindLabel = labelForKind(resolvedKind);
+            if (kindLabel && !labels.includes(kindLabel)) {
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number, labels: [kindLabel],
+              });
+              labels.push(kindLabel);
+              core.info(`Applied kind label "${kindLabel}".`);
+            }
+
+            // -----------------------------------------------------------------
             // Validate
             // -----------------------------------------------------------------
             const result = validateIssue({
@@ -143,9 +156,12 @@ jobs:
             });
 
             // -----------------------------------------------------------------
-            // VALID issue
+            // VALID or soft-pass issue (do not close)
             // -----------------------------------------------------------------
-            if (result.valid) {
+            if (result.valid || result.softPass) {
+              if (result.softPass) {
+                core.info("Soft-pass: substantial content without mapped form headings; skipping closure.");
+              }
               // If the bot previously closed it, consider reopening.
               if (botState?.active && issue.state === "closed") {
                 // Normalise closed_by from the API object to a plain login string.
@@ -241,7 +257,7 @@ jobs:
             const newBotState = {
               version: 2,
               active: true,
-              kind,
+              kind: resolvedKind,
               closedAt: closedIssue.closed_at,
               stateReason: closedIssue.state_reason || "not_planned",
             };

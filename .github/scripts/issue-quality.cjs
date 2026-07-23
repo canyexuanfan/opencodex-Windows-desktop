@@ -70,6 +70,51 @@ function extractSection(body, heading) {
   return out.join("\n").trim();
 }
 
+/**
+ * Resolve a logical section from the first matching heading.
+ * Prefers the first non-empty match; if every present heading is empty,
+ * returns that empty string so callers can distinguish "missing" (null)
+ * from "present but blank".
+ */
+function resolveSection(body, headings) {
+  let firstPresent = null;
+  for (const heading of headings) {
+    const section = extractSection(body, heading);
+    if (section === null) continue;
+    if (firstPresent === null) firstPresent = section;
+    if (!isEmpty(section)) return section;
+  }
+  return firstPresent;
+}
+
+/**
+ * True when the body has at least one non-empty h2–h4 section with enough
+ * detail, or a long unstructured body. Used for soft-pass only.
+ */
+function hasSubstantialStructuredContent(body, minSectionLen = 40) {
+  if (typeof body !== "string") return false;
+  const lines = body.split("\n");
+  let capturing = false;
+  let bucket = [];
+  let richSections = 0;
+  const flush = () => {
+    if (clean(bucket.join("\n")).length >= minSectionLen) richSections += 1;
+    bucket = [];
+  };
+  for (const line of lines) {
+    const m = line.match(/^#{2,4}\s+(.*)/);
+    if (m) {
+      if (capturing) flush();
+      capturing = true;
+      continue;
+    }
+    if (capturing) bucket.push(line);
+  }
+  if (capturing) flush();
+  if (richSections >= 1) return true;
+  return clean(body).length >= 200;
+}
+
 // ---------------------------------------------------------------------------
 // Issue kind detection
 // ---------------------------------------------------------------------------
@@ -80,6 +125,34 @@ const FEATURE_NEW_HEADINGS = [
   "What should OpenCodex do?",
 ];
 const FEATURE_LEGACY_HEADINGS = ["Problem to solve", "Proposed solution"];
+const FEATURE_GOAL_HEADINGS = [
+  "What are you trying to accomplish?",
+  "Goal / Problem",
+  "Problem to solve",
+];
+const FEATURE_BLOCKER_HEADINGS = [
+  "What prevents this today?",
+  "Current limitation",
+  "Current workaround",
+];
+const FEATURE_BEHAVIOUR_HEADINGS = [
+  "What should OpenCodex do?",
+  "Expected behaviour",
+  "Proposed solution",
+];
+const FEATURE_EXAMPLE_HEADINGS = [
+  "Example usage or interface",
+  "Example usage",
+  "Example",
+];
+const FEATURE_ALIAS_DETECT_HEADINGS = [
+  "Goal / Problem",
+  "Expected behaviour",
+  "Current limitation",
+  "Current workaround",
+  "Example usage",
+  "Example",
+];
 const BUG_NEW_HEADINGS = ["Client or integration", "Summary", "Reproduction"];
 const BUG_LEGACY_HEADINGS = ["Summary", "Reproduction"];
 const PROVIDER_HEADINGS = [
@@ -93,6 +166,21 @@ const DOCS_HEADINGS = [
   "Documentation location",
   "What is wrong or missing?",
 ];
+
+const KIND_TO_LABEL = {
+  bug: "bug",
+  feature: "enhancement",
+  documentation: "documentation",
+  "provider-compatibility": "provider-compatibility",
+};
+
+/**
+ * Map a detected issue kind to its triage label. Returns null when unknown.
+ */
+function labelForKind(kind) {
+  if (!kind || typeof kind !== "string") return null;
+  return KIND_TO_LABEL[kind] || null;
+}
 
 function countHeadings(body, headings) {
   let n = 0;
@@ -125,6 +213,9 @@ function detectIssueKind(issue) {
 
   // New feature form: at least 2 of the 3 core headings.
   if (countHeadings(body, FEATURE_NEW_HEADINGS) >= 2) return "feature";
+
+  // Translated / alternate feature headings (e.g. after issue-triage).
+  if (countHeadings(body, FEATURE_ALIAS_DETECT_HEADINGS) >= 2) return "feature";
 
   // New bug form: Client or integration + Summary + Reproduction.
   if (
@@ -202,55 +293,68 @@ function isRawPlaceholder(raw) {
  * Validate an issue body for its detected kind.
  *
  * @param {{ title: string, body: string, labels: string[], storedKind?: string|null }} issue
- * @returns {{ kind: string|null, valid: boolean, reasons: string[], guidance: string[] }}
+ * @returns {{ kind: string|null, valid: boolean, softPass: boolean, reasons: string[], guidance: string[] }}
  */
 function validateIssue(issue) {
   const { title = "", body = "" } = issue;
   const kind = detectIssueKind(issue);
   const reasons = [];
   const guidance = [];
+  let softPass = false;
+  const titleLower = title.toLowerCase();
 
   if (!kind) {
     // Not a structured form we validate.
-    return { kind: null, valid: true, reasons: [], guidance: [] };
+    return { kind: null, valid: true, softPass: false, reasons: [], guidance: [] };
   }
 
   if (kind === "feature") {
-    const goal = extractSection(body, "What are you trying to accomplish?") ??
-      extractSection(body, "Problem to solve");
-    const blocker = extractSection(body, "What prevents this today?");
-    const behaviour = extractSection(body, "What should OpenCodex do?") ??
-      extractSection(body, "Proposed solution");
-    const example = extractSection(body, "Example usage or interface");
+    const goal = resolveSection(body, FEATURE_GOAL_HEADINGS);
+    const blocker = resolveSection(body, FEATURE_BLOCKER_HEADINGS);
+    const behaviour = resolveSection(body, FEATURE_BEHAVIOUR_HEADINGS);
+    const example = resolveSection(body, FEATURE_EXAMPLE_HEADINGS);
 
     const coreSections = [goal, blocker, behaviour, example];
     const emptyCore = [];
     if (isEmpty(goal)) emptyCore.push("goal / problem");
-    // blocker and example are only required on the new form (heading exists).
-    // On the legacy form these sections are absent (null), which is acceptable.
+    // blocker and example are only required when those headings exist.
+    // On the legacy / translated forms these sections may be absent (null).
     if (blocker !== null && isEmpty(blocker)) emptyCore.push("current limitation");
     if (isEmpty(behaviour)) emptyCore.push("expected behaviour");
     if (example !== null && isEmpty(example)) emptyCore.push("example usage");
 
+    const mappedHeadingPresent =
+      goal !== null || blocker !== null || behaviour !== null || example !== null;
+
     if (emptyCore.length > 0) {
-      reasons.push(`Required sections are missing or empty: ${emptyCore.join(", ")}.`);
-      guidance.push("Fill in each required section with specific detail about your workflow.");
+      const canSoftPass =
+        !mappedHeadingPresent &&
+        titleLower.startsWith("[feature]:") &&
+        hasSubstantialStructuredContent(body);
+      if (canSoftPass) {
+        softPass = true;
+      } else {
+        reasons.push(`Required sections are missing or empty: ${emptyCore.join(", ")}.`);
+        guidance.push("Fill in each required section with specific detail about your workflow.");
+      }
     }
 
-    const nonEmpty = coreSections.filter((s) => !isEmpty(s));
-    if (nonEmpty.length >= 2 && allSameCanonical(nonEmpty)) {
-      reasons.push("All core sections contain the same content.");
-      guidance.push("Each section should describe a different aspect: goal, limitation, expected behaviour, and a concrete example.");
-    }
+    if (!softPass) {
+      const nonEmpty = coreSections.filter((s) => !isEmpty(s));
+      if (nonEmpty.length >= 2 && allSameCanonical(nonEmpty)) {
+        reasons.push("All core sections contain the same content.");
+        guidance.push("Each section should describe a different aspect: goal, limitation, expected behaviour, and a concrete example.");
+      }
 
-    if (nonEmpty.length >= 2 && allRepeatTitle(nonEmpty, title)) {
-      reasons.push("All core sections merely repeat the issue title.");
-      guidance.push("Expand each section with details beyond the title.");
-    }
+      if (nonEmpty.length >= 2 && allRepeatTitle(nonEmpty, title)) {
+        reasons.push("All core sections merely repeat the issue title.");
+        guidance.push("Expand each section with details beyond the title.");
+      }
 
-    if (nonEmpty.length > 0 && nonEmpty.every(isPlaceholder)) {
-      reasons.push("Required sections contain only placeholder text.");
-      guidance.push("Replace placeholder text with your actual proposal.");
+      if (nonEmpty.length > 0 && nonEmpty.every(isPlaceholder)) {
+        reasons.push("Required sections contain only placeholder text.");
+        guidance.push("Replace placeholder text with your actual proposal.");
+      }
     }
   }
 
@@ -261,8 +365,17 @@ function validateIssue(issue) {
     const os = extractSection(body, "Operating system") ?? extractSection(body, "OS");
 
     if (isEmpty(summary) && isEmpty(repro)) {
-      reasons.push("Both Summary and Reproduction are empty.");
-      guidance.push("Describe what happened and how to reproduce it.");
+      const canSoftPass =
+        summary === null &&
+        repro === null &&
+        titleLower.startsWith("[bug]:") &&
+        hasSubstantialStructuredContent(body);
+      if (canSoftPass) {
+        softPass = true;
+      } else {
+        reasons.push("Both Summary and Reproduction are empty.");
+        guidance.push("Describe what happened and how to reproduce it.");
+      }
     }
 
     // Required environment fields removed after submission.
@@ -271,26 +384,28 @@ function validateIssue(issue) {
     // Skip when the raw value is a "No response" placeholder -- the old form had
     // both fields as optional, so legacy issues legitimately contain those headings
     // with the GitHub placeholder. Only close when the field was actively cleared.
-    if (version !== null && os !== null && isEmpty(version) && isEmpty(os) &&
+    if (!softPass && version !== null && os !== null && isEmpty(version) && isEmpty(os) &&
         !isRawPlaceholder(version) && !isRawPlaceholder(os)) {
       reasons.push("Version and Operating system are both missing.");
       guidance.push("Add your OpenCodex version and OS so we can reproduce the environment.");
     }
 
-    const nonEmpty = [summary, repro].filter((s) => !isEmpty(s));
-    if (nonEmpty.length >= 2 && allSameCanonical(nonEmpty)) {
-      reasons.push("Summary and Reproduction contain the same content.");
-      guidance.push("Summary should describe the symptom; Reproduction should list the exact steps.");
-    }
+    if (!softPass) {
+      const nonEmpty = [summary, repro].filter((s) => !isEmpty(s));
+      if (nonEmpty.length >= 2 && allSameCanonical(nonEmpty)) {
+        reasons.push("Summary and Reproduction contain the same content.");
+        guidance.push("Summary should describe the symptom; Reproduction should list the exact steps.");
+      }
 
-    if (nonEmpty.length >= 1 && allRepeatTitle(nonEmpty, title)) {
-      reasons.push("Summary and Reproduction merely repeat the title.");
-      guidance.push("Add detail beyond the title: what you observed, what you expected, and the exact steps.");
-    }
+      if (nonEmpty.length >= 1 && allRepeatTitle(nonEmpty, title)) {
+        reasons.push("Summary and Reproduction merely repeat the title.");
+        guidance.push("Add detail beyond the title: what you observed, what you expected, and the exact steps.");
+      }
 
-    if (nonEmpty.length > 0 && nonEmpty.every(isPlaceholder)) {
-      reasons.push("Required sections contain only placeholder text.");
-      guidance.push("Replace placeholder text with your actual report.");
+      if (nonEmpty.length > 0 && nonEmpty.every(isPlaceholder)) {
+        reasons.push("Required sections contain only placeholder text.");
+        guidance.push("Replace placeholder text with your actual report.");
+      }
     }
   }
 
@@ -362,7 +477,8 @@ function validateIssue(issue) {
 
   return {
     kind,
-    valid: reasons.length === 0,
+    valid: reasons.length === 0 && !softPass,
+    softPass,
     reasons,
     guidance,
   };
@@ -401,8 +517,12 @@ module.exports = {
   normalise,
   canonicalise,
   extractSection,
+  resolveSection,
   detectIssueKind,
   validateIssue,
   shouldReopen,
   isRawPlaceholder,
+  labelForKind,
+  KIND_TO_LABEL,
+  hasSubstantialStructuredContent,
 };
