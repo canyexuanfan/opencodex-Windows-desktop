@@ -89,7 +89,7 @@ function resolveSection(body, headings) {
 
 /**
  * True when the body has at least one non-empty h2–h4 section with enough
- * detail, or a long unstructured body. Used for soft-pass only.
+ * detail. Used for soft-pass only — unstructured length alone is not enough.
  */
 function hasSubstantialStructuredContent(body, minSectionLen = 40) {
   if (typeof body !== "string") return false;
@@ -111,8 +111,7 @@ function hasSubstantialStructuredContent(body, minSectionLen = 40) {
     if (capturing) bucket.push(line);
   }
   if (capturing) flush();
-  if (richSections >= 1) return true;
-  return clean(body).length >= 200;
+  return richSections >= 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +150,7 @@ const FEATURE_ALIAS_DETECT_HEADINGS = [
   "Current limitation",
   "Current workaround",
   "Example usage",
-  "Example",
+  // Intentionally omit bare "Example" — too common in freeform/bug reports.
 ];
 const BUG_NEW_HEADINGS = ["Client or integration", "Summary", "Reproduction"];
 const BUG_LEGACY_HEADINGS = ["Summary", "Reproduction"];
@@ -197,12 +196,8 @@ function countHeadings(body, headings) {
  * @param {{ title: string, body: string, labels: string[], storedKind?: string|null }} issue
  * @returns {"feature"|"bug"|"provider-compatibility"|"documentation"|null}
  */
-function detectIssueKind(issue) {
-  const { title = "", body = "", labels = [], storedKind } = issue;
-
-  // Stored bot kind takes precedence (survives heading removal).
-  if (storedKind) return storedKind;
-
+function detectIssueKindFromContent(issue) {
+  const { title = "", body = "", labels = [] } = issue;
   const titleLower = title.toLowerCase();
 
   // Provider compatibility: distinct headings.
@@ -215,7 +210,16 @@ function detectIssueKind(issue) {
   if (countHeadings(body, FEATURE_NEW_HEADINGS) >= 2) return "feature";
 
   // Translated / alternate feature headings (e.g. after issue-triage).
-  if (countHeadings(body, FEATURE_ALIAS_DETECT_HEADINGS) >= 2) return "feature";
+  // Gate on a feature hint so common headings like "Expected behaviour"
+  // cannot reclassify bug/freeform reports as features.
+  if (countHeadings(body, FEATURE_ALIAS_DETECT_HEADINGS) >= 2) {
+    const hasGoalHeading = countHeadings(body, FEATURE_GOAL_HEADINGS) >= 1;
+    const featureHint =
+      titleLower.startsWith("[feature]:") ||
+      labels.includes("enhancement") ||
+      hasGoalHeading;
+    if (featureHint) return "feature";
+  }
 
   // New bug form: Client or integration + Summary + Reproduction.
   if (
@@ -239,6 +243,28 @@ function detectIssueKind(issue) {
   }
 
   return null;
+}
+
+/**
+ * Detect the issue kind from body headings, title prefix, labels, and
+ * optional stored bot kind.
+ *
+ * Stored kind survives heading removal (bypass protection), but a strong
+ * conflicting form in the body wins so stale bot state cannot sticky-wrong-kind.
+ *
+ * @param {{ title: string, body: string, labels: string[], storedKind?: string|null }} issue
+ * @returns {"feature"|"bug"|"provider-compatibility"|"documentation"|null}
+ */
+function detectIssueKind(issue) {
+  const { storedKind } = issue;
+  const detected = detectIssueKindFromContent(issue);
+
+  if (storedKind) {
+    if (detected && detected !== storedKind) return detected;
+    return storedKind;
+  }
+
+  return detected;
 }
 
 // ---------------------------------------------------------------------------

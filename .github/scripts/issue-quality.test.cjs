@@ -583,6 +583,71 @@ describe("translated feature headings and soft-pass", () => {
       null,
     );
   });
+
+  it("does not soft-pass long unstructured bodies without headings", () => {
+    const result = validateIssue({
+      title: "[Feature]: please add thing",
+      body: "x".repeat(250),
+      labels: [],
+    });
+    assert.equal(result.kind, "feature");
+    assert.equal(result.softPass, false);
+    assert.equal(result.valid, false);
+  });
+
+  it("does not classify Expected behaviour + Example as feature without a feature hint", () => {
+    assert.equal(
+      detectIssueKind({
+        title: "Something broke in the proxy",
+        body: [
+          "### Expected behaviour",
+          "Proxy should return 200.",
+          "### Example",
+          "curl localhost:10100/v1/responses",
+        ].join("\n"),
+        labels: [],
+      }),
+      null,
+    );
+  });
+
+  it("classifies alias headings as feature when a goal heading is present", () => {
+    assert.equal(
+      detectIssueKind({
+        title: "Advertise image input for sidecar models",
+        body: [
+          "### Goal / Problem",
+          "App blocks images before the sidecar runs.",
+          "### Expected behaviour",
+          "Catalog should advertise image input.",
+        ].join("\n"),
+        labels: [],
+      }),
+      "feature",
+    );
+  });
+
+  it("lets a strong bug form override a stale stored feature kind", () => {
+    const result = validateIssue({
+      title: "Crash on start",
+      body: [
+        "### Client or integration",
+        "Codex CLI",
+        "### Summary",
+        "Proxy segfaults on ARM64 when streaming is enabled.",
+        "### Reproduction",
+        "ocx start on Raspberry Pi 4, send any streaming request.",
+        "### Version",
+        "2.7.36",
+        "### Operating system",
+        "Linux",
+      ].join("\n"),
+      labels: ["bug"],
+      storedKind: "feature",
+    });
+    assert.equal(result.kind, "bug");
+    assert.equal(result.valid, true, `Expected valid bug but got: ${result.reasons.join("; ")}`);
+  });
 });
 
 describe("labelForKind", () => {

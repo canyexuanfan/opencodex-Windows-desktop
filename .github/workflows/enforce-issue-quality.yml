@@ -1,5 +1,7 @@
 name: Enforce issue quality
 
+# Issue events use the workflow file from the repository default branch.
+# Merging this to `dev` alone does not activate it until it reaches that branch.
 on:
   issues:
     types:
@@ -110,11 +112,12 @@ jobs:
             const labels = (issue.labels || []).map((l) =>
               typeof l === "string" ? l : l.name,
             );
+            const activeBotKind = botState?.active ? (botState.kind || null) : null;
             const kind = detectIssueKind({
               title: issue.title,
               body: issue.body || "",
               labels,
-              storedKind: botState?.kind || null,
+              storedKind: activeBotKind,
             });
 
             // If headings were stripped but the form label is still present,
@@ -138,11 +141,15 @@ jobs:
             // -----------------------------------------------------------------
             const kindLabel = labelForKind(resolvedKind);
             if (kindLabel && !labels.includes(kindLabel)) {
-              await github.rest.issues.addLabels({
-                owner, repo, issue_number, labels: [kindLabel],
-              });
-              labels.push(kindLabel);
-              core.info(`Applied kind label "${kindLabel}".`);
+              try {
+                await github.rest.issues.addLabels({
+                  owner, repo, issue_number, labels: [kindLabel],
+                });
+                labels.push(kindLabel);
+                core.info(`Applied kind label "${kindLabel}".`);
+              } catch (err) {
+                core.warning(`Failed to apply kind label "${kindLabel}": ${err.message || err}`);
+              }
             }
 
             // -----------------------------------------------------------------
@@ -152,7 +159,10 @@ jobs:
               title: issue.title,
               body: issue.body || "",
               labels,
-              storedKind: botState?.kind || resolvedKind || null,
+              // Active bot kind survives heading removal; resolvedKind covers
+              // label-based enforcement. Strong conflicting body forms override
+              // inside detectIssueKind.
+              storedKind: activeBotKind || resolvedKind || null,
             });
 
             // -----------------------------------------------------------------
@@ -178,13 +188,16 @@ jobs:
                     owner, repo, issue_number, state: "open",
                   });
                   const doneState = { ...botState, active: false };
+                  const reopenBlurb = result.softPass
+                    ? "The automated check no longer treats this report as insufficient detail (substantial structured content was found). Thanks for updating it."
+                    : "The report now contains the information required by the automated check. Thanks for updating it.";
                   await upsertComment([
                     BOT_MARKER,
                     stateTag(doneState),
                     "",
                     "### Issue reopened",
                     "",
-                    "The report now contains the information required by the automated check. Thanks for updating it.",
+                    reopenBlurb,
                   ].join("\n"));
                 } else if (actorIsMaintainer) {
                   // Maintainer changed the state — respect it, mark inactive.
@@ -201,13 +214,16 @@ jobs:
               } else if (botState?.active && issue.state === "open") {
                 // Already open and valid — deactivate bot state silently.
                 const doneState = { ...botState, active: false };
+                const reopenBlurb = result.softPass
+                  ? "The automated check no longer treats this report as insufficient detail (substantial structured content was found). Thanks for updating it."
+                  : "The report now contains the information required by the automated check. Thanks for updating it.";
                 await upsertComment([
                   BOT_MARKER,
                   stateTag(doneState),
                   "",
                   "### Issue reopened",
                   "",
-                  "The report now contains the information required by the automated check. Thanks for updating it.",
+                  reopenBlurb,
                 ].join("\n"));
               }
               return;
