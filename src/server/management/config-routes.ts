@@ -57,6 +57,7 @@ import { isAllowedRequestOrigin, jsonResponse, providerManagementConfigError, pu
 import { applySystemEnvToggle } from "../system-env";
 import { getCachedStartupHealth, invalidateStartupHealthCache } from "../startup-health-cache";
 import { runWindowsTrayAction } from "../windows-tray-control";
+import { runStartupInstallAction, type StartupInstallAction } from "../startup-action-control";
 
 import { isPlainRecord, parseDebugLogQuery, tokPerSecondResult, unavailableCostReason, costResult, requestLogDto, stripRegistryOnlyStaticHeaders, fetchAllModels } from "./shared";
 import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, CostResult, MetricSource } from "./shared";
@@ -83,6 +84,22 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
 
   if (url.pathname === "/api/startup-health" && req.method === "GET") {
     return jsonResponse(await getCachedStartupHealth(config));
+  }
+
+  if (url.pathname === "/api/startup-action" && req.method === "POST") {
+    let body: { action?: unknown };
+    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (!body || !["install-service", "install-shim"].includes(String(body.action))) {
+      return jsonResponse({ error: "action must be install-service or install-shim" }, 400);
+    }
+    try {
+      const action = body.action as StartupInstallAction;
+      const result = await (deps.runStartupInstallAction ?? runStartupInstallAction)(action);
+      invalidateStartupHealthCache();
+      return jsonResponse({ ok: true, action, message: result.message });
+    } catch (error) {
+      return jsonResponse({ error: error instanceof Error ? error.message : String(error) }, 500);
+    }
   }
 
   if (url.pathname === "/api/windows-tray" && req.method === "GET") {

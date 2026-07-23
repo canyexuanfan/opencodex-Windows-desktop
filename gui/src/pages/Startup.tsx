@@ -6,6 +6,7 @@ import { EmptyState } from "../ui";
 
 type StartupStatus = "native" | "protected" | "at-risk";
 type StartupProtection = "service" | "shim" | "none";
+type StartupInstallAction = "install-service" | "install-shim";
 
 interface StartupHealthData {
   status: StartupStatus;
@@ -85,6 +86,8 @@ export default function Startup({ apiBase }: { apiBase: string }) {
   const [trayLoading, setTrayLoading] = useState(true);
   const [trayBusy, setTrayBusy] = useState(false);
   const [trayError, setTrayError] = useState(false);
+  const [installBusy, setInstallBusy] = useState<StartupInstallAction | null>(null);
+  const [installResult, setInstallResult] = useState<{ kind: "success" | "error"; action: StartupInstallAction; detail?: string } | null>(null);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -176,6 +179,26 @@ export default function Startup({ apiBase }: { apiBase: string }) {
     }
   };
 
+  const runInstallAction = async (action: StartupInstallAction) => {
+    setInstallBusy(action);
+    setInstallResult(null);
+    try {
+      const res = await fetch(`${apiBase}/api/startup-action`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const body = await res.json().catch(() => null) as { error?: unknown } | null;
+      if (!res.ok) throw new Error(typeof body?.error === "string" ? body.error : "installation failed");
+      setInstallResult({ kind: "success", action });
+      await refresh();
+    } catch (error) {
+      setInstallResult({ kind: "error", action, detail: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setInstallBusy(null);
+    }
+  };
+
   const routingKey: TKey = data?.routingKind === "opencodex-local" ? "startup.routing.proxy"
     : data?.routingKind === "custom-local" ? "startup.routing.customLocal"
       : data?.routingKind === "custom-remote" ? "startup.routing.customRemote"
@@ -247,22 +270,43 @@ export default function Startup({ apiBase }: { apiBase: string }) {
             </div>
             <div className="startup-detail-row">
               <div><strong>{t("startup.service")}</strong><span>{t("startup.serviceHint")}</span></div>
-              <StateBadge
-                ok={data.serviceViable}
-                yes={t("startup.viable")}
-                no={t(data.serviceConflict ? "startup.conflict" : data.serviceStale ? "startup.stale" : data.serviceInstalled ? "startup.unhealthy" : data.serviceSupported ? "startup.notInstalled" : "startup.unsupported")}
-              />
+              <div className="startup-detail-actions">
+                <StateBadge
+                  ok={data.serviceViable}
+                  yes={t("startup.viable")}
+                  no={t(data.serviceConflict ? "startup.conflict" : data.serviceStale ? "startup.stale" : data.serviceInstalled ? "startup.unhealthy" : data.serviceSupported ? "startup.notInstalled" : "startup.unsupported")}
+                />
+                {data.serviceSupported && !data.serviceInstalled && (
+                  <button type="button" className="btn btn-primary btn-sm" aria-label={`${t("startup.service")} - ${t("startup.install")}`} disabled={installBusy !== null || failed} onClick={() => void runInstallAction("install-service")}>
+                    {t(installBusy === "install-service" ? "startup.installing" : "startup.install")}
+                  </button>
+                )}
+              </div>
             </div>
             <div className="startup-detail-row">
               <div><strong>{t("startup.shim")}</strong><span>{t("startup.shimHint")}</span></div>
-              <StateBadge
-                ok={data.shimHealthy && data.autostartEnabled}
-                yes={t(data.shimCoverage === "cli-only" ? "startup.cliOnly" : "startup.healthy")}
-                no={t(data.shimInstalled
-                  ? data.shimHealthy && !data.autostartEnabled ? "startup.installedDisabled" : "startup.stale"
-                  : "startup.notInstalled")}
-              />
+              <div className="startup-detail-actions">
+                <StateBadge
+                  ok={data.shimHealthy && data.autostartEnabled}
+                  yes={t(data.shimCoverage === "cli-only" ? "startup.cliOnly" : "startup.healthy")}
+                  no={t(data.shimInstalled
+                    ? data.shimHealthy && !data.autostartEnabled ? "startup.installedDisabled" : "startup.stale"
+                    : "startup.notInstalled")}
+                />
+                {!data.shimInstalled && (
+                  <button type="button" className="btn btn-primary btn-sm" aria-label={`${t("startup.shim")} - ${t("startup.install")}`} disabled={installBusy !== null || failed} onClick={() => void runInstallAction("install-shim")}>
+                    {t(installBusy === "install-shim" ? "startup.installing" : "startup.install")}
+                  </button>
+                )}
+              </div>
             </div>
+            {installResult && (
+              <div className={`notice ${installResult.kind === "success" ? "notice-ok" : "notice-warn"} startup-action-notice`} role="status" aria-live="polite">
+                {installResult.kind === "success"
+                  ? t(installResult.action === "install-service" ? "startup.serviceInstalled" : "startup.shimInstalled")
+                  : `${t("startup.installFailed")} ${installResult.detail ?? ""}`}
+              </div>
+            )}
           </section>
 
           {data.platform === "win32" && (
