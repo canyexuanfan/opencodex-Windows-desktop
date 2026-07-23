@@ -167,3 +167,36 @@ export function resolveAntigravityEffortWireModel(
   // Rule 5: everything else.
   return { wireModelId: resolveAntigravityWireModelId(modelId) };
 }
+
+
+// ── Usage aggregation reverse map (picker/call base identity) ──
+// Effort wire IDs and compatibility aliases must collapse to the same picker-visible
+// base model that users invoke after effort routing. Historical logs store suffix IDs;
+// summary aggregation consults this reverse map so one call model = one usage row.
+const ANTIGRAVITY_USAGE_BASE_BY_ID: Record<string, string> = (() => {
+  const rev: Record<string, string> = {};
+  for (const base of ANTIGRAVITY_MODELS) rev[base] = base;
+  for (const [base, effortMap] of Object.entries(ANTIGRAVITY_EFFORT_WIRE_MAP)) {
+    rev[base] = base;
+    for (const wire of Object.values(effortMap)) rev[wire] = base;
+  }
+  for (const [alias, wire] of Object.entries(ANTIGRAVITY_MODEL_ALIASES)) {
+    const base = rev[wire] ?? rev[alias];
+    if (base) rev[alias] = base;
+    // If alias is itself a base/wire already mapped, keep that mapping.
+    else if (rev[wire]) rev[alias] = rev[wire]!;
+  }
+  // Visible aliases that only appear in ANTIGRAVITY_VISIBLE_MODEL_ALIASES are already
+  // included via ANTIGRAVITY_MODEL_ALIASES. Identity bases without effort maps remain.
+  return rev;
+})();
+
+/**
+ * Canonical picker/call model id for usage aggregation.
+ * Unknown ids stay identity so future CCA models do not invent mappings.
+ */
+export function canonicalAntigravityUsageModel(modelId: string): string {
+  const id = modelId.trim();
+  if (!id) return modelId;
+  return ANTIGRAVITY_USAGE_BASE_BY_ID[id] ?? id;
+}

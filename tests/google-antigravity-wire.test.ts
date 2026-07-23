@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createGoogleAdapter } from "../src/adapters/google";
 import { antigravitySessionId, isLikelyRealThoughtSignature } from "../src/adapters/google-antigravity-wire";
-import { ANTIGRAVITY_MODELS, ANTIGRAVITY_MODEL_EFFORTS } from "../src/providers/antigravity-models";
+import { ANTIGRAVITY_MODELS, ANTIGRAVITY_MODEL_EFFORTS, canonicalAntigravityUsageModel } from "../src/providers/antigravity-models";
 import type { AdapterEvent, OcxParsedRequest, OcxProviderConfig } from "../src/types";
 
 function parsed(text = "hello world", stream = false, modelId = "gemini-3-pro"): OcxParsedRequest {
@@ -436,3 +436,16 @@ describe("isLikelyRealThoughtSignature", () => {
     expect(isLikelyRealThoughtSignature("sig-abcdef0123456789")).toBe(true);
   });
 });
+
+
+describe("canonicalAntigravityUsageModel", () => {
+  test("maps wire/compat ids to picker bases", () => {
+    expect(canonicalAntigravityUsageModel("gemini-3.5-flash-mid")).toBe("gemini-3.6-flash");
+    expect(canonicalAntigravityUsageModel("gemini-3.6-flash-high")).toBe("gemini-3.6-flash");
+    expect(canonicalAntigravityUsageModel("gemini-pro-agent")).toBe("gemini-3.1-pro");
+    expect(canonicalAntigravityUsageModel("gemini-3.1-pro-low")).toBe("gemini-3.1-pro");
+    expect(canonicalAntigravityUsageModel("claude-opus-4-6-thinking")).toBe("claude-opus-4-6-thinking");
+    expect(canonicalAntigravityUsageModel("unknown-model")).toBe("unknown-model");
+  });
+});
+

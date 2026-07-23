@@ -484,8 +484,8 @@ function UsageModelsTable({
           </thead>
           <tbody>
             {models.map(model => (
-              <tr key={`${model.provider}/${model.model}/${model.resolvedModel ?? ""}`}>
-                <td className="mono">{modelLabel(model.resolvedModel ?? model.model)}</td>
+              <tr key={`${model.provider}/${model.model}`}>
+                <td className="mono">{modelLabel(model.model)}</td>
                 <td className="muted">{model.provider}</td>
                 <td className="num">{model.requests}</td>
                 <td className="num">{model.measuredRequests}</td>

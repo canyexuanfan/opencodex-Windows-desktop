@@ -1,4 +1,5 @@
 import { baseProviderLabel } from "../providers/label";
+import { canonicalAntigravityUsageModel } from "../providers/antigravity-models";
 import { usageDisplayTotalTokens } from "./totals";
 import type { PersistedUsageEntry, UsageStatus } from "./log";
 import { estimateComboCost, estimateRequestCost } from "./cost";
@@ -160,13 +161,47 @@ interface UsageAttribution {
   totalTokens?: number;
 }
 
+
+/**
+ * Usage row identity for model breakdowns.
+ * Google Antigravity collapses wire/compat/suffix ids to picker/call base models so
+ * historical effort-variant logs merge with current base-model invocations.
+ */
+function usageModelIdentity(
+  provider: string,
+  model: string,
+  resolvedModel?: string,
+): { model: string; resolvedModel?: string } {
+  if (baseProviderLabel(provider) !== "google-antigravity") {
+    return resolvedModel ? { model, resolvedModel } : { model };
+  }
+  const fromModel = canonicalAntigravityUsageModel(model);
+  const fromResolved = resolvedModel
+    ? canonicalAntigravityUsageModel(resolvedModel)
+    : undefined;
+  // Prefer an explicit base mapping from model; if model is unknown but resolved maps
+  // to a known base, use that (covers base call + upstream wire resolvedModel pairs).
+  const canonical = fromModel !== model
+    ? fromModel
+    : (fromResolved && fromResolved !== resolvedModel ? fromResolved : fromModel);
+  return { model: canonical };
+}
+
+function usageModelKey(providerKey: string, model: string): string {
+  return `${providerKey}/${model}`;
+}
+
+function antigravityUsageModel(provider: string, model: string): string {
+  if (baseProviderLabel(provider) !== "google-antigravity") return model;
+  return canonicalAntigravityUsageModel(model);
+}
+
 function usageAttributions(entry: PersistedUsageEntry): UsageAttribution[] {
   if (!entry.attempts?.length) {
     return [{
       requestId: entry.requestId,
       provider: entry.provider,
-      model: entry.model,
-      ...(entry.resolvedModel ? { resolvedModel: entry.resolvedModel } : {}),
+      ...usageModelIdentity(entry.provider, entry.model, entry.resolvedModel),
       usageStatus: entry.usageStatus,
       ...(entry.usage ? { usage: entry.usage } : {}),
       ...(entry.totalTokens !== undefined ? { totalTokens: entry.totalTokens } : {}),
@@ -175,7 +210,7 @@ function usageAttributions(entry: PersistedUsageEntry): UsageAttribution[] {
   return entry.attempts.map(attempt => ({
     requestId: entry.requestId,
     provider: attempt.provider,
-    model: attempt.model,
+    ...usageModelIdentity(attempt.provider, attempt.model),
     usageStatus: attempt.usageStatus,
     ...(attempt.usage ? { usage: attempt.usage } : {}),
     ...(attempt.totalTokens !== undefined ? { totalTokens: attempt.totalTokens } : {}),
@@ -263,7 +298,7 @@ function buildDayGrid(range: UsageRange, since: number | null, now: number, entr
     let models = dayModels.get(dayKey);
     if (!models) { models = new Map(); dayModels.set(dayKey, models); }
     const providerKey = baseProviderLabel(attribution.provider);
-    const mKey = `${providerKey}/${attribution.model}`;
+    const mKey = usageModelKey(providerKey, attribution.model);
     let m = models.get(mKey);
     if (!m) {
       m = { model: attribution.model, provider: providerKey, requests: 0, attemptCount: 0, totalTokens: 0 };
@@ -310,7 +345,7 @@ function buildModels(entries: PersistedUsageEntry[], totalTokens: number): Usage
     for (const attribution of usageAttributions(entry)) {
       const providerKey = baseProviderLabel(attribution.provider);
       // resolvedModel is a routing detail, not a row identity.
-      const key = `${providerKey}${attribution.model}`;
+      const key = usageModelKey(providerKey, attribution.model);
       let model = byKey.get(key);
       if (!model) {
         model = {
@@ -363,14 +398,14 @@ function buildModels(entries: PersistedUsageEntry[], totalTokens: number): Usage
       // Combo: attribute each attempt's cost to its own model
       for (const attemptEst of estimate.attempts) {
         const aProviderKey = baseProviderLabel(attemptEst.provider);
-        const aKey = `${aProviderKey}${attemptEst.model}`;
+        const aKey = usageModelKey(aProviderKey, antigravityUsageModel(attemptEst.provider, attemptEst.model));
         const m = byKey.get(aKey);
         if (m) m.estimatedCostUsd = (m.estimatedCostUsd ?? 0) + attemptEst.cost.total;
       }
     } else {
       // Single-target: attribute to the entry's model
       const providerKey = baseProviderLabel(entry.provider);
-      const key = `${providerKey}${entry.model}`;
+      const key = usageModelKey(providerKey, antigravityUsageModel(entry.provider, entry.model));
       const m = byKey.get(key);
       if (m) m.estimatedCostUsd = (m.estimatedCostUsd ?? 0) + estimate.cost.total;
     }

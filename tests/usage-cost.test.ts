@@ -189,7 +189,7 @@ describe("resolveMatchedPrice", () => {
   });
 
   test("16. shipped overlay membership: 43 keys, including Gemini 3.6 and compatibility prices", () => {
-    expect(EXPECTED_PRICE_OVERLAYS.length).toBe(43);
+    expect(EXPECTED_PRICE_OVERLAYS.length).toBe(44);
     expect(EXPECTED_PRICE_OVERLAYS.some(row => row.status === "unverified")).toBe(false);
     const keys = new Set(EXPECTED_PRICE_OVERLAYS.map(row => `${row.provider}/${row.modelId}`));
     for (const expected of [
@@ -199,6 +199,7 @@ describe("resolveMatchedPrice", () => {
       "deepseek/deepseek-reasoner",
       "google-antigravity/gemini-3.1-pro-low",
       "google-antigravity/gemini-3.1-pro-high",
+      "google-antigravity/gemini-pro-agent",
       "google-antigravity/gemini-3.6-flash",
       "google-antigravity/gemini-3.1-pro",
       "google/gemini-3.6-flash",
