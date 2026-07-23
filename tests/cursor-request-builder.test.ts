@@ -223,4 +223,79 @@ describe("Cursor request builder", () => {
     expect(withoutSearch.system.join("\n")).toContain("unavailable this turn");
     expect(withoutSearch.system.join("\n")).not.toContain("Use tool_search");
   });
+
+
+  test("external Cursor tool-result continuation forces a fresh conversation id", () => {
+    const request = createCursorRequest({
+      modelId: "cursor/gpt-5.6-sol",
+      context: {
+        messages: [
+          { role: "user", content: "read a file", timestamp: 1 },
+          {
+            role: "assistant",
+            model: "cursor/gpt-5.6-sol",
+            timestamp: 2,
+            content: [{ type: "toolCall", id: "call_1", name: "read_file", namespace: "mcp__fs", arguments: { path: "a.txt" } }],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_1",
+            toolName: "read_file",
+            toolNamespace: "mcp__fs",
+            content: "FILE CONTENTS HERE",
+            isError: false,
+            timestamp: 3,
+          },
+        ],
+      },
+      stream: false,
+      options: { reasoning: "xhigh" },
+      _cursorConversationId: "cursor_old_external",
+    });
+
+    expect(request.modelId).toBe("gpt-5.6-sol-xhigh");
+    expect(request.conversationId).not.toBe("cursor_old_external");
+    expect(request.conversationId.startsWith("cursor_")).toBe(true);
+  });
+
+  test("native Cursor tool-result continuation keeps the remembered conversation id", () => {
+    const request = createCursorRequest({
+      modelId: "cursor/composer-2.5",
+      context: {
+        messages: [
+          { role: "user", content: "read a file", timestamp: 1 },
+          {
+            role: "assistant",
+            model: "cursor/composer-2.5",
+            timestamp: 2,
+            content: [{ type: "toolCall", id: "call_1", name: "read_file", namespace: "mcp__fs", arguments: { path: "a.txt" } }],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_1",
+            toolName: "read_file",
+            toolNamespace: "mcp__fs",
+            content: "FILE CONTENTS HERE",
+            isError: false,
+            timestamp: 3,
+          },
+        ],
+      },
+      stream: false,
+      options: {},
+      _cursorConversationId: "cursor_native_stable",
+    });
+
+    expect(request.conversationId).toBe("cursor_native_stable");
+  });
+
+  test("forceFreshConversation always mints a new conversation id", () => {
+    const request = createCursorRequest({
+      ...base,
+      _cursorConversationId: "cursor_force_me",
+    }, { forceFreshConversation: true });
+
+    expect(request.conversationId).not.toBe("cursor_force_me");
+    expect(request.conversationId.startsWith("cursor_")).toBe(true);
+  });
 });

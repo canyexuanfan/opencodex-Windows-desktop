@@ -140,4 +140,119 @@ describe("Cursor adapter live transport", () => {
     expect(cursorExecDeniedMessage("shellArgs")).toContain("shellArgs");
     expect(cursorExecDeniedMessage("shellArgs")).toContain("legacy mock transport cannot execute");
   });
+
+  test("retries external-model invalid_argument once with a fresh conversation id", async () => {
+    const seen: string[] = [];
+    let attempts = 0;
+    const adapter = createCursorAdapter({
+      ...provider,
+      apiKey: "cursor-token",
+    }, {
+      createTransport: () => ({
+        async *run(request) {
+          attempts += 1;
+          seen.push(request.conversationId);
+          if (attempts === 1) {
+            throw Object.assign(
+              new Error("Cursor invalid request: Cursor Connect error invalid_argument: Error"),
+              { code: "invalid_argument" },
+            );
+          }
+          yield { type: "done" } satisfies CursorServerMessage;
+        },
+        writeClient() {},
+      }),
+    });
+
+    const events: AdapterEvent[] = [];
+    const body: OcxParsedRequest = {
+      modelId: "cursor/gpt-5.6-sol",
+      context: {
+        messages: [
+          { role: "user", content: "read a file", timestamp: 1 },
+          {
+            role: "assistant",
+            model: "cursor/gpt-5.6-sol",
+            timestamp: 2,
+            content: [{ type: "toolCall", id: "call_1", name: "read_file", namespace: "mcp__fs", arguments: { path: "a.txt" } }],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_1",
+            toolName: "read_file",
+            toolNamespace: "mcp__fs",
+            content: "FILE CONTENTS HERE",
+            isError: false,
+            timestamp: 3,
+          },
+        ],
+      },
+      stream: false,
+      options: { reasoning: "xhigh" },
+      _cursorConversationId: "cursor_corrupt",
+    };
+
+    await adapter.runTurn?.(body, { headers: new Headers() }, event => events.push(event));
+
+    expect(attempts).toBe(2);
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).not.toBe("cursor_corrupt");
+    expect(seen[1]).not.toBe(seen[0]);
+    expect(body._cursorConversationId).toBe(seen[1]);
+    expect(events.filter(event => event.type === "error")).toHaveLength(0);
+  });
 });
+
+  test("does not replay invalid_argument after non-heartbeat output was already emitted", async () => {
+    let attempts = 0;
+    const adapter = createCursorAdapter({
+      ...provider,
+      apiKey: "cursor-token",
+    }, {
+      createTransport: () => ({
+        async *run() {
+          attempts += 1;
+          yield { type: "text", text: "partial output" } satisfies CursorServerMessage;
+          throw Object.assign(
+            new Error("Cursor invalid request: Cursor Connect error invalid_argument: Error"),
+            { code: "invalid_argument" },
+          );
+        },
+        writeClient() {},
+      }),
+    });
+
+    const events: AdapterEvent[] = [];
+    const body: OcxParsedRequest = {
+      modelId: "cursor/gpt-5.6-sol",
+      context: {
+        messages: [
+          { role: "user", content: "read a file", timestamp: 1 },
+          {
+            role: "assistant",
+            model: "cursor/gpt-5.6-sol",
+            timestamp: 2,
+            content: [{ type: "toolCall", id: "call_1", name: "read_file", namespace: "mcp__fs", arguments: { path: "a.txt" } }],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_1",
+            toolName: "read_file",
+            toolNamespace: "mcp__fs",
+            content: "FILE CONTENTS HERE",
+            isError: false,
+            timestamp: 3,
+          },
+        ],
+      },
+      stream: false,
+      options: { reasoning: "xhigh" },
+      _cursorConversationId: "cursor_corrupt",
+    };
+
+    await adapter.runTurn?.(body, { headers: new Headers() }, event => events.push(event));
+
+    expect(attempts).toBe(1);
+    expect(events.some(event => event.type === "text_delta")).toBe(true);
+    expect(events.some(event => event.type === "error")).toBe(true);
+  });
