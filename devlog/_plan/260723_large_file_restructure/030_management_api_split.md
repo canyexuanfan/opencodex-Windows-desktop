@@ -128,10 +128,17 @@ shared.ts — domains never import each other's handlers.
    `fetchAllModels|handleManagementAPI|VERSION|ManagementApiDeps` — no new
    specifiers.
 4. `wc -l src/server/management-api.ts` < 800 (facade) — target.
-5. `tests/oauth-reauth-bind.test.ts:113` source-text assertion still passes
-   (it reads this file; confirm the asserted text still lives here or adjust
-   the split so it does — NO test edit unless the assertion is about a symbol
-   that legitimately moved, in which case flag as a deviation).
+5. **Source-text test deviation (A-gate fold-back, reviewer Zeno):**
+   `tests/oauth-reauth-bind.test.ts:112-115` reads the raw text of
+   `src/server/management-api.ts` and asserts it contains `reauthAccountId:
+   accountId` and `Unknown account for reauth` (the `/api/oauth/login` handler
+   at `:1542,:1548`). That handler legitimately MOVES to
+   `src/server/management/oauth-account-routes.ts`, so B updates the test's
+   read path to the new module:
+   `await Bun.file("src/server/management/oauth-account-routes.ts").text()`.
+   This is the ONLY test edit in wp3; it is justified because the asserted code
+   legitimately moves and the test's intent (the reauth-bind logic exists) is
+   preserved by pointing at the new home. No assertion values change.
 
 ## SoT sync
 
