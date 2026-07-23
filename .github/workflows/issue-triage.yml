@@ -15,10 +15,10 @@ jobs:
     permissions:
       models: read
     outputs:
-      requires_translation: ${{ steps.ai.outputs.requires_translation }}
-      translated_title: ${{ steps.ai.outputs.translated_title }}
-      translated_body: ${{ steps.ai.outputs.translated_body }}
-      detected_language: ${{ steps.ai.outputs.detected_language }}
+      requires_translation: ${{ steps.parse.outputs.requires_translation }}
+      translated_title: ${{ steps.parse.outputs.translated_title }}
+      translated_body: ${{ steps.parse.outputs.translated_body }}
+      detected_language: ${{ steps.parse.outputs.detected_language }}
     steps:
       - name: Detect and translate
         id: ai
