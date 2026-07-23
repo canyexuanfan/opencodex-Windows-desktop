@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   buildWindowsTrayRunCommand,
@@ -202,10 +202,26 @@ describe("Windows tray packaging and command safety", () => {
     expect(source).toContain("GetPathRoot");
     expect(source).toContain("$heartbeat.hostPid = $HostPid");
     expect(source).toContain('Start-OcxCommand @("__tray-restart")');
+    expect(source).toContain('Load-TrayIcon "opencodex-tray-online.ico"');
+    expect(source).toContain('Load-TrayIcon "opencodex-tray-warning.ico"');
+    expect(source).toContain('Load-TrayIcon "opencodex-tray-offline.ico"');
+    expect(source).toContain("$notify.Icon = $offlineIcon");
     expect(source).not.toContain("$menu.add_Opening({ Update-TrayState })");
     expect(source).not.toContain("Invoke-Expression");
     expect(source).not.toContain("taskkill");
     expect(source).not.toContain("Stop-Process");
+  });
+
+  test("ships branded multi-size Windows tray icons", () => {
+    const assets = join(import.meta.dir, "..", "src", "tray", "assets");
+    for (const name of ["online", "warning", "offline"]) {
+      const path = join(assets, `opencodex-tray-${name}.ico`);
+      expect(existsSync(path)).toBe(true);
+      const bytes = readFileSync(path);
+      expect(bytes.readUInt16LE(0)).toBe(0);
+      expect(bytes.readUInt16LE(2)).toBe(1);
+      expect(bytes.readUInt16LE(4)).toBeGreaterThanOrEqual(7);
+    }
   });
 
   test("serves tray status without blocking the proxy event loop", async () => {
@@ -233,6 +249,8 @@ describe("Windows tray packaging and command safety", () => {
     const root = join(import.meta.dir, "..");
     const tray = readFileSync(join(root, "src", "tray", "windows.ts"), "utf8");
     expect(tray).toContain('join(getConfigDir(), "opencodex-tray.ps1")');
+    expect(tray).toContain('join(import.meta.dir, "assets", name)');
+    expect(tray).toContain("installedTrayIconPaths()");
     expect(tray).toContain("const hardened = hardenSecretPath(temporary, { required: true })");
     expect(tray).toContain("if (!hardened.ok)");
     expect(tray).toContain("if (!hardenedDir.ok)");

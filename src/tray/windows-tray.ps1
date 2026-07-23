@@ -22,6 +22,22 @@ function Normalize-HomePath([string]$Value) {
 $OpenCodexHome = Normalize-HomePath $OpenCodexHome
 $CodexHome = Normalize-HomePath $CodexHome
 
+$script:ownedIcons = New-Object System.Collections.Generic.List[System.Drawing.Icon]
+function Load-TrayIcon([string]$Name, [System.Drawing.Icon]$Fallback) {
+  $path = Join-Path $OpenCodexHome $Name
+  if (-not [System.IO.File]::Exists($path)) { return $Fallback }
+  try {
+    $icon = New-Object System.Drawing.Icon($path)
+    [void]$script:ownedIcons.Add($icon)
+    return $icon
+  } catch {
+    return $Fallback
+  }
+}
+$onlineIcon = Load-TrayIcon "opencodex-tray-online.ico" ([System.Drawing.SystemIcons]::Information)
+$warningIcon = Load-TrayIcon "opencodex-tray-warning.ico" ([System.Drawing.SystemIcons]::Warning)
+$offlineIcon = Load-TrayIcon "opencodex-tray-offline.ico" ([System.Drawing.SystemIcons]::Error)
+
 function Get-StableHash([string]$Value) {
   $sha = [System.Security.Cryptography.SHA256]::Create()
   try {
@@ -187,16 +203,16 @@ function Update-TrayState {
       $startup = Read-JsonUrl "$origin/api/startup-health"
       $label = if ($startup.status -eq "at-risk") { "At risk" } elseif ($startup.status -eq "protected") { "Protected" } else { "Native routing" }
       $safetyItem.Text = "Restart safety: $label"
-      $notify.Icon = if ($startup.status -eq "at-risk") { [System.Drawing.SystemIcons]::Warning } else { [System.Drawing.SystemIcons]::Information }
+      $notify.Icon = if ($startup.status -eq "at-risk") { $warningIcon } else { $onlineIcon }
     } catch {
       $safetyItem.Text = "Restart safety: unavailable"
-      $notify.Icon = [System.Drawing.SystemIcons]::Information
+      $notify.Icon = $warningIcon
     }
   } else {
     $statusItem.Text = "Proxy: Offline"
     $safetyItem.Text = "Restart safety: start the proxy to inspect"
     $notify.Text = "opencodex: Offline"
-    $notify.Icon = [System.Drawing.SystemIcons]::Error
+    $notify.Icon = $offlineIcon
     $startItem.Enabled = $true
     $stopItem.Enabled = $false
     $restartItem.Enabled = $false
@@ -252,6 +268,7 @@ $timer.add_Tick({
   Update-TrayState
 })
 $notify.ContextMenuStrip = $menu
+$notify.Icon = $offlineIcon
 $notify.Visible = $true
 $notify.Text = "opencodex: Checking..."
 
@@ -264,6 +281,7 @@ try {
   $timer.Dispose()
   $notify.Visible = $false
   $notify.Dispose()
+  foreach ($icon in $script:ownedIcons) { $icon.Dispose() }
   $menu.Dispose()
   try { Remove-Item -LiteralPath $heartbeatPath -Force -ErrorAction SilentlyContinue } catch { }
   try { $mutex.ReleaseMutex() } catch { }

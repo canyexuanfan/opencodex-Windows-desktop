@@ -11,6 +11,11 @@ const RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const RUN_PARENT_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion";
 const TRAY_STATE_VERSION = 1;
 const FOREIGN_RUN_VALUE = "<foreign-or-unreadable-registry-value>";
+const TRAY_ICON_FILES = [
+  "opencodex-tray-online.ico",
+  "opencodex-tray-warning.ico",
+  "opencodex-tray-offline.ico",
+] as const;
 
 export interface WindowsTrayEntry {
   bun: string;
@@ -47,6 +52,10 @@ function installedTrayScriptPath(): string {
   return join(getConfigDir(), "opencodex-tray.ps1");
 }
 
+function installedTrayIconPaths(): string[] {
+  return TRAY_ICON_FILES.map(name => join(getConfigDir(), name));
+}
+
 export function windowsTrayStatePathsOwned(
   state: Pick<WindowsTrayEntry, "script" | "opencodexHome"> & { launcherPath?: string },
   configDir = getConfigDir(),
@@ -59,6 +68,10 @@ export function windowsTrayStatePathsOwned(
 
 function sourceTrayScriptPath(): string {
   return join(import.meta.dir, "windows-tray.ps1");
+}
+
+function sourceTrayIconPaths(): string[] {
+  return TRAY_ICON_FILES.map(name => join(import.meta.dir, "assets", name));
 }
 
 function currentCodexHome(): string {
@@ -362,7 +375,7 @@ function trayStatusFrom(registered: string | null): WindowsTrayStatus {
   const running = heartbeatProcessAlive(heartbeat);
   const registrationOwned = state !== null
     && registered === state.runCommand
-    && [state.bun, state.cli, state.script].every(path => existsSync(path));
+    && [state.bun, state.cli, state.script, ...installedTrayIconPaths()].every(path => existsSync(path));
   const stale = windowsTrayRegistrationIsStale({
     registered: registered !== null,
     registrationOwned,
@@ -459,7 +472,8 @@ export function installWindowsTray(startNow = true): WindowsTrayStatus {
   assertWindows();
   const entry = currentEntry();
   const sourceScript = sourceTrayScriptPath();
-  for (const path of [entry.bun, entry.cli, sourceScript]) {
+  const iconPairs = sourceTrayIconPaths().map((source, index) => ({ source, installed: installedTrayIconPaths()[index] }));
+  for (const path of [entry.bun, entry.cli, sourceScript, ...iconPairs.map(pair => pair.source)]) {
     if (!existsSync(path)) throw new Error(`Cannot install the tray because a required file is missing: ${path}`);
   }
   if (!existsSync(getConfigDir())) mkdirSync(getConfigDir(), { recursive: true, mode: 0o700 });
@@ -473,6 +487,9 @@ export function installWindowsTray(startNow = true): WindowsTrayStatus {
   if (existsSync(entry.script) && (!state || resolve(state.script) !== resolve(entry.script))) {
     throw new Error(`Refusing to overwrite an unowned tray script at ${entry.script}.`);
   }
+  if (!state && iconPairs.some(pair => existsSync(pair.installed))) {
+    throw new Error("Refusing to overwrite unowned Windows tray icon assets.");
+  }
   const wasRunning = heartbeatProcessAlive();
   if (wasRunning && !state) {
     throw new Error("Refusing to replace an unowned running tray process. Exit it before installing.");
@@ -484,11 +501,21 @@ export function installWindowsTray(startNow = true): WindowsTrayStatus {
 
   const previousStateBytes = existsSync(trayStatePath()) ? readFileSync(trayStatePath()) : null;
   const previousScriptBytes = existsSync(entry.script) ? readFileSync(entry.script) : null;
+  const previousIconBytes = new Map(iconPairs.map(pair => [
+    pair.installed,
+    existsSync(pair.installed) ? readFileSync(pair.installed) : null,
+  ]));
   const restorePreviousInstall = () => {
     try {
       if (previousScriptBytes) replaceOwnedFile(entry.script, previousScriptBytes);
       else if (existsSync(entry.script)) unlinkSync(entry.script);
     } catch { /* rollback best-effort */ }
+    for (const [path, contents] of previousIconBytes) {
+      try {
+        if (contents) replaceOwnedFile(path, contents);
+        else if (existsSync(path)) unlinkSync(path);
+      } catch { /* rollback best-effort */ }
+    }
     try {
       if (previousStateBytes) replaceOwnedFile(trayStatePath(), previousStateBytes);
       else if (existsSync(trayStatePath())) unlinkSync(trayStatePath());
@@ -509,6 +536,7 @@ export function installWindowsTray(startNow = true): WindowsTrayStatus {
     const hardenedDir = hardenSecretDir(getConfigDir(), { required: true });
     if (!hardenedDir.ok) throw new Error("Windows tray directory ACL hardening did not complete; refusing to install persistence.");
     replaceOwnedFile(entry.script, readFileSync(sourceScript));
+    for (const pair of iconPairs) replaceOwnedFile(pair.installed, readFileSync(pair.source));
     runRegistry(["add", RUN_KEY, "/v", runValue, "/t", "REG_SZ", "/d", runCommand, "/f", "/reg:64"]);
     writeState(entry, runValue, runCommand);
   } catch (error) {
@@ -562,6 +590,7 @@ export function uninstallWindowsTray(): WindowsTrayStatus {
   if (existing) runRegistry(["delete", RUN_KEY, "/v", state?.runValue ?? windowsTrayRunValue(getConfigDir()), "/f", "/reg:64"]);
   const ownedPaths = [trayStatePath(), trayHeartbeatPath(), ...(state?.launcherPath ? [state.launcherPath] : [])];
   if (state?.script && resolve(state.script) === resolve(installedTrayScriptPath())) ownedPaths.push(state.script);
+  if (state) ownedPaths.push(...installedTrayIconPaths());
   for (const path of ownedPaths) {
     try { if (existsSync(path)) unlinkSync(path); } catch { /* best-effort */ }
   }
