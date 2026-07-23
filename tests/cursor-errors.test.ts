@@ -27,6 +27,9 @@ describe("classifyCursorError", () => {
     expect(classifyCursorError("resource_exhausted: tool catalog too large")).toBe("Cursor resource limit exceeded");
     expect(classifyCursorError("resource_exhausted: request exceeds maximum allowed size")).toBe("Cursor resource limit exceeded");
     expect(classifyCursorError("resource_exhausted: too many tools")).toBe("Cursor resource limit exceeded");
+    // Explicit body/size subject keeps overflow semantics even with a "limit" tail.
+    expect(classifyCursorError("resource_exhausted: request body exceeds maximum allowed limit")).toBe("Cursor resource limit exceeded");
+    expect(classifyCursorError("resource_exhausted: request size exceeds maximum allowed limit")).toBe("Cursor resource limit exceeded");
   });
 
   test("authentication / permission denied", () => {

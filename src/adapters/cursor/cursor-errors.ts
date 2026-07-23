@@ -55,9 +55,11 @@ const REQUEST_TOO_LARGE_PATTERNS: (string | RegExp)[] = [
   "message too large",
   "payload too large",
   "request too large",
-  // Size cue required: "request exceeds concurrent request limit" is a quota shape,
-  // not an overflow — a bare "limit" tail must NOT match (WP3 review blocker 2).
-  /request (?:body |size )?exceeds .*size/,
+  // Size cue required somewhere: a bare "request exceeds ... limit" (concurrency/quota
+  // shape) must NOT match, but "request body/size exceeds ... limit" and
+  // "request exceeds maximum allowed size" are deterministic overflow (WP3 r1/r2).
+  /request exceeds .*size/,
+  /request (?:body|size) exceeds .*(?:size|limit)/,
   "maximum allowed size",
 ];
 
