@@ -1494,6 +1494,17 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
     provider: name,
     ...catalogHintsFromProviderConfig(name, prov, id, contextCap),
   }));
+  // A configured default is a real callable selector and must remain discoverable when a
+  // compatible provider's live /models request fails (issue #308). Keep this separate from the
+  // explicit static list: `liveModels: false` + empty `models[]` intentionally publishes zero
+  // rows, while a failed live discovery may degrade to the default selector.
+  const failedDiscoveryConfigured = configured.length > 0 || !prov.defaultModel || prov.adapter !== "anthropic"
+    ? configured
+    : [{
+      id: prov.defaultModel,
+      provider: name,
+      ...catalogHintsFromProviderConfig(name, prov, prov.defaultModel, contextCap),
+    }];
   const vertexDefaultSeed = seedVertexDefault ? configured[0] : undefined;
   const withVertexDefaultSeed = (models: CatalogModel[]): CatalogModel[] => (
     vertexDefaultSeed && !models.some(model => model.id === vertexDefaultSeed.id)
@@ -1536,7 +1547,7 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
     // A recently-failed provider (unreachable API, missing proxy, bad key) must not re-pay the
     // fetch timeout on every catalog poll — the dashboard polls this path per page load.
     const stale = getStaleCached(name);
-    return stale ? withVertexDefaultSeed(applyConfigHintsToCachedModels(name, prov, stale, contextCap)) : configured;
+    return stale ? withVertexDefaultSeed(applyConfigHintsToCachedModels(name, prov, stale, contextCap)) : failedDiscoveryConfigured;
   }
   const { url, headers } = buildModelsRequest(prov, apiKey, name);
   const urlClass = new URL(url).hostname.endsWith("aiplatform.googleapis.com")
@@ -1548,7 +1559,7 @@ async function fetchProviderModels(name: string, prov: OcxProviderConfig, ttlMs:
     return {
       models: stale
         ? withVertexDefaultSeed(applyConfigHintsToCachedModels(name, prov, stale, contextCap))
-        : configured,
+        : failedDiscoveryConfigured,
       fallback: stale ? "stale" : "configured",
     };
   };

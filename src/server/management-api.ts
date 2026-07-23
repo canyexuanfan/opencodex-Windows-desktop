@@ -526,6 +526,9 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       name, adapter: p.adapter, baseUrl: publicProviderBaseUrl(p.baseUrl), defaultModel: p.defaultModel,
       hasApiKey: !!p.apiKey,
       allowPrivateNetwork: p.allowPrivateNetwork === true,
+      liveModels: p.liveModels !== false,
+      models: p.models ?? [],
+      authMode: p.authMode,
       disabled: p.disabled === true,
       codexAccountMode: providerCodexAccountMode(name, p),
     })));
@@ -670,6 +673,12 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
    if (Object.hasOwn(rawBody, "allowPrivateNetwork")) {
      if (typeof rawBody.allowPrivateNetwork !== "boolean") return jsonResponse({ error: "allowPrivateNetwork must be a boolean" }, 400);
      next.allowPrivateNetwork = rawBody.allowPrivateNetwork;
+     touched = true;
+   }
+
+   if (Object.hasOwn(rawBody, "liveModels")) {
+     if (typeof rawBody.liveModels !== "boolean") return jsonResponse({ error: "liveModels must be a boolean" }, 400);
+     next.liveModels = rawBody.liveModels;
      touched = true;
    }
 

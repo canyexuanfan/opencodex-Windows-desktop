@@ -942,6 +942,58 @@ describe("Codex catalog routed normalization", () => {
     }
   });
 
+  test("failed discovery falls back to defaultModel when no static models are configured (#308)", async () => {
+    clearModelCache("anthropic-compatible-default");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("not found", { status: 404 })) as typeof fetch;
+    try {
+      const models = await gatherRoutedModels({
+        providers: {
+          "anthropic-compatible-default": {
+            baseUrl: "https://example.invalid",
+            adapter: "anthropic",
+            authMode: "key",
+            apiKey: "k",
+            defaultModel: "claude-sonnet-5",
+          },
+        },
+      });
+
+      expect(models.map(model => `${model.provider}/${model.id}`)).toEqual([
+        "anthropic-compatible-default/claude-sonnet-5",
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      clearModelCache("anthropic-compatible-default");
+    }
+  });
+
+  test("successful live discovery stays authoritative over the defaultModel fallback", async () => {
+    clearModelCache("anthropic-compatible-live");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      data: [{ id: "live-claude-model" }],
+    }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+    try {
+      const models = await gatherRoutedModels({
+        providers: {
+          "anthropic-compatible-live": {
+            baseUrl: "https://example.invalid",
+            adapter: "anthropic",
+            authMode: "key",
+            apiKey: "k",
+            defaultModel: "stale-default",
+          },
+        },
+      });
+
+      expect(models.map(model => model.id)).toEqual(["live-claude-model"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      clearModelCache("anthropic-compatible-live");
+    }
+  });
+
   test("configured alias with a dated live variant is retained (Anthropic haiku pattern)", async () => {
     clearModelCache("dated-provider");
     const originalFetch = globalThis.fetch;

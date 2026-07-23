@@ -831,6 +831,64 @@ describe("server local API auth", () => {
     }
   });
 
+  test("provider PATCH persists liveModels and provider metadata exposes the normalized state", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig(config("127.0.0.1"));
+
+    const server = startServer(0);
+    try {
+      const createRes = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "discovery-toggle",
+          provider: {
+            adapter: "anthropic",
+            baseUrl: "https://api.example.com",
+            defaultModel: "claude-sonnet-5",
+            models: [],
+          },
+        }),
+      });
+      expect(createRes.status).toBe(200);
+
+      const invalid = await fetch(new URL("/api/providers?name=discovery-toggle", server.url), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ liveModels: "false" }),
+      });
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toMatchObject({ error: "liveModels must be a boolean" });
+
+      const patchRes = await fetch(new URL("/api/providers?name=discovery-toggle", server.url), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ liveModels: false }),
+      });
+      expect(patchRes.status).toBe(200);
+
+      const providers = await fetch(new URL("/api/providers", server.url)).then(response => response.json()) as Array<{
+        name: string;
+        liveModels: boolean;
+        models: string[];
+        authMode?: string;
+      }>;
+      expect(providers.find(provider => provider.name === "discovery-toggle")).toMatchObject({
+        liveModels: false,
+        models: [],
+      });
+
+      const saved = await fetch(new URL("/api/config", server.url)).then(response => response.json()) as {
+        providers: Record<string, { liveModels?: boolean }>;
+      };
+      expect(saved.providers["discovery-toggle"].liveModels).toBe(false);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
  test("provider management rejects sensitive or injectable provider headers", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });

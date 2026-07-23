@@ -30,11 +30,11 @@ bun run dev:gui
 | **Sidecars** | Choose the web-search model and effort plus the vision-description model. Changes apply on the next request. |
 | **Maintenance** | Resync the Codex model catalog, inspect project-local config bypass warnings, check the latest or preview release, and run an update with optional proxy restart. |
 | **Codex autostart** | Enable or disable the Codex launcher shim that runs `ocx ensure` before Codex CLI/App starts. |
-| **Providers** | Add, edit, enable/disable, and remove providers; manage OAuth account pools and API-key pools where supported. |
+| **Providers** | Add, edit, enable/disable, and remove providers; manage OAuth account pools and API-key pools where supported. Provider Settings can disable live model discovery for endpoints with missing, slow, or oversized `/models` catalogs. |
 | **Add provider** | Search registry-backed presets for account login, API-key services, local servers, or a custom endpoint. |
 | **Codex Auth** | Add ChatGPT/Codex pool accounts, select the next-session account, refresh 5h / weekly / 30d quotas, and configure quota auto-switch and transient-failure failover. |
 | **Subagents** | Feature up to five bare native or namespaced routed models in the `spawn_agent` override list. |
-| **Models** | Toggle native GPT and routed models, set provider allowlists and context caps, choose v1/base/v2, and configure the v2 thread limit. |
+| **Models** | Toggle native GPT and routed models, set provider allowlists and context caps, choose v1/base/v2, and configure the v2 thread limit. Configured providers stay visible as zero-model groups when discovery is off or returns no rows. |
 | **Logs** | Auto-refresh recent requests with tokens, requested effort, resolved model, provider, status, request id, duration, and error details. |
 | **Usage / Debug** | Inspect token-usage coverage and trends, or enable opt-in provider transport and usage-extraction diagnostics. |
 | **Stop** | Gracefully stop the proxy and installed background service, restore native Codex, and exit (`POST /api/stop`). |
