@@ -8,6 +8,7 @@ import { collectStartupHealth, type StartupHealth } from "../codex/autostart-hea
 import { getCodexRoutingKind } from "../codex/inject";
 import { diagnoseCodexShim } from "../codex/shim";
 import { displayCodexRuntimePath, effortClampAppliesToRuntime, loadLastEffortClamp, resolveCodexRuntime } from "../codex/runtime";
+import { redactSecretString, redactUserPath } from "../lib/redact";
 
 type HealthCheck = {
   ok: boolean;
@@ -145,10 +146,16 @@ export async function collectStatus(): Promise<CliStatusView> {
   const resolvedRuntime = (() => {
     try {
       return resolveCodexRuntime();
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const redacted = redactUserPath(redactSecretString(message)).slice(0, 160);
       return {
         runtime: { command: "codex", version: null, source: "fallback" as const },
-        failures: [] as [],
+        failures: [{
+          command: "codex",
+          source: "fallback" as const,
+          reason: `resolve threw: ${redacted}`,
+        }],
         replacedConfigured: undefined,
         newerAvailable: undefined,
       };
@@ -157,7 +164,10 @@ export async function collectStatus(): Promise<CliStatusView> {
   const lastClamp = loadLastEffortClamp();
   const clampActive = effortClampAppliesToRuntime(lastClamp, resolvedRuntime.runtime);
   const warningParts: string[] = [];
-  if (resolvedRuntime.replacedConfigured) {
+  if (
+    resolvedRuntime.replacedConfigured
+    && resolvedRuntime.replacedConfigured.from.command !== resolvedRuntime.runtime.command
+  ) {
     warningParts.push(
       `Preferred Codex runtime is unavailable; using ${displayCodexRuntimePath(resolvedRuntime.runtime.command)} instead. Run ocx doctor for diagnosis and recovery.`,
     );
@@ -166,7 +176,12 @@ export async function collectStatus(): Promise<CliStatusView> {
     && resolvedRuntime.failures.length > 0
     && !resolvedRuntime.runtime.version
   ) {
-    warningParts.push("No validated Codex runtime found; falling back to `codex`. Run ocx doctor for diagnosis and recovery.");
+    const detail = resolvedRuntime.failures[0]?.reason;
+    warningParts.push(
+      detail
+        ? `No validated Codex runtime found (${detail}); falling back to \`codex\`. Run ocx doctor for diagnosis and recovery.`
+        : "No validated Codex runtime found; falling back to `codex`. Run ocx doctor for diagnosis and recovery.",
+    );
   }
   if (resolvedRuntime.newerAvailable) {
     warningParts.push("OpenCodex is using an older Codex binary. Run ocx doctor for diagnosis and recovery.");

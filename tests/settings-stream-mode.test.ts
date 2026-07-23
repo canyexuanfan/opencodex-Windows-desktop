@@ -122,8 +122,9 @@ describe("GET /api/settings", () => {
         };
       };
       expect(typeof body.codexRuntime?.path).toBe("string");
-      // OPENCODEX_HOME lives under the OS user profile; username must stay redacted.
-      expect(body.codexRuntime?.path?.toLowerCase()).not.toMatch(/\\users\\[^\\[\]/]+\\/i);
+      // OPENCODEX_HOME lives under the OS user profile; username must stay redacted on all OS.
+      expect(body.codexRuntime?.path?.toLowerCase()).not.toMatch(/[/\\]users[/\\][^/\\[\]]+[/\\]/i);
+      expect(body.codexRuntime?.path?.toLowerCase()).not.toContain("alice");
       expect(body.codexRuntime?.version).toBe("0.133.0");
       expect(body.codexRuntime?.source).toBe("environment");
       expect(body.codexRuntime?.catalogClamp).toEqual({

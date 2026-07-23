@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import {
   compareCodexVersions,
   displayCodexRuntimePath,
@@ -13,6 +13,7 @@ import {
   persistEffortClamp,
   resolveAndPersistCodexRuntime,
   resolveCodexRuntime,
+  resetCodexRuntimeResolveCacheForTests,
   type RuntimeExecFile,
 } from "../src/codex/runtime";
 
@@ -267,23 +268,158 @@ describe("resolveCodexRuntime", () => {
   test("catalog clamp clears diagnostics inside deps.configDir when probe fails", async () => {
     const { clampCatalogModelsToCodexSupport } = await import("../src/codex/catalog/effort");
     const nested = join(tempConfigDir(), "nested", "opencodex-home");
+    const configured = join(nested, "codex.exe");
     persistEffortClamp({
-      runtimePath: "C:\\keep\\codex.exe",
+      runtimePath: configured,
       runtimeVersion: "0.133.0",
       removedEfforts: ["max"],
       affectedModels: ["gpt-5.6-sol"],
     }, { configDir: nested });
     expect(loadLastEffortClamp({ configDir: nested })?.removedEfforts).toEqual(["max"]);
 
+    let probeCalls = 0;
     clampCatalogModelsToCodexSupport([], {
       configDir: nested,
-      env: { PATH: "" },
+      env: { CODEX_CLI_PATH: configured, PATH: "" },
       platform: "win32",
-      existsSync: () => false,
+      existsSync: (path) => path === configured,
       execFileSync: () => {
+        probeCalls += 1;
         throw new Error("catalog probe failed");
       },
     });
+    expect(probeCalls).toBeGreaterThan(0);
     expect(loadLastEffortClamp({ configDir: nested })).toBeNull();
+  });
+
+  test("persisted runtime stamp busts resolve memo; catalog cache keys by runtime", async () => {
+    const { chmodSync, mkdirSync } = await import("node:fs");
+    const {
+      loadBundledCodexCatalog,
+      resetBundledCatalogCacheForTests,
+    } = await import("../src/codex/catalog/bundled");
+
+    const home = tempConfigDir();
+    const oldDir = join(home, "old");
+    const newDir = join(home, "new");
+    mkdirSync(oldDir, { recursive: true });
+    mkdirSync(newDir, { recursive: true });
+    const oldBin = process.platform === "win32" ? join(oldDir, "codex.cmd") : join(oldDir, "codex");
+    const newBin = process.platform === "win32" ? join(newDir, "codex.cmd") : join(newDir, "codex");
+
+    const writeLauncher = (path: string, version: string, efforts: string[]) => {
+      const catalog = JSON.stringify({
+        models: [{
+          slug: "gpt-5.5",
+          base_instructions: "x",
+          supported_reasoning_levels: efforts.map(effort => ({ effort, description: effort })),
+          default_reasoning_level: "medium",
+        }],
+      });
+      const catalogPath = join(dirname(path), "catalog.json");
+      writeFileSync(catalogPath, `${catalog}\n`, "utf8");
+      if (process.platform === "win32") {
+        writeFileSync(path, [
+          "@echo off",
+          `if "%~1"=="--version" (`,
+          `  echo codex-cli ${version}`,
+          "  exit /b 0",
+          ")",
+          `type "%~dp0catalog.json"`,
+          "",
+        ].join("\r\n"), "utf8");
+      } else {
+        writeFileSync(path, [
+          "#!/bin/sh",
+          `if [ "$1" = "--version" ]; then`,
+          `  echo "codex-cli ${version}"`,
+          "  exit 0",
+          "fi",
+          `cat "$(dirname "$0")/catalog.json"`,
+          "",
+        ].join("\n"), "utf8");
+        chmodSync(path, 0o755);
+      }
+    };
+    writeLauncher(oldBin, "0.133.0", ["low", "medium", "high"]);
+    writeLauncher(newBin, "0.145.0-alpha.30", ["low", "medium", "high", "max", "ultra"]);
+
+    const previousHome = process.env.OPENCODEX_HOME;
+    const previousCli = process.env.CODEX_CLI_PATH;
+    const previousPath = process.env.PATH;
+    process.env.OPENCODEX_HOME = home;
+    process.env.PATH = "";
+    resetCodexRuntimeResolveCacheForTests();
+    resetBundledCatalogCacheForTests();
+
+    try {
+      process.env.CODEX_CLI_PATH = oldBin;
+      const first = resolveAndPersistCodexRuntime();
+      expect(first.runtime.version).toBe("0.133.0");
+
+      const oldCatalog = loadBundledCodexCatalog();
+      expect(oldCatalog?.models?.[0]?.supported_reasoning_levels?.some(
+        level => (level as { effort?: string }).effort === "max",
+      )).toBe(false);
+
+      // Doctor-style upgrade: persist newer runtime and drop env override.
+      delete process.env.CODEX_CLI_PATH;
+      persistCodexRuntime({
+        command: newBin,
+        version: "0.145.0-alpha.30",
+        source: "configured",
+      }, { configDir: home });
+
+      const second = resolveCodexRuntime();
+      expect(second.runtime.command).toBe(newBin);
+      expect(second.runtime.version).toBe("0.145.0-alpha.30");
+
+      const newCatalog = loadBundledCodexCatalog();
+      expect(newCatalog?.models?.[0]?.supported_reasoning_levels?.some(
+        level => (level as { effort?: string }).effort === "max",
+      )).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previousHome;
+      if (previousCli === undefined) delete process.env.CODEX_CLI_PATH;
+      else process.env.CODEX_CLI_PATH = previousCli;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      resetCodexRuntimeResolveCacheForTests();
+      resetBundledCatalogCacheForTests();
+    }
+  });
+
+  test("clamp diagnostics include unsupported default_reasoning_level changes", async () => {
+    const { clampCatalogModelsToCodexSupport } = await import("../src/codex/catalog/effort");
+    const diagnostics: Array<{ removedEfforts: string[]; affectedModels: string[] }> = [];
+    const models = [{
+      slug: "openrouter/example",
+      supported_reasoning_levels: [
+        { effort: "low", description: "low" },
+        { effort: "medium", description: "medium" },
+        { effort: "high", description: "high" },
+      ],
+      default_reasoning_level: "ultra",
+    }];
+    clampCatalogModelsToCodexSupport(models, {
+      commandCandidates: () => ["stub"],
+      execFileSync: () => JSON.stringify({
+        models: [{
+          slug: "gpt-5.5",
+          base_instructions: "x",
+          supported_reasoning_levels: [
+            { effort: "low", description: "low" },
+            { effort: "medium", description: "medium" },
+            { effort: "high", description: "high" },
+          ],
+          default_reasoning_level: "medium",
+        }],
+      }),
+      onEffortClamp: (diagnostic) => diagnostics.push(diagnostic),
+    });
+    expect(models[0]!.default_reasoning_level).toBe("high");
+    expect(diagnostics[0]?.removedEfforts).toContain("ultra");
+    expect(diagnostics[0]?.affectedModels).toEqual(["openrouter/example"]);
   });
 });

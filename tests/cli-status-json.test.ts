@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -123,6 +123,63 @@ describe("CLI status JSON", () => {
         expect(serialized).not.toContain(forbidden);
       }
     } finally {
+      rmSync(opencodexHome, { recursive: true, force: true });
+    }
+  });
+
+  test("status --json reports catalogClamp.runtimeVersion when clamp is active", async () => {
+    const { chmodSync } = await import("node:fs");
+    const { persistEffortClamp, resetCodexRuntimeResolveCacheForTests } = await import("../src/codex/runtime");
+    const opencodexHome = mkdtempSync(join(tmpdir(), "ocx-status-clamp-"));
+    try {
+      writeFileSync(join(opencodexHome, "config.json"), JSON.stringify({
+        port: 9,
+        providers: {},
+        defaultProvider: "openai",
+      }), "utf8");
+      const fakeCodex = process.platform === "win32"
+        ? join(opencodexHome, "bin", "codex.cmd")
+        : join(opencodexHome, "bin", "codex");
+      mkdirSync(join(opencodexHome, "bin"), { recursive: true });
+      if (process.platform === "win32") {
+        writeFileSync(fakeCodex, "@echo off\r\necho codex-cli 0.133.0\r\n", "utf8");
+      } else {
+        writeFileSync(fakeCodex, "#!/bin/sh\necho 'codex-cli 0.133.0'\n", "utf8");
+        chmodSync(fakeCodex, 0o755);
+      }
+      persistEffortClamp({
+        runtimePath: fakeCodex,
+        runtimeVersion: "0.133.0",
+        removedEfforts: ["max", "ultra"],
+        affectedModels: ["gpt-5.6-sol"],
+      }, { configDir: opencodexHome });
+      resetCodexRuntimeResolveCacheForTests();
+
+      const result = spawnSync(process.execPath, [cliPath, "status", "--json"], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          OPENCODEX_HOME: opencodexHome,
+          CODEX_CLI_PATH: fakeCodex,
+          PATH: "",
+        },
+        encoding: "utf8",
+      });
+      expect(result.status).toBe(0);
+      const parsed = JSON.parse(result.stdout) as {
+        codexRuntime?: {
+          version?: string | null;
+          catalogClamp?: { active?: boolean; removedEfforts?: string[]; runtimeVersion?: string | null };
+        };
+      };
+      expect(parsed.codexRuntime?.version).toBe("0.133.0");
+      expect(parsed.codexRuntime?.catalogClamp).toEqual({
+        active: true,
+        removedEfforts: ["max", "ultra"],
+        runtimeVersion: "0.133.0",
+      });
+    } finally {
+      resetCodexRuntimeResolveCacheForTests();
       rmSync(opencodexHome, { recursive: true, force: true });
     }
   });

@@ -41,10 +41,20 @@ export { isSpawnableCodexCandidate, codexExecInvocation } from "../exec-invocati
 
 export const BUNDLED_CATALOG_CACHE_MS = 60_000;
 
-export let bundledCatalogCache: { expiresAt: number; value: RawCatalog | null } | null = null;
+export let bundledCatalogCache: {
+  /** Selected runtime identity; must change when doctor/sync picks a different binary. */
+  key: string;
+  expiresAt: number;
+  value: RawCatalog | null;
+} | null = null;
 
 /** Test-only: clear the bundled-catalog cache (owned here; sync.ts calls this instead of assigning the import). */
 export function resetBundledCatalogCacheForTests(): void {
+  bundledCatalogCache = null;
+}
+
+/** Drop the process-local bundled catalog memo (e.g. after runtime selection changes). */
+export function invalidateBundledCatalogCache(): void {
   bundledCatalogCache = null;
 }
 
@@ -70,6 +80,8 @@ export interface BundledCatalogDeps {
   platform?: NodeJS.Platform;
   existsSync?: (path: string) => boolean;
   readFileSync?: (path: string, encoding: "utf8") => string;
+  now?: () => number;
+  discoverAlternatives?: boolean;
 }
 
 export function unique(values: string[]): string[] {
@@ -133,12 +145,10 @@ export function runCodexDebugModels(
 
 export function loadBundledCodexCatalog(deps: BundledCatalogDeps = {}): RawCatalog | null {
   const useCache = !deps.commandCandidates && !deps.execFileSync && !deps.configDir && !deps.env;
-  if (useCache && bundledCatalogCache && bundledCatalogCache.expiresAt > Date.now()) {
-    return bundledCatalogCache.value;
-  }
   const execFile = deps.execFileSync ?? (execFileSync as unknown as ExecFile);
   // Prefer the single resolved runtime so sync/clamp never probe a different binary
   // than OpenCodex will launch. Tests may inject commandCandidates to stub probing.
+  let cacheKey: string | null = null;
   const candidates = deps.commandCandidates?.() ?? (() => {
     const resolved = resolveAndPersistCodexRuntime({
       execFileSync: execFile,
@@ -147,19 +157,49 @@ export function loadBundledCodexCatalog(deps: BundledCatalogDeps = {}): RawCatal
       platform: deps.platform,
       existsSync: deps.existsSync,
       readFileSync: deps.readFileSync,
+      now: deps.now,
+      discoverAlternatives: deps.discoverAlternatives,
     });
+    if (useCache) {
+      cacheKey = [
+        resolved.runtime.command,
+        resolved.runtime.version ?? "",
+        process.env.OPENCODEX_HOME ?? "",
+      ].join("\0");
+    }
     return [resolved.runtime.command];
   })();
+  if (
+    useCache
+    && cacheKey
+    && bundledCatalogCache
+    && bundledCatalogCache.key === cacheKey
+    && bundledCatalogCache.expiresAt > Date.now()
+  ) {
+    return bundledCatalogCache.value;
+  }
   for (const command of unique(candidates)) {
     try {
       const catalog = parseCatalogJson(runCodexDebugModels(command, execFile, deps));
       if (catalog && findNativeTemplate(catalog)) {
-        if (useCache) bundledCatalogCache = { expiresAt: Date.now() + BUNDLED_CATALOG_CACHE_MS, value: catalog };
+        if (useCache && cacheKey) {
+          bundledCatalogCache = {
+            key: cacheKey,
+            expiresAt: Date.now() + BUNDLED_CATALOG_CACHE_MS,
+            value: catalog,
+          };
+        }
         return catalog;
       }
     } catch { /* try next candidate */ }
   }
-  if (useCache) bundledCatalogCache = { expiresAt: Date.now() + BUNDLED_CATALOG_CACHE_MS, value: null };
+  if (useCache && cacheKey) {
+    bundledCatalogCache = {
+      key: cacheKey,
+      expiresAt: Date.now() + BUNDLED_CATALOG_CACHE_MS,
+      value: null,
+    };
+  }
   return null;
 }
 

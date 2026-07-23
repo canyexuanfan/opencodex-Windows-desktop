@@ -222,6 +222,8 @@ export function persistCodexRuntime(
     updatedAt: new Date((deps.now ?? Date.now)()).toISOString(),
   };
   atomicWriteFile(codexRuntimeStatePath(configDir), `${JSON.stringify(payload, null, 2)}\n`);
+  // Same-process consumers must re-resolve; catalog cache is keyed by runtime identity.
+  resolveCache = null;
 }
 
 function probeVersion(
@@ -344,6 +346,19 @@ export function effortClampAppliesToRuntime(
 const RESOLVE_CACHE_MS = 15_000;
 let resolveCache: { key: string; at: number; value: ResolveCodexRuntimeResult } | null = null;
 
+function persistedRuntimeCacheStamp(deps: ResolveCodexRuntimeDeps): string {
+  // Include on-disk selection so doctor --fix in another process busts this memo.
+  const configDir = deps.configDir ?? getConfigDir();
+  const read = deps.readFileSync ?? ((path, encoding) => readFileSync(path, encoding));
+  try {
+    const raw = JSON.parse(read(codexRuntimeStatePath(configDir), "utf8")) as PersistedRuntimeState;
+    if (raw?.version !== 1 || typeof raw.command !== "string") return "";
+    return `${raw.command}|${raw.selectedVersion ?? ""}|${raw.updatedAt ?? ""}`;
+  } catch {
+    return "";
+  }
+}
+
 function resolveCacheKey(deps: ResolveCodexRuntimeDeps): string | null {
   // Only memoize uninjected process-env resolves (settings/status hot paths).
   if (deps.execFileSync || deps.existsSync || deps.readFileSync || deps.configDir || deps.now) {
@@ -356,6 +371,7 @@ function resolveCacheKey(deps: ResolveCodexRuntimeDeps): string | null {
     platform: deps.platform ?? process.platform,
     discover: deps.discoverAlternatives !== false,
     home: process.env.OPENCODEX_HOME ?? "",
+    persisted: persistedRuntimeCacheStamp(deps),
   });
 }
 

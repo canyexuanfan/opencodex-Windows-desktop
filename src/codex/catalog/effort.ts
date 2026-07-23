@@ -27,7 +27,7 @@ import {
 } from "../../combos";
 import type { NormalizedComboConfig } from "../../combos/types";
 import { providerDestinationResolvedError } from "../../lib/destination-policy";
-import { redactSecretString } from "../../lib/redact";
+import { redactSecretString, redactUserPath } from "../../lib/redact";
 import upstreamModelsSnapshot from "../data/upstream-models.json";
 
 
@@ -279,6 +279,9 @@ export function clampCatalogModelsToCodexSupport(models: RawEntry[], deps: Bundl
           ? [(level as { effort: string }).effort]
           : []),
     );
+    const beforeDefault = typeof entry.default_reasoning_level === "string"
+      ? entry.default_reasoning_level
+      : null;
     clampEntryToCodexSupportedEfforts(entry, supported);
     const after = new Set(
       (Array.isArray(entry.supported_reasoning_levels) ? entry.supported_reasoning_levels : [])
@@ -286,9 +289,14 @@ export function clampCatalogModelsToCodexSupport(models: RawEntry[], deps: Bundl
           ? [(level as { effort: string }).effort]
           : []),
     );
+    const afterDefault = typeof entry.default_reasoning_level === "string"
+      ? entry.default_reasoning_level
+      : null;
     const lost = [...before].filter(effort => !after.has(effort));
-    if (lost.length > 0) {
+    const defaultClamped = Boolean(beforeDefault && beforeDefault !== afterDefault);
+    if (lost.length > 0 || defaultClamped) {
       for (const effort of lost) removed.add(effort);
+      if (defaultClamped && beforeDefault) removed.add(beforeDefault);
       if (typeof entry.slug === "string") affected.push(entry.slug);
     }
   }
@@ -304,6 +312,8 @@ export function clampCatalogModelsToCodexSupport(models: RawEntry[], deps: Bundl
         platform: deps.platform,
         existsSync: deps.existsSync,
         readFileSync: deps.readFileSync,
+        now: deps.now,
+        discoverAlternatives: deps.discoverAlternatives,
       });
       runtimePath = resolved.runtime.command;
       runtimeVersion = resolved.runtime.version;
@@ -320,7 +330,11 @@ export function clampCatalogModelsToCodexSupport(models: RawEntry[], deps: Bundl
           `[opencodex] Falling back from ${displayCodexRuntimePath(resolved.replacedConfigured.from.command)} to ${displayCodexRuntimePath(runtimePath)}.`,
         );
       }
-    } catch { /* best-effort */ }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const redacted = redactUserPath(redactSecretString(message)).slice(0, 200);
+      console.warn(`[opencodex] Codex runtime resolve failed during catalog clamp: ${redacted}`);
+    }
   }
 
   if (removed.size > 0) {
