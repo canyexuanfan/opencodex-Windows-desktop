@@ -99,6 +99,9 @@ export function classifyError(status: number, type: string, message: string): Oc
   ) {
     return { message, type: "invalid_request_error", code: "context_length_exceeded" };
   }
+  // "Cursor resource limit exceeded" is emitted only for explicit request-size overflow
+  // details (isCursorRequestTooLargeDetail in cursor-errors.ts); quota-style resource
+  // exhaustion arrives as "Cursor rate limit exceeded" and falls through to 429 below.
   if (text.includes("cursor resource limit exceeded")) {
     return { message, type: "invalid_request_error", code: "tool_catalog_too_large" };
   }
@@ -202,6 +205,8 @@ export function inferHttpStatusFromAdapterMessage(message: string): number {
   const lower = message.toLowerCase();
   // Client aborts (e.g. mid web-search loop) must not look like upstream 502s in /api/logs.
   if (isClientClosedMessage(lower)) return 499;
+  // See classifyError: this prefix now only means explicit request-size overflow (400);
+  // quota-style Cursor resource exhaustion carries the rate-limit prefix and maps to 429.
   if (lower.includes("cursor resource limit exceeded")) return 400;
   if (
     lower.includes("resource_exhausted") ||
