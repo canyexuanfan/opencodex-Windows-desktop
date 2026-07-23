@@ -340,7 +340,9 @@ export default function Startup({ apiBase }: { apiBase: string }) {
                   <button type="button" className="btn btn-ghost" disabled={trayBusy} onClick={() => void runTrayAction("stop")}>{t("startup.tray.stop")}</button>
                 )}
                 {!trayLoading && !trayError && tray && (tray.installed || tray.stale) && (
-                  <button type="button" className="btn btn-danger" disabled={trayBusy} onClick={() => void runTrayAction("uninstall")}>{t("startup.tray.uninstall")}</button>
+                  <button type="button" className="btn btn-danger" disabled={trayBusy} onClick={() => {
+                    if (window.confirm(t("startup.tray.uninstall"))) void runTrayAction("uninstall");
+                  }}>{t("startup.tray.uninstall")}</button>
                 )}
               </div>
               {(trayError || tray?.stale) && <div className="notice notice-warn" role="alert">{t("startup.tray.error")}</div>}

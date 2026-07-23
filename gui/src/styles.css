@@ -36,7 +36,7 @@
   --accent-hover: light-dark(#3d3d3d, #ffffff);
   --accent-ink:   light-dark(#ffffff, #0d0d0d);
   --accent-soft:  light-dark(rgba(13, 13, 13, 0.06), rgba(255, 255, 255, 0.09));
-  --accent-ring:  light-dark(rgba(13, 13, 13, 0.30), rgba(255, 255, 255, 0.38));
+  --accent-ring:  light-dark(rgba(0, 0, 0, 0.5), rgba(255, 255, 255, 0.38));
 
   --green:      light-dark(#0a7d5c, #4ecb9d);
   --green-soft: light-dark(rgba(16, 163, 127, 0.10), rgba(78, 203, 157, 0.13));
