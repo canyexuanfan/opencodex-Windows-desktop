@@ -231,6 +231,8 @@ export function injectClaudeAgentDefs(config: OcxConfig, windows: Record<string,
  * directive makes the Agent tool's `model` argument INERT (the proxy overrides
  * the request model before routing — live-proven), so instead of asking the
  * dispatcher to omit it (which caused schema-anxiety loops), we hand it a fixed
- * placeholder: any value works, "sonnet" is the cheap canonical one.
+ * placeholder: any value works; "haiku" is canonical because a haiku-labeled call
+ * is visibly a placeholder in the Claude Code UI, while "sonnet" was
+ * indistinguishable from a genuine Sonnet call (issue #252).
  */
-const NO_MODEL_ARG = "NOTE: this agent's real model is pinned by the opencodex proxy — the `model` argument is ignored. Pass model: \"sonnet\" as a placeholder (or omit it); routing is unaffected either way.";
+const NO_MODEL_ARG = "NOTE: this agent's real model is pinned by the opencodex proxy — the `model` argument is ignored. Pass model: \"haiku\" as a placeholder (or omit it); routing is unaffected either way.";
