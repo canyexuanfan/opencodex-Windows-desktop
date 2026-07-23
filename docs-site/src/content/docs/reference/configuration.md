@@ -145,6 +145,7 @@ network. Only do this on trusted networks, and always set a strong `OPENCODEX_AP
 | --- | --- | --- |
 | `adapter` | `string` | One of `openai-chat`, `openai-responses`, `anthropic`, `google`, `kiro`, `cursor`, `azure-openai` (or alias `azure`). |
 | `baseUrl` | `string` | Upstream API base URL. |
+| `responsesPath?` | `string` | Optional relative resource path for key-auth `openai-responses` requests. It must start with `/` and contain no URL scheme, query, or fragment. When omitted, the adapter keeps its legacy `/v1/responses` URL construction. |
 | `disabled?` | `boolean` | Keep the provider on disk but exclude it from routing and model/catalog listings. |
 | `apiKey?` | `string` | API key, or an `${ENV_VAR}` / `$ENV_VAR` reference resolved at request time. |
 | `apiKeyPool?` | `ApiKeyPoolEntry[]` | Multi-key pool. `apiKey` mirrors the active entry; each item has `id`, `key`, optional `label`, and optional numeric `addedAt`. |

@@ -152,6 +152,7 @@ x-opencodex-api-key: your-secret-token
 | --- | --- | --- |
 | `adapter` | `string` | Одно из `openai-chat`, `openai-responses`, `anthropic`, `google`, `kiro`, `cursor`, `azure-openai` (или алиас `azure`). |
 | `baseUrl` | `string` | Базовый URL вышестоящего API. |
+| `responsesPath?` | `string` | Необязательный относительный путь ресурса для запросов `openai-responses` с аутентификацией `key`. Должен начинаться с `/` и не содержать схему URL, query или fragment. Если поле опущено, сохраняется прежнее построение URL `/v1/responses`. |
 | `disabled?` | `boolean` | Провайдер остаётся на диске, но исключается из маршрутизации и списков моделей/каталога. |
 | `apiKey?` | `string` | API-ключ или ссылка `${ENV_VAR}` / `$ENV_VAR`, разрешаемая в момент запроса. |
 | `apiKeyPool?` | `ApiKeyPoolEntry[]` | Пул из нескольких ключей. `apiKey` отражает активную запись; каждый элемент содержит `id`, `key`, необязательный `label` и необязательное числовое `addedAt`. |
