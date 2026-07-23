@@ -66,9 +66,10 @@ env_http_headers = { "x-opencodex-api-key" = "OPENCODEX_API_AUTH_TOKEN" }
 # supports_websockets = true   # only when config.websockets is true
 ```
 
-In both modes opencodex writes `$CODEX_HOME/opencodex.config.toml` as a reference/fallback config.
-On loopback it contains the root keys you can merge manually if automatic injection was removed;
-on non-loopback it contains the dedicated provider form.
+When OpenCodex owns routing, both modes write `$CODEX_HOME/opencodex.config.toml` as a
+reference/fallback config. On loopback it contains the root keys you can merge manually if automatic
+injection was removed; on non-loopback it contains the dedicated provider form. External-provider
+mode leaves this profile untouched.
 
 :::caution
 Root keys such as `openai_base_url`, `model_provider`, and `model_catalog_json` **must** sit before the
@@ -161,9 +162,11 @@ existing sessions with that provider id; replacing the active id can make those 
 disappear from Codex's history view.
 
 Keep one tool as the owner of Codex provider configuration. To use OpenCodex behind an existing
-provider manager, point that manager at the local OpenAI-compatible endpoint
-`http://127.0.0.1:10100/v1`. To let OpenCodex inject routing directly, first switch Codex back to its
-built-in `openai` provider, then rerun `ocx start`.
+provider manager, point that provider at `http://127.0.0.1:10100/v1` with Responses passthrough
+(`wire_api = "responses"` in Codex TOML), not Chat Completions translation. When proxy API auth is
+enabled, also pass `x-opencodex-api-key` from `OPENCODEX_API_AUTH_TOKEN`, matching the non-loopback
+provider form above. To let OpenCodex inject routing directly, first switch Codex back to its
+built-in `openai` provider and remove any user-owned root `openai_base_url`, then rerun `ocx start`.
 
 ### Catalog troubleshooting
 

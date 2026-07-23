@@ -372,7 +372,9 @@ export async function injectCodexConfig(port: number, config?: OcxConfig, option
       success: true,
       message: `⚠️ Codex routing NOT injected: config.toml selects the external model_provider ${tomlString(activeProvider)}.\n` +
         `  OpenCodex preserves external provider configuration so existing ${tomlString(activeProvider)} session history stays visible.\n` +
-        `  Configure your provider manager to use http://${providerBaseHost(config?.hostname)}:${port}/v1, or switch Codex to the built-in openai provider and rerun 'ocx start'.`,
+        `  Configure that provider for Responses passthrough at http://${providerBaseHost(config?.hostname)}:${port}/v1` +
+        `${shouldInjectApiAuthHeader(config) ? ` with x-opencodex-api-key from OPENCODEX_API_AUTH_TOKEN` : ""}.\n` +
+        `  For direct injection, switch to the built-in openai provider, remove any user-owned root openai_base_url, and rerun 'ocx start'.`,
     };
   }
 

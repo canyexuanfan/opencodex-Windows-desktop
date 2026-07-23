@@ -1,9 +1,10 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Database } from "bun:sqlite";
 
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 
@@ -115,6 +116,24 @@ describe("injectCodexConfig integration (Design B)", () => {
     ].join("\n");
     writeFileSync(join(codexHome, "config.toml"), original, "utf8");
 
+    const sessionsDir = join(codexHome, "sessions");
+    mkdirSync(sessionsDir);
+    const rolloutPath = join(sessionsDir, "rollout-custom.jsonl");
+    const rollout = JSON.stringify({
+      type: "session_meta",
+      payload: { id: "thread-custom", model_provider: "custom", source: "cli", cwd: codexHome },
+    }) + "\n";
+    writeFileSync(rolloutPath, rollout, "utf8");
+    const dbPath = join(codexHome, "state_5.sqlite");
+    const db = new Database(dbPath);
+    db.run(`CREATE TABLE threads (
+      id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, model_provider TEXT NOT NULL,
+      source TEXT NOT NULL, first_user_message TEXT NOT NULL, has_user_event INTEGER NOT NULL
+    )`);
+    db.run(`INSERT INTO threads VALUES ('thread-custom', ?, 'custom', 'cli', 'hello', 1)`, rolloutPath);
+    db.close();
+    const dbBefore = readFileSync(dbPath);
+
     const r = runInject(codexHome, ocxHome);
     expect(r.status).toBe(0);
     const result = JSON.parse(r.stdout);
@@ -124,6 +143,8 @@ describe("injectCodexConfig integration (Design B)", () => {
 
     expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(original);
     expect(existsSync(join(codexHome, "opencodex.config.toml"))).toBe(false);
+    expect(readFileSync(dbPath).equals(dbBefore)).toBe(true);
+    expect(readFileSync(rolloutPath, "utf8")).toBe(rollout);
   });
 
   test("non-loopback hostname still uses the legacy provider-table injection", () => {
