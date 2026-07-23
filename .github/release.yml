@@ -1,7 +1,3 @@
-# GitHub release notes category config.
-# Maps PR labels (applied by pr-labeler.yml) to release note section headings.
-# Docs: https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
-
 changelog:
   exclude:
     labels:
