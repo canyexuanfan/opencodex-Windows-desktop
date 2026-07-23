@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -30,6 +30,8 @@ describe("parseCodexVersionOutput / compareCodexVersions", () => {
     expect(compareCodexVersions("0.133.0", "0.145.0-alpha.30")).toBeLessThan(0);
     expect(compareCodexVersions("0.145.0", "0.145.0-alpha.30")).toBeGreaterThan(0);
     expect(compareCodexVersions("0.145.0-alpha.9", "0.145.0-alpha.30")).toBeLessThan(0);
+    expect(compareCodexVersions("0.145.0-alpha-1", "0.145.0-alpha-2")).toBeLessThan(0);
+    expect(compareCodexVersions("0.145.0-alpha.1.beta", "0.145.0-alpha.1.beta.1")).toBeLessThan(0);
   });
 });
 
@@ -225,5 +227,40 @@ describe("resolveCodexRuntime", () => {
     })).toBe(false);
     persistEffortClamp(null, { configDir });
     expect(loadLastEffortClamp({ configDir })).toBeNull();
+  });
+
+  test("creates missing config directory on first runtime/clamp persist", () => {
+    const parent = tempConfigDir();
+    const configDir = join(parent, "nested", "opencodex-home");
+    expect(existsSync(configDir)).toBe(false);
+    persistCodexRuntime({
+      command: "C:\\keep\\codex.exe",
+      version: "0.145.0-alpha.30",
+      source: "configured",
+    }, { configDir });
+    persistEffortClamp({
+      runtimePath: "C:\\keep\\codex.exe",
+      runtimeVersion: "0.145.0-alpha.30",
+      removedEfforts: ["max"],
+      affectedModels: ["gpt-5.6-sol"],
+    }, { configDir });
+    expect(existsSync(configDir)).toBe(true);
+    expect(loadPersistedCodexRuntime({ configDir })?.command).toBe("C:\\keep\\codex.exe");
+    expect(loadLastEffortClamp({ configDir })?.removedEfforts).toEqual(["max"]);
+  });
+
+  test("resolveAndPersistCodexRuntime surfaces persistence failures", () => {
+    const blocker = join(tempConfigDir(), "blocker-file");
+    writeFileSync(blocker, "not-a-directory");
+    const failed = resolveAndPersistCodexRuntime({
+      configDir: blocker,
+      env: { CODEX_CLI_PATH: "C:\\keep\\codex.exe", PATH: "" },
+      platform: "win32",
+      existsSync: () => true,
+      execFileSync: () => "codex-cli 0.145.0-alpha.30",
+    });
+    expect(failed.runtime.command).toBe("C:\\keep\\codex.exe");
+    expect(typeof failed.persistError).toBe("string");
+    expect(failed.persistError!.length).toBeGreaterThan(0);
   });
 });

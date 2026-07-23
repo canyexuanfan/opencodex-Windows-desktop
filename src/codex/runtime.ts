@@ -36,6 +36,8 @@ export interface ResolveCodexRuntimeResult {
   failures: RuntimeProbeFailure[];
   replacedConfigured?: { from: ResolvedCodexRuntime; reason: string };
   newerAvailable?: ResolvedCodexRuntime;
+  /** Set when the selected runtime could not be written to codex-runtime.json. */
+  persistError?: string;
 }
 
 export type RuntimeExecFile = (
@@ -154,8 +156,11 @@ export function compareCodexVersions(a: string | null, b: string | null): number
   if (!a) return -1;
   if (!b) return 1;
   const parse = (value: string) => {
-    const [core, pre = ""] = value.split("-", 2);
-    const parts = (core ?? "").split(".").map(part => Number.parseInt(part, 10) || 0);
+    const dash = value.indexOf("-");
+    const core = dash < 0 ? value : value.slice(0, dash);
+    const pre = dash < 0 ? "" : value.slice(dash + 1);
+    const parts = core.split(".").map(part => Number.parseInt(part, 10) || 0);
+    // SemVer prerelease identifiers are '.'-separated; keep hyphenated ids intact.
     const preParts = pre
       ? pre.split(".").map(part => (/^\d+$/.test(part) ? Number.parseInt(part, 10) : part))
       : [];
@@ -180,8 +185,10 @@ export function compareCodexVersions(a: string | null, b: string | null): number
       if (lp !== rp) return lp - rp;
       continue;
     }
-    const diff = String(lp).localeCompare(String(rp));
-    if (diff !== 0) return diff;
+    if (typeof lp === "number") return -1; // numeric < non-numeric (SemVer)
+    if (typeof rp === "number") return 1;
+    if (lp < rp) return -1;
+    if (lp > rp) return 1;
   }
   return 0;
 }
@@ -462,8 +469,11 @@ export function resolveAndPersistCodexRuntime(
   if (result.runtime.command && result.runtime.source !== "fallback") {
     try {
       persistCodexRuntime(result.runtime, deps);
-    } catch {
-      /* persistence best-effort */
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const persistError = redactUserPath(redactSecretString(message)).slice(0, 200);
+      console.warn(`[opencodex] Failed to persist Codex runtime selection: ${persistError}`);
+      return { ...result, persistError };
     }
   }
   return result;

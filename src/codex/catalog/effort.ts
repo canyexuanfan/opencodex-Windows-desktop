@@ -303,6 +303,9 @@ export function clampCatalogModelsToCodexSupport(models: RawEntry[], deps: Bundl
       runtimePath = resolved.runtime.command;
       runtimeVersion = resolved.runtime.version;
       process.stderr.write(`${formatRuntimeLogLine(resolved.runtime)}\n`);
+      if (resolved.persistError) {
+        console.warn(`[opencodex] Codex runtime selection could not be persisted; a later sync may pick a different binary.`);
+      }
       if (
         resolved.replacedConfigured
         && resolved.replacedConfigured.from.command !== resolved.runtime.command

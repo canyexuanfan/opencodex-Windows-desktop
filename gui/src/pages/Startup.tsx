@@ -112,6 +112,8 @@ export default function Startup({ apiBase }: { apiBase: string }) {
             };
           };
           if (!signal?.aborted) {
+            // newerAvailable comes from /api/settings full resolveCodexRuntime()
+            // (memoized alternative discovery), not discoverAlternatives:false.
             const runtime = settings.codexRuntime;
             const clampActive = Boolean(runtime?.catalogClamp?.active);
             const newer = Boolean(runtime?.newerAvailable);
