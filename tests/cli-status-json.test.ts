@@ -73,6 +73,7 @@ describe("CLI status JSON", () => {
           version?: unknown;
           source?: unknown;
           warning?: unknown;
+          newerAvailable?: unknown;
           catalogClamp?: { active?: unknown; removedEfforts?: unknown };
         };
       };
@@ -107,6 +108,12 @@ describe("CLI status JSON", () => {
       expect(typeof parsed.codexShim?.summary).toBe("string");
       expect(typeof parsed.codexRuntime?.path).toBe("string");
       expect(typeof parsed.codexRuntime?.source).toBe("string");
+      expect(parsed.codexRuntime?.version === null || typeof parsed.codexRuntime?.version === "string").toBe(true);
+      expect(parsed.codexRuntime?.warning === null || typeof parsed.codexRuntime?.warning === "string").toBe(true);
+      expect(
+        parsed.codexRuntime?.newerAvailable === null
+        || (typeof parsed.codexRuntime?.newerAvailable === "object" && parsed.codexRuntime?.newerAvailable !== null),
+      ).toBe(true);
       expect(parsed.codexRuntime?.catalogClamp?.active).toBe(false);
       expect(Array.isArray(parsed.codexRuntime?.catalogClamp?.removedEfforts)).toBe(true);
 

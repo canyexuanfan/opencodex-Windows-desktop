@@ -106,19 +106,39 @@ export default function Startup({ apiBase }: { apiBase: string }) {
         if (settingsRes.ok) {
           const settings = await settingsRes.json() as {
             codexRuntime?: {
-              warning?: string | null;
-              newerAvailable?: { path?: string } | null;
+              version?: string | null;
+              newerAvailable?: { path?: string; version?: string | null } | null;
               catalogClamp?: { active?: boolean; removedEfforts?: string[] };
             };
           };
           if (!signal?.aborted) {
-            setCodexRuntimeWarning(settings.codexRuntime?.warning ?? null);
+            const runtime = settings.codexRuntime;
+            const clampActive = Boolean(runtime?.catalogClamp?.active);
+            const newer = Boolean(runtime?.newerAvailable);
+            const version = runtime?.version ?? "unknown";
+            const efforts = (runtime?.catalogClamp?.removedEfforts ?? []).join(", ");
+            if (clampActive) {
+              setCodexRuntimeWarning(
+                efforts
+                  ? t("startup.codexRuntime.clampHiddenWithEfforts", { version, efforts })
+                  : t("startup.codexRuntime.clampHidden", { version }),
+              );
+            } else if (newer) {
+              setCodexRuntimeWarning(t("startup.codexRuntime.olderBinary", { version }));
+            } else {
+              setCodexRuntimeWarning(null);
+            }
             setCodexRuntimeFix(
-              settings.codexRuntime?.newerAvailable || settings.codexRuntime?.catalogClamp?.active
-                ? "ocx doctor --fix-codex-runtime"
-                : null,
+              newer
+                ? "ocx doctor --fix-codex-runtime && ocx sync"
+                : clampActive
+                  ? "ocx sync"
+                  : null,
             );
           }
+        } else if (!signal?.aborted) {
+          setCodexRuntimeWarning(null);
+          setCodexRuntimeFix(null);
         }
       } catch {
         if (!signal?.aborted) {
@@ -157,7 +177,7 @@ export default function Startup({ apiBase }: { apiBase: string }) {
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
-  }, [apiBase]);
+  }, [apiBase, t]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -268,12 +288,9 @@ export default function Startup({ apiBase }: { apiBase: string }) {
                   <button
                     type="button"
                     className="btn btn-ghost btn-sm"
-                    onClick={() => {
-                      void navigator.clipboard.writeText(codexRuntimeFix);
-                      setCopied(codexRuntimeFix);
-                    }}
+                    onClick={() => void copyCommand(codexRuntimeFix)}
                   >
-                    {copied === codexRuntimeFix ? "Copied" : "Copy fix command"}
+                    {copied === codexRuntimeFix ? t("startup.copied") : t("startup.copy")}
                   </button>
                   <code style={{ marginLeft: "0.5rem" }}>{codexRuntimeFix}</code>
                 </p>

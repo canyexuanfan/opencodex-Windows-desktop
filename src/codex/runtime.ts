@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { atomicWriteFile, getConfigDir } from "../config";
 import { codexExecInvocation, isSpawnableCodexCandidate } from "./exec-invocation";
-import { redactUserPath } from "../lib/redact";
+import { redactSecretString, redactUserPath } from "../lib/redact";
 
 export type CodexRuntimeSource =
   | "environment"
@@ -132,6 +132,7 @@ export function persistEffortClamp(
     removedEfforts: diagnostic.removedEfforts,
     affectedModels: diagnostic.affectedModels,
   };
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
   atomicWriteFile(path, `${JSON.stringify(payload, null, 2)}\n`);
 }
 
@@ -155,7 +156,10 @@ export function compareCodexVersions(a: string | null, b: string | null): number
   const parse = (value: string) => {
     const [core, pre = ""] = value.split("-", 2);
     const parts = (core ?? "").split(".").map(part => Number.parseInt(part, 10) || 0);
-    return { parts, pre };
+    const preParts = pre
+      ? pre.split(".").map(part => (/^\d+$/.test(part) ? Number.parseInt(part, 10) : part))
+      : [];
+    return { parts, preParts };
   };
   const left = parse(a);
   const right = parse(b);
@@ -164,9 +168,22 @@ export function compareCodexVersions(a: string | null, b: string | null): number
     const diff = (left.parts[i] ?? 0) - (right.parts[i] ?? 0);
     if (diff !== 0) return diff;
   }
-  if (!left.pre && right.pre) return 1;
-  if (left.pre && !right.pre) return -1;
-  return left.pre.localeCompare(right.pre);
+  if (left.preParts.length === 0 && right.preParts.length > 0) return 1;
+  if (left.preParts.length > 0 && right.preParts.length === 0) return -1;
+  const preLen = Math.max(left.preParts.length, right.preParts.length);
+  for (let i = 0; i < preLen; i += 1) {
+    const lp = left.preParts[i];
+    const rp = right.preParts[i];
+    if (lp === undefined) return -1;
+    if (rp === undefined) return 1;
+    if (typeof lp === "number" && typeof rp === "number") {
+      if (lp !== rp) return lp - rp;
+      continue;
+    }
+    const diff = String(lp).localeCompare(String(rp));
+    if (diff !== 0) return diff;
+  }
+  return 0;
 }
 
 export function loadPersistedCodexRuntime(
@@ -188,6 +205,7 @@ export function persistCodexRuntime(
   deps: ResolveCodexRuntimeDeps = {},
 ): void {
   const configDir = deps.configDir ?? getConfigDir();
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
   const payload: PersistedRuntimeState = {
     version: 1,
     command: runtime.command,
@@ -227,7 +245,8 @@ function probeVersion(
     return { ok: true, version };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { ok: false, reason: `failed --version (${message.slice(0, 160)})` };
+    const redacted = redactUserPath(redactSecretString(message)).slice(0, 160);
+    return { ok: false, reason: `failed --version (${redacted})` };
   }
 }
 

@@ -450,6 +450,12 @@ export async function runDoctor(args: string[] = []): Promise<void> {
       console.log(`Selected: ${displayCodexRuntimePath(current.runtime.command)} (${current.runtime.version ?? "unknown"})`);
       return;
     }
+    if (resolved.runtime.source === "environment") {
+      console.log("CODEX_CLI_PATH currently overrides configured runtimes.");
+      console.log(`Unset or update CODEX_CLI_PATH to use ${displayCodexRuntimePath(resolved.newerAvailable.command)} (${resolved.newerAvailable.version ?? "unknown"}).`);
+      console.log("Then run ocx sync.");
+      return;
+    }
     persistCodexRuntime({
       command: resolved.newerAvailable.command,
       version: resolved.newerAvailable.version,

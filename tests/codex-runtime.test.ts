@@ -25,9 +25,10 @@ describe("parseCodexVersionOutput / compareCodexVersions", () => {
     expect(parseCodexVersionOutput("0.145.0-alpha.30")).toBe("0.145.0-alpha.30");
   });
 
-  test("orders prerelease after matching core? actually alpha < release without pre for same core — compare treats bare > pre", () => {
+  test("orders prerelease identifiers numerically", () => {
     expect(compareCodexVersions("0.133.0", "0.145.0-alpha.30")).toBeLessThan(0);
     expect(compareCodexVersions("0.145.0", "0.145.0-alpha.30")).toBeGreaterThan(0);
+    expect(compareCodexVersions("0.145.0-alpha.9", "0.145.0-alpha.30")).toBeLessThan(0);
   });
 });
 
