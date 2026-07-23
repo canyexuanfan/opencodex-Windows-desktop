@@ -49,6 +49,7 @@ import {
   headersForCodexAuthContext,
   isCodexAuthContextUsable,
   resolveCodexAuthContext,
+  stripCodexRuntimeProviderFields,
   type CodexAuthContext,
 } from "../../codex/auth-context";
 import {
@@ -148,6 +149,45 @@ export function usesCodexForwardPoolAuth(
 ): authCtx is Extract<CodexAuthContext, { kind: "pool" | "main-pool" }> {
   return (authCtx.kind === "pool" || authCtx.kind === "main-pool")
     && provider.authMode === "forward" && provider.adapter === "openai-responses";
+}
+
+function normalizeCodexUnsupportedModelDetail(value: string): string {
+  return value.trim().replace(/\s+/gu, " ").toLocaleLowerCase("en-US");
+}
+
+function isAllowListedCodexAccountModel400(
+  status: number,
+  bodyText: string,
+  modelId: string,
+): boolean {
+  if (status !== 400) return false;
+  try {
+    const payload = JSON.parse(bodyText) as unknown;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+    const detail = (payload as { detail?: unknown }).detail;
+    if (typeof detail !== "string") return false;
+    const expected = `The '${modelId}' model is not supported when using Codex with a ChatGPT account.`;
+    return normalizeCodexUnsupportedModelDetail(detail)
+      === normalizeCodexUnsupportedModelDetail(expected);
+  } catch {
+    return false;
+  }
+}
+
+async function shouldRetryCodexPoolAccountModel400(
+  response: Response,
+  modelId: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (response.status !== 400) return false;
+  try {
+    const body = await readBoundedResponseBody(response.clone(), { signal });
+    return body.displaySafe
+      && !body.truncated
+      && isAllowListedCodexAccountModel400(response.status, body.text, modelId);
+  } catch {
+    return false;
+  }
 }
 
 
@@ -920,7 +960,7 @@ export async function handleResponses(
         + `(model ${parsed.modelId}); forwarding without it — earlier turns may be missing from this request`,
       );
     }
-    const request = await adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
+    let request = await adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
     const passthroughEstimate = typeof request.usageLog?.inputTokens === "number"
       ? request.usageLog.inputTokens
       : undefined;
@@ -934,6 +974,20 @@ export async function handleResponses(
     linkAbortSignal(upstream, options.abortSignal);
     const connectMs = config.connectTimeoutMs ?? 200_000;
     let upstreamResponse: Response;
+    const transportFailureResponse = (err: unknown): Response => {
+      upstream.abort();
+      if (options.abortSignal?.aborted) return clientCancelledResponse();
+      const outcome = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "connect_error";
+      if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
+        recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
+          threadId: req.headers.get("x-codex-parent-thread-id"),
+        });
+      }
+      const msg = outcome === "timeout"
+        ? `Provider connect timeout after ${connectMs}ms`
+        : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
+      return formatErrorResponse(502, "upstream_error", msg);
+    };
     try {
       // Transient-5xx pre-stream retry (devlog/_plan/260716_claudecode_hardening/010):
       // the ChatGPT backend emits transient 502/520s that an immediate retry absorbs.
@@ -950,18 +1004,80 @@ export async function handleResponses(
         { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
       );
     } catch (err) {
-      upstream.abort();
-      if (options.abortSignal?.aborted) return clientCancelledResponse();
-      const outcome = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "connect_error";
-      if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
-        recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
+      return transportFailureResponse(err);
+    }
+
+    if (
+      usesCodexForwardPoolAuth(authCtx, route.provider)
+      && await shouldRetryCodexPoolAccountModel400(
+        upstreamResponse,
+        route.modelId,
+        options.abortSignal,
+      )
+    ) {
+      const firstAuthCtx = authCtx;
+      let retryAuthCtx: CodexAuthContext | undefined;
+      try {
+        retryAuthCtx = await resolveCodexAuthContext(
+          req.headers,
+          config,
+          "pool",
+          { excludeAccountId: firstAuthCtx.accountId },
+        );
+      } catch (error) {
+        if (
+          !(error instanceof CodexPoolAuthenticationError)
+          && !(error instanceof CodexAuthContextError)
+          && !(error instanceof CodexAccountCooldownError)
+        ) throw error;
+      }
+
+      if (retryAuthCtx?.kind === "pool" || retryAuthCtx?.kind === "main-pool") {
+        recordCodexUpstreamOutcome(config, firstAuthCtx.accountId, 400, {
           threadId: req.headers.get("x-codex-parent-thread-id"),
         });
+
+        const retryHeaders = headersForCodexAuthContext(req.headers, retryAuthCtx);
+        const retryProvider = applyCodexAuthContextToProvider(
+          stripCodexRuntimeProviderFields(route.provider),
+          retryAuthCtx,
+          "pool",
+        );
+        const retryAdapter = resolveAdapter(
+          resolveWireProtocolOverride(route.providerName, route.modelId, retryProvider),
+          config.cacheRetention,
+        );
+        request = await retryAdapter.buildRequest(parsed, { headers: retryHeaders });
+
+        await upstreamResponse.body?.cancel().catch(() => undefined);
+        authCtx = retryAuthCtx;
+        options.onCodexAuthContextResolved?.(retryAuthCtx);
+        selectedForwardHeaders = retryHeaders;
+        route.provider = retryProvider;
+        logCtx.provider = formatCodexProviderForLog(
+          route.providerName,
+          retryAuthCtx.accountId,
+          config,
+        );
+
+        noteAttemptSend(logCtx.activeAttempt, passthroughEstimate);
+        try {
+          upstreamResponse = await fetchWithHeaderTimeout(
+            request.url,
+            {
+              method: request.method,
+              headers: request.headers,
+              body: request.body,
+            },
+            upstream.signal,
+            connectMs,
+            parsed.stream,
+            providerFetch(route.provider),
+          );
+        } catch (err) {
+          return transportFailureResponse(err);
+        }
       }
-      const msg = outcome === "timeout"
-        ? `Provider connect timeout after ${connectMs}ms`
-        : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
-      return formatErrorResponse(502, "upstream_error", msg);
     }
     const headers = sanitizePassthroughHeaders(upstreamResponse.headers);
     const resolvedModel = headers.get("openai-model")?.trim();
