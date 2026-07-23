@@ -2,7 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { augmentRoutedModelsWithJawcodeMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, clampCatalogModelsToCodexSupport, clampEntryToCodexSupportedEfforts, clampedDefaultEffort, deriveComboCatalogModel, exactComboCatalogSlugs, filterCatalogVisibleModels, filterSupportedNativeSlugs, gatherRoutedModels, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, resetCatalogRuntimeStateForTests, resetOpenAiApiCatalogWarningStateForTests } from "../src/codex/catalog";
+import { augmentRoutedModelsWithJawcodeMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, catalogModelSlug, clampCatalogModelsToCodexSupport, clampEntryToCodexSupportedEfforts, clampedDefaultEffort, deriveComboCatalogModel, exactComboCatalogSlugs, filterCatalogVisibleModels, filterSupportedNativeSlugs, gatherRoutedModels, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, resetCatalogRuntimeStateForTests, resetOpenAiApiCatalogWarningStateForTests } from "../src/codex/catalog";
 import {
   CURSOR_STATIC_MODELS,
   filterCursorConfiguredModelsByLiveDiscovery,
@@ -518,6 +518,129 @@ describe("Google Gemini catalog metadata", () => {
       .toEqual(["low", "medium", "high", "max", "ultra"]);
     expect(entry?.input_modalities).toEqual(["text", "image"]);
     expect(entry?.context_window).toBe(1_048_576);
+  });
+});
+
+describe("configured CatalogModel displayName -> catalog display_name", () => {
+  test("a routed CatalogModel displayName becomes the catalog display_name", () => {
+    const model = { provider: "deepseek", id: "deepseek-v4", displayName: "DeepSeek V4", owned_by: "deepseek" };
+    const entries = buildCatalogEntries(nativeTemplate(), [], [model]);
+    const row = entries.find(e => e.slug === "deepseek/deepseek-v4");
+
+    expect(row?.display_name).toBe("DeepSeek V4");
+    // Routing slug is untouched — displayName is display-only.
+    expect(row?.slug).toBe("deepseek/deepseek-v4");
+    expect(catalogModelSlug(model)).toBe("deepseek/deepseek-v4");
+  });
+
+  test("absent displayName leaves display_name as the slug (unchanged behavior)", () => {
+    const entries = buildCatalogEntries(nativeTemplate(), [], [
+      { provider: "anthropic", id: "claude-sonnet-4-6", owned_by: "anthropic" },
+    ]);
+    const row = entries.find(e => e.slug === "anthropic/claude-sonnet-4-6");
+
+    expect(row?.display_name).toBe("anthropic/claude-sonnet-4-6");
+    expect(row?.slug).toBe("anthropic/claude-sonnet-4-6");
+  });
+
+  test("empty/whitespace displayName is ignored and falls back to the slug", () => {
+    const entries = buildCatalogEntries(nativeTemplate(), [], [
+      { provider: "deepseek", id: "deepseek-v4", displayName: "   ", owned_by: "deepseek" },
+    ]);
+    const row = entries.find(e => e.slug === "deepseek/deepseek-v4");
+    expect(row?.display_name).toBe("deepseek/deepseek-v4");
+  });
+
+  test("displayName never affects the routing slug, alias, or provider", () => {
+    const withAlias = { provider: "combo", id: "x", alias: "fast-chat", displayName: "Fast Chat", owned_by: "combo" };
+    const entries = buildCatalogEntries(nativeTemplate(), [], [withAlias], undefined, false, "default", new Set(["fast-chat"]));
+    const row = entries.find(e => e.slug === "fast-chat")!;
+
+    // The public alias is still the slug; only the label changed.
+    expect(row.slug).toBe("fast-chat");
+    expect(catalogModelSlug(withAlias)).toBe("fast-chat");
+    expect(row.display_name).toBe("Fast Chat");
+    expect(row.owned_by).toBe("combo");
+  });
+
+  test("displayName stays stable across repeated catalog sync (idempotent regeneration)", () => {
+    const model = { provider: "deepseek", id: "deepseek-v4", displayName: "DeepSeek V4", owned_by: "deepseek" };
+    const rebuild = () => buildCatalogEntries(nativeTemplate(), [], [model]);
+
+    // First sync: freshly built entries merged into an empty on-disk catalog.
+    const firstSync = mergeCatalogEntriesForSync([], rebuild(), new Map(), [], false);
+    const firstRow = firstSync.find(e => e.slug === "deepseek/deepseek-v4")!;
+    expect(firstRow.display_name).toBe("DeepSeek V4");
+
+    // Second sync: re-derive from the SAME config and merge against the now-populated catalog.
+    // Routed entries are rebuilt from gatherRoutedModels each sync, so display_name must be
+    // re-derived deterministically and never drift back to the bare slug.
+    const secondSync = mergeCatalogEntriesForSync(firstSync, rebuild(), new Map(), [], false);
+    const secondRow = secondSync.find(e => e.slug === "deepseek/deepseek-v4")!;
+    expect(secondRow.display_name).toBe("DeepSeek V4");
+    expect(secondRow.slug).toBe("deepseek/deepseek-v4");
+  });
+
+  test("configured displayName does not override genuine native upstream marketing names", () => {
+    // Native gpt-5.6-* entries come from the pinned upstream snapshot with their real display
+    // names; they carry no CatalogModel (isRouted=false), so a configured displayName can never
+    // reach them — and the fallback-quality discriminator (display_name === slug) still works.
+    const entries = buildCatalogEntries(nativeTemplate(), ["gpt-5.6-sol"], []);
+    const sol = entries.find(e => e.slug === "gpt-5.6-sol");
+    expect(sol?.display_name).toBe("GPT-5.6-Sol");
+
+    // A fallback-quality native (display_name stamped with the bare slug) is still upgraded to
+    // the upstream entry by sync — displayName on routed models does not interfere with that path.
+    const synthesizedLuna = {
+      ...nativeTemplate(),
+      slug: "gpt-5.6-luna",
+      display_name: "gpt-5.6-luna",
+      priority: 9,
+    };
+    const merged = mergeCatalogEntriesForSync([synthesizedLuna], [], new Map(), [], false);
+    expect(merged.find(e => e.slug === "gpt-5.6-luna")?.display_name).toBe("GPT-5.6-Luna");
+  });
+
+  test("a configured customModel displayName propagates end-to-end through gatherRoutedModels", async () => {
+    clearModelCache("custom-provider");
+    const originalFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = (() => {
+      fetchCalls += 1;
+      throw new Error("fetch should not be called");
+    }) as typeof fetch;
+    try {
+      const models = await gatherRoutedModels({
+        port: 10100,
+        defaultProvider: "custom-provider",
+        providers: {
+          "custom-provider": {
+            baseUrl: "https://example.invalid/v1",
+            adapter: "openai-chat",
+            authMode: "key",
+            liveModels: false,
+            models: ["baseline-model"],
+          },
+        },
+        customModels: [
+          { id: "cm-1", provider: "custom-provider", modelId: "renamed-model", displayName: "Renamed Model", addedAt: "2026-01-01T00:00:00.000Z" },
+        ],
+      });
+
+      expect(fetchCalls).toBe(0);
+      // The configured custom row is added alongside the provider's baseline model; displayName
+      // rides only on the custom row.
+      const custom = models.find(m => m.provider === "custom-provider" && m.id === "renamed-model");
+      expect(custom?.displayName).toBe("Renamed Model");
+
+      const entries = buildCatalogEntries(nativeTemplate(), [], models);
+      const row = entries.find(e => e.slug === "custom-provider/renamed-model");
+      expect(row?.display_name).toBe("Renamed Model");
+      expect(row?.slug).toBe("custom-provider/renamed-model");
+    } finally {
+      globalThis.fetch = originalFetch;
+      clearModelCache("custom-provider");
+    }
   });
 });
 

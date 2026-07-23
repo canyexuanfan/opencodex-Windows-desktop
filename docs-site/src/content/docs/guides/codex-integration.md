@@ -127,6 +127,32 @@ Routed catalog entries also get their GPT-5 identity rewritten to the real upstr
 Reasoning controls come from provider/model metadata across Codex's `low | medium | high | xhigh |
 max | ultra` ladder; unsupported values are mapped or clamped before the upstream request.
 
+### Custom model display names
+
+A custom model can carry a human-readable **display name** that overrides the label Codex shows in
+its model picker, without changing anything about how the model is routed. The display name maps to
+the catalog entry's `display_name` field only — the routing slug (`<provider>/<model>`), alias
+collision order, provider, and native OpenAI marketing names are all left untouched.
+
+Add a display name from the CLI (the proxy syncs the catalog right away when live):
+
+```bash
+ocx models add deepseek deepseek-v4 --display-name "DeepSeek V4" --context-window 128000
+```
+
+You can also set or edit it through the management API (`POST /api/custom-models`,
+`PUT /api/custom-models/<id>` with a `displayName` string) and the web dashboard. A `/` is rejected
+because it would collide with the routed-slug separator.
+
+The display name is **display-only and stable across regeneration**. Every `ocx sync` and catalog
+refresh re-derives routed entries from `config.json` (including `customModels`), so the configured
+name is reapplied instead of drifting back to the routed slug. A managed service restart also attempts
+this sync shortly after the proxy binds. If that best-effort boot sync fails, for example during an
+offline login, the previously persisted catalog is retained and the next successful `ocx sync`
+reapplies the configured name. Genuine upstream native names (e.g. `gpt-5.6-sol` →
+"GPT-5.6-Sol") come from the pinned upstream snapshot and are never overridden by a custom display
+name.
+
 ## The subagent picker
 
 Codex's `spawn_agent` advertises the first **5 picker-visible catalog models** after sorting by
