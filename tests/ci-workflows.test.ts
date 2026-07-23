@@ -123,6 +123,14 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("Release must run from main or preview");
     expect(workflow).toContain("main releases must use a stable semver version");
     expect(workflow).toContain("preview releases must use a preview prerelease version");
+
+    // Release notes must include PR categories and the full channel commit range
+    // (branch merges + direct commits), for both create and edit paths.
+    expect(workflow).toContain("releases/generate-notes");
+    expect(workflow).toContain("## Commits");
+    expect(workflow).toContain("git log --pretty=format:'- %s (%h)'");
+    expect(workflow).toContain("--notes-file \"$notes_file\"");
+    expect(workflow).not.toContain("--generate-notes");
   });
 
   test("docs deployment is pinned, bounded, and scoped to Pages", async () => {
