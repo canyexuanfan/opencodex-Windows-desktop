@@ -36,7 +36,8 @@ files are picked up automatically.
 ## Split A — `tests/combos.test.ts` (1286) → keep pure-combo, move management API
 
 The management API block is **18 tests** (corrected from the census "17"),
-`tests/combos.test.ts:676-1262`:
+`tests/combos.test.ts:676-1286` (the slice runs to EOF; the final test is
+wrapped in `describe("supported disabled-provider activation")` `:1200-1286`):
 
 1. PUT/DELETE clear only mutated combo cooldowns `:676-704`
 2. GET sorted + PUT upserts normalized whole values `:705-734`
@@ -54,29 +55,33 @@ The management API block is **18 tests** (corrected from the census "17"),
 14. invalid PUT and all-disabled PUT leave config/disk unchanged `:1081-1107`
 15. DELETE is own-property safe + removes final combo map `:1108-1122`
 16. DELETE refresh retires final managed combo catalog row `:1123-1173`
-17. provider deletion guarded by sorted combo deps until cleanup `:1174-1200`
-18. PATCH skips disabled member, persists all-disabled, 503 envelope `:1201-1262`
+17. provider deletion guarded by sorted combo deps until cleanup `:1174-1197`
+18. PATCH skips disabled member, persists all-disabled, 503 envelope `:1201-1285` (inside describe `:1200-1286`)
 
 NEW `tests/combo-management-api.test.ts` receives those 18 tests plus the
 management-only setup they share (copy verbatim from combos.test.ts):
 
 - the FULL import header `:1-42` (unused imports are harmless — see above);
-- `baseConfig` `:46`, `withTempHome` `:95`, `writeRawConfig` `:114`,
-  `comboApi` `:118`, `comboApiRaw` `:133`, `responseJson` `:145`
-  (`rrConfig`/`successfulPicks`/`VALID_COMBO` stay in the original — only the
-  describe-block pure-combo tests use them);
-- the file-wide `afterEach` combo-state cleanup `:151-154` — duplicate into the
-  new file (both files need it once the block moves).
+- the ENTIRE const+helper+afterEach region `:44-154` verbatim — `VALID_COMBO`
+  `:44`, `baseConfig` `:46`, `rrConfig` `:68`, `successfulPicks` `:86`,
+  `withTempHome` `:95`, `writeRawConfig` `:114`, `comboApi` `:118`,
+  `comboApiRaw` `:133`, `responseJson` `:145`, and the `afterEach` `:151-154`.
+  `VALID_COMBO` is USED by the management tests (`:680, :741, :762, :770, :876,
+  :884, :900, :906-907, :926, :928, :940, :963, :986, :1006, :1029, :1034,
+  :1059, :1074, :1086, :1095, :1100, :1113, :1152, :1179-1180`), so it MUST be
+  copied. `rrConfig`/`successfulPicks` are describe-block-only but are copied
+  anyway (harmless — tests are not typechecked). Copying the whole `:44-154`
+  region verbatim is the simplest correct approach.
 
-MODIFY `tests/combos.test.ts`: remove the 18 top-level management tests
-`:676-<end of test #18>`; keep imports, all helpers, afterEach, and the
-`describe("combo namespace primitives")` block `:156-674`. Imports need NO
-pruning (unused imports harmless).
+MODIFY `tests/combos.test.ts`: keep `:1-674` (imports, all helpers, afterEach,
+and the `describe("combo namespace primitives")` block `:156-674`); remove
+`:675-1286` (management slice `:676`→EOF `:1286`). No import/helper pruning.
 
-Decision: COPY the six helpers + import header into the new file (test-local
-fixtures; duplication keeps each file self-contained and, since tests are not
-typechecked, carries no unused-import cost). A shared `tests/helpers/combo-api.ts`
-is a later-phase option, out of scope here.
+Decision: NEW file = lines `:1-154` (imports + VALID_COMBO + all helpers +
+afterEach) verbatim, then lines `:676-1286` (management slice) verbatim.
+Duplication keeps each file self-contained; since tests are not typechecked,
+unused members carry no cost. A shared `tests/helpers/combo-api.ts` is a
+later-phase option, out of scope here.
 
 ## Split B — `tests/server-auth.test.ts` (2926) → move provider-management validation
 
