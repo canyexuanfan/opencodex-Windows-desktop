@@ -38,6 +38,10 @@ const KIMI_K27_CODE_HIGHSPEED: Cost4 = { input: 1.9, output: 8, cacheRead: 0.38,
 const KIMI_K26: Cost4 = { input: 0.95, output: 4, cacheRead: 0.16, cacheWrite: 0.95 };
 const KIMI_K25: Cost4 = { input: 0.6, output: 3, cacheRead: 0.1, cacheWrite: 0.6 };
 const QWEN38_ROUTEWAY_TEMPORARY: Cost4 = { input: 1.5, output: 5, cacheRead: 0.15, cacheWrite: 0 };
+// Anthropic official list prices (USD / 1M tokens). Cache write uses the published 5-minute rate.
+const CLAUDE_SONNET_46: Cost4 = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
+const CLAUDE_OPUS_46: Cost4 = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
+const ANTHROPIC_PRICING = "https://platform.claude.com/docs/en/about-claude/pricing (official; 5m cache-write tier)";
 
 const GEMINI_PRICING = "https://ai.google.dev/gemini-api/docs/pricing (2026-07-22); cacheWrite=0: storage is billed per-hour, not per-token";
 const MINIMAX_PRICING = "https://platform.minimax.io/docs/guides/pricing-paygo";
@@ -77,8 +81,10 @@ export const EXPECTED_PRICE_OVERLAYS: readonly ExpectedPriceOverlay[] = [
   { provider: "google-antigravity", modelId: "gemini-3.1-pro-preview", cost4: GEMINI_31_PRO, source: GEMINI_PRICING, verifiedAt: "2026-07-20", status: "verified" },
   // Antigravity-bundled third-party models — derived from the underlying vendor's
   // official API price (Antigravity itself bills via subscription quota).
-  { provider: "google-antigravity", modelId: "claude-sonnet-4-6", cost4: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, source: "derived: anthropic official https://platform.claude.com/docs/en/about-claude/pricing (5m cache-write; 1h is $6)", verifiedAt: "2026-07-20", status: "verified-derived" },
-  { provider: "google-antigravity", modelId: "claude-opus-4-6-thinking", cost4: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, source: "derived: anthropic official https://platform.claude.com/docs/en/about-claude/pricing (5m cache-write; 1h is $10)", verifiedAt: "2026-07-20", status: "verified-derived" },
+  { provider: "google-antigravity", modelId: "claude-sonnet-4-6", cost4: CLAUDE_SONNET_46, source: `anthropic official Claude Sonnet 4.6 ${ANTHROPIC_PRICING}`, verifiedAt: "2026-07-23", status: "verified" },
+  { provider: "google-antigravity", modelId: "claude-opus-4-6-thinking", cost4: CLAUDE_OPUS_46, source: `anthropic official Claude Opus 4.6 ${ANTHROPIC_PRICING}`, verifiedAt: "2026-07-23", status: "verified" },
+  // Alias without the Antigravity "-thinking" suffix (if logs/UI ever surface it).
+  { provider: "google-antigravity", modelId: "claude-opus-4-6", cost4: CLAUDE_OPUS_46, source: `anthropic official Claude Opus 4.6 ${ANTHROPIC_PRICING}`, verifiedAt: "2026-07-23", status: "verified" },
   { provider: "google-antigravity", modelId: "gpt-oss-120b-medium", cost4: { input: 0.03, output: 0.15, cacheRead: 0, cacheWrite: 0 }, source: "derived: gpt-oss-120b open-weights — OpenRouter advertised lowest https://openrouter.ai/openai/gpt-oss-120b/providers", verifiedAt: "2026-07-20", status: "verified-derived" },
   // Kimi / Moonshot — official price tables are now published (2026-07-20 re-check;
   // previously empty). kimi = Kimi Code OAuth surface, moonshot = CN key surface,

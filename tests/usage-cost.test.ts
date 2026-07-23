@@ -189,7 +189,7 @@ describe("resolveMatchedPrice", () => {
   });
 
   test("16. shipped overlay membership: 43 keys, including Gemini 3.6 and compatibility prices", () => {
-    expect(EXPECTED_PRICE_OVERLAYS.length).toBe(44);
+    expect(EXPECTED_PRICE_OVERLAYS.length).toBe(45);
     expect(EXPECTED_PRICE_OVERLAYS.some(row => row.status === "unverified")).toBe(false);
     const keys = new Set(EXPECTED_PRICE_OVERLAYS.map(row => `${row.provider}/${row.modelId}`));
     for (const expected of [
@@ -214,6 +214,7 @@ describe("resolveMatchedPrice", () => {
       "google-antigravity/gemini-3.1-pro-preview",
       "google-antigravity/claude-sonnet-4-6",
       "google-antigravity/claude-opus-4-6-thinking",
+      "google-antigravity/claude-opus-4-6",
       "google-antigravity/gpt-oss-120b-medium",
       "kimi/k3",
       "kimi/k3[1m]",
@@ -262,6 +263,24 @@ describe("resolveMatchedPrice", () => {
     }
   });
 });
+
+
+  test("pool-suffixed google-antigravity provider matches official Anthropic Claude Opus 4.6 overlay", () => {
+    const price = resolveMatchedPrice("google-antigravity-p442fff", "claude-opus-4-6-thinking");
+    expect(price).not.toBeNull();
+    expect(price!.modelId).toBe("claude-opus-4-6-thinking");
+    expect(price!.cost4).toEqual({ input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 });
+    expect(price!.source).toBe("expected");
+    expect(price!.status).toBe("verified");
+
+    const est = estimateRequestCost({
+      provider: "google-antigravity-p442fff",
+      model: "claude-opus-4-6-thinking",
+      usageStatus: "reported",
+      usage: { inputTokens: 1_000_000, outputTokens: 0 },
+    });
+    expect(est?.cost.total).toBeCloseTo(5, 9);
+  });
 
 describe("combo", () => {
   const overlays: ExpectedPriceOverlay[] = [
