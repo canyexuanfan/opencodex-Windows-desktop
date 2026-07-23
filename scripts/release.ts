@@ -201,6 +201,17 @@ async function _remoteMainSha(): Promise<string> {
   return sha;
 }
 
+/** Live (network) head of a remote branch — never the local remote-tracking ref. */
+async function remoteBranchHead(branch: string): Promise<string> {
+  const out = (await $`git ls-remote origin refs/heads/${branch}`.text()).trim();
+  const [sha] = out.split(/\s+/);
+  if (!sha) {
+    console.error(`✗ could not resolve origin/${branch}`);
+    process.exit(1);
+  }
+  return sha;
+}
+
 if (args[0] === "watch") {
   await watchLatest();
   process.exit(0);
@@ -263,15 +274,19 @@ await waitForSuccessfulCi(releaseSha);
 console.log(`→ wait for Service lifecycle (${releaseSha})`);
 await waitForSuccessfulCi(releaseSha, SERVICE_WORKFLOW, "Service lifecycle");
 
-const originSha = (await $`git rev-parse origin/${branch}`.text()).trim();
-if (originSha !== releaseSha) {
-  console.error(`✗ origin/${branch} moved while waiting for CI (${originSha} != ${releaseSha}); aborting release dispatch.`);
+// Live-remote guard: re-read the actual remote head over the network immediately
+// before dispatch. The local remote-tracking ref can be minutes stale, and the
+// workflow_dispatch below resolves a mutable branch — so this is the last chance
+// to refuse publishing an unaudited newer commit.
+const liveOriginSha = await remoteBranchHead(branch);
+if (liveOriginSha !== releaseSha) {
+  console.error(`✗ origin/${branch} moved while waiting for CI (${liveOriginSha} != ${releaseSha}); aborting release dispatch.`);
   process.exit(1);
 }
 
 console.log(`→ dispatch Release (tag=${tag}, dry-run=${dryRun})`);
 const dispatchStartedAt = new Date(Date.now() - 5_000).toISOString();
-await $`gh workflow run release.yml --ref ${branch} -f version=${version} -f tag=${tag} -f dry-run=${String(dryRun)}`;
+await $`gh workflow run release.yml --ref ${branch} -f version=${version} -f tag=${tag} -f expected-sha=${releaseSha} -f dry-run=${String(dryRun)}`;
 
 // 5. Watch it.
 const releaseRun = await waitForReleaseWorkflowRun(releaseSha, branch, dispatchStartedAt);

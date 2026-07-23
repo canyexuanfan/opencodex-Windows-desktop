@@ -18,6 +18,7 @@ interface LoggedCall {
 interface ReleaseScenario {
   branch?: string;
   headSha?: string;
+  remoteHeadSha?: string;
   privacyExitCode?: number;
   testExitCode?: number;
   typecheckExitCode?: number;
@@ -71,6 +72,10 @@ if (args[0] === "status" && args[1] === "--porcelain") {
 }
 
 if (args[0] === "ls-remote") {
+  if (args.some(a => typeof a === "string" && a.startsWith("refs/heads/"))) {
+    const branchRef = args.find(a => typeof a === "string" && a.startsWith("refs/heads/"));
+    stdout(\`\${process.env.FAKE_GIT_REMOTE_HEAD_SHA ?? headSha}\t\${branchRef}\n\`);
+  }
   process.exit(0);
 }
 
@@ -194,6 +199,7 @@ function runRelease(version: string, scenario: ReleaseScenario = {}) {
       FAKE_RELEASE_LOG: logPath,
       FAKE_GIT_BRANCH: scenario.branch ?? "main",
       FAKE_GIT_HEAD_SHA: scenario.headSha ?? "abc123def456",
+      ...(scenario.remoteHeadSha ? { FAKE_GIT_REMOTE_HEAD_SHA: scenario.remoteHeadSha } : {}),
       FAKE_BUN_TSC_EXIT_CODE: String(scenario.typecheckExitCode ?? 0),
       FAKE_BUN_TEST_EXIT_CODE: String(scenario.testExitCode ?? 0),
       FAKE_BUN_PRIVACY_EXIT_CODE: String(scenario.privacyExitCode ?? 0),
@@ -252,5 +258,28 @@ describe("release helper", () => {
       && call.args.includes("tag=preview")
       && call.args.includes("dry-run=true"),
     )).toBeGreaterThanOrEqual(0);
+  });
+
+  test("dispatch pins the audited release SHA via expected-sha", () => {
+    const { calls, result } = runRelease("9.9.9", { headSha: "deadbeefcafe1234" });
+
+    expect(result.status).toBe(0);
+    expect(findCallIndex(calls, "gh", call =>
+      call.args[0] === "workflow"
+      && call.args[1] === "run"
+      && call.args.includes("release.yml")
+      && call.args.includes("expected-sha=deadbeefcafe1234"),
+    )).toBeGreaterThanOrEqual(0);
+  });
+
+  test("aborts before dispatch when the remote branch moved during the CI wait", () => {
+    const { calls, result } = runRelease("9.9.9", {
+      headSha: "abc123def456",
+      remoteHeadSha: "9999999999999999999999999999999999999999",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr + result.stdout).toContain("moved while waiting for CI");
+    expect(findCallIndex(calls, "gh", call => call.args[0] === "workflow" && call.args[1] === "run")).toBe(-1);
   });
 });
