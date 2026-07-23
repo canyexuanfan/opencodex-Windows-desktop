@@ -639,6 +639,12 @@ export interface OcxProviderConfig {
   adapter: string;
   baseUrl: string;
   /**
+   * Optional relative resource path for key-auth openai-responses requests. Must start with `/`
+   * and must not include a URL scheme, query string, or fragment. When omitted, the adapter keeps
+   * the legacy `/v1/responses` construction.
+   */
+  responsesPath?: string;
+  /**
    * Explicit opt-in for non-registry private-network destinations such as localhost, RFC1918,
    * link-local, or unique-local upstreams. Metadata endpoints remain blocked.
    */

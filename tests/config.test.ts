@@ -49,6 +49,20 @@ function writeConfig(content: unknown): void {
   );
 }
 
+function writeResponsesPathConfig(responsesPath: string): void {
+  writeConfig({
+    port: 12345,
+    providers: {
+      custom: {
+        adapter: "openai-responses",
+        baseUrl: "https://example.test/api/v3",
+        responsesPath,
+      },
+    },
+    defaultProvider: "custom",
+  });
+}
+
 describe("opencodex config defaults", () => {
   test("atomic rename retries transient Windows sharing violations", () => {
     const sleeps: number[] = [];
@@ -178,6 +192,38 @@ describe("opencodex config defaults", () => {
     });
     expect(readConfigDiagnostics().source).toBe("fallback");
     expect(readConfigDiagnostics().error).toContain("responsesItemIdRepair");
+  });
+
+  test("accepts a relative responsesPath", () => {
+    writeResponsesPathConfig("/responses");
+
+    const diagnostics = readConfigDiagnostics();
+    expect(diagnostics.source).toBe("file");
+    expect(diagnostics.error).toBeNull();
+    expect(diagnostics.config.providers.custom.responsesPath).toBe("/responses");
+  });
+
+  test("rejects responsesPath without a leading slash", () => {
+    writeResponsesPathConfig("responses");
+
+    const diagnostics = readConfigDiagnostics();
+    expect(diagnostics.source).toBe("fallback");
+    expect(diagnostics.error).toContain("responsesPath must start with /");
+  });
+
+  test("rejects responsesPath containing a URL scheme, query, or fragment", () => {
+    for (const [responsesPath, expectedError] of [
+      ["https://other-origin.example/responses", "responsesPath must be a relative path without a URL scheme"],
+      ["/https://other-origin.example/responses", "responsesPath must be a relative path without a URL scheme"],
+      ["/responses?api-version=v1", "responsesPath must not include query strings or fragments"],
+      ["/responses#section", "responsesPath must not include query strings or fragments"],
+    ] as const) {
+      writeResponsesPathConfig(responsesPath);
+
+      const diagnostics = readConfigDiagnostics();
+      expect(diagnostics.source).toBe("fallback");
+      expect(diagnostics.error).toContain(expectedError);
+    }
   });
 
   test("reads valid config diagnostics without mutation", () => {

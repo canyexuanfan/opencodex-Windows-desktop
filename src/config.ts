@@ -329,6 +329,7 @@ const warnedConfigFallbacks = new Set<string>();
 const providerConfigSchema = z.object({
   adapter: z.string().min(1),
   baseUrl: z.string().min(1),
+  responsesPath: z.string().min(1).optional(),
   allowPrivateNetwork: z.boolean().optional(),
   codexAccountMode: z.enum(["pool", "direct"]).optional(),
   responsesItemIdRepair: z.object({
@@ -370,6 +371,18 @@ export function providerBaseUrlConfigError(baseUrl: string): string | null {
     if (parsed.search || parsed.hash) return "baseUrl must not include query strings or fragments";
   } catch {
     return "baseUrl must be a valid URL";
+  }
+  return null;
+}
+
+function providerResponsesPathConfigError(responsesPath: string | undefined): string | null {
+  if (responsesPath === undefined) return null;
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(responsesPath) || responsesPath.includes("://")) {
+    return "responsesPath must be a relative path without a URL scheme";
+  }
+  if (!responsesPath.startsWith("/")) return "responsesPath must start with /";
+  if (responsesPath.includes("?") || responsesPath.includes("#")) {
+    return "responsesPath must not include query strings or fragments";
   }
   return null;
 }
@@ -463,6 +476,14 @@ const configSchema = z.object({
           message: destinationError,
         });
       }
+    }
+    const responsesPathError = providerResponsesPathConfigError(provider.responsesPath);
+    if (responsesPathError) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers", name, "responsesPath"],
+        message: responsesPathError,
+      });
     }
     const headersError = providerHeadersConfigError((provider as { headers?: unknown }).headers);
     if (headersError) {
