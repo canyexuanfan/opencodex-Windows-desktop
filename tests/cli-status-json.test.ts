@@ -74,7 +74,7 @@ describe("CLI status JSON", () => {
           source?: unknown;
           warning?: unknown;
           newerAvailable?: unknown;
-          catalogClamp?: { active?: unknown; removedEfforts?: unknown };
+          catalogClamp?: { active?: unknown; removedEfforts?: unknown; runtimeVersion?: unknown };
         };
       };
 
@@ -116,6 +116,7 @@ describe("CLI status JSON", () => {
       ).toBe(true);
       expect(parsed.codexRuntime?.catalogClamp?.active).toBe(false);
       expect(Array.isArray(parsed.codexRuntime?.catalogClamp?.removedEfforts)).toBe(true);
+      expect(parsed.codexRuntime?.catalogClamp?.runtimeVersion).toBeNull();
 
       const serialized = JSON.stringify(parsed).toLowerCase();
       for (const forbidden of ["apikey", "sk-test-secret", "token", "refreshtoken", "authorization", "email"]) {

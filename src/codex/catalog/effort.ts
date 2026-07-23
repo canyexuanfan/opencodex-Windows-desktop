@@ -266,7 +266,7 @@ export function clampEntryToCodexSupportedEfforts(entry: RawEntry, supported: Se
 export function clampCatalogModelsToCodexSupport(models: RawEntry[], deps: BundledCatalogDeps = {}): RawEntry[] {
   const supported = codexSupportedReasoningEfforts(deps);
   if (!supported) {
-    if (!deps.commandCandidates) persistEffortClamp(null);
+    if (!deps.commandCandidates) persistEffortClamp(null, { configDir: deps.configDir });
     return models;
   }
 
@@ -331,10 +331,10 @@ export function clampCatalogModelsToCodexSupport(models: RawEntry[], deps: Bundl
       affectedModels: affected,
     };
     for (const line of formatClampLogLines(diagnostic)) console.warn(line);
-    if (!deps.commandCandidates) persistEffortClamp(diagnostic);
+    if (!deps.commandCandidates) persistEffortClamp(diagnostic, { configDir: deps.configDir });
     deps.onEffortClamp?.(diagnostic);
   } else if (!deps.commandCandidates) {
-    persistEffortClamp(null);
+    persistEffortClamp(null, { configDir: deps.configDir });
   }
 
   return models;

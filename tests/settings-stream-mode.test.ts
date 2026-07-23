@@ -82,15 +82,25 @@ describe("GET /api/settings", () => {
   });
 
   test("reports redacted codexRuntime diagnostics and clamp correlation", async () => {
-    const { persistCodexRuntime, persistEffortClamp, resetCodexRuntimeResolveCacheForTests } = await import("../src/codex/runtime");
+    const { chmodSync } = await import("node:fs");
+    const {
+      persistEffortClamp,
+      resetCodexRuntimeResolveCacheForTests,
+    } = await import("../src/codex/runtime");
     resetCodexRuntimeResolveCacheForTests();
-    persistCodexRuntime({
-      command: join(TEST_DIR, "Users", "Alice", "codex.exe"),
-      version: "0.133.0",
-      source: "configured",
-    }, { configDir: TEST_DIR });
+
+    const fakeCodex = process.platform === "win32"
+      ? join(TEST_DIR, "bin", "codex.cmd")
+      : join(TEST_DIR, "bin", "codex");
+    mkdirSync(join(TEST_DIR, "bin"), { recursive: true });
+    if (process.platform === "win32") {
+      writeFileSync(fakeCodex, "@echo off\r\necho codex-cli 0.133.0\r\n", "utf8");
+    } else {
+      writeFileSync(fakeCodex, "#!/bin/sh\necho 'codex-cli 0.133.0'\n", "utf8");
+      chmodSync(fakeCodex, 0o755);
+    }
     persistEffortClamp({
-      runtimePath: join(TEST_DIR, "Users", "Alice", "codex.exe"),
+      runtimePath: fakeCodex,
       runtimeVersion: "0.133.0",
       removedEfforts: ["max", "ultra"],
       affectedModels: ["gpt-5.6-sol"],
@@ -99,10 +109,8 @@ describe("GET /api/settings", () => {
     const previousCli = process.env.CODEX_CLI_PATH;
     const previousPath = process.env.PATH;
     try {
-      process.env.CODEX_CLI_PATH = join(TEST_DIR, "Users", "Alice", "codex.exe");
+      process.env.CODEX_CLI_PATH = fakeCodex;
       process.env.PATH = "";
-      // Force resolve to use the persisted/env path without spawning a real Codex.
-      // The settings handler catches resolve failures; probe will fail existence and fall back.
       const body = await (await getSettings(baseConfig()))!.json() as {
         codexRuntime?: {
           path?: string;
@@ -114,17 +122,21 @@ describe("GET /api/settings", () => {
         };
       };
       expect(typeof body.codexRuntime?.path).toBe("string");
-      expect(body.codexRuntime?.path?.toLowerCase()).not.toContain("alice");
+      // OPENCODEX_HOME lives under the OS user profile; username must stay redacted.
+      expect(body.codexRuntime?.path?.toLowerCase()).not.toMatch(/\\users\\[^\\[\]/]+\\/i);
+      expect(body.codexRuntime?.version).toBe("0.133.0");
+      expect(body.codexRuntime?.source).toBe("environment");
+      expect(body.codexRuntime?.catalogClamp).toEqual({
+        active: true,
+        removedEfforts: ["max", "ultra"],
+        runtimeVersion: "0.133.0",
+      });
       expect(
         body.codexRuntime?.newerAvailable === null
         || (typeof body.codexRuntime?.newerAvailable === "object" && body.codexRuntime?.newerAvailable !== null),
       ).toBe(true);
-      expect(body.codexRuntime?.warning === null || typeof body.codexRuntime?.warning === "string").toBe(true);
-      expect(Array.isArray(body.codexRuntime?.catalogClamp?.removedEfforts)).toBe(true);
-      expect(
-        body.codexRuntime?.catalogClamp?.runtimeVersion === null
-        || typeof body.codexRuntime?.catalogClamp?.runtimeVersion === "string",
-      ).toBe(true);
+      expect(typeof body.codexRuntime?.warning).toBe("string");
+      expect(body.codexRuntime?.warning).toContain("0.133.0");
     } finally {
       if (previousCli === undefined) delete process.env.CODEX_CLI_PATH;
       else process.env.CODEX_CLI_PATH = previousCli;

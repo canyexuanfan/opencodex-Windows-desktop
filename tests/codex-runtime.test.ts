@@ -263,4 +263,27 @@ describe("resolveCodexRuntime", () => {
     expect(typeof failed.persistError).toBe("string");
     expect(failed.persistError!.length).toBeGreaterThan(0);
   });
+
+  test("catalog clamp clears diagnostics inside deps.configDir when probe fails", async () => {
+    const { clampCatalogModelsToCodexSupport } = await import("../src/codex/catalog/effort");
+    const nested = join(tempConfigDir(), "nested", "opencodex-home");
+    persistEffortClamp({
+      runtimePath: "C:\\keep\\codex.exe",
+      runtimeVersion: "0.133.0",
+      removedEfforts: ["max"],
+      affectedModels: ["gpt-5.6-sol"],
+    }, { configDir: nested });
+    expect(loadLastEffortClamp({ configDir: nested })?.removedEfforts).toEqual(["max"]);
+
+    clampCatalogModelsToCodexSupport([], {
+      configDir: nested,
+      env: { PATH: "" },
+      platform: "win32",
+      existsSync: () => false,
+      execFileSync: () => {
+        throw new Error("catalog probe failed");
+      },
+    });
+    expect(loadLastEffortClamp({ configDir: nested })).toBeNull();
+  });
 });

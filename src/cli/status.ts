@@ -61,6 +61,7 @@ export type CliStatusJson = {
     catalogClamp: {
       active: boolean;
       removedEfforts: string[];
+      runtimeVersion: string | null;
     };
   };
 };
@@ -189,6 +190,7 @@ export async function collectStatus(): Promise<CliStatusView> {
     catalogClamp: {
       active: clampActive,
       removedEfforts: clampActive ? (lastClamp?.removedEfforts ?? []) : [],
+      runtimeVersion: clampActive ? (lastClamp?.runtimeVersion ?? null) : null,
     },
   };
   const proxyLabel = pid && health.ok
