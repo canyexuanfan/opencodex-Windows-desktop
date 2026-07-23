@@ -74,3 +74,26 @@ codex-cli 0.144.5, consistent with the six-rung bundled-catalog union.
 
 Remaining open from triage: #287, #289, #290 (needs-info reply not yet
 posted — outside the approved bucket-1 batch), #292, #294, #295, #300.
+
+---
+
+## Addendum 2 — implementation complete (2026-07-23, same day)
+
+All five bucket-2 fixes landed on `codex/bucket2-fixes-260723`, one PABCD
+cycle per decade doc, main-session implementation with Sol micro-audits:
+
+| WP | Issue | Commits | Gates |
+|---|---|---|---|
+| 2 | #289 | f464f966 + ea39977d | focused 68/68, full 3519/3519, tsc, privacy, docs build |
+| 3 | #292 | a4bd1d85 | focused 106/106, full 3525/3525, tsc, privacy |
+| 4 | #287 | c771aaa5 | 32/32 API + 5/5 GUI SSR, full 3527/3527, tsc, lint:gui, gui build |
+| 5 | #295 | f4f90e94 + 95b8717c | focused 31/31, full 3531/3531, tsc, privacy, docs build |
+| 6 | #300 | 44082437 + 70d1251e | focused 97/97, full 3542/3542, tsc, lint:gui, build:gui, docs build |
+
+Deviations recorded: WP4 helper split to `gui/src/pages/claude-autoconnect.ts`
+(react-refresh lint rule); WP5 kept the v1-injectionPrompt case as a separate
+test; WP6 adapted 4 existing PUT toEqual assertions for the additive response
+field. WP6 also fixed a real latent bug found in audit: PUT /api/injection-model
+was not a true partial update (absent model key deleted stored model+effort).
+#290 needs-info reply posted (issuecomment-5053809339), issue stays open.
+No push performed; PR split decision left to the user.

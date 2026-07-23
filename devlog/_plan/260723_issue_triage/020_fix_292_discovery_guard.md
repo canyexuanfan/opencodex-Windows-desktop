@@ -1,7 +1,7 @@
 # Fix #292 — model-discovery destination guard and safe JSON diagnostics
 
 Status: implementation-ready design only  
-Target branch: `codex/fix-292-discovery-guard` from `origin/dev`  
+Target branch: `codex/bucket2-fixes-260723` (stacked; originally planned `codex/fix-292-discovery-guard`)  
 Issue: #292
 
 ## 1. Required outcome

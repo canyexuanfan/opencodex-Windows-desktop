@@ -1,7 +1,7 @@
 # 010 — Fix issue #289: configurable Responses resource path
 
 - **Issue:** #289, Volcengine Ark Agent Plan key-auth Responses URL gets an extra `/v1`
-- **Implementation branch:** `codex/fix-289-responses-path` from `dev`
+- **Implementation branch:** `codex/bucket2-fixes-260723` (stacked; originally planned `codex/fix-289-responses-path`)
 - **Work class:** C2 — optional provider contract field across type, persisted-config validation,
   one adapter branch, focused tests, and synchronized reference docs
 - **Decision:** add optional relative `responsesPath?: string`; do not infer from a hostname or
