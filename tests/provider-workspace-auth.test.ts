@@ -70,7 +70,7 @@ describe("safe OAuth account labels", () => {
 
 describe("workspace account integration seam", () => {
   test("passes account state and handlers into provider details", async () => {
-    const source = await Bun.file("gui/src/pages/Providers.tsx").text();
+    const source = (await Bun.file("gui/src/pages/Providers.tsx").text()) + (await Bun.file("gui/src/hooks/useProviderAccountPools.ts").text());
     expect(source).toContain("accountLoadState={accountLoadStates[item.name]");
     expect(source).toContain("switchingAccountId={switchingAccount?.provider === item.name");
     expect(source).toContain("onRetryAccounts: async provider => { await fetchAccountSets([provider]); }");
@@ -101,10 +101,11 @@ describe("workspace account integration seam", () => {
   });
 
   test("keeps logout and delete failure states honest", async () => {
-    const [page, codexPool] = await Promise.all([
+    const [page0, codexPool] = await Promise.all([
       Bun.file("gui/src/pages/Providers.tsx").text(),
       Bun.file("gui/src/components/CodexAccountPool.tsx").text(),
     ]);
+    const page = page0 + (await Bun.file("gui/src/hooks/useProviderAccountPools.ts").text());
     expect(page).toContain('notify(t("prov.logoutFail"');
     expect(page).toContain('notify(t("prov.accountRemoveFail"');
     expect(page).toContain("await fetchAccountSets([provider])");
@@ -130,12 +131,13 @@ describe("workspace account integration seam", () => {
   });
 
   test("wires OAuth re-authenticate handlers in classic and workspace", async () => {
-    const [page, panel, details, overview] = await Promise.all([
+    const [page0, panel, details, overview] = await Promise.all([
       Bun.file("gui/src/pages/Providers.tsx").text(),
       Bun.file("gui/src/components/provider-workspace/ProviderAuthPanel.tsx").text(),
       Bun.file("gui/src/components/provider-workspace/ProviderDetails.tsx").text(),
       Bun.file("gui/src/components/provider-workspace/ProviderOverview.tsx").text(),
     ]);
+    const page = page0 + (await Bun.file("gui/src/components/providers/ProviderCardList.tsx").text());
     expect(page).toContain("onReauth:");
     expect(page).toContain("onCancelLogin: cancelLoginOAuth");
     expect(page).toContain("loginOAuth(provider, true, accountId)");
@@ -160,12 +162,13 @@ describe("workspace account integration seam", () => {
   });
 
   test("wires Codex active reauth health into openai rail status", async () => {
-    const [page, pool, panel, modal] = await Promise.all([
+    const [page0, pool, panel, modal] = await Promise.all([
       Bun.file("gui/src/pages/Providers.tsx").text(),
       Bun.file("gui/src/components/CodexAccountPool.tsx").text(),
       Bun.file("gui/src/components/provider-workspace/ProviderAuthPanel.tsx").text(),
       Bun.file("gui/src/components/AddCodexAccountModal.tsx").text(),
     ]);
+    const page = page0 + (await Bun.file("gui/src/hooks/useProviderAccountPools.ts").text());
     expect(page).toContain("codexActiveNeedsReauth");
     expect(page).toContain("map.openai = true");
     expect(page).toContain("onCodexActiveNeedsReauthChange={setCodexActiveNeedsReauth}");
@@ -181,7 +184,7 @@ describe("workspace account integration seam", () => {
   });
 
   test("keeps classic stale-account reauth and remove outside disabled row shell", async () => {
-    const page = await Bun.file("gui/src/pages/Providers.tsx").text();
+    const page = (await Bun.file("gui/src/pages/Providers.tsx").text()) + (await Bun.file("gui/src/components/providers/ProviderCardList.tsx").text());
     expect(page).toContain('className="prov-account-row-main"');
     expect(page).toContain('className="prov-account-reauth"');
     expect(page).toContain("disabled={busy === name}");

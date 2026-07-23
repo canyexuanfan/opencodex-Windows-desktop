@@ -110,7 +110,7 @@ describe("OAuth account-scoped reauth", () => {
   });
 
   test("management login passes reauthAccountId into startLoginFlow", async () => {
-    const source = await Bun.file("src/server/management-api.ts").text();
+    const source = await Bun.file("src/server/management/oauth-account-routes.ts").text();
     expect(source).toContain("reauthAccountId: accountId");
     expect(source).toContain("Unknown account for reauth");
   });
