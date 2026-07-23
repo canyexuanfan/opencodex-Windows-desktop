@@ -3,11 +3,12 @@ import { formatUptime } from "../formatUptime";
 import { IconAlert, IconExternal, IconInfo, IconRefresh, IconX } from "../icons";
 import { Trans } from "../i18n/provider";
 import { useI18n, type TKey } from "../i18n/shared";
-import { settingsPollMayCommit, startupRiskDetailKey } from "../startup-health-ui";
+import { settingsPollMayCommit } from "../startup-health-ui";
 import { formatTokens } from "../format-tokens";
 import { EmptyState, Select } from "../ui";
 
 interface HealthData { status: string; version: string; uptime: number }
+type StartupHealthStatus = "native" | "protected" | "at-risk" | "error";
 interface ProviderInfo { name: string; adapter: string; baseUrl: string; defaultModel?: string; hasApiKey: boolean }
 interface ModelInfo { id: string; provider: string; owned_by?: string }
 interface SettingsData {
@@ -188,6 +189,7 @@ function useModalDialog(open: boolean, triggerRef: RefObject<HTMLButtonElement |
 export default function Dashboard({ apiBase }: { apiBase: string }) {
   const { locale, t } = useI18n();
   const [health, setHealth] = useState<HealthData | null>(null);
+  const [startupHealth, setStartupHealth] = useState<StartupHealthStatus | null>(null);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [settings, setSettings] = useState<SettingsData | null>(null);
@@ -244,6 +246,29 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       updateRetryTimerRef.current = null;
     }
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const readStartupHealth = async () => {
+      try {
+        const response = await fetch(`${apiBase}/api/startup-health`);
+        if (!response.ok) throw new Error("startup health unavailable");
+        const data = await response.json() as { status?: unknown; diagnosticStale?: unknown };
+        const status = data.status;
+        const validStatus = status === "native" || status === "protected" || status === "at-risk";
+        if (!validStatus) throw new Error("invalid startup health response");
+        if (!cancelled) setStartupHealth(data.diagnosticStale === true ? "at-risk" : status);
+      } catch {
+        if (!cancelled) setStartupHealth("error");
+      }
+    };
+    void readStartupHealth();
+    const interval = window.setInterval(() => { void readStartupHealth(); }, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [apiBase]);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -648,16 +673,19 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         </div>
       </div>
 
-      {(settings?.startupHealth?.status === "at-risk" || settings?.startupHealth?.diagnosticStale) && (
-        <div className="notice notice-warn" role="alert" style={{ marginTop: -12, marginBottom: 24 }}>
-          <IconAlert />
-          <span>
-            {settings.startupHealth.diagnosticStale
-              ? t("startup.staleData")
-              : t(startupRiskDetailKey(settings.startupHealth))}{" "}
-            <a href="#startup">{t("startup.title")}</a>
+      {startupHealth && (
+        <a className="startup-health-bar" href="#startup">
+          <span className={`dot ${startupHealth === "error" ? "dot-red" : startupHealth === "at-risk" ? "dot-amber" : "dot-green"}`} aria-hidden="true" />
+          <span className="startup-health-bar__summary">
+            {t(startupHealth === "error"
+              ? "startup.error"
+              : startupHealth === "at-risk"
+                ? "startup.summary.atRisk"
+                : startupHealth === "protected"
+                  ? "startup.summary.protected"
+                  : "startup.summary.native")}
           </span>
-        </div>
+        </a>
       )}
 
       {projectConfigWarnings.length > 0 && (

@@ -453,6 +453,27 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .stat .value { font-size: var(--text-title); font-weight: var(--weight-semibold); letter-spacing: 0; line-height: var(--leading-tight); }
 .stat .value.mono { font-family: var(--font-code); font-size: var(--text-subtitle); }
 
+.startup-health-bar {
+  min-height: var(--control-lg);
+  margin: calc(-1 * var(--space-3)) 0 var(--space-6);
+  padding: 0 var(--space-3);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--muted);
+  background: var(--hover);
+  border-block: 1px solid var(--border-soft);
+  text-decoration: none;
+  font-size: var(--text-control);
+  line-height: var(--leading-ui);
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.startup-health-bar:hover { background: var(--raised); color: var(--text); }
+.startup-health-bar:active { transform: translateY(1px); }
+.startup-health-bar:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
+.startup-health-bar__summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ---- dashboard model grid (grouped by provider) ---- */
 .model-group-head { display: flex; align-items: baseline; gap: 8px; margin: 0 0 8px; font-size: var(--text-control); font-weight: var(--weight-semibold); color: var(--text); }
 .model-group-head .count { font-family: var(--font-code); font-weight: var(--weight-medium); color: var(--faint); font-size: var(--text-label); }
@@ -709,16 +730,6 @@ dialog.modal-overlay::backdrop {
 .notice-warn { font-size: var(--text-label); line-height: var(--leading-body); padding: 8px 10px; border-radius: var(--radius-sm); background: var(--amber-soft); color: var(--amber); display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
 .notice-warn svg { width: 14px; height: 14px; flex-shrink: 0; }
 
-/* Startup lifecycle health — compact infrastructure status, not a setup wizard. */
-.nav-health-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-round);
-  background: var(--amber);
-  box-shadow: 0 0 0 3px var(--amber-soft);
-  margin-left: auto;
-  flex: 0 0 auto;
-}
 .startup-page-sub { margin-bottom: 0; }
 .startup-hero { display: flex; gap: 16px; align-items: flex-start; margin-bottom: 16px; }
 .startup-hero--safe { border-color: color-mix(in srgb, var(--green) 34%, var(--border)); background: color-mix(in srgb, var(--green-soft) 64%, var(--surface)); }
