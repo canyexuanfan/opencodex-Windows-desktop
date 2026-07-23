@@ -15,10 +15,10 @@ jobs:
     permissions:
       models: read
     outputs:
-      requires_translation: ${{ steps.ai.outputs.requires_translation }}
-      translated_title: ${{ steps.ai.outputs.translated_title }}
-      translated_body: ${{ steps.ai.outputs.translated_body }}
-      detected_language: ${{ steps.ai.outputs.detected_language }}
+      requires_translation: ${{ steps.parse.outputs.requires_translation }}
+      translated_title: ${{ steps.parse.outputs.translated_title }}
+      translated_body: ${{ steps.parse.outputs.translated_body }}
+      detected_language: ${{ steps.parse.outputs.detected_language }}
     steps:
       - name: Detect and translate
         id: ai
@@ -137,18 +137,32 @@ jobs:
           cat existing.json >> prompt.txt
           cat >> prompt.txt << 'PROMPT'
 
-          Return JSON: {"issues":["<number>",...], "reason":"<one sentence>"}
-          List only clear duplicates (max 5). Empty array if none.
+          Compare the new issue against the existing open issues.
+
+          Return JSON only:
+          {
+            "duplicates": ["<number>", ...],
+            "related": ["<number>", ...],
+            "reason": "<one sentence>"
+          }
+
+          Rules:
+          - duplicates: clear same-bug / same-request matches only (max 5)
+          - related: near matches such as timeout vs slow response, same area/symptom with different root cause (max 5)
+          - never leave reason empty
+          - if both lists are empty, reason must still explain why (for example "No clear duplicates or related issues found.")
+          - do not invent issue numbers
           PROMPT
       - name: Run inference
         id: infer
         uses: actions/ai-inference@b81b2afb8390ee6839b494a404766bef6493c7d9 # v1
         with:
           model: openai/gpt-4o-mini
-          max-tokens: 200
+          max-tokens: 300
           system-prompt: >
-            You are a GitHub issue triage assistant. Identify duplicates by
-            semantic similarity. Respond only with JSON, no markdown.
+            You are a GitHub issue triage assistant. Identify clear duplicates
+            and near-related issues by semantic similarity. Always include a
+            non-empty reason. Respond only with JSON, no markdown.
           prompt-file: prompt.txt
       - name: Parse matches
         id: parse
@@ -162,10 +176,13 @@ jobs:
             try { parsed = JSON.parse(raw.trim()); }
             catch { try { parsed = JSON.parse(raw.replace(/^\`\`\`(?:json)?\s*/,'').replace(/\s*\`\`\`\s*$/,'').trim()); } catch { process.exit(0); } }
             const cur = String(process.env.ISSUE_NUMBER);
-            const matches = [...new Set((Array.isArray(parsed?.issues)?parsed.issues:[]).map(String).filter(n=>n!==cur))].slice(0,5);
-            if (!matches.length) process.exit(0);
+            const normalize = (value) => [...new Set((Array.isArray(value) ? value : []).map(String).filter(n => n && n !== cur))];
+            const duplicates = normalize(parsed?.duplicates ?? parsed?.issues).slice(0, 5);
+            const related = normalize(parsed?.related).filter(n => !duplicates.includes(n)).slice(0, 5);
+            const reason = String(parsed?.reason || '').trim() || 'No clear duplicates or related issues found.';
+            if (!duplicates.length && !related.length) process.exit(0);
             const fs = require('fs');
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'matches=' + JSON.stringify(matches) + '\n');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'matches=' + JSON.stringify({ duplicates, related, reason }) + '\n');
           "
 
   post-duplicates:
@@ -185,12 +202,30 @@ jobs:
             const { owner, repo } = context.repo;
             const issue_number = context.payload.issue.number;
             const MARKER = "<!-- opencodex-dedup-bot -->";
-            const matches = JSON.parse(process.env.MATCHES || '[]');
-            if (!matches.length) return;
+            const payload = JSON.parse(process.env.MATCHES || '{}');
+            const duplicates = Array.isArray(payload)
+              ? payload
+              : (Array.isArray(payload.duplicates) ? payload.duplicates : []);
+            const related = Array.isArray(payload)
+              ? []
+              : (Array.isArray(payload.related) ? payload.related : []);
+            const reason = Array.isArray(payload)
+              ? ''
+              : String(payload.reason || '').trim();
+            if (!duplicates.length && !related.length) return;
 
-            const list = matches.map(n => `- #${n}`).join('\n');
-            const body = [MARKER, 'Potential duplicates found:', '', list, '',
-              '_Detected automatically via GitHub Models._'].join('\n');
+            const sections = [MARKER];
+            if (duplicates.length) {
+              sections.push('Potential duplicates found:', '', duplicates.map(n => `- #${n}`).join('\n'), '');
+            }
+            if (related.length) {
+              sections.push('Possibly related issues:', '', related.map(n => `- #${n}`).join('\n'), '');
+            }
+            if (reason) {
+              sections.push(`Reason: ${reason}`, '');
+            }
+            sections.push('_Detected automatically via GitHub Models._');
+            const body = sections.join('\n');
 
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner, repo, issue_number, per_page: 100,
