@@ -43,6 +43,7 @@ async function probe(config: OcxConfig, name: string): Promise<{ status: number;
 
 describe("POST /api/providers/test (WP040 connectivity probe)", () => {
   test("unreachable upstream reports ok:false with the failure reason", async () => {
+    globalThis.fetch = (async () => { throw new TypeError("connection refused"); }) as typeof fetch;
     const config = baseConfig({
       dead: { adapter: "openai-chat", baseUrl: "http://127.0.0.1:1/v1", apiKey: "sk-x", allowPrivateNetwork: true },
     });

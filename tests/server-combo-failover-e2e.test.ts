@@ -743,6 +743,7 @@ describe("server combo failover 030 activation matrix", () => {
       a: provider("openai-chat", "http://127.0.0.1:1/v1", "key-a"),
       b: provider("openai-chat", baseUrl(b), "key-b"),
     });
+    config.connectTimeoutMs = 250;
     const response = await post(config);
     expect(response.status).toBe(200);
     expect(bHits).toBe(1);
