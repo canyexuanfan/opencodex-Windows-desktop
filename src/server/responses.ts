@@ -510,6 +510,25 @@ export function sidecarOutcomeRecorder(
 }
 
 /** Account id to attribute log labels / upstream outcomes to (pool + rotation-injected main). */
+/** Codex client hard-coded helper/shadow models: 0.145.0 uses gpt-5.6-luna; older clients gpt-5.4-mini. */
+const DEFAULT_SHADOW_SOURCE_MODELS = ["gpt-5.4-mini", "gpt-5.6-luna"] as const;
+
+/**
+ * True when `modelId` is a Codex client shadow/helper source model eligible for the
+ * shadowCallIntercept rewrite. Slash-prefixed ids (`openai/gpt-5.6-luna`) are deliberate
+ * routed requests, never client shadow calls — hard-excluded even for configured
+ * overrides. `configured` arrives unvalidated from disk (config.ts top-level parse is
+ * passthrough), so non-string entries are filtered rather than trusted.
+ */
+export function isShadowSourceModel(modelId: string, configured?: unknown): boolean {
+  if (modelId.includes("/")) return false;
+  const configuredStrings = Array.isArray(configured)
+    ? configured.filter((v): v is string => typeof v === "string" && v.trim() !== "")
+    : [];
+  const prefixes = configuredStrings.length > 0 ? configuredStrings : DEFAULT_SHADOW_SOURCE_MODELS;
+  return prefixes.some(prefix => modelId.startsWith(prefix.trim()));
+}
+
 export function codexLogAccountId(authCtx: CodexAuthContext): string | null {
   return authCtx.kind === "pool" || authCtx.kind === "main-pool" ? authCtx.accountId : null;
 }
@@ -946,9 +965,10 @@ export async function handleResponses(
   logCtx.configuredServiceTier = readConfiguredCodexServiceTier();
   logCtx.configuredSpeedLabel = requestLogSpeedLabel(logCtx.configuredServiceTier);
 
-  // Shadow call intercept: rewrite Codex Desktop's hard-coded gpt-5.4-mini helper calls
+  // Shadow call intercept: rewrite Codex's hard-coded helper calls
+  // (gpt-5.4-mini on older clients, gpt-5.6-luna on 0.145.0+)
   const _sci = config.shadowCallIntercept;
-  if (_sci?.enabled && _sci.model && parsed.modelId.startsWith("gpt-5.4-mini")) {
+  if (_sci?.enabled && _sci.model && isShadowSourceModel(parsed.modelId, _sci.sourceModels)) {
     const _sciOriginal = parsed.modelId;
     parsed.modelId = _sci.model;
     if (parsed._rawBody && typeof parsed._rawBody === "object") {

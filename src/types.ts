@@ -482,15 +482,18 @@ export interface OcxConfig {
   /** 사용자가 대시보드에서 직접 추가한 커스텀 모델 목록. */
   customModels?: OcxCustomModel[];
   /**
-   * Shadow call intercept: redirect Codex Desktop's hard-coded gpt-5.4-mini helper calls
-   * (title generation, commit messages, skill orchestration) to a user-chosen model.
+   * Shadow call intercept: redirect Codex's hard-coded helper calls (title generation,
+   * commit messages, skill orchestration) to a user-chosen model. Default intercepted
+   * source models: gpt-5.4-mini (older clients) and gpt-5.6-luna (Codex 0.145.0+).
    * Opt-in; disabled by default. When enabled, effort is forced to low.
    */
   shadowCallIntercept?: {
-    /** When true, all gpt-5.4-mini* requests are rewritten to the configured model. */
+    /** When true, requests for known shadow/helper source models are rewritten to the configured model. */
     enabled?: boolean;
     /** Replacement model id (e.g. "gpt-5.5"). */
     model?: string;
+    /** Optional override of intercepted source-model prefixes (default: gpt-5.4-mini, gpt-5.6-luna). */
+    sourceModels?: string[];
   };
   /**
    * 3-state multi-agent surface override:
