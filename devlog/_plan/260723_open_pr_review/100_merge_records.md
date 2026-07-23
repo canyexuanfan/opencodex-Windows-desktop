@@ -78,3 +78,38 @@ Local-only stacking of merge-ready PRs. NO push, NO GitHub mutations. Sol subage
 - Merge commit **eebd4977** + 2 fixups. Verification: typecheck 0;
   `bun run test` **3651 pass / 0 fail** across 297 files (85.97s).
 - Outcome: **DONE** (with residual docs feedback for upstream).
+
+## WP6 — PR #304 kiro follow-up (doc 050)
+
+- Sol security sub-verdict: **CLEAN** — read-only KIROCLI_DB_PATH selector; `%:token`
+  constant bound parameter (no SQL injection); ambiguous/missing token selection fails
+  without leaking values/keys/paths; clientIdHash constrained; diagnostics categorical;
+  redaction intact (upstream-http-error.ts:6). Security files byte-identical HEAD vs
+  pr-304 (credential hardening had already landed with #302 restore). privacy:scan pass.
+- Sol merge verdict round 1: **FAIL** — 5 real conflicts (kiro.ts, structure/04,
+  kiro-stream + 2 e2e test files). My merge-tree preflight had missed the `+`-prefixed
+  markers; Sol used `merge-tree --write-tree` correctly. Lesson recorded.
+- Resolution: took the PR side in all 5 regions — pr-304 merged upstream dev at
+  9ca7ea32, so PR side is a superset containing our stack side. Verified: 4 code/test
+  files byte-identical to pr-304 post-resolution; structure doc keeps stack Cursor
+  section; kiro-stream test count 53==53.
+- Merge commit **bb94ecbe**. Sol C-round verification: **PASS** ("conflict resolution
+  faithfully preserves the stack while applying #304's intended completion behavior";
+  test delta -1 intentional: 4 old fallback cases → 2 completion-semantics cases +
+  test-runner test; #279/#316 blobs unchanged).
+- Verification: typecheck 0; `bun run test` **3650 pass / 0 fail** across 298 files;
+  privacy scan passed.
+- Outcome: **DONE**.
+
+## Final stack summary
+
+| WP | PR | Outcome | Merge SHA | Tests after |
+|----|----|---------|-----------|-------------|
+| WP2 | #307 display names | DONE | 2523a6f5 | 3631/0 |
+| WP3 | #317 WHAM monthly | NOOP (absorbed via base refresh 1639af37) | — | — |
+| WP4 | #309 google wire | NEEDS_HUMAN (Sol FAIL: codec collision + Vertex allowlist overreach) | not merged | — |
+| WP5 | #279 Copilot chat | DONE (+2 audited fixups) | eebd4977 | 3651/0 |
+| WP6 | #304 kiro follow-up | DONE (security CLEAN; 5 conflicts resolved) | bb94ecbe | 3650/0 |
+
+Branch: `codex/pr-review-260723` (local only — NOT pushed; GitHub untouched).
+Upstream feedback owed: #309 two blockers; #279 docs contradiction (residual).
