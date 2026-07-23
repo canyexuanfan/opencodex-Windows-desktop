@@ -58,11 +58,14 @@ lane on our side:
 1. **Needs-info from reporter**: `process.memoryUsage()` rss vs heapUsed over time
    (flat heapUsed + rising RSS ⇒ native leak, confirms Bun-side), provider/model in
    use, whether streaming-heavy sessions correlate.
-2. **Actionable mitigation**: evaluate bumping pinned Bun 1.3.14 → 1.4.x
-   (engines, CI matrix, watchdog). #32585's reporter already validated 1.4.0
-   stabilizing the same proxy. Requires full CI on all three OSes + release-train
-   discipline; Bun pin change touches release automation ⇒ security-review lane
-   per MAINTAINERS.md.
+2. **Actionable mitigation**: evaluate bumping pinned Bun 1.3.14 once Bun 1.4
+   reaches a STABLE release (as of 2026-07-23, stable latest is still 1.3.14;
+   1.4.0 exists only on the canary channel — `bun upgrade --canary`). #32585's
+   reporter validated a 1.4.0 canary stabilizing the same proxy. Bump requires
+   full CI on all three OSes + release-train discipline; Bun pin change touches
+   release automation ⇒ security-review lane per MAINTAINERS.md.
+   Follow-up comment correcting the upgrade guidance:
+   issue #314 comment 5055562903 (2026-07-23).
 3. Optional diagnostics: a lightweight `/api/debug/memory` (rss/heapUsed/external)
    would let Windows reporters self-serve the native-vs-JS discrimination.
 
