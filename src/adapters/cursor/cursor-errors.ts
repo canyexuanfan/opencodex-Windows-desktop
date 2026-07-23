@@ -55,7 +55,9 @@ const REQUEST_TOO_LARGE_PATTERNS: (string | RegExp)[] = [
   "message too large",
   "payload too large",
   "request too large",
-  /request (?:body |size )?exceeds .*(?:size|limit)/,
+  // Size cue required: "request exceeds concurrent request limit" is a quota shape,
+  // not an overflow — a bare "limit" tail must NOT match (WP3 review blocker 2).
+  /request (?:body |size )?exceeds .*size/,
   "maximum allowed size",
 ];
 

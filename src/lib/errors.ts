@@ -105,6 +105,12 @@ export function classifyError(status: number, type: string, message: string): Oc
   if (text.includes("cursor resource limit exceeded")) {
     return { message, type: "invalid_request_error", code: "tool_catalog_too_large" };
   }
+  // The Cursor adapter's classified rate-limit prefix is authoritative: its DETAIL may echo
+  // quota wording ("... quota exhausted") that would otherwise hit the insufficient_quota
+  // branch below and break the planned retry-with-backoff contract (WP3 review blocker 1).
+  if (text.includes("cursor rate limit exceeded")) {
+    return { message, type: "rate_limit_error", code: "rate_limit_exceeded" };
+  }
   if (
     text.includes("insufficient_quota") ||
     text.includes("exceeded your current quota") ||

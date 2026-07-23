@@ -102,4 +102,14 @@ describe("inline error envelope in a 200 stream (F1)", () => {
       error: { type: "rate_limit_error", code: "rate_limit_exceeded" },
     });
   });
+
+  test("Cursor rate-limit prefix beats quota wording in the detail", async () => {
+    // The detail echoes "quota exhausted", which would otherwise classify as
+    // insufficient_quota; the adapter's cursor-specific prefix must win.
+    const message = "Cursor rate limit exceeded: resource limit exceeded while loading tool catalog: quota exhausted";
+    expect(adapterFailureFromMessage(message)).toMatchObject({
+      httpStatus: 429,
+      error: { type: "rate_limit_error", code: "rate_limit_exceeded" },
+    });
+  });
 });

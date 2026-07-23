@@ -17,6 +17,10 @@ describe("classifyCursorError", () => {
     expect(classifyCursorError("Cursor Connect error resource_exhausted: Error")).toBe("Cursor rate limit exceeded");
     expect(classifyCursorError("resource_exhausted: too many requests")).toBe("Cursor rate limit exceeded");
     expect(classifyCursorError("resource_exhausted while loading tool catalog: quota exhausted")).toBe("Cursor rate limit exceeded");
+    // Concurrency limits are quota shapes, not request-size overflow (a bare "limit"
+    // tail must not satisfy the size patterns).
+    expect(classifyCursorError("resource_exhausted: request exceeds concurrent request limit")).toBe("Cursor rate limit exceeded");
+    expect(classifyCursorError("resource_exhausted: request exceeds per-user concurrent requests limit")).toBe("Cursor rate limit exceeded");
   });
 
   test("explicit request-size overflow keeps the too-large classification", () => {
