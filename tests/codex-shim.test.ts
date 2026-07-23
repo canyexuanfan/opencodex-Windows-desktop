@@ -1,11 +1,52 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildUnixCodexShim, buildWindowsCodexShim, buildWindowsPowerShellCodexShim, diagnoseCodexShim, findCodexOnPath, installCodexShim, isWindowsInteropDir, lastCodexDiscoveryError, uninstallCodexShim } from "../src/codex/shim";
+import { autoRestoreCodexShim, buildUnixCodexShim, buildWindowsCodexShim, buildWindowsPowerShellCodexShim, diagnoseCodexShim, findCodexOnPath, installCodexShim, isWindowsInteropDir, lastCodexDiscoveryError, uninstallCodexShim } from "../src/codex/shim";
 
 const SHIM_MARKER = "opencodex codex autostart shim";
+
+function withInstalledShim(run: (paths: {
+  binDir: string;
+  home: string;
+  wrappers: string[];
+  backups: string[];
+  statePath: string;
+}) => void): void {
+  const binDir = mkdtempSync(join(tmpdir(), "ocx-shim-bin-"));
+  const home = mkdtempSync(join(tmpdir(), "ocx-shim-home-"));
+  const oldPath = process.env.PATH;
+  const oldHome = process.env.OPENCODEX_HOME;
+  const wrappers = process.platform === "win32"
+    ? [join(binDir, "codex.cmd"), join(binDir, "codex.ps1"), join(binDir, "codex")]
+    : [join(binDir, "codex")];
+  try {
+    process.env.PATH = binDir;
+    process.env.OPENCODEX_HOME = home;
+    for (const wrapper of wrappers) {
+      writeFileSync(wrapper, process.platform === "win32" ? `real ${wrapper}\n` : "#!/bin/sh\necho real\n", "utf8");
+      if (process.platform !== "win32") chmodSync(wrapper, 0o755);
+    }
+    expect(installCodexShim().installed).toBe(true);
+    const statePath = join(home, "codex-shim.json");
+    const state = JSON.parse(readFileSync(statePath, "utf8")) as { wrappers: Array<{ wrapperPath: string; backupPath: string }> };
+    run({
+      binDir,
+      home,
+      wrappers: state.wrappers.map(file => file.wrapperPath),
+      backups: state.wrappers.map(file => file.backupPath),
+      statePath,
+    });
+  } finally {
+    if (oldPath === undefined) delete process.env.PATH;
+    else process.env.PATH = oldPath;
+    if (oldHome === undefined) delete process.env.OPENCODEX_HOME;
+    else process.env.OPENCODEX_HOME = oldHome;
+    rmSync(binDir, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+}
 
 describe("Codex autostart shim", () => {
   test("builds a Unix shim that starts ocx before execing Codex", () => {
@@ -317,6 +358,171 @@ describe("Codex autostart shim", () => {
       rmSync(dir, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  test("shim intact -> zero-overhead path is read-only and never loads config", () => {
+    withInstalledShim(({ wrappers, backups, statePath }) => {
+      const paths = [...wrappers, ...backups, statePath];
+      const before = paths.map(path => ({
+        path,
+        bytes: readFileSync(path),
+        mtimeMs: statSync(path).mtimeMs,
+      }));
+      let enabledCalls = 0;
+
+      expect(autoRestoreCodexShim({
+        enabled: () => {
+          enabledCalls += 1;
+          return true;
+        },
+      })).toEqual({ status: "healthy" });
+      expect(enabledCalls).toBe(0);
+      for (const snapshot of before) {
+        expect(readFileSync(snapshot.path)).toEqual(snapshot.bytes);
+        expect(statSync(snapshot.path).mtimeMs).toBe(snapshot.mtimeMs);
+      }
+    });
+  });
+
+  test("stable shim replacement restores through the shared install transaction", () => {
+    withInstalledShim(({ wrappers, backups }) => {
+      const replacements = wrappers.map((wrapper, index) => `replacement-${index}\n`);
+      wrappers.forEach((wrapper, index) => writeFileSync(wrapper, replacements[index], "utf8"));
+
+      const result = autoRestoreCodexShim({ enabled: () => true, nowMs: Date.now() + 1_000 });
+
+      expect(result.status).toBe("restored");
+      wrappers.forEach(wrapper => expect(readFileSync(wrapper, "utf8")).toContain(SHIM_MARKER));
+      backups.forEach((backup, index) => expect(readFileSync(backup, "utf8")).toBe(replacements[index]));
+    });
+  });
+
+  test("npm update in progress -> young replacement defers, then restores after stability", () => {
+    withInstalledShim(({ wrappers, backups }) => {
+      const oldBackups = backups.map(path => readFileSync(path));
+      wrappers.forEach((wrapper, index) => writeFileSync(wrapper, `young-${index}\n`, "utf8"));
+
+      expect(autoRestoreCodexShim({ enabled: () => true, nowMs: Date.now() })).toEqual({ status: "deferred" });
+      wrappers.forEach((wrapper, index) => expect(readFileSync(wrapper, "utf8")).toBe(`young-${index}\n`));
+      backups.forEach((backup, index) => expect(readFileSync(backup)).toEqual(oldBackups[index]));
+
+      expect(autoRestoreCodexShim({ enabled: () => true, nowMs: Date.now() + 1_000 }).status).toBe("restored");
+    });
+  });
+
+  test("opt-out set -> no restore and explicit install remains available", () => {
+    withInstalledShim(({ wrappers }) => {
+      wrappers.forEach((wrapper, index) => writeFileSync(wrapper, `disabled-${index}\n`, "utf8"));
+
+      expect(autoRestoreCodexShim({ enabled: () => false, nowMs: Date.now() + 1_000 })).toEqual({ status: "disabled" });
+      wrappers.forEach((wrapper, index) => expect(readFileSync(wrapper, "utf8")).toBe(`disabled-${index}\n`));
+      expect(installCodexShim().installed).toBe(true);
+      wrappers.forEach(wrapper => expect(readFileSync(wrapper, "utf8")).toContain(SHIM_MARKER));
+    });
+  });
+
+  test("fingerprint mismatch before guarded rename defers without owned-path mutation", () => {
+    withInstalledShim(({ wrappers, backups, statePath }) => {
+      wrappers.forEach((wrapper, index) => writeFileSync(wrapper, `candidate-${index}\n`, "utf8"));
+      const oldBackups = backups.map(path => readFileSync(path));
+      const oldState = readFileSync(statePath);
+
+      const result = autoRestoreCodexShim({
+        enabled: () => true,
+        nowMs: Date.now() + 1_000,
+        beforeGuardedRefresh: (wrapperPath, index) => {
+          if (index === 0) writeFileSync(wrapperPath, "concurrent replacement\n", "utf8");
+        },
+      });
+
+      expect(result).toEqual({ status: "deferred" });
+      expect(readFileSync(wrappers[0], "utf8")).toBe("concurrent replacement\n");
+      backups.forEach((backup, index) => expect(readFileSync(backup)).toEqual(oldBackups[index]));
+      expect(readFileSync(statePath)).toEqual(oldState);
+    });
+  });
+
+  test("multi-wrapper restore rolls back when a later sibling fingerprint changes", () => {
+    const home = mkdtempSync(join(tmpdir(), "ocx-shim-transaction-home-"));
+    const binDir = mkdtempSync(join(tmpdir(), "ocx-shim-transaction-bin-"));
+    const oldHome = process.env.OPENCODEX_HOME;
+    try {
+      process.env.OPENCODEX_HOME = home;
+      const wrappers = [join(binDir, "codex.cmd"), join(binDir, "codex.ps1")];
+      const backups = [join(binDir, "codex.opencodex-real.cmd"), join(binDir, "codex.opencodex-real.ps1")];
+      const wrapperBytes = ["replacement cmd\n", "replacement ps1\n"];
+      const backupBytes = ["prior cmd\n", "prior ps1\n"];
+      wrappers.forEach((path, index) => writeFileSync(path, wrapperBytes[index], "utf8"));
+      backups.forEach((path, index) => writeFileSync(path, backupBytes[index], "utf8"));
+      const statePath = join(home, "codex-shim.json");
+      writeFileSync(statePath, JSON.stringify({
+        platform: process.platform,
+        wrapperPath: wrappers[0],
+        originalPath: wrappers[0],
+        backupPath: backups[0],
+        wrappers: wrappers.map((wrapperPath, index) => ({
+          wrapperPath,
+          originalPath: wrapperPath,
+          backupPath: backups[index],
+        })),
+      }, null, 2) + "\n", "utf8");
+      const stateBytes = readFileSync(statePath);
+      const modes = [...wrappers, ...backups].map(path => statSync(path).mode & 0o777);
+
+      const result = autoRestoreCodexShim({
+        enabled: () => true,
+        nowMs: Date.now() + 1_000,
+        beforeGuardedRefresh: (wrapperPath, index) => {
+          if (index === 1) {
+            const originalMtime = statSync(wrapperPath).mtime;
+            utimesSync(wrapperPath, originalMtime.getTime() / 1_000 - 1, originalMtime);
+          }
+        },
+      });
+
+      expect(result).toEqual({ status: "deferred" });
+      wrappers.forEach((path, index) => expect(readFileSync(path, "utf8")).toBe(wrapperBytes[index]));
+      backups.forEach((path, index) => expect(readFileSync(path, "utf8")).toBe(backupBytes[index]));
+      expect(readFileSync(statePath)).toEqual(stateBytes);
+      [...wrappers, ...backups].forEach((path, index) => expect(statSync(path).mode & 0o777).toBe(modes[index]));
+      expect(readdirSync(binDir).filter(name => name.includes(".autorestore-"))).toEqual([]);
+    } finally {
+      if (oldHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = oldHome;
+      rmSync(home, { recursive: true, force: true });
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+
+  test("missing backup, missing wrapper, corrupt state, and platform mismatch never fresh-install", () => {
+    withInstalledShim(({ wrappers, backups, statePath }) => {
+      rmSync(backups[0]);
+      expect(autoRestoreCodexShim({ enabled: () => true, nowMs: Date.now() + 1_000 }).status).toBe("ineligible");
+
+      writeFileSync(backups[0], "backup\n", "utf8");
+      rmSync(wrappers[0]);
+      expect(autoRestoreCodexShim({ enabled: () => true, nowMs: Date.now() + 1_000 }).status).toBe("ineligible");
+
+      if (process.platform !== "win32") {
+        mkdirSync(wrappers[0]);
+        expect(autoRestoreCodexShim({ enabled: () => true, nowMs: Date.now() + 1_000 }).status).toBe("deferred");
+        rmSync(wrappers[0], { recursive: true });
+        symlinkSync(join(dirname(wrappers[0]), "missing-target"), wrappers[0]);
+        expect(autoRestoreCodexShim({ enabled: () => true, nowMs: Date.now() + 1_000 }).status).toBe("ineligible");
+      }
+
+      writeFileSync(statePath, "{broken", "utf8");
+      expect(autoRestoreCodexShim({ enabled: () => true }).status).toBe("ineligible");
+
+      const otherPlatform = process.platform === "win32" ? "linux" : "win32";
+      writeFileSync(statePath, JSON.stringify({
+        platform: otherPlatform,
+        wrapperPath: wrappers[0],
+        originalPath: wrappers[0],
+        backupPath: backups[0],
+      }), "utf8");
+      expect(autoRestoreCodexShim({ enabled: () => true }).status).toBe("ineligible");
+    });
   });
 });
 
