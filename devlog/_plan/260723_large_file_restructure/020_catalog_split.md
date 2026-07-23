@@ -36,7 +36,25 @@ Note: local `dev` (`92d9a9e2`) carries the user's separate in-progress work
 `visibleNativeSlugs` `:205-211`, `nativeModelRows` `:215-225`,
 `applyNativeVisibility` `:228-245`, `UPSTREAM_NATIVE_ENTRIES` `:247-260`,
 `upstreamNativeEntry` `:263-277`, `shouldUpgradeToUpstreamEntry` `:327-338`,
-`nativeOpenAiSlugs` `:459-462`.
+`nativeOpenAiSlugs` `:459-462`, and `listCatalogNativeSlugs` `:1260-1272`
+(MOVED HERE from sync to break the metadata↔sync cycle — `nativeOpenAiSlugs`
+calls `listCatalogNativeSlugs` at `:459-462`, so they must share a module).
+
+### `bundled.ts` — bundled Codex binary discovery + bundled-catalog cache (NEW 7th module; owns `bundledCatalogCache`)
+
+Extracted from the old sync bucket to break the effort↔sync cycle
+(`codexSupportedReasoningEfforts` in effort calls `loadBundledCodexCatalog`,
+while `syncCatalogModels` in sync calls back into effort — both now import
+bundled.ts one-way). Contains: `BUNDLED_CATALOG_CACHE_MS` `:33`,
+`bundledCatalogCache` `:34`, `ExecFile` `:731-740`, `BundledCatalogDeps`
+`:743-746`, `unique` `:748-750`, `codexCommandCandidates` `:752-770`,
+`isSpawnableCodexCandidate` `:772-775`, `codexShimCommandCandidates`
+`:777-806`, `codexExecInvocation` `:808-816`, `runCodexDebugModels`
+`:818-828`, `loadBundledCodexCatalog` `:830-848`,
+`materializeBundledCodexCatalog` `:850-860`, `loadCatalogForSync` `:862-872`,
+`readCurrentCatalogOrCache` `:874-884`, `loadCatalogTemplate` `:886-900`.
+Depends only on parsing.ts (readCatalog/findNativeTemplate) — layer below
+effort and sync.
 
 ### `parsing.ts` — catalog read/parse/normalize
 
@@ -101,18 +119,12 @@ importers: `src/server/management-api.ts:3`, `src/claude/context-windows.ts:13`,
 `resetOpenAiApiCatalogWarningStateForTests` `:1962-1971`, `orderForSubagents`
 `:2166-2178`.
 
-### `sync.ts` — orchestration: bundled discovery, backup/persistence, entry build/merge, subagent roster (owns `bundledCatalogCache`)
+### `sync.ts` — orchestration: entry build/merge, backup/persistence, subagent roster (imports bundled.ts; no longer owns bundled discovery)
 
-Bundled discovery: `BUNDLED_CATALOG_CACHE_MS` `:33`, `bundledCatalogCache`
-`:34`, `ExecFile` `:731-740`, `BundledCatalogDeps` `:743-746`, `unique`
-`:748-750`, `codexCommandCandidates` `:752-770`, `isSpawnableCodexCandidate`
-`:772-775`, `codexShimCommandCandidates` `:777-806`, `codexExecInvocation`
-`:808-816`, `runCodexDebugModels` `:818-828`, `loadBundledCodexCatalog`
-`:830-848`, `materializeBundledCodexCatalog` `:850-860`, `loadCatalogForSync`
-`:862-872`, `readCurrentCatalogOrCache` `:874-884`, `loadCatalogTemplate`
-`:886-900`, `finishUpstreamNativeEntry` `:1084-1092`,
+Entry build/merge: `finishUpstreamNativeEntry` `:1084-1092`,
 `isExactComboCatalogModel` `:1094-1099`, `deriveEntry` `:1105-1196`,
-`buildCatalogEntries` `:1198-1258`, `listCatalogNativeSlugs` `:1260-1272`.
+`buildCatalogEntries` `:1198-1258` (calls `nativeOpenAiSlugs` from metadata —
+sync→metadata, acyclic).
 Backup/persistence: path helpers `:36-91`, `readCatalogBackup` `:1285-1288`,
 `catalogHasRoutedEntries` `:1290-1292`, `writePristineCatalogBackup`
 `:1294-1304`, `ensureCatalogBackup` `:1306-1311`, `readNativeBaseline`
@@ -123,18 +135,35 @@ Backup/persistence: path helpers `:36-91`, `readCatalogBackup` `:1285-1288`,
 `SubagentRosterExclusionReason` `:363-368`, `EffectiveSubagentModel`
 `:369-372`, `SubagentRosterExclusion` `:374-378`, `EffectiveSubagentRoster`
 `:380-384`, `effectiveSubagentRoster` `:405-457`. Reset:
-`resetCatalogRuntimeStateForTests` `:2063-2071` (clears `bundledCatalogCache`
-here AND calls the provider-fetch + aggregation reset helpers).
+`resetCatalogRuntimeStateForTests` `:2063-2071` (calls the bundled.ts cache
+reset AND the provider-fetch + aggregation reset helpers — composed through
+the facade).
+
+## Cycle resolution (A-gate fold-back, reviewer Lagrange)
+
+Two import cycles in the original 6-module map were folded back:
+1. **metadata↔sync** via `nativeOpenAiSlugs`(:459)→`listCatalogNativeSlugs` and
+   `buildCatalogEntries`(:2240)→`nativeOpenAiSlugs`: resolved by moving
+   `listCatalogNativeSlugs` into metadata.ts (same module as its caller).
+2. **effort↔sync** via `codexSupportedReasoningEfforts`(:1018)→
+   `loadBundledCodexCatalog` and `syncCatalogModels`(:2368)→
+   `clampCatalogModelsToCodexSupport`: resolved by extracting bundled discovery
+   into `bundled.ts` (a layer below both effort and sync).
+Resulting acyclic layering: parsing/metadata (L0) → bundled (L1) →
+effort/provider-fetch/aggregation (L2) → sync (L3) → facade. B MUST confirm no
+cycles remain via `bun run typecheck` + an import-graph spot check.
 
 ## Mutable-state single-owner rule (critical)
 
 Six module-level mutable states must each live in exactly one module (above):
-`bundledCatalogCache`→sync, `lastDropWarnSignature`→provider-fetch,
+`bundledCatalogCache`→**bundled**, `lastDropWarnSignature`→provider-fetch,
 `openAiApiCollisionWarnings`/`comboCatalogWarningSignatures`/
 `slugAliasCollisionWarnings`/`comboMasqueradeCollisionWarnings`→aggregation.
 The two reset-for-tests exports (`resetCatalogRuntimeStateForTests`,
 `resetOpenAiApiCatalogWarningStateForTests`) are composed through the facade
-so test behavior is byte-identical.
+so test behavior is byte-identical. (`resetCatalogRuntimeStateForTests` lives
+in sync.ts and calls bundled.ts's cache-clear plus the provider-fetch and
+aggregation reset helpers — one composer, single owners.)
 
 ## Facade (MODIFY `src/codex/catalog.ts`)
 
