@@ -3,7 +3,7 @@ import { formatUptime } from "../formatUptime";
 import { IconAlert, IconExternal, IconInfo, IconRefresh, IconX } from "../icons";
 import { Trans } from "../i18n/provider";
 import { useI18n, type TKey } from "../i18n/shared";
-import { startupRiskDetailKey } from "../startup-health-ui";
+import { settingsPollMayCommit, startupRiskDetailKey } from "../startup-health-ui";
 import { formatTokens } from "../format-tokens";
 import { EmptyState, Select } from "../ui";
 
@@ -222,6 +222,9 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   const updateRetryRef = useRef(0);
   const updateRetryTimerRef = useRef<number | null>(null);
   const updateRequestEpochRef = useRef(0);
+  const settingsRequestEpochRef = useRef(0);
+  const settingsMutationEpochRef = useRef(0);
+  const settingsMutationInFlightRef = useRef(false);
   const [updateCheck, setUpdateCheck] = useState<UpdateCheckData | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [updateJob, setUpdateJob] = useState<UpdateJob | null>(null);
@@ -244,6 +247,8 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
 
   useEffect(() => {
     const fetchData = async () => {
+      const settingsRequestEpoch = ++settingsRequestEpochRef.current;
+      const settingsMutationEpoch = settingsMutationEpochRef.current;
       try {
         const [hRes, pRes, sRes, scRes, shRes, uRes] = await Promise.all([
           fetch(`${apiBase}/healthz`),
@@ -255,7 +260,15 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         ]);
         setHealth(await hRes.json());
         setProviders(await pRes.json());
-        setSettings(await sRes.json());
+        const nextSettings = await sRes.json() as SettingsData;
+        if (settingsPollMayCommit(
+          { request: settingsRequestEpoch, mutation: settingsMutationEpoch },
+          {
+            request: settingsRequestEpochRef.current,
+            mutation: settingsMutationEpochRef.current,
+            mutationInFlight: settingsMutationInFlightRef.current,
+          },
+        )) setSettings(nextSettings);
         setSidecar(await scRes.json());
         // Old servers fall through to the SPA HTML for this route; don't let a parse
         // failure here take down the whole dashboard.
@@ -296,7 +309,10 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     };
     fetchData();
     const interval = setInterval(fetchData, 5000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      settingsRequestEpochRef.current += 1;
+    };
   }, [apiBase]);
 
   useEffect(() => {
@@ -450,6 +466,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     if (!settings || settingsSaving) return;
     const next = !settings.codexAutoStart;
     setSettingsSaving(true);
+    settingsMutationInFlightRef.current = true;
     setSettings({ ...settings, codexAutoStart: next });
     try {
       const res = await fetch(`${apiBase}/api/settings`, {
@@ -459,11 +476,13 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       });
       if (!res.ok) throw new Error("save failed");
       const data = await res.json() as { codexAutoStart: boolean; startupHealth?: SettingsData["startupHealth"] };
+      settingsMutationEpochRef.current += 1;
       setSettings(prev => prev ? { ...prev, codexAutoStart: data.codexAutoStart, startupHealth: data.startupHealth ?? prev.startupHealth } : prev);
     } catch {
       setSettings(prev => prev ? { ...prev, codexAutoStart: !next } : prev);
       setError(true);
     } finally {
+      settingsMutationInFlightRef.current = false;
       setSettingsSaving(false);
     }
   };
