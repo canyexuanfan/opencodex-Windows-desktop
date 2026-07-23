@@ -279,31 +279,23 @@ describe("kiro adapter — parseStream", () => {
     }
   });
 
-  test("progress-only required response makes exactly one structural text fallback", async () => {
-    const requests: Record<string, any>[] = [];
-    globalThis.fetch = (async (_input, init) => {
-      requests.push(JSON.parse(String(init?.body)));
-      return new Response(streamOf(eventFrame({ content: "Final from fallback." })));
+  test("text-only required response completes without a second upstream request", async () => {
+    let fetches = 0;
+    globalThis.fetch = (async () => {
+      fetches++;
+      throw new Error("unexpected fallback");
     }) as typeof fetch;
     const adapter = createKiroAdapter(provider);
     await adapter.buildRequest(parsedWith([{ role: "user", content: "do it" }], [bashTool]));
 
     const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(
-      eventFrame({ content: "I am checking." }),
+      eventFrame({ content: "Task complete." }),
       eventFrame({ conversationId: "returned-conversation-42" }),
     ))));
 
-    expect(requests).toHaveLength(1);
-    const retry = requests[0].conversationState;
-    expect(retry.conversationId).toBe("returned-conversation-42");
-    expect(retry.history.at(-1).assistantResponseMessage).toEqual({ content: "I am checking." });
-    expect(retry.currentMessage.userInputMessage.content).toBe(KIRO_COMPLETION_RETRY_MESSAGE);
-    expect(retry.currentMessage.userInputMessage.userInputMessageContext.tools.map(
-      (tool: { toolSpecification: { name: string } }) => tool.toolSpecification.name,
-    )).toEqual(["bash", KIRO_COMPLETION_TOOL_NAME]);
+    expect(fetches).toBe(0);
     expect(events.filter(event => event.type === "text_delta")).toEqual([
-      { type: "text_delta", text: "I am checking.", phase: "commentary" },
-      { type: "text_delta", text: "Final from fallback.", phase: "final_answer" },
+      { type: "text_delta", text: "Task complete.", phase: "commentary" },
     ]);
     expect(events.at(-1)).toMatchObject({
       type: "done",
@@ -312,36 +304,16 @@ describe("kiro adapter — parseStream", () => {
     });
   });
 
-  test.each([
-    ["plain text", [eventFrame({ content: "  I am   checking.\n" })]],
-    ["private completion", completionFrames(" I am checking. ")],
-  ])("suppresses a whitespace-equivalent repeated %s fallback", async (_label, frames) => {
-    globalThis.fetch = (async () => new Response(streamOf(...frames))) as typeof fetch;
-    const adapter = createKiroAdapter(provider);
-    await adapter.buildRequest(parsedWith([{ role: "user", content: "do it" }], [bashTool]));
-
-    const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(
-      eventFrame({ content: "I am checking." }),
-    ))));
-
-    expect(events.filter(event => event.type === "text_delta")).toEqual([
-      { type: "text_delta", text: "I am checking.", phase: "commentary" },
-    ]);
-    expect(events.at(-1)).toMatchObject({ type: "done", endTurn: true });
-    expect(JSON.stringify(events)).not.toContain(KIRO_COMPLETION_TOOL_NAME);
-  });
-
-  test("keeps a distinct private-completion fallback as the final answer", async () => {
+  test("keeps a private-completion fallback after reasoning-only output as the final answer", async () => {
     globalThis.fetch = (async () => new Response(streamOf(...completionFrames("Done.")))) as typeof fetch;
     const adapter = createKiroAdapter(provider);
     await adapter.buildRequest(parsedWith([{ role: "user", content: "do it" }], [bashTool]));
 
     const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(
-      eventFrame({ content: "I am checking." }),
+      eventFrame({ content: "<thinking>I am checking.</thinking>" }),
     ))));
 
     expect(events.filter(event => event.type === "text_delta")).toEqual([
-      { type: "text_delta", text: "I am checking.", phase: "commentary" },
       { type: "text_delta", text: "Done.", phase: "final_answer" },
     ]);
     expect(events.at(-1)).toMatchObject({ type: "done", endTurn: true });
@@ -377,7 +349,7 @@ describe("kiro adapter — parseStream", () => {
     globalThis.fetch = (async (_input, init) => {
       fetches++;
       if (fetches === 1) {
-        return new Response(streamOf(eventFrame({ content: "Still working." })));
+        return new Response(streamOf(eventFrame({ content: "<thinking>Still working.</thinking>" })));
       }
       fallbackSignal = init?.signal ?? undefined;
       markFallbackStarted();
@@ -432,7 +404,7 @@ describe("kiro adapter — parseStream", () => {
     const adapter = createKiroAdapter(provider);
     await adapter.buildRequest(parsedWith([{ role: "user", content: "run" }], [bashTool]));
     const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(
-      eventFrame({ content: "I need one more check." }),
+      eventFrame({ content: "<thinking>I need one more check.</thinking>" }),
     ))));
     expect(fetches).toBe(1);
     expect(events.find(event => event.type === "tool_call_start")).toMatchObject({ name: "bash" });
@@ -451,7 +423,7 @@ describe("kiro adapter — parseStream", () => {
     const adapter = createKiroAdapter(provider);
     await adapter.buildRequest(parsedWith([{ role: "user", content: "work" }], [bashTool]));
     const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(
-      eventFrame({ content: "Working." }),
+      eventFrame({ content: "<thinking>Working.</thinking>" }),
     ))));
     expect(fetches).toBe(1);
     expect(events.at(-1)).toMatchObject({ type: "incomplete", reason, retryable: true, endTurn: false });
@@ -483,7 +455,7 @@ describe("kiro adapter — parseStream", () => {
     const adapter = createKiroAdapter(provider);
     await adapter.buildRequest(parsedWith([{ role: "user", content: "work" }], [bashTool]));
     const events = await collectAdapterEvents(adapter.parseStream(new Response(streamOf(
-      eventFrame({ content: "Working." }),
+      eventFrame({ content: "<thinking>Working.</thinking>" }),
     ))));
     expect(events.at(-1)).toMatchObject({ type: "incomplete", reason: "malformed_kiro_completion", retryable: true });
     expect(JSON.stringify(events)).not.toContain(KIRO_COMPLETION_TOOL_NAME);

@@ -24,6 +24,10 @@ on:
         required: false
         type: boolean
         default: true
+      expected-sha:
+        description: "Immutable release commit this dispatch must publish (fail if the branch moved)"
+        required: false
+        type: string
 
 permissions:
   contents: write # create the matching GitHub Release + version tag after npm publish
@@ -43,6 +47,17 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
+
+      - name: Verify dispatched SHA
+        env:
+          EXPECTED_SHA: ${{ inputs.expected-sha }}
+        run: |
+          if [ -z "$EXPECTED_SHA" ]; then
+            echo "::warning::no expected-sha supplied; publishing whatever the branch currently points at"
+          elif [ "$GITHUB_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::error::branch moved after the release audit (expected ${EXPECTED_SHA}, got ${GITHUB_SHA}) — refusing to publish an unaudited commit"
+            exit 1
+          fi
 
       # opencodex is bun-native (the prepublishOnly GUI build + typecheck run under bun).
       - name: Setup Bun

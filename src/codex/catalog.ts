@@ -466,6 +466,14 @@ export interface CatalogModel {
   provider: string;
   /** Public Codex-facing slug override (used by combo aliases). */
   alias?: string;
+  /**
+   * Display-only Codex catalog `display_name` override. Relabels the picker row ONLY — it never
+   * affects the routing slug, alias-collision order, native marketing-name precedence, or provider
+   * behavior. When unset, the entry falls back to its Codex-facing slug (the historical behavior).
+   * Native upstream entries (e.g. gpt-5.6-sol → "GPT-5.6-Sol") come from the pinned snapshot path
+   * which carries no CatalogModel, so a configured displayName can never override a native name.
+   */
+  displayName?: string;
   owned_by?: string;
   reasoningEfforts?: string[];
   defaultReasoningEffort?: string;
@@ -898,6 +906,14 @@ function applyCatalogModelMetadata(entry: RawEntry, model?: CatalogModel): void 
   // This marker survives strict catalog normalization and lets sync distinguish a stale
   // bare combo alias from a genuine native model row.
   if (model.provider === COMBO_NAMESPACE) entry.owned_by = model.owned_by ?? COMBO_NAMESPACE;
+  // displayName is DISPLAY-ONLY: it relabels the picker row but never touches the routing
+  // slug, alias, or provider. deriveEntry already stamped the slug as display_name; a
+  // configured displayName overrides just the label. The `/` separator is rejected at every
+  // input boundary (CLI `ocx models add`, management API), so the catalog trusts its source.
+  // Combos carry no displayName, and natives never reach here (no CatalogModel), so genuine
+  // upstream marketing names and combo alias labels are preserved untouched.
+  const displayName = typeof model.displayName === "string" ? model.displayName.trim() : "";
+  if (displayName) entry.display_name = displayName;
   if (typeof model.contextWindow === "number" && model.contextWindow > 0) {
     entry.context_window = model.contextWindow;
     entry.max_context_window = model.contextWindow;
@@ -1790,6 +1806,8 @@ export async function gatherRoutedModels(config: OcxConfig): Promise<CatalogMode
   const customModels = (config.customModels ?? []).map(cm => ({
     id: cm.modelId,
     provider: cm.provider,
+    // Display-only label: never feeds routing (customModels are keyed by routedSlug below).
+    ...(cm.displayName ? { displayName: cm.displayName } : {}),
     ...(cm.contextWindow ? { contextWindow: cm.contextWindow } : {}),
     ...(cm.inputModalities ? { inputModalities: cm.inputModalities } : {}),
   }));

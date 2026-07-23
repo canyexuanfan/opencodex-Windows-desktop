@@ -37,6 +37,7 @@ function configWithStaticModels(claudeCode?: OcxConfig["claudeCode"]): OcxConfig
         baseUrl: "http://127.0.0.1:1/v1",
         apiKey: "k",
         allowPrivateNetwork: true,
+        liveModels: false,
         models: ["test-model", "other-model"],
       },
     },

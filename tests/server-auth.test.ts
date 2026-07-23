@@ -80,6 +80,18 @@ function redirectCanonicalCodexTo(baseUrl: string): void {
   }) as typeof fetch;
 }
 
+function stubModelDiscoveryFor(...origins: string[]): void {
+  const allowed = new Set(origins);
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    if (allowed.has(url.origin) && url.pathname.endsWith("/models")) {
+      return Promise.resolve(Response.json({ data: [] }));
+    }
+    return originalGlobalFetch(input, init);
+  }) as typeof fetch;
+}
+
 beforeEach(() => {
   isolatedCodexHome = installIsolatedCodexHome("ocx-server-auth-codex-");
 });
@@ -285,6 +297,7 @@ describe("server local API auth", () => {
         health: "/healthz",
         models: "/v1/models",
         responses: "/v1/responses",
+        chatCompletions: "/v1/chat/completions",
         management: "/api/*",
       },
     });
@@ -696,6 +709,7 @@ describe("server local API auth", () => {
     mkdirSync(TEST_DIR, { recursive: true });
     process.env.OPENCODEX_HOME = TEST_DIR;
     saveConfig(config("127.0.0.1"));
+    stubModelDiscoveryFor("http://127.0.0.1:11434");
 
     const server = startServer(0);
     try {
@@ -757,6 +771,7 @@ describe("server local API auth", () => {
     mkdirSync(TEST_DIR, { recursive: true });
     process.env.OPENCODEX_HOME = TEST_DIR;
     saveConfig(config("127.0.0.1"));
+    stubModelDiscoveryFor("https://api.example.com", "http://127.0.0.1:11434");
 
     const server = startServer(0);
     try {
@@ -803,6 +818,7 @@ describe("server local API auth", () => {
     mkdirSync(TEST_DIR, { recursive: true });
     process.env.OPENCODEX_HOME = TEST_DIR;
     saveConfig(config("127.0.0.1"));
+    stubModelDiscoveryFor("http://127.0.0.1:8080");
 
     const server = startServer(0);
     try {
@@ -1206,13 +1222,16 @@ describe("server local API auth", () => {
       },
     };
     saveConfig(liveConfig);
+    let catalogRefreshes = 0;
     const patch = async (name: string, body: unknown) => {
       const req = new Request(`http://127.0.0.1/api/providers?name=${name}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-      return handleManagementAPI(req, new URL(req.url), liveConfig, {});
+      return handleManagementAPI(req, new URL(req.url), liveConfig, {
+        refreshCodexCatalog: async () => { catalogRefreshes += 1; },
+      });
     };
 
     // Editor happy path: multiple fields in one call; validation runs on the MERGED provider.
@@ -1225,6 +1244,7 @@ describe("server local API auth", () => {
       note: "fresh note",
       apiKey: "sk-existing", // untouched — keys are not writable through PATCH
     });
+    expect(catalogRefreshes).toBe(1);
 
     // Empty defaultModel/note clear the fields.
     const clear = await patch("extra", { defaultModel: "", note: "" });

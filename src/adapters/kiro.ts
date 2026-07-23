@@ -846,6 +846,14 @@ async function* parseKiroAttempt(
         ...(contextWindow ? { configuredContextWindow: contextWindow } : {}),
       });
     }
+    debugProviderDiagnostic("kiro", "attempt_complete", {
+      mode,
+      sawText,
+      sawReasoning,
+      sawRealTool,
+      completionCalls,
+      assistantChars: assistantText.length,
+    });
 
     if (mode === "text_fallback") {
       if (completionAnswer !== undefined) {
@@ -909,7 +917,23 @@ async function* parseKiroAttempt(
         terminal: { type: "done", usage: finalUsage, endTurn: false, ...(finalProviderState ? { providerState: finalProviderState } : {}) },
       };
     }
-    if (mode === "required" && (sawText || sawReasoning)) {
+    // A clean Smithy EOF after ordinary assistant text is a complete answer even when the
+    // private completion tool was advertised. Replaying that answer through a second Kiro
+    // request adds latency and can hang an otherwise-finished Codex turn if the retry stalls.
+    // Reasoning-only output still needs the bounded fallback because it has no user-facing text.
+    if (mode === "required" && sawText) {
+      return {
+        assistantText,
+        sawReasoning,
+        terminal: {
+          type: "done",
+          usage: finalUsage,
+          endTurn: true,
+          ...(finalProviderState ? { providerState: finalProviderState } : {}),
+        },
+      };
+    }
+    if (mode === "required" && sawReasoning) {
       return { assistantText, sawReasoning, needsFallback: true, usage: finalUsage, providerState: finalProviderState };
     }
     if (!sawText && !sawReasoning) {

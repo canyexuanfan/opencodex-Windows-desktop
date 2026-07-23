@@ -8,7 +8,7 @@ import type {
 } from "../../types";
 import { isAllowedToolChoice, namespacedToolName, toolChoiceAliases, type OcxTool, type OcxToolChoice } from "../../types";
 import type { CursorRequestMessage, CursorRunRequest } from "./types";
-import { cursorWireModelSelection, type CursorRoutingLevel } from "./discovery";
+import { cursorWireModelSelection, isCursorExternalWireModel, type CursorRoutingLevel } from "./discovery";
 import { cursorEffortSuffix } from "./effort-map";
 import {
   cursorMcpToolEncodedSize,
@@ -159,7 +159,15 @@ export function generatedCursorConversationId(): string {
   return `cursor_${crypto.randomUUID().replace(/-/g, "")}`;
 }
 
-export function createCursorRequest(parsed: OcxParsedRequest): CursorRunRequest {
+export interface CreateCursorRequestOptions {
+  /** Force a brand-new Cursor conversation id even when remembered state exists. */
+  forceFreshConversation?: boolean;
+}
+
+export function createCursorRequest(
+  parsed: OcxParsedRequest,
+  options: CreateCursorRequestOptions = {},
+): CursorRunRequest {
   const messages = parsed.context.messages
     .map(requestMessage)
     .filter((message): message is CursorRequestMessage => !!message && message.content.length > 0);
@@ -168,6 +176,13 @@ export function createCursorRequest(parsed: OcxParsedRequest): CursorRunRequest 
   const budget = applyCursorToolBudget(visibleTools, parsed.options.toolChoice);
   const limitNote = catalogLimitNote(budget.tools, budget.omitted);
   const model = normalizeCursorModelId(parsed.modelId, parsed.options.reasoning);
+  const lastRaw = parsed.context.messages.at(-1);
+  // External Cursor models (e.g. gpt-5.6-sol) can corrupt server-side conversation state across
+  // tool-result continuations when ResumeAction reuses the same conversationId. Force a fresh id
+  // so the full history is replayed without depending on that state.
+  const forceFreshConversation =
+    options.forceFreshConversation === true
+    || (lastRaw?.role === "toolResult" && isCursorExternalWireModel(model.modelId));
   return {
     modelId: model.modelId,
     ...(model.routingLevel ? { routingLevel: model.routingLevel } : {}),
@@ -175,7 +190,9 @@ export function createCursorRequest(parsed: OcxParsedRequest): CursorRunRequest 
     // back to the OpenAI Responses previous_response_id (resp_*): that is a Responses-chain id in a
     // different namespace and would start an unrelated Cursor conversation, breaking tool-result
     // continuation. If we have no remembered Cursor conversation, start a fresh one.
-    conversationId: parsed._cursorConversationId ?? generatedCursorConversationId(),
+    conversationId: forceFreshConversation
+      ? generatedCursorConversationId()
+      : (parsed._cursorConversationId ?? generatedCursorConversationId()),
     system: [...(parsed.context.systemPrompt ?? []), ...(limitNote ? [limitNote] : [])],
     messages,
     rawMessages: parsed.context.messages,

@@ -1,6 +1,6 @@
 {
   "name": "@bitkyc08/opencodex",
-  "version": "2.7.33",
+  "version": "2.7.34",
   "description": "Universal provider proxy for OpenAI Codex & Claude Code — use any LLM with Codex CLI/App/SDK and Claude Code",
   "type": "module",
   "main": "./bin/package-main.mjs",
@@ -36,7 +36,7 @@
     "dev:proxy": "bun run src/cli/index.ts start",
     "dev:gui": "cd gui && bun run dev",
     "start": "bun run src/cli/index.ts start",
-    "test": "bun test --isolate ./tests/",
+    "test": "bun scripts/test.ts",
     "typecheck": "bun x tsc --noEmit",
     "privacy:scan": "bun scripts/privacy-scan.ts",
     "generate:jawcode-metadata": "bun scripts/generate-jawcode-metadata.ts",
@@ -62,6 +62,9 @@
   "devDependencies": {
     "@types/bun": "1.3.14",
     "typescript": "5.9.3"
+  },
+  "overrides": {
+    "fast-uri": "^3.1.4"
   },
   "keywords": [
     "codex",

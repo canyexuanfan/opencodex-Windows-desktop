@@ -76,6 +76,10 @@ function eventStream(text: string): Uint8Array {
   return eventFrame("assistantResponseEvent", { content: text });
 }
 
+function reasoningStream(text: string): Uint8Array {
+  return eventFrame("reasoningContentEvent", { text });
+}
+
 function completionStream(answer: string): Uint8Array {
   const id = "completion-1";
   return Buffer.concat([
@@ -192,7 +196,7 @@ describe("Kiro OAuth upstream 401 replay", () => {
         if (chatCalls === 1) return new Response("rejected", { status: 401 });
         if (authorization !== "Bearer fresh-access") return new Response("stale token", { status: 401 });
         return new Response(
-          chatCalls === 2 ? eventStream("working") : completionStream("done"),
+          chatCalls === 2 ? reasoningStream("working") : completionStream("done"),
           { headers: { "content-type": "application/vnd.amazon.eventstream" } },
         );
       }
@@ -206,7 +210,6 @@ describe("Kiro OAuth upstream 401 replay", () => {
       const json = await response.json() as { output?: Array<{ type: string; phase?: string; content?: Array<{ text?: string }> }> };
       const messages = json.output?.filter(item => item.type === "message") ?? [];
       expect(messages.map(item => [item.content?.[0]?.text, item.phase])).toEqual([
-        ["working", "commentary"],
         ["done", "final_answer"],
       ]);
       expect(refreshCalls).toBe(1);

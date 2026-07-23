@@ -7,24 +7,27 @@ export type StoredAccountQuota = {
   updatedAt: number;
 };
 
-export type WhamWindow = {
-  used_percent?: number;
-  reset_at?: number;
-  limit_window_seconds?: number;
-};
-
 export type WhamUsageResponse = {
   email?: string | null;
   plan_type?: string | null;
   rate_limit?: {
-    primary_window?: WhamWindow | null;
-    secondary_window?: WhamWindow | null;
-    tertiary_window?: WhamWindow | null;
+    // Live WHAM payloads send explicit nulls for absent windows (issue #315 repro).
+    primary_window?: WhamUsageWindow | null;
+    secondary_window?: WhamUsageWindow | null;
+    tertiary_window?: WhamUsageWindow | null;
   };
   rate_limit_reset_credits?: {
     available_count: number;
   } | null;
 };
+
+type WhamUsageWindow = {
+  used_percent?: number;
+  reset_at?: number;
+  limit_window_seconds?: number;
+};
+
+const MONTHLY_WINDOW_MIN_SECONDS = 28 * 24 * 60 * 60;
 
 const accountQuota = new Map<string, StoredAccountQuota>();
 
@@ -50,16 +53,16 @@ function normalizeResetAt(value: unknown): number | undefined {
   return numeric;
 }
 
-/** >=28d windows are monthly (weekly is 604800s; WHAM monthly is 2628000s). */
-const MONTHLY_WINDOW_MIN_SECONDS = 28 * 24 * 60 * 60;
-
-function isMonthlyWindowSeconds(value: unknown): boolean {
-  return typeof value === "number" && Number.isFinite(value) && value >= MONTHLY_WINDOW_MIN_SECONDS;
-}
-
 function hasKnownQuotaValue(quota: Omit<StoredAccountQuota, "updatedAt">): boolean {
   return [quota.weeklyPercent, quota.monthlyPercent]
     .some(value => typeof value === "number" && Number.isFinite(value));
+}
+
+function isExplicitMonthlyWindow(window: WhamUsageWindow | null | undefined): boolean {
+  const seconds = window?.limit_window_seconds;
+  return typeof seconds === "number"
+    && Number.isFinite(seconds)
+    && seconds >= MONTHLY_WINDOW_MIN_SECONDS;
 }
 
 export function updateAccountQuota(
@@ -123,33 +126,34 @@ export function parseUsageQuota(data: WhamUsageResponse): Omit<StoredAccountQuot
 
   const quota: Omit<StoredAccountQuota, "updatedAt"> = {};
   const thirtyDayOnly = data.plan_type?.trim().toLowerCase() === "go" || data.plan_type?.trim().toLowerCase() === "free";
-  // primary_window was the 5h window; it now carries weekly data for GPT plans.
-  // secondary_window is the legacy weekly source; prefer primary when present.
-  // A primary window with limit_window_seconds >= 28d is a MONTHLY account window
-  // (Team accounts ship 2628000s primaries — issue #315) and must not map to weekly.
-  const primaryPercent = normalizeUsagePercent(data.rate_limit.primary_window?.used_percent);
-  const secondaryPercent = normalizeUsagePercent(data.rate_limit.secondary_window?.used_percent);
-  const tertiaryPercent = normalizeUsagePercent(data.rate_limit.tertiary_window?.used_percent);
-  const primaryResetAt = normalizeResetAt(data.rate_limit.primary_window?.reset_at);
-  const secondaryResetAt = normalizeResetAt(data.rate_limit.secondary_window?.reset_at);
-  const tertiaryResetAt = normalizeResetAt(data.rate_limit.tertiary_window?.reset_at);
-  const primaryIsMonthly = isMonthlyWindowSeconds(data.rate_limit.primary_window?.limit_window_seconds);
-  const monthlyFromPrimary = primaryIsMonthly && primaryPercent !== undefined;
-  // weekly source: primary unless primary is monthly; then secondary
-  const weeklyPercent = primaryIsMonthly ? secondaryPercent : (primaryPercent ?? secondaryPercent);
+  const primaryWindow = data.rate_limit.primary_window;
+  const secondaryWindow = data.rate_limit.secondary_window;
+  const tertiaryWindow = data.rate_limit.tertiary_window;
+  const primaryPercent = normalizeUsagePercent(primaryWindow?.used_percent);
+  const secondaryPercent = normalizeUsagePercent(secondaryWindow?.used_percent);
+  const tertiaryPercent = normalizeUsagePercent(tertiaryWindow?.used_percent);
+  const primaryResetAt = normalizeResetAt(primaryWindow?.reset_at);
+  const secondaryResetAt = normalizeResetAt(secondaryWindow?.reset_at);
+  const tertiaryResetAt = normalizeResetAt(tertiaryWindow?.reset_at);
+  const primaryIsMonthly = isExplicitMonthlyWindow(primaryWindow);
+
+  // [Decision Log]
+  // - 목적과 의도: distinguish weekly and roughly monthly WHAM primary windows without plan-name guesses.
+  // - 기존 구현 및 제약 조건: primary meant weekly, and older responses omit limit_window_seconds.
+  // - 검토한 주요 대안: exact-duration matching, plan-specific mapping, and a duration lower bound.
+  // - 선택한 방식: only an explicit primary duration of at least 28 days changes it to monthly.
+  // - 다른 대안 대신 이 방식을 선택한 이유: it accepts calendar-month variance and preserves legacy payloads.
+  // - 장점, 단점 및 영향: Team monthly quotas classify correctly; unknown durations remain weekly by design.
+  const weeklyPercent = primaryIsMonthly ? secondaryPercent : primaryPercent ?? secondaryPercent;
   const weeklyResetAt = primaryIsMonthly
     ? secondaryResetAt
-    : (primaryPercent !== undefined ? primaryResetAt : secondaryResetAt);
-  // monthly source: a monthly primary with a usable percent wins over tertiary;
-  // percent and reset always come from the SAME window (no cross-window pairing)
-  const monthlyPercent = monthlyFromPrimary ? primaryPercent : tertiaryPercent;
-  const monthlyResetAt = monthlyFromPrimary ? primaryResetAt : tertiaryResetAt;
+    : primaryPercent !== undefined ? primaryResetAt : secondaryResetAt;
+  const monthlyPercent = primaryIsMonthly ? primaryPercent ?? tertiaryPercent : tertiaryPercent;
+  const monthlyResetAt = primaryIsMonthly && primaryPercent !== undefined ? primaryResetAt : tertiaryResetAt;
   if (thirtyDayOnly) {
-    // go/free thirty-day accounts keep their historical tertiary-only contract
-    // (locked by tests; monthly-primary payloads have not been observed on these plans).
-    if (tertiaryPercent !== undefined) {
-      quota.monthlyPercent = tertiaryPercent;
-      if (tertiaryResetAt !== undefined) quota.monthlyResetAt = tertiaryResetAt;
+    if (monthlyPercent !== undefined) {
+      quota.monthlyPercent = monthlyPercent;
+      if (monthlyResetAt !== undefined) quota.monthlyResetAt = monthlyResetAt;
     }
   } else if (weeklyPercent !== undefined) {
     quota.weeklyPercent = weeklyPercent;

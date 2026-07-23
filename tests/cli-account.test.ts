@@ -448,7 +448,11 @@ describe("ocx account CLI (issue #180 matrix)", () => {
   test("10: proxy-down exits one with ocx start and ensure guidance", async () => {
     const result = await run(
       ["list"],
-      { baseUrl: "http://127.0.0.1:1", loadConfigImpl: fixtureConfig },
+      {
+        baseUrl: "http://127.0.0.1:1",
+        loadConfigImpl: fixtureConfig,
+        fetchImpl: async () => { throw new TypeError("connection refused"); },
+      },
     );
 
     expect(result.code).toBe(1);

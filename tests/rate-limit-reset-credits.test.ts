@@ -169,7 +169,7 @@ describe("rate-limit reset credits", () => {
       expect(quota).toEqual({ monthlyPercent: 50, monthlyResetAt: 1788000000 });
     });
 
-    it("locks the go/free branch to tertiary even with a monthly primary present", () => {
+    it("lets an explicit monthly primary win on go plans (upstream 4e0d6735 semantics)", () => {
       const quota = parseUsageQuota({
         plan_type: "go",
         rate_limit: {
@@ -177,7 +177,7 @@ describe("rate-limit reset credits", () => {
           tertiary_window: { used_percent: 50, reset_at: 1788000000 },
         },
       });
-      expect(quota).toEqual({ monthlyPercent: 50, monthlyResetAt: 1788000000 });
+      expect(quota).toEqual({ monthlyPercent: 30, monthlyResetAt: 1787401330 });
     });
 
     it("keeps legacy tertiary monthly next to a duration-less weekly primary", () => {
