@@ -21,11 +21,12 @@ files are picked up automatically.
     `:151-154`;
   - `describe("combo namespace primitives", …)` `:156-674` (pure-combo tests,
     inside the describe);
-  - **management slice `:676-1286` (to EOF)**: tests #1-17 are top-level
-    `test()` calls (`:676-1197`); test #18 ("PATCH skips one disabled member…")
-    is wrapped in `describe("supported disabled-provider activation")`
-    `:1200-1286`. The `describe("combo namespace primitives")` block closes at
-    `:674`, so the cut is clean: keep `:1-674`, move `:676-1286`.
+  - **management slice is DESCRIBE-WRAPPED, not top-level** (B-phase correction):
+    9 top-level describes total. The 7 pure-combo describes (`:155-615`) close at
+    `:184/:248/:280/:325/:391/:522/:615`; the 2 management describes are
+    `describe("combo management API")` `:617-1198` (tests #1-17) and
+    `describe("supported disabled-provider activation")` `:1200-1286` (test #18).
+    Clean cut: keep `:1-615`, move `:617-1286`.
 
 ## Existing helpers (do not collide)
 
@@ -34,6 +35,16 @@ files are picked up automatically.
   `installIsolatedCodexHome`.
 
 ## Split A — `tests/combos.test.ts` (1286) → keep pure-combo, move management API
+
+> **B-phase execution note (DONE, commit 6f1b12cf):** Split A implemented by
+> byte-exact line extraction. NEW `tests/combo-management-api.test.ts` =
+> header `:1-154` (imports + `VALID_COMBO` + all helpers + afterEach) +
+> management describes `:617-1286`. KEPT `tests/combos.test.ts` = `:1-615`
+> (header + 7 pure-combo describes). Verified: `bun test` on both files =
+> **49 pass / 0 fail / 333 expect()**, identical to the pre-split baseline.
+> combos.test.ts 1286 → 615 lines. The management tests are inside
+> `describe("combo management API")` `:617-1198` + `describe("supported
+> disabled-provider activation")` `:1200-1286` (NOT top-level as first drafted).
 
 The management API block is **18 tests** (corrected from the census "17"),
 `tests/combos.test.ts:676-1286` (the slice runs to EOF; the final test is
@@ -85,6 +96,17 @@ later-phase option, out of scope here.
 
 ## Split B — `tests/server-auth.test.ts` (2926) → move provider-management validation
 
+> **B-phase execution note (DONE, commit 665b6564):** all 60 tests live in ONE
+> `describe("server local API auth")` (`:113`), so the split was by test
+> identity via a brace-matching enumerator. MOVE set = two contiguous ranges:
+> `:361-1280` (21 provider-management tests) + `:1296-1450` (2 context-cap
+> tests); the single STAY test between them is `safeConfigDTO … freeTier badge`
+> `:1282-1294`. NEW `tests/management-provider-validation.test.ts` (1189 lines)
+> = setup `:1-112` + `describe("provider management validation")` wrapping the
+> 23 moved tests. KEPT `tests/server-auth.test.ts` (2946 → 1868) = `:1-360` +
+> `:1282-1294` + `:1452-2946`. Verified: `bun test` on both = **60 pass / 0 fail
+> / 355 expect()**, identical to baseline.
+
 The provider-management validation tests are NOT one contiguous block. The
 core run is `tests/server-auth.test.ts:349-1280` (17 sub-sections, see
 inventory: external forward-auth rejection through provider PATCH field-mask
@@ -120,6 +142,10 @@ real file and recorded in the B-phase commit message; C verifies the
 case-name set is preserved (no test deleted, none duplicated).
 
 ## Split C — shared SSE helper (small, optional but cheap)
+
+> **DEFERRED (wp1 D decision):** optional/low-value; not required for the
+> wp1 acceptance criteria (c2/c3/c4/c7 all met without it). Candidate for a
+> later follow-up work-phase if web-search test churn continues.
 
 `tests/web-search.test.ts` repeats an inline `text/event-stream` `Response`
 stub ~14 times (`:424-1190`) and has a reusable parser `collectSse`
