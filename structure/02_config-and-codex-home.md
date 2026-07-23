@@ -37,6 +37,10 @@ requires_openai_auth = true
 Root TOML keys must be written before the first `[table]`. Re-injection strips stale opencodex
 blocks, stale root context-window overrides, and stale opencodex catalog paths before rewriting.
 
+If the root config selects a provider other than `openai` or `opencodex`, injection must leave the
+config byte-for-byte unchanged and skip history migration. External provider managers own that
+routing configuration, and replacing their provider id can hide otherwise intact Codex sessions.
+
 `supports_websockets = true` is appended only when `websocketsEnabled(config)` returns true.
 
 ## Profile and fast tier

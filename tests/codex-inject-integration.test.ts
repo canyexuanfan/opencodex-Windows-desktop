@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -99,6 +99,31 @@ describe("injectCodexConfig integration (Design B)", () => {
     const config = readFileSync(join(codexHome, "config.toml"), "utf8");
     expect(config).toContain('openai_base_url = "https://my-own-gateway.example/v1"');
     expect(config).not.toContain("# Auto-injected by opencodex\nopenai_base_url");
+  });
+
+  test("external model provider stays byte-for-byte unchanged so its session history remains visible", () => {
+    const original = [
+      'model_provider = "custom"',
+      'model = "third-party-model"',
+      "",
+      "[model_providers.custom]",
+      'name = "Provider Manager"',
+      'base_url = "https://gateway.example/v1"',
+      'wire_api = "responses"',
+      "requires_openai_auth = true",
+      "",
+    ].join("\n");
+    writeFileSync(join(codexHome, "config.toml"), original, "utf8");
+
+    const r = runInject(codexHome, ocxHome);
+    expect(r.status).toBe(0);
+    const result = JSON.parse(r.stdout);
+    expect(result.success).toBe(true);
+    expect(result.message).toContain("routing NOT injected");
+    expect(result.message).toContain('external model_provider "custom"');
+
+    expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(original);
+    expect(existsSync(join(codexHome, "opencodex.config.toml"))).toBe(false);
   });
 
   test("non-loopback hostname still uses the legacy provider-table injection", () => {

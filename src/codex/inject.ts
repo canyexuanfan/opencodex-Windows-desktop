@@ -365,8 +365,18 @@ export async function injectCodexConfig(port: number, config?: OcxConfig, option
     return { success: false, message: `Codex config not found at ${CODEX_CONFIG_PATH}. Is Codex installed?` };
   }
 
-  writeJournal();
   const rawContent = readFileSync(CODEX_CONFIG_PATH, "utf-8");
+  const activeProvider = readRootTomlString(rawContent, "model_provider");
+  if (activeProvider && activeProvider !== "openai" && activeProvider !== "opencodex") {
+    return {
+      success: true,
+      message: `⚠️ Codex routing NOT injected: config.toml selects the external model_provider ${tomlString(activeProvider)}.\n` +
+        `  OpenCodex preserves external provider configuration so existing ${tomlString(activeProvider)} session history stays visible.\n` +
+        `  Configure your provider manager to use http://${providerBaseHost(config?.hostname)}:${port}/v1, or switch Codex to the built-in openai provider and rerun 'ocx start'.`,
+    };
+  }
+
+  writeJournal();
   // EOL boundary: transforms below are LF-pure; preserve the file's dominant ending on write.
   const eol = dominantEol(rawContent);
   let content = applyEol(rawContent, "\n");

@@ -153,6 +153,18 @@ reapplies the configured name. Genuine upstream native names (e.g. `gpt-5.6-sol`
 "GPT-5.6-Sol") come from the pinned upstream snapshot and are never overridden by a custom display
 name.
 
+### External provider managers
+
+If `config.toml` already selects a provider other than `openai` or `opencodex`, OpenCodex leaves the
+file unchanged and skips Codex history migration. Tools that manage a custom provider often tag
+existing sessions with that provider id; replacing the active id can make those intact sessions
+disappear from Codex's history view.
+
+Keep one tool as the owner of Codex provider configuration. To use OpenCodex behind an existing
+provider manager, point that manager at the local OpenAI-compatible endpoint
+`http://127.0.0.1:10100/v1`. To let OpenCodex inject routing directly, first switch Codex back to its
+built-in `openai` provider, then rerun `ocx start`.
+
 ### Catalog troubleshooting
 
 If a model is missing from Codex, or the catalog order/visibility looks wrong, check in order:
