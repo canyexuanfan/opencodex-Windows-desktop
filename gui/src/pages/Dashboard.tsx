@@ -9,7 +9,16 @@ import { EmptyState, Select } from "../ui";
 interface HealthData { status: string; version: string; uptime: number }
 interface ProviderInfo { name: string; adapter: string; baseUrl: string; defaultModel?: string; hasApiKey: boolean }
 interface ModelInfo { id: string; provider: string; owned_by?: string }
-interface SettingsData { codexAutoStart: boolean; port: number; hostname: string }
+interface SettingsData {
+  codexAutoStart: boolean;
+  port: number;
+  hostname: string;
+  startupHealth?: {
+    status: "native" | "protected" | "at-risk";
+    autostartEnabled: boolean;
+    shimCoverage: "full" | "cli-only" | "none";
+  };
+}
 type SidecarBackend = "openai" | "anthropic";
 interface SidecarSetting { backend?: SidecarBackend; model: string }
 interface SidecarData { webSearch: SidecarSetting; vision: SidecarSetting }
@@ -446,8 +455,8 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         body: JSON.stringify({ codexAutoStart: next }),
       });
       if (!res.ok) throw new Error("save failed");
-      const data = await res.json();
-      setSettings(prev => prev ? { ...prev, codexAutoStart: data.codexAutoStart } : prev);
+      const data = await res.json() as { codexAutoStart: boolean; startupHealth?: SettingsData["startupHealth"] };
+      setSettings(prev => prev ? { ...prev, codexAutoStart: data.codexAutoStart, startupHealth: data.startupHealth ?? prev.startupHealth } : prev);
     } catch {
       setSettings(prev => prev ? { ...prev, codexAutoStart: !next } : prev);
       setError(true);
@@ -616,6 +625,16 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
           )}
         </div>
       </div>
+
+      {settings?.startupHealth?.status === "at-risk" && (
+        <div className="notice notice-warn" role="alert" style={{ marginTop: -12, marginBottom: 24 }}>
+          <IconAlert />
+          <span>
+            {t(settings.startupHealth.shimCoverage === "cli-only" ? "startup.riskDetailWindowsShim" : "startup.riskDetail")}{" "}
+            <a href="#startup">{t("startup.title")}</a>
+          </span>
+        </div>
+      )}
 
       {projectConfigWarnings.length > 0 && (
         <div className="notice notice-err maintenance-notice" style={{ marginBottom: 24 }} role="alert">

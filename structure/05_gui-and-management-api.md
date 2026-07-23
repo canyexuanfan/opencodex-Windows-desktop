@@ -13,6 +13,7 @@ starts the proxy when needed and opens `http://localhost:<port>`.
 | Endpoint area | Responsibility |
 | --- | --- |
 | Config/settings | Read safe config/settings views; mutate supported settings only. Full `PUT /api/config` is disabled so masked secrets are not round-tripped. |
+| Startup safety | `GET /api/startup-health` reports whether injected Codex routing is restart-safe, with secret-free service/shim diagnostics. On Windows a healthy script shim is CLI-only; Codex Desktop requires the background service for full protection. |
 | Providers | Create/update/delete ordinary provider configs and enrich registry metadata. The reserved `openai` card exposes Pool(default)/Direct account mode; `openai-apikey` remains the separate API route. |
 | Models | Fetch routed model lists, disabled model visibility, and catalog-facing ids. |
 | OAuth | Login/status/logout for OAuth-backed providers, plus multiauth account management: `GET /api/oauth/accounts`, `PUT /api/oauth/accounts/active`, `PUT /api/oauth/accounts/alias`, `DELETE /api/oauth/accounts` list masked accounts per provider, switch the active one, edit its display-only alias, and remove one. Login accepts `addAccount: true` to force a fresh browser identity. Device flows return a structured `deviceCode`; the GUI highlights and copies it before the user opens the verification page. |
@@ -43,6 +44,14 @@ identity, active selection, and routing never consult these fields. The matching
 The dashboard sidebar includes a stop button that calls `POST /api/stop`. The button shows a
 confirmation prompt, then fires the request and accepts the connection drop (the proxy exits). The
 endpoint restores native Codex config, stops any installed service to prevent respawn, and exits.
+
+## Startup safety
+
+The dashboard sidebar exposes a **Startup safety** page. Its warning state is derived from active
+Codex routing plus the actual service and launcher-shim installation state; the
+`codexAutoStart` preference alone is never presented as proof of restart protection. The page is
+read-only and shows copyable repair commands (`ocx service install`, `ocx codex-shim install`, and
+`ocx restore`) instead of installing lifecycle hooks from the proxy process.
 
 ## UX boundary
 

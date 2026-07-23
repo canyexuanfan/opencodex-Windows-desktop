@@ -55,6 +55,7 @@ import { estimateComboCost, estimateRequestCost, normalizeCostTokens, tokensPerS
 import type { PersistedUsageAttempt } from "../../usage/log";
 import { isAllowedRequestOrigin, jsonResponse, providerManagementConfigError, publicProviderBaseUrl, safeConfigDTO } from "../auth-cors";
 import { applySystemEnvToggle } from "../system-env";
+import { collectStartupHealth } from "../../codex/autostart-health";
 
 import { isPlainRecord, parseDebugLogQuery, tokPerSecondResult, unavailableCostReason, costResult, requestLogDto, stripRegistryOnlyStaticHeaders, fetchAllModels } from "./shared";
 import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, CostResult, MetricSource } from "./shared";
@@ -75,7 +76,12 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       codexAutoStart: codexAutoStartEnabled(config),
       port: config.port,
       hostname: config.hostname ?? "127.0.0.1",
+      startupHealth: collectStartupHealth(config),
     });
+  }
+
+  if (url.pathname === "/api/startup-health" && req.method === "GET") {
+    return jsonResponse(collectStartupHealth(config));
   }
 
   if (url.pathname === "/api/settings" && req.method === "PUT") {
@@ -86,7 +92,11 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     }
     config.codexAutoStart = body.codexAutoStart;
     saveConfig(config);
-    return jsonResponse({ ok: true, codexAutoStart: codexAutoStartEnabled(config) });
+    return jsonResponse({
+      ok: true,
+      codexAutoStart: codexAutoStartEnabled(config),
+      startupHealth: collectStartupHealth(config),
+    });
   }
 
   if (url.pathname === "/api/diagnostics/project-config" && req.method === "GET") {

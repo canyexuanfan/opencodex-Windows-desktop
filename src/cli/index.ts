@@ -27,6 +27,7 @@ import { findLiveProxy, probeHostname, type LiveProxy } from "../server/proxy-li
 import { stopProxy } from "../lib/process-control";
 import { loadServiceTokenFromFile } from "../lib/service-secrets";
 import { serviceCommand, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "../service";
+import { startupHealthSummary } from "../codex/autostart-health";
 import { drainAndShutdown, startServer } from "../server";
 import { injectSystemEnv, revertSystemEnv } from "../server/system-env";
 import { buildDesktop3pRegistry } from "../claude/desktop-3p";
@@ -448,6 +449,7 @@ async function handleStatus() {
   console.log(`   Runtime source: ${status.json.runtime.source}${status.json.runtime.overrideEnv ? ` (${status.json.runtime.overrideEnv})` : ""}`);
   console.log(`   Default provider: ${status.json.defaultProvider}`);
   console.log(`   Codex autostart: ${status.json.codexAutostart ? "enabled" : "disabled"}`);
+  console.log(`   Restart safety: ${startupHealthSummary(status.json.startup)}`);
   console.log(`   Service: ${status.json.service.summary}`);
   console.log(`   ${status.json.codexShim.summary}`);
   if (status.json.codexPlugins.applicable) {

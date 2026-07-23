@@ -151,7 +151,7 @@ export function stripInjectedOpenaiBaseUrl(content: string): string {
   return lines.filter((_, i) => !drop.has(i)).join("\n");
 }
 
-function hasInjectedOpenaiBaseUrl(content: string): boolean {
+export function hasInjectedOpenaiBaseUrl(content: string): boolean {
   const lines = content.split("\n");
   const firstTable = lines.findIndex(l => /^\s*\[/.test(l));
   const rootEnd = firstTable === -1 ? lines.length : firstTable;
@@ -159,6 +159,28 @@ function hasInjectedOpenaiBaseUrl(content: string): boolean {
     if (isRootOpenaiBaseUrlLine(lines[i]) && lines[i - 1].includes(OCX_SECTION_MARKER)) return true;
   }
   return false;
+}
+
+/**
+ * True when the active Codex config is owned by opencodex routing. Covers the
+ * loopback Design B root override and the legacy/non-loopback provider table.
+ * A user-owned `openai_base_url` is intentionally not classified as injected.
+ */
+export function hasInjectedCodexRouting(content: string): boolean {
+  if (hasInjectedOpenaiBaseUrl(content)) return true;
+  return /^\s*model_provider\s*=\s*["']opencodex["']\s*$/m.test(content)
+    && /^\s*\[model_providers\.opencodex\]\s*$/m.test(content);
+}
+
+/** Read-only probe used by status, doctor, and the dashboard. */
+export function isCodexRoutingInjected(): boolean {
+  const path = CODEX_CONFIG_PATH;
+  if (!existsSync(path)) return false;
+  try {
+    return hasInjectedCodexRouting(readFileSync(path, "utf8"));
+  } catch {
+    return false;
+  }
 }
 
 /**
