@@ -1,5 +1,6 @@
 import type { IncomingMeta, ProviderAdapter } from "./base";
 import type { AdapterEvent, OcxParsedRequest, OcxProviderConfig } from "../types";
+import { catalogModelSupportsReasoningSummaries } from "../codex/catalog";
 import { decodeCompactionSummary, SUMMARY_PREFIX } from "../responses/compaction";
 import { OCX_REASONING_PREFIX } from "../responses/reasoning-envelope";
 
@@ -50,6 +51,19 @@ export function sanitizeReasoningInputContent(body: unknown): unknown {
   });
 
   return changed ? { ...raw, input } : body;
+}
+
+function stripUnsupportedReasoningSummaryDelivery(body: unknown, modelId: string): unknown {
+  if (catalogModelSupportsReasoningSummaries(modelId) !== false) return body;
+  if (!isPlainObject(body) || !isPlainObject(body.stream_options)) return body;
+  if (!("reasoning_summary_delivery" in body.stream_options)) return body;
+
+  const streamOptions = { ...body.stream_options };
+  delete streamOptions.reasoning_summary_delivery;
+  const next = { ...body };
+  if (Object.keys(streamOptions).length > 0) next.stream_options = streamOptions;
+  else delete next.stream_options;
+  return next;
 }
 
 function stripInvalidItemIds(body: unknown): unknown {
@@ -459,6 +473,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
       );
       if (forward) outBody = repairOrphanedInputItems(outBody, unexpandedMiss);
       else outBody = stripConflictingHostedTools(outBody);
+      outBody = stripUnsupportedReasoningSummaryDelivery(outBody, parsed.modelId);
       return {
         url,
         method: "POST",

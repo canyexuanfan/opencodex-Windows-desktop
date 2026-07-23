@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createResponsesPassthroughAdapter } from "../src/adapters/openai-responses";
 import { sanitizeEncryptedContentInPlace } from "../src/server/responses";
 
@@ -50,6 +53,53 @@ describe("OpenAI Responses key-auth URL construction", () => {
 });
 
 describe("OpenAI Responses passthrough sanitization", () => {
+  test("BUG-R323 strips unsupported reasoning summary delivery while preserving stream options siblings", () => {
+    const codexHome = mkdtempSync(join(tmpdir(), "ocx-reasoning-summary-delivery-"));
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = codexHome;
+    writeFileSync(join(codexHome, "opencodex-catalog.json"), JSON.stringify({
+      models: [
+        { slug: "local/no-summaries", supports_reasoning_summaries: false },
+        { slug: "local/with-summaries", supports_reasoning_summaries: true },
+      ],
+    }));
+
+    try {
+      const adapter = createResponsesPassthroughAdapter({
+        adapter: "openai-responses",
+        baseUrl: "https://api.example/v1",
+        authMode: "key",
+        apiKey: "sk-test",
+      });
+      const buildBody = (modelId: string, streamOptions: Record<string, unknown>) => JSON.parse(adapter.buildRequest({
+        modelId,
+        context: { messages: [] },
+        stream: true,
+        options: {},
+        _rawBody: {
+          model: modelId,
+          input: "ping",
+          stream_options: streamOptions,
+        },
+      }, { headers: new Headers() }).body) as Record<string, unknown>;
+
+      expect(buildBody("no-summaries", {
+        reasoning_summary_delivery: "sequential_cutoff",
+        include_usage: true,
+      }).stream_options).toEqual({ include_usage: true });
+      expect(buildBody("with-summaries", {
+        reasoning_summary_delivery: "sequential_cutoff",
+      }).stream_options).toEqual({ reasoning_summary_delivery: "sequential_cutoff" });
+      expect(buildBody("no-summaries", {
+        reasoning_summary_delivery: "sequential_cutoff",
+      })).not.toHaveProperty("stream_options");
+    } finally {
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      rmSync(codexHome, { recursive: true, force: true });
+    }
+  });
+
   test("agent_message conversion removes its non-OpenAI item id", () => {
     const input = [{
       type: "agent_message",

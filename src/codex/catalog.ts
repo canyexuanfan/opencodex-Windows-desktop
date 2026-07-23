@@ -13,7 +13,7 @@ import { getJawcodeModelMetadata, getJawcodeModelMetadataCaseInsensitive, listJa
 import { enrichProviderFromRegistry, shouldCaseFoldMetadataModelId } from "../providers/derive";
 import { getProviderRegistryEntry } from "../providers/registry";
 import { applyProviderContextCap, providerContextCap } from "../providers/context-cap";
-import { routedSlug, slugEquals, slugsEquivalent } from "../providers/slug-codec";
+import { encodeRoutedModelId, routedSlug, slugEquals, slugsEquivalent } from "../providers/slug-codec";
 import { CODEX_GPT5_IDENTITY_LINE } from "../adapters/identity";
 import { filterCursorConfiguredModelsByLiveDiscovery } from "../adapters/cursor/discovery";
 import { fetchCursorUsableModels } from "../adapters/cursor/live-models";
@@ -616,7 +616,7 @@ function ensureStrictCatalogFields(
   entry: RawEntry,
   options: { preserveExactInputModalities?: boolean; isRouted?: boolean } = {},
 ): RawEntry {
-  if (typeof entry.supports_reasoning_summaries !== "boolean") entry.supports_reasoning_summaries = true;
+  if (typeof entry.supports_reasoning_summaries !== "boolean") entry.supports_reasoning_summaries = false;
   if (typeof entry.default_reasoning_summary !== "string") entry.default_reasoning_summary = "none";
   if (typeof entry.support_verbosity !== "boolean") entry.support_verbosity = true;
   if (typeof entry.default_verbosity !== "string") entry.default_verbosity = "low";
@@ -687,6 +687,9 @@ export function normalizeRoutedCatalogEntry(entry: RawEntry, parallelToolCalls =
   delete entry.service_tier;
   delete entry.service_tiers;
   delete entry.default_service_tier;
+  // Routed rows cloned from native templates must not inherit OpenAI-only summary delivery.
+  // Per-model routed opt-ins can be added once provider metadata exposes this capability.
+  delete entry.supports_reasoning_summaries;
   const isCursorEntry = typeof entry.slug === "string" && entry.slug.startsWith("cursor/");
   // Routed providers use opencodex sidecars and client-executed tool discovery. The sidecar
   // runs through native gpt-5.4-mini, so image search is available and verbalized for text-only
@@ -706,6 +709,28 @@ export function normalizeRoutedCatalogEntry(entry: RawEntry, parallelToolCalls =
   // assembles multi-call turns (devlog/_plan/260709_parallel_tool_calls).
   entry.supports_parallel_tool_calls = isCursorEntry || parallelToolCalls === true;
   return ensureStrictCatalogFields(entry, { isRouted: true });
+}
+
+/** Resolve reasoning-summary support from the active Codex catalog for wire sanitization. */
+export function catalogModelSupportsReasoningSummaries(modelId: string): boolean | undefined {
+  const catalog = readCatalog(readCodexCatalogPath()) ?? readCatalog(activeCodexModelsCachePath());
+  const models = catalog?.models ?? [];
+  const exact = models.find(entry => entry.slug === modelId || entry.id === modelId);
+  if (typeof exact?.supports_reasoning_summaries === "boolean") {
+    return exact.supports_reasoning_summaries;
+  }
+
+  // Routing removes the provider namespace before adapter dispatch. Recover a unique routed
+  // catalog match by its Codex-facing encoded suffix; disagreement fails open and preserves input.
+  const encodedModelId = encodeRoutedModelId(modelId);
+  const matches = models.filter(entry => (
+    typeof entry.slug === "string"
+    && entry.slug.includes("/")
+    && entry.slug.slice(entry.slug.indexOf("/") + 1) === encodedModelId
+    && typeof entry.supports_reasoning_summaries === "boolean"
+  ));
+  const values = new Set(matches.map(entry => entry.supports_reasoning_summaries as boolean));
+  return values.size === 1 ? values.values().next().value : undefined;
 }
 
 // provider + NATIVE model id are passed separately: the Codex-facing slug may carry an
