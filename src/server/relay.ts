@@ -438,6 +438,10 @@ export function createSseInspector(handlers: {
   let buffer = "";
   let reported = false;
   const reportFirstOutput = createFirstOutputReporter(handlers.onFirstOutput);
+  // Allocate reconstruction state only for persistence-capable inspectors.
+  const completedItemsByOutputIndex = handlers.onCompletedResponse
+    ? new Map<number, unknown>()
+    : null;
 
   const scanPayload = (payload: string | null): void => {
     if (!reported && handlers.logCtx) inspectResponseLogSsePayload(handlers.logCtx, payload);
@@ -455,7 +459,36 @@ export function createSseInspector(handlers: {
       }
     }
     if (handlers.onCompletedResponse) {
-      const response = completedResponseFromSsePayload(payload);
+      try {
+        const event = JSON.parse(payload) as {
+          type?: unknown;
+          output_index?: unknown;
+          item?: unknown;
+        };
+        if (event.type === "response.output_item.done"
+          && Number.isInteger(event.output_index)
+          && (event.output_index as number) >= 0
+          && typeof event.item === "object"
+          && event.item !== null
+          && !Array.isArray(event.item)
+          && typeof (event.item as { type?: unknown }).type === "string") {
+          completedItemsByOutputIndex!.set(event.output_index as number, event.item);
+        }
+      } catch {
+        /* malformed SSE payloads remain best-effort/no-throw */
+      }
+
+      let response = completedResponseFromSsePayload(payload);
+      if (response
+        && (!Array.isArray(response.output) || response.output.length === 0)
+        && completedItemsByOutputIndex!.size > 0) {
+        response = {
+          ...response,
+          output: [...completedItemsByOutputIndex!.entries()]
+            .sort(([left], [right]) => left - right)
+            .map(([, item]) => item),
+        };
+      }
       if (response) handlers.onCompletedResponse(response);
     }
   };
