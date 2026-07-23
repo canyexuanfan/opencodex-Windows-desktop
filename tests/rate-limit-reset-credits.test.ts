@@ -105,6 +105,108 @@ describe("rate-limit reset credits", () => {
     });
   });
 
+  describe("parseUsageQuota window duration classification (issue #315)", () => {
+    it("keeps a 7d primary window weekly", () => {
+      const quota = parseUsageQuota({
+        plan_type: "team",
+        rate_limit: {
+          primary_window: { used_percent: 60, reset_at: 1787000000, limit_window_seconds: 604800 },
+        },
+      });
+      expect(quota).toEqual({ weeklyPercent: 60, weeklyResetAt: 1787000000 });
+    });
+
+    it("classifies a ~30.4d primary window as monthly (reporter repro)", () => {
+      const quota = parseUsageQuota({
+        plan_type: "team",
+        rate_limit: {
+          primary_window: { used_percent: 6, reset_at: 1787336442, limit_window_seconds: 2628000 },
+          secondary_window: null,
+          tertiary_window: null,
+        },
+        rate_limit_reset_credits: { available_count: 0 },
+      });
+      expect(quota).toEqual({ monthlyPercent: 6, monthlyResetAt: 1787336442, resetCredits: 0 });
+      expect(quota!.weeklyPercent).toBeUndefined();
+    });
+
+    it("keeps secondary as the weekly source next to a monthly primary", () => {
+      const quota = parseUsageQuota({
+        plan_type: "team",
+        rate_limit: {
+          primary_window: { used_percent: 39, reset_at: 1787401330, limit_window_seconds: 2628000 },
+          secondary_window: { used_percent: 20, reset_at: 1787000000 },
+        },
+      });
+      expect(quota).toEqual({
+        monthlyPercent: 39,
+        monthlyResetAt: 1787401330,
+        weeklyPercent: 20,
+        weeklyResetAt: 1787000000,
+      });
+    });
+
+    it("prefers a usable monthly primary over tertiary, same-source coupled", () => {
+      const quota = parseUsageQuota({
+        plan_type: "team",
+        rate_limit: {
+          primary_window: { used_percent: 39, reset_at: 1787401330, limit_window_seconds: 2628000 },
+          tertiary_window: { used_percent: 50, reset_at: 1788000000 },
+        },
+      });
+      expect(quota).toEqual({ monthlyPercent: 39, monthlyResetAt: 1787401330 });
+    });
+
+    it("falls back to tertiary wholesale when a monthly primary has no percent", () => {
+      const quota = parseUsageQuota({
+        plan_type: "team",
+        rate_limit: {
+          primary_window: { reset_at: 1787401330, limit_window_seconds: 2628000 },
+          tertiary_window: { used_percent: 50, reset_at: 1788000000 },
+        },
+      });
+      // percent and reset must both come from tertiary — no cross-window pairing
+      expect(quota).toEqual({ monthlyPercent: 50, monthlyResetAt: 1788000000 });
+    });
+
+    it("locks the go/free branch to tertiary even with a monthly primary present", () => {
+      const quota = parseUsageQuota({
+        plan_type: "go",
+        rate_limit: {
+          primary_window: { used_percent: 30, reset_at: 1787401330, limit_window_seconds: 2628000 },
+          tertiary_window: { used_percent: 50, reset_at: 1788000000 },
+        },
+      });
+      expect(quota).toEqual({ monthlyPercent: 50, monthlyResetAt: 1788000000 });
+    });
+
+    it("keeps legacy tertiary monthly next to a duration-less weekly primary", () => {
+      const quota = parseUsageQuota({
+        plan_type: "team",
+        rate_limit: {
+          primary_window: { used_percent: 10, reset_at: 1787000000 },
+          tertiary_window: { used_percent: 50, reset_at: 1788000000 },
+        },
+      });
+      expect(quota).toEqual({
+        weeklyPercent: 10,
+        weeklyResetAt: 1787000000,
+        monthlyPercent: 50,
+        monthlyResetAt: 1788000000,
+      });
+    });
+
+    it("keeps duration-less primary weekly (backward compatibility)", () => {
+      const quota = parseUsageQuota({
+        plan_type: "team",
+        rate_limit: {
+          primary_window: { used_percent: 10, reset_at: 1787000000 },
+        },
+      });
+      expect(quota).toEqual({ weeklyPercent: 10, weeklyResetAt: 1787000000 });
+    });
+  });
+
   describe("CodexAuth reset credit UI", () => {
     it("normalizes Go and Free quota displays to 30d only", async () => {
       const { normalizeQuotaForPlan } = await import("../gui/src/codex-quota-utils");
