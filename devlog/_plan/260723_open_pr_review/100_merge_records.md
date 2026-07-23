@@ -139,3 +139,15 @@ Reconciliation rationale (per the reasoned-mixing brief):
   fast-uri override + our scripts/test.ts runner), version stays 2.7.34.
 - Verification: typecheck 0; `bun run test` **3676 pass / 0 fail** across 299 files;
   privacy scan passed.
+
+## Push to origin/dev — WP-PUSH (user-approved this turn)
+
+- Sol pre-push gate: **GO** (ancestry holds; 32 changed files match reviewed stack,
+  no junk/local-state paths; no codexclaw/goalplan files in pushed tree).
+- Push: `a0b9688d..3a87829f  HEAD -> dev` (fast-forward, no force). Pre-push hook ran;
+  gui doctor skipped (no gui/ changes in range).
+- Remote verification: `git ls-remote origin dev` == 3a87829f == local HEAD.
+- Side effect: GitHub closed PR #304 (its head 9ca7ea32 is now an ancestor of dev).
+- Open PRs remaining after push: #306 (held for CI + GUI approval), #325 (new, untriaged).
+- Final dev tree carries: upstream a0b9688d (incl. #309 as maintainer decision) +
+  local #304 merge + two #279 fixups + review/merge/integration devlog units.
