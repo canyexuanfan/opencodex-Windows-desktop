@@ -90,7 +90,7 @@ function currentEntry(): WindowsTrayEntry {
 }
 
 export function windowsTrayRunValue(opencodexHome: string): string {
-  const normalized = resolve(opencodexHome).replace(/[\\/]+$/, "").toLowerCase();
+  const normalized = resolve(opencodexHome).replace(/[\\/](?:\.)?[\\/]*$/, "").toLowerCase();
   return `OpenCodexTray-${createHash("sha256").update(normalized).digest("hex").slice(0, 12)}`;
 }
 
