@@ -12,20 +12,20 @@ alphabetical order for routed models that share the same priority.
 Codex's models-manager sorts picker-visible catalog entries by `priority` in ascending order. It
 discards the catalog array order, so moving an entry earlier in a generated JSON array does not move
 it earlier in the picker. The implementation records this constraint directly in
-`src/codex/catalog.ts:881-884`.
+`src/codex/catalog/sync.ts`.
 
 opencodex therefore controls featured placement by assigning lower priorities, not by relying on
 array position. The relevant priorities are:
 
 | Catalog entry | Priority | Source |
 | --- | ---: | --- |
-| `subagentModels[i]` | `i` (`0` through `4`) | The featured rank map in `src/codex/catalog.ts:885-896` |
-| Other routed models | `5` | Routed entry creation in `src/codex/catalog.ts:892-896` |
-| Native GPT slugs by default | `9` | Native entry creation in `src/codex/catalog.ts:887-890` |
-| Unselected native models while a featured list exists | At least `featured.length + 100` | Native catalog merge in `src/codex/catalog.ts:1348-1355` |
+| `subagentModels[i]` | `i` (`0` through `4`) | The featured rank map in `src/codex/catalog/sync.ts` |
+| Other routed models | `5` | Routed entry creation in `src/codex/catalog/sync.ts` |
+| Native GPT slugs by default | `9` | Native entry creation in `src/codex/catalog/sync.ts` |
+| Unselected native models while a featured list exists | At least `featured.length + 100` | Native catalog merge in `src/codex/catalog/sync.ts` |
 
 The management API limits `subagentModels` to five entries with `slice(0, 5)` in
-`src/server/management-api.ts:626-634`. This matches the Codex `spawn_agent` surface, which
+`src/server/management/agent-settings-routes.ts`. This matches the Codex `spawn_agent` surface, which
 advertises only the first five model overrides. Models outside those five can still remain visible
 in the main picker and callable by their exact id.
 
@@ -33,7 +33,7 @@ in the main picker and callable by their exact id.
 
 All ordinary routed models have priority `5`, so they need a tie-breaker. Before catalog entries are
 built, `gatherRoutedModels()` sorts the routed model list by provider name and then by model id, both
-alphabetically (`src/codex/catalog.ts:1241-1270`).
+alphabetically (`src/codex/catalog/provider-fetch.ts`).
 
 This means neither of these configuration details changes the final order:
 
@@ -42,7 +42,7 @@ This means neither of these configuration details changes the final order:
 
 `orderForSubagents()` then uses a stable sort to move configured featured picks to the front in the
 same order as `subagentModels`. Non-featured models keep the provider/id alphabetical relative order
-established earlier (`src/codex/catalog.ts:1307-1321`). The featured rank is also converted to
+established earlier (`src/codex/catalog/sync.ts`). The featured rank is also converted to
 priorities `0` through `4` when entries are built, so Codex's priority sort preserves that leading
 sequence.
 
@@ -50,7 +50,7 @@ sequence.
 
 `selectedModels` and `disabledModels` decide which routed models are exposed; they are not ordering
 controls. `filterCatalogVisibleModels()` converts both selections to `Set` lookups and filters the
-gathered list without using the arrays as ranks (`src/codex/catalog.ts:1216-1237`).
+gathered list without using the arrays as ranks (`src/codex/catalog/provider-fetch.ts`).
 
 As a result, reordering `selectedModels` or `disabledModels` has no effect on picker position. It can
 only change whether a model is included.
