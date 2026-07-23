@@ -25,6 +25,19 @@ function runInject(codexHome: string, ocxHome: string, configJson = "{}"): { std
   return { stdout: result.stdout?.trim() ?? "", status: result.status ?? 1 };
 }
 
+function runRestore(codexHome: string, ocxHome: string): { stdout: string; status: number } {
+  const script = `
+    const { restoreNativeCodex } = require("./src/codex/inject");
+    console.log(JSON.stringify(restoreNativeCodex()));
+  `;
+  const result = spawnSync(process.execPath, ["--eval", script], {
+    cwd: repoRoot,
+    env: { ...process.env, CODEX_HOME: codexHome, OPENCODEX_HOME: ocxHome },
+    encoding: "utf8",
+  });
+  return { stdout: result.stdout?.trim() ?? "", status: result.status ?? 1 };
+}
+
 describe("injectCodexConfig integration (Design B)", () => {
   let codexHome: string;
   let ocxHome: string;
@@ -155,6 +168,53 @@ describe("injectCodexConfig integration (Design B)", () => {
     expect(result.message).toContain("Responses passthrough");
 
     expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(original);
+    expect(readFileSync(profilePath, "utf8")).toBe(profile);
+    expect(readFileSync(dbPath).equals(dbBefore)).toBe(true);
+    expect(readFileSync(rolloutPath, "utf8")).toBe(rollout);
+    expect(existsSync(journalPath)).toBe(false);
+  });
+
+  test("restoreNativeCodex removes a stale journal without changing external provider state", () => {
+    const configPath = join(codexHome, "config.toml");
+    const config = 'model_provider = "custom"\nmodel = "third-party-model"\n';
+    writeFileSync(configPath, config, "utf8");
+    const profilePath = join(codexHome, "opencodex.config.toml");
+    const profile = 'model_provider = "custom"\n';
+    writeFileSync(profilePath, profile, "utf8");
+
+    const sessionsDir = join(codexHome, "sessions");
+    mkdirSync(sessionsDir);
+    const rolloutPath = join(sessionsDir, "rollout-custom.jsonl");
+    const rollout = JSON.stringify({
+      type: "session_meta",
+      payload: { id: "thread-custom", model_provider: "custom", source: "cli", cwd: codexHome },
+    }) + "\n";
+    writeFileSync(rolloutPath, rollout, "utf8");
+    const dbPath = join(codexHome, "state_5.sqlite");
+    const db = new Database(dbPath);
+    db.run(`CREATE TABLE threads (
+      id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, model_provider TEXT NOT NULL,
+      source TEXT NOT NULL, first_user_message TEXT NOT NULL, has_user_event INTEGER NOT NULL
+    )`);
+    db.run(`INSERT INTO threads VALUES ('thread-custom', ?, 'custom', 'cli', 'hello', 1)`, rolloutPath);
+    db.close();
+    const dbBefore = readFileSync(dbPath);
+
+    const journalPath = join(codexHome, "opencodex-journal.json");
+    writeFileSync(journalPath, JSON.stringify({
+      version: 1,
+      originalConfig: Buffer.from('model_provider = "openai"\n').toString("base64"),
+      originalProfile: null,
+      pid: process.pid,
+      timestamp: new Date().toISOString(),
+    }), "utf8");
+
+    const r = runRestore(codexHome, ocxHome);
+    expect(r.status).toBe(0);
+    const result = JSON.parse(r.stdout);
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('External Codex provider "custom" preserved');
+    expect(readFileSync(configPath, "utf8")).toBe(config);
     expect(readFileSync(profilePath, "utf8")).toBe(profile);
     expect(readFileSync(dbPath).equals(dbBefore)).toBe(true);
     expect(readFileSync(rolloutPath, "utf8")).toBe(rollout);
