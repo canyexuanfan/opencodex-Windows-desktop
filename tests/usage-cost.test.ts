@@ -262,8 +262,6 @@ describe("resolveMatchedPrice", () => {
       expect(compatibility?.source).toContain("gemini-3.6-flash");
     }
   });
-});
-
 
   test("pool-suffixed google-antigravity provider matches official Anthropic Claude Opus 4.6 overlay", () => {
     const price = resolveMatchedPrice("google-antigravity-p442fff", "claude-opus-4-6-thinking");
@@ -281,6 +279,24 @@ describe("resolveMatchedPrice", () => {
     });
     expect(est?.cost.total).toBeCloseTo(5, 9);
   });
+
+  test("pool-suffixed google-antigravity provider matches official Anthropic Claude Sonnet 4.6 overlay", () => {
+    const price = resolveMatchedPrice("google-antigravity-p442fff", "claude-sonnet-4-6");
+    expect(price).not.toBeNull();
+    expect(price!.modelId).toBe("claude-sonnet-4-6");
+    expect(price!.cost4).toEqual({ input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 });
+    expect(price!.source).toBe("expected");
+    expect(price!.status).toBe("verified");
+
+    const est = estimateRequestCost({
+      provider: "google-antigravity-p442fff",
+      model: "claude-sonnet-4-6",
+      usageStatus: "reported",
+      usage: { inputTokens: 1_000_000, outputTokens: 0 },
+    });
+    expect(est?.cost.total).toBeCloseTo(3, 9);
+  });
+});
 
 describe("combo", () => {
   const overlays: ExpectedPriceOverlay[] = [
