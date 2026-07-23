@@ -6,7 +6,7 @@ import {
   ModelDetailsSchema,
 } from "../src/adapters/cursor/gen/agent_pb";
 import { fetchCursorUsableModels } from "../src/adapters/cursor/live-models";
-import { armTimeoutDestroyFallback, createTerminalSettler } from "../src/adapters/cursor/live-transport";
+import { armTimeoutDestroyFallback, createLiveCursorTransport, createTerminalSettler } from "../src/adapters/cursor/live-transport";
 import { gatherRoutedModels } from "../src/codex/catalog";
 import { clearModelCache } from "../src/codex/model-cache";
 
@@ -260,5 +260,42 @@ describe("Cursor timeout destroy fallback", () => {
     await new Promise(resolve => setTimeout(resolve, 40));
     expect(stream.destroys).toBe(0);
     expect(session.destroys).toBe(0);
+  });
+});
+
+describe("Cursor live transport unexpected EOF", () => {
+  test("zero-frame stream end surfaces as a transport error, not success", async () => {
+    // Real h2c peer that accepts the request stream and immediately ends it with no
+    // response frames — the shape the WP4 reviewer reproduced as a silent success.
+    await withDiscoveryServer(stream => {
+      stream.on("error", () => {});
+      stream.end();
+    }, async baseUrl => {
+      const transport = createLiveCursorTransport({
+        provider: { adapter: "cursor", baseUrl, apiKey: "test-token" },
+        firstFrameTimeoutMs: 2_000,
+      });
+      let failure: Error | undefined;
+      let sawMessage = false;
+      try {
+        for await (const _message of transport.run({
+          modelId: "composer-2",
+          conversationId: "cursor_eof_test",
+          system: [],
+          messages: [{ role: "user", content: "hello" }],
+        })) {
+          sawMessage = true;
+        }
+      } catch (err) {
+        failure = err instanceof Error ? err : new Error(String(err));
+      } finally {
+        // The client session outlives the failed turn; close it so the local
+        // fixture server can shut down without waiting on the open connection.
+        await transport.close?.();
+      }
+      expect(sawMessage).toBe(false);
+      expect(failure).toBeDefined();
+      expect(failure?.message).toContain("unexpected EOF");
+    });
   });
 });

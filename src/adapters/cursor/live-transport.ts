@@ -779,6 +779,14 @@ class LiveCursorTransport implements CursorTransport {
         expectedClose: this.expectedClose,
         elapsedMs: Date.now() - this.turnStartedAt,
       });
+      // A zero-frame end without an expected close is an unexpected EOF (peer dropped the
+      // connection before any response frame) — surfacing it as success would silently
+      // swallow the turn (WP4 review blocker 1). With frames, the protobuf event state
+      // owns terminal semantics as before.
+      if (this.framesReceived === 0 && !this.expectedClose) {
+        settler.settleFail(new Error("Cursor stream ended before any response frame (unexpected EOF)"));
+        return;
+      }
       settler.settleFinish();
     });
 
