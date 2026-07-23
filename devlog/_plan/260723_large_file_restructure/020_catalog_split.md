@@ -53,8 +53,10 @@ bundled.ts one-way). Contains: `BUNDLED_CATALOG_CACHE_MS` `:33`,
 `:818-828`, `loadBundledCodexCatalog` `:830-848`,
 `materializeBundledCodexCatalog` `:850-860`, `loadCatalogForSync` `:862-872`,
 `readCurrentCatalogOrCache` `:874-884`, `loadCatalogTemplate` `:886-900`.
-Depends only on parsing.ts (readCatalog/findNativeTemplate) — layer below
-effort and sync.
+Depends only on parsing.ts — which now also provides the path helpers
+(`activeCodexModelsCachePath` etc.) and `readCatalogBackup` that
+`loadCatalogTemplate`/`readCurrentCatalogOrCache` call — so bundled.ts is
+fully self-contained at L1 with NO edge back up to sync.
 
 ### `parsing.ts` — catalog read/parse/normalize
 
@@ -75,6 +77,17 @@ importers: `src/server/management-api.ts:3`, `src/claude/context-windows.ts:13`,
 `normalizeRoutedCatalogEntry` `:680-712`, `applyJawcodeCatalogMetadata`
 `:714-729`, `catalogModelSlug` `:1101-1103`, `filterSupportedNativeSlugs`
 `:1274-1283`.
+
+**Also owns the codex-home path helpers + catalog backup/persistence
+primitives** (A-gate fold-back round 3 — L0 catalog-file I/O shared by
+bundled.ts and sync.ts, placed here so both stay acyclic): path helpers
+`:36-91` (`legacyCatalogBackupPath`, `catalogBackupPathFor`, `samePath`,
+`activeCodexHome`, `activeCodexConfigPath`, `activeDefaultCatalogPath`,
+`activeCodexModelsCachePath`, `resolveActiveCodexConfigPath`,
+`isDefaultCatalogPath`); backup/persistence primitives `:1285-1323`
+(`readCatalogBackup`, `catalogHasRoutedEntries`, `writePristineCatalogBackup`,
+`ensureCatalogBackup`, `readNativeBaseline`). `readCodexCatalogPath` (:540)
+already lives here and uses these path helpers.
 
 ### `effort.ts` — reasoning-effort clamping
 
@@ -125,10 +138,9 @@ Entry build/merge: `finishUpstreamNativeEntry` `:1084-1092`,
 `isExactComboCatalogModel` `:1094-1099`, `deriveEntry` `:1105-1196`,
 `buildCatalogEntries` `:1198-1258` (calls `nativeOpenAiSlugs` from metadata —
 sync→metadata, acyclic).
-Backup/persistence: path helpers `:36-91`, `readCatalogBackup` `:1285-1288`,
-`catalogHasRoutedEntries` `:1290-1292`, `writePristineCatalogBackup`
-`:1294-1304`, `ensureCatalogBackup` `:1306-1311`, `readNativeBaseline`
-`:1313-1323`. Sync/merge: `mergeCatalogEntriesForSync` `:2180-2329`,
+(The path helpers `:36-91` and backup primitives `:1285-1323` now live in
+parsing.ts; sync IMPORTS them from parsing — sync→parsing, acyclic.)
+Sync/merge: `mergeCatalogEntriesForSync` `:2180-2329`,
 `syncCatalogModels` `:2331-2378`, `restoreCodexCatalog` `:2380-2411`,
 `invalidateCodexModelsCache` `:2413-2428`. Subagent roster:
 `MAX_SPAWN_AGENT_MODEL_OVERRIDES` `:360`, `SpawnAgentSurface` `:362`,
@@ -149,6 +161,11 @@ Two import cycles in the original 6-module map were folded back:
    `loadBundledCodexCatalog` and `syncCatalogModels`(:2368)→
    `clampCatalogModelsToCodexSupport`: resolved by extracting bundled discovery
    into `bundled.ts` (a layer below both effort and sync).
+3. **bundled→sync** (round 3) via `loadCatalogTemplate`(:886)→`readCatalogBackup`
+   /`activeCodexModelsCachePath` and `readCurrentCatalogOrCache`(:874)→
+   `activeCodexModelsCachePath`: resolved by moving the path helpers `:36-91`
+   and backup primitives `:1285-1323` into parsing.ts (L0), which bundled.ts
+   and sync.ts both import one-way.
 Resulting acyclic layering: parsing/metadata (L0) → bundled (L1) →
 effort/provider-fetch/aggregation (L2) → sync (L3) → facade. B MUST confirm no
 cycles remain via `bun run typecheck` + an import-graph spot check.
