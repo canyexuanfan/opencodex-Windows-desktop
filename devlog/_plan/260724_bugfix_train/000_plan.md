@@ -79,12 +79,9 @@ prefers wp4 merged to avoid i18n hunk collisions. wp7 is hygiene.
 | NEW    | devlog/_plan/260724_bugfix_train/050_pr336_takeover.md |
 | NEW    | devlog/_plan/260724_bugfix_train/060_pr337_takeover.md |
 | NEW    | devlog/_plan/260724_bugfix_train/061_root_suite_investigation.md (wp6 research artifact, split per LEXICO-SPLIT-01) |
-| DELETE | devlog/_plan/260724_bugfix_train/010_phase1.md (scaffold, replaced by 010_passthrough_state.md) |
-| DELETE | devlog/_plan/260724_bugfix_train/020_phase2.md (scaffold, replaced by 020_pool_retry_400.md) |
-| DELETE | devlog/_plan/260724_bugfix_train/030_phase3.md (scaffold, replaced by 030_shim_autorestore.md) |
-| DELETE | devlog/_plan/260724_bugfix_train/040_phase4.md (scaffold, replaced by 040_ux_discovery_badge.md) |
-| DELETE | devlog/_plan/260724_bugfix_train/050_phase5.md (scaffold, replaced by 050_pr336_takeover.md) |
-| DELETE | devlog/_plan/260724_bugfix_train/060_phase6.md (scaffold, replaced by 060_pr337_takeover.md) |
+
+Note: the six `0N0_phaseN.md` scaffolds were replaced before the unit's first
+commit and were never tracked by git — no DELETE rows apply to this map.
 
 No production code changes in wp0. Activation proof for this cycle: the A-gate
 reviewer verdict (adversarial repo-grounded audit) + `git status` showing only
