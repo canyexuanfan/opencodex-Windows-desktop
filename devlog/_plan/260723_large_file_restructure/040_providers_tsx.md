@@ -5,6 +5,18 @@ GUI surface, independent of all src/ work. `Providers.tsx` is imported only by
 at this path. Extraction targets: account/key-pool state hook, OAuth panel,
 provider card list, JSON-editor hook.
 
+## wp4 P stale-check (verified at origin/dev 71ebf77b)
+
+- `gui/src/pages/Providers.tsx` is **1426 lines** (matches this doc, unchanged).
+- `gui/src/App.tsx:3` is the only importer: `import Providers from "./pages/Providers"`.
+- 040's key anchors verified on the current tree: refs `aliveRef:95`,
+  `jsonEditorOpenRef:96`, `accountRequestGenerationRef:98`, `switchingAccountRef:99`,
+  `oauthLoginGenerationRef:101`; account/key-pool callbacks start `:259`
+  (`fetchAccountSets`); oauth flow callbacks start `:546` (`cancelLoginOAuth`).
+  The default-export `Providers` stays at `gui/src/pages/Providers.tsx`; new
+  hooks/components go into the not-yet-existing `gui/src/hooks/` and
+  `gui/src/components/providers/` dirs (created by B). Design holds.
+
 ## Shared refs (the coupling to respect)
 
 - `aliveRef` `:95` — shared across OAuth/config/account/quota async flows.
