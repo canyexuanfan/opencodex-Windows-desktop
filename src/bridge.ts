@@ -14,8 +14,22 @@ function sseEvent(name: string, data: Record<string, unknown>): string {
 }
 
 function responsesUsage(usage: OcxUsage | undefined): Record<string, unknown> {
-  if (!usage) return { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
-  // Stateful providers may report an absolute active-context checkpoint separately from their
+  // input_tokens_details / output_tokens_details are ALWAYS emitted (zero defaults):
+  // strict Responses clients deserialize them as required fields — grok-build's pinned
+  // async-openai fork (rev 95b52ebd, response_usage.rs) has non-Option InputTokenDetails/
+  // OutputTokenDetails, so omitting them turns a successful turn into a hard exit after
+  // response.completed ("missing field `input_tokens_details`", verified live 2026-07-23).
+  if (!usage) {
+    return {
+      input_tokens: 0,
+      output_tokens: 0,
+      total_tokens: 0,
+      input_tokens_details: { cached_tokens: 0 },
+      output_tokens_details: { reasoning_tokens: 0 },
+    };
+  }
+  // inputTokens is already inclusive of cache read/write (types.ts convention). Stateful
+  // providers may report an absolute active-context checkpoint separately from their
   // per-attempt usage. Split that checkpoint into input + output without adding output twice.
   const inputTokens = usage.contextTotalTokens !== undefined
     ? Math.max(0, usage.contextTotalTokens - usage.outputTokens)
@@ -27,11 +41,12 @@ function responsesUsage(usage: OcxUsage | undefined): Record<string, unknown> {
       ? usage.contextTotalTokens
       : usageDisplayTotalTokens(usage) ?? inputTokens + usage.outputTokens,
   };
-  const inputDetails: Record<string, number> = {};
-  if (usage.cachedInputTokens !== undefined) {
-    // cached_tokens carries cache READS only, matching OpenAI semantics.
-    inputDetails.cached_tokens = Math.min(usage.cachedInputTokens, inputTokens);
-  }
+  // cached_tokens carries cache READS only, matching OpenAI semantics, and is always present
+  // (zero default) for strict clients. Clamp to inputTokens so a provider's absolute
+  // checkpoint can never report more cache reads than input.
+  const inputDetails: Record<string, number> = {
+    cached_tokens: Math.min(usage.cachedInputTokens ?? 0, inputTokens),
+  };
   if (usage.cacheCreationInputTokens !== undefined) {
     const cacheRead = inputDetails.cached_tokens ?? 0;
     inputDetails.cache_write_tokens = Math.min(
@@ -39,12 +54,8 @@ function responsesUsage(usage: OcxUsage | undefined): Record<string, unknown> {
       Math.max(0, inputTokens - cacheRead),
     );
   }
-  if (Object.keys(inputDetails).length > 0) {
-    out.input_tokens_details = inputDetails;
-  }
-  if (usage.reasoningOutputTokens !== undefined) {
-    out.output_tokens_details = { reasoning_tokens: usage.reasoningOutputTokens };
-  }
+  out.input_tokens_details = inputDetails;
+  out.output_tokens_details = { reasoning_tokens: usage.reasoningOutputTokens ?? 0 };
   return out;
 }
 
