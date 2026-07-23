@@ -70,6 +70,11 @@ const GENERIC_TOOL_COUNT_MAX_FINALIZE_GRACE_MS = 1_800;
 const GENERIC_TOOL_COUNT_PER_TOOL_GRACE_MS = 125;
 const cursorContextUsageTracker = createCursorContextUsageTracker();
 
+/** Carry context-usage totals across conversation-id rotation for external-model replay. */
+export function rekeyCursorContextUsage(fromConversationId: string, toConversationId: string): void {
+  cursorContextUsageTracker.rekey(fromConversationId, toConversationId);
+}
+
 export class CursorMissingCredentialError extends Error {
   readonly code = "cursor_missing_credential";
 

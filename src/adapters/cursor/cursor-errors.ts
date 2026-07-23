@@ -37,6 +37,17 @@ export function isCursorBenignCancelError(value: unknown): boolean {
 }
 
 /**
+ * True when Cursor Connect rejected the turn with invalid_argument.
+ * Seen after stepCompleted on brittle external-model continuations.
+ */
+export function isCursorInvalidArgumentError(value: unknown): boolean {
+  const code = errorCode(value).toLowerCase();
+  if (code === "invalid_argument") return true;
+  const message = errorMessage(value).toLowerCase();
+  return message.includes("invalid_argument");
+}
+
+/**
  * Classify a Cursor transport/Connect/gRPC error message into an actionable category.
  * The returned prefix string is recognized by `src/lib/errors.ts` `classifyError` keywords,
  * so bridge-level error mapping produces the right Codex error type (rate_limit, auth, etc.).

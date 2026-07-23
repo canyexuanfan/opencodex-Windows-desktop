@@ -1,11 +1,16 @@
 import type { AdapterEvent, OcxProviderConfig } from "../types";
 import type { ProviderAdapter } from "./base";
 import { cursorExecDeniedMessage, cursorRequestDeclaresFullAccess } from "./cursor/exec-policy";
-import { isCursorBenignCancelError, safeCursorErrorMessage } from "./cursor/cursor-errors";
+import { isCursorBenignCancelError, isCursorInvalidArgumentError, safeCursorErrorMessage } from "./cursor/cursor-errors";
+import { isCursorExternalWireModel } from "./cursor/discovery";
 import { createCursorKvStore, type CursorKvStore } from "./cursor/kv-store";
 import { mapCursorServerMessage } from "./cursor/message-mapper";
 import { createCursorRequest, generatedCursorConversationId } from "./cursor/request-builder";
-import { createLiveCursorTransport, CursorMissingCredentialError } from "./cursor/live-transport";
+import {
+  createLiveCursorTransport,
+  CursorMissingCredentialError,
+  rekeyCursorContextUsage,
+} from "./cursor/live-transport";
 import { runCursorTurnWithRetry } from "./cursor/transport-retry";
 import {
   createDisabledCursorTransport,
@@ -70,26 +75,68 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
         const makeTransport = deps.createTransport ?? createLiveCursorTransport;
         const kv = deps.kv ?? createCursorKvStore();
         _parsed._cursorConversationId ??= generatedCursorConversationId();
-        const request = createCursorRequest(_parsed);
-        await runCursorTurnWithRetry(
-          makeTransport,
-          { provider, headers: incoming.headers, requestDeclaresFullAccess: cursorRequestDeclaresFullAccess(request) },
-          request,
-          incoming.abortSignal,
-          (message, activeTransport) => {
-            if (incoming.abortSignal?.aborted) {
-              emit({ type: "error", message: "Cursor turn was aborted." });
-              return;
-            }
-            const events = mapCursorServerMessage(message, {
-              kv,
-              writeClient: clientMessage => {
-                void activeTransport.writeClient(clientMessage);
-              },
-            });
-            for (const event of events) emit(event);
-          },
-        );
+        const previousConversationId = _parsed._cursorConversationId;
+        let request = createCursorRequest(_parsed);
+        // Keep remembered conversation id in sync when the request builder mints a fresh id
+        // for external-model tool-result continuations (stateless replay).
+        if (request.conversationId !== previousConversationId) {
+          rekeyCursorContextUsage(previousConversationId, request.conversationId);
+        }
+        _parsed._cursorConversationId = request.conversationId;
+        let emittedOutput = false;
+        const lastRawIsToolResult = _parsed.context.messages.at(-1)?.role === "toolResult";
+
+        const runOnce = async (activeRequest: ReturnType<typeof createCursorRequest>) => {
+          await runCursorTurnWithRetry(
+            makeTransport,
+            {
+              provider,
+              headers: incoming.headers,
+              requestDeclaresFullAccess: cursorRequestDeclaresFullAccess(activeRequest),
+            },
+            activeRequest,
+            incoming.abortSignal,
+            (message, activeTransport) => {
+              if (incoming.abortSignal?.aborted) {
+                emit({ type: "error", message: "Cursor turn was aborted." });
+                return;
+              }
+              const events = mapCursorServerMessage(message, {
+                kv,
+                writeClient: clientMessage => {
+                  void activeTransport.writeClient(clientMessage);
+                },
+              });
+              for (const event of events) {
+                if (event.type !== "heartbeat") emittedOutput = true;
+                emit(event);
+              }
+            },
+          );
+        };
+
+        try {
+          await runOnce(request);
+        } catch (err) {
+          // One-shot fallback: only for external-model tool-result continuations that fail
+          // with Connect invalid_argument before any non-heartbeat output was forwarded.
+          // Replaying after text/tool events would duplicate output.
+          if (
+            !isCursorInvalidArgumentError(err)
+            || !isCursorExternalWireModel(request.modelId)
+            || !lastRawIsToolResult
+            || emittedOutput
+            || incoming.abortSignal?.aborted
+          ) {
+            throw err;
+          }
+          const failedConversationId = request.conversationId;
+          _parsed._cursorConversationId = undefined;
+          request = createCursorRequest(_parsed, { forceFreshConversation: true });
+          rekeyCursorContextUsage(failedConversationId, request.conversationId);
+          _parsed._cursorConversationId = request.conversationId;
+          await runOnce(request);
+        }
       } catch (err) {
         if (isCursorBenignCancelError(err)) return;
         const partialUsage = (err as { partialUsage?: import("../types").OcxUsage }).partialUsage;
