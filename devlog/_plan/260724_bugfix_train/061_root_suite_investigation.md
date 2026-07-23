@@ -67,7 +67,7 @@ Classify each of the four named failures independently and cite its log/run evid
 - **PR-caused** — reproduces on the PR head, does not reproduce on the exact post-WP1 `dev` base
   under the same environment/order, and a concrete causal path from an actual PR diff hunk to the
   assertion/resource exists.
-- **Baseline deterministic** — reproduces on post-WP1 `dev` under the same environment/order with a
+- **Baseline deterministic** — reproduces on `CYCLE6_BASE_SHA` under the same environment/order with a
   stable assertion and repeatable owner.
 - **Order/concurrency flake** — standalone remains green, but a repeatable suite order, shared path,
   process overlap, environment leak, or resource collision triggers the failure on PR and/or base.

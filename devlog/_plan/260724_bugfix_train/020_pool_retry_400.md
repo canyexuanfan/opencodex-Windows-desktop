@@ -450,20 +450,29 @@ if (
     );
 
     noteAttemptSend(logCtx.activeAttempt, passthroughEstimate);
-    upstreamResponse = await fetchWithHeaderTimeout(
-      request.url,
-      {
-        method: request.method,
-        headers: request.headers,
-        body: request.body,
-      },
-      upstream.signal,
-      connectMs,
-      parsed.stream,
-      providerFetch(route.provider),
-    );
-    // No transient wrapper and no call back into the matcher: the entire retry
-    // budget is spent by this one different-account HTTP dispatch.
+    // The retry dispatch reuses the SAME transport-error boundary as the first
+    // dispatch: a connect/timeout failure here surfaces through the existing
+    // catch that maps transport errors to 502/504, attributed to the retry
+    // account (B). No transient wrapper and no call back into the matcher: the
+    // entire retry budget is spent by this one different-account HTTP dispatch.
+    try {
+      upstreamResponse = await fetchWithHeaderTimeout(
+        request.url,
+        {
+          method: request.method,
+          headers: request.headers,
+          body: request.body,
+        },
+        upstream.signal,
+        connectMs,
+        parsed.stream,
+        providerFetch(route.provider),
+      );
+    } catch (err) {
+      // Route through the existing transport-error helper (same code path the
+      // first dispatch uses at core.ts:941 region); health/log attribution is B.
+      throw err; // caught by the surrounding dispatch transport boundary
+    }
   }
 }
 

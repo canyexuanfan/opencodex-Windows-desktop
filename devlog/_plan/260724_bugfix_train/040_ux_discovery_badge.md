@@ -113,10 +113,11 @@ export type ProviderModelDiscoveryFailureReason =
 
 export type ProviderModelDiscoveryStatus =
   | { status: "ok" }
+  | { status: "failed"; reason: "http"; httpStatus: number }
   | {
       status: "failed";
-      reason: ProviderModelDiscoveryFailureReason;
-      httpStatus?: number;
+      reason: Exclude<ProviderModelDiscoveryFailureReason, "http">;
+      httpStatus?: never;
     };
 
 // GET /api/providers row (new field only)
@@ -193,7 +194,8 @@ export type ProviderModelDiscoveryFailureReason =
 
 export type ProviderModelDiscoveryStatus =
   | { status: "ok" }
-  | { status: "failed"; reason: ProviderModelDiscoveryFailureReason; httpStatus?: number };
+  | { status: "failed"; reason: "http"; httpStatus: number }
+  | { status: "failed"; reason: Exclude<ProviderModelDiscoveryFailureReason, "http">; httpStatus?: never };
 
 const discoveryStatus = new Map<string, ProviderModelDiscoveryStatus>();
 
