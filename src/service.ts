@@ -865,7 +865,7 @@ export interface WindowsServiceDiagnosticInputs {
   schedulerEnabled: boolean;
   schedulerAssetsHealthy: boolean;
   nativeStatus: "started" | "stopped" | "nonexistent" | "unknown";
-  nativeBackendRecorded: boolean;
+  recordedBackend: ServiceBackend | null;
   staleBakedPaths: boolean;
   nativeRepairAssetsOnly: boolean;
   diagnostics: string;
@@ -874,9 +874,12 @@ export interface WindowsServiceDiagnosticInputs {
 export function deriveWindowsServiceDiagnostic(inputs: WindowsServiceDiagnosticInputs): ServiceDiagnostic {
   const nativeInstalled = inputs.nativeStatus !== "nonexistent";
   const conflict = inputs.schedulerInstalled && nativeInstalled;
+  const backendStateMismatch = inputs.schedulerInstalled
+    ? inputs.recordedBackend !== "scheduler"
+    : nativeInstalled && inputs.recordedBackend !== "native";
   const stale = inputs.staleBakedPaths
     || (inputs.schedulerInstalled && !inputs.schedulerAssetsHealthy)
-    || (nativeInstalled && !inputs.nativeBackendRecorded)
+    || backendStateMismatch
     || (inputs.nativeStatus === "nonexistent" && inputs.nativeRepairAssetsOnly);
   const backend = inputs.schedulerInstalled ? "scheduler" : nativeInstalled ? "native" : null;
   const enabled = inputs.schedulerInstalled ? inputs.schedulerEnabled : inputs.nativeStatus === "started";
@@ -937,13 +940,16 @@ export function diagnoseService(): ServiceDiagnostic {
     const schedulerAssets = [windowsServiceScriptPath(), windowsLauncherVbsPath(), windowsTaskXmlPath()].every(existsSync)
       && windowsTaskRegistrationHealthy(schedulerXml);
     const nativeStatus = statusWinswRaw();
-    const nativeBackendRecorded = readServiceInstallState()?.backend === "native";
+    const installState = readServiceInstallState();
+    const recordedBackend: ServiceBackend | null = !installState
+      ? null
+      : installState.backend === "native" ? "native" : "scheduler";
     return deriveWindowsServiceDiagnostic({
       schedulerInstalled,
       schedulerEnabled,
       schedulerAssetsHealthy: schedulerAssets,
       nativeStatus,
-      nativeBackendRecorded,
+      recordedBackend,
       staleBakedPaths: bakedServicePathsDiagnostic() !== null,
       nativeRepairAssetsOnly: Boolean(winswStatusSummary()),
       diagnostics,

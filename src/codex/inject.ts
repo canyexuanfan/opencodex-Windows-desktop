@@ -163,13 +163,17 @@ export function hasInjectedOpenaiBaseUrl(content: string): boolean {
 
 export type CodexRoutingKind = "native" | "opencodex-local" | "custom-local" | "custom-remote" | "unknown";
 
+function tomlStringPattern(key: string): RegExp {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const keyToken = `(?:${escaped}|\"${escaped}\"|'${escaped}')`;
+  return new RegExp(`^\\s*${keyToken}\\s*=\\s*[\"']([^\"']+)[\"']\\s*(?:#.*)?$`);
+}
+
 function rootTomlString(content: string, key: string): string | null {
   const lines = content.split("\n");
   const firstTable = lines.findIndex(line => /^\s*\[/.test(line));
   const rootLines = lines.slice(0, firstTable === -1 ? lines.length : firstTable);
-  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const keyToken = `(?:${escaped}|\"${escaped}\"|'${escaped}')`;
-  const pattern = new RegExp(`^\\s*${keyToken}\\s*=\\s*[\"']([^\"']+)[\"']\\s*(?:#.*)?$`);
+  const pattern = tomlStringPattern(key);
   for (const line of rootLines) {
     const match = pattern.exec(line);
     if (match?.[1]) return match[1].trim();
@@ -177,15 +181,18 @@ function rootTomlString(content: string, key: string): string | null {
   return null;
 }
 
-function providerTableString(content: string, provider: string, key: string): string | null {
-  const lines = content.split("\n");
+function providerTableStart(lines: string[], provider: string): number {
   const escapedProvider = provider.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const providerToken = `(?:${escapedProvider}|\"${escapedProvider}\"|'${escapedProvider}')`;
   const header = new RegExp(`^\\s*\\[\\s*(?:model_providers|\"model_providers\"|'model_providers')\\s*\\.\\s*${providerToken}\\s*\\]\\s*(?:#.*)?$`);
-  const start = lines.findIndex(line => header.test(line));
+  return lines.findIndex(line => header.test(line));
+}
+
+function providerTableString(content: string, provider: string, key: string): string | null {
+  const lines = content.split("\n");
+  const start = providerTableStart(lines, provider);
   if (start === -1) return null;
-  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`^\\s*${escaped}\\s*=\\s*[\"']([^\"']+)[\"']\\s*(?:#.*)?$`);
+  const pattern = tomlStringPattern(key);
   for (let index = start + 1; index < lines.length && !/^\s*\[/.test(lines[index]); index += 1) {
     const match = pattern.exec(lines[index]);
     if (match?.[1]) return match[1].trim();
@@ -226,6 +233,7 @@ export function classifyCodexRouting(content: string): CodexRoutingKind {
   }
   const rootProvider = rootTomlString(content, "model_provider");
   if (rootProvider) {
+    const providerTableExists = providerTableStart(content.split("\n"), rootProvider) !== -1;
     const providerBaseUrl = providerTableString(content, rootProvider, "base_url");
     if (providerBaseUrl) {
       const endpoint = classifyRoutingEndpoint(providerBaseUrl);
@@ -233,7 +241,7 @@ export function classifyCodexRouting(content: string): CodexRoutingKind {
       if (rootProvider === "opencodex") return "opencodex-local";
       return endpoint === "local" ? "custom-local" : "custom-remote";
     }
-    if (rootProvider === "opencodex") return "unknown";
+    if (rootProvider === "opencodex" || providerTableExists || rootProvider !== "openai") return "unknown";
   }
   return "native";
 }

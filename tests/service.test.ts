@@ -496,14 +496,14 @@ describe("service diagnostics", () => {
     schedulerEnabled: false,
     schedulerAssetsHealthy: true,
     nativeStatus: "nonexistent" as const,
-    nativeBackendRecorded: false,
+    recordedBackend: null,
     staleBakedPaths: false,
     nativeRepairAssetsOnly: false,
     diagnostics: "logs: test",
   };
 
   test("fails closed for disabled, stale, conflicting, stopped, and ghost Windows services", () => {
-    expect(deriveWindowsServiceDiagnostic({ ...base, schedulerInstalled: true, schedulerEnabled: true })).toMatchObject({ viable: true, backend: "scheduler" });
+    expect(deriveWindowsServiceDiagnostic({ ...base, schedulerInstalled: true, schedulerEnabled: true, recordedBackend: "scheduler" })).toMatchObject({ viable: true, backend: "scheduler" });
     expect(deriveWindowsServiceDiagnostic({ ...base, schedulerInstalled: true })).toMatchObject({ viable: false, enabled: false });
     expect(deriveWindowsServiceDiagnostic({ ...base, schedulerInstalled: true, schedulerEnabled: true, staleBakedPaths: true })).toMatchObject({ viable: false, stale: true });
     expect(deriveWindowsServiceDiagnostic({ ...base, schedulerInstalled: true, schedulerEnabled: true, nativeStatus: "started" })).toMatchObject({ viable: false, conflict: true });
@@ -512,13 +512,20 @@ describe("service diagnostics", () => {
   });
 
   test("a stopped healthy WinSW service remains startable from the tray", () => {
-    const stoppedNative = deriveWindowsServiceDiagnostic({ ...base, nativeStatus: "stopped", nativeBackendRecorded: true });
+    const stoppedNative = deriveWindowsServiceDiagnostic({ ...base, nativeStatus: "stopped", recordedBackend: "native" });
     expect(serviceStartableFromTray(stoppedNative)).toBe(true);
     expect(serviceStartableFromTray({ ...stoppedNative, stale: true })).toBe(false);
     expect(serviceStartableFromTray({ ...stoppedNative, conflict: true })).toBe(false);
     expect(serviceStartableFromTray(deriveWindowsServiceDiagnostic({ ...base, nativeStatus: "unknown" }))).toBe(false);
     const disabledScheduler = deriveWindowsServiceDiagnostic({ ...base, schedulerInstalled: true, schedulerEnabled: false });
     expect(serviceStartableFromTray(disabledScheduler)).toBe(false);
+    const mismatchedScheduler = deriveWindowsServiceDiagnostic({
+      ...base,
+      schedulerInstalled: true,
+      schedulerEnabled: true,
+      recordedBackend: "native",
+    });
+    expect(mismatchedScheduler).toMatchObject({ backend: "scheduler", stale: true, viable: false, startable: false });
   });
 
   test("status summary exposes the service log path", () => {
