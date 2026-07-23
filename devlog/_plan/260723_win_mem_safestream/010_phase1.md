@@ -80,15 +80,45 @@ export function decideEagerRelay(
   streamMode?: "auto" | "legacy-tee" | "eager-relay";
 ```
 
-Zod/validation: mirror wherever OcxConfig fields are validated (check types.ts
-schema or config parse — loadConfig uses a result.success parse at config.ts:658;
-add the enum there in the same shape as fastMode).
+Zod/validation (WP1-P re-verify, tree e3a059c6): `configSchema` lives at
+src/config.ts:437 (`z.object({...}).passthrough()`); add
+`streamMode: z.enum(["auto", "legacy-tee", "eager-relay"]).optional(),` next to
+`multiAgentGuidanceEnabled` (:444). passthrough() would tolerate the key
+untyped, but the explicit enum rejects invalid persisted values instead of
+silently carrying them.
 
-### MODIFY src/server/management/config-routes.ts
+### MODIFY src/server/management/config-routes.ts (WP1-P re-verify)
 
-Expose `streamMode` in GET/PUT config the same way `fastMode` is exposed
-(find fastMode handling; replicate: read from config, validate against the
-3-value enum, saveConfig). Reject invalid values with 400.
+Surface: `/api/settings` GET (:76) + PUT (:129) — server-global fit (fastMode
+precedent is Claude-scoped on /api/claude-code). Audit round 1 dispositions:
+
+- GET adds `streamMode: config.streamMode ?? "auto"`.
+- PUT contract (blocker 1 FOLDED): relax to "each field optional, at least one
+  required, validated when present" — `codexAutoStart` boolean when present,
+  `streamMode` in the 3-value enum when present; empty body → 400. Legacy
+  codexAutoStart-only PUT keeps working (GUI always sends it). streamMode-only
+  PUT works (WP4/WP5 user docs depend on it). 400 message:
+  `streamMode must be auto, legacy-tee, or eager-relay`.
+- Write: `delete config.streamMode` for "auto" (file precedent
+  config-routes.ts:238-250), else assign; saveConfig; echo effective
+  `streamMode` in the PUT response (GET/PUT symmetry).
+- Docstring: stream-shape change applies to NEW turns only, no restart
+  (config object is shared by reference — verified index.ts:153/:247/:421).
+
+Load-side resilience (blocker 2 FOLDED): use
+`streamMode: z.enum(["auto","legacy-tee","eager-relay"]).optional().catch(undefined)`
+in configSchema, so a hand-edited typo (e.g. "legacy_tee") degrades to
+auto-with-console-warning instead of failing the whole parse and nuking the
+user config via the repair path (config.ts:662-670 backs up + defaults on
+double parse failure). Add a `warnInvalidStreamMode` console.warn when the raw
+key exists but is invalid (checked in loadConfig after parse, comparing
+parsed.streamMode presence vs result).
+
+Prerelease edge (low, FOLDED): parseBunVersion strips prerelease tags, so
+`1.4.0-canary.x` would compare >= minFixed `1.4.0`. Conservative posture:
+`bunHasAsyncPullCancelFix` returns false when the version string contains a
+prerelease suffix (`-`) — canaries are exactly the OPENCODEX_BUN_PATH audience
+and may predate the fix commit. Documented in the module docstring.
 
 ## Activation scenarios (C-ACTIVATION-GROUNDING-01)
 
@@ -100,10 +130,18 @@ Expose `streamMode` in GET/PUT config the same way `fastMode` is exposed
 
 ## TESTS — NEW tests/bun-stream-caps.test.ts
 
-Cases: the five activation scenarios above + compareBunVersions ordering +
-parseBunVersion("1.3.14-canary.1") → [1,3,14] + config-routes PUT accepts the
-three values and rejects "bogus" (extend existing config-routes test file if one
-exists; else route-level test near tests/*config*).
+Cases (blocker 3 FOLDED — new file tests/bun-stream-caps.test.ts + settings
+route cases in a new tests/settings-stream-mode.test.ts):
+- five activation scenarios + compareBunVersions ordering +
+  parseBunVersion("1.3.14-canary.1") → [1,3,14];
+- prerelease conservatism: bunHasAsyncPullCancelFix("1.4.0-canary.1","1.4.0") → false;
+- schema resilience: configSchema parse with streamMode "bogus" → success with
+  streamMode undefined (catch), valid values round-trip;
+- persistence round-trip: PUT "eager-relay" → persisted + survives loadConfig;
+  PUT "auto" → key absent from written config.json;
+- GET /api/settings returns streamMode "auto" default;
+- PUT accepts all three values, rejects "bogus" with 400;
+- legacy regression: codexAutoStart-only PUT still 200; empty-body PUT → 400.
 
 ## Verification (C)
 
