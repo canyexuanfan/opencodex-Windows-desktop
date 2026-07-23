@@ -249,7 +249,10 @@ export function startServer(port?: number) {
       }
 
       if (url.pathname === "/v1/models" && req.method === "GET") {
-        const apiAuthError = requireResponsesApiAuth(req, config);
+        // Model discovery never forwards Authorization upstream, so the broader admission
+        // set (Authorization / x-api-key / x-opencodex-api-key) is safe here and required by
+        // remote OpenAI-style bearer clients and Claude gateway discovery (anthropic-version).
+        const apiAuthError = requireApiAuth(req, config, "data-plane");
         if (apiAuthError) return withCors(apiAuthError, req, config);
         if (!isAllowedRequestOrigin(req, config)) {
           return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);

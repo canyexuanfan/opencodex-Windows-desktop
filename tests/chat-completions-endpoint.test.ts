@@ -686,3 +686,34 @@ test("chatCompletionsToResponsesBody recovers tool_calls function.name from earl
   const calls = (body.input as Array<Record<string, unknown>>).filter(i => i.type === "function_call");
   expect(calls.some(c => c.call_id === "call_b" && c.name === "exec_command")).toBe(true);
 });
+
+// Local-stack fixup regressions (Sol audit of #279, devlog 100_merge_records.md WP5):
+// CRLF framing and a terminal event without a trailing blank line must not be reported
+// as truncation now that the shared SSE decoder drives the converter.
+test("responsesSseToChatCompletionsSse accepts CRLF-framed SSE with terminal event at EOF", async () => {
+  const { responsesSseToChatCompletionsSse, collectChatCompletion } = await import("../src/chat/outbound");
+  const raw = [
+    `event: response.created\r\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_crlf" } })}\r\n\r\n`,
+    `event: response.output_text.delta\r\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "hello" })}\r\n\r\n`,
+    // Terminal frame: CRLF line ending, NO trailing blank line, no final newline.
+    `event: response.completed\r\ndata: ${JSON.stringify({ type: "response.completed", response: { status: "completed", usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 } } })}`,
+  ].join("");
+  const bytes = new TextEncoder().encode(raw);
+  // Split at awkward boundaries to exercise chunk-boundary handling too.
+  const cuts = [7, 41, 97, 155, bytes.length];
+  const stream = responsesSseToChatCompletionsSse(new ReadableStream<Uint8Array>({
+    start(controller) {
+      let offset = 0;
+      for (const end of cuts) {
+        if (end <= offset) continue;
+        controller.enqueue(bytes.slice(offset, Math.min(end, bytes.length)));
+        offset = end;
+      }
+      controller.close();
+    },
+  }), "mock/test-model");
+  const completion = await collectChatCompletion(stream, "mock/test-model");
+  const choice = (completion.choices as Array<{ message?: { content?: string }; finish_reason?: string }>)[0];
+  expect(choice?.message?.content).toBe("hello");
+  expect(choice?.finish_reason).toBe("stop");
+});

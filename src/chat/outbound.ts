@@ -7,6 +7,8 @@
  */
 type Rec = Record<string, unknown>;
 
+import { decodeServerSentEvents } from "../lib/sse-decoder";
+
 function isRec(v: unknown): v is Rec {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
@@ -120,9 +122,7 @@ export function responsesSseToChatCompletionsSse(
   upstream: ReadableStream<Uint8Array>,
   model: string,
 ): ReadableStream<Uint8Array> {
-  const decoder = new TextDecoder();
   const encoder = new TextEncoder();
-  let buffer = "";
   let terminated = false;
   let cancelled = false;
   let started = false;
@@ -134,7 +134,7 @@ export function responsesSseToChatCompletionsSse(
   const toolIndexByItemId = new Map<string, number>();
   const toolNameByIndex = new Map<number, string>();
   let nextToolIndex = 0;
-  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let sseIterator: AsyncGenerator<{ event?: string; data: string }> | undefined;
 
   return new ReadableStream<Uint8Array>({
     start(controller) {
@@ -340,35 +340,25 @@ export function responsesSseToChatCompletionsSse(
         }
       };
 
-      reader = upstream.getReader();
+      // Shared spec-shaped SSE decoder: handles CRLF framing, arbitrary chunk boundaries,
+      // multi-line data, and a terminal event without a trailing blank line (Sol audit
+      // blocker 3 — the hand-rolled "\n\n" splitter misreported those as truncation).
+      sseIterator = decodeServerSentEvents(upstream);
       void (async () => {
         try {
-          for (;;) {
-            const { done, value } = await reader!.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            let sep: number;
-            while ((sep = buffer.indexOf("\n\n")) !== -1) {
-              const rawFrame = buffer.slice(0, sep);
-              buffer = buffer.slice(sep + 2);
-              let eventName = "";
-              let dataLine = "";
-              for (const line of rawFrame.split("\n")) {
-                if (line.startsWith("event: ")) eventName = line.slice(7).trim();
-                else if (line.startsWith("data: ")) dataLine += line.slice(6);
-              }
-              if (!eventName || !dataLine) continue;
-              let data: unknown;
-              try { data = JSON.parse(dataLine); } catch { continue; }
-              if (!isRec(data)) continue;
-              if (terminated) continue;
-              handleFrame(eventName, data);
-            }
+          for await (const record of sseIterator!) {
+            const eventName = record.event ?? "";
+            const dataLine = record.data.trim();
+            if (!eventName || !dataLine) continue;
+            let data: unknown;
+            try { data = JSON.parse(dataLine); } catch { continue; }
+            if (!isRec(data)) continue;
+            if (terminated) continue;
+            handleFrame(eventName, data);
           }
         } catch (err) {
           fail(err instanceof Error ? err.message : String(err));
         } finally {
-          reader?.releaseLock();
           if (!cancelled && !terminated) {
             fail("upstream stream ended before a terminal frame (truncated response)");
           }
@@ -381,7 +371,7 @@ export function responsesSseToChatCompletionsSse(
     },
     cancel(reason) {
       cancelled = true;
-      return reader?.cancel(reason);
+      return sseIterator?.return(undefined).then(() => undefined, () => undefined) ?? Promise.resolve(undefined);
     },
   });
 }
