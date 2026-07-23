@@ -3,7 +3,7 @@ import type { TKey } from "./en";
 export const ru: Record<TKey, string> = {
   // sidebar / nav / common
   "nav.dashboard": "Дашборд",
-  "nav.startup": "Автозапуск",
+  "nav.startup": "Безопасность запуска",
   "nav.providers": "Провайдеры",
   "nav.models": "Модели",
   "nav.combos": "Комбо",
@@ -68,7 +68,7 @@ export const ru: Record<TKey, string> = {
   "startup.shimHint": "Запускает ocx ensure при запуске поддерживаемого скриптового лаунчера Codex.",
   "startup.healthy": "Исправен",
   "startup.cliOnly": "Только CLI",
-  "startup.stale": "Повреждён",
+  "startup.stale": "Устарел",
   "startup.viable": "Готов",
   "startup.unhealthy": "Установлен, но неисправен",
   "startup.conflict": "Конфликт служб",

@@ -30,6 +30,7 @@ describe("Codex startup health", () => {
       recommendedCommand: "ocx service install",
     });
     expect(startupHealthSummary(health)).toContain("AT RISK");
+    expect(startupHealthSummary(health)).toContain("ocx service install");
   });
 
   test("treats a background service as restart protection", () => {
@@ -143,6 +144,9 @@ describe("Codex startup health", () => {
       protection: "none",
       recommendedCommand: "ocx restore",
     });
+    const custom = deriveStartupHealth({ ...base, routingKind: "custom-local" });
+    expect(startupHealthSummary(custom)).toContain("run 'ocx restore'");
+    expect(startupHealthSummary(custom)).not.toContain("ocx service install");
   });
 
   test("exposes a secret-free startup health DTO to the dashboard", async () => {

@@ -1,7 +1,7 @@
 // German — generated from en.ts. Must match TKey set (compile-checked).
 export const de = {
   "nav.dashboard": "Übersicht",
-  "nav.startup": "Autostart",
+  "nav.startup": "Startsicherheit",
   "nav.providers": "Anbieter",
   "nav.models": "Modelle",
   "nav.combos": "Combos",

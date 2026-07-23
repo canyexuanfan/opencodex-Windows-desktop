@@ -14,6 +14,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { handoffWindowsTrayForUpdate, planWindowsTrayUpdate } from "../src/update/tray-update-plan.mjs";
 
 const PKG = "@bitkyc08/opencodex";
 const require = createRequire(import.meta.url);
@@ -136,7 +137,9 @@ function runNpmSelfUpdate() {
   // unloads it permanently, so a successful update must reinstall it afterwards.
   const serviceStatePath = join(configDir(), "service-state.json");
   const serviceWasInstalled = existsSync(serviceStatePath);
-  const trayBeforeUpdate = process.platform === "win32" ? trayInstallState() : { installed: false, running: false };
+  const trayBeforeUpdate = planWindowsTrayUpdate(
+    process.platform === "win32" ? trayInstallState() : { installed: false, running: false },
+  );
   /** Read the backend from service-state.json so the update reinstalls the same one. */
   function serviceReinstallArgs() {
     try {
@@ -182,11 +185,17 @@ function runNpmSelfUpdate() {
   // and the runtime-port record too: a service-managed or orphaned proxy can be live
   // while ocx.pid is stale/missing.
   const launcher = fileURLToPath(import.meta.url);
-  if (trayBeforeUpdate.running) {
+  if (trayBeforeUpdate.stopBeforeReplacement) {
     console.log("⏹  Handing off the Windows tray before updating...");
-    const stopped = runTrayLifecycle(launcher, "stop");
-    if (stopped.status !== 0 || trayInstallState().running) {
-      runTrayLifecycle(launcher, "start");
+    try {
+      handoffWindowsTrayForUpdate(trayBeforeUpdate, {
+        stop: () => {
+          const stopped = runTrayLifecycle(launcher, "stop");
+          return { exitStatus: stopped.status, running: trayInstallState().running };
+        },
+        start: () => runTrayLifecycle(launcher, "start"),
+      });
+    } catch {
       console.error("opencodex: could not stop the Windows tray; aborting before package replacement.");
       process.exit(1);
     }
@@ -199,7 +208,7 @@ function runNpmSelfUpdate() {
     const stillHasRuntimeState =
       existsSync(join(configDir(), "ocx.pid")) || existsSync(join(configDir(), "runtime-port.json"));
     if (stopRes.status !== 0 || stillHasRuntimeState) {
-      if (trayBeforeUpdate.running) runTrayLifecycle(launcher, "start");
+      if (trayBeforeUpdate.restoreOnFailure) runTrayLifecycle(launcher, "start");
       console.error("opencodex: could not stop the running proxy; aborting the update. Run 'ocx stop' and retry.");
       process.exit(1);
     }
@@ -222,14 +231,14 @@ function runNpmSelfUpdate() {
   if (res.status === 0) {
     console.log(`\nUpdated${latest ? ` to v${latest}` : ""}.`);
     repairCodexShimIfNeeded();
-    if (trayBeforeUpdate.installed) {
-      const tray = spawnSync(process.execPath, [launcher, "tray", "install", ...(!trayBeforeUpdate.running ? ["--no-start"] : [])], {
+    if (trayBeforeUpdate.refreshAfterReplacement) {
+      const tray = spawnSync(process.execPath, [launcher, ...trayBeforeUpdate.installArgs], {
         stdio: "inherit",
         windowsHide: true,
       });
       if (tray.status !== 0) {
         console.warn("opencodex: Windows tray refresh failed. Run: ocx tray install");
-        if (trayBeforeUpdate.running) runTrayLifecycle(launcher, "start");
+        if (trayBeforeUpdate.restoreOnFailure) runTrayLifecycle(launcher, "start");
       }
     }
     // The stop above unloaded any managed service; reinstall via the freshly-installed
@@ -268,7 +277,7 @@ function runNpmSelfUpdate() {
     }
     process.exit(0);
   }
-  if (trayBeforeUpdate.running) runTrayLifecycle(launcher, "start");
+  if (trayBeforeUpdate.restoreOnFailure) runTrayLifecycle(launcher, "start");
   console.error(`\nUpdate failed (${npm} exit ${res.status ?? "?"}). Try manually:  ${npm} install -g ${PKG}@${tag}`);
   process.exit(1);
 }

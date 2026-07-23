@@ -208,14 +208,23 @@ export function windowsRegistryParentShowsRunKey(output: string): boolean {
     .replace(/^hkey_current_user\\/, "hkcu\\") === expected);
 }
 
-function syncRegistryAbsenceIsProven(): boolean {
+export type WindowsRegistryRunner = (args: string[]) => string;
+export type WindowsRegistryAsyncRunner = (args: string[]) => Promise<string>;
+
+function registryExitCode(error: unknown): number | null {
+  const value = error as { status?: unknown; code?: unknown };
+  const code = Number(value.status ?? value.code);
+  return Number.isFinite(code) ? code : null;
+}
+
+function syncRegistryAbsenceIsProven(run: WindowsRegistryRunner): boolean {
   try {
-    runRegistry(["query", RUN_KEY, "/reg:64"]);
+    run(["query", RUN_KEY, "/reg:64"]);
     return true;
   } catch (runError) {
-    if ((runError as { status?: unknown })?.status !== 1) return false;
+    if (registryExitCode(runError) !== 1) return false;
     try {
-      const parent = runRegistry(["query", RUN_PARENT_KEY, "/reg:64"]);
+      const parent = run(["query", RUN_PARENT_KEY, "/reg:64"]);
       return !windowsRegistryParentShowsRunKey(parent);
     } catch {
       return false;
@@ -223,19 +232,23 @@ function syncRegistryAbsenceIsProven(): boolean {
   }
 }
 
-function readOwnedRunValue(runValue = windowsTrayRunValue(getConfigDir())): string | null {
+export function readWindowsTrayRunValueWithRunner(runValue: string, run: WindowsRegistryRunner): string | null {
   try {
-    const output = runRegistry(["query", RUN_KEY, "/v", runValue, "/reg:64"]);
+    const output = run(["query", RUN_KEY, "/v", runValue, "/reg:64"]);
     return parseWindowsTrayRunValue(output, runValue);
   } catch (error) {
-    if ((error as { status?: unknown })?.status === 1) {
+    if (registryExitCode(error) === 1) {
       // reg.exe also uses exit 1 for access/query failures. Only treat the
       // value as absent after proving Run is readable or does not exist under
       // a readable CurrentVersion parent.
-      if (syncRegistryAbsenceIsProven()) return null;
+      if (syncRegistryAbsenceIsProven(run)) return null;
     }
     throw new Error("Unable to verify the owned Windows tray registry value; refusing to change persistence.");
   }
+}
+
+function readOwnedRunValue(runValue = windowsTrayRunValue(getConfigDir())): string | null {
+  return readWindowsTrayRunValueWithRunner(runValue, runRegistry);
 }
 
 function runRegistryAsync(args: string[]): Promise<string> {
@@ -252,26 +265,38 @@ function runRegistryAsync(args: string[]): Promise<string> {
   });
 }
 
-async function readOwnedRunValueAsync(runValue = windowsTrayRunValue(getConfigDir())): Promise<string | null> {
+async function asyncRegistryAbsenceIsProven(run: WindowsRegistryAsyncRunner): Promise<boolean> {
   try {
-    const output = await runRegistryAsync(["query", RUN_KEY, "/v", runValue, "/reg:64"]);
+    await run(["query", RUN_KEY, "/reg:64"]);
+    return true;
+  } catch (runError) {
+    if (registryExitCode(runError) !== 1) return false;
+    try {
+      const parent = await run(["query", RUN_PARENT_KEY, "/reg:64"]);
+      return !windowsRegistryParentShowsRunKey(parent);
+    } catch {
+      return false;
+    }
+  }
+}
+
+export async function readWindowsTrayRunValueWithAsyncRunner(
+  runValue: string,
+  run: WindowsRegistryAsyncRunner,
+): Promise<string | null> {
+  try {
+    const output = await run(["query", RUN_KEY, "/v", runValue, "/reg:64"]);
     return parseWindowsTrayRunValue(output, runValue);
   } catch (error) {
-    if (Number((error as { code?: unknown }).code) === 1) {
-      try {
-        await runRegistryAsync(["query", RUN_KEY, "/reg:64"]);
-        return null;
-      } catch (runError) {
-        if (Number((runError as { code?: unknown }).code) === 1) {
-          try {
-            const parent = await runRegistryAsync(["query", RUN_PARENT_KEY, "/reg:64"]);
-            if (!windowsRegistryParentShowsRunKey(parent)) return null;
-          } catch { /* fall through to the fail-closed error */ }
-        }
-      }
+    if (registryExitCode(error) === 1 && await asyncRegistryAbsenceIsProven(run)) {
+      return null;
     }
     throw new Error("Unable to verify Windows tray registry status.");
   }
+}
+
+async function readOwnedRunValueAsync(runValue = windowsTrayRunValue(getConfigDir())): Promise<string | null> {
+  return readWindowsTrayRunValueWithAsyncRunner(runValue, runRegistryAsync);
 }
 
 function readHeartbeat(): { pid: number; hostPid?: number; timestamp: number } | null {

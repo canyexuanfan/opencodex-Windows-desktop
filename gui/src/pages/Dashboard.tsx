@@ -3,6 +3,7 @@ import { formatUptime } from "../formatUptime";
 import { IconAlert, IconExternal, IconInfo, IconRefresh, IconX } from "../icons";
 import { Trans } from "../i18n/provider";
 import { useI18n, type TKey } from "../i18n/shared";
+import { startupRiskDetailKey } from "../startup-health-ui";
 import { formatTokens } from "../format-tokens";
 import { EmptyState, Select } from "../ui";
 
@@ -634,7 +635,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
           <span>
             {settings.startupHealth.diagnosticStale
               ? t("startup.staleData")
-              : t(settings.startupHealth.routingKind === "custom-local" ? "startup.riskDetailCustomLocal" : settings.startupHealth.shimCoverage === "cli-only" ? "startup.riskDetailWindowsShim" : "startup.riskDetail")}{" "}
+              : t(startupRiskDetailKey(settings.startupHealth))}{" "}
             <a href="#startup">{t("startup.title")}</a>
           </span>
         </div>

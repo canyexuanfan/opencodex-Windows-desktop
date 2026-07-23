@@ -20,6 +20,7 @@ import {
   updateCommandStr,
 } from "./index";
 import { isNewer } from "./notify";
+import { handoffWindowsTrayForUpdate, planWindowsTrayUpdate } from "./tray-update-plan.mjs";
 
 const RELEASE_NOTES_URL = "https://github.com/lidge-jun/opencodex/releases/latest";
 const UPDATE_JOB_FILENAME = "update-job.json";
@@ -521,14 +522,17 @@ export async function runGuiUpdateWorker(jobId: string, channel: Channel, restar
 
     if (process.platform === "win32") {
       try {
-        const { getWindowsTrayStatus, stopWindowsTray } = await import("../tray/windows");
+        const { getWindowsTrayStatus, startWindowsTray, stopWindowsTray } = await import("../tray/windows");
         const tray = getWindowsTrayStatus();
-        trayWasInstalled = tray.installed;
-        trayWasRunning = tray.running;
-        if (tray.running) {
-          const stopped = stopWindowsTray();
-          if (stopped.running) throw new Error("the tray still reports running after shutdown");
-        }
+        const trayPlan = handoffWindowsTrayForUpdate(tray, {
+          stop: () => {
+            const stopped = stopWindowsTray();
+            return { exitStatus: 0, running: stopped.running };
+          },
+          start: () => startWindowsTray(),
+        });
+        trayWasInstalled = trayPlan.refreshAfterReplacement;
+        trayWasRunning = trayPlan.restoreOnFailure;
       } catch (error) {
         updateJob(job, {
           status: "failed",
@@ -561,7 +565,7 @@ export async function runGuiUpdateWorker(jobId: string, channel: Channel, restar
     }
 
     if (trayWasInstalled) {
-      const trayArgs = [process.argv[1], "tray", "install", ...(!trayWasRunning ? ["--no-start"] : [])];
+      const trayArgs = [process.argv[1], ...planWindowsTrayUpdate({ installed: trayWasInstalled, running: trayWasRunning }).installArgs];
       const tray = runLoggedCommand(job, process.execPath, trayArgs, 20_000);
       if (tray.status !== 0) {
         updateJob(job, {}, "Windows tray refresh failed; run 'ocx tray install'.");

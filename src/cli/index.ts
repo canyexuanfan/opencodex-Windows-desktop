@@ -20,6 +20,8 @@ import {
   writeRuntimePort,
 } from "../config";
 import { collectStatus } from "./status";
+import { dispatchInternalCliCommand, type InternalCliCommand } from "./internal-dispatch";
+import { runTrayProxyRestart, runTrayProxyStart } from "./tray-proxy";
 import { installCrashGuards } from "../lib/crash-guard";
 import { hasHelpFlag, printSubcommandUsage, printUsage, printVersion } from "./help";
 import { findAvailablePort, isAddrInUse, PortUnavailableError, shouldPersistSelectedPort, waitForPortAvailable } from "../server/ports";
@@ -305,45 +307,43 @@ async function handleEnsure() {
 
 /** Fixed tray action: start the proxy without depending on codexAutoStart. */
 async function handleTrayProxyStart(): Promise<void> {
-  const live = await findLiveProxy();
-  if (live) {
-    console.log(`Proxy already running on port ${live.port}.`);
-    return;
-  }
-  const service = diagnoseService();
-  const serviceStartable = serviceStartableFromTray(service);
-  if (service.installed && !serviceStartable) {
-    console.error(`Cannot start from the tray because the installed service is not viable: ${service.summary}`);
-    console.error("Repair or remove the service before starting a direct proxy.");
-    process.exitCode = 1;
-    return;
-  }
-  if (serviceStartable) {
-    await serviceCommand("start");
-  } else {
-    const config = loadConfig();
-    const port = (config.port ?? 10100) > 0 ? (config.port ?? 10100) : 10100;
-    const child = spawn(process.execPath, startArgv(port), {
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true,
-      env: { ...process.env, OCX_SERVICE: "1" },
-    });
-    child.unref();
-  }
-  const started = await waitForProxy();
-  if (!started) {
-    console.error("Proxy did not become healthy after the tray start action.");
-    process.exitCode = 1;
-    return;
-  }
-  console.log(`Proxy running on port ${started.port}.`);
+  const ok = await runTrayProxyStart({
+    findLive: findLiveProxy,
+    diagnoseService: () => {
+      const service = diagnoseService();
+      return { installed: service.installed, startable: serviceStartableFromTray(service), summary: service.summary };
+    },
+    startService: () => serviceCommand("start"),
+    startDirect: () => {
+      const config = loadConfig();
+      const port = (config.port ?? 10100) > 0 ? (config.port ?? 10100) : 10100;
+      const child = spawn(process.execPath, startArgv(port), {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+        env: { ...process.env, OCX_SERVICE: "1" },
+      });
+      child.unref();
+    },
+    waitForProxy,
+    info: message => console.log(message),
+    error: message => console.error(message),
+  });
+  if (!ok) process.exitCode = 1;
 }
 
 async function handleTrayProxyRestart(): Promise<void> {
-  await handleStop();
-  if (process.exitCode && process.exitCode !== 0) return;
-  await handleTrayProxyStart();
+  const ok = await runTrayProxyRestart({
+    stop: async () => {
+      await handleStop();
+      return !process.exitCode || process.exitCode === 0;
+    },
+    start: async () => {
+      await handleTrayProxyStart();
+      return !process.exitCode || process.exitCode === 0;
+    },
+  });
+  if (!ok) process.exitCode = 1;
 }
 
 async function handleStop() {
@@ -696,19 +696,20 @@ switch (command) {
     break;
   }
   case "__tray-start":
-    await handleTrayProxyStart();
-    break;
   case "__tray-restart":
-    await handleTrayProxyRestart();
+  case "__startup-health":
+    await dispatchInternalCliCommand(command as InternalCliCommand, {
+      trayStart: handleTrayProxyStart,
+      trayRestart: handleTrayProxyRestart,
+      startupHealth: async () => {
+        const { collectStartupHealth } = await import("../codex/autostart-health");
+        console.log(JSON.stringify(collectStartupHealth(loadConfig())));
+      },
+    });
     break;
   case "__tray-host": {
     const { runWindowsTrayHost } = await import("../tray/windows");
     await runWindowsTrayHost();
-    break;
-  }
-  case "__startup-health": {
-    const { collectStartupHealth } = await import("../codex/autostart-health");
-    console.log(JSON.stringify(collectStartupHealth(loadConfig())));
     break;
   }
   case "__gui-update-worker": {

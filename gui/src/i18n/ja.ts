@@ -68,7 +68,7 @@ export const ja: Record<TKey, string> = {
   "startup.shimHint": "対応する Codex スクリプトランチャーの起動時に ocx ensure を実行します。",
   "startup.healthy": "正常",
   "startup.cliOnly": "CLI のみ",
-  "startup.stale": "破損",
+  "startup.stale": "要更新",
   "startup.viable": "利用可能",
   "startup.unhealthy": "インストール済み・異常",
   "startup.conflict": "サービス競合",

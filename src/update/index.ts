@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { getConfigDir, loadConfig, readPid, readRuntimePort } from "../config";
+import { handoffWindowsTrayForUpdate, planWindowsTrayUpdate } from "./tray-update-plan.mjs";
 
 /**
  * A `codex-history-backup-*.json` surviving a stop means the native-history restore was
@@ -174,21 +175,18 @@ export async function runUpdate(): Promise<void> {
   let trayWasRunning = false;
   if (process.platform === "win32") {
     try {
-      const { getWindowsTrayStatus, stopWindowsTray } = await import("../tray/windows");
+      const { getWindowsTrayStatus, startWindowsTray, stopWindowsTray } = await import("../tray/windows");
       const tray = getWindowsTrayStatus();
-      trayWasInstalled = tray.installed;
-      trayWasRunning = tray.running;
-      if (tray.running) {
-        const stopped = stopWindowsTray();
-        if (stopped.running) throw new Error("the tray still reports running after shutdown");
-      }
+      const trayPlan = handoffWindowsTrayForUpdate(tray, {
+        stop: () => {
+          const stopped = stopWindowsTray();
+          return { exitStatus: 0, running: stopped.running };
+        },
+        start: () => startWindowsTray(),
+      });
+      trayWasInstalled = trayPlan.refreshAfterReplacement;
+      trayWasRunning = trayPlan.restoreOnFailure;
     } catch (error) {
-      if (trayWasRunning) {
-        try {
-          const { startWindowsTray } = await import("../tray/windows");
-          startWindowsTray();
-        } catch { /* preserve the handoff failure */ }
-      }
       console.error(`⚠️  Could not stop the Windows tray; aborting before package replacement: ${error instanceof Error ? error.message : String(error)}`);
       process.exit(1);
     }
@@ -268,7 +266,7 @@ export async function runUpdate(): Promise<void> {
       console.warn(`⚠️  Shim repair skipped: ${e instanceof Error ? e.message : e}`);
     }
     if (trayWasInstalled) {
-      const trayArgs = [process.argv[1], "tray", "install", ...(!trayWasRunning ? ["--no-start"] : [])];
+      const trayArgs = [process.argv[1], ...planWindowsTrayUpdate({ installed: trayWasInstalled, running: trayWasRunning }).installArgs];
       const tray = spawnSync(process.execPath, trayArgs, { stdio: "inherit", windowsHide: true });
       if (tray.status === 0) {
         console.log("🔧 Refreshed Windows tray startup paths.");

@@ -4,6 +4,8 @@ import { join } from "node:path";
 import {
   buildWindowsTrayRunCommand,
   parseWindowsTrayRunValue,
+  readWindowsTrayRunValueWithAsyncRunner,
+  readWindowsTrayRunValueWithRunner,
   windowsTrayProcessArgs,
   windowsTrayRunValue,
   windowsTrayStatePathsOwned,
@@ -104,6 +106,90 @@ describe("Windows tray packaging and command safety", () => {
     expect(windowsRegistryParentShowsRunKey(parent.replace(/\\Run\r?\n?$/, ""))).toBe(false);
   });
 
+  test("fails closed when registry absence cannot be proven", async () => {
+    const value = "OpenCodexTray-test";
+    const statusError = (status: number) => Object.assign(new Error(`reg exit ${status}`), { status });
+    const codeError = (code: number) => Object.assign(new Error(`reg exit ${code}`), { code });
+
+    expect(readWindowsTrayRunValueWithRunner(value, args => {
+      if (args.includes("/v")) throw statusError(1);
+      if (args[1]?.endsWith("\\Run")) return "readable";
+      throw new Error("unexpected query");
+    })).toBeNull();
+    expect(() => readWindowsTrayRunValueWithRunner(value, () => { throw statusError(5); }))
+      .toThrow("refusing to change persistence");
+    expect(() => readWindowsTrayRunValueWithRunner(value, args => {
+      if (args.includes("/v")) throw statusError(1);
+      throw statusError(5);
+    })).toThrow("refusing to change persistence");
+
+    await expect(readWindowsTrayRunValueWithAsyncRunner(value, async args => {
+      if (args.includes("/v")) throw codeError(1);
+      if (args[1]?.endsWith("\\Run")) return "readable";
+      throw new Error("unexpected query");
+    })).resolves.toBeNull();
+    await expect(readWindowsTrayRunValueWithAsyncRunner(value, async () => { throw codeError(5); }))
+      .rejects.toThrow("Unable to verify Windows tray registry status");
+    await expect(readWindowsTrayRunValueWithAsyncRunner(value, async args => {
+      if (args.includes("/v")) throw codeError(1);
+      throw codeError(5);
+    })).rejects.toThrow("Unable to verify Windows tray registry status");
+  });
+
+  test("proves a missing Run key only through the readable parent path", async () => {
+    const value = "OpenCodexTray-test";
+    const syncCalls: string[][] = [];
+    const syncResult = readWindowsTrayRunValueWithRunner(value, args => {
+      syncCalls.push(args);
+      if (args.includes("/v") || args[1]?.endsWith("\\Run")) {
+        throw Object.assign(new Error("missing"), { status: 1 });
+      }
+      return "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer";
+    });
+    expect(syncResult).toBeNull();
+    expect(syncCalls).toEqual([
+      ["query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "/v", value, "/reg:64"],
+      ["query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "/reg:64"],
+      ["query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion", "/reg:64"],
+    ]);
+
+    const asyncCalls: string[][] = [];
+    const asyncResult = await readWindowsTrayRunValueWithAsyncRunner(value, async args => {
+      asyncCalls.push(args);
+      if (args.includes("/v") || args[1]?.endsWith("\\Run")) {
+        throw Object.assign(new Error("missing"), { code: 1 });
+      }
+      return "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer";
+    });
+    expect(asyncResult).toBeNull();
+    expect(asyncCalls).toEqual(syncCalls);
+
+    expect(() => readWindowsTrayRunValueWithRunner(value, args => {
+      if (args.includes("/v") || args[1]?.endsWith("\\Run")) {
+        throw Object.assign(new Error("unreadable"), { status: 1 });
+      }
+      return "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    })).toThrow("refusing to change persistence");
+
+    await expect(readWindowsTrayRunValueWithAsyncRunner(value, async args => {
+      if (args.includes("/v") || args[1]?.endsWith("\\Run")) {
+        throw Object.assign(new Error("unreadable"), { code: 1 });
+      }
+      return "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    })).rejects.toThrow("Unable to verify Windows tray registry status");
+
+    const parentFailureSync = (args: string[]): string => {
+      if (args.includes("/v") || args[1]?.endsWith("\\Run")) throw Object.assign(new Error("missing"), { status: 1 });
+      throw Object.assign(new Error("parent unreadable"), { status: 5 });
+    };
+    expect(() => readWindowsTrayRunValueWithRunner(value, parentFailureSync))
+      .toThrow("refusing to change persistence");
+    await expect(readWindowsTrayRunValueWithAsyncRunner(value, async args => {
+      if (args.includes("/v") || args[1]?.endsWith("\\Run")) throw Object.assign(new Error("missing"), { code: 1 });
+      throw Object.assign(new Error("parent unreadable"), { code: 5 });
+    })).rejects.toThrow("Unable to verify Windows tray registry status");
+  });
+
   test("PowerShell controller uses mutex/event shutdown and bans command evaluation", () => {
     const typescript = readFileSync(join(import.meta.dir, "..", "src", "tray", "windows.ts"), "utf8");
     const source = readFileSync(join(import.meta.dir, "..", "src", "tray", "windows-tray.ps1"), "utf8");
@@ -156,7 +242,8 @@ describe("Windows tray packaging and command safety", () => {
     expect(tray).toContain("previousScriptBytes");
     expect(tray).toContain('windowsTrayProcessArgs(currentEntry(), "Stop")');
     expect(tray).not.toContain("spawnTray(state)");
-    expect(tray).toContain('runRegistry(["query", RUN_KEY, "/reg:64"])');
+    expect(tray).toContain("return readWindowsTrayRunValueWithRunner(runValue, runRegistry)");
+    expect(tray).toContain("return readWindowsTrayRunValueWithAsyncRunner(runValue, runRegistryAsync)");
 
     const updateSources = [
       join(root, "src", "update", "index.ts"),

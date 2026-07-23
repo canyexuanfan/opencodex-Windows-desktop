@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { IconAlert, IconCheck, IconPower, IconRefresh, IconTerminal } from "../icons";
 import { useI18n, type TKey } from "../i18n/shared";
+import { startupRiskDetailKey } from "../startup-health-ui";
 import { EmptyState } from "../ui";
 
 type StartupStatus = "native" | "protected" | "at-risk";
@@ -219,7 +220,7 @@ export default function Startup({ apiBase }: { apiBase: string }) {
               <p>{failed
                 ? t("startup.staleData")
                 : data.status === "at-risk"
-                ? t(data.routingKind === "custom-local" ? "startup.riskDetailCustomLocal" : data.shimCoverage === "cli-only" ? "startup.riskDetailWindowsShim" : "startup.riskDetail")
+                ? t(startupRiskDetailKey(data))
                 : t("startup.safeDetail")}</p>
             </div>
           </section>

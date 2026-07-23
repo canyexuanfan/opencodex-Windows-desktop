@@ -63,7 +63,7 @@ export const ko: Record<TKey, string> = {
   "startup.shimHint": "지원되는 Codex 스크립트 런처가 시작될 때 ocx ensure를 실행합니다.",
   "startup.healthy": "정상",
   "startup.cliOnly": "CLI 전용",
-  "startup.stale": "손상됨",
+  "startup.stale": "업데이트 필요",
   "startup.viable": "사용 가능",
   "startup.unhealthy": "설치됐지만 비정상",
   "startup.conflict": "서비스 충돌",

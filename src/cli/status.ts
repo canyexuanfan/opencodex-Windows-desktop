@@ -4,7 +4,7 @@ import { diagnoseCodexBundledPlugins, type CodexPluginsDiagnostic } from "../cod
 import { isOpencodexHealthz, probeHostname } from "../server/proxy-liveness";
 import type { OcxConfig } from "../types";
 import { diagnoseService } from "../service";
-import { deriveStartupHealth, type StartupHealth } from "../codex/autostart-health";
+import { collectStartupHealth, type StartupHealth } from "../codex/autostart-health";
 import { getCodexRoutingKind } from "../codex/inject";
 import { diagnoseCodexShim } from "../codex/shim";
 
@@ -123,19 +123,10 @@ export async function collectStatus(): Promise<CliStatusView> {
   const serviceSummary = service.summary;
   const codexShim = diagnoseCodexShim();
   const codexShimSummary = codexShim.summary;
-  const startup = deriveStartupHealth({
+  const startup = collectStartupHealth(config, {
+    service,
+    shim: codexShim,
     routingKind: getCodexRoutingKind(),
-    autostartEnabled: codexAutoStartEnabled(config),
-    serviceInstalled: service.installed,
-    serviceViable: service.viable,
-    serviceEnabled: service.enabled,
-    serviceRunning: service.running,
-    serviceStale: service.stale,
-    serviceConflict: service.conflict,
-    serviceSupported: service.supported,
-    shimInstalled: codexShim.installed,
-    shimHealthy: codexShim.healthy,
-    platform: process.platform,
   });
   const codexPlugins = diagnoseCodexBundledPlugins();
   const proxyLabel = pid && health.ok
