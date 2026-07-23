@@ -136,6 +136,12 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).not.toContain("--generate-notes");
     // Fail closed when generate-notes fails (no soft skip).
     expect(workflow).not.toMatch(/generate-notes[\s\S]*?\|\| true/);
+    // Notes must be assembled before tagging so a notes API failure does not leave
+    // a remote tag that blocks release retries at preflight.
+    const createStep = workflow.split("- name: Create GitHub release")[1]!.split(/\n {6}- name:/)[0]!;
+    expect(createStep.indexOf("gh api")).toBeGreaterThan(-1);
+    expect(createStep.indexOf('git tag "$release_tag"')).toBeGreaterThan(-1);
+    expect(createStep.indexOf("gh api")).toBeLessThan(createStep.indexOf('git tag "$release_tag"'));
   });
 
   test("docs deployment is pinned, bounded, and scoped to Pages", async () => {

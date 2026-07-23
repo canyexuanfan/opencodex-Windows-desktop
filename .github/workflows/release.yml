@@ -317,11 +317,6 @@ jobs:
           fi
           npm_metadata="Published to npm as \`@bitkyc08/opencodex@${RELEASE_VERSION}\` with dist-tag \`${NPM_DIST_TAG}\`."
 
-          if [ -z "$existing_tag_sha" ]; then
-            git tag "$release_tag" "$GITHUB_SHA"
-            git push origin "refs/tags/${release_tag}"
-          fi
-
           # Preview builds must be marked prerelease so GitHub "latest" keeps pointing at the
           # stable channel (matching npm dist-tags); see issue #64.
           prerelease_flag=""
@@ -329,10 +324,10 @@ jobs:
             prerelease_flag="--prerelease"
           fi
 
-          # Build notes once: PR categories from generate-notes, plus every commit in the
-          # channel range (branch merges and direct commits that generate-notes omits
-          # because it is PR-only). Preflight already rejects an existing GitHub Release
-          # for non-dry runs, so this step only creates.
+          # Build notes before tagging: if generate-notes fails after a tag push, preflight
+          # blocks retries because the tag already exists. API uses target_commitish, so the
+          # tag need not exist yet. Preflight already rejects an existing GitHub Release for
+          # non-dry runs, so this step only creates.
           notes_file="$(mktemp)"
           generate_notes_api=(
             "repos/${GITHUB_REPOSITORY}/releases/generate-notes"
@@ -370,6 +365,11 @@ jobs:
                 "$GITHUB_REPOSITORY" "$previous_tag" "$release_tag"
             fi
           } > "$notes_file"
+
+          if [ -z "$existing_tag_sha" ]; then
+            git tag "$release_tag" "$GITHUB_SHA"
+            git push origin "refs/tags/${release_tag}"
+          fi
 
           gh release create "$release_tag" --target "$GITHUB_SHA" --title "$release_tag" \
             --notes-file "$notes_file" ${prerelease_flag:+$prerelease_flag}
