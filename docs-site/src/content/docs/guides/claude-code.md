@@ -133,7 +133,7 @@ up to 5 models) plus `ocx-self` into `~/.claude/agents/ocx-*.md`.
 - **`ocx-self`** pins your `/model` picker default (falling back to `claudeCode.model`); omitted
   when neither exists. It does NOT use model inheritance.
 - Each agent body contains an `<!-- ocx-route: <model> -->` directive — the proxy uses this to
-  pin the real route. The Agent tool's `model` argument is therefore inert; pass `"sonnet"` as a
+  pin the real route. The Agent tool's `model` argument is therefore inert; pass `"haiku"` as a
   placeholder.
 - Frontmatter carries the alias; routing is directive-driven.
 - Only marker-verified `ocx-*.md` files containing `generated-by: opencodex` are ever
@@ -370,4 +370,4 @@ it by default (`blockedSkills: ["claude-api"]`).
 
 **Subagent dispatches to wrong model** — Roster agents (`ocx-*`) use `<!-- ocx-route: ... -->`
 directives, not the Agent tool's `model` argument. Make sure the directive matches the intended
-route. Pass `"sonnet"` as the model placeholder.
+route. Pass `"haiku"` as the model placeholder.
