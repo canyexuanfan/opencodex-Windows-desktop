@@ -509,7 +509,6 @@ export function sidecarOutcomeRecorder(
     : undefined;
 }
 
-/** Account id to attribute log labels / upstream outcomes to (pool + rotation-injected main). */
 /** Codex client hard-coded helper/shadow models: 0.145.0 uses gpt-5.6-luna; older clients gpt-5.4-mini. */
 const DEFAULT_SHADOW_SOURCE_MODELS = ["gpt-5.4-mini", "gpt-5.6-luna"] as const;
 
@@ -519,6 +518,12 @@ const DEFAULT_SHADOW_SOURCE_MODELS = ["gpt-5.4-mini", "gpt-5.6-luna"] as const;
  * routed requests, never client shadow calls — hard-excluded even for configured
  * overrides. `configured` arrives unvalidated from disk (config.ts top-level parse is
  * passthrough), so non-string entries are filtered rather than trusted.
+ *
+ * Known tradeoff (issue #311 review): matching is model-id based, so with the intercept
+ * enabled a FOREGROUND bare `gpt-5.6-luna` turn is also rewritten — the same blunt
+ * "ALL matching requests" semantics the feature has always documented for gpt-5.4-mini.
+ * The proxy has no reliable helper-call signal in the request today; users who run Luna
+ * as a foreground model can scope the intercept with `sourceModels: ["gpt-5.4-mini"]`.
  */
 export function isShadowSourceModel(modelId: string, configured?: unknown): boolean {
   if (modelId.includes("/")) return false;
@@ -529,6 +534,7 @@ export function isShadowSourceModel(modelId: string, configured?: unknown): bool
   return prefixes.some(prefix => modelId.startsWith(prefix.trim()));
 }
 
+/** Account id to attribute log labels / upstream outcomes to (pool + rotation-injected main). */
 export function codexLogAccountId(authCtx: CodexAuthContext): string | null {
   return authCtx.kind === "pool" || authCtx.kind === "main-pool" ? authCtx.accountId : null;
 }
