@@ -56,7 +56,10 @@ Hook signature (inputs → returns), per inventory:
 Moves JSX `:1043-1165`. Props (from inventory): `t`, `oauthProviders`,
 `keyProviders`, `oauthStatus`, `busy`, `loginInfo`, `linkCopied`,
 `deviceCodeCopied`, `manualCode`, `manualCodeBusy`, `manualCodeMsg`, the
-key-provider view model, `setAdding`, `setLinkCopied`, `setDeviceCodeCopied`,
+key-provider view model, `config` (OAuthPanel's keyProviders block at `:1143-1160`
+reads `config?.providers[name]` to compute `keylessFree`/`missingOpenAiKey`,
+so `config` must be an explicit prop — the derived flags are computed inside
+the component, same as today; A-gate fold-back reviewer Pauli), `setAdding`, `setLinkCopied`, `setDeviceCodeCopied`,
 `setManualCode`, `requestLoginOAuth`, `cancelLoginOAuth`, `logoutOAuth`,
 `submitManualCode`, plus `providerIconSrc`/`oauthLabel`/icons.
 
