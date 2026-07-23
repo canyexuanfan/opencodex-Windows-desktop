@@ -67,7 +67,7 @@ codex "Refactor this function for readability"
 To target a specific routed model, use the `provider/model` form Codex's model picker shows:
 
 ```bash
-codex -m "anthropic/claude-opus-4-8" "Explain this stack trace"
+codex -m "anthropic/claude-opus-5" "Explain this stack trace"
 codex -m "ollama-cloud/glm-5.2"      "Write a SQL migration"
 ```
 

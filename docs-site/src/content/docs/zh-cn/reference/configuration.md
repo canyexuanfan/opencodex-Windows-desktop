@@ -336,7 +336,7 @@ Anthropic OAuth 搜索和图像描述请求沿用 opencodex 已有的 Claude Cod
       "noVisionModels": ["glm-5.2", "gpt-oss", "qwen3-coder", "deepseek-v4-pro"]
     }
   },
-  "subagentModels": ["anthropic/claude-opus-4-8", "ollama-cloud/glm-5.2"],
+  "subagentModels": ["anthropic/claude-opus-5", "ollama-cloud/glm-5.2"],
   "disabledModels": [],
   "websockets": false,
   "webSearchSidecar": {

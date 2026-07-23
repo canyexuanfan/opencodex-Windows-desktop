@@ -16,7 +16,7 @@ Pool(기본, 메인+추가 계정) 또는 Direct(현재 caller/메인 bearer)를
    해당 프로바이더가 사용되며 id는 슬래시 뒷부분으로 잘립니다.
 
    ```text
-   anthropic/claude-opus-4-8   →  provider "anthropic",   model "claude-opus-4-8"
+   anthropic/claude-opus-5     →  provider "anthropic",   model "claude-opus-5"
    ollama-cloud/glm-5.2        →  provider "ollama-cloud", model "glm-5.2"
    openrouter/openai/gpt-5.6-sol → provider "openrouter",  model "openai/gpt-5.6-sol"
    ```

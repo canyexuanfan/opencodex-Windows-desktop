@@ -130,7 +130,7 @@ Codex 的 `spawn_agent` 会按优先级排序，然后展示**前 5 个在选择
   "subagentModels": [
     "gpt-5.5",
     "gpt-5.6-sol",
-    "anthropic/claude-opus-4-8",
+    "anthropic/claude-opus-5",
     "xai/grok-4.5",
     "cursor/gpt-5.6-terra"
   ]

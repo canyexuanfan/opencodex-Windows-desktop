@@ -135,7 +135,7 @@ Codex의 `spawn_agent`는 우선순위로 정렬한 뒤 **선택기에 표시되
   "subagentModels": [
     "gpt-5.5",
     "gpt-5.6-sol",
-    "anthropic/claude-opus-4-8",
+    "anthropic/claude-opus-5",
     "xai/grok-4.5",
     "cursor/gpt-5.6-terra"
   ]

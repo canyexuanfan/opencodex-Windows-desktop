@@ -68,7 +68,7 @@ codex "Refactor this function for readability"
 특정 라우팅 모델을 지정하려면, Codex의 모델 선택기에 표시되는 `provider/model` 형식을 사용하세요:
 
 ```bash
-codex -m "anthropic/claude-opus-4-8" "Explain this stack trace"
+codex -m "anthropic/claude-opus-5" "Explain this stack trace"
 codex -m "ollama-cloud/glm-5.2"      "Write a SQL migration"
 ```
 

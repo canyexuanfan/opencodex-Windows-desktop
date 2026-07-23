@@ -80,6 +80,7 @@ describe("anthropic provider hardening", () => {
     const anthropic = PROVIDER_REGISTRY.find(entry => entry.id === "anthropic");
 
     expect(anthropic?.modelContextWindows?.["claude-opus-4-8"]).toBe(1_000_000);
+    expect(anthropic?.modelContextWindows?.["claude-opus-5"]).toBe(1_000_000);
     expect(anthropic?.modelContextWindows?.["claude-haiku-4-5"]).toBe(200_000);
   });
 });

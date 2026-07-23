@@ -146,7 +146,7 @@ ocx gui
 
 ```bash
 # Claude Opus через Anthropic
-codex -m "anthropic/claude-opus-4-8" "Explain this stack trace"
+codex -m "anthropic/claude-opus-5" "Explain this stack trace"
 
 # Gemini через Google
 codex -m "google/gemini-3-pro" "Write unit tests for auth.ts"

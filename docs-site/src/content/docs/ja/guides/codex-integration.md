@@ -136,7 +136,7 @@ Codex の `spawn_agent` は優先度でソートした後**ピッカーに表示
   "subagentModels": [
     "gpt-5.5",
     "gpt-5.6-sol",
-    "anthropic/claude-opus-4-8",
+    "anthropic/claude-opus-5",
     "xai/grok-4.5",
     "cursor/gpt-5.6-terra"
   ]

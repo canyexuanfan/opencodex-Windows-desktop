@@ -68,7 +68,7 @@ codex "Refactor this function for readability"
 特定のルーティングモデルを指定するには、Codex のモデルピッカーに表示される `provider/model` 形式を使ってください:
 
 ```bash
-codex -m "anthropic/claude-opus-4-8" "Explain this stack trace"
+codex -m "anthropic/claude-opus-5" "Explain this stack trace"
 codex -m "ollama-cloud/glm-5.2"      "Write a SQL migration"
 ```
 

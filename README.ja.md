@@ -133,7 +133,7 @@ ocx gui
 
 ```bash
 # Anthropic 経由で Claude Opus を使用
-codex -m "anthropic/claude-opus-4-8" "このスタックトレースを説明して"
+codex -m "anthropic/claude-opus-5" "このスタックトレースを説明して"
 
 # Google 経由で Gemini を使用
 codex -m "google/gemini-3-pro" "auth.ts のユニットテストを書いて"
