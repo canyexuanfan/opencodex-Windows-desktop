@@ -5,6 +5,23 @@
 ~50 exported symbols from it. The facade must preserve every exported name at
 the path `src/codex/catalog.ts`.
 
+## wp2 P stale-check (REQUIRED before B)
+
+The symbol inventory feeding this doc was taken on the `a0b9688d` base where
+`catalog.ts` was **2408 lines**. The branch is now based on `origin/dev`
+`71ebf77b`, where `catalog.ts` is **2426 lines** (+18). Re-verified anchors that
+still hold on the current tree: `CatalogModel` `:464`, `RawEntry`/`RawCatalog`
+`:491-492`, `buildCatalogEntries` `:1198`, `mergeCatalogEntriesForSync`
+`:2180`. **All other line anchors in this doc must be re-derived on the current
+2426-line file before B** (re-run the symbol inventory; the module ASSIGNMENTS
+by symbol name remain valid, only the line numbers may have shifted). The split
+is by SYMBOL, not by line range, so the design is robust — but B must cut on
+current symbol boundaries, not the stale line numbers below.
+
+Note: local `dev` (`92d9a9e2`) carries the user's separate in-progress work
+(src/gui changes vs origin/dev); this branch stays based on `origin/dev`
+`71ebf77b` and never touches that work.
+
 ## Module map (NEW `src/codex/catalog/*.ts`)
 
 ### `metadata.ts` — native OpenAI model metadata
