@@ -196,15 +196,20 @@ if [ -z "$OPENCODEX_API_AUTH_TOKEN" ] && [ -f ${shQuote(tokenFile)} ]; then
   OPENCODEX_API_AUTH_TOKEN="$(cat ${shQuote(tokenFile)})"
   export OPENCODEX_API_AUTH_TOKEN
 fi
-case "$1" in
-  ${internalCommands}|--help|-h|--version|-V)
-    ;;
-  *)
-    if [ -z "$OCX_SHIM_BYPASS" ]; then
-      ${shQuote(bunPath)} ${shQuote(cliPath)} ensure >/dev/null 2>&1 || true
-    fi
-    ;;
-esac
+skipEnsure=
+if [ -n "$OCX_SHIM_BYPASS" ]; then
+  skipEnsure=1
+else
+  for arg in "$@"; do
+    case "$arg" in
+      --) break ;;
+      ${internalCommands}|--help|-h|--version|-V) skipEnsure=1; break ;;
+    esac
+  done
+fi
+if [ -z "$skipEnsure" ]; then
+  ${shQuote(bunPath)} ${shQuote(cliPath)} ensure >/dev/null 2>&1 || true
+fi
 exec ${shQuote(realCodexPath)} "$@"
 `;
 }
@@ -236,11 +241,17 @@ ${windowsBatchSet("OCX_CLI", cliPath)}\r
 ${windowsBatchSet("OCX_API_TOKEN_FILE", serviceApiTokenFilePath())}\r
 if "%OPENCODEX_API_AUTH_TOKEN%"=="" if exist "%OCX_API_TOKEN_FILE%" set /p OPENCODEX_API_AUTH_TOKEN=<"%OCX_API_TOKEN_FILE%"\r
 if not "%OCX_SHIM_BYPASS%"=="" goto run_codex\r
+:scan_codex_args\r
+if "%~1"=="" goto ensure_ocx\r
+if "%~1"=="--" goto ensure_ocx\r
 ${internalCommandChecks}\r
 if /I "%~1"=="--help" goto run_codex\r
 if /I "%~1"=="-h" goto run_codex\r
 if /I "%~1"=="--version" goto run_codex\r
 if /I "%~1"=="-V" goto run_codex\r
+shift\r
+goto scan_codex_args\r
+:ensure_ocx\r
 "%OCX_BUN%" "%OCX_CLI%" ensure >nul 2>nul\r
 :run_codex\r
 "%OCX_REAL_CODEX%" %*\r
@@ -260,8 +271,16 @@ if (-not $env:OPENCODEX_API_AUTH_TOKEN -and (Test-Path -LiteralPath ${psString(t
   $env:OPENCODEX_API_AUTH_TOKEN = (Get-Content -Raw -LiteralPath ${psString(tokenFile)}).Trim()
 }
 $internalCommands = @(${internalCommands})
-$firstArg = if ($args.Count -gt 0) { [string]$args[0] } else { "" }
-$skipEnsure = $env:OCX_SHIM_BYPASS -or $internalCommands -contains $firstArg -or @("--help", "-h", "--version", "-V") -contains $firstArg
+$skipEnsure = [bool]$env:OCX_SHIM_BYPASS
+if (-not $skipEnsure) {
+  foreach ($candidate in $args) {
+    if ($candidate -eq "--") { break }
+    if ($internalCommands -contains $candidate -or @("--help", "-h", "--version", "-V") -contains $candidate) {
+      $skipEnsure = $true
+      break
+    }
+  }
+}
 if (-not $skipEnsure) {
   & ${psString(bunPath)} ${psString(cliPath)} ensure *> $null
 }
