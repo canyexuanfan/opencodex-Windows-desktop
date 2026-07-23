@@ -134,8 +134,12 @@ const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
 
 // Source invariant for tests/passthrough-abort.test.ts after the pure module split:
 // if (isEventStream && upstreamResponse.body) {
-// upstreamResponse.body.tee()
 // const repairConfig = route.provider.responsesItemIdRepair;
+// #314 gated shape (win32-no-repair only; default OFF on the bundled known-bad runtime):
+// decideEagerRelay(config.streamMode ?? "auto")
+// relaySseEagerBounded(upstreamResponse.body, turnAc,
+// Default shape (tee + background inspection):
+// upstreamResponse.body.tee()
 // const repairedBody = hasResponsesItemIdRepair(repairConfig)
 // process.platform === "win32"
 // && !hasResponsesItemIdRepair(repairConfig)

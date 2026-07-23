@@ -2,6 +2,15 @@
 
 Depends: WP1 (decideEagerRelay + config.streamMode). Consumes: 001 §1-§3, §5.
 
+WP2-P stale-check (post-WP1 tree 3781448a): core.ts SSE branch unchanged at
+:1024-1075; consumeForInspection at relay.ts:407 with per-chunk machinery =
+buffer + decoder + nextSseBlock + terminalStatusFromSsePayload +
+completedResponseFromSsePayload + inspectResponseLogSsePayload +
+createFirstOutputReporter; mirror comment at index.ts:135-150; invariant test
+string list confirmed (bans relaySseWithHeartbeat( and trackStreamLifetime( in
+the sse branch slice). `config` is in scope at the wiring site (handleResponses
+param). decideEagerRelay imported from ../lib/bun-stream-caps (WP1, landed).
+
 ## Why NEW module instead of extending relaySseWithHeartbeat (P3 disposition)
 
 relaySseWithHeartbeat is client-paced pull: inspection runs inside pull(), so a
@@ -18,6 +27,9 @@ Contract (preserves the FULL side-effect inventory of 001 §2):
 ```ts
 export type EagerRelayHooks = {
   inspectChunk: (chunk: Uint8Array) => void;   // feeds existing SSE inspection
+  sawTerminal: () => boolean;                   // audit blocker 1: relay observes terminal state
+                                                // (fed by the inspector; ends discard-drain early,
+                                                //  suppresses onClientCancel after late terminal)
   onClientCancel: () => void;                   // fires ONLY if no terminal later arrives
   onDone: () => void;                           // exactly once, after upstream fully drained/errored
 };
@@ -42,24 +54,53 @@ Semantics:
 2. Backpressure: when queue > maxQueueBytes, producer PAUSES (await queue
    drain) — upstream stops being pulled → fetch-level backpressure propagates.
    This is the actual #314 mitigation: bounded JS queue instead of unbounded
-   native tee branch queue.
+   native tee branch queue. HONESTY CAVEATS (audit M5): (a) efficacy assumes a
+   gate-passing runtime also carries the #29831 fetch-backpressure fix —
+   ordering assumption, unverified; (b) whether Bun's native Response sink
+   pull-paces a JS ReadableStream is unverified — bun:test JS readers always
+   pace, so tests prove queue mechanics, not native sink pacing. Both stay
+   under the "awaiting Windows user verification" label.
+2b. PAUSE-GATE WAKEUP (audit blocker 2): the pause gate is a promise resolved
+   by ANY of: client read (queue drained below cap), client cancel(), upstream
+   AbortController signal abort (shutdown), or producer teardown. cancel() and
+   the upstream.signal listener both resolve the gate so the producer always
+   resumes to run discard-drain/cleanup — onDone/unregisterTurn are
+   unconditionally reachable; drainAndShutdown never hangs on a paused relay.
 3. Client cancel: switch to DISCARD-DRAIN mode — keep reading upstream (chunks
-   go to inspectChunk only, queue dropped) until terminal seen OR drainMs OR
+   go to inspectChunk only, queue dropped) until hooks.sawTerminal() OR drainMs OR
    drainBytes cap; then `upstream.abort()`. Preserves #44 late-terminal
    semantics with a BOUND (today's tee drain is unbounded — improvement).
    If terminal never arrives within bounds → hooks.onClientCancel() fires.
-4. Producer error mid-stream → controller.error + onDone (synthetic failed-502
-   stays in the inspection layer, unchanged).
+   Stated behavior change on the eager path (allowed): client-cancel request-log
+   finalization may be delayed by up to drainMs/drainBytes after the cancel.
+4. Producer error mid-stream → controller.error + onDone. Shutdown/abort
+   discrimination (audit M3): before any synthetic failed-502 recording, check
+   `upstream.signal.aborted` (and cancelled state) — abort-driven teardown must
+   NOT record synthetic terminals, mirroring the cancelled-flag suppression at
+   relay.ts:499-505.
 5. onDone exactly-once → unregisterTurn parity.
 
 Inspection reuse: extract the per-chunk SSE scanning state machine from
 consumeForInspection (buffer + nextSseBlock + terminal/completed-response
 detection, relay.ts:407-505) into a shared factory
-`createSseInspector(handlers) → { feed(chunk), finish() }` in relay.ts, used by
+`createSseInspector(handlers) → { feed(chunk), finish(opts), reported(): boolean }` in relay.ts, used by
 BOTH consumeForInspection (unchanged behavior) and the eager relay hooks.
 consumeForResponseLogMetadata parity: the inspector factory takes the same
 logCtx/onCompletedResponse/onFirstOutput handlers; the non-recording variant
 constructs it without onTerminal recording.
+
+Extraction-fidelity invariants (audit M4 — MUST hold, add extraction-lock tests):
+- reported gating: logCtx SSE inspection stops after terminal (relay.ts:480);
+  in the metadata config `reported` stays permanently false because no
+  onTerminal is configured — the same gate reproduces both behaviors.
+- done-flush asymmetry: the finish() trailing-buffer scan is skipped when
+  reported (relay.ts:448) while per-block onCompletedResponse continues firing
+  after reported (relay.ts:494).
+- logCtx mutation order: transportPhase/terminalSource are set BEFORE
+  onTerminal fires (relay.ts:486-491).
+- finish() cannot decide synthetic-incomplete alone: caller passes cancelled
+  state; factory exposes reported() so the caller makes the
+  `!reported && !cancelled` decision (relay.ts:467-470).
 
 ## MODIFY src/server/responses/core.ts (~:1058-1073)
 
@@ -120,10 +161,17 @@ shape to be re-verified at WP2's own P against the then-current tree.
 - NEW tests/relay-eager.test.ts: synthetic ReadableStream fixtures —
   (a) side-effect parity: terminal recorded once, completed-response captured,
   onDone once, first-output once; (b) bounded queue: producer pauses at cap with
-  a slow reader (assert via chunk-timestamp ordering or queue introspection
-  hook); (c) post-cancel late terminal → terminal recorded, onClientCancel NOT
+  a slow reader — deterministic pull-count fixture (upstream pull() resolves
+  from a deferred queue + invocation counter; assert pull count freezes at
+  ceil(cap/chunkSize)+1 then resumes exactly once per client read; no
+  wall-clock); (c) post-cancel late terminal → terminal recorded, onClientCancel NOT
   fired; (d) post-cancel drain timeout → onClientCancel fired, upstream.abort
-  called; (e) mid-stream error → controller.error + onDone.
+  called; (d2) post-cancel drainBytes cap → same, byte-bounded branch;
+  (e) mid-stream error → controller.error + onDone; (f) cancel-while-paused and
+  abort-while-paused → gate wakes, onDone fires, no deadlock; (g) shutdown
+  abort mid-stream → onDone fires, NO synthetic failed-502 recorded;
+  (h) extraction-lock: reported-gated logCtx inspection, done-flush skip when
+  reported, post-reported onCompletedResponse continuation.
 - MODIFY tests/passthrough-abort.test.ts per lockstep above.
 - Existing consume-for-inspection-cancel.test.ts / server-combo-failover-e2e
   stay green untouched (default path unchanged).
