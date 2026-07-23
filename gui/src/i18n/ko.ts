@@ -45,6 +45,7 @@ export const ko: Record<TKey, string> = {
   "startup.routing.native": "OpenAI 네이티브",
   "startup.routing.customLocal": "사용자 지정 로컬 게이트웨이",
   "startup.routing.customRemote": "사용자 지정 원격 게이트웨이",
+  "startup.routing.unknown": "알 수 없거나 잘못된 라우팅",
   "startup.restartProtection": "재부팅 보호",
   "startup.preference": "필요 시 자동 시작",
   "startup.enabled": "켜짐",

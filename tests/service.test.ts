@@ -496,6 +496,7 @@ describe("service diagnostics", () => {
     schedulerEnabled: false,
     schedulerAssetsHealthy: true,
     nativeStatus: "nonexistent" as const,
+    nativeBackendRecorded: false,
     staleBakedPaths: false,
     nativeRepairAssetsOnly: false,
     diagnostics: "logs: test",
@@ -506,12 +507,12 @@ describe("service diagnostics", () => {
     expect(deriveWindowsServiceDiagnostic({ ...base, schedulerInstalled: true })).toMatchObject({ viable: false, enabled: false });
     expect(deriveWindowsServiceDiagnostic({ ...base, schedulerInstalled: true, schedulerEnabled: true, staleBakedPaths: true })).toMatchObject({ viable: false, stale: true });
     expect(deriveWindowsServiceDiagnostic({ ...base, schedulerInstalled: true, schedulerEnabled: true, nativeStatus: "started" })).toMatchObject({ viable: false, conflict: true });
-    expect(deriveWindowsServiceDiagnostic({ ...base, nativeStatus: "stopped" })).toMatchObject({ installed: true, viable: false, running: false });
+    expect(deriveWindowsServiceDiagnostic({ ...base, nativeStatus: "stopped" })).toMatchObject({ installed: true, viable: false, startable: false, stale: true, running: false });
     expect(deriveWindowsServiceDiagnostic({ ...base, nativeRepairAssetsOnly: true })).toMatchObject({ installed: false, viable: false, stale: true });
   });
 
   test("a stopped healthy WinSW service remains startable from the tray", () => {
-    const stoppedNative = deriveWindowsServiceDiagnostic({ ...base, nativeStatus: "stopped" });
+    const stoppedNative = deriveWindowsServiceDiagnostic({ ...base, nativeStatus: "stopped", nativeBackendRecorded: true });
     expect(serviceStartableFromTray(stoppedNative)).toBe(true);
     expect(serviceStartableFromTray({ ...stoppedNative, stale: true })).toBe(false);
     expect(serviceStartableFromTray({ ...stoppedNative, conflict: true })).toBe(false);

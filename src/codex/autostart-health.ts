@@ -61,7 +61,9 @@ const COMMANDS = {
 export function deriveStartupHealth(inputs: StartupHealthInputs): StartupHealth {
   const shimEffective = inputs.autostartEnabled && inputs.shimHealthy;
   const routingInjected = inputs.routingKind === "opencodex-local";
-  const localRoutingDependency = inputs.routingKind === "opencodex-local" || inputs.routingKind === "custom-local";
+  const localRoutingDependency = inputs.routingKind === "opencodex-local"
+    || inputs.routingKind === "custom-local"
+    || inputs.routingKind === "unknown";
   // Script launchers never cover Codex Desktop/app-server surfaces. This is
   // intentionally conservative on every OS and for WSL-shared Codex homes.
   const shimCoverage: ShimCoverage = !shimEffective
@@ -83,7 +85,7 @@ export function deriveStartupHealth(inputs: StartupHealthInputs): StartupHealth 
       : "at-risk";
   const recommendedCommand = status !== "at-risk"
     ? null
-    : inputs.routingKind === "custom-local"
+    : inputs.routingKind === "custom-local" || inputs.routingKind === "unknown"
       ? COMMANDS.restoreNative
     : inputs.serviceSupported
       ? COMMANDS.installService
@@ -127,6 +129,7 @@ export function startupHealthSummary(health: StartupHealth): string {
     ? "custom remote Codex routing (no local restart dependency)"
     : "native Codex routing (no opencodex restart dependency)";
   if (health.protection === "service") return "protected by background service";
+  if (health.routingKind === "unknown") return `AT RISK after restart (Codex routing could not be verified; run '${health.commands.restoreNative}' to restore native routing)`;
   if (health.routingKind === "custom-local") return `AT RISK after restart (custom local gateway lifecycle is not managed by opencodex; run '${health.commands.restoreNative}' to restore native routing)`;
   if (health.shimCoverage === "cli-only") return `AT RISK for Codex Desktop after restart (launcher shim covers CLI scripts only; run '${health.commands.installService}' or '${health.commands.restoreNative}')`;
   if (health.serviceConflict) return `AT RISK after restart (background service managers conflict; run '${health.commands.installService}' or '${health.commands.restoreNative}')`;

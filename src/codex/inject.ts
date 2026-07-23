@@ -161,14 +161,15 @@ export function hasInjectedOpenaiBaseUrl(content: string): boolean {
   return false;
 }
 
-export type CodexRoutingKind = "native" | "opencodex-local" | "custom-local" | "custom-remote";
+export type CodexRoutingKind = "native" | "opencodex-local" | "custom-local" | "custom-remote" | "unknown";
 
 function rootTomlString(content: string, key: string): string | null {
   const lines = content.split("\n");
   const firstTable = lines.findIndex(line => /^\s*\[/.test(line));
   const rootLines = lines.slice(0, firstTable === -1 ? lines.length : firstTable);
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`^\\s*${escaped}\\s*=\\s*[\"']([^\"']+)[\"']\\s*(?:#.*)?$`);
+  const keyToken = `(?:${escaped}|\"${escaped}\"|'${escaped}')`;
+  const pattern = new RegExp(`^\\s*${keyToken}\\s*=\\s*[\"']([^\"']+)[\"']\\s*(?:#.*)?$`);
   for (const line of rootLines) {
     const match = pattern.exec(line);
     if (match?.[1]) return match[1].trim();
@@ -178,8 +179,10 @@ function rootTomlString(content: string, key: string): string | null {
 
 function providerTableString(content: string, provider: string, key: string): string | null {
   const lines = content.split("\n");
-  const header = `[model_providers.${provider}]`;
-  const start = lines.findIndex(line => line.trim() === header);
+  const escapedProvider = provider.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const providerToken = `(?:${escapedProvider}|\"${escapedProvider}\"|'${escapedProvider}')`;
+  const header = new RegExp(`^\\s*\\[\\s*(?:model_providers|\"model_providers\"|'model_providers')\\s*\\.\\s*${providerToken}\\s*\\]\\s*(?:#.*)?$`);
+  const start = lines.findIndex(line => header.test(line));
   if (start === -1) return null;
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(`^\\s*${escaped}\\s*=\\s*[\"']([^\"']+)[\"']\\s*(?:#.*)?$`);
@@ -190,12 +193,25 @@ function providerTableString(content: string, provider: string, key: string): st
   return null;
 }
 
-function isLoopbackUrl(value: string): boolean {
+type RoutingEndpointKind = "local" | "remote" | "unknown";
+
+function classifyRoutingEndpoint(value: string): RoutingEndpointKind {
   try {
-    const hostname = new URL(value).hostname.toLowerCase();
-    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "unknown";
+    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+    if (!hostname) return "unknown";
+    if (hostname === "localhost" || hostname.endsWith(".localhost")) return "local";
+    if (hostname === "::" || hostname === "::1" || hostname === "0.0.0.0") return "local";
+    const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+    if (ipv4) {
+      const octets = ipv4.slice(1).map(Number);
+      if (octets.some(octet => octet > 255)) return "unknown";
+      if (octets[0] === 127) return "local";
+    }
+    return "remote";
   } catch {
-    return false;
+    return "unknown";
   }
 }
 
@@ -203,17 +219,21 @@ function isLoopbackUrl(value: string): boolean {
 export function classifyCodexRouting(content: string): CodexRoutingKind {
   const rootBaseUrl = rootTomlString(content, "openai_base_url");
   if (rootBaseUrl) {
+    const endpoint = classifyRoutingEndpoint(rootBaseUrl);
+    if (endpoint === "unknown") return "unknown";
     if (hasInjectedOpenaiBaseUrl(content)) return "opencodex-local";
-    if (!isLoopbackUrl(rootBaseUrl)) return "custom-remote";
-    return "custom-local";
+    return endpoint === "local" ? "custom-local" : "custom-remote";
   }
   const rootProvider = rootTomlString(content, "model_provider");
   if (rootProvider) {
     const providerBaseUrl = providerTableString(content, rootProvider, "base_url");
     if (providerBaseUrl) {
+      const endpoint = classifyRoutingEndpoint(providerBaseUrl);
+      if (endpoint === "unknown") return "unknown";
       if (rootProvider === "opencodex") return "opencodex-local";
-      return isLoopbackUrl(providerBaseUrl) ? "custom-local" : "custom-remote";
+      return endpoint === "local" ? "custom-local" : "custom-remote";
     }
+    if (rootProvider === "opencodex") return "unknown";
   }
   return "native";
 }
@@ -246,7 +266,7 @@ export function getCodexRoutingKind(): CodexRoutingKind {
   try {
     return classifyCodexRouting(readFileSync(path, "utf8"));
   } catch {
-    return "native";
+    return "unknown";
   }
 }
 

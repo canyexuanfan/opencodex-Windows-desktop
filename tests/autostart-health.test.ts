@@ -79,7 +79,16 @@ describe("Codex startup health", () => {
     ].join("\n"))).toBe(true);
     expect(hasInjectedCodexRouting('openai_base_url = "http://127.0.0.1:10100/v1"')).toBe(false);
     expect(classifyCodexRouting('openai_base_url = "http://127.0.0.1:10100/v1"')).toBe("custom-local");
+    expect(classifyCodexRouting('"openai_base_url" = "http://127.0.0.2:10100/v1"')).toBe("custom-local");
+    expect(classifyCodexRouting('openai_base_url = "http://0.0.0.0:10100/v1"')).toBe("custom-local");
+    expect(classifyCodexRouting('openai_base_url = "http://[::]:10100/v1"')).toBe("custom-local");
+    expect(classifyCodexRouting('openai_base_url = "not-a-url"')).toBe("unknown");
     expect(classifyCodexRouting('openai_base_url = "https://gateway.example/v1"')).toBe("custom-remote");
+    expect(classifyCodexRouting([
+      'model_provider = "gateway"',
+      '[model_providers."gateway"]',
+      'base_url = "http://127.0.0.2:10100/v1"',
+    ].join("\n"))).toBe("custom-local");
     expect(classifyCodexRouting([
       "[features]",
       'model_provider = "opencodex"',
@@ -119,6 +128,12 @@ describe("Codex startup health", () => {
     expect(deriveStartupHealth({ ...base, routingKind: "custom-remote" })).toMatchObject({
       status: "native",
       localRoutingDependency: false,
+    });
+    expect(deriveStartupHealth({ ...base, routingKind: "unknown", serviceInstalled: true, serviceViable: true })).toMatchObject({
+      status: "at-risk",
+      rebootSafe: false,
+      protection: "none",
+      recommendedCommand: "ocx restore",
     });
   });
 

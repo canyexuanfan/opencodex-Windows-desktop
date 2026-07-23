@@ -865,6 +865,7 @@ export interface WindowsServiceDiagnosticInputs {
   schedulerEnabled: boolean;
   schedulerAssetsHealthy: boolean;
   nativeStatus: "started" | "stopped" | "nonexistent" | "unknown";
+  nativeBackendRecorded: boolean;
   staleBakedPaths: boolean;
   nativeRepairAssetsOnly: boolean;
   diagnostics: string;
@@ -875,6 +876,7 @@ export function deriveWindowsServiceDiagnostic(inputs: WindowsServiceDiagnosticI
   const conflict = inputs.schedulerInstalled && nativeInstalled;
   const stale = inputs.staleBakedPaths
     || (inputs.schedulerInstalled && !inputs.schedulerAssetsHealthy)
+    || (nativeInstalled && !inputs.nativeBackendRecorded)
     || (inputs.nativeStatus === "nonexistent" && inputs.nativeRepairAssetsOnly);
   const backend = inputs.schedulerInstalled ? "scheduler" : nativeInstalled ? "native" : null;
   const enabled = inputs.schedulerInstalled ? inputs.schedulerEnabled : inputs.nativeStatus === "started";
@@ -935,11 +937,13 @@ export function diagnoseService(): ServiceDiagnostic {
     const schedulerAssets = [windowsServiceScriptPath(), windowsLauncherVbsPath(), windowsTaskXmlPath()].every(existsSync)
       && windowsTaskRegistrationHealthy(schedulerXml);
     const nativeStatus = statusWinswRaw();
+    const nativeBackendRecorded = readServiceInstallState()?.backend === "native";
     return deriveWindowsServiceDiagnostic({
       schedulerInstalled,
       schedulerEnabled,
       schedulerAssetsHealthy: schedulerAssets,
       nativeStatus,
+      nativeBackendRecorded,
       staleBakedPaths: bakedServicePathsDiagnostic() !== null,
       nativeRepairAssetsOnly: Boolean(winswStatusSummary()),
       diagnostics,

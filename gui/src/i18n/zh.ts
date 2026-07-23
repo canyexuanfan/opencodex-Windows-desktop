@@ -45,6 +45,7 @@ export const zh: Record<TKey, string> = {
   "startup.routing.native": "OpenAI 原生",
   "startup.routing.customLocal": "自定义本地网关",
   "startup.routing.customRemote": "自定义远程网关",
+  "startup.routing.unknown": "未知或无效的路由",
   "startup.restartProtection": "重启保护",
   "startup.preference": "按需启动",
   "startup.enabled": "已启用",

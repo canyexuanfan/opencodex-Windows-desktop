@@ -21,7 +21,9 @@ export function markStartupHealthDiagnosticStale(value: StartupHealth): StartupH
     rebootSafe: false,
     protection: "none",
     diagnosticStale: true,
-    recommendedCommand: value.routingKind === "custom-local" ? value.commands.restoreNative : value.commands.installService,
+    recommendedCommand: value.routingKind === "custom-local" || value.routingKind === "unknown"
+      ? value.commands.restoreNative
+      : value.commands.installService,
   };
 }
 

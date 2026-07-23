@@ -50,6 +50,7 @@ export const ru: Record<TKey, string> = {
   "startup.routing.native": "Нативный OpenAI",
   "startup.routing.customLocal": "Пользовательский локальный шлюз",
   "startup.routing.customRemote": "Пользовательский удалённый шлюз",
+  "startup.routing.unknown": "Неизвестная или недопустимая маршрутизация",
   "startup.restartProtection": "Защита перезапуска",
   "startup.preference": "Запуск по требованию",
   "startup.enabled": "Включён",

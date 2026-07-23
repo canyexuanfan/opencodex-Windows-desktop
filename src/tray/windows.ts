@@ -206,8 +206,44 @@ function readOwnedRunValue(runValue = windowsTrayRunValue(getConfigDir())): stri
     const output = runRegistry(["query", RUN_KEY, "/v", runValue, "/reg:64"]);
     return parseWindowsTrayRunValue(output, runValue);
   } catch (error) {
-    if ((error as { status?: unknown })?.status === 1) return null;
+    if ((error as { status?: unknown })?.status === 1) {
+      // reg.exe also uses exit 1 for access/query failures. Only treat the
+      // value as absent after proving that its parent key is readable.
+      try {
+        runRegistry(["query", RUN_KEY, "/reg:64"]);
+        return null;
+      } catch { /* fall through to the fail-closed error */ }
+    }
     throw new Error("Unable to verify the owned Windows tray registry value; refusing to change persistence.");
+  }
+}
+
+function runRegistryAsync(args: string[]): Promise<string> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    execFile(registryExe(), args, {
+      encoding: "utf8",
+      timeout: 2_000,
+      windowsHide: true,
+      maxBuffer: 64 * 1024,
+    }, (error, stdout) => {
+      if (error) rejectPromise(error);
+      else resolvePromise(stdout.trim());
+    });
+  });
+}
+
+async function readOwnedRunValueAsync(runValue = windowsTrayRunValue(getConfigDir())): Promise<string | null> {
+  try {
+    const output = await runRegistryAsync(["query", RUN_KEY, "/v", runValue, "/reg:64"]);
+    return parseWindowsTrayRunValue(output, runValue);
+  } catch (error) {
+    if (Number((error as { code?: unknown }).code) === 1) {
+      try {
+        await runRegistryAsync(["query", RUN_KEY, "/reg:64"]);
+        return null;
+      } catch { /* fall through to the fail-closed error */ }
+    }
+    throw new Error("Unable to verify Windows tray registry status.");
   }
 }
 
@@ -257,14 +293,30 @@ function waitForTrayExit(previous: ReturnType<typeof readHeartbeat>, timeoutMs =
   return !heartbeatProcessAlive() && powershellExited && hostExited;
 }
 
+export function windowsTrayRegistrationIsStale(inputs: {
+  registered: boolean;
+  registrationOwned: boolean;
+  running: boolean;
+  heartbeatFresh: boolean;
+}): boolean {
+  if (!inputs.registered && inputs.running) return true;
+  if (inputs.registered && !inputs.registrationOwned) return true;
+  return inputs.running && !inputs.heartbeatFresh;
+}
+
 function trayStatusFrom(registered: string | null): WindowsTrayStatus {
   const state = readState();
   const heartbeat = readHeartbeat();
   const running = heartbeatProcessAlive(heartbeat);
-  const stale = registered !== null && (!state
-    || registered !== state.runCommand
-    || [state.bun, state.cli, state.script].some(path => !existsSync(path)))
-    || (running && (!heartbeat || Date.now() - heartbeat.timestamp > 15_000));
+  const registrationOwned = state !== null
+    && registered === state.runCommand
+    && [state.bun, state.cli, state.script].every(path => existsSync(path));
+  const stale = windowsTrayRegistrationIsStale({
+    registered: registered !== null,
+    registrationOwned,
+    running,
+    heartbeatFresh: Boolean(heartbeat && Date.now() - heartbeat.timestamp <= 15_000),
+  });
   const installed = registered !== null && state !== null && registered === state.runCommand && !stale;
   const summary = registered === null
     ? running ? "unregistered tray process is still running" : "not installed"
@@ -288,18 +340,7 @@ export async function getWindowsTrayStatusAsync(): Promise<WindowsTrayStatus> {
     return { supported: false, installed: false, running: false, stale: false, summary: `unsupported on ${process.platform}` };
   }
   const runValue = windowsTrayRunValue(getConfigDir());
-  const registered = await new Promise<string | null>((resolvePromise, rejectPromise) => {
-    execFile(registryExe(), ["query", RUN_KEY, "/v", runValue, "/reg:64"], {
-      encoding: "utf8",
-      timeout: 2_000,
-      windowsHide: true,
-      maxBuffer: 64 * 1024,
-    }, (error, stdout) => {
-      if (!error) return resolvePromise(parseWindowsTrayRunValue(stdout, runValue));
-      if ((error as { code?: unknown }).code === 1) return resolvePromise(null);
-      rejectPromise(new Error("Unable to verify Windows tray registry status."));
-    });
-  });
+  const registered = await readOwnedRunValueAsync(runValue);
   return trayStatusFrom(registered);
 }
 
@@ -446,9 +487,8 @@ export function startWindowsTray(): WindowsTrayStatus {
 
 export function stopWindowsTray(): WindowsTrayStatus {
   assertWindows();
-  const state = readState();
   let previous = readHeartbeat();
-  if (state) {
+  if (previous) {
     previous = signalTrayStop();
   }
   if (!waitForTrayExit(previous)) throw new Error("The tray did not exit after the stop signal. Its login registration was preserved.");
@@ -463,7 +503,7 @@ export function uninstallWindowsTray(): WindowsTrayStatus {
     throw new Error(`Refusing to remove a foreign or unowned HKCU Run value named ${state?.runValue ?? windowsTrayRunValue(getConfigDir())}.`);
   }
   let previous = readHeartbeat();
-  if (state) {
+  if (previous) {
     previous = signalTrayStop();
   }
   if (!waitForTrayExit(previous)) throw new Error("The tray did not exit; refusing to remove its owned registration or state.");

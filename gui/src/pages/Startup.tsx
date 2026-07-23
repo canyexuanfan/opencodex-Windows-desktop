@@ -8,7 +8,7 @@ type StartupProtection = "service" | "shim" | "none";
 
 interface StartupHealthData {
   status: StartupStatus;
-  routingKind: "native" | "opencodex-local" | "custom-local" | "custom-remote";
+  routingKind: "native" | "opencodex-local" | "custom-local" | "custom-remote" | "unknown";
   routingInjected: boolean;
   localRoutingDependency: boolean;
   autostartEnabled: boolean;
@@ -178,7 +178,8 @@ export default function Startup({ apiBase }: { apiBase: string }) {
   const routingKey: TKey = data?.routingKind === "opencodex-local" ? "startup.routing.proxy"
     : data?.routingKind === "custom-local" ? "startup.routing.customLocal"
       : data?.routingKind === "custom-remote" ? "startup.routing.customRemote"
-        : "startup.routing.native";
+        : data?.routingKind === "unknown" ? "startup.routing.unknown"
+          : "startup.routing.native";
 
   const statusClass = failed
     ? "startup-hero--risk"

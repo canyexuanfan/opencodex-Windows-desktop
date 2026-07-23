@@ -430,7 +430,8 @@ async function handleUninstall() {
   if (process.platform === "win32") {
     await runStep("Windows tray removed", async () => {
       const { getWindowsTrayStatus, uninstallWindowsTray } = await import("../tray/windows");
-      if (!getWindowsTrayStatus().installed && !getWindowsTrayStatus().stale) return false;
+      const tray = getWindowsTrayStatus();
+      if (!tray.installed && !tray.stale && !tray.running) return false;
       uninstallWindowsTray();
     });
   }

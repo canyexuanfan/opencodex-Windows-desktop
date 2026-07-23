@@ -41,6 +41,7 @@ export const de = {
   "startup.routing.native": "Natives OpenAI",
   "startup.routing.customLocal": "Benutzerdefiniertes lokales Gateway",
   "startup.routing.customRemote": "Benutzerdefiniertes Remote-Gateway",
+  "startup.routing.unknown": "Unbekanntes oder ungültiges Routing",
   "startup.restartProtection": "Neustartschutz",
   "startup.preference": "Start bei Bedarf",
   "startup.enabled": "Aktiviert",

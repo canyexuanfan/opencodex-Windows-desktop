@@ -7,6 +7,7 @@ import {
   windowsTrayProcessArgs,
   windowsTrayRunValue,
   windowsTrayStatePathsOwned,
+  windowsTrayRegistrationIsStale,
   type WindowsTrayEntry,
 } from "../src/tray/windows";
 import { handleManagementAPI } from "../src/server/management-api";
@@ -62,6 +63,21 @@ describe("Windows tray packaging and command safety", () => {
       script: join(home, "opencodex-tray.ps1"),
       launcherPath: "C:\\victim\\document.txt",
     }, home)).toBe(false);
+  });
+
+  test("treats a live unregistered tray as stale so uninstall cannot skip it", () => {
+    expect(windowsTrayRegistrationIsStale({
+      registered: false,
+      registrationOwned: false,
+      running: true,
+      heartbeatFresh: true,
+    })).toBe(true);
+    expect(windowsTrayRegistrationIsStale({
+      registered: false,
+      registrationOwned: false,
+      running: false,
+      heartbeatFresh: false,
+    })).toBe(false);
   });
 
   test("normalizes equivalent homes to one owned Run value", () => {
@@ -128,6 +144,7 @@ describe("Windows tray packaging and command safety", () => {
     expect(tray).toContain("previousScriptBytes");
     expect(tray).toContain('windowsTrayProcessArgs(currentEntry(), "Stop")');
     expect(tray).not.toContain("spawnTray(state)");
+    expect(tray).toContain('runRegistry(["query", RUN_KEY, "/reg:64"])');
 
     const updateSources = [
       join(root, "src", "update", "index.ts"),

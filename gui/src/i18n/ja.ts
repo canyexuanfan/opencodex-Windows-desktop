@@ -50,6 +50,7 @@ export const ja: Record<TKey, string> = {
   "startup.routing.native": "OpenAI ネイティブ",
   "startup.routing.customLocal": "カスタムローカルゲートウェイ",
   "startup.routing.customRemote": "カスタム遠隔ゲートウェイ",
+  "startup.routing.unknown": "不明または無効なルーティング",
   "startup.restartProtection": "再起動保護",
   "startup.preference": "オンデマンド起動",
   "startup.enabled": "有効",
