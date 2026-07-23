@@ -903,6 +903,7 @@ export const en = {
   "claude.authModeProxy": "Proxy (no account needed)",
   "claude.systemEnv": "Auto-connect",
   "claude.systemEnvDesc": "When on, running claude in any terminal automatically goes through the proxy.",
+  "claude.systemEnvUnsupported": "Auto-connect is available on macOS only. On this system, start Claude with {cmd}.",
   "claude.systemEnvWarn": "⚠ You must fully quit and relaunch your terminal app for this to take effect. Not recommended.",
   "claude.fastMode": "Fast Mode (OpenAI)",
   "claude.fastModeDesc": "Controls service_tier for OpenAI models. ON = priority (faster). OFF = default. Auto = passthrough (client decides).",

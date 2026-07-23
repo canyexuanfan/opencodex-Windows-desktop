@@ -1241,6 +1241,7 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
       tierModels: config.claudeCode?.tierModels ?? {},
       modelMap: config.claudeCode?.modelMap ?? {},
       systemEnv: config.claudeCode?.systemEnv === true,
+      autoConnectSupported: process.platform === "darwin",
       maxContextTokens: config.claudeCode?.maxContextTokens ?? null,
       alwaysEnableEffort: config.claudeCode?.alwaysEnableEffort === true,
       autoContext: config.claudeCode?.autoContext !== false,

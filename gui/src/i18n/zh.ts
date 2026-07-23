@@ -620,6 +620,7 @@ export const zh: Record<TKey, string> = {
   "claude.authModeProxy": "Proxy（无需账户）",
   "claude.systemEnv": "自动连接",
   "claude.systemEnvDesc": "开启后，在任意终端运行 claude 会自动通过代理。",
+  "claude.systemEnvUnsupported": "自动连接仅在 macOS 上可用。在此系统上，请使用 {cmd} 启动 Claude。",
   "claude.systemEnvWarn": "⚠ 需要完全退出并重新打开终端应用才能生效。不推荐使用。",
   "claude.fastMode": "Fast Mode (OpenAI)",
   "claude.fastModeDesc": "控制 OpenAI 模型的推理速度。ON = 优先级（更快）。OFF = 默认速度。Auto = 透传客户端设置。",

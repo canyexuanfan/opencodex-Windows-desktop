@@ -903,6 +903,7 @@ export const ru: Record<TKey, string> = {
   "claude.authModeProxy": "Прокси (аккаунт не нужен)",
   "claude.systemEnv": "Автоподключение",
   "claude.systemEnvDesc": "Если включено, запуск claude в любом терминале автоматически идёт через прокси.",
+  "claude.systemEnvUnsupported": "Автоподключение доступно только в macOS. В этой системе запускайте Claude с помощью {cmd}.",
   "claude.systemEnvWarn": "⚠ Чтобы изменение вступило в силу, необходимо полностью закрыть и заново запустить приложение терминала. Не рекомендуется.",
   "claude.fastMode": "Быстрый режим (OpenAI)",
   "claude.fastModeDesc": "Управляет service_tier для моделей OpenAI. ВКЛ = priority (быстрее). ВЫКЛ = default. Авто = сквозная передача (решает клиент).",

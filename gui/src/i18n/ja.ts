@@ -858,6 +858,7 @@ export const ja: Record<TKey, string> = {
   "claude.authModeProxy": "プロキシ(アカウント不要)",
   "claude.systemEnv": "自動接続",
   "claude.systemEnvDesc": "オンにすると、任意のターミナルで claude を実行すると自動的にプロキシ経由になります。",
+  "claude.systemEnvUnsupported": "自動接続は macOS でのみ利用できます。このシステムでは {cmd} で Claude を起動してください。",
   "claude.systemEnvWarn": "⚠ これを有効化するにはターミナルアプリを完全に終了して再起動する必要があります。推奨されません。",
   "claude.fastMode": "高速モード(OpenAI)",
   "claude.fastModeDesc": "OpenAI モデルの service_tier を制御します。オン = 優先(高速)。オフ = デフォルト。自動 = パススルー(クライアントが決定)。",

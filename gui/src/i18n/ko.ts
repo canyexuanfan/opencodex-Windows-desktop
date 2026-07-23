@@ -620,6 +620,7 @@ export const ko: Record<TKey, string> = {
   "claude.authModeProxy": "Proxy (계정 불필요)",
   "claude.systemEnv": "자동 연결",
   "claude.systemEnvDesc": "켜면 터미널에서 claude를 바로 실행해도 프록시를 거칩니다.",
+  "claude.systemEnvUnsupported": "자동 연결은 macOS에서만 지원됩니다. 이 시스템에서는 {cmd}로 Claude를 실행하세요.",
   "claude.systemEnvWarn": "⚠ 터미널 앱을 완전히 종료했다 다시 열어야 적용됩니다. 사용을 권장하지 않습니다.",
   "claude.fastMode": "Fast Mode (OpenAI)",
   "claude.fastModeDesc": "OpenAI 모델의 추론 속도를 제어합니다. ON = 빠른 추론. OFF = 기본 속도. Auto = 클라이언트 설정 그대로.",
