@@ -11,6 +11,7 @@ import {
   isValidProviderName,
   isOcxStartCommandLine,
   loadConfig,
+  multiAgentGuidanceEnabled,
   parsePidFile,
   positiveIntegerConfigError,
   positiveIntegerRecordConfigError,
@@ -100,6 +101,36 @@ describe("opencodex config defaults", () => {
   test("Codex autostart can be disabled explicitly", () => {
     expect(codexAutoStartEnabled({ codexAutoStart: false })).toBe(false);
     expect(codexAutoStartEnabled({ codexAutoStart: true })).toBe(true);
+  });
+
+  test("multi-agent guidance is default-on and false is the only off state", () => {
+    expect(getDefaultConfig().multiAgentGuidanceEnabled).toBe(true);
+    expect(multiAgentGuidanceEnabled({})).toBe(true);
+    expect(multiAgentGuidanceEnabled({ multiAgentGuidanceEnabled: true })).toBe(true);
+    expect(multiAgentGuidanceEnabled({ multiAgentGuidanceEnabled: false })).toBe(false);
+  });
+
+  test("multiAgentGuidanceEnabled loads false and rejects non-booleans", () => {
+    const base = {
+      port: 10100,
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+        },
+      },
+      defaultProvider: "openai",
+    };
+    writeConfig({ ...base, multiAgentGuidanceEnabled: false });
+    expect(loadConfig().multiAgentGuidanceEnabled).toBe(false);
+
+    for (const invalid of [null, "false"]) {
+      writeConfig({ ...base, multiAgentGuidanceEnabled: invalid });
+      const diagnostics = readConfigDiagnostics();
+      expect(diagnostics.source).toBe("fallback");
+      expect(diagnostics.error).toContain("multiAgentGuidanceEnabled");
+    }
   });
 
   test("loads valid config from OPENCODEX_HOME", () => {

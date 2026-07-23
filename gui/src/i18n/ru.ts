@@ -78,6 +78,8 @@ export const ru: Record<TKey, string> = {
   "dash.sidecarSaveFailed": "Не удалось сохранить настройки сайдкара.",
   "dash.injectionLabel": "Делегирование подагентам",
   "dash.injectionHint": "Выберите маршрутизируемую модель для внедрения в промпт делегирования. Агенту будет указано использовать её для подзадач.",
+  "dash.multiAgentGuidance": "Мультиагентное руководство OpenCodex",
+  "dash.multiAgentGuidanceHint": "Добавляет инструкции делегирования от OpenCodex. Отключение не меняет поверхность v1/v2, список подагентов, маршрутизацию и пределы effort.",
   "dash.injectionActive": "Активно",
   "dash.injectionNone": "Нет",
   "dash.injectionEffortLabel": "Уровень рассуждений",

@@ -429,6 +429,7 @@ const configSchema = z.object({
   openaiProviderTierVersion: z.union([z.literal(1), z.literal(2)]).optional(),
   providerContextCaps: z.record(z.string(), z.number().int().positive()).optional(),
   contextCapValue: z.number().int().positive().optional(),
+  multiAgentGuidanceEnabled: z.boolean().optional(),
 }).passthrough().superRefine((config, ctx) => {
   for (const name of Object.keys(config.providers)) {
     if (!isValidProviderName(name)) {
@@ -749,6 +750,12 @@ export function codexAutoStartEnabled(config: Pick<OcxConfig, "codexAutoStart">)
   return config.codexAutoStart !== false;
 }
 
+export function multiAgentGuidanceEnabled(
+  config: Pick<OcxConfig, "multiAgentGuidanceEnabled">,
+): boolean {
+  return config.multiAgentGuidanceEnabled !== false;
+}
+
 export function getDefaultConfig(): OcxConfig {
   // Fresh-install default: works out of the box with Codex's ChatGPT OAuth (no API key).
   // gpt-* requests forward the caller's incoming OAuth headers to the ChatGPT backend.
@@ -769,6 +776,7 @@ export function getDefaultConfig(): OcxConfig {
     },
     defaultProvider: "openai",
     subagentModels: [...DEFAULT_SUBAGENT_MODELS],
+    multiAgentGuidanceEnabled: true,
     websockets: false,
     codexAutoStart: true,
   };

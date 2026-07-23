@@ -406,6 +406,11 @@ export interface OcxConfig {
    */
   injectionPrompt?: string;
   /**
+   * Proxy-authored multi-agent developer guidance. Undefined/true = enabled for
+   * backward compatibility; false suppresses both v1 and v2 guidance injection.
+   */
+  multiAgentGuidanceEnabled?: boolean;
+  /**
    * Global hard ceiling for the reasoning effort of EVERY proxied turn (main agent AND
    * sub-agents). Ladder value "low".."max"; incoming efforts ranking above it are rewritten
    * in both request shapes before any adapter or clamp. Unset = no cap. codex-rs converts

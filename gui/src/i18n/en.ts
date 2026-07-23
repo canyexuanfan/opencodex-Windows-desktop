@@ -78,6 +78,8 @@ export const en = {
   "dash.sidecarSaveFailed": "Failed to save sidecar settings.",
   "dash.injectionLabel": "Sub-agent delegation",
   "dash.injectionHint": "Pick a routed model to inject into the delegation prompt. The agent will be told to use it for sub-tasks.",
+  "dash.multiAgentGuidance": "OpenCodex multi-agent guidance",
+  "dash.multiAgentGuidanceHint": "Adds OpenCodex-authored delegation instructions. Turning this off keeps the v1/v2 surface, sub-agent roster, routing, and effort caps unchanged.",
   "dash.injectionActive": "Active",
   "dash.injectionNone": "None",
   "dash.injectionEffortLabel": "Reasoning effort",

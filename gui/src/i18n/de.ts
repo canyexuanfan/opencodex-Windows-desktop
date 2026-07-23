@@ -69,6 +69,8 @@ export const de = {
   "dash.sidecarSaveFailed": "Sidecar-Einstellungen konnten nicht gespeichert werden.",
   "dash.injectionLabel": "Sub-Agent-Delegation",
   "dash.injectionHint": "Wähle ein geroutetes Modell für den Delegations-Prompt. Der Agent wird angewiesen, es für Teilaufgaben zu nutzen.",
+  "dash.multiAgentGuidance": "OpenCodex-Multi-Agent-Anleitung",
+  "dash.multiAgentGuidanceHint": "Fügt von OpenCodex erstellte Delegationshinweise hinzu. Beim Ausschalten bleiben v1/v2-Oberfläche, Sub-Agent-Liste, Routing und Aufwandsgrenzen unverändert.",
   "dash.injectionActive": "Aktiv",
   "dash.injectionNone": "Keine",
   "dash.injectionEffortLabel": "Reasoning-Aufwand",

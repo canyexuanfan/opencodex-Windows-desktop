@@ -2,6 +2,7 @@ import type { Server } from "bun";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse, type ResponsesTerminalStatus } from "../bridge";
 import {
   getConfigPath,
+  multiAgentGuidanceEnabled,
   resolveEnvValue,
 } from "../config";
 import { parseRequest } from "../responses/parser";
@@ -195,7 +196,43 @@ export function collabSurface(parsed: OcxParsedRequest): "v1" | "v2" | null {
  * v2 body with {{model}}/{{effort}}/{{roster}} placeholder substitution (own length,
  * user-owned); firing gates are unchanged.
  */
-export async function multiAgentGuidanceText(parsed: OcxParsedRequest, injectionModel?: string, injectionEffort?: string, subagentModels?: string[], injectionPrompt?: string): Promise<string | null> {
+import type { EffectiveSubagentRoster, SpawnAgentSurface } from "../codex/catalog";
+
+export interface MultiAgentGuidanceOptions {
+  multiAgentGuidanceEnabled?: boolean;
+  injectionModel?: string;
+  injectionEffort?: string;
+  subagentModels?: string[];
+  injectionPrompt?: string;
+}
+
+export interface MultiAgentGuidanceDeps {
+  resolveEffectiveSubagentRoster?: (
+    configuredModels: readonly string[],
+    surface: SpawnAgentSurface,
+  ) => EffectiveSubagentRoster | Promise<EffectiveSubagentRoster>;
+}
+
+async function resolveEffectiveSubagentRoster(
+  configuredModels: readonly string[],
+  surface: SpawnAgentSurface,
+): Promise<EffectiveSubagentRoster> {
+  const { effectiveSubagentRoster } = await import("../codex/catalog");
+  return effectiveSubagentRoster(configuredModels, surface);
+}
+
+export async function multiAgentGuidanceText(
+  parsed: OcxParsedRequest,
+  options: MultiAgentGuidanceOptions = {},
+  deps: MultiAgentGuidanceDeps = {},
+): Promise<string | null> {
+  if (options.multiAgentGuidanceEnabled === false) return null;
+  const {
+    injectionModel,
+    injectionEffort,
+    subagentModels,
+    injectionPrompt,
+  } = options;
   const surface = collabSurface(parsed);
   if (surface === null) return null;
 
@@ -207,8 +244,8 @@ export async function multiAgentGuidanceText(parsed: OcxParsedRequest, injection
       ...(subagentModels ?? []),
       ...(injectionModel ? [injectionModel] : []),
     ];
-    const { effectiveSubagentRoster } = await import("../codex/catalog");
-    const effective = effectiveSubagentRoster(configuredForGuidance, "v2");
+    const resolveRoster = deps.resolveEffectiveSubagentRoster ?? resolveEffectiveSubagentRoster;
+    const effective = await resolveRoster(configuredForGuidance, "v2");
     const rosterModels = effective.advertised.filter(candidate =>
       (subagentModels ?? []).some(model => slugsEquivalent(model, candidate.model))
     );
@@ -908,17 +945,23 @@ export async function handleResponses(
   }
 
   // Multi-agent guidance shim: codex-rs emits its Proactive delegation developer
-  // message only on the v2 surface. The proxy fills both gaps: the Proactive text
-  // for v1 collab surfaces at the top tier, and the sub-agent model designation on
-  // BOTH surfaces when an injectionModel is configured (v2 additionally gets the
-  // fork_turns override rules). The surface is judged from the request's own tool list.
-  // Runs BEFORE the mock-max clamp below so the synthetic top tier (ultra arrives
-  // as max on the codex wire) is still visible. Both request shapes are rewritten.
+  // message only on the v2 surface. The proxy fills the gaps: the Proactive text
+  // for v1 collab surfaces at the top tier (no model designation on v1), and the
+  // sub-agent model/roster designation plus fork_turns override rules on v2.
+  // The surface is judged from the request's own tool list. Runs BEFORE the
+  // mock-max clamp below so the synthetic top tier (ultra arrives as max on the
+  // codex wire) is still visible. Both request shapes are rewritten.
   {
-    const guidance = await multiAgentGuidanceText(parsed, config.injectionModel, config.injectionEffort, config.subagentModels, config.injectionPrompt);
+    const guidance = await multiAgentGuidanceText(parsed, {
+      multiAgentGuidanceEnabled: config.multiAgentGuidanceEnabled,
+      injectionModel: config.injectionModel,
+      injectionEffort: config.injectionEffort,
+      subagentModels: config.subagentModels,
+      injectionPrompt: config.injectionPrompt,
+    });
     if (guidance) {
       injectDeveloperMessage(parsed, guidance);
-      if (isInjectionDebugEnabled()) injectionDebugLog(`[opencodex] ${route.modelId}: multi-agent guidance injected (surface=${collabSurface(parsed)}, ${guidance.length} chars)`);
+      if (isInjectionDebugEnabled()) injectionDebugLog(`[opencodex] ${route.modelId}: multi-agent guidance injected (surface=${collabSurface(parsed)}, guidanceEnabled=${multiAgentGuidanceEnabled(config)}, ${guidance.length} chars)`);
     } else if (isInjectionDebugEnabled() && collabSurface(parsed) !== null) {
       injectionDebugLog(`[opencodex] ${route.modelId}: collab surface=${collabSurface(parsed)}, guidance silent (effort=${parsed.options.reasoning ?? "unset"}, injectionModel=${config.injectionModel ?? "unset"})`);
     }

@@ -78,6 +78,8 @@ export const ja: Record<TKey, string> = {
   "dash.sidecarSaveFailed": "サイドカー設定の保存に失敗しました。",
   "dash.injectionLabel": "サブエージェント委任",
   "dash.injectionHint": "委任プロンプトに注入するルーティングモデルを選択します。エージェントはサブタスクにそれを使うよう指示されます。",
+  "dash.multiAgentGuidance": "OpenCodex マルチエージェントガイダンス",
+  "dash.multiAgentGuidanceHint": "OpenCodex が作成する委任指示を追加します。オフにしても v1/v2 サーフェス、サブエージェントロスター、ルーティング、effort 上限は変わりません。",
   "dash.injectionActive": "アクティブ",
   "dash.injectionNone": "なし",
   "dash.injectionEffortLabel": "推論負荷",

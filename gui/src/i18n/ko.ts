@@ -73,6 +73,8 @@ export const ko: Record<TKey, string> = {
   "dash.sidecarSaveFailed": "사이드카 설정 저장에 실패했습니다.",
   "dash.injectionLabel": "서브에이전트 위임",
   "dash.injectionHint": "위임 프롬프트에 주입할 라우팅 모델을 선택합니다. 에이전트가 서브태스크에 이 모델을 사용하도록 안내됩니다.",
+  "dash.multiAgentGuidance": "OpenCodex 멀티 에이전트 가이던스",
+  "dash.multiAgentGuidanceHint": "OpenCodex가 작성한 위임 안내를 추가합니다. 꺼도 v1/v2 표면, 서브에이전트 로스터, 라우팅, effort 상한은 바뀌지 않습니다.",
   "dash.injectionActive": "활성",
   "dash.injectionNone": "없음",
   "dash.injectionEffortLabel": "추론 강도",

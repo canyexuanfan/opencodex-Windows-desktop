@@ -73,6 +73,8 @@ export const zh: Record<TKey, string> = {
   "dash.sidecarSaveFailed": "保存附属设置失败。",
   "dash.injectionLabel": "子代理委托",
   "dash.injectionHint": "选择要注入委托提示的路由模型。代理将被告知在子任务中使用它。",
+  "dash.multiAgentGuidance": "OpenCodex 多代理指引",
+  "dash.multiAgentGuidanceHint": "添加由 OpenCodex 编写的委派指令。关闭后仍保留 v1/v2 界面、子代理清单、路由和 effort 上限。",
   "dash.injectionActive": "已激活",
   "dash.injectionNone": "无",
   "dash.injectionEffortLabel": "推理强度",
