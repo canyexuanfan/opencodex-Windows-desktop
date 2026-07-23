@@ -6,7 +6,11 @@ import { isCursorExternalWireModel } from "./cursor/discovery";
 import { createCursorKvStore, type CursorKvStore } from "./cursor/kv-store";
 import { mapCursorServerMessage } from "./cursor/message-mapper";
 import { createCursorRequest, generatedCursorConversationId } from "./cursor/request-builder";
-import { createLiveCursorTransport, CursorMissingCredentialError } from "./cursor/live-transport";
+import {
+  createLiveCursorTransport,
+  CursorMissingCredentialError,
+  rekeyCursorContextUsage,
+} from "./cursor/live-transport";
 import { runCursorTurnWithRetry } from "./cursor/transport-retry";
 import {
   createDisabledCursorTransport,
@@ -71,10 +75,16 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
         const makeTransport = deps.createTransport ?? createLiveCursorTransport;
         const kv = deps.kv ?? createCursorKvStore();
         _parsed._cursorConversationId ??= generatedCursorConversationId();
+        const previousConversationId = _parsed._cursorConversationId;
         let request = createCursorRequest(_parsed);
         // Keep remembered conversation id in sync when the request builder mints a fresh id
         // for external-model tool-result continuations (stateless replay).
+        if (request.conversationId !== previousConversationId) {
+          rekeyCursorContextUsage(previousConversationId, request.conversationId);
+        }
         _parsed._cursorConversationId = request.conversationId;
+        let emittedOutput = false;
+        const lastRawIsToolResult = _parsed.context.messages.at(-1)?.role === "toolResult";
 
         const runOnce = async (activeRequest: ReturnType<typeof createCursorRequest>) => {
           await runCursorTurnWithRetry(
@@ -97,7 +107,10 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
                   void activeTransport.writeClient(clientMessage);
                 },
               });
-              for (const event of events) emit(event);
+              for (const event of events) {
+                if (event.type !== "heartbeat") emittedOutput = true;
+                emit(event);
+              }
             },
           );
         };
@@ -105,18 +118,22 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
         try {
           await runOnce(request);
         } catch (err) {
-          // One-shot fallback: external Cursor models can reject resume/continuation on a
-          // stale server-side conversation with Connect invalid_argument after stepCompleted.
-          // Replay once with a fresh conversation id and full history.
+          // One-shot fallback: only for external-model tool-result continuations that fail
+          // with Connect invalid_argument before any non-heartbeat output was forwarded.
+          // Replaying after text/tool events would duplicate output.
           if (
             !isCursorInvalidArgumentError(err)
             || !isCursorExternalWireModel(request.modelId)
+            || !lastRawIsToolResult
+            || emittedOutput
             || incoming.abortSignal?.aborted
           ) {
             throw err;
           }
+          const failedConversationId = request.conversationId;
           _parsed._cursorConversationId = undefined;
           request = createCursorRequest(_parsed, { forceFreshConversation: true });
+          rekeyCursorContextUsage(failedConversationId, request.conversationId);
           _parsed._cursorConversationId = request.conversationId;
           await runOnce(request);
         }
