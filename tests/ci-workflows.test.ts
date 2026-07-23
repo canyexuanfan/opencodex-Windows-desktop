@@ -131,6 +131,8 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("## Commits");
     expect(workflow).toContain("git log --pretty=format:'- %s (%h)'");
     expect(workflow).toContain('commit_range="${previous_tag}..${GITHUB_SHA}"');
+    expect(workflow).toContain('previous_tag_name=${previous_tag}');
+    expect(workflow).toContain("skipping generate-notes (commits-only notes)");
     expect(workflow).toMatch(/gh release create[\s\S]*?--notes-file "\$notes_file"/);
     expect(workflow).not.toContain("gh release edit");
     expect(workflow).not.toContain("--generate-notes");
@@ -142,6 +144,11 @@ describe("GitHub Actions hardening", () => {
     expect(createStep.indexOf("gh api")).toBeGreaterThan(-1);
     expect(createStep.indexOf('git tag "$release_tag"')).toBeGreaterThan(-1);
     expect(createStep.indexOf("gh api")).toBeLessThan(createStep.indexOf('git tag "$release_tag"'));
+    // First-channel releases must not call generate-notes without an explicit channel baseline
+    // (GitHub would otherwise pick the newest repo tag, possibly from the other channel).
+    expect(createStep).toMatch(
+      /if \[ -n "\$previous_tag" \]; then[\s\S]*previous_tag_name=\$\{previous_tag\}[\s\S]*else[\s\S]*skipping generate-notes/,
+    );
   });
 
   test("docs deployment is pinned, bounded, and scoped to Pages", async () => {

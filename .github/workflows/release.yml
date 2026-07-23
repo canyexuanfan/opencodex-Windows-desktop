@@ -329,18 +329,23 @@ jobs:
           # tag need not exist yet. Preflight already rejects an existing GitHub Release for
           # non-dry runs, so this step only creates.
           notes_file="$(mktemp)"
-          generate_notes_api=(
-            "repos/${GITHUB_REPOSITORY}/releases/generate-notes"
-            -f "tag_name=${release_tag}"
-            -f "target_commitish=${GITHUB_SHA}"
-          )
+          pr_notes=""
           if [ -n "$previous_tag" ]; then
-            generate_notes_api+=(-f "previous_tag_name=${previous_tag}")
+            generate_notes_api=(
+              "repos/${GITHUB_REPOSITORY}/releases/generate-notes"
+              -f "tag_name=${release_tag}"
+              -f "target_commitish=${GITHUB_SHA}"
+              -f "previous_tag_name=${previous_tag}"
+            )
+            # Fail closed: missing PR categories is a broken release note, not a soft skip.
+            pr_notes="$(gh api "${generate_notes_api[@]}" --jq '.body')"
+            # Drop generate-notes' trailing compare link; we re-append it after the commit list.
+            pr_notes="$(printf '%s\n' "$pr_notes" | sed '/^\*\*Full Changelog\*\*:/d')"
+          else
+            # First release on this channel: never call generate-notes without previous_tag_name.
+            # GitHub would baseline the newest repo tag, which may belong to the other channel.
+            echo "::notice::No previous channel tag; skipping generate-notes (commits-only notes)"
           fi
-          # Fail closed: missing PR categories is a broken release note, not a soft skip.
-          pr_notes="$(gh api "${generate_notes_api[@]}" --jq '.body')"
-          # Drop generate-notes' trailing compare link; we re-append it after the commit list.
-          pr_notes="$(printf '%s\n' "$pr_notes" | sed '/^\*\*Full Changelog\*\*:/d')"
 
           if [ -n "$previous_tag" ]; then
             commit_range="${previous_tag}..${GITHUB_SHA}"
