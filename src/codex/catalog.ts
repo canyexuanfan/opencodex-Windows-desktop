@@ -357,6 +357,100 @@ export function catalogModelEfforts(slugs: readonly string[]): Map<string, strin
   return out;
 }
 
+export const MAX_SPAWN_AGENT_MODEL_OVERRIDES = 5;
+
+export type SpawnAgentSurface = "v1" | "v2";
+export type SubagentRosterExclusionReason =
+  | "missing_catalog_entry"
+  | "picker_hidden"
+  | "surface_incompatible"
+  | "outside_display_limit";
+
+export interface EffectiveSubagentModel {
+  model: string;
+  efforts: string[];
+}
+
+export interface SubagentRosterExclusion {
+  configured: string;
+  reason: SubagentRosterExclusionReason;
+  catalogModel?: string;
+}
+
+export interface EffectiveSubagentRoster {
+  candidates: EffectiveSubagentModel[];
+  advertised: EffectiveSubagentModel[];
+  excluded: SubagentRosterExclusion[];
+}
+
+function catalogEntryEfforts(entry: RawEntry): string[] {
+  const levels = Array.isArray(entry.supported_reasoning_levels)
+    ? entry.supported_reasoning_levels as Array<{ effort?: string }>
+    : [];
+  return levels.flatMap(level => typeof level.effort === "string" ? [level.effort] : []);
+}
+
+function configuredCatalogEntry(entries: RawEntry[], configured: string): RawEntry | undefined {
+  return entries.find(entry => entry.slug === configured)
+    ?? entries.find(entry => typeof entry.slug === "string" && slugsEquivalent(configured, entry.slug));
+}
+
+/**
+ * The effective sub-agent roster for a collaboration surface: Codex's picker-visible
+ * (`visibility === "list"`), surface-compatible, priority-sorted first five catalog
+ * entries (candidates), intersected with the configured subagentModels (advertised),
+ * plus a reason for every configured entry that did not make the set (excluded).
+ * Canonical `entry.slug` is returned; legacy raw aliases are matching inputs only.
+ */
+export function effectiveSubagentRoster(
+  configuredModels: readonly string[],
+  surface: SpawnAgentSurface,
+): EffectiveSubagentRoster {
+  const configured = configuredModels
+    .filter(model => model.trim().length > 0)
+    .filter((model, index, all) =>
+      !all.slice(0, index).some(previous => slugsEquivalent(previous, model))
+    );
+  const entries = readCatalog(readCodexCatalogPath())?.models ?? [];
+  const ordered = entries
+    .map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => typeof entry.slug === "string")
+    .filter(({ entry }) => entry.visibility === "list")
+    .filter(({ entry }) => surface !== "v2" || entry.multi_agent_version === "v2")
+    .sort((left, right) => {
+      const leftPriority = typeof left.entry.priority === "number" && Number.isFinite(left.entry.priority)
+        ? left.entry.priority : Number.MAX_SAFE_INTEGER;
+      const rightPriority = typeof right.entry.priority === "number" && Number.isFinite(right.entry.priority)
+        ? right.entry.priority : Number.MAX_SAFE_INTEGER;
+      return leftPriority - rightPriority || left.index - right.index;
+    })
+    .slice(0, MAX_SPAWN_AGENT_MODEL_OVERRIDES);
+
+  const candidates = ordered.map(({ entry }) => ({
+    model: entry.slug as string,
+    efforts: catalogEntryEfforts(entry),
+  }));
+  const advertised = candidates.filter(candidate =>
+    configured.some(model => slugsEquivalent(model, candidate.model))
+  );
+  const excluded = configured.flatMap((model): SubagentRosterExclusion[] => {
+    const entry = configuredCatalogEntry(entries, model);
+    if (!entry) return [{ configured: model, reason: "missing_catalog_entry" }];
+    const catalogModel = entry.slug as string;
+    if (entry.visibility !== "list") {
+      return [{ configured: model, catalogModel, reason: "picker_hidden" }];
+    }
+    if (surface === "v2" && entry.multi_agent_version !== "v2") {
+      return [{ configured: model, catalogModel, reason: "surface_incompatible" }];
+    }
+    if (!candidates.some(candidate => candidate.model === catalogModel)) {
+      return [{ configured: model, catalogModel, reason: "outside_display_limit" }];
+    }
+    return [];
+  });
+  return { candidates, advertised, excluded };
+}
+
 /**
  * The native (passthrough) OpenAI slugs to advertise — the LIVE Codex catalog's own bare slugs when
  * available, with documented Codex-native additions layered in, else the static fallback above.

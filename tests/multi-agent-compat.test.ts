@@ -10,12 +10,20 @@ import { join } from "node:path";
 import { injectDeveloperMessage, multiAgentGuidanceText, sanitizeEncryptedContentInPlace } from "../src/server/responses";
 import { parseRequest } from "../src/responses/parser";
 import type { OcxParsedRequest } from "../src/types";
+import { effectiveSubagentRoster } from "../src/codex/catalog";
+import { clearDebugSettings, setDebugSettings } from "../src/lib/debug-settings";
+import {
+  getInjectionDebugLogEntries,
+  resetInjectionDebugLogBufferForTests,
+} from "../src/lib/injection-debug-log";
 
 const savedCodexHome = process.env.CODEX_HOME;
 
 afterEach(() => {
   if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
   else process.env.CODEX_HOME = savedCodexHome;
+  clearDebugSettings();
+  resetInjectionDebugLogBufferForTests();
 });
 
 function codexHomeFixture(configToml: string): string {
@@ -26,13 +34,25 @@ function codexHomeFixture(configToml: string): string {
   return dir;
 }
 
+type CatalogFixtureModel = {
+  slug: string;
+  efforts?: string[];
+  visibility?: "list" | "hide";
+  priority?: number;
+  multiAgentVersion?: "v1" | "v2" | null;
+};
+
 /** Write an injected-catalog fixture into the active CODEX_HOME. */
-function catalogFixture(dir: string, models: Array<{ slug: string; efforts: string[] }>): void {
+function catalogFixture(dir: string, models: CatalogFixtureModel[]): void {
   writeFileSync(join(dir, "opencodex-catalog.json"), JSON.stringify({
-    models: models.map(m => ({
-      slug: m.slug,
-      display_name: m.slug,
-      supported_reasoning_levels: m.efforts.map(effort => ({ effort, description: effort })),
+    models: models.map((model, index) => ({
+      slug: model.slug,
+      display_name: model.slug,
+      visibility: model.visibility ?? "list",
+      priority: model.priority ?? index,
+      multi_agent_version: model.multiAgentVersion === undefined ? "v2" : model.multiAgentVersion,
+      supported_reasoning_levels: (model.efforts ?? [])
+        .map(effort => ({ effort, description: effort })),
     })),
   }));
 }
@@ -81,25 +101,150 @@ describe("multiAgentGuidanceText", () => {
     expect(await multiAgentGuidanceText(parsedFixture({ reasoning: "max", tools: [{ name: "shell" }] }))).toBeNull();
   });
 
-  test("flat v2 surface + injectionModel injects the designation with fork_turns rules", async () => {
-    codexHomeFixture(V2_ON);
-    const v2Tools = [{ name: "spawn_agent" }];
+  test("v2 built-in guidance is schema-agnostic and keeps fork rules", async () => {
+    const dir = codexHomeFixture(V2_ON);
+    catalogFixture(dir, [{
+      slug: "anthropic/claude-sonnet-5",
+      efforts: ["low", "medium", "high", "xhigh"],
+    }]);
+
     const text = await multiAgentGuidanceText(
-      parsedFixture({ reasoning: "medium", tools: v2Tools }),
+      parsedFixture({ reasoning: "medium", tools: [{ name: "spawn_agent" }] }),
       "anthropic/claude-sonnet-5",
     );
-    expect(text).toContain("<multi_agent_mode>");
-    expect(text).toContain('"anthropic/claude-sonnet-5"');
+
+    expect(text).toContain("When the active spawn_agent tool supports optional");
+    expect(text).toContain("use only models listed for this collaboration surface");
     expect(text).toContain("fork_turns");
     expect(text).toContain('"none"');
-    // schema hides model on native backends — the prompt must pre-empt schema doubt
-    expect(text).toContain("never claim sub-agent models cannot be selected");
-    // codex-rs supplies the Proactive text on v2 — the proxy must NOT duplicate it.
+    expect(text).not.toMatch(/hidden/i);
+    expect(text).not.toMatch(/not in the schema/i);
+    expect(text).not.toMatch(/never claim/i);
     expect(text).not.toContain("Proactive multi-agent delegation is active");
   });
 
+  test("v2 roster is the configured intersection of the active spawn_agent candidates", async () => {
+    const dir = codexHomeFixture(V2_ON);
+    catalogFixture(dir, [
+      { slug: "gpt-5.6-sol", efforts: ["high", "max", "ultra"], priority: 0, multiAgentVersion: "v2" },
+      { slug: "gpt-5.5", efforts: ["low", "medium", "high"], priority: 1, multiAgentVersion: null },
+      { slug: "gpt-5.6-terra", efforts: ["high", "max", "ultra"], priority: 2, multiAgentVersion: "v2" },
+      { slug: "gpt-5.6-luna", efforts: ["high", "max"], priority: 3, multiAgentVersion: "v1" },
+    ]);
+    const configured = ["gpt-5.6-sol", "gpt-5.5", "gpt-5.6-terra", "gpt-5.6-luna"];
+
+    const effective = effectiveSubagentRoster(configured, "v2");
+    expect(effective.candidates.map(model => model.model)).toEqual([
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+    ]);
+    expect(effective.advertised.map(model => model.model)).toEqual([
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+    ]);
+
+    const text = await multiAgentGuidanceText(
+      parsedFixture({ tools: [{ name: "spawn_agent" }] }),
+      undefined,
+      undefined,
+      configured,
+    );
+    expect(text).toContain('"gpt-5.6-sol"');
+    expect(text).toContain('"gpt-5.6-terra"');
+    expect(text).not.toContain('"gpt-5.5"');
+    expect(text).not.toContain('"gpt-5.6-luna"');
+    for (const advertised of effective.advertised) {
+      expect(effective.candidates.map(model => model.model)).toContain(advertised.model);
+    }
+  });
+
+  test("effective roster applies alias, visibility, v2 compatibility, stable priority, cap, and diagnostics", async () => {
+    const dir = codexHomeFixture(V2_ON);
+    catalogFixture(dir, [
+      { slug: "provider/vendor-model", efforts: ["high"], priority: 0 },
+      { slug: "eligible-a", efforts: ["high"], priority: 1 },
+      { slug: "eligible-b", efforts: ["high"], priority: 1 },
+      { slug: "hidden-model", efforts: ["high"], visibility: "hide", priority: 2 },
+      { slug: "v1-model", efforts: ["high"], priority: 3, multiAgentVersion: "v1" },
+      { slug: "filler-a", efforts: ["high"], priority: 4 },
+      { slug: "filler-b", efforts: ["high"], priority: 5 },
+      { slug: "displaced-model", efforts: ["high"], priority: 6 },
+    ]);
+    const configured = [
+      "provider/vendor/model",
+      "hidden-model",
+      "v1-model",
+      "missing-model",
+      "displaced-model",
+    ];
+
+    const effective = effectiveSubagentRoster(configured, "v2");
+    expect(effective.candidates.map(model => model.model)).toEqual([
+      "provider/vendor-model",
+      "eligible-a",
+      "eligible-b",
+      "filler-a",
+      "filler-b",
+    ]);
+    expect(effective.advertised.map(model => model.model)).toEqual(["provider/vendor-model"]);
+    expect(effective.excluded).toEqual([
+      { configured: "hidden-model", catalogModel: "hidden-model", reason: "picker_hidden" },
+      { configured: "v1-model", catalogModel: "v1-model", reason: "surface_incompatible" },
+      { configured: "missing-model", reason: "missing_catalog_entry" },
+      { configured: "displaced-model", catalogModel: "displaced-model", reason: "outside_display_limit" },
+    ]);
+
+    setDebugSettings({ injection: false });
+    await multiAgentGuidanceText(
+      parsedFixture({ tools: [{ name: "spawn_agent" }] }),
+      undefined,
+      undefined,
+      configured,
+    );
+    expect(getInjectionDebugLogEntries()).toEqual([]);
+
+    resetInjectionDebugLogBufferForTests();
+    setDebugSettings({ injection: true });
+    await multiAgentGuidanceText(
+      parsedFixture({ tools: [{ name: "spawn_agent" }] }),
+      undefined,
+      undefined,
+      configured,
+    );
+    const lines = getInjectionDebugLogEntries().map(entry => entry.line).join("\n");
+    expect(lines).toContain("hidden-model:picker_hidden");
+    expect(lines).toContain("v1-model:surface_incompatible");
+    expect(lines).toContain("missing-model:missing_catalog_entry");
+    expect(lines).toContain("displaced-model:outside_display_limit");
+  });
+
+  test("built-in preferred model is canonical and limited to active candidates", async () => {
+    const dir = codexHomeFixture(V2_ON);
+    catalogFixture(dir, [
+      { slug: "provider/vendor-model", efforts: ["high"], priority: 0, multiAgentVersion: "v2" },
+      { slug: "gpt-5.5", efforts: ["high"], priority: 1, multiAgentVersion: null },
+    ]);
+
+    expect(await multiAgentGuidanceText(
+      parsedFixture({ tools: [{ name: "spawn_agent" }] }),
+      "gpt-5.5",
+    )).toBeNull();
+
+    const eligible = await multiAgentGuidanceText(
+      parsedFixture({ tools: [{ name: "spawn_agent" }] }),
+      "provider/vendor/model",
+      "high",
+    );
+    expect(eligible).toContain('Preferred sub-agent: model "provider/vendor-model", reasoning_effort "high"');
+    expect(eligible).not.toContain('model "provider/vendor/model"');
+  });
+
   test("NATIVE v2 wire shape (collaboration namespace + v2 companions) is classified v2", async () => {
-    codexHomeFixture(V2_ON);
+    const dir = codexHomeFixture(V2_ON);
+    catalogFixture(dir, [{
+      slug: "anthropic/claude-sonnet-5",
+      efforts: ["low", "medium", "high", "xhigh"],
+    }]);
     // The ChatGPT backend registers reserved namespaced collab tools:
     // collaboration.spawn_agent + send_message/followup_task/wait_agent/... (spec_plan.rs)
     const nativeV2 = [
@@ -152,7 +297,8 @@ describe("multiAgentGuidanceText", () => {
     const names = (parsed.context.tools ?? []).map(t => (t.namespace ? `${t.namespace}.${t.name}` : t.name));
     expect(names).toContain("collaboration.spawn_agent");
     const text = await multiAgentGuidanceText(parsed, "gpt-5.6-sol", "xhigh", ["gpt-5.6-terra"]);
-    expect(text).toContain("never claim sub-agent models cannot be selected");
+    expect(text).toContain("When the active spawn_agent tool supports optional");
+    expect(text).not.toMatch(/hidden|not in the schema|never claim/i);
     expect(text).toContain('(reasoning_effort high/max/ultra): "gpt-5.6-terra"');
   });
 
@@ -202,8 +348,12 @@ describe("multiAgentGuidanceText", () => {
     expect(await multiAgentGuidanceText(parsedFixture({ tools: [{ name: "spawn_agent" }] }), undefined, undefined, ["nope/none"])).toBeNull();
   });
 
-  test("v2 surface + injectionModel + injectionEffort names both", async () => {
-    codexHomeFixture(V2_ON);
+  test("v2 surface + eligible injectionModel + injectionEffort names both", async () => {
+    const dir = codexHomeFixture(V2_ON);
+    catalogFixture(dir, [{
+      slug: "opencode-go/glm-5.2",
+      efforts: ["low", "medium", "high", "xhigh"],
+    }]);
     const text = await multiAgentGuidanceText(
       parsedFixture({ tools: [{ name: "spawn_agent" }] }),
       "opencode-go/glm-5.2",
@@ -212,16 +362,31 @@ describe("multiAgentGuidanceText", () => {
     expect(text).toContain('Preferred sub-agent: model "opencode-go/glm-5.2", reasoning_effort "xhigh"');
   });
 
-  test("injectionPrompt override replaces the v2 body with placeholder substitution", async () => {
+  test("injectionPrompt preserves raw model and substitutes only the effective roster", async () => {
     const dir = codexHomeFixture(V2_ON);
-    catalogFixture(dir, [{ slug: "gpt-5.6-terra", efforts: ["high", "max"] }]);
-    const custom = "CUSTOM RULES model={{model}} effort={{effort}}{{roster}}";
-    const v2 = await multiAgentGuidanceText(
+    catalogFixture(dir, [
+      { slug: "gpt-5.6-terra", efforts: ["high", "max"], priority: 0, multiAgentVersion: "v2" },
+      { slug: "gpt-5.6-luna", efforts: ["high", "max"], priority: 1, multiAgentVersion: "v1" },
+    ]);
+    const custom = "CUSTOM model={{model}} effort={{effort}}{{roster}}";
+    const text = await multiAgentGuidanceText(
       parsedFixture({ tools: [{ name: "spawn_agent" }] }),
-      "gpt-5.6-terra", "max", ["gpt-5.6-terra"], custom,
+      "raw/preferred-model",
+      "max",
+      ["gpt-5.6-terra", "gpt-5.6-luna"],
+      custom,
     );
-    expect(v2).toBe("<multi_agent_mode>CUSTOM RULES model=gpt-5.6-terra effort=max"
-      + " Available models (reasoning_effort high/max): \"gpt-5.6-terra\".</multi_agent_mode>");
+
+    expect(text).toBe(
+      '<multi_agent_mode>CUSTOM model=raw/preferred-model effort=max'
+        + ' Available models (reasoning_effort high/max): "gpt-5.6-terra".</multi_agent_mode>',
+    );
+    expect(text).not.toContain("gpt-5.6-luna");
+  });
+
+  test("v1 ignores injectionPrompt and custom prompt does not fire a bare v2 surface", async () => {
+    codexHomeFixture(V2_ON);
+    const custom = "CUSTOM RULES model={{model}} effort={{effort}}{{roster}}";
     const v1 = await multiAgentGuidanceText(
       parsedFixture({ reasoning: "max", tools: [{ name: "spawn_agent", namespace: "multi_agent_v1" }, { name: "send_input", namespace: "multi_agent_v1" }] }),
       undefined, undefined, undefined, "V1 BODY {{model}}|{{effort}}|{{roster}}",
@@ -248,7 +413,8 @@ describe("multiAgentGuidanceText", () => {
       parsedFixture({ reasoning: "medium", tools: [{ name: "spawn_agent" }] }),
       undefined, undefined, ["gpt-5.6-terra"],
     );
-    expect(text).toContain("never claim sub-agent models cannot be selected");
+    expect(text).toContain("When the active spawn_agent tool supports optional");
+    expect(text).not.toMatch(/hidden|not in the schema|never claim/i);
     expect(text).toContain('(reasoning_effort high/max/ultra): "gpt-5.6-terra"');
     expect(text).not.toContain("Preferred sub-agent");
   });

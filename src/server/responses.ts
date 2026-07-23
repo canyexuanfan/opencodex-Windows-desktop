@@ -58,6 +58,7 @@ import {
 import { fetchWithResetRetry, fetchWithTransientRetry, applyUpstreamRecoveryInit } from "../lib/upstream-retry";
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "./auth-cors";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../providers/openai-sidecar";
+import { slugsEquivalent } from "../providers/slug-codec";
 import { applyOpenAiVirtualModel, resolveOpenAiCompactModel } from "../providers/openai-virtual-models";
 import { isUsageDebugEnabled } from "../usage/debug";
 import { readJsonRequestBody, DecompressedBodyTooLargeError, UnsupportedContentEncodingError } from "./request-decompress";
@@ -183,13 +184,9 @@ export function collabSurface(parsed: OcxParsedRequest): "v1" | "v2" | null {
  * model/effort overrides on a full-history fork (multi_agents_v2/spawn.rs
  * reject_full_fork_spawn_overrides), so the prompt mandates fork_turns "none" or a
  * partial fork plus a self-contained task message.
- * The published spawn_agent schema HIDES model/reasoning_effort by
- * default (hide_spawn_agent_metadata=true upstream — and it must STAY hidden: the
- * ChatGPT backend treats collaboration.spawn_agent as a reserved function and
- * rejects any request whose declared schema deviates, "Invalid Value: 'tools'").
- * That is prompt-workable: SpawnAgentArgs always parses model/reasoning_effort
- * regardless of the flag (spawn.rs), so the prompt tells the model to pass the
- * arguments even though the schema does not list them.
+ * Current Codex surfaces can expose model/reasoning_effort overrides directly or
+ * omit them. The proxy wording therefore stays schema-agnostic and advertises only
+ * the effective candidates described for this collaboration surface.
  *
  * The v2 body is budgeted to <= 700 chars (V2_GUIDANCE_CHAR_BUDGET): rules first,
  * then the preferred model, then the compact roster of configured `subagentModels`
@@ -206,17 +203,37 @@ export async function multiAgentGuidanceText(parsed: OcxParsedRequest, injection
     // codex-rs supplies the Proactive text on v2; the proxy only adds model-designation
     // guidance, and only when there is something concrete to designate: a configured
     // injectionModel and/or a roster entry that resolves in the injected catalog.
-    const roster = await subagentRosterText(subagentModels);
+    const configuredForGuidance = [
+      ...(subagentModels ?? []),
+      ...(injectionModel ? [injectionModel] : []),
+    ];
+    const { effectiveSubagentRoster } = await import("../codex/catalog");
+    const effective = effectiveSubagentRoster(configuredForGuidance, "v2");
+    const rosterModels = effective.advertised.filter(candidate =>
+      (subagentModels ?? []).some(model => slugsEquivalent(model, candidate.model))
+    );
+    const roster = subagentRosterText(rosterModels);
+    const preferred = injectionModel
+      ? effective.candidates.find(candidate => slugsEquivalent(injectionModel, candidate.model))
+      : undefined;
+
+    if (isInjectionDebugEnabled() && effective.excluded.length > 0) {
+      injectionDebugLog(`[opencodex] multi-agent guidance excluded: ${effective.excluded
+        .map(item => `${item.configured}:${item.reason}`)
+        .join(", ")}`);
+    }
     if (!injectionModel && roster === "") return null;
     if (injectionPrompt) {
       return `<multi_agent_mode>${applyInjectionPlaceholders(injectionPrompt, injectionModel, injectionEffort, roster)}</multi_agent_mode>`;
     }
-    let text = "spawn_agent also accepts hidden \"model\" and \"reasoning_effort\" string arguments "
-      + "(not in the schema, but parsed and applied) — never claim sub-agent models cannot be selected. "
-      + "When setting either, set fork_turns to \"none\" (or e.g. \"3\"; full-history forks reject overrides) "
-      + "and make the message self-contained.";
-    if (injectionModel) {
-      text += ` Preferred sub-agent: model "${injectionModel}"`
+    if (!preferred && roster === "") return null;
+    let text = "When the active spawn_agent tool supports optional \"model\" or \"reasoning_effort\" overrides, "
+      + "use only models listed for this collaboration surface. "
+      + "When setting either override, set fork_turns to \"none\" "
+      + "(or a positive turn count such as \"3\"; full-history forks reject overrides) "
+      + "and make the task message self-contained.";
+    if (preferred) {
+      text += ` Preferred sub-agent: model "${preferred.model}"`
         + (injectionEffort ? `, reasoning_effort "${injectionEffort}"` : "")
         + " — use it unless the user names another.";
     }
@@ -247,25 +264,21 @@ function applyInjectionPlaceholders(prompt: string, model?: string, effort?: str
 }
 
 /**
- * Compact one-line roster of configured sub-agent models, or "" when no configured
- * model resolves to a catalog entry. Efforts come from the injected catalog
- * (catalogModelEfforts) so only rungs codex-rs will actually accept are advertised.
+ * Compact one-line roster of effective sub-agent candidates, or "" when empty.
+ * Efforts come from the injected catalog so only rungs codex-rs will actually
+ * accept are advertised.
  */
-async function subagentRosterText(subagentModels?: string[]): Promise<string> {
-  const featured = (subagentModels ?? []).filter(id => typeof id === "string" && id.trim().length > 0);
-  if (featured.length === 0) return "";
-  const { catalogModelEfforts } = await import("../codex/catalog");
-  const efforts = catalogModelEfforts(featured);
-  const resolved = featured.filter(id => efforts.has(id));
-  if (resolved.length === 0) return "";
-  const ladders = new Set(resolved.map(id => efforts.get(id)!.join("/")));
-  if (ladders.size === 1) {
-    // Shared ladder (the common case: the injected catalog advertises one rung set)
-    // -> state it once instead of per model, keeping the roster inside the budget.
-    const ids = resolved.map(id => `"${id}"`).join(", ");
-    return ` Available models (reasoning_effort ${[...ladders][0]}): ${ids}.`;
+function subagentRosterText(models: Array<{ model: string; efforts: string[] }>): string {
+  if (models.length === 0) return "";
+  const ladders = new Set(models.map(model => model.efforts.join("/")));
+  if (!ladders.has("") && ladders.size === 1) {
+    return ` Available models (reasoning_effort ${[...ladders][0]}): ${models
+      .map(model => `"${model.model}"`)
+      .join(", ")}.`;
   }
-  const entries = resolved.map(id => `"${id}" (${efforts.get(id)!.join("/")})`);
+  const entries = models.map(model => model.efforts.length > 0
+    ? `"${model.model}" (${model.efforts.join("/")})`
+    : `"${model.model}"`);
   return ` Available models (valid reasoning_effort): ${entries.join(", ")}.`;
 }
 
