@@ -15,6 +15,7 @@ import {
   previousResponseProviderState,
   rememberResponseState,
   setResponseStateByteCapForTests,
+  getStoredResponseBytesForTests,
 } from "../src/responses/state";
 import { adapterNeedsForcedContinuation } from "../src/server/responses";
 
@@ -223,6 +224,65 @@ describe("Responses previous_response_id state", () => {
         rememberResponseState(body, json, { cursor: { conversationId: `conv_r${i}` } }, { force: true });
       }
       expect(previousResponseProviderState(json.id as string)?.cursor?.conversationId).toBe("conv_r3");
+    } finally {
+      setResponseStateByteCapForTests(null);
+    }
+  });
+
+  test("count-prune eviction releases byte accounting (no phantom debt)", () => {
+    // Cap far above total volume so ONLY count pruning (MAX_STORED_RESPONSES=1000)
+    // evicts; the byte pruner never fires and cannot mask a leaked decrement.
+    setResponseStateByteCapForTests(1_000_000_000);
+    try {
+      const bulk = "c".repeat(2_000);
+      let lastId = "";
+      let perEntryBytes = 0;
+      for (let i = 0; i < 1_050; i++) {
+        const body = { model: "cursor/grok-4.5", input: `${bulk}-000${String(i % 10)}`, store: false };
+        const json = buildResponseJSON([{ type: "text_delta", text: "ok" }, { type: "done" }], "cursor/grok-4.5");
+        rememberResponseState(body, json, { cursor: { conversationId: `conv_c${i}` } }, { force: true });
+        lastId = json.id as string;
+        if (perEntryBytes === 0) perEntryBytes = getStoredResponseBytesForTests();
+      }
+      expect(previousResponseProviderState(lastId)?.cursor?.conversationId).toBe("conv_c1049");
+      // Direct accounting proof: 1050 stores with 50 count-prune evictions must
+      // leave exactly ~1000 entries' worth of bytes. Fixed-width inputs keep every
+      // entry the same size, so leaked decrements would show up as >1000x.
+      const total = getStoredResponseBytesForTests();
+      expect(perEntryBytes).toBeGreaterThan(2_000);
+      expect(total).toBeLessThanOrEqual(perEntryBytes * 1_000);
+      expect(total).toBeGreaterThanOrEqual(perEntryBytes * 999);
+    } finally {
+      setResponseStateByteCapForTests(null);
+    }
+  });
+
+  test("TTL-prune eviction releases byte accounting", () => {
+    setResponseStateByteCapForTests(10_000);
+    try {
+      const realNow = Date.now;
+      try {
+        // Store an old heavy entry, then advance time past the 1h TTL.
+        Date.now = () => realNow() - 2 * 60 * 60 * 1_000;
+        const oldBody = { model: "cursor/grok-4.5", input: "o".repeat(6_000), store: false };
+        const oldJson = buildResponseJSON([{ type: "text_delta", text: "ok" }, { type: "done" }], "cursor/grok-4.5");
+        rememberResponseState(oldBody, oldJson, { cursor: { conversationId: "conv_old" } }, { force: true });
+
+        Date.now = realNow;
+        // TTL prune removes the old entry; if its ~6KB were leaked as phantom debt,
+        // this fresh ~3KB entry would immediately trip the 10KB cap and be evicted.
+        const newBody = { model: "cursor/grok-4.5", input: "n".repeat(3_000), store: false };
+        const newJson = buildResponseJSON([{ type: "text_delta", text: "ok" }, { type: "done" }], "cursor/grok-4.5");
+        rememberResponseState(newBody, newJson, { cursor: { conversationId: "conv_new" } }, { force: true });
+
+        expect(previousResponseProviderState(oldJson.id as string)).toBeUndefined();
+        expect(previousResponseProviderState(newJson.id as string)?.cursor?.conversationId).toBe("conv_new");
+        // Direct accounting proof: only the fresh entry's bytes remain (~3KB < 6KB old entry).
+        expect(getStoredResponseBytesForTests()).toBeLessThan(6_000);
+        expect(getStoredResponseBytesForTests()).toBeGreaterThan(0);
+      } finally {
+        Date.now = realNow;
+      }
     } finally {
       setResponseStateByteCapForTests(null);
     }

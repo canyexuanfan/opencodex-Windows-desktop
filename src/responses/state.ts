@@ -40,6 +40,11 @@ export function setResponseStateByteCapForTests(bytes: number | null): void {
   byteCapOverride = bytes;
 }
 
+/** Test-only: current in-memory byte accounting (proves evictions release their bytes). */
+export function getStoredResponseBytesForTests(): number {
+  return storedResponseBytes;
+}
+
 /** The ONLY size computation: approximate entry weight from its items payload. */
 function measuredEntry(entry: Omit<StoredResponseState, "sizeBytes">): StoredResponseState {
   let sizeBytes = 0;
@@ -139,11 +144,15 @@ function persistNow(path: string): void {
     let total = 0;
     // Newest-first so the most recent chains survive both caps.
     for (const entry of [...states].reverse()) {
-      const size = JSON.stringify(entry).length;
+      // sizeBytes is in-memory accounting only; keep it out of the disk snapshot.
+      const [id, state] = entry;
+      const { sizeBytes: _sizeBytes, ...persistable } = state;
+      const persistEntry: [string, StoredResponseState] = [id, persistable];
+      const size = JSON.stringify(persistEntry).length;
       if (size > SNAPSHOT_ENTRY_MAX_BYTES) continue;
       if (total + size > SNAPSHOT_TOTAL_MAX_BYTES) break;
       total += size;
-      entries.push(entry);
+      entries.push(persistEntry);
     }
     entries.reverse();
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
