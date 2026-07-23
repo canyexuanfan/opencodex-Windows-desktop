@@ -37,3 +37,13 @@ Implement properly with:
 2. Batch config update endpoint
 3. Type-safe field preservation
 4. Tests for credential retention, deletion rollback, concurrency
+
+## Status: DEFERRED
+
+The provider JSON editor save flow needs a fundamental architectural change:
+an atomic batch config endpoint with typed public/private DTO merge policy.
+This is too complex for the current overnight review session.
+
+The PR shows as MERGED on GitHub but the code was reverted from dev. A Sol
+review comment has been posted on the PR explaining the 3 high-severity
+findings. The rebuild will be tracked as a separate devlog unit when undertaken.
