@@ -51,3 +51,30 @@ Local-only stacking of merge-ready PRs. NO push, NO GitHub mutations. Sol subage
   as composed. Findings should go back to the PR author (GitHub posting is out of
   scope for this local session; Jun decides whether/how to relay).
 - Stack state: unchanged (last green: 2523a6f5 + devlog commits).
+
+## WP5 — PR #279 Copilot chat completions (doc 070)
+
+- Sol audit round 1: **FAIL**, 3 blockers.
+  1. High — /v1/models switched to `requireResponsesApiAuth` drops Authorization /
+     x-api-key admission on remote binds (breaks OpenAI bearer clients AND Claude
+     gateway discovery via anthropic-version). Fix: keep `requireApiAuth` — /v1/models
+     never forwards Authorization upstream, so the dual-bearer concern doesn't apply.
+  2. Medium — docs/github-copilot-app.md remote setup self-contradictory (API-key
+     field vs x-opencodex-api-key header). **Residual**: docs-only, loopback unaffected;
+     recorded here as upstream feedback, not fixed locally.
+  3. High — outbound.ts hand-rolled `\n\n` splitter misses CRLF framing and
+     terminal-event-at-EOF → valid responses misreported as "truncated". Semantic
+     conflict with the stack's shared sse-decoder (#316). Fix: use decodeServerSentEvents.
+- Fixup commit 1: /v1/models back to requireApiAuth(data-plane) with comment;
+  responsesSseToChatCompletionsSse rewritten onto shared decoder; CRLF/EOF regression test.
+- Sol round 2: **FAIL**, 1 new blocker — cancel() hung behind idle upstream read
+  (generator return waits for pending await; live probe showed upstreamCancelled:false).
+- Fixup commit 2: decodeServerSentEvents gains optional { signal }; abort cancels the
+  underlying reader directly; outbound cancel aborts first then closes iterator;
+  idle-upstream cancellation regression test. No-signal consumers (#316 anthropic path)
+  unchanged.
+- Sol round 3: **PASS** — "cancellation resolves promptly, cancels upstream exactly
+  once, listener cleanup safe, no-signal consumers unchanged, 27 focused tests pass."
+- Merge commit **eebd4977** + 2 fixups. Verification: typecheck 0;
+  `bun run test` **3651 pass / 0 fail** across 297 files (85.97s).
+- Outcome: **DONE** (with residual docs feedback for upstream).
