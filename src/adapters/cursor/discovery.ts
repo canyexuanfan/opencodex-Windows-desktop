@@ -120,6 +120,31 @@ export function cursorCodexToWireModelId(modelId: string): string {
   return cursorWireModelSelection(modelId).modelId;
 }
 
+/**
+ * Cursor-native wire models keep server-side conversation state reliably.
+ * External models (gpt/claude/gemini/grok families and similar) are more brittle on resumeAction.
+ */
+export function isCursorNativeWireModel(modelId: string): boolean {
+  const wire = cursorCodexToWireModelId(modelId).trim().toLowerCase();
+  const bare = stripCursorEffortSuffix(wire);
+  if (bare === CURSOR_AUTO_WIRE_MODEL_ID || bare === CURSOR_AUTO_MODEL_ID) return true;
+  return bare.startsWith("composer-");
+}
+
+/** Inverse of {@link isCursorNativeWireModel}. */
+export function isCursorExternalWireModel(modelId: string): boolean {
+  return !isCursorNativeWireModel(modelId);
+}
+
+function stripCursorEffortSuffix(wireModelId: string): string {
+  const suffixes = [...CANONICAL_EFFORT_SUFFIXES].sort((a, b) => b.length - a.length);
+  for (const suffix of suffixes) {
+    const marker = `-${suffix}`;
+    if (wireModelId.endsWith(marker)) return wireModelId.slice(0, -marker.length);
+  }
+  return wireModelId;
+}
+
 export function isCursorRouterModelId(modelId: string): boolean {
   return (CURSOR_ROUTER_MODEL_IDS as readonly string[]).includes(modelId);
 }

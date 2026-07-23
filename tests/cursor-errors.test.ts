@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   classifyCursorError,
   isCursorBenignCancelError,
+  isCursorInvalidArgumentError,
   safeCursorErrorMessage,
 } from "../src/adapters/cursor/cursor-errors";
 
@@ -79,5 +80,14 @@ describe("safeCursorErrorMessage", () => {
     expect(msg).toContain("Cursor resource limit exceeded");
     expect(msg).not.toContain("resource_exhausted");
     expect(msg).not.toContain("rate limit");
+  });
+});
+
+
+describe("isCursorInvalidArgumentError", () => {
+  test("matches Connect invalid_argument code and message", () => {
+    expect(isCursorInvalidArgumentError({ code: "invalid_argument", message: "Cursor invalid request" })).toBe(true);
+    expect(isCursorInvalidArgumentError(new Error("Cursor invalid request: Cursor Connect error invalid_argument: Error"))).toBe(true);
+    expect(isCursorInvalidArgumentError(new Error("Cursor connection failed"))).toBe(false);
   });
 });

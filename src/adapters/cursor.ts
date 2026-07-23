@@ -1,7 +1,8 @@
 import type { AdapterEvent, OcxProviderConfig } from "../types";
 import type { ProviderAdapter } from "./base";
 import { cursorExecDeniedMessage, cursorRequestDeclaresFullAccess } from "./cursor/exec-policy";
-import { isCursorBenignCancelError, safeCursorErrorMessage } from "./cursor/cursor-errors";
+import { isCursorBenignCancelError, isCursorInvalidArgumentError, safeCursorErrorMessage } from "./cursor/cursor-errors";
+import { isCursorExternalWireModel } from "./cursor/discovery";
 import { createCursorKvStore, type CursorKvStore } from "./cursor/kv-store";
 import { mapCursorServerMessage } from "./cursor/message-mapper";
 import { createCursorRequest, generatedCursorConversationId } from "./cursor/request-builder";
@@ -70,26 +71,55 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
         const makeTransport = deps.createTransport ?? createLiveCursorTransport;
         const kv = deps.kv ?? createCursorKvStore();
         _parsed._cursorConversationId ??= generatedCursorConversationId();
-        const request = createCursorRequest(_parsed);
-        await runCursorTurnWithRetry(
-          makeTransport,
-          { provider, headers: incoming.headers, requestDeclaresFullAccess: cursorRequestDeclaresFullAccess(request) },
-          request,
-          incoming.abortSignal,
-          (message, activeTransport) => {
-            if (incoming.abortSignal?.aborted) {
-              emit({ type: "error", message: "Cursor turn was aborted." });
-              return;
-            }
-            const events = mapCursorServerMessage(message, {
-              kv,
-              writeClient: clientMessage => {
-                void activeTransport.writeClient(clientMessage);
-              },
-            });
-            for (const event of events) emit(event);
-          },
-        );
+        let request = createCursorRequest(_parsed);
+        // Keep remembered conversation id in sync when the request builder mints a fresh id
+        // for external-model tool-result continuations (stateless replay).
+        _parsed._cursorConversationId = request.conversationId;
+
+        const runOnce = async (activeRequest: ReturnType<typeof createCursorRequest>) => {
+          await runCursorTurnWithRetry(
+            makeTransport,
+            {
+              provider,
+              headers: incoming.headers,
+              requestDeclaresFullAccess: cursorRequestDeclaresFullAccess(activeRequest),
+            },
+            activeRequest,
+            incoming.abortSignal,
+            (message, activeTransport) => {
+              if (incoming.abortSignal?.aborted) {
+                emit({ type: "error", message: "Cursor turn was aborted." });
+                return;
+              }
+              const events = mapCursorServerMessage(message, {
+                kv,
+                writeClient: clientMessage => {
+                  void activeTransport.writeClient(clientMessage);
+                },
+              });
+              for (const event of events) emit(event);
+            },
+          );
+        };
+
+        try {
+          await runOnce(request);
+        } catch (err) {
+          // One-shot fallback: external Cursor models can reject resume/continuation on a
+          // stale server-side conversation with Connect invalid_argument after stepCompleted.
+          // Replay once with a fresh conversation id and full history.
+          if (
+            !isCursorInvalidArgumentError(err)
+            || !isCursorExternalWireModel(request.modelId)
+            || incoming.abortSignal?.aborted
+          ) {
+            throw err;
+          }
+          _parsed._cursorConversationId = undefined;
+          request = createCursorRequest(_parsed, { forceFreshConversation: true });
+          _parsed._cursorConversationId = request.conversationId;
+          await runOnce(request);
+        }
       } catch (err) {
         if (isCursorBenignCancelError(err)) return;
         const partialUsage = (err as { partialUsage?: import("../types").OcxUsage }).partialUsage;

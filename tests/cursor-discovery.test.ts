@@ -14,6 +14,8 @@ import {
   cursorModelReasoningEfforts,
   cursorWireModelSelection,
   inferCursorContextWindow,
+  isCursorExternalWireModel,
+  isCursorNativeWireModel,
   normalizeCursorModels,
 } from "../src/adapters/cursor/discovery";
 
@@ -144,5 +146,16 @@ describe("Cursor discovery metadata", () => {
     expect(efforts["grok-4.3"]).toEqual([]);
     expect(efforts["unknown-reasoning-model"]).toEqual([]);
     expect(efforts["composer-2.5"]).toEqual([]);
+  });
+
+  test("classifies native vs external Cursor wire models", () => {
+    expect(isCursorNativeWireModel("default")).toBe(true);
+    expect(isCursorNativeWireModel("auto")).toBe(true);
+    expect(isCursorNativeWireModel("composer-2.5")).toBe(true);
+    expect(isCursorNativeWireModel("composer-2.5-fast")).toBe(true);
+    expect(isCursorExternalWireModel("gpt-5.6-sol")).toBe(true);
+    expect(isCursorExternalWireModel("gpt-5.6-sol-xhigh")).toBe(true);
+    expect(isCursorExternalWireModel("claude-4.6-sonnet-high")).toBe(true);
+    expect(isCursorExternalWireModel("cursor/gpt-5.6-sol")).toBe(true);
   });
 });

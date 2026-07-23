@@ -4,6 +4,8 @@ import { ValueSchema } from "@bufbuild/protobuf/wkt";
 import type { OcxAssistantContentPart, OcxMessage, OcxToolResultMessage } from "../../types";
 import { namespacedToolName } from "../../types";
 import type { CursorRunRequest } from "./types";
+import { isCursorExternalWireModel } from "./discovery";
+import { debugProviderDiagnostic } from "../../lib/debug";
 import { storeCursorBlob } from "./native-exec";
 import {
   AgentClientMessageSchema,
@@ -326,8 +328,9 @@ export function encodeCursorRunRequest(request: CursorRunRequest): Uint8Array {
   // would pollute the model input and double-deliver the result. Use ResumeAction so Cursor picks up
   // from the history we provided.
   const lastRawIsToolResult = request.rawMessages?.at(-1)?.role === "toolResult";
+  const actionCase = !lastRawIsToolResult && text.trim().length > 0 ? "userMessageAction" : "resumeAction";
   const action = create(ConversationActionSchema, {
-    action: !lastRawIsToolResult && text.trim().length > 0
+    action: actionCase === "userMessageAction"
       ? {
           case: "userMessageAction",
           value: create(UserMessageActionSchema, {
@@ -344,6 +347,13 @@ export function encodeCursorRunRequest(request: CursorRunRequest): Uint8Array {
             requestContext: buildRequestContext(),
           }),
         },
+  });
+  debugProviderDiagnostic("cursor", "run-request", {
+    wireModel: request.modelId,
+    action: actionCase,
+    conversationId: request.conversationId,
+    turnType: lastRawIsToolResult ? "tool-continuation" : "initial",
+    externalModel: isCursorExternalWireModel(request.modelId),
   });
 
   const runRequest = create(AgentRunRequestSchema, {
