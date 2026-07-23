@@ -33,7 +33,6 @@ type Rec = Record<string, unknown>;
 function isRec(v: unknown): v is Rec {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
-
 async function readChatBody(req: Request): Promise<unknown> {
   try {
     return await readJsonRequestBody(req);
@@ -257,4 +256,3 @@ export async function handleChatCompletions(
     },
   });
 }
-
