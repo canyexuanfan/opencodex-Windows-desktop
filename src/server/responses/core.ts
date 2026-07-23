@@ -345,6 +345,22 @@ export function buildComboChildHeaders(parentHeaders: HeadersInit): Headers {
   return childHeaders;
 }
 
+const UNREADABLE_ENCRYPTED_AGENT_TASK_MESSAGE =
+  "Routed V2 worker task is encrypted for the native ChatGPT backend and cannot be read by the selected provider. Use plaintext V2 agent-message delivery or select a native ChatGPT model.";
+
+function unreadableEncryptedAgentTaskResponse(): Response {
+  return new Response(
+    JSON.stringify({
+      error: {
+        message: UNREADABLE_ENCRYPTED_AGENT_TASK_MESSAGE,
+        type: "invalid_request_error",
+        code: "unreadable_encrypted_agent_task",
+      },
+    }),
+    { status: 400, headers: { "Content-Type": "application/json" } },
+  );
+}
+
 
 
 export async function handleComboResponses(
@@ -369,9 +385,30 @@ export async function handleComboResponses(
     return formatErrorResponse(404, "invalid_request_error", `Unknown combo: ${comboId}`);
   }
 
+  const unreadableEncryptedAgentTask = hasUnreadableEncryptedAgentTask(
+    (rawBody as { input?: unknown } | undefined)?.input,
+  );
+  const canDecryptUnreadableAgentTask = (target: (typeof combo.targets)[number]): boolean => {
+    const provider = config.providers[target.provider];
+    if (!provider || provider.disabled === true) return false;
+    try {
+      const route = routeModel(config, `${target.provider}/${target.model}`);
+      return isCanonicalOpenAiForwardProvider(route.provider);
+    } catch {
+      return false;
+    }
+  };
+  const payloadEligible = (target: (typeof combo.targets)[number]): boolean =>
+    !unreadableEncryptedAgentTask || canDecryptUnreadableAgentTask(target);
+
+  if (unreadableEncryptedAgentTask && !combo.targets.some(canDecryptUnreadableAgentTask)) {
+    return unreadableEncryptedAgentTaskResponse();
+  }
+
   const initialNow = Date.now();
   let pick = pickComboTarget(config, comboId, {
-    eligible: target => !isComboTargetInCooldown(comboId, target, initialNow),
+    eligible: target => payloadEligible(target)
+      && !isComboTargetInCooldown(comboId, target, initialNow),
   });
   if (!pick) {
     return comboUnavailableResponse(`No available targets for combo: ${comboId}`);
@@ -532,6 +569,7 @@ export async function handleComboResponses(
     pick = advanceComboAfterFailure(config, pick, {
       retryAfter: failure.retryAfter,
       now: Date.now(),
+      eligible: payloadEligible,
     });
   }
   return lastFailure!;
@@ -555,12 +593,12 @@ export async function handleResponses(
   if (comboId && Object.hasOwn(config.combos ?? {}, comboId)) {
     return handleComboResponses(req, body, comboId, config, logCtx, options);
   }
-  const originalBody = body;
-  body = expandPreviousResponseInput(body);
-  const previousResponseInputExpanded = body !== originalBody;
   const unreadableEncryptedAgentTask = hasUnreadableEncryptedAgentTask(
     (body as { input?: unknown } | undefined)?.input,
   );
+  const originalBody = body;
+  body = expandPreviousResponseInput(body);
+  const previousResponseInputExpanded = body !== originalBody;
 
   // Spawn-message compatibility (both directions): agent_message task payloads ride in
   // encrypted_content slots as plaintext. Rewrite them to input_text on the RAW body BEFORE
@@ -624,11 +662,7 @@ export async function handleResponses(
   // providers cannot. Reject the raw-input classification before adapter construction
   // or provider dispatch so an unreadable worker task cannot trigger a cost storm.
   if (!isCanonicalOpenAiForwardProvider(route.provider) && unreadableEncryptedAgentTask) {
-    return formatErrorResponse(
-      400,
-      "invalid_request_error",
-      "Routed V2 worker task is encrypted for the native ChatGPT backend and cannot be read by the selected provider. Use plaintext V2 agent-message delivery or select a native ChatGPT model.",
-    );
+    return unreadableEncryptedAgentTaskResponse();
   }
 
   // Apply the routed model id upstream: routing may strip a "<provider>/" namespace
