@@ -12,7 +12,14 @@ import {
   cursorModelReasoningEfforts,
 } from "../src/adapters/cursor/discovery";
 import { getJawcodeModelMetadata, resolveJawcodeProvider } from "../src/generated/jawcode-model-metadata";
-import { clearModelCache, getStaleCached, setCached } from "../src/codex/model-cache";
+import {
+  clearModelCache,
+  getProviderDiscoveryStatus,
+  getStaleCached,
+  markProviderDiscoveryFailed,
+  setCached,
+  type ProviderModelDiscoveryStatus,
+} from "../src/codex/model-cache";
 import type { OcxConfig } from "../src/types";
 import type { NormalizedComboConfig } from "../src/combos/types";
 import { enrichProviderFromRegistry } from "../src/providers/derive";
@@ -1447,6 +1454,7 @@ describe("Codex catalog routed normalization", () => {
       expect(models.map(model => `${model.provider}/${model.id}`)).toEqual([
         `${provider}/static-fallback`,
       ]);
+      expect(getProviderDiscoveryStatus(provider)).toEqual({ status: "failed", reason: "blocked" });
       const warningText = warning.mock.calls.flat().join(" ");
       expect(warningText).toContain("blocked by destination policy");
       expect(warningText).toContain("benchmark address");
@@ -1484,6 +1492,7 @@ describe("Codex catalog routed normalization", () => {
       expect(models.map(model => `${model.provider}/${model.id}`)).toEqual([
         `${provider}/live-private-model`,
       ]);
+      expect(getProviderDiscoveryStatus(provider)).toEqual({ status: "ok" });
     } finally {
       clearModelCache(provider);
     }
@@ -1553,6 +1562,7 @@ describe("Codex catalog routed normalization", () => {
         `${provider}/last-known-good`,
       ]);
       expect(getStaleCached(provider)).toEqual(stale);
+      expect(getProviderDiscoveryStatus(provider)).toEqual({ status: "failed", reason: "invalid_response" });
       const warningText = warning.mock.calls.flat().join(" ");
       expect(warningText).toContain("returned invalid JSON in a 2xx response");
       expect(warningText).toContain("contentType=application/problem+json");
@@ -1565,9 +1575,9 @@ describe("Codex catalog routed normalization", () => {
   });
 
   test("HTTP non-OK discovery returns configured models with status diagnostics", async () => {
-    const provider = "discovery-http-503";
+    const provider = "discovery-http-401";
     const warning = spyOn(console, "warn").mockImplementation(() => {});
-    globalThis.fetch = (async () => new Response(null, { status: 503 })) as typeof fetch;
+    globalThis.fetch = (async () => new Response(null, { status: 401 })) as typeof fetch;
 
     try {
       const models = await gatherRoutedModels({
@@ -1584,8 +1594,13 @@ describe("Codex catalog routed normalization", () => {
       expect(models.map(model => `${model.provider}/${model.id}`)).toEqual([
         `${provider}/static-fallback`,
       ]);
+      expect(getProviderDiscoveryStatus(provider)).toEqual({
+        status: "failed",
+        reason: "http",
+        httpStatus: 401,
+      });
       const warningText = warning.mock.calls.flat().join(" ");
-      expect(warningText).toContain("failed with HTTP 503");
+      expect(warningText).toContain("failed with HTTP 401");
       expect(warningText).toContain("fallback=configured");
     } finally {
       warning.mockRestore();
@@ -1595,9 +1610,10 @@ describe("Codex catalog routed normalization", () => {
 
   test("thrown fetch discovery returns configured models without SyntaxError conflation", async () => {
     const provider = "discovery-fetch-throw";
+    const sentinel = "SENTINEL-PRIVATE-URL-https://secret.invalid/account";
     const warning = spyOn(console, "warn").mockImplementation(() => {});
     globalThis.fetch = (async () => {
-      throw new TypeError("fetch failed");
+      throw new TypeError(sentinel);
     }) as typeof fetch;
 
     try {
@@ -1615,11 +1631,13 @@ describe("Codex catalog routed normalization", () => {
       expect(models.map(model => `${model.provider}/${model.id}`)).toEqual([
         `${provider}/static-fallback`,
       ]);
+      expect(getProviderDiscoveryStatus(provider)).toEqual({ status: "failed", reason: "network" });
+      expect(JSON.stringify(getProviderDiscoveryStatus(provider))).not.toContain(sentinel);
       const warningText = warning.mock.calls.flat().join(" ");
       expect(warningText).toContain("threw TypeError");
       expect(warningText).toContain("fallback=configured");
       expect(warningText).not.toContain("SyntaxError");
-      expect(warningText).not.toContain("fetch failed");
+      expect(warningText).not.toContain(sentinel);
     } finally {
       warning.mockRestore();
       clearModelCache(provider);
@@ -1657,6 +1675,7 @@ describe("Codex catalog routed normalization", () => {
         `${provider}/last-known-good`,
       ]);
       expect(getStaleCached(provider)).toEqual([{ provider, id: "last-known-good" }]);
+      expect(getProviderDiscoveryStatus(provider)).toEqual({ status: "failed", reason: "invalid_response" });
     } finally {
       warning.mockRestore();
       clearModelCache(provider);
@@ -1689,6 +1708,7 @@ describe("Codex catalog routed normalization", () => {
         `${provider}/static-fallback`,
       ]);
       expect(getStaleCached(provider)).toBeNull();
+      expect(getProviderDiscoveryStatus(provider)).toEqual({ status: "failed", reason: "invalid_response" });
     } finally {
       warning.mockRestore();
       clearModelCache(provider);
@@ -1725,6 +1745,7 @@ describe("Codex catalog routed normalization", () => {
       expect(second).toEqual([]);
       expect(fetchCalls).toBe(1);
       expect(getStaleCached(provider)).toEqual([]);
+      expect(getProviderDiscoveryStatus(provider)).toEqual({ status: "ok" });
       const warningText = warning.mock.calls.flat().join(" ");
       expect(warningText).toContain(provider);
       expect(warningText).toContain("configured-ghost");
@@ -1733,6 +1754,39 @@ describe("Codex catalog routed normalization", () => {
       warning.mockRestore();
       clearModelCache(provider);
     }
+  });
+
+  test("successful discovery clears every prior failure reason", async () => {
+    const provider = "discovery-status-reset";
+    const failures: Array<Extract<ProviderModelDiscoveryStatus, { status: "failed" }>> = [
+      { status: "failed", reason: "blocked" },
+      { status: "failed", reason: "http", httpStatus: 401 },
+      { status: "failed", reason: "invalid_response" },
+      { status: "failed", reason: "network" },
+      { status: "failed", reason: "provider" },
+    ];
+    globalThis.fetch = (async () => Response.json({ data: [] })) as typeof fetch;
+
+    for (const { status: _status, ...failure } of failures) {
+      markProviderDiscoveryFailed(provider, failure);
+      expect(getProviderDiscoveryStatus(provider)).toEqual({ status: "failed", ...failure });
+
+      await gatherRoutedModels({
+        modelCacheTtlMs: 0,
+        providers: {
+          [provider]: {
+            adapter: "openai-chat",
+            baseUrl: "https://93.184.216.34/v1",
+            apiKey: "sk-test",
+          },
+        },
+      });
+
+      expect(getProviderDiscoveryStatus(provider)).toEqual({ status: "ok" });
+    }
+
+    clearModelCache(provider);
+    expect(getProviderDiscoveryStatus(provider)).toBeUndefined();
   });
 
   test("routed entries receive exact jawcode context metadata", () => {
