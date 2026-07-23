@@ -157,9 +157,10 @@ name.
 ### External provider managers
 
 If `config.toml` already selects a provider other than `openai` or `opencodex`, OpenCodex leaves the
-file unchanged and skips Codex history migration. Tools that manage a custom provider often tag
-existing sessions with that provider id; replacing the active id can make those intact sessions
-disappear from Codex's history view.
+file unchanged and skips profile writes, catalog/cache refresh, and both immediate and background
+Codex history migration. Tools that manage a custom provider often tag existing sessions with that
+provider id; replacing the active id can make those intact sessions disappear from Codex's history
+view. The same protection applies to an external provider selected by a legacy root profile.
 
 Keep one tool as the owner of Codex provider configuration. To use OpenCodex behind an existing
 provider manager, point that provider at `http://127.0.0.1:10100/v1` with Responses passthrough

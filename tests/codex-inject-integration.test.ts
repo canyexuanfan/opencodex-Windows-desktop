@@ -133,6 +133,14 @@ describe("injectCodexConfig integration (Design B)", () => {
     db.run(`INSERT INTO threads VALUES ('thread-custom', ?, 'custom', 'cli', 'hello', 1)`, rolloutPath);
     db.close();
     const dbBefore = readFileSync(dbPath);
+    const journalPath = join(codexHome, "opencodex-journal.json");
+    writeFileSync(journalPath, JSON.stringify({
+      version: 1,
+      originalConfig: Buffer.from('model_provider = "openai"\n').toString("base64"),
+      originalProfile: null,
+      pid: process.pid,
+      timestamp: new Date().toISOString(),
+    }), "utf8");
 
     const r = runInject(codexHome, ocxHome);
     expect(r.status).toBe(0);
@@ -145,6 +153,24 @@ describe("injectCodexConfig integration (Design B)", () => {
     expect(existsSync(join(codexHome, "opencodex.config.toml"))).toBe(false);
     expect(readFileSync(dbPath).equals(dbBefore)).toBe(true);
     expect(readFileSync(rolloutPath, "utf8")).toBe(rollout);
+    expect(existsSync(journalPath)).toBe(false);
+  });
+
+  test("provider selected through a legacy root profile is also preserved", () => {
+    const original = [
+      'profile = "work"',
+      'model_provider = "openai"',
+      "",
+      "[profiles.work]",
+      'model_provider = "custom"',
+      "",
+    ].join("\n");
+    writeFileSync(join(codexHome, "config.toml"), original, "utf8");
+
+    const r = runInject(codexHome, ocxHome);
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout).message).toContain('external model_provider "custom"');
+    expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(original);
   });
 
   test("non-loopback hostname still uses the legacy provider-table injection", () => {

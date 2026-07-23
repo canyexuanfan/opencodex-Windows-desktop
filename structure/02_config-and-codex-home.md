@@ -40,7 +40,8 @@ blocks, stale root context-window overrides, and stale opencodex catalog paths b
 If the root config selects a provider other than `openai` or `opencodex`, injection must leave the
 config byte-for-byte unchanged and skip profile creation/updates and history migration. External
 provider managers own that routing configuration, and replacing their provider id can hide
-otherwise intact Codex sessions.
+otherwise intact Codex sessions. This ownership check must run before catalog/cache refresh,
+journal creation, and the background history migration guardian.
 
 `supports_websockets = true` is appended only when `websocketsEnabled(config)` returns true.
 

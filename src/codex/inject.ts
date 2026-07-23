@@ -1,12 +1,23 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { atomicWriteFile, loadConfig, websocketsEnabled } from "../config";
-import { markJournalInjectedState, restoreJournalState, writeJournal } from "./journal";
+import { markJournalInjectedState, removeJournal, restoreJournalState, writeJournal } from "./journal";
 import { restoreCodexCatalog } from "./catalog";
 import { migrateHistoryToOpenai, syncCodexHistoryProvider } from "./history-provider";
 import { CODEX_CONFIG_PATH, CODEX_PROFILE_PATH, DEFAULT_CATALOG_PATH, parseTomlString, readRootTomlString, resolveCodexConfigPath, tomlString } from "./paths";
+import { resolveEffectiveProjectModelProvider } from "./project-config-warnings";
 import type { OcxConfig } from "../types";
 
 const OCX_SECTION_MARKER = "# Auto-injected by opencodex";
+
+export function externalCodexModelProvider(content: string): string | null {
+  const provider = resolveEffectiveProjectModelProvider(content).provider;
+  return provider && provider !== "openai" && provider !== "opencodex" ? provider : null;
+}
+
+export function currentExternalCodexModelProvider(): string | null {
+  if (!existsSync(CODEX_CONFIG_PATH)) return null;
+  return externalCodexModelProvider(readFileSync(CODEX_CONFIG_PATH, "utf8"));
+}
 
 /**
  * Detect the file's dominant line ending. Every transform in this module is LF-pure
@@ -366,8 +377,11 @@ export async function injectCodexConfig(port: number, config?: OcxConfig, option
   }
 
   const rawContent = readFileSync(CODEX_CONFIG_PATH, "utf-8");
-  const activeProvider = readRootTomlString(rawContent, "model_provider");
-  if (activeProvider && activeProvider !== "openai" && activeProvider !== "opencodex") {
+  const activeProvider = externalCodexModelProvider(rawContent);
+  if (activeProvider) {
+    // A launcher may have journaled before the provider manager took ownership. Never let shutdown
+    // replay that stale snapshot over externally managed config.
+    removeJournal();
     return {
       success: true,
       message: `⚠️ Codex routing NOT injected: config.toml selects the external model_provider ${tomlString(activeProvider)}.\n` +
@@ -555,6 +569,11 @@ export function removeCodexConfig(options: { preserveProfile?: boolean } = {}): 
  * handler, and `ocx restore`. Idempotent + atomic.
  */
 export function restoreNativeCodex(): { success: boolean; message: string } {
+  const activeProvider = currentExternalCodexModelProvider();
+  if (activeProvider) {
+    removeJournal();
+    return { success: true, message: `External Codex provider ${tomlString(activeProvider)} preserved; no native restore was needed.` };
+  }
   const journal = restoreJournalState();
   const cfg = journal.configRestored
     ? { success: true, message: "Codex config restored from opencodex journal." }
