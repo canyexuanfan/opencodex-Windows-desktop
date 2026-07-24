@@ -498,7 +498,7 @@ test("sideband GET /v1/live/{callId} upgrades and relays bidirectionally to Chat
     constructor(url: string | URL, protocols?: string | string[] | Record<string, unknown>) {
       const parsed = new URL(String(url));
       const target =
-        parsed.hostname === "chatgpt.com" && parsed.pathname.startsWith("/backend-api/codex/")
+        parsed.hostname === "api.openai.com" && parsed.pathname.startsWith("/v1/live/")
           ? `ws://127.0.0.1:${upstreamPort}${parsed.pathname}${parsed.search}`
           : String(url);
       super(target, protocols as string[]);
@@ -526,7 +526,7 @@ test("sideband GET /v1/live/{callId} upgrades and relays bidirectionally to Chat
       client.addEventListener("message", (event) => {
         try {
           expect(String(event.data)).toBe("echo:ping-sideband");
-          expect(seenPaths).toContain("/backend-api/codex/rtc_sideband");
+          expect(seenPaths).toContain("/v1/live/rtc_sideband");
           expect(seenUpgradeHeaders).toHaveLength(1);
           expect(seenUpgradeHeaders[0].get("openai-alpha")).toBe("quicksilver=v2");
           expect(seenUpgradeHeaders[0].get("x-session-id")).toBe("rts_side");
@@ -576,7 +576,19 @@ test("buildLiveSidebandUpstreamWsUrl maps Frameless and Realtime join shapes", a
       style: "frameless-path",
       callId: "rtc_1",
     }),
-  ).toBe("wss://chatgpt.com/backend-api/codex/rtc_1");
+  ).toBe("wss://api.openai.com/v1/live/rtc_1");
+  expect(
+    buildLiveSidebandUpstreamWsUrl("https://chatgpt.com/backend-api/codex", true, {
+      style: "realtime-calls-path",
+      callId: "rtc_1",
+    }),
+  ).toBe("wss://api.openai.com/v1/realtime/calls/rtc_1");
+  expect(
+    buildLiveSidebandUpstreamWsUrl("https://chatgpt.com/backend-api/codex", true, {
+      style: "realtime-query",
+      callId: "rtc_2",
+    }),
+  ).toBe("wss://api.openai.com/v1/realtime?intent=quicksilver&call_id=rtc_2");
   expect(
     buildLiveSidebandUpstreamWsUrl("https://api.openai.com/v1", false, {
       style: "frameless-path",

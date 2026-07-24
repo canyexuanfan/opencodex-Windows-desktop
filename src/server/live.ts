@@ -46,6 +46,14 @@ const LIVE_RELAY_HEADERS = ["content-type", "location"] as const;
 export const LIVE_AVAS_QUERY = "intent=quicksilver&architecture=avas";
 
 /**
+ * Sideband WebSocket API root. openai/codex joins the sideband via the API provider default
+ * (`to_api_provider(AuthMode::ApiKey)` → https://api.openai.com/v1) even for ChatGPT-auth calls
+ * created through backend-api; chatgpt.com/backend-api rejects sideband upgrades pre-101
+ * (verified live 2026-07-24). The call-create bearer works on the API host unchanged.
+ */
+export const LIVE_SIDEBAND_API_ROOT = "https://api.openai.com/v1";
+
+/**
  * Client protocol headers relayed verbatim to the upstream on call-create and sideband upgrade.
  * `openai-alpha: quicksilver=v2` carries the Frameless protocol negotiation — without it the
  * ChatGPT backend validates the type-less Frameless session as v1 quicksilver and 400s
@@ -142,26 +150,29 @@ export function buildLiveSidebandUpstreamWsUrl(
   target: LiveSidebandTarget,
 ): string {
   const root = providerBaseUrl.replace(/\/$/, "");
+  if (usesBackendShape) {
+    // ChatGPT backend-api call-create, but the sideband join lives on the public API host
+    // (matches openai/codex, which builds the sideband from the ApiKey provider default).
+    if (target.style === "frameless-path") {
+      return httpsToWss(`${LIVE_SIDEBAND_API_ROOT}/live/${target.callId}`);
+    }
+    if (target.style === "realtime-calls-path") {
+      return httpsToWss(`${LIVE_SIDEBAND_API_ROOT}/realtime/calls/${target.callId}`);
+    }
+    return httpsToWss(
+      `${LIVE_SIDEBAND_API_ROOT}/realtime?intent=quicksilver&call_id=${encodeURIComponent(target.callId)}`,
+    );
+  }
   if (target.style === "frameless-path") {
     // Frameless: normalize to .../live then append /{callId}.
-    // Backend bases like .../backend-api/codex keep their path and append /{callId}.
-    if (usesBackendShape) {
-      return httpsToWss(`${root}/${target.callId}`);
-    }
     const apiRoot = root.replace(/\/v1\/?$/, "");
     return httpsToWss(`${apiRoot}/v1/live/${target.callId}`);
   }
   if (target.style === "realtime-calls-path") {
-    if (usesBackendShape) {
-      return httpsToWss(`${root}/realtime/calls/${target.callId}`);
-    }
     const apiRoot = root.replace(/\/v1\/?$/, "");
     return httpsToWss(`${apiRoot}/v1/realtime/calls/${target.callId}`);
   }
   // Realtime v1/v2: /v1/realtime?intent=quicksilver&call_id=
-  if (usesBackendShape) {
-    return httpsToWss(`${root}/realtime?intent=quicksilver&call_id=${encodeURIComponent(target.callId)}`);
-  }
   const apiRoot = root.replace(/\/v1\/?$/, "");
   return httpsToWss(
     `${apiRoot}/v1/realtime?intent=quicksilver&call_id=${encodeURIComponent(target.callId)}`,
