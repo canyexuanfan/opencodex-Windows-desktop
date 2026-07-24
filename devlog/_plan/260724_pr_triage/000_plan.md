@@ -24,7 +24,7 @@ Decision log:
 | #337 | GUI auto-switch threshold | gui-touching — boundary rule | DEFER pending explicit user GUI approval | open, reported |
 | #358 | GUI provider discovery UX | gui-touching — boundary rule | DEFER pending explicit user GUI approval | open, reported |
 | #369 | kiro progress text nonterminal | MERGE_AS_IS (McClintock): CI green, real terminals preserved, compatible with bridge terminal exactly-once, regression tests RED-valid | MERGE_AS_IS | MERGED 2704747d 2026-07-24 |
-| #366 | Cursor store:false continuity | REBUILD_ON_DEV (Hypatia): High isolation bypass, Medium UTF-16 slice vs byte cap, unproven same-id strategy, 27 commits behind | DEFER — detailed review posted as PR comment (issuecomment-5065520056) | comment posted |
+| #366 | Cursor store:false continuity | REBUILD_ON_DEV (Hypatia r1) -> author rebuilt: isolation-first + UTF-8 byte budget + credential-derived scope; Hypatia r2 BLOCKERS-CLOSED, CI green, clean | MERGE_AS_IS after rebuild (user-approved) | MERGED c1b0b1cf 2026-07-24 |
 | #368 | Go port (39k LOC draft, author lidge-jun) | CLOSE recommended by reviewer (Archimedes): parallel unverified runtime, no packaging/release linkage, CI flake | DEFER — owner's own draft experiment; close/keep decision reserved for user | open draft, reported |
 
 Non-dev-target PRs noted during triage (outside loop scope): #365 (draft,
