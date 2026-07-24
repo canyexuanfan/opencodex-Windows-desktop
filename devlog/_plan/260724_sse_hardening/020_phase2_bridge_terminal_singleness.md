@@ -1,0 +1,90 @@
+# 020 — Phase 2: Bridge terminal singleness + incomplete replay caching
+# (classes 7, 5)
+
+One PABCD cycle. Core capability: exactly one terminal event per turn, and
+the replay store honors the bridge's documented caching contract.
+
+## Scope
+
+IN:
+- src/bridge.ts (terminal exactly-once in bridgeToResponsesSSE)
+- src/responses/state.ts (rememberResponseState accepts incomplete)
+- tests: bridge-lifecycle, bridge, responses-state
+
+OUT: adapter behavior (phase 1 landed), chat outbound (phase 3),
+passthrough inspector reconstruction (bugfix train owns it).
+
+## File change map
+
+### 1. src/bridge.ts — MODIFY the adapter-event loop (~438) and terminal
+### cases (:633, :699, plus catch block)
+
+Current (verified): each terminal case ends with `terminated = true; break;`
+which exits only the `switch`; the `for await` keeps consuming and a second
+terminal re-emits. `[DONE]` fires after the loop (:741).
+
+Change:
+- Add a loop-level guard: after the switch, `if (terminated) break;` so the
+  first terminal event (done / incomplete / error / synthesized catch
+  terminal) ends adapter consumption.
+- On breaking early, call the event iterator's `return?.()` inside a
+  try/catch so a well-behaved adapter generator can clean up its upstream
+  reader; a throwing cleanup must not replace the emitted terminal.
+- Guard the synthesized post-loop terminals (`if (!terminated)` already
+  exists for the no-terminal EOF path — keep it; it becomes unreachable
+  after a real terminal, which is the point).
+- Do NOT change event ordering before the terminal: closing open items,
+  compaction emission, usage attachment all stay exactly as-is.
+
+### 2. src/responses/state.ts — MODIFY rememberResponseState (:244-280)
+
+Current (verified, :257):
+```ts
+if (response.status !== undefined && response.status !== "completed") return;
+```
+
+Change:
+- Accept `"incomplete"` as storable: the bridge already calls
+  onCompletedResponse for incomplete max_tokens turns with the comment
+  "Still cache the partial output so previous_response_id replay works"
+  (bridge.ts:658). New guard:
+  `if (response.status !== undefined && response.status !== "completed"
+  && response.status !== "incomplete") return;`
+- Keep `"failed"` excluded: a failed turn's partial output must not become
+  authoritative replay history.
+- Cursor checkpointUsable logic unchanged (function_call presence check
+  already covers incomplete tool turns).
+- Update the docblock above rememberResponseState to state the incomplete
+  contract explicitly.
+
+### 3. src/bridge.ts — comment sync
+
+The :658 comment becomes true after change 2; extend it to name the
+state.ts guard so the two sides stop drifting.
+
+## Accept criteria + activation scenarios
+
+1. Adapter yields error then done (misbehaving generator): client receives
+   response.failed exactly once, never response.completed; `[DONE]` still
+   emitted exactly once. Activation: bridge-lifecycle test with a scripted
+   event generator; assert terminal event sequence length 1.
+2. Adapter yields done then trailing error: response.completed exactly
+   once; trailing error swallowed (generator.return called).
+3. incomplete (max_tokens) turn: rememberResponseState stores the partial
+   items; a subsequent expandPreviousResponseInput with that
+   previous_response_id returns prior items + suffix. Activation:
+   responses-state test driving remember + expand directly.
+4. failed turn: still NOT stored (guard keeps failing statuses out).
+5. Regression: bridge.test.ts, bridge-lifecycle.test.ts,
+   bridge-raw-reasoning-hidden.test.ts, responses-state.test.ts green;
+   `bun run typecheck` green.
+
+## Risks
+
+- Breaking the loop early abandons unconsumed adapter events: any adapter
+  that relies on full drainage for side effects would notice. Mitigation:
+  adapters are pull-based generators; abandonment is the standard early-exit
+  contract, and generator.return gives them a cleanup hook.
+- Caching incomplete could replay a truncated turn into the next request:
+  that is exactly the bridge's documented intent (continue-from-partial);
+  the alternative (current behavior) sends a naked delta, which is worse.

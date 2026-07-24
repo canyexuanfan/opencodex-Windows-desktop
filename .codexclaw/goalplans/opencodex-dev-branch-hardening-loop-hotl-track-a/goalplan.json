@@ -1,0 +1,95 @@
+{
+  "objective": "OpenCodex dev-branch hardening loop (HOTL): Track A SSE stability hardening in relay/responses pipeline with new devlog unit devlog/_plan/260724_sse_hardening/ (docs-first roadmap cycle, then one PABCD cycle per decade doc). Track B one-PR-at-a-time triage of open dev-target PRs with Sol reviewer subagents, explicit MERGE_AS_IS/MERGE_AND_IMPROVE/REBUILD_ON_DEV/DEFER/CLOSE decisions, executed via gh (user pre-approved remote merges; never touch main/preview; never merge gui-touching PRs without fresh approval; no publish/release; no force-push). Verification: bun run typecheck + focused tests per D, full suite before dev push, CI green before merge. Terminal outcomes DONE/BLOCKED/NEEDS_HUMAN/BUDGET_EXHAUSTED as stated in host goal.",
+  "slug": "opencodex-dev-branch-hardening-loop-hotl-track-a",
+  "createdAt": "2026-07-24T00:15:19.266Z",
+  "updatedAt": "2026-07-24T00:15:19.267Z",
+  "activeWorkPhaseId": null,
+  "workPhases": [
+    {
+      "id": "wp0-roadmap",
+      "title": "Docs-only roadmap cycle: SSE stability research (000-009) + diff-level decade docs for hardening phases under devlog/_plan/260724_sse_hardening/",
+      "status": "pending",
+      "tasks": [
+        { "id": "wp0-t1", "title": "Survey relay/responses SSE pipeline post-bugfix-train (parse-once, reconstruct, passthrough replay state)", "status": "pending" },
+        { "id": "wp0-t2", "title": "Enumerate remaining instability classes with code evidence", "status": "pending" },
+        { "id": "wp0-t3", "title": "Write 000_plan.md + research docs (000-009 range)", "status": "pending" },
+        { "id": "wp0-t4", "title": "Write every implementation decade doc to diff level (DIFFLEVEL-ROADMAP-01)", "status": "pending" }
+      ],
+      "criteriaIds": ["c-roadmap-docs", "c-audit-gate"]
+    },
+    {
+      "id": "wp-sse-impl",
+      "title": "SSE hardening implementation cycles (one PABCD cycle per decade doc; map locked at wp0 D)",
+      "status": "pending",
+      "tasks": [
+        { "id": "wp-impl-t1", "title": "Execute decade docs in dependency order, one cycle each, with regression tests", "status": "pending" }
+      ],
+      "criteriaIds": ["c-sse-tests", "c-typecheck"]
+    },
+    {
+      "id": "wp-pr-triage",
+      "title": "Open dev-target PR triage: one PR per cycle, Sol reviewer subagent, explicit MERGE_AS_IS/MERGE_AND_IMPROVE/REBUILD_ON_DEV/DEFER/CLOSE decision executed via gh",
+      "status": "pending",
+      "tasks": [
+        { "id": "wp-pr-t1", "title": "Triage #363 Chat Completions tool-call delta duplication fix", "status": "pending" },
+        { "id": "wp-pr-t2", "title": "Triage #360 oversized Responses call ID replay recovery (draft)", "status": "pending" },
+        { "id": "wp-pr-t3", "title": "Triage #356 Codex shim auto-restore", "status": "pending" },
+        { "id": "wp-pr-t4", "title": "Triage #355 Gemini inline image output (draft)", "status": "pending" },
+        { "id": "wp-pr-t5", "title": "Triage #352 account pool retry", "status": "pending" },
+        { "id": "wp-pr-t6", "title": "Triage #336 v2 Fernet guard hardening", "status": "pending" },
+        { "id": "wp-pr-t7", "title": "Triage #337 GUI auto-switch threshold (gui-touching: DEFER pending user approval)", "status": "pending" },
+        { "id": "wp-pr-t8", "title": "Triage #358 GUI provider discovery/fallback UX (gui-touching: DEFER pending user approval)", "status": "pending" }
+      ],
+      "criteriaIds": ["c-pr-decisions", "c-ci-green"]
+    }
+  ],
+  "criteria": [
+    {
+      "id": "c-roadmap-docs",
+      "scenario": "wp0 produces numbered research docs (000-009) plus diff-level decade docs for every implementation phase in devlog/_plan/260724_sse_hardening/, dependency-ordered",
+      "expectedEvidence": "ls of the unit folder + doc contents; LEXICO-SPLIT-01 compliant filenames",
+      "capturedEvidence": "",
+      "status": "open"
+    },
+    {
+      "id": "c-audit-gate",
+      "scenario": "each cycle passes the A gate with an independent reviewer verdict (pass or near-pass with recorded residuals)",
+      "expectedEvidence": "reviewer verdict tails pasted in A>B attests",
+      "capturedEvidence": "",
+      "status": "open"
+    },
+    {
+      "id": "c-sse-tests",
+      "scenario": "every SSE hardening change lands with focused regression tests that fail without the fix",
+      "expectedEvidence": "bun test output for touched test files, fresh per cycle",
+      "capturedEvidence": "",
+      "status": "open"
+    },
+    {
+      "id": "c-typecheck",
+      "scenario": "bun run typecheck stays green at every D; full bun run test green before any dev push",
+      "expectedEvidence": "command output with exit code 0",
+      "capturedEvidence": "",
+      "status": "open"
+    },
+    {
+      "id": "c-pr-decisions",
+      "scenario": "every open dev-target PR carries an explicit executed or DEFER-red decision with rationale recorded in the devlog unit",
+      "expectedEvidence": "devlog triage records + gh pr state per PR",
+      "capturedEvidence": "",
+      "status": "open"
+    },
+    {
+      "id": "c-ci-green",
+      "scenario": "any merged PR head was CI-green pre-merge and dev tip CI is green after merges",
+      "expectedEvidence": "gh run list / check-runs output per merge",
+      "capturedEvidence": "",
+      "status": "open"
+    }
+  ],
+  "host": {
+    "armed": false,
+    "armedAt": null,
+    "source": "none"
+  }
+}
