@@ -35,9 +35,13 @@ yield { type: "done", usage: pendingUsage };
 
 Changes:
 - (a) Track `sawAnyFrame` and `sawTerminalSignal` (a parsed candidate with
-  `finishReason` or usage-bearing final chunk). At EOF, inspect the residual
-  `buffer`: if non-empty after trim, attempt the same frame handling;
-  a residual that is not a valid frame => truncation evidence.
+  `finishReason` or usage-bearing final chunk). At EOF, FIRST flush the
+  streaming decoder (`buffer += decoder.decode()`) so partial UTF-8 bytes
+  held inside TextDecoder surface into the string buffer (A-gate finding:
+  today a valid STOP followed by truncated UTF-8 bytes never reaches
+  `buffer` and completes clean), THEN inspect the residual `buffer`: if
+  non-empty after trim, attempt the same frame handling; a residual that
+  is not a valid frame => truncation evidence.
 - (b) Malformed `data:` JSON: stop dropping silently. Yield
   `{ type: "error", message: "malformed upstream SSE data frame" }` and
   return (mirrors openai-chat.ts:626-629). Keep debugDroppedFrame for the
@@ -100,6 +104,11 @@ Change: extend to also map `event.stopReason === "content_filter"` ->
    drives parseStream with a crafted chunk split; assert error event.
 2. Google stream with EOF-residual frame lacking trailing newline -> frame
    still parsed (no event loss). Activation: residual-buffer test.
+2a. Google stream with a valid STOP terminal followed by partial UTF-8
+   bytes (incomplete multi-byte sequence at socket EOF) -> error, not
+   clean done. Activation: crafted byte chunks ending mid-codepoint.
+2b. Google stream with malformed residual (non-frame garbage) after the
+   last valid frame -> error.
 3. Google stream ending with zero terminal signal -> error, not done.
 4. Google MAX_TOKENS text-only stream -> done stopReason "max_tokens" ->
    bridge response.incomplete max_output_tokens. (Existing Vertex guard

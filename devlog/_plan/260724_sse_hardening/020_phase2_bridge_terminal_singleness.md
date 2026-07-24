@@ -30,6 +30,18 @@ Change:
 - On breaking early, call the event iterator's `return?.()` inside a
   try/catch so a well-behaved adapter generator can clean up its upstream
   reader; a throwing cleanup must not replace the emitted terminal.
+- Source-level producer stop (A-gate finding, High): generator.return does
+  NOT reach the Cursor-style `runTurn` path — core.ts:1153 starts
+  `void runTurn()` which produces independently into run-turn-queue.ts:57's
+  unbounded array, and queue.stream().return is not wired to that producer.
+  The terminal path must therefore ALSO trigger the source-level abort that
+  core.ts already owns (runTurnAbort / the abort signal linked for the
+  turn), so the producer stops instead of filling a dead queue. Concretely:
+  bridgeToResponsesSSE already receives/creates the abort wiring used for
+  client disconnect; the terminal-break path must invoke the same
+  cancellation. Exact call site is pinned in B against core.ts:1140-1180 —
+  the contract (producer stops at first terminal) is not negotiable, the
+  mechanism may be adjusted to the existing abort plumbing.
 - Guard the synthesized post-loop terminals (`if (!terminated)` already
   exists for the no-terminal EOF path — keep it; it becomes unreachable
   after a real terminal, which is the point).
@@ -70,6 +82,11 @@ state.ts guard so the two sides stop drifting.
    event generator; assert terminal event sequence length 1.
 2. Adapter yields done then trailing error: response.completed exactly
    once; trailing error swallowed (generator.return called).
+2a. runTurn regression: a Cursor-style producer emitting error then done
+   (or done then trailing events) stops producing at the first terminal —
+   assert the queue length stops growing after terminal and the abort
+   signal fired. Activation: scripted runTurn queue with an event source
+   that keeps producing until aborted.
 3. incomplete (max_tokens) turn: rememberResponseState stores the partial
    items; a subsequent expandPreviousResponseInput with that
    previous_response_id returns prior items + suffix. Activation:

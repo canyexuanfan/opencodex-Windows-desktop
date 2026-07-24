@@ -55,6 +55,20 @@ Out of scope (with reasons in 002): 6, 8, 10, 13, 14.
 
 Each phase = one full PABCD cycle. Never two decade docs in one B.
 
+## Sequencing dependencies (A-gate amendment, round 1 FAIL -> fold)
+
+- Phases 1-2 (010/020) touch google/anthropic/openai-chat adapters, bridge,
+  state: no overlap with open PRs. They may start immediately.
+- Phases 3 and 5 touch src/chat/outbound.ts and src/server/responses/core.ts,
+  which open PRs #363 (chat/outbound + its tests) and #352 (core.ts) also
+  modify. Dependency: the triage track must DECIDE #363 and #352
+  (merge/close) and the working tree must be rebased on the resulting dev
+  BEFORE phase 3 and phase 5 enter B. After either PR lands, re-audit the
+  affected decade doc against the new tree (stale check) before building.
+- #360 touches openai-responses.ts only: no conflict with any phase.
+- If triage DEFERs #363 or #352, phases 3/5 proceed on current dev and the
+  deferred PR is re-evaluated against the post-phase tree.
+
 ## Cross-track note
 
 Track B (PR triage) runs interleaved as separate work-phases; #363 (class 8)

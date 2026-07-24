@@ -25,22 +25,26 @@ below), Cursor/Kiro (already emit heartbeat events).
 
 Current (verified, :41): comment lines are dropped inside acceptLine.
 
-Change (additive, backward-compatible):
-- Extend options: `{ signal?: AbortSignal; onActivity?: () => void }`.
-- Invoke `onActivity` for every accepted line INCLUDING comment lines
-  (`:`-prefixed) and keepalive blanks — any byte arrival is liveness.
-- Callers that pass no onActivity see zero behavior change (anthropic and
-  chat/outbound are the current callers).
+Change (additive, backward-compatible — REVISED after A-gate: an
+onActivity callback is insufficient because the decoder never yields for
+comments, so consumers get no loop turn to observe activity):
+- Extend options: `{ signal?: AbortSignal; includeComments?: boolean }`.
+- When includeComments is true, comment records are YIELDED as
+  `{ comment: string }` records (new optional field on ServerSentEvent or a
+  distinct record shape — pin the exact shape in B; the contract is:
+  comment frames become consumable loop turns). Blank keepalive lines
+  without data stay non-yielding (no event loss, no noise).
+- Callers that do not opt in see zero behavior change (chat/outbound keeps
+  the current contract).
 
 ### 2. src/adapters/anthropic.ts — wire activity
 
-At the decodeServerSentEvents call sites (:717, :740): pass
-`onActivity: () => { noteActivity(); }` where noteActivity records a
-timestamp; when the adapter's event loop has emitted no real event since
-the last activity note, yield `{ type: "heartbeat" }` so the bridge's
-adapter-activity clock resets. Simplest correct form: yield heartbeat on
-each comment-only record (decoder yields nothing for comments, so emit
-heartbeat from onActivity via a pending-flag consumed on next loop turn).
+At the decodeServerSentEvents call sites (:717, :740): opt into
+includeComments and translate each yielded comment record into
+`{ type: "heartbeat" }` so the bridge's adapter-activity clock resets.
+This works because comment records now produce real loop turns (A-gate
+fix). Rate: one heartbeat per comment record is acceptable (upstream
+keepalives are typically 1/15-30s).
 
 ### 3. src/adapters/google.ts — wire activity
 
@@ -58,11 +62,12 @@ verify-first item: read, then patch only if missing.
 
 ### 5. src/server/relay.ts — relaySseWithHeartbeat (:324)
 
-Zero callers. Decision: REMOVE the dead export (and its tests adjusted),
-OR wire it. Native passthrough is byte-verbatim and adding synthetic
-comment frames changes wire bytes; the conservative resolution is removal
-+ a comment where it was pointing at the stall/keepalive design. If the
-A-gate reviewer argues for wiring behind config, amend here before B.
+Correction (A-gate finding): NOT zero-caller — exported via the server
+barrel (src/server/index.ts:87) and consumed by passthrough-abort.test.ts:2.
+No production call site, but it is a tested public export.
+Decision: KEEP the export in this phase (no removal, no wire change);
+record the deprecation question as a maintainer note in the D summary.
+This phase does not touch it.
 
 ## Accept criteria + activation scenarios
 
@@ -71,12 +76,14 @@ A-gate reviewer argues for wiring behind config, amend here before B.
    upstream_stall_timeout fires while comments flow. Activation:
    bridge-lifecycle test with a comment-only generator and a shortened
    stall budget; assert no incomplete is synthesized.
-2. Google comment-only keepalive -> same contract.
-3. Truly silent upstream (no bytes at all) -> stall timeout still fires
+1a. Comment-only INFINITE stream: heartbeats continue indefinitely, no
+   stall, no terminal (activation of the exact A-gate failure mode).
+1b. Truly silent upstream (no bytes at all) -> stall timeout still fires
    (regression pin).
-4. sse-decoder tests: existing 42 stay green without onActivity; new test
-   proves onActivity fires for comment lines and blank keepalives.
-5. `bun run typecheck` green; focused suites green.
+2. Google comment-only keepalive -> same contract.
+3. sse-decoder tests: existing 42 stay green without includeComments; new
+   tests prove comment records yield when opted in and never otherwise.
+4. `bun run typecheck` green; focused suites green.
 
 ## Risks
 

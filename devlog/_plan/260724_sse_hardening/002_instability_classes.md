@@ -72,8 +72,10 @@ PRs are marked and must not be re-implemented.
 - sse-decoder.ts:41 drops SSE comments; adapters never see keepalives, so
   the bridge adapter-activity clock (bridge.ts:196) can hit the 300s stall
   (stall-timeout.ts:8) during comment-only keepalive reasoning.
-- relaySseWithHeartbeat (relay.ts:324) declared, zero callers; native
-  passthrough emits no synthetic heartbeat.
+- relaySseWithHeartbeat (relay.ts:324) has no production call site but is
+  exported via the server barrel (src/server/index.ts:87) and used by
+  passthrough-abort.test.ts — it is a tested public export, not dead code;
+  native passthrough emits no synthetic heartbeat.
 - No issue/PR coverage.
 
 ### 12. Abort race between headers and reader attach (MED)

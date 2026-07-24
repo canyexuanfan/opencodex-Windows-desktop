@@ -10,14 +10,20 @@ preserve.
 IN:
 - src/bridge.ts (bridgeToResponsesSSE consumption discipline)
 - src/chat/outbound.ts (same discipline in the chat converter)
+- src/adapters/run-turn-queue.ts (bounded producer/consumer handoff)
 - src/server/responses/core.ts (cancelBodyOnAbort in the generic adapter
-  fetch path)
+  fetch path + runTurn wiring against the bounded queue)
 - src/lib/abort.ts (only if a helper gap appears)
 - tests: bridge-lifecycle, bridge-live-delivery, chat-completions-endpoint,
-  a new slow-consumer regression test
+  cursor/runTurn unread-reader coverage, a new slow-consumer regression test
 
 OUT: native passthrough relay (eager bounded relay already exists;
 Windows tee decision is class 10, out of scope), WS bridge (verify only).
+
+Sequencing (A-gate): this phase touches src/chat/outbound.ts and
+src/server/responses/core.ts, which open PRs #363/#352 also modify — B may
+only start after the triage decisions on those PRs have landed and the tree
+is rebased (see 000_plan.md sequencing dependencies).
 
 ## File change map
 
@@ -50,7 +56,25 @@ The converter wraps a ReadableStream around the Responses SSE generator;
 apply the same pull-driven discipline (it sits downstream of the bridge,
 so with 1 in place its queue is the only remaining unbounded one).
 
-### 3. src/server/responses/core.ts — abort race (~1300 fetch -> ~1473
+### 3. src/adapters/run-turn-queue.ts + core.ts runTurn wiring (A-gate
+### finding, High)
+
+Current (verified): core.ts:1153/1176 starts `void runTurn()` before the
+bridge consumes anything; run-turn-queue.ts:57 pushes into an unbounded
+array when no consumer reads. Bridge-side backpressure alone cannot fix
+this producer.
+
+Change:
+- Give the queue a high-water bound: when the internal array exceeds the
+  bound AND no consumer is attached/reading, the producer side observes
+  backpressure (await consumer drain) or, past a hard cap, the turn's abort
+  fires and the queue terminates with an error event — never unbounded
+  growth.
+- Wire queue termination to the same abort the phase-2 terminal path uses,
+  so first-terminal stops the producer here too.
+- Exact bound constant documented inline; no config surface.
+
+### 4. src/server/responses/core.ts — abort race (~1300 fetch -> ~1473
 ### reader)
 
 Current (verified): the generic adapter path attaches no guard between
@@ -65,6 +89,14 @@ Change:
   producing an unhandledRejection.
 - Match the existing web-search usage pattern; no new helper unless the
   shapes differ.
+
+### 5. First-frame latency verification (A-gate)
+
+Pull-driven consumption must not delay the first frame for consumers that
+read immediately: verify Claude outbound (claude/outbound.ts:355) and the
+WS pump (ws-bridge.ts:179) still observe first bytes without an extra
+event-loop turn vs the eager baseline (bridge-live-delivery.test.ts is the
+anchor; add a first-frame assertion if missing).
 
 ## Accept criteria + activation scenarios
 
@@ -81,10 +113,13 @@ Change:
 4. Abort race: abort fired between header resolution and reader attach
    produces no unhandledRejection and cancels the body. Activation:
    fault-injection test mirroring abort.ts:126's documented race.
-5. Live-delivery: bridge-live-delivery.test.ts stays green (pull-driven
+5. runTurn unread-reader: a Cursor-style queue with no consumer stops
+   growing at the bound; abort fires at the hard cap; with a consumer,
+   ordering matches the unbounded baseline.
+6. Live-delivery: bridge-live-delivery.test.ts stays green (pull-driven
    must not reintroduce event-loop coalescing for an actively-reading
-   client).
-6. Full gate: `bun run typecheck` + bridge/chat/passthrough suites green.
+   client); Claude-outbound and WS first-frame checks pass.
+7. Full gate: `bun run typecheck` + bridge/chat/passthrough suites green.
 
 ## Risks
 
