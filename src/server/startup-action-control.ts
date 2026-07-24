@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { durableBunPath } from "../lib/bun-runtime";
-import { isWindowsAccessDenied, runWindowsElevatedCommand } from "../lib/windows-elevation";
-import { windowsSchedulerTaskInstalled } from "../service";
+import { isWindowsAccessDenied } from "../lib/windows-elevation";
+import { finalizeWindowsSchedulerServiceRegistration, windowsSchedulerTaskInstalled } from "../service";
 
 export type StartupInstallAction = "install-service" | "install-shim";
 let activeInstall: StartupInstallAction | null = null;
@@ -17,19 +17,10 @@ function installFailureDetail(stdout: string, stderr: string, error: Error): str
   return stderr.trim() || stdout.trim() || error.message;
 }
 
-function runCliInstall(action: StartupInstallAction, elevated = false): Promise<{ stdout: string; stderr: string }> {
+function runCliInstall(action: StartupInstallAction): Promise<{ stdout: string; stderr: string }> {
   const bun = durableBunPath();
   const cli = join(import.meta.dir, "..", "cli", "index.ts");
   const argv = [cli, ...startupInstallArgv(action)];
-  if (elevated && process.platform === "win32") {
-    return runWindowsElevatedCommand(bun, argv).then(exitCode => {
-      if (exitCode === 0) return { stdout: "", stderr: "" };
-      if (exitCode === 1223) {
-        throw new Error("Windows administrator approval was required to install the background service, but the UAC prompt was cancelled or denied.");
-      }
-      throw new Error(`Background service install failed with exit code ${exitCode}.`);
-    });
-  }
   return new Promise((resolve, reject) => {
     execFile(bun, argv, {
       encoding: "utf8",
@@ -57,7 +48,7 @@ export function runStartupInstallAction(action: StartupInstallAction): Promise<{
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       if (action === "install-service" && process.platform === "win32" && isWindowsAccessDenied(detail)) {
-        await runCliInstall(action, true);
+        await finalizeWindowsSchedulerServiceRegistration();
         if (!windowsSchedulerTaskInstalled()) {
           throw new Error("Background service install still failed after requesting administrator approval.");
         }

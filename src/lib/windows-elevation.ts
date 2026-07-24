@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -6,6 +6,7 @@ function windowsAccessDeniedText(text: string): boolean {
   const normalized = text.toLowerCase();
   return normalized.includes("access denied")
     || normalized.includes("access is denied")
+    || normalized.includes("denied access")
     || normalized.includes("zugriff verweigert");
 }
 
@@ -30,10 +31,20 @@ export function formatWindowsSchtasksError(error: unknown, args: string[]): stri
   }
   const argsText = args.map(arg => (/\s/.test(arg) ? `"${arg}"` : arg)).join(" ");
   return [
-    "Windows denied access while running Task Scheduler.",
+    "Windows access denied while running Task Scheduler.",
     `Command: schtasks ${argsText}`,
     "Approve the Windows UAC prompt to install the background service, or run `ocx service install` from an elevated PowerShell window.",
   ].join(" ");
+}
+
+function windowsCmdQuote(value: string): string {
+  if (!/[\s"]/.test(value)) return value;
+  return `"${value.replace(/"/g, '\\"')}"`;
+}
+
+/** Build one Win32 argument-list string for Start-Process -ArgumentList. */
+export function buildWindowsElevatedArgumentList(args: string[]): string {
+  return args.map(windowsCmdQuote).join(" ");
 }
 
 function windowsPowerShell(): string {
@@ -46,38 +57,40 @@ function psSingleQuote(value: string): string {
 }
 
 /** Launch a file with UAC elevation and wait for it to exit. */
-export function runWindowsElevated(file: string, args: string[]): Promise<number> {
+export function runWindowsElevated(file: string, args: string[], timeoutMs = 120_000): Promise<number> {
   if (process.platform !== "win32") {
     return Promise.reject(new Error("Windows elevation is only supported on Windows."));
   }
-  const argumentList = args.map(arg => psSingleQuote(arg)).join(", ");
+  const argumentList = buildWindowsElevatedArgumentList(args);
   const script = [
     `$p = Start-Process -FilePath ${psSingleQuote(file)}`,
-    argumentList.length > 0 ? ` -ArgumentList ${argumentList}` : "",
+    argumentList.length > 0 ? ` -ArgumentList ${psSingleQuote(argumentList)}` : "",
     " -Verb RunAs -WindowStyle Hidden -PassThru -Wait;",
     "if ($null -eq $p) { exit 1223 }",
     "exit $p.ExitCode",
   ].join("");
   return new Promise((resolve, reject) => {
-    try {
-      execFileSync(windowsPowerShell(), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      });
-      resolve(0);
-    } catch (error) {
-      const exec = error as { status?: number | null; message?: string };
+    execFile(windowsPowerShell(), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], {
+      encoding: "utf8",
+      timeout: timeoutMs,
+      windowsHide: true,
+      maxBuffer: 256 * 1024,
+    }, (error, _stdout, stderr) => {
+      if (!error) {
+        resolve(0);
+        return;
+      }
+      const exec = error as NodeJS.ErrnoException & { status?: number | null };
+      if (exec.code === "ETIMEDOUT") {
+        reject(new Error(`Windows elevation timed out after ${timeoutMs}ms.`));
+        return;
+      }
       if (typeof exec.status === "number") {
         resolve(exec.status);
         return;
       }
-      reject(error instanceof Error ? error : new Error(String(error)));
-    }
+      const detail = stderr.trim() || exec.message;
+      reject(new Error(detail || "Windows elevation failed."));
+    });
   });
 }
-
-export function runWindowsElevatedCommand(file: string, args: string[]): Promise<number> {
-  return runWindowsElevated(file, args);
-}
-

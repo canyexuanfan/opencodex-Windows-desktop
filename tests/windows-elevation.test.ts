@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  buildWindowsElevatedArgumentList,
   formatWindowsSchtasksError,
   isWindowsAccessDenied,
   isWindowsAccessDeniedError,
@@ -28,9 +29,26 @@ describe("windows elevation helpers", () => {
       status: 1,
     });
     const message = formatWindowsSchtasksError(error, ["/create", "/tn", "opencodex-proxy"]);
-    expect(message).toContain("Windows denied access while running Task Scheduler.");
+    expect(message).toContain("Windows access denied while running Task Scheduler.");
     expect(message).toContain("schtasks /create /tn opencodex-proxy");
     expect(message).toContain("UAC prompt");
+  });
+
+  test("recognizes formatted scheduler denial text for retry detection", () => {
+    expect(isWindowsAccessDenied("Windows access denied while running Task Scheduler.")).toBe(true);
+  });
+
+  test("builds one Win32-quoted argument list for spaced paths", () => {
+    expect(buildWindowsElevatedArgumentList([
+      "/create",
+      "/tn",
+      "opencodex-proxy",
+      "/xml",
+      "C:\\Users\\Jane Doe\\.opencodex\\opencodex-service-task.xml",
+      "/f",
+    ])).toBe(
+      '/create /tn opencodex-proxy /xml "C:\\Users\\Jane Doe\\.opencodex\\opencodex-service-task.xml" /f',
+    );
   });
 
   test("passes through non-access-denied errors unchanged", () => {
@@ -38,4 +56,3 @@ describe("windows elevation helpers", () => {
     expect(formatWindowsSchtasksError(error, ["/query"])).toBe("schtasks is unavailable");
   });
 });
-
