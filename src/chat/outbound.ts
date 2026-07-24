@@ -350,8 +350,20 @@ export function responsesSseToChatCompletionsSse(
             const details = isRec(response.incomplete_details) ? response.incomplete_details : {};
             const reason = details.reason === "max_output_tokens" ? "length"
               : details.reason === "content_filter" ? "content_filter"
-              : sawToolUse ? "tool_calls" : "stop";
-            finish(reason, response.usage);
+              : undefined;
+            if (reason !== undefined) {
+              // Truthful OpenAI-compatible finish reasons: the turn ended, just early.
+              finish(reason, response.usage);
+            } else {
+              // upstream_stall_timeout / adapter_eof / proxy-synthesized incompletes are
+              // failures, not early finishes: emit an error frame and close WITHOUT
+              // [DONE] instead of a success-looking stop/tool_calls + [DONE].
+              const why = typeof details.reason === "string" ? details.reason : "unknown";
+              const message = typeof details.message === "string" && details.message.length > 0
+                ? details.message
+                : `upstream stream ended early (${why})`;
+              fail(message);
+            }
             break;
           }
           case "response.failed": {
