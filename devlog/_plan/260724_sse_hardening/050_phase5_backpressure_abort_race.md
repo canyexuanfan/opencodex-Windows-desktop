@@ -25,6 +25,18 @@ src/server/responses/core.ts, which open PRs #363/#352 also modify — B may
 only start after the triage decisions on those PRs have landed and the tree
 is rebased (see 000_plan.md sequencing dependencies).
 
+STALE-CHECK (WP5 P): gate CLEARED — #363 merged affc477e, #352 merged
+beab5b3e, both rebased in long ago. Fresh anchors: bridge eager
+`async start(controller)` at bridge.ts:163 (no pull, post-WP2 manual
+iterator inside); run-turn-queue backlog array at run-turn-queue.ts:57
+(`queued.push(event)`, readers-settle structure at :67-86);
+cancelBodyOnAbort at abort.ts:137 (web-search executor usage:
+web-search/executor.ts:90, anthropic-executor.ts:173); core.ts generic
+fetch->parseStream handoff region ~:1300-1480 (post-#352/#366 shifts).
+Bridge now has WP2's terminal-break + fire-and-forget return: the
+pull-driven restructure MUST preserve that cleanup ordering (abort first,
+break, void return.catch) — it is the pinned contract from 020.
+
 ## File change map
 
 ### 1. src/bridge.ts — backpressure-aware consumption (~162 start,
