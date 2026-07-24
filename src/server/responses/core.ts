@@ -98,6 +98,7 @@ import {
 } from "../relay";
 import { relaySseEagerBounded } from "../relay-eager";
 import { decideEagerRelay } from "../../lib/bun-stream-caps";
+import { cancelBodyOnAbort } from "../../lib/abort";
 import { hasResponsesItemIdRepair, relaySseWithResponsesItemIdRepair } from "../responses-item-id-repair";
 import type { EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/catalog";
 
@@ -1312,7 +1313,9 @@ export async function handleResponses(
   if (adapter.runTurn) {
     const runTurnAbort = new AbortController();
     linkAbortSignal(runTurnAbort, options.abortSignal);
-    const queue = createAdapterEventQueue();
+    const queue = createAdapterEventQueue({
+      onBacklogExceeded: () => runTurnAbort.abort(),
+    });
     const runTurn = async (): Promise<void> => {
       try {
         noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens);
@@ -1628,6 +1631,8 @@ export async function handleResponses(
       return formatErrorResponse(upstreamResponse.status, "upstream_error", `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`);
     }
   }
+
+  cancelBodyOnAbort(upstreamResponse.body, upstream.signal);
 
   if (parsed.stream) {
     const eventStream = activeAdapter.parseStream(upstreamResponse);
