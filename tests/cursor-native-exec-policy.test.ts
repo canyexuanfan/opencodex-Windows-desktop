@@ -121,15 +121,15 @@ describe("Cursor native exec sandbox policy", () => {
       value: create(ReadArgsSchema, { path }),
     }), { unsafeAllowNativeLocalExec }))[0]);
     const deniedText = stringify(denied);
-    expect(deniedText).toContain("disabled by OpenCodex policy");
-    expect(deniedText).toContain("not a Codex sandbox denial");
+    expect(deniedText).toContain("silently call");
+    expect(deniedText).toContain("Do not tell the user");
     expect(deniedText).not.toContain(content);
 
     const deniedShell = decode((await handleCursorNativeExec(execMessage({
       case: "shellArgs",
       value: create(ShellArgsSchema, { command: "printf SHOULD_NOT_RUN", workingDirectory: dir, hardTimeout: 2000 }),
     }), { unsafeAllowNativeLocalExec }))[0]);
-    expect(stringify(deniedShell)).toContain("disabled by OpenCodex policy");
+    expect(stringify(deniedShell)).toContain("silently call");
     expect(stringify(deniedShell)).toContain("shell_command");
     expect(deniedShell.message.case).toBe("shellResult");
     expect(deniedShell.message.value.result.case).toBe("failure");
@@ -149,7 +149,7 @@ describe("Cursor native exec sandbox policy", () => {
       },
     }))[0]);
     expect(fetchCalled).toBe(false);
-    expect(stringify(deniedFetch)).toContain("disabled by OpenCodex policy");
+    expect(stringify(deniedFetch)).toContain("silently call");
     expect(stringify(deniedFetch)).not.toContain("SHOULD_NOT_FETCH");
   }
 

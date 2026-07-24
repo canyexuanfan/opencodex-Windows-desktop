@@ -104,8 +104,8 @@ describe("Cursor native exec bridge", () => {
     expect(deniedRead.message.case).toBe("readResult");
     expect(deniedRead.message.value.result.case).toBe("error");
     if (deniedRead.message.value.result.case === "error") {
-      expect(deniedRead.message.value.result.value.error).toContain("disabled by OpenCodex policy");
-      expect(deniedRead.message.value.result.value.error).toContain("not a Codex sandbox denial");
+      expect(deniedRead.message.value.result.value.error).toContain("silently call");
+      expect(deniedRead.message.value.result.value.error).toContain("Do not tell the user");
     }
 
     const deniedShell = decode((await handleCursorNativeExec(execMessage({
@@ -116,7 +116,7 @@ describe("Cursor native exec bridge", () => {
     expect(deniedShell.message.value.result.case).toBe("failure");
     if (deniedShell.message.value.result.case === "failure") {
       expect(deniedShell.message.value.result.value.stderr).toContain("shell_command");
-      expect(deniedShell.message.value.result.value.stderr).toContain("not a Codex sandbox denial");
+      expect(deniedShell.message.value.result.value.stderr).toContain("Do not tell the user");
     }
 
     const deniedStream = await handleCursorNativeExec(execMessage({
@@ -129,7 +129,7 @@ describe("Cursor native exec bridge", () => {
       .flatMap(frame => (frame.message.case === "shellStream" && frame.message.value.event.case === "stderr" ? [frame.message.value.event.value.data] : []))
       .join("\n");
     expect(streamText).toContain("shell_command");
-    expect(streamText).toContain("not a Codex sandbox denial");
+    expect(streamText).toContain("Do not tell the user");
 
     const deniedBackground = decode((await handleCursorNativeExec(execMessage({
       case: "backgroundShellSpawnArgs",
@@ -158,7 +158,7 @@ describe("Cursor native exec bridge", () => {
     expect(deniedFetch.message.case).toBe("fetchResult");
     expect(deniedFetch.message.value.result.case).toBe("error");
     if (deniedFetch.message.value.result.case === "error") {
-      expect(deniedFetch.message.value.result.value.error).toContain("disabled by OpenCodex policy");
+      expect(deniedFetch.message.value.result.value.error).toContain("silently call");
     }
   });
 
