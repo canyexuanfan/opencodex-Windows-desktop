@@ -35,7 +35,11 @@ yield { type: "done", usage: pendingUsage };
 
 Changes:
 - (a) Track `sawAnyFrame` and `sawTerminalSignal` (a parsed candidate with
-  `finishReason` or usage-bearing final chunk). At EOF, FIRST flush the
+  `finishReason` or usage-bearing final chunk — A-gate fold: this is the
+  ONLY terminal-signal definition; a parsed content frame is NOT one
+  (otherwise truncated-after-text completes clean, which is class 1
+  itself). Real Gemini streams always end with finishReason+usage, so
+  this tightening breaks no existing test). At EOF, FIRST flush the
   streaming decoder (`buffer += decoder.decode()`) so partial UTF-8 bytes
   held inside TextDecoder surface into the string buffer (A-gate finding:
   today a valid STOP followed by truncated UTF-8 bytes never reaches
@@ -50,9 +54,10 @@ Changes:
   `line.startsWith("data:")` and slicing 5, then trimming — do NOT switch to
   the shared decoder in this phase (google frames carry no multi-line data;
   keep the diff surgical).
-- (d) EOF without any terminal signal (no finishReason, no usage, no parsed
-  content frame): yield error "upstream stream ended without a terminal
-  signal — possible truncation" (mirrors openai-chat.ts:724-726).
+- (d) EOF without any terminal signal (no finishReason AND no usage —
+  definition unified per (a)): yield error "upstream stream ended without
+  a terminal signal — possible truncation" (mirrors
+  openai-chat.ts:724-726).
 - (e) Propagate finishReason on the terminal done:
   `lastFinishReason === "MAX_TOKENS"` -> `yield { type: "done", usage,
   stopReason: "max_tokens" }`; SAFETY/RECITATION/BLOCKLIST/PROHIBITED_CONTENT
@@ -64,8 +69,6 @@ Changes:
 Current (verified): `if (pendingUsage && !emittedDone) yield* emitDone();`
 
 Change:
-- Track `sawStopSignal = pendingStopReason !== undefined` (message_delta
-  already records stop_reason at :803-806) OR any tool_use/content emitted.
 - EOF tail becomes: if `!emittedDone`:
   - `pendingStopReason !== undefined` (compatible providers that skip
     message_stop but reported stop_reason in message_delta) -> emitDone()
@@ -75,6 +78,9 @@ Change:
     `yield { type: "error", message: "upstream stream ended before
     message_stop — possible truncation" }`.
   - else (nothing at all) -> error (same message). Never silent done.
+  (A-gate note: `pendingStopReason` is in scope at the EOF tail —
+  anthropic.ts:727 declaration, :806 write, :820 read. Mapping stays
+  local to the EOF branch; shared emitDone keeps its current behavior.)
 
 ### 3. src/adapters/openai-chat.ts — MODIFY handleDataLine + EOF (~595-730)
 
@@ -131,7 +137,10 @@ Change: extend to also map `event.stopReason === "content_filter"` ->
   they now fail-closed. Mitigation: error message names the missing
   terminal; this is the intended truthfulness trade-off (a silent truncation
   is worse than a visible failure).
-- Existing test "MAX_TOKENS with NO tool call still completes" pins the old
-  false-completion behavior and must be updated to the new contract — flag
-  in B, do not silently rewrite: the new pinned contract is incomplete, not
-  completed.
+- Test updates in B (A-gate verified NO existing test goes mechanically
+  RED): EXTEND google-vertex-stream.test.ts:57 ("MAX_TOKENS with NO tool
+  call still completes") with `done.stopReason === "max_tokens"` and add
+  the bridge-level pin (response.incomplete max_output_tokens); add
+  message_stop to the umans-provider.test.ts:146 fixture so its truncated
+  shape is not left as "normal"; all new accept criteria are written
+  RED-first.
