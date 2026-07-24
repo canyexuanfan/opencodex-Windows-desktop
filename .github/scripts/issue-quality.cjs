@@ -13,6 +13,7 @@ function clean(raw) {
   let s = raw.replace(/<!--[\s\S]*?-->/g, "");
   // Treat GitHub's "No response" placeholder as empty.
   s = s.replace(/^[\s_*]*No response[\s_*]*$/gim, "");
+  s = s.replace(/^[\s_*]*(na|n\/a|not applicable|not available)[\s_*]*$/gim, "");
   return s.trim();
 }
 
@@ -334,12 +335,41 @@ function isPlaceholder(text) {
   const lower = c.toLowerCase();
   return (
     lower === "no response" ||
+    lower === "na" ||
     lower === "n/a" ||
+    lower === "not applicable" ||
+    lower === "not available" ||
     lower === "none" ||
     lower === "todo" ||
     lower === "tbd" ||
     /^_no response_$/i.test(c)
   );
+}
+
+function countWords(text) {
+  const c = clean(text);
+  if (!c) return 0;
+  const spaced = (c.match(/\b[\p{L}\p{N}']+\b/gu) || []).length;
+  if (spaced > 0) return spaced;
+  return (c.match(/\p{L}/gu) || []).length;
+}
+
+function hasConcreteDetail(text) {
+  const c = clean(text);
+  if (!c) return false;
+  return (
+    /\d/.test(c) ||
+    /[`{}\[\]<>/\\]/.test(c) ||
+    /\b(ocx|config|api|cli|dashboard|provider|proxy|route|endpoint|workflow|command)\b/i.test(c)
+  );
+}
+
+function isTooTerseFeatureSection(text) {
+  if (isEmpty(text) || isPlaceholder(text)) return false;
+  const words = countWords(text);
+  if (words >= 8) return false;
+  if (words >= 6 && hasConcreteDetail(text)) return false;
+  return !hasConcreteDetail(text);
 }
 
 /**
@@ -386,7 +416,12 @@ function validateIssue(issue) {
     // On the legacy / translated forms these sections may be absent (null).
     if (blocker !== null && isEmpty(blocker)) emptyCore.push("current limitation");
     if (isEmpty(behaviour)) emptyCore.push("expected behaviour");
-    if (example !== null && isEmpty(example)) emptyCore.push("example usage");
+    if (example !== null && isPlaceholder(example)) {
+      reasons.push("Example usage or interface contains placeholder text instead of a concrete example.");
+      guidance.push("Add a real CLI command, config snippet, API exchange, or before/after workflow example.");
+    } else if (example !== null && isEmpty(example)) {
+      emptyCore.push("example usage");
+    }
 
     const mappedHeadingPresent =
       goal !== null || blocker !== null || behaviour !== null || example !== null;
@@ -420,6 +455,15 @@ function validateIssue(issue) {
         reasons.push("Required sections contain only placeholder text.");
         guidance.push("Replace placeholder text with your actual proposal.");
       }
+    }
+
+    const terseSections = [];
+    if (goal !== null && isTooTerseFeatureSection(goal)) terseSections.push("goal / problem");
+    if (blocker !== null && isTooTerseFeatureSection(blocker)) terseSections.push("current limitation");
+    if (behaviour !== null && isTooTerseFeatureSection(behaviour)) terseSections.push("expected behaviour");
+    if (terseSections.length > 0) {
+      reasons.push(`Required sections are too vague to act on: ${terseSections.join(", ")}.`);
+      guidance.push("Describe the workflow, limitation, and expected behaviour with enough detail for someone to implement or evaluate the request.");
     }
   }
 
