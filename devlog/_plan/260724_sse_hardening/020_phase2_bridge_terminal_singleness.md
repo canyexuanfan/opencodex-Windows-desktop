@@ -42,6 +42,13 @@ Change:
   cancellation. Exact call site is pinned in B against core.ts:1140-1180 —
   the contract (producer stops at first terminal) is not negotiable, the
   mechanism may be adjusted to the existing abort plumbing.
+  STALE-CHECK (WP2 P, post-#352): the wiring now lives at
+  core.ts:1304 (`const runTurnAbort = new AbortController()`) and the
+  bridge receives the cancel callback at core.ts:1340-1343
+  (`() => { runTurnAbort.abort(); queue.close(); }` passed as the
+  cancellation argument of bridgeToResponsesSSE). B must verify whether
+  the bridge currently invokes that callback on terminal events; if it
+  only fires on client cancel, the terminal path must call it too.
 - Guard the synthesized post-loop terminals (`if (!terminated)` already
   exists for the no-terminal EOF path — keep it; it becomes unreachable
   after a real terminal, which is the point).
