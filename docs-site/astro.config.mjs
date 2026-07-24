@@ -2,9 +2,9 @@
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
 
-// Project GitHub Pages site: https://lidge-jun.github.io/opencodex
-// `site` + `base` make Starlight emit correct absolute URLs and asset paths under the repo subpath.
-const SITE_URL = "https://lidge-jun.github.io/opencodex";
+// Canonical GitHub Pages custom domain. The site is served at the domain root,
+// so Starlight must not emit the former /opencodex project-site prefix.
+const SITE_URL = "https://opencodex.me";
 
 // JSON-LD: WebSite + SoftwareApplication (docs SEO baseline; canonical/og/sitemap
 // are emitted by Starlight itself).
@@ -47,8 +47,7 @@ const jsonLd = JSON.stringify({
 });
 
 export default defineConfig({
-  site: "https://lidge-jun.github.io",
-  base: "/opencodex",
+  site: SITE_URL,
   trailingSlash: "ignore",
   // lightningcss merges animation-timeline into the `animation` shorthand,
   // which Chrome cannot parse — the scroll-driven animations die silently.
@@ -75,11 +74,11 @@ export default defineConfig({
         PageTitle: "./src/components/PageTitle.astro",
       },
       head: [
-        { tag: "meta", attrs: { property: "og:image", content: "https://lidge-jun.github.io/opencodex/og.png" } },
+        { tag: "meta", attrs: { property: "og:image", content: `${SITE_URL}/og.png` } },
         { tag: "meta", attrs: { property: "og:image:width", content: "1200" } },
         { tag: "meta", attrs: { property: "og:image:height", content: "630" } },
         { tag: "meta", attrs: { name: "twitter:card", content: "summary_large_image" } },
-        { tag: "meta", attrs: { name: "twitter:image", content: "https://lidge-jun.github.io/opencodex/og.png" } },
+        { tag: "meta", attrs: { name: "twitter:image", content: `${SITE_URL}/og.png` } },
         { tag: "meta", attrs: { name: "theme-color", media: "(prefers-color-scheme: light)", content: "#ffffff" } },
         { tag: "meta", attrs: { name: "theme-color", media: "(prefers-color-scheme: dark)", content: "#212121" } },
         { tag: "script", attrs: { type: "application/ld+json" }, content: jsonLd },
@@ -146,6 +145,14 @@ export default defineConfig({
             { label: "Configuration", translations: { ko: "설정", "zh-CN": "配置", ru: "Конфигурация", ja: "設定" }, slug: "reference/configuration" },
             { label: "Adapters", translations: { ko: "어댑터", "zh-CN": "适配器", ru: "Адаптеры", ja: "アダプター" }, slug: "reference/adapters" },
             { label: "Architecture", translations: { ko: "아키텍처", "zh-CN": "架构", ru: "Архитектура", ja: "アーキテクチャ" }, slug: "reference/architecture" },
+          ],
+        },
+        {
+          label: "Troubleshooting",
+          translations: { ko: "문제 해결", "zh-CN": "故障排除", ru: "Устранение неполадок", ja: "トラブルシューティング" },
+          collapsed: true,
+          items: [
+            { label: "Windows Memory Growth", translations: { ko: "Windows 메모리 증가", "zh-CN": "Windows 内存增长", ru: "Рост памяти в Windows", ja: "Windows メモリ増加" }, slug: "troubleshooting/windows-memory" },
           ],
         },
         { label: "Contributing", translations: { ko: "기여하기", "zh-CN": "贡献", ru: "Как внести вклад", ja: "コントリビュート" }, slug: "contributing" },

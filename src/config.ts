@@ -329,6 +329,7 @@ const warnedConfigFallbacks = new Set<string>();
 const providerConfigSchema = z.object({
   adapter: z.string().min(1),
   baseUrl: z.string().min(1),
+  responsesPath: z.string().min(1).optional(),
   allowPrivateNetwork: z.boolean().optional(),
   codexAccountMode: z.enum(["pool", "direct"]).optional(),
   responsesItemIdRepair: z.object({
@@ -374,6 +375,18 @@ export function providerBaseUrlConfigError(baseUrl: string): string | null {
   return null;
 }
 
+function providerResponsesPathConfigError(responsesPath: string | undefined): string | null {
+  if (responsesPath === undefined) return null;
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(responsesPath) || responsesPath.includes("://")) {
+    return "responsesPath must be a relative path without a URL scheme";
+  }
+  if (!responsesPath.startsWith("/")) return "responsesPath must start with /";
+  if (responsesPath.includes("?") || responsesPath.includes("#")) {
+    return "responsesPath must not include query strings or fragments";
+  }
+  return null;
+}
+
 export function providerHeadersConfigError(headers: unknown): string | null {
   if (headers === undefined) return null;
   if (!headers || typeof headers !== "object" || Array.isArray(headers)) return "headers must be an object";
@@ -409,6 +422,18 @@ export function positiveIntegerConfigError(value: unknown, field: string): strin
   return null;
 }
 
+export function booleanRecordConfigError(value: unknown, field: string): string | null {
+  if (value === undefined) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return `${field} must be a plain object`;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return `${field} must be a plain object with own properties`;
+  for (const [key, entry] of Object.entries(value)) {
+    if (!key.trim()) return `${field} keys must be nonblank model ids`;
+    if (typeof entry !== "boolean") return `${field}.${key} must be a boolean`;
+  }
+  return null;
+}
+
 const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
   providers: z.record(z.string(), providerConfigSchema),
@@ -416,6 +441,12 @@ const configSchema = z.object({
   openaiProviderTierVersion: z.union([z.literal(1), z.literal(2)]).optional(),
   providerContextCaps: z.record(z.string(), z.number().int().positive()).optional(),
   contextCapValue: z.number().int().positive().optional(),
+  multiAgentGuidanceEnabled: z.boolean().optional(),
+  codexShimAutoRestore: z.boolean().optional(),
+  // Invalid values degrade to undefined ("auto") instead of failing the whole
+  // parse: a hand-edited typo must never trip the backup-and-defaults repair
+  // path below and wipe providers/pool accounts. Warning emitted in loadConfig.
+  streamMode: z.enum(["auto", "legacy-tee", "eager-relay"]).optional().catch(undefined),
 }).passthrough().superRefine((config, ctx) => {
   for (const name of Object.keys(config.providers)) {
     if (!isValidProviderName(name)) {
@@ -464,6 +495,14 @@ const configSchema = z.object({
         });
       }
     }
+    const responsesPathError = providerResponsesPathConfigError(provider.responsesPath);
+    if (responsesPathError) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers", name, "responsesPath"],
+        message: responsesPathError,
+      });
+    }
     const headersError = providerHeadersConfigError((provider as { headers?: unknown }).headers);
     if (headersError) {
       ctx.addIssue({
@@ -481,6 +520,17 @@ const configSchema = z.object({
         code: "custom",
         path: ["providers", name, "modelMaxInputTokens"],
         message: maxInputError,
+      });
+    }
+    const reasoningSummariesError = booleanRecordConfigError(
+      (provider as { modelSupportsReasoningSummaries?: unknown }).modelSupportsReasoningSummaries,
+      "modelSupportsReasoningSummaries",
+    );
+    if (reasoningSummariesError) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers", name, "modelSupportsReasoningSummaries"],
+        message: reasoningSummariesError,
       });
     }
     const defaultMaxOutputError = positiveIntegerConfigError(
@@ -597,6 +647,19 @@ export function hardenExistingSecret(path: string): void {
     }
   }
 }
+/**
+ * The schema's `.catch(undefined)` silently degrades an invalid persisted
+ * `streamMode` to "auto"; surface that once so a hand-edited typo (e.g.
+ * "legacy_tee") is discoverable instead of silently changing stream shape.
+ */
+function warnDegradedStreamMode(rawParsed: unknown, validated: OcxConfig): void {
+  if (!rawParsed || typeof rawParsed !== "object") return;
+  const raw = (rawParsed as Record<string, unknown>).streamMode;
+  if (raw !== undefined && validated.streamMode === undefined) {
+    console.warn(`⚠️  config.json streamMode ${JSON.stringify(raw)} is invalid (expected "auto", "legacy-tee", or "eager-relay") — falling back to "auto"`);
+  }
+}
+
 export function loadConfig(): OcxConfig {
   const dir = getConfigDir();
   const configPath = getConfigPath();
@@ -610,7 +673,10 @@ export function loadConfig(): OcxConfig {
     const raw = readFileSync(configPath, "utf-8").replace(/^\uFEFF/, "");
     const parsed = JSON.parse(raw);
     const result = configSchema.safeParse(parsed);
-    if (result.success) return result.data as OcxConfig;
+    if (result.success) {
+      warnDegradedStreamMode(parsed, result.data as OcxConfig);
+      return result.data as OcxConfig;
+    }
     // Schema validation failed — merge defaults into the raw object instead of
     // discarding it entirely, so pool accounts and providers survive a missing
     // field like defaultProvider.
@@ -728,6 +794,21 @@ export function codexAutoStartEnabled(config: Pick<OcxConfig, "codexAutoStart">)
   return config.codexAutoStart !== false;
 }
 
+export const CODEX_SHIM_AUTO_RESTORE_ENV = "OPENCODEX_CODEX_SHIM_AUTO_RESTORE";
+
+export function codexShimAutoRestoreEnabled(
+  config: Pick<OcxConfig, "codexShimAutoRestore">,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return config.codexShimAutoRestore !== false && env[CODEX_SHIM_AUTO_RESTORE_ENV] !== "0";
+}
+
+export function multiAgentGuidanceEnabled(
+  config: Pick<OcxConfig, "multiAgentGuidanceEnabled">,
+): boolean {
+  return config.multiAgentGuidanceEnabled !== false;
+}
+
 export function getDefaultConfig(): OcxConfig {
   // Fresh-install default: works out of the box with Codex's ChatGPT OAuth (no API key).
   // gpt-* requests forward the caller's incoming OAuth headers to the ChatGPT backend.
@@ -748,8 +829,10 @@ export function getDefaultConfig(): OcxConfig {
     },
     defaultProvider: "openai",
     subagentModels: [...DEFAULT_SUBAGENT_MODELS],
+    multiAgentGuidanceEnabled: true,
     websockets: false,
     codexAutoStart: true,
+    codexShimAutoRestore: true,
   };
 }
 

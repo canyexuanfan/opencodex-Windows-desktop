@@ -14,7 +14,7 @@ OpenAI 的 bare `gpt-*` 使用单一 `openai` provider。`codexAccountMode` 在 
 1. **显式 `provider/model`** —— 如果 id 包含 `/`，且斜杠前的部分是某个已配置提供商的名称，则使用该提供商，并将 id 截取为斜杠之后的部分。
 
    ```text
-   anthropic/claude-opus-4-8   →  provider "anthropic",   model "claude-opus-4-8"
+   anthropic/claude-opus-5     →  provider "anthropic",   model "claude-opus-5"
    ollama-cloud/glm-5.2        →  provider "ollama-cloud", model "glm-5.2"
    openrouter/openai/gpt-5.6-sol → provider "openrouter",  model "openai/gpt-5.6-sol"
    ```
@@ -75,4 +75,4 @@ OpenAI 的 bare `gpt-*` 使用单一 `openai` provider。`codexAccountMode` 在 
 - **为提供商预置 `models[]` 或 `defaultModel`**，这样短 id（规则 2/4）无需 `provider/` 前缀即可解析。
 - **前缀模式只是一种便利**，而非保证：只有当确实配置了同名（例如 `anthropic`、`openai`、`groq`）的提供商时，它们才会解析成功。
 
-这些规则读取的提供商字段请参见 [配置](/opencodex/zh-cn/reference/configuration/)。
+这些规则读取的提供商字段请参见 [配置](/zh-cn/reference/configuration/)。

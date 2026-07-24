@@ -125,6 +125,8 @@ fall back to 350k.
 `ANTHROPIC_SMALL_FAST_MODEL`. The effective Haiku is `tierModels.haiku ?? smallFastModel`, fed
 to both Haiku variables.
 
+When both `tierModels.haiku` and `smallFastModel` are absent, OpenCodex leaves both helper variables unset; Claude Code then chooses its native helper model (currently Sonnet), which may incur native-provider charges.
+
 ## Roster agents (injectAgents)
 
 `ocx claude` (and the system-env daemon) syncs your featured subagent roster (Subagents tab,
@@ -133,7 +135,7 @@ up to 5 models) plus `ocx-self` into `~/.claude/agents/ocx-*.md`.
 - **`ocx-self`** pins your `/model` picker default (falling back to `claudeCode.model`); omitted
   when neither exists. It does NOT use model inheritance.
 - Each agent body contains an `<!-- ocx-route: <model> -->` directive — the proxy uses this to
-  pin the real route. The Agent tool's `model` argument is therefore inert; pass `"sonnet"` as a
+  pin the real route. The Agent tool's `model` argument is therefore inert; pass `"haiku"` as a
   placeholder.
 - Frontmatter carries the alias; routing is directive-driven.
 - Only marker-verified `ocx-*.md` files containing `generated-by: opencodex` are ever
@@ -227,7 +229,7 @@ images are cached by backend, model, detail, image bytes, and request context, s
 image-and-context pair is not described again on every replay. Remote `https:` images are never
 cached because their contents can change.
 
-See the [configuration reference](/opencodex/reference/configuration/#sidecars) for every key.
+See the [configuration reference](/reference/configuration/#sidecars) for every key.
 Anthropic-OAuth web search and image description reuse the repository's existing Claude Code OAuth
 fingerprint precedent, but should still be soak-tested with your account and workload before you
 depend on them for long unattended runs.
@@ -370,4 +372,4 @@ it by default (`blockedSkills: ["claude-api"]`).
 
 **Subagent dispatches to wrong model** — Roster agents (`ocx-*`) use `<!-- ocx-route: ... -->`
 directives, not the Agent tool's `model` argument. Make sure the directive matches the intended
-route. Pass `"sonnet"` as the model placeholder.
+route. Pass `"haiku"` as the model placeholder.

@@ -85,12 +85,12 @@ export default function ProviderUsage({ item, usageTotals, quotaReport, modelUsa
               </thead>
               <tbody>
                 {sortedModels.map(row => {
-                  const key = row.resolvedModel ?? row.model;
+                  const key = row.model;
                   const isExpanded = expandedModel === key;
                   return (
                     <>
                       <tr key={key} className="pws-model-row" onClick={() => setExpandedModel(isExpanded ? null : key)} style={{ cursor: "pointer" }}>
-                        <td className="mono">{row.resolvedModel ?? row.model}</td>
+                        <td className="mono">{row.model}</td>
                         <td className="num mono">{formatCostUsd(row.estimatedCostUsd, locale)}</td>
                         <td className="num mono">{formatTokenCount(row.totalTokens, locale)}</td>
                         <td className="num">{row.requests}</td>

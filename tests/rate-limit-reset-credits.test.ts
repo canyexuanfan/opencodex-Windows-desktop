@@ -1,6 +1,8 @@
 import { describe, it, expect } from "bun:test";
 import {
+  applyAccountQuotaFromUpstreamHeaders,
   parseUsageQuota,
+  setAccountQuotaFromParsed,
   updateAccountQuota,
   getAccountQuota,
   clearAccountQuota,
@@ -105,6 +107,108 @@ describe("rate-limit reset credits", () => {
     });
   });
 
+  describe("parseUsageQuota window duration classification (issue #315)", () => {
+    it("keeps a 7d primary window weekly", () => {
+      const quota = parseUsageQuota({
+        plan_type: "team",
+        rate_limit: {
+          primary_window: { used_percent: 60, reset_at: 1787000000, limit_window_seconds: 604800 },
+        },
+      });
+      expect(quota).toEqual({ weeklyPercent: 60, weeklyResetAt: 1787000000 });
+    });
+
+    it("classifies a ~30.4d primary window as monthly (reporter repro)", () => {
+      const quota = parseUsageQuota({
+        plan_type: "team",
+        rate_limit: {
+          primary_window: { used_percent: 6, reset_at: 1787336442, limit_window_seconds: 2628000 },
+          secondary_window: null,
+          tertiary_window: null,
+        },
+        rate_limit_reset_credits: { available_count: 0 },
+      });
+      expect(quota).toEqual({ monthlyPercent: 6, monthlyResetAt: 1787336442, resetCredits: 0 });
+      expect(quota!.weeklyPercent).toBeUndefined();
+    });
+
+    it("keeps secondary as the weekly source next to a monthly primary", () => {
+      const quota = parseUsageQuota({
+        plan_type: "team",
+        rate_limit: {
+          primary_window: { used_percent: 39, reset_at: 1787401330, limit_window_seconds: 2628000 },
+          secondary_window: { used_percent: 20, reset_at: 1787000000 },
+        },
+      });
+      expect(quota).toEqual({
+        monthlyPercent: 39,
+        monthlyResetAt: 1787401330,
+        weeklyPercent: 20,
+        weeklyResetAt: 1787000000,
+      });
+    });
+
+    it("prefers a usable monthly primary over tertiary, same-source coupled", () => {
+      const quota = parseUsageQuota({
+        plan_type: "team",
+        rate_limit: {
+          primary_window: { used_percent: 39, reset_at: 1787401330, limit_window_seconds: 2628000 },
+          tertiary_window: { used_percent: 50, reset_at: 1788000000 },
+        },
+      });
+      expect(quota).toEqual({ monthlyPercent: 39, monthlyResetAt: 1787401330 });
+    });
+
+    it("falls back to tertiary wholesale when a monthly primary has no percent", () => {
+      const quota = parseUsageQuota({
+        plan_type: "team",
+        rate_limit: {
+          primary_window: { reset_at: 1787401330, limit_window_seconds: 2628000 },
+          tertiary_window: { used_percent: 50, reset_at: 1788000000 },
+        },
+      });
+      // percent and reset must both come from tertiary — no cross-window pairing
+      expect(quota).toEqual({ monthlyPercent: 50, monthlyResetAt: 1788000000 });
+    });
+
+    it("lets an explicit monthly primary win on go plans (upstream 4e0d6735 semantics)", () => {
+      const quota = parseUsageQuota({
+        plan_type: "go",
+        rate_limit: {
+          primary_window: { used_percent: 30, reset_at: 1787401330, limit_window_seconds: 2628000 },
+          tertiary_window: { used_percent: 50, reset_at: 1788000000 },
+        },
+      });
+      expect(quota).toEqual({ monthlyPercent: 30, monthlyResetAt: 1787401330 });
+    });
+
+    it("keeps legacy tertiary monthly next to a duration-less weekly primary", () => {
+      const quota = parseUsageQuota({
+        plan_type: "team",
+        rate_limit: {
+          primary_window: { used_percent: 10, reset_at: 1787000000 },
+          tertiary_window: { used_percent: 50, reset_at: 1788000000 },
+        },
+      });
+      expect(quota).toEqual({
+        weeklyPercent: 10,
+        weeklyResetAt: 1787000000,
+        monthlyPercent: 50,
+        monthlyResetAt: 1788000000,
+      });
+    });
+
+    it("keeps duration-less primary weekly (backward compatibility)", () => {
+      const quota = parseUsageQuota({
+        plan_type: "team",
+        rate_limit: {
+          primary_window: { used_percent: 10, reset_at: 1787000000 },
+        },
+      });
+      expect(quota).toEqual({ weeklyPercent: 10, weeklyResetAt: 1787000000 });
+    });
+  });
+
   describe("CodexAuth reset credit UI", () => {
     it("normalizes Go and Free quota displays to 30d only", async () => {
       const { normalizeQuotaForPlan } = await import("../gui/src/codex-quota-utils");
@@ -188,6 +292,145 @@ describe("rate-limit reset credits", () => {
       updateAccountQuota("test-3", 50, undefined, undefined, undefined, 1);
       const q = getAccountQuota("test-3");
       expect(q!.resetCredits).toBe(1);
+    });
+  });
+
+  describe("quota snapshot replacement (issue #382)", () => {
+    it("clears stale weekly when a monthly-only WHAM snapshot is applied", () => {
+      clearAccountQuota();
+      updateAccountQuota("monthly-A", 100, 1787401330);
+      const quota = parseUsageQuota({
+        plan_type: "team",
+        rate_limit: {
+          primary_window: { used_percent: 100, reset_at: 1787401330, limit_window_seconds: 2628000 },
+          secondary_window: null,
+        },
+      });
+      expect(quota).toEqual({ monthlyPercent: 100, monthlyResetAt: 1787401330 });
+      setAccountQuotaFromParsed("monthly-A", quota!);
+      expect(getAccountQuota("monthly-A")).toEqual({
+        monthlyPercent: 100,
+        monthlyResetAt: 1787401330,
+        updatedAt: expect.any(Number),
+      });
+    });
+
+    it("classifies a ~30d primary header as monthly and clears stale weekly", () => {
+      clearAccountQuota();
+      updateAccountQuota("monthly-A", 100, 1787401330);
+      const headers = new Headers({
+        "x-codex-primary-used-percent": "100",
+        "x-codex-primary-window-minutes": "43800",
+        "x-codex-primary-reset-at": "1787401330",
+      });
+      applyAccountQuotaFromUpstreamHeaders("monthly-A", headers);
+      expect(getAccountQuota("monthly-A")).toEqual({
+        monthlyPercent: 100,
+        monthlyResetAt: 1787401330,
+        updatedAt: expect.any(Number),
+      });
+    });
+
+    it("keeps weekly primary headers weekly", () => {
+      clearAccountQuota();
+      const headers = new Headers({
+        "x-codex-primary-used-percent": "80",
+        "x-codex-primary-window-minutes": "10080",
+        "x-codex-primary-reset-at": "1787000000",
+      });
+      applyAccountQuotaFromUpstreamHeaders("weekly-A", headers);
+      expect(getAccountQuota("weekly-A")).toEqual({
+        weeklyPercent: 80,
+        weeklyResetAt: 1787000000,
+        updatedAt: expect.any(Number),
+      });
+    });
+    it("preserves resetCredits when applying header quota snapshots", () => {
+      clearAccountQuota();
+      updateAccountQuota("credits-A", 10, 111, 20, 222, 3);
+      const headers = new Headers({
+        "x-codex-primary-used-percent": "80",
+        "x-codex-primary-window-minutes": "10080",
+        "x-codex-primary-reset-at": "1787000000",
+      });
+      applyAccountQuotaFromUpstreamHeaders("credits-A", headers);
+      expect(getAccountQuota("credits-A")).toEqual({
+        weeklyPercent: 80,
+        weeklyResetAt: 1787000000,
+        monthlyPercent: 20,
+        monthlyResetAt: 222,
+        resetCredits: 3,
+        updatedAt: expect.any(Number),
+      });
+    });
+
+    it("keeps tertiary from overriding explicit monthly primary headers", () => {
+      clearAccountQuota();
+      const headers = new Headers({
+        "x-codex-primary-used-percent": "39",
+        "x-codex-primary-window-minutes": "43800",
+        "x-codex-primary-reset-at": "1787401330",
+        "x-codex-tertiary-used-percent": "50",
+        "x-codex-tertiary-reset-at": "1788000000",
+      });
+      applyAccountQuotaFromUpstreamHeaders("team-tertiary", headers);
+      expect(getAccountQuota("team-tertiary")).toEqual({
+        monthlyPercent: 39,
+        monthlyResetAt: 1787401330,
+        updatedAt: expect.any(Number),
+      });
+    });
+
+    it("preserves usage on credits-only WHAM refreshes", () => {
+      clearAccountQuota();
+      updateAccountQuota("credits-only", 10, 111, 20, 222, 1);
+      const quota = parseUsageQuota({ rate_limit_reset_credits: { available_count: 2 } });
+      setAccountQuotaFromParsed("credits-only", quota!);
+      expect(getAccountQuota("credits-only")).toEqual({
+        weeklyPercent: 10,
+        weeklyResetAt: 111,
+        monthlyPercent: 20,
+        monthlyResetAt: 222,
+        resetCredits: 2,
+        updatedAt: expect.any(Number),
+      });
+    });
+
+    it("preserves monthly quota when weekly-only headers arrive", () => {
+      clearAccountQuota();
+      updateAccountQuota("weekly-only", 10, 111, 50, 222);
+      const headers = new Headers({
+        "x-codex-primary-used-percent": "80",
+        "x-codex-primary-window-minutes": "10080",
+        "x-codex-primary-reset-at": "1787000000",
+      });
+      applyAccountQuotaFromUpstreamHeaders("weekly-only", headers);
+      expect(getAccountQuota("weekly-only")).toEqual({
+        weeklyPercent: 80,
+        weeklyResetAt: 1787000000,
+        monthlyPercent: 50,
+        monthlyResetAt: 222,
+        updatedAt: expect.any(Number),
+      });
+    });
+
+    it("maps monthly primary plus secondary weekly headers together", () => {
+      clearAccountQuota();
+      const headers = new Headers({
+        "x-codex-primary-used-percent": "39",
+        "x-codex-primary-window-minutes": "43800",
+        "x-codex-primary-reset-at": "1787401330",
+        "x-codex-secondary-used-percent": "20",
+        "x-codex-secondary-reset-at": "1787000000",
+      });
+      applyAccountQuotaFromUpstreamHeaders("team-A", headers);
+      expect(getAccountQuota("team-A")).toEqual({
+        monthlyPercent: 39,
+        monthlyResetAt: 1787401330,
+        weeklyPercent: 20,
+        weeklyResetAt: 1787000000,
+        updatedAt: expect.any(Number),
+      });
     });
   });
 });

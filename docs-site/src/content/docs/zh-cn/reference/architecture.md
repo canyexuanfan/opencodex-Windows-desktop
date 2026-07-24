@@ -5,7 +5,7 @@ description: opencodex 内部机制 —— 模块图、请求解析器、Adapter
 
 opencodex 运行在单个 Bun 进程中。请求以 OpenAI Responses 格式进入，规范化为内部模型后完成
 路由，再由 adapter 发送到 provider，最后桥接回 Responses SSE。端到端流程参见
-[工作原理](/opencodex/zh-cn/getting-started/how-it-works/)。
+[工作原理](/zh-cn/getting-started/how-it-works/)。
 
 ## 模块图
 
@@ -34,16 +34,24 @@ src/
 └── index.ts            # public entry
 ```
 
+原先的三个大型入口文件现在是兼容性 facade：`codex/catalog.ts` 导出 7 个
+`codex/catalog/*.ts` 模块，`server/management-api.ts` 分派到 9 个
+`server/management/*.ts` 模块，而 `server/responses.ts` 导出 5 个
+`server/responses/*.ts` 模块。
+
 ## 请求流程
 
-`server/index.ts` 负责 HTTP 边界，并把 Responses data plane 交给 `server/responses.ts`：
+`server/index.ts` 负责 HTTP 边界，并把 Responses data plane 交给 `server/responses.ts` facade
+及其 `server/responses/*.ts` 模块：
 
 1. `server/index.ts` 应用 CORS 和 API 认证，在 drain 期间拒绝新请求，并记录请求生命周期
    metadata。它提供 `GET /v1/models`、`POST /v1/responses`、
    `POST /v1/responses/compact`、`POST /v1/images/generations` / `POST /v1/images/edits`
-   （供 Codex 内置 `image_gen` 工具使用——由 `server/images.ts` 中继到 OpenAI 系上游），
+   （供 Codex 内置 `image_gen` 工具使用——由 `server/images.ts` 中继到 OpenAI 系上游）、
+   `POST /v1/live` / `POST /v1/realtime/calls`（ChatGPT / Codex App 语音与 OpenAI Realtime
+   建连，由 `server/live.ts` 中继）、`/v1/live/{callId}` 旁路 WebSocket，
    以及 `/v1/responses` 上可选的 WebSocket upgrade。
-2. `server/responses.ts` 解压并解析 JSON；如果本地记住了对应输入，则展开
+2. `server/responses/core.ts` 解压并解析 JSON；如果本地记住了对应输入，则展开
    `previous_response_id`，随后调用 `responses/parser.ts`。
 3. `router.ts` 解析 bare id 或 `provider/model` id。server 随后确定 Codex account affinity，
    必要时刷新 provider OAuth，并把选中的 credential 应用到 route。
@@ -104,7 +112,8 @@ item，因此 MCP 命名空间、`apply_patch` 风格的 freeform 工具和客�
 
 ## 管理 API、OAuth 与用量
 
-`server/management-api.ts` 为仪表盘提供后端。其 `/api/*` route 涵盖安全的配置/设置、provider
+`server/management-api.ts` 为仪表盘提供后端，并把专门的 route 分派给
+`server/management/*.ts`。其 `/api/*` route 涵盖安全的配置/设置、provider
 CRUD 与 key pool、模型选择/context cap/v2 控制、catalog sync、诊断与 debug log、usage 与
 quota、sidecar 设置、更新、生成客户端 API key、OAuth 登录/状态/登出与账号选择、Codex 账号
 管理，以及 graceful stop。proxy 绑定到 loopback 之外时，`server/auth-cors.ts` 会要求
@@ -123,7 +132,7 @@ thread affinity 位于 `codex/` 下，不会出现在管理 API 响应中。请�
 session 中回退到 HTTP。设置 `"websockets": true` 后，同一 endpoint 会接受 upgrade 并使用
 WebSocket bridge。
 
-Codex context compaction 同样适用于路由模型。`server/responses.ts` 处理
+Codex context compaction 同样适用于路由模型。`server/responses/compact.ts` 处理
 `POST /v1/responses/compact`，运行一次内部路由 summarization turn 并返回压缩后的历史；
 `responses/parser.ts` 与 `bridge.ts` 则处理 remote compaction v2 的 `compaction_trigger` turn，
 准确发出一个合成的 `compaction` 输出 item。
@@ -132,8 +141,9 @@ Codex context compaction 同样适用于路由模型。`server/responses.ts` 处
 
 - `codex/model-cache.ts` 为每个 provider 维护实时 `/models` 结果的内存 TTL 缓存（默认 5 分钟，
   与 Codex 自身缓存一致），获取失败时会回退到旧数据。
-- `codex/catalog.ts` 把路由模型作为带命名空间的条目合并进 Codex 目录，优先排列精选的
-  [subagent 模型](/opencodex/zh-cn/guides/codex-integration/#subagent-选择器)，过滤
+- `codex/catalog.ts` facade 导出的 `codex/catalog/sync.ts` 把路由模型作为带命名空间的条目
+  合并进 Codex 目录，优先排列精选的
+  [subagent 模型](/zh-cn/guides/codex-integration/#subagent-选择器)，过滤
   `disabledModels`，并可从一次性备份中完整恢复原始目录。
 
 ## Reasoning effort

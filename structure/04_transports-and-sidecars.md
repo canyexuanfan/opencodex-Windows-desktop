@@ -17,6 +17,30 @@ within their route; neither route falls through to the other. See
 and before the `/v1/*` guard. Unknown `/v1/*` paths return JSON 404 errors instead of falling through
 to GUI static serving.
 
+### Passthrough SSE stream shapes (#314)
+
+Native passthrough SSE has TWO shapes, selected per request in
+`src/server/responses/core.ts`:
+
+- **Default: tee + background inspection.** `upstreamResponse.body.tee()` sends
+  branch[0] to the client (pure native relay on win32 without item-id repair —
+  the Bun#32111 crash workaround; a JS relay elsewhere) while branch[1] is
+  drained eagerly by `consumeForInspection`/`consumeForResponseLogMetadata`
+  for terminal-outcome recording, quota, the passthrough continuation cache,
+  and request logs. This is the only shape on the bundled Bun 1.3.14.
+- **Gated: eager bounded relay** (`src/server/relay-eager.ts`). win32-no-repair
+  only, armed by `decideEagerRelay(config.streamMode)` from
+  `src/lib/bun-stream-caps.ts` — default-on only for runtimes proven to carry
+  the Bun#32111 fix (`MIN_FIXED_BUN_VERSION`, null until a bundle bump), or by
+  explicit `streamMode: "eager-relay"` opt-in. One eager reader + byte-bounded
+  client queue + post-cancel bounded discard-drain replaces the tee, preserving
+  the full inspection side-effect set (shared `createSseInspector` factory in
+  `relay.ts`) including the #44 late-terminal semantics.
+
+The two-shape contract is mirror-commented in `src/server/index.ts` and
+source-invariant-tested by `tests/passthrough-abort.test.ts`; keep both in
+lockstep with any `core.ts` passthrough change.
+
 ## Standalone Images
 
 Codex's local `image_gen.imagegen` tool makes a second Images request after the model calls it:
@@ -81,11 +105,15 @@ closes the stream with `response.incomplete` / `upstream_stall_timeout` and canc
 request if no real adapter events arrive. Adapter-yielded `{ type: "heartbeat" }` events DO reset
 the watchdog.
 
-The web-search loop requests `stream: true` for every routed-model iteration, but fully buffers its
-semantic adapter events internally so synthetic search calls and preliminary answers never leak to
-the client. Only the first iteration's final response headers/status and any 429 key rotations are
-handled eagerly. A failure before downstream SSE starts returns non-2xx JSON; once headers have
-started the final response, a generation failure is emitted as `response.failed` SSE.
+The web-search loop requests `stream: true` for every routed-model iteration, but buffers the events
+needed to decide whether to intercept a synthetic search call. Text explicitly phased as
+`commentary` is safe to forward live because it cannot terminate the turn; this keeps Kiro's
+progress visible. A Kiro stream EOF after user-facing text or reasoning gets one bounded completion
+retry, because the upstream text event does not distinguish progress from a final answer. Synthetic search calls, real tool calls,
+and terminal events remain buffered until the iteration validates. Only the first iteration's final
+response headers/status and any 429 key rotations are handled eagerly. A failure before downstream
+SSE starts returns non-2xx JSON; once headers have started the final response, a generation failure
+is emitted as `response.failed` SSE.
 
 Historical `web_search_call` output items from previous Responses turns are not converted into
 assistant text. They are UI/search-cell evidence, not a replayable search result payload; turning
@@ -98,9 +126,12 @@ Four independent clocks bound this path. `stallTimeoutSec` is the base bridge ev
 not response-body generation. Config-file-only
 `webSearchSidecar.routedModelStallTimeoutMs` (default 200 s, integer 1..2147483647) bounds continuous
 raw response-byte inactivity for a routed-model iteration and resets on every non-empty byte.
-`webSearchSidecar.timeoutMs` (default 200 s) separately bounds one hosted search request. The
+`webSearchSidecar.timeoutMs` (default 60 s) separately bounds one hosted search request (lowered
+from 200 s so an unavailable/limit-exhausted search backend degrades within ~1 min instead of
+hanging the whole turn, #398). The
 effective web-search bridge watchdog is
-`max(base stall, connect timeout, routed-model stall, sidecar timeout) + 30 s` (230 s at defaults),
+`max(base stall, connect timeout, routed-model stall, sidecar timeout) + 30 s` (230 s at defaults,
+dominated by the routed-model stall clock),
 with seam heartbeats between bounded units. None of these clocks is a total generation deadline.
 
 ## Reasoning and tool-result compatibility
@@ -114,8 +145,25 @@ messages until the round completes, reattaching real results to their original c
 and synthesizing explicit "no tool result was recorded" answers only when no real result exists
 (Kimi/Moonshot 400 `ocx-mrqaiw05-269`; unit `devlog/_plan/260718_dangling_toolcall_hardening`).
 
+Forward-mode OpenAI passthrough also repairs replayed `call_id` values longer than the Responses
+API's 64-character limit. Sidechat/fork replay can namespace routed-provider ids beyond that limit,
+so each oversized id and all matching call/output items receive the same deterministic,
+request-local alias. Raw API-key continuations deliberately preserve ids because an output-only
+continuation may reference a call stored upstream under its original id; proxy-expanded API-key
+replays are explicit and receive the same repair.
+
 These compatibility guards are covered by focused tests and should stay close to the adapters that
 need them.
+
+## Cursor Router optimization levels
+
+Cursor Router's parameterized `default` model is represented in Codex by four catalog rows:
+`cursor/auto` preserves Cursor's team/account default, while `cursor/auto-cost`,
+`cursor/auto-balance`, and `cursor/auto-intelligence` make each optimization level explicit.
+All four route to the `default` Cursor wire model. Explicit variants additionally populate
+`AgentRunRequest.requested_model.parameters` with the `optimization` parameter; this is the same
+parameterized-model channel used by current Cursor clients. Router rows are static capabilities and
+must survive a live `GetUsableModels` response that omits `default`.
 
 ## Cursor active-context usage
 

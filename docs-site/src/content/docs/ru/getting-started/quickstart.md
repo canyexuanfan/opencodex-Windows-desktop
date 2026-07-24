@@ -72,7 +72,7 @@ codex "Refactor this function for readability"
 которую показывает селектор модели в Codex:
 
 ```bash
-codex -m "anthropic/claude-opus-4-8" "Explain this stack trace"
+codex -m "anthropic/claude-opus-5" "Explain this stack trace"
 codex -m "ollama-cloud/glm-5.2"      "Write a SQL migration"
 ```
 
@@ -94,7 +94,7 @@ ocx logout xai
 ```
 
 Самому OpenAI ключ **не нужен** — провайдер по умолчанию напрямую пересылает ваши существующие
-учётные данные `codex login` (см. [Провайдеры](/opencodex/ru/guides/providers/)).
+учётные данные `codex login` (см. [Провайдеры](/ru/guides/providers/)).
 
 ## Остановка и восстановление
 
@@ -106,6 +106,6 @@ ocx restore back  # снова направить Codex через всё ещё
 
 ## Далее
 
-- [Как это работает](/opencodex/ru/getting-started/how-it-works/) — что происходит с каждым запросом.
-- [Провайдеры](/opencodex/ru/guides/providers/) — все способы аутентификации.
-- [Конфигурация](/opencodex/ru/reference/configuration/) — полный справочник по `config.json`.
+- [Как это работает](/ru/getting-started/how-it-works/) — что происходит с каждым запросом.
+- [Провайдеры](/ru/guides/providers/) — все способы аутентификации.
+- [Конфигурация](/ru/reference/configuration/) — полный справочник по `config.json`.

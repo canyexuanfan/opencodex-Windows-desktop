@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,10 +8,20 @@ import * as systemEnv from "../src/server/system-env";
 import type { OcxConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 
+// Full-suite Windows load: startServer + multi-PUT management flows often exceed bun's
+// default 5s per-test budget (same flake class as 810fa115 / kiro-oauth).
+setDefaultTimeout(30_000);
+
 let testDir = "";
 let previousHome: string | undefined;
 let previousClaudeConfigDir: string | undefined;
 let isolatedCodexHome: IsolatedCodexHome | null = null;
+
+function setPlatform(platform: NodeJS.Platform): void {
+  Object.defineProperty(process, "platform", { configurable: true, value: platform });
+}
+
+const originalPlatform = process.platform;
 
 beforeEach(() => {
   previousHome = process.env.OPENCODEX_HOME;
@@ -26,12 +36,13 @@ beforeEach(() => {
     port: 0,
     defaultProvider: "mock",
     providers: {
-      mock: { adapter: "openai-chat", baseUrl: "http://127.0.0.1:1/v1", apiKey: "k", allowPrivateNetwork: true, models: ["test-model"] },
+      mock: { adapter: "openai-chat", baseUrl: "http://127.0.0.1:1/v1", apiKey: "k", allowPrivateNetwork: true, liveModels: false, models: ["test-model"] },
     },
   } as OcxConfig);
 });
 
 afterEach(() => {
+  setPlatform(originalPlatform);
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
   if (previousClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
@@ -414,6 +425,37 @@ test("PUT validation rejects bad shapes", async () => {
       expect(((await r.json()) as { error: string }).error).toBe(error);
     }
     expect(loadConfig().claudeCode).toBeUndefined(); // nothing persisted on rejects
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("GET /api/claude-code reports Auto-connect support on Darwin", async () => {
+  setPlatform("darwin");
+  const server = startServer(0);
+  try {
+    const r = await fetch(new URL("/api/claude-code", server.url));
+    expect(r.status).toBe(200);
+    const d = await r.json() as Record<string, any>;
+    expect(d.autoConnectSupported).toBe(true);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("GET /api/claude-code reports Auto-connect unsupported outside Darwin", async () => {
+  saveConfig({
+    ...loadConfig(),
+    claudeCode: { systemEnv: true },
+  } as OcxConfig);
+  setPlatform("linux");
+  const server = startServer(0);
+  try {
+    const r = await fetch(new URL("/api/claude-code", server.url));
+    expect(r.status).toBe(200);
+    const d = await r.json() as Record<string, any>;
+    expect(d.systemEnv).toBe(true);              // raw stored preference
+    expect(d.autoConnectSupported).toBe(false);  // effective capability
   } finally {
     server.stop(true);
   }

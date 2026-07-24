@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <b>한국어</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ru.md">Русский</a> · <a href="README.ja.md">日本語</a> · 📖 <a href="https://lidge-jun.github.io/opencodex/ko/"><b>전체 문서 →</b></a>
+  <a href="README.md">English</a> · <b>한국어</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ru.md">Русский</a> · <a href="README.ja.md">日本語</a> · 📖 <a href="https://opencodex.me/ko/"><b>전체 문서 →</b></a>
 </p>
 
 <p align="center">
@@ -133,7 +133,7 @@ ocx gui
 
 ```bash
 # Anthropic을 통해 Claude Opus 사용
-codex -m "anthropic/claude-opus-4-8" "이 스택 트레이스를 설명해 줘"
+codex -m "anthropic/claude-opus-5" "이 스택 트레이스를 설명해 줘"
 
 # Google을 통해 Gemini 사용
 codex -m "google/gemini-3-pro" "auth.ts의 유닛 테스트를 작성해 줘"
@@ -232,7 +232,7 @@ opencodex는 두 가지 동작을 분리해서 유지합니다:
 | Ollama / vLLM / LM Studio (로컬) | `openai-chat` | key (보통 비워둠) |
 | 모든 OpenAI 호환 엔드포인트 | `openai-chat` | key |
 
-그 외에 DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Mistral, Hugging Face, NVIDIA NIM, MiniMax, Qwen Cloud, Tencent Cloud Coding Plan, SiliconFlow 등이 있습니다. 전체 목록은 `ocx init` 또는 [프로바이더 문서](https://lidge-jun.github.io/opencodex/ko/reference/configuration/)에서 확인하세요.
+그 외에 DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Mistral, Hugging Face, NVIDIA NIM, MiniMax, Qwen Cloud, Tencent Cloud Coding Plan, SiliconFlow 등이 있습니다. 전체 목록은 `ocx init` 또는 [프로바이더 문서](https://opencodex.me/ko/reference/configuration/)에서 확인하세요.
 
 ## CLI
 
@@ -264,10 +264,16 @@ opencodex에는 프록시를 자동 시작하는 두 가지 방법이 있습니�
 | **방식** | OS 서비스 관리자 (launchd / systemd / schtasks) | `codex` 스크립트 런처를 래핑하며 실제 `codex.exe`는 건드리지 않음 |
 | **시점** | 로그인 후 항상 실행 | 온디맨드 — `codex` 실행 시 `ocx ensure` 실행 |
 | **재시작** | 크래시 시 자동 재시작 | `codex` 호출마다 한 번 시작 |
-| **Codex 업데이트** | 영향 없음 | `ocx codex-shim install` 또는 `ocx update` 시 복구 |
+| **Codex 업데이트** | 영향 없음 | 안정적으로 교체가 끝난 런처는 다음 일반 `ocx` 명령에서 복구 |
 | **제거** | `ocx service uninstall` | `ocx codex-shim uninstall` |
 
 항상 프록시를 켜두려면 **service** (개발 머신 권장), 가볍게 온디맨드로 쓰려면 **shim**을 사용하세요.
+
+외부 Codex 업데이트가 설치된 shim을 덮어쓰면 다음 일반 `ocx` 명령이 안정화된 새 런처를 백업하고
+shim을 복구합니다. 아직 변경 중인 런처는 건드리지 않고 이후 명령에서 다시 시도합니다. 복구 실패는
+요청한 명령을 실패시키지 않고 경고만 출력하며, 수동 대체 명령은 `ocx codex-shim install`입니다.
+자동 복구를 끄려면 `codexShimAutoRestore`를 `false`로 설정하거나 프로세스에
+`OPENCODEX_CODEX_SHIM_AUTO_RESTORE=0`을 설정하세요.
 shim 자동 시작은 기본으로 켜져 있으며 GUI 대시보드에서 끌 수 있습니다. 설정된 프록시 포트가 이미 사용
 중이면 `ocx start`가 자동으로 다른 빈 로컬 포트를 고르고 Codex 설정도 그 포트로 갱신합니다.
 
@@ -387,12 +393,12 @@ OpenAI로 복원하고, 남은 opencodex 유저 스레드도 OpenAI로 eject 하
 ocx recover-history --legacy-openai
 ```
 
-모든 필드에 대한 자세한 내용은 **[설정 레퍼런스](https://lidge-jun.github.io/opencodex/ko/reference/configuration/)** 를 참고하세요.
+모든 필드에 대한 자세한 내용은 **[설정 레퍼런스](https://opencodex.me/ko/reference/configuration/)** 를 참고하세요.
 
 ## 문서
 
 공개 문서(설치, 프로바이더, 라우팅, sidecar, Codex 통합, Codex App 모델 선택기, CLI/설정 레퍼런스)는 [`docs-site/`](./docs-site)의 Astro 사이트로 빌드되어
-**[lidge-jun.github.io/opencodex](https://lidge-jun.github.io/opencodex/ko/)** 에 게시됩니다.
+**[opencodex.me](https://opencodex.me/ko/)** 에 게시됩니다.
 
 유지보수용 source of truth는 [`structure/`](./structure)에, 과거 조사/진단 노트는 [`docs/`](./docs)에 있습니다.
 
@@ -416,7 +422,7 @@ API는 `/healthz`, `/v1/responses`, `POST /v1/images/generations`, `POST /v1/ima
 bun run dev:gui
 ```
 
-**[기여하기](https://lidge-jun.github.io/opencodex/ko/contributing/)** 를 참고하세요.
+**[기여하기](https://opencodex.me/ko/contributing/)** 를 참고하세요.
 
 ## 면책 조항
 

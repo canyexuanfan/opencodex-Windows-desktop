@@ -3,7 +3,9 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+  CODEX_SHIM_AUTO_RESTORE_ENV,
   codexAutoStartEnabled,
+  codexShimAutoRestoreEnabled,
   getConfigPath,
   getDefaultConfig,
   getPidPath,
@@ -11,6 +13,7 @@ import {
   isValidProviderName,
   isOcxStartCommandLine,
   loadConfig,
+  multiAgentGuidanceEnabled,
   parsePidFile,
   positiveIntegerConfigError,
   positiveIntegerRecordConfigError,
@@ -47,6 +50,20 @@ function writeConfig(content: unknown): void {
     typeof content === "string" ? content : JSON.stringify(content),
     "utf-8",
   );
+}
+
+function writeResponsesPathConfig(responsesPath: string): void {
+  writeConfig({
+    port: 12345,
+    providers: {
+      custom: {
+        adapter: "openai-responses",
+        baseUrl: "https://example.test/api/v3",
+        responsesPath,
+      },
+    },
+    defaultProvider: "custom",
+  });
 }
 
 describe("opencodex config defaults", () => {
@@ -86,6 +103,75 @@ describe("opencodex config defaults", () => {
   test("Codex autostart can be disabled explicitly", () => {
     expect(codexAutoStartEnabled({ codexAutoStart: false })).toBe(false);
     expect(codexAutoStartEnabled({ codexAutoStart: true })).toBe(true);
+  });
+
+  test("Codex shim auto-restore defaults on with config and environment opt-out precedence", () => {
+    expect(getDefaultConfig().codexShimAutoRestore).toBe(true);
+    expect(codexShimAutoRestoreEnabled({}, {})).toBe(true);
+    expect(codexShimAutoRestoreEnabled({ codexShimAutoRestore: true }, {})).toBe(true);
+    expect(codexShimAutoRestoreEnabled({ codexShimAutoRestore: false }, {})).toBe(false);
+    expect(codexShimAutoRestoreEnabled(
+      { codexShimAutoRestore: false },
+      { [CODEX_SHIM_AUTO_RESTORE_ENV]: "1" },
+    )).toBe(false);
+    expect(codexShimAutoRestoreEnabled({}, { [CODEX_SHIM_AUTO_RESTORE_ENV]: "0" })).toBe(false);
+    expect(codexShimAutoRestoreEnabled(
+      { codexShimAutoRestore: true },
+      { [CODEX_SHIM_AUTO_RESTORE_ENV]: "0" },
+    )).toBe(false);
+  });
+
+  test("codexShimAutoRestore loads false and rejects non-booleans", () => {
+    const base = {
+      port: 10100,
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+        },
+      },
+      defaultProvider: "openai",
+    };
+    writeConfig({ ...base, codexShimAutoRestore: false });
+    expect(readConfigDiagnostics().config.codexShimAutoRestore).toBe(false);
+
+    for (const invalid of [null, "false", 0]) {
+      writeConfig({ ...base, codexShimAutoRestore: invalid });
+      const diagnostics = readConfigDiagnostics();
+      expect(diagnostics.source).toBe("fallback");
+      expect(diagnostics.error).toContain("codexShimAutoRestore");
+    }
+  });
+
+  test("multi-agent guidance is default-on and false is the only off state", () => {
+    expect(getDefaultConfig().multiAgentGuidanceEnabled).toBe(true);
+    expect(multiAgentGuidanceEnabled({})).toBe(true);
+    expect(multiAgentGuidanceEnabled({ multiAgentGuidanceEnabled: true })).toBe(true);
+    expect(multiAgentGuidanceEnabled({ multiAgentGuidanceEnabled: false })).toBe(false);
+  });
+
+  test("multiAgentGuidanceEnabled loads false and rejects non-booleans", () => {
+    const base = {
+      port: 10100,
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+        },
+      },
+      defaultProvider: "openai",
+    };
+    writeConfig({ ...base, multiAgentGuidanceEnabled: false });
+    expect(loadConfig().multiAgentGuidanceEnabled).toBe(false);
+
+    for (const invalid of [null, "false"]) {
+      writeConfig({ ...base, multiAgentGuidanceEnabled: invalid });
+      const diagnostics = readConfigDiagnostics();
+      expect(diagnostics.source).toBe("fallback");
+      expect(diagnostics.error).toContain("multiAgentGuidanceEnabled");
+    }
   });
 
   test("loads valid config from OPENCODEX_HOME", () => {
@@ -178,6 +264,38 @@ describe("opencodex config defaults", () => {
     });
     expect(readConfigDiagnostics().source).toBe("fallback");
     expect(readConfigDiagnostics().error).toContain("responsesItemIdRepair");
+  });
+
+  test("accepts a relative responsesPath", () => {
+    writeResponsesPathConfig("/responses");
+
+    const diagnostics = readConfigDiagnostics();
+    expect(diagnostics.source).toBe("file");
+    expect(diagnostics.error).toBeNull();
+    expect(diagnostics.config.providers.custom.responsesPath).toBe("/responses");
+  });
+
+  test("rejects responsesPath without a leading slash", () => {
+    writeResponsesPathConfig("responses");
+
+    const diagnostics = readConfigDiagnostics();
+    expect(diagnostics.source).toBe("fallback");
+    expect(diagnostics.error).toContain("responsesPath must start with /");
+  });
+
+  test("rejects responsesPath containing a URL scheme, query, or fragment", () => {
+    for (const [responsesPath, expectedError] of [
+      ["https://other-origin.example/responses", "responsesPath must be a relative path without a URL scheme"],
+      ["/https://other-origin.example/responses", "responsesPath must be a relative path without a URL scheme"],
+      ["/responses?api-version=v1", "responsesPath must not include query strings or fragments"],
+      ["/responses#section", "responsesPath must not include query strings or fragments"],
+    ] as const) {
+      writeResponsesPathConfig(responsesPath);
+
+      const diagnostics = readConfigDiagnostics();
+      expect(diagnostics.source).toBe("fallback");
+      expect(diagnostics.error).toContain(expectedError);
+    }
   });
 
   test("reads valid config diagnostics without mutation", () => {
@@ -395,6 +513,37 @@ describe("opencodex config defaults", () => {
     expect(positiveIntegerRecordConfigError(Object.create({ inherited: 1 }), "modelMaxInputTokens")).toContain("own properties");
     for (const invalid of [null, [], { model: 0 }, { model: -1 }, { model: 1.5 }, { model: "1" }, { model: Number.POSITIVE_INFINITY }]) {
       expect(positiveIntegerRecordConfigError(invalid, "modelMaxInputTokens")).not.toBeNull();
+    }
+  });
+
+  test("modelSupportsReasoningSummaries accepts only plain boolean records", () => {
+    writeConfig({
+      port: 12345,
+      providers: {
+        custom: {
+          adapter: "openai-responses",
+          baseUrl: "https://example.test/v1",
+          modelSupportsReasoningSummaries: { strict: false, normal: true },
+        },
+      },
+      defaultProvider: "custom",
+    });
+    expect(readConfigDiagnostics().error).toBeNull();
+
+    for (const invalid of [[], { strict: "false" }, { "": false }]) {
+      writeConfig({
+        port: 12345,
+        providers: {
+          custom: {
+            adapter: "openai-responses",
+            baseUrl: "https://example.test/v1",
+            modelSupportsReasoningSummaries: invalid,
+          },
+        },
+        defaultProvider: "custom",
+      });
+      expect(readConfigDiagnostics().source).toBe("fallback");
+      expect(readConfigDiagnostics().error).toContain("modelSupportsReasoningSummaries");
     }
   });
 

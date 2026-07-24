@@ -5,6 +5,11 @@ import { useT } from "../i18n/shared";
 import type { TFn, TKey } from "../i18n/shared";
 import { modelLabel } from "../model-display";
 import { type ComboItem, parseComboList } from "../combo-workspace-data";
+import {
+  buildProviderModelGroups,
+  type ConfiguredProviderSummary,
+  type ProviderDiscoverySummary,
+} from "../models-groups";
 
 interface ModelRow {
   provider: string;
@@ -73,6 +78,7 @@ function activeModelOptions(models: ModelRow[], disabled: Set<string>): { value:
 export default function Models({ apiBase }: { apiBase: string }) {
   const t: TFn = useT();
   const [models, setModels] = useState<ModelRow[]>([]);
+  const [providers, setProviders] = useState<ConfiguredProviderSummary[]>([]);
   const [disabled, setDisabled] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState<Record<string, string>>({});
   const [limit, setLimit] = useState<Record<string, number>>({});
@@ -181,9 +187,12 @@ export default function Models({ apiBase }: { apiBase: string }) {
         fetch(`${apiBase}/api/models`).then(r => r.json()) as Promise<ModelRow[]>,
         fetch(`${apiBase}/api/provider-context-caps`).then(r => r.json()) as Promise<ProviderContextCapsResponse>,
       ]);
+      const providerData = await fetch(`${apiBase}/api/providers`)
+        .then(r => r.json()) as ConfiguredProviderSummary[];
       void loadV2(); // best-effort, independent of the models fetch
       void loadShadowCall();
       setModels(data);
+      setProviders(providerData);
       setDisabled(collectDisabledNamespaced(data));
       const value = typeof capsData.value === "number" && Number.isFinite(capsData.value) && capsData.value > 0
         ? capsData.value
@@ -214,18 +223,10 @@ export default function Models({ apiBase }: { apiBase: string }) {
     };
   }, [load]);
 
-  const groups = useMemo(() => {
-    const g: Record<string, ModelRow[]> = {};
-    for (const m of models) (g[m.provider] ??= []).push(m);
-    // The single native `openai` group pins first. Its credential policy comes from
-    // the Providers-page Pool/Direct option and never changes model identity here.
-    return Object.entries(g).sort(([a, rowsA], [b, rowsB]) => {
-      const nativeA = rowsA.every(r => r.native);
-      const nativeB = rowsB.every(r => r.native);
-      if (nativeA !== nativeB) return nativeA ? -1 : 1;
-      return a.localeCompare(b);
-    });
-  }, [models]);
+  const groups = useMemo(
+    () => buildProviderModelGroups(models, providers),
+    [models, providers],
+  );
 
   const apply = async (next: Set<string>) => {
     setBusy(true);
@@ -341,8 +342,8 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const allCapped = useMemo(
     () => {
       // Cap aggregate counts routed providers only; the single native group has no cap switch.
-      const routed = groups.filter(([, rows]) => !rows.every(r => r.native));
-      return routed.length > 0 && routed.every(([provider]) => contextCaps[provider] === contextCapValue);
+      const routed = groups.filter(group => !group.native && group.rows.length > 0);
+      return routed.length > 0 && routed.every(group => contextCaps[group.provider] === contextCapValue);
     },
     [groups, contextCaps, contextCapValue],
   );
@@ -730,11 +731,10 @@ export default function Models({ apiBase }: { apiBase: string }) {
 
      {
        // eslint-disable-next-line react-hooks/refs -- The hover ref is only read by row event handlers nested in this renderer.
-       groups.map(([provider, rows]) => {
+       groups.map(({ provider, rows, native: isNative, liveModels, discovery }) => {
        const isCollapsed = collapsed.has(provider);
        const activeCount = rows.filter(m => !disabled.has(m.namespaced)).length;
        const capOn = contextCaps[provider] === contextCapValue;
-       const isNative = rows.every(m => m.native);
        const q = (search[provider] ?? "").trim().toLowerCase();
        const filtered = q ? rows.filter(m => m.id.toLowerCase().includes(q)) : rows;
        // Display-only: enabled models float to the top of each provider group so they
@@ -745,8 +745,9 @@ export default function Models({ apiBase }: { apiBase: string }) {
        const shown = limit[provider] ?? PAGE;
        const visible = sorted.slice(0, shown);
        const remaining = filtered.length - visible.length;
-        const allOn = rows.every(m => !disabled.has(m.namespaced));
-        const allOff = rows.every(m => disabled.has(m.namespaced));
+        const discoveryFailure = liveModels && discovery?.status === "failed" ? discovery : undefined;
+        const allOn = rows.length > 0 && rows.every(m => !disabled.has(m.namespaced));
+        const allOff = rows.length > 0 && rows.every(m => disabled.has(m.namespaced));
         const bulkToggle = (enable: boolean) => {
           const next = new Set(disabled);
           for (const m of rows) { if (enable) next.delete(m.namespaced); else next.add(m.namespaced); }
@@ -759,6 +760,15 @@ export default function Models({ apiBase }: { apiBase: string }) {
              <IconChevron style={{ width: 14, height: 14, color: "var(--muted)", transform: isCollapsed ? "none" : "rotate(90deg)", transition: "transform .12s" }} />
              <span className="text-body font-semibold">{provider}</span>
              {isNative && <span className="muted mono text-caption" style={{ padding: "1px 6px", border: "1px solid var(--border)", borderRadius: "var(--radius-pill)" }}>{t("models.nativeGroupLabel")}</span>}
+             {discoveryFailure && (
+               <span
+                 className="badge badge-amber"
+                 role="status"
+                 title={discoveryFailureReason(t, discoveryFailure)}
+               >
+                 {t("models.discoveryFailedBadge")}
+               </span>
+             )}
              <span className="muted mono text-label">{t("models.active", { active: activeCount, total: rows.length })}</span>
              <div style={{ flex: 1 }} />
               <div className="row" onClick={e => e.stopPropagation()} style={{ gap: 6 }}>
@@ -784,9 +794,11 @@ export default function Models({ apiBase }: { apiBase: string }) {
                     aria-haspopup="dialog"
                   >+</button>
                 )}
-                <button type="button" className="btn btn-ghost btn-sm text-caption" disabled={busy || allOn} onClick={() => bulkToggle(true)} style={{ padding: "2px 8px" }}>{t("models.allOn")}</button>
-                <button type="button" className="btn btn-ghost btn-sm text-caption" disabled={busy || allOff} onClick={() => bulkToggle(false)} style={{ padding: "2px 8px" }}>{t("models.allOff")}</button>
-                {!isNative && <>
+                {rows.length > 0 && <>
+                  <button type="button" className="btn btn-ghost btn-sm text-caption" disabled={busy || allOn} onClick={() => bulkToggle(true)} style={{ padding: "2px 8px" }}>{t("models.allOn")}</button>
+                  <button type="button" className="btn btn-ghost btn-sm text-caption" disabled={busy || allOff} onClick={() => bulkToggle(false)} style={{ padding: "2px 8px" }}>{t("models.allOff")}</button>
+                </>}
+                {!isNative && rows.length > 0 && <>
                   <Switch on={capOn} onClick={() => toggleProviderCap(provider)} disabled={busy} label={t("models.capValue", { value: fmtK(contextCapValue) })} />
                   <span className="muted mono text-label">{t("models.capValue", { value: fmtK(contextCapValue) })}</span>
                 </>}
@@ -795,6 +807,9 @@ export default function Models({ apiBase }: { apiBase: string }) {
            {!isCollapsed && (
              <div style={{ padding: "6px 12px" }}>
                {isNative && <p className="muted text-label" style={{ margin: "2px 0 6px" }}>{t("models.nativeHint")}</p>}
+               {rows.length === 0 && (
+                 <EmptyProviderHint liveModels={liveModels} discovery={discovery} showFailureBadge={false} />
+               )}
                {rows.length > PAGE / 2 && (
                  <input
                    className="input"
@@ -939,7 +954,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
               {t("models.v2Help")}
             </div>
             <div style={{ marginTop: 12 }}>
-              <a className="text-control" href="https://lidge-jun.github.io/opencodex/guides/sub-agent-surface/" target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
+              <a className="text-control" href="https://opencodex.me/guides/sub-agent-surface/" target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
                 {t("models.v2DocsLink")}
               </a>
             </div>
@@ -1107,5 +1122,50 @@ export default function Models({ apiBase }: { apiBase: string }) {
         </div>
       )}
     </>
+  );
+}
+
+function discoveryFailureReason(
+  t: ReturnType<typeof useT>,
+  discovery: Extract<ProviderDiscoverySummary, { status: "failed" }>,
+): string {
+  switch (discovery.reason) {
+    case "http":
+      return t("models.discoveryFailedHttp", { status: discovery.httpStatus });
+    case "blocked":
+      return t("models.discoveryFailedBlocked");
+    case "invalid_response":
+      return t("models.discoveryFailedInvalidResponse");
+    case "network":
+      return t("models.discoveryFailedNetwork");
+    case "provider":
+      return t("models.discoveryFailedProvider");
+    default:
+      return t("models.discoveryFailedGeneric");
+  }
+}
+
+export function EmptyProviderHint({
+  liveModels,
+  discovery,
+  showFailureBadge = true,
+}: {
+  liveModels: boolean;
+  discovery?: ProviderDiscoverySummary;
+  showFailureBadge?: boolean;
+}) {
+  const t = useT();
+  const failed = liveModels && discovery?.status === "failed" ? discovery : undefined;
+  return (
+    <div className="row muted text-label leading-body" role="status" style={{ alignItems: "flex-start", gap: 8, padding: "6px 0" }}>
+      <IconInfo width={15} height={15} aria-hidden="true" style={{ flexShrink: 0, marginTop: 2 }} />
+      <span>
+        {failed && showFailureBadge && <><span className="badge badge-amber">{t("models.discoveryFailedBadge")}</span>{" "}</>}
+        {failed
+          ? `${discoveryFailureReason(t, failed)} `
+          : `${t(liveModels ? "models.emptyDiscovery" : "models.emptyDiscoveryDisabled")} `}
+        <a href="#providers">{t("models.openProviderSettings")}</a>
+      </span>
+    </div>
   );
 }

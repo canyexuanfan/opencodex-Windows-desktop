@@ -121,6 +121,8 @@ user-agent 会获得易读的 CLI 形式，其他客户端会获得 Desktop 哈�
 `ANTHROPIC_SMALL_FAST_MODEL`。有效 Haiku 值为 `tierModels.haiku ?? smallFastModel`，并会
 提供给两个 Haiku 变量。
 
+当 `tierModels.haiku` 和 `smallFastModel` 均未设置时，OpenCodex 会让两个辅助模型变量保持未设置；随后 Claude Code 会选择其原生辅助模型（目前为 Sonnet），并可能产生原生提供方费用。
+
 ## 名册代理（injectAgents）
 
 `ocx claude`（以及系统环境守护进程）会把你的精选子代理名册（Subagents 标签页，最多 5 个模型）
@@ -129,7 +131,7 @@ user-agent 会获得易读的 CLI 形式，其他客户端会获得 Desktop 哈�
 - **`ocx-self`** 固定你在 `/model` 选择器中的默认模型（回退到 `claudeCode.model`）；两者均
   不存在时省略。它**不**使用模型继承。
 - 每个代理正文都包含一条 `<!-- ocx-route: <model> -->` 指令——代理使用该指令固定实际路由。
-  因此 Agent 工具的 `model` 参数不起作用；请传入 `"sonnet"` 作为占位符。
+  因此 Agent 工具的 `model` 参数不起作用；请传入 `"haiku"` 作为占位符。
 - Frontmatter 携带别名；路由由指令驱动。
 - 只有包含 `generated-by: opencodex` 且通过标记验证的 `ocx-*.md` 文件才会被覆盖或清理；
   你自己的代理绝不会被改动。
@@ -213,7 +215,7 @@ Claude 入站的路由重放会把主 ChatGPT 登录附加到内部请求，因�
 进行中描述不会消耗配额。成功的 `data:` 图像描述会按后端、模型、detail、图像字节和请求上下文
 缓存，避免每次重放都重复描述同一图像与上下文。内容可能变化的远程 `https:` 图像不会缓存。
 
-全部配置项见[配置参考](/opencodex/zh-cn/reference/configuration/#sidecars)。Anthropic OAuth Web
+全部配置项见[配置参考](/zh-cn/reference/configuration/#sidecars)。Anthropic OAuth Web
 Search 和图像描述沿用仓库已有的 Claude Code OAuth fingerprint 先例，但在用于长时间无人值守任务前，
 仍应使用你的账户和实际负载进行充分 soak test。
 
@@ -352,4 +354,4 @@ Claude 模型时自动加载。对于原生透传，这是正常现象；对于�
 替换为占位说明（`blockedSkills: ["claude-api"]`）。
 
 **子代理派发到错误模型**——名册代理（`ocx-*`）使用 `<!-- ocx-route: ... -->` 指令，
-而不是 Agent 工具的 `model` 参数。请确保指令与预期路由一致。传入 `"sonnet"` 作为模型占位符。
+而不是 Agent 工具的 `model` 参数。请确保指令与预期路由一致。传入 `"haiku"` 作为模型占位符。

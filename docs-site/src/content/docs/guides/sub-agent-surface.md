@@ -6,7 +6,7 @@ description: Control how Codex spawns and manages sub-agents across all models.
 opencodex lets you choose the multi-agent collaboration surface for every model in the catalog. The **Sub-agent** toggle in the dashboard and Models page controls this globally.
 
 :::note
-On the v2 surface (`multi_agent_v2`), a spawned sub-agent inherits the parent model **by default**: `fork_turns` defaults to `all`, and full-history forks reject overrides. Since v2.7.2 opencodex injects guidance that teaches the model how to break inheritance — a `spawn_agent` call that sets `fork_turns` to `"none"` (or a partial fork such as `"3"`) can pass `model` / `reasoning_effort` arguments, which the Codex runtime parses and applies even though the published tool schema hides them. Known limitation: when a **native** parent spawns a child routed to a **non-native** provider, the Codex client may send the `NEW_TASK` payload only as backend-encrypted `encrypted_content`, so the routed child receives an empty task body ([#92](https://github.com/lidge-jun/opencodex/issues/92)). The model override still applies, but the task text can be lost — the v1 surface remains the reliable choice for heterogeneous-provider delegation.
+On the v2 surface (`multi_agent_v2`), a spawned sub-agent inherits the parent model **by default**: `fork_turns` defaults to `all`, and full-history forks reject overrides. Since v2.7.2 opencodex injects guidance that teaches the model how to break inheritance — a `spawn_agent` call that sets `fork_turns` to `"none"` (or a partial fork such as `"3"`) can pass `model` / `reasoning_effort` arguments, which the Codex runtime parses and applies even though the published tool schema hides them. Known transport limitation: when a **native** parent spawns a child routed to a **non-native** provider, the Codex client may send the `NEW_TASK` payload only as backend-encrypted `encrypted_content` ([#92](https://github.com/lidge-jun/opencodex/issues/92)). opencodex does not forward that unreadable task to an external provider: a direct route fails with HTTP 400 and code `unreadable_encrypted_agent_task`, while a combo skips non-decrypting targets and selects a canonical native ChatGPT target when one is available. Use v1 for heterogeneous-provider delegation, select a native ChatGPT child, or resend the task as plaintext v2 `agent_message` content.
 :::
 
 ## Modes
@@ -15,7 +15,17 @@ On the v2 surface (`multi_agent_v2`), a spawned sub-agent inherits the parent mo
 | --- | --- | --- |
 | **v1** | `multi_agent_v1` | Classic namespaced agent tools with `send_input` / `close_agent` / `resume_agent`. A `spawn_agent` model override can start a sub-agent on a different model. |
 | **base** (default) | Upstream pins | Restores upstream model pins: gpt-5.6-sol and gpt-5.6-terra use v2, gpt-5.6-luna uses v1, and unpinned models follow the Codex `multi_agent_v2` feature flag. Spawn behavior follows the surface that resolves for that model. |
-| **v2** | `multi_agent_v2` | Flat `spawn_agent` tools with concurrent sessions and `send_message` / `followup_task` / `wait_agent` / `interrupt_agent`. Children inherit the parent model on full-history forks; `fork_turns: "none"` (or a partial fork) accepts `model` / `reasoning_effort` overrides. Task body may arrive encrypted for native→routed children ([#92](https://github.com/lidge-jun/opencodex/issues/92)). |
+| **v2** | `multi_agent_v2` | Flat `spawn_agent` tools with concurrent sessions and `send_message` / `followup_task` / `wait_agent` / `interrupt_agent`. Children inherit the parent model on full-history forks; `fork_turns: "none"` (or a partial fork) accepts `model` / `reasoning_effort` overrides. If a native→routed child receives only backend-encrypted task content, external routes return `unreadable_encrypted_agent_task`; mixed combos prefer a decrypt-capable native target ([#92](https://github.com/lidge-jun/opencodex/issues/92)). |
+
+### Encrypted v2 task delivery
+
+Only the native ChatGPT backend can read its encrypted task payload. For an unreadable v2 `agent_message`, opencodex applies these rules before provider dispatch:
+
+- A direct non-native route returns HTTP 400 with `error.code = "unreadable_encrypted_agent_task"`. The response never echoes the encrypted payload.
+- A combo considers only canonical native ChatGPT targets for that task, including retries. If the combo has no decrypt-capable target, it returns the same 400 response instead of sending an empty task to an external provider.
+- Readable plaintext tasks keep the normal combo order and failover behavior.
+
+To recover, switch the child to a native ChatGPT model, add a native target to the combo, use the v1 surface for heterogeneous-provider delegation, or resend the task as plaintext v2 `agent_message` content when you control the caller.
 
 ## How it works
 
@@ -33,7 +43,7 @@ The dashboard's **Sub-agent delegation** picker stores an `injectionModel` and, 
 
 `multiAgentGuidanceText` identifies the surface from the request's tools — including the Codex Desktop WebSocket path (`responses_lite`), where tools arrive inside an `additional_tools` input item instead of the request's `tools` array.
 
-On a **v2** turn (Sol/Terra in base mode, every model in v2 mode), the proxy injects a compact guidance block — budgeted to 700 characters — whenever an injection model is set or the configured sub-agent roster resolves in the catalog. The block teaches `spawn_agent`'s hidden `model` / `reasoning_effort` arguments, mandates `fork_turns: "none"` (or a partial fork) for overrides, names the preferred model and effort, and lists the `subagentModels` roster with the effort ladder each advertises in the injected catalog — the same list Codex validates spawn efforts against.
+On a **v2** turn (Sol/Terra in base mode, every model in v2 mode), the proxy injects a compact guidance block — budgeted to 700 characters — whenever an eligible injection model is set or the effective sub-agent roster is non-empty. The block conditionally describes `model` / `reasoning_effort` overrides without assuming whether they appear in the active schema, mandates `fork_turns: "none"` (or a partial fork), names only an eligible canonical preferred model, and lists only configured models in Codex's picker-visible, v2-compatible, priority-sorted first five with their available effort ladders.
 
 On a **v1** turn the proxy only mirrors upstream's Proactive delegation text at the top effort tier (max / ultra). No model designation, roster, or custom prompt is added there — v1 stays lean by design.
 
@@ -46,7 +56,7 @@ To replace the built-in v2 guidance, set `injectionPrompt` (config key, or `PUT 
 - **Dashboard** → first stat cell: click **v1**, **base**, or **v2**.
 - **Models** page → top-row segmented control.
 - Both pages have a **?** button that opens a help modal with a link back here.
-- **Dashboard** → **Sub-agent delegation**: choose a preferred model and optional reasoning effort. On v2 the injected guidance instructs the agent to spawn with `fork_turns: "none"` so the model override applies — though for native→routed children the task body can currently arrive encrypted ([#92](https://github.com/lidge-jun/opencodex/issues/92)).
+- **Dashboard** → **Sub-agent delegation**: choose a preferred model and optional reasoning effort. On v2 the injected guidance instructs the agent to spawn with `fork_turns: "none"` so the model override applies. If a native→routed child receives only encrypted task content, use a native target or v1; external-only delivery now fails explicitly with `unreadable_encrypted_agent_task` ([#92](https://github.com/lidge-jun/opencodex/issues/92)).
 
 ### CLI
 

@@ -3,7 +3,7 @@ title: アーキテクチャ
 description: opencodex の内部構造 — モジュールマップ、AdapterEvent ブリッジ、リクエストパーサー、そしてキャッシュ。
 ---
 
-opencodex は単一の Bun プロセスです。リクエストは OpenAI Responses として入り、内部モデルに正規化され、ルーティングされたのち、アダプターを経由してプロバイダーに送信され、再び Responses SSE にブリッジされます。エンドツーエンドのフローは [動作の仕組み](/opencodex/ja/getting-started/how-it-works/) を参照してください。
+opencodex は単一の Bun プロセスです。リクエストは OpenAI Responses として入り、内部モデルに正規化され、ルーティングされたのち、アダプターを経由してプロバイダーに送信され、再び Responses SSE にブリッジされます。エンドツーエンドのフローは [動作の仕組み](/ja/getting-started/how-it-works/) を参照してください。
 
 ## モジュールマップ
 
@@ -32,15 +32,23 @@ src/
 └── index.ts            # public entry
 ```
 
+以前の大規模なエントリーファイル 3 つは、現在は互換性 facade です。`codex/catalog.ts` は
+7 個の `codex/catalog/*.ts` モジュールを、`server/management-api.ts` は 9 個の
+`server/management/*.ts` モジュールを、`server/responses.ts` は 5 個の
+`server/responses/*.ts` モジュールを接続します。
+
 ## リクエスト処理フロー
 
-HTTP の境界は `server/index.ts` が担い、Responses データプレーンは `server/responses.ts` に渡します。
+HTTP の境界は `server/index.ts` が担い、Responses データプレーンは `server/responses.ts` facade と
+`server/responses/*.ts` モジュールに渡します。
 
 1. `server/index.ts` で CORS と API 認証を確認し、終了待ち状態なら新規リクエストを拒否したのち、リクエストのライフサイクルを記録します。ここで `GET /v1/models`、`POST /v1/responses`、
    `POST /v1/responses/compact`、`POST /v1/images/generations` / `POST /v1/images/edits`
    （Codex 組み込み `image_gen` ツール用 — `server/images.ts` が OpenAI 系の上流に中継）、
+   `POST /v1/live` / `POST /v1/realtime/calls`（ChatGPT / Codex App 音声と OpenAI Realtime
+   の call-create、`server/live.ts` が中継）と `/v1/live/{callId}` サイドバンド WebSocket、
    `/v1/responses` のオプション WebSocket アップグレードを提供します。
-2. `server/responses.ts` が展開し JSON を読みます。覚えておいた `previous_response_id` 入力があれば展開したのち `responses/parser.ts` に渡します。
+2. `server/responses/core.ts` が展開し JSON を読みます。覚えておいた `previous_response_id` 入力があれば展開したのち `responses/parser.ts` に渡します。
 3. `router.ts` が通常のモデル id または `provider/model` id を解決します。続いて Codex アカウント affinity を決定し、必要ならプロバイダー OAuth を更新して選択された認証情報を route に適用します。
 4. 本リクエストの前に `vision/` が `noVisionModels` モデル用の画像説明を作ります。安全なサイドカー経路がないときはテキスト専用の上流に画像を送らず取り除きます。
 5. `server/adapter-resolve.ts` がモデル別の wire override を適用し、7つのアダプターのいずれかを作ります。
@@ -89,14 +97,14 @@ HTTP の境界は `server/index.ts` が担い、Responses データプレーン�
 
 `server/index.ts` はデフォルトで `/v1/responses` を HTTP/SSE で提供します。`websockets` が `false` の状態で Codex が Responses WebSocket アップグレードを試みると、opencodex は `426 upgrade_required` を返し、Codex はそのセッションで HTTP にフォールバックします。`"websockets": true` を設定すると同じエンドポイントがアップグレードを受け入れ WebSocket ブリッジを使います。
 
-Codex コンテキスト compaction はルーティングされたモデルでも動作します。`server/responses.ts` は
+Codex コンテキスト compaction はルーティングされたモデルでも動作します。`server/responses/compact.ts` は
 `POST /v1/responses/compact` を内部ルーティング要約ターンとして扱い、圧縮されたヒストリーを返します。
 `responses/parser.ts` と `bridge.ts` は remote compaction v2 の `compaction_trigger` ターンを扱い、合成 `compaction` 出力項目を正確に 1 つ送ります。
 
 ## キャッシュとカタログ
 
 - `codex/model-cache.ts` はリアルタイム `/models` 結果をプロバイダー別にメモリで TTL キャッシュし（デフォルト 5 分、Codex 自身のキャッシュと一致）、fetch が失敗すると stale-fallback を提供します。
-- `codex/catalog.ts` はルーティングされたモデルを名前空間項目として Codex のカタログにマージし、おすすめの [サブエージェントモデル](/opencodex/ja/guides/codex-integration/#the-subagent-picker) を先にランク付けし、`disabledModels` をフィルタし、一回限りのバックアップから元のカタログを完全に復元できます。
+- `codex/catalog.ts` facade が公開する `codex/catalog/sync.ts` は、ルーティングされたモデルを名前空間項目として Codex のカタログにマージし、おすすめの [サブエージェントモデル](/ja/guides/codex-integration/#the-subagent-picker) を先にランク付けし、`disabledModels` をフィルタし、一回限りのバックアップから元のカタログを完全に復元できます。
 
 ## Reasoning effort
 

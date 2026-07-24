@@ -589,6 +589,16 @@ describe("Cursor protobuf tool-call events", () => {
     ]);
     expect(tracker.get("cursor_conv_1")).toBeUndefined();
   });
+
+  test("rekey copies carry-forward totals onto a rotated conversation id", () => {
+    const tracker = createCursorContextUsageTracker();
+    tracker.record("cursor_old", 12_500);
+    tracker.rekey("cursor_old", "cursor_new");
+
+    expect(tracker.get("cursor_old")).toBeUndefined();
+    expect(tracker.get("cursor_new")).toBe(12_500);
+    expect(tracker.controlsForConversation("cursor_new").carryForwardTokens).toBe(12_500);
+  });
 });
 
 describe("Cursor MCP display-name alias", () => {

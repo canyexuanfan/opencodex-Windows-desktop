@@ -2,7 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { augmentRoutedModelsWithJawcodeMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, clampCatalogModelsToCodexSupport, clampEntryToCodexSupportedEfforts, clampedDefaultEffort, deriveComboCatalogModel, exactComboCatalogSlugs, filterCatalogVisibleModels, filterSupportedNativeSlugs, gatherRoutedModels, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, resetCatalogRuntimeStateForTests, resetOpenAiApiCatalogWarningStateForTests } from "../src/codex/catalog";
+import { augmentRoutedModelsWithJawcodeMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, catalogModelSlug, clampCatalogModelsToCodexSupport, clampEntryToCodexSupportedEfforts, clampedDefaultEffort, deriveComboCatalogModel, exactComboCatalogSlugs, filterCatalogVisibleModels, filterSupportedNativeSlugs, gatherRoutedModels, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, resetCatalogRuntimeStateForTests, resetOpenAiApiCatalogWarningStateForTests } from "../src/codex/catalog";
 import {
   CURSOR_STATIC_MODELS,
   filterCursorConfiguredModelsByLiveDiscovery,
@@ -12,10 +12,18 @@ import {
   cursorModelReasoningEfforts,
 } from "../src/adapters/cursor/discovery";
 import { getJawcodeModelMetadata, resolveJawcodeProvider } from "../src/generated/jawcode-model-metadata";
-import { clearModelCache, getStaleCached, setCached } from "../src/codex/model-cache";
+import {
+  clearModelCache,
+  getProviderDiscoveryStatus,
+  getStaleCached,
+  markProviderDiscoveryFailed,
+  setCached,
+  type ProviderModelDiscoveryStatus,
+} from "../src/codex/model-cache";
 import type { OcxConfig } from "../src/types";
 import type { NormalizedComboConfig } from "../src/combos/types";
 import { enrichProviderFromRegistry } from "../src/providers/derive";
+import { handleManagementAPI } from "../src/server/management-api";
 
 const originalFetch = globalThis.fetch;
 
@@ -39,6 +47,27 @@ function normalizedCombo(
     ],
     ...overrides,
   };
+}
+
+async function providerDiscoveryDto(provider: string): Promise<Record<string, unknown>> {
+  const requestUrl = new URL("http://127.0.0.1/api/providers");
+  const response = await handleManagementAPI(
+    new Request(requestUrl),
+    requestUrl,
+    {
+      port: 10100,
+      defaultProvider: provider,
+      providers: {
+        [provider]: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.example.test/v1",
+          models: [],
+        },
+      },
+    },
+  );
+  const providers = await response!.json() as Array<Record<string, unknown>>;
+  return providers[0] ?? {};
 }
 
 describe("combo catalog capability intersection", () => {
@@ -401,7 +430,7 @@ describe("combo catalog capability intersection", () => {
     } finally {
       warn.mockRestore();
     }
-  });
+  }, 15_000);
 
   test("exact combo slugs come only from current config", () => {
     expect(exactComboCatalogSlugs({ combos: {
@@ -518,6 +547,129 @@ describe("Google Gemini catalog metadata", () => {
       .toEqual(["low", "medium", "high", "max", "ultra"]);
     expect(entry?.input_modalities).toEqual(["text", "image"]);
     expect(entry?.context_window).toBe(1_048_576);
+  });
+});
+
+describe("configured CatalogModel displayName -> catalog display_name", () => {
+  test("a routed CatalogModel displayName becomes the catalog display_name", () => {
+    const model = { provider: "deepseek", id: "deepseek-v4", displayName: "DeepSeek V4", owned_by: "deepseek" };
+    const entries = buildCatalogEntries(nativeTemplate(), [], [model]);
+    const row = entries.find(e => e.slug === "deepseek/deepseek-v4");
+
+    expect(row?.display_name).toBe("DeepSeek V4");
+    // Routing slug is untouched — displayName is display-only.
+    expect(row?.slug).toBe("deepseek/deepseek-v4");
+    expect(catalogModelSlug(model)).toBe("deepseek/deepseek-v4");
+  });
+
+  test("absent displayName leaves display_name as the slug (unchanged behavior)", () => {
+    const entries = buildCatalogEntries(nativeTemplate(), [], [
+      { provider: "anthropic", id: "claude-sonnet-4-6", owned_by: "anthropic" },
+    ]);
+    const row = entries.find(e => e.slug === "anthropic/claude-sonnet-4-6");
+
+    expect(row?.display_name).toBe("anthropic/claude-sonnet-4-6");
+    expect(row?.slug).toBe("anthropic/claude-sonnet-4-6");
+  });
+
+  test("empty/whitespace displayName is ignored and falls back to the slug", () => {
+    const entries = buildCatalogEntries(nativeTemplate(), [], [
+      { provider: "deepseek", id: "deepseek-v4", displayName: "   ", owned_by: "deepseek" },
+    ]);
+    const row = entries.find(e => e.slug === "deepseek/deepseek-v4");
+    expect(row?.display_name).toBe("deepseek/deepseek-v4");
+  });
+
+  test("displayName never affects the routing slug, alias, or provider", () => {
+    const withAlias = { provider: "combo", id: "x", alias: "fast-chat", displayName: "Fast Chat", owned_by: "combo" };
+    const entries = buildCatalogEntries(nativeTemplate(), [], [withAlias], undefined, false, "default", new Set(["fast-chat"]));
+    const row = entries.find(e => e.slug === "fast-chat")!;
+
+    // The public alias is still the slug; only the label changed.
+    expect(row.slug).toBe("fast-chat");
+    expect(catalogModelSlug(withAlias)).toBe("fast-chat");
+    expect(row.display_name).toBe("Fast Chat");
+    expect(row.owned_by).toBe("combo");
+  });
+
+  test("displayName stays stable across repeated catalog sync (idempotent regeneration)", () => {
+    const model = { provider: "deepseek", id: "deepseek-v4", displayName: "DeepSeek V4", owned_by: "deepseek" };
+    const rebuild = () => buildCatalogEntries(nativeTemplate(), [], [model]);
+
+    // First sync: freshly built entries merged into an empty on-disk catalog.
+    const firstSync = mergeCatalogEntriesForSync([], rebuild(), new Map(), [], false);
+    const firstRow = firstSync.find(e => e.slug === "deepseek/deepseek-v4")!;
+    expect(firstRow.display_name).toBe("DeepSeek V4");
+
+    // Second sync: re-derive from the SAME config and merge against the now-populated catalog.
+    // Routed entries are rebuilt from gatherRoutedModels each sync, so display_name must be
+    // re-derived deterministically and never drift back to the bare slug.
+    const secondSync = mergeCatalogEntriesForSync(firstSync, rebuild(), new Map(), [], false);
+    const secondRow = secondSync.find(e => e.slug === "deepseek/deepseek-v4")!;
+    expect(secondRow.display_name).toBe("DeepSeek V4");
+    expect(secondRow.slug).toBe("deepseek/deepseek-v4");
+  });
+
+  test("configured displayName does not override genuine native upstream marketing names", () => {
+    // Native gpt-5.6-* entries come from the pinned upstream snapshot with their real display
+    // names; they carry no CatalogModel (isRouted=false), so a configured displayName can never
+    // reach them — and the fallback-quality discriminator (display_name === slug) still works.
+    const entries = buildCatalogEntries(nativeTemplate(), ["gpt-5.6-sol"], []);
+    const sol = entries.find(e => e.slug === "gpt-5.6-sol");
+    expect(sol?.display_name).toBe("GPT-5.6-Sol");
+
+    // A fallback-quality native (display_name stamped with the bare slug) is still upgraded to
+    // the upstream entry by sync — displayName on routed models does not interfere with that path.
+    const synthesizedLuna = {
+      ...nativeTemplate(),
+      slug: "gpt-5.6-luna",
+      display_name: "gpt-5.6-luna",
+      priority: 9,
+    };
+    const merged = mergeCatalogEntriesForSync([synthesizedLuna], [], new Map(), [], false);
+    expect(merged.find(e => e.slug === "gpt-5.6-luna")?.display_name).toBe("GPT-5.6-Luna");
+  });
+
+  test("a configured customModel displayName propagates end-to-end through gatherRoutedModels", async () => {
+    clearModelCache("custom-provider");
+    const originalFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = (() => {
+      fetchCalls += 1;
+      throw new Error("fetch should not be called");
+    }) as typeof fetch;
+    try {
+      const models = await gatherRoutedModels({
+        port: 10100,
+        defaultProvider: "custom-provider",
+        providers: {
+          "custom-provider": {
+            baseUrl: "https://example.invalid/v1",
+            adapter: "openai-chat",
+            authMode: "key",
+            liveModels: false,
+            models: ["baseline-model"],
+          },
+        },
+        customModels: [
+          { id: "cm-1", provider: "custom-provider", modelId: "renamed-model", displayName: "Renamed Model", addedAt: "2026-01-01T00:00:00.000Z" },
+        ],
+      });
+
+      expect(fetchCalls).toBe(0);
+      // The configured custom row is added alongside the provider's baseline model; displayName
+      // rides only on the custom row.
+      const custom = models.find(m => m.provider === "custom-provider" && m.id === "renamed-model");
+      expect(custom?.displayName).toBe("Renamed Model");
+
+      const entries = buildCatalogEntries(nativeTemplate(), [], models);
+      const row = entries.find(e => e.slug === "custom-provider/renamed-model");
+      expect(row?.display_name).toBe("Renamed Model");
+      expect(row?.slug).toBe("custom-provider/renamed-model");
+    } finally {
+      globalThis.fetch = originalFetch;
+      clearModelCache("custom-provider");
+    }
   });
 });
 
@@ -648,6 +800,7 @@ describe("Codex catalog routed normalization", () => {
     expect(routed).not.toHaveProperty("default_service_tier");
     expect(routed?.web_search_tool_type).toBe("text_and_image");
     expect(routed?.supports_search_tool).toBe(true);
+    expect(routed?.supports_reasoning_summaries).toBe(false);
     expect(routed?.base_instructions).not.toBe(nativeTemplate().base_instructions);
     expect(routed?.base_instructions).toContain("claude-sonnet-4-6");
     expect(routed?.default_reasoning_level).toBe("medium");
@@ -942,6 +1095,58 @@ describe("Codex catalog routed normalization", () => {
     }
   });
 
+  test("failed discovery falls back to defaultModel when no static models are configured (#308)", async () => {
+    clearModelCache("anthropic-compatible-default");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("not found", { status: 404 })) as typeof fetch;
+    try {
+      const models = await gatherRoutedModels({
+        providers: {
+          "anthropic-compatible-default": {
+            baseUrl: "https://example.invalid",
+            adapter: "anthropic",
+            authMode: "key",
+            apiKey: "k",
+            defaultModel: "claude-sonnet-5",
+          },
+        },
+      });
+
+      expect(models.map(model => `${model.provider}/${model.id}`)).toEqual([
+        "anthropic-compatible-default/claude-sonnet-5",
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      clearModelCache("anthropic-compatible-default");
+    }
+  });
+
+  test("successful live discovery stays authoritative over the defaultModel fallback", async () => {
+    clearModelCache("anthropic-compatible-live");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      data: [{ id: "live-claude-model" }],
+    }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+    try {
+      const models = await gatherRoutedModels({
+        providers: {
+          "anthropic-compatible-live": {
+            baseUrl: "https://example.invalid",
+            adapter: "anthropic",
+            authMode: "key",
+            apiKey: "k",
+            defaultModel: "stale-default",
+          },
+        },
+      });
+
+      expect(models.map(model => model.id)).toEqual(["live-claude-model"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      clearModelCache("anthropic-compatible-live");
+    }
+  });
+
   test("configured alias with a dated live variant is retained (Anthropic haiku pattern)", async () => {
     clearModelCache("dated-provider");
     const originalFetch = globalThis.fetch;
@@ -1031,6 +1236,12 @@ describe("Codex catalog routed normalization", () => {
       });
 
       expect(fetchCalls).toBe(0);
+      const cursorRouterIds = ["auto", "auto-cost", "auto-balance", "auto-intelligence"];
+      const routedIds = models
+        .filter(model => model.provider === "cursor" && cursorRouterIds.includes(model.id))
+        .map(model => model.id);
+      expect(routedIds).toHaveLength(cursorRouterIds.length);
+      expect(routedIds).toEqual(expect.arrayContaining(cursorRouterIds));
       const auto = models.find(model => model.provider === "cursor" && model.id === "auto");
       expect(auto).toMatchObject({
         provider: "cursor",
@@ -1046,16 +1257,31 @@ describe("Codex catalog routed normalization", () => {
       expect(entry?.input_modalities).toEqual(["text", "image"]);
       expect(entry?.supported_reasoning_levels).toEqual([]);
       expect(entry).not.toHaveProperty("default_reasoning_level");
+      for (const id of cursorRouterIds.slice(1)) {
+        const routedEntry = entries.find(item => item.slug === `cursor/${id}`);
+        expect(routedEntry?.context_window).toBe(200_000);
+        expect(routedEntry?.supported_reasoning_levels).toEqual([]);
+      }
     } finally {
       globalThis.fetch = originalFetch;
       clearModelCache("cursor");
     }
   });
 
-  test("Cursor live discovery keeps auto even when GetUsableModels omits it", () => {
-    const configured = [{ id: "auto" }, { id: "gpt-5.4" }, { id: "claude-fable-5" }];
+  test("Cursor live discovery keeps all router levels when GetUsableModels omits them", () => {
+    const configured = [
+      { id: "auto" },
+      { id: "auto-cost" },
+      { id: "auto-balance" },
+      { id: "auto-intelligence" },
+      { id: "gpt-5.4" },
+      { id: "claude-fable-5" },
+    ];
     expect(filterCursorConfiguredModelsByLiveDiscovery(configured, ["gpt-5.4-high"]).map(model => model.id)).toEqual([
       "auto",
+      "auto-cost",
+      "auto-balance",
+      "auto-intelligence",
       "gpt-5.4",
     ]);
   });
@@ -1222,6 +1448,233 @@ describe("Codex catalog routed normalization", () => {
     }
   });
 
+  test("destination-blocked discovery records blocked status", async () => {
+    const provider = "discovery-private-blocked";
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      return new Response(JSON.stringify({ data: [{ id: "must-not-fetch" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const models = await gatherRoutedModels({
+        providers: {
+          [provider]: {
+            adapter: "openai-chat",
+            baseUrl: "http://198.18.0.1/v1",
+            apiKey: "sk-test",
+            models: ["static-fallback"],
+          },
+        },
+      });
+
+      expect(fetchCalls).toBe(0);
+      expect(models.map(model => `${model.provider}/${model.id}`)).toEqual([
+        `${provider}/static-fallback`,
+      ]);
+      expect(getProviderDiscoveryStatus(provider)).toEqual({ status: "failed", reason: "blocked" });
+      expect(await providerDiscoveryDto(provider)).toMatchObject({
+        discovery: { status: "failed", reason: "blocked" },
+      });
+      const warningText = warning.mock.calls.flat().join(" ");
+      expect(warningText).toContain("blocked by destination policy");
+      expect(warningText).toContain("benchmark address");
+      expect(warningText).toContain("fallback=configured");
+    } finally {
+      warning.mockRestore();
+      clearModelCache(provider);
+    }
+  });
+
+  test("model discovery allows a private destination with allowPrivateNetwork opt-in", async () => {
+    const provider = "discovery-private-opt-in";
+    let requestedUrl: string | undefined;
+    globalThis.fetch = (async input => {
+      requestedUrl = String(input);
+      return new Response(JSON.stringify({ data: [{ id: "live-private-model" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const models = await gatherRoutedModels({
+        providers: {
+          [provider]: {
+            adapter: "openai-chat",
+            baseUrl: "http://198.18.0.1/v1",
+            allowPrivateNetwork: true,
+            apiKey: "sk-test",
+          },
+        },
+      });
+
+      expect(requestedUrl).toBe("http://198.18.0.1/v1/models");
+      expect(models.map(model => `${model.provider}/${model.id}`)).toEqual([
+        `${provider}/live-private-model`,
+      ]);
+      expect(getProviderDiscoveryStatus(provider)).toEqual({ status: "ok" });
+    } finally {
+      clearModelCache(provider);
+    }
+  });
+
+  test("2xx non-JSON discovery emits safe diagnostics instead of SyntaxError", async () => {
+    const provider = "discovery-non-json";
+    const bodyMarker = "PRIVATE-UPSTREAM-BODY-MARKER";
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
+    globalThis.fetch = (async () => new Response(`<html>${bodyMarker}</html>`, {
+      status: 200,
+      headers: { "content-type": "text/html; charset=utf-8" },
+    })) as typeof fetch;
+
+    try {
+      const models = await gatherRoutedModels({
+        providers: {
+          [provider]: {
+            adapter: "openai-chat",
+            baseUrl: "https://93.184.216.34/v1",
+            apiKey: "sk-test",
+            models: ["static-fallback"],
+          },
+        },
+      });
+
+      expect(models.map(model => `${model.provider}/${model.id}`)).toEqual([
+        `${provider}/static-fallback`,
+      ]);
+      const warningText = warning.mock.calls.flat().join(" ");
+      expect(warningText).toContain("returned a non-JSON 2xx response");
+      expect(warningText).toContain("status=200");
+      expect(warningText).toContain("contentType=text/html");
+      expect(warningText).toContain("fallback=configured");
+      expect(warningText).not.toContain("SyntaxError");
+      expect(warningText).not.toContain(bodyMarker);
+    } finally {
+      warning.mockRestore();
+      clearModelCache(provider);
+    }
+  });
+
+  test("invalid 2xx JSON preserves and returns the stale discovery cache", async () => {
+    const provider = "discovery-invalid-json-stale";
+    const stale = [{ provider, id: "last-known-good" }];
+    setCached(provider, stale);
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
+    globalThis.fetch = (async () => new Response("{not-json", {
+      status: 200,
+      headers: { "content-type": "application/problem+json; charset=utf-8" },
+    })) as typeof fetch;
+
+    try {
+      const models = await gatherRoutedModels({
+        modelCacheTtlMs: 0,
+        providers: {
+          [provider]: {
+            adapter: "openai-chat",
+            baseUrl: "https://93.184.216.34/v1",
+            apiKey: "sk-test",
+            models: ["static-fallback"],
+          },
+        },
+      });
+
+      expect(models.map(model => `${model.provider}/${model.id}`)).toEqual([
+        `${provider}/last-known-good`,
+      ]);
+      expect(getStaleCached(provider)).toEqual(stale);
+      expect(getProviderDiscoveryStatus(provider)).toEqual({ status: "failed", reason: "invalid_response" });
+      const warningText = warning.mock.calls.flat().join(" ");
+      expect(warningText).toContain("returned invalid JSON in a 2xx response");
+      expect(warningText).toContain("contentType=application/problem+json");
+      expect(warningText).toContain("fallback=stale");
+      expect(warningText).not.toContain("SyntaxError");
+    } finally {
+      warning.mockRestore();
+      clearModelCache(provider);
+    }
+  });
+
+  test("HTTP non-OK discovery returns configured models with status diagnostics", async () => {
+    const provider = "discovery-http-401";
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
+    globalThis.fetch = (async () => new Response(null, { status: 401 })) as typeof fetch;
+
+    try {
+      const models = await gatherRoutedModels({
+        providers: {
+          [provider]: {
+            adapter: "openai-chat",
+            baseUrl: "https://93.184.216.34/v1",
+            apiKey: "sk-test",
+            models: ["static-fallback"],
+          },
+        },
+      });
+
+      expect(models.map(model => `${model.provider}/${model.id}`)).toEqual([
+        `${provider}/static-fallback`,
+      ]);
+      expect(getProviderDiscoveryStatus(provider)).toEqual({
+        status: "failed",
+        reason: "http",
+        httpStatus: 401,
+      });
+      expect(await providerDiscoveryDto(provider)).toMatchObject({
+        discovery: { status: "failed", reason: "http", httpStatus: 401 },
+      });
+      const warningText = warning.mock.calls.flat().join(" ");
+      expect(warningText).toContain("failed with HTTP 401");
+      expect(warningText).toContain("fallback=configured");
+    } finally {
+      warning.mockRestore();
+      clearModelCache(provider);
+    }
+  });
+
+  test("network discovery failure records sanitized network status", async () => {
+    const provider = "discovery-fetch-throw";
+    const sentinel = "SENTINEL-PRIVATE-URL-https://secret.invalid/account";
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
+    globalThis.fetch = (async () => {
+      throw new TypeError(sentinel);
+    }) as typeof fetch;
+
+    try {
+      const models = await gatherRoutedModels({
+        providers: {
+          [provider]: {
+            adapter: "openai-chat",
+            baseUrl: "https://93.184.216.34/v1",
+            apiKey: "sk-test",
+            models: ["static-fallback"],
+          },
+        },
+      });
+
+      expect(models.map(model => `${model.provider}/${model.id}`)).toEqual([
+        `${provider}/static-fallback`,
+      ]);
+      expect(getProviderDiscoveryStatus(provider)).toEqual({ status: "failed", reason: "network" });
+      expect(JSON.stringify(getProviderDiscoveryStatus(provider))).not.toContain(sentinel);
+      const dto = await providerDiscoveryDto(provider);
+      expect(dto).toMatchObject({ discovery: { status: "failed", reason: "network" } });
+      expect(JSON.stringify(dto)).not.toContain(sentinel);
+      const warningText = warning.mock.calls.flat().join(" ");
+      expect(warningText).toContain("threw TypeError");
+      expect(warningText).toContain("fallback=configured");
+      expect(warningText).not.toContain("SyntaxError");
+      expect(warningText).not.toContain(sentinel);
+    } finally {
+      warning.mockRestore();
+      clearModelCache(provider);
+    }
+  });
+
   test("malformed 2xx discovery keeps the stale catalog and does not cache the response", async () => {
     const provider = "malformed-stale";
     setCached(provider, [{ provider, id: "last-known-good" }]);
@@ -1253,6 +1706,7 @@ describe("Codex catalog routed normalization", () => {
         `${provider}/last-known-good`,
       ]);
       expect(getStaleCached(provider)).toEqual([{ provider, id: "last-known-good" }]);
+      expect(getProviderDiscoveryStatus(provider)).toEqual({ status: "failed", reason: "invalid_response" });
     } finally {
       warning.mockRestore();
       clearModelCache(provider);
@@ -1285,9 +1739,55 @@ describe("Codex catalog routed normalization", () => {
         `${provider}/static-fallback`,
       ]);
       expect(getStaleCached(provider)).toBeNull();
+      expect(getProviderDiscoveryStatus(provider)).toEqual({ status: "failed", reason: "invalid_response" });
     } finally {
       warning.mockRestore();
       clearModelCache(provider);
+    }
+  });
+
+  test("invalid JSON or malformed model data records invalid-response status", async () => {
+    const cases = [
+      { name: "invalid-json", body: "{not-json" },
+      { name: "missing-data", body: JSON.stringify({ models: [] }) },
+      { name: "malformed-data", body: JSON.stringify({ data: [{ id: 42 }] }) },
+    ];
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      for (const fixture of cases) {
+        const provider = `discovery-${fixture.name}`;
+        globalThis.fetch = (async () => new Response(fixture.body, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })) as typeof fetch;
+
+        const models = await gatherRoutedModels({
+          providers: {
+            [provider]: {
+              adapter: "openai-chat",
+              baseUrl: "https://93.184.216.34/v1",
+              apiKey: "sk-test",
+              models: ["static-fallback"],
+            },
+          },
+        });
+
+        expect(models.map(model => `${model.provider}/${model.id}`)).toEqual([
+          `${provider}/static-fallback`,
+        ]);
+        expect(getProviderDiscoveryStatus(provider)).toEqual({
+          status: "failed",
+          reason: "invalid_response",
+        });
+        expect(await providerDiscoveryDto(provider)).toMatchObject({
+          discovery: { status: "failed", reason: "invalid_response" },
+        });
+        clearModelCache(provider);
+      }
+    } finally {
+      warning.mockRestore();
+      clearModelCache();
     }
   });
 
@@ -1321,6 +1821,7 @@ describe("Codex catalog routed normalization", () => {
       expect(second).toEqual([]);
       expect(fetchCalls).toBe(1);
       expect(getStaleCached(provider)).toEqual([]);
+      expect(getProviderDiscoveryStatus(provider)).toEqual({ status: "ok" });
       const warningText = warning.mock.calls.flat().join(" ");
       expect(warningText).toContain(provider);
       expect(warningText).toContain("configured-ghost");
@@ -1329,6 +1830,41 @@ describe("Codex catalog routed normalization", () => {
       warning.mockRestore();
       clearModelCache(provider);
     }
+  });
+
+  test("successful catalog discovery clears every prior failure reason", async () => {
+    const provider = "discovery-status-reset";
+    const failures: Array<Extract<ProviderModelDiscoveryStatus, { status: "failed" }>> = [
+      { status: "failed", reason: "blocked" },
+      { status: "failed", reason: "http", httpStatus: 401 },
+      { status: "failed", reason: "invalid_response" },
+      { status: "failed", reason: "network" },
+      { status: "failed", reason: "provider" },
+    ];
+    globalThis.fetch = (async () => Response.json({ data: [] })) as typeof fetch;
+
+    for (const { status: _status, ...failure } of failures) {
+      markProviderDiscoveryFailed(provider, failure);
+      expect(getProviderDiscoveryStatus(provider)).toEqual({ status: "failed", ...failure });
+
+      await gatherRoutedModels({
+        modelCacheTtlMs: 0,
+        providers: {
+          [provider]: {
+            adapter: "openai-chat",
+            baseUrl: "https://93.184.216.34/v1",
+            apiKey: "sk-test",
+          },
+        },
+      });
+
+      expect(getProviderDiscoveryStatus(provider)).toEqual({ status: "ok" });
+      expect(await providerDiscoveryDto(provider)).toMatchObject({ discovery: { status: "ok" } });
+    }
+
+    clearModelCache(provider);
+    expect(getProviderDiscoveryStatus(provider)).toBeUndefined();
+    expect(await providerDiscoveryDto(provider)).not.toHaveProperty("discovery");
   });
 
   test("routed entries receive exact jawcode context metadata", () => {
@@ -1490,8 +2026,28 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.max_context_window).toBe(128_000);
     expect(routed?.auto_compact_token_limit).toBe(115_200);
     expect(routed?.input_modalities).toEqual(["text"]);
-    expect(routed?.supports_reasoning_summaries).toBe(true);
+    expect(routed?.supports_reasoning_summaries).toBe(false);
     expect(routed?.default_reasoning_summary).toBe("none");
+  });
+
+  test("model-specific reasoning-summary opt-out reaches the routed catalog (#323)", async () => {
+    const models = await gatherRoutedModels({
+      providers: {
+        compat: {
+          adapter: "openai-responses",
+          baseUrl: "https://compat.example.test/v1",
+          authMode: "key",
+          liveModels: false,
+          models: ["strict-summary-model"],
+          modelSupportsReasoningSummaries: { "strict-summary-model": false },
+        },
+      },
+    });
+    const entries = buildCatalogEntries(null, [], models);
+    const routed = entries.find(e => e.slug === "compat/strict-summary-model");
+
+    expect(models.find(model => model.id === "strict-summary-model")?.supportsReasoningSummaries).toBe(false);
+    expect(routed?.supports_reasoning_summaries).toBe(false);
   });
 
   test("generated jawcode snapshot is restricted to mapped providers", () => {

@@ -84,4 +84,5 @@ export type ProviderUpdatePatch = {
   note?: string;
   disabled?: boolean;
   allowPrivateNetwork?: boolean;
+  liveModels?: boolean;
 };

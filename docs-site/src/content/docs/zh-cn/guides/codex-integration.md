@@ -64,8 +64,9 @@ env_http_headers = { "x-opencodex-api-key" = "OPENCODEX_API_AUTH_TOKEN" }
 # supports_websockets = true   # 仅当 config.websockets 为 true
 ```
 
-两种模式都会把 `$CODEX_HOME/opencodex.config.toml` 写成参考/回退配置。loopback 模式下，其中包含
-自动注入被移除时可手动合并的根级键；non-loopback 模式下，其中包含专用提供商配置。
+当 OpenCodex 管理路由时，两种模式都会把 `$CODEX_HOME/opencodex.config.toml` 写成参考/回退配置。
+loopback 模式下，其中包含自动注入被移除时可手动合并的根级键；non-loopback 模式下，其中包含
+专用提供商配置。外部提供商模式不会修改此配置文件。
 
 :::caution
 `openai_base_url`、`model_provider`、`model_catalog_json` 等根级键**必须**位于第一个 `[table]`
@@ -129,14 +130,14 @@ Codex 的 `spawn_agent` 会按优先级排序，然后展示**前 5 个在选择
   "subagentModels": [
     "gpt-5.5",
     "gpt-5.6-sol",
-    "anthropic/claude-opus-4-8",
+    "anthropic/claude-opus-5",
     "xai/grok-4.5",
     "cursor/gpt-5.6-terra"
   ]
 }
 ```
 
-优先级排序：置顶（0–4）< 其他路由（5）< 原生（9）。你也可以从 [web 仪表盘](/opencodex/zh-cn/guides/web-dashboard/) 管理这一项。
+优先级排序：置顶（0–4）< 其他路由（5）< 原生（9）。你也可以从 [web 仪表盘](/zh-cn/guides/web-dashboard/) 管理这一项。
 
 ## Codex 账号预热
 
@@ -159,4 +160,4 @@ ocx restore    # 不停止 proxy 仅恢复  (别名: ocx eject)
 ocx restore back # 让普通 Codex 重新指向仍在运行的 proxy
 ```
 
-当 opencodex 作为受管的 [后台服务](/opencodex/zh-cn/reference/cli/#ocx-service) 运行时，它会设置 `OCX_SERVICE=1`，这样由服务驱动的重启**不会**反复改写 Codex 配置——只有显式的 `ocx stop` / `ocx service stop` 才会恢复原生 Codex。
+当 opencodex 作为受管的 [后台服务](/zh-cn/reference/cli/#ocx-service) 运行时，它会设置 `OCX_SERVICE=1`，这样由服务驱动的重启**不会**反复改写 Codex 配置——只有显式的 `ocx stop` / `ocx service stop` 才会恢复原生 Codex。

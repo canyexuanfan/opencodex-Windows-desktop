@@ -38,6 +38,117 @@ describe("Cursor request builder", () => {
     expect(request.conversationId).toBe("cursor_stable");
   });
 
+  test("uses stable client thread identity for external store:false continuations", () => {
+    const initial = createCursorRequest({
+      ...base,
+      modelId: "cursor/gpt-5.6-sol",
+      context: { messages: [{ role: "user", content: "start", timestamp: 1 }] },
+      _clientThreadId: "thread-a",
+      options: { promptCacheKey: "shared-cache-key" },
+    });
+    const continuation = createCursorRequest({
+      ...base,
+      modelId: "cursor/gpt-5.6-sol",
+      context: {
+        messages: [{
+          role: "toolResult",
+          toolCallId: "call-1",
+          toolName: "read_file",
+          content: "result",
+          isError: false,
+          timestamp: 2,
+        }],
+      },
+      _clientThreadId: "thread-a",
+      options: { promptCacheKey: "shared-cache-key" },
+    });
+
+    expect(continuation.conversationId).toBe(initial.conversationId);
+  });
+
+  test("isolates client threads even when they share a prompt cache key", () => {
+    const first = createCursorRequest({
+      ...base,
+      _clientThreadId: "thread-a",
+      options: { promptCacheKey: "shared-cache-key" },
+    });
+    const second = createCursorRequest({
+      ...base,
+      _clientThreadId: "thread-b",
+      options: { promptCacheKey: "shared-cache-key" },
+    });
+
+    expect(second.conversationId).not.toBe(first.conversationId);
+  });
+
+  test("native and external models do not pin conversation id from prompt_cache_key alone", () => {
+    const nativeA = createCursorRequest({
+      modelId: "cursor/composer-2.5",
+      context: { messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+      stream: false,
+      options: { promptCacheKey: "shared-cache-key" },
+    });
+    const nativeB = createCursorRequest({
+      modelId: "cursor/composer-2.5",
+      context: { messages: [{ role: "user", content: "hi again", timestamp: 2 }] },
+      stream: false,
+      options: { promptCacheKey: "shared-cache-key" },
+    });
+    expect(nativeA.conversationId).not.toBe(nativeB.conversationId);
+
+    const externalA = createCursorRequest({
+      modelId: "cursor/gpt-5.6-sol",
+      context: { messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+      stream: false,
+      options: { promptCacheKey: "shared-cache-key" },
+    });
+    const externalB = createCursorRequest({
+      modelId: "cursor/gpt-5.6-sol",
+      context: { messages: [{ role: "user", content: "hi again", timestamp: 2 }] },
+      stream: false,
+      options: { promptCacheKey: "shared-cache-key" },
+    });
+    expect(externalA.conversationId).not.toBe(externalB.conversationId);
+  });
+
+  test("identity scope namespaces client thread conversation ids", () => {
+    const a = createCursorRequest({
+      ...base,
+      _clientThreadId: "thread-a",
+      _cursorIdentityScope: "account-1",
+    });
+    const b = createCursorRequest({
+      ...base,
+      _clientThreadId: "thread-a",
+      _cursorIdentityScope: "account-2",
+    });
+    expect(a.conversationId).not.toBe(b.conversationId);
+  });
+
+  test("isolated helper turns mint a fresh conversation id", () => {
+    const main = createCursorRequest({
+      ...base,
+      _clientThreadId: "thread-a",
+    });
+    const helper = createCursorRequest({
+      ...base,
+      _clientThreadId: "thread-a",
+      _cursorIsolateConversation: true,
+    });
+    expect(helper.conversationId).not.toBe(main.conversationId);
+  });
+
+  test("isolation wins over a remembered parent conversation id", () => {
+    const helper = createCursorRequest({
+      ...base,
+      _clientThreadId: "thread-a",
+      _cursorConversationId: "cursor_parent_remembered",
+      _cursorIsolateConversation: true,
+    });
+    expect(helper.conversationId).not.toBe("cursor_parent_remembered");
+    expect(helper.conversationId.startsWith("cursor_")).toBe(true);
+  });
+
   test("marks Cursor context-usage boundaries for compaction epochs", () => {
     expect(createCursorRequest({ ...base, _contextCompactionBoundary: true }).contextUsageReset).toBe(true);
 
@@ -222,5 +333,79 @@ describe("Cursor request builder", () => {
     });
     expect(withoutSearch.system.join("\n")).toContain("unavailable this turn");
     expect(withoutSearch.system.join("\n")).not.toContain("Use tool_search");
+  });
+
+
+  test("external Cursor tool-result continuation keeps the remembered conversation id", () => {
+    const request = createCursorRequest({
+      modelId: "cursor/gpt-5.6-sol",
+      context: {
+        messages: [
+          { role: "user", content: "read a file", timestamp: 1 },
+          {
+            role: "assistant",
+            model: "cursor/gpt-5.6-sol",
+            timestamp: 2,
+            content: [{ type: "toolCall", id: "call_1", name: "read_file", namespace: "mcp__fs", arguments: { path: "a.txt" } }],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_1",
+            toolName: "read_file",
+            toolNamespace: "mcp__fs",
+            content: "FILE CONTENTS HERE",
+            isError: false,
+            timestamp: 3,
+          },
+        ],
+      },
+      stream: false,
+      options: { reasoning: "xhigh" },
+      _cursorConversationId: "cursor_old_external",
+    });
+
+    expect(request.modelId).toBe("gpt-5.6-sol-xhigh");
+    expect(request.conversationId).toBe("cursor_old_external");
+  });
+
+  test("native Cursor tool-result continuation keeps the remembered conversation id", () => {
+    const request = createCursorRequest({
+      modelId: "cursor/composer-2.5",
+      context: {
+        messages: [
+          { role: "user", content: "read a file", timestamp: 1 },
+          {
+            role: "assistant",
+            model: "cursor/composer-2.5",
+            timestamp: 2,
+            content: [{ type: "toolCall", id: "call_1", name: "read_file", namespace: "mcp__fs", arguments: { path: "a.txt" } }],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_1",
+            toolName: "read_file",
+            toolNamespace: "mcp__fs",
+            content: "FILE CONTENTS HERE",
+            isError: false,
+            timestamp: 3,
+          },
+        ],
+      },
+      stream: false,
+      options: {},
+      _cursorConversationId: "cursor_native_stable",
+    });
+
+    expect(request.conversationId).toBe("cursor_native_stable");
+  });
+
+  test("forceFreshConversation always mints a new conversation id", () => {
+    const request = createCursorRequest({
+      ...base,
+      _cursorConversationId: "cursor_force_me",
+    }, { forceFreshConversation: true });
+
+    expect(request.conversationId).not.toBe("cursor_force_me");
+    expect(request.conversationId.startsWith("cursor_")).toBe(true);
   });
 });

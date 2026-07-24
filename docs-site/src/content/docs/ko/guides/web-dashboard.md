@@ -29,10 +29,12 @@ bun run dev:gui
 | **Sub-agent delegation** | v1 위임 프롬프트에 넣을 네이티브 또는 라우팅 모델과 선택적 reasoning 강도를 고릅니다. 스폰별 라우터는 아닙니다. 아래 설명을 확인하세요. |
 | **사이드카** | 웹 검색 모델과 강도, 이미지 설명 모델을 선택합니다. 다음 요청부터 적용됩니다. |
 | **Maintenance** | Codex 모델 카탈로그를 다시 동기화하고, 프로젝트 로컬 설정의 우회 경고를 확인하고, latest/preview 업데이트를 조회하거나 선택적 프록시 재시작과 함께 설치합니다. |
-| **Codex 자동 시작** | Codex CLI/App 실행 전에 `ocx ensure`를 호출하는 launcher shim을 켜거나 끕니다. |
+| **시작 안전성** | 주입된 Codex 라우팅이 재부팅 후에도 유지되는지 서비스와 launcher shim 상태, 정확한 복구 명령과 함께 표시합니다. |
+| **Windows 트레이** | 로그인할 때 사용자 전용 트레이를 시작하고 프록시 시작·중지·재시작·대시보드·상태를 클릭으로 제어합니다. 트레이는 재시작 서비스가 아닙니다. |
+| **Codex 자동 시작** | 이미 설치된 Codex launcher shim이 `ocx ensure`를 실행하도록 허용합니다. 이 토글은 shim이나 백그라운드 서비스를 설치하지 않습니다. |
 | **Providers** | 프로바이더를 추가, 편집, 활성화/비활성화, 제거하고, 지원되는 OAuth 계정 풀과 API key 풀을 관리합니다. |
 | **Add provider** | 레지스트리 기반 프리셋에서 계정 로그인, API key 서비스, 로컬 서버, custom endpoint를 검색합니다. |
-| **Codex Auth** | ChatGPT/Codex 풀 계정을 추가하고, 다음 세션 계정을 선택하고, 5시간 / 주간 / 30일 할당량을 갱신하며, 할당량 자동 전환과 일시적 실패 failover를 설정합니다. |
+| **Codex Auth** | ChatGPT/Codex 풀 계정을 추가하고, 다음 세션 계정을 선택하고, 5시간 / 주간 / 30일 할당량을 갱신하며, 할당량 자동 전환을 켜거나 끄고 1~100% 임계값과 일시적 실패 failover를 설정합니다. |
 | **Subagents** | `spawn_agent` override 목록에 네이티브 또는 라우팅 모델을 최대 5개까지 우선 노출합니다. |
 | **Models** | 네이티브 GPT와 라우팅 모델을 켜고 끄고, 프로바이더 allowlist와 컨텍스트 상한, v1/base/v2, v2 thread 수를 설정합니다. |
 | **Logs** | 토큰, 요청 강도, 실제 모델, 프로바이더, 상태, 요청 id, 소요 시간, 오류 상세가 포함된 최근 요청을 자동 갱신합니다. |
@@ -53,7 +55,7 @@ Dashboard의 **Sub-agent delegation** 선택기는 `injectionModel`과 선택적
 이 선택기는 v1 호환 서피스용 위임 안내입니다. `multi_agent_v2`에서는 현재 프록시가 v1 주입
 메시지를 덧붙이지 않으며, 생성된 모든 서브에이전트가 부모 세션의 모델을 상속합니다. 프록시가
 스폰마다 모델을 바꾸는 라우터가 아닙니다. v1/base/v2의 정확한 동작은
-[서브에이전트 서피스](/opencodex/ko/guides/sub-agent-surface/)를 참고하세요.
+[서브에이전트 서피스](/ko/guides/sub-agent-surface/)를 참고하세요.
 :::
 
 선택기에는 활성화된 네이티브 및 라우팅 모델과 Codex 전역 reasoning 단계가 표시됩니다. API는
@@ -67,10 +69,12 @@ Dashboard의 **Sub-agent delegation** 선택기는 `injectionModel`과 선택적
 - 계정을 직접 고르면 다음 새 Codex 세션부터 바뀝니다. 이미 계정이 묶인 thread는 이 수동 전환만으로
   중간에 이동하지 않습니다.
 - Thread affinity가 요청마다 계정이 흔들리는 일을 막습니다. 할당량 자동 전환이 켜져 있으면 오래
-  실행되는 thread도 주기적으로 다시 평가합니다. 관련 사용량이 임계값을 넘고 사용량이 확실히 더 낮은
+  실행되는 thread도 주기적으로 다시 평가합니다. 관련 사용량이 임계값 이상이고 사용량이 확실히 더 낮은
   정상 계정이 있으면 그 계정으로 다시 묶일 수 있습니다.
 - 새 세션은 사용량이 가장 낮은 정상 계정을 고를 수 있습니다. 유료 플랜은 알려진 5시간, 주간, 30일
   창 중 가장 높은 사용률로 점수를 매기고, Go/Free 플랜은 30일 창만 사용합니다.
+- WHAM이 `limit_window_seconds`를 제공하면 Codex Auth는 28일 이상인 primary window를 주간이 아닌
+  30일 창으로 분류합니다. 기간이 없는 기존 응답은 이전과 동일하게 주간 창으로 해석합니다.
 - **Refresh quotas**는 계정 사용량을 즉시 다시 읽어 라우팅과 화면의 계정 카드가 같은 값을 보게 합니다.
 - 풀 요청 로그에는 이메일 대신 `p3fa91c` 같은 불투명한 라벨을 사용합니다.
 
@@ -81,6 +85,8 @@ GUI는 프록시의 JSON 관리 API를 사용하는 얇은 클라이언트입니
 | 엔드포인트 | 용도 |
 | --- | --- |
 | `GET` / `PUT /api/settings` | 설정을 읽거나 Codex 자동 시작을 켜고 끕니다. |
+| `GET /api/startup-health` | 비밀값 없이 라우팅, 서비스, shim, 재부팅 안전성 진단을 읽습니다. |
+| `GET` / `POST /api/windows-tray` | Windows 트레이 설치 및 표시 상태를 읽거나 `install`, `start`, `stop`, `uninstall` 작업을 수행합니다. |
 | `POST /api/sync` | 공유 모델 카탈로그를 다시 만들고 Codex 모델 캐시를 오래된 상태로 표시합니다. |
 | `GET /api/update/check` · `POST /api/update/run` · `GET /api/update/status` | 자체 업데이트 작업을 확인, 실행, 추적합니다. |
 | `GET` / `PUT /api/sidecar-settings` | 검색/비전 사이드카 모델 설정을 읽거나 바꿉니다. |
@@ -90,7 +96,7 @@ GUI는 프록시의 JSON 관리 API를 사용하는 얇은 클라이언트입니
 | `GET /api/models` · `PUT /api/disabled-models` | 네이티브/라우팅 모델 행을 조회하고 공용 disabled model 목록을 갱신합니다. |
 | `GET /api/key-providers` · `GET /api/oauth/providers` | API key 및 OAuth 프로바이더 카탈로그를 읽습니다. |
 | `POST /api/oauth/login` · `GET /api/oauth/status` | 프로바이더 OAuth 로그인을 시작하고 완료 여부를 확인합니다. |
-| `GET /api/codex-auth/accounts?refresh=1` | main 및 pool 계정을 조회하고 할당량을 강제로 갱신합니다. |
+| `GET /api/codex-auth/accounts?refresh=1` | main 및 pool 계정을 조회하고 할당량을 강제로 갱신하며 main 계정의 `hasCredential` / terminal `needsReauth` 상태를 표시합니다. |
 | `PUT /api/codex-auth/active` · `PUT /api/codex-auth/auto-switch` · `PUT /api/codex-auth/failover` | 다음 세션 계정과 풀 라우팅 정책을 설정합니다. |
 | `POST /api/codex-auth/login` · `GET /api/codex-auth/login-status` | 브라우저 로그인으로 pool 계정을 추가합니다. |
 | `GET /api/logs?tail=50&provider=...&status=5xx` | tail, 프로바이더, 정확한 상태 코드 또는 상태 등급으로 최근 요청 메타데이터를 조회합니다. |
@@ -100,5 +106,5 @@ GUI는 프록시의 JSON 관리 API를 사용하는 얇은 클라이언트입니
 :::tip
 대시보드에서 **Ollama Cloud** 같은 카탈로그 프로바이더를 추가하면 텍스트/비전 모델 분류가 저장된
 프로바이더 설정에 복사됩니다. 별도 분류 작업 없이도
-[비전 사이드카](/opencodex/ko/guides/sidecars/)가 올바른 조건에서만 실행됩니다.
+[비전 사이드카](/ko/guides/sidecars/)가 올바른 조건에서만 실행됩니다.
 :::

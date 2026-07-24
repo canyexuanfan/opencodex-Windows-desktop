@@ -22,6 +22,8 @@ export interface CursorContextUsageTracker {
   controlsForConversation(conversationId: string, options?: { clearPrior?: boolean; storeCheckpoints?: boolean }): CursorContextUsageControls;
   get(conversationId: string): number | undefined;
   record(conversationId: string, tokens: number): void;
+  /** Copy numeric carry-forward totals when a conversation id is rotated for replay. */
+  rekey(fromConversationId: string, toConversationId: string): void;
   clear(conversationId: string): void;
   clearAll(): void;
 }
@@ -91,6 +93,18 @@ export function createCursorContextUsageTracker(options: { maxEntries?: number; 
     },
     get,
     record,
+    rekey(fromConversationId, toConversationId) {
+      if (!fromConversationId || !toConversationId || fromConversationId === toConversationId) return;
+      prune();
+      const from = entries.get(fromConversationId);
+      if (!from) return;
+      const to = entries.get(toConversationId);
+      const tokens = Math.max(from.tokens, to?.tokens ?? 0);
+      entries.delete(fromConversationId);
+      entries.delete(toConversationId);
+      entries.set(toConversationId, { tokens, updatedAt: now() });
+      prune();
+    },
     clear(conversationId) {
       entries.delete(conversationId);
     },

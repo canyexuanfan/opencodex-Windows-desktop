@@ -24,6 +24,10 @@ on:
         required: false
         type: boolean
         default: true
+      expected-sha:
+        description: "Immutable release commit this dispatch must publish (fail if the branch moved)"
+        required: false
+        type: string
 
 permissions:
   contents: write # create the matching GitHub Release + version tag after npm publish
@@ -43,6 +47,17 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
+
+      - name: Verify dispatched SHA
+        env:
+          EXPECTED_SHA: ${{ inputs.expected-sha }}
+        run: |
+          if [ -z "$EXPECTED_SHA" ]; then
+            echo "::warning::no expected-sha supplied; publishing whatever the branch currently points at"
+          elif [ "$GITHUB_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::error::branch moved after the release audit (expected ${EXPECTED_SHA}, got ${GITHUB_SHA}) — refusing to publish an unaudited commit"
+            exit 1
+          fi
 
       # opencodex is bun-native (the prepublishOnly GUI build + typecheck run under bun).
       - name: Setup Bun
@@ -139,10 +154,20 @@ jobs:
 
           echo "Cross-platform CI passed for ${GITHUB_SHA}: ${ci_url}"
 
-          previous_tag="$(
-            git tag --merged HEAD --list 'v[0-9]*' --sort=-v:refname |
-              head -n 1 || true
-          )"
+          # Compare within the release channel so preview and stable gates use matching history.
+          if [[ "$RELEASE_VERSION" == *-preview.* ]]; then
+            previous_tag="$(
+              git tag --merged HEAD --list 'v[0-9]*' --sort=-v:refname |
+                grep -- '-preview\.' |
+                head -n 1 || true
+            )"
+          else
+            previous_tag="$(
+              git tag --merged HEAD --list 'v[0-9]*' --sort=-v:refname |
+                grep -v -- '-preview\.' |
+                head -n 1 || true
+            )"
+          fi
           if [ -n "$previous_tag" ]; then
             changed_files="$(git diff --name-only "${previous_tag}..HEAD")"
           else
@@ -265,7 +290,6 @@ jobs:
           set -euo pipefail
 
           release_tag="v${RELEASE_VERSION}"
-          notes_file="$(mktemp)"
 
           git fetch --force --tags origin
 
@@ -275,41 +299,23 @@ jobs:
             exit 1
           fi
 
-          previous_tag="$(
-            git tag --merged HEAD --list 'v[0-9]*' --sort=-v:refname |
-              grep -vx "$release_tag" |
-              head -n 1 || true
-          )"
-
-          {
-            echo "Published to npm as \`@bitkyc08/opencodex@${RELEASE_VERSION}\` with dist-tag \`${NPM_DIST_TAG}\`."
-            echo
-            echo "## Commit log"
-            echo
-            if [ -n "$previous_tag" ]; then
-              echo "Changes since \`${previous_tag}\`:"
-              echo
-              git log --reverse --no-merges --pretty=format:'- %s (%h)' "${previous_tag}..HEAD" |
-                grep -vE '^- release: v[0-9]+\.[0-9]+\.[0-9]+' || true
-              echo
-              echo
-              echo "[Full diff](https://github.com/${GITHUB_REPOSITORY}/compare/${previous_tag}...${release_tag})"
-            else
-              echo "Initial release commits:"
-              echo
-              git log --reverse --no-merges --pretty=format:'- %s (%h)' HEAD |
-                grep -vE '^- release: v[0-9]+\.[0-9]+\.[0-9]+' || true
-            fi
-          } > "$notes_file"
-
-          if ! grep -q '^- ' "$notes_file"; then
-            printf '\n- Release version bump only.\n' >> "$notes_file"
+          # Generate notes against the previous tag from the same release channel.
+          if [[ "$RELEASE_VERSION" == *-preview.* ]]; then
+            previous_tag="$(
+              git tag --merged HEAD --list 'v[0-9]*' --sort=-v:refname |
+                grep -- '-preview\.' |
+                grep -vx "$release_tag" |
+                head -n 1 || true
+            )"
+          else
+            previous_tag="$(
+              git tag --merged HEAD --list 'v[0-9]*' --sort=-v:refname |
+                grep -v -- '-preview\.' |
+                grep -vx "$release_tag" |
+                head -n 1 || true
+            )"
           fi
-
-          if [ -z "$existing_tag_sha" ]; then
-            git tag "$release_tag" "$GITHUB_SHA"
-            git push origin "refs/tags/${release_tag}"
-          fi
+          npm_metadata="Published to npm as \`@bitkyc08/opencodex@${RELEASE_VERSION}\` with dist-tag \`${NPM_DIST_TAG}\`."
 
           # Preview builds must be marked prerelease so GitHub "latest" keeps pointing at the
           # stable channel (matching npm dist-tags); see issue #64.
@@ -318,8 +324,57 @@ jobs:
             prerelease_flag="--prerelease"
           fi
 
-          if gh release view "$release_tag" >/dev/null 2>&1; then
-            gh release edit "$release_tag" --title "$release_tag" --notes-file "$notes_file" ${prerelease_flag:+$prerelease_flag}
+          # Build notes before tagging: if generate-notes fails after a tag push, preflight
+          # blocks retries because the tag already exists. API uses target_commitish, so the
+          # tag need not exist yet. Preflight already rejects an existing GitHub Release for
+          # non-dry runs, so this step only creates.
+          notes_file="$(mktemp)"
+          pr_notes=""
+          if [ -n "$previous_tag" ]; then
+            generate_notes_api=(
+              "repos/${GITHUB_REPOSITORY}/releases/generate-notes"
+              -f "tag_name=${release_tag}"
+              -f "target_commitish=${GITHUB_SHA}"
+              -f "previous_tag_name=${previous_tag}"
+            )
+            # Fail closed: missing PR categories is a broken release note, not a soft skip.
+            pr_notes="$(gh api "${generate_notes_api[@]}" --jq '.body')"
+            # Drop generate-notes' trailing compare link; we re-append it after the commit list.
+            pr_notes="$(printf '%s\n' "$pr_notes" | sed '/^\*\*Full Changelog\*\*:/d')"
           else
-            gh release create "$release_tag" --target "$GITHUB_SHA" --title "$release_tag" --notes-file "$notes_file" ${prerelease_flag:+$prerelease_flag}
+            # First release on this channel: never call generate-notes without previous_tag_name.
+            # GitHub would baseline the newest repo tag, which may belong to the other channel.
+            echo "::notice::No previous channel tag; skipping generate-notes (commits-only notes)"
           fi
+
+          if [ -n "$previous_tag" ]; then
+            commit_range="${previous_tag}..${GITHUB_SHA}"
+            commits="$(git log --pretty=format:'- %s (%h)' "$commit_range")"
+          else
+            # First release on a channel has no previous tag; cap history so the notes
+            # body stays within GitHub release size limits.
+            commits="$(git log --pretty=format:'- %s (%h)' --max-count=100 "$GITHUB_SHA")"
+          fi
+
+          {
+            printf '%s\n\n' "$npm_metadata"
+            if [ -n "$(printf '%s' "$pr_notes" | tr -d '[:space:]')" ]; then
+              printf '%s\n\n' "$pr_notes"
+            fi
+            if [ -n "$commits" ]; then
+              printf '## Commits\n\n'
+              printf '%s\n\n' "$commits"
+            fi
+            if [ -n "$previous_tag" ]; then
+              printf '**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
+                "$GITHUB_REPOSITORY" "$previous_tag" "$release_tag"
+            fi
+          } > "$notes_file"
+
+          if [ -z "$existing_tag_sha" ]; then
+            git tag "$release_tag" "$GITHUB_SHA"
+            git push origin "refs/tags/${release_tag}"
+          fi
+
+          gh release create "$release_tag" --target "$GITHUB_SHA" --title "$release_tag" \
+            --notes-file "$notes_file" ${prerelease_flag:+$prerelease_flag}

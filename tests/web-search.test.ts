@@ -272,6 +272,59 @@ function scriptedAdapter(firstPass: AdapterEvent[]): ProviderAdapter {
 }
 
 describe("BUG-R86 routed web-search timeout semantics", () => {
+  test("Kiro-style commentary streams before the iteration finishes", async () => {
+    let releaseIteration: () => void = () => {};
+    const iterationGate = new Promise<void>(resolve => { releaseIteration = resolve; });
+    const adapter: ProviderAdapter = {
+      name: "kiro-commentary",
+      buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
+      fetchResponse: async () => new Response("wire", { status: 200 }),
+      async *parseStream() {
+        yield { type: "text_delta", text: "Hi from Kiro", phase: "commentary" };
+        await iterationGate;
+        yield { type: "done" };
+      },
+      async parseResponse() {
+        throw new Error("parseResponse must be unreachable");
+      },
+    };
+
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }] }),
+      adapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.6-luna", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+    });
+
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    try {
+      for (let reads = 0; reads < 10 && !text.includes("Hi from Kiro"); reads++) {
+        const result = await Promise.race([
+          reader.read(),
+          new Promise<"timeout">(resolve => setTimeout(() => resolve("timeout"), 250)),
+        ]);
+        expect(result).not.toBe("timeout");
+        if (result === "timeout" || result.done) break;
+        text += decoder.decode(result.value, { stream: true });
+      }
+      expect(text).toContain("Hi from Kiro");
+    } finally {
+      releaseIteration();
+    }
+
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      text += decoder.decode(result.value, { stream: true });
+    }
+    expect(text).toContain("event: response.completed");
+  });
+
   test("routed iterations use upstream streaming and never call parseResponse", async () => {
     const seenStream: boolean[] = [];
     let parseStreamCalls = 0;
@@ -1191,6 +1244,21 @@ describe("web-search stall deadline", () => {
     expect(webSearchStallTimeoutSec(undefined, 30_000, 30_000)).toBe(330);
   });
 
+  test("#398: the default sidecar search deadline is bounded (60s, not 200s)", () => {
+    const parsed = parsedWithWebSearch();
+    const auth = new Headers({ authorization: "Bearer chatgpt" });
+    // With no explicit webSearchSidecar.timeoutMs, the plan must carry the lowered 60s default so
+    // an unavailable/limit-exhausted backend degrades within ~1 min instead of the old 200s hang.
+    const plan = planWebSearch(config(), parsed, false, auth, routedProvider, "model");
+    expect(plan?.settings.timeoutMs).toBe(60_000);
+    // An explicit override still wins.
+    const overridden = planWebSearch(
+      config({ webSearchSidecar: { timeoutMs: 90_000 } }),
+      parsed, false, auth, routedProvider, "model",
+    );
+    expect(overridden?.settings.timeoutMs).toBe(90_000);
+  });
+
   test("threaded stallTimeoutSec reaches the bridge: a hung sidecar trips upstream_stall_timeout", async () => {
     globalThis.fetch = ((input: unknown, init?: RequestInit) => {
       const url = String(input);
@@ -1223,4 +1291,44 @@ describe("web-search stall deadline", () => {
     const resp = incomplete!.data.response as { incomplete_details?: { reason?: string } };
     expect(resp.incomplete_details?.reason).toBe("upstream_stall_timeout");
   }, 15_000);
+});
+
+describe("#398 sidecar failure degradation", () => {
+  test("an unexpectedly thrown sidecar degrades to a failed cell and a completed turn", async () => {
+    // The executors are 'never throws', but the loop must enforce that contract: even a thrown
+    // sidecar becomes a failed tool result and the routed model still answers (no 499/502).
+    globalThis.fetch = ((input: unknown) => {
+      const url = String(input);
+      if (url.startsWith("https://routed.test/")) return Promise.resolve(new Response("{}", { status: 200 }));
+      // sidecar /responses throws synchronously (simulates an unexpected executor throw carrying a secret)
+      throw new Error("boom LEAKMARKER_should_not_appear");
+    }) as typeof fetch;
+
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "search please", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: scriptedAdapter([
+        { type: "tool_call_start", id: "call_boom", name: "web_search" },
+        { type: "tool_call_delta", arguments: JSON.stringify({ query: "anything" }) },
+        { type: "tool_call_end" },
+      ]),
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+    });
+
+    const frames = await collectSse(response.body!);
+    // The turn completes normally — no response.failed.
+    expect(frames.find(f => f.event === "response.completed")).toBeDefined();
+    expect(frames.find(f => f.event === "response.failed")).toBeUndefined();
+    // The failed search cell is present and marked failed.
+    const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
+    const output = completed.output as Record<string, unknown>[];
+    const cell = output.find(item => item.type === "web_search_call") as Record<string, unknown> | undefined;
+    expect(cell?.status).toBe("failed");
+    // The raw thrown message (fake secret) must never leak into any SSE frame.
+    const raw = frames.map(f => JSON.stringify(f.data)).join("");
+    expect(raw.includes("LEAKMARKER_should_not_appear")).toBe(false);
+  });
 });

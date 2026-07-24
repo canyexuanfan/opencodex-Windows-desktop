@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { spawn } from "node:child_process";
 import { rmSync } from "node:fs";
-import { restoreNativeCodex, shouldInjectApiAuthHeader } from "../codex/inject";
+import { currentExternalCodexModelProvider, restoreNativeCodex, shouldInjectApiAuthHeader } from "../codex/inject";
 import { restoreLegacyOpenaiHistory } from "../codex/history-provider";
 import { writeJournal, reconcileJournal } from "../codex/journal";
 import {
@@ -20,19 +20,23 @@ import {
   writeRuntimePort,
 } from "../config";
 import { collectStatus } from "./status";
+import { dispatchInternalCliCommand, type InternalCliCommand } from "./internal-dispatch";
+import { runTrayProxyRestart, runTrayProxyStart } from "./tray-proxy";
 import { installCrashGuards } from "../lib/crash-guard";
 import { hasHelpFlag, printSubcommandUsage, printUsage, printVersion } from "./help";
 import { findAvailablePort, isAddrInUse, PortUnavailableError, shouldPersistSelectedPort, waitForPortAvailable } from "../server/ports";
 import { findLiveProxy, probeHostname, type LiveProxy } from "../server/proxy-liveness";
 import { stopProxy } from "../lib/process-control";
 import { loadServiceTokenFromFile } from "../lib/service-secrets";
-import { serviceCommand, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "../service";
+import { diagnoseService, serviceCommand, serviceStartableFromTray, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "../service";
+import { startupHealthSummary } from "../codex/autostart-health";
 import { drainAndShutdown, startServer } from "../server";
 import { injectSystemEnv, revertSystemEnv } from "../server/system-env";
 import { buildDesktop3pRegistry } from "../claude/desktop-3p";
 import { installShellHook, uninstallShellHook } from "../server/system-env";
 import { startTokenGuardian } from "../oauth/token-guardian";
 import { startHistoryMigrationGuardian } from "../codex/history-migration-guardian";
+import { maybeAutoRestoreCodexShim } from "./codex-shim-autorestore";
 import { maybeShowStarPrompt } from "./star-prompt";
 import { maybeShowUpdatePrompt } from "../update/notify";
 import { syncModelsToCodex } from "../codex/sync";
@@ -46,8 +50,9 @@ if (command === "--version" || command === "-v" || command === "version") {
   process.exit(0);
 }
 
-if (command === "help" && args[1]) {
-  printSubcommandUsage(args[1]);
+if (command === undefined || command === "help" || command === "--help" || command === "-h") {
+  if (command === "help" && args[1]) printSubcommandUsage(args[1]);
+  else printUsage();
   process.exit(0);
 }
 
@@ -55,6 +60,8 @@ if (command !== undefined && command !== "help" && hasHelpFlag(args.slice(1))) {
   printSubcommandUsage(command);
   process.exit(0);
 }
+
+maybeAutoRestoreCodexShim(command, args);
 
 function parsePortOption(): number | undefined {
   if (args.length === 1) return undefined;
@@ -106,7 +113,7 @@ async function chooseListenPort(requestedPort?: number): Promise<number> {
       preferRetryIntervalMs: 50,
       allowEphemeralFallback: !hardPin,
     });
-    if (selected !== preferred) {
+    if (preferred > 0 && selected !== preferred) {
       console.log(`⚠️  Port ${preferred} is busy; starting opencodex on ${selected}.`);
     }
     if (shouldPersistSelectedPort(config.port, selected, preferred)) {
@@ -131,7 +138,7 @@ async function handleStart(options: { block?: boolean } = {}) {
   const serviceToken = loadServiceTokenFromFile(process.env);
   if (serviceToken) process.env.OPENCODEX_API_AUTH_TOKEN = serviceToken;
   const requestedPort = parsePortOption();
-  reconcileJournal();
+  if (!currentExternalCodexModelProvider()) reconcileJournal();
   const existingPid = readPid();
   if (existingPid) {
     const live = await findLiveProxy();
@@ -179,7 +186,7 @@ async function handleStart(options: { block?: boolean } = {}) {
 
   const config = loadConfig();
   writeRuntimePort({ pid: process.pid, port, hostname: config.hostname });
-  writeJournal();
+  if (!currentExternalCodexModelProvider()) writeJournal();
 
   // Background proactive token refresh. No-op unless config.tokenGuardian.enabled; timer is unref'd
   // so it never keeps the process alive on its own. Stopped in syncCleanup so no refresh fires mid-drain.
@@ -187,9 +194,7 @@ async function handleStart(options: { block?: boolean } = {}) {
   // Design B upgrade path: keep retrying the one-time opencodex→openai history migration in the
   // background — the first `ocx start` after an update usually races the Codex app's DB lock.
   // Loopback-only (legacy mode still forward-tags) and respects syncResumeHistory opt-out.
-  const historyGuardian = !shouldInjectApiAuthHeader(config) && config.syncResumeHistory !== false
-    ? startHistoryMigrationGuardian()
-    : undefined;
+  let historyGuardian: ReturnType<typeof startHistoryMigrationGuardian> | undefined;
 
   let cleaned = false;
   const syncCleanup = () => {
@@ -200,7 +205,9 @@ async function handleStart(options: { block?: boolean } = {}) {
     try { revertSystemEnv(); } catch { /* best-effort */ }
     removePid(process.pid);
     removeRuntimePort(process.pid);
-    if (!process.env.OCX_SERVICE) { try { restoreNativeCodex(); } catch { /* best-effort restore */ } }
+    if (!process.env.OCX_SERVICE && !currentExternalCodexModelProvider()) {
+      try { restoreNativeCodex(); } catch { /* best-effort restore */ }
+    }
   };
 
   let shuttingDown = false;
@@ -246,6 +253,9 @@ async function handleStart(options: { block?: boolean } = {}) {
 
   await maybeShowStarPrompt(); // once-only [Y/n] GitHub-star prompt on first interactive start
   await syncModelsToCodex(port).catch(() => {});
+  if (!currentExternalCodexModelProvider() && !shouldInjectApiAuthHeader(config) && config.syncResumeHistory !== false) {
+    historyGuardian = startHistoryMigrationGuardian();
+  }
   // Build Desktop 3P alias registry so inbound claude-opus-4-8-{code} aliases (and legacy claude-opus-4-{code}) decode correctly.
   try {
     const { fetchAllModels } = await import("../server/management-api");
@@ -263,7 +273,7 @@ async function handleStart(options: { block?: boolean } = {}) {
 }
 
 async function handleEnsure() {
-  reconcileJournal();
+  if (!currentExternalCodexModelProvider()) reconcileJournal();
   const config = loadConfig();
   if (!codexAutoStartEnabled(config)) {
     console.log("Codex autostart is disabled.");
@@ -300,6 +310,47 @@ async function handleEnsure() {
     console.error(`⚠️  Model sync skipped: ${e instanceof Error ? e.message : String(e)}`);
   });
   console.log(`✅ Proxy running on port ${port}`);
+}
+
+/** Fixed tray action: start the proxy without depending on codexAutoStart. */
+async function handleTrayProxyStart(): Promise<void> {
+  const ok = await runTrayProxyStart({
+    findLive: findLiveProxy,
+    diagnoseService: () => {
+      const service = diagnoseService();
+      return { installed: service.installed, startable: serviceStartableFromTray(service), summary: service.summary };
+    },
+    startService: () => serviceCommand("start"),
+    startDirect: () => {
+      const config = loadConfig();
+      const port = (config.port ?? 10100) > 0 ? (config.port ?? 10100) : 10100;
+      const child = spawn(process.execPath, startArgv(port), {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+        env: { ...process.env, OCX_SERVICE: "1" },
+      });
+      child.unref();
+    },
+    waitForProxy,
+    info: message => console.log(message),
+    error: message => console.error(message),
+  });
+  if (!ok) process.exitCode = 1;
+}
+
+async function handleTrayProxyRestart(): Promise<void> {
+  const ok = await runTrayProxyRestart({
+    stop: async () => {
+      await handleStop();
+      return !process.exitCode || process.exitCode === 0;
+    },
+    start: async () => {
+      await handleTrayProxyStart();
+      return !process.exitCode || process.exitCode === 0;
+    },
+  });
+  if (!ok) process.exitCode = 1;
 }
 
 async function handleStop() {
@@ -382,6 +433,15 @@ async function handleUninstall() {
 
   await runStep("service removed", () => uninstallServiceIfInstalled());
 
+  if (process.platform === "win32") {
+    await runStep("Windows tray removed", async () => {
+      const { getWindowsTrayStatus, uninstallWindowsTray } = await import("../tray/windows");
+      const tray = getWindowsTrayStatus();
+      if (!tray.installed && !tray.stale && !tray.running) return false;
+      uninstallWindowsTray();
+    });
+  }
+
   await runStep("native Codex restored", () => {
     const r = restoreNativeCodex();
     if (!r.success) throw new Error(r.message);
@@ -448,8 +508,19 @@ async function handleStatus() {
   console.log(`   Runtime source: ${status.json.runtime.source}${status.json.runtime.overrideEnv ? ` (${status.json.runtime.overrideEnv})` : ""}`);
   console.log(`   Default provider: ${status.json.defaultProvider}`);
   console.log(`   Codex autostart: ${status.json.codexAutostart ? "enabled" : "disabled"}`);
+  console.log(`   Restart safety: ${startupHealthSummary(status.json.startup)}`);
   console.log(`   Service: ${status.json.service.summary}`);
   console.log(`   ${status.json.codexShim.summary}`);
+  console.log(`   Codex runtime: ${status.json.codexRuntime.path}`);
+  console.log(`   Codex version: ${status.json.codexRuntime.version ?? "unknown"}`);
+  console.log(`   Codex source: ${status.json.codexRuntime.source}`);
+  console.log(`   Catalog clamp: ${status.json.codexRuntime.catalogClamp.active ? "active" : "inactive"}`);
+  if (status.json.codexRuntime.catalogClamp.removedEfforts.length > 0) {
+    console.log(`   Removed efforts: ${status.json.codexRuntime.catalogClamp.removedEfforts.join(", ")}`);
+  }
+  if (status.json.codexRuntime.warning) {
+    console.log(`   ⚠️  ${status.json.codexRuntime.warning}`);
+  }
   if (status.json.codexPlugins.applicable) {
     const icon = status.json.codexPlugins.stale ? "⚠️ " : "✅";
     console.log(`   ${icon} Codex bundled plugins: ${status.json.codexPlugins.summary}`);
@@ -524,7 +595,7 @@ switch (command) {
     break;
   case "doctor": {
     const { runDoctor } = await import("./doctor");
-    await runDoctor();
+    await runDoctor(args.slice(1));
     break;
   }
   case "debug": {
@@ -594,6 +665,11 @@ switch (command) {
   case "service":
     await serviceCommand(...args.slice(1));
     break;
+  case "tray": {
+    const { windowsTrayCommand } = await import("../tray/windows");
+    await windowsTrayCommand(args.slice(1));
+    break;
+  }
   case "codex-shim": {
     const { codexShimStatus, installCodexShim, uninstallCodexShim } = await import("../codex/shim");
     switch (args[1]) {
@@ -634,6 +710,23 @@ switch (command) {
     const { refreshVersionCache } = await import("../update/notify");
     const channel = args[1] === "preview" ? "preview" : "latest";
     await refreshVersionCache(channel);
+    break;
+  }
+  case "__tray-start":
+  case "__tray-restart":
+  case "__startup-health":
+    await dispatchInternalCliCommand(command as InternalCliCommand, {
+      trayStart: handleTrayProxyStart,
+      trayRestart: handleTrayProxyRestart,
+      startupHealth: async () => {
+        const { collectStartupHealth } = await import("../codex/autostart-health");
+        console.log(JSON.stringify(collectStartupHealth(loadConfig())));
+      },
+    });
+    break;
+  case "__tray-host": {
+    const { runWindowsTrayHost } = await import("../tray/windows");
+    await runWindowsTrayHost();
     break;
   }
   case "__gui-update-worker": {

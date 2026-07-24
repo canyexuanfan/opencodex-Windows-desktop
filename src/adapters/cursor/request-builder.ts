@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   OcxAssistantContentPart,
   OcxContentPart,
@@ -8,7 +9,7 @@ import type {
 } from "../../types";
 import { isAllowedToolChoice, namespacedToolName, toolChoiceAliases, type OcxTool, type OcxToolChoice } from "../../types";
 import type { CursorRequestMessage, CursorRunRequest } from "./types";
-import { cursorCodexToWireModelId } from "./discovery";
+import { cursorWireModelSelection, type CursorRoutingLevel } from "./discovery";
 import { cursorEffortSuffix } from "./effort-map";
 import {
   cursorMcpToolEncodedSize,
@@ -17,6 +18,7 @@ import {
   cursorToolWireName,
   cursorToolsForActivePrompt,
 } from "./tool-definitions";
+import { lookupCursorThreadConversation } from "./thread-continuity";
 
 /** Probe-verified Cursor Connect boundaries, with byte headroom for the enclosing field. */
 export const CURSOR_TOOL_COUNT_LIMIT = 330;
@@ -97,10 +99,11 @@ function catalogLimitNote(kept: readonly OcxTool[], omitted: readonly OcxTool[])
 * `undefined` for non-reasoning models like `composer-2.5`. A fully-qualified id (one that isn't a
 * known effort base) passes through unchanged.
  */
-function normalizeCursorModelId(modelId: string, reasoning?: string): string {
-  const id = cursorCodexToWireModelId(modelId);
+function normalizeCursorModelId(modelId: string, reasoning?: string): { modelId: string; routingLevel?: CursorRoutingLevel } {
+  const selection = cursorWireModelSelection(modelId);
+  const id = selection.modelId;
   const suffix = cursorEffortSuffix(id, reasoning);
-  return suffix ? `${id}-${suffix}` : id;
+  return { ...selection, modelId: suffix ? `${id}-${suffix}` : id };
 }
 
 function contentPartToText(part: OcxContentPart | OcxAssistantContentPart): string | undefined {
@@ -158,7 +161,52 @@ export function generatedCursorConversationId(): string {
   return `cursor_${crypto.randomUUID().replace(/-/g, "")}`;
 }
 
-export function createCursorRequest(parsed: OcxParsedRequest): CursorRunRequest {
+/** Derive an opaque provider-scoped Cursor id from the upstream client's conversation identity. */
+export function cursorConversationIdFromClientThread(threadId: string, identityScope?: string): string {
+  const digest = createHash("sha256")
+    .update("ocx:cursor:thread:")
+    .update(identityScope?.trim() || "local")
+    .update("\0")
+    .update(threadId)
+    .digest("hex")
+    .slice(0, 32);
+  return `cursor_${digest}`;
+}
+
+/**
+ * Resolve the Cursor conversation id for this turn.
+ * Priority: force-fresh → isolate helper → remembered → thread override → client thread → random.
+ * Never use OpenAI Responses `previous_response_id` (resp_*) or shared `prompt_cache_key`
+ * (cache-cohort fingerprint, not conversation ownership).
+ */
+export function resolveCursorConversationId(
+  parsed: OcxParsedRequest,
+  _wireModelId: string,
+  options: CreateCursorRequestOptions = {},
+): string {
+  if (options.forceFreshConversation === true) return generatedCursorConversationId();
+  // Helper/shadow/compaction turns must not append into the parent's Cursor conversation,
+  // even when previous_response_id restored the parent's remembered id.
+  if (parsed._cursorIsolateConversation === true) return generatedCursorConversationId();
+  if (parsed._cursorConversationId) return parsed._cursorConversationId;
+  const threadId = parsed._clientThreadId?.trim();
+  if (threadId) {
+    const recovered = lookupCursorThreadConversation(threadId, parsed._cursorIdentityScope);
+    if (recovered) return recovered;
+    return cursorConversationIdFromClientThread(threadId, parsed._cursorIdentityScope);
+  }
+  return generatedCursorConversationId();
+}
+
+export interface CreateCursorRequestOptions {
+  /** Force a brand-new Cursor conversation id even when remembered state exists. */
+  forceFreshConversation?: boolean;
+}
+
+export function createCursorRequest(
+  parsed: OcxParsedRequest,
+  options: CreateCursorRequestOptions = {},
+): CursorRunRequest {
   const messages = parsed.context.messages
     .map(requestMessage)
     .filter((message): message is CursorRequestMessage => !!message && message.content.length > 0);
@@ -166,13 +214,11 @@ export function createCursorRequest(parsed: OcxParsedRequest): CursorRunRequest 
   const visibleTools = cursorToolsForActivePrompt(parsed.context.tools, activeText, parsed.options.toolChoice);
   const budget = applyCursorToolBudget(visibleTools, parsed.options.toolChoice);
   const limitNote = catalogLimitNote(budget.tools, budget.omitted);
+  const model = normalizeCursorModelId(parsed.modelId, parsed.options.reasoning);
   return {
-    modelId: normalizeCursorModelId(parsed.modelId, parsed.options.reasoning),
-    // The Cursor conversation id comes ONLY from remembered state (_cursorConversationId). Do NOT fall
-    // back to the OpenAI Responses previous_response_id (resp_*): that is a Responses-chain id in a
-    // different namespace and would start an unrelated Cursor conversation, breaking tool-result
-    // continuation. If we have no remembered Cursor conversation, start a fresh one.
-    conversationId: parsed._cursorConversationId ?? generatedCursorConversationId(),
+    modelId: model.modelId,
+    ...(model.routingLevel ? { routingLevel: model.routingLevel } : {}),
+    conversationId: resolveCursorConversationId(parsed, model.modelId, options),
     system: [...(parsed.context.systemPrompt ?? []), ...(limitNote ? [limitNote] : [])],
     messages,
     rawMessages: parsed.context.messages,

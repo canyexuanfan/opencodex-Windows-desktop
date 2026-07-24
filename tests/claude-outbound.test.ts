@@ -6,6 +6,7 @@ import {
   collectAnthropicMessage,
   responsesJsonToAnthropicMessage,
   responsesSseToAnthropicSse,
+  sanitizeWebSearchInput,
 } from "../src/claude/outbound";
 
 function sse(name: string, data: Record<string, unknown>): string {
@@ -175,6 +176,55 @@ describe("claude outbound SSE", () => {
     const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
     expect(events.find(e => e.name === "message_delta")!.data.delta.stop_reason).toBe("refusal");
     expect(events.at(-1)!.name).toBe("message_stop");
+  });
+
+  test("retryable or unknown incomplete becomes overloaded_error, never end_turn", async () => {
+    const upstream = [
+      sse("response.created", { response: {} }),
+      sse("response.output_text.delta", { delta: "partial" }),
+      sse("response.incomplete", {
+        response: {
+          status: "incomplete",
+          incomplete_details: {
+            reason: "empty_kiro_fallback",
+            message: "Kiro produced no final answer on its bounded completion retry",
+            retryable: true,
+          },
+        },
+      }),
+    ].join("");
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
+    expect(events.some(event => event.name === "message_delta" || event.name === "message_stop")).toBe(false);
+    expect(events.at(-1)).toMatchObject({
+      name: "error",
+      data: {
+        type: "error",
+        error: {
+          type: "overloaded_error",
+          message: "Kiro produced no final answer on its bounded completion retry",
+        },
+      },
+    });
+
+    const json = responsesJsonToAnthropicMessage({
+      status: "incomplete",
+      incomplete_details: { reason: "reasoning_only_kiro_fallback", retryable: true },
+      output: [],
+    }, "m");
+    expect(json).toEqual({
+      type: "error",
+      error: {
+        type: "overloaded_error",
+        message: "upstream response was incomplete (reasoning_only_kiro_fallback)",
+      },
+    });
+  });
+
+  test("completed end_turn:false without a client tool becomes overloaded_error", async () => {
+    const upstream = sse("response.created", { response: {} })
+      + sse("response.completed", { response: { status: "completed", end_turn: false } });
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
+    expect(events.at(-1)).toMatchObject({ name: "error", data: { error: { type: "overloaded_error" } } });
   });
 
   test("idle keepalive pings flow during upstream silence", async () => {
@@ -383,5 +433,98 @@ describe("claude outbound web_search translation", () => {
     expect(msg.content[0].input).toEqual({ query: "latest bun release" });
     expect(msg.content[1].tool_use_id).toBe("ws_1");
     expect(msg.usage.server_tool_use).toEqual({ web_search_requests: 1 });
+  });
+});
+
+describe("sanitizeWebSearchInput (#381)", () => {
+  test("omits empty allowed_domains and blocked_domains arrays", () => {
+    expect(sanitizeWebSearchInput({
+      query: "CLAUDE.md practices",
+      allowed_domains: ["code.claude.com"],
+      blocked_domains: [],
+    })).toEqual({
+      query: "CLAUDE.md practices",
+      allowed_domains: ["code.claude.com"],
+    });
+    expect(sanitizeWebSearchInput({
+      query: "community",
+      allowed_domains: [],
+      blocked_domains: ["example.com"],
+    })).toEqual({
+      query: "community",
+      blocked_domains: ["example.com"],
+    });
+    expect(sanitizeWebSearchInput({
+      query: "open",
+      allowed_domains: [],
+      blocked_domains: [],
+    })).toEqual({ query: "open" });
+  });
+
+  test("keeps allowed_domains and drops blocked_domains when both are non-empty", () => {
+    expect(sanitizeWebSearchInput({
+      query: "docs",
+      allowed_domains: ["code.claude.com"],
+      blocked_domains: ["example.com"],
+    })).toEqual({
+      query: "docs",
+      allowed_domains: ["code.claude.com"],
+    });
+  });
+
+  test("JSON path sanitizes WebSearch function_call arguments", () => {
+    const msg = responsesJsonToAnthropicMessage({
+      status: "completed",
+      output: [{
+        type: "function_call",
+        call_id: "toolu_ws",
+        name: "WebSearch",
+        arguments: JSON.stringify({
+          query: "site:code.claude.com memory",
+          allowed_domains: ["code.claude.com"],
+          blocked_domains: [],
+        }),
+      }],
+      usage: { input_tokens: 3, output_tokens: 1 },
+    }, "claude-ocx-native--gpt-5.6-sol") as Record<string, any>;
+    expect(msg.stop_reason).toBe("tool_use");
+    expect(msg.content[0]).toEqual({
+      type: "tool_use",
+      id: "toolu_ws",
+      name: "WebSearch",
+      input: {
+        query: "site:code.claude.com memory",
+        allowed_domains: ["code.claude.com"],
+      },
+    });
+  });
+
+  test("SSE path buffers WebSearch args and emits one sanitized input_json_delta", async () => {
+    const args = JSON.stringify({
+      query: "CLAUDE.md token cost",
+      allowed_domains: [],
+      blocked_domains: ["example.com"],
+    });
+    const upstream = [
+      sse("response.created", { response: {} }),
+      sse("response.output_item.added", {
+        output_index: 0,
+        item: { type: "function_call", id: "fc_ws", call_id: "toolu_ws", name: "WebSearch", arguments: "", status: "in_progress" },
+      }),
+      sse("response.function_call_arguments.delta", { item_id: "fc_ws", output_index: 0, delta: args.slice(0, 20) }),
+      sse("response.function_call_arguments.delta", { item_id: "fc_ws", output_index: 0, delta: args.slice(20) }),
+      sse("response.output_item.done", {
+        output_index: 0,
+        item: { type: "function_call", id: "fc_ws", call_id: "toolu_ws", name: "WebSearch", arguments: args },
+      }),
+      sse("response.completed", { response: { status: "completed", usage: { input_tokens: 2, output_tokens: 1 } } }),
+    ].join("");
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
+    const deltas = events.filter(e => e.name === "content_block_delta" && e.data.delta?.type === "input_json_delta");
+    expect(deltas).toHaveLength(1);
+    expect(JSON.parse(deltas[0].data.delta.partial_json)).toEqual({
+      query: "CLAUDE.md token cost",
+      blocked_domains: ["example.com"],
+    });
   });
 });

@@ -5,7 +5,7 @@ description: opencodex internals — module map, the AdapterEvent bridge, the re
 
 opencodex is a single Bun process. A request enters as OpenAI Responses, is normalized to an internal
 model, routed, sent to a provider via an adapter, and bridged back to Responses SSE. See
-[How It Works](/opencodex/getting-started/how-it-works/) for the end-to-end flow.
+[How It Works](/getting-started/how-it-works/) for the end-to-end flow.
 
 ## Module map
 
@@ -34,17 +34,25 @@ src/
 └── index.ts            # public entry
 ```
 
+Three formerly large entry files now preserve compatibility as facades: `codex/catalog.ts` exports
+the seven focused `codex/catalog/*.ts` modules, `server/management-api.ts` dispatches to the nine
+`server/management/*.ts` modules, and `server/responses.ts` exports the five
+`server/responses/*.ts` modules.
+
 ## Request flow
 
 `server/index.ts` owns the HTTP boundary and delegates the Responses data plane to
-`server/responses.ts`:
+the `server/responses.ts` facade and its `server/responses/*.ts` modules:
 
 1. `server/index.ts` applies CORS and API authentication, rejects new work while draining, and
    records request lifecycle metadata. It serves `GET /v1/models`, `POST /v1/responses`,
    `POST /v1/responses/compact`, `POST /v1/images/generations` / `POST /v1/images/edits`
    (relayed to an OpenAI-family upstream by `server/images.ts` for codex's built-in `image_gen`
-   tool), and the optional WebSocket upgrade on `/v1/responses`.
-2. `server/responses.ts` decompresses and parses JSON, expands locally remembered
+   tool), `POST /v1/live` / `POST /v1/realtime/calls` (ChatGPT / Codex App voice and OpenAI
+   Realtime call-create, relayed by `server/live.ts`), sideband WebSocket joins on
+   `/v1/live/{callId}` (and `/v1/realtime?call_id=`), and the optional WebSocket upgrade on
+   `/v1/responses`.
+2. `server/responses/core.ts` decompresses and parses JSON, expands locally remembered
    `previous_response_id` input when available, then calls `responses/parser.ts`.
 3. `router.ts` resolves a bare or `provider/model` id. The server then resolves Codex account
    affinity, refreshes provider OAuth when needed, and applies the selected credential to the route.
@@ -107,7 +115,8 @@ single non-streaming response object from the same events.
 
 ## Management API, OAuth, and usage
 
-`server/management-api.ts` backs the dashboard. Its `/api/*` routes cover safe config/settings,
+`server/management-api.ts` backs the dashboard and dispatches focused route groups to
+`server/management/*.ts`. Its `/api/*` routes cover safe config/settings,
 provider CRUD and key pools, model selection/context caps/v2 controls, catalog sync, diagnostics and
 debug logs, usage and quotas, sidecar settings, updates, generated client API keys, OAuth login/status/
 logout and account selection, Codex account management, and graceful stop. `server/auth-cors.ts`
@@ -127,7 +136,7 @@ WebSocket upgrade while `websockets` is `false`, opencodex returns `426 upgrade_
 falls back to HTTP for that session. When `"websockets": true` is set, the same endpoint accepts the
 upgrade and uses the WebSocket bridge.
 
-Codex context compaction works for routed models. `server/responses.ts` handles
+Codex context compaction works for routed models. `server/responses/compact.ts` handles
 `POST /v1/responses/compact` by running an internal routed summarization turn and returning compacted
 history, while `responses/parser.ts` and `bridge.ts` handle remote compaction v2
 `compaction_trigger` turns by emitting exactly one synthetic `compaction` output item.
@@ -136,8 +145,9 @@ history, while `responses/parser.ts` and `bridge.ts` handle remote compaction v2
 
 - `codex/model-cache.ts` keeps a per-provider, in-memory TTL cache of live `/models` results (default 5 min,
   matching Codex's own cache), with a stale-fallback when a fetch fails.
-- `codex/catalog.ts` merges routed models into Codex's catalog as namespaced entries, ranks featured
-  [subagent models](/opencodex/guides/codex-integration/#the-subagent-picker) first, filters
+- `codex/catalog/sync.ts`, exported through the `codex/catalog.ts` facade, merges routed models into
+  Codex's catalog as namespaced entries, ranks featured
+  [subagent models](/guides/codex-integration/#the-subagent-picker) first, filters
   `disabledModels`, and can fully restore the pristine catalog from a one-time backup.
 
 ## Reasoning effort

@@ -20,6 +20,7 @@ import {
   updateCommandStr,
 } from "./index";
 import { isNewer } from "./notify";
+import { handoffWindowsTrayForUpdate, planWindowsTrayUpdate } from "./tray-update-plan.mjs";
 
 const RELEASE_NOTES_URL = "https://github.com/lidge-jun/opencodex/releases/latest";
 const UPDATE_JOB_FILENAME = "update-job.json";
@@ -474,6 +475,8 @@ export async function runGuiUpdateWorker(jobId: string, channel: Channel, restar
     port: runtimeTrusted ? rt.port : configPort,
     hostname: (runtimeTrusted ? rt.hostname : undefined) ?? preUpdateConfig.hostname ?? "127.0.0.1",
   };
+  let trayWasInstalled = false;
+  let trayWasRunning = false;
   if (!job) {
     job = {
       id: jobId,
@@ -517,6 +520,28 @@ export async function runGuiUpdateWorker(jobId: string, channel: Channel, restar
       command: cmd.display,
     }, integrityLine);
 
+    if (process.platform === "win32") {
+      try {
+        const { getWindowsTrayStatus, startWindowsTray, stopWindowsTray } = await import("../tray/windows");
+        const tray = getWindowsTrayStatus();
+        const trayPlan = handoffWindowsTrayForUpdate(tray, {
+          stop: () => {
+            const stopped = stopWindowsTray();
+            return { exitStatus: 0, running: stopped.running };
+          },
+          start: () => startWindowsTray(),
+        });
+        trayWasInstalled = trayPlan.refreshAfterReplacement;
+        trayWasRunning = trayPlan.restoreOnFailure;
+      } catch (error) {
+        updateJob(job, {
+          status: "failed",
+          error: `Could not stop the Windows tray; aborting before package replacement: ${error instanceof Error ? error.message : String(error)}`,
+        });
+        return;
+      }
+    }
+
     /* [Decision Log]
     - 목적: GUI 요청 처리 프로세스가 자신이 실행 중인 패키지를 직접 덮어쓰지 않도록 업데이트를 별도 worker에서 수행한다.
     - 대안 분석: (1) 서버에서 runUpdate 직접 호출: process.exit/stdio/실행 파일 교체 위험. (2) GUI에서 CLI 명령 안내만 제공: 자동 업데이트 UX 부족. (3) 숨은 worker가 Node launcher/Bun 전역 명령을 실행: 상태 추적과 안전한 재시작이 가능.
@@ -524,6 +549,12 @@ export async function runGuiUpdateWorker(jobId: string, channel: Channel, restar
     */
     const result = runLoggedCommand(job, cmd.bin, cmd.args, UPDATE_TIMEOUT_MS);
     if (result.status !== 0) {
+      if (trayWasRunning) {
+        try {
+          const { startWindowsTray } = await import("../tray/windows");
+          startWindowsTray();
+        } catch { /* retain the primary update failure */ }
+      }
       updateJob(job, {
         status: "failed",
         exitCode: result.status,
@@ -531,6 +562,15 @@ export async function runGuiUpdateWorker(jobId: string, channel: Channel, restar
         error: `update command failed (${result.status ?? "?"})`,
       });
       return;
+    }
+
+    if (trayWasInstalled) {
+      const trayArgs = [process.argv[1], ...planWindowsTrayUpdate({ installed: trayWasInstalled, running: trayWasRunning }).installArgs];
+      const tray = runLoggedCommand(job, process.execPath, trayArgs, 20_000);
+      if (tray.status !== 0) {
+        updateJob(job, {}, "Windows tray refresh failed; run 'ocx tray install'.");
+        if (trayWasRunning) runLoggedCommand(job, process.execPath, [process.argv[1], "tray", "start"], 15_000);
+      }
     }
 
     if (restart) {
@@ -543,6 +583,12 @@ export async function runGuiUpdateWorker(jobId: string, channel: Channel, restar
 
     updateJob(job, { status: "succeeded", restarted: false }, "Update installed. Restart the proxy to use the new version.");
   } catch (err) {
+    if (trayWasRunning) {
+      try {
+        const { startWindowsTray } = await import("../tray/windows");
+        startWindowsTray();
+      } catch { /* retain the primary worker failure */ }
+    }
     updateJob(job, {
       status: "failed",
       error: err instanceof Error ? err.message : String(err),

@@ -5,6 +5,7 @@ import { bridgeToResponsesSSE } from "../bridge";
 import { runWebSearch, type SidecarOutcome, type SidecarOutcomeRecorder, type SidecarSettings } from "./executor";
 import { runAnthropicWebSearch } from "./anthropic-executor";
 import { clearableDeadline } from "../lib/abort";
+import { redactSecretString } from "../lib/redact";
 import { readBoundedResponseBody } from "../lib/bounded-body";
 import { fetchWithResetRetry } from "../lib/upstream-retry";
 import { formatWebSearchResults } from "./format-result";
@@ -364,6 +365,13 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
         inactivityTimeoutMs: routedModelStallTimeoutMs,
       })) {
         if (event.type === "heartbeat") yield event;
+        // Kiro's explicit-completion protocol marks ordinary assistant text as commentary while
+        // it performs a bounded final-answer retry. That text is safe to surface immediately and
+        // is exactly what the native Kiro transport streams. Keeping it in the search scanner made
+        // Codex show only `Working` until both Kiro attempts had finished (often 30-40 seconds).
+        // Tool events remain buffered below, so the decision to invoke the hosted sidecar is still
+        // atomic and no search call can escape before its stream has validated successfully.
+        else if (event.type === "text_delta" && event.phase === "commentary") yield event;
         else events.push(event);
       }
     } catch (error) {
@@ -373,7 +381,8 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
       throw new LoopError(502, `Provider stream error: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    const terminalIndexes = events.flatMap((event, index) => event.type === "done" || event.type === "error" ? [index] : []);
+    const terminalIndexes = events.flatMap((event, index) =>
+      event.type === "done" || event.type === "incomplete" || event.type === "error" ? [index] : []);
     if (terminalIndexes.length !== 1 || terminalIndexes[0] !== events.length - 1) {
       throw new LoopError(502, `Web-search adapter stream protocol error: expected one final terminal event, received ${terminalIndexes.length}`);
     }
@@ -416,9 +425,22 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
         }
         // F5: the anthropic sidecar authenticates with its own stored OAuth — it never touches the
         // ChatGPT forward headers and must NOT record a Codex/OpenAI pool outcome.
-        outcome = backend === "anthropic" && anthropicSidecar
-          ? await runAnthropicWebSearch(query, anthropicSidecar.providerName, anthropicSidecar.provider, settings, signal)
-          : await runWebSearch(query, hostedTool, forwardProvider!, selectedForwardHeaders, settings, signal, recordSidecarOutcome);
+        // #398: the executors are "never throws", but enforce the contract defensively so a future
+        // throw degrades to a failed tool result instead of aborting the whole turn. A genuine
+        // parent abort MUST stay 499 — the executors catch abort and RETURN {error}, so check
+        // signal.aborted both after the await and in the catch (a fulfilled {error} on an aborted
+        // signal would otherwise look like an ordinary degradable failure).
+        try {
+          outcome = backend === "anthropic" && anthropicSidecar
+            ? await runAnthropicWebSearch(query, anthropicSidecar.providerName, anthropicSidecar.provider, settings, signal)
+            : await runWebSearch(query, hostedTool, forwardProvider!, selectedForwardHeaders, settings, signal, recordSidecarOutcome);
+          if (signal.aborted) throw new LoopError(499, "client closed request during web-search");
+        } catch (e) {
+          if (e instanceof LoopError) throw e;
+          if (signal.aborted) throw new LoopError(499, "client closed request during web-search");
+          // Unexpected executor throw: degrade this query to a failed tool result (redacted).
+          outcome = { text: "", sources: [], error: `sidecar failed: ${redactSecretString(e instanceof Error ? e.message : String(e))}` };
+        }
         searchesExecuted++;
         executedSearchCount++;
         if (outcome.error) failedQueries.add(normalizeQuery(query));

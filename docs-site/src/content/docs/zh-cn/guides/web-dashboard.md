@@ -28,10 +28,12 @@ bun run dev:gui
 | **Sub-agent delegation** | 为 v1 委派 prompt 选择原生或路由模型，并可指定 reasoning 强度。它不是逐次生成的路由器，详见下文。 |
 | **Sidecar** | 选择 web-search 模型及强度，以及图像描述模型；更改从下一次请求开始生效。 |
 | **Maintenance** | 重新同步 Codex 模型目录，查看项目级配置绕过警告，检查 latest/preview 版本，并可在更新后重启代理。 |
-| **Codex 自动启动** | 启用或禁用 Codex launcher shim；该 shim 会在 Codex CLI/App 启动前运行 `ocx ensure`。 |
+| **启动安全** | 显示注入的 Codex 路由能否在重启后继续工作，并分别显示服务、launcher shim 状态和准确的修复命令。 |
+| **Windows 托盘** | 安装用户登录托盘，一键控制代理启动、停止、重启、面板和状态。托盘不是代理重启服务。 |
+| **Codex 自动启动** | 允许已安装的 Codex launcher shim 运行 `ocx ensure`。此开关不会安装 shim 或后台服务。 |
 | **Providers** | 添加、编辑、启用/禁用、删除 provider，并在支持时管理 OAuth 账号池和 API key 池。 |
 | **Add provider** | 搜索 registry preset，选择账号登录、API key 服务、本地服务器或自定义 endpoint。 |
-| **Codex Auth** | 添加 ChatGPT/Codex 池账号，选择下一 session 的账号，刷新 5h / 每周 / 30d 配额，并设置配额自动切换和临时故障 failover。 |
+| **Codex Auth** | 添加 ChatGPT/Codex 池账号，选择下一 session 的账号，刷新 5h / 每周 / 30d 配额，启用或停用配额自动切换，设置其 1–100% 阈值和临时故障 failover。 |
 | **Subagents** | 在 `spawn_agent` override 列表中置顶最多五个原生或路由模型。 |
 | **Models** | 开关原生 GPT 与路由模型，配置 provider allowlist、上下文上限、v1/base/v2 以及 v2 thread 数量。 |
 | **Logs** | 自动刷新近期请求，显示 token、请求强度、实际模型、provider、状态、request id、耗时和错误详情。 |
@@ -51,7 +53,7 @@ Dashboard 的 **Sub-agent delegation** 选择器会保存 `injectionModel`，以
 :::caution
 该选择器是面向 v1 兼容界面的委派指引。在 `multi_agent_v2` 中，当前代理不会附加 v1 注入消息，
 而且所有生成的子代理都会继承父 session 的模型。它不是代理侧的跨模型路由器。v1/base/v2 的
-权威说明见 [子代理界面](/opencodex/zh-cn/guides/sub-agent-surface/)。
+权威说明见 [子代理界面](/zh-cn/guides/sub-agent-surface/)。
 :::
 
 选择器会列出已启用的原生与路由模型，以及全局 Codex reasoning 阶梯。API 会先验证所选强度是否
@@ -78,6 +80,8 @@ GUI 是代理 JSON 管理 API 之上的轻量客户端。常用 endpoint 包括�
 | Endpoint | 用途 |
 | --- | --- |
 | `GET` / `PUT /api/settings` | 读取设置或切换 Codex 自动启动。 |
+| `GET /api/startup-health` | 读取不含秘密信息的路由、服务、shim 和重启安全诊断。 |
+| `GET` / `POST /api/windows-tray` | 读取或更改 Windows 托盘安装和显示状态；POST 支持 `install`、`start`、`stop`、`uninstall`。 |
 | `POST /api/sync` | 重建共享模型目录，并把 Codex 模型缓存标记为过期。 |
 | `GET /api/update/check` · `POST /api/update/run` · `GET /api/update/status` | 检查、运行和监控自更新任务。 |
 | `GET` / `PUT /api/sidecar-settings` | 读取或设置 search/vision sidecar 模型。 |
@@ -87,7 +91,7 @@ GUI 是代理 JSON 管理 API 之上的轻量客户端。常用 endpoint 包括�
 | `GET /api/models` · `PUT /api/disabled-models` | 列出原生/路由模型，并更新共享的 disabled-model 集合。 |
 | `GET /api/key-providers` · `GET /api/oauth/providers` | 读取 API key 和 OAuth provider 目录。 |
 | `POST /api/oauth/login` · `GET /api/oauth/status` | 启动 provider OAuth 流程并轮询完成状态。 |
-| `GET /api/codex-auth/accounts?refresh=1` | 列出主账号与池账号，并强制刷新配额。 |
+| `GET /api/codex-auth/accounts?refresh=1` | 列出主账号与池账号、强制刷新配额，并返回主账号的 `hasCredential` / terminal `needsReauth` 状态。 |
 | `PUT /api/codex-auth/active` · `PUT /api/codex-auth/auto-switch` · `PUT /api/codex-auth/failover` | 选择下一 session 的账号并配置账号池路由。 |
 | `POST /api/codex-auth/login` · `GET /api/codex-auth/login-status` | 通过浏览器登录添加池账号。 |
 | `GET /api/logs?tail=50&provider=...&status=5xx` | 使用 tail、provider、精确状态码或状态类别筛选近期请求元数据。 |
@@ -96,6 +100,6 @@ GUI 是代理 JSON 管理 API 之上的轻量客户端。常用 endpoint 包括�
 
 :::tip
 从仪表盘添加 **Ollama Cloud** 或其他目录型 provider 时，其文本/视觉模型分类会写入保存的
-provider 配置。因此无需手动分类，[vision sidecar](/opencodex/zh-cn/guides/sidecars/) 也能在正确
+provider 配置。因此无需手动分类，[vision sidecar](/zh-cn/guides/sidecars/) 也能在正确
 条件下启用。
 :::

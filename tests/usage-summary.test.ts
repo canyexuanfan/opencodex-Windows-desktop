@@ -528,4 +528,147 @@ describe("summarizeUsage", () => {
     expect(sum.summary.requests).toBe(1);
     expect(sum.summary.totalTokens).toBe(2);
   });
+
+  test("collapses google-antigravity suffix/compat wire ids into picker/call base models", () => {
+    const entries: PersistedUsageEntry[] = [
+      entry({
+        ts: FIXED_NOW - 1,
+        requestId: "ag-flash-high",
+        provider: "google-antigravity",
+        model: "gemini-3.5-flash-high",
+        resolvedModel: "gemini-3.5-flash-high",
+        usageStatus: "reported",
+        usage: { inputTokens: 1000, outputTokens: 100 },
+        totalTokens: 1100,
+      }),
+      entry({
+        ts: FIXED_NOW - 2,
+        requestId: "ag-flash-low",
+        provider: "google-antigravity",
+        model: "gemini-3.5-flash-low",
+        resolvedModel: "gemini-3.5-flash-low",
+        usageStatus: "reported",
+        usage: { inputTokens: 500, outputTokens: 50 },
+        totalTokens: 550,
+      }),
+      entry({
+        ts: FIXED_NOW - 3,
+        requestId: "ag-flash-agent",
+        provider: "google-antigravity",
+        model: "gemini-3-flash-agent",
+        resolvedModel: "gemini-3-flash-agent",
+        usageStatus: "reported",
+        usage: { inputTokens: 100, outputTokens: 10 },
+        totalTokens: 110,
+      }),
+      entry({
+        ts: FIXED_NOW - 4,
+        requestId: "ag-pro-agent",
+        provider: "google-antigravity",
+        model: "gemini-pro-agent",
+        resolvedModel: "gemini-pro-agent",
+        usageStatus: "reported",
+        usage: { inputTokens: 2000, outputTokens: 200 },
+        totalTokens: 2200,
+      }),
+      entry({
+        ts: FIXED_NOW - 5,
+        requestId: "ag-pro-low",
+        provider: "google-antigravity",
+        model: "gemini-3.1-pro-low",
+        usageStatus: "reported",
+        usage: { inputTokens: 300, outputTokens: 30 },
+        totalTokens: 330,
+      }),
+      entry({
+        ts: FIXED_NOW - 6,
+        requestId: "ag-unknown",
+        provider: "google-antigravity",
+        model: "future-cca-model",
+        usageStatus: "reported",
+        usage: { inputTokens: 10, outputTokens: 1 },
+        totalTokens: 11,
+      }),
+      entry({
+        ts: FIXED_NOW - 7,
+        requestId: "openai-virtual",
+        provider: "openai",
+        model: "gpt-5.6-sol-pro",
+        resolvedModel: "gpt-5.6-sol",
+        usageStatus: "reported",
+        usage: { inputTokens: 40, outputTokens: 4 },
+        totalTokens: 44,
+      }),
+    ];
+    const sum = summarizeUsage(entries, "30d", FIXED_NOW);
+    const byModel = Object.fromEntries(sum.models.map(m => [`${m.provider}/${m.model}`, m]));
+
+    expect(byModel["google-antigravity/gemini-3.6-flash"]).toMatchObject({
+      provider: "google-antigravity",
+      model: "gemini-3.6-flash",
+      requests: 3,
+      totalTokens: 1760,
+    });
+    expect(byModel["google-antigravity/gemini-3.6-flash"]?.resolvedModel).toBeUndefined();
+
+    expect(byModel["google-antigravity/gemini-3.1-pro"]).toMatchObject({
+      provider: "google-antigravity",
+      model: "gemini-3.1-pro",
+      requests: 2,
+      totalTokens: 2530,
+    });
+    expect(byModel["google-antigravity/gemini-3.1-pro"]?.resolvedModel).toBeUndefined();
+    expect(byModel["google-antigravity/gemini-3.1-pro"]?.estimatedCostUsd).toBeGreaterThan(0);
+
+    expect(byModel["google-antigravity/future-cca-model"]).toMatchObject({
+      model: "future-cca-model",
+      requests: 1,
+      totalTokens: 11,
+    });
+
+    expect(byModel["openai/gpt-5.6-sol-pro"]).toMatchObject({
+      model: "gpt-5.6-sol-pro",
+      requests: 1,
+      totalTokens: 44,
+    });
+
+    const day = sum.days.find(d => d.requests > 0)!;
+    const dayModels = Object.fromEntries(day.models.map(m => [`${m.provider}/${m.model}`, m]));
+    expect(dayModels["google-antigravity/gemini-3.6-flash"]?.requests).toBe(3);
+    expect(dayModels["google-antigravity/gemini-3.1-pro"]?.requests).toBe(2);
+  });
+
+  test("collapses antigravity base model + wire resolvedModel into one picker row", () => {
+    const entries: PersistedUsageEntry[] = [
+      entry({
+        ts: FIXED_NOW - 1,
+        requestId: "base-call",
+        provider: "google-antigravity",
+        model: "gemini-3.6-flash",
+        resolvedModel: "gemini-3.6-flash-high",
+        usageStatus: "reported",
+        usage: { inputTokens: 100, outputTokens: 10 },
+        totalTokens: 110,
+      }),
+      entry({
+        ts: FIXED_NOW - 2,
+        requestId: "suffix-call",
+        provider: "google-antigravity",
+        model: "gemini-3.6-flash-high",
+        usageStatus: "reported",
+        usage: { inputTokens: 50, outputTokens: 5 },
+        totalTokens: 55,
+      }),
+    ];
+    const sum = summarizeUsage(entries, "30d", FIXED_NOW);
+    expect(sum.models).toHaveLength(1);
+    expect(sum.models[0]).toMatchObject({
+      provider: "google-antigravity",
+      model: "gemini-3.6-flash",
+      requests: 2,
+      totalTokens: 165,
+    });
+    expect(sum.models[0]?.resolvedModel).toBeUndefined();
+  });
+
 });

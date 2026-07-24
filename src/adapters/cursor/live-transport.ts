@@ -64,11 +64,64 @@ const CURSOR_RUN_PATH = "/agent.v1.AgentService/Run";
 const CURSOR_CLIENT_VERSION = "cli-2026.07.08-0c04a8a";
 const HEARTBEAT_MS = 5_000;
 const CURSOR_FIRST_FRAME_TIMEOUT_MS = 30_000;
+const CURSOR_TIMEOUT_DESTROY_GRACE_MS = 1_000;
 const CLIENT_TOOL_FINALIZE_GRACE_MS = 50;
 const GENERIC_TOOL_COUNT_MIN_FINALIZE_GRACE_MS = 750;
 const GENERIC_TOOL_COUNT_MAX_FINALIZE_GRACE_MS = 1_800;
 const GENERIC_TOOL_COUNT_PER_TOOL_GRACE_MS = 125;
 const cursorContextUsageTracker = createCursorContextUsageTracker();
+
+/**
+ * Single-shot terminal settlement for one Cursor turn: whichever of fail/finish wins first owns
+ * the terminal; later calls are no-ops. Prevents double-terminal mutation when multiple sources
+ * race (stream error + session error, end + late session error, timeout + destroy error).
+ * Exported for direct unit testing — the callbacks are otherwise private to run()/open().
+ */
+export function createTerminalSettler(hooks: {
+  fail: (error: Error) => void;
+  finish: () => void;
+  clearTimer: () => void;
+}): { settleFail: (error: Error) => void; settleFinish: () => void; settled: () => boolean } {
+  let settled = false;
+  return {
+    settleFail(error) {
+      if (settled) return;
+      settled = true;
+      hooks.clearTimer();
+      hooks.fail(error);
+    },
+    settleFinish() {
+      if (settled) return;
+      settled = true;
+      hooks.clearTimer();
+      hooks.finish();
+    },
+    settled: () => settled,
+  };
+}
+
+/**
+ * Arm the post-close destroy fallback for a timed-out turn: close() waits for in-flight frames,
+ * but a dead socket can ignore it, leaving a stalled TLS session past the timeout. Exported for
+ * unit testing with fakes. The timer is unref'd so it never holds the process open.
+ */
+export function armTimeoutDestroyFallback(
+  stream: { destroyed: boolean; destroy: () => void },
+  session: { destroyed: boolean; destroy: () => void },
+  graceMs: number,
+): ReturnType<typeof setTimeout> {
+  const timer = setTimeout(() => {
+    try { if (!stream.destroyed) stream.destroy(); } catch { /* gone */ }
+    try { if (!session.destroyed) session.destroy(); } catch { /* gone */ }
+  }, graceMs);
+  timer.unref?.();
+  return timer;
+}
+
+/** Carry context-usage totals across conversation-id rotation for external-model replay. */
+export function rekeyCursorContextUsage(fromConversationId: string, toConversationId: string): void {
+  cursorContextUsageTracker.rekey(fromConversationId, toConversationId);
+}
 
 export class CursorMissingCredentialError extends Error {
   readonly code = "cursor_missing_credential";
@@ -611,10 +664,15 @@ class LiveCursorTransport implements CursorTransport {
       "x-session-id": this.sessionId,
     });
 
-    // Single owner of the pre-first-frame deadline. Cleared by the first server frame/end-stream and
-    // by every terminal path (trailers, error, end, abort, close) so it can never leak.
+    // Single-shot terminal owner for this turn (createTerminalSettler): stream error, session
+    // error, trailers, end, abort, and the first-frame timeout all race into it, and only the
+    // first wins. The first-frame timer is cleared by any settlement so it can never leak.
+    const settler = createTerminalSettler({
+      fail,
+      finish,
+      clearTimer: () => this.clearFirstFrameTimer(),
+    });
     const failAndClear = (error: Error) => {
-      this.clearFirstFrameTimer();
       if (this.expectedClose) {
         // We already emitted a terminal `done` and cancelled the run (client-tool suspension). The
         // RST_STREAM CANCEL surfaces here as a stream error/abort; it is expected, not a failure.
@@ -624,19 +682,33 @@ class LiveCursorTransport implements CursorTransport {
           framesReceived: this.framesReceived,
           elapsedMs: Date.now() - this.turnStartedAt,
         });
-        finish();
+        settler.settleFinish();
         return;
       }
-      fail(error);
+      settler.settleFail(error);
     };
     const session = this.session;
     const stream = this.stream;
+    // Session-level errors (TLS/socket/GOAWAY) do not always propagate to the stream listener;
+    // without this handler they could bypass orderly failure reporting entirely.
+    session.on("error", err => {
+      const realErr = err instanceof Error ? err : new Error(String(err));
+      debugProviderDiagnostic("cursor", "session-error", {
+        code: String((realErr as { code?: unknown }).code ?? ""),
+        message: redactCursorForLog(realErr.message),
+        elapsedMs: Date.now() - this.turnStartedAt,
+      });
+      failAndClear(realErr);
+    });
     this.firstFrameTimer = setTimeout(() => {
       this.firstFrameTimer = undefined;
       debugProviderDiagnostic("cursor", "first-frame-timeout", { timeoutMs: this.input.firstFrameTimeoutMs ?? CURSOR_FIRST_FRAME_TIMEOUT_MS });
       try { stream.close(); } catch { /* already closing */ }
       try { session.close(); } catch { /* already closing */ }
-      fail(new Error("Cursor transport timed out before first response"));
+      // close() waits for in-flight frames; a dead socket can ignore it — force-destroy shortly
+      // after so a stalled TLS session cannot linger past the timeout.
+      armTimeoutDestroyFallback(stream, session, this.input.timeoutDestroyGraceMs ?? CURSOR_TIMEOUT_DESTROY_GRACE_MS);
+      settler.settleFail(new Error("Cursor transport timed out before first response"));
     }, this.input.firstFrameTimeoutMs ?? CURSOR_FIRST_FRAME_TIMEOUT_MS);
 
     let pending: Uint8Array<ArrayBufferLike> = new Uint8Array();
@@ -707,7 +779,15 @@ class LiveCursorTransport implements CursorTransport {
         expectedClose: this.expectedClose,
         elapsedMs: Date.now() - this.turnStartedAt,
       });
-      finish();
+      // A zero-frame end without an expected close is an unexpected EOF (peer dropped the
+      // connection before any response frame) — surfacing it as success would silently
+      // swallow the turn (WP4 review blocker 1). With frames, the protobuf event state
+      // owns terminal semantics as before.
+      if (this.framesReceived === 0 && !this.expectedClose) {
+        settler.settleFail(new Error("Cursor stream ended before any response frame (unexpected EOF)"));
+        return;
+      }
+      settler.settleFinish();
     });
 
     signal?.addEventListener("abort", () => {
@@ -746,6 +826,11 @@ class LiveCursorTransport implements CursorTransport {
           return;
         }
       }
+      // Native exec/MCP is handled inside this transport and can mutate files/process state
+      // without emitting a Responses tool event. Mark the turn replay-unsafe before executing so
+      // an eventual invalid_argument cannot cause the adapter's fresh-conversation fallback to
+      // run the same local action twice.
+      push({ type: "local_side_effect" });
       const replies = await handleCursorNativeExec(message.message.value, this.execContext);
       for (const reply of replies) this.stream.write(encodeConnectFrame(reply));
       return;
@@ -836,6 +921,8 @@ function describeCursorServerFrame(message: AgentServerMessage): Record<string, 
     out.id = message.message.value.id;
   } else if (message.message.case === "kvServerMessage") {
     out.kv = message.message.value.message.case ?? "unknown";
+  } else if (message.message.case === "conversationCheckpointUpdate") {
+    out.usedTokens = message.message.value.tokenDetails?.usedTokens ?? 0;
   }
   return out;
 }

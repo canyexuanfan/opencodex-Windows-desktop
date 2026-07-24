@@ -18,7 +18,7 @@ import { fetchAntigravityWithRetry, fetchVertexWithRetry } from "./google-http";
 import { safeAntigravityHttpErrorMessage, safeVertexHttpErrorMessage } from "./google-errors";
 import { isVertexTruncationReason, vertexTruncationErrorMessage } from "./google-truncation";
 import { ANTIGRAVITY_REQUEST_UA, antigravitySessionId, isLikelyRealThoughtSignature, sanitizeAntigravityClaudeSignatures } from "./google-antigravity-wire";
-import { sanitizeGeminiToolParameters } from "./google-tool-schema";
+import { compileGoogleWireBody } from "./google-wire-compiler";
 import { neutralizeIdentity } from "./identity";
 import { antigravityUsesReplayCache, applyAntigravityReplay, clearAntigravityReplay, observeAntigravityReplay } from "./google-antigravity-replay";
 import { resolveAntigravityEffortWireModel } from "../providers/antigravity-models";
@@ -179,7 +179,7 @@ function toolsToGeminiFormat(parsed: OcxParsedRequest): unknown[] | undefined {
     functionDeclarations: tools.map(t => ({
       name: namespacedToolName(t.namespace, t.name),
       description: t.description,
-      parameters: sanitizeGeminiToolParameters(t.parameters),
+      parameters: t.parameters,
     })),
   }];
 }
@@ -199,6 +199,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
   // can stash the CCA model/session for parseStream's reasoning-replay observation.
   let antigravityModel: string | undefined;
   let antigravitySession: string | undefined;
+  let restoreGoogleToolName = (name: string): string => name;
   return {
     name: "google",
 
@@ -262,23 +263,27 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         }
         // Reasoning continuity: Gemini models re-inject cached thoughtSignatures; Claude-on-Antigravity
         // sanitizes signatures inline (no cache). Both guard against the upstream 400 on bad signatures.
-        if (Array.isArray((body as { contents?: unknown[] }).contents)) {
-          const contents = (body as { contents: unknown[] }).contents;
+        // The real Antigravity client puts the session id ONLY at `request.sessionId` (camelCase,
+        // nested) — matching CLIProxyAPI `generateStableSessionID`. An extra top-level/snake_case
+        // spelling is a non-first-party key, so we send the single canonical location.
+        const draftRequest: Record<string, unknown> = { ...body, sessionId };
+        // Claude-on-Antigravity forces VALIDATED function calling (the real client always sets it).
+        if (/claude/i.test(wireModelId)) {
+          const existing = (draftRequest.toolConfig ?? {}) as Record<string, unknown>;
+          const fcc = (existing.functionCallingConfig ?? {}) as Record<string, unknown>;
+          draftRequest.toolConfig = { ...existing, functionCallingConfig: { ...fcc, mode: "VALIDATED" } };
+        }
+        const compiled = compileGoogleWireBody(draftRequest);
+        const request = compiled.body;
+        restoreGoogleToolName = compiled.restoreToolName;
+        // Compile names before replay: signatures are keyed by the exact provider-visible name.
+        if (Array.isArray((request as { contents?: unknown[] }).contents)) {
+          const contents = (request as { contents: unknown[] }).contents;
           if (antigravityUsesReplayCache(wireModelId)) {
             applyAntigravityReplay(wireModelId, sessionId, contents);
           } else {
             sanitizeAntigravityClaudeSignatures(contents);
           }
-        }
-        // The real Antigravity client puts the session id ONLY at `request.sessionId` (camelCase,
-        // nested) — matching CLIProxyAPI `generateStableSessionID`. An extra top-level/snake_case
-        // spelling is a non-first-party key, so we send the single canonical location.
-        const request: Record<string, unknown> = { ...body, sessionId };
-        // Claude-on-Antigravity forces VALIDATED function calling (the real client always sets it).
-        if (/claude/i.test(wireModelId)) {
-          const existing = (request.toolConfig ?? {}) as Record<string, unknown>;
-          const fcc = (existing.functionCallingConfig ?? {}) as Record<string, unknown>;
-          request.toolConfig = { ...existing, functionCallingConfig: { ...fcc, mode: "VALIDATED" } };
         }
         const envelope = {
           model: wireModelId,
@@ -297,12 +302,14 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
       }
 
       if (provider.googleMode === "vertex") {
+        const compiled = compileGoogleWireBody(body);
+        restoreGoogleToolName = compiled.restoreToolName;
         // Vertex AI: project/location endpoint with GCP ADC, or x-goog-api-key fast path.
         const apiKey = resolveVertexApiKey(provider.apiKey);
         if (apiKey) {
           const url = `https://aiplatform.googleapis.com/v1/publishers/google/models/${parsed.modelId}:${method}${streamParam}`;
           headers["x-goog-api-key"] = apiKey;
-          return { url, method: "POST", headers, body: JSON.stringify(body) };
+          return { url, method: "POST", headers, body: JSON.stringify(compiled.body) };
         }
         const project = provider.project || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT;
         if (!project) throw new Error("Vertex AI requires a project id (provider.project or GOOGLE_CLOUD_PROJECT/GCLOUD_PROJECT).");
@@ -312,7 +319,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         const url = `https://${host}/v1/projects/${project}/locations/${location}/publishers/google/models/${parsed.modelId}:${method}${streamParam}`;
         const token = await getVertexAccessToken();
         headers["Authorization"] = `Bearer ${token}`;
-        return { url, method: "POST", headers, body: JSON.stringify(body) };
+        return { url, method: "POST", headers, body: JSON.stringify(compiled.body) };
       }
 
       // ai-studio (default): Generative Language API + x-goog-api-key.
@@ -321,7 +328,9 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
       if (!apiKey) throw new Error("google (AI Studio) requires a non-empty API key");
       headers["x-goog-api-key"] = apiKey;
 
-      return { url, method: "POST", headers, body: JSON.stringify(body) };
+      const compiled = compileGoogleWireBody(body);
+      restoreGoogleToolName = compiled.restoreToolName;
+      return { url, method: "POST", headers, body: JSON.stringify(compiled.body) };
     },
 
     async *parseStream(response: Response): AsyncGenerator<AdapterEvent> {
@@ -336,6 +345,86 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
       let pendingUsage: OcxUsage | undefined;
       let toolCallsStarted = 0;
       let lastFinishReason: string | undefined;
+      let sawAnyFrame = false;
+      let sawTerminalSignal = false;
+
+      const handleDataLine = function* (line: string): Generator<AdapterEvent, "continue" | "content" | "terminate"> {
+        const payload = line.slice(5).trim();
+        if (!payload) return "continue";
+        let emittedContentEvent = false;
+
+        let chunk: Record<string, unknown>;
+        try {
+          chunk = JSON.parse(payload);
+        } catch {
+          yield { type: "error", message: "malformed upstream SSE data frame" };
+          return "terminate";
+        }
+        sawAnyFrame = true;
+
+        // Inline provider error inside a 200 stream → terminal error (see openai-chat.ts).
+        if (chunk.error) {
+          const err = chunk.error as { message?: string } | undefined;
+          // Clear-on-invalid: a signature rejection means our replayed thoughtSignatures are stale.
+          // Drop the cache entry so the next turn starts clean instead of re-injecting a bad sig.
+          if (provider.googleMode === "cloud-code-assist" && antigravityModel && antigravitySession
+            && /signature|invalid_argument|invalid argument/i.test(err?.message ?? "")) {
+            clearAntigravityReplay(antigravityModel, antigravitySession);
+          }
+          yield { type: "error", message: err?.message ?? "upstream error" };
+          return "terminate";
+        }
+
+        // Antigravity (CCA) nests the standard Gemini payload under `response`.
+        let root = chunk;
+        if (provider.googleMode === "cloud-code-assist") {
+          const wrapped = chunk.response;
+          if (!wrapped || typeof wrapped !== "object" || Array.isArray(wrapped)) {
+            yield { type: "error", message: "google-antigravity response missing response wrapper" };
+            return "terminate";
+          }
+          root = wrapped as Record<string, unknown>;
+        }
+        // usageMetadata is a top-level field independent of candidates; read it BEFORE the
+        // candidates guard so a usage-only final chunk is not dropped.
+        const usageMeta = root.usageMetadata as Record<string, number> | undefined;
+        if (usageMeta) {
+          // Accumulate usage; emit a single terminal `done` post-loop so usage is never
+          // dropped on EOF and the stream never yields two `done` events.
+          pendingUsage = usageFromGemini(usageMeta);
+          sawTerminalSignal = true;
+        }
+        const candidates = root.candidates as { content?: { parts?: unknown[] }; finishReason?: string }[] | undefined;
+        if (!candidates?.length) return "continue";
+
+        if (typeof candidates[0].finishReason === "string" && candidates[0].finishReason) {
+          lastFinishReason = candidates[0].finishReason;
+          sawTerminalSignal = true;
+        }
+
+        const parts = candidates[0].content?.parts as { text?: string; functionCall?: { name: string; args: unknown } }[] | undefined;
+        // Antigravity reasoning-replay: record thoughtSignatures from the model parts for the next turn.
+        if (provider.googleMode === "cloud-code-assist" && parts && antigravityModel && antigravitySession) {
+          observeAntigravityReplay(antigravityModel, antigravitySession, parts as unknown[]);
+        }
+        if (parts) {
+          for (const part of parts) {
+            if (part.text) {
+              emittedContentEvent = true;
+              yield { type: "text_delta", text: part.text };
+            }
+            if (part.functionCall) {
+              const id = `call_${crypto.randomUUID().slice(0, 8)}`;
+              toolCallsStarted++;
+              emittedContentEvent = true;
+              yield { type: "tool_call_start", id, name: restoreGoogleToolName(part.functionCall.name) };
+              yield { type: "tool_call_delta", arguments: JSON.stringify(part.functionCall.args ?? {}) };
+              yield { type: "tool_call_end" };
+            }
+          }
+        }
+        return emittedContentEvent ? "content" : "continue";
+      };
 
       try {
         while (true) {
@@ -346,70 +435,30 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
           const lines = buffer.split("\n");
           buffer = lines.pop() ?? "";
 
+          let sawLiveness = false;
+          let sawContentEvent = false;
           for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            const payload = line.slice(6).trim();
-            if (!payload) continue;
-
-            let chunk: Record<string, unknown>;
-            try { chunk = JSON.parse(payload); } catch { debugDroppedFrame("google", payload); continue; }
-
-            // Inline provider error inside a 200 stream → terminal error (see openai-chat.ts).
-            if (chunk.error) {
-              const err = chunk.error as { message?: string } | undefined;
-              // Clear-on-invalid: a signature rejection means our replayed thoughtSignatures are stale.
-              // Drop the cache entry so the next turn starts clean instead of re-injecting a bad sig.
-              if (provider.googleMode === "cloud-code-assist" && antigravityModel && antigravitySession
-                && /signature|invalid_argument|invalid argument/i.test(err?.message ?? "")) {
-                clearAntigravityReplay(antigravityModel, antigravitySession);
-              }
-              yield { type: "error", message: err?.message ?? "upstream error" };
-              return;
+            if (line.startsWith("data:")) {
+              const result = yield* handleDataLine(line);
+              if (result === "terminate") return;
+              if (result === "content") sawContentEvent = true;
+              continue;
             }
-
-            // Antigravity (CCA) nests the standard Gemini payload under `response`.
-            let root = chunk;
-            if (provider.googleMode === "cloud-code-assist") {
-              const wrapped = chunk.response;
-              if (!wrapped || typeof wrapped !== "object" || Array.isArray(wrapped)) {
-                yield { type: "error", message: "google-antigravity response missing response wrapper" };
-                return;
-              }
-              root = wrapped as Record<string, unknown>;
-            }
-            // usageMetadata is a top-level field independent of candidates; read it BEFORE the
-            // candidates guard so a usage-only final chunk is not dropped.
-            const usageMeta = root.usageMetadata as Record<string, number> | undefined;
-            if (usageMeta) {
-              // Accumulate usage; emit a single terminal `done` post-loop so usage is never
-              // dropped on EOF and the stream never yields two `done` events.
-              pendingUsage = usageFromGemini(usageMeta);
-            }
-            const candidates = root.candidates as { content?: { parts?: unknown[] }; finishReason?: string }[] | undefined;
-            if (!candidates?.length) continue;
-
-            lastFinishReason = candidates[0].finishReason ?? lastFinishReason;
-
-            const parts = candidates[0].content?.parts as { text?: string; functionCall?: { name: string; args: unknown } }[] | undefined;
-            // Antigravity reasoning-replay: record thoughtSignatures from the model parts for the next turn.
-            if (provider.googleMode === "cloud-code-assist" && parts && antigravityModel && antigravitySession) {
-              observeAntigravityReplay(antigravityModel, antigravitySession, parts as unknown[]);
-            }
-            if (parts) {
-              for (const part of parts) {
-                if (part.text) {
-                  yield { type: "text_delta", text: part.text };
-                }
-                if (part.functionCall) {
-                  const id = `call_${crypto.randomUUID().slice(0, 8)}`;
-                  toolCallsStarted++;
-                  yield { type: "tool_call_start", id, name: part.functionCall.name };
-                  yield { type: "tool_call_delta", arguments: JSON.stringify(part.functionCall.args ?? {}) };
-                  yield { type: "tool_call_end" };
-                }
-              }
-            }
+            sawLiveness = true;
+            if (line.startsWith(":") || !line.trim()) continue;
+            debugDroppedFrame("google", line);
           }
+          if (sawLiveness && !sawContentEvent) yield { type: "heartbeat" };
+        }
+        buffer += decoder.decode();
+        if (buffer.trim().length > 0) {
+          const residual = buffer.trim();
+          if (residual.startsWith(":")) {
+            yield { type: "heartbeat" };
+          } else if (!residual.startsWith("data:")) {
+            yield { type: "error", message: "upstream stream ended with an incomplete SSE frame — possible truncation" };
+            return;
+          } else if ((yield* handleDataLine(residual)) === "terminate") return;
         }
         // Fail-closed: a turn cut off mid tool call (MAX_TOKENS / MALFORMED_FUNCTION_CALL) surfaces
         // an error instead of a silently-incomplete done. Mirrors kiro-truncation.
@@ -418,7 +467,20 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
           yield { type: "error", message: vertexTruncationErrorMessage(lastFinishReason) };
           return;
         }
-        yield { type: "done", usage: pendingUsage };
+        if (!sawAnyFrame || !sawTerminalSignal) {
+          yield { type: "error", message: "upstream stream ended without a terminal signal — possible truncation" };
+          return;
+        }
+        const stopReason = lastFinishReason === "MAX_TOKENS"
+          ? "max_tokens"
+          : ["SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"].includes(lastFinishReason ?? "")
+            ? "content_filter"
+            : undefined;
+        yield {
+          type: "done",
+          usage: pendingUsage,
+          ...(stopReason ? { stopReason } : {}),
+        };
       } finally {
         reader.releaseLock();
       }
@@ -456,7 +518,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
           if (part.functionCall) {
             const id = `call_${crypto.randomUUID().slice(0, 8)}`;
             toolCallsStarted++;
-            events.push({ type: "tool_call_start", id, name: part.functionCall.name });
+            events.push({ type: "tool_call_start", id, name: restoreGoogleToolName(part.functionCall.name) });
             events.push({ type: "tool_call_delta", arguments: JSON.stringify(part.functionCall.args ?? {}) });
             events.push({ type: "tool_call_end" });
           }

@@ -1,4 +1,4 @@
-import type { AdapterEvent, OcxUsage } from "./types";
+import type { AdapterEvent, OcxMessagePhase, OcxProviderContinuationState, OcxUsage } from "./types";
 import { adapterFailureFromMessage, classifyError, type OcxErrorPayload } from "./lib/errors";
 import { encodeCompactionSummary } from "./responses/compaction";
 import { encodeReasoningEnvelope, type ReasoningEnvelope } from "./responses/reasoning-envelope";
@@ -43,6 +43,18 @@ function responseError(status: number, type: string, message: string): OcxErrorP
   return classifyError(status, type, message);
 }
 
+function adapterFailureFromEvent(event: Extract<AdapterEvent, { type: "error" }>): { httpStatus: number; error: OcxErrorPayload } {
+  if (event.status === undefined && event.errorType === undefined && event.code === undefined) {
+    return adapterFailureFromMessage(event.message);
+  }
+  const fallback = adapterFailureFromMessage(event.message);
+  const httpStatus = event.status ?? fallback.httpStatus;
+  const error = classifyError(httpStatus, event.errorType ?? fallback.error.type, event.message);
+  if (event.errorType !== undefined) error.type = event.errorType;
+  if (event.code !== undefined) error.code = event.code;
+  return { httpStatus, error };
+}
+
 export { adapterFailureFromMessage } from "./lib/errors";
 
 /**
@@ -85,7 +97,7 @@ export function bridgeToResponsesSSE(
     /** One-shot: first non-empty text/thinking/raw-reasoning delta observed (WP4 TTFT). */
     onFirstOutput?: () => void;
     onTerminal?: (status: ResponsesTerminalStatus) => void;
-    onCompletedResponse?: (response: Record<string, unknown>) => void;
+    onCompletedResponse?: (response: Record<string, unknown>, providerState?: OcxProviderContinuationState) => void;
   },
 ): ReadableStream<Uint8Array> {
   // Freeform/custom tools (apply_patch) carry their body in `input`; the model is given a
@@ -146,16 +158,16 @@ export function bridgeToResponsesSSE(
   // upstream silence so a stalled routed provider never trips "idle timeout waiting for SSE".
   let activity = false;
   let beat: ReturnType<typeof setInterval> | undefined;
-
-  return new ReadableStream<Uint8Array>({
-    async start(controller) {
-      let emittedSinceYield = false;
-      const emit = (name: string, data: Record<string, unknown>) => {
+  let controller: ReadableStreamDefaultController<Uint8Array>;
+  let emittedFrames = 0;
+  let gated = false;
+  let stepping = false;
+  const emit = (name: string, data: Record<string, unknown>) => {
         if (closed) return;
         activity = true;
         try {
           controller.enqueue(encoder.encode(sseEvent(name, { type: name, sequence_number: seq++, ...data })));
-          emittedSinceYield = true;
+          emittedFrames++;
         } catch {
           closed = true;
         }
@@ -164,6 +176,7 @@ export function bridgeToResponsesSSE(
         if (closed) return;
         try {
           controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          emittedFrames++;
         } catch {
           closed = true;
         }
@@ -173,47 +186,18 @@ export function bridgeToResponsesSSE(
       let outputIndex = 0;
       const finishedItems: OutputItem[] = [];
 
-      const responseSnapshot = (status: string, output: OutputItem[]) => ({
+      const responseSnapshot = (status: string, output: OutputItem[], endTurn?: boolean) => ({
         id: responseId, object: "response", created_at: createdAt,
         status, model: modelId, output, usage: null,
+        ...(endTurn !== undefined ? { end_turn: endTurn } : {}),
       });
 
-      emit("response.created", { response: responseSnapshot("in_progress", []) });
-
-      // Re-arm Codex's idle timer during silence with a parser-ignored heartbeat (RC3). Skips a tick
-      // whenever a real event was emitted since the last tick, so it only fires on a genuine stall.
       const heartbeatFrame = encoder.encode('event: response.heartbeat\ndata: {"type":"response.heartbeat"}\n\n');
       let stallTicks = 0;
       const stallSec = resolveStallTimeoutSec(options?.stallTimeoutSec);
       const maxStallTicks = Math.ceil((stallSec * 1000) / heartbeatMs);
-      beat = setInterval(() => {
-        if (closed) return;
-        if (activity) { activity = false; stallTicks = 0; return; }
-        if (++stallTicks >= maxStallTicks) {
-          if (currentMsg) closeCurrentMessage();
-          if (currentReasoning) closeCurrentReasoning();
-          if (currentRawReasoning) closeCurrentRawReasoning();
-          flushHiddenRawReasoning();
-          if (currentToolCall) closeCurrentToolCall();
-          if (currentWebSearch) closeCurrentWebSearch("failed", []);
-          emit("response.incomplete", {
-            response: {
-              ...responseSnapshot("incomplete", finishedItems),
-              incomplete_details: { reason: "upstream_stall_timeout" },
-            },
-          });
-          reportTerminal("incomplete");
-          terminated = true;
-          closed = true;
-          clearInterval(beat!);
-          beat = undefined;
-          onCancel?.();
-          return;
-        }
-        try { controller.enqueue(heartbeatFrame); } catch { closed = true; }
-      }, heartbeatMs);
 
-      let currentMsg: { itemId: string; outputIndex: number; text: string } | null = null;
+      let currentMsg: { itemId: string; outputIndex: number; text: string; phase?: OcxMessagePhase } | null = null;
       let currentReasoning: { itemId: string; outputIndex: number; text: string } | null = null;
       let currentRawReasoning: { itemId: string; outputIndex: number; text: string } | null = null;
       // Anthropic extended-thinking round-trip state: the signature signs the CURRENT thinking
@@ -299,6 +283,7 @@ export function bridgeToResponsesSSE(
         const item = {
           type: "message", id: currentMsg.itemId, status: "completed", role: "assistant",
           content: [{ type: "output_text", text: currentMsg.text, annotations }],
+          ...(currentMsg.phase ? { phase: currentMsg.phase } : {}),
         };
         emit("response.output_item.done", { output_index: currentMsg.outputIndex, item });
         finishedItems.push(item as OutputItem);
@@ -418,19 +403,46 @@ export function bridgeToResponsesSSE(
         firstOutputReported = true;
         try { options?.onFirstOutput?.(); } catch { /* metrics must not break the stream */ }
       };
-      let macrotaskFired = true;
-      let macrotaskTimer: ReturnType<typeof setTimeout> | undefined;
-
-      try {
-        for await (const event of events) {
-          if (!macrotaskFired && emittedSinceYield) {
-            await new Promise<void>(r => setTimeout(r, 0));
-            macrotaskFired = true;
+      const it = events[Symbol.asyncIterator]();
+      let iteratorStarted = false;
+      let iteratorReturned = false;
+      let upstreamDone = false;
+      const returnIterator = () => {
+        if (iteratorReturned) return;
+        iteratorReturned = true;
+        const finishReturn = () => {
+          try {
+            void it.return?.()?.catch(() => {});
+          } catch {
+            /* synchronous iterator cleanup failure is also best-effort */
           }
-          emittedSinceYield = false;
-          macrotaskFired = false;
-          if (macrotaskTimer !== undefined) clearTimeout(macrotaskTimer);
-          macrotaskTimer = setTimeout(() => { macrotaskFired = true; macrotaskTimer = undefined; }, 0);
+        };
+        // Async-generator return() before the first next() does not enter the generator, so its
+        // finally blocks cannot cancel prepared upstream bodies. The cancel hook has already
+        // aborted the turn; bootstrap one cleanup step, then close the iterator without awaiting it.
+        if (!iteratorStarted) {
+          iteratorStarted = true;
+          try {
+            void it.next().then(finishReturn, () => {}).catch(() => {});
+          } catch {
+            /* synchronous iterator start failure is also best-effort */
+          }
+          return;
+        }
+        finishReturn();
+      };
+      const step = async () => {
+        if (stepping || closed) return;
+        stepping = true;
+        gated = false;
+        const emittedAtStart = emittedFrames;
+        try {
+        while (!terminated && !closed && emittedFrames === emittedAtStart) {
+          iteratorStarted = true;
+          const next = await it.next();
+          if (next.done) { upstreamDone = true; break; }
+          const event = next.value;
+          let terminalEvent = false;
           activity = true;
           stallTicks = 0;
           reportFirstOutput(event);
@@ -441,26 +453,39 @@ export function bridgeToResponsesSSE(
           // its compaction UI renders nothing mid-turn, so nothing is lost visually.
           if (options?.compaction) {
             if (event.type === "text_delta") { compactionText += event.text; continue; }
-            if (event.type !== "done" && event.type !== "error") continue;
+            if (event.type !== "done" && event.type !== "incomplete" && event.type !== "error") continue;
           }
           switch (event.type) {
+            case "assistant_boundary": {
+              // A guarded continuation starts a fresh assistant output item while keeping the
+              // intermediate, suspicious text in the same Responses turn.
+              if (currentMsg) closeCurrentMessage();
+              if (currentReasoning) closeCurrentReasoning();
+              if (currentRawReasoning) closeCurrentRawReasoning();
+              flushHiddenRawReasoning();
+              if (currentToolCall) closeCurrentToolCall();
+              flushHiddenReasoningEnvelope();
+              break;
+            }
             case "text_delta": {
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
               flushHiddenRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
+              if (currentMsg && currentMsg.phase !== event.phase) closeCurrentMessage();
               if (!currentMsg) {
                 const itemId = `msg_${uuid()}`;
                 const item = {
                   type: "message", id: itemId, status: "in_progress", role: "assistant",
                   content: [] as { type: string; text: string; annotations: never[] }[],
+                  ...(event.phase ? { phase: event.phase } : {}),
                 };
                 emit("response.output_item.added", { output_index: outputIndex, item });
                 emit("response.content_part.added", {
                   item_id: itemId, output_index: outputIndex, content_index: 0,
                   part: { type: "output_text", text: "", annotations: [] },
                 });
-                currentMsg = { itemId, outputIndex, text: "" };
+                currentMsg = { itemId, outputIndex, text: "", ...(event.phase ? { phase: event.phase } : {}) };
               }
               currentMsg.text += event.text;
               emit("response.output_text.delta", {
@@ -634,27 +659,53 @@ export function bridgeToResponsesSSE(
                 finishedItems.push(item as OutputItem);
                 outputIndex++;
               }
-              if (event.stopReason === "max_tokens") {
-                // Upstream hit its output token cap. Surface as incomplete so the client can
-                // distinguish a truncated turn from a genuinely finished one (issue #246).
+              if (event.stopReason === "max_tokens" || event.stopReason === "content_filter") {
+                // Upstream stopped before a normal completion. Surface as incomplete so the
+                // client can distinguish a truncated/filtered turn from a finished one.
                 const response = {
-                  ...responseSnapshot("incomplete", finishedItems),
+                  ...responseSnapshot("incomplete", finishedItems, event.endTurn),
                   usage: responsesUsage(event.usage),
-                  incomplete_details: { reason: "max_output_tokens" },
+                  incomplete_details: {
+                    reason: event.stopReason === "max_tokens" ? "max_output_tokens" : "content_filter",
+                  },
                 };
-                // Still cache the partial output so previous_response_id replay works.
-                options?.onCompletedResponse?.(response);
+                // Cache max-output partials so previous_response_id replay can continue them;
+                // rememberResponseState rejects content-filtered incomplete responses.
+                options?.onCompletedResponse?.(response, event.providerState);
                 emit("response.incomplete", { response });
                 reportTerminal("incomplete");
               } else {
-                const response = { ...responseSnapshot("completed", finishedItems), usage: responsesUsage(event.usage) };
-                options?.onCompletedResponse?.(response);
+                const response = { ...responseSnapshot("completed", finishedItems, event.endTurn), usage: responsesUsage(event.usage) };
+                options?.onCompletedResponse?.(response, event.providerState);
                 emit("response.completed", {
                   response,
                 });
                 reportTerminal("completed");
               }
-              terminated = true;
+              terminalEvent = true;
+              break;
+            }
+            case "incomplete": {
+              if (currentMsg) closeCurrentMessage();
+              if (currentReasoning) closeCurrentReasoning();
+              if (currentRawReasoning) closeCurrentRawReasoning();
+              flushHiddenRawReasoning();
+              if (currentToolCall) closeCurrentToolCall();
+              if (currentWebSearch) closeCurrentWebSearch("failed", []);
+              flushHiddenReasoningEnvelope();
+              emit("response.incomplete", {
+                response: {
+                  ...responseSnapshot("incomplete", finishedItems, event.endTurn),
+                  usage: responsesUsage(event.usage),
+                  incomplete_details: {
+                    reason: event.reason,
+                    ...(event.message ? { message: event.message } : {}),
+                    ...(event.retryable !== undefined ? { retryable: event.retryable } : {}),
+                  },
+                },
+              });
+              reportTerminal("incomplete");
+              terminalEvent = true;
               break;
             }
             case "error": {
@@ -664,7 +715,7 @@ export function bridgeToResponsesSSE(
               flushHiddenRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
               if (currentWebSearch) closeCurrentWebSearch("failed", []);
-              const failure = adapterFailureFromMessage(event.message);
+              const failure = adapterFailureFromEvent(event);
               emit("response.failed", {
                 response: {
                   ...responseSnapshot("failed", finishedItems),
@@ -673,30 +724,45 @@ export function bridgeToResponsesSSE(
                   ...(event.usage ? { usage: responsesUsage(event.usage) } : {}),
                   error: failure.error,
                   last_error: failure.error,
+                  ...(event.retryable !== undefined ? { retryable: event.retryable } : {}),
                 },
               });
               reportTerminal("failed");
-              terminated = true;
+              terminalEvent = true;
               break;
             }
           }
+          if (terminalEvent) {
+            onCancel?.();
+            terminated = true;
+            returnIterator();
+            break;
+          }
         }
       } catch (err) {
-        flushHiddenRawReasoning();
-        if (currentWebSearch) closeCurrentWebSearch("failed", []);
-        emit("response.failed", {
-          response: {
-            ...responseSnapshot("failed", finishedItems),
-            error: responseError(500, "proxy_error", err instanceof Error ? err.message : String(err)),
-            last_error: responseError(500, "proxy_error", err instanceof Error ? err.message : String(err)),
-          },
-        });
-        reportTerminal("failed");
-        terminated = true;
+        if (!terminated) {
+          flushHiddenRawReasoning();
+          if (currentWebSearch) closeCurrentWebSearch("failed", []);
+          emit("response.failed", {
+            response: {
+              ...responseSnapshot("failed", finishedItems),
+              error: responseError(500, "proxy_error", err instanceof Error ? err.message : String(err)),
+              last_error: responseError(500, "proxy_error", err instanceof Error ? err.message : String(err)),
+            },
+          });
+          reportTerminal("failed");
+          onCancel?.();
+          terminated = true;
+          returnIterator();
+        }
       }
 
-      if (beat) clearInterval(beat);
-      if (macrotaskTimer !== undefined) clearTimeout(macrotaskTimer);
+      if (!terminated && !upstreamDone) {
+        gated = true;
+        stepping = false;
+        return;
+      }
+      if (beat) { clearInterval(beat); beat = undefined; }
 
       if (!terminated) {
         // The adapter generator ended without an explicit done/error event. Mark as incomplete
@@ -715,6 +781,7 @@ export function bridgeToResponsesSSE(
           },
         });
         reportTerminal("incomplete");
+        terminated = true;
       }
 
       emitDone();
@@ -723,6 +790,59 @@ export function bridgeToResponsesSSE(
       } catch {
         /* already closed (e.g. client cancelled) */
       }
+      closed = true;
+      gated = true;
+      stepping = false;
+      };
+
+      const startStream = () => {
+        emit("response.created", { response: responseSnapshot("in_progress", []) });
+        // The default ReadableStream strategy has HWM=1. Once one event's frames fill that
+        // queue, pull stepping pauses; no custom FIFO or queuing strategy is layered on top.
+        gated = true;
+        beat = setInterval(() => {
+          if (closed || gated) return;
+          if (activity) { activity = false; stallTicks = 0; return; }
+          if (++stallTicks >= maxStallTicks) {
+            if (currentMsg) closeCurrentMessage();
+            if (currentReasoning) closeCurrentReasoning();
+            if (currentRawReasoning) closeCurrentRawReasoning();
+            flushHiddenRawReasoning();
+            if (currentToolCall) closeCurrentToolCall();
+            if (currentWebSearch) closeCurrentWebSearch("failed", []);
+            emit("response.incomplete", {
+              response: {
+                ...responseSnapshot("incomplete", finishedItems),
+                incomplete_details: { reason: "upstream_stall_timeout" },
+              },
+            });
+            reportTerminal("incomplete");
+            onCancel?.();
+            terminated = true;
+            returnIterator();
+            emitDone();
+            if (beat) clearInterval(beat);
+            beat = undefined;
+            try { controller.close(); } catch { /* already closed */ }
+            closed = true;
+            return;
+          }
+          try {
+            controller.enqueue(heartbeatFrame);
+            emittedFrames++;
+          } catch {
+            closed = true;
+          }
+        }, heartbeatMs);
+      };
+
+  return new ReadableStream<Uint8Array>({
+    start(streamController) {
+      controller = streamController;
+      startStream();
+    },
+    pull() {
+      return step();
     },
     cancel() {
       // Client (Codex) disconnected. Stop emitting and let the caller abort the upstream fetch so a
@@ -731,6 +851,7 @@ export function bridgeToResponsesSSE(
       closed = true;
       if (beat) clearInterval(beat);
       onCancel?.();
+      returnIterator();
     },
   });
 }
@@ -745,16 +866,20 @@ export function buildResponseJSON(
     toolSearchToolNames?: Set<string>;
     /** Remote compaction v2 turn — append one synthetic compaction output item (see bridgeToResponsesSSE). */
     compaction?: boolean;
+    onProviderState?: (state: OcxProviderContinuationState) => void;
   },
 ): Record<string, unknown> {
   const responseId = `resp_${uuid()}`;
   const output: OutputItem[] = [];
   let usage: OcxUsage | undefined;
-  let errorMessage: string | undefined;
+  let errorEvent: Extract<AdapterEvent, { type: "error" }> | undefined;
+  let incompleteEvent: Extract<AdapterEvent, { type: "incomplete" }> | undefined;
+  let endTurn: boolean | undefined;
   let stopReason: string | undefined;
   let compactionText = "";
 
   let currentText = "";
+  let currentTextPhase: OcxMessagePhase | undefined;
   let currentSummaryReasoning = "";
   let currentRawReasoning = "";
   // Anthropic extended-thinking round-trip (batch): see bridgeToResponsesSSE counterpart.
@@ -783,8 +908,10 @@ export function buildResponseJSON(
     output.push({
       type: "message", id: `msg_${uuid()}`, role: "assistant", status: "completed",
       content: [{ type: "output_text", text: currentText, annotations }],
+      ...(currentTextPhase ? { phase: currentTextPhase } : {}),
     });
     currentText = "";
+    currentTextPhase = undefined;
   };
   const flushSummaryReasoning = () => {
     if (!currentSummaryReasoning && !batchSignature && batchRedacted.length === 0) return;
@@ -855,14 +982,24 @@ export function buildResponseJSON(
 
   for (const e of events) {
     switch (e.type) {
+      case "assistant_boundary":
+        flushText();
+        flushSummaryReasoning();
+        flushRawReasoning();
+        flushToolCall();
+        break;
       case "text_delta":
+        if (currentText && currentTextPhase !== e.phase) flushText();
         if (currentSummaryReasoning) flushSummaryReasoning();
         if (currentRawReasoning) flushRawReasoning();
         if (currentToolCallId) flushToolCall();
         // Compaction turns keep the summary out of normal message output (replay dedup — see
         // bridgeToResponsesSSE); it ships only inside the synthetic compaction item below.
         if (options?.compaction) compactionText += e.text;
-        else currentText += e.text;
+        else {
+          currentTextPhase = e.phase;
+          currentText += e.text;
+        }
         break;
       case "thinking_delta":
         if (currentText) flushText();
@@ -922,10 +1059,18 @@ export function buildResponseJSON(
         }
         break;
       case "error":
-        errorMessage = e.message;
+        errorEvent = e;
+        usage = e.usage ?? usage;
+        break;
+      case "incomplete":
+        incompleteEvent = e;
+        endTurn = e.endTurn;
+        if (e.providerState) options?.onProviderState?.(e.providerState);
         break;
       case "done":
         usage = e.usage;
+        endTurn = e.endTurn;
+        if (e.providerState) options?.onProviderState?.(e.providerState);
         if (e.stopReason === "max_tokens") stopReason = "max_tokens";
         break;
     }
@@ -934,18 +1079,34 @@ export function buildResponseJSON(
   flushSummaryReasoning();
   flushRawReasoning();
   flushToolCall();
-  if (options?.compaction && !errorMessage) {
+  if (options?.compaction && !errorEvent) {
     output.push({ type: "compaction", id: `cmp_${uuid()}`, encrypted_content: encodeCompactionSummary(compactionText) });
   }
 
+  const failure = errorEvent ? adapterFailureFromEvent(errorEvent) : undefined;
+  const status = errorEvent
+    ? "failed"
+    : incompleteEvent || stopReason === "max_tokens"
+      ? "incomplete"
+      : "completed";
   return {
     id: responseId, object: "response",
     created_at: Math.floor(Date.now() / 1000),
-    status: errorMessage ? "failed" : stopReason === "max_tokens" ? "incomplete" : "completed",
+    status,
     model: modelId, output,
-    ...(errorMessage ? { error: { message: errorMessage } } : {}),
-    ...(stopReason === "max_tokens" && !errorMessage ? { incomplete_details: { reason: "max_output_tokens" } } : {}),
-    usage: responsesUsage(usage),
+    ...(endTurn !== undefined ? { end_turn: endTurn } : {}),
+    ...(failure ? { error: failure.error, last_error: failure.error } : {}),
+    ...(errorEvent?.retryable !== undefined ? { retryable: errorEvent.retryable } : {}),
+    ...(incompleteEvent ? {
+      incomplete_details: {
+        reason: incompleteEvent.reason,
+        ...(incompleteEvent.message ? { message: incompleteEvent.message } : {}),
+        ...(incompleteEvent.retryable !== undefined ? { retryable: incompleteEvent.retryable } : {}),
+      },
+    } : stopReason === "max_tokens" ? {
+      incomplete_details: { reason: "max_output_tokens" },
+    } : {}),
+    usage: responsesUsage(incompleteEvent?.usage ?? usage),
   };
 }
 

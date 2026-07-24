@@ -47,6 +47,13 @@ const ANTIGRAVITY_DEFAULT_EFFORT: Record<string, string> = {
   "gemini-3.1-pro": "high",
 };
 
+const ANTIGRAVITY_THINKING_LEVELS = new Set(["minimal", "low", "medium", "high"]);
+
+function resolveAntigravityThinkingLevel(effort: string): string | undefined {
+  if (effort === "xhigh" || effort === "max" || effort === "ultra") return "high";
+  return ANTIGRAVITY_THINKING_LEVELS.has(effort) ? effort : undefined;
+}
+
 // ── Visible client aliases (kept for saved-config compat, not picker-visible) ──
 const ANTIGRAVITY_VISIBLE_MODEL_ALIASES: Record<string, string> = {
   "gemini-3.1-pro-high": "gemini-pro-agent",
@@ -152,12 +159,44 @@ export function resolveAntigravityEffortWireModel(
   }
 
   // Rule 4: Claude models — effort via thinkingConfig only (no suffix variants).
-  // Anthropic adaptive thinking supports low/medium/high/max for both Sonnet 4.6 and Opus 4.6.
-  // CLIProxyAPI proves CCA accepts thinkingConfig on base IDs (validation confirmed).
+  // CCA validates this field as Google's ThinkingLevel enum, whose highest value is `high`.
   if (/^claude-/.test(modelId) && effort) {
-    return { wireModelId: modelId, thinkingLevel: effort };
+    return { wireModelId: modelId, thinkingLevel: resolveAntigravityThinkingLevel(effort) };
   }
 
   // Rule 5: everything else.
   return { wireModelId: resolveAntigravityWireModelId(modelId) };
+}
+
+
+// ── Usage aggregation reverse map (picker/call base identity) ──
+// Effort wire IDs and compatibility aliases must collapse to the same picker-visible
+// base model that users invoke after effort routing. Historical logs store suffix IDs;
+// summary aggregation consults this reverse map so one call model = one usage row.
+const ANTIGRAVITY_USAGE_BASE_BY_ID: Record<string, string> = (() => {
+  const rev: Record<string, string> = {};
+  for (const base of ANTIGRAVITY_MODELS) rev[base] = base;
+  for (const [base, effortMap] of Object.entries(ANTIGRAVITY_EFFORT_WIRE_MAP)) {
+    rev[base] = base;
+    for (const wire of Object.values(effortMap)) rev[wire] = base;
+  }
+  for (const [alias, wire] of Object.entries(ANTIGRAVITY_MODEL_ALIASES)) {
+    const base = rev[wire] ?? rev[alias];
+    if (base) rev[alias] = base;
+    // If alias is itself a base/wire already mapped, keep that mapping.
+    else if (rev[wire]) rev[alias] = rev[wire]!;
+  }
+  // Visible aliases that only appear in ANTIGRAVITY_VISIBLE_MODEL_ALIASES are already
+  // included via ANTIGRAVITY_MODEL_ALIASES. Identity bases without effort maps remain.
+  return rev;
+})();
+
+/**
+ * Canonical picker/call model id for usage aggregation.
+ * Unknown ids stay identity so future CCA models do not invent mappings.
+ */
+export function canonicalAntigravityUsageModel(modelId: string): string {
+  const id = modelId.trim();
+  if (!id) return modelId;
+  return ANTIGRAVITY_USAGE_BASE_BY_ID[id] ?? id;
 }

@@ -1,0 +1,113 @@
+/**
+ * Shadow call intercept source-model matching (issue #311): Codex 0.145.0 moved
+ * its hard-coded helper model from gpt-5.4-mini to gpt-5.6-luna, so the intercept
+ * must match a source-model set, not a single literal.
+ */
+import { afterEach, describe, expect, test } from "bun:test";
+import { handleResponses, isShadowSourceModel } from "../src/server/responses";
+import type { OcxConfig } from "../src/types";
+
+const originalFetch = globalThis.fetch;
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
+
+describe("isShadowSourceModel", () => {
+  test("matches default shadow source models by prefix", () => {
+    expect(isShadowSourceModel("gpt-5.4-mini")).toBe(true);
+    expect(isShadowSourceModel("gpt-5.4-mini-2026-01")).toBe(true);
+    expect(isShadowSourceModel("gpt-5.6-luna")).toBe(true);
+  });
+
+  test("does not match non-helper models", () => {
+    expect(isShadowSourceModel("gpt-5.6-terra")).toBe(false);
+    expect(isShadowSourceModel("gpt-5.5")).toBe(false);
+    expect(isShadowSourceModel("gpt-5.6-sol")).toBe(false);
+  });
+
+  test("hard-excludes slash-prefixed routed ids, even for configured overrides", () => {
+    expect(isShadowSourceModel("openai/gpt-5.6-luna")).toBe(false);
+    expect(isShadowSourceModel("openai/gpt-5.6-luna", ["openai/gpt-5.6-luna"])).toBe(false);
+  });
+
+  test("configured sourceModels replace the defaults", () => {
+    expect(isShadowSourceModel("custom-helper-v2", ["custom-helper"])).toBe(true);
+    expect(isShadowSourceModel("gpt-5.6-luna", ["custom-helper"])).toBe(false);
+  });
+
+  test("tolerates malformed persisted config without throwing", () => {
+    expect(isShadowSourceModel("x-model", [1, "", "x"])).toBe(true);
+    expect(isShadowSourceModel("gpt-5.6-luna", [1, ""])).toBe(true); // no valid strings -> defaults
+    expect(isShadowSourceModel("gpt-5.6-luna", "not-an-array")).toBe(true); // non-array -> defaults
+  });
+
+  test("empty array falls back to defaults", () => {
+    expect(isShadowSourceModel("gpt-5.6-luna", [])).toBe(true);
+  });
+});
+
+function interceptConfig(): OcxConfig {
+  return {
+    port: 0,
+    defaultProvider: "xai",
+    providers: {
+      xai: {
+        adapter: "openai-chat",
+        baseUrl: "https://api.x.ai/v1",
+        authMode: "key",
+        apiKey: "test-xai-key",
+      },
+    },
+    shadowCallIntercept: { enabled: true, model: "xai/grok-4.5" },
+  } as OcxConfig;
+}
+
+async function post(config: OcxConfig, model: string): Promise<Response> {
+  return handleResponses(new Request("http://localhost/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model,
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
+      stream: false,
+      reasoning: { effort: "high" },
+    }),
+  }), config, { model: "", provider: "" });
+}
+
+describe("shadow call intercept request path (issue #311)", () => {
+  test("rewrites a gpt-5.6-luna helper call to the configured model with low effort", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+      return new Response(JSON.stringify({
+        choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    await post(interceptConfig(), "gpt-5.6-luna");
+
+    expect(bodies.length).toBe(1);
+    // Routed through xai openai-chat: upstream model is the decoded routed id, not the helper id
+    expect(String(bodies[0]?.model ?? "")).toContain("grok-4.5");
+    const effort = (bodies[0]?.reasoning as { effort?: string } | undefined)?.effort
+      ?? bodies[0]?.reasoning_effort;
+    expect(effort).toBe("low");
+  });
+
+  test("leaves gpt-5.6-terra requests unrewritten", async () => {
+    let sawFetch = false;
+    globalThis.fetch = (async () => {
+      sawFetch = true;
+      return new Response(JSON.stringify({ error: { message: "unreachable" } }), { status: 500 });
+    }) as typeof fetch;
+
+    const response = await post(interceptConfig(), "gpt-5.6-terra");
+    // gpt-5.6-terra is not routable in this minimal config: the request must fail
+    // routing (404) BEFORE any upstream fetch — proving no shadow rewrite happened.
+    expect(sawFetch).toBe(false);
+    expect(response.status).toBe(404);
+  });
+});
