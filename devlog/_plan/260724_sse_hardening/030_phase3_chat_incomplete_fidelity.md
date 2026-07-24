@@ -17,6 +17,12 @@ failure taxonomy — verify only), WS bridge (verify only).
 
 ### 1. src/chat/outbound.ts — MODIFY response.incomplete case (~323-330)
 
+STALE-CHECK (WP3 P, post-#363): the case now lives at outbound.ts:348-356;
+the file was restructured by #363 (shared decodeServerSentEvents, buffered
+tool-call frames) but the incomplete mapping logic is verbatim-identical,
+so the plan applies unchanged at the new anchors. collectChatCompletion is
+now at :479; the EOF-truncation fail at :389 is pre-existing.
+
 Current (verified):
 ```ts
 case "response.incomplete": {
