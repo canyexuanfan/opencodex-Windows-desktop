@@ -341,6 +341,31 @@ describe("validateIssue - feature", () => {
     }
   });
 
+  it("counts mixed-script CJK text without inflating non-CJK letter length", () => {
+    assert.equal(countWords("provider中"), 2);
+    assert.equal(countWords("провайдер中"), 2);
+    assert.equal(countWords("configuration中"), 2);
+    assert.equal(countWords("中provider文"), 3);
+  });
+
+  it("rejects mixed-script CJK stubs that only inflate letter counts", () => {
+    const terseGoals = ["provider中", "провайдер中", "configuration中"];
+    for (const goal of terseGoals) {
+      assert.ok(countWords(goal) < 8, `Expected "${goal}" to stay under 8 units`);
+      const result = validateIssue({
+        title: "Improve feature request quality",
+        body: featureBodyWithGoal(goal),
+        labels: ["enhancement"],
+      });
+      assert.equal(result.kind, "feature");
+      assert.equal(result.valid, false, `Expected terse goal "${goal}" to be invalid`);
+      assert.ok(
+        result.reasons.some((r) => r.includes("too vague")),
+        `Expected too vague reason for "${goal}", got: ${result.reasons.join(", ")}`,
+      );
+    }
+  });
+
   it("accepts sufficiently detailed goal sections", () => {
     const detailedGoal =
       "Expose a dashboard setting to choose the fallback voice model and provider.";

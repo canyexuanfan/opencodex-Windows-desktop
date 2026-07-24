@@ -375,23 +375,21 @@ function isPlaceholder(text) {
   return isPlaceholderOnlyValue(text);
 }
 
+const CJK_RE =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu;
+
 function countWords(text) {
   const c = clean(text);
   if (!c) return 0;
 
-  // Use Unicode letter/number tokens so Cyrillic/Greek/Arabic words count as
-  // one token each. `\b` is ASCII-only and would miss those scripts.
-  const tokens = c.match(/[\p{L}\p{N}']+/gu) || [];
-  const letters = (c.match(/\p{L}/gu) || []).length;
-  const containsCjk =
-    /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(c);
+  // Count each CJK character as one unit, and non-CJK scripts as Unicode
+  // word tokens. Mixing one CJK glyph into a Latin/Cyrillic word must not
+  // inflate the count to letter-length.
+  const cjkChars = c.match(CJK_RE) || [];
+  const nonCjkText = c.replace(CJK_RE, " ");
+  const nonCjkTokens = nonCjkText.match(/[\p{L}\p{N}']+/gu) || [];
 
-  // CJK often has no whitespace-separated words; letter count is the detail proxy.
-  if (containsCjk && letters >= 8) {
-    return letters;
-  }
-
-  return tokens.length;
+  return cjkChars.length + nonCjkTokens.length;
 }
 
 function hasConcreteDetail(text) {
