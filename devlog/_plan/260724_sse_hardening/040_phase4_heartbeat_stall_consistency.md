@@ -67,6 +67,16 @@ If the bridge currently only uses heartbeat for downstream keepalive,
 extend it to also refresh the upstream-activity timestamp. This is a
 verify-first item: read, then patch only if missing.
 
+STALE-CHECK (WP4 P): VERIFIED — no patch needed. The bridge sets
+`activity = true; stallTicks = 0;` at the top of every event-loop turn
+(bridge.ts:452-453), before the event-type switch, so ANY AdapterEvent
+(including `{ type: "heartbeat" }`, which hits the default case) resets
+the upstream stall clock. Item 4 is therefore satisfied by items 1-3
+producing heartbeat events; B only needs a regression test proving a
+comment-only upstream keeps the stall timer from firing.
+Anchors refreshed: anthropic has ONE decoder call site (anthropic.ts:740,
+import :24); bridge stall machinery at :196-227.
+
 ### 5. src/server/relay.ts — relaySseWithHeartbeat (:324)
 
 Correction (A-gate finding): NOT zero-caller — exported via the server
