@@ -421,6 +421,12 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   }, [grouped, modelQuery]);
   const sidecarModels = useMemo(() => sidecarModelOptions(models), [models]);
 
+  const startupHealth = useMemo(() => {
+    if (!settings?.startupHealth) return null;
+    if (settings.startupHealth.diagnosticStale) return "error" as const;
+    return settings.startupHealth.status;
+  }, [settings?.startupHealth]);
+
   if (error) {
     return (
       <EmptyState style={{ marginTop: 40 }} icon={<IconAlert />}
@@ -431,11 +437,6 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   }
 
   const online = health?.status === "ok";
-  const startupHealth = useMemo(() => {
-    if (!settings?.startupHealth) return null;
-    if (settings.startupHealth.diagnosticStale) return "error" as const;
-    return settings.startupHealth.status;
-  }, [settings?.startupHealth]);
 
   const saveSidecar = async (patch: SidecarPatch) => {
     if (!sidecar || sidecarSaving) return;
