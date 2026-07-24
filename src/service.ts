@@ -16,6 +16,7 @@ import { isWslRuntime } from "./codex/home";
 import { durableBunPath, durableBunRuntime } from "./lib/bun-runtime";
 import { isProcessAlive, stopProxy } from "./lib/process-control";
 import { serviceApiTokenFilePath } from "./lib/service-secrets";
+import { formatWindowsSchtasksError } from "./lib/windows-elevation";
 import { defaultWinswEntry, installWinswService, startWinswService, stopWinswService, statusWinswRaw, uninstallWinswService, winswStatusSummary, WINSW_SERVICE_ID, WINSW_SHA256, WINSW_VERSION } from "./lib/winsw";
 import { hardenSecretDir, hardenSecretPath } from "./lib/windows-secret-acl";
 import { windowsEnvIndirectBatchPathList, windowsEnvIndirectBatchValue } from "./lib/win-paths";
@@ -321,8 +322,26 @@ function windowsWscript(): string {
   return existsSync(candidate) ? candidate : "wscript.exe";
 }
 
-function schtasks(args: string[]): string {
+function querySchtasks(args: string[]): string {
   return runFile(windowsSchtasks(), args);
+}
+
+function schtasks(args: string[]): string {
+  try {
+    return querySchtasks(args);
+  } catch (error) {
+    throw new Error(formatWindowsSchtasksError(error, args));
+  }
+}
+
+/** True when the Task Scheduler registration for the default proxy task exists. */
+export function windowsSchedulerTaskInstalled(taskName = TASK): boolean {
+  if (process.platform !== "win32") return false;
+  try {
+    return querySchtasks(["/query", "/tn", taskName]).includes(taskName);
+  } catch {
+    return false;
+  }
 }
 
 function windowsBatchValue(value: string): string {
