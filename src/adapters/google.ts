@@ -451,13 +451,14 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
           if (sawLiveness && !sawContentEvent) yield { type: "heartbeat" };
         }
         buffer += decoder.decode();
-        if (buffer.length > 0) {
-          if (buffer.startsWith(":")) {
+        if (buffer.trim().length > 0) {
+          const residual = buffer.trim();
+          if (residual.startsWith(":")) {
             yield { type: "heartbeat" };
-          } else if (!buffer.startsWith("data:")) {
+          } else if (!residual.startsWith("data:")) {
             yield { type: "error", message: "upstream stream ended with an incomplete SSE frame — possible truncation" };
             return;
-          } else if ((yield* handleDataLine(buffer)) === "terminate") return;
+          } else if ((yield* handleDataLine(residual)) === "terminate") return;
         }
         // Fail-closed: a turn cut off mid tool call (MAX_TOKENS / MALFORMED_FUNCTION_CALL) surfaces
         // an error instead of a silently-incomplete done. Mirrors kiro-truncation.
