@@ -1,0 +1,148 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  applySubagentModelFallback,
+  buildSubagentModelChain,
+  isSubagentModelUnavailable,
+  noteSubagentModelFailure,
+  readCodexAgentModelFallback,
+  resetSubagentModelFallbackStateForTests,
+  resolveAgentModelFallbackForPrimary,
+  selectAvailableSubagentModel,
+  subagentFallbackGuidanceText,
+} from "../src/codex/subagent-model-fallback";
+import { updateAccountQuota } from "../src/codex/quota";
+import type { OcxConfig } from "../src/types";
+
+const savedCodexHome = process.env.CODEX_HOME;
+
+function cfg(overrides: Partial<OcxConfig> = {}): OcxConfig {
+  return {
+    port: 10100,
+    providers: { openai: { adapter: "openai-responses" } },
+    defaultProvider: "openai",
+    activeCodexAccountId: "main",
+    autoSwitchThreshold: 80,
+    subagentModelFallback: [
+      "gpt-5.6-sol",
+      "alibaba-token-plan/qwen3.8-max-preview",
+      "kimi/k3",
+    ],
+    ...overrides,
+  };
+}
+
+function codexHomeFixture(): string {
+  const dir = mkdtempSync(join(tmpdir(), "ocx-subagent-fallback-"));
+  mkdirSync(join(dir, "agents"), { recursive: true });
+  process.env.CODEX_HOME = dir;
+  return dir;
+}
+
+afterEach(() => {
+  if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+  else process.env.CODEX_HOME = savedCodexHome;
+  resetSubagentModelFallbackStateForTests();
+});
+
+describe("subagent model fallback chain", () => {
+  test("buildSubagentModelChain dedupes and preserves order", () => {
+    expect(buildSubagentModelChain("gpt-5.6-sol", cfg())).toEqual([
+      "gpt-5.6-sol",
+      "alibaba-token-plan/qwen3.8-max-preview",
+      "kimi/k3",
+    ]);
+    expect(buildSubagentModelChain("kimi/k3", cfg())).toEqual([
+      "kimi/k3",
+      "gpt-5.6-sol",
+      "alibaba-token-plan/qwen3.8-max-preview",
+    ]);
+  });
+
+  test("selectAvailableSubagentModel skips quota-exhausted native models", () => {
+    updateAccountQuota("main", 95, undefined, 20);
+    const selected = selectAvailableSubagentModel("gpt-5.6-sol", cfg());
+    expect(selected).toEqual({
+      model: "alibaba-token-plan/qwen3.8-max-preview",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol"],
+    });
+  });
+
+  test("selectAvailableSubagentModel skips cached routed failures", () => {
+    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max-preview", "quota exhausted");
+    const selected = selectAvailableSubagentModel("gpt-5.6-sol", cfg());
+    expect(selected.model).toBe("kimi/k3");
+    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max-preview", cfg())).toBe(true);
+  });
+
+  test("applySubagentModelFallback rewrites parsed request model", () => {
+    updateAccountQuota("main", 95);
+    const parsed = {
+      modelId: "gpt-5.6-sol",
+      options: {},
+      context: { messages: [] },
+      _rawBody: { model: "gpt-5.6-sol" },
+    };
+    const result = applySubagentModelFallback(
+      parsed as never,
+      new Headers({ "x-openai-subagent": "collab_spawn" }),
+      cfg(),
+    );
+    expect(result).toEqual({
+      from: "gpt-5.6-sol",
+      to: "alibaba-token-plan/qwen3.8-max-preview",
+      skipped: ["gpt-5.6-sol"],
+    });
+    expect(parsed.modelId).toBe("alibaba-token-plan/qwen3.8-max-preview");
+    expect((parsed._rawBody as { model?: string }).model).toBe("alibaba-token-plan/qwen3.8-max-preview");
+  });
+
+  test("applySubagentModelFallback is a no-op for main turns", () => {
+    updateAccountQuota("main", 95);
+    const parsed = {
+      modelId: "gpt-5.6-sol",
+      options: {},
+      context: { messages: [] },
+      _rawBody: { model: "gpt-5.6-sol" },
+    };
+    expect(applySubagentModelFallback(parsed as never, new Headers(), cfg())).toBeNull();
+    expect(parsed.modelId).toBe("gpt-5.6-sol");
+  });
+
+  test("applySubagentModelFallback can use per-agent model_fallback without global config", () => {
+    const dir = codexHomeFixture();
+    writeFileSync(join(dir, "agents", "executor.toml"), [
+      "name = \"executor\"",
+      "model = \"gpt-5.6-sol\"",
+      "model_fallback = [\"alibaba-token-plan/qwen3.8-max-preview\"]",
+      "",
+    ].join("\n"), "utf8");
+    updateAccountQuota("main", 95);
+    const parsed = {
+      modelId: "gpt-5.6-sol",
+      options: {},
+      context: { messages: [] },
+      _rawBody: { model: "gpt-5.6-sol" },
+    };
+    const result = applySubagentModelFallback(
+      parsed as never,
+      new Headers({ "x-openai-subagent": "collab_spawn" }),
+      cfg({ subagentModelFallback: undefined }),
+    );
+    expect(result?.to).toBe("alibaba-token-plan/qwen3.8-max-preview");
+    expect(resolveAgentModelFallbackForPrimary("gpt-5.6-sol", dir)).toEqual([
+      "alibaba-token-plan/qwen3.8-max-preview",
+    ]);
+    expect(readCodexAgentModelFallback("executor", dir)).toEqual([
+      "alibaba-token-plan/qwen3.8-max-preview",
+    ]);
+  });
+
+  test("subagentFallbackGuidanceText renders configured chain", () => {
+    expect(subagentFallbackGuidanceText(cfg())).toContain("gpt-5.6-sol");
+    expect(subagentFallbackGuidanceText(cfg({ subagentModelFallback: undefined }))).toBe("");
+  });
+});

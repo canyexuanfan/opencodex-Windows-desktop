@@ -76,6 +76,12 @@ import { registerTurn, trackStreamLifetime, unregisterTurn } from "../lifecycle"
 import { redactSecretString } from "../../lib/redact";
 import { readBoundedResponseBody } from "../../lib/bounded-body";
 import { supportedLadderFor } from "../effort-policy";
+import { isThreadSpawnRequest } from "../effort-policy";
+import {
+  applySubagentModelFallback,
+  maybePrimeSubagentQuota,
+  recordSubagentQuotaFailureForThreadSpawn,
+} from "../../codex/subagent-model-fallback";
 import {
   beginRequestAttempt,
   catalogModelSupportsServiceTier,
@@ -706,6 +712,18 @@ export async function handleResponses(
   }
   if (parsed._compactionRequest === true) parsed._cursorIsolateConversation = true;
 
+  if (isThreadSpawnRequest(req.headers)) {
+    await maybePrimeSubagentQuota(config);
+    const fallback = applySubagentModelFallback(parsed, req.headers, config);
+    if (fallback) {
+      (logCtx as unknown as Record<string, unknown>).subagentModelFallbackFrom = fallback.from;
+      (logCtx as unknown as Record<string, unknown>).subagentModelFallbackTo = fallback.to;
+      if (isInjectionDebugEnabled()) {
+        injectionDebugLog(`[opencodex] subagent model fallback ${fallback.from} -> ${fallback.to}`);
+      }
+    }
+  }
+
   let route;
   try {
     route = routeModel(config, parsed.modelId);
@@ -768,6 +786,7 @@ export async function handleResponses(
       injectionModel: config.injectionModel,
       injectionEffort: config.injectionEffort,
       subagentModels: config.subagentModels,
+      subagentModelFallback: config.subagentModelFallback,
       injectionPrompt: config.injectionPrompt,
     });
     if (guidance) {
@@ -1178,6 +1197,14 @@ export async function handleResponses(
       if (terminalBodyWillRecord) {
         options.setTerminalOutcomeRecorder?.((status, httpStatusOverride) => {
           terminalRecorder(status, httpStatusOverride);
+          if (status === "failed") {
+            recordSubagentQuotaFailureForThreadSpawn(
+              req.headers,
+              parsed.modelId,
+              httpStatusOverride ?? logCtx.terminalHttpStatus ?? "usage limit",
+              config,
+            );
+          }
           options.onNativePassthroughTerminal?.(status);
         });
       } else {
@@ -1215,6 +1242,14 @@ export async function handleResponses(
         const reportNativeTerminal = recordTerminalOutcomes
           ? (status: ResponsesTerminalStatus, httpStatusOverride?: number) => {
             terminalRecorder?.(status, httpStatusOverride);
+            if (status === "failed") {
+              recordSubagentQuotaFailureForThreadSpawn(
+                req.headers,
+                parsed.modelId,
+                httpStatusOverride ?? logCtx.terminalHttpStatus ?? "usage limit",
+                config,
+              );
+            }
             options.onNativePassthroughTerminal?.(status);
           }
           : undefined;
@@ -1640,6 +1675,14 @@ export async function handleResponses(
       }
       const errorText = await upstreamResponse.text().catch(() => "unknown error");
       cleanupUpstreamAbort();
+      recordSubagentQuotaFailureForThreadSpawn(
+        req.headers,
+        parsed.modelId,
+        upstreamResponse.status === 429 || upstreamResponse.status === 402
+          ? upstreamResponse.status
+          : `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`,
+        config,
+      );
       // Upstreams occasionally echo request details in error bodies — scrub token-shaped
       // material before it reaches the client-facing error surface.
       return formatErrorResponse(upstreamResponse.status, "upstream_error", `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`);

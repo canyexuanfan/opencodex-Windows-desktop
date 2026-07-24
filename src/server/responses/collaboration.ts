@@ -61,6 +61,7 @@ import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } f
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
 import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
 import { slugsEquivalent } from "../../providers/slug-codec";
+import { subagentFallbackGuidanceText } from "../../codex/subagent-model-fallback";
 import { applyOpenAiVirtualModel, resolveOpenAiCompactModel } from "../../providers/openai-virtual-models";
 import { isUsageDebugEnabled } from "../../usage/debug";
 import { readJsonRequestBody, DecompressedBodyTooLargeError, UnsupportedContentEncodingError } from "../request-decompress";
@@ -160,6 +161,7 @@ export interface MultiAgentGuidanceOptions {
   injectionModel?: string;
   injectionEffort?: string;
   subagentModels?: string[];
+  subagentModelFallback?: string[];
   injectionPrompt?: string;
 }
 
@@ -194,6 +196,7 @@ export async function multiAgentGuidanceText(
     injectionModel,
     injectionEffort,
     subagentModels,
+    subagentModelFallback,
     injectionPrompt,
   } = options;
   const surface = collabSurface(parsed);
@@ -237,6 +240,7 @@ export async function multiAgentGuidanceText(
         + (injectionEffort ? `, reasoning_effort "${injectionEffort}"` : "")
         + " — use it unless the user names another.";
     }
+    text += subagentFallbackGuidanceText({ subagentModelFallback } as OcxConfig);
     text += roster;
     if (text.length > V2_GUIDANCE_CHAR_BUDGET) {
       // Roster is the only unbounded part — drop it before breaking the budget.
@@ -314,4 +318,3 @@ export function injectDeveloperMessage(parsed: OcxParsedRequest, text: string): 
     }
   }
 }
-
