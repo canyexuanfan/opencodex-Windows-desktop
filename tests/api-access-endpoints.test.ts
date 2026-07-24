@@ -23,4 +23,15 @@ describe("buildApiAccessEndpoints", () => {
       modelsEndpoint: "http://127.0.0.1:10100/v1/models",
     });
   });
+
+  test("brackets IPv6 hostnames for URL display", () => {
+    expect(buildApiAccessEndpoints({ hostname: "::1", port: 10100 })).toEqual({
+      baseUrl: "http://[::1]:10100/v1",
+      endpoint: "http://[::1]:10100/v1/responses",
+      responsesEndpoint: "http://[::1]:10100/v1/responses",
+      chatCompletionsEndpoint: "http://[::1]:10100/v1/chat/completions",
+      messagesEndpoint: "http://[::1]:10100/v1/messages",
+      modelsEndpoint: "http://[::1]:10100/v1/models",
+    });
+  });
 });

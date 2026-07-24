@@ -71,6 +71,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   const [endpoints, setEndpoints] = useState<ApiEndpointInfo>(DEFAULT_ENDPOINTS);
   const [models, setModels] = useState<ExternalModelRow[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsLoadFailed, setModelsLoadFailed] = useState(false);
   const [modelQuery, setModelQuery] = useState("");
   const [copiedModelId, setCopiedModelId] = useState<string | null>(null);
   const [modelTests, setModelTests] = useState<Record<string, { state: ModelTestState; detail?: string }>>({});
@@ -99,25 +100,50 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
 
   const fetchModels = useCallback(async () => {
     setModelsLoading(true);
+    setModelsLoadFailed(false);
     try {
-      const res = await fetch(`${apiBase}/api/models`);
-      if (!res.ok) return;
+      const res = await fetch(`${apiBase}/v1/models`);
+      if (!res.ok) {
+        setModels([]);
+        setModelsLoadFailed(true);
+        return;
+      }
       const data = await res.json() as unknown;
-      if (!Array.isArray(data)) return;
-      const rows = data
-        .filter((row): row is ExternalModelRow => typeof row === "object" && row !== null && typeof (row as ExternalModelRow).id === "string")
-        .map(row => ({
-          id: row.id,
-          displayName: row.displayName ?? row.id,
-          provider: row.provider,
-          namespaced: row.namespaced,
-          disabled: row.disabled,
-          native: row.native,
-          custom: row.custom,
-        }))
-        .filter(row => !row.disabled)
+      const rawRows = Array.isArray(data)
+        ? data
+        : (typeof data === "object" && data !== null && Array.isArray((data as { data?: unknown }).data)
+          ? (data as { data: unknown[] }).data
+          : null);
+      if (!rawRows) {
+        setModels([]);
+        setModelsLoadFailed(true);
+        return;
+      }
+      const rows = rawRows
+        .filter((row): row is { id: string; owned_by?: string } => (
+          typeof row === "object"
+          && row !== null
+          && typeof (row as { id?: unknown }).id === "string"
+        ))
+        .map(row => {
+          const slashIndex = row.id.indexOf("/");
+          const provider = slashIndex > 0 ? row.id.slice(0, slashIndex) : (row.owned_by ?? "openai");
+          const modelId = slashIndex > 0 ? row.id.slice(slashIndex + 1) : row.id;
+          const native = slashIndex < 0;
+          return {
+            id: modelId,
+            displayName: row.id,
+            provider,
+            namespaced: slashIndex > 0 ? row.id : undefined,
+            native,
+            custom: provider !== "openai" && provider !== "combo" && !native,
+          } satisfies ExternalModelRow;
+        })
         .sort((a, b) => externalModelId(a).localeCompare(externalModelId(b)));
       setModels(rows);
+    } catch {
+      setModels([]);
+      setModelsLoadFailed(true);
     } finally {
       setModelsLoading(false);
     }
@@ -280,6 +306,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
           <li>{t("api.authMessages")}</li>
           <li>{t("api.authLoopback")}</li>
         </ul>
+        <p className="muted small">{t("api.authBaseUrlNote")}</p>
       </div>
 
       {newKey && (
@@ -366,6 +393,8 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
         />
         {modelsLoading ? (
           <p className="muted small" style={{ marginTop: "0.75rem" }}>{t("api.modelsLoading")}</p>
+        ) : modelsLoadFailed ? (
+          <p className="muted small" style={{ marginTop: "0.75rem" }}>{t("api.modelsLoadFailed")}</p>
         ) : filteredModels.length === 0 ? (
           <p className="muted small" style={{ marginTop: "0.75rem" }}>{t("api.modelsEmpty")}</p>
         ) : (
@@ -422,7 +451,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
       <div className="panel api-panel" style={{ marginTop: "1rem" }}>
         <h3 className="panel-title">{t("api.usageChatTitle")}</h3>
         <pre className="api-code">{`curl ${endpoints.chatCompletions} \\
-  -H "Authorization: Bearer ocx_YOUR_KEY_HERE" \\
+  -H "x-opencodex-api-key: ocx_YOUR_KEY_HERE" \\
   -H "Content-Type: application/json" \\
   -d '{
     "model": "gpt-5.4",
@@ -438,6 +467,18 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   -d '{
     "model": "gpt-5.4",
     "input": "Hello, world!"
+  }'`}</pre>
+      </div>
+
+      <div className="panel api-panel" style={{ marginTop: "1rem" }}>
+        <h3 className="panel-title">{t("api.usageMessagesTitle")}</h3>
+        <pre className="api-code">{`curl ${endpoints.messages} \\
+  -H "x-opencodex-api-key: ocx_YOUR_KEY_HERE" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 64,
+    "messages": [{"role": "user", "content": "Hello, world!"}]
   }'`}</pre>
       </div>
     </section>

@@ -13,7 +13,8 @@ export interface ApiAccessEndpoints {
 export function buildApiAccessEndpoints(config: OcxConfig): ApiAccessEndpoints {
   const host = config.hostname ?? "127.0.0.1";
   const port = config.port ?? 10100;
-  const baseUrl = `http://${host}:${port}/v1`;
+  const displayHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  const baseUrl = `http://${displayHost}:${port}/v1`;
   const responsesEndpoint = `${baseUrl}/responses`;
   return {
     baseUrl,

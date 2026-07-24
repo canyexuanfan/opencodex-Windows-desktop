@@ -276,7 +276,6 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     const endpoints = buildApiAccessEndpoints(config);
     return jsonResponse({
       keys: keys.map(k => ({ id: k.id, name: k.name, prefix: k.key.slice(0, 8) + "...", createdAt: k.createdAt })),
-      endpoint: endpoints.responsesEndpoint,
       ...endpoints,
     }, 200, req, config);
   }

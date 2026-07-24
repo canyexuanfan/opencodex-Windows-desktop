@@ -1,5 +1,7 @@
 // German — generated from en.ts. Must match TKey set (compile-checked).
-export const de = {
+import type { TKey } from "./en";
+
+export const de: Record<TKey, string> = {
   "nav.dashboard": "Übersicht",
   "nav.startup": "Startsicherheit",
   "nav.providers": "Anbieter",
@@ -697,14 +699,12 @@ export const de = {
   "api.modelCopied": "Kopiert",
   "api.testModel": "Testen",
   "api.testingModel": "Teste…",
-  "api.testOk": "OK",
   "api.testFailed": "Fehlgeschlagen",
   "api.protocolResponses": "Responses",
   "api.protocolChatCompletions": "Chat Completions",
   "api.protocolMessages": "Messages",
   "api.sourceNative": "ChatGPT-Pool",
   "api.sourceCombo": "Combo",
-  "api.sourceOpenai": "OpenAI",
   "api.sourceCustom": "Benutzerdefiniert",
   "api.usageResponsesTitle": "Responses-Beispiel",
   "api.usageChatTitle": "Chat-Completions-Beispiel",
@@ -1163,6 +1163,4 @@ export const de = {
   "cws.err.invalidStickyLimit": "Sticky-Erfolge müssen eine Ganzzahl von 1 bis 100 sein.",
   "cws.err.invalidWeight": "Jedes Round-Robin-Gewicht muss eine Ganzzahl von 1 bis 10000 sein.",
   "cws.err.noEnabledTarget": "Mindestens ein Ziel muss einen aktivierten Anbieter verwenden.",
-} as const;
-
-export type TKey = keyof typeof de;
+};
