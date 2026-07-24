@@ -3,13 +3,25 @@ import { formatUptime } from "../formatUptime";
 import { IconAlert, IconChevron, IconExternal, IconInfo, IconRefresh, IconSearch, IconX } from "../icons";
 import { Trans } from "../i18n/provider";
 import { useI18n, type TKey } from "../i18n/shared";
+import { settingsPollMayCommit } from "../startup-health-ui";
 import { formatTokens } from "../format-tokens";
 import { EmptyState, Select } from "../ui";
 
 interface HealthData { status: string; version: string; uptime: number }
 interface ProviderInfo { name: string; adapter: string; baseUrl: string; defaultModel?: string; hasApiKey: boolean }
 interface ModelInfo { id: string; provider: string; owned_by?: string }
-interface SettingsData { codexAutoStart: boolean; port: number; hostname: string }
+interface SettingsData {
+  codexAutoStart: boolean;
+  port: number;
+  hostname: string;
+  startupHealth?: {
+    status: "native" | "protected" | "at-risk";
+    routingKind: "native" | "opencodex-local" | "custom-local" | "custom-remote" | "unknown";
+    autostartEnabled: boolean;
+    shimCoverage: "full" | "cli-only" | "none";
+    diagnosticStale: boolean;
+  };
+}
 type SidecarBackend = "openai" | "anthropic";
 interface SidecarSetting { backend?: SidecarBackend; model: string }
 interface SidecarData { webSearch: SidecarSetting; vision: SidecarSetting }
@@ -208,6 +220,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   const [injectionEfforts, setInjectionEfforts] = useState<string[]>([]);
   const [injectionAvailable, setInjectionAvailable] = useState<Array<{ provider: string; model: string; namespaced: string }>>([]);
   const [injectionSaving, setInjectionSaving] = useState(false);
+  const [multiAgentGuidanceEnabled, setMultiAgentGuidanceEnabled] = useState(true);
   const [effortCap, setEffortCap] = useState<string>("");
   const [subagentEffortCap, setSubagentEffortCap] = useState<string>("");
   const [effortCapSaving, setEffortCapSaving] = useState(false);
@@ -221,6 +234,9 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   const updateRetryRef = useRef(0);
   const updateRetryTimerRef = useRef<number | null>(null);
   const updateRequestEpochRef = useRef(0);
+  const settingsRequestEpochRef = useRef(0);
+  const settingsMutationEpochRef = useRef(0);
+  const settingsMutationInFlightRef = useRef(false);
   const [updateCheck, setUpdateCheck] = useState<UpdateCheckData | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [updateJob, setUpdateJob] = useState<UpdateJob | null>(null);
@@ -256,7 +272,17 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         ]);
         setHealth(await hRes.json());
         setProviders(await pRes.json());
-        setSettings(await sRes.json());
+        const settingsRequestEpoch = settingsRequestEpochRef.current;
+        const settingsMutationEpoch = settingsMutationEpochRef.current;
+        const nextSettings = await sRes.json() as SettingsData;
+        if (settingsPollMayCommit(
+          { request: settingsRequestEpoch, mutation: settingsMutationEpoch },
+          {
+            request: settingsRequestEpochRef.current,
+            mutation: settingsMutationEpochRef.current,
+            mutationInFlight: settingsMutationInFlightRef.current,
+          },
+        )) setSettings(nextSettings);
         setSidecar(await scRes.json());
         // Old servers fall through to the SPA HTML for this route; don't let a parse
         // failure here take down the whole dashboard.
@@ -275,7 +301,8 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         try {
           const imRes = await fetch(`${apiBase}/api/injection-model`);
           if (imRes.ok) {
-            const imData = await imRes.json() as { model?: string | null; effort?: string | null; efforts?: string[]; available?: Array<{ provider: string; model: string; namespaced: string }> };
+            const imData = await imRes.json() as { multiAgentGuidanceEnabled?: boolean; model?: string | null; effort?: string | null; efforts?: string[]; available?: Array<{ provider: string; model: string; namespaced: string }> };
+            setMultiAgentGuidanceEnabled(imData.multiAgentGuidanceEnabled !== false);
             setInjectionModel(imData.model ?? "");
             setInjectionEffort(imData.effort ?? "");
             setInjectionEfforts(imData.efforts ?? []);
@@ -296,7 +323,10 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     };
     fetchData();
     const interval = setInterval(fetchData, 5000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      settingsRequestEpochRef.current += 1;
+    };
   }, [apiBase]);
 
   useEffect(() => {
@@ -401,6 +431,11 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   }
 
   const online = health?.status === "ok";
+  const startupHealth = useMemo(() => {
+    if (!settings?.startupHealth) return null;
+    if (settings.startupHealth.diagnosticStale) return "error" as const;
+    return settings.startupHealth.status;
+  }, [settings?.startupHealth]);
 
   const saveSidecar = async (patch: SidecarPatch) => {
     if (!sidecar || sidecarSaving) return;
@@ -460,6 +495,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     if (!settings || settingsSaving) return;
     const next = !settings.codexAutoStart;
     setSettingsSaving(true);
+    settingsMutationInFlightRef.current = true;
     setSettings({ ...settings, codexAutoStart: next });
     try {
       const res = await fetch(`${apiBase}/api/settings`, {
@@ -468,12 +504,14 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         body: JSON.stringify({ codexAutoStart: next }),
       });
       if (!res.ok) throw new Error("save failed");
-      const data = await res.json();
-      setSettings(prev => prev ? { ...prev, codexAutoStart: data.codexAutoStart } : prev);
+      const data = await res.json() as { codexAutoStart: boolean; startupHealth?: SettingsData["startupHealth"] };
+      settingsMutationEpochRef.current += 1;
+      setSettings(prev => prev ? { ...prev, codexAutoStart: data.codexAutoStart, startupHealth: data.startupHealth ?? prev.startupHealth } : prev);
     } catch {
       setSettings(prev => prev ? { ...prev, codexAutoStart: !next } : prev);
       setError(true);
     } finally {
+      settingsMutationInFlightRef.current = false;
       setSettingsSaving(false);
     }
   };
@@ -636,6 +674,21 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   </div>
 </div>
 
+      {startupHealth && (
+        <a className="startup-health-bar" href="#dashboard">
+          <span className={`dot ${startupHealth === "error" ? "dot-red" : startupHealth === "at-risk" ? "dot-amber" : "dot-green"}`} aria-hidden="true" />
+          <span className="startup-health-bar__summary">
+            {t(startupHealth === "error"
+              ? "startup.error"
+              : startupHealth === "at-risk"
+                ? "startup.summary.atRisk"
+                : startupHealth === "protected"
+                  ? "startup.summary.protected"
+                  : "startup.summary.native")}
+          </span>
+        </a>
+      )}
+
 {projectConfigWarnings.length > 0 && (
   <div className="notice notice-err maintenance-notice" role="alert">
     <IconAlert />
@@ -789,6 +842,40 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     {injectionModel && <span className="badge badge-green text-micro">{t("dash.injectionActive")}</span>}
   </div>
   <div className="muted text-control" style={{ marginTop: 6 }}>{t("dash.injectionHint")}</div>
+</div>
+
+<div className="panel" style={{ marginBottom: 24 }}>
+  <div className="spread setting-row">
+    <div className="setting-copy" style={{ flex: 1 }}>
+      <div className="font-semibold">{t("dash.multiAgentGuidance")}</div>
+      <div className="muted setting-hint">{t("dash.multiAgentGuidanceHint")}</div>
+    </div>
+    <button
+      type="button"
+      className={`switch ${multiAgentGuidanceEnabled ? "on" : ""}`}
+      onClick={async () => {
+        if (injectionSaving) return;
+        setInjectionSaving(true);
+        try {
+          const res = await fetch(`${apiBase}/api/injection-model`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ multiAgentGuidanceEnabled: !multiAgentGuidanceEnabled }),
+          });
+          if (res.ok) {
+            const data = await res.json() as { multiAgentGuidanceEnabled?: boolean };
+            setMultiAgentGuidanceEnabled(data.multiAgentGuidanceEnabled !== false);
+          }
+        } catch { /* ignore */ }
+        finally { setInjectionSaving(false); }
+      }}
+      disabled={injectionSaving}
+      aria-label={t("dash.multiAgentGuidance")}
+      aria-pressed={multiAgentGuidanceEnabled}
+    >
+      <span className="knob" />
+    </button>
+  </div>
 </div>
 
 <div className="panel maintenance-panel">
@@ -1160,7 +1247,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         {t("models.v2Help")}
       </div>
       <div style={{ marginTop: 12 }}>
-        <a className="text-control" href="https://lidge-jun.github.io/opencodex/guides/sub-agent-surface/" target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
+        <a className="text-control" href="https://opencodex.me/guides/sub-agent-surface/" target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
           {t("models.v2DocsLink")}
         </a>
       </div>
