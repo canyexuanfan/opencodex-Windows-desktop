@@ -281,10 +281,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .nav-entry-claude .switch::before {
   content: "";
   position: absolute;
-  top: 8px;
-  left: 5px;
-  width: 34px;
-  height: 20px;
+  top: 10px;
+  left: 8px;
+  width: 28px;
+  height: 16px;
   border: 1px solid var(--border);
   border-radius: var(--radius-pill);
   background: var(--raised);
@@ -292,7 +292,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 }
 .nav-entry-claude .switch.on { border-color: transparent; background: transparent; }
 .nav-entry-claude .switch.on::before { border-color: var(--toggle-on-bg); background: var(--toggle-on-bg); }
-.nav-entry-claude .switch .knob { position: absolute; top: 11px; left: 8px; z-index: 1; }
+.nav-entry-claude .switch .knob { position: absolute; top: 13px; left: 11px; z-index: 1; width: 10px; height: 10px; }
+.nav-entry-claude .switch.on .knob { transform: translateX(12px); }
 .nav-entry-claude .switch:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 0; }
 
 .sidebar-foot { margin-top: auto; padding-top: 12px; display: flex; flex-direction: column; gap: 2px; }
