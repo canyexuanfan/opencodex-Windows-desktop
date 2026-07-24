@@ -63,6 +63,10 @@ export function markProviderDiscoveryFailed(
   discoveryStatus.set(provider, { status: "failed", ...failure });
 }
 
+export function clearProviderDiscoveryStatus(provider: string): void {
+  discoveryStatus.delete(provider);
+}
+
 export function getProviderDiscoveryStatus(provider: string): ProviderModelDiscoveryStatus | undefined {
   return discoveryStatus.get(provider);
 }

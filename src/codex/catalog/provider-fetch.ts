@@ -6,6 +6,7 @@ import { atomicWriteFile, expandUserPath, getConfigDir, websocketsEnabled } from
 import { CODEX_CONFIG_PATH, CODEX_MODELS_CACHE_PATH, DEFAULT_CATALOG_PATH, readRootTomlString, resolveCodexConfigPath } from "../paths";
 import {
   clearModelCache,
+  clearProviderDiscoveryStatus,
   DEFAULT_MODEL_CACHE_TTL_MS,
   getFreshCached,
   getStaleCached,
@@ -246,7 +247,11 @@ export async function fetchProviderModels(name: string, prov: OcxProviderConfig,
       : models
   );
   if (prov.adapter === "cursor") {
-    if (prov.liveModels === false || !apiKey) return configured;
+    if (prov.liveModels === false) {
+      clearProviderDiscoveryStatus(name);
+      return configured;
+    }
+    if (!apiKey) return configured;
     // Cursor uses a bespoke GetUsableModels RPC (not /models), returning the full effort-suffixed
     // variants this PLAN can use. Keep the base-model UX (the request builder appends the effort
     // suffix) but filter the static seed to the bases the account actually has — so models not on the
@@ -280,6 +285,7 @@ export async function fetchProviderModels(name: string, prov: OcxProviderConfig,
     return configured;
   }
   if (prov.liveModels === false) {
+    clearProviderDiscoveryStatus(name);
     return configured;
   }
   const fresh = getFreshCached(name, ttlMs);

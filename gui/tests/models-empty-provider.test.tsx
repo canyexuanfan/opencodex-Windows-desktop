@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { Window } from "happy-dom";
 import http2 from "node:http2";
+import { act } from "react";
+import type { Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LanguageProvider } from "../src/i18n/provider";
-import { EmptyProviderHint } from "../src/pages/Models";
+import Models, { EmptyProviderHint } from "../src/pages/Models";
 import type { ProviderDiscoverySummary } from "../src/models-groups";
 import { gatherRoutedModels } from "../../src/codex/catalog";
 import {
@@ -44,6 +47,7 @@ function renderHint(liveModels: boolean, discovery?: ProviderDiscoverySummary): 
 async function providerDto(
   provider: string,
   adapter: "openai-chat" | "cursor" = "openai-chat",
+  liveModels = true,
 ): Promise<Record<string, unknown>> {
   const requestUrl = new URL("http://127.0.0.1/api/providers");
   const response = await handleManagementAPI(
@@ -54,6 +58,7 @@ async function providerDto(
         [provider]: {
           adapter,
           baseUrl: adapter === "cursor" ? "https://api2.cursor.sh" : "https://api.example.test/v1",
+          liveModels,
           models: [],
         },
       },
@@ -62,6 +67,76 @@ async function providerDto(
   const providers = await response!.json() as Array<Record<string, unknown>>;
   return providers[0] ?? {};
 }
+
+test("Models page keeps the discovery-failure badge visible with fallback rows", async () => {
+  const domGlobals = ["document", "window", "localStorage", "IS_REACT_ACT_ENVIRONMENT"] as const;
+  const previousDescriptors = Object.fromEntries(
+    domGlobals.map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
+  ) as Record<(typeof domGlobals)[number], PropertyDescriptor | undefined>;
+  const testWindow = new Window({ url: "http://localhost/" });
+  const container = testWindow.document.createElement("div");
+  testWindow.document.body.append(container);
+  let root: Root | undefined;
+
+  Object.defineProperties(globalThis, {
+    document: { configurable: true, value: testWindow.document },
+    window: { configurable: true, value: testWindow },
+    localStorage: { configurable: true, value: testWindow.localStorage },
+    IS_REACT_ACT_ENVIRONMENT: { configurable: true, value: true },
+  });
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    if (url.endsWith("/api/models")) {
+      return Response.json([{
+        provider: "fallback-provider",
+        id: "configured-fallback",
+        namespaced: "fallback-provider/configured-fallback",
+        disabled: false,
+      }]);
+    }
+    if (url.endsWith("/api/providers")) {
+      return Response.json([{
+        name: "fallback-provider",
+        liveModels: true,
+        models: ["configured-fallback"],
+        discovery: { status: "failed", reason: "http", httpStatus: 401 },
+      }]);
+    }
+    if (url.endsWith("/api/provider-context-caps")) return Response.json({ caps: {} });
+    if (url.endsWith("/api/combos")) return Response.json([]);
+    return new Response(null, { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    const { createRoot } = await import("react-dom/client");
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <LanguageProvider>
+          <Models apiBase="http://localhost" />
+        </LanguageProvider>,
+      );
+    });
+    await act(async () => {
+      await new Promise(resolve => testWindow.setTimeout(resolve, 0));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("fallback-provider/configured-fallback");
+    expect(container.querySelector(".badge.badge-amber")?.textContent).toContain("Discovery failed");
+    expect(container.textContent).not.toContain("No models were discovered");
+  } finally {
+    if (root) {
+      await act(async () => root?.unmount());
+    }
+    testWindow.close();
+    for (const key of domGlobals) {
+      const descriptor = previousDescriptors[key];
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete (globalThis as Record<string, unknown>)[key];
+    }
+  }
+});
 
 async function withCursorDiscoveryServer<T>(
   status: number,
@@ -300,6 +375,30 @@ test("successful discovery clears every prior failure reason", async () => {
   clearModelCache(provider);
   expect(getProviderDiscoveryStatus(provider)).toBeUndefined();
   expect(await providerDto(provider)).not.toHaveProperty("discovery");
+});
+
+test("static catalog paths clear stale discovery failures and omit them from the API", async () => {
+  for (const adapter of ["openai-chat", "cursor"] as const) {
+    const provider = `static-${adapter}`;
+    markProviderDiscoveryFailed(provider, { reason: "http", httpStatus: 401 });
+    expect(await providerDto(provider, adapter, false)).not.toHaveProperty("discovery");
+
+    const models = await gatherRoutedModels({
+      modelCacheTtlMs: 0,
+      providers: {
+        [provider]: {
+          adapter,
+          baseUrl: adapter === "cursor" ? "https://api2.cursor.sh" : "https://api.example.test/v1",
+          liveModels: false,
+          models: ["configured-fallback"],
+        },
+      },
+    });
+
+    expect(models.map(model => model.id)).toEqual(["configured-fallback"]);
+    expect(getProviderDiscoveryStatus(provider)).toBeUndefined();
+    expect(await providerDto(provider, adapter, false)).not.toHaveProperty("discovery");
+  }
 });
 
 test("empty static provider explains that live discovery is disabled", () => {

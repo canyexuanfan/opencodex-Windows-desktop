@@ -745,6 +745,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
        const shown = limit[provider] ?? PAGE;
        const visible = sorted.slice(0, shown);
        const remaining = filtered.length - visible.length;
+        const discoveryFailure = liveModels && discovery?.status === "failed" ? discovery : undefined;
         const allOn = rows.length > 0 && rows.every(m => !disabled.has(m.namespaced));
         const allOff = rows.length > 0 && rows.every(m => disabled.has(m.namespaced));
         const bulkToggle = (enable: boolean) => {
@@ -759,6 +760,15 @@ export default function Models({ apiBase }: { apiBase: string }) {
              <IconChevron style={{ width: 14, height: 14, color: "var(--muted)", transform: isCollapsed ? "none" : "rotate(90deg)", transition: "transform .12s" }} />
              <span className="text-body font-semibold">{provider}</span>
              {isNative && <span className="muted mono text-caption" style={{ padding: "1px 6px", border: "1px solid var(--border)", borderRadius: "var(--radius-pill)" }}>{t("models.nativeGroupLabel")}</span>}
+             {discoveryFailure && (
+               <span
+                 className="badge badge-amber"
+                 role="status"
+                 title={discoveryFailureReason(t, discoveryFailure)}
+               >
+                 {t("models.discoveryFailedBadge")}
+               </span>
+             )}
              <span className="muted mono text-label">{t("models.active", { active: activeCount, total: rows.length })}</span>
              <div style={{ flex: 1 }} />
               <div className="row" onClick={e => e.stopPropagation()} style={{ gap: 6 }}>
@@ -797,7 +807,9 @@ export default function Models({ apiBase }: { apiBase: string }) {
            {!isCollapsed && (
              <div style={{ padding: "6px 12px" }}>
                {isNative && <p className="muted text-label" style={{ margin: "2px 0 6px" }}>{t("models.nativeHint")}</p>}
-               {rows.length === 0 && <EmptyProviderHint liveModels={liveModels} discovery={discovery} />}
+               {rows.length === 0 && (
+                 <EmptyProviderHint liveModels={liveModels} discovery={discovery} showFailureBadge={false} />
+               )}
                {rows.length > PAGE / 2 && (
                  <input
                    className="input"
@@ -1136,9 +1148,11 @@ function discoveryFailureReason(
 export function EmptyProviderHint({
   liveModels,
   discovery,
+  showFailureBadge = true,
 }: {
   liveModels: boolean;
   discovery?: ProviderDiscoverySummary;
+  showFailureBadge?: boolean;
 }) {
   const t = useT();
   const failed = liveModels && discovery?.status === "failed" ? discovery : undefined;
@@ -1146,7 +1160,7 @@ export function EmptyProviderHint({
     <div className="row muted text-label leading-body" role="status" style={{ alignItems: "flex-start", gap: 8, padding: "6px 0" }}>
       <IconInfo width={15} height={15} aria-hidden="true" style={{ flexShrink: 0, marginTop: 2 }} />
       <span>
-        {failed && <><span className="badge badge-amber">{t("models.discoveryFailedBadge")}</span>{" "}</>}
+        {failed && showFailureBadge && <><span className="badge badge-amber">{t("models.discoveryFailedBadge")}</span>{" "}</>}
         {failed
           ? `${discoveryFailureReason(t, failed)} `
           : `${t(liveModels ? "models.emptyDiscovery" : "models.emptyDiscoveryDisabled")} `}

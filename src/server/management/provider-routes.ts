@@ -79,7 +79,7 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       authMode: p.authMode,
       disabled: p.disabled === true,
       codexAccountMode: providerCodexAccountMode(name, p),
-      discovery: getProviderDiscoveryStatus(name),
+      discovery: p.liveModels === false ? undefined : getProviderDiscoveryStatus(name),
     })));
   }
 

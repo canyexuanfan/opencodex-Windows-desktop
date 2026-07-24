@@ -19,6 +19,7 @@ interface ClaudeCodeState {
   autoCompactWindow: number | null;
   injectAgents: boolean;
   smallFastModel: string;
+  tierModels?: { haiku?: string };
   effectiveModelEnv: Record<string, string>;
   available: string[];
   aliases: { id: string; display_name: string }[];
@@ -103,14 +104,17 @@ export function AutoConnectSetting({
 
 export function SmallFastModelSetting({
   value,
+  tierHaikuModel,
   options,
   onChange,
 }: {
   value: string;
+  tierHaikuModel?: string;
   options: SelectOption[];
   onChange: (value: string) => void;
 }) {
   const t = useT();
+  const effectiveHelperModel = tierHaikuModel ?? value;
   return (
     <>
       <div className="h-section">{t("claude.smallFastModel")}</div>
@@ -124,8 +128,8 @@ export function SmallFastModelSetting({
         label={t("claude.smallFastModel")}
         style={{ maxWidth: 420 }}
       />
-      {value === "" && (
-        <p className="notice-warn" role="note" style={{ marginTop: 8 }}>
+      {effectiveHelperModel === "" && (
+        <p className="notice-warn" role="status" style={{ marginTop: 8 }}>
           {t("claude.smallFastModelNativeWarning")}
         </p>
       )}
@@ -379,6 +383,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
 
       <SmallFastModelSetting
         value={state.smallFastModel}
+        tierHaikuModel={state.tierModels?.haiku}
         options={modelOptions}
         onChange={smallFastModel => setState({ ...state, smallFastModel })}
       />
