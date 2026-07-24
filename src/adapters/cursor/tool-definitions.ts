@@ -97,10 +97,14 @@ function cursorToolChoiceMatches(
   tool: Pick<OcxTool, "namespace" | "name">,
   choiceName: string,
 ): boolean {
+  // Bare shell_command / exec_command choices select only the Codex shell bridge.
+  // Do not let them match a namespaced tool whose raw name is also exec_command/shell_command
+  // (e.g. mcp__remote.exec_command) — that would violate forced tool_choice.
+  if (isCodexShellBridgeToolName(choiceName)) {
+    return isBareCodexShellBridgeTool(tool);
+  }
   if (tool.name === choiceName || cursorToolWireName(tool) === choiceName) return true;
-  const aliases = cursorToolChoiceAliases(tool);
-  if (aliases.includes(choiceName)) return true;
-  return resolveShellBridgeAliasKey(choiceName, alias => aliases.includes(alias) ? alias : undefined) !== undefined;
+  return cursorToolChoiceAliases(tool).includes(choiceName);
 }
 
 export function isBareCodexShellBridgeTool(tool: Pick<OcxTool, "namespace" | "name">): boolean {

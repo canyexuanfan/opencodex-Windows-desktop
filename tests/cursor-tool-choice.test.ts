@@ -33,6 +33,17 @@ describe("Cursor Responses tool_choice support", () => {
     expect(buildCursorToolDefinitions(shellBridgeTools, { mode: "required", allowedTools: ["shell_command"] }).map(tool => tool.toolName)).toEqual(["shell_command"]);
   });
 
+  test("forced exec_command does not select a namespaced remote exec_command beside the bare bridge", () => {
+    const toolsWithRemote: OcxTool[] = [
+      { name: "shell_command", description: "Run", parameters: {} },
+      { name: "exec_command", namespace: "mcp__remote", description: "Remote exec", parameters: {} },
+    ];
+    expect(buildCursorToolDefinitions(toolsWithRemote, { name: "exec_command" }).map(tool => tool.toolName)).toEqual(["shell_command"]);
+    expect(buildCursorToolDefinitions(toolsWithRemote, { mode: "required", allowedTools: ["shell_command"] }).map(tool => tool.toolName)).toEqual(["shell_command"]);
+    // Wire-name choice still selects the namespaced tool intentionally.
+    expect(buildCursorToolDefinitions(toolsWithRemote, { name: "mcp__remote__exec_command" }).map(tool => tool.toolName)).toEqual(["mcp__remote__exec_command"]);
+  });
+
   test("parser preserves parallel_tool_calls false for Cursor request enforcement", () => {
     const parsed = parseRequest({
       model: "cursor/auto",
