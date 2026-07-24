@@ -716,8 +716,6 @@ export async function handleResponses(
     await maybePrimeSubagentQuota(config);
   }
 
-  const subagentQuotaFailureModel = parsed.modelId;
-
   let route;
   try {
     route = routeModel(config, parsed.modelId);
@@ -891,16 +889,24 @@ export async function handleResponses(
   const identityScope = codexLogAccountId(authCtx);
   if (identityScope) parsed._cursorIdentityScope = identityScope;
 
-  const subagentFallbackAccountId = authCtx.kind === "pool" || authCtx.kind === "main-pool"
+  let subagentFallbackAccountId = authCtx.kind === "pool" || authCtx.kind === "main-pool"
     ? authCtx.accountId
     : config.activeCodexAccountId ?? null;
+  let subagentQuotaFailureModel = parsed.modelId;
 
   if (isThreadSpawnRequest(req.headers) && !options.comboAttempt) {
+    const routeBeforeFallback = {
+      providerName: route.providerName,
+      modelId: route.modelId,
+      codexAccountMode: route.codexAccountMode,
+    };
     const fallback = applySubagentModelFallback(
       parsed,
       req.headers,
       config,
       subagentFallbackAccountId,
+      Date.now(),
+      unreadableEncryptedAgentTask,
     );
     if (fallback) {
       (logCtx as unknown as Record<string, unknown>).subagentModelFallbackFrom = fallback.from;
@@ -909,6 +915,7 @@ export async function handleResponses(
         injectionDebugLog(`[opencodex] subagent model fallback ${fallback.from} -> ${fallback.to}`);
       }
     }
+    subagentQuotaFailureModel = fallback?.to ?? parsed.modelId;
     if (fallback?.to && !slugsEquivalent(fallback.to, route.modelId)) {
       try {
         route = routeModel(config, fallback.to);
@@ -927,6 +934,55 @@ export async function handleResponses(
       logCtx.model = route.modelId;
       logCtx.provider = route.providerName;
       logCtx.providerAdapter = route.provider.adapter;
+    }
+    if (
+      route.providerName !== routeBeforeFallback.providerName
+      || route.modelId !== routeBeforeFallback.modelId
+      || route.codexAccountMode !== routeBeforeFallback.codexAccountMode
+    ) {
+      try {
+        if (route.codexAccountMode === "direct") validateForwardAdmissionCredential(req.headers, config);
+        if (route.codexAccountMode) {
+          authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode);
+          options.onCodexAuthContextResolved?.(authCtx);
+        } else {
+          authCtx = { kind: "main", accountId: null };
+          options.onCodexAuthContextResolved?.(undefined);
+        }
+        selectedForwardHeaders = headersForCodexAuthContext(req.headers, authCtx);
+      } catch (err) {
+        if (err instanceof CodexAccountCooldownError) {
+          return formatErrorResponse(429, "rate_limit_error", "Selected Codex account is cooling down");
+        }
+        if (err instanceof CodexThreadAffinityExpiredError) {
+          return formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session");
+        }
+        if (err instanceof CodexAuthContextError) {
+          const safeAccountLabel = formatCodexProviderForLog(route.providerName, err.accountId, config);
+          console.error(`[codex-auth] Pool account ${safeAccountLabel} token failed; reauthentication required`);
+          return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
+        }
+        if (err instanceof CodexPoolAuthenticationError) {
+          return formatErrorResponse(401, "authentication_error", err.message);
+        }
+        if (err instanceof CodexDirectAuthenticationError) {
+          return formatErrorResponse(401, "authentication_error", err.message);
+        }
+        if (err instanceof ForwardAdmissionCredentialError) {
+          return formatErrorResponse(401, "authentication_error", err.message);
+        }
+        throw err;
+      }
+      if (!isCodexAuthContextUsable(authCtx, config)) {
+        return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
+      }
+      route.provider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
+      logCtx.provider = formatCodexProviderForLog(route.providerName, codexLogAccountId(authCtx), config);
+      const fallbackIdentityScope = codexLogAccountId(authCtx);
+      if (fallbackIdentityScope) parsed._cursorIdentityScope = fallbackIdentityScope;
+      subagentFallbackAccountId = authCtx.kind === "pool" || authCtx.kind === "main-pool"
+        ? authCtx.accountId
+        : config.activeCodexAccountId ?? null;
     }
   }
 
@@ -1231,11 +1287,18 @@ export async function handleResponses(
         options.setTerminalOutcomeRecorder?.((status, httpStatusOverride) => {
           terminalRecorder(status, httpStatusOverride);
           if (status === "failed") {
+            const quotaFailureMessage = httpStatusOverride === 429 || httpStatusOverride === 402
+              || logCtx.terminalHttpStatus === 429
+              || logCtx.terminalHttpStatus === 402
+              ? (httpStatusOverride ?? logCtx.terminalHttpStatus)
+              : undefined;
+            if (quotaFailureMessage === undefined) return;
             recordSubagentQuotaFailureForThreadSpawn(
               req.headers,
               subagentQuotaFailureModel,
-              httpStatusOverride ?? logCtx.terminalHttpStatus ?? "usage limit",
+              quotaFailureMessage,
               config,
+              subagentFallbackAccountId,
             );
           }
           options.onNativePassthroughTerminal?.(status);
@@ -1276,11 +1339,18 @@ export async function handleResponses(
           ? (status: ResponsesTerminalStatus, httpStatusOverride?: number) => {
             terminalRecorder?.(status, httpStatusOverride);
             if (status === "failed") {
+              const quotaFailureMessage = httpStatusOverride === 429 || httpStatusOverride === 402
+                || logCtx.terminalHttpStatus === 429
+                || logCtx.terminalHttpStatus === 402
+                ? (httpStatusOverride ?? logCtx.terminalHttpStatus)
+                : undefined;
+              if (quotaFailureMessage === undefined) return;
               recordSubagentQuotaFailureForThreadSpawn(
                 req.headers,
                 subagentQuotaFailureModel,
-                httpStatusOverride ?? logCtx.terminalHttpStatus ?? "usage limit",
+                quotaFailureMessage,
                 config,
+                subagentFallbackAccountId,
               );
             }
             options.onNativePassthroughTerminal?.(status);
@@ -1715,6 +1785,7 @@ export async function handleResponses(
           ? upstreamResponse.status
           : `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`,
         config,
+        subagentFallbackAccountId,
       );
       // Upstreams occasionally echo request details in error bodies — scrub token-shaped
       // material before it reaches the client-facing error surface.

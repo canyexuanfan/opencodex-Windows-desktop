@@ -120,6 +120,56 @@ describe("subagent model fallback chain", () => {
     expect(isSubagentModelUnavailable("kimi/k3", cfg())).toBe(true);
   });
 
+  test("noteSubagentModelFailure records the configured fallback slug", () => {
+    resetSubagentModelFallbackStateForTests();
+    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max-preview", "429", cfg());
+    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max-preview", cfg())).toBe(true);
+    expect(isSubagentModelUnavailable("qwen3.8-max-preview", cfg())).toBe(false);
+  });
+
+  test("selectAvailableSubagentModel can require native-only fallback for encrypted tasks", () => {
+    resetSubagentModelFallbackStateForTests();
+    updateAccountQuota("main", 95, undefined, 20);
+    const selected = selectAvailableSubagentModel(
+      "gpt-5.6-sol",
+      cfg(),
+      [],
+      "main",
+      Date.now(),
+      true,
+    );
+    expect(selected).toEqual({
+      model: "gpt-5.6-sol",
+      rewritten: false,
+      skipped: ["gpt-5.6-sol", "alibaba-token-plan/qwen3.8-max-preview", "kimi/k3"],
+    });
+  });
+
+  test("selectAvailableSubagentModel can stay native-only for encrypted spawns", () => {
+    resetSubagentModelFallbackStateForTests();
+    updateAccountQuota("main", 95, undefined, 20);
+    const selected = selectAvailableSubagentModel(
+      "gpt-5.6-sol",
+      cfg(),
+      [],
+      "main",
+      Date.now(),
+      true,
+    );
+    expect(selected).toEqual({
+      model: "gpt-5.6-sol",
+      rewritten: false,
+      skipped: ["gpt-5.6-sol", "alibaba-token-plan/qwen3.8-max-preview", "kimi/k3"],
+    });
+  });
+
+  test("noteSubagentModelFailure records failures under the configured fallback slug", () => {
+    resetSubagentModelFallbackStateForTests();
+    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max-preview", "429", cfg(), "main");
+    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max-preview", cfg(), "main")).toBe(true);
+    expect(isSubagentModelUnavailable("qwen3.8-max-preview", cfg(), "main")).toBe(false);
+  });
+
   test("readCodexAgentModelFallback parses multiline TOML arrays", () => {
     const dir = codexHomeFixture();
     writeFileSync(join(dir, "agents", "executor.toml"), [

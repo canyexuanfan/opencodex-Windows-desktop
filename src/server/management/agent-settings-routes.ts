@@ -310,7 +310,14 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
   }
   if (url.pathname === "/api/subagent-model-fallback" && req.method === "PUT") {
     let body: { models?: unknown; pollMs?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    try {
+      body = await req.json();
+    } catch {
+      return jsonResponse({ error: "invalid JSON body" }, 400);
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return jsonResponse({ error: "invalid JSON body" }, 400);
+    }
     let nextModels = config.subagentModelFallback;
     let nextPollMs = config.subagentModelFallbackPollMs;
     if ("models" in body) {

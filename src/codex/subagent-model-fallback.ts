@@ -150,10 +150,15 @@ export function selectAvailableSubagentModel(
   extraFallback: readonly string[] = [],
   accountId?: string | null,
   now = Date.now(),
+  nativeFallbackOnly = false,
 ): { model: string; rewritten: boolean; skipped: string[] } {
   const chain = normalizedChain(primary, config, extraFallback);
   const skipped: string[] = [];
   for (const candidate of chain) {
+    if (nativeFallbackOnly && !isNativeOpenAiSlug(candidate)) {
+      skipped.push(candidate);
+      continue;
+    }
     if (isSubagentModelUnavailable(candidate, config, accountId, now)) {
       skipped.push(candidate);
       continue;
@@ -280,12 +285,20 @@ export function applySubagentModelFallback(
   config: OcxConfig,
   accountId?: string | null,
   now = Date.now(),
+  nativeFallbackOnly = false,
 ): { from?: string; to?: string; skipped?: string[] } | null {
   if (!isThreadSpawnRequest(headers)) return null;
   const roleFallback = resolveAgentModelFallbackForPrimary(parsed.modelId, getCodexHome());
   const globalFallback = config.subagentModelFallback ?? [];
   if (globalFallback.length === 0 && roleFallback.length === 0) return null;
-  const selection = selectAvailableSubagentModel(parsed.modelId, config, roleFallback, accountId, now);
+  const selection = selectAvailableSubagentModel(
+    parsed.modelId,
+    config,
+    roleFallback,
+    accountId,
+    now,
+    nativeFallbackOnly,
+  );
   if (!selection.rewritten) return selection.skipped.length > 0
     ? { from: parsed.modelId, to: parsed.modelId, skipped: selection.skipped }
     : null;
