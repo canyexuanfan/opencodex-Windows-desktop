@@ -398,14 +398,14 @@ describe("Codex autostart shim", () => {
     });
   });
 
-  test("concurrent processes cannot move another restore's freshly written shim into backup", async () => {
-    if (process.platform === "win32") return;
+  test("an aged lock held by a live restore owner is never reclaimed", async () => {
     const binDir = mkdtempSync(join(tmpdir(), "ocx-shim-concurrent-bin-"));
     const home = mkdtempSync(join(tmpdir(), "ocx-shim-concurrent-home-"));
     const readyPath = join(home, "first-lock-ready");
     const releasePath = join(home, "release-first-lock");
-    const wrapper = join(binDir, "codex");
-    const backup = join(binDir, "codex.opencodex-real");
+    const restoreLockPath = join(home, "codex-shim.autorestore.lock");
+    const wrapper = join(binDir, process.platform === "win32" ? "codex.cmd" : "codex");
+    const backup = join(binDir, process.platform === "win32" ? "codex.opencodex-real.cmd" : "codex.opencodex-real");
     const replacement = "concurrent replacement launcher\n";
     const oldPath = process.env.PATH;
     const oldHome = process.env.OPENCODEX_HOME;
@@ -413,21 +413,27 @@ describe("Codex autostart shim", () => {
     try {
       process.env.PATH = binDir;
       process.env.OPENCODEX_HOME = home;
-      writeFileSync(wrapper, "#!/bin/sh\necho original\n", "utf8");
-      chmodSync(wrapper, 0o755);
+      writeFileSync(wrapper, process.platform === "win32" ? "@echo off\r\necho original\r\n" : "#!/bin/sh\necho original\n", "utf8");
+      if (process.platform !== "win32") chmodSync(wrapper, 0o755);
       expect(installCodexShim().installed).toBe(true);
       writeFileSync(wrapper, replacement, "utf8");
-      chmodSync(wrapper, 0o755);
+      if (process.platform !== "win32") chmodSync(wrapper, 0o755);
 
       const shimModule = join(import.meta.dir, "..", "src", "codex", "shim.ts");
       const firstScript = `
-        import { existsSync, writeFileSync } from "node:fs";
+        import { existsSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
+        import { join } from "node:path";
         const { autoRestoreCodexShim } = await import(${JSON.stringify(shimModule)});
         const result = autoRestoreCodexShim({
           enabled: () => true,
           stabilitySleep: () => {},
           afterRestoreLockAcquired: () => {
-            writeFileSync(${JSON.stringify(readyPath)}, "ready");
+            const ownerPath = join(${JSON.stringify(restoreLockPath)}, readdirSync(${JSON.stringify(restoreLockPath)})[0]);
+            const held = JSON.parse(readFileSync(ownerPath, "utf8"));
+            held.createdAt = 0;
+            writeFileSync(ownerPath, JSON.stringify(held) + "\\n");
+            utimesSync(ownerPath, new Date(0), new Date(0));
+            writeFileSync(${JSON.stringify(readyPath)}, readFileSync(ownerPath));
             while (!existsSync(${JSON.stringify(releasePath)})) Bun.sleepSync(5);
           },
         });
@@ -455,6 +461,9 @@ describe("Codex autostart shim", () => {
       });
       expect(second.status).toBe(0);
       expect(JSON.parse(second.stdout.trim())).toEqual({ status: "deferred" });
+      const heldLock = JSON.parse(readFileSync(readyPath, "utf8")) as { pid?: number; token?: string };
+      expect(heldLock.pid).toBe(first.pid);
+      expect(heldLock.token).toBeString();
 
       writeFileSync(releasePath, "release", "utf8");
       expect(await first.exited).toBe(0);
@@ -472,6 +481,61 @@ describe("Codex autostart shim", () => {
       rmSync(binDir, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  test("stale-lock compare-and-delete never unlinks a successor lock", () => {
+    withInstalledShim(({ home, wrappers, backups }) => {
+      const lockPath = join(home, "codex-shim.autorestore.lock");
+      const stalePath = join(lockPath, "stale-owner.json");
+      const successorPath = join(lockPath, "successor-owner.json");
+      const stale = JSON.stringify({ version: 1, token: "stale-owner", pid: 2_147_483_647, createdAt: 0 }) + "\n";
+      const successor = JSON.stringify({ version: 1, token: "successor-owner", pid: process.pid, createdAt: Date.now() }) + "\n";
+      const oldBackups = backups.map(path => readFileSync(path));
+      wrappers.forEach((path, index) => writeFileSync(path, `replacement-${index}\n`, "utf8"));
+      mkdirSync(lockPath);
+      writeFileSync(stalePath, stale, "utf8");
+      utimesSync(stalePath, new Date(0), new Date(0));
+
+      const result = autoRestoreCodexShim({
+        enabled: () => true,
+        stabilitySleep: skipStabilityWait,
+        beforeStaleRestoreLockDelete: () => {
+          rmSync(lockPath, { recursive: true });
+          mkdirSync(lockPath);
+          writeFileSync(successorPath, successor, "utf8");
+        },
+      });
+
+      expect(result).toEqual({ status: "deferred" });
+      expect(readdirSync(lockPath)).toEqual(["successor-owner.json"]);
+      expect(readFileSync(successorPath, "utf8")).toBe(successor);
+      wrappers.forEach((path, index) => expect(readFileSync(path, "utf8")).toBe(`replacement-${index}\n`));
+      backups.forEach((path, index) => expect(readFileSync(path)).toEqual(oldBackups[index]));
+    });
+  });
+
+  test("an unchanged stale lock from a dead owner is reclaimed", () => {
+    withInstalledShim(({ home, wrappers, backups }) => {
+      const lockPath = join(home, "codex-shim.autorestore.lock");
+      const ownerPath = join(lockPath, "dead-owner.json");
+      const replacements = wrappers.map((_, index) => `dead-owner-replacement-${index}\n`);
+      wrappers.forEach((path, index) => writeFileSync(path, replacements[index], "utf8"));
+      mkdirSync(lockPath);
+      writeFileSync(ownerPath, `${JSON.stringify({
+        version: 1,
+        token: "dead-owner",
+        pid: 2_147_483_647,
+        createdAt: 0,
+      })}\n`, "utf8");
+      utimesSync(ownerPath, new Date(0), new Date(0));
+
+      const result = autoRestoreCodexShim({ enabled: () => true, stabilitySleep: skipStabilityWait });
+
+      expect(result.status).toBe("restored");
+      expect(existsSync(lockPath)).toBe(false);
+      wrappers.forEach(path => expect(readFileSync(path, "utf8")).toContain(SHIM_MARKER));
+      backups.forEach((path, index) => expect(readFileSync(path, "utf8")).toBe(replacements[index]));
+    });
   });
 
   test("stalled partial write changing during the observation interval is never promoted", () => {
