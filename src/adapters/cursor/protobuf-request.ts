@@ -104,8 +104,9 @@ function storedRootBlob(
   };
 }
 
-function truncateToolResultBlob(entry: StoredRootBlob, maxBytes: number): StoredRootBlob {
-  if (entry.byteLength <= maxBytes || entry.role !== "toolResult" || entry.text === undefined) return entry;
+function truncateToolResultBlob(entry: StoredRootBlob, maxBytes: number): StoredRootBlob | null {
+  if (entry.byteLength <= maxBytes) return entry;
+  if (entry.role !== "toolResult" || entry.text === undefined) return null;
   const marker = "\n…[truncated for Cursor external replay budget]";
   const encoded = encoder.encode(entry.text);
   // Leave headroom for JSON envelope (`role`/`content` wrapper) around the truncated text.
@@ -119,14 +120,16 @@ function truncateToolResultBlob(entry: StoredRootBlob, maxBytes: number): Stored
       "toolResult",
       { messageIndex: entry.messageIndex, text: truncated },
     );
-    if (result.byteLength <= maxBytes || end === 0) return result;
+    if (result.byteLength <= maxBytes) return result;
+    if (end === 0) break;
     keepBytes = Math.max(0, end - (result.byteLength - maxBytes) - 16);
   }
-  return storedRootBlob(
+  const markerOnly = storedRootBlob(
     { role: "user", content: [{ type: "text", text: marker.trimStart() }] },
     "toolResult",
     { messageIndex: entry.messageIndex, text: marker.trimStart() },
   );
+  return markerOnly.byteLength <= maxBytes ? markerOnly : null;
 }
 
 function systemPromptBlobs(request: CursorRunRequest): StoredRootBlob[] {
@@ -224,18 +227,29 @@ function rootPromptMessages(request: CursorRunRequest): {
     const historyLimit = Math.max(0, CURSOR_EXTERNAL_ROOT_BLOB_LIMIT - systemEntryCount);
     const historyBudget = Math.max(0, CURSOR_EXTERNAL_ROOT_BYTE_LIMIT - systemBytes);
 
-    // Always retain the active trailing tool-result block (may truncate text to fit).
+    // Retain the active trailing tool-result block when it fits (may truncate text).
+    // If even a truncation marker cannot fit the remaining budget, omit it rather than
+    // emitting an oversized root blob.
     let activeStart = history.length;
     while (activeStart > 0 && history[activeStart - 1]?.role === "toolResult") activeStart -= 1;
-    const active = history.slice(activeStart).map(entry => truncateToolResultBlob(entry, historyBudget));
+    const active = history
+      .slice(activeStart)
+      .map(entry => truncateToolResultBlob(entry, historyBudget))
+      .filter((entry): entry is StoredRootBlob => entry !== null);
     let activeBytes = active.reduce((sum, entry) => sum + entry.byteLength, 0);
     while (active.length > 1 && activeBytes > historyBudget) {
       const dropped = active.shift();
       activeBytes -= dropped?.byteLength ?? 0;
     }
     if (active.length === 1 && active[0] && activeBytes > historyBudget) {
-      active[0] = truncateToolResultBlob(active[0], historyBudget);
-      activeBytes = active[0].byteLength;
+      const truncated = truncateToolResultBlob(active[0], historyBudget);
+      if (truncated) {
+        active[0] = truncated;
+        activeBytes = truncated.byteLength;
+      } else {
+        active.length = 0;
+        activeBytes = 0;
+      }
     }
 
     const prior = history.slice(0, activeStart);
