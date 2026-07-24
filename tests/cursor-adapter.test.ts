@@ -125,6 +125,36 @@ describe("Cursor adapter live transport", () => {
     expect(JSON.stringify(events).includes("secret-token-123")).toBe(false);
   });
 
+  test("derives distinct thread conversation ids per Cursor credential", async () => {
+    const ids: string[] = [];
+    const scopes: Array<string | undefined> = [];
+    for (const apiKey of ["cursor-token-a", "cursor-token-b"]) {
+      const adapter = createCursorAdapter({ ...provider, apiKey }, {
+        createTransport: () => ({
+          async *run(request) {
+            ids.push(request.conversationId);
+            yield { type: "done" } satisfies CursorServerMessage;
+          },
+          writeClient() {},
+        }),
+      });
+      const body: OcxParsedRequest = {
+        modelId: "cursor/auto",
+        context: { messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+        stream: false,
+        options: {},
+        _clientThreadId: `cred-scope-thread`,
+      };
+      await adapter.runTurn?.(body, { headers: new Headers() }, () => {});
+      scopes.push(body._cursorIdentityScope);
+    }
+    expect(scopes[0]).toBeTruthy();
+    expect(scopes[1]).toBeTruthy();
+    expect(scopes[0]).not.toBe(scopes[1]);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).not.toBe(ids[1]);
+  });
+
   test("parseStream reports that the fetch path is disabled", async () => {
     const adapter = createCursorAdapter(provider);
 

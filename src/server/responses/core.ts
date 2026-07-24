@@ -854,8 +854,8 @@ export async function handleResponses(
   }
   route.provider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
   logCtx.provider = formatCodexProviderForLog(route.providerName, codexLogAccountId(authCtx), config);
-  // Namespace Cursor thread→conversation derivation by authenticated pool account when present
-  // so shared-proxy tenants cannot collide on a client-supplied parent thread id.
+  // Prefer Codex pool account as the Cursor thread namespace when present. Cursor routes without
+  // codexAccountMode still get a credential-derived scope inside the Cursor adapter.
   const identityScope = codexLogAccountId(authCtx);
   if (identityScope) parsed._cursorIdentityScope = identityScope;
 

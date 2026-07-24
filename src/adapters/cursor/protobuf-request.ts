@@ -46,6 +46,7 @@ import {
 } from "./tool-definitions";
 
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 /** Parameter id advertised by Cursor's `default` model for its Cost/Balance/Intelligence control. */
 export const CURSOR_ROUTING_LEVEL_PARAMETER_ID = "optimization";
@@ -105,12 +106,26 @@ function storedRootBlob(
 
 function truncateToolResultBlob(entry: StoredRootBlob, maxBytes: number): StoredRootBlob {
   if (entry.byteLength <= maxBytes || entry.role !== "toolResult" || entry.text === undefined) return entry;
-  const keep = Math.max(0, maxBytes - 128);
-  const truncated = `${entry.text.slice(0, keep)}\n…[truncated for Cursor external replay budget]`;
+  const marker = "\n…[truncated for Cursor external replay budget]";
+  const encoded = encoder.encode(entry.text);
+  // Leave headroom for JSON envelope (`role`/`content` wrapper) around the truncated text.
+  let keepBytes = Math.min(encoded.byteLength, Math.max(0, maxBytes - encoder.encode(marker).byteLength - 96));
+  for (let attempt = 0; attempt < 8; attempt++) {
+    let end = keepBytes;
+    while (end > 0 && end < encoded.byteLength && (encoded[end]! & 0xc0) === 0x80) end -= 1;
+    const truncated = `${decoder.decode(encoded.subarray(0, end))}${marker}`;
+    const result = storedRootBlob(
+      { role: "user", content: [{ type: "text", text: truncated }] },
+      "toolResult",
+      { messageIndex: entry.messageIndex, text: truncated },
+    );
+    if (result.byteLength <= maxBytes || end === 0) return result;
+    keepBytes = Math.max(0, end - (result.byteLength - maxBytes) - 16);
+  }
   return storedRootBlob(
-    { role: "user", content: [{ type: "text", text: truncated }] },
+    { role: "user", content: [{ type: "text", text: marker.trimStart() }] },
     "toolResult",
-    { messageIndex: entry.messageIndex, text: truncated },
+    { messageIndex: entry.messageIndex, text: marker.trimStart() },
   );
 }
 

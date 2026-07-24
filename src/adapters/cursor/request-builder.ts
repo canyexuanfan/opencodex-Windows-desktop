@@ -175,7 +175,7 @@ export function cursorConversationIdFromClientThread(threadId: string, identityS
 
 /**
  * Resolve the Cursor conversation id for this turn.
- * Priority: force-fresh → remembered → thread override → client thread → random.
+ * Priority: force-fresh → isolate helper → remembered → thread override → client thread → random.
  * Never use OpenAI Responses `previous_response_id` (resp_*) or shared `prompt_cache_key`
  * (cache-cohort fingerprint, not conversation ownership).
  */
@@ -185,9 +185,10 @@ export function resolveCursorConversationId(
   options: CreateCursorRequestOptions = {},
 ): string {
   if (options.forceFreshConversation === true) return generatedCursorConversationId();
-  if (parsed._cursorConversationId) return parsed._cursorConversationId;
-  // Helper/shadow/compaction turns must not append into the parent's Cursor conversation.
+  // Helper/shadow/compaction turns must not append into the parent's Cursor conversation,
+  // even when previous_response_id restored the parent's remembered id.
   if (parsed._cursorIsolateConversation === true) return generatedCursorConversationId();
+  if (parsed._cursorConversationId) return parsed._cursorConversationId;
   const threadId = parsed._clientThreadId?.trim();
   if (threadId) {
     const recovered = lookupCursorThreadConversation(threadId, parsed._cursorIdentityScope);

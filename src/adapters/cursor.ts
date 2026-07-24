@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AdapterEvent, OcxProviderConfig } from "../types";
 import type { ProviderAdapter } from "./base";
 import { cursorExecDeniedMessage, cursorRequestDeclaresFullAccess } from "./cursor/exec-policy";
@@ -10,6 +11,7 @@ import {
   createLiveCursorTransport,
   CursorMissingCredentialError,
   rekeyCursorContextUsage,
+  resolveCursorToken,
 } from "./cursor/live-transport";
 import { rememberCursorThreadConversation } from "./cursor/thread-continuity";
 import { runCursorTurnWithRetry } from "./cursor/transport-retry";
@@ -78,6 +80,21 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
         const makeTransport = deps.createTransport ?? createLiveCursorTransport;
         const kv = deps.kv ?? createCursorKvStore();
         const rekeyContextUsage = deps.rekeyContextUsage ?? rekeyCursorContextUsage;
+        // Namespace thread→conversation derivation by the authenticated Cursor credential so
+        // shared-proxy tenants with different Cursor accounts cannot collide on a parent thread id.
+        // Prefer an already-set auth scope (e.g. Codex pool account) when present.
+        if (!_parsed._cursorIdentityScope) {
+          try {
+            const token = resolveCursorToken(provider, incoming.headers);
+            _parsed._cursorIdentityScope = createHash("sha256")
+              .update("ocx:cursor:acct:")
+              .update(token)
+              .digest("hex")
+              .slice(0, 16);
+          } catch {
+            /* Missing credential is handled by the live transport path below. */
+          }
+        }
         const previousConversationId = _parsed._cursorConversationId;
         let request = createCursorRequest(_parsed);
         // The builder may derive a stable provider id from the client thread when Responses state

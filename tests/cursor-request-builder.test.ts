@@ -138,6 +138,17 @@ describe("Cursor request builder", () => {
     expect(helper.conversationId).not.toBe(main.conversationId);
   });
 
+  test("isolation wins over a remembered parent conversation id", () => {
+    const helper = createCursorRequest({
+      ...base,
+      _clientThreadId: "thread-a",
+      _cursorConversationId: "cursor_parent_remembered",
+      _cursorIsolateConversation: true,
+    });
+    expect(helper.conversationId).not.toBe("cursor_parent_remembered");
+    expect(helper.conversationId.startsWith("cursor_")).toBe(true);
+  });
+
   test("marks Cursor context-usage boundaries for compaction epochs", () => {
     expect(createCursorRequest({ ...base, _contextCompactionBoundary: true }).contextUsageReset).toBe(true);
 
