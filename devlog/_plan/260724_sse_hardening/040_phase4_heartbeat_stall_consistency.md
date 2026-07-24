@@ -27,15 +27,22 @@ Current (verified, :41): comment lines are dropped inside acceptLine.
 
 Change (additive, backward-compatible — REVISED after A-gate: an
 onActivity callback is insufficient because the decoder never yields for
-comments, so consumers get no loop turn to observe activity):
-- Extend options: `{ signal?: AbortSignal; includeComments?: boolean }`.
-- When includeComments is true, comment records are YIELDED as
-  `{ comment: string }` records (new optional field on ServerSentEvent or a
-  distinct record shape — pin the exact shape in B; the contract is:
-  comment frames become consumable loop turns). Blank keepalive lines
-  without data stay non-yielding (no event loss, no noise).
-- Callers that do not opt in see zero behavior change (chat/outbound keeps
-  the current contract).
+comments, so consumers get no loop turn to observe activity).
+DECIDED TYPE CONTRACT (A-gate round 2):
+```ts
+export type SseRecord =
+  | { kind: "event"; event?: string; data: string }
+  | { kind: "comment"; comment: string };
+```
+- Overloads: `decodeServerSentEvents(source, { signal? })` keeps returning
+  `AsyncGenerator<ServerSentEvent>` (existing shape, existing callers
+  unchanged — chat/outbound's unconditional `record.data` stays sound);
+  `decodeServerSentEvents(source, { includeComments: true, signal? })`
+  returns `AsyncGenerator<SseRecord>`.
+- When includeComments is true, comment lines yield
+  `{ kind: "comment", comment }` records and data records yield
+  `{ kind: "event", ... }`. Blank keepalive lines without data stay
+  non-yielding (no noise). Event dispatch semantics otherwise unchanged.
 
 ### 2. src/adapters/anthropic.ts — wire activity
 

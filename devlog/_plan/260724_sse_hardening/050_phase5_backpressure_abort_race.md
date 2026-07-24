@@ -65,14 +65,20 @@ array when no consumer reads. Bridge-side backpressure alone cannot fix
 this producer.
 
 Change:
-- Give the queue a high-water bound: when the internal array exceeds the
-  bound AND no consumer is attached/reading, the producer side observes
-  backpressure (await consumer drain) or, past a hard cap, the turn's abort
-  fires and the queue terminates with an error event — never unbounded
-  growth.
+- DECIDED (A-gate round 2): the emitter contract is synchronous
+  (`emit: (event) => void`, adapters/base.ts:35; Cursor transport calls it
+  synchronously), so "producer awaits consumer drain" is NOT
+  implementable without an adapter-API expansion, which this phase rejects
+  as disproportionate. The mechanism is a SYNCHRONOUS HARD CAP:
+  - The queue tracks its backlog length. At or beyond the high-water mark
+    (constant, e.g. 1024 pending events, documented inline), push
+    synchronously triggers the turn abort (the same runTurnAbort wiring
+    core.ts:1189 uses for cancellation) and terminates the queue with a
+    terminal error event ("consumer backlog exceeded — aborted") so the
+    bridge surfaces response.failed instead of leaking memory.
+  - Below the cap, pushes stay fire-and-forget; no API change anywhere.
 - Wire queue termination to the same abort the phase-2 terminal path uses,
   so first-terminal stops the producer here too.
-- Exact bound constant documented inline; no config surface.
 
 ### 4. src/server/responses/core.ts — abort race (~1300 fetch -> ~1473
 ### reader)
