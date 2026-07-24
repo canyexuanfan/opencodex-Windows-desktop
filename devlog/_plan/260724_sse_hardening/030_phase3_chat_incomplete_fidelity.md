@@ -68,9 +68,12 @@ audit finds a false-success mapping; if found, amend this doc before B.
 
 1. Stall scenario: Responses bridge emits response.incomplete with reason
    upstream_stall_timeout -> chat stream ends with an error frame and NO
-   [DONE]; client sees a non-success termination. Activation: endpoint test
-   injecting a stalled fake adapter (chat-completions-endpoint harness has
-   stall coverage patterns already).
+   [DONE]; client sees a non-success termination. Activation (as realized):
+   converter-level tests driving response.incomplete frames through
+   responsesSseToChatCompletionsSse + a collectChatCompletion throw test;
+   the endpoint error mapping is pinned by the existing "non-streaming
+   /v1/chat/completions returns error status on upstream failure" test
+   (chat-completions.ts:203-206, same fail->error-frame->StreamError path).
 2. adapter_eof incomplete -> same error-frame contract.
 3. max_output_tokens incomplete -> finish_reason "length" + [DONE]
    (unchanged, pinned).
