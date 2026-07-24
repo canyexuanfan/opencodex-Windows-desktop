@@ -122,6 +122,7 @@ import { handleChatCompletions } from "./chat-completions";
 import { anthropicErrorResponse } from "../claude/outbound";
 import { buildDesktop3pRegistry } from "../claude/desktop-3p";
 import { handleImages } from "./images";
+import { handleLive } from "./live";
 import { handleSearch } from "./search";
 import { fetchAllModels, handleManagementAPI, VERSION } from "./management-api";
 
@@ -495,6 +496,35 @@ export function startServer(port?: number) {
         const requestId = nextRequestLogId(start);
         const logCtx: RequestLogContext = { model: "unknown", provider: "unknown" };
         const response = await handleChatCompletions(req, config, logCtx, { requestId, start });
+        return withCors(response, req, config);
+      }
+
+      // ChatGPT / Codex App voice (GPT‑Live / Frameless Bidi). Call-create only; sideband WS
+      // follow-ups may still need a later phase if Location stays on the proxy host.
+      if (url.pathname === "/v1/live" && req.method === "POST") {
+        disableResponsesRequestTimeout(req, requestServer);
+        if (isDraining()) {
+          return new Response("Service shutting down", {
+            status: 503,
+            headers: { ...corsHeaders(req, config), "Retry-After": "5" },
+          });
+        }
+        const apiAuthError = requireApiAuth(req, config, "data-plane");
+        if (apiAuthError) return withCors(apiAuthError, req, config);
+        if (!isAllowedRequestOrigin(req, config)) {
+          return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, config);
+        }
+        const start = Date.now();
+        const requestId = nextRequestLogId(start);
+        const logCtx: RequestLogContext = { model: "gpt-live", provider: "unknown" };
+        const response = await handleLive(req, config, logCtx);
+        addFinalRequestLog(
+          requestId,
+          start,
+          logCtx,
+          response.status,
+          response.status === 499 ? { closeReason: "client_cancel" } : undefined,
+        );
         return withCors(response, req, config);
       }
 
