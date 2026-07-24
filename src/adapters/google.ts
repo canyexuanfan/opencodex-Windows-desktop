@@ -345,6 +345,87 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
       let pendingUsage: OcxUsage | undefined;
       let toolCallsStarted = 0;
       let lastFinishReason: string | undefined;
+      let sawAnyFrame = false;
+      let sawTerminalSignal = false;
+
+      const handleDataLine = function* (line: string): Generator<AdapterEvent, "continue" | "terminate"> {
+        if (!line.startsWith("data:")) {
+          if (line.trim()) debugDroppedFrame("google", line);
+          return "continue";
+        }
+        const payload = line.slice(5).trim();
+        if (!payload) return "continue";
+
+        let chunk: Record<string, unknown>;
+        try {
+          chunk = JSON.parse(payload);
+        } catch {
+          yield { type: "error", message: "malformed upstream SSE data frame" };
+          return "terminate";
+        }
+        sawAnyFrame = true;
+
+        // Inline provider error inside a 200 stream → terminal error (see openai-chat.ts).
+        if (chunk.error) {
+          const err = chunk.error as { message?: string } | undefined;
+          // Clear-on-invalid: a signature rejection means our replayed thoughtSignatures are stale.
+          // Drop the cache entry so the next turn starts clean instead of re-injecting a bad sig.
+          if (provider.googleMode === "cloud-code-assist" && antigravityModel && antigravitySession
+            && /signature|invalid_argument|invalid argument/i.test(err?.message ?? "")) {
+            clearAntigravityReplay(antigravityModel, antigravitySession);
+          }
+          yield { type: "error", message: err?.message ?? "upstream error" };
+          return "terminate";
+        }
+
+        // Antigravity (CCA) nests the standard Gemini payload under `response`.
+        let root = chunk;
+        if (provider.googleMode === "cloud-code-assist") {
+          const wrapped = chunk.response;
+          if (!wrapped || typeof wrapped !== "object" || Array.isArray(wrapped)) {
+            yield { type: "error", message: "google-antigravity response missing response wrapper" };
+            return "terminate";
+          }
+          root = wrapped as Record<string, unknown>;
+        }
+        // usageMetadata is a top-level field independent of candidates; read it BEFORE the
+        // candidates guard so a usage-only final chunk is not dropped.
+        const usageMeta = root.usageMetadata as Record<string, number> | undefined;
+        if (usageMeta) {
+          // Accumulate usage; emit a single terminal `done` post-loop so usage is never
+          // dropped on EOF and the stream never yields two `done` events.
+          pendingUsage = usageFromGemini(usageMeta);
+          sawTerminalSignal = true;
+        }
+        const candidates = root.candidates as { content?: { parts?: unknown[] }; finishReason?: string }[] | undefined;
+        if (!candidates?.length) return "continue";
+
+        if (typeof candidates[0].finishReason === "string" && candidates[0].finishReason) {
+          lastFinishReason = candidates[0].finishReason;
+          sawTerminalSignal = true;
+        }
+
+        const parts = candidates[0].content?.parts as { text?: string; functionCall?: { name: string; args: unknown } }[] | undefined;
+        // Antigravity reasoning-replay: record thoughtSignatures from the model parts for the next turn.
+        if (provider.googleMode === "cloud-code-assist" && parts && antigravityModel && antigravitySession) {
+          observeAntigravityReplay(antigravityModel, antigravitySession, parts as unknown[]);
+        }
+        if (parts) {
+          for (const part of parts) {
+            if (part.text) {
+              yield { type: "text_delta", text: part.text };
+            }
+            if (part.functionCall) {
+              const id = `call_${crypto.randomUUID().slice(0, 8)}`;
+              toolCallsStarted++;
+              yield { type: "tool_call_start", id, name: restoreGoogleToolName(part.functionCall.name) };
+              yield { type: "tool_call_delta", arguments: JSON.stringify(part.functionCall.args ?? {}) };
+              yield { type: "tool_call_end" };
+            }
+          }
+        }
+        return "continue";
+      };
 
       try {
         while (true) {
@@ -356,69 +437,16 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
           buffer = lines.pop() ?? "";
 
           for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            const payload = line.slice(6).trim();
-            if (!payload) continue;
-
-            let chunk: Record<string, unknown>;
-            try { chunk = JSON.parse(payload); } catch { debugDroppedFrame("google", payload); continue; }
-
-            // Inline provider error inside a 200 stream → terminal error (see openai-chat.ts).
-            if (chunk.error) {
-              const err = chunk.error as { message?: string } | undefined;
-              // Clear-on-invalid: a signature rejection means our replayed thoughtSignatures are stale.
-              // Drop the cache entry so the next turn starts clean instead of re-injecting a bad sig.
-              if (provider.googleMode === "cloud-code-assist" && antigravityModel && antigravitySession
-                && /signature|invalid_argument|invalid argument/i.test(err?.message ?? "")) {
-                clearAntigravityReplay(antigravityModel, antigravitySession);
-              }
-              yield { type: "error", message: err?.message ?? "upstream error" };
-              return;
-            }
-
-            // Antigravity (CCA) nests the standard Gemini payload under `response`.
-            let root = chunk;
-            if (provider.googleMode === "cloud-code-assist") {
-              const wrapped = chunk.response;
-              if (!wrapped || typeof wrapped !== "object" || Array.isArray(wrapped)) {
-                yield { type: "error", message: "google-antigravity response missing response wrapper" };
-                return;
-              }
-              root = wrapped as Record<string, unknown>;
-            }
-            // usageMetadata is a top-level field independent of candidates; read it BEFORE the
-            // candidates guard so a usage-only final chunk is not dropped.
-            const usageMeta = root.usageMetadata as Record<string, number> | undefined;
-            if (usageMeta) {
-              // Accumulate usage; emit a single terminal `done` post-loop so usage is never
-              // dropped on EOF and the stream never yields two `done` events.
-              pendingUsage = usageFromGemini(usageMeta);
-            }
-            const candidates = root.candidates as { content?: { parts?: unknown[] }; finishReason?: string }[] | undefined;
-            if (!candidates?.length) continue;
-
-            lastFinishReason = candidates[0].finishReason ?? lastFinishReason;
-
-            const parts = candidates[0].content?.parts as { text?: string; functionCall?: { name: string; args: unknown } }[] | undefined;
-            // Antigravity reasoning-replay: record thoughtSignatures from the model parts for the next turn.
-            if (provider.googleMode === "cloud-code-assist" && parts && antigravityModel && antigravitySession) {
-              observeAntigravityReplay(antigravityModel, antigravitySession, parts as unknown[]);
-            }
-            if (parts) {
-              for (const part of parts) {
-                if (part.text) {
-                  yield { type: "text_delta", text: part.text };
-                }
-                if (part.functionCall) {
-                  const id = `call_${crypto.randomUUID().slice(0, 8)}`;
-                  toolCallsStarted++;
-                  yield { type: "tool_call_start", id, name: restoreGoogleToolName(part.functionCall.name) };
-                  yield { type: "tool_call_delta", arguments: JSON.stringify(part.functionCall.args ?? {}) };
-                  yield { type: "tool_call_end" };
-                }
-              }
-            }
+            if ((yield* handleDataLine(line)) === "terminate") return;
           }
+        }
+        buffer += decoder.decode();
+        if (buffer.trim()) {
+          if (!buffer.startsWith("data:")) {
+            yield { type: "error", message: "upstream stream ended with an incomplete SSE frame — possible truncation" };
+            return;
+          }
+          if ((yield* handleDataLine(buffer)) === "terminate") return;
         }
         // Fail-closed: a turn cut off mid tool call (MAX_TOKENS / MALFORMED_FUNCTION_CALL) surfaces
         // an error instead of a silently-incomplete done. Mirrors kiro-truncation.
@@ -427,7 +455,20 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
           yield { type: "error", message: vertexTruncationErrorMessage(lastFinishReason) };
           return;
         }
-        yield { type: "done", usage: pendingUsage };
+        if (!sawAnyFrame || !sawTerminalSignal) {
+          yield { type: "error", message: "upstream stream ended without a terminal signal — possible truncation" };
+          return;
+        }
+        const stopReason = lastFinishReason === "MAX_TOKENS"
+          ? "max_tokens"
+          : ["SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"].includes(lastFinishReason ?? "")
+            ? "content_filter"
+            : undefined;
+        yield {
+          type: "done",
+          usage: pendingUsage,
+          ...(stopReason ? { stopReason } : {}),
+        };
       } finally {
         reader.releaseLock();
       }

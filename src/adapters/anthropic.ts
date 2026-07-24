@@ -817,7 +817,23 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
               }
         }
       }
-      if (pendingUsage && !emittedDone) yield* emitDone();
+      if (!emittedDone) {
+        if (pendingStopReason !== undefined) {
+          const stopReason = pendingStopReason === "max_tokens"
+            ? "max_tokens"
+            : pendingStopReason === "refusal" || pendingStopReason === "content_filter"
+              ? "content_filter"
+              : undefined;
+          emittedDone = true;
+          yield {
+            type: "done",
+            usage: usageFromAnthropic(pendingUsage),
+            ...(stopReason ? { stopReason } : {}),
+          };
+        } else {
+          yield { type: "error", message: "upstream stream ended before message_stop — possible truncation" };
+        }
+      }
     },
 
     async parseResponse(response: Response): Promise<AdapterEvent[]> {

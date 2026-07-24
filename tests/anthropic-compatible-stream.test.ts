@@ -93,6 +93,44 @@ describe("Anthropic-compatible reasoning stream termination (#312)", () => {
     expect(text).toContain("event: message_stop");
   });
 
+  test("message_start followed by clean EOF fails closed before message_stop", async () => {
+    const events = await collectAdapterEvents(arbitrarilyChunkedResponse(
+      'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":2}}}\n\n',
+    ));
+
+    expect(events.at(-1)).toEqual({
+      type: "error",
+      message: "upstream stream ended before message_stop — possible truncation",
+    });
+    expect(events.some(event => event.type === "done")).toBe(false);
+  });
+
+  test("compatible provider can omit message_stop after reporting max_tokens", async () => {
+    const events = await collectAdapterEvents(arbitrarilyChunkedResponse([
+      'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":2}}}',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":3}}',
+    ].join("\n\n")));
+
+    expect(events.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 2, outputTokens: 3 },
+      stopReason: "max_tokens",
+    });
+    expect(events.some(event => event.type === "error")).toBe(false);
+  });
+
+  test("compatible provider EOF maps refusal to content_filter locally", async () => {
+    const events = await collectAdapterEvents(arbitrarilyChunkedResponse(
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"refusal"}}',
+    ));
+
+    expect(events.at(-1)).toEqual({
+      type: "done",
+      usage: undefined,
+      stopReason: "content_filter",
+    });
+  });
+
   test("non-streaming compatible reasoning blocks map without hiding later text", async () => {
     const events = await createAnthropicAdapter(provider).parseResponse(new Response(JSON.stringify({
       content: [

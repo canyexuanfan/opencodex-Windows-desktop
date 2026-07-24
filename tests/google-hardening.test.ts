@@ -38,6 +38,15 @@ function sseResponse(chunks: unknown[]): Response {
   return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
 }
 
+function byteStreamResponse(chunks: Uint8Array[]): Response {
+  return new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  }), { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
 async function collect(events: AsyncGenerator<AdapterEvent>): Promise<AdapterEvent[]> {
   const collected: AdapterEvent[] = [];
   for await (const event of events) collected.push(event);
@@ -84,6 +93,68 @@ describe("google provider hardening", () => {
     }];
     expect(streamEvents).toEqual(expected);
     expect(responseEvents).toEqual(expected);
+  });
+
+  test("truncated final JSON is a terminal stream error", async () => {
+    const events = await collect(createGoogleAdapter(provider()).parseStream(
+      new Response('data: {"candidates":[{"finishReason":"STOP"}', {
+        headers: { "content-type": "text/event-stream" },
+      }),
+    ));
+
+    expect(events.at(-1)).toEqual({
+      type: "error",
+      message: "malformed upstream SSE data frame",
+    });
+    expect(events.some(event => event.type === "done")).toBe(false);
+  });
+
+  test("EOF residual data frame without a trailing newline is parsed", async () => {
+    const events = await collect(createGoogleAdapter(provider()).parseStream(
+      new Response('data:{"candidates":[{"content":{"parts":[{"text":"final"}]},"finishReason":"STOP"}]}', {
+        headers: { "content-type": "text/event-stream" },
+      }),
+    ));
+
+    expect(events).toContainEqual({ type: "text_delta", text: "final" });
+    expect(events.at(-1)?.type).toBe("done");
+    expect(events.some(event => event.type === "error")).toBe(false);
+  });
+
+  test("EOF after content without a terminal signal fails closed", async () => {
+    const events = await collect(createGoogleAdapter(provider()).parseStream(
+      new Response('data: {"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}\n\n', {
+        headers: { "content-type": "text/event-stream" },
+      }),
+    ));
+
+    expect(events.at(-1)).toEqual({
+      type: "error",
+      message: "upstream stream ended without a terminal signal — possible truncation",
+    });
+    expect(events.some(event => event.type === "done")).toBe(false);
+  });
+
+  test("partial UTF-8 bytes after a valid STOP terminal fail closed", async () => {
+    const encoder = new TextEncoder();
+    const terminal = encoder.encode('data: {"candidates":[{"finishReason":"STOP"}]}\n\n');
+    const events = await collect(createGoogleAdapter(provider()).parseStream(
+      byteStreamResponse([terminal, new Uint8Array([0xe2, 0x82])]),
+    ));
+
+    expect(events.at(-1)?.type).toBe("error");
+    expect(events.some(event => event.type === "done")).toBe(false);
+  });
+
+  test("non-frame garbage after a valid STOP terminal fails closed", async () => {
+    const events = await collect(createGoogleAdapter(provider()).parseStream(
+      new Response('data: {"candidates":[{"finishReason":"STOP"}]}\n\ngarbage', {
+        headers: { "content-type": "text/event-stream" },
+      }),
+    ));
+
+    expect(events.at(-1)?.type).toBe("error");
+    expect(events.some(event => event.type === "done")).toBe(false);
   });
 
   test("non-streaming responses surface the upstream error message", async () => {

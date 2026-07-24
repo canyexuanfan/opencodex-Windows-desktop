@@ -650,13 +650,15 @@ export function bridgeToResponsesSSE(
                 finishedItems.push(item as OutputItem);
                 outputIndex++;
               }
-              if (event.stopReason === "max_tokens") {
-                // Upstream hit its output token cap. Surface as incomplete so the client can
-                // distinguish a truncated turn from a genuinely finished one (issue #246).
+              if (event.stopReason === "max_tokens" || event.stopReason === "content_filter") {
+                // Upstream stopped before a normal completion. Surface as incomplete so the
+                // client can distinguish a truncated/filtered turn from a finished one.
                 const response = {
                   ...responseSnapshot("incomplete", finishedItems, event.endTurn),
                   usage: responsesUsage(event.usage),
-                  incomplete_details: { reason: "max_output_tokens" },
+                  incomplete_details: {
+                    reason: event.stopReason === "max_tokens" ? "max_output_tokens" : "content_filter",
+                  },
                 };
                 // Still cache the partial output so previous_response_id replay works.
                 options?.onCompletedResponse?.(response, event.providerState);
