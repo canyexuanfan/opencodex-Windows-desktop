@@ -3,7 +3,7 @@
   "slug": "opencodex-dev-branch-hardening-loop-hotl-track-a",
   "createdAt": "2026-07-24T00:15:19.266Z",
   "updatedAt": "2026-07-24T01:48:30.920Z",
-  "activeWorkPhaseId": "wp3-phase3",
+  "activeWorkPhaseId": "wp2-phase2",
   "workPhases": [
     {
       "id": "wp0-roadmap",
@@ -86,7 +86,7 @@
     {
       "id": "wp3-phase3",
       "title": "Phase 3 (030): Chat Completions incomplete error fidelity (gated on #363 triage decision + rebase)",
-      "status": "in_progress",
+      "status": "pending",
       "tasks": [
         {
           "id": "wp3-t1",
