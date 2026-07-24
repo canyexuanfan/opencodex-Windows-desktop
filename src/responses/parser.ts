@@ -129,7 +129,7 @@ function buildTools(tools: unknown[] | undefined): OcxTool[] | undefined {
       out.push({
         name: t.name,
         description: (t.description as string) ?? "",
-        parameters: { type: "object", properties: { input: { type: "string", description: "Raw tool input (verbatim body, e.g. the apply_patch envelope)." } }, required: ["input"] },
+        parameters: { type: "object", properties: { input: { type: "string", description: "Raw tool input. For apply_patch, begin exactly with `*** Begin Patch` (no trailing `***`), then use its standard patch envelope." } }, required: ["input"] },
         freeform: true,
       });
     }
@@ -594,6 +594,7 @@ export function parseRequest(body: unknown): OcxParsedRequest {
     stream: data.stream === true,
     options,
     _rawBody: body,
+    ...(replayedInputPrefixLength > 0 ? { _replayPrefixLen: replayedInputPrefixLength } : {}),
     ...(webSearch ? { _webSearch: webSearch } : {}),
     ...(structuredOutput ? { _structuredOutput: true } : {}),
     ...(compactionRequest ? { _compactionRequest: true } : {}),

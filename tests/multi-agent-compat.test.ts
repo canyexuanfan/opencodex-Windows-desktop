@@ -562,6 +562,23 @@ describe("multiAgentGuidanceText", () => {
 });
 
 describe("injectDeveloperMessage", () => {
+  const guidance = "guidance text";
+  const generatedItem = (text = guidance) => ({
+    type: "message",
+    role: "developer",
+    content: [{ type: "input_text", text }],
+  });
+  const countExact = (input: unknown[], text = guidance): number => input.filter(item => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const record = item as Record<string, unknown>;
+    if (record.type !== "message" || record.role !== "developer" || !Array.isArray(record.content)) return false;
+    if (record.content.length !== 1) return false;
+    const part = record.content[0];
+    return !!part && typeof part === "object" && !Array.isArray(part)
+      && (part as Record<string, unknown>).type === "input_text"
+      && (part as Record<string, unknown>).text === text;
+  }).length;
+
   test("appends to both the parsed messages and the raw passthrough input", () => {
     const parsed = parsedFixture({ reasoning: "max" });
     injectDeveloperMessage(parsed, "hello there");
@@ -597,9 +614,62 @@ describe("injectDeveloperMessage", () => {
     expect((input[1] as { role: string }).role).toBe("developer");
     expect((input[2] as { type: string }).type).toBe("compaction_trigger");
   });
+
+  test("exact-guidance predicate rejects every near-match replay-prefix shape (#326)", () => {
+    const nearMatches: Array<[string, unknown]> = [
+      ["non-record item", null],
+      ["wrong type", { ...generatedItem(), type: "other" }],
+      ["wrong role", { ...generatedItem(), role: "user" }],
+      ["non-array content", { type: "message", role: "developer", content: "guidance text" }],
+      ["wrong content length", { type: "message", role: "developer", content: [] }],
+      ["non-record part", { type: "message", role: "developer", content: [null] }],
+      ["wrong part type", { type: "message", role: "developer", content: [{ type: "output_text", text: guidance }] }],
+      ["different text", generatedItem("different guidance")],
+      ["extra content part", {
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: guidance }, { type: "input_text", text: "extra" }],
+      }],
+    ];
+
+    for (const [label, nearMatch] of nearMatches) {
+      const parsed = parsedFixture({ reasoning: "max", rawInput: [nearMatch] });
+      parsed._replayPrefixLen = 1;
+      injectDeveloperMessage(parsed, guidance);
+      const rawInput = (parsed._rawBody as { input: unknown[] }).input;
+      expect(countExact(rawInput), label).toBe(1);
+      expect(parsed.context.messages.filter(message => message.role === "developer" && message.content === guidance), label)
+        .toHaveLength(1);
+    }
+  });
+
+  test("matching guidance in the current suffix does not suppress replay-prefix injection (#326)", () => {
+    const parsed = parsedFixture({
+      reasoning: "max",
+      rawInput: [
+        { type: "message", role: "user", content: "replayed" },
+        generatedItem(),
+      ],
+    });
+    parsed._replayPrefixLen = 1;
+    injectDeveloperMessage(parsed, guidance);
+
+    const rawInput = (parsed._rawBody as { input: unknown[] }).input;
+    expect(countExact(rawInput)).toBe(2);
+    expect(parsed.context.messages.filter(message => message.role === "developer" && message.content === guidance))
+      .toHaveLength(1);
+  });
 });
 
 describe("sanitizeEncryptedContentInPlace", () => {
+  const fernetFixture = (): string => {
+    const raw = Buffer.alloc(73, 0x5a);
+    raw[0] = 0x80;
+    raw.writeBigUInt64BE(1_720_000_000n, 1);
+    const unpadded = raw.toString("base64url");
+    return `${unpadded}${"=".repeat((4 - (unpadded.length % 4)) % 4)}`;
+  };
+
   test("plaintext parked in encrypted slots becomes input_text; real blobs survive", () => {
     const blob = "gAAAAAB".padEnd(120, "Qw1_-=");
     const input = [
@@ -628,7 +698,7 @@ describe("sanitizeEncryptedContentInPlace", () => {
   });
 
   test("mixed slot (hook preamble + embedded Fernet task) splits into text + encrypted parts", () => {
-    const fernet = "gAAAA" + "Ab1_-".repeat(20) + "==";
+    const fernet = fernetFixture();
     const input = [
       { type: "message", role: "user", content: [
         { type: "encrypted_content", encrypted_content: `[CXC-LEAF-GUARD] follow the rules.\n\n${fernet}` },
@@ -642,7 +712,7 @@ describe("sanitizeEncryptedContentInPlace", () => {
   });
 
   test("pure Fernet slot stays byte-identical", () => {
-    const fernet = "gAAAA" + "Ab1_-".repeat(20) + "==";
+    const fernet = fernetFixture();
     const input = [
       { type: "message", role: "user", content: [
         { type: "encrypted_content", encrypted_content: fernet },
