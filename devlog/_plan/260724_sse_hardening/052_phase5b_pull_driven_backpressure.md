@@ -35,6 +35,26 @@ Change (mechanics, per DECIDED semantics):
   inside one pull — no internal FIFO, no split lifecycle pairs).
 - start() keeps ONLY: `response.created` emission (first frame guarantee
   for eager readers), state init, and the stall/heartbeat interval.
+- GATED FLAG MECHANICS (A-gate fold, binding): a `gated` boolean is set
+  false when a pull starts stepping and true when the pull returns
+  (initial value false; with the default queuingStrategy HWM=1 the first
+  pull fires immediately after start()). The interval observes it: while
+  `gated === true` it skips BOTH stall-tick advancement and downstream
+  heartbeat enqueue. Only while `gated === false` does the stall clock
+  advance — that is the upstream-silence-only semantics made observable.
+- Emit is NOT gated (A-gate precision): gating applies ONLY to loop
+  stepping. Synthesized terminal frames therefore need no "bypass
+  allowance" — they emit through the normal ungated path; there is no
+  allowance counter to build. (This supersedes the overview's "bounded
+  allowance" phrasing; "pull drains gated terminal frames" is meaningless
+  in this model and is dropped.)
+- State hoisting (A-gate precision): the loop-local state (emit, emitDone,
+  currentMsg/currentReasoning/..., finishedItems, closures) moves from the
+  start() scope to the stream-factory function scope, with `controller`
+  stored in a shared variable assigned by start(). No controller proxy.
+- Criterion 1 precision: no custom queuingStrategy — the default HWM=1
+  applies; an unpulled stream consumes at most the events needed to reach
+  the first frame (a small constant) beyond start().
 - Stall/heartbeat interval behavior while pull-gated: stall ticks do NOT
   advance (upstream-silence-only semantics — the loop is not consuming,
   so "no adapter event observed" is not upstream silence); downstream
