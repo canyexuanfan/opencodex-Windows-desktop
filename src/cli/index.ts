@@ -50,8 +50,9 @@ if (command === "--version" || command === "-v" || command === "version") {
   process.exit(0);
 }
 
-if (command === "help" && args[1]) {
-  printSubcommandUsage(args[1]);
+if (command === undefined || command === "help" || command === "--help" || command === "-h") {
+  if (command === "help" && args[1]) printSubcommandUsage(args[1]);
+  else printUsage();
   process.exit(0);
 }
 

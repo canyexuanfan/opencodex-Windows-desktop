@@ -38,12 +38,14 @@ config/catalog, then serves until shutdown. Normal shutdown restores native Code
 `OCX_SERVICE=1`, so managed restarts do not repeatedly restore/reinject; explicit service stop and
 uninstall still restore.
 
-An installed Codex shim is checked on ordinary CLI startup with bounded state, metadata, and prefix
-reads. A complete replacement must remain stable for at least 100 ms; changing or mixed sibling
-launchers are silently deferred. Guarded repair preflights every tracked sibling before mutation,
-revalidates each source before rename, and rolls back earlier siblings in reverse order on a later
-race. Failures warn without changing the requested command's exit behavior. The probe uses
-read-only config diagnostics only for a confirmed candidate and never reads adjacent auth state.
+An installed Codex shim is checked on ordinary CLI startup with a regular-file/1 MiB state bound plus
+bounded metadata and prefix reads. A complete replacement must produce identical fingerprints and
+prefixes across a 100 ms observation interval; changing launchers are silently deferred, while mixed
+sibling sets warn and defer as a unit. Guarded repair holds an O_EXCL interprocess lock across its
+final revalidation, rename, shim write, and state commit; it preflights every tracked sibling before
+mutation and rolls back earlier siblings in reverse order on a later race. Failures warn without
+changing the requested command's exit behavior. The probe uses read-only config diagnostics only for
+a confirmed candidate and never reads adjacent auth state.
 
 The bridge enforces a heartbeat stall deadline: after 5 minutes (150 ticks at the default 2 s
 interval) of upstream silence with no real events, the stream is closed and the upstream request

@@ -32,6 +32,8 @@ export function maybeAutoRestoreCodexShim(
     });
     if (result.status === "restored") {
       deps.warn(`⚠️  ${result.message} (automatic repair after Codex update)`);
+    } else if ((result.status === "deferred" || result.status === "ineligible") && result.message) {
+      deps.warn(`⚠️  ${result.message}`);
     }
   } catch (error) {
     deps.warn(

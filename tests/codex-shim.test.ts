@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { autoRestoreCodexShim, buildUnixCodexShim, buildWindowsCodexShim, buildWindowsPowerShellCodexShim, diagnoseCodexShim, findCodexOnPath, installCodexShim, isWindowsInteropDir, lastCodexDiscoveryError, uninstallCodexShim } from "../src/codex/shim";
 
 const SHIM_MARKER = "opencodex codex autostart shim";
+const skipStabilityWait = () => {};
 
 function withInstalledShim(run: (paths: {
   binDir: string;
@@ -389,7 +390,7 @@ describe("Codex autostart shim", () => {
       const replacements = wrappers.map((wrapper, index) => `replacement-${index}\n`);
       wrappers.forEach((wrapper, index) => writeFileSync(wrapper, replacements[index], "utf8"));
 
-      const result = autoRestoreCodexShim({ enabled: () => true, nowMs: Date.now() + 1_000 });
+      const result = autoRestoreCodexShim({ enabled: () => true, stabilitySleep: skipStabilityWait });
 
       expect(result.status).toBe("restored");
       wrappers.forEach(wrapper => expect(readFileSync(wrapper, "utf8")).toContain(SHIM_MARKER));
@@ -397,16 +398,125 @@ describe("Codex autostart shim", () => {
     });
   });
 
-  test("npm update in progress -> young replacement defers, then restores after stability", () => {
+  test("concurrent processes cannot move another restore's freshly written shim into backup", async () => {
+    if (process.platform === "win32") return;
+    const binDir = mkdtempSync(join(tmpdir(), "ocx-shim-concurrent-bin-"));
+    const home = mkdtempSync(join(tmpdir(), "ocx-shim-concurrent-home-"));
+    const readyPath = join(home, "first-lock-ready");
+    const releasePath = join(home, "release-first-lock");
+    const wrapper = join(binDir, "codex");
+    const backup = join(binDir, "codex.opencodex-real");
+    const replacement = "concurrent replacement launcher\n";
+    const oldPath = process.env.PATH;
+    const oldHome = process.env.OPENCODEX_HOME;
+    let first: ReturnType<typeof Bun.spawn> | undefined;
+    try {
+      process.env.PATH = binDir;
+      process.env.OPENCODEX_HOME = home;
+      writeFileSync(wrapper, "#!/bin/sh\necho original\n", "utf8");
+      chmodSync(wrapper, 0o755);
+      expect(installCodexShim().installed).toBe(true);
+      writeFileSync(wrapper, replacement, "utf8");
+      chmodSync(wrapper, 0o755);
+
+      const shimModule = join(import.meta.dir, "..", "src", "codex", "shim.ts");
+      const firstScript = `
+        import { existsSync, writeFileSync } from "node:fs";
+        const { autoRestoreCodexShim } = await import(${JSON.stringify(shimModule)});
+        const result = autoRestoreCodexShim({
+          enabled: () => true,
+          stabilitySleep: () => {},
+          afterRestoreLockAcquired: () => {
+            writeFileSync(${JSON.stringify(readyPath)}, "ready");
+            while (!existsSync(${JSON.stringify(releasePath)})) Bun.sleepSync(5);
+          },
+        });
+        console.log(JSON.stringify(result));
+      `;
+      const secondScript = `
+        const { autoRestoreCodexShim } = await import(${JSON.stringify(shimModule)});
+        console.log(JSON.stringify(autoRestoreCodexShim({ enabled: () => true, stabilitySleep: () => {} })));
+      `;
+      const childEnv = { ...process.env, PATH: binDir, OPENCODEX_HOME: home };
+      first = Bun.spawn([process.execPath, "-e", firstScript], {
+        cwd: join(import.meta.dir, ".."),
+        env: childEnv,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const deadline = Date.now() + 5_000;
+      while (!existsSync(readyPath) && Date.now() < deadline) await Bun.sleep(5);
+      expect(existsSync(readyPath)).toBe(true);
+
+      const second = spawnSync(process.execPath, ["-e", secondScript], {
+        cwd: join(import.meta.dir, ".."),
+        env: childEnv,
+        encoding: "utf8",
+      });
+      expect(second.status).toBe(0);
+      expect(JSON.parse(second.stdout.trim())).toEqual({ status: "deferred" });
+
+      writeFileSync(releasePath, "release", "utf8");
+      expect(await first.exited).toBe(0);
+      const firstStdout = await new Response(first.stdout).text();
+      expect(JSON.parse(firstStdout.trim()).status).toBe("restored");
+      expect(readFileSync(wrapper, "utf8")).toContain(SHIM_MARKER);
+      expect(readFileSync(backup, "utf8")).toBe(replacement);
+    } finally {
+      try { writeFileSync(releasePath, "release", "utf8"); } catch { /* temp dir may already be gone */ }
+      if (first) await first.exited;
+      if (oldPath === undefined) delete process.env.PATH;
+      else process.env.PATH = oldPath;
+      if (oldHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = oldHome;
+      rmSync(binDir, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("stalled partial write changing during the observation interval is never promoted", () => {
     withInstalledShim(({ wrappers, backups }) => {
       const oldBackups = backups.map(path => readFileSync(path));
-      wrappers.forEach((wrapper, index) => writeFileSync(wrapper, `young-${index}\n`, "utf8"));
+      wrappers.forEach((wrapper, index) => writeFileSync(wrapper, `partial-${index}\n`, "utf8"));
 
-      expect(autoRestoreCodexShim({ enabled: () => true, nowMs: Date.now() })).toEqual({ status: "deferred" });
-      wrappers.forEach((wrapper, index) => expect(readFileSync(wrapper, "utf8")).toBe(`young-${index}\n`));
+      const result = autoRestoreCodexShim({
+        enabled: () => true,
+        stabilitySleep: () => writeFileSync(wrappers[0], "completed after stalled partial write\n", "utf8"),
+      });
+
+      expect(result).toEqual({ status: "deferred" });
+      expect(readFileSync(wrappers[0], "utf8")).toBe("completed after stalled partial write\n");
       backups.forEach((backup, index) => expect(readFileSync(backup)).toEqual(oldBackups[index]));
+    });
+  });
 
-      expect(autoRestoreCodexShim({ enabled: () => true, nowMs: Date.now() + 1_000 }).status).toBe("restored");
+  test("mixed launcher siblings defer the whole restore without piecemeal mutation", () => {
+    withInstalledShim(({ binDir, wrappers, backups, statePath }) => {
+      if (wrappers.length === 1) {
+        const sibling = join(binDir, "codex.ps1");
+        const siblingBackup = join(binDir, "codex.opencodex-real.ps1");
+        writeFileSync(sibling, readFileSync(wrappers[0]));
+        chmodSync(sibling, 0o755);
+        writeFileSync(siblingBackup, "prior sibling launcher\n", "utf8");
+        const state = JSON.parse(readFileSync(statePath, "utf8")) as {
+          wrappers: Array<{ wrapperPath: string; originalPath: string; backupPath: string }>;
+        };
+        state.wrappers.push({ wrapperPath: sibling, originalPath: sibling, backupPath: siblingBackup });
+        writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+        wrappers.push(sibling);
+        backups.push(siblingBackup);
+      }
+      const oldBackups = backups.map(path => readFileSync(path));
+      const healthySiblings = wrappers.slice(1).map(path => readFileSync(path));
+      writeFileSync(wrappers[0], "one updated sibling\n", "utf8");
+
+      const result = autoRestoreCodexShim({ enabled: () => true, stabilitySleep: skipStabilityWait });
+
+      expect(result.status).toBe("deferred");
+      expect(result.message).toContain("mixed shim/replacement state");
+      expect(readFileSync(wrappers[0], "utf8")).toBe("one updated sibling\n");
+      wrappers.slice(1).forEach((path, index) => expect(readFileSync(path)).toEqual(healthySiblings[index]));
+      backups.forEach((path, index) => expect(readFileSync(path)).toEqual(oldBackups[index]));
     });
   });
 
@@ -414,7 +524,7 @@ describe("Codex autostart shim", () => {
     withInstalledShim(({ wrappers }) => {
       wrappers.forEach((wrapper, index) => writeFileSync(wrapper, `disabled-${index}\n`, "utf8"));
 
-      expect(autoRestoreCodexShim({ enabled: () => false, nowMs: Date.now() + 1_000 })).toEqual({ status: "disabled" });
+      expect(autoRestoreCodexShim({ enabled: () => false, stabilitySleep: skipStabilityWait })).toEqual({ status: "disabled" });
       wrappers.forEach((wrapper, index) => expect(readFileSync(wrapper, "utf8")).toBe(`disabled-${index}\n`));
       expect(installCodexShim().installed).toBe(true);
       wrappers.forEach(wrapper => expect(readFileSync(wrapper, "utf8")).toContain(SHIM_MARKER));
@@ -429,7 +539,7 @@ describe("Codex autostart shim", () => {
 
       const result = autoRestoreCodexShim({
         enabled: () => true,
-        nowMs: Date.now() + 1_000,
+        stabilitySleep: skipStabilityWait,
         beforeGuardedRefresh: (wrapperPath, index) => {
           if (index === 0) writeFileSync(wrapperPath, "concurrent replacement\n", "utf8");
         },
@@ -471,7 +581,7 @@ describe("Codex autostart shim", () => {
 
       const result = autoRestoreCodexShim({
         enabled: () => true,
-        nowMs: Date.now() + 1_000,
+        stabilitySleep: skipStabilityWait,
         beforeGuardedRefresh: (wrapperPath, index) => {
           if (index === 1) {
             const originalMtime = statSync(wrapperPath).mtime;
@@ -497,18 +607,18 @@ describe("Codex autostart shim", () => {
   test("missing backup, missing wrapper, corrupt state, and platform mismatch never fresh-install", () => {
     withInstalledShim(({ wrappers, backups, statePath }) => {
       rmSync(backups[0]);
-      expect(autoRestoreCodexShim({ enabled: () => true, nowMs: Date.now() + 1_000 }).status).toBe("ineligible");
+      expect(autoRestoreCodexShim({ enabled: () => true, stabilitySleep: skipStabilityWait }).status).toBe("ineligible");
 
       writeFileSync(backups[0], "backup\n", "utf8");
       rmSync(wrappers[0]);
-      expect(autoRestoreCodexShim({ enabled: () => true, nowMs: Date.now() + 1_000 }).status).toBe("ineligible");
+      expect(autoRestoreCodexShim({ enabled: () => true, stabilitySleep: skipStabilityWait }).status).toBe("ineligible");
 
       if (process.platform !== "win32") {
         mkdirSync(wrappers[0]);
-        expect(autoRestoreCodexShim({ enabled: () => true, nowMs: Date.now() + 1_000 }).status).toBe("deferred");
+        expect(autoRestoreCodexShim({ enabled: () => true, stabilitySleep: skipStabilityWait }).status).toBe("deferred");
         rmSync(wrappers[0], { recursive: true });
         symlinkSync(join(dirname(wrappers[0]), "missing-target"), wrappers[0]);
-        expect(autoRestoreCodexShim({ enabled: () => true, nowMs: Date.now() + 1_000 }).status).toBe("ineligible");
+        expect(autoRestoreCodexShim({ enabled: () => true, stabilitySleep: skipStabilityWait }).status).toBe("ineligible");
       }
 
       writeFileSync(statePath, "{broken", "utf8");

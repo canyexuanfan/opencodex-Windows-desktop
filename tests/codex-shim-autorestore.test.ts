@@ -10,7 +10,7 @@ import {
   skipsCodexShimAutoRestore,
   type CodexShimAutoRestoreCliDeps,
 } from "../src/cli/codex-shim-autorestore";
-import { installCodexShim } from "../src/codex/shim";
+import { autoRestoreCodexShim, CODEX_SHIM_STATE_MAX_BYTES, installCodexShim } from "../src/codex/shim";
 
 const SHIM_MARKER = "opencodex codex autostart shim";
 
@@ -61,6 +61,15 @@ describe("Codex shim CLI auto-restore policy", () => {
     expect(warnings).toEqual([expect.stringContaining("automatic repair after Codex update")]);
   });
 
+  test("actionable mixed-sibling deferrals are logged while ordinary deferrals stay silent", () => {
+    const { deps, warnings } = cliDeps({
+      status: "deferred",
+      message: "tracked launcher siblings are in a mixed shim/replacement state",
+    });
+    maybeAutoRestoreCodexShim("status", ["status"], deps);
+    expect(warnings).toEqual([expect.stringContaining("mixed shim/replacement state")]);
+  });
+
   test("healthy, not-installed, disabled, and deferred outcomes stay silent and lazy", () => {
     for (const status of ["healthy", "not-installed", "disabled", "deferred"] as const) {
       const { deps, warnings, readConfigCalls } = cliDeps({ status });
@@ -88,6 +97,30 @@ describe("Codex shim CLI auto-restore policy", () => {
       maybeAutoRestoreCodexShim("status", ["status"], deps);
       expect(enabledValue).toBe(false);
       expect(warnings).toEqual([]);
+    }
+  });
+
+  test("oversized shim state is bounded, skipped, and warned without loading config", () => {
+    const home = mkdtempSync(join(tmpdir(), "ocx-shim-oversized-state-"));
+    const oldHome = process.env.OPENCODEX_HOME;
+    try {
+      process.env.OPENCODEX_HOME = home;
+      const statePath = join(home, "codex-shim.json");
+      writeFileSync(statePath, Buffer.alloc(CODEX_SHIM_STATE_MAX_BYTES + 1, 0x20));
+      const before = readFileSync(statePath);
+      const { deps, warnings, readConfigCalls } = cliDeps({ status: "healthy" }, {
+        restore: autoRestoreCodexShim,
+      });
+
+      maybeAutoRestoreCodexShim("status", ["status"], deps);
+
+      expect(warnings).toEqual([expect.stringContaining("exceeds the 1 MiB startup limit")]);
+      expect(readConfigCalls()).toBe(0);
+      expect(readFileSync(statePath)).toEqual(before);
+    } finally {
+      if (oldHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = oldHome;
+      rmSync(home, { recursive: true, force: true });
     }
   });
 

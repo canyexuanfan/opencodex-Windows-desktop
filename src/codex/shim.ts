@@ -3,6 +3,7 @@ import {
   chmodSync,
   closeSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -10,6 +11,7 @@ import {
   readSync,
   renameSync,
   statSync,
+  type Stats,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -22,6 +24,8 @@ import { isWslRuntime, wslAutomountRoot } from "./home";
 const SHIM_MARKER = "opencodex codex autostart shim";
 const CODEX_SHIM_PROBE_BYTES = 16 * 1024;
 export const CODEX_SHIM_REPLACEMENT_STABLE_MS = 100;
+export const CODEX_SHIM_STATE_MAX_BYTES = 1024 * 1024;
+const CODEX_SHIM_RESTORE_LOCK_STALE_MS = 30_000;
 let lastShimDiscoveryError: string | null = null;
 /** Last human-readable reason discovery returned null (exposed for doctor/tests). */
 export function lastCodexDiscoveryError(): string | null {
@@ -105,7 +109,8 @@ interface InstallCodexShimInternalOptions {
 }
 
 export type CodexShimAutoRestoreResult =
-  | { status: "not-installed" | "healthy" | "ineligible" | "deferred" | "disabled" }
+  | { status: "not-installed" | "healthy" | "disabled" }
+  | { status: "ineligible" | "deferred"; message?: string }
   | { status: "restored"; message: string };
 
 function cliEntry(): { bun: string; cli: string } {
@@ -214,10 +219,8 @@ function stableShimPathProbe(path: string): StableShimPathProbe | null {
   return contentSize > 0 ? { fingerprint, prefix } : null;
 }
 
-function fingerprintIsOldEnough(fingerprint: ShimPathFingerprint, nowMs: number): boolean {
-  const timestamps = [fingerprint.mtimeMs, fingerprint.ctimeMs];
-  if (fingerprint.target) timestamps.push(fingerprint.target.mtimeMs, fingerprint.target.ctimeMs);
-  return nowMs - Math.max(...timestamps) >= CODEX_SHIM_REPLACEMENT_STABLE_MS;
+function sameStableShimPathProbe(left: StableShimPathProbe, right: StableShimPathProbe): boolean {
+  return left.prefix === right.prefix && sameFingerprint(left.fingerprint, right.fingerprint);
 }
 
 function isHealthyShimProbe(probe: StableShimPathProbe, platform: NodeJS.Platform): boolean {
@@ -490,12 +493,62 @@ exit $LASTEXITCODE
 `;
 }
 
-function readState(): ShimState | null {
+interface ShimStateReadResult {
+  state: ShimState | null;
+  warning?: string;
+}
+
+function fileErrorCode(error: unknown): string | undefined {
+  return error && typeof error === "object" && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
+}
+
+function readBoundedRegularFile(path: string, maxBytes: number): { content: string } | { warning: string } | null {
+  let fd: number;
   try {
-    const value = JSON.parse(readFileSync(statePath(), "utf8")) as unknown;
-    if (!value || typeof value !== "object") return null;
+    fd = openSync(path, "r");
+  } catch (error) {
+    if (fileErrorCode(error) === "ENOENT") return null;
+    return { warning: `Codex shim state could not be opened as a regular file at ${path}.` };
+  }
+  try {
+    const before = fstatSync(fd);
+    if (!before.isFile()) return { warning: `Codex shim state is not a regular file at ${path}; auto-restore skipped.` };
+    if (before.size > maxBytes) {
+      return { warning: `Codex shim state exceeds the 1 MiB startup limit at ${path}; auto-restore skipped.` };
+    }
+    const buffer = Buffer.allocUnsafe(before.size);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const bytesRead = readSync(fd, buffer, offset, buffer.length - offset, offset);
+      if (bytesRead === 0) return { warning: `Codex shim state changed while being read at ${path}; auto-restore skipped.` };
+      offset += bytesRead;
+    }
+    const extra = Buffer.allocUnsafe(1);
+    if (readSync(fd, extra, 0, 1, offset) !== 0) {
+      return { warning: `Codex shim state exceeds the 1 MiB startup limit at ${path}; auto-restore skipped.` };
+    }
+    const after = fstatSync(fd);
+    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
+      || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
+      return { warning: `Codex shim state changed while being read at ${path}; auto-restore skipped.` };
+    }
+    return { content: buffer.toString("utf8") };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function readStateResult(): ShimStateReadResult {
+  const bounded = readBoundedRegularFile(statePath(), CODEX_SHIM_STATE_MAX_BYTES);
+  if (!bounded) return { state: null };
+  if ("warning" in bounded) return { state: null, warning: bounded.warning };
+  try {
+    const value = JSON.parse(bounded.content) as unknown;
+    if (!value || typeof value !== "object") return { state: null };
     const state = value as Record<string, unknown>;
-    if (typeof state.platform !== "string") return null;
+    if (typeof state.platform !== "string") return { state: null };
     const validFile = (item: unknown): item is ShimFileState => {
       if (!item || typeof item !== "object") return false;
       const file = item as Record<string, unknown>;
@@ -506,14 +559,18 @@ function readState(): ShimState | null {
         && (file.preserveOnly === undefined || typeof file.preserveOnly === "boolean");
     };
     if (state.wrappers !== undefined) {
-      if (!Array.isArray(state.wrappers) || state.wrappers.length === 0 || !state.wrappers.every(validFile)) return null;
+      if (!Array.isArray(state.wrappers) || state.wrappers.length === 0 || !state.wrappers.every(validFile)) return { state: null };
     } else if (!validFile(state)) {
-      return null;
+      return { state: null };
     }
-    return state as unknown as ShimState;
+    return { state: state as unknown as ShimState };
   } catch {
-    return null;
+    return { state: null };
   }
+}
+
+function readState(): ShimState | null {
+  return readStateResult().state;
 }
 
 function statePath(): string {
@@ -618,6 +675,70 @@ interface GuardedRefreshJournalEntry {
 }
 
 let guardedRefreshTransactionId = 0;
+
+interface ShimRestoreLock {
+  release(): void;
+}
+
+function restoreLockPath(): string {
+  return join(getConfigDir(), "codex-shim.autorestore.lock");
+}
+
+function sameFileIdentity(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function reclaimStaleRestoreLock(path: string): boolean {
+  const before = statFingerprint(path, false);
+  if (!before || before.kind !== "file" || Date.now() - before.mtimeMs <= CODEX_SHIM_RESTORE_LOCK_STALE_MS) return false;
+  const after = statFingerprint(path, false);
+  if (!after || !sameFingerprint(before, after)) return false;
+  try {
+    unlinkSync(path);
+    return true;
+  } catch (error) {
+    if (fileErrorCode(error) === "ENOENT") return true;
+    return false;
+  }
+}
+
+function tryAcquireShimRestoreLock(): ShimRestoreLock | null {
+  const dir = getConfigDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const path = restoreLockPath();
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let fd: number | null = null;
+    let identity: Stats | null = null;
+    try {
+      fd = openSync(path, "wx", 0o600);
+      identity = fstatSync(fd);
+      writeFileSync(fd, `${JSON.stringify({ acquiredAt: Date.now(), pid: process.pid })}\n`, "utf8");
+      identity = fstatSync(fd);
+      let released = false;
+      return {
+        release(): void {
+          if (released) return;
+          released = true;
+          try { closeSync(fd!); } catch { /* stale recovery handles an uncertain lock */ }
+          try {
+            if (identity && sameFileIdentity(identity, lstatSync(path))) unlinkSync(path);
+          } catch { /* stale recovery handles release failures */ }
+        },
+      };
+    } catch (error) {
+      if (fd !== null) {
+        try { closeSync(fd); } catch { /* best-effort close before ownership cleanup */ }
+        try {
+          if (identity && sameFileIdentity(identity, lstatSync(path))) unlinkSync(path);
+        } catch { /* leave an uncertain lock for stale recovery */ }
+      }
+      if (fileErrorCode(error) !== "EEXIST") throw error;
+      if (attempt === 0 && reclaimStaleRestoreLock(path)) continue;
+      return null;
+    }
+  }
+  return null;
+}
 
 function planGuardedRefreshTransaction(
   files: readonly ShimFileState[],
@@ -835,18 +956,24 @@ export function installCodexShim(): { installed: boolean; message: string } {
 
 export function autoRestoreCodexShim(options: {
   enabled: () => boolean;
-  nowMs?: number;
+  stabilitySleep?: (ms: number) => void;
+  /** Narrow deterministic seam used to hold the interprocess lock in tests. */
+  afterRestoreLockAcquired?: () => void;
   /** Narrow deterministic race seam for the guarded transaction tests. */
   beforeGuardedRefresh?: (wrapperPath: string, index: number) => void;
 }): CodexShimAutoRestoreResult {
-  const state = readState();
-  if (!state) return { status: existsSync(statePath()) ? "ineligible" : "not-installed" };
+  const stateRead = readStateResult();
+  const state = stateRead.state;
+  if (!state) {
+    if (stateRead.warning) return { status: "ineligible", message: stateRead.warning };
+    return { status: existsSync(statePath()) ? "ineligible" : "not-installed" };
+  }
   if (state.platform !== process.platform) return { status: "ineligible" };
 
   const files = stateFiles(state);
-  const expectedReplacements = new Map<string, ShimPathFingerprint>();
+  const replacementProbes = new Map<string, StableShimPathProbe>();
   const seen = new Set<string>();
-  const nowMs = options.nowMs ?? Date.now();
+  let healthyCount = 0;
   for (const file of files) {
     if (seen.has(file.wrapperPath)) return { status: "ineligible" };
     seen.add(file.wrapperPath);
@@ -859,22 +986,44 @@ export function autoRestoreCodexShim(options: {
     if (!probe) return { status: "deferred" };
     if (probe.prefix.includes(SHIM_MARKER)) {
       if (!isHealthyShimProbe(probe, state.platform)) return { status: "ineligible" };
+      healthyCount += 1;
       continue;
     }
-    if (!fingerprintIsOldEnough(probe.fingerprint, nowMs)) return { status: "deferred" };
-    expectedReplacements.set(file.wrapperPath, probe.fingerprint);
+    replacementProbes.set(file.wrapperPath, probe);
   }
 
-  if (expectedReplacements.size === 0) return { status: "healthy" };
+  if (replacementProbes.size === 0) return { status: "healthy" };
   if (!options.enabled()) return { status: "disabled" };
-  const result = installCodexShimInternal({
-    allowFreshInstall: false,
-    expectedReplacements,
-    beforeGuardedRefresh: options.beforeGuardedRefresh,
-  });
-  return result.installed
-    ? { status: "restored", message: result.message }
-    : { status: "deferred" };
+  if (files.length > 1 && healthyCount > 0) {
+    return {
+      status: "deferred",
+      message: "Codex shim auto-restore deferred because tracked launcher siblings are in a mixed shim/replacement state.",
+    };
+  }
+
+  const lock = tryAcquireShimRestoreLock();
+  if (!lock) return { status: "deferred" };
+  try {
+    options.afterRestoreLockAcquired?.();
+    (options.stabilitySleep ?? Bun.sleepSync)(CODEX_SHIM_REPLACEMENT_STABLE_MS);
+    const expectedReplacements = new Map<string, ShimPathFingerprint>();
+    for (const [path, firstProbe] of replacementProbes) {
+      const secondProbe = stableShimPathProbe(path);
+      if (!secondProbe || secondProbe.prefix.includes(SHIM_MARKER)
+        || !sameStableShimPathProbe(firstProbe, secondProbe)) return { status: "deferred" };
+      expectedReplacements.set(path, secondProbe.fingerprint);
+    }
+    const result = installCodexShimInternal({
+      allowFreshInstall: false,
+      expectedReplacements,
+      beforeGuardedRefresh: options.beforeGuardedRefresh,
+    });
+    return result.installed
+      ? { status: "restored", message: result.message }
+      : { status: "deferred" };
+  } finally {
+    lock.release();
+  }
 }
 
 export function uninstallCodexShim(): { removed: boolean; message: string } {
