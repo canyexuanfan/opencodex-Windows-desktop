@@ -48,8 +48,8 @@ src/
    metadata。它提供 `GET /v1/models`、`POST /v1/responses`、
    `POST /v1/responses/compact`、`POST /v1/images/generations` / `POST /v1/images/edits`
    （供 Codex 内置 `image_gen` 工具使用——由 `server/images.ts` 中继到 OpenAI 系上游）、
-   `POST /v1/live`（ChatGPT / Codex App 语音建连，由 `server/live.ts` 中继），
-   以及 `/v1/responses` 上可选的 WebSocket upgrade。
+   `POST /v1/live` / `POST /v1/realtime/calls`（ChatGPT / Codex App 语音与 OpenAI Realtime
+   建连，由 `server/live.ts` 中继），以及 `/v1/responses` 上可选的 WebSocket upgrade。
 2. `server/responses/core.ts` 解压并解析 JSON；如果本地记住了对应输入，则展开
    `previous_response_id`，随后调用 `responses/parser.ts`。
 3. `router.ts` 解析 bare id 或 `provider/model` id。server 随后确定 Codex account affinity，

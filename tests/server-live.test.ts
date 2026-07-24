@@ -106,24 +106,30 @@ function forwardConfig(): OcxConfig {
   } as OcxConfig;
 }
 
-function multipartLiveBody(sdp = "v=0", session = { model: "gpt-live" }): { body: Uint8Array; contentType: string } {
+function multipartLiveBody(
+  sdp = "v=0",
+  session: Record<string, unknown> | null = { model: "gpt-live" },
+): { body: Uint8Array; contentType: string } {
   const boundary = "codex-realtime-call-boundary";
-  const text = [
+  const parts = [
     `--${boundary}`,
     `Content-Disposition: form-data; name="sdp"`,
     `Content-Type: application/sdp`,
     ``,
     sdp,
-    `--${boundary}`,
-    `Content-Disposition: form-data; name="session"`,
-    `Content-Type: application/json`,
-    ``,
-    JSON.stringify(session),
-    `--${boundary}--`,
-    ``,
-  ].join("\r\n");
+  ];
+  if (session !== null) {
+    parts.push(
+      `--${boundary}`,
+      `Content-Disposition: form-data; name="session"`,
+      `Content-Type: application/json`,
+      ``,
+      JSON.stringify(session),
+    );
+  }
+  parts.push(`--${boundary}--`, ``);
   return {
-    body: new TextEncoder().encode(text),
+    body: new TextEncoder().encode(parts.join("\r\n")),
     contentType: `multipart/form-data; boundary=${boundary}`,
   };
 }
@@ -164,9 +170,9 @@ test("POST /v1/live rewrites ChatGPT multipart into backend realtime/calls JSON"
   }
 });
 
-test("POST /v1/live relays to an OpenAI API-key provider at /v1/live", async () => {
+test("POST /v1/live relays to an OpenAI API-key provider at /v1/realtime/calls", async () => {
   const captured: CapturedRequest[] = [];
-  const upstream = fakeLiveUpstream(captured, 201, "/v1/live/rtc_api");
+  const upstream = fakeLiveUpstream(captured, 201, "/v1/realtime/calls/rtc_api");
   saveConfig({
     port: 0,
     defaultProvider: "openai-apikey",
@@ -189,16 +195,93 @@ test("POST /v1/live relays to an OpenAI API-key provider at /v1/live", async () 
       body,
     });
     expect(response.status).toBe(201);
-    expect(response.headers.get("location")).toBe("/v1/live/rtc_api");
+    expect(response.headers.get("location")).toBe("/v1/realtime/calls/rtc_api");
 
     expect(captured).toHaveLength(1);
-    expect(captured[0].path).toBe("/v1/live");
+    expect(captured[0].path).toBe("/v1/realtime/calls");
     expect(captured[0].headers.get("authorization")).toBe("Bearer sk-test-live");
     expect(captured[0].headers.get("content-type")).toContain("multipart/form-data");
     expect(captured[0].bodyText).toContain('name="sdp"');
   } finally {
     await server.stop(true);
     await upstream.stop(true);
+  }
+});
+
+test("POST /v1/realtime/calls is accepted and relays like /v1/live", async () => {
+  const captured: CapturedRequest[] = [];
+  const upstream = fakeLiveUpstream(captured, 201, "/v1/realtime/calls/rtc_codex");
+  saveConfig(forwardConfig());
+
+  const server = startServer(0);
+  try {
+    const { body, contentType } = multipartLiveBody("v=0-codex");
+    const response = await fetch(new URL("/v1/realtime/calls", server.url), {
+      method: "POST",
+      headers: {
+        "content-type": contentType,
+        authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
+        "chatgpt-account-id": "acct-123",
+      },
+      body,
+    });
+    expect(response.status).toBe(201);
+    expect(response.headers.get("location")).toBe("/v1/realtime/calls/rtc_codex");
+    expect(captured).toHaveLength(1);
+    expect(captured[0].path).toBe("/realtime/calls");
+    expect(JSON.parse(captured[0].bodyText)).toEqual({
+      sdp: "v=0-codex",
+      session: { model: "gpt-live" },
+    });
+  } finally {
+    await server.stop(true);
+    await upstream.stop(true);
+  }
+});
+
+test("ChatGPT multipart rewrite allows SDP-only offers without session", async () => {
+  const captured: CapturedRequest[] = [];
+  const upstream = fakeLiveUpstream(captured);
+  saveConfig(forwardConfig());
+
+  const server = startServer(0);
+  try {
+    const { body, contentType } = multipartLiveBody("v=0-sdp-only", null);
+    const response = await fetch(new URL("/v1/live", server.url), {
+      method: "POST",
+      headers: {
+        "content-type": contentType,
+        authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
+        "chatgpt-account-id": "acct-123",
+      },
+      body,
+    });
+    expect(response.status).toBe(201);
+    expect(captured).toHaveLength(1);
+    expect(JSON.parse(captured[0].bodyText)).toEqual({ sdp: "v=0-sdp-only" });
+  } finally {
+    await server.stop(true);
+    await upstream.stop(true);
+  }
+});
+
+test("OPTIONS preflight allows ChatGPT-Account-Id for voice clients", async () => {
+  saveConfig(forwardConfig());
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/live", server.url), {
+      method: "OPTIONS",
+      headers: {
+        Origin: "http://127.0.0.1:" + new URL(server.url).port,
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "authorization,content-type,chatgpt-account-id",
+      },
+    });
+    expect(response.status).toBe(204);
+    const allowed = response.headers.get("Access-Control-Allow-Headers") ?? "";
+    expect(allowed.toLowerCase()).toContain("chatgpt-account-id");
+  } finally {
+    await server.stop(true);
   }
 });
 

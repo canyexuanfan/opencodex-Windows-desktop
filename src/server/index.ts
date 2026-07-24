@@ -499,9 +499,14 @@ export function startServer(port?: number) {
         return withCors(response, req, config);
       }
 
-      // ChatGPT / Codex App voice (GPT‑Live / Frameless Bidi). Call-create only; sideband WS
-      // follow-ups may still need a later phase if Location stays on the proxy host.
-      if (url.pathname === "/v1/live" && req.method === "POST") {
+      // ChatGPT / Codex App voice (GPT‑Live / Frameless Bidi) + OpenAI Realtime call-create.
+      // Clients hit either /v1/live (Frameless App) or /v1/realtime/calls (codex RealtimeCallClient /
+      // public Realtime API). Call-create only; sideband WS follow-ups may still need a later phase
+      // if Location stays on the proxy host.
+      if (
+        req.method === "POST"
+        && (url.pathname === "/v1/live" || url.pathname === "/v1/realtime/calls")
+      ) {
         disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
           return new Response("Service shutting down", {

@@ -1,15 +1,20 @@
 /**
- * /v1/live relay (issue #371).
+ * /v1/live and /v1/realtime/calls relay (issue #371).
  *
- * Codex App / ChatGPT voice (GPT‑Live / Frameless Bidi) POSTs call-create to `{base_url}/live`.
- * Under Design B injection that base_url is this proxy, so without a route the request dies on
- * the /v1/* JSON-404 guard. Voice is an OpenAI/ChatGPT surface only — routed providers cannot
- * serve it. Relay the request to the ChatGPT forward provider (or an OpenAI API-key provider)
- * and pass the response through, including the `Location` call id the client needs next.
+ * Codex App / ChatGPT voice (GPT‑Live / Frameless Bidi) POSTs call-create against the injected
+ * `base_url`. Under Design B that host is this proxy, so without a route the request dies on the
+ * /v1/* JSON-404 guard. Voice is an OpenAI/ChatGPT surface only — routed providers cannot serve it.
  *
- * When the client talks to the injected `/v1` base it sends the API multipart shape even though
- * the ChatGPT forward upstream is `backend-api/codex`. In that case rewrite to the backend
- * JSON shape and `realtime/calls` path (matches openai/codex `RealtimeCallClient`).
+ * Inbound paths:
+ * - `POST /v1/live` — Frameless / ChatGPT App shape against an injected `/v1` base
+ * - `POST /v1/realtime/calls` — openai/codex RealtimeCallClient and the public OpenAI Realtime API
+ *
+ * Upstream:
+ * - ChatGPT `backend-api` → JSON `{ sdp, session? }` at `{base}/realtime/calls` (multipart rewritten)
+ * - OpenAI API-key provider → multipart (or raw) at `{base}/v1/realtime/calls`
+ *
+ * Pass the response through, including the `Location` call id the client needs next. Sideband WS
+ * follow-ups for `/v1/live/{callId}` / `/v1/realtime/calls/{callId}` remain a possible later phase.
  */
 import { formatErrorResponse } from "../bridge";
 import {
@@ -37,7 +42,7 @@ function isChatGptBackendBaseUrl(baseUrl: string): boolean {
 }
 
 function keyedLiveUrl(baseUrl: string): string {
-  return `${baseUrl.replace(/\/v1\/?$/, "")}/v1/live`;
+  return `${baseUrl.replace(/\/v1\/?$/, "")}/v1/realtime/calls`;
 }
 
 function forwardLiveUrl(baseUrl: string, usesBackendShape: boolean): string {
@@ -56,30 +61,88 @@ async function backendJsonBodyFromApiMultipart(
     return formatErrorResponse(
       400,
       "invalid_request_error",
-      "ChatGPT voice relay could not parse multipart /v1/live body",
+      "ChatGPT voice relay could not parse multipart call-create body",
     );
   }
   const sdp = form.get("sdp");
+  if (typeof sdp !== "string") {
+    return formatErrorResponse(
+      400,
+      "invalid_request_error",
+      "ChatGPT voice relay expects multipart field sdp on call-create",
+    );
+  }
+  // `session` is optional on the public Realtime calls API; omit when the client sends SDP only.
   const sessionRaw = form.get("session");
-  if (typeof sdp !== "string" || typeof sessionRaw !== "string") {
-    return formatErrorResponse(
-      400,
-      "invalid_request_error",
-      "ChatGPT voice relay expects multipart fields sdp and session on /v1/live",
-    );
+  let session: unknown | undefined;
+  if (sessionRaw != null) {
+    if (typeof sessionRaw !== "string") {
+      return formatErrorResponse(
+        400,
+        "invalid_request_error",
+        "ChatGPT voice relay expected a string multipart session field",
+      );
+    }
+    try {
+      session = JSON.parse(sessionRaw);
+    } catch {
+      return formatErrorResponse(
+        400,
+        "invalid_request_error",
+        "ChatGPT voice relay expected JSON in the multipart session field",
+      );
+    }
   }
-  let session: unknown;
-  try {
-    session = JSON.parse(sessionRaw);
-  } catch {
-    return formatErrorResponse(
-      400,
-      "invalid_request_error",
-      "ChatGPT voice relay expected JSON in the multipart session field",
-    );
-  }
-  const encoded = new TextEncoder().encode(JSON.stringify({ sdp, session }));
+  const payload = session === undefined ? { sdp } : { sdp, session };
+  const encoded = new TextEncoder().encode(JSON.stringify(payload));
   return { body: encoded, contentType: "application/json" };
+}
+
+/** Read an upstream body with a hard byte cap so oversized replies abort before full buffering. */
+async function readUpstreamBodyCapped(
+  response: Response,
+  maxBytes: number,
+): Promise<ArrayBuffer | Response> {
+  const stream = response.body;
+  if (!stream) return new ArrayBuffer(0);
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        return formatErrorResponse(
+          502,
+          "upstream_error",
+          `live response too large (${total} bytes)`,
+        );
+      }
+      chunks.push(value);
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // already released / cancelled
+    }
+  }
+  if (chunks.length === 0) return new ArrayBuffer(0);
+  if (chunks.length === 1) {
+    const only = chunks[0]!;
+    return only.buffer.slice(only.byteOffset, only.byteOffset + only.byteLength) as ArrayBuffer;
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return merged.buffer;
 }
 
 export async function handleLive(
@@ -117,7 +180,7 @@ export async function handleLive(
       400,
       "invalid_request_error",
       "Built-in ChatGPT voice needs an OpenAI upstream (ChatGPT login or an OpenAI API-key provider), "
-        + "but none is configured in opencodex. Routed providers cannot serve /v1/live.",
+        + "but none is configured in opencodex. Routed providers cannot serve voice call-create.",
     );
   }
 
@@ -207,11 +270,11 @@ export async function handleLive(
       body: outboundBody,
       signal: linkedSignal.signal,
     });
-    const payload = await upstreamResponse.arrayBuffer();
-    if (payload.byteLength > LIVE_RESPONSE_MAX_BYTES) {
-      return formatErrorResponse(502, "upstream_error", `live response too large (${payload.byteLength} bytes)`);
-    }
+    // Record every completed upstream response before body size handling so account health /
+    // cooldown still updates when we reject an oversized payload.
     forward?.recordOutcome?.(upstreamResponse.status);
+    const payload = await readUpstreamBodyCapped(upstreamResponse, LIVE_RESPONSE_MAX_BYTES);
+    if (payload instanceof Response) return payload;
     const relayHeaders: Record<string, string> = {};
     for (const name of LIVE_RELAY_HEADERS) {
       const value = upstreamResponse.headers.get(name);
