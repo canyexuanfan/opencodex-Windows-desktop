@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <b>한국어</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ru.md">Русский</a> · <a href="README.ja.md">日本語</a> · 📖 <a href="https://lidge-jun.github.io/opencodex/ko/"><b>전체 문서 →</b></a>
+  <a href="README.md">English</a> · <b>한국어</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ru.md">Русский</a> · <a href="README.ja.md">日本語</a> · 📖 <a href="https://opencodex.me/ko/"><b>전체 문서 →</b></a>
 </p>
 
 <p align="center">
@@ -232,7 +232,7 @@ opencodex는 두 가지 동작을 분리해서 유지합니다:
 | Ollama / vLLM / LM Studio (로컬) | `openai-chat` | key (보통 비워둠) |
 | 모든 OpenAI 호환 엔드포인트 | `openai-chat` | key |
 
-그 외에 DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Mistral, Hugging Face, NVIDIA NIM, MiniMax, Qwen Cloud, Tencent Cloud Coding Plan, SiliconFlow 등이 있습니다. 전체 목록은 `ocx init` 또는 [프로바이더 문서](https://lidge-jun.github.io/opencodex/ko/reference/configuration/)에서 확인하세요.
+그 외에 DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Mistral, Hugging Face, NVIDIA NIM, MiniMax, Qwen Cloud, Tencent Cloud Coding Plan, SiliconFlow 등이 있습니다. 전체 목록은 `ocx init` 또는 [프로바이더 문서](https://opencodex.me/ko/reference/configuration/)에서 확인하세요.
 
 ## CLI
 
@@ -393,12 +393,12 @@ OpenAI로 복원하고, 남은 opencodex 유저 스레드도 OpenAI로 eject 하
 ocx recover-history --legacy-openai
 ```
 
-모든 필드에 대한 자세한 내용은 **[설정 레퍼런스](https://lidge-jun.github.io/opencodex/ko/reference/configuration/)** 를 참고하세요.
+모든 필드에 대한 자세한 내용은 **[설정 레퍼런스](https://opencodex.me/ko/reference/configuration/)** 를 참고하세요.
 
 ## 문서
 
 공개 문서(설치, 프로바이더, 라우팅, sidecar, Codex 통합, Codex App 모델 선택기, CLI/설정 레퍼런스)는 [`docs-site/`](./docs-site)의 Astro 사이트로 빌드되어
-**[lidge-jun.github.io/opencodex](https://lidge-jun.github.io/opencodex/ko/)** 에 게시됩니다.
+**[opencodex.me](https://opencodex.me/ko/)** 에 게시됩니다.
 
 유지보수용 source of truth는 [`structure/`](./structure)에, 과거 조사/진단 노트는 [`docs/`](./docs)에 있습니다.
 
@@ -422,7 +422,7 @@ API는 `/healthz`, `/v1/responses`, `POST /v1/images/generations`, `POST /v1/ima
 bun run dev:gui
 ```
 
-**[기여하기](https://lidge-jun.github.io/opencodex/ko/contributing/)** 를 참고하세요.
+**[기여하기](https://opencodex.me/ko/contributing/)** 를 참고하세요.
 
 ## 면책 조항
 

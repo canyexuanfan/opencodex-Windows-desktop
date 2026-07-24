@@ -342,7 +342,7 @@ ocx login xai
 
 ### `ocx gui`
 
-`http://localhost:<port>`에서 [웹 대시보드](/opencodex/ko/guides/web-dashboard/)를 엽니다.
+`http://localhost:<port>`에서 [웹 대시보드](/ko/guides/web-dashboard/)를 엽니다.
 프록시가 실행 중이 아니면 자동으로 시작합니다.
 
 ## 백그라운드 서비스

@@ -6,7 +6,7 @@ description: Внутреннее устройство opencodex — карта 
 opencodex — это один процесс Bun. Запрос приходит как OpenAI Responses, нормализуется во
 внутреннюю модель, маршрутизируется, отправляется провайдеру через адаптер и мостом
 преобразуется обратно в Responses SSE. Сквозной поток описан в разделе
-[Как это работает](/opencodex/ru/getting-started/how-it-works/).
+[Как это работает](/ru/getting-started/how-it-works/).
 
 ## Карта модулей
 
@@ -163,7 +163,7 @@ Compaction контекста Codex работает для маршрутизи
 - `codex/catalog/sync.ts`, экспортируемый через фасад `codex/catalog.ts`, сливает маршрутизируемые
   модели в каталог Codex как записи с пространствами
   имён, ставит рекомендуемые
-  [модели подагентов](/opencodex/ru/guides/codex-integration/#the-subagent-picker) первыми,
+  [модели подагентов](/ru/guides/codex-integration/#the-subagent-picker) первыми,
   фильтрует `disabledModels` и может полностью восстановить первозданный каталог из одноразовой
   резервной копии.
 

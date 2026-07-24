@@ -229,7 +229,7 @@ images are cached by backend, model, detail, image bytes, and request context, s
 image-and-context pair is not described again on every replay. Remote `https:` images are never
 cached because their contents can change.
 
-See the [configuration reference](/opencodex/reference/configuration/#sidecars) for every key.
+See the [configuration reference](/reference/configuration/#sidecars) for every key.
 Anthropic-OAuth web search and image description reuse the repository's existing Claude Code OAuth
 fingerprint precedent, but should still be soak-tested with your account and workload before you
 depend on them for long unattended runs.

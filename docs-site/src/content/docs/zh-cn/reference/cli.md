@@ -327,7 +327,7 @@ ocx login xai
 
 ### `ocx gui`
 
-在 `http://localhost:<port>` 打开 [Web 仪表盘](/opencodex/zh-cn/guides/web-dashboard/)。如果代理
+在 `http://localhost:<port>` 打开 [Web 仪表盘](/zh-cn/guides/web-dashboard/)。如果代理
 尚未运行，会自动启动。
 
 ## 后台服务

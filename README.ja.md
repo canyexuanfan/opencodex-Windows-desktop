@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ru.md">Русский</a> · <b>日本語</b> · 📖 <a href="https://lidge-jun.github.io/opencodex/ja/"><b>完全なドキュメント →</b></a>
+  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ru.md">Русский</a> · <b>日本語</b> · 📖 <a href="https://opencodex.me/ja/"><b>完全なドキュメント →</b></a>
 </p>
 
 <p align="center">
@@ -233,7 +233,7 @@ opencodex は 2 つの動作を分離して保持します:
 | Ollama / vLLM / LM Studio(ローカル) | `openai-chat` | key(通常は空欄) |
 | 任意の OpenAI 互換エンドポイント | `openai-chat` | key |
 
-このほか DeepSeek、Groq、OpenRouter、Together、Fireworks、Cerebras、Mistral、Hugging Face、NVIDIA NIM、MiniMax、Qwen Cloud、Tencent Cloud Coding Plan、SiliconFlow などがあります。完全な一覧は `ocx init` または[プロバイダードキュメント](https://lidge-jun.github.io/opencodex/ja/reference/configuration/)で確認してください。
+このほか DeepSeek、Groq、OpenRouter、Together、Fireworks、Cerebras、Mistral、Hugging Face、NVIDIA NIM、MiniMax、Qwen Cloud、Tencent Cloud Coding Plan、SiliconFlow などがあります。完全な一覧は `ocx init` または[プロバイダードキュメント](https://opencodex.me/ja/reference/configuration/)で確認してください。
 
 Cursor サポートは段階的な実験的ブリッジです: `ocx init` とダッシュボードの Add Provider ピッカーに Cursor の静的公開モデルカタログを持つローカル config として表示されます。Cursor アクセストークンを設定するとライブ
 HTTP/2 トランスポートが有効になります。Cursor サーバー駆動のネイティブ
@@ -403,12 +403,12 @@ OpenAI に復元し、残った opencodex ユーザースレッドも OpenAI に
 ocx recover-history --legacy-openai
 ```
 
-全フィールドの詳細は **[設定リファレンス](https://lidge-jun.github.io/opencodex/ja/reference/configuration/)** を参照してください。
+全フィールドの詳細は **[設定リファレンス](https://opencodex.me/ja/reference/configuration/)** を参照してください。
 
 ## ドキュメント
 
 公開ドキュメント(インストール、プロバイダー、ルーティング、サイドカー、Codex 統合、Codex App モデルピッカー、CLI/設定リファレンス)は [`docs-site/`](./docs-site) の Astro サイトとしてビルドされ
-**[lidge-jun.github.io/opencodex](https://lidge-jun.github.io/opencodex/ja/)** に公開されます。
+**[opencodex.me](https://opencodex.me/ja/)** に公開されます。
 
 メンテナ用の source of truth は [`structure/`](./structure) に、過去の調査/診断ノートは [`docs/`](./docs) にあります。
 
@@ -432,7 +432,7 @@ API は `/healthz`、`/v1/responses`、`POST /v1/images/generations`、`POST /v1
 bun run dev:gui
 ```
 
-**[コントリビュート](https://lidge-jun.github.io/opencodex/ja/contributing/)** を参照してください。
+**[コントリビュート](https://opencodex.me/ja/contributing/)** を参照してください。
 
 ## 免責事項
 

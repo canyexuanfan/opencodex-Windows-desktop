@@ -339,7 +339,7 @@ Remove the stored OAuth credential for a provider.
 
 ### `ocx gui`
 
-Open the [web dashboard](/opencodex/guides/web-dashboard/) at `http://localhost:<port>`, auto-starting
+Open the [web dashboard](/guides/web-dashboard/) at `http://localhost:<port>`, auto-starting
 the proxy if it isn't running.
 
 ## Background service
