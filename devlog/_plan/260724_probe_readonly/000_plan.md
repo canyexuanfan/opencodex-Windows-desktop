@@ -19,11 +19,18 @@ any loop commits. CI stays green because CI runners have no codex binary.
 
 src/codex/runtime.ts — MODIFY the probe execution (~241-250):
 - Before execFile, create a throwaway dir
-  `mkdtempSync(join(tmpdir(), "ocx-codex-probe-"))`.
+  `mkdtempSync(join(tmpdir(), "ocx-codex-probe-"))` INSIDE the existing
+  try block (A-gate fold): probeVersion is a total function that never
+  throws — if mkdtemp itself fails (tmpdir unwritable/exhausted), return
+  `{ ok: false, reason: "probe sandbox unavailable" }` instead of
+  throwing or falling back to the inherited env (which would resurrect
+  the side effect).
 - Run the probe with `CODEX_HOME=<throwaway>` merged over the resolved env
   so any side effects of the probed binary land in the throwaway, never in
   the user's real CODEX_HOME.
-- `finally`: `rmSync(throwaway, { recursive: true, force: true })`.
+- `finally`: `rmSync(throwaway, { recursive: true, force: true })` in a
+  nested try/catch (Windows transient EBUSY) so cleanup failure never
+  masks the probe result.
 - Keep everything else identical (timeout, stdio, version parse, redacted
   error). Probe failures must still return the same { ok: false, reason }
   shapes; cleanup failure must not mask the probe result.
