@@ -379,16 +379,20 @@ export function encodeCursorRunRequest(request: CursorRunRequest): Uint8Array {
       displayNameShort: request.modelId,
       aliases: [],
     }),
-    ...(request.routingLevel ? {
-      requestedModel: create(RequestedModelSchema, {
-        modelId: request.modelId,
-        maxMode: false,
+    // Always populate requested_model. Cursor is deprecating model_details in favor of
+    // requested_model; omitting it for non-router (external) models caused intermittent
+    // Connect invalid_argument on gpt-5.6-* shards while the IDE client (which always
+    // sends both) stayed stable.
+    requestedModel: create(RequestedModelSchema, {
+      modelId: request.modelId,
+      maxMode: false,
+      ...(request.routingLevel ? {
         parameters: [create(RequestedModel_ModelParameterbytesSchema, {
           id: CURSOR_ROUTING_LEVEL_PARAMETER_ID,
           value: request.routingLevel,
         })],
-      }),
-    } : {}),
+      } : {}),
+    }),
     // Mirror the client (Responses) tool definitions into the top-level AgentRunRequest.mcp_tools
     // channel. Advertising them ONLY via native-exec `requestContextArgs` (RequestContext.tools) is
     // insufficient: cursor models report those tools as unavailable and fall back to native tools.

@@ -100,6 +100,22 @@ describe("Cursor blob handshake", () => {
     });
   });
 
+  test("always encodes requested_model for external Cursor models", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "gpt-5.6-sol-xhigh",
+      conversationId: "c1",
+      system: [],
+      messages: [{ role: "user", content: "hi" }],
+    });
+    const msg = fromBinary(AgentClientMessageSchema, bytes);
+    const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
+
+    expect(run?.modelDetails?.modelId).toBe("gpt-5.6-sol-xhigh");
+    expect(run?.requestedModel?.modelId).toBe("gpt-5.6-sol-xhigh");
+    expect(run?.requestedModel?.maxMode).toBe(false);
+    expect(run?.requestedModel?.parameters ?? []).toEqual([]);
+  });
+
   test("adds Cursor exact-tool guidance to system prompt blobs when tools are advertised", () => {
     const bytes = encodeCursorRunRequest({
       modelId: "claude-4.6-sonnet",

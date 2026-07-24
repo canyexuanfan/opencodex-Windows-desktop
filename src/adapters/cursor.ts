@@ -87,7 +87,6 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
         }
         _parsed._cursorConversationId = request.conversationId;
         let emittedOutput = false;
-        const lastRawIsToolResult = _parsed.context.messages.at(-1)?.role === "toolResult";
 
         const runOnce = async (activeRequest: ReturnType<typeof createCursorRequest>) => {
           await runCursorTurnWithRetry(
@@ -121,13 +120,12 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
         try {
           await runOnce(request);
         } catch (err) {
-          // One-shot fallback: only for external-model tool-result continuations that fail
-          // with Connect invalid_argument before any non-heartbeat output was forwarded.
-          // Replaying after text/tool events would duplicate output.
+          // One-shot fallback for external-model Connect invalid_argument before any
+          // non-heartbeat output. Covers plain-user continuations as well as tool-result
+          // resumes (PR #318); replaying after text/tool events would duplicate output.
           if (
             !isCursorInvalidArgumentError(err)
             || !isCursorExternalWireModel(request.modelId)
-            || !lastRawIsToolResult
             || emittedOutput
             || incoming.abortSignal?.aborted
           ) {

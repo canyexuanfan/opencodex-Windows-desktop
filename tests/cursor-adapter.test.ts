@@ -202,6 +202,58 @@ describe("Cursor adapter live transport", () => {
     expect(events.filter(event => event.type === "error")).toHaveLength(0);
   });
 
+  test("retries external-model invalid_argument on plain-user continuations too", async () => {
+    const seen: string[] = [];
+    let attempts = 0;
+    const adapter = createCursorAdapter({
+      ...provider,
+      apiKey: "cursor-token",
+    }, {
+      createTransport: () => ({
+        async *run(request) {
+          attempts += 1;
+          seen.push(request.conversationId);
+          if (attempts === 1) {
+            throw Object.assign(
+              new Error("Cursor invalid request: Cursor Connect error invalid_argument: Error"),
+              { code: "invalid_argument" },
+            );
+          }
+          yield { type: "done" } satisfies CursorServerMessage;
+        },
+        writeClient() {},
+      }),
+    });
+
+    const events: AdapterEvent[] = [];
+    const body: OcxParsedRequest = {
+      modelId: "cursor/gpt-5.6-sol",
+      context: {
+        messages: [
+          { role: "user", content: "first turn", timestamp: 1 },
+          {
+            role: "assistant",
+            model: "cursor/gpt-5.6-sol",
+            timestamp: 2,
+            content: [{ type: "text", text: "ack" }],
+          },
+          { role: "user", content: "second turn", timestamp: 3 },
+        ],
+      },
+      stream: false,
+      options: { reasoning: "xhigh" },
+      _cursorConversationId: "cursor_stale",
+    };
+
+    await adapter.runTurn?.(body, { headers: new Headers() }, event => events.push(event));
+
+    expect(attempts).toBe(2);
+    expect(seen[0]).toBe("cursor_stale");
+    expect(seen[1]).not.toBe("cursor_stale");
+    expect(body._cursorConversationId).toBe(seen[1]);
+    expect(events.filter(event => event.type === "error")).toHaveLength(0);
+  });
+
   test("rotation rekeys context usage through the injectable seam", async () => {
     const rekeyCalls: Array<[string, string]> = [];
     const seen: string[] = [];
