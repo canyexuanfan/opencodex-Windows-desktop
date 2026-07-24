@@ -98,8 +98,13 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
         const previousConversationId = _parsed._cursorConversationId;
         let request = createCursorRequest(_parsed);
         // The builder may derive a stable provider id from the client thread when Responses state
-        // is unavailable. Rekey only existing state; there is nothing to migrate on a fresh turn.
-        if (previousConversationId && request.conversationId !== previousConversationId) {
+        // is unavailable. Rekey only existing state; there is nothing to migrate on a fresh turn,
+        // and isolated helper/compaction turns must never inherit or donate the parent's usage state.
+        if (
+          previousConversationId
+          && request.conversationId !== previousConversationId
+          && _parsed._cursorIsolateConversation !== true
+        ) {
           rekeyContextUsage(previousConversationId, request.conversationId);
         }
         _parsed._cursorConversationId = request.conversationId;
@@ -159,8 +164,9 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
           rekeyContextUsage(failedConversationId, request.conversationId);
           _parsed._cursorConversationId = request.conversationId;
           // Persist recovery for store:false clients that only send a parent thread id, so the
-          // next turn does not recompute the stale deterministic thread hash.
-          if (_parsed._clientThreadId) {
+          // next turn does not recompute the stale deterministic thread hash. Isolated helper /
+          // compaction turns must not park their throwaway id under the parent thread key.
+          if (_parsed._clientThreadId && _parsed._cursorIsolateConversation !== true) {
             rememberCursorThreadConversation(
               _parsed._clientThreadId,
               request.conversationId,

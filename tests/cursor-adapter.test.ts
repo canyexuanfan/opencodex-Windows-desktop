@@ -3,6 +3,10 @@ import {
   createCursorAdapter,
   cursorExecDeniedMessage,
 } from "../src/adapters/cursor";
+import {
+  clearCursorThreadContinuityForTests,
+  lookupCursorThreadConversation,
+} from "../src/adapters/cursor/thread-continuity";
 import type { AdapterEvent, OcxParsedRequest, OcxProviderConfig } from "../src/types";
 import type { CursorClientMessage, CursorRunRequest, CursorServerMessage } from "../src/adapters/cursor/types";
 
@@ -365,7 +369,81 @@ describe("Cursor adapter live transport", () => {
     expect(rekeyCalls).toEqual([]);
     expect(body._cursorConversationId).toBe("cursor_prior");
   });
-});
+
+  test("isolated helper turns do not rekey parent context usage", async () => {
+    const rekeyCalls: Array<[string, string]> = [];
+    const seen: string[] = [];
+    const adapter = createCursorAdapter({
+      ...provider,
+      apiKey: "cursor-token",
+    }, {
+      createTransport: () => ({
+        async *run(request) {
+          seen.push(request.conversationId);
+          yield { type: "done" } satisfies CursorServerMessage;
+        },
+        writeClient() {},
+      }),
+      rekeyContextUsage: (from, to) => rekeyCalls.push([from, to]),
+    });
+
+    const body: OcxParsedRequest = {
+      modelId: "cursor/auto",
+      context: { messages: [{ role: "user", content: "summarize", timestamp: 1 }] },
+      stream: false,
+      options: {},
+      _clientThreadId: "parent-thread-isolate-rekey",
+      _cursorConversationId: "cursor_parent_real",
+      _cursorIsolateConversation: true,
+    };
+
+    await adapter.runTurn?.(body, { headers: new Headers() }, () => {});
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).not.toBe("cursor_parent_real");
+    expect(seen[0]?.startsWith("cursor_")).toBe(true);
+    expect(rekeyCalls).toEqual([]);
+  });
+
+  test("isolated invalid_argument recovery does not remember under the parent thread", async () => {
+    clearCursorThreadContinuityForTests();
+    let attempts = 0;
+    const adapter = createCursorAdapter({
+      ...provider,
+      apiKey: "cursor-token",
+    }, {
+      createTransport: () => ({
+        async *run() {
+          attempts += 1;
+          if (attempts === 1) {
+            throw Object.assign(
+              new Error("Cursor invalid request: Cursor Connect error invalid_argument: Error"),
+              { code: "invalid_argument" },
+            );
+          }
+          yield { type: "done" } satisfies CursorServerMessage;
+        },
+        writeClient() {},
+      }),
+    });
+
+    const threadId = "parent-thread-isolate-remember";
+    const body: OcxParsedRequest = {
+      modelId: "cursor/gpt-5.6-sol",
+      context: { messages: [{ role: "user", content: "helper ask", timestamp: 1 }] },
+      stream: false,
+      options: { reasoning: "xhigh" },
+      _clientThreadId: threadId,
+      _cursorConversationId: "cursor_parent_real",
+      _cursorIsolateConversation: true,
+      _cursorIdentityScope: "acct-isolate-test",
+    };
+
+    await adapter.runTurn?.(body, { headers: new Headers() }, () => {});
+
+    expect(attempts).toBe(2);
+    expect(lookupCursorThreadConversation(threadId, "acct-isolate-test")).toBeUndefined();
+  });
 
   test("does not replay invalid_argument after non-heartbeat output was already emitted", async () => {
     let attempts = 0;
@@ -420,3 +498,4 @@ describe("Cursor adapter live transport", () => {
     expect(events.some(event => event.type === "text_delta")).toBe(true);
     expect(events.some(event => event.type === "error")).toBe(true);
   });
+});
