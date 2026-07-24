@@ -115,6 +115,34 @@ describe("Cursor tool definitions", () => {
     });
   });
 
+  test("preserves cmd-only exec_command schemas during Responses normalization", () => {
+    const tool: OcxTool = {
+      name: "exec_command",
+      description: "Run a command",
+      parameters: {
+        type: "object",
+        properties: {
+          cmd: { type: "string" },
+          workdir: { type: "string" },
+        },
+        required: ["cmd"],
+      },
+    };
+
+    expect(cursorToolArgNormalizeSchema(tool)).toEqual({
+      type: "object",
+      properties: {
+        cmd: { type: "string" },
+        workdir: { type: "string" },
+      },
+      required: ["cmd"],
+    });
+    expect(normalizeArgKeys({ cmd: "git status", workdir: "C:/repo" }, cursorToolArgNormalizeSchema(tool))).toEqual({
+      cmd: "git status",
+      workdir: "C:/repo",
+    });
+  });
+
   test("does not alias namespaced exec_command tools", () => {
     const tool: OcxTool = {
       name: "exec_command",

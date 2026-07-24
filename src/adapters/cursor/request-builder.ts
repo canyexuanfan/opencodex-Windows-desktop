@@ -15,6 +15,7 @@ import {
   cursorMcpToolEncodedSize,
   cursorMcpToolsEncodedSize,
   cursorToolAllowedByChoice,
+  cursorToolChoiceAliases,
   cursorToolWireName,
   cursorToolsForActivePrompt,
   isBareCodexShellBridgeTool,
@@ -36,7 +37,7 @@ function explicitlySelectedNames(choice: OcxToolChoice | undefined): Set<string>
 }
 
 function toolPriority(tool: OcxTool, selectedNames: ReadonlySet<string>): number {
-  if (toolChoiceAliases(tool).some(name => selectedNames.has(name))) return 0;
+  if (cursorToolChoiceAliases(tool).some(name => selectedNames.has(name))) return 0;
   // Shell bridge before apply_patch so a large patch schema cannot starve the only execution path (#399).
   if (isBareCodexShellBridgeTool(tool)) return 1;
   if (!tool.namespace && tool.name === "apply_patch") return 2;

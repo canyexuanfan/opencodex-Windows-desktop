@@ -1,7 +1,7 @@
 import { create, fromJson, toBinary, type JsonValue } from "@bufbuild/protobuf";
 import { ValueSchema } from "@bufbuild/protobuf/wkt";
 import type { OcxRequestOptions, OcxTool } from "../../types";
-import { namespacedToolName } from "../../types";
+import { namespacedToolName, toolChoiceAliases } from "../../types";
 import { McpToolDefinitionSchema, McpToolsSchema, type McpToolDefinition } from "./gen/agent_pb";
 
 export const OCX_RESPONSES_TOOL_PROVIDER = "opencodex-responses";
@@ -85,6 +85,24 @@ export function resolveShellBridgeAliasKey<T>(
   return undefined;
 }
 
+export function cursorToolChoiceAliases(tool: Pick<OcxTool, "namespace" | "name">): string[] {
+  const aliases = new Set(toolChoiceAliases(tool));
+  if (isBareCodexShellBridgeTool(tool)) {
+    for (const alias of CODEX_SHELL_BRIDGE_TOOL_NAMES) aliases.add(alias);
+  }
+  return [...aliases];
+}
+
+function cursorToolChoiceMatches(
+  tool: Pick<OcxTool, "namespace" | "name">,
+  choiceName: string,
+): boolean {
+  if (tool.name === choiceName || cursorToolWireName(tool) === choiceName) return true;
+  const aliases = cursorToolChoiceAliases(tool);
+  if (aliases.includes(choiceName)) return true;
+  return resolveShellBridgeAliasKey(choiceName, alias => aliases.includes(alias) ? alias : undefined) !== undefined;
+}
+
 export function isBareCodexShellBridgeTool(tool: Pick<OcxTool, "namespace" | "name">): boolean {
   return !tool.namespace && isCodexShellBridgeToolName(tool.name);
 }
@@ -140,17 +158,27 @@ export function cursorToolInputSchema(tool: OcxTool): unknown {
  */
 export function cursorToolArgNormalizeSchema(tool: OcxTool): unknown {
   if (isBareCodexShellBridgeTool(tool)) {
-    return shellBridgeArgNormalizeSchema(tool.parameters);
+    return shellBridgeArgNormalizeSchema(tool);
   }
   return tool.parameters ?? {};
 }
 
-function shellBridgeArgNormalizeSchema(parameters: unknown): unknown {
+function shellBridgeArgNormalizeSchema(tool: OcxTool): unknown {
+  const parameters = tool.parameters;
   if (!parameters || typeof parameters !== "object") return CODEX_SHELL_BRIDGE_ARG_NORMALIZE_SCHEMA;
   const base = parameters as Record<string, unknown>;
   const rawProps = base.properties && typeof base.properties === "object"
     ? { ...(base.properties as Record<string, unknown>) }
     : {};
+  const required = Array.isArray(base.required) ? [...base.required as unknown[]] : [];
+  const requiresCommand = required.includes("command") || "command" in rawProps;
+  const requiresCmd = required.includes("cmd") || "cmd" in rawProps;
+  const shouldRewriteCmdToCommand = tool.name === CODEX_SHELL_COMMAND_TOOL || requiresCommand;
+
+  if (!shouldRewriteCmdToCommand && requiresCmd) {
+    return parameters;
+  }
+
   // Drop Cursor-preferred aliases so normalizeArgKeys can rewrite them to Responses keys.
   delete rawProps.cmd;
   const properties = {
@@ -162,9 +190,7 @@ function shellBridgeArgNormalizeSchema(parameters: unknown): unknown {
     ...base,
     type: "object",
     properties,
-    required: Array.isArray(base.required) && (base.required as unknown[]).includes("command")
-      ? base.required
-      : ["command"],
+    required: requiresCommand ? required : ["command"],
   };
 }
 
@@ -293,9 +319,9 @@ export function cursorToolAllowedByChoice(tool: Pick<OcxTool, "namespace" | "nam
   if (!toolChoice || toolChoice === "auto" || toolChoice === "required") return true;
   if (toolChoice === "none") return false;
   if ("allowedTools" in toolChoice) {
-    return toolChoice.allowedTools.includes(tool.name) || toolChoice.allowedTools.includes(cursorToolWireName(tool));
+    return toolChoice.allowedTools.some(choiceName => cursorToolChoiceMatches(tool, choiceName));
   }
-  return tool.name === toolChoice.name || cursorToolWireName(tool) === toolChoice.name;
+  return cursorToolChoiceMatches(tool, toolChoice.name);
 }
 
 function quotedNames(names: readonly string[]): string {

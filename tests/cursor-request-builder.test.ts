@@ -329,6 +329,20 @@ describe("Cursor request builder", () => {
     expect(cursorMcpToolsEncodedSize(budget.tools, "auto")).toBeLessThanOrEqual(CURSOR_TOOL_BYTES_LIMIT);
   });
 
+  test("keeps the shell bridge when tool_choice names the exec_command alias", () => {
+    const regular = Array.from({ length: CURSOR_TOOL_COUNT_LIMIT + 20 }, (_, index) => ({
+      name: `regular_${index}`,
+      namespace: "mcp__regular",
+      description: "Regular",
+      parameters: {},
+    }));
+    const shell = { name: "shell_command", description: "Run", parameters: {} };
+    const budget = applyCursorToolBudget([...regular, shell], { name: "exec_command" });
+
+    expect(budget.tools).toEqual([shell]);
+    expect(budget.omitted).toEqual([]);
+  });
+
   test("keeps shell_command even when a large apply_patch would otherwise consume the byte budget first", () => {
     const hugePatch = {
       name: "apply_patch",
