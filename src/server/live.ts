@@ -45,6 +45,31 @@ const LIVE_RELAY_HEADERS = ["content-type", "location"] as const;
 /** AVAS WebRTC call-create query (openai/codex `configure_realtime_call_request`). */
 export const LIVE_AVAS_QUERY = "intent=quicksilver&architecture=avas";
 
+/**
+ * Client protocol headers relayed verbatim to the upstream on call-create and sideband upgrade.
+ * `openai-alpha: quicksilver=v2` carries the Frameless protocol negotiation — without it the
+ * ChatGPT backend validates the type-less Frameless session as v1 quicksilver and 400s
+ * (openai/codex `realtime_request_headers`, core/src/realtime_conversation.rs). Auth headers
+ * (`authorization`, `chatgpt-account-id`) stay proxy-owned and are never taken from this list.
+ */
+export const LIVE_CLIENT_PROTOCOL_HEADERS = [
+  "openai-alpha",
+  "x-session-id",
+  "session-id",
+  "thread-id",
+  "originator",
+  "x-oai-attestation",
+] as const;
+
+function clientProtocolHeaders(reqHeaders: Headers): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const name of LIVE_CLIENT_PROTOCOL_HEADERS) {
+    const value = reqHeaders.get(name);
+    if (value != null && value !== "") out[name] = value;
+  }
+  return out;
+}
+
 const LIVE_CALL_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 export type LiveSidebandTarget =
@@ -323,7 +348,8 @@ export async function resolveLiveRelay(
     }
   }
 
-  const headers: Record<string, string> = {};
+  // Client protocol headers first so provider/auth headers below always win on conflict.
+  const headers: Record<string, string> = clientProtocolHeaders(req.headers);
   if (forward) {
     const { provider } = forward;
     if (provider.headers) Object.assign(headers, provider.headers);

@@ -215,6 +215,83 @@ test("POST /v1/live relays to an OpenAI API-key provider at /v1/realtime/calls",
   }
 });
 
+test("call-create forwards Frameless protocol headers and keeps auth pool-owned", async () => {
+  const captured: CapturedRequest[] = [];
+  const upstream = fakeLiveUpstream(captured);
+  saveConfig(forwardConfig());
+
+  const server = startServer(0);
+  try {
+    const { body, contentType } = multipartLiveBody("v=0-offer", { model: "gpt-live", instructions: "hi" });
+    const response = await fetch(new URL("/v1/live", server.url), {
+      method: "POST",
+      headers: {
+        "content-type": contentType,
+        authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
+        "chatgpt-account-id": "acct-123",
+        "openai-alpha": "quicksilver=v2",
+        "x-session-id": "rts_123",
+        "session-id": "sess_abc",
+        "thread-id": "thread_def",
+        originator: "codex_app",
+        "x-oai-attestation": "attest-blob",
+        // Must NOT be forwarded: account-derived compliance header.
+        "x-openai-fedramp": "true",
+      },
+      body,
+    });
+    expect(response.status).toBe(201);
+
+    expect(captured).toHaveLength(1);
+    const headers = captured[0].headers;
+    expect(headers.get("openai-alpha")).toBe("quicksilver=v2");
+    expect(headers.get("x-session-id")).toBe("rts_123");
+    expect(headers.get("session-id")).toBe("sess_abc");
+    expect(headers.get("thread-id")).toBe("thread_def");
+    expect(headers.get("originator")).toBe("codex_app");
+    expect(headers.get("x-oai-attestation")).toBe("attest-blob");
+    expect(headers.get("x-openai-fedramp")).toBeNull();
+    // Auth stays proxy-resolved, not blindly copied from the whitelist path.
+    expect(headers.get("authorization")).toBe(`Bearer ${DIRECT_CHATGPT_TOKEN}`);
+    expect(headers.get("chatgpt-account-id")).toBe("acct-123");
+  } finally {
+    await server.stop(true);
+    await upstream.stop(true);
+  }
+});
+
+test("call-create without protocol headers does not invent them upstream", async () => {
+  const captured: CapturedRequest[] = [];
+  const upstream = fakeLiveUpstream(captured);
+  saveConfig(forwardConfig());
+
+  const server = startServer(0);
+  try {
+    const { body, contentType } = multipartLiveBody("v=0-offer", { model: "gpt-live", instructions: "hi" });
+    const response = await fetch(new URL("/v1/live", server.url), {
+      method: "POST",
+      headers: {
+        "content-type": contentType,
+        authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
+        "chatgpt-account-id": "acct-123",
+      },
+      body,
+    });
+    expect(response.status).toBe(201);
+    expect(captured).toHaveLength(1);
+    const headers = captured[0].headers;
+    expect(headers.get("openai-alpha")).toBeNull();
+    expect(headers.get("x-session-id")).toBeNull();
+    expect(headers.get("session-id")).toBeNull();
+    expect(headers.get("thread-id")).toBeNull();
+    expect(headers.get("originator")).toBeNull();
+    expect(headers.get("x-oai-attestation")).toBeNull();
+  } finally {
+    await server.stop(true);
+    await upstream.stop(true);
+  }
+});
+
 test("POST /v1/realtime/calls is accepted and relays like /v1/live", async () => {
   const captured: CapturedRequest[] = [];
   const upstream = fakeLiveUpstream(captured, 201, "/v1/realtime/calls/rtc_codex");
@@ -287,6 +364,12 @@ test("OPTIONS preflight allows ChatGPT-Account-Id for voice clients", async () =
     expect(response.status).toBe(204);
     const allowed = response.headers.get("Access-Control-Allow-Headers") ?? "";
     expect(allowed.toLowerCase()).toContain("chatgpt-account-id");
+    expect(allowed.toLowerCase()).toContain("openai-alpha");
+    expect(allowed.toLowerCase()).toContain("x-session-id");
+    expect(allowed.toLowerCase()).toContain("session-id");
+    expect(allowed.toLowerCase()).toContain("thread-id");
+    expect(allowed.toLowerCase()).toContain("originator");
+    expect(allowed.toLowerCase()).toContain("x-oai-attestation");
   } finally {
     await server.stop(true);
   }
@@ -386,12 +469,14 @@ test("a routed pool account's token overrides the caller bearer on the live rela
 
 test("sideband GET /v1/live/{callId} upgrades and relays bidirectionally to ChatGPT backend", async () => {
   const seenPaths: string[] = [];
+  const seenUpgradeHeaders: Headers[] = [];
   const upstream = Bun.serve({
     port: 0,
     fetch(req, server) {
       const url = new URL(req.url);
       if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
         seenPaths.push(url.pathname);
+        seenUpgradeHeaders.push(req.headers);
         if (server.upgrade(req, { data: {} })) return undefined as unknown as Response;
         return new Response("upgrade failed", { status: 500 });
       }
@@ -428,6 +513,8 @@ test("sideband GET /v1/live/{callId} upgrades and relays bidirectionally to Chat
       headers: {
         authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
         "chatgpt-account-id": "acct-123",
+        "openai-alpha": "quicksilver=v2",
+        "x-session-id": "rts_side",
       },
     } as unknown as string[]);
 
@@ -440,6 +527,10 @@ test("sideband GET /v1/live/{callId} upgrades and relays bidirectionally to Chat
         try {
           expect(String(event.data)).toBe("echo:ping-sideband");
           expect(seenPaths).toContain("/backend-api/codex/rtc_sideband");
+          expect(seenUpgradeHeaders).toHaveLength(1);
+          expect(seenUpgradeHeaders[0].get("openai-alpha")).toBe("quicksilver=v2");
+          expect(seenUpgradeHeaders[0].get("x-session-id")).toBe("rts_side");
+          expect(seenUpgradeHeaders[0].get("authorization")).toBe(`Bearer ${DIRECT_CHATGPT_TOKEN}`);
           clearTimeout(timer);
           resolve();
         } catch (err) {
