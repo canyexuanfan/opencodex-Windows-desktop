@@ -435,8 +435,12 @@ export function bridgeToResponsesSSE(
       let macrotaskFired = true;
       let macrotaskTimer: ReturnType<typeof setTimeout> | undefined;
 
+      const it = events[Symbol.asyncIterator]();
       try {
-        for await (const event of events) {
+        while (true) {
+          const next = await it.next();
+          if (next.done) break;
+          const event = next.value;
           if (!macrotaskFired && emittedSinceYield) {
             await new Promise<void>(r => setTimeout(r, 0));
             macrotaskFired = true;
@@ -660,7 +664,8 @@ export function bridgeToResponsesSSE(
                     reason: event.stopReason === "max_tokens" ? "max_output_tokens" : "content_filter",
                   },
                 };
-                // Still cache the partial output so previous_response_id replay works.
+                // Cache max-output partials so previous_response_id replay can continue them;
+                // rememberResponseState rejects content-filtered incomplete responses.
                 options?.onCompletedResponse?.(response, event.providerState);
                 emit("response.incomplete", { response });
                 reportTerminal("incomplete");
@@ -722,19 +727,32 @@ export function bridgeToResponsesSSE(
               break;
             }
           }
+          if (terminated) onCancel?.();
+          if (terminated) break;
         }
       } catch (err) {
-        flushHiddenRawReasoning();
-        if (currentWebSearch) closeCurrentWebSearch("failed", []);
-        emit("response.failed", {
-          response: {
-            ...responseSnapshot("failed", finishedItems),
-            error: responseError(500, "proxy_error", err instanceof Error ? err.message : String(err)),
-            last_error: responseError(500, "proxy_error", err instanceof Error ? err.message : String(err)),
-          },
-        });
-        reportTerminal("failed");
-        terminated = true;
+        if (!terminated) {
+          flushHiddenRawReasoning();
+          if (currentWebSearch) closeCurrentWebSearch("failed", []);
+          emit("response.failed", {
+            response: {
+              ...responseSnapshot("failed", finishedItems),
+              error: responseError(500, "proxy_error", err instanceof Error ? err.message : String(err)),
+              last_error: responseError(500, "proxy_error", err instanceof Error ? err.message : String(err)),
+            },
+          });
+          reportTerminal("failed");
+          terminated = true;
+          onCancel?.();
+        }
+      }
+
+      if (terminated) {
+        try {
+          void it.return?.()?.catch(() => {});
+        } catch {
+          /* synchronous iterator cleanup failure is also best-effort */
+        }
       }
 
       if (beat) clearInterval(beat);
