@@ -6,14 +6,32 @@
 // ---------------------------------------------------------------------------
 
 /**
- * Strip HTML comments, "No response" placeholders, and trim whitespace.
+ * True when the entire meaningful value is a placeholder-only token.
+ * Supports harmless Markdown emphasis/code markers and trailing punctuation.
+ * Sentences that merely contain a placeholder phrase are not matches.
+ */
+const PLACEHOLDER_ONLY_RE =
+  /^[\s_*~`]*(?:no\s+response|n\/?a|not\s+applicable|not\s+available|none|todo|tbd)[\s_*~`]*[.!?]*$/i;
+
+function isPlaceholderOnlyValue(raw) {
+  if (typeof raw !== "string") return false;
+  const withoutComments = raw.replace(/<!--[\s\S]*?-->/g, "").trim();
+  if (!withoutComments) return false;
+  return PLACEHOLDER_ONLY_RE.test(withoutComments);
+}
+
+/**
+ * Strip HTML comments, placeholder-only values, and trim whitespace.
  */
 function clean(raw) {
   if (typeof raw !== "string") return "";
   let s = raw.replace(/<!--[\s\S]*?-->/g, "");
-  // Treat GitHub's "No response" placeholder as empty.
-  s = s.replace(/^[\s_*]*No response[\s_*]*$/gim, "");
-  s = s.replace(/^[\s_*]*(na|n\/a|not applicable|not available)[\s_*]*$/gim, "");
+  // Treat placeholder-only lines (GitHub "No response", N/A, etc.) as empty.
+  s = s
+    .split("\n")
+    .map((line) => (isPlaceholderOnlyValue(line) ? "" : line))
+    .join("\n");
+  if (isPlaceholderOnlyValue(s)) return "";
   return s.trim();
 }
 
@@ -330,35 +348,19 @@ function allRepeatTitle(sections, title) {
 }
 
 function isPlaceholder(text) {
-  if (typeof text !== "string") return false;
-  const trimmed = text.trim();
-  if (!trimmed) return false;
-  const lower = trimmed.toLowerCase();
-  if (
-    lower === "no response" ||
-    lower === "na" ||
-    lower === "n/a" ||
-    lower === "not applicable" ||
-    lower === "not available" ||
-    lower === "none" ||
-    lower === "todo" ||
-    lower === "tbd" ||
-    /^_no response_$/i.test(trimmed)
-  ) {
-    return true;
-  }
-  const c = clean(text);
-  if (!c) return false;
-  const cleanedLower = c.toLowerCase();
-  return cleanedLower === "none" || cleanedLower === "todo" || cleanedLower === "tbd";
+  return isPlaceholderOnlyValue(text);
 }
 
 function countWords(text) {
   const c = clean(text);
   if (!c) return 0;
   const spaced = (c.match(/\b[\p{L}\p{N}']+\b/gu) || []).length;
-  if (spaced > 0) return spaced;
-  return (c.match(/\p{L}/gu) || []).length;
+  const letters = (c.match(/\p{L}/gu) || []).length;
+  if (spaced === 0) return letters;
+  if (letters >= 8 && /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(c) && spaced < letters) {
+    return letters;
+  }
+  return spaced;
 }
 
 function hasConcreteDetail(text) {
@@ -376,19 +378,17 @@ function isTooTerseFeatureSection(text) {
   const words = countWords(text);
   if (words >= 8) return false;
   if (words >= 6 && hasConcreteDetail(text)) return false;
-  return !hasConcreteDetail(text);
+  return true;
 }
 
 /**
- * Check if raw section text is a GitHub "No response" placeholder variant
- * without stripping it first. Used to distinguish intentionally blank optional
- * fields from actively cleared required fields.
+ * Check if raw section text is a placeholder-only variant without relying on
+ * clean() first. Used to distinguish intentionally blank optional fields
+ * (legacy "No response" / N/A) from actively cleared required fields.
  */
 function isRawPlaceholder(raw) {
   if (raw === null) return false;
-  const trimmed = raw.trim();
-  if (!trimmed) return false;
-  return /^[\s_*]*no response[\s_*]*$/i.test(trimmed);
+  return isPlaceholderOnlyValue(raw);
 }
 
 /**
@@ -638,6 +638,47 @@ function shouldReopen(botState, issue, maintainerOverride) {
   return true;
 }
 
+/**
+ * workflow_dispatch accepts a bare issue number, but GitHub reuses the same
+ * number namespace for issues and pull requests. Reject PR targets before any
+ * validation or mutation runs.
+ *
+ * @param {{ pull_request?: unknown }} issue
+ * @param {number|string} issueNumber
+ * @param {string} eventName
+ * @returns {string|null}
+ */
+function rejectsWorkflowDispatchPullRequest(issue, issueNumber, eventName) {
+  if (eventName !== "workflow_dispatch") return null;
+  if (!issue?.pull_request) return null;
+  return `#${issueNumber} is a pull request. This workflow only accepts issue numbers.`;
+}
+
+/**
+ * workflow_dispatch can be started from a selected branch. Reject runs whose
+ * selected ref is not the repository default branch so untrusted branch code
+ * cannot drive issue mutations with issues:write.
+ *
+ * @param {string} eventName
+ * @param {string|null|undefined} ref
+ * @param {string|null|undefined} defaultBranch
+ * @returns {string|null}
+ */
+function rejectsWorkflowDispatchNonDefaultBranch(eventName, ref, defaultBranch) {
+  if (eventName !== "workflow_dispatch") return null;
+  if (!defaultBranch || typeof defaultBranch !== "string") {
+    return "workflow_dispatch requires repository.default_branch to be available.";
+  }
+  const expected = `refs/heads/${defaultBranch}`;
+  if (ref !== expected) {
+    return (
+      `workflow_dispatch must run from the default branch (${defaultBranch}); ` +
+      `selected ref was ${ref || "(empty)"}.`
+    );
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
@@ -652,8 +693,12 @@ module.exports = {
   validateIssue,
   shouldReopen,
   shouldEnforceClosure,
+  isPlaceholderOnlyValue,
+  isPlaceholder,
   isRawPlaceholder,
   labelForKind,
   KIND_TO_LABEL,
   hasSubstantialStructuredContent,
+  rejectsWorkflowDispatchPullRequest,
+  rejectsWorkflowDispatchNonDefaultBranch,
 };

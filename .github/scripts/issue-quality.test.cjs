@@ -12,7 +12,27 @@ const {
   shouldReopen,
   shouldEnforceClosure,
   labelForKind,
+  isPlaceholderOnlyValue,
+  isPlaceholder,
+  isRawPlaceholder,
+  rejectsWorkflowDispatchPullRequest,
+  rejectsWorkflowDispatchNonDefaultBranch,
 } = require("./issue-quality.cjs");
+
+function featureBodyWithGoal(goal) {
+  return [
+    "### Area",
+    "CLI",
+    "### What are you trying to accomplish?",
+    goal,
+    "### What prevents this today?",
+    "Port resets to 10100 after every ocx stop command.",
+    "### What should OpenCodex do?",
+    "Persist the last used port in config across restarts.",
+    "### Example usage or interface",
+    "ocx start --port 8080 && ocx stop && ocx start",
+  ].join("\n");
+}
 
 // ---------------------------------------------------------------------------
 // Detection
@@ -188,19 +208,35 @@ describe("validateIssue - feature", () => {
   });
 
   it("rejects feature reports with placeholder example variants", () => {
-    const body = [
-      "### What are you trying to accomplish?",
-      "Route voice requests to a configured fallback provider when the primary quota is exhausted.",
-      "### What prevents this today?",
-      "Voice mode is hard-wired to the primary Codex quota and cannot switch providers.",
-      "### What should OpenCodex do?",
-      "Expose a setting to choose the fallback voice model and provider.",
-      "### Example usage or interface",
+    const placeholders = [
+      "NA",
       "N/A",
-    ].join("\n");
-    const result = validateIssue({ title: "Voice fallback routing", body, labels: ["enhancement"] });
-    assert.equal(result.valid, false);
-    assert.ok(result.reasons.some((r) => r.includes("placeholder")));
+      "_N/A_",
+      "NA.",
+      "N/A.",
+      "Not applicable",
+      "Not applicable.",
+      "Not available!",
+    ];
+    for (const example of placeholders) {
+      const body = [
+        "### What are you trying to accomplish?",
+        "Route voice requests to a configured fallback provider when the primary quota is exhausted.",
+        "### What prevents this today?",
+        "Voice mode is hard-wired to the primary Codex quota and cannot switch providers.",
+        "### What should OpenCodex do?",
+        "Expose a setting to choose the fallback voice model and provider.",
+        "### Example usage or interface",
+        example,
+      ].join("\n");
+      const result = validateIssue({ title: "Voice fallback routing", body, labels: ["enhancement"] });
+      assert.equal(result.valid, false, `Expected placeholder example "${example}" to be invalid`);
+      assert.ok(
+        result.reasons.some((r) => r.includes("placeholder")),
+        `Expected placeholder reason for "${example}", got: ${result.reasons.join("; ")}`,
+      );
+      assert.ok(!result.reasons.some((r) => r.includes("example usage")));
+    }
   });
 
   it("reports blank example usage as missing, not placeholder", () => {
@@ -248,6 +284,44 @@ describe("validateIssue - feature", () => {
     const result = validateIssue({ title: "\u652f\u6301\u591a\u63d0\u4f9b\u5546\u6545\u969c\u8f6c\u79fb", body, labels: ["enhancement"] });
     assert.equal(result.kind, "feature");
     assert.equal(result.valid, true);
+  });
+
+  it("rejects terse goal sections that only contain a keyword, digit, or punctuation", () => {
+    const terseGoals = ["API", "provider", "1", "/", "use CLI", "route 1"];
+    for (const goal of terseGoals) {
+      const result = validateIssue({
+        title: "Improve feature request quality",
+        body: featureBodyWithGoal(goal),
+        labels: ["enhancement"],
+      });
+      assert.equal(result.kind, "feature");
+      assert.equal(result.valid, false, `Expected terse goal "${goal}" to be invalid`);
+      assert.ok(
+        result.reasons.some((r) => r.includes("too vague")),
+        `Expected too vague reason for "${goal}", got: ${result.reasons.join(", ")}`,
+      );
+    }
+  });
+
+  it("accepts sufficiently detailed goal sections", () => {
+    const detailedGoal =
+      "Expose a dashboard setting to choose the fallback voice model and provider.";
+    const detailedResult = validateIssue({
+      title: "Voice fallback routing",
+      body: featureBodyWithGoal(detailedGoal),
+      labels: ["enhancement"],
+    });
+    assert.equal(detailedResult.kind, "feature");
+    assert.equal(detailedResult.valid, true);
+
+    const concreteGoal = "Route voice requests through the configured fallback API provider.";
+    const concreteResult = validateIssue({
+      title: "Voice fallback routing",
+      body: featureBodyWithGoal(concreteGoal),
+      labels: ["enhancement"],
+    });
+    assert.equal(concreteResult.kind, "feature");
+    assert.equal(concreteResult.valid, true);
   });
 });
 
@@ -326,6 +400,29 @@ describe("validateIssue - bug", () => {
     const result = validateIssue({ title: "[Bug]: crash", body, labels: ["bug"] });
     assert.equal(result.kind, "bug");
     assert.equal(result.valid, true, `Expected valid but got: ${result.reasons.join(", ")}`);
+  });
+
+  it("accepts a legacy bug with N/A-style placeholders in Version and Operating system", () => {
+    for (const placeholder of ["N/A", "NA", "Not applicable.", "Not available!"]) {
+      const body = [
+        "### Summary",
+        "Proxy crashes on startup when streaming is enabled.",
+        "### Reproduction",
+        "Run ocx start and send any streaming request.",
+        "### Version",
+        placeholder,
+        "### Operating system",
+        placeholder,
+      ].join("\n");
+      const result = validateIssue({ title: "[Bug]: crash", body, labels: ["bug"] });
+      assert.equal(result.kind, "bug");
+      assert.equal(
+        result.valid,
+        true,
+        `Expected legacy env placeholder "${placeholder}" to remain valid, got: ${result.reasons.join(", ")}`,
+      );
+      assert.ok(!result.reasons.some((r) => r.includes("Version")));
+    }
   });
 
   it("rejects a new-form bug where env fields were actively cleared", () => {
@@ -483,7 +580,45 @@ describe("normalisation", () => {
 
   it("treats NA and not applicable as placeholders", () => {
     assert.equal(clean("NA"), "");
+    assert.equal(clean("N/A"), "");
+    assert.equal(clean("_N/A_"), "");
+    assert.equal(clean("NA."), "");
+    assert.equal(clean("N/A."), "");
     assert.equal(clean("not applicable"), "");
+    assert.equal(clean("Not applicable."), "");
+    assert.equal(clean("Not available!"), "");
+  });
+
+  it("does not treat sentences containing placeholder phrases as empty", () => {
+    assert.equal(clean("This is N/A for voice mode today."), "This is N/A for voice mode today.");
+    assert.equal(clean("Not applicable to Claude Code."), "Not applicable to Claude Code.");
+  });
+
+  it("shares one placeholder matcher across clean, isPlaceholder, and isRawPlaceholder", () => {
+    const placeholders = [
+      "No response",
+      "NA",
+      "N/A",
+      "_N/A_",
+      "NA.",
+      "N/A.",
+      "None",
+      "Todo",
+      "TBD",
+      "Not applicable",
+      "Not applicable.",
+      "Not available!",
+    ];
+    for (const value of placeholders) {
+      assert.equal(isPlaceholderOnlyValue(value), true, value);
+      assert.equal(isPlaceholder(value), true, value);
+      assert.equal(isRawPlaceholder(value), true, value);
+      assert.equal(clean(value), "", value);
+    }
+    assert.equal(isPlaceholderOnlyValue("Route voice traffic to provider N/A fallback"), false);
+    assert.equal(isPlaceholder("use CLI"), false);
+    assert.equal(isRawPlaceholder(""), false);
+    assert.equal(isRawPlaceholder(null), false);
   });
 
   it("strips HTML comments", () => {
@@ -810,5 +945,51 @@ describe("labelForKind", () => {
     assert.equal(labelForKind("provider-compatibility"), "provider-compatibility");
     assert.equal(labelForKind(null), null);
     assert.equal(labelForKind("unknown"), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// workflow_dispatch guards
+// ---------------------------------------------------------------------------
+
+describe("rejectsWorkflowDispatchPullRequest", () => {
+  it("rejects pull request numbers on workflow_dispatch", () => {
+    assert.equal(
+      rejectsWorkflowDispatchPullRequest({ pull_request: {} }, 423, "workflow_dispatch"),
+      "#423 is a pull request. This workflow only accepts issue numbers.",
+    );
+  });
+
+  it("allows issues and non-dispatch events", () => {
+    assert.equal(rejectsWorkflowDispatchPullRequest({ pull_request: {} }, 423, "issues"), null);
+    assert.equal(rejectsWorkflowDispatchPullRequest({}, 42, "workflow_dispatch"), null);
+  });
+});
+
+describe("rejectsWorkflowDispatchNonDefaultBranch", () => {
+  it("rejects workflow_dispatch runs that are not on the default branch", () => {
+    assert.equal(
+      rejectsWorkflowDispatchNonDefaultBranch(
+        "workflow_dispatch",
+        "refs/heads/fix/issue-quality-low-effort-reports",
+        "main",
+      ),
+      "workflow_dispatch must run from the default branch (main); selected ref was refs/heads/fix/issue-quality-low-effort-reports.",
+    );
+  });
+
+  it("allows default-branch dispatches and normal issue events", () => {
+    assert.equal(
+      rejectsWorkflowDispatchNonDefaultBranch("workflow_dispatch", "refs/heads/main", "main"),
+      null,
+    );
+    assert.equal(
+      rejectsWorkflowDispatchNonDefaultBranch(
+        "issues",
+        "refs/heads/fix/issue-quality-low-effort-reports",
+        "main",
+      ),
+      null,
+    );
   });
 });
