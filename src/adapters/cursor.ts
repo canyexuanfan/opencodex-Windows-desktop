@@ -5,7 +5,7 @@ import { isCursorBenignCancelError, isCursorInvalidArgumentError, safeCursorErro
 import { isCursorExternalWireModel } from "./cursor/discovery";
 import { createCursorKvStore, type CursorKvStore } from "./cursor/kv-store";
 import { mapCursorServerMessage } from "./cursor/message-mapper";
-import { createCursorRequest, generatedCursorConversationId } from "./cursor/request-builder";
+import { createCursorRequest } from "./cursor/request-builder";
 import {
   createLiveCursorTransport,
   CursorMissingCredentialError,
@@ -77,16 +77,17 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
         const makeTransport = deps.createTransport ?? createLiveCursorTransport;
         const kv = deps.kv ?? createCursorKvStore();
         const rekeyContextUsage = deps.rekeyContextUsage ?? rekeyCursorContextUsage;
-        _parsed._cursorConversationId ??= generatedCursorConversationId();
         const previousConversationId = _parsed._cursorConversationId;
         let request = createCursorRequest(_parsed);
-        // Keep remembered conversation id in sync when the request builder mints a fresh id
-        // for external-model tool-result continuations (stateless replay).
-        if (request.conversationId !== previousConversationId) {
+        // The builder may derive a stable provider id from the client thread when Responses state
+        // is unavailable. Rekey only existing state; there is nothing to migrate on a fresh turn.
+        if (previousConversationId && request.conversationId !== previousConversationId) {
           rekeyContextUsage(previousConversationId, request.conversationId);
         }
         _parsed._cursorConversationId = request.conversationId;
         let emittedOutput = false;
+        let replayUnsafe = false;
+        const lastRawIsToolResult = _parsed.context.messages.at(-1)?.role === "toolResult";
 
         const runOnce = async (activeRequest: ReturnType<typeof createCursorRequest>) => {
           await runCursorTurnWithRetry(
@@ -103,6 +104,7 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
                 emit({ type: "error", message: "Cursor turn was aborted." });
                 return;
               }
+              if (message.type === "local_side_effect") replayUnsafe = true;
               const events = mapCursorServerMessage(message, {
                 kv,
                 writeClient: clientMessage => {
@@ -126,7 +128,9 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
           if (
             !isCursorInvalidArgumentError(err)
             || !isCursorExternalWireModel(request.modelId)
+            || lastRawIsToolResult
             || emittedOutput
+            || replayUnsafe
             || incoming.abortSignal?.aborted
           ) {
             throw err;

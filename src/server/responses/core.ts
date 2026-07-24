@@ -661,6 +661,8 @@ export async function handleResponses(
     if (previousResponseInputExpanded) parsed._previousResponseInputExpanded = true;
     parsed._providerContinuation = previousResponseProviderState(parsed.previousResponseId);
     parsed._cursorConversationId = parsed._providerContinuation?.cursor?.conversationId;
+    const clientThreadId = req.headers.get("x-codex-parent-thread-id")?.trim();
+    if (clientThreadId) parsed._clientThreadId = clientThreadId;
   } catch (err) {
     return formatErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   OcxAssistantContentPart,
   OcxContentPart,
@@ -8,7 +9,7 @@ import type {
 } from "../../types";
 import { isAllowedToolChoice, namespacedToolName, toolChoiceAliases, type OcxTool, type OcxToolChoice } from "../../types";
 import type { CursorRequestMessage, CursorRunRequest } from "./types";
-import { cursorWireModelSelection, isCursorExternalWireModel, type CursorRoutingLevel } from "./discovery";
+import { cursorWireModelSelection, isCursorNativeWireModel, type CursorRoutingLevel } from "./discovery";
 import { cursorEffortSuffix } from "./effort-map";
 import {
   cursorMcpToolEncodedSize,
@@ -159,6 +160,52 @@ export function generatedCursorConversationId(): string {
   return `cursor_${crypto.randomUUID().replace(/-/g, "")}`;
 }
 
+/** Derive an opaque provider-scoped Cursor id from the upstream client's conversation identity. */
+export function cursorConversationIdFromClientThread(threadId: string): string {
+  const digest = createHash("sha256")
+    .update("ocx:cursor:thread:")
+    .update(threadId)
+    .digest("hex")
+    .slice(0, 32);
+  return `cursor_${digest}`;
+}
+
+/**
+ * Stable Cursor conversation id derived from Codex's prompt_cache_key.
+ * Native Composer only: used when previous_response_id state and thread headers are missing but
+ * the client still replays full history under store:false.
+ */
+export function stableCursorConversationIdFromPromptCacheKey(promptCacheKey: string): string {
+  const digest = createHash("sha256")
+    .update("ocx-cursor-conv:")
+    .update(promptCacheKey)
+    .digest("hex")
+    .slice(0, 32);
+  return `cursor_${digest}`;
+}
+
+/**
+ * Resolve the Cursor conversation id for this turn.
+ * Priority: force-fresh → remembered → client thread → native+prompt_cache_key → random.
+ * Never use OpenAI Responses `previous_response_id` (resp_*) — different namespace.
+ */
+export function resolveCursorConversationId(
+  parsed: OcxParsedRequest,
+  wireModelId: string,
+  options: CreateCursorRequestOptions = {},
+): string {
+  if (options.forceFreshConversation === true) return generatedCursorConversationId();
+  if (parsed._cursorConversationId) return parsed._cursorConversationId;
+  if (parsed._clientThreadId) return cursorConversationIdFromClientThread(parsed._clientThreadId);
+  // Native composer/auto only: pin to prompt_cache_key so store:false full-history turns still
+  // share one Cursor conversation. External models skip this to avoid cross-thread collisions.
+  if (isCursorNativeWireModel(wireModelId)) {
+    const key = parsed.options.promptCacheKey?.trim();
+    if (key) return stableCursorConversationIdFromPromptCacheKey(key);
+  }
+  return generatedCursorConversationId();
+}
+
 export interface CreateCursorRequestOptions {
   /** Force a brand-new Cursor conversation id even when remembered state exists. */
   forceFreshConversation?: boolean;
@@ -176,23 +223,10 @@ export function createCursorRequest(
   const budget = applyCursorToolBudget(visibleTools, parsed.options.toolChoice);
   const limitNote = catalogLimitNote(budget.tools, budget.omitted);
   const model = normalizeCursorModelId(parsed.modelId, parsed.options.reasoning);
-  const lastRaw = parsed.context.messages.at(-1);
-  // External Cursor models (e.g. gpt-5.6-sol) can corrupt server-side conversation state across
-  // tool-result continuations when ResumeAction reuses the same conversationId. Force a fresh id
-  // so the full history is replayed without depending on that state.
-  const forceFreshConversation =
-    options.forceFreshConversation === true
-    || (lastRaw?.role === "toolResult" && isCursorExternalWireModel(model.modelId));
   return {
     modelId: model.modelId,
     ...(model.routingLevel ? { routingLevel: model.routingLevel } : {}),
-    // The Cursor conversation id comes ONLY from remembered state (_cursorConversationId). Do NOT fall
-    // back to the OpenAI Responses previous_response_id (resp_*): that is a Responses-chain id in a
-    // different namespace and would start an unrelated Cursor conversation, breaking tool-result
-    // continuation. If we have no remembered Cursor conversation, start a fresh one.
-    conversationId: forceFreshConversation
-      ? generatedCursorConversationId()
-      : (parsed._cursorConversationId ?? generatedCursorConversationId()),
+    conversationId: resolveCursorConversationId(parsed, model.modelId, options),
     system: [...(parsed.context.systemPrompt ?? []), ...(limitNote ? [limitNote] : [])],
     messages,
     rawMessages: parsed.context.messages,

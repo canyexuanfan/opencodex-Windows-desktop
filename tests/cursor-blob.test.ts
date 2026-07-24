@@ -2,7 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { create, fromBinary } from "@bufbuild/protobuf";
 import { handleCursorNativeKv, storeCursorBlob } from "../src/adapters/cursor/native-exec";
-import { CURSOR_ROUTING_LEVEL_PARAMETER_ID, encodeCursorRunRequest } from "../src/adapters/cursor/protobuf-request";
+import {
+  CURSOR_EXTERNAL_ROOT_BYTE_LIMIT,
+  CURSOR_EXTERNAL_ROOT_BLOB_LIMIT,
+  CURSOR_ROUTING_LEVEL_PARAMETER_ID,
+  encodeCursorRunRequest,
+} from "../src/adapters/cursor/protobuf-request";
 import {
   AgentClientMessageSchema,
   ConversationStepSchema,
@@ -81,6 +86,66 @@ describe("Cursor blob handshake", () => {
     expect(run?.mcpTools?.mcpTools[0]?.toolName).toBe("mcp__fs__read_file");
   });
 
+  test("caps external root replay while preserving system and newest history", () => {
+    const rawMessages = Array.from({ length: 210 }, (_, index) =>
+      index % 2 === 0
+        ? { role: "user" as const, content: `user-${index}`, timestamp: index }
+        : {
+            role: "assistant" as const,
+            model: "cursor/gpt-5.6-sol",
+            content: [{ type: "text" as const, text: `assistant-${index}` }],
+            timestamp: index,
+          });
+    rawMessages.push({ role: "user", content: "active-user", timestamp: 211 });
+    const bytes = encodeCursorRunRequest({
+      modelId: "gpt-5.6-sol-xhigh",
+      conversationId: "c1",
+      system: ["system-marker"],
+      messages: [{ role: "user", content: "active-user" }],
+      rawMessages,
+    });
+
+    const roots = decodeRootMessages(bytes);
+    expect(roots.length).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
+    expect(JSON.stringify(roots[0])).toContain("system-marker");
+    expect((roots[1] as { role?: string }).role).toBe("user");
+    expect(JSON.stringify(roots)).toContain("assistant-209");
+    expect(JSON.stringify(roots)).not.toContain("user-0");
+  });
+
+  test("caps external root replay by serialized bytes", () => {
+    const large = "x".repeat(40_000);
+    const rawMessages = Array.from({ length: 12 }, (_, index) => [
+      { role: "user" as const, content: `user-${index}:${large}`, timestamp: index * 2 + 1 },
+      {
+        role: "assistant" as const,
+        model: "cursor/gpt-5.6-sol",
+        content: [{ type: "text" as const, text: `assistant-${index}:${large}` }],
+        timestamp: index * 2 + 2,
+      },
+    ]).flat();
+    rawMessages.push({ role: "user", content: "current", timestamp: 100 });
+
+    const bytes = encodeCursorRunRequest({
+      modelId: "gpt-5.6-sol-xhigh",
+      conversationId: "c-byte-cap",
+      system: ["system"],
+      messages: [{ role: "user", content: "current" }],
+      rawMessages,
+    });
+    const msg = fromBinary(AgentClientMessageSchema, bytes);
+    const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
+    const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+    const rootBytes = roots.reduce((sum, id) => sum + blobData(id).byteLength, 0);
+    const rootRoles = roots.map(id =>
+      (JSON.parse(new TextDecoder().decode(blobData(id))) as { role?: string }).role
+    );
+
+    expect(rootBytes).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BYTE_LIMIT);
+    expect(roots.length).toBeLessThan(rawMessages.length);
+    expect(rootRoles.find(role => role !== "system")).toBe("user");
+  });
+
   test("encodes Cursor Router levels through requested_model parameters", () => {
     const bytes = encodeCursorRunRequest({
       modelId: "default",
@@ -100,7 +165,7 @@ describe("Cursor blob handshake", () => {
     });
   });
 
-  test("always encodes requested_model for external Cursor models", () => {
+  test("does not encode router-only requested_model for external Cursor models", () => {
     const bytes = encodeCursorRunRequest({
       modelId: "gpt-5.6-sol-xhigh",
       conversationId: "c1",
@@ -111,9 +176,7 @@ describe("Cursor blob handshake", () => {
     const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
 
     expect(run?.modelDetails?.modelId).toBe("gpt-5.6-sol-xhigh");
-    expect(run?.requestedModel?.modelId).toBe("gpt-5.6-sol-xhigh");
-    expect(run?.requestedModel?.maxMode).toBe(false);
-    expect(run?.requestedModel?.parameters ?? []).toEqual([]);
+    expect(run?.requestedModel).toBeUndefined();
   });
 
   test("adds Cursor exact-tool guidance to system prompt blobs when tools are advertised", () => {
@@ -256,9 +319,9 @@ describe("Cursor blob handshake", () => {
     }
   });
 
-  test("encodeCursorRunRequest preserves prior assistant tool calls with tool results in turn steps", () => {
+  test("native Cursor replay preserves tool calls with results in turn steps", () => {
     const bytes = encodeCursorRunRequest({
-      modelId: "claude-4.6-opus-high",
+      modelId: "composer-2.5",
       conversationId: "c1",
       system: ["You are helpful."],
       messages: [{ role: "tool", content: "[tool_result]\ncall_id: call_1\nname: read_file\nis_error: false\noutput:\ncontents" }],
@@ -294,9 +357,63 @@ describe("Cursor blob handshake", () => {
         if (content?.case === "text") expect(content.value.text).toBe("contents");
       }
     }
-    // The last raw message is a toolResult, so the turn continues the same Cursor conversation with
-    // the tool result carried as structured history (mcpToolCall.result above). The action must be
-    // ResumeAction, NOT a UserMessageAction that would re-inject the tool result as user text.
+    expect(run?.action?.action.case).toBe("resumeAction");
+  });
+
+  test("external Cursor replay uses text history instead of native tool/thinking structures", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "gpt-5.6-sol-xhigh",
+      conversationId: "c1",
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "[tool_result]\ncall_id: call_1\nname: read_file\nis_error: false\noutput:\ncontents" }],
+      rawMessages: [
+        { role: "user", content: "read a file", timestamp: 1 },
+        {
+          role: "assistant",
+          model: "cursor/gpt-5.6-sol",
+          timestamp: 2,
+          content: [
+            { type: "thinking", thinking: "hidden reasoning" },
+            { type: "toolCall", id: "call_1", name: "read_file", arguments: { path: "a.txt" } },
+          ],
+        },
+        { role: "toolResult", toolCallId: "call_1", toolName: "read_file", content: "contents", isError: false, timestamp: 3 },
+      ],
+    });
+    const msg = fromBinary(AgentClientMessageSchema, bytes);
+    const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
+    const turn = fromBinary(ConversationTurnStructureSchema, blobData(run?.conversationState?.turns[0] ?? new Uint8Array()));
+    expect(turn.turn.case).toBe("agentConversationTurn");
+    const steps = turn.turn.case === "agentConversationTurn" ? turn.turn.value.steps : [];
+    expect(steps).toHaveLength(1);
+    const roots = decodeRootMessages(bytes) as Array<{ role?: string; content?: unknown }>;
+    const historicalUser = roots.find(root => root.role === "user");
+    expect(historicalUser?.content).toEqual([{ type: "text", text: "read a file" }]);
+    expect(run?.action?.action.case).toBe("resumeAction");
+    expect(JSON.stringify(roots)).toContain("contents");
+    expect(JSON.stringify(roots)).not.toContain("hidden reasoning");
+  });
+
+  test("keeps ResumeAction for native-model tool-result continuations", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "composer-2.5",
+      conversationId: "c1",
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "[tool_result]\ncall_id: call_1\nname: read_file\nis_error: false\noutput:\ncontents" }],
+      rawMessages: [
+        { role: "user", content: "read a file", timestamp: 1 },
+        {
+          role: "assistant",
+          model: "cursor/composer-2.5",
+          timestamp: 2,
+          content: [{ type: "toolCall", id: "call_1", name: "read_file", arguments: { path: "a.txt" } }],
+        },
+        { role: "toolResult", toolCallId: "call_1", toolName: "read_file", content: "contents", isError: false, timestamp: 3 },
+      ],
+    });
+    const msg = fromBinary(AgentClientMessageSchema, bytes);
+    const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
+
     expect(run?.action?.action.case).toBe("resumeAction");
   });
 });

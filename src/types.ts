@@ -11,6 +11,8 @@ export interface OcxParsedRequest {
   _previousResponseInputExpanded?: boolean;
   /** Provider-private stable Cursor conversation id resolved from the Responses previous_response_id chain. */
   _cursorConversationId?: string;
+  /** Stable upstream client thread identity, used only to derive provider-scoped continuation ids. */
+  _clientThreadId?: string;
   /** Provider-private continuation metadata resolved from the Responses previous_response_id chain. */
   _providerContinuation?: OcxProviderContinuationState;
   /**

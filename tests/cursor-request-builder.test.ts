@@ -38,6 +38,112 @@ describe("Cursor request builder", () => {
     expect(request.conversationId).toBe("cursor_stable");
   });
 
+  test("uses stable client thread identity for external store:false continuations", () => {
+    const initial = createCursorRequest({
+      ...base,
+      modelId: "cursor/gpt-5.6-sol",
+      context: { messages: [{ role: "user", content: "start", timestamp: 1 }] },
+      _clientThreadId: "thread-a",
+      options: { promptCacheKey: "shared-cache-key" },
+    });
+    const continuation = createCursorRequest({
+      ...base,
+      modelId: "cursor/gpt-5.6-sol",
+      context: {
+        messages: [{
+          role: "toolResult",
+          toolCallId: "call-1",
+          toolName: "read_file",
+          content: "result",
+          isError: false,
+          timestamp: 2,
+        }],
+      },
+      _clientThreadId: "thread-a",
+      options: { promptCacheKey: "shared-cache-key" },
+    });
+
+    expect(continuation.conversationId).toBe(initial.conversationId);
+  });
+
+  test("isolates client threads even when they share a prompt cache key", () => {
+    const first = createCursorRequest({
+      ...base,
+      _clientThreadId: "thread-a",
+      options: { promptCacheKey: "shared-cache-key" },
+    });
+    const second = createCursorRequest({
+      ...base,
+      _clientThreadId: "thread-b",
+      options: { promptCacheKey: "shared-cache-key" },
+    });
+
+    expect(second.conversationId).not.toBe(first.conversationId);
+  });
+
+  test("native composer pins conversation id to prompt_cache_key when none remembered", () => {
+    const a = createCursorRequest({
+      modelId: "cursor/composer-2.5",
+      context: { messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+      stream: false,
+      options: { promptCacheKey: "thread-abc" },
+    });
+    const b = createCursorRequest({
+      modelId: "composer-2.5",
+      context: {
+        messages: [
+          { role: "user", content: "hi", timestamp: 1 },
+          {
+            role: "toolResult",
+            toolCallId: "call_1",
+            toolName: "shell",
+            content: "ok",
+            isError: false,
+            timestamp: 2,
+          },
+        ],
+      },
+      stream: false,
+      options: { promptCacheKey: "thread-abc" },
+    });
+    expect(a.conversationId).toBe(b.conversationId);
+    expect(a.conversationId.startsWith("cursor_")).toBe(true);
+    expect(a.conversationId).toHaveLength("cursor_".length + 32);
+  });
+
+  test("client thread wins over native prompt_cache_key pin", () => {
+    const fromThread = createCursorRequest({
+      modelId: "cursor/composer-2.5",
+      context: { messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+      stream: false,
+      _clientThreadId: "thread-a",
+      options: { promptCacheKey: "shared-cache-key" },
+    });
+    const fromCacheOnly = createCursorRequest({
+      modelId: "cursor/composer-2.5",
+      context: { messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+      stream: false,
+      options: { promptCacheKey: "shared-cache-key" },
+    });
+    expect(fromThread.conversationId).not.toBe(fromCacheOnly.conversationId);
+  });
+
+  test("external models do not pin conversation id from prompt_cache_key alone", () => {
+    const first = createCursorRequest({
+      modelId: "cursor/gpt-5.6-sol",
+      context: { messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+      stream: false,
+      options: { promptCacheKey: "thread-xyz" },
+    });
+    const second = createCursorRequest({
+      modelId: "cursor/gpt-5.6-sol",
+      context: { messages: [{ role: "user", content: "hi again", timestamp: 2 }] },
+      stream: false,
+      options: { promptCacheKey: "thread-xyz" },
+    });
+    expect(first.conversationId).not.toBe(second.conversationId);
+  });
+
   test("marks Cursor context-usage boundaries for compaction epochs", () => {
     expect(createCursorRequest({ ...base, _contextCompactionBoundary: true }).contextUsageReset).toBe(true);
 
@@ -225,7 +331,7 @@ describe("Cursor request builder", () => {
   });
 
 
-  test("external Cursor tool-result continuation forces a fresh conversation id", () => {
+  test("external Cursor tool-result continuation keeps the remembered conversation id", () => {
     const request = createCursorRequest({
       modelId: "cursor/gpt-5.6-sol",
       context: {
@@ -254,8 +360,7 @@ describe("Cursor request builder", () => {
     });
 
     expect(request.modelId).toBe("gpt-5.6-sol-xhigh");
-    expect(request.conversationId).not.toBe("cursor_old_external");
-    expect(request.conversationId.startsWith("cursor_")).toBe(true);
+    expect(request.conversationId).toBe("cursor_old_external");
   });
 
   test("native Cursor tool-result continuation keeps the remembered conversation id", () => {
