@@ -79,6 +79,13 @@ Change:
   (bridge.ts:658). New guard:
   `if (response.status !== undefined && response.status !== "completed"
   && response.status !== "incomplete") return;`
+- DECIDED (A-gate round, WP1 follow-on): incomplete caching applies to
+  `max_output_tokens` partials ONLY. `content_filter` incompletes must NOT
+  be cached: replaying filter-triggering partial text into the next turn's
+  upstream history re-sends the very content that caused the refusal and
+  invites repeated refusals. Implementation: the state guard accepts
+  incomplete only when `response.incomplete_details.reason ===
+  "max_output_tokens"`; the docblock records this boundary explicitly.
 - Keep `"failed"` excluded: a failed turn's partial output must not become
   authoritative replay history.
 - Cursor checkpointUsable logic unchanged (function_call presence check
