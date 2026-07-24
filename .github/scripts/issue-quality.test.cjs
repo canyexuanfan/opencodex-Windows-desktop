@@ -15,6 +15,8 @@ const {
   isPlaceholderOnlyValue,
   isPlaceholder,
   isRawPlaceholder,
+  countWords,
+  hasConcreteDetail,
   rejectsWorkflowDispatchPullRequest,
   rejectsWorkflowDispatchNonDefaultBranch,
 } = require("./issue-quality.cjs");
@@ -31,6 +33,19 @@ function featureBodyWithGoal(goal) {
     "Persist the last used port in config across restarts.",
     "### Example usage or interface",
     "ocx start --port 8080 && ocx stop && ocx start",
+  ].join("\n");
+}
+
+function featureBodyWithExample(example) {
+  return [
+    "### What are you trying to accomplish?",
+    "Route voice requests to a configured fallback provider when the primary quota is exhausted.",
+    "### What prevents this today?",
+    "Voice mode is hard-wired to the primary Codex quota and cannot switch providers.",
+    "### What should OpenCodex do?",
+    "Expose a setting to choose the fallback voice model and provider.",
+    "### Example usage or interface",
+    example,
   ].join("\n");
 }
 
@@ -303,6 +318,29 @@ describe("validateIssue - feature", () => {
     }
   });
 
+  it("rejects a single long non-CJK word as overly terse", () => {
+    const terseGoals = [
+      "провайдер",
+      "маршрут",
+      "πάροχος",
+      "واجهة",
+    ];
+    for (const goal of terseGoals) {
+      assert.equal(countWords(goal), 1, `Expected "${goal}" to count as one word`);
+      const result = validateIssue({
+        title: "Improve feature request quality",
+        body: featureBodyWithGoal(goal),
+        labels: ["enhancement"],
+      });
+      assert.equal(result.kind, "feature");
+      assert.equal(result.valid, false, `Expected terse goal "${goal}" to be invalid`);
+      assert.ok(
+        result.reasons.some((r) => r.includes("too vague")),
+        `Expected too vague reason for "${goal}", got: ${result.reasons.join(", ")}`,
+      );
+    }
+  });
+
   it("accepts sufficiently detailed goal sections", () => {
     const detailedGoal =
       "Expose a dashboard setting to choose the fallback voice model and provider.";
@@ -313,8 +351,16 @@ describe("validateIssue - feature", () => {
     });
     assert.equal(detailedResult.kind, "feature");
     assert.equal(detailedResult.valid, true);
+    assert.ok(countWords(detailedGoal) >= 8);
+  });
 
-    const concreteGoal = "Route voice requests through the configured fallback API provider.";
+  it("accepts a 6-7 word goal when it includes concrete technical detail", () => {
+    const concreteGoal = "Route requests through the configured API provider.";
+    assert.equal(countWords(concreteGoal), 7);
+    assert.ok(countWords(concreteGoal) < 8);
+    assert.ok(countWords(concreteGoal) >= 6);
+    assert.equal(hasConcreteDetail(concreteGoal), true);
+
     const concreteResult = validateIssue({
       title: "Voice fallback routing",
       body: featureBodyWithGoal(concreteGoal),
@@ -323,8 +369,73 @@ describe("validateIssue - feature", () => {
     assert.equal(concreteResult.kind, "feature");
     assert.equal(concreteResult.valid, true);
   });
-});
 
+  it("rejects a 6-7 word goal that lacks concrete technical detail", () => {
+    // Avoid keywords that count as concrete detail (api/provider/workflow/…).
+    const vagueGoal = "Make this process easier for all users.";
+    assert.equal(countWords(vagueGoal), 7);
+    assert.equal(hasConcreteDetail(vagueGoal), false);
+
+    const vagueResult = validateIssue({
+      title: "Voice fallback routing",
+      body: featureBodyWithGoal(vagueGoal),
+      labels: ["enhancement"],
+    });
+    assert.equal(vagueResult.kind, "feature");
+    assert.equal(vagueResult.valid, false);
+    assert.ok(vagueResult.reasons.some((r) => r.includes("too vague")));
+  });
+
+  it("rejects fenced placeholder-only examples", () => {
+    const fencedPlaceholders = [
+      "```\nN/A\n```",
+      "```text\nN/A\n```",
+      "```json\nNot applicable.\n```",
+      "~~~text\nN/A\n~~~",
+    ];
+    for (const example of fencedPlaceholders) {
+      assert.equal(
+        isPlaceholderOnlyValue(example),
+        true,
+        `Expected fenced placeholder to match: ${JSON.stringify(example)}`,
+      );
+      const result = validateIssue({
+        title: "Voice fallback routing",
+        body: featureBodyWithExample(example),
+        labels: ["enhancement"],
+      });
+      assert.equal(result.valid, false, `Expected fenced placeholder to be invalid: ${JSON.stringify(example)}`);
+      assert.ok(
+        result.reasons.some((r) => r.includes("placeholder")),
+        `Expected placeholder reason for ${JSON.stringify(example)}, got: ${result.reasons.join("; ")}`,
+      );
+    }
+  });
+
+  it("accepts real fenced examples that merely mention N/A", () => {
+    const realExamples = [
+      "```text\nThe API returns N/A when no provider is configured.\n```",
+      '```json\n{"provider":"N/A","fallback":"anthropic"}\n```',
+    ];
+    for (const example of realExamples) {
+      assert.equal(
+        isPlaceholderOnlyValue(example),
+        false,
+        `Expected real example not to be placeholder-only: ${JSON.stringify(example)}`,
+      );
+      const result = validateIssue({
+        title: "Voice fallback routing",
+        body: featureBodyWithExample(example),
+        labels: ["enhancement"],
+      });
+      assert.equal(
+        result.valid,
+        true,
+        `Expected real fenced example to remain valid, got: ${result.reasons.join("; ")}`,
+      );
+    }
+  });
+});
 // ---------------------------------------------------------------------------
 // Validation: bug
 // ---------------------------------------------------------------------------
@@ -608,6 +719,10 @@ describe("normalisation", () => {
       "Not applicable",
       "Not applicable.",
       "Not available!",
+      "```\nN/A\n```",
+      "```text\nN/A\n```",
+      "```json\nNot applicable.\n```",
+      "~~~text\nN/A\n~~~",
     ];
     for (const value of placeholders) {
       assert.equal(isPlaceholderOnlyValue(value), true, value);
@@ -616,6 +731,8 @@ describe("normalisation", () => {
       assert.equal(clean(value), "", value);
     }
     assert.equal(isPlaceholderOnlyValue("Route voice traffic to provider N/A fallback"), false);
+    assert.equal(isPlaceholderOnlyValue("```text\nThe API returns N/A when no provider is configured.\n```"), false);
+    assert.equal(isPlaceholderOnlyValue('```json\n{"provider":"N/A","fallback":"anthropic"}\n```'), false);
     assert.equal(isPlaceholder("use CLI"), false);
     assert.equal(isRawPlaceholder(""), false);
     assert.equal(isRawPlaceholder(null), false);

@@ -13,11 +13,32 @@
 const PLACEHOLDER_ONLY_RE =
   /^[\s_*~`]*(?:no\s+response|n\/?a|not\s+applicable|not\s+available|none|todo|tbd)[\s_*~`]*[.!?]*$/i;
 
+/**
+ * If `text` is exactly one enclosing fenced code block (``` or ~~~), return the
+ * inner body; otherwise null. Real multi-statement fences are left alone by
+ * the placeholder matcher after unwrap.
+ */
+function unwrapSingleEnclosingFence(text) {
+  const trimmed = text.trim();
+  const match = trimmed.match(/^(```|~~~)[^\n]*\r?\n([\s\S]*?)\r?\n\1[ \t]*$/);
+  if (!match) return null;
+  return match[2];
+}
+
 function isPlaceholderOnlyValue(raw) {
   if (typeof raw !== "string") return false;
-  const withoutComments = raw.replace(/<!--[\s\S]*?-->/g, "").trim();
-  if (!withoutComments) return false;
-  return PLACEHOLDER_ONLY_RE.test(withoutComments);
+  let value = raw.replace(/<!--[\s\S]*?-->/g, "").trim();
+  if (!value) return false;
+
+  // A lone fenced block whose entire body is a placeholder is still placeholder
+  // text (e.g. ```text\nN/A\n```), not a real example.
+  const unwrapped = unwrapSingleEnclosingFence(value);
+  if (unwrapped !== null) {
+    value = unwrapped.trim();
+    if (!value) return false;
+  }
+
+  return PLACEHOLDER_ONLY_RE.test(value);
 }
 
 /**
@@ -26,6 +47,9 @@ function isPlaceholderOnlyValue(raw) {
 function clean(raw) {
   if (typeof raw !== "string") return "";
   let s = raw.replace(/<!--[\s\S]*?-->/g, "");
+  // Whole-value placeholders first (including a single enclosing fence), so
+  // line-by-line stripping cannot leave bare fence markers behind.
+  if (isPlaceholderOnlyValue(s)) return "";
   // Treat placeholder-only lines (GitHub "No response", N/A, etc.) as empty.
   s = s
     .split("\n")
@@ -354,13 +378,20 @@ function isPlaceholder(text) {
 function countWords(text) {
   const c = clean(text);
   if (!c) return 0;
-  const spaced = (c.match(/\b[\p{L}\p{N}']+\b/gu) || []).length;
+
+  // Use Unicode letter/number tokens so Cyrillic/Greek/Arabic words count as
+  // one token each. `\b` is ASCII-only and would miss those scripts.
+  const tokens = c.match(/[\p{L}\p{N}']+/gu) || [];
   const letters = (c.match(/\p{L}/gu) || []).length;
-  if (spaced === 0) return letters;
-  if (letters >= 8 && /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(c) && spaced < letters) {
+  const containsCjk =
+    /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(c);
+
+  // CJK often has no whitespace-separated words; letter count is the detail proxy.
+  if (containsCjk && letters >= 8) {
     return letters;
   }
-  return spaced;
+
+  return tokens.length;
 }
 
 function hasConcreteDetail(text) {
@@ -696,6 +727,8 @@ module.exports = {
   isPlaceholderOnlyValue,
   isPlaceholder,
   isRawPlaceholder,
+  countWords,
+  hasConcreteDetail,
   labelForKind,
   KIND_TO_LABEL,
   hasSubstantialStructuredContent,
