@@ -714,7 +714,7 @@ export const de: Record<TKey, string> = {
   "api.authBaseUrlNote": "Konfiguriere Clients mit der Basis-URL und wähle dann den protokollspezifischen Endpunkt unten.",
   "api.authTitle": "Authentifizierung",
   "api.authResponses": "Responses-Anfragen sollten x-opencodex-api-key verwenden, weil der Authorization-Header für Codex Direct reserviert sein kann.",
-  "api.authChatCompletions": "Chat Completions akzeptiert Authorization: Bearer ocx_... oder x-opencodex-api-key.",
+  "api.authChatCompletions": "Chat Completions und /v1/models akzeptieren Authorization: Bearer ocx_... oder x-opencodex-api-key.",
   "api.authMessages": "Messages akzeptiert Authorization: Bearer ocx_... oder x-opencodex-api-key.",
   "api.authLoopback": "Loopback-Binds (127.0.0.1 oder ::1) umgehen die Authentifizierung. Remote-Binds benötigen einen generierten ocx_-Schlüssel oder OPENCODEX_API_AUTH_TOKEN.",
   "api.modelsTitle": "Externe Modelle",
