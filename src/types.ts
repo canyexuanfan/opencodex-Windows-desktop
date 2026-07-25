@@ -308,6 +308,12 @@ export interface OcxUrlCitation {
 export interface OcxUsage {
   inputTokens: number;
   outputTokens: number;
+  /**
+   * Absolute active-context size after the response. Stateful providers can expose this separately
+   * from their per-attempt usage. Responses serialization derives the input side from
+   * `contextTotalTokens - outputTokens` so output is never added to an absolute checkpoint twice.
+   */
+  contextTotalTokens?: number;
   totalTokens?: number;
   cachedInputTokens?: number;
   cacheReadInputTokens?: number;
