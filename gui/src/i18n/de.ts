@@ -1,5 +1,7 @@
 // German — generated from en.ts. Must match TKey set (compile-checked).
-export const de = {
+import type { TKey } from "./en";
+
+export const de: Record<TKey, string> = {
   "nav.dashboard": "Übersicht",
   "nav.startup": "Startsicherheit",
   "nav.providers": "Anbieter",
@@ -702,8 +704,44 @@ export const de = {
   "codexAuth.creditExpires": "Läuft ab {date} ({days} Tage übrig)",
   "api.title": "API-Zugriff",
   "api.subtitle": "Nutze generierte API-Schlüssel, um von externen Apps auf den opencodex-Proxy zuzugreifen. Schlüssel authentifizieren über den {authHeader}- oder {altHeader}-Header.",
-  "api.endpoint": "Endpunkt",
-  "api.endpointNote": "Kompatibel mit dem OpenAI Responses API-Format.",
+  "api.baseUrl": "Basis-URL",
+  "api.responsesEndpoint": "Responses API",
+  "api.chatCompletionsEndpoint": "Chat Completions API",
+  "api.messagesEndpoint": "Messages API",
+  "api.modelsEndpoint": "Models API",
+  "api.endpointNote": "Nutze die Basis-URL für OpenAI-kompatible Clients. Responses und Chat Completions liegen unter /v1.",
+  "api.endpointsTitle": "Gateway-Endpunkte",
+  "api.authBaseUrlNote": "Konfiguriere Clients mit der Basis-URL und wähle dann den protokollspezifischen Endpunkt unten.",
+  "api.authTitle": "Authentifizierung",
+  "api.authResponses": "Responses-Anfragen sollten x-opencodex-api-key verwenden, weil der Authorization-Header für Codex Direct reserviert sein kann.",
+  "api.authChatCompletions": "Chat Completions und /v1/models akzeptieren Authorization: Bearer ocx_... oder x-opencodex-api-key.",
+  "api.authMessages": "Messages akzeptiert Authorization: Bearer ocx_... oder x-opencodex-api-key.",
+  "api.authLoopback": "Loopback-Binds (127.0.0.1 oder ::1) umgehen die Authentifizierung. Remote-Binds benötigen einen generierten ocx_-Schlüssel oder OPENCODEX_API_AUTH_TOKEN.",
+  "api.modelsTitle": "Externe Modelle",
+  "api.modelsCount": "{count} aufrufbar",
+  "api.modelsSearch": "Modelle suchen",
+  "api.modelsSubtitle": "Verwende diese exakten Modell-IDs mit /v1/models und dem gewählten eingehenden Protokoll.",
+  "api.modelsLoading": "Modelle werden geladen…",
+  "api.modelsEmpty": "Noch keine extern aufrufbaren Modelle verfügbar.",
+  "api.modelsLoadFailed": "Der externe Modellkatalog konnte nicht geladen werden.",
+  "api.colModel": "Modell",
+  "api.colSource": "Quelle",
+  "api.colProtocols": "Protokolle",
+  "api.copyModelId": "ID kopieren",
+  "api.modelCopied": "Kopiert",
+  "api.testModel": "Testen",
+  "api.testingModel": "Teste…",
+  "api.testFailed": "Fehlgeschlagen",
+  "api.protocolResponses": "Responses",
+  "api.protocolChatCompletions": "Chat Completions",
+  "api.protocolMessages": "Messages",
+  "api.sourceNative": "ChatGPT-Pool",
+  "api.sourceCombo": "Combo",
+  "api.sourceCustom": "Benutzerdefiniert",
+  "api.usageResponsesTitle": "Responses-Beispiel",
+  "api.usageChatTitle": "Chat-Completions-Beispiel",
+  "api.usageMessagesTitle": "Messages-Beispiel",
+  "api.testSucceeded": "OK",
   "api.newKeyTitle": "Neuer Schlüssel erstellt",
   "api.newKeyNote": "Kopiere diesen Schlüssel jetzt — er wird nicht erneut angezeigt.",
   "api.copy": "Kopieren",
@@ -720,7 +758,6 @@ export const de = {
   "api.colCreated": "Erstellt",
   "api.confirm": "Bestätigen",
   "api.deleteAria": "API-Schlüssel löschen",
-  "api.usageTitle": "Nutzungsbeispiel",
   "api.usageSampleInput": "Hallo, Welt!",
   // Claude Code inbound
   "nav.claude": "Claude",
@@ -1156,6 +1193,4 @@ export const de = {
   "cws.err.invalidStickyLimit": "Sticky-Erfolge müssen eine Ganzzahl von 1 bis 100 sein.",
   "cws.err.invalidWeight": "Jedes Round-Robin-Gewicht muss eine Ganzzahl von 1 bis 10000 sein.",
   "cws.err.noEnabledTarget": "Mindestens ein Ziel muss einen aktivierten Anbieter verwenden.",
-} as const;
-
-export type TKey = keyof typeof de;
+};
