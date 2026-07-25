@@ -32,6 +32,10 @@ const {
   fitTranslationBody,
   shouldOmitVisibleBookkeeping,
   deleteVerifiedControlComments,
+  MAX_CLOCK_SKEW_MS,
+  collectMergedRecentFromComments,
+  isValidControlTimestamp,
+  pruneRecent,
 } = require("./issue-translation.cjs");
 
 const HASH_A = "aaaaaaaaaaaaaaaa";
@@ -772,7 +776,7 @@ describe("bot-owned control state", () => {
     );
   });
 
-  it("records attempts even when prior state is newer", () => {
+  it("heals slightly-future prior within skew and uses wall-clock attemptedAt", () => {
     const now = 1_700_000_000_000;
     const prior = {
       v: 2,
@@ -782,6 +786,7 @@ describe("bot-owned control state", () => {
       requiresTranslation: false,
       detectedLanguage: "English",
     };
+    assert.equal(isValidControlTimestamp(prior.attemptedAt, now), true);
     const merged = mergeTranslationAttemptState({
       priorState: prior,
       attempt: {
@@ -791,39 +796,192 @@ describe("bot-owned control state", () => {
       },
       now,
     });
-    assert.equal(merged.sourceHash, HASH_B);
-    assert.equal(merged.attemptedAt, now + 5_000);
+    assert.equal(merged.sourceHash, HASH_A);
+    assert.equal(merged.attemptedAt, now);
     assert.ok(merged.recent.includes(now));
+    assert.ok(merged.recent.includes(now + 5_000));
   });
 
-  it("strips orphan body markers without treating them as control state", () => {
-    const orphan = `${SOURCE}\n\n<!-- opencodex-issue-inline-translator-control-state-v2:${encodeControlState({
+  it("rejects far-future attemptedAt and strips far-future recent entries", () => {
+    const now = 1_700_000_000_000;
+    const far = now + MAX_CLOCK_SKEW_MS + 60_000;
+    assert.equal(validateControlState({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: far,
+      recent: [now, far],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    }, now), null);
+
+    const withinSkew = validateControlState({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: now + 1_000,
+      recent: [now - 1_000, far, now + 1_000],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    }, now);
+    assert.equal(withinSkew.attemptedAt, now + 1_000);
+    assert.deepEqual(withinSkew.recent, [now - 1_000, now + 1_000]);
+  });
+
+  it("corrupt far-future comment does not outrank a valid current comment", () => {
+    const now = 1_700_000_000_000;
+    const valid = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: now,
+      recent: [now],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    }), 1);
+    const poisonedBody = [
+      CONTROL_MARKER,
+      `<!-- opencodex-issue-inline-translator-control-state-v2:${encodeControlState({
+        v: 2,
+        sourceHash: HASH_B,
+        attemptedAt: now + MAX_CLOCK_SKEW_MS + 86_400_000,
+        recent: [now + MAX_CLOCK_SKEW_MS + 86_400_000],
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      })} -->`,
+    ].join("\n");
+    const poisoned = botComment(poisonedBody, 2);
+    assert.equal(findControlComment([valid, poisoned], now).id, 1);
+    assert.equal(resolveControlState([valid, poisoned], 1, now).sourceHash, HASH_A);
+  });
+
+  it("mergeTranslationAttemptState ignores poisoned far-future prior", () => {
+    const now = 1_700_000_000_000;
+    const merged = mergeTranslationAttemptState({
+      priorState: {
+        v: 2,
+        sourceHash: HASH_B,
+        attemptedAt: now + MAX_CLOCK_SKEW_MS + 1,
+        recent: [now + MAX_CLOCK_SKEW_MS + 1],
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      },
+      attempt: {
+        sourceHash: HASH_A,
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      },
+      now,
+    });
+    assert.equal(merged.sourceHash, HASH_A);
+    assert.equal(merged.attemptedAt, now);
+    assert.deepEqual(merged.recent, [now]);
+  });
+
+  it("canonicalisation preserves valid bounded recent history across comments", () => {
+    const now = 1_700_000_000_000;
+    const older = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_B,
+      attemptedAt: now - 120_000,
+      recent: [now - 120_000, now - 60_000],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    }), 1);
+    const newer = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: now - 10_000,
+      recent: [now - 10_000],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    }), 2);
+    const merged = collectMergedRecentFromComments(
+      [older, newer],
+      extractTranslationControlState([older, newer], now),
+      now,
+    );
+    assert.deepEqual(merged, [now - 120_000, now - 60_000, now - 10_000]);
+  });
+
+  it("strips trailing obsolete markers without treating them as control state", () => {
+    const encoded = encodeControlState({
       v: 2,
       sourceHash: HASH_A,
       attemptedAt: 1,
       recent: [1],
       requiresTranslation: false,
       detectedLanguage: "English",
-    })} -->\n`;
+    });
+    const orphan = `${SOURCE}\n\n<!-- opencodex-issue-inline-translator-control-state-v2:${encoded} -->\n`;
     assert.equal(extractTranslationControlState([]), null);
     assert.equal(stripOrphanBodyControlState(orphan).includes("control-state-v2:"), false);
     assert.ok(stripOrphanBodyControlState(orphan).includes("Proxy startet nicht"));
   });
 
-  it("preserves author whitespace around orphan markers byte-for-byte", () => {
+  it("preserves author whitespace when stripping a trailing obsolete marker", () => {
     const fixtures = [
-      [`tail ${ORPHAN_MARKER}`, "tail "],
-      [`${ORPHAN_MARKER}\nbody`, "\nbody"],
-      [`pre\n${ORPHAN_MARKER}\npost`, "pre\n\npost"],
-      [`pre\n\n${ORPHAN_MARKER}\n\npost`, "pre\n\n\n\npost"],
-      [`${ORPHAN_MARKER}\n\n    indented code`, "\n\n    indented code"],
-      [`${ORPHAN_MARKER}\n\n\n\`\`\`text\nfenced\n\`\`\``, "\n\n\n```text\nfenced\n```"],
-      [`keep   \n${ORPHAN_MARKER}\n`, "keep   \n\n"],
-      [`a ${ORPHAN_MARKER} b ${ORPHAN_MARKER} c`, "a  b  c"],
+      [`${SOURCE}\n\n${ORPHAN_MARKER}`, `${SOURCE}\n\n`],
+      [`${SOURCE}\n\n${ORPHAN_MARKER}\n`, `${SOURCE}\n\n`],
+      [`${SOURCE}   \n${ORPHAN_MARKER}\t`, `${SOURCE}   \n`],
+      [`keep   \n${ORPHAN_MARKER}\n`, "keep   \n"],
     ];
     for (const [input, expected] of fixtures) {
       assert.equal(stripOrphanBodyControlState(input), expected);
     }
+  });
+
+  it("leaves marker-like author content inside fences, quotes, and prose untouched", () => {
+    const fenced = [
+      "Repro:",
+      "```html",
+      ORPHAN_MARKER,
+      "```",
+      "",
+    ].join("\n");
+    assert.equal(stripOrphanBodyControlState(fenced), fenced);
+
+    const quoted = `> saw this token ${ORPHAN_MARKER} in the log\n`;
+    assert.equal(stripOrphanBodyControlState(quoted), quoted);
+
+    const prose = `Please ignore ${ORPHAN_MARKER} if present.\nMore text.`;
+    assert.equal(stripOrphanBodyControlState(prose), prose);
+
+    const mid = `pre\n${ORPHAN_MARKER}\npost`;
+    assert.equal(stripOrphanBodyControlState(mid), mid);
+  });
+
+  it("translation application preserves marker-like author content", () => {
+    const body = [
+      SOURCE,
+      "",
+      "```",
+      ORPHAN_MARKER,
+      "```",
+    ].join("\n");
+    const next = appendTranslationBlock(body, "English translation of the report.");
+    assert.ok(next.includes(ORPHAN_MARKER));
+    assert.ok(next.includes(MARKER));
+  });
+
+  it("stale-source checking detects actual author edits after safe normalisation", () => {
+    const prepared = hashTranslationSource({
+      title: "T",
+      body: stripOrphanBodyControlState(`${SOURCE}\n\n${ORPHAN_MARKER}`),
+    });
+    assert.equal(
+      isPreparedSourceStillCurrent({
+        preparedHash: prepared,
+        liveTitle: "T",
+        liveBody: stripOrphanBodyControlState(`${SOURCE}\n\n${ORPHAN_MARKER}`),
+      }),
+      true,
+    );
+    assert.equal(
+      isPreparedSourceStillCurrent({
+        preparedHash: prepared,
+        liveTitle: "T",
+        liveBody: stripOrphanBodyControlState(`${SOURCE}\nextra\n\n${ORPHAN_MARKER}`),
+      }),
+      false,
+    );
   });
 
   it("rate limits repeated non-ASCII detections", () => {

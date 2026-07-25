@@ -7,15 +7,67 @@ const {
   parseTriageMatches,
   parseAiJson,
   sanitizeReason,
+  hasConcreteRelatedSignature,
+  hasConcreteFailureToken,
 } = require("./issue-triage.cjs");
+
+describe("hasConcreteRelatedSignature", () => {
+  it("rejects standalone ECONNRESET referring only to the new issue", () => {
+    assert.equal(
+      hasConcreteRelatedSignature(
+        "The new issue alone reports ECONNRESET; issue 410 is a separate 401 problem.",
+      ),
+      false,
+    );
+  });
+
+  it("rejects shared route with different failures", () => {
+    assert.equal(
+      hasConcreteRelatedSignature(
+        "Both issues call POST /v1/responses, but one returns 401 and the other crashes locally.",
+      ),
+      false,
+    );
+  });
+
+  it("rejects same provider with different root causes", () => {
+    assert.equal(
+      hasConcreteRelatedSignature(
+        "The same provider is involved, but the failures and root causes differ.",
+      ),
+      false,
+    );
+  });
+
+  it("does not treat ordinary e-words as error constants", () => {
+    assert.equal(hasConcreteFailureToken("each exact existing endpoint"), false);
+    assert.equal(
+      hasConcreteRelatedSignature(
+        "Both issues involve each exact existing endpoint without a real fault code.",
+      ),
+      false,
+    );
+  });
+
+  it("keeps shared errno plus shared comparison", () => {
+    assert.equal(
+      hasConcreteRelatedSignature(
+        "Both issues return ECONNRESET from POST /v1/responses in the OpenRouter adapter.",
+      ),
+      true,
+    );
+  });
+});
 
 describe("hardenRelatedMatches", () => {
   it("drops #452-style weak related links to unrelated HTTP errors", () => {
     const result = hardenRelatedMatches({
       duplicates: [],
-      related: ["420"],
-      reason:
-        "The new issue involves a 503 error from the Codex proxy which is somewhat related to the 400 error reported in issue 420, as both issues pertain to errors in content serialization with the Codex app.",
+      related: [{
+        number: "420",
+        reason:
+          "The new issue involves a 503 error from the Codex proxy which is somewhat related to the 400 error reported in issue 420, as both issues pertain to errors in content serialization with the Codex app.",
+      }],
     });
     assert.deepEqual(result.related, []);
     assert.deepEqual(result.duplicates, []);
@@ -25,94 +77,80 @@ describe("hardenRelatedMatches", () => {
     assert.deepEqual(
       hardenRelatedMatches({
         duplicates: [],
-        related: ["1"],
-        reason: "Same client and both are general proxy errors.",
-      }).related,
-      [],
-    );
-    assert.deepEqual(
-      hardenRelatedMatches({
-        duplicates: [],
-        related: ["2"],
-        reason: "Both use Codex and return an HTTP error.",
-      }).related,
-      [],
-    );
-    assert.deepEqual(
-      hardenRelatedMatches({
-        duplicates: [],
-        related: ["3"],
-        reason: "Same app, vaguely related failures.",
+        related: [{ number: "1", reason: "Same client and both are general proxy errors." }],
       }).related,
       [],
     );
   });
 
-  it("keeps related when same-client wording also has a concrete signature", () => {
+  it("keeps related when shared comparison has a concrete signature", () => {
     assert.deepEqual(
       hardenRelatedMatches({
         duplicates: [],
-        related: ["410"],
-        reason:
-          "Same client, exact ECONNRESET on /v1/responses in the OpenRouter adapter.",
+        related: [{
+          number: "410",
+          reason:
+            "Both issues return exact ECONNRESET on /v1/responses in the OpenRouter adapter.",
+        }],
       }).related,
-      ["410"],
-    );
-    assert.deepEqual(
-      hardenRelatedMatches({
-        duplicates: [],
-        related: ["411"],
+      [{
+        number: "410",
         reason:
-          "Same app, exact 503 from POST /v1/responses with the Xiaomi openai-chat adapter.",
-      }).related,
-      ["411"],
-    );
-    assert.deepEqual(
-      hardenRelatedMatches({
-        duplicates: [],
-        related: ["412"],
-        reason:
-          "Both reproduce when content[0].text is an object instead of a string.",
-      }).related,
-      ["412"],
+          "Both issues return exact ECONNRESET on /v1/responses in the OpenRouter adapter.",
+      }],
     );
   });
 
-  it("keeps related when the reason states a concrete shared failure", () => {
+  it("one valid related entry does not validate other weak entries", () => {
     const result = hardenRelatedMatches({
       duplicates: [],
-      related: ["410", "411"],
-      reason:
-        "Same Xiaomi openai-chat adapter returns 503 on /v1/responses after Codex sync while curl succeeds.",
+      related: [
+        {
+          number: "410",
+          reason:
+            "Both issues return ECONNRESET from POST /v1/responses in the OpenRouter adapter.",
+        },
+        {
+          number: "420",
+          reason: "Somewhat related Codex HTTP errors in the same app.",
+        },
+        {
+          number: "421",
+          reason: "Both issues call POST /v1/responses, but one returns 401 and the other crashes locally.",
+        },
+      ],
     });
-    assert.deepEqual(result.related, ["410", "411"]);
+    assert.deepEqual(result.related.map((e) => e.number), ["410"]);
   });
 
-  it("keeps related when 'both involve' names a concrete shared failure", () => {
+  it("each related entry requires its own concrete reason", () => {
     const result = hardenRelatedMatches({
       duplicates: [],
-      related: ["410"],
-      reason:
-        "Both issues involve the exact ECONNRESET error on /v1/responses in the OpenRouter adapter.",
+      related: [
+        { number: "410", reason: "short" },
+        {
+          number: "411",
+          reason:
+            "Both issues return HTTP 503 from POST /v1/responses with the Xiaomi openai-chat adapter.",
+        },
+      ],
     });
-    assert.deepEqual(result.related, ["410"]);
+    assert.deepEqual(result.related.map((e) => e.number), ["411"]);
   });
 
   it("caps related at 3 and never overlaps duplicates", () => {
     const result = hardenRelatedMatches({
       duplicates: ["100"],
-      related: ["100", "101", "102", "103", "104"],
-      reason: "Same listen-port reclaim failure after Windows taskkill leaves ghost LISTEN on 10100.",
+      related: [
+        { number: "100", reason: "Both issues return the same listen-port reclaim failure after Windows taskkill leaves ghost LISTEN on 10100." },
+        { number: "101", reason: "Both issues return the same listen-port reclaim failure after Windows taskkill leaves ghost LISTEN on 10100." },
+        { number: "102", reason: "Both issues return the same listen-port reclaim failure after Windows taskkill leaves ghost LISTEN on 10100." },
+        { number: "103", reason: "Both issues return the same listen-port reclaim failure after Windows taskkill leaves ghost LISTEN on 10100." },
+        { number: "104", reason: "Both issues return the same listen-port reclaim failure after Windows taskkill leaves ghost LISTEN on 10100." },
+      ],
     });
     assert.deepEqual(result.duplicates, ["100"]);
-    assert.deepEqual(result.related, ["101", "102", "103"]);
-  });
-
-  it("drops related when the reason is missing or tiny", () => {
-    assert.deepEqual(
-      hardenRelatedMatches({ duplicates: [], related: ["9"], reason: "same" }).related,
-      [],
-    );
+    assert.deepEqual(result.related.map((e) => e.number), ["101", "102", "103"]);
   });
 });
 
@@ -121,9 +159,12 @@ describe("parseTriageMatches", () => {
     const matches = parseTriageMatches(
       JSON.stringify({
         duplicates: [],
-        related: ["420"],
-        reason:
-          "somewhat related Codex App HTTP errors; both pertain to errors in the proxy",
+        related: [{
+          number: "420",
+          reason:
+            "somewhat related Codex App HTTP errors; both pertain to errors in the proxy",
+        }],
+        reason: "weak overlap",
       }),
       { currentNumber: 452, knownNumbers: ["420", "451"] },
     );
@@ -134,8 +175,11 @@ describe("parseTriageMatches", () => {
     const matches = parseTriageMatches(
       JSON.stringify({
         duplicates: ["420"],
-        related: ["451"],
-        reason: "somewhat related to other Codex errors in general",
+        related: [{
+          number: "451",
+          reason: "somewhat related to other Codex errors in general",
+        }],
+        reason: "Exact same Anthropic messages.0.content.N.text.text Field required failure.",
       }),
       { currentNumber: 452, knownNumbers: new Set(["420", "451"]) },
     );
@@ -153,6 +197,63 @@ describe("parseTriageMatches", () => {
       { currentNumber: 452, knownNumbers: ["420"] },
     );
     assert.deepEqual(matches.duplicates, ["420"]);
+  });
+
+  it("ignores malformed related objects and legacy string related arrays", () => {
+    const matches = parseTriageMatches(
+      JSON.stringify({
+        duplicates: [],
+        related: [
+          "410",
+          { number: "411" },
+          { reason: "Both issues return ECONNRESET from POST /v1/responses." },
+          {
+            number: "412",
+            reason:
+              "Both issues return ECONNRESET from POST /v1/responses in the OpenRouter adapter.",
+          },
+          null,
+          413,
+        ],
+        reason: "overall",
+      }),
+      { currentNumber: 1, knownNumbers: ["410", "411", "412", "413"] },
+    );
+    assert.deepEqual(matches.related.map((e) => e.number), ["412"]);
+  });
+
+  it("prevents duplicate and related lists from overlapping", () => {
+    const matches = parseTriageMatches(
+      JSON.stringify({
+        duplicates: ["410"],
+        related: [{
+          number: "410",
+          reason:
+            "Both issues return ECONNRESET from POST /v1/responses in the OpenRouter adapter.",
+        }, {
+          number: "411",
+          reason:
+            "Both issues return ECONNRESET from POST /v1/responses in the OpenRouter adapter.",
+        }],
+        reason: "dupes",
+      }),
+      { currentNumber: 1, knownNumbers: ["410", "411"] },
+    );
+    assert.deepEqual(matches.duplicates, ["410"]);
+    assert.deepEqual(matches.related.map((e) => e.number), ["411"]);
+  });
+
+  it("caps related output at 3", () => {
+    const related = ["410", "411", "412", "413"].map((number) => ({
+      number,
+      reason:
+        "Both issues return ECONNRESET from POST /v1/responses in the OpenRouter adapter.",
+    }));
+    const matches = parseTriageMatches(
+      JSON.stringify({ duplicates: [], related, reason: "many" }),
+      { currentNumber: 1, knownNumbers: ["410", "411", "412", "413"] },
+    );
+    assert.equal(matches.related.length, 3);
   });
 });
 
