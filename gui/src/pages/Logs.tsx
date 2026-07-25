@@ -277,8 +277,8 @@ export default function Logs({ apiBase }: { apiBase: string }) {
     else if (e.key === "ArrowRight" || e.key === "End") { e.preventDefault(); selectTab("debug"); document.getElementById("logs-tab-debug")?.focus(); }
   };
 
-  const fetchLogs = useCallback(async () => {
-    setLoading(true);
+  const fetchLogs = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     setError(null);
     try {
       const res = await fetch(`${apiBase}/api/logs`);
@@ -288,7 +288,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
       const detail = cause instanceof Error ? cause.message : "";
       setError(detail ? `${t("logs.loadError")} ${detail}` : t("logs.loadError"));
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   }, [apiBase, t]);
 
@@ -296,7 +296,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
     if (tab !== "logs") return;
     void fetchLogs();
     if (!autoRefresh) return;
-    const interval = setInterval(() => void fetchLogs(), 2000);
+    const interval = setInterval(() => void fetchLogs({ silent: true }), 2000);
     return () => clearInterval(interval);
   }, [autoRefresh, fetchLogs, tab]);
 
@@ -402,7 +402,6 @@ export default function Logs({ apiBase }: { apiBase: string }) {
         <EmptyState title={t("logs.noRequests")} />
       ) : (
         <>
-        {loading && <div className="row muted" role="status"><span className="spin" /> {t("common.loading")}</div>}
         <div ref={scrollContainerRef} className="tbl-wrap" style={{ overflowY: "auto", maxHeight: "calc(100vh - 260px)" }}>
           <table className="tbl logs-table">
             <thead style={{ position: "sticky", top: 0, zIndex: 1, background: "var(--surface)" }}>
