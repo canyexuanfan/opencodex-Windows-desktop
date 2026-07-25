@@ -10,6 +10,13 @@
 
 - 작업 워크트리: `/Users/jun/.codex/worktrees/ebcd/opencodex` (브랜치 `dev`)
 - **소스 기준점(source baseline)** = `origin/dev` = `037e8f5e4fa32a82e4149acc509554f157656dad`
+  - **갱신 (WP1 A-gate residual 반영):** `origin/dev`는 이후 `faaaf98f8306ee50d4b4a7ee64d95140c371812c`
+    (README 문서 커밋)로 이동했다. 우리 대상 소스 파일(`src/adapters/google.ts`,
+    `src/responses/parser.ts`, `src/adapters/kiro.ts`, `src/codex/auth-api.ts`)에는 변동이 없음을
+    `git diff --stat 037e8f5e origin/dev -- <대상파일>` 빈 출력으로 확인했다.
+    작업 브랜치는 `faaaf98f` 위로 rebase되었다.
+  - `origin/dev`는 이 유닛 진행 중에도 움직일 수 있다. 각 WP 착수 시 `git fetch`로 재확인하고,
+    대상 파일에 변동이 없으면 rebase만 하고 계약은 유지한다. 변동이 있으면 해당 문서를 amend한다.
 - 작업 브랜치: `codex/260725-pr-rework`. 이 유닛의 모든 커밋이 여기에 쌓인다.
   WP0 문서 커밋 이후 `HEAD != origin/dev`인 것은 **정상**이다.
 - **실행 기준점 규칙 (A-gate blocker 1 반영):** 각 구현 work-phase의 착수 assertion은
@@ -19,6 +26,26 @@
      (WP0 직후에는 `devlog/_plan/260725_pr_issue_rework/` 9개 문서만)
   각 WP는 직전 WP가 남긴 누적 브랜치 HEAD를 입력으로 받는다. `010`~`070`의
   "dev HEAD == 037e8f5e" 문구는 이 규칙으로 대체해 읽는다.
+- **PRE_APPLY_HEAD 규칙 (WP1 A-gate residual 반영):** 각 WP의 changed-file 수용 기준은
+  소스 기준점이 아니라 **그 WP 착수 직전 HEAD**를 기준으로 검사한다.
+  1. 적용 전 `PRE_APPLY_HEAD=$(git rev-parse HEAD)`를 기록한다
+  2. 적용·수정·커밋 후 `git diff --name-status $PRE_APPLY_HEAD..HEAD`가 그 WP의 대상 파일만
+     보여야 한다
+  `git diff --name-status 037e8f5e --`로 검사하면 앞선 WP의 산출물이 섞여 나오므로
+  "대상 파일만" 기준을 절대 충족할 수 없다. `010`~`070`의 changed-file 수용 기준은
+  모두 이 `PRE_APPLY_HEAD` 규칙으로 대체해 읽는다.
+
+### 작업 점유 마커 (게시 완료)
+
+다른 메인테이너의 중복·경합 작업을 막기 위해 2026-07-26 KST에 마커를 게시했다.
+
+| 대상 | 건수 | 내용 |
+|---|---|---|
+| 통합 대상 PR | 8건 (#430 #436 #439 #370 #389 #449 #427 #385) | merge/rebase/force-push/close 보류 요청, 통합 브랜치와 검증 절차 안내, 원저작자 보존 명시 |
+| 대응 이슈 | 3건 (#420 #435 #448) | 경합 PR 생성 보류 요청, 수정 진행 중 안내 |
+| 리뷰 보류 PR | 11건 (#408 #424 #447 #445 #355 #434 #405 #429 #391 #426 #431) | merge/close 보류 요청, 상세 리뷰 예고, dev 통합 배치로 인한 rebase 예고 |
+
+#403과 #437은 `NO_ACTION`이므로 마커도 게시하지 않았다.
 - 직전 버그 스윕(`260725_bug_sweep`)이 13:24에 종료되어 #433/#432/#422/#404와 PR #376이 closed.
 - 로컬 게이트 기준선(`a5ec15e3`, 소스 동일): `bun run typecheck` exit 0,
   `bun run test` 4151 pass / 0 fail (324 파일), `bun run privacy:scan` 통과,
