@@ -16,6 +16,11 @@ test("ApiKeys renders the single stacked layout (no layout toggle, no workspace 
   expect(app).toContain("<ApiKeys apiBase={API_BASE} />");
   expect(css).not.toContain("styles-apikeys-workspace.css");
   expect(css).not.toContain("styles-claudecode-workspace.css");
+  expect(css).toContain(".api-auth-list");
+  expect(css).toContain(".api-test-note--ok");
+  expect(css).toContain(".api-test-note--error");
+  expect(page).toContain('className="api-auth-list');
+  expect(page).toContain("api-test-note--ok");
 });
 
 test("ApiKeys stacked layout keeps endpoint, generate, keys table, and usage panels", async () => {
@@ -37,7 +42,14 @@ test("ApiKeys stacked layout keeps endpoint, generate, keys table, and usage pan
 
   // Exactly one Messages usage example, gated on Claude inbound.
   expect(src.match(/api\.usageMessagesTitle/g)?.length).toBe(1);
-  expect(src).toMatch(/claudeCodeEnabled && \([\s\S]*?api\.usageMessagesTitle/);
+  const messagesUsageIdx = src.indexOf('t("api.usageMessagesTitle")');
+  expect(messagesUsageIdx).toBeGreaterThan(-1);
+  const gateOpenIdx = src.lastIndexOf("claudeCodeEnabled && (", messagesUsageIdx);
+  expect(gateOpenIdx).toBeGreaterThan(-1);
+  // No other usage title may sit between the gate and the Messages title.
+  const between = src.slice(gateOpenIdx, messagesUsageIdx);
+  expect(between).not.toContain('t("api.usageChatTitle")');
+  expect(between).not.toContain('t("api.usageResponsesTitle")');
   expect(src).toContain("gatewayInboundProtocols(claudeCodeEnabled)");
   expect(src).toContain("classifyExternalModel(row)");
   expect(src).toContain('from "../api-access-models"');

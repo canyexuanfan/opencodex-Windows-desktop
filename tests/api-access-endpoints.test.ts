@@ -64,6 +64,11 @@ describe("buildApiAccessEndpoints", () => {
       { hostname: "::", port: 10100 },
       { requestOrigin: "http://[2001:db8::1]:10100" },
     ).baseUrl).toBe("http://[2001:db8::1]:10100/v1");
+
+    expect(buildApiAccessEndpoints(
+      { hostname: "::", port: 10100 },
+      { requestHost: "[2001:db8::1]:9999" },
+    ).baseUrl).toBe("http://[2001:db8::1]:9999/v1");
   });
 
   test("reflects disabled Claude inbound in API access metadata", () => {
