@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { CatalogModel } from "../../codex/catalog";
 import { catalogModelSlug, disabledNativeSlugs, invalidateCodexModelsCache, nativeModelRows, uniqueCatalogModelsForPublicList } from "../../codex/catalog";
+import { getProviderLiveModelCount } from "../../codex/model-cache";
 import {
   DEFAULT_SUBAGENT_MODELS,
   codexAutoStartEnabled,
@@ -326,10 +327,15 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     const available: Record<string, string[]> = {};
     for (const m of models) (available[m.provider] ??= []).push(m.id);
     const selected: Record<string, string[]> = {};
+    // Live-catalog provenance. The GUI cannot infer this by subtracting known custom ids: an id
+    // that is both custom and discovered would make a real live catalog look custom-only.
+    const liveModelCounts: Record<string, number> = {};
     for (const [name, prov] of Object.entries(config.providers)) {
       if (Array.isArray(prov.selectedModels) && prov.selectedModels.length > 0) selected[name] = [...prov.selectedModels];
+      const liveCount = getProviderLiveModelCount(name);
+      if (liveCount !== undefined) liveModelCounts[name] = liveCount;
     }
-    return jsonResponse({ selected, available });
+    return jsonResponse({ selected, available, liveModelCounts });
   }
   if (url.pathname === "/api/selected-models" && req.method === "PUT") {
     let body: { provider?: unknown; models?: unknown };

@@ -498,6 +498,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
             modelUsage={data.modelUsage}
             quotaReport={data.quotaReport}
             availableModels={data.availableModels}
+            hasLiveModels={data.hasLiveModels}
             selectedModels={data.selectedModels}
             modelsLoading={data.modelsLoading}
             modelsLoadFailed={data.modelsLoadFailed}
