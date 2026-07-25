@@ -565,8 +565,6 @@ export const en = {
   "usage.section.models": "Models",
   "usage.section.providers": "Providers",
   "usage.section.coverage": "Coverage breakdown",
-  "usage.workspace.sections": "Usage sections",
-  "usage.workspace.report": "Usage report",
   "usage.coverage.measured": "Measured",
   "usage.coverage.reported": "Provider reported",
   "usage.coverage.estimated": "Estimated",

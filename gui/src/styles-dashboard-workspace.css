@@ -45,10 +45,13 @@
   gap: var(--space-4);
 }
 
-/* Sidecar settings: two panels side by side, gap matches --space-4 */
+/* Sidecar settings: two panels side by side, gap matches --space-4.
+   auto-fit collapses to one column before two columns get too narrow for the
+   title + model select row (~21rem per card), so the select never overlaps or
+   overflows the card between the old 768px breakpoint and desktop widths. */
 .dash-sidecar-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 21rem), 1fr));
   gap: var(--space-4);
   align-items: start;
 }
@@ -66,6 +69,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
   min-width: 0;
 }
@@ -159,10 +163,4 @@
   background: var(--raised);
   color: var(--text);
   white-space: nowrap;
-}
-
-@media (max-width: 768px) {
-  .dash-sidecar-grid {
-    grid-template-columns: 1fr;
-  }
 }

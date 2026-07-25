@@ -559,8 +559,6 @@ export const ko: Record<TKey, string> = {
   "usage.section.models": "모델",
   "usage.section.providers": "프로바이더",
   "usage.section.coverage": "커버리지 상세",
-  "usage.workspace.sections": "사용량 섹션",
-  "usage.workspace.report": "사용량 보고서",
   "usage.coverage.measured": "측정됨",
   "usage.coverage.reported": "제공자 보고",
   "usage.coverage.estimated": "추정",

@@ -542,8 +542,6 @@ export const de = {
   "usage.section.models": "Modelle",
   "usage.section.providers": "Anbieter",
   "usage.section.coverage": "Abdeckungs-Aufschlüsselung",
-  "usage.workspace.sections": "Nutzungsabschnitte",
-  "usage.workspace.report": "Nutzungsbericht",
   "usage.coverage.measured": "Gemessen",
   "usage.coverage.reported": "Anbieter gemeldet",
   "usage.coverage.estimated": "Geschätzt",

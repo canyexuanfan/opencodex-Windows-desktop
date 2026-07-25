@@ -565,8 +565,6 @@ export const ru: Record<TKey, string> = {
   "usage.section.models": "Модели",
   "usage.section.providers": "Провайдеры",
   "usage.section.coverage": "Детализация покрытия",
-  "usage.workspace.sections": "Разделы использования",
-  "usage.workspace.report": "Отчёт об использовании",
   "usage.coverage.measured": "Измерено",
   "usage.coverage.reported": "Сообщено провайдером",
   "usage.coverage.estimated": "Оценено",

@@ -530,8 +530,6 @@ export const ja: Record<TKey, string> = {
   "usage.section.models": "モデル",
   "usage.section.providers": "プロバイダー",
   "usage.section.coverage": "カバレッジ内訳",
-  "usage.workspace.sections": "使用量セクション",
-  "usage.workspace.report": "使用量レポート",
   "usage.coverage.measured": "計測",
   "usage.coverage.reported": "プロバイダー報告",
   "usage.coverage.estimated": "推定",
