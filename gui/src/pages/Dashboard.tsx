@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { formatUptime } from "../formatUptime";
+import MemoryObservabilityCard from "../components/MemoryObservabilityCard";
 import { IconAlert, IconChevron, IconExternal, IconInfo, IconRefresh, IconSearch, IconX } from "../icons";
 import { Trans } from "../i18n/provider";
 import { useI18n, type TKey } from "../i18n/shared";
@@ -1121,6 +1122,8 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     </div>
   </div>
 </div>
+
+      <MemoryObservabilityCard apiBase={apiBase} />
 
     </div>
   );

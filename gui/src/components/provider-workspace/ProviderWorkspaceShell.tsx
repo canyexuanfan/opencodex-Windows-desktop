@@ -19,7 +19,7 @@ import {
   type WorkspaceSections,
 } from "../../provider-workspace/catalog";
 import { providerKind } from "../../provider-workspace/kind";
-import { countAvailableModels, parseAvailableModels, parseSelectedModels, type ProviderAvailableModels, type ProviderModelCounts, type ProviderSelectedModels } from "../../provider-workspace/usage";
+import { countAvailableModels, parseAvailableModels, parseLiveModelCounts, parseSelectedModels, type ProviderAvailableModels, type ProviderLiveModelCounts, type ProviderModelCounts, type ProviderSelectedModels } from "../../provider-workspace/usage";
 import type { ProviderQuotaReportView } from "../../provider-workspace/report";
 import { formatProviderDisplayName } from "../../provider-icons";
 import { RailRow } from "./ProviderRail";
@@ -35,6 +35,8 @@ export interface DetailSlotData {
   modelUsage?: ProviderModelUsageRow[];
   quotaReport?: ProviderQuotaReportView;
   availableModels: string[];
+  /** Did the last successful discovery return rows? Server-reported, never inferred. */
+  hasLiveModels: boolean;
   selectedModels: string[];
   modelsLoading: boolean;
   modelsLoadFailed: boolean;
@@ -91,6 +93,7 @@ export default function ProviderWorkspaceShell({
   const [railFocusName, setRailFocusName] = useState<string | null>(null);
   const [modelCounts, setModelCounts] = useState<ProviderModelCounts>({});
   const [availableModels, setAvailableModels] = useState<ProviderAvailableModels>({});
+  const [liveModelCounts, setLiveModelCounts] = useState<ProviderLiveModelCounts>({});
   const [selectedModels, setSelectedModels] = useState<ProviderSelectedModels>({});
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsLoadFailed, setModelsLoadFailed] = useState(false);
@@ -121,6 +124,7 @@ export default function ProviderWorkspaceShell({
           if (cancelled) return;
           setModelCounts(countAvailableModels(data));
           setAvailableModels(parseAvailableModels(data));
+          setLiveModelCounts(parseLiveModelCounts(data));
           setSelectedModels(parseSelectedModels(data));
           setModelsLoadFailed(false);
           setModelsLoading(false);
@@ -476,6 +480,7 @@ export default function ProviderWorkspaceShell({
             modelUsage: usageModels[selectedItem.name],
             quotaReport: quotaReports[selectedItem.name],
             availableModels: availableModels[selectedItem.name] ?? [],
+            hasLiveModels: (liveModelCounts[selectedItem.name] ?? 0) > 0,
             selectedModels: selectedModels[selectedItem.name] ?? [],
             modelsLoading,
             modelsLoadFailed,

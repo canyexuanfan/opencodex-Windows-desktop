@@ -48,6 +48,10 @@ bun run dev:gui
 **ログ**と**使用量**のコスト値は報告されたトークンで計算した API 定価換算値です。請求明細や
 実際の請求証拠ではなく、サブスクリプション使用量またはプロバイダークレジットが代わりに適用される場合があります。
 
+## モデルの表示
+
+**モデル** スイッチは Codex での最終的な表示状態を示します。ルーティングモデルはプロバイダーの allowlist に含まれる（または allowlist がない）うえで、無効化されていない場合だけオンになります。オン操作は両方のフィルターを原子的に調整し、**すべてオン** は allowlist を解除して新しいモデルも含めます。
+
 ## 委任セレクターとスポーンルーティングの違い
 
 ダッシュボードの **サブエージェント委任** セレクターは `injectionModel` とオプションの `injectionEffort` を
@@ -96,6 +100,7 @@ GUI はプロキシの JSON 管理 API を使うシンクライアントです�
 | `GET` / `PUT /api/v2` | サーフェスモード、Codex 機能フラグ、v2 スレッド上限を読むか変えます。 |
 | `GET /api/providers` · `POST /api/providers` · `PATCH /api/providers?name=...` · `DELETE /api/providers?name=...` | プロバイダー一覧の参照、追加/差替、有効化/無効化、削除。 |
 | `GET /api/models` · `PUT /api/disabled-models` | ネイティブ/ルーティングモデル行を参照し共有 disabled model 一覧を更新します。 |
+| `GET /api/selected-models` · `PUT /api/model-visibility` | プロバイダー allowlist を読み取り、モデルまたはプロバイダーグループの最終表示状態を原子的に変更します。 |
 | `GET /api/key-providers` · `GET /api/oauth/providers` | API キーおよび OAuth プロバイダーカタログを読みます。 |
 | `POST /api/oauth/login` · `GET /api/oauth/status` | プロバイダー OAuth ログインを開始し完了可否を確認します。 |
 | `GET /api/codex-auth/accounts?refresh=1` | メインおよびプールアカウントを参照しクォータを強制更新し、メインの `hasCredential` / terminal `needsReauth` 状態を返します。 |

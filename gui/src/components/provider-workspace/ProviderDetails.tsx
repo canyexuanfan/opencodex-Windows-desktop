@@ -30,6 +30,7 @@ export default function ProviderDetails({
   modelUsage,
   quotaReport,
   availableModels,
+  hasLiveModels,
   selectedModels,
   modelsLoading,
   modelsLoadFailed,
@@ -57,6 +58,8 @@ export default function ProviderDetails({
   modelUsage?: ProviderModelUsageRow[];
   quotaReport?: ProviderQuotaReportView;
   availableModels: string[];
+  /** Server-reported live-catalog provenance; see filterModels(). */
+  hasLiveModels: boolean;
   selectedModels: string[];
   modelsLoading?: boolean;
   modelsLoadFailed?: boolean;
@@ -247,8 +250,11 @@ export default function ProviderDetails({
         )}
         {tab === "models" && (
           <ProviderModels
+            key={item.name}
             item={item}
+            apiBase={apiBase}
             availableModels={availableModels}
+            hasLiveModels={hasLiveModels}
             selectedModels={selectedModels}
             modelsLoading={modelsLoading}
             modelsLoadFailed={modelsLoadFailed}
