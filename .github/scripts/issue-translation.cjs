@@ -3,6 +3,7 @@
 const crypto = require("crypto");
 
 const MARKER = "<!-- opencodex-issue-inline-translator -->";
+const END_MARKER = "<!-- /opencodex-issue-inline-translator -->";
 const LEGACY_STATE_RE = /<!-- opencodex-issue-inline-translator-state:([\s\S]*?) -->\s*/;
 const CONTROL_MARKER = "<!-- opencodex-issue-inline-translator-control -->";
 const CONTROL_STATE_RE =
@@ -29,16 +30,6 @@ function hashTranslationSource({ title = "", body = "" } = {}) {
   return crypto.createHash("sha256").update(payload, "utf8").digest("hex").slice(0, 16);
 }
 
-/** @deprecated Use hashTranslationSource */
-function hashSourceContent(args) {
-  return hashTranslationSource(args);
-}
-
-/** @deprecated Use hashTranslationSource */
-function hashSourceBody(body) {
-  return hashTranslationSource({ body });
-}
-
 /**
  * Locate the first generated inline translation block.
  * @returns {{ start: number, end: number } | null}
@@ -55,6 +46,12 @@ function findTranslationBlockRange(text) {
   }
 
   const rest = String(text).slice(cursor);
+  const endRel = rest.indexOf(END_MARKER);
+  if (endRel !== -1) {
+    return { start: markerIdx, end: cursor + endRel + END_MARKER.length };
+  }
+
+  // Legacy blocks (pre-END_MARKER): fall back to first </details>.
   if (/^\s*<details>/i.test(rest)) {
     const closeRel = rest.search(/<\/details>/i);
     if (closeRel !== -1) {
@@ -125,22 +122,32 @@ function parseControlState(raw) {
   }
 }
 
-function extractTranslationControlState(comments) {
+/**
+ * Return the newest github-actions control comment, if any.
+ */
+function findControlComment(comments) {
   const botComments = (Array.isArray(comments) ? comments : []).filter(
     (comment) => comment?.user?.login === BOT_LOGIN && comment?.body?.includes(CONTROL_MARKER),
   );
   if (!botComments.length) return null;
+  return botComments[botComments.length - 1];
+}
 
-  const newest = botComments[botComments.length - 1];
+function extractTranslationControlState(comments) {
+  const newest = findControlComment(comments);
+  if (!newest) return null;
   const match = String(newest.body || "").match(CONTROL_STATE_RE);
   return parseControlState(match?.[1]);
 }
 
 function buildTranslationControlComment(state) {
   const stateJson = JSON.stringify(state);
+  const lang = scrubDetectedLanguage(state?.detectedLanguage);
   return [
     CONTROL_MARKER,
     `<!-- opencodex-issue-inline-translator-control-state:${stateJson} -->`,
+    "",
+    `<sub>Automated translation bookkeeping — detected language: ${lang}.</sub>`,
   ].join("\n");
 }
 
@@ -157,7 +164,13 @@ function countRecentAttempts(recent, now, windowMs = 3_600_000) {
 
 function mergeTranslationAttemptState({ priorState = null, attempt, now = Date.now() }) {
   if (priorState?.attemptedAt && priorState.attemptedAt > now) {
-    return priorState;
+    return {
+      ...priorState,
+      recent: pruneRecent(
+        [...pruneRecent(priorState.recent, priorState.attemptedAt), now],
+        priorState.attemptedAt,
+      ),
+    };
   }
 
   const priorRecent = pruneRecent(priorState?.recent, now);
@@ -171,6 +184,43 @@ function mergeTranslationAttemptState({ priorState = null, attempt, now = Date.n
     requiresTranslation: Boolean(attempt.requiresTranslation),
     detectedLanguage: attempt.detectedLanguage ?? null,
   };
+}
+
+/**
+ * Upsert the bot-owned control comment using a single shared selector.
+ */
+async function upsertTranslationControlComment({
+  github,
+  owner,
+  repo,
+  issue_number,
+  comments,
+  priorState = null,
+  attempt,
+  now = Date.now(),
+}) {
+  const body = buildTranslationControlComment(
+    mergeTranslationAttemptState({ priorState, attempt, now }),
+  );
+  const existing = findControlComment(comments);
+  if (existing) {
+    if (existing.body !== body) {
+      await github.rest.issues.updateComment({
+        owner,
+        repo,
+        comment_id: existing.id,
+        body,
+      });
+    }
+    return existing;
+  }
+  const created = await github.rest.issues.createComment({
+    owner,
+    repo,
+    issue_number,
+    body,
+  });
+  return created.data;
 }
 
 function isPreparedSourceStillCurrent({ preparedHash, liveTitle, liveBody }) {
@@ -218,20 +268,16 @@ function shouldTranslate({
   return { ok: true, sourceHash, recent };
 }
 
-/** @deprecated Use mergeTranslationAttemptState */
-function nextTranslationState({ sourceHash, recent, now = Date.now() }) {
-  return mergeTranslationAttemptState({
-    priorState: null,
-    attempt: { sourceHash, requiresTranslation: true, detectedLanguage: null, recent },
-    now,
-  });
-}
-
 function sanitizeTranslationBody(raw, maxChars = 60000) {
   return String(raw || "")
+    .split(MARKER).join("")
+    .split(END_MARKER).join("")
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
-    .replace(/@/g, "(at)")
-    .replace(/\bjavascript:/gi, "")
+    // Defuse pings only: @login / @org/team — not emails, scopes, or decorators.
+    .replace(
+      /(^|[\s(])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\/[A-Za-z0-9._-]+)?)/g,
+      "$1@\u200b$2",
+    )
     .trim()
     .slice(0, maxChars);
 }
@@ -259,6 +305,7 @@ function buildTranslationBlock(translatedBody) {
     safeBody,
     "",
     "</details>",
+    END_MARKER,
     "",
   ].join("\n");
 }
@@ -290,23 +337,23 @@ function appendTranslationBlock(sourceBody, translatedBody) {
 
 module.exports = {
   MARKER,
+  END_MARKER,
   CONTROL_MARKER,
   BOT_LOGIN,
   ISSUE_BODY_MAX,
   DEFAULT_RATE_LIMIT,
   hashTranslationSource,
-  hashSourceContent,
-  hashSourceBody,
   findTranslationBlockRange,
   splitTranslationBlock,
   stripTranslationBlock,
   extractTranslationState,
+  findControlComment,
   extractTranslationControlState,
   buildTranslationControlComment,
   mergeTranslationAttemptState,
+  upsertTranslationControlComment,
   isPreparedSourceStillCurrent,
   shouldTranslate,
-  nextTranslationState,
   sanitizeTranslationBody,
   scrubDetectedLanguage,
   buildTranslationBlock,

@@ -174,7 +174,7 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("translated_title");
     expect(workflow).toContain("isPreparedSourceStillCurrent");
     expect(workflow).toContain("extractTranslationControlState");
-    expect(workflow).toContain("buildTranslationControlComment");
+    expect(workflow).toContain("upsertTranslationControlComment");
     expect(workflow).toContain("rejectsWorkflowDispatchNonDefaultBranch");
     expect(workflow).toContain("rejectsWorkflowDispatchPullRequest");
     expect(workflow).toContain("models: read");
@@ -183,7 +183,7 @@ describe("GitHub Actions hardening", () => {
 
     // Job-scoped permissions only (no top-level issues:write).
     expect(workflow).toMatch(
-      /jobs:\s*\n\s*translate:[\s\S]*?permissions:\s*\n\s*contents: read\s*\n\s*issues: write\s*\n\s*models: read/,
+      /jobs:\s*\n\s*translate:[\s\S]*?permissions:\s*\n(?:\s*#.*\n)*\s*contents: read\s*\n(?:\s*#.*\n)*\s*issues: write\s*\n(?:\s*#.*\n)*\s*models: read/,
     );
     expect(workflow).toMatch(
       /jobs:\s*\n\s*translate:[\s\S]*?validate:[\s\S]*?permissions:\s*\n\s*contents: read\s*\n\s*#.*\n\s*issues: write/,
@@ -200,8 +200,8 @@ describe("GitHub Actions hardening", () => {
     expect(checkoutStep).toContain("sparse-checkout: .github/scripts");
 
     const script = workflow
-      .split("script: |")
-      .slice(-1)[0]!
+      .split("- name: Validate issue quality")[1]!
+      .split("script: |")[1]!
       .split(/\n {6}- name:/)[0]!;
 
     // Invalid issue numbers fail before any issues API call.
@@ -250,6 +250,18 @@ describe("GitHub Actions hardening", () => {
     expect(staleGuardIdx).toBeGreaterThan(-1);
     expect(issueUpdateIdx).toBeGreaterThan(-1);
     expect(staleGuardIdx).toBeLessThan(issueUpdateIdx);
+
+    // Parse AI response must use a heredoc (not broken node -e quoting).
+    const parseStep = workflow
+      .split("- name: Parse AI response")[1]!
+      .split("- name: Apply inline translation")[0]!;
+    expect(parseStep).toContain("node <<'NODE'");
+    const scrubDecl = parseStep.indexOf("const scrubLine");
+    const scrubUse = parseStep.indexOf("scrubLine(");
+    expect(scrubDecl).toBeGreaterThan(-1);
+    expect(scrubUse).toBeGreaterThan(-1);
+    expect(scrubDecl).toBeLessThan(scrubUse);
+    expect(parseStep).toContain('typeof parsed !== "object"');
   });
 
   test("React Doctor workflow is SHA-pinned, engine-pinned, advisory, and read-only", async () => {

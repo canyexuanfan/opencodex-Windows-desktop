@@ -4,6 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   MARKER,
+  END_MARKER,
   CONTROL_MARKER,
   BOT_LOGIN,
   ISSUE_BODY_MAX,
@@ -13,10 +14,12 @@ const {
   appendTranslationBlock,
   buildTranslationBlock,
   buildTranslationControlComment,
+  findControlComment,
   extractTranslationControlState,
   mergeTranslationAttemptState,
   isPreparedSourceStillCurrent,
   shouldTranslate,
+  sanitizeTranslationBody,
   fitTranslationBody,
 } = require("./issue-translation.cjs");
 
@@ -94,6 +97,23 @@ describe("splitTranslationBlock", () => {
     assert.ok(split.sourceBody.includes("oops"));
     assert.ok(split.sourceBody.includes(SOURCE));
   });
+
+  it("preserves nested details inside translated content via end marker", () => {
+    const nested = [
+      "Outer translation",
+      "<details><summary>logs</summary>",
+      "inner",
+      "</details>",
+      "still translation",
+    ].join("\n");
+    const body = appendTranslationBlock(SOURCE, nested) + "\n\nuser suffix";
+    assert.ok(body.includes(END_MARKER));
+    const split = splitTranslationBlock(body);
+    assert.equal(split.suffix, "user suffix");
+    assert.equal(split.sourceBody, `${SOURCE}\n\nuser suffix`);
+    assert.ok(split.block.includes("inner"));
+    assert.ok(split.block.includes("still translation"));
+  });
 });
 
 describe("isPreparedSourceStillCurrent", () => {
@@ -153,11 +173,61 @@ describe("bot-owned control state", () => {
     assert.deepEqual(extractTranslationControlState(comments), state);
   });
 
+  it("reader and selector agree on the newest control comment", () => {
+    const older = {
+      v: 2,
+      sourceHash: "old",
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    };
+    const newer = {
+      v: 2,
+      sourceHash: "new",
+      attemptedAt: 2,
+      recent: [1, 2],
+      requiresTranslation: true,
+      detectedLanguage: "German",
+    };
+    const comments = [
+      { id: 1, user: { login: BOT_LOGIN }, body: buildTranslationControlComment(older) },
+      { id: 2, user: { login: BOT_LOGIN }, body: buildTranslationControlComment(newer) },
+    ];
+    const selected = findControlComment(comments);
+    assert.equal(selected.id, 2);
+    assert.deepEqual(extractTranslationControlState(comments), newer);
+  });
+
   it("treats corrupt control state as missing", () => {
     const comments = [
       botComment(`${CONTROL_MARKER}\n<!-- opencodex-issue-inline-translator-control-state:{bad -->`),
     ];
     assert.equal(extractTranslationControlState(comments), null);
+  });
+
+  it("records attempts even when prior state is newer", () => {
+    const now = 1_700_000_000_000;
+    const prior = {
+      v: 2,
+      sourceHash: "new",
+      attemptedAt: now + 5_000,
+      recent: [now + 5_000],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    };
+    const merged = mergeTranslationAttemptState({
+      priorState: prior,
+      attempt: {
+        sourceHash: "old",
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      },
+      now,
+    });
+    assert.equal(merged.sourceHash, "new");
+    assert.equal(merged.attemptedAt, now + 5_000);
+    assert.ok(merged.recent.includes(now));
   });
 
   it("rate limits repeated English detections", () => {
@@ -180,26 +250,11 @@ describe("bot-owned control state", () => {
     assert.equal(decision.reason, "rate_limited_interval");
   });
 
-  it("merges concurrent state without dropping newer timestamps", () => {
-    const now = 1_700_000_000_000;
-    const prior = {
-      v: 2,
-      sourceHash: "new",
-      attemptedAt: now + 5_000,
-      recent: [now + 5_000],
-      requiresTranslation: false,
-      detectedLanguage: "English",
-    };
-    const merged = mergeTranslationAttemptState({
-      priorState: prior,
-      attempt: {
-        sourceHash: "old",
-        requiresTranslation: false,
-        detectedLanguage: "English",
-      },
-      now,
-    });
-    assert.equal(merged, prior);
+  it("defuses mention-shaped tokens without rewriting emails or mid-token at-signs", () => {
+    const out = sanitizeTranslationBody("see @octocat and user@example.com and npm:@scope");
+    assert.match(out, /@\u200boctocat/);
+    assert.ok(out.includes("user@example.com"));
+    assert.ok(out.includes("npm:@scope"));
   });
 
   it("ignores forged body-embedded legacy state", () => {
