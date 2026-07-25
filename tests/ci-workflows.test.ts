@@ -228,9 +228,9 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).not.toMatch(/uses:\s+\S+@(?:v\d+|main|master)\b/);
 
     // Engine pin: the action wrapper would fetch react-doctor@latest without it.
-    expect(workflow).toContain('version: "0.7.8"');
+    expect(workflow).toContain('version: "0.9.1"');
 
-    // Action pin must accept CLI JSON schemaVersion 3 (baseline reports from 0.7.8).
+    // Action pin must accept CLI JSON schemaVersion 3 (baseline reports from 0.9.1).
     // v2.1.0's ensure-json-report only knew schemas 1–2 and failed every PR scan.
     // Advisory + least privilege: read-only token, all write-scoped outputs off.
     // pull-requests: read is required so the action can list PR files for
@@ -249,7 +249,7 @@ describe("GitHub Actions hardening", () => {
     const guiPkg = await readText("gui/package.json");
     const rootPkg = await readText("package.json");
 
-    expect(guiPkg).toContain("react-doctor@0.7.8");
+    expect(guiPkg).toContain("react-doctor@0.9.1");
     expect(guiPkg).not.toContain("react-doctor@latest");
     expect(rootPkg).not.toContain("react-doctor@latest");
     expect(rootPkg).toContain('"doctor:gui:if-changed": "bun scripts/doctor-gui-if-changed.ts"');
