@@ -62,12 +62,29 @@ describe("hasConcreteRelatedSignature", () => {
     }
   });
 
+  it("rejects shared wording that borrows a concrete token from only one issue", () => {
+    const rejected = [
+      "Both issues fail on the same adapter, though only the new issue reports ECONNRESET.",
+      "Both issues fail, but only one includes the Field required message.",
+      "Both issues use OpenRouter; issue 410 alone returns HTTP 503.",
+      "Both issues reproduce after startup, but just the first issue reports ETIMEDOUT.",
+      "Both issues return errors, with ECONNRESET appearing only in the new report.",
+      "Both issues have the same adapter, but the existing issue does not report ECONNRESET.",
+    ];
+    for (const reason of rejected) {
+      assert.equal(hasConcreteRelatedSignature(reason), false, reason);
+    }
+  });
+
   it("keeps shared concrete failure signatures", () => {
     const accepted = [
       "Both issues return HTTP 503 from POST /v1/responses in the OpenRouter adapter.",
       "Both issues report ECONNRESET from the same endpoint.",
       "Both issues have the same Field required error at messages.0.content.0.text.",
       "Both issues return ECONNRESET from POST /v1/responses in the OpenRouter adapter.",
+      "Both issues report ECONNRESET from POST /v1/responses.",
+      "Both issues return HTTP 503 in the OpenRouter adapter.",
+      "The issues share the ETIMEDOUT failure when connecting through the Anthropic adapter.",
     ];
     for (const reason of accepted) {
       assert.equal(hasConcreteRelatedSignature(reason), true, reason);

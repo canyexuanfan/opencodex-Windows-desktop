@@ -21,22 +21,12 @@ const ERRNO_STYLE_RE = /\bE[A-Z]{4,}\b/;
 
 const HTTP_STATUS_RE = /\b(?:HTTP\s+)?([1-5]\d\d)\b/gi;
 
-/**
- * Shared comparison must bind to the failure itself.
- * Component overlap verbs (use / call / involve) are not enough.
- */
-function hasSharedFailureComparison(text) {
-  if (/\bboth(?:\s+issues?)?\s+(?:return|report|show|have|hit|fail|reproduce|receive)\b/i.test(text)) {
-    return true;
-  }
-  if (/\b(?:the\s+)?issues?\s+have\s+the\s+same\b/i.test(text)) return true;
-  if (/\bsame\b[^.]{0,80}\b(?:error|failure|status|fault|exception|signature|root\s+cause)\b/i.test(text)) {
-    return true;
-  }
-  if (/\bshared\s+(?:failure|error|status|signature)\b/i.test(text)) return true;
-  if (/\bidentical(?:ly)?\b/i.test(text)) return true;
-  return false;
-}
+/** One-sided attribution of a concrete failure to only one issue. */
+const ONE_SIDED_ATTRIBUTION_RE =
+  /\b(?:only\s+(?:the\s+)?(?:new\s+)?(?:issue|one|first|second|other)|only\s+one|just\s+the\s+(?:first|second|new|other)|(?:issue\s+#?\d+\s+)?alone|appearing\s+only(?:\s+in)?|appears?\s+only(?:\s+in)?|exclusive\s+to|the\s+(?:other|existing(?:\s+issue)?)\s+does\s+not|(?:does|do)\s+not\s+(?:show|report|include|return|have))\b/i;
+
+const BOTH_FAILURE_VERB_RE =
+  /\bboth(?:\s+issues?)?(?:\s+\w+){0,6}\s+(?:return|report|show|have|hit|fail|reproduce|receive|share)\b/i;
 
 function extractHttpStatuses(text) {
   const found = [];
@@ -61,8 +51,48 @@ function extractErrnoTokens(text) {
 }
 
 /**
+ * Locate concrete failure signature spans inside a clause.
+ * @returns {{ start: number, end: number, text: string }[]}
+ */
+function findSignatureSpans(text) {
+  const spans = [];
+  const pushMatches = (re) => {
+    const copy = new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`);
+    let match;
+    while ((match = copy.exec(text)) !== null) {
+      spans.push({
+        start: match.index,
+        end: match.index + match[0].length,
+        text: match[0],
+      });
+    }
+  };
+
+  pushMatches(KNOWN_ERRNO_RE);
+  pushMatches(ERRNO_STYLE_RE);
+  pushMatches(/\b(?:HTTP\s+)?[1-5]\d\d\b/gi);
+  pushMatches(/\bField required\b/gi);
+  pushMatches(/\bcontent\[\d+\]/g);
+  pushMatches(/\b[\w]+\.[\w.]+\.(?:text|content|type)\b/g);
+
+  if (/\b(?:taskkill|ghost\s+LISTEN|listen(?:-|\s)?port)\b/i.test(text) && /\b\d{2,5}\b/.test(text)) {
+    const m = text.match(/\b(?:taskkill|ghost\s+LISTEN|listen(?:-|\s)?port)\b/i);
+    if (m && m.index != null) {
+      spans.push({ start: m.index, end: m.index + m[0].length, text: m[0] });
+    }
+  }
+
+  spans.sort((a, b) => a.start - b.start || a.end - b.end);
+  return spans;
+}
+
+function hasConcreteFailureToken(text) {
+  return findSignatureSpans(String(text || "")).length > 0
+    || (/\breproduc(?:e|es|ed|tion)\b/i.test(text) && /\b(?:when|if|after|on)\b/i.test(text));
+}
+
+/**
  * True when the reason attributes distinct concrete failures to different issues.
- * Prefer token extraction over an ever-growing English blacklist.
  */
 function hasDistinctFailureSignatures(text) {
   const statuses = extractHttpStatuses(text);
@@ -71,8 +101,6 @@ function hasDistinctFailureSignatures(text) {
   const errnos = extractErrnoTokens(text);
   if (errnos.length > 1) return true;
 
-  // Contrast attribution even when only one extracted token is present
-  // (e.g. "one times out and the other returns 401").
   if (/\b(?:the\s+first|one)\b[\s\S]{0,100}\b(?:the\s+second|the\s+other)\b/i.test(text)) {
     return true;
   }
@@ -91,34 +119,72 @@ function hasDistinctFailureSignatures(text) {
   return false;
 }
 
-function hasConcreteFailureToken(text) {
-  if (extractErrnoTokens(text).length > 0) return true;
-  if (extractHttpStatuses(text).length > 0) return true;
-  if (/\bcontent\[\d+\]/.test(text) || /\b[\w]+\.[\w.]+\.(?:text|content|type)\b/.test(text)) {
-    return true;
+/**
+ * Require a shared quantifier in the same clause as the concrete signature,
+ * with no one-sided attribution between the binder and the token (or immediately
+ * after the token). Generic "both fail" + a later one-issue token does not pass.
+ */
+function clauseBindsSharedToSignature(clause) {
+  const signatures = findSignatureSpans(clause);
+  if (!signatures.length) {
+    // Reproduction phrases count as signatures when shared-bound.
+    if (!(/\breproduc(?:e|es|ed|tion)\b/i.test(clause) && /\b(?:when|if|after|on)\b/i.test(clause))) {
+      return false;
+    }
   }
-  if (/\bField required\b/i.test(text)) return true;
-  if (/\breproduc(?:e|es|ed|tion)\b/i.test(text) && /\b(?:when|if|after|on)\b/i.test(text)) {
-    return true;
-  }
-  if (/\b(?:taskkill|ghost\s+LISTEN|listen(?:-|\s)?port)\b/i.test(text) && /\b\d{2,5}\b/.test(text)) {
-    return true;
+
+  const spans = signatures.length
+    ? signatures
+    : [{ start: clause.search(/\breproduc/i), end: clause.length, text: "repro" }];
+
+  for (const sig of spans) {
+    if (sig.start < 0) continue;
+
+    const binders = [];
+    const binderRe = /\b(?:both(?:\s+issues?)?|(?:the\s+)?issues?\s+share|share|shared|same|identical(?:ly)?)\b/gi;
+    let match;
+    while ((match = binderRe.exec(clause)) !== null) {
+      if (match.index < sig.start) binders.push(match);
+    }
+
+    for (const binder of binders) {
+      const between = clause.slice(binder.index, sig.start);
+      const trail = clause.slice(sig.end, Math.min(clause.length, sig.end + 72));
+      if (ONE_SIDED_ATTRIBUTION_RE.test(between) || ONE_SIDED_ATTRIBUTION_RE.test(trail)) {
+        continue;
+      }
+
+      const binderText = binder[0];
+      if (/^both\b/i.test(binderText)) {
+        if (!BOTH_FAILURE_VERB_RE.test(clause.slice(binder.index, sig.end))) continue;
+      } else if (/^same$/i.test(binderText)) {
+        // "same adapter" is not enough; require same … error/failure/Field required/status.
+        if (!/\bsame\b[\s\S]{0,80}\b(?:error|failure|status|fault|exception|signature|Field required|(?:HTTP\s+)?[1-5]\d\d|E[A-Z]{4,})\b/i
+          .test(clause.slice(binder.index))) {
+          continue;
+        }
+      } else if (/share/i.test(binderText)) {
+        if (!/\b(?:share|shared)\b/i.test(between + clause.slice(sig.start, sig.end))) continue;
+      }
+
+      return true;
+    }
   }
   return false;
 }
 
 /**
  * Positive evidence that two issues share a concrete failure signature.
- * Component overlap (same provider/route/adapter) is supporting context only;
- * the reason must independently establish the same concrete failure.
+ * The shared comparison must bind directly to the concrete token/description
+ * in the same clause; component overlap alone is never enough.
  */
 function hasConcreteRelatedSignature(reason) {
   const text = String(reason || "");
   if (!text) return false;
-  if (!hasSharedFailureComparison(text)) return false;
   if (hasDistinctFailureSignatures(text)) return false;
-  if (!hasConcreteFailureToken(text)) return false;
-  return true;
+
+  const clauses = text.split(/[.;]+/).map((part) => part.trim()).filter(Boolean);
+  return clauses.some((clause) => clauseBindsSharedToSignature(clause));
 }
 
 function sanitizeReason(raw) {
@@ -260,10 +326,12 @@ function parseTriageMatches(raw, { currentNumber, knownNumbers }) {
 
 module.exports = {
   WEAK_RELATED_REASON_RE,
-  hasSharedFailureComparison,
+  ONE_SIDED_ATTRIBUTION_RE,
   hasDistinctFailureSignatures,
   hasConcreteRelatedSignature,
   hasConcreteFailureToken,
+  clauseBindsSharedToSignature,
+  findSignatureSpans,
   extractHttpStatuses,
   extractErrnoTokens,
   sanitizeReason,
