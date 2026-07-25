@@ -642,7 +642,7 @@ rg -n '\[image: \?\]|\[file: \?\]' src/responses/parser.ts tests/responses-parse
 
 ### 추가 필수 테스트 (A-gate 라운드2 반영)
 
-아래 4건은 canonical 계약의 새 분기를 활성화한다. 하나라도 없으면 WP2의 C는 통과가 아니다.
+아래 표에서 `SUPERSEDED`가 아닌 항목만 필수다. 취소선 항목은 계획 재설계로 무효이며 구현·검증 대상이 아니다.
 
 | 테스트 | 트리거 | 관찰 (실행 증거) |
 |---|---|---|
@@ -652,7 +652,7 @@ rg -n '\[image: \?\]|\[file: \?\]' src/responses/parser.ts tests/responses-parse
 | file precedence | `file_id` 단독 / `file_data` 단독 / `filename + file_data` / `filename` 단독 | 각각 `[file: <id>]`, `[file: inline data]`, `[file: <filename>]`, 그리고 **생략** |
 
 통합 assertion은 malformed `input_image`(ref 없음)와 malformed `input_file`(ref 없음)을 실제
-raw input에 포함해 Google과 Cursor 두 경로의 최종 결과를 관찰한다.
+raw input에 포함해 **Google wire 결과만** 관찰한다. Cursor 검증은 이 WP 범위 밖이다.
 
 ## 수용 기준
 
