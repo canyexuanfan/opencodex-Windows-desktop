@@ -227,67 +227,76 @@ jobs:
             const preparedTitle = process.env.PREPARED_TITLE || "";
             const translatedTitle = scrubLine(process.env.TRANSLATED_TITLE, 256);
             const translatedBody = sanitizeTranslationBody(process.env.TRANSLATED_BODY);
-            if (!translatedTitle && !translatedBody) return;
-
-            const { data: live } = await github.rest.issues.get({ owner, repo, issue_number });
-            const liveSourceBody = stripTranslationBlock(live.body || "");
-            if (!isPreparedSourceStillCurrent({
-              preparedHash: process.env.SOURCE_HASH,
-              liveTitle: live.title || "",
-              liveBody: liveSourceBody,
-            })) {
-              core.info("Issue changed while translation was running; skipping stale update.");
-              return;
-            }
-
             const lang = scrubDetectedLanguage(process.env.DETECTED_LANG);
+
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner, repo, issue_number, per_page: 100,
             });
             const priorState = extractTranslationControlState(comments);
 
-            const translationText = [
-              `*Original language: ${lang}*`,
-              "",
-              translatedBody,
-            ].join("\n");
+            try {
+              if (!translatedTitle && !translatedBody) return;
 
-            const nextBody = translatedBody
-              ? appendTranslationBlock(sourceBody, translationText)
-              : sourceBody;
+              const { data: live } = await github.rest.issues.get({ owner, repo, issue_number });
+              const liveSourceBody = stripTranslationBlock(live.body || "");
+              if (!isPreparedSourceStillCurrent({
+                preparedHash: process.env.SOURCE_HASH,
+                liveTitle: live.title || "",
+                liveBody: liveSourceBody,
+              })) {
+                core.info("Issue changed while translation was running; skipping stale update.");
+                return;
+              }
 
-            await removeLegacyTranslationComments(owner, repo, issue_number, comments);
+              const translationText = [
+                `*Original language: ${lang}*`,
+                "",
+                translatedBody,
+              ].join("\n");
 
-            const update = { owner, repo, issue_number };
-            let changed = false;
-            if (translatedTitle && live.title !== translatedTitle) {
-              update.title = translatedTitle;
-              changed = true;
+              const nextBody = translatedBody
+                ? appendTranslationBlock(sourceBody, translationText)
+                : sourceBody;
+
+              await removeLegacyTranslationComments(owner, repo, issue_number, comments);
+
+              const update = { owner, repo, issue_number };
+              let changed = false;
+              if (translatedTitle && live.title !== translatedTitle) {
+                update.title = translatedTitle;
+                changed = true;
+              }
+              if (translatedBody && (live.body || "") !== nextBody) {
+                update.body = nextBody;
+                changed = true;
+              }
+              if (changed) {
+                await github.rest.issues.update(update);
+              }
+            } finally {
+              // Count every model attempt toward cooldown / hourly caps,
+              // including empty translations and stale-source skips.
+              await upsertTranslationControlComment({
+                github,
+                owner,
+                repo,
+                issue_number,
+                comments,
+                priorState,
+                attempt: {
+                  sourceHash: process.env.SOURCE_HASH,
+                  requiresTranslation: true,
+                  detectedLanguage: lang,
+                },
+              });
             }
-            if (translatedBody && (live.body || "") !== nextBody) {
-              update.body = nextBody;
-              changed = true;
-            }
-            if (changed) {
-              await github.rest.issues.update(update);
-            }
-
-            await upsertTranslationControlComment({
-              github,
-              owner,
-              repo,
-              issue_number,
-              comments,
-              priorState,
-              attempt: {
-                sourceHash: process.env.SOURCE_HASH,
-                requiresTranslation: true,
-                detectedLanguage: lang,
-              },
-            });
 
       - name: Persist translation control state
-        if: steps.prepare.outputs.should_translate == 'true' && steps.parse.outputs.requires_translation == 'false'
+        if: >-
+          always() &&
+          steps.prepare.outcome == 'success' &&
+          steps.prepare.outputs.should_translate == 'true' &&
+          steps.parse.outputs.requires_translation != 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           SOURCE_HASH: ${{ steps.prepare.outputs.source_hash }}
@@ -298,8 +307,6 @@ jobs:
             const {
               extractTranslationControlState,
               upsertTranslationControlComment,
-              stripTranslationBlock,
-              isPreparedSourceStillCurrent,
               scrubDetectedLanguage,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-translation.cjs"));
 
@@ -309,17 +316,6 @@ jobs:
               issue_number = Number(context.payload.inputs.issue_number);
             } else {
               issue_number = context.payload.issue.number;
-            }
-
-            const { data: live } = await github.rest.issues.get({ owner, repo, issue_number });
-            const liveSourceBody = stripTranslationBlock(live.body || "");
-            if (!isPreparedSourceStillCurrent({
-              preparedHash: process.env.SOURCE_HASH,
-              liveTitle: live.title || "",
-              liveBody: liveSourceBody,
-            })) {
-              core.info("Issue changed while detection was running; skipping stale control update.");
-              return;
             }
 
             const comments = await github.paginate(github.rest.issues.listComments, {
@@ -336,7 +332,7 @@ jobs:
               attempt: {
                 sourceHash: process.env.SOURCE_HASH,
                 requiresTranslation: false,
-                detectedLanguage: scrubDetectedLanguage(process.env.DETECTED_LANG),
+                detectedLanguage: scrubDetectedLanguage(process.env.DETECTED_LANG || "unknown"),
               },
             });
 

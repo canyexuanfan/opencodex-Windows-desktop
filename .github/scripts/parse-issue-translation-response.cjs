@@ -53,7 +53,13 @@ function main() {
   }
 
   const parsed = parseAiResponse(process.env.AI_RESPONSE);
-  if (!parsed) process.exit(0);
+  if (!parsed) {
+    // Still emit outputs so the workflow can persist rate-limit state.
+    console.warn("::warning::Issue translation AI response was empty or not valid JSON.");
+    writeOutput("requires_translation", "false");
+    writeOutput("detected_language", "unknown");
+    return;
+  }
 
   if (parsed.requires_translation !== true) {
     const lang = scrubLine(parsed.detected_language || "English", 64) || "English";

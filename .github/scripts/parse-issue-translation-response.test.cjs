@@ -124,11 +124,14 @@ describe("parse-issue-translation-response process", () => {
     assert.equal(parseOutputs(output).translated_body, body);
   });
 
-  it("exits cleanly on invalid JSON and empty responses", () => {
-    assert.equal(runParser("{").status, 0);
-    assert.equal(runParser("{").output, "");
-    assert.equal(runParser("").status, 0);
-    assert.equal(runParser("[]").status, 0);
+  it("writes false outputs on invalid JSON and empty responses", () => {
+    for (const raw of ["{", "", "[]"]) {
+      const { status, output } = runParser(raw);
+      assert.equal(status, 0);
+      const parsed = parseOutputs(output);
+      assert.equal(parsed.requires_translation, "false");
+      assert.equal(parsed.detected_language, "unknown");
+    }
   });
 
   it("parses fenced responses in the process path", () => {

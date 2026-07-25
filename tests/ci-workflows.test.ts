@@ -259,6 +259,14 @@ describe("GitHub Actions hardening", () => {
     expect(parseStep).toContain("parse-issue-translation-response.cjs");
     expect(parseStep).not.toContain("node -e");
     expect(parseStep).not.toContain("node <<");
+    // AI output must stay in env, never interpolated into the shell run script.
+    expect(parseStep.split(/\n\s*run:\s*/)[1] || "").not.toContain("${{");
+
+    const persistStep = workflow
+      .split("- name: Persist translation control state")[1]!
+      .split(/\n {2}[a-z]/)[0]!;
+    expect(persistStep).toContain("always()");
+    expect(persistStep).toContain("requires_translation != 'true'");
   });
 
   test("React Doctor workflow is SHA-pinned, engine-pinned, advisory, and read-only", async () => {

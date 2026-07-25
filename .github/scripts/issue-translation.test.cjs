@@ -180,7 +180,8 @@ describe("splitTranslationBlock", () => {
     const forged = `${SOURCE}${block}\n${END_MARKER}\nkeep me`;
     const split = splitTranslationBlock(forged);
     assert.ok(split.sourceBody.includes("keep me"));
-    assert.ok(split.suffix.includes(END_MARKER) || split.sourceBody.includes("keep me"));
+    assert.ok(!split.block.includes("keep me"));
+    assert.equal(split.suffix, `${END_MARKER}\nkeep me`);
   });
 });
 
