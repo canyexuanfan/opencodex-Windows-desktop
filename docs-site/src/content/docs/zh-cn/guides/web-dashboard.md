@@ -33,15 +33,23 @@ bun run dev:gui
 | **Codex 自动启动** | 允许已安装的 Codex launcher shim 运行 `ocx ensure`。此开关不会安装 shim 或后台服务。 |
 | **Providers** | 添加、编辑、启用/禁用、删除 provider，并在支持时管理 OAuth 账号池和 API key 池。 |
 | **Add provider** | 搜索 registry preset，选择账号登录、API key 服务、本地服务器或自定义 endpoint。 |
-| **Codex Auth** | 添加 ChatGPT/Codex 池账号，选择下一 session 的账号，刷新 5h / 每周 / 30d 配额，并设置配额自动切换和临时故障 failover。 |
+| **Codex Auth** | 添加 ChatGPT/Codex 池账号，选择下一 session 的账号，刷新 5h / 每周 / 30d 配额，启用或停用配额自动切换，设置其 1–100% 阈值和临时故障 failover。 |
 | **Subagents** | 在 `spawn_agent` override 列表中置顶最多五个原生或路由模型。 |
 | **Models** | 开关原生 GPT 与路由模型，配置 provider allowlist、上下文上限、v1/base/v2 以及 v2 thread 数量。 |
 | **Logs** | 自动刷新近期请求，显示 token、请求强度、实际模型、provider、状态、request id、耗时和错误详情。 |
 | **Usage / Debug** | 查看 token usage 覆盖率与趋势，或启用可选的 provider transport 和 usage 提取诊断。 |
 | **Stop** | 优雅地停止代理和已安装的后台服务，恢复原生 Codex 并退出（`POST /api/stop`）。 |
 
+### 链接到某个部分
+
+布局只有一种，无需切换。Dashboard 的各个部分都有自己的地址：`#dashboard` 打开 Overview，`#dashboard/providers` 与 `#dashboard/models` 打开另外两个。刷新、收藏和后退都会保留当前所在的部分。**Logs** 同理，使用 `#logs` 与 `#logs/debug`。旧的 `#providers/workspace` 书签现在会跳转到 `#providers`。
+
 **Logs** 和 **Usage** 中的费用是根据已报告 token 计算的 API 标价折算值，不是账单，也不能证明
 实际发生了扣费；实际可能计入订阅用量或消耗服务商额度。
+
+## 模型可见性
+
+**Models** 开关表示 Codex 中的最终可见状态。路由模型只有在 provider allowlist 中（或未设置 allowlist）且未被禁用时才会开启。开启模型会原子地协调两个过滤条件；**全部开启** 会清除 allowlist，因此以后新发现的模型也会开启。
 
 ## 委派选择器与生成路由的区别
 
@@ -53,7 +61,7 @@ Dashboard 的 **Sub-agent delegation** 选择器会保存 `injectionModel`，以
 :::caution
 该选择器是面向 v1 兼容界面的委派指引。在 `multi_agent_v2` 中，当前代理不会附加 v1 注入消息，
 而且所有生成的子代理都会继承父 session 的模型。它不是代理侧的跨模型路由器。v1/base/v2 的
-权威说明见 [子代理界面](/opencodex/zh-cn/guides/sub-agent-surface/)。
+权威说明见 [子代理界面](/zh-cn/guides/sub-agent-surface/)。
 :::
 
 选择器会列出已启用的原生与路由模型，以及全局 Codex reasoning 阶梯。API 会先验证所选强度是否
@@ -89,6 +97,7 @@ GUI 是代理 JSON 管理 API 之上的轻量客户端。常用 endpoint 包括�
 | `GET` / `PUT /api/v2` | 读取或设置界面模式、Codex feature flag 和 v2 thread 上限。 |
 | `GET /api/providers` · `POST /api/providers` · `PATCH /api/providers?name=...` · `DELETE /api/providers?name=...` | 列出、添加/替换、启用/禁用或删除 provider。 |
 | `GET /api/models` · `PUT /api/disabled-models` | 列出原生/路由模型，并更新共享的 disabled-model 集合。 |
+| `GET /api/selected-models` · `PUT /api/model-visibility` | 读取 provider allowlist，并原子地更改单个模型或 provider 分组的最终可见状态。 |
 | `GET /api/key-providers` · `GET /api/oauth/providers` | 读取 API key 和 OAuth provider 目录。 |
 | `POST /api/oauth/login` · `GET /api/oauth/status` | 启动 provider OAuth 流程并轮询完成状态。 |
 | `GET /api/codex-auth/accounts?refresh=1` | 列出主账号与池账号、强制刷新配额，并返回主账号的 `hasCredential` / terminal `needsReauth` 状态。 |
@@ -100,6 +109,6 @@ GUI 是代理 JSON 管理 API 之上的轻量客户端。常用 endpoint 包括�
 
 :::tip
 从仪表盘添加 **Ollama Cloud** 或其他目录型 provider 时，其文本/视觉模型分类会写入保存的
-provider 配置。因此无需手动分类，[vision sidecar](/opencodex/zh-cn/guides/sidecars/) 也能在正确
+provider 配置。因此无需手动分类，[vision sidecar](/zh-cn/guides/sidecars/) 也能在正确
 条件下启用。
 :::

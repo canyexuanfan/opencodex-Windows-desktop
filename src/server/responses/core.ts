@@ -49,6 +49,8 @@ import {
   headersForCodexAuthContext,
   isCodexAuthContextUsable,
   resolveCodexAuthContext,
+  codexProbeLeaseId,
+  releaseCodexAuthContextProbeLease,
   stripCodexRuntimeProviderFields,
   type CodexAuthContext,
 } from "../../codex/auth-context";
@@ -105,6 +107,7 @@ import type { EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/cat
 import { buildToolBridgeMaps, collabSurface, injectDeveloperMessage, multiAgentGuidanceText } from "./collaboration";
 import { hasUnreadableEncryptedAgentTask, looksLikeBackendCiphertext, sanitizeEncryptedContentInPlace } from "./encrypted-payload";
 import { fetchWithHeaderTimeout, providerFetch, safeHostLabel } from "./fetch-helpers";
+import { guardTerminalEventStream } from "./terminal-guard";
 
 /**
  * Adapters whose continuation state must survive Codex's store:false requests.
@@ -119,7 +122,10 @@ export function sidecarOutcomeRecorder(
   threadId?: string | null,
 ): ((outcome: CodexUpstreamOutcome) => void) | undefined {
   return authCtx.kind === "pool" || authCtx.kind === "main-pool"
-    ? outcome => recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, { threadId })
+    ? outcome => recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
+      threadId,
+      probeLeaseId: authCtx.probeLeaseId,
+    })
     : undefined;
 }
 
@@ -206,7 +212,10 @@ export function codexForwardTerminalOutcomeRecorder(
       // Normal limit/content-filter/stall terminal — the account served the
       // request. Don't penalize account health; record success to clear any
       // prior soft-avoid so a healthy account isn't stuck avoided.
-      recordCodexUpstreamOutcome(config, authCtx.accountId, 200, { threadId });
+      recordCodexUpstreamOutcome(config, authCtx.accountId, 200, {
+        threadId,
+        probeLeaseId: codexProbeLeaseId(authCtx),
+      });
       return;
     }
     // status === "completed" or "failed": use the semantic HTTP status derived
@@ -221,7 +230,10 @@ export function codexForwardTerminalOutcomeRecorder(
     const outcome = status === "completed"
       ? 200
       : (httpStatusOverride ?? logCtx?.terminalHttpStatus ?? 502);
-    recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, { threadId });
+    recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
+      threadId,
+      probeLeaseId: codexProbeLeaseId(authCtx),
+    });
   };
 }
 
@@ -720,6 +732,10 @@ export async function handleResponses(
     }
     parsed.modelId = route.modelId;
   }
+  // Settle the wire once, right after the native model id is known, so logging,
+  // fast-mode injection, auth, and sidecar decisions all read the adapter this
+  // request will actually use rather than the provider-wide default (#404).
+  route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
   logCtx.model = route.modelId;
   logCtx.provider = route.providerName;
   logCtx.providerAdapter = route.provider.adapter;
@@ -851,6 +867,8 @@ export async function handleResponses(
     throw err;
   }
   if (!isCodexAuthContextUsable(authCtx, config)) {
+    // Nothing reaches upstream on this path, so give the probe back.
+    releaseCodexAuthContextProbeLease(authCtx);
     return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
   }
   route.provider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
@@ -973,7 +991,12 @@ export async function handleResponses(
   // one `{type:"compaction"}` output item (codex-rs compact_remote_v2.rs). Passthrough handles it
   // natively upstream; here we run the routed model as a plain summarizer — no tools, no web-search
   // sidecar — and the bridge appends the synthetic compaction item (src/responses/compaction.ts).
-  const routedCompaction = parsed._compactionRequest === true && !("passthrough" in adapter && adapter.passthrough);
+  // A Responses-shaped wire does not imply support for Codex's private
+  // `compaction_trigger` item — only the canonical ChatGPT backend speaks that
+  // contract. An API-key gateway would receive the trigger, answer with an ordinary
+  // message, and leave Codex fataling on a missing compaction item (#422).
+  const routedCompaction = parsed._compactionRequest === true
+    && !isCanonicalOpenAiForwardProvider(route.provider);
   if (routedCompaction) {
     delete parsed.context.tools;
     delete parsed._webSearch;
@@ -982,7 +1005,7 @@ export async function handleResponses(
     parsed.context.messages.push({ role: "user", content: COMPACT_PROMPT, timestamp: Date.now() });
   }
 
-  if ("passthrough" in adapter && adapter.passthrough) {
+  if ("passthrough" in adapter && adapter.passthrough && !routedCompaction) {
     // Local continuation cache for the ChatGPT passthrough. Codex WS turns chain with
     // previous_response_id, ocx converts them to internal HTTP requests, and the ChatGPT Codex
     // REST backend rejects the parameter — the adapter strips it in forward mode, so the ONLY
@@ -1025,6 +1048,7 @@ export async function handleResponses(
       if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
         recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
           threadId: req.headers.get("x-codex-parent-thread-id"),
+          probeLeaseId: codexProbeLeaseId(authCtx),
         });
       }
       const msg = outcome === "timeout"
@@ -1079,6 +1103,7 @@ export async function handleResponses(
       if (retryAuthCtx?.kind === "pool" || retryAuthCtx?.kind === "main-pool") {
         recordCodexUpstreamOutcome(config, firstAuthCtx.accountId, 400, {
           threadId: req.headers.get("x-codex-parent-thread-id"),
+          probeLeaseId: codexProbeLeaseId(firstAuthCtx),
         });
 
         const retryHeaders = headersForCodexAuthContext(req.headers, retryAuthCtx);
@@ -1147,25 +1172,9 @@ export async function handleResponses(
    if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
       // primary was the 5h window; it now carries weekly data for GPT plans.
       // Prefer primary when present, fall back to secondary for compatibility.
-      const primaryRaw = upstreamResponse.headers.get("x-codex-primary-used-percent");
-      const secondaryRaw = upstreamResponse.headers.get("x-codex-secondary-used-percent");
-      const weeklyRaw = primaryRaw ?? secondaryRaw;
-      const monthlyRaw = upstreamResponse.headers.get("x-codex-tertiary-used-percent");
-      const primaryResetRaw = upstreamResponse.headers.get("x-codex-primary-reset-at");
-      const secondaryResetRaw = upstreamResponse.headers.get("x-codex-secondary-reset-at");
-      const weeklyResetRaw = primaryRaw ? primaryResetRaw : secondaryResetRaw;
-      const monthlyResetRaw = upstreamResponse.headers.get("x-codex-tertiary-reset-at");
       const retryAfterRaw = upstreamResponse.headers.get("retry-after");
-      if (weeklyRaw || monthlyRaw) {
-        const { updateAccountQuota } = await import("../../codex/auth-api");
-        updateAccountQuota(
-          authCtx.accountId,
-          weeklyRaw,
-          weeklyResetRaw,
-          monthlyRaw,
-          monthlyResetRaw,
-        );
-      }
+      const { applyAccountQuotaFromUpstreamHeaders } = await import("../../codex/auth-api");
+      applyAccountQuotaFromUpstreamHeaders(authCtx.accountId, upstreamResponse.headers);
       if (terminalBodyWillRecord) {
         options.setTerminalOutcomeRecorder?.((status, httpStatusOverride) => {
           terminalRecorder(status, httpStatusOverride);
@@ -1174,8 +1183,13 @@ export async function handleResponses(
       } else {
         recordCodexUpstreamOutcome(config, authCtx.accountId, upstreamResponse.status, {
         retryAfter: retryAfterRaw,
-         resetAt: [primaryResetRaw, secondaryResetRaw, monthlyResetRaw].filter(Boolean),
+         resetAt: [
+           upstreamResponse.headers.get("x-codex-primary-reset-at"),
+           upstreamResponse.headers.get("x-codex-secondary-reset-at"),
+           upstreamResponse.headers.get("x-codex-tertiary-reset-at"),
+         ].filter(Boolean),
          threadId: req.headers.get("x-codex-parent-thread-id"),
+         probeLeaseId: codexProbeLeaseId(authCtx),
         });
       }
     }
@@ -1634,8 +1648,136 @@ export async function handleResponses(
 
   cancelBodyOnAbort(upstreamResponse.body, upstream.signal);
 
+  // Claude can return a clean end_turn after announcing an edit without emitting any tool call.
+  // Keep the normal request/recovery path above intact, and use this bounded callback only for the
+  // one internal continuation pass. A continuation failure becomes an in-stream adapter error so
+  // the client never sees a second hidden HTTP response or an unbounded retry loop.
+  const terminalGuardEnabled = activeAdapter.name === "anthropic" && !options.comboAttempt && !routedCompaction;
+  const fetchTerminalGuardContinuation = async function* (nextParsed: OcxParsedRequest): AsyncGenerator<AdapterEvent> {
+    let imageTierBias = 0;
+    let response: Response | undefined;
+    while (true) {
+      try {
+        const continuationRequest = await activeAdapter.buildRequest(nextParsed, {
+          headers: selectedForwardHeaders,
+          ...(imageTierBias > 0 ? { imageTierBias } : {}),
+        });
+        const continuationEstimate = typeof continuationRequest.usageLog?.inputTokens === "number"
+          ? continuationRequest.usageLog.inputTokens
+          : undefined;
+        if (continuationEstimate !== undefined) logCtx.usageLogInputTokens = continuationEstimate;
+        if (activeAdapter.fetchResponse) {
+          noteAttemptSend(logCtx.activeAttempt, continuationEstimate);
+          response = await activeAdapter.fetchResponse(continuationRequest, {
+              abortSignal: upstream.signal,
+              timeoutMs: connectMs,
+              stream: nextParsed.stream,
+            });
+        } else {
+          response = await fetchWithResetRetry(
+              recovery => {
+                noteAttemptSend(logCtx.activeAttempt, continuationEstimate, recovery);
+                return fetchWithHeaderTimeout(
+                  continuationRequest.url,
+                  applyUpstreamRecoveryInit({
+                    method: continuationRequest.method,
+                    headers: continuationRequest.headers,
+                    body: continuationRequest.body,
+                  }, recovery),
+                  upstream.signal,
+                  connectMs,
+                  nextParsed.stream,
+                  providerFetch(route.provider),
+                );
+              },
+              { abortSignal: upstream.signal, label: safeHostLabel(continuationRequest.url) },
+            );
+        }
+      } catch (error) {
+        if (options.abortSignal?.aborted) {
+          yield { type: "error", message: "client closed request during terminal continuation", status: 499 };
+        } else {
+          yield { type: "error", message: `Provider continuation failed: ${error instanceof Error ? error.message : String(error)}` };
+        }
+        return;
+      }
+
+      if (response.status === 429 && hasKeyPoolFailover(route.provider)) {
+        const rotated = rotateProviderTransportOn429(config, route.providerName, {
+          retryAfter: response.headers.get("retry-after"),
+          now: Date.now(),
+          attemptedKey: route.provider.apiKey,
+          promptCacheKey: nextParsed.options.promptCacheKey,
+        });
+        if (rotated) {
+          try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+          route.provider = rotated;
+          activeAdapter = resolveAdapter(
+            resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
+            config.cacheRetention,
+          );
+          continue;
+        }
+      }
+      if (shouldAttemptImageTierRetry({
+        status: response.status,
+        adapterName: activeAdapter.name,
+        parsed: nextParsed,
+        alreadyAttempted: imageTierBias > 0,
+      })) {
+        imageTierBias = 1;
+        try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+        continue;
+      }
+      break;
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "unknown error");
+      yield {
+        type: "error",
+        status: response.status,
+        message: `Provider continuation error ${response.status}: ${redactSecretString(errorText.slice(0, 500))}`,
+      };
+      return;
+    }
+
+    try {
+      // Protect the continuation body against a client abort landing between fetch resolution and
+      // reader attach, exactly as the initial response is guarded above (#390/366e3053). Without
+      // this, a client cancel during the continuation reopens the Bun fetch-to-reader abort race.
+      const detachContinuationBodyGuard = cancelBodyOnAbort(response.body, upstream.signal);
+      try {
+        if (nextParsed.stream) {
+          yield* activeAdapter.parseStream(response);
+        } else if (activeAdapter.parseResponse) {
+          yield* await activeAdapter.parseResponse(response);
+        } else {
+          yield { type: "error", message: "Provider continuation does not support response parsing" };
+        }
+      } finally {
+        detachContinuationBodyGuard();
+      }
+    } catch (error) {
+      if (options.abortSignal?.aborted) {
+        yield { type: "error", message: "client closed request during terminal continuation", status: 499 };
+      } else {
+        yield { type: "error", message: `Provider continuation parse failed: ${redactSecretString(error instanceof Error ? error.message : String(error))}` };
+      }
+    }
+  };
+
   if (parsed.stream) {
-    const eventStream = activeAdapter.parseStream(upstreamResponse);
+    const initialEventStream = activeAdapter.parseStream(upstreamResponse);
+    const eventStream = terminalGuardEnabled
+      ? guardTerminalEventStream({
+          parsed,
+          firstEvents: initialEventStream,
+          adapterName: activeAdapter.name,
+          maxAutoContinuations: 1,
+          continuation: fetchTerminalGuardContinuation,
+        })
+      : initialEventStream;
     const { toolNsMap, freeformToolNames, toolSearchToolNames } = buildToolBridgeMaps(parsed);
     const sseStream = bridgeToResponsesSSE(
       eventStream, parsed.modelId, toolNsMap, freeformToolNames, toolSearchToolNames,
@@ -1670,7 +1812,19 @@ export async function handleResponses(
   if (activeAdapter.parseResponse) {
     let events: AdapterEvent[];
     try {
-      events = await activeAdapter.parseResponse(upstreamResponse);
+      const initialEvents = await activeAdapter.parseResponse(upstreamResponse);
+      if (terminalGuardEnabled) {
+        events = [];
+        for await (const event of guardTerminalEventStream({
+          parsed,
+          firstEvents: (async function* () { yield* initialEvents; })(),
+          adapterName: activeAdapter.name,
+          maxAutoContinuations: 1,
+          continuation: fetchTerminalGuardContinuation,
+        })) events.push(event);
+      } else {
+        events = initialEvents;
+      }
     } finally {
       cleanupUpstreamAbort();
     }

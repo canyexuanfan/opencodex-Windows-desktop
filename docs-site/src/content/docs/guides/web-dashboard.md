@@ -34,16 +34,28 @@ bun run dev:gui
 | **Codex autostart** | Allow an already-installed Codex launcher shim to run `ocx ensure`. This toggle does not install a shim or background service. |
 | **Providers** | Add, edit, enable/disable, and remove providers; manage OAuth account pools and API-key pools where supported. Provider Settings can disable live model discovery for endpoints with missing, slow, or oversized `/models` catalogs. |
 | **Add provider** | Search registry-backed presets for account login, API-key services, local servers, or a custom endpoint. |
-| **Codex Auth** | Add ChatGPT/Codex pool accounts, select the next-session account, refresh 5h / weekly / 30d quotas, and configure quota auto-switch and transient-failure failover. |
+| **Codex Auth** | Add ChatGPT/Codex pool accounts, select the next-session account, refresh 5h / weekly / 30d quotas, enable or disable quota auto-switch, set its 1–100% threshold, and configure transient-failure failover. |
 | **Subagents** | Feature up to five bare native or namespaced routed models in the `spawn_agent` override list. |
 | **Models** | Toggle native GPT and routed models, set provider allowlists and context caps, choose v1/base/v2, and configure the v2 thread limit. Configured providers stay visible as zero-model groups when discovery is off or returns no rows. |
 | **Logs** | Auto-refresh recent requests with tokens, requested effort, resolved model, provider, status, request id, duration, and error details. |
 | **Usage / Debug** | Inspect token-usage coverage and trends, or enable opt-in provider transport and usage-extraction diagnostics. |
 | **Stop** | Gracefully stop the proxy and installed background service, restore native Codex, and exit (`POST /api/stop`). |
 
+### Linking to a section
+
+There is a single layout, so there is no layout switch to configure. Dashboard sections are
+addressable instead: `#dashboard` opens Overview, and `#dashboard/providers` and
+`#dashboard/models` open the other two. Reload, bookmark, and Back all keep the section you were
+on. **Logs** works the same way with `#logs` and `#logs/debug`. An older `#providers/workspace`
+bookmark now lands on `#providers`.
+
 Cost values in **Logs** and **Usage** are API list-price equivalents calculated from reported tokens.
 They are not billing receipts or evidence of an actual charge; subscription usage or provider credits
 may apply instead.
+
+## Model visibility
+
+The **Models** switches show final Codex visibility: a routed model is on only when its provider allowlist includes it (or no allowlist is set) and it is not disabled. Turning a model on reconciles both filters atomically; **All on** clears the provider allowlist so newly discovered models are also on.
 
 ## Delegation picker vs spawn routing
 
@@ -56,7 +68,7 @@ parent reasoning effort; clearing the model also clears the stored effort.
 This picker is delegation guidance for the v1 compatibility surface. On `multi_agent_v2`, the
 current proxy does not append the v1 injection message, and every spawned sub-agent inherits the
 parent session's model. It is not a proxy-side cross-model router. See
-[Sub-agent Surface](/opencodex/guides/sub-agent-surface/) for the canonical v1/base/v2 behavior.
+[Sub-agent Surface](/guides/sub-agent-surface/) for the canonical v1/base/v2 behavior.
 :::
 
 The picker offers enabled native and routed models plus the global Codex effort ladder. The API
@@ -98,6 +110,7 @@ The GUI is a thin client over the proxy's JSON management API. Useful endpoints 
 | `GET` / `PUT /api/v2` | Read or set the surface mode, Codex feature flag, and v2 thread limit. |
 | `GET /api/providers` · `POST /api/providers` · `PATCH /api/providers?name=...` · `DELETE /api/providers?name=...` | List, add/replace, enable/disable, or remove providers. |
 | `GET /api/models` · `PUT /api/disabled-models` | List native/routed model rows and update the shared disabled-model set. |
+| `GET /api/selected-models` · `PUT /api/model-visibility` | Read provider allowlists and atomically change the final visibility of one model or provider group. |
 | `GET /api/key-providers` · `GET /api/oauth/providers` | Read the API-key and OAuth provider catalogs. |
 | `POST /api/oauth/login` · `GET /api/oauth/status` | Start a provider OAuth flow and poll for completion. |
 | `GET /api/codex-auth/accounts?refresh=1` | List main and pool accounts, force quota refresh, and report main-account `hasCredential` / terminal `needsReauth` state. |
@@ -109,6 +122,6 @@ The GUI is a thin client over the proxy's JSON management API. Useful endpoints 
 
 :::tip
 Adding **Ollama Cloud** or another catalog provider from the dashboard copies its text-versus-vision
-classification into the saved provider config, so the [vision sidecar](/opencodex/guides/sidecars/)
+classification into the saved provider config, so the [vision sidecar](/guides/sidecars/)
 is gated correctly without manual classification.
 :::

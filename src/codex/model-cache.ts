@@ -47,13 +47,23 @@ export const MODELS_FETCH_FAILURE_COOLDOWN_MS = 30_000;
 
 const failureAt = new Map<string, number>();
 const discoveryStatus = new Map<string, ProviderModelDiscoveryStatus>();
+/**
+ * How many models the last successful discovery actually returned, before any configured-alias
+ * augmentation or custom-model merge. Consumers cannot recover this by subtracting known custom
+ * ids: a custom id that later also appears upstream would make a real live catalog look
+ * custom-only, and the provider's configured fallback would wrongly stay authoritative.
+ */
+const liveModelCounts = new Map<string, number>();
 
 export function markModelsFetchFailure(provider: string, now = Date.now()): void {
   failureAt.set(provider, now);
 }
 
-export function markProviderDiscoveryOk(provider: string): void {
+/** `liveModelCount` is required so a caller that forgets to pass it fails typecheck instead of
+ * silently recording zero and misclassifying the provider as having no live catalog. */
+export function markProviderDiscoveryOk(provider: string, liveModelCount: number): void {
   discoveryStatus.set(provider, { status: "ok" });
+  liveModelCounts.set(provider, Math.max(0, Math.floor(liveModelCount)));
 }
 
 export function markProviderDiscoveryFailed(
@@ -63,12 +73,42 @@ export function markProviderDiscoveryFailed(
   discoveryStatus.set(provider, { status: "failed", ...failure });
 }
 
+/**
+ * Decide whether a discovery FAILURE should be logged, to avoid flooding the log with an identical
+ * warning on every poll (#395: an anthropic-adapter baseUrl without `/v1/models`, e.g. Azure AI
+ * Foundry, returns HTTP 404 forever; the 30s cooldown re-probes and previously re-logged each time).
+ *
+ * Returns true only when the failure SIGNATURE changed since the last observed status — i.e. the
+ * previous state was ok/undefined, or a different reason/httpStatus. Repeated identical failures
+ * stay observable through `getProviderDiscoveryStatus()` / the providers API without log spam.
+ * Call this BEFORE `markProviderDiscoveryFailed` so it can see the prior state.
+ */
+export function shouldLogDiscoveryFailure(
+  provider: string,
+  failure: ProviderModelDiscoveryFailure,
+): boolean {
+  const prev = discoveryStatus.get(provider);
+  if (!prev || prev.status !== "failed") return true;
+  if (prev.reason !== failure.reason) return true;
+  if (prev.reason === "http" && failure.reason === "http") {
+    return prev.httpStatus !== failure.httpStatus;
+  }
+  return false;
+}
+
 export function clearProviderDiscoveryStatus(provider: string): void {
   discoveryStatus.delete(provider);
+  liveModelCounts.delete(provider);
 }
 
 export function getProviderDiscoveryStatus(provider: string): ProviderModelDiscoveryStatus | undefined {
   return discoveryStatus.get(provider);
+}
+
+/** Undefined when discovery has never succeeded for this provider. A failed refresh keeps the
+ * last successful count so a stale catalog is still recognised as live-origin. */
+export function getProviderLiveModelCount(provider: string): number | undefined {
+  return liveModelCounts.get(provider);
 }
 
 export function isModelsFetchCoolingDown(provider: string, cooldownMs = MODELS_FETCH_FAILURE_COOLDOWN_MS, now = Date.now()): boolean {
@@ -98,9 +138,11 @@ export function clearModelCache(provider?: string): void {
     cache.delete(provider);
     failureAt.delete(provider);
     discoveryStatus.delete(provider);
+    liveModelCounts.delete(provider);
   } else {
     cache.clear();
     failureAt.clear();
     discoveryStatus.clear();
+    liveModelCounts.clear();
   }
 }

@@ -34,7 +34,7 @@ import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isol
 
 // Full-suite Windows load: startServer + multi-step provider PATCH/GET flows exceed the
 // default 5s per-test budget (same flake class as 810fa115 / claude-management-api).
-setDefaultTimeout(30_000);
+setDefaultTimeout(60_000);
 
 const previousApiToken = process.env.OPENCODEX_API_AUTH_TOKEN;
 const previousOpencodexHome = process.env.OPENCODEX_HOME;
@@ -124,6 +124,8 @@ describe("provider management validation", () => {
         new Request(requestUrl),
         requestUrl,
         {
+          port: 10100,
+          defaultProvider: "auth-broken",
           providers: {
             "auth-broken": {
               adapter: "openai-chat",
@@ -296,6 +298,43 @@ describe("provider management validation", () => {
         expect(rejected.status).toBe(400);
       }
       expect(loadConfig().providers["custom-summary-capability"].modelSupportsReasoningSummaries).toEqual({ strict: false });
+
+      const acceptedModelAdapters = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "custom-mixed-gateway",
+          provider: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.example.test/v1",
+            modelAdapters: { "grok-4.5": "openai-responses" },
+          },
+        }),
+      });
+      expect(acceptedModelAdapters.status).toBe(200);
+      for (const invalid of [
+        [],
+        { "grok-4.5": true },
+        { "": "openai-chat" },
+        // Provider-specific adapters would change how credentials are sent (#404).
+        { "grok-4.5": "cursor" },
+        { "grok-4.5": "anthropic" },
+      ]) {
+        const rejected = await fetch(new URL("/api/providers", server.url), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "custom-mixed-gateway",
+            provider: {
+              adapter: "openai-chat",
+              baseUrl: "https://api.example.test/v1",
+              modelAdapters: invalid,
+            },
+          }),
+        });
+        expect(rejected.status).toBe(400);
+      }
+      expect(loadConfig().providers["custom-mixed-gateway"].modelAdapters).toEqual({ "grok-4.5": "openai-responses" });
       const legacy = await fetch(new URL("/api/providers", server.url), {
         method: "POST",
         headers: { "content-type": "application/json" },

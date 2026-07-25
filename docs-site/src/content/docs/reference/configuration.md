@@ -164,12 +164,13 @@ network. Only do this on trusted networks, and always set a strong `OPENCODEX_AP
 | `headers?` | `Record<string,string>` | Extra upstream headers. Authorization, cookies, API-key headers, embedded newlines, and invalid header names are rejected. |
 | `openRouterRouting?` | `OpenRouterProviderRouting` | Default OpenRouter provider preferences. Supports `order`, `only`, and `allowFallbacks`; valid only with the canonical OpenRouter base URL and `openai-chat` adapter. |
 | `modelOpenRouterRouting?` | `Record<string,OpenRouterProviderRouting>` | Exact model-id overrides for `openRouterRouting`. A matching entry replaces the provider-wide default. |
-| `authMode?` | `"key" \| "forward" \| "oauth"` | How to authenticate (default `key`). See [Providers](/opencodex/guides/providers/#auth-modes). |
+| `authMode?` | `"key" \| "forward" \| "oauth"` | How to authenticate (default `key`). See [Providers](/guides/providers/#auth-modes). |
 | `codexAccountMode?` | `"pool" \| "direct"` | Only for canonical `openai`; defaults to Pool when omitted. Direct short-circuits pool state. |
 | `refreshPolicy?` | `"proactive" \| "lazy-only" \| "disabled"` | Override this OAuth provider's Token Guardian policy. |
 | `reasoningEfforts?` | `string[]` | Provider-wide Codex reasoning labels to advertise and send (`low`, `medium`, `high`, `xhigh`, `max`, `ultra`). |
 | `modelReasoningEfforts?` | `Record<string,string[]>` | Model-specific reasoning labels. An empty list hides the effort control for that model. |
 | `modelSupportsReasoningSummaries?` | `Record<string,boolean>` | Model-specific reasoning-summary capability. Set a model to `false` to stop advertising summaries and strip summary-delivery fields before an `openai-responses` request. |
+| `modelAdapters?` | `Record<string,string>` | Per-model wire override for a gateway that fronts models speaking different wires. Keys are upstream native model ids; values must be `openai-chat` or `openai-responses`. Useful when one model needs the Responses API for hosted tools such as `web_search` while its siblings are fine on chat completions. Models the upstream pins to a single wire, and the canonical ChatGPT forward provider, reject overrides. |
 | `reasoningEffortMap?` | `Record<string,string>` | Provider-wide wire aliases for reasoning labels. Use only when the upstream expects a different value. |
 | `modelReasoningEffortMap?` | `Record<string,Record<string,string>>` | Model-specific wire aliases for reasoning labels. |
 | `noReasoningModels?` | `string[]` | Models that reject a reasoning/thinking param — the adapter drops `reasoning_effort` for them. |
@@ -182,7 +183,7 @@ network. Only do this on trusted networks, and always set a strong `OPENCODEX_AP
 | `preserveReasoningContentModels?` | `string[]` | Models that require prior assistant `reasoning_content` to remain in chat history. |
 | `thinkingToggleModels?` | `string[]` | Chat models using a vendor `thinking.enabled` toggle instead of an effort ladder. |
 | `thinkingBudgetModels?` | `string[]` | Chat models using an integer `thinking_budget`; effort is mapped to a budget fraction. |
-| `noVisionModels?` | `string[]` | Text-only models — the [vision sidecar](/opencodex/guides/sidecars/) describes images for them. Matching tolerates an Ollama `:size` tag. |
+| `noVisionModels?` | `string[]` | Text-only models — the [vision sidecar](/guides/sidecars/) describes images for them. Matching tolerates an Ollama `:size` tag. |
 | `escapeBuiltinToolNames?` | `boolean` | Anthropic-compatible gateways such as Umans can require tool-name escaping on the wire; opencodex strips the prefix before returning tool calls to Codex. |
 | `googleMode?` | `"ai-studio" \| "vertex" \| "cloud-code-assist"` | Google transport/auth mode. Default `ai-studio`. |
 | `project?` | `string` | Vertex project id or Antigravity Cloud Code Assist project id. |
@@ -264,7 +265,7 @@ tools (`apply_patch`, `exec_command`, and so on) with approval and sandbox polic
 The field belongs on the **provider object** (`providers.cursor`), not at the top level of
 `config.json`.
 
-You can also set it from the [web dashboard](/opencodex/guides/web-dashboard/): **Providers →
+You can also set it from the [web dashboard](/guides/web-dashboard/): **Providers →
 Cursor → Edit JSON**, set `"nativeLocalExec"` to `"off"`, `"on"`, or `"codex-sandbox"`, save, then
 restart the proxy (`ocx restart` or `ocx stop` + `ocx start`).
 
@@ -377,7 +378,7 @@ with those explicit additions, or set it to `false` to expose only `models`.
 | `reasoning?` | `string` | `low` | Reasoning effort for the sidecar (`minimal` is rejected with web search). |
 | `maxSearchesPerTurn?` | `number` | `3` | Total real searches per main-model turn (loop guard). |
 | `routedModelStallTimeoutMs?` | `number` | `200000` | Config-file-only continuous raw response-byte inactivity deadline for each routed-model iteration. Must be an integer from `1` through `2147483647`; every non-empty response-body chunk resets it. |
-| `timeoutMs?` | `number` | `200000` | Separate deadline for one hosted web-search request. |
+| `timeoutMs?` | `number` | `60000` | Separate deadline for one hosted web-search request. Lowered from 200000 so an unavailable/limit-exhausted search backend degrades to a no-result answer within ~1 min instead of hanging the whole turn (#398). |
 
 The `openai` backend runs hosted search through an enabled ChatGPT `forward` provider, so it needs
 both a ChatGPT login and that provider. On Claude-inbound routed replays, opencodex injects the main
@@ -448,7 +449,7 @@ with the intended account and workload.
   "webSearchSidecar": {
     "maxSearchesPerTurn": 3,
     "routedModelStallTimeoutMs": 200000,
-    "timeoutMs": 200000
+    "timeoutMs": 60000
   },
   "visionSidecar": { "enabled": true }
 }
