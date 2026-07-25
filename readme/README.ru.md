@@ -1,15 +1,27 @@
 <h3 align="center">make codex open!</h3>
-<p align="center"><b>Универсальный прокси провайдеров для OpenAI Codex &amp; Claude Code</b> — используйте любую LLM с Codex CLI, App, SDK и Claude Code.</p>
-<p align="center"><code>npm install -g @bitkyc08/opencodex</code> · <code>ocx start</code> · <b>localhost:10100</b></p>
+<p align="center"><b>Универсальный прокси провайдеров для OpenAI Codex &amp; Claude Code</b><br>
+Две команды — и Codex, и Claude Code работают на любой LLM, которую вы укажете.</p>
 
 <p align="center">
+  <a href="https://x.com/claudeebum"><img src="https://img.shields.io/badge/%40claudeebum-000000?logo=x&logoColor=white" alt="Подписывайтесь на @claudeebum в X"></a>
   <a href="https://www.npmjs.com/package/@bitkyc08/opencodex"><img src="https://img.shields.io/npm/v/@bitkyc08/opencodex?color=cb3837&label=npm&logo=npm" alt="npm version"></a>
   <a href="https://github.com/lidge-jun/opencodex/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/@bitkyc08/opencodex?color=blue" alt="license"></a>
   <img src="https://img.shields.io/node/v/@bitkyc08/opencodex?logo=node.js&label=node" alt="node version">
 </p>
 
+```bash
+npm install -g @bitkyc08/opencodex
+ocx start        # прокси + дашборд: localhost:10100
+```
+
 <p align="center">
-  <img src="assets/banner.png" alt="opencodex — универсальный прокси провайдеров для Codex, используйте любую LLM" width="820">
+  <img src="../assets/claude-code-models.gif" alt="Claude Code работает на маршрутизированной модели через opencodex — в строке состояния активна gpt-5.6-luna-medium" width="820"><br>
+  <sub><b>Claude Code на любой модели.</b> Селектор — обычный Claude Code, а вот модель за ним — какую захотите.</sub>
+</p>
+
+<p align="center">
+  <img src="../assets/demo.gif" alt="Демонстрация opencodex — выполнение задачи в приложении Codex на маршрутизируемой модели не от OpenAI" width="820"><br>
+  <sub><b>Codex на любой модели.</b> Выберите провайдера — и вперёд: тот же рабочий процесс Codex, другой «мозг».</sub>
 </p>
 
 <p align="center">
@@ -17,17 +29,12 @@
 </p>
 
 <p align="center">
-  <img src="assets/architecture.png" alt="Архитектура opencodex — Codex CLI направляет запросы через прокси opencodex к любому LLM-провайдеру" width="820">
+  <img src="../assets/architecture.png" alt="Архитектура opencodex — Codex CLI направляет запросы через прокси opencodex к любому LLM-провайдеру" width="820">
 </p>
 
 Используйте Claude, Gemini, Grok, GLM, DeepSeek, Kimi, Qwen, Ollama или любую другую LLM с Codex — и с **Claude Code** — не дожидаясь, пока кто-нибудь добавит поддержку.
 
 opencodex — это лёгкий локальный прокси, который транслирует Responses API Codex в протокол, понятный вашему провайдеру. Потоковая передача, вызовы инструментов, токены рассуждений, изображения — всё работает в обе стороны.
-
-<p align="center">
-  <img src="assets/demo.gif" alt="Демонстрация opencodex — выполнение задачи в приложении Codex на маршрутизируемой модели не от OpenAI" width="820">
-</p>
-<p align="center"><sub><b>Codex на любой модели.</b> Выберите провайдера — и вперёд: тот же рабочий процесс Codex, другой «мозг».</sub></p>
 
 Кроме того, opencodex умеет управлять **пулом аккаунтов ChatGPT** для аутентификации Codex. Добавьте
 несколько аккаунтов ChatGPT / Codex, обновляйте их квоты (5 ч / неделя / 30 дней) в панели управления —
@@ -177,7 +184,7 @@ OpenAI API-ключа и OpenRouter (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-lu
 провайдеров, которые могут их обслуживать.
 
 <p align="center">
-  <img src="assets/codex-app-picker.png" alt="Codex App с маршрутизируемыми моделями opencodex и селектором уровня рассуждений" width="480">
+  <img src="../assets/codex-app-picker.png" alt="Codex App с маршрутизируемыми моделями opencodex и селектором уровня рассуждений" width="480">
 </p>
 
 ## Режимы аккаунтов провайдера OpenAI
