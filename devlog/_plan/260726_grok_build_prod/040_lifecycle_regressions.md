@@ -8,8 +8,25 @@ tags: [grok-build, tests, lifecycle]
 
 # 040 — CLI 라이프사이클 회귀 (B4)
 
+> **개정 2026-07-26 (A-게이트 감사 반영).** 초판의 테스트 5–8은 그대로 쓰면 **사용자의 실제
+> launchd 서비스를 정지시키거나 테스트 러너를 종료**시킨다. 아래는 그 위험을 제거한 교정본이다.
+
 대상 파일: `tests/helpers/isolated-grok-home.ts`(신규), `tests/grok-lifecycle.test.ts`(신규),
 `tests/service.test.ts`, `tests/grok-config-inject.test.ts`.
+
+## 선행 조건 (030이 먼저 처리한다)
+
+감사에서 확인된 두 가지 때문에, 아래 테스트들은 030의 소스 변경 없이는 **작성 자체가 불가능**하다.
+
+1. `serviceCommand("stop")`은 `ops.stop()`을 무조건 호출하고(`service.ts:1151`),
+   `stopLaunchd`(`:585`)가 `homedir()` 기준으로 실제 `launchctl unload`를 실행한다.
+   `bun run test`가 **개발자의 실제 서비스를 정지**시킨다. 030에서 설치 여부 가드를 넣고,
+   테스트는 `node:child_process`의 `execSync`/`execFileSync`를 `mock.module`로 대체한다.
+   `platformOps`(`service.ts:815`)가 모듈 private 함수를 클로저로 잡고 있어
+   `mock.module("../src/service")`로는 내부를 갈아끼울 수 없다 — 프로세스 실행 계층에서 막는다.
+2. `/api/stop` 성공 경로는 200 ms 뒤 `process.exit(0)`을 예약한다(`management-api.ts:148`).
+   테스트가 그대로 호출하면 단언 직후 러너가 종료된다. 030에서 종료 훅을 주입 가능하게 만든 뒤에만
+   성공 경로 테스트를 쓴다. (409 경로는 타이머 전에 반환하므로 안전하다.)
 근거: `000_blocker_inventory.md` B4 + 라이프사이클 커버리지 실측.
 
 ## 제약: `src/cli/index.ts`는 import할 수 없다
@@ -50,10 +67,8 @@ export function installIsolatedGrokHome(prefix: string): { path: string; restore
 ### 그룹 1 — 배선 (스타일 A, `tests/grok-lifecycle.test.ts`)
 
 1. `handleStart`가 Desktop3P 등록 실패와 **무관하게** grok 동기화를 시도한다.
-   현재는 grok inject가 Desktop3P try 블록 **안쪽**에 중첩돼, 카탈로그 조회가 던지면 fence가
-   조용히 건너뛰어진다. 030에서 이 중첩을 형제 블록으로 분리하고, 이 테스트가 그 구조를 고정한다.
-   검증: `handleStart` 슬라이스에서 `syncGrokConfig` 호출이 `buildDesktop3pRegistry`의 catch
-   **뒤**에 독립 try로 존재.
+   구현 소유는 030 §5. 검증: `handleStart` 슬라이스에서 `syncGrokConfig` 호출이
+   `buildDesktop3pRegistry`의 catch **뒤**에 독립 try로 존재.
 2. `handleEnsure` 라이브 분기가 `live.hostname`을, spawn 분기가 `config.hostname`을 넘긴다
    (분기별로 정확한 호스트 출처를 고정 — 뒤바뀌면 잘못된 base_url을 쓴다).
 3. `handleStop`에서 `stripGrokConfig()` 호출이 소유권 게이트 **안쪽**에 있다
@@ -63,16 +78,21 @@ export function installIsolatedGrokHome(prefix: string): { path: string; restore
 ### 그룹 2 — 실제 동작 (스타일 B/C)
 
 5. `serviceCommand("stop")`이 fence를 실제로 제거한다.
-   `installIsolatedGrokHome` + `installIsolatedCodexHome`로 격리하고, 플랫폼 ops는
-   `mock.module`로 대체해 실제 launchd/systemd를 건드리지 않는다.
+   `installIsolatedGrokHome` + `installIsolatedCodexHome`로 격리하고,
+   **`node:child_process`를 `mock.module`로 대체**해 실제 launchd/systemd 명령이 나가지 않게 한다.
+   030의 설치 여부 가드가 선행되어야 한다.
 6. `serviceCommand("uninstall")` 동일.
 7. 소유권 불일치 상태에서 `serviceCommand("stop")`이 **fence를 남긴 채** throw한다
    (`service-state.json` 세팅은 `tests/service.test.ts:188` 패턴 그대로).
 8. `POST /api/stop`이 fence를 제거하고 성공 응답을 준다 —
-   `handleManagementAPI`를 직접 import + `new Request(...)`.
-9. `POST /api/stop`이 소유권 불일치에 409로 응답하고 fence를 **남긴다**.
+   `handleManagementAPI`를 직접 import + `new Request(...)`, **주입된 종료 훅**으로 호출을 기록만 한다.
+   (라우팅 도달성 확인됨: `Host`/`Origin`이 `null`이면 `isLoopbackRequestHost(null)`가 참이라
+   `isAllowedRequestOrigin`을 통과하고, `requireApiAuth`는 `server/index.ts:333`에 있어 이 함수 밖이다.)
+9. `POST /api/stop`이 소유권 불일치에 409로 응답하고 fence를 **남긴다**. 프록시도 종료하지 않는다.
 10. `ServiceOwnershipError`가 `isServiceOwnershipError`로 판별되고, 일반 정지 실패는 판별되지
     않는다(오분류로 teardown을 통째로 막지 않도록).
+11. `stopProxyGracefully`가 409를 받으면 `refused`를 반환하고 `killProxy`를 호출하지 않는다.
+12. 대시보드 정지 핸들러가 409에서 `stopping`을 해제하고 메시지를 노출한다(GUI 테스트).
 
 ## 게이트
 

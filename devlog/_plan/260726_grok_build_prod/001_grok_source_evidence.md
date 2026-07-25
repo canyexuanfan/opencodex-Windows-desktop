@@ -52,17 +52,41 @@ TOML parse error at line 4, column 8: duplicate key
 `api_key` → `env_key` → auth_provider 캐시 토큰 → 세션 토큰 → `XAI_API_KEY`.
 **공백뿐인 `api_key`는 무시되고 `env_key`로 폴백한다** (`first_own_credential`이 `!k.trim().is_empty()` 필터).
 
-| 방식 | 동작 | 실패 시 |
-|------|------|---------|
-| `env_key = "VAR"` 또는 `["V1","V2"]` | 요청 시점에 lazy 해석, 처음 채워진 값 사용 | 경고 후 **키를 보내지 않음** (안전) |
-| `api_key = "${VAR}"` | 로드 시 `shellexpand` 확장 | 미설정이면 **리터럴 `${VAR}`을 토큰으로 전송** (위험) |
+| 방식 | 동작 | 해석 실패 시 |
+|------|------|-------------|
+| `env_key = "VAR"` 또는 `["V1","V2"]` | 요청 시점에 lazy 해석, 처음 채워진 값 사용 | **다음 우선순위로 폴백** (아래 정정 참조) |
+| `api_key = "${VAR}"` | 로드 시 `shellexpand` 확장 | 미설정이면 **리터럴 `${VAR}`을 토큰으로 전송** |
 | `auth_provider` | 헬퍼 명령 stdout에서 토큰 획득 | 파일/회전 토큰용 |
 
-**결론(B1):** 비루프백에서도 자동 등록을 포기할 필요가 없다. 리터럴 토큰 대신
-`env_key = "OPENCODEX_API_AUTH_TOKEN"`를 방출하면 우리는 사용자 파일에 비밀을 쓰지 않고,
-grok은 실행 환경에서 토큰을 읽는다. 토큰이 없으면 grok은 키 없이 요청해 401이 나며 — 이는
-"조용히 잘못된 키를 보내는" 현재 동작보다 진단 가능하다.
-`${VAR}` 확장은 실패 시 쓰레기 토큰을 전송하므로 채택하지 않는다.
+### 정정 (2026-07-26 A-게이트 감사) — `env_key`는 fail-safe가 아니다
+
+초판은 "`env_key`가 해석되지 않으면 grok이 키 없이 호출한다"고 적었다. **틀렸다.**
+`resolve_credentials`(`config.rs:4689-4715`)의 실제 폴백 사슬은:
+
+```rust
+let (api_key, base_url, auth_type) = if let Some(key) = model.own_credential() { ... }
+else if let Some(provider) = model.auth_provider.as_ref() { ... }
+else if let Some(key) = session_key {            // ← 로그인된 grok 세션 JWT
+    (Some(key.to_owned()), info.base_url.clone(), AuthType::SessionToken)
+} else if let Ok(key) = read_xai_api_key_env() { // ← XAI_API_KEY
+```
+
+`base_url`은 **우리가 쓴 URL** 그대로다. 상위 테스트가 이 동작을 못박는다:
+`resolve_credentials_empty_env_key_falls_through_to_session`(`config.rs:6550`)은
+`AuthType::SessionToken`과 `api_key == Some("session-jwt")`를 단언한다.
+
+fail-closed 경로는 존재하지만 `model_provider`가 설정된 경우에만 붙는다(`config.rs:3510-3513`).
+우리 블록은 `model_provider`를 방출하지 않으므로(모델 공급자 상속이 라우팅되지 않는다는 이유로
+의도적으로 제외) 해당 보호가 걸리지 않는다.
+
+**보안 결론:** 비루프백 블록에서 `api_key`를 빼고 `env_key`만 쓰면, 사용자가 변수를 export하지
+않았을 때 grok이 **xAI 세션 토큰을 평문 HTTP LAN 주소로 전송**한다. 현재의
+`api_key = "opencodex-loopback"`은 비어 있지 않은 own-credential이라 사슬을 즉시 끊고 401로 끝난다.
+즉 제안했던 설계는 무해한 401을 자격증명 유출로 바꾸는 **퇴행**이다. 채택하지 않는다.
+
+**결론(B1):** 메인테이너가 요구한 대로 비루프백에서는 **fence 자동 등록을 하지 않는다.**
+`env_key`는 문서에 수동 레시피로만 남기고, 반드시 `model_provider` 또는 자리표시자 `api_key`와
+짝지어야 세션 토큰 폴백이 막힌다는 경고를 함께 적는다.
 
 ## E4 — 핫리로드는 실재한다 (B7 부분 반박)
 

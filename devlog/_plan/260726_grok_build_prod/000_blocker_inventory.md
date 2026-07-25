@@ -110,3 +110,28 @@ tags: [grok-build, pr-403, review-blockers, production]
 | B2, B6 | 030 — 라이프사이클 teardown 정합성 |
 | B4 | 040 — CLI 라이프사이클 회귀 |
 | B7, B8 | 050 — 문서/devlog 진실 정렬 |
+
+## A-게이트 감사에서 추가로 발견된 결함 (2026-07-26)
+
+독립 감사자가 리뷰 목록 밖에서 찾아낸 것들. 리뷰에는 없었지만 같은 모듈의 실제 결함이다.
+
+| # | 결함 | 귀속 |
+|---|------|------|
+| D1 | `handleStart`의 grok 동기화가 Desktop3P `try` 안에 중첩돼, 카탈로그 조회가 던지면 fence가 조용히 건너뛰어짐 (`src/cli/index.ts:263`) | 030 §5 |
+| D2 | `ocx stop`이 `stripGrokConfig`의 `!ok`(orphaned-marker 거부 등)를 삼키고 0으로 종료 (`src/cli/index.ts:447`) | 030 §2d |
+| D3 | `serviceCommand("stop")`이 설치 여부 가드 없이 `ops.stop()` 실행 (`src/service.ts:1151`) | 030 §3 |
+| D4 | `POST /api/stop`의 `stopServiceIfInstalled()`가 무보호라 소유권 예외가 500으로 새고 프록시가 살아남음 | 030 §4 |
+| D5 | `[[model.x]]`, `[model.x.sub]` 철자가 우리 블록과 duplicate-key 충돌하는데 예약되지 않음 | 010 (B3 확장) |
+| D6 | 백업 `config.toml.bak-opencodex`가 최초 1회만 생성돼 임의로 낡을 수 있음 (`src/grok/inject.ts:186`) — orphaned-marker 안내가 이 파일을 가리킨다 | **미할당 잔여 위험** |
+| D7 | 루트 dotted 키(`model.ocx-mine.x = 1`), `[model]` + dotted 키 형태도 충돌하나 예약 대상 아님 | **미할당 잔여 위험** |
+
+D6/D7은 이번 PR 범위(리뷰 블로커 해소)를 넘어서므로 여기 기록만 하고, 후속 유닛에서 다룬다.
+D6은 사용자 데이터 복구 경로라 우선순위가 높다.
+
+## 정정 이력
+
+- **2026-07-26, B1 설계 반전.** 초판은 `env_key` 방출로 자동 등록을 유지하려 했다. 감사에서
+  `env_key` 미해석 시 grok이 xAI 세션 토큰을 우리 평문 LAN 주소로 전송함이 원본 코드와 상위
+  테스트로 확인됐다(`001` E3 정정). 메인테이너 원안(비루프백 자동 등록 거부)으로 되돌렸다.
+- **2026-07-26, B5 알고리즘 교체.** 초판 strip 규칙은 정보 이론상 불가능한 복원을 시도했고
+  중간 삽입 경로에서 개행이 누적되는 퇴행을 유발했다. inject를 단사로 만드는 방식으로 교체.
