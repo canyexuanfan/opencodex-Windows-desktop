@@ -213,22 +213,28 @@ export async function reclaimListenPort(
           foreignLive = true;
           continue;
         }
-        if (!allowedKillPids.has(pid)) {
+        if (!mayKill || !allowedKillPids.has(pid)) {
           // Healthy / intentional ocx proxy — never steal its port.
           protectedOcxListener = true;
           continue;
         }
-        if (mayKill && !killed.has(pid)) {
+        if (!killed.has(pid)) {
           // Revalidate immediately before termination.
           if (isAliveFn(pid) && verifyOcxFn(pid) === pid && allowedKillPids.has(pid)) {
             try {
               killFn(pid);
               killed.add(pid);
             } catch {
-              /* keep waiting; next scan retries */
+              // Kill failed: keep waiting and never reset this listener's TCP rows.
+              protectedOcxListener = true;
             }
+          } else {
+            // Revalidation failed while the allowlisted listener is still listed live.
+            protectedOcxListener = true;
           }
         }
+        // Only reset TCP rows after confirmed process death.
+        if (isAliveFn(pid)) protectedOcxListener = true;
       }
 
       if (foreignLive || protectedOcxListener) {

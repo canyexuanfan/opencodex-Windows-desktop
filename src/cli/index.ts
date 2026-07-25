@@ -120,7 +120,7 @@ async function chooseListenPort(requestedPort?: number): Promise<number> {
   }
   try {
     const selected = await findAvailablePort(preferred, config.hostname ?? "127.0.0.1", {
-      preferRetryMs: hardPin ? 8_000 : 750,
+      preferRetryMs: hardPin ? 0 : 750,
       preferRetryIntervalMs: 50,
       allowEphemeralFallback: !hardPin,
     });
