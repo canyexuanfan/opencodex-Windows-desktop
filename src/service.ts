@@ -16,7 +16,8 @@ import { isWslRuntime } from "./codex/home";
 import { durableBunPath, durableBunRuntime } from "./lib/bun-runtime";
 import { isProcessAlive, stopProxy } from "./lib/process-control";
 import { serviceApiTokenFilePath } from "./lib/service-secrets";
-import { runWindowsElevated, toWindowsSchtasksError, WindowsElevationError } from "./lib/windows-elevation";
+import { runWindowsElevated, runElevatedSchtasksCreateAndRun, toWindowsSchtasksError } from "./lib/windows-elevation";
+import type { ElevatedSchtasksCreateAndRunResult } from "./lib/windows-elevation";
 import { defaultWinswEntry, installWinswService, startWinswService, stopWinswService, statusWinswRaw, uninstallWinswService, winswStatusSummary, WINSW_SERVICE_ID, WINSW_SHA256, WINSW_VERSION } from "./lib/winsw";
 import { hardenSecretDir, hardenSecretPath } from "./lib/windows-secret-acl";
 import { windowsEnvIndirectBatchPathList, windowsEnvIndirectBatchValue } from "./lib/win-paths";
@@ -383,7 +384,7 @@ export function evaluateWindowsSchedulerInstallVerification(inputs: {
         : !registrationHealthy
           ? "Task Scheduler registration is present but unhealthy."
           : nativeStatusUnknown
-            ? `Native WinSW (${WINSW_SERVICE_ID}) status could not be verified after elevated registration.`
+            ? "The Task Scheduler task was created, but OpenCodex could not verify that the native WinSW service is absent."
             : "ok";
   return {
     taskInstalled: inputs.taskInstalled,
@@ -424,10 +425,47 @@ async function rollbackElevatedSchedulerTask(taskName = TASK): Promise<string | 
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
-  if (windowsSchedulerTaskInstalled(taskName)) {
+  const stillInstalled = finalizeHooks?.taskInstalled?.() ?? windowsSchedulerTaskInstalled(taskName);
+  if (stillInstalled) {
     return `Task Scheduler task ${taskName} is still present after rollback.`;
   }
   return null;
+}
+
+type ElevateCreateAndRun = (
+  schtasksPath: string,
+  createArgs: string[],
+  runArgs: string[],
+) => Promise<ElevatedSchtasksCreateAndRunResult>;
+
+type FinalizeHooks = {
+  elevateCreateAndRun?: ElevateCreateAndRun;
+  verify?: () => WindowsSchedulerInstallVerification;
+  writeInstallState?: () => void;
+  taskInstalled?: () => boolean;
+};
+
+let finalizeHooks: FinalizeHooks | null = null;
+
+/** Test-only hooks for elevated create+run finalization. */
+export function setFinalizeWindowsSchedulerHooksForTests(hooks: FinalizeHooks | null): void {
+  finalizeHooks = hooks;
+}
+
+function failAfterElevatedCreate(
+  reason: string,
+  options: { rollback: boolean; rollbackError?: string | null },
+): never {
+  const parts = [reason];
+  if (options.rollback) {
+    if (options.rollbackError) {
+      parts.push(`Rollback also failed: ${options.rollbackError}`);
+      parts.push(`Remove the task manually with 'schtasks /delete /tn ${TASK} /f' and the native service with 'sc delete ${WINSW_SERVICE_ID}' if present.`);
+    } else {
+      parts.push("The elevated Task Scheduler task was rolled back.");
+    }
+  }
+  throw new Error(parts.join(" "));
 }
 
 /** Re-register the scheduler task with elevation after a non-elevated install wrote assets. */
@@ -435,24 +473,25 @@ export async function finalizeWindowsSchedulerServiceRegistration(script = windo
   if (process.platform !== "win32") {
     throw new Error("Windows scheduler registration is only supported on Windows.");
   }
-  await elevateSchtasks(buildWindowsSchtasksCreateArgs(script));
-  let runDetail: string | null = null;
-  try {
-    await elevateSchtasks(["/run", "/tn", TASK]);
-  } catch (error) {
-    // Logon-triggered tasks may still start on the next sign-in even if /run fails.
-    // Tolerate UAC cancel and non-zero schtasks /run exits; rethrow timeout/launch failures.
-    if (error instanceof WindowsElevationError) {
-      if (error.reason === "cancelled" || error.reason === "child-failed") {
-        runDetail = error.message;
-      } else {
-        throw error;
-      }
-    } else {
-      runDetail = error instanceof Error ? error.message : String(error);
-    }
+  const createArgs = buildWindowsSchtasksCreateArgs(script);
+  const runArgs = ["/run", "/tn", TASK];
+  const elevateCreateAndRun = finalizeHooks?.elevateCreateAndRun
+    ?? ((schtasksPath, create, run) => runElevatedSchtasksCreateAndRun(schtasksPath, create, run));
+  const result = await elevateCreateAndRun(windowsSchtasks(), createArgs, runArgs);
+
+  if (result.createExitCode !== 0) {
+    throw new Error(`Elevated schtasks /create failed with exit code ${result.createExitCode}.`);
   }
-  const verification = verifyWindowsSchedulerInstall();
+  if (result.runExitCode === null || result.runExitCode !== 0) {
+    const runCode = result.runExitCode ?? "unknown";
+    const rollbackError = await rollbackElevatedSchedulerTask();
+    failAfterElevatedCreate(
+      `Elevated schtasks /run failed with exit code ${runCode}. The Task Scheduler task was registered but could not be started.`,
+      { rollback: true, rollbackError },
+    );
+  }
+
+  const verification = (finalizeHooks?.verify ?? verifyWindowsSchedulerInstall)();
   if (!verification.ok) {
     // Do not destroy a healthy elevated task solely because WinSW status is unverified.
     const preserveElevatedTask = verification.taskInstalled
@@ -460,23 +499,20 @@ export async function finalizeWindowsSchedulerServiceRegistration(script = windo
       && verification.assetsHealthy
       && !verification.conflict
       && verification.nativeStatusUnknown;
-    const rollbackError = preserveElevatedTask ? null : await rollbackElevatedSchedulerTask();
-    const parts = [
-      "Elevated Task Scheduler registration did not produce a conflict-free install.",
-      verification.detail,
-    ];
-    if (runDetail) parts.push(`Task /run after create: ${runDetail}`);
     if (preserveElevatedTask) {
-      parts.push("The elevated Task Scheduler task was left in place because native WinSW status could not be verified.");
-    } else if (rollbackError) {
-      parts.push(`Rollback also failed: ${rollbackError}`);
-      parts.push(`Remove the task manually with 'schtasks /delete /tn ${TASK} /f' and the native service with 'sc delete ${WINSW_SERVICE_ID}' if present.`);
-    } else {
-      parts.push("The elevated Task Scheduler task was rolled back.");
+      throw new Error([
+        "Elevated Task Scheduler registration did not produce a conflict-free install.",
+        verification.detail,
+        "The elevated Task Scheduler task was left in place because native WinSW status could not be verified.",
+      ].join(" "));
     }
-    throw new Error(parts.join(" "));
+    const rollbackError = await rollbackElevatedSchedulerTask();
+    failAfterElevatedCreate(
+      `Elevated Task Scheduler registration did not produce a conflict-free install. ${verification.detail}`,
+      { rollback: true, rollbackError },
+    );
   }
-  writeServiceInstallState("scheduler");
+  (finalizeHooks?.writeInstallState ?? (() => writeServiceInstallState("scheduler")))();
 }
 
 function windowsBatchValue(value: string): string {

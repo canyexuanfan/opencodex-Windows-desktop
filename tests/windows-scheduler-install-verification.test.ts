@@ -72,7 +72,7 @@ describe("evaluateWindowsSchedulerInstallVerification", () => {
     expect(result.conflict).toBe(false);
     expect(result.nativeStatusUnknown).toBe(true);
     expect(result.nativeServiceAbsent).toBe(false);
-    expect(result.detail).toContain("could not be verified");
+    expect(result.detail).toContain("could not verify");
     expect(result.detail).not.toContain("CONFLICT");
   });
 

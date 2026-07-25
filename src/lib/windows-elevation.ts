@@ -1,6 +1,8 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 
 type ElevationSpawn = (
   command: string,
@@ -18,6 +20,9 @@ export function setWindowsElevationSpawnForTests(next: ElevationSpawn | null): v
 /** Stable machine-readable marker for a denied `schtasks /create`. Crosses the CLI→proxy boundary. */
 export const WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER =
   "OCX_ERROR_CODE=WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED";
+
+export const OCX_SCHTASKS_CREATE_EXIT_PREFIX = "OCX_SCHTASKS_CREATE_EXIT=";
+export const OCX_SCHTASKS_RUN_EXIT_PREFIX = "OCX_SCHTASKS_RUN_EXIT=";
 
 export type WindowsSchtasksOperation = "create" | "run" | "query" | "delete" | "end" | "other";
 export type WindowsSchtasksFailureReason = "access-denied" | "other";
@@ -189,30 +194,21 @@ export interface WindowsElevationResult {
   stderr: string;
 }
 
-/**
- * Launch a file with UAC elevation and wait for it to exit.
- * Throws WindowsElevationError for cancellation, timeout, launch failure, or signal termination.
- * Returns the elevated process exit code for completed launches (including non-zero).
- */
-export function runWindowsElevated(file: string, args: string[], timeoutMs = 120_000): Promise<number> {
+function parsePrefixedExit(output: string, prefix: string): number | null {
+  const match = output.match(new RegExp(`${prefix}(-?\\d+)`, "m"));
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : null;
+}
+
+/** Spawn non-elevated PowerShell to run a -Command script; classify UAC/cancel/timeout outcomes. */
+function runPowerShellCommand(commandScript: string, timeoutMs: number): Promise<WindowsElevationResult> {
   if (process.platform !== "win32") {
     return Promise.reject(new WindowsElevationError(
       "launch-failed",
       "Windows elevation is only supported on Windows.",
     ));
   }
-  const argumentList = buildWindowsElevatedArgumentList(args);
-  // Touch .Handle so Windows PowerShell 5.1 keeps a process handle; ExitCode can
-  // otherwise stay $null after -Wait and `exit $null` becomes exit 0 (false success).
-  const script = [
-    `$p = Start-Process -FilePath ${psSingleQuote(file)}`,
-    argumentList.length > 0 ? ` -ArgumentList ${psSingleQuote(argumentList)}` : "",
-    " -Verb RunAs -WindowStyle Hidden -PassThru -Wait;",
-    "if ($null -eq $p) { exit 1223 }",
-    "$null = $p.Handle",
-    "if ($null -eq $p.ExitCode) { exit 1 }",
-    "exit $p.ExitCode",
-  ].join("");
 
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -231,7 +227,7 @@ export function runWindowsElevated(file: string, args: string[], timeoutMs = 120
     try {
       child = elevationSpawn(
         windowsPowerShell(),
-        ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+        ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", commandScript],
         {
           windowsHide: true,
           stdio: ["ignore", "pipe", "pipe"],
@@ -275,7 +271,7 @@ export function runWindowsElevated(file: string, args: string[], timeoutMs = 120
 
     child.once("close", (code, signal) => {
       if (timedOut) return;
-      const detail = stderr.trim() || stdout.trim();
+      const detail = [stderr.trim(), stdout.trim()].filter(Boolean).join("\n");
       if (typeof code === "number") {
         if (code === 1223 || windowsUacCancelledText(detail)) {
           settle(() => reject(new WindowsElevationError(
@@ -284,7 +280,7 @@ export function runWindowsElevated(file: string, args: string[], timeoutMs = 120
           )));
           return;
         }
-        settle(() => resolve(code));
+        settle(() => resolve({ exitCode: code, stdout, stderr }));
         return;
       }
       settle(() => reject(new WindowsElevationError(
@@ -293,4 +289,129 @@ export function runWindowsElevated(file: string, args: string[], timeoutMs = 120
       )));
     });
   });
+}
+
+/**
+ * Launch a file with UAC elevation and wait for it to exit.
+ * Throws WindowsElevationError for cancellation, timeout, launch failure, or signal termination.
+ * Returns the elevated process exit code for completed launches (including non-zero).
+ */
+export function runWindowsElevated(file: string, args: string[], timeoutMs = 120_000): Promise<number> {
+  const argumentList = buildWindowsElevatedArgumentList(args);
+  // Touch .Handle so Windows PowerShell 5.1 keeps a process handle; ExitCode can
+  // otherwise stay $null after -Wait and `exit $null` becomes exit 0 (false success).
+  const script = [
+    `$p = Start-Process -FilePath ${psSingleQuote(file)}`,
+    argumentList.length > 0 ? ` -ArgumentList ${psSingleQuote(argumentList)}` : "",
+    " -Verb RunAs -WindowStyle Hidden -PassThru -Wait;",
+    "if ($null -eq $p) { exit 1223 }",
+    "$null = $p.Handle",
+    "if ($null -eq $p.ExitCode) { exit 1 }",
+    "exit $p.ExitCode",
+  ].join("");
+
+  return runPowerShellCommand(script, timeoutMs).then(result => result.exitCode);
+}
+
+export interface ElevatedSchtasksCreateAndRunResult {
+  createExitCode: number;
+  /** null when /run was not attempted because /create failed. */
+  runExitCode: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+/** Build the elevated (post-UAC) script that runs schtasks /create then /run without a second prompt. */
+export function buildElevatedSchtasksCreateAndRunScript(
+  schtasksPath: string,
+  createArgs: string[],
+  runArgs: string[],
+  resultPath: string,
+): string {
+  const createList = buildWindowsElevatedArgumentList(createArgs);
+  const runList = buildWindowsElevatedArgumentList(runArgs);
+  const createPrefix = OCX_SCHTASKS_CREATE_EXIT_PREFIX;
+  const runPrefix = OCX_SCHTASKS_RUN_EXIT_PREFIX;
+  return [
+    `$schtasks = ${psSingleQuote(schtasksPath)}`,
+    `$resultPath = ${psSingleQuote(resultPath)}`,
+    "function Invoke-OcxSchtasks([string]$ArgList) {",
+    "  $p = Start-Process -FilePath $schtasks -ArgumentList $ArgList -Wait -PassThru -WindowStyle Hidden",
+    "  if ($null -eq $p) { return 1 }",
+    "  $null = $p.Handle",
+    "  if ($null -eq $p.ExitCode) { return 1 }",
+    "  return [int]$p.ExitCode",
+    "}",
+    "function Write-OcxResult([int]$CreateCode, $RunCode) {",
+    `  $lines = @('${createPrefix}' + $CreateCode)`,
+    `  if ($null -ne $RunCode) { $lines += ('${runPrefix}' + $RunCode) }`,
+    "  Set-Content -LiteralPath $resultPath -Value ($lines -join [Environment]::NewLine) -Encoding ascii",
+    "}",
+    `$createCode = Invoke-OcxSchtasks ${psSingleQuote(createList)}`,
+    "if ($createCode -ne 0) { Write-OcxResult $createCode $null; exit $createCode }",
+    `$runCode = Invoke-OcxSchtasks ${psSingleQuote(runList)}`,
+    "Write-OcxResult $createCode $runCode",
+    "exit $runCode",
+  ].join("; ");
+}
+
+function readElevatedResultFile(resultPath: string): string {
+  try {
+    if (!existsSync(resultPath)) return "";
+    return readFileSync(resultPath, "utf8");
+  } catch {
+    return "";
+  } finally {
+    try { if (existsSync(resultPath)) unlinkSync(resultPath); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Create and run the scheduler task inside one elevated PowerShell process (one UAC prompt).
+ * Throws WindowsElevationError for UAC cancel/timeout/launch/signal failures.
+ */
+export async function runElevatedSchtasksCreateAndRun(
+  schtasksPath: string,
+  createArgs: string[],
+  runArgs: string[],
+  timeoutMs = 120_000,
+): Promise<ElevatedSchtasksCreateAndRunResult> {
+  const resultPath = join(tmpdir(), `ocx-elev-schtasks-${randomBytes(8).toString("hex")}.txt`);
+  const inner = buildElevatedSchtasksCreateAndRunScript(schtasksPath, createArgs, runArgs, resultPath);
+  // One Start-Process -Verb RunAs elevates PowerShell; create and run execute inside that process.
+  const launcher = [
+    `$p = Start-Process -FilePath ${psSingleQuote(windowsPowerShell())}`,
+    ` -ArgumentList ${psSingleQuote(buildWindowsElevatedArgumentList([
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      inner,
+    ]))}`,
+    " -Verb RunAs -WindowStyle Hidden -PassThru -Wait;",
+    "if ($null -eq $p) { exit 1223 }",
+    "$null = $p.Handle",
+    "if ($null -eq $p.ExitCode) { exit 1 }",
+    "exit $p.ExitCode",
+  ].join("");
+
+  try {
+    const result = await runPowerShellCommand(launcher, timeoutMs);
+    const markerText = readElevatedResultFile(resultPath);
+    const combined = `${markerText}\n${result.stdout}\n${result.stderr}`;
+    const createExitCode = parsePrefixedExit(combined, OCX_SCHTASKS_CREATE_EXIT_PREFIX) ?? result.exitCode;
+    const runExitCode = createExitCode === 0
+      ? (parsePrefixedExit(combined, OCX_SCHTASKS_RUN_EXIT_PREFIX) ?? result.exitCode)
+      : null;
+    return {
+      createExitCode,
+      runExitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    };
+  } catch (error) {
+    readElevatedResultFile(resultPath);
+    throw error;
+  }
 }
