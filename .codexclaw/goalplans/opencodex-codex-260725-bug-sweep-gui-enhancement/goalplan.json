@@ -2,8 +2,8 @@
   "objective": "opencodex 워크트리 codex/260725-bug-sweep에서 GUI·enhancement 제외 미해결 버그(#433 quota cooldown 고착, #432 Windows 서비스 stale 오탐, #422 remote compaction v2 fatal, #404 Grok per-model adapter, #373 Cursor 재시작 context 0)를 다중 PABCD 사이클로 직접 수정하고 각 work-phase를 로컬 커밋으로 쌓는다. WP0는 docs-only 로드맵 사이클.",
   "slug": "opencodex-codex-260725-bug-sweep-gui-enhancement",
   "createdAt": "2026-07-25T08:12:13.026Z",
-  "updatedAt": "2026-07-25T11:24:06.676Z",
-  "activeWorkPhaseId": "wp4",
+  "updatedAt": "2026-07-25T12:12:21.536Z",
+  "activeWorkPhaseId": "wp5",
   "workPhases": [
     {
       "id": "wp0",
@@ -131,22 +131,22 @@
     {
       "id": "wp4",
       "title": "WP4 #373 — Cursor 재시작 후 context usage 0 보고 수정",
-      "status": "in_progress",
+      "status": "done",
       "tasks": [
         {
           "id": "wp4-t1",
           "title": "050 문서 stale 체크 후 checkpoint tracker 경로 확정",
-          "status": "pending"
+          "status": "done"
         },
         {
           "id": "wp4-t2",
           "title": "재시작 시드 복구 또는 request-local 추정 구현",
-          "status": "pending"
+          "status": "done"
         },
         {
           "id": "wp4-t3",
           "title": "회귀 테스트 추가 + typecheck/test 통과 + 커밋",
-          "status": "pending"
+          "status": "done"
         }
       ],
       "criteriaIds": [
@@ -156,7 +156,7 @@
     {
       "id": "wp5",
       "title": "WP5 #404 — Grok 4.5 per-model adapter override (혼합 게이트웨이 web_search 소실)",
-      "status": "pending",
+      "status": "in_progress",
       "tasks": [
         {
           "id": "wp5-t1",
@@ -237,8 +237,8 @@
       "id": "c-373",
       "scenario": "프록시 재시작 후 checkpoint 없는 Cursor 요청이 inputTokens=0이 아닌 실제 컨텍스트 규모를 보고한다.",
       "expectedEvidence": "신규 테스트 파일 경로 + bun test 통과 출력 tail + 커밋 SHA",
-      "capturedEvidence": "",
-      "status": "open"
+      "capturedEvidence": "커밋 cb22b7ee. 신규 10개 테스트(cursor-blob 4, cursor-protobuf-events 4, cursor-live-transport 2). cursor+token-estimate 7파일 132 pass/0 fail. 뮤테이션 검증: live-transport estimatedInputTokens 배선 제거 시 transport 테스트 2개가 정확히 실패. 전체 bun run test 4119 pass (기준선 4079 대비 +40). typecheck exit 0, privacy scan 통과. 리뷰어는 kimi/k3(Curie) 3라운드 감사 PASS.",
+      "status": "met"
     },
     {
       "id": "c-404",
