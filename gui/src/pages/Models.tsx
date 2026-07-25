@@ -196,6 +196,12 @@ export default function Models({ apiBase, viewMode }: { apiBase: string; viewMod
         .then(r => r.json()) as ConfiguredProviderSummary[];
       void loadV2(); // best-effort, independent of the models fetch
       void loadShadowCall();
+      const nextGroups = buildProviderModelGroups(data, providerData);
+      setSelectedProvider(prev => (
+        prev !== null && !nextGroups.some(group => group.provider === prev)
+          ? null
+          : prev
+      ));
       setModels(data);
       setProviders(providerData);
       setDisabled(collectDisabledNamespaced(data));
@@ -232,12 +238,6 @@ export default function Models({ apiBase, viewMode }: { apiBase: string; viewMod
     () => buildProviderModelGroups(models, providers),
     [models, providers],
   );
-
-  useEffect(() => {
-    if (selectedProvider !== null && !groups.some(group => group.provider === selectedProvider)) {
-      setSelectedProvider(null);
-    }
-  }, [groups, selectedProvider]);
 
   const apply = async (next: Set<string>) => {
     setBusy(true);
