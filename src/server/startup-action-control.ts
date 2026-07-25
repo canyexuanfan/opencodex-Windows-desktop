@@ -252,9 +252,16 @@ export function runStartupInstallAction(action: StartupInstallAction): Promise<{
             timedOutAt: Date.now(),
             reconciliation: finalized.reconciliation,
           };
-          void finalized.reconciliation.then(outcome => {
-            applyReconciliationOutcome(ownedAttemptId, outcome);
-          });
+          void finalized.reconciliation.then(
+            outcome => {
+              applyReconciliationOutcome(ownedAttemptId, outcome);
+            },
+            () => {
+              // Fail closed: a rejected reconciliation must not leave an unhandled rejection
+              // or silently idle the lock while Task Scheduler state may still be partial.
+              applyReconciliationOutcome(ownedAttemptId, "blocked-partial");
+            },
+          );
           throw new Error(INDETERMINATE_MESSAGE);
         }
       } else {

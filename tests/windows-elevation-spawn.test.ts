@@ -98,7 +98,9 @@ describe("runWindowsElevated spawn contract", () => {
 
     await runWindowsElevated("schtasks.exe", ["/create"]);
     expect(commandScript).toContain(`if ($null -eq $p.ExitCode) { exit ${OCX_ELEVATED_PROTOCOL_FAILED} }`);
-    expect(commandScript).toContain("$null = $p.Handle");
+    expect(commandScript).toContain("$null = $p.Handle;");
+    expect(commandScript).not.toContain("$p.Handleif");
+    expect(commandScript).toMatch(/\$null = \$p\.Handle;\s*if \(\$null -eq \$p\.ExitCode\)/);
   });
 
   test("returns non-zero exit codes from completed elevated processes", async () => {
@@ -124,6 +126,11 @@ describe("runWindowsElevated spawn contract", () => {
       expect((error as WindowsElevationError).reason).toBe("cancelled");
       expect((error as Error).message).toContain("UAC prompt was cancelled");
     }
+  });
+
+  test("does not treat UAC-cancel text as cancelled when exit code is 0", async () => {
+    fakeChild({ code: 0, stderr: "Start-Process : The operation was canceled by the user." });
+    await expect(runWindowsElevated("schtasks.exe", ["/create"])).resolves.toBe(0);
   });
 
   test("maps ENOENT launch failure", async () => {
@@ -567,7 +574,7 @@ describe("finalizeWindowsSchedulerServiceRegistration", () => {
     expect(writeCount).toBe(0);
   });
 
-  test("signal termination during create+run does not write install state", async () => {
+  test("signal termination during create+run surfaces reconciliation detail", async () => {
     setFinalizeWindowsSchedulerHooksForTests({
       elevateCreateAndRun: async () => {
         elevateLaunches += 1;
@@ -577,8 +584,28 @@ describe("finalizeWindowsSchedulerServiceRegistration", () => {
       taskInstalled: () => false,
     });
 
-    await expect(finalizeWindowsSchedulerServiceRegistration()).rejects.toMatchObject({ reason: "terminated" });
+    await expect(finalizeWindowsSchedulerServiceRegistration()).rejects.toThrow(/unknown result/);
     expect(writeCount).toBe(0);
+  });
+
+  test("signal termination with leftover task reports cleanup guidance", async () => {
+    mockParentRollbackSpawn();
+    let calls = 0;
+    setFinalizeWindowsSchedulerHooksForTests({
+      elevateCreateAndRun: async () => {
+        elevateLaunches += 1;
+        throw new WindowsElevationError("terminated", "Windows elevation terminated by SIGTERM.");
+      },
+      writeInstallState: () => { writeCount += 1; },
+      taskInstalled: () => {
+        calls += 1;
+        return calls === 1;
+      },
+    });
+
+    await expect(finalizeWindowsSchedulerServiceRegistration()).rejects.toThrow(/unknown result|Cleanup/);
+    expect(writeCount).toBe(0);
+    expect(parentRollbackLaunches).toBe(1);
   });
 
   test("protocol-failed with no task present reconciles without inventing a phase", async () => {

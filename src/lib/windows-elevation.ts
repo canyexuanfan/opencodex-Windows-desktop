@@ -338,7 +338,11 @@ export function startPowerShellCommand(commandScript: string): WindowsElevationE
     child.once("close", (code, signal) => {
       const detail = [stderr.trim(), stdout.trim()].filter(Boolean).join("\n");
       if (typeof code === "number") {
-        if (code === OCX_ELEVATED_UAC_CANCELLED || windowsUacCancelledText(detail)) {
+        // Only treat UAC-cancellation text as cancelled when the process did not succeed.
+        if (
+          code === OCX_ELEVATED_UAC_CANCELLED
+          || (code !== 0 && windowsUacCancelledText(detail))
+        ) {
           settle(() => reject(new WindowsElevationError(
             "cancelled",
             "Windows administrator approval was required, but the UAC prompt was cancelled or denied.",
@@ -373,7 +377,7 @@ export function runWindowsElevated(file: string, args: string[]): Promise<number
     argumentList.length > 0 ? ` -ArgumentList ${psSingleQuote(argumentList)}` : "",
     " -Verb RunAs -WindowStyle Hidden -PassThru -Wait;",
     `if ($null -eq $p) { exit ${OCX_ELEVATED_UAC_CANCELLED} }`,
-    "$null = $p.Handle",
+    "$null = $p.Handle;",
     // Missing ExitCode is a protocol failure for single-file elevation (not success).
     `if ($null -eq $p.ExitCode) { exit ${OCX_ELEVATED_PROTOCOL_FAILED} }`,
     "exit $p.ExitCode",
@@ -450,7 +454,7 @@ export function startElevatedSchtasksCreateAndRun(
     ]))}`,
     " -Verb RunAs -WindowStyle Hidden -PassThru -Wait;",
     `if ($null -eq $p) { exit ${OCX_ELEVATED_UAC_CANCELLED} }`,
-    "$null = $p.Handle",
+    "$null = $p.Handle;",
     `if ($null -eq $p.ExitCode) { exit ${OCX_ELEVATED_PROTOCOL_FAILED} }`,
     "exit $p.ExitCode",
   ].join("");

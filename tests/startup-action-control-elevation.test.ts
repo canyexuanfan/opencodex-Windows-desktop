@@ -241,6 +241,29 @@ describe("startup install elevation retry", () => {
     await Promise.resolve();
     expect(getStartupInstallState()).toMatchObject({ attemptId: "new-attempt", status: "indeterminate" });
   });
+
+  test("rejected reconciliation fails closed into blocked state", async () => {
+    failCli(`Windows access denied while running Task Scheduler.\n${WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER}`);
+    let rejectReconciliation!: (error: Error) => void;
+    const reconciliation = new Promise<"released" | "blocked-partial">((_, reject) => {
+      rejectReconciliation = reject;
+    });
+    finalizeMock.mockResolvedValue({
+      kind: "indeterminate",
+      attemptId: "attempt-reject-1",
+      reconciliation,
+    });
+
+    await expect(runStartupInstallAction("install-service")).rejects.toThrow(/may still be running/);
+    rejectReconciliation(new Error("reconciliation boom"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(getStartupInstallState()).toMatchObject({
+      status: "blocked",
+      reason: "partial-elevated-install",
+      attemptId: "attempt-reject-1",
+    });
+  });
 });
 
 describe("classifyCliInstallFailure marker transport", () => {

@@ -661,8 +661,10 @@ export async function finalizeWindowsSchedulerServiceRegistration(
     if (error instanceof WindowsElevationError && error.reason === "terminated") {
       try {
         await reconcileUnknownElevatedOutcome(OCX_ELEVATED_PROTOCOL_FAILED);
-      } catch {
-        throw error;
+      } catch (reconcileError) {
+        // Prefer the reconciliation detail (partial install / cleanup guidance) over the
+        // generic signal message so callers can block retries when a task remains.
+        throw reconcileError;
       }
     }
     throw error;
