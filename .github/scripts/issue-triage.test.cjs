@@ -49,6 +49,27 @@ describe("hasConcreteRelatedSignature", () => {
     );
   });
 
+  it("does not treat capitalized common words as errno tokens", () => {
+    assert.equal(hasConcreteFailureToken("ERROR"), false);
+    assert.equal(hasConcreteFailureToken("EXCEPTION"), false);
+    assert.equal(
+      hasConcreteRelatedSignature(
+        "Both issues show the same ERROR when calling the API.",
+      ),
+      false,
+    );
+  });
+
+  it("ignores bare three-digit numbers without status context", () => {
+    assert.equal(hasConcreteFailureToken("See issue 410 and PR 503"), false);
+    assert.equal(
+      hasConcreteRelatedSignature(
+        "Both issues mention 410 and 503 without a status code.",
+      ),
+      false,
+    );
+  });
+
   it("rejects different HTTP statuses despite component overlap", () => {
     const rejected = [
       "Both issues use OpenRouter. The first returns 401; the second returns 500.",
@@ -60,6 +81,15 @@ describe("hasConcreteRelatedSignature", () => {
     for (const reason of rejected) {
       assert.equal(hasConcreteRelatedSignature(reason), false, reason);
     }
+  });
+
+  it("rejects distinct statuses even when the shared-comparison gate is open", () => {
+    assert.equal(
+      hasConcreteRelatedSignature(
+        "Both issues return errors, but one returns 401 and the other returns 500.",
+      ),
+      false,
+    );
   });
 
   it("rejects shared wording that borrows a concrete token from only one issue", () => {

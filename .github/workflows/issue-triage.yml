@@ -148,6 +148,13 @@ jobs:
             const MARKER = "<!-- opencodex-dedup-bot -->";
             const payload = JSON.parse(process.env.MATCHES || '{}');
             // Consume only the normalised parse output — never raw model text.
+            const sanitize = (v) => String(v || '')
+              .replace(/[\u0000-\u001f\u007f]/g, ' ')
+              .replace(/@/g, '(at)')
+              .replace(/[\x60*_~<>\[\]()#|]/g, '')
+              .replace(/\s+/g, ' ')
+              .trim()
+              .slice(0, 240);
             const duplicates = Array.isArray(payload.duplicates)
               ? payload.duplicates
                   .map((n) => String(n))
@@ -158,24 +165,12 @@ jobs:
                   .filter((entry) => entry && typeof entry === 'object')
                   .map((entry) => ({
                     number: String(entry.number || ''),
-                    reason: String(entry.reason || '')
-                      .replace(/[\u0000-\u001f\u007f]/g, ' ')
-                      .replace(/@/g, '(at)')
-                      .replace(/[\x60*_~<>\[\]()#|]/g, '')
-                      .replace(/\s+/g, ' ')
-                      .trim()
-                      .slice(0, 240),
+                    reason: sanitize(entry.reason),
                   }))
                   .filter((entry) => /^\d+$/.test(entry.number) && entry.reason.length >= 24)
                   .slice(0, 3)
               : [];
-            const reason = String(payload.reason || '')
-              .replace(/[\u0000-\u001f\u007f]/g, ' ')
-              .replace(/@/g, '(at)')
-              .replace(/[\x60*_~<>\[\]()#|]/g, '')
-              .replace(/\s+/g, ' ')
-              .trim()
-              .slice(0, 240);
+            const reason = sanitize(payload.reason);
             if (!duplicates.length && !related.length) return;
 
             const sections = [MARKER];

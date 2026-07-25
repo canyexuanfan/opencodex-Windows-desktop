@@ -9,17 +9,16 @@
 const WEAK_RELATED_REASON_RE =
   /\b(?:somewhat|broadly|loosely|vaguely)\s+related\b|\bboth\s+(?:issues?\s+)?pertain\s+to\s+errors?\b|\bsame\s+(?:client|app)\b|\berrors?\s+in\s+general\b|\bgeneral\s+proxy\s+errors?\b|\bHTTP\s+error\b/i;
 
-/** Well-known errno / syscall failure tokens (case-sensitive uppercase form preferred). */
+/** Well-known errno / syscall failure tokens (allowlist only — never E[A-Z]{4,}). */
 const KNOWN_ERRNO_RE =
   /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EPIPE|EAI_AGAIN|ECONNABORTED|EHOSTUNREACH|ENETUNREACH|EADDRINUSE)\b/;
 
 /**
- * Errno-style tokens must be uppercase E + 4+ uppercase letters so ordinary
- * English words (each, exact, existing) never match.
+ * HTTP statuses require status-indicating context so bare issue/PR numbers
+ * (e.g. 410, 503 as ticket ids) are not treated as failure evidence.
  */
-const ERRNO_STYLE_RE = /\bE[A-Z]{4,}\b/;
-
-const HTTP_STATUS_RE = /\b(?:HTTP\s+)?([1-5]\d\d)\b/gi;
+const HTTP_STATUS_RE =
+  /\b(?:(?:HTTP(?:\s+status)?(?:\s+code)?|status(?:\s+code)?)\s+|(?:returns?|returning|got|getting|receive[ds]?|reports?|reporting|code)\s+)([1-5]\d\d)\b/gi;
 
 /** One-sided attribution of a concrete failure to only one issue. */
 const ONE_SIDED_ATTRIBUTION_RE =
@@ -40,12 +39,10 @@ function extractHttpStatuses(text) {
 
 function extractErrnoTokens(text) {
   const found = [];
-  for (const re of [KNOWN_ERRNO_RE, ERRNO_STYLE_RE]) {
-    const copy = new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`);
-    let match;
-    while ((match = copy.exec(String(text || ""))) !== null) {
-      found.push(match[0].toUpperCase());
-    }
+  const copy = new RegExp(KNOWN_ERRNO_RE.source, "g");
+  let match;
+  while ((match = copy.exec(String(text || ""))) !== null) {
+    found.push(match[0].toUpperCase());
   }
   return [...new Set(found)];
 }
@@ -69,8 +66,7 @@ function findSignatureSpans(text) {
   };
 
   pushMatches(KNOWN_ERRNO_RE);
-  pushMatches(ERRNO_STYLE_RE);
-  pushMatches(/\b(?:HTTP\s+)?[1-5]\d\d\b/gi);
+  pushMatches(HTTP_STATUS_RE);
   pushMatches(/\bField required\b/gi);
   pushMatches(/\bcontent\[\d+\]/g);
   pushMatches(/\b[\w]+\.[\w.]+\.(?:text|content|type)\b/g);
@@ -159,7 +155,7 @@ function clauseBindsSharedToSignature(clause) {
         if (!BOTH_FAILURE_VERB_RE.test(clause.slice(binder.index, sig.end))) continue;
       } else if (/^same$/i.test(binderText)) {
         // "same adapter" is not enough; require same … error/failure/Field required/status.
-        if (!/\bsame\b[\s\S]{0,80}\b(?:error|failure|status|fault|exception|signature|Field required|(?:HTTP\s+)?[1-5]\d\d|E[A-Z]{4,})\b/i
+        if (!/\bsame\b[\s\S]{0,80}\b(?:error|failure|status|fault|exception|signature|Field required|(?:HTTP(?:\s+status)?(?:\s+code)?|status(?:\s+code)?|returns?|got|code)\s+[1-5]\d\d|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EPIPE|EAI_AGAIN|ECONNABORTED|EHOSTUNREACH|ENETUNREACH|EADDRINUSE)\b/i
           .test(clause.slice(binder.index))) {
           continue;
         }
@@ -276,9 +272,8 @@ function hardenRelatedMatches({ duplicates, related }) {
     if (!number || dupeSet.has(number)) continue;
     const safeReason = sanitizeReason(entry?.reason);
     if (!safeReason || safeReason.length < 24) continue;
-    if (WEAK_RELATED_REASON_RE.test(safeReason) && !hasConcreteRelatedSignature(safeReason)) {
-      continue;
-    }
+    // WEAK_RELATED_REASON_RE alone is insufficient: concrete-signature gating
+    // already rejects weak overlap, so a separate weak+!concrete branch is dead.
     if (!hasConcreteRelatedSignature(safeReason)) continue;
     relatedOut.push({ number, reason: safeReason });
     if (relatedOut.length >= 3) break;

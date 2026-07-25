@@ -193,9 +193,8 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toMatch(
       /jobs:\s*\n\s*translate:[\s\S]*?permissions:\s*\n(?:\s*#.*\n)*\s*contents: read\s*\n(?:\s*#.*\n)*\s*issues: write\s*\n(?:\s*#.*\n)*\s*models: read/,
     );
-    expect(workflow).not.toMatch(
-      /jobs:\s*\n\s*translate:[\s\S]*?permissions:[\s\S]*?actions:\s*write/,
-    );
+    const translateJob = workflow.split(/\n {2}translate:\n/)[1]!.split(/\n {2}[a-zA-Z]/)[0]!;
+    expect(translateJob).not.toMatch(/actions:\s*write/);
     expect(workflow).toMatch(
       /jobs:\s*\n\s*translate:[\s\S]*?validate:[\s\S]*?permissions:\s*\n\s*contents: read\s*\n\s*#.*\n\s*issues: write/,
     );
@@ -205,8 +204,15 @@ describe("GitHub Actions hardening", () => {
     // Non-cancelling per-issue concurrency at workflow and translate-job scope.
     expect(workflow).toContain("group: issue-quality-${{ github.event.issue.number || inputs.issue_number }}");
     expect(workflow).toContain("group: issue-translation-${{ github.event.issue.number || inputs.issue_number }}");
-    expect(workflow).toMatch(/concurrency:\s*\n\s*group: issue-quality-[\s\S]*?cancel-in-progress:\s*false/);
-    expect(workflow).toMatch(/concurrency:\s*\n\s*group: issue-translation-[\s\S]*?cancel-in-progress:\s*false/);
+    const workflowConcurrency = workflow.split(/jobs:\s*\n/)[0]!;
+    expect(workflowConcurrency).toMatch(
+      /concurrency:\s*\n\s*group: issue-quality-[^\n]*\n\s*cancel-in-progress:\s*false/,
+    );
+    expect(translateJob).toMatch(
+      /concurrency:\s*\n\s*group: issue-translation-[^\n]*\n\s*cancel-in-progress:\s*false/,
+    );
+    expect(translateJob).toContain("translation-state-degraded");
+    expect(translateJob).toContain("core.summary");
 
     // Trusted scripts always come from the repository default branch.
     const checkoutStep = workflow

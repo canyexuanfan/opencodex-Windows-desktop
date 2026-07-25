@@ -298,7 +298,15 @@ jobs:
                   },
                 });
               } catch (err) {
-                core.warning(`Translation control state not persisted: ${err instanceof Error ? err.message : String(err)}`);
+                const message = err instanceof Error ? err.message : String(err);
+                // Fail open for the already-applied translation, but surface the
+                // miss so repeated edit→model loops are detectable without log spelunking.
+                core.warning(`Translation control state not persisted: ${message}`);
+                core.notice(`translation-state-degraded: ${message}`);
+                await core.summary
+                  .addHeading("Translation control state degraded", 3)
+                  .addRaw(message)
+                  .write();
               }
             }
 
@@ -355,7 +363,13 @@ jobs:
             } catch (err) {
               // Fail closed for storage errors without mutating the issue body.
               // Prior bot control comments remain as durable cooldown fallback.
-              core.warning(`English translation state not persisted: ${err instanceof Error ? err.message : String(err)}`);
+              const message = err instanceof Error ? err.message : String(err);
+              core.warning(`English translation state not persisted: ${message}`);
+              core.notice(`translation-state-degraded: ${message}`);
+              await core.summary
+                .addHeading("Translation control state degraded", 3)
+                .addRaw(message)
+                .write();
             }
 
   validate:

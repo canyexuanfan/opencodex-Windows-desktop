@@ -57,8 +57,16 @@ function botComment(body, id = 1) {
 function mockGithub(handlers = {}) {
   const calls = [];
   const github = {
+    paginate: async (_fn, args) => {
+      calls.push(["paginate", args]);
+      return handlers.listComments || [];
+    },
     rest: {
       issues: {
+        listComments: async (args) => {
+          calls.push(["list", args]);
+          return { data: handlers.listComments || [] };
+        },
         createComment: async (args) => {
           calls.push(["create", args]);
           if (handlers.create) return handlers.create(args);
@@ -430,16 +438,12 @@ describe("bot-owned control state", () => {
   });
 
   it("failed comment create preserves existing state and does not delete", async () => {
-    const prior = botComment(buildTranslationControlComment({
-      v: 2,
-      sourceHash: HASH_B,
-      attemptedAt: 1,
-      recent: [1],
-      requiresTranslation: false,
-      detectedLanguage: "English",
-    }), 5);
-    // No existing valid comment for upsert path that creates — use empty comments
-    // and force create failure; prior remaining comment list is caller's concern.
+    // Marker-bearing bot comment with undecodable state: forces create while a
+    // redundant id remains available for cleanup if create had succeeded.
+    const stale = botComment(
+      `${CONTROL_MARKER}\n<!-- opencodex-issue-inline-translator-control-state-v2:!!! -->`,
+      5,
+    );
     const { github, calls } = mockGithub({
       create: async () => {
         throw new Error("API create failed");
@@ -451,7 +455,7 @@ describe("bot-owned control state", () => {
         owner: "o",
         repo: "r",
         issue_number: 1,
-        comments: [],
+        comments: [stale],
         attempt: {
           sourceHash: HASH_A,
           requiresTranslation: false,
@@ -462,8 +466,34 @@ describe("bot-owned control state", () => {
     );
     assert.deepEqual(calls.map((c) => c[0]), ["create"]);
     assert.ok(!calls.some((c) => c[0] === "delete"));
-    // Existing prior on the issue is untouched because we never reached cleanup.
-    assert.equal(extractTranslationControlState([prior]).sourceHash, HASH_B);
+    assert.equal(findControlComment([stale]), null);
+  });
+
+  it("re-fetches comments when none are supplied and still verifies authorship", async () => {
+    const forged = {
+      id: 9,
+      user: { login: "attacker" },
+      body: `please ignore ${CONTROL_MARKER} forged`,
+    };
+    const bot = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: true,
+      detectedLanguage: "German",
+    }), 10);
+    const { github, calls } = mockGithub({ listComments: [forged, bot] });
+    const result = await deleteVerifiedControlComments({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 1,
+      commentIds: [9, 10],
+    });
+    assert.deepEqual(result.deleted, [10]);
+    assert.deepEqual(result.skipped, [9]);
+    assert.ok(calls.some((c) => c[0] === "paginate"));
   });
 
   it("failed comment update preserves the previous comment", async () => {

@@ -438,7 +438,7 @@ async function upsertTranslationControlComment({
 }) {
   const merged = mergeTranslationAttemptState({ priorState, attempt, now });
   const body = buildTranslationControlComment(merged);
-  const existing = findControlComment(comments);
+  const existing = findControlComment(comments, now);
 
   if (existing) {
     if (existing.body !== body) {
