@@ -6,7 +6,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useT } from "../../i18n";
-import { IconFilter, IconSearch, IconBoxes, IconGlobe, IconLock, IconKey } from "../../icons";
+import { IconFilter, IconSearch, IconBoxes, IconGlobe, IconLock, IconKey, IconTrash } from "../../icons";
 import {
   applyActiveAccountReauth,
   buildProviderWorkspace,
@@ -55,6 +55,7 @@ export default function ProviderWorkspaceShell({
   defaultProvider,
   selectedName,
   onSelect,
+  onRemoveProvider,
   onAddProvider,
   onEditConfig,
   jsonEditor,
@@ -68,6 +69,8 @@ export default function ProviderWorkspaceShell({
   defaultProvider: string;
   selectedName: string | null;
   onSelect: (name: string | null) => void;
+  /** WP4: mouse accelerator for deleting a provider straight from the rail. */
+  onRemoveProvider?: (name: string) => void;
   onAddProvider: (intent?: AddProviderIntent) => void;
   onEditConfig?: () => void;
   jsonEditor?: JsonEditorState;
@@ -415,17 +418,41 @@ export default function ProviderWorkspaceShell({
                   <span className="pws-rail-group-count">{count}</span>
                 </div>
                 {items.map(item => (
-                  <RailRow
-                    key={item.name}
-                    item={item}
-                    selected={selectedName === item.name}
-                    tabbable={railTabbableName === item.name}
-                    modelCount={modelCounts[item.name]}
-                    isDefault={defaultProvider === item.name}
-                    showConfigId={duplicateDisplayNames.has(formatProviderDisplayName(item.name))}
-                    onClick={() => onSelect(item.name)}
-                    onFocus={() => setRailFocusName(item.name)}
-                  />
+                  // The wrapper exists so the delete control can be a SIBLING of the row.
+                  // The row is a <button role="option">, so nesting an interactive child
+                  // inside it would be invalid HTML, break listbox focus tracking
+                  // (el.contains(active) would treat the trash button as the option), and
+                  // let one click both select and delete.
+                  <div key={item.name} className="pws-rail-row-wrap">
+                    <RailRow
+                      item={item}
+                      selected={selectedName === item.name}
+                      tabbable={railTabbableName === item.name}
+                      modelCount={modelCounts[item.name]}
+                      isDefault={defaultProvider === item.name}
+                      showConfigId={duplicateDisplayNames.has(formatProviderDisplayName(item.name))}
+                      onClick={() => onSelect(item.name)}
+                      onFocus={() => setRailFocusName(item.name)}
+                    />
+                    {onRemoveProvider && (
+                      <button
+                        type="button"
+                        className="pws-rail-row-remove"
+                        // Mouse accelerator only. Keyboard and screen-reader users already
+                        // have the labelled delete control in the provider detail header,
+                        // and adding this to the tab order would disturb option roving.
+                        tabIndex={-1}
+                        aria-hidden="true"
+                        onClick={event => {
+                          event.stopPropagation();
+                          onRemoveProvider(item.name);
+                        }}
+                        title={t("pws.removeConfirmTitle")}
+                      >
+                        <IconTrash width={14} height={14} />
+                      </button>
+                    )}
+                  </div>
                 ))}
               </div>
             );

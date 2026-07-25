@@ -544,6 +544,7 @@ export default function Providers({ apiBase, viewMode }: { apiBase: string; view
         </div>
         {status && <Notice tone={statusOk ? "ok" : "err"}>{status}</Notice>}
         <ProviderWorkspaceShell
+          onRemoveProvider={removeProvider}
           providers={config.providers as Record<string, WorkspaceProvider>}
           apiBase={apiBase}
           defaultProvider={config.defaultProvider}
