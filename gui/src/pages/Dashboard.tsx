@@ -8,6 +8,7 @@ import { formatTokens } from "../format-tokens";
 import { EmptyState, Select } from "../ui";
 
 interface HealthData { status: string; version: string; uptime: number }
+type StartupHealthStatus = "native" | "protected" | "at-risk" | "error";
 interface ProviderInfo { name: string; adapter: string; baseUrl: string; defaultModel?: string; hasApiKey: boolean }
 interface ModelInfo { id: string; provider: string; owned_by?: string }
 interface SettingsData {
@@ -199,6 +200,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   const [modelQuery, setModelQuery] = useState("");
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
   const [health, setHealth] = useState<HealthData | null>(null);
+  const [startupHealth, setStartupHealth] = useState<StartupHealthStatus | null>(null);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [settings, setSettings] = useState<SettingsData | null>(null);
@@ -211,6 +213,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [maMode, setMaMode] = useState<"v1" | "default" | "v2">("default");
+  const [maModeResolved, setMaModeResolved] = useState(false);
   const [maBusy, setMaBusy] = useState(false);
   const [maHelpOpen, setMaHelpOpen] = useState(false);
   const [effortCapHelpOpen, setEffortCapHelpOpen] = useState(false);
@@ -237,6 +240,9 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   const settingsRequestEpochRef = useRef(0);
   const settingsMutationEpochRef = useRef(0);
   const settingsMutationInFlightRef = useRef(false);
+  const shadowCallRequestEpochRef = useRef(0);
+  const shadowCallMutationEpochRef = useRef(0);
+  const shadowCallMutationInFlightRef = useRef(false);
   const [updateCheck, setUpdateCheck] = useState<UpdateCheckData | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [updateJob, setUpdateJob] = useState<UpdateJob | null>(null);
@@ -260,6 +266,29 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    const readStartupHealth = async () => {
+      try {
+        const response = await fetch(`${apiBase}/api/startup-health`);
+        if (!response.ok) throw new Error("startup health unavailable");
+        const data = await response.json() as { status?: unknown; diagnosticStale?: unknown };
+        const status = data.status;
+        const validStatus = status === "native" || status === "protected" || status === "at-risk";
+        if (!validStatus) throw new Error("invalid startup health response");
+        if (!cancelled) setStartupHealth(data.diagnosticStale === true ? "error" : status);
+      } catch {
+        if (!cancelled) setStartupHealth("error");
+      }
+    };
+    void readStartupHealth();
+    const interval = window.setInterval(() => { void readStartupHealth(); }, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [apiBase]);
+
+  useEffect(() => {
     const fetchData = async () => {
       try {
         const [hRes, pRes, sRes, scRes, shRes, uRes] = await Promise.all([
@@ -274,6 +303,8 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         setProviders(await pRes.json());
         const settingsRequestEpoch = settingsRequestEpochRef.current;
         const settingsMutationEpoch = settingsMutationEpochRef.current;
+        const shadowRequestEpoch = shadowCallRequestEpochRef.current;
+        const shadowMutationEpoch = shadowCallMutationEpochRef.current;
         const nextSettings = await sRes.json() as SettingsData;
         if (settingsPollMayCommit(
           { request: settingsRequestEpoch, mutation: settingsMutationEpoch },
@@ -282,11 +313,33 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             mutation: settingsMutationEpochRef.current,
             mutationInFlight: settingsMutationInFlightRef.current,
           },
-        )) setSettings(nextSettings);
+        )) {
+          setSettings(nextSettings);
+          const seeded = nextSettings.startupHealth;
+          if (seeded) {
+            setStartupHealth(seeded.diagnosticStale ? "error" : seeded.status);
+          }
+        }
         setSidecar(await scRes.json());
         // Old servers fall through to the SPA HTML for this route; don't let a parse
         // failure here take down the whole dashboard.
-        try { if (shRes.ok) setShadowCall(await shRes.json()); } catch { setShadowCall(null); }
+        try {
+          if (shRes.ok) {
+            const nextShadow = await shRes.json() as ShadowCallData;
+            // Ignore polls that raced a user toggle — otherwise the switch flips back
+            // to the pre-write value for a few seconds until the next poll.
+            if (settingsPollMayCommit(
+              { request: shadowRequestEpoch, mutation: shadowMutationEpoch },
+              {
+                request: shadowCallRequestEpochRef.current,
+                mutation: shadowCallMutationEpochRef.current,
+                mutationInFlight: shadowCallMutationInFlightRef.current,
+              },
+            )) {
+              setShadowCall(nextShadow);
+            }
+          }
+        } catch { setShadowCall(null); }
         try { setUsage30d(uRes.ok ? await uRes.json() : null); } catch { setUsage30d(null); }
         setError(false);
         // Best-effort v2 mode fetch (independent of core health)
@@ -298,6 +351,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             else setMaMode("default");
           }
         } catch { /* old server */ }
+        finally { setMaModeResolved(true); }
         try {
           const imRes = await fetch(`${apiBase}/api/injection-model`);
           if (imRes.ok) {
@@ -317,8 +371,16 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             setSubagentEffortCap(ecData.subagentEffortCap ?? "");
           }
         } catch { /* old server */ }
+        try {
+          const pcRes = await fetch(`${apiBase}/api/diagnostics/project-config`);
+          const pcData = pcRes.ok ? await pcRes.json() as { grouped?: ProjectCodexConfigGroup[] } : null;
+          setProjectConfigWarnings(pcData?.grouped ?? []);
+        } catch {
+          setProjectConfigWarnings([]);
+        }
       } catch {
         setError(true);
+        setMaModeResolved(true);
       }
     };
     fetchData();
@@ -326,6 +388,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     return () => {
       clearInterval(interval);
       settingsRequestEpochRef.current += 1;
+      shadowCallRequestEpochRef.current += 1;
     };
   }, [apiBase]);
 
@@ -339,7 +402,6 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         setProjectConfigWarnings([]);
       }
     };
-    void fetchDiagnostics();
     const interval = setInterval(() => void fetchDiagnostics(), 30_000);
     return () => clearInterval(interval);
   }, [apiBase]);
@@ -421,12 +483,6 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   }, [grouped, modelQuery]);
   const sidecarModels = useMemo(() => sidecarModelOptions(models), [models]);
 
-  const startupHealth = useMemo(() => {
-    if (!settings?.startupHealth) return null;
-    if (settings.startupHealth.diagnosticStale) return "error" as const;
-    return settings.startupHealth.status;
-  }, [settings?.startupHealth]);
-
   if (error) {
     return (
       <EmptyState style={{ marginTop: 40 }} icon={<IconAlert />}
@@ -464,16 +520,25 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
 
   async function saveShadowCall(patch: Partial<ShadowCallData>) {
     if (!shadowCall || shadowCallSaving) return;
-    setShadowCallSaving(true);
+    const previous = shadowCall;
     const updated = { ...shadowCall, ...patch };
+    setShadowCallSaving(true);
+    shadowCallMutationInFlightRef.current = true;
     setShadowCall(updated);
     try {
-      await fetch(`${apiBase}/api/shadow-call-settings`, {
+      const res = await fetch(`${apiBase}/api/shadow-call-settings`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
       });
+      if (!res.ok) throw new Error("shadow-call save failed");
+      // Bump only after a successful write so a poll that started mid-request
+      // (still carrying the pre-mutation epoch) cannot overwrite optimistic UI.
+      shadowCallMutationEpochRef.current += 1;
+    } catch {
+      setShadowCall(previous);
     } finally {
+      shadowCallMutationInFlightRef.current = false;
       setShadowCallSaving(false);
     }
   }
@@ -620,6 +685,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
 
   const overviewSection = (
     <div className="dash-overview-stack">
+<div className="dash-overview-head">
 <div className="stat-row">
   <div className="stat">
     <div className="label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -667,28 +733,36 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   <div className="stat">
     <div className="label">{t("dash.tokens30d")}</div>
     <div className="value mono">{usage30d && usage30d.summary.requests > 0 ? formatTokens(usage30d.summary.totalTokens, locale) : "—"}</div>
-    {usage30d && usage30d.summary.requests > 0 && (
-      <div className="muted text-label" style={{ marginTop: 2 }}>
-        {t("dash.coverage").replace("{pct}", `${Math.round(usage30d.summary.coverageRatio * 100)}%`)}
-      </div>
-    )}
+    <div className="muted text-label dash-stat-coverage">
+      {usage30d && usage30d.summary.requests > 0
+        ? t("dash.coverage").replace("{pct}", `${Math.round(usage30d.summary.coverageRatio * 100)}%`)
+        : "\u00a0"}
+    </div>
   </div>
 </div>
 
-      {startupHealth && (
-        <a className="startup-health-bar" href="#dashboard">
-          <span className={`dot ${startupHealth === "error" ? "dot-red" : startupHealth === "at-risk" ? "dot-amber" : "dot-green"}`} aria-hidden="true" />
-          <span className="startup-health-bar__summary">
-            {t(startupHealth === "error"
-              ? "startup.error"
-              : startupHealth === "at-risk"
-                ? "startup.summary.atRisk"
-                : startupHealth === "protected"
-                  ? "startup.summary.protected"
-                  : "startup.summary.native")}
-          </span>
-        </a>
-      )}
+      <div className="startup-health-slot" aria-live="polite">
+        {startupHealth ? (
+          <a className="startup-health-bar" href="#startup">
+            <span className={`dot ${startupHealth === "error" ? "dot-red" : startupHealth === "at-risk" ? "dot-amber" : "dot-green"}`} aria-hidden="true" />
+            <span className="startup-health-bar__summary">
+              {t(startupHealth === "error"
+                ? "startup.error"
+                : startupHealth === "at-risk"
+                  ? "startup.summary.atRisk"
+                  : startupHealth === "protected"
+                    ? "startup.summary.protected"
+                    : "startup.summary.native")}
+            </span>
+          </a>
+        ) : (
+          <div className="startup-health-bar startup-health-bar--pending" aria-hidden="true">
+            <span className="dot dot-amber" />
+            <span className="startup-health-bar__summary">&nbsp;</span>
+          </div>
+        )}
+      </div>
+</div>
 
 {projectConfigWarnings.length > 0 && (
   <div className="notice notice-err maintenance-notice" role="alert">
@@ -708,7 +782,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
   </div>
 )}
 
-{maMode !== "v1" && (
+{maModeResolved && maMode !== "v1" && (
   <div className="panel">
     <div className="injection-head">
       <span className="injection-label" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -843,10 +917,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     {injectionModel && <span className="badge badge-green text-micro">{t("dash.injectionActive")}</span>}
   </div>
   <div className="muted text-control" style={{ marginTop: 6 }}>{t("dash.injectionHint")}</div>
-</div>
-
-<div className="panel" style={{ marginBottom: 24 }}>
-  <div className="spread setting-row">
+  <div className="spread dash-subagent-guidance-row">
     <div className="setting-copy" style={{ flex: 1 }}>
       <div className="font-semibold">{t("dash.multiAgentGuidance")}</div>
       <div className="muted setting-hint">{t("dash.multiAgentGuidanceHint")}</div>
@@ -951,40 +1022,32 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
 </div>
 
 <div className="dash-sidecar-grid">
-<div className="panel">
-  <div className="spread" style={{ alignItems: "flex-start" }}>
-    <div className="setting-copy" style={{ flex: 1 }}>
-      <div className="font-semibold">{t("dash.webSearchSidecar")}</div>
-      <div className="muted setting-hint">{t("dash.webSearchSidecarHint")}</div>
-    </div>
-    <div className="setting-controls">
-      <Select
-        value={sidecar?.webSearch.model ?? "gpt-5.6-luna"}
-        options={sidecarModels}
-        onChange={model => { void saveSidecar({ webSearch: { model, backend: sidecarBackendForModel(models, model) } }); }}
-        disabled={!sidecar || sidecarSaving}
-        label={t("dash.sidecarModel")}
-      />
-    </div>
+<div className="panel dash-sidecar-card">
+  <div className="dash-sidecar-card__row">
+    <div className="font-semibold">{t("dash.webSearchSidecar")}</div>
+    <Select
+      value={sidecar?.webSearch.model ?? "gpt-5.6-luna"}
+      options={sidecarModels}
+      onChange={model => { void saveSidecar({ webSearch: { model, backend: sidecarBackendForModel(models, model) } }); }}
+      disabled={!sidecar || sidecarSaving}
+      label={t("dash.sidecarModel")}
+    />
   </div>
+  <div className="muted setting-hint">{t("dash.webSearchSidecarHint")}</div>
 </div>
 
-<div className="panel">
-  <div className="spread" style={{ alignItems: "flex-start" }}>
-    <div className="setting-copy" style={{ flex: 1 }}>
-      <div className="font-semibold">{t("dash.visionSidecar")}</div>
-      <div className="muted setting-hint">{t("dash.visionSidecarHint")}</div>
-    </div>
-    <div className="setting-controls">
-      <Select
-        value={sidecar?.vision.model ?? "gpt-5.6-luna"}
-        options={sidecarModels}
-        onChange={model => { void saveSidecar({ vision: { model, backend: sidecarBackendForModel(models, model) } }); }}
-        disabled={!sidecar || sidecarSaving}
-        label={t("dash.sidecarModel")}
-      />
-    </div>
+<div className="panel dash-sidecar-card">
+  <div className="dash-sidecar-card__row">
+    <div className="font-semibold">{t("dash.visionSidecar")}</div>
+    <Select
+      value={sidecar?.vision.model ?? "gpt-5.6-luna"}
+      options={sidecarModels}
+      onChange={model => { void saveSidecar({ vision: { model, backend: sidecarBackendForModel(models, model) } }); }}
+      disabled={!sidecar || sidecarSaving}
+      label={t("dash.sidecarModel")}
+    />
   </div>
+  <div className="muted setting-hint">{t("dash.visionSidecarHint")}</div>
 </div>
 </div>
 
@@ -1021,7 +1084,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       <Select
         value={shadowCall?.model ?? ""}
         options={[{ value: "", label: "—" }, ...models.map(m => ({ value: m.id, label: `${m.provider}/${m.id}` }))]}
-        onChange={v => { setShadowCall(c => c ? { ...c, model: v } : c); saveShadowCall({ model: v }); }}
+        onChange={v => { void saveShadowCall({ model: v }); }}
         disabled={!shadowCall || shadowCallSaving || !shadowCall?.enabled}
         label={t("dash.shadowCallModel")}
         align="right"
@@ -1143,6 +1206,8 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
           onChange={v => changeUpdateChannel(v as UpdateChannel)}
           disabled={updateLoading}
           label={t("dash.updateChannel")}
+          // Native <dialog showModal()> top-layer paints above body portals.
+          portal={false}
         />
       </div>
       {updateLoading && <EmptyState className="update-empty" icon={<span className="spin" />} title={t("dash.updateChecking")} />}

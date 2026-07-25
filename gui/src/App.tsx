@@ -380,6 +380,7 @@ export default function App() {
               onChange={v => setLocale(v as Locale)}
               label={t("lang.label")}
               placement="right"
+              portal={false}
               style={{ flex: 1, minWidth: 0, width: "100%" }}
             />
           </div>

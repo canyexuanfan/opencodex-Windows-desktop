@@ -512,6 +512,36 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .startup-health-bar:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
 .startup-health-bar__summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+.startup-health-slot {
+  min-height: var(--control-lg);
+}
+
+.startup-health-bar--pending {
+  pointer-events: none;
+  color: var(--faint);
+}
+
+.dash-stat-coverage {
+  margin-top: 2px;
+  min-height: 1.25em;
+  line-height: 1.25;
+}
+
+.dash-overview-head {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 0;
+}
+
+.dash-overview-head .stat-row {
+  margin-bottom: 0;
+}
+
+.dash-overview-head .startup-health-bar,
+.dash-overview-head .startup-health-bar--pending {
+  margin: var(--space-4) 0 0;
+}
+
 /* ---- dashboard model grid (grouped by provider) ---- */
 .model-group-head { display: flex; align-items: baseline; gap: 8px; margin: 0 0 8px; font-size: var(--text-control); font-weight: var(--weight-semibold); color: var(--text); }
 .model-group-head .count { font-family: var(--font-code); font-weight: var(--weight-medium); color: var(--faint); font-size: var(--text-label); }
@@ -613,12 +643,16 @@ select.input { appearance: none; }
   border: 1px solid var(--border); border-radius: var(--radius);
   padding: 4px; box-shadow: 0 8px 32px rgb(0 0 0 / 0.16);
 }
-.select-dropdown-portal { position: fixed; }
-.select-dropdown-portal { z-index: 60; }
+.select-dropdown-portal {
+  /* Position (top/bottom/left/right/maxHeight) comes from computeSelectMenuStyle. */
+  position: fixed;
+  top: auto;
+  left: auto;
+  right: auto;
+  bottom: auto;
+}
 .select-dropdown-right { left: auto !important; right: 0; }
 .select-dropdown-beside { top: 0; left: calc(100% + 6px); right: auto; min-width: 10rem; }
-/* Flips above the trigger when there is no room below (set via JS). */
-.select-dropdown-up { top: auto; bottom: calc(100% + 4px); }
 .select-option {
   display: block; width: 100%; text-align: left;
   padding: 7px 12px; border: none; border-radius: var(--radius-sm);
@@ -700,20 +734,18 @@ select.input { appearance: none; }
   .sidebar { background: var(--rail); }
   .lang-toggle .select-dropdown { background: var(--rail); }
   .modal-card { background: var(--surface); }
-  .modal-overlay { background: light-dark(rgba(17, 19, 28, 0.78), rgba(0, 0, 0, 0.82)); }
 }
 @media (prefers-reduced-transparency: reduce) {
   body::before { display: none; }
   .sidebar { background: var(--rail); backdrop-filter: none; -webkit-backdrop-filter: none; }
   .lang-toggle .select-dropdown { background: var(--rail); backdrop-filter: none; -webkit-backdrop-filter: none; }
   .modal-card { background: var(--surface); backdrop-filter: none; -webkit-backdrop-filter: none; }
-  .modal-overlay { background: light-dark(rgba(17, 19, 28, 0.78), rgba(0, 0, 0, 0.82)); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .modal-overlay { backdrop-filter: none; -webkit-backdrop-filter: none; }
 }
 
 /* ---- modal ---- */
-/* Liquid-glass modal: frosted veil — light tint so the 40px blur reads as
-   glass, while the blur itself keeps background content unreadable */
-.modal-overlay { position: fixed; inset: 0; background: light-dark(rgba(17, 19, 28, 0.40), rgba(0, 0, 0, 0.50)); backdrop-filter: blur(40px) saturate(1.3); -webkit-backdrop-filter: blur(40px) saturate(1.3); display: flex; align-items: flex-start; justify-content: center; padding: 8vh 16px; z-index: var(--z-modal); }
+/* Liquid-glass modal: heavy tint + blur so background content is unreadable */
+.modal-overlay { position: fixed; inset: 0; background: light-dark(rgba(17, 19, 28, 0.78), rgba(0, 0, 0, 0.82)); backdrop-filter: blur(40px) saturate(1.2); -webkit-backdrop-filter: blur(40px) saturate(1.2); display: flex; align-items: flex-start; justify-content: center; padding: 8vh 16px; z-index: var(--z-modal); }
 /* Native <dialog>.showModal() UA styles (solid border + ::backdrop) stack on top of
    .modal-overlay and produce a white frame + double dim. Reset when the dialog IS the overlay. */
 dialog.modal-overlay {
@@ -1130,6 +1162,13 @@ button.prov-account-row.active { cursor: default; }
 /* ── Setting row (label left, control right) ── */
 .setting-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; gap: 16px; }
 .setting-row + .setting-row { border-top: 1px solid var(--border-soft); }
+.dash-subagent-guidance-row {
+  align-items: center;
+  gap: 16px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
 .setting-label { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .setting-label .title { font-size: var(--text-body); font-weight: var(--weight-semibold); color: var(--text); }
 .setting-label .desc { font-size: var(--text-label); color: var(--muted); line-height: var(--leading-body); }

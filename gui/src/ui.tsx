@@ -25,7 +25,7 @@ export function Notice({ tone, children }: { tone: "ok" | "err"; children: React
 
 export interface SelectOption { value: string; label: React.ReactNode }
 
-export function Select({ value, options, onChange, disabled, label, style, align, placement, dropdownStyle, portal = false }: {
+export function Select({ value, options, onChange, disabled, label, style, align, placement, dropdownStyle, portal = true }: {
   value: string;
   options: SelectOption[];
   onChange: (value: string) => void;
@@ -35,6 +35,7 @@ export function Select({ value, options, onChange, disabled, label, style, align
   align?: "left" | "right";
   placement?: "below" | "right";
   dropdownStyle?: CSSProperties;
+  /** When true (default), menu is portaled and flips above the trigger if it would leave the viewport. */
   portal?: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -98,7 +99,7 @@ export function Select({ value, options, onChange, disabled, label, style, align
   const dropdown = open ? (
     <div
       ref={menuRef}
-      className={`select-dropdown${portal ? " select-dropdown-portal" : ""}${align === "right" ? " select-dropdown-right" : ""}${placement === "right" ? " select-dropdown-beside" : ""}`}
+      className={`select-dropdown${portal ? " select-dropdown-portal" : ""}${!portal && align === "right" ? " select-dropdown-right" : ""}${!portal && placement === "right" ? " select-dropdown-beside" : ""}`}
       role="listbox"
       aria-label={label}
       style={portal ? { ...menuStyle, zIndex: 60, ...dropdownStyle } : dropdownStyle}

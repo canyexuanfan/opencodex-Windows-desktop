@@ -113,6 +113,54 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-4);
+  align-items: start;
+}
+
+/* Title + select on one row; hint gets the full card width underneath so
+   it stays a stable 2-line block (no clamp / no cutoff when the select grows). */
+.dash-sidecar-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dash-sidecar-card__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.dash-sidecar-card__row .font-semibold {
+  min-width: 0;
+}
+
+.dash-sidecar-card__row .custom-select {
+  /* Fixed width so both sidecar triggers stay equal from first paint —
+     model labels like anthropic/claude-… must not grow the card later. */
+  flex: 0 0 14rem;
+  width: 14rem;
+  max-width: 14rem;
+  min-width: 0;
+}
+
+.dash-sidecar-card__row .select-trigger {
+  width: 100%;
+  max-width: 100%;
+  justify-content: space-between;
+}
+
+.dash-sidecar-card__row .select-trigger > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.dash-sidecar-card .setting-hint {
+  margin-top: 0;
 }
 
 /* Available models: search + per-provider accordion with model chips */
