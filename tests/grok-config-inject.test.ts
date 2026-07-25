@@ -290,4 +290,64 @@ describe("Grok config injection", () => {
       expect(readFileSync(configPath(), "utf8")).toBe(original);
     });
   });
+
+  describe("non-loopback binds refuse auto-registration", () => {
+    const configPath = () => join(grokHome, "config.toml");
+
+    // A wildcard bind is NOT loopback: it exposes the proxy on every interface, so the data
+    // plane demands the admission token that a regenerated block cannot safely carry.
+    for (const hostname of ["0.0.0.0", "::", "[::]", "192.168.1.10", "proxy.lan"]) {
+      test(`skips injection when bound to ${hostname}`, () => {
+        const result = injectGrokConfig(10100, [{ id: "gpt-5.6-sol" }], { grokHome, hostname });
+
+        expect(result).toMatchObject({ ok: true, changed: false, skippedReason: "non-loopback" });
+        expect(existsSync(configPath())).toBe(false);
+        expect(result.message).toContain("admission token");
+      });
+    }
+
+    for (const hostname of [undefined, "", "127.0.0.1", "localhost", "::1", "[::1]"]) {
+      test(`still registers when bound to ${hostname === undefined ? "(unset)" : hostname || "(empty)"}`, () => {
+        const result = injectGrokConfig(
+          10100,
+          [{ id: "gpt-5.6-sol" }],
+          hostname === undefined ? { grokHome } : { grokHome, hostname },
+        );
+
+        expect(result).toMatchObject({ ok: true, changed: true });
+        expect(readFileSync(configPath(), "utf8")).toContain("[model.ocx-gpt-5-6-sol]");
+      });
+    }
+
+    test("never emits env_key, which would open grok's session-token fallthrough", () => {
+      // With no `model_provider` to fail closed, an unresolved env_key makes grok fall through
+      // to its xAI session bearer and send it to whatever base_url we wrote.
+      injectGrokConfig(10100, [{ id: "gpt-5.6-sol" }], { grokHome, hostname: "127.0.0.1" });
+      expect(readFileSync(configPath(), "utf8")).not.toContain("env_key");
+    });
+
+    test("removes a stale loopback block when the bind moves to non-loopback", () => {
+      const userContent = 'theme = "dark"\n';
+      writeFileSync(configPath(), userContent, "utf8");
+      injectGrokConfig(10100, [{ id: "gpt-5.6-sol" }], { grokHome, hostname: "127.0.0.1" });
+      expect(readFileSync(configPath(), "utf8")).toContain(BEGIN_MARKER);
+
+      const result = injectGrokConfig(10100, [{ id: "gpt-5.6-sol" }], { grokHome, hostname: "0.0.0.0" });
+
+      expect(result).toMatchObject({ ok: true, changed: true, skippedReason: "non-loopback" });
+      expect(readFileSync(configPath(), "utf8")).toBe(userContent);
+    });
+
+    test("leaves a user-managed api_key untouched across repeated syncs", () => {
+      // The exact scenario the maintainer reproduced as REAL_TOKEN_PRESERVED=false.
+      const userContent = '[model.mine]\nmodel = "gpt-5.6-sol"\nbase_url = "http://192.168.1.10:10100/v1"\napi_key = "real-admission-token"\n';
+      writeFileSync(configPath(), userContent, "utf8");
+
+      for (let i = 0; i < 3; i += 1) {
+        injectGrokConfig(10100, [{ id: "gpt-5.6-sol" }], { grokHome, hostname: "192.168.1.10" });
+      }
+
+      expect(readFileSync(configPath(), "utf8")).toBe(userContent);
+    });
+  });
 });

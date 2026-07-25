@@ -2,7 +2,7 @@ import { constants, copyFileSync, existsSync, readFileSync, statSync } from "nod
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { atomicWriteFile } from "../config";
-import { applyEol, dominantEol, providerBaseHost } from "../codex/inject";
+import { applyEol, dominantEol, isLoopbackHostname, providerBaseHost } from "../codex/inject";
 
 export interface GrokInjectModel {
   id: string;
@@ -14,7 +14,7 @@ export interface GrokInjectResult {
   ok: boolean;
   changed: boolean;
   message: string;
-  skippedReason?: "no-grok-home" | "orphaned-marker";
+  skippedReason?: "no-grok-home" | "orphaned-marker" | "non-loopback";
 }
 
 const BEGIN_MARKER = "# >>> opencodex managed block — do not edit (removed by `ocx stop`) >>>";
@@ -173,6 +173,30 @@ export function injectGrokConfig(
       changed: false,
       message: `Grok home not found at ${grokHome}; config injection skipped.`,
       skippedReason: "no-grok-home",
+    };
+  }
+
+  // Non-loopback binds require the real admission token (src/server/auth-cors.ts), and there is
+  // no safe way for a REGENERATED block to carry it: a literal token would write the user's
+  // secret into their own file and overwrite it on every start/ensure/restart, while omitting
+  // api_key in favour of env_key opens grok's credential fallthrough — with no `model_provider`
+  // to fail closed, an unresolved env_key makes grok send its xAI session bearer to our
+  // plaintext LAN endpoint (upstream config.rs resolve_credentials). So we do not auto-register
+  // at all here; the user configures models manually, outside our fence, where nothing we do
+  // can clobber their credential.
+  if (!isLoopbackHostname(opts.hostname)) {
+    const removed = stripGrokConfig({ ...(opts.grokHome !== undefined ? { grokHome: opts.grokHome } : {}) });
+    const cleanup = removed.changed
+      ? " Removed the previously generated block, which pointed at a loopback address."
+      : "";
+    return {
+      ok: true, // a deliberate policy skip, not a failure — it must never block startup
+      changed: removed.changed,
+      skippedReason: "non-loopback",
+      message: `Grok auto-registration skipped: opencodex is bound to the non-loopback host `
+        + `"${opts.hostname}", where requests need your admission token. A managed block would `
+        + `either store that secret in ~/.grok/config.toml or overwrite it on the next start, so `
+        + `add the models yourself OUTSIDE the opencodex markers (see the Grok Build guide).${cleanup}`,
     };
   }
 

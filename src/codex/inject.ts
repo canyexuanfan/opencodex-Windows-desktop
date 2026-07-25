@@ -64,7 +64,13 @@ export interface InjectCodexOptions {
  * whatever `[table]` happened to be open last (e.g. `[plugins."chrome@openai-bundled"]`), so Codex
  * never saw a global model_provider and silently fell back to the `openai` (ChatGPT) provider.
  */
-function isLoopbackHostname(hostname: string | undefined): boolean {
+/**
+ * True only for hostnames that bind loopback ONLY. Wildcard binds ("0.0.0.0", "::") are NOT
+ * loopback: they expose the proxy on every interface and therefore require the admission token.
+ * Do not use `providerBaseHost` for this decision — it folds wildcards to 127.0.0.1 because it
+ * answers "what address do I dial", which is a different question from "is this exposed".
+ */
+export function isLoopbackHostname(hostname: string | undefined): boolean {
   const normalized = (hostname ?? "127.0.0.1").trim().toLowerCase();
   return normalized === "" || normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
 }

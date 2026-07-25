@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { injectGrokConfig } from "../src/grok/inject";
@@ -39,16 +39,26 @@ describe("syncGrokConfig", () => {
     }
   });
 
-  test("hostname override reaches the generated base_url (ensure live branch)", async () => {
+  test("the observed bind hostname reaches injection (ensure live branch)", async () => {
     const { root, grokHome } = tempGrokHome();
     try {
-      await syncGrokConfig(10100, baseConfig, { grokHome, hostname: "0.0.0.0" }, {
+      // ensure's live branch passes live.hostname — the host the proxy ACTUALLY bound, which
+      // can differ from a drifted config.hostname. A wildcard bind exposes every interface, so
+      // injection must refuse rather than write a block that cannot authenticate.
+      const wildcard = await syncGrokConfig(10100, baseConfig, { grokHome, hostname: "0.0.0.0" }, {
         fetchAllModels: async () => [],
         injectGrokConfig,
       });
-      const content = readFileSync(join(grokHome, "config.toml"), "utf8");
-      // providerBaseHost maps 0.0.0.0 to a loopback the client can dial.
-      expect(content).toContain('base_url = "http://127.0.0.1:10100/v1"');
+      expect(wildcard).toMatchObject({ ok: true, changed: false, skippedReason: "non-loopback" });
+      expect(existsSync(join(grokHome, "config.toml"))).toBe(false);
+
+      const loopback = await syncGrokConfig(10100, baseConfig, { grokHome, hostname: "::1" }, {
+        fetchAllModels: async () => [],
+        injectGrokConfig,
+      });
+      expect(loopback).toMatchObject({ ok: true, changed: true });
+      expect(readFileSync(join(grokHome, "config.toml"), "utf8"))
+        .toContain('base_url = "http://[::1]:10100/v1"');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
