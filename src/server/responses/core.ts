@@ -80,7 +80,6 @@ import { supportedLadderFor } from "../effort-policy";
 import { isThreadSpawnRequest } from "../effort-policy";
 import {
   applySubagentModelFallback,
-  configUsesCodexAccountPool,
   maybePrimeSubagentQuota,
   recordSubagentQuotaFailureForThreadSpawn,
 } from "../../codex/subagent-model-fallback";
@@ -911,7 +910,6 @@ export async function handleResponses(
       previewAccountId,
       Date.now(),
       unreadableEncryptedAgentTask,
-      { requireNativeAccount: configUsesCodexAccountPool(config) },
     );
     if (fallback) {
       (logCtx as unknown as Record<string, unknown>).subagentModelFallbackFrom = fallback.from;

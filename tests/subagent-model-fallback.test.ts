@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -17,22 +17,43 @@ import {
   setSubagentQuotaPrimeForTests,
   subagentFallbackGuidanceText,
 } from "../src/codex/subagent-model-fallback";
+import { saveCodexAccountCredential } from "../src/codex/account-store";
+import { clearAccountNeedsReauth, markAccountNeedsReauth } from "../src/codex/account-runtime-state";
 import { clearAccountQuota, updateAccountQuota } from "../src/codex/quota";
 import type { OcxConfig } from "../src/types";
 
 const savedCodexHome = process.env.CODEX_HOME;
+const savedOpencodexHome = process.env.OPENCODEX_HOME;
+let testDir: string;
+
+function installPoolCredential(accountId: string, now = Date.now()): void {
+  saveCodexAccountCredential(accountId, {
+    accessToken: `${accountId}_token`,
+    refreshToken: `${accountId}_refresh`,
+    expiresAt: now + 24 * 60 * 60_000,
+    chatgptAccountId: `${accountId}_acc`,
+  });
+}
 
 function cfg(overrides: Partial<OcxConfig> = {}): OcxConfig {
   return {
     port: 10100,
     providers: {
+      // Omitted codexAccountMode — canonical openai defaults to pool via routeModel.
       openai: { adapter: "openai-responses" },
       "alibaba-token-plan": { adapter: "openai-chat", apiKey: "test", baseUrl: "https://example.invalid" },
       kimi: { adapter: "openai-chat", apiKey: "test", baseUrl: "https://example.invalid" },
+      xai: { adapter: "openai-chat", apiKey: "test", baseUrl: "https://api.x.ai/v1" },
     },
     defaultProvider: "openai",
-    activeCodexAccountId: "main",
+    activeCodexAccountId: "pool-a",
     autoSwitchThreshold: 80,
+    codexAccounts: [
+      { id: "main", email: "main@example.test", isMain: true },
+      { id: "pool-a", email: "a@example.test", isMain: false, chatgptAccountId: "pool_a_acc" },
+      { id: "account-a", email: "aa@example.test", isMain: false, chatgptAccountId: "aa_acc" },
+      { id: "account-b", email: "bb@example.test", isMain: false, chatgptAccountId: "bb_acc" },
+    ],
     subagentModelFallback: [
       "gpt-5.6-sol",
       "alibaba-token-plan/qwen3.8-max-preview",
@@ -49,11 +70,31 @@ function codexHomeFixture(): string {
   return dir;
 }
 
+beforeEach(() => {
+  testDir = mkdtempSync(join(tmpdir(), "ocx-subagent-fb-"));
+  process.env.OPENCODEX_HOME = testDir;
+  process.env.CODEX_HOME = testDir;
+  installPoolCredential("pool-a");
+  installPoolCredential("account-a");
+  installPoolCredential("account-b");
+  clearAccountNeedsReauth("pool-a");
+  clearAccountNeedsReauth("account-a");
+  clearAccountNeedsReauth("account-b");
+  clearAccountNeedsReauth("main");
+});
+
 afterEach(() => {
   if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
   else process.env.CODEX_HOME = savedCodexHome;
+  if (savedOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
+  else process.env.OPENCODEX_HOME = savedOpencodexHome;
   clearAccountQuota();
   resetSubagentModelFallbackStateForTests();
+  clearAccountNeedsReauth("pool-a");
+  clearAccountNeedsReauth("account-a");
+  clearAccountNeedsReauth("account-b");
+  clearAccountNeedsReauth("main");
+  rmSync(testDir, { recursive: true, force: true });
 });
 
 describe("subagent model fallback chain", () => {
@@ -72,7 +113,7 @@ describe("subagent model fallback chain", () => {
 
   test("selectAvailableSubagentModel skips quota-exhausted native models", () => {
     resetSubagentModelFallbackStateForTests();
-    updateAccountQuota("main", 95, undefined, 20);
+    updateAccountQuota("pool-a", 95, undefined, 20);
     const selected = selectAvailableSubagentModel("gpt-5.6-sol", cfg());
     expect(selected).toEqual({
       model: "alibaba-token-plan/qwen3.8-max-preview",
@@ -95,7 +136,7 @@ describe("subagent model fallback chain", () => {
 
   test("selectAvailableSubagentModel skips cached routed failures", () => {
     resetSubagentModelFallbackStateForTests();
-    updateAccountQuota("main", 95, undefined, 20);
+    updateAccountQuota("pool-a", 95, undefined, 20);
     noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max-preview", "quota exhausted", cfg());
     const selected = selectAvailableSubagentModel("gpt-5.6-sol", cfg());
     expect(selected.model).toBe("kimi/k3");
@@ -104,7 +145,7 @@ describe("subagent model fallback chain", () => {
 
   test("selectAvailableSubagentModel skips stale fallback entries that cannot route", () => {
     resetSubagentModelFallbackStateForTests();
-    updateAccountQuota("main", 95, undefined, 20);
+    updateAccountQuota("pool-a", 95, undefined, 20);
     const selected = selectAvailableSubagentModel(
       "gpt-5.6-sol",
       cfg({
@@ -158,7 +199,7 @@ describe("subagent model fallback chain", () => {
     setSubagentQuotaPrimeForTests(async () => {
       midRefreshModel = selectAvailableSubagentModel("gpt-5.6-sol", cfg()).model;
       await gate;
-      updateAccountQuota("main", 95, undefined, 20);
+      updateAccountQuota("pool-a", 95, undefined, 20);
     });
 
     const priming = maybePrimeSubagentQuota(cfg());
@@ -181,7 +222,7 @@ describe("subagent model fallback chain", () => {
     setSubagentQuotaPrimeForTests(async () => {
       calls += 1;
       await gate;
-      updateAccountQuota("main", 95, undefined, 20);
+      updateAccountQuota("pool-a", 95, undefined, 20);
     });
 
     const a = maybePrimeSubagentQuota(cfg());
@@ -210,7 +251,7 @@ describe("subagent model fallback chain", () => {
 
     setSubagentQuotaPrimeForTests(async () => {
       calls += 1;
-      updateAccountQuota("main", 95, undefined, 20);
+      updateAccountQuota("pool-a", 95, undefined, 20);
     });
     await maybePrimeSubagentQuota(cfg());
     expect(calls).toBe(2);
@@ -241,17 +282,17 @@ describe("subagent model fallback chain", () => {
     resetSubagentModelFallbackStateForTests();
     noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max-preview", "429", cfg());
     expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max-preview", cfg())).toBe(true);
-    expect(isSubagentModelUnavailable("qwen3.8-max-preview", cfg())).toBe(false);
+    expect(isSubagentModelUnavailable("kimi/k3", cfg())).toBe(false);
   });
 
   test("selectAvailableSubagentModel can require native-only fallback for encrypted tasks", () => {
     resetSubagentModelFallbackStateForTests();
-    updateAccountQuota("main", 95, undefined, 20);
+    updateAccountQuota("pool-a", 95, undefined, 20);
     const selected = selectAvailableSubagentModel(
       "gpt-5.6-sol",
       cfg(),
       [],
-      "main",
+      "pool-a",
       Date.now(),
       true,
     );
@@ -264,12 +305,12 @@ describe("subagent model fallback chain", () => {
 
   test("selectAvailableSubagentModel can stay native-only for encrypted spawns", () => {
     resetSubagentModelFallbackStateForTests();
-    updateAccountQuota("main", 95, undefined, 20);
+    updateAccountQuota("pool-a", 95, undefined, 20);
     const selected = selectAvailableSubagentModel(
       "gpt-5.6-sol",
       cfg(),
       [],
-      "main",
+      "pool-a",
       Date.now(),
       true,
     );
@@ -297,17 +338,12 @@ describe("subagent model fallback chain", () => {
       },
       subagentModelFallback: ["kimi/k3"],
     });
-    expect(isSubagentModelUnavailable("gpt-5.6-sol", config, "pool-a", Date.now(), {
-      requireNativeAccount: true,
-    })).toBe(false);
+    expect(isSubagentModelUnavailable("gpt-5.6-sol", config, "pool-a")).toBe(false);
     const selected = selectAvailableSubagentModel(
       "gpt-5.6-sol",
       config,
       [],
       "pool-a",
-      Date.now(),
-      false,
-      { requireNativeAccount: true },
     );
     expect(selected).toEqual({
       model: "gpt-5.6-sol",
@@ -371,7 +407,6 @@ describe("subagent model fallback chain", () => {
       "pool-a",
       Date.now(),
       true,
-      { requireNativeAccount: true },
     );
     expect(selected).toEqual({
       model: "openai-direct/gpt-5.5",
@@ -409,7 +444,6 @@ describe("subagent model fallback chain", () => {
       "pool-a",
       Date.now(),
       true,
-      { requireNativeAccount: true },
     );
     expect(selected).toEqual({
       model: "gpt-5.6-sol",
@@ -448,9 +482,6 @@ describe("subagent model fallback chain", () => {
       config,
       [],
       "pool-a",
-      Date.now(),
-      false,
-      { requireNativeAccount: true },
     );
     expect(selected).toEqual({
       model: "openai-direct/gpt-5.5",
@@ -459,11 +490,86 @@ describe("subagent model fallback chain", () => {
     });
   });
 
+  test("omitted openai codexAccountMode still requires a usable pool account", () => {
+    resetSubagentModelFallbackStateForTests();
+    // Default cfg omits codexAccountMode on openai (defaults to pool via routeModel).
+    const selected = selectAvailableSubagentModel(
+      "gpt-5.6-sol",
+      cfg({ subagentModelFallback: ["xai/grok-4.5"] }),
+      [],
+      null,
+    );
+    expect(selected).toEqual({
+      model: "xai/grok-4.5",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol"],
+    });
+  });
+
+  test("no usable pool account falls back to XAI", () => {
+    resetSubagentModelFallbackStateForTests();
+    const selected = selectAvailableSubagentModel(
+      "gpt-5.6-sol",
+      cfg({
+        activeCodexAccountId: undefined,
+        codexAccounts: [{ id: "main", email: "main@example.test", isMain: true }],
+        subagentModelFallback: ["xai/grok-4.5"],
+      }),
+      [],
+      null,
+    );
+    expect(selected).toEqual({
+      model: "xai/grok-4.5",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol"],
+    });
+  });
+
+  test("reauthentication-required pool account falls back to XAI", () => {
+    resetSubagentModelFallbackStateForTests();
+    markAccountNeedsReauth("pool-a");
+    const selected = selectAvailableSubagentModel(
+      "gpt-5.6-sol",
+      cfg({ subagentModelFallback: ["xai/grok-4.5"] }),
+      [],
+      "pool-a",
+    );
+    expect(selected).toEqual({
+      model: "xai/grok-4.5",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol"],
+    });
+  });
+
+  test("explicit direct mode remains unaffected by missing pool accounts", () => {
+    resetSubagentModelFallbackStateForTests();
+    const config = cfg({
+      activeCodexAccountId: undefined,
+      codexAccounts: [{ id: "main", email: "main@example.test", isMain: true }],
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "direct",
+        },
+        xai: { adapter: "openai-chat", apiKey: "test", baseUrl: "https://api.x.ai/v1" },
+      },
+      subagentModelFallback: ["xai/grok-4.5"],
+    });
+    const selected = selectAvailableSubagentModel("gpt-5.6-sol", config, [], null);
+    expect(selected).toEqual({
+      model: "gpt-5.6-sol",
+      rewritten: false,
+      skipped: [],
+    });
+  });
+
   test("noteSubagentModelFailure records failures under the configured fallback slug", () => {
     resetSubagentModelFallbackStateForTests();
-    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max-preview", "429", cfg(), "main");
-    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max-preview", cfg(), "main")).toBe(true);
-    expect(isSubagentModelUnavailable("qwen3.8-max-preview", cfg(), "main")).toBe(false);
+    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max-preview", "429", cfg(), "pool-a");
+    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max-preview", cfg(), "pool-a")).toBe(true);
+    expect(isSubagentModelUnavailable("kimi/k3", cfg(), "pool-a")).toBe(false);
   });
 
   test("readCodexAgentModelFallback parses multiline TOML arrays", () => {
@@ -543,7 +649,7 @@ describe("subagent model fallback chain", () => {
   });
 
   test("applySubagentModelFallback rewrites parsed request model", () => {
-    updateAccountQuota("main", 95);
+    updateAccountQuota("pool-a", 95);
     const parsed = {
       modelId: "gpt-5.6-sol",
       options: {},
@@ -565,7 +671,7 @@ describe("subagent model fallback chain", () => {
   });
 
   test("applySubagentModelFallback is a no-op for main turns", () => {
-    updateAccountQuota("main", 95);
+    updateAccountQuota("pool-a", 95);
     const parsed = {
       modelId: "gpt-5.6-sol",
       options: {},
@@ -584,7 +690,7 @@ describe("subagent model fallback chain", () => {
       "model_fallback = [\"alibaba-token-plan/qwen3.8-max-preview\"]",
       "",
     ].join("\n"), "utf8");
-    updateAccountQuota("main", 95);
+    updateAccountQuota("pool-a", 95);
     const parsed = {
       modelId: "gpt-5.6-sol",
       options: {},
