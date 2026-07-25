@@ -444,6 +444,9 @@ export default function ProviderWorkspaceShell({
                         tabIndex={-1}
                         aria-hidden="true"
                         onClick={event => {
+                          // Defensive only: as a sibling this never reaches the row's
+                          // handler, but it keeps the intent explicit if the wrapper ever
+                          // gains a click handler of its own.
                           event.stopPropagation();
                           onRemoveProvider(item.name);
                         }}

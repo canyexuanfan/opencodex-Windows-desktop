@@ -60,12 +60,22 @@ test("deleting routes through the existing confirmation dialog", async () => {
 
 test("the accelerator is hidden where hover does not exist", async () => {
   const css = await read("../src/styles/provider-workspace-shell.css");
+  const rule = (selector: string) => css.slice(css.indexOf(selector), css.indexOf("}", css.indexOf(selector)));
 
   expect(css).toContain(".pws-rail-row-wrap {");
   expect(css).toContain("position: relative;");
-  // Revealed on hover AND focus-within, so it is not purely pointer-gated on desktop.
+  // Revealed on hover, plus focus-within so the control does not vanish while the row
+  // itself holds focus. It is NOT keyboard-reachable (tabIndex=-1) — keyboard users take
+  // the labelled control in the detail header.
   expect(css).toContain(".pws-rail-row-wrap:hover .pws-rail-row-remove");
   expect(css).toContain(".pws-rail-row-wrap:focus-within .pws-rail-row-remove");
+  // Hidden by default, revealed on hover — assert the actual declarations, not just
+  // that the selectors exist.
+  expect(rule(".pws-rail-row-remove {")).toContain("opacity: 0;");
+  expect(rule(".pws-rail-row-remove {")).toContain("pointer-events: none;");
+  expect(rule(".pws-rail-row-wrap:hover .pws-rail-row-remove")).toContain("opacity: 1;");
+
   // Touch devices have no hover, so it would otherwise be permanently visible.
   expect(css).toContain("@media (hover: none)");
+  expect(css.slice(css.indexOf("@media (hover: none)"))).toContain("display: none;");
 });
