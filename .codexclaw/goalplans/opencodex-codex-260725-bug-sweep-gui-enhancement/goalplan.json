@@ -2,8 +2,8 @@
   "objective": "opencodex 워크트리 codex/260725-bug-sweep에서 GUI·enhancement 제외 미해결 버그(#433 quota cooldown 고착, #432 Windows 서비스 stale 오탐, #422 remote compaction v2 fatal, #404 Grok per-model adapter, #373 Cursor 재시작 context 0)를 다중 PABCD 사이클로 직접 수정하고 각 work-phase를 로컬 커밋으로 쌓는다. WP0는 docs-only 로드맵 사이클.",
   "slug": "opencodex-codex-260725-bug-sweep-gui-enhancement",
   "createdAt": "2026-07-25T08:12:13.026Z",
-  "updatedAt": "2026-07-25T10:52:31.760Z",
-  "activeWorkPhaseId": "wp3",
+  "updatedAt": "2026-07-25T11:24:06.676Z",
+  "activeWorkPhaseId": "wp4",
   "workPhases": [
     {
       "id": "wp0",
@@ -106,22 +106,22 @@
     {
       "id": "wp3",
       "title": "WP3 #422 — API-key 기반 openai-responses에서 remote compaction v2 fatal 수정",
-      "status": "in_progress",
+      "status": "done",
       "tasks": [
         {
           "id": "wp3-t1",
           "title": "030 문서 stale 체크 후 compaction 분기 경로 확정",
-          "status": "pending"
+          "status": "done"
         },
         {
           "id": "wp3-t2",
           "title": "authMode별 compaction 지원 판정 구현",
-          "status": "pending"
+          "status": "done"
         },
         {
           "id": "wp3-t3",
           "title": "회귀 테스트 추가 + typecheck/test 통과 + 커밋",
-          "status": "pending"
+          "status": "done"
         }
       ],
       "criteriaIds": [
@@ -131,7 +131,7 @@
     {
       "id": "wp4",
       "title": "WP4 #373 — Cursor 재시작 후 context usage 0 보고 수정",
-      "status": "pending",
+      "status": "in_progress",
       "tasks": [
         {
           "id": "wp4-t1",
@@ -230,8 +230,8 @@
       "id": "c-422",
       "scenario": "authMode=key인 openai-responses provider에서 remote compaction 요청이 fatal 없이 처리되거나 명확히 미지원으로 저하(degrade)된다.",
       "expectedEvidence": "신규 테스트 파일 경로 + bun test 통과 출력 tail + 커밋 SHA",
-      "capturedEvidence": "",
-      "status": "open"
+      "capturedEvidence": "커밋 e2626eb6. 신규 tests/responses-compaction-routing.test.ts 10 pass/0 fail (helper matrix, wire rewrite 검사, additional_tools 제거, input_image 재귀 치환, noncanonical forward rewrite, upstream failure, incomplete 차단, output_text.done fallback, completed snapshot fallback). 기존 responses-compaction+passthrough 46 pass 무회귀. 전체 bun run test 4109 pass (기준선 4079 대비 +30). typecheck exit 0, privacy scan 통과.",
+      "status": "met"
     },
     {
       "id": "c-373",
