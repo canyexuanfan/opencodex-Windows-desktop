@@ -657,11 +657,22 @@ select.input { appearance: none; }
   display: block; width: 100%; text-align: left;
   padding: 7px 12px; border: none; border-radius: var(--radius-sm);
   background: transparent; color: var(--text); font: inherit; font-size: var(--text-control); line-height: var(--leading-ui);
-  cursor: pointer; transition: background var(--motion-fast);
+  cursor: pointer; transition: background var(--motion-fast), box-shadow var(--motion-fast);
   white-space: nowrap;
 }
-.select-option:hover { background: var(--hover); }
+/* Pointer hover alone — softer than keyboard focus so the two cues stay distinct. */
+.select-option:hover:not(.select-option-active) { background: var(--hover); }
+/* Selected value (committed). */
 .select-option.active { background: var(--accent-soft); color: var(--accent); font-weight: var(--weight-semibold); }
+/* Keyboard / aria-activedescendant focus — visible without relying on :hover. */
+.select-option-active {
+  background: var(--hover);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.select-option.active.select-option-active {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
 
 /* ---- switch ---- */
 .switch {

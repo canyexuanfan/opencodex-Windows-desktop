@@ -292,3 +292,136 @@ async function mount(initialMode: ViewMode, initialHash: string) {
     expect(providersHashForViewMode("classic")).toBe("providers");
   });
 });
+
+describe("runtime viewMode survives storage failure", () => {
+  function installThrowingStorage() {
+    const throwing = {
+      getItem() { throw new Error("blocked"); },
+      setItem() { throw new Error("blocked"); },
+      removeItem() { throw new Error("blocked"); },
+      clear() { throw new Error("blocked"); },
+      key() { throw new Error("blocked"); },
+      get length() { throw new Error("blocked"); },
+    };
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: throwing });
+    Object.defineProperty(testWindow, "localStorage", { configurable: true, value: throwing });
+  }
+
+  async function mountThrowing(initialHash: string) {
+    installThrowingStorage();
+    if (normalizeHashPath(testWindow.location.hash) !== initialHash.replace(/^#/, "")) {
+      testWindow.location.hash = initialHash.replace(/^#/, "");
+    }
+    await Promise.resolve();
+    const { createRoot } = await import("react-dom/client");
+    const host = document.createElement("div");
+    document.body.append(host);
+    let root!: Root;
+    await act(async () => {
+      root = createRoot(host);
+      root.render(<AppRouteHarness />);
+    });
+    await act(async () => { await Promise.resolve(); });
+    return { root, host };
+  }
+
+  test("getItem failure initializes Classic without crashing", async () => {
+    const { root, host } = await mountThrowing("#dashboard");
+    expect(host.querySelector('[data-testid="mode"]')?.textContent).toBe("classic");
+    expect(host.querySelector('[data-testid="page"]')?.textContent).toBe("dashboard");
+    await act(async () => { root.unmount(); });
+  });
+
+  test("toggle Workspace while setItem throws keeps in-memory Workspace on Providers", async () => {
+    const { root, host } = await mountThrowing("#dashboard");
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="toggle"]')!.click();
+    });
+    expect(host.querySelector('[data-testid="mode"]')?.textContent).toBe("workspace");
+    // Storage still fails — readViewMode must not win over React state.
+    expect(readViewMode()).toBe("classic");
+
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="go-providers"]')!.click();
+    });
+    expect(normalizeHashPath(window.location.hash)).toBe("providers/workspace");
+    expect(host.querySelector('[data-testid="page"]')?.textContent).toBe("providers");
+    expect(host.querySelector('[data-testid="mode"]')?.textContent).toBe("workspace");
+    await act(async () => { root.unmount(); });
+  });
+
+  test("toggle Classic while storage throws updates Providers hash from React state", async () => {
+    const { root, host } = await mountThrowing("#dashboard");
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="toggle"]')!.click();
+    });
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="go-providers"]')!.click();
+    });
+    expect(normalizeHashPath(window.location.hash)).toBe("providers/workspace");
+
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="toggle"]')!.click();
+    });
+    expect(host.querySelector('[data-testid="mode"]')?.textContent).toBe("classic");
+    expect(normalizeHashPath(window.location.hash)).toBe("providers");
+    await act(async () => { root.unmount(); });
+  });
+
+  test("Back/Forward after failed persistence stay coherent with in-memory mode", async () => {
+    const { root, host } = await mountThrowing("#dashboard");
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="toggle"]')!.click();
+    });
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="go-providers"]')!.click();
+    });
+    expect(normalizeHashPath(window.location.hash)).toBe("providers/workspace");
+
+    await historyBack();
+    expect(normalizeHashPath(window.location.hash)).toBe("dashboard");
+    expect(host.querySelector('[data-testid="mode"]')?.textContent).toBe("workspace");
+
+    await historyForward();
+    expect(normalizeHashPath(window.location.hash)).toBe("providers/workspace");
+    expect(host.querySelector('[data-testid="page"]')?.textContent).toBe("providers");
+    expect(host.querySelector('[data-testid="mode"]')?.textContent).toBe("workspace");
+    await act(async () => { root.unmount(); });
+  });
+
+  test("explicit #providers/workspace deep link works while storage throws", async () => {
+    const { root, host } = await mountThrowing("#providers/workspace");
+    expect(host.querySelector('[data-testid="mode"]')?.textContent).toBe("workspace");
+    expect(normalizeHashPath(window.location.hash)).toBe("providers/workspace");
+    await act(async () => { root.unmount(); });
+  });
+
+  test("multiple toggles keep the latest React mode when storage throws", async () => {
+    const { root, host } = await mountThrowing("#dashboard");
+    for (let i = 0; i < 3; i++) {
+      await act(async () => {
+        host.querySelector<HTMLButtonElement>('[data-testid="toggle"]')!.click();
+      });
+    }
+    expect(host.querySelector('[data-testid="mode"]')?.textContent).toBe("workspace");
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="go-providers"]')!.click();
+    });
+    expect(normalizeHashPath(window.location.hash)).toBe("providers/workspace");
+    await act(async () => { root.unmount(); });
+  });
+
+  test("non-Providers hashes stay put when toggling with throwing storage", async () => {
+    const { root, host } = await mountThrowing("#models");
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="go-models"]')!.click();
+    });
+    expect(normalizeHashPath(window.location.hash)).toBe("models");
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="toggle"]')!.click();
+    });
+    expect(normalizeHashPath(window.location.hash)).toBe("models");
+    expect(host.querySelector('[data-testid="mode"]')?.textContent).toBe("workspace");
+    await act(async () => { root.unmount(); });
+  });
+});

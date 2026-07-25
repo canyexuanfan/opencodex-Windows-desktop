@@ -249,5 +249,64 @@ test("shrinking options clamps active descendant", async () => {
   expect(activeId).toBeTruthy();
   expect(document.getElementById(activeId!)).not.toBeNull();
   expect(listbox()!.querySelectorAll('[role="option"]').length).toBe(1);
+  expect(document.getElementById(activeId!)?.classList.contains("select-option-active")).toBe(true);
   await act(async () => { root.unmount(); });
+});
+
+async function assertKeyboardActiveClassMoves(portal: boolean) {
+  function Harness() {
+    const [value, setValue] = useState("a");
+    return (
+      <div>
+        <div data-testid="value">{value}</div>
+        <Select value={value} options={OPTIONS} onChange={setValue} label="Pick" portal={portal} />
+      </div>
+    );
+  }
+  const { root, host } = await mountSelect(<Harness />);
+  const trigger = () => host.querySelector<HTMLButtonElement>("button.select-trigger")!;
+  const opts = () => [...listbox()!.querySelectorAll<HTMLElement>('[role="option"]')];
+  const activeEl = () => listbox()!.querySelector<HTMLElement>(".select-option-active");
+
+  await act(async () => { key(trigger(), "ArrowDown"); });
+  expect(opts()[0]!.classList.contains("active")).toBe(true);
+  expect(opts()[0]!.classList.contains("select-option-active")).toBe(true);
+  expect(trigger().getAttribute("aria-activedescendant")).toBe(opts()[0]!.id);
+
+  await act(async () => { key(trigger(), "ArrowDown"); });
+  expect(opts()[0]!.classList.contains("select-option-active")).toBe(false);
+  expect(opts()[1]!.classList.contains("select-option-active")).toBe(true);
+  expect(opts()[0]!.classList.contains("active")).toBe(true);
+  expect(trigger().getAttribute("aria-activedescendant")).toBe(opts()[1]!.id);
+  expect(activeEl()?.textContent).toContain("Beta");
+
+  await act(async () => { key(trigger(), "Home"); });
+  expect(activeEl()?.textContent).toContain("Alpha");
+  expect(opts().filter(o => o.classList.contains("select-option-active")).length).toBe(1);
+
+  await act(async () => { key(trigger(), "End"); });
+  expect(activeEl()?.textContent).toContain("Charlie");
+  expect(trigger().getAttribute("aria-activedescendant")).toBe(opts()[2]!.id);
+
+  await act(async () => {
+    // React listens for mouseover to drive onMouseEnter in this environment.
+    opts()[1]!.dispatchEvent(new testWindow.MouseEvent("mouseover", { bubbles: true }) as unknown as MouseEvent);
+  });
+  expect(activeEl()?.textContent).toContain("Beta");
+  expect(trigger().getAttribute("aria-activedescendant")).toBe(opts()[1]!.id);
+
+  await act(async () => { activeEl()!.click(); });
+  expect(host.querySelector('[data-testid="value"]')!.textContent).toBe("b");
+  expect(listbox()).toBeNull();
+  expect(document.activeElement).toBe(trigger());
+
+  await act(async () => { root.unmount(); });
+}
+
+test("portaled Select moves select-option-active with keyboard and hover", async () => {
+  await assertKeyboardActiveClassMoves(true);
+});
+
+test("non-portal Select moves select-option-active with keyboard and hover", async () => {
+  await assertKeyboardActiveClassMoves(false);
 });

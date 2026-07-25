@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   hashBelongsToPage,
   readPageFromHash,
@@ -10,7 +10,6 @@ import {
   ensureMigratedViewMode,
   providersHashForGlobalViewChange,
   providersHashForViewMode,
-  readViewMode,
   toggleViewMode,
   writeViewMode,
   type ViewMode,
@@ -19,6 +18,7 @@ import {
 /**
  * Production App route + Classic/Workspace ownership.
  * Hash page changes push history; view-mode sync on Providers replaces the current entry.
+ * After init, React `viewMode` is authoritative for the session — storage is persistence only.
  */
 export function useAppRouteState() {
   const [page, setPageState] = useState<Page>(readPageFromHash);
@@ -35,27 +35,38 @@ export function useAppRouteState() {
     }
     return migrated;
   });
+  const viewModeRef = useRef(viewMode);
+
+  const commitViewMode = (next: ViewMode) => {
+    viewModeRef.current = next;
+    setViewMode(next);
+  };
+
+  useEffect(() => {
+    viewModeRef.current = viewMode;
+  }, [viewMode]);
 
   const applyHashAction = (rawHash: string) => {
-    const action = resolveAppHashChange(rawHash, readViewMode());
+    // Prefer in-memory mode so a storage failure cannot revert a live session toggle.
+    const action = resolveAppHashChange(rawHash, viewModeRef.current);
     if (action.replaceTo) replaceHash(action.replaceTo);
     if (action.persistViewMode) writeViewMode(action.persistViewMode);
     // Route page and view mode update in the same event — never via startTransition.
     setPageState(action.page);
-    if (action.viewMode) setViewMode(action.viewMode);
+    if (action.viewMode) commitViewMode(action.viewMode);
   };
 
   const toggleGlobalWorkspace = () => {
-    const next = toggleViewMode(viewMode);
+    const next = toggleViewMode(viewModeRef.current);
     writeViewMode(next);
-    setViewMode(next);
+    commitViewMode(next);
     // Preference change, not page navigation: replace the Providers hash in place.
     const wanted = providersHashForGlobalViewChange(window.location.hash, next, page === "providers");
     if (wanted) replaceHash(wanted);
   };
 
   const navigateToPage = (id: Page) => {
-    navigateHash(id === "providers" ? providersHashForViewMode(readViewMode()) : id);
+    navigateHash(id === "providers" ? providersHashForViewMode(viewModeRef.current) : id);
     setPageState(id);
   };
 
