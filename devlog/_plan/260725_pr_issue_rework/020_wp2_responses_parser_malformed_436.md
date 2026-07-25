@@ -435,7 +435,12 @@ const detail = nonEmptyString(b.detail);
 ...(detail ? { detail: normalizeImageDetail(detail) } : {}),
 ```
 
-#### blocker 3 (High, 가장 중요) — 빈 content가 Cursor를 fresh `resumeAction`으로 만든다
+#### [SUPERSEDED — 비규범 역사 기록, 구현하지 말 것] blocker 3 — 빈 content와 Cursor `resumeAction`
+
+> **이 절 전체는 무효다.** 아래 내용은 A-gate 3라운드에서 왜 이 방향을 포기했는지 남기는
+> 역사 기록이며, 어떤 코드도 이 절을 근거로 작성하지 않는다. `parts.length === 0` 정규화,
+> placeholder 삽입, Cursor 회귀 요구는 모두 이번 WP 범위 밖이다.
+> 살아있는 계약은 문서 최상단 '계획 재설계' 절과 canonical diff뿐이다.
 
 가짜 마커를 제거하면 malformed-only 메시지의 `content`가 `[]`가 된다. adapter별 실측 결과:
 
@@ -492,13 +497,11 @@ Cursor 메시지 유실과 `"[image]"` 허위 마커도 함께 막힌다.
 `file_url` 스키마 추가는 이 WP의 범위를 넘는 별도 기능이므로 하지 않는다. D 영수증에
 후속 이슈 후보로 기록한다.
 
-#### blocker 4 (Medium) — 통합 assertion에 실제 malformed image/file을 넣는다
+#### blocker 4 (Medium) — 통합 assertion에 실제 malformed image/file을 넣는다 [유효]
 
-문서의 raw→Google assertion은 missing `input_text`만 입력해 image/file 경로를 한 번도
-실행하지 않았다. 개정: malformed `input_image`(ref 없음)와 malformed `input_file`(ref 없음)을
-raw input에 넣고 **Google과 Cursor 두 경로**의 최종 결과를 관찰한다.
-Cursor 회귀는 malformed-only 첫 turn이 메시지를 잃지 않고 `resumeAction`으로 변질되지 않음을
-고정한다.
+원래 raw→Google assertion은 missing `input_text`만 입력해 image/file 경로를 한 번도 실행하지
+않았다. 개정: malformed `input_image`(ref 없음)와 malformed `input_file`(ref 없음)을 raw input에
+넣고 **Google wire 결과만** 관찰한다. Cursor 검증은 범위 밖이므로 요구하지 않는다.
 
 ### 우리 test delta — `tests/responses-parser-malformed-content.test.ts` MODIFY
 
@@ -548,11 +551,17 @@ PR의 assistant malformed test 근처에 `[null]` 직접 사례를 추가한다.
        .toEqual([{ type: "image", imageUrl: "data:image/png;base64,aGVsbG8=", detail: "high" }]);
    });
  
-+  test("input_file uses a non-empty file_id, filename, or inline-data marker", () => {
++  test("input_file marker follows file_id > file_data(+filename) > omit precedence", () => {
 +    expect(userContent([{ type: "input_file", file_id: "file_1" }])).toBe("[file: file_1]");
 +    // filename 단독은 파일 resource가 아니므로 생략된다 (A-gate 반영).
 +    expect(userContent([{ type: "input_file", filename: "report.pdf" }])).toEqual([]);
 +    expect(userContent([{ type: "input_file", file_data: "ZmlsZQ==" }])).toBe("[file: inline data]");
++    // filename + file_data는 공식 Base64 사용 형태다. filename을 이름으로 쓰는 true branch.
++    expect(userContent([{ type: "input_file", filename: "report.pdf", file_data: "ZmlsZQ==" }]))
++      .toBe("[file: report.pdf]");
++    // file_data 바이트는 어떤 경로에서도 content로 새지 않는다.
++    expect(JSON.stringify(userContent([{ type: "input_file", filename: "report.pdf", file_data: "ZmlsZQ==" }])))
++      .not.toContain("ZmlsZQ==");
 +    expect(userContent([{
 +      type: "input_file",
 +      file_id: "file_1",
@@ -580,17 +589,27 @@ PR의 assistant malformed test 근처에 `[null]` 직접 사례를 추가한다.
 ```diff
 @@
    test("adapters build a request from malformed input instead of throwing", async () => {
-     const parsed = parseRequest(inputOf("user", [{ type: "input_text" }]));
+-    const parsed = parseRequest(inputOf("user", [{ type: "input_text" }]));
++    // ref 없는 malformed image/file을 실제로 통과시켜 두 repair branch를 활성화한다.
++    // missing input_text만 넣으면 image/file 경로가 한 번도 실행되지 않는다 (A-gate 반영).
++    const parsed = parseRequest(inputOf("user", [
++      { type: "input_text" },
++      { type: "input_image" },
++      { type: "input_file" },
++    ]));
      const google = { adapter: "google", baseUrl: "https://generativelanguage.googleapis.com", apiKey: "k" } as unknown as OcxProviderConfig;
      const anthropic = { adapter: "anthropic", baseUrl: "https://api.anthropic.com", apiKey: "sk-x" } as unknown as OcxProviderConfig;
  
 -    await expect(createGoogleAdapter(google).buildRequest(parsed)).resolves.toBeDefined();
 +    const googleRequest = await createGoogleAdapter(google).buildRequest(parsed);
++    // WP1(#430)의 빈 parts 방어가 placeholder를 넣는다. 세 malformed block 모두 생략됐다는 뜻.
 +    expect(JSON.parse(googleRequest.body).contents).toEqual([
 +      { role: "user", parts: [{ text: "(empty)" }] },
 +    ]);
++    // 가짜 ref marker가 wire에 절대 나타나지 않는다.
 +    expect(googleRequest.body).not.toContain("[image: ?]");
 +    expect(googleRequest.body).not.toContain("[file: ?]");
++    expect(googleRequest.body).not.toContain("undefined");
      await expect(createAnthropicAdapter(anthropic).buildRequest(parsed)).resolves.toBeDefined();
    });
 ```
@@ -629,7 +648,7 @@ rg -n '\[image: \?\]|\[file: \?\]' src/responses/parser.ts tests/responses-parse
 |---|---|---|
 | ~~빈 content 정규화~~ | **SUPERSEDED — 이번 WP 범위 밖** | — |
 | ~~system 미오염~~ | **SUPERSEDED — 정규화를 하지 않으므로 해당 없음** | — |
-| ~~Cursor 회귀~~ | **SUPERSEDED — 기존 결함이며 이 PR이 만들지 않는다. 별도 이슈로 분리** | — |
+| ~~Cursor 회귀~~ | **SUPERSEDED — 범위 밖. 별도 이슈로 분리** | — |
 | file precedence | `file_id` 단독 / `file_data` 단독 / `filename + file_data` / `filename` 단독 | 각각 `[file: <id>]`, `[file: inline data]`, `[file: <filename>]`, 그리고 **생략** |
 
 통합 assertion은 malformed `input_image`(ref 없음)와 malformed `input_file`(ref 없음)을 실제
