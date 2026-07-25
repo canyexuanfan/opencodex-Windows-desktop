@@ -13,7 +13,7 @@ test("Dashboard sub-hashes are registered routes, not invalid suffixes", () => {
     expect(hashBelongsToPage(raw, "dashboard")).toBe(true);
 
     // A registered hash must survive: no passive replace back to "#dashboard".
-    const action = resolveAppHashChange(raw, "classic");
+    const action = resolveAppHashChange(raw);
     expect(action.page).toBe("dashboard");
     expect(action.replaceTo).toBeNull();
   }
@@ -22,13 +22,13 @@ test("Dashboard sub-hashes are registered routes, not invalid suffixes", () => {
 test("bare #dashboard stays the Overview route", () => {
   expect(readPageFromHash("dashboard")).toBe("dashboard");
   expect(hashBelongsToPage("dashboard", "dashboard")).toBe(true);
-  expect(resolveAppHashChange("dashboard", "classic").replaceTo).toBeNull();
+  expect(resolveAppHashChange("dashboard").replaceTo).toBeNull();
   // Overview must not be spelled with a suffix.
   expect(DASHBOARD_TAB_HASHES).not.toContain("dashboard/overview");
 });
 
 test("unknown Dashboard suffixes are still normalized away", () => {
-  const action = resolveAppHashChange("dashboard/nope", "classic");
+  const action = resolveAppHashChange("dashboard/nope");
   expect(action.page).toBe("dashboard");
   expect(action.replaceTo).toBe("dashboard");
 });

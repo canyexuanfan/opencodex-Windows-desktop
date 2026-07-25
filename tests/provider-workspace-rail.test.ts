@@ -72,13 +72,20 @@ describe("provider rail source contract", () => {
     expect((css.match(/\.providers-workspace-rail-row\s*\{/g) ?? []).length).toBe(1);
   });
 
-  test("preserves only the exact workspace subroute on page synchronization", async () => {
-    const { hashBelongsToPage } = await import("../gui/src/app-routing");
-    // Exact subroute only — unknown Providers suffixes must not count as belonging.
-    expect(hashBelongsToPage("providers/workspace", "providers")).toBe(true);
+  test("redirects the legacy workspace subroute and normalizes unknown suffixes", async () => {
+    const { hashBelongsToPage, resolveAppHashChange } = await import("../gui/src/app-routing");
+    // WP5 (Q1): the dual-layout hash is no longer a Providers route. It must not belong,
+    // and it must be passively replaced so an old bookmark still lands somewhere real.
+    expect(hashBelongsToPage("providers/workspace", "providers")).toBe(false);
     expect(hashBelongsToPage("providers", "providers")).toBe(true);
     expect(hashBelongsToPage("providers/other", "providers")).toBe(false);
     expect(hashBelongsToPage("providers/workspace/extra", "providers")).toBe(false);
+
+    const legacy = resolveAppHashChange("providers/workspace");
+    expect(legacy.page).toBe("providers");
+    expect(legacy.replaceTo).toBe("providers");
+    // Unknown suffixes collapse to the bare page rather than 404.
+    expect(resolveAppHashChange("providers/other").replaceTo).toBe("providers");
 
     const routing = await Bun.file("gui/src/app-routing.ts").text();
     const routeState = await Bun.file("gui/src/use-app-route-state.ts").text();

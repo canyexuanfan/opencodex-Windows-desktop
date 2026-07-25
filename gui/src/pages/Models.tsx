@@ -1224,7 +1224,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
       {modalsBlock}
     </div>
   );
-  
+
 }
 
 function discoveryFailureReason(

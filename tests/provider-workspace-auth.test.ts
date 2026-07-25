@@ -131,28 +131,25 @@ describe("workspace account integration seam", () => {
     expect(page).toContain("activeAccountNeedsReauth={activeAccountNeedsReauth}");
   });
 
-  test("wires OAuth re-authenticate handlers in classic and workspace", async () => {
+  test("wires OAuth re-authenticate handlers into the workspace detail", async () => {
     const [page0, panel, details, overview] = await Promise.all([
       Bun.file("gui/src/pages/Providers.tsx").text(),
       Bun.file("gui/src/components/provider-workspace/ProviderAuthPanel.tsx").text(),
       Bun.file("gui/src/components/provider-workspace/ProviderDetails.tsx").text(),
       Bun.file("gui/src/components/provider-workspace/ProviderOverview.tsx").text(),
     ]);
-    const page = page0 + (await Bun.file("gui/src/components/providers/ProviderCardList.tsx").text());
+    const page = page0;
     expect(page).toContain("onReauth:");
     expect(page).toContain("onCancelLogin: cancelLoginOAuth");
     expect(page).toContain("loginOAuth(provider, true, accountId)");
     expect(page).toContain("accountId: reauthTargetId, reauth: true");
     expect(page).toContain("prov.reauthIdentityMismatch");
-    expect(page).toContain("loginOAuth(name, true, account.id)");
     expect(page).toContain("oauthLoginGenerationRef");
     expect(page).toContain("/api/oauth/login/cancel");
     expect(page).toContain("deviceCode");
     expect(panel).toContain("pwi-device-code");
     // Classic provider-level CTA: OAuth uses loginOAuth; openai deep-links to Codex Auth.
-    expect(page).toContain('activeAccountNeedsReauth[name] && prov.authMode === "oauth"');
-    expect(page).toContain('activeAccountNeedsReauth[name] && name === "openai"');
-    expect(page).toContain('href="#codex-auth"');
+    expect(page).toContain('href: "#codex-auth"');
     expect(panel).toContain("onReauth");
     expect(panel).toContain("pws.reauthenticate");
     expect(panel).toContain("onCancelLogin");
@@ -200,11 +197,4 @@ describe("workspace account integration seam", () => {
     expect(panel).toContain("controller={codexController}");
   });
 
-  test("keeps classic stale-account reauth and remove outside disabled row shell", async () => {
-    const page = (await Bun.file("gui/src/pages/Providers.tsx").text()) + (await Bun.file("gui/src/components/providers/ProviderCardList.tsx").text());
-    expect(page).toContain('className="prov-account-row-main"');
-    expect(page).toContain('className="prov-account-reauth"');
-    expect(page).toContain("disabled={busy === name}");
-    expect(page).toMatch(/<div[\s\S]*?className=\{`prov-account-row\$\{account\.active/);
-  });
 });

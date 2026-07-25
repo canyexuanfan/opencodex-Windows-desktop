@@ -509,5 +509,5 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
       </div>
     </div>
   );
-  
+
 }

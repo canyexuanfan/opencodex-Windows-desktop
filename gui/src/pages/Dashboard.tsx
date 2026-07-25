@@ -1459,5 +1459,5 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       {updateDialog}
     </div>
   );
-  
+
 }

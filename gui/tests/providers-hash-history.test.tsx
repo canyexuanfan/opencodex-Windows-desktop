@@ -85,42 +85,109 @@ describe("route resolution", () => {
   });
 });
 
-describe("stale layout-preference cleanup", () => {
-  test("the route hook clears every key the removed preference wrote", async () => {
-    const src = await Bun.file(new URL("../src/use-app-route-state.ts", import.meta.url)).text();
 
-    // One-shot cleanup: there is a single layout now, so these would otherwise sit in
-    // every user's storage forever.
-    expect(src).toContain("clearStaleViewKeys");
-    expect(src).toContain("localStorage.removeItem");
-    for (const key of [
-      "ocx-global-view",
-      "ocx-view",
-      "ocx-providers-view",
-      "ocx-subagents-view",
-      "ocx-storage-view",
-      "ocx-codexauth-view",
-      "ocx-apikeys-view",
-      "ocx-claudecode-view",
-      "ocx-usage-view",
-      "ocx-logs-view",
-      "ocx-models-view",
-      "ocx-dashboard-view",
-    ]) {
-      expect(src).toContain(key);
+describe("useAppRouteState (real hook)", () => {
+  const globals = ["document", "window", "navigator", "localStorage", "IS_REACT_ACT_ENVIRONMENT"] as const;
+  let previous: Record<(typeof globals)[number], unknown>;
+  let win: Window;
+  let host: HTMLElement;
+  let root: import("react-dom/client").Root | null = null;
+
+  async function mountAt(hash: string, storage?: Storage) {
+    win = new Window({ url: `http://localhost/${hash}` });
+    Object.defineProperties(globalThis, {
+      document: { configurable: true, value: win.document },
+      window: { configurable: true, value: win },
+      navigator: { configurable: true, value: win.navigator },
+      localStorage: { configurable: true, value: storage ?? win.localStorage },
+    });
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    host = win.document.createElement("div") as unknown as HTMLElement;
+    win.document.body.appendChild(host as never);
+
+    // Lazy imports: a static react-dom/client import binds to the document that existed
+    // when the module graph loaded and corrupts sibling suites in the same process.
+    const [{ act }, { createRoot }, { useAppRouteState }] = await Promise.all([
+      import("react"),
+      import("react-dom/client"),
+      import("../src/use-app-route-state"),
+    ]);
+    const seen: { current: ReturnType<typeof useAppRouteState> | null } = { current: null };
+    function Probe() {
+      seen.current = useAppRouteState();
+      return null;
+    }
+    await act(async () => {
+      root = createRoot(host);
+      root.render(<Probe />);
+    });
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    return { seen, act };
+  }
+
+  beforeEach(() => {
+    previous = Object.fromEntries(globals.map((k) => [k, Reflect.get(globalThis, k)])) as typeof previous;
+  });
+
+  afterEach(async () => {
+    if (root) {
+      const current = root;
+      const { act } = await import("react");
+      await act(async () => { current.unmount(); });
+      root = null;
+    }
+    for (const key of globals) {
+      Object.defineProperty(globalThis, key, { configurable: true, value: previous[key] });
     }
   });
 
-  test("the layout toggle and its i18n keys are gone", async () => {
-    const app = await Bun.file(new URL("../src/App.tsx", import.meta.url)).text();
-    expect(app).not.toContain("toggleGlobalWorkspace");
-    expect(app).not.toContain("viewMode");
+  test("the legacy workspace hash is REPLACED, so Back is not trapped", async () => {
+    const { seen } = await mountAt("#providers/workspace");
+    const lengthAfter = win.history.length;
+    expect(normalizeHashPath(win.location.hash)).toBe("providers");
+    expect(seen.current!.page).toBe("providers");
+    // replaceHash, not navigateHash: the rewrite must not add a history entry.
+    expect(lengthAfter).toBe(1);
+  });
 
-    for (const locale of ["en", "ko", "ja", "de", "ru", "zh"]) {
-      const src = await Bun.file(new URL(`../src/i18n/${locale}.ts`, import.meta.url)).text();
-      expect(src).not.toContain("pws.classicToggle");
-      expect(src).not.toContain("pws.workspaceToggle");
-      expect(src).not.toContain("app.viewMode");
-    }
+  test("an unknown suffix is normalised through the hook", async () => {
+    const { seen } = await mountAt("#models/nope");
+    expect(normalizeHashPath(win.location.hash)).toBe("models");
+    expect(seen.current!.page).toBe("models");
+  });
+
+  test("navigateToPage pushes a history entry", async () => {
+    const { seen, act } = await mountAt("#dashboard");
+    const before = win.history.length;
+    await act(async () => { seen.current!.navigateToPage("models"); });
+    expect(normalizeHashPath(win.location.hash)).toBe("models");
+    expect(win.history.length).toBeGreaterThan(before);
+  });
+
+  test("stale layout-preference keys are cleared on mount", async () => {
+    const seed = new Window({ url: "http://localhost/#dashboard" });
+    seed.localStorage.setItem("ocx-global-view", "workspace");
+    seed.localStorage.setItem("ocx-providers-view", "classic");
+    seed.localStorage.setItem("keep-me", "yes");
+
+    await mountAt("#dashboard", seed.localStorage as unknown as Storage);
+
+    expect(seed.localStorage.getItem("ocx-global-view")).toBeNull();
+    expect(seed.localStorage.getItem("ocx-providers-view")).toBeNull();
+    // Unrelated keys must survive the cleanup.
+    expect(seed.localStorage.getItem("keep-me")).toBe("yes");
+  });
+
+  test("a throwing storage does not break routing", async () => {
+    const throwing = {
+      getItem: () => { throw new Error("blocked"); },
+      setItem: () => { throw new Error("blocked"); },
+      removeItem: () => { throw new Error("blocked"); },
+    } as unknown as Storage;
+
+    const { seen } = await mountAt("#providers/workspace", throwing);
+    // Cleanup failure is swallowed; the redirect still happens.
+    expect(normalizeHashPath(win.location.hash)).toBe("providers");
+    expect(seen.current!.page).toBe("providers");
   });
 });
