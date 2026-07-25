@@ -84,15 +84,38 @@ dashboard | codex-auth providers models subagents | logs usage storage | api cla
 `nav-entry` 마크업은 현재 평면 리스트다. 그룹 구분선을 넣을지, 순서만 바꿀지는
 A(감사) 단계에서 확정한다. 순서만 바꾸는 쪽이 CSS 변경 없이 끝난다.
 
-### WP3 — Codex Auth 클릭 시 즉시 multi-auth
+### WP3 — Provider Overview 탭에서 계정 조작 직접 수행
 
-`pages/CodexAuth.tsx`는 57줄짜리 얇은 래퍼로 `CodexAccountPool`을 감싼다
-(`CodexAuth.tsx:3,56`). 현재는 `accountModeState === "pool"`일 때만 pool 배지와
-설명이 붙는다. 클릭 즉시 multi-auth(계정 풀) 화면이 나오도록 진입 상태를 바꾼다.
+대상은 `pages/CodexAuth.tsx`가 아니라 **Providers workspace의 Overview 탭**이다.
 
-A 단계에서 확인할 것: 현재 어떤 상태에서 multi-auth가 **안** 뜨는지, 그것이
-`accountModeState`가 `direct`일 때인지 아니면 로딩 지연인지. 재현 없이 고치지
-않는다.
+현재 동작 (`ProviderOverview.tsx:85-127`): Overview의 AUTHENTICATION 섹션은
+`pws.loggedInAs` 한 줄, 즉 "Logged in as p***1@gmail.com" 텍스트만 보여준다.
+조작 버튼은 재인증이 필요할 때(`needsAttention`)만 나타난다. 계정을 바꾸거나
+추가하거나 alias를 고치려면 Accounts 탭으로 이동해야 한다.
+
+목표: Overview에서 Accounts 탭과 **동일한 조작**을 할 수 있게 한다. 구체적으로
+`ProviderAuthPanel.tsx:140-196`이 제공하는 행위 일체다.
+
+| 조작 | 현재 위치 | 핸들러 |
+| --- | --- | --- |
+| 계정 전환 | Accounts 탭 행 클릭 | `onSwitchAccount` (`:150`) |
+| 재인증 | Accounts 탭 (Overview는 경고 시에만) | `onReauth` (`:169`) |
+| alias 편집 | Accounts 탭 | `onEditAlias` (`:174`) |
+| 계정 삭제 | Accounts 탭 휴지통 | `onRemoveAccount` (`:180`) |
+| 계정 추가 | Accounts 탭 하단 | `onLogin(name, true)` (`:194`) |
+
+구현 방향: `ProviderAuthPanel`의 계정 리스트를 Overview에서 재사용한다.
+`ProviderDetails.tsx:247-260`이 Accounts 탭에 넘기는 props와 같은 것을
+Overview에도 내려주면 되고, 새 API나 새 상태 소유자는 필요 없다.
+
+A 단계에서 결정할 것:
+
+- 계정 리스트를 통째로 재사용할지, Overview용 컴팩트 변형을 만들지
+- 둘 다 렌더되면 Accounts 탭은 남길지 없앨지 (Overview가 완전 대체하면 탭 하나가
+  중복이 된다 — `ProviderDetails.tsx:96`의 조건부 탭 정의를 손대게 된다)
+- `surface === "codex-accounts"`(OpenAI Codex login)는 `CodexAccountPool`을 통째로
+  임베드하는 별도 경로다(`ProviderAuthPanel.tsx:39-47`). Overview에 그대로 넣으면
+  세로로 길어지므로 이 표면만 예외로 둘지 판단이 필요하다
 
 ### WP4 — Providers 레일 호버 삭제 버튼
 
@@ -144,7 +167,8 @@ WP5를 마지막에 두는 이유: WP1~WP4를 Classic이 살아있는 상태에�
 
 1. `rg -n "viewMode|ViewMode|classicToggle" gui/src`가 0건
 2. Subagents가 Classic 레이아웃 하나로만 렌더되고 5개 슬롯 저장이 동작
-3. 사이드바에서 Codex Auth가 두 번째 그룹에 있고, 클릭 시 multi-auth가 즉시 표시
+3. 사이드바에서 Codex Auth가 두 번째 그룹에 있고, Provider Overview 탭에서 계정
+   전환·추가·삭제·alias 편집·재인증이 모두 가능
 4. Providers 레일 행 호버에서 휴지통이 뜨고 확인 모달을 거쳐 삭제됨
 5. `typecheck` / `test` / `lint:gui` / `privacy:scan` 전부 green
 6. 실제 브라우저에서 4개 화면 스크린샷 확보 (로컬 Vite + 실행 중 프록시)
@@ -155,4 +179,6 @@ WP5를 마지막에 두는 이유: WP1~WP4를 Classic이 살아있는 상태에�
   `providers`로 처리할 것인가?
 - Q2. 레거시 localStorage 키 10개를 1회 삭제할 것인가, 방치할 것인가?
 - Q3. NAV 그룹 구분을 시각적 divider로 표현할 것인가, 순서만 바꿀 것인가?
-- Q4. WP3의 "즉시 multi-auth"가 정확히 어떤 현재 동작을 고치는 것인가?
+- Q4. Overview가 계정 조작을 전부 흡수하면 Accounts 탭을 없앨 것인가?
+- Q5. `codex-accounts` 표면(OpenAI Codex login)은 `CodexAccountPool` 전체를
+  임베드하므로 Overview에서 예외 처리할 것인가?
