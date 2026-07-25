@@ -68,6 +68,20 @@ describe("hasConcreteRelatedSignature", () => {
       ),
       false,
     );
+    // Shared verb ("report") must not bind "both issues" to another issue's
+    // number as if it were a concrete failure/status signature.
+    assert.equal(
+      hasConcreteRelatedSignature(
+        "Both issues report the same problem as issue 410.",
+      ),
+      false,
+    );
+    assert.equal(
+      hasConcreteRelatedSignature(
+        "Both issues report the same problem as issue 503.",
+      ),
+      false,
+    );
   });
 
   it("rejects different HTTP statuses despite component overlap", () => {
