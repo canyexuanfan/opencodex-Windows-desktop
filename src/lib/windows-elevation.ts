@@ -1,8 +1,6 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { randomBytes } from "node:crypto";
 
 type ElevationSpawn = (
   command: string,
@@ -21,8 +19,29 @@ export function setWindowsElevationSpawnForTests(next: ElevationSpawn | null): v
 export const WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER =
   "OCX_ERROR_CODE=WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED";
 
-export const OCX_SCHTASKS_CREATE_EXIT_PREFIX = "OCX_SCHTASKS_CREATE_EXIT=";
-export const OCX_SCHTASKS_RUN_EXIT_PREFIX = "OCX_SCHTASKS_RUN_EXIT=";
+/**
+ * Reserved elevated-scheduler protocol exit codes.
+ * These are OpenCodex-owned values returned by the elevated PowerShell transaction.
+ * They must never collide with UAC cancellation (1223).
+ *
+ * The elevated script never exits with raw schtasks codes — only these protocol values —
+ * so the parent can classify the transaction without a user-controlled result file.
+ */
+export const OCX_ELEVATED_SUCCESS = 0;
+export const OCX_ELEVATED_CREATE_FAILED = 10;
+export const OCX_ELEVATED_RUN_FAILED_ROLLED_BACK = 11;
+export const OCX_ELEVATED_RUN_FAILED_ROLLBACK_FAILED = 12;
+export const OCX_ELEVATED_PROTOCOL_FAILED = 13;
+/** Windows ERROR_CANCELLED — reserved for UAC denial; never emitted by the elevated script. */
+export const OCX_ELEVATED_UAC_CANCELLED = 1223;
+
+export const OCX_ELEVATED_PROTOCOL_CODES = [
+  OCX_ELEVATED_SUCCESS,
+  OCX_ELEVATED_CREATE_FAILED,
+  OCX_ELEVATED_RUN_FAILED_ROLLED_BACK,
+  OCX_ELEVATED_RUN_FAILED_ROLLBACK_FAILED,
+  OCX_ELEVATED_PROTOCOL_FAILED,
+] as const;
 
 export type WindowsSchtasksOperation = "create" | "run" | "query" | "delete" | "end" | "other";
 export type WindowsSchtasksFailureReason = "access-denied" | "other";
@@ -33,6 +52,13 @@ export type WindowsElevationFailureReason =
   | "launch-failed"
   | "child-failed"
   | "terminated";
+
+export type ElevatedSchedulerOutcome =
+  | "success"
+  | "create-failed"
+  | "run-failed-rolled-back"
+  | "run-failed-rollback-failed"
+  | "protocol-failed";
 
 const ELEVATION_OUTPUT_LIMIT = 256 * 1024;
 
@@ -173,6 +199,16 @@ export function buildWindowsElevatedArgumentList(args: string[]): string {
   return args.map(windowsCmdQuote).join(" ");
 }
 
+/** Classify an elevated-process exit code into a stable scheduler outcome. */
+export function classifyElevatedSchedulerExitCode(exitCode: number): ElevatedSchedulerOutcome {
+  if (exitCode === OCX_ELEVATED_SUCCESS) return "success";
+  if (exitCode === OCX_ELEVATED_CREATE_FAILED) return "create-failed";
+  if (exitCode === OCX_ELEVATED_RUN_FAILED_ROLLED_BACK) return "run-failed-rolled-back";
+  if (exitCode === OCX_ELEVATED_RUN_FAILED_ROLLBACK_FAILED) return "run-failed-rollback-failed";
+  // Malformed / unexpected / missing-ExitCode-normalized codes fail closed.
+  return "protocol-failed";
+}
+
 function windowsPowerShell(): string {
   const candidate = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   return existsSync(candidate) ? candidate : "powershell.exe";
@@ -192,13 +228,6 @@ export interface WindowsElevationResult {
   exitCode: number;
   stdout: string;
   stderr: string;
-}
-
-function parsePrefixedExit(output: string, prefix: string): number | null {
-  const match = output.match(new RegExp(`${prefix}(-?\\d+)`, "m"));
-  if (!match) return null;
-  const value = Number(match[1]);
-  return Number.isFinite(value) ? value : null;
 }
 
 /** Spawn non-elevated PowerShell to run a -Command script; classify UAC/cancel/timeout outcomes. */
@@ -273,7 +302,7 @@ function runPowerShellCommand(commandScript: string, timeoutMs: number): Promise
       if (timedOut) return;
       const detail = [stderr.trim(), stdout.trim()].filter(Boolean).join("\n");
       if (typeof code === "number") {
-        if (code === 1223 || windowsUacCancelledText(detail)) {
+        if (code === OCX_ELEVATED_UAC_CANCELLED || windowsUacCancelledText(detail)) {
           settle(() => reject(new WindowsElevationError(
             "cancelled",
             "Windows administrator approval was required, but the UAC prompt was cancelled or denied.",
@@ -304,37 +333,32 @@ export function runWindowsElevated(file: string, args: string[], timeoutMs = 120
     `$p = Start-Process -FilePath ${psSingleQuote(file)}`,
     argumentList.length > 0 ? ` -ArgumentList ${psSingleQuote(argumentList)}` : "",
     " -Verb RunAs -WindowStyle Hidden -PassThru -Wait;",
-    "if ($null -eq $p) { exit 1223 }",
+    `if ($null -eq $p) { exit ${OCX_ELEVATED_UAC_CANCELLED} }`,
     "$null = $p.Handle",
-    "if ($null -eq $p.ExitCode) { exit 1 }",
+    // Missing ExitCode is a protocol failure for single-file elevation (not success).
+    `if ($null -eq $p.ExitCode) { exit ${OCX_ELEVATED_PROTOCOL_FAILED} }`,
     "exit $p.ExitCode",
   ].join("");
 
   return runPowerShellCommand(script, timeoutMs).then(result => result.exitCode);
 }
 
-export interface ElevatedSchtasksCreateAndRunResult {
-  createExitCode: number;
-  /** null when /run was not attempted because /create failed. */
-  runExitCode: number | null;
-  stdout: string;
-  stderr: string;
-}
-
-/** Build the elevated (post-UAC) script that runs schtasks /create then /run without a second prompt. */
+/**
+ * Build the elevated (post-UAC) script: create → run → optional delete rollback.
+ * Returns only OpenCodex protocol exit codes (never raw schtasks codes, never 1223).
+ * Does not write through any user-controlled pathname.
+ */
 export function buildElevatedSchtasksCreateAndRunScript(
   schtasksPath: string,
   createArgs: string[],
   runArgs: string[],
-  resultPath: string,
+  deleteArgs: string[],
 ): string {
   const createList = buildWindowsElevatedArgumentList(createArgs);
   const runList = buildWindowsElevatedArgumentList(runArgs);
-  const createPrefix = OCX_SCHTASKS_CREATE_EXIT_PREFIX;
-  const runPrefix = OCX_SCHTASKS_RUN_EXIT_PREFIX;
+  const deleteList = buildWindowsElevatedArgumentList(deleteArgs);
   return [
     `$schtasks = ${psSingleQuote(schtasksPath)}`,
-    `$resultPath = ${psSingleQuote(resultPath)}`,
     "function Invoke-OcxSchtasks([string]$ArgList) {",
     "  $p = Start-Process -FilePath $schtasks -ArgumentList $ArgList -Wait -PassThru -WindowStyle Hidden",
     "  if ($null -eq $p) { return 1 }",
@@ -342,43 +366,37 @@ export function buildElevatedSchtasksCreateAndRunScript(
     "  if ($null -eq $p.ExitCode) { return 1 }",
     "  return [int]$p.ExitCode",
     "}",
-    "function Write-OcxResult([int]$CreateCode, $RunCode) {",
-    `  $lines = @('${createPrefix}' + $CreateCode)`,
-    `  if ($null -ne $RunCode) { $lines += ('${runPrefix}' + $RunCode) }`,
-    "  Set-Content -LiteralPath $resultPath -Value ($lines -join [Environment]::NewLine) -Encoding ascii",
-    "}",
     `$createCode = Invoke-OcxSchtasks ${psSingleQuote(createList)}`,
-    "if ($createCode -ne 0) { Write-OcxResult $createCode $null; exit $createCode }",
+    `if ($createCode -ne 0) { exit ${OCX_ELEVATED_CREATE_FAILED} }`,
     `$runCode = Invoke-OcxSchtasks ${psSingleQuote(runList)}`,
-    "Write-OcxResult $createCode $runCode",
-    "exit $runCode",
+    `if ($runCode -eq 0) { exit ${OCX_ELEVATED_SUCCESS} }`,
+    `$deleteCode = Invoke-OcxSchtasks ${psSingleQuote(deleteList)}`,
+    `if ($deleteCode -eq 0) { exit ${OCX_ELEVATED_RUN_FAILED_ROLLED_BACK} }`,
+    `exit ${OCX_ELEVATED_RUN_FAILED_ROLLBACK_FAILED}`,
   ].join("; ");
 }
 
-function readElevatedResultFile(resultPath: string): string {
-  try {
-    if (!existsSync(resultPath)) return "";
-    return readFileSync(resultPath, "utf8");
-  } catch {
-    return "";
-  } finally {
-    try { if (existsSync(resultPath)) unlinkSync(resultPath); } catch { /* ignore */ }
-  }
+export interface ElevatedSchtasksCreateAndRunResult {
+  outcome: ElevatedSchedulerOutcome;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
 }
 
 /**
- * Create and run the scheduler task inside one elevated PowerShell process (one UAC prompt).
+ * Create, run, and (on /run failure) roll back the scheduler task inside one elevated
+ * PowerShell process — one UAC prompt, no user-controlled result file.
  * Throws WindowsElevationError for UAC cancel/timeout/launch/signal failures.
  */
 export async function runElevatedSchtasksCreateAndRun(
   schtasksPath: string,
   createArgs: string[],
   runArgs: string[],
+  deleteArgs: string[],
   timeoutMs = 120_000,
 ): Promise<ElevatedSchtasksCreateAndRunResult> {
-  const resultPath = join(tmpdir(), `ocx-elev-schtasks-${randomBytes(8).toString("hex")}.txt`);
-  const inner = buildElevatedSchtasksCreateAndRunScript(schtasksPath, createArgs, runArgs, resultPath);
-  // One Start-Process -Verb RunAs elevates PowerShell; create and run execute inside that process.
+  const inner = buildElevatedSchtasksCreateAndRunScript(schtasksPath, createArgs, runArgs, deleteArgs);
+  // One Start-Process -Verb RunAs elevates PowerShell; create/run/rollback execute inside that process.
   const launcher = [
     `$p = Start-Process -FilePath ${psSingleQuote(windowsPowerShell())}`,
     ` -ArgumentList ${psSingleQuote(buildWindowsElevatedArgumentList([
@@ -390,28 +408,17 @@ export async function runElevatedSchtasksCreateAndRun(
       inner,
     ]))}`,
     " -Verb RunAs -WindowStyle Hidden -PassThru -Wait;",
-    "if ($null -eq $p) { exit 1223 }",
+    `if ($null -eq $p) { exit ${OCX_ELEVATED_UAC_CANCELLED} }`,
     "$null = $p.Handle",
-    "if ($null -eq $p.ExitCode) { exit 1 }",
+    `if ($null -eq $p.ExitCode) { exit ${OCX_ELEVATED_PROTOCOL_FAILED} }`,
     "exit $p.ExitCode",
   ].join("");
 
-  try {
-    const result = await runPowerShellCommand(launcher, timeoutMs);
-    const markerText = readElevatedResultFile(resultPath);
-    const combined = `${markerText}\n${result.stdout}\n${result.stderr}`;
-    const createExitCode = parsePrefixedExit(combined, OCX_SCHTASKS_CREATE_EXIT_PREFIX) ?? result.exitCode;
-    const runExitCode = createExitCode === 0
-      ? (parsePrefixedExit(combined, OCX_SCHTASKS_RUN_EXIT_PREFIX) ?? result.exitCode)
-      : null;
-    return {
-      createExitCode,
-      runExitCode,
-      stdout: result.stdout,
-      stderr: result.stderr,
-    };
-  } catch (error) {
-    readElevatedResultFile(resultPath);
-    throw error;
-  }
+  const result = await runPowerShellCommand(launcher, timeoutMs);
+  return {
+    outcome: classifyElevatedSchedulerExitCode(result.exitCode),
+    exitCode: result.exitCode,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  };
 }
