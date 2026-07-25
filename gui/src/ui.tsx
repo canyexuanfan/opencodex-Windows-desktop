@@ -246,6 +246,7 @@ export function Tooltip({ content, children, side = "top", maxWidth = 280 }: {
   maxWidth?: number;
 }) {
   const [open, setOpen] = useState(false);
+  const tipId = useId();
   const timer = useRef<number | null>(null);
 
   const show = () => {
@@ -259,10 +260,21 @@ export function Tooltip({ content, children, side = "top", maxWidth = 280 }: {
   useEffect(() => () => { if (timer.current !== null) window.clearTimeout(timer.current); }, []);
 
   return (
-    <span className="ocx-tooltip" onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide} tabIndex={0}>
+    <span
+      className="ocx-tooltip"
+      onMouseEnter={show}
+      onMouseLeave={hide}
+      onFocus={show}
+      onBlur={hide}
+      onKeyDown={event => {
+        if (event.key === "Escape") hide();
+      }}
+      aria-describedby={open ? tipId : undefined}
+      tabIndex={0}
+    >
       {children}
       {open && (
-        <span className={`ocx-tooltip-bubble ocx-tooltip-bubble--${side}`} role="tooltip" style={{ maxWidth }}>
+        <span id={tipId} className={`ocx-tooltip-bubble ocx-tooltip-bubble--${side}`} role="tooltip" style={{ maxWidth }}>
           {content}
         </span>
       )}

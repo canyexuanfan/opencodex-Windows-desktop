@@ -1,6 +1,7 @@
 /* ============================================================================
-   models-workspace — isolated stylesheet (mirrors providers-workspace layout DNA)
-   Namespace: models-workspace-  |  widgets: mdw-
+   models-workspace layout shell + shared Models controls
+   Namespace: models-workspace- (workspace shell/rail/main)
+   Shared controls: models-control-*, models-shadow-*, models-v2-* (workspace + classic)
    Uses only design tokens from styles.css. No gradients.
    ============================================================================ */
 
@@ -189,22 +190,7 @@
 
 /* ── Responsive ───────────────────────────────────────── */
 
-@media (max-width: 768px) {
-  .models-workspace-root {
-    grid-template-columns: 1fr;
-  }
-
-  .models-workspace-rail {
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-    padding-right: 0;
-    padding-bottom: var(--space-3);
-  }
-
-  .models-workspace-rail-list {
-    max-height: 240px;
-  }
-
+@media (max-width: 1160px) {
   .models-control-top-row {
     grid-template-columns: 1fr;
   }
@@ -224,5 +210,22 @@
   .models-v2-mode-row {
     flex-wrap: wrap;
     justify-self: start;
+  }
+}
+
+@media (max-width: 768px) {
+  .models-workspace-root {
+    grid-template-columns: 1fr;
+  }
+
+  .models-workspace-rail {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding-right: 0;
+    padding-bottom: var(--space-3);
+  }
+
+  .models-workspace-rail-list {
+    max-height: 240px;
   }
 }

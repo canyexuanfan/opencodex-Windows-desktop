@@ -233,6 +233,12 @@ export default function Models({ apiBase, viewMode }: { apiBase: string; viewMod
     [models, providers],
   );
 
+  useEffect(() => {
+    if (selectedProvider !== null && !groups.some(group => group.provider === selectedProvider)) {
+      setSelectedProvider(null);
+    }
+  }, [groups, selectedProvider]);
+
   const apply = async (next: Set<string>) => {
     setBusy(true);
     busyRef.current = true;
@@ -551,11 +557,11 @@ export default function Models({ apiBase, viewMode }: { apiBase: string; viewMod
 
 
   const renderGroup = (group: ProviderModelGroup<ModelRow>) => {
-    const { provider, rows, liveModels, discovery } = group;
+    const { provider, rows, native, liveModels, discovery } = group;
     const isCollapsed = collapsed.has(provider);
     const activeCount = rows.filter(m => !disabled.has(m.namespaced)).length;
     const capOn = contextCaps[provider] === contextCapValue;
-    const isNative = rows.every(m => m.native);
+    const isNative = native;
     const discoveryFailure = liveModels && discovery?.status === "failed" ? discovery : undefined;
     const q = (search[provider] ?? "").trim().toLowerCase();
     const filtered = q ? rows.filter(m => m.id.toLowerCase().includes(q)) : rows;
@@ -766,7 +772,7 @@ export default function Models({ apiBase, viewMode }: { apiBase: string; viewMod
       <div className="models-control-top-row">
         <div className="models-shadow-row row muted text-control">
           <span className="models-shadow-label">{t("models.shadowCallIntercept")} <Tooltip content={t("models.shadowCallInterceptHint")} side="top" maxWidth={320}><span style={{ cursor: "help" }} aria-label={t("models.shadowCallInterceptHint")}>ⓘ</span></Tooltip></span>
-          <code className="text-caption models-shadow-warning" style={{ opacity: 0.6 }}>⚠ 5.4-mini →</code>
+          <code className="text-caption models-shadow-warning" style={{ opacity: 0.6 }}>{t("models.shadowCallOriginal")}</code>
           <Switch on={shadowCall?.enabled ?? false} onClick={() => void saveShadowCall({ enabled: !shadowCall?.enabled })} disabled={!shadowCall || shadowCallSaving} label={t("models.shadowCallIntercept")} />
           <div className="models-shadow-model-slot">
             <Select value={shadowCall?.model ?? ""} options={[{ value: "", label: "\u2014" }, ...shadowModelOptions]} onChange={v => { setShadowCall(c => c ? { ...c, model: v } : c); void saveShadowCall({ model: v }); }} disabled={!shadowCall || shadowCallSaving || !shadowCall.enabled} label={t("models.shadowCallIntercept")} />
@@ -1208,7 +1214,7 @@ export default function Models({ apiBase, viewMode }: { apiBase: string; viewMod
               })}
             </div>
           </aside>
-          <main className="models-workspace-main">
+          <section className="models-workspace-main" aria-label={t("models.workspace.mainAria")}>
             {controlsBlock}
             {combosBlock}
             {collapseControls}
@@ -1217,7 +1223,7 @@ export default function Models({ apiBase, viewMode }: { apiBase: string; viewMod
               visibleGroups.map(group => renderGroup(group))
             }
             {groups.length === 0 && emptyStateBlock}
-          </main>
+          </section>
         </div>
         {modalsBlock}
       </div>
