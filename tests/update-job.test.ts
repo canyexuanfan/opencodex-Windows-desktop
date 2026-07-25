@@ -145,6 +145,34 @@ describe("GUI update execution decisions", () => {
     expect(spawned).toEqual([{ port: 12345 }]);
   });
 
+  test("restart refuses to spawn when the captured port never becomes free", async () => {
+    const spawned: Array<{ port?: number }> = [];
+    const job: UpdateJobState = {
+      id: "restart-busy",
+      status: "restarting",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentVersion: "2.7.39",
+      latestVersion: "2.7.40",
+      channel: "latest",
+      installer: "npm",
+      restart: true,
+      command: "",
+      log: [],
+    };
+    writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+    await restartAfterUpdateForTests(job, { port: 10100, hostname: "127.0.0.1" }, {
+      serviceInstalledFn: () => false,
+      waitForPort: async () => false,
+      spawnStart: (_job, _installer, port) => {
+        spawned.push({ port });
+      },
+    });
+    expect(spawned).toEqual([]);
+    const saved = readUpdateJob(job.id);
+    expect(saved?.log.some(line => line.includes("still busy") && line.includes("not starting on another port"))).toBe(true);
+  });
+
   test("service restart waits on the captured port and clears OCX_BAKE_PORT after install", async () => {
     const waited: Array<{ port: number; hostname: string }> = [];
     const bakeDuringInstall: string[] = [];

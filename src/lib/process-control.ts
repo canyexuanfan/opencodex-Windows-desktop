@@ -67,7 +67,9 @@ export async function stopProxyGracefully(pid: number, io: GracefulStopIo = {}):
     const res = await fetchFn(`http://${gracefulStopHost(runtime.hostname)}:${runtime.port}/api/stop`, {
       method: "POST",
       headers,
-      signal: AbortSignal.timeout(2000),
+      // Hung proxies with many CLOSE_WAIT clients can be slow to accept; give them
+      // longer than a health poll so we prefer drain over taskkill /F.
+      signal: AbortSignal.timeout(io.exitTimeoutMs ? Math.min(io.exitTimeoutMs, 10_000) : 10_000),
     });
     if (!res.ok) return false;
   } catch {
@@ -91,13 +93,48 @@ function drainDeadlineMs(): number {
 /** Graceful-first stop: management-API drain, then the platform kill ladder. */
 export async function stopProxy(pid: number): Promise<void> {
   if (!isProcessAlive(pid)) return;
-  if (await stopProxyGracefully(pid)) return;
+  const runtime = readRuntimePort(pid);
+  if (await stopProxyGracefully(pid)) {
+    await waitForStoppedPort(runtime);
+    return;
+  }
   killProxy(pid);
+  await waitForStoppedPort(runtime);
+}
+
+/** After stop/kill, wait for the former listen port to become bindable (Windows drain). */
+async function waitForStoppedPort(
+  runtime: { port: number; hostname?: string } | null | undefined,
+): Promise<void> {
+  if (!runtime?.port) return;
+  try {
+    const { reclaimListenPort } = await import("../server/port-reclaim");
+    await reclaimListenPort(runtime.port, runtime.hostname ?? "127.0.0.1", {
+      timeoutMs: 15_000,
+      intervalMs: 100,
+      scanIntervalMs: 500,
+      // The process we just stopped should already be dead; still clear any twin ocx listener.
+      killOcxHolders: true,
+    });
+  } catch {
+    /* best-effort — callers that need a hard guarantee reclaim again before bind */
+  }
 }
 
 export function killProxy(pid: number): void {
   if (!isProcessAlive(pid)) return;
   if (process.platform === "win32") {
+    // Soft signals first so Bun can run drainAndShutdown and close the listen socket.
+    // Jumping straight to taskkill /F is what leaves Windows ghost LISTEN + client CLOSE_WAIT
+    // holding config.port across updates.
+    for (const signal of ["SIGTERM", "SIGINT"] as const) {
+      try {
+        process.kill(pid, signal);
+      } catch {
+        /* process may already be gone */
+      }
+      if (waitForExit(pid, signal === "SIGTERM" ? 8_000 : 2_000)) return;
+    }
     const taskkill = `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\taskkill.exe`;
     try {
       execFileSync(taskkill, ["/PID", String(pid), "/T", "/F"], { stdio: "pipe", windowsHide: true });
