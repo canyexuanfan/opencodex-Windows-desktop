@@ -109,7 +109,7 @@ export const zh: Record<TKey, string> = {
   // dashboard
   "dash.subtitle": "本地 opencodex 代理、其提供方以及路由到 Codex 的模型的实时状态。",
   "dash.workspace.overview": "概览",
-  "dash.workspace.sections": "部分",
+  "dash.workspace.sections": "板块",
   "dash.status": "状态",
   "dash.online": "在线",
   "dash.offline": "离线",

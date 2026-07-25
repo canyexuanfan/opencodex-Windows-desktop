@@ -290,6 +290,12 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
 
   useEffect(() => {
     const fetchData = async () => {
+      // Snapshot epochs before issuing fetches so an in-flight poll cannot commit
+      // after a later mutation or overlapping poll identity change.
+      const settingsRequestEpoch = ++settingsRequestEpochRef.current;
+      const settingsMutationEpoch = settingsMutationEpochRef.current;
+      const shadowRequestEpoch = ++shadowCallRequestEpochRef.current;
+      const shadowMutationEpoch = shadowCallMutationEpochRef.current;
       try {
         const [hRes, pRes, sRes, scRes, shRes, uRes] = await Promise.all([
           fetch(`${apiBase}/healthz`),
@@ -301,10 +307,6 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         ]);
         setHealth(await hRes.json());
         setProviders(await pRes.json());
-        const settingsRequestEpoch = settingsRequestEpochRef.current;
-        const settingsMutationEpoch = settingsMutationEpochRef.current;
-        const shadowRequestEpoch = shadowCallRequestEpochRef.current;
-        const shadowMutationEpoch = shadowCallMutationEpochRef.current;
         const nextSettings = await sRes.json() as SettingsData;
         if (settingsPollMayCommit(
           { request: settingsRequestEpoch, mutation: settingsMutationEpoch },
@@ -315,10 +317,6 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
           },
         )) {
           setSettings(nextSettings);
-          const seeded = nextSettings.startupHealth;
-          if (seeded) {
-            setStartupHealth(seeded.diagnosticStale ? "error" : seeded.status);
-          }
         }
         setSidecar(await scRes.json());
         // Old servers fall through to the SPA HTML for this route; don't let a parse
@@ -371,13 +369,6 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             setSubagentEffortCap(ecData.subagentEffortCap ?? "");
           }
         } catch { /* old server */ }
-        try {
-          const pcRes = await fetch(`${apiBase}/api/diagnostics/project-config`);
-          const pcData = pcRes.ok ? await pcRes.json() as { grouped?: ProjectCodexConfigGroup[] } : null;
-          setProjectConfigWarnings(pcData?.grouped ?? []);
-        } catch {
-          setProjectConfigWarnings([]);
-        }
       } catch {
         setError(true);
         setMaModeResolved(true);
@@ -402,6 +393,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         setProjectConfigWarnings([]);
       }
     };
+    void fetchDiagnostics();
     const interval = setInterval(() => void fetchDiagnostics(), 30_000);
     return () => clearInterval(interval);
   }, [apiBase]);
@@ -716,7 +708,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
             style={{ borderRadius: "var(--radius-pill)", minWidth: 36, padding: "5px 10px", border: "none", background: maMode === mode ? undefined : "transparent", color: maMode === mode ? undefined : "var(--muted)" }}
             disabled={maBusy}
             onClick={() => void switchMaMode(mode)}
-          >{mode === "default" ? "base" : mode}</button>
+          >{t(`models.v2Mode_${mode}` as TKey)}</button>
         ))}
       </div>
     </div>
@@ -883,7 +875,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         } catch { /* ignore */ }
         finally { setInjectionSaving(false); }
       }}
-      disabled={injectionSaving}
+      disabled={injectionSaving || !multiAgentGuidanceEnabled}
       label={t("dash.injectionLabel")}
     />
     {injectionModel && injectionEfforts.length > 0 && (
@@ -910,11 +902,11 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
           } catch { /* ignore */ }
           finally { setInjectionSaving(false); }
         }}
-        disabled={injectionSaving}
+        disabled={injectionSaving || !multiAgentGuidanceEnabled}
         label={t("dash.injectionEffortLabel")}
       />
     )}
-    {injectionModel && <span className="badge badge-green text-micro">{t("dash.injectionActive")}</span>}
+    {injectionModel && multiAgentGuidanceEnabled && <span className="badge badge-green text-micro">{t("dash.injectionActive")}</span>}
   </div>
   <div className="muted text-control" style={{ marginTop: 6 }}>{t("dash.injectionHint")}</div>
   <div className="spread dash-subagent-guidance-row">
@@ -1385,7 +1377,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         </div>
         <p className="page-sub">{t("dash.subtitle")}</p>
         <div className="dashboard-workspace-root">
-          <aside className="dashboard-workspace-rail" aria-label={t("nav.dashboard")}>
+          <aside className="dashboard-workspace-rail" aria-label={t("dash.workspace.sections")}>
             <div className="dashboard-workspace-rail-list">
               {sections.map(s => (
                 <button
@@ -1400,9 +1392,9 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
               ))}
             </div>
           </aside>
-          <main className="dashboard-workspace-main">
+          <section className="dashboard-workspace-main" aria-label={selected.label}>
             {selected.body}
-          </main>
+          </section>
         </div>
         {updateDialog}
       </div>

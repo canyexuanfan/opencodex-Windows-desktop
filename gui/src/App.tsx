@@ -78,10 +78,10 @@ function providersHashForPage(): string {
   return readProvidersViewPreference() === "workspace" ? "providers/workspace" : "providers";
 }
 
-// localStorage keys for every tab that offers a Workspace/Classic view. The
-// sidebar's global toggle writes all of them at once so one click switches the
-// whole app; each page still reads its own key on mount, so per-page toggles
-// keep working and future tabs only need to register their key here.
+// Canonical global preference plus per-page keys. The sidebar toggle writes the
+// canonical key and every page key so one click stays consistent; each page
+// still reads its own key on mount.
+const GLOBAL_VIEW_KEY = "ocx-view";
 const WORKSPACE_VIEW_KEYS: readonly string[] = [
   "ocx-providers-view",
   "ocx-subagents-view",
@@ -94,10 +94,23 @@ const WORKSPACE_VIEW_KEYS: readonly string[] = [
   "ocx-models-view",
   "ocx-dashboard-view",
 ];
+// Pages that actually remount on a Classic/Workspace change (others ignore the
+// preference for layout — remounting them would discard unsaved form state).
+const WORKSPACE_LAYOUT_PAGES = new Set<Page>(["dashboard", "providers"]);
 
 function readGlobalWorkspacePreference(): boolean {
   try {
-    return WORKSPACE_VIEW_KEYS.some(key => localStorage.getItem(key) === "workspace");
+    const global = localStorage.getItem(GLOBAL_VIEW_KEY);
+    if (global === "workspace") return true;
+    if (global === "classic") return false;
+    // Migrate mixed/legacy per-page keys: prefer pages that implement workspace
+    // in this build, then fall back to classic (avoid `some()` false-positives).
+    for (const key of ["ocx-dashboard-view", "ocx-providers-view"] as const) {
+      const value = localStorage.getItem(key);
+      if (value === "workspace") return true;
+      if (value === "classic") return false;
+    }
+    return false;
   } catch {
     return false;
   }
@@ -105,8 +118,10 @@ function readGlobalWorkspacePreference(): boolean {
 
 function writeGlobalWorkspacePreference(workspace: boolean): void {
   try {
+    const value = workspace ? "workspace" : "classic";
+    localStorage.setItem(GLOBAL_VIEW_KEY, value);
     for (const key of WORKSPACE_VIEW_KEYS) {
-      localStorage.setItem(key, workspace ? "workspace" : "classic");
+      localStorage.setItem(key, value);
     }
   } catch {
     /* ignore quota / private-mode failures */
@@ -154,18 +169,30 @@ export default function App() {
   const navWasOpen = useRef(false);
 
   // Global Workspace/Classic preference. Pages read their own localStorage key on
-  // mount, so toggling here writes every key and bumps `viewBump` to remount the
-  // current page so it re-reads the preference immediately.
-  // Read during render (not stored in state): the value only changes via our own
-  // writes, which bump `viewBump` to re-render, so the label is always accurate —
-  // including after a per-page toggle followed by navigation.
-  const workspaceView = readGlobalWorkspacePreference();
+  // mount; toggling here writes every key and remounts only pages that have a
+  // workspace layout so other tabs keep unsaved form state.
+  const [workspaceView, setWorkspaceView] = useState(readGlobalWorkspacePreference);
   const [viewBump, setViewBump] = useState(0);
   const toggleGlobalWorkspace = () => {
-    const next = !readGlobalWorkspacePreference();
+    const next = !workspaceView;
     writeGlobalWorkspacePreference(next);
-    setViewBump(n => n + 1);
+    setWorkspaceView(next);
+    // Providers treats the hash as a co-equal source of truth; keep it aligned
+    // or the next hashchange undoes this write.
+    if (page === "providers") {
+      const wanted = next ? "providers/workspace" : "providers";
+      if (window.location.hash.replace(/^#\/?/, "") !== wanted) {
+        window.location.hash = wanted;
+      }
+    }
+    if (WORKSPACE_LAYOUT_PAGES.has(page)) setViewBump(n => n + 1);
   };
+
+  useEffect(() => {
+    // Normalize legacy per-page keys onto the canonical global preference once.
+    writeGlobalWorkspacePreference(readGlobalWorkspacePreference());
+    setWorkspaceView(readGlobalWorkspacePreference());
+  }, []);
 
   useEffect(() => {
     // External navigation (hash edit, back/forward) also dismisses the mobile drawer.
@@ -187,12 +214,14 @@ export default function App() {
       if (nextPage === "providers") {
         const preferred = readProvidersViewPreference();
         if (rawHash === "providers/workspace") {
-          writeProvidersViewPreference("workspace");
+          writeGlobalWorkspacePreference(true);
+          setWorkspaceView(true);
         } else if (rawHash === "providers" && preferred === "workspace") {
           window.location.hash = "providers/workspace";
           return;
         } else if (rawHash === "providers") {
-          writeProvidersViewPreference("classic");
+          writeGlobalWorkspacePreference(false);
+          setWorkspaceView(false);
         }
       }
       setPageState(nextPage);
@@ -213,7 +242,8 @@ export default function App() {
       // Honor an explicit workspace deep link on first load before normalizing
       // to the saved preference (bookmarks/shared links must not open Classic).
       if (rawHash === "providers/workspace") {
-        writeProvidersViewPreference("workspace");
+        writeGlobalWorkspacePreference(true);
+        setWorkspaceView(true);
         return;
       }
       const wanted = providersHashForPage();
@@ -399,7 +429,7 @@ export default function App() {
       </aside>
 
       <main className="main" inert={navOpen}>
-        <div key={viewBump} className={`main-inner${page === "combos" ? " main-inner--combos" : ""}`}>
+        <div key={WORKSPACE_LAYOUT_PAGES.has(page) ? viewBump : "static"} className={`main-inner${page === "combos" ? " main-inner--combos" : ""}`}>
           <ErrorBoundary
             key={page}
             pageName={t(PAGE_TKEY[page])}
