@@ -364,9 +364,12 @@ describe("subagent fallback final-route normalization", () => {
   });
 
   test("routed primary falls back to native and preserves encrypted task passthrough", async () => {
+    resetSubagentModelFallbackStateForTests();
     const cfg = poolNativePlusRoutedConfig({
       defaultProvider: "xai",
-      subagentModelFallback: ["gpt-5.5"],
+      // Prefer a documented native slug that other tests in this file do not health-block.
+      subagentModelFallback: ["gpt-5.6-terra"],
+      activeCodexAccountId: undefined,
       providers: {
         xai: {
           adapter: "openai-chat",
@@ -392,7 +395,10 @@ describe("subagent fallback final-route normalization", () => {
       stream: false,
     });
 
-    expect(response.status).toBe(200);
+    if (response.status !== 200) {
+      const body = await response.text();
+      throw new Error(`expected 200, got ${response.status}: ${body}`);
+    }
     expect(capture.urls.some((url) => url.includes("chatgpt.com/backend-api/codex"))).toBe(true);
     expect(capture.bodies[0]).toContain(FERNET_TASK);
   });
@@ -464,9 +470,11 @@ describe("encrypted child native-only fallback", () => {
   });
 
   test("skips exhausted native candidates before rejecting encrypted routed primary", async () => {
+    resetSubagentModelFallbackStateForTests();
     const cfg = poolNativePlusRoutedConfig({
       defaultProvider: "xai",
-      subagentModelFallback: ["gpt-5.5", "xai/grok-3"],
+      subagentModelFallback: ["gpt-5.6-terra", "xai/grok-3"],
+      activeCodexAccountId: undefined,
       providers: {
         xai: {
           adapter: "openai-chat",
@@ -483,7 +491,7 @@ describe("encrypted child native-only fallback", () => {
       },
     });
     const { noteSubagentModelFailure } = await import("../src/codex/subagent-model-fallback");
-    noteSubagentModelFailure("gpt-5.5", "429", cfg);
+    noteSubagentModelFailure("gpt-5.6-terra", "429", cfg);
 
     const response = await postSpawn(cfg, {
       model: "xai/grok-4.5",
