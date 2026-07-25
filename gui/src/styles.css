@@ -13,6 +13,7 @@
 @import "./styles/provider-workspace-settings.css";
 @import "./styles/provider-overview-dashboard.css";
 @import "./styles-combos-workspace.css";
+@import "./styles-models-workspace.css";
 @import "./styles-dashboard-workspace.css";
 
 :root {
@@ -1209,3 +1210,31 @@ button.prov-account-row.active { cursor: default; }
 .model-tip-key { color: var(--muted); }
 .model-tip-val { color: var(--text); font-family: var(--mono); font-size: var(--text-label); }
 .model-tip-actions { display: flex; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-soft); }
+
+/* ---- hover tooltip (styled replacement for native title) ---- */
+.ocx-tooltip { position: relative; display: inline-flex; align-items: center; }
+.ocx-tooltip-bubble {
+  position: absolute; z-index: var(--z-popover);
+  width: max-content;
+  background: color-mix(in oklab, canvas 84%, transparent);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  box-shadow: 0 8px 32px rgb(0 0 0 / 0.16);
+  color: var(--text);
+  font-size: var(--text-label);
+  line-height: var(--leading-body);
+  white-space: normal;
+  pointer-events: none;
+  animation: ocx-tooltip-in var(--motion-fast) ease-out;
+}
+.ocx-tooltip-bubble--top { bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); }
+.ocx-tooltip-bubble--bottom { top: calc(100% + 8px); left: 50%; transform: translateX(-50%); }
+.ocx-tooltip-bubble--left { right: calc(100% + 8px); top: 50%; transform: translateY(-50%); }
+.ocx-tooltip-bubble--right { left: calc(100% + 8px); top: 50%; transform: translateY(-50%); }
+@keyframes ocx-tooltip-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}

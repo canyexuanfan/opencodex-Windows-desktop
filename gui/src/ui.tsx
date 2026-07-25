@@ -237,3 +237,47 @@ export function EmptyState({ icon, title, children, className, style }: { icon?:
     </div>
   );
 }
+
+/* Hover/focus tooltip — styled replacement for the native `title` attribute. */
+export function Tooltip({ content, children, side = "top", maxWidth = 280 }: {
+  content: ReactNode;
+  children: ReactNode;
+  side?: "top" | "bottom" | "left" | "right";
+  maxWidth?: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const tipId = useId();
+  const timer = useRef<number | null>(null);
+
+  const show = () => {
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setOpen(true), 150);
+  };
+  const hide = () => {
+    if (timer.current !== null) { window.clearTimeout(timer.current); timer.current = null; }
+    setOpen(false);
+  };
+  useEffect(() => () => { if (timer.current !== null) window.clearTimeout(timer.current); }, []);
+
+  return (
+    <span
+      className="ocx-tooltip"
+      onMouseEnter={show}
+      onMouseLeave={hide}
+      onFocus={show}
+      onBlur={hide}
+      onKeyDown={event => {
+        if (event.key === "Escape") hide();
+      }}
+      aria-describedby={open ? tipId : undefined}
+      tabIndex={0}
+    >
+      {children}
+      {open && (
+        <span id={tipId} className={`ocx-tooltip-bubble ocx-tooltip-bubble--${side}`} role="tooltip" style={{ maxWidth }}>
+          {content}
+        </span>
+      )}
+    </span>
+  );
+}
