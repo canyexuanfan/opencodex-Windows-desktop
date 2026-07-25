@@ -977,6 +977,7 @@ export const ja: Record<TKey, string> = {
   "api.confirm": "確認",
   "api.deleteAria": "API キーを削除",
   "api.usageTitle": "使用例",
+  "api.usageSampleInput": "こんにちは、世界！",
   "api.workspace.overview": "概要",
   "api.workspace.keyDetails": "キーの詳細",
   "api.workspace.keyPrefix": "キーのプレフィックス",

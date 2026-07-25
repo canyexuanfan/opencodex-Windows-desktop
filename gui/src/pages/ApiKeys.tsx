@@ -47,7 +47,7 @@ export default function ApiKeys({ apiBase, viewMode }: { apiBase: string; viewMo
 
   const responseEndpoint = endpoint || "http://127.0.0.1:10100/v1/responses";
 
-  const handleCreate = async (name?: string) => {
+  const handleCreate = async (name?: string): Promise<boolean> => {
     const effectiveName = name ?? newName;
     setCreating(true);
     try {
@@ -56,12 +56,14 @@ export default function ApiKeys({ apiBase, viewMode }: { apiBase: string; viewMo
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: effectiveName || "default" }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        setNewKey(data.key);
-        setNewName("");
-        fetchKeys();
-      }
+      if (!res.ok) return false;
+      const data = await res.json();
+      setNewKey(data.key);
+      setNewName("");
+      fetchKeys();
+      return true;
+    } catch {
+      return false;
     } finally {
       setCreating(false);
     }
@@ -101,7 +103,7 @@ export default function ApiKeys({ apiBase, viewMode }: { apiBase: string; viewMo
           creating={creating}
           newKey={newKey}
           copied={copied}
-          onCreate={name => { void handleCreate(name); }}
+          onCreate={name => handleCreate(name)}
           onDismissNewKey={() => setNewKey(null)}
           onCopyNewKey={copyKey}
           onDelete={id => { void handleDelete(id); }}
@@ -204,7 +206,7 @@ export default function ApiKeys({ apiBase, viewMode }: { apiBase: string; viewMo
   -H "Content-Type: application/json" \\
   -d '{
     "model": "gpt-5.4",
-    "input": "Hello, world!"
+    "input": ${JSON.stringify(t("api.usageSampleInput"))}
   }'`}</pre>
       </div>
     </section>

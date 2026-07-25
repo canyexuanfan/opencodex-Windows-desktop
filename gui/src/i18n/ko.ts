@@ -737,6 +737,7 @@ export const ko: Record<TKey, string> = {
   "api.confirm": "확인",
   "api.deleteAria": "API 키 삭제",
   "api.usageTitle": "사용 예시",
+  "api.usageSampleInput": "안녕하세요, 세계!",
   "api.workspace.overview": "개요",
   "api.workspace.keyDetails": "키 세부 정보",
   "api.workspace.keyPrefix": "키 접두사",

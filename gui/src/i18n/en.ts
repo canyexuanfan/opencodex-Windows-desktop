@@ -1022,6 +1022,7 @@ export const en = {
   "api.confirm": "Confirm",
   "api.deleteAria": "Delete API key",
   "api.usageTitle": "Usage example",
+  "api.usageSampleInput": "Hello, world!",
   "api.workspace.overview": "Overview",
   "api.workspace.keyDetails": "Key details",
   "api.workspace.keyPrefix": "Key prefix",

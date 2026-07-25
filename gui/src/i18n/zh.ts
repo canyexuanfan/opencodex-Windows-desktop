@@ -737,6 +737,7 @@ export const zh: Record<TKey, string> = {
   "api.confirm": "确认",
   "api.deleteAria": "删除 API 密钥",
   "api.usageTitle": "使用示例",
+  "api.usageSampleInput": "你好，世界！",
   "api.workspace.overview": "概览",
   "api.workspace.keyDetails": "密钥详情",
   "api.workspace.keyPrefix": "密钥前缀",

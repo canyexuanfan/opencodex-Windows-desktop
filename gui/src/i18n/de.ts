@@ -715,6 +715,7 @@ export const de = {
   "api.confirm": "Bestätigen",
   "api.deleteAria": "API-Schlüssel löschen",
   "api.usageTitle": "Nutzungsbeispiel",
+  "api.usageSampleInput": "Hallo, Welt!",
   "api.workspace.overview": "Übersicht",
   "api.workspace.keyDetails": "Schlüsseldetails",
   "api.workspace.keyPrefix": "Schlüssel-Präfix",

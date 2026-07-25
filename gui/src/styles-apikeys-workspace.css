@@ -11,6 +11,8 @@
 .apikeys-workspace-shell {
   width: 100%;
   min-width: 0;
+  container-type: inline-size;
+  container-name: apikeys-workspace;
 }
 
 .apikeys-workspace-root {
@@ -237,7 +239,7 @@
   margin: 0;
   flex: 1;
   min-width: 0;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .awi-kv-row dd code {
@@ -250,6 +252,10 @@
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 16px;
+}
+
+.awi-back {
+  margin-bottom: 8px;
 }
 
 .awi-detail-title {
@@ -299,6 +305,26 @@
 }
 
 /* ── Responsive ───────────────────────────────────────── */
+/* Keep @container and @media stacking rules in sync when changing breakpoints. */
+
+@container apikeys-workspace (max-width: 720px) {
+  .apikeys-workspace-root {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: auto;
+  }
+  .apikeys-workspace-rail {
+    border-right: none;
+    padding-right: 0;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: var(--space-3);
+  }
+  .apikeys-workspace-rail-list {
+    max-height: 320px;
+  }
+  .apikeys-workspace-main {
+    padding: var(--space-2) 0 0;
+  }
+}
 
 @media (max-width: 768px) {
   .apikeys-workspace-root {

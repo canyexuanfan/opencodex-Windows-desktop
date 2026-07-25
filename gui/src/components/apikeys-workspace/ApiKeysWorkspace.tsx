@@ -1,9 +1,10 @@
 /**
  * ApiKeysWorkspace — rail + main workspace for the API Keys tab, mirroring the
- * Providers workspace DNA. Left rail lists active keys; the main pane shows either
- * the overview (endpoint, generate form, usage example) or a per-key detail view.
+ * Providers workspace DNA. Left rail lists Overview + active keys; the main pane
+ * shows either the overview (endpoint, generate form, usage example) or a per-key
+ * detail view.
  */
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { IconCheck, IconPlus, IconTrash, IconX } from "../../icons";
 import { useT } from "../../i18n";
 
@@ -21,7 +22,8 @@ export interface ApiKeysWorkspaceProps {
   creating: boolean;
   newKey: string | null;
   copied: boolean;
-  onCreate: (name: string) => void;
+  /** Resolves true only after a successful create so the draft name can be cleared. */
+  onCreate: (name: string) => Promise<boolean>;
   onDismissNewKey: () => void;
   onCopyNewKey: () => void;
   onDelete: (id: string) => void;
@@ -47,12 +49,19 @@ export default function ApiKeysWorkspace({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const createInFlight = useRef(false);
 
   const selected = keys.find(k => k.id === selectedId) ?? null;
 
-  const handleCreate = () => {
-    onCreate(newName);
-    setNewName("");
+  const handleCreate = async () => {
+    if (creating || createInFlight.current) return;
+    createInFlight.current = true;
+    try {
+      const ok = await onCreate(newName);
+      if (ok) setNewName("");
+    } finally {
+      createInFlight.current = false;
+    }
   };
 
   const handleDeleteClick = () => {
@@ -66,6 +75,11 @@ export default function ApiKeysWorkspace({
     setSelectedId(null);
   };
 
+  const showOverview = () => {
+    setSelectedId(null);
+    setConfirmDelete(false);
+  };
+
   return (
     <div className="apikeys-workspace-shell">
       <div className="apikeys-workspace-root">
@@ -75,6 +89,14 @@ export default function ApiKeysWorkspace({
             <span className="apikeys-workspace-rail-count">{keys.length}</span>
           </div>
           <div className="apikeys-workspace-rail-list">
+            <button
+              type="button"
+              className={`apikeys-workspace-rail-row${selectedId === null ? " apikeys-workspace-rail-row--selected" : ""}`}
+              onClick={showOverview}
+              aria-current={selectedId === null ? "true" : undefined}
+            >
+              <span className="apikeys-workspace-rail-name">{t("api.workspace.overview")}</span>
+            </button>
             {keys.length === 0 ? (
               <span className="apikeys-workspace-rail-empty">{t("api.workspace.noKeysHint")}</span>
             ) : (
@@ -94,9 +116,12 @@ export default function ApiKeysWorkspace({
           </div>
         </aside>
 
-        <main className="apikeys-workspace-main">
+        <section className="apikeys-workspace-main" aria-label={selected ? t("api.workspace.keyDetails") : t("api.workspace.overview")}>
           {selected ? (
             <div className="awi-detail">
+              <button type="button" className="btn btn-ghost btn-sm awi-back" onClick={showOverview}>
+                {t("modal.back")}
+              </button>
               <div className="awi-detail-head">
                 <h2 className="awi-detail-title">{selected.name}</h2>
                 <span className="awi-detail-actions">
@@ -174,10 +199,16 @@ export default function ApiKeysWorkspace({
                     placeholder={t("api.keyNamePlaceholder")}
                     aria-label={t("api.keyNamePlaceholder")}
                     value={newName}
+                    disabled={creating}
                     onChange={e => setNewName(e.target.value)}
-                    onKeyDown={e => { if (e.key === "Enter") handleCreate(); }}
+                    onKeyDown={e => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void handleCreate();
+                      }
+                    }}
                   />
-                  <button type="button" className="btn btn-primary" onClick={handleCreate} disabled={creating}>
+                  <button type="button" className="btn btn-primary" onClick={() => { void handleCreate(); }} disabled={creating}>
                     <IconPlus /> {creating ? t("api.generating") : t("api.generate")}
                   </button>
                 </div>
@@ -190,12 +221,12 @@ export default function ApiKeysWorkspace({
   -H "Content-Type: application/json" \\
   -d '{
     "model": "gpt-5.4",
-    "input": "Hello, world!"
+    "input": ${JSON.stringify(t("api.usageSampleInput"))}
   }'`}</pre>
               </div>
             </>
           )}
-        </main>
+        </section>
       </div>
     </div>
   );
