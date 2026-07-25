@@ -31,7 +31,7 @@ gh pr diff N --repo lidge-jun/opencodex | git apply --check -
 | #405 | `a70e0cc4d720e3a512910f3ea327d2db94fc865e` | ready, 4 files | exit 0, clean |
 | #429 | `f408f3485d2a3ec1d35b10e82dcbd9d28f8f9932` | **draft**, 5 files | exit 1: `src/adapters/cursor/protobuf-events.ts:2`, `tool-definitions.ts:9`, `tests/cursor-blob.test.ts:324` do not apply |
 | #391 | `ed1ee20139f0eb8dac194b8c8ad66a037be35848` | ready, 9 files | exit 0, clean |
-| #426 | `374313200f8fa20c9e00fe5f918c67372a289381` | ready, 46 files, `+1438/-57` | exit 1: `src/codex/auth-context.ts:24`, `src/codex/routing.ts:66`, `src/server/responses/compact.ts:255`, `src/server/responses/core.ts:120` do not apply |
+| #426 | ~~`374313200f8fa20c9e00fe5f918c67372a289381`~~ → live `2ff3e24b` | **STALE — 게시 보류** | 50 files, `+2111/-74`, mergeable=CONFLICTING |
 | #431 | `d25eba5b` (full SHA는 게시 직전 재확인) | **draft**, 9 files, `+140/-5` | exit 0, clean |
 
 Clean apply는 security/correctness 승인 근거가 아니다. #434의 binary error만으로 stale을 판정하지 않고, removed paths와 Providers conflict 및 4-feature blast radius를 함께 근거로 split/rework를 요구한다.
@@ -241,3 +241,39 @@ Although this pinned patch currently passes `git apply --check`, it must be reba
       완료 사실로 바꿔 쓴다. 통합 전에 게시할 경우에만 "planned" 표현을 유지한다.
 - [ ] 모든 코멘트가 영어이며 감사 표현, file:line, failure mode, fix, test 계약을 포함한다.
 - [ ] #403과 #437에는 아무 코멘트도 게시하지 않는다 (`NO_ACTION`).
+
+## WP8 게시 시점 갱신 (A-gate 반영)
+
+### #426 — STALE, 이번 배치에서 게시하지 않는다
+
+pinned `37431320`에서 live `2ff3e24b`로 head가 바뀌었다(50파일 `+2111/-74`, mergeable=CONFLICTING).
+문서의 게시 전 규칙에 따라 **이전 line/diff 기반 초안을 그대로 게시하면 안 된다.** 새 head 전체를
+재감사한 뒤 별도로 게시한다. `account.id` namespace fallback 자체는 새 head에서도 남아 있는 것으로
+보이지만, 라인 근거가 이동했으므로 초안 재작성이 필요하다.
+
+따라서 이번 게시 대상은 **10건**이다: #408 #424 #447 #445 #355 #434 #405 #429 #391 #431.
+
+### 게시 시점 rebase 완료 문구 (planned → 완료 사실)
+
+dev가 실제로 통합한 것: #370(auth 3파일), #389(`src/router.ts`), #439(`src/types.ts`),
+#385(`src/providers/registry.ts`), #436(`src/responses/parser.ts`), #430(`src/adapters/google.ts`),
+#449(provider workspace).
+
+| PR | 추가할 문구 |
+|---|---|
+| #408 | 불필요 |
+| #424 | current `dev` now includes #436's validated Responses parser contract in `src/responses/parser.ts` and #439's context-pressure types in `src/types.ts` |
+| #447 | current `dev` now includes #439's Kiro/context-pressure changes in `src/adapters/kiro.ts` and `src/types.ts`, and #385's BizRouter registry seed |
+| #445 | current `dev` now includes #449's provider-workspace integration in `gui/src/pages/Providers.tsx` and the new dashboard i18n keys |
+| #355 | preserve #430's Google empty/malformed-content guards in `src/adapters/google.ts` and the current provider-registry parity contract |
+| #434 | re-cut each split from current `dev`, which now includes #389's model visibility/router contracts, #449's provider-workspace changes, and #385's registry seed |
+| #405 | current `dev` now includes #385's BizRouter registry entry and expanded registry-parity assertions |
+| #429 | 완료 사실 없음. 기존 current-dev re-cut 요구 유지 |
+| #391 | current `dev` now includes #439's context-pressure fields in `src/types.ts` |
+| #431 | current `dev` now integrated #385 in `src/providers/registry.ts`, #389 in `src/router.ts`, #439 in `src/types.ts` |
+
+### close 순서 (감사 지적)
+
+`dev` push 후 remote `dev`가 `15dfa270`을 포함함을 **확인한 뒤에** 통합 PR과 이슈를 닫는다.
+push 전에 닫으면 안 된다.
+
