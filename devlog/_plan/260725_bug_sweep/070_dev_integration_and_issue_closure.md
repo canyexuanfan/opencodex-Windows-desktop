@@ -128,4 +128,47 @@ cd gui && bun test tests && bun run build
 
 ## 실행 영수증
 
-_(C/D 단계에서 작성)_
+### 재배치와 로컬 검증
+
+- rebase 직전 merge tree: `34c4ba5626fee2246719464abaa7caf47596a0e9`
+- local `dev` 기준: `f0db9188d11b87f45f5cca0f52d6e447b6b51428`
+- rebase 결과: 16/16 무충돌, 스윕 tip `a5ec15e37f0ba39bf226ceb4357a6cc341efbfc0`
+- focused activation tests: 11파일, **332 pass / 0 fail**
+- `bun run prepush`: **4151 pass / 0 fail**, typecheck·GUI lint·privacy scan 통과
+- GUI tests: **134 pass / 0 fail**
+- GUI build: `tsc -b && vite build`, exit 0
+- 사용자 소유 `devlog/_plan/.DS_Store` blob hash:
+  `3a1ad0021f9ebeed0b59a514a836fce018b0ef71` (재배치·첫 ff-only 전후 동일)
+
+### 첫 dev 게시와 hosted gate
+
+- `IMPLEMENTATION_SHA`: `a5ec15e37f0ba39bf226ceb4357a6cc341efbfc0`
+- local `dev` fast-forward: 성공
+- `origin/dev` push: 성공, force 없음
+- [Cross-platform CI run 30159409645](https://github.com/lidge-jun/opencodex/actions/runs/30159409645):
+  success. Ubuntu/macOS/Windows와 npm-global 3개 job 전부 통과.
+- [Service lifecycle run 30159409637](https://github.com/lidge-jun/opencodex/actions/runs/30159409637):
+  success. Windows Task Scheduler, Linux systemd, macOS launchd 전부 통과.
+
+### GitHub 코멘트와 종료
+
+모든 코멘트를 먼저 게시하고 URL을 확인한 뒤 PR, 이슈 순으로 닫았다.
+
+| 항목 | 코멘트 | 최종 상태 |
+|---|---|---|
+| #433 | [issuecomment-5078643748](https://github.com/lidge-jun/opencodex/issues/433#issuecomment-5078643748) | CLOSED / COMPLETED |
+| #432 | [issuecomment-5078643797](https://github.com/lidge-jun/opencodex/issues/432#issuecomment-5078643797) | CLOSED / COMPLETED |
+| #422 | [issuecomment-5078643875](https://github.com/lidge-jun/opencodex/issues/422#issuecomment-5078643875) | CLOSED / COMPLETED |
+| #373 | [issuecomment-5078643829](https://github.com/lidge-jun/opencodex/issues/373#issuecomment-5078643829) | CLOSED / COMPLETED |
+| #404 | [issuecomment-5078643932](https://github.com/lidge-jun/opencodex/issues/404#issuecomment-5078643932) | CLOSED / COMPLETED |
+| PR #376 | [issuecomment-5078643983](https://github.com/lidge-jun/opencodex/pull/376#issuecomment-5078643983) | CLOSED / not merged |
+
+- #433 코멘트는 핵심 pinning 수정과 미구현 CLI/GUI 후속을 분리했다.
+- #404/#422 코멘트는 live private gateway 재검증이 아니라 회귀 계약으로 닫는다고 명시했다.
+- 제외 대상 PR #408, #430, #436은 모두 OPEN / MERGEABLE 상태를 유지한다.
+
+### Receipt 게시
+
+이 문서 커밋을 `RECEIPT_SHA`로 삼아 스윕 브랜치에서 커밋한 뒤 local `dev`를 두 번째
+ff-only로 올리고 push한다. docs-only path filter 때문에 자동 실행되지 않는 두 hosted workflow는
+수동 dispatch하고 exact SHA를 확인한다.
