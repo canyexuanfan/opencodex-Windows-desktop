@@ -153,8 +153,13 @@ if (workspaceView) {
 2. Classic 집중 계약:
 
    ```bash
-   bun test gui/tests/subagents-classic.test.ts
+   (cd gui && bun test tests/subagents-classic.test.ts)
    ```
+
+   > 루트에서 `bun test gui/tests/...` 는 경로가 아니라 **필터**로 해석되어
+   > 아무 파일도 매칭하지 않고 조용히 통과한다. `scripts/test.ts:38-41` 기본값은
+   > `./tests/` 뿐이다. GUI 테스트는 반드시 `cd gui && bun test tests` 형태로 돌린다
+   > (`gui/package.json:10`, `.github/workflows/ci.yml:75-76`).
 
    2 pass, 0 fail이면 단일 Classic 렌더와 선택·5개 상한·순서·저장 계약이
    정적 회귀 테스트를 통과한 것이다.

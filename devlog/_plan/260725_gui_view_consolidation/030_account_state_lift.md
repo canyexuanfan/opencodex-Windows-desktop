@@ -18,7 +18,8 @@ Provider workspace의 Overview와 Accounts가 Codex 계정 목록을 각각 소�
 | `gui/src/components/provider-workspace/ProviderOverview.tsx` | **MODIFY** | `authPanel` prop을 받아 AUTHENTICATION 요약 자리에 렌더한다. 우측 sidebar는 변경하지 않는다(`ProviderOverview.tsx:132-172`). |
 | `gui/src/components/provider-workspace/ProviderAuthPanel.tsx` | **MODIFY** | `codexPool` prop을 받아 Codex 표시에도 공유 컨트롤러를 사용하고, OAuth/Codex 행을 동일한 `pwi-auth-row` 슬롯 계약으로 맞춘다. 현재 Codex는 내부 마운트다(`ProviderAuthPanel.tsx:40-48`). |
 | `gui/src/styles/provider-workspace-settings.css` | **MODIFY** | 계정 행 액션 슬롯과 빈 슬롯 규칙을 추가한다. 기존 행의 축소 규칙은 `provider-workspace-settings.css:34-60`이다. |
-| `tests/provider-workspace-auth.test.ts` | **MODIFY** | 두 탭이 같은 컨트롤러를 받고 Codex 행이 OAuth 행 계약을 쓰는 정적 회귀를 추가한다. 기존 Codex workspace 검사는 `tests/provider-workspace-auth.test.ts:96-167`에 있다. |
+| `tests/provider-workspace-auth.test.ts` | **MODIFY** | 소스 문자열 기반 **정적** 회귀만 담당한다(기존 검사는 `:83-180`). 공유 상태의 실제 동작 증명은 이 파일로 부족하다 — 아래 '동작 수준 테스트'를 별도로 만든다. |
+| `gui/tests/codex-account-pool-controller.test.tsx` | **NEW** | 동작 수준 테스트. 하나의 컨트롤러에 Overview/Accounts 두 경로를 붙이고 mutation·실패 보존·순서 뒤바뀐 응답·요청 수를 단언한다. |
 | `gui/tests/codex-auto-switch-controller.test.tsx` | **MODIFY** | `CodexAccountPool`의 필수 controller prop에 맞추되 auto-switch read/write 회귀를 보존한다. 현재 직접 마운트는 `codex-auto-switch-controller.test.tsx:160`이다. |
 
 새 endpoint, 새 자격증명 형식, 새 라우팅 계층은 추가하지 않는다. 새 훅은 `CodexAccountPool.tsx:57-201`의 기존 요청을 옮기는 것뿐이다.
@@ -369,19 +370,73 @@ Q8에 따라 우측 sidebar의 폭/내용/순서는 변경하지 않는다. `Pro
 
 ## 검증
 
+
+## 로드/폴링 생명주기 소유권 (A-gate 보완, 확정)
+
+리뷰에서 지적된 누락이다. 추출 표가 상태는 나눴지만 **이펙트의 소유자를 지정하지
+않았다.** 지정하지 않으면 두 표면이 각자 폴링하거나(중복 요청) 아무도 초기 로드를
+하지 않는다.
+
+현재 이펙트 (`CodexAccountPool.tsx:92-108`):
+
+```text
+useEffect(() => {
+  timeout(0)  -> load()                 // 초기 로드
+  if (showAdd) return cleanup           // add/reauth 모달 열려있으면 폴링 정지
+  interval(30_000) -> load()            // 배경 갱신
+}, [load, showAdd]);
+```
+
+**문제:** 이 이펙트는 DATA(`load`)와 PRESENTATION(`showAdd`)에 동시에 의존한다.
+Q6의 분류선을 그대로 적용하면 이펙트가 두 계층에 걸친다.
+
+### 확정
+
+1. **이펙트는 훅(컨트롤러)이 소유한다.** `useCodexAccountPool`이 초기 로드와
+   30초 인터벌을 단독으로 돌린다. `Providers.tsx`가 훅을 한 번만 호출하므로
+   폴링도 앱 전체에서 한 번만 돈다.
+2. **`showAdd` 의존은 일반화한 pause 신호로 바꾼다.** 훅이
+   `pauseRefresh(reason)` / `resumeRefresh(reason)`를 노출하고, 모달을 여는
+   표시 계층이 이를 호출한다. 이유 문자열을 세트로 관리해 두 표면이 각각 모달을
+   열어도 참조 카운트가 맞는다.
+3. **표면 컴포넌트는 이펙트를 갖지 않는다.** Overview와 Accounts는 훅이 준
+   값을 읽기만 한다. 이것이 "두 표면이 마운트/언마운트돼도 요청 수가 변하지
+   않는다"는 검증 기준의 근거다.
+
+```text
+// 훅이 노출하는 형태 (Q6 데이터 계층 + 생명주기)
+{
+  accounts, activeId, loadState, switchingId,
+  load, switchAccount, saveAlias, removeAccount, syncAfterAccountAdded,
+  pauseRefresh(reason: string), resumeRefresh(reason: string),
+}
+```
+
+### 이 결정이 만드는 검증 기준
+
+- Overview와 Accounts를 번갈아 5회 전환해도 `/api/codex-auth/accounts` 요청 수가
+  증가하지 않는다 (탭 전환은 fetch를 유발하지 않는다).
+- Overview에서 add 모달을 열면 30초 폴링이 멈추고, 닫으면 재개된다.
+- 두 표면이 동시에 마운트된 상황이 생기더라도 인터벌은 하나다.
+
 ### 정적/테스트 게이트
 
 구현 직후 작은 순서로 실행하고, 마지막에 전체 gate를 실행한다.
 
 ```bash
 git diff --check
-bun test tests/provider-workspace-auth.test.ts gui/tests/codex-auto-switch-controller.test.tsx
+bun test tests/provider-workspace-auth.test.ts
+(cd gui && bun test tests/codex-auto-switch-controller.test.tsx)
 bun run typecheck
 bun run lint:gui
 bun run build:gui
 bun run privacy:scan
-bun run test
+bun run test                      # 루트 스위트 (./tests/)
+(cd gui && bun test tests)        # GUI 스위트 — 루트 test 는 gui/tests 를 돌리지 않는다
 ```
+
+> 루트에서 GUI 파일을 인자로 주면 **필터**로 해석되어 조용히 건너뛴다
+> (`scripts/test.ts:38-41`). 위처럼 반드시 분리해서 실행한다.
 
 추가 회귀는 다음을 증명해야 한다.
 

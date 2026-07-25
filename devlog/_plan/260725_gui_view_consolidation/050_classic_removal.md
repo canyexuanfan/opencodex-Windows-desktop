@@ -73,11 +73,39 @@ pws.workspaceToggle
 | --- | --- | --- |
 | `gui/tests/view-mode.test.ts` | **삭제** | 9개 테스트 전부 `view-mode preference` / `providers hash sync helpers` 검증 |
 | `gui/tests/view-mode-remount.test.tsx` | **삭제** | `toggling viewMode does not remount...` — 토글 자체가 사라짐 |
-| `gui/tests/providers-hash-history.test.tsx` | **재작성** | 11개 케이스 중 workspace 정규화/토글/히스토리 부분 제거, 단일 `#providers` 계약만 남긴다 |
+| `gui/tests/providers-hash-history.test.tsx` | **선별 재작성** | 실측 **21개** 케이스(`:50-414`). 아래 표로 케이스별 처리를 확정한다 |
 | `gui/tests/subagents-workspace.test.ts` | WP1에서 처리 | — |
 | `tests/provider-workspace-rail.test.ts:75-88` | **수정** | `preserves only the exact workspace subroute on page synchronization`가 `providers/workspace`를 단언한다. 계획서 초안이 누락했던 5번째 파일이다 |
 
 `tests/startup-health-ui.test.ts`는 health 상태와 poll epoch만 검증한다. **무관하다.**
+
+### `providers-hash-history.test.tsx` 케이스별 처리 (확정)
+
+WP2가 이 파일에 Dashboard 해시 테스트를 **추가**한다(`020_nav_and_dashboard_tabs.md`).
+따라서 WP5가 "재작성"이라는 이름으로 통째로 갈아엎으면 WP2가 방금 넣은 계약이 함께
+사라진다. 케이스 단위로 지정한다.
+
+**유지 (ViewMode와 무관한 계약):**
+
+- `normalizeHashPath` / `replaceHash` / `navigateHash` 순수 헬퍼 테스트
+- WP2가 추가한 Dashboard 해시 케이스 (등록된 하위 해시, 미등록 접미사 passive replace)
+- 뒤로가기/앞으로가기 히스토리 동작
+- 스토리지 접근 실패(사생활 보호 모드) 시 degrade 동작
+
+**변환 (workspace → 단일 해시 계약):**
+
+- `#providers/workspace` 입력 → `#providers`로 passive replace 되는지. 이것은
+  **삭제가 아니라 반대 방향으로 다시 쓴다.** Q1 확정 사항의 회귀 방어다.
+
+**삭제 (개념 자체가 사라짐):**
+
+- `preferred === "workspace"`일 때 `#providers` → `#providers/workspace` 재작성
+- 토글로 인한 해시 변경
+- `persistViewMode` 관련 단언
+- 저장된 선호값에 따른 분기 전부
+
+착수 시 `rg -n "^\s*(it|test)\(" gui/tests/providers-hash-history.test.tsx`로 현재
+개수를 다시 세고, 위 분류에 넣은 뒤 남은 것이 없는지 확인한다.
 
 ## 해시 처리 (Q1 확정)
 
@@ -126,13 +154,23 @@ try { for (const k of STALE_VIEW_KEYS) localStorage.removeItem(k); } catch { /* 
 
 ```bash
 rg -n "viewMode|ViewMode|classicToggle|workspaceToggle" gui/src    # 0건이어야 한다
-rg -n "providers/workspace" gui/src tests/                          # 0건
+rg -n "providers/workspace" gui/src                                 # 0건
 bun run typecheck
 bun run lint:gui
-bun run test
+bun run test                      # 루트 스위트 (./tests/) — provider-workspace-rail 포함
+(cd gui && bun test tests)        # GUI 스위트 — 필수. 루트 test 는 gui/tests 를 돌리지 않는다
 bun run privacy:scan
 bun run build:gui
+git diff --check
 ```
+
+> WP5는 GUI 테스트 3개를 삭제/재작성하므로 **GUI 스위트 실행이 특히 중요하다.**
+> `scripts/test.ts:38-41`의 기본 인자는 `./tests/`뿐이라 루트 `bun run test`만
+> 돌리면 변경한 파일이 한 번도 실행되지 않는다.
+>
+> `providers/workspace` 문자열은 `tests/`에서는 0건이 아닐 수 있다 —
+> `tests/provider-workspace-rail.test.ts:75-88`을 Q1 계약(passive replace)으로
+> 고쳐 쓰면 그 문자열이 남는다. `gui/src`에서만 0건을 요구한다.
 
 브라우저:
 

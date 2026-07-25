@@ -12,15 +12,26 @@ Providers workspace 레일에서 프로바이더 행에 마우스를 올리면 �
 
 ## 현재 상태
 
-### 삭제 핸들러는 이미 있다
+### 삭제 핸들러는 이미 있다 — 다만 레일까지 전달되지 않는다
 
 ```text
-ProviderDetails.tsx:151-160    onRemoveProvider 콜백 + IconTrash 버튼
-ProviderDetails.tsx:76         onRemoveProvider?: (name: string) => void
-i18n 키 pws.removeConfirmTitle 이미 존재
+Providers.tsx:397-399     removeProvider(name) → setRemoveConfirmName(name)  (모달만 연다)
+Providers.tsx:401-405     confirmRemoveProvider() → 실제 DELETE 수행
+Providers.tsx:653-659     {removeConfirmName && <RemoveConfirmDialog .../>}
+Providers.tsx:623         onRemoveProvider={removeProvider}  ← ProviderDetails 에만 전달됨
+ProviderDetails.tsx:151-160   그 콜백을 받아 IconTrash 버튼을 그린다
 ```
 
-새 API도 새 핸들러도 필요 없다. 레일에서 같은 콜백을 호출하면 된다.
+**중요:** `removeProvider`는 이미 확인 모달을 여는 함수다. 즉시 삭제가 아니다.
+따라서 레일에서 그대로 호출해도 `RemoveConfirmDialog`를 거친다 — 별도 확인 로직을
+만들 필요가 없다.
+
+다만 `ProviderWorkspaceShell`은 현재 이 콜백을 **받지 않는다**. 레일은 shell 안에
+있으므로 prop 전달 경로를 새로 뚫어야 한다:
+
+```text
+Providers.tsx  →  ProviderWorkspaceShell (신규 prop)  →  RailRow 래퍼
+```
 
 ### 행의 DOM 구조가 제약이다
 
@@ -28,7 +39,8 @@ i18n 키 pws.removeConfirmTitle 이미 존재
 ProviderRail.tsx:86-90    <button role="option" aria-selected className="providers-workspace-rail-row">
 ProviderRail.tsx:118-131  마지막 자식이 <span className="providers-workspace-rail-trail">
                           그 안에 pwi-default-star(조건부) + railStatusCls 상태점
-ProviderWorkspaceShell.tsx:412-417  items.map(item => <RailRow .../>) — 행 래퍼가 없다
+ProviderWorkspaceShell.tsx:417-429  items.map(item => <RailRow ... />) — 행 래퍼가 없다
+                                    (RailRow 요소가 :418-429 를 차지한다)
 ```
 
 CSS도 제약을 건다:
@@ -137,20 +149,54 @@ after:   {items.map(item => (
 휴지통이 그 위를 덮는다. 별도 처리 없이 z축으로 겹친다 — 다만 상태점이 비쳐
 보이지 않도록 휴지통 버튼에 배경(`background: var(--surface)`)을 준다.
 
-### 4. 확인 모달 경유
+### 4. prop 경로 (확정 — B단계로 미루지 않는다)
 
-파괴적 동작이므로 기존 확인 경로를 반드시 탄다. `onRemoveProvider`가 이미
-`ProviderDialogs.tsx` 확인 모달을 띄우는지 B단계 착수 시 확인하고, 아니라면
-`ProviderDetails.tsx:151-160`과 동일한 경로를 태운다.
+`ProviderWorkspaceShell`의 prop 계약에 추가한다:
+
+```text
+// ProviderWorkspaceShell.tsx — props 인터페이스
++ onRemoveProvider?: (name: string) => void;
+
+// Providers.tsx — shell 호출부
+// 현재 onRemoveProvider 는 ProviderDetails 렌더 함수 안(:623)에서만 쓰인다.
+// shell 자체에도 같은 함수를 넘긴다.
+  <ProviderWorkspaceShell
+    ...
++   onRemoveProvider={removeProvider}
+  />
+```
+
+`ProviderWorkspaceShell.tsx`에 `IconTrash` import를 추가한다 (현재 없다).
+
+호출 시 동작 흐름:
+
+```text
+레일 휴지통 클릭
+  → removeProvider(name)              Providers.tsx:397-399
+  → setRemoveConfirmName(name)
+  → <RemoveConfirmDialog>             Providers.tsx:653-659
+  → 사용자 확인 → confirmRemoveProvider()  Providers.tsx:401-405
+```
+
+**확인 모달은 자동으로 경유된다.** 별도 구현이 필요 없다.
 
 ## 검증
 
 ```bash
 bun run typecheck
 bun run lint:gui
-bun run test
+bun run test                      # 루트 스위트 (./tests/)
+(cd gui && bun test tests)        # GUI 스위트 — 루트 test 는 gui/tests 를 돌리지 않는다
+bun run privacy:scan
 bun run build:gui
+git diff --check
 ```
+
+> **주의:** 저장소 루트에서 `bun test gui/tests/foo.test.ts` 는 경로가 아니라
+> **필터**로 해석되어 아무 파일도 매칭하지 않고 조용히 통과한다.
+> `scripts/test.ts:38-41` 의 기본값은 `./tests/` 뿐이다. GUI 테스트는 반드시
+> `cd gui && bun test tests` 형태로 돌린다
+> (`gui/package.json:10`, `.github/workflows/ci.yml:75-76` 과 동일한 방식).
 
 브라우저(로컬 Vite 5199):
 

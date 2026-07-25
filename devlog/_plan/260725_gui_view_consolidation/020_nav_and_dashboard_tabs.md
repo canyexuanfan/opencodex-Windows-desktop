@@ -356,13 +356,26 @@ expect(src).not.toContain("dashboard-workspace-rail");
 
 구현 후 정적·계약 검증을 다음 순서로 실행한다. 첫 명령은 Dashboard landmark/tab 계약과 route normalize 계약을 직접 검증한다(`gui/tests/dashboard-contracts.test.ts:19-25`, `gui/tests/providers-hash-history.test.tsx:49-82`). 나머지는 GUI 전체 타입/빌드, lint, root 타입 계약을 확인한다(`gui/package.json:8-10`, `package.json:39`, `package.json:43`, `package.json:50`).
 
+집중 확인:
+
 ```bash
 (cd gui && bun test tests/dashboard-contracts.test.ts tests/providers-hash-history.test.tsx)
-(cd gui && bun run build)
-bun run lint:gui
+```
+
+전체 게이트 (`000_plan.md` 필수 항목 전부):
+
+```bash
 bun run typecheck
+bun run lint:gui
+bun run test                      # 루트 스위트 (./tests/)
+(cd gui && bun test tests)        # GUI 스위트 — 루트 test 는 gui/tests 를 돌리지 않는다
+bun run privacy:scan
+bun run build:gui
 git diff --check
 ```
+
+> 이 WP는 `app-routing.ts`/`use-app-route-state.ts` 를 바꾸므로 루트 스위트의
+> `tests/provider-workspace-rail.test.ts` 가 반드시 함께 돌아야 한다.
 
 브라우저 검증은 `bun run dev:gui`로 Vite를 띄운 뒤 다음을 확인한다(`package.json:37`, `gui/package.json:7`).
 

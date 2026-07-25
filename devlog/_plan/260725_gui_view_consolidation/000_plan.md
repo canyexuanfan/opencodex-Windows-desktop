@@ -28,7 +28,7 @@ Classic/Workspace 이중 렌더 경로를 없애고 Workspace 단일 경로로 �
 
 ```text
 gui/src/App.tsx:72            useAppRouteState() -> viewMode, toggleGlobalWorkspace
-gui/src/App.tsx:236-239       사이드바 하단 Classic/Workspace 토글 버튼
+gui/src/App.tsx:235-240       사이드바 하단 Classic/Workspace 토글 버튼 (여는 줄~닫는 줄)
 gui/src/App.tsx:277,279,280,282  Dashboard/Providers/Models/Subagents에 viewMode prop 주입
 gui/src/view-mode.ts          ViewMode 타입 + 레거시 키 10개 마이그레이션 + providers 해시 변환
 gui/src/use-app-route-state.ts
@@ -177,7 +177,7 @@ DELETE /api/oauth/accounts       (:187)  <-> DELETE /api/codex-auth/accounts
 
 > **다만 "즉시 전환 vs 다음 세션"은 UI 문제가 아니다.** 두 엔드포인트 모두 즉시
 > 상태를 쓴다(`auth-api.ts:512-514`). 차이는 **소비 측**에 있다:
-> `src/codex/routing.ts:404-419`의 `threadAccountMap` 스레드 어피니티가 이미
+> `src/codex/routing.ts:375-416`의 `threadAccountMap` 스레드 어피니티가 이미
 > 진행 중인 스레드를 기존 계정에 고정하므로, 활성 계정을 바꿔도 **진행 중인
 > 스레드는 안 바뀐다**. 그래서 "다음 세션부터"라는 문구가 붙은 것이다. OAuth에는
 > 이 어피니티 계층이 없어서 즉시 반영된다.
@@ -267,8 +267,8 @@ WP5를 마지막에 두는 이유: WP1~WP4를 Classic이 살아있는 상태에�
 
 | 제약 | 출처 | 결과 |
 | --- | --- | --- |
-| `src/` 변경은 WP3a 상태 리프팅에 한정 | D5 + 범위 | 라우팅/어피니티 런타임은 건드리지 않는다 |
-| 스레드 어피니티(`routing.ts:404-419`) 변경 금지 | 범위 밖 | "다음 세션" 의미는 문구로만 표현한다 |
+| `src/` 변경은 두 곳으로 한정 | D5 + 범위 | (1) WP3a 상태 리프팅에 필요한 최소 변경, (2) WP7의 `src/usage/expected-prices.ts` 가격 오버레이. 그 외 `src/`는 금지 |
+| 스레드 어피니티(`routing.ts:375-416`) 변경 금지 | 범위 밖 | "다음 세션" 의미는 문구로만 표현한다 |
 | 인증/자격증명 표면 변경은 보안 검토 대상 | `AGENTS.md:65`, `MAINTAINERS.md:22` | WP3/WP3a는 자기검토 게이트를 거친다 (D3) |
 | `bun run typecheck` / `test` / `lint:gui` green | `AGENTS.md` | 각 WP 종료 시 게이트 통과 |
 | `bun run build:gui` 산출물 갱신 필요 | 로컬 검증 | `gui/dist`는 gitignore 대상, 커밋 아님 |
