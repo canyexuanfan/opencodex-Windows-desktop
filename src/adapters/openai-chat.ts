@@ -3,6 +3,7 @@ import type { AdapterEvent, OcxAssistantMessage, OcxContentPart, OcxMessage, Ocx
 import { isAllowedToolChoice, modelInList, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
 import { mapReasoningEffort, modelRecordValue } from "../reasoning-effort";
 import { debugProviderDiagnostic } from "../lib/debug";
+import { isDebugEnabled } from "../lib/debug-settings";
 import { redactSecretString } from "../lib/redact";
 import { contentPartsToText } from "./image";
 import { neutralizeIdentity } from "./identity";
@@ -589,17 +590,24 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       if (hasCredential) headers["Authorization"] = `Bearer ${provider.apiKey}`;
       if (provider.headers) Object.assign(headers, provider.headers);
 
-      debugProviderDiagnostic("openai-chat", "request", {
-        url,
-        model: body.model,
-        stream: parsed.stream,
-        messageCount: Array.isArray(messages) ? messages.length : 0,
-        toolCount: Array.isArray(tools) ? tools.length : 0,
-        hasCredential,
-        bodyBytes: new TextEncoder().encode(JSON.stringify(body)).length,
-      });
+      const bodyJson = JSON.stringify(body);
+      // Never log pathname/query — tenant-scoped hosts (e.g. Cloudflare
+      // /accounts/<account_id>/ai/v1) would otherwise leak account identifiers (#452).
+      if (isDebugEnabled()) {
+        let host = "upstream";
+        try { host = new URL(url).host; } catch { /* keep fallback */ }
+        debugProviderDiagnostic("openai-chat", "request", {
+          host,
+          model: body.model,
+          stream: parsed.stream,
+          messageCount: Array.isArray(messages) ? messages.length : 0,
+          toolCount: Array.isArray(tools) ? tools.length : 0,
+          hasCredential,
+          bodyBytes: new TextEncoder().encode(bodyJson).length,
+        });
+      }
 
-      return { url, method: "POST", headers, body: JSON.stringify(body) };
+      return { url, method: "POST", headers, body: bodyJson };
     },
 
     async *parseStream(response: Response): AsyncGenerator<AdapterEvent> {

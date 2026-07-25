@@ -72,6 +72,23 @@ describe("formatPassthroughUpstreamError (#452)", () => {
     expect(json.error?.message?.toLowerCase()).not.toBe("unknown error");
   });
 
+  test("empty body preserves validated Retry-After and forces application/json", async () => {
+    const headers = new Headers({ "retry-after": "12", "x-other": "drop-me" });
+    const response = formatPassthroughUpstreamError(429, "", { headers });
+    expect(response.status).toBe(429);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(response.headers.get("retry-after")).toBe("12");
+    expect(response.headers.get("x-other")).toBeNull();
+  });
+
+  test("empty body drops invalid Retry-After values", async () => {
+    for (const bad of ["", "nope", "-1", "0", "1e6", "not-a-delay"]) {
+      const headers = new Headers({ "retry-after": bad });
+      const response = formatPassthroughUpstreamError(503, "", { headers, now: Date.now() });
+      expect(response.headers.get("retry-after")).toBeNull();
+    }
+  });
+
   test("JSON with error.message is preserved for Codex", async () => {
     const body = JSON.stringify({ error: { message: "no healthy upstream", type: "server_error" } });
     const response = formatPassthroughUpstreamError(503, body);
@@ -90,70 +107,134 @@ describe("formatPassthroughUpstreamError (#452)", () => {
   });
 });
 
+async function withPoolPassthrough(
+  reply: (request: Request) => Response | Promise<Response>,
+  run: (serverUrl: string) => Promise<void>,
+): Promise<void> {
+  if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
+  mkdirSync(TEST_DIR, { recursive: true });
+  process.env.OPENCODEX_HOME = TEST_DIR;
+  delete process.env.OPENCODEX_API_AUTH_TOKEN;
+  clearCodexUpstreamHealth();
+  clearThreadAccountMap();
+  clearAccountQuota();
+  clearAccountNeedsReauth("pool-a");
+
+  const upstream = Bun.serve({
+    port: 0,
+    fetch(request) {
+      return reply(request);
+    },
+  });
+  redirectCanonicalCodexTo(upstream.url.toString());
+
+  saveConfig({
+    port: 0,
+    defaultProvider: "openai",
+    openaiProviderTierVersion: 2,
+    providers: {
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authMode: "forward",
+        codexAccountMode: "pool",
+      },
+    },
+    codexAccounts: [
+      { id: "main", email: "main@example.test", isMain: true },
+      { id: "pool-a", email: "pool-a@example.test", isMain: false, chatgptAccountId: "acct-pool-a" },
+    ],
+    activeCodexAccountId: "pool-a",
+  } as OcxConfig);
+  saveCodexAccountCredential("pool-a", {
+    accessToken: "pool-a-token",
+    refreshToken: "pool-a-refresh",
+    expiresAt: Date.now() + 10 * 60_000,
+    chatgptAccountId: "acct-pool-a",
+  });
+  updateAccountQuota("pool-a", 10);
+
+  const server = startServer(0);
+  try {
+    await run(server.url.toString());
+  } finally {
+    await server.stop(true);
+    await upstream.stop(true);
+  }
+}
+
 describe("passthrough empty 503 (#452)", () => {
   test("ChatGPT passthrough empty-body 503 becomes JSON Codex can parse", async () => {
-    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
-    mkdirSync(TEST_DIR, { recursive: true });
-    process.env.OPENCODEX_HOME = TEST_DIR;
-    delete process.env.OPENCODEX_API_AUTH_TOKEN;
-    clearCodexUpstreamHealth();
-    clearThreadAccountMap();
-    clearAccountQuota();
-    clearAccountNeedsReauth("pool-a");
-
-    const upstream = Bun.serve({
-      port: 0,
-      fetch() {
-        // Codex shows "Unknown error" when the body is empty — the historical passthrough bug.
-        return new Response(null, { status: 503 });
+    await withPoolPassthrough(
+      () => new Response(null, { status: 503 }),
+      async (serverUrl) => {
+        const response = await originalGlobalFetch(new URL("/v1/responses", serverUrl), {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: "Bearer inbound-token" },
+          body: JSON.stringify({ model: "gpt-5.6-sol", input: "hi", stream: false }),
+        });
+        expect(response.status).toBe(503);
+        const text = await response.text();
+        expect(text.trim().length).toBeGreaterThan(0);
+        const json = JSON.parse(text) as { error?: { message?: string } };
+        expect(typeof json.error?.message).toBe("string");
+        expect(json.error!.message!.trim().length).toBeGreaterThan(0);
+        expect(json.error!.message!.toLowerCase()).not.toBe("unknown error");
       },
-    });
-    redirectCanonicalCodexTo(upstream.url.toString());
+    );
+  });
 
-    saveConfig({
-      port: 0,
-      defaultProvider: "openai",
-      openaiProviderTierVersion: 2,
-      providers: {
-        openai: {
-          adapter: "openai-responses",
-          baseUrl: "https://chatgpt.com/backend-api/codex",
-          authMode: "forward",
-          codexAccountMode: "pool",
+  test("direct /v1/responses preserves Retry-After on empty-body 429 and 503", async () => {
+    for (const status of [429, 503] as const) {
+      await withPoolPassthrough(
+        () => new Response(null, { status, headers: { "Retry-After": "1" } }),
+        async (serverUrl) => {
+          const response = await originalGlobalFetch(new URL("/v1/responses", serverUrl), {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: "Bearer inbound-token" },
+            body: JSON.stringify({ model: "gpt-5.6-sol", input: "hi", stream: false }),
+          });
+          expect(response.status).toBe(status);
+          expect(response.headers.get("content-type")).toContain("application/json");
+          expect(response.headers.get("retry-after")).toBe("1");
         },
-      },
-      codexAccounts: [
-        { id: "main", email: "main@example.test", isMain: true },
-        { id: "pool-a", email: "pool-a@example.test", isMain: false, chatgptAccountId: "acct-pool-a" },
-      ],
-      activeCodexAccountId: "pool-a",
-    } as OcxConfig);
-    saveCodexAccountCredential("pool-a", {
-      accessToken: "pool-a-token",
-      refreshToken: "pool-a-refresh",
-      expiresAt: Date.now() + 10 * 60_000,
-      chatgptAccountId: "acct-pool-a",
-    });
-    updateAccountQuota("pool-a", 10);
-
-    const server = startServer(0);
-    try {
-      const response = await originalGlobalFetch(new URL("/v1/responses", server.url), {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: "Bearer inbound-token" },
-        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hi", stream: false }),
-      });
-      expect(response.status).toBe(503);
-      const text = await response.text();
-      expect(text.trim().length).toBeGreaterThan(0);
-      const json = JSON.parse(text) as { error?: { message?: string } };
-      expect(typeof json.error?.message).toBe("string");
-      expect(json.error!.message!.trim().length).toBeGreaterThan(0);
-      expect(json.error!.message!.toLowerCase()).not.toBe("unknown error");
-    } finally {
-      await server.stop(true);
-      await upstream.stop(true);
+      );
     }
+  });
+
+  test("direct /v1/responses drops invalid Retry-After on empty-body 503", async () => {
+    await withPoolPassthrough(
+      () => new Response(null, { status: 503, headers: { "Retry-After": "not-a-delay" } }),
+      async (serverUrl) => {
+        const response = await originalGlobalFetch(new URL("/v1/responses", serverUrl), {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: "Bearer inbound-token" },
+          body: JSON.stringify({ model: "gpt-5.6-sol", input: "hi", stream: false }),
+        });
+        expect(response.status).toBe(503);
+        expect(response.headers.get("retry-after")).toBeNull();
+      },
+    );
+  });
+
+  test("/v1/chat/completions forwards Retry-After from empty-body upstream 429", async () => {
+    await withPoolPassthrough(
+      () => new Response(null, { status: 429, headers: { "Retry-After": "3" } }),
+      async (serverUrl) => {
+        const response = await originalGlobalFetch(new URL("/v1/chat/completions", serverUrl), {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: "Bearer inbound-token" },
+          body: JSON.stringify({
+            model: "gpt-5.6-sol",
+            messages: [{ role: "user", content: "hi" }],
+            stream: false,
+          }),
+        });
+        expect(response.status).toBe(429);
+        expect(response.headers.get("content-type")).toContain("application/json");
+        expect(response.headers.get("retry-after")).toBe("3");
+      },
+    );
   });
 });
 
@@ -217,6 +298,35 @@ describe("openai-chat provider debug (#452)", () => {
     adapter.buildRequest(parsed);
     const lines = getDebugLogEntries().map(e => e.line);
     expect(lines.some(line => line.includes("[ocx:openai-chat:request]"))).toBe(true);
+    expect(lines.join("\n")).toContain('"host":"api.xiaomimimo.com"');
     expect(lines.join("\n")).not.toContain("sk-secret-xiaomi-key");
+    expect(lines.join("\n")).not.toContain("/v1/chat/completions");
+  });
+
+  test("tenant-scoped baseUrl logs host only — account id never appears", () => {
+    process.env.OCX_DEBUG = "1";
+    resetDebugLogBufferForTests();
+    const accountId = "cf-account-abc123secret";
+    const adapter = createOpenAIChatAdapter({
+      adapter: "openai-chat",
+      baseUrl: `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`,
+      apiKey: "cf-key-should-not-appear",
+    });
+    const parsed = {
+      modelId: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      stream: false,
+      context: {
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      },
+      options: {},
+    } as unknown as OcxParsedRequest;
+    adapter.buildRequest(parsed);
+    const joined = getDebugLogEntries().map(e => e.line).join("\n");
+    expect(joined).toContain("[ocx:openai-chat:request]");
+    expect(joined).toContain('"host":"api.cloudflare.com"');
+    expect(joined).not.toContain(accountId);
+    expect(joined).not.toContain("/accounts/");
+    expect(joined).not.toContain("cf-key-should-not-appear");
+    expect(joined).not.toContain("/ai/v1");
   });
 });
