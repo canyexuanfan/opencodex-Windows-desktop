@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <b>한국어</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ru.md">Русский</a> · <a href="README.ja.md">日本語</a> · 📖 <a href="https://opencodex.me/ko/"><b>전체 문서 →</b></a>
+  <a href="../README.md">English</a> · <b>한국어</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ru.md">Русский</a> · <a href="README.ja.md">日本語</a> · 📖 <a href="https://opencodex.me/ko/"><b>전체 문서 →</b></a>
 </p>
 
 <p align="center">
@@ -397,10 +397,10 @@ ocx recover-history --legacy-openai
 
 ## 문서
 
-공개 문서(설치, 프로바이더, 라우팅, sidecar, Codex 통합, Codex App 모델 선택기, CLI/설정 레퍼런스)는 [`docs-site/`](./docs-site)의 Astro 사이트로 빌드되어
+공개 문서(설치, 프로바이더, 라우팅, sidecar, Codex 통합, Codex App 모델 선택기, CLI/설정 레퍼런스)는 [`docs-site/`](../docs-site)의 Astro 사이트로 빌드되어
 **[opencodex.me](https://opencodex.me/ko/)** 에 게시됩니다.
 
-유지보수용 source of truth는 [`structure/`](./structure)에, 과거 조사/진단 노트는 [`docs/`](./docs)에 있습니다.
+유지보수용 source of truth는 [`structure/`](../structure)에, 과거 조사/진단 노트는 [`docs/`](../docs)에 있습니다.
 
 ## 개발
 

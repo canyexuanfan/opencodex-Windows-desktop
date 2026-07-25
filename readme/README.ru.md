@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <b>Русский</b> · <a href="README.ja.md">日本語</a> · 📖 <a href="https://opencodex.me/ru/"><b>Полная документация →</b></a>
+  <a href="../README.md">English</a> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <b>Русский</b> · <a href="README.ja.md">日本語</a> · 📖 <a href="https://opencodex.me/ru/"><b>Полная документация →</b></a>
 </p>
 
 <p align="center">
@@ -447,11 +447,11 @@ ocx recover-history --legacy-openai
 
 ## Документация
 
-Публичная документация — установка, провайдеры, маршрутизация, сайдкары, интеграция с Codex, селектор моделей Codex App и справочник по CLI/конфигурации — собирается из [`docs-site/`](./docs-site) и публикуется на **[opencodex.me](https://opencodex.me/)**.
+Публичная документация — установка, провайдеры, маршрутизация, сайдкары, интеграция с Codex, селектор моделей Codex App и справочник по CLI/конфигурации — собирается из [`docs-site/`](../docs-site) и публикуется на **[opencodex.me](https://opencodex.me/)**.
 
-Заметки мейнтейнеров, служащие источником истины, находятся в [`structure/`](./structure). Материалы прошлых исследований хранятся в [`docs/`](./docs).
-Инструкции для контрибьюторов — в [`CONTRIBUTING.md`](./CONTRIBUTING.md), а порядок сообщений
-о проблемах безопасности — в [`SECURITY.md`](./SECURITY.md).
+Заметки мейнтейнеров, служащие источником истины, находятся в [`structure/`](../structure). Материалы прошлых исследований хранятся в [`docs/`](../docs).
+Инструкции для контрибьюторов — в [`CONTRIBUTING.md`](../CONTRIBUTING.md), а порядок сообщений
+о проблемах безопасности — в [`SECURITY.md`](../SECURITY.md).
 
 ## Разработка
 
@@ -473,7 +473,7 @@ bun x tsc --noEmit   # проверка типов
 bun run dev:gui
 ```
 
-См. **[руководство для контрибьюторов](./CONTRIBUTING.md)**.
+См. **[руководство для контрибьюторов](../CONTRIBUTING.md)**.
 
 ## Отказ от ответственности
 

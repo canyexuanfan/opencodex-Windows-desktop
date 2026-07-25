@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <b>简体中文</b> · <a href="README.ru.md">Русский</a> · <a href="README.ja.md">日本語</a> · 📖 <a href="https://opencodex.me/zh-cn/"><b>完整文档 →</b></a>
+  <a href="../README.md">English</a> · <a href="README.ko.md">한국어</a> · <b>简体中文</b> · <a href="README.ru.md">Русский</a> · <a href="README.ja.md">日本語</a> · 📖 <a href="https://opencodex.me/zh-cn/"><b>完整文档 →</b></a>
 </p>
 
 <p align="center">
@@ -375,9 +375,9 @@ ocx recover-history --legacy-openai
 
 ## 文档
 
-完整文档——安装、provider 配置、路由、sidecar、Codex 集成、Codex App 模型选择器、CLI/配置参考——由 [`docs-site/`](./docs-site) 目录下的 Astro 站点构建，发布在 **[opencodex.me](https://opencodex.me/zh-cn/)**。
+完整文档——安装、provider 配置、路由、sidecar、Codex 集成、Codex App 模型选择器、CLI/配置参考——由 [`docs-site/`](../docs-site) 目录下的 Astro 站点构建，发布在 **[opencodex.me](https://opencodex.me/zh-cn/)**。
 
-维护者 source of truth 位于 [`structure/`](./structure)，历史调查和诊断笔记保留在 [`docs/`](./docs)。
+维护者 source of truth 位于 [`structure/`](../structure)，历史调查和诊断笔记保留在 [`docs/`](../docs)。
 
 ## 开发
 

@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ru.md">Русский</a> · <b>日本語</b> · 📖 <a href="https://opencodex.me/ja/"><b>完全なドキュメント →</b></a>
+  <a href="../README.md">English</a> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ru.md">Русский</a> · <b>日本語</b> · 📖 <a href="https://opencodex.me/ja/"><b>完全なドキュメント →</b></a>
 </p>
 
 <p align="center">
@@ -407,10 +407,10 @@ ocx recover-history --legacy-openai
 
 ## ドキュメント
 
-公開ドキュメント(インストール、プロバイダー、ルーティング、サイドカー、Codex 統合、Codex App モデルピッカー、CLI/設定リファレンス)は [`docs-site/`](./docs-site) の Astro サイトとしてビルドされ
+公開ドキュメント(インストール、プロバイダー、ルーティング、サイドカー、Codex 統合、Codex App モデルピッカー、CLI/設定リファレンス)は [`docs-site/`](../docs-site) の Astro サイトとしてビルドされ
 **[opencodex.me](https://opencodex.me/ja/)** に公開されます。
 
-メンテナ用の source of truth は [`structure/`](./structure) に、過去の調査/診断ノートは [`docs/`](./docs) にあります。
+メンテナ用の source of truth は [`structure/`](../structure) に、過去の調査/診断ノートは [`docs/`](../docs) にあります。
 
 ## 開発
 
