@@ -16,12 +16,18 @@ import { isWslRuntime } from "./codex/home";
 import { durableBunPath, durableBunRuntime } from "./lib/bun-runtime";
 import { isProcessAlive, stopProxy } from "./lib/process-control";
 import { serviceApiTokenFilePath } from "./lib/service-secrets";
+import { randomUUID } from "node:crypto";
 import {
+  ELEVATION_REQUEST_TIMEOUT_MS,
+  OCX_ELEVATED_PROTOCOL_FAILED,
   classifyElevatedSchedulerExitCode,
-  runElevatedSchtasksCreateAndRun,
+  raceWithTimeout,
+  startElevatedSchtasksCreateAndRun,
   runWindowsElevated,
   toWindowsSchtasksError,
+  WindowsElevationError,
   type ElevatedSchedulerOutcome,
+  type ElevatedSchtasksCreateAndRunExecution,
   type ElevatedSchtasksCreateAndRunResult,
 } from "./lib/windows-elevation";
 import { defaultWinswEntry, installWinswService, startWinswService, stopWinswService, statusWinswRaw, uninstallWinswService, winswStatusSummary, WINSW_SERVICE_ID, WINSW_SHA256, WINSW_VERSION } from "./lib/winsw";
@@ -438,18 +444,28 @@ async function rollbackElevatedSchedulerTask(taskName = TASK): Promise<string | 
   return null;
 }
 
-type ElevateCreateAndRun = (
+type ElevateCreateAndRunStart = (
   schtasksPath: string,
   createArgs: string[],
   runArgs: string[],
   deleteArgs: string[],
-) => Promise<ElevatedSchtasksCreateAndRunResult>;
+) => ElevatedSchtasksCreateAndRunExecution;
 
 type FinalizeHooks = {
-  elevateCreateAndRun?: ElevateCreateAndRun;
+  startElevateCreateAndRun?: ElevateCreateAndRunStart;
+  /** Legacy sync hook used by older tests — wraps a resolved result as an execution. */
+  elevateCreateAndRun?: (
+    schtasksPath: string,
+    createArgs: string[],
+    runArgs: string[],
+    deleteArgs: string[],
+  ) => Promise<ElevatedSchtasksCreateAndRunResult>;
   verify?: () => WindowsSchedulerInstallVerification;
   writeInstallState?: () => void;
   taskInstalled?: () => boolean;
+  /** Defense-in-depth: late reconciliation must still own this attempt. */
+  stillOwnsAttempt?: (attemptId: string) => boolean;
+  requestTimeoutMs?: number;
 };
 
 let finalizeHooks: FinalizeHooks | null = null;
@@ -467,7 +483,7 @@ function throwPartialInstall(parts: string[]): never {
  * Reconcile an unrecognized elevated exit when we cannot trust the phase code.
  * Never invent a create-vs-run classification; inspect actual task state first.
  */
-async function reconcileUnknownElevatedOutcome(exitCode: number): Promise<never> {
+async function reconcileUnknownElevatedOutcome(exitCode: number): Promise<void> {
   const taskPresent = finalizeHooks?.taskInstalled?.() ?? windowsSchedulerTaskInstalled();
   const parts = [
     "The elevated Task Scheduler operation returned an unknown result.",
@@ -489,17 +505,24 @@ async function reconcileUnknownElevatedOutcome(exitCode: number): Promise<never>
   throwPartialInstall(parts);
 }
 
-/** Re-register the scheduler task with elevation after a non-elevated install wrote assets. */
-export async function finalizeWindowsSchedulerServiceRegistration(script = windowsServiceScriptPath()): Promise<void> {
-  if (process.platform !== "win32") {
-    throw new Error("Windows scheduler registration is only supported on Windows.");
+type ApplyElevatedOptions = {
+  attemptId: string;
+  writeOnSuccess: boolean;
+  stillOwnsAttempt?: (attemptId: string) => boolean;
+};
+
+function attemptStillOwned(options: ApplyElevatedOptions): boolean {
+  const check = options.stillOwnsAttempt ?? finalizeHooks?.stillOwnsAttempt;
+  return !check || check(options.attemptId);
+}
+
+async function applyElevatedSchedulerResult(
+  result: ElevatedSchtasksCreateAndRunResult,
+  options: ApplyElevatedOptions,
+): Promise<void> {
+  if (!attemptStillOwned(options)) {
+    return;
   }
-  const createArgs = buildWindowsSchtasksCreateArgs(script);
-  const runArgs = ["/run", "/tn", TASK];
-  const deleteArgs = ["/delete", "/tn", TASK, "/f"];
-  const elevateCreateAndRun = finalizeHooks?.elevateCreateAndRun
-    ?? ((schtasksPath, create, run, del) => runElevatedSchtasksCreateAndRun(schtasksPath, create, run, del));
-  const result = await elevateCreateAndRun(windowsSchtasks(), createArgs, runArgs, deleteArgs);
   const outcome: ElevatedSchedulerOutcome = result.outcome ?? classifyElevatedSchedulerExitCode(result.exitCode);
 
   if (outcome === "create-failed") {
@@ -518,19 +541,15 @@ export async function finalizeWindowsSchedulerServiceRegistration(script = windo
       "Installation state was not written.",
     ]);
   }
-  if (outcome === "protocol-failed") {
+  if (outcome === "protocol-failed" || outcome !== "success") {
     await reconcileUnknownElevatedOutcome(result.exitCode);
-  }
-  if (outcome !== "success") {
-    await reconcileUnknownElevatedOutcome(result.exitCode);
+    return;
   }
 
   const verification = (finalizeHooks?.verify ?? verifyWindowsSchedulerInstall)();
   if (!verification.ok) {
     // Preserve a healthy elevated task when WinSW absence cannot be proven (unknown SCM status).
     // Unknown is not a confirmed dual-backend conflict; install state is still withheld.
-    // Parent-side rollback here may require a second UAC prompt — only used after a protocol
-    // success when postconditions fail for a confirmed problem (conflict / unhealthy / missing assets).
     const preserveElevatedTask = verification.taskInstalled
       && verification.registrationHealthy
       && verification.assetsHealthy
@@ -558,7 +577,191 @@ export async function finalizeWindowsSchedulerServiceRegistration(script = windo
     parts.push("Installation state was not written.");
     throwPartialInstall(parts);
   }
-  (finalizeHooks?.writeInstallState ?? (() => writeServiceInstallState("scheduler")))();
+  if (options.writeOnSuccess) {
+    if (!attemptStillOwned(options)) {
+      return;
+    }
+    (finalizeHooks?.writeInstallState ?? (() => writeServiceInstallState("scheduler")))();
+  }
+}
+
+/** Outcome of late reconciliation after a request-level elevation timeout. */
+export type ElevatedReconciliationOutcome =
+  | "released"
+  | "blocked-partial";
+
+export type FinalizeWindowsSchedulerResult =
+  | { kind: "done" }
+  | {
+      kind: "indeterminate";
+      attemptId: string;
+      /** Settles after the elevated transaction finishes and late reconciliation runs. */
+      reconciliation: Promise<ElevatedReconciliationOutcome>;
+    };
+
+export type FinalizeWindowsSchedulerOptions = {
+  attemptId?: string;
+  stillOwnsAttempt?: (attemptId: string) => boolean;
+  requestTimeoutMs?: number;
+};
+
+function startElevateExecution(
+  schtasksPath: string,
+  createArgs: string[],
+  runArgs: string[],
+  deleteArgs: string[],
+): ElevatedSchtasksCreateAndRunExecution {
+  if (finalizeHooks?.startElevateCreateAndRun) {
+    return finalizeHooks.startElevateCreateAndRun(schtasksPath, createArgs, runArgs, deleteArgs);
+  }
+  if (finalizeHooks?.elevateCreateAndRun) {
+    const completion = finalizeHooks.elevateCreateAndRun(schtasksPath, createArgs, runArgs, deleteArgs);
+    return { completion, launcherPid: null };
+  }
+  return startElevatedSchtasksCreateAndRun(schtasksPath, createArgs, runArgs, deleteArgs);
+}
+
+function isPartialInstallError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return /partial Task Scheduler/i.test(error.message)
+    || /Cleanup also failed/i.test(error.message)
+    || /left in place because native WinSW status could not be verified/i.test(error.message);
+}
+
+/**
+ * Re-register the scheduler task with elevation after a non-elevated install wrote assets.
+ *
+ * Request timeout does not kill the elevated launcher. On timeout this returns
+ * `indeterminate` and keeps reconciling the eventual protocol result.
+ */
+export async function finalizeWindowsSchedulerServiceRegistration(
+  script = windowsServiceScriptPath(),
+  options?: FinalizeWindowsSchedulerOptions,
+): Promise<FinalizeWindowsSchedulerResult> {
+  if (process.platform !== "win32") {
+    throw new Error("Windows scheduler registration is only supported on Windows.");
+  }
+  const attemptId = options?.attemptId ?? randomUUID();
+  const stillOwnsAttempt = options?.stillOwnsAttempt ?? finalizeHooks?.stillOwnsAttempt;
+  const createArgs = buildWindowsSchtasksCreateArgs(script);
+  const runArgs = ["/run", "/tn", TASK];
+  const deleteArgs = ["/delete", "/tn", TASK, "/f"];
+  const started = startElevateExecution(windowsSchtasks(), createArgs, runArgs, deleteArgs);
+  const timeoutMs = options?.requestTimeoutMs
+    ?? finalizeHooks?.requestTimeoutMs
+    ?? ELEVATION_REQUEST_TIMEOUT_MS;
+  const applyOpts: ApplyElevatedOptions = { attemptId, writeOnSuccess: true, stillOwnsAttempt };
+
+  let raced: { status: "completed"; value: ElevatedSchtasksCreateAndRunResult } | { status: "timed-out" };
+  try {
+    raced = await raceWithTimeout(started.completion, timeoutMs);
+  } catch (error) {
+    // Cancellation / launch failure / signal before or instead of a protocol result.
+    // Signal after Start-Process may leave an elevated child; reconcile conservatively.
+    if (error instanceof WindowsElevationError && error.reason === "terminated") {
+      try {
+        await reconcileUnknownElevatedOutcome(OCX_ELEVATED_PROTOCOL_FAILED);
+      } catch {
+        throw error;
+      }
+    }
+    throw error;
+  }
+
+  if (raced.status === "completed") {
+    await applyElevatedSchedulerResult(raced.value, applyOpts);
+    return { kind: "done" };
+  }
+
+  const reconciliation = (async (): Promise<ElevatedReconciliationOutcome> => {
+    try {
+      const result = await started.completion;
+      await applyElevatedSchedulerResult(result, applyOpts);
+      return "released";
+    } catch (error) {
+      if (error instanceof WindowsElevationError && error.reason === "cancelled") {
+        return "released";
+      }
+      if (error instanceof WindowsElevationError && error.reason === "launch-failed") {
+        return "released";
+      }
+      if (error instanceof WindowsElevationError && error.reason === "terminated") {
+        try {
+          await reconcileUnknownElevatedOutcome(OCX_ELEVATED_PROTOCOL_FAILED);
+          return "released";
+        } catch (reconcileError) {
+          return isPartialInstallError(reconcileError) ? "blocked-partial" : "released";
+        }
+      }
+      // applyElevatedSchedulerResult failures are expected (create/run/conflict); swallow for background.
+      if (isPartialInstallError(error)) {
+        return "blocked-partial";
+      }
+      return "released";
+    }
+  })();
+
+  return { kind: "indeterminate", attemptId, reconciliation };
+}
+
+/**
+ * Pure post-restart / pre-install advisory check. Does not mutate state.
+ * A process-local indeterminate lock cannot survive restart — callers must inspect reality.
+ */
+export function evaluateSchedulerInstallRestartReconciliation(inputs: {
+  taskInstalled: boolean;
+  registrationHealthy: boolean;
+  assetsHealthy: boolean;
+  nativeStatus: "started" | "stopped" | "nonexistent" | "unknown";
+  installStateBackend: "scheduler" | "native" | null;
+}): {
+  status: "healthy" | "orphan-task" | "stale-install-state" | "conflict" | "unhealthy" | "unverified";
+  detail: string;
+} {
+  const conflict = inputs.taskInstalled
+    && (inputs.nativeStatus === "started" || inputs.nativeStatus === "stopped");
+  if (conflict) {
+    return {
+      status: "conflict",
+      detail: `CONFLICT: Task Scheduler and native WinSW (${WINSW_SERVICE_ID}) are both present.`,
+    };
+  }
+  if (inputs.taskInstalled && inputs.nativeStatus === "unknown") {
+    return {
+      status: "unverified",
+      detail: "The Task Scheduler task exists, but native WinSW status could not be verified.",
+    };
+  }
+  if (inputs.taskInstalled && (!inputs.registrationHealthy || !inputs.assetsHealthy)) {
+    return {
+      status: "unhealthy",
+      detail: !inputs.assetsHealthy
+        ? "Required scheduler service assets are missing."
+        : "Task Scheduler registration is present but unhealthy.",
+    };
+  }
+  if (inputs.taskInstalled && inputs.installStateBackend !== "scheduler") {
+    return {
+      status: "orphan-task",
+      detail: "A Task Scheduler task is present without matching scheduler install state.",
+    };
+  }
+  if (!inputs.taskInstalled && inputs.installStateBackend === "scheduler") {
+    return {
+      status: "stale-install-state",
+      detail: "Scheduler install state is present but the Task Scheduler task is absent.",
+    };
+  }
+  if (
+    inputs.taskInstalled
+    && inputs.registrationHealthy
+    && inputs.assetsHealthy
+    && inputs.nativeStatus === "nonexistent"
+    && inputs.installStateBackend === "scheduler"
+  ) {
+    return { status: "healthy", detail: "ok" };
+  }
+  return { status: "healthy", detail: "ok" };
 }
 
 function windowsBatchValue(value: string): string {

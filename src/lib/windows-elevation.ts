@@ -230,55 +230,92 @@ export interface WindowsElevationResult {
   stderr: string;
 }
 
-/** Spawn non-elevated PowerShell to run a -Command script; classify UAC/cancel/timeout outcomes. */
-function runPowerShellCommand(commandScript: string, timeoutMs: number): Promise<WindowsElevationResult> {
-  if (process.platform !== "win32") {
-    return Promise.reject(new WindowsElevationError(
-      "launch-failed",
-      "Windows elevation is only supported on Windows.",
-    ));
-  }
+export interface WindowsElevationExecution {
+  /** Settles only on launcher close/error — never killed by a request-level timeout. */
+  completion: Promise<WindowsElevationResult>;
+  launcherPid: number | null;
+}
 
+/** Request-facing wait for elevation; process observation continues separately. */
+export const ELEVATION_REQUEST_TIMEOUT_MS = 120_000;
+
+/**
+ * Wait for `promise` up to `timeoutMs` without cancelling it.
+ * On timeout the original promise remains active for late settlement.
+ */
+export function raceWithTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+): Promise<{ status: "completed"; value: T } | { status: "timed-out" }> {
   return new Promise((resolve, reject) => {
     let settled = false;
-    let timedOut = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({ status: "timed-out" });
+    }, timeoutMs);
+    promise.then(
+      value => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ status: "completed", value });
+      },
+      error => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+/**
+ * Spawn non-elevated PowerShell to run a -Command script.
+ * Does not kill the launcher on any timeout — callers race a separate request timeout.
+ */
+export function startPowerShellCommand(commandScript: string): WindowsElevationExecution {
+  if (process.platform !== "win32") {
+    return {
+      launcherPid: null,
+      completion: Promise.reject(new WindowsElevationError(
+        "launch-failed",
+        "Windows elevation is only supported on Windows.",
+      )),
+    };
+  }
+
+  let child: ChildProcess;
+  try {
+    child = elevationSpawn(
+      windowsPowerShell(),
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", commandScript],
+      {
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+  } catch (error) {
+    return {
+      launcherPid: null,
+      completion: Promise.reject(new WindowsElevationError(
+        "launch-failed",
+        error instanceof Error ? error.message : String(error),
+      )),
+    };
+  }
+
+  const completion = new Promise<WindowsElevationResult>((resolve, reject) => {
+    let settled = false;
     let stdout = "";
     let stderr = "";
-    let child: ChildProcess;
 
     const settle = (fn: () => void) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
       fn();
     };
-
-    try {
-      child = elevationSpawn(
-        windowsPowerShell(),
-        ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", commandScript],
-        {
-          windowsHide: true,
-          stdio: ["ignore", "pipe", "pipe"],
-        },
-      );
-    } catch (error) {
-      reject(new WindowsElevationError(
-        "launch-failed",
-        error instanceof Error ? error.message : String(error),
-      ));
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try { child.kill(); } catch { /* ignore */ }
-      // The elevated child started by Start-Process -Verb RunAs may outlive this launcher.
-      settle(() => reject(new WindowsElevationError(
-        "timeout",
-        `Windows elevation timed out after ${timeoutMs}ms. The elevated Task Scheduler process may still be running.`,
-      )));
-    }, timeoutMs);
 
     child.stdout?.setEncoding?.("utf8");
     child.stderr?.setEncoding?.("utf8");
@@ -299,7 +336,6 @@ function runPowerShellCommand(commandScript: string, timeoutMs: number): Promise
     });
 
     child.once("close", (code, signal) => {
-      if (timedOut) return;
       const detail = [stderr.trim(), stdout.trim()].filter(Boolean).join("\n");
       if (typeof code === "number") {
         if (code === OCX_ELEVATED_UAC_CANCELLED || windowsUacCancelledText(detail)) {
@@ -312,20 +348,23 @@ function runPowerShellCommand(commandScript: string, timeoutMs: number): Promise
         settle(() => resolve({ exitCode: code, stdout, stderr }));
         return;
       }
+      // Launcher terminated without an exit code — elevated child may still exist.
       settle(() => reject(new WindowsElevationError(
         "terminated",
         `Windows elevation terminated by ${signal ?? "unknown signal"}.`,
       )));
     });
   });
+
+  return { completion, launcherPid: child.pid ?? null };
 }
 
 /**
  * Launch a file with UAC elevation and wait for it to exit.
- * Throws WindowsElevationError for cancellation, timeout, launch failure, or signal termination.
+ * Throws WindowsElevationError for cancellation, launch failure, or signal termination.
  * Returns the elevated process exit code for completed launches (including non-zero).
  */
-export function runWindowsElevated(file: string, args: string[], timeoutMs = 120_000): Promise<number> {
+export function runWindowsElevated(file: string, args: string[]): Promise<number> {
   const argumentList = buildWindowsElevatedArgumentList(args);
   // Touch .Handle so Windows PowerShell 5.1 keeps a process handle; ExitCode can
   // otherwise stay $null after -Wait and `exit $null` becomes exit 0 (false success).
@@ -340,7 +379,7 @@ export function runWindowsElevated(file: string, args: string[], timeoutMs = 120
     "exit $p.ExitCode",
   ].join("");
 
-  return runPowerShellCommand(script, timeoutMs).then(result => result.exitCode);
+  return startPowerShellCommand(script).completion.then(result => result.exitCode);
 }
 
 /**
@@ -383,20 +422,22 @@ export interface ElevatedSchtasksCreateAndRunResult {
   stderr: string;
 }
 
+export interface ElevatedSchtasksCreateAndRunExecution {
+  completion: Promise<ElevatedSchtasksCreateAndRunResult>;
+  launcherPid: number | null;
+}
+
 /**
- * Create, run, and (on /run failure) roll back the scheduler task inside one elevated
- * PowerShell process — one UAC prompt, no user-controlled result file.
- * Throws WindowsElevationError for UAC cancel/timeout/launch/signal failures.
+ * Start create/run/rollback inside one elevated PowerShell process (one UAC prompt).
+ * The completion promise outlives any request-level timeout — do not kill the launcher.
  */
-export async function runElevatedSchtasksCreateAndRun(
+export function startElevatedSchtasksCreateAndRun(
   schtasksPath: string,
   createArgs: string[],
   runArgs: string[],
   deleteArgs: string[],
-  timeoutMs = 120_000,
-): Promise<ElevatedSchtasksCreateAndRunResult> {
+): ElevatedSchtasksCreateAndRunExecution {
   const inner = buildElevatedSchtasksCreateAndRunScript(schtasksPath, createArgs, runArgs, deleteArgs);
-  // One Start-Process -Verb RunAs elevates PowerShell; create/run/rollback execute inside that process.
   const launcher = [
     `$p = Start-Process -FilePath ${psSingleQuote(windowsPowerShell())}`,
     ` -ArgumentList ${psSingleQuote(buildWindowsElevatedArgumentList([
@@ -414,11 +455,28 @@ export async function runElevatedSchtasksCreateAndRun(
     "exit $p.ExitCode",
   ].join("");
 
-  const result = await runPowerShellCommand(launcher, timeoutMs);
+  const started = startPowerShellCommand(launcher);
   return {
-    outcome: classifyElevatedSchedulerExitCode(result.exitCode),
-    exitCode: result.exitCode,
-    stdout: result.stdout,
-    stderr: result.stderr,
+    launcherPid: started.launcherPid,
+    completion: started.completion.then(result => ({
+      outcome: classifyElevatedSchedulerExitCode(result.exitCode),
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    })),
   };
+}
+
+/**
+ * Create, run, and (on /run failure) roll back the scheduler task inside one elevated
+ * PowerShell process — one UAC prompt, no user-controlled result file.
+ * Waits for the full elevated transaction (no request-timeout kill).
+ */
+export function runElevatedSchtasksCreateAndRun(
+  schtasksPath: string,
+  createArgs: string[],
+  runArgs: string[],
+  deleteArgs: string[],
+): Promise<ElevatedSchtasksCreateAndRunResult> {
+  return startElevatedSchtasksCreateAndRun(schtasksPath, createArgs, runArgs, deleteArgs).completion;
 }

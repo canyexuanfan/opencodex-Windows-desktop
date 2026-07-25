@@ -11,7 +11,7 @@ const execFileMock = mock((
   callback(null, "", "");
 });
 
-const finalizeMock = mock(async () => {});
+const finalizeMock = mock(async () => ({ kind: "done" as const }));
 
 mock.module("node:child_process", () => ({
   ...childProcess,
@@ -20,7 +20,10 @@ mock.module("node:child_process", () => ({
 
 const {
   classifyCliInstallFailure,
+  clearStartupInstallPartialBlock,
+  getStartupInstallState,
   installFailureDetail,
+  resetStartupInstallStateForTests,
   runStartupInstallAction,
   setStartupInstallFinalizeForTests,
 } = await import("../src/server/startup-action-control");
@@ -30,15 +33,17 @@ describe("startup install elevation retry", () => {
 
   beforeEach(() => {
     Object.defineProperty(process, "platform", { value: "win32" });
+    resetStartupInstallStateForTests();
     execFileMock.mockReset();
     finalizeMock.mockReset();
-    finalizeMock.mockResolvedValue(undefined);
+    finalizeMock.mockResolvedValue({ kind: "done" });
     setStartupInstallFinalizeForTests(finalizeMock as never);
   });
 
   afterEach(() => {
     Object.defineProperty(process, "platform", { value: originalPlatform });
     setStartupInstallFinalizeForTests(null);
+    resetStartupInstallStateForTests();
   });
 
   function failCli(message: string) {
@@ -71,6 +76,7 @@ describe("startup install elevation retry", () => {
     expect(result).toEqual({ message: "Background service installed." });
     expect(execFileMock).toHaveBeenCalledTimes(1);
     expect(finalizeMock).toHaveBeenCalledTimes(1);
+    expect(getStartupInstallState().status).toBe("idle");
   });
 
   test("retries when the create-access-denied marker is on stdout and stderr has noise", async () => {
@@ -138,6 +144,102 @@ describe("startup install elevation retry", () => {
 
     await expect(runStartupInstallAction("install-service")).rejects.toThrow(/CONFLICT/);
     expect(finalizeMock).toHaveBeenCalledTimes(1);
+    expect(getStartupInstallState().status).toBe("idle");
+  });
+
+  test("elevation request timeout enters indeterminate and blocks new installs", async () => {
+    failCli(`Windows access denied while running Task Scheduler.\n${WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER}`);
+    let resolveReconciliation!: (value: "released" | "blocked-partial") => void;
+    const reconciliation = new Promise<"released" | "blocked-partial">(resolve => {
+      resolveReconciliation = resolve;
+    });
+    finalizeMock.mockResolvedValue({
+      kind: "indeterminate",
+      attemptId: "attempt-timeout-1",
+      reconciliation,
+    });
+
+    await expect(runStartupInstallAction("install-service")).rejects.toThrow(
+      /elevated Task Scheduler transaction may still be running/,
+    );
+    expect(getStartupInstallState()).toMatchObject({
+      status: "indeterminate",
+      attemptId: "attempt-timeout-1",
+      action: "install-service",
+    });
+
+    await expect(runStartupInstallAction("install-service")).rejects.toThrow(/still being reconciled/);
+    await expect(runStartupInstallAction("install-shim")).rejects.toThrow(/still being reconciled/);
+    expect(finalizeMock).toHaveBeenCalledTimes(1);
+
+    resolveReconciliation("released");
+    await reconciliation;
+    await Promise.resolve();
+    expect(getStartupInstallState().status).toBe("idle");
+
+    failCli(`Windows access denied while running Task Scheduler.\n${WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER}`);
+    finalizeMock.mockResolvedValue({ kind: "done" });
+    await expect(runStartupInstallAction("install-service")).resolves.toEqual({
+      message: "Background service installed.",
+    });
+  });
+
+  test("late blocked-partial keeps install lock blocked until cleared", async () => {
+    failCli(`Windows access denied while running Task Scheduler.\n${WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER}`);
+    let resolveReconciliation!: (value: "released" | "blocked-partial") => void;
+    const reconciliation = new Promise<"released" | "blocked-partial">(resolve => {
+      resolveReconciliation = resolve;
+    });
+    finalizeMock.mockResolvedValue({
+      kind: "indeterminate",
+      attemptId: "attempt-partial-1",
+      reconciliation,
+    });
+
+    await expect(runStartupInstallAction("install-service")).rejects.toThrow(/may still be running/);
+    resolveReconciliation("blocked-partial");
+    await reconciliation;
+    await Promise.resolve();
+    expect(getStartupInstallState()).toMatchObject({
+      status: "blocked",
+      reason: "partial-elevated-install",
+      attemptId: "attempt-partial-1",
+    });
+
+    await expect(runStartupInstallAction("install-service")).rejects.toThrow(/partial Task Scheduler state/);
+    expect(clearStartupInstallPartialBlock({ taskInstalled: true }).cleared).toBe(false);
+    expect(clearStartupInstallPartialBlock({ taskInstalled: false }).cleared).toBe(true);
+    expect(getStartupInstallState().status).toBe("idle");
+  });
+
+  test("stale reconciliation cannot clear a newer indeterminate attempt", async () => {
+    failCli(`Windows access denied while running Task Scheduler.\n${WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER}`);
+    let resolveOld!: (value: "released" | "blocked-partial") => void;
+    const oldReconciliation = new Promise<"released" | "blocked-partial">(resolve => {
+      resolveOld = resolve;
+    });
+    finalizeMock.mockResolvedValue({
+      kind: "indeterminate",
+      attemptId: "old-attempt",
+      reconciliation: oldReconciliation,
+    });
+    await expect(runStartupInstallAction("install-service")).rejects.toThrow(/may still be running/);
+
+    // Simulate an ownership hand-off that should not happen in production, then prove defense-in-depth.
+    resetStartupInstallStateForTests();
+    finalizeMock.mockResolvedValue({
+      kind: "indeterminate",
+      attemptId: "new-attempt",
+      reconciliation: new Promise<"released">(() => {}),
+    });
+    failCli(`Windows access denied while running Task Scheduler.\n${WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER}`);
+    await expect(runStartupInstallAction("install-service")).rejects.toThrow(/may still be running/);
+    expect(getStartupInstallState()).toMatchObject({ attemptId: "new-attempt", status: "indeterminate" });
+
+    resolveOld("released");
+    await oldReconciliation;
+    await Promise.resolve();
+    expect(getStartupInstallState()).toMatchObject({ attemptId: "new-attempt", status: "indeterminate" });
   });
 });
 

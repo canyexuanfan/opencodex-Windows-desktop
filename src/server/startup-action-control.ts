@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { durableBunPath } from "../lib/bun-runtime";
@@ -5,19 +6,96 @@ import {
   WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER,
   isWindowsSchtasksCreateAccessDenied,
 } from "../lib/windows-elevation";
-import { finalizeWindowsSchedulerServiceRegistration } from "../service";
+import {
+  finalizeWindowsSchedulerServiceRegistration,
+  type ElevatedReconciliationOutcome,
+  type FinalizeWindowsSchedulerOptions,
+  type FinalizeWindowsSchedulerResult,
+} from "../service";
 
 export type StartupInstallAction = "install-service" | "install-shim";
-let activeInstall: StartupInstallAction | null = null;
+
+export type StartupInstallState =
+  | { status: "idle" }
+  | {
+      status: "running";
+      action: StartupInstallAction;
+      attemptId: string;
+      startedAt: number;
+    }
+  | {
+      status: "indeterminate";
+      action: "install-service";
+      attemptId: string;
+      startedAt: number;
+      timedOutAt: number;
+      reconciliation: Promise<ElevatedReconciliationOutcome>;
+    }
+  | {
+      status: "blocked";
+      reason: "partial-elevated-install";
+      action: "install-service";
+      attemptId: string;
+      detail: string;
+    };
 
 const INSTALL_DETAIL_LIMIT = 2_000;
+const INDETERMINATE_MESSAGE =
+  "Windows elevation timed out, but the elevated Task Scheduler transaction may still be running. New service installation attempts are temporarily blocked while OpenCodex reconciles its final state.";
+const RECONCILING_MESSAGE =
+  "A previous elevated Windows service installation is still being reconciled. Wait for it to finish or inspect the Task Scheduler state before retrying.";
+const BLOCKED_PARTIAL_MESSAGE =
+  "A previous elevated Windows service installation left a partial Task Scheduler state. Remove the OpenCodex scheduler task (or confirm it is absent), then clear the install block before retrying.";
 
-type FinalizeFn = typeof finalizeWindowsSchedulerServiceRegistration;
+let installState: StartupInstallState = { status: "idle" };
+
+type FinalizeFn = (
+  script?: string,
+  options?: FinalizeWindowsSchedulerOptions,
+) => Promise<FinalizeWindowsSchedulerResult>;
 let finalizeImpl: FinalizeFn = finalizeWindowsSchedulerServiceRegistration;
 
 /** Test-only seam so elevation retry tests do not mock.module the service package. */
 export function setStartupInstallFinalizeForTests(next: FinalizeFn | null): void {
   finalizeImpl = next ?? finalizeWindowsSchedulerServiceRegistration;
+}
+
+/** Snapshot of the install lock for diagnostics and tests. */
+export function getStartupInstallState(): StartupInstallState {
+  return installState;
+}
+
+/** True when this attempt still owns the active/indeterminate/blocked lock. */
+export function ownsStartupInstallAttempt(attemptId: string): boolean {
+  return (installState.status === "running"
+    || installState.status === "indeterminate"
+    || installState.status === "blocked")
+    && installState.attemptId === attemptId;
+}
+
+/**
+ * Clear a partial-install block after the operator has cleaned up Task Scheduler.
+ * Does not itself delete the task — callers must verify absence first.
+ */
+export function clearStartupInstallPartialBlock(options?: {
+  taskInstalled?: boolean;
+}): { cleared: boolean; detail: string } {
+  if (installState.status !== "blocked") {
+    return { cleared: false, detail: `Install lock is ${installState.status}, not blocked.` };
+  }
+  if (options?.taskInstalled) {
+    return {
+      cleared: false,
+      detail: "OpenCodex Task Scheduler task is still present; remove it before clearing the block.",
+    };
+  }
+  installState = { status: "idle" };
+  return { cleared: true, detail: "Partial-install block cleared." };
+}
+
+/** Test-only reset of the install lock. */
+export function resetStartupInstallStateForTests(): void {
+  installState = { status: "idle" };
 }
 
 export function startupInstallArgv(action: StartupInstallAction): string[] {
@@ -97,10 +175,55 @@ function installFailureCode(error: unknown): string | null {
   return extractOcxErrorCode(detail);
 }
 
-/** Execute the existing fixed CLI installer outside the proxy event loop. */
+function rejectIfBusy(_action: StartupInstallAction): Error | null {
+  if (installState.status === "running") {
+    return new Error(`Another startup installation is already running: ${installState.action}`);
+  }
+  if (installState.status === "indeterminate") {
+    return new Error(RECONCILING_MESSAGE);
+  }
+  if (installState.status === "blocked") {
+    return new Error(BLOCKED_PARTIAL_MESSAGE);
+  }
+  return null;
+}
+
+function applyReconciliationOutcome(
+  attemptId: string,
+  outcome: ElevatedReconciliationOutcome,
+): void {
+  if (installState.status !== "indeterminate" || installState.attemptId !== attemptId) {
+    return;
+  }
+  if (outcome === "blocked-partial") {
+    installState = {
+      status: "blocked",
+      reason: "partial-elevated-install",
+      action: "install-service",
+      attemptId,
+      detail: BLOCKED_PARTIAL_MESSAGE,
+    };
+    return;
+  }
+  installState = { status: "idle" };
+}
+
+/**
+ * Execute the existing fixed CLI installer outside the proxy event loop.
+ *
+ * After an elevation request timeout the lock becomes `indeterminate` until the
+ * original elevated transaction completes and is reconciled. A process restart
+ * clears this in-memory lock — callers must then inspect Task Scheduler reality
+ * (see evaluateSchedulerInstallRestartReconciliation) before installing again.
+ */
 export function runStartupInstallAction(action: StartupInstallAction): Promise<{ message: string }> {
-  if (activeInstall) return Promise.reject(new Error(`Another startup installation is already running: ${activeInstall}`));
-  activeInstall = action;
+  const busy = rejectIfBusy(action);
+  if (busy) return Promise.reject(busy);
+
+  const attemptId = randomUUID();
+  const startedAt = Date.now();
+  installState = { status: "running", action, attemptId, startedAt };
+
   const operation = (async () => {
     try {
       await runCliInstall(action);
@@ -115,7 +238,25 @@ export function runStartupInstallAction(action: StartupInstallAction): Promise<{
         && (code === WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER
           || isWindowsSchtasksCreateAccessDenied(detail))
       ) {
-        await finalizeImpl();
+        const finalized = await finalizeImpl(undefined, {
+          attemptId,
+          stillOwnsAttempt: ownsStartupInstallAttempt,
+        });
+        if (finalized.kind === "indeterminate") {
+          const ownedAttemptId = finalized.attemptId;
+          installState = {
+            status: "indeterminate",
+            action: "install-service",
+            attemptId: ownedAttemptId,
+            startedAt,
+            timedOutAt: Date.now(),
+            reconciliation: finalized.reconciliation,
+          };
+          void finalized.reconciliation.then(outcome => {
+            applyReconciliationOutcome(ownedAttemptId, outcome);
+          });
+          throw new Error(INDETERMINATE_MESSAGE);
+        }
       } else {
         throw error;
       }
@@ -126,5 +267,11 @@ export function runStartupInstallAction(action: StartupInstallAction): Promise<{
         : "Codex launcher shim installed.",
     };
   })();
-  return operation.finally(() => { activeInstall = null; });
+
+  return operation.finally(() => {
+    // Do not clear an indeterminate or blocked lock from a timed-out elevation.
+    if (installState.status === "running" && installState.attemptId === attemptId) {
+      installState = { status: "idle" };
+    }
+  });
 }
