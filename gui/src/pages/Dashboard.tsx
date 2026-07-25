@@ -3,12 +3,13 @@ import { formatUptime } from "../formatUptime";
 import { IconAlert, IconChevron, IconExternal, IconInfo, IconRefresh, IconSearch, IconX } from "../icons";
 import { Trans } from "../i18n/provider";
 import { useI18n, type TKey } from "../i18n/shared";
-import { settingsPollMayCommit } from "../startup-health-ui";
+import { settingsPollMayCommit, beginPollEpochs, mapStartupHealthProbe, seedStartupHealthFromSettings, PROJECT_CONFIG_DIAGNOSTICS_POLL_MS, type StartupHealthStatus } from "../startup-health-ui";
 import { formatTokens } from "../format-tokens";
 import { EmptyState, Select } from "../ui";
+import type { ViewMode } from "../view-mode";
 
 interface HealthData { status: string; version: string; uptime: number }
-type StartupHealthStatus = "native" | "protected" | "at-risk" | "error";
+// StartupHealthStatus imported from startup-health-ui.
 interface ProviderInfo { name: string; adapter: string; baseUrl: string; defaultModel?: string; hasApiKey: boolean }
 interface ModelInfo { id: string; provider: string; owned_by?: string }
 interface SettingsData {
@@ -186,16 +187,9 @@ function useModalDialog(open: boolean, triggerRef: RefObject<HTMLButtonElement |
   return dialogRef;
 }
 
-export default function Dashboard({ apiBase }: { apiBase: string }) {
+export default function Dashboard({ apiBase, viewMode }: { apiBase: string; viewMode: ViewMode }) {
   const { locale, t } = useI18n();
-  // Workspace vs Classic: localStorage is the source of truth (same pattern as Providers).
-  const [workspaceView] = useState(() => {
-    try {
-      return localStorage.getItem("ocx-dashboard-view") === "workspace";
-    } catch {
-      return false;
-    }
-  });
+  const workspaceView = viewMode === "workspace";
   const [selectedSection, setSelectedSection] = useState("overview");
   const [modelQuery, setModelQuery] = useState("");
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
@@ -272,10 +266,9 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
         const response = await fetch(`${apiBase}/api/startup-health`);
         if (!response.ok) throw new Error("startup health unavailable");
         const data = await response.json() as { status?: unknown; diagnosticStale?: unknown };
-        const status = data.status;
-        const validStatus = status === "native" || status === "protected" || status === "at-risk";
-        if (!validStatus) throw new Error("invalid startup health response");
-        if (!cancelled) setStartupHealth(data.diagnosticStale === true ? "error" : status);
+        const mapped = mapStartupHealthProbe(data);
+        if (!mapped) throw new Error("invalid startup health response");
+        if (!cancelled) setStartupHealth(mapped);
       } catch {
         if (!cancelled) setStartupHealth("error");
       }
@@ -292,10 +285,16 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
     const fetchData = async () => {
       // Snapshot epochs before issuing fetches so an in-flight poll cannot commit
       // after a later mutation or overlapping poll identity change.
-      const settingsRequestEpoch = ++settingsRequestEpochRef.current;
-      const settingsMutationEpoch = settingsMutationEpochRef.current;
-      const shadowRequestEpoch = ++shadowCallRequestEpochRef.current;
-      const shadowMutationEpoch = shadowCallMutationEpochRef.current;
+      const epochs = beginPollEpochs({
+        settingsRequest: settingsRequestEpochRef,
+        settingsMutation: settingsMutationEpochRef,
+        shadowRequest: shadowCallRequestEpochRef,
+        shadowMutation: shadowCallMutationEpochRef,
+      });
+      const settingsRequestEpoch = epochs.settings.request;
+      const settingsMutationEpoch = epochs.settings.mutation;
+      const shadowRequestEpoch = epochs.shadow.request;
+      const shadowMutationEpoch = epochs.shadow.mutation;
       try {
         const [hRes, pRes, sRes, scRes, shRes, uRes] = await Promise.all([
           fetch(`${apiBase}/healthz`),
@@ -317,6 +316,8 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
           },
         )) {
           setSettings(nextSettings);
+          const seeded = nextSettings.startupHealth;
+          setStartupHealth(previous => seedStartupHealthFromSettings(previous, seeded));
         }
         setSidecar(await scRes.json());
         // Old servers fall through to the SPA HTML for this route; don't let a parse
@@ -394,7 +395,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
       }
     };
     void fetchDiagnostics();
-    const interval = setInterval(() => void fetchDiagnostics(), 30_000);
+    const interval = setInterval(() => void fetchDiagnostics(), PROJECT_CONFIG_DIAGNOSTICS_POLL_MS);
     return () => clearInterval(interval);
   }, [apiBase]);
 

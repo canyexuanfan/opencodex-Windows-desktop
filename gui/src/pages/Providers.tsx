@@ -18,6 +18,8 @@ import { useProviderAccountPools } from "../hooks/useProviderAccountPools";
 import { useJsonConfigEditor } from "../hooks/useJsonConfigEditor";
 import { OAuthPanel } from "../components/providers/OAuthPanel";
 import { ProviderCardList } from "../components/providers/ProviderCardList";
+import type { ViewMode } from "../view-mode";
+import { providersHashForViewMode } from "../view-mode";
 
 interface Config {
   port: number;
@@ -45,8 +47,9 @@ const OAUTH_LABELS: Record<string, string> = {
 };
 const oauthLabel = (id: string) => OAUTH_LABELS[id] ?? id;
 
-export default function Providers({ apiBase }: { apiBase: string }) {
+export default function Providers({ apiBase, viewMode }: { apiBase: string; viewMode: ViewMode }) {
   const t = useT();
+  const workspaceView = viewMode === "workspace";
   const [config, setConfig] = useState<Config | null>(null);
   const [adding, setAdding] = useState(false);
   const [status, setStatus] = useState("");
@@ -62,15 +65,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const [manualCode, setManualCode] = useState("");
   const [manualCodeBusy, setManualCodeBusy] = useState(false);
   const [manualCodeMsg, setManualCodeMsg] = useState("");
-  // Workspace vs Classic: localStorage is source of truth; hash stays in sync.
-  // Leaving Providers (e.g. Models) must not reset a saved workspace preference.
-  const [workspaceView, setWorkspaceView] = useState(() => {
-    try {
-      return localStorage.getItem("ocx-providers-view") === "workspace";
-    } catch {
-      return false;
-    }
-  });
+  // viewMode comes from App (canonical global preference + hash sync).
   const [workspaceSelected, setWorkspaceSelected] = useState<string | null>(null);
   const [addIntent, setAddIntent] = useState<AddProviderIntent | null>(null);
   const [removeConfirmName, setRemoveConfirmName] = useState<string | null>(null);
@@ -87,46 +82,14 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const notify = (msg: string, ok: boolean) => { setStatus(msg); setStatusOk(ok); };
 
   useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false; }; }, []);
+  // Keep Providers hash aligned with the shared viewMode without owning preference writes.
   useEffect(() => {
-    const writePref = (workspace: boolean) => {
-      try {
-        localStorage.setItem("ocx-providers-view", workspace ? "workspace" : "classic");
-      } catch {
-        /* ignore */
-      }
-    };
-    const readPrefWorkspace = () => {
-      try {
-        return localStorage.getItem("ocx-providers-view") === "workspace";
-      } catch {
-        return false;
-      }
-    };
-    const wantedHash = workspaceView ? "providers/workspace" : "providers";
-    const onHash = () => {
-      const hash = location.hash.replace(/^#\/?/, "");
-      // Ignore unrelated routes (Models, Usage, …) — do not clear the preference.
-      if (hash === "providers/workspace") {
-        setWorkspaceView(true);
-        writePref(true);
-        return;
-      }
-      if (hash === "providers") {
-        // Bare #providers must not clobber a saved workspace choice (nav race).
-        if (readPrefWorkspace()) {
-          location.hash = "#providers/workspace";
-          return;
-        }
-        setWorkspaceView(false);
-        writePref(false);
-      }
-    };
-    window.addEventListener("hashchange", onHash);
-    if (location.hash.replace(/^#\/?/, "") !== wantedHash) {
-      location.hash = `#${wantedHash}`;
+    const wanted = providersHashForViewMode(viewMode);
+    const raw = location.hash.replace(/^#\/?/, "");
+    if ((raw === "providers" || raw === "providers/workspace") && raw !== wanted) {
+      location.hash = `#${wanted}`;
     }
-    return () => window.removeEventListener("hashchange", onHash);
-  }, [workspaceView]);
+  }, [viewMode]);
 
   const fetchConfig = useCallback(async () => {
     try {

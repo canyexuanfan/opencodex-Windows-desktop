@@ -16,6 +16,16 @@ import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconH
 import { useI18n, useT, LOCALES, type Locale, type TKey } from "./i18n";
 import { Select, Switch } from "./ui";
 import { installApiAuthFetch } from "./api";
+import {
+  ensureMigratedViewMode,
+  providersHashAfterGlobalToggle,
+  providersHashForViewMode,
+  readViewMode,
+  toggleViewMode,
+  viewModeFromProvidersHash,
+  writeViewMode,
+  type ViewMode,
+} from "./view-mode";
 
 installApiAuthFetch();
 
@@ -56,68 +66,9 @@ function hashBelongsToPage(rawHash: string, page: Page): boolean {
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 const THEME_KEY = "ocx-theme";
-const PROVIDERS_VIEW_KEY = "ocx-providers-view";
-
-function readProvidersViewPreference(): "classic" | "workspace" {
-  try {
-    return localStorage.getItem(PROVIDERS_VIEW_KEY) === "workspace" ? "workspace" : "classic";
-  } catch {
-    return "classic";
-  }
-}
 
 function providersHashForPage(): string {
-  return readProvidersViewPreference() === "workspace" ? "providers/workspace" : "providers";
-}
-
-// Canonical global preference plus per-page keys. The sidebar toggle writes the
-// canonical key and every page key so one click stays consistent; each page
-// still reads its own key on mount.
-const GLOBAL_VIEW_KEY = "ocx-view";
-const WORKSPACE_VIEW_KEYS: readonly string[] = [
-  "ocx-providers-view",
-  "ocx-subagents-view",
-  "ocx-storage-view",
-  "ocx-codexauth-view",
-  "ocx-apikeys-view",
-  "ocx-claudecode-view",
-  "ocx-usage-view",
-  "ocx-logs-view",
-  "ocx-models-view",
-  "ocx-dashboard-view",
-];
-// Pages that actually remount on a Classic/Workspace change (others ignore the
-// preference for layout — remounting them would discard unsaved form state).
-const WORKSPACE_LAYOUT_PAGES = new Set<Page>(["dashboard", "providers"]);
-
-function readGlobalWorkspacePreference(): boolean {
-  try {
-    const global = localStorage.getItem(GLOBAL_VIEW_KEY);
-    if (global === "workspace") return true;
-    if (global === "classic") return false;
-    // Migrate mixed/legacy per-page keys: prefer pages that implement workspace
-    // in this build, then fall back to classic (avoid `some()` false-positives).
-    for (const key of ["ocx-dashboard-view", "ocx-providers-view"] as const) {
-      const value = localStorage.getItem(key);
-      if (value === "workspace") return true;
-      if (value === "classic") return false;
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-function writeGlobalWorkspacePreference(workspace: boolean): void {
-  try {
-    const value = workspace ? "workspace" : "classic";
-    localStorage.setItem(GLOBAL_VIEW_KEY, value);
-    for (const key of WORKSPACE_VIEW_KEYS) {
-      localStorage.setItem(key, value);
-    }
-  } catch {
-    /* ignore quota / private-mode failures */
-  }
+  return providersHashForViewMode(readViewMode());
 }
 
 const NAV: { id: Page; tkey: TKey; Icon: typeof IconGrid }[] = [
@@ -160,31 +111,16 @@ export default function App() {
   const sidebarRef = useRef<HTMLElement>(null);
   const navWasOpen = useRef(false);
 
-  // Global Workspace/Classic preference. Pages read their own localStorage key on
-  // mount; toggling here writes every key and remounts only pages that have a
-  // workspace layout so other tabs keep unsaved form state.
-  const [workspaceView, setWorkspaceView] = useState(readGlobalWorkspacePreference);
-  const [viewBump, setViewBump] = useState(0);
+  // Shared Classic/Workspace mode. Passed as a prop to pages that support it —
+  // never remount the shared page container (that discards unsaved drafts).
+  const [viewMode, setViewMode] = useState<ViewMode>(() => ensureMigratedViewMode());
   const toggleGlobalWorkspace = () => {
-    const next = !workspaceView;
-    writeGlobalWorkspacePreference(next);
-    setWorkspaceView(next);
-    // Providers treats the hash as a co-equal source of truth; keep it aligned
-    // or the next hashchange undoes this write.
-    if (page === "providers") {
-      const wanted = next ? "providers/workspace" : "providers";
-      if (window.location.hash.replace(/^#\/?/, "") !== wanted) {
-        window.location.hash = wanted;
-      }
-    }
-    if (WORKSPACE_LAYOUT_PAGES.has(page)) setViewBump(n => n + 1);
+    const next = toggleViewMode(viewMode);
+    writeViewMode(next);
+    setViewMode(next);
+    const wanted = providersHashAfterGlobalToggle(window.location.hash, next, page === "providers");
+    if (wanted) window.location.hash = wanted;
   };
-
-  useEffect(() => {
-    // Normalize legacy per-page keys onto the canonical global preference once.
-    writeGlobalWorkspacePreference(readGlobalWorkspacePreference());
-    setWorkspaceView(readGlobalWorkspacePreference());
-  }, []);
 
   useEffect(() => {
     // External navigation (hash edit, back/forward) also dismisses the mobile drawer.
@@ -204,16 +140,17 @@ export default function App() {
       // Preference is source of truth for Classic/Workspace. Bare #providers must not
       // wipe a saved workspace choice (that regressed when leaving Providers and returning).
       if (nextPage === "providers") {
-        const preferred = readProvidersViewPreference();
-        if (rawHash === "providers/workspace") {
-          writeGlobalWorkspacePreference(true);
-          setWorkspaceView(true);
+        const preferred = readViewMode();
+        const fromHash = viewModeFromProvidersHash(rawHash);
+        if (fromHash === "workspace") {
+          writeViewMode("workspace");
+          setViewMode("workspace");
         } else if (rawHash === "providers" && preferred === "workspace") {
           window.location.hash = "providers/workspace";
           return;
-        } else if (rawHash === "providers") {
-          writeGlobalWorkspacePreference(false);
-          setWorkspaceView(false);
+        } else if (fromHash === "classic") {
+          writeViewMode("classic");
+          setViewMode("classic");
         }
       }
       setPageState(nextPage);
@@ -234,18 +171,18 @@ export default function App() {
       // Honor an explicit workspace deep link on first load before normalizing
       // to the saved preference (bookmarks/shared links must not open Classic).
       if (rawHash === "providers/workspace") {
-        writeGlobalWorkspacePreference(true);
-        setWorkspaceView(true);
+        writeViewMode("workspace");
+        setViewMode("workspace");
         return;
       }
-      const wanted = providersHashForPage();
+      const wanted = providersHashForViewMode(viewMode);
       if (rawHash !== wanted) window.location.hash = wanted;
       return;
     }
     if (!hashBelongsToPage(rawHash, page)) {
       window.location.hash = page;
     }
-  }, [page]);
+  }, [page, viewMode]);
 
   useEffect(() => {
     const el = document.documentElement;
@@ -389,10 +326,10 @@ export default function App() {
         </nav>
         <div className="sidebar-foot">
           <button type="button" className="theme-toggle" onClick={toggleGlobalWorkspace}
-            aria-pressed={workspaceView}
-            aria-label={`${t("app.viewMode")}: ${t(workspaceView ? "pws.workspaceToggle" : "pws.classicToggle")}`}
-            title={`${t("app.viewMode")}: ${t(workspaceView ? "pws.workspaceToggle" : "pws.classicToggle")}`}>
-            <IconLayoutSidebar /> <span className="mode">{t(workspaceView ? "pws.workspaceToggle" : "pws.classicToggle")}</span>
+            aria-pressed={viewMode === "workspace"}
+            aria-label={`${t("app.viewMode")}: ${t(viewMode === "workspace" ? "pws.workspaceToggle" : "pws.classicToggle")}`}
+            title={`${t("app.viewMode")}: ${t(viewMode === "workspace" ? "pws.workspaceToggle" : "pws.classicToggle")}`}>
+            <IconLayoutSidebar /> <span className="mode">{t(viewMode === "workspace" ? "pws.workspaceToggle" : "pws.classicToggle")}</span>
           </button>
           <div className="lang-toggle">
             <IconGlobe aria-hidden />
@@ -421,7 +358,7 @@ export default function App() {
       </aside>
 
       <main className="main" inert={navOpen}>
-        <div key={WORKSPACE_LAYOUT_PAGES.has(page) ? viewBump : "static"} className={`main-inner${page === "combos" ? " main-inner--combos" : ""}`}>
+        <div className={`main-inner${page === "combos" ? " main-inner--combos" : ""}`}>
           <ErrorBoundary
             key={page}
             pageName={t(PAGE_TKEY[page])}
@@ -430,9 +367,9 @@ export default function App() {
             detailsLabel={t("errorBoundary.details")}
             reloadLabel={t("errorBoundary.reload")}
           >
-            {page === "dashboard" && <Dashboard apiBase={API_BASE} />}
+            {page === "dashboard" && <Dashboard apiBase={API_BASE} viewMode={viewMode} />}
             {page === "startup" && <Startup apiBase={API_BASE} />}
-            {page === "providers" && <Providers apiBase={API_BASE} />}
+            {page === "providers" && <Providers apiBase={API_BASE} viewMode={viewMode} />}
             {page === "models" && <Models apiBase={API_BASE} />}
             {page === "combos" && <Combos apiBase={API_BASE} />}
             {page === "subagents" && <Subagents apiBase={API_BASE} />}

@@ -59,7 +59,7 @@
 }
 
 .dashboard-workspace-rail-row:hover {
-  background: var(--raised);
+  background: var(--hover);
 }
 
 .dashboard-workspace-rail-row--selected {

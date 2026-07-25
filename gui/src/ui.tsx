@@ -1,5 +1,5 @@
 /* Shared UI primitives built on the design-system classes in styles.css. */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { IconCheck, IconAlert } from "./icons";
 import { IconChevron } from "./icons";
@@ -38,12 +38,27 @@ export function Select({ value, options, onChange, disabled, label, style, align
   /** When true (default), menu is portaled and flips above the trigger if it would leave the viewport. */
   portal?: boolean;
 }) {
+  const listboxId = useId();
   const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(() => Math.max(0, options.findIndex(o => o.value === value)));
   const [menuStyle, setMenuStyle] = useState<CSSProperties | undefined>();
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const optionId = useCallback((index: number) => `${listboxId}-opt-${index}`, [listboxId]);
   const current = options.find(o => o.value === value);
+
+  const close = useCallback((restoreFocus = false) => {
+    setOpen(false);
+    if (restoreFocus) triggerRef.current?.focus();
+  }, []);
+
+  const openAt = useCallback((index: number) => {
+    if (disabled || options.length === 0) return;
+    const clamped = Math.max(0, Math.min(options.length - 1, index));
+    setActiveIndex(clamped);
+    setOpen(true);
+  }, [disabled, options.length]);
 
   const reposition = useCallback((menuHeight?: number) => {
     if (!portal) return;
@@ -58,16 +73,14 @@ export function Select({ value, options, onChange, disabled, label, style, align
 
   useEffect(() => {
     if (!open) return;
-    const close = (e: MouseEvent) => {
+    const onPointerDown = (e: MouseEvent) => {
       const target = e.target as Node;
       if (ref.current?.contains(target) || menuRef.current?.contains(target)) return;
-      setOpen(false);
+      close();
     };
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", close);
-    document.addEventListener("keydown", esc);
-    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", esc); };
-  }, [open]);
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [close, open]);
 
   useLayoutEffect(() => {
     if (!open || !portal) return;
@@ -96,22 +109,79 @@ export function Select({ value, options, onChange, disabled, label, style, align
     });
   }, [align, open, options.length, placement, portal]);
 
+  useLayoutEffect(() => {
+    if (!open || !menuRef.current) return;
+    const active = menuRef.current.querySelector<HTMLElement>(`[id="${optionId(activeIndex)}"]`);
+    active?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex, open, optionId]);
+
+  const selectIndex = (index: number) => {
+    const option = options[index];
+    if (!option) return;
+    onChange(option.value);
+    close(true);
+  };
+
+  const onTriggerKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (disabled) return;
+    const selectedIndex = Math.max(0, options.findIndex(o => o.value === value));
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        openAt(open ? Math.min(options.length - 1, activeIndex + 1) : selectedIndex);
+        break;
+      case "ArrowUp":
+        event.preventDefault();
+        openAt(open ? Math.max(0, activeIndex - 1) : selectedIndex);
+        break;
+      case "Home":
+        event.preventDefault();
+        openAt(0);
+        break;
+      case "End":
+        event.preventDefault();
+        openAt(options.length - 1);
+        break;
+      case "Enter":
+      case " ":
+        event.preventDefault();
+        if (open) selectIndex(activeIndex);
+        else openAt(selectedIndex);
+        break;
+      case "Escape":
+        if (open) {
+          event.preventDefault();
+          close(true);
+        }
+        break;
+      case "Tab":
+        if (open) close();
+        break;
+      default:
+        break;
+    }
+  };
+
   const dropdown = open ? (
     <div
       ref={menuRef}
+      id={listboxId}
       className={`select-dropdown${portal ? " select-dropdown-portal" : ""}${!portal && align === "right" ? " select-dropdown-right" : ""}${!portal && placement === "right" ? " select-dropdown-beside" : ""}`}
       role="listbox"
       aria-label={label}
       style={portal ? { ...menuStyle, zIndex: 60, ...dropdownStyle } : dropdownStyle}
     >
-      {options.map(o => (
+      {options.map((o, index) => (
         <button
           key={o.value}
+          id={optionId(index)}
           type="button"
           role="option"
+          tabIndex={-1}
           aria-selected={o.value === value}
-          className={`select-option${o.value === value ? " active" : ""}`}
-          onClick={() => { onChange(o.value); setOpen(false); }}
+          className={`select-option${o.value === value ? " active" : ""}${index === activeIndex ? " select-option-active" : ""}`}
+          onMouseEnter={() => setActiveIndex(index)}
+          onClick={() => selectIndex(index)}
         >{o.label}</button>
       ))}
     </div>
@@ -123,10 +193,17 @@ export function Select({ value, options, onChange, disabled, label, style, align
         ref={triggerRef}
         type="button"
         className="select-trigger"
-        onClick={() => !disabled && setOpen(o => !o)}
+        onClick={() => {
+          if (disabled) return;
+          if (open) close();
+          else openAt(Math.max(0, options.findIndex(o => o.value === value)));
+        }}
+        onKeyDown={onTriggerKeyDown}
         disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
+        aria-activedescendant={open ? optionId(activeIndex) : undefined}
         aria-label={label}
       >
         <span>{current?.label ?? value}</span>
