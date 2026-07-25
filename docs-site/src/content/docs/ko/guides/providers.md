@@ -18,6 +18,8 @@ bare `gpt-5.6-sol`은 Providers 페이지의 Pool/Direct 옵션을 따르고,
 max input 922,000이며 `*-pro` virtual id는 공개 상태에 유지되고 wire에서 base 모델과
 `reasoning.mode: "pro"`로 바뀝니다.
 
+내장 `openai` 제공자가 없거나 비활성화된 경우 대시보드 Accounts 선택기와 Codex Auth 페이지에서 복구할 수 있습니다. 없는 항목은 정규 프리셋으로 만들고, 비활성화된 정규 항목은 저장된 모드/모델 설정을 바꾸지 않고 다시 켜며, 비정규 `openai` 항목에는 그 복구 경로를 제공하지 않습니다.
+
 shipped v1 config는 marker 2의 단일 옵션 행으로 자동 이관됩니다. 원본은
 `~/.opencodex/config.json.pre-openai-tiers-v2.bak`에 한 번 보존되며 다음 명령으로 복원합니다:
 `cp ~/.opencodex/config.json.pre-openai-tiers-v2.bak ~/.opencodex/config.json`.

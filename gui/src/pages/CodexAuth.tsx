@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useT } from "../i18n";
 import CodexAccountPool from "../components/CodexAccountPool";
 import { codexAccountModeState, type CodexAccountModeState } from "../codex-multi-state";
-import { ensureOpenAiProvider, openAiAccountProviderState } from "../provider-payload";
+import { ensureOpenAiProvider, openAiAccountProviderState, OpenAiEnableError } from "../provider-payload";
 
 export type OpenAiAccountBannerState = CodexAccountModeState | "invalid" | null;
 
@@ -111,7 +111,11 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
       await ensureOpenAiProvider(apiBase, bannerState);
       await loadMode();
     } catch (error) {
-      setEnableError(error instanceof Error ? error.message : t("prov.saveFailed"));
+      if (error instanceof OpenAiEnableError) {
+        setEnableError(error.serverMessage ?? t(error.i18nKey));
+      } else {
+        setEnableError(error instanceof Error ? error.message : t("prov.saveFailed"));
+      }
     } finally {
       setEnableBusy(false);
     }

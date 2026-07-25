@@ -69,8 +69,10 @@ The dashboard presents one OpenAI Codex card with accessible Pool/Direct control
 unchanged API-key card. `PATCH /api/providers?name=openai` persists exactly one
 `codexAccountMode`, clears affinity/quota cache, primes only when entering Pool, and does not refresh
 the model catalog or restart the proxy. Codex Auth shows an option-aware Pool/Direct banner, while
-Models always shows one bare OpenAI group. Disabled or absent `openai` state remains neutral and is
-never recreated by the UI.
+Models always shows one bare OpenAI group. Disabled or absent canonical `openai` state can be
+restored from the Accounts picker or Codex Auth through gated recovery: missing rows are created
+from the canonical preset, disabled canonical rows are re-enabled without replacing saved mode or
+model settings, and noncanonical `openai` rows never receive that recovery path.
 
 `GET /api/codex-auth/accounts?refresh=1` treats missing main credentials, HTTP 401, and allowlisted
 terminal 403 codes as `needsReauth`; generic permission failures remain non-terminal, and a

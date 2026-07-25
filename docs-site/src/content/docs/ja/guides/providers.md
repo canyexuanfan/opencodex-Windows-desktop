@@ -18,6 +18,8 @@ bare `gpt-5.6-sol` は Providers ページの Pool/Direct オプションに従�
 max input 922,000 で `*-pro` virtual ID は公開状態を維持し、wire でベースモデルと
 `reasoning.mode: "pro"` に切り替わります。
 
+組み込み `openai` が欠落または無効な場合、ダッシュボードの Accounts ピッカーと Codex Auth から復元できます。欠落行は正規プリセットから作成され、正規の無効行は保存済みのモードやモデル設定を置き換えずに再有効化され、非正規の `openai` 行にはその復元経路は出ません。
+
 出荷版 v1 config は marker 2 の単一オプション行に自動移行されます。オリジナルは
 `~/.opencodex/config.json.pre-openai-tiers-v2.bak` に一度保存され、次のコマンドで復元します:
 `cp ~/.opencodex/config.json.pre-openai-tiers-v2.bak ~/.opencodex/config.json`。

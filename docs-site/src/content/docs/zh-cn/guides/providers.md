@@ -17,6 +17,8 @@ bare `gpt-5.6-sol` 遵循 Providers 页面中的 Pool/Direct 选项，
 922,000 max input；`*-pro` virtual id 保留在公开状态中，线上改写为 base 模型加
 `reasoning.mode: "pro"`。
 
+若内置 `openai` 提供商缺失或已禁用，可在仪表盘 Accounts 选择器或 Codex Auth 页面恢复：缺失行会从规范预设创建，已禁用的规范行会在不替换已保存模式/模型设置的情况下重新启用，非规范的 `openai` 行不会提供该恢复路径。
+
 shipped v1 配置自动迁移到 marker 2 的单一选项行。原配置只保留一次到
 `~/.opencodex/config.json.pre-openai-tiers-v2.bak`；恢复命令：
 `cp ~/.opencodex/config.json.pre-openai-tiers-v2.bak ~/.opencodex/config.json`。

@@ -22,13 +22,13 @@ import {
   upsertOAuthProvider,
 } from "../../oauth";
 import { removeCredential } from "../../oauth/store";
-import { providerDestinationResolvedError } from "../../lib/destination-policy";
+import { isBenchmarkDestinationError, providerDestinationResolvedError } from "../../lib/destination-policy";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "../../oauth/key-providers";
 import { deriveProviderPresets } from "../../providers/derive";
 import { providerCodexAccountMode } from "../../providers/registry";
 import { routedSlug, slugEquals } from "../../providers/slug-codec";
 import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../../providers/quota";
-import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
+import { CODEX_FORWARD_BASE_URL, isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
 import { clearThreadAccountMap } from "../../codex/routing";
 import { primeCodexPoolQuotas } from "../../codex/auth-api";
 import { getProviderDiscoveryStatus } from "../../codex/model-cache";
@@ -101,10 +101,19 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     }
     // Hostname destinations additionally get a DNS-resolved SSRF check at write time —
     // the sync check above only classifies literal IPs (review finding, PR #96).
-    const resolvedError = name === "openai" && isCanonicalOpenAiForwardProvider(prov)
-      ? null
-      : await providerDestinationResolvedError(name, prov);
-    if (resolvedError) return jsonResponse({ error: resolvedError }, 400);
+    // Canonical openai still runs the resolver so loopback/private/metadata rejections
+    // stay intact; only Clash fake-IP (benchmark) answers are suppressed for that seed.
+    const resolvedError = await providerDestinationResolvedError(name, prov);
+    if (
+      resolvedError
+      && !(
+        name === "openai"
+        && isCanonicalOpenAiForwardProvider(prov)
+        && isBenchmarkDestinationError(resolvedError)
+      )
+    ) {
+      return jsonResponse({ error: resolvedError }, 400);
+    }
     // Catalog providers (e.g. ollama-cloud) carry a models + vision/reasoning classification the GUI
     // doesn't send — merge it in so the sidecars are gated correctly.
     enrichProviderFromCatalog(name, prov);
@@ -253,6 +262,9 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       if (!isCanonicalOpenAiForwardProvider(next)) {
         return jsonResponse({ error: "provider openai must be the canonical built-in provider" }, 400);
       }
+      // Persist the byte-identical canonical URL so config.ts startup checks (case-sensitive)
+      // accept the row after we fill mode. Equivalent hosts like CHATGPT.com/:443 normalize here.
+      next.baseUrl = CODEX_FORWARD_BASE_URL;
       // Fill missing mode so a disabled canonical row becomes a complete live openai entry.
       if (next.codexAccountMode !== "pool" && next.codexAccountMode !== "direct") {
         next.codexAccountMode = "pool";

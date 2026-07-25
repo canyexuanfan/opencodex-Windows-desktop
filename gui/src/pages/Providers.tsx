@@ -6,7 +6,7 @@ import ProviderWorkspaceShell, { type AddProviderIntent } from "../components/pr
 import ProviderDetails from "../components/provider-workspace/ProviderDetails";
 import { RemoveConfirmDialog, UnsavedLeaveDialog } from "../components/provider-workspace/ProviderDialogs";
 import type { WorkspaceProvider } from "../provider-workspace/catalog";
-import { codexAccountProviderNames, ensureOpenAiProvider, openAiAccountProviderState } from "../provider-payload";
+import { codexAccountProviderNames, ensureOpenAiProvider, openAiAccountProviderState, OpenAiEnableError } from "../provider-payload";
 import type { ProviderUpdatePatch } from "../components/provider-workspace/types";
 import { oauthTosRisk } from "../oauth-tos-risk";
 import { Notice } from "../ui";
@@ -443,7 +443,11 @@ export default function Providers({ apiBase }: { apiBase: string }) {
           await ensureOpenAiProvider(apiBase, state);
           await fetchConfig();
         } catch (error) {
-          notify(error instanceof Error ? error.message : t("prov.saveFailed"), false);
+          if (error instanceof OpenAiEnableError) {
+            notify(error.serverMessage ?? t(error.i18nKey), false);
+          } else {
+            notify(error instanceof Error ? error.message : t("prov.saveFailed"), false);
+          }
           return;
         }
       }

@@ -134,6 +134,11 @@ export function assertProviderDestinationAllowed(name: string, provider: Pick<Oc
  * advisory and must not hard-fail offline startups. DNS rebinding after validation is
  * a recorded residual for this loopback proxy (devlog 260712_pr_batch_landing 000).
  */
+/** True when a resolved-destination error is only the Clash/fake-IP benchmark range. */
+export function isBenchmarkDestinationError(error: string): boolean {
+  return error.includes("benchmark address");
+}
+
 export async function providerDestinationResolvedError(
   name: string,
   provider: Pick<OcxProviderConfig, "baseUrl" | "allowPrivateNetwork">,

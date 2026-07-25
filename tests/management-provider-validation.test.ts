@@ -995,7 +995,7 @@ describe("provider management validation", () => {
     }
   });
 
-  test("canonical OpenAI bypasses fake-IP DNS rejection without weakening custom providers", async () => {
+  test("canonical OpenAI suppresses only fake-IP/benchmark DNS rejection", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
     process.env.OPENCODEX_HOME = TEST_DIR;
@@ -1012,7 +1012,7 @@ describe("provider management validation", () => {
     };
     saveConfig(liveConfig);
     const resolvedError = spyOn(destinationPolicy, "providerDestinationResolvedError")
-      .mockResolvedValue("baseUrl hostname resolves to a benchmark network (198.18.0.30)");
+      .mockResolvedValue("baseUrl hostname chatgpt.com resolves to a benchmark address (198.18.0.30); set allowPrivateNetwork:true only for intentionally local/self-hosted providers");
 
     try {
       const post = (body: unknown) => {
@@ -1027,13 +1027,51 @@ describe("provider management validation", () => {
       };
       const canonical = await post({ name: "openai", provider: canonicalDirect });
       expect(canonical?.status).toBe(200);
-      expect(resolvedError).not.toHaveBeenCalled();
+      expect(resolvedError).toHaveBeenCalledTimes(1);
 
       const custom = await post({
         name: "custom",
         provider: { adapter: "openai-chat", baseUrl: "https://custom.example.test/v1" },
       });
       expect(custom?.status).toBe(400);
+      expect(resolvedError).toHaveBeenCalledTimes(2);
+    } finally {
+      resolvedError.mockRestore();
+    }
+  });
+
+  test("canonical OpenAI still rejects non-benchmark private destination answers", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      defaultProvider: "test-openai",
+      providers: {
+        "test-openai": {
+          adapter: "openai-chat",
+          baseUrl: "https://api.example.test/v1",
+          apiKey: "sk-secret-value",
+        },
+      },
+    };
+    saveConfig(liveConfig);
+    const resolvedError = spyOn(destinationPolicy, "providerDestinationResolvedError")
+      .mockResolvedValue("baseUrl hostname chatgpt.com resolves to a loopback address (127.0.0.1); set allowPrivateNetwork:true only for intentionally local/self-hosted providers");
+
+    try {
+      const request = new Request("http://127.0.0.1/api/providers", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "openai", provider: canonicalDirect }),
+      });
+      const response = await handleManagementAPI(request, new URL(request.url), liveConfig, {
+        refreshCodexCatalog: async () => undefined,
+      });
+      expect(response?.status).toBe(400);
+      expect(await response?.json()).toMatchObject({
+        error: expect.stringContaining("loopback address"),
+      });
       expect(resolvedError).toHaveBeenCalledTimes(1);
     } finally {
       resolvedError.mockRestore();
@@ -1103,7 +1141,7 @@ describe("provider management validation", () => {
       providers: {
         openai: {
           adapter: "openai-responses",
-          baseUrl: "https://chatgpt.com/backend-api/codex",
+          baseUrl: "https://CHATGPT.com:443/backend-api/codex",
           authMode: "forward",
           disabled: true,
         },

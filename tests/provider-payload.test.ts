@@ -7,6 +7,7 @@ import {
   ensureOpenAiProvider,
   isReservedCodexForwardPreset,
   openAiAccountProviderState,
+  OpenAiEnableError,
 } from "../gui/src/provider-payload";
 import { en } from "../gui/src/i18n/en";
 import { ko } from "../gui/src/i18n/ko";
@@ -109,6 +110,24 @@ describe("provider dashboard payload", () => {
       method: "PATCH",
       body: { disabled: false },
     }]);
+  });
+
+  test("surfaces OpenAI enable failures as stable i18n keys", async () => {
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/api/provider-presets") {
+        return new Response("nope", { status: 500 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    try {
+      await ensureOpenAiProvider("http://localhost:10100", "absent", fetchImpl);
+      expect.unreachable("expected OpenAiEnableError");
+    } catch (error) {
+      expect(error).toBeInstanceOf(OpenAiEnableError);
+      expect((error as OpenAiEnableError).i18nKey).toBe("codexAuth.openaiPresetLoadFailed");
+    }
   });
 
   test("persists explicit API-key mode for built-in OAuth providers", () => {

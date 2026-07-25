@@ -118,6 +118,30 @@ function buildReservedProviderPostBody(
   };
 }
 
+/** Stable i18n keys for OpenAI enable failures (no hardcoded UI English). */
+export type OpenAiEnableErrorKey =
+  | "codexAuth.enableOpenaiFailed"
+  | "codexAuth.openaiPresetLoadFailed"
+  | "codexAuth.openaiPresetUnavailable";
+
+export class OpenAiEnableError extends Error {
+  readonly i18nKey: OpenAiEnableErrorKey;
+  /** Optional management-API error text; callers may surface it when present. */
+  readonly serverMessage?: string;
+
+  constructor(i18nKey: OpenAiEnableErrorKey, serverMessage?: string) {
+    super(serverMessage ?? i18nKey);
+    this.name = "OpenAiEnableError";
+    this.i18nKey = i18nKey;
+    this.serverMessage = serverMessage;
+  }
+}
+
+async function readProviderErrorMessage(response: Response): Promise<string | undefined> {
+  const body = await response.json().catch(() => ({})) as { error?: unknown };
+  return typeof body.error === "string" ? body.error : undefined;
+}
+
 export async function ensureOpenAiProvider(
   apiBase: string,
   state: "absent" | "disabled",
@@ -130,15 +154,14 @@ export async function ensureOpenAiProvider(
       body: JSON.stringify({ disabled: false }),
     });
     if (response.ok) return;
-    const body = await response.json().catch(() => ({})) as { error?: unknown };
-    throw new Error(typeof body.error === "string" ? body.error : "Failed to enable the OpenAI provider");
+    throw new OpenAiEnableError("codexAuth.enableOpenaiFailed", await readProviderErrorMessage(response));
   }
 
   const presetsResponse = await fetchImpl(`${apiBase}/api/provider-presets`);
-  if (!presetsResponse.ok) throw new Error("Failed to load the OpenAI provider preset");
+  if (!presetsResponse.ok) throw new OpenAiEnableError("codexAuth.openaiPresetLoadFailed");
   const data = await presetsResponse.json() as { providers?: ProviderPostPreset[] };
   const preset = data.providers?.find(provider => provider.id === "openai");
-  if (!preset) throw new Error("OpenAI provider preset is unavailable");
+  if (!preset) throw new OpenAiEnableError("codexAuth.openaiPresetUnavailable");
 
   const response = await fetchImpl(`${apiBase}/api/providers`, {
     method: "POST",
@@ -146,6 +169,5 @@ export async function ensureOpenAiProvider(
     body: JSON.stringify(buildReservedProviderPostBody(preset)),
   });
   if (response.ok) return;
-  const body = await response.json().catch(() => ({})) as { error?: unknown };
-  throw new Error(typeof body.error === "string" ? body.error : "Failed to enable the OpenAI provider");
+  throw new OpenAiEnableError("codexAuth.enableOpenaiFailed", await readProviderErrorMessage(response));
 }
