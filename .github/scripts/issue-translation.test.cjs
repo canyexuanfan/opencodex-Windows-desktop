@@ -4,13 +4,16 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   MARKER,
-  hashSourceBody,
+  ISSUE_BODY_MAX,
+  hashSourceContent,
   extractTranslationState,
   stripTranslationBlock,
   appendTranslationBlock,
+  appendThrottleBlock,
   shouldTranslate,
   nextTranslationState,
   buildTranslationBlock,
+  fitTranslationBody,
 } = require("./issue-translation.cjs");
 
 const SOURCE = [
@@ -24,7 +27,7 @@ const SOURCE = [
 describe("issue-translation", () => {
   it("round-trips strip and append", () => {
     const state = nextTranslationState({
-      sourceHash: hashSourceBody(SOURCE),
+      sourceHash: hashSourceContent({ body: SOURCE }),
       recent: [],
       now: 1_700_000_000_000,
     });
@@ -38,6 +41,23 @@ describe("issue-translation", () => {
     assert.equal(stripTranslationBlock(withTranslation), SOURCE);
   });
 
+  it("preserves suffix appended after the translation block", () => {
+    const state = nextTranslationState({
+      sourceHash: hashSourceContent({ body: SOURCE }),
+      recent: [],
+      now: 1_700_000_000_000,
+    });
+    const suffix = "Extra maintainer note after translation.";
+    const withTranslation = appendTranslationBlock(SOURCE, "Translation", state) + "\n\n" + suffix;
+    assert.equal(stripTranslationBlock(withTranslation), `${SOURCE}\n\n${suffix}`);
+  });
+
+  it("includes the title in source fingerprints", () => {
+    const bodyHash = hashSourceContent({ body: SOURCE });
+    const withTitle = hashSourceContent({ title: "Neuer Titel", body: SOURCE });
+    assert.notEqual(bodyHash, withTitle);
+  });
+
   it("extracts embedded state", () => {
     const state = { v: 1, sourceHash: "abc", translatedAt: 1, recent: [1] };
     const block = buildTranslationBlock("Hello", state);
@@ -45,9 +65,21 @@ describe("issue-translation", () => {
     assert.deepEqual(extractTranslationState(body), state);
   });
 
+  it("records throttle-only markers without details", () => {
+    const state = nextTranslationState({
+      sourceHash: hashSourceContent({ title: "T", body: SOURCE }),
+      recent: [],
+      now: 1_700_000_000_000,
+    });
+    const body = appendThrottleBlock(SOURCE, state);
+    assert.ok(body.includes(MARKER));
+    assert.ok(!body.includes("<details>"));
+    assert.equal(stripTranslationBlock(body), SOURCE);
+  });
+
   it("skips when source content is unchanged", () => {
     const state = nextTranslationState({
-      sourceHash: hashSourceBody(SOURCE),
+      sourceHash: hashSourceContent({ body: SOURCE }),
       recent: [],
       now: 1_700_000_000_000,
     });
@@ -60,6 +92,23 @@ describe("issue-translation", () => {
     });
     assert.equal(decision.ok, false);
     assert.equal(decision.reason, "unchanged_source");
+  });
+
+  it("re-translates when only the title changes", () => {
+    const state = nextTranslationState({
+      sourceHash: hashSourceContent({ title: "Alt", body: SOURCE }),
+      recent: [],
+      now: 1_700_000_000_000,
+    });
+    const body = appendTranslationBlock(SOURCE, "Translation", state);
+    const priorState = extractTranslationState(body);
+    const decision = shouldTranslate({
+      sourceTitle: "Neuer Titel",
+      sourceBody: stripTranslationBlock(body),
+      priorState,
+      now: priorState.translatedAt + 120_000,
+    });
+    assert.equal(decision.ok, true);
   });
 
   it("skips when edits arrive too quickly", () => {
@@ -112,5 +161,19 @@ describe("issue-translation", () => {
     });
     assert.equal(decision.ok, true);
     assert.ok(decision.sourceHash);
+  });
+
+  it("truncates translations that would exceed the issue body limit", () => {
+    const big = "x".repeat(60_000);
+    const state = nextTranslationState({
+      sourceHash: hashSourceContent({ body: big }),
+      recent: [],
+      now: 1_700_000_000_000,
+    });
+    const fitted = fitTranslationBody(big, "y".repeat(80_000), state);
+    assert.ok(fitted.length < 80_000);
+    assert.match(fitted, /truncated to fit GitHub issue body limit/);
+    const next = appendTranslationBlock(big, fitted, state);
+    assert.ok(next.length <= ISSUE_BODY_MAX);
   });
 });

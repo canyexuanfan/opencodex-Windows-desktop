@@ -4,8 +4,7 @@ const crypto = require("crypto");
 
 const MARKER = "<!-- opencodex-issue-inline-translator -->";
 const STATE_RE = /<!-- opencodex-issue-inline-translator-state:([\s\S]*?) -->\s*/;
-const BLOCK_RE =
-  /\n*<!-- opencodex-issue-inline-translator -->[\s\S]*?<\/details>\s*$/i;
+const ISSUE_BODY_MAX = 65536;
 
 const DEFAULT_RATE_LIMIT = {
   minIntervalMs: 60_000,
@@ -14,10 +13,42 @@ const DEFAULT_RATE_LIMIT = {
 };
 
 /**
- * Fingerprint issue source text (without the inline translation block).
+ * Locate the generated inline translation block (marker, state, optional details).
+ * @returns {{ start: number, end: number } | null}
  */
+function findTranslationBlockRange(text) {
+  const markerIdx = String(text || "").indexOf(MARKER);
+  if (markerIdx === -1) return null;
+
+  let end = markerIdx + MARKER.length;
+  const afterMarker = String(text).slice(end);
+  const stateMatch = afterMarker.match(STATE_RE);
+  if (stateMatch) {
+    end += stateMatch.index + stateMatch[0].length;
+  }
+
+  const rest = String(text).slice(end);
+  if (/^\s*<details>/i.test(rest)) {
+    const closeRel = rest.search(/<\/details>/i);
+    if (closeRel !== -1) {
+      end += closeRel + "</details>".length;
+    }
+  }
+
+  return { start: markerIdx, end };
+}
+
+/**
+ * Fingerprint issue source text (title + body without the inline translation block).
+ */
+function hashSourceContent({ title = "", body = "" } = {}) {
+  const payload = `${String(title).trim()}\n---\n${String(body).trim()}`;
+  return crypto.createHash("sha256").update(payload, "utf8").digest("hex").slice(0, 16);
+}
+
+/** @deprecated Use hashSourceContent */
 function hashSourceBody(body) {
-  return crypto.createHash("sha256").update(String(body || ""), "utf8").digest("hex").slice(0, 16);
+  return hashSourceContent({ body });
 }
 
 /**
@@ -36,23 +67,27 @@ function extractTranslationState(body) {
 }
 
 /**
- * Remove the inline translation block (marker, state, and details) from a body.
+ * Remove the inline translation block while preserving any suffix after it.
  */
 function stripTranslationBlock(body) {
-  let text = String(body || "");
-  if (text.includes(MARKER)) {
-    text = text.replace(BLOCK_RE, "");
-  }
-  return text.replace(/\s+$/, "");
+  const text = String(body || "");
+  const range = findTranslationBlockRange(text);
+  if (!range) return text.replace(/\s+$/, "");
+
+  const before = text.slice(0, range.start).replace(/\s+$/, "");
+  const after = text.slice(range.end).replace(/^\s+/, "");
+  if (!after) return before;
+  if (!before) return after;
+  return `${before}\n\n${after}`.replace(/\s+$/, "");
 }
 
-function sanitizeTranslationBody(raw) {
+function sanitizeTranslationBody(raw, maxChars = 60000) {
   return String(raw || "")
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
     .replace(/@/g, "(at)")
     .replace(/\bjavascript:/gi, "")
     .trim()
-    .slice(0, 60000);
+    .slice(0, maxChars);
 }
 
 function scrubDetectedLanguage(value) {
@@ -65,9 +100,6 @@ function scrubDetectedLanguage(value) {
   );
 }
 
-/**
- * Build the collapsible translation appendix appended to an issue body.
- */
 function buildTranslationBlock(translatedBody, state) {
   const safeBody = sanitizeTranslationBody(translatedBody);
   const stateJson = JSON.stringify(state);
@@ -87,9 +119,51 @@ function buildTranslationBlock(translatedBody, state) {
   ].join("\n");
 }
 
+/**
+ * Throttle-only marker (no visible translation) for English detection runs.
+ */
+function buildThrottleBlock(state) {
+  const stateJson = JSON.stringify(state);
+  return [
+    "",
+    MARKER,
+    `<!-- opencodex-issue-inline-translator-state:${stateJson} -->`,
+    "",
+  ].join("\n");
+}
+
+function maxTranslationChars(sourceBody, state) {
+  const base = stripTranslationBlock(sourceBody);
+  const emptyBlock = buildTranslationBlock("", state);
+  return Math.max(0, ISSUE_BODY_MAX - base.length - emptyBlock.length - 64);
+}
+
+function fitTranslationBody(sourceBody, translatedBody, state) {
+  let safe = sanitizeTranslationBody(translatedBody);
+  const maxChars = maxTranslationChars(sourceBody, state);
+  if (safe.length <= maxChars) return safe;
+  const note = "\n\n_(Translation truncated to fit GitHub issue body limit.)_";
+  const budget = Math.max(0, maxChars - note.length);
+  return safe.slice(0, budget).trimEnd() + note;
+}
+
 function appendTranslationBlock(sourceBody, translatedBody, state) {
   const base = stripTranslationBlock(sourceBody);
-  return base + buildTranslationBlock(translatedBody, state);
+  const fitted = fitTranslationBody(base, translatedBody, state);
+  const next = base + buildTranslationBlock(fitted, state);
+  if (next.length > ISSUE_BODY_MAX) {
+    throw new Error("Translated issue body exceeds GitHub limit after truncation.");
+  }
+  return next;
+}
+
+function appendThrottleBlock(sourceBody, state) {
+  const base = stripTranslationBlock(sourceBody);
+  const next = base + buildThrottleBlock(state);
+  if (next.length > ISSUE_BODY_MAX) {
+    throw new Error("Issue body exceeds GitHub limit after throttle marker.");
+  }
+  return next;
 }
 
 function pruneRecent(recent, now, windowMs = 3_600_000) {
@@ -109,19 +183,22 @@ function countRecentTranslations(recent, now, windowMs = 3_600_000) {
  * @returns {{ ok: true, sourceHash: string, recent: number[] } | { ok: false, reason: string }}
  */
 function shouldTranslate({
+  sourceTitle = "",
   sourceBody,
   priorState = null,
   now = Date.now(),
   rateLimit = DEFAULT_RATE_LIMIT,
 }) {
-  const source = String(sourceBody || "").trim();
+  const title = String(sourceTitle || "").trim();
+  const body = String(sourceBody || "").trim();
+  const combined = `${title}\n${body}`.trim();
   const minChars = rateLimit.minSourceChars ?? DEFAULT_RATE_LIMIT.minSourceChars;
 
-  if (source.length < minChars) {
+  if (combined.length < minChars) {
     return { ok: false, reason: "source_too_short" };
   }
 
-  const sourceHash = hashSourceBody(source);
+  const sourceHash = hashSourceContent({ title, body });
   if (priorState?.sourceHash === sourceHash) {
     return { ok: false, reason: "unchanged_source" };
   }
@@ -155,14 +232,21 @@ function nextTranslationState({ sourceHash, recent, now = Date.now() }) {
 
 module.exports = {
   MARKER,
+  ISSUE_BODY_MAX,
   DEFAULT_RATE_LIMIT,
+  findTranslationBlockRange,
+  hashSourceContent,
   hashSourceBody,
   extractTranslationState,
   stripTranslationBlock,
   sanitizeTranslationBody,
   scrubDetectedLanguage,
   buildTranslationBlock,
+  buildThrottleBlock,
+  maxTranslationChars,
+  fitTranslationBody,
   appendTranslationBlock,
+  appendThrottleBlock,
   shouldTranslate,
   nextTranslationState,
   countRecentTranslations,
