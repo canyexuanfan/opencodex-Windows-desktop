@@ -75,3 +75,62 @@ bun run privacy:scan
 ## 결과
 
 _(WP6 실행 시 작성)_
+
+### 수정된 버그
+
+| 이슈 | 커밋 | 요약 |
+|---|---|---|
+| #433 | `c71defc4` | 회복된 계정을 재시작 없이 다시 쓰도록 probe lease 도입, reset 파생 cooldown 상한 분리 |
+| #432 | `c00b9c0c` | 생략된 Task Scheduler 기본값을 기본값으로 읽고, 판정을 한 owner로 통합 |
+| #422 | `e2626eb6` | Responses wire를 compaction-trigger 지원으로 오인하지 않도록 capability gate 교체 |
+| #373 | `cb22b7ee` | 재시작 후 checkpoint가 없을 때 전송 payload에서 파생한 estimate 보고 |
+| #404 | `359e2ecd` | 혼합 게이트웨이에서 모델별 wire override 허용 |
+
+계획 문서 커밋: `cddc86f9` `961fa431` `86de6069` `c349c758` `48ae2028` `dc4de1c0` `5051fa98`
+
+### 검증
+
+```
+bun run typecheck                      exit 0
+bun run test                           4132 pass / 2 fail / 2 errors
+bun run privacy:scan                   통과
+```
+
+기준선(변경 전 동일 명령, 변경분 stash 후 측정): **4079 pass / 2 fail / 2 errors**.
+
+증가분 +53은 전부 이번 스윕의 신규 회귀 테스트다. 실패 2건은 이 워크트리에 GUI 의존성이
+설치되지 않아 `gui/src`의 `react/jsx-dev-runtime`이 해결되지 않는 것으로, 변경 전후가 동일하며
+수정과 무관하다.
+
+### 교차 영향 확인
+
+#422와 #404가 모두 `core.ts`의 provider/adapter 판단을 건드리므로 직접 확인했다.
+
+- canonical forward provider는 override 해석 이후에도 canonical로 남는다 → #422의
+  compaction gate가 정상 동작한다.
+- key 게이트웨이가 override로 responses wire를 받아도 canonical로 오인되지 않는다 →
+  synthetic compaction 경로가 유지된다.
+- #433의 probe lease는 최종 트리에서 429 → lease 획득 → leased success → cooldown 해제까지
+  end-to-end로 동작한다.
+
+### 보안 검토 (MAINTAINERS.md)
+
+- **#433**: lease는 계정당 동시 1개, `Retry-After` 유래 cooldown은 probe 대상 제외,
+  세대 불일치 lease는 새 cooldown을 해제하지 못함, 실패한 probe는 interval을 재시작.
+  각각 회귀 테스트로 고정.
+- **#404**: override 허용 값을 `openai-chat`/`openai-responses`로 한정. canonical forward
+  provider는 override를 거부(chat adapter가 forwarded credential을 쓰지 않으므로).
+  `apiKey`/`authMode`/`baseUrl`이 보존됨을 테스트로 고정.
+- 요청 본문·토큰·계정 식별자 로깅 추가 없음 (privacy scan 통과).
+
+### 범위 밖으로 남긴 것
+
+- #433 이슈 제안 3·4번(`ocx account clear-cooldown` CLI, cooldown 상태 가시화) — CLI/GUI 표면
+- #418 — 제보자가 provider를 비공개해 재현 경로 없음
+- #417 / #241 — upstream-tracking, ocx 밖 원인
+- #435 / #420 — 각각 PR #436, #430이 이미 커버
+- Cursor용 Grok 토큰 비율 정확도 — 근거를 갖춘 별도 unit이 필요 (#373 참조)
+
+### 상태
+
+로컬 커밋만 쌓여 있다. `git push`는 사용자 승인 전까지 하지 않는다.
