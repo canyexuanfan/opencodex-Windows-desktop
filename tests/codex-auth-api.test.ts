@@ -575,6 +575,45 @@ describe("codex-auth API", () => {
     }
   });
 
+  test("GET /api/codex-auth/accounts refresh=1 clears stale weekly for monthly primary-only WHAM", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "monthly-A",
+      email: "monthly-A@example.com",
+      accessToken: "tok",
+      refreshToken: "ref",
+      chatgptAccountId: "acc-monthly-A",
+      plan: "team",
+    });
+    updateAccountQuota("monthly-A", 100, 1787401330, 100, 1787401330);
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      plan_type: "team",
+      rate_limit: {
+        primary_window: {
+          used_percent: 100,
+          limit_window_seconds: 2628000,
+          reset_at: 1787401330,
+        },
+        secondary_window: null,
+      },
+    }), { status: 200 })) as typeof fetch;
+
+    try {
+      const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+      const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+      expect(resp!.status).toBe(200);
+      const data = await resp!.json() as { accounts: Array<{ id: string; quota?: Record<string, unknown> }> };
+      const quota = data.accounts.find(a => a.id === "monthly-A")?.quota;
+      expect(quota).toMatchObject({ monthlyPercent: 100, monthlyResetAt: 1787401330 });
+      expect(quota).not.toHaveProperty("weeklyPercent");
+      expect(quota).not.toHaveProperty("weeklyResetAt");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("reset-credit lookup rejects orphaned credential records before upstream fetch", async () => {
     const config = makeConfig();
     saveCodexAccountCredential("orphan", {
