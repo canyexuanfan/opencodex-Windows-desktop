@@ -190,6 +190,29 @@ export function classifyError(status: number, type: string, message: string): Oc
   return { message, type, code: type || null };
 }
 
+/**
+ * True when a provider failure should participate in rate-limit / quota health blocking.
+ * Reuses {@link classifyError} so generic 429 wording and quota phrases stay aligned.
+ */
+export function isRateLimitOrQuotaFailureMessage(message: string): boolean {
+  const normalized = String(message ?? "").trim();
+  if (!normalized) return false;
+  const numericStatus = Number(normalized);
+  if (numericStatus === 429 || numericStatus === 402) return true;
+  const statusHint = Number.isInteger(numericStatus) && numericStatus > 0 ? numericStatus : 0;
+  const classified = classifyError(statusHint, "", normalized);
+  if (
+    classified.type === "rate_limit_error"
+    || classified.code === "rate_limit_exceeded"
+    || classified.type === "insufficient_quota"
+    || classified.code === "insufficient_quota"
+  ) {
+    return true;
+  }
+  // Retained quota cue used by subagent health before classifyError covered it.
+  return normalized.toLowerCase().includes("usage limit");
+}
+
 /** Best-effort parse of a retry delay embedded in an upstream error message. */
 export function parseRetryAfterFromMessage(message: string): number | undefined {
   const patterns = [
