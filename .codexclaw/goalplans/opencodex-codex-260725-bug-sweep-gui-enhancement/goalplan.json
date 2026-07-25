@@ -2,96 +2,206 @@
   "objective": "opencodex 워크트리 codex/260725-bug-sweep에서 GUI·enhancement 제외 미해결 버그(#433 quota cooldown 고착, #432 Windows 서비스 stale 오탐, #422 remote compaction v2 fatal, #404 Grok per-model adapter, #373 Cursor 재시작 context 0)를 다중 PABCD 사이클로 직접 수정하고 각 work-phase를 로컬 커밋으로 쌓는다. WP0는 docs-only 로드맵 사이클.",
   "slug": "opencodex-codex-260725-bug-sweep-gui-enhancement",
   "createdAt": "2026-07-25T08:12:13.026Z",
-  "updatedAt": "2026-07-25T08:12:13.027Z",
-  "activeWorkPhaseId": null,
+  "updatedAt": "2026-07-25T10:52:31.760Z",
+  "activeWorkPhaseId": "wp3",
   "workPhases": [
     {
       "id": "wp0",
       "title": "WP0 docs-only 로드맵 사이클 — 260725_bug_sweep 유닛 + 이슈별 decade 문서 diff-level 작성",
       "status": "done",
       "tasks": [
-        { "id": "wp0-t1", "title": "5개 이슈 근본원인을 코드 대조로 확정 (sol high 4기 병렬 조사)", "status": "done" },
-        { "id": "wp0-t2", "title": "외부 근거 원문 확인 (MS XSD, xAI, OpenAI Compaction, upstream codex)", "status": "done" },
-        { "id": "wp0-t3", "title": "독립 리뷰어 3라운드 감사로 설계 결함 제거", "status": "done" },
-        { "id": "wp0-t4", "title": "통합 유닛 구조가 DIFFLEVEL-ROADMAP-01과 충돌함을 확인, 이슈별 단일 work-phase 유닛으로 재구성 결정", "status": "done" }
+        {
+          "id": "wp0-t1",
+          "title": "5개 이슈 근본원인을 코드 대조로 확정 (sol high 4기 병렬 조사)",
+          "status": "done"
+        },
+        {
+          "id": "wp0-t2",
+          "title": "외부 근거 원문 확인 (MS XSD, xAI, OpenAI Compaction, upstream codex)",
+          "status": "done"
+        },
+        {
+          "id": "wp0-t3",
+          "title": "독립 리뷰어 3라운드 감사로 설계 결함 제거",
+          "status": "done"
+        },
+        {
+          "id": "wp0-t4",
+          "title": "통합 유닛 구조가 DIFFLEVEL-ROADMAP-01과 충돌함을 확인, 이슈별 단일 work-phase 유닛으로 재구성 결정",
+          "status": "done"
+        }
       ],
-      "criteriaIds": ["c-roadmap"]
+      "criteriaIds": [
+        "c-roadmap"
+      ]
     },
     {
       "id": "wp-restructure",
       "title": "P-phase 개정 — 통합 유닛을 이슈별 단일 work-phase 유닛으로 분리 (LOOP-UNIT-CHAIN-01)",
       "status": "done",
       "tasks": [
-        { "id": "wpr-t1", "title": "DIFFLEVEL-ROADMAP-01은 2+ work-phase 유닛에만 적용됨을 규약 원문으로 확인", "status": "done" },
-        { "id": "wpr-t2", "title": "이슈별 독립 유닛 devlog/_plan/260725_issue_<n>/ 구조로 전환", "status": "done" }
+        {
+          "id": "wpr-t1",
+          "title": "DIFFLEVEL-ROADMAP-01은 2+ work-phase 유닛에만 적용됨을 규약 원문으로 확인",
+          "status": "done"
+        },
+        {
+          "id": "wpr-t2",
+          "title": "이슈별 독립 유닛 devlog/_plan/260725_issue_<n>/ 구조로 전환",
+          "status": "done"
+        }
       ],
       "criteriaIds": []
     },
     {
       "id": "wp1",
       "title": "WP1 #433 — 먼 미래 resetAt로 인한 quota cooldown 고착 수정",
-      "status": "pending",
+      "status": "done",
       "tasks": [
-        { "id": "wp1-t1", "title": "260725_issue_433 유닛 P — 실제 파일 열어 정확한 diff 작성", "status": "pending" },
-        { "id": "wp1-t2", "title": "cooldown 상한 분리 + probe lease 구현 (lease id 전달 경로 포함)", "status": "pending" },
-        { "id": "wp1-t3", "title": "회귀 테스트 추가 + typecheck/test 통과 + 커밋", "status": "pending" }
+        {
+          "id": "wp1-t1",
+          "title": "260725_issue_433 유닛 P — 실제 파일 열어 정확한 diff 작성",
+          "status": "done"
+        },
+        {
+          "id": "wp1-t2",
+          "title": "cooldown 상한 분리 + probe lease 구현 (lease id 전달 경로 포함)",
+          "status": "done"
+        },
+        {
+          "id": "wp1-t3",
+          "title": "회귀 테스트 추가 + typecheck/test 통과 + 커밋",
+          "status": "done"
+        }
       ],
-      "criteriaIds": ["c-433"]
+      "criteriaIds": [
+        "c-433"
+      ]
     },
     {
       "id": "wp2",
       "title": "WP2 #432 — Windows Task Scheduler XML 기본값 생략 시 stale 오탐 수정",
-      "status": "pending",
+      "status": "done",
       "tasks": [
-        { "id": "wp2-t1", "title": "260725_issue_432 유닛 P — 실제 파일 열어 정확한 diff 작성", "status": "pending" },
-        { "id": "wp2-t2", "title": "생략형 XML을 기본값으로 해석 + diagnoseService wiring 통합", "status": "pending" },
-        { "id": "wp2-t3", "title": "회귀 테스트 추가 + typecheck/test 통과 + 커밋", "status": "pending" }
+        {
+          "id": "wp2-t1",
+          "title": "260725_issue_432 유닛 P — 실제 파일 열어 정확한 diff 작성",
+          "status": "done"
+        },
+        {
+          "id": "wp2-t2",
+          "title": "생략형 XML을 기본값으로 해석 + diagnoseService wiring 통합",
+          "status": "done"
+        },
+        {
+          "id": "wp2-t3",
+          "title": "회귀 테스트 추가 + typecheck/test 통과 + 커밋",
+          "status": "done"
+        }
       ],
-      "criteriaIds": ["c-432"]
+      "criteriaIds": [
+        "c-432"
+      ]
     },
     {
       "id": "wp3",
       "title": "WP3 #422 — API-key 기반 openai-responses에서 remote compaction v2 fatal 수정",
-      "status": "pending",
+      "status": "in_progress",
       "tasks": [
-        { "id": "wp3-t1", "title": "030 문서 stale 체크 후 compaction 분기 경로 확정", "status": "pending" },
-        { "id": "wp3-t2", "title": "authMode별 compaction 지원 판정 구현", "status": "pending" },
-        { "id": "wp3-t3", "title": "회귀 테스트 추가 + typecheck/test 통과 + 커밋", "status": "pending" }
+        {
+          "id": "wp3-t1",
+          "title": "030 문서 stale 체크 후 compaction 분기 경로 확정",
+          "status": "pending"
+        },
+        {
+          "id": "wp3-t2",
+          "title": "authMode별 compaction 지원 판정 구현",
+          "status": "pending"
+        },
+        {
+          "id": "wp3-t3",
+          "title": "회귀 테스트 추가 + typecheck/test 통과 + 커밋",
+          "status": "pending"
+        }
       ],
-      "criteriaIds": ["c-422"]
+      "criteriaIds": [
+        "c-422"
+      ]
     },
     {
       "id": "wp4",
       "title": "WP4 #373 — Cursor 재시작 후 context usage 0 보고 수정",
       "status": "pending",
       "tasks": [
-        { "id": "wp4-t1", "title": "050 문서 stale 체크 후 checkpoint tracker 경로 확정", "status": "pending" },
-        { "id": "wp4-t2", "title": "재시작 시드 복구 또는 request-local 추정 구현", "status": "pending" },
-        { "id": "wp4-t3", "title": "회귀 테스트 추가 + typecheck/test 통과 + 커밋", "status": "pending" }
+        {
+          "id": "wp4-t1",
+          "title": "050 문서 stale 체크 후 checkpoint tracker 경로 확정",
+          "status": "pending"
+        },
+        {
+          "id": "wp4-t2",
+          "title": "재시작 시드 복구 또는 request-local 추정 구현",
+          "status": "pending"
+        },
+        {
+          "id": "wp4-t3",
+          "title": "회귀 테스트 추가 + typecheck/test 통과 + 커밋",
+          "status": "pending"
+        }
       ],
-      "criteriaIds": ["c-373"]
+      "criteriaIds": [
+        "c-373"
+      ]
     },
     {
       "id": "wp5",
       "title": "WP5 #404 — Grok 4.5 per-model adapter override (혼합 게이트웨이 web_search 소실)",
       "status": "pending",
       "tasks": [
-        { "id": "wp5-t1", "title": "040 문서 stale 체크 후 adapter-resolve 경로 확정", "status": "pending" },
-        { "id": "wp5-t2", "title": "모델별 wire override 구현 또는 BLOCKED 증거 기록", "status": "pending" },
-        { "id": "wp5-t3", "title": "회귀 테스트 추가 + typecheck/test 통과 + 커밋", "status": "pending" }
+        {
+          "id": "wp5-t1",
+          "title": "040 문서 stale 체크 후 adapter-resolve 경로 확정",
+          "status": "pending"
+        },
+        {
+          "id": "wp5-t2",
+          "title": "모델별 wire override 구현 또는 BLOCKED 증거 기록",
+          "status": "pending"
+        },
+        {
+          "id": "wp5-t3",
+          "title": "회귀 테스트 추가 + typecheck/test 통과 + 커밋",
+          "status": "pending"
+        }
       ],
-      "criteriaIds": ["c-404"]
+      "criteriaIds": [
+        "c-404"
+      ]
     },
     {
       "id": "wp6",
       "title": "WP6 최종 통합 검증 — 전체 스위트 회귀 확인",
       "status": "pending",
       "tasks": [
-        { "id": "wp6-t1", "title": "bun run typecheck 전체 통과", "status": "pending" },
-        { "id": "wp6-t2", "title": "bun run test 전체 스위트 실행 및 회귀 없음 확인", "status": "pending" },
-        { "id": "wp6-t3", "title": "060 스윕 종료 요약 문서 + 최종 커밋", "status": "pending" }
+        {
+          "id": "wp6-t1",
+          "title": "bun run typecheck 전체 통과",
+          "status": "pending"
+        },
+        {
+          "id": "wp6-t2",
+          "title": "bun run test 전체 스위트 실행 및 회귀 없음 확인",
+          "status": "pending"
+        },
+        {
+          "id": "wp6-t3",
+          "title": "060 스윕 종료 요약 문서 + 최종 커밋",
+          "status": "pending"
+        }
       ],
-      "criteriaIds": ["c-suite"]
+      "criteriaIds": [
+        "c-suite"
+      ]
     }
   ],
   "criteria": [
@@ -106,15 +216,15 @@
       "id": "c-433",
       "scenario": "먼 미래 resetAt를 받은 계정이 상한을 넘겨 고착되지 않고, 회복된 계정이 다시 라우팅 대상이 된다. 수정 전 실패하고 수정 후 통과하는 회귀 테스트가 이 동작을 고정한다.",
       "expectedEvidence": "신규 테스트 파일 경로 + bun test 통과 출력 tail + 커밋 SHA",
-      "capturedEvidence": "",
-      "status": "open"
+      "capturedEvidence": "커밋 c71defc4. tests/codex-routing.test.ts 72 pass/0 fail (신규 13개: far-future resetAt 상한, Retry-After 보존, retry-after 미probe, interval당 lease 1개, leased success 해제, unleased 2xx 보존, 불일치 lease 미소비, 실패 probe interval 재시작, stale-generation 차단, credential 종료, retry-after source 보존, reset-derived probe 가능, in-flight lease 생존). tests/codex-auth-context.test.ts 17 pass/0 fail (통합: 차단→interval 후 probe 허용→성공→정상 복귀). 기존 codex-routing:312/:806 무수정 통과. 전체 bun run test 4093 pass, 기준선 4079 대비 +14, 실패 2건은 양쪽 동일한 GUI react/jsx-dev-runtime 미해결로 무관. typecheck exit 0, privacy scan 통과.",
+      "status": "met"
     },
     {
       "id": "c-432",
       "scenario": "Enabled/RunLevel이 생략된 Task Scheduler XML을 정상(healthy)으로 판정하고, 실제로 비활성화된 서비스는 여전히 stale로 판정한다.",
       "expectedEvidence": "신규 테스트 파일 경로 + bun test 통과 출력 tail + 커밋 SHA",
-      "capturedEvidence": "",
-      "status": "open"
+      "capturedEvidence": "커밋 c00b9c0c. tests/service.test.ts 40 pass/0 fail (기존 34 무회귀 + 신규 6: canonicalized XML 수용, 명시적 unsafe 거부, Data/주석 decoy 거부, prefixed 값 거부, Data shadowing 3종 거부, 중복 요소 거부). 전체 bun run test 4099 pass (기준선 4079 대비 +20). typecheck exit 0, privacy scan 통과. wiring은 WindowsServiceDiagnosticInputs 타입 변경으로 강제.",
+      "status": "met"
     },
     {
       "id": "c-422",
