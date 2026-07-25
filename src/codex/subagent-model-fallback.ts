@@ -8,6 +8,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { hasOwnProvider } from "../config";
+import { isRateLimitOrQuotaFailureMessage } from "../lib/errors";
 import type { OcxParsedRequest, OcxConfig } from "../types";
 import { slugsEquivalent } from "../providers/slug-codec";
 import { CODEX_HOME, getCodexHome } from "./paths";
@@ -18,6 +19,9 @@ import { slugEquals } from "../providers/slug-codec";
 import { isThreadSpawnRequest } from "../server/effort-policy";
 import { PROVIDER_REGISTRY } from "../providers/registry";
 export const DEFAULT_SUBAGENT_MODEL_FALLBACK_POLL_MS = 60_000;
+
+type SubagentQuotaPrimeFn = (config: OcxConfig, reason: string) => Promise<void>;
+let subagentQuotaPrimeForTests: SubagentQuotaPrimeFn | null = null;
 
 type ModelHealth = {
   unavailableUntil: number;
@@ -191,17 +195,7 @@ export function noteSubagentModelFailure(
   ttlMs?: number,
 ): void {
   const interval = ttlMs ?? DEFAULT_SUBAGENT_MODEL_FALLBACK_POLL_MS;
-  const normalized = String(message).trim();
-  const lower = normalized.toLowerCase();
-  const numericStatus = Number(normalized);
-  const quotaLike = lower.includes("insufficient_quota")
-    || lower.includes("quota exhausted")
-    || lower.includes("usage limit")
-    || lower.includes("exceeded your current quota")
-    || lower.includes("account quota exceeded")
-    || numericStatus === 429
-    || numericStatus === 402;
-  if (!quotaLike) return;
+  if (!isRateLimitOrQuotaFailureMessage(message)) return;
   modelHealth.set(healthKey(model, resolveFallbackAccountId(config, accountId)), {
     unavailableUntil: now + interval,
     reason: "quota_exhausted",
@@ -211,6 +205,12 @@ export function noteSubagentModelFailure(
 export function resetSubagentModelFallbackStateForTests(): void {
   modelHealth.clear();
   quotaPrimedAt.clear();
+  subagentQuotaPrimeForTests = null;
+}
+
+/** Test-only: inject the quota prime implementation used by {@link maybePrimeSubagentQuota}. */
+export function setSubagentQuotaPrimeForTests(fn: SubagentQuotaPrimeFn | null): void {
+  subagentQuotaPrimeForTests = fn;
 }
 
 function rewriteParsedModel(parsed: OcxParsedRequest, model: string): void {
@@ -274,11 +274,26 @@ export function resolveAgentModelFallbackForPrimary(
   return merged;
 }
 
-export function maybePrimeSubagentQuota(config: OcxConfig, now = Date.now()): void {
-  if (!shouldPrimeSubagentQuota(config, now)) return;
-  void import("./auth-api")
-    .then(({ primeCodexPoolQuotas }) => primeCodexPoolQuotas(config, "subagent-spawn"))
-    .catch(() => {});
+/**
+ * Best-effort quota refresh before subagent model selection.
+ * Returns a promise the caller must await so selection observes refreshed state.
+ * Refresh failures are swallowed here so spawn routing can continue.
+ */
+export function maybePrimeSubagentQuota(config: OcxConfig, now = Date.now()): Promise<void> {
+  if (!shouldPrimeSubagentQuota(config, now)) return Promise.resolve();
+  const run = async (): Promise<void> => {
+    try {
+      if (subagentQuotaPrimeForTests) {
+        await subagentQuotaPrimeForTests(config, "subagent-spawn");
+        return;
+      }
+      const { primeCodexPoolQuotas } = await import("./auth-api");
+      await primeCodexPoolQuotas(config, "subagent-spawn");
+    } catch {
+      // Owning boundary: do not fail the spawn path when priming is unavailable.
+    }
+  };
+  return run();
 }
 
 export function recordSubagentQuotaFailureForThreadSpawn(

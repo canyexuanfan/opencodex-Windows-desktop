@@ -322,7 +322,18 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     let nextPollMs = config.subagentModelFallbackPollMs;
     if ("models" in body) {
       if (!Array.isArray(body.models)) return jsonResponse({ error: "models must be an array" }, 400);
-      const models = body.models.filter((m): m is string => typeof m === "string" && m.trim().length > 0);
+      const models: string[] = [];
+      for (let i = 0; i < body.models.length; i++) {
+        const entry = body.models[i];
+        if (typeof entry !== "string" || entry.trim().length === 0) {
+          return jsonResponse({
+            error: `models[${i}] must be a non-empty string`,
+            index: i,
+            value: entry,
+          }, 400);
+        }
+        models.push(entry.trim());
+      }
       nextModels = models.length > 0 ? models : undefined;
     }
     if ("pollMs" in body) {

@@ -6,11 +6,13 @@ import {
   applySubagentModelFallback,
   buildSubagentModelChain,
   isSubagentModelUnavailable,
+  maybePrimeSubagentQuota,
   noteSubagentModelFailure,
   readCodexAgentModelFallback,
   resetSubagentModelFallbackStateForTests,
   resolveAgentModelFallbackForPrimary,
   selectAvailableSubagentModel,
+  setSubagentQuotaPrimeForTests,
   subagentFallbackGuidanceText,
 } from "../src/codex/subagent-model-fallback";
 import { clearAccountQuota, updateAccountQuota } from "../src/codex/quota";
@@ -121,6 +123,50 @@ describe("subagent model fallback chain", () => {
     resetSubagentModelFallbackStateForTests();
     noteSubagentModelFailure("kimi/k3", "429", cfg());
     expect(isSubagentModelUnavailable("kimi/k3", cfg())).toBe(true);
+  });
+
+  test("noteSubagentModelFailure records generic rate-limit wording as a health block", () => {
+    resetSubagentModelFallbackStateForTests();
+    noteSubagentModelFailure("kimi/k3", "Rate limit exceeded. Please try again later.", cfg());
+    expect(isSubagentModelUnavailable("kimi/k3", cfg())).toBe(true);
+
+    resetSubagentModelFallbackStateForTests();
+    noteSubagentModelFailure("kimi/k3", "Too Many Requests", cfg());
+    expect(isSubagentModelUnavailable("kimi/k3", cfg())).toBe(true);
+
+    resetSubagentModelFallbackStateForTests();
+    noteSubagentModelFailure("kimi/k3", "provider temporarily rate limited", cfg());
+    expect(isSubagentModelUnavailable("kimi/k3", cfg())).toBe(true);
+  });
+
+  test("noteSubagentModelFailure ignores unrelated errors", () => {
+    resetSubagentModelFallbackStateForTests();
+    noteSubagentModelFailure("kimi/k3", "connection refused", cfg());
+    expect(isSubagentModelUnavailable("kimi/k3", cfg())).toBe(false);
+    noteSubagentModelFailure("kimi/k3", "invalid_request_error: missing field", cfg());
+    expect(isSubagentModelUnavailable("kimi/k3", cfg())).toBe(false);
+  });
+
+  test("await maybePrimeSubagentQuota waits for deferred refresh before selection", async () => {
+    resetSubagentModelFallbackStateForTests();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let midRefreshModel = "";
+
+    setSubagentQuotaPrimeForTests(async () => {
+      midRefreshModel = selectAvailableSubagentModel("gpt-5.6-sol", cfg()).model;
+      await gate;
+      updateAccountQuota("main", 95, undefined, 20);
+    });
+
+    const priming = maybePrimeSubagentQuota(cfg());
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", cfg()).model).toBe("gpt-5.6-sol");
+    release();
+    await priming;
+    expect(midRefreshModel).toBe("gpt-5.6-sol");
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", cfg()).model).toBe(
+      "alibaba-token-plan/qwen3.8-max-preview",
+    );
   });
 
   test("noteSubagentModelFailure records the configured fallback slug", () => {
