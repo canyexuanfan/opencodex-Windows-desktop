@@ -115,7 +115,7 @@ async function waitForStoppedPort(
       intervalMs: 100,
       scanIntervalMs: 500,
       // Only the process we just stopped — never kill a newly started twin proxy.
-      killOcxHolders: true,
+      killOcxHolders: !!(stoppedPid && stoppedPid > 0),
       onlyKillPids: stoppedPid && stoppedPid > 0 ? [stoppedPid] : [],
     });
   } catch {

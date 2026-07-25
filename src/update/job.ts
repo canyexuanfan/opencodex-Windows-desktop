@@ -310,7 +310,7 @@ export interface RestartIo {
 
 async function restartAfterUpdate(
   job: UpdateJobState,
-  captured?: { port: number; hostname: string },
+  captured?: { port: number; hostname: string; oldPid?: number },
   io: RestartIo = {},
 ): Promise<void> {
   const serviceInstalled = (io.serviceInstalledFn ?? isServiceInstalled)();
@@ -320,6 +320,9 @@ async function restartAfterUpdate(
   // port to wait on; config is only the cold-start fallback.
   const port = captured?.port ?? config.port ?? 10100;
   const hostname = captured?.hostname ?? config.hostname ?? "127.0.0.1";
+  const oldPid = typeof captured?.oldPid === "number" && captured.oldPid > 0
+    ? captured.oldPid
+    : undefined;
   let svcArgs: string[] | undefined;
   if (serviceInstalled) {
     try {
@@ -329,15 +332,18 @@ async function restartAfterUpdate(
   }
   const cmd = restartCommand(serviceInstalled, job.installer, packageLauncherPath(), port, svcArgs);
   const waitFn = io.waitForPort ?? reclaimListenPort;
+  const reclaimOpts = {
+    timeoutMs: RESTART_PORT_RECLAIM_MS,
+    intervalMs: 100,
+    scanIntervalMs: 500,
+    killOcxHolders: oldPid != null,
+    onlyKillPids: oldPid != null ? [oldPid] : [],
+  };
 
   if (serviceInstalled) {
-    // Stop-first update already unloaded the service; reclaim the socket (and any leftover
-    // ocx listener), then reinstall wrappers that bake `--port` via OCX_BAKE_PORT.
-    const freed = await waitFn(port, hostname, {
-      timeoutMs: RESTART_PORT_RECLAIM_MS,
-      intervalMs: 100,
-      scanIntervalMs: 500,
-    });
+    // Stop-first update already unloaded the service; reclaim the socket (only the
+    // captured old PID when trusted), then reinstall wrappers that bake `--port`.
+    const freed = await waitFn(port, hostname, reclaimOpts);
     if (!freed) {
       updateJob(job, {}, `Port ${port} still busy after ${Math.trunc(RESTART_PORT_RECLAIM_MS / 1000)}s; refusing to hop — reinstall may fail until the port is free.`);
     }
@@ -373,11 +379,8 @@ async function restartAfterUpdate(
   }
   // Reclaim the captured port before the pinned start. Spawning `--port` while the old
   // socket is still busy is how Windows updates used to fail health checks (or hop).
-  const freed = await waitFn(port, hostname, {
-    timeoutMs: RESTART_PORT_RECLAIM_MS,
-    intervalMs: 100,
-    scanIntervalMs: 500,
-  });
+  // Only the trusted pre-update PID may be killed; never an arbitrary ocx listener.
+  const freed = await waitFn(port, hostname, reclaimOpts);
   if (!freed) {
     updateJob(job, {}, `Port ${port} still busy after ${Math.trunc(RESTART_PORT_RECLAIM_MS / 1000)}s (reclaim could not free the socket); not starting on another port. Retry 'ocx start --port ${port}'.`);
     return;
@@ -388,7 +391,7 @@ async function restartAfterUpdate(
 /** Exposed for tests: drives the non-service restart path with injected io. */
 export function restartAfterUpdateForTests(
   job: UpdateJobState,
-  captured: { port: number; hostname: string },
+  captured: { port: number; hostname: string; oldPid?: number },
   io: RestartIo,
 ): Promise<void> {
   return restartAfterUpdate(job, captured, io);
@@ -485,6 +488,7 @@ export async function runGuiUpdateWorker(jobId: string, channel: Channel, restar
   const captured = {
     port: runtimeTrusted ? rt.port : configPort,
     hostname: (runtimeTrusted ? rt.hostname : undefined) ?? preUpdateConfig.hostname ?? "127.0.0.1",
+    ...(runtimeTrusted && livePid ? { oldPid: livePid } : {}),
   };
   let trayWasInstalled = false;
   let trayWasRunning = false;

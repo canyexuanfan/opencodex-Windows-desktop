@@ -59,12 +59,27 @@ function ipv4ToWinUint32(addr: string): number | null {
   const host = addr.replace(/^::ffff:/i, "");
   // Refuse bare IPv6 — SetTcpEntry is IPv4-only; coercing "::"/"::1" to 0 would
   // miss the real TCB and can hit an unrelated IPv4 wildcard row.
-  if (host.includes(":") && !/^\d+\.\d+\.\d+\.\d+$/.test(host)) return null;
-  if (host === "0.0.0.0" || host === "*" || host === "::") return 0;
+  if (isBareIpv6Address(host)) return null;
+  if (host === "0.0.0.0" || host === "*") return 0;
   const parts = host.split(".").map(Number);
   if (parts.length !== 4 || parts.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return null;
   return (parts[0]! | (parts[1]! << 8) | (parts[2]! << 16) | (parts[3]! << 24)) >>> 0;
 }
+
+/** True for bare IPv6 (including :: / ::1), false for dotted IPv4 and IPv4-mapped. */
+export function isBareIpv6Address(addr: string): boolean {
+  const host = String(addr || "").replace(/^\[|\]$/g, "").replace(/^::ffff:/i, "");
+  if (!host) return false;
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return false;
+  return host.includes(":");
+}
+
+export type WindowsTcpDropResult = {
+  /** Successful SetTcpEntry(DELETE_TCB) calls for IPv4 rows. */
+  dropped: number;
+  /** IPv6 (or unparseable) rows skipped — never coerced into IPv4 wildcards. */
+  skippedIpv6: number;
+};
 
 function htons(port: number): number {
   return (((port & 0xff) << 8) | ((port >> 8) & 0xff)) >>> 0;
@@ -111,28 +126,37 @@ function readNetstatAno(): string {
 }
 
 /**
- * Force-delete TCP rows bound to `localPort` via SetTcpEntry(DELETE_TCB).
+ * Force-delete IPv4 TCP rows bound to `localPort` via SetTcpEntry(DELETE_TCB).
  * Does not kill foreign processes — only resets sockets so the listen port can bind again.
- * Returns how many SetTcpEntry calls reported success (0 when denied / unsupported).
+ * Bare IPv6 rows (`::1`, `::`, etc.) are skipped (not coerced into IPv4 wildcards);
+ * IPv6 TCB reclamation is unsupported on this path.
  */
-export function dropWindowsTcpRowsForLocalPort(port: number): number {
-  if (process.platform !== "win32" || !Number.isFinite(port) || port <= 0) return 0;
+export function dropWindowsTcpRowsForLocalPort(port: number): WindowsTcpDropResult {
+  if (process.platform !== "win32" || !Number.isFinite(port) || port <= 0) {
+    return { dropped: 0, skippedIpv6: 0 };
+  }
   const setTcpEntry = loadSetTcpEntry();
-  if (!setTcpEntry) return 0;
+  if (!setTcpEntry) return { dropped: 0, skippedIpv6: 0 };
 
   let output = "";
   try {
     output = readNetstatAno();
   } catch {
-    return 0;
+    return { dropped: 0, skippedIpv6: 0 };
   }
 
   const rows = parseTcpQuadsForLocalPort(output, Math.trunc(port));
-  let ok = 0;
+  let dropped = 0;
+  let skippedIpv6 = 0;
   for (const row of rows) {
     const localDw = ipv4ToWinUint32(row.localAddr);
     const remoteDw = ipv4ToWinUint32(row.remoteAddr);
-    if (localDw === null || remoteDw === null) continue; // skip IPv6 / unparseable
+    if (localDw === null || remoteDw === null) {
+      if (isBareIpv6Address(row.localAddr) || isBareIpv6Address(row.remoteAddr)) {
+        skippedIpv6 += 1;
+      }
+      continue;
+    }
     const buf = new ArrayBuffer(20);
     const view = new DataView(buf);
     view.setUint32(0, 12, true); // MIB_TCP_STATE_DELETE_TCB
@@ -141,10 +165,10 @@ export function dropWindowsTcpRowsForLocalPort(port: number): number {
     view.setUint32(12, remoteDw, true);
     view.setUint32(16, htons(row.remotePort), true);
     try {
-      if (setTcpEntry(ptr(buf)) === 0) ok += 1;
+      if (setTcpEntry(ptr(buf)) === 0) dropped += 1;
     } catch {
       /* keep going */
     }
   }
-  return ok;
+  return { dropped, skippedIpv6 };
 }

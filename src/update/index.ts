@@ -204,6 +204,7 @@ export async function runUpdate(): Promise<void> {
   const capturedListen = {
     port: runtimeTrusted ? preUpdateRt.port : configPort,
     hostname: (runtimeTrusted ? preUpdateRt.hostname : undefined) ?? preUpdateConfig.hostname ?? "127.0.0.1",
+    ...(runtimeTrusted && livePid ? { oldPid: livePid } : {}),
   };
 
   // Never replace package files under a live proxy: the running server dynamic-imports
@@ -286,6 +287,8 @@ export async function runUpdate(): Promise<void> {
         timeoutMs: 30_000,
         intervalMs: 100,
         scanIntervalMs: 500,
+        killOcxHolders: capturedListen.oldPid != null,
+        onlyKillPids: capturedListen.oldPid != null ? [capturedListen.oldPid] : [],
       });
       if (!freed) {
         console.warn(`⚠️  Port ${capturedListen.port} still busy after 30s; reinstalling service with pinned --port ${capturedListen.port} anyway (refusing to hop).`);

@@ -115,7 +115,7 @@ describe("GUI update execution decisions", () => {
   test("restart waits on the captured pre-update port unconditionally and pins the spawn to it", async () => {
     // The stop-first update flow clears pid/runtime state before restartAfterUpdate runs,
     // so the wait must fire even with no readable pid — driven here via the io seam.
-    const waited: Array<{ port: number; hostname: string }> = [];
+    const waited: Array<{ port: number; hostname: string; opts?: { killOcxHolders?: boolean; onlyKillPids?: number[] } }> = [];
     const spawned: Array<{ port?: number }> = [];
     const job: UpdateJobState = {
       id: "restart-io",
@@ -133,16 +133,57 @@ describe("GUI update execution decisions", () => {
     writeFileSync(updateJobPath(job.id), JSON.stringify(job));
     await restartAfterUpdateForTests(job, { port: 12345, hostname: "127.0.0.1" }, {
       serviceInstalledFn: () => false, // drive the proxy-mode branch regardless of host state
-      waitForPort: async (port, hostname) => {
-        waited.push({ port, hostname: hostname ?? "" });
+      waitForPort: async (port, hostname, opts) => {
+        waited.push({
+          port,
+          hostname: hostname ?? "",
+          opts: {
+            killOcxHolders: opts?.killOcxHolders,
+            onlyKillPids: opts?.onlyKillPids,
+          },
+        });
         return true;
       },
       spawnStart: (_job, _installer, port) => {
         spawned.push({ port });
       },
     });
-    expect(waited).toEqual([{ port: 12345, hostname: "127.0.0.1" }]);
+    expect(waited).toEqual([{
+      port: 12345,
+      hostname: "127.0.0.1",
+      opts: { killOcxHolders: false, onlyKillPids: [] },
+    }]);
     expect(spawned).toEqual([{ port: 12345 }]);
+  });
+
+  test("restart reclaim allowlists only the trusted oldPid", async () => {
+    const optsSeen: Array<{ killOcxHolders?: boolean; onlyKillPids?: number[] }> = [];
+    const job: UpdateJobState = {
+      id: "restart-oldpid",
+      status: "restarting",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentVersion: "2.7.39",
+      latestVersion: "2.7.40",
+      channel: "latest",
+      installer: "npm",
+      restart: true,
+      command: "",
+      log: [],
+    };
+    writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+    await restartAfterUpdateForTests(job, { port: 10100, hostname: "127.0.0.1", oldPid: 4242 }, {
+      serviceInstalledFn: () => false,
+      waitForPort: async (_port, _hostname, opts) => {
+        optsSeen.push({
+          killOcxHolders: opts?.killOcxHolders,
+          onlyKillPids: opts?.onlyKillPids,
+        });
+        return true;
+      },
+      spawnStart: () => {},
+    });
+    expect(optsSeen).toEqual([{ killOcxHolders: true, onlyKillPids: [4242] }]);
   });
 
   test("restart refuses to spawn when the captured port never becomes free", async () => {

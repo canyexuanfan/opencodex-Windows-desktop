@@ -1,6 +1,9 @@
 /**
  * Reclaim a listen port after stop/update so restart can stay on the configured
  * port instead of hopping to an ephemeral one (Windows CLOSE_WAIT / leftover ocx).
+ *
+ * Killing is never the default: a process may be killed only when the caller
+ * supplies a non-empty explicit PID allowlist for a process it just stopped.
  */
 import { execFileSync } from "node:child_process";
 import { verifyPidIdentity } from "../config";
@@ -8,28 +11,35 @@ import { isProcessAlive, killProxy } from "../lib/process-control";
 import { isPortAvailable, type WaitForPortOptions } from "./ports";
 import { dropWindowsTcpRowsForLocalPort } from "./windows-tcp-drop";
 
+export type ListenPidScan =
+  | { ok: true; pids: number[] }
+  | { ok: false; error?: string };
+
 export type ReclaimListenPortOptions = WaitForPortOptions & {
-  /** Kill leftover ocx-start listeners found on the port while waiting. Default true. */
+  /**
+   * When true AND `onlyKillPids` is a non-empty allowlist, those PIDs may be
+   * killed after revalidation. Default false — never kill without an allowlist.
+   */
   killOcxHolders?: boolean;
   /**
-   * When set, only these PIDs may be killed as ocx holders. Any other live ocx
-   * listener on the port aborts reclamation (overlapping start / intentional proxy).
-   * When unset, any verified ocx listener may be killed (legacy post-stop cleanup).
+   * Explicit PIDs the caller just stopped / hard-killed. An omitted or empty
+   * list means no process may be killed.
    */
   onlyKillPids?: number[];
   /**
-   * On Windows, force-delete TCP rows for this local port (RST clients / ghost LISTEN)
-   * via SetTcpEntry. Default true on win32. Never kills foreign processes, and never
-   * runs while a live non-ocx listener owns the port.
+   * On Windows, force-delete IPv4 TCP rows for this local port via SetTcpEntry.
+   * Default true on win32. Never kills foreign processes, never runs while a
+   * live foreign / protected ocx listener owns the port, and never runs when
+   * the listener scan failed.
    */
   dropTcpRows?: boolean;
   /** How often to scan for listen PIDs / attempt TCB drop (ms). Default 500. */
   scanIntervalMs?: number;
-  listListenPidsFn?: (port: number) => number[];
+  listListenPidsFn?: (port: number) => ListenPidScan | number[];
   isAliveFn?: (pid: number) => boolean;
   verifyOcxFn?: (pid: number) => number | null;
   killFn?: (pid: number) => void;
-  dropTcpFn?: (port: number) => number;
+  dropTcpFn?: (port: number) => number | { dropped: number; skippedIpv6: number };
   isAvailableFn?: (port: number, hostname?: string) => Promise<boolean>;
   sleepMs?: (ms: number) => Promise<void>;
 };
@@ -67,34 +77,9 @@ export function parseListenPidsFromNetstat(output: string, port: number): number
   return [...pids];
 }
 
-/** Best-effort PIDs currently LISTENing on `port`. Empty on probe failure. */
-export function listListenPids(port: number): number[] {
-  if (!Number.isFinite(port) || port <= 0 || port > 65535) return [];
-  try {
-    if (process.platform === "win32") {
-      return parseListenPidsFromNetstat(readWindowsNetstatAno(), port);
-    }
-    try {
-      const output = execFileSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], {
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 3000,
-      });
-      return output
-        .split(/\r?\n/)
-        .map(line => Number(line.trim()))
-        .filter(pid => Number.isSafeInteger(pid) && pid > 0);
-    } catch {
-      const output = execFileSync("netstat", ["-anlp"], {
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 3000,
-      });
-      return parseListenPidsFromNetstat(output, Math.trunc(port));
-    }
-  } catch {
-    return [];
-  }
+function normalizeListenPidScan(result: ListenPidScan | number[]): ListenPidScan {
+  if (Array.isArray(result)) return { ok: true, pids: result };
+  return result;
 }
 
 /** Prefer English netstat states; fall back to the UI-locale table. */
@@ -120,11 +105,63 @@ function readWindowsNetstatAno(): string {
 }
 
 /**
- * Wait until `port` can bind. While waiting:
- * - kill leftover *opencodex start* processes still holding the listen socket
- *   (or only `onlyKillPids` when provided; other live ocx listeners abort reclaim)
- * - on Windows, best-effort RST of TCP rows on that local port (clients / ghost LISTEN)
- * Never kills foreign processes. Never drops TCP rows while a live foreign listener owns the port.
+ * Scan for PIDs currently LISTENing on `port`.
+ * Distinguishes probe failure (`ok: false`) from a successful empty result.
+ */
+export function scanListenPids(port: number): ListenPidScan {
+  if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+    return { ok: false, error: "invalid port" };
+  }
+  try {
+    if (process.platform === "win32") {
+      return { ok: true, pids: parseListenPidsFromNetstat(readWindowsNetstatAno(), port) };
+    }
+    try {
+      const output = execFileSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 3000,
+      });
+      return {
+        ok: true,
+        pids: output
+          .split(/\r?\n/)
+          .map(line => Number(line.trim()))
+          .filter(pid => Number.isSafeInteger(pid) && pid > 0),
+      };
+    } catch (lsofErr) {
+      try {
+        const output = execFileSync("netstat", ["-anlp"], {
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "ignore"],
+          timeout: 3000,
+        });
+        return { ok: true, pids: parseListenPidsFromNetstat(output, Math.trunc(port)) };
+      } catch (netstatErr) {
+        return {
+          ok: false,
+          error: `lsof/netstat unavailable: ${String(lsofErr)} / ${String(netstatErr)}`,
+        };
+      }
+    }
+  } catch (error) {
+    return { ok: false, error: String(error) };
+  }
+}
+
+/** Best-effort PIDs currently LISTENing on `port`. Empty on probe failure. */
+export function listListenPids(port: number): number[] {
+  const scan = scanListenPids(port);
+  return scan.ok ? scan.pids : [];
+}
+
+/**
+ * Wait until `port` can bind.
+ * Never kills a process unless `killOcxHolders === true` and `onlyKillPids` is a
+ * non-empty allowlist of PIDs the caller itself just stopped — then revalidates
+ * immediately before each kill.
+ * Never kills foreign processes. Never drops TCP rows while a live foreign or
+ * protected ocx listener owns the port, or when the listener scan failed.
  */
 export async function reclaimListenPort(
   port: number,
@@ -134,14 +171,12 @@ export async function reclaimListenPort(
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const intervalMs = opts.intervalMs ?? 100;
   const scanIntervalMs = opts.scanIntervalMs ?? 500;
-  const killOcxHolders = opts.killOcxHolders !== false;
-  // Distinguishing unset vs []: unset = kill any verified ocx leftover; [] = kill none
-  // (and abort if another live ocx holds the port).
-  const onlyKill = Array.isArray(opts.onlyKillPids)
-    ? new Set(opts.onlyKillPids.filter(pid => Number.isSafeInteger(pid) && pid > 0))
-    : null;
+  const allowedKillPids = new Set(
+    (opts.onlyKillPids ?? []).filter(pid => Number.isSafeInteger(pid) && pid > 0),
+  );
+  const mayKill = opts.killOcxHolders === true && allowedKillPids.size > 0;
   const dropTcpRows = opts.dropTcpRows ?? process.platform === "win32";
-  const listFn = opts.listListenPidsFn ?? listListenPids;
+  const listFn = opts.listListenPidsFn ?? scanListenPids;
   const isAliveFn = opts.isAliveFn ?? isProcessAlive;
   const verifyOcxFn = opts.verifyOcxFn ?? verifyPidIdentity;
   const killFn = opts.killFn ?? killProxy;
@@ -160,11 +195,17 @@ export async function reclaimListenPort(
     if (Date.now() - lastScan >= scanIntervalMs) {
       lastScan = Date.now();
 
-      const listeners = listFn(port);
-      let foreignLive = false;
-      let foreignOcxAbort = false;
+      const scan = normalizeListenPidScan(listFn(port));
+      if (!scan.ok) {
+        // Failed probe ≠ empty listeners: do not kill and do not reset TCP rows.
+        await sleep(intervalMs);
+        continue;
+      }
 
-      for (const pid of listeners) {
+      let foreignLive = false;
+      let protectedOcxListener = false;
+
+      for (const pid of scan.pids) {
         if (pid === process.pid) continue;
         if (!isAliveFn(pid)) continue; // Windows may still list a dead owner briefly
         const isOcx = verifyOcxFn(pid) === pid;
@@ -172,22 +213,25 @@ export async function reclaimListenPort(
           foreignLive = true;
           continue;
         }
-        if (onlyKill && !onlyKill.has(pid)) {
-          // Another intentional ocx proxy is listening — do not steal its port.
-          foreignOcxAbort = true;
+        if (!allowedKillPids.has(pid)) {
+          // Healthy / intentional ocx proxy — never steal its port.
+          protectedOcxListener = true;
           continue;
         }
-        if (killOcxHolders && !killed.has(pid) && (!onlyKill || onlyKill.has(pid))) {
-          try {
-            killFn(pid);
-            killed.add(pid);
-          } catch {
-            /* keep waiting; next scan retries */
+        if (mayKill && !killed.has(pid)) {
+          // Revalidate immediately before termination.
+          if (isAliveFn(pid) && verifyOcxFn(pid) === pid && allowedKillPids.has(pid)) {
+            try {
+              killFn(pid);
+              killed.add(pid);
+            } catch {
+              /* keep waiting; next scan retries */
+            }
           }
         }
       }
 
-      if (foreignLive || foreignOcxAbort) {
+      if (foreignLive || protectedOcxListener) {
         // Foreign app or an unprotected live ocx listener owns the port: never
         // SetTcpEntry-reset their sockets, and fail reclaim once the deadline hits.
         await sleep(intervalMs);
@@ -195,8 +239,8 @@ export async function reclaimListenPort(
       }
 
       // After hard-kill, browsers often keep ESTABLISHED/CLOSE_WAIT to the dead listener.
-      // Reset those TCBs (and ghost LISTEN rows) so the configured port can bind again —
-      // without killing the browser process. Only safe when no live foreign listener remains.
+      // Reset those IPv4 TCBs (and ghost LISTEN rows) so the configured port can bind again —
+      // without killing the browser process. Only safe when no live foreign/protected listener remains.
       if (dropTcpRows) {
         try {
           dropTcpFn(port);
