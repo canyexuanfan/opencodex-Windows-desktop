@@ -27,7 +27,6 @@ test("ApiKeys stacked layout keeps endpoint, generate, keys table, and usage pan
     't("api.activeKeys"',
     't("api.usageChatTitle")',
     't("api.usageResponsesTitle")',
-    't("api.usageMessagesTitle")',
   ];
   let cursor = -1;
   for (const marker of order) {
@@ -35,6 +34,12 @@ test("ApiKeys stacked layout keeps endpoint, generate, keys table, and usage pan
     expect(at).toBeGreaterThan(cursor);
     cursor = at;
   }
+
+  // Exactly one Messages usage example, gated on Claude inbound.
+  expect(src.match(/api\.usageMessagesTitle/g)?.length).toBe(1);
+  expect(src).toMatch(/claudeCodeEnabled && \([\s\S]*?api\.usageMessagesTitle/);
+  expect(src).toContain("gatewayInboundProtocols(claudeCodeEnabled)");
+  expect(src).toContain("classifyExternalModel(row)");
 
   // Inline per-row delete confirmation, not a workspace detail pane.
   expect(src).toContain("confirmDelete === k.id");

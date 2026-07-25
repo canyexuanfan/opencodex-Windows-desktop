@@ -273,7 +273,11 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
   // ---------------------------------------------------------------------------
   if (url.pathname === "/api/keys" && req.method === "GET") {
     const keys = config.apiKeys ?? [];
-    const endpoints = buildApiAccessEndpoints(config);
+    const endpoints = buildApiAccessEndpoints(config, {
+      requestUrl: req.url,
+      requestHost: req.headers.get("host"),
+      requestOrigin: req.headers.get("origin"),
+    });
     return jsonResponse({
       keys: keys.map(k => ({ id: k.id, name: k.name, prefix: k.key.slice(0, 8) + "...", createdAt: k.createdAt })),
       ...endpoints,

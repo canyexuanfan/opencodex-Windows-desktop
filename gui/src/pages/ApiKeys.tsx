@@ -53,10 +53,37 @@ function externalModelId(model: ExternalModelRow): string {
   return model.id;
 }
 
-function modelProtocols(model: ExternalModelRow): string[] {
-  if (model.provider === "anthropic") return ["messages", "chat"];
-  if (model.provider === "openai" || model.native) return ["responses", "chat"];
-  return ["chat"];
+/** Inbound gateway protocols — not inferred from provider type. */
+export function gatewayInboundProtocols(claudeCodeEnabled: boolean): string[] {
+  return claudeCodeEnabled
+    ? ["responses", "chat", "messages"]
+    : ["responses", "chat"];
+}
+
+/**
+ * Classify a `/v1/models` row. Bare IDs keep their callable id; `owned_by`
+ * decides native/combo/custom so combo aliases are not labeled OpenAI.
+ */
+export function classifyExternalModel(row: {
+  id: string;
+  owned_by?: string;
+}): ExternalModelRow {
+  const slashIndex = row.id.indexOf("/");
+  const ownedBy = typeof row.owned_by === "string" && row.owned_by.trim()
+    ? row.owned_by.trim()
+    : undefined;
+  const provider = slashIndex > 0
+    ? row.id.slice(0, slashIndex)
+    : (ownedBy ?? "openai");
+  const native = slashIndex < 0 && provider === "openai";
+  const custom = provider !== "openai" && provider !== "combo";
+  return {
+    id: row.id,
+    displayName: row.id,
+    provider,
+    native,
+    custom,
+  };
 }
 
 function formatCreatedDate(iso: string, localeTag?: string): string {
@@ -127,18 +154,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
           && row !== null
           && typeof (row as { id?: unknown }).id === "string"
         ))
-        .map(row => {
-          const slashIndex = row.id.indexOf("/");
-          const provider = slashIndex > 0 ? row.id.slice(0, slashIndex) : (row.owned_by ?? "openai");
-          const native = slashIndex < 0;
-          return {
-            id: row.id,
-            displayName: row.id,
-            provider,
-            native,
-            custom: provider !== "openai" && provider !== "combo" && !native,
-          } satisfies ExternalModelRow;
-        })
+        .map(row => classifyExternalModel(row))
         .sort((a, b) => externalModelId(a).localeCompare(externalModelId(b)));
       setModels(rows);
     } catch {
@@ -430,7 +446,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
                         </div>
                       </td>
                       <td>{sourceLabel(model)}</td>
-                      <td>{modelProtocols(model).map(protocolLabel).join(", ")}</td>
+                      <td>{gatewayInboundProtocols(claudeCodeEnabled).map(protocolLabel).join(", ")}</td>
                       <td>
                         <div className="api-model-actions">
                           <button type="button" className="btn btn-sm btn-ghost" onClick={() => { void copyModelId(modelId); }}>
@@ -464,7 +480,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   -H "Content-Type: application/json" \\
   -d '{
     "model": "gpt-5.4",
-    "messages": [{"role": "user", "content": "Hello, world!"}]
+    "messages": [{"role": "user", "content": ${JSON.stringify(t("api.usageSampleInput"))}}]
   }'`}</pre>
       </div>
 
@@ -479,17 +495,6 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   }'`}</pre>
       </div>
 
-      <div className="panel api-panel" style={{ marginTop: "1rem" }}>
-        <h3 className="panel-title">{t("api.usageMessagesTitle")}</h3>
-        <pre className="api-code">{`curl ${endpoints.messages} \\
-  -H "x-opencodex-api-key: ocx_YOUR_KEY_HERE" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "claude-sonnet-4-6",
-    "max_tokens": 64,
-    "messages": [{"role": "user", "content": "Hello, world!"}]
-  }'`}</pre>
-      </div>
       {claudeCodeEnabled && (
         <div className="panel api-panel" style={{ marginTop: "1rem" }}>
           <h3 className="panel-title">{t("api.usageMessagesTitle")}</h3>
@@ -499,7 +504,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   -d '{
     "model": "claude-sonnet-4-6",
     "max_tokens": 64,
-    "messages": [{"role": "user", "content": "Hello, world!"}]
+    "messages": [{"role": "user", "content": ${JSON.stringify(t("api.usageSampleInput"))}}]
   }'`}</pre>
         </div>
       )}
