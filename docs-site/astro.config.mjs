@@ -2,9 +2,9 @@
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
 
-// Project GitHub Pages site: https://lidge-jun.github.io/opencodex
-// `site` + `base` make Starlight emit correct absolute URLs and asset paths under the repo subpath.
-const SITE_URL = "https://lidge-jun.github.io/opencodex";
+// Canonical GitHub Pages custom domain. The site is served at the domain root,
+// so Starlight must not emit the former /opencodex project-site prefix.
+const SITE_URL = "https://opencodex.me";
 
 // JSON-LD: WebSite + SoftwareApplication (docs SEO baseline; canonical/og/sitemap
 // are emitted by Starlight itself).
@@ -47,8 +47,7 @@ const jsonLd = JSON.stringify({
 });
 
 export default defineConfig({
-  site: "https://lidge-jun.github.io",
-  base: "/opencodex",
+  site: SITE_URL,
   trailingSlash: "ignore",
   // lightningcss merges animation-timeline into the `animation` shorthand,
   // which Chrome cannot parse — the scroll-driven animations die silently.
@@ -64,7 +63,7 @@ export default defineConfig({
         dark: "./src/assets/logo-dark.png",
         replacesTitle: false,
       },
-      favicon: "/favicon.png",
+      favicon: "/favicon.ico",
       customCss: [
         "@fontsource-variable/geist",
         "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css",
@@ -75,11 +74,13 @@ export default defineConfig({
         PageTitle: "./src/components/PageTitle.astro",
       },
       head: [
-        { tag: "meta", attrs: { property: "og:image", content: "https://lidge-jun.github.io/opencodex/og.png" } },
+        // Google favicon guidelines: PNG at a multiple of 48px, exposed via rel="icon".
+        { tag: "link", attrs: { rel: "icon", type: "image/png", sizes: "192x192", href: "/favicon.png" } },
+        { tag: "meta", attrs: { property: "og:image", content: `${SITE_URL}/og.png` } },
         { tag: "meta", attrs: { property: "og:image:width", content: "1200" } },
         { tag: "meta", attrs: { property: "og:image:height", content: "630" } },
         { tag: "meta", attrs: { name: "twitter:card", content: "summary_large_image" } },
-        { tag: "meta", attrs: { name: "twitter:image", content: "https://lidge-jun.github.io/opencodex/og.png" } },
+        { tag: "meta", attrs: { name: "twitter:image", content: `${SITE_URL}/og.png` } },
         { tag: "meta", attrs: { name: "theme-color", media: "(prefers-color-scheme: light)", content: "#ffffff" } },
         { tag: "meta", attrs: { name: "theme-color", media: "(prefers-color-scheme: dark)", content: "#212121" } },
         { tag: "script", attrs: { type: "application/ld+json" }, content: jsonLd },

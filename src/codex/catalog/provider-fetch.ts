@@ -14,6 +14,7 @@ import {
   markModelsFetchFailure,
   markProviderDiscoveryFailed,
   markProviderDiscoveryOk,
+  shouldLogDiscoveryFailure,
   setCached,
   type ProviderModelDiscoveryFailure,
 } from "../model-cache";
@@ -302,7 +303,11 @@ export async function fetchProviderModels(name: string, prov: OcxProviderConfig,
     : "provider-models";
   const failedDiscoveryFallback = (
     failure: ProviderModelDiscoveryFailure,
-  ): { models: CatalogModel[]; fallback: "stale" | "configured" } => {
+  ): { models: CatalogModel[]; fallback: "stale" | "configured"; shouldLog: boolean } => {
+    // Decide logging BEFORE recording the new status, so we can compare against the prior one and
+    // suppress an identical repeated failure (#395 log flood). The failure stays observable via the
+    // discovery-status API regardless.
+    const shouldLog = shouldLogDiscoveryFailure(name, failure);
     markModelsFetchFailure(name);
     markProviderDiscoveryFailed(name, failure);
     const stale = getStaleCached(name);
@@ -311,6 +316,7 @@ export async function fetchProviderModels(name: string, prov: OcxProviderConfig,
         ? withVertexDefaultSeed(applyConfigHintsToCachedModels(name, prov, stale, contextCap))
         : failedDiscoveryConfigured,
       fallback: stale ? "stale" : "configured",
+      shouldLog,
     };
   };
   try {
@@ -319,19 +325,23 @@ export async function fetchProviderModels(name: string, prov: OcxProviderConfig,
       allowPrivateNetwork: prov.allowPrivateNetwork,
     });
     if (destinationError) {
-      const { models, fallback } = failedDiscoveryFallback({ reason: "blocked" });
-      console.warn(
-        `[opencodex] Provider model discovery for "${name}" was blocked by destination policy: ${destinationError} [urlClass=${urlClass}, fallback=${fallback}].`,
-      );
+      const { models, fallback, shouldLog } = failedDiscoveryFallback({ reason: "blocked" });
+      if (shouldLog) {
+        console.warn(
+          `[opencodex] Provider model discovery for "${name}" was blocked by destination policy: ${destinationError} [urlClass=${urlClass}, fallback=${fallback}].`,
+        );
+      }
       return models;
     }
 
     const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
     if (!res.ok) {
-      const { models, fallback } = failedDiscoveryFallback({ reason: "http", httpStatus: res.status });
-      console.warn(
-        `[opencodex] Provider model discovery for "${name}" failed with HTTP ${res.status} [urlClass=${urlClass}, fallback=${fallback}].`,
-      );
+      const { models, fallback, shouldLog } = failedDiscoveryFallback({ reason: "http", httpStatus: res.status });
+      if (shouldLog) {
+        console.warn(
+          `[opencodex] Provider model discovery for "${name}" failed with HTTP ${res.status} [urlClass=${urlClass}, fallback=${fallback}].`,
+        );
+      }
       return models;
     }
 
@@ -343,23 +353,27 @@ export async function fetchProviderModels(name: string, prov: OcxProviderConfig,
     try {
       json = JSON.parse(body) as unknown;
     } catch {
-      const { models, fallback } = failedDiscoveryFallback({ reason: "invalid_response" });
+      const { models, fallback, shouldLog } = failedDiscoveryFallback({ reason: "invalid_response" });
       const diagnostic = contentType === "application/json" || contentType.endsWith("+json")
         ? "returned invalid JSON in a 2xx response"
         : "returned a non-JSON 2xx response";
-      console.warn(
-        `[opencodex] Provider model discovery for "${name}" ${diagnostic} [status=${res.status}, contentType=${contentType}, urlClass=${urlClass}, fallback=${fallback}].`,
-      );
+      if (shouldLog) {
+        console.warn(
+          `[opencodex] Provider model discovery for "${name}" ${diagnostic} [status=${res.status}, contentType=${contentType}, urlClass=${urlClass}, fallback=${fallback}].`,
+        );
+      }
       return models;
     }
     const data = json !== null && typeof json === "object" && !Array.isArray(json)
       ? (json as { data?: unknown }).data
       : undefined;
     if (!isProviderModelsApiItems(data)) {
-      const { models, fallback } = failedDiscoveryFallback({ reason: "invalid_response" });
-      console.warn(
-        `[opencodex] Provider model discovery for "${name}" returned malformed 2xx data [status=${res.status}, contentType=${contentType}, urlClass=${urlClass}, fallback=${fallback}].`,
-      );
+      const { models, fallback, shouldLog } = failedDiscoveryFallback({ reason: "invalid_response" });
+      if (shouldLog) {
+        console.warn(
+          `[opencodex] Provider model discovery for "${name}" returned malformed 2xx data [status=${res.status}, contentType=${contentType}, urlClass=${urlClass}, fallback=${fallback}].`,
+        );
+      }
       return models;
     }
     const items = data;
@@ -402,10 +416,12 @@ export async function fetchProviderModels(name: string, prov: OcxProviderConfig,
     setCached(name, live);
     return live;
   } catch (error) {
-    const { models, fallback } = failedDiscoveryFallback({ reason: "network" });
-    console.warn(
-      `[opencodex] Provider model discovery for "${name}" threw ${error instanceof Error ? error.name : "unknown"} [urlClass=${urlClass}, fallback=${fallback}].`,
-    );
+    const { models, fallback, shouldLog } = failedDiscoveryFallback({ reason: "network" });
+    if (shouldLog) {
+      console.warn(
+        `[opencodex] Provider model discovery for "${name}" threw ${error instanceof Error ? error.name : "unknown"} [urlClass=${urlClass}, fallback=${fallback}].`,
+      );
+    }
     return models;
   }
 }
@@ -525,10 +541,13 @@ export async function gatherRoutedModels(config: OcxConfig): Promise<CatalogMode
     else warnUncataloguedComboOnce(id, combo, members);
   }
   all.sort((a, b) => (a.provider === b.provider ? a.id.localeCompare(b.id) : a.provider.localeCompare(b.provider)));
+  // Enriched (registry-hydrated) provider clones, keyed by name — the same view used above so
+  // custom rows get the same noVisionModels / inputModalities treatment as discovered rows.
+  const enrichedByName = new Map(activeProviders);
   const customModels = (config.customModels ?? []).map(cm => {
-    const provider = config.providers[cm.provider] as OcxProviderConfigWithReasoningSummaries | undefined;
-    const supportsReasoningSummaries = modelRecordValue(provider?.modelSupportsReasoningSummaries, cm.modelId);
-    return {
+    const rawProvider = config.providers[cm.provider] as OcxProviderConfigWithReasoningSummaries | undefined;
+    const supportsReasoningSummaries = modelRecordValue(rawProvider?.modelSupportsReasoningSummaries, cm.modelId);
+    const base: CatalogModel = {
       id: cm.modelId,
       provider: cm.provider,
       // Display-only label: never feeds routing (customModels are keyed by routedSlug below).
@@ -537,6 +556,19 @@ export async function gatherRoutedModels(config: OcxConfig): Promise<CatalogMode
       ...(cm.inputModalities ? { inputModalities: cm.inputModalities } : {}),
       ...(typeof supportsReasoningSummaries === "boolean" ? { supportsReasoningSummaries } : {}),
     };
+    // Vision-sidecar coverage ONLY: if the custom model is in the enriched provider's
+    // noVisionModels, advertise image input so the Codex app lets images reach the sidecar
+    // (#349/#344). Deliberately NOT the full applyProviderConfigHints pass — custom rows are a
+    // user override, so their explicit contextWindow / inputModalities / reasoning fields must be
+    // preserved verbatim (the hint pass would cap context and overwrite modalities from registry).
+    const enrichedProvider = enrichedByName.get(cm.provider) ?? rawProvider;
+    if (enrichedProvider && modelInList(enrichedProvider.noVisionModels, base.id)) {
+      const current = base.inputModalities ?? ["text"];
+      if (!current.includes("image")) {
+        return { ...base, inputModalities: [...current, "image"] };
+      }
+    }
+    return base;
   });
   // Custom rows override discovered rows that encode to the same Codex-facing slug.
   const customKeys = new Set(customModels.map(c => routedSlug(c.provider, c.id)));

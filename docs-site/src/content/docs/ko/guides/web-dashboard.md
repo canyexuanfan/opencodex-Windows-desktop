@@ -34,12 +34,16 @@ bun run dev:gui
 | **Codex 자동 시작** | 이미 설치된 Codex launcher shim이 `ocx ensure`를 실행하도록 허용합니다. 이 토글은 shim이나 백그라운드 서비스를 설치하지 않습니다. |
 | **Providers** | 프로바이더를 추가, 편집, 활성화/비활성화, 제거하고, 지원되는 OAuth 계정 풀과 API key 풀을 관리합니다. |
 | **Add provider** | 레지스트리 기반 프리셋에서 계정 로그인, API key 서비스, 로컬 서버, custom endpoint를 검색합니다. |
-| **Codex Auth** | ChatGPT/Codex 풀 계정을 추가하고, 다음 세션 계정을 선택하고, 5시간 / 주간 / 30일 할당량을 갱신하며, 할당량 자동 전환과 일시적 실패 failover를 설정합니다. |
+| **Codex Auth** | ChatGPT/Codex 풀 계정을 추가하고, 다음 세션 계정을 선택하고, 5시간 / 주간 / 30일 할당량을 갱신하며, 할당량 자동 전환을 켜거나 끄고 1~100% 임계값과 일시적 실패 failover를 설정합니다. |
 | **Subagents** | `spawn_agent` override 목록에 네이티브 또는 라우팅 모델을 최대 5개까지 우선 노출합니다. |
 | **Models** | 네이티브 GPT와 라우팅 모델을 켜고 끄고, 프로바이더 allowlist와 컨텍스트 상한, v1/base/v2, v2 thread 수를 설정합니다. |
 | **Logs** | 토큰, 요청 강도, 실제 모델, 프로바이더, 상태, 요청 id, 소요 시간, 오류 상세가 포함된 최근 요청을 자동 갱신합니다. |
 | **Usage / Debug** | 토큰 사용량의 측정 범위와 추이를 보거나, 선택적 프로바이더 전송/사용량 추출 진단을 켭니다. |
 | **Stop** | 프록시와 설치된 백그라운드 서비스를 정상 종료하고 네이티브 Codex를 복원한 뒤 끝냅니다(`POST /api/stop`). |
+
+### 섹션으로 바로 가기
+
+레이아웃은 하나뿐이라 전환할 설정이 없습니다. 대신 Dashboard의 섹션마다 주소가 있습니다. `#dashboard`는 Overview, `#dashboard/providers`와 `#dashboard/models`는 나머지 두 섹션입니다. 새로고침하거나 북마크해도, 뒤로 가도 보던 섹션이 그대로 유지됩니다. **Logs**도 `#logs`와 `#logs/debug`로 똑같이 동작합니다. 예전 `#providers/workspace` 북마크는 `#providers`로 넘어갑니다.
 
 **Logs**와 **Usage**의 비용 값은 보고된 토큰으로 계산한 API 정가 환산치입니다. 결제 영수증이나
 실제 청구 증거가 아니며, 구독 사용량 또는 프로바이더 크레딧이 대신 적용될 수 있습니다.
@@ -55,7 +59,7 @@ Dashboard의 **Sub-agent delegation** 선택기는 `injectionModel`과 선택적
 이 선택기는 v1 호환 서피스용 위임 안내입니다. `multi_agent_v2`에서는 현재 프록시가 v1 주입
 메시지를 덧붙이지 않으며, 생성된 모든 서브에이전트가 부모 세션의 모델을 상속합니다. 프록시가
 스폰마다 모델을 바꾸는 라우터가 아닙니다. v1/base/v2의 정확한 동작은
-[서브에이전트 서피스](/opencodex/ko/guides/sub-agent-surface/)를 참고하세요.
+[서브에이전트 서피스](/ko/guides/sub-agent-surface/)를 참고하세요.
 :::
 
 선택기에는 활성화된 네이티브 및 라우팅 모델과 Codex 전역 reasoning 단계가 표시됩니다. API는
@@ -69,7 +73,7 @@ Dashboard의 **Sub-agent delegation** 선택기는 `injectionModel`과 선택적
 - 계정을 직접 고르면 다음 새 Codex 세션부터 바뀝니다. 이미 계정이 묶인 thread는 이 수동 전환만으로
   중간에 이동하지 않습니다.
 - Thread affinity가 요청마다 계정이 흔들리는 일을 막습니다. 할당량 자동 전환이 켜져 있으면 오래
-  실행되는 thread도 주기적으로 다시 평가합니다. 관련 사용량이 임계값을 넘고 사용량이 확실히 더 낮은
+  실행되는 thread도 주기적으로 다시 평가합니다. 관련 사용량이 임계값 이상이고 사용량이 확실히 더 낮은
   정상 계정이 있으면 그 계정으로 다시 묶일 수 있습니다.
 - 새 세션은 사용량이 가장 낮은 정상 계정을 고를 수 있습니다. 유료 플랜은 알려진 5시간, 주간, 30일
   창 중 가장 높은 사용률로 점수를 매기고, Go/Free 플랜은 30일 창만 사용합니다.
@@ -106,5 +110,5 @@ GUI는 프록시의 JSON 관리 API를 사용하는 얇은 클라이언트입니
 :::tip
 대시보드에서 **Ollama Cloud** 같은 카탈로그 프로바이더를 추가하면 텍스트/비전 모델 분류가 저장된
 프로바이더 설정에 복사됩니다. 별도 분류 작업 없이도
-[비전 사이드카](/opencodex/ko/guides/sidecars/)가 올바른 조건에서만 실행됩니다.
+[비전 사이드카](/ko/guides/sidecars/)가 올바른 조건에서만 실행됩니다.
 :::

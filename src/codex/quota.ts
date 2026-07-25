@@ -28,6 +28,7 @@ type WhamUsageWindow = {
 };
 
 const MONTHLY_WINDOW_MIN_SECONDS = 28 * 24 * 60 * 60;
+const MONTHLY_WINDOW_MIN_MINUTES = MONTHLY_WINDOW_MIN_SECONDS / 60;
 
 const accountQuota = new Map<string, StoredAccountQuota>();
 
@@ -63,6 +64,125 @@ function isExplicitMonthlyWindow(window: WhamUsageWindow | null | undefined): bo
   return typeof seconds === "number"
     && Number.isFinite(seconds)
     && seconds >= MONTHLY_WINDOW_MIN_SECONDS;
+}
+
+function isExplicitMonthlyWindowMinutes(windowMinutes: unknown): boolean {
+  const minutes = typeof windowMinutes === "number"
+    ? windowMinutes
+    : typeof windowMinutes === "string" && windowMinutes.trim() !== ""
+      ? Number(windowMinutes)
+      : undefined;
+  return typeof minutes === "number"
+    && Number.isFinite(minutes)
+    && minutes >= MONTHLY_WINDOW_MIN_MINUTES;
+}
+
+
+function snapshotHasWeekly(quota: Omit<StoredAccountQuota, "updatedAt">): boolean {
+  return quota.weeklyPercent !== undefined || quota.weeklyResetAt !== undefined;
+}
+
+function snapshotHasMonthly(quota: Omit<StoredAccountQuota, "updatedAt">): boolean {
+  return quota.monthlyPercent !== undefined || quota.monthlyResetAt !== undefined;
+}
+
+function snapshotHasUsage(quota: Omit<StoredAccountQuota, "updatedAt">): boolean {
+  return snapshotHasWeekly(quota) || snapshotHasMonthly(quota);
+}
+export function setAccountQuotaFromParsed(
+  accountId: string,
+  quota: Omit<StoredAccountQuota, "updatedAt"> | null,
+): void {
+  if (!quota) return;
+  const existing = accountQuota.get(accountId);
+  const next: StoredAccountQuota = { updatedAt: Date.now() };
+  const creditsOnly = quota.resetCredits !== undefined && !snapshotHasUsage(quota);
+
+  if (creditsOnly) {
+    if (existing?.weeklyPercent !== undefined) next.weeklyPercent = existing.weeklyPercent;
+    if (existing?.weeklyResetAt !== undefined) next.weeklyResetAt = existing.weeklyResetAt;
+    if (existing?.monthlyPercent !== undefined) next.monthlyPercent = existing.monthlyPercent;
+    if (existing?.monthlyResetAt !== undefined) next.monthlyResetAt = existing.monthlyResetAt;
+    next.resetCredits = quota.resetCredits;
+    accountQuota.set(accountId, next);
+    return;
+  }
+
+  if (snapshotHasWeekly(quota)) {
+    if (quota.weeklyPercent !== undefined) next.weeklyPercent = quota.weeklyPercent;
+    if (quota.weeklyResetAt !== undefined) next.weeklyResetAt = quota.weeklyResetAt;
+  } else if (snapshotHasMonthly(quota) && !snapshotHasWeekly(quota)) {
+    // Monthly-only snapshots intentionally clear stale weekly values (issue #382).
+  } else if (existing?.weeklyPercent !== undefined) {
+    next.weeklyPercent = existing.weeklyPercent;
+    if (existing.weeklyResetAt !== undefined) next.weeklyResetAt = existing.weeklyResetAt;
+  }
+
+  if (snapshotHasMonthly(quota)) {
+    if (quota.monthlyPercent !== undefined) next.monthlyPercent = quota.monthlyPercent;
+    if (quota.monthlyResetAt !== undefined) next.monthlyResetAt = quota.monthlyResetAt;
+  } else if (snapshotHasWeekly(quota) && existing?.monthlyPercent !== undefined) {
+    next.monthlyPercent = existing.monthlyPercent;
+    if (existing.monthlyResetAt !== undefined) next.monthlyResetAt = existing.monthlyResetAt;
+  }
+
+  if (quota.resetCredits !== undefined) next.resetCredits = quota.resetCredits;
+  else if (existing?.resetCredits !== undefined) next.resetCredits = existing.resetCredits;
+
+  accountQuota.set(accountId, next);
+}
+
+export function parseUpstreamQuotaHeaders(headers: Headers): Omit<StoredAccountQuota, "updatedAt"> | null {
+  const primaryRaw = headers.get("x-codex-primary-used-percent");
+  const secondaryRaw = headers.get("x-codex-secondary-used-percent");
+  const tertiaryRaw = headers.get("x-codex-tertiary-used-percent");
+  const primaryResetRaw = headers.get("x-codex-primary-reset-at");
+  const secondaryResetRaw = headers.get("x-codex-secondary-reset-at");
+  const tertiaryResetRaw = headers.get("x-codex-tertiary-reset-at");
+  const primaryWindowMinutes = headers.get("x-codex-primary-window-minutes");
+  const secondaryWindowMinutes = headers.get("x-codex-secondary-window-minutes");
+
+  const quota: Omit<StoredAccountQuota, "updatedAt"> = {};
+  const primaryPercent = normalizeUsagePercent(primaryRaw);
+  const secondaryPercent = normalizeUsagePercent(secondaryRaw);
+  const tertiaryPercent = normalizeUsagePercent(tertiaryRaw);
+  const primaryResetAt = normalizeResetAt(primaryResetRaw);
+  const secondaryResetAt = normalizeResetAt(secondaryResetRaw);
+  const tertiaryResetAt = normalizeResetAt(tertiaryResetRaw);
+  const primaryIsMonthly = primaryRaw !== null && isExplicitMonthlyWindowMinutes(primaryWindowMinutes);
+
+  if (primaryIsMonthly) {
+    if (primaryPercent !== undefined) {
+      quota.monthlyPercent = primaryPercent;
+      if (primaryResetAt !== undefined) quota.monthlyResetAt = primaryResetAt;
+    }
+    if (secondaryPercent !== undefined) {
+      quota.weeklyPercent = secondaryPercent;
+      if (secondaryResetAt !== undefined) quota.weeklyResetAt = secondaryResetAt;
+    }
+  } else {
+    const weeklyPercent = primaryPercent ?? secondaryPercent;
+    const weeklyResetAt = primaryPercent !== undefined
+      ? primaryResetAt
+      : secondaryResetAt;
+    if (weeklyPercent !== undefined) {
+      quota.weeklyPercent = weeklyPercent;
+      if (weeklyResetAt !== undefined) quota.weeklyResetAt = weeklyResetAt;
+    }
+  }
+
+  if (tertiaryPercent !== undefined && quota.monthlyPercent === undefined) {
+    quota.monthlyPercent = tertiaryPercent;
+    if (tertiaryResetAt !== undefined) quota.monthlyResetAt = tertiaryResetAt;
+  }
+
+  return hasKnownQuotaValue(quota) ? quota : null;
+}
+
+export function applyAccountQuotaFromUpstreamHeaders(accountId: string, headers: Headers): void {
+  const quota = parseUpstreamQuotaHeaders(headers);
+  if (!quota) return;
+  setAccountQuotaFromParsed(accountId, quota);
 }
 
 export function updateAccountQuota(

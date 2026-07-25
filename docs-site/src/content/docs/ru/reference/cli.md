@@ -363,7 +363,7 @@ ocx login xai
 
 ### `ocx gui`
 
-Открывает [веб-дашборд](/opencodex/ru/guides/web-dashboard/) по адресу `http://localhost:<port>`,
+Открывает [веб-дашборд](/ru/guides/web-dashboard/) по адресу `http://localhost:<port>`,
 автоматически запуская прокси, если он не работает.
 
 ## Фоновый сервис

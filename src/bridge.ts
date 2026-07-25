@@ -456,6 +456,17 @@ export function bridgeToResponsesSSE(
             if (event.type !== "done" && event.type !== "incomplete" && event.type !== "error") continue;
           }
           switch (event.type) {
+            case "assistant_boundary": {
+              // A guarded continuation starts a fresh assistant output item while keeping the
+              // intermediate, suspicious text in the same Responses turn.
+              if (currentMsg) closeCurrentMessage();
+              if (currentReasoning) closeCurrentReasoning();
+              if (currentRawReasoning) closeCurrentRawReasoning();
+              flushHiddenRawReasoning();
+              if (currentToolCall) closeCurrentToolCall();
+              flushHiddenReasoningEnvelope();
+              break;
+            }
             case "text_delta": {
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
@@ -971,6 +982,12 @@ export function buildResponseJSON(
 
   for (const e of events) {
     switch (e.type) {
+      case "assistant_boundary":
+        flushText();
+        flushSummaryReasoning();
+        flushRawReasoning();
+        flushToolCall();
+        break;
       case "text_delta":
         if (currentText && currentTextPhase !== e.phase) flushText();
         if (currentSummaryReasoning) flushSummaryReasoning();
@@ -1062,7 +1079,9 @@ export function buildResponseJSON(
   flushSummaryReasoning();
   flushRawReasoning();
   flushToolCall();
-  if (options?.compaction && !errorEvent) {
+  // A truncated turn must never be installed as replacement history: emit the
+  // compaction item only when the turn actually completed (#422).
+  if (options?.compaction && !errorEvent && !incompleteEvent && stopReason !== "max_tokens") {
     output.push({ type: "compaction", id: `cmp_${uuid()}`, encrypted_content: encodeCompactionSummary(compactionText) });
   }
 

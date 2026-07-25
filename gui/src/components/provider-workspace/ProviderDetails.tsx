@@ -16,6 +16,7 @@ import ProviderOverview from "./ProviderOverview";
 import ProviderModels from "./ProviderModels";
 import ProviderUsage from "./ProviderUsage";
 import ProviderAuthPanel from "./ProviderAuthPanel";
+import type { CodexAccountPoolController } from "../../hooks/useCodexAccountPool";
 import ProviderSettings from "./ProviderSettings";
 import { UnsavedLeaveDialog } from "./ProviderDialogs";
 import type { ProviderQuotaReportView } from "../../provider-workspace/report";
@@ -45,6 +46,7 @@ export default function ProviderDetails({
   loginHint,
   authHandlers,
   onCodexActiveNeedsReauthChange,
+  codexController,
   onUpdateProvider,
   isDefault,
   onRemoveProvider,
@@ -71,6 +73,8 @@ export default function ProviderDetails({
   loginHint?: LoginHint | null;
   authHandlers?: ProviderAuthHandlers;
   onCodexActiveNeedsReauthChange?: (needs: boolean) => void;
+  /** Shared Codex account state owned by Providers (WP3). */
+  codexController?: CodexAccountPoolController;
   onUpdateProvider?: (name: string, patch: ProviderUpdatePatch) => Promise<{ ok: boolean; error?: string }>;
   isDefault?: boolean;
   onRemoveProvider?: (name: string) => void;
@@ -199,6 +203,22 @@ export default function ProviderDetails({
       >
         {tab === "overview" && (
           <ProviderOverview
+            accountPanel={authSurface ? (
+              <ProviderAuthPanel
+                item={item}
+                apiBase={apiBase}
+                oauth={oauth}
+                accounts={accounts}
+                keys={keys}
+                accountLoadState={accountLoadState}
+                switchingAccountId={switchingAccountId}
+                busy={busyProvider === item.name}
+                loginHint={loginHint}
+                authHandlers={authHandlers}
+                onCodexActiveNeedsReauthChange={onCodexActiveNeedsReauthChange}
+                codexController={codexController}
+              />
+            ) : undefined}
             item={item}
             usageTotals={usageTotals}
             quotaReport={quotaReport}
@@ -256,6 +276,7 @@ export default function ProviderDetails({
             loginHint={loginHint}
             authHandlers={authHandlers}
             onCodexActiveNeedsReauthChange={onCodexActiveNeedsReauthChange}
+            codexController={codexController}
           />
         )}
         {tab === "settings" && (

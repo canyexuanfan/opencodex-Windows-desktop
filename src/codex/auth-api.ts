@@ -19,11 +19,19 @@ import {
   getAccountQuota,
   listAccountQuotas,
   parseUsageQuota,
+  setAccountQuotaFromParsed,
   updateAccountQuota,
   type StoredAccountQuota,
   type WhamUsageResponse,
 } from "./quota";
-export { clearAccountQuota, getAccountQuota, parseUsageQuota, updateAccountQuota } from "./quota";
+export {
+  applyAccountQuotaFromUpstreamHeaders,
+  clearAccountQuota,
+  getAccountQuota,
+  parseUsageQuota,
+  setAccountQuotaFromParsed,
+  updateAccountQuota,
+} from "./quota";
 import { extractAccountId, decodeJwtPayload } from "../oauth/chatgpt";
 import { MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from "./main-account";
 import { maskEmail } from "../lib/privacy";
@@ -280,14 +288,7 @@ export async function fetchMainAccountInfo(forceRefresh = false): Promise<{ emai
     // score and auto-switch the main account exactly like a pool account (Option A).
     setMainAccountPlan(result.plan);
     if (result.quota) {
-      updateAccountQuota(
-        MAIN_CODEX_ACCOUNT_ID,
-        result.quota.weeklyPercent,
-        result.quota.weeklyResetAt,
-        result.quota.monthlyPercent,
-        result.quota.monthlyResetAt,
-        result.quota.resetCredits,
-      );
+      setAccountQuotaFromParsed(MAIN_CODEX_ACCOUNT_ID, result.quota);
     }
     return result;
   } catch {
@@ -327,14 +328,7 @@ async function fetchPoolAccountQuota(accountId: string, forceRefresh = false, co
     const data = (await resp.json()) as WhamUsageResponse;
     const quota = parseUsageQuota({ ...data, plan_type: data.plan_type ?? configuredPlan });
     if (!quota) return { quota: existing ?? null, needsReauth: false };
-    updateAccountQuota(
-      accountId,
-      quota.weeklyPercent,
-      quota.weeklyResetAt,
-      quota.monthlyPercent,
-      quota.monthlyResetAt,
-      quota.resetCredits,
-    );
+    setAccountQuotaFromParsed(accountId, quota);
     return { quota: getAccountQuota(accountId), needsReauth: false };
   } catch (e) {
     if (e instanceof CodexCredentialGenerationConflictError || e instanceof CodexCredentialRefreshLockTimeoutError) return { quota: existing ?? null, needsReauth: false };
@@ -767,14 +761,7 @@ export async function handleCodexAuthAPI(
               markCodexAccountValidated(accountId, warmup.validatedAt);
               clearAccountNeedsReauth(accountId);
               if (quota) {
-                updateAccountQuota(
-                  accountId,
-                  quota.weeklyPercent,
-                  quota.weeklyResetAt,
-                  quota.monthlyPercent,
-                  quota.monthlyResetAt,
-                  quota.resetCredits,
-                );
+                setAccountQuotaFromParsed(accountId, quota);
               }
 
               const latestConfig = getRuntimeConfig(config);

@@ -323,7 +323,7 @@ ocx login xai
 
 ### `ocx gui`
 
-`http://localhost:<port>` で [ウェブダッシュボード](/opencodex/ja/guides/web-dashboard/) を開きます。
+`http://localhost:<port>` で [ウェブダッシュボード](/ja/guides/web-dashboard/) を開きます。
 プロキシが実行中でない場合は自動的に起動します。
 
 ## バックグラウンドサービス
