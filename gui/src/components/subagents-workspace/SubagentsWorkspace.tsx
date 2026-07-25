@@ -29,13 +29,6 @@ export interface SubagentsWorkspaceProps {
 
 const FEATURED_MAX = 5;
 
-/** Only split provider/id when the public string is clearly `provider/model`. */
-function routedParts(slug: string): { provider: string; modelId: string } | null {
-  const idx = slug.lastIndexOf("/");
-  if (idx <= 0 || idx >= slug.length - 1) return null;
-  return { provider: slug.slice(0, idx), modelId: slug.slice(idx + 1) };
-}
-
 export default function SubagentsWorkspace({
   available,
   chosen,
@@ -62,7 +55,6 @@ export default function SubagentsWorkspace({
 
   const selectedIndex = selected ? chosen.indexOf(selected) : -1;
   const selectedIsFeatured = selectedIndex !== -1;
-  const selectedParts = selected ? routedParts(selected) : null;
 
   return (
     <div className="subagents-workspace-shell">
@@ -165,25 +157,11 @@ export default function SubagentsWorkspace({
               </div>
 
               <div className="swi-detail-section">
-                <h3 className="swi-detail-section-title">{t("sub.workspace.modelId")}</h3>
                 <dl className="swi-detail-kv">
-                  {selectedParts ? (
-                    <>
-                      <div className="swi-detail-kv-row">
-                        <dt>{t("sub.workspace.provider")}</dt>
-                        <dd><code>{selectedParts.provider}</code></dd>
-                      </div>
-                      <div className="swi-detail-kv-row">
-                        <dt>{t("sub.workspace.modelId")}</dt>
-                        <dd><code>{selectedParts.modelId}</code></dd>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="swi-detail-kv-row">
-                      <dt>{t("sub.workspace.modelId")}</dt>
-                      <dd><code>{selected}</code></dd>
-                    </div>
-                  )}
+                  <div className="swi-detail-kv-row">
+                    <dt>{t("sub.workspace.selector")}</dt>
+                    <dd><code>{selected}</code></dd>
+                  </div>
                   <div className="swi-detail-kv-row">
                     <dt>{t("sub.workspace.priority")}</dt>
                     <dd>{selectedIsFeatured ? selectedIndex + 1 : t("sub.workspace.notFeatured")}</dd>

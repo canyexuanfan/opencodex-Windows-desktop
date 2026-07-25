@@ -33,9 +33,41 @@ test("SubagentsWorkspace exposes featured rail + save actions", async () => {
   // Rail toggles must include the model name in their accessible label.
   expect(src).toContain('t("sub.workspace.removeFromFeatured", { m })');
   expect(src).toContain('t("sub.workspace.addToFeatured", { m })');
-  // Do not fabricate openai provider for bare combo aliases.
+});
+
+test("Subagents detail shows exact public selector without inferred provider metadata", async () => {
+  const src = await Bun.file(
+    new URL("../src/components/subagents-workspace/SubagentsWorkspace.tsx", import.meta.url),
+  ).text();
+  const en = await Bun.file(new URL("../src/i18n/en.ts", import.meta.url)).text();
+
+  // No slash-splitting helpers that invent Provider / Model ID rows.
+  expect(src).not.toContain("routedParts");
+  expect(src).not.toContain("selectedParts");
+  expect(src).not.toContain("providerOf");
+  expect(src).not.toContain("bareId");
   expect(src).not.toContain('"openai"');
-  expect(src).toContain("routedParts");
+  expect(src).not.toContain('t("sub.workspace.provider")');
+  expect(src).not.toContain('t("sub.workspace.modelId")');
+  expect(en).not.toContain('"sub.workspace.provider"');
+  expect(en).not.toContain('"sub.workspace.modelId"');
+
+  // Exact API selector is shown under an honest label.
+  expect(src).toContain('t("sub.workspace.selector")');
+  expect(src).toContain("<code>{selected}</code>");
+  expect(en).toContain('"sub.workspace.selector": "Public selector"');
+
+  // Representative public selectors must not be reinterpreted in source.
+  for (const selector of [
+    "gpt-5.6-sol",
+    "openrouter/claude-sonnet-4",
+    "zenmux/moonshotai-kimi-k3-free",
+    "deepseek-v4-flash",
+    "fast/deepseek",
+    "combo/free",
+  ]) {
+    expect(src).not.toContain(`provider: "${selector.split("/")[0]}"`);
+  }
 });
 
 test("Subagents rail list reserves scrollbar gutter so toggles stay clear", async () => {
