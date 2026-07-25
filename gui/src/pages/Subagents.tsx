@@ -4,8 +4,10 @@ import { IconArrowUp, IconArrowDown, IconX, IconCheck, IconSearch, IconBot, Icon
 import { useT } from "../i18n/shared";
 import { Trans } from "../i18n/provider";
 import { modelLabel } from "../model-display";
+import { readViewMode, type ViewMode } from "../view-mode";
+import SubagentsWorkspace from "../components/subagents-workspace/SubagentsWorkspace";
 
-export default function Subagents({ apiBase }: { apiBase: string }) {
+export default function Subagents({ apiBase, viewMode }: { apiBase: string; viewMode?: ViewMode }) {
   const t = useT();
   const [available, setAvailable] = useState<string[]>([]);
   const [chosen, setChosen] = useState<string[]>([]);
@@ -13,6 +15,7 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
   const [status, setStatus] = useState("");
   const [ok, setOk] = useState(false);
   const [loading, setLoading] = useState(true);
+  const workspaceView = (viewMode ?? readViewMode()) === "workspace";
 
   const chosenSet = useMemo(() => new Set(chosen), [chosen]);
 
@@ -77,9 +80,29 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
 
   if (loading) return <div className="muted" style={{ padding: 8 }}>{t("sub.loading")}</div>;
 
+  if (workspaceView) {
+    return (
+      <>
+        <div className="page-head">
+          <h2>{t("nav.subagents")}</h2>
+        </div>
+        {status && <Notice tone={ok ? "ok" : "err"}>{status}</Notice>}
+        <SubagentsWorkspace
+          available={available}
+          chosen={chosen}
+          onToggle={toggle}
+          onMove={move}
+          onSave={() => { void save(); }}
+        />
+      </>
+    );
+  }
+
   return (
     <>
-      <div className="page-head"><h2>{t("nav.subagents")}</h2></div>
+      <div className="page-head">
+        <h2>{t("nav.subagents")}</h2>
+      </div>
       <p className="page-sub"><Trans k="sub.subtitle" cmd="spawn_agent" /></p>
 
       {status && <Notice tone={ok ? "ok" : "err"}>{status}</Notice>}
