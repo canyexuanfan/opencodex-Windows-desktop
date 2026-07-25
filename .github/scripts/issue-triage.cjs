@@ -9,14 +9,6 @@
 const WEAK_RELATED_REASON_RE =
   /\b(?:somewhat|broadly|loosely|vaguely)\s+related\b|\bboth\s+(?:issues?\s+)?pertain\s+to\s+errors?\b|\bsame\s+(?:client|app)\b|\berrors?\s+in\s+general\b|\bgeneral\s+proxy\s+errors?\b|\bHTTP\s+error\b/i;
 
-/** Explicit comparison that the two issues share a failure (not just overlap). */
-const SHARED_COMPARISON_RE =
-  /\b(?:both(?:\s+issues?)?\s+(?:return|report|show|have|hit|fail|use|call|involve|reproduce|receive)|(?:the\s+)?same\s+(?:error|failure|status|fault|exception|signature|root\s+cause)|shared\s+(?:failure|error|status|signature)|identical(?:ly)?)\b/i;
-
-/** Reasons that admit the failures are not actually shared. */
-const DIVERGENT_FAILURE_RE =
-  /\b(?:but\s+(?:one|the\s+other|they)|one\s+returns|the\s+other(?:\s+\w+)?\s+(?:returns|crashes|fails|reports)|failures?\s+and\s+root\s+causes\s+differ|(?:failures?|root\s+causes?|status(?:es)?|errors?)\s+differ|different\s+(?:failure|root\s+cause|status|error|problem)|separate\s+\d{3}\s+problem|alone\s+reports)\b/i;
-
 /** Well-known errno / syscall failure tokens (case-sensitive uppercase form preferred). */
 const KNOWN_ERRNO_RE =
   /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EPIPE|EAI_AGAIN|ECONNABORTED|EHOSTUNREACH|ENETUNREACH|EADDRINUSE)\b/;
@@ -27,9 +19,81 @@ const KNOWN_ERRNO_RE =
  */
 const ERRNO_STYLE_RE = /\bE[A-Z]{4,}\b/;
 
+const HTTP_STATUS_RE = /\b(?:HTTP\s+)?([1-5]\d\d)\b/gi;
+
+/**
+ * Shared comparison must bind to the failure itself.
+ * Component overlap verbs (use / call / involve) are not enough.
+ */
+function hasSharedFailureComparison(text) {
+  if (/\bboth(?:\s+issues?)?\s+(?:return|report|show|have|hit|fail|reproduce|receive)\b/i.test(text)) {
+    return true;
+  }
+  if (/\b(?:the\s+)?issues?\s+have\s+the\s+same\b/i.test(text)) return true;
+  if (/\bsame\b[^.]{0,80}\b(?:error|failure|status|fault|exception|signature|root\s+cause)\b/i.test(text)) {
+    return true;
+  }
+  if (/\bshared\s+(?:failure|error|status|signature)\b/i.test(text)) return true;
+  if (/\bidentical(?:ly)?\b/i.test(text)) return true;
+  return false;
+}
+
+function extractHttpStatuses(text) {
+  const found = [];
+  const re = new RegExp(HTTP_STATUS_RE.source, "gi");
+  let match;
+  while ((match = re.exec(String(text || ""))) !== null) {
+    found.push(match[1]);
+  }
+  return [...new Set(found)];
+}
+
+function extractErrnoTokens(text) {
+  const found = [];
+  for (const re of [KNOWN_ERRNO_RE, ERRNO_STYLE_RE]) {
+    const copy = new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`);
+    let match;
+    while ((match = copy.exec(String(text || ""))) !== null) {
+      found.push(match[0].toUpperCase());
+    }
+  }
+  return [...new Set(found)];
+}
+
+/**
+ * True when the reason attributes distinct concrete failures to different issues.
+ * Prefer token extraction over an ever-growing English blacklist.
+ */
+function hasDistinctFailureSignatures(text) {
+  const statuses = extractHttpStatuses(text);
+  if (statuses.length > 1) return true;
+
+  const errnos = extractErrnoTokens(text);
+  if (errnos.length > 1) return true;
+
+  // Contrast attribution even when only one extracted token is present
+  // (e.g. "one times out and the other returns 401").
+  if (/\b(?:the\s+first|one)\b[\s\S]{0,100}\b(?:the\s+second|the\s+other)\b/i.test(text)) {
+    return true;
+  }
+  if (/\bwhereas\b/i.test(text)) return true;
+  if (/\brespectively\b/i.test(text)) return true;
+  if (/\bwhile\s+(?:the\s+)?(?:other|second|issue)\b/i.test(text)) return true;
+  if (/\bone\b[^.]{0,80}\band\s+the\s+other\b/i.test(text)) return true;
+  if (/\balone\s+reports\b/i.test(text)) return true;
+  if (/\bseparate\s+\d{3}\s+problem\b/i.test(text)) return true;
+  if (/\b(?:failures?|root\s+causes?|status(?:es)?|errors?)\s+differ\b/i.test(text)) {
+    return true;
+  }
+  if (/\bdifferent\s+(?:failure|root\s+cause|status|error|problem)\b/i.test(text)) {
+    return true;
+  }
+  return false;
+}
+
 function hasConcreteFailureToken(text) {
-  if (KNOWN_ERRNO_RE.test(text) || ERRNO_STYLE_RE.test(text)) return true;
-  if (/\b(?:HTTP\s+)?[1-5]\d\d\b/i.test(text)) return true;
+  if (extractErrnoTokens(text).length > 0) return true;
+  if (extractHttpStatuses(text).length > 0) return true;
   if (/\bcontent\[\d+\]/.test(text) || /\b[\w]+\.[\w.]+\.(?:text|content|type)\b/.test(text)) {
     return true;
   }
@@ -45,17 +109,15 @@ function hasConcreteFailureToken(text) {
 
 /**
  * Positive evidence that two issues share a concrete failure signature.
- * Requires explicit shared-comparison language plus a concrete failure token.
- * API routes / providers alone are never enough.
+ * Component overlap (same provider/route/adapter) is supporting context only;
+ * the reason must independently establish the same concrete failure.
  */
 function hasConcreteRelatedSignature(reason) {
   const text = String(reason || "");
   if (!text) return false;
-  if (!SHARED_COMPARISON_RE.test(text)) return false;
-  if (DIVERGENT_FAILURE_RE.test(text)) return false;
+  if (!hasSharedFailureComparison(text)) return false;
+  if (hasDistinctFailureSignatures(text)) return false;
   if (!hasConcreteFailureToken(text)) return false;
-  // Weak client/app overlap still needs a real shared failure token (already required).
-  // Route-only / provider-only claims never reach here without a failure token.
   return true;
 }
 
@@ -198,10 +260,12 @@ function parseTriageMatches(raw, { currentNumber, knownNumbers }) {
 
 module.exports = {
   WEAK_RELATED_REASON_RE,
-  SHARED_COMPARISON_RE,
-  DIVERGENT_FAILURE_RE,
+  hasSharedFailureComparison,
+  hasDistinctFailureSignatures,
   hasConcreteRelatedSignature,
   hasConcreteFailureToken,
+  extractHttpStatuses,
+  extractErrnoTokens,
   sanitizeReason,
   normalizeIssueNumber,
   normalizeIssueNumbers,

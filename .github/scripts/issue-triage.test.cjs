@@ -49,6 +49,31 @@ describe("hasConcreteRelatedSignature", () => {
     );
   });
 
+  it("rejects different HTTP statuses despite component overlap", () => {
+    const rejected = [
+      "Both issues use OpenRouter. The first returns 401; the second returns 500.",
+      "One returns HTTP 401 while the other returns HTTP 500.",
+      "The new issue reports 503, whereas issue 410 reports 400.",
+      "Both call POST /v1/responses and return 401 and 500 respectively.",
+      "Both involve the same adapter, but one times out and the other returns 401.",
+    ];
+    for (const reason of rejected) {
+      assert.equal(hasConcreteRelatedSignature(reason), false, reason);
+    }
+  });
+
+  it("keeps shared concrete failure signatures", () => {
+    const accepted = [
+      "Both issues return HTTP 503 from POST /v1/responses in the OpenRouter adapter.",
+      "Both issues report ECONNRESET from the same endpoint.",
+      "Both issues have the same Field required error at messages.0.content.0.text.",
+      "Both issues return ECONNRESET from POST /v1/responses in the OpenRouter adapter.",
+    ];
+    for (const reason of accepted) {
+      assert.equal(hasConcreteRelatedSignature(reason), true, reason);
+    }
+  });
+
   it("keeps shared errno plus shared comparison", () => {
     assert.equal(
       hasConcreteRelatedSignature(
