@@ -1,5 +1,3 @@
-const TOKEN_KEY = "opencodex-api-token";
-
 let installed = false;
 let promptInFlight: Promise<string | null> | null = null;
 
@@ -17,21 +15,19 @@ function needsApiAuth(input: RequestInfo | URL): boolean {
   return !!path && (path.startsWith("/api/") || path.startsWith("/v1/"));
 }
 
+/** In-memory only — never write tokens to web storage (XSS can read sessionStorage/localStorage). */
+let memoryToken: string | null = null;
+
 function readToken(): string | null {
-  try {
-    const token = sessionStorage.getItem(TOKEN_KEY)?.trim();
-    return token || null;
-  } catch {
-    return null;
-  }
+  return memoryToken;
 }
 
 function storeToken(token: string): void {
-  try { sessionStorage.setItem(TOKEN_KEY, token); } catch { /* session storage may be disabled */ }
+  memoryToken = token;
 }
 
 function clearToken(): void {
-  try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* session storage may be disabled */ }
+  memoryToken = null;
 }
 
 function withToken(input: RequestInfo | URL, init: RequestInit | undefined, token: string): [RequestInfo | URL, RequestInit | undefined] {
