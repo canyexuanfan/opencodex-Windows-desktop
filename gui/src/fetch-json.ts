@@ -4,6 +4,13 @@
  * (`fetch` resolves on HTTP 4xx/5xx).
  */
 
+async function readJsonBody<T>(res: Response): Promise<T> {
+  if (res.status === 204) return undefined as T;
+  const text = await res.text();
+  if (!text.trim()) return undefined as T;
+  return JSON.parse(text) as T;
+}
+
 export async function readJsonOrThrow<T>(
   res: Response,
   fallbackMessage = `HTTP ${res.status}`,
@@ -18,10 +25,10 @@ export async function readJsonOrThrow<T>(
     }
     throw new Error(message);
   }
-  return res.json() as Promise<T>;
+  return readJsonBody<T>(res);
 }
 
 export async function readJsonIfOk<T>(res: Response): Promise<T | null> {
   if (!res.ok) return null;
-  return res.json() as Promise<T>;
+  return readJsonBody<T>(res);
 }

@@ -9,12 +9,20 @@ export type ResourceSnapshot<T> = {
 type Store<T> = {
   snapshot: ResourceSnapshot<T>;
   listeners: Set<() => void>;
+  /** listener → requested poll interval (undefined = no poll from that subscriber) */
+  pollByListener: Map<() => void, number | undefined>;
   subscriberCount: number;
   pollTimer: ReturnType<typeof setInterval> | null;
   inflight: AbortController | null;
   generation: number;
+  /** Latest fetcher for poll ticks (updated on each subscribe). */
+  fetcher: ((signal: AbortSignal) => Promise<T>) | null;
 };
 
+/**
+ * Module cache keyed by string. Call sites must not reuse the same key for
+ * different resource types (no runtime check — keys are an API contract).
+ */
 const stores = new Map<string, Store<unknown>>();
 
 const EMPTY_SNAPSHOT: ResourceSnapshot<never> = { data: undefined, error: undefined, loading: false };
@@ -25,10 +33,12 @@ function getStore<T>(key: string): Store<T> {
     store = {
       snapshot: { data: undefined, error: undefined, loading: false },
       listeners: new Set(),
+      pollByListener: new Map(),
       subscriberCount: 0,
       pollTimer: null,
       inflight: null,
       generation: 0,
+      fetcher: null,
     };
     stores.set(key, store);
   }
@@ -39,16 +49,45 @@ function emit<T>(store: Store<T>) {
   for (const listener of store.listeners) listener();
 }
 
+function clearPollTimer<T>(store: Store<T>) {
+  if (store.pollTimer !== null) {
+    clearInterval(store.pollTimer);
+    store.pollTimer = null;
+  }
+}
+
+/** Honor the most aggressive (smallest positive) poll interval among subscribers. */
+function recomputePoll<T>(store: Store<T>) {
+  clearPollTimer(store);
+  let pollMs: number | undefined;
+  for (const ms of store.pollByListener.values()) {
+    if (typeof ms === "number" && ms > 0) {
+      pollMs = pollMs === undefined ? ms : Math.min(pollMs, ms);
+    }
+  }
+  if (pollMs === undefined || !store.fetcher) return;
+  const fetcher = store.fetcher;
+  store.pollTimer = setInterval(() => {
+    // Skip ticks while a request is in flight so slow polls can finish.
+    void runFetch(store, fetcher, { replaceInflight: false });
+  }, pollMs);
+}
+
 async function runFetch<T>(
   store: Store<T>,
   fetcher: (signal: AbortSignal) => Promise<T>,
+  options?: { replaceInflight?: boolean },
 ) {
-  store.inflight?.abort();
+  const replaceInflight = options?.replaceInflight !== false;
+  if (store.inflight && !replaceInflight) return;
+
+  if (replaceInflight) store.inflight?.abort();
   const controller = new AbortController();
   store.inflight = controller;
   const gen = ++store.generation;
 
-  if (!store.snapshot.data) {
+  // Only treat missing cache as "empty" — falsy values (false/0/null/"") are valid data.
+  if (store.snapshot.data === undefined) {
     store.snapshot = { ...store.snapshot, loading: true };
     emit(store);
   }
@@ -73,27 +112,28 @@ function subscribeResource<T>(
   onStoreChange: () => void,
 ) {
   const store = getStore<T>(key);
+  store.fetcher = fetcher;
   store.listeners.add(onStoreChange);
+  store.pollByListener.set(onStoreChange, pollMs);
   store.subscriberCount++;
 
   if (store.subscriberCount === 1) {
-    void runFetch(store, fetcher);
-    if (pollMs && pollMs > 0) {
-      store.pollTimer = setInterval(() => void runFetch(store, fetcher), pollMs);
-    }
+    void runFetch(store, fetcher, { replaceInflight: true });
   }
+  recomputePoll(store);
 
   return () => {
     store.listeners.delete(onStoreChange);
+    store.pollByListener.delete(onStoreChange);
     store.subscriberCount--;
     if (store.subscriberCount === 0) {
       store.inflight?.abort();
       store.inflight = null;
-      if (store.pollTimer !== null) {
-        clearInterval(store.pollTimer);
-        store.pollTimer = null;
-      }
+      clearPollTimer(store);
+      stores.delete(key);
+      return;
     }
+    recomputePoll(store);
   };
 }
 
@@ -134,28 +174,51 @@ export function useClientResource<T>(
 
   const refresh = useCallback(() => {
     if (!enabled) return;
-    void runFetch(getStore<T>(key), stableFetcher);
+    void runFetch(getStore<T>(key), stableFetcher, { replaceInflight: true });
   }, [key, stableFetcher, enabled]);
 
   return { ...snapshot, refresh };
 }
 
-/** Stable loader via explicit deps — avoids react-doctor fresh-deps on inline fetchers. */
+function depsChanged(prev: readonly unknown[] | null, next: readonly unknown[]): boolean {
+  if (prev === null) return false;
+  if (prev.length !== next.length) return true;
+  for (let i = 0; i < prev.length; i++) {
+    if (!Object.is(prev[i], next[i])) return true;
+  }
+  return false;
+}
+
+/**
+ * Like `useClientResource`, but refetches when `deps` change (element-wise
+ * `Object.is`), even if the cache `key` stays the same. Callers may allocate a
+ * fresh deps array each render — identity of the array is ignored.
+ */
 export function useKeyedClientResource<T>(
   key: string,
-  _deps: readonly unknown[],
+  deps: readonly unknown[],
   load: (signal: AbortSignal) => Promise<T>,
   options?: { pollMs?: number; enabled?: boolean },
 ): ResourceSnapshot<T> & { refresh: () => void } {
-  // `useClientResource` keeps the latest `load` via layout-effect ref sync; `_deps` is
-  // retained so call sites can document intentional invalidation keys without
-  // wrapping every loader in useCallback.
-  void _deps;
-  return useClientResource(key, load, options);
+  const resource = useClientResource(key, load, options);
+  const prevDepsRef = useRef<readonly unknown[] | null>(null);
+
+  useLayoutEffect(() => {
+    const prev = prevDepsRef.current;
+    prevDepsRef.current = deps;
+    if (!depsChanged(prev, deps)) return;
+    resource.refresh();
+  });
+
+  return resource;
 }
 
+/** Publish data for a key and invalidate any in-flight fetch so it cannot stomp this write. */
 export function setClientResourceData<T>(key: string, data: T) {
   const store = getStore<T>(key);
+  store.inflight?.abort();
+  store.inflight = null;
+  store.generation++;
   store.snapshot = { data, error: undefined, loading: false };
   emit(store);
 }
