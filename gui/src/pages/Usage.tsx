@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n, type TFn, type Locale } from "../i18n/shared";
 import { formatTokens } from "../format-tokens";
+import { formatEstimatedUsdValue as formatUsdEstimate } from "../intl-formatters";
 import { EmptyState, Notice } from "../ui";
 import { modelLabel } from "../model-display";
 
@@ -82,14 +83,6 @@ interface UsageResponse {
 
 function formatPct(ratio: number): string {
   return `${Math.round(ratio * 100)}%`;
-}
-
-function formatEstimatedUsdValue(value: number, locale: Locale): string {
-  if (!Number.isFinite(value) || value < 0) return "\u2014";
-  return `~$${new Intl.NumberFormat(locale, {
-    minimumFractionDigits: 4,
-    maximumFractionDigits: 4,
-  }).format(value)}`;
 }
 
 // Stable per-model bar color: hash the provider/model id to a hue so the same model keeps its color
@@ -292,7 +285,7 @@ function UsageSummaryCards({
         <div className="usage-cost-row" role="note">
           <span className="muted">{t("usage.cost.total")}</span>
           <span className="stat-value mono usage-cost-value">
-            {formatEstimatedUsdValue(summary.estimatedCostUsd, locale)}
+            {formatUsdEstimate(summary.estimatedCostUsd, locale)}
           </span>
           <span className="muted text-caption">{t("usage.cost.disclaimer")}</span>
           {((summary.unpricedRequests ?? 0) + (summary.unmeteredRequests ?? 0)) > 0 && (
@@ -608,7 +601,8 @@ export default function Usage({ apiBase }: { apiBase: string }) {
       const detail = cause instanceof Error ? cause.message : "";
       setError(detail ? `${t("usage.loadError")} ${detail}` : t("usage.loadError"));
     } finally {
-      if (!signal.aborted) setLoading(false);
+      // Unconditional clear; a newer effect-owned fetch re-sets loading true.
+      setLoading(false);
     }
   }, [apiBase, t]);
 
@@ -629,7 +623,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
   const filteredModels = useMemo(() => {
     const q = modelQuery.trim().toLowerCase();
     const models = data?.models ?? [];
-    const sorted = [...models].sort((a, b) => b.totalTokens - a.totalTokens);
+    const sorted = models.toSorted((a, b) => b.totalTokens - a.totalTokens);
     if (!q) return sorted.slice(0, 100);
     return sorted.filter(m =>
       m.model.toLowerCase().includes(q) ||
@@ -639,7 +633,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
   }, [data?.models, modelQuery]);
 
   const sortedProviders = useMemo(() =>
-    [...(data?.providers ?? [])].sort((a, b) => b.totalTokens - a.totalTokens),
+    (data?.providers ?? []).toSorted((a, b) => b.totalTokens - a.totalTokens),
     [data?.providers],
   );
 

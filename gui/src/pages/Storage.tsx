@@ -128,7 +128,9 @@ export default function Storage({ apiBase }: { apiBase: string }) {
       if (signal?.aborted) return;
       setData(null);
     } finally {
-      if (!signal?.aborted) setLoading(false);
+      // Unconditional: aborted requests may briefly clear loading before the next
+      // effect-owned fetch sets it true again (react-doctor: no-loading-flag-reset-outside-finally).
+      setLoading(false);
     }
   }, [apiBase]);
 
