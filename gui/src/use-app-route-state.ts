@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   hashBelongsToPage,
   readPageFromHash,
@@ -37,16 +37,16 @@ export function useAppRouteState() {
   });
   const viewModeRef = useRef(viewMode);
 
-  const commitViewMode = (next: ViewMode) => {
+  const commitViewMode = useCallback((next: ViewMode) => {
     viewModeRef.current = next;
     setViewMode(next);
-  };
+  }, []);
 
   useEffect(() => {
     viewModeRef.current = viewMode;
   }, [viewMode]);
 
-  const applyHashAction = (rawHash: string) => {
+  const applyHashAction = useCallback((rawHash: string) => {
     // Prefer in-memory mode so a storage failure cannot revert a live session toggle.
     const action = resolveAppHashChange(rawHash, viewModeRef.current);
     if (action.replaceTo) replaceHash(action.replaceTo);
@@ -54,7 +54,7 @@ export function useAppRouteState() {
     // Route page and view mode update in the same event — never via startTransition.
     setPageState(action.page);
     if (action.viewMode) commitViewMode(action.viewMode);
-  };
+  }, [commitViewMode]);
 
   const toggleGlobalWorkspace = () => {
     const next = toggleViewMode(viewModeRef.current);
@@ -81,7 +81,7 @@ export function useAppRouteState() {
       window.removeEventListener("hashchange", onRouteHash);
       window.removeEventListener("popstate", onRouteHash);
     };
-  }, []);
+  }, [applyHashAction]);
 
   useEffect(() => {
     const rawHash = normalizeHashPath(window.location.hash);

@@ -138,12 +138,12 @@
 }
 
 .dash-sidecar-card__row .custom-select {
-  /* Fixed width so both sidecar triggers stay equal from first paint —
-     model labels like anthropic/claude-… must not grow the card later. */
-  flex: 0 0 14rem;
-  width: 14rem;
-  max-width: 14rem;
-  min-width: 0;
+  /* Reserve baseline space to prevent row reflow, but keep the trigger
+     compact instead of forcing a permanently wide fixed width. */
+  flex: 0 1 auto;
+  width: auto;
+  min-width: clamp(10rem, 24vw, 11.5rem);
+  max-width: min(100%, 14rem);
 }
 
 .dash-sidecar-card__row .select-trigger {
