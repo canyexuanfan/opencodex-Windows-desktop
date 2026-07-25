@@ -43,13 +43,13 @@ const THEME_KEY = "ocx-theme";
 
 const NAV: { id: Page; tkey: TKey; Icon: typeof IconGrid }[] = [
   { id: "dashboard", tkey: "nav.dashboard", Icon: IconGrid },
+  { id: "codex-auth", tkey: "nav.codexAuth", Icon: IconKey },
   { id: "providers", tkey: "nav.providers", Icon: IconServer },
   { id: "models", tkey: "nav.models", Icon: IconBoxes },
   { id: "subagents", tkey: "nav.subagents", Icon: IconBot },
   { id: "logs", tkey: "nav.logs", Icon: IconList },
   { id: "usage", tkey: "nav.usage", Icon: IconActivity },
   { id: "storage", tkey: "nav.storage", Icon: IconHardDrive },
-  { id: "codex-auth", tkey: "nav.codexAuth", Icon: IconKey },
   { id: "api", tkey: "nav.api", Icon: IconGlobe },
   { id: "claude", tkey: "nav.claude", Icon: IconSparkle },
 ];
@@ -214,7 +214,14 @@ export default function App() {
           </button>
         </div>
         <nav>
-          {NAV.filter(({ id }) => !(viewMode === "workspace" && id === "codex-auth")).map(({ id, tkey, Icon }) => (
+          {/*
+            Codex Auth used to be hidden in Workspace mode because the Providers
+            workspace embeds the same account pool. The maintainer promoted it to the
+            second slot instead (WP2a), so it is now always visible — WP5 removes the
+            Classic mode entirely, and a filter keyed on viewMode would have made the
+            page permanently unreachable from the sidebar.
+          */}
+          {NAV.map(({ id, tkey, Icon }) => (
             <div key={id} className={`nav-entry${id === "claude" ? ` nav-entry-claude${page === id ? " active" : ""}` : ""}`}>
               <button className={`nav-item${page === id ? " active" : ""}`} data-page={id}
                 onClick={() => {

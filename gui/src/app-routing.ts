@@ -43,10 +43,18 @@ export function readPageFromHash(hash?: string): Page {
   return VALID_PAGES.has(pageId) ? pageId : "dashboard";
 }
 
+/**
+ * Dashboard section tabs live in the hash so refresh/bookmark/back-forward keep the
+ * choice, mirroring Logs (`#logs` / `#logs/debug`). Overview is the bare `#dashboard`,
+ * so it has no suffix entry here.
+ */
+export const DASHBOARD_TAB_HASHES = ["dashboard/providers", "dashboard/models"] as const;
+
 export function hashBelongsToPage(rawHash: string, page: Page): boolean {
   return rawHash === page
     || (page === "providers" && rawHash === "providers/workspace")
-    || (page === "logs" && rawHash === "logs/debug");
+    || (page === "logs" && rawHash === "logs/debug")
+    || (page === "dashboard" && (DASHBOARD_TAB_HASHES as readonly string[]).includes(rawHash));
 }
 
 export function providersHashForPreferredMode(preferred: ViewMode = "classic"): string {

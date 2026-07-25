@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { formatUptime } from "../formatUptime";
 import { IconAlert, IconChevron, IconExternal, IconInfo, IconRefresh, IconSearch, IconX } from "../icons";
 import { Trans } from "../i18n/provider";
@@ -6,7 +6,23 @@ import { useI18n, type TKey } from "../i18n/shared";
 import { settingsPollMayCommit, beginPollEpochs, mapStartupHealthProbe, seedStartupHealthFromSettings, PROJECT_CONFIG_DIAGNOSTICS_POLL_MS, type StartupHealthStatus } from "../startup-health-ui";
 import { formatTokens } from "../format-tokens";
 import { EmptyState, Select } from "../ui";
+import { navigateHash } from "../hash-routing";
 import type { ViewMode } from "../view-mode";
+
+/** Dashboard section tabs, mirroring the Logs hash-tab contract. */
+type DashboardSection = "overview" | "providers" | "models";
+
+function readDashboardSectionFromHash(): DashboardSection {
+  const raw = window.location.hash.replace(/^#\/?/, "");
+  if (raw === "dashboard/providers") return "providers";
+  if (raw === "dashboard/models") return "models";
+  return "overview";
+}
+
+/** Overview is the bare `#dashboard`; the other sections carry a suffix. */
+function dashboardHashForSection(section: DashboardSection): string {
+  return section === "overview" ? "dashboard" : `dashboard/${section}`;
+}
 
 interface HealthData { status: string; version: string; uptime: number }
 // StartupHealthStatus imported from startup-health-ui.
@@ -190,7 +206,16 @@ function useModalDialog(open: boolean, triggerRef: RefObject<HTMLButtonElement |
 export default function Dashboard({ apiBase, viewMode }: { apiBase: string; viewMode: ViewMode }) {
   const { locale, t } = useI18n();
   const workspaceView = viewMode === "workspace";
-  const [selectedSection, setSelectedSection] = useState("overview");
+  // The hash is the source of truth for the active section (#dashboard,
+  // #dashboard/providers, #dashboard/models), so refresh/bookmark/back-forward keep
+  // the choice. Mirrors the Logs tab contract.
+  const [selectedSection, setSelectedSection] = useState<DashboardSection>(readDashboardSectionFromHash);
+
+  useEffect(() => {
+    const onHash = () => setSelectedSection(readDashboardSectionFromHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
   const [modelQuery, setModelQuery] = useState("");
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
   const [health, setHealth] = useState<HealthData | null>(null);
@@ -1378,38 +1403,62 @@ export default function Dashboard({ apiBase, viewMode }: { apiBase: string; view
   );
 
   if (workspaceView) {
-    const sections = [
+    const sections: { id: DashboardSection; label: string; body: ReactNode }[] = [
       { id: "overview", label: t("dash.workspace.overview"), body: overviewSection },
       { id: "providers", label: t("dash.activeProviders"), body: providersSection },
       { id: "models", label: t("dash.availableModels"), body: modelsSection },
     ];
     const selected = sections.find(s => s.id === selectedSection) ?? sections[0];
+    const selectTab = (next: DashboardSection) => {
+      // Deliberate navigation: push a history entry so Back/Forward restore the tab.
+      navigateHash(dashboardHashForSection(next));
+    };
+    const onTabKeyDown = (e: React.KeyboardEvent) => {
+      const index = sections.findIndex(s => s.id === selectedSection);
+      let next = -1;
+      if (e.key === "ArrowRight") next = (index + 1) % sections.length;
+      else if (e.key === "ArrowLeft") next = (index - 1 + sections.length) % sections.length;
+      else if (e.key === "Home") next = 0;
+      else if (e.key === "End") next = sections.length - 1;
+      if (next < 0) return;
+      e.preventDefault();
+      const target = sections[next]!;
+      selectTab(target.id);
+      document.getElementById(`dashboard-tab-${target.id}`)?.focus();
+    };
     return (
       <div className="dashboard-workspace-shell">
         <div className="page-head">
           <h2>{t("nav.dashboard")}</h2>
         </div>
         <p className="page-sub">{t("dash.subtitle")}</p>
-        <div className="dashboard-workspace-root">
-          <aside className="dashboard-workspace-rail" aria-label={t("dash.workspace.sections")}>
-            <div className="dashboard-workspace-rail-list">
-              {sections.map(s => (
-                <button
-                  key={s.id}
-                  type="button"
-                  className={`dashboard-workspace-rail-row${selectedSection === s.id ? " dashboard-workspace-rail-row--selected" : ""}`}
-                  onClick={() => setSelectedSection(s.id)}
-                  aria-current={selectedSection === s.id ? "true" : undefined}
-                >
-                  <span className="dashboard-workspace-rail-name">{s.label}</span>
-                </button>
-              ))}
-            </div>
-          </aside>
-          <section className="dashboard-workspace-main" aria-label={selected.label}>
-            {selected.body}
-          </section>
+        <div className="page-tabs" role="tablist" aria-label={t("dash.workspace.sections")}>
+          {sections.map(s => (
+            <button
+              key={s.id}
+              type="button"
+              role="tab"
+              id={`dashboard-tab-${s.id}`}
+              aria-selected={selectedSection === s.id}
+              aria-controls={`dashboard-panel-${s.id}`}
+              tabIndex={selectedSection === s.id ? 0 : -1}
+              className={`page-tab${selectedSection === s.id ? " page-tab--active" : ""}`}
+              onClick={() => selectTab(s.id)}
+              onKeyDown={onTabKeyDown}
+            >
+              {s.label}
+            </button>
+          ))}
         </div>
+        <section
+          className="dashboard-workspace-main"
+          role="tabpanel"
+          id={`dashboard-panel-${selected.id}`}
+          aria-labelledby={`dashboard-tab-${selected.id}`}
+          tabIndex={0}
+        >
+          {selected.body}
+        </section>
         {updateDialog}
       </div>
     );
