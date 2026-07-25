@@ -1172,7 +1172,8 @@ export async function handleResponses(
 
     // Non-2xx passthrough failures must never reach Codex as an empty body —
     // Codex renders that as the opaque "Unknown error" (#452). Combo attempts
-    // keep their typed failure envelope; everything else is normalized below.
+    // keep their typed failure envelope. Non-empty bodies are relayed verbatim
+    // (headers included) so pool-retry Activation B/D and client diagnostics stay intact.
     if (!upstreamResponse.ok) {
       if (options.comboAttempt) {
         const failure = await consumeComboFailure(upstreamResponse, options.abortSignal);
@@ -1180,7 +1181,10 @@ export async function handleResponses(
         return failure.response;
       }
       const errorText = await upstreamResponse.text().catch(() => "");
-      return formatPassthroughUpstreamError(upstreamResponse.status, errorText);
+      return formatPassthroughUpstreamError(upstreamResponse.status, errorText, {
+        statusText: upstreamResponse.statusText,
+        headers,
+      });
     }
 
     // Bun#32111 workaround: passthrough SSE uses tee()+native relay to avoid the

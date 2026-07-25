@@ -80,12 +80,13 @@ describe("formatPassthroughUpstreamError (#452)", () => {
     expect(json.error?.message).toBe("no healthy upstream");
   });
 
-  test("JSON without error.message is wrapped", async () => {
+  test("non-empty body without error.message is relayed verbatim with headers", async () => {
     const body = JSON.stringify({ detail: "overloaded" });
-    const response = formatPassthroughUpstreamError(503, body);
-    const json = await response.json() as { error?: { message?: string } };
-    expect(json.error?.message).toContain("503");
-    expect(json.error?.message).toContain("overloaded");
+    const headers = new Headers({ "content-type": "application/json", "x-pool-retry-test": "original" });
+    const response = formatPassthroughUpstreamError(400, body, { statusText: "Bad Request", headers });
+    expect(response.status).toBe(400);
+    expect(response.headers.get("x-pool-retry-test")).toBe("original");
+    expect(await response.text()).toBe(body);
   });
 });
 
