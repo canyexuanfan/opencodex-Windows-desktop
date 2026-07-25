@@ -82,20 +82,29 @@
 | #447 | REVIEW_ONLY (OAuth) | — | `src/oauth/kiro.ts`, `src/adapters/kiro.ts` — **WP3와 겹침** |
 | #445 | REVIEW_ONLY (canonical 우회) | — | `gui/src/pages/CodexAuth.tsx` |
 | #355 | REVIEW_ONLY (OAuth 이미지) | — | `src/images/artifacts.ts` — #424와 시그니처 충돌 |
-| #426 | REVIEW_ONLY (C4 auth, 45파일) | — | `src/codex/auth-api.ts`, `auth-context.ts`, `account-lifecycle.ts`, `src/router.ts`, `src/types.ts` — **WP4/WP5와 정면 충돌** |
+| #426 | REVIEW_ONLY (C4 auth, 46파일, head `37431320`) | — | `src/codex/auth-api.ts`, `auth-context.ts`, `account-lifecycle.ts` (∩#370), `src/router.ts` (∩#389), `src/types.ts` (∩#439) — **WP3/WP4/WP5와 정면 충돌** |
 | #434 | SPLIT_REQUEST (96파일) | — | provider/GUI 전역 |
 | #405 | REWORK (#434에 포함됨) | — | `src/providers/registry.ts` — **WP7과 겹침** |
 | #429 | REBASE_REQUEST (draft, stale) | — | `src/adapters/cursor/*` |
 | #391 | REWORK (fire-and-forget) | — | `src/codex/subagent-model-fallback.ts`, `src/server/responses/core.ts` |
-| #431 | REVIEW_ONLY (draft) | — | `src/providers/registry.ts`, `src/router.ts`, `src/types.ts` — **WP3/WP5/WP7과 겹침** |
-| #403 | OUT_OF_SCOPE (maintainer 본인 PR, 별도 blocker 잔존) | — | `src/bridge.ts`, `src/server/responses/core.ts` — **WP3와 겹침** |
-| #437 | INTEGRATE 후보 (docs-only, WP7에 편승 가능) | WP7 | `CONTRIBUTING.md`, `README.md`, `docs-site/.../contributing.md` — 충돌 없음 |
+| #431 | REVIEW_ONLY (draft, head `d25eba5b`) | — | `src/providers/registry.ts`, `src/router.ts`, `src/types.ts` — **WP3/WP5/WP7과 겹침** |
+| #403 | OUT_OF_SCOPE / NO_ACTION (maintainer 본인 PR, 별도 blocker 잔존, head `fcd3d682`) | — | `src/bridge.ts`, `tests/bridge.test.ts`, `src/server/responses/core.ts` — WP3와 겹치지만 이 유닛은 코멘트도 게시하지 않는다 |
+| #437 | DEFER / OUT_OF_SCOPE (docs-only, head `86e963c6`) | — | `CONTRIBUTING.md`, `README.md`, `docs-site/.../contributing.md` — 충돌 없음 |
 
-**충돌 의존에서 나오는 결론:** #426은 45파일 규모로 WP4(#370)와 같은 auth 파일을 고친다.
+**충돌 의존에서 나오는 결론:** #426은 46파일 규모로 WP4(#370)와 같은 auth 파일을 고친다.
 #370을 먼저 통합하면 #426은 대형 rebase 대상이 된다. 이는 예상된 결과이며, WP8의 #426
 리뷰 코멘트에 "dev가 #370을 통합했으므로 rebase가 필요하다"는 사실을 반드시 포함한다.
 같은 이유로 #447(WP3 이후), #405/#431(WP7 이후), #403(WP3 이후)의 rebase 필요성도
 각 코멘트에 기록한다.
+
+**정확한 코멘트 게시 대상 (A-gate 라운드2 blocker 1 반영):** WP8이 코멘트를 게시하는 PR은
+정확히 **11건**이다 — #408, #424, #447, #445, #355, #434, #405, #429, #391, #426, #431.
+#403과 #437은 `NO_ACTION`이므로 코멘트를 게시하지 않는다. #426과 #431의 리뷰 본문은
+`080_review_only_prs.md`에 추가되어야 하며, 본문 없이 "rebase 필요"만 남기는 것은 금지한다.
+
+**#437 확정 (A-gate 라운드2 blocker 2 반영):** docs-only이고 clean apply되지만, 이번 유닛의
+통합 대상은 8건으로 고정한다. #437은 `DEFER`이며 WP7에 편승하지 않는다. 통합 PR 개수를
+흐리지 않기 위한 결정이다.
 
 열린 이슈 22건 중 이 유닛이 직접 닫는 것은 #420(WP1), #435(WP2), #448(WP6) 세 건이다.
 나머지는 다음과 같이 분류한다.
@@ -152,13 +161,14 @@ WP0 (docs)
 - **#385 ↔ #405/#434**: `src/providers/registry.ts`와 parity test가 겹친다. 어느 쪽이 먼저 들어가도
   작은 rebase가 필요하다.
 - **#445 ↔ #449**: 공유 파일 0개. 상호 충돌 없다.
-- **#426 ↔ #370/#389**: `src/codex/auth-api.ts`, `auth-context.ts`, `account-lifecycle.ts`,
-  `src/router.ts`, `src/types.ts`가 겹친다. #426은 review-only이므로 이 유닛은 진행하지만,
-  #426 작성자에게 rebase 필요를 알린다.
+- **#426 ↔ #370/#389/#439**: `src/codex/auth-api.ts`, `auth-context.ts`,
+  `account-lifecycle.ts`가 #370과, `src/router.ts`가 #389와, `src/types.ts`가 **#439(WP3)와**
+  겹친다. #426은 review-only이므로 이 유닛은 진행하지만, 코멘트에 세 WP 모두에 대한 rebase
+  필요를 기록한다.
 - **#431 ↔ WP3/WP5/WP7**: `src/providers/registry.ts`, `src/router.ts`, `src/types.ts`.
   draft이므로 이 유닛은 진행한다.
-- **#403 ↔ WP3**: `src/bridge.ts`, `src/server/responses/core.ts`. maintainer 본인 PR로
-  별도 blocker가 남아 있어 `OUT_OF_SCOPE`.
+- **#403 ↔ WP3**: `src/bridge.ts`, `tests/bridge.test.ts`, `src/server/responses/core.ts`.
+  maintainer 본인 PR로 별도 blocker가 남아 있어 `NO_ACTION`(코멘트도 게시하지 않음).
 
 ## Verifier
 
@@ -182,9 +192,11 @@ WP8은 exact-SHA hosted `Cross-platform CI`와 `Service lifecycle`이 둘 다 su
 
 ## Stop condition
 
-8개 PR의 변경이 `dev`에 병합되어 로컬과 `origin/dev` SHA가 일치하고, 병합 SHA의 두 hosted
-게이트가 success이며, 병합된 PR과 대응 이슈(#420, #435, #448)가 근거 코멘트와 함께 closed이고,
-보류 대상 PR 9건에 구체적 리뷰 코멘트가 게시된 상태.
+통합 대상 **8개 PR**(#430 #436 #439 #370 #389 #449 #427 #385)의 변경이 `dev`에 병합되어
+로컬과 `origin/dev` SHA가 일치하고, 병합 SHA의 두 hosted 게이트가 success이며,
+병합된 8개 PR과 대응 이슈 3건(#420, #435, #448)이 근거 코멘트와 함께 closed이고,
+보류 대상 **11건**(#408 #424 #447 #445 #355 #434 #405 #429 #391 #426 #431)에 구체적
+리뷰 코멘트가 게시된 상태. #403과 #437은 `NO_ACTION`이므로 게시 대상이 아니다.
 
 ## Terminal outcomes
 

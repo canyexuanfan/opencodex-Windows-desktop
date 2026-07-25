@@ -111,15 +111,6 @@ function formatBytes(bytes: number): string {
 
 같은 파일의 모든 call site를 빠짐없이 `formatBytes(value, locale)`로 변경한다: RSS, heap used/total, JSC heap, absolute growth, response-state total/largest, watchdog threshold. `formatAge`와 `lastWarnAt.toLocaleString(locale)`은 이미 locale-aware이므로 변경하지 않는다.
 
-NEW `gui/tests/memory-observability-card.test.ts`:
-
-```ts
-import { expect, test } from "bun:test";
-import { formatBytes } from "../src/components/MemoryObservabilityCard";
-
-test("memory byte labels use binary units and the active numeric locale", () => {
-```
-
 **formatter 단위 테스트만으로는 불충분하다 (A-gate blocker 5 반영, C-ACTIVATION-GROUNDING-01).**
 `formatBytes()`를 직접 호출하는 테스트는 카드의 fetch 경로나 탭별 mount가 깨져도 green이다.
 JSX가 tabpanel 바깥으로 새어나가 모든 탭에서 poll을 돌려도 관찰되지 않는다.
@@ -131,11 +122,17 @@ JSX가 tabpanel 바깥으로 새어나가 모든 탭에서 poll을 돌려도 관
 | 탭 전환 시 unmount | Providers 또는 Models 탭 선택 | 카드가 사라지고 추가 `/api/system/memory` 요청이 발생하지 않음 (fetch 호출 수 관찰) |
 | unavailable 경로 활성화 | 같은 endpoint를 non-OK(예: 500)로 mock | unavailable UI가 표시되고 예외로 카드가 깨지지 않음 |
 
-위 세 케이스 중 최소 "정상 표시"와 "unavailable 경로"가 없으면 WP7의 C는 통과로 볼 수 없다.
-배치 검증은 `rg` 수동 확인이 아니라 위 unmount 테스트가 담당한다.
+**위 세 케이스 전부가 필수다** (A-gate 라운드2 blocker 4 반영). 두 건만 있으면 카드가
+tabpanel 밖에 놓여 모든 탭에서 polling해도 C가 통과해버린다. 배치 검증은 `rg` 수동 확인이
+아니라 unmount 테스트의 fetch-count assertion이 담당한다. `rg`는 보조 확인일 뿐 게이트가 아니다.
+
+NEW `gui/tests/memory-observability-card.test.ts` — formatter 단위 테스트는 보조로 유지한다:
 
 ```ts
-// (formatter 단위 테스트는 보조로 유지)
+import { expect, test } from "bun:test";
+import { formatBytes } from "../src/components/MemoryObservabilityCard";
+
+test("memory byte labels use binary units and the active numeric locale", () => {
   expect(formatBytes(0, "en")).toBe("0 B");
   expect(formatBytes(1536, "en")).toBe("1.5 KiB");
   expect(formatBytes(1536, "de")).toBe("1,5 KiB");
@@ -228,7 +225,7 @@ bun run test
 bun run privacy:scan
 ```
 
-Dashboard 구조 확인:
+Dashboard 구조 보조 확인 (게이트가 아니라 참고용):
 
 ```bash
 rg -n "MemoryObservabilityCard|const overviewSection|const sections|selected.body" gui/src/pages/Dashboard.tsx
@@ -240,6 +237,9 @@ rg -n "MemoryObservabilityCard|const overviewSection|const sections|selected.bod
 
 - [ ] #427 Dashboard 제외 patch가 clean apply되고 manual rebase가 exact current-dev hunk와 일치한다.
 - [ ] card는 Overview tab에서만 정확히 한 번 렌더되며 existing tab semantics/layout을 바꾸지 않는다.
+- [ ] rendered 테스트 3건이 모두 존재하고 통과한다: 정상 표시(locale KiB/MiB 관찰),
+      탭 전환 unmount(전환 후 `/api/system/memory` fetch 호출 수가 증가하지 않음을 assertion),
+      unavailable 경로(non-OK 응답에서 unavailable UI 표시).
 - [ ] 1024 scaling은 KiB/MiB/GiB/TiB로 표시되고 숫자는 active locale을 따른다.
 - [ ] memory payload는 count/bytes/age scalar뿐이며 management auth 경계를 재사용한다.
 - [ ] #385 pinned patch가 적용되고 BizRouter preset의 adapter/URL/auth/default/models가 focused test로 고정된다.

@@ -302,8 +302,11 @@ branch에서 count 인자를 빠뜨려 기본값 `0`이 쓰여도 테스트가 g
 | 성공한 empty list | 빈 `data: []`를 mock하고 같은 경로 통과 | count가 `0`이고 custom-only 오분류가 발생하지 않음 |
 | 실패 후 stale 보존 | 위 성공 뒤 discovery 실패를 mock | 마지막 성공 count가 유지됨 |
 
-`markProviderDiscoveryOk`를 직접 호출하는 unit 테스트는 보조로 남겨도 되지만,
-위 네 케이스 중 최소 두 branch 활성화 테스트가 없으면 WP6의 C는 통과로 볼 수 없다.
+`markProviderDiscoveryOk`를 직접 호출하는 unit 테스트는 보조로 남겨도 된다.
+**위 네 케이스 전부가 필수 수용 기준이다** (A-gate 라운드2 blocker 5 반영). 두 branch만
+테스트하면, 성공한 empty list에서 count `0`을 기록하지 않거나 실패 시 마지막 성공 count를
+지워버려도 green이 된다. 네 케이스 모두 실제 discovery 경로(`fetchAllModels()` 또는
+management route)를 통과해야 하며, 하나라도 없으면 WP6의 C는 통과로 볼 수 없다.
 
 ### PR snapshot의 결함 2 — 최초 custom GET 실패 뒤 Add 영구 비활성
 
