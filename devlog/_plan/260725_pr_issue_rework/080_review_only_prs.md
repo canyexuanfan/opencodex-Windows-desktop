@@ -2,7 +2,9 @@
 
 ## 범위와 게시 규칙
 
-- 이 문서는 병합/수정 대상이 아닌 9개 PR에 남길 **영어 리뷰 코멘트 본문 초안**만 고정한다.
+- 이 문서는 병합/수정 대상이 아닌 **11개 PR**(#408 #424 #447 #445 #355 #434 #405 #429 #391
+  #426 #431)에 남길 **영어 리뷰 코멘트 본문 초안**만 고정한다.
+  #403과 #437은 `NO_ACTION`이므로 게시 대상이 아니다 (`000_plan.md` manifest 참조).
 - GitHub comment/review/close/push는 WP0 범위 밖이며 이 문서 작성 중 실행하지 않는다.
 - 게시 직전 각 PR의 head SHA, draft 상태, diff, CI를 다시 확인한다. 아래 head가 달라졌다면 해당 초안을 그대로 게시하지 말고 `STALE`로 재감사한다.
 - 리뷰는 AGENTS.md에 따라 영어로 쓰고 file:line, 구체적 failure mode, 수정 제안, 감사 표현을 포함한다.
@@ -29,6 +31,8 @@ gh pr diff N --repo lidge-jun/opencodex | git apply --check -
 | #405 | `a70e0cc4d720e3a512910f3ea327d2db94fc865e` | ready, 4 files | exit 0, clean |
 | #429 | `f408f3485d2a3ec1d35b10e82dcbd9d28f8f9932` | **draft**, 5 files | exit 1: `src/adapters/cursor/protobuf-events.ts:2`, `tool-definitions.ts:9`, `tests/cursor-blob.test.ts:324` do not apply |
 | #391 | `ed1ee20139f0eb8dac194b8c8ad66a037be35848` | ready, 9 files | exit 0, clean |
+| #426 | `374313200f8fa20c9e00fe5f918c67372a289381` | ready, 46 files, `+1438/-57` | exit 1: `src/codex/auth-context.ts:24`, `src/codex/routing.ts:66`, `src/server/responses/compact.ts:255`, `src/server/responses/core.ts:120` do not apply |
+| #431 | `d25eba5b` (full SHA는 게시 직전 재확인) | **draft**, 9 files, `+140/-5` | exit 0, clean |
 
 Clean apply는 security/correctness 승인 근거가 아니다. #434의 binary error만으로 stale을 판정하지 않고, removed paths와 Providers conflict 및 4-feature blast radius를 함께 근거로 split/rework를 요구한다.
 
@@ -176,16 +180,6 @@ Thank you for the substantial quota-aware subagent fallback work. I found three 
 I appreciate the scope of this feature. The refresh must be truly awaited, settings updates must be atomic, and generic rate limits must participate in the same health block before the fallback chain is reliable.
 ```
 
-## 게시 전 체크리스트
-
-- [ ] 각 PR head가 표의 pinned SHA와 같다.
-- [ ] draft #429는 draft 상태를 존중하고 merge 요구 대신 rebase/rework만 요청한다.
-- [ ] #408/#424/#447/#445/#355에는 explicit maintainer security review 요구가 포함된다.
-- [ ] #434 split boundaries 4개와 defects 3개가 모두 포함된다.
-- [ ] #405가 #434에 완전히 포함된 blob 관계를 live diff/blob으로 재확인한다.
-- [ ] 모든 코멘트가 영어이며 감사, file:line, failure mode, fix, test를 포함한다.
-- [ ] 게시/close/review/push는 WP0에서 실행하지 않는다.
-
 ## PR #426 — account-id namespace fallback leaks identifiers into catalog and logs
 
 검증 영수증:
@@ -198,7 +192,7 @@ I appreciate the scope of this feature. The refresh must be truly awaited, setti
 ```text
 Thank you for implementing the account-qualified model picker and the fail-closed exact-account routing requested in #425. I found a privacy blocker in the namespace fallback that must be fixed before this can merge.
 
-`src/codex/account-namespaces.ts:33-36` and `src/codex/account-namespaces.ts:45-56` derive a public namespace from `account.id` whenever the account has no alias. That namespace is then written into catalog model slugs at `src/codex/catalog/metadata.ts:276-282` and copied into auth/provider logs at `src/server/responses/core.ts:853-857` and `src/server/responses/core.ts:874-877`. An account added by manual import or OAuth without an alias therefore exposes its internal account identifier through the model catalog and logs, contradicting this PR's stated contract that account ids stay server-side and violating the repository privacy rule against logging account identifiers.
+`src/codex/account-namespaces.ts:33-36` and `src/codex/account-namespaces.ts:45-56` derive a public namespace from `account.id` whenever the account has no alias. That namespace is then written into catalog model slugs at `src/codex/catalog/sync.ts:276-282` and copied into auth/provider logs at `src/server/responses/core.ts:853-857` and `src/server/responses/core.ts:874-877`. An account added by manual import or OAuth without an alias therefore exposes its internal account identifier through the model catalog and logs, contradicting this PR's stated contract that account ids stay server-side and violating the repository privacy rule against logging account identifiers.
 
 Please never use `account.id`, email, or another credential-derived identifier as a public namespace fallback. Generate a stable non-PII label (the existing random `logLabel` is the closest established primitive), persist it independently from the private binding value, and keep catalog/error/log serialization limited to that safe label. Add regressions that enable namespaces for an alias-less account whose id and email are unique sentinels, then assert neither sentinel appears in the catalog JSON, model display names, error text, or captured logs; also cover add, delete, and reauthentication so stale namespace rows cannot survive account removal or silently rebind to a different identity.
 
@@ -231,3 +225,19 @@ Although this pinned patch currently passes `git apply --check`, it must be reba
 ```
 
 감사 메모: `src/router.ts:81-86,153-207`은 registry/user 배열을 합집합으로 병합하고 `src/providers/derive.ts`도 기존 값이 없을 때만 seed를 채우므로, 이 diff가 기존 provider 설정을 덮어쓰는 결함은 확인하지 못했다. 빈 delta는 무시되고 terminal 없는 EOF는 `src/adapters/openai-chat.ts:747-754`에서 fail-closed 처리된다. 확인된 결함은 content/reasoning 동시 응답의 event 순서와 해당 parser 계약을 실행하지 않는 테스트 공백이다.
+
+## 게시 전 체크리스트 (WP8에서 사용)
+
+게시 대상은 **11건**이다: #408 #424 #447 #445 #355 #434 #405 #429 #391 #426 #431.
+
+- [ ] 각 PR head가 위 표의 pinned SHA와 같다. 다르면 그 초안을 그대로 게시하지 않고 `STALE`로 재감사한다.
+- [ ] draft PR(#429, #431)은 draft 상태를 존중하고 merge 요구 대신 rebase/rework만 요청한다.
+- [ ] #408/#424/#447/#445/#355/#426에는 explicit maintainer security review 요구가 포함된다.
+- [ ] #434 split boundaries 4개와 defects 3개가 모두 포함된다.
+- [ ] #405가 #434에 완전히 포함된 blob 관계를 live diff/blob으로 재확인한다.
+- [ ] **rebase 문구를 게시 시점 사실로 갱신한다** (A-gate 라운드3 residual 3). #426과 #431의
+      초안은 "planned integration"으로 쓰여 있다. WP1~WP7이 실제로 dev에 통합된 뒤 게시하므로,
+      게시 직전 live base/head를 재확인하고 "dev has integrated #370/#389/#439 ..." 형태의
+      완료 사실로 바꿔 쓴다. 통합 전에 게시할 경우에만 "planned" 표현을 유지한다.
+- [ ] 모든 코멘트가 영어이며 감사 표현, file:line, failure mode, fix, test 계약을 포함한다.
+- [ ] #403과 #437에는 아무 코멘트도 게시하지 않는다 (`NO_ACTION`).
