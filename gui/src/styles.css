@@ -15,6 +15,7 @@
 @import "./styles-combos-workspace.css";
 @import "./styles-models-workspace.css";
 @import "./styles-dashboard-workspace.css";
+@import "./styles-subagents-workspace.css";
 
 :root {
   /* default: follow the OS; [data-theme] below pins color-scheme so light-dark() obeys it */
