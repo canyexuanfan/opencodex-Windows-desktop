@@ -12,6 +12,8 @@
 .models-workspace-shell {
   width: 100%;
   min-width: 0;
+  container-type: inline-size;
+  container-name: models-workspace;
 }
 
 .models-workspace-root {
@@ -188,6 +190,31 @@
   align-items: center;
 }
 
+/* ── Provider group header (Classic + Workspace) ─────── */
+
+.models-provider-head {
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
+  column-gap: var(--space-2);
+  align-items: center;
+  min-width: 0;
+}
+
+.models-provider-head > span.text-body {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.models-provider-actions {
+  margin-left: auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
 /* ── Responsive ───────────────────────────────────────── */
 
 @media (max-width: 1160px) {
@@ -213,6 +240,35 @@
   }
 }
 
+/*
+  Stack rail above the main pane when the workspace shell is squeezed —
+  typically by the persistent desktop sidebar at ~900–1024px viewports —
+  not only at the mobile drawer breakpoint.
+*/
+@container models-workspace (max-width: 720px) {
+  .models-workspace-root {
+    grid-template-columns: 1fr;
+  }
+
+  .models-workspace-rail {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding-right: 0;
+    padding-bottom: var(--space-3);
+  }
+
+  .models-workspace-rail-list {
+    max-height: 240px;
+  }
+
+  .models-provider-actions {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+}
+
+/* Mobile: sidebar is a drawer; still prefer rail-on-top for touch. */
 @media (max-width: 768px) {
   .models-workspace-root {
     grid-template-columns: 1fr;
@@ -227,5 +283,11 @@
 
   .models-workspace-rail-list {
     max-height: 240px;
+  }
+
+  .models-provider-actions {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
   }
 }
