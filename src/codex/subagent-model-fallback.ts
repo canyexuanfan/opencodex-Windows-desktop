@@ -16,6 +16,7 @@ import { computeCodexUsageScore, getPoolAccountPlan } from "./routing";
 import { nativeOpenAiSlugs } from "./catalog";
 import { slugEquals } from "../providers/slug-codec";
 import { isThreadSpawnRequest } from "../server/effort-policy";
+import { PROVIDER_REGISTRY } from "../providers/registry";
 export const DEFAULT_SUBAGENT_MODEL_FALLBACK_POLL_MS = 60_000;
 
 type ModelHealth = {
@@ -25,7 +26,17 @@ type ModelHealth = {
 
 const modelHealth = new Map<string, ModelHealth>();
 const quotaPrimedAt = new Map<string, number>();
-const nativeSlugSet = () => new Set(nativeOpenAiSlugs().map(slug => slug.toLowerCase()));
+const NATIVE_SLUG_CACHE_MS = 60_000;
+let nativeSlugCache: { cachedAt: number; slugs: Set<string> } | null = null;
+function nativeSlugSet(now = Date.now()): Set<string> {
+  if (nativeSlugCache && (now - nativeSlugCache.cachedAt) < NATIVE_SLUG_CACHE_MS) {
+    return nativeSlugCache.slugs;
+  }
+  const slugs = new Set(nativeOpenAiSlugs().map(slug => slug.toLowerCase()));
+  nativeSlugCache = { cachedAt: now, slugs };
+  return slugs;
+}
+const knownProviderIdSet = new Set(PROVIDER_REGISTRY.map(entry => entry.id.toLowerCase()));
 
 function healthKey(model: string, accountId: string | null): string {
   const scopedAccountId = nativeSlugSet().has(model.toLowerCase()) ? accountId : null;
@@ -98,7 +109,11 @@ function isRoutableFallbackModel(model: string, config: OcxConfig): boolean {
   const slash = model.indexOf("/");
   if (slash > 0) {
     const providerName = model.slice(0, slash);
-    if (!hasOwnProvider(config.providers, providerName)) return true;
+    if (!hasOwnProvider(config.providers, providerName)) {
+      // Allow well-known "vendor/model" ids (e.g. anthropic/claude-*) to flow as
+      // raw model ids through the default provider, but reject stale/typo prefixes.
+      return knownProviderIdSet.has(providerName.toLowerCase());
+    }
     const provider = config.providers[providerName];
     if (provider?.disabled === true) return false;
   }

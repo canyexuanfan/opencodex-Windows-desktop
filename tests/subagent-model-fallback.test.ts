@@ -91,6 +91,7 @@ describe("subagent model fallback chain", () => {
 
   test("selectAvailableSubagentModel skips cached routed failures", () => {
     resetSubagentModelFallbackStateForTests();
+    updateAccountQuota("main", 95, undefined, 20);
     noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max-preview", "quota exhausted", cfg());
     const selected = selectAvailableSubagentModel("gpt-5.6-sol", cfg());
     expect(selected.model).toBe("kimi/k3");
@@ -99,6 +100,7 @@ describe("subagent model fallback chain", () => {
 
   test("selectAvailableSubagentModel skips stale fallback entries that cannot route", () => {
     resetSubagentModelFallbackStateForTests();
+    updateAccountQuota("main", 95, undefined, 20);
     const selected = selectAvailableSubagentModel(
       "gpt-5.6-sol",
       cfg({
@@ -222,6 +224,7 @@ describe("subagent model fallback chain", () => {
 
   test("selectAvailableSubagentModel allows raw slash model ids without provider namespaces", () => {
     resetSubagentModelFallbackStateForTests();
+    updateAccountQuota("main", 95, undefined, 20);
     const selected = selectAvailableSubagentModel(
       "gpt-5.6-sol",
       cfg({
