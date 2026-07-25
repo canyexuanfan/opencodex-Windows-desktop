@@ -5,7 +5,8 @@ import { act } from "react";
 import type { Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LanguageProvider } from "../src/i18n/provider";
-import Models, { EmptyProviderHint } from "../src/pages/Models";
+import Models from "../src/pages/Models";
+import { EmptyProviderHint } from "../src/pages/models-provider-hints";
 import type { ProviderDiscoverySummary } from "../src/models-groups";
 import { gatherRoutedModels } from "../../src/codex/catalog";
 import {
