@@ -15,6 +15,7 @@ import type { AccountQuota } from "../codex-quota-utils";
 import { providerIconSrc, formatProviderDisplayName } from "../provider-icons";
 import { apiErrorMessage } from "../api-error";
 import { useProviderAccountPools } from "../hooks/useProviderAccountPools";
+import { useCodexAccountPool } from "../hooks/useCodexAccountPool";
 import { useJsonConfigEditor } from "../hooks/useJsonConfigEditor";
 import { OAuthPanel } from "../components/providers/OAuthPanel";
 import { ProviderCardList } from "../components/providers/ProviderCardList";
@@ -178,6 +179,11 @@ export default function Providers({ apiBase, viewMode }: { apiBase: string; view
       setCodexActiveNeedsReauth(needs);
     } catch { /* ignore */ }
   }, [apiBase]);
+
+  // WP3: one Codex account controller for the whole Providers page, shared by the
+  // Overview tab and the Accounts tab so a mutation on either is instantly visible on
+  // both. Mounting CodexAccountPool twice used to fork this state.
+  const codexPool = useCodexAccountPool(apiBase);
 
   const pools = useProviderAccountPools({
     apiBase, t: t as unknown as Parameters<typeof useProviderAccountPools>[0]["t"],
@@ -624,6 +630,7 @@ export default function Providers({ apiBase, viewMode }: { apiBase: string; view
               onSetDisabled={setProviderDisabled}
               onUpdateProvider={updateProvider}
               onCodexActiveNeedsReauthChange={setCodexActiveNeedsReauth}
+              codexController={codexPool}
             />
             );
           }}
