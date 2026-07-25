@@ -6,6 +6,7 @@ import {
   applySubagentModelFallback,
   buildSubagentModelChain,
   getSubagentQuotaPrimeStateForTests,
+  isNativeModelQuotaExhausted,
   isSubagentModelUnavailable,
   maybePrimeSubagentQuota,
   noteSubagentModelFailure,
@@ -216,7 +217,7 @@ describe("subagent model fallback chain", () => {
     expect(getSubagentQuotaPrimeStateForTests().primedAt).toBeGreaterThan(0);
   });
 
-  test("reset clears timestamp, in-flight, health, and native slug cache", async () => {
+  test("reset clears timestamp, in-flight, and health state", async () => {
     resetSubagentModelFallbackStateForTests();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -279,6 +280,185 @@ describe("subagent model fallback chain", () => {
     });
   });
 
+  test("direct bare GPT route ignores exhausted retained pool account quota", () => {
+    resetSubagentModelFallbackStateForTests();
+    updateAccountQuota("pool-a", 95, undefined, 20);
+    const config = cfg({
+      activeCodexAccountId: "pool-a",
+      autoSwitchThreshold: 80,
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "direct",
+        },
+        kimi: { adapter: "openai-chat", apiKey: "test", baseUrl: "https://example.invalid" },
+      },
+      subagentModelFallback: ["kimi/k3"],
+    });
+    expect(isSubagentModelUnavailable("gpt-5.6-sol", config, "pool-a", Date.now(), {
+      requireNativeAccount: true,
+    })).toBe(false);
+    const selected = selectAvailableSubagentModel(
+      "gpt-5.6-sol",
+      config,
+      [],
+      "pool-a",
+      Date.now(),
+      false,
+      { requireNativeAccount: true },
+    );
+    expect(selected).toEqual({
+      model: "gpt-5.6-sol",
+      rewritten: false,
+      skipped: [],
+    });
+  });
+
+  test("another pool provider in config does not affect a direct GPT candidate", () => {
+    resetSubagentModelFallbackStateForTests();
+    updateAccountQuota("pool-a", 95, undefined, 20);
+    const config = cfg({
+      activeCodexAccountId: "pool-a",
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "direct",
+        },
+        "openai-pool": {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "pool",
+        },
+        kimi: { adapter: "openai-chat", apiKey: "test", baseUrl: "https://example.invalid" },
+      },
+      subagentModelFallback: ["kimi/k3"],
+    });
+    expect(isNativeModelQuotaExhausted("gpt-5.6-sol", config, "pool-a")).toBe(false);
+    expect(isSubagentModelUnavailable("gpt-5.6-sol", config, "pool-a")).toBe(false);
+  });
+
+  test("openai-direct/gpt-5.5 is accepted as encrypted-task fallback when canonical", () => {
+    resetSubagentModelFallbackStateForTests();
+    updateAccountQuota("pool-a", 95, undefined, 20);
+    const config = cfg({
+      activeCodexAccountId: "pool-a",
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "pool",
+        },
+        "openai-direct": {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "direct",
+        },
+        kimi: { adapter: "openai-chat", apiKey: "test", baseUrl: "https://example.invalid" },
+      },
+      subagentModelFallback: ["openai-direct/gpt-5.5", "kimi/k3"],
+    });
+    const selected = selectAvailableSubagentModel(
+      "gpt-5.6-sol",
+      config,
+      [],
+      "pool-a",
+      Date.now(),
+      true,
+      { requireNativeAccount: true },
+    );
+    expect(selected).toEqual({
+      model: "openai-direct/gpt-5.5",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol"],
+    });
+  });
+
+  test("namespaced noncanonical OpenAI-compatible provider is rejected for encrypted tasks", () => {
+    resetSubagentModelFallbackStateForTests();
+    updateAccountQuota("pool-a", 95, undefined, 20);
+    const config = cfg({
+      activeCodexAccountId: "pool-a",
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "pool",
+        },
+        "openai-compat": {
+          adapter: "openai-responses",
+          baseUrl: "https://api.example.com/v1",
+          authMode: "key",
+          apiKey: "sk-test",
+        },
+        kimi: { adapter: "openai-chat", apiKey: "test", baseUrl: "https://example.invalid" },
+      },
+      subagentModelFallback: ["openai-compat/gpt-5.5", "kimi/k3"],
+    });
+    const selected = selectAvailableSubagentModel(
+      "gpt-5.6-sol",
+      config,
+      [],
+      "pool-a",
+      Date.now(),
+      true,
+      { requireNativeAccount: true },
+    );
+    expect(selected).toEqual({
+      model: "gpt-5.6-sol",
+      rewritten: false,
+      skipped: ["gpt-5.6-sol", "openai-compat/gpt-5.5", "kimi/k3"],
+    });
+  });
+
+  test("pool quota affects only candidates whose resolved route uses pool mode", () => {
+    resetSubagentModelFallbackStateForTests();
+    updateAccountQuota("pool-a", 95, undefined, 20);
+    const config = cfg({
+      activeCodexAccountId: "pool-a",
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "pool",
+        },
+        "openai-direct": {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "direct",
+        },
+        kimi: { adapter: "openai-chat", apiKey: "test", baseUrl: "https://example.invalid" },
+      },
+      subagentModelFallback: ["openai-direct/gpt-5.5", "kimi/k3"],
+    });
+    expect(isNativeModelQuotaExhausted("gpt-5.6-sol", config, "pool-a")).toBe(true);
+    expect(isNativeModelQuotaExhausted("openai-direct/gpt-5.5", config, "pool-a")).toBe(false);
+    expect(isNativeModelQuotaExhausted("kimi/k3", config, "pool-a")).toBe(false);
+    const selected = selectAvailableSubagentModel(
+      "gpt-5.6-sol",
+      config,
+      [],
+      "pool-a",
+      Date.now(),
+      false,
+      { requireNativeAccount: true },
+    );
+    expect(selected).toEqual({
+      model: "openai-direct/gpt-5.5",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol"],
+    });
+  });
+
   test("noteSubagentModelFailure records failures under the configured fallback slug", () => {
     resetSubagentModelFallbackStateForTests();
     noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max-preview", "429", cfg(), "main");
@@ -337,7 +517,9 @@ describe("subagent model fallback chain", () => {
 
   test("selectAvailableSubagentModel allows raw slash model ids without provider namespaces", () => {
     resetSubagentModelFallbackStateForTests();
-    updateAccountQuota("main", 95, undefined, 20);
+    // Health-block the primary model only. A raw vendor/model id still routes through the
+    // default provider; it must remain selectable (not rejected as an unknown namespace).
+    noteSubagentModelFailure("gpt-5.6-sol", "429", cfg());
     const selected = selectAvailableSubagentModel(
       "gpt-5.6-sol",
       cfg({
