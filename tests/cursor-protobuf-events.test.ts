@@ -703,3 +703,60 @@ describe("Cursor MCP display-name alias", () => {
     expect(delta && delta.type === "tool_call_delta" ? JSON.parse(delta.arguments) : null).toEqual({ command: "echo ok" });
   });
 });
+
+// --- #373: a restart clears the checkpoint tracker, so a turn with no checkpoint
+// must not report inputTokens=0 and make Codex see an almost-empty context. -------
+describe("request-local input estimate (#373)", () => {
+  test("restart without checkpoint reports the prepared estimate", () => {
+    // A fresh tracker stands in for the post-restart state: no carry-forward exists.
+    const state = createCursorProtobufEventState({ estimatedInputTokens: 1_234 });
+    state.usage.outputTokens = 7;
+
+    const [done] = finalizeTurnEvents(state);
+
+    expect(done?.type).toBe("done");
+    const usage = done?.type === "done" ? done.usage : undefined;
+    expect(usage?.inputTokens).toBe(1_234);
+    expect(usage?.totalTokens).toBe(1_241);
+    expect(usage?.estimated).toBe(true);
+  });
+
+  test("a checkpoint observed this turn outranks the estimate", () => {
+    const state = createCursorProtobufEventState({ estimatedInputTokens: 1_234 });
+    state.usage.outputTokens = 7;
+    state.contextTokens = 10_300;
+
+    const [done] = finalizeTurnEvents(state);
+    const usage = done?.type === "done" ? done.usage : undefined;
+
+    expect(usage?.totalTokens).toBe(10_300);
+    expect(usage?.inputTokens).not.toBe(1_234);
+  });
+
+  test("carry-forward outranks the estimate and the estimate never reaches the tracker", () => {
+    const tracker = createCursorContextUsageTracker();
+    const controls = tracker.controlsForConversation("conv-373");
+    const state = createCursorProtobufEventState({
+      contextUsage: { ...controls, carryForwardTokens: 18_000 },
+      estimatedInputTokens: 1_234,
+    });
+    state.usage.outputTokens = 7;
+
+    const [done] = finalizeTurnEvents(state);
+    const usage = done?.type === "done" ? done.usage : undefined;
+
+    expect(usage?.totalTokens).toBe(18_000);
+    // Only real checkpoints seed the tracker; an estimate must never be promoted.
+    expect(tracker.controlsForConversation("conv-373").carryForwardTokens).toBeUndefined();
+  });
+
+  test("without a checkpoint, a carry, or an estimate the old zero behavior stands", () => {
+    const state = createCursorProtobufEventState();
+    state.usage.outputTokens = 7;
+
+    const [done] = finalizeTurnEvents(state);
+    const usage = done?.type === "done" ? done.usage : undefined;
+
+    expect(usage?.inputTokens).toBe(0);
+  });
+});

@@ -131,6 +131,13 @@ export interface CursorProtobufEventState {
    */
   contextTokens?: number;
   /**
+   * Request-local input estimate derived from the payload actually sent to Cursor.
+   * Used only when neither a checkpoint nor a carry-forward is available — a restart
+   * clears the tracker, and reporting inputTokens=0 makes Codex see an almost-empty
+   * context (#373). Never written back into the tracker: only real checkpoints are.
+   */
+  estimatedInputTokens?: number;
+  /**
    * Session-level last-known absolute context size for this Cursor conversation. This is a fallback
    * for no-checkpoint client-tool finalize turns only; any checkpoint observed during the current
    * turn remains authoritative, with monotonic max semantics unless a compaction boundary reset the
@@ -157,6 +164,12 @@ export function createCursorProtobufEventState(options: {
   toolSchemas?: Map<string, unknown>;
   cursorToolNameMap?: Map<string, string>;
   contextUsage?: CursorContextUsageControls;
+  /**
+   * Request-local input estimate derived from the payload actually sent. Used only
+   * when neither a checkpoint nor a carry-forward is available; never recorded into
+   * the checkpoint tracker (#373).
+   */
+  estimatedInputTokens?: number;
 } = {}): CursorProtobufEventState {
   return {
     // Cursor provides no authoritative usage frame; token counts are heuristic estimates from
@@ -171,6 +184,11 @@ export function createCursorProtobufEventState(options: {
     ...(options.cursorToolNameMap ? { cursorToolNameMap: options.cursorToolNameMap } : {}),
     ...(options.contextUsage?.carryForwardTokens !== undefined ? { contextCarryForwardTokens: options.contextUsage.carryForwardTokens } : {}),
     ...(options.contextUsage?.recordContextTokens ? { recordContextTokens: options.contextUsage.recordContextTokens } : {}),
+    ...(typeof options.estimatedInputTokens === "number"
+      && Number.isFinite(options.estimatedInputTokens)
+      && options.estimatedInputTokens > 0
+      ? { estimatedInputTokens: options.estimatedInputTokens }
+      : {}),
   };
 }
 
@@ -453,6 +471,27 @@ export function mapCursorProtobufServerMessage(
 }
 
 /**
+ * Resolve the usage to report for a turn, in order of trustworthiness: a checkpoint
+ * observed this turn, then the session carry-forward, then the request-local estimate,
+ * then the raw per-turn counters. Shared with the partial-usage path in live-transport
+ * so a failed turn reports the same input side as a clean one (#373).
+ */
+export function resolvedTurnUsage(state: CursorProtobufEventState): OcxUsage {
+  const contextTokens = reportableContextTokens(state);
+  if (contextTokens !== undefined) return usageFromContextTokens(state, contextTokens);
+  const estimate = state.estimatedInputTokens;
+  if (estimate !== undefined) {
+    return {
+      ...state.usage,
+      inputTokens: estimate,
+      totalTokens: estimate + state.usage.outputTokens,
+      estimated: true,
+    };
+  }
+  return { ...state.usage };
+}
+
+/**
  * Finalize a Cursor turn. If any client tool call is still open (started but never completed),
  * the stream was truncated and the partial tool call must not reach Codex as a completed call
  * with corrupt/empty arguments. Emit an explicit error instead of done (fail-closed).
@@ -471,9 +510,5 @@ export function finalizeTurnEvents(state: CursorProtobufEventState): CursorServe
   // render the additive pair instead of total_tokens, so leaving inputTokens at 0 makes a 16k-context
   // first turn display as "9 used". Keep outputTokens as the per-turn delta and clamp the inferred
   // input to 0 in case Cursor reports a checkpoint smaller than the streamed output delta.
-  const contextTokens = reportableContextTokens(state);
-  const usage: OcxUsage = contextTokens !== undefined
-    ? usageFromContextTokens(state, contextTokens)
-    : { ...state.usage };
-  return [{ type: "done", usage }];
+  return [{ type: "done", usage: resolvedTurnUsage(state) }];
 }
