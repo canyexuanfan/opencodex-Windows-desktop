@@ -31,8 +31,8 @@ test("SubagentsWorkspace exposes featured rail + save actions", async () => {
   expect(src).toContain('<section className="subagents-workspace-main"');
   expect(src).not.toContain("<main className=\"subagents-workspace-main\"");
   // Rail toggles must include the model name in their accessible label.
-  expect(src).toContain('t("sub.workspace.removeFromFeatured", { m: label })');
-  expect(src).toContain('t("sub.workspace.addToFeatured", { m: label })');
+  expect(src).toContain('t("sub.workspace.removeFromFeatured", { m })');
+  expect(src).toContain('t("sub.workspace.addToFeatured", { m })');
   // Do not fabricate openai provider for bare combo aliases.
   expect(src).not.toContain('"openai"');
   expect(src).toContain("routedParts");

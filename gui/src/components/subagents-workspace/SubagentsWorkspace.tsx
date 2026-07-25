@@ -93,7 +93,6 @@ export default function SubagentsWorkspace({
                 </div>
                 {featuredFiltered.map(m => {
                   const priority = chosen.indexOf(m) + 1;
-                  const label = modelLabel(m);
                   return (
                     <div key={m} className={`subagents-workspace-rail-row${selected === m ? " subagents-workspace-rail-row--selected" : ""}`}>
                       <button
@@ -103,14 +102,14 @@ export default function SubagentsWorkspace({
                         aria-current={selected === m ? "true" : undefined}
                       >
                         <span className="swi-rail-priority">{priority}</span>
-                        <span className="subagents-workspace-rail-name">{label}</span>
+                        <span className="subagents-workspace-rail-name">{modelLabel(m)}</span>
                       </button>
                       <button
                         type="button"
                         className="subagents-workspace-rail-toggle subagents-workspace-rail-toggle--on"
                         onClick={() => onToggle(m)}
-                        aria-label={t("sub.workspace.removeFromFeatured", { m: label })}
-                        title={t("sub.workspace.removeFromFeatured", { m: label })}
+                        aria-label={t("sub.workspace.removeFromFeatured", { m })}
+                        title={t("sub.workspace.removeFromFeatured", { m })}
                       >
                         <IconCheck style={{ width: 14, height: 14 }} />
                       </button>
@@ -125,9 +124,7 @@ export default function SubagentsWorkspace({
                   <span>{t("sub.workspace.allModels")}</span>
                   <span className="subagents-workspace-rail-group-count">{availableFiltered.length}</span>
                 </div>
-                {availableFiltered.map(m => {
-                  const label = modelLabel(m);
-                  return (
+                {availableFiltered.map(m => (
                     <div key={m} className={`subagents-workspace-rail-row${selected === m ? " subagents-workspace-rail-row--selected" : ""}`}>
                       <button
                         type="button"
@@ -136,21 +133,20 @@ export default function SubagentsWorkspace({
                         aria-current={selected === m ? "true" : undefined}
                       >
                         <span className="swi-rail-priority" aria-hidden="true" />
-                        <span className="subagents-workspace-rail-name">{label}</span>
+                        <span className="subagents-workspace-rail-name">{modelLabel(m)}</span>
                       </button>
                       <button
                         type="button"
                         className={`subagents-workspace-rail-toggle${full ? " subagents-workspace-rail-toggle--disabled" : ""}`}
                         onClick={() => { if (!full) onToggle(m); }}
                         disabled={full}
-                        aria-label={t("sub.workspace.addToFeatured", { m: label })}
-                        title={full ? t("sub.workspace.featuredFull") : t("sub.workspace.addToFeatured", { m: label })}
+                        aria-label={t("sub.workspace.addToFeatured", { m })}
+                        title={full ? t("sub.workspace.featuredFull") : t("sub.workspace.addToFeatured", { m })}
                       >
                         <IconPlus style={{ width: 14, height: 14 }} />
                       </button>
                     </div>
-                  );
-                })}
+                ))}
               </div>
             )}
           </div>
@@ -200,11 +196,11 @@ export default function SubagentsWorkspace({
                 <div className="swi-detail-actions">
                   {selectedIsFeatured ? (
                     <button type="button" className="btn btn-ghost btn-sm" onClick={() => onToggle(selected)}>
-                      <IconX /> {t("sub.workspace.removeFromFeatured", { m: modelLabel(selected) })}
+                      <IconX /> {t("sub.workspace.removeFromFeatured", { m: selected })}
                     </button>
                   ) : (
                     <button type="button" className="btn btn-primary btn-sm" onClick={() => onToggle(selected)} disabled={full}>
-                      <IconPlus /> {full ? t("sub.workspace.featuredFull") : t("sub.workspace.addToFeatured", { m: modelLabel(selected) })}
+                      <IconPlus /> {full ? t("sub.workspace.featuredFull") : t("sub.workspace.addToFeatured", { m: selected })}
                     </button>
                   )}
                 </div>
