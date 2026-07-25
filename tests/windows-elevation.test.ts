@@ -108,6 +108,7 @@ describe("windows elevation helpers", () => {
       resolveTrustedWindowsPowerShellExe,
       resolveTrustedWindowsSchtasksExe,
       setTrustedWindowsSystemDirectoryResolverForTests,
+      setTrustedWindowsElevationExecutablesForTests,
     } = require("../src/lib/windows-elevation") as typeof import("../src/lib/windows-elevation");
 
     const previousSystemRoot = process.env.SystemRoot;
@@ -116,6 +117,7 @@ describe("windows elevation helpers", () => {
     process.env.WINDIR = "C:\\Users\\Public\\evil-root";
     try {
       // Prove the production GetSystemDirectoryW path ignores env even when poisoned.
+      setTrustedWindowsElevationExecutablesForTests(null);
       setTrustedWindowsSystemDirectoryResolverForTests(null);
       const powershell = resolveTrustedWindowsPowerShellExe();
       const schtasks = resolveTrustedWindowsSchtasksExe();
@@ -131,6 +133,7 @@ describe("windows elevation helpers", () => {
       expect(() => resolveTrustedWindowsSchtasksExe()).toThrow(/not found|unusable|outside the trusted/i);
     } finally {
       setTrustedWindowsSystemDirectoryResolverForTests(null);
+      setTrustedWindowsElevationExecutablesForTests(null);
       if (previousSystemRoot === undefined) delete process.env.SystemRoot;
       else process.env.SystemRoot = previousSystemRoot;
       if (previousWindir === undefined) delete process.env.WINDIR;

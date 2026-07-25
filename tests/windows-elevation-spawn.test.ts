@@ -15,6 +15,7 @@ import {
   runElevatedSchtasksCreateAndRun,
   runWindowsElevated,
   setWindowsElevationSpawnForTests,
+  setTrustedWindowsElevationExecutablesForTests,
   startElevatedSchtasksCreateAndRun,
   startPowerShellCommand,
 } from "../src/lib/windows-elevation";
@@ -24,15 +25,23 @@ import {
   setFinalizeWindowsSchedulerHooksForTests,
 } from "../src/service";
 
+/** Linux CI fakes win32 without a real System32; keep elevation paths production-shaped. */
+const FAKE_TRUSTED_ELEVATION_EXES = {
+  powershell: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+  schtasks: "C:\\Windows\\System32\\schtasks.exe",
+} as const;
+
 describe("runWindowsElevated spawn contract", () => {
   const originalPlatform = process.platform;
 
   beforeEach(() => {
     Object.defineProperty(process, "platform", { value: "win32" });
+    setTrustedWindowsElevationExecutablesForTests(FAKE_TRUSTED_ELEVATION_EXES);
   });
 
   afterEach(() => {
     Object.defineProperty(process, "platform", { value: originalPlatform });
+    setTrustedWindowsElevationExecutablesForTests(null);
     setWindowsElevationSpawnForTests(null);
   });
 
@@ -247,6 +256,7 @@ describe("finalizeWindowsSchedulerServiceRegistration", () => {
 
   beforeEach(() => {
     Object.defineProperty(process, "platform", { value: "win32" });
+    setTrustedWindowsElevationExecutablesForTests(FAKE_TRUSTED_ELEVATION_EXES);
     elevateLaunches = 0;
     writeCount = 0;
     parentRollbackLaunches = 0;
@@ -256,6 +266,7 @@ describe("finalizeWindowsSchedulerServiceRegistration", () => {
 
   afterEach(() => {
     Object.defineProperty(process, "platform", { value: originalPlatform });
+    setTrustedWindowsElevationExecutablesForTests(null);
     setFinalizeWindowsSchedulerHooksForTests(null);
     setWindowsElevationSpawnForTests(null);
   });

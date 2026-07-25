@@ -105,8 +105,24 @@ function assertTrustedSystemExecutable(candidate: string, label: string): string
   return resolved;
 }
 
+type ElevationExeOverrides = { powershell?: string; schtasks?: string };
+let elevationExeOverridesForTests: ElevationExeOverrides | null = null;
+
+/**
+ * Test-only absolute executable overrides for Linux CI (which fakes win32 but has
+ * no kernel32/System32). Production resolution never consults this seam.
+ */
+export function setTrustedWindowsElevationExecutablesForTests(
+  next: ElevationExeOverrides | null,
+): void {
+  elevationExeOverridesForTests = next;
+}
+
 /** Absolute path to System32\\WindowsPowerShell\\v1.0\\powershell.exe from a trusted system directory. */
 export function resolveTrustedWindowsPowerShellExe(): string {
+  if (elevationExeOverridesForTests?.powershell) {
+    return elevationExeOverridesForTests.powershell;
+  }
   const candidate = join(
     resolveTrustedWindowsSystemDirectory(),
     "WindowsPowerShell",
@@ -118,6 +134,9 @@ export function resolveTrustedWindowsPowerShellExe(): string {
 
 /** Absolute path to System32\\schtasks.exe from a trusted system directory. */
 export function resolveTrustedWindowsSchtasksExe(): string {
+  if (elevationExeOverridesForTests?.schtasks) {
+    return elevationExeOverridesForTests.schtasks;
+  }
   const candidate = join(resolveTrustedWindowsSystemDirectory(), "schtasks.exe");
   return assertTrustedSystemExecutable(candidate, "schtasks.exe");
 }
