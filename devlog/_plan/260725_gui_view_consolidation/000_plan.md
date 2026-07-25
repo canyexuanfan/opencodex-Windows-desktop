@@ -231,13 +231,28 @@ WP1~WP4가 끝난 뒤 마지막에 수행한다.
 ## 순서와 근거
 
 ```text
-WP1 (Subagents 단일화)
-  -> WP2a (NAV 순서) -> WP2b (Dashboard 상단 탭 + 해시 등록)
-  -> WP3a (계정 상태 리프팅) -> WP3 (Overview 계정 조작)
-  -> WP4 (레일 호버 삭제)
-  -> WP5 (Classic 철거)
-  -> WP6 (docs-site 5개 파일)
+WP0 (문서화 사이클 — 이 유닛의 decade 문서 작성)
+  -> WP1 (Subagents 단일화)          decade 010
+  -> WP2 (NAV 순서 + Dashboard 탭)   decade 020
+  -> WP3 (계정 상태 리프팅 + Overview 조작)  decade 030
+  -> WP4 (레일 호버 삭제)             decade 040
+  -> WP5 (Classic 철거)              decade 050
+  -> WP6 (docs-site 5개 파일)        decade 060
+  -> WP7 (opus-5 가격)               decade 070
 ```
+
+WP0은 docs-only 사이클이다(LOOP-DOCS-FIRST-01). 산출물은 아래 decade 문서이고,
+production 코드는 건드리지 않는다.
+
+| decade | 문서 | 내용 |
+| --- | --- | --- |
+| 010 | `010_subagents_single.md` | Workspace 구현 제거, Classic 승격, i18n 회수 |
+| 020 | `020_nav_and_dashboard_tabs.md` | NAV 순서, `.page-tabs` 공용화, 해시 등록 |
+| 030 | `030_account_state_lift.md` | `useCodexAccountPool` 추출 + Overview 계정 조작 |
+| 040 | `040_rail_hover_delete.md` | 레일 행 호버 삭제, a11y 대응 |
+| 050 | `050_classic_removal.md` | view-mode 철거 전체 소비자 목록 |
+| 060 | `060_docs_sync.md` | docs-site 5개 파일 |
+| 070 | `070_opus5_pricing.md` | 가격 오버레이 |
 
 WP3a가 WP3보다 먼저인 이유: 상태 소유자를 먼저 하나로 만들지 않으면 Overview와
 Accounts가 각자 상태를 갖게 되어 D2(중복 허용)가 곧바로 동기화 버그가 된다.
@@ -281,16 +296,50 @@ WP5를 마지막에 두는 이유: WP1~WP4를 Classic이 살아있는 상태에�
 
 ## 미해결 질문 (A 단계에서 답한다)
 
-- Q1. `providers/workspace` 해시로 들어온 북마크를 리다이렉트할 것인가, 그냥
-  `providers`로 처리할 것인가?
-- Q2. 레거시 localStorage 키 10개를 1회 삭제할 것인가, 방치할 것인가?
-- Q3. NAV 그룹 구분을 시각적 divider로 표현할 것인가, 순서만 바꿀 것인가?
-- Q6. `useCodexAccountPool` 추출 범위 (14개 상태 전부 vs 목록/활성/전환만)
-- Q7. Dashboard 탭 해시 이름과 좁은 폭 넘침 처리
-- Q8. Overview 2단 그리드에서 계정 행의 물리적 배치
+모든 미해결 질문은 아래와 같이 확정한다. A 단계는 이 결정을 검증하는 것이지,
+다시 여는 것이 아니다.
 
-> Q4/Q5는 D2/D1/D5로 해소되었다. Accounts 탭은 유지하고, Codex도 예외 없이 같은
-> 껍데기를 쓰되 상태를 공유한다.
+| # | 질문 | 확정 |
+| --- | --- | --- |
+| Q1 | `providers/workspace` 북마크 | `providers`로 **passive replace**. `replaceHash`를 쓰고 히스토리에 남기지 않는다. Logs의 무효 접미사 처리와 같은 방식. |
+| Q2 | 레거시 localStorage 키 10개 | **1회 삭제.** `ensureMigratedViewMode` 자리에 1회성 정리 함수를 넣고, 다음 릴리스에서 그 함수도 제거한다. 방치하면 영구 부채가 된다. |
+| Q3 | NAV 그룹 구분 | **순서만 변경.** divider 없음. CSS 변경 0, 되돌리기 쉬움. |
+| Q4 | Accounts 탭 존치 | **유지** (D2). |
+| Q5 | Codex 예외 처리 | **예외 없음** (D1+D5). 같은 껍데기 + 공유 상태. |
+| Q6 | `useCodexAccountPool` 추출 범위 | **데이터 계층만.** `accounts`, `activeId`, `loadState`, `switchingId`, `load()`, 그리고 전환/별칭/삭제/추가 액션. 모달·토스트·팝오버(`confirm`, `showAdd`, `reauthId`, `toast`, `resetPopup`, `resetConfirm`, `creditDetails*`)는 표시 계층에 남긴다. 근거: 모달은 표면마다 독립적이어도 무해하고, 목록/활성/진행중 상태만 공유하면 D2의 동기화 요구가 충족된다. |
+| Q7 | Dashboard 탭 해시·넘침 | 해시는 `#dashboard`(Overview) / `#dashboard/providers` / `#dashboard/models`. 첫 탭은 접미사 없음 — Logs가 `#logs`를 기본 탭으로 쓰는 것과 동일. 넘침은 **줄바꿈 없이 가로 스크롤**(`.page-tabs`에 `overflow-x:auto`), 탭 3개면 320px에서도 대체로 들어가므로 스크롤은 안전망. |
+| Q8 | Overview 계정 행 배치 | 좌측 본문 컬럼의 **AUTHENTICATION 섹션 자리**를 계정 목록으로 대체한다. 우측 사이드바(280px 고정)는 STATISTICS/NOTES 그대로 둔다. 근거: 계정 행은 가로 폭이 필요하고 본문 컬럼이 약 656px로 더 넓다. |
+
+### WP7 — `claude-opus-5` 가격 등록
+
+사용자 보고: opus5는 이전 opus와 가격이 같은데 로그의 `~$` 열이 `—`로 뜬다.
+
+확인 결과 **가격 데이터 자체가 없다**:
+
+```text
+src/providers/registry.ts:103        claude-opus-5 가 ANTHROPIC_MODELS 에 등록됨
+src/adapters/cursor/discovery.ts:185 cursor 쪽에도 등록됨
+src/providers/kiro-models.ts:8       kiro 쪽에도 등록됨
+src/generated/jawcode-model-metadata.ts  anthropic 번들에 claude-opus-5 행 없음 (0건)
+src/usage/expected-prices.ts        claude-opus-5 오버레이 없음
+```
+
+`resolveMatchedPrice()`는 jawcode exact -> overlay -> jawcode 모델 레벨 -> null 순서로
+찾는데(`src/usage/cost.ts:141-150`), 어느 단계에서도 잡히지 않아 `null`이 되고 GUI가
+`—`를 그린다.
+
+조치: `EXPECTED_PRICE_OVERLAYS`에 `claude-opus-5` 오버레이를 추가한다. 단가는 기존
+`CLAUDE_OPUS_46` 상수와 동일하다 (input 5 / output 25 / cacheRead 0.5 /
+cacheWrite 6.25, `expected-prices.ts:43`).
+
+등록 대상 provider: `anthropic`, `cursor`, `kiro`. 세 곳 모두 `claude-opus-5`를
+노출하므로 각각 오버레이 행이 필요하다 — 다만 `cost.ts`의 모델 레벨 vendor
+fallback(WP5 정책)이 동작하면 `anthropic` 하나로 충분할 수 있다. A 단계에서
+`resolveMatchedPrice("cursor", "claude-opus-5")`를 실제로 호출해 확인한 뒤 결정한다.
+
+> 주의: `status`는 `verified`가 아니라 **`verified-derived`**가 맞다. Anthropic이
+> Opus 5 공식 가격표를 별도로 게시했는지 확인되지 않았고, 근거는 "이전 opus와 같다"는
+> 사용자 진술이기 때문이다. 출처 문자열에 그 근거를 남긴다.
 
 ## OPEN ASSUMPTIONS
 
