@@ -6,8 +6,11 @@ export const GLOBAL_VIEW_KEY = "ocx-global-view";
 /** Prior canonical key from an earlier revision of this PR; still accepted once. */
 export const LEGACY_GLOBAL_VIEW_KEY = "ocx-view";
 
+export const LEGACY_PROVIDERS_VIEW_KEY = "ocx-providers-view";
+export const LEGACY_DASHBOARD_VIEW_KEY = "ocx-dashboard-view";
+
 export const LEGACY_PAGE_VIEW_KEYS: readonly string[] = [
-  "ocx-providers-view",
+  LEGACY_PROVIDERS_VIEW_KEY,
   "ocx-subagents-view",
   "ocx-storage-view",
   "ocx-codexauth-view",
@@ -16,7 +19,7 @@ export const LEGACY_PAGE_VIEW_KEYS: readonly string[] = [
   "ocx-usage-view",
   "ocx-logs-view",
   "ocx-models-view",
-  "ocx-dashboard-view",
+  LEGACY_DASHBOARD_VIEW_KEY,
 ];
 
 export interface StorageLike {
@@ -31,7 +34,7 @@ function isViewMode(value: string | null): value is ViewMode {
 /** Deterministic migration when the canonical key is missing. */
 export function migrateLegacyViewMode(storage: StorageLike): ViewMode {
   // Prefer pages that implement Workspace in this build, then classic.
-  for (const key of ["ocx-dashboard-view", "ocx-providers-view"] as const) {
+  for (const key of [LEGACY_DASHBOARD_VIEW_KEY, LEGACY_PROVIDERS_VIEW_KEY] as const) {
     const value = storage.getItem(key);
     if (isViewMode(value)) return value;
   }

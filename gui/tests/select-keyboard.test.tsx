@@ -191,6 +191,27 @@ test("outside click closes the menu", async () => {
   await act(async () => { root.unmount(); });
 });
 
+test("clicking an option selects it and returns focus", async () => {
+  function Harness() {
+    const [value, setValue] = useState("a");
+    return (
+      <div>
+        <div data-testid="value">{value}</div>
+        <Select value={value} options={OPTIONS} onChange={setValue} label="Pick" />
+      </div>
+    );
+  }
+  const { root, host } = await mountSelect(<Harness />);
+  const trigger = host.querySelector<HTMLButtonElement>("button.select-trigger")!;
+  await act(async () => { key(trigger, "ArrowDown"); });
+  const option = listbox()!.querySelectorAll<HTMLElement>('[role="option"]')[1]!;
+  await act(async () => { option.click(); });
+  expect(host.querySelector('[data-testid="value"]')!.textContent).toBe("b");
+  expect(listbox()).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+  await act(async () => { root.unmount(); });
+});
+
 test("external value change updates active option on next open", async () => {
   function Harness() {
     const [value, setValue] = useState("a");

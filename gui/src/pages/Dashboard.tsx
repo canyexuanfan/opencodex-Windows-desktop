@@ -338,7 +338,20 @@ export default function Dashboard({ apiBase, viewMode }: { apiBase: string; view
               setShadowCall(nextShadow);
             }
           }
-        } catch { setShadowCall(null); }
+        } catch {
+          // Same epoch gate as success: a parse failure must not null optimistic UI
+          // while a save is in flight or a newer poll owns the request identity.
+          if (settingsPollMayCommit(
+            { request: shadowRequestEpoch, mutation: shadowMutationEpoch },
+            {
+              request: shadowCallRequestEpochRef.current,
+              mutation: shadowCallMutationEpochRef.current,
+              mutationInFlight: shadowCallMutationInFlightRef.current,
+            },
+          )) {
+            setShadowCall(null);
+          }
+        }
         try { setUsage30d(uRes.ok ? await uRes.json() : null); } catch { setUsage30d(null); }
         setError(false);
         // Best-effort v2 mode fetch (independent of core health)
