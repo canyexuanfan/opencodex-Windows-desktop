@@ -237,3 +237,63 @@ WP8은 exact-SHA hosted `Cross-platform CI`와 `Service lifecycle`이 둘 다 su
 
 통합 충돌이나 신규 회귀는 main session이 회수한다. 보안 경계 판단과 provider 신뢰 표현
 (#385 BizRouter 등록 등)은 자동 결정하지 않고 사용자에게 되돌린다.
+
+## 실행 영수증 (WP8)
+
+### 병합
+
+- `origin/dev`: `faaaf98f` → **`ebc62d1f`** (fast-forward, force push 없음)
+- 커밋 23개 = 구현 7 + devlog 16
+- `bun run prepush` exit 0 (내부 테스트 4222 pass / 0 fail)
+
+### hosted CI — exact SHA `ebc62d1f`
+
+`Cross-platform CI` run `30167215384`: **6/6 job success**
+
+| job | 결과 |
+|---|---|
+| ubuntu-latest | success |
+| macos-latest | success |
+| windows-latest | success |
+| npm-global ubuntu-latest | success |
+| npm-global macos-latest | success |
+| npm-global windows-latest | success |
+
+`Service lifecycle`은 path filter(`src/service.ts`, `src/cli.ts`, `src/cli/index.ts`,
+`src/lib/bun-runtime.ts`, `package.json`) 대상 파일을 이 배치가 변경하지 않아 트리거되지 않았다.
+`git diff --name-only faaaf98f..ebc62d1f`로 확인했다.
+
+### 통합 PR 8건 — 영수증 코멘트 후 closed
+
+| PR | 통합 커밋 | 원저자 |
+|---|---|---|
+| #430 | `74795ad6` | snowyukitty |
+| #436 | `4cc7f692` | snowyukitty |
+| #439 | `fc517004` | coseung2 |
+| #370 | `03e3f1b4` | duansy123 |
+| #389 | `323bb93f` | csa906 |
+| #449 | `121a3512` | apple-ouyang |
+| #427 | `15dfa270` | dev-shinyu |
+| #385 | `15dfa270` | latemonk |
+
+모든 커밋에 `Co-authored-by`로 원저작자를 보존했다.
+
+### 이슈 3건 — 근거 코멘트 후 closed
+
+`#420`(WP1), `#435`(WP2), `#448`(WP6). 각 코멘트에 통합 커밋 SHA, 활성화 증거,
+전체 게이트 결과, hosted CI 결과를 포함했다.
+
+### 리뷰 코멘트 11건 게시
+
+- 보류 10건: #408 #424 #447 #445 #355 #434 #405 #429 #391 #431
+  각 코멘트에 구체적 결함(파일:라인)과 게시 시점 rebase 완료 사실을 포함했다.
+- #426: head가 `37431320` → `2ff3e24b`로 이동해 **STALE**. 기존 초안을 게시하지 않고
+  재감사 예고와 함께 privacy finding 및 rebase 필요 사실만 전달했다.
+- #403 / #437: `NO_ACTION`, 코멘트 없음.
+
+### Terminal outcome
+
+`DONE`. 계획한 통합 8건, 이슈 close 3건, 리뷰 게시가 모두 완료됐고 exact-SHA hosted CI가 통과했다.
+잔여 후속 후보(범위 밖으로 이관): Cursor malformed-only 첫 turn `resumeAction`,
+`contentPartsToText([])`의 `[image]` 허위 마커, `file_url` 스키마 부재, Kiro 빈 assistant history,
+tool-result remote image representable 불일치, #426 재감사.
