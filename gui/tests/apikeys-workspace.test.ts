@@ -24,9 +24,10 @@ test("ApiKeys workspace avoids nested main and stacks via container query", asyn
   expect(src).toContain('<section className="apikeys-workspace-main"');
   expect(src).not.toContain('<main className="apikeys-workspace-main"');
   expect(src).toContain('t("api.workspace.overview")');
-  expect(src).toContain("if (creating) return");
+  expect(src).toContain("if (creating || createInFlight.current) return");
   expect(src).toContain("Promise<boolean>");
   expect(src).toContain('t("api.usageSampleInput")');
+  expect(src).toContain("createInFlight");
 
   expect(css).toContain("container-name: apikeys-workspace");
   expect(css).toContain("container-type: inline-size");
