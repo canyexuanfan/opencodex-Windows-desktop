@@ -29,7 +29,7 @@ import { findAvailablePort, isAddrInUse, PortUnavailableError, shouldPersistSele
 import { findLiveProxy, probeHostname, type LiveProxy } from "../server/proxy-liveness";
 import { stopProxy } from "../lib/process-control";
 import { loadServiceTokenFromFile } from "../lib/service-secrets";
-import { diagnoseService, serviceCommand, serviceStartableFromTray, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "../service";
+import { diagnoseService, isServiceOwnershipError, serviceCommand, serviceEnvironmentOwnedHere, serviceStartableFromTray, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "../service";
 import { startupHealthSummary } from "../codex/autostart-health";
 import { drainAndShutdown, startServer } from "../server";
 import { injectSystemEnv, revertSystemEnv } from "../server/system-env";
@@ -209,7 +209,13 @@ async function handleStart(options: { block?: boolean } = {}) {
     if (!process.env.OCX_SERVICE && !currentExternalCodexModelProvider()) {
       try { restoreNativeCodex(); } catch { /* best-effort restore */ }
     }
-    if (!process.env.OCX_SERVICE) { try { stripGrokConfig(); } catch { /* best-effort restore */ } }
+    // Same ownership rule as `ocx stop`: if the installed service belongs to another home, the
+    // Grok fence is shared state we must not remove — that service keeps running and would be
+    // left pointing nowhere. This guard also covers signal-driven exits, which is the path that
+    // would otherwise bypass handleStop's gate entirely.
+    if (!process.env.OCX_SERVICE && serviceEnvironmentOwnedHere()) {
+      try { stripGrokConfig(); } catch { /* best-effort restore */ }
+    }
   };
 
   let shuttingDown = false;
@@ -267,16 +273,18 @@ async function handleStart(options: { block?: boolean } = {}) {
       [...visibleNativeSlugs(config)],
       models.map(m => ({ provider: m.provider, id: m.id, contextWindow: m.contextWindow })),
     );
-    // Grok Build auto-registration: additive fenced block in ~/.grok/config.toml so an
-    // installed grok CLI can pick opencodex-routed models without manual config. No-op
-    // when ~/.grok is absent; removed again by stop/eject/uninstall/shutdown.
-    try {
-      const { syncGrokConfig } = await import("../grok/sync");
-      const r = await syncGrokConfig(port, config, config.hostname ? { hostname: config.hostname } : {});
-      if (r.changed) console.log("   + Grok Build config updated (~/.grok/config.toml)");
-      else if (!r.ok) console.error(`⚠️  ${r.message}`);
-    } catch { /* best-effort — grok integration must never block startup */ }
   } catch { /* best-effort — registry rebuilds on first /v1/models call */ }
+  // Grok Build auto-registration: additive fenced block in ~/.grok/config.toml so an installed
+  // grok CLI can pick opencodex-routed models without manual config. No-op when ~/.grok is
+  // absent or the bind is non-loopback; removed again by stop/eject/uninstall/shutdown.
+  // Deliberately a SIBLING of the Desktop-3P block above: nesting it there meant a catalog
+  // failure skipped the fence entirely, even though syncGrokConfig handles that case itself.
+  try {
+    const { syncGrokConfig } = await import("../grok/sync");
+    const r = await syncGrokConfig(port, config, config.hostname ? { hostname: config.hostname } : {});
+    if (r.changed) console.log("   + Grok Build config updated (~/.grok/config.toml)");
+    else if (!r.ok) console.error(`⚠️  ${r.message}`);
+  } catch { /* best-effort — grok integration must never block startup */ }
   if (options.block ?? true) {
     setInterval(() => {}, 60_000);
     await new Promise<void>(() => {});
@@ -382,19 +390,26 @@ async function handleTrayProxyRestart(): Promise<void> {
 }
 
 async function handleStop() {
-  // Service-manager stop can throw (e.g. OPENCODEX_HOME mismatch guard). That must not
-  // abort the rest of the teardown — proxy stop, Codex restore, env revert, and the
-  // Grok config strip below all still need to run.
   let stopFailed = false;
   let stoppedService = false;
+  // An ownership mismatch means the service manager was never even contacted: the installed
+  // service is still live and will respawn the proxy. Tearing down SHARED state in that
+  // situation (native Codex config, the Grok fence) removes config out from under a running
+  // service — the exact failure this flag prevents. A plain stop failure is different: we
+  // tried, so local teardown still proceeds.
+  let ownershipBlocked = false;
   try {
     stoppedService = stopServiceIfInstalled();
     if (stoppedService) console.log("🛑 Service manager stopped (won't respawn).");
   } catch (err) {
-    // Service-manager failure (e.g. OPENCODEX_HOME mismatch guard) is warned but does not
-    // fail the whole stop: the local proxy/codex/grok teardown below is independent, and
-    // `ocx restart` must still be able to proceed to its ensure step.
-    console.error(`⚠️  Service manager stop failed: ${err instanceof Error ? err.message : String(err)}`);
+    if (isServiceOwnershipError(err)) {
+      ownershipBlocked = true;
+      stopFailed = true;
+      console.error(`❌ ${err.message}`);
+      console.error("   Skipping shared teardown (native Codex restore, Grok config): the installed service is still running.");
+    } else {
+      console.error(`⚠️  Service manager stop failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   const pid = readPid();
@@ -437,18 +452,27 @@ async function handleStop() {
       removeRuntimePortIfPidIs(staleRuntimePid);
     }
   }
-  const r = restoreNativeCodex();
-  console.log(`↩️  ${r.message}`);
-  // Safety net: revert system env vars even if the daemon's syncCleanup didn't run
-  // (e.g. SIGKILL). revertSystemEnv is ownership-checked and idempotent.
+  if (!ownershipBlocked) {
+    const r = restoreNativeCodex();
+    console.log(`↩️  ${r.message}`);
+  }
+  // revertSystemEnv is NOT gated: it carries its own ownership check and concerns launchctl
+  // user env, not CODEX_HOME. Safety net for when the daemon's syncCleanup didn't run (SIGKILL).
   try { revertSystemEnv(); } catch { /* best-effort */ }
-  // Same safety net for the Grok Build managed block (marker-owned, idempotent).
-  try {
-    const g = stripGrokConfig();
-    if (g.changed) console.log(`↩️  ${g.message}`);
-    else if (!g.ok) console.error(`⚠️  ${g.message}`);
-  } catch { /* best-effort */ }
-  if (stopFailed) process.exit(1);
+  if (!ownershipBlocked) {
+    // Same safety net for the Grok Build managed block (marker-owned, idempotent).
+    try {
+      const g = stripGrokConfig();
+      if (g.changed) console.log(`↩️  ${g.message}`);
+      // A refused strip (e.g. orphaned marker) leaves the fence pointing at a dead proxy —
+      // reporting success there hides a broken end state.
+      else if (!g.ok) { stopFailed = true; console.error(`⚠️  ${g.message}`); }
+    } catch { /* best-effort */ }
+  }
+  // Set the code rather than exiting inline: `restart` and the tray coordinator call this
+  // function and need it to RETURN so they can decide what to do next.
+  if (stopFailed) process.exitCode = 1;
+  return !stopFailed;
 }
 
 async function handleUninstall() {
@@ -793,8 +817,10 @@ switch (command) {
     break;
   }
   case "restart": {
-    await handleStop();
-    await handleEnsure();
+    // A failed stop must not be followed by a re-inject: with a foreign service still running
+    // (ownership mismatch) we would rewrite shared config we just declined to touch.
+    if (await handleStop()) await handleEnsure();
+    else console.error("↩️  Restart aborted: the proxy was not stopped cleanly.");
     break;
   }
   case "health": {

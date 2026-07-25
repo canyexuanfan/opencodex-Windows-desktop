@@ -178,7 +178,17 @@ export default function App() {
   const handleStop = async () => {
     if (!confirm(t("dash.stopConfirm"))) return;
     setStopping(true);
-    try { await fetch(`${API_BASE}/api/stop`, { method: "POST" }); } catch { /* connection drops */ }
+    try {
+      const res = await fetch(`${API_BASE}/api/stop`, { method: "POST" });
+      // A refusal (409: a service under another home owns this proxy) returns normally instead
+      // of dropping the connection, so the button would otherwise sit in "stopping…" forever
+      // with nothing explaining why.
+      if (!res.ok) {
+        setStopping(false);
+        const detail = await res.json().catch(() => null) as { message?: string } | null;
+        if (detail?.message) alert(detail.message);
+      }
+    } catch { /* connection drops — the proxy is going down as expected */ }
   };
 
   const brand = (

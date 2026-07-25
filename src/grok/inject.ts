@@ -62,12 +62,18 @@ function findManagedRegion(content: string): ManagedRegion | null {
 const KEY_SEGMENT = String.raw`(?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*')`;
 /**
  * User-owned model table headers. Also matches array-of-table (`[[model.x]]`) and sub-table
- * (`[model.x.sub]`) spellings: both collide with a generated `[model.x]` and a single collision
- * makes grok reject the ENTIRE config layer ("duplicate key"), taking every unrelated user
- * setting with it. Reserving conservatively is always cheaper than that failure.
+ * (`[model.x.sub]`) spellings. `[[model.x]]` genuinely collides with a generated `[model.x]`,
+ * and one collision makes grok reject the ENTIRE config layer ("duplicate key"), taking every
+ * unrelated user setting with it; `[model.x.sub]` does not strictly collide, but reserving it
+ * costs only a suffixed alias and keeps us clear of the user's namespace.
+ *
+ * Every character class here is newline-free ON PURPOSE. With `[^\]]*` the optional sub-table
+ * tail runs past the end of its own line, so an unclosed `[model.…` inside a multiline string
+ * swallows the following lines — including a real `[model.<alias>]` header, which then goes
+ * unreserved and produces the very duplicate-key config this scan exists to prevent.
  */
 const MODEL_TABLE_HEADER = new RegExp(
-  String.raw`^\s*\[\[?\s*(${KEY_SEGMENT})\s*\.\s*(${KEY_SEGMENT})\s*(?:\.[^\]]*)?\]\]?\s*(?:#.*)?$`,
+  String.raw`^[ \t]*\[\[?[ \t]*(${KEY_SEGMENT})[ \t]*\.[ \t]*(${KEY_SEGMENT})[ \t]*(?:\.[^\]\r\n]*)?\]\]?[ \t]*(?:#.*)?$`,
   "gm",
 );
 

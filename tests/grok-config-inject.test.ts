@@ -220,6 +220,20 @@ describe("Grok config injection", () => {
       expect(written.slice(written.indexOf(BEGIN_MARKER))).toContain("[model.ocx-mine]");
     });
 
+    test("an unclosed header inside a multiline string does not swallow the next real header", () => {
+      // The sub-table tail must not run past its own line. When it did, this valid TOML made the
+      // scan reserve "a" and miss ocx-mine entirely, so we emitted a duplicate [model.ocx-mine]
+      // and grok rejected the whole config layer.
+      const userContent = 'prompt = """\n[model.a.b\n"""\n\n[model.ocx-mine]\nmodel = "user/keeps-this"\n';
+      writeFileSync(configPath(), userContent, "utf8");
+
+      injectGrokConfig(10100, [{ id: "mine" }], { grokHome });
+
+      const generated = readFileSync(configPath(), "utf8");
+      expect(generated.slice(generated.indexOf(BEGIN_MARKER))).toContain("[model.ocx-mine-2]");
+      expect(generated.match(/^\[model\.ocx-mine\]$/gm)).toHaveLength(1);
+    });
+
     test("generated aliases never contain a dot", () => {
       // A bare [model.grok-4.5] header is a THREE-segment key path, not the id "grok-4.5".
       injectGrokConfig(10100, [{ id: "xai/grok-4.5" }, { id: "a.b.c" }], { grokHome });
@@ -254,13 +268,16 @@ describe("Grok config injection", () => {
     }
 
     test("repeated inject/strip cycles never grow the file", () => {
-      const original = 'theme = "dark"\n';
-      writeFileSync(configPath(), original, "utf8");
-
-      for (let i = 0; i < 5; i += 1) {
-        injectGrokConfig(10100, [{ id: "gpt-5.6-sol" }], { grokHome });
-        stripGrokConfig({ grokHome });
-        expect(readFileSync(configPath(), "utf8")).toBe(original);
+      // Deliberately the shapes that the previous separator rule got wrong: a file with no
+      // terminator, and a multi-section file. A file already ending in one newline round-tripped
+      // even before the fix, so it cannot detect drift.
+      for (const original of ['theme = "dark"', '[a]\nx = 1\n\n[b]\ny = 2']) {
+        writeFileSync(configPath(), original, "utf8");
+        for (let i = 0; i < 5; i += 1) {
+          injectGrokConfig(10100, [{ id: "gpt-5.6-sol" }], { grokHome });
+          stripGrokConfig({ grokHome });
+          expect(readFileSync(configPath(), "utf8")).toBe(original);
+        }
       }
     });
 
@@ -284,7 +301,9 @@ describe("Grok config injection", () => {
       writeFileSync(configPath(), original, "utf8");
 
       injectGrokConfig(10100, [{ id: "gpt-5.6-sol" }], { grokHome });
-      expect(readFileSync(configPath(), "utf8")).not.toContain("\n\n\r\n");
+      // After CRLF normalization every \n carries a \r, so asserting on a bare "\n\n" could
+      // never fail. The real question is whether a blank CRLF line crept in before the fence.
+      expect(readFileSync(configPath(), "utf8")).not.toContain("\r\n\r\n\r\n");
       stripGrokConfig({ grokHome });
 
       expect(readFileSync(configPath(), "utf8")).toBe(original);
