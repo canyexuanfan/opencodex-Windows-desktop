@@ -381,9 +381,87 @@ async function upsertTranslationControlComment({
 }
 
 /**
+ * Bot control-comment IDs eligible for post-cache cleanup.
+ * Only positive safe integers from github-actions comments that carry CONTROL_MARKER.
+ */
+function collectEligibleControlCommentCleanupIds(comments) {
+  return findAllControlComments(comments)
+    .map((comment) => comment.id)
+    .filter((id) => Number.isSafeInteger(id) && id > 0);
+}
+
+/**
+ * Delete verified legacy translation control comments.
+ * Re-checks bot authorship + CONTROL_MARKER before each delete. Never trusts
+ * author-forged IDs alone. Deletion failures are reported, not thrown.
+ */
+async function deleteVerifiedControlComments({
+  github,
+  owner,
+  repo,
+  issue_number,
+  commentIds,
+  comments = null,
+}) {
+  const ids = [...new Set(
+    (Array.isArray(commentIds) ? commentIds : [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isSafeInteger(id) && id > 0),
+  )];
+  if (!ids.length) {
+    return { deleted: [], skipped: [], failed: [] };
+  }
+
+  let liveComments = comments;
+  if (!Array.isArray(liveComments)) {
+    liveComments = await github.paginate(github.rest.issues.listComments, {
+      owner,
+      repo,
+      issue_number,
+      per_page: 100,
+    });
+  }
+  const byId = new Map(
+    (Array.isArray(liveComments) ? liveComments : [])
+      .filter((c) => Number.isSafeInteger(c?.id))
+      .map((c) => [c.id, c]),
+  );
+
+  const deleted = [];
+  const skipped = [];
+  const failed = [];
+  for (const id of ids) {
+    const comment = byId.get(id);
+    if (
+      !comment
+      || comment.user?.login !== BOT_LOGIN
+      || !String(comment.body || "").includes(CONTROL_MARKER)
+    ) {
+      skipped.push(id);
+      continue;
+    }
+    try {
+      await github.rest.issues.deleteComment({
+        owner,
+        repo,
+        comment_id: id,
+      });
+      deleted.push(id);
+    } catch (err) {
+      failed.push({
+        id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return { deleted, skipped, failed };
+}
+
+/**
  * Persist rate-limit / cooldown state.
- * - English / no-translation: file only (Actions cache). Never create/update an
- *   issue comment. Delete prior control comments only after the file write succeeds.
+ * - English / no-translation: file only (Actions cache). Never create/update/delete
+ *   issue comments here. Returns cleanupCommentIds for the workflow to remove after
+ *   a successful cache save.
  * - Non-English translation: bot-owned issue comment (visible bookkeeping) + file mirror.
  */
 async function persistTranslationControlState({
@@ -399,7 +477,7 @@ async function persistTranslationControlState({
 }) {
   const merged = mergeTranslationAttemptState({ priorState, attempt, now });
 
-  // Persist file state first so a later comment-delete failure cannot lose the attempt.
+  // Persist file state first. Comment deletion is a separate, post-cache step.
   let fileState;
   try {
     fileState = writeFileStateFn(issue_number, merged);
@@ -413,14 +491,12 @@ async function persistTranslationControlState({
   }
 
   if (shouldUseSilentFileState(merged)) {
-    for (const existing of findAllControlComments(comments)) {
-      await github.rest.issues.deleteComment({
-        owner,
-        repo,
-        comment_id: existing.id,
-      });
-    }
-    return { storage: "file", state: fileState, comment: null };
+    return {
+      storage: "file",
+      state: fileState,
+      comment: null,
+      cleanupCommentIds: collectEligibleControlCommentCleanupIds(comments),
+    };
   }
 
   const comment = await upsertTranslationControlComment({
@@ -433,7 +509,12 @@ async function persistTranslationControlState({
     attempt,
     now,
   });
-  return { storage: "comment", state: fileState, comment };
+  return {
+    storage: "comment",
+    state: fileState,
+    comment,
+    cleanupCommentIds: [],
+  };
 }
 
 function isPreparedSourceStillCurrent({ preparedHash, liveTitle, liveBody }) {
@@ -553,6 +634,8 @@ module.exports = {
   extractTranslationState,
   findControlComment,
   findAllControlComments,
+  collectEligibleControlCommentCleanupIds,
+  deleteVerifiedControlComments,
   extractTranslationControlState,
   resolveControlState,
   readFileControlState,

@@ -269,11 +269,51 @@ describe("GitHub Actions hardening", () => {
 
     const persistStep = workflow
       .split("- name: Persist translation control state")[1]!
-      .split(/\n {2}[a-z]|- name: Save translation/)[0]!;
+      .split("- name: Save translation control state cache")[0]!;
     expect(persistStep).toContain("always()");
+    expect(persistStep).toContain("id: persist_translation_state");
     expect(persistStep).toContain("requires_translation != 'true'");
     expect(persistStep).toContain("persistTranslationControlState");
     expect(persistStep).not.toContain("upsertTranslationControlComment");
+    expect(persistStep).toContain('core.setOutput("silent_state"');
+    expect(persistStep).toContain('core.setOutput("cleanup_comment_ids"');
+    // English silent path must not create/update comments in the persist step.
+    expect(persistStep).not.toContain("createComment");
+    expect(persistStep).not.toContain("updateComment");
+    expect(persistStep).not.toContain("deleteComment");
+
+    // Cache restore → persist → cache save → cleanup ordering.
+    const restoreIdx = workflow.indexOf("- name: Restore translation control state cache");
+    const persistIdx = workflow.indexOf("- name: Persist translation control state");
+    const saveIdx = workflow.indexOf("- name: Save translation control state cache");
+    const cleanupIdx = workflow.indexOf("- name: Remove migrated English control comments");
+    expect(restoreIdx).toBeGreaterThan(-1);
+    expect(persistIdx).toBeGreaterThan(-1);
+    expect(saveIdx).toBeGreaterThan(-1);
+    expect(cleanupIdx).toBeGreaterThan(-1);
+    expect(restoreIdx).toBeLessThan(persistIdx);
+    expect(persistIdx).toBeLessThan(saveIdx);
+    expect(saveIdx).toBeLessThan(cleanupIdx);
+
+    const saveStep = workflow
+      .split("- name: Save translation control state cache")[1]!
+      .split("- name: Remove migrated English control comments")[0]!;
+    expect(saveStep).toContain("id: save_translation_state");
+
+    const cleanupStep = workflow
+      .split("- name: Remove migrated English control comments")[1]!
+      .split(/\n {2}[a-zA-Z]/)[0]!;
+    expect(cleanupStep).toContain("steps.persist_translation_state.outputs.silent_state == 'true'");
+    expect(cleanupStep).toContain("steps.save_translation_state.outcome == 'success'");
+    // Failed/cancelled/skipped cache save must not delete comments.
+    expect(cleanupStep).not.toContain("always()");
+    expect(cleanupStep).toContain("deleteVerifiedControlComments");
+    // Helper re-verifies bot ownership + control marker before deletion.
+    expect(workflow).toContain("deleteVerifiedControlComments");
+    const helperSrc = await readText(".github/scripts/issue-translation.cjs");
+    expect(helperSrc).toContain("comment.user?.login !== BOT_LOGIN");
+    expect(helperSrc).toContain('.includes(CONTROL_MARKER)');
+    expect(helperSrc).toContain("Number.isSafeInteger(id) && id > 0");
   });
 
   test("React Doctor workflow is SHA-pinned, engine-pinned, advisory, and read-only", async () => {

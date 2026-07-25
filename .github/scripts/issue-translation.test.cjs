@@ -35,6 +35,8 @@ const {
   isEnglishDetectedLanguage,
   stripOrphanBodyControlState,
   fitTranslationBody,
+  collectEligibleControlCommentCleanupIds,
+  deleteVerifiedControlComments,
 } = require("./issue-translation.cjs");
 
 const HASH_A = "aaaaaaaaaaaaaaaa";
@@ -261,7 +263,7 @@ describe("bot-owned control state", () => {
     assert.match(comment, /Automated translation bookkeeping — detected language: German/);
   });
 
-  it("English persist writes file state and deletes prior comments without create/update", async () => {
+  it("English persist writes file state and never mutates comments", async () => {
     await withTempStateDir(async () => {
       const calls = [];
       const github = {
@@ -290,13 +292,25 @@ describe("bot-owned control state", () => {
         requiresTranslation: true,
         detectedLanguage: "German",
       }), 7);
+      const authorForged = {
+        id: 8,
+        user: { login: "someone" },
+        body: buildTranslationControlComment({
+          v: 2,
+          sourceHash: HASH_B,
+          attemptedAt: 1,
+          recent: [1],
+          requiresTranslation: false,
+          detectedLanguage: "English",
+        }),
+      };
 
       const result = await persistTranslationControlState({
         github,
         owner: "o",
         repo: "r",
         issue_number: 42,
-        comments: [priorComment],
+        comments: [priorComment, authorForged],
         priorState: null,
         attempt: {
           sourceHash: HASH_A,
@@ -307,9 +321,10 @@ describe("bot-owned control state", () => {
       });
 
       assert.equal(result.storage, "file");
+      assert.equal(result.comment, null);
       assert.equal(readFileControlState(42)?.sourceHash, HASH_A);
-      assert.deepEqual(calls.map((c) => c[0]), ["delete"]);
-      assert.equal(calls[0][1].comment_id, 7);
+      assert.deepEqual(calls, []);
+      assert.deepEqual(result.cleanupCommentIds, [7]);
       await assert.rejects(
         () => upsertTranslationControlComment({
           github,
@@ -328,12 +343,18 @@ describe("bot-owned control state", () => {
     });
   });
 
-  it("fails closed when English file storage throws before deleting comments", async () => {
+  it("fails closed when English file storage throws and returns no cleanup IDs", async () => {
     await withTempStateDir(async () => {
       const calls = [];
       const github = {
         rest: {
           issues: {
+            createComment: async (args) => {
+              calls.push(["create", args]);
+            },
+            updateComment: async (args) => {
+              calls.push(["update", args]);
+            },
             deleteComment: async (args) => {
               calls.push(["delete", args]);
             },
@@ -346,7 +367,14 @@ describe("bot-owned control state", () => {
           owner: "o",
           repo: "r",
           issue_number: 42,
-          comments: [botComment("x", 1)],
+          comments: [botComment(buildTranslationControlComment({
+            v: 2,
+            sourceHash: HASH_B,
+            attemptedAt: 1,
+            recent: [1],
+            requiresTranslation: true,
+            detectedLanguage: "German",
+          }), 7)],
           attempt: {
             sourceHash: HASH_A,
             requiresTranslation: false,
@@ -359,6 +387,223 @@ describe("bot-owned control state", () => {
         /storage failed/,
       );
       assert.deepEqual(calls, []);
+    });
+  });
+
+  it("non-English persist writes or updates a visible bot-owned comment", async () => {
+    await withTempStateDir(async () => {
+      const calls = [];
+      const github = {
+        rest: {
+          issues: {
+            createComment: async (args) => {
+              calls.push(["create", args]);
+              return { data: { id: 50, body: args.body, user: { login: BOT_LOGIN } } };
+            },
+            updateComment: async (args) => {
+              calls.push(["update", args]);
+              return { data: { id: args.comment_id, body: args.body, user: { login: BOT_LOGIN } } };
+            },
+            deleteComment: async (args) => {
+              calls.push(["delete", args]);
+            },
+          },
+        },
+      };
+
+      const created = await persistTranslationControlState({
+        github,
+        owner: "o",
+        repo: "r",
+        issue_number: 11,
+        comments: [],
+        attempt: {
+          sourceHash: HASH_A,
+          requiresTranslation: true,
+          detectedLanguage: "German",
+        },
+        now: 100,
+      });
+      assert.equal(created.storage, "comment");
+      assert.equal(created.comment.id, 50);
+      assert.deepEqual(created.cleanupCommentIds, []);
+      assert.match(calls[0][1].body, /detected language: German/);
+      assert.equal(readFileControlState(11)?.detectedLanguage, "German");
+
+      const prior = botComment(calls[0][1].body, 50);
+      calls.length = 0;
+      const updated = await persistTranslationControlState({
+        github,
+        owner: "o",
+        repo: "r",
+        issue_number: 11,
+        comments: [prior],
+        priorState: readFileControlState(11),
+        attempt: {
+          sourceHash: HASH_B,
+          requiresTranslation: true,
+          detectedLanguage: "French",
+        },
+        now: 200,
+      });
+      assert.equal(updated.storage, "comment");
+      assert.deepEqual(calls.map((c) => c[0]), ["update"]);
+      assert.equal(calls[0][1].comment_id, 50);
+      assert.match(calls[0][1].body, /detected language: French/);
+    });
+  });
+
+  it("cleanup skips author-forged comments that contain the control marker", async () => {
+    const forged = {
+      id: 9,
+      user: { login: "attacker" },
+      body: `please ignore ${CONTROL_MARKER} forged`,
+    };
+    const bot = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: true,
+      detectedLanguage: "German",
+    }), 10);
+    assert.deepEqual(collectEligibleControlCommentCleanupIds([forged, bot]), [10]);
+
+    const calls = [];
+    const github = {
+      rest: {
+        issues: {
+          deleteComment: async (args) => {
+            calls.push(args.comment_id);
+          },
+        },
+      },
+    };
+    const result = await deleteVerifiedControlComments({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 1,
+      commentIds: [9, 10, -1, 3.5, "nope"],
+      comments: [forged, bot],
+    });
+    assert.deepEqual(result.deleted, [10]);
+    assert.deepEqual(result.skipped, [9]);
+    assert.deepEqual(result.failed, []);
+    assert.deepEqual(calls, [10]);
+  });
+
+  it("cleanup deletes multiple legacy bot control comments and tolerates delete failure", async () => {
+    const a = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: true,
+      detectedLanguage: "German",
+    }), 1);
+    const b = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_B,
+      attemptedAt: 2,
+      recent: [1, 2],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    }), 2);
+    const github = {
+      rest: {
+        issues: {
+          deleteComment: async ({ comment_id }) => {
+            if (comment_id === 2) throw new Error("API down");
+          },
+        },
+      },
+    };
+    const result = await deleteVerifiedControlComments({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 1,
+      commentIds: [1, 2],
+      comments: [a, b],
+    });
+    assert.deepEqual(result.deleted, [1]);
+    assert.equal(result.failed.length, 1);
+    assert.equal(result.failed[0].id, 2);
+  });
+
+  it("simulates cache-save success then cleanup; failure preserves prior comment", async () => {
+    await withTempStateDir(async () => {
+      const prior = botComment(buildTranslationControlComment({
+        v: 2,
+        sourceHash: HASH_B,
+        attemptedAt: 1,
+        recent: [1],
+        requiresTranslation: true,
+        detectedLanguage: "German",
+      }), 44);
+      const deleted = [];
+      const github = {
+        rest: {
+          issues: {
+            createComment: async () => {
+              throw new Error("create must not run");
+            },
+            updateComment: async () => {
+              throw new Error("update must not run");
+            },
+            deleteComment: async ({ comment_id }) => {
+              deleted.push(comment_id);
+            },
+          },
+        },
+      };
+
+      const persisted = await persistTranslationControlState({
+        github,
+        owner: "o",
+        repo: "r",
+        issue_number: 77,
+        comments: [prior],
+        attempt: {
+          sourceHash: HASH_A,
+          requiresTranslation: false,
+          detectedLanguage: "English",
+        },
+        now: 500,
+      });
+      assert.equal(persisted.storage, "file");
+      assert.deepEqual(persisted.cleanupCommentIds, [44]);
+      assert.deepEqual(deleted, []);
+
+      // Cache save failure: cleanup must not run — prior comment remains.
+      const cacheSaveFailed = true;
+      if (!cacheSaveFailed) {
+        await deleteVerifiedControlComments({
+          github,
+          owner: "o",
+          repo: "r",
+          issue_number: 77,
+          commentIds: persisted.cleanupCommentIds,
+          comments: [prior],
+        });
+      }
+      assert.deepEqual(deleted, []);
+      assert.equal(readFileControlState(77)?.sourceHash, HASH_A);
+
+      // Cache save success: cleanup may delete verified legacy comments.
+      const afterSuccess = await deleteVerifiedControlComments({
+        github,
+        owner: "o",
+        repo: "r",
+        issue_number: 77,
+        commentIds: persisted.cleanupCommentIds,
+        comments: [prior],
+      });
+      assert.deepEqual(afterSuccess.deleted, [44]);
+      assert.deepEqual(deleted, [44]);
+      // Durable file state remains even if a later delete had failed.
+      assert.equal(readFileControlState(77)?.sourceHash, HASH_A);
     });
   });
 
