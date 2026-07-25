@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { IconPlus, IconX, IconCheck } from "../icons";
 import { useI18n, LOCALES } from "../i18n/shared";
 import { readViewMode, type ViewMode } from "../view-mode";
@@ -25,6 +25,7 @@ export default function ApiKeys({ apiBase, viewMode }: { apiBase: string; viewMo
   const [newKey, setNewKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const creatingRef = useRef(false);
   const workspaceView = (viewMode ?? readViewMode()) === "workspace";
 
   const fetchKeys = useCallback(async () => {
@@ -48,23 +49,27 @@ export default function ApiKeys({ apiBase, viewMode }: { apiBase: string; viewMo
   const responseEndpoint = endpoint || "http://127.0.0.1:10100/v1/responses";
 
   const handleCreate = async (name?: string): Promise<boolean> => {
-    const effectiveName = name ?? newName;
+    if (creatingRef.current) return false;
+    creatingRef.current = true;
     setCreating(true);
     try {
+      const effectiveName = name ?? newName;
       const res = await fetch(`${apiBase}/api/keys`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: effectiveName || "default" }),
       });
       if (!res.ok) return false;
-      const data = await res.json();
+      const data = await res.json() as { key?: unknown };
+      if (typeof data.key !== "string" || data.key.length === 0) return false;
       setNewKey(data.key);
       setNewName("");
-      fetchKeys();
+      void fetchKeys();
       return true;
     } catch {
       return false;
     } finally {
+      creatingRef.current = false;
       setCreating(false);
     }
   };

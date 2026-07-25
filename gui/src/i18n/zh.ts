@@ -739,6 +739,7 @@ export const zh: Record<TKey, string> = {
   "api.usageTitle": "使用示例",
   "api.usageSampleInput": "你好，世界！",
   "api.workspace.overview": "概览",
+  "api.workspace.details": "API 密钥详情",
   "api.workspace.keyDetails": "密钥详情",
   "api.workspace.keyPrefix": "密钥前缀",
   "api.workspace.deleteKey": "删除密钥",

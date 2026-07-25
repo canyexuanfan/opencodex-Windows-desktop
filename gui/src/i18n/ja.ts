@@ -979,6 +979,7 @@ export const ja: Record<TKey, string> = {
   "api.usageTitle": "使用例",
   "api.usageSampleInput": "こんにちは、世界！",
   "api.workspace.overview": "概要",
+  "api.workspace.details": "APIキーの詳細",
   "api.workspace.keyDetails": "キーの詳細",
   "api.workspace.keyPrefix": "キーのプレフィックス",
   "api.workspace.deleteKey": "キーを削除",

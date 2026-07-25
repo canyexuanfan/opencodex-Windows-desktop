@@ -1024,6 +1024,7 @@ export const en = {
   "api.usageTitle": "Usage example",
   "api.usageSampleInput": "Hello, world!",
   "api.workspace.overview": "Overview",
+  "api.workspace.details": "API key details",
   "api.workspace.keyDetails": "Key details",
   "api.workspace.keyPrefix": "Key prefix",
   "api.workspace.deleteKey": "Delete key",

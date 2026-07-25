@@ -19,15 +19,18 @@ test("ApiKeys uses global viewMode (no per-page toggle) and workspace shell", as
 
 test("ApiKeys workspace avoids nested main and stacks via container query", async () => {
   const src = await Bun.file(new URL("../src/components/apikeys-workspace/ApiKeysWorkspace.tsx", import.meta.url)).text();
+  const page = await Bun.file(new URL("../src/pages/ApiKeys.tsx", import.meta.url)).text();
   const css = await Bun.file(new URL("../src/styles-apikeys-workspace.css", import.meta.url)).text();
 
   expect(src).toContain('<section className="apikeys-workspace-main"');
   expect(src).not.toContain('<main className="apikeys-workspace-main"');
   expect(src).toContain('t("api.workspace.overview")');
+  expect(src).toContain('t("api.workspace.details")');
   expect(src).toContain("if (creating || createInFlight.current) return");
   expect(src).toContain("Promise<boolean>");
-  expect(src).toContain('t("api.usageSampleInput")');
-  expect(src).toContain("createInFlight");
+  expect(src).toContain("e.nativeEvent.isComposing");
+  expect(page).toContain("creatingRef");
+  expect(page).toContain("if (creatingRef.current) return false");
 
   expect(css).toContain("container-name: apikeys-workspace");
   expect(css).toContain("container-type: inline-size");

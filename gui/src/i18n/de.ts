@@ -717,6 +717,7 @@ export const de = {
   "api.usageTitle": "Nutzungsbeispiel",
   "api.usageSampleInput": "Hallo, Welt!",
   "api.workspace.overview": "Übersicht",
+  "api.workspace.details": "API-Schlüsseldetails",
   "api.workspace.keyDetails": "Schlüsseldetails",
   "api.workspace.keyPrefix": "Schlüssel-Präfix",
   "api.workspace.deleteKey": "Schlüssel löschen",

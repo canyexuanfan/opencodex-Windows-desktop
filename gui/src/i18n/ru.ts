@@ -1024,6 +1024,7 @@ export const ru: Record<TKey, string> = {
   "api.usageTitle": "Пример использования",
   "api.usageSampleInput": "Привет, мир!",
   "api.workspace.overview": "Обзор",
+  "api.workspace.details": "Сведения об API-ключе",
   "api.workspace.keyDetails": "Сведения о ключе",
   "api.workspace.keyPrefix": "Префикс ключа",
   "api.workspace.deleteKey": "Удалить ключ",

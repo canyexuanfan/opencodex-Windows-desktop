@@ -93,7 +93,7 @@ export default function ApiKeysWorkspace({
               type="button"
               className={`apikeys-workspace-rail-row${selectedId === null ? " apikeys-workspace-rail-row--selected" : ""}`}
               onClick={showOverview}
-              aria-current={selectedId === null ? "true" : undefined}
+              aria-current={selectedId === null ? "page" : undefined}
             >
               <span className="apikeys-workspace-rail-name">{t("api.workspace.overview")}</span>
             </button>
@@ -106,7 +106,7 @@ export default function ApiKeysWorkspace({
                   type="button"
                   className={`apikeys-workspace-rail-row${selectedId === k.id ? " apikeys-workspace-rail-row--selected" : ""}`}
                   onClick={() => { setSelectedId(k.id); setConfirmDelete(false); }}
-                  aria-current={selectedId === k.id ? "true" : undefined}
+                  aria-current={selectedId === k.id ? "page" : undefined}
                 >
                   <span className="apikeys-workspace-rail-name">{k.name}</span>
                   <span className="apikeys-workspace-rail-meta">{k.prefix} · {formatCreatedDate(k.createdAt, localeTag)}</span>
@@ -116,7 +116,7 @@ export default function ApiKeysWorkspace({
           </div>
         </aside>
 
-        <section className="apikeys-workspace-main" aria-label={selected ? t("api.workspace.keyDetails") : t("api.workspace.overview")}>
+        <section className="apikeys-workspace-main" aria-label={t("api.workspace.details")}>
           {selected ? (
             <div className="awi-detail">
               <button type="button" className="btn btn-ghost btn-sm awi-back" onClick={showOverview}>
@@ -202,10 +202,16 @@ export default function ApiKeysWorkspace({
                     disabled={creating}
                     onChange={e => setNewName(e.target.value)}
                     onKeyDown={e => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        void handleCreate();
+                      if (
+                        e.key !== "Enter"
+                        || e.nativeEvent.isComposing
+                        || creating
+                        || createInFlight.current
+                      ) {
+                        return;
                       }
+                      e.preventDefault();
+                      void handleCreate();
                     }}
                   />
                   <button type="button" className="btn btn-primary" onClick={() => { void handleCreate(); }} disabled={creating}>
