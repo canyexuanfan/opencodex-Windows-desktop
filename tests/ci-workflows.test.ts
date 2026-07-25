@@ -173,10 +173,15 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("issue-translation.cjs");
     expect(workflow).toContain("translated_title");
     expect(workflow).toContain("isPreparedSourceStillCurrent");
-    expect(workflow).toContain("extractTranslationControlState");
+    expect(workflow).toContain("resolveControlState");
+    expect(workflow).toContain("persistTranslationControlState");
     expect(workflow).toContain("parse-issue-translation-response.cjs");
     expect(workflow).not.toContain('node -e "');
-    expect(workflow).toContain("upsertTranslationControlComment");
+    expect(workflow).toContain("actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684");
+    expect(workflow).toContain("actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684");
+    expect(workflow).toContain("actions: write");
+    expect(workflow).not.toContain("null language");
+    expect(workflow).toContain('normally "English"');
     expect(workflow).toContain("rejectsWorkflowDispatchNonDefaultBranch");
     expect(workflow).toContain("rejectsWorkflowDispatchPullRequest");
     expect(workflow).toContain("models: read");
@@ -185,7 +190,7 @@ describe("GitHub Actions hardening", () => {
 
     // Job-scoped permissions only (no top-level issues:write).
     expect(workflow).toMatch(
-      /jobs:\s*\n\s*translate:[\s\S]*?permissions:\s*\n(?:\s*#.*\n)*\s*contents: read\s*\n(?:\s*#.*\n)*\s*issues: write\s*\n(?:\s*#.*\n)*\s*models: read/,
+      /jobs:\s*\n\s*translate:[\s\S]*?permissions:\s*\n(?:\s*#.*\n)*\s*contents: read\s*\n(?:\s*#.*\n)*\s*issues: write\s*\n(?:\s*#.*\n)*\s*models: read\s*\n(?:\s*#.*\n)*\s*actions: write/,
     );
     expect(workflow).toMatch(
       /jobs:\s*\n\s*translate:[\s\S]*?validate:[\s\S]*?permissions:\s*\n\s*contents: read\s*\n\s*#.*\n\s*issues: write/,
@@ -264,9 +269,11 @@ describe("GitHub Actions hardening", () => {
 
     const persistStep = workflow
       .split("- name: Persist translation control state")[1]!
-      .split(/\n {2}[a-z]/)[0]!;
+      .split(/\n {2}[a-z]|- name: Save translation/)[0]!;
     expect(persistStep).toContain("always()");
     expect(persistStep).toContain("requires_translation != 'true'");
+    expect(persistStep).toContain("persistTranslationControlState");
+    expect(persistStep).not.toContain("upsertTranslationControlComment");
   });
 
   test("React Doctor workflow is SHA-pinned, engine-pinned, advisory, and read-only", async () => {

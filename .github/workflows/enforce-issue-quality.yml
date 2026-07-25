@@ -33,10 +33,12 @@ jobs:
     permissions:
       # Read-only checkout of trusted scripts from the default branch.
       contents: read
-      # Required to rewrite the issue title/body and upsert the control comment.
+      # Required to rewrite the issue title/body and upsert/delete the control comment.
       issues: write
       # Required by actions/ai-inference; untrusted issue text reaches the model.
       models: read
+      # Cache English/no-translation cooldown state (no issue comment object).
+      actions: write
     steps:
       - name: Checkout trusted workflow code
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -44,6 +46,14 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
           sparse-checkout: .github/scripts
+
+      - name: Restore translation control state cache
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: .ocx-translation-state
+          key: ocx-translation-${{ github.event.issue.number || inputs.issue_number }}-${{ github.run_id }}
+          restore-keys: |
+            ocx-translation-${{ github.event.issue.number || inputs.issue_number }}-
 
       - name: Prepare translation
         id: prepare
@@ -55,7 +65,7 @@ jobs:
             const {
               stripTranslationBlock,
               stripOrphanBodyControlState,
-              extractTranslationControlState,
+              resolveControlState,
               shouldTranslate,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-translation.cjs"));
             const {
@@ -110,7 +120,9 @@ jobs:
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner, repo, issue_number, per_page: 100,
             });
-            const priorState = extractTranslationControlState(comments);
+            // Prefer bot-owned file cache (English) or control comment (translated).
+            // Never trust author-editable issue body markers.
+            const priorState = resolveControlState(comments, issue_number);
 
             const rawBody = issue.body || "";
             const sourceTitle = issue.title || "";
@@ -161,13 +173,12 @@ jobs:
             - Set requires_translation to true only when primarily non-English.
             - Preserve Markdown, code blocks, URLs, @mentions, issue refs.
             - Keep translated title within 256 chars.
-            - When false, return empty translation fields and null language.
+            - When requires_translation is false:
+              - set detected_language to the detected source language, normally "English";
+              - leave translated_title and translated_body empty.
 
             JSON shape:
-            {"requires_translation":<bool>,"detected_language":"<lang|null>","translated_title":"<str>","translated_body":"<str>"}
-            When requires_translation is false, set detected_language to "English"
-            (or the source language name) and leave translation fields empty — do
-            not invent a translation.
+            {"requires_translation":<bool>,"detected_language":"<lang>","translated_title":"<str>","translated_body":"<str>"}
 
       - name: Parse AI response
         id: parse
@@ -192,8 +203,8 @@ jobs:
             const path = require("path");
             const {
               appendTranslationBlock,
-              extractTranslationControlState,
-              upsertTranslationControlComment,
+              resolveControlState,
+              persistTranslationControlState,
               sanitizeTranslationBody,
               scrubDetectedLanguage,
               stripTranslationBlock,
@@ -238,7 +249,7 @@ jobs:
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner, repo, issue_number, per_page: 100,
             });
-            const priorState = extractTranslationControlState(comments);
+            const priorState = resolveControlState(comments, issue_number);
 
             try {
               if (!translatedTitle && !translatedBody) return;
@@ -282,7 +293,7 @@ jobs:
             } finally {
               // Count every model attempt toward cooldown / hourly caps,
               // including empty translations and stale-source skips.
-              await upsertTranslationControlComment({
+              await persistTranslationControlState({
                 github,
                 owner,
                 repo,
@@ -311,8 +322,8 @@ jobs:
           script: |
             const path = require("path");
             const {
-              extractTranslationControlState,
-              upsertTranslationControlComment,
+              resolveControlState,
+              persistTranslationControlState,
               scrubDetectedLanguage,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-translation.cjs"));
 
@@ -327,20 +338,32 @@ jobs:
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner, repo, issue_number, per_page: 100,
             });
-            const priorState = extractTranslationControlState(comments);
-            await upsertTranslationControlComment({
-              github,
-              owner,
-              repo,
-              issue_number,
-              comments,
-              priorState,
-              attempt: {
-                sourceHash: process.env.SOURCE_HASH,
-                requiresTranslation: false,
-                detectedLanguage: scrubDetectedLanguage(process.env.DETECTED_LANG || "unknown"),
-              },
-            });
+            const priorState = resolveControlState(comments, issue_number);
+            try {
+              await persistTranslationControlState({
+                github,
+                owner,
+                repo,
+                issue_number,
+                comments,
+                priorState,
+                attempt: {
+                  sourceHash: process.env.SOURCE_HASH,
+                  requiresTranslation: false,
+                  detectedLanguage: scrubDetectedLanguage(process.env.DETECTED_LANG || "English"),
+                },
+              });
+            } catch (err) {
+              // Fail closed for storage errors without mutating the issue body.
+              core.warning(`English translation state not persisted: ${err instanceof Error ? err.message : String(err)}`);
+            }
+
+      - name: Save translation control state cache
+        if: always() && steps.prepare.outputs.should_translate == 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: .ocx-translation-state
+          key: ocx-translation-${{ github.event.issue.number || inputs.issue_number }}-${{ github.run_id }}
 
   validate:
     runs-on: ubuntu-latest

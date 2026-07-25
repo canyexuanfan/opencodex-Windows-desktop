@@ -6,7 +6,48 @@
  */
 
 const WEAK_RELATED_REASON_RE =
-  /\b(?:somewhat|broadly|loosely|vaguely)\s+related\b|\bboth\s+(?:issues?\s+)?pertain\s+to\s+errors?\b|\bsame\s+(?:client|app)\b|\berrors?\s+in\s+general\b/i;
+  /\b(?:somewhat|broadly|loosely|vaguely)\s+related\b|\bboth\s+(?:issues?\s+)?pertain\s+to\s+errors?\b|\bsame\s+(?:client|app)\b|\berrors?\s+in\s+general\b|\bgeneral\s+proxy\s+errors?\b|\bHTTP\s+error\b/i;
+
+/**
+ * Positive evidence that two issues share a concrete failure signature.
+ * Generic wording like "same client" is not enough by itself.
+ */
+function hasConcreteRelatedSignature(reason) {
+  const text = String(reason || "");
+  if (!text) return false;
+
+  if (/\b(ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EPIPE|EAI_AGAIN)\b/i.test(text)) {
+    return true;
+  }
+  // Exact HTTP status paired with an API path.
+  if (/\b(?:exact\s+)?(?:HTTP\s+)?([1-5]\d\d)\b/i.test(text) && /\/v\d\//.test(text)) {
+    return true;
+  }
+  if (/\bPOST\s+\/v\d\//i.test(text) || /\/v\d\/[\w./_-]+/.test(text)) {
+    return true;
+  }
+  // Provider/adapter path with a concrete failure token.
+  if (
+    /\b(?:openai-chat|anthropic|openrouter|google|xiaomi|adapter)\b/i.test(text)
+    && /\b(?:\d{3}|E[A-Z]{3,}|fail|error|reset|timeout)\b/i.test(text)
+  ) {
+    return true;
+  }
+  // Structured field / content-path failures.
+  if (/\bcontent\[\d+\]/.test(text) || /\b[\w]+\.[\w.]+\.(?:text|content|type)\b/.test(text)) {
+    return true;
+  }
+  if (/\bField required\b/i.test(text)) return true;
+  // Concrete reproduction clause.
+  if (/\breproduc(?:e|es|ed|tion)\b/i.test(text) && /\b(?:when|if|after|on)\b/i.test(text)) {
+    return true;
+  }
+  // Platform-specific listen/port reclaim fingerprints.
+  if (/\b(?:taskkill|ghost\s+LISTEN|listen(?:-|\s)?port)\b/i.test(text) && /\b\d{2,5}\b/.test(text)) {
+    return true;
+  }
+  return false;
+}
 
 function sanitizeReason(raw) {
   return String(raw || "")
@@ -52,8 +93,8 @@ function parseAiJson(raw) {
 
 /**
  * Drop related matches when the model only found a soft / generic overlap.
- * Example false positive: #452 (Codex 503 vs curl 200) ↔ #420 (Anthropic 400
- * content serialization) linked as "somewhat related" HTTP errors in Codex.
+ * Concrete shared failure signatures keep related matches even if the reason
+ * also says "same client" / "same app".
  */
 function hardenRelatedMatches({ duplicates, related, reason }) {
   const dupes = Array.isArray(duplicates) ? duplicates : [];
@@ -64,7 +105,10 @@ function hardenRelatedMatches({ duplicates, related, reason }) {
     return { duplicates: dupes, related: [], reason: safeReason };
   }
 
-  if (WEAK_RELATED_REASON_RE.test(safeReason)) {
+  const weak = WEAK_RELATED_REASON_RE.test(safeReason);
+  const concrete = hasConcreteRelatedSignature(safeReason);
+  if ((weak && !concrete) || !concrete) {
+    // Related without a concrete shared signature is not actionable.
     relatedList = [];
   }
 
@@ -117,6 +161,7 @@ function parseTriageMatches(raw, { currentNumber, knownNumbers }) {
 
 module.exports = {
   WEAK_RELATED_REASON_RE,
+  hasConcreteRelatedSignature,
   sanitizeReason,
   normalizeIssueNumbers,
   parseAiJson,

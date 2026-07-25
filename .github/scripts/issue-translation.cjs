@@ -1,6 +1,8 @@
 "use strict";
 
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 
 const MARKER = "<!-- opencodex-issue-inline-translator -->";
 const END_MARKER = "<!-- /opencodex-issue-inline-translator -->";
@@ -10,13 +12,14 @@ const CONTROL_STATE_V2_RE =
   /<!-- opencodex-issue-inline-translator-control-state-v2:([A-Za-z0-9_-]+) -->/;
 const CONTROL_STATE_LEGACY_RE =
   /<!-- opencodex-issue-inline-translator-control-state:([\s\S]*?) -->/;
-/** Orphan body markers from a short-lived experiment — strip only, never trust as state. */
+/** Exact orphan body markers from a short-lived experiment — strip token only. */
 const ORPHAN_BODY_STATE_RE =
-  /\n?<!-- opencodex-issue-inline-translator-control-state-v2:[A-Za-z0-9_-]+ -->\s*/g;
+  /<!-- opencodex-issue-inline-translator-control-state-v2:[A-Za-z0-9_-]+ -->/g;
 const ISSUE_BODY_MAX = 65536;
 const BOT_LOGIN = "github-actions[bot]";
 const SOURCE_HASH_RE = /^[a-f0-9]{16}$/;
 const MAX_RECENT = 32;
+const DEFAULT_STATE_DIR = ".ocx-translation-state";
 
 const DEFAULT_RATE_LIMIT = {
   minIntervalMs: 60_000,
@@ -139,11 +142,65 @@ function isEnglishDetectedLanguage(value) {
 
 /**
  * Strip orphan body-embedded control markers (never authoritative).
- * Only removes the marker and a single preceding newline; does not trim
- * unrelated trailing whitespace.
+ * Removes only the exact HTML comment token; all surrounding whitespace is
+ * preserved byte-for-byte (including indentation and blank lines).
  */
 function stripOrphanBodyControlState(body) {
-  return String(body || "").replace(ORPHAN_BODY_STATE_RE, "\n");
+  return String(body || "").replace(ORPHAN_BODY_STATE_RE, "");
+}
+
+function translationStateDir() {
+  return process.env.OCX_TRANSLATION_STATE_DIR || DEFAULT_STATE_DIR;
+}
+
+function translationStatePath(issueNumber) {
+  const n = Math.trunc(Number(issueNumber));
+  if (!Number.isSafeInteger(n) || n <= 0) {
+    throw new Error(`invalid issue number for translation state: ${issueNumber}`);
+  }
+  return path.join(translationStateDir(), `issue-${n}.json`);
+}
+
+/** Bot-owned file state (Actions cache). Authors cannot forge this path. */
+function readFileControlState(issueNumber) {
+  try {
+    const raw = fs.readFileSync(translationStatePath(issueNumber), "utf8");
+    return validateControlState(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function writeFileControlState(issueNumber, state) {
+  const safe = validateControlState(state);
+  if (!safe) {
+    throw new Error("refusing to persist invalid translation control state");
+  }
+  const dir = translationStateDir();
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const target = translationStatePath(issueNumber);
+  const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(safe)}\n`, { encoding: "utf8", mode: 0o600 });
+  fs.renameSync(tmp, target);
+  return safe;
+}
+
+/**
+ * Prefer the newer of bot comment state and file state.
+ * Body-embedded markers are never consulted.
+ */
+function resolveControlState(comments, issueNumber) {
+  const fromComment = extractTranslationControlState(comments);
+  const fromFile = readFileControlState(issueNumber);
+  if (!fromComment) return fromFile;
+  if (!fromFile) return fromComment;
+  return fromComment.attemptedAt >= fromFile.attemptedAt ? fromComment : fromFile;
+}
+
+function findAllControlComments(comments) {
+  return (Array.isArray(comments) ? comments : []).filter(
+    (comment) => comment?.user?.login === BOT_LOGIN && comment?.body?.includes(CONTROL_MARKER),
+  );
 }
 
 function encodeControlState(state) {
@@ -231,16 +288,13 @@ function buildTranslationControlComment(state) {
     detectedLanguage: null,
   };
   const encoded = encodeControlState(safe);
-  const lines = [
+  const lang = scrubDetectedLanguage(safe.detectedLanguage);
+  return [
     CONTROL_MARKER,
     `<!-- opencodex-issue-inline-translator-control-state-v2:${encoded} -->`,
-  ];
-  // English / no-translation attempts must stay silent — no public bookkeeping text.
-  if (safe.requiresTranslation && !isEnglishDetectedLanguage(safe.detectedLanguage)) {
-    const lang = scrubDetectedLanguage(safe.detectedLanguage);
-    lines.push("", `<sub>Automated translation bookkeeping — detected language: ${lang}.</sub>`);
-  }
-  return lines.join("\n");
+    "",
+    `<sub>Automated translation bookkeeping — detected language: ${lang}.</sub>`,
+  ].join("\n");
 }
 
 function pruneRecent(recent, now, windowMs = 3_600_000) {
@@ -280,10 +334,13 @@ function mergeTranslationAttemptState({ priorState = null, attempt, now = Date.n
   };
 }
 
+function shouldUseSilentFileState(state) {
+  return !state?.requiresTranslation || isEnglishDetectedLanguage(state.detectedLanguage);
+}
+
 /**
- * Upsert the bot-owned control comment.
- * English / no-translation attempts still use a bot-owned comment for rate
- * limits, but buildTranslationControlComment omits any visible bookkeeping text.
+ * Upsert the bot-owned control comment for non-English translation attempts.
+ * English / no-translation must use {@link persistTranslationControlState} instead.
  */
 async function upsertTranslationControlComment({
   github,
@@ -295,9 +352,13 @@ async function upsertTranslationControlComment({
   attempt,
   now = Date.now(),
 }) {
-  const body = buildTranslationControlComment(
-    mergeTranslationAttemptState({ priorState, attempt, now }),
-  );
+  const merged = mergeTranslationAttemptState({ priorState, attempt, now });
+  if (shouldUseSilentFileState(merged)) {
+    throw new Error(
+      "English/no-translation state must not create issue comments; use persistTranslationControlState",
+    );
+  }
+  const body = buildTranslationControlComment(merged);
   const existing = findControlComment(comments);
   if (existing) {
     if (existing.body !== body) {
@@ -317,6 +378,62 @@ async function upsertTranslationControlComment({
     body,
   });
   return created.data;
+}
+
+/**
+ * Persist rate-limit / cooldown state.
+ * - English / no-translation: file only (Actions cache). Never create/update an
+ *   issue comment. Delete prior control comments only after the file write succeeds.
+ * - Non-English translation: bot-owned issue comment (visible bookkeeping) + file mirror.
+ */
+async function persistTranslationControlState({
+  github,
+  owner,
+  repo,
+  issue_number,
+  comments,
+  priorState = null,
+  attempt,
+  now = Date.now(),
+  writeFileStateFn = writeFileControlState,
+}) {
+  const merged = mergeTranslationAttemptState({ priorState, attempt, now });
+
+  // Persist file state first so a later comment-delete failure cannot lose the attempt.
+  let fileState;
+  try {
+    fileState = writeFileStateFn(issue_number, merged);
+  } catch (err) {
+    // Fail safe: do not mutate issue comments/body when storage is unavailable.
+    const error = new Error(
+      `translation control state storage failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    error.cause = err;
+    throw error;
+  }
+
+  if (shouldUseSilentFileState(merged)) {
+    for (const existing of findAllControlComments(comments)) {
+      await github.rest.issues.deleteComment({
+        owner,
+        repo,
+        comment_id: existing.id,
+      });
+    }
+    return { storage: "file", state: fileState, comment: null };
+  }
+
+  const comment = await upsertTranslationControlComment({
+    github,
+    owner,
+    repo,
+    issue_number,
+    comments,
+    priorState,
+    attempt,
+    now,
+  });
+  return { storage: "comment", state: fileState, comment };
 }
 
 function isPreparedSourceStillCurrent({ preparedHash, liveTitle, liveBody }) {
@@ -428,19 +545,26 @@ module.exports = {
   BOT_LOGIN,
   ISSUE_BODY_MAX,
   DEFAULT_RATE_LIMIT,
+  DEFAULT_STATE_DIR,
   hashTranslationSource,
   findTranslationBlockRange,
   splitTranslationBlock,
   stripTranslationBlock,
   extractTranslationState,
   findControlComment,
+  findAllControlComments,
   extractTranslationControlState,
+  resolveControlState,
+  readFileControlState,
+  writeFileControlState,
   encodeControlState,
   decodeControlState,
   validateControlState,
   buildTranslationControlComment,
   mergeTranslationAttemptState,
   upsertTranslationControlComment,
+  persistTranslationControlState,
+  shouldUseSilentFileState,
   isPreparedSourceStillCurrent,
   shouldTranslate,
   sanitizeTranslationBody,

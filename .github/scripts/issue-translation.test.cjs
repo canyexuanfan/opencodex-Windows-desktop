@@ -2,6 +2,9 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const {
   MARKER,
   END_MARKER,
@@ -16,10 +19,15 @@ const {
   buildTranslationControlComment,
   findControlComment,
   extractTranslationControlState,
+  resolveControlState,
+  readFileControlState,
+  writeFileControlState,
   encodeControlState,
   decodeControlState,
   validateControlState,
   mergeTranslationAttemptState,
+  persistTranslationControlState,
+  upsertTranslationControlComment,
   isPreparedSourceStillCurrent,
   shouldTranslate,
   sanitizeTranslationBody,
@@ -31,6 +39,7 @@ const {
 
 const HASH_A = "aaaaaaaaaaaaaaaa";
 const HASH_B = "bbbbbbbbbbbbbbbb";
+const ORPHAN_MARKER = `<!-- opencodex-issue-inline-translator-control-state-v2:${"a".repeat(16)} -->`;
 
 const SOURCE = [
   "### Was funktioniert nicht?",
@@ -40,8 +49,21 @@ const SOURCE = [
   "2. Fehler in der Konsole",
 ].join("\n");
 
-function botComment(body) {
-  return { user: { login: BOT_LOGIN }, body };
+function botComment(body, id = 1) {
+  return { id, user: { login: BOT_LOGIN }, body };
+}
+
+function withTempStateDir(fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ocx-translation-state-"));
+  const prev = process.env.OCX_TRANSLATION_STATE_DIR;
+  process.env.OCX_TRANSLATION_STATE_DIR = dir;
+  return Promise.resolve()
+    .then(() => fn(dir))
+    .finally(() => {
+      if (prev === undefined) delete process.env.OCX_TRANSLATION_STATE_DIR;
+      else process.env.OCX_TRANSLATION_STATE_DIR = prev;
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
 }
 
 describe("hashTranslationSource", () => {
@@ -227,20 +249,6 @@ describe("isPreparedSourceStillCurrent", () => {
 });
 
 describe("bot-owned control state", () => {
-  it("omits visible bookkeeping text for English / no-translation state", () => {
-    const comment = buildTranslationControlComment({
-      v: 2,
-      sourceHash: HASH_A,
-      attemptedAt: 1,
-      recent: [1],
-      requiresTranslation: false,
-      detectedLanguage: "English",
-    });
-    assert.ok(comment.includes(CONTROL_MARKER));
-    assert.ok(!comment.includes("Automated translation bookkeeping"));
-    assert.ok(!comment.includes("detected language"));
-  });
-
   it("keeps visible bookkeeping only when a non-English translation was applied", () => {
     const comment = buildTranslationControlComment({
       v: 2,
@@ -251,6 +259,134 @@ describe("bot-owned control state", () => {
       detectedLanguage: "German",
     });
     assert.match(comment, /Automated translation bookkeeping — detected language: German/);
+  });
+
+  it("English persist writes file state and deletes prior comments without create/update", async () => {
+    await withTempStateDir(async () => {
+      const calls = [];
+      const github = {
+        rest: {
+          issues: {
+            createComment: async (args) => {
+              calls.push(["create", args]);
+              return { data: { id: 99, body: args.body } };
+            },
+            updateComment: async (args) => {
+              calls.push(["update", args]);
+              return { data: { id: args.comment_id } };
+            },
+            deleteComment: async (args) => {
+              calls.push(["delete", args]);
+              return {};
+            },
+          },
+        },
+      };
+      const priorComment = botComment(buildTranslationControlComment({
+        v: 2,
+        sourceHash: HASH_B,
+        attemptedAt: 1,
+        recent: [1],
+        requiresTranslation: true,
+        detectedLanguage: "German",
+      }), 7);
+
+      const result = await persistTranslationControlState({
+        github,
+        owner: "o",
+        repo: "r",
+        issue_number: 42,
+        comments: [priorComment],
+        priorState: null,
+        attempt: {
+          sourceHash: HASH_A,
+          requiresTranslation: false,
+          detectedLanguage: "English",
+        },
+        now: 100,
+      });
+
+      assert.equal(result.storage, "file");
+      assert.equal(readFileControlState(42)?.sourceHash, HASH_A);
+      assert.deepEqual(calls.map((c) => c[0]), ["delete"]);
+      assert.equal(calls[0][1].comment_id, 7);
+      await assert.rejects(
+        () => upsertTranslationControlComment({
+          github,
+          owner: "o",
+          repo: "r",
+          issue_number: 42,
+          comments: [],
+          attempt: {
+            sourceHash: HASH_A,
+            requiresTranslation: false,
+            detectedLanguage: "English",
+          },
+        }),
+        /must not create issue comments/,
+      );
+    });
+  });
+
+  it("fails closed when English file storage throws before deleting comments", async () => {
+    await withTempStateDir(async () => {
+      const calls = [];
+      const github = {
+        rest: {
+          issues: {
+            deleteComment: async (args) => {
+              calls.push(["delete", args]);
+            },
+          },
+        },
+      };
+      await assert.rejects(
+        () => persistTranslationControlState({
+          github,
+          owner: "o",
+          repo: "r",
+          issue_number: 42,
+          comments: [botComment("x", 1)],
+          attempt: {
+            sourceHash: HASH_A,
+            requiresTranslation: false,
+            detectedLanguage: "English",
+          },
+          writeFileStateFn: () => {
+            throw new Error("disk full");
+          },
+        }),
+        /storage failed/,
+      );
+      assert.deepEqual(calls, []);
+    });
+  });
+
+  it("resolveControlState prefers newer file state over stale comments", async () => {
+    await withTempStateDir(async () => {
+      const commentState = {
+        v: 2,
+        sourceHash: HASH_A,
+        attemptedAt: 10,
+        recent: [10],
+        requiresTranslation: true,
+        detectedLanguage: "German",
+      };
+      writeFileControlState(9, {
+        v: 2,
+        sourceHash: HASH_B,
+        attemptedAt: 20,
+        recent: [10, 20],
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      });
+      const resolved = resolveControlState(
+        [botComment(buildTranslationControlComment(commentState))],
+        9,
+      );
+      assert.equal(resolved.sourceHash, HASH_B);
+      assert.equal(resolved.requiresTranslation, false);
+    });
   });
 
   it("selects only github-actions control comments", () => {
@@ -391,25 +527,6 @@ describe("bot-owned control state", () => {
     assert.ok(merged.recent.includes(now));
   });
 
-  it("stores English rate-limit state in a markers-only bot comment", () => {
-    const state = {
-      v: 2,
-      sourceHash: HASH_A,
-      attemptedAt: 42,
-      recent: [40, 42],
-      requiresTranslation: false,
-      detectedLanguage: "English",
-    };
-    const comment = buildTranslationControlComment(state);
-    assert.ok(comment.includes(CONTROL_MARKER));
-    assert.ok(comment.includes("control-state-v2:"));
-    assert.ok(!comment.includes("Automated translation bookkeeping"));
-    assert.deepEqual(
-      extractTranslationControlState([botComment(comment)]),
-      validateControlState(state),
-    );
-  });
-
   it("strips orphan body markers without treating them as control state", () => {
     const orphan = `${SOURCE}\n\n<!-- opencodex-issue-inline-translator-control-state-v2:${encodeControlState({
       v: 2,
@@ -419,40 +536,50 @@ describe("bot-owned control state", () => {
       requiresTranslation: false,
       detectedLanguage: "English",
     })} -->\n`;
-    assert.equal(extractTranslationControlState([], orphan), null);
+    assert.equal(extractTranslationControlState([]), null);
     assert.equal(stripOrphanBodyControlState(orphan).includes("control-state-v2:"), false);
     assert.ok(stripOrphanBodyControlState(orphan).includes("Proxy startet nicht"));
   });
 
-  it("skips visible English bookkeeping and still rate-limits model probes", () => {
-    assert.equal(isEnglishDetectedLanguage("English"), true);
-    assert.equal(isEnglishDetectedLanguage("German"), false);
-    assert.ok(!buildTranslationControlComment({
-      v: 2,
-      sourceHash: HASH_A,
-      attemptedAt: 1,
-      recent: [1],
-      requiresTranslation: false,
-      detectedLanguage: "English",
-    }).includes("Automated translation bookkeeping"));
+  it("preserves author whitespace around orphan markers byte-for-byte", () => {
+    const fixtures = [
+      [`tail ${ORPHAN_MARKER}`, "tail "],
+      [`${ORPHAN_MARKER}\nbody`, "\nbody"],
+      [`pre\n${ORPHAN_MARKER}\npost`, "pre\n\npost"],
+      [`pre\n\n${ORPHAN_MARKER}\n\npost`, "pre\n\n\n\npost"],
+      [`${ORPHAN_MARKER}\n\n    indented code`, "\n\n    indented code"],
+      [`${ORPHAN_MARKER}\n\n\n\`\`\`text\nfenced\n\`\`\``, "\n\n\n```text\nfenced\n```"],
+      [`keep   \n${ORPHAN_MARKER}\n`, "keep   \n\n"],
+      [`a ${ORPHAN_MARKER} b ${ORPHAN_MARKER} c`, "a  b  c"],
+    ];
+    for (const [input, expected] of fixtures) {
+      assert.equal(stripOrphanBodyControlState(input), expected);
+    }
+  });
 
-    const now = 1_700_000_000_000;
-    const priorState = {
-      v: 2,
-      sourceHash: HASH_A,
-      attemptedAt: now,
-      recent: [now],
-      requiresTranslation: false,
-      detectedLanguage: "English",
-    };
-    const decision = shouldTranslate({
-      sourceTitle: "Hello",
-      sourceBody: "Still English but edited enough to change the hash.",
-      priorState,
-      now: now + 5_000,
+  it("file English state rate-limits model probes without issue comments", async () => {
+    await withTempStateDir(async () => {
+      assert.equal(isEnglishDetectedLanguage("English"), true);
+      assert.equal(isEnglishDetectedLanguage("German"), false);
+      const now = 1_700_000_000_000;
+      writeFileControlState(3, {
+        v: 2,
+        sourceHash: HASH_A,
+        attemptedAt: now,
+        recent: [now],
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      });
+      const priorState = resolveControlState([], 3);
+      const decision = shouldTranslate({
+        sourceTitle: "Hello",
+        sourceBody: "Still English but edited enough to change the hash.",
+        priorState,
+        now: now + 5_000,
+      });
+      assert.equal(decision.ok, false);
+      assert.equal(decision.reason, "rate_limited_interval");
     });
-    assert.equal(decision.ok, false);
-    assert.equal(decision.reason, "rate_limited_interval");
   });
 
   it("rate limits repeated non-ASCII detections", () => {

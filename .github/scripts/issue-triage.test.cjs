@@ -21,6 +21,63 @@ describe("hardenRelatedMatches", () => {
     assert.deepEqual(result.duplicates, []);
   });
 
+  it("drops generic same-client / same-app overlap without a concrete signature", () => {
+    assert.deepEqual(
+      hardenRelatedMatches({
+        duplicates: [],
+        related: ["1"],
+        reason: "Same client and both are general proxy errors.",
+      }).related,
+      [],
+    );
+    assert.deepEqual(
+      hardenRelatedMatches({
+        duplicates: [],
+        related: ["2"],
+        reason: "Both use Codex and return an HTTP error.",
+      }).related,
+      [],
+    );
+    assert.deepEqual(
+      hardenRelatedMatches({
+        duplicates: [],
+        related: ["3"],
+        reason: "Same app, vaguely related failures.",
+      }).related,
+      [],
+    );
+  });
+
+  it("keeps related when same-client wording also has a concrete signature", () => {
+    assert.deepEqual(
+      hardenRelatedMatches({
+        duplicates: [],
+        related: ["410"],
+        reason:
+          "Same client, exact ECONNRESET on /v1/responses in the OpenRouter adapter.",
+      }).related,
+      ["410"],
+    );
+    assert.deepEqual(
+      hardenRelatedMatches({
+        duplicates: [],
+        related: ["411"],
+        reason:
+          "Same app, exact 503 from POST /v1/responses with the Xiaomi openai-chat adapter.",
+      }).related,
+      ["411"],
+    );
+    assert.deepEqual(
+      hardenRelatedMatches({
+        duplicates: [],
+        related: ["412"],
+        reason:
+          "Both reproduce when content[0].text is an object instead of a string.",
+      }).related,
+      ["412"],
+    );
+  });
+
   it("keeps related when the reason states a concrete shared failure", () => {
     const result = hardenRelatedMatches({
       duplicates: [],
