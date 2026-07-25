@@ -170,12 +170,25 @@ describe("GitHub Actions hardening", () => {
     // Manual dispatch is supported, but only with a positive issue number.
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("issue_number:");
+    expect(workflow).toContain("issue-translation.cjs");
+    expect(workflow).toContain("translated_title");
+    expect(workflow).toContain("isPreparedSourceStillCurrent");
+    expect(workflow).toContain("extractTranslationControlState");
+    expect(workflow).toContain("parse-issue-translation-response.cjs");
+    expect(workflow).not.toContain('node -e "');
+    expect(workflow).toContain("upsertTranslationControlComment");
+    expect(workflow).toContain("rejectsWorkflowDispatchNonDefaultBranch");
+    expect(workflow).toContain("rejectsWorkflowDispatchPullRequest");
+    expect(workflow).toContain("models: read");
     expect(workflow).toContain("Number.isSafeInteger(parsedIssueNumber)");
     expect(workflow).toContain("parsedIssueNumber <= 0");
 
     // Job-scoped permissions only (no top-level issues:write).
     expect(workflow).toMatch(
-      /jobs:\s*\n\s*validate:[\s\S]*?permissions:\s*\n\s*contents: read\s*\n\s*#.*\n\s*issues: write/,
+      /jobs:\s*\n\s*translate:[\s\S]*?permissions:\s*\n(?:\s*#.*\n)*\s*contents: read\s*\n(?:\s*#.*\n)*\s*issues: write\s*\n(?:\s*#.*\n)*\s*models: read/,
+    );
+    expect(workflow).toMatch(
+      /jobs:\s*\n\s*translate:[\s\S]*?validate:[\s\S]*?permissions:\s*\n\s*contents: read\s*\n\s*#.*\n\s*issues: write/,
     );
     const beforeJobs = workflow.split(/jobs:\s*\n/)[0]!;
     expect(beforeJobs).not.toMatch(/^\s*permissions:/m);
@@ -189,6 +202,7 @@ describe("GitHub Actions hardening", () => {
     expect(checkoutStep).toContain("sparse-checkout: .github/scripts");
 
     const script = workflow
+      .split("- name: Validate issue quality")[1]!
       .split("script: |")[1]!
       .split(/\n {6}- name:/)[0]!;
 
@@ -218,6 +232,41 @@ describe("GitHub Actions hardening", () => {
     expect(prGuardIdx).toBeLessThan(firstMutationIdx);
     expect(script).toContain("if (pullRequestFailure) {");
     expect(script).toContain("core.setFailed(pullRequestFailure);");
+
+    const translateScript = workflow
+      .split("- name: Prepare translation")[1]!
+      .split("- name: Detect and translate")[0]!;
+    const branchGuardIdxTranslate = translateScript.indexOf(
+      "rejectsWorkflowDispatchNonDefaultBranch(",
+    );
+    const issuesGetIdxTranslate = translateScript.indexOf("github.rest.issues.get({");
+    expect(branchGuardIdxTranslate).toBeGreaterThan(-1);
+    expect(issuesGetIdxTranslate).toBeGreaterThan(-1);
+    expect(branchGuardIdxTranslate).toBeLessThan(issuesGetIdxTranslate);
+
+    const applyScript = workflow
+      .split("- name: Apply inline translation")[1]!
+      .split("- name: Persist translation control state")[0]!;
+    const staleGuardIdx = applyScript.indexOf("isPreparedSourceStillCurrent({");
+    const issueUpdateIdx = applyScript.indexOf("github.rest.issues.update(");
+    expect(staleGuardIdx).toBeGreaterThan(-1);
+    expect(issueUpdateIdx).toBeGreaterThan(-1);
+    expect(staleGuardIdx).toBeLessThan(issueUpdateIdx);
+
+    const parseStep = workflow
+      .split("- name: Parse AI response")[1]!
+      .split("- name: Apply inline translation")[0]!;
+    expect(parseStep).toContain("parse-issue-translation-response.cjs");
+    expect(parseStep).not.toContain("node -e");
+    expect(parseStep).not.toContain("node <<");
+    // AI output must stay in env, never interpolated into the shell run script.
+    expect(parseStep.split(/\n\s*run:\s*/)[1] || "").not.toContain("${{");
+
+    const persistStep = workflow
+      .split("- name: Persist translation control state")[1]!
+      .split(/\n {2}[a-z]/)[0]!;
+    expect(persistStep).toContain("always()");
+    expect(persistStep).toContain("requires_translation != 'true'");
   });
 
   test("React Doctor workflow is SHA-pinned, engine-pinned, advisory, and read-only", async () => {
