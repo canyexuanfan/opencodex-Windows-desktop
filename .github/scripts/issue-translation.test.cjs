@@ -24,6 +24,9 @@ const {
   shouldTranslate,
   sanitizeTranslationBody,
   scrubDetectedLanguage,
+  isEnglishDetectedLanguage,
+  stripSilentControlState,
+  applySilentControlStateToBody,
   fitTranslationBody,
 } = require("./issue-translation.cjs");
 
@@ -225,14 +228,40 @@ describe("isPreparedSourceStillCurrent", () => {
 });
 
 describe("bot-owned control state", () => {
-  it("selects only github-actions control comments", () => {
-    const state = {
+  it("omits visible bookkeeping text for English / no-translation state", () => {
+    const comment = buildTranslationControlComment({
       v: 2,
       sourceHash: HASH_A,
       attemptedAt: 1,
       recent: [1],
       requiresTranslation: false,
       detectedLanguage: "English",
+    });
+    assert.ok(comment.includes(CONTROL_MARKER));
+    assert.ok(!comment.includes("Automated translation bookkeeping"));
+    assert.ok(!comment.includes("detected language"));
+  });
+
+  it("keeps visible bookkeeping only when a non-English translation was applied", () => {
+    const comment = buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: true,
+      detectedLanguage: "German",
+    });
+    assert.match(comment, /Automated translation bookkeeping — detected language: German/);
+  });
+
+  it("selects only github-actions control comments", () => {
+    const state = {
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: true,
+      detectedLanguage: "German",
     };
     const comments = [
       botComment("random bot comment"),
@@ -248,8 +277,8 @@ describe("bot-owned control state", () => {
       sourceHash: HASH_A,
       attemptedAt: 1,
       recent: [1],
-      requiresTranslation: false,
-      detectedLanguage: "English",
+      requiresTranslation: true,
+      detectedLanguage: "German",
     };
     const newer = {
       v: 2,
@@ -257,7 +286,7 @@ describe("bot-owned control state", () => {
       attemptedAt: 2,
       recent: [1, 2],
       requiresTranslation: true,
-      detectedLanguage: "German",
+      detectedLanguage: "Japanese",
     };
     const comments = [
       { id: 1, user: { login: BOT_LOGIN }, body: buildTranslationControlComment(older) },
@@ -363,7 +392,37 @@ describe("bot-owned control state", () => {
     assert.ok(merged.recent.includes(now));
   });
 
-  it("rate limits repeated English detections", () => {
+  it("stores English rate-limit state invisibly on the issue body", () => {
+    const state = {
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 42,
+      recent: [40, 42],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    };
+    const withState = applySilentControlStateToBody(SOURCE, state);
+    assert.ok(!withState.includes("Automated translation bookkeeping"));
+    assert.ok(withState.includes("control-state-v2:"));
+    assert.equal(stripSilentControlState(withState), SOURCE);
+    assert.deepEqual(
+      extractTranslationControlState([], withState),
+      validateControlState(state),
+    );
+  });
+
+  it("skips visible English bookkeeping and still rate-limits model probes", () => {
+    assert.equal(isEnglishDetectedLanguage("English"), true);
+    assert.equal(isEnglishDetectedLanguage("German"), false);
+    assert.ok(!buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    }).includes("Automated translation bookkeeping"));
+
     const now = 1_700_000_000_000;
     const priorState = {
       v: 2,
@@ -375,7 +434,27 @@ describe("bot-owned control state", () => {
     };
     const decision = shouldTranslate({
       sourceTitle: "Hello",
-      sourceBody: "Still English but edited.",
+      sourceBody: "Still English but edited enough to change the hash.",
+      priorState,
+      now: now + 5_000,
+    });
+    assert.equal(decision.ok, false);
+    assert.equal(decision.reason, "rate_limited_interval");
+  });
+
+  it("rate limits repeated non-ASCII detections", () => {
+    const now = 1_700_000_000_000;
+    const priorState = {
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: now,
+      recent: [now],
+      requiresTranslation: false,
+      detectedLanguage: "German",
+    };
+    const decision = shouldTranslate({
+      sourceTitle: "Immer noch kaputt",
+      sourceBody: "Der Proxy antwortet weiterhin mit Fehlern nach dem Update.",
       priorState,
       now: now + 5_000,
     });
