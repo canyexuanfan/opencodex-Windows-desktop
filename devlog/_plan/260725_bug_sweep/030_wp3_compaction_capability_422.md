@@ -1,5 +1,9 @@
 # WP3 — #422 API-key openai-responses에서 remote compaction v2 fatal
 
+> 개정 이력: r1 초안은 A-gate에서 FAIL. blocker 4(non-stream 경로가 `parseResponse`
+> 부재로 400을 내는데 diff가 `parseStream`만 다룸)를 r2에서 수정했다. 외부 근거와
+> 이슈 본문 전제 정정은 `001_external_evidence.md` 참조.
+
 ## 증상
 
 `authMode: "key"`인 `openai-responses` provider로 라우팅할 때 Codex의 remote compaction v2가
@@ -16,14 +20,9 @@ fatal 지점은 upstream Codex의 `collect_compaction_output()`이다.
 
 ## 이슈 본문 전제 정정
 
-이슈는 "표준 OpenAI API가 compaction을 미지원"한다고 적었지만 현재 기준으로 틀렸다.
-공식 Responses API는 `context_management`와 `POST /responses/compact`를 지원한다.
-([Compaction guide](https://developers.openai.com/api/docs/guides/compaction),
-[compact API reference](https://developers.openai.com/api/reference/resources/responses/methods/compact))
-
-공개 API에 없는 것은 `/responses` **입력**의 `compaction_trigger` item이다. 따라서 정확한
-근거는 "표준 compaction 미지원"이 아니라 **"Responses wire를 지원한다는 사실만으로 Codex v2
-trigger 지원을 추론할 수 없다"** 이다. 이 구분이 수정 설계를 가른다.
+이슈의 "표준 OpenAI API는 compaction 미지원" 주장은 틀렸다. 정확한 근거는
+**"Responses wire를 지원한다는 사실만으로 Codex v2 trigger 지원을 추론할 수 없다"** 이다.
+상세 출처는 `001_external_evidence.md` §OpenAI Compaction 참조.
 
 ## 근본 원인
 
@@ -87,14 +86,9 @@ if (route.provider.adapter === "openai-responses") {
 
 ## 수정 방향
 
-capability를 adapter 이름에서 분리한다. 대안 비교:
-
-| 안 | 판단 |
-|---|---|
-| 1. authMode 기반 capability gate + non-forward synthetic | **채택** — trigger를 미지원 upstream에 보내지 않고 기존 envelope·bridge 재사용 |
-| 2. 명시적 capability config 추가 | 정확하지만 public config/type/registry/docs까지 범위 확대. 장기 과제 |
-| 3. 응답에 compaction item 없으면 사후 wrapping | 이미 private trigger/tools를 보낸 뒤. SSE 전체 버퍼링 필요 |
-| 4. 명확한 proxy 오류만 반환 | fatal은 피하지만 compaction은 여전히 실패 |
+capability를 adapter 이름에서 분리한다. authMode 기반 gate + non-forward synthetic을
+채택한다 (대안 비교는 조사 단계에서 수행: 사후 wrapping은 이미 private trigger를 보낸
+뒤라 늦고, proxy 오류 반환은 compaction 자체를 포기한다).
 
 공식 `openai-apikey`의 `/responses/compact` 지원은 반드시 보존한다.
 
@@ -180,17 +174,67 @@ key-mode에서 trigger를 제거하고 요약 프롬프트로 대체한다.
 +}
 ```
 
-stub parser 교체 — `src/lib/sse-decoder.ts`를 재사용해 다음만 변환하면 된다.
+**stub parser 교체 — 두 메서드 모두 필요하다.**
 
-```
-response.output_text.delta -> { type: "text_delta", text }
-response.completed         -> { type: "done" }
-response.failed / error    -> { type: "error", message }
+r1은 `parseStream`만 다뤘으나, non-stream 경로는 `adapter.parseResponse`가 없으면
+`src/server/responses/core.ts:1828`에서 끝난다.
+
+```ts
+  return formatErrorResponse(400, "invalid_request_error", "Non-streaming not supported by this adapter");
 ```
 
-non-streaming JSON은 `output[].type === "message"`의 `output_text`를 합쳐
-`text_delta + done`으로 변환한다. 이후 `src/bridge.ts:652`의 기존 로직이 정확히 하나의
-`compaction` item으로 감싼다.
+`/responses/compact`의 synthetic 내부 요청도 `stream:false`를 강제하므로 같은 400을 맞는다.
+따라서 두 메서드를 함께 구현한다.
+
+```ts
++async *parseSyntheticCompactionStream(response: Response): AsyncGenerator<AdapterEvent> {
++  for await (const event of decodeSse(response)) {
++    const data = safeJsonParse(event.data);
++    if (!isPlainObject(data)) continue;
++    switch (data.type) {
++      case "response.output_text.delta":
++        if (typeof data.delta === "string") yield { type: "text_delta", text: data.delta };
++        break;
++      case "response.failed":
++      case "error":
++        yield { type: "error", message: errorMessageOf(data) };
++        return;
++      case "response.completed":
++        yield { type: "done", usage: usageFromResponsesPayload(data.response) };
++        return;
++    }
++  }
++  yield { type: "done" };
++}
++
++/**
++ * Non-stream sibling. Without this the generic non-stream path fails with
++ * "Non-streaming not supported by this adapter" (core.ts:1828), which also
++ * breaks the v1 /responses/compact synthetic path since it forces stream:false.
++ */
++async parseResponse(response: Response): Promise<AdapterEvent[]> {
++  const json = await response.json();
++  if (!isPlainObject(json)) return [{ type: "error", message: "malformed compaction response" }];
++  if (json.error) return [{ type: "error", message: errorMessageOf(json) }];
++  const text = Array.isArray(json.output)
++    ? json.output
++        .filter(item => isPlainObject(item) && item.type === "message")
++        .flatMap(item => Array.isArray(item.content) ? item.content : [])
++        .filter(part => isPlainObject(part) && part.type === "output_text")
++        .map(part => String(part.text ?? ""))
++        .join("")
++    : "";
++  return [
++    ...(text ? [{ type: "text_delta" as const, text }] : []),
++    { type: "done" as const, usage: usageFromResponsesPayload(json) },
++  ];
++}
+```
+
+`usageFromResponsesPayload()`는 이 어댑터가 일반 경로에서 이미 쓰는 usage 추출 로직을
+재사용한다. B 단계에서 실제 export 이름을 확인해 맞춘다.
+
+이후 `src/bridge.ts:652`의 기존 로직이 정확히 하나의 `compaction` item으로 감싼다.
 
 ## 회귀 테스트
 
@@ -203,16 +247,28 @@ non-streaming JSON은 `output[].type === "message"`의 `output_text`를 합쳐
    - proxy SSE의 `response.output_item.done`이 정확히 1개이고 type이 `compaction`
    - 수정 전 실패: trigger가 그대로 전달되고 결과가 `message`
 
-2. 같은 조건 `stream:false`
+2. 같은 조건 `stream:false` — **blocker 4 회귀**
    - JSON `output`이 `compaction` 1개
+   - 수정 전 실패: `parseResponse` 부재로 400 "Non-streaming not supported by this adapter"
 
 3. `forward openai-responses` 보존
    - trigger가 ChatGPT upstream으로 전달되고 encrypted `compaction` item이 무변경 relay
    - capability gate가 forward를 synthetic으로 오분류하지 않음을 고정
 
-4. custom key provider의 `POST /v1/responses/compact`
+4. custom key provider의 `POST /v1/responses/compact` — **blocker 4 회귀**
    - `/responses/compact`가 아니라 synthetic `/responses` 호출
+   - 내부 요청이 `stream:false`이므로 `parseResponse`가 반드시 동작해야 함
+   - 최종 v1 output이 retained user message + `SUMMARY_PREFIX` summary
    - 수정 전 실패: 무조건 `/responses/compact`
+
+6. `upstream error surfaces as an error, not an empty compaction`
+   - stream/non-stream 각각에서 upstream이 `response.failed` 또는 `{error}`를 줄 때
+     빈 `compaction` item을 만들지 않고 오류로 전달
+
+## WP5와의 공유 지점
+
+`src/server/responses/core.ts`와 `src/server/responses/compact.ts`를 WP5도 수정한다.
+WP3를 먼저 닫고, WP5의 P에서 이 결과 위에 stale 체크를 수행한다.
 
 5. built-in `openai-apikey`의 v1 보존
    - 공식 `/v1/responses/compact`를 계속 호출

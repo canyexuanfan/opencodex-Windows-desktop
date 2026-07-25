@@ -1,5 +1,10 @@
 # WP4 — #373 Cursor 재시작 후 context usage 0 보고
 
+> 개정 이력: r1 초안은 A-gate에서 FAIL. blocker 5(존재하지 않는 `roots.serialized`를
+> 반환 타입 변경 없이 사용, 핵심 함수 본문 생략)와 blocker 9(shared estimator 변경을
+> Cursor 국소 변경으로 오분류)를 r2에서 수정했다. 외부 근거·경쟁 PR 이력은
+> `001_external_evidence.md` 참조.
+
 ## 증상
 
 프록시 재시작 후 checkpoint frame이 없는 agent/tool 턴이 계속 `inputTokens=0`,
@@ -106,20 +111,88 @@ rootPromptMessages()의 selected roots
 
 ### `src/adapters/cursor/protobuf-request.ts`
 
-`StoredRootBlob`에 직렬화 문자열을 보관해 재직렬화를 없앤다.
+**(1) `StoredRootBlob`에 직렬화 문자열 보관** (현재 타입 정의):
 
 ```ts
  type StoredRootBlob = {
    id: Uint8Array;
    byteLength: number;
-+  /** Exact JSON handed to storeCursorBlob() — reused for estimation. */
++  /**
++   * The exact JSON string handed to storeCursorBlob(). Retained so the token
++   * estimate reads the same text the wire carries, without re-serializing (#373).
++   */
 +  serialized: string;
    role: "system" | "user" | "assistant" | "toolResult";
-   ...
+   messageIndex?: number;
+   text?: string;
  };
 ```
 
-새 진입점:
+blob을 만드는 모든 지점에서 `serialized`를 채운다. 현재 `JSON.stringify(value)` 결과를
+`encoder.encode()`에 넘기는 자리마다 중간 변수로 뽑아 그대로 저장한다.
+
+```ts
+-      const data = encoder.encode(JSON.stringify(value));
++      const serialized = JSON.stringify(value);
++      const data = encoder.encode(serialized);
+       return {
+         id: storeCursorBlob(data),
+         byteLength: data.byteLength,
++        serialized,
+         ...
+       };
+```
+
+**(2) `rootPromptMessages()` 반환 타입 확장** — 현재 163-167행. r1의 오류가 여기였다.
+실제 반환은 `ids` / `byteLength` / `historyMessageStart` 셋뿐이므로 필드를 추가해야 한다.
+
+```ts
+ function rootPromptMessages(request: CursorRunRequest): {
+   ids: Uint8Array[];
+   byteLength: number;
+   historyMessageStart: number;
++  /** Serialized text of the roots that SURVIVED pruning, in wire order. */
++  serialized: string[];
+ } {
+```
+
+조기 반환(messages 없음, 172행 부근)과 최종 반환(288행) **양쪽** 모두 채운다.
+최종 반환은 pruning이 끝난 `selected`에서 파생하므로 버려진 history가 자동으로 빠진다.
+
+```ts
+   return {
+     ids: selected.map(entry => entry.id),
+     byteLength: selected.reduce((sum, entry) => sum + entry.byteLength, 0),
+     historyMessageStart,
++    serialized: selected.map(entry => entry.serialized),
+   };
+```
+
+조기 반환도 같은 방식으로 `entries.map(entry => entry.serialized)`를 넣는다.
+
+**(3) tool 텍스트 복원 helper** — protobuf `inputSchema`는 binary라 그대로는 셀 수 없다.
+
+```ts
++/**
++ * Reconstruct the model-visible text of a finalized tool definition. The schema
++ * travels as packed protobuf Value bytes, so it must be decoded to be counted the
++ * way the model sees it.
++ */
++function modelVisibleToolText(definition: McpToolDefinition): string {
++  const inputSchema = toJson(ValueSchema, fromBinary(ValueSchema, definition.inputSchema));
++  return JSON.stringify({
++    name: definition.toolName || definition.name,
++    description: definition.description,
++    inputSchema,
++  });
++}
+```
+
+`toJson`, `fromBinary`, `ValueSchema` import를 파일 상단에 추가한다.
+
+**(4) 단일 준비 진입점** — 기존 `encodeCursorRunRequest()` 본문을 그대로 옮기고 반환만
+바꾼다. 본문 로직(action 결정, conversationState 구성, mcpTools 부착)은 **변경 없이**
+이동한다.
 
 ```ts
 +export interface PreparedCursorRunRequest {
@@ -131,21 +204,29 @@ rootPromptMessages()의 selected roots
 +  request: CursorRunRequest,
 +  options: { estimateInputTokens?: boolean } = {},
 +): PreparedCursorRunRequest {
-+  // roots/action/mcpToolDefs are computed ONCE; both the encoded bytes and the
-+  // estimate derive from these same instances, so the estimate can never count
-+  // history or tools the wire payload dropped (#373).
-+  const roots = rootPromptMessages(request);
-+  const visibleTools = cursorToolsForActivePrompt(request.tools, rawText, request.toolChoice);
-+  const mcpToolDefs = buildCursorToolDefinitions(visibleTools, request.toolChoice);
-+  ...
++  // (existing encodeCursorRunRequest body, unchanged, producing:)
++  //   const rawText = activePromptText(request);
++  //   const text  = ...
++  //   const actionCase = ...
++  //   const roots = rootPromptMessages(request);
++  //   const visibleTools = cursorToolsForActivePrompt(request.tools, rawText, request.toolChoice);
++  //   const mcpToolDefs  = buildCursorToolDefinitions(visibleTools, request.toolChoice);
++  //   const runRequest / message = ...
 +  const bytes = toBinary(AgentClientMessageSchema, message);
 +  if (!options.estimateInputTokens) return { bytes };
++
++  // The estimate derives from the SAME roots/action/tool instances that produced
++  // `bytes`, so it can never count history or tools the wire payload dropped —
++  // the exact defect that blocked PR #376.
 +  const modelVisibleParts = [
 +    ...roots.serialized,
 +    ...(actionCase === "userMessageAction" ? [text] : []),
 +    ...mcpToolDefs.map(modelVisibleToolText),
 +  ];
-+  return { bytes, estimatedInputTokens: estimateTokens(modelVisibleParts.join("\n"), request.modelId) };
++  return {
++    bytes,
++    estimatedInputTokens: estimateCursorInputTokens(modelVisibleParts.join("\n"), request.modelId),
++  };
 +}
 +
 +/** Back-compat wrapper for existing callers and tests. */
@@ -154,8 +235,8 @@ rootPromptMessages()의 selected roots
 +}
 ```
 
-`modelVisibleToolText()`는 `inputSchema`를 `fromBinary`/`toJson`으로 복원해 실제 모델이
-보는 형태로 직렬화한다.
+`text`와 `actionCase`가 위 본문에서 이미 계산되므로 추가 계산은 없다. B 단계에서 실제
+변수명을 확인해 맞춘다.
 
 ### `src/adapters/cursor/live-transport.ts`
 
@@ -202,14 +283,38 @@ estimator가 본 payload와 실제 전송 payload가 동일함이 타입 수준�
 "checkpoint 또는 output signal이 하나라도 있어야 보고" guard를 반드시 유지한다 — 요청이
 실제로 소비됐다는 증거 없이 usage를 만들어내면 안 된다.
 
-### `src/lib/token-estimate.ts`
+### Grok 비율: 공유 estimator를 건드리지 않는다
 
-Cursor의 실제 wire model ID가 `grok-4.5[-effort]`이므로 prefix만 추가한다.
+r1은 `KIRO_MODEL_PREFIXES`에 `"grok"`을 추가하려 했으나, `estimateTokens()`는 Cursor 전용이
+아니다. 실제 소비자를 확인한 결과:
 
-```diff
--const KIRO_MODEL_PREFIXES = ["kiro", "claude", "deepseek", "minimax", "glm", "qwen"];
-+const KIRO_MODEL_PREFIXES = ["kiro", "claude", "deepseek", "minimax", "glm", "qwen", "grok"];
+- `src/adapters/kiro.ts:151, 158, 565`
+- `src/server/claude-messages.ts:591, 799`
+- `src/server/chat-completions.ts:97`
+
+prefix를 추가하면 이 경로들의 Grok usage-log 추정치가 4 → 3.5 chars/token으로 함께 바뀐다.
+#373과 무관한 회계 변경이므로 **범위 밖**이다.
+
+대신 Cursor 국소 helper로 가둔다. `src/adapters/cursor/protobuf-request.ts`:
+
+```ts
++/**
++ * Cursor-local ratio. Cursor wire model ids look like `grok-4.5[-effort]`, and
++ * Grok's code/JSON-heavy traffic packs denser than the generic English ratio.
++ * Kept local so shared usage-log estimates for other surfaces stay unchanged (#373).
++ */
++const CURSOR_DENSE_MODEL_PREFIXES = ["grok"];
++
++function estimateCursorInputTokens(text: string, modelId?: string): number {
++  const id = modelId?.toLowerCase();
++  if (id && CURSOR_DENSE_MODEL_PREFIXES.some(p => id.startsWith(p))) {
++    return Math.ceil(text.length / 3.5);
++  }
++  return estimateTokens(text, modelId);
++}
 ```
+
+`src/lib/token-estimate.ts`는 **변경하지 않는다.**
 
 ### `structure/04_transports-and-sidecars.md`
 
@@ -229,6 +334,14 @@ carry도 없으면 Cursor에 보낸 것과 동일한 pruned payload에서 파생
    decoded payload에는 placeholder만 존재
 4. `prepared bytes are the payload used for estimation` — 반환된 bytes를 decode해
    roots/action/tool 경계 검증
+
+4b. `serialized roots match the blobs actually sent` — decode한 blob 바이트를
+   `serialized` 문자열과 대조해 truncation 이후에도 정확히 일치함을 확인.
+   `StoredRootBlob.serialized`가 stale해지는 실수를 잡는다.
+
+4c. `grok ratio stays local to cursor` — 동일 텍스트에 대해
+   `estimateTokens(text, "grok-4.5")`(공유)와 Cursor 경로 추정치가 다름을 확인하고,
+   `tests/token-estimate.test.ts`의 기존 10개가 무변경 통과함을 함께 요구한다.
 
 ### `tests/cursor-protobuf-events.test.ts`
 
@@ -255,3 +368,5 @@ bun test tests/cursor-blob.test.ts tests/cursor-protobuf-events.test.ts \
          tests/cursor-request-builder.test.ts tests/token-estimate.test.ts
 bun run typecheck
 ```
+
+`tests/token-estimate.test.ts`는 공유 estimator를 건드리지 않았음을 증명하는 회귀 가드다.

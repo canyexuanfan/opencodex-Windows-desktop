@@ -1,5 +1,9 @@
 # WP5 — #404 혼합 게이트웨이 per-model adapter override
 
+> 개정 이력: r1 초안은 A-gate에서 FAIL. blocker 6(임의 adapter 허용이 인증 경계를 확장)과
+> blocker 10(inbound 분기 회귀 테스트 누락)을 r2에서 수정했다. 외부 근거는
+> `001_external_evidence.md` §xAI 참조.
+
 ## 증상
 
 OpenAI 호환 게이트웨이 하나에 Grok과 Gemini가 함께 붙어 있을 때, Grok 4.5로 web_search를
@@ -54,16 +58,9 @@ openai-responses → https://gateway/v1/responses          tools:[{"type":"web_s
 
 ## 공식 문서 근거
 
-xAI 공식 비교표는 Responses API가 search/code/MCP agentic tool을 native 지원하고
-Chat Completions는 function calling만 지원하는 deprecated legacy endpoint라고 명시한다.
-([Comparison with Chat Completions API](https://docs.x.ai/developers/model-capabilities/text/comparison))
-
-공식 Web Search 문서는 `grok-4.5`를 `POST https://api.x.ai/v1/responses`와
-`tools:[{"type":"web_search"}]`로 호출한다.
-([Web Search](https://docs.x.ai/developers/tools/web-search))
-
-즉 이 이슈의 OpenAI 호환 게이트웨이에서는 `/v1/responses`가 공식적으로 맞는 wire다.
-이름이 `web_search`인 Chat Completions function은 xAI hosted search와 동등하지 않다.
+xAI 공식 문서상 hosted web_search는 Responses API 경로에서만 지원되며, 이 이슈의 OpenAI
+호환 게이트웨이에서는 `/v1/responses`가 맞는 wire다. 출처는
+`001_external_evidence.md` §xAI Responses vs Chat Completions 참조.
 
 ## 설계: `modelAdapters`
 
@@ -79,6 +76,38 @@ Chat Completions는 function calling만 지원하는 deprecated legacy endpoint�
 - wildcard 없이 exact key
 - 우선순위: 설정된 override → 기존 hardcoded pin → provider 기본값
 - 필드가 없으면 현재 동작과 완전히 동일
+- **값은 wire-compatible 최소 집합으로 제한한다 (아래 보안 경계 참조)**
+
+### 보안 경계: 허용 adapter를 제한한다
+
+r1은 "`resolveAdapter()`가 지원하는 모든 ID"를 허용하려 했다. 이는 인증 경계를 넓힌다.
+`src/server/adapter-resolve.ts:27`의 switch에는 provider 전용 어댑터가 함께 있다.
+
+```
+openai-chat / openai-responses / anthropic / google / kiro / azure / azure-openai / cursor / mimo-free
+```
+
+예를 들어 `cursor` override는 provider key가 없을 때 caller Authorization을 토큰으로
+선택해 해당 provider의 `baseUrl`로 전송한다. 이는 "auth/baseUrl을 새로 만들지 않는다"는
+전제를 깨고 크리덴셜 전달 의미를 바꾼다.
+
+따라서 **허용 목록을 #404가 실제로 요구하는 두 wire로 한정한다.**
+
+```ts
++/**
++ * Only OpenAI-shaped wires may be selected per model. Provider-specific adapters
++ * (cursor, kiro, google, ...) carry their own credential and base-URL semantics,
++ * so exposing them here would widen the auth boundary rather than pick a wire.
++ * Extending this set requires a per-adapter credential threat model.
++ */
++const MODEL_ADAPTER_OVERRIDE_ALLOWED = new Set(["openai-chat", "openai-responses"]);
+```
+
+config validator와 management validator 모두 이 집합을 참조한다.
+
+`MAINTAINERS.md`의 보안 검토 대상에 해당하므로, 구현 후 다음을 명시적으로 확인한다:
+override가 `apiKey`/`authMode`/`baseUrl`을 바꾸지 않고 오직 `adapter` 필드만 교체하며,
+반환된 객체가 원본 provider의 얕은 복사본임을 테스트로 고정한다.
 
 `responsesModels: string[]` 대안은 "provider 기본이 Responses인데 일부만 Chat"인 반대
 구성을 표현하지 못한다. 대칭적인 map이 낫다.
@@ -104,11 +133,13 @@ Chat Completions는 function calling만 지원하는 deprecated legacy endpoint�
 ### `src/config.ts` (403행 부근)
 
 `modelAdapterRecordConfigError()`를 추가하고 `configSchema.superRefine()`에 연결한다.
+`modelSupportsReasoningSummaries`의 기존 validator(`src/config.ts:425`)를 형태 참고로 삼는다.
 
-- plain own-properties object만 허용
+- plain own-properties object만 허용 (prototype 오염 방지: `Object.getPrototypeOf(v) === Object.prototype`)
 - 키는 nonblank trimmed string
-- 값은 `resolveAdapter()`가 실제 지원하는 adapter ID로 제한
-- 잘못된 설정은 startup fallback 전에 명확한 진단으로 거부
+- 값은 `MODEL_ADAPTER_OVERRIDE_ALLOWED`의 원소만 허용
+- 잘못된 설정은 startup fallback 전에 `providers.<name>.modelAdapters` 경로를 담은
+  진단으로 거부
 
 ### `src/server/auth-cors.ts` (202행 부근)
 
@@ -119,9 +150,12 @@ Chat Completions는 function calling만 지원하는 deprecated legacy endpoint�
 
 ```ts
 +  // Configured per-model override wins over the hardcoded wire pins below.
++  // Re-check the allow-list at use time: config may have been written by an older
++  // build or hand-edited past the validator.
 +  const configured = providerConfig.modelAdapters;
-+  if (configured && Object.hasOwn(configured, modelId)) {
-+    return { ...providerConfig, adapter: configured[modelId]! };
++  const requested = configured && Object.hasOwn(configured, modelId) ? configured[modelId] : undefined;
++  if (requested && MODEL_ADAPTER_OVERRIDE_ALLOWED.has(requested) && requested !== providerConfig.adapter) {
++    return { ...providerConfig, adapter: requested };
 +  }
    const overrideSet = ANTHROPIC_WIRE_MODELS[providerName];
 ```
@@ -147,7 +181,9 @@ adapter로 sampling 제거·response-format 거부·compact passthrough를 판�
 effective adapter로 사전 분기해야 한다.
 
 **WP3와의 충돌 주의**: `compact.ts`와 `core.ts`는 WP3에서도 수정된다. 반드시 WP3를 먼저
-닫고 그 결과 위에서 이 phase의 P를 다시 stale 체크한다.
+닫고 그 결과 위에서 이 phase의 P를 다시 stale 체크한다. 특히 WP3가 `compact.ts:205`의
+native gate를 `supportsNativeResponsesCompactEndpoint()`로 바꾸므로, 그 위에 effective
+adapter 판단을 얹어야 한다.
 
 ### 변경하지 않는 파일
 
@@ -191,6 +227,21 @@ effective adapter로 사전 분기해야 한다.
 4. mock Responses SSE의 `web_search_call` + assistant message가 proxy SSE에도 나타남
 5. combo alias도 동일 target으로 라우팅
 6. override 없는 config는 `/chat/completions` 유지
+7. 허용 목록 밖 값(`cursor`, `kiro`)은 config 로드와 관리 API 양쪽에서 거부되고,
+   그런 값이 이미 저장돼 있어도 resolver가 무시하고 provider 기본값을 쓴다
+8. override 적용 결과가 원본 provider를 mutate하지 않고 `apiKey`/`authMode`/`baseUrl`이
+   보존됨 — 인증 경계 불변 고정
+
+### inbound 분기 회귀 (blocker 10)
+
+계획이 수정하는 세 inbound 경로 각각에 override hit/miss 테스트가 필요하다. E2E가
+`/responses`만 검증하면 이 wiring은 무증상으로 깨진다.
+
+9. `chat-completions.ts` — override로 effective adapter가 바뀐 모델에서 sampling 파라미터
+   처리가 effective adapter 기준으로 동작
+10. `claude-messages.ts` — response-format 거부 판단이 effective adapter 기준
+11. `compact.ts` — WP3의 capability gate와 결합해, override된 모델의 compact 경로가
+    native/synthetic 중 올바른 쪽을 고름
 
 ## 판정
 

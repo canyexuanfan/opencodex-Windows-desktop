@@ -1,5 +1,9 @@
 # WP1 — #433 먼 미래 resetAt로 인한 quota cooldown 고착
 
+> 개정 이력: r1 초안은 A-gate에서 FAIL. blocker 1·2·3(카나리 도달 불가, 무조건 delete로
+> 인한 기존 테스트 2건 회귀, transient 경로에서 probe 상태 소실)을 반영해 r2에서
+> **probe lease** 설계로 전면 교체했다. 외부 근거는 `001_external_evidence.md` 참조.
+
 ## 증상
 
 상위 ChatGPT/Codex 계정이 `usage_limit_exceeded`와 함께 며칠 뒤의 reset 타임스탬프를
@@ -16,25 +20,8 @@
 `src/codex/routing.ts:151` `parseResetCooldownMs()`는 resetAt까지 남은 시간을 그대로
 cooldown으로 쓰고 `clampCooldownMs()`로 24h까지만 자른다.
 
-```ts
-export function parseResetCooldownMs(resetAt: unknown | unknown[] | undefined, now = Date.now()): number | undefined {
-  const values = Array.isArray(resetAt) ? resetAt : [resetAt];
-  let best: number | undefined;
-  for (const value of values) {
-    const timestamp = resetTimestampMs(value);
-    if (timestamp === undefined) continue;
-    const delay = timestamp - now;
-    if (delay <= 0) continue;
-    const clamped = clampCooldownMs(delay);
-    if (best === undefined || clamped < best) best = clamped;
-  }
-  return best;
-}
-```
-
 `Retry-After`는 "이만큼 뒤에 다시 오라"는 지시지만, weekly/monthly quota의 `resetAt`은
-"이때 창이 갱신된다"는 정보일 뿐 그 전까지 사용 불가라는 뜻이 아니다. 실제로 플랜 단위
-quota는 광고된 reset보다 훨씬 먼저 풀리는 경우가 많다.
+"이때 창이 갱신된다"는 정보일 뿐 그 전까지 사용 불가라는 뜻이 아니다.
 
 ### 2. 하드 cooldown을 해제할 경로가 재시작밖에 없다
 
@@ -46,154 +33,251 @@ quota는 광고된 reset보다 훨씬 먼저 풀리는 경우가 많다.
     if (cooldownUntil) upstreamHealth.set(accountId, { consecutiveFailures: 0, cooldownUntil });
 ```
 
-성공 응답으로도 하드 cooldown이 살아남는다. 그런데 cooldown이 걸린 계정은 애초에
-요청이 나가지 않으므로(`src/codex/auth-context.ts:132`에서 선차단) 성공 응답이 발생할
-기회 자체가 없다. 자기 완결적 교착이다.
+cooldown이 걸린 계정은 `src/codex/auth-context.ts:132`에서 선차단되어 요청이 나가지
+않으므로 성공 응답이 발생할 기회 자체가 없다. 자기 완결적 교착이다.
 
-```ts
-  const cooldownUntil = getCodexAccountCooldownUntil(accountId);
-  if (cooldownUntil) throw new CodexAccountCooldownError(accountId, cooldownUntil);
-```
+## 설계 제약 (A-gate에서 확인된 사실)
 
-`getCodexAccountCooldownUntil()`은 `auth-context.ts`(2곳)와 routing 내부 선택 로직이
-모두 통과하는 단일 게이트다. 여기에 재프로브를 넣으면 모든 소비처가 한 번에 고쳐진다.
+r1 초안을 무효화한 세 가지 실측 사실이다. 구현은 이 제약을 반드시 만족해야 한다.
+
+**C1. `getCodexAccountCooldownUntil()`은 한 요청에서 여러 번 호출된다.**
+`resolveCodexAccountForThreadDetailed()`(routing.ts:443)와
+`buildCodexAuthContext()`(auth-context.ts:132), `assertCodexAuthContextNotCooled()`
+(auth-context.ts:161)가 각각 조회한다. 따라서 **조회 시점에 카나리를 소비하면**
+첫 호출이 통과시킨 뒤 두 번째 호출이 다시 막아 요청이 429로 끝난다. 조회는 무상태여야 하고,
+lease 획득은 auth 단계에서 딱 한 번 일어나야 한다.
+
+**C2. cooldown 계정의 2xx가 반드시 카나리인 것은 아니다.**
+요청 A가 진행 중일 때 요청 B의 429가 cooldown을 설정하고, 그 뒤 A가 200으로 끝날 수 있다.
+기존 테스트 두 개가 이 의미를 명시적으로 고정하고 있다.
+
+- `tests/codex-routing.test.ts:312` `2xx responses clear transient failures without clearing an unexpired cooldown`
+- `tests/codex-routing.test.ts:806` `2xx clears soft-avoid but preserves hard quota cooldown`
+
+따라서 **무조건 `delete()`는 회귀다.** lease를 소지한 요청의 성공만 cooldown을 지워야 한다.
+
+**C3. transient 경로가 probe 상태를 버린다.**
+`routing.ts:526`의 transient 기록은 `cooldownUntil`만 보존한다. 카나리가 503/timeout이면
+`cooldownSince`/`lastProbeAt`이 사라져 다음 probe가 불가능해진다.
 
 ## 수정 방향
 
-이슈 제안 1·2번을 채택한다. 3·4번(CLI escape hatch, 상태 가시화)은 CLI/GUI 표면을
-건드리므로 이번 범위 밖으로 둔다.
+이슈 제안 1·2번을 채택한다. 3·4번(CLI escape hatch, 상태 가시화)은 CLI/GUI 표면이라 범위 밖.
 
-- **파생 상한 분리**: `Retry-After`는 지금처럼 24h까지 존중하되, `resetAt`에서 파생한
-  cooldown은 훨씬 낮은 상한으로 자른다.
-- **카나리 재프로브**: 상한을 넘긴 cooldown은 일정 간격마다 요청 하나를 통과시킨다.
-  그 요청이 성공하면 `recordCodexUpstreamOutcome`의 success 경로가 cooldown을 지운다.
+- **파생 상한 분리**: `Retry-After`는 24h까지 존중하되 `resetAt` 파생 cooldown은 낮게 자른다.
+- **probe lease**: 상한을 넘긴 cooldown은 주기적으로 요청 하나에 lease를 발급한다.
+  lease를 소지한 요청만 upstream까지 나가고, 그 요청의 성공만 cooldown을 해제한다.
 
-두 번째가 핵심이다. 상한만 낮추면 "24h 대신 N분" 문제로 바뀔 뿐, 회복된 계정을
-즉시 쓰지 못하는 구조는 그대로다.
+### 보안 검토 필요 (MAINTAINERS.md)
+
+이 변경은 계정 선택·차단 의미를 바꾸지만 크리덴셜 저장·전송 경로는 건드리지 않는다.
+그래도 quota 우회로 오용될 여지가 있으므로, 구현 후 다음을 명시적으로 확인한다:
+lease는 계정당 동시 1개이며, lease 발급 간격이 상한보다 짧아질 수 없고,
+lease 실패 시 cooldown이 반드시 연장된다.
 
 ## Diff-level 변경안
 
 ### `src/codex/routing.ts`
 
-상수 추가 (현재 42-44행 부근):
+**(1) 상수** — 42-44행 뒤에 추가:
 
 ```ts
-const CODEX_DEFAULT_QUOTA_COOLDOWN_MS = 60_000;
-const CODEX_MAX_QUOTA_COOLDOWN_MS = 24 * 60 * 60_000;
+ const CODEX_DEFAULT_QUOTA_COOLDOWN_MS = 60_000;
+ const CODEX_MAX_QUOTA_COOLDOWN_MS = 24 * 60 * 60_000;
 +/**
-+ * A weekly/monthly `resetAt` is a window-refresh announcement, not a retry
-+ * directive: plan quota often frees up long before the advertised reset. Cap
-+ * reset-derived cooldowns far below the Retry-After cap so a far-future reset
-+ * cannot pin an account for the full day (#433).
++ * A weekly/monthly `resetAt` announces a window refresh; it is not a retry
++ * directive like Retry-After. Plan quota often frees up long before the
++ * advertised reset, so cap reset-derived cooldowns far below the 24h ceiling (#433).
 + */
 +const CODEX_MAX_RESET_DERIVED_COOLDOWN_MS = 15 * 60_000;
-+/** After this much cooldown has elapsed, let one canary request through. */
-+export const CODEX_QUOTA_CANARY_INTERVAL_MS = 5 * 60_000;
++/** Minimum gap between probe leases for one cooled-down account. */
++export const CODEX_QUOTA_PROBE_INTERVAL_MS = 5 * 60_000;
 ```
 
-`CodexUpstreamHealth`에 카나리 추적 필드 추가 (현재 33행 부근):
+**(2) 상태 필드** — `CodexUpstreamHealth`(33행 부근):
 
 ```ts
-  /** Hard cooldown (quota 429). Survives a later 2xx; blocks auth + selection. */
-  cooldownUntil?: number;
-+  /** When the cooldown began — the canary clock's origin. */
-+  cooldownSince?: number;
-+  /** Last time a canary probe was released through the cooldown. */
-+  lastCanaryAt?: number;
+   /** Hard cooldown (quota 429). Survives a later 2xx; blocks auth + selection. */
+   cooldownUntil?: number;
++  /**
++   * Probe lease. A cooled-down account never sends traffic, so no organic 2xx can
++   * prove recovery. `probeLeaseAt` marks the moment a single request was allowed
++   * through; ONLY that request's outcome may clear the cooldown (#433).
++   */
++  probeLeaseAt?: number;
++  /** Last probe attempt (granted or concluded) — the lease interval's origin. */
++  lastProbeAt?: number;
 ```
 
-`parseResetCooldownMs()`가 별도 상한을 쓰도록 변경 (현재 151-163행):
+**(3) 파생 상한 분리** — `parseResetCooldownMs()` 내부 (161행):
 
 ```ts
 -    const clamped = clampCooldownMs(delay);
 +    const clamped = Math.min(clampCooldownMs(delay), CODEX_MAX_RESET_DERIVED_COOLDOWN_MS);
 ```
 
-`getCodexAccountCooldownUntil()`에 카나리 창 추가 (현재 175-178행):
+**(4) 조회는 무상태 유지** — `getCodexAccountCooldownUntil()`(175-178행)은 **변경하지 않는다.**
+C1 때문이다. 대신 lease 소지 여부만 반영하는 얇은 래퍼를 추가한다.
 
 ```ts
- export function getCodexAccountCooldownUntil(accountId: string, now = Date.now()): number | null {
--  const cooldownUntil = upstreamHealth.get(accountId)?.cooldownUntil;
--  return typeof cooldownUntil === "number" && Number.isFinite(cooldownUntil) && cooldownUntil > now ? cooldownUntil : null;
++/** True when this account currently holds a probe lease (its request may go out). */
++export function hasCodexQuotaProbeLease(accountId: string): boolean {
++  return upstreamHealth.get(accountId)?.probeLeaseAt !== undefined;
++}
++
++/**
++ * Atomically grant at most one probe lease per interval. Called ONCE per request
++ * from the auth path — never from selection, which may run several times per
++ * request and would otherwise burn the lease before the request goes out (#433).
++ */
++export function tryAcquireCodexQuotaProbeLease(accountId: string, now = Date.now()): boolean {
 +  const health = upstreamHealth.get(accountId);
 +  const cooldownUntil = health?.cooldownUntil;
-+  if (typeof cooldownUntil !== "number" || !Number.isFinite(cooldownUntil) || cooldownUntil <= now) return null;
-+  // Canary: a cooled-down account never sends a request, so a real 2xx can never
-+  // arrive to clear the cooldown. Periodically release exactly one probe; if it
-+  // succeeds, recordCodexUpstreamOutcome() drops the cooldown for good (#433).
-+  const since = health?.cooldownSince ?? cooldownUntil;
-+  const lastCanary = health?.lastCanaryAt ?? since;
-+  if (now - lastCanary >= CODEX_QUOTA_CANARY_INTERVAL_MS) {
-+    upstreamHealth.set(accountId, { ...health!, lastCanaryAt: now });
-+    return null;
-+  }
-+  return cooldownUntil;
- }
++  if (typeof cooldownUntil !== "number" || cooldownUntil <= now) return false;
++  if (health!.probeLeaseAt !== undefined) return false; // one in flight already
++  const origin = health!.lastProbeAt ?? health!.cooldownSince ?? now;
++  if (now - origin < CODEX_QUOTA_PROBE_INTERVAL_MS) return false;
++  upstreamHealth.set(accountId, { ...health!, probeLeaseAt: now, lastProbeAt: now });
++  return true;
++}
 ```
 
-quota 기록 경로에 `cooldownSince` 세팅 (현재 493-500행):
+`cooldownSince`도 함께 둔다 (quota 기록 시 `now`).
+
+**(5) quota 기록** — 493-500행:
 
 ```ts
    if (outcomeClass === "quota") {
-+    const cooldownUntil = computeQuotaCooldownUntil(meta);
++    // A failed probe concludes its lease and restarts the interval clock, so the
++    // next probe waits a full interval instead of retrying immediately.
++    const prior = upstreamHealth.get(accountId);
      upstreamHealth.set(accountId, {
        consecutiveFailures: 0,
        lastFailureStatus,
        lastFailureAt: now,
--      cooldownUntil: computeQuotaCooldownUntil(meta),
-+      cooldownUntil,
-+      cooldownSince: now,
+       cooldownUntil: computeQuotaCooldownUntil(meta),
++      cooldownSince: prior?.cooldownSince ?? now,
++      lastProbeAt: now,
++      // probeLeaseAt intentionally dropped — the lease is consumed.
      });
 ```
 
-success 경로에서 cooldown이 실제로 지워지도록 변경 (현재 460-478행). 카나리가 성공하면
-하드 cooldown도 해제해야 한다 — 이게 이 수정의 목적이다.
+**(6) success 경로** — 460-478행. C2를 지켜 **lease 소지 시에만** 해제한다:
 
 ```ts
--    // Level 1 clears immediately; escalated accounts need two consecutive healthy terminals.
--    // Hard quota cooldown intentionally survives either recovery path.
--    if (cooldownUntil) upstreamHealth.set(accountId, { consecutiveFailures: 0, cooldownUntil });
--    else upstreamHealth.delete(accountId);
-+    // A 2xx from a cooled-down account can only come from a released canary, and
-+    // it proves the upstream quota actually recovered. Clear the hard cooldown
-+    // instead of holding it to the advertised reset (#433).
-+    upstreamHealth.delete(accountId);
-     return;
+   if (outcomeClass === "success") {
+     const current = upstreamHealth.get(accountId);
+     const cooldownUntil = getCodexAccountCooldownUntil(accountId, now);
++    // Only a leased probe proves recovery. A plain 2xx may be an in-flight request
++    // that started before the 429 landed, so it must NOT clear a quota cooldown
++    // (tests/codex-routing.test.ts:312 and :806 pin this).
++    if (cooldownUntil && current?.probeLeaseAt !== undefined) {
++      upstreamHealth.delete(accountId);
++      return;
++    }
+     const failoverEnabled = ...
 ```
 
-`cooldownUntil` 지역 변수가 이 분기에서 더 이상 쓰이지 않으므로, 위쪽 escalation 분기의
-`...(cooldownUntil ? { cooldownUntil } : {})` 유지 여부를 함께 정리한다. escalation
-분기는 아직 2연속 성공이 안 된 중간 상태이므로 cooldown을 유지하는 편이 맞다.
+이후 기존 escalation 로직과 `if (cooldownUntil) upstreamHealth.set(...)` 보존 분기는
+**그대로 둔다**. 단 보존 시 `probeLeaseAt`/`lastProbeAt`/`cooldownSince`를 함께 유지한다.
+
+**(7) transient 경로** — 526행. C3를 지켜 probe 상태를 보존한다:
+
+```ts
+   upstreamHealth.set(accountId, {
+     consecutiveFailures,
+     lastFailureStatus,
+     lastFailureAt: now,
+     ...(hardCooldownUntil ? { cooldownUntil: hardCooldownUntil } : {}),
++    // Preserve probe bookkeeping: a 503/timeout probe must still conclude its
++    // lease and restart the interval, not lose the clock entirely (#433 C3).
++    ...(current?.cooldownSince !== undefined ? { cooldownSince: current.cooldownSince } : {}),
++    ...(hardCooldownUntil && current?.probeLeaseAt !== undefined ? { lastProbeAt: now } : {}),
+     ...(softAvoidUntil !== undefined ? { softAvoidUntil } : {}),
+   });
+```
+
+`probeLeaseAt`은 여기서도 전달하지 않는다 — 실패한 probe는 lease를 소비한다.
+
+### `src/codex/auth-context.ts` (132행)
+
+lease 획득은 여기 단 한 곳이다.
+
+```ts
+   const cooldownUntil = getCodexAccountCooldownUntil(accountId);
+-  if (cooldownUntil) throw new CodexAccountCooldownError(accountId, cooldownUntil);
++  if (cooldownUntil && !tryAcquireCodexQuotaProbeLease(accountId)) {
++    throw new CodexAccountCooldownError(accountId, cooldownUntil);
++  }
+```
+
+`assertCodexAuthContextNotCooled()`(161행)도 lease를 존중해야 한다. 그렇지 않으면 C1대로
+두 번째 관문에서 다시 막힌다.
+
+```ts
+   const cooldownUntil = getCodexAccountCooldownUntil(ctx.accountId);
+-  if (cooldownUntil) throw new CodexAccountCooldownError(ctx.accountId, cooldownUntil);
++  if (cooldownUntil && !hasCodexQuotaProbeLease(ctx.accountId)) {
++    throw new CodexAccountCooldownError(ctx.accountId, cooldownUntil);
++  }
+```
+
+선택 로직(`isCodexAccountSelectable`, `resolveCodexAccountForThreadDetailed`)은 **변경하지
+않는다.** cooldown 계정은 pool 선택에서 계속 회피되고, 단일 계정이라 fallback이 없을 때만
+`hasConfiguredPoolAccount` 경로로 auth까지 도달해 lease를 시도한다. 이게 #433의 실제
+시나리오(단일 `__main__` 계정)다.
+
+> 구현 시 확인 필요: pool에 건강한 대체 계정이 있으면 cooled 계정은 선택되지 않으므로
+> lease 기회가 오지 않는다. 이는 의도된 동작이다 — 건강한 계정이 있는데 굳이 cooled
+> 계정을 시험할 이유가 없다. 다만 모든 계정이 cooled인 경우도 같은 경로로 도달하는지
+> B 단계에서 `resolveCodexAccountForThreadDetailed`를 재확인한다.
 
 ## 회귀 테스트
 
-`tests/codex-routing.test.ts`에 추가한다. 이 파일은 이미
-`computeQuotaCooldownUntil`/`getCodexUpstreamHealth`/`recordCodexUpstreamOutcome`을
-import하고 있으며 320행에 유사한 cooldown 단언이 있다.
+`tests/codex-routing.test.ts`에 추가한다.
 
 1. `far-future resetAt is capped well below the 24h ceiling`
-   - `resetAt`을 4일 뒤로 주고 quota 429 기록
-   - `cooldownUntil - now <= CODEX_MAX_RESET_DERIVED_COOLDOWN_MS`
-   - 수정 전 실패: 24h(86,400,000ms)로 clamp됨
+   - `resetAt` 4일 뒤 + quota 429 → `cooldownUntil - now <= CODEX_MAX_RESET_DERIVED_COOLDOWN_MS`
+   - 수정 전 실패: 24h로 clamp
 
 2. `Retry-After keeps honoring long explicit delays`
-   - `Retry-After: 7200` (2시간)
-   - cooldown이 2시간으로 유지됨 — reset 상한이 명시적 지시까지 깎지 않음을 고정
+   - `Retry-After: 7200` → cooldown 2시간 유지 (reset 상한이 명시 지시를 깎지 않음)
 
-3. `canary probe is released after the interval`
-   - quota 429 기록 후 즉시 `isCodexAccountInCooldown()` → `true`
-   - `now + CODEX_QUOTA_CANARY_INTERVAL_MS` 시점 조회 → `false` (카나리 통과)
-   - 곧바로 다시 조회 → `true` (카나리는 한 번만)
-   - 수정 전 실패: 항상 `true`
+3. `probe lease is granted at most once per interval`
+   - quota 429 직후 `tryAcquireCodexQuotaProbeLease()` → `false`
+   - `+CODEX_QUOTA_PROBE_INTERVAL_MS` → `true`
+   - 곧바로 재호출 → `false` (동시 lease 1개)
 
-4. `successful canary clears the hard cooldown`
-   - quota 429 → 카나리 창에서 200 기록
-   - `getCodexUpstreamHealth()`가 `null`
-   - 수정 전 실패: `cooldownUntil`이 그대로 남음
+4. `selection and auth checks stay consistent within one request` — **C1 회귀**
+   - lease 획득 후 `getCodexAccountCooldownUntil()`이 여전히 값을 반환하지만
+     `hasCodexQuotaProbeLease()`가 `true`
+   - 즉 두 번째 관문이 같은 요청을 막지 않음
 
-5. `failed canary keeps the account cooled down`
-   - quota 429 → 카나리 창에서 다시 429
-   - 여전히 cooldown 상태이고 새 `cooldownSince`로 카나리 시계가 리셋됨
+5. `leased probe success clears the hard cooldown`
+   - quota 429 → lease 획득 → 200 → `getCodexUpstreamHealth()`가 `null`
+
+6. `unleased 2xx preserves the hard cooldown` — **C2 회귀, 기존 :312/:806과 동일 의미**
+   - quota 429 → lease 없이 200 → cooldown 유지
+
+7. `failed probe restarts the interval and drops the lease`
+   - lease 획득 → 429 → `hasCodexQuotaProbeLease()`가 `false`이고
+     즉시 재획득 시도가 `false`
+
+8. `transient probe failure keeps probe bookkeeping` — **C3 회귀**
+   - lease 획득 → 503 → cooldown 유지, `lastProbeAt`이 갱신되어
+     `+interval` 후 재획득이 `true`
+   - timeout과 connect_error에 대해서도 같은 단언
+
+9. 기존 `2xx responses clear transient failures without clearing an unexpired cooldown`
+   (:312)과 `2xx clears soft-avoid but preserves hard quota cooldown`(:806)이
+   **수정 없이 계속 통과**해야 한다. 이 둘이 깨지면 설계가 틀린 것이다.
+
+### 통합 테스트
+
+단위 테스트만으로는 C1을 완전히 증명하지 못한다. `tests/server-auth.test.ts` 또는 신규
+`tests/codex-quota-probe-e2e.test.ts`에서 `handleResponses()`를 통해
+429 → interval 경과 → probe가 실제 upstream fetch까지 도달 → 200 → 다음 요청이 정상
+통과하는 흐름을 mock fetch로 검증한다.
 
 ## 유지해야 할 동작
 
@@ -205,6 +289,6 @@ import하고 있으며 320행에 유사한 cooldown 단언이 있다.
 ## 검증 명령
 
 ```bash
-bun test tests/codex-routing.test.ts
+bun test tests/codex-routing.test.ts tests/codex-auth-context.test.ts tests/server-auth.test.ts
 bun run typecheck
 ```

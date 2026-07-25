@@ -1,5 +1,9 @@
 # WP2 — #432 Windows Task Scheduler 기본값 생략으로 인한 stale 오탐
 
+> 개정 이력: r1 초안은 A-gate에서 FAIL(스윕 전체). blocker 8(테스트가 두 번째 wiring
+> 누락을 잡지 못함)과 11(PR #408 현황 stale)을 r2에서 수정했다. 공식 스키마 근거는
+> `001_external_evidence.md` §Windows Task Scheduler 참조.
+
 ## 증상
 
 정상 동작 중인 Task Scheduler 서비스를 `ocx status`와 Dashboard Startup Safety가
@@ -49,20 +53,9 @@ const schedulerEnabled =
 
 ## 공식 스키마 근거
 
-Microsoft 문서로 확인한 실제 기본값:
-
-- Trigger `Enabled`: [Task Scheduler Schema](https://learn.microsoft.com/en-us/windows/win32/taskschd/task-scheduler-schema)가
-  `default="true" minOccurs="0"`. [Common Trigger Elements](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsch/a0cf999f-aa47-4821-a46a-00fd28431f65)도
-  "필드가 없거나 TRUE이면 enabled"라고 명시한다.
-- Settings `Enabled`: 같은 XSD에서 `default="true" minOccurs="0"`.
-  [SchRpcRegisterTask](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsch/849c131a-64e4-46ef-b015-9d4c599c5167)는
-  Settings/Enabled가 "존재하고 FALSE일 때"만 실행하지 않는다고 규정한다.
-- Principal `RunLevel`: XSD에서 `minOccurs="0"`이고, 생략 시 서버가 `LeastPrivilege`를
-  사용해야 한다고 같은 프로토콜 문서가 명시한다.
-
-개별 [Enabled(settingsType) 페이지](https://learn.microsoft.com/en-us/windows/win32/taskschd/taskschedulerschema-enabled-settingstype-element)는
-`minOccurs="1"`이라고 적지만 전체 XSD 및 등록 프로토콜과 모순된다. 전체 스키마와 동작
-프로토콜을 우선 근거로 삼는다.
+Trigger `Enabled`와 Settings `Enabled`는 `default="true" minOccurs="0"`, Principal
+`RunLevel`은 생략 시 `LeastPrivilege`다. 출처와 상충 문서 처리 방침은
+`001_external_evidence.md` §Windows Task Scheduler 참조.
 
 ## Diff-level 변경안
 
@@ -126,6 +119,52 @@ Microsoft 문서로 확인한 실제 기본값:
 
 `schedulerSettings` 지역 변수가 다른 곳에서 쓰이지 않으면 함께 제거한다.
 
+### 두 판정을 한 parser로 합친다 (blocker 8)
+
+헬퍼만 고치면 `diagnoseService()`의 정규식 교체를 잊어도 헬퍼 테스트와 derive 테스트가
+모두 통과한다. 두 판정이 같은 함수를 거치도록 묶어 그 구멍을 없앤다.
+
+```ts
++export interface WindowsSchedulerXmlState {
++  installed: boolean;
++  enabled: boolean;
++  registrationHealthy: boolean;
++}
++
++/**
++ * Single source of truth for reading a registered task's XML. Both the status
++ * diagnostic and the install verification path must go through here so a partial
++ * fix (helper updated, diagnoseService() left on the old regex) cannot pass (#432).
++ */
++export function readWindowsSchedulerXmlState(
++  xml: string,
++  wscript: string,
++  launcher: string,
++): WindowsSchedulerXmlState {
++  const installed = xml.length > 0;
++  return {
++    installed,
++    enabled: installed && windowsTaskRegistrationEnabled(xml),
++    registrationHealthy: installed && windowsTaskRegistrationHealthy(xml, wscript, launcher),
++  };
++}
+```
+
+`diagnoseService()`는 이 함수만 호출한다.
+
+```ts
+-const schedulerInstalled = schedulerXml.length > 0;
+-const schedulerSettings = taskXmlSection(schedulerXml, "Settings");
+-const schedulerEnabled = schedulerInstalled && /<Enabled>\s*true\s*<\/Enabled>/i.test(schedulerSettings);
+-const schedulerAssets = [...].every(existsSync) && windowsTaskRegistrationHealthy(schedulerXml);
++const schedulerState = readWindowsSchedulerXmlState(schedulerXml, wscript, launcher);
++const schedulerInstalled = schedulerState.installed;
++const schedulerEnabled = schedulerState.enabled;
++const schedulerAssets = [...].every(existsSync) && schedulerState.registrationHealthy;
+```
+
+B 단계에서 `wscript`/`launcher` 값이 이 스코프에서 어떻게 얻어지는지 확인해 맞춘다.
+
 ## 회귀 테스트
 
 `tests/service.test.ts` (203행 부근의 `buildWindowsTaskXml()` + `.replace()` inline
@@ -148,10 +187,17 @@ fixture 패턴을 따른다).
    - `InteractiveToken→Password`, `IgnoreNew→Parallel`, `PT0S→PT72H`,
      `wscript.exe→cmd.exe`, launcher path 변경 → 전부 `false`
 
-5. `canonicalized scheduler state remains viable`
-   - 두 판정 결과를 `deriveWindowsServiceDiagnostic()`에 넣어
-     `stale:false`, `enabled:true`, `viable:true` 확인
-   - 이 테스트가 `schedulerEnabled`를 고치지 않은 반쪽 수정을 잡는다
+5. `canonicalized scheduler state remains viable` — **blocker 8 대응**
+   - `readWindowsSchedulerXmlState(canonicalXml, ...)`를 직접 호출해
+     `{installed:true, enabled:true, registrationHealthy:true}` 확인
+   - 그 결과를 `deriveWindowsServiceDiagnostic()`에 넣어 `stale:false`, `enabled:true`,
+     `viable:true` 확인
+   - 헬퍼 결과를 손으로 주입하지 않고 XML에서 두 판정을 함께 산출하므로, 한쪽만 고친
+     반쪽 수정이 여기서 실패한다
+
+6. `explicitly disabled task is still reported disabled`
+   - Settings `Enabled=false` XML → `readWindowsSchedulerXmlState().enabled === false`
+   - 오탐 수정이 진짜 비활성화까지 통과시키지 않음을 고정
 
 ## 유지해야 할 동작
 
@@ -162,16 +208,29 @@ fixture 패턴을 따른다).
 - 정확한 `wscript.exe` action과 VBS launcher 인자.
 - asset 파일 존재, baked path, backend-state mismatch, WinSW 충돌 검사.
 
-## PR #408과의 관계
+## PR #408과의 관계 (blocker 11 — 초안 서술은 stale이었다)
 
-PR #408은 `src/service.ts`의 import 부근과 321-330행(`schtasks()` 래핑 + elevation)만
-건드린다. 우리가 고치는 471-493행과 953-958행은 손대지 않으므로 텍스트 충돌은 없다.
-`tests/service.test.ts`도 #408은 건드리지 않는다.
+r1은 #408이 import 부근과 321-330행만 건드린다고 적었으나, **현재 head는 `src/service.ts`에
+훨씬 큰 변경을 담고 있다.** 특히 `evaluateWindowsSchedulerInstallVerification()`이라는
+새 `windowsTaskRegistrationHealthy()` 소비자와 전용 테스트를 추가했다.
 
-다만 의미상 결합이 있다. #408의 `evaluateWindowsSchedulerInstallVerification()`이 같은
-`windowsTaskRegistrationHealthy()`를 호출하므로, #432를 고치지 않으면 elevated install
-성공 후에도 canonicalized XML을 unhealthy로 보고 rollback할 수 있다. 즉 이 수정은
-#408을 방해하지 않고 오히려 보강한다.
+따라서 WP2 착수 시 다음을 반드시 먼저 수행한다.
+
+```bash
+gh pr diff 408 --repo lidge-jun/opencodex > /tmp/pr408.diff
+```
+
+확인 항목:
+
+1. `windowsTaskRegistrationHealthy()` 시그니처를 #408이 바꿨는지. 바꿨다면 우리
+   `readWindowsSchedulerXmlState()`의 인자도 맞춰야 한다.
+2. `evaluateWindowsSchedulerInstallVerification()`이 canonicalized XML(기본값 생략형)을
+   어떻게 다루는지. #432 수정 후 그 경로가 install을 rollback하지 않는지.
+3. #408이 추가한 install-verification 테스트가 우리 수정 이후에도 의미를 유지하는지.
+
+의미상 결합은 유지된다: #432를 고치지 않으면 #408의 elevated install이 성공한 뒤에도
+canonicalized XML을 unhealthy로 보고 rollback할 수 있다. 이 수정은 #408을 보강한다.
+다만 **행번호 기준 충돌은 이제 실재할 수 있으므로** 최신 head 대조가 필수다.
 
 ## 검증 명령
 
