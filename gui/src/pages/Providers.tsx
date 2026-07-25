@@ -73,10 +73,8 @@ export default function Providers({ apiBase, viewMode }: { apiBase: string; view
   const [codexLoginOpen, setCodexLoginOpen] = useState(false);
   const [modelsRefreshToken, setModelsRefreshToken] = useState(0);
   const [oauthTosPending, setOauthTosPending] = useState<{ provider: string; addAccount: boolean } | null>(null);
-  const [codexActiveNeedsReauth, setCodexActiveNeedsReauth] = useState(false);
   const aliveRef = useRef(true);
   const removeBusyRef = useRef(false);
-  const codexReauthGenerationRef = useRef(0);
   const oauthLoginGenerationRef = useRef<Map<string, number>>(new Map());
 
   const notify = (msg: string, ok: boolean) => { setStatus(msg); setStatusOk(ok); };
@@ -157,33 +155,13 @@ export default function Providers({ apiBase, viewMode }: { apiBase: string; view
     }
   }, [apiBase]);
 
-  const fetchCodexActiveReauth = useCallback(async () => {
-    const generation = ++codexReauthGenerationRef.current;
-    try {
-      const [accountsRes, activeRes] = await Promise.all([
-        fetch(`${apiBase}/api/codex-auth/accounts`),
-        fetch(`${apiBase}/api/codex-auth/active`),
-      ]);
-      if (!accountsRes.ok || !activeRes.ok) return;
-      const accts = await accountsRes.json() as { accounts?: Array<{ id: string; isMain?: boolean; needsReauth?: boolean }> };
-      const active = await activeRes.json() as { activeCodexAccountId?: string | null };
-      if (!aliveRef.current || codexReauthGenerationRef.current !== generation) return;
-      const accounts = accts.accounts ?? [];
-      const activeId = active.activeCodexAccountId ?? null;
-      const activePoolAccount = activeId && activeId !== "__main__"
-        ? accounts.find(a => a.id === activeId)
-        : null;
-      const needs = activePoolAccount
-        ? Boolean(activePoolAccount.needsReauth)
-        : Boolean(accounts.find(a => a.isMain)?.needsReauth);
-      setCodexActiveNeedsReauth(needs);
-    } catch { /* ignore */ }
-  }, [apiBase]);
-
   // WP3: one Codex account controller for the whole Providers page, shared by the
   // Overview tab and the Accounts tab so a mutation on either is instantly visible on
   // both. Mounting CodexAccountPool twice used to fork this state.
   const codexPool = useCodexAccountPool(apiBase);
+  // Single source for Codex reauth health: the controller derives it from the same
+  // accounts/active pair this page used to poll on its own 30s timer.
+  const codexActiveNeedsReauth = codexPool.activeNeedsReauth;
 
   const pools = useProviderAccountPools({
     apiBase, t: t as unknown as Parameters<typeof useProviderAccountPools>[0]["t"],
@@ -214,14 +192,11 @@ export default function Providers({ apiBase, viewMode }: { apiBase: string; view
       void fetchConfig();
       void fetchOauth();
       void fetchProviderQuotas();
-      void fetchCodexActiveReauth();
     }, 0);
-    const iv = window.setInterval(() => { void fetchCodexActiveReauth(); }, 30_000);
     return () => {
       window.clearTimeout(timeout);
-      window.clearInterval(iv);
     };
-  }, [fetchConfig, fetchOauth, fetchProviderQuotas, fetchCodexActiveReauth]);
+  }, [fetchConfig, fetchOauth, fetchProviderQuotas]);
 
   const cancelLoginOAuth = useCallback(async (provider: string) => {
     const gen = (oauthLoginGenerationRef.current.get(provider) ?? 0) + 1;
@@ -629,7 +604,6 @@ export default function Providers({ apiBase, viewMode }: { apiBase: string; view
               onRemoveProvider={removeProvider}
               onSetDisabled={setProviderDisabled}
               onUpdateProvider={updateProvider}
-              onCodexActiveNeedsReauthChange={setCodexActiveNeedsReauth}
               codexController={codexPool}
             />
             );

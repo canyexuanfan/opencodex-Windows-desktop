@@ -76,6 +76,9 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
   const [pauseCount, setPauseCount] = useState(0);
   const pauseTokensRef = useRef<Set<PauseToken>>(new Set());
   const loadGenerationRef = useRef(0);
+  // Set by switchAccount so a background load already in flight cannot roll the active
+  // id back to a value the server had not yet committed when that request was issued.
+  const pendingActiveIdRef = useRef<{ id: string | null } | null>(null);
   const observersRef = useRef<Set<CodexAccountLoadObserver>>(new Set());
   const switchingRef = useRef<string | null>(null);
 
@@ -110,7 +113,14 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
         if (!response.ok) throw new Error("active account load failed");
         const active = await response.json();
         if (loadGenerationRef.current === generation) {
-          setActiveId(active.activeCodexAccountId ?? null);
+          const serverActiveId = active.activeCodexAccountId ?? null;
+          const pending = pendingActiveIdRef.current;
+          if (pending && serverActiveId !== pending.id) {
+            // Stale read: keep the accepted value and let the next load reconcile.
+          } else {
+            pendingActiveIdRef.current = null;
+            setActiveId(serverActiveId);
+          }
           for (const observer of observers) {
             observer.acceptActiveRead(active.autoSwitchThreshold, revisions.get(observer)!);
           }
@@ -133,6 +143,8 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
 
   // Initial load plus background refresh. Owned here so mounting or unmounting a surface
   // never changes the request count.
+  // Initial load. Deliberately independent of `pauseCount`: previously every pause
+  // transition re-ran this effect and enqueued a fetch while supposedly paused.
   useEffect(() => {
     // `enabled` is false for the inert instance a nested consumer still has to create
     // (hooks cannot be called conditionally). Without this guard, embedding
@@ -140,14 +152,14 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
     // poll loop and issue duplicate requests on every mount.
     if (!enabled) return;
     const timeout = window.setTimeout(() => { void load(); }, 0);
-    if (pauseCount > 0) {
-      return () => window.clearTimeout(timeout);
-    }
+    return () => window.clearTimeout(timeout);
+  }, [enabled, load]);
+
+  // Background refresh, suspended while any pause lease is held.
+  useEffect(() => {
+    if (!enabled || pauseCount > 0) return;
     const interval = window.setInterval(() => { void load(); }, REFRESH_INTERVAL_MS);
-    return () => {
-      window.clearTimeout(timeout);
-      window.clearInterval(interval);
-    };
+    return () => window.clearInterval(interval);
   }, [enabled, load, pauseCount]);
 
   const pauseRefresh = useCallback((): PauseToken => {
@@ -175,8 +187,11 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
       if (!response.ok) throw new Error("account switch failed");
       const result = await response.json().catch(() => ({})) as { activeCodexAccountId?: string | null };
       const selectedId = result.activeCodexAccountId ?? id;
+      pendingActiveIdRef.current = { id: selectedId ?? null };
       setActiveId(selectedId ?? null);
-      await load();
+      // Reconcile in the background: the switch is already accepted upstream, so a slow
+      // reload must not hold the caller's confirmation dialog open.
+      void load();
       return { ok: true, activeId: selectedId ?? null } as const;
     } catch {
       return { ok: false, reason: "request" } as const;

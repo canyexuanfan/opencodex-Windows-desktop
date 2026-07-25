@@ -106,6 +106,7 @@ describe("workspace account integration seam", () => {
       Bun.file("gui/src/components/CodexAccountPool.tsx").text(),
     ]);
     const page = page0 + (await Bun.file("gui/src/hooks/useProviderAccountPools.ts").text());
+    const hook = await Bun.file("gui/src/hooks/useCodexAccountPool.ts").text();
     expect(page).toContain('notify(t("prov.logoutFail"');
     expect(page).toContain('notify(t("prov.accountRemoveFail"');
     expect(page).toContain("await fetchAccountSets([provider])");
@@ -169,18 +170,34 @@ describe("workspace account integration seam", () => {
       Bun.file("gui/src/components/AddCodexAccountModal.tsx").text(),
     ]);
     const page = page0 + (await Bun.file("gui/src/hooks/useProviderAccountPools.ts").text());
+    const hook = await Bun.file("gui/src/hooks/useCodexAccountPool.ts").text();
     expect(page).toContain("codexActiveNeedsReauth");
     expect(page).toContain("map.openai = true");
-    expect(page).toContain("onCodexActiveNeedsReauthChange={setCodexActiveNeedsReauth}");
-    expect(page).toContain("codexReauthGenerationRef");
-    expect(pool).toContain("onActiveNeedsReauthChange");
-    expect(pool).toContain("if (showAdd)");
+
+    // WP3: reauth health is DERIVED from the shared controller. The page used to keep a
+    // second state copy refreshed by its own 30s timer, which meant two background
+    // owners read the same endpoints and pauseRefresh() could not stop one of them.
+    expect(page).toContain("const codexActiveNeedsReauth = codexPool.activeNeedsReauth;");
+    expect(page).not.toContain("fetchCodexActiveReauth");
+    expect(page).not.toContain("codexReauthGenerationRef");
+    expect(page).not.toContain("setCodexActiveNeedsReauth");
+
+    // WP3: background refresh pauses through a token lease, not a boolean read of the
+    // modal flag. Two holders must both release before polling resumes.
+    expect(pool).toContain("controller.pauseRefresh()");
+    expect(pool).toContain("controller.resumeRefresh(token)");
+    expect(pool).not.toContain("if (showAdd) {");
+    expect(hook).toContain("pauseTokensRef");
+    expect(hook).toContain("if (!enabled || pauseCount > 0) return;");
+    // The initial load must not be re-triggered by pause transitions.
+    expect(hook).toContain("}, [enabled, load]);");
     expect(modal).toContain("reauth: true");
     expect(modal).toContain("startedReauthRef");
     expect(modal).toContain("&reauth=1");
     expect(pool).toContain("codexAuth.reauthenticate");
     expect(pool).toContain("codexAuth.mainTokenExpired");
-    expect(panel).toContain("onActiveNeedsReauthChange={onCodexActiveNeedsReauthChange}");
+    // The panel now shares the controller instead of reporting health upward.
+    expect(panel).toContain("controller={codexController}");
   });
 
   test("keeps classic stale-account reauth and remove outside disabled row shell", async () => {
