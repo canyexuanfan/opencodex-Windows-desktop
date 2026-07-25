@@ -142,12 +142,33 @@ describe("useAppRouteState (real hook)", () => {
   });
 
   test("the legacy workspace hash is REPLACED, so Back is not trapped", async () => {
-    const { seen } = await mountAt("#providers/workspace");
-    const lengthAfter = win.history.length;
+    const { seen, act } = await mountAt("#dashboard");
+
+    // Build a real prior entry, then navigate onto the legacy hash the way a bookmark
+    // or a pasted link would.
+    const baseline = win.history.length;
+    await act(async () => { seen.current!.navigateToPage("models"); });
+    expect(win.history.length).toBeGreaterThan(baseline);
+
+    const beforeLegacy = win.history.length;
+    await act(async () => {
+      win.location.hash = "providers/workspace";
+      win.dispatchEvent(new win.HashChangeEvent("hashchange"));
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    // The rewrite itself must be a replace, so it adds no entry beyond the navigation.
     expect(normalizeHashPath(win.location.hash)).toBe("providers");
     expect(seen.current!.page).toBe("providers");
-    // replaceHash, not navigateHash: the rewrite must not add a history entry.
-    expect(lengthAfter).toBe(1);
+    expect(win.history.length).toBe(beforeLegacy + 1);
+
+    // And Back must reach the previous page rather than bouncing on a rewritten entry.
+    await act(async () => {
+      win.history.back();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(normalizeHashPath(win.location.hash)).toBe("models");
+    expect(seen.current!.page).toBe("models");
   });
 
   test("an unknown suffix is normalised through the hook", async () => {
@@ -159,7 +180,10 @@ describe("useAppRouteState (real hook)", () => {
   test("navigateToPage pushes a history entry", async () => {
     const { seen, act } = await mountAt("#dashboard");
     const before = win.history.length;
-    await act(async () => { seen.current!.navigateToPage("models"); });
+    await act(async () => {
+      seen.current!.navigateToPage("models");
+      await new Promise((r) => setTimeout(r, 10));
+    });
     expect(normalizeHashPath(win.location.hash)).toBe("models");
     expect(win.history.length).toBeGreaterThan(before);
   });

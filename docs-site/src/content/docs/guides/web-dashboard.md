@@ -41,11 +41,13 @@ bun run dev:gui
 | **Usage / Debug** | Inspect token-usage coverage and trends, or enable opt-in provider transport and usage-extraction diagnostics. |
 | **Stop** | Gracefully stop the proxy and installed background service, restore native Codex, and exit (`POST /api/stop`). |
 
-### Classic vs Workspace
+### Linking to a section
 
-The sidebar **Workspace / Classic** control switches the Dashboard and Providers layouts. The
-preference is stored in the browser and kept consistent across those pages. On Providers, the URL
-also reflects the mode (`#providers` vs `#providers/workspace`).
+There is a single layout, so there is no layout switch to configure. Dashboard sections are
+addressable instead: `#dashboard` opens Overview, and `#dashboard/providers` and
+`#dashboard/models` open the other two. Reload, bookmark, and Back all keep the section you were
+on. **Logs** works the same way with `#logs` and `#logs/debug`. An older `#providers/workspace`
+bookmark now lands on `#providers`.
 
 Cost values in **Logs** and **Usage** are API list-price equivalents calculated from reported tokens.
 They are not billing receipts or evidence of an actual charge; subscription usage or provider credits

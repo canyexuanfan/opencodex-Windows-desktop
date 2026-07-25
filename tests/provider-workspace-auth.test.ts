@@ -148,7 +148,7 @@ describe("workspace account integration seam", () => {
     expect(page).toContain("/api/oauth/login/cancel");
     expect(page).toContain("deviceCode");
     expect(panel).toContain("pwi-device-code");
-    // Classic provider-level CTA: OAuth uses loginOAuth; openai deep-links to Codex Auth.
+    // Add Provider account row CTA: OAuth uses loginOAuth; openai deep-links to Codex Auth.
     expect(page).toContain('href: "#codex-auth"');
     expect(panel).toContain("onReauth");
     expect(panel).toContain("pws.reauthenticate");

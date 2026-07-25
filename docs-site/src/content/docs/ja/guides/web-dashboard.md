@@ -41,9 +41,9 @@ bun run dev:gui
 | **使用量 / デバッグ** | トークン使用量の測定範囲と推移を見るか、オプションのプロバイダートランスポート/使用量抽出診断をオンにします。 |
 | **停止** | プロキシとインストールされたバックグラウンドサービスを正常終了しネイティブ Codex を復元した後終了します(`POST /api/stop`)。 |
 
-### Classic / Workspace
+### セクションへのリンク
 
-サイドバーの **Workspace / Classic** コントロールで Dashboard と Providers のレイアウトを切り替えます。設定はブラウザに保存され、これらのページ間で揃います。Providers では URL もモードを反映します（`#providers` と `#providers/workspace`）。
+レイアウトは 1 つだけなので、切り替える設定はありません。代わりに Dashboard の各セクションに URL があります。`#dashboard` は Overview、`#dashboard/providers` と `#dashboard/models` は残りの 2 つです。再読み込み・ブックマーク・戻る操作のいずれでも、表示していたセクションが保たれます。**Logs** も `#logs` と `#logs/debug` で同じように動作します。以前の `#providers/workspace` のブックマークは `#providers` に移動します。
 
 **ログ**と**使用量**のコスト値は報告されたトークンで計算した API 定価換算値です。請求明細や
 実際の請求証拠ではなく、サブスクリプション使用量またはプロバイダークレジットが代わりに適用される場合があります。
