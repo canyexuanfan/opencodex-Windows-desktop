@@ -124,7 +124,18 @@ export interface CodexAccountPoolController {
   saveAlias(id: string, alias: string): Promise<CodexAccountActionResult>;
   removeAccount(id: string): Promise<CodexAccountActionResult>;
   syncAfterAccountAdded(): Promise<CodexAccountActionResult>;
+
+  /** 배경 폴링 일시정지. 호출마다 새 토큰을 반환하며, 그 토큰을 해제해야 재개된다. */
+  pauseRefresh(): PauseToken;
+  /** 같은 이유로 두 표면이 동시에 정지시켜도 마지막 해제에서만 재개된다. */
+  resumeRefresh(token: PauseToken): void;
+
+  /** 훅이 소유한 배경 load 결과를 표시 계층이 구독한다(아래 observer 절). */
+  subscribeLoadObserver(observer: CodexAccountLoadObserver): () => void;
 }
+
+/** 불투명 토큰 — 문자열 reason 을 키로 쓰지 않는다. */
+export type PauseToken = { readonly __brand: "codex-pool-pause" };
 
 export function useCodexAccountPool(apiBase: string): CodexAccountPoolController;
 ```
@@ -395,28 +406,36 @@ Q6의 분류선을 그대로 적용하면 이펙트가 두 계층에 걸친다.
 1. **이펙트는 훅(컨트롤러)이 소유한다.** `useCodexAccountPool`이 초기 로드와
    30초 인터벌을 단독으로 돌린다. `Providers.tsx`가 훅을 한 번만 호출하므로
    폴링도 앱 전체에서 한 번만 돈다.
-2. **`showAdd` 의존은 일반화한 pause 신호로 바꾼다.** 훅이
-   `pauseRefresh(reason)` / `resumeRefresh(reason)`를 노출하고, 모달을 여는
-   표시 계층이 이를 호출한다. 이유 문자열을 세트로 관리해 두 표면이 각각 모달을
-   열어도 참조 카운트가 맞는다.
-3. **표면 컴포넌트는 이펙트를 갖지 않는다.** Overview와 Accounts는 훅이 준
+2. **`showAdd` 의존은 토큰 기반 pause 리스로 바꾼다.** `pauseRefresh()`는
+   호출할 때마다 **새 불투명 토큰**을 반환하고, `resumeRefresh(token)`은 그
+   토큰만 해제한다. 훅은 살아있는 토큰 집합이 비었을 때만 폴링을 재개한다.
+
+   > 초안은 "이유 문자열을 세트로 관리"라고 적었는데 **틀렸다.** 두 표면이 같은
+   > 이유(`"add-modal"`)로 동시에 정지시키면 첫 번째 `resumeRefresh`가 두 번째
+   > 호출자의 정지까지 풀어버린다. 문자열 키가 아니라 호출 단위 토큰이어야 한다.
+
+3. **auto-switch observer는 구독 방식으로 받는다.** 현재 `load(refreshQuota, observer)`는
+   호출자가 observer 를 넘기는 구조인데, 폴링이 훅으로 올라가면 **배경 load 에는
+   넘길 호출자가 없다.** 따라서 `subscribeLoadObserver(observer)`를 두고, auto-switch
+   임계값을 소유한 표시 계층이 마운트 시 구독한다. 훅은 자기 소유의 배경 load 든
+   표시 계층이 유발한 명시적 load 든 동일하게 구독자 전원에게 통지한다.
+4. **표면 컴포넌트는 이펙트를 갖지 않는다.** Overview와 Accounts는 훅이 준
    값을 읽기만 한다. 이것이 "두 표면이 마운트/언마운트돼도 요청 수가 변하지
    않는다"는 검증 기준의 근거다.
 
-```text
-// 훅이 노출하는 형태 (Q6 데이터 계층 + 생명주기)
-{
-  accounts, activeId, loadState, switchingId,
-  load, switchAccount, saveAlias, removeAccount, syncAfterAccountAdded,
-  pauseRefresh(reason: string), resumeRefresh(reason: string),
-}
-```
+정식 형태는 위 `CodexAccountPoolController` 인터페이스 하나뿐이다. 요약하면
+데이터(`accounts`/`activeId`/`loadState`/`switchingId`/`activeNeedsReauth`),
+액션(`load`/`switchAccount`/`saveAlias`/`removeAccount`/`syncAfterAccountAdded`),
+생명주기(`pauseRefresh`/`resumeRefresh`/`subscribeLoadObserver`)의 세 묶음이다.
 
 ### 이 결정이 만드는 검증 기준
 
 - Overview와 Accounts를 번갈아 5회 전환해도 `/api/codex-auth/accounts` 요청 수가
   증가하지 않는다 (탭 전환은 fetch를 유발하지 않는다).
 - Overview에서 add 모달을 열면 30초 폴링이 멈추고, 닫으면 재개된다.
+- **두 표면이 동시에 정지시킨 뒤 하나만 해제하면 폴링은 여전히 멈춰 있다**
+  (토큰 리스 회귀 — 문자열 키였다면 실패한다).
+- 배경 폴링이 유발한 load 도 구독한 auto-switch observer 에게 통지된다.
 - 두 표면이 동시에 마운트된 상황이 생기더라도 인터벌은 하나다.
 
 ### 정적/테스트 게이트
