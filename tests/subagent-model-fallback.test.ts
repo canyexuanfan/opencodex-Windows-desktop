@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   applySubagentModelFallback,
   buildSubagentModelChain,
+  getSubagentQuotaPrimeStateForTests,
   isSubagentModelUnavailable,
   maybePrimeSubagentQuota,
   noteSubagentModelFailure,
@@ -167,6 +168,72 @@ describe("subagent model fallback chain", () => {
     expect(selectAvailableSubagentModel("gpt-5.6-sol", cfg()).model).toBe(
       "alibaba-token-plan/qwen3.8-max-preview",
     );
+    expect(getSubagentQuotaPrimeStateForTests().primedAt).toBeGreaterThan(0);
+    expect(getSubagentQuotaPrimeStateForTests().inFlight).toBe(false);
+  });
+
+  test("concurrent maybePrimeSubagentQuota callers share one in-flight refresh", async () => {
+    resetSubagentModelFallbackStateForTests();
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    setSubagentQuotaPrimeForTests(async () => {
+      calls += 1;
+      await gate;
+      updateAccountQuota("main", 95, undefined, 20);
+    });
+
+    const a = maybePrimeSubagentQuota(cfg());
+    const b = maybePrimeSubagentQuota(cfg());
+    const c = maybePrimeSubagentQuota(cfg());
+    expect(getSubagentQuotaPrimeStateForTests().inFlight).toBe(true);
+    release();
+    await Promise.all([a, b, c]);
+    expect(calls).toBe(1);
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", cfg()).model).toBe(
+      "alibaba-token-plan/qwen3.8-max-preview",
+    );
+  });
+
+  test("failed quota prime does not mark success TTL and allows retry", async () => {
+    resetSubagentModelFallbackStateForTests();
+    let calls = 0;
+    setSubagentQuotaPrimeForTests(async () => {
+      calls += 1;
+      throw new Error("prime failed");
+    });
+    await maybePrimeSubagentQuota(cfg());
+    expect(calls).toBe(1);
+    expect(getSubagentQuotaPrimeStateForTests().primedAt).toBe(0);
+    expect(getSubagentQuotaPrimeStateForTests().inFlight).toBe(false);
+
+    setSubagentQuotaPrimeForTests(async () => {
+      calls += 1;
+      updateAccountQuota("main", 95, undefined, 20);
+    });
+    await maybePrimeSubagentQuota(cfg());
+    expect(calls).toBe(2);
+    expect(getSubagentQuotaPrimeStateForTests().primedAt).toBeGreaterThan(0);
+  });
+
+  test("reset clears timestamp, in-flight, health, and native slug cache", async () => {
+    resetSubagentModelFallbackStateForTests();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    setSubagentQuotaPrimeForTests(async () => {
+      await gate;
+      throw new Error("cancelled after reset");
+    });
+    const priming = maybePrimeSubagentQuota(cfg());
+    noteSubagentModelFailure("kimi/k3", "429", cfg());
+    expect(isSubagentModelUnavailable("kimi/k3", cfg())).toBe(true);
+    expect(getSubagentQuotaPrimeStateForTests().inFlight).toBe(true);
+    resetSubagentModelFallbackStateForTests();
+    expect(getSubagentQuotaPrimeStateForTests()).toEqual({ primedAt: 0, inFlight: false });
+    expect(isSubagentModelUnavailable("kimi/k3", cfg())).toBe(false);
+    release();
+    await priming;
+    expect(getSubagentQuotaPrimeStateForTests()).toEqual({ primedAt: 0, inFlight: false });
   });
 
   test("noteSubagentModelFailure records the configured fallback slug", () => {

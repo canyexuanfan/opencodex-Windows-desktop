@@ -22,6 +22,7 @@ export const DEFAULT_SUBAGENT_MODEL_FALLBACK_POLL_MS = 60_000;
 
 type SubagentQuotaPrimeFn = (config: OcxConfig, reason: string) => Promise<void>;
 let subagentQuotaPrimeForTests: SubagentQuotaPrimeFn | null = null;
+let quotaPrimeInFlight: Promise<void> | null = null;
 
 type ModelHealth = {
   unavailableUntil: number;
@@ -205,12 +206,25 @@ export function noteSubagentModelFailure(
 export function resetSubagentModelFallbackStateForTests(): void {
   modelHealth.clear();
   quotaPrimedAt.clear();
+  quotaPrimeInFlight = null;
   subagentQuotaPrimeForTests = null;
+  nativeSlugCache = null;
 }
 
 /** Test-only: inject the quota prime implementation used by {@link maybePrimeSubagentQuota}. */
 export function setSubagentQuotaPrimeForTests(fn: SubagentQuotaPrimeFn | null): void {
   subagentQuotaPrimeForTests = fn;
+}
+
+/** Test-only: inspect shared prime TTL / in-flight state. */
+export function getSubagentQuotaPrimeStateForTests(): {
+  primedAt: number;
+  inFlight: boolean;
+} {
+  return {
+    primedAt: quotaPrimedAt.get("global") ?? 0,
+    inFlight: quotaPrimeInFlight !== null,
+  };
 }
 
 function rewriteParsedModel(parsed: OcxParsedRequest, model: string): void {
@@ -276,24 +290,31 @@ export function resolveAgentModelFallbackForPrimary(
 
 /**
  * Best-effort quota refresh before subagent model selection.
- * Returns a promise the caller must await so selection observes refreshed state.
- * Refresh failures are swallowed here so spawn routing can continue.
+ * Concurrent callers share one in-flight promise. The success TTL is updated only
+ * after a successful refresh so failures remain retryable. Errors are swallowed so
+ * spawn routing can continue.
  */
 export function maybePrimeSubagentQuota(config: OcxConfig, now = Date.now()): Promise<void> {
+  if (quotaPrimeInFlight) return quotaPrimeInFlight;
   if (!shouldPrimeSubagentQuota(config, now)) return Promise.resolve();
-  const run = async (): Promise<void> => {
+
+  quotaPrimeInFlight = (async () => {
     try {
       if (subagentQuotaPrimeForTests) {
         await subagentQuotaPrimeForTests(config, "subagent-spawn");
-        return;
+      } else {
+        const { primeCodexPoolQuotas } = await import("./auth-api");
+        await primeCodexPoolQuotas(config, "subagent-spawn");
       }
-      const { primeCodexPoolQuotas } = await import("./auth-api");
-      await primeCodexPoolQuotas(config, "subagent-spawn");
+      quotaPrimedAt.set("global", Date.now());
     } catch {
       // Owning boundary: do not fail the spawn path when priming is unavailable.
+      // Leave quotaPrimedAt untouched so a later spawn can retry.
+    } finally {
+      quotaPrimeInFlight = null;
     }
-  };
-  return run();
+  })();
+  return quotaPrimeInFlight;
 }
 
 export function recordSubagentQuotaFailureForThreadSpawn(
@@ -386,10 +407,8 @@ export function listCodexAgentRoles(codexHome = CODEX_HOME): string[] {
     .map(name => name.slice(0, -".toml".length));
 }
 
+/** True when a new quota prime should start (no success within the poll interval). */
 export function shouldPrimeSubagentQuota(config: OcxConfig, now = Date.now()): boolean {
-  const key = "global";
-  const last = quotaPrimedAt.get(key) ?? 0;
-  if (now - last < pollIntervalMs(config)) return false;
-  quotaPrimedAt.set(key, now);
-  return true;
+  const last = quotaPrimedAt.get("global") ?? 0;
+  return now - last >= pollIntervalMs(config);
 }

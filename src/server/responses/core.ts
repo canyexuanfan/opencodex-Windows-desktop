@@ -9,7 +9,7 @@ import { parseRequest } from "../../responses/parser";
 import { buildCompactV1Output, COMPACT_PROMPT, decodeCompactionSummary, extractCompactUserMessages } from "../../responses/compaction";
 import { FORWARD_HEADERS, sanitizeReasoningInputContent } from "../../adapters/openai-responses";
 import { expandPreviousResponseInput, previousResponseProviderState, rememberResponseState } from "../../responses/state";
-import { routeModel } from "../../router";
+import { routeModel, type RouteResult } from "../../router";
 import {
   advanceComboAfterFailure,
   comboDefaultEffort,
@@ -420,6 +420,167 @@ function unreadableEncryptedAgentTaskResponse(): Response {
   );
 }
 
+type ResponsesAuthResolution =
+  | { ok: true; authCtx: CodexAuthContext; headers: Headers }
+  | { ok: false; response: Response };
+
+/**
+ * Resolve Codex auth for a route. On unusable contexts, releases any probe lease
+ * before returning the 401 (nothing reaches upstream).
+ */
+async function resolveResponsesCodexAuth(
+  req: Request,
+  config: OcxConfig,
+  route: RouteResult,
+  options: HandleResponsesOptions,
+): Promise<ResponsesAuthResolution> {
+  try {
+    if (route.codexAccountMode === "direct") validateForwardAdmissionCredential(req.headers, config);
+    let authCtx: CodexAuthContext;
+    if (route.codexAccountMode) {
+      authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode);
+      options.onCodexAuthContextResolved?.(authCtx);
+    } else {
+      authCtx = { kind: "main", accountId: null };
+      options.onCodexAuthContextResolved?.(undefined);
+    }
+    if (!isCodexAuthContextUsable(authCtx, config)) {
+      releaseCodexAuthContextProbeLease(authCtx);
+      return {
+        ok: false,
+        response: formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication"),
+      };
+    }
+    return {
+      ok: true,
+      authCtx,
+      headers: headersForCodexAuthContext(req.headers, authCtx),
+    };
+  } catch (err) {
+    if (err instanceof CodexAccountCooldownError) {
+      return { ok: false, response: formatErrorResponse(429, "rate_limit_error", "Selected Codex account is cooling down") };
+    }
+    if (err instanceof CodexThreadAffinityExpiredError) {
+      return {
+        ok: false,
+        response: formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session"),
+      };
+    }
+    if (err instanceof CodexAuthContextError) {
+      const safeAccountLabel = formatCodexProviderForLog(route.providerName, err.accountId, config);
+      console.error(`[codex-auth] Pool account ${safeAccountLabel} token failed; reauthentication required`);
+      return {
+        ok: false,
+        response: formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication"),
+      };
+    }
+    if (err instanceof CodexPoolAuthenticationError) {
+      return { ok: false, response: formatErrorResponse(401, "authentication_error", err.message) };
+    }
+    if (err instanceof CodexDirectAuthenticationError) {
+      return { ok: false, response: formatErrorResponse(401, "authentication_error", err.message) };
+    }
+    if (err instanceof ForwardAdmissionCredentialError) {
+      return { ok: false, response: formatErrorResponse(401, "authentication_error", err.message) };
+    }
+    throw err;
+  }
+}
+
+/**
+ * Apply every route-dependent request mutation against the final selected route.
+ * Must run only after subagent fallback has settled the model/provider.
+ */
+async function applyFinalRouteRequestNormalization(args: {
+  parsed: OcxParsedRequest;
+  route: RouteResult;
+  config: OcxConfig;
+  req: Request;
+  logCtx: RequestLogContext;
+}): Promise<void> {
+  const { parsed, route, config, req, logCtx } = args;
+
+  // Apply the routed model id upstream: routing may strip a "<provider>/" namespace.
+  if (route.modelId !== parsed.modelId) {
+    if (parsed._rawBody && typeof parsed._rawBody === "object") {
+      (parsed._rawBody as { model?: string }).model = route.modelId;
+    }
+    parsed.modelId = route.modelId;
+  }
+  // Settle the wire once so logging, fast-mode, auth, and sidecars read the adapter
+  // this request will actually use (#404).
+  route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
+  logCtx.model = route.modelId;
+  logCtx.provider = route.providerName;
+  logCtx.providerAdapter = route.provider.adapter;
+
+  // Virtual model rewriting: Pro aliases → base model + reasoning.mode="pro".
+  applyOpenAiVirtualModel(parsed, route, logCtx);
+
+  // Fast mode override for OpenAI-routed models.
+  if (config.fastMode !== undefined && route.provider.adapter === "openai-responses") {
+    const tier = config.fastMode ? "priority" : undefined;
+    if (parsed._rawBody && typeof parsed._rawBody === "object") {
+      if (tier) (parsed._rawBody as Record<string, unknown>).service_tier = tier;
+      else delete (parsed._rawBody as Record<string, unknown>).service_tier;
+    }
+    parsed.options.serviceTier = tier;
+  }
+
+  {
+    const guidance = await multiAgentGuidanceText(parsed, {
+      multiAgentGuidanceEnabled: config.multiAgentGuidanceEnabled,
+      injectionModel: config.injectionModel,
+      injectionEffort: config.injectionEffort,
+      subagentModels: config.subagentModels,
+      subagentModelFallback: config.subagentModelFallback,
+      injectionPrompt: config.injectionPrompt,
+    });
+    if (guidance) {
+      injectDeveloperMessage(parsed, guidance);
+      if (isInjectionDebugEnabled()) {
+        injectionDebugLog(`[opencodex] ${route.modelId}: multi-agent guidance injected (surface=${collabSurface(parsed)}, guidanceEnabled=${multiAgentGuidanceEnabled(config)}, ${guidance.length} chars)`);
+      }
+    } else if (isInjectionDebugEnabled() && collabSurface(parsed) !== null) {
+      injectionDebugLog(`[opencodex] ${route.modelId}: collab surface=${collabSurface(parsed)}, guidance silent (effort=${parsed.options.reasoning ?? "unset"}, injectionModel=${config.injectionModel ?? "unset"})`);
+    }
+  }
+
+  {
+    const { applyEffortCap, effortCapAppliesTo, supportedLadderFor } = await import("../effort-policy");
+    const surface = collabSurface(parsed);
+    if (effortCapAppliesTo(surface, req.headers, config, parsed._compactionRequest === true)) {
+      const capped = applyEffortCap(parsed, req.headers, config, supportedLadderFor(route));
+      if (capped) {
+        logCtx.requestedEffort = `${capped.from}->${capped.to}`;
+        if (isInjectionDebugEnabled()) {
+          injectionDebugLog(`[opencodex] ${route.modelId}: effort cap applied (${capped.from} -> ${capped.to}, ${capped.subagent ? "sub-agent" : "main"} turn)`);
+        }
+      }
+    } else if (isInjectionDebugEnabled() && (config.effortCap || config.subagentEffortCap)) {
+      injectionDebugLog(`[opencodex] ${route.modelId}: effort cap skipped (surface=${surface ?? "none"}, v2 feature only)`);
+    }
+  }
+
+  {
+    const requestedModelId = logCtx.requestedModel ?? route.modelId;
+    const { nativeEffortClamp, shouldApplyNativeEffortClamp } = await import("../../codex/catalog");
+    const clamped = shouldApplyNativeEffortClamp(route.providerName, route.provider, requestedModelId)
+      ? nativeEffortClamp(route.modelId, parsed.options.reasoning)
+      : null;
+    if (clamped) {
+      parsed.options.reasoning = clamped;
+      const raw = parsed._rawBody as { reasoning?: { effort?: string } } | undefined;
+      if (raw?.reasoning && typeof raw.reasoning === "object") raw.reasoning.effort = clamped;
+      logCtx.requestedEffort = `${logCtx.requestedEffort ?? "max"}->${clamped}`;
+    }
+  }
+  logCtx.modelSupportsServiceTier = catalogModelSupportsServiceTier(
+    route.modelId,
+    logCtx.requestedServiceTier ?? logCtx.configuredServiceTier,
+  );
+}
+
 
 
 export async function handleComboResponses(
@@ -716,7 +877,7 @@ export async function handleResponses(
     await maybePrimeSubagentQuota(config);
   }
 
-  let route;
+  let route: RouteResult;
   try {
     route = routeModel(config, parsed.modelId);
   } catch (err) {
@@ -726,180 +887,26 @@ export async function handleResponses(
     return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
 
-  // The canonical ChatGPT backend can decrypt its V2 Fernet task tokens; routed
-  // providers cannot. Reject the raw-input classification before adapter construction
-  // or provider dispatch so an unreadable worker task cannot trigger a cost storm.
-  if (!isCanonicalOpenAiForwardProvider(route.provider) && unreadableEncryptedAgentTask) {
-    return unreadableEncryptedAgentTaskResponse();
-  }
-
-  // Apply the routed model id upstream: routing may strip a "<provider>/" namespace
-  // (e.g. "opencode-go/deepseek-v4-pro" → "deepseek-v4-pro"). Adapters read parsed.modelId,
-  // and the passthrough adapter serializes _rawBody, so rewrite both.
-  if (route.modelId !== parsed.modelId) {
-    if (parsed._rawBody && typeof parsed._rawBody === "object") {
-      (parsed._rawBody as { model?: string }).model = route.modelId;
-    }
-    parsed.modelId = route.modelId;
-  }
-  // Settle the wire once, right after the native model id is known, so logging,
-  // fast-mode injection, auth, and sidecar decisions all read the adapter this
-  // request will actually use rather than the provider-wide default (#404).
-  route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
-  logCtx.model = route.modelId;
-  logCtx.provider = route.providerName;
-  logCtx.providerAdapter = route.provider.adapter;
-
-  // Virtual model rewriting: Pro aliases → base model + reasoning.mode="pro".
-  // Must run before effort caps/native clamps so the base model gets correct limits.
-  applyOpenAiVirtualModel(parsed, route, logCtx);
-
-  // Fast mode override: when config.fastMode is explicitly set, inject or strip
-  // service_tier for OpenAI-routed models. Undefined = passthrough (client decides).
-  if (config.fastMode !== undefined && route.provider.adapter === "openai-responses") {
-    const tier = config.fastMode ? "priority" : undefined;
-    if (parsed._rawBody && typeof parsed._rawBody === "object") {
-      if (tier) (parsed._rawBody as Record<string, unknown>).service_tier = tier;
-      else delete (parsed._rawBody as Record<string, unknown>).service_tier;
-    }
-    parsed.options.serviceTier = tier;
-  }
-
-  // Multi-agent guidance shim: codex-rs emits its Proactive delegation developer
-  // message only on the v2 surface. The proxy fills the gaps: the Proactive text
-  // for v1 collab surfaces at the top tier (no model designation on v1), and the
-  // sub-agent model/roster designation plus fork_turns override rules on v2.
-  // The surface is judged from the request's own tool list. Runs BEFORE the
-  // mock-max clamp below so the synthetic top tier (ultra arrives as max on the
-  // codex wire) is still visible. Both request shapes are rewritten.
-  {
-    const guidance = await multiAgentGuidanceText(parsed, {
-      multiAgentGuidanceEnabled: config.multiAgentGuidanceEnabled,
-      injectionModel: config.injectionModel,
-      injectionEffort: config.injectionEffort,
-      subagentModels: config.subagentModels,
-      subagentModelFallback: config.subagentModelFallback,
-      injectionPrompt: config.injectionPrompt,
-    });
-    if (guidance) {
-      injectDeveloperMessage(parsed, guidance);
-      if (isInjectionDebugEnabled()) injectionDebugLog(`[opencodex] ${route.modelId}: multi-agent guidance injected (surface=${collabSurface(parsed)}, guidanceEnabled=${multiAgentGuidanceEnabled(config)}, ${guidance.length} chars)`);
-    } else if (isInjectionDebugEnabled() && collabSurface(parsed) !== null) {
-      injectionDebugLog(`[opencodex] ${route.modelId}: collab surface=${collabSurface(parsed)}, guidance silent (effort=${parsed.options.reasoning ?? "unset"}, injectionModel=${config.injectionModel ?? "unset"})`);
-    }
-  }
-
-  // Hard effort caps (effortCap / subagentEffortCap): enforcement companion to the advisory
-  // injection above — spawn-arg prompting cannot stop codex-rs from inheriting the parent's
-  // ultra-tier default on bare spawns (see src/server/effort-policy.ts). Runs BEFORE the
-  // mock-max clamp so a capped effort is what nativeness clamping then validates; rewrites
-  // both request shapes (same dual-write contract as the clamp below).
-  // GATE: v2 feature only (effortCapAppliesTo) — v2-surface main turns plus header-marked
-  // child turns admitted regardless of tool surface (depth-limited leaves carry no collab
-  // tools while shallower children do, so tool sniffing alone would cap siblings
-  // inconsistently); multiAgentMode "v1" disables caps entirely; compaction turns bypass
-  // caps so routed compaction matches native /v1/responses/compact (which never enters
-  // handleResponses).
-  {
-    const { applyEffortCap, effortCapAppliesTo, supportedLadderFor } = await import("../effort-policy");
-    const surface = collabSurface(parsed);
-    if (effortCapAppliesTo(surface, req.headers, config, parsed._compactionRequest === true)) {
-      const capped = applyEffortCap(parsed, req.headers, config, supportedLadderFor(route));
-      if (capped) {
-        logCtx.requestedEffort = `${capped.from}->${capped.to}`;
-        if (isInjectionDebugEnabled()) {
-          injectionDebugLog(`[opencodex] ${route.modelId}: effort cap applied (${capped.from} -> ${capped.to}, ${capped.subagent ? "sub-agent" : "main"} turn)`);
-        }
-      }
-    } else if (isInjectionDebugEnabled() && (config.effortCap || config.subagentEffortCap)) {
-      injectionDebugLog(`[opencodex] ${route.modelId}: effort cap skipped (surface=${surface ?? "none"}, v2 feature only)`);
-    }
-  }
-
-  // Mock-max clamp: native models whose real ladder stops below max (gpt-5.5/5.4/…)
-  // receive `max` when the user picks Ultra (codex converts ultra->max client-side).
-  // Clamp to the model's highest real effort BEFORE any adapter — the ChatGPT
-  // passthrough serializes _rawBody verbatim, so both shapes must be rewritten.
-  // GUARD: judge nativeness by BOTH the originally requested id (logCtx.requestedModel)
-  // and the resolved provider identity. Routing strips the "<provider>/" namespace, and
-  // some third-party providers expose bare `defaultModel` selectors, so route.modelId
-  // alone can make a routed model masquerade as an off-snapshot native. Only the
-  // canonical built-in ChatGPT forward provider should receive the native clamp.
-  {
-    const requestedModelId = logCtx.requestedModel ?? route.modelId;
-    const { nativeEffortClamp, shouldApplyNativeEffortClamp } = await import("../../codex/catalog");
-    const clamped = shouldApplyNativeEffortClamp(route.providerName, route.provider, requestedModelId)
-      ? nativeEffortClamp(route.modelId, parsed.options.reasoning)
-      : null;
-    if (clamped) {
-      parsed.options.reasoning = clamped;
-      const raw = parsed._rawBody as { reasoning?: { effort?: string } } | undefined;
-      if (raw?.reasoning && typeof raw.reasoning === "object") raw.reasoning.effort = clamped;
-      logCtx.requestedEffort = `${logCtx.requestedEffort ?? "max"}->${clamped}`;
-    }
-  }
-  logCtx.modelSupportsServiceTier = catalogModelSupportsServiceTier(
-    route.modelId,
-    logCtx.requestedServiceTier ?? logCtx.configuredServiceTier,
-  );
-
   let authCtx: CodexAuthContext = { kind: "main", accountId: null };
-  let selectedForwardHeaders: Headers;
-  try {
-    if (route.codexAccountMode === "direct") validateForwardAdmissionCredential(req.headers, config);
-    if (route.codexAccountMode) {
-      authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode);
-      options.onCodexAuthContextResolved?.(authCtx);
-    } else {
-      options.onCodexAuthContextResolved?.(undefined);
-    }
-    selectedForwardHeaders = headersForCodexAuthContext(req.headers, authCtx);
-  } catch (err) {
-    if (err instanceof CodexAccountCooldownError) {
-      return formatErrorResponse(429, "rate_limit_error", "Selected Codex account is cooling down");
-    }
-    if (err instanceof CodexThreadAffinityExpiredError) {
-      return formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session");
-    }
-    if (err instanceof CodexAuthContextError) {
-      const safeAccountLabel = formatCodexProviderForLog(route.providerName, err.accountId, config);
-      console.error(`[codex-auth] Pool account ${safeAccountLabel} token failed; reauthentication required`);
-      return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
-    }
-    if (err instanceof CodexPoolAuthenticationError) {
-      return formatErrorResponse(401, "authentication_error", err.message);
-    }
-    if (err instanceof CodexDirectAuthenticationError) {
-      return formatErrorResponse(401, "authentication_error", err.message);
-    }
-    if (err instanceof ForwardAdmissionCredentialError) {
-      return formatErrorResponse(401, "authentication_error", err.message);
-    }
-    throw err;
-  }
-  if (!isCodexAuthContextUsable(authCtx, config)) {
-    // Nothing reaches upstream on this path, so give the probe back.
-    releaseCodexAuthContextProbeLease(authCtx);
-    return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
-  }
-  route.provider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
-  logCtx.provider = formatCodexProviderForLog(route.providerName, codexLogAccountId(authCtx), config);
-  // Prefer Codex pool account as the Cursor thread namespace when present. Cursor routes without
-  // codexAccountMode still get a credential-derived scope inside the Cursor adapter.
-  const identityScope = codexLogAccountId(authCtx);
-  if (identityScope) parsed._cursorIdentityScope = identityScope;
-
-  let subagentFallbackAccountId = authCtx.kind === "pool" || authCtx.kind === "main-pool"
-    ? authCtx.accountId
-    : config.activeCodexAccountId ?? null;
+  let selectedForwardHeaders = req.headers;
+  let authReady = false;
+  let subagentFallbackAccountId = config.activeCodexAccountId ?? null;
   let subagentQuotaFailureModel = parsed.modelId;
 
+  // Subagent fallback must settle the final model/provider BEFORE route-dependent
+  // normalization (virtual models, effort caps, service tier, wire protocol).
+  // Early auth is only for account-scoped quota selection; its probe lease is
+  // released whenever that context is abandoned before upstream.
   if (isThreadSpawnRequest(req.headers) && !options.comboAttempt) {
-    const routeBeforeFallback = {
-      providerName: route.providerName,
-      modelId: route.modelId,
-      codexAccountMode: route.codexAccountMode,
-    };
+    const earlyAuth = await resolveResponsesCodexAuth(req, config, route, options);
+    if (!earlyAuth.ok) return earlyAuth.response;
+    authCtx = earlyAuth.authCtx;
+    selectedForwardHeaders = earlyAuth.headers;
+    authReady = true;
+    subagentFallbackAccountId = authCtx.kind === "pool" || authCtx.kind === "main-pool"
+      ? authCtx.accountId
+      : config.activeCodexAccountId ?? null;
+
     const fallback = applySubagentModelFallback(
       parsed,
       req.headers,
@@ -916,75 +923,58 @@ export async function handleResponses(
       }
     }
     subagentQuotaFailureModel = fallback?.to ?? parsed.modelId;
+
     if (fallback?.to && !slugsEquivalent(fallback.to, route.modelId)) {
+      let nextRoute: RouteResult;
       try {
-        route = routeModel(config, fallback.to);
+        nextRoute = routeModel(config, fallback.to);
       } catch (err) {
+        releaseCodexAuthContextProbeLease(authCtx);
+        authReady = false;
         if (err instanceof NoAvailableComboTargetsError) {
           return comboUnavailableResponse(err.message);
         }
         return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
       }
-      if (route.modelId !== parsed.modelId) {
-        if (parsed._rawBody && typeof parsed._rawBody === "object") {
-          (parsed._rawBody as { model?: string }).model = route.modelId;
-        }
-        parsed.modelId = route.modelId;
+      const authReusable = route.providerName === nextRoute.providerName
+        && route.codexAccountMode === nextRoute.codexAccountMode;
+      if (!authReusable) {
+        // Abandon the pre-fallback auth context (and any probe lease) before
+        // resolving replacement auth — nothing has reached upstream yet.
+        releaseCodexAuthContextProbeLease(authCtx);
+        authCtx = { kind: "main", accountId: null };
+        authReady = false;
+        selectedForwardHeaders = req.headers;
       }
-      logCtx.model = route.modelId;
-      logCtx.provider = route.providerName;
-      logCtx.providerAdapter = route.provider.adapter;
-    }
-    if (
-      route.providerName !== routeBeforeFallback.providerName
-      || route.modelId !== routeBeforeFallback.modelId
-      || route.codexAccountMode !== routeBeforeFallback.codexAccountMode
-    ) {
-      try {
-        if (route.codexAccountMode === "direct") validateForwardAdmissionCredential(req.headers, config);
-        if (route.codexAccountMode) {
-          authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode);
-          options.onCodexAuthContextResolved?.(authCtx);
-        } else {
-          authCtx = { kind: "main", accountId: null };
-          options.onCodexAuthContextResolved?.(undefined);
-        }
-        selectedForwardHeaders = headersForCodexAuthContext(req.headers, authCtx);
-      } catch (err) {
-        if (err instanceof CodexAccountCooldownError) {
-          return formatErrorResponse(429, "rate_limit_error", "Selected Codex account is cooling down");
-        }
-        if (err instanceof CodexThreadAffinityExpiredError) {
-          return formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session");
-        }
-        if (err instanceof CodexAuthContextError) {
-          const safeAccountLabel = formatCodexProviderForLog(route.providerName, err.accountId, config);
-          console.error(`[codex-auth] Pool account ${safeAccountLabel} token failed; reauthentication required`);
-          return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
-        }
-        if (err instanceof CodexPoolAuthenticationError) {
-          return formatErrorResponse(401, "authentication_error", err.message);
-        }
-        if (err instanceof CodexDirectAuthenticationError) {
-          return formatErrorResponse(401, "authentication_error", err.message);
-        }
-        if (err instanceof ForwardAdmissionCredentialError) {
-          return formatErrorResponse(401, "authentication_error", err.message);
-        }
-        throw err;
-      }
-      if (!isCodexAuthContextUsable(authCtx, config)) {
-        return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
-      }
-      route.provider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
-      logCtx.provider = formatCodexProviderForLog(route.providerName, codexLogAccountId(authCtx), config);
-      const fallbackIdentityScope = codexLogAccountId(authCtx);
-      if (fallbackIdentityScope) parsed._cursorIdentityScope = fallbackIdentityScope;
-      subagentFallbackAccountId = authCtx.kind === "pool" || authCtx.kind === "main-pool"
-        ? authCtx.accountId
-        : config.activeCodexAccountId ?? null;
+      route = nextRoute;
     }
   }
+
+  // Encrypted child tasks may only reach the canonical native backend. This check
+  // runs against the FINAL route so native-only fallback can rescue a routed primary.
+  if (!isCanonicalOpenAiForwardProvider(route.provider) && unreadableEncryptedAgentTask) {
+    if (authReady) releaseCodexAuthContextProbeLease(authCtx);
+    return unreadableEncryptedAgentTaskResponse();
+  }
+
+  await applyFinalRouteRequestNormalization({ parsed, route, config, req, logCtx });
+
+  if (!authReady) {
+    const finalAuth = await resolveResponsesCodexAuth(req, config, route, options);
+    if (!finalAuth.ok) return finalAuth.response;
+    authCtx = finalAuth.authCtx;
+    selectedForwardHeaders = finalAuth.headers;
+  }
+
+  route.provider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
+  logCtx.provider = formatCodexProviderForLog(route.providerName, codexLogAccountId(authCtx), config);
+  // Prefer Codex pool account as the Cursor thread namespace when present. Cursor routes without
+  // codexAccountMode still get a credential-derived scope inside the Cursor adapter.
+  const identityScope = codexLogAccountId(authCtx);
+  if (identityScope) parsed._cursorIdentityScope = identityScope;
+  subagentFallbackAccountId = authCtx.kind === "pool" || authCtx.kind === "main-pool"
+    ? authCtx.accountId
+    : config.activeCodexAccountId ?? null;
 
   // OAuth providers: swap in a fresh access token (auto-refreshed) as the Bearer key, so the
   // existing openai-chat / anthropic adapters authenticate with no change.
