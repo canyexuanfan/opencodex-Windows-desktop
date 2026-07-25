@@ -672,8 +672,10 @@ select.input { appearance: none; }
 .select-option-active {
   background: var(--hover);
 }
+/* Selected + keyboard-highlighted: full inset ring (not a left stripe). */
 .select-option.active.select-option-active {
   background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 /* ---- switch ---- */

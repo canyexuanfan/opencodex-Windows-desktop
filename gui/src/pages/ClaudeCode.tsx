@@ -240,7 +240,9 @@ export default function ClaudeCode({ apiBase, viewMode }: { apiBase: string; vie
   const manualEnv = buildManualEnv(state);
 
   const settingsSection = (
-    <div className="card" style={{ overflow: "hidden" }}>
+    <>
+      {workspaceView && <div className="h-section">{t("claude.workspace.settings")}</div>}
+      <div className="card" style={{ overflow: "hidden" }}>
       <div className="setting-row">
         <div className="setting-label">
           <span className="title">{t("claude.enabledLabel")}</span>
@@ -371,6 +373,7 @@ export default function ClaudeCode({ apiBase, viewMode }: { apiBase: string; vie
         );
       })}
     </div>
+    </>
   );
 
   const quickstartSection = (
@@ -496,7 +499,7 @@ export default function ClaudeCode({ apiBase, viewMode }: { apiBase: string; vie
                   type="button"
                   className={`claudecode-workspace-rail-row${selectedSection === s.id ? " claudecode-workspace-rail-row--selected" : ""}`}
                   onClick={() => setSelectedSection(s.id)}
-                  aria-current={selectedSection === s.id ? "page" : undefined}
+                  aria-current={selectedSection === s.id ? "true" : undefined}
                 >
                   <span className="claudecode-workspace-rail-name">{s.label}</span>
                 </button>
