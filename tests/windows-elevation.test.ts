@@ -100,4 +100,41 @@ describe("windows elevation helpers", () => {
     const error = new Error("schtasks is unavailable");
     expect(formatWindowsSchtasksError(error, ["/query"])).toBe("schtasks is unavailable");
   });
+
+  test("elevated executables ignore a hostile SystemRoot", () => {
+    if (process.platform !== "win32") return;
+
+    const {
+      resolveTrustedWindowsPowerShellExe,
+      resolveTrustedWindowsSchtasksExe,
+      setTrustedWindowsSystemDirectoryResolverForTests,
+    } = require("../src/lib/windows-elevation") as typeof import("../src/lib/windows-elevation");
+
+    const previousSystemRoot = process.env.SystemRoot;
+    const previousWindir = process.env.WINDIR;
+    process.env.SystemRoot = "C:\\Users\\Public\\evil-root";
+    process.env.WINDIR = "C:\\Users\\Public\\evil-root";
+    try {
+      // Prove the production GetSystemDirectoryW path ignores env even when poisoned.
+      setTrustedWindowsSystemDirectoryResolverForTests(null);
+      const powershell = resolveTrustedWindowsPowerShellExe();
+      const schtasks = resolveTrustedWindowsSchtasksExe();
+      const evil = "evil-root";
+      expect(powershell.toLowerCase().includes(evil)).toBe(false);
+      expect(schtasks.toLowerCase().includes(evil)).toBe(false);
+      expect(powershell.toLowerCase().endsWith("\\system32\\windowspowershell\\v1.0\\powershell.exe")).toBe(true);
+      expect(schtasks.toLowerCase().endsWith("\\system32\\schtasks.exe")).toBe(true);
+
+      // Fail closed when a hostile resolver returns an untrusted directory.
+      setTrustedWindowsSystemDirectoryResolverForTests(() => "C:\\Users\\Public\\evil-root\\System32");
+      expect(() => resolveTrustedWindowsPowerShellExe()).toThrow(/not found|unusable|outside the trusted/i);
+      expect(() => resolveTrustedWindowsSchtasksExe()).toThrow(/not found|unusable|outside the trusted/i);
+    } finally {
+      setTrustedWindowsSystemDirectoryResolverForTests(null);
+      if (previousSystemRoot === undefined) delete process.env.SystemRoot;
+      else process.env.SystemRoot = previousSystemRoot;
+      if (previousWindir === undefined) delete process.env.WINDIR;
+      else process.env.WINDIR = previousWindir;
+    }
+  });
 });

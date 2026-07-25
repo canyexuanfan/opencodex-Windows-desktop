@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
+import { dlopen, ptr, type Pointer } from "bun:ffi";
 
 type ElevationSpawn = (
   command: string,
@@ -13,6 +14,112 @@ let elevationSpawn: ElevationSpawn = spawn;
 /** Test-only seam for the elevated PowerShell launcher. */
 export function setWindowsElevationSpawnForTests(next: ElevationSpawn | null): void {
   elevationSpawn = next ?? spawn;
+}
+
+type GetSystemDirectoryW = (buffer: Pointer, size: number) => number;
+type TrustedSystemDirectoryResolver = () => string;
+
+let getSystemDirectoryWFn: GetSystemDirectoryW | null | undefined;
+let trustedSystemDirectoryResolverForTests: TrustedSystemDirectoryResolver | null = null;
+
+/** Test-only seam to replace GetSystemDirectoryW-backed resolution. */
+export function setTrustedWindowsSystemDirectoryResolverForTests(
+  next: TrustedSystemDirectoryResolver | null,
+): void {
+  trustedSystemDirectoryResolverForTests = next;
+}
+
+function loadGetSystemDirectoryW(): GetSystemDirectoryW | null {
+  if (getSystemDirectoryWFn !== undefined) return getSystemDirectoryWFn;
+  if (process.platform !== "win32") {
+    getSystemDirectoryWFn = null;
+    return null;
+  }
+  try {
+    const lib = dlopen("kernel32.dll", {
+      GetSystemDirectoryW: {
+        args: ["ptr", "u32"],
+        returns: "u32",
+      },
+    });
+    getSystemDirectoryWFn = (buffer, size) => lib.symbols.GetSystemDirectoryW(buffer, size) as number;
+  } catch {
+    getSystemDirectoryWFn = null;
+  }
+  return getSystemDirectoryWFn;
+}
+
+function decodeWideCString(buf: Uint16Array, length: number): string {
+  return String.fromCharCode(...buf.subarray(0, length));
+}
+
+/**
+ * Resolve the real Windows system directory via GetSystemDirectoryW.
+ * Must never trust process.env.SystemRoot / WINDIR — those are caller-controlled and
+ * must not select binaries for UAC elevation.
+ */
+export function resolveTrustedWindowsSystemDirectory(): string {
+  if (trustedSystemDirectoryResolverForTests) {
+    return trustedSystemDirectoryResolverForTests();
+  }
+  if (process.platform !== "win32") {
+    throw new Error("Trusted Windows system directory resolution is only supported on Windows.");
+  }
+  const getSystemDirectoryW = loadGetSystemDirectoryW();
+  if (!getSystemDirectoryW) {
+    throw new Error("Failed to load GetSystemDirectoryW from kernel32.dll.");
+  }
+
+  let size = 260;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const buf = new Uint16Array(size);
+    const written = getSystemDirectoryW(ptr(buf.buffer), size);
+    if (written === 0) {
+      throw new Error("GetSystemDirectoryW failed while resolving the trusted system directory.");
+    }
+    // When the buffer is too small, the return value is the required size including NUL.
+    if (written >= size) {
+      size = written + 1;
+      continue;
+    }
+    const directory = decodeWideCString(buf, written).replace(/[/\\]+$/, "");
+    if (!directory || !existsSync(directory)) {
+      throw new Error("GetSystemDirectoryW returned an unusable system directory.");
+    }
+    return resolvePath(directory);
+  }
+  throw new Error("GetSystemDirectoryW required a system directory path larger than expected.");
+}
+
+function assertTrustedSystemExecutable(candidate: string, label: string): string {
+  const systemDir = resolveTrustedWindowsSystemDirectory();
+  const resolved = resolvePath(candidate);
+  const systemPrefix = systemDir.toLowerCase().replace(/[/\\]+$/, "") + "\\";
+  const resolvedLower = resolved.toLowerCase();
+  if (resolvedLower !== systemDir.toLowerCase() && !resolvedLower.startsWith(systemPrefix)) {
+    throw new Error(`${label} resolved outside the trusted Windows system directory.`);
+  }
+  if (!existsSync(resolved)) {
+    throw new Error(`Trusted ${label} was not found at ${resolved}.`);
+  }
+  return resolved;
+}
+
+/** Absolute path to System32\\WindowsPowerShell\\v1.0\\powershell.exe from a trusted system directory. */
+export function resolveTrustedWindowsPowerShellExe(): string {
+  const candidate = join(
+    resolveTrustedWindowsSystemDirectory(),
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+  return assertTrustedSystemExecutable(candidate, "PowerShell");
+}
+
+/** Absolute path to System32\\schtasks.exe from a trusted system directory. */
+export function resolveTrustedWindowsSchtasksExe(): string {
+  const candidate = join(resolveTrustedWindowsSystemDirectory(), "schtasks.exe");
+  return assertTrustedSystemExecutable(candidate, "schtasks.exe");
 }
 
 /** Stable machine-readable marker for a denied `schtasks /create`. Crosses the CLI→proxy boundary. */
@@ -210,8 +317,7 @@ export function classifyElevatedSchedulerExitCode(exitCode: number): ElevatedSch
 }
 
 function windowsPowerShell(): string {
-  const candidate = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  return existsSync(candidate) ? candidate : "powershell.exe";
+  return resolveTrustedWindowsPowerShellExe();
 }
 
 function psSingleQuote(value: string): string {

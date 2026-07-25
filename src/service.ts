@@ -22,6 +22,7 @@ import {
   OCX_ELEVATED_PROTOCOL_FAILED,
   classifyElevatedSchedulerExitCode,
   raceWithTimeout,
+  resolveTrustedWindowsSchtasksExe,
   startElevatedSchtasksCreateAndRun,
   runWindowsElevated,
   toWindowsSchtasksError,
@@ -326,8 +327,7 @@ function runFile(file: string, args: string[]): string {
 }
 
 function windowsSchtasks(): string {
-  const candidate = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "schtasks.exe");
-  return existsSync(candidate) ? candidate : "schtasks.exe";
+  return resolveTrustedWindowsSchtasksExe();
 }
 
 function windowsWscript(): string {
