@@ -9,7 +9,16 @@
 ## 착수 시점 사실
 
 - 작업 워크트리: `/Users/jun/.codex/worktrees/ebcd/opencodex` (브랜치 `dev`)
-- `dev` = `origin/dev` = `037e8f5e4fa32a82e4149acc509554f157656dad`
+- **소스 기준점(source baseline)** = `origin/dev` = `037e8f5e4fa32a82e4149acc509554f157656dad`
+- 작업 브랜치: `codex/260725-pr-rework`. 이 유닛의 모든 커밋이 여기에 쌓인다.
+  WP0 문서 커밋 이후 `HEAD != origin/dev`인 것은 **정상**이다.
+- **실행 기준점 규칙 (A-gate blocker 1 반영):** 각 구현 work-phase의 착수 assertion은
+  `HEAD == 037e8f5e`가 아니라 다음 두 가지다.
+  1. `git merge-base HEAD origin/dev` == `037e8f5e` (소스 기준점이 이동하지 않았다)
+  2. `git diff --name-status origin/dev...HEAD`가 이 유닛이 의도한 파일만 보여준다
+     (WP0 직후에는 `devlog/_plan/260725_pr_issue_rework/` 9개 문서만)
+  각 WP는 직전 WP가 남긴 누적 브랜치 HEAD를 입력으로 받는다. `010`~`070`의
+  "dev HEAD == 037e8f5e" 문구는 이 규칙으로 대체해 읽는다.
 - 직전 버그 스윕(`260725_bug_sweep`)이 13:24에 종료되어 #433/#432/#422/#404와 PR #376이 closed.
 - 로컬 게이트 기준선(`a5ec15e3`, 소스 동일): `bun run typecheck` exit 0,
   `bun run test` 4151 pass / 0 fail (324 파일), `bun run privacy:scan` 통과,
@@ -24,8 +33,22 @@
 - `src/` 동작 변경에는 해당 서브시스템 근처의 회귀 테스트가 필요하다.
 - `bun run privacy:scan`은 항상 통과해야 하고, 요청 본문·API 키·계정 식별자 로깅을 추가하지 않는다.
 - 보안 경계(인증, credential/token, OAuth, GitHub Actions, 릴리스 자동화, 의존성 설치)는
-  `MAINTAINERS.md`상 명시적 보안 리뷰 대상이다. 이 유닛은 그 범위를 병합하지 않는다.
+  `MAINTAINERS.md`상 명시적 보안 리뷰 대상이다.
 - `devlog/`는 gitignore 대상이므로 문서 추가는 `git add -f`가 필요하다.
+
+### 보안 경계 정책 (A-gate blocker 2 반영)
+
+"보안 PR을 병합하지 않는다"는 표현은 부정확했다. 정확한 정책은 다음과 같다.
+
+- **review-only (통합하지 않음):** #408, #424, #447, #445, #355, #426.
+  이들은 권한 상승, SSRF, OAuth/credential 신규 경로, canonical 재활성화 우회를 포함한다.
+- **승인된 통합 예외:** PR #370. 사용자가 이 유닛의 범위로 명시 승인했다.
+  다만 auth/credential/account identity를 다루므로 `MAINTAINERS.md` 보안 리뷰 대상이며,
+  WP4는 다음을 추가 조건으로 갖는다.
+  1. credential·token·계정 식별자를 로깅하지 않음을 `privacy:scan`과 diff 검토로 확인
+  2. 상태 purge가 `MAIN_CODEX_ACCOUNT_ID`에만 한정됨을 코드로 확인
+  3. `origin/dev` push 전 사용자에게 auth 변경 포함 사실을 명시 보고
+- WP8의 push는 사용자가 명시 승인했으나, #370이 포함된 병합은 위 3개 조건 충족 후에만 진행한다.
 
 ## 조사 근거
 
@@ -39,6 +62,49 @@
 | 보안 리뷰 필요, 병합 보류 | #408, #424, #447, #445, #355 | 권한 상승, SSRF, OAuth/credential 경계 |
 | 분할/재작업 요청 | #434, #405, #429, #391 | 96파일 혼재, 포함 관계, stale, fire-and-forget |
 | 이미 종료 | #376 | dev `28066934`가 #373을 더 완전하게 해결 |
+
+### 열린 PR 전량 disposition manifest (A-gate blocker 3 반영)
+
+스냅샷 시각: `2026-07-25T23:40+09:00`. `gh pr list --state open`로 확인한 21건 전량.
+
+| PR | disposition | 관련 WP | overlap 파일 |
+|---|---|---|---|
+| #430 | INTEGRATE | WP1 | `src/adapters/google.ts` |
+| #436 | INTEGRATE + 우리 수정 | WP2 | `src/responses/parser.ts` |
+| #439 | INTEGRATE | WP3 | `src/adapters/kiro.ts`, `src/bridge.ts`, `src/types.ts` |
+| #370 | INTEGRATE + 우리 수정 (보안 조건부) | WP4 | `src/codex/auth-api.ts` 외 3 |
+| #389 | INTEGRATE (rebase) | WP5 | `src/server/management/model-routes.ts`, `src/router.ts` |
+| #449 | INTEGRATE + 우리 수정 | WP6 | `gui/src/provider-workspace/report.ts` |
+| #427 | INTEGRATE + 우리 수정 (Dashboard rebase) | WP7 | `gui/src/pages/Dashboard.tsx`, `src/responses/state.ts` |
+| #385 | INTEGRATE + 테스트 보강 | WP7 | `src/providers/registry.ts` |
+| #408 | REVIEW_ONLY (권한 상승) | — | `src/lib/windows-elevation.ts`, `src/service.ts` |
+| #424 | REVIEW_ONLY (SSRF) | — | `src/images/artifacts.ts`, `src/server/responses/core.ts` |
+| #447 | REVIEW_ONLY (OAuth) | — | `src/oauth/kiro.ts`, `src/adapters/kiro.ts` — **WP3와 겹침** |
+| #445 | REVIEW_ONLY (canonical 우회) | — | `gui/src/pages/CodexAuth.tsx` |
+| #355 | REVIEW_ONLY (OAuth 이미지) | — | `src/images/artifacts.ts` — #424와 시그니처 충돌 |
+| #426 | REVIEW_ONLY (C4 auth, 45파일) | — | `src/codex/auth-api.ts`, `auth-context.ts`, `account-lifecycle.ts`, `src/router.ts`, `src/types.ts` — **WP4/WP5와 정면 충돌** |
+| #434 | SPLIT_REQUEST (96파일) | — | provider/GUI 전역 |
+| #405 | REWORK (#434에 포함됨) | — | `src/providers/registry.ts` — **WP7과 겹침** |
+| #429 | REBASE_REQUEST (draft, stale) | — | `src/adapters/cursor/*` |
+| #391 | REWORK (fire-and-forget) | — | `src/codex/subagent-model-fallback.ts`, `src/server/responses/core.ts` |
+| #431 | REVIEW_ONLY (draft) | — | `src/providers/registry.ts`, `src/router.ts`, `src/types.ts` — **WP3/WP5/WP7과 겹침** |
+| #403 | OUT_OF_SCOPE (maintainer 본인 PR, 별도 blocker 잔존) | — | `src/bridge.ts`, `src/server/responses/core.ts` — **WP3와 겹침** |
+| #437 | INTEGRATE 후보 (docs-only, WP7에 편승 가능) | WP7 | `CONTRIBUTING.md`, `README.md`, `docs-site/.../contributing.md` — 충돌 없음 |
+
+**충돌 의존에서 나오는 결론:** #426은 45파일 규모로 WP4(#370)와 같은 auth 파일을 고친다.
+#370을 먼저 통합하면 #426은 대형 rebase 대상이 된다. 이는 예상된 결과이며, WP8의 #426
+리뷰 코멘트에 "dev가 #370을 통합했으므로 rebase가 필요하다"는 사실을 반드시 포함한다.
+같은 이유로 #447(WP3 이후), #405/#431(WP7 이후), #403(WP3 이후)의 rebase 필요성도
+각 코멘트에 기록한다.
+
+열린 이슈 22건 중 이 유닛이 직접 닫는 것은 #420(WP1), #435(WP2), #448(WP6) 세 건이다.
+나머지는 다음과 같이 분류한다.
+
+- 대응 PR이 review-only여서 닫지 않음: #443(→#445), #425(→#426), #374(→#391)
+- upstream-tracking으로 코드 수정 대상 아님: #417, #241, #92
+- enhancement/roadmap으로 이 유닛 범위 밖(`OUT_OF_SCOPE`): #415, #414, #401, #386, #357,
+  #330, #294, #201, #178, #177, #95, #42
+- 증거 대기: #418(matching raw trace 필요)
 
 dev에 **실제로 살아있는** 버그로 코드 확인된 것은 두 건이다.
 
@@ -86,6 +152,13 @@ WP0 (docs)
 - **#385 ↔ #405/#434**: `src/providers/registry.ts`와 parity test가 겹친다. 어느 쪽이 먼저 들어가도
   작은 rebase가 필요하다.
 - **#445 ↔ #449**: 공유 파일 0개. 상호 충돌 없다.
+- **#426 ↔ #370/#389**: `src/codex/auth-api.ts`, `auth-context.ts`, `account-lifecycle.ts`,
+  `src/router.ts`, `src/types.ts`가 겹친다. #426은 review-only이므로 이 유닛은 진행하지만,
+  #426 작성자에게 rebase 필요를 알린다.
+- **#431 ↔ WP3/WP5/WP7**: `src/providers/registry.ts`, `src/router.ts`, `src/types.ts`.
+  draft이므로 이 유닛은 진행한다.
+- **#403 ↔ WP3**: `src/bridge.ts`, `src/server/responses/core.ts`. maintainer 본인 PR로
+  별도 blocker가 남아 있어 `OUT_OF_SCOPE`.
 
 ## Verifier
 

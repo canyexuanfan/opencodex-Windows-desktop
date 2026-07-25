@@ -118,6 +118,24 @@ import { expect, test } from "bun:test";
 import { formatBytes } from "../src/components/MemoryObservabilityCard";
 
 test("memory byte labels use binary units and the active numeric locale", () => {
+```
+
+**formatter 단위 테스트만으로는 불충분하다 (A-gate blocker 5 반영, C-ACTIVATION-GROUNDING-01).**
+`formatBytes()`를 직접 호출하는 테스트는 카드의 fetch 경로나 탭별 mount가 깨져도 green이다.
+JSX가 tabpanel 바깥으로 새어나가 모든 탭에서 poll을 돌려도 관찰되지 않는다.
+따라서 아래 rendered 테스트를 함께 추가한다.
+
+| 시나리오 | 트리거 | 관찰 대상 (실행 증거) |
+|---|---|---|
+| 카드 정상 표시 | `/api/system/memory`를 200 + 메트릭 payload로 mock하고 Dashboard Overview 렌더 | 카드가 나타나고 locale 포맷된 KiB/MiB 숫자가 화면에 보임 |
+| 탭 전환 시 unmount | Providers 또는 Models 탭 선택 | 카드가 사라지고 추가 `/api/system/memory` 요청이 발생하지 않음 (fetch 호출 수 관찰) |
+| unavailable 경로 활성화 | 같은 endpoint를 non-OK(예: 500)로 mock | unavailable UI가 표시되고 예외로 카드가 깨지지 않음 |
+
+위 세 케이스 중 최소 "정상 표시"와 "unavailable 경로"가 없으면 WP7의 C는 통과로 볼 수 없다.
+배치 검증은 `rg` 수동 확인이 아니라 위 unmount 테스트가 담당한다.
+
+```ts
+// (formatter 단위 테스트는 보조로 유지)
   expect(formatBytes(0, "en")).toBe("0 B");
   expect(formatBytes(1536, "en")).toBe("1.5 KiB");
   expect(formatBytes(1536, "de")).toBe("1,5 KiB");

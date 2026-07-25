@@ -251,7 +251,18 @@ index 00000000..a403cc37
 
 #### 결함의 정확한 before
 
-PR-head `src/responses/parser.ts:53-59`의 fallback은 ref 부재를 정보로 보존하지 않고 `?`를 만들어낸다.
+PR head `acfe5c14` 기준 `src/responses/parser.ts`의 fallback은 ref 부재를 정보로 보존하지 않고
+`?`를 만들어낸다. **고정점은 라인 번호가 아니라 `inputContentParts()`의 `input_image` /
+`input_file` 두 branch다** (A-gate blocker 6 반영). PR head에서 실측한 위치는 다음과 같다.
+
+| 대상 | PR head `acfe5c14` 실제 라인 | 내용 |
+|---|---|---|
+| image fake marker | `:50-52` | `[image: ...?]` fallback |
+| file fake marker | `:53-56` | `[file: ...?]` fallback |
+| `:59` | — | collapse 관련 주석. repair 대상이 아니다 |
+
+**두 branch를 모두 고쳐야 한다.** image branch만 놓치면 결함이 절반 남는다.
+적용 시에는 라인 번호로 찾지 말고 `input_image` / `input_file` case 문자열로 찾아라.
 
 ```ts
       } else {

@@ -284,7 +284,26 @@ PR 적용 직후 `report.ts` before와 최종 after:
      });
 ```
 
-`tests/codex-catalog.test.ts`에는 `markProviderDiscoveryOk(provider, 1)` 뒤 `/api/selected-models` DTO가 `{ liveModelCounts: { [provider]: 1 } }`를 반환하는 케이스, 성공한 empty list가 `0`을 반환하는 케이스, 이후 실패+stale fallback에서도 마지막 성공 count가 유지되는 케이스를 추가한다. assertion은 request body/token/path/account ID를 검사하거나 출력하지 않는다.
+`tests/codex-catalog.test.ts`에는 아래 케이스를 추가한다. assertion은 request body/token/path/
+account ID를 검사하거나 출력하지 않는다.
+
+**활성화 요구 (A-gate blocker 4 반영, C-ACTIVATION-GROUNDING-01).**
+`markProviderDiscoveryOk(provider, 1)`을 직접 호출하고 DTO만 검사하는 테스트는
+**불충분하다.** 그렇게 하면 `src/codex/catalog/provider-fetch.ts`의 Cursor branch나 일반
+branch에서 count 인자를 빠뜨려 기본값 `0`이 쓰여도 테스트가 green이 된다. 즉 원래 결함이
+프로덕션 discovery 경로에 그대로 남는다.
+
+따라서 다음 두 테스트는 **실제 discovery 경로를 통과**해야 한다.
+
+| 테스트 | 트리거 방법 | 관찰 대상 (실행 증거) |
+|---|---|---|
+| Cursor branch 활성화 | Cursor discovery 응답을 mock하고 `fetchAllModels()`를 호출 | `/api/selected-models` DTO의 `liveModelCounts[provider]`가 mock한 모델 수와 일치 |
+| 일반 OpenAI-list branch 활성화 | `/models` 형태 응답을 mock하고 `fetchAllModels()`를 호출 | 동일 |
+| 성공한 empty list | 빈 `data: []`를 mock하고 같은 경로 통과 | count가 `0`이고 custom-only 오분류가 발생하지 않음 |
+| 실패 후 stale 보존 | 위 성공 뒤 discovery 실패를 mock | 마지막 성공 count가 유지됨 |
+
+`markProviderDiscoveryOk`를 직접 호출하는 unit 테스트는 보조로 남겨도 되지만,
+위 네 케이스 중 최소 두 branch 활성화 테스트가 없으면 WP6의 C는 통과로 볼 수 없다.
 
 ### PR snapshot의 결함 2 — 최초 custom GET 실패 뒤 Add 영구 비활성
 
