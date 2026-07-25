@@ -50,8 +50,23 @@ grok -m ocx-anthropic-claude-opus-4-8 -p "hello"
 
 Grok Build requires a non-empty API key for custom models even on loopback. The injected
 entries carry a placeholder (`opencodex-loopback`) — opencodex ignores admission keys for
-loopback connections, so no real secret is involved. If you bind the proxy on a
-non-loopback host, replace the per-model `api_key` with your opencodex admission token.
+loopback connections, so no real secret is involved.
+
+**Auto-registration is loopback-only.** When opencodex binds a non-loopback host — including
+the wildcards `0.0.0.0` and `::`, which expose every interface — requests need your real
+admission token, and a managed block cannot carry one safely. Writing the literal token would
+put your secret into `~/.grok/config.toml` and overwrite whatever you set there on the next
+`ocx start`/`ensure`/`restart`. So opencodex writes nothing at all in that case (and removes
+any block left over from an earlier loopback bind), and you configure the models yourself
+outside the managed markers, where nothing opencodex does can clobber them. See
+[Manual recipe](#manual-recipe-without-auto-registration) for the exact table, and set both
+`base_url` (a host that is actually reachable from where you run `grok`) and `api_key`
+(your `OPENCODEX_API_AUTH_TOKEN`).
+
+Do not replace `api_key` with `env_key` here. With no `model_provider` set, an `env_key`
+that fails to resolve does not stop the request — Grok falls through to your xAI session
+token and sends it to whatever `base_url` the entry names, which for a LAN deployment is a
+plaintext HTTP endpoint that is not xAI.
 
 The injected per-model `api_key` sits first in Grok's credential chain for these models,
 so turns against opencodex need no additional Grok login. Keep your normal `grok login` /
@@ -60,7 +75,8 @@ directly.
 
 ## Manual recipe (without auto-registration)
 
-If you manage `~/.grok/config.toml` yourself, add per-model tables with **direct fields**:
+If you manage `~/.grok/config.toml` yourself — or opencodex is on a non-loopback bind — add
+per-model tables with **direct fields**, outside the `# >>> opencodex managed block` markers:
 
 ```toml
 [model.ocx-opus]
@@ -70,10 +86,24 @@ api_backend = "chat_completions"
 api_key = "opencodex-loopback"
 ```
 
+For a proxy reachable over the network, point `base_url` at the address `grok` can actually
+dial and use your admission token:
+
+```toml
+[model.ocx-opus]
+model = "anthropic/claude-opus-4-8"
+base_url = "http://192.168.1.10:10100/v1"   # the reachable host, not 127.0.0.1
+api_backend = "chat_completions"
+api_key = "your-OPENCODEX_API_AUTH_TOKEN"
+```
+
 Do not rely on `[model_providers.<id>]` inheritance for the endpoint: as of Grok Build
 0.2.101 the inherited `base_url` is not applied to inference routing (requests fall
 through to the default xAI proxy and fail with 401). Direct per-model fields route
 correctly.
+
+Quote any alias containing a dot: bare `[model.grok-4.5]` is a three-segment key path, not
+the id `grok-4.5`. Generated aliases avoid dots entirely for this reason.
 
 ## Known limitations
 
@@ -88,7 +118,12 @@ correctly.
   `ocx service` setup, and if that unmanaged process dies the managed block can point at
   a dead proxy until the next `ocx start`/`ocx ensure` refreshes it.
 - **Config read timing:** start opencodex first, then launch `grok` for the most
-  predictable results. Recent Grok Build versions watch `config.toml` and hot-reload
-  `[model.*]` changes into an open session; older builds may need a restart.
+  predictable results. Grok Build watches `~/.grok/config.toml` and reloads when the
+  `[model]` table actually changes (roughly a one-second debounce, compared by content), so
+  a refreshed block reaches an open session without a restart. To confirm what Grok parsed,
+  run `grok inspect`: it lists the config sources it loaded and warns about any field it
+  rejected. It does not print the resolved model list. Note that a single TOML error
+  invalidates the *entire* user config layer, which is why opencodex writes the file
+  atomically — Grok never sees a half-written config.
 - **Catalog updates:** the fenced block reflects the catalog at injection time. After
   adding providers or models, run `ocx ensure` (or restart the proxy) to refresh it.
