@@ -1,5 +1,31 @@
 # WP3 — Kiro per-attempt usage와 절대 context pressure 분리: PR #439 통합
 
+## A-gate 반영 — 우리 test delta 2건 (활성화 공백)
+
+독립 감사 결과 production 결함·보안 blocker는 없다(`VERDICT: GO-WITH-FIXES (blockers=2)`).
+둘 다 **테스트가 조건부 경로를 실제로 증명하지 못하는** 활성화 공백이다. 원래 계획은
+"우리 delta 없음, PR 그대로 통합"이었으나 아래 2건을 추가한다.
+
+### delta 1 — fallback checkpoint가 rebuilt estimate에서 왔음을 구별한다
+
+`tests/kiro-stream.test.ts`의 fallback 테스트(PR 기준 `:315-336`)는 실제 fallback을 실행하지만,
+`mergeKiroUsage()`의 `first.contextTotalTokens + second.outputTokens` floor만으로 현재 assertion이
+만족된다. 즉 `fallback.contextInputEstimate` 전달을 stale initial estimate로 퇴행시켜도 통과한다.
+
+계약: **첫 attempt의 visible assistant progress 크기만 다른 두 실행**을 비교해 checkpoint가
+서로 달라짐을 관찰한다. progress가 크면 두 번째 attempt의 rebuilt payload가 커지므로 checkpoint도
+커져야 한다. stale estimate를 쓰면 두 값이 같아져 회귀가 잡힌다.
+
+### delta 2 — non-stream `parseResponse`가 estimate closure를 활성화한다
+
+non-stream 테스트가 `buildRequest()`를 호출하지 않아 `src/adapters/kiro.ts`의
+`contextInputEstimate` closure 전달이 활성화되지 않는다.
+
+계약: long-history 요청으로 먼저 `buildRequest()`를 호출한 뒤 `parseResponse()`의 terminal usage에서
+absolute checkpoint가 per-attempt input보다 크다는 것을 단언한다.
+
+두 delta 모두 기존 테스트를 수정하지 않고 새 테스트로 추가한다.
+
 ## 루프 계약
 
 - **Archetype:** 독립 리뷰에서 `MERGE_OK`를 받은 cross-module usage-contract PR의 verbatim integration.
