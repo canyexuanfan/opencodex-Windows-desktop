@@ -131,6 +131,17 @@ describe("hasConcreteRelatedSignature", () => {
     }
   });
 
+  it("rejects this/current/present issue attributions after generic both-wording", () => {
+    const rejected = [
+      "Both issues fail in OpenRouter, but this issue returns HTTP 500.",
+      "Both issues have adapter errors, while the current issue reports ECONNRESET.",
+      "Both issues reproduce, but the present issue shows Field required.",
+    ];
+    for (const reason of rejected) {
+      assert.equal(hasConcreteRelatedSignature(reason), false, reason);
+    }
+  });
+
   it("keeps shared concrete failure signatures", () => {
     const accepted = [
       "Both issues return HTTP 503 from POST /v1/responses in the OpenRouter adapter.",

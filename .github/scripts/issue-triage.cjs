@@ -29,7 +29,7 @@ const ONE_SIDED_ATTRIBUTION_RE =
  * token is not shared evidence (e.g. "both fail: issue 410 returns HTTP 500").
  */
 const ISSUE_SPECIFIC_ATTR_RE =
-  /\b(?:issue\s+#?\d+|the\s+new\s+issue|the\s+(?:first|second|other)(?:\s+issue)?)\b/i;
+  /\b(?:issue\s+#?\d+|the\s+(?:new|current|present)\s+issue|this\s+issue|the\s+(?:first|second|other)(?:\s+issue)?)\b/i;
 
 const BOTH_FAILURE_VERB_RE =
   /\bboth(?:\s+issues?)?(?:\s+\w+){0,6}\s+(?:return|report|show|have|hit|fail|reproduce|receive|share)\b/i;
