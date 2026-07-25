@@ -66,14 +66,6 @@ function readProvidersViewPreference(): "classic" | "workspace" {
   }
 }
 
-function writeProvidersViewPreference(view: "classic" | "workspace"): void {
-  try {
-    localStorage.setItem(PROVIDERS_VIEW_KEY, view);
-  } catch {
-    /* ignore quota / private-mode failures */
-  }
-}
-
 function providersHashForPage(): string {
   return readProvidersViewPreference() === "workspace" ? "providers/workspace" : "providers";
 }
