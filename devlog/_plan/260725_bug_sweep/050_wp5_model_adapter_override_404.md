@@ -3,6 +3,12 @@
 > 개정 이력: r1 초안은 A-gate에서 FAIL. blocker 6(임의 adapter 허용이 인증 경계를 확장)과
 > blocker 10(inbound 분기 회귀 테스트 누락)을 r2에서 수정했다. 외부 근거는
 > `001_external_evidence.md` §xAI 참조.
+>
+> r3: r2도 FAIL. allow-list의 소유 파일이 없었고, hard pin과의 충돌을 막지 않았으며,
+> inbound 테스트 설명이 실제 코드와 반대였다(Claude 경로는 sampling 제거이고
+> response-format 거부는 Chat Completions 쪽이다).
+>
+> **이 문서의 코드 블록은 설계 스케치다.** 정확한 diff는 이 phase의 P에서 작성한다.
 
 ## 증상
 
@@ -94,16 +100,41 @@ openai-chat / openai-responses / anthropic / google / kiro / azure / azure-opena
 따라서 **허용 목록을 #404가 실제로 요구하는 두 wire로 한정한다.**
 
 ```ts
-+/**
-+ * Only OpenAI-shaped wires may be selected per model. Provider-specific adapters
-+ * (cursor, kiro, google, ...) carry their own credential and base-URL semantics,
-+ * so exposing them here would widen the auth boundary rather than pick a wire.
-+ * Extending this set requires a per-adapter credential threat model.
-+ */
-+const MODEL_ADAPTER_OVERRIDE_ALLOWED = new Set(["openai-chat", "openai-responses"]);
+/**
+ * Only OpenAI-shaped wires may be selected per model. Provider-specific adapters
+ * (cursor, kiro, google, ...) carry their own credential and base-URL semantics,
+ * so exposing them here would widen the auth boundary rather than pick a wire.
+ * Extending this set requires a per-adapter credential threat model.
+ */
+const MODEL_ADAPTER_OVERRIDE_ALLOWED = new Set(["openai-chat", "openai-responses"]);
 ```
 
-config validator와 management validator 모두 이 집합을 참조한다.
+**소유 파일 (r3)**: 이 상수는 `src/config.ts`(validator), `src/server/auth-cors.ts`
+(management validator), `src/server/adapter-resolve.ts`(resolver) 세 곳이 참조한다.
+`adapter-resolve.ts`에 두면 config가 server 모듈을 import하게 되어 순환 위험이 있다.
+P에서 실제 import 그래프를 확인해 소유 파일을 정하되, `src/types.ts` 또는
+`src/providers/` 아래의 의존성 없는 모듈이 후보다.
+
+### hard pin 충돌 (r3 추가)
+
+`src/server/adapter-resolve.ts:13`의 `ANTHROPIC_WIRE_MODELS`는 upstream이 해당 모델에
+대해 Anthropic wire만 말한다는 사실을 담은 pin이다.
+
+```ts
+const ANTHROPIC_WIRE_MODELS: Record<string, Set<string>> = {
+  "opencode-go": new Set(["minimax-m2.5", "minimax-m2.7", "minimax-m3"]),
+};
+```
+
+r2 설계는 override를 pin보다 **먼저** 검사하므로, `opencode-go/minimax-m3`에
+`"openai-chat"` override를 넣으면 validator가 통과시키고 resolver가 pin 이전에 반환한다.
+알려진 비호환 조합이 "유효 설정"이 되어버린다.
+
+**결정: hard pin이 override보다 우선한다.** 그리고 validator가 pinned model에 대한
+`modelAdapters` 항목 자체를 거부해, 사용자가 조용히 무시되는 설정을 쓰지 않게 한다.
+
+즉 resolver의 순서는 `hard pin → configured override → provider 기본값`이다.
+r1·r2가 적은 "override → pin" 순서는 폐기한다.
 
 `MAINTAINERS.md`의 보안 검토 대상에 해당하므로, 구현 후 다음을 명시적으로 확인한다:
 override가 `apiKey`/`authMode`/`baseUrl`을 바꾸지 않고 오직 `adapter` 필드만 교체하며,
@@ -148,19 +179,27 @@ override가 `apiKey`/`authMode`/`baseUrl`을 바꾸지 않고 오직 `adapter` �
 
 ### `src/server/adapter-resolve.ts` (18행)
 
+hard pin을 **먼저** 평가하고, 그 다음에 configured override를 본다.
+
 ```ts
-+  // Configured per-model override wins over the hardcoded wire pins below.
-+  // Re-check the allow-list at use time: config may have been written by an older
-+  // build or hand-edited past the validator.
-+  const configured = providerConfig.modelAdapters;
-+  const requested = configured && Object.hasOwn(configured, modelId) ? configured[modelId] : undefined;
-+  if (requested && MODEL_ADAPTER_OVERRIDE_ALLOWED.has(requested) && requested !== providerConfig.adapter) {
+   const overrideSet = ANTHROPIC_WIRE_MODELS[providerName];
+   if (overrideSet?.has(modelId) && providerConfig.adapter !== "anthropic") {
+     return { ...providerConfig, adapter: "anthropic" };
+   }
++  // Configured per-model override, evaluated only for models without a hard pin.
++  // The allow-list is re-checked here because config may have been hand-edited
++  // past the validator or written by an older build.
++  const requested = providerConfig.modelAdapters?.[modelId];
++  if (requested
++    && MODEL_ADAPTER_OVERRIDE_ALLOWED.has(requested)
++    && requested !== providerConfig.adapter) {
 +    return { ...providerConfig, adapter: requested };
 +  }
-   const overrideSet = ANTHROPIC_WIRE_MODELS[providerName];
+   return providerConfig;
 ```
 
-기존 `opencode-go` fallback은 그대로 보존한다.
+`Object.hasOwn` 대신 직접 인덱싱해도 되는지는 prototype 오염 방어를 validator가 이미
+수행하는지에 달렸다. P에서 확정한다.
 
 ### `src/server/responses/core.ts` (698행 부근)
 
@@ -237,11 +276,27 @@ adapter 판단을 얹어야 한다.
 계획이 수정하는 세 inbound 경로 각각에 override hit/miss 테스트가 필요하다. E2E가
 `/responses`만 검증하면 이 wiring은 무증상으로 깨진다.
 
-9. `chat-completions.ts` — override로 effective adapter가 바뀐 모델에서 sampling 파라미터
-   처리가 effective adapter 기준으로 동작
-10. `claude-messages.ts` — response-format 거부 판단이 effective adapter 기준
+9. `chat-completions.ts` — 이 경로의 실제 사전 판단은 sampling 파라미터 처리(75행 부근)와
+   response-format 거부(88행 부근)다. override로 effective adapter가 바뀐 모델에서
+   두 판단이 effective adapter 기준으로 동작하는지 확인
+10. `claude-messages.ts:570` — 이 경로의 실제 사전 판단은 sampling 제거다.
+    r2가 "response-format 거부"라고 적은 것은 오류였다
 11. `compact.ts` — WP3의 capability gate와 결합해, override된 모델의 compact 경로가
     native/synthetic 중 올바른 쪽을 고름
+12. `hard pin wins over a configured override` — `opencode-go/minimax-m3`에
+    `"openai-chat"` override를 넣어도 resolver가 `anthropic`을 반환하고,
+    validator가 그 설정 자체를 거부
+
+## 문서화 (r3 범위 추가)
+
+`modelAdapters`는 새 사용자 설정 필드이므로 `AGENTS.md`의 docs-sync 정책이 적용된다.
+영어/한국어 configuration reference에 필드 설명과 혼합 게이트웨이 예제를 추가한다.
+
+- `docs-site/src/content/docs/reference/configuration.md`
+- `docs-site/src/content/docs/ko/reference/configuration.md`
+
+허용 값이 `openai-chat`/`openai-responses` 두 개뿐이라는 점과 hard pin이 우선한다는 점을
+함께 적는다.
 
 ## 판정
 

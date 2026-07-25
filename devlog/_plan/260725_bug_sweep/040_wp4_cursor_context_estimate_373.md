@@ -4,6 +4,12 @@
 > 반환 타입 변경 없이 사용, 핵심 함수 본문 생략)와 blocker 9(shared estimator 변경을
 > Cursor 국소 변경으로 오분류)를 r2에서 수정했다. 외부 근거·경쟁 PR 이력은
 > `001_external_evidence.md` 참조.
+>
+> r3: r2도 FAIL. Cursor 국소 Grok 비율이 공유 estimator의 CJK clamp를 우회해 한국어
+> prompt를 과소계산하는 문제가 남았고, `prepareCursorRunRequest()` 본문이 여전히
+> 생략돼 있었다.
+>
+> **이 문서의 코드 블록은 설계 스케치다.** 정확한 diff는 이 phase의 P에서 작성한다.
 
 ## 증상
 
@@ -190,9 +196,13 @@ blob을 만드는 모든 지점에서 `serialized`를 채운다. 현재 `JSON.st
 
 `toJson`, `fromBinary`, `ValueSchema` import를 파일 상단에 추가한다.
 
-**(4) 단일 준비 진입점** — 기존 `encodeCursorRunRequest()` 본문을 그대로 옮기고 반환만
-바꾼다. 본문 로직(action 결정, conversationState 구성, mcpTools 부착)은 **변경 없이**
-이동한다.
+**(4) 단일 준비 진입점** — 기존 `encodeCursorRunRequest()`(506행부터)의 본문을 옮기고
+반환만 바꾼다.
+
+**주의 (r3)**: 실제 코드는 `mcpToolDefs`를 IIFE 안에서 만든다. 단순 이동으로는 추정에
+필요한 변수에 접근할 수 없으므로, P에서 해당 IIFE를 풀어 `roots` / `text` /
+`actionCase` / `mcpToolDefs`를 함수 스코프의 지역 변수로 끌어올려야 한다. 추가로
+`McpToolDefinition` 타입과 `estimateTokens` import가 필요하다.
 
 ```ts
 +export interface PreparedCursorRunRequest {
@@ -283,36 +293,38 @@ estimator가 본 payload와 실제 전송 payload가 동일함이 타입 수준�
 "checkpoint 또는 output signal이 하나라도 있어야 보고" guard를 반드시 유지한다 — 요청이
 실제로 소비됐다는 증거 없이 usage를 만들어내면 안 된다.
 
-### Grok 비율: 공유 estimator를 건드리지 않는다
+### Grok 비율: 특례를 넣지 않는다 (r3 결정)
 
-r1은 `KIRO_MODEL_PREFIXES`에 `"grok"`을 추가하려 했으나, `estimateTokens()`는 Cursor 전용이
-아니다. 실제 소비자를 확인한 결과:
+r1은 `KIRO_MODEL_PREFIXES`에 `"grok"`을 추가하려 했다. 그러나 `estimateTokens()`는
+Cursor 전용이 아니다.
 
 - `src/adapters/kiro.ts:151, 158, 565`
 - `src/server/claude-messages.ts:591, 799`
 - `src/server/chat-completions.ts:97`
 
-prefix를 추가하면 이 경로들의 Grok usage-log 추정치가 4 → 3.5 chars/token으로 함께 바뀐다.
-#373과 무관한 회계 변경이므로 **범위 밖**이다.
+prefix 추가는 이 경로들의 Grok usage-log 추정치를 함께 바꾼다. #373과 무관한 회계
+변경이므로 범위 밖이다.
 
-대신 Cursor 국소 helper로 가둔다. `src/adapters/cursor/protobuf-request.ts`:
+r2는 Cursor 국소 helper로 가두려 했으나 그것도 틀렸다. 공유 estimator에는 CJK 보호가 있다
+(`src/lib/token-estimate.ts:62`).
 
 ```ts
-+/**
-+ * Cursor-local ratio. Cursor wire model ids look like `grok-4.5[-effort]`, and
-+ * Grok's code/JSON-heavy traffic packs denser than the generic English ratio.
-+ * Kept local so shared usage-log estimates for other surfaces stay unchanged (#373).
-+ */
-+const CURSOR_DENSE_MODEL_PREFIXES = ["grok"];
-+
-+function estimateCursorInputTokens(text: string, modelId?: string): number {
-+  const id = modelId?.toLowerCase();
-+  if (id && CURSOR_DENSE_MODEL_PREFIXES.some(p => id.startsWith(p))) {
-+    return Math.ceil(text.length / 3.5);
-+  }
-+  return estimateTokens(text, modelId);
-+}
+  let ratio = charsPerToken(modelId);
+  if (cjkRatio(text) > CJK_RATIO_THRESHOLD) ratio = Math.min(ratio, CJK_CHARS_PER_TOKEN);
+  return Math.max(1, Math.ceil(len / ratio));
 ```
+
+국소 helper가 `length / 3.5`를 직접 반환하면 이 clamp를 건너뛴다. 한국어 Grok prompt는
+CJK 비율이 높아 2.5로 clamp되어야 하는데 3.5로 나눠 **과소계산**된다. 사용자가 한국어로
+작업하는 이 저장소에서는 특히 나쁘다.
+
+**결론: Grok 비율 조정을 이번 범위에서 뺀다.** `estimateCursorInputTokens()`를 만들지 않고
+`estimateTokens(text, modelId)`를 그대로 쓴다.
+
+근거: #373의 증상은 `inputTokens=0`이다. 0에서 "pruning 이후 payload 기반 추정치"로 가는
+것이 수정의 본질이고, 그 추정치가 4 chars/token이냐 3.5냐는 부차적이다. 비율 정확도는
+근거(실측 대조)를 갖춘 별도 unit에서 다루는 편이 옳다. `estimated: true` 플래그가 이미
+추정치임을 알린다.
 
 `src/lib/token-estimate.ts`는 **변경하지 않는다.**
 
@@ -339,9 +351,9 @@ carry도 없으면 Cursor에 보낸 것과 동일한 pruned payload에서 파생
    `serialized` 문자열과 대조해 truncation 이후에도 정확히 일치함을 확인.
    `StoredRootBlob.serialized`가 stale해지는 실수를 잡는다.
 
-4c. `grok ratio stays local to cursor` — 동일 텍스트에 대해
-   `estimateTokens(text, "grok-4.5")`(공유)와 Cursor 경로 추정치가 다름을 확인하고,
-   `tests/token-estimate.test.ts`의 기존 10개가 무변경 통과함을 함께 요구한다.
+4c. `estimate honors the shared CJK clamp` — 한국어가 지배적인 payload에서 추정치가
+   `estimateTokens()`와 정확히 일치함을 확인한다. Grok 특례가 재도입되어 CJK 보호를
+   우회하면 이 테스트가 실패한다. `tests/token-estimate.test.ts` 기존 10개도 무변경 통과.
 
 ### `tests/cursor-protobuf-events.test.ts`
 

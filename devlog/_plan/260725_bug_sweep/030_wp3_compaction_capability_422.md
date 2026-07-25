@@ -3,6 +3,12 @@
 > 개정 이력: r1 초안은 A-gate에서 FAIL. blocker 4(non-stream 경로가 `parseResponse`
 > 부재로 400을 내는데 diff가 `parseStream`만 다룸)를 r2에서 수정했다. 외부 근거와
 > 이슈 본문 전제 정정은 `001_external_evidence.md` 참조.
+>
+> r3: r2도 FAIL. capability gate가 custom `authMode:"forward"` 게이트웨이까지 통과시켰고,
+> parser diff가 존재하지 않는 helper(`decodeSse`, `safeJsonParse`, `errorMessageOf`)를
+> 참조했으며 메서드 이름이 adapter interface와 불일치했다.
+>
+> **이 문서의 코드 블록은 설계 스케치다.** 정확한 diff는 이 phase의 P에서 작성한다.
 
 ## 증상
 
@@ -103,25 +109,29 @@ capability를 adapter 이름에서 분리한다. authMode 기반 gate + non-forw
 두 capability를 분리한다. 공식 OpenAI API-key는 `/responses/compact`는 지원하지만
 공개 `compaction_trigger` 계약은 제공하지 않으므로 하나로 묶을 수 없다.
 
+**r2의 오류**: `authMode === "forward"`만 보면 부족하다. 수동 설정 파일은 임의
+baseUrl에 `authMode:"forward"`를 쓸 수 있고(`src/config.ts`의 provider 스키마는
+`.passthrough()`이며 superRefine은 authMode 조합을 막지 않는다), management API만
+이를 거부한다. 그런 custom forward 게이트웨이는 ChatGPT backend가 아니므로
+`compaction_trigger`를 이해하지 못한다.
+
+다행히 이미 정확한 판정자가 있다. `src/providers/openai-tiers.ts:32`:
+
 ```ts
-+/** Can this provider accept a Codex v2 `compaction_trigger` input item? */
-+export function supportsNativeResponsesCompactionTrigger(provider: OcxProviderConfig): boolean {
-+  return provider.adapter === "openai-responses" && provider.authMode === "forward";
-+}
-+
-+/** Can this provider serve `POST /responses/compact`? */
-+export function supportsNativeResponsesCompactEndpoint(
-+  providerName: string,
-+  provider: OcxProviderConfig,
-+): boolean {
-+  return provider.adapter === "openai-responses"
-+    && (
-+      provider.authMode === "forward"
-+      || (providerName === OPENAI_API_PROVIDER_ID
-+        && normalizedBaseUrl(provider.baseUrl) === "https://api.openai.com/v1")
-+    );
-+}
+export function isCanonicalOpenAiForwardProvider(provider: OcxProviderConfig): boolean {
+  return provider.adapter === "openai-responses"
+    && provider.authMode === "forward"
+    && normalizedBaseUrl(provider.baseUrl) === CODEX_FORWARD_BASE_URL;
+}
 ```
+
+baseUrl까지 검사하므로 이게 trigger capability의 올바른 기준이다.
+
+- **trigger capability** = `isCanonicalOpenAiForwardProvider(provider)` 를 그대로 사용.
+  새 helper를 만들 필요가 없다.
+- **compact endpoint capability** = canonical ChatGPT forward **또는**
+  공식 `openai-apikey` + `api.openai.com/v1`. 이 조합만 허용하는 helper를 새로 추가한다.
+  provider id 상수와 baseUrl 정규화 함수의 정확한 이름은 P에서 확인한다.
 
 ### `src/server/responses/compact.ts` (205행)
 
@@ -176,63 +186,44 @@ key-mode에서 trigger를 제거하고 요약 프롬프트로 대체한다.
 
 **stub parser 교체 — 두 메서드 모두 필요하다.**
 
-r1은 `parseStream`만 다뤘으나, non-stream 경로는 `adapter.parseResponse`가 없으면
-`src/server/responses/core.ts:1828`에서 끝난다.
+non-stream 경로는 `adapter.parseResponse`가 없으면 `src/server/responses/core.ts:1828`에서
+끝난다.
 
 ```ts
   return formatErrorResponse(400, "invalid_request_error", "Non-streaming not supported by this adapter");
 ```
 
 `/responses/compact`의 synthetic 내부 요청도 `stream:false`를 강제하므로 같은 400을 맞는다.
-따라서 두 메서드를 함께 구현한다.
 
-```ts
-+async *parseSyntheticCompactionStream(response: Response): AsyncGenerator<AdapterEvent> {
-+  for await (const event of decodeSse(response)) {
-+    const data = safeJsonParse(event.data);
-+    if (!isPlainObject(data)) continue;
-+    switch (data.type) {
-+      case "response.output_text.delta":
-+        if (typeof data.delta === "string") yield { type: "text_delta", text: data.delta };
-+        break;
-+      case "response.failed":
-+      case "error":
-+        yield { type: "error", message: errorMessageOf(data) };
-+        return;
-+      case "response.completed":
-+        yield { type: "done", usage: usageFromResponsesPayload(data.response) };
-+        return;
-+    }
-+  }
-+  yield { type: "done" };
-+}
-+
-+/**
-+ * Non-stream sibling. Without this the generic non-stream path fails with
-+ * "Non-streaming not supported by this adapter" (core.ts:1828), which also
-+ * breaks the v1 /responses/compact synthetic path since it forces stream:false.
-+ */
-+async parseResponse(response: Response): Promise<AdapterEvent[]> {
-+  const json = await response.json();
-+  if (!isPlainObject(json)) return [{ type: "error", message: "malformed compaction response" }];
-+  if (json.error) return [{ type: "error", message: errorMessageOf(json) }];
-+  const text = Array.isArray(json.output)
-+    ? json.output
-+        .filter(item => isPlainObject(item) && item.type === "message")
-+        .flatMap(item => Array.isArray(item.content) ? item.content : [])
-+        .filter(part => isPlainObject(part) && part.type === "output_text")
-+        .map(part => String(part.text ?? ""))
-+        .join("")
-+    : "";
-+  return [
-+    ...(text ? [{ type: "text_delta" as const, text }] : []),
-+    { type: "done" as const, usage: usageFromResponsesPayload(json) },
-+  ];
-+}
+**r2의 오류**: adapter interface가 요구하는 이름은 `parseStream`/`parseResponse`인데
+r2는 `parseSyntheticCompactionStream`이라는 별도 이름을 추가했다. 기존 stub을 남기면
+계속 error를 내고, 지우면 필수 메서드가 사라진다. 또한 `decodeSse`, `safeJsonParse`,
+`errorMessageOf`는 **코드베이스에 존재하지 않는다**.
+
+### 구현 계약 (정확한 diff는 P에서)
+
+`createResponsesPassthroughAdapter()`가 반환하는 객체의 `parseStream`(현재 588행 부근의
+error stub)을 **조건부 동작**으로 바꾼다. compaction 요청일 때만 실제 파싱을 하고,
+일반 passthrough에서는 기존 error 의미를 유지한다(passthrough는 원래 파서를 거치지 않는다).
+
+`parseResponse`를 같은 조건으로 새로 추가한다.
+
+매핑 규칙:
+
+```
+SSE  response.output_text.delta   -> text_delta
+     response.completed           -> done (usage 포함)
+     response.failed / error      -> error
+JSON output[].type === "message"의 content[].type === "output_text" 를 이어붙여 text_delta + done
 ```
 
-`usageFromResponsesPayload()`는 이 어댑터가 일반 경로에서 이미 쓰는 usage 추출 로직을
-재사용한다. B 단계에서 실제 export 이름을 확인해 맞춘다.
+P에서 확인할 것:
+
+1. 이 저장소의 실제 SSE 디코더 이름과 시그니처 (`src/lib/sse-decoder.ts`의 export).
+2. usage 추출 helper의 실제 이름과 인자. r2는 `usageFromResponsesPayload(data.response)`로
+   적었으나 리뷰어 지적대로 `.usage`를 넘겨야 할 가능성이 높다.
+3. `AdapterEvent`의 `done` variant가 usage를 받는 정확한 형태.
+4. adapter 객체의 메서드 시그니처 (`parseStream`이 받는 인자 형태).
 
 이후 `src/bridge.ts:652`의 기존 로직이 정확히 하나의 `compaction` item으로 감싼다.
 

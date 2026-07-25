@@ -3,6 +3,12 @@
 > 개정 이력: r1 초안은 A-gate에서 FAIL(스윕 전체). blocker 8(테스트가 두 번째 wiring
 > 누락을 잡지 못함)과 11(PR #408 현황 stale)을 r2에서 수정했다. 공식 스키마 근거는
 > `001_external_evidence.md` §Windows Task Scheduler 참조.
+>
+> r3: r2도 FAIL. `readWindowsSchedulerXmlState()`를 도입했지만 테스트가 여전히 결과를
+> 손으로 derive에 주입하는 형태라 반쪽 수정을 못 잡고, 제안 호출의 `wscript`/`launcher`가
+> 해당 스코프에 없었다.
+>
+> **이 문서의 코드 블록은 설계 스케치다.** 정확한 diff는 이 phase의 P에서 작성한다.
 
 ## 증상
 
@@ -119,51 +125,33 @@ Trigger `Enabled`와 Settings `Enabled`는 `default="true" minOccurs="0"`, Princ
 
 `schedulerSettings` 지역 변수가 다른 곳에서 쓰이지 않으면 함께 제거한다.
 
-### 두 판정을 한 parser로 합친다 (blocker 8)
+### 두 판정을 production owner 하나로 합친다 (blocker 8)
 
 헬퍼만 고치면 `diagnoseService()`의 정규식 교체를 잊어도 헬퍼 테스트와 derive 테스트가
-모두 통과한다. 두 판정이 같은 함수를 거치도록 묶어 그 구멍을 없앤다.
+모두 통과한다. r2는 `readWindowsSchedulerXmlState()`를 도입했지만, 테스트가 그 결과를
+**손으로** derive에 넣는 형태라 구멍이 그대로였다.
 
-```ts
-+export interface WindowsSchedulerXmlState {
-+  installed: boolean;
-+  enabled: boolean;
-+  registrationHealthy: boolean;
-+}
-+
-+/**
-+ * Single source of truth for reading a registered task's XML. Both the status
-+ * diagnostic and the install verification path must go through here so a partial
-+ * fix (helper updated, diagnoseService() left on the old regex) cannot pass (#432).
-+ */
-+export function readWindowsSchedulerXmlState(
-+  xml: string,
-+  wscript: string,
-+  launcher: string,
-+): WindowsSchedulerXmlState {
-+  const installed = xml.length > 0;
-+  return {
-+    installed,
-+    enabled: installed && windowsTaskRegistrationEnabled(xml),
-+    registrationHealthy: installed && windowsTaskRegistrationHealthy(xml, wscript, launcher),
-+  };
-+}
+**요구사항**: production `diagnoseService()`가 실제로 호출하는 순수 함수 하나를 만들고,
+테스트가 **그 함수를** 호출해야 한다. 그래야 production wiring을 고치지 않은 반쪽 수정이
+테스트에서 실패한다.
+
+형태(이름과 인자는 P에서 확정):
+
+```
+diagnoseWindowsServiceFromXml(xml, assetsPresent, wscript, launcher, ...) -> 진단 결과
 ```
 
-`diagnoseService()`는 이 함수만 호출한다.
+- `diagnoseService()`는 XML과 파일 존재 여부만 수집해 이 함수에 넘긴다.
+- 테스트는 XML 문자열을 만들어 이 함수를 직접 호출하고 `stale`/`enabled`/`viable`을 단언한다.
+- `schedulerEnabled` 판정과 `registrationHealthy` 판정이 이 함수 안에서 함께 이뤄지므로
+  한쪽만 고치면 테스트가 깨진다.
 
-```ts
--const schedulerInstalled = schedulerXml.length > 0;
--const schedulerSettings = taskXmlSection(schedulerXml, "Settings");
--const schedulerEnabled = schedulerInstalled && /<Enabled>\s*true\s*<\/Enabled>/i.test(schedulerSettings);
--const schedulerAssets = [...].every(existsSync) && windowsTaskRegistrationHealthy(schedulerXml);
-+const schedulerState = readWindowsSchedulerXmlState(schedulerXml, wscript, launcher);
-+const schedulerInstalled = schedulerState.installed;
-+const schedulerEnabled = schedulerState.enabled;
-+const schedulerAssets = [...].every(existsSync) && schedulerState.registrationHealthy;
-```
+**P에서 확인할 것**: `wscript`와 `launcher` 값이 `diagnoseService()` 스코프에서 어떻게
+얻어지는지. r2 diff는 이 두 변수가 해당 스코프에 있다고 가정했으나 확인되지 않았다.
+없다면 함수 내부에서 유도하거나 기본 인자로 처리한다.
 
-B 단계에서 `wscript`/`launcher` 값이 이 스코프에서 어떻게 얻어지는지 확인해 맞춘다.
+**PR #408 결합**: #408의 `evaluateWindowsSchedulerInstallVerification()`도 같은 판정을
+쓰므로, 가능하면 그 경로도 이 owner를 거치게 한다. 최신 head 대조 시 함께 확인한다.
 
 ## 회귀 테스트
 
@@ -187,16 +175,15 @@ fixture 패턴을 따른다).
    - `InteractiveToken→Password`, `IgnoreNew→Parallel`, `PT0S→PT72H`,
      `wscript.exe→cmd.exe`, launcher path 변경 → 전부 `false`
 
-5. `canonicalized scheduler state remains viable` — **blocker 8 대응**
-   - `readWindowsSchedulerXmlState(canonicalXml, ...)`를 직접 호출해
-     `{installed:true, enabled:true, registrationHealthy:true}` 확인
-   - 그 결과를 `deriveWindowsServiceDiagnostic()`에 넣어 `stale:false`, `enabled:true`,
-     `viable:true` 확인
-   - 헬퍼 결과를 손으로 주입하지 않고 XML에서 두 판정을 함께 산출하므로, 한쪽만 고친
-     반쪽 수정이 여기서 실패한다
+5. `canonicalized scheduler XML yields a healthy diagnostic` — **blocker 8 대응**
+   - production owner 함수에 canonical XML(기본값 생략형)을 **직접** 넣어
+     `stale:false`, `enabled:true`, `viable:true` 확인
+   - 중간 결과를 손으로 주입하지 않는다. `diagnoseService()`가 이 함수를 쓰지 않으면
+     production은 여전히 깨진 채이므로, P에서 `diagnoseService()`가 이 함수만 호출하도록
+     리팩터링했는지 diff로 확인한다
 
 6. `explicitly disabled task is still reported disabled`
-   - Settings `Enabled=false` XML → `readWindowsSchedulerXmlState().enabled === false`
+   - Settings `Enabled=false` XML → 같은 함수가 `enabled:false`
    - 오탐 수정이 진짜 비활성화까지 통과시키지 않음을 고정
 
 ## 유지해야 할 동작

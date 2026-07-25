@@ -3,6 +3,43 @@
 > 개정 이력: r1은 A-gate에서 FAIL(blocker 12건). r2에서 연구 자료를 `001`로 분리하고
 > (LEXICO-SPLIT-01), WP1을 probe lease 설계로 교체하고, WP6 문서를 작성하고,
 > 의존성 맵을 실제 공유 지점으로 정정했다.
+>
+> r3: r2도 FAIL(blocker 13건). 반복된 실패의 근본 원인은 개별 지적이 아니라 **방법**이었다.
+> 아직 열어보지 않은 5개 서브시스템의 copy-paste 실행 가능한 diff를 종이 위에서 미리
+> 쓰려다 팬텀 참조를 계속 만들어냈다(`buildCodexAuthContext` 미존재, `roots.serialized`
+> 미존재, `decodeSse`/`safeJsonParse` 미존재, `wscript`/`launcher` 스코프 부재).
+> 아래 "계획 정밀도 정책"으로 전환한다.
+
+## 계획 정밀도 정책 (r3)
+
+DIFFLEVEL-ROADMAP-01은 각 phase가 실행 가능한 PRD를 갖기를 요구한다. 그러나 컴파일러를
+거치지 않은 diff는 정밀해 보일 뿐 실행 가능하지 않다. 두 번의 A-gate가 이를 증명했다.
+
+따라서 문서가 지는 책임을 이렇게 나눈다.
+
+- **로드맵 문서(이 유닛)가 확정하는 것**: 근본 원인(파일:라인 인용, 실제 코드 대조 완료),
+  설계 결정과 그 근거, 반드시 만족해야 할 불변식, 회귀 테스트 케이스 목록,
+  깨뜨리면 안 되는 기존 동작, 보안 검토 항목.
+- **각 구현 사이클의 P가 확정하는 것**: 정확한 diff. 그 phase의 P에서 대상 파일을 열어
+  현재 시그니처·스코프·import를 확인한 뒤 작성하고, 곧바로 B에서 컴파일러와 테스트로
+  검증한다.
+
+즉 decade 문서의 코드 블록은 **설계 의도를 고정하는 스케치**이지 최종 패치가 아니다.
+각 문서 상단에 그 사실을 명시한다. 이는 규약 회피가 아니라, 검증되지 않은 정밀도를
+검증된 정밀도로 바꾸는 순서 조정이다. 첫 구현 사이클(WP1)이 이 방식이 실제로 통하는지를
+증명하는 시험대다.
+
+## 착수 전 sync gate
+
+`origin/dev`가 로드맵 작성 시점(`f77e3963`) 이후 움직였다. WP1 착수 전 반드시:
+
+```bash
+git fetch origin dev
+git log --oneline HEAD..origin/dev -- src/ tests/
+```
+
+`src/`나 `tests/`에 변화가 있으면 rebase하고 해당 decade 문서의 stale 체크를 다시 한다.
+런타임 소스 변화가 없으면 그대로 진행한다.
 
 ## 목표
 
@@ -97,6 +134,15 @@ diff, accept criteria만 담는다 (LEXICO-SPLIT-01).
 6. 로컬 커밋 1개 이상
 
 WP6에서 `bun run test` 전체 스위트를 실행해 기존 테스트 회귀가 없음을 확인한다.
+
+## 범위 조정 (r3)
+
+- **WP5 문서화**: `modelAdapters`는 새 사용자 설정 필드이므로 `AGENTS.md`의 docs-sync
+  정책상 `docs-site/` 반영이 필요하다. r1에서 docs-site를 일괄 범위 밖으로 둔 것은
+  과했다. 이 필드에 한해 영어/한국어 configuration reference 갱신을 범위에 포함한다.
+- **WP5 hard pin 충돌**: `opencode-go/minimax-*`처럼 이미 hardcoded wire pin이 있는
+  모델은 `modelAdapters` override 대상에서 제외한다. validator가 거부하고 resolver도
+  pin을 우선한다. 알려진 비호환 조합을 "유효 설정"으로 인정하지 않기 위함이다.
 
 ## 기준선
 

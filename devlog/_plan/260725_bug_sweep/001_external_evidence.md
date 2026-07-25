@@ -36,7 +36,8 @@ decade 구현 문서가 참조하는 공식 문서 근거를 한곳에 모은다
 ## OpenAI Compaction (#422)
 
 - [Compaction guide](https://developers.openai.com/api/docs/guides/compaction)
-- [Responses compact API reference](https://developers.openai.com/api/reference/resources/responses/methods/compact)
+- [Responses compact API reference](https://developers.openai.com/api/docs/api-reference/responses/compact)
+  (이전 `/api/reference/resources/...` 경로는 현재 공식 guide가 링크하는 경로가 아니다)
 
 공식 Responses API는 `context_management`와 `POST /responses/compact`를 지원한다.
 **이슈 본문의 "표준 OpenAI API는 compaction 미지원" 주장은 틀렸다.** 공개 API에 없는 것은
@@ -63,10 +64,22 @@ decade 구현 문서가 참조하는 공식 문서 근거를 한곳에 모은다
 
 ## 기준선 측정
 
-`bun install` 후:
+`bun install` 후 (독립 리뷰어 재확인 포함):
 
 ```
+bun run typecheck                                            exit 0
 tests/codex-routing.test.ts                                  59 pass / 0 fail
 tests/responses-compaction.test.ts + openai-responses-passthrough  46 pass / 0 fail
 tests/service.test.ts                                        34 pass / 0 fail
+tests/cursor-*.test.ts                                       112 pass / 0 fail
+tests/server-auth.test.ts                                    54 pass / 0 fail
+bun run privacy:scan                                         통과
 ```
+
+## ref 상태 (착수 전 재확인 필요)
+
+로드맵 작성 시점의 `origin/dev`는 `f77e3963`이었으나, 리뷰어 확인 시점에는 `9bf85aea`로
+21커밋 앞서 있었다. **다만 `src/`와 `tests/`의 런타임 소스는 그 사이 변하지 않았다**
+(GUI/devlog 커밋). 위 기준선 수치는 그대로 유효하다.
+
+WP1 착수 시 `000_plan.md`의 sync gate 절차를 따라 다시 확인한다.
