@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useI18n, type TFn, type Locale } from "../i18n/shared";
 import { formatTokens } from "../format-tokens";
 import { EmptyState, Notice } from "../ui";
 import { modelLabel } from "../model-display";
+import { readViewMode, type ViewMode } from "../view-mode";
 
 type Range = "all" | "30d" | "7d";
 type UsageSurface = "all" | "codex" | "claude";
@@ -449,93 +450,145 @@ function UsageModelsTable({
   onModelQuery,
   locale,
   t,
+  workspace = false,
 }: {
   models: UsageModel[];
   modelQuery: string;
   onModelQuery: (query: string) => void;
   locale: Locale;
   t: TFn;
+  workspace?: boolean;
 }) {
   const searchLabel = t("usage.search.models");
+  const sectionLabel = t("usage.section.models");
+  const titleId = "usage-models-title";
+  const searchInput = (
+    <input
+      className="input"
+      aria-label={searchLabel}
+      placeholder={searchLabel}
+      value={modelQuery}
+      onChange={event => onModelQuery(event.target.value)}
+    />
+  );
+  const table = (
+    <div className="tbl-wrap usage-scroll">
+      <table className="tbl">
+        <thead>
+          <tr>
+            <th>{t("logs.col.model")}</th>
+            <th>{t("logs.col.provider")}</th>
+            <th className="num">{t("usage.col.requests")}</th>
+            <th className="num">{t("usage.col.measured")}</th>
+            <th className="num">{t("usage.col.tokens")}</th>
+            <th>{t("usage.col.share")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {models.map(model => (
+            <tr key={`${model.provider}/${model.model}`}>
+              <td className="mono">{modelLabel(model.model)}</td>
+              <td className="muted">{model.provider}</td>
+              <td className="num">{model.requests}</td>
+              <td className="num">{model.measuredRequests}</td>
+              <td className="num mono">{formatTokens(model.totalTokens, locale)}</td>
+              <td><div className="usage-bar"><div className="usage-bar-fill" style={{ width: `${Math.round(model.shareRatio * 100)}%` }} /></div></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  if (workspace) {
+    return (
+      <UsageWorkspaceSection title={sectionLabel} titleId={titleId}>
+        <div className="usw-section-toolbar">{searchInput}</div>
+        {table}
+      </UsageWorkspaceSection>
+    );
+  }
 
   return (
-    <section className="panel" style={{ marginTop: 16 }} aria-labelledby="usage-models-title">
+    <section className="panel" style={{ marginTop: 16 }} aria-labelledby={titleId}>
       <div className="panel-head">
-        <h3 id="usage-models-title" className="panel-title">{t("usage.section.models")}</h3>
-        <input
-          className="input"
-          aria-label={searchLabel}
-          placeholder={searchLabel}
-          value={modelQuery}
-          onChange={event => onModelQuery(event.target.value)}
-        />
+        <h3 id={titleId} className="panel-title">{sectionLabel}</h3>
+        {searchInput}
       </div>
-      <div className="tbl-wrap usage-scroll">
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>{t("logs.col.model")}</th>
-              <th>{t("logs.col.provider")}</th>
-              <th className="num">{t("usage.col.requests")}</th>
-              <th className="num">{t("usage.col.measured")}</th>
-              <th className="num">{t("usage.col.tokens")}</th>
-              <th>{t("usage.col.share")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {models.map(model => (
-              <tr key={`${model.provider}/${model.model}`}>
-                <td className="mono">{modelLabel(model.model)}</td>
-                <td className="muted">{model.provider}</td>
-                <td className="num">{model.requests}</td>
-                <td className="num">{model.measuredRequests}</td>
-                <td className="num mono">{formatTokens(model.totalTokens, locale)}</td>
-                <td><div className="usage-bar"><div className="usage-bar-fill" style={{ width: `${Math.round(model.shareRatio * 100)}%` }} /></div></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {table}
     </section>
   );
 }
 
-function UsageProvidersTable({ providers, locale, t }: { providers: UsageProvider[]; locale: Locale; t: TFn }) {
-  return (
-    <section className="panel" style={{ marginTop: 16 }} aria-labelledby="usage-providers-title">
-      <h3 id="usage-providers-title" className="panel-title">{t("usage.section.providers")}</h3>
-      <div className="tbl-wrap usage-scroll">
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>{t("logs.col.provider")}</th>
-              <th className="num">{t("usage.col.requests")}</th>
-              <th className="num">{t("usage.col.measured")}</th>
-              <th className="num">{t("usage.col.tokens")}</th>
-              <th>{t("usage.col.share")}</th>
+function UsageProvidersTable({
+  providers,
+  locale,
+  t,
+  workspace = false,
+}: {
+  providers: UsageProvider[];
+  locale: Locale;
+  t: TFn;
+  workspace?: boolean;
+}) {
+  const sectionLabel = t("usage.section.providers");
+  const titleId = "usage-providers-title";
+  const table = (
+    <div className="tbl-wrap usage-scroll">
+      <table className="tbl">
+        <thead>
+          <tr>
+            <th>{t("logs.col.provider")}</th>
+            <th className="num">{t("usage.col.requests")}</th>
+            <th className="num">{t("usage.col.measured")}</th>
+            <th className="num">{t("usage.col.tokens")}</th>
+            <th>{t("usage.col.share")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {providers.map(provider => (
+            <tr key={provider.provider}>
+              <td className="mono">{provider.provider}</td>
+              <td className="num">{provider.requests}</td>
+              <td className="num">{provider.measuredRequests}</td>
+              <td className="num mono">{formatTokens(provider.totalTokens, locale)}</td>
+              <td><div className="usage-bar"><div className="usage-bar-fill" style={{ width: `${Math.round(provider.shareRatio * 100)}%` }} /></div></td>
             </tr>
-          </thead>
-          <tbody>
-            {providers.map(provider => (
-              <tr key={provider.provider}>
-                <td className="mono">{provider.provider}</td>
-                <td className="num">{provider.requests}</td>
-                <td className="num">{provider.measuredRequests}</td>
-                <td className="num mono">{formatTokens(provider.totalTokens, locale)}</td>
-                <td><div className="usage-bar"><div className="usage-bar-fill" style={{ width: `${Math.round(provider.shareRatio * 100)}%` }} /></div></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  if (workspace) {
+    return (
+      <UsageWorkspaceSection title={sectionLabel} titleId={titleId}>
+        {table}
+      </UsageWorkspaceSection>
+    );
+  }
+
+  return (
+    <section className="panel" style={{ marginTop: 16 }} aria-labelledby={titleId}>
+      <h3 id={titleId} className="panel-title">{sectionLabel}</h3>
+      {table}
     </section>
   );
 }
 
-function UsageCoveragePanel({ summary, t }: { summary: UsageSummaryTotals; t: TFn }) {
-  return (
-    <section className="panel" style={{ marginTop: 16 }} aria-labelledby="usage-coverage-title">
-      <h3 id="usage-coverage-title" className="panel-title">{t("usage.section.coverage")}</h3>
+function UsageCoveragePanel({
+  summary,
+  t,
+  workspace = false,
+}: {
+  summary: UsageSummaryTotals;
+  t: TFn;
+  workspace?: boolean;
+}) {
+  const sectionLabel = t("usage.section.coverage");
+  const titleId = "usage-coverage-title";
+  const body = (
+    <>
       <div className="usage-cards usage-cards-3x2">
         <div className="stat"><div className="muted">{t("usage.coverage.measured")}</div><div className="stat-value">{summary.measuredRequests}</div></div>
         <div className="stat"><div className="muted">{t("usage.coverage.reported")}</div><div className="stat-value">{summary.reportedRequests}</div></div>
@@ -544,11 +597,140 @@ function UsageCoveragePanel({ summary, t }: { summary: UsageSummaryTotals; t: TF
         <div className="stat"><div className="muted">{t("logs.tokens.unsupported")}</div><div className="stat-value">{summary.unsupportedRequests}</div></div>
       </div>
       <p className="muted text-control" style={{ marginTop: 12 }}>{t("usage.coverage.note")}</p>
+    </>
+  );
+
+  if (workspace) {
+    return (
+      <UsageWorkspaceSection title={sectionLabel} titleId={titleId}>
+        {body}
+      </UsageWorkspaceSection>
+    );
+  }
+
+  return (
+    <section className="panel" style={{ marginTop: 16 }} aria-labelledby={titleId}>
+      <h3 id={titleId} className="panel-title">{sectionLabel}</h3>
+      {body}
     </section>
   );
 }
 
-export default function Usage({ apiBase }: { apiBase: string }) {
+function UsageWorkspaceSection({
+  title,
+  titleId,
+  children,
+}: {
+  title: string;
+  titleId: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="usw-section" aria-labelledby={titleId}>
+      <div id={titleId} className="h-section">{title}</div>
+      {children}
+    </section>
+  );
+}
+
+/**
+ * Workspace layout for the Usage tab: a left rail lists the report sections
+ * (Overview, Models, Providers, Coverage) and the main pane renders the selected
+ * one. Section bodies reuse the same panel components as the classic stacked view.
+ */
+function UsageWorkspaceBody({
+  data,
+  heatmap,
+  weekBars,
+  activeDays,
+  filteredModels,
+  modelQuery,
+  onModelQuery,
+  sortedProviders,
+  range,
+  selectedSection,
+  onSelectSection,
+  locale,
+  t,
+}: {
+  data: UsageResponse;
+  heatmap: ReturnType<typeof buildHeatmap>;
+  weekBars: UsageDay[];
+  activeDays: number;
+  filteredModels: UsageModel[];
+  modelQuery: string;
+  onModelQuery: (query: string) => void;
+  sortedProviders: UsageProvider[];
+  range: Range;
+  selectedSection: string;
+  onSelectSection: (id: string) => void;
+  locale: Locale;
+  t: TFn;
+}) {
+  const sections = [
+    {
+      id: "overview",
+      label: t("usage.section.overview"),
+      meta: `${data.summary.requests}`,
+      body: (
+        <>
+          <UsageSummaryCards summary={data.summary} activeDays={activeDays} locale={locale} t={t} />
+          <UsageHeatmapPanel range={range} heatmap={heatmap} weekBars={weekBars} locale={locale} t={t} />
+        </>
+      ),
+    },
+    {
+      id: "models",
+      label: t("usage.section.models"),
+      meta: `${data.models.length}`,
+      body: <UsageModelsTable models={filteredModels} modelQuery={modelQuery} onModelQuery={onModelQuery} locale={locale} t={t} workspace />,
+    },
+    {
+      id: "providers",
+      label: t("usage.section.providers"),
+      meta: `${data.providers.length}`,
+      body: <UsageProvidersTable providers={sortedProviders} locale={locale} t={t} workspace />,
+    },
+    {
+      id: "coverage",
+      label: t("usage.section.coverage"),
+      meta: formatPct(data.summary.coverageRatio),
+      body: <UsageCoveragePanel summary={data.summary} t={t} workspace />,
+    },
+  ];
+  const selected = sections.find(s => s.id === selectedSection) ?? sections[0];
+
+  return (
+    <div className="usage-workspace-shell">
+      <div className="usage-workspace-root">
+        <aside className="usage-workspace-rail" aria-label={t("usage.title")}>
+          <div className="usage-workspace-rail-header">
+            <span className="usage-workspace-rail-title">{t("usage.title")}</span>
+          </div>
+          <div className="usage-workspace-rail-list">
+            {sections.map(s => (
+              <button
+                key={s.id}
+                type="button"
+                className={`usage-workspace-rail-row${selectedSection === s.id ? " usage-workspace-rail-row--selected" : ""}`}
+                onClick={() => onSelectSection(s.id)}
+                aria-current={selectedSection === s.id ? "true" : undefined}
+              >
+                <span className="usage-workspace-rail-name">{s.label}</span>
+                <span className="usage-workspace-rail-meta">{s.meta}</span>
+              </button>
+            ))}
+          </div>
+        </aside>
+        <section className="usage-workspace-main" aria-label={t("usage.title")}>
+          <div className="usw-body">{selected.body}</div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+export default function Usage({ apiBase, viewMode }: { apiBase: string; viewMode?: ViewMode }) {
   const { t, locale } = useI18n();
   const [range, setRange] = useState<Range>("30d");
   const [surface, setSurface] = useState<UsageSurface>("all");
@@ -556,6 +738,8 @@ export default function Usage({ apiBase }: { apiBase: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [modelQuery, setModelQuery] = useState("");
+  const [selectedSection, setSelectedSection] = useState("overview");
+  const workspaceView = (viewMode ?? readViewMode()) === "workspace";
 
   const fetchUsage = useCallback(async (nextRange: Range, nextSurface: UsageSurface, signal: AbortSignal) => {
     setLoading(true);
@@ -631,6 +815,22 @@ export default function Usage({ apiBase }: { apiBase: string }) {
         <EmptyState title={t("usage.loading")} />
       ) : data?.summary.requests === 0 ? (
         <EmptyState title={t("usage.empty")} />
+      ) : data && workspaceView ? (
+        <UsageWorkspaceBody
+          data={data}
+          heatmap={heatmap}
+          weekBars={weekBars}
+          activeDays={activeDays}
+          filteredModels={filteredModels}
+          modelQuery={modelQuery}
+          onModelQuery={setModelQuery}
+          sortedProviders={sortedProviders}
+          range={range}
+          selectedSection={selectedSection}
+          onSelectSection={setSelectedSection}
+          locale={locale}
+          t={t}
+        />
       ) : data ? (
         <>
           <UsageSummaryCards summary={data.summary} activeDays={activeDays} locale={locale} t={t} />

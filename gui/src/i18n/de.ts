@@ -548,6 +548,7 @@ export const de = {
   "usage.card.coverage": "Abdeckung",
   "usage.card.activeDays": "Aktive Tage",
   "usage.section.heatmap": "Tägliche Aktivität",
+  "usage.section.overview": "Übersicht",
   "usage.section.models": "Modelle",
   "usage.section.providers": "Anbieter",
   "usage.section.coverage": "Abdeckungs-Aufschlüsselung",

@@ -281,7 +281,7 @@ export default function App() {
             {page === "combos" && <Combos apiBase={API_BASE} />}
             {page === "subagents" && <Subagents apiBase={API_BASE} viewMode={viewMode} />}
             {page === "logs" && <Logs apiBase={API_BASE} />}
-            {page === "usage" && <Usage apiBase={API_BASE} />}
+            {page === "usage" && <Usage apiBase={API_BASE} viewMode={viewMode} />}
             {page === "storage" && <Storage apiBase={API_BASE} />}
             {page === "codex-auth" && <CodexAuth apiBase={API_BASE} />}
             {page === "api" && <ApiKeys apiBase={API_BASE} />}

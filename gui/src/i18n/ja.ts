@@ -537,6 +537,7 @@ export const ja: Record<TKey, string> = {
   "usage.card.coverage": "カバレッジ",
   "usage.card.activeDays": "アクティブ日数",
   "usage.section.heatmap": "日のアクティビティ",
+  "usage.section.overview": "概要",
   "usage.section.models": "モデル",
   "usage.section.providers": "プロバイダー",
   "usage.section.coverage": "カバレッジ内訳",
