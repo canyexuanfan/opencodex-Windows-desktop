@@ -4,12 +4,8 @@ import { IconArrowUp, IconArrowDown, IconX, IconCheck, IconSearch, IconBot, Icon
 import { useT } from "../i18n/shared";
 import { Trans } from "../i18n/provider";
 import { modelLabel } from "../model-display";
-import { type ViewMode } from "../view-mode";
 
-// `viewMode` stays in the props type but is no longer destructured: Subagents has a
-// single implementation now, while App.tsx still passes the global preference. The
-// call-site contract is removed in WP5 (050_classic_removal.md).
-export default function Subagents({ apiBase }: { apiBase: string; viewMode?: ViewMode }) {
+export default function Subagents({ apiBase }: { apiBase: string }) {
   const t = useT();
   const [available, setAvailable] = useState<string[]>([]);
   const [chosen, setChosen] = useState<string[]>([]);

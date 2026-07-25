@@ -3,7 +3,6 @@ import { Switch, Notice, EmptyState, Select, Tooltip } from "../ui";
 import { IconChevron, IconBoxes, IconInfo, IconShuffle } from "../icons";
 import { useT } from "../i18n/shared";
 import type { TFn, TKey } from "../i18n/shared";
-import { readViewMode, type ViewMode } from "../view-mode";
 import { modelLabel } from "../model-display";
 import { type ComboItem, parseComboList } from "../combo-workspace-data";
 import {
@@ -77,7 +76,7 @@ function activeModelOptions(models: ModelRow[], disabled: Set<string>): { value:
   return options;
 }
 
-export default function Models({ apiBase, viewMode }: { apiBase: string; viewMode?: ViewMode }) {
+export default function Models({ apiBase }: { apiBase: string }) {
   const t: TFn = useT();
   const [models, setModels] = useState<ModelRow[]>([]);
   const [providers, setProviders] = useState<ConfiguredProviderSummary[]>([]);
@@ -131,7 +130,6 @@ export default function Models({ apiBase, viewMode }: { apiBase: string; viewMod
   });
 
   // App owns the in-session view mode; fallback to persisted mode for isolated renders/tests.
-  const workspaceView = (viewMode ?? readViewMode()) === "workspace";
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const toggleCombosOpen = () => {
     setCombosOpen(prev => {
@@ -1168,69 +1166,8 @@ export default function Models({ apiBase, viewMode }: { apiBase: string; viewMod
     </>
   );
 
-  if (workspaceView) {
-    return (
-      <div className="models-workspace-shell">
-        <div className="page-head">
-          <h2>{t("nav.models")}</h2>
-          <div className="row">
-            <span className="muted mono text-label">{t("models.active", { active: models.length - disabled.size, total: models.length })}</span>
-          </div>
-        </div>
-        <p className="page-sub">{t("models.subtitle")}</p>
-        {status && <Notice tone={ok ? "ok" : "err"}>{status}</Notice>}
-        <div className="models-workspace-root">
-          <aside className="models-workspace-rail" aria-label={t("nav.models")}>
-            <div className="models-workspace-rail-header">
-              <span className="models-workspace-rail-title">{t("models.workspace.providers")}</span>
-              <span className="models-workspace-rail-count">{groups.length}</span>
-            </div>
-            <div className="models-workspace-rail-list">
-              <button
-                type="button"
-                className={`models-workspace-rail-row${selectedProvider === null ? " models-workspace-rail-row--selected" : ""}`}
-                onClick={() => setSelectedProvider(null)}
-                aria-current={selectedProvider === null ? "true" : undefined}
-              >
-                <span className="models-workspace-rail-name">{t("models.workspace.allProviders")}</span>
-                <span className="models-workspace-rail-meta">{t("models.active", { active: models.length - disabled.size, total: models.length })}</span>
-              </button>
-              {groups.map(group => {
-                const { provider, rows } = group;
-                const activeCount = rows.filter(m => !disabled.has(m.namespaced)).length;
-                return (
-                  <button
-                    key={provider}
-                    type="button"
-                    className={`models-workspace-rail-row${selectedProvider === provider ? " models-workspace-rail-row--selected" : ""}`}
-                    onClick={() => setSelectedProvider(provider)}
-                    aria-current={selectedProvider === provider ? "true" : undefined}
-                  >
-                    <span className="models-workspace-rail-name">{provider}</span>
-                    <span className="models-workspace-rail-meta">{t("models.active", { active: activeCount, total: rows.length })}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </aside>
-          <section className="models-workspace-main" aria-label={t("models.workspace.mainAria")}>
-            {controlsBlock}
-            {combosBlock}
-            {collapseControls}
-            {
-              // eslint-disable-next-line react-hooks/refs -- The hover ref is only read by row event handlers nested in this renderer.
-              visibleGroups.map(group => renderGroup(group))
-            }
-            {groups.length === 0 && emptyStateBlock}
-          </section>
-        </div>
-        {modalsBlock}
-      </div>
-    );
-  }
-
   return (
-    <>
+    <div className="models-workspace-shell">
       <div className="page-head">
         <h2>{t("nav.models")}</h2>
         <div className="row">
@@ -1239,17 +1176,55 @@ export default function Models({ apiBase, viewMode }: { apiBase: string; viewMod
       </div>
       <p className="page-sub">{t("models.subtitle")}</p>
       {status && <Notice tone={ok ? "ok" : "err"}>{status}</Notice>}
-      {controlsBlock}
-      {combosBlock}
-      {collapseControls}
-      {
-        // eslint-disable-next-line react-hooks/refs -- The hover ref is only read by row event handlers nested in this renderer.
-        groups.map(group => renderGroup(group))
-      }
-      {groups.length === 0 && emptyStateBlock}
+      <div className="models-workspace-root">
+        <aside className="models-workspace-rail" aria-label={t("nav.models")}>
+          <div className="models-workspace-rail-header">
+            <span className="models-workspace-rail-title">{t("models.workspace.providers")}</span>
+            <span className="models-workspace-rail-count">{groups.length}</span>
+          </div>
+          <div className="models-workspace-rail-list">
+            <button
+              type="button"
+              className={`models-workspace-rail-row${selectedProvider === null ? " models-workspace-rail-row--selected" : ""}`}
+              onClick={() => setSelectedProvider(null)}
+              aria-current={selectedProvider === null ? "true" : undefined}
+            >
+              <span className="models-workspace-rail-name">{t("models.workspace.allProviders")}</span>
+              <span className="models-workspace-rail-meta">{t("models.active", { active: models.length - disabled.size, total: models.length })}</span>
+            </button>
+            {groups.map(group => {
+              const { provider, rows } = group;
+              const activeCount = rows.filter(m => !disabled.has(m.namespaced)).length;
+              return (
+                <button
+                  key={provider}
+                  type="button"
+                  className={`models-workspace-rail-row${selectedProvider === provider ? " models-workspace-rail-row--selected" : ""}`}
+                  onClick={() => setSelectedProvider(provider)}
+                  aria-current={selectedProvider === provider ? "true" : undefined}
+                >
+                  <span className="models-workspace-rail-name">{provider}</span>
+                  <span className="models-workspace-rail-meta">{t("models.active", { active: activeCount, total: rows.length })}</span>
+                </button>
+              );
+            })}
+          </div>
+        </aside>
+        <section className="models-workspace-main" aria-label={t("models.workspace.mainAria")}>
+          {controlsBlock}
+          {combosBlock}
+          {collapseControls}
+          {
+            // eslint-disable-next-line react-hooks/refs -- The hover ref is only read by row event handlers nested in this renderer.
+            visibleGroups.map(group => renderGroup(group))
+          }
+          {groups.length === 0 && emptyStateBlock}
+        </section>
+      </div>
       {modalsBlock}
-    </>
+    </div>
   );
+  
 }
 
 function discoveryFailureReason(

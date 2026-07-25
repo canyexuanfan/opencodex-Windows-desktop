@@ -35,7 +35,8 @@ test("unknown Dashboard suffixes are still normalized away", () => {
 
 test("registering Dashboard tabs does not disturb the Logs or Providers contracts", () => {
   expect(hashBelongsToPage("logs/debug", "logs")).toBe(true);
-  expect(hashBelongsToPage("providers/workspace", "providers")).toBe(true);
+  // WP5: the dual-layout hash is no longer a route — it only exists to be redirected.
+  expect(hashBelongsToPage("providers/workspace", "providers")).toBe(false);
   // Cross-page suffixes stay invalid.
   expect(hashBelongsToPage("dashboard/providers", "providers")).toBe(false);
   expect(hashBelongsToPage("logs/debug", "dashboard")).toBe(false);

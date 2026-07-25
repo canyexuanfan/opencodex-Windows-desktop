@@ -1,19 +1,19 @@
 import { expect, test } from "bun:test";
 
-test("Usage uses global viewMode (no per-page toggle) and workspace shell", async () => {
+test("Usage renders the single workspace shell (WP5 removed the layout toggle)", async () => {
   const page = await Bun.file(new URL("../src/pages/Usage.tsx", import.meta.url)).text();
   const app = await Bun.file(new URL("../src/App.tsx", import.meta.url)).text();
   const css = await Bun.file(new URL("../src/styles.css", import.meta.url)).text();
 
-  expect(page).toContain("viewMode");
-  expect(page).toContain("readViewMode");
+  expect(page).not.toContain("viewMode");
+  expect(page).not.toContain("readViewMode");
   expect(page).toContain("UsageWorkspaceBody");
-  expect(page).toContain('workspaceView = (viewMode ?? readViewMode()) === "workspace"');
+  expect(page).not.toContain("workspaceView");
   expect(page).not.toContain("ocx-usage-view");
   expect(page).not.toContain("pws.workspaceToggle");
   expect(page).not.toContain("pws.classicToggle");
 
-  expect(app).toContain("<Usage apiBase={API_BASE} viewMode={viewMode} />");
+  expect(app).toContain("<Usage apiBase={API_BASE} />");
   expect(css).toContain('@import "./styles-usage-workspace.css"');
 });
 
@@ -60,13 +60,12 @@ test("Usage workspace rail and report pane use distinct localized landmark names
   expect(en).toContain('"usage.workspace.report": "Usage report"');
 });
 
-test("Usage workspace shell mounts before data arrives (no classic loading flash)", async () => {
+test("the shell owns loading and empty states (no separate stacked fallback)", async () => {
   const src = await Bun.file(new URL("../src/pages/Usage.tsx", import.meta.url)).text();
-  // Workspace branch must win over classic EmptyState loading/empty gates.
-  const workspaceBranch = src.indexOf(") : workspaceView ? (");
-  const classicLoading = src.indexOf(") : loading && !data ? (");
-  expect(workspaceBranch).toBeGreaterThan(-1);
-  expect(classicLoading).toBeGreaterThan(workspaceBranch);
+  // WP5: there is no second layout to outrank. The shell mounts immediately and renders
+  // its own loading/empty states, so there is still no flash before data arrives.
+  expect(src).not.toContain(") : loading && !data ? (");
+  expect(src).toContain("loading && !data");
   expect(src).toContain("loading={loading}");
   expect(src).toContain("data: UsageResponse | null");
 });

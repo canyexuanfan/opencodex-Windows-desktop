@@ -4,7 +4,6 @@ import { IconPlus, IconX } from "../icons";
 import { Trans } from "../i18n/provider";
 import { useT } from "../i18n/shared";
 import { modelLabel } from "../model-display";
-import { readViewMode, type ViewMode } from "../view-mode";
 import { reconcileAutoConnectState } from "./claude-autoconnect";
 import { buildManualEnv, type SidecarBackend, type SidecarOverride } from "./claude-manual-env";
 
@@ -138,7 +137,7 @@ export function SmallFastModelSetting({
   );
 }
 
-export default function ClaudeCode({ apiBase, viewMode }: { apiBase: string; viewMode?: ViewMode }) {
+export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   const t = useT();
   const [state, setState] = useState<ClaudeCodeState | null>(null);
   const [rows, setRows] = useState<MapRow[]>([]);
@@ -146,7 +145,6 @@ export default function ClaudeCode({ apiBase, viewMode }: { apiBase: string; vie
   const [ok, setOk] = useState(false);
   const [loading, setLoading] = useState(true);
   const [selectedSection, setSelectedSection] = useState("settings");
-  const workspaceView = (viewMode ?? readViewMode()) === "workspace";
 
   const load = useCallback(async () => {
     try {
@@ -241,7 +239,7 @@ export default function ClaudeCode({ apiBase, viewMode }: { apiBase: string; vie
 
   const settingsSection = (
     <>
-      {workspaceView && <div className="h-section">{t("claude.workspace.settings")}</div>}
+      <div className="h-section">{t("claude.workspace.settings")}</div>
       <div className="card" style={{ overflow: "hidden" }}>
       <div className="setting-row">
         <div className="setting-label">
@@ -481,49 +479,35 @@ export default function ClaudeCode({ apiBase, viewMode }: { apiBase: string; vie
     { id: "aliases", label: t("claude.aliases"), body: aliasesSection },
   ];
 
-  if (workspaceView) {
-    const selected = sections.find(s => s.id === selectedSection) ?? sections[0];
-    return (
-      <div className="claudecode-workspace-shell">
-        <div className="page-head">
-          <h2>{t("claude.pageTitle")}</h2>
-        </div>
-        <p className="page-sub">{t("claude.subtitle")}</p>
-        {status && <Notice tone={ok ? "ok" : "err"}>{status}</Notice>}
-        <div className="claudecode-workspace-root">
-          <aside className="claudecode-workspace-rail" aria-label={t("claude.pageTitle")}>
-            <div className="claudecode-workspace-rail-list">
-              {sections.map(s => (
-                <button
-                  key={s.id}
-                  type="button"
-                  className={`claudecode-workspace-rail-row${selectedSection === s.id ? " claudecode-workspace-rail-row--selected" : ""}`}
-                  onClick={() => setSelectedSection(s.id)}
-                  aria-current={selectedSection === s.id ? "true" : undefined}
-                >
-                  <span className="claudecode-workspace-rail-name">{s.label}</span>
-                </button>
-              ))}
-            </div>
-          </aside>
-          <section className="claudecode-workspace-main" aria-label={selected.label}>
-            <div className="ccw-body">{selected.body}</div>
-          </section>
-        </div>
-      </div>
-    );
-  }
-
+  const selected = sections.find(s => s.id === selectedSection) ?? sections[0];
   return (
-    <>
-      <div className="page-head"><h2>{t("claude.pageTitle")}</h2></div>
+    <div className="claudecode-workspace-shell">
+      <div className="page-head">
+        <h2>{t("claude.pageTitle")}</h2>
+      </div>
       <p className="page-sub">{t("claude.subtitle")}</p>
       {status && <Notice tone={ok ? "ok" : "err"}>{status}</Notice>}
-      {settingsSection}
-      {quickstartSection}
-      {smallFastSection}
-      {modelMapSection}
-      {aliasesSection}
-    </>
+      <div className="claudecode-workspace-root">
+        <aside className="claudecode-workspace-rail" aria-label={t("claude.pageTitle")}>
+          <div className="claudecode-workspace-rail-list">
+            {sections.map(s => (
+              <button
+                key={s.id}
+                type="button"
+                className={`claudecode-workspace-rail-row${selectedSection === s.id ? " claudecode-workspace-rail-row--selected" : ""}`}
+                onClick={() => setSelectedSection(s.id)}
+                aria-current={selectedSection === s.id ? "true" : undefined}
+              >
+                <span className="claudecode-workspace-rail-name">{s.label}</span>
+              </button>
+            ))}
+          </div>
+        </aside>
+        <section className="claudecode-workspace-main" aria-label={selected.label}>
+          <div className="ccw-body">{selected.body}</div>
+        </section>
+      </div>
+    </div>
   );
+  
 }

@@ -3,7 +3,6 @@ import { useI18n, type TFn, type Locale } from "../i18n/shared";
 import { formatTokens } from "../format-tokens";
 import { EmptyState, Notice } from "../ui";
 import { modelLabel } from "../model-display";
-import { readViewMode, type ViewMode } from "../view-mode";
 
 type Range = "all" | "30d" | "7d";
 type UsageSurface = "all" | "codex" | "claude";
@@ -744,7 +743,7 @@ function UsageWorkspaceBody({
   );
 }
 
-export default function Usage({ apiBase, viewMode }: { apiBase: string; viewMode?: ViewMode }) {
+export default function Usage({ apiBase }: { apiBase: string }) {
   const { t, locale } = useI18n();
   const [range, setRange] = useState<Range>("30d");
   const [surface, setSurface] = useState<UsageSurface>("all");
@@ -753,7 +752,6 @@ export default function Usage({ apiBase, viewMode }: { apiBase: string; viewMode
   const [error, setError] = useState<string | null>(null);
   const [modelQuery, setModelQuery] = useState("");
   const [selectedSection, setSelectedSection] = useState("overview");
-  const workspaceView = (viewMode ?? readViewMode()) === "workspace";
 
   const fetchUsage = useCallback(async (nextRange: Range, nextSurface: UsageSurface, signal: AbortSignal) => {
     setLoading(true);
@@ -825,7 +823,7 @@ export default function Usage({ apiBase, viewMode }: { apiBase: string; viewMode
             {t("common.retry")}
           </button>
         </Notice>
-      ) : workspaceView ? (
+      ) : (
         <UsageWorkspaceBody
           data={data}
           loading={loading}
@@ -842,19 +840,7 @@ export default function Usage({ apiBase, viewMode }: { apiBase: string; viewMode
           locale={locale}
           t={t}
         />
-      ) : loading && !data ? (
-        <EmptyState title={t("usage.loading")} />
-      ) : data?.summary.requests === 0 ? (
-        <EmptyState title={t("usage.empty")} />
-      ) : data ? (
-        <>
-          <UsageSummaryCards summary={data.summary} activeDays={activeDays} locale={locale} t={t} />
-          <UsageHeatmapPanel range={range} heatmap={heatmap} weekBars={weekBars} locale={locale} t={t} />
-          <UsageModelsTable models={filteredModels} modelQuery={modelQuery} onModelQuery={setModelQuery} locale={locale} t={t} />
-          <UsageProvidersTable providers={sortedProviders} locale={locale} t={t} />
-          <UsageCoveragePanel summary={data.summary} t={t} />
-        </>
-      ) : null}
+      )}
     </>
   );
 }

@@ -1,7 +1,6 @@
-/** Pure hash → page/viewMode resolution used by App route state. */
+/** Pure hash → page resolution used by App route state. */
 
-import { normalizeHashPath, resolveProvidersHashChange } from "./hash-routing";
-import { providersHashForViewMode, type ViewMode } from "./view-mode";
+import { normalizeHashPath } from "./hash-routing";
 
 export type Page =
   | "dashboard"
@@ -36,7 +35,7 @@ export function readPageFromHash(hash?: string): Page {
   const raw = normalizeHashPath(
     hash ?? (typeof window !== "undefined" ? window.location.hash : ""),
   );
-  // Sub-views use a "/" suffix (e.g. #providers/workspace); the first segment is the page id.
+  // Sub-views use a "/" suffix (e.g. #logs/debug); the first segment is the page id.
   const pageId = raw.split("/")[0] as Page;
   // Legacy: Debug used to be a standalone page; it now lives as a tab on Logs.
   if (pageId === ("debug" as Page)) return "logs";
@@ -52,26 +51,15 @@ export const DASHBOARD_TAB_HASHES = ["dashboard/providers", "dashboard/models"] 
 
 export function hashBelongsToPage(rawHash: string, page: Page): boolean {
   return rawHash === page
-    || (page === "providers" && rawHash === "providers/workspace")
     || (page === "logs" && rawHash === "logs/debug")
     || (page === "dashboard" && (DASHBOARD_TAB_HASHES as readonly string[]).includes(rawHash));
 }
 
-export function providersHashForPreferredMode(preferred: ViewMode = "classic"): string {
-  return providersHashForViewMode(preferred);
-}
 
-/**
- * Result of applying an incoming hash against the canonical view preference.
- * Callers must apply `page` and `viewMode` together (no deferred transitions).
- */
+/** Result of resolving an incoming hash. */
 export type AppHashChangeAction = {
   page: Page;
-  /** When non-null, set React viewMode in the same turn as `page`. */
-  viewMode: ViewMode | null;
-  /** When non-null, persist to the canonical preference store. */
-  persistViewMode: ViewMode | null;
-  /** When non-null, passively replace the current history entry (no push). */
+  /** When non-null, passively replace the hash (no new history entry). */
   replaceTo: string | null;
 };
 
@@ -80,49 +68,23 @@ export type AppHashChangeAction = {
  * Classic/Workspace is a persistent preference: bare `#providers` with a stored
  * workspace preference is rewritten via replaceState, never pushed.
  */
-export function resolveAppHashChange(rawHash: string, preferred: ViewMode): AppHashChangeAction {
+export function resolveAppHashChange(rawHash: string): AppHashChangeAction {
   const nextPage = readPageFromHash(rawHash);
 
+  // Legacy: Debug used to be a standalone page.
   if (rawHash === "debug" || rawHash.startsWith("debug/")) {
-    return {
-      page: "logs",
-      viewMode: null,
-      persistViewMode: null,
-      replaceTo: "logs/debug",
-    };
+    return { page: "logs", replaceTo: "logs/debug" };
   }
 
+  // Legacy deep link from the removed dual-layout era.
+  if (rawHash === "providers/workspace") {
+    return { page: "providers", replaceTo: "providers" };
+  }
+
+  // An unrecognised sub-hash is normalised away rather than left in the URL.
   if (!hashBelongsToPage(rawHash, nextPage)) {
-    return {
-      page: nextPage === "providers" ? "providers" : nextPage,
-      viewMode: nextPage === "providers" ? preferred : null,
-      persistViewMode: null,
-      replaceTo: nextPage === "providers" ? providersHashForPreferredMode(preferred) : nextPage,
-    };
+    return { page: nextPage, replaceTo: nextPage };
   }
 
-  if (nextPage === "providers") {
-    const resolved = resolveProvidersHashChange(rawHash, preferred);
-    if (resolved.replaceTo) {
-      return {
-        page: "providers",
-        viewMode: resolved.viewMode,
-        persistViewMode: resolved.viewMode,
-        replaceTo: resolved.replaceTo,
-      };
-    }
-    return {
-      page: "providers",
-      viewMode: resolved.viewMode,
-      persistViewMode: resolved.viewMode,
-      replaceTo: null,
-    };
-  }
-
-  return {
-    page: nextPage,
-    viewMode: null,
-    persistViewMode: null,
-    replaceTo: null,
-  };
+  return { page: nextPage, replaceTo: null };
 }

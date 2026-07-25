@@ -7,7 +7,6 @@ import { settingsPollMayCommit, beginPollEpochs, mapStartupHealthProbe, seedStar
 import { formatTokens } from "../format-tokens";
 import { EmptyState, Select } from "../ui";
 import { navigateHash } from "../hash-routing";
-import type { ViewMode } from "../view-mode";
 
 /** Dashboard section tabs, mirroring the Logs hash-tab contract. */
 type DashboardSection = "overview" | "providers" | "models";
@@ -203,9 +202,8 @@ function useModalDialog(open: boolean, triggerRef: RefObject<HTMLButtonElement |
   return dialogRef;
 }
 
-export default function Dashboard({ apiBase, viewMode }: { apiBase: string; viewMode: ViewMode }) {
+export default function Dashboard({ apiBase }: { apiBase: string }) {
   const { locale, t } = useI18n();
-  const workspaceView = viewMode === "workspace";
   // The hash is the source of truth for the active section (#dashboard,
   // #dashboard/providers, #dashboard/models), so refresh/bookmark/back-forward keep
   // the choice. Mirrors the Logs tab contract.
@@ -1402,78 +1400,64 @@ export default function Dashboard({ apiBase, viewMode }: { apiBase: string; view
     </>
   );
 
-  if (workspaceView) {
-    const sections: { id: DashboardSection; label: string; body: ReactNode }[] = [
-      { id: "overview", label: t("dash.workspace.overview"), body: overviewSection },
-      { id: "providers", label: t("dash.activeProviders"), body: providersSection },
-      { id: "models", label: t("dash.availableModels"), body: modelsSection },
-    ];
-    const selected = sections.find(s => s.id === selectedSection) ?? sections[0];
-    const selectTab = (next: DashboardSection) => {
-      // Deliberate navigation: push a history entry so Back/Forward restore the tab.
-      navigateHash(dashboardHashForSection(next));
-    };
-    const onTabKeyDown = (e: React.KeyboardEvent) => {
-      const index = sections.findIndex(s => s.id === selectedSection);
-      let next = -1;
-      if (e.key === "ArrowRight") next = (index + 1) % sections.length;
-      else if (e.key === "ArrowLeft") next = (index - 1 + sections.length) % sections.length;
-      else if (e.key === "Home") next = 0;
-      else if (e.key === "End") next = sections.length - 1;
-      if (next < 0) return;
-      e.preventDefault();
-      const target = sections[next]!;
-      selectTab(target.id);
-      document.getElementById(`dashboard-tab-${target.id}`)?.focus();
-    };
-    return (
-      <div className="dashboard-workspace-shell">
-        <div className="page-head">
-          <h2>{t("nav.dashboard")}</h2>
-        </div>
-        <p className="page-sub">{t("dash.subtitle")}</p>
-        <div className="page-tabs" role="tablist" aria-label={t("dash.workspace.sections")}>
-          {sections.map(s => (
-            <button
-              key={s.id}
-              type="button"
-              role="tab"
-              id={`dashboard-tab-${s.id}`}
-              aria-selected={selectedSection === s.id}
-              aria-controls={`dashboard-panel-${s.id}`}
-              tabIndex={selectedSection === s.id ? 0 : -1}
-              className={`page-tab${selectedSection === s.id ? " page-tab--active" : ""}`}
-              onClick={() => selectTab(s.id)}
-              onKeyDown={onTabKeyDown}
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
-        <section
-          className="dashboard-workspace-main"
-          role="tabpanel"
-          id={`dashboard-panel-${selected.id}`}
-          aria-labelledby={`dashboard-tab-${selected.id}`}
-          tabIndex={0}
-        >
-          {selected.body}
-        </section>
-        {updateDialog}
-      </div>
-    );
-  }
-
+  const sections: { id: DashboardSection; label: string; body: ReactNode }[] = [
+    { id: "overview", label: t("dash.workspace.overview"), body: overviewSection },
+    { id: "providers", label: t("dash.activeProviders"), body: providersSection },
+    { id: "models", label: t("dash.availableModels"), body: modelsSection },
+  ];
+  const selected = sections.find(s => s.id === selectedSection) ?? sections[0];
+  const selectTab = (next: DashboardSection) => {
+    // Deliberate navigation: push a history entry so Back/Forward restore the tab.
+    navigateHash(dashboardHashForSection(next));
+  };
+  const onTabKeyDown = (e: React.KeyboardEvent) => {
+    const index = sections.findIndex(s => s.id === selectedSection);
+    let next = -1;
+    if (e.key === "ArrowRight") next = (index + 1) % sections.length;
+    else if (e.key === "ArrowLeft") next = (index - 1 + sections.length) % sections.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = sections.length - 1;
+    if (next < 0) return;
+    e.preventDefault();
+    const target = sections[next]!;
+    selectTab(target.id);
+    document.getElementById(`dashboard-tab-${target.id}`)?.focus();
+  };
   return (
-    <>
+    <div className="dashboard-workspace-shell">
       <div className="page-head">
         <h2>{t("nav.dashboard")}</h2>
       </div>
       <p className="page-sub">{t("dash.subtitle")}</p>
-      {overviewSection}
-      {providersSection}
-      {modelsSection}
+      <div className="page-tabs" role="tablist" aria-label={t("dash.workspace.sections")}>
+        {sections.map(s => (
+          <button
+            key={s.id}
+            type="button"
+            role="tab"
+            id={`dashboard-tab-${s.id}`}
+            aria-selected={selectedSection === s.id}
+            aria-controls={`dashboard-panel-${s.id}`}
+            tabIndex={selectedSection === s.id ? 0 : -1}
+            className={`page-tab${selectedSection === s.id ? " page-tab--active" : ""}`}
+            onClick={() => selectTab(s.id)}
+            onKeyDown={onTabKeyDown}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+      <section
+        className="dashboard-workspace-main"
+        role="tabpanel"
+        id={`dashboard-panel-${selected.id}`}
+        aria-labelledby={`dashboard-tab-${selected.id}`}
+        tabIndex={0}
+      >
+        {selected.body}
+      </section>
       {updateDialog}
-    </>
+    </div>
   );
+  
 }

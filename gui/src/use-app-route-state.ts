@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   hashBelongsToPage,
   readPageFromHash,
@@ -6,67 +6,54 @@ import {
   type Page,
 } from "./app-routing";
 import { navigateHash, normalizeHashPath, replaceHash } from "./hash-routing";
-import {
-  ensureMigratedViewMode,
-  providersHashForGlobalViewChange,
-  providersHashForViewMode,
-  toggleViewMode,
-  writeViewMode,
-  type ViewMode,
-} from "./view-mode";
+
+/** localStorage keys written by the removed Classic/Workspace preference. */
+const STALE_VIEW_KEYS = [
+  "ocx-global-view",
+  "ocx-view",
+  "ocx-providers-view",
+  "ocx-subagents-view",
+  "ocx-storage-view",
+  "ocx-codexauth-view",
+  "ocx-apikeys-view",
+  "ocx-claudecode-view",
+  "ocx-usage-view",
+  "ocx-logs-view",
+  "ocx-models-view",
+  "ocx-dashboard-view",
+];
 
 /**
- * Production App route + Classic/Workspace ownership.
- * Hash page changes push history; view-mode sync on Providers replaces the current entry.
- * After init, React `viewMode` is authoritative for the session — storage is persistence only.
+ * One-shot cleanup of the layout-preference keys. There is a single layout now, so these
+ * would otherwise sit in every user's storage forever.
+ * TODO: delete this function (and its call) one release after 2.7.x.
+ */
+function clearStaleViewKeys(): void {
+  try {
+    for (const key of STALE_VIEW_KEYS) localStorage.removeItem(key);
+  } catch {
+    /* private mode / quota — nothing to clean up */
+  }
+}
+
+/**
+ * Production App route ownership. Hash page changes push history; normalization of an
+ * unknown sub-hash replaces the current entry so Back is never trapped on a URL the
+ * router immediately rewrites.
  */
 export function useAppRouteState() {
   const [page, setPageState] = useState<Page>(readPageFromHash);
-  const [viewMode, setViewMode] = useState<ViewMode>(() => {
-    const migrated = ensureMigratedViewMode();
-    try {
-      const rawHash = normalizeHashPath(window.location.hash);
-      if (rawHash === "providers/workspace") {
-        writeViewMode("workspace");
-        return "workspace";
-      }
-    } catch {
-      /* ignore */
-    }
-    return migrated;
-  });
-  const viewModeRef = useRef(viewMode);
 
-  const commitViewMode = useCallback((next: ViewMode) => {
-    viewModeRef.current = next;
-    setViewMode(next);
-  }, []);
-
-  useEffect(() => {
-    viewModeRef.current = viewMode;
-  }, [viewMode]);
+  useEffect(() => { clearStaleViewKeys(); }, []);
 
   const applyHashAction = useCallback((rawHash: string) => {
-    // Prefer in-memory mode so a storage failure cannot revert a live session toggle.
-    const action = resolveAppHashChange(rawHash, viewModeRef.current);
+    const action = resolveAppHashChange(rawHash);
     if (action.replaceTo) replaceHash(action.replaceTo);
-    if (action.persistViewMode) writeViewMode(action.persistViewMode);
-    // Route page and view mode update in the same event — never via startTransition.
     setPageState(action.page);
-    if (action.viewMode) commitViewMode(action.viewMode);
-  }, [commitViewMode]);
-
-  const toggleGlobalWorkspace = () => {
-    const next = toggleViewMode(viewModeRef.current);
-    writeViewMode(next);
-    commitViewMode(next);
-    // Preference change, not page navigation: replace the Providers hash in place.
-    const wanted = providersHashForGlobalViewChange(window.location.hash, next, page === "providers");
-    if (wanted) replaceHash(wanted);
-  };
+  }, []);
 
   const navigateToPage = (id: Page) => {
-    navigateHash(id === "providers" ? providersHashForViewMode(viewModeRef.current) : id);
+    navigateHash(id);
     setPageState(id);
   };
 
@@ -89,21 +76,19 @@ export function useAppRouteState() {
       replaceHash("logs/debug");
       return;
     }
-    if (page === "providers") {
-      const wanted = providersHashForViewMode(viewMode);
-      if (rawHash !== wanted) replaceHash(wanted);
+    // Legacy deep link from the removed dual-layout era.
+    if (rawHash === "providers/workspace") {
+      replaceHash("providers");
       return;
     }
     if (!hashBelongsToPage(rawHash, page)) {
       replaceHash(page);
     }
-  }, [page, viewMode]);
+  }, [page]);
 
   return {
     page,
-    viewMode,
     setPageState,
-    toggleGlobalWorkspace,
     navigateToPage,
   };
 }

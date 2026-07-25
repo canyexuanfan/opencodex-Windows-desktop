@@ -1,19 +1,19 @@
 import { expect, test } from "bun:test";
 
-test("ApiKeys uses global viewMode (no per-page toggle) and workspace shell", async () => {
+test("ApiKeys renders the single workspace shell (WP5 removed the layout toggle)", async () => {
   const page = await Bun.file(new URL("../src/pages/ApiKeys.tsx", import.meta.url)).text();
   const app = await Bun.file(new URL("../src/App.tsx", import.meta.url)).text();
   const css = await Bun.file(new URL("../src/styles.css", import.meta.url)).text();
 
-  expect(page).toContain("viewMode");
-  expect(page).toContain("readViewMode");
+  expect(page).not.toContain("viewMode");
+  expect(page).not.toContain("readViewMode");
   expect(page).toContain("ApiKeysWorkspace");
-  expect(page).toContain('workspaceView = (viewMode ?? readViewMode()) === "workspace"');
+  expect(page).not.toContain("workspaceView");
   expect(page).not.toContain("ocx-apikeys-view");
   expect(page).not.toContain("pws.workspaceToggle");
   expect(page).not.toContain("pws.classicToggle");
 
-  expect(app).toContain("<ApiKeys apiBase={API_BASE} viewMode={viewMode} />");
+  expect(app).toContain("<ApiKeys apiBase={API_BASE} />");
   expect(css).toContain('@import "./styles-apikeys-workspace.css"');
 });
 

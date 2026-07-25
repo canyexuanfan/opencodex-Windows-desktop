@@ -12,7 +12,7 @@ import ApiKeys from "./pages/ApiKeys";
 import ClaudeCode from "./pages/ClaudeCode";
 import Startup from "./pages/Startup";
 import ErrorBoundary from "./components/ErrorBoundary";
-import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconGithub, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle, IconX, IconLayoutSidebar } from "./icons";
+import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconGithub, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle, IconX } from "./icons";
 import { useI18n, useT, LOCALES, type Locale, type TKey } from "./i18n";
 import { Select, Switch } from "./ui";
 import { installApiAuthFetch } from "./api";
@@ -69,7 +69,7 @@ function readStoredTheme(): Theme {
 }
 
 export default function App() {
-  const { page, viewMode, toggleGlobalWorkspace, navigateToPage } = useAppRouteState();
+  const { page, navigateToPage } = useAppRouteState();
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
   const [runtimeVersion, setRuntimeVersion] = useState<string | null>(null);
   const { locale, setLocale } = useI18n();
@@ -215,11 +215,10 @@ export default function App() {
         </div>
         <nav>
           {/*
-            Codex Auth used to be hidden in Workspace mode because the Providers
-            workspace embeds the same account pool. The maintainer promoted it to the
-            second slot instead (WP2a), so it is now always visible — WP5 removes the
-            Classic mode entirely, and a filter keyed on viewMode would have made the
-            page permanently unreachable from the sidebar.
+            Codex Auth was once filtered out of this list whenever the workspace layout
+            was active, on the grounds that the Providers workspace embeds the same
+            account pool. It is now promoted to the second slot instead: there is only
+            one layout, so that filter would have hidden the page permanently.
           */}
           {NAV.map(({ id, tkey, Icon }) => (
             <div key={id} className={`nav-entry${id === "claude" ? ` nav-entry-claude${page === id ? " active" : ""}` : ""}`}>
@@ -239,12 +238,6 @@ export default function App() {
           ))}
         </nav>
         <div className="sidebar-foot">
-          <button type="button" className="theme-toggle" onClick={toggleGlobalWorkspace}
-            aria-pressed={viewMode === "workspace"}
-            aria-label={`${t("app.viewMode")}: ${t(viewMode === "workspace" ? "pws.workspaceToggle" : "pws.classicToggle")}`}
-            title={`${t("app.viewMode")}: ${t(viewMode === "workspace" ? "pws.workspaceToggle" : "pws.classicToggle")}`}>
-            <IconLayoutSidebar /> <span className="mode">{t(viewMode === "workspace" ? "pws.workspaceToggle" : "pws.classicToggle")}</span>
-          </button>
           <div className="lang-toggle">
             <IconGlobe aria-hidden />
             <Select
@@ -281,18 +274,18 @@ export default function App() {
             detailsLabel={t("errorBoundary.details")}
             reloadLabel={t("errorBoundary.reload")}
           >
-            {page === "dashboard" && <Dashboard apiBase={API_BASE} viewMode={viewMode} />}
+            {page === "dashboard" && <Dashboard apiBase={API_BASE} />}
             {page === "startup" && <Startup apiBase={API_BASE} />}
-            {page === "providers" && <Providers apiBase={API_BASE} viewMode={viewMode} />}
-            {page === "models" && <Models apiBase={API_BASE} viewMode={viewMode} />}
+            {page === "providers" && <Providers apiBase={API_BASE} />}
+            {page === "models" && <Models apiBase={API_BASE} />}
             {page === "combos" && <Combos apiBase={API_BASE} />}
-            {page === "subagents" && <Subagents apiBase={API_BASE} viewMode={viewMode} />}
+            {page === "subagents" && <Subagents apiBase={API_BASE} />}
             {page === "logs" && <Logs apiBase={API_BASE} />}
-            {page === "usage" && <Usage apiBase={API_BASE} viewMode={viewMode} />}
+            {page === "usage" && <Usage apiBase={API_BASE} />}
             {page === "storage" && <Storage apiBase={API_BASE} />}
             {page === "codex-auth" && <CodexAuth apiBase={API_BASE} />}
-            {page === "api" && <ApiKeys apiBase={API_BASE} viewMode={viewMode} />}
-            {page === "claude" && <ClaudeCode apiBase={API_BASE} viewMode={viewMode} />}
+            {page === "api" && <ApiKeys apiBase={API_BASE} />}
+            {page === "claude" && <ClaudeCode apiBase={API_BASE} />}
           </ErrorBoundary>
         </div>
       </main>
