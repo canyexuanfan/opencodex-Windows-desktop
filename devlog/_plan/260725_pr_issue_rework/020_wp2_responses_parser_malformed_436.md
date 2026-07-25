@@ -276,12 +276,18 @@ PR head `acfe5c14` 기준 `src/responses/parser.ts`의 fallback은 ref 부재를
 
 이는 malformed input을 생략하는 대신 모델이 실제 image/file이 있었다고 믿게 만드는 correctness defect다.
 
-#### 정확한 after diff
+#### 정확한 after diff — CANONICAL (A-gate 라운드2에서 교체됨)
 
-`InputBlock`에 schema의 정상 `file_data` 필드를 반영하고, non-empty string 판정을 한 owner helper로 둔다. empty string과 non-string은 ref가 아니다. inline bytes는 marker에 직접 삽입하지 않는다.
+`InputBlock`에 schema의 정상 `file_data`를 반영하고, non-empty string 판정을 한 owner helper로
+둔다. empty string과 non-string은 ref가 아니다. inline bytes는 marker에 삽입하지 않는다.
+`detail`은 반드시 지역 변수로 narrow한다 — 조건에서만 호출하면 `string | undefined`가
+`normalizeImageDetail()`에 전달되어 typecheck가 깨진다.
 
-```diff
-@@
+**빈 결과 정규화는 `inputContentParts()` 내부가 아니라 user/developer call site에 둔다.**
+같은 helper를 system(`parser.ts:341`)이 공유하므로 내부에 두면 malformed system input이
+고우선순위 지시문으로 변한다. system은 계속 drop한다.
+
+```
  type InputBlock =
    | { type: "input_text"; text: string }
    | { type: "text"; text: string }
@@ -292,42 +298,81 @@ PR head `acfe5c14` 기준 `src/responses/parser.ts`의 fallback은 ref 부재를
 +function nonEmptyString(value: unknown): string | undefined {
 +  return typeof value === "string" && value.length > 0 ? value : undefined;
 +}
-@@
+```
+
+image branch — ref가 전혀 없으면 블록을 생략한다. `[image: ?]`를 만들지 않는다.
+
+```
      } else if (block.type === "input_image") {
        const b = block as { image_url?: string; file_id?: string; detail?: string };
 -      if (typeof b.image_url === "string" && b.image_url.length > 0) {
-+      const imageUrl = nonEmptyString(b.image_url);
-+      const fileId = nonEmptyString(b.file_id);
-+      if (imageUrl) {
-         // Preserve the image as a structured part — adapters send it as a native image block.
-         // NEVER inline the (often base64 data-URL) image_url as text: that explodes the token count.
 -        parts.push({ type: "image", imageUrl: b.image_url, ...(typeof b.detail === "string" && b.detail.length > 0 ? { detail: normalizeImageDetail(b.detail) } : {}) });
 -      } else {
--        parts.push({ type: "text", text: `[image: ${typeof b.file_id === "string" ? b.file_id : "?"}]` }); // file_id ref → no inline data
+-        parts.push({ type: "text", text: `[image: ${typeof b.file_id === "string" ? b.file_id : "?"}]` });
+-      }
++      const imageUrl = nonEmptyString(b.image_url);
++      const fileId = nonEmptyString(b.file_id);
++      const detail = nonEmptyString(b.detail);
++      if (imageUrl) {
 +        parts.push({
 +          type: "image",
 +          imageUrl,
-+          ...(nonEmptyString(b.detail) ? { detail: normalizeImageDetail(b.detail) } : {}),
++          ...(detail ? { detail: normalizeImageDetail(detail) } : {}),
 +        });
 +      } else if (fileId) {
-+        parts.push({ type: "text", text: `[image: ${fileId}]` }); // file_id ref → no inline data
-       }
++        parts.push({ type: "text", text: `[image: ${fileId}]` });
++      }
+```
+
+file branch — precedence는 `file_id` > `file_data`(+optional `filename`) > 생략이다.
+`filename` 단독은 파일 resource가 아니므로 marker를 만들지 않는다.
+
+```
      } else if (block.type === "input_file") {
 -      const b = block as { file_id?: string; filename?: string };
 -      const ref = typeof b.file_id === "string" ? b.file_id : typeof b.filename === "string" ? b.filename : "?";
 -      parts.push({ type: "text", text: `[file: ${ref}]` });
 +      const b = block as { file_id?: string; filename?: string; file_data?: string };
-+      const ref = nonEmptyString(b.file_id) ?? nonEmptyString(b.filename);
-+      if (ref) {
-+        parts.push({ type: "text", text: `[file: ${ref}]` });
-+      } else if (nonEmptyString(b.file_data)) {
-+        // Inline file_data may be large/base64. Preserve only its presence, never its bytes.
-+        parts.push({ type: "text", text: "[file: inline data]" });
++      const fileId = nonEmptyString(b.file_id);
++      const fileData = nonEmptyString(b.file_data);
++      const filename = nonEmptyString(b.filename);
++      if (fileId) {
++        parts.push({ type: "text", text: `[file: ${fileId}]` });
++      } else if (fileData) {
++        parts.push({ type: "text", text: filename ? `[file: ${filename}]` : "[file: inline data]" });
 +      }
      }
 ```
 
-계약의 precedence는 `image_url > file_id` 및 `file_id > filename > file_data`다. 정상 ref가 있으면 가장 구체적인 ref marker를 사용하고, `file_data`만 있으면 고정 marker를 사용한다. 어떤 경로도 `?`, raw `file_data`, object stringification을 사용자 content로 만들지 않는다.
+user/developer call site(`parser.ts:346-352`)에서 빈 결과를 정규화한다. `inputContentParts()`가
+비배열 early return으로 `[]`를 주는 경로도 여기서 함께 잡힌다.
+
+```
+           case "user":
+           case "developer": {
+             pendingReasoning.length = 0;
+             const content = inputContentParts(msg.content as unknown[] | string | undefined);
+-            messages.push({ role: msg.role, content, timestamp: now });
++            // 빈 배열을 그대로 내보내면 Cursor(request-builder.ts:236)가 메시지를 제거하고
++            // tool result가 아닌데도 resumeAction을 만든다. 중립 문구로 정규화한다.
++            // image/file 존재를 주장하지 않으므로 원래 결함([image: ?])은 재발하지 않는다.
++            const normalized = Array.isArray(content) && content.length === 0
++              ? [{ type: "text" as const, text: "[empty or unsupported content]" }]
++              : content;
++            messages.push({ role: msg.role, content: normalized, timestamp: now });
+             break;
+           }
+```
+
+문구는 `[empty or unsupported content]`다. literal `[]`(정상 empty)와 malformed drop을 모두
+포괄하므로 정상 입력을 "unsupported"라고 단정하지 않는다.
+
+`file_url` 스키마 추가와 Kiro의 빈 assistant history 처리는 이 WP 범위 밖이며 D 영수증에
+후속 후보로 기록한다.
+
+계약의 precedence는 image가 `image_url > file_id > 생략`, file이 `file_id > file_data(+optional
+filename) > 생략`이다. `filename` 단독은 파일 resource가 아니므로 marker를 만들지 않는다.
+어떤 경로도 `?`, raw `file_data`, object stringification을 사용자 content로 만들지 않는다.
 
 ### A-gate 라운드1 blocker 반영 — 계약 개정
 
@@ -358,13 +403,18 @@ const detail = nonEmptyString(b.detail);
 | **Cursor** | `request-builder.ts:236`의 `content.length > 0` 필터가 메시지를 **제거**하고, tool result가 아닌데도 `resumeAction`을 만든다 | **안전하지 않음** |
 | OpenAI Responses / Azure passthrough | `_rawBody` 사용 | 영향 없음 |
 
-추가 실측: `src/adapters/image.ts:19` `contentPartsToText()`는 빈 배열과 all-empty text 배열에서
-`"[image]"`를 반환한다. 즉 openai-chat 경로에서 **없는 이미지를 있다고 주장**한다.
+추가 실측 (정정, A-gate 라운드2): `src/adapters/image.ts:19` `contentPartsToText()`는 빈 배열과
+all-empty text 배열에서 `"[image]"`를 반환한다.
 
 ```
-$ bun -e 'contentPartsToText([])'            -> "[image]"
-$ bun -e 'contentPartsToText([{type:"text",text:""}])' -> "[image]"
+$ bun -e 'contentPartsToText([])'                      -> "[image]"
+$ bun -e 'contentPartsToText([{type:"text",text:""}])'  -> "[image]"
 ```
+
+**다만 이것은 이번 user-message 경로의 소비처가 아니다.** `openai-chat.ts:149` 부근의 user
+content는 직접 `map(...).join("")`하고, `contentPartsToText()`는 tool result에 쓰인다.
+따라서 이 정규화의 근거는 **Cursor 메시지 유실**이며, `"[image]"` 허위 마커는 별도 후속
+이슈로 분리한다. D 영수증에 후속 후보로 기록한다.
 
 **따라서 parser 계약을 변경한다: 가짜 *ref* 마커는 없애되, 빈 content 배열을 downstream에
 내보내지 않는다.** user/developer 메시지의 모든 파트가 drop된 경우 중립 placeholder 한 개를
@@ -525,6 +575,20 @@ rg -n '\[image: \?\]|\[file: \?\]' src/responses/parser.ts tests/responses-parse
 
 마지막 `rg`는 exit 1(매치 없음)이 성공 조건이다.
 
+### 추가 필수 테스트 (A-gate 라운드2 반영)
+
+아래 4건은 canonical 계약의 새 분기를 활성화한다. 하나라도 없으면 WP2의 C는 통과가 아니다.
+
+| 테스트 | 트리거 | 관찰 (실행 증거) |
+|---|---|---|
+| 빈 content 정규화 | 모든 파트가 malformed인 user 메시지, 그리고 literal `content: []` | 메시지 content가 `[{type:"text",text:"[empty or unsupported content]"}]` |
+| system 미오염 | malformed system message | `systemPrompt`에 `[empty or unsupported content]`가 들어가지 않고 drop됨 |
+| **Cursor 회귀** | malformed-only 첫 user turn으로 `createCursorRequest()` 호출 | 메시지가 제거되지 않고 fresh conversation에서 `resumeAction`이 생성되지 않음 |
+| file precedence | `file_id` 단독 / `file_data` 단독 / `filename + file_data` / `filename` 단독 | 각각 `[file: <id>]`, `[file: inline data]`, `[file: <filename>]`, 그리고 **생략** |
+
+통합 assertion은 malformed `input_image`(ref 없음)와 malformed `input_file`(ref 없음)을 실제
+raw input에 포함해 Google과 Cursor 두 경로의 최종 결과를 관찰한다.
+
 ## 수용 기준
 
 - [ ] WP1이 먼저 적용되어 `tests/google-empty-content.test.ts`가 green이다.
@@ -535,9 +599,22 @@ rg -n '\[image: \?\]|\[file: \?\]' src/responses/parser.ts tests/responses-parse
 - [ ] assistant `content: [null]`은 content `[]`가 되며 bare text part가 없다.
 - [ ] non-empty `image_url`은 structured image, non-empty `file_id`는 image marker가 된다.
 - [ ] URL/ref 없는 malformed `input_image`는 생략되며 `[image: ?]`가 없다.
-- [ ] `input_file.file_id`, `filename`, `file_data`의 정상 사례가 각각 위 marker 계약을 만족한다.
+- [ ] `input_file`의 `file_id` 단독, `file_data` 단독, `filename + file_data` 조합이 각각
+      `[file: <id>]`, `[file: inline data]`, `[file: <filename>]`이 된다.
+- [ ] **`filename` 단독인 malformed `input_file`은 생략된다** — 가짜 파일 marker를 만들지 않는다.
 - [ ] empty/non-string file fields는 생략되며 `[file: ?]`와 raw `file_data` 노출이 없다.
+- [ ] **`detail` narrowing**: `bun run typecheck`가 exit 0이다 (지역 변수 없이 조건 호출만 하면
+      `string | undefined` 오류가 난다).
+- [ ] **빈 content 정규화**: 모든 파트가 drop된 user/developer 메시지와 literal `content: []`가
+      `[{ type: "text", text: "[empty or unsupported content]" }]`이 된다.
+- [ ] **system은 오염되지 않는다**: malformed system message가 `[empty or unsupported content]`를
+      systemPrompt에 넣지 않고 그대로 drop된다.
+- [ ] **Cursor 회귀**: malformed-only 첫 user turn이 메시지를 잃지 않고 fresh conversation에서
+      `resumeAction`으로 변질되지 않는다 (`src/adapters/cursor/request-builder.ts:236` 필터 통과).
 - [ ] raw malformed Responses input이 Google wire에서 `parts: [{ text: "(empty)" }]`가 되어 #420 경로를 재발시키지 않는다.
+- [ ] 통합 assertion이 **실제 malformed `input_image`(ref 없음)와 malformed `input_file`(ref 없음)을
+      raw input에 넣고** Google과 Cursor 두 경로의 최종 결과를 관찰한다. missing `input_text`만
+      넣는 assertion은 image/file 경로를 활성화하지 못하므로 불충분하다.
 - [ ] valid blocks가 malformed siblings와 함께 있을 때 그대로 보존된다.
 - [ ] focused tests, parser+Google integration, typecheck, full suite, privacy scan, GUI lint, `git diff --check`가 모두 기대한 exit code다.
 
