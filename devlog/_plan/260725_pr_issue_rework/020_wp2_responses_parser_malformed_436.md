@@ -1,5 +1,43 @@
 # WP2 — Responses malformed parser: PR #436 통합과 fake marker 제거
 
+## ⚠️ 계획 재설계 (A-gate 3라운드 FAIL 후, LOOP-REPAIR-01)
+
+A-gate가 3라운드 연속 FAIL했다. 원인은 계약의 세부가 아니라 **범위 설정 자체**였다.
+독립 리뷰어의 지적이 옳다. 무엇이 잘못됐는지 기록한다.
+
+1. 가짜 ref 마커(`[image: ?]`)를 제거하면 content가 빈 배열이 될 수 있다. 나는 그 빈 배열이
+   Cursor에서 메시지 유실을 일으킨다는 사실을 발견하고 **parser에 placeholder 정규화를 추가**하려
+   했다. 이 확장이 실패의 근원이다.
+2. `src/responses/parser.ts:53`은 단일 text 파트를 **문자열로 collapse**한다. 따라서
+   `Array.isArray()` 기반 정규화는 `[{type:"input_text",text:""}]` 같은 입력을 구조적으로
+   잡을 수 없다.
+3. Cursor의 `src/adapters/cursor/request-builder.ts:236` 필터는 파트 개수가 아니라
+   **join된 문자열 길이** 기준이다 — `contentToText()`가 empty part를 filter하고 join한다.
+   즉 parser에서 파트를 몇 개 남기든 텍스트가 실질적으로 비면 메시지는 제거된다.
+4. 결국 "빈 content를 downstream에 내보내지 않는다"는 invariant는 parser 한 지점에서 달성
+   불가능하다. 그것은 **Cursor adapter의 문제**이며 PR #436과 별개다.
+
+### 재설계된 범위 — 이번 WP가 하는 것
+
+- PR #436을 그대로 통합한다 (무검증 cast → 검증). 이것이 #435를 닫는다.
+- 우리 repair는 **가짜 ref 마커 제거로만 한정**한다: 유효 ref가 없는 malformed image/file은
+  생략하고 `?`나 raw `file_data`를 사용자 content로 만들지 않는다.
+- `detail`은 지역 변수로 narrow한다 (typecheck 필수).
+- file precedence: `file_id > file_data(+optional filename) > 생략`. `filename` 단독 금지.
+
+### 이번 WP가 하지 않는 것 — 후속 이슈 후보, D 영수증에 기록
+
+- **빈 content placeholder 정규화** — parser 단독으로 해결 불가. 아래 canonical diff의
+  call-site 정규화 hunk는 **무효(SUPERSEDED)** 이며 적용하지 않는다.
+- **Cursor malformed-only 첫 turn `resumeAction`** — 기존 결함이며 이 PR이 만들지 않는다.
+  가짜 마커가 있던 시절에도 `content: ""`인 입력에서 동일하게 발생했다. 별도 이슈로 올린다.
+- `contentPartsToText([]) → "[image]"` 허위 마커 (tool result 경로).
+- `file_url` 스키마 부재.
+- Kiro의 빈 assistant history 생성.
+
+이 재설계로 계약은 PR #436의 범위 안에 머문다. **테스트 기대값은 원래 문서대로 `[]`를 유지**하며,
+`filename` 단독 케이스만 `[file: report.pdf]` → 생략으로 바꾼다.
+
 ## 루프 계약
 
 - **Archetype:** 외부 parser-hardening PR 흡수 + 발견된 correctness defect를 같은 work-phase에서 최소 수정하는 integration-and-repair.
@@ -283,7 +321,8 @@ PR head `acfe5c14` 기준 `src/responses/parser.ts`의 fallback은 ref 부재를
 `detail`은 반드시 지역 변수로 narrow한다 — 조건에서만 호출하면 `string | undefined`가
 `normalizeImageDetail()`에 전달되어 typecheck가 깨진다.
 
-**빈 결과 정규화는 `inputContentParts()` 내부가 아니라 user/developer call site에 둔다.**
+**[SUPERSEDED — 계획 재설계로 무효]** 빈 결과 정규화는 이번 WP에서 하지 않는다. 아래 call-site
+hunk는 적용하지 않는다. 이유는 문서 상단 '계획 재설계' 절을 보라.
 같은 helper를 system(`parser.ts:341`)이 공유하므로 내부에 두면 malformed system input이
 고우선순위 지시문으로 변한다. system은 계속 drop한다.
 
@@ -343,6 +382,12 @@ file branch — precedence는 `file_id` > `file_data`(+optional `filename`) > �
 +      }
      }
 ```
+
+### [SUPERSEDED — 적용 금지]
+
+아래 call-site 정규화는 A-gate 3라운드 FAIL로 무효화됐다. `parser.ts:53`의 단일-text collapse와
+Cursor의 문자열 길이 기준 필터 때문에 parser 단독으로는 invariant를 달성할 수 없다.
+참고용으로만 남긴다.
 
 user/developer call site(`parser.ts:346-352`)에서 빈 결과를 정규화한다. `inputContentParts()`가
 비배열 early return으로 `[]`를 주는 경로도 여기서 함께 잡힌다.
@@ -505,7 +550,8 @@ PR의 assistant malformed test 근처에 `[null]` 직접 사례를 추가한다.
  
 +  test("input_file uses a non-empty file_id, filename, or inline-data marker", () => {
 +    expect(userContent([{ type: "input_file", file_id: "file_1" }])).toBe("[file: file_1]");
-+    expect(userContent([{ type: "input_file", filename: "report.pdf" }])).toBe("[file: report.pdf]");
++    // filename 단독은 파일 resource가 아니므로 생략된다 (A-gate 반영).
++    expect(userContent([{ type: "input_file", filename: "report.pdf" }])).toEqual([]);
 +    expect(userContent([{ type: "input_file", file_data: "ZmlsZQ==" }])).toBe("[file: inline data]");
 +    expect(userContent([{
 +      type: "input_file",
@@ -581,9 +627,9 @@ rg -n '\[image: \?\]|\[file: \?\]' src/responses/parser.ts tests/responses-parse
 
 | 테스트 | 트리거 | 관찰 (실행 증거) |
 |---|---|---|
-| 빈 content 정규화 | 모든 파트가 malformed인 user 메시지, 그리고 literal `content: []` | 메시지 content가 `[{type:"text",text:"[empty or unsupported content]"}]` |
-| system 미오염 | malformed system message | `systemPrompt`에 `[empty or unsupported content]`가 들어가지 않고 drop됨 |
-| **Cursor 회귀** | malformed-only 첫 user turn으로 `createCursorRequest()` 호출 | 메시지가 제거되지 않고 fresh conversation에서 `resumeAction`이 생성되지 않음 |
+| ~~빈 content 정규화~~ | **SUPERSEDED — 이번 WP 범위 밖** | — |
+| ~~system 미오염~~ | **SUPERSEDED — 정규화를 하지 않으므로 해당 없음** | — |
+| ~~Cursor 회귀~~ | **SUPERSEDED — 기존 결함이며 이 PR이 만들지 않는다. 별도 이슈로 분리** | — |
 | file precedence | `file_id` 단독 / `file_data` 단독 / `filename + file_data` / `filename` 단독 | 각각 `[file: <id>]`, `[file: inline data]`, `[file: <filename>]`, 그리고 **생략** |
 
 통합 assertion은 malformed `input_image`(ref 없음)와 malformed `input_file`(ref 없음)을 실제
@@ -605,16 +651,10 @@ raw input에 포함해 Google과 Cursor 두 경로의 최종 결과를 관찰한
 - [ ] empty/non-string file fields는 생략되며 `[file: ?]`와 raw `file_data` 노출이 없다.
 - [ ] **`detail` narrowing**: `bun run typecheck`가 exit 0이다 (지역 변수 없이 조건 호출만 하면
       `string | undefined` 오류가 난다).
-- [ ] **빈 content 정규화**: 모든 파트가 drop된 user/developer 메시지와 literal `content: []`가
-      `[{ type: "text", text: "[empty or unsupported content]" }]`이 된다.
-- [ ] **system은 오염되지 않는다**: malformed system message가 `[empty or unsupported content]`를
-      systemPrompt에 넣지 않고 그대로 drop된다.
-- [ ] **Cursor 회귀**: malformed-only 첫 user turn이 메시지를 잃지 않고 fresh conversation에서
-      `resumeAction`으로 변질되지 않는다 (`src/adapters/cursor/request-builder.ts:236` 필터 통과).
 - [ ] raw malformed Responses input이 Google wire에서 `parts: [{ text: "(empty)" }]`가 되어 #420 경로를 재발시키지 않는다.
 - [ ] 통합 assertion이 **실제 malformed `input_image`(ref 없음)와 malformed `input_file`(ref 없음)을
-      raw input에 넣고** Google과 Cursor 두 경로의 최종 결과를 관찰한다. missing `input_text`만
-      넣는 assertion은 image/file 경로를 활성화하지 못하므로 불충분하다.
+      raw input에 넣고** Google wire 결과를 관찰한다. missing `input_text`만 넣는 assertion은
+      image/file 경로를 활성화하지 못하므로 불충분하다.
 - [ ] valid blocks가 malformed siblings와 함께 있을 때 그대로 보존된다.
 - [ ] focused tests, parser+Google integration, typecheck, full suite, privacy scan, GUI lint, `git diff --check`가 모두 기대한 exit code다.
 
