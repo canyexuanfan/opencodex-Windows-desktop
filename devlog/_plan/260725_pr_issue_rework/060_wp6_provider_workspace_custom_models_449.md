@@ -1,5 +1,147 @@
 # WP6 — Provider workspace custom models: PR #449 통합과 provenance/retry 수선
 
+## A-gate 반영 — 수정 설계 확정 (CANONICAL)
+
+독립 감사 `VERDICT: GO-WITH-FIXES (blockers=4)`. 아래가 canonical 계약이며, 문서 뒷부분의
+기존 diff 제안 중 이와 충돌하는 부분은 무효다.
+
+감사가 확인한 사항(재검증 불필요): #448의 provider-scoped 입력·빈 ID·namespaced ID·중복
+거부·즉시 반영이 모두 충족된다. WP5(#389)와 파일 충돌이 없고 `parseSelectedModels()`는
+`selected`만 읽으므로 additive `liveModelCounts`와 호환된다. custom POST는 `config.customModels`만
+immutable append하므로 provider 설정 필드 유실이 없다.
+
+### 결함 1 — provenance 보존: source-side live count
+
+감사가 네 접근을 비교했다.
+
+| 접근 | 판정 |
+|---|---|
+| ID 차집합 (PR 현재) | **불가.** 동일 ID overlap에서 provenance가 소실된다 |
+| catalog row별 `source` 필드 | 표현력은 높으나 custom override dedup에서 live row가 제거되므로 스키마·merge 정책을 광범위하게 바꿔야 한다 |
+| 기존 discovery status 재사용 | **불충분.** 실패 상태가 이전 성공 count를 덮어 stale이 live-origin인지 판정 불가 |
+| **source-side live count** | **채택.** 최소 변경으로 `0` / non-zero / 실패 후 stale을 정확히 구분 |
+
+핵심: **`live.length`는 configured alias 증강 *전에* capture한다.** 그러지 않으면 configured row가
+live count를 오염시킨다.
+
+```
+ // src/codex/model-cache.ts
++const liveModelCounts = new Map<string, number>();
++
++export function getProviderLiveModelCount(provider: string): number | undefined {
++  return liveModelCounts.get(provider);
++}
++
+ export function clearProviderDiscoveryStatus(provider: string): void {
+   discoveryStatus.delete(provider);
++  liveModelCounts.delete(provider);
+ }
+```
+
+```
+ // src/codex/catalog/provider-fetch.ts — Cursor 성공 branch
+-markProviderDiscoveryOk(name);
++markProviderDiscoveryOk(name, liveResult.models.length);
+
+ // 일반 OpenAI-list branch
+ const live = items.map(...).filter(...);
++const liveModelCount = live.length; // configured alias 증강 전에 capture
+ ...
+-markProviderDiscoveryOk(name);
++markProviderDiscoveryOk(name, liveModelCount);
+```
+
+management DTO에 `liveModelCounts`를 additive로 싣고, GUI는 추론 대신 그 값을 쓴다.
+
+```
+-  const customSet = new Set(customModels);
+-  const hasLiveModels = base.some(id => !customSet.has(id));
+   const fallback = configuredModels?.length ? configuredModels : defaultModel ? [defaultModel] : [];
+-  const primary = base.length > 0 && (hasLiveModels || customSet.size === 0) ? base : fallback;
++  const primary = hasLiveModels ? base : fallback;
+   return [...new Set([...primary, ...customModels])];
+```
+
+결과 분리: live `0` + custom-only → configured fallback + custom / live `>0` + overlap →
+live·custom row만 / 실패 + stale → 마지막 성공 count 유지.
+
+### blocker 3 — 기본값이 wiring 누락을 은폐한다 (중요)
+
+count 인수와 GUI prop을 **required로 만든다.** optional/default로 두면 production branch에서
+전달을 빠뜨려도 typecheck가 통과하고 조용히 count `0`으로 오분류한다.
+
+```
+- export function markProviderDiscoveryOk(provider: string, liveModelCount = 0): void {
++ export function markProviderDiscoveryOk(provider: string, liveModelCount: number): void {
+```
+
+```
+- hasLiveModels?: boolean;
++ hasLiveModels: boolean;
+```
+
+`DetailSlotData` → `ProviderDetails` → `ProviderModels` 전 구간에서 required로 두어 props-down
+누락이 컴파일 오류가 되게 한다. required화에 따라 기존 직접 호출도 수정 범위에 포함한다:
+`tests/provider-discovery-log-suppression.test.ts`의 `markProviderDiscoveryOk(P)` → `(P, 0)`.
+
+### 결함 2 — GET 실패 후 복구: 명시적 Retry CTA + epoch
+
+| 접근 | 판정 |
+|---|---|
+| effect dependency만 변경 | 재실행 트리거가 별도로 필요하고 자동 반복은 불필요한 요청을 만든다 |
+| Add 클릭 시 lazy GET | 한 번의 Add가 GET→POST 2단계가 되어 실패 의미가 모호하고 race 처리가 복잡 |
+| **Retry CTA + epoch effect** | **채택.** 가장 명확하고 기존 provider model retry UX와 일치 |
+
+```
+ const [customModelsReady, setCustomModelsReady] = useState(false);
++const [customModelsLoadFailed, setCustomModelsLoadFailed] = useState(false);
++const [customModelsLoadEpoch, setCustomModelsLoadEpoch] = useState(0);
+ ...
+ .then(rows => {
++  setCustomModelsLoadFailed(false);
++  setCustomError("");
+   setCustomModelsReady(true);
+ })
+ .catch(() => {
+   if (!active) return;
+   setCustomModelIds([]);
++  setCustomModelsReady(false);
++  setCustomModelsLoadFailed(true);
+   setCustomError(t("models.networkError"));
+ });
+-}, [apiBase, item.name, t]);
++}, [apiBase, item.name, t, customModelsLoadEpoch]);
++
++const retryCustomModels = () => {
++  setCustomModelsReady(false);
++  setCustomModelsLoadFailed(false);
++  setCustomError("");
++  setCustomModelsLoadEpoch(epoch => epoch + 1);
++};
+```
+
+에러 표시 옆에 `customModelsLoadFailed`일 때만 Retry 버튼을 렌더링한다.
+
+회귀 테스트는 **같은 mount 안에서** `GET fail → Retry → GET success → Add 활성화 → POST 정확히 1회`
+전 구간을 확인해야 한다.
+
+### blocker 4 — 활성화 테스트의 실제 배치
+
+Cursor는 `globalThis.fetch` mock으로 활성화할 수 없다. HTTP/2 protobuf fixture가 필요하며 기존
+harness가 `tests/cursor-hardening.test.ts`에 있다.
+
+| 시나리오 | 배치 |
+|---|---|
+| Cursor 성공 branch | `tests/cursor-hardening.test.ts`의 `withDiscoveryServer()`로 `/api/selected-models` 호출 후 count 확인 |
+| 일반 non-empty / empty / 성공→실패 stale | `tests/codex-catalog.test.ts`에서 management route 호출 |
+| malformed/negative/NaN 파서 | `tests/provider-workspace-data.test.ts`에 `parseLiveModelCounts` 회귀 |
+
+허용 changed-file ledger에 `tests/cursor-hardening.test.ts`,
+`tests/provider-discovery-log-suppression.test.ts`, `tests/provider-workspace-data.test.ts`를 추가한다.
+
+**4개 discovery 시나리오는 축소하지 않는다.** `markProviderDiscoveryOk()`만 직접 호출하는
+테스트로 줄이면 production branch가 count 기록을 빠뜨려도 green이 된다.
+
 ## 루프 계약
 
 - **Archetype:** clean-applying GUI PR을 현재 `dev` 위에 흡수한 뒤, 발견된 correctness/recovery 결함을 source-to-view 계약까지 추적해 함께 수선하는 integration-and-repair.
