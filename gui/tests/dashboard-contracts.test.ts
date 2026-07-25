@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
+import { PROJECT_CONFIG_DIAGNOSTICS_POLL_MS } from "../src/startup-health-ui";
 
-test("Dashboard owns project-config diagnostics on a single path", async () => {
+test("Dashboard owns project-config diagnostics on a dedicated poll interval", async () => {
+  expect(PROJECT_CONFIG_DIAGNOSTICS_POLL_MS).toBe(30_000);
   const src = await Bun.file(new URL("../src/pages/Dashboard.tsx", import.meta.url)).text();
-  const matches = src.match(/diagnostics\/project-config/g) ?? [];
-  expect(matches.length).toBe(1);
+  // Single endpoint owner: the dedicated diagnostics effect, not the five-second settings poll.
+  expect(src.match(/diagnostics\/project-config/g)?.length ?? 0).toBe(1);
   expect(src).toContain("PROJECT_CONFIG_DIAGNOSTICS_POLL_MS");
-  expect(src).toContain("setInterval(() => void fetchDiagnostics(), PROJECT_CONFIG_DIAGNOSTICS_POLL_MS)");
-  // Ensure the five-second poll body does not also call the diagnostics endpoint.
   const fetchDataStart = src.indexOf("const fetchData = async () => {");
   const fetchDataEnd = src.indexOf("const interval = setInterval(fetchData, 5000);", fetchDataStart);
   expect(fetchDataStart).toBeGreaterThan(-1);
@@ -19,7 +19,7 @@ test("Dashboard workspace uses a labelled section instead of nested main", async
   expect(src).toContain('className="dashboard-workspace-main"');
   expect(src).toContain("aria-label={selected.label}");
   expect(src).toContain('aria-label={t("dash.workspace.sections")}');
-  expect(src).not.toMatch(/<main className="dashboard-workspace-main"/);
+  expect(src).not.toMatch(/<main\b[^>]*dashboard-workspace-main/);
 });
 
 test("multi-agent guidance disables injection controls when off", async () => {

@@ -89,10 +89,12 @@ export function viewModeFromProvidersHash(rawHash: string): ViewMode | null {
 }
 
 /**
- * Normalize Providers hash when global mode changes while Providers is active.
- * Returns the hash to assign, or null when already aligned / not on Providers.
+ * Providers hash to passively replace when the global Classic/Workspace preference
+ * changes while Providers is active. Returns null when already aligned / not on Providers.
+ * Callers must use replaceHash — never navigateHash — so Back is not trapped on a
+ * Classic/Workspace variant that the preference immediately rewrites.
  */
-export function providersHashAfterGlobalToggle(
+export function providersHashForGlobalViewChange(
   currentHash: string,
   nextMode: ViewMode,
   pageIsProviders: boolean,

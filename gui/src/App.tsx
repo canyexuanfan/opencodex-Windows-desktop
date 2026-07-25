@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, startTransition } from "react";
+import { useEffect, useRef, useState } from "react";
 import Dashboard from "./pages/Dashboard";
 import Providers from "./pages/Providers";
 import Models from "./pages/Models";
@@ -16,23 +16,12 @@ import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconH
 import { useI18n, useT, LOCALES, type Locale, type TKey } from "./i18n";
 import { Select, Switch } from "./ui";
 import { installApiAuthFetch } from "./api";
-import {
-  ensureMigratedViewMode,
-  providersHashAfterGlobalToggle,
-  providersHashForViewMode,
-  readViewMode,
-  toggleViewMode,
-  writeViewMode,
-  type ViewMode,
-} from "./view-mode";
-import { navigateHash, normalizeHashPath, replaceHash, resolveProvidersHashChange } from "./hash-routing";
+import { type Page } from "./app-routing";
+import { useAppRouteState } from "./use-app-route-state";
 
 installApiAuthFetch();
 
-type Page = "dashboard" | "startup" | "providers" | "models" | "combos" | "subagents" | "logs" | "usage" | "storage" | "codex-auth" | "api" | "claude";
 type Theme = "light" | "dark" | "system";
-
-const VALID_PAGES = new Set<Page>(["dashboard", "startup", "providers", "models", "combos", "subagents", "logs", "usage", "storage", "codex-auth", "api", "claude"]);
 
 const PAGE_TKEY: Record<Page, TKey> = {
   dashboard: "nav.dashboard",
@@ -49,27 +38,8 @@ const PAGE_TKEY: Record<Page, TKey> = {
   claude: "nav.claude",
 };
 
-function readPageFromHash(): Page {
-  const raw = normalizeHashPath(location.hash);
-  // Sub-views use a "/" suffix (e.g. #providers/workspace); the first segment is the page id.
-  const pageId = raw.split("/")[0] as Page;
-  // Legacy: Debug used to be a standalone page; it now lives as a tab on Logs.
-  if (pageId === ("debug" as Page)) return "logs";
-  return VALID_PAGES.has(pageId) ? pageId : "dashboard";
-}
-
-function hashBelongsToPage(rawHash: string, page: Page): boolean {
-  return rawHash === page
-    || (page === "providers" && rawHash === "providers/workspace")
-    || (page === "logs" && rawHash === "logs/debug");
-}
-
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 const THEME_KEY = "ocx-theme";
-
-function providersHashForPage(): string {
-  return providersHashForViewMode(readViewMode());
-}
 
 const NAV: { id: Page; tkey: TKey; Icon: typeof IconGrid }[] = [
   { id: "dashboard", tkey: "nav.dashboard", Icon: IconGrid },
@@ -99,7 +69,7 @@ function readStoredTheme(): Theme {
 }
 
 export default function App() {
-  const [page, setPageState] = useState<Page>(readPageFromHash);
+  const { page, viewMode, toggleGlobalWorkspace, navigateToPage } = useAppRouteState();
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
   const [runtimeVersion, setRuntimeVersion] = useState<string | null>(null);
   const { locale, setLocale } = useI18n();
@@ -111,96 +81,16 @@ export default function App() {
   const sidebarRef = useRef<HTMLElement>(null);
   const navWasOpen = useRef(false);
 
-  // Shared Classic/Workspace mode. Passed as a prop to pages that support it —
-  // never remount the shared page container (that discards unsaved drafts).
-  const [viewMode, setViewMode] = useState<ViewMode>(() => {
-    const migrated = ensureMigratedViewMode();
-    try {
-      const rawHash = normalizeHashPath(window.location.hash);
-      if (rawHash === "providers/workspace") {
-        writeViewMode("workspace");
-        return "workspace";
-      }
-    } catch {
-      /* ignore */
-    }
-    return migrated;
-  });
-  const toggleGlobalWorkspace = () => {
-    const next = toggleViewMode(viewMode);
-    writeViewMode(next);
-    setViewMode(next);
-    // Deliberate Classic/Workspace toggle while Providers is open — push history.
-    const wanted = providersHashAfterGlobalToggle(window.location.hash, next, page === "providers");
-    if (wanted) navigateHash(wanted);
-  };
-
   useEffect(() => {
     // External navigation (hash edit, back/forward) also dismisses the mobile drawer.
-    const onHash = () => {
-      const nextPage = readPageFromHash();
-      const rawHash = normalizeHashPath(window.location.hash);
-      setNavOpen(false);
-      // Legacy #debug deep links → the Debug tab on Logs (passive; no extra history entry).
-      if (rawHash === "debug" || rawHash.startsWith("debug/")) {
-        replaceHash("logs/debug");
-        setPageState("logs");
-        return;
-      }
-      if (!hashBelongsToPage(rawHash, nextPage)) {
-        // Passive correction of malformed hashes belonging to this page family.
-        replaceHash(nextPage === "providers" ? providersHashForPage() : nextPage);
-        setPageState(nextPage === "providers" ? "providers" : nextPage);
-        if (nextPage === "providers") {
-          startTransition(() => setViewMode(readViewMode()));
-        }
-        return;
-      }
-      // Preference is source of truth for Classic/Workspace. Bare #providers must not
-      // wipe a saved workspace choice (that regressed when leaving Providers and returning).
-      if (nextPage === "providers") {
-        const preferred = readViewMode();
-        const resolved = resolveProvidersHashChange(rawHash, preferred);
-        if (resolved.replaceTo) {
-          // Passive normalize — replaceState so Back is not trapped in a hash loop.
-          replaceHash(resolved.replaceTo);
-          if (resolved.viewMode) {
-            writeViewMode(resolved.viewMode);
-            startTransition(() => setViewMode(resolved.viewMode!));
-          }
-          setPageState("providers");
-          return;
-        }
-        if (resolved.viewMode) {
-          writeViewMode(resolved.viewMode);
-          startTransition(() => setViewMode(resolved.viewMode!));
-        }
-      }
-      setPageState(nextPage);
+    const dismissNav = () => setNavOpen(false);
+    window.addEventListener("hashchange", dismissNav);
+    window.addEventListener("popstate", dismissNav);
+    return () => {
+      window.removeEventListener("hashchange", dismissNav);
+      window.removeEventListener("popstate", dismissNav);
     };
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
   }, []);
-
-  useEffect(() => {
-    const rawHash = normalizeHashPath(window.location.hash);
-    // Legacy #debug deep links must resolve before generic normalization
-    // (otherwise the hash collapses to bare #logs and the tab choice is lost).
-    if (rawHash === "debug" || rawHash.startsWith("debug/")) {
-      replaceHash("logs/debug");
-      return;
-    }
-    if (page === "providers") {
-      // Deep-link bookmarks are applied in the viewMode initializer; here we only
-      // normalize the hash to the shared React state (passive replace — no push).
-      const wanted = providersHashForViewMode(viewMode);
-      if (rawHash !== wanted) replaceHash(wanted);
-      return;
-    }
-    if (!hashBelongsToPage(rawHash, page)) {
-      replaceHash(page);
-    }
-  }, [page, viewMode]);
 
   useEffect(() => {
     const el = document.documentElement;
@@ -329,8 +219,7 @@ export default function App() {
               <button className={`nav-item${page === id ? " active" : ""}`} data-page={id}
                 onClick={() => {
                   // Deliberate sidebar navigation — push a history entry.
-                  navigateHash(id === "providers" ? providersHashForPage() : id);
-                  setPageState(id);
+                  navigateToPage(id);
                   setNavOpen(false);
                 }}
                 aria-current={page === id ? "page" : undefined}>

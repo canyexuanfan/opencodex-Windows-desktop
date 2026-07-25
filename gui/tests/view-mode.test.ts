@@ -4,7 +4,7 @@ import {
   LEGACY_GLOBAL_VIEW_KEY,
   ensureMigratedViewMode,
   migrateLegacyViewMode,
-  providersHashAfterGlobalToggle,
+  providersHashForGlobalViewChange,
   providersHashForViewMode,
   readViewMode,
   toggleViewMode,
@@ -84,10 +84,10 @@ describe("view-mode preference", () => {
 
 describe("providers hash sync helpers", () => {
   test("maps both toggle directions while Providers is active", () => {
-    expect(providersHashAfterGlobalToggle("#providers", "workspace", true)).toBe("providers/workspace");
-    expect(providersHashAfterGlobalToggle("#providers/workspace", "classic", true)).toBe("providers");
-    expect(providersHashAfterGlobalToggle("#providers/workspace", "workspace", true)).toBeNull();
-    expect(providersHashAfterGlobalToggle("#providers", "workspace", false)).toBeNull();
+    expect(providersHashForGlobalViewChange("#providers", "workspace", true)).toBe("providers/workspace");
+    expect(providersHashForGlobalViewChange("#providers/workspace", "classic", true)).toBe("providers");
+    expect(providersHashForGlobalViewChange("#providers/workspace", "workspace", true)).toBeNull();
+    expect(providersHashForGlobalViewChange("#providers", "workspace", false)).toBeNull();
   });
 
   test("round-trips hash helpers", () => {
