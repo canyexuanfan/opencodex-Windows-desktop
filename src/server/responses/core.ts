@@ -1,5 +1,6 @@
 import type { Server } from "bun";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse, type ResponsesTerminalStatus } from "../../bridge";
+import { formatPassthroughUpstreamError } from "./passthrough-error";
 import {
   getConfigPath,
   multiAgentGuidanceEnabled,
@@ -1289,6 +1290,23 @@ export async function handleResponses(
       }
     }
 
+    // Non-2xx passthrough failures must never reach Codex as an empty body —
+    // Codex renders that as the opaque "Unknown error" (#452). Combo attempts
+    // keep their typed failure envelope. Non-empty bodies are relayed verbatim
+    // (headers included) so pool-retry Activation B/D and client diagnostics stay intact.
+    if (!upstreamResponse.ok) {
+      if (options.comboAttempt) {
+        const failure = await consumeComboFailure(upstreamResponse, options.abortSignal);
+        options.onConsumedComboFailure?.(failure);
+        return failure.response;
+      }
+      const errorText = await upstreamResponse.text().catch(() => "");
+      return formatPassthroughUpstreamError(upstreamResponse.status, errorText, {
+        statusText: upstreamResponse.statusText,
+        headers,
+      });
+    }
+
     // Bun#32111 workaround: passthrough SSE uses tee()+native relay to avoid the
     // async-pull segfault on Windows. Branch[0] goes directly to the Response (Bun
     // native relay, never enters JS Sink.write); branch[1] is consumed in the
@@ -1299,7 +1317,7 @@ export async function handleResponses(
     // bounded reader with inline inspection (see src/server/relay-eager.ts and
     // devlog/_plan/260723_win_mem_safestream/020). Default on the bundled
     // known-bad runtime remains the tee path below.
-    if (upstreamResponse.ok && isEventStream && upstreamResponse.body) {
+    if (isEventStream && upstreamResponse.body) {
       const repairConfig = route.provider.responsesItemIdRepair;
       const winNoRepair = process.platform === "win32" && !hasResponsesItemIdRepair(repairConfig);
       const eagerDecision = winNoRepair ? decideEagerRelay(config.streamMode ?? "auto") : null;
@@ -1424,14 +1442,9 @@ export async function handleResponses(
       }));
     }
     if (headers.get("content-type")?.toLowerCase().includes("application/json")) {
-      if (!upstreamResponse.ok && options.comboAttempt) {
-        const failure = await consumeComboFailure(upstreamResponse, options.abortSignal);
-        options.onConsumedComboFailure?.(failure);
-        return failure.response;
-      }
       const text = await upstreamResponse.text();
       inspectResponseLogJson(logCtx, text);
-      if (upstreamResponse.ok && rememberPassthroughResponse) {
+      if (rememberPassthroughResponse) {
         try {
           rememberPassthroughResponse(JSON.parse(text) as { id?: unknown; output?: unknown; status?: unknown });
         } catch { /* non-JSON despite content-type; recording is best-effort */ }

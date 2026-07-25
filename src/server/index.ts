@@ -282,6 +282,18 @@ export function startServer(port?: number) {
   // (0.0.0.0/::) and specific hosts are left untouched so intentional exposure is preserved.
   const bindHost = /^localhost$/i.test(config.hostname ?? "") ? "127.0.0.1" : (config.hostname ?? "127.0.0.1");
 
+  // Codex treats empty / non-JSON 503 bodies as "Unknown error" (#452). Keep Retry-After and
+  // the server_is_overloaded code so clients can back off, but always return a JSON envelope.
+  function drainingResponse(req: Request): Response {
+    const response = formatErrorResponse(503, "server_error", "Service shutting down");
+    const headers = new Headers(response.headers);
+    for (const [name, value] of Object.entries(corsHeaders(req, config))) {
+      headers.set(name, value);
+    }
+    headers.set("Retry-After", "5");
+    return new Response(response.body, { status: 503, headers });
+  }
+
   const server: Server<WsData> = Bun.serve<WsData>({
     port: listenPort,
     hostname: bindHost,
@@ -301,7 +313,7 @@ export function startServer(port?: number) {
       // handshake-time only, so capture inbound headers and thread them into the pipeline.
       if (url.pathname === "/v1/responses" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
         if (isDraining()) {
-          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
+          return drainingResponse(req);
         }
         const apiAuthError = requireResponsesApiAuth(req, config);
         if (apiAuthError) return withCors(apiAuthError, req, config);
@@ -406,7 +418,7 @@ export function startServer(port?: number) {
       // before the /v1/* 404 guard below.
       if (url.pathname === "/v1/responses/compact" && req.method === "POST") {
         if (isDraining()) {
-          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
+          return drainingResponse(req);
         }
         const apiAuthError = requireResponsesApiAuth(req, config);
         if (apiAuthError) return withCors(apiAuthError, req, config);
@@ -438,10 +450,7 @@ export function startServer(port?: number) {
       ) {
         disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
-          return new Response("Service shutting down", {
-            status: 503,
-            headers: { ...corsHeaders(req, config), "Retry-After": "5" },
-          });
+          return drainingResponse(req);
         }
         const apiAuthError = requireApiAuth(req, config, "data-plane");
         if (apiAuthError) return withCors(apiAuthError, req, config);
@@ -460,10 +469,7 @@ export function startServer(port?: number) {
       if (url.pathname === "/v1/alpha/search" && req.method === "POST") {
         disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
-          return new Response("Service shutting down", {
-            status: 503,
-            headers: { ...corsHeaders(req, config), "Retry-After": "5" },
-          });
+          return drainingResponse(req);
         }
         const apiAuthError = requireApiAuth(req, config, "data-plane");
         if (apiAuthError) return withCors(apiAuthError, req, config);
@@ -487,7 +493,7 @@ export function startServer(port?: number) {
       if (url.pathname === "/v1/responses" && req.method === "POST") {
         disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
-          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
+          return drainingResponse(req);
         }
         const apiAuthError = requireResponsesApiAuth(req, config);
         if (apiAuthError) return withCors(apiAuthError, req, config);
@@ -526,7 +532,7 @@ export function startServer(port?: number) {
       // Claude Code posts `/v1/messages?beta=true` — pathname match ignores the query (003 G9).
       if (url.pathname === "/v1/messages/count_tokens" && req.method === "POST") {
         if (isDraining()) {
-          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
+          return drainingResponse(req);
         }
         if (!hasValidApiAuth(req, config)) {
           return withCors(anthropicErrorResponse(401, "opencodex API key required", "authentication_error"), req, config);
@@ -541,7 +547,7 @@ export function startServer(port?: number) {
       if (url.pathname === "/v1/messages" && req.method === "POST") {
         disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
-          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
+          return drainingResponse(req);
         }
         if (!hasValidApiAuth(req, config)) {
           return withCors(anthropicErrorResponse(401, "opencodex API key required", "authentication_error"), req, config);
@@ -564,7 +570,7 @@ export function startServer(port?: number) {
       if (url.pathname === "/v1/chat/completions" && req.method === "POST") {
         disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
-          return new Response("Service shutting down", { status: 503, headers: { ...corsHeaders(req, config), "Retry-After": "5" } });
+          return drainingResponse(req);
         }
         const apiAuthError = requireResponsesApiAuth(req, config);
         if (apiAuthError) return withCors(apiAuthError, req, config);
@@ -587,10 +593,7 @@ export function startServer(port?: number) {
       ) {
         disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
-          return new Response("Service shutting down", {
-            status: 503,
-            headers: { ...corsHeaders(req, config), "Retry-After": "5" },
-          });
+          return drainingResponse(req);
         }
         const apiAuthError = requireApiAuth(req, config, "data-plane");
         if (apiAuthError) return withCors(apiAuthError, req, config);
@@ -618,10 +621,7 @@ export function startServer(port?: number) {
         : null;
       if (liveSidebandTarget) {
         if (isDraining()) {
-          return new Response("Service shutting down", {
-            status: 503,
-            headers: { ...corsHeaders(req, config), "Retry-After": "5" },
-          });
+          return drainingResponse(req);
         }
         const apiAuthError = requireApiAuth(req, config, "data-plane");
         if (apiAuthError) return withCors(apiAuthError, req, config);

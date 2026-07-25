@@ -2,6 +2,8 @@ import type { ProviderAdapter } from "./base";
 import type { AdapterEvent, OcxAssistantMessage, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTextContent, OcxThinkingContent, OcxToolCall, OcxUsage } from "../types";
 import { isAllowedToolChoice, modelInList, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
 import { mapReasoningEffort, modelRecordValue } from "../reasoning-effort";
+import { debugProviderDiagnostic } from "../lib/debug";
+import { isDebugEnabled } from "../lib/debug-settings";
 import { redactSecretString } from "../lib/redact";
 import { contentPartsToText } from "./image";
 import { neutralizeIdentity } from "./identity";
@@ -588,7 +590,24 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       if (hasCredential) headers["Authorization"] = `Bearer ${provider.apiKey}`;
       if (provider.headers) Object.assign(headers, provider.headers);
 
-      return { url, method: "POST", headers, body: JSON.stringify(body) };
+      const bodyJson = JSON.stringify(body);
+      // Never log pathname/query — tenant-scoped hosts (e.g. Cloudflare
+      // /accounts/<account_id>/ai/v1) would otherwise leak account identifiers (#452).
+      if (isDebugEnabled()) {
+        let host = "upstream";
+        try { host = new URL(url).host; } catch { /* keep fallback */ }
+        debugProviderDiagnostic("openai-chat", "request", {
+          host,
+          model: body.model,
+          stream: parsed.stream,
+          messageCount: Array.isArray(messages) ? messages.length : 0,
+          toolCount: Array.isArray(tools) ? tools.length : 0,
+          hasCredential,
+          bodyBytes: new TextEncoder().encode(bodyJson).length,
+        });
+      }
+
+      return { url, method: "POST", headers, body: bodyJson };
     },
 
     async *parseStream(response: Response): AsyncGenerator<AdapterEvent> {
@@ -658,8 +677,10 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         // classified response.failed (bridge case "error") — never a truncated completion.
         if (chunk.error) {
           const err = chunk.error as { message?: string } | undefined;
+          const message = err?.message ?? "upstream error";
+          debugProviderDiagnostic("openai-chat", "stream-error", { message });
           yield* flushToolCalls();
-          yield { type: "error", message: err?.message ?? "upstream error" };
+          yield { type: "error", message };
           return "terminate";
         }
 
@@ -748,6 +769,10 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         // closed so the bridge emits a classified response.failed rather than a silent truncation.
         const sawFinish = finishReason !== undefined;
         if (!sawFinish && pendingUsage === undefined) {
+          debugProviderDiagnostic("openai-chat", "stream-truncated", {
+            finishReason: finishReason ?? null,
+            hadUsage: false,
+          });
           yield { type: "error", message: "upstream stream ended without a terminal signal ([DONE] or finish_reason) — possible truncation" };
           return;
         }
