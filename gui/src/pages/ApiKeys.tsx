@@ -189,9 +189,13 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   };
 
   const copyModelId = async (modelId: string) => {
-    await navigator.clipboard.writeText(modelId);
-    setCopiedModelId(modelId);
-    window.setTimeout(() => setCopiedModelId(current => (current === modelId ? null : current)), 2000);
+    try {
+      await navigator.clipboard.writeText(modelId);
+      setCopiedModelId(modelId);
+      window.setTimeout(() => setCopiedModelId(current => (current === modelId ? null : current)), 2000);
+    } catch {
+      /* clipboard unavailable */
+    }
   };
 
   const sourceLabel = (model: ExternalModelRow): string => {
@@ -410,7 +414,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
                       <td>
                         <div className="api-model-actions">
                           <button type="button" className="btn btn-sm btn-ghost" onClick={() => { void copyModelId(modelId); }}>
-                            {copiedModelId === modelId ? t("api.copied") : t("api.copyModelId")}
+                            {copiedModelId === modelId ? t("api.modelCopied") : t("api.copyModelId")}
                           </button>
                           <button
                             type="button"
@@ -421,7 +425,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
                             {testState === "testing" ? t("api.testingModel") : t("api.testModel")}
                           </button>
                         </div>
-                            {testState === "ok" && <p className="muted small api-test-note">{t("api.testSucceeded")}</p>}
+                        {testState === "ok" && <p className="muted small api-test-note api-test-note--ok">{t("api.testSucceeded")}</p>}
                         {testState === "error" && <p className="muted small api-test-note api-test-note--error">{modelTests[modelId]?.detail ?? t("api.testFailed")}</p>}
                       </td>
                     </tr>
