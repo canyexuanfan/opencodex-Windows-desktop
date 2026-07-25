@@ -214,7 +214,7 @@ export default function App() {
           </button>
         </div>
         <nav>
-          {NAV.map(({ id, tkey, Icon }) => (
+          {NAV.filter(({ id }) => !(viewMode === "workspace" && id === "codex-auth")).map(({ id, tkey, Icon }) => (
             <div key={id} className={`nav-entry${id === "claude" ? ` nav-entry-claude${page === id ? " active" : ""}` : ""}`}>
               <button className={`nav-item${page === id ? " active" : ""}`} data-page={id}
                 onClick={() => {

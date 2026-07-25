@@ -627,7 +627,7 @@ function UsageWorkspaceSection({
 }) {
   return (
     <section className="usw-section" aria-labelledby={titleId}>
-      <div id={titleId} className="h-section">{title}</div>
+      <h3 id={titleId} className="h-section">{title}</h3>
       {children}
     </section>
   );
@@ -637,9 +637,12 @@ function UsageWorkspaceSection({
  * Workspace layout for the Usage tab: a left rail lists the report sections
  * (Overview, Models, Providers, Coverage) and the main pane renders the selected
  * one. Section bodies reuse the same panel components as the classic stacked view.
+ * The shell mounts immediately (including while loading/empty) so workspace mode
+ * never flashes the classic EmptyState first.
  */
 function UsageWorkspaceBody({
   data,
+  loading,
   heatmap,
   weekBars,
   activeDays,
@@ -653,7 +656,8 @@ function UsageWorkspaceBody({
   locale,
   t,
 }: {
-  data: UsageResponse;
+  data: UsageResponse | null;
+  loading: boolean;
   heatmap: ReturnType<typeof buildHeatmap>;
   weekBars: UsageDay[];
   activeDays: number;
@@ -667,43 +671,53 @@ function UsageWorkspaceBody({
   locale: Locale;
   t: TFn;
 }) {
+  const empty = !!data && data.summary.requests === 0;
   const sections = [
     {
       id: "overview",
       label: t("usage.section.overview"),
-      meta: `${data.summary.requests}`,
-      body: (
+      meta: data ? `${data.summary.requests}` : "—",
+      body: data ? (
         <>
           <UsageSummaryCards summary={data.summary} activeDays={activeDays} locale={locale} t={t} />
           <UsageHeatmapPanel range={range} heatmap={heatmap} weekBars={weekBars} locale={locale} t={t} />
         </>
-      ),
+      ) : null,
     },
     {
       id: "models",
       label: t("usage.section.models"),
-      meta: `${data.models.length}`,
-      body: <UsageModelsTable models={filteredModels} modelQuery={modelQuery} onModelQuery={onModelQuery} locale={locale} t={t} workspace />,
+      meta: data ? `${data.models.length}` : "—",
+      body: data
+        ? <UsageModelsTable models={filteredModels} modelQuery={modelQuery} onModelQuery={onModelQuery} locale={locale} t={t} workspace />
+        : null,
     },
     {
       id: "providers",
       label: t("usage.section.providers"),
-      meta: `${data.providers.length}`,
-      body: <UsageProvidersTable providers={sortedProviders} locale={locale} t={t} workspace />,
+      meta: data ? `${data.providers.length}` : "—",
+      body: data
+        ? <UsageProvidersTable providers={sortedProviders} locale={locale} t={t} workspace />
+        : null,
     },
     {
       id: "coverage",
       label: t("usage.section.coverage"),
-      meta: formatPct(data.summary.coverageRatio),
-      body: <UsageCoveragePanel summary={data.summary} t={t} workspace />,
+      meta: data ? formatPct(data.summary.coverageRatio) : "—",
+      body: data ? <UsageCoveragePanel summary={data.summary} t={t} workspace /> : null,
     },
   ];
   const selected = sections.find(s => s.id === selectedSection) ?? sections[0];
+  const mainBody = loading && !data
+    ? <EmptyState title={t("usage.loading")} />
+    : empty
+      ? <EmptyState title={t("usage.empty")} />
+      : selected.body;
 
   return (
     <div className="usage-workspace-shell">
       <div className="usage-workspace-root">
-        <aside className="usage-workspace-rail" aria-label={t("usage.title")}>
+        <aside className="usage-workspace-rail" aria-label={t("usage.workspace.sections")}>
           <div className="usage-workspace-rail-header">
             <span className="usage-workspace-rail-title">{t("usage.title")}</span>
           </div>
@@ -722,8 +736,8 @@ function UsageWorkspaceBody({
             ))}
           </div>
         </aside>
-        <section className="usage-workspace-main" aria-label={t("usage.title")}>
-          <div className="usw-body">{selected.body}</div>
+        <section className="usage-workspace-main" aria-label={t("usage.workspace.report")}>
+          <div className="usw-body">{mainBody}</div>
         </section>
       </div>
     </div>
@@ -811,13 +825,10 @@ export default function Usage({ apiBase, viewMode }: { apiBase: string; viewMode
             {t("common.retry")}
           </button>
         </Notice>
-      ) : loading && !data ? (
-        <EmptyState title={t("usage.loading")} />
-      ) : data?.summary.requests === 0 ? (
-        <EmptyState title={t("usage.empty")} />
-      ) : data && workspaceView ? (
+      ) : workspaceView ? (
         <UsageWorkspaceBody
           data={data}
+          loading={loading}
           heatmap={heatmap}
           weekBars={weekBars}
           activeDays={activeDays}
@@ -831,6 +842,10 @@ export default function Usage({ apiBase, viewMode }: { apiBase: string; viewMode
           locale={locale}
           t={t}
         />
+      ) : loading && !data ? (
+        <EmptyState title={t("usage.loading")} />
+      ) : data?.summary.requests === 0 ? (
+        <EmptyState title={t("usage.empty")} />
       ) : data ? (
         <>
           <UsageSummaryCards summary={data.summary} activeDays={activeDays} locale={locale} t={t} />

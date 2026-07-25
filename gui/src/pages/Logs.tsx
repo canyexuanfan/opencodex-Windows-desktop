@@ -278,17 +278,21 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   };
 
   const fetchLogs = useCallback(async (opts?: { silent?: boolean }) => {
-    if (!opts?.silent) setLoading(true);
-    setError(null);
+    const silent = opts?.silent === true;
+    // Silent polls must not clear an existing error or toggle loading — otherwise
+    // failures flicker between the error banner, empty state, and stale table.
+    if (!silent) setLoading(true);
     try {
       const res = await fetch(`${apiBase}/api/logs`);
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`.trim());
       setLogs(await res.json());
+      setError(null);
     } catch (cause) {
+      if (silent) return;
       const detail = cause instanceof Error ? cause.message : "";
       setError(detail ? `${t("logs.loadError")} ${detail}` : t("logs.loadError"));
     } finally {
-      if (!opts?.silent) setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [apiBase, t]);
 

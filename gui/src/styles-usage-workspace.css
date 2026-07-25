@@ -150,6 +150,7 @@
 }
 
 /* ── Responsive ───────────────────────────────────────── */
+/* Keep @container and @media stacking rules in sync when changing breakpoints. */
 
 @container usage-workspace (max-width: 720px) {
   .usage-workspace-root {

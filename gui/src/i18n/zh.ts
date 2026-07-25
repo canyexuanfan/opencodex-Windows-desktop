@@ -569,6 +569,8 @@ export const zh: Record<TKey, string> = {
   "usage.section.models": "模型",
   "usage.section.providers": "提供方",
   "usage.section.coverage": "覆盖率明细",
+  "usage.workspace.sections": "用量分区",
+  "usage.workspace.report": "用量报告",
   "usage.coverage.measured": "已计量",
   "usage.coverage.reported": "提供方上报",
   "usage.coverage.estimated": "估算",
