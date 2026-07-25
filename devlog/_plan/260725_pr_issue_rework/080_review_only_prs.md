@@ -185,3 +185,49 @@ I appreciate the scope of this feature. The refresh must be truly awaited, setti
 - [ ] #405가 #434에 완전히 포함된 blob 관계를 live diff/blob으로 재확인한다.
 - [ ] 모든 코멘트가 영어이며 감사, file:line, failure mode, fix, test를 포함한다.
 - [ ] 게시/close/review/push는 WP0에서 실행하지 않는다.
+
+## PR #426 — account-id namespace fallback leaks identifiers into catalog and logs
+
+검증 영수증:
+
+- pinned head: `374313200f8fa20c9e00fe5f918c67372a289381` (ready, 46 files, `+1438/-57`)
+- `gh pr diff 426 --repo lidge-jun/opencodex | git apply --check -`: exit 1 — `src/codex/auth-context.ts:24`, `src/codex/routing.ts:66`, `src/server/responses/compact.ts:255`, `src/server/responses/core.ts:120` do not apply to `origin/dev=037e8f5e`
+
+게시할 영어 본문:
+
+```text
+Thank you for implementing the account-qualified model picker and the fail-closed exact-account routing requested in #425. I found a privacy blocker in the namespace fallback that must be fixed before this can merge.
+
+`src/codex/account-namespaces.ts:33-36` and `src/codex/account-namespaces.ts:45-56` derive a public namespace from `account.id` whenever the account has no alias. That namespace is then written into catalog model slugs at `src/codex/catalog/metadata.ts:276-282` and copied into auth/provider logs at `src/server/responses/core.ts:853-857` and `src/server/responses/core.ts:874-877`. An account added by manual import or OAuth without an alias therefore exposes its internal account identifier through the model catalog and logs, contradicting this PR's stated contract that account ids stay server-side and violating the repository privacy rule against logging account identifiers.
+
+Please never use `account.id`, email, or another credential-derived identifier as a public namespace fallback. Generate a stable non-PII label (the existing random `logLabel` is the closest established primitive), persist it independently from the private binding value, and keep catalog/error/log serialization limited to that safe label. Add regressions that enable namespaces for an alias-less account whose id and email are unique sentinels, then assert neither sentinel appears in the catalog JSON, model display names, error text, or captured logs; also cover add, delete, and reauthentication so stale namespace rows cannot survive account removal or silently rebind to a different identity.
+
+This PR also needs to be rebased on current `dev`. Its auth changes overlap the planned #370 integration in `src/codex/auth-api.ts`, `src/codex/auth-context.ts`, and `src/codex/account-lifecycle.ts`; `src/router.ts` overlaps the planned #389 integration; and `src/types.ts` overlaps the planned #439 integration. The pinned patch already fails `git apply --check` in auth/routing/Responses files, so please re-cut the fix against the integrated contracts rather than restoring stale code.
+
+Because this changes account selection, OAuth-created credential lifecycle, and credential-to-model routing, it is a C4 authentication boundary and requires the explicit maintainer security review mandated by `MAINTAINERS.md`, in addition to focused auth/catalog/privacy regressions and the full typecheck, test, and privacy-scan gates. I appreciate the careful work on exact-account fail-closed behavior; the public namespace must be fully separated from private account identity before review can proceed.
+```
+
+감사 메모: provider-name/combo 충돌은 `src/config.ts:449-482`에서 거부되고, 삭제 시 binding 제거는 `src/codex/account-lifecycle.ts:15-30`에 구현되어 있다. `src/config.ts`는 `.passthrough()`를 유지하므로 이 diff만으로 기존 사용자 정의 설정 필드가 유실되는 결함은 확인하지 못했다. 위 코멘트는 재현 가능한 account-id 노출과 미고정 lifecycle 테스트 계약에 한정한다.
+
+## PR #431 — split reasoning emits final text before reasoning; draft rebase/readiness contract
+
+검증 영수증:
+
+- pinned head: `d25eba5b1f329ac77a2a75cce11ce2cf9a8d65d3` (**draft**, 9 files, `+140/-5`)
+- `gh pr diff 431 --repo lidge-jun/opencodex | git apply --check -`: exit 0, clean against `origin/dev=037e8f5e`
+
+게시할 영어 본문:
+
+```text
+Thank you for keeping this as a draft while adding MiniMax's split-reasoning request capability. Before marking it ready for review, please fix the response-ordering regression and tighten the scope/test contract.
+
+`src/adapters/openai-chat.ts:784-790` emits `text_delta` before `reasoning_raw_delta` when a non-streaming MiniMax response contains both `content` and `reasoning_content`, which is exactly the split response shape described in this PR. The bridge closes the text item when the later reasoning event arrives (`src/bridge.ts:470-542`), so the final answer is materialized before the reasoning item instead of reasoning preceding the answer. The streaming path has the same ordering when both fields share one delta at `src/adapters/openai-chat.ts:683-690`. Please emit non-empty reasoning before final content for both paths and add parser-level regressions for (1) a non-stream response containing both fields, (2) a stream frame containing both fields, (3) empty deltas followed by a finish-only frame, and (4) EOF without `[DONE]`, `finish_reason`, or usage. The last two should preserve the existing no-op and fail-closed behavior rather than treating an interrupted stream as complete.
+
+The current `tests/minimax-reasoning-split.test.ts:38-95` only calls `buildRequest`; it proves `reasoning_split`, effort mapping, and history serialization, but never executes `parseStream` or `parseResponse`, so it cannot catch the response-ordering failure promised by the title. Please make the regression assert emitted adapter-event order, not only request JSON.
+
+I traced the one-line additions in `src/oauth/index.ts:492-499`, `src/oauth/login-cli.ts:86-93`, and `src/server/auth-cors.ts:313-323`. They carry `reasoningSplitModels` through existing provider-config reconciliation, key-login construction, and the safe dashboard DTO; I do not see a new OAuth flow or CORS-origin policy in those hunks. Please explain that propagation in the PR scope and keep it to those whitelist paths, because OAuth/config serialization remains a security-sensitive boundary even when the value itself is only a model-id list.
+
+Although this pinned patch currently passes `git apply --check`, it must be rebased before it becomes ready: `src/providers/registry.ts` overlaps the planned #385/WP7 integration, `src/router.ts` overlaps #389/WP5, and `src/types.ts` overlaps #439/WP3. After rebasing, verify that registry enrichment still preserves explicit user provider fields, run the focused MiniMax parser/request tests, and run the full typecheck and test suite. Thanks again for addressing the visible `<think>` leakage; the draft needs response-side proof and the integrated provider contracts before full review.
+```
+
+감사 메모: `src/router.ts:81-86,153-207`은 registry/user 배열을 합집합으로 병합하고 `src/providers/derive.ts`도 기존 값이 없을 때만 seed를 채우므로, 이 diff가 기존 provider 설정을 덮어쓰는 결함은 확인하지 못했다. 빈 delta는 무시되고 terminal 없는 EOF는 `src/adapters/openai-chat.ts:747-754`에서 fail-closed 처리된다. 확인된 결함은 content/reasoning 동시 응답의 event 순서와 해당 parser 계약을 실행하지 않는 테스트 공백이다.
