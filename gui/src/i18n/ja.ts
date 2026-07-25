@@ -963,14 +963,6 @@ export const ja: Record<TKey, string> = {
   "api.deleteAria": "API キーを削除",
   "api.usageTitle": "使用例",
   "api.usageSampleInput": "こんにちは、世界！",
-  "api.workspace.overview": "概要",
-  "api.workspace.details": "APIキーの詳細",
-  "api.workspace.keyDetails": "キーの詳細",
-  "api.workspace.keyPrefix": "キーのプレフィックス",
-  "api.workspace.deleteKey": "キーを削除",
-  "api.workspace.deleteConfirm": "このキーを削除してもよろしいですか？この操作は元に戻せません。",
-  "api.workspace.noKeysHint": "API キーがまだありません。作成して始めましょう。",
-  "api.workspace.selectKeyHint": "一覧からキーを選択すると、詳細が表示されます。",
   // Claude Code inbound
   "nav.claude": "Claude",
   "claude.subtitle": "Claude Code 内で GPT、Gemini などのモデルを使用します。",
@@ -1029,7 +1021,6 @@ export const ja: Record<TKey, string> = {
   "claude.networkError": "ネットワークエラー — プロキシは起動していますか?",
   "claude.toggleAria": "Claude 接続を切り替え",
   "claude.none": "なし",
-  "claude.workspace.settings": "設定",
 
   // Combos workspace
   "cws.loading": "コンボを読み込み中…",

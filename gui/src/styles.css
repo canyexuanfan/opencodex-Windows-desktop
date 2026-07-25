@@ -15,8 +15,6 @@
 @import "./styles-combos-workspace.css";
 @import "./styles-models-workspace.css";
 @import "./styles-dashboard-workspace.css";
-@import "./styles-apikeys-workspace.css";
-@import "./styles-claudecode-workspace.css";
 
 :root {
   /* default: follow the OS; [data-theme] below pins color-scheme so light-dark() obeys it */

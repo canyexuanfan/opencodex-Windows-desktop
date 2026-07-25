@@ -1008,14 +1008,6 @@ export const en = {
   "api.deleteAria": "Delete API key",
   "api.usageTitle": "Usage example",
   "api.usageSampleInput": "Hello, world!",
-  "api.workspace.overview": "Overview",
-  "api.workspace.details": "API key details",
-  "api.workspace.keyDetails": "Key details",
-  "api.workspace.keyPrefix": "Key prefix",
-  "api.workspace.deleteKey": "Delete key",
-  "api.workspace.deleteConfirm": "Are you sure you want to delete this key? This cannot be undone.",
-  "api.workspace.noKeysHint": "No API keys yet. Generate one to get started.",
-  "api.workspace.selectKeyHint": "Select a key from the list to view its details.",
   // Claude Code inbound
   "nav.claude": "Claude",
   "claude.subtitle": "Use GPT, Gemini, and other models inside Claude Code.",
@@ -1074,7 +1066,6 @@ export const en = {
   "claude.networkError": "Network error — is the proxy running?",
   "claude.toggleAria": "Toggle Claude connection",
   "claude.none": "None",
-  "claude.workspace.settings": "Settings",
 
   // Combos workspace
   "cws.loading": "Loading combos…",

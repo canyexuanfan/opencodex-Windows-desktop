@@ -1008,14 +1008,6 @@ export const ru: Record<TKey, string> = {
   "api.deleteAria": "Удалить API-ключ",
   "api.usageTitle": "Пример использования",
   "api.usageSampleInput": "Привет, мир!",
-  "api.workspace.overview": "Обзор",
-  "api.workspace.details": "Сведения об API-ключе",
-  "api.workspace.keyDetails": "Сведения о ключе",
-  "api.workspace.keyPrefix": "Префикс ключа",
-  "api.workspace.deleteKey": "Удалить ключ",
-  "api.workspace.deleteConfirm": "Вы уверены, что хотите удалить этот ключ? Это действие нельзя отменить.",
-  "api.workspace.noKeysHint": "API-ключей пока нет. Создайте один, чтобы начать.",
-  "api.workspace.selectKeyHint": "Выберите ключ из списка, чтобы просмотреть его сведения.",
   // Claude Code inbound
   "nav.claude": "Claude",
   "claude.subtitle": "Используйте GPT, Gemini и другие модели внутри Claude Code.",
@@ -1074,7 +1066,6 @@ export const ru: Record<TKey, string> = {
   "claude.networkError": "Ошибка сети — запущен ли прокси?",
   "claude.toggleAria": "Переключить подключение Claude",
   "claude.none": "Нет",
-  "claude.workspace.settings": "Настройки",
 
   // Combos workspace
   "cws.loading": "Загрузка комбо…",
