@@ -1,5 +1,99 @@
 # WP5 — PR #389 최종 model visibility 통합
 
+## A-gate 반영 — `Models.tsx` 충돌 해소 계약 (CANONICAL)
+
+독립 감사가 `VERDICT: FAIL`, blocker 3건을 냈다. 핵심은 **이 문서가 실제 두 conflict를 실행
+가능하게 규정하지 않았다**는 것이다. 아래가 canonical 해소 계약이며, 문서 뒷부분의
+`renderProviderGroup` snippet은 **비규범 참고자료**로만 읽는다.
+
+### 실측된 사실
+
+- `git apply --3way --check`는 exit 0을 반환하지만 `Models.tsx`에 "with conflicts"를 명시한다.
+  실제 3-way 합성은 **conflict marker 2개, exit 2**다.
+- 나머지 14개 파일은 3-way clean.
+- 충돌 원인: PR patch base의 **구형 인라인 GUI**와 현재 dev의 **workspace 추출 구조**가
+  같은 원본 범위를 서로 다르게 수정했다. dev에는 Classic 뷰 철거(`fa1af1b2`)와 레이아웃
+  복원(`9b37ef5a`, `c258b31b`)이 들어가 있다.
+- GitHub merge 상태도 `CONFLICTING`이다.
+
+### conflict 1 — controls 영역
+
+| side | 내용 |
+|---|---|
+| current (`Models.tsx:767` 부근) | `controlsBlock`의 `models-control-top-row`, Tooltip 기반 Shadow Call UI |
+| incoming | 구형 `page-head` + subtitle + status 블록에 `effectiveVisibleCount` 적용 |
+
+**해소: current side를 전부 유지하고 incoming `page-head`는 폐기한다.**
+대신 PR이 의도한 count 반영을 현재 구조에 이식한다.
+
+- workspace rail 전체 count(`Models.tsx:1193` 부근)를 `effectiveVisibleCount`로 바꾼다.
+- provider별 rail count(`:1197` 부근)도 `modelVisible()` 기준으로 계산한다.
+
+### conflict 2 — group 렌더링 영역
+
+| side | 내용 |
+|---|---|
+| current (`:965`, `:1216` 부근) | `collapseControls`, `emptyStateBlock`, `visibleGroups.map(group => renderGroup(group))` |
+| incoming | 구형 인라인 `groups.map(...)` 전체 |
+
+**해소: current side를 유지하고 incoming 인라인 map은 폐기한다.**
+PR의 visibility 로직만 현재 `renderGroup()`(`:557` 부근)으로 **수동 이식**한다:
+
+- provider-local `isVisible`
+- active count
+- visible-first stable sort
+- `allOn` / `allOff`
+- target 생성과 `applyVisibility`
+- row Switch, 색상, 취소선, tooltip status
+
+### 빈 provider 규칙 (blocker 2)
+
+PR head는 bulk controls를 `rows.length > 0`일 때만 렌더링한다. 반면 **현재 workspace는 버튼을
+항상 렌더링한다**(`:621` 부근). 따라서 `rows.length > 0 && rows.every(...)`만 이식하면 빈
+provider에서 두 버튼이 활성화되고 **빈 targets PUT이 400으로 실패한다.**
+
+계약: controls를 `rows.length > 0`으로 감싸거나 `rows.length === 0`일 때 두 버튼을 명시적으로
+disable한다. 빈 provider GUI 회귀 테스트를 유지한다.
+
+### 3-way가 올바르게 합성하므로 보존할 부분
+
+import, `selectedModels`, generation refs, atomic load/action, `setSelectedProvider` stale
+cleanup. 특히 **`nextGroups` 기반 cleanup을 반드시 보존**한다.
+
+### GUI build 위험 (사전 경고)
+
+- conflict 2에서 current만 택하고 visibility 이식을 생략하면, 자동 삭제된 `apply`/`toggle`을
+  `renderGroup`이 계속 참조해 **TypeScript build가 깨진다.**
+- incoming을 택하면 `collapseControls`/`emptyStateBlock` 선언과 `visibleGroups` 흐름을 잃거나
+  구형 inline map이 중복된다.
+- conflict 1에서 incoming을 택하면 Tooltip과 `models-control-*` DOM/CSS가 제거되고 JSX wrapper
+  균형이 깨질 가능성이 높다.
+- 유지 필수: `models-provider-card`, `models-provider-head`, `models-provider-actions`,
+  `models-shadow-*` class와 `ProviderModelGroup` props.
+
+### 추가 필수 테스트 (blocker 3)
+
+현재 GUI 테스트는 pending poll을 건너뛰는 single-flight만 검증하고, **stale-generation 경로를
+활성화하지 않는다.** generation guard가 회귀해도 통과한다.
+
+계약: 다음 순서를 만들어 최신 models/selection/count가 유지됨을 단언한다.
+
+1. 초기 load 완료
+2. poll fetch를 보류(pending)
+3. toggle의 forced refresh가 먼저 완료
+4. 보류했던 오래된 poll이 나중에 도착
+
+### 감사가 확인한 안전 사항 (재검증 불필요)
+
+- backend는 provider object를 교체하지 않고 `selectedModels`와 top-level `disabledModels`만
+  변경한다. API key/base URL/adapter/custom 필드 유실 없음.
+- physical `combo`, shared-prefix alias, stale bare native disable 세 분기는 management API
+  테스트로 실제 활성화된다.
+- 기존 통합 4커밋과 충돌 없음. `fc517004`는 `OcxUsage`만 확장하고 `#370`은 `router.ts`를
+  건드리지 않는다.
+- docs-site 5개 로케일이 네 가지 의미(allowlist AND not-disabled, individual-on 원자적 조정,
+  All-on의 allowlist 제거, future discovery 모델 활성화)에서 모두 일치한다. 모순 없음.
+
 ## 루프 계약
 
 - **Archetype:** C3 cross-surface integration (management API + GUI + docs) with configuration-preservation audit.
