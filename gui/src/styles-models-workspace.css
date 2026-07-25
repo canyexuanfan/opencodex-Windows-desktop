@@ -116,6 +116,77 @@
   min-width: 0;
 }
 
+/* Controls row: shadow call on the left, sub-agent mode pinned right.
+   Right group does not move when the model name length changes. */
+.models-control-top-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: clamp(var(--space-3), 2vw, var(--space-6));
+  row-gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  min-width: 0;
+}
+
+.models-shadow-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.models-shadow-label {
+  white-space: nowrap;
+}
+
+.models-shadow-warning {
+  white-space: nowrap;
+}
+
+.models-shadow-model-slot {
+  flex: 0 1 auto;
+  min-width: 9.5rem;
+  max-width: 12.5rem;
+}
+
+.models-shadow-model-slot .custom-select {
+  width: auto;
+  min-width: 100%;
+  max-width: 100%;
+}
+
+.models-shadow-model-slot .select-trigger {
+  width: auto;
+  min-width: 100%;
+  max-width: 100%;
+  justify-content: space-between;
+}
+
+.models-shadow-model-slot .select-trigger > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.models-v2-mode-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+  min-width: 0;
+  flex-wrap: nowrap;
+  justify-self: end;
+}
+
+.models-v2-detail-row {
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
 /* ── Responsive ───────────────────────────────────────── */
 
 @media (max-width: 768px) {
@@ -132,5 +203,26 @@
 
   .models-workspace-rail-list {
     max-height: 240px;
+  }
+
+  .models-control-top-row {
+    grid-template-columns: 1fr;
+  }
+
+  .models-shadow-row {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+  }
+
+  .models-shadow-model-slot {
+    flex: 1 1 12rem;
+    width: auto;
+    min-width: min(100%, 10rem);
+    max-width: 100%;
+  }
+
+  .models-v2-mode-row {
+    flex-wrap: wrap;
+    justify-self: start;
   }
 }

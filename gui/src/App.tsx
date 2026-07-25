@@ -277,7 +277,7 @@ export default function App() {
             {page === "dashboard" && <Dashboard apiBase={API_BASE} viewMode={viewMode} />}
             {page === "startup" && <Startup apiBase={API_BASE} />}
             {page === "providers" && <Providers apiBase={API_BASE} viewMode={viewMode} />}
-            {page === "models" && <Models apiBase={API_BASE} />}
+            {page === "models" && <Models apiBase={API_BASE} viewMode={viewMode} />}
             {page === "combos" && <Combos apiBase={API_BASE} />}
             {page === "subagents" && <Subagents apiBase={API_BASE} />}
             {page === "logs" && <Logs apiBase={API_BASE} />}

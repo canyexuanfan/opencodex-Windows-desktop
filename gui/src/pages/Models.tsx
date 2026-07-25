@@ -3,12 +3,14 @@ import { Switch, Notice, EmptyState, Select, Tooltip } from "../ui";
 import { IconChevron, IconBoxes, IconInfo, IconShuffle } from "../icons";
 import { useT } from "../i18n/shared";
 import type { TFn, TKey } from "../i18n/shared";
+import { readViewMode, type ViewMode } from "../view-mode";
 import { modelLabel } from "../model-display";
 import { type ComboItem, parseComboList } from "../combo-workspace-data";
 import {
   buildProviderModelGroups,
   type ConfiguredProviderSummary,
   type ProviderDiscoverySummary,
+  type ProviderModelGroup,
 } from "../models-groups";
 
 interface ModelRow {
@@ -75,7 +77,7 @@ function activeModelOptions(models: ModelRow[], disabled: Set<string>): { value:
   return options;
 }
 
-export default function Models({ apiBase }: { apiBase: string }) {
+export default function Models({ apiBase, viewMode }: { apiBase: string; viewMode?: ViewMode }) {
   const t: TFn = useT();
   const [models, setModels] = useState<ModelRow[]>([]);
   const [providers, setProviders] = useState<ConfiguredProviderSummary[]>([]);
@@ -128,14 +130,8 @@ export default function Models({ apiBase }: { apiBase: string }) {
     try { return localStorage.getItem("ocx-models-combos-open") === "1"; } catch { return false; }
   });
 
-  // Workspace vs Classic: localStorage is the source of truth (same pattern as Providers).
-  const [workspaceView] = useState(() => {
-    try {
-      return localStorage.getItem("ocx-models-view") === "workspace";
-    } catch {
-      return false;
-    }
-  });
+  // App owns the in-session view mode; fallback to persisted mode for isolated renders/tests.
+  const workspaceView = (viewMode ?? readViewMode()) === "workspace";
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const toggleCombosOpen = () => {
     setCombosOpen(prev => {
@@ -301,7 +297,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
   };
   const setAllCollapsed = (collapse: boolean) => {
     setCollapsed(() => {
-      const n = collapse ? new Set(groups.map(([p]) => p)) : new Set<string>();
+      const n = collapse ? new Set(groups.map(group => group.provider)) : new Set<string>();
       try { localStorage.setItem("ocx-models-collapsed", JSON.stringify([...n])); } catch { /* quota */ }
       return n;
     });
@@ -554,11 +550,13 @@ export default function Models({ apiBase }: { apiBase: string }) {
   if (loading) return <div className="row muted"><span className="spin" /> {t("models.loading")}</div>;
 
 
-  const renderGroup = (provider: string, rows: ModelRow[]) => {
+  const renderGroup = (group: ProviderModelGroup<ModelRow>) => {
+    const { provider, rows, liveModels, discovery } = group;
     const isCollapsed = collapsed.has(provider);
     const activeCount = rows.filter(m => !disabled.has(m.namespaced)).length;
     const capOn = contextCaps[provider] === contextCapValue;
     const isNative = rows.every(m => m.native);
+    const discoveryFailure = liveModels && discovery?.status === "failed" ? discovery : undefined;
     const q = (search[provider] ?? "").trim().toLowerCase();
     const filtered = q ? rows.filter(m => m.id.toLowerCase().includes(q)) : rows;
     // Display-only: enabled models float to the top of each provider group so they
@@ -583,6 +581,15 @@ export default function Models({ apiBase }: { apiBase: string }) {
           <IconChevron style={{ width: 14, height: 14, color: "var(--muted)", transform: isCollapsed ? "none" : "rotate(90deg)", transition: "transform .12s" }} />
           <span className="text-body font-semibold">{provider}</span>
           {isNative && <span className="muted mono text-caption" style={{ padding: "1px 6px", border: "1px solid var(--border)", borderRadius: "var(--radius-pill)" }}>{t("models.nativeGroupLabel")}</span>}
+         {discoveryFailure && (
+           <span
+             className="badge badge-amber"
+             role="status"
+             title={discoveryFailureReason(t, discoveryFailure)}
+           >
+             {t("models.discoveryFailedBadge")}
+           </span>
+         )}
           <span className="muted mono text-label">{t("models.active", { active: activeCount, total: rows.length })}</span>
           <div style={{ flex: 1 }} />
            <div className="row" onClick={e => e.stopPropagation()} style={{ gap: 6 }}>
@@ -619,6 +626,9 @@ export default function Models({ apiBase }: { apiBase: string }) {
         {!isCollapsed && (
           <div style={{ padding: "6px 12px" }}>
             {isNative && <p className="muted text-label" style={{ margin: "2px 0 6px" }}>{t("models.nativeHint")}</p>}
+            {rows.length === 0 && (
+              <EmptyProviderHint liveModels={liveModels} discovery={discovery} showFailureBadge={false} />
+            )}
             {rows.length > PAGE / 2 && (
               <input
                 className="input"
@@ -748,50 +758,59 @@ export default function Models({ apiBase }: { apiBase: string }) {
   };
 
   const visibleGroups = selectedProvider
-    ? groups.filter(([p]) => p === selectedProvider)
+    ? groups.filter(group => group.provider === selectedProvider)
     : groups;
 
   const controlsBlock = (
     <>
-      <div className="row muted text-control" style={{ gap: 6, marginBottom: 8, alignItems: "center" }}>
-        <span>{t("models.shadowCallIntercept")} <Tooltip content={t("models.shadowCallInterceptHint")} side="top" maxWidth={320}><span style={{ cursor: "help" }} aria-label={t("models.shadowCallInterceptHint")}>ⓘ</span></Tooltip></span>
-        <code className="text-caption" style={{ opacity: 0.6 }}>⚠ 5.4-mini →</code>
-        <Switch on={shadowCall?.enabled ?? false} onClick={() => void saveShadowCall({ enabled: !shadowCall?.enabled })} disabled={!shadowCall || shadowCallSaving} label={t("models.shadowCallIntercept")} />
-        <Select value={shadowCall?.model ?? ""} options={[{ value: "", label: "\u2014" }, ...shadowModelOptions]} onChange={v => { setShadowCall(c => c ? { ...c, model: v } : c); void saveShadowCall({ model: v }); }} disabled={!shadowCall || shadowCallSaving || !shadowCall.enabled} label={t("models.shadowCallIntercept")} />
+      <div className="models-control-top-row">
+        <div className="models-shadow-row row muted text-control">
+          <span className="models-shadow-label">{t("models.shadowCallIntercept")} <Tooltip content={t("models.shadowCallInterceptHint")} side="top" maxWidth={320}><span style={{ cursor: "help" }} aria-label={t("models.shadowCallInterceptHint")}>ⓘ</span></Tooltip></span>
+          <code className="text-caption models-shadow-warning" style={{ opacity: 0.6 }}>⚠ 5.4-mini →</code>
+          <Switch on={shadowCall?.enabled ?? false} onClick={() => void saveShadowCall({ enabled: !shadowCall?.enabled })} disabled={!shadowCall || shadowCallSaving} label={t("models.shadowCallIntercept")} />
+          <div className="models-shadow-model-slot">
+            <Select value={shadowCall?.model ?? ""} options={[{ value: "", label: "\u2014" }, ...shadowModelOptions]} onChange={v => { setShadowCall(c => c ? { ...c, model: v } : c); void saveShadowCall({ model: v }); }} disabled={!shadowCall || shadowCallSaving || !shadowCall.enabled} label={t("models.shadowCallIntercept")} />
+          </div>
+        </div>
+
+        {v2 && (
+          <div className="models-v2-mode-row row">
+            <span className="muted text-control">{t("models.v2Label")}</span>
+            <div className="segmented" role="radiogroup" aria-label={t("models.v2Label")} style={{ display: "inline-flex", borderRadius: "var(--radius-pill)", background: "var(--surface-soft, var(--raised))", padding: 3, gap: 2 }}>
+              {(["v1", "default", "v2"] as const).map(mode => (
+                <button
+                  key={mode}
+                  type="button"
+                  role="radio"
+                  aria-checked={(v2.multiAgentMode ?? "default") === mode}
+                  className={`btn btn-sm${(v2.multiAgentMode ?? "default") === mode ? " btn-primary" : " btn-ghost"}`}
+                  style={{ borderRadius: "var(--radius-pill)", minWidth: 64, padding: "5px 12px", border: "none", background: (v2.multiAgentMode ?? "default") === mode ? undefined : "transparent", color: (v2.multiAgentMode ?? "default") === mode ? undefined : "var(--muted)" }}
+                  disabled={v2Busy}
+                  onClick={() => void setMultiAgentMode(mode)}
+                >
+                  {t(`models.v2Mode_${mode}` as TKey)}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              style={{ width: 24, height: 24, minWidth: 24, flex: "0 0 24px", padding: 0, borderRadius: "var(--radius-pill)", color: "var(--muted)" }}
+              onClick={() => setV2HelpOpen(true)}
+              aria-label={t("models.v2Label")}
+              aria-haspopup="dialog"
+            >
+              <IconInfo width={14} height={14} aria-hidden="true" />
+            </button>
+          </div>
+        )}
       </div>
 
-      {v2 && (
-        <div className="row" style={{ gap: 8, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <span className="muted text-control">{t("models.v2Label")}</span>
-          <div className="segmented" role="radiogroup" aria-label={t("models.v2Label")} style={{ display: "inline-flex", borderRadius: "var(--radius-pill)", background: "var(--surface-soft, var(--raised))", padding: 3, gap: 2 }}>
-            {(["v1", "default", "v2"] as const).map(mode => (
-              <button
-                key={mode}
-                type="button"
-                role="radio"
-                aria-checked={(v2.multiAgentMode ?? "default") === mode}
-                className={`btn btn-sm${(v2.multiAgentMode ?? "default") === mode ? " btn-primary" : " btn-ghost"}`}
-                style={{ borderRadius: "var(--radius-pill)", minWidth: 64, padding: "5px 12px", border: "none", background: (v2.multiAgentMode ?? "default") === mode ? undefined : "transparent", color: (v2.multiAgentMode ?? "default") === mode ? undefined : "var(--muted)" }}
-                disabled={v2Busy}
-                onClick={() => void setMultiAgentMode(mode)}
-              >
-                {t(`models.v2Mode_${mode}` as TKey)}
-              </button>
-            ))}
-          </div>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            style={{ width: 24, height: 24, minWidth: 24, flex: "0 0 24px", padding: 0, borderRadius: "var(--radius-pill)", color: "var(--muted)" }}
-            onClick={() => setV2HelpOpen(true)}
-            aria-label={t("models.v2Label")}
-            aria-haspopup="dialog"
-          >
-            <IconInfo width={14} height={14} aria-hidden="true" />
-          </button>
+      {v2 && (v2.enabled || v2.agentsMaxThreadsConflict || v2Note) && (
+        <div className="models-v2-detail-row row">
           {v2.enabled && (
             <>
-              <span className="muted text-control" style={{ marginLeft: 8 }}>{t("models.v2ThreadsLabel")}</span>
+              <span className="muted text-control">{t("models.v2ThreadsLabel")}</span>
               <Select
                 value={showThreadsCustom
                   ? CUSTOM_OPTION
@@ -1171,7 +1190,8 @@ export default function Models({ apiBase }: { apiBase: string }) {
                 <span className="models-workspace-rail-name">{t("models.workspace.allProviders")}</span>
                 <span className="models-workspace-rail-meta">{t("models.active", { active: models.length - disabled.size, total: models.length })}</span>
               </button>
-              {groups.map(([provider, rows]) => {
+              {groups.map(group => {
+                const { provider, rows } = group;
                 const activeCount = rows.filter(m => !disabled.has(m.namespaced)).length;
                 return (
                   <button
@@ -1194,7 +1214,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
             {collapseControls}
             {
               // eslint-disable-next-line react-hooks/refs -- The hover ref is only read by row event handlers nested in this renderer.
-              visibleGroups.map(([provider, rows]) => renderGroup(provider, rows))
+              visibleGroups.map(group => renderGroup(group))
             }
             {groups.length === 0 && emptyStateBlock}
           </main>
@@ -1219,7 +1239,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
       {collapseControls}
       {
         // eslint-disable-next-line react-hooks/refs -- The hover ref is only read by row event handlers nested in this renderer.
-        groups.map(([provider, rows]) => renderGroup(provider, rows))
+        groups.map(group => renderGroup(group))
       }
       {groups.length === 0 && emptyStateBlock}
       {modalsBlock}
