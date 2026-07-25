@@ -1,0 +1,221 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { saveCodexAccountCredential } from "../src/codex/account-store";
+import { clearAccountNeedsReauth, clearAccountQuota, updateAccountQuota } from "../src/codex/auth-api";
+import { clearCodexUpstreamHealth, clearThreadAccountMap } from "../src/codex/routing";
+import { saveConfig } from "../src/config";
+import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
+import { getDebugLogEntries, resetDebugLogBufferForTests } from "../src/lib/debug-log-buffer";
+import { resetDebugSettingsForTests } from "../src/lib/debug-settings";
+import { setDraining } from "../src/server/lifecycle";
+import { startServer } from "../src/server";
+import { formatPassthroughUpstreamError } from "../src/server/responses/passthrough-error";
+import type { OcxConfig, OcxParsedRequest } from "../src/types";
+import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
+
+const previousApiToken = process.env.OPENCODEX_API_AUTH_TOKEN;
+const previousOpencodexHome = process.env.OPENCODEX_HOME;
+const previousOcxDebug = process.env.OCX_DEBUG;
+const originalGlobalFetch = globalThis.fetch;
+const TEST_DIR = join(import.meta.dir, ".tmp-issue-452-empty-503");
+let isolatedCodexHome: IsolatedCodexHome | null = null;
+
+function redirectCanonicalCodexTo(baseUrl: string): void {
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    const prefix = "/backend-api/codex";
+    if (url.hostname === "chatgpt.com" && url.pathname.startsWith(prefix)) {
+      const target = new URL(`${url.pathname.slice(prefix.length)}${url.search}`, baseUrl);
+      return originalGlobalFetch(target, init);
+    }
+    return originalGlobalFetch(input, init);
+  }) as typeof fetch;
+}
+
+beforeEach(() => {
+  isolatedCodexHome = installIsolatedCodexHome("ocx-issue-452-");
+  resetDebugSettingsForTests();
+  resetDebugLogBufferForTests();
+  setDraining(false);
+});
+
+afterEach(() => {
+  globalThis.fetch = originalGlobalFetch;
+  setDraining(false);
+  if (previousApiToken === undefined) delete process.env.OPENCODEX_API_AUTH_TOKEN;
+  else process.env.OPENCODEX_API_AUTH_TOKEN = previousApiToken;
+  if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
+  else process.env.OPENCODEX_HOME = previousOpencodexHome;
+  if (previousOcxDebug === undefined) delete process.env.OCX_DEBUG;
+  else process.env.OCX_DEBUG = previousOcxDebug;
+  resetDebugSettingsForTests();
+  resetDebugLogBufferForTests();
+  isolatedCodexHome?.restore();
+  isolatedCodexHome = null;
+  clearCodexUpstreamHealth();
+  clearThreadAccountMap();
+  clearAccountNeedsReauth("pool-a");
+  clearAccountQuota();
+  if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
+});
+
+describe("formatPassthroughUpstreamError (#452)", () => {
+  test("empty body becomes a JSON error with a non-empty message", async () => {
+    const response = formatPassthroughUpstreamError(503, "");
+    expect(response.status).toBe(503);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    const json = await response.json() as { error?: { message?: string; code?: string | null } };
+    expect(json.error?.message?.trim().length).toBeGreaterThan(0);
+    expect(json.error?.message).toContain("503");
+    expect(json.error?.message?.toLowerCase()).not.toBe("unknown error");
+  });
+
+  test("JSON with error.message is preserved for Codex", async () => {
+    const body = JSON.stringify({ error: { message: "no healthy upstream", type: "server_error" } });
+    const response = formatPassthroughUpstreamError(503, body);
+    expect(response.status).toBe(503);
+    const json = await response.json() as { error?: { message?: string } };
+    expect(json.error?.message).toBe("no healthy upstream");
+  });
+
+  test("JSON without error.message is wrapped", async () => {
+    const body = JSON.stringify({ detail: "overloaded" });
+    const response = formatPassthroughUpstreamError(503, body);
+    const json = await response.json() as { error?: { message?: string } };
+    expect(json.error?.message).toContain("503");
+    expect(json.error?.message).toContain("overloaded");
+  });
+});
+
+describe("passthrough empty 503 (#452)", () => {
+  test("ChatGPT passthrough empty-body 503 becomes JSON Codex can parse", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    delete process.env.OPENCODEX_API_AUTH_TOKEN;
+    clearCodexUpstreamHealth();
+    clearThreadAccountMap();
+    clearAccountQuota();
+    clearAccountNeedsReauth("pool-a");
+
+    const upstream = Bun.serve({
+      port: 0,
+      fetch() {
+        // Codex shows "Unknown error" when the body is empty — the historical passthrough bug.
+        return new Response(null, { status: 503 });
+      },
+    });
+    redirectCanonicalCodexTo(upstream.url.toString());
+
+    saveConfig({
+      port: 0,
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "pool",
+        },
+      },
+      codexAccounts: [
+        { id: "main", email: "main@example.test", isMain: true },
+        { id: "pool-a", email: "pool-a@example.test", isMain: false, chatgptAccountId: "acct-pool-a" },
+      ],
+      activeCodexAccountId: "pool-a",
+    } as OcxConfig);
+    saveCodexAccountCredential("pool-a", {
+      accessToken: "pool-a-token",
+      refreshToken: "pool-a-refresh",
+      expiresAt: Date.now() + 10 * 60_000,
+      chatgptAccountId: "acct-pool-a",
+    });
+    updateAccountQuota("pool-a", 10);
+
+    const server = startServer(0);
+    try {
+      const response = await originalGlobalFetch(new URL("/v1/responses", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer inbound-token" },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hi", stream: false }),
+      });
+      expect(response.status).toBe(503);
+      const text = await response.text();
+      expect(text.trim().length).toBeGreaterThan(0);
+      const json = JSON.parse(text) as { error?: { message?: string } };
+      expect(typeof json.error?.message).toBe("string");
+      expect(json.error!.message!.trim().length).toBeGreaterThan(0);
+      expect(json.error!.message!.toLowerCase()).not.toBe("unknown error");
+    } finally {
+      await server.stop(true);
+      await upstream.stop(true);
+    }
+  });
+});
+
+describe("drain 503 JSON (#452)", () => {
+  test("POST /v1/responses while draining returns JSON error body", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    delete process.env.OPENCODEX_API_AUTH_TOKEN;
+    saveConfig({
+      port: 0,
+      defaultProvider: "xiaomi",
+      providers: {
+        xiaomi: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.xiaomimimo.com/v1",
+          apiKey: "key-xiaomi-000111222333",
+          defaultModel: "mimo-v2.5-pro",
+        },
+      },
+    } as OcxConfig);
+
+    const server = startServer(0);
+    try {
+      setDraining(true);
+      const response = await originalGlobalFetch(new URL("/v1/responses", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "mimo-v2.5-pro", input: "hi" }),
+      });
+      expect(response.status).toBe(503);
+      expect(response.headers.get("retry-after")).toBe("5");
+      const json = await response.json() as { error?: { message?: string; code?: string | null } };
+      expect(json.error?.message).toContain("shutting down");
+      expect(json.error?.code).toBe("server_is_overloaded");
+    } finally {
+      setDraining(false);
+      await server.stop(true);
+    }
+  });
+});
+
+describe("openai-chat provider debug (#452)", () => {
+  test("buildRequest emits debugProviderDiagnostic when OCX_DEBUG=1", () => {
+    process.env.OCX_DEBUG = "1";
+    resetDebugLogBufferForTests();
+    const adapter = createOpenAIChatAdapter({
+      adapter: "openai-chat",
+      baseUrl: "https://api.xiaomimimo.com/v1",
+      apiKey: "sk-secret-xiaomi-key",
+    });
+    const parsed = {
+      modelId: "mimo-v2.5-pro",
+      stream: true,
+      context: {
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        tools: [{ type: "function", name: "shell_command", description: "run", parameters: { type: "object" } }],
+      },
+      options: {},
+    } as unknown as OcxParsedRequest;
+    adapter.buildRequest(parsed);
+    const lines = getDebugLogEntries().map(e => e.line);
+    expect(lines.some(line => line.includes("[ocx:openai-chat:request]"))).toBe(true);
+    expect(lines.join("\n")).not.toContain("sk-secret-xiaomi-key");
+  });
+});
