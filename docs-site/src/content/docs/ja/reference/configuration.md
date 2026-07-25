@@ -30,12 +30,13 @@ namespaced selected id を bare id に変えます。
 | `providers` | `Record<string, OcxProviderConfig>` | — | プロバイダー名 → 設定 map。 |
 | `openaiProviderTierVersion?` | `2` | 移行設定 | 単一の省略可能 OpenAI projection 完了マーカー。 |
 | `defaultProvider` | `string` | `"openai"` | ルーティングでより良い match が見つからなかったときに使うプロバイダー。 |
-| `subagentModels?` | `string[]` | `gpt-5.5`、GPT-5.6 3種、`gpt-5.4-mini` | Codex サブエージェントセレクターの先頭に表示するネイティブ slug または `provider/model` id。最大 5 つで、明示的な空配列もそのまま保存します。v2 委任案内には利用可能モデルのロスターとしても注入され、各項目がカタログに公表する effort ラダーも併記されます。 |
+| `subagentModels?` | `string[]` | `gpt-5.5`、GPT-5.6 3種、`gpt-5.4-mini` | Codex サブエージェントセレクターの先頭に表示するネイティブ slug または `provider/model` id。最大 5 つで、明示的な空配列もそのまま保存します。v2 ガイダンスのロスターは、Codex の picker-visible・v2 互換・priority 順の先頭 5 件との設定済みモデルの共通部分で、正規カタログ slug と利用可能な effort ラダーを使います。除外された項目も設定には残ります。 |
 | `injectionModel?` | `string` | — | 注入される multi-agent 案内（v2 surface）に入るネイティブ/ルーティングモデル。委任案内でこのモデルを `fork_turns: "none"` とともに `spawn_agent` に渡します。 |
 | `injectionEffort?` | `string` | — | 希望する `spawn_agent` reasoning effort（`low` から `ultra`）。`injectionModel` と一緒に使うときだけ意味を持ちます。 |
 | `effortCap?` | `string` | — | reasoning effort にリクエストごとに適用する強制上限。マルチエージェント V2 専用機能で、自身のツールリストに V2 協調 surface を持つメインターンと、`x-openai-subagent: collab_spawn` ヘッダーまたは `x-codex-turn-metadata` の `"subagent_kind": "thread_spawn"` 標識が正確に一致する spawn された子ターンに適用されます（標識のついた子は自身のツール surface と無関係に適用対象です）。通常のメインターンと V1 surface メインターンは触れず、コンパクションターンは常に上限をバイパスし、`multiAgentMode: "v1"` は上限機能全体を無効化します（ダッシュボードもパネルを隠します）。`low` から `ultra` を許可し、値を上げずに下げるだけです。上限以下でモデルがサポートする最も高い段階に下げます。モデルが effort 制御を公開しない、または上限以下にサポート段階がない場合は effort フィールドを削除しプロバイダーのデフォルトを適用します。`max` と `ultra` も許可しますが、より低いランク上限を作りません（クライアントが `ultra` を `max` に変換するためリクエストは `low` から `max` で入ります）。ただし、既知のモデル effort ラダーに従い段階が下がるかフィールドが削除される可能性があります。ダッシュボードセレクターは `low` から `xhigh` まで提供します。`GET /api/effort-caps` と `PUT /api/effort-caps` で管理します。 |
 | `subagentEffortCap?` | `string` | — | 同じ強制上限を codex-rs 標識が正確に一致する spawn された子ターンにだけ適用します: `x-openai-subagent: collab_spawn` または `x-codex-turn-metadata` の `"subagent_kind": "thread_spawn"`。それ以外の内部サブエージェントカテゴリ（レビュー、コンパクション、メモリ整理）はこの上限にかからず、`multiAgentMode: "v1"` は機能全体を無効化します。`low` から `ultra` を許可し両方の上限が設定されていればより低い値を適用し、値を上げずに下げるだけです。上限以下でモデルがサポートする最も高い段階に下げます。モデルが effort 制御を公開しない、または上限以下にサポート段階がない場合は effort フィールドを削除しプロバイダーのデフォルトを適用します。`max` と `ultra` も許可しますが、より低いランク上限を作りません（クライアントが `ultra` を `max` に変換するためリクエストは `low` から `max` で入ります）。ただし、既知のモデル effort ラダーに従い段階が下がるかフィールドが削除される可能性があります。ダッシュボードセレクターは `low` から `xhigh` まで提供します。`GET /api/effort-caps` と `PUT /api/effort-caps` で管理します。 |
 | `injectionPrompt?` | `string` | — | 注入される v2 案内本文を丸ごと差し替えるカスタムテキスト。`{{model}}`、`{{effort}}`、`{{roster}}` placeholder が置換され、発火条件はそのままです。`PUT /api/injection-model` の `prompt` キーでも設定できます。 |
+| `multiAgentGuidanceEnabled?` | `boolean` | `true` | OpenCodex が作成する multi-agent developer ガイダンスだけを制御します。未設定/`true` は v1/v2 ガイダンスを維持し、`false` は collaboration surface、`subagentModels`、routing、effort cap を変えずに両方を抑止します。`GET/PUT /api/injection-model` は有効値を返し、PUT は部分更新です。 |
 | `disabledModels?` | `string[]` | — | Codex で隠すモデル。ルーティングされた `provider/model` id はカタログと `/v1/models` から除外します。`gpt-5.4` のような通常のネイティブ GPT slug はカタログ項目を `visibility: "hide"` に変え、通常の `/v1/models` 一覧から外します。ダッシュボードの Models ページでモデルごとに切り替えできます。 |
 | `multiAgentMode?` | `"v1" \| "default" \| "v2"` | `"default"` | 3 段階 multi-agent surface override。`"v1"` は上流 pin より優先してすべてのモデルを v1 に、`"default"` は上流 model pin（sol/terra=v2、luna=v1）に従い、`"v2"` はすべてを v2 に強制します。ダッシュボードの Models ページまたは `ocx v2 mode` で設定します。 |
 | `providerContextCaps?` | `Record<string,number>` | `{}` | プロバイダー別の Codex 表示 context cap。既知の context window を下げるだけです。 |
@@ -46,6 +47,7 @@ namespaced selected id を bare id に変えます。
 | `websockets?` | `boolean` | `false` | `supports_websockets` を知らせ Codex が Responses WebSocket 経路を使うようにします。省略または `false` なら HTTP/SSE を維持します。 |
 | `apiKeys?` | `OcxApiKey[]` | `[]` | 非 loopback バインドで管理 API とデータプレーン認証に追加で許可する生成型 `ocx_…` 認証情報。ダッシュボードが管理し、項目フィールドは下で説明します。 |
 | `codexAutoStart?` | `boolean` | `true` | Codex shim が Codex 実行前に `ocx ensure` を実行するようにします。`false` なら `ocx ensure` は何もしません。 |
+| `codexShimAutoRestore?` | `boolean` | `true` | 完了した外部 Codex 更新で以前にインストールした shim が置換された場合に復元します。無効にするには `false`、またはプロセスで `OPENCODEX_CODEX_SHIM_AUTO_RESTORE=0` を設定します。 |
 | `syncResumeHistory?` | `boolean` | `true` | 戻せる Codex App 履歴互換モード。opencodex は元の Codex thread metadata をバックアップし、旧 OpenAI interactive row を `opencodex` に再マッピングし、opencodex が作成した `exec` row を App に見えるソースとして一時的に昇格します。`ocx stop` / `ocx restore` はバックアップした OpenAI row を復元し、残った opencodex user thread を OpenAI に戻し、ネイティブ Codex が `config.toml` からプロキシを削除した後でも開き続けられるようにします。オフにするには `false` に設定します。 |
 | `codexAccounts?` | `CodexAccount[]` | `[]` | Codex Auth ダッシュボードが管理する ChatGPT/Codex pool アカウント metadata。secret は `codex-accounts.json` に別途置きます。 |
 | `activeCodexAccountId?` | `string` | — | 次の新しい Codex thread に使う pool アカウント。既存 thread affinity は元のアカウントを維持します。 |
@@ -130,6 +132,7 @@ token の代わりに使えます。すべての候補は timing side channel �
 | --- | --- | --- |
 | `adapter` | `string` | `openai-chat`、`openai-responses`、`anthropic`、`google`、`kiro`、`cursor`、`azure-openai`（または別名 `azure`）のいずれか。 |
 | `baseUrl` | `string` | 上流 API base URL。 |
+| `responsesPath?` | `string` | `key` 認証の `openai-responses` リクエストに使う任意の相対 resource path。`/` で始め、URL scheme、query、fragment を含めてはいけません。省略時は従来の `/v1/responses` URL 構築を維持します。 |
 | `disabled?` | `boolean` | 設定はディスクに残すがルーティングとモデル/カタログ一覧から除外します。 |
 | `apiKey?` | `string` | API キーまたはリクエスト時に解釈する `${ENV_VAR}` / `$ENV_VAR` 参照。 |
 | `apiKeyPool?` | `ApiKeyPoolEntry[]` | 複数キーを納める pool。`apiKey` はアクティブ項目を反映します。各項目には `id`、`key`、選択 `label`、選択数値 `addedAt` があります。 |
@@ -141,11 +144,12 @@ token の代わりに使えます。すべての候補は timing side channel �
 | `modelContextWindows?` | `Record<string,number>` | モデル別 context-window cap。一致するモデルでは `contextWindow` より優先し、より小さいリアルタイム metadata を上げません。 |
 | `modelInputModalities?` | `Record<string,string[]>` | `["text"]`、`["text", "image"]` のようなモデル別カタログ input hint。 |
 | `headers?` | `Record<string,string>` | 追加の上流ヘッダー。Authorization、cookie、API-key ヘッダー、改行を含む値、誤ったヘッダー名は拒否します。 |
-| `authMode?` | `"key" \| "forward" \| "oauth"` | 認証方式（デフォルト `key`）。[プロバイダー](/opencodex/ja/guides/providers/#認証モード) 参照。 |
+| `authMode?` | `"key" \| "forward" \| "oauth"` | 認証方式（デフォルト `key`）。[プロバイダー](/ja/guides/providers/#認証モード) 参照。 |
 | `codexAccountMode?` | `"pool" \| "direct"` | canonical `openai` 専用。省略すると Pool で Direct は pool 状態を飛ばします。 |
 | `refreshPolicy?` | `"proactive" \| "lazy-only" \| "disabled"` | この OAuth プロバイダーの Token Guardian ポリシー override。 |
 | `reasoningEfforts?` | `string[]` | 公表・送信するプロバイダー単位の Codex reasoning ラベル（`low`、`medium`、`high`、`xhigh`、`max`、`ultra`）。 |
 | `modelReasoningEfforts?` | `Record<string,string[]>` | モデル別 reasoning ラベル。空配列はそのモデルの effort control を隠します。 |
+| `modelSupportsReasoningSummaries?` | `Record<string,boolean>` | モデル別 reasoning summary capability。`false` にすると summary 対応を広告せず、`openai-responses` リクエスト前に summary-delivery フィールドを除去します。 |
 | `reasoningEffortMap?` | `Record<string,string>` | プロバイダー単位の reasoning ラベル wire alias。上流が別の値を要求するときだけ使います。 |
 | `modelReasoningEffortMap?` | `Record<string,Record<string,string>>` | モデル別 reasoning ラベル wire alias。 |
 | `noReasoningModels?` | `string[]` | reasoning/thinking パラメータを拒否するモデル。アダプターが `reasoning_effort` を削除します。 |
@@ -157,7 +161,7 @@ token の代わりに使えます。すべての候補は timing side channel �
 | `preserveReasoningContentModels?` | `string[]` | 前の assistant `reasoning_content` を chat history に維持すべきモデル。 |
 | `thinkingToggleModels?` | `string[]` | effort 段階の代わりに vendor `thinking.enabled` toggle を使う chat モデル。 |
 | `thinkingBudgetModels?` | `string[]` | 整数 `thinking_budget` を使う chat モデル。effort を budget 比率にマッピングします。 |
-| `noVisionModels?` | `string[]` | テキスト専用モデル。[ビジョンサイドカー](/opencodex/ja/guides/sidecars/) が画像を説明します。Ollama の `:size` タグも一致させます。 |
+| `noVisionModels?` | `string[]` | テキスト専用モデル。[ビジョンサイドカー](/ja/guides/sidecars/) が画像を説明します。Ollama の `:size` タグも一致させます。 |
 | `escapeBuiltinToolNames?` | `boolean` | Umans のような Anthropic 互換 gateway が wire でツール名 escaping を要求するときに使います。opencodex はツール呼び出しを Codex に戻す前に prefix を削除します。 |
 | `googleMode?` | `"ai-studio" \| "vertex" \| "cloud-code-assist"` | Google 伝送/認証モード。デフォルト `ai-studio`。 |
 | `project?` | `string` | Vertex project id または Antigravity Cloud Code Assist project id。 |
@@ -193,7 +197,7 @@ Codex の承認経路なしにローカルファイルを読み、書き、消�
 
 このフラグは最上位 `config.json` ではなく **プロバイダーオブジェクト**（`providers.cursor`）に置きます。
 
-[ウェブダッシュボード](/opencodex/ja/guides/web-dashboard/) でも設定できます。**Providers →
+[ウェブダッシュボード](/ja/guides/web-dashboard/) でも設定できます。**Providers →
 Cursor → Edit JSON** で `"unsafeAllowNativeLocalExec": true` を追加して保存し、プロキシを
 再起動してください（`ocx restart` または `ocx stop` + `ocx start`）。
 
@@ -324,7 +328,7 @@ fingerprint 方式をそのまま踏襲します。保存所の既存 OAuth 先�
       "noVisionModels": ["glm-5.2", "gpt-oss", "qwen3-coder", "deepseek-v4-pro"]
     }
   },
-  "subagentModels": ["anthropic/claude-opus-4-8", "ollama-cloud/glm-5.2"],
+  "subagentModels": ["anthropic/claude-opus-5", "ollama-cloud/glm-5.2"],
   "disabledModels": [],
   "websockets": false,
   "webSearchSidecar": {

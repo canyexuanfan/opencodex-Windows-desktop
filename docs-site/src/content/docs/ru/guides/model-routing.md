@@ -17,7 +17,7 @@ description: Как opencodex решает, какой провайдер буд
    настроенного провайдера, используется этот провайдер, а id усекается до части после косой черты.
 
    ```text
-   anthropic/claude-opus-4-8   →  provider "anthropic",   model "claude-opus-4-8"
+   anthropic/claude-opus-5     →  provider "anthropic",   model "claude-opus-5"
    ollama-cloud/glm-5.2        →  provider "ollama-cloud", model "glm-5.2"
    openrouter/openai/gpt-5.6-sol → provider "openrouter",  model "openai/gpt-5.6-sol"
    ```
@@ -96,4 +96,4 @@ description: Как opencodex решает, какой провайдер буд
   таким именем (например, `anthropic`, `openai`, `groq`) действительно настроен.
 
 Поля провайдера, которые читают эти правила, описаны в разделе
-[Конфигурация](/opencodex/ru/reference/configuration/).
+[Конфигурация](/ru/reference/configuration/).

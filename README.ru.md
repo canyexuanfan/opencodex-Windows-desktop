@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <b>Русский</b> · <a href="README.ja.md">日本語</a> · 📖 <a href="https://lidge-jun.github.io/opencodex/ru/"><b>Полная документация →</b></a>
+  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <b>Русский</b> · <a href="README.ja.md">日本語</a> · 📖 <a href="https://opencodex.me/ru/"><b>Полная документация →</b></a>
 </p>
 
 <p align="center">
@@ -146,7 +146,7 @@ ocx gui
 
 ```bash
 # Claude Opus через Anthropic
-codex -m "anthropic/claude-opus-4-8" "Explain this stack trace"
+codex -m "anthropic/claude-opus-5" "Explain this stack trace"
 
 # Gemini через Google
 codex -m "google/gemini-3-pro" "Write unit tests for auth.ts"
@@ -262,7 +262,7 @@ OpenAI API-ключа и OpenRouter (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-lu
 | Ollama / vLLM / LM Studio (локально) | `openai-chat` | key (обычно пустой) |
 | Любой OpenAI-совместимый эндпоинт | `openai-chat` | key |
 
-А также DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Mistral, Hugging Face, NVIDIA NIM, MiniMax, Qwen Cloud, Tencent Cloud Coding Plan, SiliconFlow и другие. Полный список — в `ocx init` или в [документации по провайдерам](https://lidge-jun.github.io/opencodex/reference/configuration/).
+А также DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Mistral, Hugging Face, NVIDIA NIM, MiniMax, Qwen Cloud, Tencent Cloud Coding Plan, SiliconFlow и другие. Полный список — в `ocx init` или в [документации по провайдерам](https://opencodex.me/reference/configuration/).
 
 Поддержка Cursor — поэтапный экспериментальный мост: он появляется в `ocx init` и в селекторе
 Add Provider панели управления как локальная конфигурация со статическим публичным каталогом
@@ -305,10 +305,16 @@ ocx update [--tag preview]     # обновить opencodex; preview-устан�
 | **Как** | Менеджер служб ОС (launchd / systemd / schtasks) | Оборачивает скриптовые лончеры `codex`; настоящий `codex.exe` не затрагивается |
 | **Когда** | Всегда работает после входа в систему | По требованию — выполняет `ocx ensure` при запуске `codex` |
 | **Перезапуск** | Автоматический перезапуск при сбое | Запускается один раз на каждый вызов `codex` |
-| **Обновления Codex** | Не влияют | Восстанавливается при следующем `ocx codex-shim install` или `ocx update` |
+| **Обновления Codex** | Не влияют | Стабильно заменённый лончер восстанавливается следующей обычной командой `ocx` |
 | **Удаление** | `ocx service uninstall` | `ocx codex-shim uninstall` |
 
 Используйте **службу**, если прокси должен работать постоянно (рекомендуется для машин разработчиков).
+Если внешнее обновление Codex перезапишет установленный shim, следующая обычная команда `ocx`
+сохранит стабильный новый лончер в резервную копию и восстановит shim. Лончер, который ещё меняется,
+остаётся нетронутым до следующей команды. Ошибка восстановления выдаёт предупреждение, но не приводит
+к сбою запрошенной команды; ручной вариант — `ocx codex-shim install`. Для отключения установите
+`codexShimAutoRestore` в `false` или задайте процессу
+`OPENCODEX_CODEX_SHIM_AUTO_RESTORE=0`.
 Используйте **shim** для лёгкого запуска прокси по требованию без фонового демона. Автозапуск через
 shim включён по умолчанию и отключается в GUI-панели управления. Если настроенный порт прокси уже
 занят, `ocx start` автоматически выберет другой свободный локальный порт и обновит настройки Codex.
@@ -437,11 +443,11 @@ opencodex автоматически перепривязывает истори
 ocx recover-history --legacy-openai
 ```
 
-Описание всех полей — в **[справочнике по конфигурации](https://lidge-jun.github.io/opencodex/reference/configuration/)**.
+Описание всех полей — в **[справочнике по конфигурации](https://opencodex.me/reference/configuration/)**.
 
 ## Документация
 
-Публичная документация — установка, провайдеры, маршрутизация, сайдкары, интеграция с Codex, селектор моделей Codex App и справочник по CLI/конфигурации — собирается из [`docs-site/`](./docs-site) и публикуется на **[lidge-jun.github.io/opencodex](https://lidge-jun.github.io/opencodex/)**.
+Публичная документация — установка, провайдеры, маршрутизация, сайдкары, интеграция с Codex, селектор моделей Codex App и справочник по CLI/конфигурации — собирается из [`docs-site/`](./docs-site) и публикуется на **[opencodex.me](https://opencodex.me/)**.
 
 Заметки мейнтейнеров, служащие источником истины, находятся в [`structure/`](./structure). Материалы прошлых исследований хранятся в [`docs/`](./docs).
 Инструкции для контрибьюторов — в [`CONTRIBUTING.md`](./CONTRIBUTING.md), а порядок сообщений

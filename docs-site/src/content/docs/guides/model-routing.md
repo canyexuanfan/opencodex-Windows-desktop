@@ -17,7 +17,7 @@ do not fall through to one another.
    configured provider, that provider is used and the id is stripped to the part after the slash.
 
    ```text
-   anthropic/claude-opus-4-8   →  provider "anthropic",   model "claude-opus-4-8"
+   anthropic/claude-opus-5     →  provider "anthropic",   model "claude-opus-5"
    ollama-cloud/glm-5.2        →  provider "ollama-cloud", model "glm-5.2"
    openrouter/openai/gpt-5.6-sol → provider "openrouter",  model "openai/gpt-5.6-sol"
    ```
@@ -88,4 +88,4 @@ Routing and catalog visibility are separate controls:
 - **Prefix patterns are a convenience**, not a guarantee: they only resolve if a provider with that
   name (e.g. `anthropic`, `openai`, `groq`) is actually configured.
 
-See [Configuration](/opencodex/reference/configuration/) for the provider fields these rules read.
+See [Configuration](/reference/configuration/) for the provider fields these rules read.

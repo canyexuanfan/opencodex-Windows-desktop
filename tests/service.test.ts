@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { windowsEnvIndirectBatchValue } from "../src/lib/win-paths";
-import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, normalizeServiceSubcommand, resolveServiceListenPort, serviceLogPath, serviceStatusSummary } from "../src/service";
+import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, normalizeServiceSubcommand, parseServiceInstallState, resolveServiceListenPort, serviceLogPath, serviceStartableFromTray, serviceStatusSummary, windowsTaskRegistrationHealthy } from "../src/service";
 import { serviceApiTokenFilePath } from "../src/lib/service-secrets";
 import type { OcxConfig } from "../src/types";
 
@@ -235,6 +235,21 @@ describe("Windows service task", () => {
     expect(xml).toMatch(/<Command>.*wscript\.exe<\/Command>/);
     expect(xml).toContain('<Arguments>/b /nologo &quot;C:\\Users\\a&amp;b\\.opencodex\\opencodex-service-launcher.vbs&quot;</Arguments>');
     expect(xml).not.toContain("<Command>C:\\Users\\a&amp;b\\.opencodex\\opencodex-service.cmd</Command>");
+  });
+
+  test("validates the registered scheduler action, trigger, principal, and settings", () => {
+    const wscript = "C:\\Windows\\System32\\wscript.exe";
+    const launcher = "C:\\Users\\Test\\.opencodex\\service-launcher.vbs";
+    const xml = buildWindowsTaskXml("ignored.cmd", launcher).replace(/<Command>.*?<\/Command>/, `<Command>${wscript}</Command>`);
+    expect(windowsTaskRegistrationHealthy(xml, wscript, launcher)).toBe(true);
+    for (const mutated of [
+      xml.replace("<LogonTrigger>", "<BootTrigger>"),
+      xml.replace("InteractiveToken", "Password"),
+      xml.replace("LeastPrivilege", "HighestAvailable"),
+      xml.replace("IgnoreNew", "Parallel"),
+      xml.replace(wscript, "C:\\Windows\\System32\\cmd.exe"),
+      xml.replace(launcher, "C:\\Temp\\foreign.vbs"),
+    ]) expect(windowsTaskRegistrationHealthy(mutated, wscript, launcher)).toBe(false);
   });
 
   test("hidden launcher VBS stays resident and escapes quotes in the wrapper path", () => {
@@ -476,6 +491,57 @@ describe("service lifecycle cleanup ordering", () => {
 });
 
 describe("service diagnostics", () => {
+  const base = {
+    schedulerInstalled: false,
+    schedulerEnabled: false,
+    schedulerAssetsHealthy: true,
+    nativeStatus: "nonexistent" as const,
+    recordedBackend: null,
+    staleBakedPaths: false,
+    nativeRepairAssetsOnly: false,
+    diagnostics: "logs: test",
+  };
+
+  test("fails closed for disabled, stale, conflicting, stopped, and ghost Windows services", () => {
+    expect(deriveWindowsServiceDiagnostic({ ...base, schedulerInstalled: true, schedulerEnabled: true, recordedBackend: "scheduler" })).toMatchObject({ viable: true, backend: "scheduler" });
+    expect(deriveWindowsServiceDiagnostic({ ...base, schedulerInstalled: true })).toMatchObject({ viable: false, enabled: false });
+    expect(deriveWindowsServiceDiagnostic({ ...base, schedulerInstalled: true, schedulerEnabled: true, staleBakedPaths: true })).toMatchObject({ viable: false, stale: true });
+    expect(deriveWindowsServiceDiagnostic({ ...base, schedulerInstalled: true, schedulerEnabled: true, nativeStatus: "started" })).toMatchObject({ viable: false, conflict: true });
+    expect(deriveWindowsServiceDiagnostic({ ...base, nativeStatus: "stopped" })).toMatchObject({ installed: true, viable: false, startable: false, stale: true, running: false });
+    expect(deriveWindowsServiceDiagnostic({ ...base, nativeRepairAssetsOnly: true })).toMatchObject({ installed: false, viable: false, stale: true });
+  });
+
+  test("a stopped healthy WinSW service remains startable from the tray", () => {
+    const stoppedNative = deriveWindowsServiceDiagnostic({ ...base, nativeStatus: "stopped", recordedBackend: "native" });
+    expect(serviceStartableFromTray(stoppedNative)).toBe(true);
+    expect(serviceStartableFromTray({ ...stoppedNative, stale: true })).toBe(false);
+    expect(serviceStartableFromTray({ ...stoppedNative, conflict: true })).toBe(false);
+    expect(serviceStartableFromTray(deriveWindowsServiceDiagnostic({ ...base, nativeStatus: "unknown" }))).toBe(false);
+    const disabledScheduler = deriveWindowsServiceDiagnostic({ ...base, schedulerInstalled: true, schedulerEnabled: false });
+    expect(serviceStartableFromTray(disabledScheduler)).toBe(false);
+    const mismatchedScheduler = deriveWindowsServiceDiagnostic({
+      ...base,
+      schedulerInstalled: true,
+      schedulerEnabled: true,
+      recordedBackend: "native",
+    });
+    expect(mismatchedScheduler).toMatchObject({ backend: "scheduler", stale: true, viable: false, startable: false });
+  });
+
+  test("rejects malformed service backend state instead of defaulting it to scheduler", () => {
+    const valid = {
+      version: 2,
+      codexHome: "C:\\codex",
+      opencodexHome: "C:\\opencodex",
+      backend: "scheduler",
+    };
+    expect(parseServiceInstallState(valid)?.backend).toBe("scheduler");
+    expect(parseServiceInstallState({ ...valid, backend: "garbage" })).toBeNull();
+    expect(parseServiceInstallState({ ...valid, backend: undefined })).toBeNull();
+    expect(parseServiceInstallState({ ...valid, version: 1, backend: "scheduler" })).toBeNull();
+    expect(parseServiceInstallState({ ...valid, version: 1, backend: undefined })?.version).toBe(1);
+  });
+
   test("status summary exposes the service log path", () => {
     const summary = serviceStatusSummary();
 

@@ -5,7 +5,7 @@ description: opencodex 내부 구조 — 모듈 맵, AdapterEvent 브리지, 요
 
 opencodex는 단일 Bun 프로세스입니다. 요청은 OpenAI Responses로 들어와 내부 모델로 정규화되고,
 라우팅된 뒤, 어댑터를 통해 프로바이더로 전송되고, 다시 Responses SSE로 브리징됩니다. 엔드투엔드
-플로우는 [동작 원리](/opencodex/ko/getting-started/how-it-works/)를 참조하세요.
+플로우는 [동작 원리](/ko/getting-started/how-it-works/)를 참조하세요.
 
 ## 모듈 맵
 
@@ -34,16 +34,23 @@ src/
 └── index.ts            # public entry
 ```
 
+기존의 대형 진입 파일 세 개는 이제 호환성 facade입니다. `codex/catalog.ts`는 7개의
+`codex/catalog/*.ts` 모듈을, `server/management-api.ts`는 9개의 `server/management/*.ts`
+모듈을, `server/responses.ts`는 5개의 `server/responses/*.ts` 모듈을 연결합니다.
+
 ## 요청 처리 흐름
 
-HTTP 경계는 `server/index.ts`가 맡고, Responses 데이터 플레인은 `server/responses.ts`로 넘깁니다.
+HTTP 경계는 `server/index.ts`가 맡고, Responses 데이터 플레인은 `server/responses.ts` facade와
+`server/responses/*.ts` 모듈로 넘깁니다.
 
 1. `server/index.ts`에서 CORS와 API 인증을 확인하고, 종료 대기 중이면 새 요청을 거부한 뒤 요청 수명
    주기를 기록합니다. 여기서 `GET /v1/models`, `POST /v1/responses`,
    `POST /v1/responses/compact`, `POST /v1/images/generations` / `POST /v1/images/edits`
    (Codex 내장 `image_gen` 도구용 — `server/images.ts`가 OpenAI 계열 업스트림으로 중계),
-   `/v1/responses`의 선택적 WebSocket 업그레이드를 제공합니다.
-2. `server/responses.ts`가 압축을 풀고 JSON을 읽습니다. 기억해 둔 `previous_response_id` 입력이 있으면
+   `POST /v1/live` / `POST /v1/realtime/calls`(ChatGPT / Codex App 음성 및 OpenAI Realtime
+   호출 생성, `server/live.ts`가 중계)와 `/v1/live/{callId}` 사이드밴드 WebSocket,
+   그리고 `/v1/responses`의 선택적 WebSocket 업그레이드를 제공합니다.
+2. `server/responses/core.ts`가 압축을 풀고 JSON을 읽습니다. 기억해 둔 `previous_response_id` 입력이 있으면
    펼친 다음 `responses/parser.ts`로 넘깁니다.
 3. `router.ts`가 일반 모델 id 또는 `provider/model` id를 해석합니다. 이어서 Codex 계정 affinity를
    결정하고, 필요하면 프로바이더 OAuth를 갱신해 선택된 자격 증명을 route에 적용합니다.
@@ -110,7 +117,7 @@ Responses 항목 타입으로 구분됩니다 — 따라서 MCP 네임스페이�
 반환하고, Codex는 해당 세션에서 HTTP로 폴백합니다. `"websockets": true`가 설정되면 같은
 엔드포인트가 업그레이드를 받아들이고 WebSocket 브리지를 사용합니다.
 
-Codex 컨텍스트 compaction은 라우팅된 모델에서도 동작합니다. `server/responses.ts`는
+Codex 컨텍스트 compaction은 라우팅된 모델에서도 동작합니다. `server/responses/compact.ts`는
 `POST /v1/responses/compact`를 내부 라우팅 요약 턴으로 처리해 압축된 히스토리를 반환합니다.
 `responses/parser.ts`와 `bridge.ts`는 remote compaction v2의 `compaction_trigger` 턴을 처리해
 합성 `compaction` 출력 항목을 정확히 하나 내보냅니다.
@@ -119,8 +126,9 @@ Codex 컨텍스트 compaction은 라우팅된 모델에서도 동작합니다. `
 
 - `codex/model-cache.ts`는 실시간 `/models` 결과를 프로바이더별로 메모리에 TTL 캐싱하며(기본 5분, Codex
   자체 캐시와 일치), fetch가 실패하면 stale-fallback을 제공합니다.
-- `codex/catalog.ts`는 라우팅된 모델을 네임스페이스 항목으로 Codex의 카탈로그에 병합하고, 추천
-  [서브에이전트 모델](/opencodex/ko/guides/codex-integration/#the-subagent-picker)을 먼저 랭크하며,
+- `codex/catalog.ts` facade가 내보내는 `codex/catalog/sync.ts`는 라우팅된 모델을 네임스페이스
+  항목으로 Codex의 카탈로그에 병합하고, 추천
+  [서브에이전트 모델](/ko/guides/codex-integration/#the-subagent-picker)을 먼저 랭크하며,
   `disabledModels`를 필터링하고, 일회성 백업으로부터 원본 카탈로그를 완전히 복원할 수 있습니다.
 
 ## Reasoning effort

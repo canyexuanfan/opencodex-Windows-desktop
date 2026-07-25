@@ -129,7 +129,7 @@ function buildTools(tools: unknown[] | undefined): OcxTool[] | undefined {
       out.push({
         name: t.name,
         description: (t.description as string) ?? "",
-        parameters: { type: "object", properties: { input: { type: "string", description: "Raw tool input (verbatim body, e.g. the apply_patch envelope)." } }, required: ["input"] },
+        parameters: { type: "object", properties: { input: { type: "string", description: "Raw tool input. For apply_patch, begin exactly with `*** Begin Patch` (no trailing `***`), then use its standard patch envelope." } }, required: ["input"] },
         freeform: true,
       });
     }
@@ -197,6 +197,10 @@ function outputToToolResultContent(output: string | unknown[] | undefined): stri
   }
   if (!hasImage) return parts.map(p => (p.type === "text" ? p.text : "")).join("");
   return parts;
+}
+
+function toolOutputContainsEncryptedContent(output: string | unknown[] | undefined): boolean {
+  return Array.isArray(output) && output.some(raw => isObj(raw) && raw.type === "encrypted_content");
 }
 
 /**
@@ -330,7 +334,7 @@ export function parseRequest(body: unknown): OcxParsedRequest {
       }
 
       if (effectiveType === "message") {
-        const msg = item as { role?: string; content?: unknown };
+        const msg = item as { role?: string; content?: unknown; phase?: "commentary" | "final_answer" };
         switch (msg.role) {
           case "system": {
             pendingReasoning.length = 0;
@@ -353,6 +357,7 @@ export function parseRequest(body: unknown): OcxParsedRequest {
               content: pendingReasoning.length > 0
                 ? [...pendingReasoning.map(entry => entry.part), ...parts]
                 : parts,
+              ...(msg.phase ? { phase: msg.phase } : {}),
               model: data.model,
               timestamp: now,
             });
@@ -508,6 +513,7 @@ export function parseRequest(body: unknown): OcxParsedRequest {
           role: "toolResult", toolCallId: output.call_id,
           toolName: toolInfo.name, toolNamespace: toolInfo.namespace,
           content: outputToToolResultContent(output.output), isError: false, timestamp: now,
+          ...(toolOutputContainsEncryptedContent(output.output) ? { containsEncryptedContent: true } : {}),
         });
         continue;
       }
@@ -522,6 +528,7 @@ export function parseRequest(body: unknown): OcxParsedRequest {
           // Same payload shape as function_call_output (codex-rs FunctionCallOutputPayload):
           // string or content items — normalize arrays instead of leaking raw wire blocks.
           content: outputToToolResultContent(output.output), isError: false, timestamp: now,
+          ...(toolOutputContainsEncryptedContent(output.output) ? { containsEncryptedContent: true } : {}),
         });
       }
     }
@@ -587,6 +594,7 @@ export function parseRequest(body: unknown): OcxParsedRequest {
     stream: data.stream === true,
     options,
     _rawBody: body,
+    ...(replayedInputPrefixLength > 0 ? { _replayPrefixLen: replayedInputPrefixLength } : {}),
     ...(webSearch ? { _webSearch: webSearch } : {}),
     ...(structuredOutput ? { _structuredOutput: true } : {}),
     ...(compactionRequest ? { _compactionRequest: true } : {}),

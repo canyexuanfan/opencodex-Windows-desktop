@@ -79,9 +79,9 @@ function readProcVersion(): string | null {
 }
 
 export function isWslRuntime(deps: CodexHomeDeps = {}): boolean {
+  if ((deps.platform ?? process.platform) !== "linux") return false;
   const env = deps.env ?? process.env;
   if (env.WSL_DISTRO_NAME || env.WSL_INTEROP) return true;
-  if ((deps.platform ?? process.platform) !== "linux") return false;
   const version = `${deps.release ?? ""}\n${deps.procVersion ?? readProcVersion() ?? ""}`;
   return /microsoft|wsl/i.test(version);
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n, type TFn, type Locale } from "../i18n/shared";
 import { formatTokens } from "../format-tokens";
-import { EmptyState } from "../ui";
+import { EmptyState, Notice } from "../ui";
 import { modelLabel } from "../model-display";
 
 type Range = "all" | "30d" | "7d";
@@ -484,8 +484,8 @@ function UsageModelsTable({
           </thead>
           <tbody>
             {models.map(model => (
-              <tr key={`${model.provider}/${model.model}/${model.resolvedModel ?? ""}`}>
-                <td className="mono">{modelLabel(model.resolvedModel ?? model.model)}</td>
+              <tr key={`${model.provider}/${model.model}`}>
+                <td className="mono">{modelLabel(model.model)}</td>
                 <td className="muted">{model.provider}</td>
                 <td className="num">{model.requests}</td>
                 <td className="num">{model.measuredRequests}</td>
@@ -554,24 +554,27 @@ export default function Usage({ apiBase }: { apiBase: string }) {
   const [surface, setSurface] = useState<UsageSurface>("all");
   const [data, setData] = useState<UsageResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [modelQuery, setModelQuery] = useState("");
 
   const fetchUsage = useCallback(async (nextRange: Range, nextSurface: UsageSurface, signal: AbortSignal) => {
     setLoading(true);
+    setError(null);
     try {
       const res = await fetch(`${apiBase}/api/usage?range=${nextRange}&surface=${nextSurface}`, { signal });
-      if (!res.ok) throw new Error("fetch failed");
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`.trim());
       const json = await res.json() as UsageResponse;
       if (signal.aborted) return;
       setData(json);
-    } catch {
+    } catch (cause) {
       // A stale request (range/apiBase changed, or unmount) must not overwrite newer state.
       if (signal.aborted) return;
-      setData(null);
+      const detail = cause instanceof Error ? cause.message : "";
+      setError(detail ? `${t("usage.loadError")} ${detail}` : t("usage.loadError"));
     } finally {
       if (!signal.aborted) setLoading(false);
     }
-  }, [apiBase]);
+  }, [apiBase, t]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -612,11 +615,23 @@ export default function Usage({ apiBase }: { apiBase: string }) {
       </div>
       <p className="page-sub">{t("usage.subtitle")}</p>
 
-      {loading && !data ? (
+      {error ? (
+        <Notice tone="err">
+          {error}{" "}
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => void fetchUsage(range, surface, new AbortController().signal)}
+            disabled={loading}
+          >
+            {t("common.retry")}
+          </button>
+        </Notice>
+      ) : loading && !data ? (
         <EmptyState title={t("usage.loading")} />
-      ) : !data || data.summary.requests === 0 ? (
+      ) : data?.summary.requests === 0 ? (
         <EmptyState title={t("usage.empty")} />
-      ) : (
+      ) : data ? (
         <>
           <UsageSummaryCards summary={data.summary} activeDays={activeDays} locale={locale} t={t} />
           <UsageHeatmapPanel range={range} heatmap={heatmap} weekBars={weekBars} locale={locale} t={t} />
@@ -624,7 +639,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
           <UsageProvidersTable providers={sortedProviders} locale={locale} t={t} />
           <UsageCoveragePanel summary={data.summary} t={t} />
         </>
-      )}
+      ) : null}
     </>
   );
 }

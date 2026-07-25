@@ -55,8 +55,9 @@ function cfg(anthropicBaseUrl: string, extraClaude?: Record<string, unknown>): O
     port: 0,
     defaultProvider: "mock",
     providers: {
-      mock: { adapter: "openai-chat", baseUrl: "http://127.0.0.1:1/v1", apiKey: "k", allowPrivateNetwork: true, models: ["test-model"] },
+      mock: { adapter: "openai-chat", baseUrl: "http://127.0.0.1:1/v1", apiKey: "k", allowPrivateNetwork: true, liveModels: false, models: ["test-model"] },
     },
+    connectTimeoutMs: 250,
     claudeCode: { anthropicBaseUrl, ...extraClaude },
   } as OcxConfig;
 }

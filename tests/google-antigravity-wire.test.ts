@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createGoogleAdapter } from "../src/adapters/google";
 import { antigravitySessionId, isLikelyRealThoughtSignature } from "../src/adapters/google-antigravity-wire";
-import { ANTIGRAVITY_MODELS, ANTIGRAVITY_MODEL_EFFORTS } from "../src/providers/antigravity-models";
+import { ANTIGRAVITY_MODELS, ANTIGRAVITY_MODEL_EFFORTS, canonicalAntigravityUsageModel } from "../src/providers/antigravity-models";
 import type { AdapterEvent, OcxParsedRequest, OcxProviderConfig } from "../src/types";
 
 function parsed(text = "hello world", stream = false, modelId = "gemini-3-pro"): OcxParsedRequest {
@@ -246,18 +246,18 @@ describe("antigravity CCA envelope", () => {
     expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("high");
   });
 
-  test("claude-opus-4-6-thinking with effort=max sends thinkingConfig max", async () => {
+  test("claude-opus-4-6-thinking with effort=max clamps CCA thinkingLevel to high", async () => {
     const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("claude-opus-4-6-thinking", "max"));
     const env = JSON.parse(req.body);
     expect(env.model).toBe("claude-opus-4-6-thinking");
-    expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("max");
+    expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("high");
   });
 
-  test("claude-opus-4-6-thinking with effort=ultra clamps to max", async () => {
+  test("claude-opus-4-6-thinking with effort=ultra clamps CCA thinkingLevel to high", async () => {
     const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("claude-opus-4-6-thinking", "ultra"));
     const env = JSON.parse(req.body);
     expect(env.model).toBe("claude-opus-4-6-thinking");
-    expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("max");
+    expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("high");
   });
 
   test("claude-opus-4-6-thinking with no effort sends no thinkingConfig", async () => {
@@ -276,11 +276,11 @@ describe("antigravity CCA envelope", () => {
     expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("high");
   });
 
-  test("claude-sonnet-4-6 with effort=max sends thinkingConfig max", async () => {
+  test("claude-sonnet-4-6 with effort=max clamps CCA thinkingLevel to high", async () => {
     const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("claude-sonnet-4-6", "max"));
     const env = JSON.parse(req.body);
     expect(env.model).toBe("claude-sonnet-4-6");
-    expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("max");
+    expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("high");
   });
 
   test("claude-sonnet-4-6 with no effort sends no thinkingConfig", async () => {
@@ -436,3 +436,16 @@ describe("isLikelyRealThoughtSignature", () => {
     expect(isLikelyRealThoughtSignature("sig-abcdef0123456789")).toBe(true);
   });
 });
+
+
+describe("canonicalAntigravityUsageModel", () => {
+  test("maps wire/compat ids to picker bases", () => {
+    expect(canonicalAntigravityUsageModel("gemini-3.5-flash-mid")).toBe("gemini-3.6-flash");
+    expect(canonicalAntigravityUsageModel("gemini-3.6-flash-high")).toBe("gemini-3.6-flash");
+    expect(canonicalAntigravityUsageModel("gemini-pro-agent")).toBe("gemini-3.1-pro");
+    expect(canonicalAntigravityUsageModel("gemini-3.1-pro-low")).toBe("gemini-3.1-pro");
+    expect(canonicalAntigravityUsageModel("claude-opus-4-6-thinking")).toBe("claude-opus-4-6-thinking");
+    expect(canonicalAntigravityUsageModel("unknown-model")).toBe("unknown-model");
+  });
+});
+

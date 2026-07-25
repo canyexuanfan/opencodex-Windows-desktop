@@ -88,7 +88,7 @@ function normalizePathForCompare(path: string): string {
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
-interface ServiceInstallState {
+export interface ServiceInstallState {
   version: 1 | 2;
   codexHome: string;
   opencodexHome: string;
@@ -99,6 +99,23 @@ interface ServiceInstallState {
   backend?: ServiceBackend;
   winswVersion?: string;
   winswSha256?: string;
+}
+
+export function parseServiceInstallState(value: unknown): ServiceInstallState | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const state = value as Record<string, unknown>;
+  if (state.version !== 1 && state.version !== 2) return null;
+  if (typeof state.codexHome !== "string" || state.codexHome.length === 0) return null;
+  if (typeof state.opencodexHome !== "string" || state.opencodexHome.length === 0) return null;
+  for (const key of ["bunPath", "cliPath", "winswVersion", "winswSha256"] as const) {
+    if (state[key] !== undefined && (typeof state[key] !== "string" || state[key].length === 0)) return null;
+  }
+  if (state.version === 1) {
+    if (state.backend !== undefined) return null;
+  } else if (state.backend !== "scheduler" && state.backend !== "native") {
+    return null;
+  }
+  return state as unknown as ServiceInstallState;
 }
 
 function writeServiceInstallState(backend: ServiceBackend = "scheduler"): void {
@@ -124,8 +141,8 @@ function writeServiceInstallState(backend: ServiceBackend = "scheduler"): void {
 function readServiceInstallState(): ServiceInstallState | null {
   for (const path of serviceStatePaths()) {
     try {
-      const parsed = JSON.parse(readFileSync(path, "utf8")) as ServiceInstallState;
-      if (parsed.version === 1 || parsed.version === 2) return parsed;
+      const parsed = parseServiceInstallState(JSON.parse(readFileSync(path, "utf8")));
+      if (parsed) return parsed;
     } catch {
       /* try the next known state path */
     }
@@ -451,6 +468,30 @@ export function buildWindowsTaskXml(script = windowsServiceScriptPath(), launche
 `;
 }
 
+function taskXmlSection(xml: string, tag: string): string {
+  return new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}>`, "i").exec(xml)?.[1] ?? "";
+}
+
+/** Validate the security/lifecycle-critical fields of the registered scheduler task. */
+export function windowsTaskRegistrationHealthy(
+  xml: string,
+  wscript = windowsWscript(),
+  launcher = windowsLauncherVbsPath(),
+): boolean {
+  const trigger = taskXmlSection(xml, "LogonTrigger");
+  const principal = taskXmlSection(xml, "Principal");
+  const settings = taskXmlSection(xml, "Settings");
+  const action = taskXmlSection(xml, "Exec");
+  return /<Enabled>\s*true\s*<\/Enabled>/i.test(trigger)
+    && /<LogonType>\s*InteractiveToken\s*<\/LogonType>/i.test(principal)
+    && /<RunLevel>\s*LeastPrivilege\s*<\/RunLevel>/i.test(principal)
+    && /<Enabled>\s*true\s*<\/Enabled>/i.test(settings)
+    && /<MultipleInstancesPolicy>\s*IgnoreNew\s*<\/MultipleInstancesPolicy>/i.test(settings)
+    && /<ExecutionTimeLimit>\s*PT0S\s*<\/ExecutionTimeLimit>/i.test(settings)
+    && action.includes(`<Command>${taskXmlString(wscript)}</Command>`)
+    && action.includes(`<Arguments>${taskXmlString(`/b /nologo "${launcher}"`)}</Arguments>`);
+}
+
 // ── macOS (launchd) ──
 function installLaunchd(): void {
   const dir = join(homedir(), "Library", "LaunchAgents");
@@ -561,6 +602,7 @@ async function installWindowsNative(): Promise<void> {
 function startWindows(): void { schtasks(["/run", "/tn", TASK]); }
 function stopWindows(): void { try { schtasks(["/end", "/tn", TASK]); } catch { /* not running */ } }
 function statusWindows(): string { try { return schtasks(["/query", "/tn", TASK]); } catch { return ""; } }
+function statusWindowsXml(): string { try { return schtasks(["/query", "/tn", TASK, "/xml"]); } catch { return ""; } }
 function uninstallWindows(): void {
   try { schtasks(["/delete", "/tn", TASK, "/f"]); } catch { /* absent */ }
   if (existsSync(windowsServiceScriptPath())) unlinkSync(windowsServiceScriptPath());
@@ -814,31 +856,141 @@ export function uninstallServiceIfInstalled(): boolean {
 
 /** True if a background service (launchd/systemd/Task Scheduler) is installed. */
 export function isServiceInstalled(): boolean {
-  return serviceStatusSummary().startsWith("installed");
+  return diagnoseService().installed;
+}
+
+export interface ServiceDiagnostic {
+  supported: boolean;
+  installed: boolean;
+  enabled: boolean;
+  running: boolean;
+  viable: boolean;
+  startable: boolean;
+  stale: boolean;
+  conflict: boolean;
+  backend: ServiceBackend | "launchd" | "systemd" | null;
+  summary: string;
+}
+
+/** Windows tray may restart a healthy-but-stopped native service; stale/conflicting installs remain blocked. */
+export function serviceStartableFromTray(service: ServiceDiagnostic): boolean {
+  return service.startable && !service.stale && !service.conflict;
+}
+
+export interface WindowsServiceDiagnosticInputs {
+  schedulerInstalled: boolean;
+  schedulerEnabled: boolean;
+  schedulerAssetsHealthy: boolean;
+  nativeStatus: "started" | "stopped" | "nonexistent" | "unknown";
+  recordedBackend: ServiceBackend | null;
+  staleBakedPaths: boolean;
+  nativeRepairAssetsOnly: boolean;
+  diagnostics: string;
+}
+
+export function deriveWindowsServiceDiagnostic(inputs: WindowsServiceDiagnosticInputs): ServiceDiagnostic {
+  const nativeInstalled = inputs.nativeStatus !== "nonexistent";
+  const conflict = inputs.schedulerInstalled && nativeInstalled;
+  const backendStateMismatch = inputs.schedulerInstalled
+    ? inputs.recordedBackend !== "scheduler"
+    : nativeInstalled && inputs.recordedBackend !== "native";
+  const stale = inputs.staleBakedPaths
+    || (inputs.schedulerInstalled && !inputs.schedulerAssetsHealthy)
+    || backendStateMismatch
+    || (inputs.nativeStatus === "nonexistent" && inputs.nativeRepairAssetsOnly);
+  const backend = inputs.schedulerInstalled ? "scheduler" : nativeInstalled ? "native" : null;
+  const enabled = inputs.schedulerInstalled ? inputs.schedulerEnabled : inputs.nativeStatus === "started";
+  const running = nativeInstalled ? inputs.nativeStatus === "started" : inputs.schedulerInstalled && inputs.schedulerEnabled;
+  const viable = !conflict && !stale
+    && (inputs.schedulerInstalled ? inputs.schedulerEnabled && inputs.schedulerAssetsHealthy : inputs.nativeStatus === "started");
+  const startable = !conflict && !stale
+    && (inputs.schedulerInstalled
+      ? inputs.schedulerEnabled && inputs.schedulerAssetsHealthy
+      : inputs.nativeStatus === "started" || inputs.nativeStatus === "stopped");
+  const detail = conflict
+    ? "CONFLICT: Task Scheduler and native WinSW are both present — run 'ocx service uninstall' then reinstall one"
+    : stale
+      ? "stale or missing service assets — run 'ocx service install' to repair"
+      : inputs.schedulerInstalled
+        ? inputs.schedulerEnabled ? "Task Scheduler enabled" : "Task Scheduler disabled"
+        : nativeInstalled
+          ? `native (WinSW ${WINSW_VERSION}): ${inputs.nativeStatus}`
+          : "not installed";
+  const summary = backend ? `installed, ${detail} (${inputs.diagnostics})` : `not installed (${inputs.diagnostics})`;
+  return {
+    supported: true,
+    installed: inputs.schedulerInstalled || nativeInstalled,
+    enabled,
+    running,
+    viable,
+    startable,
+    stale,
+    conflict,
+    backend,
+    summary,
+  };
+}
+
+/**
+ * Fail-closed restart diagnostic. Presence alone is never enough: conflicting
+ * managers, stale baked paths, disabled registrations, and unknown/stopped
+ * native managers cannot claim that Codex will reconnect after a reboot.
+ */
+export function diagnoseService(): ServiceDiagnostic {
+  const diagnostics = serviceDiagnosticsSummary();
+  if (process.platform === "darwin") {
+    const installed = existsSync(plistPath());
+    const running = installed && Boolean(statusLaunchd());
+    const stale = installed && bakedServicePathsDiagnostic() !== null;
+    const viable = installed && running && !stale;
+    const summary = !installed ? `not installed (${diagnostics})`
+      : stale ? `installed, but stale (launchd; ${diagnostics})`
+        : running ? `installed and loaded (launchd; ${diagnostics})`
+          : `installed, not loaded (launchd; ${diagnostics})`;
+    return { supported: true, installed, enabled: running, running, viable, startable: installed && !stale, stale, conflict: false, backend: "launchd", summary };
+  }
+  if (process.platform === "win32") {
+    const schedulerXml = statusWindowsXml();
+    const schedulerInstalled = schedulerXml.length > 0;
+    const schedulerSettings = taskXmlSection(schedulerXml, "Settings");
+    const schedulerEnabled = schedulerInstalled && /<Enabled>\s*true\s*<\/Enabled>/i.test(schedulerSettings);
+    const schedulerAssets = [windowsServiceScriptPath(), windowsLauncherVbsPath(), windowsTaskXmlPath()].every(existsSync)
+      && windowsTaskRegistrationHealthy(schedulerXml);
+    const nativeStatus = statusWinswRaw();
+    const installState = readServiceInstallState();
+    const recordedBackend: ServiceBackend | null = !installState
+      ? null
+      : installState.backend === "native" ? "native" : "scheduler";
+    return deriveWindowsServiceDiagnostic({
+      schedulerInstalled,
+      schedulerEnabled,
+      schedulerAssetsHealthy: schedulerAssets,
+      nativeStatus,
+      recordedBackend,
+      staleBakedPaths: bakedServicePathsDiagnostic() !== null,
+      nativeRepairAssetsOnly: Boolean(winswStatusSummary()),
+      diagnostics,
+    });
+  }
+  if (process.platform === "linux") {
+    if (existsSync("/.dockerenv")) return { supported: false, installed: false, enabled: false, running: false, viable: false, startable: false, stale: false, conflict: false, backend: null, summary: "unsupported in Docker" };
+    if (!isSystemd()) return { supported: false, installed: false, enabled: false, running: false, viable: false, startable: false, stale: false, conflict: false, backend: null, summary: "unsupported: systemd not found" };
+    const installed = existsSync(unitPath());
+    const enabled = installed && (() => { try { return sh(`systemctl --user is-enabled ${TASK}`) === "enabled"; } catch { return false; } })();
+    const running = installed && (() => { try { return sh(`systemctl --user is-active ${TASK}`) === "active"; } catch { return false; } })();
+    const stale = installed && bakedServicePathsDiagnostic() !== null;
+    const viable = installed && enabled && running && !stale;
+    const summary = !installed ? `not installed (${diagnostics})`
+      : stale ? `installed, but stale (systemd user; ${diagnostics})`
+        : viable ? `installed, enabled and running (systemd user; ${diagnostics})`
+          : `installed, but ${!enabled ? "disabled" : "not running"} (systemd user; ${diagnostics})`;
+    return { supported: true, installed, enabled, running, viable, startable: installed && !stale, stale, conflict: false, backend: "systemd", summary };
+  }
+  return { supported: false, installed: false, enabled: false, running: false, viable: false, startable: false, stale: false, conflict: false, backend: null, summary: `unsupported on ${process.platform}` };
 }
 
 export function serviceStatusSummary(): string {
-  const diagnostics = serviceDiagnosticsSummary();
-  if (process.platform === "darwin") {
-    if (!existsSync(plistPath())) return `not installed (${diagnostics})`;
-    const status = statusLaunchd();
-    return status ? `installed (launchd; ${diagnostics})` : `installed, not loaded (${diagnostics})`;
-  }
-  if (process.platform === "win32") {
-    const scheduler = statusWindows();
-    const native = winswStatusSummary();
-    if (scheduler && native) return `installed (CONFLICT: Task Scheduler AND native WinSW both present — run 'ocx service uninstall' then reinstall one; ${diagnostics})`;
-    if (native) return `installed (${native}; ${diagnostics})`;
-    return scheduler ? `installed (Task Scheduler; ${diagnostics})` : `not installed (${diagnostics})`;
-  }
-  if (process.platform === "linux") {
-    if (existsSync("/.dockerenv")) return "unsupported in Docker";
-    if (!isSystemd()) return "unsupported: systemd not found";
-    if (!existsSync(unitPath())) return `not installed (${diagnostics})`;
-    const status = statusSystemd();
-    return status ? `installed (systemd user; ${diagnostics})` : `installed, not running (${diagnostics})`;
-  }
-  return `unsupported on ${process.platform}`;
+  return diagnoseService().summary;
 }
 
 export function normalizeServiceSubcommand(sub?: string): string {

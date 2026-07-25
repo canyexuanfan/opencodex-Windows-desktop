@@ -5,6 +5,7 @@ export const KIRO_MODELS = [
   "gpt-5.6-terra",
   "gpt-5.6-luna",
   "claude-sonnet-5",
+  "claude-opus-5",
   "claude-opus-4.8",
   "claude-opus-4.7",
   "claude-opus-4.6",
@@ -28,6 +29,7 @@ export const KIRO_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "gpt-5.6-terra": 272_000,
   "gpt-5.6-luna": 272_000,
   "claude-sonnet-5": 1_000_000,
+  "claude-opus-5": 1_000_000,
   "claude-opus-4.8": 1_000_000,
   "claude-opus-4.7": 1_000_000,
   "claude-opus-4.6": 1_000_000,
@@ -45,8 +47,8 @@ export const KIRO_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 
 const KIRO_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
-// Kiro has no upstream reasoning_effort enum; these labels map to fake-thinking budgets in
-// src/adapters/kiro.ts.
+// gpt-5.6-sol sends these values through Kiro's verified native reasoning field. Other models map
+// them to bounded thinking instructions until their native effort support is verified.
 export const KIRO_MODEL_REASONING_EFFORTS: Record<string, string[]> = Object.fromEntries(
   KIRO_MODELS.map(id => [id, KIRO_REASONING_EFFORTS]),
 );

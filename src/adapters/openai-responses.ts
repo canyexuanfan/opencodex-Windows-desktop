@@ -1,7 +1,10 @@
+import { createHash } from "node:crypto";
 import type { IncomingMeta, ProviderAdapter } from "./base";
 import type { AdapterEvent, OcxParsedRequest, OcxProviderConfig } from "../types";
+import { catalogModelSupportsReasoningSummaries } from "../codex/catalog";
 import { decodeCompactionSummary, SUMMARY_PREFIX } from "../responses/compaction";
 import { OCX_REASONING_PREFIX } from "../responses/reasoning-envelope";
+import { modelRecordValue } from "../reasoning-effort";
 
 // Headers relayed verbatim from the caller in OAuth-passthrough ("forward") mode.
 // Exported so the web-search sidecar reuses the exact same forwarded-auth set for its ChatGPT call.
@@ -50,6 +53,19 @@ export function sanitizeReasoningInputContent(body: unknown): unknown {
   });
 
   return changed ? { ...raw, input } : body;
+}
+
+function stripUnsupportedReasoningSummaryDelivery(body: unknown, modelId: string): unknown {
+  if (catalogModelSupportsReasoningSummaries(modelId) !== false) return body;
+  if (!isPlainObject(body) || !isPlainObject(body.stream_options)) return body;
+  if (!("reasoning_summary_delivery" in body.stream_options)) return body;
+
+  const streamOptions = { ...body.stream_options };
+  delete streamOptions.reasoning_summary_delivery;
+  const next = { ...body };
+  if (Object.keys(streamOptions).length > 0) next.stream_options = streamOptions;
+  else delete next.stream_options;
+  return next;
 }
 
 function stripInvalidItemIds(body: unknown): unknown {
@@ -156,6 +172,49 @@ function stripUnsupportedReasoningParams(body: unknown): unknown {
   const { context: _ctx, summary: _sum, generate_summary: _gs, ...rest } = reasoning;
   if (_ctx === undefined && _sum === undefined && _gs === undefined) return body;
   return { ...body, reasoning: Object.keys(rest).length > 0 ? rest : undefined };
+}
+
+/**
+ * A false model capability prevents Codex from emitting summary fields after the catalog refresh.
+ * Strip them here as well so an already-running client with a stale catalog cannot keep sending an
+ * upstream-rejected `reasoning_summary_delivery` value (issue #323).
+ */
+function stripDisabledReasoningSummaries(
+  body: unknown,
+  provider: OcxProviderConfig,
+  modelId: string,
+): unknown {
+  if (modelRecordValue(provider.modelSupportsReasoningSummaries, modelId) !== false || !isPlainObject(body)) {
+    return body;
+  }
+
+  let changed = false;
+  let streamOptions = body.stream_options;
+  if (isPlainObject(streamOptions) && Object.hasOwn(streamOptions, "reasoning_summary_delivery")) {
+    const { reasoning_summary_delivery: _delivery, ...rest } = streamOptions;
+    streamOptions = rest;
+    changed = true;
+  }
+
+  let reasoning = body.reasoning;
+  if (isPlainObject(reasoning)) {
+    const { summary: _summary, generate_summary: _generateSummary, ...rest } = reasoning;
+    if (_summary !== undefined || _generateSummary !== undefined) {
+      reasoning = rest;
+      changed = true;
+    }
+  }
+
+  if (!changed) return body;
+  return {
+    ...body,
+    ...(isPlainObject(streamOptions) && Object.keys(streamOptions).length > 0
+      ? { stream_options: streamOptions }
+      : { stream_options: undefined }),
+    ...(isPlainObject(reasoning) && Object.keys(reasoning).length > 0
+      ? { reasoning }
+      : { reasoning: undefined }),
+  };
 }
 
 /**
@@ -268,6 +327,55 @@ function stripSparkCompatibility(body: unknown): unknown {
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+const MAX_RESPONSES_CALL_ID_LENGTH = 64;
+const REPAIRED_CALL_ID_PREFIX = "call_ocx_";
+const REPAIRED_CALL_ID_DIGEST_LENGTH = MAX_RESPONSES_CALL_ID_LENGTH - REPAIRED_CALL_ID_PREFIX.length;
+
+/**
+ * The ChatGPT Responses backend rejects input `call_id` values longer than 64 characters. Codex
+ * sidechat/fork replay can namespace call ids from routed providers past that limit. Forward mode
+ * already sends explicit replay input without `previous_response_id`, so it is safe to replace each
+ * oversized id and every matching call/output occurrence with one deterministic request-local alias.
+ * Raw API-key continuations are intentionally excluded because an output-only continuation may
+ * reference a call stored upstream under the original id. Proxy-expanded API-key replays are
+ * explicit and stateless here, so they are safe to repair too.
+ */
+function repairOversizedReplayCallIds(body: unknown): unknown {
+  if (!isPlainObject(body) || !Array.isArray(body.input)) return body;
+
+  const occupied = new Set<string>();
+  for (const item of body.input) {
+    if (!isPlainObject(item) || typeof item.call_id !== "string") continue;
+    if (item.call_id.length <= MAX_RESPONSES_CALL_ID_LENGTH) occupied.add(item.call_id);
+  }
+
+  const aliases = new Map<string, string>();
+  let changed = false;
+  const input = body.input.map(item => {
+    if (!isPlainObject(item) || typeof item.call_id !== "string") return item;
+    const original = item.call_id;
+    if (original.length <= MAX_RESPONSES_CALL_ID_LENGTH) return item;
+
+    let alias = aliases.get(original);
+    if (!alias) {
+      let salt = 0;
+      do {
+        const hashInput = salt === 0 ? original : `${original}\0${salt}`;
+        const digest = createHash("sha256").update(hashInput).digest("hex");
+        alias = `${REPAIRED_CALL_ID_PREFIX}${digest.slice(0, REPAIRED_CALL_ID_DIGEST_LENGTH)}`;
+        salt += 1;
+      } while (occupied.has(alias));
+      aliases.set(original, alias);
+      occupied.add(alias);
+    }
+
+    changed = true;
+    return { ...item, call_id: alias };
+  });
+
+  return changed ? { ...body, input } : body;
 }
 
 /** Flatten a Responses tool-output `output` value (string or content-part array) to plain text. */
@@ -440,8 +548,13 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
           headers["chatgpt-account-id"] = override.chatgptAccountId;
         }
       } else {
-        const base = provider.baseUrl.replace(/\/v1\/?$/, "");
-        url = `${base}/v1/responses`;
+        if (provider.responsesPath === undefined) {
+          const base = provider.baseUrl.replace(/\/v1\/?$/, "");
+          url = `${base}/v1/responses`;
+        } else {
+          const base = provider.baseUrl.replace(/\/$/, "");
+          url = `${base}${provider.responsesPath}`;
+        }
         if (provider.apiKey) headers["Authorization"] = `Bearer ${provider.apiKey}`;
         if (provider.headers) Object.assign(headers, provider.headers);
       }
@@ -452,13 +565,23 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         parsed._rawBody,
         forward || parsed._previousResponseInputExpanded === true,
       );
-      if (forward) outBody = repairOrphanedInputItems(outBody, unexpandedMiss);
+      if (forward) {
+        outBody = repairOrphanedInputItems(outBody, unexpandedMiss);
+      }
       else outBody = stripConflictingHostedTools(outBody);
+      if (forward || parsed._previousResponseInputExpanded === true) {
+        outBody = repairOversizedReplayCallIds(outBody);
+      }
+      outBody = stripUnsupportedReasoningSummaryDelivery(outBody, parsed.modelId);
       return {
         url,
         method: "POST",
         headers,
-        body: JSON.stringify(stripSparkCompatibility(stripUnsupportedReasoningParams(stripItemIdsWhenUnstored(stripInvalidItemIds(stripUnsupportedHostedTools(sanitizeReasoningInputContent(scrubOcxCompactionItems(outBody)))))))),
+        body: JSON.stringify(stripDisabledReasoningSummaries(
+          stripSparkCompatibility(stripUnsupportedReasoningParams(stripItemIdsWhenUnstored(stripInvalidItemIds(stripUnsupportedHostedTools(sanitizeReasoningInputContent(scrubOcxCompactionItems(outBody))))))),
+          provider,
+          parsed.modelId,
+        )),
       };
     },
 

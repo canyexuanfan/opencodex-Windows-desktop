@@ -65,8 +65,9 @@ env_http_headers = { "x-opencodex-api-key" = "OPENCODEX_API_AUTH_TOKEN" }
 # supports_websockets = true   # config.websockets가 true일 때만
 ```
 
-두 모드 모두 `$CODEX_HOME/opencodex.config.toml`을 참고용 폴백 설정으로 작성합니다. loopback 모드에서는
-자동 주입이 빠졌을 때 직접 합칠 수 있는 루트 키가, non-loopback 모드에서는 전용 프로바이더 설정이 담깁니다.
+OpenCodex가 라우팅을 소유할 때 두 모드 모두 `$CODEX_HOME/opencodex.config.toml`을 참고용 폴백 설정으로
+작성합니다. loopback 모드에서는 자동 주입이 빠졌을 때 직접 합칠 수 있는 루트 키가, non-loopback 모드에서는
+전용 프로바이더 설정이 담깁니다. 외부 프로바이더 모드에서는 이 프로필을 변경하지 않습니다.
 
 :::caution
 `openai_base_url`, `model_provider`, `model_catalog_json` 같은 루트 키는 첫 번째 `[table]` 헤더보다
@@ -134,7 +135,7 @@ Codex의 `spawn_agent`는 우선순위로 정렬한 뒤 **선택기에 표시되
   "subagentModels": [
     "gpt-5.5",
     "gpt-5.6-sol",
-    "anthropic/claude-opus-4-8",
+    "anthropic/claude-opus-5",
     "xai/grok-4.5",
     "cursor/gpt-5.6-terra"
   ]
@@ -142,7 +143,7 @@ Codex의 `spawn_agent`는 우선순위로 정렬한 뒤 **선택기에 표시되
 ```
 
 우선순위 순위: featured (0–4) < 기타 라우팅됨 (5) < 네이티브 (9). 이는
-[웹 대시보드](/opencodex/ko/guides/web-dashboard/)에서도 관리할 수 있습니다.
+[웹 대시보드](/ko/guides/web-dashboard/)에서도 관리할 수 있습니다.
 
 ## Codex 계정 워밍업
 
@@ -166,6 +167,6 @@ ocx restore    # 중지하지 않고 복원  (별칭: ocx eject)
 ocx restore back # 실행 중인 프록시를 일반 Codex에 다시 연결
 ```
 
-opencodex가 관리형 [백그라운드 서비스](/opencodex/ko/reference/cli/#ocx-service)로 실행될 때는
+opencodex가 관리형 [백그라운드 서비스](/ko/reference/cli/#ocx-service)로 실행될 때는
 `OCX_SERVICE=1`을 설정하므로 서비스가 주도하는 재시작이 Codex 설정을 흔들지 **않습니다** — 명시적인
 `ocx stop` / `ocx service stop`만이 네이티브 Codex를 복원합니다.

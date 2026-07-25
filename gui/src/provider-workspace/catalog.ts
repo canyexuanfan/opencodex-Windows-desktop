@@ -35,6 +35,8 @@ export interface WorkspaceProvider {
   defaultModel?: string;
   /** Static/configured model ids from provider config (offline fallback). */
   models?: string[];
+  /** Whether the proxy fetches the provider's live model catalog (default true). */
+  liveModels?: boolean;
   authMode?: "key" | "forward" | "oauth" | "local" | string;
   keyOptional?: boolean;
   /** Free pricing (may still require an API key). */

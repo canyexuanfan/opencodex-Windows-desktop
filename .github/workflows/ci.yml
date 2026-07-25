@@ -72,6 +72,9 @@ jobs:
       - name: Test
         run: bun test --isolate tests
 
+      - name: GUI tests
+        run: cd gui && bun test tests
+
       - name: Privacy scan
         run: bun run privacy:scan
 

@@ -66,9 +66,10 @@ env_http_headers = { "x-opencodex-api-key" = "OPENCODEX_API_AUTH_TOKEN" }
 # supports_websockets = true   # only when config.websockets is true
 ```
 
-In both modes opencodex writes `$CODEX_HOME/opencodex.config.toml` as a reference/fallback config.
-On loopback it contains the root keys you can merge manually if automatic injection was removed;
-on non-loopback it contains the dedicated provider form.
+When OpenCodex owns routing, both modes write `$CODEX_HOME/opencodex.config.toml` as a
+reference/fallback config. On loopback it contains the root keys you can merge manually if automatic
+injection was removed; on non-loopback it contains the dedicated provider form. External-provider
+mode leaves this profile untouched.
 
 :::caution
 Root keys such as `openai_base_url`, `model_provider`, and `model_catalog_json` **must** sit before the
@@ -127,6 +128,74 @@ Routed catalog entries also get their GPT-5 identity rewritten to the real upstr
 Reasoning controls come from provider/model metadata across Codex's `low | medium | high | xhigh |
 max | ultra` ladder; unsupported values are mapped or clamped before the upstream request.
 
+### Custom model display names
+
+A custom model can carry a human-readable **display name** that overrides the label Codex shows in
+its model picker, without changing anything about how the model is routed. The display name maps to
+the catalog entry's `display_name` field only — the routing slug (`<provider>/<model>`), alias
+collision order, provider, and native OpenAI marketing names are all left untouched.
+
+Add a display name from the CLI (the proxy syncs the catalog right away when live):
+
+```bash
+ocx models add deepseek deepseek-v4 --display-name "DeepSeek V4" --context-window 128000
+```
+
+You can also set or edit it through the management API (`POST /api/custom-models`,
+`PUT /api/custom-models/<id>` with a `displayName` string) and the web dashboard. A `/` is rejected
+because it would collide with the routed-slug separator.
+
+The display name is **display-only and stable across regeneration**. Every `ocx sync` and catalog
+refresh re-derives routed entries from `config.json` (including `customModels`), so the configured
+name is reapplied instead of drifting back to the routed slug. A managed service restart also attempts
+this sync shortly after the proxy binds. If that best-effort boot sync fails, for example during an
+offline login, the previously persisted catalog is retained and the next successful `ocx sync`
+reapplies the configured name. Genuine upstream native names (e.g. `gpt-5.6-sol` →
+"GPT-5.6-Sol") come from the pinned upstream snapshot and are never overridden by a custom display
+name.
+
+### External provider managers
+
+If `config.toml` already selects a provider other than `openai` or `opencodex`, OpenCodex leaves the
+file unchanged and skips profile writes, catalog/cache refresh, and both immediate and background
+Codex history migration. Tools that manage a custom provider often tag existing sessions with that
+provider id; replacing the active id can make those intact sessions disappear from Codex's history
+view. The same protection applies to an external provider selected by a legacy root profile.
+
+Keep one tool as the owner of Codex provider configuration. To use OpenCodex behind an existing
+provider manager, point that provider at `http://127.0.0.1:10100/v1` with Responses passthrough
+(`wire_api = "responses"` in Codex TOML), not Chat Completions translation. When proxy API auth is
+enabled, also pass `x-opencodex-api-key` from `OPENCODEX_API_AUTH_TOKEN`, matching the non-loopback
+provider form above. To let OpenCodex inject routing directly, first switch Codex back to its
+built-in `openai` provider and remove any user-owned root `openai_base_url`, then rerun `ocx start`.
+
+### Catalog troubleshooting
+
+If a model is missing from Codex, or the catalog order/visibility looks wrong, check in order:
+
+1. **`selectedModels`** on the provider — a non-empty allowlist exposes only those ids to Codex;
+   empty or omitted exposes all discovered models. An id not in the allowlist never reaches the
+   catalog.
+2. **`disabledModels`** (top level) — hides models from both the catalog and `/v1/models`, and flips
+   bare native GPT slugs to `visibility: "hide"`.
+3. **`liveModels: false` with empty `models`** — when live discovery is off and `models` is empty or
+   omitted, opencodex exposes no routed models for that provider.
+4. **Cursor `GetUsableModels`** — the Cursor adapter discovers models through its protobuf
+   `GetUsableModels` RPC, not `/models`, so a Cursor-side change can alter which ids are visible
+   independently of other providers.
+5. **Cache and `ocx sync`** — live catalogs are cached for about five minutes (`modelCacheTtlMs`,
+   default `300000`). Run `ocx sync` to force a fresh fetch and rewrite the catalog immediately.
+
+:::caution[Other local writers]
+Catalog writes (`opencodex-catalog.json`, `config.toml`) are atomic **inside** opencodex, which only
+prevents half-written files when two opencodex-owned writers race. That does **not** stop another
+local process, file watcher, or sync agent from rewriting catalog visibility or order after opencodex
+has written. Codex keeps its separate `models_cache.json` and can refresh it independently, changing
+the visible list without rewriting `opencodex-catalog.json`. If models flip unexpectedly while the
+proxy is running, stop or reconfigure the competing writers, then run `ocx sync` — this is an
+external-writer hazard, not a confirmed opencodex defect.
+:::
+
 ## The subagent picker
 
 Codex's `spawn_agent` advertises the first **5 picker-visible catalog models** after sorting by
@@ -138,7 +207,7 @@ priority. `subagentModels` accepts up to five ids, either bare native GPT slugs 
   "subagentModels": [
     "gpt-5.5",
     "gpt-5.6-sol",
-    "anthropic/claude-opus-4-8",
+    "anthropic/claude-opus-5",
     "xai/grok-4.5",
     "cursor/gpt-5.6-terra"
   ]
@@ -146,7 +215,7 @@ priority. `subagentModels` accepts up to five ids, either bare native GPT slugs 
 ```
 
 Priority ranking: featured (0–4) < other routed (5) < native (9). You can also manage this from the
-[web dashboard](/opencodex/guides/web-dashboard/).
+[web dashboard](/guides/web-dashboard/).
 
 ## Codex account warmup
 
@@ -170,6 +239,6 @@ ocx restore    # restore without stopping  (alias: ocx eject)
 ocx restore back # point plain Codex at the running proxy again
 ```
 
-When opencodex runs as a managed [background service](/opencodex/reference/cli/#ocx-service), it sets
+When opencodex runs as a managed [background service](/reference/cli/#ocx-service), it sets
 `OCX_SERVICE=1` so a service-driven restart does **not** thrash the Codex config — only an explicit
 `ocx stop` / `ocx service stop` restores native Codex.

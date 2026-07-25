@@ -16,7 +16,7 @@ Pool(デフォルト、メイン + 追加アカウント)または Direct(現在
    該当プロバイダーが使われ、ID はスラッシュの後部に切り詰められます。
 
    ```text
-   anthropic/claude-opus-4-8   →  provider "anthropic",   model "claude-opus-4-8"
+   anthropic/claude-opus-5     →  provider "anthropic",   model "claude-opus-5"
    ollama-cloud/glm-5.2        →  provider "ollama-cloud", model "glm-5.2"
    openrouter/openai/gpt-5.6-sol → provider "openrouter",  model "openai/gpt-5.6-sol"
    ```
@@ -89,4 +89,4 @@ Pool(デフォルト、メイン + 追加アカウント)または Direct(現在
 - **プレフィックスパターンは便利機能**であり保証ではありません: 該当名(例: `anthropic`、`openai`、`groq`)の
   プロバイダーが実際に設定されているときのみ解釈されます。
 
-これらのルールが読むプロバイダーフィールドは[設定](/opencodex/ja/reference/configuration/)を参照してください。
+これらのルールが読むプロバイダーフィールドは[設定](/ja/reference/configuration/)を参照してください。

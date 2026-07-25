@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useI18n, LOCALES, type TFn } from "../i18n/shared";
 import { formatTokens } from "../format-tokens";
 import { statusCodeInfo } from "../status-codes";
 import { IconX } from "../icons";
 import { modelLabel } from "../model-display";
-import { EmptyState } from "../ui";
+import { EmptyState, Notice } from "../ui";
 import Debug from "./Debug";
 
 type LogsTab = "logs" | "debug";
@@ -251,6 +251,8 @@ function modelTitle(log: LogEntry): string {
 export default function Logs({ apiBase }: { apiBase: string }) {
   const { t, locale } = useI18n();
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [detail, setDetail] = useState<LogEntry | null>(null);
   const [surfaceFilter, setSurfaceFilter] = useState<"all" | "claude" | "codex">("all");
@@ -275,19 +277,28 @@ export default function Logs({ apiBase }: { apiBase: string }) {
     else if (e.key === "ArrowRight" || e.key === "End") { e.preventDefault(); selectTab("debug"); document.getElementById("logs-tab-debug")?.focus(); }
   };
 
+  const fetchLogs = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${apiBase}/api/logs`);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`.trim());
+      setLogs(await res.json());
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : "";
+      setError(detail ? `${t("logs.loadError")} ${detail}` : t("logs.loadError"));
+    } finally {
+      setLoading(false);
+    }
+  }, [apiBase, t]);
+
   useEffect(() => {
     if (tab !== "logs") return;
-    const fetchLogs = async () => {
-      try {
-        const res = await fetch(`${apiBase}/api/logs`);
-        setLogs(await res.json());
-      } catch { /* ignore */ }
-    };
-    fetchLogs();
+    void fetchLogs();
     if (!autoRefresh) return;
-    const interval = setInterval(fetchLogs, 2000);
+    const interval = setInterval(() => void fetchLogs(), 2000);
     return () => clearInterval(interval);
-  }, [apiBase, autoRefresh, tab]);
+  }, [autoRefresh, fetchLogs, tab]);
 
   const detailInfo = detail ? statusCodeInfo(detail.status, locale) : null;
   const filteredLogs = logs.filter(log => (
@@ -378,9 +389,20 @@ export default function Logs({ apiBase }: { apiBase: string }) {
         </div>
       </div>
 
-      {filteredLogs.length === 0 ? (
+      {error ? (
+        <Notice tone="err">
+          {error}{" "}
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => void fetchLogs()} disabled={loading}>
+            {t("common.retry")}
+          </button>
+        </Notice>
+      ) : loading && logs.length === 0 ? (
+        <EmptyState title={t("common.loading")} />
+      ) : filteredLogs.length === 0 ? (
         <EmptyState title={t("logs.noRequests")} />
       ) : (
+        <>
+        {loading && <div className="row muted" role="status"><span className="spin" /> {t("common.loading")}</div>}
         <div ref={scrollContainerRef} className="tbl-wrap" style={{ overflowY: "auto", maxHeight: "calc(100vh - 260px)" }}>
           <table className="tbl logs-table">
             <thead style={{ position: "sticky", top: 0, zIndex: 1, background: "var(--surface)" }}>
@@ -481,6 +503,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
             </tbody>
           </table>
         </div>
+        </>
       )}
 
       {detail && (

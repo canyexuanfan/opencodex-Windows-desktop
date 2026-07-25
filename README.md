@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ru.md">Русский</a> · <a href="README.ja.md">日本語</a> · 📖 <a href="https://lidge-jun.github.io/opencodex/"><b>Full documentation →</b></a>
+  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ru.md">Русский</a> · <a href="README.ja.md">日本語</a> · 📖 <a href="https://opencodex.me/"><b>Full documentation →</b></a>
 </p>
 
 <p align="center">
@@ -144,7 +144,7 @@ working too.
 
 ```bash
 # Use Claude Opus through Anthropic
-codex -m "anthropic/claude-opus-4-8" "Explain this stack trace"
+codex -m "anthropic/claude-opus-5" "Explain this stack trace"
 
 # Use Gemini through Google
 codex -m "google/gemini-3-pro" "Write unit tests for auth.ts"
@@ -229,12 +229,13 @@ next Codex session. opencodex keeps these behaviors:
 
 - **Use any LLM with Codex.** 5 protocol adapters cover Anthropic Messages, Google Gemini, Azure, OpenAI Responses passthrough, and every OpenAI-compatible Chat Completions endpoint — that's 40+ providers out of the box.
 - **Use any LLM with Claude Code too.** The same daemon serves the Anthropic Messages API (`/v1/messages` + `count_tokens`): `ocx claude` launches Claude Code fully wired, and routed models appear in its native `/model` picker via gateway model discovery (`claude-ocx-<provider>--<model>` aliases, Claude Code 2.1.129+). Configure slots and model maps on the dashboard's Claude page.
+- **Use any LLM with GitHub Copilot App too.** Point Copilot's Model providers at `http://127.0.0.1:10100/v1` — OpenCodex serves OpenAI-compatible `GET /v1/models` and `POST /v1/chat/completions` so routed models sync into the app. See [docs/github-copilot-app.md](docs/github-copilot-app.md).
 - **Pool ChatGPT accounts safely.** Keep existing Codex threads on one account while new sessions
   can auto-pick a lower-usage account from the pool, with quota refresh and non-PII request labels.
 - **Log in once, skip the API key.** OAuth support for xAI, Anthropic, and Kimi means you can authenticate with your existing account. Tokens auto-refresh. Or forward your `codex login`, paste an API key, or use `${ENV_VAR}` references — your call.
 - **Works everywhere Codex does.** Injects into Codex CLI, TUI, App, and SDK automatically. Routed models show up in Codex's model picker just like native ones.
 - **History-safe injection.** On local installs the proxy points Codex's own built-in `openai` provider at itself via a single `openai_base_url` line — new threads keep their native provider tag, so ongoing chat history is never remapped and an unclean shutdown can't hide it. (Threads re-tagged by older versions are migrated back once on the first start; remote/LAN binds use a dedicated provider entry instead, since they need an API-key header.)
-- **Delegate to the right model.** Feature up to five routed or native models in Codex's subagent picker from the dashboard or config — route complex tasks to a reasoning model, fast tasks to a cheap one. On the v2 multi-agent surface (GPT-5.6 Sol/Terra) the proxy injects compact delegation guidance: a preferred sub-agent model and effort (`injectionModel` / `injectionEffort`), the featured-model roster with the effort ladder each supports, and the `fork_turns` rules that let cross-model `spawn_agent` calls apply their overrides. Known limitation: when a native parent spawns a routed child, the task body can currently arrive backend-encrypted and be lost ([#92](https://github.com/lidge-jun/opencodex/issues/92)) — use the v1 surface for reliable cross-provider delegation. Want your own wording? Set `injectionPrompt` with `{{model}}` / `{{effort}}` / `{{roster}}` placeholders.
+- **Delegate to the right model.** Feature up to five routed or native models in Codex's subagent picker from the dashboard or config — route complex tasks to a reasoning model, fast tasks to a cheap one. On the v2 multi-agent surface (GPT-5.6 Sol/Terra) the proxy injects compact, schema-agnostic delegation guidance: an eligible preferred sub-agent model and effort (`injectionModel` / `injectionEffort`), the configured intersection of Codex's picker-visible, v2-compatible, priority-sorted first five with available effort ladders, and the `fork_turns` rules that let cross-model `spawn_agent` calls apply their overrides. Known limitation: when a native parent spawns a routed child, the task body can currently arrive backend-encrypted and be lost ([#92](https://github.com/lidge-jun/opencodex/issues/92)) — use the v1 surface for reliable cross-provider delegation. Want your own wording? Set `injectionPrompt` with `{{model}}` / `{{effort}}` / `{{roster}}` placeholders.
 - **Prepare for preview-gated OpenAI rollouts.** GPT-5.6 Sol/Terra/Luna entries preserve the upstream effort ladders. Direct/Multi use the 372k Codex contract; OpenAI API and OpenRouter use 1.05M metadata when upstream access is available.
 - **Give any model superpowers.** Non-OpenAI models get real web search and image understanding via a `gpt-5.4-mini` sidecar over your ChatGPT login.
 - **Generate images natively.** Codex's standalone `image_gen` tool uses `POST /v1/images/generations` for generation and `POST /v1/images/edits` for edits; it is separate from the hosted Responses `image_generation` tool.
@@ -259,7 +260,7 @@ next Codex session. opencodex keeps these behaviors:
 | Ollama / vLLM / LM Studio (local) | `openai-chat` | key (usually blank) |
 | Any OpenAI-compatible endpoint | `openai-chat` | key |
 
-Plus DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Mistral, Hugging Face, NVIDIA NIM, MiniMax, Qwen Cloud, Tencent Cloud Coding Plan, SiliconFlow, and more. See the full list with `ocx init` or in the [provider docs](https://lidge-jun.github.io/opencodex/reference/configuration/).
+Plus DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Mistral, Hugging Face, NVIDIA NIM, MiniMax, Qwen Cloud, Tencent Cloud Coding Plan, SiliconFlow, and more. See the full list with `ocx init` or in the [provider docs](https://opencodex.me/reference/configuration/).
 
 Cursor support is a staged experimental bridge: it appears in `ocx init` and the dashboard Add
 Provider picker as a local config with Cursor's static public model catalog. Live
@@ -304,13 +305,19 @@ opencodex has two ways to auto-start the proxy:
 | **How** | OS service manager (launchd / systemd / schtasks) | Wraps script launchers for `codex`; real `codex.exe` is left untouched |
 | **When** | Always running after login | On-demand — runs `ocx ensure` when `codex` is launched |
 | **Restart** | Auto-restarts on crash | Starts once per `codex` invocation |
-| **Codex updates** | Unaffected | Repairs on next `ocx codex-shim install` or `ocx update` |
+| **Codex updates** | Unaffected | A completed stable launcher replacement is repaired by the next ordinary `ocx` command |
 | **Remove** | `ocx service uninstall` | `ocx codex-shim uninstall` |
 
 Use the **service** for always-on proxy (recommended for development machines). Use the **shim** for
 lightweight, on-demand proxy startup without a background daemon. Shim autostart is enabled by default
 and can be disabled from the GUI dashboard. If the configured proxy port is already busy, `ocx start`
 automatically picks another free local port and updates Codex to use it.
+
+If an external Codex update overwrites an installed shim, the next ordinary `ocx` command backs up
+the stable new launcher and restores the shim. A launcher that is still changing is left untouched
+and retried later. Repair failures warn without failing the requested command; use
+`ocx codex-shim install` as the manual fallback. Set `codexShimAutoRestore` to `false`, or set
+`OPENCODEX_CODEX_SHIM_AUTO_RESTORE=0` for a process-level opt-out.
 
 ### Uninstall
 
@@ -356,7 +363,9 @@ Here's a typical multi-provider setup:
 Provider entries can also annotate routed catalog metadata and output defaults. Use `contextWindow`
 for a provider-wide Codex-visible context cap, `modelContextWindows` for model-specific caps, and
 `modelInputModalities` for model-specific catalog input hints such as `["text"]` or
-`["text", "image"]`. For OpenAI-compatible chat providers whose upstream default response budget is
+`["text", "image"]`. For Responses models that reject Codex reasoning-summary delivery fields, set
+`modelSupportsReasoningSummaries.<model-id>` to `false`; this updates the catalog and strips stale
+summary-delivery fields at the adapter boundary. For OpenAI-compatible chat providers whose upstream default response budget is
 too small, set `defaultMaxOutputTokens` or per-model `modelMaxOutputTokens`; explicit
 `max_output_tokens` from the client still wins, and unset configs still omit `max_tokens`. Context
 values cap live `/models` metadata; they never raise a smaller live context window. The bundled
@@ -435,11 +444,11 @@ backup support existed, you can also run the explicit recovery command:
 ocx recover-history --legacy-openai
 ```
 
-See the **[Configuration reference](https://lidge-jun.github.io/opencodex/reference/configuration/)** for every field.
+See the **[Configuration reference](https://opencodex.me/reference/configuration/)** for every field.
 
 ## Documentation
 
-The public docs — install, providers, routing, sidecars, Codex integration, Codex App model picker, and CLI/config reference — are built from [`docs-site/`](./docs-site) and published to **[lidge-jun.github.io/opencodex](https://lidge-jun.github.io/opencodex/)**.
+The public docs — install, providers, routing, sidecars, Codex integration, Codex App model picker, and CLI/config reference — are built from [`docs-site/`](./docs-site) and published to **[opencodex.me](https://opencodex.me/)**.
 
 Maintainer source-of-truth notes live under [`structure/`](./structure). Historical investigations remain under [`docs/`](./docs).
 Contributor setup lives in [`CONTRIBUTING.md`](./CONTRIBUTING.md), and security reporting guidance

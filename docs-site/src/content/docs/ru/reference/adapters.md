@@ -22,7 +22,7 @@ interface ProviderAdapter {
 `parseStream` / `parseResponse` поднимают ответ провайдера обратно во внутренние события
 `AdapterEvent`. `fetchResponse` позволяет адаптеру самому управлять повторными попытками и
 таймаутами, а `runTurn` поддерживает транспорты, которые нельзя представить как один HTTP-запрос
-с последующим одним потоком ответа. Затем [`bridge.ts`](/opencodex/ru/reference/architecture/#мост)
+с последующим одним потоком ответа. Затем [`bridge.ts`](/ru/reference/architecture/#мост)
 превращает события в Responses SSE.
 
 ## `openai-chat`
@@ -48,10 +48,11 @@ interface ProviderAdapter {
 запроса и стримит ответ обратно **без преобразования**.
 **Аутентификация:** `forward` (ретрансляция заголовков вызывающей стороны) или `key`.
 
-- URL для `forward` → `{baseUrl}/responses`; URL для `key` → `{baseUrl}/v1/responses`.
+- URL для `forward` → `{baseUrl}/responses`. Провайдер с `key` по умолчанию сохраняет прежнее построение `{baseUrl}/v1/responses`.
+- Провайдер с `key` может задать проверенный относительный `responsesPath`: адаптер удаляет один завершающий `/` из `baseUrl` и отправляет запрос на `{trimmedBaseUrl}{responsesPath}`. Для Ark Agent Plan используйте `baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3"` и `responsesPath: "/responses"`.
 - В режиме `forward` ретранслируется только безопасный allowlist заголовков (`FORWARD_HEADERS`):
   authorization, ChatGPT account id и заголовки OpenAI beta/originator/session. Это путь входа
-  через ChatGPT, на котором также работают [сайдкары](/opencodex/ru/guides/sidecars/).
+  через ChatGPT, на котором также работают [сайдкары](/ru/guides/sidecars/).
 
 ## `anthropic`
 

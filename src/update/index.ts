@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { getConfigDir, loadConfig, readPid, readRuntimePort } from "../config";
+import { handoffWindowsTrayForUpdate, planWindowsTrayUpdate } from "./tray-update-plan.mjs";
 
 /**
  * A `codex-history-backup-*.json` surviving a stop means the native-history restore was
@@ -170,6 +171,26 @@ export async function runUpdate(): Promise<void> {
     const { isServiceInstalled } = await import("../service");
     serviceWasInstalled = isServiceInstalled();
   } catch { /* best-effort */ }
+  let trayWasInstalled = false;
+  let trayWasRunning = false;
+  if (process.platform === "win32") {
+    try {
+      const { getWindowsTrayStatus, startWindowsTray, stopWindowsTray } = await import("../tray/windows");
+      const tray = getWindowsTrayStatus();
+      const trayPlan = handoffWindowsTrayForUpdate(tray, {
+        stop: () => {
+          const stopped = stopWindowsTray();
+          return { exitStatus: 0, running: stopped.running };
+        },
+        start: () => startWindowsTray(),
+      });
+      trayWasInstalled = trayPlan.refreshAfterReplacement;
+      trayWasRunning = trayPlan.restoreOnFailure;
+    } catch (error) {
+      console.error(`⚠️  Could not stop the Windows tray; aborting before package replacement: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+  }
 
   // Capture listen target before stop clears runtime state (same contract as GUI update worker).
   // Prefer a live runtime record; a stale crashed leftover must not override config.port.
@@ -200,6 +221,12 @@ export async function runUpdate(): Promise<void> {
     });
     if (stopStdio === "pipe") logSpawnOutput("", stop);
     if (stop.status !== 0 || readPid() || readRuntimePort()) {
+      if (trayWasRunning) {
+        try {
+          const { startWindowsTray } = await import("../tray/windows");
+          startWindowsTray();
+        } catch { /* preserve the proxy stop failure */ }
+      }
       console.error("⚠️  Could not stop the running proxy; aborting the update. Run 'ocx stop' and retry.");
       process.exit(1);
     }
@@ -237,6 +264,16 @@ export async function runUpdate(): Promise<void> {
       }
     } catch (e) {
       console.warn(`⚠️  Shim repair skipped: ${e instanceof Error ? e.message : e}`);
+    }
+    if (trayWasInstalled) {
+      const trayArgs = [process.argv[1], ...planWindowsTrayUpdate({ installed: trayWasInstalled, running: trayWasRunning }).installArgs];
+      const tray = spawnSync(process.execPath, trayArgs, { stdio: "inherit", windowsHide: true });
+      if (tray.status === 0) {
+        console.log("🔧 Refreshed Windows tray startup paths.");
+      } else {
+        console.warn("⚠️  Windows tray refresh failed. Run 'ocx tray install'.");
+        if (trayWasRunning) spawnSync(process.execPath, [process.argv[1], "tray", "start"], { stdio: "ignore", windowsHide: true });
+      }
     }
     // The stop above unloaded any managed service; reinstall it with the NEW files
     // (spawn the fresh cli.ts so updated code writes the baked paths) so a
@@ -286,6 +323,12 @@ export async function runUpdate(): Promise<void> {
       console.log("Restart the proxy:  ocx start");
     }
   } else {
+    if (trayWasRunning) {
+      try {
+        const { startWindowsTray } = await import("../tray/windows");
+        startWindowsTray();
+      } catch { /* keep the primary update failure */ }
+    }
     console.error(`\n⚠️  Update failed (${bin} exit ${r.status ?? "?"}). Try manually:  ${bin} ${cmdArgs.join(" ")}`);
     process.exit(1);
   }

@@ -40,6 +40,7 @@ export default function ProviderSettings({
   const [authMode, setAuthMode] = useState(initialAuth);
   const [note, setNote] = useState(item.note ?? "");
   const [allowPrivateNetwork, setAllowPrivateNetwork] = useState(item.allowPrivateNetwork ?? false);
+  const [liveModels, setLiveModels] = useState(item.liveModels !== false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [baseUrlChoices, setBaseUrlChoices] = useState<CatalogPreset["baseUrlChoices"]>();
@@ -54,9 +55,10 @@ export default function ProviderSettings({
     setAuthMode(String(item.authMode ?? (item.keyOptional ? "local" : "key")));
     setNote(item.note ?? "");
     setAllowPrivateNetwork(item.allowPrivateNetwork ?? false);
+    setLiveModels(item.liveModels !== false);
     setMsg(null);
     queueMicrotask(() => setEndpointChoice(matchChoiceId(baseUrlChoices, item.baseUrl)));
-  }, [item.adapter, item.baseUrl, item.defaultModel, item.authMode, item.keyOptional, item.note, item.allowPrivateNetwork, baseUrlChoices]);
+  }, [item.adapter, item.baseUrl, item.defaultModel, item.authMode, item.keyOptional, item.note, item.allowPrivateNetwork, item.liveModels, baseUrlChoices]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
@@ -89,7 +91,8 @@ export default function ProviderSettings({
     || defaultModel.trim() !== (item.defaultModel ?? "")
     || authMode !== String(item.authMode ?? (item.keyOptional ? "local" : "key"))
     || note.trim() !== (item.note ?? "")
-    || allowPrivateNetwork !== (item.allowPrivateNetwork ?? false);
+    || allowPrivateNetwork !== (item.allowPrivateNetwork ?? false)
+    || liveModels !== (item.liveModels !== false);
 
   useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); }, [dirty, onDirtyChange]);
 
@@ -119,7 +122,7 @@ export default function ProviderSettings({
       : baseUrl.trim();
     if (!adapter.trim() || !nextBaseUrl) { setMsg({ ok: false, text: t("pws.adapterBaseRequired") }); return false; }
     setSaving(true); setMsg(null);
-    const patch: ProviderUpdatePatch = { adapter: adapter.trim(), baseUrl: nextBaseUrl, defaultModel: defaultModel.trim(), authMode, note: note.trim(), allowPrivateNetwork };
+    const patch: ProviderUpdatePatch = { adapter: adapter.trim(), baseUrl: nextBaseUrl, defaultModel: defaultModel.trim(), authMode, note: note.trim(), allowPrivateNetwork, liveModels };
     const res = await onUpdateProvider(item.name, patch);
     setSaving(false);
     setMsg(res.ok ? { ok: true, text: t("pws.settingsSaved") } : { ok: false, text: res.error || t("prov.saveFailed") });
@@ -139,7 +142,7 @@ export default function ProviderSettings({
   const discard = () => {
     setAdapter(item.adapter); setBaseUrl(item.baseUrl);
     setDefaultModel(item.defaultModel ?? ""); setAuthMode(initialAuth);
-    setNote(item.note ?? ""); setAllowPrivateNetwork(item.allowPrivateNetwork ?? false); setMsg(null);
+    setNote(item.note ?? ""); setAllowPrivateNetwork(item.allowPrivateNetwork ?? false); setLiveModels(item.liveModels !== false); setMsg(null);
     setEndpointChoice(matchChoiceId(baseUrlChoices, item.baseUrl));
   };
 
@@ -226,6 +229,13 @@ export default function ProviderSettings({
       <label className="pwi-settings-field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
         <input type="checkbox" checked={allowPrivateNetwork} onChange={e => setAllowPrivateNetwork(e.target.checked)} />
         <span className="pwi-settings-label">{t("pws.allowPrivateNetwork")}</span>
+      </label>
+      <label className="pwi-settings-field" style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+        <input type="checkbox" checked={liveModels} onChange={e => setLiveModels(e.target.checked)} />
+        <span>
+          <span className="pwi-settings-label">{t("pws.liveModels")}</span>
+          <span className="muted text-label" style={{ display: "block", marginTop: 2 }}>{t("pws.liveModelsDesc")}</span>
+        </span>
       </label>
       {dirty && (
         <div className="pwi-settings-sticky-bar">

@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <b>简体中文</b> · <a href="README.ru.md">Русский</a> · <a href="README.ja.md">日本語</a> · 📖 <a href="https://lidge-jun.github.io/opencodex/zh-cn/"><b>完整文档 →</b></a>
+  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <b>简体中文</b> · <a href="README.ru.md">Русский</a> · <a href="README.ja.md">日本語</a> · 📖 <a href="https://opencodex.me/zh-cn/"><b>完整文档 →</b></a>
 </p>
 
 <p align="center">
@@ -144,7 +144,7 @@ ocx gui
 
 ```bash
 # 通过 Anthropic 使用 Claude Opus
-codex -m "anthropic/claude-opus-4-8" "解释这个 stack trace"
+codex -m "anthropic/claude-opus-5" "解释这个 stack trace"
 
 # 通过 Google 使用 Gemini
 codex -m "google/gemini-3-pro" "为 auth.ts 写单元测试"
@@ -225,7 +225,7 @@ opencodex 保持两种独立行为：
 | Ollama / vLLM / LM Studio（本地） | `openai-chat` | key（通常留空） |
 | 任意 OpenAI 兼容端点 | `openai-chat` | key |
 
-此外还有 DeepSeek、Groq、OpenRouter、Together、Fireworks、Cerebras、Mistral、Hugging Face、NVIDIA NIM、MiniMax、Qwen Cloud、腾讯云 Coding Plan、SiliconFlow 等等。完整列表可通过 `ocx init` 查看，或参阅 [provider 文档](https://lidge-jun.github.io/opencodex/zh-cn/reference/configuration/)。
+此外还有 DeepSeek、Groq、OpenRouter、Together、Fireworks、Cerebras、Mistral、Hugging Face、NVIDIA NIM、MiniMax、Qwen Cloud、腾讯云 Coding Plan、SiliconFlow 等等。完整列表可通过 `ocx init` 查看，或参阅 [provider 文档](https://opencodex.me/zh-cn/reference/configuration/)。
 
 ## CLI
 
@@ -257,10 +257,16 @@ opencodex 提供两种自动启动代理的方式：
 | **方式** | OS 服务管理器（launchd / systemd / schtasks） | 包装 `codex` 脚本启动器；不会改动真实 `codex.exe` |
 | **时机** | 登录后始终运行 | 按需 — 仅在运行 `codex` 时启动 |
 | **重启** | 崩溃后自动重启 | 每次调用 `codex` 时启动一次 |
-| **Codex 更新** | 不受影响 | 下次运行 `ocx codex-shim install` 或 `ocx update` 时修复 |
+| **Codex 更新** | 不受影响 | 稳定完成的启动器替换会在下一条普通 `ocx` 命令中修复 |
 | **移除** | `ocx service uninstall` | `ocx codex-shim uninstall` |
 
 如需常驻代理，使用 **service**（推荐开发环境）。轻量按需启动使用 **shim**。
+
+如果外部 Codex 更新覆盖了已安装的 shim，下一条普通 `ocx` 命令会备份已稳定的新启动器并恢复
+shim。仍在变化的启动器不会被改动，而会在后续命令中重试。修复失败只会警告，不会让请求的命令
+失败；手动备用命令为 `ocx codex-shim install`。若要关闭自动恢复，请将
+`codexShimAutoRestore` 设为 `false`，或为进程设置
+`OPENCODEX_CODEX_SHIM_AUTO_RESTORE=0`。
 如果配置的代理端口已被占用，`ocx start` 会自动选择另一个空闲本地端口并更新 Codex 使用它。
 
 ### 卸载
@@ -365,11 +371,11 @@ Codex 不会尝试 resume 一个其 provider 已不在 `config.toml` 中的线�
 ocx recover-history --legacy-openai
 ```
 
-每个字段的详细说明参阅 **[配置参考](https://lidge-jun.github.io/opencodex/zh-cn/reference/configuration/)**。
+每个字段的详细说明参阅 **[配置参考](https://opencodex.me/zh-cn/reference/configuration/)**。
 
 ## 文档
 
-完整文档——安装、provider 配置、路由、sidecar、Codex 集成、Codex App 模型选择器、CLI/配置参考——由 [`docs-site/`](./docs-site) 目录下的 Astro 站点构建，发布在 **[lidge-jun.github.io/opencodex](https://lidge-jun.github.io/opencodex/zh-cn/)**。
+完整文档——安装、provider 配置、路由、sidecar、Codex 集成、Codex App 模型选择器、CLI/配置参考——由 [`docs-site/`](./docs-site) 目录下的 Astro 站点构建，发布在 **[opencodex.me](https://opencodex.me/zh-cn/)**。
 
 维护者 source of truth 位于 [`structure/`](./structure)，历史调查和诊断笔记保留在 [`docs/`](./docs)。
 
@@ -392,7 +398,7 @@ bun x tsc --noEmit   # 类型检查
 bun run dev:gui
 ```
 
-参阅 **[贡献指南](https://lidge-jun.github.io/opencodex/zh-cn/contributing/)**。
+参阅 **[贡献指南](https://opencodex.me/zh-cn/contributing/)**。
 
 ## 免责声明
 

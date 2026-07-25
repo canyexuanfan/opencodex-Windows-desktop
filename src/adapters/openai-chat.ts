@@ -61,6 +61,13 @@ function extractErrorDetail(parsed: unknown): string | undefined {
   return undefined;
 }
 
+function developerSystemText(message: OcxMessage): string | undefined {
+  if (message.role !== "developer") return undefined;
+  if (typeof message.content === "string") return message.content;
+  if (message.content.some(part => part.type === "image")) return undefined;
+  return message.content.map(part => (part as OcxTextContent).text).join("");
+}
+
 function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] {
   const out: unknown[] = [];
   const { context, options } = parsed;
@@ -112,7 +119,20 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
   const toolCatalogNudge = shouldInjectNonOpenAIToolCatalogNudge(provider)
     ? buildNonOpenAIToolCatalogNudgeForTools(context.tools, options.toolChoice)
     : undefined;
-  const systemParts = [...(context.systemPrompt ?? []), ...(toolCatalogNudge ? [toolCatalogNudge] : [])];
+  // Chat templates used by LM Studio, llama.cpp, and other strict OpenAI-compatible
+  // backends require every system instruction to precede conversation history. Codex can
+  // append developer reminders after user turns, so fold text-only developer messages into
+  // the single leading system message instead of emitting role:"system" in place. Developer
+  // messages with images cannot be represented as system content and remain user-compatible
+  // vision messages at their original position below.
+  const developerSystemParts = context.messages
+    .map(developerSystemText)
+    .filter((part): part is string => part !== undefined && part.length > 0);
+  const systemParts = [
+    ...(context.systemPrompt ?? []),
+    ...developerSystemParts,
+    ...(toolCatalogNudge ? [toolCatalogNudge] : []),
+  ];
   if (systemParts.length > 0) {
     // Codex sends its GPT-5 identity prompt for EVERY model (the per-model catalog
     // base_instructions is ignored at request time). Neutralize that one identity line
@@ -126,18 +146,19 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
     switch (msg.role) {
       case "user":
       case "developer": {
-        const role = msg.role === "developer" ? "system" : "user";
+        const parts = typeof msg.content === "string" ? undefined : msg.content as OcxContentPart[];
+        const hasImages = parts?.some(p => p.type === "image") ?? false;
+        if (msg.role === "developer" && !hasImages) break;
         let chatMsg: Record<string, unknown>;
         if (typeof msg.content === "string") {
-          chatMsg = { role, content: msg.content };
+          chatMsg = { role: "user", content: msg.content };
         } else {
-          const parts = msg.content as OcxContentPart[];
-          if (!parts.some(p => p.type === "image")) {
-            chatMsg = { role, content: parts.map(p => (p as OcxTextContent).text).join("") };
+          if (!hasImages) {
+            chatMsg = { role: "user", content: parts!.map(p => (p as OcxTextContent).text).join("") };
           } else {
             // Vision: chat-completions content-parts array. Images are only valid on the user role,
             // and the data URL goes straight into image_url.url (never the token-exploding text path).
-            const chatParts = parts.map(p => p.type === "image"
+            const chatParts = parts!.map(p => p.type === "image"
               ? { type: "image_url", image_url: { url: p.imageUrl, ...(p.detail ? { detail: p.detail } : {}) } }
               : { type: "text", text: (p as OcxTextContent).text });
             chatMsg = { role: "user", content: chatParts };
@@ -604,7 +625,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       // being reported as a clean completion (silent truncation). A graceful close is either an
       // explicit `[DONE]` sentinel OR a chunk carrying a non-null `finish_reason` (some
       // OpenAI-compatible providers omit `[DONE]` but do send finish_reason).
-      let sawFinish = false;
+      let finishReason: string | undefined;
 
       // Single per-line handler shared by the streaming loop and the EOF residual-frame flush, so
       // a final frame is parsed identically wherever it lands (no duplicated, drift-prone parsing).
@@ -615,7 +636,12 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         const payload = line.slice(6).trim();
         if (payload === "[DONE]") {
           yield* flushToolCalls();
-          yield { type: "done", usage: pendingUsage };
+          const stopReason = finishReason === "length"
+            ? "max_tokens"
+            : finishReason === "content_filter"
+              ? "content_filter"
+              : undefined;
+          yield { type: "done", usage: pendingUsage, ...(stopReason ? { stopReason } : {}) };
           return "terminate";
         }
 
@@ -647,9 +673,9 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         const choices = chunk.choices as { delta?: Record<string, unknown>; finish_reason?: string }[] | undefined;
         if (!choices || choices.length === 0) return "continue";
         // Observe the terminator BEFORE the delta guard: a finish-only chunk (finish_reason set,
-        // no delta) is a graceful close and must mark sawFinish even though we skip it below.
+        // no delta) is a graceful close and must record finishReason even though we skip it below.
         if (typeof choices[0].finish_reason === "string" && choices[0].finish_reason) {
-          sawFinish = true;
+          finishReason = choices[0].finish_reason;
         }
         const delta = choices[0].delta;
         if (delta) {
@@ -720,12 +746,18 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         // a non-null finish_reason (sawFinish), or a trailing usage chunk (providers emit usage only
         // at end-of-generation). If NONE of those were seen, the stream was cut mid-flight — fail
         // closed so the bridge emits a classified response.failed rather than a silent truncation.
+        const sawFinish = finishReason !== undefined;
         if (!sawFinish && pendingUsage === undefined) {
           yield { type: "error", message: "upstream stream ended without a terminal signal ([DONE] or finish_reason) — possible truncation" };
           return;
         }
         // Graceful close that omitted [DONE] but delivered finish_reason and/or final usage.
-        yield { type: "done", usage: pendingUsage };
+        const stopReason = finishReason === "length"
+          ? "max_tokens"
+          : finishReason === "content_filter"
+            ? "content_filter"
+            : undefined;
+        yield { type: "done", usage: pendingUsage, ...(stopReason ? { stopReason } : {}) };
       } finally {
         reader.releaseLock();
       }

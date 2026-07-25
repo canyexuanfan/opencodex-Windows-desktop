@@ -571,6 +571,46 @@ describe("codex routing", () => {
     });
   });
 
+  test("WHAM primary window uses its explicit duration to distinguish weekly and monthly quotas", () => {
+    expect(parseUsageQuota({
+      plan_type: "team",
+      rate_limit: {
+        primary_window: { used_percent: 20, reset_at: 2, limit_window_seconds: 604_800 },
+      },
+    })).toEqual({ weeklyPercent: 20, weeklyResetAt: 2 });
+
+    expect(parseUsageQuota({
+      plan_type: "team",
+      rate_limit: {
+        primary_window: { used_percent: 39, reset_at: 3, limit_window_seconds: 2_628_000 },
+      },
+    })).toEqual({ monthlyPercent: 39, monthlyResetAt: 3 });
+  });
+
+  test("WHAM monthly primary preserves a legacy secondary weekly window", () => {
+    expect(parseUsageQuota({
+      plan_type: "team",
+      rate_limit: {
+        primary_window: { used_percent: 39, reset_at: 30, limit_window_seconds: 2_628_000 },
+        secondary_window: { used_percent: 12, reset_at: 7, limit_window_seconds: 604_800 },
+      },
+    })).toEqual({
+      weeklyPercent: 12,
+      weeklyResetAt: 7,
+      monthlyPercent: 39,
+      monthlyResetAt: 30,
+    });
+  });
+
+  test("WHAM primary window without duration keeps the legacy weekly fallback", () => {
+    expect(parseUsageQuota({
+      plan_type: "team",
+      rate_limit: {
+        primary_window: { used_percent: 6, reset_at: 7 },
+      },
+    })).toEqual({ weeklyPercent: 6, weeklyResetAt: 7 });
+  });
+
   test("WHAM parser returns null when no valid quota window is present", () => {
     expect(parseUsageQuota({ rate_limit: {} })).toBeNull();
     expect(parseUsageQuota({

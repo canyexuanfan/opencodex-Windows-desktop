@@ -1,12 +1,23 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { atomicWriteFile, loadConfig, websocketsEnabled } from "../config";
-import { markJournalInjectedState, restoreJournalState, writeJournal } from "./journal";
+import { markJournalInjectedState, removeJournal, restoreJournalState, writeJournal } from "./journal";
 import { restoreCodexCatalog } from "./catalog";
 import { migrateHistoryToOpenai, syncCodexHistoryProvider } from "./history-provider";
 import { CODEX_CONFIG_PATH, CODEX_PROFILE_PATH, DEFAULT_CATALOG_PATH, parseTomlString, readRootTomlString, resolveCodexConfigPath, tomlString } from "./paths";
+import { resolveEffectiveProjectModelProvider } from "./project-config-warnings";
 import type { OcxConfig } from "../types";
 
 const OCX_SECTION_MARKER = "# Auto-injected by opencodex";
+
+export function externalCodexModelProvider(content: string): string | null {
+  const provider = resolveEffectiveProjectModelProvider(content).provider;
+  return provider && provider !== "openai" && provider !== "opencodex" ? provider : null;
+}
+
+export function currentExternalCodexModelProvider(): string | null {
+  if (!existsSync(CODEX_CONFIG_PATH)) return null;
+  return externalCodexModelProvider(readFileSync(CODEX_CONFIG_PATH, "utf8"));
+}
 
 /**
  * Detect the file's dominant line ending. Every transform in this module is LF-pure
@@ -151,7 +162,7 @@ export function stripInjectedOpenaiBaseUrl(content: string): string {
   return lines.filter((_, i) => !drop.has(i)).join("\n");
 }
 
-function hasInjectedOpenaiBaseUrl(content: string): boolean {
+export function hasInjectedOpenaiBaseUrl(content: string): boolean {
   const lines = content.split("\n");
   const firstTable = lines.findIndex(l => /^\s*\[/.test(l));
   const rootEnd = firstTable === -1 ? lines.length : firstTable;
@@ -159,6 +170,137 @@ function hasInjectedOpenaiBaseUrl(content: string): boolean {
     if (isRootOpenaiBaseUrlLine(lines[i]) && lines[i - 1].includes(OCX_SECTION_MARKER)) return true;
   }
   return false;
+}
+
+export type CodexRoutingKind = "native" | "opencodex-local" | "custom-local" | "custom-remote" | "unknown";
+
+function tomlStringPattern(key: string): RegExp {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const keyToken = `(?:${escaped}|\"${escaped}\"|'${escaped}')`;
+  return new RegExp(`^\\s*${keyToken}\\s*=\\s*[\"']([^\"']+)[\"']\\s*(?:#.*)?$`);
+}
+
+function rootTomlString(content: string, key: string): string | null {
+  const lines = content.split("\n");
+  const firstTable = lines.findIndex(line => /^\s*\[/.test(line));
+  const rootLines = lines.slice(0, firstTable === -1 ? lines.length : firstTable);
+  const pattern = tomlStringPattern(key);
+  for (const line of rootLines) {
+    const match = pattern.exec(line);
+    if (match?.[1]) return match[1].trim();
+  }
+  return null;
+}
+
+function providerTableStart(lines: string[], provider: string): number {
+  const escapedProvider = provider.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const providerToken = `(?:${escapedProvider}|\"${escapedProvider}\"|'${escapedProvider}')`;
+  const header = new RegExp(`^\\s*\\[\\s*(?:model_providers|\"model_providers\"|'model_providers')\\s*\\.\\s*${providerToken}\\s*\\]\\s*(?:#.*)?$`);
+  return lines.findIndex(line => header.test(line));
+}
+
+function providerTableString(content: string, provider: string, key: string): string | null {
+  const lines = content.split("\n");
+  const start = providerTableStart(lines, provider);
+  if (start === -1) return null;
+  const pattern = tomlStringPattern(key);
+  for (let index = start + 1; index < lines.length && !/^\s*\[/.test(lines[index]); index += 1) {
+    const match = pattern.exec(lines[index]);
+    if (match?.[1]) return match[1].trim();
+  }
+  return null;
+}
+
+type RoutingEndpointKind = "local" | "remote" | "unknown";
+
+function ipv4Octets(hostname: string): number[] | null {
+  const dotted = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  if (dotted) {
+    const octets = dotted.slice(1).map(Number);
+    return octets.some(octet => octet > 255) ? null : octets;
+  }
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(hostname);
+  if (!mapped) return null;
+  const high = Number.parseInt(mapped[1], 16);
+  const low = Number.parseInt(mapped[2], 16);
+  return [high >>> 8, high & 0xff, low >>> 8, low & 0xff];
+}
+
+function classifyRoutingEndpoint(value: string): RoutingEndpointKind {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "unknown";
+    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+    if (!hostname) return "unknown";
+    if (hostname === "localhost" || hostname.endsWith(".localhost")) return "local";
+    if (hostname === "::" || hostname === "::1" || hostname === "0.0.0.0") return "local";
+    const octets = ipv4Octets(hostname);
+    if (octets) {
+      if (octets.every(octet => octet === 0)) return "local";
+      if (octets[0] === 127) return "local";
+      return "remote";
+    }
+    if (/^::ffff:/i.test(hostname)) return "unknown";
+    return "remote";
+  } catch {
+    return "unknown";
+  }
+}
+
+/** Classify actual routing dependency separately from opencodex ownership. */
+export function classifyCodexRouting(content: string): CodexRoutingKind {
+  const rootBaseUrl = rootTomlString(content, "openai_base_url");
+  if (rootBaseUrl) {
+    const endpoint = classifyRoutingEndpoint(rootBaseUrl);
+    if (endpoint === "unknown") return "unknown";
+    if (hasInjectedOpenaiBaseUrl(content)) return "opencodex-local";
+    return endpoint === "local" ? "custom-local" : "custom-remote";
+  }
+  const rootProvider = rootTomlString(content, "model_provider");
+  if (rootProvider) {
+    const providerTableExists = providerTableStart(content.split("\n"), rootProvider) !== -1;
+    const providerBaseUrl = providerTableString(content, rootProvider, "base_url");
+    if (providerBaseUrl) {
+      const endpoint = classifyRoutingEndpoint(providerBaseUrl);
+      if (endpoint === "unknown") return "unknown";
+      if (rootProvider === "opencodex") return "opencodex-local";
+      return endpoint === "local" ? "custom-local" : "custom-remote";
+    }
+    if (rootProvider === "opencodex" || providerTableExists || rootProvider !== "openai") return "unknown";
+  }
+  return "native";
+}
+
+/**
+ * True when the active Codex config is owned by opencodex routing. Covers the
+ * loopback Design B root override and the legacy/non-loopback provider table.
+ * A user-owned `openai_base_url` is intentionally not classified as injected.
+ */
+export function hasInjectedCodexRouting(content: string): boolean {
+  if (hasInjectedOpenaiBaseUrl(content)) return true;
+  return rootTomlString(content, "model_provider") === "opencodex"
+    && providerTableString(content, "opencodex", "base_url") !== null;
+}
+
+/** Read-only probe used by status, doctor, and the dashboard. */
+export function isCodexRoutingInjected(): boolean {
+  const path = CODEX_CONFIG_PATH;
+  if (!existsSync(path)) return false;
+  try {
+    return hasInjectedCodexRouting(readFileSync(path, "utf8"));
+  } catch {
+    return false;
+  }
+}
+
+export function getCodexRoutingKind(): CodexRoutingKind {
+  const path = CODEX_CONFIG_PATH;
+  if (!existsSync(path)) return "native";
+  try {
+    return classifyCodexRouting(readFileSync(path, "utf8"));
+  } catch {
+    return "unknown";
+  }
 }
 
 /**
@@ -365,8 +507,23 @@ export async function injectCodexConfig(port: number, config?: OcxConfig, option
     return { success: false, message: `Codex config not found at ${CODEX_CONFIG_PATH}. Is Codex installed?` };
   }
 
-  writeJournal();
   const rawContent = readFileSync(CODEX_CONFIG_PATH, "utf-8");
+  const activeProvider = externalCodexModelProvider(rawContent);
+  if (activeProvider) {
+    // A launcher may have journaled before the provider manager took ownership. Never let shutdown
+    // replay that stale snapshot over externally managed config.
+    removeJournal();
+    return {
+      success: true,
+      message: `⚠️ Codex routing NOT injected: config.toml selects the external model_provider ${tomlString(activeProvider)}.\n` +
+        `  OpenCodex preserves external provider configuration so existing ${tomlString(activeProvider)} session history stays visible.\n` +
+        `  Configure that provider for Responses passthrough at http://${providerBaseHost(config?.hostname)}:${port}/v1` +
+        `${shouldInjectApiAuthHeader(config) ? ` with x-opencodex-api-key from OPENCODEX_API_AUTH_TOKEN` : ""}.\n` +
+        `  For direct injection, switch to the built-in openai provider, remove any user-owned root openai_base_url, and rerun 'ocx start'.`,
+    };
+  }
+
+  writeJournal();
   // EOL boundary: transforms below are LF-pure; preserve the file's dominant ending on write.
   const eol = dominantEol(rawContent);
   let content = applyEol(rawContent, "\n");
@@ -543,6 +700,11 @@ export function removeCodexConfig(options: { preserveProfile?: boolean } = {}): 
  * handler, and `ocx restore`. Idempotent + atomic.
  */
 export function restoreNativeCodex(): { success: boolean; message: string } {
+  const activeProvider = currentExternalCodexModelProvider();
+  if (activeProvider) {
+    removeJournal();
+    return { success: true, message: `External Codex provider ${tomlString(activeProvider)} preserved; no native restore was needed.` };
+  }
   const journal = restoreJournalState();
   const cfg = journal.configRestored
     ? { success: true, message: "Codex config restored from opencodex journal." }

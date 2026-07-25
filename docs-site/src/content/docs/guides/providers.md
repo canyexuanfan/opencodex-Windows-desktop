@@ -50,8 +50,8 @@ The `openai` provider needs **no API key**. Direct forwards credentials from you
 ```
 
 Only a curated set of headers is forwarded (`FORWARD_HEADERS`: authorization, ChatGPT account id,
-OpenAI beta/originator/session — see [Adapters](/opencodex/reference/adapters/)). This path is also
-what powers the [web-search and vision sidecars](/opencodex/guides/sidecars/).
+OpenAI beta/originator/session — see [Adapters](/reference/adapters/)). This path is also
+what powers the [web-search and vision sidecars](/guides/sidecars/).
 
 The ChatGPT passthrough catalog also layers in the bare GPT-5.6 Sol/Terra/Luna slugs
 (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`) for accounts that can use them.
@@ -85,7 +85,7 @@ ocx logout <provider>
 | `cursor` | `cursor` | `https://api2.cursor.sh` | Experimental PKCE login, live HTTP/2 transport, and account-filtered model discovery. |
 | `github-copilot` | `openai-chat` | `https://api.githubcopilot.com` | Experimental. GitHub device flow + `copilot_internal` exchange (VS Code OAuth client). Requires an active Copilot subscription; not an official third-party API. |
 
-You can also start OAuth from the [web dashboard](/opencodex/guides/web-dashboard/).
+You can also start OAuth from the [web dashboard](/guides/web-dashboard/).
 
 ### Multiple OAuth accounts
 
@@ -94,6 +94,19 @@ login. The Providers page shows those accounts in a dropdown, lets you add anoth
 active account without logging the others out. Identity-less Kimi and Kiro credentials replace their
 active slot, while `chatgpt` is always single-slot because Codex pool accounts have a separate ledger.
 Tokens stay in `~/.opencodex/auth.json`; `/api/oauth/accounts` returns masked metadata only.
+
+### Kiro credential import
+
+`ocx login kiro` searches the platform Kiro CLI stores and opens SQLite databases read-only. Two
+environment variables make selection explicit without copying credentials into opencodex:
+
+- `KIROCLI_DB_PATH` selects a nonstandard Kiro CLI SQLite database. The path must already exist;
+  opencodex does not create it or modify the database, WAL, or SHM files.
+- `KIROCLI_TOKEN_KEY` selects the exact `auth_kv` token key when a database contains multiple
+  otherwise ambiguous token rows. A missing selection fails login instead of guessing.
+
+Keep these variables and the selected database private. Do not attach database files or raw login
+diagnostics to bug reports.
 
 ## 3. API-key catalog
 
@@ -147,7 +160,7 @@ management API is `/api/providers/keys` and returns masked keys only.
 
 Use `ocx account list`, `ocx account current`, and `ocx account use` to inspect or switch the same
 Codex, OAuth, and API-key pools without opening the dashboard. See the
-[CLI reference](/opencodex/reference/cli/#ocx-account-subcommand) for commands, JSON output, and
+[CLI reference](/reference/cli/#ocx-account-subcommand) for commands, JSON output, and
 new-session behavior.
 
 ### GPT-5.6 preview paths
@@ -187,7 +200,7 @@ account. Cursor server-driven native read/write/delete/ls/grep/shell/fetch execu
 is disabled by default because it bypasses Codex's approval and sandbox path; set
 `unsafeAllowNativeLocalExec: true` on the `providers.cursor` object in `~/.opencodex/config.json`
 only for trusted local experiments (or via **Providers → Cursor → Edit JSON** in the dashboard).
-See the [Configuration reference](/opencodex/reference/configuration/#cursor-provider-adapter-cursor)
+See the [Configuration reference](/reference/configuration/#cursor-provider-adapter-cursor)
 for a full example. MCP, screen recording, and computer-use are available as executor hooks; without a
 configured local executor, opencodex returns typed no-executor results instead of policy-blocking
 the request. Cursor OAuth and live model discovery are enabled for this experimental adapter;
@@ -198,7 +211,7 @@ Cursor is still not shown in key-login lists.
 
 Ollama Cloud is a hosted (not local) Ollama, OpenAI-compatible at `https://ollama.com/v1` with a key
 from [ollama.com/settings/keys](https://ollama.com/settings/keys). opencodex classifies its cloud
-lineup by vision capability so the [vision sidecar](/opencodex/guides/sidecars/) only kicks in for
+lineup by vision capability so the [vision sidecar](/guides/sidecars/) only kicks in for
 text-only models. Text-only models (e.g. `glm-5.2`, `deepseek-v4-pro`, `gpt-oss`, `qwen3-coder`,
 `minimax-m2.x`, `nemotron-3-*`) are listed in `noVisionModels`; vision-native models (e.g.
 `kimi-k2.6`, `minimax-m3`, `gemma4`, `qwen3.5`, `gemini-3-flash-preview`) are not. Matching is
@@ -218,5 +231,5 @@ Point opencodex at a local OpenAI-compatible server — usually with a blank key
 
 If a provider speaks Chat Completions, the `openai-chat` adapter handles it — choose **Custom** in the
 dashboard or `custom` in `ocx init` and enter the base URL. See the
-[Configuration reference](/opencodex/reference/configuration/) for every provider field
+[Configuration reference](/reference/configuration/) for every provider field
 (`headers`, `noReasoningModels`, `noVisionModels`, `models`, …).

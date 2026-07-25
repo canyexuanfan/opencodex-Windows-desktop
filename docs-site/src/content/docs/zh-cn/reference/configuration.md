@@ -29,12 +29,13 @@ no-replace 方式创建 `config.json.pre-openai-tiers-v2.bak`，并把已知旧 
 | `providers` | `Record<string, OcxProviderConfig>` | — | provider 名称 → 配置的映射。 |
 | `openaiProviderTierVersion?` | `2` | migration 设置 | 单一选项式 OpenAI projection 完成标记。 |
 | `defaultProvider` | `string` | `"openai"` | 路由找不到更优匹配时使用的 provider。 |
-| `subagentModels?` | `string[]` | `gpt-5.5`、三款 GPT-5.6、`gpt-5.4-mini` | 最多 5 个原生 slug 或 `provider/model` id，优先显示在 Codex subagent picker 中。显式空数组会被保留。 也会作为可用模型清单注入 v2 委派指南，并标注各模型在目录中公布的 effort 阶梯。 |
+| `subagentModels?` | `string[]` | `gpt-5.5`、三款 GPT-5.6、`gpt-5.4-mini` | 最多 5 个原生 slug 或 `provider/model` id，优先显示在 Codex subagent picker 中。v2 指引清单是已配置模型与 Codex 中 picker 可见、兼容 v2、按 priority 排序后前五项的交集，并使用规范目录 slug 与可用 effort 档位；被排除的条目仍保留在配置中。显式空数组会被保留。 |
 | `injectionModel?` | `string` | — | 注入 multi-agent 指南（v2 界面）的首选原生或路由模型；委派指南会要求把该模型连同 `fork_turns: "none"` 一起传给 `spawn_agent`。 |
 | `injectionEffort?` | `string` | — | 首选 `spawn_agent` reasoning effort（`low` 到 `ultra`）。只有与 `injectionModel` 一起使用才有意义。 |
 | `effortCap?` | `string` | — | reasoning effort 的逐请求硬上限。这是多代理 V2 专属功能：适用于工具列表带有 V2 协作表面的主轮次，以及标记精确匹配 `x-openai-subagent: collab_spawn` 或 `x-codex-turn-metadata` 中 `"subagent_kind": "thread_spawn"` 的派生子轮次（带标记的子轮次无论自身工具表面如何都会被覆盖）。普通主轮次与 V1 表面主轮次不受影响，压缩（compaction）轮次始终绕过上限，`multiAgentMode: "v1"` 会完全禁用上限功能（仪表盘同时隐藏该面板）。接受 `low` 到 `ultra`；只会降低 effort，绝不会提高。会降至不高于上限的最高受支持档位。若模型不提供 effort 控制，或上限之下没有可用档位，则移除 effort 字段并采用 provider 默认值。`max` 和 `ultra` 均可使用，但不会形成更低的等级上限（客户端会将 `ultra` 转换为 `max`，因此请求以 `low` 到 `max` 的范围到达）；不过，已知的模型 effort 阶梯仍可能触发降档或移除字段。仪表盘选择器提供 `low` 到 `xhigh`。通过 `GET /api/effort-caps` 和 `PUT /api/effort-caps` 管理。 |
 | `subagentEffortCap?` | `string` | — | 同样的硬上限，但只用于 codex-rs 标记精确匹配的派生子轮次：`x-openai-subagent: collab_spawn`，或 `x-codex-turn-metadata` 中的 `"subagent_kind": "thread_spawn"`。其他内部子代理类别（评审、压缩、记忆整理）不会触发此上限，`multiAgentMode: "v1"` 会完全禁用该功能。接受 `low` 到 `ultra`；两个上限同时设置时取较低者，且只会降低 effort，绝不会提高。会降至不高于上限的最高受支持档位。若模型不提供 effort 控制，或上限之下没有可用档位，则移除 effort 字段并采用 provider 默认值。`max` 和 `ultra` 均可使用，但不会形成更低的等级上限（客户端会将 `ultra` 转换为 `max`，因此请求以 `low` 到 `max` 的范围到达）；不过，已知的模型 effort 阶梯仍可能触发降档或移除字段。仪表盘选择器提供 `low` 到 `xhigh`。通过 `GET /api/effort-caps` 和 `PUT /api/effort-caps` 管理。 |
 | `injectionPrompt?` | `string` | — | 整体替换注入的 v2 指南正文的自定义文本。`{{model}}`、`{{effort}}`、`{{roster}}` 占位符会被替换，触发条件保持不变。也可通过 `PUT /api/injection-model` 的 `prompt` 键设置。 |
+| `multiAgentGuidanceEnabled?` | `boolean` | `true` | 仅控制由 OpenCodex 添加的 multi-agent developer 指引。未设置/`true` 保持 v1/v2 指引；`false` 会同时禁止两者，但不改变协作界面、`subagentModels`、路由或 effort 上限。`GET/PUT /api/injection-model` 返回有效值，PUT 为部分更新。 |
 | `disabledModels?` | `string[]` | — | 从 Codex 隐藏的模型。路由 `provider/model` id 会从目录和 `/v1/models` 排除；bare 原生 GPT slug（如 `gpt-5.4`）的目录条目会改成 `visibility: "hide"`，并从 bare `/v1/models` 列表移除。可在仪表盘 Models 页面按模型切换。 |
 | `multiAgentMode?` | `"v1" \| "default" \| "v2"` | `"default"` | 三态 multi-agent surface override。`"v1"` 覆盖 upstream pin，强制全部模型使用 v1；`"default"` 遵循 upstream model pin（sol/terra=v2，luna=v1）；`"v2"` 强制全部模型使用 v2。可在仪表盘 Models 页面或 `ocx v2 mode` 中设置。 |
 | `providerContextCaps?` | `Record<string,number>` | `{}` | provider 级 Codex 可见 context cap。只会降低已知 context window。 |
@@ -45,6 +46,7 @@ no-replace 方式创建 `config.json.pre-openai-tiers-v2.bak`，并把已知旧 
 | `websockets?` | `boolean` | `false` | 公布 `supports_websockets`，让 Codex 使用 Responses WebSocket 路径。省略或设为 `false` 会保持 HTTP/SSE。 |
 | `apiKeys?` | `OcxApiKey[]` | `[]` | 非 loopback 绑定下，management 和 data-plane 认证额外接受的生成式 `ocx_…` credential。由仪表盘管理；条目字段见下文。 |
 | `codexAutoStart?` | `boolean` | `true` | 允许 Codex shim 在启动 Codex 前运行 `ocx ensure`。`false` 会让 `ocx ensure` 不执行任何操作。 |
+| `codexShimAutoRestore?` | `boolean` | `true` | 已完成的外部 Codex 更新替换此前安装的 shim 时自动恢复。若要关闭，请设为 `false`，或为进程设置 `OPENCODEX_CODEX_SHIM_AUTO_RESTORE=0`。 |
 | `syncResumeHistory?` | `boolean` | `true` | 可逆的 Codex App 历史兼容模式。opencodex 会备份原始 Codex thread metadata，把旧 OpenAI interactive row 重映射到 `opencodex`，并暂时把 opencodex 创建的 `exec` row 提升成 App 可见 source。`ocx stop` / `ocx restore` 会恢复已备份的 OpenAI row，并把剩余 opencodex user thread 转回 OpenAI，使原生 Codex 在从 `config.toml` 移除代理后仍能继续这些 thread。设为 `false` 可退出该模式。 |
 | `codexAccounts?` | `CodexAccount[]` | `[]` | Codex Auth 仪表盘管理的 ChatGPT/Codex pool account metadata。secret 单独存放在 `codex-accounts.json`。 |
 | `activeCodexAccountId?` | `string` | — | 下一个新 Codex thread 使用的 pool account。已有 thread affinity 继续保留原账号。 |
@@ -125,6 +127,7 @@ x-opencodex-api-key: your-secret-token
 | --- | --- | --- |
 | `adapter` | `string` | `openai-chat`、`openai-responses`、`anthropic`、`google`、`kiro`、`cursor`、`azure-openai`（或别名 `azure`）之一。 |
 | `baseUrl` | `string` | 上游 API base URL。 |
+| `responsesPath?` | `string` | `key` 认证的 `openai-responses` 请求可选相对 resource path。必须以 `/` 开头，且不得包含 URL scheme、query 或 fragment。省略时保留原有的 `/v1/responses` URL 构造。 |
 | `disabled?` | `boolean` | 配置保留在磁盘上，但从路由和模型/目录列表排除。 |
 | `apiKey?` | `string` | API key，或在请求时解析的 `${ENV_VAR}` / `$ENV_VAR` 引用。 |
 | `apiKeyPool?` | `ApiKeyPoolEntry[]` | 多 key pool。`apiKey` 映射当前活动条目；每项包含 `id`、`key`、可选 `label` 和可选数字 `addedAt`。 |
@@ -138,11 +141,12 @@ x-opencodex-api-key: your-secret-token
 | `headers?` | `Record<string,string>` | 额外上游 header。Authorization、cookie、API-key header、包含换行的值和无效 header 名称会被拒绝。 |
 | `openRouterRouting?` | `OpenRouterProviderRouting` | 默认 OpenRouter provider 路由设置。支持 `order`、`only` 和 `allowFallbacks`；仅适用于 canonical OpenRouter URL 和 `openai-chat` adapter。 |
 | `modelOpenRouterRouting?` | `Record<string,OpenRouterProviderRouting>` | 按精确模型 id 覆盖 `openRouterRouting`。 |
-| `authMode?` | `"key" \| "forward" \| "oauth"` | 认证方式（默认 `key`）。参见 [Providers](/opencodex/zh-cn/guides/providers/#认证模式)。 |
+| `authMode?` | `"key" \| "forward" \| "oauth"` | 认证方式（默认 `key`）。参见 [Providers](/zh-cn/guides/providers/#认证模式)。 |
 | `codexAccountMode?` | `"pool" \| "direct"` | 仅用于 canonical `openai`。省略时默认 Pool；Direct 会绕过池状态。 |
 | `refreshPolicy?` | `"proactive" \| "lazy-only" \| "disabled"` | 覆盖该 OAuth provider 的 Token Guardian 策略。 |
 | `reasoningEfforts?` | `string[]` | provider 级需要公布和发送的 Codex reasoning label（`low`、`medium`、`high`、`xhigh`、`max`、`ultra`）。 |
 | `modelReasoningEfforts?` | `Record<string,string[]>` | 模型级 reasoning label。空数组会隐藏该模型的 effort 控件。 |
+| `modelSupportsReasoningSummaries?` | `Record<string,boolean>` | 模型级 reasoning summary 能力。设为 `false` 时不再声明 summary 支持，并在 `openai-responses` 请求前移除 summary-delivery 字段。 |
 | `reasoningEffortMap?` | `Record<string,string>` | provider 级 reasoning label wire alias。只在上游需要不同值时使用。 |
 | `modelReasoningEffortMap?` | `Record<string,Record<string,string>>` | 模型级 reasoning label wire alias。 |
 | `noReasoningModels?` | `string[]` | 拒绝 reasoning/thinking 参数的模型；adapter 会为它们移除 `reasoning_effort`。 |
@@ -154,7 +158,7 @@ x-opencodex-api-key: your-secret-token
 | `preserveReasoningContentModels?` | `string[]` | 要求在 chat history 中保留先前 assistant `reasoning_content` 的模型。 |
 | `thinkingToggleModels?` | `string[]` | 使用 vendor `thinking.enabled` toggle，而不是 effort ladder 的 chat 模型。 |
 | `thinkingBudgetModels?` | `string[]` | 使用整数 `thinking_budget` 的 chat 模型；effort 会映射成 budget 比例。 |
-| `noVisionModels?` | `string[]` | 纯文本模型；[视觉 sidecar](/opencodex/zh-cn/guides/sidecars/) 会为它们描述图像。匹配时容忍 Ollama `:size` 标签。 |
+| `noVisionModels?` | `string[]` | 纯文本模型；[视觉 sidecar](/zh-cn/guides/sidecars/) 会为它们描述图像。匹配时容忍 Ollama `:size` 标签。 |
 | `escapeBuiltinToolNames?` | `boolean` | Umans 等 Anthropic 兼容 gateway 可能要求在 wire 上转义工具名；opencodex 会在把 tool call 返回 Codex 前移除 prefix。 |
 | `googleMode?` | `"ai-studio" \| "vertex" \| "cloud-code-assist"` | Google transport/auth mode。默认 `ai-studio`。 |
 | `project?` | `string` | Vertex project id 或 Antigravity Cloud Code Assist project id。 |
@@ -190,7 +194,7 @@ Cursor server 驱动的原生本地工具默认保持**禁用**。Codex 继续�
 
 该 flag 应放在 **provider 对象**（`providers.cursor`）上，而不是 `config.json` 顶层。
 
-也可在 [Web 仪表盘](/opencodex/zh-cn/guides/web-dashboard/) 中设置：进入 **Providers → Cursor →
+也可在 [Web 仪表盘](/zh-cn/guides/web-dashboard/) 中设置：进入 **Providers → Cursor →
 Edit JSON**，添加 `"unsafeAllowNativeLocalExec": true`，保存后重启代理
 （`ocx restart` 或 `ocx stop` + `ocx start`）。
 
@@ -272,7 +276,7 @@ Codex 目录会公布 `max` reasoning，同时与 `xhigh` 保持
 | `reasoning?` | `string` | `low` | sidecar reasoning effort（网络搜索会拒绝 `minimal`）。 |
 | `maxSearchesPerTurn?` | `number` | `3` | 每个主模型 turn 的真实搜索总次数（loop guard）。 |
 | `routedModelStallTimeoutMs?` | `number` | `200000` | 仅可在配置文件中设置的路由模型迭代原始响应 byte 连续无活动 deadline。必须是 `1` 到 `2147483647` 的整数；每个非空响应 body chunk 都会重置该计时器。 |
-| `timeoutMs?` | `number` | `200000` | 单次托管 web-search 请求的独立 deadline。 |
+| `timeoutMs?` | `number` | `60000` | 单次托管 web-search 请求的独立 deadline。已从 200000 下调，使不可用/额度耗尽的搜索后端在约 1 分钟内降级为无结果回答，而不会拖住整轮请求（#398）。 |
 
 `openai` 后端通过已启用的 ChatGPT `forward` provider 执行托管搜索，因此同时需要 ChatGPT 登录
 和该 provider。Claude 入站的路由重放会把主 ChatGPT 认证注入内部 sidecar 请求，使该路径仍可
@@ -333,13 +337,13 @@ Anthropic OAuth 搜索和图像描述请求沿用 opencodex 已有的 Claude Cod
       "noVisionModels": ["glm-5.2", "gpt-oss", "qwen3-coder", "deepseek-v4-pro"]
     }
   },
-  "subagentModels": ["anthropic/claude-opus-4-8", "ollama-cloud/glm-5.2"],
+  "subagentModels": ["anthropic/claude-opus-5", "ollama-cloud/glm-5.2"],
   "disabledModels": [],
   "websockets": false,
   "webSearchSidecar": {
     "maxSearchesPerTurn": 3,
     "routedModelStallTimeoutMs": 200000,
-    "timeoutMs": 200000
+    "timeoutMs": 60000
   },
   "visionSidecar": { "enabled": true }
 }

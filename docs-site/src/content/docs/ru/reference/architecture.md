@@ -6,7 +6,7 @@ description: Внутреннее устройство opencodex — карта 
 opencodex — это один процесс Bun. Запрос приходит как OpenAI Responses, нормализуется во
 внутреннюю модель, маршрутизируется, отправляется провайдеру через адаптер и мостом
 преобразуется обратно в Responses SSE. Сквозной поток описан в разделе
-[Как это работает](/opencodex/ru/getting-started/how-it-works/).
+[Как это работает](/ru/getting-started/how-it-works/).
 
 ## Карта модулей
 
@@ -35,19 +35,26 @@ src/
 └── index.ts            # public entry
 ```
 
+Три прежних крупных входных файла теперь служат фасадами совместимости: `codex/catalog.ts`
+экспортирует семь модулей `codex/catalog/*.ts`, `server/management-api.ts` направляет запросы в
+девять модулей `server/management/*.ts`, а `server/responses.ts` экспортирует пять модулей
+`server/responses/*.ts`.
+
 ## Поток запроса
 
 `server/index.ts` владеет HTTP-границей и делегирует плоскость данных Responses в
-`server/responses.ts`:
+фасад `server/responses.ts` и его модули `server/responses/*.ts`:
 
 1. `server/index.ts` применяет CORS и аутентификацию API, отклоняет новую работу во время
    завершения (drain) и записывает метаданные жизненного цикла запроса. Он обслуживает
    `GET /v1/models`, `POST /v1/responses`,
    `POST /v1/responses/compact`, `POST /v1/images/generations` / `POST /v1/images/edits`
    (ретранслируются модулем `server/images.ts` вышестоящему провайдеру семейства OpenAI для
-   встроенного инструмента codex `image_gen`), а также необязательный WebSocket-апгрейд на
+   встроенного инструмента codex `image_gen`), `POST /v1/live` / `POST /v1/realtime/calls`
+   (создание голосового/Realtime-вызова ChatGPT / Codex App, ретранслируется `server/live.ts`),
+   sideband WebSocket на `/v1/live/{callId}`, а также необязательный WebSocket-апгрейд на
    `/v1/responses`.
-2. `server/responses.ts` распаковывает и парсит JSON, разворачивает локально запомненный вход
+2. `server/responses/core.ts` распаковывает и парсит JSON, разворачивает локально запомненный вход
    `previous_response_id`, когда он доступен, затем вызывает `responses/parser.ts`.
 3. `router.ts` разрешает «голый» id или id вида `provider/model`. Затем сервер определяет
    привязку (affinity) аккаунта Codex, при необходимости обновляет OAuth провайдера и применяет
@@ -119,7 +126,8 @@ src/
 
 ## Management API, OAuth и использование
 
-`server/management-api.ts` обслуживает дашборд. Его маршруты `/api/*` покрывают безопасные
+`server/management-api.ts` обслуживает дашборд и направляет специализированные группы маршрутов в
+`server/management/*.ts`. Его маршруты `/api/*` покрывают безопасные
 конфигурацию/настройки, CRUD провайдеров и пулы ключей, выбор моделей/лимиты контекста/управление
 v2, синхронизацию каталога, диагностику и отладочные логи, использование и квоты, настройки
 сайдкаров, обновления, сгенерированные клиентские API-ключи, вход/статус/выход OAuth и выбор
@@ -141,7 +149,7 @@ loopback; настроенные записи `corsAllowOrigins` расширя�
 `426 upgrade_required`; Codex тогда откатывается на HTTP для этой сессии. Когда установлено
 `"websockets": true`, та же конечная точка принимает апгрейд и использует WebSocket-мост.
 
-Compaction контекста Codex работает для маршрутизируемых моделей. `server/responses.ts`
+Compaction контекста Codex работает для маршрутизируемых моделей. `server/responses/compact.ts`
 обрабатывает `POST /v1/responses/compact`, выполняя внутренний маршрутизируемый ход суммаризации
 и возвращая сжатую историю, а `responses/parser.ts` и `bridge.ts` обрабатывают ходы
 `compaction_trigger` из remote compaction v2, генерируя ровно один синтетический выходной элемент
@@ -152,9 +160,10 @@ Compaction контекста Codex работает для маршрутизи
 - `codex/model-cache.ts` держит в памяти TTL-кэш живых результатов `/models` для каждого
   провайдера (по умолчанию 5 минут, как у собственного кэша Codex) с откатом на устаревшие данные
   при неудачном запросе.
-- `codex/catalog.ts` сливает маршрутизируемые модели в каталог Codex как записи с пространствами
+- `codex/catalog/sync.ts`, экспортируемый через фасад `codex/catalog.ts`, сливает маршрутизируемые
+  модели в каталог Codex как записи с пространствами
   имён, ставит рекомендуемые
-  [модели подагентов](/opencodex/ru/guides/codex-integration/#the-subagent-picker) первыми,
+  [модели подагентов](/ru/guides/codex-integration/#the-subagent-picker) первыми,
   фильтрует `disabledModels` и может полностью восстановить первозданный каталог из одноразовой
   резервной копии.
 

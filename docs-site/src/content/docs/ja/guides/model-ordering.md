@@ -10,19 +10,19 @@ Codex モデルピッカーは opencodex 設定に書かれたプロバイダー
 ## Codex が適用するルール
 
 Codex の models-manager はピッカーに表示されるカタログ項目を `priority` 昇順でソートします。
-カタログ配列順は捨てるため、生成された JSON 配列で項目を前に動かしてもピッカーでは前に移動しません。この制約は `src/codex/catalog.ts:881-884` に直接記録されています。
+カタログ配列順は捨てるため、生成された JSON 配列で項目を前に動かしてもピッカーでは前に移動しません。この制約は `src/codex/catalog/sync.ts` に直接記録されています。
 
 そのため opencodex は配列位置ではなくより低い priority を付与してフィーチャー位置を制御します。
 関連 priority は次のとおりです。
 
 | カタログ項目 | Priority | 根拠 |
  --- | ---: | --- |
-| `subagentModels[i]` | `i`(`0` から `4`) | `src/codex/catalog.ts:885-896` の featured rank map |
-| その他のルーティングモデル | `5` | `src/codex/catalog.ts:892-896` のルーティング項目生成 |
-| デフォルトネイティブ GPT スラッグ | `9` | `src/codex/catalog.ts:887-890` のネイティブ項目生成 |
-| featured リストがあるとき選択されていないネイティブモデル | 最小 `featured.length + 100` | `src/codex/catalog.ts:1348-1355` のネイティブカタログマージ |
+| `subagentModels[i]` | `i`(`0` から `4`) | `src/codex/catalog/sync.ts` の featured rank map |
+| その他のルーティングモデル | `5` | `src/codex/catalog/sync.ts` のルーティング項目生成 |
+| デフォルトネイティブ GPT スラッグ | `9` | `src/codex/catalog/sync.ts` のネイティブ項目生成 |
+| featured リストがあるとき選択されていないネイティブモデル | 最小 `featured.length + 100` | `src/codex/catalog/sync.ts` のネイティブカタログマージ |
 
-管理 API は `src/server/management-api.ts:626-634` の `slice(0, 5)` で `subagentModels` を最大
+管理 API は `src/server/management/agent-settings-routes.ts` の `slice(0, 5)` で `subagentModels` を最大
 5 つに制限します。これは最初の 5 モデルオーバーライドだけを広告する Codex `spawn_agent` サーフェスと合致します。
 5 つ以降のモデルもメインピッカーに引き続き表示でき、正確な ID で呼び出し可能です。
 
@@ -30,7 +30,7 @@ Codex の models-manager はピッカーに表示されるカタログ項目を 
 
 一般ルーティングモデルはすべて priority `5` なので同点ソートが必要です。カタログ項目を作る前に
 `gatherRoutedModels()` がルーティングモデル一覧をプロバイダー名順、次にモデル ID 順でアルファベットソートします
-(`src/codex/catalog.ts:1241-1270`)。
+(`src/codex/catalog/provider-fetch.ts`)。
 
 したがって次の設定の順序は最終ソートに影響しません。
 
@@ -39,14 +39,14 @@ Codex の models-manager はピッカーに表示されるカタログ項目を 
 
 その後 `orderForSubagents()` が stable sort を使い、フィーチャー済みモデルを `subagentModels` に書いた順に
 前に動かします。フィーチャー以外のモデルは前に決定されたプロバイダー/ID アルファベット相対順序を保ちます
-(`src/codex/catalog.ts:1307-1321`)。項目生成時の featured rank も priority `0` から `4` に変換されるため
+(`src/codex/catalog/sync.ts`)。項目生成時の featured rank も priority `0` から `4` に変換されるため
 Codex の priority ソートでもこの先頭順序は保存されます。
 
 ## 公開可否と順序は別物
 
 `selectedModels` と `disabledModels` はどのルーティングモデルを公開するか決めるだけで、ソートを制御しません。
 `filterCatalogVisibleModels()` は 2 つの選択リストを `Set` ルックアップに変換し、配列をランクとして使わず
-収集した一覧をフィルタします(`src/codex/catalog.ts:1216-1237`)。
+収集した一覧をフィルタします(`src/codex/catalog/provider-fetch.ts`)。
 
 したがって `selectedModels` や `disabledModels` の配列順序を変えてもピッカー位置は変わりません。
 変わり得るのはモデルの包含可否だけです。
