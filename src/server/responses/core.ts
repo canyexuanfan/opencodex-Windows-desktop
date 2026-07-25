@@ -49,6 +49,8 @@ import {
   headersForCodexAuthContext,
   isCodexAuthContextUsable,
   resolveCodexAuthContext,
+  codexProbeLeaseId,
+  releaseCodexAuthContextProbeLease,
   stripCodexRuntimeProviderFields,
   type CodexAuthContext,
 } from "../../codex/auth-context";
@@ -120,7 +122,10 @@ export function sidecarOutcomeRecorder(
   threadId?: string | null,
 ): ((outcome: CodexUpstreamOutcome) => void) | undefined {
   return authCtx.kind === "pool" || authCtx.kind === "main-pool"
-    ? outcome => recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, { threadId })
+    ? outcome => recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
+      threadId,
+      probeLeaseId: authCtx.probeLeaseId,
+    })
     : undefined;
 }
 
@@ -207,7 +212,10 @@ export function codexForwardTerminalOutcomeRecorder(
       // Normal limit/content-filter/stall terminal — the account served the
       // request. Don't penalize account health; record success to clear any
       // prior soft-avoid so a healthy account isn't stuck avoided.
-      recordCodexUpstreamOutcome(config, authCtx.accountId, 200, { threadId });
+      recordCodexUpstreamOutcome(config, authCtx.accountId, 200, {
+        threadId,
+        probeLeaseId: codexProbeLeaseId(authCtx),
+      });
       return;
     }
     // status === "completed" or "failed": use the semantic HTTP status derived
@@ -222,7 +230,10 @@ export function codexForwardTerminalOutcomeRecorder(
     const outcome = status === "completed"
       ? 200
       : (httpStatusOverride ?? logCtx?.terminalHttpStatus ?? 502);
-    recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, { threadId });
+    recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
+      threadId,
+      probeLeaseId: codexProbeLeaseId(authCtx),
+    });
   };
 }
 
@@ -852,6 +863,8 @@ export async function handleResponses(
     throw err;
   }
   if (!isCodexAuthContextUsable(authCtx, config)) {
+    // Nothing reaches upstream on this path, so give the probe back.
+    releaseCodexAuthContextProbeLease(authCtx);
     return formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
   }
   route.provider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
@@ -1026,6 +1039,7 @@ export async function handleResponses(
       if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
         recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
           threadId: req.headers.get("x-codex-parent-thread-id"),
+          probeLeaseId: codexProbeLeaseId(authCtx),
         });
       }
       const msg = outcome === "timeout"
@@ -1080,6 +1094,7 @@ export async function handleResponses(
       if (retryAuthCtx?.kind === "pool" || retryAuthCtx?.kind === "main-pool") {
         recordCodexUpstreamOutcome(config, firstAuthCtx.accountId, 400, {
           threadId: req.headers.get("x-codex-parent-thread-id"),
+          probeLeaseId: codexProbeLeaseId(firstAuthCtx),
         });
 
         const retryHeaders = headersForCodexAuthContext(req.headers, retryAuthCtx);
@@ -1165,6 +1180,7 @@ export async function handleResponses(
            upstreamResponse.headers.get("x-codex-tertiary-reset-at"),
          ].filter(Boolean),
          threadId: req.headers.get("x-codex-parent-thread-id"),
+         probeLeaseId: codexProbeLeaseId(authCtx),
         });
       }
     }

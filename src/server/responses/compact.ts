@@ -49,6 +49,7 @@ import {
   headersForCodexAuthContext,
   isCodexAuthContextUsable,
   resolveCodexAuthContext,
+  codexProbeLeaseId,
   type CodexAuthContext,
 } from "../../codex/auth-context";
 import {
@@ -255,6 +256,7 @@ export async function handleResponsesCompact(
       recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
         ...meta,
         threadId: compactThreadId,
+        probeLeaseId: codexProbeLeaseId(authCtx),
       });
     };
     let upstream: Response;
@@ -338,5 +340,3 @@ export async function handleResponsesCompact(
   const output = buildCompactV1Output(extractCompactUserMessages(inputItems), summary);
   return new Response(JSON.stringify({ output }), { headers: { "Content-Type": "application/json" } });
 }
-
-

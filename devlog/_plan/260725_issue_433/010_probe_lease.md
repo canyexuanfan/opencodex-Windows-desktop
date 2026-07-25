@@ -5,11 +5,66 @@
 ## 불변식
 
 1. 계정당 동시 lease 최대 1개.
-2. lease를 소지한 outcome만 하드 cooldown을 해제한다.
+2. **success에 의한 조기 해제**는 lease를 소지하고 세대가 일치하는 outcome만 할 수 있다.
+   (credential quarantine은 아래 예외를 참조 — 그건 해제가 아니라 상태 대체다.)
 3. `Retry-After` 유래 cooldown은 probe 대상이 아니다.
 4. **lease는 자신이 발급된 cooldown 세대에만 유효하다.** lease 취득 후 cooldown이
    갱신되면 그 lease의 success는 새 cooldown을 해제하지 못한다.
 5. lease 없는 2xx는 cooldown을 보존한다 (기존 테스트 `:312`, `:806`).
+6. **소유한 probe의 모든 terminal outcome은 lease를 반납한다.** 세대가 낡았더라도
+   probe가 끝났다는 사실은 변하지 않는다.
+
+### 예외: credential quarantine
+
+401/403은 계정을 쓸 수 없다는 뜻이므로 quota 상태를 유지할 이유가 없다. 현재
+`routing.ts:483`이 health를 reauth 상태로 통째로 덮어쓰며, 그 결과 lease와 cooldown이
+함께 사라진다. 이는 불변식 2의 "해제"가 아니라 **상태 대체**이며 의도된 동작이다.
+lease 일치 여부와 무관하게 적용된다.
+
+## 두 개의 판정을 분리한다
+
+A-gate에서 발견된 논리 오류. `L`을 "id 일치 && 세대 일치" 단일 조건으로 두면, 다른
+요청이 세대를 올린 뒤 원래 probe가 끝났을 때 `L=아니오`가 되어 **자기 lease를 반납하지
+못한다.** 완료된 probe의 lease가 영구히 남는다.
+
+따라서 두 판정을 나눈다. `meta`에는 lease id만 실리고 세대는 없으므로, 세대 비교는
+저장된 `probeLeaseGeneration`과 현재 `cooldownGeneration`을 대조한다. `meta`의 세대를
+읽으려 하면 구현 불가능하다.
+
+```ts
+// meta.probeLeaseId 존재 조건이 선행되어야 한다. 없으면 undefined === undefined 로
+// lease 없는 outcome이 소유자로 오판된다.
+const ownsLease =
+  meta.probeLeaseId !== undefined &&
+  meta.probeLeaseId === health.probeLeaseId;
+
+// 세대는 lease 발급 시 저장해 둔 값과 현재 cooldown 세대를 비교한다.
+const mayClearCooldown =
+  ownsLease &&
+  health.probeLeaseGeneration === health.cooldownGeneration;
+```
+
+- `ownsLease`가 참이면 **항상 lease를 반납**한다 (불변식 6).
+- `mayClearCooldown`이 참일 때만 success가 cooldown을 지운다 (불변식 2·4).
+
+## 하드 cooldown 메타데이터 보존 규칙 (STRICT)
+
+현재 success/transient 분기는 health 객체를 **재구성**한다(`routing.ts:476`, `:526`).
+그대로 확장하면 늦게 도착한 비소유 2xx/503 하나로 `cooldownSource`·`cooldownSince`·
+`cooldownGeneration`·진행 중 lease가 통째로 날아간다. Retry-After 출처가 사라지면
+불변식 3이 깨지고, 세대가 사라지면 불변식 4가 깨진다.
+
+**규칙: 다음 세 경우를 제외한 모든 전이는 하드 cooldown 메타데이터와 비소유 lease를
+그대로 보존한다.**
+
+1. `quota` 갱신 — cooldown/source/세대를 새 값으로 쓴다 (세대 증가).
+2. `credential` 대체 — health 전체를 reauth 상태로 덮어쓴다 (의도된 예외).
+3. `mayClearCooldown`인 success — `upstreamHealth.delete()`.
+
+보존 대상 필드: `cooldownUntil`, `cooldownSince`, `cooldownSource`, `cooldownGeneration`,
+`lastProbeAt`, 그리고 자신이 소유하지 않은 `probeLeaseId`/`probeLeaseGeneration`.
+
+구현 시 health를 새로 만들지 말고 기존 객체를 spread한 뒤 바뀌는 필드만 덮는다.
 
 ### 불변식 4가 필요한 이유
 
@@ -44,23 +99,25 @@ TTL 회수는 불변식 1을 깨뜨린다. 요청 총 실행시간에 상한이 
 
 ## 상태 전이표
 
-`L` = outcome meta의 `probeLeaseId`가 저장된 lease id와 일치하고 **세대도 일치**.
+| outcomeClass | ownsLease | 세대 일치 | 동작 |
+|---|---|---|---|
+| `success` | 예 | 예 | `upstreamHealth.delete()` — probe 성공, cooldown 해제 |
+| `success` | 예 | 아니오 | **lease만 반납**, cooldown/source/세대 전부 보존. 그 사이 다른 요청이 새 제한을 받았으므로 해제하지 않는다 |
+| `success` | 아니오 | — | soft-avoid 정리 등 기존 동작 + **하드 cooldown 메타데이터와 진행 중 lease 보존** |
+| `quota` | 예 | — | cooldown 갱신 + 세대 증가, lease 반납, `lastProbeAt=now` |
+| `quota` | 아니오 | — | cooldown 갱신 + 세대 증가, 기존 lease/probe 상태 보존 |
+| `transient` | 예 | — | cooldown 유지, lease 반납, `lastProbeAt=now` |
+| `transient` | 아니오 | — | 기존 soft-avoid escalation + **하드 cooldown 메타데이터와 진행 중 lease 보존** |
+| `caller` | 예 | — | lease 반납 + `lastProbeAt=now` (현재는 early return이므로 이 처리를 추가) |
+| `caller` | 아니오 | — | 기존 동작 (early return, 상태 변화 없음) |
+| `credential` | — | — | reauth 상태로 health 대체. lease와 cooldown이 함께 사라진다 (위 예외 참조) |
+| `unknown` | — | — | 현재 코드가 transient 분기로 내려가므로 transient 행과 동일 |
 
-| outcomeClass | L | 동작 |
-|---|---|---|
-| `success` | 예 | `upstreamHealth.delete()` — probe 성공, cooldown 해제 |
-| `success` | 아니오 | 기존 동작 유지 (cooldown 보존, soft-avoid 정리) |
-| `quota` | 예 | cooldown 갱신 + **세대 증가**, lease 해제, `lastProbeAt=now` |
-| `quota` | 아니오 | cooldown 갱신 + 세대 증가, 기존 lease/probe 상태 보존 |
-| `transient` | 예 | cooldown 유지, lease 해제, `lastProbeAt=now` |
-| `transient` | 아니오 | 기존 동작 + probe 상태 보존 |
-| `caller` | 예 | lease만 해제, `lastProbeAt=now` (현재는 early return) |
-| `caller` | 아니오 | 기존 동작 (early return, 상태 변화 없음) |
-| `credential` | 예/아니오 | **reauth가 quota 상태를 대체한다.** 현재 동작대로 health를 reauth 상태로 덮어쓰고 lease도 함께 사라진다. 401/403은 계정이 쓸 수 없다는 뜻이므로 cooldown 유지가 무의미하다 |
-| `unknown` | — | `classifyCodexUpstreamOutcome()`이 `unknown`을 반환하는 경우 현재 코드는 transient와 같은 분기로 내려간다. transient 행과 동일하게 처리한다 |
+핵심 두 가지:
 
-핵심: 일치하지 않는 outcome은 lease를 소비하지 않는다. 다른 in-flight 요청의 503이
-진행 중인 probe를 죽이지 못한다.
+- 소유하지 않은 outcome은 lease를 건드리지 않는다 — 다른 요청의 503이 진행 중 probe를
+  죽이지 못한다.
+- 소유한 outcome은 세대와 무관하게 lease를 반납한다 — 완료된 probe가 lease를 남기지 않는다.
 
 ## 변경 파일
 
@@ -72,6 +129,7 @@ TTL 회수는 불변식 1을 깨뜨린다. 요청 총 실행시간에 상한이 
 | `src/server/responses/compact.ts` | MODIFY (meta 추가) |
 | `src/providers/openai-sidecar.ts` | MODIFY (meta 추가 + 반납) |
 | `tests/codex-routing.test.ts` | MODIFY |
+| `tests/codex-quota-probe.test.ts` | NEW (통합 회귀) |
 
 ### `src/codex/routing.ts`
 
@@ -128,7 +186,7 @@ export function releaseCodexQuotaProbeLease(accountId: string, leaseId: string):
 | `core.ts:1081` **모델 400 계정 재시도** | `firstAuthCtx` |
 | `core.ts:1160` HTTP 상태 | `authCtx` |
 | `compact.ts:255` `recordCompactPoolOutcome` | `authCtx` (클로저) |
-| `openai-sidecar.ts:91` | `authContext` |
+| `openai-sidecar.ts:98` | `authContext` (`recordOutcome` 클로저) |
 
 `core.ts:1081`이 중요하다. 첫 계정의 caller outcome을 기록한 뒤 다른 계정으로 전환하므로,
 `firstAuthCtx.probeLeaseId`를 넘기지 않으면 첫 계정의 lease가 소비되지 않고 고착된다.
@@ -150,20 +208,35 @@ export function releaseCodexQuotaProbeLease(accountId: string, leaseId: string):
 6. `unleased 2xx preserves the hard cooldown`
 7. `mismatched lease id does not consume the probe`
 8. `failed probe releases the lease and restarts the interval`
-9. `stale-generation lease cannot clear a newer cooldown` — **불변식 4 회귀**
+9. `stale-generation lease cannot clear a newer cooldown` — **불변식 4·6 회귀**
    - reset-derived cooldown → lease 취득(id=X, gen=1)
    - 비-lease 429 `Retry-After: 7200` → cooldown 갱신, gen=2
-   - id=X를 가진 200 기록 → **cooldown이 유지되어야 한다**
-   - 이게 없으면 명시적 Retry-After가 우회된다
+   - id=X를 가진 200 기록 → 다음을 **모두** 단언한다
+     - cooldown이 유지된다 (불변식 4, Retry-After 우회 차단)
+     - `cooldownSource === "retry-after"`가 보존된다 (상태 재구성으로 유실되지 않음)
+     - `probeLeaseId`가 사라진다 (불변식 6, 완료된 probe가 lease를 남기지 않음)
+     - 활성 cooldown이 retry-after 출처이므로 `tryAcquire`가 계속 null
 10. `credential failure ends the probe` — 401 기록 후 reauth 상태, lease 없음
-11. 기존 `:312`, `:806`이 **무수정 통과**
+11. `unowned outcome preserves retry-after source` — **보존 규칙 회귀**
+    - `Retry-After` cooldown → lease 없는 200 기록 → `cooldownSource === "retry-after"` 유지,
+      `tryAcquire`가 계속 null
+    - 503으로도 동일 단언
+12. `unowned outcome keeps a reset-derived cooldown probeable`
+    - reset-derived cooldown → lease 없는 200/503 기록 → interval 경과 후 `tryAcquire` 성공
+    - 늦은 응답 하나가 probe 경로를 막지 않음을 고정
+13. `in-flight lease survives an unowned outcome`
+    - lease 취득(id=X) → lease 없는 200/503 기록 → `probeLeaseId`가 여전히 X
+    - 진행 중 probe가 남의 응답으로 사라지지 않음
+14. 기존 `:312`, `:806`이 **무수정 통과**
 
-### 통합 테스트 (`tests/server-auth.test.ts` 또는 신규)
+### 통합 테스트 (`tests/codex-quota-probe.test.ts`, NEW)
 
 단위 테스트만으로는 선택기 → auth-context 배선을 검증하지 못한다. 구현 실수로 auth의
 기존 cooldown throw가 lease 취득보다 먼저 남아 있어도 위 테스트는 모두 통과한다.
 
-12. `main account probe reaches auth and recovers`
+신규 파일로 두는 이유: `tests/server-auth.test.ts`(54 tests)는 이미 크고 관심사가 다르다.
+
+15. `main account probe reaches auth and recovers`
     - 활성 `__main__`에 reset-derived cooldown 설정
     - interval 전: 요청이 429
     - interval 후: `resolveCodexAuthContext()`가 `main-pool` 컨텍스트와 lease id 반환
@@ -182,5 +255,6 @@ export function releaseCodexQuotaProbeLease(accountId: string, leaseId: string):
 
 ```bash
 bun run typecheck
-bun test tests/codex-routing.test.ts tests/codex-auth-context.test.ts tests/server-auth.test.ts
+bun test tests/codex-routing.test.ts tests/codex-auth-context.test.ts \
+         tests/codex-quota-probe.test.ts tests/server-auth.test.ts
 ```
