@@ -732,6 +732,10 @@ export async function handleResponses(
     }
     parsed.modelId = route.modelId;
   }
+  // Settle the wire once, right after the native model id is known, so logging,
+  // fast-mode injection, auth, and sidecar decisions all read the adapter this
+  // request will actually use rather than the provider-wide default (#404).
+  route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
   logCtx.model = route.modelId;
   logCtx.provider = route.providerName;
   logCtx.providerAdapter = route.provider.adapter;
