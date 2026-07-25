@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, startTransition } from "react";
 import Dashboard from "./pages/Dashboard";
 import Providers from "./pages/Providers";
 import Models from "./pages/Models";
@@ -113,7 +113,19 @@ export default function App() {
 
   // Shared Classic/Workspace mode. Passed as a prop to pages that support it —
   // never remount the shared page container (that discards unsaved drafts).
-  const [viewMode, setViewMode] = useState<ViewMode>(() => ensureMigratedViewMode());
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    const migrated = ensureMigratedViewMode();
+    try {
+      const rawHash = window.location.hash.replace(/^#\/?/, "");
+      if (rawHash === "providers/workspace") {
+        writeViewMode("workspace");
+        return "workspace";
+      }
+    } catch {
+      /* ignore */
+    }
+    return migrated;
+  });
   const toggleGlobalWorkspace = () => {
     const next = toggleViewMode(viewMode);
     writeViewMode(next);
@@ -144,13 +156,13 @@ export default function App() {
         const fromHash = viewModeFromProvidersHash(rawHash);
         if (fromHash === "workspace") {
           writeViewMode("workspace");
-          setViewMode("workspace");
+          startTransition(() => setViewMode("workspace"));
         } else if (rawHash === "providers" && preferred === "workspace") {
           window.location.hash = "providers/workspace";
           return;
         } else if (fromHash === "classic") {
           writeViewMode("classic");
-          setViewMode("classic");
+          startTransition(() => setViewMode("classic"));
         }
       }
       setPageState(nextPage);
@@ -168,13 +180,8 @@ export default function App() {
       return;
     }
     if (page === "providers") {
-      // Honor an explicit workspace deep link on first load before normalizing
-      // to the saved preference (bookmarks/shared links must not open Classic).
-      if (rawHash === "providers/workspace") {
-        writeViewMode("workspace");
-        setViewMode("workspace");
-        return;
-      }
+      // Deep-link bookmarks are applied in the viewMode initializer; here we only
+      // normalize the hash to the shared React state (no sync setState).
       const wanted = providersHashForViewMode(viewMode);
       if (rawHash !== wanted) window.location.hash = wanted;
       return;

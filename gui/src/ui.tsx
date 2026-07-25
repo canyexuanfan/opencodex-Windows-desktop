@@ -45,7 +45,7 @@ export function Select({ value, options, onChange, disabled, label, style, align
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const optionId = useCallback((index: number) => `${listboxId}-opt-${index}`, [listboxId]);
+  const optionId = useCallback((index: number) => `${listboxId}-${index}`, [listboxId]);
   const current = options.find(o => o.value === value);
 
   const close = useCallback((restoreFocus = false) => {
