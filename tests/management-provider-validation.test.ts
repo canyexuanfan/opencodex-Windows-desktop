@@ -1040,6 +1040,105 @@ describe("provider management validation", () => {
     }
   });
 
+  test("disabled-only PATCH cannot re-enable a noncanonical openai row unchanged", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "extra",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.openai.com/v1",
+          authMode: "key",
+          apiKey: "sk-malformed",
+          disabled: true,
+        },
+        extra: {
+          adapter: "openai-chat",
+          baseUrl: "https://extra.example.test/v1",
+          liveModels: false,
+          models: ["extra-model"],
+        },
+      },
+    };
+    saveConfig(liveConfig);
+
+    const server = startServer(0);
+    try {
+      const rejected = await fetch(new URL("/api/providers?name=openai", server.url), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ disabled: false }),
+      });
+      expect(rejected.status).toBe(400);
+      expect(await rejected.json()).toMatchObject({
+        error: expect.stringContaining("canonical built-in provider"),
+      });
+
+      const persisted = loadConfig();
+      expect(persisted.providers.openai).toMatchObject({
+        adapter: "openai-chat",
+        baseUrl: "https://api.openai.com/v1",
+        authMode: "key",
+        disabled: true,
+      });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("disabled-only PATCH re-enables canonical openai and fills missing pool mode", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig({
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "extra",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          disabled: true,
+        },
+        extra: {
+          adapter: "openai-chat",
+          baseUrl: "https://extra.example.test/v1",
+          liveModels: false,
+          models: ["extra-model"],
+        },
+      },
+    });
+
+    const server = startServer(0);
+    try {
+      const enabled = await fetch(new URL("/api/providers?name=openai", server.url), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ disabled: false }),
+      });
+      expect(enabled.status).toBe(200);
+      expect(await enabled.json()).toMatchObject({ success: true, name: "openai", disabled: false });
+
+      const persisted = loadConfig();
+      expect(persisted.providers.openai).toEqual({
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authMode: "forward",
+        codexAccountMode: "pool",
+      });
+      expect(persisted.providers.openai.disabled).toBeUndefined();
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("provider mode PATCH is strict, persists live state, clears caches and affinity, and primes Pool only", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });

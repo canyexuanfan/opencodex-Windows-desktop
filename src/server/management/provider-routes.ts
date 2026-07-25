@@ -235,15 +235,29 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
 
     if (!touched) return jsonResponse({ error: "no recognized fields to update" }, 400);
 
-    // A disabled-only toggle preserves the v2 fast lane: it changes routing eligibility,
-    // not the provider shape, so the merged-shape validators (canonical-seed guard for
-    // openai, destination/local checks) do not apply.
+    // A disabled-only toggle preserves the v2 fast lane for non-openai providers: it changes
+    // routing eligibility, not the provider shape. Re-enabling `openai` is different — a
+    // malformed disabled row must not come back online unchanged, so canonicalize/reject
+    // against the same built-in gate used by mode PATCH and POST.
     const editorTouched = keys.some(key => key !== "disabled");
+    const enablingOpenAi = name === "openai"
+      && Object.hasOwn(rawBody, "disabled")
+      && rawBody.disabled === false
+      && config.providers[name]?.disabled === true;
     if (editorTouched) {
       const providerError = providerManagementConfigError(name, next);
       if (providerError) return jsonResponse({ error: providerError }, 400);
       const resolvedError = await providerDestinationResolvedError(name, next);
       if (resolvedError) return jsonResponse({ error: resolvedError }, 400);
+    } else if (enablingOpenAi) {
+      if (!isCanonicalOpenAiForwardProvider(next)) {
+        return jsonResponse({ error: "provider openai must be the canonical built-in provider" }, 400);
+      }
+      // Fill missing mode so a disabled canonical row becomes a complete live openai entry.
+      if (next.codexAccountMode !== "pool" && next.codexAccountMode !== "direct") {
+        next.codexAccountMode = "pool";
+      }
+      if (next.disabled === false) delete next.disabled;
     }
 
     const { saveConfig: save } = await import("../../config");

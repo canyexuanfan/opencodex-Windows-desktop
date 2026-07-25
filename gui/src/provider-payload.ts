@@ -14,6 +14,20 @@ export interface ProviderPostPreset {
   provider?: ProviderPayload;
 }
 
+/** Mirrors `isCanonicalOpenAiForwardProvider` (src/providers/openai-tiers.ts). */
+const CODEX_FORWARD_BASE_URL = "https://chatgpt.com/backend-api/codex";
+
+function normalizedBaseUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value.trim());
+    if (url.username || url.password || url.search || url.hash) return undefined;
+    const path = url.pathname.replace(/\/+$/, "");
+    return `${url.origin}${path}`;
+  } catch {
+    return undefined;
+  }
+}
+
 export function codexAccountProviderNames(
   providers: Record<string, { authMode?: string }>,
 ): string[] {
@@ -26,10 +40,18 @@ export function codexAccountProviderNames(
 }
 
 export function openAiAccountProviderState(
-  provider: { adapter?: string; authMode?: string; disabled?: boolean } | undefined,
+  provider: { adapter?: string; authMode?: string; baseUrl?: string; disabled?: boolean } | undefined,
 ): "absent" | "disabled" | "ready" | "invalid" {
   if (!provider) return "absent";
-  if (provider.adapter !== "openai-responses" || provider.authMode !== "forward") return "invalid";
+  // Disabled and enabled rows share one canonical gate: adapter + authMode + baseUrl.
+  if (
+    provider.adapter !== "openai-responses"
+    || provider.authMode !== "forward"
+    || typeof provider.baseUrl !== "string"
+    || normalizedBaseUrl(provider.baseUrl) !== CODEX_FORWARD_BASE_URL
+  ) {
+    return "invalid";
+  }
   return provider.disabled === true ? "disabled" : "ready";
 }
 

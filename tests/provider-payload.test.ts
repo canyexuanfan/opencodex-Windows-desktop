@@ -31,15 +31,30 @@ describe("provider dashboard payload", () => {
     expect(openAiAccountProviderState({
       adapter: "openai-responses",
       authMode: "forward",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
       disabled: true,
     })).toBe("disabled");
     expect(openAiAccountProviderState({
       adapter: "openai-responses",
       authMode: "forward",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
     })).toBe("ready");
     expect(openAiAccountProviderState({
       adapter: "openai-responses",
       authMode: "key",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      disabled: true,
+    })).toBe("invalid");
+    expect(openAiAccountProviderState({
+      adapter: "openai-chat",
+      authMode: "forward",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      disabled: true,
+    })).toBe("invalid");
+    expect(openAiAccountProviderState({
+      adapter: "openai-responses",
+      authMode: "forward",
+      baseUrl: "https://api.openai.com/v1",
       disabled: true,
     })).toBe("invalid");
   });

@@ -2,14 +2,16 @@ import { useCallback, useEffect, useState } from "react";
 import { useT } from "../i18n";
 import CodexAccountPool from "../components/CodexAccountPool";
 import { codexAccountModeState, type CodexAccountModeState } from "../codex-multi-state";
-import { ensureOpenAiProvider } from "../provider-payload";
+import { ensureOpenAiProvider, openAiAccountProviderState } from "../provider-payload";
+
+export type OpenAiAccountBannerState = CodexAccountModeState | "invalid" | null;
 
 export function OpenAiAccountModeBanner({
   state,
   busy,
   onEnable,
 }: {
-  state: CodexAccountModeState | null;
+  state: OpenAiAccountBannerState;
   busy: boolean;
   onEnable: () => void;
 }) {
@@ -37,8 +39,33 @@ export function OpenAiAccountModeBanner({
           </button>
         </div>
       )}
+      {state === "invalid" && (
+        <p className="card-sub" style={{ margin: "6px 0 0" }}>
+          {t("codexAuth.openaiMissing")} <a href="#providers">{t("codexAuth.openProviders")}</a>
+        </p>
+      )}
     </div>
   );
+}
+
+function openaiProviderFromConfig(config: unknown): {
+  adapter?: string;
+  authMode?: string;
+  baseUrl?: string;
+  disabled?: boolean;
+} | undefined {
+  if (!config || typeof config !== "object") return undefined;
+  const providers = (config as { providers?: unknown }).providers;
+  if (!providers || typeof providers !== "object" || Array.isArray(providers)) return undefined;
+  if (!Object.hasOwn(providers, "openai")) return undefined;
+  const provider = (providers as Record<string, unknown>).openai;
+  if (!provider || typeof provider !== "object" || Array.isArray(provider)) return undefined;
+  return provider as {
+    adapter?: string;
+    authMode?: string;
+    baseUrl?: string;
+    disabled?: boolean;
+  };
 }
 
 /**
@@ -48,6 +75,7 @@ export function OpenAiAccountModeBanner({
  */
 export default function CodexAuth({ apiBase }: { apiBase: string }) {
   const t = useT();
+  const [bannerState, setBannerState] = useState<OpenAiAccountBannerState>(null);
   const [accountModeState, setAccountModeState] = useState<CodexAccountModeState | null>(null);
   const [enableBusy, setEnableBusy] = useState(false);
   const [enableError, setEnableError] = useState("");
@@ -55,7 +83,16 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
   const loadMode = useCallback(async () => {
     try {
       const config = await fetch(`${apiBase}/api/config`).then(r => r.json());
-      setAccountModeState(codexAccountModeState(config));
+      const providerState = openAiAccountProviderState(openaiProviderFromConfig(config));
+      if (providerState === "absent" || providerState === "disabled" || providerState === "invalid") {
+        setBannerState(providerState);
+        // Non-canonical / missing rows are not a live Codex account mode.
+        setAccountModeState(providerState === "disabled" ? "disabled" : "absent");
+        return;
+      }
+      const mode = codexAccountModeState(config);
+      setBannerState(mode);
+      setAccountModeState(mode);
     } catch { /* banner degrades to no badge */ }
   }, [apiBase]);
 
@@ -69,8 +106,9 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
     setEnableBusy(true);
     setEnableError("");
     try {
-      if (accountModeState !== "absent" && accountModeState !== "disabled") return;
-      await ensureOpenAiProvider(apiBase, accountModeState);
+      // Recovery is gated on the same canonical checks as Providers → Accounts.
+      if (bannerState !== "absent" && bannerState !== "disabled") return;
+      await ensureOpenAiProvider(apiBase, bannerState);
       await loadMode();
     } catch (error) {
       setEnableError(error instanceof Error ? error.message : t("prov.saveFailed"));
@@ -81,7 +119,7 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
 
   const banner = <>
     <OpenAiAccountModeBanner
-      state={accountModeState}
+      state={bannerState}
       busy={enableBusy}
       onEnable={() => { void enableOpenAi(); }}
     />

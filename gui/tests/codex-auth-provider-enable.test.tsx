@@ -50,3 +50,16 @@ test("disabled and busy OpenAI provider states keep the recovery action clear", 
   expect(busyHtml).toContain("Enabling...");
   expect(busyHtml).toContain("disabled=\"\"");
 });
+
+test("noncanonical disabled OpenAI rows do not offer built-in recovery", () => {
+  const html = renderToStaticMarkup(
+    <LanguageProvider>
+      <OpenAiAccountModeBanner state="invalid" busy={false} onEnable={() => undefined} />
+    </LanguageProvider>,
+  );
+
+  expect(html).toContain("The built-in OpenAI provider is not configured.");
+  expect(html).toContain('href="#providers"');
+  expect(html).not.toContain("Enable OpenAI");
+  expect(html).not.toContain("Your OpenAI accounts are still available");
+});
