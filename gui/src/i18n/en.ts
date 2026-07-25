@@ -439,11 +439,12 @@ export const en = {
   "sub.workspace.modelId": "Model ID",
   "sub.workspace.priority": "Priority",
   "sub.workspace.notFeatured": "Not featured",
-  "sub.workspace.addToFeatured": "Add to featured",
-  "sub.workspace.removeFromFeatured": "Remove from featured",
+  "sub.workspace.addToFeatured": "Add {m} to featured",
+  "sub.workspace.removeFromFeatured": "Remove {m} from featured",
   "sub.workspace.featuredFull": "Featured list is full (max 5)",
   "sub.workspace.selectModel": "Select a model",
   "sub.workspace.selectModelDesc": "Pick a model from the list to see details and feature it for spawn_agent.",
+  "sub.workspace.mainAria": "Subagent model details",
 
   // logs
   "logs.title": "Request Logs",

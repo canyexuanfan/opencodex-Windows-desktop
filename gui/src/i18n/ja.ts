@@ -404,11 +404,12 @@ export const ja: Record<TKey, string> = {
   "sub.workspace.modelId": "モデル ID",
   "sub.workspace.priority": "優先度",
   "sub.workspace.notFeatured": "おすすめ未設定",
-  "sub.workspace.addToFeatured": "おすすめに追加",
-  "sub.workspace.removeFromFeatured": "おすすめから削除",
+  "sub.workspace.addToFeatured": "{m} をおすすめに追加",
+  "sub.workspace.removeFromFeatured": "{m} をおすすめから削除",
   "sub.workspace.featuredFull": "おすすめリストがいっぱいです（最大 5）",
   "sub.workspace.selectModel": "モデルを選択",
   "sub.workspace.selectModelDesc": "一覧からモデルを選んで詳細を確認し、spawn_agent のおすすめに設定します。",
+  "sub.workspace.mainAria": "サブエージェントのモデル詳細",
 
   // logs
   "logs.title": "リクエストログ",

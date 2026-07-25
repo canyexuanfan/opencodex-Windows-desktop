@@ -29,13 +29,11 @@ export interface SubagentsWorkspaceProps {
 
 const FEATURED_MAX = 5;
 
-function providerOf(slug: string): string {
+/** Only split provider/id when the public string is clearly `provider/model`. */
+function routedParts(slug: string): { provider: string; modelId: string } | null {
   const idx = slug.lastIndexOf("/");
-  return idx === -1 ? "openai" : slug.slice(0, idx);
-}
-
-function bareId(slug: string): string {
-  return slug.slice(slug.lastIndexOf("/") + 1);
+  if (idx <= 0 || idx >= slug.length - 1) return null;
+  return { provider: slug.slice(0, idx), modelId: slug.slice(idx + 1) };
 }
 
 export default function SubagentsWorkspace({
@@ -64,6 +62,7 @@ export default function SubagentsWorkspace({
 
   const selectedIndex = selected ? chosen.indexOf(selected) : -1;
   const selectedIsFeatured = selectedIndex !== -1;
+  const selectedParts = selected ? routedParts(selected) : null;
 
   return (
     <div className="subagents-workspace-shell">
@@ -94,6 +93,7 @@ export default function SubagentsWorkspace({
                 </div>
                 {featuredFiltered.map(m => {
                   const priority = chosen.indexOf(m) + 1;
+                  const label = modelLabel(m);
                   return (
                     <div key={m} className={`subagents-workspace-rail-row${selected === m ? " subagents-workspace-rail-row--selected" : ""}`}>
                       <button
@@ -103,14 +103,14 @@ export default function SubagentsWorkspace({
                         aria-current={selected === m ? "true" : undefined}
                       >
                         <span className="swi-rail-priority">{priority}</span>
-                        <span className="subagents-workspace-rail-name">{modelLabel(m)}</span>
+                        <span className="subagents-workspace-rail-name">{label}</span>
                       </button>
                       <button
                         type="button"
                         className="subagents-workspace-rail-toggle subagents-workspace-rail-toggle--on"
                         onClick={() => onToggle(m)}
-                        aria-label={t("sub.workspace.removeFromFeatured")}
-                        title={t("sub.workspace.removeFromFeatured")}
+                        aria-label={t("sub.workspace.removeFromFeatured", { m: label })}
+                        title={t("sub.workspace.removeFromFeatured", { m: label })}
                       >
                         <IconCheck style={{ width: 14, height: 14 }} />
                       </button>
@@ -125,35 +125,38 @@ export default function SubagentsWorkspace({
                   <span>{t("sub.workspace.allModels")}</span>
                   <span className="subagents-workspace-rail-group-count">{availableFiltered.length}</span>
                 </div>
-                {availableFiltered.map(m => (
-                  <div key={m} className={`subagents-workspace-rail-row${selected === m ? " subagents-workspace-rail-row--selected" : ""}`}>
-                    <button
-                      type="button"
-                      className="subagents-workspace-rail-row-main"
-                      onClick={() => setSelected(m)}
-                      aria-current={selected === m ? "true" : undefined}
-                    >
-                      <span className="swi-rail-priority" aria-hidden="true" />
-                      <span className="subagents-workspace-rail-name">{modelLabel(m)}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className={`subagents-workspace-rail-toggle${full ? " subagents-workspace-rail-toggle--disabled" : ""}`}
-                      onClick={() => { if (!full) onToggle(m); }}
-                      disabled={full}
-                      aria-label={t("sub.workspace.addToFeatured")}
-                      title={full ? t("sub.workspace.featuredFull") : t("sub.workspace.addToFeatured")}
-                    >
-                      <IconPlus style={{ width: 14, height: 14 }} />
-                    </button>
-                  </div>
-                ))}
+                {availableFiltered.map(m => {
+                  const label = modelLabel(m);
+                  return (
+                    <div key={m} className={`subagents-workspace-rail-row${selected === m ? " subagents-workspace-rail-row--selected" : ""}`}>
+                      <button
+                        type="button"
+                        className="subagents-workspace-rail-row-main"
+                        onClick={() => setSelected(m)}
+                        aria-current={selected === m ? "true" : undefined}
+                      >
+                        <span className="swi-rail-priority" aria-hidden="true" />
+                        <span className="subagents-workspace-rail-name">{label}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`subagents-workspace-rail-toggle${full ? " subagents-workspace-rail-toggle--disabled" : ""}`}
+                        onClick={() => { if (!full) onToggle(m); }}
+                        disabled={full}
+                        aria-label={t("sub.workspace.addToFeatured", { m: label })}
+                        title={full ? t("sub.workspace.featuredFull") : t("sub.workspace.addToFeatured", { m: label })}
+                      >
+                        <IconPlus style={{ width: 14, height: 14 }} />
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
         </aside>
 
-        <main className="subagents-workspace-main">
+        <section className="subagents-workspace-main" aria-label={t("sub.workspace.mainAria")}>
           {selected ? (
             <div className="swi-detail">
               <button type="button" className="swi-detail-back" onClick={() => setSelected(null)}>
@@ -168,14 +171,23 @@ export default function SubagentsWorkspace({
               <div className="swi-detail-section">
                 <h3 className="swi-detail-section-title">{t("sub.workspace.modelId")}</h3>
                 <dl className="swi-detail-kv">
-                  <div className="swi-detail-kv-row">
-                    <dt>{t("sub.workspace.provider")}</dt>
-                    <dd><code>{providerOf(selected)}</code></dd>
-                  </div>
-                  <div className="swi-detail-kv-row">
-                    <dt>{t("sub.workspace.modelId")}</dt>
-                    <dd><code>{bareId(selected)}</code></dd>
-                  </div>
+                  {selectedParts ? (
+                    <>
+                      <div className="swi-detail-kv-row">
+                        <dt>{t("sub.workspace.provider")}</dt>
+                        <dd><code>{selectedParts.provider}</code></dd>
+                      </div>
+                      <div className="swi-detail-kv-row">
+                        <dt>{t("sub.workspace.modelId")}</dt>
+                        <dd><code>{selectedParts.modelId}</code></dd>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="swi-detail-kv-row">
+                      <dt>{t("sub.workspace.modelId")}</dt>
+                      <dd><code>{selected}</code></dd>
+                    </div>
+                  )}
                   <div className="swi-detail-kv-row">
                     <dt>{t("sub.workspace.priority")}</dt>
                     <dd>{selectedIsFeatured ? selectedIndex + 1 : t("sub.workspace.notFeatured")}</dd>
@@ -188,11 +200,11 @@ export default function SubagentsWorkspace({
                 <div className="swi-detail-actions">
                   {selectedIsFeatured ? (
                     <button type="button" className="btn btn-ghost btn-sm" onClick={() => onToggle(selected)}>
-                      <IconX /> {t("sub.workspace.removeFromFeatured")}
+                      <IconX /> {t("sub.workspace.removeFromFeatured", { m: modelLabel(selected) })}
                     </button>
                   ) : (
                     <button type="button" className="btn btn-primary btn-sm" onClick={() => onToggle(selected)} disabled={full}>
-                      <IconPlus /> {full ? t("sub.workspace.featuredFull") : t("sub.workspace.addToFeatured")}
+                      <IconPlus /> {full ? t("sub.workspace.featuredFull") : t("sub.workspace.addToFeatured", { m: modelLabel(selected) })}
                     </button>
                   )}
                 </div>
@@ -238,7 +250,7 @@ export default function SubagentsWorkspace({
               </div>
             </>
           )}
-        </main>
+        </section>
       </div>
     </div>
   );

@@ -11,6 +11,8 @@
 .subagents-workspace-shell {
   width: 100%;
   min-width: 0;
+  container-type: inline-size;
+  container-name: subagents-workspace;
 }
 
 .subagents-workspace-root {
@@ -415,6 +417,7 @@
 
 .swi-detail-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-top: 4px;
@@ -422,6 +425,31 @@
 
 /* ── Responsive ───────────────────────────────────────── */
 
+/*
+  Stack rail above the main pane when the workspace shell is squeezed —
+  typically by the persistent desktop sidebar at ~900–1024px viewports —
+  not only at the mobile drawer breakpoint.
+*/
+@container subagents-workspace (max-width: 720px) {
+  .subagents-workspace-root {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: auto;
+  }
+  .subagents-workspace-rail {
+    border-right: none;
+    padding-right: 0;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: var(--space-3);
+  }
+  .subagents-workspace-rail-list {
+    max-height: 320px;
+  }
+  .subagents-workspace-main {
+    padding: var(--space-2) 0 0;
+  }
+}
+
+/* Mobile: sidebar is a drawer; still prefer rail-on-top for touch. */
 @media (max-width: 768px) {
   .subagents-workspace-root {
     grid-template-columns: minmax(0, 1fr);

@@ -27,6 +27,15 @@ test("SubagentsWorkspace exposes featured rail + save actions", async () => {
   expect(src).toContain("sub.workspace.addToFeatured");
   expect(src).toContain("sub.workspace.removeFromFeatured");
   expect(src).toContain("common.save");
+  // Nested <main> is invalid inside App's main landmark.
+  expect(src).toContain('<section className="subagents-workspace-main"');
+  expect(src).not.toContain("<main className=\"subagents-workspace-main\"");
+  // Rail toggles must include the model name in their accessible label.
+  expect(src).toContain('t("sub.workspace.removeFromFeatured", { m: label })');
+  expect(src).toContain('t("sub.workspace.addToFeatured", { m: label })');
+  // Do not fabricate openai provider for bare combo aliases.
+  expect(src).not.toContain('"openai"');
+  expect(src).toContain("routedParts");
 });
 
 test("Subagents rail list reserves scrollbar gutter so toggles stay clear", async () => {
@@ -34,4 +43,12 @@ test("Subagents rail list reserves scrollbar gutter so toggles stay clear", asyn
   expect(css).toMatch(/\.subagents-workspace-rail-list\s*\{[^}]*scrollbar-gutter:\s*stable/s);
   expect(css).toMatch(/\.subagents-workspace-rail-list\s*\{[^}]*padding-inline-end:/s);
   expect(css).toMatch(/\.subagents-workspace-rail-list\s*\{[^}]*padding-block-end:/s);
+});
+
+test("Subagents workspace stacks via content-width container query before mobile drawer", async () => {
+  const css = await Bun.file(new URL("../src/styles-subagents-workspace.css", import.meta.url)).text();
+  expect(css).toContain("container-name: subagents-workspace");
+  expect(css).toContain("container-type: inline-size");
+  expect(css).toContain("@container subagents-workspace (max-width: 720px)");
+  expect(css).toContain("@media (max-width: 768px)");
 });
