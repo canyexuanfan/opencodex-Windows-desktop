@@ -428,6 +428,16 @@ export const zh: Record<TKey, string> = {
   "sub.moveUp": "上移 {m}",
   "sub.moveDown": "下移 {m}",
   "sub.removeAria": "移除 {m}",
+  "sub.workspace.allModels": "所有模型",
+  "sub.workspace.provider": "提供商",
+  "sub.workspace.modelId": "模型 ID",
+  "sub.workspace.priority": "优先级",
+  "sub.workspace.notFeatured": "未设为精选",
+  "sub.workspace.addToFeatured": "添加到精选",
+  "sub.workspace.removeFromFeatured": "从精选中移除",
+  "sub.workspace.featuredFull": "精选列表已满（最多 5 个）",
+  "sub.workspace.selectModel": "选择模型",
+  "sub.workspace.selectModelDesc": "从列表中选择一个模型以查看详情，并将其设为 spawn_agent 的精选模型。",
 
   // logs
   "logs.title": "请求日志",

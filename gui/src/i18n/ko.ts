@@ -428,6 +428,16 @@ export const ko: Record<TKey, string> = {
   "sub.moveUp": "{m} 위로 이동",
   "sub.moveDown": "{m} 아래로 이동",
   "sub.removeAria": "{m} 삭제",
+  "sub.workspace.allModels": "모든 모델",
+  "sub.workspace.provider": "제공자",
+  "sub.workspace.modelId": "모델 ID",
+  "sub.workspace.priority": "우선순위",
+  "sub.workspace.notFeatured": "추천되지 않음",
+  "sub.workspace.addToFeatured": "추천에 추가",
+  "sub.workspace.removeFromFeatured": "추천에서 제거",
+  "sub.workspace.featuredFull": "추천 목록이 가득 찼습니다 (최대 5개)",
+  "sub.workspace.selectModel": "모델 선택",
+  "sub.workspace.selectModelDesc": "목록에서 모델을 선택하여 세부 정보를 확인하고 spawn_agent에 추천하세요.",
 
   // logs
   "logs.title": "요청 로그",

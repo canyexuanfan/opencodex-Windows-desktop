@@ -434,6 +434,16 @@ export const en = {
   "sub.moveUp": "Move {m} up",
   "sub.moveDown": "Move {m} down",
   "sub.removeAria": "Remove {m}",
+  "sub.workspace.allModels": "All models",
+  "sub.workspace.provider": "Provider",
+  "sub.workspace.modelId": "Model ID",
+  "sub.workspace.priority": "Priority",
+  "sub.workspace.notFeatured": "Not featured",
+  "sub.workspace.addToFeatured": "Add to featured",
+  "sub.workspace.removeFromFeatured": "Remove from featured",
+  "sub.workspace.featuredFull": "Featured list is full (max 5)",
+  "sub.workspace.selectModel": "Select a model",
+  "sub.workspace.selectModelDesc": "Pick a model from the list to see details and feature it for spawn_agent.",
 
   // logs
   "logs.title": "Request Logs",

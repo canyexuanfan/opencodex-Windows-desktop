@@ -434,6 +434,16 @@ export const ru: Record<TKey, string> = {
   "sub.moveUp": "Переместить {m} вверх",
   "sub.moveDown": "Переместить {m} вниз",
   "sub.removeAria": "Убрать {m}",
+  "sub.workspace.allModels": "Все модели",
+  "sub.workspace.provider": "Провайдер",
+  "sub.workspace.modelId": "ID модели",
+  "sub.workspace.priority": "Приоритет",
+  "sub.workspace.notFeatured": "Не в избранных",
+  "sub.workspace.addToFeatured": "Добавить в избранные",
+  "sub.workspace.removeFromFeatured": "Убрать из избранных",
+  "sub.workspace.featuredFull": "Список избранных заполнен (макс. 5)",
+  "sub.workspace.selectModel": "Выберите модель",
+  "sub.workspace.selectModelDesc": "Выберите модель из списка, чтобы увидеть детали и добавить её в избранные для spawn_agent.",
 
   // logs
   "logs.title": "Журнал запросов",
