@@ -10,7 +10,8 @@ const CONTROL_STATE_V2_RE =
   /<!-- opencodex-issue-inline-translator-control-state-v2:([A-Za-z0-9_-]+) -->/;
 const CONTROL_STATE_LEGACY_RE =
   /<!-- opencodex-issue-inline-translator-control-state:([\s\S]*?) -->/;
-const SILENT_BODY_STATE_RE =
+/** Orphan body markers from a short-lived experiment — strip only, never trust as state. */
+const ORPHAN_BODY_STATE_RE =
   /\n?<!-- opencodex-issue-inline-translator-control-state-v2:[A-Za-z0-9_-]+ -->\s*/g;
 const ISSUE_BODY_MAX = 65536;
 const BOT_LOGIN = "github-actions[bot]";
@@ -129,29 +130,20 @@ function scrubDetectedLanguage(value) {
 
 /**
  * True when the model (or caller) reported English / no translation needed.
- * Used to avoid posting a visible English bookkeeping comment.
+ * Used to omit visible English bookkeeping text from the bot control comment.
  */
 function isEnglishDetectedLanguage(value) {
   const lang = scrubDetectedLanguage(value).toLowerCase();
   return !lang || lang === "english" || lang === "en" || lang === "eng";
 }
 
-/** Remove invisible English rate-limit state from an issue body. */
-function stripSilentControlState(body) {
-  return String(body || "").replace(SILENT_BODY_STATE_RE, "\n").replace(/\s+$/, "");
-}
-
-function buildSilentControlStateMarker(state) {
-  const safe = validateControlState(state);
-  if (!safe) return "";
-  return `<!-- opencodex-issue-inline-translator-control-state-v2:${encodeControlState(safe)} -->`;
-}
-
-function applySilentControlStateToBody(body, state) {
-  const base = stripSilentControlState(body);
-  const marker = buildSilentControlStateMarker(state);
-  if (!marker) return base;
-  return `${base}\n\n${marker}\n`;
+/**
+ * Strip orphan body-embedded control markers (never authoritative).
+ * Only removes the marker and a single preceding newline; does not trim
+ * unrelated trailing whitespace.
+ */
+function stripOrphanBodyControlState(body) {
+  return String(body || "").replace(ORPHAN_BODY_STATE_RE, "\n");
 }
 
 function encodeControlState(state) {
@@ -218,23 +210,14 @@ function findControlComment(comments) {
   return botComments[botComments.length - 1];
 }
 
-function extractTranslationControlState(comments, issueBody = "") {
+function extractTranslationControlState(comments) {
   const newest = findControlComment(comments);
-  if (newest) {
-    const body = String(newest.body || "");
-    const v2 = body.match(CONTROL_STATE_V2_RE);
-    if (v2) return decodeControlState(v2[1]);
-    const legacy = body.match(CONTROL_STATE_LEGACY_RE);
-    if (legacy) return parseLegacyControlState(legacy[1]);
-  }
-
-  // English path stores rate-limit state as an invisible trailing HTML comment
-  // on the issue body so we never post a public bookkeeping message.
-  const bodyMatch = String(issueBody || "").match(CONTROL_STATE_V2_RE);
-  if (bodyMatch) {
-    const decoded = decodeControlState(bodyMatch[1]);
-    if (decoded && !decoded.requiresTranslation) return decoded;
-  }
+  if (!newest) return null;
+  const body = String(newest.body || "");
+  const v2 = body.match(CONTROL_STATE_V2_RE);
+  if (v2) return decodeControlState(v2[1]);
+  const legacy = body.match(CONTROL_STATE_LEGACY_RE);
+  if (legacy) return parseLegacyControlState(legacy[1]);
   return null;
 }
 
@@ -298,11 +281,9 @@ function mergeTranslationAttemptState({ priorState = null, attempt, now = Date.n
 }
 
 /**
- * Upsert bot-owned translation control state.
- * Non-English translations keep a visible control comment.
- * English / no-translation attempts never create a public comment; state is
- * stored as an invisible HTML comment on the issue body, and any prior
- * English bookkeeping comment is deleted.
+ * Upsert the bot-owned control comment.
+ * English / no-translation attempts still use a bot-owned comment for rate
+ * limits, but buildTranslationControlComment omits any visible bookkeeping text.
  */
 async function upsertTranslationControlComment({
   github,
@@ -313,36 +294,11 @@ async function upsertTranslationControlComment({
   priorState = null,
   attempt,
   now = Date.now(),
-  issueBody = null,
 }) {
-  const merged = mergeTranslationAttemptState({ priorState, attempt, now });
+  const body = buildTranslationControlComment(
+    mergeTranslationAttemptState({ priorState, attempt, now }),
+  );
   const existing = findControlComment(comments);
-  const silent =
-    !merged.requiresTranslation || isEnglishDetectedLanguage(merged.detectedLanguage);
-
-  if (silent) {
-    if (existing) {
-      await github.rest.issues.deleteComment({
-        owner,
-        repo,
-        comment_id: existing.id,
-      });
-    }
-    if (issueBody != null) {
-      const nextBody = applySilentControlStateToBody(issueBody, merged);
-      if (nextBody !== String(issueBody || "")) {
-        await github.rest.issues.update({
-          owner,
-          repo,
-          issue_number,
-          body: nextBody,
-        });
-      }
-    }
-    return null;
-  }
-
-  const body = buildTranslationControlComment(merged);
   if (existing) {
     if (existing.body !== body) {
       await github.rest.issues.updateComment({
@@ -490,8 +446,7 @@ module.exports = {
   sanitizeTranslationBody,
   scrubDetectedLanguage,
   isEnglishDetectedLanguage,
-  stripSilentControlState,
-  applySilentControlStateToBody,
+  stripOrphanBodyControlState,
   buildTranslationBlock,
   maxTranslationChars,
   fitTranslationBody,

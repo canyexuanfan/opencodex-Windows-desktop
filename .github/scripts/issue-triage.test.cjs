@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const {
   hardenRelatedMatches,
   parseTriageMatches,
+  parseAiJson,
   sanitizeReason,
 } = require("./issue-triage.cjs");
 
@@ -28,6 +29,16 @@ describe("hardenRelatedMatches", () => {
         "Same Xiaomi openai-chat adapter returns 503 on /v1/responses after Codex sync while curl succeeds.",
     });
     assert.deepEqual(result.related, ["410", "411"]);
+  });
+
+  it("keeps related when 'both involve' names a concrete shared failure", () => {
+    const result = hardenRelatedMatches({
+      duplicates: [],
+      related: ["410"],
+      reason:
+        "Both issues involve the exact ECONNRESET error on /v1/responses in the OpenRouter adapter.",
+    });
+    assert.deepEqual(result.related, ["410"]);
   });
 
   it("caps related at 3 and never overlaps duplicates", () => {
@@ -85,6 +96,19 @@ describe("parseTriageMatches", () => {
       { currentNumber: 452, knownNumbers: ["420"] },
     );
     assert.deepEqual(matches.duplicates, ["420"]);
+  });
+});
+
+describe("parseAiJson", () => {
+  it("strips a json fence before parsing", () => {
+    assert.deepEqual(
+      parseAiJson("```json\n{\"duplicates\":[]}\n```"),
+      { duplicates: [] },
+    );
+  });
+
+  it("returns null for unparseable input", () => {
+    assert.equal(parseAiJson("not json at all"), null);
   });
 });
 

@@ -6,7 +6,7 @@
  */
 
 const WEAK_RELATED_REASON_RE =
-  /\b(?:somewhat|broadly|loosely|vaguely)\s+related\b|\bboth\s+(?:issues?\s+)?(?:pertain|involve|relate)\b|\bsame\s+(?:client|app)\b|\berrors?\s+in\s+general\b/i;
+  /\b(?:somewhat|broadly|loosely|vaguely)\s+related\b|\bboth\s+(?:issues?\s+)?pertain\s+to\s+errors?\b|\bsame\s+(?:client|app)\b|\berrors?\s+in\s+general\b/i;
 
 function sanitizeReason(raw) {
   return String(raw || "")

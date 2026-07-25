@@ -25,8 +25,7 @@ const {
   sanitizeTranslationBody,
   scrubDetectedLanguage,
   isEnglishDetectedLanguage,
-  stripSilentControlState,
-  applySilentControlStateToBody,
+  stripOrphanBodyControlState,
   fitTranslationBody,
 } = require("./issue-translation.cjs");
 
@@ -392,7 +391,7 @@ describe("bot-owned control state", () => {
     assert.ok(merged.recent.includes(now));
   });
 
-  it("stores English rate-limit state invisibly on the issue body", () => {
+  it("stores English rate-limit state in a markers-only bot comment", () => {
     const state = {
       v: 2,
       sourceHash: HASH_A,
@@ -401,14 +400,28 @@ describe("bot-owned control state", () => {
       requiresTranslation: false,
       detectedLanguage: "English",
     };
-    const withState = applySilentControlStateToBody(SOURCE, state);
-    assert.ok(!withState.includes("Automated translation bookkeeping"));
-    assert.ok(withState.includes("control-state-v2:"));
-    assert.equal(stripSilentControlState(withState), SOURCE);
+    const comment = buildTranslationControlComment(state);
+    assert.ok(comment.includes(CONTROL_MARKER));
+    assert.ok(comment.includes("control-state-v2:"));
+    assert.ok(!comment.includes("Automated translation bookkeeping"));
     assert.deepEqual(
-      extractTranslationControlState([], withState),
+      extractTranslationControlState([botComment(comment)]),
       validateControlState(state),
     );
+  });
+
+  it("strips orphan body markers without treating them as control state", () => {
+    const orphan = `${SOURCE}\n\n<!-- opencodex-issue-inline-translator-control-state-v2:${encodeControlState({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    })} -->\n`;
+    assert.equal(extractTranslationControlState([], orphan), null);
+    assert.equal(stripOrphanBodyControlState(orphan).includes("control-state-v2:"), false);
+    assert.ok(stripOrphanBodyControlState(orphan).includes("Proxy startet nicht"));
   });
 
   it("skips visible English bookkeeping and still rate-limits model probes", () => {

@@ -54,7 +54,7 @@ jobs:
             const path = require("path");
             const {
               stripTranslationBlock,
-              stripSilentControlState,
+              stripOrphanBodyControlState,
               extractTranslationControlState,
               shouldTranslate,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-translation.cjs"));
@@ -110,11 +110,12 @@ jobs:
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner, repo, issue_number, per_page: 100,
             });
-            const priorState = extractTranslationControlState(comments, issue.body || "");
+            const priorState = extractTranslationControlState(comments);
 
             const rawBody = issue.body || "";
             const sourceTitle = issue.title || "";
-            const sourceBody = stripSilentControlState(stripTranslationBlock(rawBody));
+            // Strip any orphan body markers from a reverted experiment; never trust them as state.
+            const sourceBody = stripOrphanBodyControlState(stripTranslationBlock(rawBody));
             const decision = shouldTranslate({
               sourceTitle,
               sourceBody,
@@ -196,7 +197,7 @@ jobs:
               sanitizeTranslationBody,
               scrubDetectedLanguage,
               stripTranslationBlock,
-              stripSilentControlState,
+              stripOrphanBodyControlState,
               isPreparedSourceStillCurrent,
               BOT_LOGIN,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-translation.cjs"));
@@ -237,14 +238,13 @@ jobs:
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner, repo, issue_number, per_page: 100,
             });
-            const { data: liveForState } = await github.rest.issues.get({ owner, repo, issue_number });
-            const priorState = extractTranslationControlState(comments, liveForState.body || "");
+            const priorState = extractTranslationControlState(comments);
 
             try {
               if (!translatedTitle && !translatedBody) return;
 
-              const live = liveForState;
-              const liveSourceBody = stripSilentControlState(stripTranslationBlock(live.body || ""));
+              const { data: live } = await github.rest.issues.get({ owner, repo, issue_number });
+              const liveSourceBody = stripOrphanBodyControlState(stripTranslationBlock(live.body || ""));
               if (!isPreparedSourceStillCurrent({
                 preparedHash: process.env.SOURCE_HASH,
                 liveTitle: live.title || "",
@@ -289,7 +289,6 @@ jobs:
                 issue_number,
                 comments,
                 priorState,
-                issueBody: liveForState.body || "",
                 attempt: {
                   sourceHash: process.env.SOURCE_HASH,
                   requiresTranslation: true,
@@ -328,8 +327,7 @@ jobs:
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner, repo, issue_number, per_page: 100,
             });
-            const { data: live } = await github.rest.issues.get({ owner, repo, issue_number });
-            const priorState = extractTranslationControlState(comments, live.body || "");
+            const priorState = extractTranslationControlState(comments);
             await upsertTranslationControlComment({
               github,
               owner,
@@ -337,7 +335,6 @@ jobs:
               issue_number,
               comments,
               priorState,
-              issueBody: live.body || "",
               attempt: {
                 sourceHash: process.env.SOURCE_HASH,
                 requiresTranslation: false,
