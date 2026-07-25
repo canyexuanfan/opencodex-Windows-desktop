@@ -1079,6 +1079,7 @@ export const en = {
   "claude.networkError": "Network error — is the proxy running?",
   "claude.toggleAria": "Toggle Claude connection",
   "claude.none": "None",
+  "claude.workspace.settings": "Settings",
 
   // Combos workspace
   "cws.loading": "Loading combos…",

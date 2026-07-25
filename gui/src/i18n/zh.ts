@@ -793,6 +793,7 @@ export const zh: Record<TKey, string> = {
   "claude.networkError": "网络错误 — 代理是否在运行？",
   "claude.toggleAria": "切换 Claude 连接",
   "claude.none": "无",
+  "claude.workspace.settings": "设置",
   "common.close": "关闭",
   "common.ok": "确定",
   "app.logoAria": "opencodex 徽标",

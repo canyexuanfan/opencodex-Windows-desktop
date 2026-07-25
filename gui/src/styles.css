@@ -17,6 +17,7 @@
 @import "./styles-dashboard-workspace.css";
 @import "./styles-usage-workspace.css";
 @import "./styles-apikeys-workspace.css";
+@import "./styles-claudecode-workspace.css";
 
 :root {
   /* default: follow the OS; [data-theme] below pins color-scheme so light-dark() obeys it */
@@ -670,11 +671,11 @@ select.input { appearance: none; }
 /* Keyboard / aria-activedescendant focus — visible without relying on :hover. */
 .select-option-active {
   background: var(--hover);
-  box-shadow: inset 2px 0 0 var(--accent);
 }
+/* Selected + keyboard-highlighted: full inset ring (not a left stripe). */
 .select-option.active.select-option-active {
   background: var(--accent-soft);
-  box-shadow: inset 2px 0 0 var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 /* ---- switch ---- */
@@ -815,7 +816,7 @@ dialog.modal-overlay::backdrop {
 .bar-amber { background: linear-gradient(90deg, var(--green), var(--amber)); }
 .toggle { width: var(--toggle-w); height: var(--toggle-h); border-radius: var(--radius-pill); background: var(--toggle-off-bg); border: 1px solid var(--border); cursor: pointer; position: relative; transition: background var(--motion-normal), border-color var(--motion-normal); flex-shrink: 0; }
 .toggle.on { background: var(--toggle-on-bg); border-color: var(--toggle-on-bg); }
-.toggle-knob { width: 16px; height: 16px; background: light-dark(#ffffff, #ececec); border-radius: var(--radius-round); position: absolute; top: 1px; left: 1px; transition: left var(--motion-normal), background var(--motion-normal); }
+.toggle-knob { width: 16px; height: 16px; background: light-dark(#ffffff, #ececec); border-radius: var(--radius-round); position: absolute; top: 50%; left: 1px; transform: translateY(-50%); transition: left var(--motion-normal), background var(--motion-normal); }
 .toggle.on .toggle-knob { left: 17px; background: var(--toggle-dot-color); }
 .toggle:disabled { cursor: not-allowed; opacity: 0.55; }
 .codex-auto-switch-card { gap: 16px; flex-wrap: wrap; }
@@ -1167,9 +1168,9 @@ button.prov-account-row.active { cursor: default; }
 .toggle { position: relative; display: inline-block; width: var(--toggle-w); height: var(--toggle-h); flex-shrink: 0; }
 .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
 .toggle .slider { position: absolute; inset: 0; background: var(--toggle-off-bg); border-radius: var(--radius-pill); cursor: pointer; transition: background var(--motion-normal) ease; }
-.toggle .slider::after { content: ""; position: absolute; top: 3px; left: 3px; width: var(--toggle-dot); height: var(--toggle-dot); background: var(--toggle-dot-color); border-radius: var(--radius-round); transition: transform var(--motion-normal) ease; }
+.toggle .slider::after { content: ""; position: absolute; top: 50%; left: 3px; width: var(--toggle-dot); height: var(--toggle-dot); background: var(--toggle-dot-color); border-radius: var(--radius-round); transform: translateY(-50%); transition: transform var(--motion-normal) ease; }
 .toggle input:checked + .slider { background: var(--toggle-on-bg); }
-.toggle input:checked + .slider::after { transform: translateX(calc(var(--toggle-w) - var(--toggle-dot) - 6px)); }
+.toggle input:checked + .slider::after { transform: translate(calc(var(--toggle-w) - var(--toggle-dot) - 6px), -50%); }
 .toggle input:focus-visible + .slider { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
 .toggle input:disabled + .slider { opacity: 0.5; cursor: not-allowed; }
 

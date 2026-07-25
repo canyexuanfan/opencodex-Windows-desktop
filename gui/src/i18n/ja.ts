@@ -1034,6 +1034,7 @@ export const ja: Record<TKey, string> = {
   "claude.networkError": "ネットワークエラー — プロキシは起動していますか?",
   "claude.toggleAria": "Claude 接続を切り替え",
   "claude.none": "なし",
+  "claude.workspace.settings": "設定",
 
   // Combos workspace
   "cws.loading": "コンボを読み込み中…",

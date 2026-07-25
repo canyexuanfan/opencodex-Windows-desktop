@@ -1079,6 +1079,7 @@ export const ru: Record<TKey, string> = {
   "claude.networkError": "Ошибка сети — запущен ли прокси?",
   "claude.toggleAria": "Переключить подключение Claude",
   "claude.none": "Нет",
+  "claude.workspace.settings": "Настройки",
 
   // Combos workspace
   "cws.loading": "Загрузка комбо…",
