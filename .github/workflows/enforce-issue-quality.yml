@@ -37,8 +37,6 @@ jobs:
       issues: write
       # Required by actions/ai-inference; untrusted issue text reaches the model.
       models: read
-      # Cache English/no-translation cooldown state (no issue comment object).
-      actions: write
     steps:
       - name: Checkout trusted workflow code
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -46,14 +44,6 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
           sparse-checkout: .github/scripts
-
-      - name: Restore translation control state cache
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: .ocx-translation-state
-          key: ocx-translation-${{ github.event.issue.number || inputs.issue_number }}-${{ github.run_id }}
-          restore-keys: |
-            ocx-translation-${{ github.event.issue.number || inputs.issue_number }}-
 
       - name: Prepare translation
         id: prepare
@@ -120,7 +110,7 @@ jobs:
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner, repo, issue_number, per_page: 100,
             });
-            // Prefer bot-owned file cache (English) or control comment (translated).
+            // Prefer bot-owned control comment state only.
             // Never trust author-editable issue body markers.
             const priorState = resolveControlState(comments, issue_number);
 
@@ -293,23 +283,26 @@ jobs:
             } finally {
               // Count every model attempt toward cooldown / hourly caps,
               // including empty translations and stale-source skips.
-              await persistTranslationControlState({
-                github,
-                owner,
-                repo,
-                issue_number,
-                comments,
-                priorState,
-                attempt: {
-                  sourceHash: process.env.SOURCE_HASH,
-                  requiresTranslation: true,
-                  detectedLanguage: lang,
-                },
-              });
+              try {
+                await persistTranslationControlState({
+                  github,
+                  owner,
+                  repo,
+                  issue_number,
+                  comments,
+                  priorState,
+                  attempt: {
+                    sourceHash: process.env.SOURCE_HASH,
+                    requiresTranslation: true,
+                    detectedLanguage: lang,
+                  },
+                });
+              } catch (err) {
+                core.warning(`Translation control state not persisted: ${err instanceof Error ? err.message : String(err)}`);
+              }
             }
 
       - name: Persist translation control state
-        id: persist_translation_state
         if: >-
           always() &&
           steps.prepare.outcome == 'success' &&
@@ -336,10 +329,6 @@ jobs:
               issue_number = context.payload.issue.number;
             }
 
-            // Defaults: never expose cleanup IDs unless silent file state succeeded.
-            core.setOutput("silent_state", "false");
-            core.setOutput("cleanup_comment_ids", "[]");
-
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner, repo, issue_number, per_page: 100,
             });
@@ -358,80 +347,15 @@ jobs:
                   detectedLanguage: scrubDetectedLanguage(process.env.DETECTED_LANG || "English"),
                 },
               });
-              if (result.storage === "file") {
-                const cleanupIds = (result.cleanupCommentIds || [])
-                  .map((id) => Number(id))
-                  .filter((id) => Number.isSafeInteger(id) && id > 0);
-                core.setOutput("silent_state", "true");
-                // Numeric IDs only — never issue body or model text.
-                core.setOutput("cleanup_comment_ids", JSON.stringify(cleanupIds));
+              if (result.cleanup?.failed?.length) {
+                core.warning(
+                  `Redundant control comment cleanup incomplete: ${result.cleanup.failed.map((f) => f.id).join(", ")}`,
+                );
               }
             } catch (err) {
               // Fail closed for storage errors without mutating the issue body.
+              // Prior bot control comments remain as durable cooldown fallback.
               core.warning(`English translation state not persisted: ${err instanceof Error ? err.message : String(err)}`);
-            }
-
-      - name: Save translation control state cache
-        id: save_translation_state
-        if: always() && steps.prepare.outputs.should_translate == 'true'
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: .ocx-translation-state
-          key: ocx-translation-${{ github.event.issue.number || inputs.issue_number }}-${{ github.run_id }}
-
-      - name: Remove migrated English control comments
-        if: >-
-          steps.persist_translation_state.outputs.silent_state == 'true' &&
-          steps.save_translation_state.outcome == 'success'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
-        env:
-          CLEANUP_COMMENT_IDS: ${{ steps.persist_translation_state.outputs.cleanup_comment_ids }}
-        with:
-          script: |
-            const path = require("path");
-            const {
-              deleteVerifiedControlComments,
-            } = require(path.join(process.cwd(), ".github", "scripts", "issue-translation.cjs"));
-
-            const { owner, repo } = context.repo;
-            let issue_number;
-            if (context.eventName === "workflow_dispatch") {
-              issue_number = Number(context.payload.inputs.issue_number);
-            } else {
-              issue_number = context.payload.issue.number;
-            }
-
-            let commentIds = [];
-            try {
-              const parsed = JSON.parse(process.env.CLEANUP_COMMENT_IDS || "[]");
-              if (Array.isArray(parsed)) {
-                commentIds = parsed
-                  .map((id) => Number(id))
-                  .filter((id) => Number.isSafeInteger(id) && id > 0);
-              }
-            } catch {
-              core.warning("Ignoring invalid cleanup_comment_ids output");
-              return;
-            }
-            if (!commentIds.length) return;
-
-            // Re-list comments and re-verify bot + control marker before delete.
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner, repo, issue_number, per_page: 100,
-            });
-            const result = await deleteVerifiedControlComments({
-              github,
-              owner,
-              repo,
-              issue_number,
-              commentIds,
-              comments,
-            });
-            if (result.failed.length) {
-              // Cache already saved — warn only; leftover comments are redundant fallback.
-              core.warning(
-                `Legacy control comment cleanup incomplete: ${result.failed.map((f) => f.id).join(", ")}`,
-              );
             }
 
   validate:

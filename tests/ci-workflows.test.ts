@@ -177,9 +177,10 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("persistTranslationControlState");
     expect(workflow).toContain("parse-issue-translation-response.cjs");
     expect(workflow).not.toContain('node -e "');
-    expect(workflow).toContain("actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684");
-    expect(workflow).toContain("actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684");
-    expect(workflow).toContain("actions: write");
+    expect(workflow).not.toContain("actions/cache/restore");
+    expect(workflow).not.toContain("actions/cache/save");
+    expect(workflow).not.toContain("actions: write");
+    expect(workflow).not.toContain(".ocx-translation-state");
     expect(workflow).not.toContain("null language");
     expect(workflow).toContain('normally "English"');
     expect(workflow).toContain("rejectsWorkflowDispatchNonDefaultBranch");
@@ -188,15 +189,24 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("Number.isSafeInteger(parsedIssueNumber)");
     expect(workflow).toContain("parsedIssueNumber <= 0");
 
-    // Job-scoped permissions only (no top-level issues:write).
+    // Job-scoped permissions only (no top-level issues:write; no actions:write).
     expect(workflow).toMatch(
-      /jobs:\s*\n\s*translate:[\s\S]*?permissions:\s*\n(?:\s*#.*\n)*\s*contents: read\s*\n(?:\s*#.*\n)*\s*issues: write\s*\n(?:\s*#.*\n)*\s*models: read\s*\n(?:\s*#.*\n)*\s*actions: write/,
+      /jobs:\s*\n\s*translate:[\s\S]*?permissions:\s*\n(?:\s*#.*\n)*\s*contents: read\s*\n(?:\s*#.*\n)*\s*issues: write\s*\n(?:\s*#.*\n)*\s*models: read/,
+    );
+    expect(workflow).not.toMatch(
+      /jobs:\s*\n\s*translate:[\s\S]*?permissions:[\s\S]*?actions:\s*write/,
     );
     expect(workflow).toMatch(
       /jobs:\s*\n\s*translate:[\s\S]*?validate:[\s\S]*?permissions:\s*\n\s*contents: read\s*\n\s*#.*\n\s*issues: write/,
     );
     const beforeJobs = workflow.split(/jobs:\s*\n/)[0]!;
     expect(beforeJobs).not.toMatch(/^\s*permissions:/m);
+
+    // Non-cancelling per-issue concurrency at workflow and translate-job scope.
+    expect(workflow).toContain("group: issue-quality-${{ github.event.issue.number || inputs.issue_number }}");
+    expect(workflow).toContain("group: issue-translation-${{ github.event.issue.number || inputs.issue_number }}");
+    expect(workflow).toMatch(/concurrency:\s*\n\s*group: issue-quality-[\s\S]*?cancel-in-progress:\s*false/);
+    expect(workflow).toMatch(/concurrency:\s*\n\s*group: issue-translation-[\s\S]*?cancel-in-progress:\s*false/);
 
     // Trusted scripts always come from the repository default branch.
     const checkoutStep = workflow
@@ -248,6 +258,8 @@ describe("GitHub Actions hardening", () => {
     expect(branchGuardIdxTranslate).toBeGreaterThan(-1);
     expect(issuesGetIdxTranslate).toBeGreaterThan(-1);
     expect(branchGuardIdxTranslate).toBeLessThan(issuesGetIdxTranslate);
+    expect(translateScript).toContain("resolveControlState");
+    expect(translateScript).toContain("Never trust author-editable issue body markers");
 
     const applyScript = workflow
       .split("- name: Apply inline translation")[1]!
@@ -257,6 +269,8 @@ describe("GitHub Actions hardening", () => {
     expect(staleGuardIdx).toBeGreaterThan(-1);
     expect(issueUpdateIdx).toBeGreaterThan(-1);
     expect(staleGuardIdx).toBeLessThan(issueUpdateIdx);
+    expect(applyScript).toContain("persistTranslationControlState");
+    expect(applyScript).toContain("Translation control state not persisted");
 
     const parseStep = workflow
       .split("- name: Parse AI response")[1]!
@@ -269,51 +283,24 @@ describe("GitHub Actions hardening", () => {
 
     const persistStep = workflow
       .split("- name: Persist translation control state")[1]!
-      .split("- name: Save translation control state cache")[0]!;
+      .split(/\n {2}[a-zA-Z]/)[0]!;
     expect(persistStep).toContain("always()");
-    expect(persistStep).toContain("id: persist_translation_state");
     expect(persistStep).toContain("requires_translation != 'true'");
     expect(persistStep).toContain("persistTranslationControlState");
-    expect(persistStep).not.toContain("upsertTranslationControlComment");
-    expect(persistStep).toContain('core.setOutput("silent_state"');
-    expect(persistStep).toContain('core.setOutput("cleanup_comment_ids"');
-    // English silent path must not create/update comments in the persist step.
-    expect(persistStep).not.toContain("createComment");
-    expect(persistStep).not.toContain("updateComment");
-    expect(persistStep).not.toContain("deleteComment");
+    expect(persistStep).not.toContain("silent_state");
+    expect(persistStep).not.toContain("cleanup_comment_ids");
+    expect(workflow).not.toContain("Save translation control state cache");
+    expect(workflow).not.toContain("Remove migrated English control comments");
+    expect(workflow).not.toContain("Restore translation control state cache");
 
-    // Cache restore → persist → cache save → cleanup ordering.
-    const restoreIdx = workflow.indexOf("- name: Restore translation control state cache");
-    const persistIdx = workflow.indexOf("- name: Persist translation control state");
-    const saveIdx = workflow.indexOf("- name: Save translation control state cache");
-    const cleanupIdx = workflow.indexOf("- name: Remove migrated English control comments");
-    expect(restoreIdx).toBeGreaterThan(-1);
-    expect(persistIdx).toBeGreaterThan(-1);
-    expect(saveIdx).toBeGreaterThan(-1);
-    expect(cleanupIdx).toBeGreaterThan(-1);
-    expect(restoreIdx).toBeLessThan(persistIdx);
-    expect(persistIdx).toBeLessThan(saveIdx);
-    expect(saveIdx).toBeLessThan(cleanupIdx);
-
-    const saveStep = workflow
-      .split("- name: Save translation control state cache")[1]!
-      .split("- name: Remove migrated English control comments")[0]!;
-    expect(saveStep).toContain("id: save_translation_state");
-
-    const cleanupStep = workflow
-      .split("- name: Remove migrated English control comments")[1]!
-      .split(/\n {2}[a-zA-Z]/)[0]!;
-    expect(cleanupStep).toContain("steps.persist_translation_state.outputs.silent_state == 'true'");
-    expect(cleanupStep).toContain("steps.save_translation_state.outcome == 'success'");
-    // Failed/cancelled/skipped cache save must not delete comments.
-    expect(cleanupStep).not.toContain("always()");
-    expect(cleanupStep).toContain("deleteVerifiedControlComments");
-    // Helper re-verifies bot ownership + control marker before deletion.
-    expect(workflow).toContain("deleteVerifiedControlComments");
+    // Helper contract: marker-only English comments; replace-before-cleanup; body non-authoritative.
     const helperSrc = await readText(".github/scripts/issue-translation.cjs");
-    expect(helperSrc).toContain("comment.user?.login !== BOT_LOGIN");
-    expect(helperSrc).toContain('.includes(CONTROL_MARKER)');
-    expect(helperSrc).toContain("Number.isSafeInteger(id) && id > 0");
+    expect(helperSrc).toContain("shouldOmitVisibleBookkeeping");
+    expect(helperSrc).toContain("Automated translation bookkeeping");
+    expect(helperSrc).toContain("canonical comment first");
+    expect(helperSrc).toContain("Authoritative control state comes only from verified bot-owned comments");
+    expect(helperSrc).not.toContain("writeFileControlState");
+    expect(helperSrc).not.toContain(".ocx-translation-state");
   });
 
   test("React Doctor workflow is SHA-pinned, engine-pinned, advisory, and read-only", async () => {

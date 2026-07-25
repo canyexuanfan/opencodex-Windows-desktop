@@ -2,9 +2,6 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
 const {
   MARKER,
   END_MARKER,
@@ -20,8 +17,6 @@ const {
   findControlComment,
   extractTranslationControlState,
   resolveControlState,
-  readFileControlState,
-  writeFileControlState,
   encodeControlState,
   decodeControlState,
   validateControlState,
@@ -35,7 +30,7 @@ const {
   isEnglishDetectedLanguage,
   stripOrphanBodyControlState,
   fitTranslationBody,
-  collectEligibleControlCommentCleanupIds,
+  shouldOmitVisibleBookkeeping,
   deleteVerifiedControlComments,
 } = require("./issue-translation.cjs");
 
@@ -55,17 +50,35 @@ function botComment(body, id = 1) {
   return { id, user: { login: BOT_LOGIN }, body };
 }
 
-function withTempStateDir(fn) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ocx-translation-state-"));
-  const prev = process.env.OCX_TRANSLATION_STATE_DIR;
-  process.env.OCX_TRANSLATION_STATE_DIR = dir;
-  return Promise.resolve()
-    .then(() => fn(dir))
-    .finally(() => {
-      if (prev === undefined) delete process.env.OCX_TRANSLATION_STATE_DIR;
-      else process.env.OCX_TRANSLATION_STATE_DIR = prev;
-      fs.rmSync(dir, { recursive: true, force: true });
-    });
+function mockGithub(handlers = {}) {
+  const calls = [];
+  const github = {
+    rest: {
+      issues: {
+        createComment: async (args) => {
+          calls.push(["create", args]);
+          if (handlers.create) return handlers.create(args);
+          return { data: { id: handlers.nextId || 99, body: args.body, user: { login: BOT_LOGIN } } };
+        },
+        updateComment: async (args) => {
+          calls.push(["update", args]);
+          if (handlers.update) return handlers.update(args);
+          return { data: { id: args.comment_id, body: args.body, user: { login: BOT_LOGIN } } };
+        },
+        deleteComment: async (args) => {
+          calls.push(["delete", args]);
+          if (handlers.delete) return handlers.delete(args);
+          return {};
+        },
+        update: async (args) => {
+          calls.push(["issueUpdate", args]);
+          if (handlers.issueUpdate) return handlers.issueUpdate(args);
+          return { data: args };
+        },
+      },
+    },
+  };
+  return { github, calls };
 }
 
 describe("hashTranslationSource", () => {
@@ -261,203 +274,122 @@ describe("bot-owned control state", () => {
       detectedLanguage: "German",
     });
     assert.match(comment, /Automated translation bookkeeping — detected language: German/);
+    assert.equal(shouldOmitVisibleBookkeeping({
+      requiresTranslation: true,
+      detectedLanguage: "German",
+    }), false);
   });
 
-  it("English persist writes file state and never mutates comments", async () => {
-    await withTempStateDir(async () => {
-      const calls = [];
-      const github = {
-        rest: {
-          issues: {
-            createComment: async (args) => {
-              calls.push(["create", args]);
-              return { data: { id: 99, body: args.body } };
-            },
-            updateComment: async (args) => {
-              calls.push(["update", args]);
-              return { data: { id: args.comment_id } };
-            },
-            deleteComment: async (args) => {
-              calls.push(["delete", args]);
-              return {};
-            },
-          },
-        },
-      };
-      const priorComment = botComment(buildTranslationControlComment({
-        v: 2,
-        sourceHash: HASH_B,
-        attemptedAt: 1,
-        recent: [1],
-        requiresTranslation: true,
-        detectedLanguage: "German",
-      }), 7);
-      const authorForged = {
-        id: 8,
-        user: { login: "someone" },
-        body: buildTranslationControlComment({
-          v: 2,
-          sourceHash: HASH_B,
-          attemptedAt: 1,
-          recent: [1],
-          requiresTranslation: false,
-          detectedLanguage: "English",
-        }),
-      };
-
-      const result = await persistTranslationControlState({
-        github,
-        owner: "o",
-        repo: "r",
-        issue_number: 42,
-        comments: [priorComment, authorForged],
-        priorState: null,
-        attempt: {
-          sourceHash: HASH_A,
-          requiresTranslation: false,
-          detectedLanguage: "English",
-        },
-        now: 100,
-      });
-
-      assert.equal(result.storage, "file");
-      assert.equal(result.comment, null);
-      assert.equal(readFileControlState(42)?.sourceHash, HASH_A);
-      assert.deepEqual(calls, []);
-      assert.deepEqual(result.cleanupCommentIds, [7]);
-      await assert.rejects(
-        () => upsertTranslationControlComment({
-          github,
-          owner: "o",
-          repo: "r",
-          issue_number: 42,
-          comments: [],
-          attempt: {
-            sourceHash: HASH_A,
-            requiresTranslation: false,
-            detectedLanguage: "English",
-          },
-        }),
-        /must not create issue comments/,
-      );
+  it("English creates a marker-only bot comment with no visible bookkeeping", async () => {
+    const { github, calls } = mockGithub({ nextId: 42 });
+    const result = await persistTranslationControlState({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 7,
+      comments: [],
+      attempt: {
+        sourceHash: HASH_A,
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      },
+      now: 100,
     });
+    assert.equal(result.storage, "comment");
+    assert.equal(result.markerOnly, true);
+    assert.equal(result.comment.id, 42);
+    assert.deepEqual(calls.map((c) => c[0]), ["create"]);
+    assert.match(calls[0][1].body, new RegExp(CONTROL_MARKER));
+    assert.doesNotMatch(calls[0][1].body, /Automated translation bookkeeping/);
+    assert.doesNotMatch(calls[0][1].body, /detected language/);
+    assert.equal(extractTranslationControlState([botComment(calls[0][1].body, 42)]).sourceHash, HASH_A);
   });
 
-  it("fails closed when English file storage throws and returns no cleanup IDs", async () => {
-    await withTempStateDir(async () => {
-      const calls = [];
-      const github = {
-        rest: {
-          issues: {
-            createComment: async (args) => {
-              calls.push(["create", args]);
-            },
-            updateComment: async (args) => {
-              calls.push(["update", args]);
-            },
-            deleteComment: async (args) => {
-              calls.push(["delete", args]);
-            },
-          },
-        },
-      };
-      await assert.rejects(
-        () => persistTranslationControlState({
-          github,
-          owner: "o",
-          repo: "r",
-          issue_number: 42,
-          comments: [botComment(buildTranslationControlComment({
-            v: 2,
-            sourceHash: HASH_B,
-            attemptedAt: 1,
-            recent: [1],
-            requiresTranslation: true,
-            detectedLanguage: "German",
-          }), 7)],
-          attempt: {
-            sourceHash: HASH_A,
-            requiresTranslation: false,
-            detectedLanguage: "English",
-          },
-          writeFileStateFn: () => {
-            throw new Error("disk full");
-          },
-        }),
-        /storage failed/,
-      );
-      assert.deepEqual(calls, []);
+  it("English updates the canonical bot comment instead of creating duplicates", async () => {
+    const priorBody = buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_B,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: false,
+      detectedLanguage: "English",
     });
+    const prior = botComment(priorBody, 11);
+    const { github, calls } = mockGithub();
+    const result = await persistTranslationControlState({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 7,
+      comments: [prior],
+      priorState: extractTranslationControlState([prior]),
+      attempt: {
+        sourceHash: HASH_A,
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      },
+      now: 200,
+    });
+    assert.equal(result.comment.id, 11);
+    assert.deepEqual(calls.map((c) => c[0]), ["update"]);
+    assert.equal(calls[0][1].comment_id, 11);
+    assert.doesNotMatch(calls[0][1].body, /Automated translation bookkeeping/);
   });
 
   it("non-English persist writes or updates a visible bot-owned comment", async () => {
-    await withTempStateDir(async () => {
-      const calls = [];
-      const github = {
-        rest: {
-          issues: {
-            createComment: async (args) => {
-              calls.push(["create", args]);
-              return { data: { id: 50, body: args.body, user: { login: BOT_LOGIN } } };
-            },
-            updateComment: async (args) => {
-              calls.push(["update", args]);
-              return { data: { id: args.comment_id, body: args.body, user: { login: BOT_LOGIN } } };
-            },
-            deleteComment: async (args) => {
-              calls.push(["delete", args]);
-            },
-          },
-        },
-      };
-
-      const created = await persistTranslationControlState({
-        github,
-        owner: "o",
-        repo: "r",
-        issue_number: 11,
-        comments: [],
-        attempt: {
-          sourceHash: HASH_A,
-          requiresTranslation: true,
-          detectedLanguage: "German",
-        },
-        now: 100,
-      });
-      assert.equal(created.storage, "comment");
-      assert.equal(created.comment.id, 50);
-      assert.deepEqual(created.cleanupCommentIds, []);
-      assert.match(calls[0][1].body, /detected language: German/);
-      assert.equal(readFileControlState(11)?.detectedLanguage, "German");
-
-      const prior = botComment(calls[0][1].body, 50);
-      calls.length = 0;
-      const updated = await persistTranslationControlState({
-        github,
-        owner: "o",
-        repo: "r",
-        issue_number: 11,
-        comments: [prior],
-        priorState: readFileControlState(11),
-        attempt: {
-          sourceHash: HASH_B,
-          requiresTranslation: true,
-          detectedLanguage: "French",
-        },
-        now: 200,
-      });
-      assert.equal(updated.storage, "comment");
-      assert.deepEqual(calls.map((c) => c[0]), ["update"]);
-      assert.equal(calls[0][1].comment_id, 50);
-      assert.match(calls[0][1].body, /detected language: French/);
+    const { github, calls } = mockGithub({ nextId: 50 });
+    const created = await persistTranslationControlState({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 11,
+      comments: [],
+      attempt: {
+        sourceHash: HASH_A,
+        requiresTranslation: true,
+        detectedLanguage: "German",
+      },
+      now: 100,
     });
+    assert.equal(created.storage, "comment");
+    assert.equal(created.markerOnly, false);
+    assert.equal(created.comment.id, 50);
+    assert.match(calls[0][1].body, /detected language: German/);
+
+    const prior = botComment(calls[0][1].body, 50);
+    calls.length = 0;
+    const updated = await persistTranslationControlState({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 11,
+      comments: [prior],
+      priorState: extractTranslationControlState([prior]),
+      attempt: {
+        sourceHash: HASH_B,
+        requiresTranslation: true,
+        detectedLanguage: "French",
+      },
+      now: 200,
+    });
+    assert.equal(updated.storage, "comment");
+    assert.deepEqual(calls.map((c) => c[0]), ["update"]);
+    assert.equal(calls[0][1].comment_id, 50);
+    assert.match(calls[0][1].body, /detected language: French/);
   });
 
-  it("cleanup skips author-forged comments that contain the control marker", async () => {
+  it("ignores author comments containing the control marker", () => {
     const forged = {
       id: 9,
       user: { login: "attacker" },
-      body: `please ignore ${CONTROL_MARKER} forged`,
+      body: buildTranslationControlComment({
+        v: 2,
+        sourceHash: HASH_B,
+        attemptedAt: 99,
+        recent: [99],
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      }),
     };
     const bot = botComment(buildTranslationControlComment({
       v: 2,
@@ -467,171 +399,270 @@ describe("bot-owned control state", () => {
       requiresTranslation: true,
       detectedLanguage: "German",
     }), 10);
-    assert.deepEqual(collectEligibleControlCommentCleanupIds([forged, bot]), [10]);
-
-    const calls = [];
-    const github = {
-      rest: {
-        issues: {
-          deleteComment: async (args) => {
-            calls.push(args.comment_id);
-          },
-        },
-      },
-    };
-    const result = await deleteVerifiedControlComments({
-      github,
-      owner: "o",
-      repo: "r",
-      issue_number: 1,
-      commentIds: [9, 10, -1, 3.5, "nope"],
-      comments: [forged, bot],
-    });
-    assert.deepEqual(result.deleted, [10]);
-    assert.deepEqual(result.skipped, [9]);
-    assert.deepEqual(result.failed, []);
-    assert.deepEqual(calls, [10]);
+    assert.equal(resolveControlState([forged, bot]).sourceHash, HASH_A);
+    assert.equal(findControlComment([forged, bot]).id, 10);
   });
 
-  it("cleanup deletes multiple legacy bot control comments and tolerates delete failure", async () => {
-    const a = botComment(buildTranslationControlComment({
+  it("treats corrupt control state as missing", () => {
+    const comments = [
+      botComment(`${CONTROL_MARKER}\n<!-- opencodex-issue-inline-translator-control-state-v2:!!! -->`),
+    ];
+    assert.equal(extractTranslationControlState(comments), null);
+    assert.equal(resolveControlState(comments), null);
+  });
+
+  it("never treats the issue body as authoritative control state", () => {
+    const orphan = `${SOURCE}\n\n<!-- opencodex-issue-inline-translator-control-state-v2:${encodeControlState({
       v: 2,
       sourceHash: HASH_A,
       attemptedAt: 1,
       recent: [1],
-      requiresTranslation: true,
-      detectedLanguage: "German",
-    }), 1);
-    const b = botComment(buildTranslationControlComment({
-      v: 2,
-      sourceHash: HASH_B,
-      attemptedAt: 2,
-      recent: [1, 2],
       requiresTranslation: false,
       detectedLanguage: "English",
-    }), 2);
-    const github = {
-      rest: {
-        issues: {
-          deleteComment: async ({ comment_id }) => {
-            if (comment_id === 2) throw new Error("API down");
-          },
-        },
-      },
-    };
-    const result = await deleteVerifiedControlComments({
-      github,
-      owner: "o",
-      repo: "r",
-      issue_number: 1,
-      commentIds: [1, 2],
-      comments: [a, b],
-    });
-    assert.deepEqual(result.deleted, [1]);
-    assert.equal(result.failed.length, 1);
-    assert.equal(result.failed[0].id, 2);
+    })} -->\n`;
+    assert.equal(resolveControlState([], 1), null);
+    assert.equal(extractTranslationControlState([]), null);
+    assert.equal(stripOrphanBodyControlState(orphan).includes("control-state-v2:"), false);
   });
 
-  it("simulates cache-save success then cleanup; failure preserves prior comment", async () => {
-    await withTempStateDir(async () => {
-      const prior = botComment(buildTranslationControlComment({
-        v: 2,
-        sourceHash: HASH_B,
-        attemptedAt: 1,
-        recent: [1],
-        requiresTranslation: true,
-        detectedLanguage: "German",
-      }), 44);
-      const deleted = [];
-      const github = {
-        rest: {
-          issues: {
-            createComment: async () => {
-              throw new Error("create must not run");
-            },
-            updateComment: async () => {
-              throw new Error("update must not run");
-            },
-            deleteComment: async ({ comment_id }) => {
-              deleted.push(comment_id);
-            },
-          },
-        },
-      };
-
-      const persisted = await persistTranslationControlState({
+  it("failed comment create preserves existing state and does not delete", async () => {
+    const prior = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_B,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    }), 5);
+    // No existing valid comment for upsert path that creates — use empty comments
+    // and force create failure; prior remaining comment list is caller's concern.
+    const { github, calls } = mockGithub({
+      create: async () => {
+        throw new Error("API create failed");
+      },
+    });
+    await assert.rejects(
+      () => persistTranslationControlState({
         github,
         owner: "o",
         repo: "r",
-        issue_number: 77,
-        comments: [prior],
+        issue_number: 1,
+        comments: [],
         attempt: {
           sourceHash: HASH_A,
           requiresTranslation: false,
           detectedLanguage: "English",
         },
-        now: 500,
-      });
-      assert.equal(persisted.storage, "file");
-      assert.deepEqual(persisted.cleanupCommentIds, [44]);
-      assert.deepEqual(deleted, []);
+      }),
+      /persistence failed/,
+    );
+    assert.deepEqual(calls.map((c) => c[0]), ["create"]);
+    assert.ok(!calls.some((c) => c[0] === "delete"));
+    // Existing prior on the issue is untouched because we never reached cleanup.
+    assert.equal(extractTranslationControlState([prior]).sourceHash, HASH_B);
+  });
 
-      // Cache save failure: cleanup must not run — prior comment remains.
-      const cacheSaveFailed = true;
-      if (!cacheSaveFailed) {
-        await deleteVerifiedControlComments({
-          github,
-          owner: "o",
-          repo: "r",
-          issue_number: 77,
-          commentIds: persisted.cleanupCommentIds,
-          comments: [prior],
-        });
-      }
-      assert.deepEqual(deleted, []);
-      assert.equal(readFileControlState(77)?.sourceHash, HASH_A);
-
-      // Cache save success: cleanup may delete verified legacy comments.
-      const afterSuccess = await deleteVerifiedControlComments({
+  it("failed comment update preserves the previous comment", async () => {
+    const priorBody = buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_B,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    });
+    const prior = botComment(priorBody, 8);
+    const { github, calls } = mockGithub({
+      update: async () => {
+        throw new Error("API update failed");
+      },
+    });
+    await assert.rejects(
+      () => persistTranslationControlState({
         github,
         owner: "o",
         repo: "r",
-        issue_number: 77,
-        commentIds: persisted.cleanupCommentIds,
+        issue_number: 1,
         comments: [prior],
-      });
-      assert.deepEqual(afterSuccess.deleted, [44]);
-      assert.deepEqual(deleted, [44]);
-      // Durable file state remains even if a later delete had failed.
-      assert.equal(readFileControlState(77)?.sourceHash, HASH_A);
-    });
+        priorState: extractTranslationControlState([prior]),
+        attempt: {
+          sourceHash: HASH_A,
+          requiresTranslation: false,
+          detectedLanguage: "English",
+        },
+        now: 200,
+      }),
+      /persistence failed/,
+    );
+    assert.deepEqual(calls.map((c) => c[0]), ["update"]);
+    assert.ok(!calls.some((c) => c[0] === "delete"));
+    assert.equal(extractTranslationControlState([prior]).sourceHash, HASH_B);
   });
 
-  it("resolveControlState prefers newer file state over stale comments", async () => {
-    await withTempStateDir(async () => {
-      const commentState = {
-        v: 2,
+  it("deletes redundant bot comments only after canonical replacement succeeds", async () => {
+    const older = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_B,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: true,
+      detectedLanguage: "German",
+    }), 1);
+    const newer = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 2,
+      recent: [1, 2],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    }), 2);
+    const { github, calls } = mockGithub();
+    const result = await persistTranslationControlState({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 1,
+      comments: [older, newer],
+      priorState: extractTranslationControlState([older, newer]),
+      attempt: {
         sourceHash: HASH_A,
-        attemptedAt: 10,
-        recent: [10],
-        requiresTranslation: true,
-        detectedLanguage: "German",
-      };
-      writeFileControlState(9, {
-        v: 2,
-        sourceHash: HASH_B,
-        attemptedAt: 20,
-        recent: [10, 20],
         requiresTranslation: false,
         detectedLanguage: "English",
-      });
-      const resolved = resolveControlState(
-        [botComment(buildTranslationControlComment(commentState))],
-        9,
-      );
-      assert.equal(resolved.sourceHash, HASH_B);
-      assert.equal(resolved.requiresTranslation, false);
+      },
+      now: 300,
     });
+    assert.equal(result.comment.id, 2);
+    assert.deepEqual(calls.map((c) => c[0]), ["update", "delete"]);
+    assert.equal(calls[0][1].comment_id, 2);
+    assert.equal(calls[1][1].comment_id, 1);
+    assert.deepEqual(result.cleanup.deleted, [1]);
+  });
+
+  it("cleanup failure leaves valid fallback comments intact", async () => {
+    const older = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_B,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: true,
+      detectedLanguage: "German",
+    }), 1);
+    const newer = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 2,
+      recent: [1, 2],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    }), 2);
+    const { github, calls } = mockGithub({
+      delete: async () => {
+        throw new Error("delete denied");
+      },
+    });
+    const result = await persistTranslationControlState({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 1,
+      comments: [older, newer],
+      priorState: extractTranslationControlState([older, newer]),
+      attempt: {
+        sourceHash: HASH_A,
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      },
+      now: 300,
+    });
+    assert.equal(result.comment.id, 2);
+    assert.equal(result.cleanup.failed.length, 1);
+    assert.equal(result.cleanup.failed[0].id, 1);
+    assert.ok(calls.some((c) => c[0] === "update"));
+    // Older comment body is unchanged in the caller's list — durable fallback remains.
+    assert.equal(extractTranslationControlState([older]).sourceHash, HASH_B);
+  });
+
+  it("cooldown and hourly limits survive repeated issue events via bot comments", () => {
+    const now = 1_700_000_000_000;
+    const body = buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: now,
+      recent: [now],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    });
+    const priorState = resolveControlState([botComment(body)]);
+    const decision = shouldTranslate({
+      sourceTitle: "Hello",
+      sourceBody: "Still English but edited enough to change the hash.",
+      priorState,
+      now: now + 5_000,
+    });
+    assert.equal(decision.ok, false);
+    assert.equal(decision.reason, "rate_limited_interval");
+
+    const hourly = resolveControlState([botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: now,
+      recent: Array.from({ length: 10 }, (_, i) => now - i * 60_000),
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    }))]);
+    const hourlyDecision = shouldTranslate({
+      sourceTitle: "Hello again",
+      sourceBody: "Another English edit that would otherwise probe the model.",
+      priorState: hourly,
+      now: now + 120_000,
+    });
+    assert.equal(hourlyDecision.ok, false);
+    assert.equal(hourlyDecision.reason, "rate_limited_hourly");
+  });
+
+  it("rapid sequential edits cannot invoke the model repeatedly", async () => {
+    const { github, calls } = mockGithub({ nextId: 3 });
+    const first = await persistTranslationControlState({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 9,
+      comments: [],
+      attempt: {
+        sourceHash: HASH_A,
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      },
+      now: 1_000,
+    });
+    const comments = [botComment(first.comment.body, first.comment.id)];
+    const priorState = resolveControlState(comments);
+    const second = shouldTranslate({
+      sourceTitle: "Edit two",
+      sourceBody: "Changed body content that must still be rate limited.",
+      priorState,
+      now: 1_000 + 10_000,
+    });
+    assert.equal(second.ok, false);
+    assert.equal(second.reason, "rate_limited_interval");
+    assert.equal(calls.filter((c) => c[0] === "create").length, 1);
+  });
+
+  it("persistence never mutates the issue title or body", async () => {
+    const { github, calls } = mockGithub();
+    await persistTranslationControlState({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 9,
+      comments: [],
+      attempt: {
+        sourceHash: HASH_A,
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      },
+    });
+    assert.ok(!calls.some((c) => c[0] === "issueUpdate"));
   });
 
   it("selects only github-actions control comments", () => {
@@ -675,13 +706,6 @@ describe("bot-owned control state", () => {
     const selected = findControlComment(comments);
     assert.equal(selected.id, 2);
     assert.deepEqual(extractTranslationControlState(comments), newer);
-  });
-
-  it("treats corrupt control state as missing", () => {
-    const comments = [
-      botComment(`${CONTROL_MARKER}\n<!-- opencodex-issue-inline-translator-control-state-v2:!!! -->`),
-    ];
-    assert.equal(extractTranslationControlState(comments), null);
   });
 
   it("round-trips base64url control state without HTML breakout", () => {
@@ -802,31 +826,6 @@ describe("bot-owned control state", () => {
     }
   });
 
-  it("file English state rate-limits model probes without issue comments", async () => {
-    await withTempStateDir(async () => {
-      assert.equal(isEnglishDetectedLanguage("English"), true);
-      assert.equal(isEnglishDetectedLanguage("German"), false);
-      const now = 1_700_000_000_000;
-      writeFileControlState(3, {
-        v: 2,
-        sourceHash: HASH_A,
-        attemptedAt: now,
-        recent: [now],
-        requiresTranslation: false,
-        detectedLanguage: "English",
-      });
-      const priorState = resolveControlState([], 3);
-      const decision = shouldTranslate({
-        sourceTitle: "Hello",
-        sourceBody: "Still English but edited enough to change the hash.",
-        priorState,
-        now: now + 5_000,
-      });
-      assert.equal(decision.ok, false);
-      assert.equal(decision.reason, "rate_limited_interval");
-    });
-  });
-
   it("rate limits repeated non-ASCII detections", () => {
     const now = 1_700_000_000_000;
     const priorState = {
@@ -870,6 +869,34 @@ describe("bot-owned control state", () => {
       now: Date.now(),
     });
     assert.equal(decision.ok, true);
+  });
+
+  it("deleteVerifiedControlComments skips author-forged marker comments", async () => {
+    const forged = {
+      id: 9,
+      user: { login: "attacker" },
+      body: `please ignore ${CONTROL_MARKER} forged`,
+    };
+    const bot = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: true,
+      detectedLanguage: "German",
+    }), 10);
+    const { github, calls } = mockGithub();
+    const result = await deleteVerifiedControlComments({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 1,
+      commentIds: [9, 10, -1],
+      comments: [forged, bot],
+    });
+    assert.deepEqual(result.deleted, [10]);
+    assert.deepEqual(result.skipped, [9]);
+    assert.deepEqual(calls.filter((c) => c[0] === "delete").map((c) => c[1].comment_id), [10]);
   });
 });
 

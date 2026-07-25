@@ -1,8 +1,6 @@
 "use strict";
 
 const crypto = require("crypto");
-const fs = require("fs");
-const path = require("path");
 
 const MARKER = "<!-- opencodex-issue-inline-translator -->";
 const END_MARKER = "<!-- /opencodex-issue-inline-translator -->";
@@ -19,7 +17,6 @@ const ISSUE_BODY_MAX = 65536;
 const BOT_LOGIN = "github-actions[bot]";
 const SOURCE_HASH_RE = /^[a-f0-9]{16}$/;
 const MAX_RECENT = 32;
-const DEFAULT_STATE_DIR = ".ocx-translation-state";
 
 const DEFAULT_RATE_LIMIT = {
   minIntervalMs: 60_000,
@@ -149,54 +146,6 @@ function stripOrphanBodyControlState(body) {
   return String(body || "").replace(ORPHAN_BODY_STATE_RE, "");
 }
 
-function translationStateDir() {
-  return process.env.OCX_TRANSLATION_STATE_DIR || DEFAULT_STATE_DIR;
-}
-
-function translationStatePath(issueNumber) {
-  const n = Math.trunc(Number(issueNumber));
-  if (!Number.isSafeInteger(n) || n <= 0) {
-    throw new Error(`invalid issue number for translation state: ${issueNumber}`);
-  }
-  return path.join(translationStateDir(), `issue-${n}.json`);
-}
-
-/** Bot-owned file state (Actions cache). Authors cannot forge this path. */
-function readFileControlState(issueNumber) {
-  try {
-    const raw = fs.readFileSync(translationStatePath(issueNumber), "utf8");
-    return validateControlState(JSON.parse(raw));
-  } catch {
-    return null;
-  }
-}
-
-function writeFileControlState(issueNumber, state) {
-  const safe = validateControlState(state);
-  if (!safe) {
-    throw new Error("refusing to persist invalid translation control state");
-  }
-  const dir = translationStateDir();
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const target = translationStatePath(issueNumber);
-  const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(safe)}\n`, { encoding: "utf8", mode: 0o600 });
-  fs.renameSync(tmp, target);
-  return safe;
-}
-
-/**
- * Prefer the newer of bot comment state and file state.
- * Body-embedded markers are never consulted.
- */
-function resolveControlState(comments, issueNumber) {
-  const fromComment = extractTranslationControlState(comments);
-  const fromFile = readFileControlState(issueNumber);
-  if (!fromComment) return fromFile;
-  if (!fromFile) return fromComment;
-  return fromComment.attemptedAt >= fromFile.attemptedAt ? fromComment : fromFile;
-}
-
 function findAllControlComments(comments) {
   return (Array.isArray(comments) ? comments : []).filter(
     (comment) => comment?.user?.login === BOT_LOGIN && comment?.body?.includes(CONTROL_MARKER),
@@ -256,26 +205,56 @@ function parseLegacyControlState(raw) {
   }
 }
 
+function parseControlStateFromCommentBody(body) {
+  const text = String(body || "");
+  const v2 = text.match(CONTROL_STATE_V2_RE);
+  if (v2) return decodeControlState(v2[1]);
+  const legacy = text.match(CONTROL_STATE_LEGACY_RE);
+  if (legacy) return parseLegacyControlState(legacy[1]);
+  return null;
+}
+
 /**
- * Return the newest github-actions control comment, if any.
+ * Newest github-actions control comment with a valid decoded state.
+ * Author-forged comments are ignored. Invalid payloads are skipped.
  */
 function findControlComment(comments) {
-  const botComments = (Array.isArray(comments) ? comments : []).filter(
-    (comment) => comment?.user?.login === BOT_LOGIN && comment?.body?.includes(CONTROL_MARKER),
-  );
-  if (!botComments.length) return null;
-  return botComments[botComments.length - 1];
+  let best = null;
+  let bestState = null;
+  for (const comment of findAllControlComments(comments)) {
+    const state = parseControlStateFromCommentBody(comment.body);
+    if (!state) continue;
+    if (!bestState || state.attemptedAt >= bestState.attemptedAt) {
+      best = comment;
+      bestState = state;
+    }
+  }
+  return best;
 }
 
 function extractTranslationControlState(comments) {
   const newest = findControlComment(comments);
   if (!newest) return null;
-  const body = String(newest.body || "");
-  const v2 = body.match(CONTROL_STATE_V2_RE);
-  if (v2) return decodeControlState(v2[1]);
-  const legacy = body.match(CONTROL_STATE_LEGACY_RE);
-  if (legacy) return parseLegacyControlState(legacy[1]);
-  return null;
+  return parseControlStateFromCommentBody(newest.body);
+}
+
+/**
+ * Authoritative control state comes only from verified bot-owned comments.
+ * Issue body markers and author comments are never consulted.
+ * The optional second argument is ignored (kept for call-site compatibility).
+ */
+function resolveControlState(comments, _issueNumber) {
+  return extractTranslationControlState(comments);
+}
+
+/**
+ * English / no-translation attempts use a marker-only bot comment (no visible text).
+ * requiresTranslation:true is never treated as marker-only solely because language is empty.
+ */
+function shouldOmitVisibleBookkeeping(state) {
+  if (!state?.requiresTranslation) return true;
+  return Boolean(state.detectedLanguage)
+    && isEnglishDetectedLanguage(state.detectedLanguage);
 }
 
 function buildTranslationControlComment(state) {
@@ -288,13 +267,18 @@ function buildTranslationControlComment(state) {
     detectedLanguage: null,
   };
   const encoded = encodeControlState(safe);
-  const lang = scrubDetectedLanguage(safe.detectedLanguage);
-  return [
+  const lines = [
     CONTROL_MARKER,
     `<!-- opencodex-issue-inline-translator-control-state-v2:${encoded} -->`,
-    "",
-    `<sub>Automated translation bookkeeping — detected language: ${lang}.</sub>`,
-  ].join("\n");
+  ];
+  if (!shouldOmitVisibleBookkeeping(safe)) {
+    const lang = scrubDetectedLanguage(safe.detectedLanguage);
+    lines.push(
+      "",
+      `<sub>Automated translation bookkeeping — detected language: ${lang}.</sub>`,
+    );
+  }
+  return lines.join("\n");
 }
 
 function pruneRecent(recent, now, windowMs = 3_600_000) {
@@ -334,66 +318,10 @@ function mergeTranslationAttemptState({ priorState = null, attempt, now = Date.n
   };
 }
 
-function shouldUseSilentFileState(state) {
-  return !state?.requiresTranslation || isEnglishDetectedLanguage(state.detectedLanguage);
-}
-
 /**
- * Upsert the bot-owned control comment for non-English translation attempts.
- * English / no-translation must use {@link persistTranslationControlState} instead.
- */
-async function upsertTranslationControlComment({
-  github,
-  owner,
-  repo,
-  issue_number,
-  comments,
-  priorState = null,
-  attempt,
-  now = Date.now(),
-}) {
-  const merged = mergeTranslationAttemptState({ priorState, attempt, now });
-  if (shouldUseSilentFileState(merged)) {
-    throw new Error(
-      "English/no-translation state must not create issue comments; use persistTranslationControlState",
-    );
-  }
-  const body = buildTranslationControlComment(merged);
-  const existing = findControlComment(comments);
-  if (existing) {
-    if (existing.body !== body) {
-      await github.rest.issues.updateComment({
-        owner,
-        repo,
-        comment_id: existing.id,
-        body,
-      });
-    }
-    return existing;
-  }
-  const created = await github.rest.issues.createComment({
-    owner,
-    repo,
-    issue_number,
-    body,
-  });
-  return created.data;
-}
-
-/**
- * Bot control-comment IDs eligible for post-cache cleanup.
- * Only positive safe integers from github-actions comments that carry CONTROL_MARKER.
- */
-function collectEligibleControlCommentCleanupIds(comments) {
-  return findAllControlComments(comments)
-    .map((comment) => comment.id)
-    .filter((id) => Number.isSafeInteger(id) && id > 0);
-}
-
-/**
- * Delete verified legacy translation control comments.
- * Re-checks bot authorship + CONTROL_MARKER before each delete. Never trusts
- * author-forged IDs alone. Deletion failures are reported, not thrown.
+ * Delete verified bot control comments by ID.
+ * Re-checks bot authorship + CONTROL_MARKER before each delete.
+ * Deletion failures are reported, not thrown.
  */
 async function deleteVerifiedControlComments({
   github,
@@ -402,11 +330,15 @@ async function deleteVerifiedControlComments({
   issue_number,
   commentIds,
   comments = null,
+  keepCommentId = null,
 }) {
+  const keepId = Number.isSafeInteger(keepCommentId) && keepCommentId > 0
+    ? keepCommentId
+    : null;
   const ids = [...new Set(
     (Array.isArray(commentIds) ? commentIds : [])
       .map((id) => Number(id))
-      .filter((id) => Number.isSafeInteger(id) && id > 0),
+      .filter((id) => Number.isSafeInteger(id) && id > 0 && id !== keepId),
   )];
   if (!ids.length) {
     return { deleted: [], skipped: [], failed: [] };
@@ -458,11 +390,51 @@ async function deleteVerifiedControlComments({
 }
 
 /**
- * Persist rate-limit / cooldown state.
- * - English / no-translation: file only (Actions cache). Never create/update/delete
- *   issue comments here. Returns cleanupCommentIds for the workflow to remove after
- *   a successful cache save.
- * - Non-English translation: bot-owned issue comment (visible bookkeeping) + file mirror.
+ * Upsert the canonical bot-owned control comment.
+ * English / no-translation: marker-only (no visible bookkeeping sentence).
+ * Non-English: includes visible detected-language bookkeeping.
+ * Never mutates the issue title or body.
+ */
+async function upsertTranslationControlComment({
+  github,
+  owner,
+  repo,
+  issue_number,
+  comments,
+  priorState = null,
+  attempt,
+  now = Date.now(),
+}) {
+  const merged = mergeTranslationAttemptState({ priorState, attempt, now });
+  const body = buildTranslationControlComment(merged);
+  const existing = findControlComment(comments);
+
+  if (existing) {
+    if (existing.body !== body) {
+      await github.rest.issues.updateComment({
+        owner,
+        repo,
+        comment_id: existing.id,
+        body,
+      });
+    }
+    return { comment: { ...existing, body }, state: merged, created: false };
+  }
+
+  const created = await github.rest.issues.createComment({
+    owner,
+    repo,
+    issue_number,
+    body,
+  });
+  return { comment: created.data, state: merged, created: true };
+}
+
+/**
+ * Persist rate-limit / cooldown state in a bot-owned issue comment.
+ * Writes/updates the canonical comment first; only then deletes redundant
+ * older bot control comments. Create/update failure preserves prior comments.
+ * Never uses the issue body/title or author-created comments as storage.
  */
 async function persistTranslationControlState({
   github,
@@ -473,47 +445,51 @@ async function persistTranslationControlState({
   priorState = null,
   attempt,
   now = Date.now(),
-  writeFileStateFn = writeFileControlState,
 }) {
-  const merged = mergeTranslationAttemptState({ priorState, attempt, now });
-
-  // Persist file state first. Comment deletion is a separate, post-cache step.
-  let fileState;
+  let upserted;
   try {
-    fileState = writeFileStateFn(issue_number, merged);
+    upserted = await upsertTranslationControlComment({
+      github,
+      owner,
+      repo,
+      issue_number,
+      comments,
+      priorState,
+      attempt,
+      now,
+    });
   } catch (err) {
-    // Fail safe: do not mutate issue comments/body when storage is unavailable.
     const error = new Error(
-      `translation control state storage failed: ${err instanceof Error ? err.message : String(err)}`,
+      `translation control comment persistence failed: ${err instanceof Error ? err.message : String(err)}`,
     );
     error.cause = err;
     throw error;
   }
 
-  if (shouldUseSilentFileState(merged)) {
-    return {
-      storage: "file",
-      state: fileState,
-      comment: null,
-      cleanupCommentIds: collectEligibleControlCommentCleanupIds(comments),
-    };
+  const canonicalId = upserted.comment?.id;
+  const redundantIds = findAllControlComments(comments)
+    .map((comment) => comment.id)
+    .filter((id) => Number.isSafeInteger(id) && id > 0 && id !== canonicalId);
+
+  let cleanup = { deleted: [], skipped: [], failed: [] };
+  if (redundantIds.length) {
+    cleanup = await deleteVerifiedControlComments({
+      github,
+      owner,
+      repo,
+      issue_number,
+      commentIds: redundantIds,
+      comments,
+      keepCommentId: canonicalId,
+    });
   }
 
-  const comment = await upsertTranslationControlComment({
-    github,
-    owner,
-    repo,
-    issue_number,
-    comments,
-    priorState,
-    attempt,
-    now,
-  });
   return {
     storage: "comment",
-    state: fileState,
-    comment,
-    cleanupCommentIds: [],
+    state: upserted.state,
+    comment: upserted.comment,
+    markerOnly: shouldOmitVisibleBookkeeping(upserted.state),
+    cleanup,
   };
 }
 
@@ -626,7 +602,6 @@ module.exports = {
   BOT_LOGIN,
   ISSUE_BODY_MAX,
   DEFAULT_RATE_LIMIT,
-  DEFAULT_STATE_DIR,
   hashTranslationSource,
   findTranslationBlockRange,
   splitTranslationBlock,
@@ -634,12 +609,9 @@ module.exports = {
   extractTranslationState,
   findControlComment,
   findAllControlComments,
-  collectEligibleControlCommentCleanupIds,
   deleteVerifiedControlComments,
   extractTranslationControlState,
   resolveControlState,
-  readFileControlState,
-  writeFileControlState,
   encodeControlState,
   decodeControlState,
   validateControlState,
@@ -647,7 +619,7 @@ module.exports = {
   mergeTranslationAttemptState,
   upsertTranslationControlComment,
   persistTranslationControlState,
-  shouldUseSilentFileState,
+  shouldOmitVisibleBookkeeping,
   isPreparedSourceStillCurrent,
   shouldTranslate,
   sanitizeTranslationBody,
