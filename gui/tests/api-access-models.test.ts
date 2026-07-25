@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   classifyExternalModel,
   gatewayInboundProtocols,
-} from "../src/pages/ApiKeys";
+} from "../src/api-access-models";
 
 describe("classifyExternalModel", () => {
   test("keeps bare native OpenAI ids and marks them native via owned_by", () => {

@@ -40,6 +40,7 @@ test("ApiKeys stacked layout keeps endpoint, generate, keys table, and usage pan
   expect(src).toMatch(/claudeCodeEnabled && \([\s\S]*?api\.usageMessagesTitle/);
   expect(src).toContain("gatewayInboundProtocols(claudeCodeEnabled)");
   expect(src).toContain("classifyExternalModel(row)");
+  expect(src).toContain('from "../api-access-models"');
 
   // Inline per-row delete confirmation, not a workspace detail pane.
   expect(src).toContain("confirmDelete === k.id");
