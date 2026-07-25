@@ -329,6 +329,82 @@ PR head `acfe5c14` 기준 `src/responses/parser.ts`의 fallback은 ref 부재를
 
 계약의 precedence는 `image_url > file_id` 및 `file_id > filename > file_data`다. 정상 ref가 있으면 가장 구체적인 ref marker를 사용하고, `file_data`만 있으면 고정 marker를 사용한다. 어떤 경로도 `?`, raw `file_data`, object stringification을 사용자 content로 만들지 않는다.
 
+### A-gate 라운드1 blocker 반영 — 계약 개정
+
+독립 감사가 High 3건 + Medium 1건을 냈다. 아래로 계약을 개정한다.
+
+#### blocker 1 (High) — `detail` narrowing이 typecheck를 깨뜨린다
+
+`nonEmptyString(b.detail)`을 조건으로만 쓰면 `b.detail`이 narrow되지 않아
+`normalizeImageDetail(b.detail)`에 `string | undefined`가 전달된다. compiler probe로 재현됨.
+**반드시 지역 변수에 저장해서 쓴다.**
+
+```ts
+const detail = nonEmptyString(b.detail);
+// ...
+...(detail ? { detail: normalizeImageDetail(detail) } : {}),
+```
+
+#### blocker 3 (High, 가장 중요) — 빈 content가 Cursor를 fresh `resumeAction`으로 만든다
+
+가짜 마커를 제거하면 malformed-only 메시지의 `content`가 `[]`가 된다. adapter별 실측 결과:
+
+| adapter | 빈 content 처리 | 안전성 |
+|---|---|---|
+| Google | WP1(#430)이 `[{text:"(empty)"}]`로 대체 | 안전 |
+| Anthropic | `"(empty)"` 대체 + 빈 assistant skip, `length > 0` 가드 존재 | 안전 |
+| OpenAI-chat / MiMo | 빈 user 배열 → `content: ""` | builder는 통과하나 strict provider 증거 없음 |
+| Kiro | 빈 current user → `content: ""` | malformed-only 첫 turn 미검증 |
+| **Cursor** | `request-builder.ts:236`의 `content.length > 0` 필터가 메시지를 **제거**하고, tool result가 아닌데도 `resumeAction`을 만든다 | **안전하지 않음** |
+| OpenAI Responses / Azure passthrough | `_rawBody` 사용 | 영향 없음 |
+
+추가 실측: `src/adapters/image.ts:19` `contentPartsToText()`는 빈 배열과 all-empty text 배열에서
+`"[image]"`를 반환한다. 즉 openai-chat 경로에서 **없는 이미지를 있다고 주장**한다.
+
+```
+$ bun -e 'contentPartsToText([])'            -> "[image]"
+$ bun -e 'contentPartsToText([{type:"text",text:""}])' -> "[image]"
+```
+
+**따라서 parser 계약을 변경한다: 가짜 *ref* 마커는 없애되, 빈 content 배열을 downstream에
+내보내지 않는다.** user/developer 메시지의 모든 파트가 drop된 경우 중립 placeholder 한 개를
+남긴다. 이것은 존재하지 않는 image/file을 주장하지 않으면서, adapter가 메시지를 잃지 않게 한다.
+
+```ts
+// inputContentParts()의 반환 직전
+// 모든 파트가 malformed로 drop된 경우: 빈 배열을 내보내면 Cursor는 메시지를 제거하고
+// contentPartsToText()는 "[image]"라는 허위 마커를 만든다. 중립 텍스트로 정규화한다.
+if (parts.length === 0) return [{ type: "text", text: "[unsupported content]" }];
+```
+
+`"[unsupported content]"`는 image/file 존재를 주장하지 않고 "보낼 수 없는 무언가가 있었다"만
+표현한다. 원래 결함(`[image: ?]` / `[file: ?]`가 실제 첨부를 주장하는 것)은 해소되고,
+Cursor 메시지 유실과 `"[image]"` 허위 마커도 함께 막힌다.
+
+#### blocker 2 (High) — file 계약을 실제 스키마에 맞춘다
+
+`src/responses/schema.ts:15-18`의 `input_file`은 `file_id`/`filename`/`file_data`만 받고
+`file_url`은 없다. OpenAI 공식 사용 형태는 `file_id`, `file_url`, 또는 `filename + file_data`이며
+**`filename` 단독은 파일 resource가 아니다.**
+
+개정된 precedence:
+
+1. `file_id`가 있으면 `[file: <file_id>]`
+2. `file_data`가 있으면 `filename`이 있을 때 `[file: <filename>]`, 없으면 `[file: inline data]`
+   (어느 경우도 `file_data` 바이트를 content로 만들지 않는다)
+3. 위 어느 것도 없으면 이 블록을 생략한다 — **`filename` 단독으로 marker를 만들지 않는다**
+
+`file_url` 스키마 추가는 이 WP의 범위를 넘는 별도 기능이므로 하지 않는다. D 영수증에
+후속 이슈 후보로 기록한다.
+
+#### blocker 4 (Medium) — 통합 assertion에 실제 malformed image/file을 넣는다
+
+문서의 raw→Google assertion은 missing `input_text`만 입력해 image/file 경로를 한 번도
+실행하지 않았다. 개정: malformed `input_image`(ref 없음)와 malformed `input_file`(ref 없음)을
+raw input에 넣고 **Google과 Cursor 두 경로**의 최종 결과를 관찰한다.
+Cursor 회귀는 malformed-only 첫 turn이 메시지를 잃지 않고 `resumeAction`으로 변질되지 않음을
+고정한다.
+
 ### 우리 test delta — `tests/responses-parser-malformed-content.test.ts` MODIFY
 
 PR의 assistant malformed test 근처에 `[null]` 직접 사례를 추가한다.
