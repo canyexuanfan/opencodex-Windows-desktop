@@ -284,7 +284,7 @@ export default function App() {
             {page === "usage" && <Usage apiBase={API_BASE} viewMode={viewMode} />}
             {page === "storage" && <Storage apiBase={API_BASE} />}
             {page === "codex-auth" && <CodexAuth apiBase={API_BASE} />}
-            {page === "api" && <ApiKeys apiBase={API_BASE} />}
+            {page === "api" && <ApiKeys apiBase={API_BASE} viewMode={viewMode} />}
             {page === "claude" && <ClaudeCode apiBase={API_BASE} />}
           </ErrorBoundary>
         </div>

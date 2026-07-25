@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { IconPlus, IconX, IconCheck } from "../icons";
 import { useI18n, LOCALES } from "../i18n/shared";
+import { readViewMode, type ViewMode } from "../view-mode";
 import ApiKeysWorkspace from "../components/apikeys-workspace/ApiKeysWorkspace";
 
 interface ApiKeyEntry {
@@ -14,7 +15,7 @@ function formatCreatedDate(iso: string, localeTag?: string): string {
   return new Date(iso).toLocaleDateString(localeTag);
 }
 
-export default function ApiKeys({ apiBase }: { apiBase: string }) {
+export default function ApiKeys({ apiBase, viewMode }: { apiBase: string; viewMode?: ViewMode }) {
   const { t, locale } = useI18n();
   const localeTag = LOCALES.find(l => l.code === locale)?.htmlLang;
   const [keys, setKeys] = useState<ApiKeyEntry[]>([]);
@@ -24,14 +25,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   const [newKey, setNewKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  // Workspace vs Classic: localStorage is the source of truth (same pattern as Providers).
-  const [workspaceView] = useState(() => {
-    try {
-      return localStorage.getItem("ocx-apikeys-view") === "workspace";
-    } catch {
-      return false;
-    }
-  });
+  const workspaceView = (viewMode ?? readViewMode()) === "workspace";
 
   const fetchKeys = useCallback(async () => {
     try {
