@@ -62,6 +62,8 @@ export interface CodexAccountPoolController {
   pauseRefresh(): PauseToken;
   resumeRefresh(token: PauseToken): void;
   subscribeLoadObserver(observer: CodexAccountLoadObserver): () => void;
+  /** Last threshold an actual /active read returned; undefined before the first success. */
+  readLastThreshold(): unknown;
 }
 
 const REFRESH_INTERVAL_MS = 30_000;
@@ -80,12 +82,18 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
   // id back to a value the server had not yet committed when that request was issued.
   const pendingActiveIdRef = useRef<{ id: string | null } | null>(null);
   const observersRef = useRef<Set<CodexAccountLoadObserver>>(new Set());
+  // Last threshold value an actual /active read returned. Surfaces that mount after a
+  // load already finished read it to seed their UI instead of waiting a poll interval.
+  const lastThresholdRef = useRef<{ value: unknown } | null>(null);
   const switchingRef = useRef<string | null>(null);
 
   const subscribeLoadObserver = useCallback((observer: CodexAccountLoadObserver) => {
     observersRef.current.add(observer);
     return () => { observersRef.current.delete(observer); };
   }, []);
+
+  /** Last threshold an actual read returned, or undefined when none has succeeded yet. */
+  const readLastThreshold = useCallback(() => lastThresholdRef.current?.value, []);
 
   const load = useCallback(async (refreshQuota = false): Promise<boolean> => {
     const generation = ++loadGenerationRef.current;
@@ -121,6 +129,7 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
             pendingActiveIdRef.current = null;
             setActiveId(serverActiveId);
           }
+          lastThresholdRef.current = { value: active.autoSwitchThreshold };
           for (const observer of observers) {
             observer.acceptActiveRead(active.autoSwitchThreshold, revisions.get(observer)!);
           }
@@ -257,5 +266,6 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
     pauseRefresh,
     resumeRefresh,
     subscribeLoadObserver,
+    readLastThreshold,
   };
 }

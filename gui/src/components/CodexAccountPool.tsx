@@ -39,7 +39,7 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
     updateFailed: t("codexAuth.autoSwitchUpdateFailed"),
     invalid: t("codexAuth.autoSwitchThresholdInvalid"),
   });
-  const { beginServerRead, acceptServerRead, rejectServerRead } = autoSwitch;
+  const { beginServerRead, acceptServerRead, rejectServerRead, hydrateServerValue } = autoSwitch;
   // A hook cannot be called conditionally, so the fallback instance is always created
   // but stays inert (no load, no polling) whenever a shared controller was injected.
   const ownController = useCodexAccountPool(apiBase, !injectedController);
@@ -59,11 +59,24 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
 
   // The controller owns loading and polling. This surface only feeds the auto-switch
   // threshold observer and leases a pause while an OAuth modal is open.
-  useEffect(() => controller.subscribeLoadObserver({
+  // Depend on the stable subscribe callback, not the controller object: the hook
+  // returns a fresh object every render, which would resubscribe on every render.
+  const { subscribeLoadObserver, readLastThreshold } = controller;
+
+  useEffect(() => subscribeLoadObserver({
     beginActiveRead: beginServerRead,
     acceptActiveRead: acceptServerRead,
     rejectActiveRead: rejectServerRead,
-  }), [controller, beginServerRead, acceptServerRead, rejectServerRead]);
+  }), [subscribeLoadObserver, beginServerRead, acceptServerRead, rejectServerRead]);
+
+  // Seed from a value an earlier load already fetched. Tabs mount and unmount their
+  // panels, so a panel appearing after that load would otherwise show "Loading" until
+  // the next poll. Hydration applies only while uninitialized, so it cannot disturb a
+  // draft or a pending save.
+  useEffect(() => {
+    const cached = readLastThreshold();
+    if (cached !== undefined) hydrateServerValue(cached);
+  }, [readLastThreshold, hydrateServerValue]);
 
   useEffect(() => {
     if (!showAdd) return;

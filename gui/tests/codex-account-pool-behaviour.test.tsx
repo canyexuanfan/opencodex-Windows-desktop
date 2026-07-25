@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import type { Root } from "react-dom/client";
 import { useCodexAccountPool, type CodexAccountPoolController } from "../src/hooks/useCodexAccountPool";
 
 /**
@@ -10,12 +10,16 @@ import { useCodexAccountPool, type CodexAccountPoolController } from "../src/hoo
  * substring checks is not proven at all.
  */
 
-const globals = ["document", "window", "navigator", "localStorage", "fetch", "IS_REACT_ACT_ENVIRONMENT"] as const;
+// NOTE: `fetch` is deliberately absent. A sibling suite installs its own fetch router
+// inside individual tests without restoring it, so writing a captured fetch back here
+// would clobber that router and make results depend on file order.
+const globals = ["document", "window", "navigator", "localStorage", "IS_REACT_ACT_ENVIRONMENT"] as const;
 let previous: Record<(typeof globals)[number], unknown>;
 let win: Window;
 let host: HTMLElement;
 let root: Root | null = null;
 let calls: string[] = [];
+let originalFetch: typeof globalThis.fetch;
 let accounts: unknown[] = [];
 let threshold = 80;
 
@@ -30,8 +34,9 @@ beforeEach(() => {
   });
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+  originalFetch = globalThis.fetch;
   calls = [];
-  accounts = [{ id: "a1", email: "a@x.com", isMain: true, hasCredential: true, quota: null }];
+  accounts = [{ id: "a1", email: "account-one", isMain: true, hasCredential: true, quota: null }];
   Object.defineProperty(globalThis, "fetch", {
     configurable: true,
     value: async (url: string, init?: RequestInit) => {
@@ -52,14 +57,22 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  // Unmount first, while this file's window/timers are still the active globals:
+  // otherwise React cleanup runs against a swapped-out window and the controller's
+  // 30s interval outlives the suite, firing into whatever runs next.
   if (root) {
     const current = root;
     await act(async () => { current.unmount(); });
     root = null;
   }
+  await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
   for (const key of globals) {
     Object.defineProperty(globalThis, key, { configurable: true, value: previous[key] });
   }
+  Object.defineProperty(globalThis, "fetch", { configurable: true, value: originalFetch });
+  // Tear the window down: leaving it alive kept this file's timers and document
+  // reachable, which made a sibling suite in the same process fail depending on order.
+  await win.happyDOM?.close?.();
 });
 
 /** Mounts the hook and exposes the live controller. */
@@ -69,6 +82,8 @@ async function mountController(enabled = true) {
     seen.current = useCodexAccountPool("", enabled);
     return null;
   }
+  // Lazy import: see the note on the Root type import above.
+  const { createRoot } = await import("react-dom/client");
   await act(async () => {
     root = createRoot(host);
     root.render(<Probe />);
@@ -115,6 +130,12 @@ test("two pause holders both have to release before polling resumes", async () =
   expect(calls.length).toBe(afterPause);
 });
 
+test("the last genuine threshold read is cached for surfaces that mount later", async () => {
+  const seen = await mountController();
+  // A real /active read succeeded during the initial load.
+  expect(seen.current!.readLastThreshold()).toBe(80);
+});
+
 test("subscribing never fabricates a server read", async () => {
   const seen = await mountController();
   const received: unknown[] = [];
@@ -127,10 +148,11 @@ test("subscribing never fabricates a server read", async () => {
     });
   });
 
-  // A replay-on-subscribe was tried and rejected: useCodexAutoSwitch treats every
-  // acceptActiveRead as belonging to a read that genuinely started at that revision, so
-  // a synthesised accept corrupted its editing/saving disposition and overwrote drafts
-  // the user was typing. Subscribing is therefore silent; the next load notifies.
+  // Subscribing stays silent: useCodexAutoSwitch treats every acceptActiveRead as
+  // belonging to a read that genuinely started at that revision, so synthesising one
+  // corrupts its editing/saving disposition and overwrites drafts. Late surfaces seed
+  // themselves through readLastThreshold() + hydrateServerValue() instead, which applies
+  // only while uninitialized.
   expect(received).toEqual([]);
 
   // And a real load does reach the subscriber.
@@ -141,8 +163,8 @@ test("subscribing never fabricates a server read", async () => {
 test("a mutation updates the one shared controller state", async () => {
   const seen = await mountController();
   accounts = [
-    { id: "a1", email: "a@x.com", isMain: true, hasCredential: true, quota: null },
-    { id: "a2", email: "b@x.com", isMain: false, hasCredential: true, quota: null },
+    { id: "a1", email: "account-one", isMain: true, hasCredential: true, quota: null },
+    { id: "a2", email: "account-two", isMain: false, hasCredential: true, quota: null },
   ];
 
   await act(async () => { await seen.current!.switchAccount("a2"); });
