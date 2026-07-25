@@ -1,5 +1,144 @@
 # WP4 — PR #370 Codex main-account identity 전환 통합 및 transient auth 보존 수정
 
+## A-gate 반영 — 수정 설계 확정 (호환형 접근 A)
+
+독립 감사 결과 기존 리뷰 지적 6건 중 5건은 PR 후속 커밋으로 해결됐고, 미해결 1건이 우리 수정
+대상이다. `VERDICT: GO-WITH-FIXES (blockers=2)`.
+
+| 기존 리뷰 지적 | 판정 |
+|---|---|
+| startup quota priming 전 identity 미-seed | 해결 (`primeCodexPoolQuotas()`가 reconcile 선행) |
+| transient null을 account switch로 처리 | 해결 (`account-lifecycle.ts:27-44`, null이면 purge 안 함) |
+| main info cache 미무효화 | 해결 (전용 모듈 분리 + main purge에서만 clear) |
+| in-flight A 응답이 B 상태 덮어씀 | 해결 (fetch 시작 identity fence + 1회 재요청) |
+| retry 중 null identity를 switch로 처리 | 해결 (`currentAccountId === null` guard) |
+| **fetch 시작 전 token read null이 cache 파괴** | **미해결 → 우리가 고친다** |
+
+### 채택: 호환형 접근 A — 상세 결과 API 추가, 기존 시그니처 유지
+
+감사가 두 접근을 비교해 A를 권고했다. 근거:
+
+- 접근 B(`existsSync()`로 존재를 따로 확인)는 **TOCTOU**가 있다. 확인과 실제 read 사이에 파일이
+  바뀔 수 있고, non-atomic rewrite의 순간적 부재를 로그아웃으로 오판한다.
+- 접근 A는 단일 read 결과에서 `missing / invalid / unreadable`을 분류하므로 경합이 없다.
+- **시그니처를 직접 바꾸면 8개 호출부를 모두 고쳐야 한다**: `auth-api.ts:107,257,373,409`,
+  `auth-collision.ts:26`, `main-account.ts:30,41`, `cli/doctor.ts:304`.
+  호환 wrapper를 남기면 파급이 `fetchMainAccountInfo()` 한 곳으로 제한된다.
+
+#### `src/codex/auth-collision.ts` — 상세 reader 신설, 기존 함수는 wrapper로
+
+```
++export interface CodexTokens {
++  access_token: string;
++  account_id: string;
++  id_token?: string;
++}
++
++export type CodexTokenReadResult =
++  | { status: "ok"; tokens: CodexTokens }
++  | { status: "missing" | "invalid" | "unreadable" };
++
++function hasErrnoCode(error: unknown, code: string): boolean {
++  return typeof error === "object" && error !== null && "code" in error
++    && (error as { code?: unknown }).code === code;
++}
++
++/**
++ * Distinguishes a real sign-out from a transient read failure. The old catch-all collapsed
++ * "file absent", "malformed JSON", and "read error" into one null, so callers could not tell a
++ * logged-out account from a half-written file and destroyed healthy cached state.
++ * Never returns or logs the raw error or any token material.
++ */
++export function readCodexTokensResult(): CodexTokenReadResult {
++  let raw: string;
++  try {
++    raw = readFileSync(join(resolveCodexHomeDir(), "auth.json"), "utf-8");
++  } catch (error) {
++    return { status: hasErrnoCode(error, "ENOENT") ? "missing" : "unreadable" };
++  }
++  try {
++    const parsed = JSON.parse(raw) as {
++      tokens?: { access_token?: string; account_id?: string; id_token?: string };
++    };
++    if (!parsed.tokens?.access_token) return { status: "invalid" };
++    return {
++      status: "ok",
++      tokens: {
++        access_token: parsed.tokens.access_token,
++        account_id: parsed.tokens.account_id ?? "",
++        id_token: parsed.tokens.id_token,
++      },
++    };
++  } catch {
++    return { status: "invalid" };
++  }
++}
+
+ export function readCodexTokens(): CodexTokens | null {
+-  // 기존 exists/read/parse catch-all
++  const result = readCodexTokensResult();
++  return result.status === "ok" ? result.tokens : null;
+ }
+```
+
+#### `src/codex/auth-api.ts` — local read 실패에서 캐시·reauth를 건드리지 않는다
+
+```
+-  const tokens = readCodexTokens();
+-  if (!tokens) {
+-    clearMainAccountInfoCache();
+-    markAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+-    return EMPTY_MAIN_ACCOUNT_INFO;
+-  }
++  const tokenRead = readCodexTokensResult();
++  if (tokenRead.status !== "ok") {
++    // A local read failure is not proof of sign-out. Preserve cached email/plan/quota and the
++    // reauth flag; routing stays fail-closed because getMainAccountToken() re-reads the file.
++    return getMainAccountInfoCache() ?? EMPTY_MAIN_ACCOUNT_INFO;
++  }
++  const tokens = tokenRead.tokens;
+```
+
+### 정책 분리 (확정)
+
+| 상황 | cache | persistent reauth |
+|---|---|---|
+| local `missing`/`invalid`/`unreadable` | **보존** | **변경 안 함** |
+| 실제 request routing | — | fail-closed (wrapper가 null 반환) |
+| account DTO 표시 | — | `hasCredential=false`, 동적 `needsReauth=true` |
+| terminal upstream 401 / 인정된 403 | clear | 설정 |
+| 성공 fetch | 갱신 | 해제 |
+
+### 활성화 증거 계약 (blocker 2 반영)
+
+`missing`만 테스트하면 구현이 ENOENT만 보존하고 JSON parse 실패에서는 기존 destructive 분기를
+유지해도 통과한다. **두 원인을 모두 테스트한다.**
+
+1. 정상 auth로 `fetchMainAccountInfo(true)`를 호출해 email/plan/quota 캐시와 shared quota를 채운다.
+2. 다음을 각각 적용한다.
+   - `rmSync(auth.json)` — 파일 부재 / non-atomic rewrite gap
+   - `writeFileSync(auth.json, "{")` — 결정적 malformed JSON
+3. 다시 `fetchMainAccountInfo(true)`를 호출한다.
+4. 관찰 대상:
+   - WHAM fetch 호출 수가 증가하지 않음
+   - 캐시된 email/plan/quota가 정확히 보존됨
+   - shared `getAccountQuota(MAIN_CODEX_ACCOUNT_ID)`도 보존됨
+   - `isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID) === false`
+   - 파일이 손상된 동안 실제 사용 가능성 판정은 **fail-closed**
+   - 정상 auth 복구 후 같은 identity가 다시 usable하고 불필요한 purge/reauth가 없음
+
+`chmod(0)`은 root 실행과 Windows에서 신뢰할 수 없으므로 필수 회귀로 쓰지 않는다.
+
+### 보안 조건 검증 결과 (감사 확인)
+
+- 새 production logging 없음. 추가된 token/email 문자열은 테스트 fixture 또는 기존 필드 접근뿐.
+- `main-account-cache.ts`는 email/plan/quota/timestamp만 저장하며 token/credential을 저장하지 않음.
+- 상태 purge는 `MAIN_CODEX_ACCOUNT_ID`에 한정되며 다른 pool 계정의 전역 purge는 없음.
+- 새 credential 파일·write 경로·OAuth 흐름·권한·dependency·workflow 변경 없음.
+- 3-way 합성 안전: `74795ad6`(Google), `4cc7f692`(parser), `fc517004`(Kiro/bridge/types)와
+  auth 파일 교집합 없음. 단 현재 `setAccountQuotaFromParsed()`와 `auth-context.ts` quota-probe
+  lease 흐름이 PR의 구형 context로 덮이지 않는지 적용 후 반드시 확인한다.
+
 ## 루프 계약
 
 - **Archetype:** C4 auth/security integration + correctness repair.
