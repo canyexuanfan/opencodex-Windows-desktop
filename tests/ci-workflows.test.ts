@@ -172,6 +172,11 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("issue_number:");
     expect(workflow).toContain("issue-translation.cjs");
     expect(workflow).toContain("translated_title");
+    expect(workflow).toContain("isPreparedSourceStillCurrent");
+    expect(workflow).toContain("extractTranslationControlState");
+    expect(workflow).toContain("buildTranslationControlComment");
+    expect(workflow).toContain("rejectsWorkflowDispatchNonDefaultBranch");
+    expect(workflow).toContain("rejectsWorkflowDispatchPullRequest");
     expect(workflow).toContain("models: read");
     expect(workflow).toContain("Number.isSafeInteger(parsedIssueNumber)");
     expect(workflow).toContain("parsedIssueNumber <= 0");
@@ -225,6 +230,26 @@ describe("GitHub Actions hardening", () => {
     expect(prGuardIdx).toBeLessThan(firstMutationIdx);
     expect(script).toContain("if (pullRequestFailure) {");
     expect(script).toContain("core.setFailed(pullRequestFailure);");
+
+    const translateScript = workflow
+      .split("- name: Prepare translation")[1]!
+      .split("- name: Detect and translate")[0]!;
+    const branchGuardIdxTranslate = translateScript.indexOf(
+      "rejectsWorkflowDispatchNonDefaultBranch(",
+    );
+    const issuesGetIdxTranslate = translateScript.indexOf("github.rest.issues.get({");
+    expect(branchGuardIdxTranslate).toBeGreaterThan(-1);
+    expect(issuesGetIdxTranslate).toBeGreaterThan(-1);
+    expect(branchGuardIdxTranslate).toBeLessThan(issuesGetIdxTranslate);
+
+    const applyScript = workflow
+      .split("- name: Apply inline translation")[1]!
+      .split("- name: Persist translation control state")[0]!;
+    const staleGuardIdx = applyScript.indexOf("isPreparedSourceStillCurrent({");
+    const issueUpdateIdx = applyScript.indexOf("github.rest.issues.update(");
+    expect(staleGuardIdx).toBeGreaterThan(-1);
+    expect(issueUpdateIdx).toBeGreaterThan(-1);
+    expect(staleGuardIdx).toBeLessThan(issueUpdateIdx);
   });
 
   test("React Doctor workflow is SHA-pinned, engine-pinned, advisory, and read-only", async () => {

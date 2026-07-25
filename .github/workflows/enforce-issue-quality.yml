@@ -46,12 +46,13 @@ jobs:
             const path = require("path");
             const {
               stripTranslationBlock,
-              extractTranslationState,
+              extractTranslationControlState,
               shouldTranslate,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-translation.cjs"));
-            const { rejectsWorkflowDispatchNonDefaultBranch } = require(
-              path.join(process.cwd(), ".github", "scripts", "issue-quality.cjs"),
-            );
+            const {
+              rejectsWorkflowDispatchNonDefaultBranch,
+              rejectsWorkflowDispatchPullRequest,
+            } = require(path.join(process.cwd(), ".github", "scripts", "issue-quality.cjs"));
 
             const nonDefaultBranchFailure = rejectsWorkflowDispatchNonDefaultBranch(
               context.eventName,
@@ -80,15 +81,30 @@ jobs:
             const { data: issue } = await github.rest.issues.get({
               owner, repo, issue_number,
             });
+
+            const pullRequestFailure = rejectsWorkflowDispatchPullRequest(
+              issue,
+              issue_number,
+              context.eventName,
+            );
+            if (pullRequestFailure) {
+              core.setFailed(pullRequestFailure);
+              return;
+            }
+
             if (issue.pull_request) {
               core.setOutput("should_translate", "false");
               core.setOutput("skip_reason", "pull_request");
               return;
             }
 
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
+            const priorState = extractTranslationControlState(comments);
+
             const rawBody = issue.body || "";
             const sourceTitle = issue.title || "";
-            const priorState = extractTranslationState(rawBody);
             const sourceBody = stripTranslationBlock(rawBody);
             const decision = shouldTranslate({
               sourceTitle,
@@ -154,7 +170,9 @@ jobs:
             if (!parsed || typeof parsed !== "object") process.exit(0);
             const fs = require('fs');
             if (parsed.requires_translation !== true) {
+              const lang = scrubLine(parsed.detected_language || "English", 64) || "English";
               fs.appendFileSync(process.env.GITHUB_OUTPUT, 'requires_translation=false\n');
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, 'detected_language=' + lang + '\n');
               process.exit(0);
             }
             const scrubLine = (value, max) => String(value || '')
@@ -188,11 +206,52 @@ jobs:
             const path = require("path");
             const {
               appendTranslationBlock,
-              nextTranslationState,
+              mergeTranslationAttemptState,
+              buildTranslationControlComment,
+              extractTranslationControlState,
               sanitizeTranslationBody,
               scrubDetectedLanguage,
               stripTranslationBlock,
+              isPreparedSourceStillCurrent,
+              CONTROL_MARKER,
+              BOT_LOGIN,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-translation.cjs"));
+
+            const LEGACY_MARKER = "<!-- opencodex-issue-translator -->";
+
+            async function upsertControlComment({
+              owner, repo, issue_number, priorState, attempt, comments,
+            }) {
+              const merged = mergeTranslationAttemptState({
+                priorState,
+                attempt,
+                now: Date.now(),
+              });
+              const body = buildTranslationControlComment(merged);
+              const existing = comments.find((c) =>
+                c.user?.login === BOT_LOGIN && c.body?.includes(CONTROL_MARKER));
+              if (existing) {
+                if (existing.body === body) return;
+                await github.rest.issues.updateComment({
+                  owner, repo, comment_id: existing.id, body,
+                });
+                return;
+              }
+              await github.rest.issues.createComment({
+                owner, repo, issue_number, body,
+              });
+            }
+
+            async function removeLegacyTranslationComments(owner, repo, issue_number, comments) {
+              for (const comment of comments) {
+                if (comment.user?.login !== BOT_LOGIN) continue;
+                if (comment.body?.includes(LEGACY_MARKER)) {
+                  await github.rest.issues.deleteComment({
+                    owner, repo, comment_id: comment.id,
+                  });
+                }
+              }
+            }
 
             const scrubLine = (value, max) => String(value || "")
               .replace(/[\u0000-\u001f\u007f]/g, " ")
@@ -216,18 +275,20 @@ jobs:
 
             const { data: live } = await github.rest.issues.get({ owner, repo, issue_number });
             const liveSourceBody = stripTranslationBlock(live.body || "");
-            if (liveSourceBody !== sourceBody || (live.title || "") !== preparedTitle) {
-              core.info("Issue changed during translation; skipping stale apply.");
+            if (!isPreparedSourceStillCurrent({
+              preparedHash: process.env.SOURCE_HASH,
+              liveTitle: live.title || "",
+              liveBody: liveSourceBody,
+            })) {
+              core.info("Issue changed while translation was running; skipping stale update.");
               return;
             }
 
             const lang = scrubDetectedLanguage(process.env.DETECTED_LANG);
-            const recent = JSON.parse(process.env.RECENT_TIMESTAMPS || "[]");
-            const state = nextTranslationState({
-              sourceHash: process.env.SOURCE_HASH,
-              recent,
-              now: Date.now(),
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
             });
+            const priorState = extractTranslationControlState(comments);
 
             const translationText = [
               `*Original language: ${lang}*`,
@@ -236,20 +297,10 @@ jobs:
             ].join("\n");
 
             const nextBody = translatedBody
-              ? appendTranslationBlock(sourceBody, translationText, state)
+              ? appendTranslationBlock(sourceBody, translationText)
               : sourceBody;
 
-            const LEGACY_MARKER = "<!-- opencodex-issue-translator -->";
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner, repo, issue_number, per_page: 100,
-            });
-            const legacy = comments.find((c) =>
-              c.user?.login === "github-actions[bot]" && c.body?.includes(LEGACY_MARKER));
-            if (legacy) {
-              await github.rest.issues.deleteComment({
-                owner, repo, comment_id: legacy.id,
-              });
-            }
+            await removeLegacyTranslationComments(owner, repo, issue_number, comments);
 
             const update = { owner, repo, issue_number };
             let changed = false;
@@ -261,25 +312,41 @@ jobs:
               update.body = nextBody;
               changed = true;
             }
-            if (!changed) return;
+            if (changed) {
+              await github.rest.issues.update(update);
+            }
 
-            await github.rest.issues.update(update);
+            await upsertControlComment({
+              owner,
+              repo,
+              issue_number,
+              priorState,
+              attempt: {
+                sourceHash: process.env.SOURCE_HASH,
+                requiresTranslation: true,
+                detectedLanguage: lang,
+              },
+              comments,
+            });
 
-      - name: Record translation throttle
+      - name: Persist translation control state
         if: steps.prepare.outputs.should_translate == 'true' && steps.parse.outputs.requires_translation == 'false'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
-          SOURCE_BODY: ${{ steps.prepare.outputs.source_body }}
-          PREPARED_TITLE: ${{ steps.prepare.outputs.prepared_title }}
           SOURCE_HASH: ${{ steps.prepare.outputs.source_hash }}
-          RECENT_TIMESTAMPS: ${{ steps.prepare.outputs.recent_timestamps }}
+          DETECTED_LANG: ${{ steps.parse.outputs.detected_language }}
         with:
           script: |
             const path = require("path");
             const {
-              appendThrottleBlock,
-              nextTranslationState,
+              mergeTranslationAttemptState,
+              buildTranslationControlComment,
+              extractTranslationControlState,
               stripTranslationBlock,
+              isPreparedSourceStillCurrent,
+              scrubDetectedLanguage,
+              CONTROL_MARKER,
+              BOT_LOGIN,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-translation.cjs"));
 
             const { owner, repo } = context.repo;
@@ -290,26 +357,43 @@ jobs:
               issue_number = context.payload.issue.number;
             }
 
-            const sourceBody = process.env.SOURCE_BODY || "";
-            const preparedTitle = process.env.PREPARED_TITLE || "";
             const { data: live } = await github.rest.issues.get({ owner, repo, issue_number });
             const liveSourceBody = stripTranslationBlock(live.body || "");
-            if (liveSourceBody !== sourceBody || (live.title || "") !== preparedTitle) {
-              core.info("Issue changed during detection; skipping throttle record.");
+            if (!isPreparedSourceStillCurrent({
+              preparedHash: process.env.SOURCE_HASH,
+              liveTitle: live.title || "",
+              liveBody: liveSourceBody,
+            })) {
+              core.info("Issue changed while detection was running; skipping stale control update.");
               return;
             }
 
-            const recent = JSON.parse(process.env.RECENT_TIMESTAMPS || "[]");
-            const state = nextTranslationState({
-              sourceHash: process.env.SOURCE_HASH,
-              recent,
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
+            const priorState = extractTranslationControlState(comments);
+            const merged = mergeTranslationAttemptState({
+              priorState,
+              attempt: {
+                sourceHash: process.env.SOURCE_HASH,
+                requiresTranslation: false,
+                detectedLanguage: scrubDetectedLanguage(process.env.DETECTED_LANG),
+              },
               now: Date.now(),
             });
-            const nextBody = appendThrottleBlock(sourceBody, state);
-            if ((live.body || "") === nextBody) return;
-
-            await github.rest.issues.update({
-              owner, repo, issue_number, body: nextBody,
+            const body = buildTranslationControlComment(merged);
+            const existing = comments.find((c) =>
+              c.user?.login === BOT_LOGIN && c.body?.includes(CONTROL_MARKER));
+            if (existing) {
+              if (existing.body !== body) {
+                await github.rest.issues.updateComment({
+                  owner, repo, comment_id: existing.id, body,
+                });
+              }
+              return;
+            }
+            await github.rest.issues.createComment({
+              owner, repo, issue_number, body,
             });
 
   validate:
