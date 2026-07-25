@@ -65,8 +65,8 @@ export type AppHashChangeAction = {
 
 /**
  * Resolve what App should do for the current location hash.
- * Classic/Workspace is a persistent preference: bare `#providers` with a stored
- * workspace preference is rewritten via replaceState, never pushed.
+ * Any rewrite this returns is passive: callers apply it with replaceState, never a
+ * push, so Back is never trapped on a hash the router immediately corrects.
  */
 export function resolveAppHashChange(rawHash: string): AppHashChangeAction {
   const nextPage = readPageFromHash(rawHash);
