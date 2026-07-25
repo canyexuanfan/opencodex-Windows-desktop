@@ -489,9 +489,6 @@ export default function ClaudeCode({ apiBase, viewMode }: { apiBase: string; vie
         {status && <Notice tone={ok ? "ok" : "err"}>{status}</Notice>}
         <div className="claudecode-workspace-root">
           <aside className="claudecode-workspace-rail" aria-label={t("claude.pageTitle")}>
-            <div className="claudecode-workspace-rail-header">
-              <span className="claudecode-workspace-rail-title">{t("claude.pageTitle")}</span>
-            </div>
             <div className="claudecode-workspace-rail-list">
               {sections.map(s => (
                 <button
