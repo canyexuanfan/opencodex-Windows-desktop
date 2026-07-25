@@ -22,7 +22,7 @@ import {
   upsertOAuthProvider,
 } from "../../oauth";
 import { removeCredential } from "../../oauth/store";
-import { isBenchmarkDestinationError, providerDestinationResolvedError } from "../../lib/destination-policy";
+import { providerDestinationResolvedError } from "../../lib/destination-policy";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "../../oauth/key-providers";
 import { deriveProviderPresets } from "../../providers/derive";
 import { providerCodexAccountMode } from "../../providers/registry";
@@ -101,19 +101,11 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     }
     // Hostname destinations additionally get a DNS-resolved SSRF check at write time —
     // the sync check above only classifies literal IPs (review finding, PR #96).
-    // Canonical openai still runs the resolver so loopback/private/metadata rejections
-    // stay intact; only Clash fake-IP (benchmark) answers are suppressed for that seed.
-    const resolvedError = await providerDestinationResolvedError(name, prov);
-    if (
-      resolvedError
-      && !(
-        name === "openai"
-        && isCanonicalOpenAiForwardProvider(prov)
-        && isBenchmarkDestinationError(resolvedError)
-      )
-    ) {
-      return jsonResponse({ error: resolvedError }, 400);
-    }
+    // Canonical openai still runs the resolver: only Clash fake-IP (198.18.0.0/15)
+    // answers are ignored; loopback/RFC1918/metadata/mixed sets still fail.
+    const allowBenchmarkAddresses = name === "openai" && isCanonicalOpenAiForwardProvider(prov);
+    const resolvedError = await providerDestinationResolvedError(name, prov, { allowBenchmarkAddresses });
+    if (resolvedError) return jsonResponse({ error: resolvedError }, 400);
     // Catalog providers (e.g. ollama-cloud) carry a models + vision/reasoning classification the GUI
     // doesn't send — merge it in so the sidecars are gated correctly.
     enrichProviderFromCatalog(name, prov);

@@ -112,7 +112,7 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
       await loadMode();
     } catch (error) {
       if (error instanceof OpenAiEnableError) {
-        setEnableError(error.serverMessage ?? t(error.i18nKey));
+        setEnableError(t(error.i18nKey));
       } else {
         setEnableError(error instanceof Error ? error.message : t("prov.saveFailed"));
       }

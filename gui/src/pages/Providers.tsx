@@ -444,7 +444,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
           await fetchConfig();
         } catch (error) {
           if (error instanceof OpenAiEnableError) {
-            notify(error.serverMessage ?? t(error.i18nKey), false);
+            notify(t(error.i18nKey), false);
           } else {
             notify(error instanceof Error ? error.message : t("prov.saveFailed"), false);
           }
