@@ -95,16 +95,17 @@ export async function stopProxy(pid: number): Promise<void> {
   if (!isProcessAlive(pid)) return;
   const runtime = readRuntimePort(pid);
   if (await stopProxyGracefully(pid)) {
-    await waitForStoppedPort(runtime);
+    await waitForStoppedPort(runtime, pid);
     return;
   }
   killProxy(pid);
-  await waitForStoppedPort(runtime);
+  await waitForStoppedPort(runtime, pid);
 }
 
 /** After stop/kill, wait for the former listen port to become bindable (Windows drain). */
 async function waitForStoppedPort(
   runtime: { port: number; hostname?: string } | null | undefined,
+  stoppedPid?: number,
 ): Promise<void> {
   if (!runtime?.port) return;
   try {
@@ -113,8 +114,9 @@ async function waitForStoppedPort(
       timeoutMs: 15_000,
       intervalMs: 100,
       scanIntervalMs: 500,
-      // The process we just stopped should already be dead; still clear any twin ocx listener.
+      // Only the process we just stopped — never kill a newly started twin proxy.
       killOcxHolders: true,
+      onlyKillPids: stoppedPid && stoppedPid > 0 ? [stoppedPid] : [],
     });
   } catch {
     /* best-effort — callers that need a hard guarantee reclaim again before bind */
@@ -124,17 +126,10 @@ async function waitForStoppedPort(
 export function killProxy(pid: number): void {
   if (!isProcessAlive(pid)) return;
   if (process.platform === "win32") {
-    // Soft signals first so Bun can run drainAndShutdown and close the listen socket.
-    // Jumping straight to taskkill /F is what leaves Windows ghost LISTEN + client CLOSE_WAIT
-    // holding config.port across updates.
-    for (const signal of ["SIGTERM", "SIGINT"] as const) {
-      try {
-        process.kill(pid, signal);
-      } catch {
-        /* process may already be gone */
-      }
-      if (waitForExit(pid, signal === "SIGTERM" ? 8_000 : 2_000)) return;
-    }
+    // Windows process.kill(SIGTERM/SIGINT) is TerminateProcess — not a graceful signal.
+    // Graceful drain happens only via stopProxyGracefully() (POST /api/stop). This path
+    // is the hard fallback: taskkill /T /F so the process tree exits (ghost LISTEN /
+    // CLOSE_WAIT are then cleared by reclaimListenPort / SetTcpEntry).
     const taskkill = `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\taskkill.exe`;
     try {
       execFileSync(taskkill, ["/PID", String(pid), "/T", "/F"], { stdio: "pipe", windowsHide: true });

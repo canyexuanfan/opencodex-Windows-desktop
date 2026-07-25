@@ -288,23 +288,27 @@ export async function runUpdate(): Promise<void> {
         scanIntervalMs: 500,
       });
       if (!freed) {
-        console.warn(`⚠️  Port ${capturedListen.port} still busy after 30s (reclaim could not free the socket); refusing to hop. Retry 'ocx start --port ${capturedListen.port}'.`);
-      } else {
-        const prevBake = process.env.OCX_BAKE_PORT;
-        process.env.OCX_BAKE_PORT = String(capturedListen.port);
-        try {
-          const svcStdio = updateChildStdio();
-          const svc = spawnSync(process.execPath, [process.argv[1], ...serviceReinstallArgs()], {
-            stdio: svcStdio,
-            encoding: svcStdio === "pipe" ? "utf8" : undefined,
-            windowsHide: true,
-          });
-          if (svcStdio === "pipe") logSpawnOutput("", svc);
-          if (svc.status !== 0) {
-            // On Windows, schtasks /create requires elevation. The CLI inherits the
-            // user's (non-admin) token, so the service reinstall can fail with access
-            // denied. Fall back to a direct detached proxy start so the update never
-            // leaves the user without a running proxy.
+        console.warn(`⚠️  Port ${capturedListen.port} still busy after 30s; reinstalling service with pinned --port ${capturedListen.port} anyway (refusing to hop).`);
+      }
+      const prevBake = process.env.OCX_BAKE_PORT;
+      process.env.OCX_BAKE_PORT = String(capturedListen.port);
+      try {
+        const svcStdio = updateChildStdio();
+        const svc = spawnSync(process.execPath, [process.argv[1], ...serviceReinstallArgs()], {
+          stdio: svcStdio,
+          encoding: svcStdio === "pipe" ? "utf8" : undefined,
+          windowsHide: true,
+        });
+        if (svcStdio === "pipe") logSpawnOutput("", svc);
+        if (svc.status !== 0) {
+          // On Windows, schtasks /create requires elevation. The CLI inherits the
+          // user's (non-admin) token, so the service reinstall can fail with access
+          // denied. Fall back to a direct detached proxy start so the update never
+          // leaves the user without a running proxy — but only when the port is free.
+          if (!freed) {
+            console.warn("⚠️  Service refresh failed and the captured port is still busy; not starting on another port.");
+            console.warn(`   Run 'ocx service install' as administrator, then 'ocx start --port ${capturedListen.port}'.`);
+          } else {
             console.warn("⚠️  Service refresh failed — starting the proxy directly instead.");
             console.warn("   Run 'ocx service install' as administrator to refresh the background service.");
             const env = { ...process.env };
@@ -318,10 +322,10 @@ export async function runUpdate(): Promise<void> {
             child.unref();
             console.log(`✅ Proxy starting on port ${capturedListen.port}.`);
           }
-        } finally {
-          if (prevBake === undefined) delete process.env.OCX_BAKE_PORT;
-          else process.env.OCX_BAKE_PORT = prevBake;
         }
+      } finally {
+        if (prevBake === undefined) delete process.env.OCX_BAKE_PORT;
+        else process.env.OCX_BAKE_PORT = prevBake;
       }
     } else {
       console.log(`Restart the proxy:  ocx start --port ${capturedListen.port}`);

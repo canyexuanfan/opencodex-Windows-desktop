@@ -36,6 +36,16 @@ describe("parseTcpQuadsForLocalPort", () => {
       { localAddr: "127.0.0.1", localPort: 10100, remoteAddr: "127.0.0.1", remotePort: 62066, state: "ESTABLISHED" },
     ]);
   });
+
+  test("keeps IPv6 local rows parseable without coercing them into IPv4 wildcards for drop", () => {
+    const output = [
+      "  TCP    [::1]:10100            [::]:0                 LISTENING       18268",
+      "  TCP    127.0.0.1:10100        0.0.0.0:0              LISTENING       18268",
+    ].join("\n");
+    const rows = parseTcpQuadsForLocalPort(output, 10100);
+    expect(rows.some(r => r.localAddr.includes(":"))).toBe(true);
+    expect(rows.some(r => r.localAddr === "127.0.0.1")).toBe(true);
+  });
 });
 
 describe("reclaimListenPort", () => {
@@ -63,11 +73,12 @@ describe("reclaimListenPort", () => {
 
   test("does not kill foreign (non-ocx) listeners", async () => {
     const killed: number[] = [];
+    const dropped: number[] = [];
     await expect(reclaimListenPort(10100, "127.0.0.1", {
       timeoutMs: 80,
       intervalMs: 20,
       scanIntervalMs: 20,
-      dropTcpRows: false,
+      dropTcpRows: true,
       isAvailableFn: async () => false,
       listListenPidsFn: () => [555],
       isAliveFn: () => true,
@@ -75,9 +86,55 @@ describe("reclaimListenPort", () => {
       killFn: pid => {
         killed.push(pid);
       },
+      dropTcpFn: port => {
+        dropped.push(port);
+        return 1;
+      },
       sleepMs: async () => {},
     })).resolves.toBe(false);
     expect(killed).toEqual([]);
+    // Must not SetTcpEntry-reset sockets owned by a live foreign listener.
+    expect(dropped).toEqual([]);
+  });
+
+  test("does not kill unprotected live ocx listeners when onlyKillPids is set", async () => {
+    const killed: number[] = [];
+    await expect(reclaimListenPort(10100, "127.0.0.1", {
+      timeoutMs: 80,
+      intervalMs: 20,
+      scanIntervalMs: 20,
+      dropTcpRows: false,
+      onlyKillPids: [100],
+      isAvailableFn: async () => false,
+      listListenPidsFn: () => [200],
+      isAliveFn: () => true,
+      verifyOcxFn: pid => pid,
+      killFn: pid => {
+        killed.push(pid);
+      },
+      sleepMs: async () => {},
+    })).resolves.toBe(false);
+    expect(killed).toEqual([]);
+  });
+
+  test("kills only the allowlisted ocx pid", async () => {
+    const killed: number[] = [];
+    await expect(reclaimListenPort(10100, "127.0.0.1", {
+      timeoutMs: 80,
+      intervalMs: 20,
+      scanIntervalMs: 20,
+      dropTcpRows: false,
+      onlyKillPids: [100],
+      isAvailableFn: async () => false,
+      listListenPidsFn: () => [100, 200],
+      isAliveFn: () => true,
+      verifyOcxFn: pid => pid,
+      killFn: pid => {
+        killed.push(pid);
+      },
+      sleepMs: async () => {},
+    })).resolves.toBe(false);
+    expect(killed).toEqual([100]);
   });
 
   test("ignores dead owner PIDs still listed by the OS", async () => {

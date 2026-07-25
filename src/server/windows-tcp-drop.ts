@@ -1,8 +1,6 @@
 /**
- * Best-effort Windows TCP TCB drop for a local listen port.
- * Used after hard-kill leaves CLOSE_WAIT/ESTABLISHED (or a ghost LISTEN) holding the port.
- * SetTcpEntry may require elevation (rc 317) — failure is non-fatal; reclaim keeps waiting.
- * Soft SIGTERM-before-/F in killProxy is what prevents ghosts for normal (non-admin) users.
+ * Soft SIGTERM-before-/F is NOT available on Windows (process.kill is TerminateProcess).
+ * Graceful drain is stopProxyGracefully(); this module only resets leftover TCBs after hard kill.
  */
 import { dlopen, ptr, type Pointer } from "bun:ffi";
 import { execFileSync } from "node:child_process";
@@ -57,11 +55,14 @@ function splitHostPort(addr: string): { host: string; port: number } | null {
   return { host: (m[1] ?? m[2] ?? "0.0.0.0").replace(/^::ffff:/i, ""), port: Number(m[3]) };
 }
 
-function ipv4ToWinUint32(addr: string): number {
+function ipv4ToWinUint32(addr: string): number | null {
   const host = addr.replace(/^::ffff:/i, "");
+  // Refuse bare IPv6 — SetTcpEntry is IPv4-only; coercing "::"/"::1" to 0 would
+  // miss the real TCB and can hit an unrelated IPv4 wildcard row.
+  if (host.includes(":") && !/^\d+\.\d+\.\d+\.\d+$/.test(host)) return null;
   if (host === "0.0.0.0" || host === "*" || host === "::") return 0;
   const parts = host.split(".").map(Number);
-  if (parts.length !== 4 || parts.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return 0;
+  if (parts.length !== 4 || parts.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return null;
   return (parts[0]! | (parts[1]! << 8) | (parts[2]! << 16) | (parts[3]! << 24)) >>> 0;
 }
 
@@ -129,12 +130,15 @@ export function dropWindowsTcpRowsForLocalPort(port: number): number {
   const rows = parseTcpQuadsForLocalPort(output, Math.trunc(port));
   let ok = 0;
   for (const row of rows) {
+    const localDw = ipv4ToWinUint32(row.localAddr);
+    const remoteDw = ipv4ToWinUint32(row.remoteAddr);
+    if (localDw === null || remoteDw === null) continue; // skip IPv6 / unparseable
     const buf = new ArrayBuffer(20);
     const view = new DataView(buf);
     view.setUint32(0, 12, true); // MIB_TCP_STATE_DELETE_TCB
-    view.setUint32(4, ipv4ToWinUint32(row.localAddr), true);
+    view.setUint32(4, localDw, true);
     view.setUint32(8, htons(row.localPort), true);
-    view.setUint32(12, ipv4ToWinUint32(row.remoteAddr), true);
+    view.setUint32(12, remoteDw, true);
     view.setUint32(16, htons(row.remotePort), true);
     try {
       if (setTcpEntry(ptr(buf)) === 0) ok += 1;
