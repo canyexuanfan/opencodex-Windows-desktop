@@ -16,12 +16,19 @@ const {
   buildTranslationControlComment,
   findControlComment,
   extractTranslationControlState,
+  encodeControlState,
+  decodeControlState,
+  validateControlState,
   mergeTranslationAttemptState,
   isPreparedSourceStillCurrent,
   shouldTranslate,
   sanitizeTranslationBody,
+  scrubDetectedLanguage,
   fitTranslationBody,
 } = require("./issue-translation.cjs");
+
+const HASH_A = "aaaaaaaaaaaaaaaa";
+const HASH_B = "bbbbbbbbbbbbbbbb";
 
 const SOURCE = [
   "### Was funktioniert nicht?",
@@ -114,6 +121,67 @@ describe("splitTranslationBlock", () => {
     assert.ok(split.block.includes("inner"));
     assert.ok(split.block.includes("still translation"));
   });
+
+  it("removes multi-level nested details only inside the generated block", () => {
+    const before = "<details><summary>before</summary>\nbefore-log\n</details>";
+    const after = "<details><summary>after</summary>\nafter-log\n</details>";
+    const nested = [
+      "top",
+      "<details><summary>L1</summary>",
+      "<details><summary>L2</summary>",
+      "deep",
+      "</details>",
+      "</details>",
+      "tail",
+    ].join("\n");
+    const body = [
+      before,
+      "",
+      appendTranslationBlock(SOURCE, nested).trimStart(),
+      "",
+      after,
+    ].join("\n");
+    const stripped = stripTranslationBlock(body);
+    assert.ok(stripped.includes("before-log"));
+    assert.ok(stripped.includes("after-log"));
+    assert.ok(!stripped.includes("deep"));
+    assert.ok(!stripped.includes("top"));
+    assert.ok(!stripped.includes(MARKER));
+    assert.ok(!stripped.includes(END_MARKER));
+  });
+
+  it("migrates legacy blocks that close on first details end", () => {
+    const legacy = [
+      SOURCE,
+      "",
+      MARKER,
+      "",
+      "<details>",
+      "",
+      "<summary>Translated Message</summary>",
+      "",
+      "legacy english",
+      "",
+      "</details>",
+      "",
+      "user after",
+    ].join("\n");
+    const split = splitTranslationBlock(legacy);
+    assert.equal(split.suffix, "user after");
+    assert.equal(split.sourceBody, `${SOURCE}\n\nuser after`);
+    const migrated = appendTranslationBlock(split.sourceBody, "fresh");
+    assert.ok(migrated.includes(END_MARKER));
+    assert.equal((migrated.match(new RegExp(MARKER, "g")) || []).length, 1);
+    assert.ok(migrated.includes("user after"));
+  });
+
+  it("does not greedily erase across duplicate end markers", () => {
+    const block = buildTranslationBlock("one");
+    const forged = `${SOURCE}${block}\n${END_MARKER}\nkeep me`;
+    const split = splitTranslationBlock(forged);
+    assert.ok(split.sourceBody.includes("keep me"));
+    assert.ok(split.suffix.includes(END_MARKER) || split.sourceBody.includes("keep me"));
+  });
 });
 
 describe("isPreparedSourceStillCurrent", () => {
@@ -159,7 +227,7 @@ describe("bot-owned control state", () => {
   it("selects only github-actions control comments", () => {
     const state = {
       v: 2,
-      sourceHash: "abc",
+      sourceHash: HASH_A,
       attemptedAt: 1,
       recent: [1],
       requiresTranslation: false,
@@ -176,7 +244,7 @@ describe("bot-owned control state", () => {
   it("reader and selector agree on the newest control comment", () => {
     const older = {
       v: 2,
-      sourceHash: "old",
+      sourceHash: HASH_A,
       attemptedAt: 1,
       recent: [1],
       requiresTranslation: false,
@@ -184,7 +252,7 @@ describe("bot-owned control state", () => {
     };
     const newer = {
       v: 2,
-      sourceHash: "new",
+      sourceHash: HASH_B,
       attemptedAt: 2,
       recent: [1, 2],
       requiresTranslation: true,
@@ -201,16 +269,80 @@ describe("bot-owned control state", () => {
 
   it("treats corrupt control state as missing", () => {
     const comments = [
-      botComment(`${CONTROL_MARKER}\n<!-- opencodex-issue-inline-translator-control-state:{bad -->`),
+      botComment(`${CONTROL_MARKER}\n<!-- opencodex-issue-inline-translator-control-state-v2:!!! -->`),
     ];
     assert.equal(extractTranslationControlState(comments), null);
+  });
+
+  it("round-trips base64url control state without HTML breakout", () => {
+    const state = {
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 42,
+      recent: [40, 42],
+      requiresTranslation: true,
+      detectedLanguage: "German --> @username <script>`ticks`",
+    };
+    const comment = buildTranslationControlComment(state);
+    assert.ok(!comment.includes("--> @"));
+    assert.ok(!comment.includes("<script>"));
+    assert.match(comment, /control-state-v2:[A-Za-z0-9_-]+/);
+    const encoded = comment.match(/control-state-v2:([A-Za-z0-9_-]+)/)[1];
+    assert.match(encoded, /^[A-Za-z0-9_-]+$/);
+    assert.ok(!encoded.includes(">"));
+    assert.ok(!encoded.includes("@"));
+    assert.ok(!encoded.includes("-->"));
+    const decoded = decodeControlState(encoded);
+    assert.equal(decoded.sourceHash, HASH_A);
+    assert.equal(decoded.detectedLanguage, "German -- username scriptticks");
+    assert.deepEqual(
+      extractTranslationControlState([botComment(comment)]),
+      decoded,
+    );
+  });
+
+  it("rejects invalid decoded payloads", () => {
+    assert.equal(decodeControlState("%%%"), null);
+    assert.equal(decodeControlState(encodeControlState([1, 2])), null);
+    assert.equal(validateControlState({ v: 2, sourceHash: "short", attemptedAt: 1, recent: [], requiresTranslation: true }), null);
+    assert.equal(validateControlState({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: Number.NaN,
+      recent: [],
+      requiresTranslation: true,
+    }), null);
+    assert.equal(validateControlState({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: Number.POSITIVE_INFINITY,
+      recent: Array.from({ length: 100 }, (_, i) => i),
+      requiresTranslation: true,
+      detectedLanguage: "Deutsch",
+    }), null);
+    const oversized = validateControlState({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 10,
+      recent: Array.from({ length: 100 }, (_, i) => i + 1),
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    });
+    assert.equal(oversized.recent.length, 32);
+  });
+
+  it("scrubs injection characters from detected language", () => {
+    assert.equal(
+      scrubDetectedLanguage("German --> @username <script>"),
+      "German -- username script",
+    );
   });
 
   it("records attempts even when prior state is newer", () => {
     const now = 1_700_000_000_000;
     const prior = {
       v: 2,
-      sourceHash: "new",
+      sourceHash: HASH_B,
       attemptedAt: now + 5_000,
       recent: [now + 5_000],
       requiresTranslation: false,
@@ -219,13 +351,13 @@ describe("bot-owned control state", () => {
     const merged = mergeTranslationAttemptState({
       priorState: prior,
       attempt: {
-        sourceHash: "old",
+        sourceHash: HASH_A,
         requiresTranslation: false,
         detectedLanguage: "English",
       },
       now,
     });
-    assert.equal(merged.sourceHash, "new");
+    assert.equal(merged.sourceHash, HASH_B);
     assert.equal(merged.attemptedAt, now + 5_000);
     assert.ok(merged.recent.includes(now));
   });
@@ -234,7 +366,7 @@ describe("bot-owned control state", () => {
     const now = 1_700_000_000_000;
     const priorState = {
       v: 2,
-      sourceHash: "old",
+      sourceHash: HASH_A,
       attemptedAt: now,
       recent: [now],
       requiresTranslation: false,

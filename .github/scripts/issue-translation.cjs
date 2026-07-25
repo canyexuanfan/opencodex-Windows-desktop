@@ -6,10 +6,14 @@ const MARKER = "<!-- opencodex-issue-inline-translator -->";
 const END_MARKER = "<!-- /opencodex-issue-inline-translator -->";
 const LEGACY_STATE_RE = /<!-- opencodex-issue-inline-translator-state:([\s\S]*?) -->\s*/;
 const CONTROL_MARKER = "<!-- opencodex-issue-inline-translator-control -->";
-const CONTROL_STATE_RE =
+const CONTROL_STATE_V2_RE =
+  /<!-- opencodex-issue-inline-translator-control-state-v2:([A-Za-z0-9_-]+) -->/;
+const CONTROL_STATE_LEGACY_RE =
   /<!-- opencodex-issue-inline-translator-control-state:([\s\S]*?) -->/;
 const ISSUE_BODY_MAX = 65536;
 const BOT_LOGIN = "github-actions[bot]";
+const SOURCE_HASH_RE = /^[a-f0-9]{16}$/;
+const MAX_RECENT = 32;
 
 const DEFAULT_RATE_LIMIT = {
   minIntervalMs: 60_000,
@@ -111,12 +115,64 @@ function extractTranslationState(body) {
   }
 }
 
-function parseControlState(raw) {
-  if (!raw) return null;
+function scrubDetectedLanguage(value) {
+  return (
+    String(value || "")
+      .replace(/[^\p{L}\p{N}\s\-()]/gu, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 64) || "non-English"
+  );
+}
+
+function encodeControlState(state) {
+  return Buffer.from(JSON.stringify(state), "utf8").toString("base64url");
+}
+
+function validateControlState(parsed) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  if (parsed.v !== 2) return null;
+  if (typeof parsed.sourceHash !== "string" || !SOURCE_HASH_RE.test(parsed.sourceHash)) {
+    return null;
+  }
+  if (typeof parsed.attemptedAt !== "number" || !Number.isFinite(parsed.attemptedAt)) {
+    return null;
+  }
+  if (!Array.isArray(parsed.recent)) return null;
+  const recent = parsed.recent
+    .filter((ts) => typeof ts === "number" && Number.isFinite(ts))
+    .slice(-MAX_RECENT);
+  if (typeof parsed.requiresTranslation !== "boolean") return null;
+
+  let detectedLanguage = null;
+  if (parsed.detectedLanguage != null) {
+    if (typeof parsed.detectedLanguage !== "string") return null;
+    detectedLanguage = scrubDetectedLanguage(parsed.detectedLanguage);
+  }
+
+  return {
+    v: 2,
+    sourceHash: parsed.sourceHash,
+    attemptedAt: parsed.attemptedAt,
+    recent,
+    requiresTranslation: parsed.requiresTranslation,
+    detectedLanguage,
+  };
+}
+
+function decodeControlState(encoded) {
   try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return null;
-    return parsed;
+    const json = Buffer.from(String(encoded || ""), "base64url").toString("utf8");
+    return validateControlState(JSON.parse(json));
+  } catch {
+    return null;
+  }
+}
+
+/** Legacy JSON-in-HTML-comment state (read-only migration). */
+function parseLegacyControlState(raw) {
+  try {
+    return validateControlState(JSON.parse(raw));
   } catch {
     return null;
   }
@@ -136,16 +192,28 @@ function findControlComment(comments) {
 function extractTranslationControlState(comments) {
   const newest = findControlComment(comments);
   if (!newest) return null;
-  const match = String(newest.body || "").match(CONTROL_STATE_RE);
-  return parseControlState(match?.[1]);
+  const body = String(newest.body || "");
+  const v2 = body.match(CONTROL_STATE_V2_RE);
+  if (v2) return decodeControlState(v2[1]);
+  const legacy = body.match(CONTROL_STATE_LEGACY_RE);
+  if (legacy) return parseLegacyControlState(legacy[1]);
+  return null;
 }
 
 function buildTranslationControlComment(state) {
-  const stateJson = JSON.stringify(state);
-  const lang = scrubDetectedLanguage(state?.detectedLanguage);
+  const safe = validateControlState(state) || {
+    v: 2,
+    sourceHash: "0000000000000000",
+    attemptedAt: Date.now(),
+    recent: [],
+    requiresTranslation: false,
+    detectedLanguage: null,
+  };
+  const encoded = encodeControlState(safe);
+  const lang = scrubDetectedLanguage(safe.detectedLanguage);
   return [
     CONTROL_MARKER,
-    `<!-- opencodex-issue-inline-translator-control-state:${stateJson} -->`,
+    `<!-- opencodex-issue-inline-translator-control-state-v2:${encoded} -->`,
     "",
     `<sub>Automated translation bookkeeping — detected language: ${lang}.</sub>`,
   ].join("\n");
@@ -182,7 +250,9 @@ function mergeTranslationAttemptState({ priorState = null, attempt, now = Date.n
     attemptedAt: now,
     recent,
     requiresTranslation: Boolean(attempt.requiresTranslation),
-    detectedLanguage: attempt.detectedLanguage ?? null,
+    detectedLanguage: attempt.detectedLanguage == null
+      ? null
+      : scrubDetectedLanguage(attempt.detectedLanguage),
   };
 }
 
@@ -282,16 +352,6 @@ function sanitizeTranslationBody(raw, maxChars = 60000) {
     .slice(0, maxChars);
 }
 
-function scrubDetectedLanguage(value) {
-  return (
-    String(value || "")
-      .replace(/[\u0000-\u001f\u007f]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 64) || "non-English"
-  );
-}
-
 function buildTranslationBlock(translatedBody) {
   const safeBody = sanitizeTranslationBody(translatedBody);
   return [
@@ -349,6 +409,9 @@ module.exports = {
   extractTranslationState,
   findControlComment,
   extractTranslationControlState,
+  encodeControlState,
+  decodeControlState,
+  validateControlState,
   buildTranslationControlComment,
   mergeTranslationAttemptState,
   upsertTranslationControlComment,

@@ -174,6 +174,8 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("translated_title");
     expect(workflow).toContain("isPreparedSourceStillCurrent");
     expect(workflow).toContain("extractTranslationControlState");
+    expect(workflow).toContain("parse-issue-translation-response.cjs");
+    expect(workflow).not.toContain('node -e "');
     expect(workflow).toContain("upsertTranslationControlComment");
     expect(workflow).toContain("rejectsWorkflowDispatchNonDefaultBranch");
     expect(workflow).toContain("rejectsWorkflowDispatchPullRequest");
@@ -251,17 +253,12 @@ describe("GitHub Actions hardening", () => {
     expect(issueUpdateIdx).toBeGreaterThan(-1);
     expect(staleGuardIdx).toBeLessThan(issueUpdateIdx);
 
-    // Parse AI response must use a heredoc (not broken node -e quoting).
     const parseStep = workflow
       .split("- name: Parse AI response")[1]!
       .split("- name: Apply inline translation")[0]!;
-    expect(parseStep).toContain("node <<'NODE'");
-    const scrubDecl = parseStep.indexOf("const scrubLine");
-    const scrubUse = parseStep.indexOf("scrubLine(");
-    expect(scrubDecl).toBeGreaterThan(-1);
-    expect(scrubUse).toBeGreaterThan(-1);
-    expect(scrubDecl).toBeLessThan(scrubUse);
-    expect(parseStep).toContain('typeof parsed !== "object"');
+    expect(parseStep).toContain("parse-issue-translation-response.cjs");
+    expect(parseStep).not.toContain("node -e");
+    expect(parseStep).not.toContain("node <<");
   });
 
   test("React Doctor workflow is SHA-pinned, engine-pinned, advisory, and read-only", async () => {
