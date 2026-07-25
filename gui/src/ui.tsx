@@ -40,23 +40,30 @@ export function Select({ value, options, onChange, disabled, label, style, align
 }) {
   const listboxId = useId();
   const [open, setOpen] = useState(false);
-  const [activeIndex, setActiveIndex] = useState(() => Math.max(0, options.findIndex(o => o.value === value)));
+  const [highlightIndex, setHighlightIndex] = useState<number | null>(null);
   const [menuStyle, setMenuStyle] = useState<CSSProperties | undefined>();
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const optionId = useCallback((index: number) => `${listboxId}-${index}`, [listboxId]);
   const current = options.find(o => o.value === value);
+  const selectedIndex = options.length === 0 ? 0 : Math.max(0, options.findIndex(o => o.value === value));
+  // While open, keyboard/hover highlight wins; while closed, follow the selected value.
+  // Clamp so aria-activedescendant never points at a missing option after shrink/reorder.
+  const activeIndex = !open || options.length === 0
+    ? selectedIndex
+    : Math.min(highlightIndex ?? selectedIndex, options.length - 1);
 
   const close = useCallback((restoreFocus = false) => {
     setOpen(false);
+    setHighlightIndex(null);
     if (restoreFocus) triggerRef.current?.focus();
   }, []);
 
   const openAt = useCallback((index: number) => {
     if (disabled || options.length === 0) return;
     const clamped = Math.max(0, Math.min(options.length - 1, index));
-    setActiveIndex(clamped);
+    setHighlightIndex(clamped);
     setOpen(true);
   }, [disabled, options.length]);
 
@@ -124,7 +131,6 @@ export function Select({ value, options, onChange, disabled, label, style, align
 
   const onTriggerKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (disabled) return;
-    const selectedIndex = Math.max(0, options.findIndex(o => o.value === value));
     switch (event.key) {
       case "ArrowDown":
         event.preventDefault();
@@ -155,12 +161,19 @@ export function Select({ value, options, onChange, disabled, label, style, align
         }
         break;
       case "Tab":
-        if (open) close();
+        // Select-only combobox: commit the active option, then let focus leave naturally.
+        if (open) {
+          const option = options[activeIndex];
+          if (option) onChange(option.value);
+          setOpen(false);
+        }
         break;
       default:
         break;
     }
   };
+
+  const activeDescendant = open && options[activeIndex] ? optionId(activeIndex) : undefined;
 
   const dropdown = open ? (
     <div
@@ -180,7 +193,7 @@ export function Select({ value, options, onChange, disabled, label, style, align
           tabIndex={-1}
           aria-selected={o.value === value}
           className={`select-option${o.value === value ? " active" : ""}${index === activeIndex ? " select-option-active" : ""}`}
-          onMouseEnter={() => setActiveIndex(index)}
+          onMouseEnter={() => setHighlightIndex(index)}
           onClick={() => selectIndex(index)}
         >{o.label}</button>
       ))}
@@ -192,18 +205,19 @@ export function Select({ value, options, onChange, disabled, label, style, align
       <button
         ref={triggerRef}
         type="button"
+        role="combobox"
         className="select-trigger"
         onClick={() => {
           if (disabled) return;
           if (open) close();
-          else openAt(Math.max(0, options.findIndex(o => o.value === value)));
+          else openAt(selectedIndex);
         }}
         onKeyDown={onTriggerKeyDown}
         disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
-        aria-activedescendant={open ? optionId(activeIndex) : undefined}
+        aria-activedescendant={activeDescendant}
         aria-label={label}
       >
         <span>{current?.label ?? value}</span>

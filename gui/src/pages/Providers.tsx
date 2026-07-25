@@ -19,7 +19,6 @@ import { useJsonConfigEditor } from "../hooks/useJsonConfigEditor";
 import { OAuthPanel } from "../components/providers/OAuthPanel";
 import { ProviderCardList } from "../components/providers/ProviderCardList";
 import type { ViewMode } from "../view-mode";
-import { providersHashForViewMode } from "../view-mode";
 
 interface Config {
   port: number;
@@ -82,14 +81,7 @@ export default function Providers({ apiBase, viewMode }: { apiBase: string; view
   const notify = (msg: string, ok: boolean) => { setStatus(msg); setStatusOk(ok); };
 
   useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false; }; }, []);
-  // Keep Providers hash aligned with the shared viewMode without owning preference writes.
-  useEffect(() => {
-    const wanted = providersHashForViewMode(viewMode);
-    const raw = location.hash.replace(/^#\/?/, "");
-    if ((raw === "providers" || raw === "providers/workspace") && raw !== wanted) {
-      location.hash = `#${wanted}`;
-    }
-  }, [viewMode]);
+  // Providers hash sync is owned by App (passive replaceHash / deliberate navigateHash).
 
   const fetchConfig = useCallback(async () => {
     try {

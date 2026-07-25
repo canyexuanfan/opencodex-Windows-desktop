@@ -22,10 +22,10 @@ import {
   providersHashForViewMode,
   readViewMode,
   toggleViewMode,
-  viewModeFromProvidersHash,
   writeViewMode,
   type ViewMode,
 } from "./view-mode";
+import { navigateHash, normalizeHashPath, replaceHash, resolveProvidersHashChange } from "./hash-routing";
 
 installApiAuthFetch();
 
@@ -50,7 +50,7 @@ const PAGE_TKEY: Record<Page, TKey> = {
 };
 
 function readPageFromHash(): Page {
-  const raw = location.hash.replace(/^#\/?/, "");
+  const raw = normalizeHashPath(location.hash);
   // Sub-views use a "/" suffix (e.g. #providers/workspace); the first segment is the page id.
   const pageId = raw.split("/")[0] as Page;
   // Legacy: Debug used to be a standalone page; it now lives as a tab on Logs.
@@ -116,7 +116,7 @@ export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     const migrated = ensureMigratedViewMode();
     try {
-      const rawHash = window.location.hash.replace(/^#\/?/, "");
+      const rawHash = normalizeHashPath(window.location.hash);
       if (rawHash === "providers/workspace") {
         writeViewMode("workspace");
         return "workspace";
@@ -130,39 +130,50 @@ export default function App() {
     const next = toggleViewMode(viewMode);
     writeViewMode(next);
     setViewMode(next);
+    // Deliberate Classic/Workspace toggle while Providers is open — push history.
     const wanted = providersHashAfterGlobalToggle(window.location.hash, next, page === "providers");
-    if (wanted) window.location.hash = wanted;
+    if (wanted) navigateHash(wanted);
   };
 
   useEffect(() => {
     // External navigation (hash edit, back/forward) also dismisses the mobile drawer.
     const onHash = () => {
       const nextPage = readPageFromHash();
-      const rawHash = window.location.hash.replace(/^#\/?/, "");
+      const rawHash = normalizeHashPath(window.location.hash);
       setNavOpen(false);
-      // Legacy #debug deep links → the Debug tab on Logs.
+      // Legacy #debug deep links → the Debug tab on Logs (passive; no extra history entry).
       if (rawHash === "debug" || rawHash.startsWith("debug/")) {
-        window.location.hash = "logs/debug";
+        replaceHash("logs/debug");
+        setPageState("logs");
         return;
       }
       if (!hashBelongsToPage(rawHash, nextPage)) {
-        window.location.hash = nextPage === "providers" ? providersHashForPage() : nextPage;
+        // Passive correction of malformed hashes belonging to this page family.
+        replaceHash(nextPage === "providers" ? providersHashForPage() : nextPage);
+        setPageState(nextPage === "providers" ? "providers" : nextPage);
+        if (nextPage === "providers") {
+          startTransition(() => setViewMode(readViewMode()));
+        }
         return;
       }
       // Preference is source of truth for Classic/Workspace. Bare #providers must not
       // wipe a saved workspace choice (that regressed when leaving Providers and returning).
       if (nextPage === "providers") {
         const preferred = readViewMode();
-        const fromHash = viewModeFromProvidersHash(rawHash);
-        if (fromHash === "workspace") {
-          writeViewMode("workspace");
-          startTransition(() => setViewMode("workspace"));
-        } else if (rawHash === "providers" && preferred === "workspace") {
-          window.location.hash = "providers/workspace";
+        const resolved = resolveProvidersHashChange(rawHash, preferred);
+        if (resolved.replaceTo) {
+          // Passive normalize — replaceState so Back is not trapped in a hash loop.
+          replaceHash(resolved.replaceTo);
+          if (resolved.viewMode) {
+            writeViewMode(resolved.viewMode);
+            startTransition(() => setViewMode(resolved.viewMode!));
+          }
+          setPageState("providers");
           return;
-        } else if (fromHash === "classic") {
-          writeViewMode("classic");
-          startTransition(() => setViewMode("classic"));
+        }
+        if (resolved.viewMode) {
+          writeViewMode(resolved.viewMode);
+          startTransition(() => setViewMode(resolved.viewMode!));
         }
       }
       setPageState(nextPage);
@@ -172,22 +183,22 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const rawHash = window.location.hash.replace(/^#\/?/, "");
+    const rawHash = normalizeHashPath(window.location.hash);
     // Legacy #debug deep links must resolve before generic normalization
     // (otherwise the hash collapses to bare #logs and the tab choice is lost).
     if (rawHash === "debug" || rawHash.startsWith("debug/")) {
-      window.location.hash = "logs/debug";
+      replaceHash("logs/debug");
       return;
     }
     if (page === "providers") {
       // Deep-link bookmarks are applied in the viewMode initializer; here we only
-      // normalize the hash to the shared React state (no sync setState).
+      // normalize the hash to the shared React state (passive replace — no push).
       const wanted = providersHashForViewMode(viewMode);
-      if (rawHash !== wanted) window.location.hash = wanted;
+      if (rawHash !== wanted) replaceHash(wanted);
       return;
     }
     if (!hashBelongsToPage(rawHash, page)) {
-      window.location.hash = page;
+      replaceHash(page);
     }
   }, [page, viewMode]);
 
@@ -317,8 +328,8 @@ export default function App() {
             <div key={id} className={`nav-entry${id === "claude" ? ` nav-entry-claude${page === id ? " active" : ""}` : ""}`}>
               <button className={`nav-item${page === id ? " active" : ""}`} data-page={id}
                 onClick={() => {
-                  // Always sync the hash on nav click so Providers restores Classic/Workspace preference.
-                  window.location.hash = id === "providers" ? providersHashForPage() : id;
+                  // Deliberate sidebar navigation — push a history entry.
+                  navigateHash(id === "providers" ? providersHashForPage() : id);
                   setPageState(id);
                   setNavOpen(false);
                 }}

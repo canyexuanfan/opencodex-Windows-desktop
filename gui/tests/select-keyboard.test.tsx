@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
-import { act } from "react";
+import { act, useState } from "react";
 import type { Root } from "react-dom/client";
 import { Select } from "../src/ui";
 
@@ -32,7 +32,7 @@ const OPTIONS = [
   { value: "c", label: "Charlie" },
 ];
 
-async function mountSelect(node: React.ReactElement): Promise<{ root: Root; trigger: HTMLButtonElement }> {
+async function mountSelect(node: React.ReactElement): Promise<{ root: Root; trigger: HTMLButtonElement; host: HTMLDivElement }> {
   const { createRoot } = await import("react-dom/client");
   const host = document.createElement("div");
   document.body.append(host);
@@ -42,12 +42,87 @@ async function mountSelect(node: React.ReactElement): Promise<{ root: Root; trig
     root.render(node);
   });
   const trigger = host.querySelector<HTMLButtonElement>("button.select-trigger")!;
-  return { root, trigger };
+  return { root, trigger, host };
 }
 
 function key(target: HTMLElement, name: string) {
   target.dispatchEvent(new testWindow.KeyboardEvent("keydown", { key: name, bubbles: true }) as unknown as KeyboardEvent);
 }
+
+function listbox() {
+  return document.body.querySelector<HTMLElement>('[role="listbox"]');
+}
+
+async function assertComboboxContract(portal: boolean) {
+  function Harness() {
+    const [value, setValue] = useState("a");
+    return (
+      <div>
+        <div data-testid="value">{value}</div>
+        <Select value={value} options={OPTIONS} onChange={setValue} label="Pick" portal={portal} />
+      </div>
+    );
+  }
+  const { root, host } = await mountSelect(<Harness />);
+  const trigger = () => host.querySelector<HTMLButtonElement>("button.select-trigger")!;
+  const current = () => host.querySelector('[data-testid="value"]')!.textContent;
+
+  expect(trigger().getAttribute("role")).toBe("combobox");
+  expect(trigger().getAttribute("aria-expanded")).toBe("false");
+  expect(trigger().getAttribute("aria-activedescendant")).toBeNull();
+  expect(listbox()).toBeNull();
+
+  await act(async () => { key(trigger(), "ArrowDown"); });
+  const box = listbox();
+  expect(box).not.toBeNull();
+  expect(trigger().getAttribute("aria-expanded")).toBe("true");
+  expect(trigger().getAttribute("aria-controls")).toBe(box!.id);
+  const activeId = trigger().getAttribute("aria-activedescendant");
+  expect(activeId).toBeTruthy();
+  expect(document.getElementById(activeId!)).not.toBeNull();
+
+  await act(async () => { key(trigger(), "ArrowDown"); });
+  expect(trigger().getAttribute("aria-activedescendant")).not.toBe(activeId);
+  await act(async () => { key(trigger(), "Home"); });
+  const homeId = trigger().getAttribute("aria-activedescendant")!;
+  expect(document.getElementById(homeId)?.textContent).toContain("Alpha");
+  await act(async () => { key(trigger(), "End"); });
+  const endId = trigger().getAttribute("aria-activedescendant")!;
+  expect(document.getElementById(endId)?.textContent).toContain("Charlie");
+
+  await act(async () => { key(trigger(), "Enter"); });
+  expect(current()).toBe("c");
+  expect(listbox()).toBeNull();
+  expect(document.activeElement).toBe(trigger());
+
+  await act(async () => { key(trigger(), "Home"); });
+  await act(async () => { key(trigger(), " "); });
+  expect(current()).toBe("a");
+  expect(listbox()).toBeNull();
+
+  await act(async () => { key(trigger(), "ArrowDown"); });
+  await act(async () => { key(trigger(), "ArrowDown"); });
+  await act(async () => { key(trigger(), "Escape"); });
+  expect(current()).toBe("a");
+  expect(trigger().getAttribute("aria-expanded")).toBe("false");
+  expect(document.activeElement).toBe(trigger());
+
+  await act(async () => { key(trigger(), "ArrowDown"); });
+  await act(async () => { key(trigger(), "ArrowDown"); });
+  await act(async () => { key(trigger(), "Tab"); });
+  expect(current()).toBe("b");
+  expect(listbox()).toBeNull();
+
+  await act(async () => { root.unmount(); });
+}
+
+test("portaled Select exposes a valid combobox contract", async () => {
+  await assertComboboxContract(true);
+});
+
+test("non-portal Select exposes a valid combobox contract", async () => {
+  await assertComboboxContract(false);
+});
 
 test("ArrowDown opens and Enter selects the active option (portal)", async () => {
   let value = "a";
@@ -55,12 +130,12 @@ test("ArrowDown opens and Enter selects the active option (portal)", async () =>
     <Select value={value} options={OPTIONS} onChange={next => { value = next; }} label="Pick" />,
   );
   await act(async () => { key(trigger, "ArrowDown"); });
-  expect(document.body.querySelector('[role="listbox"]')).not.toBeNull();
+  expect(listbox()).not.toBeNull();
   expect(trigger.getAttribute("aria-activedescendant")).toBeTruthy();
   await act(async () => { key(trigger, "ArrowDown"); });
   await act(async () => { key(trigger, "Enter"); });
   expect(value).toBe("b");
-  expect(document.body.querySelector('[role="listbox"]')).toBeNull();
+  expect(listbox()).toBeNull();
   expect(document.activeElement).toBe(trigger);
   await act(async () => { root.unmount(); });
 });
@@ -86,9 +161,20 @@ test("disabled Select does not open from keyboard or click", async () => {
     <Select value="a" options={OPTIONS} onChange={() => {}} label="Off" disabled />,
   );
   await act(async () => { key(trigger, "ArrowDown"); });
-  expect(document.body.querySelector('[role="listbox"]')).toBeNull();
+  expect(listbox()).toBeNull();
   await act(async () => { trigger.click(); });
-  expect(document.body.querySelector('[role="listbox"]')).toBeNull();
+  expect(listbox()).toBeNull();
+  await act(async () => { root.unmount(); });
+});
+
+test("empty options do not open", async () => {
+  const { root, trigger } = await mountSelect(
+    <Select value="" options={[]} onChange={() => {}} label="Empty" />,
+  );
+  await act(async () => { key(trigger, "ArrowDown"); });
+  expect(listbox()).toBeNull();
+  await act(async () => { trigger.click(); });
+  expect(listbox()).toBeNull();
   await act(async () => { root.unmount(); });
 });
 
@@ -97,10 +183,50 @@ test("outside click closes the menu", async () => {
     <Select value="a" options={OPTIONS} onChange={() => {}} label="Pick" />,
   );
   await act(async () => { key(trigger, "ArrowDown"); });
-  expect(document.body.querySelector('[role="listbox"]')).not.toBeNull();
+  expect(listbox()).not.toBeNull();
   await act(async () => {
     document.body.dispatchEvent(new testWindow.MouseEvent("mousedown", { bubbles: true }) as unknown as MouseEvent);
   });
-  expect(document.body.querySelector('[role="listbox"]')).toBeNull();
+  expect(listbox()).toBeNull();
+  await act(async () => { root.unmount(); });
+});
+
+test("external value change updates active option on next open", async () => {
+  function Harness() {
+    const [value, setValue] = useState("a");
+    return (
+      <div>
+        <button type="button" data-testid="set-c" onClick={() => setValue("c")}>set-c</button>
+        <Select value={value} options={OPTIONS} onChange={setValue} label="Pick" />
+      </div>
+    );
+  }
+  const { root, host } = await mountSelect(<Harness />);
+  const trigger = host.querySelector<HTMLButtonElement>("button.select-trigger")!;
+  await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="set-c"]')!.click(); });
+  await act(async () => { key(trigger, "ArrowDown"); });
+  const activeId = trigger.getAttribute("aria-activedescendant")!;
+  expect(document.getElementById(activeId)?.textContent).toContain("Charlie");
+  await act(async () => { root.unmount(); });
+});
+
+test("shrinking options clamps active descendant", async () => {
+  function Harness() {
+    const [opts, setOpts] = useState(OPTIONS);
+    return (
+      <div>
+        <button type="button" data-testid="shrink" onClick={() => setOpts(OPTIONS.slice(0, 1))}>shrink</button>
+        <Select value="a" options={opts} onChange={() => {}} label="Pick" />
+      </div>
+    );
+  }
+  const { root, host } = await mountSelect(<Harness />);
+  const trigger = host.querySelector<HTMLButtonElement>("button.select-trigger")!;
+  await act(async () => { key(trigger, "End"); });
+  await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="shrink"]')!.click(); });
+  const activeId = trigger.getAttribute("aria-activedescendant");
+  expect(activeId).toBeTruthy();
+  expect(document.getElementById(activeId!)).not.toBeNull();
+  expect(listbox()!.querySelectorAll('[role="option"]').length).toBe(1);
   await act(async () => { root.unmount(); });
 });
