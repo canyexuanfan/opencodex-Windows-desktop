@@ -13,6 +13,7 @@
 @import "./styles/provider-workspace-settings.css";
 @import "./styles/provider-overview-dashboard.css";
 @import "./styles-combos-workspace.css";
+@import "./styles-dashboard-workspace.css";
 
 :root {
   /* default: follow the OS; [data-theme] below pins color-scheme so light-dark() obeys it */
@@ -259,6 +260,43 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .nav-item svg { width: 17px; height: 17px; color: var(--faint); flex-shrink: 0; }
 .nav-item.active svg { color: var(--text); }
 
+.nav-entry { display: flex; align-items: center; min-width: 0; border-radius: var(--radius-sm); }
+.nav-entry .nav-item { flex: 1 1 auto; min-width: 0; }
+.nav-entry-claude {
+  padding-right: 2px;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.nav-entry-claude:hover,
+.nav-entry-claude.active { background: var(--accent-soft); color: var(--text); }
+.nav-entry-claude .nav-item,
+.nav-entry-claude .nav-item:hover,
+.nav-entry-claude .nav-item.active { width: auto; background: transparent; }
+.nav-entry-claude .switch {
+  position: relative;
+  width: 44px;
+  height: 36px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+}
+.nav-entry-claude .switch::before {
+  content: "";
+  position: absolute;
+  top: 10px;
+  left: 8px;
+  width: 28px;
+  height: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--raised);
+  transition: background var(--motion-normal), border-color var(--motion-normal);
+}
+.nav-entry-claude .switch.on { border-color: transparent; background: transparent; }
+.nav-entry-claude .switch.on::before { border-color: var(--toggle-on-bg); background: var(--toggle-on-bg); }
+.nav-entry-claude .switch .knob { position: absolute; top: 13px; left: 11px; z-index: 1; width: 10px; height: 10px; }
+.nav-entry-claude .switch.on .knob { transform: translateX(12px); }
+.nav-entry-claude .switch:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 0; }
+
 .sidebar-foot { margin-top: auto; padding-top: 12px; display: flex; flex-direction: column; gap: 2px; }
 
 /* drawer header row: brand + close button (close is mobile-only) */
@@ -474,6 +512,36 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .startup-health-bar:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
 .startup-health-bar__summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+.startup-health-slot {
+  min-height: var(--control-lg);
+}
+
+.startup-health-bar--pending {
+  pointer-events: none;
+  color: var(--faint);
+}
+
+.dash-stat-coverage {
+  margin-top: 2px;
+  min-height: 1.25em;
+  line-height: 1.25;
+}
+
+.dash-overview-head {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 0;
+}
+
+.dash-overview-head .stat-row {
+  margin-bottom: 0;
+}
+
+.dash-overview-head .startup-health-bar,
+.dash-overview-head .startup-health-bar--pending {
+  margin: var(--space-4) 0 0;
+}
+
 /* ---- dashboard model grid (grouped by provider) ---- */
 .model-group-head { display: flex; align-items: baseline; gap: 8px; margin: 0 0 8px; font-size: var(--text-control); font-weight: var(--weight-semibold); color: var(--text); }
 .model-group-head .count { font-family: var(--font-code); font-weight: var(--weight-medium); color: var(--faint); font-size: var(--text-label); }
@@ -575,17 +643,36 @@ select.input { appearance: none; }
   border: 1px solid var(--border); border-radius: var(--radius);
   padding: 4px; box-shadow: 0 8px 32px rgb(0 0 0 / 0.16);
 }
+.select-dropdown-portal {
+  /* Position (top/bottom/left/right/maxHeight) comes from computeSelectMenuStyle. */
+  position: fixed;
+  top: auto;
+  left: auto;
+  right: auto;
+  bottom: auto;
+}
 .select-dropdown-right { left: auto !important; right: 0; }
 .select-dropdown-beside { top: 0; left: calc(100% + 6px); right: auto; min-width: 10rem; }
 .select-option {
   display: block; width: 100%; text-align: left;
   padding: 7px 12px; border: none; border-radius: var(--radius-sm);
   background: transparent; color: var(--text); font: inherit; font-size: var(--text-control); line-height: var(--leading-ui);
-  cursor: pointer; transition: background var(--motion-fast);
+  cursor: pointer; transition: background var(--motion-fast), box-shadow var(--motion-fast);
   white-space: nowrap;
 }
-.select-option:hover { background: var(--hover); }
+/* Pointer hover alone — softer than keyboard focus so the two cues stay distinct. */
+.select-option:hover:not(.select-option-active) { background: var(--hover); }
+/* Selected value (committed). */
 .select-option.active { background: var(--accent-soft); color: var(--accent); font-weight: var(--weight-semibold); }
+/* Keyboard / aria-activedescendant focus — visible without relying on :hover. */
+.select-option-active {
+  background: var(--hover);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.select-option.active.select-option-active {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
 
 /* ---- switch ---- */
 .switch {
@@ -727,6 +814,20 @@ dialog.modal-overlay::backdrop {
 .toggle.on { background: var(--toggle-on-bg); border-color: var(--toggle-on-bg); }
 .toggle-knob { width: 16px; height: 16px; background: light-dark(#ffffff, #ececec); border-radius: var(--radius-round); position: absolute; top: 1px; left: 1px; transition: left var(--motion-normal), background var(--motion-normal); }
 .toggle.on .toggle-knob { left: 17px; background: var(--toggle-dot-color); }
+.toggle:disabled { cursor: not-allowed; opacity: 0.55; }
+.codex-auto-switch-card { gap: 16px; flex-wrap: wrap; }
+.codex-auto-switch-copy { flex: 1 1 auto; min-width: 0; }
+.codex-auto-switch-copy .card-sub { padding: 2px 0 0; }
+.codex-auto-switch-controls { display: flex; align-items: flex-end; gap: 12px; flex: 0 0 auto; margin-left: auto; }
+.codex-auto-switch-controls > .toggle { margin-left: auto; }
+.codex-auto-switch-threshold { display: flex; flex-direction: column; align-items: flex-start; margin: 0; }
+.codex-auto-switch-threshold .field-label { margin-bottom: 4px; white-space: nowrap; }
+.codex-auto-switch-input-wrap { display: flex; align-items: center; gap: 6px; }
+.codex-auto-switch-input { width: 84px; text-align: right; font-variant-numeric: tabular-nums; }
+.codex-auto-switch-input[readonly] { cursor: progress; opacity: 0.7; }
+.codex-auto-switch-unit { color: var(--muted); font-size: var(--text-control); }
+.codex-auto-switch-feedback { flex: 1 0 100%; margin-top: -8px; color: var(--muted); font-size: var(--text-label); line-height: var(--leading-body); text-align: right; }
+.codex-auto-switch-feedback.is-error { color: var(--red); }
 .notice-warn { font-size: var(--text-label); line-height: var(--leading-body); padding: 8px 10px; border-radius: var(--radius-sm); background: var(--amber-soft); color: var(--amber); display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
 .notice-warn svg { width: 14px; height: 14px; flex-shrink: 0; }
 
@@ -959,6 +1060,9 @@ button.prov-account-row.active { cursor: default; }
   .setting-row > .select-sm { width: 100%; }
   .api-form-row { align-items: stretch; flex-direction: column; }
   .api-form-row .btn { width: 100%; min-height: 40px; }
+  .codex-auto-switch-card { align-items: stretch; flex-direction: column; }
+  .codex-auto-switch-controls { align-items: flex-end; justify-content: space-between; width: 100%; }
+  .codex-auto-switch-feedback { margin-top: -6px; text-align: left; }
   .stat-row > .stat { min-width: 100px; }
   .tbl { min-width: 460px; }   /* keep columns readable; .tbl-wrap scrolls horizontally */
   .usage-cards { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
@@ -1069,6 +1173,13 @@ button.prov-account-row.active { cursor: default; }
 /* ── Setting row (label left, control right) ── */
 .setting-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; gap: 16px; }
 .setting-row + .setting-row { border-top: 1px solid var(--border-soft); }
+.dash-subagent-guidance-row {
+  align-items: center;
+  gap: 16px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
 .setting-label { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .setting-label .title { font-size: var(--text-body); font-weight: var(--weight-semibold); color: var(--text); }
 .setting-label .desc { font-size: var(--text-label); color: var(--muted); line-height: var(--leading-body); }

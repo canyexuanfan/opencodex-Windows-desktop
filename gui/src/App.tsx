@@ -12,17 +12,16 @@ import ApiKeys from "./pages/ApiKeys";
 import ClaudeCode from "./pages/ClaudeCode";
 import Startup from "./pages/Startup";
 import ErrorBoundary from "./components/ErrorBoundary";
-import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconGithub, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle, IconX } from "./icons";
+import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconGithub, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle, IconX, IconLayoutSidebar } from "./icons";
 import { useI18n, useT, LOCALES, type Locale, type TKey } from "./i18n";
-import { Select } from "./ui";
+import { Select, Switch } from "./ui";
 import { installApiAuthFetch } from "./api";
+import { type Page } from "./app-routing";
+import { useAppRouteState } from "./use-app-route-state";
 
 installApiAuthFetch();
 
-type Page = "dashboard" | "startup" | "providers" | "models" | "combos" | "subagents" | "logs" | "usage" | "storage" | "codex-auth" | "api" | "claude";
 type Theme = "light" | "dark" | "system";
-
-const VALID_PAGES = new Set<Page>(["dashboard", "startup", "providers", "models", "combos", "subagents", "logs", "usage", "storage", "codex-auth", "api", "claude"]);
 
 const PAGE_TKEY: Record<Page, TKey> = {
   dashboard: "nav.dashboard",
@@ -39,44 +38,8 @@ const PAGE_TKEY: Record<Page, TKey> = {
   claude: "nav.claude",
 };
 
-function readPageFromHash(): Page {
-  const raw = location.hash.replace(/^#\/?/, "");
-  // Sub-views use a "/" suffix (e.g. #providers/workspace); the first segment is the page id.
-  const pageId = raw.split("/")[0] as Page;
-  // Legacy: Debug used to be a standalone page; it now lives as a tab on Logs.
-  if (pageId === ("debug" as Page)) return "logs";
-  return VALID_PAGES.has(pageId) ? pageId : "dashboard";
-}
-
-function hashBelongsToPage(rawHash: string, page: Page): boolean {
-  return rawHash === page
-    || (page === "providers" && rawHash === "providers/workspace")
-    || (page === "logs" && rawHash === "logs/debug");
-}
-
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 const THEME_KEY = "ocx-theme";
-const PROVIDERS_VIEW_KEY = "ocx-providers-view";
-
-function readProvidersViewPreference(): "classic" | "workspace" {
-  try {
-    return localStorage.getItem(PROVIDERS_VIEW_KEY) === "workspace" ? "workspace" : "classic";
-  } catch {
-    return "classic";
-  }
-}
-
-function writeProvidersViewPreference(view: "classic" | "workspace"): void {
-  try {
-    localStorage.setItem(PROVIDERS_VIEW_KEY, view);
-  } catch {
-    /* ignore quota / private-mode failures */
-  }
-}
-
-function providersHashForPage(): string {
-  return readProvidersViewPreference() === "workspace" ? "providers/workspace" : "providers";
-}
 
 const NAV: { id: Page; tkey: TKey; Icon: typeof IconGrid }[] = [
   { id: "dashboard", tkey: "nav.dashboard", Icon: IconGrid },
@@ -106,7 +69,7 @@ function readStoredTheme(): Theme {
 }
 
 export default function App() {
-  const [page, setPageState] = useState<Page>(readPageFromHash);
+  const { page, viewMode, toggleGlobalWorkspace, navigateToPage } = useAppRouteState();
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
   const [runtimeVersion, setRuntimeVersion] = useState<string | null>(null);
   const { locale, setLocale } = useI18n();
@@ -120,61 +83,14 @@ export default function App() {
 
   useEffect(() => {
     // External navigation (hash edit, back/forward) also dismisses the mobile drawer.
-    const onHash = () => {
-      const nextPage = readPageFromHash();
-      const rawHash = window.location.hash.replace(/^#\/?/, "");
-      setNavOpen(false);
-      // Legacy #debug deep links → the Debug tab on Logs.
-      if (rawHash === "debug" || rawHash.startsWith("debug/")) {
-        window.location.hash = "logs/debug";
-        return;
-      }
-      if (!hashBelongsToPage(rawHash, nextPage)) {
-        window.location.hash = nextPage === "providers" ? providersHashForPage() : nextPage;
-        return;
-      }
-      // Preference is source of truth for Classic/Workspace. Bare #providers must not
-      // wipe a saved workspace choice (that regressed when leaving Providers and returning).
-      if (nextPage === "providers") {
-        const preferred = readProvidersViewPreference();
-        if (rawHash === "providers/workspace") {
-          writeProvidersViewPreference("workspace");
-        } else if (rawHash === "providers" && preferred === "workspace") {
-          window.location.hash = "providers/workspace";
-          return;
-        } else if (rawHash === "providers") {
-          writeProvidersViewPreference("classic");
-        }
-      }
-      setPageState(nextPage);
+    const dismissNav = () => setNavOpen(false);
+    window.addEventListener("hashchange", dismissNav);
+    window.addEventListener("popstate", dismissNav);
+    return () => {
+      window.removeEventListener("hashchange", dismissNav);
+      window.removeEventListener("popstate", dismissNav);
     };
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
   }, []);
-
-  useEffect(() => {
-    const rawHash = window.location.hash.replace(/^#\/?/, "");
-    // Legacy #debug deep links must resolve before generic normalization
-    // (otherwise the hash collapses to bare #logs and the tab choice is lost).
-    if (rawHash === "debug" || rawHash.startsWith("debug/")) {
-      window.location.hash = "logs/debug";
-      return;
-    }
-    if (page === "providers") {
-      // Honor an explicit workspace deep link on first load before normalizing
-      // to the saved preference (bookmarks/shared links must not open Classic).
-      if (rawHash === "providers/workspace") {
-        writeProvidersViewPreference("workspace");
-        return;
-      }
-      const wanted = providersHashForPage();
-      if (rawHash !== wanted) window.location.hash = wanted;
-      return;
-    }
-    if (!hashBelongsToPage(rawHash, page)) {
-      window.location.hash = page;
-    }
-  }, [page]);
 
   useEffect(() => {
     const el = document.documentElement;
@@ -204,7 +120,7 @@ export default function App() {
   const displayedVersion = runtimeVersion ?? __APP_VERSION__;
 
   const [stopping, setStopping] = useState(false);
-  // Sidebar "Claude ON" toggle — literal label in every locale (product name).
+  // Claude navigation row also owns the connection toggle.
   const [claudeEnabled, setClaudeEnabled] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -299,26 +215,29 @@ export default function App() {
         </div>
         <nav>
           {NAV.map(({ id, tkey, Icon }) => (
-            <button key={id} className={`nav-item${page === id ? " active" : ""}`} data-page={id}
-              onClick={() => {
-                // Always sync the hash on nav click so Providers restores Classic/Workspace preference.
-                window.location.hash = id === "providers" ? providersHashForPage() : id;
-                setPageState(id);
-                setNavOpen(false);
-              }}
-              aria-current={page === id ? "page" : undefined}>
-              <Icon /> {t(tkey)}
-            </button>
+            <div key={id} className={`nav-entry${id === "claude" ? ` nav-entry-claude${page === id ? " active" : ""}` : ""}`}>
+              <button className={`nav-item${page === id ? " active" : ""}`} data-page={id}
+                onClick={() => {
+                  // Deliberate sidebar navigation — push a history entry.
+                  navigateToPage(id);
+                  setNavOpen(false);
+                }}
+                aria-current={page === id ? "page" : undefined}>
+                <Icon /> {t(tkey)}
+              </button>
+              {id === "claude" && claudeEnabled !== null && (
+                <Switch on={claudeEnabled} onClick={() => void toggleClaude()} label={t("claude.toggleAria")} />
+              )}
+            </div>
           ))}
         </nav>
         <div className="sidebar-foot">
-          {claudeEnabled !== null && (
-            <button type="button" className="theme-toggle" onClick={toggleClaude}
-              aria-pressed={claudeEnabled} aria-label={t("claude.toggleAria")} title={t("claude.toggleAria")}
-              style={claudeEnabled ? { color: "var(--accent)" } : undefined}>
-              <IconSparkle /> <span className="mode">{claudeEnabled ? t("app.claudeOn") : t("app.claudeOff")}</span>
-            </button>
-          )}
+          <button type="button" className="theme-toggle" onClick={toggleGlobalWorkspace}
+            aria-pressed={viewMode === "workspace"}
+            aria-label={`${t("app.viewMode")}: ${t(viewMode === "workspace" ? "pws.workspaceToggle" : "pws.classicToggle")}`}
+            title={`${t("app.viewMode")}: ${t(viewMode === "workspace" ? "pws.workspaceToggle" : "pws.classicToggle")}`}>
+            <IconLayoutSidebar /> <span className="mode">{t(viewMode === "workspace" ? "pws.workspaceToggle" : "pws.classicToggle")}</span>
+          </button>
           <div className="lang-toggle">
             <IconGlobe aria-hidden />
             <Select
@@ -327,6 +246,7 @@ export default function App() {
               onChange={v => setLocale(v as Locale)}
               label={t("lang.label")}
               placement="right"
+              portal={false}
               style={{ flex: 1, minWidth: 0, width: "100%" }}
             />
           </div>
@@ -354,9 +274,9 @@ export default function App() {
             detailsLabel={t("errorBoundary.details")}
             reloadLabel={t("errorBoundary.reload")}
           >
-            {page === "dashboard" && <Dashboard apiBase={API_BASE} />}
+            {page === "dashboard" && <Dashboard apiBase={API_BASE} viewMode={viewMode} />}
             {page === "startup" && <Startup apiBase={API_BASE} />}
-            {page === "providers" && <Providers apiBase={API_BASE} />}
+            {page === "providers" && <Providers apiBase={API_BASE} viewMode={viewMode} />}
             {page === "models" && <Models apiBase={API_BASE} />}
             {page === "combos" && <Combos apiBase={API_BASE} />}
             {page === "subagents" && <Subagents apiBase={API_BASE} />}

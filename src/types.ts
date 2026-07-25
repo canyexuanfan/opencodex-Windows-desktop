@@ -5,10 +5,24 @@ export interface OcxParsedRequest {
   stream: boolean;
   options: OcxRequestOptions;
   _rawBody?: unknown;
+  /** Number of leading raw input items restored from local previous_response_id state. */
+  _replayPrefixLen?: number;
   /** True when the proxy expanded a previous_response_id request into a full input replay. */
   _previousResponseInputExpanded?: boolean;
   /** Provider-private stable Cursor conversation id resolved from the Responses previous_response_id chain. */
   _cursorConversationId?: string;
+  /** Stable upstream client thread identity, used only to derive provider-scoped continuation ids. */
+  _clientThreadId?: string;
+  /**
+   * Optional authenticated tenant/operator namespace for Cursor thread→conversation derivation.
+   * When absent (single-operator local proxy), derivation stays local-scoped.
+   */
+  _cursorIdentityScope?: string;
+  /**
+   * True for helper/shadow/compaction turns that must not append into the main Cursor conversation
+   * derived from the parent thread id.
+   */
+  _cursorIsolateConversation?: boolean;
   /** Provider-private continuation metadata resolved from the Responses previous_response_id chain. */
   _providerContinuation?: OcxProviderContinuationState;
   /**
@@ -232,6 +246,8 @@ export type AdapterEvent =
   | { type: "tool_call_start"; id: string; name: string }
   | { type: "tool_call_delta"; arguments: string }
   | { type: "tool_call_end" }
+  /** Internal boundary between a guarded first pass and its one-shot continuation. */
+  | { type: "assistant_boundary" }
   // Native web-search activity surfaced by the web-search sidecar so Codex renders a "Searched the
   // web" cell. Emitted as a lifecycle PAIR at real wall-clock moments by src/web-search/loop.ts
   // (routed adapters never emit these): `begin` right before the sidecar runs so Codex shows the
@@ -538,6 +554,8 @@ export interface OcxConfig {
   apiKeys?: Array<{ id: string; name: string; key: string; createdAt: string }>;
   /** Auto-start/sync the proxy from the Codex shim before launching Codex. Default true. */
   codexAutoStart?: boolean;
+  /** Restore an installed shim after a stable external Codex update replaces it. Default true. */
+  codexShimAutoRestore?: boolean;
   /**
    * Compatibility mode: temporarily rewrite Codex resume-history metadata while the proxy is active
    * so Codex App can show old OpenAI chats and opencodex-created exec chats under its default

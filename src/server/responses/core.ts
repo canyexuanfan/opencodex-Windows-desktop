@@ -49,6 +49,7 @@ import {
   headersForCodexAuthContext,
   isCodexAuthContextUsable,
   resolveCodexAuthContext,
+  stripCodexRuntimeProviderFields,
   type CodexAuthContext,
 } from "../../codex/auth-context";
 import {
@@ -97,12 +98,14 @@ import {
 } from "../relay";
 import { relaySseEagerBounded } from "../relay-eager";
 import { decideEagerRelay } from "../../lib/bun-stream-caps";
+import { cancelBodyOnAbort } from "../../lib/abort";
 import { hasResponsesItemIdRepair, relaySseWithResponsesItemIdRepair } from "../responses-item-id-repair";
 import type { EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/catalog";
 
 import { buildToolBridgeMaps, collabSurface, injectDeveloperMessage, multiAgentGuidanceText } from "./collaboration";
 import { hasUnreadableEncryptedAgentTask, looksLikeBackendCiphertext, sanitizeEncryptedContentInPlace } from "./encrypted-payload";
 import { fetchWithHeaderTimeout, providerFetch, safeHostLabel } from "./fetch-helpers";
+import { guardTerminalEventStream } from "./terminal-guard";
 
 /**
  * Adapters whose continuation state must survive Codex's store:false requests.
@@ -148,6 +151,45 @@ export function usesCodexForwardPoolAuth(
 ): authCtx is Extract<CodexAuthContext, { kind: "pool" | "main-pool" }> {
   return (authCtx.kind === "pool" || authCtx.kind === "main-pool")
     && provider.authMode === "forward" && provider.adapter === "openai-responses";
+}
+
+function normalizeCodexUnsupportedModelDetail(value: string): string {
+  return value.trim().replace(/\s+/gu, " ").toLocaleLowerCase("en-US");
+}
+
+function isAllowListedCodexAccountModel400(
+  status: number,
+  bodyText: string,
+  modelId: string,
+): boolean {
+  if (status !== 400) return false;
+  try {
+    const payload = JSON.parse(bodyText) as unknown;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+    const detail = (payload as { detail?: unknown }).detail;
+    if (typeof detail !== "string") return false;
+    const expected = `The '${modelId}' model is not supported when using Codex with a ChatGPT account.`;
+    return normalizeCodexUnsupportedModelDetail(detail)
+      === normalizeCodexUnsupportedModelDetail(expected);
+  } catch {
+    return false;
+  }
+}
+
+async function shouldRetryCodexPoolAccountModel400(
+  response: Response,
+  modelId: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (response.status !== 400) return false;
+  try {
+    const body = await readBoundedResponseBody(response.clone(), { signal });
+    return body.displaySafe
+      && !body.truncated
+      && isAllowListedCodexAccountModel400(response.status, body.text, modelId);
+  } catch {
+    return false;
+  }
 }
 
 
@@ -345,6 +387,22 @@ export function buildComboChildHeaders(parentHeaders: HeadersInit): Headers {
   return childHeaders;
 }
 
+const UNREADABLE_ENCRYPTED_AGENT_TASK_MESSAGE =
+  "Routed V2 worker task is encrypted for the native ChatGPT backend and cannot be read by the selected provider. Use plaintext V2 agent-message delivery or select a native ChatGPT model.";
+
+function unreadableEncryptedAgentTaskResponse(): Response {
+  return new Response(
+    JSON.stringify({
+      error: {
+        message: UNREADABLE_ENCRYPTED_AGENT_TASK_MESSAGE,
+        type: "invalid_request_error",
+        code: "unreadable_encrypted_agent_task",
+      },
+    }),
+    { status: 400, headers: { "Content-Type": "application/json" } },
+  );
+}
+
 
 
 export async function handleComboResponses(
@@ -369,9 +427,30 @@ export async function handleComboResponses(
     return formatErrorResponse(404, "invalid_request_error", `Unknown combo: ${comboId}`);
   }
 
+  const unreadableEncryptedAgentTask = hasUnreadableEncryptedAgentTask(
+    (rawBody as { input?: unknown } | undefined)?.input,
+  );
+  const canDecryptUnreadableAgentTask = (target: (typeof combo.targets)[number]): boolean => {
+    const provider = config.providers[target.provider];
+    if (!provider || provider.disabled === true) return false;
+    try {
+      const route = routeModel(config, `${target.provider}/${target.model}`);
+      return isCanonicalOpenAiForwardProvider(route.provider);
+    } catch {
+      return false;
+    }
+  };
+  const payloadEligible = (target: (typeof combo.targets)[number]): boolean =>
+    !unreadableEncryptedAgentTask || canDecryptUnreadableAgentTask(target);
+
+  if (unreadableEncryptedAgentTask && !combo.targets.some(canDecryptUnreadableAgentTask)) {
+    return unreadableEncryptedAgentTaskResponse();
+  }
+
   const initialNow = Date.now();
   let pick = pickComboTarget(config, comboId, {
-    eligible: target => !isComboTargetInCooldown(comboId, target, initialNow),
+    eligible: target => payloadEligible(target)
+      && !isComboTargetInCooldown(comboId, target, initialNow),
   });
   if (!pick) {
     return comboUnavailableResponse(`No available targets for combo: ${comboId}`);
@@ -532,6 +611,7 @@ export async function handleComboResponses(
     pick = advanceComboAfterFailure(config, pick, {
       retryAfter: failure.retryAfter,
       now: Date.now(),
+      eligible: payloadEligible,
     });
   }
   return lastFailure!;
@@ -555,12 +635,12 @@ export async function handleResponses(
   if (comboId && Object.hasOwn(config.combos ?? {}, comboId)) {
     return handleComboResponses(req, body, comboId, config, logCtx, options);
   }
-  const originalBody = body;
-  body = expandPreviousResponseInput(body);
-  const previousResponseInputExpanded = body !== originalBody;
   const unreadableEncryptedAgentTask = hasUnreadableEncryptedAgentTask(
     (body as { input?: unknown } | undefined)?.input,
   );
+  const originalBody = body;
+  body = expandPreviousResponseInput(body);
+  const previousResponseInputExpanded = body !== originalBody;
 
   // Spawn-message compatibility (both directions): agent_message task payloads ride in
   // encrypted_content slots as plaintext. Rewrite them to input_text on the RAW body BEFORE
@@ -583,6 +663,8 @@ export async function handleResponses(
     if (previousResponseInputExpanded) parsed._previousResponseInputExpanded = true;
     parsed._providerContinuation = previousResponseProviderState(parsed.previousResponseId);
     parsed._cursorConversationId = parsed._providerContinuation?.cursor?.conversationId;
+    const clientThreadId = req.headers.get("x-codex-parent-thread-id")?.trim();
+    if (clientThreadId) parsed._clientThreadId = clientThreadId;
   } catch (err) {
     return formatErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
@@ -608,7 +690,10 @@ export async function handleResponses(
       (parsed._rawBody as Record<string, unknown>).reasoning = { effort: "low" };
     }
     (logCtx as unknown as Record<string, unknown>).shadowCallRewrittenFrom = _sciOriginal;
+    // Helpers must not resume/append into the parent thread's Cursor conversation.
+    parsed._cursorIsolateConversation = true;
   }
+  if (parsed._compactionRequest === true) parsed._cursorIsolateConversation = true;
 
   let route;
   try {
@@ -624,11 +709,7 @@ export async function handleResponses(
   // providers cannot. Reject the raw-input classification before adapter construction
   // or provider dispatch so an unreadable worker task cannot trigger a cost storm.
   if (!isCanonicalOpenAiForwardProvider(route.provider) && unreadableEncryptedAgentTask) {
-    return formatErrorResponse(
-      400,
-      "invalid_request_error",
-      "Routed V2 worker task is encrypted for the native ChatGPT backend and cannot be read by the selected provider. Use plaintext V2 agent-message delivery or select a native ChatGPT model.",
-    );
+    return unreadableEncryptedAgentTaskResponse();
   }
 
   // Apply the routed model id upstream: routing may strip a "<provider>/" namespace
@@ -775,6 +856,10 @@ export async function handleResponses(
   }
   route.provider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
   logCtx.provider = formatCodexProviderForLog(route.providerName, codexLogAccountId(authCtx), config);
+  // Prefer Codex pool account as the Cursor thread namespace when present. Cursor routes without
+  // codexAccountMode still get a credential-derived scope inside the Cursor adapter.
+  const identityScope = codexLogAccountId(authCtx);
+  if (identityScope) parsed._cursorIdentityScope = identityScope;
 
   // OAuth providers: swap in a fresh access token (auto-refreshed) as the Bearer key, so the
   // existing openai-chat / anthropic adapters authenticate with no change.
@@ -920,7 +1005,7 @@ export async function handleResponses(
         + `(model ${parsed.modelId}); forwarding without it — earlier turns may be missing from this request`,
       );
     }
-    const request = await adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
+    let request = await adapter.buildRequest(parsed, { headers: selectedForwardHeaders });
     const passthroughEstimate = typeof request.usageLog?.inputTokens === "number"
       ? request.usageLog.inputTokens
       : undefined;
@@ -934,6 +1019,20 @@ export async function handleResponses(
     linkAbortSignal(upstream, options.abortSignal);
     const connectMs = config.connectTimeoutMs ?? 200_000;
     let upstreamResponse: Response;
+    const transportFailureResponse = (err: unknown): Response => {
+      upstream.abort();
+      if (options.abortSignal?.aborted) return clientCancelledResponse();
+      const outcome = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "connect_error";
+      if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
+        recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
+          threadId: req.headers.get("x-codex-parent-thread-id"),
+        });
+      }
+      const msg = outcome === "timeout"
+        ? `Provider connect timeout after ${connectMs}ms`
+        : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
+      return formatErrorResponse(502, "upstream_error", msg);
+    };
     try {
       // Transient-5xx pre-stream retry (devlog/_plan/260716_claudecode_hardening/010):
       // the ChatGPT backend emits transient 502/520s that an immediate retry absorbs.
@@ -950,18 +1049,80 @@ export async function handleResponses(
         { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
       );
     } catch (err) {
-      upstream.abort();
-      if (options.abortSignal?.aborted) return clientCancelledResponse();
-      const outcome = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "connect_error";
-      if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
-        recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
+      return transportFailureResponse(err);
+    }
+
+    if (
+      usesCodexForwardPoolAuth(authCtx, route.provider)
+      && await shouldRetryCodexPoolAccountModel400(
+        upstreamResponse,
+        route.modelId,
+        options.abortSignal,
+      )
+    ) {
+      const firstAuthCtx = authCtx;
+      let retryAuthCtx: CodexAuthContext | undefined;
+      try {
+        retryAuthCtx = await resolveCodexAuthContext(
+          req.headers,
+          config,
+          "pool",
+          { excludeAccountId: firstAuthCtx.accountId },
+        );
+      } catch (error) {
+        if (
+          !(error instanceof CodexPoolAuthenticationError)
+          && !(error instanceof CodexAuthContextError)
+          && !(error instanceof CodexAccountCooldownError)
+        ) throw error;
+      }
+
+      if (retryAuthCtx?.kind === "pool" || retryAuthCtx?.kind === "main-pool") {
+        recordCodexUpstreamOutcome(config, firstAuthCtx.accountId, 400, {
           threadId: req.headers.get("x-codex-parent-thread-id"),
         });
+
+        const retryHeaders = headersForCodexAuthContext(req.headers, retryAuthCtx);
+        const retryProvider = applyCodexAuthContextToProvider(
+          stripCodexRuntimeProviderFields(route.provider),
+          retryAuthCtx,
+          "pool",
+        );
+        const retryAdapter = resolveAdapter(
+          resolveWireProtocolOverride(route.providerName, route.modelId, retryProvider),
+          config.cacheRetention,
+        );
+        request = await retryAdapter.buildRequest(parsed, { headers: retryHeaders });
+
+        await upstreamResponse.body?.cancel().catch(() => undefined);
+        authCtx = retryAuthCtx;
+        options.onCodexAuthContextResolved?.(retryAuthCtx);
+        selectedForwardHeaders = retryHeaders;
+        route.provider = retryProvider;
+        logCtx.provider = formatCodexProviderForLog(
+          route.providerName,
+          retryAuthCtx.accountId,
+          config,
+        );
+
+        noteAttemptSend(logCtx.activeAttempt, passthroughEstimate);
+        try {
+          upstreamResponse = await fetchWithHeaderTimeout(
+            request.url,
+            {
+              method: request.method,
+              headers: request.headers,
+              body: request.body,
+            },
+            upstream.signal,
+            connectMs,
+            parsed.stream,
+            providerFetch(route.provider),
+          );
+        } catch (err) {
+          return transportFailureResponse(err);
+        }
       }
-      const msg = outcome === "timeout"
-        ? `Provider connect timeout after ${connectMs}ms`
-        : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
-      return formatErrorResponse(502, "upstream_error", msg);
     }
     const headers = sanitizePassthroughHeaders(upstreamResponse.headers);
     const resolvedModel = headers.get("openai-model")?.trim();
@@ -987,25 +1148,9 @@ export async function handleResponses(
    if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
       // primary was the 5h window; it now carries weekly data for GPT plans.
       // Prefer primary when present, fall back to secondary for compatibility.
-      const primaryRaw = upstreamResponse.headers.get("x-codex-primary-used-percent");
-      const secondaryRaw = upstreamResponse.headers.get("x-codex-secondary-used-percent");
-      const weeklyRaw = primaryRaw ?? secondaryRaw;
-      const monthlyRaw = upstreamResponse.headers.get("x-codex-tertiary-used-percent");
-      const primaryResetRaw = upstreamResponse.headers.get("x-codex-primary-reset-at");
-      const secondaryResetRaw = upstreamResponse.headers.get("x-codex-secondary-reset-at");
-      const weeklyResetRaw = primaryRaw ? primaryResetRaw : secondaryResetRaw;
-      const monthlyResetRaw = upstreamResponse.headers.get("x-codex-tertiary-reset-at");
       const retryAfterRaw = upstreamResponse.headers.get("retry-after");
-      if (weeklyRaw || monthlyRaw) {
-        const { updateAccountQuota } = await import("../../codex/auth-api");
-        updateAccountQuota(
-          authCtx.accountId,
-          weeklyRaw,
-          weeklyResetRaw,
-          monthlyRaw,
-          monthlyResetRaw,
-        );
-      }
+      const { applyAccountQuotaFromUpstreamHeaders } = await import("../../codex/auth-api");
+      applyAccountQuotaFromUpstreamHeaders(authCtx.accountId, upstreamResponse.headers);
       if (terminalBodyWillRecord) {
         options.setTerminalOutcomeRecorder?.((status, httpStatusOverride) => {
           terminalRecorder(status, httpStatusOverride);
@@ -1014,7 +1159,11 @@ export async function handleResponses(
       } else {
         recordCodexUpstreamOutcome(config, authCtx.accountId, upstreamResponse.status, {
         retryAfter: retryAfterRaw,
-         resetAt: [primaryResetRaw, secondaryResetRaw, monthlyResetRaw].filter(Boolean),
+         resetAt: [
+           upstreamResponse.headers.get("x-codex-primary-reset-at"),
+           upstreamResponse.headers.get("x-codex-secondary-reset-at"),
+           upstreamResponse.headers.get("x-codex-tertiary-reset-at"),
+         ].filter(Boolean),
          threadId: req.headers.get("x-codex-parent-thread-id"),
         });
       }
@@ -1153,7 +1302,9 @@ export async function handleResponses(
   if (adapter.runTurn) {
     const runTurnAbort = new AbortController();
     linkAbortSignal(runTurnAbort, options.abortSignal);
-    const queue = createAdapterEventQueue();
+    const queue = createAdapterEventQueue({
+      onBacklogExceeded: () => runTurnAbort.abort(),
+    });
     const runTurn = async (): Promise<void> => {
       try {
         noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens);
@@ -1470,8 +1621,138 @@ export async function handleResponses(
     }
   }
 
+  cancelBodyOnAbort(upstreamResponse.body, upstream.signal);
+
+  // Claude can return a clean end_turn after announcing an edit without emitting any tool call.
+  // Keep the normal request/recovery path above intact, and use this bounded callback only for the
+  // one internal continuation pass. A continuation failure becomes an in-stream adapter error so
+  // the client never sees a second hidden HTTP response or an unbounded retry loop.
+  const terminalGuardEnabled = activeAdapter.name === "anthropic" && !options.comboAttempt && !routedCompaction;
+  const fetchTerminalGuardContinuation = async function* (nextParsed: OcxParsedRequest): AsyncGenerator<AdapterEvent> {
+    let imageTierBias = 0;
+    let response: Response | undefined;
+    while (true) {
+      try {
+        const continuationRequest = await activeAdapter.buildRequest(nextParsed, {
+          headers: selectedForwardHeaders,
+          ...(imageTierBias > 0 ? { imageTierBias } : {}),
+        });
+        const continuationEstimate = typeof continuationRequest.usageLog?.inputTokens === "number"
+          ? continuationRequest.usageLog.inputTokens
+          : undefined;
+        if (continuationEstimate !== undefined) logCtx.usageLogInputTokens = continuationEstimate;
+        if (activeAdapter.fetchResponse) {
+          noteAttemptSend(logCtx.activeAttempt, continuationEstimate);
+          response = await activeAdapter.fetchResponse(continuationRequest, {
+              abortSignal: upstream.signal,
+              timeoutMs: connectMs,
+              stream: nextParsed.stream,
+            });
+        } else {
+          response = await fetchWithResetRetry(
+              recovery => {
+                noteAttemptSend(logCtx.activeAttempt, continuationEstimate, recovery);
+                return fetchWithHeaderTimeout(
+                  continuationRequest.url,
+                  applyUpstreamRecoveryInit({
+                    method: continuationRequest.method,
+                    headers: continuationRequest.headers,
+                    body: continuationRequest.body,
+                  }, recovery),
+                  upstream.signal,
+                  connectMs,
+                  nextParsed.stream,
+                  providerFetch(route.provider),
+                );
+              },
+              { abortSignal: upstream.signal, label: safeHostLabel(continuationRequest.url) },
+            );
+        }
+      } catch (error) {
+        if (options.abortSignal?.aborted) {
+          yield { type: "error", message: "client closed request during terminal continuation", status: 499 };
+        } else {
+          yield { type: "error", message: `Provider continuation failed: ${error instanceof Error ? error.message : String(error)}` };
+        }
+        return;
+      }
+
+      if (response.status === 429 && hasKeyPoolFailover(route.provider)) {
+        const rotated = rotateProviderTransportOn429(config, route.providerName, {
+          retryAfter: response.headers.get("retry-after"),
+          now: Date.now(),
+          attemptedKey: route.provider.apiKey,
+          promptCacheKey: nextParsed.options.promptCacheKey,
+        });
+        if (rotated) {
+          try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+          route.provider = rotated;
+          activeAdapter = resolveAdapter(
+            resolveWireProtocolOverride(route.providerName, route.modelId, route.provider),
+            config.cacheRetention,
+          );
+          continue;
+        }
+      }
+      if (shouldAttemptImageTierRetry({
+        status: response.status,
+        adapterName: activeAdapter.name,
+        parsed: nextParsed,
+        alreadyAttempted: imageTierBias > 0,
+      })) {
+        imageTierBias = 1;
+        try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+        continue;
+      }
+      break;
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "unknown error");
+      yield {
+        type: "error",
+        status: response.status,
+        message: `Provider continuation error ${response.status}: ${redactSecretString(errorText.slice(0, 500))}`,
+      };
+      return;
+    }
+
+    try {
+      // Protect the continuation body against a client abort landing between fetch resolution and
+      // reader attach, exactly as the initial response is guarded above (#390/366e3053). Without
+      // this, a client cancel during the continuation reopens the Bun fetch-to-reader abort race.
+      const detachContinuationBodyGuard = cancelBodyOnAbort(response.body, upstream.signal);
+      try {
+        if (nextParsed.stream) {
+          yield* activeAdapter.parseStream(response);
+        } else if (activeAdapter.parseResponse) {
+          yield* await activeAdapter.parseResponse(response);
+        } else {
+          yield { type: "error", message: "Provider continuation does not support response parsing" };
+        }
+      } finally {
+        detachContinuationBodyGuard();
+      }
+    } catch (error) {
+      if (options.abortSignal?.aborted) {
+        yield { type: "error", message: "client closed request during terminal continuation", status: 499 };
+      } else {
+        yield { type: "error", message: `Provider continuation parse failed: ${redactSecretString(error instanceof Error ? error.message : String(error))}` };
+      }
+    }
+  };
+
   if (parsed.stream) {
-    const eventStream = activeAdapter.parseStream(upstreamResponse);
+    const initialEventStream = activeAdapter.parseStream(upstreamResponse);
+    const eventStream = terminalGuardEnabled
+      ? guardTerminalEventStream({
+          parsed,
+          firstEvents: initialEventStream,
+          adapterName: activeAdapter.name,
+          maxAutoContinuations: 1,
+          continuation: fetchTerminalGuardContinuation,
+        })
+      : initialEventStream;
     const { toolNsMap, freeformToolNames, toolSearchToolNames } = buildToolBridgeMaps(parsed);
     const sseStream = bridgeToResponsesSSE(
       eventStream, parsed.modelId, toolNsMap, freeformToolNames, toolSearchToolNames,
@@ -1506,7 +1787,19 @@ export async function handleResponses(
   if (activeAdapter.parseResponse) {
     let events: AdapterEvent[];
     try {
-      events = await activeAdapter.parseResponse(upstreamResponse);
+      const initialEvents = await activeAdapter.parseResponse(upstreamResponse);
+      if (terminalGuardEnabled) {
+        events = [];
+        for await (const event of guardTerminalEventStream({
+          parsed,
+          firstEvents: (async function* () { yield* initialEvents; })(),
+          adapterName: activeAdapter.name,
+          maxAutoContinuations: 1,
+          continuation: fetchTerminalGuardContinuation,
+        })) events.push(event);
+      } else {
+        events = initialEvents;
+      }
     } finally {
       cleanupUpstreamAbort();
     }
