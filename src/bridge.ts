@@ -1079,7 +1079,9 @@ export function buildResponseJSON(
   flushSummaryReasoning();
   flushRawReasoning();
   flushToolCall();
-  if (options?.compaction && !errorEvent) {
+  // A truncated turn must never be installed as replacement history: emit the
+  // compaction item only when the turn actually completed (#422).
+  if (options?.compaction && !errorEvent && !incompleteEvent && stopReason !== "max_tokens") {
     output.push({ type: "compaction", id: `cmp_${uuid()}`, encrypted_content: encodeCompactionSummary(compactionText) });
   }
 
