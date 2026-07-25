@@ -93,15 +93,29 @@ export function cursorToolChoiceAliases(tool: Pick<OcxTool, "namespace" | "name"
   return [...aliases];
 }
 
+function catalogHasBareCodexShellBridge(
+  catalog: readonly Pick<OcxTool, "namespace" | "name">[],
+): boolean {
+  return catalog.some(isBareCodexShellBridgeTool);
+}
+
+/**
+ * Catalog-aware tool_choice matching for Cursor.
+ * When a bare Codex shell bridge is in the catalog, raw `shell_command` / `exec_command`
+ * choices select only that bridge (never a namespaced remote with the same raw name).
+ * When no bare bridge exists, raw bridge names may select a namespaced tool by raw name.
+ * Explicit wire names (`mcp__remote__exec_command`) always match the namespaced tool.
+ */
 function cursorToolChoiceMatches(
   tool: Pick<OcxTool, "namespace" | "name">,
   choiceName: string,
+  catalog: readonly Pick<OcxTool, "namespace" | "name">[],
 ): boolean {
-  // Bare shell_command / exec_command choices select only the Codex shell bridge.
-  // Do not let them match a namespaced tool whose raw name is also exec_command/shell_command
-  // (e.g. mcp__remote.exec_command) — that would violate forced tool_choice.
   if (isCodexShellBridgeToolName(choiceName)) {
-    return isBareCodexShellBridgeTool(tool);
+    if (catalogHasBareCodexShellBridge(catalog)) {
+      return isBareCodexShellBridgeTool(tool);
+    }
+    return tool.name === choiceName || cursorToolWireName(tool) === choiceName;
   }
   if (tool.name === choiceName || cursorToolWireName(tool) === choiceName) return true;
   return cursorToolChoiceAliases(tool).includes(choiceName);
@@ -124,7 +138,8 @@ export function cursorRequestAdvertisesApplyPatch(
   tools: readonly Pick<OcxTool, "namespace" | "name" | "freeform">[] | undefined,
   toolChoice?: OcxRequestOptions["toolChoice"],
 ): boolean {
-  return tools?.some(tool => !tool.namespace && tool.name === CODEX_APPLY_PATCH_TOOL && tool.freeform === true && cursorToolAllowedByChoice(tool, toolChoice)) ?? false;
+  const catalog = tools ?? [];
+  return catalog.some(tool => !tool.namespace && tool.name === CODEX_APPLY_PATCH_TOOL && tool.freeform === true && cursorToolAllowedByChoice(tool, toolChoice, catalog));
 }
 
 export function cursorToolWireName(tool: Pick<OcxTool, "namespace" | "name">): string {
@@ -296,7 +311,8 @@ export function cursorToolsForActivePrompt<T extends Pick<OcxTool, "namespace" |
 ): readonly T[] | undefined {
   if (!shouldUseNativeExecOnlyForGenericToolUse(tools, activeText)) return tools;
   const execTools = tools?.filter(isBareCodexExecCommandTool);
-  if (execTools?.length && !execTools.some(tool => cursorToolAllowedByChoice(tool, toolChoice))) return tools;
+  const catalog = tools ?? [];
+  if (execTools?.length && !execTools.some(tool => cursorToolAllowedByChoice(tool, toolChoice, catalog))) return tools;
   return execTools && execTools.length > 0 ? execTools : tools;
 }
 
@@ -319,13 +335,17 @@ export function appendCursorShellAliasHint(
   return `${text}${text.endsWith("\n") ? "\n" : "\n\n"}${CURSOR_SHELL_ALIAS_USER_HINT}`;
 }
 
-export function cursorToolAllowedByChoice(tool: Pick<OcxTool, "namespace" | "name">, toolChoice: OcxRequestOptions["toolChoice"] | undefined): boolean {
+export function cursorToolAllowedByChoice(
+  tool: Pick<OcxTool, "namespace" | "name">,
+  toolChoice: OcxRequestOptions["toolChoice"] | undefined,
+  catalog: readonly Pick<OcxTool, "namespace" | "name">[] = [tool],
+): boolean {
   if (!toolChoice || toolChoice === "auto" || toolChoice === "required") return true;
   if (toolChoice === "none") return false;
   if ("allowedTools" in toolChoice) {
-    return toolChoice.allowedTools.some(choiceName => cursorToolChoiceMatches(tool, choiceName));
+    return toolChoice.allowedTools.some(choiceName => cursorToolChoiceMatches(tool, choiceName, catalog));
   }
-  return cursorToolChoiceMatches(tool, toolChoice.name);
+  return cursorToolChoiceMatches(tool, toolChoice.name, catalog);
 }
 
 function quotedNames(names: readonly string[]): string {
@@ -352,7 +372,7 @@ export function buildCursorToolGuidanceSystemNote(
   if (!tools?.length) return undefined;
   const wireNames = [...new Set(
     tools
-      .filter(tool => cursorToolAllowedByChoice(tool, toolChoice))
+      .filter(tool => cursorToolAllowedByChoice(tool, toolChoice, tools))
       .map(tool => cursorToolWireName(tool)),
   )];
   if (wireNames.length === 0) return undefined;
@@ -416,7 +436,7 @@ export function buildCursorToolDefinitions(
   toolChoice?: OcxRequestOptions["toolChoice"],
 ): McpToolDefinition[] {
   if (!tools?.length) return [];
-  return tools.filter(tool => cursorToolAllowedByChoice(tool, toolChoice)).map(tool => {
+  return tools.filter(tool => cursorToolAllowedByChoice(tool, toolChoice, tools)).map(tool => {
     const wireName = cursorToolWireName(tool);
     return create(McpToolDefinitionSchema, {
       name: wireName,

@@ -449,6 +449,32 @@ describe("Cursor protobuf tool-call events", () => {
     });
   });
 
+  test("completed shell payload with both command and cmd keeps only canonical command", () => {
+    const toolSchemas = new Map<string, unknown>([
+      ["shell_command", { type: "object", properties: { command: { type: "string" }, workdir: { type: "string" } }, required: ["command"] }],
+    ]);
+    for (const [index, args] of [
+      { command: "safe command", cmd: "different command", workdir: "C:/repo" },
+      { cmd: "different command", command: "safe command", workdir: "C:/repo" },
+    ].entries()) {
+      const state = createCursorProtobufEventState({
+        clientToolNames: ["shell_command"],
+        toolSchemas,
+        cursorToolNameMap: new Map([["shell_command", "shell_command"]]),
+      });
+      const toolCall = mcpToolCall("shell_command", args);
+      const events = mapCursorProtobufServerMessage(interaction({
+        case: "toolCallCompleted",
+        value: create(ToolCallCompletedUpdateSchema, { callId: `call_${index}`, modelCallId: `model_${index}`, toolCall }),
+      }), state);
+      const delta = events.find(e => e.type === "tool_call_delta");
+      expect(delta && delta.type === "tool_call_delta" ? JSON.parse(delta.arguments) : null).toEqual({
+        command: "safe command",
+        workdir: "C:/repo",
+      });
+    }
+  });
+
   test("normalizes mis-keyed args that arrived only via streamed text (no completed map)", () => {
     // The P1 audit case: model streamed `{"filepath":"a.txt"}` complete and the completion has no
     // map bytes. Buffered text must still be schema-normalized to `path` before reaching Codex.

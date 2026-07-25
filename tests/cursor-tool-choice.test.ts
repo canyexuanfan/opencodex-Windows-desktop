@@ -39,9 +39,26 @@ describe("Cursor Responses tool_choice support", () => {
       { name: "exec_command", namespace: "mcp__remote", description: "Remote exec", parameters: {} },
     ];
     expect(buildCursorToolDefinitions(toolsWithRemote, { name: "exec_command" }).map(tool => tool.toolName)).toEqual(["shell_command"]);
-    expect(buildCursorToolDefinitions(toolsWithRemote, { mode: "required", allowedTools: ["shell_command"] }).map(tool => tool.toolName)).toEqual(["shell_command"]);
+    expect(buildCursorToolDefinitions(toolsWithRemote, { mode: "required", allowedTools: ["exec_command"] }).map(tool => tool.toolName)).toEqual(["shell_command"]);
     // Wire-name choice still selects the namespaced tool intentionally.
     expect(buildCursorToolDefinitions(toolsWithRemote, { name: "mcp__remote__exec_command" }).map(tool => tool.toolName)).toEqual(["mcp__remote__exec_command"]);
+  });
+
+  test("raw exec_command selects namespaced remote when no bare shell bridge exists", () => {
+    const remoteOnly: OcxTool[] = [
+      { name: "exec_command", namespace: "mcp__remote", description: "Remote exec", parameters: {} },
+    ];
+    expect(buildCursorToolDefinitions(remoteOnly, { name: "exec_command" }).map(tool => tool.toolName)).toEqual(["mcp__remote__exec_command"]);
+    expect(buildCursorToolDefinitions(remoteOnly, { mode: "required", allowedTools: ["exec_command"] }).map(tool => tool.toolName)).toEqual(["mcp__remote__exec_command"]);
+    expect(buildCursorToolDefinitions(remoteOnly, { name: "mcp__remote__exec_command" }).map(tool => tool.toolName)).toEqual(["mcp__remote__exec_command"]);
+  });
+
+  test("raw shell_command selects namespaced remote when no bare shell bridge exists", () => {
+    const remoteOnly: OcxTool[] = [
+      { name: "shell_command", namespace: "mcp__remote", description: "Remote shell", parameters: {} },
+    ];
+    expect(buildCursorToolDefinitions(remoteOnly, { name: "shell_command" }).map(tool => tool.toolName)).toEqual(["mcp__remote__shell_command"]);
+    expect(buildCursorToolDefinitions(remoteOnly, { mode: "required", allowedTools: ["shell_command"] }).map(tool => tool.toolName)).toEqual(["mcp__remote__shell_command"]);
   });
 
   test("parser preserves parallel_tool_calls false for Cursor request enforcement", () => {
