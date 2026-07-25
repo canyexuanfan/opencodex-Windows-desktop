@@ -147,7 +147,7 @@ export function useCodexAccountPool(apiBase: string): CodexAccountPoolController
 
 | 현재 함수 | 이동 후 | 경계 |
 | --- | --- | --- |
-| `load(refreshQuota)` (`CodexAccountPool.tsx:57-91`) | 훅의 `load`로 그대로 이동 | accounts/active 병렬 GET, generation 검사, `loadState` 갱신은 DATA다. auto-switch threshold의 `beginServerRead/acceptServerRead/rejectServerRead` 연결은 `CodexAccountPool`의 표시 controller에 남긴다. 호출 때 선택적 `CodexAccountLoadObserver`를 전달하고, 훅은 request 시작 전에 `beginActiveRead()`, active 성공 직후 `acceptActiveRead(...)`, 실패 시 `rejectActiveRead()`를 호출한다. threshold UI state는 훅 반환값에 추가하지 않는다. |
+| `load(refreshQuota)` (`CodexAccountPool.tsx:57-91`) | 훅의 `load`로 그대로 이동 | accounts/active 병렬 GET, generation 검사, `loadState` 갱신은 DATA다. auto-switch threshold의 `beginServerRead/acceptServerRead/rejectServerRead` 연결은 `CodexAccountPool`의 표시 controller에 남긴다. observer는 `subscribeLoadObserver`로 등록된 것만 쓰며 `load` 인자로 전달하지 않는다. 훅은 배경/명시 구분 없이 모든 load에서 등록된 구독자에게 request 시작 전에 `beginActiveRead()`, active 성공 직후 `acceptActiveRead(...)`, 실패 시 `rejectActiveRead()`를 호출한다. threshold UI state는 훅 반환값에 추가하지 않는다. |
 | `setActive(id)` (`CodexAccountPool.tsx:140-169`) | `switchAccount(id)` | PUT, `activeId`, `switchingId`, reload만 훅으로 이동한다. `confirm` 닫기와 성공/실패 toast 문구는 caller가 결과를 보고 처리한다. `accountModeState`는 문구에만 필요하므로 훅 인자가 아니다. |
 | `editAlias(account)` (`CodexAccountPool.tsx:171-187`) | `saveAlias(id, alias)` | `window.prompt`와 toast는 표시 계층에 남고, trimmed alias PUT + reload만 이동한다. main에는 호출하지 않는다. |
 | `remove(id)` (`CodexAccountPool.tsx:189-201`) | `removeAccount(id)` | label 계산, `window.confirm`, toast는 표시 계층에 남고 DELETE + reload만 이동한다. main에는 호출하지 않는다. |
