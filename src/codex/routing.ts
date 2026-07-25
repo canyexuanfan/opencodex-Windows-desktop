@@ -235,14 +235,8 @@ export function computeQuotaCooldownUntil(meta: CodexUpstreamOutcomeMeta = {}): 
  * Returns the lease id, or null when no probe may go out right now.
  */
 export function tryAcquireCodexQuotaProbeLease(accountId: string, now = Date.now()): string | null {
-  const health = upstreamHealth.get(accountId);
-  if (!health) return null;
-  const cooldownUntil = health.cooldownUntil;
-  if (typeof cooldownUntil !== "number" || !Number.isFinite(cooldownUntil) || cooldownUntil <= now) return null;
-  if (health.cooldownSource === "retry-after") return null;
-  if (health.probeLeaseId !== undefined) return null;
-  const origin = health.lastProbeAt ?? health.cooldownSince ?? cooldownUntil;
-  if (now - origin < CODEX_QUOTA_PROBE_INTERVAL_MS) return null;
+  if (!canAcquireCodexQuotaProbeLease(accountId, now)) return null;
+  const health = upstreamHealth.get(accountId)!;
   const probeLeaseId = randomUUID();
   upstreamHealth.set(accountId, {
     ...health,
@@ -251,6 +245,18 @@ export function tryAcquireCodexQuotaProbeLease(accountId: string, now = Date.now
     lastProbeAt: now,
   });
   return probeLeaseId;
+}
+
+/** Side-effect-free check mirroring {@link tryAcquireCodexQuotaProbeLease} eligibility. */
+export function canAcquireCodexQuotaProbeLease(accountId: string, now = Date.now()): boolean {
+  const health = upstreamHealth.get(accountId);
+  if (!health) return false;
+  const cooldownUntil = health.cooldownUntil;
+  if (typeof cooldownUntil !== "number" || !Number.isFinite(cooldownUntil) || cooldownUntil <= now) return false;
+  if (health.cooldownSource === "retry-after") return false;
+  if (health.probeLeaseId !== undefined) return false;
+  const origin = health.lastProbeAt ?? health.cooldownSince ?? cooldownUntil;
+  return now - origin >= CODEX_QUOTA_PROBE_INTERVAL_MS;
 }
 
 /**
@@ -497,6 +503,74 @@ export function resolveCodexAccountForThread(
 ): string | null {
   const resolution = resolveCodexAccountForThreadDetailed(threadId, config, now);
   return resolution.status === "selected" ? resolution.accountId : null;
+}
+
+/**
+ * Side-effect-free preview of the Codex pool account native routing would prefer.
+ * Used for subagent fallback quota decisions before final auth.
+ *
+ * Does not mutate activeCodexAccountId, thread affinity, config on disk, or probe leases.
+ * Mirrors {@link resolveCodexAccountForThreadDetailed} account choice, including returning a
+ * configured cooled account so callers can evaluate probe/quota availability.
+ */
+export function previewCodexAccountForRequest(
+  threadId: string | null,
+  config: OcxConfig,
+  now = Date.now(),
+): string | null {
+  if (threadId && threadAccountMap.has(threadId)) {
+    const entry = threadAccountMap.get(threadId)!;
+    if (
+      !isThreadAffinityExpired(entry, now)
+      && isThreadAffinityGenerationLive(entry)
+      && isCodexAccountSelectable(config, entry.accountId, now)
+      && !shouldFailover(config, entry.accountId, now)
+    ) {
+      const threshold = config.autoSwitchThreshold ?? 80;
+      if (threshold > 0) {
+        const usage = computeCodexUsageScore(
+          getAccountQuota(entry.accountId),
+          getPoolAccountPlan(config, entry.accountId),
+        );
+        if (usage >= threshold) {
+          const best = pickLowerUsageAccount(config, entry.accountId, usage, now);
+          if (best !== entry.accountId) return best;
+        }
+      }
+      return entry.accountId;
+    }
+    // Stale/unusable affinity is ignored for preview (no map mutation).
+  }
+
+  let active = config.activeCodexAccountId ?? null;
+  if (!active) {
+    return pickLowestUsageCodexAccount(config, undefined, now);
+  }
+  if (!isCodexAccountSelectable(config, active, now)) {
+    const fallback = pickLowestUsageCodexAccount(config, active, now);
+    if (fallback) active = fallback;
+    else if (hasConfiguredPoolAccount(config, active)) return active;
+    else return null;
+  }
+
+  const threshold = config.autoSwitchThreshold ?? 80;
+  if (threshold > 0) {
+    const usage = computeCodexUsageScore(getAccountQuota(active), getPoolAccountPlan(config, active));
+    if (usage >= threshold) {
+      active = pickLowerUsageAccount(config, active, usage, now);
+    }
+  }
+  if (shouldFailover(config, active, now)) {
+    const best = pickLowestUsageCodexAccount(config, active, now);
+    if (best) active = best;
+  }
+  if (!isCodexAccountUsable(config, active)) {
+    return hasConfiguredPoolAccount(config, active) ? active : null;
+  }
+  if (isCodexAccountInCooldown(active, now)) {
+    return hasConfiguredPoolAccount(config, active) ? active : null;
+  }
+  return active;
 }
 
 export function resolveCodexAccountForThreadDetailed(

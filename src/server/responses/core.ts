@@ -56,6 +56,7 @@ import {
 } from "../../codex/auth-context";
 import {
   formatCodexProviderForLog,
+  previewCodexAccountForRequest,
   recordCodexUpstreamOutcome,
   type CodexUpstreamOutcome,
 } from "../../codex/routing";
@@ -79,6 +80,7 @@ import { supportedLadderFor } from "../effort-policy";
 import { isThreadSpawnRequest } from "../effort-policy";
 import {
   applySubagentModelFallback,
+  configUsesCodexAccountPool,
   maybePrimeSubagentQuota,
   recordSubagentQuotaFailureForThreadSpawn,
 } from "../../codex/subagent-model-fallback";
@@ -514,6 +516,9 @@ async function applyFinalRouteRequestNormalization(args: {
   logCtx.provider = route.providerName;
   logCtx.providerAdapter = route.provider.adapter;
 
+  // Final selected model before virtual wire-model rewriting (Pro aliases).
+  const finalSelectedModelId = route.modelId;
+
   // Virtual model rewriting: Pro aliases → base model + reasoning.mode="pro".
   applyOpenAiVirtualModel(parsed, route, logCtx);
 
@@ -563,9 +568,8 @@ async function applyFinalRouteRequestNormalization(args: {
   }
 
   {
-    const requestedModelId = logCtx.requestedModel ?? route.modelId;
     const { nativeEffortClamp, shouldApplyNativeEffortClamp } = await import("../../codex/catalog");
-    const clamped = shouldApplyNativeEffortClamp(route.providerName, route.provider, requestedModelId)
+    const clamped = shouldApplyNativeEffortClamp(route.providerName, route.provider, finalSelectedModelId)
       ? nativeEffortClamp(route.modelId, parsed.options.reasoning)
       : null;
     if (clamped) {
@@ -889,31 +893,25 @@ export async function handleResponses(
 
   let authCtx: CodexAuthContext = { kind: "main", accountId: null };
   let selectedForwardHeaders = req.headers;
-  let authReady = false;
   let subagentFallbackAccountId = config.activeCodexAccountId ?? null;
   let subagentQuotaFailureModel = parsed.modelId;
 
   // Subagent fallback must settle the final model/provider BEFORE route-dependent
   // normalization (virtual models, effort caps, service tier, wire protocol).
-  // Early auth is only for account-scoped quota selection; its probe lease is
-  // released whenever that context is abandoned before upstream.
+  // Preview the preferred Codex account without acquiring a probe lease or refreshing
+  // tokens — auth is resolved only after the final route is selected.
   if (isThreadSpawnRequest(req.headers) && !options.comboAttempt) {
-    const earlyAuth = await resolveResponsesCodexAuth(req, config, route, options);
-    if (!earlyAuth.ok) return earlyAuth.response;
-    authCtx = earlyAuth.authCtx;
-    selectedForwardHeaders = earlyAuth.headers;
-    authReady = true;
-    subagentFallbackAccountId = authCtx.kind === "pool" || authCtx.kind === "main-pool"
-      ? authCtx.accountId
-      : config.activeCodexAccountId ?? null;
-
+    const threadId = req.headers.get("x-codex-parent-thread-id");
+    const previewAccountId = previewCodexAccountForRequest(threadId, config);
+    subagentFallbackAccountId = previewAccountId ?? config.activeCodexAccountId ?? null;
     const fallback = applySubagentModelFallback(
       parsed,
       req.headers,
       config,
-      subagentFallbackAccountId,
+      previewAccountId,
       Date.now(),
       unreadableEncryptedAgentTask,
+      { requireNativeAccount: configUsesCodexAccountPool(config) },
     );
     if (fallback) {
       (logCtx as unknown as Record<string, unknown>).subagentModelFallbackFrom = fallback.from;
@@ -925,41 +923,26 @@ export async function handleResponses(
     subagentQuotaFailureModel = fallback?.to ?? parsed.modelId;
 
     if (fallback?.to && !slugsEquivalent(fallback.to, route.modelId)) {
-      let nextRoute: RouteResult;
       try {
-        nextRoute = routeModel(config, fallback.to);
+        route = routeModel(config, fallback.to);
       } catch (err) {
-        releaseCodexAuthContextProbeLease(authCtx);
-        authReady = false;
         if (err instanceof NoAvailableComboTargetsError) {
           return comboUnavailableResponse(err.message);
         }
         return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
       }
-      const authReusable = route.providerName === nextRoute.providerName
-        && route.codexAccountMode === nextRoute.codexAccountMode;
-      if (!authReusable) {
-        // Abandon the pre-fallback auth context (and any probe lease) before
-        // resolving replacement auth — nothing has reached upstream yet.
-        releaseCodexAuthContextProbeLease(authCtx);
-        authCtx = { kind: "main", accountId: null };
-        authReady = false;
-        selectedForwardHeaders = req.headers;
-      }
-      route = nextRoute;
     }
   }
 
   // Encrypted child tasks may only reach the canonical native backend. This check
   // runs against the FINAL route so native-only fallback can rescue a routed primary.
   if (!isCanonicalOpenAiForwardProvider(route.provider) && unreadableEncryptedAgentTask) {
-    if (authReady) releaseCodexAuthContextProbeLease(authCtx);
     return unreadableEncryptedAgentTaskResponse();
   }
 
   await applyFinalRouteRequestNormalization({ parsed, route, config, req, logCtx });
 
-  if (!authReady) {
+  {
     const finalAuth = await resolveResponsesCodexAuth(req, config, route, options);
     if (!finalAuth.ok) return finalAuth.response;
     authCtx = finalAuth.authCtx;
@@ -1282,14 +1265,15 @@ export async function handleResponses(
               || logCtx.terminalHttpStatus === 402
               ? (httpStatusOverride ?? logCtx.terminalHttpStatus)
               : undefined;
-            if (quotaFailureMessage === undefined) return;
-            recordSubagentQuotaFailureForThreadSpawn(
-              req.headers,
-              subagentQuotaFailureModel,
-              quotaFailureMessage,
-              config,
-              subagentFallbackAccountId,
-            );
+            if (quotaFailureMessage !== undefined) {
+              recordSubagentQuotaFailureForThreadSpawn(
+                req.headers,
+                subagentQuotaFailureModel,
+                quotaFailureMessage,
+                config,
+                subagentFallbackAccountId,
+              );
+            }
           }
           options.onNativePassthroughTerminal?.(status);
         });
@@ -1334,14 +1318,15 @@ export async function handleResponses(
                 || logCtx.terminalHttpStatus === 402
                 ? (httpStatusOverride ?? logCtx.terminalHttpStatus)
                 : undefined;
-              if (quotaFailureMessage === undefined) return;
-              recordSubagentQuotaFailureForThreadSpawn(
-                req.headers,
-                subagentQuotaFailureModel,
-                quotaFailureMessage,
-                config,
-                subagentFallbackAccountId,
-              );
+              if (quotaFailureMessage !== undefined) {
+                recordSubagentQuotaFailureForThreadSpawn(
+                  req.headers,
+                  subagentQuotaFailureModel,
+                  quotaFailureMessage,
+                  config,
+                  subagentFallbackAccountId,
+                );
+              }
             }
             options.onNativePassthroughTerminal?.(status);
           }
@@ -1387,6 +1372,22 @@ export async function handleResponses(
         // client-cancel (no terminal seen) is finalized separately via consumeForInspection's onCancel.
         const reportNativeTerminal = (status: ResponsesTerminalStatus, httpStatusOverride?: number) => {
           terminalRecorder?.(status, httpStatusOverride);
+          if (status === "failed") {
+            const quotaFailureMessage = httpStatusOverride === 429 || httpStatusOverride === 402
+              || logCtx.terminalHttpStatus === 429
+              || logCtx.terminalHttpStatus === 402
+              ? (httpStatusOverride ?? logCtx.terminalHttpStatus)
+              : undefined;
+            if (quotaFailureMessage !== undefined) {
+              recordSubagentQuotaFailureForThreadSpawn(
+                req.headers,
+                subagentQuotaFailureModel,
+                quotaFailureMessage,
+                config,
+                subagentFallbackAccountId,
+              );
+            }
+          }
           options.onNativePassthroughTerminal?.(status);
         };
         consumeForInspection(
