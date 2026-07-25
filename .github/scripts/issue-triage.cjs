@@ -24,6 +24,13 @@ const HTTP_STATUS_RE =
 const ONE_SIDED_ATTRIBUTION_RE =
   /\b(?:only\s+(?:the\s+)?(?:new\s+)?(?:issue|one|first|second|other)|only\s+one|just\s+the\s+(?:first|second|new|other)|(?:issue\s+#?\d+\s+)?alone|appearing\s+only(?:\s+in)?|appears?\s+only(?:\s+in)?|exclusive\s+to|the\s+(?:other|existing(?:\s+issue)?)\s+does\s+not|(?:does|do)\s+not\s+(?:show|report|include|return|have))\b/i;
 
+/**
+ * Issue-role attribution between a shared binder and a concrete token means the
+ * token is not shared evidence (e.g. "both fail: issue 410 returns HTTP 500").
+ */
+const ISSUE_SPECIFIC_ATTR_RE =
+  /\b(?:issue\s+#?\d+|the\s+new\s+issue|the\s+(?:first|second|other)(?:\s+issue)?)\b/i;
+
 const BOTH_FAILURE_VERB_RE =
   /\bboth(?:\s+issues?)?(?:\s+\w+){0,6}\s+(?:return|report|show|have|hit|fail|reproduce|receive|share)\b/i;
 
@@ -97,6 +104,9 @@ function hasDistinctFailureSignatures(text) {
   const errnos = extractErrnoTokens(text);
   if (errnos.length > 1) return true;
 
+  // Mixed concrete failure types (HTTP status + errno) are not a shared signature.
+  if (statuses.length >= 1 && errnos.length >= 1) return true;
+
   if (/\b(?:the\s+first|one)\b[\s\S]{0,100}\b(?:the\s+second|the\s+other)\b/i.test(text)) {
     return true;
   }
@@ -106,10 +116,10 @@ function hasDistinctFailureSignatures(text) {
   if (/\bone\b[^.]{0,80}\band\s+the\s+other\b/i.test(text)) return true;
   if (/\balone\s+reports\b/i.test(text)) return true;
   if (/\bseparate\s+\d{3}\s+problem\b/i.test(text)) return true;
-  if (/\b(?:failures?|root\s+causes?|status(?:es)?|errors?)\s+differ\b/i.test(text)) {
+  if (/\b(?:failures?|root\s+causes?|status(?:es)?|errors?|symptoms?)\s+differ\b/i.test(text)) {
     return true;
   }
-  if (/\bdifferent\s+(?:failure|root\s+cause|status|error|problem)\b/i.test(text)) {
+  if (/\bdifferent\s+(?:failure|root\s+cause|status|error|problem|symptom)s?\b/i.test(text)) {
     return true;
   }
   return false;
@@ -153,6 +163,9 @@ function clauseBindsSharedToSignature(clause) {
       const binderText = binder[0];
       if (/^both\b/i.test(binderText)) {
         if (!BOTH_FAILURE_VERB_RE.test(clause.slice(binder.index, sig.end))) continue;
+        // Generic "both issues fail/have/show …" must not validate a later
+        // issue-specific token (e.g. "issue 410 returns HTTP 500").
+        if (ISSUE_SPECIFIC_ATTR_RE.test(between)) continue;
       } else if (/^same$/i.test(binderText)) {
         // "same adapter" is not enough; require same … error/failure/Field required/status.
         if (!/\bsame\b[\s\S]{0,80}\b(?:error|failure|status|fault|exception|signature|Field required|(?:HTTP(?:\s+status)?(?:\s+code)?|status(?:\s+code)?|returns?|got|code)\s+[1-5]\d\d|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EPIPE|EAI_AGAIN|ECONNABORTED|EHOSTUNREACH|ENETUNREACH|EADDRINUSE)\b/i

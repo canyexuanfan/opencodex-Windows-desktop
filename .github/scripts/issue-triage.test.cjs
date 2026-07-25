@@ -120,6 +120,17 @@ describe("hasConcreteRelatedSignature", () => {
     }
   });
 
+  it("rejects mixed HTTP and errno failures attributed to different issues", () => {
+    const rejected = [
+      "Both issues fail in the adapter: issue 410 returns HTTP 500, and the new issue reports ECONNRESET.",
+      "Both issues have different symptoms, but the new issue reports ECONNRESET.",
+      "Both issues fail: the first returns HTTP 503 and the other reports ETIMEDOUT.",
+    ];
+    for (const reason of rejected) {
+      assert.equal(hasConcreteRelatedSignature(reason), false, reason);
+    }
+  });
+
   it("keeps shared concrete failure signatures", () => {
     const accepted = [
       "Both issues return HTTP 503 from POST /v1/responses in the OpenRouter adapter.",
@@ -128,6 +139,8 @@ describe("hasConcreteRelatedSignature", () => {
       "Both issues return ECONNRESET from POST /v1/responses in the OpenRouter adapter.",
       "Both issues report ECONNRESET from POST /v1/responses.",
       "Both issues return HTTP 503 in the OpenRouter adapter.",
+      "Both issues return HTTP 500 from the same endpoint.",
+      "Both issues report ECONNRESET in the OpenRouter adapter.",
       "The issues share the ETIMEDOUT failure when connecting through the Anthropic adapter.",
     ];
     for (const reason of accepted) {
