@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { setClientResourceData, useKeyedClientResource } from "./client-resource";
 import Dashboard from "./pages/Dashboard";
 import Providers from "./pages/Providers";
 import Models from "./pages/Models";
@@ -16,6 +17,7 @@ import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconH
 import { useI18n, useT, LOCALES, type Locale, type TKey } from "./i18n";
 import { Select, Switch } from "./ui";
 import { installApiAuthFetch } from "./api";
+import { readJsonIfOk } from "./fetch-json";
 import { type Page } from "./app-routing";
 import { useAppRouteState } from "./use-app-route-state";
 
@@ -71,7 +73,6 @@ function readStoredTheme(): Theme {
 export default function App() {
   const { page, navigateToPage } = useAppRouteState();
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
-  const [runtimeVersion, setRuntimeVersion] = useState<string | null>(null);
   const { locale, setLocale } = useI18n();
   const t = useT();
 
@@ -98,30 +99,35 @@ export default function App() {
     else { el.setAttribute("data-theme", theme); localStorage.setItem(THEME_KEY, theme); }
   }, [theme]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const fetchRuntimeVersion = async () => {
-      try {
-        const res = await fetch(`${API_BASE}/healthz`);
-        if (!res.ok) return;
-        const version = readRuntimeVersion(await res.json());
-        if (!cancelled && version) setRuntimeVersion(version);
-      } catch {
-        // Keep the build-time fallback when the proxy is unavailable.
-      }
-    };
-    fetchRuntimeVersion();
-    const interval = setInterval(fetchRuntimeVersion, 30000);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, []);
+  const healthPoll = useKeyedClientResource(
+    `app-healthz:${API_BASE}`,
+    [],
+    async (signal) => {
+      const res = await fetch(`${API_BASE}/healthz`, { signal });
+      if (!res.ok) return null;
+      return readRuntimeVersion(await res.json());
+    },
+    { pollMs: 30_000 },
+  );
 
   const cycleTheme = () => setTheme(t => (t === "light" ? "dark" : t === "dark" ? "system" : "light"));
   const ThemeIcon = THEME_ICON[theme];
-  const displayedVersion = runtimeVersion ?? __APP_VERSION__;
+  const displayedVersion: string = healthPoll.data ?? __APP_VERSION__;
 
   const [stopping, setStopping] = useState(false);
   // Claude navigation row also owns the connection toggle.
-  const [claudeEnabled, setClaudeEnabled] = useState<boolean | null>(null);
+  const fetchClaudeEnabled = useCallback(async (signal: AbortSignal) => {
+    const res = await fetch(`${API_BASE}/api/claude-code`, { signal });
+    const d = await readJsonIfOk<{ enabled?: unknown }>(res);
+    return d && typeof d.enabled === "boolean" ? d.enabled : null;
+  }, []);
+
+  const claudePoll = useKeyedClientResource(
+    `app-claude-code:${API_BASE}`,
+    [],
+    fetchClaudeEnabled,
+  );
+  const claudeEnabled = claudePoll.data ?? null;
 
   useEffect(() => {
     if (!navOpen) return;
@@ -151,28 +157,19 @@ export default function App() {
     return () => mq.removeEventListener("change", onChange);
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    fetch(`${API_BASE}/api/claude-code`)
-      .then(res => res.json())
-      .then(d => { if (!cancelled && typeof d.enabled === "boolean") setClaudeEnabled(d.enabled); })
-      .catch(() => { /* toggle stays hidden until the API answers */ });
-    return () => { cancelled = true; };
-  }, []);
-
   const toggleClaude = async () => {
     if (claudeEnabled === null) return;
     const next = !claudeEnabled;
-    setClaudeEnabled(next); // optimistic
+    setClientResourceData(`app-claude-code:${API_BASE}`, next);
     try {
       const res = await fetch(`${API_BASE}/api/claude-code`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled: next }),
       });
-      if (!res.ok) setClaudeEnabled(!next);
+      if (!res.ok) setClientResourceData(`app-claude-code:${API_BASE}`, !next);
     } catch {
-      setClaudeEnabled(!next);
+      setClientResourceData(`app-claude-code:${API_BASE}`, !next);
     }
   };
   const handleStop = async () => {
@@ -222,7 +219,7 @@ export default function App() {
           */}
           {NAV.map(({ id, tkey, Icon }) => (
             <div key={id} className={`nav-entry${id === "claude" ? ` nav-entry-claude${page === id ? " active" : ""}` : ""}`}>
-              <button className={`nav-item${page === id ? " active" : ""}`} data-page={id}
+              <button type="button" className={`nav-item${page === id ? " active" : ""}`} data-page={id}
                 onClick={() => {
                   // Deliberate sidebar navigation — push a history entry.
                   navigateToPage(id);

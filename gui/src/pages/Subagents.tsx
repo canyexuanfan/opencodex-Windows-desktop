@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { readJsonOrThrow } from "../fetch-json";
 import { Notice, EmptyState } from "../ui";
 import { IconArrowUp, IconArrowDown, IconX, IconCheck, IconSearch, IconBot, IconInfo } from "../icons";
 import { useT } from "../i18n/shared";
@@ -13,12 +14,14 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
   const [status, setStatus] = useState("");
   const [ok, setOk] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
 
   const chosenSet = useMemo(() => new Set(chosen), [chosen]);
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch(`${apiBase}/api/subagent-models`).then(res => res.json());
+      const res = await fetch(`${apiBase}/api/subagent-models`);
+      const r = await readJsonOrThrow<{ available?: string[]; chosen?: string[] }>(res, t("sub.loadFail"));
       const avail: string[] = r.available ?? [];
       const availSet = new Set(avail);
       setAvailable(avail);
@@ -52,6 +55,8 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
   };
 
   const save = async () => {
+    if (busy) return;
+    setBusy(true);
     setStatus("");
     try {
       const r = await fetch(`${apiBase}/api/subagent-models`, {
@@ -59,14 +64,20 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ models: chosen }),
       });
-      const d = await r.json();
-      setOk(r.ok);
-      setStatus(r.ok
-        ? t("sub.saved", { n: d.applied?.length ?? 0, cmd: "ocx sync" })
-        : (d.error || t("sub.saveFailed")));
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({})) as { error?: string; applied?: string[] };
+        setOk(false);
+        setStatus(d.error || t("sub.saveFailed"));
+        return;
+      }
+      const d = await r.json() as { applied?: string[] };
+      setOk(true);
+      setStatus(t("sub.saved", { n: d.applied?.length ?? 0, cmd: "ocx sync" }));
     } catch {
       setOk(false);
       setStatus(t("sub.networkError"));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -114,7 +125,7 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
       )}
 
       <div style={{ marginTop: 14 }}>
-        <button type="button" className="btn btn-primary" onClick={save}>{t("common.save")}</button>
+        <button type="button" className="btn btn-primary" onClick={() => void save()} disabled={busy}>{t("common.save")}</button>
       </div>
 
       <div className="h-section">{t("sub.models")} <span className="count">{filtered.length}</span></div>
