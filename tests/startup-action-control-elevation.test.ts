@@ -24,7 +24,7 @@ mock.module("../src/service", () => ({
   finalizeWindowsSchedulerServiceRegistration: finalizeWindowsSchedulerServiceRegistrationMock,
 }));
 
-const { runStartupInstallAction } = await import("../src/server/startup-action-control");
+const { installFailureDetail, runStartupInstallAction } = await import("../src/server/startup-action-control");
 
 describe("startup install elevation retry", () => {
   const originalPlatform = process.platform;
@@ -51,6 +51,17 @@ describe("startup install elevation retry", () => {
     });
   }
 
+  function failCliStreams(stdout: string, stderr: string) {
+    execFileMock.mockImplementation((
+      _file: string,
+      _args: string[],
+      _options: unknown,
+      callback: (error: Error | null, stdout?: string, stderr?: string) => void,
+    ) => {
+      callback(new Error("Command failed"), stdout, stderr);
+    });
+  }
+
   test("retries only for structured schtasks /create access denied", async () => {
     failCli(`Windows access denied while running Task Scheduler.\n${WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER}`);
 
@@ -59,6 +70,25 @@ describe("startup install elevation retry", () => {
     expect(result).toEqual({ message: "Background service installed." });
     expect(execFileMock).toHaveBeenCalledTimes(1);
     expect(finalizeWindowsSchedulerServiceRegistrationMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("retries when the create-access-denied marker is on stdout and stderr has noise", async () => {
+    // Mirrors CLI→proxy boundary: marker must survive even if stderr wins a single-stream pick.
+    failCliStreams(
+      `Windows access denied while running Task Scheduler.\n${WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER}`,
+      "WARNING: unrelated installer warning",
+    );
+
+    const result = await runStartupInstallAction("install-service");
+
+    expect(result).toEqual({ message: "Background service installed." });
+    expect(finalizeWindowsSchedulerServiceRegistrationMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not elevate when marker is absent across both streams", async () => {
+    failCliStreams("service install failed", "Access is denied.");
+    await expect(runStartupInstallAction("install-service")).rejects.toThrow(/Access is denied/);
+    expect(finalizeWindowsSchedulerServiceRegistrationMock).not.toHaveBeenCalled();
   });
 
   test("does not elevate for WinSW removal access denied", async () => {
@@ -100,5 +130,29 @@ describe("startup install elevation retry", () => {
 
     await expect(runStartupInstallAction("install-service")).rejects.toThrow(/CONFLICT/);
     expect(finalizeWindowsSchedulerServiceRegistrationMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("installFailureDetail CLI→proxy marker contract", () => {
+  test("combines stderr and stdout so a stdout marker survives stderr noise", () => {
+    const detail = installFailureDetail(
+      `guidance\n${WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER}`,
+      "WARNING: noisy stderr",
+      new Error("Command failed"),
+    );
+    expect(detail).toContain("WARNING: noisy stderr");
+    expect(detail).toContain(WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER);
+  });
+
+  test("caps detail length while preserving the elevation marker", () => {
+    const marker = WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER;
+    const detail = installFailureDetail(
+      `${"x".repeat(3_000)}\n${marker}`,
+      "stderr-head",
+      new Error("Command failed"),
+    );
+    expect(detail.length).toBeLessThanOrEqual(2_000 + marker.length + 40);
+    expect(detail).toContain(marker);
+    expect(detail).toContain("truncated");
   });
 });

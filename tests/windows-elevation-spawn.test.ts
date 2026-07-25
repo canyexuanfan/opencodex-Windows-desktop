@@ -57,6 +57,32 @@ describe("runWindowsElevated spawn contract", () => {
     await expect(runWindowsElevated("schtasks.exe", ["/query"])).resolves.toBe(0);
   });
 
+  test("PowerShell script treats a missing ExitCode as failure", async () => {
+    let commandScript = "";
+    setWindowsElevationSpawnForTests(((
+      _cmd: string,
+      args: ReadonlyArray<string>,
+    ) => {
+      commandScript = String(args[args.length - 1] ?? "");
+      const child = new EventEmitter() as EventEmitter & {
+        stdout: EventEmitter & { setEncoding?: (enc: string) => void };
+        stderr: EventEmitter & { setEncoding?: (enc: string) => void };
+        kill: ReturnType<typeof mock>;
+      };
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdout.setEncoding = () => undefined;
+      child.stderr.setEncoding = () => undefined;
+      child.kill = mock(() => true);
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child as never;
+    }) as never);
+
+    await runWindowsElevated("schtasks.exe", ["/create"]);
+    expect(commandScript).toContain("if ($null -eq $p.ExitCode) { exit 1 }");
+    expect(commandScript).toContain("$null = $p.Handle");
+  });
+
   test("returns non-zero exit codes from completed elevated processes", async () => {
     fakeChild({ code: 1, stderr: "failed" });
     await expect(runWindowsElevated("schtasks.exe", ["/create"])).resolves.toBe(1);

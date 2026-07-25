@@ -59,6 +59,23 @@ describe("evaluateWindowsSchedulerInstallVerification", () => {
     expect(result.conflict).toBe(true);
   });
 
+  test("treats unknown WinSW status as unverified, not as a conflict", () => {
+    const result = evaluateWindowsSchedulerInstallVerification({
+      taskInstalled: true,
+      xml: healthyXml,
+      assetsExist: true,
+      nativeStatus: "unknown",
+      wscript,
+      launcher,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.conflict).toBe(false);
+    expect(result.nativeStatusUnknown).toBe(true);
+    expect(result.nativeServiceAbsent).toBe(false);
+    expect(result.detail).toContain("could not be verified");
+    expect(result.detail).not.toContain("CONFLICT");
+  });
+
   test("fails when registration health is invalid", () => {
     const badXml = healthyXml.replace("<LogonTrigger>", "<BootTrigger>");
     const result = evaluateWindowsSchedulerInstallVerification({

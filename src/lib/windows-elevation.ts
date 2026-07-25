@@ -202,11 +202,15 @@ export function runWindowsElevated(file: string, args: string[], timeoutMs = 120
     ));
   }
   const argumentList = buildWindowsElevatedArgumentList(args);
+  // Touch .Handle so Windows PowerShell 5.1 keeps a process handle; ExitCode can
+  // otherwise stay $null after -Wait and `exit $null` becomes exit 0 (false success).
   const script = [
     `$p = Start-Process -FilePath ${psSingleQuote(file)}`,
     argumentList.length > 0 ? ` -ArgumentList ${psSingleQuote(argumentList)}` : "",
     " -Verb RunAs -WindowStyle Hidden -PassThru -Wait;",
     "if ($null -eq $p) { exit 1223 }",
+    "$null = $p.Handle",
+    "if ($null -eq $p.ExitCode) { exit 1 }",
     "exit $p.ExitCode",
   ].join("");
 
