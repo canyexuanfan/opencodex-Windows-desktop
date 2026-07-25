@@ -119,7 +119,8 @@ export interface CodexAccountPoolController {
   switchingId: string | null;
   activeNeedsReauth: boolean;
 
-  load(refreshQuota?: boolean, observer?: CodexAccountLoadObserver): Promise<boolean>;
+  /** observer 인자는 없다 — 통지는 subscribeLoadObserver 한 경로뿐이다. */
+  load(refreshQuota?: boolean): Promise<boolean>;
   switchAccount(id: string): Promise<CodexAccountActionResult<{ activeId: string | null }>>;
   saveAlias(id: string, alias: string): Promise<CodexAccountActionResult>;
   removeAccount(id: string): Promise<CodexAccountActionResult>;
@@ -155,7 +156,14 @@ export function useCodexAccountPool(apiBase: string): CodexAccountPoolController
 | `openReauth`, `closeAddModal` (`CodexAccountPool.tsx:122-130`) | 이동 없음 | `reauthId`와 `showAdd`만 바꾸는 modal 제어다. |
 | `openResetPopup`, `handleRedeem` (`CodexAccountPool.tsx:214-260`) | 이동 없음 | reset-credit popup의 로딩/확인/feedback은 Q6이 명시한 presentation 범위다. 성공 뒤에만 공유 `load(true)`를 호출한다. |
 
-auto-switch는 현재 `load`의 active 응답에 함께 들어오는 `autoSwitchThreshold`를 소비한다(`CodexAccountPool.tsx:72-84`). 이를 빼먹으면 `CodexAutoSwitchSetting` 초기화가 깨진다. 구현 시 `useCodexAutoSwitch` 자체를 새 계정 훅으로 옮기지 말고, `CodexAccountPool`이 `load(refreshQuota, { beginActiveRead: beginServerRead, acceptActiveRead: acceptServerRead, rejectActiveRead: rejectServerRead })`를 호출한다. 기존 세 callback 연결(`CodexAccountPool.tsx:34-39,57-91`)만 유지하는 이 좁은 observer bridge가 Q6의 “계정 DATA만 추출” 경계를 지킨다.
+auto-switch는 현재 `load`의 active 응답에 함께 들어오는 `autoSwitchThreshold`를 소비한다(`CodexAccountPool.tsx:72-84`). 이를 빼먹으면 `CodexAutoSwitchSetting` 초기화가 깨진다. `useCodexAutoSwitch` 자체는 새 계정 훅으로 옮기지 않는다 — 표시 계층에 남는다.
+
+**전달 방식은 구독 하나뿐이다.** `CodexAccountPool`이 마운트 시
+`subscribeLoadObserver({ beginActiveRead: beginServerRead, acceptActiveRead: acceptServerRead, rejectActiveRead: rejectServerRead })`를 호출하고, 언마운트 시 반환된 해제 함수를 부른다. `load`에 observer를 인자로 넘기는 경로는 **없다**.
+
+> 초안은 `load(refreshQuota, observer)` 주입을 지시했는데 폐기한다. 폴링이 훅으로
+> 올라간 뒤에는 배경 load 에 인자를 넘길 호출자가 없고, 두 경로를 함께 두면 명시적
+> load 한 번에 같은 observer가 두 번 통지된다. 경로는 하나여야 한다.
 
 ### 인스턴스 소유권
 
@@ -195,7 +203,7 @@ const pools = useProviderAccountPools({
 | 현재 선언 | 분류 | 처리와 근거 |
 | --- | --- | --- |
 | `autoSwitch = useCodexAutoSwitch(...)` (`:34-38`) | PRESENTATION controller | `CodexAutoSwitchSetting`의 draft/saving/feedback을 소유한다. 계정 목록 공유와 무관하고, Q6 반환 shape에 넣지 않는다. 단 `load`의 threshold read bridge는 보존한다(`:39,57-91`). |
-| `beginServerRead`, `acceptServerRead`, `rejectServerRead` (`:39`) | PRESENTATION callbacks | auto-switch controller의 read reconciliation이다. 새 `load(..., observer)` 호출에 전달하되 훅 state로 옮기지 않는다. |
+| `beginServerRead`, `acceptServerRead`, `rejectServerRead` (`:39`) | PRESENTATION callbacks | auto-switch controller의 read reconciliation이다. `subscribeLoadObserver`로 등록하되 훅 state로 옮기지 않는다. |
 | `accounts` (`:40`) | **DATA** | 훅으로 이동. Overview/Accounts가 같은 배열을 읽는다. |
 | `activeId` (`:41`) | **DATA** | 훅으로 이동. Codex `다음 세션`/active 배지의 단일 원본이다. |
 | `confirm` (`:42`) | PRESENTATION | 현재 표면의 전환 확인 modal 대상이다. confirm 승인 시 공유 `switchAccount`를 호출한다. |
@@ -212,7 +220,7 @@ const pools = useProviderAccountPools({
 | `loadState` (`:53`) | **DATA** | 훅으로 이동. 두 탭 모두 같은 loading/ready/error와 retry 결과를 본다. |
 | `switchingId` (`:54`) | **DATA** | 훅으로 이동. 탭 이동 중에도 중복 전환을 막고 동일한 switching 배지를 표시한다. |
 | `loadGenerationRef` (`:55`) | **DATA ref** | 훅으로 이동. 늦게 도착한 accounts/active 응답이 최신 state를 덮지 못하게 한다(`:57-90`). |
-| `load = useCallback(...)` (`:57-60`, 전체 `:57-91`) | **DATA callback** | 훅으로 이동. `apiBase`와 generation/ref/state setter만 데이터 소유자에 남긴다. auto-switch observer만 presentation bridge로 주입한다. |
+| `load = useCallback(...)` (`:57-60`, 전체 `:57-91`) | **DATA callback** | 훅으로 이동. `apiBase`와 generation/ref/state setter를 데이터 소유자가 갖는다. auto-switch observer는 인자 주입이 아니라 `subscribeLoadObserver` 구독으로 통지한다. |
 
 `useCallback` 중 `openReauth`/`closeAddModal`/`handleAccountAdded`는 `CodexAccountPool.tsx:122-138`에 있고, 모두 표시 계층에 남는다. 단 `handleAccountAdded` 안의 `load()` 한 줄만 `syncAfterAccountAdded()`로 바뀐다. 이 분해가 “add action은 데이터 훅, modal/toast는 presentation”이라는 Q6을 만족한다.
 
@@ -436,6 +444,8 @@ Q6의 분류선을 그대로 적용하면 이펙트가 두 계층에 걸친다.
 - **두 표면이 동시에 정지시킨 뒤 하나만 해제하면 폴링은 여전히 멈춰 있다**
   (토큰 리스 회귀 — 문자열 키였다면 실패한다).
 - 배경 폴링이 유발한 load 도 구독한 auto-switch observer 에게 통지된다.
+- **명시적 load 1회당 구독 observer 의 각 callback 은 정확히 1번 호출된다**
+  (인자 주입 경로가 남아 있으면 2번 호출되어 실패한다).
 - 두 표면이 동시에 마운트된 상황이 생기더라도 인터벌은 하나다.
 
 ### 정적/테스트 게이트
