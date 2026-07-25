@@ -175,4 +175,119 @@ describe("Grok config injection", () => {
     expect(injectResult).toMatchObject({ ok: false, changed: false, skippedReason: "orphaned-marker" });
     expect(readFileSync(configPath, "utf8")).toBe(damaged);
   });
+
+  describe("user table reservation across TOML header spellings", () => {
+    const configPath = () => join(grokHome, "config.toml");
+
+    // Every spelling below addresses the SAME table as a generated [model.ocx-mine]. grok's TOML
+    // parser rejects the entire config layer on a duplicate key, so an unreserved spelling would
+    // destroy every unrelated setting the user owns — not just our block.
+    const collidingSpellings: Array<[label: string, header: string]> = [
+      ["quoted first segment", '["model"."ocx-mine"]'],
+      ["single-quoted first segment", "['model'.ocx-mine]"],
+      ["mixed quoting with whitespace", `[ "model" . 'ocx-mine' ]`],
+      ["bare (baseline)", "[model.ocx-mine]"],
+      ["array of tables", "[[model.ocx-mine]]"],
+      ["sub-table", "[model.ocx-mine.extra]"],
+      ["trailing comment", '[model."ocx-mine"] # mine'],
+    ];
+
+    for (const [label, header] of collidingSpellings) {
+      test(`reserves a user alias written as ${label}`, () => {
+        writeFileSync(configPath(), `${header}\nmodel = "user/keeps-this"\n`, "utf8");
+
+        injectGrokConfig(10100, [{ id: "mine" }], { grokHome });
+
+        const written = readFileSync(configPath(), "utf8");
+        const generated = written.slice(written.indexOf(BEGIN_MARKER));
+        expect(generated).toContain("[model.ocx-mine-2]");
+        expect(generated).not.toContain("[model.ocx-mine]\n");
+      });
+    }
+
+    test("does not reserve aliases from unrelated tables", () => {
+      // [models.*] and [model_providers.*] are different tables entirely — reserving from them
+      // would needlessly suffix our aliases.
+      writeFileSync(
+        configPath(),
+        '[models.ocx-mine]\nx = 1\n\n[model_providers.ocx-mine]\ny = 2\n\n[auth_provider.ocx-mine]\nz = 3\n',
+        "utf8",
+      );
+
+      injectGrokConfig(10100, [{ id: "mine" }], { grokHome });
+
+      const written = readFileSync(configPath(), "utf8");
+      expect(written.slice(written.indexOf(BEGIN_MARKER))).toContain("[model.ocx-mine]");
+    });
+
+    test("generated aliases never contain a dot", () => {
+      // A bare [model.grok-4.5] header is a THREE-segment key path, not the id "grok-4.5".
+      injectGrokConfig(10100, [{ id: "xai/grok-4.5" }, { id: "a.b.c" }], { grokHome });
+
+      const written = readFileSync(configPath(), "utf8");
+      const headers = [...written.matchAll(/^\[model\.(.+)\]$/gm)].map(m => m[1]!);
+      expect(headers.length).toBeGreaterThan(0);
+      for (const alias of headers) expect(alias).not.toContain(".");
+    });
+  });
+
+  describe("byte-for-byte restore of user config", () => {
+    const configPath = () => join(grokHome, "config.toml");
+
+    const originals: Array<[label: string, content: string]> = [
+      ["no trailing newline", 'theme = "dark"'],
+      ["one trailing newline", 'theme = "dark"\n'],
+      ["two trailing newlines", 'theme = "dark"\n\n'],
+      ["three trailing newlines", 'theme = "dark"\n\n\n'],
+      ["multi-section, no trailing newline", '[a]\nx = 1\n\n[b]\ny = 2'],
+    ];
+
+    for (const [label, original] of originals) {
+      test(`inject + strip restores a config with ${label}`, () => {
+        writeFileSync(configPath(), original, "utf8");
+
+        injectGrokConfig(10100, [{ id: "gpt-5.6-sol" }], { grokHome });
+        stripGrokConfig({ grokHome });
+
+        expect(readFileSync(configPath(), "utf8")).toBe(original);
+      });
+    }
+
+    test("repeated inject/strip cycles never grow the file", () => {
+      const original = 'theme = "dark"\n';
+      writeFileSync(configPath(), original, "utf8");
+
+      for (let i = 0; i < 5; i += 1) {
+        injectGrokConfig(10100, [{ id: "gpt-5.6-sol" }], { grokHome });
+        stripGrokConfig({ grokHome });
+        expect(readFileSync(configPath(), "utf8")).toBe(original);
+      }
+    });
+
+    test("content the user appended after the block is preserved", () => {
+      const original = 'theme = "dark"\n';
+      writeFileSync(configPath(), original, "utf8");
+      injectGrokConfig(10100, [{ id: "gpt-5.6-sol" }], { grokHome });
+
+      const withUserTail = `${readFileSync(configPath(), "utf8")}\n[mine]\nkeep = true\n`;
+      writeFileSync(configPath(), withUserTail, "utf8");
+
+      stripGrokConfig({ grokHome });
+
+      expect(readFileSync(configPath(), "utf8")).toBe(`${original}\n[mine]\nkeep = true\n`);
+    });
+
+    test("uniform CRLF round-trips byte-for-byte", () => {
+      // Mixed EOL cannot round-trip by design: applyEol normalizes the whole file to the
+      // dominant terminator. Uniform CRLF is the contract we hold.
+      const original = 'theme = "dark"\r\n[a]\r\nx = 1\r\n';
+      writeFileSync(configPath(), original, "utf8");
+
+      injectGrokConfig(10100, [{ id: "gpt-5.6-sol" }], { grokHome });
+      expect(readFileSync(configPath(), "utf8")).not.toContain("\n\n\r\n");
+      stripGrokConfig({ grokHome });
+
+      expect(readFileSync(configPath(), "utf8")).toBe(original);
+    });
+  });
 });
