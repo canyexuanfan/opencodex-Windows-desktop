@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { durableBunPath } from "../lib/bun-runtime";
-import { isWindowsAccessDenied } from "../lib/windows-elevation";
-import { finalizeWindowsSchedulerServiceRegistration, windowsSchedulerTaskInstalled } from "../service";
+import { isWindowsSchtasksCreateAccessDenied } from "../lib/windows-elevation";
+import { finalizeWindowsSchedulerServiceRegistration } from "../service";
 
 export type StartupInstallAction = "install-service" | "install-shim";
 let activeInstall: StartupInstallAction | null = null;
@@ -47,11 +47,16 @@ export function runStartupInstallAction(action: StartupInstallAction): Promise<{
       await runCliInstall(action);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      if (action === "install-service" && process.platform === "win32" && isWindowsAccessDenied(detail)) {
+      // Elevate only for a structured Task Scheduler /create access denial — never for
+      // WinSW removal, asset writes, or generic permission errors.
+      // finalizeWindowsSchedulerServiceRegistration verifies conflict-free state, rolls
+      // back on failure, and writes install state only after checks pass.
+      if (
+        action === "install-service"
+        && process.platform === "win32"
+        && isWindowsSchtasksCreateAccessDenied(detail)
+      ) {
         await finalizeWindowsSchedulerServiceRegistration();
-        if (!windowsSchedulerTaskInstalled()) {
-          throw new Error("Background service install still failed after requesting administrator approval.");
-        }
       } else {
         throw error;
       }

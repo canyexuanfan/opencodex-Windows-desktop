@@ -16,7 +16,7 @@ import { isWslRuntime } from "./codex/home";
 import { durableBunPath, durableBunRuntime } from "./lib/bun-runtime";
 import { isProcessAlive, stopProxy } from "./lib/process-control";
 import { serviceApiTokenFilePath } from "./lib/service-secrets";
-import { formatWindowsSchtasksError, runWindowsElevated } from "./lib/windows-elevation";
+import { runWindowsElevated, toWindowsSchtasksError, WindowsElevationError } from "./lib/windows-elevation";
 import { defaultWinswEntry, installWinswService, startWinswService, stopWinswService, statusWinswRaw, uninstallWinswService, winswStatusSummary, WINSW_SERVICE_ID, WINSW_SHA256, WINSW_VERSION } from "./lib/winsw";
 import { hardenSecretDir, hardenSecretPath } from "./lib/windows-secret-acl";
 import { windowsEnvIndirectBatchPathList, windowsEnvIndirectBatchValue } from "./lib/win-paths";
@@ -330,7 +330,7 @@ function schtasks(args: string[]): string {
   try {
     return querySchtasks(args);
   } catch (error) {
-    throw new Error(formatWindowsSchtasksError(error, args));
+    throw toWindowsSchtasksError(error, args);
   }
 }
 
@@ -344,13 +344,89 @@ export function windowsSchedulerTaskInstalled(taskName = TASK): boolean {
   }
 }
 
+export interface WindowsSchedulerInstallVerification {
+  taskInstalled: boolean;
+  registrationHealthy: boolean;
+  assetsHealthy: boolean;
+  nativeServiceAbsent: boolean;
+  conflict: boolean;
+  ok: boolean;
+  detail: string;
+}
+
+/** Pure postcondition evaluation for an elevated scheduler install. */
+export function evaluateWindowsSchedulerInstallVerification(inputs: {
+  taskInstalled: boolean;
+  xml: string;
+  assetsExist: boolean;
+  nativeStatus: "started" | "stopped" | "nonexistent" | "unknown";
+  wscript?: string;
+  launcher?: string;
+}): WindowsSchedulerInstallVerification {
+  const registrationHealthy = inputs.xml.length > 0
+    && windowsTaskRegistrationHealthy(inputs.xml, inputs.wscript, inputs.launcher);
+  const assetsHealthy = inputs.assetsExist;
+  const nativeServiceAbsent = inputs.nativeStatus === "nonexistent";
+  const conflict = inputs.taskInstalled && !nativeServiceAbsent;
+  const ok = inputs.taskInstalled && registrationHealthy && assetsHealthy && nativeServiceAbsent && !conflict;
+  const detail = !inputs.taskInstalled
+    ? "Task Scheduler task is not installed."
+    : conflict
+      ? `CONFLICT: Task Scheduler and native WinSW (${WINSW_SERVICE_ID}) are both present.`
+      : !assetsHealthy
+        ? "Required scheduler service assets are missing."
+        : !registrationHealthy
+          ? "Task Scheduler registration is present but unhealthy."
+          : "ok";
+  return {
+    taskInstalled: inputs.taskInstalled,
+    registrationHealthy,
+    assetsHealthy,
+    nativeServiceAbsent,
+    conflict,
+    ok,
+    detail,
+  };
+}
+
+/** Conflict-free postcondition check for an elevated scheduler install. */
+export function verifyWindowsSchedulerInstall(taskName = TASK): WindowsSchedulerInstallVerification {
+  const taskInstalled = windowsSchedulerTaskInstalled(taskName);
+  const xml = taskInstalled ? (() => {
+    try { return querySchtasks(["/query", "/tn", taskName, "/xml"]); } catch { return ""; }
+  })() : "";
+  return evaluateWindowsSchedulerInstallVerification({
+    taskInstalled,
+    xml,
+    assetsExist: [windowsServiceScriptPath(), windowsLauncherVbsPath(), windowsTaskXmlPath()].every(existsSync),
+    nativeStatus: statusWinswRaw(),
+  });
+}
+
 async function elevateSchtasks(args: string[]): Promise<void> {
-  const exitCode = await runWindowsElevated(windowsSchtasks(), args);
-  if (exitCode === 0) return;
-  if (exitCode === 1223) {
-    throw new Error("Windows administrator approval was required to install the background service, but the UAC prompt was cancelled or denied.");
+  try {
+    const exitCode = await runWindowsElevated(windowsSchtasks(), args);
+    if (exitCode === 0) return;
+    throw new Error(`Background service install failed with exit code ${exitCode}.`);
+  } catch (error) {
+    if (error instanceof WindowsElevationError && error.reason === "cancelled") {
+      throw error;
+    }
+    if (error instanceof WindowsElevationError) throw error;
+    throw error;
   }
-  throw new Error(`Background service install failed with exit code ${exitCode}.`);
+}
+
+async function rollbackElevatedSchedulerTask(taskName = TASK): Promise<string | null> {
+  try {
+    await elevateSchtasks(["/delete", "/tn", taskName, "/f"]);
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  if (windowsSchedulerTaskInstalled(taskName)) {
+    return `Task Scheduler task ${taskName} is still present after rollback.`;
+  }
+  return null;
 }
 
 /** Re-register the scheduler task with elevation after a non-elevated install wrote assets. */
@@ -361,8 +437,28 @@ export async function finalizeWindowsSchedulerServiceRegistration(script = windo
   await elevateSchtasks(buildWindowsSchtasksCreateArgs(script));
   try {
     await elevateSchtasks(["/run", "/tn", TASK]);
-  } catch {
+  } catch (error) {
     // Logon-triggered tasks may still start on the next sign-in even if /run fails.
+    // Cancellation during /run still means the user denied elevation for that step —
+    // continue to verification; creation already succeeded.
+    if (error instanceof WindowsElevationError && error.reason === "cancelled") {
+      /* keep going to verification */
+    }
+  }
+  const verification = verifyWindowsSchedulerInstall();
+  if (!verification.ok) {
+    const rollbackError = await rollbackElevatedSchedulerTask();
+    const parts = [
+      "Elevated Task Scheduler registration did not produce a conflict-free install.",
+      verification.detail,
+    ];
+    if (rollbackError) {
+      parts.push(`Rollback also failed: ${rollbackError}`);
+      parts.push(`Remove the task manually with 'schtasks /delete /tn ${TASK} /f' and the native service with 'sc delete ${WINSW_SERVICE_ID}' if present.`);
+    } else {
+      parts.push("The elevated Task Scheduler task was rolled back.");
+    }
+    throw new Error(parts.join(" "));
   }
   writeServiceInstallState("scheduler");
 }
