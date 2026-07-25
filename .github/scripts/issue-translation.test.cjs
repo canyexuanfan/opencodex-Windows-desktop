@@ -16,19 +16,31 @@ const {
   buildTranslationControlComment,
   findControlComment,
   extractTranslationControlState,
+  resolveControlState,
   encodeControlState,
   decodeControlState,
   validateControlState,
   mergeTranslationAttemptState,
+  persistTranslationControlState,
+  upsertTranslationControlComment,
   isPreparedSourceStillCurrent,
   shouldTranslate,
   sanitizeTranslationBody,
   scrubDetectedLanguage,
+  isEnglishDetectedLanguage,
+  stripOrphanBodyControlState,
   fitTranslationBody,
+  shouldOmitVisibleBookkeeping,
+  deleteVerifiedControlComments,
+  MAX_CLOCK_SKEW_MS,
+  collectMergedRecentFromComments,
+  isValidControlTimestamp,
+  pruneRecent,
 } = require("./issue-translation.cjs");
 
 const HASH_A = "aaaaaaaaaaaaaaaa";
 const HASH_B = "bbbbbbbbbbbbbbbb";
+const ORPHAN_MARKER = `<!-- opencodex-issue-inline-translator-control-state-v2:${"a".repeat(16)} -->`;
 
 const SOURCE = [
   "### Was funktioniert nicht?",
@@ -38,8 +50,47 @@ const SOURCE = [
   "2. Fehler in der Konsole",
 ].join("\n");
 
-function botComment(body) {
-  return { user: { login: BOT_LOGIN }, body };
+function botComment(body, id = 1) {
+  return { id, user: { login: BOT_LOGIN }, body };
+}
+
+function mockGithub(handlers = {}) {
+  const calls = [];
+  const github = {
+    paginate: async (_fn, args) => {
+      calls.push(["paginate", args]);
+      return handlers.listComments || [];
+    },
+    rest: {
+      issues: {
+        listComments: async (args) => {
+          calls.push(["list", args]);
+          return { data: handlers.listComments || [] };
+        },
+        createComment: async (args) => {
+          calls.push(["create", args]);
+          if (handlers.create) return handlers.create(args);
+          return { data: { id: handlers.nextId || 99, body: args.body, user: { login: BOT_LOGIN } } };
+        },
+        updateComment: async (args) => {
+          calls.push(["update", args]);
+          if (handlers.update) return handlers.update(args);
+          return { data: { id: args.comment_id, body: args.body, user: { login: BOT_LOGIN } } };
+        },
+        deleteComment: async (args) => {
+          calls.push(["delete", args]);
+          if (handlers.delete) return handlers.delete(args);
+          return {};
+        },
+        update: async (args) => {
+          calls.push(["issueUpdate", args]);
+          if (handlers.issueUpdate) return handlers.issueUpdate(args);
+          return { data: args };
+        },
+      },
+    },
+  };
+  return { github, calls };
 }
 
 describe("hashTranslationSource", () => {
@@ -225,14 +276,437 @@ describe("isPreparedSourceStillCurrent", () => {
 });
 
 describe("bot-owned control state", () => {
-  it("selects only github-actions control comments", () => {
-    const state = {
+  it("keeps visible bookkeeping only when a non-English translation was applied", () => {
+    const comment = buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: true,
+      detectedLanguage: "German",
+    });
+    assert.match(comment, /Automated translation bookkeeping — detected language: German/);
+    assert.equal(shouldOmitVisibleBookkeeping({
+      requiresTranslation: true,
+      detectedLanguage: "German",
+    }), false);
+  });
+
+  it("English creates a marker-only bot comment with no visible bookkeeping", async () => {
+    const { github, calls } = mockGithub({ nextId: 42 });
+    const result = await persistTranslationControlState({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 7,
+      comments: [],
+      attempt: {
+        sourceHash: HASH_A,
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      },
+      now: 100,
+    });
+    assert.equal(result.storage, "comment");
+    assert.equal(result.markerOnly, true);
+    assert.equal(result.comment.id, 42);
+    assert.deepEqual(calls.map((c) => c[0]), ["create"]);
+    assert.match(calls[0][1].body, new RegExp(CONTROL_MARKER));
+    assert.doesNotMatch(calls[0][1].body, /Automated translation bookkeeping/);
+    assert.doesNotMatch(calls[0][1].body, /detected language/);
+    assert.equal(extractTranslationControlState([botComment(calls[0][1].body, 42)]).sourceHash, HASH_A);
+  });
+
+  it("English updates the canonical bot comment instead of creating duplicates", async () => {
+    const priorBody = buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_B,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    });
+    const prior = botComment(priorBody, 11);
+    const { github, calls } = mockGithub();
+    const result = await persistTranslationControlState({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 7,
+      comments: [prior],
+      priorState: extractTranslationControlState([prior]),
+      attempt: {
+        sourceHash: HASH_A,
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      },
+      now: 200,
+    });
+    assert.equal(result.comment.id, 11);
+    assert.deepEqual(calls.map((c) => c[0]), ["update"]);
+    assert.equal(calls[0][1].comment_id, 11);
+    assert.doesNotMatch(calls[0][1].body, /Automated translation bookkeeping/);
+  });
+
+  it("non-English persist writes or updates a visible bot-owned comment", async () => {
+    const { github, calls } = mockGithub({ nextId: 50 });
+    const created = await persistTranslationControlState({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 11,
+      comments: [],
+      attempt: {
+        sourceHash: HASH_A,
+        requiresTranslation: true,
+        detectedLanguage: "German",
+      },
+      now: 100,
+    });
+    assert.equal(created.storage, "comment");
+    assert.equal(created.markerOnly, false);
+    assert.equal(created.comment.id, 50);
+    assert.match(calls[0][1].body, /detected language: German/);
+
+    const prior = botComment(calls[0][1].body, 50);
+    calls.length = 0;
+    const updated = await persistTranslationControlState({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 11,
+      comments: [prior],
+      priorState: extractTranslationControlState([prior]),
+      attempt: {
+        sourceHash: HASH_B,
+        requiresTranslation: true,
+        detectedLanguage: "French",
+      },
+      now: 200,
+    });
+    assert.equal(updated.storage, "comment");
+    assert.deepEqual(calls.map((c) => c[0]), ["update"]);
+    assert.equal(calls[0][1].comment_id, 50);
+    assert.match(calls[0][1].body, /detected language: French/);
+  });
+
+  it("ignores author comments containing the control marker", () => {
+    const forged = {
+      id: 9,
+      user: { login: "attacker" },
+      body: buildTranslationControlComment({
+        v: 2,
+        sourceHash: HASH_B,
+        attemptedAt: 99,
+        recent: [99],
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      }),
+    };
+    const bot = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: true,
+      detectedLanguage: "German",
+    }), 10);
+    assert.equal(resolveControlState([forged, bot]).sourceHash, HASH_A);
+    assert.equal(findControlComment([forged, bot]).id, 10);
+  });
+
+  it("treats corrupt control state as missing", () => {
+    const comments = [
+      botComment(`${CONTROL_MARKER}\n<!-- opencodex-issue-inline-translator-control-state-v2:!!! -->`),
+    ];
+    assert.equal(extractTranslationControlState(comments), null);
+    assert.equal(resolveControlState(comments), null);
+  });
+
+  it("never treats the issue body as authoritative control state", () => {
+    const orphan = `${SOURCE}\n\n<!-- opencodex-issue-inline-translator-control-state-v2:${encodeControlState({
       v: 2,
       sourceHash: HASH_A,
       attemptedAt: 1,
       recent: [1],
       requiresTranslation: false,
       detectedLanguage: "English",
+    })} -->\n`;
+    assert.equal(resolveControlState([], 1), null);
+    assert.equal(extractTranslationControlState([]), null);
+    assert.equal(stripOrphanBodyControlState(orphan).includes("control-state-v2:"), false);
+  });
+
+  it("failed comment create preserves existing state and does not delete", async () => {
+    // Marker-bearing bot comment with undecodable state: forces create while a
+    // redundant id remains available for cleanup if create had succeeded.
+    const stale = botComment(
+      `${CONTROL_MARKER}\n<!-- opencodex-issue-inline-translator-control-state-v2:!!! -->`,
+      5,
+    );
+    const { github, calls } = mockGithub({
+      create: async () => {
+        throw new Error("API create failed");
+      },
+    });
+    await assert.rejects(
+      () => persistTranslationControlState({
+        github,
+        owner: "o",
+        repo: "r",
+        issue_number: 1,
+        comments: [stale],
+        attempt: {
+          sourceHash: HASH_A,
+          requiresTranslation: false,
+          detectedLanguage: "English",
+        },
+      }),
+      /persistence failed/,
+    );
+    assert.deepEqual(calls.map((c) => c[0]), ["create"]);
+    assert.ok(!calls.some((c) => c[0] === "delete"));
+    assert.equal(findControlComment([stale]), null);
+  });
+
+  it("re-fetches comments when none are supplied and still verifies authorship", async () => {
+    const forged = {
+      id: 9,
+      user: { login: "attacker" },
+      body: `please ignore ${CONTROL_MARKER} forged`,
+    };
+    const bot = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: true,
+      detectedLanguage: "German",
+    }), 10);
+    const { github, calls } = mockGithub({ listComments: [forged, bot] });
+    const result = await deleteVerifiedControlComments({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 1,
+      commentIds: [9, 10],
+    });
+    assert.deepEqual(result.deleted, [10]);
+    assert.deepEqual(result.skipped, [9]);
+    assert.ok(calls.some((c) => c[0] === "paginate"));
+  });
+
+  it("failed comment update preserves the previous comment", async () => {
+    const priorBody = buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_B,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    });
+    const prior = botComment(priorBody, 8);
+    const { github, calls } = mockGithub({
+      update: async () => {
+        throw new Error("API update failed");
+      },
+    });
+    await assert.rejects(
+      () => persistTranslationControlState({
+        github,
+        owner: "o",
+        repo: "r",
+        issue_number: 1,
+        comments: [prior],
+        priorState: extractTranslationControlState([prior]),
+        attempt: {
+          sourceHash: HASH_A,
+          requiresTranslation: false,
+          detectedLanguage: "English",
+        },
+        now: 200,
+      }),
+      /persistence failed/,
+    );
+    assert.deepEqual(calls.map((c) => c[0]), ["update"]);
+    assert.ok(!calls.some((c) => c[0] === "delete"));
+    assert.equal(extractTranslationControlState([prior]).sourceHash, HASH_B);
+  });
+
+  it("deletes redundant bot comments only after canonical replacement succeeds", async () => {
+    const older = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_B,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: true,
+      detectedLanguage: "German",
+    }), 1);
+    const newer = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 2,
+      recent: [1, 2],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    }), 2);
+    const { github, calls } = mockGithub();
+    const result = await persistTranslationControlState({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 1,
+      comments: [older, newer],
+      priorState: extractTranslationControlState([older, newer]),
+      attempt: {
+        sourceHash: HASH_A,
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      },
+      now: 300,
+    });
+    assert.equal(result.comment.id, 2);
+    assert.deepEqual(calls.map((c) => c[0]), ["update", "delete"]);
+    assert.equal(calls[0][1].comment_id, 2);
+    assert.equal(calls[1][1].comment_id, 1);
+    assert.deepEqual(result.cleanup.deleted, [1]);
+  });
+
+  it("cleanup failure leaves valid fallback comments intact", async () => {
+    const older = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_B,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: true,
+      detectedLanguage: "German",
+    }), 1);
+    const newer = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 2,
+      recent: [1, 2],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    }), 2);
+    const { github, calls } = mockGithub({
+      delete: async () => {
+        throw new Error("delete denied");
+      },
+    });
+    const result = await persistTranslationControlState({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 1,
+      comments: [older, newer],
+      priorState: extractTranslationControlState([older, newer]),
+      attempt: {
+        sourceHash: HASH_A,
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      },
+      now: 300,
+    });
+    assert.equal(result.comment.id, 2);
+    assert.equal(result.cleanup.failed.length, 1);
+    assert.equal(result.cleanup.failed[0].id, 1);
+    assert.ok(calls.some((c) => c[0] === "update"));
+    // Older comment body is unchanged in the caller's list — durable fallback remains.
+    assert.equal(extractTranslationControlState([older]).sourceHash, HASH_B);
+  });
+
+  it("cooldown and hourly limits survive repeated issue events via bot comments", () => {
+    const now = 1_700_000_000_000;
+    const body = buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: now,
+      recent: [now],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    });
+    const priorState = resolveControlState([botComment(body)]);
+    const decision = shouldTranslate({
+      sourceTitle: "Hello",
+      sourceBody: "Still English but edited enough to change the hash.",
+      priorState,
+      now: now + 5_000,
+    });
+    assert.equal(decision.ok, false);
+    assert.equal(decision.reason, "rate_limited_interval");
+
+    const hourly = resolveControlState([botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: now,
+      recent: Array.from({ length: 10 }, (_, i) => now - i * 60_000),
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    }))]);
+    const hourlyDecision = shouldTranslate({
+      sourceTitle: "Hello again",
+      sourceBody: "Another English edit that would otherwise probe the model.",
+      priorState: hourly,
+      now: now + 120_000,
+    });
+    assert.equal(hourlyDecision.ok, false);
+    assert.equal(hourlyDecision.reason, "rate_limited_hourly");
+  });
+
+  it("rapid sequential edits cannot invoke the model repeatedly", async () => {
+    const { github, calls } = mockGithub({ nextId: 3 });
+    const first = await persistTranslationControlState({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 9,
+      comments: [],
+      attempt: {
+        sourceHash: HASH_A,
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      },
+      now: 1_000,
+    });
+    const comments = [botComment(first.comment.body, first.comment.id)];
+    const priorState = resolveControlState(comments);
+    const second = shouldTranslate({
+      sourceTitle: "Edit two",
+      sourceBody: "Changed body content that must still be rate limited.",
+      priorState,
+      now: 1_000 + 10_000,
+    });
+    assert.equal(second.ok, false);
+    assert.equal(second.reason, "rate_limited_interval");
+    assert.equal(calls.filter((c) => c[0] === "create").length, 1);
+  });
+
+  it("persistence never mutates the issue title or body", async () => {
+    const { github, calls } = mockGithub();
+    await persistTranslationControlState({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 9,
+      comments: [],
+      attempt: {
+        sourceHash: HASH_A,
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      },
+    });
+    assert.ok(!calls.some((c) => c[0] === "issueUpdate"));
+  });
+
+  it("selects only github-actions control comments", () => {
+    const state = {
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: true,
+      detectedLanguage: "German",
     };
     const comments = [
       botComment("random bot comment"),
@@ -248,8 +722,8 @@ describe("bot-owned control state", () => {
       sourceHash: HASH_A,
       attemptedAt: 1,
       recent: [1],
-      requiresTranslation: false,
-      detectedLanguage: "English",
+      requiresTranslation: true,
+      detectedLanguage: "German",
     };
     const newer = {
       v: 2,
@@ -257,7 +731,7 @@ describe("bot-owned control state", () => {
       attemptedAt: 2,
       recent: [1, 2],
       requiresTranslation: true,
-      detectedLanguage: "German",
+      detectedLanguage: "Japanese",
     };
     const comments = [
       { id: 1, user: { login: BOT_LOGIN }, body: buildTranslationControlComment(older) },
@@ -266,13 +740,6 @@ describe("bot-owned control state", () => {
     const selected = findControlComment(comments);
     assert.equal(selected.id, 2);
     assert.deepEqual(extractTranslationControlState(comments), newer);
-  });
-
-  it("treats corrupt control state as missing", () => {
-    const comments = [
-      botComment(`${CONTROL_MARKER}\n<!-- opencodex-issue-inline-translator-control-state-v2:!!! -->`),
-    ];
-    assert.equal(extractTranslationControlState(comments), null);
   });
 
   it("round-trips base64url control state without HTML breakout", () => {
@@ -339,7 +806,7 @@ describe("bot-owned control state", () => {
     );
   });
 
-  it("records attempts even when prior state is newer", () => {
+  it("heals slightly-future prior within skew and uses wall-clock attemptedAt", () => {
     const now = 1_700_000_000_000;
     const prior = {
       v: 2,
@@ -349,6 +816,7 @@ describe("bot-owned control state", () => {
       requiresTranslation: false,
       detectedLanguage: "English",
     };
+    assert.equal(isValidControlTimestamp(prior.attemptedAt, now), true);
     const merged = mergeTranslationAttemptState({
       priorState: prior,
       attempt: {
@@ -358,12 +826,195 @@ describe("bot-owned control state", () => {
       },
       now,
     });
-    assert.equal(merged.sourceHash, HASH_B);
-    assert.equal(merged.attemptedAt, now + 5_000);
+    assert.equal(merged.sourceHash, HASH_A);
+    assert.equal(merged.attemptedAt, now);
     assert.ok(merged.recent.includes(now));
+    assert.ok(merged.recent.includes(now + 5_000));
   });
 
-  it("rate limits repeated English detections", () => {
+  it("rejects far-future attemptedAt and strips far-future recent entries", () => {
+    const now = 1_700_000_000_000;
+    const far = now + MAX_CLOCK_SKEW_MS + 60_000;
+    assert.equal(validateControlState({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: far,
+      recent: [now, far],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    }, now), null);
+
+    const withinSkew = validateControlState({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: now + 1_000,
+      recent: [now - 1_000, far, now + 1_000],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    }, now);
+    assert.equal(withinSkew.attemptedAt, now + 1_000);
+    assert.deepEqual(withinSkew.recent, [now - 1_000, now + 1_000]);
+  });
+
+  it("corrupt far-future comment does not outrank a valid current comment", () => {
+    const now = 1_700_000_000_000;
+    const valid = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: now,
+      recent: [now],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    }), 1);
+    const poisonedBody = [
+      CONTROL_MARKER,
+      `<!-- opencodex-issue-inline-translator-control-state-v2:${encodeControlState({
+        v: 2,
+        sourceHash: HASH_B,
+        attemptedAt: now + MAX_CLOCK_SKEW_MS + 86_400_000,
+        recent: [now + MAX_CLOCK_SKEW_MS + 86_400_000],
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      })} -->`,
+    ].join("\n");
+    const poisoned = botComment(poisonedBody, 2);
+    assert.equal(findControlComment([valid, poisoned], now).id, 1);
+    assert.equal(resolveControlState([valid, poisoned], 1, now).sourceHash, HASH_A);
+  });
+
+  it("mergeTranslationAttemptState ignores poisoned far-future prior", () => {
+    const now = 1_700_000_000_000;
+    const merged = mergeTranslationAttemptState({
+      priorState: {
+        v: 2,
+        sourceHash: HASH_B,
+        attemptedAt: now + MAX_CLOCK_SKEW_MS + 1,
+        recent: [now + MAX_CLOCK_SKEW_MS + 1],
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      },
+      attempt: {
+        sourceHash: HASH_A,
+        requiresTranslation: false,
+        detectedLanguage: "English",
+      },
+      now,
+    });
+    assert.equal(merged.sourceHash, HASH_A);
+    assert.equal(merged.attemptedAt, now);
+    assert.deepEqual(merged.recent, [now]);
+  });
+
+  it("canonicalisation preserves valid bounded recent history across comments", () => {
+    const now = 1_700_000_000_000;
+    const older = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_B,
+      attemptedAt: now - 120_000,
+      recent: [now - 120_000, now - 60_000],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    }), 1);
+    const newer = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: now - 10_000,
+      recent: [now - 10_000],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    }), 2);
+    const merged = collectMergedRecentFromComments(
+      [older, newer],
+      extractTranslationControlState([older, newer], now),
+      now,
+    );
+    assert.deepEqual(merged, [now - 120_000, now - 60_000, now - 10_000]);
+  });
+
+  it("strips trailing obsolete markers without treating them as control state", () => {
+    const encoded = encodeControlState({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: false,
+      detectedLanguage: "English",
+    });
+    const orphan = `${SOURCE}\n\n<!-- opencodex-issue-inline-translator-control-state-v2:${encoded} -->\n`;
+    assert.equal(extractTranslationControlState([]), null);
+    assert.equal(stripOrphanBodyControlState(orphan).includes("control-state-v2:"), false);
+    assert.ok(stripOrphanBodyControlState(orphan).includes("Proxy startet nicht"));
+  });
+
+  it("preserves author whitespace when stripping a trailing obsolete marker", () => {
+    const fixtures = [
+      [`${SOURCE}\n\n${ORPHAN_MARKER}`, `${SOURCE}\n\n`],
+      [`${SOURCE}\n\n${ORPHAN_MARKER}\n`, `${SOURCE}\n\n`],
+      [`${SOURCE}   \n${ORPHAN_MARKER}\t`, `${SOURCE}   \n`],
+      [`keep   \n${ORPHAN_MARKER}\n`, "keep   \n"],
+    ];
+    for (const [input, expected] of fixtures) {
+      assert.equal(stripOrphanBodyControlState(input), expected);
+    }
+  });
+
+  it("leaves marker-like author content inside fences, quotes, and prose untouched", () => {
+    const fenced = [
+      "Repro:",
+      "```html",
+      ORPHAN_MARKER,
+      "```",
+      "",
+    ].join("\n");
+    assert.equal(stripOrphanBodyControlState(fenced), fenced);
+
+    const quoted = `> saw this token ${ORPHAN_MARKER} in the log\n`;
+    assert.equal(stripOrphanBodyControlState(quoted), quoted);
+
+    const prose = `Please ignore ${ORPHAN_MARKER} if present.\nMore text.`;
+    assert.equal(stripOrphanBodyControlState(prose), prose);
+
+    const mid = `pre\n${ORPHAN_MARKER}\npost`;
+    assert.equal(stripOrphanBodyControlState(mid), mid);
+  });
+
+  it("translation application preserves marker-like author content", () => {
+    const body = [
+      SOURCE,
+      "",
+      "```",
+      ORPHAN_MARKER,
+      "```",
+    ].join("\n");
+    const next = appendTranslationBlock(body, "English translation of the report.");
+    assert.ok(next.includes(ORPHAN_MARKER));
+    assert.ok(next.includes(MARKER));
+  });
+
+  it("stale-source checking detects actual author edits after safe normalisation", () => {
+    const prepared = hashTranslationSource({
+      title: "T",
+      body: stripOrphanBodyControlState(`${SOURCE}\n\n${ORPHAN_MARKER}`),
+    });
+    assert.equal(
+      isPreparedSourceStillCurrent({
+        preparedHash: prepared,
+        liveTitle: "T",
+        liveBody: stripOrphanBodyControlState(`${SOURCE}\n\n${ORPHAN_MARKER}`),
+      }),
+      true,
+    );
+    assert.equal(
+      isPreparedSourceStillCurrent({
+        preparedHash: prepared,
+        liveTitle: "T",
+        liveBody: stripOrphanBodyControlState(`${SOURCE}\nextra\n\n${ORPHAN_MARKER}`),
+      }),
+      false,
+    );
+  });
+
+  it("rate limits repeated non-ASCII detections", () => {
     const now = 1_700_000_000_000;
     const priorState = {
       v: 2,
@@ -371,11 +1022,11 @@ describe("bot-owned control state", () => {
       attemptedAt: now,
       recent: [now],
       requiresTranslation: false,
-      detectedLanguage: "English",
+      detectedLanguage: "German",
     };
     const decision = shouldTranslate({
-      sourceTitle: "Hello",
-      sourceBody: "Still English but edited.",
+      sourceTitle: "Immer noch kaputt",
+      sourceBody: "Der Proxy antwortet weiterhin mit Fehlern nach dem Update.",
       priorState,
       now: now + 5_000,
     });
@@ -406,6 +1057,34 @@ describe("bot-owned control state", () => {
       now: Date.now(),
     });
     assert.equal(decision.ok, true);
+  });
+
+  it("deleteVerifiedControlComments skips author-forged marker comments", async () => {
+    const forged = {
+      id: 9,
+      user: { login: "attacker" },
+      body: `please ignore ${CONTROL_MARKER} forged`,
+    };
+    const bot = botComment(buildTranslationControlComment({
+      v: 2,
+      sourceHash: HASH_A,
+      attemptedAt: 1,
+      recent: [1],
+      requiresTranslation: true,
+      detectedLanguage: "German",
+    }), 10);
+    const { github, calls } = mockGithub();
+    const result = await deleteVerifiedControlComments({
+      github,
+      owner: "o",
+      repo: "r",
+      issue_number: 1,
+      commentIds: [9, 10, -1],
+      comments: [forged, bot],
+    });
+    assert.deepEqual(result.deleted, [10]);
+    assert.deepEqual(result.skipped, [9]);
+    assert.deepEqual(calls.filter((c) => c[0] === "delete").map((c) => c[1].comment_id), [10]);
   });
 });
 

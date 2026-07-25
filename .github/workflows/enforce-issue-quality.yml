@@ -33,7 +33,7 @@ jobs:
     permissions:
       # Read-only checkout of trusted scripts from the default branch.
       contents: read
-      # Required to rewrite the issue title/body and upsert the control comment.
+      # Required to rewrite the issue title/body and upsert/delete the control comment.
       issues: write
       # Required by actions/ai-inference; untrusted issue text reaches the model.
       models: read
@@ -54,7 +54,8 @@ jobs:
             const path = require("path");
             const {
               stripTranslationBlock,
-              extractTranslationControlState,
+              stripOrphanBodyControlState,
+              resolveControlState,
               shouldTranslate,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-translation.cjs"));
             const {
@@ -109,11 +110,14 @@ jobs:
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner, repo, issue_number, per_page: 100,
             });
-            const priorState = extractTranslationControlState(comments);
+            // Prefer bot-owned control comment state only.
+            // Never trust author-editable issue body markers.
+            const priorState = resolveControlState(comments, issue_number);
 
             const rawBody = issue.body || "";
             const sourceTitle = issue.title || "";
-            const sourceBody = stripTranslationBlock(rawBody);
+            // Strip any orphan body markers from a reverted experiment; never trust them as state.
+            const sourceBody = stripOrphanBodyControlState(stripTranslationBlock(rawBody));
             const decision = shouldTranslate({
               sourceTitle,
               sourceBody,
@@ -159,10 +163,12 @@ jobs:
             - Set requires_translation to true only when primarily non-English.
             - Preserve Markdown, code blocks, URLs, @mentions, issue refs.
             - Keep translated title within 256 chars.
-            - When false, return empty translation fields and null language.
+            - When requires_translation is false:
+              - set detected_language to the detected source language, normally "English";
+              - leave translated_title and translated_body empty.
 
             JSON shape:
-            {"requires_translation":<bool>,"detected_language":"<lang|null>","translated_title":"<str>","translated_body":"<str>"}
+            {"requires_translation":<bool>,"detected_language":"<lang>","translated_title":"<str>","translated_body":"<str>"}
 
       - name: Parse AI response
         id: parse
@@ -187,11 +193,12 @@ jobs:
             const path = require("path");
             const {
               appendTranslationBlock,
-              extractTranslationControlState,
-              upsertTranslationControlComment,
+              resolveControlState,
+              persistTranslationControlState,
               sanitizeTranslationBody,
               scrubDetectedLanguage,
               stripTranslationBlock,
+              stripOrphanBodyControlState,
               isPreparedSourceStillCurrent,
               BOT_LOGIN,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-translation.cjs"));
@@ -232,13 +239,13 @@ jobs:
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner, repo, issue_number, per_page: 100,
             });
-            const priorState = extractTranslationControlState(comments);
+            const priorState = resolveControlState(comments, issue_number);
 
             try {
               if (!translatedTitle && !translatedBody) return;
 
               const { data: live } = await github.rest.issues.get({ owner, repo, issue_number });
-              const liveSourceBody = stripTranslationBlock(live.body || "");
+              const liveSourceBody = stripOrphanBodyControlState(stripTranslationBlock(live.body || ""));
               if (!isPreparedSourceStillCurrent({
                 preparedHash: process.env.SOURCE_HASH,
                 liveTitle: live.title || "",
@@ -276,19 +283,31 @@ jobs:
             } finally {
               // Count every model attempt toward cooldown / hourly caps,
               // including empty translations and stale-source skips.
-              await upsertTranslationControlComment({
-                github,
-                owner,
-                repo,
-                issue_number,
-                comments,
-                priorState,
-                attempt: {
-                  sourceHash: process.env.SOURCE_HASH,
-                  requiresTranslation: true,
-                  detectedLanguage: lang,
-                },
-              });
+              try {
+                await persistTranslationControlState({
+                  github,
+                  owner,
+                  repo,
+                  issue_number,
+                  comments,
+                  priorState,
+                  attempt: {
+                    sourceHash: process.env.SOURCE_HASH,
+                    requiresTranslation: true,
+                    detectedLanguage: lang,
+                  },
+                });
+              } catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                // Fail open for the already-applied translation, but surface the
+                // miss so repeated edit→model loops are detectable without log spelunking.
+                core.warning(`Translation control state not persisted: ${message}`);
+                core.notice(`translation-state-degraded: ${message}`);
+                await core.summary
+                  .addHeading("Translation control state degraded", 3)
+                  .addRaw(message)
+                  .write();
+              }
             }
 
       - name: Persist translation control state
@@ -305,8 +324,8 @@ jobs:
           script: |
             const path = require("path");
             const {
-              extractTranslationControlState,
-              upsertTranslationControlComment,
+              resolveControlState,
+              persistTranslationControlState,
               scrubDetectedLanguage,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-translation.cjs"));
 
@@ -321,20 +340,37 @@ jobs:
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner, repo, issue_number, per_page: 100,
             });
-            const priorState = extractTranslationControlState(comments);
-            await upsertTranslationControlComment({
-              github,
-              owner,
-              repo,
-              issue_number,
-              comments,
-              priorState,
-              attempt: {
-                sourceHash: process.env.SOURCE_HASH,
-                requiresTranslation: false,
-                detectedLanguage: scrubDetectedLanguage(process.env.DETECTED_LANG || "unknown"),
-              },
-            });
+            const priorState = resolveControlState(comments, issue_number);
+            try {
+              const result = await persistTranslationControlState({
+                github,
+                owner,
+                repo,
+                issue_number,
+                comments,
+                priorState,
+                attempt: {
+                  sourceHash: process.env.SOURCE_HASH,
+                  requiresTranslation: false,
+                  detectedLanguage: scrubDetectedLanguage(process.env.DETECTED_LANG || "English"),
+                },
+              });
+              if (result.cleanup?.failed?.length) {
+                core.warning(
+                  `Redundant control comment cleanup incomplete: ${result.cleanup.failed.map((f) => f.id).join(", ")}`,
+                );
+              }
+            } catch (err) {
+              // Fail closed for storage errors without mutating the issue body.
+              // Prior bot control comments remain as durable cooldown fallback.
+              const message = err instanceof Error ? err.message : String(err);
+              core.warning(`English translation state not persisted: ${message}`);
+              core.notice(`translation-state-degraded: ${message}`);
+              await core.summary
+                .addHeading("Translation control state degraded", 3)
+                .addRaw(message)
+                .write();
+            }
 
   validate:
     runs-on: ubuntu-latest

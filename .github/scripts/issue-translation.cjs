@@ -10,10 +10,15 @@ const CONTROL_STATE_V2_RE =
   /<!-- opencodex-issue-inline-translator-control-state-v2:([A-Za-z0-9_-]+) -->/;
 const CONTROL_STATE_LEGACY_RE =
   /<!-- opencodex-issue-inline-translator-control-state:([\s\S]*?) -->/;
+/** Trailing standalone marker (+ optional final whitespace). Never mid-body. */
+const TRAILING_ORPHAN_BODY_STATE_RE =
+  /<!-- opencodex-issue-inline-translator-control-state-v2:[A-Za-z0-9_-]+ -->[ \t]*(?:\r?\n)?[ \t]*$/;
 const ISSUE_BODY_MAX = 65536;
 const BOT_LOGIN = "github-actions[bot]";
 const SOURCE_HASH_RE = /^[a-f0-9]{16}$/;
 const MAX_RECENT = 32;
+/** Allow small clock skew; far-future timestamps are rejected. */
+const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 const DEFAULT_RATE_LIMIT = {
   minIntervalMs: 60_000,
@@ -125,22 +130,58 @@ function scrubDetectedLanguage(value) {
   );
 }
 
+/**
+ * True when the model (or caller) reported English / no translation needed.
+ * Used to omit visible English bookkeeping text from the bot control comment.
+ */
+function isEnglishDetectedLanguage(value) {
+  const lang = scrubDetectedLanguage(value).toLowerCase();
+  return !lang || lang === "english" || lang === "en" || lang === "eng";
+}
+
+/**
+ * Strip obsolete bot-owned body control markers from the legacy trailing
+ * storage position only. Markers inside fenced code, quotes, or prose are
+ * left untouched. Surrounding author whitespace is preserved byte-for-byte.
+ */
+function stripOrphanBodyControlState(body) {
+  let text = String(body || "");
+  // Only remove exact trailing tokens (legacy bot storage). Repeat in case
+  // multiple obsolete markers were appended at EOF.
+  while (TRAILING_ORPHAN_BODY_STATE_RE.test(text)) {
+    text = text.replace(TRAILING_ORPHAN_BODY_STATE_RE, "");
+  }
+  return text;
+}
+
+function isValidControlTimestamp(ts, now = Date.now()) {
+  return typeof ts === "number"
+    && Number.isFinite(ts)
+    && ts <= now + MAX_CLOCK_SKEW_MS;
+}
+
+function findAllControlComments(comments) {
+  return (Array.isArray(comments) ? comments : []).filter(
+    (comment) => comment?.user?.login === BOT_LOGIN && comment?.body?.includes(CONTROL_MARKER),
+  );
+}
+
 function encodeControlState(state) {
   return Buffer.from(JSON.stringify(state), "utf8").toString("base64url");
 }
 
-function validateControlState(parsed) {
+function validateControlState(parsed, now = Date.now()) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   if (parsed.v !== 2) return null;
   if (typeof parsed.sourceHash !== "string" || !SOURCE_HASH_RE.test(parsed.sourceHash)) {
     return null;
   }
-  if (typeof parsed.attemptedAt !== "number" || !Number.isFinite(parsed.attemptedAt)) {
+  if (!isValidControlTimestamp(parsed.attemptedAt, now)) {
     return null;
   }
   if (!Array.isArray(parsed.recent)) return null;
   const recent = parsed.recent
-    .filter((ts) => typeof ts === "number" && Number.isFinite(ts))
+    .filter((ts) => isValidControlTimestamp(ts, now))
     .slice(-MAX_RECENT);
   if (typeof parsed.requiresTranslation !== "boolean") return null;
 
@@ -160,44 +201,74 @@ function validateControlState(parsed) {
   };
 }
 
-function decodeControlState(encoded) {
+function decodeControlState(encoded, now = Date.now()) {
   try {
     const json = Buffer.from(String(encoded || ""), "base64url").toString("utf8");
-    return validateControlState(JSON.parse(json));
+    return validateControlState(JSON.parse(json), now);
   } catch {
     return null;
   }
 }
 
 /** Legacy JSON-in-HTML-comment state (read-only migration). */
-function parseLegacyControlState(raw) {
+function parseLegacyControlState(raw, now = Date.now()) {
   try {
-    return validateControlState(JSON.parse(raw));
+    return validateControlState(JSON.parse(raw), now);
   } catch {
     return null;
   }
 }
 
-/**
- * Return the newest github-actions control comment, if any.
- */
-function findControlComment(comments) {
-  const botComments = (Array.isArray(comments) ? comments : []).filter(
-    (comment) => comment?.user?.login === BOT_LOGIN && comment?.body?.includes(CONTROL_MARKER),
-  );
-  if (!botComments.length) return null;
-  return botComments[botComments.length - 1];
+function parseControlStateFromCommentBody(body, now = Date.now()) {
+  const text = String(body || "");
+  const v2 = text.match(CONTROL_STATE_V2_RE);
+  if (v2) return decodeControlState(v2[1], now);
+  const legacy = text.match(CONTROL_STATE_LEGACY_RE);
+  if (legacy) return parseLegacyControlState(legacy[1], now);
+  return null;
 }
 
-function extractTranslationControlState(comments) {
-  const newest = findControlComment(comments);
+/**
+ * Newest github-actions control comment with a valid decoded state.
+ * Author-forged comments and far-future poisoned payloads are ignored.
+ */
+function findControlComment(comments, now = Date.now()) {
+  let best = null;
+  let bestState = null;
+  for (const comment of findAllControlComments(comments)) {
+    const state = parseControlStateFromCommentBody(comment.body, now);
+    if (!state) continue;
+    if (!bestState || state.attemptedAt >= bestState.attemptedAt) {
+      best = comment;
+      bestState = state;
+    }
+  }
+  return best;
+}
+
+function extractTranslationControlState(comments, now = Date.now()) {
+  const newest = findControlComment(comments, now);
   if (!newest) return null;
-  const body = String(newest.body || "");
-  const v2 = body.match(CONTROL_STATE_V2_RE);
-  if (v2) return decodeControlState(v2[1]);
-  const legacy = body.match(CONTROL_STATE_LEGACY_RE);
-  if (legacy) return parseLegacyControlState(legacy[1]);
-  return null;
+  return parseControlStateFromCommentBody(newest.body, now);
+}
+
+/**
+ * Authoritative control state comes only from verified bot-owned comments.
+ * Issue body markers and author comments are never consulted.
+ * The optional second argument is ignored (kept for call-site compatibility).
+ */
+function resolveControlState(comments, _issueNumber, now = Date.now()) {
+  return extractTranslationControlState(comments, now);
+}
+
+/**
+ * English / no-translation attempts use a marker-only bot comment (no visible text).
+ * requiresTranslation:true is never treated as marker-only solely because language is empty.
+ */
+function shouldOmitVisibleBookkeeping(state) {
+  if (!state?.requiresTranslation) return true;
+  return Boolean(state.detectedLanguage)
+    && isEnglishDetectedLanguage(state.detectedLanguage);
 }
 
 function buildTranslationControlComment(state) {
@@ -210,19 +281,25 @@ function buildTranslationControlComment(state) {
     detectedLanguage: null,
   };
   const encoded = encodeControlState(safe);
-  const lang = scrubDetectedLanguage(safe.detectedLanguage);
-  return [
+  const lines = [
     CONTROL_MARKER,
     `<!-- opencodex-issue-inline-translator-control-state-v2:${encoded} -->`,
-    "",
-    `<sub>Automated translation bookkeeping — detected language: ${lang}.</sub>`,
-  ].join("\n");
+  ];
+  if (!shouldOmitVisibleBookkeeping(safe)) {
+    const lang = scrubDetectedLanguage(safe.detectedLanguage);
+    lines.push(
+      "",
+      `<sub>Automated translation bookkeeping — detected language: ${lang}.</sub>`,
+    );
+  }
+  return lines.join("\n");
 }
 
 function pruneRecent(recent, now, windowMs = 3_600_000) {
   const cutoff = now - windowMs;
+  const maxTs = now + MAX_CLOCK_SKEW_MS;
   return (Array.isArray(recent) ? recent : []).filter(
-    (ts) => typeof ts === "number" && ts > cutoff,
+    (ts) => typeof ts === "number" && Number.isFinite(ts) && ts > cutoff && ts <= maxTs,
   );
 }
 
@@ -230,18 +307,34 @@ function countRecentAttempts(recent, now, windowMs = 3_600_000) {
   return pruneRecent(recent, now, windowMs).length;
 }
 
+/**
+ * Merge bounded recent-attempt histories from every valid bot control comment
+ * so canonicalisation does not drop hourly-limit evidence.
+ */
+function collectMergedRecentFromComments(comments, priorState = null, now = Date.now()) {
+  const collected = [];
+  if (Array.isArray(priorState?.recent)) collected.push(...priorState.recent);
+  for (const comment of findAllControlComments(comments)) {
+    const state = parseControlStateFromCommentBody(comment.body, now);
+    if (state?.recent) collected.push(...state.recent);
+  }
+  return [...new Set(pruneRecent(collected, now))].sort((a, b) => a - b).slice(-MAX_RECENT);
+}
+
+/**
+ * Record a new attempt. Far-future poisoned prior state is ignored/healed.
+ * New attemptedAt always uses wall-clock `now` so skew cannot stick forever.
+ */
 function mergeTranslationAttemptState({ priorState = null, attempt, now = Date.now() }) {
-  if (priorState?.attemptedAt && priorState.attemptedAt > now) {
-    return {
+  let prior = null;
+  if (priorState && isValidControlTimestamp(priorState.attemptedAt, now)) {
+    prior = {
       ...priorState,
-      recent: pruneRecent(
-        [...pruneRecent(priorState.recent, priorState.attemptedAt), now],
-        priorState.attemptedAt,
-      ),
+      recent: (priorState.recent || []).filter((ts) => isValidControlTimestamp(ts, now)),
     };
   }
 
-  const priorRecent = pruneRecent(priorState?.recent, now);
+  const priorRecent = pruneRecent(prior?.recent, now);
   const recent = pruneRecent([...priorRecent, now], now);
 
   return {
@@ -257,7 +350,81 @@ function mergeTranslationAttemptState({ priorState = null, attempt, now = Date.n
 }
 
 /**
- * Upsert the bot-owned control comment using a single shared selector.
+ * Delete verified bot control comments by ID.
+ * Re-checks bot authorship + CONTROL_MARKER before each delete.
+ * Deletion failures are reported, not thrown.
+ */
+async function deleteVerifiedControlComments({
+  github,
+  owner,
+  repo,
+  issue_number,
+  commentIds,
+  comments = null,
+  keepCommentId = null,
+}) {
+  const keepId = Number.isSafeInteger(keepCommentId) && keepCommentId > 0
+    ? keepCommentId
+    : null;
+  const ids = [...new Set(
+    (Array.isArray(commentIds) ? commentIds : [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isSafeInteger(id) && id > 0 && id !== keepId),
+  )];
+  if (!ids.length) {
+    return { deleted: [], skipped: [], failed: [] };
+  }
+
+  let liveComments = comments;
+  if (!Array.isArray(liveComments)) {
+    liveComments = await github.paginate(github.rest.issues.listComments, {
+      owner,
+      repo,
+      issue_number,
+      per_page: 100,
+    });
+  }
+  const byId = new Map(
+    (Array.isArray(liveComments) ? liveComments : [])
+      .filter((c) => Number.isSafeInteger(c?.id))
+      .map((c) => [c.id, c]),
+  );
+
+  const deleted = [];
+  const skipped = [];
+  const failed = [];
+  for (const id of ids) {
+    const comment = byId.get(id);
+    if (
+      !comment
+      || comment.user?.login !== BOT_LOGIN
+      || !String(comment.body || "").includes(CONTROL_MARKER)
+    ) {
+      skipped.push(id);
+      continue;
+    }
+    try {
+      await github.rest.issues.deleteComment({
+        owner,
+        repo,
+        comment_id: id,
+      });
+      deleted.push(id);
+    } catch (err) {
+      failed.push({
+        id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return { deleted, skipped, failed };
+}
+
+/**
+ * Upsert the canonical bot-owned control comment.
+ * English / no-translation: marker-only (no visible bookkeeping sentence).
+ * Non-English: includes visible detected-language bookkeeping.
+ * Never mutates the issue title or body.
  */
 async function upsertTranslationControlComment({
   github,
@@ -269,10 +436,10 @@ async function upsertTranslationControlComment({
   attempt,
   now = Date.now(),
 }) {
-  const body = buildTranslationControlComment(
-    mergeTranslationAttemptState({ priorState, attempt, now }),
-  );
-  const existing = findControlComment(comments);
+  const merged = mergeTranslationAttemptState({ priorState, attempt, now });
+  const body = buildTranslationControlComment(merged);
+  const existing = findControlComment(comments, now);
+
   if (existing) {
     if (existing.body !== body) {
       await github.rest.issues.updateComment({
@@ -282,15 +449,93 @@ async function upsertTranslationControlComment({
         body,
       });
     }
-    return existing;
+    return { comment: { ...existing, body }, state: merged, created: false };
   }
+
   const created = await github.rest.issues.createComment({
     owner,
     repo,
     issue_number,
     body,
   });
-  return created.data;
+  return { comment: created.data, state: merged, created: true };
+}
+
+/**
+ * Persist rate-limit / cooldown state in a bot-owned issue comment.
+ * Writes/updates the canonical comment first; only then deletes redundant
+ * older bot control comments. Create/update failure preserves prior comments.
+ * Never uses the issue body/title or author-created comments as storage.
+ */
+async function persistTranslationControlState({
+  github,
+  owner,
+  repo,
+  issue_number,
+  comments,
+  priorState = null,
+  attempt,
+  now = Date.now(),
+}) {
+  const mergedRecent = collectMergedRecentFromComments(comments, priorState, now);
+  const effectivePrior = priorState && isValidControlTimestamp(priorState.attemptedAt, now)
+    ? { ...priorState, recent: mergedRecent }
+    : (mergedRecent.length
+      ? {
+        v: 2,
+        sourceHash: attempt.sourceHash,
+        attemptedAt: Math.min(...mergedRecent),
+        recent: mergedRecent,
+        requiresTranslation: false,
+        detectedLanguage: null,
+      }
+      : null);
+
+  let upserted;
+  try {
+    upserted = await upsertTranslationControlComment({
+      github,
+      owner,
+      repo,
+      issue_number,
+      comments,
+      priorState: effectivePrior,
+      attempt,
+      now,
+    });
+  } catch (err) {
+    const error = new Error(
+      `translation control comment persistence failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    error.cause = err;
+    throw error;
+  }
+
+  const canonicalId = upserted.comment?.id;
+  const redundantIds = findAllControlComments(comments)
+    .map((comment) => comment.id)
+    .filter((id) => Number.isSafeInteger(id) && id > 0 && id !== canonicalId);
+
+  let cleanup = { deleted: [], skipped: [], failed: [] };
+  if (redundantIds.length) {
+    cleanup = await deleteVerifiedControlComments({
+      github,
+      owner,
+      repo,
+      issue_number,
+      commentIds: redundantIds,
+      comments,
+      keepCommentId: canonicalId,
+    });
+  }
+
+  return {
+    storage: "comment",
+    state: upserted.state,
+    comment: upserted.comment,
+    markerOnly: shouldOmitVisibleBookkeeping(upserted.state),
+    cleanup,
+  };
 }
 
 function isPreparedSourceStillCurrent({ preparedHash, liveTitle, liveBody }) {
@@ -402,23 +647,33 @@ module.exports = {
   BOT_LOGIN,
   ISSUE_BODY_MAX,
   DEFAULT_RATE_LIMIT,
+  MAX_CLOCK_SKEW_MS,
   hashTranslationSource,
   findTranslationBlockRange,
   splitTranslationBlock,
   stripTranslationBlock,
   extractTranslationState,
   findControlComment,
+  findAllControlComments,
+  deleteVerifiedControlComments,
   extractTranslationControlState,
+  resolveControlState,
   encodeControlState,
   decodeControlState,
   validateControlState,
+  isValidControlTimestamp,
   buildTranslationControlComment,
   mergeTranslationAttemptState,
+  collectMergedRecentFromComments,
   upsertTranslationControlComment,
+  persistTranslationControlState,
+  shouldOmitVisibleBookkeeping,
   isPreparedSourceStillCurrent,
   shouldTranslate,
   sanitizeTranslationBody,
   scrubDetectedLanguage,
+  isEnglishDetectedLanguage,
+  stripOrphanBodyControlState,
   buildTranslationBlock,
   maxTranslationChars,
   fitTranslationBody,
