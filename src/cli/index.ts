@@ -106,10 +106,21 @@ async function chooseListenPort(requestedPort?: number): Promise<number> {
   const preferred = requestedPort ?? config.port ?? 10100;
   const hardPin = requestedPort !== undefined && requestedPort > 0;
   // Soft start: brief prefer-retry then ephemeral hop.
-  // Explicit `--port` (service wrappers / update restart): longer prefer-retry, never hop.
+  // Explicit `--port` (service wrappers / update restart): wait for the pinned port
+  // to free without killing any listener (healthy ocx / foreign). Never hop.
+  if (hardPin && preferred > 0) {
+    const { reclaimListenPort } = await import("../server/port-reclaim");
+    await reclaimListenPort(preferred, config.hostname ?? "127.0.0.1", {
+      timeoutMs: 30_000,
+      intervalMs: 100,
+      scanIntervalMs: 500,
+      killOcxHolders: false,
+      dropTcpRows: false,
+    });
+  }
   try {
     const selected = await findAvailablePort(preferred, config.hostname ?? "127.0.0.1", {
-      preferRetryMs: hardPin ? 8_000 : 750,
+      preferRetryMs: hardPin ? 0 : 750,
       preferRetryIntervalMs: 50,
       allowEphemeralFallback: !hardPin,
     });

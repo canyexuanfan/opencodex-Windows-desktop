@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { atomicWriteFile, getConfigDir, loadConfig, readPid, readRuntimePort } from "../config";
 import { killProxy } from "../lib/process-control";
-import { waitForPortAvailable } from "../server/ports";
+import { reclaimListenPort } from "../server/port-reclaim";
 import { proxyIdentityAt } from "../server/proxy-liveness";
 import { isServiceInstalled } from "../service";
 import {
@@ -28,6 +28,8 @@ const UPDATE_TIMEOUT_MS = 180_000;
 const RESTART_TIMEOUT_MS = 60_000;
 const RESTART_HEALTH_TIMEOUT_MS = 15_000;
 const RESTART_STABILITY_WINDOW_MS = 15_000;
+/** How long update restart waits for the captured port to become bindable after stop. */
+export const RESTART_PORT_RECLAIM_MS = 30_000;
 
 export type UpdateJobStatus = "running" | "restarting" | "succeeded" | "failed";
 
@@ -292,7 +294,7 @@ function spawnDetachedStart(job: UpdateJobState, installer: Installer, port?: nu
 
 /** Test seam: the wait/spawn pair is injectable so the restart path is verifiable. */
 export interface RestartIo {
-  waitForPort?: typeof waitForPortAvailable;
+  waitForPort?: typeof reclaimListenPort;
   spawnStart?: (job: UpdateJobState, installer: Installer, port?: number) => void;
   serviceInstalledFn?: () => boolean;
   probeProxy?: (port: number, hostname?: string) => Promise<boolean>;
@@ -308,7 +310,7 @@ export interface RestartIo {
 
 async function restartAfterUpdate(
   job: UpdateJobState,
-  captured?: { port: number; hostname: string },
+  captured?: { port: number; hostname: string; oldPid?: number },
   io: RestartIo = {},
 ): Promise<void> {
   const serviceInstalled = (io.serviceInstalledFn ?? isServiceInstalled)();
@@ -318,6 +320,9 @@ async function restartAfterUpdate(
   // port to wait on; config is only the cold-start fallback.
   const port = captured?.port ?? config.port ?? 10100;
   const hostname = captured?.hostname ?? config.hostname ?? "127.0.0.1";
+  const oldPid = typeof captured?.oldPid === "number" && captured.oldPid > 0
+    ? captured.oldPid
+    : undefined;
   let svcArgs: string[] | undefined;
   if (serviceInstalled) {
     try {
@@ -326,14 +331,21 @@ async function restartAfterUpdate(
     } catch { /* fallback to default service install */ }
   }
   const cmd = restartCommand(serviceInstalled, job.installer, packageLauncherPath(), port, svcArgs);
-  const waitFn = io.waitForPort ?? waitForPortAvailable;
+  const waitFn = io.waitForPort ?? reclaimListenPort;
+  const reclaimOpts = {
+    timeoutMs: RESTART_PORT_RECLAIM_MS,
+    intervalMs: 100,
+    scanIntervalMs: 500,
+    killOcxHolders: oldPid != null,
+    onlyKillPids: oldPid != null ? [oldPid] : [],
+  };
 
   if (serviceInstalled) {
-    // Stop-first update already unloaded the service; wait for the socket to drain,
-    // then reinstall wrappers that bake `--port` via OCX_BAKE_PORT (PR #152 gap).
-    const freed = await waitFn(port, hostname, { timeoutMs: 5_000, intervalMs: 25 });
+    // Stop-first update already unloaded the service; reclaim the socket (only the
+    // captured old PID when trusted), then reinstall wrappers that bake `--port`.
+    const freed = await waitFn(port, hostname, reclaimOpts);
     if (!freed) {
-      updateJob(job, {}, `Port ${port} still busy after stop; reinstalling service with pinned --port ${port} anyway.`);
+      updateJob(job, {}, `Port ${port} still busy after ${Math.trunc(RESTART_PORT_RECLAIM_MS / 1000)}s; refusing to hop — reinstall may fail until the port is free.`);
     }
     const prevBake = process.env.OCX_BAKE_PORT;
     process.env.OCX_BAKE_PORT = String(Math.trunc(port));
@@ -365,12 +377,13 @@ async function restartAfterUpdate(
     updateJob(job, {}, `Stopping current proxy PID ${pid}.`);
     killProxy(pid);
   }
-  // The old socket can stay busy briefly after stop (Windows taskkill drain, or the
-  // stop-first update path that already killed the proxy before we got here) — wait
-  // unconditionally on the captured port so the pinned start does not race the drain.
-  const freed = await waitFn(port, hostname, { timeoutMs: 2_000, intervalMs: 25 });
+  // Reclaim the captured port before the pinned start. Spawning `--port` while the old
+  // socket is still busy is how Windows updates used to fail health checks (or hop).
+  // Only the trusted pre-update PID may be killed; never an arbitrary ocx listener.
+  const freed = await waitFn(port, hostname, reclaimOpts);
   if (!freed) {
-    updateJob(job, {}, `Port ${port} still busy after stop; starting with --port ${port} anyway.`);
+    updateJob(job, {}, `Port ${port} still busy after ${Math.trunc(RESTART_PORT_RECLAIM_MS / 1000)}s (reclaim could not free the socket); not starting on another port. Retry 'ocx start --port ${port}'.`);
+    return;
   }
   (io.spawnStart ?? spawnDetachedStart)(job, job.installer, port);
 }
@@ -378,7 +391,7 @@ async function restartAfterUpdate(
 /** Exposed for tests: drives the non-service restart path with injected io. */
 export function restartAfterUpdateForTests(
   job: UpdateJobState,
-  captured: { port: number; hostname: string },
+  captured: { port: number; hostname: string; oldPid?: number },
   io: RestartIo,
 ): Promise<void> {
   return restartAfterUpdate(job, captured, io);
@@ -386,7 +399,8 @@ export function restartAfterUpdateForTests(
 
 function restartFailureHint(port: number): string {
   return `Update installed, but the restarted proxy did not stay healthy on port ${port}. `
-    + "Try 'ocx start'. If the update log shows bun postinstall or EPERM warnings, "
+    + `Try 'ocx start --port ${port}'. `
+    + "If the update log shows bun postinstall or EPERM warnings, "
     + "reinstall with 'npm install -g --allow-scripts=bun @bitkyc08/opencodex'.";
 }
 
@@ -474,6 +488,7 @@ export async function runGuiUpdateWorker(jobId: string, channel: Channel, restar
   const captured = {
     port: runtimeTrusted ? rt.port : configPort,
     hostname: (runtimeTrusted ? rt.hostname : undefined) ?? preUpdateConfig.hostname ?? "127.0.0.1",
+    ...(runtimeTrusted && livePid ? { oldPid: livePid } : {}),
   };
   let trayWasInstalled = false;
   let trayWasRunning = false;

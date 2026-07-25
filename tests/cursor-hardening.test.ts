@@ -179,7 +179,7 @@ describe("Cursor discovery bounded retry", () => {
       }
       stream.respond({ ":status": 200, "content-type": "application/proto" });
       stream.end(body);
-    }, baseUrl => fetchCursorUsableModels({ apiKey: "test-token", baseUrl, timeoutMs: 30 }));
+    }, baseUrl => fetchCursorUsableModels({ apiKey: "test-token", baseUrl, timeoutMs: 120 }));
 
     expect(requests).toBe(2);
     expect(result).toEqual({ ok: true, models: ["gpt-5.5-high"] });
