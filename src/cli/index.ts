@@ -433,9 +433,15 @@ async function handleStop() {
       console.log(`✅ Proxy (PID ${pid}) stopped.`);
       removePid(pid);
       removeRuntimePort(pid);
-    } catch {
+    } catch (err) {
       stopFailed = true;
       console.error(`❌ Failed to stop proxy (PID ${pid}).`);
+      // stopProxy throws with the reason — an ownership refusal (409) carries the
+      // remediation ("run the stop from that home"). Swallowing it leaves the operator
+      // with a bare failure and a manual `kill` as the obvious next move, which is the
+      // exact teardown the refusal exists to prevent.
+      const detail = err instanceof Error ? err.message : String(err);
+      if (detail) console.error(`   ${detail}`);
     }
   } else {
     // Snapshot the stale on-disk state BEFORE the async probe: a concurrent `ocx start`
@@ -449,9 +455,11 @@ async function handleStop() {
       try {
         await stopProxy(live.pid);
         console.log(`✅ Proxy (PID ${live.pid}) stopped.`);
-      } catch {
+      } catch (err) {
         stopFailed = true;
         console.error(`❌ Failed to stop proxy (PID ${live.pid}).`);
+        const detail = err instanceof Error ? err.message : String(err);
+        if (detail) console.error(`   ${detail}`);
       }
     } else if (!stoppedService) {
       console.log("No running proxy found.");

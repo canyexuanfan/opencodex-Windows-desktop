@@ -65,6 +65,21 @@ describe("Grok fence lifecycle wiring", () => {
     expect(stopFn).toContain("else if (!g.ok) { stopFailed = true;");
   });
 
+  test("a refused proxy stop reports WHY, not just that it failed", () => {
+    const stopFn = sliceFn(CLI_SOURCE, "async function handleStop(", "async function handleUninstall(");
+    // stopProxy throws the ownership refusal ("run the stop from that home"). A bare
+    // `catch {}` on these call sites strands the operator on a generic failure line, whose
+    // natural next move is a manual kill — the teardown the 409 guard exists to prevent.
+    const bareCatchAfterStopProxy = /await stopProxy\([^)]*\);[\s\S]{0,400}?\}\s*catch\s*\{/;
+    expect(stopFn).not.toMatch(bareCatchAfterStopProxy);
+
+    // Both proxy-stop call sites (tracked pid, and the orphan-recovery pid) bind the error
+    // and echo its message.
+    const detailEchoes = stopFn.match(/const detail = err instanceof Error \? err\.message : String\(err\);/g);
+    expect(detailEchoes).toHaveLength(2);
+    expect(stopFn.match(/if \(detail\) console\.error\(`   \$\{detail\}`\);/g)).toHaveLength(2);
+  });
+
   test("handleStop returns its outcome so restart and the tray can react", () => {
     const stopFn = sliceFn(CLI_SOURCE, "async function handleStop(", "async function handleUninstall(");
     // process.exit() inside handleStop would strand runTrayProxyRestart's start() half.
