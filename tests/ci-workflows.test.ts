@@ -136,6 +136,9 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("bun scripts/release-notes.ts assemble");
     expect(workflow).toContain("bun scripts/release-notes.ts matching-preview-tags");
     expect(workflow).toContain("bun scripts/release-notes.ts has-meaningful");
+    expect(workflow).toContain("bun scripts/release-notes.ts join-carried");
+    expect(workflow).toContain("releases/tags/");
+    expect(workflow).toContain('gh api "repos/${GITHUB_REPOSITORY}" --jq \'.full_name\'');
     expect(workflow).toContain("git merge-base --is-ancestor");
     expect(workflow).toContain("operational error, not a missing release");
     expect(workflow).toContain("not an ancestor");
@@ -144,28 +147,41 @@ describe("GitHub Actions hardening", () => {
     expect(workflow).toContain("--commits");
     expect(workflow).toContain('git tag --list "v${RELEASE_VERSION}-preview.*"');
     expect(workflow).toContain("Carrying preview release notes from");
+    // Every subcommand the workflow invokes must be dispatched by the CLI.
     const releaseNotesHelper = await readText("scripts/release-notes.ts");
-    expect(releaseNotesHelper).toContain("## Commits");
-    expect(releaseNotesHelper).toContain("## Since preview");
-    expect(releaseNotesHelper).toContain("matchingPreviewTags");
-    expect(releaseNotesHelper).toContain("hasMeaningfulCarriedNotes");
-    expect(releaseNotesHelper).toContain("selectNewestCarriedPreviewTag");
+    const invoked = [...workflow.matchAll(/bun scripts\/release-notes\.ts ([a-z-]+)/g)]
+      .map(m => m[1]!);
+    expect(invoked.length).toBeGreaterThan(0);
+    for (const cmd of new Set(invoked)) {
+      expect(releaseNotesHelper).toContain(`"${cmd}"`);
+    }
     expect(workflow).toMatch(/gh release create[\s\S]*?--notes-file "\$notes_file"/);
     expect(workflow).not.toContain("gh release edit");
     expect(workflow).not.toContain("--generate-notes");
     // Notes must be assembled before tagging so a notes API failure does not leave
     // a remote tag that blocks release retries at preflight.
     const createStep = workflow.split("- name: Create GitHub release")[1]!.split(/\n {6}- name:/)[0]!;
-    // Fail closed when generate-notes fails (no soft skip on the API call itself).
-    expect(createStep).not.toMatch(/pr_notes="\$\(gh api[\s\S]*?\|\| true\)"/);
+    // Preview carry lookup must use tag-specific API status, not `gh release view` stderr prose.
+    expect(createStep).toContain("releases/tags/");
+    expect(createStep).not.toContain("gh release view");
+    // Fail closed: no soft-skip in any spelling around gh api calls in this step.
+    for (const line of createStep.split("\n").filter(l => l.includes("gh api"))) {
+      expect(line).not.toMatch(/\|\|\s*(true|echo|:)/);
+    }
+    expect(createStep).not.toContain("set +e\n            pr_notes");
     expect(createStep.indexOf("gh api")).toBeGreaterThan(-1);
     expect(createStep.indexOf('git tag "$release_tag"')).toBeGreaterThan(-1);
     expect(createStep.indexOf("gh api")).toBeLessThan(createStep.indexOf('git tag "$release_tag"'));
     // First-channel releases must not call generate-notes without an explicit baseline
     // (GitHub would otherwise pick the newest repo tag, possibly from the other channel).
-    expect(createStep).toMatch(
-      /if \[ -n "\$notes_range_start" \]; then[\s\S]*previous_tag_name=\$\{notes_range_start\}[\s\S]*else[\s\S]*skipping generate-notes/,
-    );
+    // Scope to the single if-block that owns generate-notes; createStep has two
+    // `[ -n "$notes_range_start" ]` blocks, so an unanchored [\s\S]* can straddle them.
+    const notesBlock = createStep
+      .split(/if \[ -n "\$notes_range_start" \]; then/)[1]!
+      .split(/\n {10}if \[/)[0]!;
+    expect(notesBlock).toContain("previous_tag_name=${notes_range_start}");
+    expect(notesBlock).toContain("skipping generate-notes");
+    expect(notesBlock).toMatch(/\n {10}else\n/);
   });
 
   test("docs deployment is pinned, bounded, and scoped to Pages", async () => {

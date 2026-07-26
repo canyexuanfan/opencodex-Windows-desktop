@@ -349,26 +349,32 @@ jobs:
                 bun scripts/release-notes.ts matching-preview-tags "$RELEASE_VERSION"
             )"
             newest_carried_preview_tag=""
+            carried_part_files=()
+            # Probe repo readability once so a token/permission 404 cannot be
+            # mistaken for "this preview tag has no release".
+            gh api "repos/${GITHUB_REPOSITORY}" --jq '.full_name' > /dev/null
+            view_err="$(mktemp)"
             while IFS= read -r preview_carry_tag; do
               [ -n "$preview_carry_tag" ] || continue
-              view_err="$(mktemp)"
+              : > "$view_err"
               set +e
-              gh release view "$preview_carry_tag" --json body --jq .body > "${carried_file}.raw" 2>"$view_err"
+              # Prefer HTTP status over stderr prose: auth failures also say "Not Found".
+              gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${preview_carry_tag}" \
+                --jq '.body' > "${carried_file}.raw" 2>"$view_err"
               view_status=$?
               set -e
               if [ "$view_status" -eq 0 ]; then
                 bun scripts/release-notes.ts strip-carried "${carried_file}.raw" > "${carried_file}.one"
                 if bun scripts/release-notes.ts has-meaningful "${carried_file}.one"; then
-                  if [ -s "$carried_file" ]; then
-                    printf '\n\n' >> "$carried_file"
-                  fi
-                  cat "${carried_file}.one" >> "$carried_file"
+                  part_file="${carried_file}.part.${#carried_part_files[@]}"
+                  cp "${carried_file}.one" "$part_file"
+                  carried_part_files+=("$part_file")
                   newest_carried_preview_tag="$preview_carry_tag"
                   echo "::notice::Carrying preview release notes from ${preview_carry_tag} into ${release_tag}"
                 else
                   echo "::notice::Preview release ${preview_carry_tag} has no usable changelog after strip; leaving carried baseline unchanged for this tag"
                 fi
-              elif grep -qiE 'could not find|not found|HTTP[[:space:]]*404|Not Found' "$view_err"; then
+              elif grep -qE 'HTTP 404' "$view_err"; then
                 echo "::notice::Matching preview tag ${preview_carry_tag} has no GitHub Release; skipping"
               else
                 echo "::error::Failed to look up GitHub Release for ${preview_carry_tag} (operational error, not a missing release)"
@@ -376,6 +382,10 @@ jobs:
                 exit 1
               fi
             done <<< "$preview_carry_tags"
+
+            if [ "${#carried_part_files[@]}" -gt 0 ]; then
+              bun scripts/release-notes.ts join-carried --out "$carried_file" "${carried_part_files[@]}"
+            fi
 
             if [ -n "$newest_carried_preview_tag" ]; then
               if git merge-base --is-ancestor "$newest_carried_preview_tag" "$GITHUB_SHA"; then
@@ -407,14 +417,14 @@ jobs:
           if [ -n "$notes_range_start" ]; then
             commit_range="${notes_range_start}..${GITHUB_SHA}"
             git log --pretty=format:'- %s (%h)' "$commit_range" > "$commits_file"
-            # git log may omit a trailing newline; normalize empty output for assemble.
-            if [ ! -s "$commits_file" ]; then
-              : > "$commits_file"
-            fi
           else
             # First release on a channel has no previous tag; cap history so the notes
             # body stays within GitHub release size limits.
             git log --pretty=format:'- %s (%h)' --max-count=100 "$GITHUB_SHA" > "$commits_file"
+          fi
+          # `--pretty=format:` omits the trailing newline; normalize for downstream readers.
+          if [ -s "$commits_file" ]; then
+            printf '\n' >> "$commits_file"
           fi
 
           assemble_args=(

@@ -181,6 +181,37 @@ async function main(argv: string[]): Promise<void> {
     process.exit(hasMeaningfulCarriedNotes(stripped) ? 0 : 1);
   }
 
+  if (cmd === "join-carried") {
+    let out: string | undefined;
+    const files: string[] = [];
+    for (let i = 0; i < rest.length; i += 1) {
+      const arg = rest[i];
+      if (arg === "--out") {
+        const value = rest[i + 1];
+        if (!value || value.startsWith("--")) {
+          console.error("Missing value for --out");
+          process.exit(1);
+        }
+        out = value;
+        i += 1;
+        continue;
+      }
+      if (arg?.startsWith("--")) {
+        console.error(`Unknown flag: ${arg}`);
+        process.exit(1);
+      }
+      if (arg) files.push(arg);
+    }
+    if (!out || files.length === 0) {
+      console.error("Usage: bun scripts/release-notes.ts join-carried --out <file> <part-file>...");
+      process.exit(1);
+    }
+    const parts = await Promise.all(files.map(path => Bun.file(path).text()));
+    const joined = joinCarriedPreviewNotes(parts);
+    await Bun.write(out, joined ? joined + "\n" : "");
+    return;
+  }
+
   if (cmd === "matching-preview-tag" || cmd === "matching-preview-tags") {
     const version = rest[0];
     if (!version) {
@@ -244,6 +275,7 @@ async function main(argv: string[]): Promise<void> {
 Usage:
   bun scripts/release-notes.ts strip-carried [body-file]
   bun scripts/release-notes.ts has-meaningful [body-file]
+  bun scripts/release-notes.ts join-carried --out <file> <part-file>...
   bun scripts/release-notes.ts matching-preview-tag <version>   # tags on stdin
   bun scripts/release-notes.ts matching-preview-tags <version>  # tags on stdin, oldest→newest
   bun scripts/release-notes.ts assemble --npm-metadata ... --out ...`);

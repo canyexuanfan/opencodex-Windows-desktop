@@ -40,6 +40,16 @@ describe("matchingPreviewTags", () => {
       "v2.7.39-preview.20260725",
     ]);
   });
+
+  test("orders same-day previews numerically, not lexicographically", () => {
+    expect(matchingPreviewTags("2.7.39", [
+      "v2.7.39-preview.20260725.10",
+      "v2.7.39-preview.20260725.2",
+    ])).toEqual([
+      "v2.7.39-preview.20260725.2",
+      "v2.7.39-preview.20260725.10",
+    ]);
+  });
 });
 
 describe("stripCarriedReleaseNotes", () => {
