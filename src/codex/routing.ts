@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { saveConfig } from "../config";
+import { saveConfigPreservingClaudeCode } from "../config";
 import { isCodexAccountGenerationLive, readCodexAccountRecord } from "./account-store";
 import { codexAccountLogLabel } from "./account-label";
 import { isCodexAccountUsable } from "./account-usability";
@@ -484,7 +484,7 @@ export function pickLowestUsageCodexAccount(config: OcxConfig, excludeId?: strin
 function setActiveCodexAccount(config: OcxConfig, accountId: string): void {
   if (config.activeCodexAccountId === accountId) return;
   config.activeCodexAccountId = accountId;
-  saveConfig(config);
+  saveConfigPreservingClaudeCode(config);
 }
 
 function isUnknownUsage(usage: number): boolean {

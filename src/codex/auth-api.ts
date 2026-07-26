@@ -1,4 +1,4 @@
-import { loadConfig, saveConfig } from "../config";
+import { loadConfig, saveConfigPreservingClaudeCode } from "../config";
 import { withCodexAccountLogLabel } from "./account-label";
 import {
   getCodexAccountCredential,
@@ -217,7 +217,7 @@ function getRuntimeConfig(config: OcxConfig): OcxConfig {
 }
 
 function saveRuntimeConfig(sourceConfig: OcxConfig, nextConfig: OcxConfig): void {
-  saveConfig(nextConfig);
+  saveConfigPreservingClaudeCode(nextConfig);
   if (sourceConfig === nextConfig || !isRuntimeConfig(sourceConfig)) return;
   for (const key of Object.keys(sourceConfig) as Array<keyof OcxConfig>) {
     delete sourceConfig[key];
