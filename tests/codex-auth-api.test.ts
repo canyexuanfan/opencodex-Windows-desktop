@@ -651,6 +651,111 @@ describe("codex-auth API", () => {
     expect(await resp!.json()).toMatchObject({ error: "Invalid account id format" });
   });
 
+  test("reset-credit consume returns remaining from refreshed quota, not the consume payload", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "pool-reset", email: "reset@example.test" });
+    // Stale local count before redeem — must not be what the response reports.
+    updateAccountQuota("pool-reset", undefined, undefined, undefined, undefined, 9);
+    const originalFetch = globalThis.fetch;
+    let usageCalls = 0;
+    try {
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/backend-api/wham/rate-limit-reset-credits/consume")) {
+          expect(init?.method).toBe("POST");
+          // Upstream may advertise a wrong/stale remaining — management must ignore it.
+          return Response.json({ code: "reset", remaining: 99, available_count: 99 });
+        }
+        if (url.includes("/backend-api/wham/usage")) {
+          usageCalls += 1;
+          return Response.json({
+            rate_limit: { primary_window: { used_percent: 10, reset_at: 1782000000 } },
+            rate_limit_reset_credits: { available_count: 2 },
+          });
+        }
+        return originalFetch(input, init);
+      }) as typeof fetch;
+
+      const req = new Request("http://localhost/api/codex-auth/reset-credits/consume", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ accountId: "pool-reset" }),
+      });
+      const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+      expect(resp!.status).toBe(200);
+      expect(await resp!.json()).toEqual({ code: "reset", remaining: 2 });
+      expect(usageCalls).toBe(1);
+      expect(getAccountQuota("pool-reset")?.resetCredits).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("reset-credit already_redeemed refreshes quota and never invents a local decrement", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "pool-idempotent", email: "idem@example.test" });
+    updateAccountQuota("pool-idempotent", undefined, undefined, undefined, undefined, 3);
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/backend-api/wham/rate-limit-reset-credits/consume")) {
+          return Response.json({ code: "already_redeemed" });
+        }
+        if (url.includes("/backend-api/wham/usage")) {
+          return Response.json({
+            rate_limit: { primary_window: { used_percent: 5, reset_at: 1782000000 } },
+            rate_limit_reset_credits: { available_count: 3 },
+          });
+        }
+        return originalFetch(input);
+      }) as typeof fetch;
+
+      const req = new Request("http://localhost/api/codex-auth/reset-credits/consume", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ accountId: "pool-idempotent" }),
+      });
+      const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+      expect(resp!.status).toBe(200);
+      expect(await resp!.json()).toEqual({ code: "already_redeemed", remaining: 3 });
+      expect(getAccountQuota("pool-idempotent")?.resetCredits).toBe(3);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("reset-credit consume omits remaining when refreshed quota has no credit count", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "pool-nocount", email: "nocount@example.test" });
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/backend-api/wham/rate-limit-reset-credits/consume")) {
+          return Response.json({ code: "reset", remaining: 1 });
+        }
+        if (url.includes("/backend-api/wham/usage")) {
+          return Response.json({
+            rate_limit: { primary_window: { used_percent: 1, reset_at: 1782000000 } },
+          });
+        }
+        return originalFetch(input);
+      }) as typeof fetch;
+
+      const req = new Request("http://localhost/api/codex-auth/reset-credits/consume", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ accountId: "pool-nocount" }),
+      });
+      const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+      expect(resp!.status).toBe(200);
+      expect(await resp!.json()).toEqual({ code: "reset" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("unmatched route returns null", async () => {
     const req = new Request("http://localhost/api/codex-auth/unknown", { method: "GET" });
     const url = new URL(req.url);

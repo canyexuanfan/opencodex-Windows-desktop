@@ -143,16 +143,9 @@ function safeResetCreditsDto(input: unknown): { credits: { granted_at: string; e
   };
 }
 
-function safeResetCreditConsumeDto(input: unknown): { code: string; remaining?: number } {
+function safeResetCreditConsumeDto(input: unknown): { code: string } {
   const obj = typeof input === "object" && input !== null ? input as Record<string, unknown> : {};
-  const code = typeof obj.code === "string" ? obj.code : "unknown";
-  const rawRemaining = obj.remaining
-    ?? obj.available_count
-    ?? (obj.rate_limit_reset_credits as { available_count?: unknown } | null | undefined)?.available_count;
-  return {
-    code,
-    ...(typeof rawRemaining === "number" && Number.isFinite(rawRemaining) ? { remaining: rawRemaining } : {}),
-  };
+  return { code: typeof obj.code === "string" ? obj.code : "unknown" };
 }
 
 export function isUnverifiedCodexImportEnabled(): boolean {
@@ -658,13 +651,22 @@ export async function handleCodexAuthAPI(
         return jsonResponse({ error: `Upstream error ${resp.status}` }, resp.status);
       }
       const result = safeResetCreditConsumeDto(await resp.json());
-      if (result.code === "reset") {
+      // After a successful redeem (or an idempotent already_redeemed), refresh WHAM usage
+      // and return the authoritative remaining credit count from stored quota — never from
+      // the consume payload or a GUI modal snapshot.
+      if (result.code === "reset" || result.code === "already_redeemed") {
+        const quotaAccountId = auth.isMain ? MAIN_CODEX_ACCOUNT_ID : body.accountId;
         if (auth.isMain) {
           await fetchMainAccountInfo(true);
         } else {
           const account = configuredPoolAccount(getRuntimeConfig(config), body.accountId);
           await fetchPoolAccountQuota(body.accountId, true, account?.plan);
         }
+        const remaining = getAccountQuota(quotaAccountId)?.resetCredits;
+        return jsonResponse({
+          code: result.code,
+          ...(typeof remaining === "number" && Number.isFinite(remaining) ? { remaining } : {}),
+        });
       }
       return jsonResponse(result);
     } catch (e) {

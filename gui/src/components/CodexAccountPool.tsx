@@ -188,7 +188,7 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
   const handleRedeem = async (accountId: string) => {
     setRedeeming(true);
     try {
-      const result = await redeemResetCredit(apiBase, accountId, t, resetPopup, load);
+      const result = await redeemResetCredit(apiBase, accountId, t, load);
       if (result.close) {
         setResetPopup(null);
         setResetConfirm(false);

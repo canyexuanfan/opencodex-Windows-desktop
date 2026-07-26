@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { redeemResetCredit } from "../src/components/codex-account-pool-handlers";
-import type { CodexAccountEntry } from "../src/components/codex-account-pool-types";
 import type { TFn } from "../src/i18n";
 
 const t: TFn = ((key: string, vars?: Record<string, string | number>) => {
@@ -11,14 +10,6 @@ const t: TFn = ((key: string, vars?: Record<string, string | number>) => {
 let originalFetch: typeof globalThis.fetch;
 let consumeBody: { code: string; remaining?: number } | null = null;
 let loadCalls = 0;
-
-const popup: CodexAccountEntry = {
-  id: "acct-1",
-  email: "a@example.test",
-  isMain: false,
-  hasCredential: true,
-  quota: { resetCredits: 3, updatedAt: 1 },
-};
 
 beforeEach(() => {
   originalFetch = globalThis.fetch;
@@ -34,9 +25,10 @@ afterEach(() => {
   Object.defineProperty(globalThis, "fetch", { configurable: true, value: originalFetch });
 });
 
-test("already_redeemed never invents a decrement when the server omits remaining", async () => {
-  consumeBody = { code: "already_redeemed" };
-  const result = await redeemResetCredit("", "acct-1", t, popup, async () => {
+test("balance changed after modal opened: toast uses authoritative remaining, not a stale snapshot", async () => {
+  // Modal opened when balance was 3; concurrent activity left 1 — server reports 1.
+  consumeBody = { code: "reset", remaining: 1 };
+  const result = await redeemResetCredit("", "acct-1", t, async () => {
     loadCalls += 1;
     return true;
   });
@@ -44,31 +36,45 @@ test("already_redeemed never invents a decrement when the server omits remaining
   expect(loadCalls).toBe(1);
   expect(result.ok).toBe(true);
   expect(result.close).toBe(true);
-  // Keep the known count; do not toast "2 remaining" from a local guess.
+  expect(result.toast).toBe("codexAuth.resetSuccess:remaining=1");
+  expect(result.toast).not.toContain("remaining=2");
+  expect(result.toast).not.toContain("remaining=3");
+});
+
+test("already_redeemed does not decrement and uses the returned remaining count", async () => {
+  consumeBody = { code: "already_redeemed", remaining: 3 };
+  const result = await redeemResetCredit("", "acct-1", t, async () => {
+    loadCalls += 1;
+    return true;
+  });
+
+  expect(loadCalls).toBe(1);
+  expect(result.ok).toBe(true);
+  expect(result.close).toBe(true);
   expect(result.toast).toBe("codexAuth.resetSuccess:remaining=3");
   expect(result.toast).not.toContain("remaining=2");
 });
 
-test("already_redeemed prefers the authoritative server remaining count", async () => {
-  consumeBody = { code: "already_redeemed", remaining: 3 };
-  const result = await redeemResetCredit("", "acct-1", t, popup, async () => true);
+test("missing refreshed count uses the generic success toast", async () => {
+  consumeBody = { code: "reset" };
+  const result = await redeemResetCredit("", "acct-1", t, async () => true);
 
   expect(result.ok).toBe(true);
-  expect(result.toast).toBe("codexAuth.resetSuccess:remaining=3");
+  expect(result.toast).toBe("codexAuth.resetSuccessGeneric");
 });
 
-test("already_redeemed without known credits uses the dedicated toast, not a guessed count", async () => {
+test("already_redeemed without remaining also uses the generic success toast", async () => {
   consumeBody = { code: "already_redeemed" };
-  const noCredits: CodexAccountEntry = { ...popup, quota: { updatedAt: 1 } };
-  const result = await redeemResetCredit("", "acct-1", t, noCredits, async () => true);
+  const result = await redeemResetCredit("", "acct-1", t, async () => true);
 
   expect(result.ok).toBe(true);
-  expect(result.toast).toBe("codexAuth.resetAlreadyRedeemed");
+  expect(result.toast).toBe("codexAuth.resetSuccessGeneric");
+  expect(result.toast).not.toBe("codexAuth.resetAlreadyRedeemed");
 });
 
 test("failure paths return ok:false so callers can set toastError from result.ok", async () => {
   consumeBody = { code: "no_credit" };
-  const result = await redeemResetCredit("", "acct-1", t, popup, async () => true);
+  const result = await redeemResetCredit("", "acct-1", t, async () => true);
 
   expect(result.ok).toBe(false);
   expect(result.toast).toBe("codexAuth.resetNoCredit");

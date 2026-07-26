@@ -1,6 +1,5 @@
 import type { TFn } from "../i18n";
 import { readJsonIfOk } from "../fetch-json";
-import type { CodexAccountEntry } from "./codex-account-pool-types";
 
 function remainingCreditsToast(
   t: TFn,
@@ -14,7 +13,6 @@ export async function redeemResetCredit(
   apiBase: string,
   accountId: string,
   t: TFn,
-  resetPopup: CodexAccountEntry | null,
   load: (refresh?: boolean) => Promise<boolean>,
 ): Promise<{ ok: boolean; toast?: string; close?: boolean }> {
   try {
@@ -27,23 +25,16 @@ export async function redeemResetCredit(
     if (!result) return { ok: false, toast: t("codexAuth.resetError") };
     if (result.code === "reset" || result.code === "already_redeemed") {
       await load(true);
-      const serverRemaining =
+      // Authoritative remaining comes from the management endpoint (refreshed quota).
+      // Never invent a decrement from a stale modal snapshot.
+      const remaining =
         typeof result.remaining === "number" && Number.isFinite(result.remaining)
           ? Math.max(0, result.remaining)
           : undefined;
-      const knownCredits = resetPopup?.quota?.resetCredits;
-      // Prefer server remaining. Never invent a decrement for already_redeemed / unknown counts.
-      const remaining =
-        serverRemaining
-        ?? (result.code === "already_redeemed"
-          ? (typeof knownCredits === "number" ? knownCredits : undefined)
-          : (typeof knownCredits === "number" ? Math.max(0, knownCredits - 1) : undefined));
       return {
         ok: true,
         close: true,
-        toast: result.code === "already_redeemed" && remaining === undefined
-          ? t("codexAuth.resetAlreadyRedeemed")
-          : remainingCreditsToast(t, remaining),
+        toast: remainingCreditsToast(t, remaining),
       };
     }
     const key = result.code === "nothing_to_reset" ? "codexAuth.resetNothingToReset"
