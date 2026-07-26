@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n, type TFn, type TKey, type Locale } from "../i18n/shared";
 import { EmptyState } from "../ui";
 import { IconRefresh } from "../icons";
@@ -115,20 +115,24 @@ export default function Storage({ apiBase }: { apiBase: string }) {
   const { t, locale } = useI18n();
   const [data, setData] = useState<StorageReport | null>(null);
   const [loading, setLoading] = useState(true);
+  const loadGenerationRef = useRef(0);
 
   const fetchStorage = useCallback(async (signal?: AbortSignal) => {
+    const generation = ++loadGenerationRef.current;
     setLoading(true);
     try {
       const res = await fetch(`${apiBase}/api/storage`, { signal });
       if (!res.ok) throw new Error("fetch failed");
       const json = await res.json() as StorageReport;
-      if (signal?.aborted) return;
+      if (signal?.aborted || generation !== loadGenerationRef.current) return;
       setData(json);
     } catch {
-      if (signal?.aborted) return;
+      if (signal?.aborted || generation !== loadGenerationRef.current) return;
       setData(null);
     } finally {
-      if (!signal?.aborted) setLoading(false);
+      // Only the current request may clear loading — a superseded abort must not
+      // settle the UI while a newer fetch is still in flight.
+      if (generation === loadGenerationRef.current) setLoading(false);
     }
   }, [apiBase]);
 
@@ -140,6 +144,9 @@ export default function Storage({ apiBase }: { apiBase: string }) {
     }, 0);
     return () => {
       window.clearTimeout(timeout);
+      // Invalidate before abort so a superseded request's finally cannot clear
+      // loading in the gap before the deferred replacement increments generation.
+      loadGenerationRef.current += 1;
       controller.abort();
     };
   }, [fetchStorage]);
