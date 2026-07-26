@@ -637,7 +637,29 @@ describe("kiro adapter — parseStream", () => {
     expect(events.filter(event => event.type === "text_delta")).toEqual([
       { type: "text_delta", text: "Partial progress.", phase: "commentary" },
     ]);
-    expect(events.at(-1)).toMatchObject({ type: "error", status: 429, retryable: true });
+    // Commentary was already flushed; keep status/code but block replay (#520).
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      status: 429,
+      code: "rate_limit_exceeded",
+      retryable: false,
+    });
+  });
+
+  test("zero-output throttling exception remains retryable (#520)", async () => {
+    const events = await collectAdapterEvents(createKiroAdapter(provider).parseStream(new Response(streamOf(
+      encodeMessage(
+        { ":message-type": "exception", ":exception-type": "ThrottlingException" },
+        enc.encode(JSON.stringify({ message: "Too many requests." })),
+      ),
+    ))));
+    expect(events.some(event => event.type === "text_delta")).toBe(false);
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      status: 429,
+      code: "rate_limit_exceeded",
+      retryable: true,
+    });
   });
 
   test("normal Responses cancellation aborts the adapter-owned fallback without another replay", async () => {

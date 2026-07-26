@@ -736,15 +736,29 @@ async function* parseKiroAttemptEvents(
     return contextTotal > 0 ? { ...base, contextTotalTokens: contextTotal } : base;
   };
 
-  const classifiedTerminal = (failure: KiroErrorClassification): AdapterEvent => ({
-    type: "error",
-    message: failure.message,
-    status: failure.status,
-    errorType: failure.errorType,
-    code: failure.code,
-    retryable: failure.retryable,
-    usage: usage(),
-  });
+  const classifiedTerminal = (failure: KiroErrorClassification): AdapterEvent => {
+    // Upstream exception/error frames can arrive after commentary was already staged (and will be
+    // flushed before this terminal is yielded). Replaying after that content would duplicate it.
+    const emittedOutput = priorEmittedOutput
+      || sawText
+      || sawReasoning
+      || sawRealTool
+      || assistantText.length > 0
+      || deferred.length > 0
+      || completionAnswer !== undefined
+      || completionCalls > 0
+      || open !== null
+      || fallbackEvents.length > 0;
+    return {
+      type: "error",
+      message: failure.message,
+      status: failure.status,
+      errorType: failure.errorType,
+      code: failure.code,
+      retryable: emittedOutput ? false : failure.retryable,
+      usage: usage(),
+    };
+  };
 
   const protocolTerminal = (message: string, malformedCompletion = false): AdapterEvent => {
     if (mode === "text_fallback" && malformedCompletion) {
