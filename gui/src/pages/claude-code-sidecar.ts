@@ -50,5 +50,5 @@ export function serializeSidecarOverride(
     if (!trimmed) return null;
     return { backend: null, model: trimmed };
   }
-  return { backend: override.backend, model: override.model ?? "" };
+  return { backend: override.backend, model: trimmed };
 }

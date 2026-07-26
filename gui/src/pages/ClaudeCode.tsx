@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Notice } from "../ui";
-import { useT } from "../i18n/shared";
+import { useI18n, useT, LOCALES } from "../i18n/shared";
 import { modelLabel } from "../model-display";
 import { readJsonOrThrow } from "../fetch-json";
 import { reconcileAutoConnectState } from "./claude-autoconnect";
@@ -19,6 +19,8 @@ export { AutoConnectSetting, SmallFastModelSetting } from "./claude-code-setting
 
 export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   const t = useT();
+  const { locale } = useI18n();
+  const localeTag = LOCALES.find(l => l.code === locale)?.htmlLang ?? "en";
   const [state, setState] = useState<ClaudeCodeState | null>(null);
   const [rows, setRows] = useState<MapRow[]>([]);
   const [status, setStatus] = useState("");
@@ -78,9 +80,9 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
     const values = current !== null && !ladder.includes(current) ? [...ladder, current].sort((a, b) => a - b) : ladder;
     return [
       { value: "", label: t("claude.autoCompactDefault") },
-      ...values.map(value => ({ value: String(value), label: formatCompactWindow(value) })),
+      ...values.map(value => ({ value: String(value), label: formatCompactWindow(value, localeTag) })),
     ];
-  }, [state?.autoCompactWindow, t]);
+  }, [state?.autoCompactWindow, t, localeTag]);
 
   const save = async () => {
     if (!state) return;

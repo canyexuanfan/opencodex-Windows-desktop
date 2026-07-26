@@ -137,3 +137,38 @@ test("ClaudeCode save surfaces the server error message from a failed PUT", asyn
     testWindow.close();
   }
 });
+
+test("ClaudeCode save treats an empty 200 body as success", async () => {
+  let putCount = 0;
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (url.endsWith("/api/claude-code") && method === "GET") {
+      return Response.json(CLAUDE_OK);
+    }
+    if (url.endsWith("/api/claude-code") && method === "PUT") {
+      putCount += 1;
+      return new Response("", { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response(null, { status: 404 });
+  }) as typeof fetch;
+
+  const { container, root, testWindow } = await mountClaudeCode();
+  try {
+    const save = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => /save/i.test(button.textContent ?? ""));
+    expect(save).toBeTruthy();
+
+    await act(async () => {
+      save!.click();
+      await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 0));
+      await Promise.resolve();
+    });
+
+    expect(putCount).toBeGreaterThanOrEqual(1);
+    expect(container.textContent).toContain("Saved.");
+  } finally {
+    await act(async () => root.unmount());
+    testWindow.close();
+  }
+});

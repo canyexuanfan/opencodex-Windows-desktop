@@ -31,5 +31,10 @@ export async function readJsonOrThrow<T>(
 
 export async function readJsonIfOk<T>(res: Response): Promise<T | null | undefined> {
   if (!res.ok) return null;
-  return readJsonBody<T>(res);
+  try {
+    return await readJsonBody<T>(res);
+  } catch {
+    // Malformed / non-JSON OK bodies must not throw — callers treat null as "no usable payload".
+    return null;
+  }
 }

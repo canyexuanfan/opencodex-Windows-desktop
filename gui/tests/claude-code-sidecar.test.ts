@@ -61,3 +61,14 @@ test("Explicit backends serialize even with an empty model", () => {
     model: "",
   });
 });
+
+test("Explicit backends trim whitespace-padded models before persist", () => {
+  expect(serializeSidecarOverride({ backend: "openai", model: "  gpt-4o  " })).toEqual({
+    backend: "openai",
+    model: "gpt-4o",
+  });
+  expect(serializeSidecarOverride({ backend: "anthropic", model: "  claude-sonnet-4  " })).toEqual({
+    backend: "anthropic",
+    model: "claude-sonnet-4",
+  });
+});

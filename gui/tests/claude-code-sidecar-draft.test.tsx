@@ -7,11 +7,13 @@ import { ClaudeCodeSettingsCard } from "../src/pages/claude-code-sections";
 import type { ClaudeCodeState } from "../src/pages/claude-code-types";
 
 const globals = ["document", "window", "navigator", "localStorage", "IS_REACT_ACT_ENVIRONMENT"] as const;
-let previousGlobals: Record<(typeof globals)[number], unknown>;
+let previousGlobals: Record<(typeof globals)[number], PropertyDescriptor | undefined>;
 let testWindow: Window;
 
 beforeEach(() => {
-  previousGlobals = Object.fromEntries(globals.map(key => [key, Reflect.get(globalThis, key)])) as typeof previousGlobals;
+  previousGlobals = Object.fromEntries(
+    globals.map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
+  ) as typeof previousGlobals;
   testWindow = new Window({ url: "http://localhost/" });
   Object.defineProperty(testWindow.navigator, "language", { configurable: true, value: "en-US" });
   Object.defineProperties(globalThis, {
@@ -26,7 +28,9 @@ beforeEach(() => {
 afterEach(() => {
   testWindow.close();
   for (const key of globals) {
-    Object.defineProperty(globalThis, key, { configurable: true, value: previousGlobals[key] });
+    const descriptor = previousGlobals[key];
+    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+    else Reflect.deleteProperty(globalThis, key);
   }
 });
 
