@@ -38,6 +38,23 @@ export const openAiApiCollisionWarnings = new Set<string>();
 
 export const comboCatalogWarningSignatures = new Map<string, string>();
 
+/** Combos omitted from the catalog during the most recent `gatherRoutedModels` call (#484). */
+export interface ComboCatalogOmission {
+  id: string;
+  targets: string[];
+  message: string;
+}
+
+let lastComboCatalogOmissions: ComboCatalogOmission[] = [];
+
+export function clearLastComboCatalogOmissions(): void {
+  lastComboCatalogOmissions = [];
+}
+
+export function getLastComboCatalogOmissions(): readonly ComboCatalogOmission[] {
+  return lastComboCatalogOmissions;
+}
+
 export function intersectStrings(values: readonly string[][]): string[] {
   if (values.length === 0) return [];
   const rest = values.slice(1).map(value => new Set(value));
@@ -136,20 +153,35 @@ export function comboCatalogWarningSignature(
   }).sort((a, b) => a.key.localeCompare(b.key)));
 }
 
+export function buildComboCatalogOmission(
+  id: string,
+  combo: NormalizedComboConfig,
+): ComboCatalogOmission {
+  const targets = combo.targets
+    .map(target => safeCatalogWarningLabel(targetKey(target)))
+    .sort((a, b) => a.localeCompare(b));
+  return {
+    id,
+    targets,
+    message: `[opencodex] Combo "${safeCatalogWarningLabel(id)}" is omitted from the catalog because member capabilities are incomplete: ${targets.join(", ")}.`,
+  };
+}
+
+/**
+ * Record a combo omitted from `/v1/models` + on-disk catalog, warn once per signature,
+ * and always append to the per-gather omission list so sync/CLI/API can surface it (#484).
+ */
 export function warnUncataloguedComboOnce(
   id: string,
   combo: NormalizedComboConfig,
   members: readonly CatalogModel[],
 ): void {
+  const omission = buildComboCatalogOmission(id, combo);
+  lastComboCatalogOmissions.push(omission);
   const signature = comboCatalogWarningSignature(combo, members);
   if (comboCatalogWarningSignatures.get(id) === signature) return;
   comboCatalogWarningSignatures.set(id, signature);
-  const targets = combo.targets
-    .map(target => safeCatalogWarningLabel(targetKey(target)))
-    .sort((a, b) => a.localeCompare(b));
-  console.warn(
-    `[opencodex] Combo "${safeCatalogWarningLabel(id)}" is omitted from the catalog because member capabilities are incomplete: ${targets.join(", ")}.`,
-  );
+  console.warn(omission.message);
 }
 
 export function exactComboCatalogSlugs(

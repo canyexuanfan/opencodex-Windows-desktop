@@ -47,7 +47,7 @@ import upstreamModelsSnapshot from "../data/upstream-models.json";
 import { JAWCODE_CATALOG_AUGMENT_PROVIDERS, catalogModelSlug, shouldExposeRoutedModel } from "./parsing";
 import type { CatalogModel } from "./parsing";
 import { disabledNativeSlugs, hasComboTargets, nativeInputModalities, nativeOpenAiContextWindow, nativeOpenAiSlugs, nativeParallelToolCalls, nativeReasoningEfforts } from "./metadata";
-import { deriveComboCatalogModel, normalizedOpenAiApiSignature, openAiApiCollisionWarnings, warnUncataloguedComboOnce } from "./aggregation";
+import { clearLastComboCatalogOmissions, deriveComboCatalogModel, normalizedOpenAiApiSignature, openAiApiCollisionWarnings, warnUncataloguedComboOnce } from "./aggregation";
 
 type OcxProviderConfigWithReasoningSummaries = OcxProviderConfig & {
   modelSupportsReasoningSummaries?: Record<string, boolean>;
@@ -465,6 +465,7 @@ export function filterCatalogVisibleModels(
 }
 
 export async function gatherRoutedModels(config: OcxConfig): Promise<CatalogModel[]> {
+  clearLastComboCatalogOmissions();
   const ttlMs = config.modelCacheTtlMs ?? DEFAULT_MODEL_CACHE_TTL_MS;
   // Persisted provider entries can predate newer registry fields (noVisionModels,
   // modelInputModalities, ...). The ROUTER merges registry seeds at request time

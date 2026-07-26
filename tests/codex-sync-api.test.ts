@@ -54,6 +54,7 @@ describe("GUI/CLI Codex sync backend", () => {
         path: "/tmp/opencodex-catalog.json",
         catalogExists: true,
         cacheSynced: true,
+        comboOmissions: [],
       }),
       injectCodexConfig: async (port, _config, options) => {
         injectedPort = port;
@@ -76,6 +77,32 @@ describe("GUI/CLI Codex sync backend", () => {
     });
     expect(logs).toContain("   Target Codex home: C:\\Users\\[USER]\\.codex");
     expect(errors).toEqual([]);
+  });
+
+  test("surfaces combo catalog omissions in sync result and CLI stderr (#484)", async () => {
+    const logs: string[] = [];
+    const errors: string[] = [];
+    const omission = {
+      id: "k3k3",
+      targets: ["kimi/k3", "xianyu/kimi-k3"],
+      message: "[opencodex] Combo \"k3k3\" is omitted from the catalog because member capabilities are incomplete: kimi/k3, xianyu/kimi-k3.",
+    };
+    const result = await syncModelsToCodex(12345, config, { log: line => logs.push(String(line)), error: line => errors.push(String(line)) }, {
+      refreshCodexModelCatalog: async () => ({
+        added: 1,
+        path: "/tmp/opencodex-catalog.json",
+        catalogExists: true,
+        cacheSynced: true,
+        comboOmissions: [omission],
+      }),
+      injectCodexConfig: async () => ({ success: true, message: "injected" }),
+      currentExternalCodexModelProvider: () => null,
+      collectCodexHomeDiagnostic: () => homeDiagnostic(),
+    });
+
+    expect(result.comboOmissions).toEqual([omission]);
+    expect(result.warning).toContain("1 combo omitted from the catalog");
+    expect(errors).toContain(omission.message);
   });
 
   test("keeps injection fallback behavior when catalog refresh throws", async () => {

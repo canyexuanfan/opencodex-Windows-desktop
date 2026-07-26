@@ -477,6 +477,8 @@ describe("combo catalog capability intersection", () => {
       expect(String(warn.mock.calls[0]?.[0])).toContain("[REDACTED]");
       expect(String(warn.mock.calls[0]?.[0])).not.toContain(warningSentinel);
       expect(second).toEqual(first);
+      const { getLastComboCatalogOmissions } = await import("../src/codex/catalog");
+      expect(getLastComboCatalogOmissions().some(item => item.id === "hidden")).toBe(true);
 
       resetCatalogRuntimeStateForTests();
       await gatherRoutedModels(config);

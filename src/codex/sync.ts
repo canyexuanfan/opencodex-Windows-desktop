@@ -4,6 +4,7 @@ import { refreshCodexModelCatalog } from "./refresh";
 import { applyProxyEnv, loadConfig } from "../config";
 import type { OcxConfig } from "../types";
 import { collectOrcaCodexHomeDiagnostic } from "./home";
+import type { ComboCatalogOmission } from "./catalog/aggregation";
 
 export interface CodexSyncResult {
   ok: boolean;
@@ -13,6 +14,7 @@ export interface CodexSyncResult {
   cacheSynced: boolean;
   message: string;
   warning?: string;
+  comboOmissions?: ComboCatalogOmission[];
   projectConfigWarnings?: ProjectCodexConfigWarning[];
   projectConfigGrouped?: { path: string; issues: string[]; bypass: string }[];
 }
@@ -71,6 +73,7 @@ export async function syncModelsToCodex(
   let catalogExists = false;
   let cacheSynced = false;
   let warning: string | undefined;
+  let comboOmissions: ComboCatalogOmission[] = [];
 
   try {
     const cat = await deps.refreshCodexModelCatalog(config);
@@ -79,11 +82,19 @@ export async function syncModelsToCodex(
     cacheSynced = cat.cacheSynced;
     catalogPathForInjection = cat.catalogExists ? cat.path : null;
     catalogPath = catalogPathForInjection;
+    comboOmissions = cat.comboOmissions ?? [];
     if (cat.added > 0) {
       log?.log(`   + ${cat.added} models appended to Codex catalog (${cat.path})`);
     } else if (!cat.catalogExists) {
       warning = "catalog sync skipped: no Codex catalog source found; keeping Codex's native catalog.";
       log?.error(warning);
+    }
+    if (comboOmissions.length > 0) {
+      for (const omission of comboOmissions) {
+        log?.error(omission.message);
+      }
+      const summary = `${comboOmissions.length} combo${comboOmissions.length === 1 ? "" : "s"} omitted from the catalog because member capabilities are incomplete.`;
+      warning = warning ? `${warning} ${summary}` : summary;
     }
   } catch (e) {
     warning = `catalog sync skipped: ${e instanceof Error ? e.message : String(e)}`;
@@ -102,6 +113,7 @@ export async function syncModelsToCodex(
     cacheSynced,
     message: result.message,
     ...(warning ? { warning } : {}),
+    ...(comboOmissions.length > 0 ? { comboOmissions } : {}),
     ...(projectConfigWarnings.length > 0 ? {
       projectConfigWarnings,
       projectConfigGrouped: groupProjectCodexConfigWarningsByPath(projectConfigWarnings),

@@ -1192,6 +1192,7 @@ export const ko: Record<TKey, string> = {
   "cws.attentionTitle": "확인 필요",
   "cws.attention.empty": "구성된 대상 없음",
   "cws.attention.few": "대상이 하나뿐 — 장애 조치할 곳이 없음",
+  "cws.attention.catalogOmitted": "모델 카탈로그에 없음 — 멤버에 context window/능력 메타데이터가 부족함(별칭 라우팅은 계속 동작)",
   "cws.emptyTitle": "첫 콤보 만들기",
   "cws.empty.createDesc": "가상 모델 이름을 정하고 백엔드를 둘 이상 연결하세요.",
   "cws.backToAll": "모든 콤보로",
