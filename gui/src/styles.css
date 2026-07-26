@@ -1354,6 +1354,11 @@ button.prov-account-row.active { cursor: default; }
 .claude-model-context { flex-shrink: 0; color: var(--muted); font-size: 11px; }
 .claude-model-context-unknown { color: var(--faint); font-style: italic; }
 .claude-row-default { flex-shrink: 0; color: var(--green); font-size: 10.5px; font-weight: 600; }
+.claude-1m-chip {
+  flex-shrink: 0; padding: 1px 6px; border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent);
+  font-size: 10px; font-weight: 700; letter-spacing: 0.02em;
+}
 .claude-model-body { padding: 10px 12px 12px; border-top: 1px solid var(--border-soft); }
 .claude-field { display: block; margin-top: 10px; }
 .claude-model-body > .claude-field:first-child { margin-top: 0; }

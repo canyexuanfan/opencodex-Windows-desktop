@@ -40,7 +40,13 @@ export interface Desktop3pRoutedModel {
   contextWindow?: number;
 }
 
-const SUPPORTS_1M_THRESHOLD = 1_000_000;
+/**
+ * 1M-context eligibility, shared with the Desktop DTO so the dashboard's 1M chip can
+ * never disagree with what the writer emits. The DTO imports this from here — keeping
+ * the constant in this module avoids a cycle, since shared.ts already reads
+ * claude/desktop-profile.
+ */
+export const DESKTOP_SUPPORTS_1M_THRESHOLD = 1_000_000;
 
 /** CLI arg parsing for `ocx claude desktop` mode flags (mutually exclusive). */
 export function parseDesktop3pModeArgs(flags: string[]): { mode: Desktop3pConfigMode } | { error: string } {
@@ -170,7 +176,7 @@ function collectDesktop3pModels(
   for (const { provider, id, contextWindow } of candidates) {
     const route = `${provider}/${id}`;
     const alias = desktop3pAlias(provider, id);
-    const supports1m = typeof contextWindow === "number" && contextWindow >= SUPPORTS_1M_THRESHOLD
+    const supports1m = typeof contextWindow === "number" && contextWindow >= DESKTOP_SUPPORTS_1M_THRESHOLD
       ? { supports1m: true as const }
       : {};
     if (alias === id) {

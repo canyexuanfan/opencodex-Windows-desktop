@@ -1298,6 +1298,7 @@ export const zh: Record<TKey, string> = {
   "grok.colContext": "上下文",
   "claudeDesktop.available": "可用",
   "claudeDesktop.defaultBadge": "默认",
+  "claudeDesktop.supports1m": "1M",
   "claudeDesktop.unavailable": "不可用",
   "claudeDesktop.contextM": "{n}M 上下文",
   "claudeDesktop.contextK": "{n}k 上下文",

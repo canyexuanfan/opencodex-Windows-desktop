@@ -1300,6 +1300,7 @@ export const en = {
   "grok.colContext": "Context",
   "claudeDesktop.available": "Available",
   "claudeDesktop.defaultBadge": "Default",
+  "claudeDesktop.supports1m": "1M",
   "claudeDesktop.unavailable": "Unavailable",
   "claudeDesktop.contextM": "{n}M context",
   "claudeDesktop.contextK": "{n}k context",

@@ -1159,6 +1159,7 @@ export const ja: Record<TKey, string> = {
   "grok.colContext": "コンテキスト",
   "claudeDesktop.available": "利用可能",
   "claudeDesktop.defaultBadge": "既定",
+  "claudeDesktop.supports1m": "1M",
   "claudeDesktop.unavailable": "利用不可",
   "claudeDesktop.contextM": "{n}M コンテキスト",
   "claudeDesktop.contextK": "{n}k コンテキスト",

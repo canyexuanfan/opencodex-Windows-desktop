@@ -34,6 +34,7 @@ interface DesktopModel {
   available: boolean;
   contextWindow?: number;
   effortSupported?: boolean;
+  supports1m?: boolean;
   assignment: Assignment;
 }
 
@@ -465,6 +466,10 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
                       {/* Distinguish "we do not know the window" from "we know it is
                           small": a blank reads as broken. */}
                       {!context && <span className="claude-model-context claude-model-context-unknown">{t("claudeDesktop.contextUnknown")}</span>}
+                      {/* Read-only view of the 1M capability the written config already
+                          carries — distinct from the context number, because a 984k
+                          model is below the threshold. */}
+                      {model.supports1m === true && <span className="claude-1m-chip">{t("claudeDesktop.supports1m")}</span>}
                       {model.effortSupported === false && <span className="claude-effort-badge off">{t("claudeDesktop.effort.displayOnly")}</span>}
                       {model.effortSupported === true && <span className="claude-effort-badge on">{t("claudeDesktop.effort.supported")}</span>}
                       {profile.defaults[family] === model.route && (

@@ -21,8 +21,8 @@ let container: HTMLElement;
 let root: Root | null = null;
 
 const MODELS = [
-  { route: "prov/first", label: "First Model", available: true, contextWindow: 200_000, effortSupported: true, assignment: { family: "opus", alias: "claude-opus-first" } },
-  { route: "prov/second", label: "Second Model", available: true, contextWindow: 1_000_000, effortSupported: false, assignment: { family: "opus", alias: "claude-opus-second" } },
+  { route: "prov/first", label: "First Model", available: true, contextWindow: 200_000, effortSupported: true, supports1m: false, assignment: { family: "opus", alias: "claude-opus-first" } },
+  { route: "prov/second", label: "Second Model", available: true, contextWindow: 1_000_000, effortSupported: false, supports1m: true, assignment: { family: "opus", alias: "claude-opus-second" } },
 ];
 
 function payload() {
@@ -168,4 +168,12 @@ test("a collapsed row is still draggable", async () => {
   const second = row("Second Model");
   expect(summary("Second Model").getAttribute("aria-expanded")).toBe("false");
   expect(second.getAttribute("draggable")).toBe("true");
+});
+
+test("a 1M-capable row shows the 1M chip; a below-threshold row does not", async () => {
+  await mount();
+  // Second Model is 1_000_000 (supports1m) — the chip shows in the collapsed summary.
+  // First Model is 200_000 — a context number alone is not eligibility, so no chip.
+  expect(row("Second Model").querySelector(".claude-1m-chip")?.textContent).toBe("1M");
+  expect(row("First Model").querySelector(".claude-1m-chip")).toBeNull();
 });

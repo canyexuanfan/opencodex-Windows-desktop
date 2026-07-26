@@ -188,6 +188,7 @@ export function stripRegistryOnlyStaticHeaders(name: string, provider: OcxProvid
 /** Shared Desktop profile DTO builder for the management API and CLI. */
 export async function buildClaudeDesktopState(config: OcxConfig, stored?: OcxClaudeDesktopProfile) {
   const { filterCatalogVisibleModels, nativeOpenAiContextWindow, visibleNativeSlugs } = await import("../../codex/catalog");
+  const { DESKTOP_SUPPORTS_1M_THRESHOLD } = await import("../../claude/desktop-3p");
   const { reconcileDesktopProfile, renderDesktopProfile } = await import("../../claude/desktop-profile");
   const routed = filterCatalogVisibleModels(await fetchAllModels(config), config);
   const profileModels: DesktopProfileModel[] = [
@@ -222,6 +223,9 @@ export async function buildClaudeDesktopState(config: OcxConfig, stored?: OcxCla
     available: available.has(route),
     ...(modelByRoute.get(route)?.contextWindow ? { contextWindow: modelByRoute.get(route)!.contextWindow } : {}),
     effortSupported: effortByRoute.get(route) ?? false,
+    // Read-only view of the 1M capability the written Desktop config already emits,
+    // derived from the SAME threshold so the dashboard chip can never disagree.
+    supports1m: (modelByRoute.get(route)?.contextWindow ?? 0) >= DESKTOP_SUPPORTS_1M_THRESHOLD,
     assignment: profile.assignments[route]!,
   }));
   return {
