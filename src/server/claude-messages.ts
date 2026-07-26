@@ -30,7 +30,7 @@ import { resolveWireProtocolOverride } from "./adapter-resolve";
 import type { OcxConfig } from "../types";
 import { readJsonRequestBody } from "./request-decompress";
 import { addFinalRequestLog, httpStatusForTerminalStatus, recordFirstOutput, type RequestLogContext, type RequestLogEntry } from "./request-log";
-import { conversationIdFromClaudeCacheKey } from "./request-log-conversation";
+import { conversationIdFromClaudeMetadata } from "./request-log-conversation";
 import { responseWithDeferredRequestLog } from "./relay";
 import { handleResponses } from "./responses";
 
@@ -557,17 +557,19 @@ export async function handleClaudeMessages(
       logCtx.surface = "claude-desktop";
       recordDesktopRequest();
     }
+    // Correlate before native passthrough so Anthropic-credential turns still filter/total (#330 / #522).
+    if (isRec(anthropicBody)) {
+      const claudeConversationId = conversationIdFromClaudeMetadata(
+        isRec(anthropicBody.metadata) ? anthropicBody.metadata : undefined,
+      );
+      if (claudeConversationId) logCtx.conversationId = claudeConversationId;
+    }
     if (isRec(anthropicBody) && wantsNativePassthrough(req, config, anthropicBody.model)) {
       return await anthropicNativePassthrough(req, config, logCtx, logIds, anthropicBody, "/v1/messages");
     }
     const translation = anthropicToResponsesTranslation(anthropicBody, config.claudeCode);
     internalBody = translation.body;
     cacheKeySource = translation.cacheKeySource;
-    const claudeConversationId = conversationIdFromClaudeCacheKey(
-      cacheKeySource,
-      typeof internalBody.prompt_cache_key === "string" ? internalBody.prompt_cache_key : undefined,
-    );
-    if (claudeConversationId) logCtx.conversationId = claudeConversationId;
   } catch (err) {
     const status = err instanceof AnthropicRequestError ? 400 : 500;
     if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, status, { closeReason: "non_stream" });

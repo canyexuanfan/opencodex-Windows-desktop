@@ -452,7 +452,7 @@ export const de: Record<TKey, string> = {
   "logs.filter.conversation.placeholder": "Konversations-ID einfügen",
   "logs.filter.conversation.clear": "Löschen",
   "logs.filter.conversation.apply": "Logs filtern",
-  "logs.conversation.totals": "{requests} Anfragen · {tokens} Tokens · ~{cost}",
+  "logs.conversation.totals": "{requests} Anfragen · {tokens} Tokens · {cost}",
   "logs.conversation.scope": "Summen gelten nur für den aktuell geladenen Logs-Ring.",
   "logs.conversation.excluded": "({unpriced} ohne Preis, {unmetered} ohne Messung vom ~$ ausgenommen)",
   "logs.detail.conversation": "Konversation",

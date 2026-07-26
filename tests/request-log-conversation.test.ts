@@ -2,8 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   conversationIdFromClaudeCacheKey,
+  conversationIdFromClaudeMetadata,
   conversationIdFromResponsesRequest,
+  matchesLogConversationId,
   normalizeLogConversationId,
+  sessionIdHeaderFromRequest,
   summarizeConversationLogs,
 } from "../src/server/request-log-conversation";
 import {
@@ -26,20 +29,45 @@ function log(overrides: Partial<RequestLogEntry>): RequestLogEntry {
   };
 }
 
+function digest32(raw: string): string {
+  return createHash("sha256").update(raw).digest("hex").slice(0, 32);
+}
+
 describe("normalizeLogConversationId", () => {
   test("trims and rejects empty / control characters", () => {
-    expect(normalizeLogConversationId("  abc  ")).toBe("abc");
     expect(normalizeLogConversationId("")).toBeUndefined();
     expect(normalizeLogConversationId("   ")).toBeUndefined();
     expect(normalizeLogConversationId("bad\nid")).toBeUndefined();
     expect(normalizeLogConversationId(null)).toBeUndefined();
   });
 
-  test("hashes ids longer than 128 chars to a stable short key", () => {
+  test("always hashes to a stable 32-char digest (including short header values)", () => {
+    expect(normalizeLogConversationId("  user@example.com  ")).toBe(digest32("user@example.com"));
+    expect(normalizeLogConversationId("session-abc")).toBe(digest32("session-abc"));
     const long = "x".repeat(200);
-    const expected = createHash("sha256").update(long).digest("hex").slice(0, 32);
-    expect(normalizeLogConversationId(long)).toBe(expected);
+    expect(normalizeLogConversationId(long)).toBe(digest32(long));
     expect(normalizeLogConversationId(long)).toBe(normalizeLogConversationId(long));
+  });
+});
+
+describe("matchesLogConversationId", () => {
+  test("matches persisted digest or original preimage", () => {
+    const raw = "cursor-conversation-uuid";
+    const stored = digest32(raw);
+    expect(matchesLogConversationId(stored, stored)).toBe(true);
+    expect(matchesLogConversationId(stored, raw)).toBe(true);
+    expect(matchesLogConversationId(stored, "other")).toBe(false);
+    expect(matchesLogConversationId(undefined, raw)).toBe(false);
+  });
+});
+
+describe("sessionIdHeaderFromRequest", () => {
+  test("accepts session_id and hyphenated session-id with underscore preferred", () => {
+    expect(sessionIdHeaderFromRequest(new Headers({ "session-id": "hyphen" }))).toBe("hyphen");
+    expect(sessionIdHeaderFromRequest(new Headers({
+      session_id: "underscore",
+      "session-id": "hyphen",
+    }))).toBe("underscore");
   });
 });
 
@@ -50,27 +78,28 @@ describe("conversationIdFromResponsesRequest", () => {
       sessionIdHeader: "session",
       threadIdHeader: "thread",
       cursorConversationId: "cursor",
-    })).toBe("parent-thread");
+    })).toBe(digest32("parent-thread"));
     expect(conversationIdFromResponsesRequest({
       sessionIdHeader: "session",
       threadIdHeader: "thread",
       cursorConversationId: "cursor",
-    })).toBe("session");
+    })).toBe(digest32("session"));
     expect(conversationIdFromResponsesRequest({
       threadIdHeader: "thread",
       cursorConversationId: "cursor",
-    })).toBe("thread");
+    })).toBe(digest32("thread"));
     expect(conversationIdFromResponsesRequest({
       cursorConversationId: "cursor",
-    })).toBe("cursor");
+    })).toBe(digest32("cursor"));
   });
 });
 
-describe("conversationIdFromClaudeCacheKey", () => {
-  test("only accepts metadata-derived cache keys", () => {
-    expect(conversationIdFromClaudeCacheKey("metadata", "session-key")).toBe("session-key");
+describe("conversationIdFromClaudeMetadata", () => {
+  test("hashes metadata.user_id and ignores Desktop system-hash keys", () => {
+    expect(conversationIdFromClaudeMetadata({ user_id: "session-user" })).toBe(digest32("session-user"));
+    expect(conversationIdFromClaudeMetadata({})).toBeUndefined();
     expect(conversationIdFromClaudeCacheKey("system", "system-hash")).toBeUndefined();
-    expect(conversationIdFromClaudeCacheKey(null, "session-key")).toBeUndefined();
+    expect(conversationIdFromClaudeCacheKey("metadata", digest32("session-user"))).toBe(digest32("session-user"));
   });
 });
 
@@ -104,15 +133,16 @@ describe("summarizeConversationLogs", () => {
 });
 
 describe("request log conversation persistence / filter", () => {
-  test("filterRequestLogs matches conversationId and conversation aliases", () => {
+  test("filterRequestLogs matches conversationId preimage and digest aliases", () => {
+    const raw = "conv-raw-1";
     const logs = [
-      log({ requestId: "a", conversationId: "conv-1" }),
-      log({ requestId: "b", conversationId: "conv-2" }),
+      log({ requestId: "a", conversationId: digest32(raw) }),
+      log({ requestId: "b", conversationId: digest32("conv-2") }),
       log({ requestId: "c" }),
     ];
-    expect(filterRequestLogs(logs, new URLSearchParams("conversationId=conv-1")).map(e => e.requestId))
+    expect(filterRequestLogs(logs, new URLSearchParams(`conversationId=${raw}`)).map(e => e.requestId))
       .toEqual(["a"]);
-    expect(filterRequestLogs(logs, new URLSearchParams("conversation=conv-2")).map(e => e.requestId))
+    expect(filterRequestLogs(logs, new URLSearchParams(`conversation=${digest32("conv-2")}`)).map(e => e.requestId))
       .toEqual(["b"]);
   });
 
@@ -125,8 +155,8 @@ describe("request log conversation persistence / filter", () => {
       status: 200,
       durationMs: 10,
       usageStatus: "reported",
-      conversationId: "thread-xyz",
+      conversationId: digest32("thread-xyz"),
     };
-    expect(requestLogEntryFromPersistedUsage(persisted).conversationId).toBe("thread-xyz");
+    expect(requestLogEntryFromPersistedUsage(persisted).conversationId).toBe(digest32("thread-xyz"));
   });
 });

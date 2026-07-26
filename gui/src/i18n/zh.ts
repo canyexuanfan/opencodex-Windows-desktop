@@ -464,7 +464,7 @@ export const zh: Record<TKey, string> = {
   "logs.filter.conversation.placeholder": "粘贴会话 ID",
   "logs.filter.conversation.clear": "清除",
   "logs.filter.conversation.apply": "筛选日志",
-  "logs.conversation.totals": "{requests} 次请求 · {tokens} tokens · ~{cost}",
+  "logs.conversation.totals": "{requests} 次请求 · {tokens} tokens · {cost}",
   "logs.conversation.scope": "合计仅覆盖当前已加载的 Logs 环形缓冲。",
   "logs.conversation.excluded": "（~$ 已排除 {unpriced} 条无定价、{unmetered} 条无计量）",
   "logs.detail.conversation": "会话",

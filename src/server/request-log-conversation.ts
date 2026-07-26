@@ -4,24 +4,55 @@
  */
 import { createHash } from "node:crypto";
 
-export const LOG_CONVERSATION_ID_MAX = 128;
+/** Reject absurdly long client strings before hashing (DoS / JSONL bloat). */
+export const LOG_CONVERSATION_ID_INPUT_MAX = 4096;
+/** Persisted / filterable form is always a 32-char hex digest. */
+export const LOG_CONVERSATION_ID_LEN = 32;
 
-/** Cap / sanitize a correlation id for persistence. Returns undefined when unusable. */
-export function normalizeLogConversationId(raw: string | undefined | null): string | undefined {
+function sanitizeConversationIdInput(raw: string | undefined | null): string | undefined {
   if (typeof raw !== "string") return undefined;
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
   // Reject control characters that would break JSONL / UI paste.
   if (/[\u0000-\u001f\u007f]/.test(trimmed)) return undefined;
-  if (trimmed.length <= LOG_CONVERSATION_ID_MAX) return trimmed;
-  // Long opaque tokens (e.g. full Cursor ids) hash to a stable short key so filters stay pasteable.
-  return createHash("sha256").update(trimmed).digest("hex").slice(0, 32);
+  if (trimmed.length > LOG_CONVERSATION_ID_INPUT_MAX) return undefined;
+  return trimmed;
+}
+
+/**
+ * Cap / sanitize a correlation id for persistence.
+ * Always hashes so client-controlled headers cannot land emails or short secrets in usage.jsonl.
+ */
+export function normalizeLogConversationId(raw: string | undefined | null): string | undefined {
+  const trimmed = sanitizeConversationIdInput(raw);
+  if (!trimmed) return undefined;
+  return createHash("sha256").update(trimmed).digest("hex").slice(0, LOG_CONVERSATION_ID_LEN);
+}
+
+/**
+ * Filter match: accept either the persisted digest or the original preimage
+ * (so pasting from Logs detail or the client-facing session id both work).
+ */
+export function matchesLogConversationId(
+  stored: string | undefined,
+  query: string | undefined | null,
+): boolean {
+  if (!stored) return false;
+  const trimmed = typeof query === "string" ? query.trim() : "";
+  if (!trimmed) return false;
+  if (stored === trimmed) return true;
+  const hashed = normalizeLogConversationId(trimmed);
+  return hashed !== undefined && stored === hashed;
 }
 
 /**
  * Codex/Claude/Cursor priority for Responses-shaped requests:
- * parent thread header > session_id > thread-id > cursor conversation id.
+ * parent thread header > session_id / session-id > thread-id > cursor conversation id.
  */
+export function sessionIdHeaderFromRequest(headers: Headers): string | null {
+  return headers.get("session_id") ?? headers.get("session-id");
+}
+
 export function conversationIdFromResponsesRequest(input: {
   clientThreadId?: string;
   sessionIdHeader?: string | null;
@@ -36,13 +67,30 @@ export function conversationIdFromResponsesRequest(input: {
   );
 }
 
-/** Claude Code metadata-derived prompt_cache_key only — never the system-hash Desktop fallback. */
+/**
+ * Claude Code metadata.user_id only — never the system-hash Desktop fallback.
+ * Hashes the raw user_id once (same opacity goal as inbound prompt_cache_key).
+ */
+export function conversationIdFromClaudeMetadata(
+  metadata: { user_id?: unknown } | null | undefined,
+): string | undefined {
+  if (!metadata || typeof metadata.user_id !== "string") return undefined;
+  return normalizeLogConversationId(metadata.user_id);
+}
+
+/** @deprecated Prefer conversationIdFromClaudeMetadata; kept for call-site clarity. */
 export function conversationIdFromClaudeCacheKey(
   cacheKeySource: "metadata" | "system" | null | undefined,
   promptCacheKey: string | undefined,
 ): string | undefined {
   if (cacheKeySource !== "metadata") return undefined;
-  return normalizeLogConversationId(promptCacheKey);
+  // prompt_cache_key is already sha256(user_id)[:32] from inbound — persist as-is
+  // (do not re-hash) so native and translated paths stay aligned when callers pass
+  // the preimage via conversationIdFromClaudeMetadata instead.
+  const trimmed = sanitizeConversationIdInput(promptCacheKey);
+  if (!trimmed) return undefined;
+  if (trimmed.length === LOG_CONVERSATION_ID_LEN && /^[0-9a-f]+$/i.test(trimmed)) return trimmed.toLowerCase();
+  return normalizeLogConversationId(trimmed);
 }
 
 export interface ConversationLogTotals {

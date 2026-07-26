@@ -464,7 +464,7 @@ export const ko: Record<TKey, string> = {
   "logs.filter.conversation.placeholder": "대화 ID 붙여넣기",
   "logs.filter.conversation.clear": "지우기",
   "logs.filter.conversation.apply": "로그 필터",
-  "logs.conversation.totals": "{requests}건 요청 · {tokens} 토큰 · ~{cost}",
+  "logs.conversation.totals": "{requests}건 요청 · {tokens} 토큰 · {cost}",
   "logs.conversation.scope": "합계는 현재 로드된 Logs 링만 포함합니다.",
   "logs.conversation.excluded": "(~$에서 가격 없음 {unpriced}건, 미측정 {unmetered}건 제외)",
   "logs.detail.conversation": "대화",

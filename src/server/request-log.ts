@@ -29,6 +29,7 @@ import {
   USAGE_DEBUG_BODY_SAMPLE_BYTES,
   type UsageDebugBodyKind,
 } from "../usage/debug";
+import { matchesLogConversationId } from "./request-log-conversation";
 
 export interface RequestLogContext {
   model: string;
@@ -719,7 +720,7 @@ export function filterRequestLogs(logs: RequestLogEntry[], params: URLSearchPara
   }
   const conversationId = params.get("conversationId")?.trim() || params.get("conversation")?.trim();
   if (conversationId) {
-    filtered = filtered.filter(entry => entry.conversationId === conversationId);
+    filtered = filtered.filter(entry => matchesLogConversationId(entry.conversationId, conversationId));
   }
   const status = params.get("status")?.trim().toLowerCase();
   if (status) {

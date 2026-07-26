@@ -434,7 +434,7 @@ export const ja: Record<TKey, string> = {
   "logs.filter.conversation.placeholder": "会話 ID を貼り付け",
   "logs.filter.conversation.clear": "クリア",
   "logs.filter.conversation.apply": "ログを絞り込み",
-  "logs.conversation.totals": "{requests} 件 · {tokens} トークン · ~{cost}",
+  "logs.conversation.totals": "{requests} 件 · {tokens} トークン · {cost}",
   "logs.conversation.scope": "合計は現在読み込まれている Logs リングのみです。",
   "logs.conversation.excluded": "（~$ から価格なし {unpriced} / 未計測 {unmetered} を除外）",
   "logs.detail.conversation": "会話",

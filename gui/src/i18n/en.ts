@@ -470,7 +470,7 @@ export const en = {
   "logs.filter.conversation.placeholder": "Paste conversation id",
   "logs.filter.conversation.clear": "Clear",
   "logs.filter.conversation.apply": "Filter logs",
-  "logs.conversation.totals": "{requests} requests · {tokens} tokens · ~{cost}",
+  "logs.conversation.totals": "{requests} requests · {tokens} tokens · {cost}",
   "logs.conversation.scope": "Totals cover the currently loaded Logs ring only.",
   "logs.conversation.excluded": "({unpriced} unpriced, {unmetered} unmetered excluded from ~$)",
   "logs.detail.conversation": "Conversation",

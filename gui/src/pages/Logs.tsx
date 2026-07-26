@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useI18n, LOCALES, type TFn } from "../i18n/shared";
 import { formatTokens } from "../format-tokens";
+import { hashLogConversationQuery, matchesLogConversationId } from "../log-conversation-id";
 import { statusCodeInfo } from "../status-codes";
 import { IconX } from "../icons";
 import { modelLabel } from "../model-display";
@@ -312,6 +313,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   const [detail, setDetail] = useState<LogEntry | null>(null);
   const [surfaceFilter, setSurfaceFilter] = useState<"all" | "claude" | "codex">("all");
   const [conversationFilter, setConversationFilter] = useState("");
+  const [conversationQueryHash, setConversationQueryHash] = useState<string | undefined>();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const localeTag = LOCALES.find(l => l.code === locale)?.htmlLang;
   // The hash is the source of truth for the active tab (#logs vs #logs/debug),
@@ -355,10 +357,23 @@ export default function Logs({ apiBase }: { apiBase: string }) {
 
   const detailInfo = detail ? statusCodeInfo(detail.status, locale) : null;
   const conversationQuery = conversationFilter.trim();
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!conversationQuery) {
+      setConversationQueryHash(undefined);
+      return;
+    }
+    void hashLogConversationQuery(conversationQuery).then(hash => {
+      if (!cancelled) setConversationQueryHash(hash);
+    });
+    return () => { cancelled = true; };
+  }, [conversationQuery]);
+
   const filteredLogs = logs.filter(log => (
     (surfaceFilter === "all"
       || (surfaceFilter === "claude" ? log.surface === "claude" : log.surface !== "claude"))
-    && (!conversationQuery || log.conversationId === conversationQuery)
+    && (!conversationQuery || matchesLogConversationId(log.conversationId, conversationQuery, conversationQueryHash))
   ));
   const conversationTotals = conversationQuery ? summarizeFilteredLogs(filteredLogs) : null;
 
@@ -467,7 +482,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
           <Notice tone="ok">
             {t("logs.conversation.totals", {
               requests: conversationTotals.requests,
-              tokens: formatTokens(conversationTotals.totalTokens, localeTag),
+              tokens: formatTokens(conversationTotals.totalTokens, localeTag ?? locale),
               cost: formatEstimatedUsdValue(conversationTotals.estimatedCostUsd, localeTag),
             })}
             {" "}

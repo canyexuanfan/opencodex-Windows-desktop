@@ -469,7 +469,7 @@ export const ru: Record<TKey, string> = {
   "logs.filter.conversation.placeholder": "Вставьте ID диалога",
   "logs.filter.conversation.clear": "Сбросить",
   "logs.filter.conversation.apply": "Фильтровать логи",
-  "logs.conversation.totals": "{requests} запросов · {tokens} токенов · ~{cost}",
+  "logs.conversation.totals": "{requests} запросов · {tokens} токенов · {cost}",
   "logs.conversation.scope": "Итоги только по загруженному кольцу Logs.",
   "logs.conversation.excluded": "(из ~$ исключены {unpriced} без цены, {unmetered} без учёта)",
   "logs.detail.conversation": "Диалог",
