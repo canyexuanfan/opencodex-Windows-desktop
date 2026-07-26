@@ -80,10 +80,12 @@ when **every** target has discoverable capabilities that can be intersected:
   `modelContextWindows` / `contextWindow`)
 - a non-empty `inputModalities` intersection (defaults to `["text"]` when a member omits modalities)
 
-When a member is a bare relay id with no context metadata, the combo is **omitted from the catalog**
-even though direct requests still work. `ocx sync` prints each omission; the Combos dashboard flags
-it under Needs attention. Fix by setting `modelContextWindows` (and modalities if needed) on the
-relay provider, or by pointing the target at a model that already advertises those fields.
+When a member is a bare relay id with no context metadata, or when members advertise **disjoint**
+`inputModalities` (empty intersection), the combo is **omitted from the catalog** even though direct
+requests still work. `ocx sync` surfaces a summary warning (and `console.warn` once per combo); the
+Combos dashboard flags it under Needs attention. Fix by setting `modelContextWindows` / matching
+modalities on the relay provider, or by pointing targets at models that already advertise compatible
+fields.
 
 If an older development build already ran `syncResumeHistory` before backup support existed, you can
 also force the same native-provider recovery with `ocx recover-history --legacy-openai`.

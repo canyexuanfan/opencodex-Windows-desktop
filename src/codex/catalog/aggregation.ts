@@ -55,6 +55,10 @@ export function getLastComboCatalogOmissions(): readonly ComboCatalogOmission[] 
   return lastComboCatalogOmissions;
 }
 
+export function replaceLastComboCatalogOmissions(items: readonly ComboCatalogOmission[]): void {
+  lastComboCatalogOmissions = [...items];
+}
+
 export function intersectStrings(values: readonly string[][]): string[] {
   if (values.length === 0) return [];
   const rest = values.slice(1).map(value => new Set(value));
@@ -168,20 +172,24 @@ export function buildComboCatalogOmission(
 }
 
 /**
- * Record a combo omitted from `/v1/models` + on-disk catalog, warn once per signature,
- * and always append to the per-gather omission list so sync/CLI/API can surface it (#484).
+ * Record a combo omitted from `/v1/models` + on-disk catalog and warn once per signature.
+ * Callers that need a race-free list (catalog sync) pass a local `sink` from the same
+ * gather invocation instead of reading process-global state afterward (#484 review).
  */
 export function warnUncataloguedComboOnce(
   id: string,
   combo: NormalizedComboConfig,
   members: readonly CatalogModel[],
-): void {
+  sink: ComboCatalogOmission[] = lastComboCatalogOmissions,
+): ComboCatalogOmission {
   const omission = buildComboCatalogOmission(id, combo);
-  lastComboCatalogOmissions.push(omission);
+  sink.push(omission);
   const signature = comboCatalogWarningSignature(combo, members);
-  if (comboCatalogWarningSignatures.get(id) === signature) return;
-  comboCatalogWarningSignatures.set(id, signature);
-  console.warn(omission.message);
+  if (comboCatalogWarningSignatures.get(id) !== signature) {
+    comboCatalogWarningSignatures.set(id, signature);
+    console.warn(omission.message);
+  }
+  return omission;
 }
 
 export function exactComboCatalogSlugs(

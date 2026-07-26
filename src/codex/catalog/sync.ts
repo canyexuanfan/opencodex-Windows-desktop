@@ -37,7 +37,7 @@ import { applyNativeVisibility, disabledNativeSlugs, isUnsupportedOpenAiNativeSl
 import { loadCatalogForSync, resetBundledCatalogCacheForTests } from "./bundled";
 import { applyCatalogModelMetadata, applyReasoningLevels, catalogEntryEfforts, clampCatalogModelsToCodexSupport, ensureGpt56ReasoningLevels, ensureUltraReasoningLevel, isGpt56NativeSlug } from "./effort";
 import { filterCatalogVisibleModels, gatherRoutedModels, lastDropWarnSignature } from "./provider-fetch";
-import { clearLastComboCatalogOmissions, comboCatalogWarningSignatures, comboMasqueradeCollisionWarnings, exactComboCatalogSlugs, getLastComboCatalogOmissions, openAiApiCollisionWarnings, resolveSlugAliasCollisions, slugAliasCollisionWarnings, warnComboMasqueradeCollisionOnce } from "./aggregation";
+import { clearLastComboCatalogOmissions, comboCatalogWarningSignatures, comboMasqueradeCollisionWarnings, exactComboCatalogSlugs, openAiApiCollisionWarnings, resolveSlugAliasCollisions, slugAliasCollisionWarnings, warnComboMasqueradeCollisionOnce } from "./aggregation";
 import type { ComboCatalogOmission } from "./aggregation";
 
 export const MAX_SPAWN_AGENT_MODEL_OVERRIDES = 5;
@@ -465,8 +465,8 @@ export async function syncCatalogModels(config: OcxConfig): Promise<{
 
   const template = findNativeTemplate(catalog);
 
-  const goModels = await gatherRoutedModels(config);
-  const comboOmissions = [...getLastComboCatalogOmissions()];
+  const comboOmissions: ComboCatalogOmission[] = [];
+  const goModels = await gatherRoutedModels(config, { comboOmissions });
   try {
     // Once-only: preserve the PRISTINE pre-opencodex catalog as the native-priority baseline
     // (later syncs would otherwise overwrite it with featured-modified priorities).

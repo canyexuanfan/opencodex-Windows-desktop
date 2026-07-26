@@ -1278,7 +1278,7 @@ export const ru: Record<TKey, string> = {
   "cws.attentionTitle": "Требует внимания",
   "cws.attention.empty": "Цели не настроены",
   "cws.attention.few": "Только одна цель — failover некуда переключаться",
-  "cws.attention.catalogOmitted": "Отсутствует в каталоге моделей — у участника нет context window / метаданных возможностей (маршрутизация по alias всё ещё работает)",
+  "cws.attention.catalogOmitted": "Отсутствует в каталоге моделей — возможности участников неполны или несовместимы (нет context window / метаданных, или пустое пересечение modalities). Маршрутизация по alias всё ещё работает",
   "cws.emptyTitle": "Создайте первое комбо",
   "cws.empty.createDesc": "Задайте имя виртуальной модели и объедините в цепочку два и более бэкенда.",
   "cws.backToAll": "Назад ко всем комбо",

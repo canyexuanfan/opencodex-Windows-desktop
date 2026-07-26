@@ -102,7 +102,9 @@ describe("GUI/CLI Codex sync backend", () => {
 
     expect(result.comboOmissions).toEqual([omission]);
     expect(result.warning).toContain("1 combo omitted from the catalog");
-    expect(errors).toContain(omission.message);
+    expect(errors).toEqual([
+      "1 combo omitted from the catalog because member capabilities are incomplete.",
+    ]);
   });
 
   test("keeps injection fallback behavior when catalog refresh throws", async () => {

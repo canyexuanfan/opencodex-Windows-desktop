@@ -90,10 +90,10 @@ export async function syncModelsToCodex(
       log?.error(warning);
     }
     if (comboOmissions.length > 0) {
-      for (const omission of comboOmissions) {
-        log?.error(omission.message);
-      }
+      // Individual omission lines already went through console.warn during gather;
+      // keep a single summary on the sync logger to avoid duplicate stderr noise.
       const summary = `${comboOmissions.length} combo${comboOmissions.length === 1 ? "" : "s"} omitted from the catalog because member capabilities are incomplete.`;
+      log?.error(summary);
       warning = warning ? `${warning} ${summary}` : summary;
     }
   } catch (e) {
