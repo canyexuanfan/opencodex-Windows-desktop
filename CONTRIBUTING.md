@@ -13,7 +13,6 @@ Thanks for helping with opencodex.
 - `dev` — integration target for all normal pull requests.
 - `main` — releases only; moves by maintainer-controlled promotion from `dev`.
 - `preview` — prerelease train.
-- `claudedesktop` — work in progress; maintainer-integrated only.
 
 Agent-facing repository and review rules live in [`AGENTS.md`](./AGENTS.md).
 
