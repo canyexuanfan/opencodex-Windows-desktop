@@ -46,7 +46,9 @@ jobs:
   test:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 8
+    # The Windows full suite now completes near the old 8-minute ceiling; leave
+    # enough room for the privacy/build smokes instead of cancelling a green run.
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:

@@ -287,6 +287,145 @@ export function appendUsageEntry(entry: PersistedUsageEntry): void {
   try { chmodSync(path, 0o600); } catch { /* best-effort on platforms that ignore chmod */ }
 }
 
+export type UsageLogRevision = {
+  path: string;
+  dev: number;
+  ino: number;
+  birthtimeMs: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+};
+
+let usageReadCacheStats = { fullReads: 0, tailReads: 0, parsedLines: 0 };
+let managementUsageReadInflight: {
+  key: string;
+  promise: Promise<{ entries: PersistedUsageEntry[]; revision: UsageLogRevision }>;
+} | null = null;
+
+/** Test-only observability for proving that unchanged prefixes are not reparsed. */
+export function usageReadCacheStatsForTests(): Readonly<typeof usageReadCacheStats> {
+  return { ...usageReadCacheStats };
+}
+
+export function resetUsageReadCacheForTests(): void {
+  usageReadCacheStats = { fullReads: 0, tailReads: 0, parsedLines: 0 };
+  managementUsageReadInflight = null;
+}
+
+function readExactly(fd: number, length: number, position: number): Buffer | null {
+  const output = Buffer.allocUnsafe(length);
+  let offset = 0;
+  while (offset < length) {
+    const read = readSync(fd, output, offset, length - offset, position + offset);
+    if (read === 0) return null;
+    offset += read;
+  }
+  return output;
+}
+
+function usageLogRevision(path: string, stat: ReturnType<typeof fstatSync>): UsageLogRevision {
+  if (!stat.isFile()) throw new Error("usage log is not a regular file");
+  return {
+    path,
+    dev: Number(stat.dev),
+    ino: Number(stat.ino),
+    birthtimeMs: Number(stat.birthtimeMs),
+    size: Number(stat.size),
+    mtimeMs: Number(stat.mtimeMs),
+    ctimeMs: Number(stat.ctimeMs),
+  };
+}
+
+export function usageLogRevisionKey(revision: UsageLogRevision | null): string {
+  if (!revision) return "missing";
+  return [
+    revision.path,
+    revision.dev,
+    revision.ino,
+    revision.birthtimeMs,
+    revision.size,
+    revision.mtimeMs,
+    revision.ctimeMs,
+  ].join("\0");
+}
+
+export function currentUsageLogRevision(): UsageLogRevision | null {
+  const path = usageLogPath();
+  if (!existsSync(path)) return null;
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    return usageLogRevision(path, fstatSync(fd));
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+async function parseUsageTextCooperatively(text: string): Promise<PersistedUsageEntry[]> {
+  const lines = text.split(/\r?\n/);
+  usageReadCacheStats.parsedLines += lines.filter(line => line.trim()).length;
+  const entries: PersistedUsageEntry[] = [];
+  const batchSize = 1_000;
+  for (let offset = 0; offset < lines.length; offset += batchSize) {
+    entries.push(...parseUsageLines(lines.slice(offset, offset + batchSize)));
+    if (offset + batchSize < lines.length) {
+      // JSON parsing dominates large-log startup. Yield between bounded batches so
+      // Bun can continue serving health and settings requests on the same thread.
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+    }
+  }
+  return entries;
+}
+
+async function readUsageEntriesFullCooperatively(
+  path: string,
+): Promise<{ entries: PersistedUsageEntry[]; revision: UsageLogRevision }> {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const stat = fstatSync(fd);
+    const size = Number(stat.size);
+    const bytes = readExactly(fd, size, 0);
+    if (bytes === null) throw new Error("usage log changed while it was being read");
+    const entries = await parseUsageTextCooperatively(bytes.toString("utf-8"));
+    usageReadCacheStats.fullReads += 1;
+    return { entries, revision: usageLogRevision(path, stat) };
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/**
+ * Management API reader: full parses yield between bounded batches and concurrent
+ * callers share work only when they observed the same exact file revision. Parsed rows
+ * are returned to the request and never retained in module state.
+ */
+export async function readUsageSnapshotForManagement(): Promise<{
+  entries: PersistedUsageEntry[];
+  revision: UsageLogRevision | null;
+}> {
+  const path = usageLogPath();
+  if (!existsSync(path)) return { entries: [], revision: null };
+  const observed = currentUsageLogRevision();
+  const key = usageLogRevisionKey(observed);
+  if (managementUsageReadInflight?.key === key) {
+    const shared = await managementUsageReadInflight.promise;
+    return { entries: shared.entries.slice(), revision: shared.revision };
+  }
+  const promise = readUsageEntriesFullCooperatively(path);
+  managementUsageReadInflight = { key, promise };
+  try {
+    return await promise;
+  } finally {
+    if (managementUsageReadInflight?.promise === promise) managementUsageReadInflight = null;
+  }
+}
+
+export async function readUsageEntriesForManagement(): Promise<PersistedUsageEntry[]> {
+  return (await readUsageSnapshotForManagement()).entries;
+}
+
 export function readUsageEntries(): PersistedUsageEntry[] {
   const path = usageLogPath();
   if (!existsSync(path)) return [];
