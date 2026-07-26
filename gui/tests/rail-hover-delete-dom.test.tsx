@@ -32,6 +32,8 @@ beforeEach(() => {
   originalFetch = globalThis.fetch;
   win = new Window({ url: "http://localhost/" });
   Object.defineProperty(win.navigator, "language", { configurable: true, value: "en-US" });
+  // React 19 resolveUpdatePriority reads window.event; happy-dom omits the IE legacy field.
+  Object.defineProperty(win, "event", { configurable: true, writable: true, value: undefined });
   Object.defineProperties(globalThis, {
     document: { configurable: true, value: win.document },
     window: { configurable: true, value: win },
@@ -59,6 +61,10 @@ afterEach(async () => {
     await act(async () => { current.unmount(); });
     root = null;
   }
+  // Flush React 19 scheduler work (setImmediate/MessageChannel) while window still
+  // exists. Restoring globals first lets a late dispatchSetState hit undefined
+  // window.event and fail the suite as an unhandled error between tests (macOS CI).
+  await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
   for (const key of globals) {
     Object.defineProperty(globalThis, key, { configurable: true, value: previous[key] });
   }
