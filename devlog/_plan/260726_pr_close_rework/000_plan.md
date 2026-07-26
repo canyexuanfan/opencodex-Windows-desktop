@@ -21,9 +21,7 @@
 | PR | 원저자 | 내용 | 선행 |
 |---|---|---|---|
 | #437 | CooperSheroy | Bun 요구사항 문서화 (docs-only) | 없음 |
-| #429 | Aciredy | Cursor 프롬프트 오염 제거 + 빈 exec_command 거부 | 없음 |
 | #460 | mushikingh | Kiro native END_TURN + Opus 5 effort | 없음 |
-| #466 | Wibias | react-doctor 공용 기반 (단 `gui/src/api.ts` 제외) | 없음 |
 | #468 | Wibias | Startup/Debug/Storage/Usage 정리 | #466 |
 | #467 | Wibias | Combos 분할 | 없음 |
 | #431 | H-H-E | MiniMax split reasoning (축소 슬라이스) | 없음 |
@@ -41,6 +39,21 @@
 | #424 | xAI OAuth + 유료 호출 |
 | #408 | Windows UAC 권한 상승 |
 | #403 | config 소유권 + lifecycle teardown (본인 작성 → 타 maintainer 승인 필요) |
+| #429 | shell-tool 입력 경계 하드닝 (A-gate 재분류, 아래 참조) |
+
+### 실행 중 발생한 분류 변경
+
+**#466 — OBSOLETE.** WP1 push 시점에 동료가 `d9e5102a`로 직접 머지했다.
+우리 040 문서가 지적한 결함 3(폴링 abort)·5(캐시 미제거)는 동료 커밋
+`971e0564`·`3616d2ae`가 같은 방향으로 해소했고, 우리가 보안 사유로 제외했던
+`gui/src/api.ts`도 `afc99ec6`·`138751f7`로 별도 처리됐다. WP4는 수행하지 않는다.
+WP5(#468)는 선행이 이미 dev에 있으므로 현재 dev 소스 기준으로 델타를 재계산한다.
+
+**#429 — self-merge → 보안 보류.** A-gate 리뷰어가 `MAINTAINERS.md:22-23`의
+"and other security-boundary changes"를 근거로 재분류를 요구했고 이를 수용했다.
+이 변경이 검증을 넣는 지점은 모델 생성 인자가 shell 실행 도구로 진입하는 경계다.
+방향이 하드닝이라도 경계는 경계다. 구현 계약(020 문서)은 완성해 두되 병합은
+사용자 승인 후로 미룬다.
 
 ### C. 통합 없이 close
 
@@ -53,7 +66,10 @@
 열린 이슈 18건 중 **dev에서 이미 고쳐졌는데 안 닫힌 것은 0건**이다.
 #457/#443/#425 세 건은 열린 PR이 다루는 중이고, 나머지 15건은 실제 미구현이다.
 따라서 이번 루프에서 이슈 close는 통합 PR이 실제로 닫는 건에 한정한다.
-통합 대상 8건 중 closing keyword를 가진 PR은 없으므로, 이슈 close 대상은 현재 없다.
+통합 대상 중 closing keyword를 가진 PR은 없으므로, 이슈 close 대상은 현재 없다.
+
+최초 self-merge 분류는 8건이었으나 실행 중 두 건이 빠졌다(#466 동료 머지, #429 보안
+재분류). 현재 대상은 6건이다: #437(완료) #460 #468 #467 #431 #405.
 
 ## work-phase 맵 (의존성 순서)
 
@@ -71,7 +87,7 @@ GUI 기반 → GUI 소비자 순이다.
 | WP6 | 060 | #467 Combos 분할 | — |
 | WP7 | 070 | #431 MiniMax 축소 슬라이스 | — |
 | WP8 | 080 | #405 메타데이터 모듈만 | **WP7** |
-| WP9 | 090 | 보안보류 8건 리뷰 게시 + #459 close | WP1–WP8 |
+| WP9 | 090 | 보안보류 리뷰 게시 + #459 close | WP1–WP8 |
 
 WP8의 WP7 의존은 A-gate에서 발견됐다. 둘 다 `tests/provider-registry-parity.test.ts`를
 수정하고, WP7이 바꾸는 `src/providers/registry.ts`의 불변조건을 WP8이 잠근다.
