@@ -15,6 +15,10 @@ function scrubLine(value, max) {
  * Models often emit JS-style escapes inside JSON strings (especially `\'`).
  * Those are invalid JSON and used to make long Korean/Japanese issue translations
  * fail closed even when the payload is otherwise complete.
+ *
+ * Only `\'` drops the backslash (apostrophe needs no JSON escape). Other unknown
+ * escapes (e.g. `\Users`, `\d+`, `\x41`) are rewritten as doubled backslashes so
+ * JSON.parse keeps a literal `\` — dropping them would corrupt Markdown/code.
  */
 function repairInvalidJsonStringEscapes(text) {
   let out = "";
@@ -32,9 +36,12 @@ function repairInvalidJsonStringEscapes(text) {
         out += "\\" + ch;
       } else if (ch === "u") {
         out += "\\u";
+      } else if (ch === "'") {
+        // JS-style apostrophe escape → plain apostrophe in JSON.
+        out += "'";
       } else {
-        // Drop the invalid backslash; keep the character (e.g. `\'` → `'`).
-        out += ch;
+        // Preserve a literal backslash in the parsed string (C:\Users, \d+, \x41).
+        out += "\\\\" + ch;
       }
       escaped = false;
       continue;
@@ -46,7 +53,7 @@ function repairInvalidJsonStringEscapes(text) {
     if (ch === '"') inString = false;
     out += ch;
   }
-  if (escaped) out += "\\";
+  if (escaped) out += "\\\\";
   return out;
 }
 

@@ -87,6 +87,33 @@ describe("parseAiResponse", () => {
     );
   });
 
+  it("repairs apostrophe escapes inside a fenced code block", () => {
+    const raw =
+      '```json\n{"requires_translation":true,"detected_language":"Korean",' +
+      '"translated_title":"Title","translated_body":"with Kiro\\\'s mid-stream 429"}\n```';
+    const parsed = parseAiResponse(raw);
+    assert.equal(parsed.requires_translation, true);
+    assert.equal(parsed.translated_body, "with Kiro's mid-stream 429");
+  });
+
+  it("preserves literal backslashes for non-apostrophe invalid escapes", () => {
+    // Malformed model JSON: C:\Users, \d+, \x41 — must not become C:Users / d+ / x41.
+    const raw =
+      '{"requires_translation":true,"detected_language":"Korean",' +
+      '"translated_title":"T",' +
+      '"translated_body":"path C:\\Users regex \\d+ code \\x41"}';
+    const repaired = repairInvalidJsonStringEscapes(raw);
+    assert.equal(
+      repaired,
+      '{"requires_translation":true,"detected_language":"Korean",' +
+        '"translated_title":"T",' +
+        '"translated_body":"path C:\\\\Users regex \\\\d+ code \\\\x41"}',
+    );
+    const parsed = parseAiResponse(raw);
+    assert.equal(parsed.requires_translation, true);
+    assert.equal(parsed.translated_body, "path C:\\Users regex \\d+ code \\x41");
+  });
+
   it("keeps requires_translation=true for issue and comment payloads with invalid escapes", () => {
     // Build explicitly so the fixture contains the illegal \' sequence.
     const issueRaw =
