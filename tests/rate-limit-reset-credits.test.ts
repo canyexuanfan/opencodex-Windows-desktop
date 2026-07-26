@@ -237,11 +237,15 @@ describe("rate-limit reset credits", () => {
     });
 
     it("does not exclude team or workspace plans from ticket badges", async () => {
-      const source = await Bun.file("gui/src/components/CodexAccountPool.tsx").text();
+      const [pool, helpers] = await Promise.all([
+        Bun.file("gui/src/components/CodexAccountPool.tsx").text(),
+        Bun.file("gui/src/components/codex-account-pool-helpers.tsx").text(),
+      ]);
+      const source = `${pool}\n${helpers}`;
       expect(source).not.toContain("isWorkspaceAccount");
       expect(source).not.toContain("Not available for workspace accounts");
-      expect(source).toContain("if (credits === undefined) return null;");
-      expect(source).toContain("className={`badge ${hasCredits ? \"badge-amber\" : \"badge-muted\"} badge-clickable`}");
+      expect(helpers).toContain("if (credits === undefined) return null;");
+      expect(helpers).toContain("className={`badge ${hasCredits ? \"badge-amber\" : \"badge-muted\"} badge-clickable`}");
     });
 
     it("keeps clickable ticket badges from overriding visual badge colors", async () => {
@@ -254,9 +258,9 @@ describe("rate-limit reset credits", () => {
     });
 
     it("renders reset tickets beside next-session badges instead of replacing them", async () => {
-      const source = await Bun.file("gui/src/components/CodexAccountPool.tsx").text();
+      const source = await Bun.file("gui/src/components/codex-account-pool-cards.tsx").text();
       expect(source).toContain("className=\"card-badges\"");
-      expect(source).toContain("<TicketBadge t={t} account={a} onClick={() => openResetPopup(a)} />");
+      expect(source).toContain("<CodexTicketBadge t={t} account={a} onClick={() => onOpenReset(a)} />");
       // Since the pool/direct mode split, the next-session badge is conditional on the
       // account mode (poolPrepared in direct mode) but still renders BESIDE the ticket.
       expect(source).toContain("{isNext(a.id) && !a.needsReauth && (");

@@ -170,12 +170,15 @@ describe("workspace account integration seam", () => {
   });
 
   test("wires Codex active reauth health into openai rail status", async () => {
-    const [page, pool, panel, modal, hook] = await Promise.all([
+    const [page, pool, panel, modal, hook, oauthHook, cards, mainCard] = await Promise.all([
       providersPageSeam(),
       Bun.file("gui/src/components/CodexAccountPool.tsx").text(),
       Bun.file("gui/src/components/provider-workspace/ProviderAuthPanel.tsx").text(),
       Bun.file("gui/src/components/AddCodexAccountModal.tsx").text(),
       Bun.file("gui/src/hooks/useCodexAccountPool.ts").text(),
+      Bun.file("gui/src/components/use-add-codex-account-oauth.ts").text(),
+      Bun.file("gui/src/components/codex-account-pool-cards.tsx").text(),
+      Bun.file("gui/src/components/codex-account-pool-main-card.tsx").text(),
     ]);
     expect(page).toContain("codexActiveNeedsReauth");
     expect(page).toContain("map.openai = true");
@@ -197,11 +200,13 @@ describe("workspace account integration seam", () => {
     expect(hook).toContain("if (!enabled || pauseCount > 0) return;");
     // The initial load must not be re-triggered by pause transitions.
     expect(hook).toContain("}, [enabled, load]);");
-    expect(modal).toContain("reauth: true");
-    expect(modal).toContain("startedReauthRef");
-    expect(modal).toContain("&reauth=1");
-    expect(pool).toContain("codexAuth.reauthenticate");
-    expect(pool).toContain("codexAuth.mainTokenExpired");
+    // Reauth OAuth payload lives in the extracted OAuth hook (modal only wires props).
+    expect(oauthHook).toContain("reauth: true");
+    expect(oauthHook).toContain("startedReauthRef");
+    expect(oauthHook).toContain("&reauth=1");
+    expect(modal).toContain("reauthAccountId");
+    expect(cards).toContain("codexAuth.reauthenticate");
+    expect(mainCard).toContain("codexAuth.mainTokenExpired");
     // The panel now shares the controller instead of reporting health upward.
     expect(panel).toContain("controller={codexController}");
   });
