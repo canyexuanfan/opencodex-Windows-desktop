@@ -621,6 +621,77 @@ describe("OpenAI Responses hosted-tool name conflicts", () => {
     expect(body.tools.some(t => t.type === "image_generation")).toBe(false);
   });
 
+  test("keyed responses-lite strips hosted image_generation from nested additional_tools", () => {
+    const adapter = createResponsesPassthroughAdapter(keyedProvider);
+    const request = adapter.buildRequest({
+      modelId: "gpt-5.6-sol",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "gpt-5.6-sol",
+        input: [
+          {
+            type: "additional_tools",
+            role: "developer",
+            tools: [
+              { type: "namespace", name: "image_gen", tools: [] },
+              { type: "image_generation" },
+              { type: "web_search" },
+            ],
+          },
+          { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+        ],
+      },
+    }, meta);
+    const body = JSON.parse(request.body) as {
+      input: Array<{ type: string; role?: string; tools?: Array<{ type: string; name?: string }> }>;
+    };
+    const additionalTools = body.input.find(item => item.type === "additional_tools");
+
+    // Preserve the input entry and unrelated tools while removing only the hosted conflict.
+    expect(additionalTools).toBeDefined();
+    expect(additionalTools?.role).toBe("developer");
+    expect(additionalTools?.tools?.some(t => t.type === "image_generation")).toBe(false);
+    expect(additionalTools?.tools?.some(t => t.type === "namespace" && t.name === "image_gen")).toBe(true);
+    expect(additionalTools?.tools?.some(t => t.type === "web_search")).toBe(true);
+    expect(body.input.some(item => item.type === "message")).toBe(true);
+  });
+
+  test("keyed responses-lite detects image_gen conflicts across top-level and nested tool groups", () => {
+    const adapter = createResponsesPassthroughAdapter(keyedProvider);
+    const request = adapter.buildRequest({
+      modelId: "gpt-5.6-sol",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "gpt-5.6-sol",
+        tools: [
+          { type: "image_generation" },
+          { type: "web_search" },
+        ],
+        input: [
+          {
+            type: "additional_tools",
+            role: "developer",
+            tools: [{ type: "function", name: "image_gen.imagegen", parameters: {} }],
+          },
+        ],
+      },
+    }, meta);
+    const body = JSON.parse(request.body) as {
+      tools: Array<{ type: string }>;
+      input: Array<{ type: string; tools?: Array<{ type: string; name?: string }> }>;
+    };
+    const additionalTools = body.input.find(item => item.type === "additional_tools");
+
+    // The platform validates one merged namespace even when declarations use different groups.
+    expect(body.tools.some(t => t.type === "image_generation")).toBe(false);
+    expect(body.tools.some(t => t.type === "web_search")).toBe(true);
+    expect(additionalTools?.tools?.some(t => t.name === "image_gen.imagegen")).toBe(true);
+  });
+
   test("keyed platform keeps hosted image_generation when no conflicting tool is declared", () => {
     const adapter = createResponsesPassthroughAdapter(keyedProvider);
     const request = adapter.buildRequest({

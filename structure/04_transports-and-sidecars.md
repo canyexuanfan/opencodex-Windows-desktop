@@ -56,6 +56,14 @@ existing account-health state. Unknown Images subpaths still reach the JSON `/v1
 On non-loopback binds, data-plane authentication and origin policy cover both Images routes just as
 they cover `/v1/responses`; clients must send the configured `x-opencodex-api-key`.
 
+The API-key `openai-responses` path also prevents the standalone client tool from colliding with the
+hosted Responses tool. When a request declares `image_gen.imagegen` (as a flat function or an
+`image_gen` namespace), the adapter drops hosted `image_generation` while preserving unrelated
+tools. Conflict discovery spans both top-level `body.tools` and Codex Desktop Responses Lite
+`input[].type = "additional_tools"` containers because the platform validates their merged tool
+namespace. ChatGPT forward mode preserves the pair because that backend accepts it and owns native
+image generation.
+
 ## Cursor Native Exec
 
 Cursor's experimental live transport can receive server-driven local read/write/delete/ls/grep,

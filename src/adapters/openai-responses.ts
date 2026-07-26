@@ -496,26 +496,81 @@ const HOSTED_TOOL_NAME_CONFLICTS: ReadonlyArray<{ hostedType: string; namePrefix
  * HOSTED_TOOL_NAME_CONFLICTS). Only applies on the API-key platform path: the ChatGPT backend
  * ("forward" mode) accepts the pair, and stripping there would disable native imagegen. No-op
  * (returns the original reference) when nothing matches.
+ *
+ * Codex Desktop Responses Lite requests do not always use top-level `body.tools`; they may place
+ * the same declarations in `body.input[]` entries of type `additional_tools`. The platform validates
+ * these containers as one tool namespace, so conflict detection must span all of them. The function
+ * uses copy-on-write semantics and preserves the original request reference when nothing is removed.
  */
 function stripConflictingHostedTools(body: unknown): unknown {
-  if (!isPlainObject(body) || !Array.isArray(body.tools)) return body;
-  const allTools = body.tools;
+  if (!isPlainObject(body)) return body;
 
-  const conflicting = HOSTED_TOOL_NAME_CONFLICTS.filter(c =>
-    allTools.some(t => {
+  // Collect every tool container in the request. Traditional HTTP/SSE requests use top-level
+  // `tools`, while Responses Lite may carry the same declarations in `additional_tools` entries.
+  const toolGroups: unknown[][] = [];
+  if (Array.isArray(body.tools)) toolGroups.push(body.tools);
+  if (Array.isArray(body.input)) {
+    for (const item of body.input) {
+      if (isPlainObject(item) && item.type === "additional_tools" && Array.isArray(item.tools)) {
+        toolGroups.push(item.tools);
+      }
+    }
+  }
+  if (toolGroups.length === 0) return body;
+
+  // Detect conflicts across containers because the client namespace and the hosted tool may be
+  // declared in different groups while still sharing one platform-validated namespace.
+  const conflicting = HOSTED_TOOL_NAME_CONFLICTS.filter(c => toolGroups.some(group =>
+    group.some(t => {
       if (!isPlainObject(t) || typeof t.name !== "string") return false;
       if (t.type === "namespace") return t.name === c.namePrefix;
       return t.name === c.namePrefix || t.name.startsWith(`${c.namePrefix}.`);
     }),
-  );
+  ));
   if (conflicting.length === 0) return body;
 
-  const tools = allTools.filter(t => {
-    const type = isPlainObject(t) && typeof t.type === "string" ? t.type : undefined;
-    if (!type) return true;
-    return !conflicting.some(c => c.hostedType === type);
-  });
-  return tools.length === allTools.length ? body : { ...body, tools };
+  // Allocate a replacement only when a hosted tool is removed. Preserve malformed entries,
+  // unrelated tools, and future tool types so this compatibility rule remains narrowly scoped.
+  const stripGroup = (tools: unknown[]): unknown[] => {
+    const filtered = tools.filter(t => {
+      const type = isPlainObject(t) && typeof t.type === "string" ? t.type : undefined;
+      if (!type) return true;
+      return !conflicting.some(c => c.hostedType === type);
+    });
+    return filtered.length === tools.length ? tools : filtered;
+  };
+
+  let changed = false;
+  let tools = body.tools;
+  if (Array.isArray(body.tools)) {
+    tools = stripGroup(body.tools);
+    changed ||= tools !== body.tools;
+  }
+
+  let input = body.input;
+  if (Array.isArray(body.input)) {
+    let nestedChanged = false;
+    const mappedInput = body.input.map(item => {
+      if (!isPlainObject(item) || item.type !== "additional_tools" || !Array.isArray(item.tools)) {
+        return item;
+      }
+      const nestedTools = stripGroup(item.tools);
+      if (nestedTools === item.tools) return item;
+      nestedChanged = true;
+      return { ...item, tools: nestedTools };
+    });
+    if (nestedChanged) {
+      input = mappedInput;
+      changed = true;
+    }
+  }
+
+  if (!changed) return body;
+  return {
+    ...body,
+    ...(Array.isArray(body.tools) ? { tools } : {}),
+    ...(Array.isArray(body.input) ? { input } : {}),
+  };
 }
 
 /**
