@@ -585,24 +585,27 @@ export default function Usage({ apiBase }: { apiBase: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [modelQuery, setModelQuery] = useState("");
+  const loadGenerationRef = useRef(0);
 
   const fetchUsage = useCallback(async (nextRange: Range, nextSurface: UsageSurface, signal: AbortSignal) => {
+    const generation = ++loadGenerationRef.current;
     setLoading(true);
     setError(null);
     try {
       const res = await fetch(`${apiBase}/api/usage?range=${nextRange}&surface=${nextSurface}`, { signal });
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`.trim());
       const json = await res.json() as UsageResponse;
-      if (signal.aborted) return;
+      if (signal.aborted || generation !== loadGenerationRef.current) return;
       setData(json);
     } catch (cause) {
       // A stale request (range/apiBase changed, or unmount) must not overwrite newer state.
-      if (signal.aborted) return;
+      if (signal.aborted || generation !== loadGenerationRef.current) return;
       const detail = cause instanceof Error ? cause.message : "";
       setError(detail ? `${t("usage.loadError")} ${detail}` : t("usage.loadError"));
     } finally {
-      // Unconditional clear; a newer effect-owned fetch re-sets loading true.
-      setLoading(false);
+      // Only the current request may clear loading — a superseded abort must not
+      // settle the UI while a newer fetch is still in flight.
+      if (generation === loadGenerationRef.current) setLoading(false);
     }
   }, [apiBase, t]);
 

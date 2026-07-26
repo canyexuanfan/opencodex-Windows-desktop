@@ -28,7 +28,7 @@ export function DebugClaudeInboundPanel({ entries }: { entries: ClaudeInboundEnt
             </thead>
             <tbody>
               {entries.map(entry => (
-                <tr key={`${entry.at}:${entry.endpoint}:${entry.model}`}>
+                <tr key={entry.id}>
                   <td className="muted mono">{formatClaudeInboundTime(entry.at)}</td>
                   <td className="mono">{entry.endpoint}</td>
                   <td className="mono" title={entry.resolvedModel}>

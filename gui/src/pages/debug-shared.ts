@@ -14,6 +14,7 @@ export interface DebugLogEntry {
 }
 
 export interface ClaudeInboundEntry {
+  id: number;
   at: number;
   endpoint: string;
   model: string;

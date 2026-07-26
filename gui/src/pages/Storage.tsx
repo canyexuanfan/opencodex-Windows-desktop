@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n, type TFn, type TKey, type Locale } from "../i18n/shared";
 import { EmptyState } from "../ui";
 import { IconRefresh } from "../icons";
@@ -115,22 +115,24 @@ export default function Storage({ apiBase }: { apiBase: string }) {
   const { t, locale } = useI18n();
   const [data, setData] = useState<StorageReport | null>(null);
   const [loading, setLoading] = useState(true);
+  const loadGenerationRef = useRef(0);
 
   const fetchStorage = useCallback(async (signal?: AbortSignal) => {
+    const generation = ++loadGenerationRef.current;
     setLoading(true);
     try {
       const res = await fetch(`${apiBase}/api/storage`, { signal });
       if (!res.ok) throw new Error("fetch failed");
       const json = await res.json() as StorageReport;
-      if (signal?.aborted) return;
+      if (signal?.aborted || generation !== loadGenerationRef.current) return;
       setData(json);
     } catch {
-      if (signal?.aborted) return;
+      if (signal?.aborted || generation !== loadGenerationRef.current) return;
       setData(null);
     } finally {
-      // Unconditional: aborted requests may briefly clear loading before the next
-      // effect-owned fetch sets it true again (react-doctor: no-loading-flag-reset-outside-finally).
-      setLoading(false);
+      // Only the current request may clear loading — a superseded abort must not
+      // settle the UI while a newer fetch is still in flight.
+      if (generation === loadGenerationRef.current) setLoading(false);
     }
   }, [apiBase]);
 

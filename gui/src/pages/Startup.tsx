@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { IconRefresh } from "../icons";
 import { useI18n } from "../i18n/shared";
 import { EmptyState } from "../ui";
@@ -29,15 +29,17 @@ export default function Startup({ apiBase }: { apiBase: string }) {
   const [installResult, setInstallResult] = useState<{ kind: "success" | "error"; action: StartupInstallAction; detail?: string } | null>(null);
   const [codexRuntimeWarning, setCodexRuntimeWarning] = useState<string | null>(null);
   const [codexRuntimeFix, setCodexRuntimeFix] = useState<string | null>(null);
+  const loadGenerationRef = useRef(0);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
+    const generation = ++loadGenerationRef.current;
     setLoading(true);
     setTrayLoading(true);
     try {
       const res = await fetch(`${apiBase}/api/startup-health`, { signal });
       if (!res.ok) throw new Error("fetch failed");
       const next = await res.json() as StartupHealthData;
-      if (signal?.aborted) return;
+      if (signal?.aborted || generation !== loadGenerationRef.current) return;
       setData(next);
       setFailed(next.diagnosticStale);
       try {
@@ -50,7 +52,7 @@ export default function Startup({ apiBase }: { apiBase: string }) {
               catalogClamp?: { active?: boolean; removedEfforts?: string[]; runtimeVersion?: string | null };
             };
           };
-          if (!signal?.aborted) {
+          if (!signal?.aborted && generation === loadGenerationRef.current) {
             const runtime = settings.codexRuntime;
             const clampActive = Boolean(runtime?.catalogClamp?.active);
             const newer = Boolean(runtime?.newerAvailable);
@@ -77,12 +79,12 @@ export default function Startup({ apiBase }: { apiBase: string }) {
                   : null,
             );
           }
-        } else if (!signal?.aborted) {
+        } else if (!signal?.aborted && generation === loadGenerationRef.current) {
           setCodexRuntimeWarning(null);
           setCodexRuntimeFix(null);
         }
       } catch {
-        if (!signal?.aborted) {
+        if (!signal?.aborted && generation === loadGenerationRef.current) {
           setCodexRuntimeWarning(null);
           setCodexRuntimeFix(null);
         }
@@ -94,25 +96,27 @@ export default function Startup({ apiBase }: { apiBase: string }) {
           if (!trayRes.ok) throw new Error("tray status failed");
           const trayNext = await trayRes.json() as unknown;
           if (!isTrayStatusData(trayNext)) throw new Error("invalid tray status");
-          if (!signal?.aborted) {
+          if (!signal?.aborted && generation === loadGenerationRef.current) {
             setTray(trayNext);
             setTrayError(false);
           }
         } catch {
-          if (!signal?.aborted) {
+          if (!signal?.aborted && generation === loadGenerationRef.current) {
             setTray(null);
             setTrayError(true);
           }
         }
       }
     } catch {
-      if (signal?.aborted) return;
+      if (signal?.aborted || generation !== loadGenerationRef.current) return;
       setFailed(true);
       setTray(null);
       setTrayError(true);
     } finally {
-      setTrayLoading(false);
-      setLoading(false);
+      if (generation === loadGenerationRef.current) {
+        setTrayLoading(false);
+        setLoading(false);
+      }
     }
   }, [apiBase, t]);
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useKeyedClientResource } from "../client-resource";
+import { setClientResourceData, useKeyedClientResource } from "../client-resource";
 import { useI18n } from "../i18n/shared";
 import { DebugClaudeInboundPanel } from "./debug-claude-inbound-panel";
 import { DebugLogViewer } from "./debug-log-viewer";
@@ -12,17 +12,23 @@ import {
   isStreamEnabled,
 } from "./debug-shared";
 
+function debugSettingsKey(apiBase: string): string {
+  return `debug-settings:${apiBase}`;
+}
+
 export default function Debug({ apiBase, embedded }: { apiBase: string; embedded?: boolean }) {
   const { t } = useI18n();
+  const [debugBusy, setDebugBusy] = useState(false);
   const [stream, setStream] = useState<LogStream>("provider");
   const [entries, setEntries] = useState<import("./debug-shared").DebugLogEntry[]>([]);
   const [follow, setFollow] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const afterRef = useRef(0);
+  const mutationGenerationRef = useRef(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const debugPoll = useKeyedClientResource(
-    `debug-settings:${apiBase}`,
+    debugSettingsKey(apiBase),
     [apiBase],
     async (signal) => {
       const res = await fetch(`${apiBase}/api/debug`, { signal });
@@ -122,26 +128,30 @@ export default function Debug({ apiBase, embedded }: { apiBase: string; embedded
     }
   }, [entries, follow, lineVirtualizer]);
 
-  const setDebugFlag = async (flag: "debug" | "usage" | "injection" | "claude", enabled: boolean) => {
+  const runDebugMutation = async (body: Record<string, unknown>) => {
+    const generation = ++mutationGenerationRef.current;
+    setDebugBusy(true);
     try {
       const res = await fetch(`${apiBase}/api/debug`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ [flag]: enabled }),
+        body: JSON.stringify(body),
       });
-      if (res.ok) debugPoll.refresh();
-    } catch { /* ignore */ }
+      if (!res.ok) return;
+      const next = await res.json() as DebugSettings;
+      if (generation !== mutationGenerationRef.current) return;
+      setClientResourceData(debugSettingsKey(apiBase), next);
+    } catch { /* ignore */ } finally {
+      if (generation === mutationGenerationRef.current) setDebugBusy(false);
+    }
+  };
+
+  const setDebugFlag = async (flag: "debug" | "usage" | "injection" | "claude", enabled: boolean) => {
+    await runDebugMutation({ [flag]: enabled });
   };
 
   const resetDebug = async () => {
-    try {
-      const res = await fetch(`${apiBase}/api/debug`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ reset: true }),
-      });
-      if (res.ok) debugPoll.refresh();
-    } catch { /* ignore */ }
+    await runDebugMutation({ reset: true });
   };
 
   return (
@@ -160,7 +170,7 @@ export default function Debug({ apiBase, embedded }: { apiBase: string; embedded
       ) : (
         <DebugSettingsPanel
           debug={debug}
-          debugBusy={false}
+          debugBusy={debugBusy}
           stream={stream}
           onSetFlag={(flag, enabled) => { void setDebugFlag(flag, enabled); }}
           onReset={() => { void resetDebug(); }}
