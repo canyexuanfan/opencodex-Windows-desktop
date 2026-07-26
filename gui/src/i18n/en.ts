@@ -1218,7 +1218,7 @@ export const en = {
   "cws.field.stickyLimitHint": "Retain the selected target for this many successful requests before the weighted selector advances.",
   "cws.field.defaultEffort": "Default reasoning",
   "cws.field.defaultEffortNone": "None (target default)",
-  "cws.field.defaultEffortHint": "Used only when the client omits reasoning effort. Options are the intersection of the selected targets' advertised efforts.",
+  "cws.field.defaultEffortHint": "Used only when the client omits reasoning effort. Options are the intersection of the selected targets' advertised efforts; targets without catalog effort metadata offer none.",
   "cws.field.defaultEffortUnsupported": "This effort is not in the targets' common ladder — it will be ignored or snapped at request time.",
   "cws.field.defaultEffortUnsupportedOption": "not in intersection",
   "cws.targets": "Targets",

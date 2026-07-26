@@ -171,14 +171,14 @@ describe("combo-workspace-data", () => {
     )).toEqual(["medium", "high"]);
   });
 
-  test("intersectComboEfforts treats unknown members as the full ladder", () => {
+  test("intersectComboEfforts treats unknown members as having no selectable efforts", () => {
     const map = new Map<string, readonly string[] | undefined>([
       ["a/m1", ["low", "medium"]],
     ]);
     expect(intersectComboEfforts(
       [{ provider: "a", model: "m1" }, { provider: "b", model: "unknown" }],
       map,
-    )).toEqual(["low", "medium"]);
+    )).toEqual([]);
   });
 
   test("attention flags zero-target and one-target defensive rows", () => {
