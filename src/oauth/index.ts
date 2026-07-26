@@ -19,6 +19,8 @@ import { detectClaudeCodeToken, detectGrokCliToken, hasComparableGrokIdentity, i
 import { logOAuthEvent } from "./log";
 export {
   collectOAuthHealthEntries,
+  collectOAuthHealthEntriesForCli,
+  detectOAuthWarning,
   oauthAccountHealthFields,
   oauthHealthLabel,
   oauthHealthSummary,
@@ -30,6 +32,7 @@ export {
   type OAuthHealthEntry,
   type OAuthHealthLabel,
 } from "./health";
+export { OAUTH_REFRESH_LOCK_WAIT_MS, peekAuthStore, peekOAuthRefreshIntent } from "./store";
 
 const REFRESH_SKEW_MS = 60_000;
 export interface OAuthAccessSnapshot {

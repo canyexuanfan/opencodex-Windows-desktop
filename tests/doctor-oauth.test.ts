@@ -45,7 +45,7 @@ describe("collectOAuthDoctorChecks", () => {
     const accountId = set!.activeAccountId;
     await markAccountNeedsReauth("openai", accountId, true);
 
-    const checks = collectOAuthDoctorChecks();
+    const checks = await collectOAuthDoctorChecks();
     const warn = checks.find(
       (c) => c.level === "WARN" && c.message.includes("requires reauthentication"),
     );
@@ -58,16 +58,19 @@ describe("collectOAuthDoctorChecks", () => {
     expect(warn!.message).not.toContain("refresh-token");
   });
 
-  test("emits static OK rows for storage, single-flight, and metadata", () => {
-    const checks = collectOAuthDoctorChecks();
+  test("emits static OK rows for storage, single-flight, and metadata", async () => {
+    const checks = await collectOAuthDoctorChecks();
     expect(checks.some((c) => c.level === "OK" && c.message.includes("OAuth credential storage is writable"))).toBe(true);
     expect(checks.some((c) => c.level === "OK" && c.message.includes("Token refresh single-flight is active"))).toBe(true);
     expect(checks.some((c) => c.level === "OK" && c.message.includes("No fabricated official-client metadata detected"))).toBe(true);
   });
 
-  test("Codex needsReauth WARN action points at the dashboard pool", () => {
+  test("Codex needsReauth WARN action points at the dashboard pool", async () => {
     markCodexAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
-    const checks = collectOAuthDoctorChecks();
+    // Force process-local Codex projection so a live proxy on the machine cannot mask this case.
+    const checks = await collectOAuthDoctorChecks(Date.now(), {
+      findLiveProxyImpl: async () => null,
+    });
     const warn = checks.find(
       (c) => c.level === "WARN" && c.message.includes("requires reauthentication"),
     );
@@ -87,7 +90,7 @@ describe("collectOAuthDoctorChecks", () => {
     const set = getAccountSet("xai")!;
     await markAccountNeedsReauth("xai", set.activeAccountId, true);
 
-    const warns = collectOAuthDoctorChecks().filter((c) => c.level === "WARN");
+    const warns = (await collectOAuthDoctorChecks()).filter((c) => c.level === "WARN");
     expect(warns.length).toBeGreaterThan(0);
     for (const warn of warns) {
       expect(warn.message).toMatch(/Action:/);

@@ -27,7 +27,7 @@ import {
   resolveAndPersistCodexRuntime,
   resolveCodexRuntime,
 } from "../codex/runtime";
-import { CODEX_REAUTH_ACTION, collectOAuthHealthEntries, type OAuthHealthEntry } from "../oauth/health";
+import { CODEX_REAUTH_ACTION, collectOAuthHealthEntriesForCli, type OAuthHealthEntry } from "../oauth/health";
 import { getAuthRefreshIntentLockPath, getAuthStorePath } from "../oauth/store";
 export { resolveCodexHomeDir } from "../codex/home";
 
@@ -42,11 +42,10 @@ function pathIsWritable(path: string): boolean {
   }
 }
 
-/** Observe-only: can we write auth.json (or create it in the config dir)? */
+/** Observe-only: can we atomically replace auth.json (sibling tmp + rename)? */
 function isOAuthCredentialStorageWritable(): boolean {
   const storePath = getAuthStorePath();
-  if (existsSync(storePath)) return pathIsWritable(storePath);
-  const dir = getConfigDir();
+  const dir = existsSync(storePath) ? dirname(storePath) : getConfigDir();
   if (existsSync(dir)) return pathIsWritable(dir);
   // Config dir missing: check nearest existing ancestor (no mkdir — observe-only).
   let parent = dirname(dir);
@@ -114,7 +113,10 @@ function describeDoctorHealth(entry: OAuthHealthEntry): string {
  * OAuth reliability checks for `ocx doctor`. Observe-only: never mutates
  * credentials, locks, or networking. Every WARN includes a recovery Action.
  */
-export function collectOAuthDoctorChecks(now = Date.now()): OAuthDoctorCheck[] {
+export async function collectOAuthDoctorChecks(
+  now = Date.now(),
+  deps: Parameters<typeof collectOAuthHealthEntriesForCli>[1] = {},
+): Promise<OAuthDoctorCheck[]> {
   const checks: OAuthDoctorCheck[] = [];
 
   if (isOAuthCredentialStorageWritable()) {
@@ -137,7 +139,7 @@ export function collectOAuthDoctorChecks(now = Date.now()): OAuthDoctorCheck[] {
     });
   }
 
-  for (const entry of collectOAuthHealthEntries(now)) {
+  for (const entry of await collectOAuthHealthEntriesForCli(now, deps)) {
     if (entry.health.status === "healthy") continue;
     const action = actionForDoctorEntry(entry);
     checks.push({
@@ -726,7 +728,7 @@ export async function runDoctor(args: string[] = []): Promise<void> {
 
   // OAuth reliability: observe-only (no mutations / auto-repair).
   console.log("\nOAuth reliability");
-  for (const check of collectOAuthDoctorChecks()) {
+  for (const check of await collectOAuthDoctorChecks()) {
     console.log(`  [${check.level}] ${check.message}`);
   }
 

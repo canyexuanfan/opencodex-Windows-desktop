@@ -125,6 +125,19 @@ describe("collectOAuthHealthEntries", () => {
     });
     expect(entry!.action).not.toContain("ocx login codex");
   });
+
+  test("kiro access-only credentials are not stale_credentials", async () => {
+    await saveCredential("kiro", {
+      access: "kiro-access-only",
+      refresh: "",
+      expires: Date.now() + 3_600_000,
+      source: "manual",
+    });
+    const accountId = getAccountSet("kiro")!.activeAccountId;
+    const entries = collectOAuthHealthEntries();
+    const entry = entries.find(e => e.provider === "kiro" && e.accountId === accountId);
+    expect(entry?.health).toEqual({ status: "healthy" });
+  });
 });
 
 describe("getCodexAccountHealthSnapshot", () => {

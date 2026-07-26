@@ -10,10 +10,15 @@ import type { WorkspaceItem } from "../../provider-workspace/catalog";
 import { oauthAccountDisplayLabel, providerAuthSurface } from "../../provider-workspace/auth";
 import { displayAccountId } from "../../lib/privacy";
 import {
+  copyTextToClipboard,
+  doctorCopyButtonLabel,
+  formatOAuthHealthLabel,
+  formatOAuthHealthSummary,
   oauthHealthBadgeClass,
   oauthHealthIsCooldown,
   oauthHealthShowsDoctor,
   oauthHealthShowsReauth,
+  type DoctorCopyFeedback,
 } from "../../oauth-health-display";
 import CodexAccountPool from "../CodexAccountPool";
 import type { CodexAccountPoolController } from "../../hooks/useCodexAccountPool";
@@ -45,7 +50,7 @@ export default function ProviderAuthPanel({
   const [newKey, setNewKey] = useState("");
   const [keyBusy, setKeyBusy] = useState(false);
   const [deviceCodeCopied, setDeviceCodeCopied] = useState(false);
-  const [copiedDoctorFor, setCopiedDoctorFor] = useState<string | null>(null);
+  const [copiedDoctorFor, setCopiedDoctorFor] = useState<DoctorCopyFeedback | null>(null);
 
   const surface = providerAuthSurface({ ...item, hasApiKey: item.hasApiKey || keys.length > 0 });
   const isOauth = surface === "oauth-accounts";
@@ -171,11 +176,19 @@ export default function ProviderAuthPanel({
                   const showDoctor = oauthHealthShowsDoctor(healthStatus);
                   const inCooldown = oauthHealthIsCooldown(healthStatus);
                   const maskedId = displayAccountId(account.id);
+                  const healthLabel = formatOAuthHealthLabel(t, account.health);
+                  const healthSummary = formatOAuthHealthSummary(t, item.name, account.id, account.health);
                   const copyDoctor = () => {
-                    navigator.clipboard.writeText(DOCTOR_CMD).then(() => {
-                      setCopiedDoctorFor(account.id);
-                      setTimeout(() => setCopiedDoctorFor(current => current === account.id ? null : current), 2500);
-                    }).catch(() => {});
+                    void copyTextToClipboard(DOCTOR_CMD).then((ok) => {
+                      const feedback: DoctorCopyFeedback = {
+                        accountId: account.id,
+                        outcome: ok ? "copied" : "unavailable",
+                      };
+                      setCopiedDoctorFor(feedback);
+                      setTimeout(() => setCopiedDoctorFor(current => (
+                        current?.accountId === account.id && current.outcome === feedback.outcome ? null : current
+                      )), 2500);
+                    });
                   };
                   return (
                   <li key={account.id} className={`pwi-auth-row${account.active ? " pwi-auth-row--active" : ""}`}>
@@ -188,17 +201,17 @@ export default function ProviderAuthPanel({
                       <span className="pwi-auth-row-copy">
                         <span className="pwi-auth-row-label">{label}</span>
                         <span className="pwi-auth-row-secondary">{[account.email, `${t("prov.accountId")}: ${maskedId}`].filter(Boolean).join(" · ")}</span>
-                        {account.healthSummary && account.healthLabel !== "Healthy" && (
-                          <span className="pwi-auth-row-secondary faint">{account.healthSummary}</span>
+                        {healthSummary && (
+                          <span className="pwi-auth-row-secondary faint">{healthSummary}</span>
                         )}
                         {inCooldown && (
                           <span className="pwi-auth-row-secondary faint">{t("pws.healthCooldownHint")}</span>
                         )}
                       </span>
-                      {account.healthLabel && account.healthLabel !== "Healthy" && (
-                        <span className={oauthHealthBadgeClass(healthStatus)}>{account.healthLabel}</span>
+                      {healthLabel && (
+                        <span className={oauthHealthBadgeClass(healthStatus)}>{healthLabel}</span>
                       )}
-                      {showReauth && !account.healthLabel && <span className="badge badge-amber">{t("pws.reauth")}</span>}
+                      {showReauth && !healthLabel && <span className="badge badge-amber">{t("pws.reauth")}</span>}
                       {account.active && <span className="badge badge-primary">{t("prov.accountActive")}</span>}
                       {switching && <span className="badge badge-muted">{t("pws.accountSwitching")}</span>}
                     </button>
@@ -214,7 +227,7 @@ export default function ProviderAuthPanel({
                     )}
                     {showDoctor && (
                       <button type="button" className="btn btn-ghost btn-sm" onClick={copyDoctor}>
-                        {copiedDoctorFor === account.id ? t("pws.doctorCopied") : t("pws.copyDoctor")}
+                        {doctorCopyButtonLabel(t, copiedDoctorFor, account.id)}
                       </button>
                     )}
                     <button type="button" className="btn btn-ghost btn-sm"

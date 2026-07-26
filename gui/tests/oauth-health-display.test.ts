@@ -1,5 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import {
+  copyTextToClipboard,
+  doctorCopyButtonLabel,
+  formatOAuthHealthLabel,
+  formatOAuthHealthSummary,
   oauthHealthBadgeClass,
   oauthHealthBadgeTone,
   oauthHealthIsCooldown,
@@ -7,6 +11,15 @@ import {
   oauthHealthShowsReauth,
 } from "../src/oauth-health-display";
 import { displayAccountId, maskAccountId } from "../src/lib/privacy";
+import type { TFn } from "../src/i18n";
+
+const t: TFn = ((key: string, vars?: Record<string, string | number>) => {
+  if (!vars) return key;
+  return Object.entries(vars).reduce(
+    (out, [name, value]) => out.replaceAll(`{${name}}`, String(value)),
+    key,
+  );
+}) as TFn;
 
 describe("oauth health badge helpers", () => {
   test("maps statuses to badge tones and classes", () => {
@@ -27,6 +40,62 @@ describe("oauth health badge helpers", () => {
     expect(oauthHealthShowsDoctor("cooldown")).toBe(false);
     expect(oauthHealthIsCooldown("cooldown")).toBe(true);
     expect(oauthHealthIsCooldown("healthy")).toBe(false);
+  });
+
+  test("localizes labels and summaries from structured health", () => {
+    expect(formatOAuthHealthLabel(t, { status: "healthy" })).toBeNull();
+    expect(formatOAuthHealthLabel(t, { status: "cooldown", reason: "rate_limit", until: "2026-07-26T00:00:00.000Z" }))
+      .toBe("pws.healthLabel.rateLimited");
+    expect(formatOAuthHealthLabel(t, { status: "warning", reason: "refresh_conflict" }))
+      .toBe("pws.healthLabel.credentialConflict");
+    expect(formatOAuthHealthSummary(t, "xai", "acct_abcd1234", { status: "reauth_required", reason: "refresh_failed" }))
+      .toBe("pws.healthSummary.reauthRequired");
+    expect(formatOAuthHealthSummary(t, "xai", "acct_abcd1234", { status: "warning", reason: "stale_credentials" }))
+      .toContain("pws.healthSummary.staleCredentials");
+  });
+
+  test("doctorCopyButtonLabel reflects feedback outcome", () => {
+    expect(doctorCopyButtonLabel(t, null, "a1")).toBe("pws.copyDoctor");
+    expect(doctorCopyButtonLabel(t, { accountId: "a1", outcome: "copied" }, "a1")).toBe("pws.doctorCopied");
+    expect(doctorCopyButtonLabel(t, { accountId: "a1", outcome: "unavailable" }, "a1")).toBe("pws.doctorCopyUnavailable");
+    expect(doctorCopyButtonLabel(t, { accountId: "a1", outcome: "copied" }, "a2")).toBe("pws.copyDoctor");
+  });
+
+  test("copyTextToClipboard returns false when Clipboard API is missing", async () => {
+    const hadClipboard = "clipboard" in navigator;
+    const original = hadClipboard ? navigator.clipboard : undefined;
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    try {
+      expect(await copyTextToClipboard("ocx doctor")).toBe(false);
+    } finally {
+      if (hadClipboard) {
+        Object.defineProperty(navigator, "clipboard", { configurable: true, value: original });
+      } else {
+        // @ts-expect-error restore missing clipboard
+        delete (navigator as { clipboard?: Clipboard }).clipboard;
+      }
+    }
+  });
+
+  test("copyTextToClipboard uses writeText when available", async () => {
+    const hadClipboard = "clipboard" in navigator;
+    const original = hadClipboard ? navigator.clipboard : undefined;
+    const writeText = mock(async () => {});
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    try {
+      expect(await copyTextToClipboard("ocx doctor")).toBe(true);
+      expect(writeText).toHaveBeenCalledWith("ocx doctor");
+    } finally {
+      if (hadClipboard) {
+        Object.defineProperty(navigator, "clipboard", { configurable: true, value: original });
+      } else {
+        // @ts-expect-error restore missing clipboard
+        delete (navigator as { clipboard?: Clipboard }).clipboard;
+      }
+    }
   });
 
   test("maskAccountId never returns the full raw id for long values", () => {

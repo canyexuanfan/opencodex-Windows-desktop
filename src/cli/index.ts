@@ -539,13 +539,13 @@ async function handleStatus() {
       console.log(`      Suggested: ${status.json.codexPlugins.suggestedRepair}`);
     }
   }
-  const { collectOAuthHealthEntries, oauthLoginSummary } = await import("../oauth");
+  const { collectOAuthHealthEntriesForCli, oauthLoginSummary } = await import("../oauth");
   const { formatOAuthHealthForStatus } = await import("./status-oauth");
   console.log(`   OAuth logins:`);
   for (const e of oauthLoginSummary()) {
     console.log(`     ${e.provider.padEnd(10)} ${e.loggedIn ? `✓ logged in${e.email ? ` (${e.email})` : ""}` : "✗ not logged in"}`);
   }
-  const oauthHealthBlock = formatOAuthHealthForStatus(collectOAuthHealthEntries());
+  const oauthHealthBlock = formatOAuthHealthForStatus(await collectOAuthHealthEntriesForCli());
   if (oauthHealthBlock) {
     for (const line of oauthHealthBlock.split("\n")) {
       console.log(`   ${line}`);

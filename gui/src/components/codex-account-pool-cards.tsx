@@ -6,10 +6,14 @@ import type { CodexAccountModeState } from "../codex-multi-state";
 import QuotaBars from "./QuotaBars";
 import { CodexTicketBadge } from "./codex-account-pool-helpers";
 import {
+  doctorCopyButtonLabel,
+  formatOAuthHealthLabel,
+  formatOAuthHealthSummary,
   oauthHealthBadgeClass,
   oauthHealthIsCooldown,
   oauthHealthShowsDoctor,
   oauthHealthShowsReauth,
+  type DoctorCopyFeedback,
 } from "../oauth-health-display";
 
 export function CodexAccountPoolCards({
@@ -37,7 +41,7 @@ export function CodexAccountPoolCards({
   onEditAlias: (account: CodexAccountEntry) => void;
   onRemove: (id: string) => void;
   onCopyDoctor?: (accountId: string) => void;
-  copiedDoctorFor?: string | null;
+  copiedDoctorFor?: DoctorCopyFeedback | null;
 }) {
   const t = useT();
   const isNext = (id: string) => activeId === id;
@@ -48,6 +52,8 @@ export function CodexAccountPoolCards({
         const healthStatus = a.health?.status;
         const showReauth = Boolean(a.needsReauth) || oauthHealthShowsReauth(healthStatus);
         const inCooldown = oauthHealthIsCooldown(healthStatus);
+        const healthLabel = formatOAuthHealthLabel(t, a.health);
+        const healthSummary = formatOAuthHealthSummary(t, "codex", a.id, a.health);
         return (
         <div key={a.id} className={`card ${isNext(a.id) ? "card-active" : ""}`} style={{ marginBottom: 8 }}>
           <div className="card-head">
@@ -56,10 +62,10 @@ export function CodexAccountPoolCards({
             <span className="card-badges">
               {a.plan && <span className="badge badge-green">{a.plan}</span>}
               <CodexTicketBadge t={t} account={a} onClick={() => onOpenReset(a)} />
-              {a.healthLabel && a.healthLabel !== "Healthy" && (
-                <span className={oauthHealthBadgeClass(healthStatus)}>{a.healthLabel}</span>
+              {healthLabel && (
+                <span className={oauthHealthBadgeClass(healthStatus)}>{healthLabel}</span>
               )}
-              {showReauth && !a.healthLabel && <span className="badge badge-amber">{t("codexAuth.needsReauth")}</span>}
+              {showReauth && !healthLabel && <span className="badge badge-amber">{t("codexAuth.needsReauth")}</span>}
               {isNext(a.id) && !showReauth && !inCooldown && (
                 <span className="badge badge-primary">
                   {t(accountModeState === "direct" ? "codexAuth.poolPrepared" : "codexAuth.nextSession")}
@@ -78,7 +84,7 @@ export function CodexAccountPoolCards({
             )}
             {onCopyDoctor && oauthHealthShowsDoctor(healthStatus) && (
               <button type="button" className="btn btn-ghost btn-sm" onClick={() => onCopyDoctor(a.id)}>
-                {copiedDoctorFor === a.id ? t("pws.doctorCopied") : t("pws.copyDoctor")}
+                {doctorCopyButtonLabel(t, copiedDoctorFor, a.id)}
               </button>
             )}
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => void onEditAlias(a)}>
@@ -95,8 +101,8 @@ export function CodexAccountPoolCards({
             </button>
           </div>
           <div className="card-sub">{a.email}{a.plan ? ` · ${a.plan}` : ""} · {t("prov.accountId")}: {displayAccountId(a.id)}</div>
-          {a.healthSummary && a.healthLabel !== "Healthy" && (
-            <div className="card-sub faint">{a.healthSummary}</div>
+          {healthSummary && (
+            <div className="card-sub faint">{healthSummary}</div>
           )}
           {inCooldown && (
             <div className="card-sub faint">{t("pws.healthCooldownHint")}</div>

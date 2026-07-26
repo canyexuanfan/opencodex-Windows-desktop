@@ -3,7 +3,9 @@ import { isAccountNeedsReauth } from "../codex/account-runtime-state";
 import { getCodexAccountCredential, listCodexAccountIds } from "../codex/account-store";
 import { MAIN_CODEX_ACCOUNT_ID } from "../codex/main-account";
 import { maskAccountId } from "../lib/privacy";
-import { loadAuthStore, readOAuthRefreshIntent } from "./store";
+import { loadServiceTokenFromFile } from "../lib/service-secrets";
+import { findLiveProxy, probeHostname } from "../server/proxy-liveness";
+import { loadAuthStore, peekAuthStore, peekOAuthRefreshIntent, readOAuthRefreshIntent } from "./store";
 import type { ProviderAccount } from "./types";
 
 export type OAuthAccountHealth =
@@ -32,6 +34,16 @@ export type OAuthAccountHealthFields = {
   healthLabel: OAuthHealthLabel;
   healthSummary: string;
   healthAction?: string;
+};
+
+export type CollectOAuthHealthOptions = {
+  /** Skip chmod/backup side effects when reading credential files (doctor/status). */
+  observeOnly?: boolean;
+  /**
+   * When true (default), include Codex entries from this process's in-memory maps.
+   * CLI surfaces should prefer {@link collectOAuthHealthEntriesForCli} which queries the live proxy.
+   */
+  includeLocalCodex?: boolean;
 };
 
 type OAuthWarningReason = "refresh_conflict" | "metadata_mismatch" | "stale_credentials";
@@ -151,11 +163,12 @@ export function projectStoredOAuthAccountHealth(
   provider: string,
   account: ProviderAccount,
   now = Date.now(),
+  opts: { observeOnly?: boolean } = {},
 ): OAuthAccountHealth {
   return projectOAuthAccountHealth({
     needsReauth: account.needsReauth === true,
     reauthReason: account.needsReauth === true ? "refresh_failed" : undefined,
-    warningReason: detectOAuthWarning(provider, account),
+    warningReason: detectOAuthWarning(provider, account, opts.observeOnly === true),
     now,
   });
 }
@@ -176,11 +189,25 @@ export function projectCodexAccountHealth(input: {
   });
 }
 
-function detectOAuthWarning(provider: string, account: ProviderAccount): OAuthWarningReason | undefined {
-  const intent = readOAuthRefreshIntent(provider, account.id);
+/**
+ * Incomplete credentials warning. Kiro may intentionally store an empty refresh
+ * when authenticated via KIRO_ACCESS_TOKEN or a pasted access-only token.
+ */
+export function detectOAuthWarning(
+  provider: string,
+  account: ProviderAccount,
+  observeOnly = false,
+): OAuthWarningReason | undefined {
+  const intent = observeOnly
+    ? peekOAuthRefreshIntent(provider, account.id)
+    : readOAuthRefreshIntent(provider, account.id);
   if (intent?.uncertain) return "refresh_conflict";
   const cred = account.credential;
-  if (!cred?.access || !cred?.refresh) return "stale_credentials";
+  if (!cred?.access) return "stale_credentials";
+  if (!cred.refresh) {
+    if (provider === "kiro") return undefined;
+    return "stale_credentials";
+  }
   return undefined;
 }
 
@@ -206,22 +233,8 @@ function pushEntry(
   });
 }
 
-export function collectOAuthHealthEntries(now = Date.now()): OAuthHealthEntry[] {
+function collectLocalCodexEntries(now: number): OAuthHealthEntry[] {
   const entries: OAuthHealthEntry[] = [];
-  const store = loadAuthStore();
-
-  for (const [provider, set] of Object.entries(store)) {
-    for (const account of set.accounts) {
-      const health = projectOAuthAccountHealth({
-        needsReauth: account.needsReauth === true,
-        reauthReason: account.needsReauth === true ? "refresh_failed" : undefined,
-        warningReason: detectOAuthWarning(provider, account),
-        now,
-      });
-      pushEntry(entries, provider, account.id, health);
-    }
-  }
-
   const codexIds = new Set(listCodexAccountIds());
   codexIds.add(MAIN_CODEX_ACCOUNT_ID);
   for (const accountId of codexIds) {
@@ -239,6 +252,90 @@ export function collectOAuthHealthEntries(now = Date.now()): OAuthHealthEntry[] 
     });
     pushEntry(entries, "codex", accountId, health);
   }
+  return entries;
+}
 
+export function collectOAuthHealthEntries(
+  now = Date.now(),
+  opts: CollectOAuthHealthOptions = {},
+): OAuthHealthEntry[] {
+  const observeOnly = opts.observeOnly === true;
+  const includeLocalCodex = opts.includeLocalCodex !== false;
+  const entries: OAuthHealthEntry[] = [];
+  const store = observeOnly ? peekAuthStore() : loadAuthStore();
+
+  for (const [provider, set] of Object.entries(store)) {
+    for (const account of set.accounts) {
+      const health = projectOAuthAccountHealth({
+        needsReauth: account.needsReauth === true,
+        reauthReason: account.needsReauth === true ? "refresh_failed" : undefined,
+        warningReason: detectOAuthWarning(provider, account, observeOnly),
+        now,
+      });
+      pushEntry(entries, provider, account.id, health);
+    }
+  }
+
+  if (includeLocalCodex) {
+    for (const entry of collectLocalCodexEntries(now)) entries.push(entry);
+  }
+
+  return entries;
+}
+
+type ProxyCodexAccountHealth = {
+  id: string;
+  health?: OAuthAccountHealth;
+  needsReauth?: boolean;
+};
+
+async function fetchCodexHealthFromLiveProxy(
+  fetchImpl: typeof fetch = fetch,
+  findLiveProxyImpl: typeof findLiveProxy = findLiveProxy,
+): Promise<OAuthHealthEntry[] | null> {
+  const live = await findLiveProxyImpl();
+  if (!live) return null;
+  const token = process.env.OPENCODEX_API_AUTH_TOKEN ?? loadServiceTokenFromFile(process.env);
+  const headers: Record<string, string> = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  try {
+    const res = await fetchImpl(
+      `http://${probeHostname(live.hostname)}:${live.port}/api/codex-auth/accounts`,
+      { headers, signal: AbortSignal.timeout(4000) },
+    );
+    if (!res.ok) return null;
+    const json = await res.json() as { accounts?: ProxyCodexAccountHealth[] };
+    if (!Array.isArray(json.accounts)) return null;
+    const entries: OAuthHealthEntry[] = [];
+    for (const account of json.accounts) {
+      if (!account?.id || typeof account.id !== "string") continue;
+      const health = account.health
+        ?? projectOAuthAccountHealth({ needsReauth: account.needsReauth === true });
+      pushEntry(entries, "codex", account.id, health);
+    }
+    return entries;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * CLI/doctor collector: observe-only OAuth store reads, and Codex health from the
+ * running proxy process when reachable (cooldowns/reauth live in proxy memory).
+ */
+export async function collectOAuthHealthEntriesForCli(
+  now = Date.now(),
+  deps: {
+    fetchImpl?: typeof fetch;
+    findLiveProxyImpl?: typeof findLiveProxy;
+  } = {},
+): Promise<OAuthHealthEntry[]> {
+  const entries = collectOAuthHealthEntries(now, { observeOnly: true, includeLocalCodex: false });
+  const remote = await fetchCodexHealthFromLiveProxy(deps.fetchImpl, deps.findLiveProxyImpl);
+  if (remote) {
+    for (const entry of remote) entries.push(entry);
+  } else {
+    for (const entry of collectLocalCodexEntries(now)) entries.push(entry);
+  }
   return entries;
 }

@@ -15,7 +15,7 @@ import { CodexAccountResetModal } from "./codex-account-reset-modal";
 import { CodexAccountPoolLoadStates, CodexAccountPoolMainCard, CodexAccountPoolPageHead } from "./codex-account-pool-main-card";
 import { redeemResetCredit } from "./codex-account-pool-handlers";
 import type { CodexAccountEntry } from "./codex-account-pool-types";
-import { oauthHealthShowsReauth } from "../oauth-health-display";
+import { copyTextToClipboard, oauthHealthShowsReauth, type DoctorCopyFeedback } from "../oauth-health-display";
 
 // Single definition lives with the controller that owns this data (WP3).
 export type { CodexAccountEntry } from "../hooks/useCodexAccountPool";
@@ -65,13 +65,19 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
   const [redeeming, setRedeeming] = useState(false);
   const [creditDetails, setCreditDetails] = useState<{ granted_at: string; expires_at: string }[] | null>(null);
   const [creditDetailsLoading, setCreditDetailsLoading] = useState(false);
-  const [copiedDoctorFor, setCopiedDoctorFor] = useState<string | null>(null);
+  const [copiedDoctorFor, setCopiedDoctorFor] = useState<DoctorCopyFeedback | null>(null);
 
   const copyDoctor = useCallback((accountId: string) => {
-    navigator.clipboard.writeText(DOCTOR_CMD).then(() => {
-      setCopiedDoctorFor(accountId);
-      setTimeout(() => setCopiedDoctorFor(current => current === accountId ? null : current), 2500);
-    }).catch(() => {});
+    void copyTextToClipboard(DOCTOR_CMD).then((ok) => {
+      const feedback: DoctorCopyFeedback = {
+        accountId,
+        outcome: ok ? "copied" : "unavailable",
+      };
+      setCopiedDoctorFor(feedback);
+      setTimeout(() => setCopiedDoctorFor(current => (
+        current?.accountId === accountId && current.outcome === feedback.outcome ? null : current
+      )), 2500);
+    });
   }, []);
 
   // The controller owns loading and polling. This surface only feeds the auto-switch
@@ -251,7 +257,7 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
         onSwitch={setConfirm}
         onOpenReset={openResetPopup}
         onCopyDoctor={copyDoctor}
-        doctorCopied={copiedDoctorFor === (main?.id ?? "__main__")}
+        copiedDoctorFor={copiedDoctorFor}
       />
 
       <div className="section-sep">

@@ -1,9 +1,29 @@
 /**
- * Dashboard helpers for OAuth account health badges.
- * Labels/summaries come from the management API; this maps status → badge tone.
+ * Dashboard helpers for OAuth account health badges and localized copy.
+ * Structured `health` comes from the management API; labels/summaries are
+ * rendered via `t(...)` so non-English locales do not show English API text.
  */
 
+import type { TFn, TKey } from "./i18n";
+import { displayAccountId } from "./lib/privacy";
+
 export type OAuthHealthStatus = "healthy" | "cooldown" | "reauth_required" | "warning";
+
+export type OAuthHealthReason =
+  | "rate_limit"
+  | "quota"
+  | "unauthorized"
+  | "forbidden"
+  | "refresh_failed"
+  | "refresh_conflict"
+  | "metadata_mismatch"
+  | "stale_credentials";
+
+export type OAuthHealthView = {
+  status: OAuthHealthStatus;
+  reason?: OAuthHealthReason | string;
+  until?: string;
+};
 
 export type OAuthHealthBadgeTone = "ok" | "warn" | "muted";
 
@@ -35,3 +55,82 @@ export function oauthHealthIsCooldown(status: OAuthHealthStatus | undefined): bo
 export function oauthHealthShowsDoctor(status: OAuthHealthStatus | undefined): boolean {
   return status === "warning" || status === "reauth_required";
 }
+
+export function oauthHealthLabelKey(health: OAuthHealthView | undefined): TKey | null {
+  if (!health || health.status === "healthy") return null;
+  if (health.status === "cooldown") return "pws.healthLabel.rateLimited";
+  if (health.status === "reauth_required") {
+    return health.reason === "refresh_failed"
+      ? "pws.healthLabel.refreshFailed"
+      : "pws.healthLabel.reauthRequired";
+  }
+  switch (health.reason) {
+    case "refresh_conflict":
+      return "pws.healthLabel.credentialConflict";
+    case "metadata_mismatch":
+      return "pws.healthLabel.metadataMismatch";
+    case "stale_credentials":
+      return "pws.healthLabel.refreshFailed";
+    default:
+      return "pws.healthLabel.reauthRequired";
+  }
+}
+
+export function formatOAuthHealthLabel(t: TFn, health: OAuthHealthView | undefined): string | null {
+  const key = oauthHealthLabelKey(health);
+  return key ? t(key) : null;
+}
+
+export function formatOAuthHealthSummary(
+  t: TFn,
+  provider: string,
+  accountId: string,
+  health: OAuthHealthView | undefined,
+): string | null {
+  if (!health || health.status === "healthy") return null;
+  const account = displayAccountId(accountId);
+  if (health.status === "cooldown") {
+    const until = health.until ? new Date(health.until).toLocaleString() : "";
+    return t(
+      health.reason === "rate_limit" ? "pws.healthSummary.rateLimited" : "pws.healthSummary.quotaLimited",
+      { provider, account, until },
+    );
+  }
+  if (health.status === "reauth_required") {
+    return t("pws.healthSummary.reauthRequired", { provider, account });
+  }
+  if (health.reason === "refresh_conflict") {
+    return t("pws.healthSummary.credentialConflict", { provider, account });
+  }
+  if (health.reason === "metadata_mismatch") {
+    return t("pws.healthSummary.metadataMismatch", { provider, account });
+  }
+  return t("pws.healthSummary.staleCredentials", { provider, account });
+}
+
+/** Safe clipboard write: no throw when Clipboard API is missing (non-secure contexts). */
+export async function copyTextToClipboard(text: string): Promise<boolean> {
+  const write = navigator.clipboard?.writeText?.bind(navigator.clipboard);
+  if (!write) return false;
+  try {
+    await write(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export type DoctorCopyFeedback = {
+  accountId: string;
+  outcome: "copied" | "unavailable";
+};
+
+export function doctorCopyButtonLabel(
+  t: TFn,
+  feedback: DoctorCopyFeedback | null | undefined,
+  accountId: string,
+): string {
+  if (feedback?.accountId !== accountId) return t("pws.copyDoctor");
+  return feedback.outcome === "copied" ? t("pws.doctorCopied") : t("pws.doctorCopyUnavailable");
+}
+
