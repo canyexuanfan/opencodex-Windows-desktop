@@ -9,6 +9,7 @@ import {
   renderDesktopProfile,
   type DesktopProfileModel,
 } from "./desktop-profile";
+import { nativeOpenAiContextWindow } from "../codex/catalog";
 
 export interface Desktop3pModelEntry {
   name: string;
@@ -117,7 +118,13 @@ function collectDesktop3pModels(
   const registry = new Map<string, string>();
   const models: Desktop3pModelEntry[] = [];
   const candidates: Desktop3pRoutedModel[] = [
-    ...nativeSlugs.map(id => ({ provider: "native", id })),
+    // Native candidates carry their real context window from the same accessor the
+    // Desktop DTO uses, so a native 1M/372k model resolves identically in the written
+    // config and on the dashboard.
+    ...nativeSlugs.map(id => {
+      const contextWindow = nativeOpenAiContextWindow(id);
+      return { provider: "native", id, ...(contextWindow !== undefined ? { contextWindow } : {}) };
+    }),
     ...routedModels,
   ];
 

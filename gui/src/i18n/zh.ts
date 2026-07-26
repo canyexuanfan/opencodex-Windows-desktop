@@ -1301,6 +1301,7 @@ export const zh: Record<TKey, string> = {
   "claudeDesktop.unavailable": "不可用",
   "claudeDesktop.contextM": "{n}M 上下文",
   "claudeDesktop.contextK": "{n}k 上下文",
+  "claudeDesktop.contextUnknown": "上下文未知",
   "claudeDesktop.alias": "别名",
   "claudeDesktop.useAsDefault": "设为 {family} 默认模型",
   "claudeDesktop.moveTo": "移动到",

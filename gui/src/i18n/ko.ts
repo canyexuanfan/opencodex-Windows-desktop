@@ -1301,6 +1301,7 @@ export const ko: Record<TKey, string> = {
   "claudeDesktop.unavailable": "사용 불가",
   "claudeDesktop.contextM": "컨텍스트 {n}M",
   "claudeDesktop.contextK": "컨텍스트 {n}k",
+  "claudeDesktop.contextUnknown": "컨텍스트 불명",
   "claudeDesktop.alias": "별칭",
   "claudeDesktop.useAsDefault": "{family} 기본 모델로 사용",
   "claudeDesktop.moveTo": "이동 위치",

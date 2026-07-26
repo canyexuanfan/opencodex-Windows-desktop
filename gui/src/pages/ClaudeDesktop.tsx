@@ -103,6 +103,9 @@ function errorMessage(value: unknown, fallback: string): string {
 
 function formatContextWindow(value: number | undefined, t: TFn): string | null {
   if (!value) return null;
+  // 1 MiB and above is a whole "1M": providers report 2^20 (1048576), and
+  // 1048576 / 1e6 = 1.048576 reads as a bug.
+  if (value >= 1_048_576) return t("claudeDesktop.contextM", { n: Math.round(value / 1_048_576) });
   return value >= 1_000_000
     ? t("claudeDesktop.contextM", { n: value / 1_000_000 })
     : t("claudeDesktop.contextK", { n: Math.round(value / 1_000) });
@@ -459,6 +462,9 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
                         <code title={model.route}>{model.route}</code>
                       </span>
                       {context && <span className="claude-model-context">{context}</span>}
+                      {/* Distinguish "we do not know the window" from "we know it is
+                          small": a blank reads as broken. */}
+                      {!context && <span className="claude-model-context claude-model-context-unknown">{t("claudeDesktop.contextUnknown")}</span>}
                       {model.effortSupported === false && <span className="claude-effort-badge off">{t("claudeDesktop.effort.displayOnly")}</span>}
                       {model.effortSupported === true && <span className="claude-effort-badge on">{t("claudeDesktop.effort.supported")}</span>}
                       {profile.defaults[family] === model.route && (

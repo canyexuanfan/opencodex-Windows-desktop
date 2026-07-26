@@ -187,11 +187,17 @@ export function stripRegistryOnlyStaticHeaders(name: string, provider: OcxProvid
 
 /** Shared Desktop profile DTO builder for the management API and CLI. */
 export async function buildClaudeDesktopState(config: OcxConfig, stored?: OcxClaudeDesktopProfile) {
-  const { filterCatalogVisibleModels, visibleNativeSlugs } = await import("../../codex/catalog");
+  const { filterCatalogVisibleModels, nativeOpenAiContextWindow, visibleNativeSlugs } = await import("../../codex/catalog");
   const { reconcileDesktopProfile, renderDesktopProfile } = await import("../../claude/desktop-profile");
   const routed = filterCatalogVisibleModels(await fetchAllModels(config), config);
   const profileModels: DesktopProfileModel[] = [
-    ...visibleNativeSlugs(config).map(id => ({ route: `native/${id}`, label: `${id} (native)` })),
+    // Native rows carry their real context window from the same accessor the Grok sync
+    // uses — otherwise Sol's 372k and gpt-5.5's 272k render as blank on Desktop.
+    ...visibleNativeSlugs(config).map(id => {
+      const contextWindow = nativeOpenAiContextWindow(id);
+      return { route: `native/${id}`, label: `${id} (native)`,
+        ...(contextWindow !== undefined ? { contextWindow } : {}) };
+    }),
     ...routed.map(model => ({
       route: `${model.provider}/${model.id}`,
       label: `${model.id} (${model.provider})`,

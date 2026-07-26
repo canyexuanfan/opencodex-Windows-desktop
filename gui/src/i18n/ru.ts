@@ -1207,6 +1207,7 @@ export const ru: Record<TKey, string> = {
   "claudeDesktop.unavailable": "Недоступно",
   "claudeDesktop.contextM": "Контекст {n}M",
   "claudeDesktop.contextK": "Контекст {n}k",
+  "claudeDesktop.contextUnknown": "контекст неизвестен",
   "claudeDesktop.alias": "Псевдоним",
   "claudeDesktop.useAsDefault": "Сделать по умолчанию для {family}",
   "claudeDesktop.moveTo": "Переместить в",

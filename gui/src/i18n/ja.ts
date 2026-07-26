@@ -1162,6 +1162,7 @@ export const ja: Record<TKey, string> = {
   "claudeDesktop.unavailable": "利用不可",
   "claudeDesktop.contextM": "{n}M コンテキスト",
   "claudeDesktop.contextK": "{n}k コンテキスト",
+  "claudeDesktop.contextUnknown": "コンテキスト不明",
   "claudeDesktop.alias": "エイリアス",
   "claudeDesktop.useAsDefault": "{family} のデフォルトに設定",
   "claudeDesktop.moveTo": "移動先",

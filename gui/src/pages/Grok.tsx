@@ -20,6 +20,9 @@ interface GrokStatus {
 /** Same context formatting the Desktop page uses, so the two surfaces read alike. */
 function formatContext(value: number | undefined, t: TFn): string {
   if (!value) return "—";
+  // 1 MiB and above is a whole "1M": providers report 2^20 (1048576), and
+  // 1048576 / 1e6 = 1.048576 reads as a bug.
+  if (value >= 1_048_576) return t("claudeDesktop.contextM", { n: Math.round(value / 1_048_576) });
   return value >= 1_000_000
     ? t("claudeDesktop.contextM", { n: value / 1_000_000 })
     : t("claudeDesktop.contextK", { n: Math.round(value / 1_000) });

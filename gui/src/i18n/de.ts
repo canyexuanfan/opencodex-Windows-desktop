@@ -1281,6 +1281,7 @@ export const de: Record<TKey, string> = {
   "claudeDesktop.unavailable": "Nicht verfügbar",
   "claudeDesktop.contextM": "{n}M Kontext",
   "claudeDesktop.contextK": "{n}k Kontext",
+  "claudeDesktop.contextUnknown": "Kontext unbekannt",
   "claudeDesktop.alias": "Alias",
   "claudeDesktop.useAsDefault": "Als {family}-Standard verwenden",
   "claudeDesktop.moveTo": "Verschieben nach",

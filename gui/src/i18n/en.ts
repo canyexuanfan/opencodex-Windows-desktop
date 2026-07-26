@@ -1303,6 +1303,7 @@ export const en = {
   "claudeDesktop.unavailable": "Unavailable",
   "claudeDesktop.contextM": "{n}M context",
   "claudeDesktop.contextK": "{n}k context",
+  "claudeDesktop.contextUnknown": "context unknown",
   "claudeDesktop.alias": "Alias",
   "claudeDesktop.useAsDefault": "Use as {family} default",
   "claudeDesktop.moveTo": "Move to",
