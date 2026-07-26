@@ -28,6 +28,32 @@ ocx claude
 | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `DISABLE_COMPACT` | Legacy context override when `maxContextTokens` is set (conditional) |
 Variables you export yourself always win. Extra arguments pass through: `ocx claude -p "hello"`.
 
+## Auth mode
+
+Claude Code needs a token in `ANTHROPIC_AUTH_TOKEN` to talk to a gateway, but setting that
+variable also disables your claude.ai login and its connectors. Which of the two you want
+depends on something opencodex can look up, so by default it does.
+
+Leave **Auth mode** on **Auto** (the default) in **Claude → Claude Code** and opencodex
+decides at each launch:
+
+| What it finds | What it does |
+| --- | --- |
+| A Claude login (`~/.claude.json` OAuth account, `.credentials.json`, the macOS keychain, or an exported `ANTHROPIC_API_KEY`) | Leaves the token unset, so your subscription and connectors keep working |
+| No Claude auth at all | Injects a placeholder token, so Claude Code stops asking you to log in and routes through the proxy |
+| It cannot tell (unreadable keychain, corrupt file) | Assumes subscription and prints a warning — it never moves a paying subscriber onto the proxy on a failed read |
+
+This is recomputed every launch, not remembered, so logging in or out is picked up on the
+next `ocx claude` with nothing to reconfigure.
+
+Pick **Subscription** or **Proxy** explicitly when you want it fixed. An explicit choice is
+stored in `claudeCode.authMode` and detection never overrides it — including after you log
+in or out later. Switch back to Auto to hand the decision back.
+
+On macOS, auto-connect (`claudeCode.systemEnv`) follows the same resolution, so a plain
+`claude` launched outside `ocx` behaves the same way. That file is a snapshot refreshed when
+the proxy starts or you save settings, while `ocx claude` always resolves live.
+
 ## System environment integration (macOS)
 
 ## Claude Desktop profile

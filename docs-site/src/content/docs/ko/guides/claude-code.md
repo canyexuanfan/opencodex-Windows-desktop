@@ -28,6 +28,31 @@ ocx claude
 | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `DISABLE_COMPACT` | `maxContextTokens`가 설정된 경우 기존 컨텍스트 재정의 값 (조건부) |
 직접 내보낸 변수가 항상 우선해요. 추가 인자는 그대로 전달돼요: `ocx claude -p "hello"`.
 
+## 인증 모드
+
+Claude Code가 게이트웨이와 통신하려면 `ANTHROPIC_AUTH_TOKEN`에 토큰이 필요해요. 그런데 이 변수를
+설정하면 claude.ai 로그인과 커넥터가 꺼져요. 둘 중 무엇이 필요한지는 지금 이 컴퓨터에 Claude
+로그인이 있느냐에 달려 있고, 그건 opencodex가 직접 확인할 수 있어요.
+
+**Claude → Claude Code**의 **인증 모드**를 기본값인 **자동**으로 두면 실행할 때마다 이렇게 판단해요.
+
+| 발견한 것 | 동작 |
+| --- | --- |
+| Claude 로그인(`~/.claude.json`의 OAuth 계정, `.credentials.json`, macOS 키체인, 내보낸 `ANTHROPIC_API_KEY`) | 토큰을 설정하지 않아요. 구독과 커넥터가 그대로 유지돼요 |
+| Claude 인증이 전혀 없음 | 더미 토큰을 넣어요. Claude Code가 로그인을 요구하지 않고 프록시로 라우팅돼요 |
+| 확인 실패(키체인 접근 거부, 파일 손상 등) | 구독으로 간주하고 경고를 출력해요. 읽기에 실패했다고 구독자를 프록시로 옮기지는 않아요 |
+
+이 판단은 저장하지 않고 실행할 때마다 다시 계산해요. 그래서 로그인하거나 로그아웃하면 다음
+`ocx claude`부터 알아서 반영돼요.
+
+고정하고 싶다면 **구독** 또는 **프록시**를 직접 선택하세요. 직접 고른 값은 `claudeCode.authMode`에
+저장되고, 이후에 로그인 상태가 바뀌어도 자동 감지가 이 값을 덮어쓰지 않아요. 다시 자동으로
+돌리면 판단을 opencodex에 넘겨요.
+
+macOS의 자동 연결(`claudeCode.systemEnv`)도 같은 방식으로 판단하므로, `ocx` 없이 실행한 `claude`도
+동일하게 동작해요. 다만 이쪽은 프록시가 시작하거나 설정을 저장할 때 갱신되는 스냅숏이고,
+`ocx claude`는 실행할 때마다 실시간으로 판단해요.
+
 ## 시스템 환경 통합(macOS)
 
 `claudeCode.systemEnv`를 `true`로 설정하면(기본값: **꺼짐**) `ocx start`가 `launchctl setenv`를
