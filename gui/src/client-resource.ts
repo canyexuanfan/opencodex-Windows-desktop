@@ -16,6 +16,8 @@ type Store<T> = {
   subscriberCount: number;
   pollTimer: ReturnType<typeof setInterval> | null;
   inflight: AbortController | null;
+  /** Subscriber that started the current in-flight request (if any). */
+  inflightOwner: (() => void) | null;
   generation: number;
 };
 
@@ -38,6 +40,7 @@ function getStore<T>(key: string): Store<T> {
       subscriberCount: 0,
       pollTimer: null,
       inflight: null,
+      inflightOwner: null,
       generation: 0,
     };
     stores.set(key, store);
@@ -57,16 +60,18 @@ function clearPollTimer<T>(store: Store<T>) {
 }
 
 /** Prefer a polling subscriber's fetcher; otherwise any remaining subscriber. */
-function pickFetcher<T>(
+function pickFetcherEntry<T>(
   store: Store<T>,
-): ((signal: AbortSignal) => Promise<T>) | null {
+): { owner: () => void; fetcher: (signal: AbortSignal) => Promise<T> } | null {
   for (const [listener, ms] of store.pollByListener) {
     if (typeof ms === "number" && ms > 0) {
       const fetcher = store.fetcherByListener.get(listener);
-      if (fetcher) return fetcher;
+      if (fetcher) return { owner: listener, fetcher };
     }
   }
-  for (const fetcher of store.fetcherByListener.values()) return fetcher;
+  for (const [listener, fetcher] of store.fetcherByListener) {
+    return { owner: listener, fetcher };
+  }
   return null;
 }
 
@@ -81,17 +86,17 @@ function recomputePoll<T>(store: Store<T>) {
   }
   if (pollMs === undefined) return;
   store.pollTimer = setInterval(() => {
-    const fetcher = pickFetcher(store);
-    if (!fetcher) return;
+    const entry = pickFetcherEntry(store);
+    if (!entry) return;
     // Skip ticks while a request is in flight so slow polls can finish.
-    void runFetch(store, fetcher, { replaceInflight: false });
+    void runFetch(store, entry.fetcher, { replaceInflight: false, owner: entry.owner });
   }, pollMs);
 }
 
 async function runFetch<T>(
   store: Store<T>,
   fetcher: (signal: AbortSignal) => Promise<T>,
-  options?: { replaceInflight?: boolean },
+  options?: { replaceInflight?: boolean; owner?: (() => void) | null },
 ) {
   const replaceInflight = options?.replaceInflight !== false;
   if (store.inflight && !replaceInflight) return;
@@ -99,6 +104,7 @@ async function runFetch<T>(
   if (replaceInflight) store.inflight?.abort();
   const controller = new AbortController();
   store.inflight = controller;
+  store.inflightOwner = options?.owner ?? null;
   const gen = ++store.generation;
 
   // Only treat missing cache as "empty" — falsy values (false/0/null/"") are valid data.
@@ -115,9 +121,20 @@ async function runFetch<T>(
     if (gen !== store.generation || controller.signal.aborted) return;
     store.snapshot = { ...store.snapshot, error, loading: false };
   } finally {
-    if (store.inflight === controller) store.inflight = null;
+    if (store.inflight === controller) {
+      store.inflight = null;
+      store.inflightOwner = null;
+    }
     emit(store);
   }
+}
+
+function abortInflightOwnedBy<T>(store: Store<T>, owner: () => void) {
+  if (store.inflightOwner !== owner) return;
+  store.inflight?.abort();
+  store.inflight = null;
+  store.inflightOwner = null;
+  store.generation++;
 }
 
 function subscribeResource<T>(
@@ -133,7 +150,7 @@ function subscribeResource<T>(
   store.subscriberCount++;
 
   if (store.subscriberCount === 1) {
-    void runFetch(store, fetcher, { replaceInflight: true });
+    void runFetch(store, fetcher, { replaceInflight: true, owner: onStoreChange });
   }
   recomputePoll(store);
 
@@ -142,9 +159,12 @@ function subscribeResource<T>(
     store.pollByListener.delete(onStoreChange);
     store.fetcherByListener.delete(onStoreChange);
     store.subscriberCount--;
+    // Drop this subscriber's in-flight work so a late resolve cannot stomp shared data.
+    abortInflightOwnedBy(store, onStoreChange);
     if (store.subscriberCount === 0) {
       store.inflight?.abort();
       store.inflight = null;
+      store.inflightOwner = null;
       clearPollTimer(store);
       stores.delete(key);
       return;
@@ -173,9 +193,12 @@ export function useClientResource<T>(
     [],
   );
 
+  const listenerRef = useRef<(() => void) | null>(null);
+
   const subscribe = useCallback(
     (onStoreChange: () => void) => {
       if (!enabled) return () => {};
+      listenerRef.current = onStoreChange;
       return subscribeResource(key, stableFetcher, pollMs, onStoreChange);
     },
     [key, stableFetcher, pollMs, enabled],
@@ -190,7 +213,10 @@ export function useClientResource<T>(
 
   const refresh = useCallback(() => {
     if (!enabled) return;
-    void runFetch(getStore<T>(key), stableFetcher, { replaceInflight: true });
+    void runFetch(getStore<T>(key), stableFetcher, {
+      replaceInflight: true,
+      owner: listenerRef.current,
+    });
   }, [key, stableFetcher, enabled]);
 
   return { ...snapshot, refresh };
@@ -234,6 +260,7 @@ export function setClientResourceData<T>(key: string, data: T) {
   const store = getStore<T>(key);
   store.inflight?.abort();
   store.inflight = null;
+  store.inflightOwner = null;
   store.generation++;
   store.snapshot = { data, error: undefined, loading: false };
   emit(store);

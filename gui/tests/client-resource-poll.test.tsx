@@ -96,3 +96,86 @@ test("after the latest subscriber unmounts, polling continues with the surviving
   });
   container.remove();
 });
+
+test("unmounting the subscriber that owns an in-flight request must not overwrite remaining data", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+
+  const KEY = `inflight-owner-${Date.now()}`;
+  let resolveB!: (value: string) => void;
+  const deferredB = new Promise<string>((resolve) => {
+    resolveB = resolve;
+  });
+
+  type HarnessApi = {
+    dropB: () => void;
+    refreshB: () => void;
+    readA: () => string | undefined;
+  };
+  const api: HarnessApi = {
+    dropB: () => {},
+    refreshB: () => {},
+    readA: () => undefined,
+  };
+
+  function SubscriberA() {
+    const resource = useClientResource(KEY, async () => "from-A");
+    useEffect(() => {
+      api.readA = () => resource.data;
+    }, [resource.data]);
+    return <span data-a={resource.data ?? ""} />;
+  }
+
+  function SubscriberB() {
+    const resource = useClientResource(KEY, async () => deferredB);
+    useEffect(() => {
+      api.refreshB = () => resource.refresh();
+    }, [resource.refresh]);
+    return <span data-b="" />;
+  }
+
+  function Harness() {
+    const [showB, setShowB] = useState(true);
+    useEffect(() => {
+      api.dropB = () => setShowB(false);
+    }, []);
+    return (
+      <>
+        <SubscriberA />
+        {showB ? <SubscriberB /> : null}
+      </>
+    );
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Harness />);
+  });
+
+  await act(async () => {
+    await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 20));
+  });
+  expect(api.readA()).toBe("from-A");
+
+  await act(async () => {
+    api.refreshB();
+  });
+
+  await act(async () => {
+    api.dropB();
+  });
+
+  await act(async () => {
+    resolveB("from-B");
+    await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 20));
+  });
+
+  expect(api.readA()).toBe("from-A");
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
