@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * The single-writer boundary (WP3, audit blocker 1): injectGrokConfig is the ONLY
@@ -18,7 +19,9 @@ function* walk(dir: string): Generator<string> {
   }
 }
 
-const SRC = new URL("../src", import.meta.url).pathname;
+// fileURLToPath, not .pathname: on Windows .pathname keeps a leading slash before the
+// drive letter (\D:\a\...), which breaks fs calls on CI.
+const SRC = fileURLToPath(new URL("../src", import.meta.url));
 
 test("only src/grok/inject.ts writes a grok config.toml", () => {
   const writers: string[] = [];
