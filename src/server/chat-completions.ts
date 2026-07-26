@@ -14,6 +14,7 @@ import {
   responsesJsonToChatCompletion,
   responsesSseToChatCompletionsSse,
 } from "../chat/outbound";
+import { classifyError } from "../lib/errors";
 import { estimateTokens } from "../lib/token-estimate";
 import { routeModel } from "../router";
 import { resolveWireProtocolOverride } from "./adapter-resolve";
@@ -152,30 +153,52 @@ export async function handleChatCompletions(
 
   if (!response.ok) {
     let message = `upstream error (${response.status})`;
+    let upstreamCode: string | null | undefined;
+    let upstreamType: string | undefined;
     try {
       const text = await response.text();
       try {
-        const parsed = JSON.parse(text) as { error?: { message?: string; type?: string } | string; message?: string };
-        const nested = typeof parsed?.error === "object" && parsed.error ? parsed.error.message : undefined;
+        const parsed = JSON.parse(text) as {
+          error?: { message?: string; type?: string; code?: string | null } | string;
+          message?: string;
+        };
+        const nested = typeof parsed?.error === "object" && parsed.error ? parsed.error : undefined;
         const flat = typeof parsed?.error === "string" ? parsed.error : parsed?.message;
-        message = nested || flat || (text ? `upstream error (${response.status}): ${text.slice(0, 400)}` : message);
+        message = nested?.message || flat || (text ? `upstream error (${response.status}): ${text.slice(0, 400)}` : message);
+        if (nested) {
+          if (typeof nested.type === "string") upstreamType = nested.type;
+          if (nested.code === null || typeof nested.code === "string") upstreamCode = nested.code;
+        }
       } catch {
         if (text) message = `upstream error (${response.status}): ${text.slice(0, 400)}`;
       }
     } catch { /* keep fallback */ }
     const retryAfter = response.headers.get("retry-after");
-    return new Response(JSON.stringify({
-      error: {
-        message,
-        type: response.status === 401 ? "authentication_error"
+    const classified = classifyError(
+      response.status,
+      upstreamType
+        ?? (response.status === 401 ? "authentication_error"
           : response.status === 429 ? "rate_limit_error"
           : response.status >= 500 ? "server_error"
-          : "invalid_request_error",
+          : "invalid_request_error"),
+      message,
+    );
+    if (upstreamCode === "cyber_policy") {
+      classified.code = "cyber_policy";
+      classified.type = "invalid_request_error";
+    } else if (upstreamCode !== undefined && upstreamCode !== null && classified.code == null) {
+      classified.code = upstreamCode;
+    }
+    const status = classified.code === "cyber_policy" ? 400 : response.status;
+    return new Response(JSON.stringify({
+      error: {
+        message: classified.message,
+        type: classified.type,
         param: null,
-        code: null,
+        code: classified.code,
       },
     }), {
-      status: response.status,
+      status,
       headers: {
         "Content-Type": "application/json",
         ...(retryAfter ? { "Retry-After": retryAfter } : {}),
@@ -206,7 +229,7 @@ export async function handleChatCompletions(
       });
     } catch (err) {
       if (isChatCompletionsStreamError(err)) {
-        return chatCompletionsErrorResponse(err.status, err.message, err.type);
+        return chatCompletionsErrorResponse(err.status, err.message, err.type, err.code);
       }
       return chatCompletionsErrorResponse(
         502,
@@ -225,8 +248,19 @@ export async function handleChatCompletions(
   }
   const status = (json as Rec)?.status;
   if (status === "failed") {
-    const error = (json as { error?: { message?: string } }).error;
-    return chatCompletionsErrorResponse(502, error?.message ?? "upstream request failed", "server_error");
+    const error = (json as { error?: { message?: string; type?: string; code?: string | null } }).error;
+    const message = error?.message ?? "upstream request failed";
+    const classified = classifyError(502, error?.type ?? "server_error", message);
+    if (error?.code === "cyber_policy") {
+      classified.code = "cyber_policy";
+      classified.type = "invalid_request_error";
+    }
+    return chatCompletionsErrorResponse(
+      classified.code === "cyber_policy" ? 400 : 502,
+      message,
+      classified.type,
+      classified.code,
+    );
   }
   const completion = responsesJsonToChatCompletion(json, requestedModel);
   if (!stream) {

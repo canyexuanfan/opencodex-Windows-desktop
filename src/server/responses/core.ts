@@ -322,12 +322,20 @@ export async function consumeComboFailure(
   const fallback = `Provider error ${response.status}`;
   let classificationText = fallback;
   let usage: OcxUsage | undefined;
+  let upstreamCode: string | undefined;
   try {
     const body = await readBoundedResponseBody(response, { signal });
     usage = usageFromComboFailureText(body.text);
     if (body.displaySafe) {
       const safeText = redactSecretString(body.text).slice(0, 500);
       if (safeText) classificationText = safeText;
+      try {
+        const parsed = JSON.parse(body.text) as { error?: { code?: unknown } | string };
+        const nested = typeof parsed?.error === "object" && parsed.error ? parsed.error.code : undefined;
+        if (typeof nested === "string" && nested.length > 0) upstreamCode = nested;
+      } catch {
+        /* non-JSON upstream body — message-only classification */
+      }
     }
   } catch (error) {
     if (signal?.aborted) throw error;
@@ -338,7 +346,9 @@ export async function consumeComboFailure(
     : `${fallback}: ${classificationText}`;
   const retryAfter = sanitizedRetryAfter(response.headers.get("retry-after"), now);
   return {
-    response: formatErrorResponse(response.status, "upstream_error", message),
+    response: formatErrorResponse(response.status, "upstream_error", message, {
+      ...(upstreamCode !== undefined ? { code: upstreamCode } : {}),
+    }),
     classificationText,
     ...(retryAfter !== undefined ? { retryAfter } : {}),
     ...(usage ? { usage } : {}),

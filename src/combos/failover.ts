@@ -83,6 +83,8 @@ export function comboFailureDecision(status: number, message: string): ComboFail
   if (status === 499) return "stop";
   if (message.toLowerCase().includes("origin_rejected")) return "stop";
   const error = classifyError(status, "upstream_error", message);
+  // Cyber policy is a hard non-retryable refusal — do not hop even if status looks transient.
+  if (error.code === "cyber_policy") return "stop";
   if (["origin_rejected", "context_length_exceeded", "invalid_request_error"].includes(error.code ?? "")) {
     return "stop";
   }
