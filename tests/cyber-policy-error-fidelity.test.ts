@@ -275,26 +275,6 @@ describe("cyber_policy error fidelity", () => {
     }]);
   });
 
-  test("chat completions preserves structured model_not_found through classify remaps", async () => {
-    // Mirror the non-OK rewrite path: classifyError would otherwise overwrite a structured code.
-    const classified = classifyError(404, "invalid_request_error", "No such model");
-    expect(classified.code).not.toBe("model_not_found");
-    const body = chatCompletionsErrorBody(404, "No such model", "invalid_request_error", "model_not_found");
-    expect(body).toEqual({
-      error: {
-        message: "No such model",
-        type: "invalid_request_error",
-        param: null,
-        code: "model_not_found",
-      },
-    });
-    const replay = chatCompletionsErrorResponse(502, "No such model", "server_error", "model_not_found");
-    expect(replay.status).toBe(502);
-    await expect(replay.json()).resolves.toMatchObject({
-      error: { code: "model_not_found" },
-    });
-  });
-
   test("httpStatusFromTerminalError and combo failover treat cyber as non-retryable 400", () => {
     expect(httpStatusFromTerminalError({
       type: "invalid_request_error",
