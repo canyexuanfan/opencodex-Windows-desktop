@@ -14,7 +14,8 @@ import {
   responsesJsonToChatCompletion,
   responsesSseToChatCompletionsSse,
 } from "../chat/outbound";
-import { classifyError } from "../lib/errors";
+import { classifyError, CYBER_POLICY_ERROR_CODE, isCyberPolicyCode } from "../lib/errors";
+import { redactSecretString } from "../lib/redact";
 import { estimateTokens } from "../lib/token-estimate";
 import { routeModel } from "../router";
 import { resolveWireProtocolOverride } from "./adapter-resolve";
@@ -147,16 +148,15 @@ export async function handleChatCompletions(
     onNativePassthroughTerminal: status => finalizeNativeLog(httpStatusForTerminalStatus(status), { terminalStatus: status, closeReason: "terminal" }),
     onNativePassthroughCancel: () => finalizeNativeLog(499, { closeReason: "client_cancel" }),
   });
-  const response = logIds
-    ? responseWithDeferredRequestLog(upstream, logIds.requestId, logIds.start, logCtx)
-    : upstream;
 
-  if (!response.ok) {
-    let message = `upstream error (${response.status})`;
+  // Rewrite non-2xx before deferred logging so /api/logs records the client-facing status
+  // (e.g. cyber_policy remapped from a passthrough 5xx to HTTP 400).
+  if (!upstream.ok) {
+    let message = `upstream error (${upstream.status})`;
     let upstreamCode: string | null | undefined;
     let upstreamType: string | undefined;
     try {
-      const text = await response.text();
+      const text = await upstream.text();
       try {
         const parsed = JSON.parse(text) as {
           error?: { message?: string; type?: string; code?: string | null } | string;
@@ -164,33 +164,36 @@ export async function handleChatCompletions(
         };
         const nested = typeof parsed?.error === "object" && parsed.error ? parsed.error : undefined;
         const flat = typeof parsed?.error === "string" ? parsed.error : parsed?.message;
-        message = nested?.message || flat || (text ? `upstream error (${response.status}): ${text.slice(0, 400)}` : message);
+        const rawFallback = text
+          ? `upstream error (${upstream.status}): ${redactSecretString(text).slice(0, 400)}`
+          : message;
+        message = nested?.message || flat || rawFallback;
         if (nested) {
           if (typeof nested.type === "string") upstreamType = nested.type;
           if (nested.code === null || typeof nested.code === "string") upstreamCode = nested.code;
         }
       } catch {
-        if (text) message = `upstream error (${response.status}): ${text.slice(0, 400)}`;
+        if (text) message = `upstream error (${upstream.status}): ${redactSecretString(text).slice(0, 400)}`;
       }
     } catch { /* keep fallback */ }
-    const retryAfter = response.headers.get("retry-after");
+    const retryAfter = upstream.headers.get("retry-after");
     const classified = classifyError(
-      response.status,
+      upstream.status,
       upstreamType
-        ?? (response.status === 401 ? "authentication_error"
-          : response.status === 429 ? "rate_limit_error"
-          : response.status >= 500 ? "server_error"
+        ?? (upstream.status === 401 ? "authentication_error"
+          : upstream.status === 429 ? "rate_limit_error"
+          : upstream.status >= 500 ? "server_error"
           : "invalid_request_error"),
       message,
     );
-    if (upstreamCode === "cyber_policy") {
-      classified.code = "cyber_policy";
+    if (isCyberPolicyCode(upstreamCode)) {
+      classified.code = CYBER_POLICY_ERROR_CODE;
       classified.type = "invalid_request_error";
     } else if (upstreamCode !== undefined && upstreamCode !== null && classified.code == null) {
       classified.code = upstreamCode;
     }
-    const status = classified.code === "cyber_policy" ? 400 : response.status;
-    return new Response(JSON.stringify({
+    const status = isCyberPolicyCode(classified.code) ? 400 : upstream.status;
+    const rewritten = new Response(JSON.stringify({
       error: {
         message: classified.message,
         type: classified.type,
@@ -204,7 +207,14 @@ export async function handleChatCompletions(
         ...(retryAfter ? { "Retry-After": retryAfter } : {}),
       },
     });
+    return logIds
+      ? responseWithDeferredRequestLog(rewritten, logIds.requestId, logIds.start, logCtx)
+      : rewritten;
   }
+
+  const response = logIds
+    ? responseWithDeferredRequestLog(upstream, logIds.requestId, logIds.start, logCtx)
+    : upstream;
 
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("text/event-stream") && response.body) {
@@ -251,12 +261,12 @@ export async function handleChatCompletions(
     const error = (json as { error?: { message?: string; type?: string; code?: string | null } }).error;
     const message = error?.message ?? "upstream request failed";
     const classified = classifyError(502, error?.type ?? "server_error", message);
-    if (error?.code === "cyber_policy") {
-      classified.code = "cyber_policy";
+    if (isCyberPolicyCode(error?.code)) {
+      classified.code = CYBER_POLICY_ERROR_CODE;
       classified.type = "invalid_request_error";
     }
     return chatCompletionsErrorResponse(
-      classified.code === "cyber_policy" ? 400 : 502,
+      isCyberPolicyCode(classified.code) ? 400 : 502,
       message,
       classified.type,
       classified.code,

@@ -50,32 +50,27 @@ export function chatCompletionsErrorBody(
   type = "invalid_request_error",
   code?: string | null,
 ): Rec {
-  const classified = classifyError(status, type, message);
-  let resolvedCode: string | null;
-  if (isCyberPolicyCode(code) || classified.code === CYBER_POLICY_ERROR_CODE) {
-    resolvedCode = CYBER_POLICY_ERROR_CODE;
-  } else if (code !== undefined) {
-    resolvedCode = code;
-  } else if (classified.code) {
-    resolvedCode = classified.code;
-  } else if (status === 401) {
-    resolvedCode = "invalid_api_key";
-  } else if (status === 404) {
-    resolvedCode = "model_not_found";
-  } else if (status === 429) {
-    resolvedCode = "rate_limit_exceeded";
-  } else {
-    resolvedCode = null;
+  if (isCyberPolicyCode(code) || isCyberPolicyMessage(message)) {
+    return {
+      error: {
+        message,
+        type: "invalid_request_error",
+        param: null,
+        code: CYBER_POLICY_ERROR_CODE,
+      },
+    };
   }
-  const resolvedType = resolvedCode === CYBER_POLICY_ERROR_CODE
-    ? "invalid_request_error"
-    : (classified.type || type);
   return {
     error: {
       message,
-      type: resolvedType,
+      type,
       param: null,
-      code: resolvedCode,
+      code: code !== undefined
+        ? code
+        : status === 401 ? "invalid_api_key"
+          : status === 404 ? "model_not_found"
+          : status === 429 ? "rate_limit_exceeded"
+          : null,
     },
   };
 }

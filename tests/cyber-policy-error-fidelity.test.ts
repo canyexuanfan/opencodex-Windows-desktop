@@ -87,6 +87,9 @@ describe("cyber_policy error fidelity", () => {
       type: "invalid_request_error",
       code: "invalid_request_error",
     });
+    // Bare model-id collision must not become a cyber refusal.
+    expect(classifyError(404, "upstream_error", "No provider configured for model: cyber_policy").code)
+      .not.toBe(CYBER_POLICY_ERROR_CODE);
   });
 
   test("adapterFailureFromMessage prefers HTTP 400 + cyber_policy (not 502)", () => {
@@ -131,6 +134,7 @@ describe("cyber_policy error fidelity", () => {
     const upstream = new Response(JSON.stringify(CYBER_ERROR_BODY), { status: 400 });
     const failure = await consumeComboFailure(upstream);
     expect(failure.response.status).toBe(400);
+    expect(failure.upstreamCode).toBe(CYBER_POLICY_ERROR_CODE);
     await expect(failure.response.json()).resolves.toMatchObject({
       error: { code: CYBER_POLICY_ERROR_CODE, type: "invalid_request_error" },
     });
@@ -180,7 +184,7 @@ describe("cyber_policy error fidelity", () => {
     expect(failed.error).toMatchObject({ code: CYBER_POLICY_ERROR_CODE });
   });
 
-  test("chat completions error envelope preserves cyber_policy", async () => {
+  test("chat completions error envelope preserves cyber_policy and model_not_found", async () => {
     expect(chatCompletionsErrorBody(400, OPENAI_CYBER_MESSAGE, "invalid_request_error", CYBER_POLICY_ERROR_CODE)).toEqual({
       error: {
         message: OPENAI_CYBER_MESSAGE,
@@ -189,10 +193,24 @@ describe("cyber_policy error fidelity", () => {
         code: CYBER_POLICY_ERROR_CODE,
       },
     });
+    expect(chatCompletionsErrorBody(404, "model not found", "invalid_request_error")).toEqual({
+      error: {
+        message: "model not found",
+        type: "invalid_request_error",
+        param: null,
+        code: "model_not_found",
+      },
+    });
     const response = chatCompletionsErrorResponse(502, OPENAI_CYBER_MESSAGE, "server_error");
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({
       error: { code: CYBER_POLICY_ERROR_CODE, param: null },
+    });
+    // Non-cyber classification must not rewrite HTTP status.
+    const rateLimited = chatCompletionsErrorResponse(502, "Rate limit reached for model", "server_error");
+    expect(rateLimited.status).toBe(502);
+    await expect(rateLimited.json()).resolves.toMatchObject({
+      error: { type: "server_error", code: null },
     });
   });
 
@@ -238,5 +256,9 @@ describe("cyber_policy error fidelity", () => {
     })).toBe(400);
     expect(comboFailureDecision(400, OPENAI_CYBER_MESSAGE)).toBe("stop");
     expect(comboFailureDecision(502, OPENAI_CYBER_MESSAGE)).toBe("stop");
+    // Structured code wins even when the truncated message lacks cyber wording.
+    expect(comboFailureDecision(502, "Provider error 502: " + "x".repeat(600), {
+      code: CYBER_POLICY_ERROR_CODE,
+    })).toBe("stop");
   });
 });

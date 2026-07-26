@@ -14,10 +14,14 @@ export function isCyberPolicyCode(code: string | null | undefined): boolean {
 /**
  * Detect OpenAI cyber-policy refusals from message text when structured `code` was stripped.
  * Matches Codex fallback copy and Cursor/API agent wording (session evidence 2026-07-24).
+ * Does not treat a bare `cyber_policy` token as conclusive — model ids / routing errors can
+ * include that substring without being a policy refusal.
  */
 export function isCyberPolicyMessage(text: string): boolean {
   const lower = text.toLowerCase();
-  if (lower.includes("cyber_policy")) return true;
+  // Serialized error-code signatures only (not bare model-id collisions).
+  if (/"code"\s*:\s*"cyber_policy"/.test(lower)) return true;
+  if (/\bcode\s*[:=]\s*["']?cyber_policy\b/.test(lower)) return true;
   if (lower.includes("high-risk cybersecurity")) return true;
   if (lower.includes("high-risk cyber activity") || lower.includes("high-risk cyber ")) return true;
   if (lower.includes("possible cybersecurity risk")) return true;

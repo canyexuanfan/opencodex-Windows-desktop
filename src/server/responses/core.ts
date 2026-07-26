@@ -274,6 +274,8 @@ export function comboUnavailableResponse(message: string): Response {
 export interface ConsumedComboFailure {
   response: Response;
   classificationText: string;
+  /** Structured upstream `error.code` when present in the failure body. */
+  upstreamCode?: string;
   /** Valid numeric/date value used only for cooldown calculation. */
   retryAfter?: string;
   /** Reserved for 040 usage attribution without adding another body read. */
@@ -350,6 +352,7 @@ export async function consumeComboFailure(
       ...(upstreamCode !== undefined ? { code: upstreamCode } : {}),
     }),
     classificationText,
+    ...(upstreamCode !== undefined ? { upstreamCode } : {}),
     ...(retryAfter !== undefined ? { retryAfter } : {}),
     ...(usage ? { usage } : {}),
   };
@@ -785,7 +788,9 @@ export async function handleComboResponses(
     (logCtx.attempts ??= []).push(attempt);
     attemptRetained = true;
     lastFailure = failure.response;
-    if (comboFailureDecision(response.status, failure.classificationText) === "stop") {
+    if (comboFailureDecision(failure.response.status, failure.classificationText, {
+      code: failure.upstreamCode,
+    }) === "stop") {
       Object.assign(logCtx, childLog, {
         requestedModel,
         model: requestedModel,

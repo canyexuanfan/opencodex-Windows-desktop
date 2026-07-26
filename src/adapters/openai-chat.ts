@@ -4,6 +4,7 @@ import { isAllowedToolChoice, modelInList, namespacedToolName, resolveToolChoice
 import { mapReasoningEffort, modelRecordValue } from "../reasoning-effort";
 import { debugProviderDiagnostic } from "../lib/debug";
 import { isDebugEnabled } from "../lib/debug-settings";
+import { isCyberPolicyCode } from "../lib/errors";
 import { redactSecretString } from "../lib/redact";
 import { contentPartsToText } from "./image";
 import { neutralizeIdentity } from "./identity";
@@ -689,7 +690,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
             ...(typeof err?.type === "string" ? { errorType: err.type } : {}),
             ...(typeof err?.status === "number" && Number.isInteger(err.status)
               ? { status: err.status }
-              : err?.code === "cyber_policy"
+              : isCyberPolicyCode(err?.code)
                 ? { status: 400 }
                 : {}),
           };
@@ -808,7 +809,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         const errorType = typeof upstreamError.type === "string" ? upstreamError.type : undefined;
         const status = typeof upstreamError.status === "number" && Number.isInteger(upstreamError.status)
           ? upstreamError.status
-          : code === "cyber_policy"
+          : isCyberPolicyCode(code)
             ? 400
             : undefined;
         return [{
