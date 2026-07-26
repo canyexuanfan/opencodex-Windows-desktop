@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
 import type { OcxConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
+import { resetUsageReadCacheForTests, usageReadCacheStatsForTests } from "../src/usage/log";
 
 let testDir = "";
 let previousHome: string | undefined;
@@ -69,6 +70,7 @@ beforeEach(() => {
   isolatedCodexHome = installIsolatedCodexHome("ocx-api-usage-codex-");
   testDir = mkdtempSync(join(tmpdir(), "ocx-api-usage-"));
   process.env.OPENCODEX_HOME = testDir;
+  resetUsageReadCacheForTests();
   saveConfig(baseConfig());
 });
 
@@ -97,6 +99,34 @@ describe("GET /api/usage", () => {
       expect(Array.isArray(body.days)).toBe(true);
       expect(Array.isArray(body.models)).toBe(true);
       expect(Array.isArray(body.providers)).toBe(true);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("reuses only a compact summary for an unchanged revision", async () => {
+    writeFixture(Date.now());
+    const server = startServer(0);
+    try {
+      const first = await fetch(new URL("/api/usage?range=30d", server.url)).then(res => res.json());
+      const second = await fetch(new URL("/api/usage?range=30d", server.url)).then(res => res.json());
+      expect(second.summary).toEqual(first.summary);
+      expect(usageReadCacheStatsForTests().fullReads).toBe(1);
+
+      appendFileSync(join(testDir, "usage.jsonl"), `${JSON.stringify({
+        requestId: "ocx-appended",
+        timestamp: Date.now(),
+        provider: "openai",
+        model: "gpt-5.5",
+        status: 200,
+        durationMs: 1,
+        usageStatus: "reported",
+        usage: { inputTokens: 1, outputTokens: 1 },
+        totalTokens: 2,
+      })}\n`);
+      const changed = await fetch(new URL("/api/usage?range=30d", server.url)).then(res => res.json());
+      expect(changed.summary.requests).toBe(first.summary.requests + 1);
+      expect(usageReadCacheStatsForTests().fullReads).toBe(2);
     } finally {
       await server.stop(true);
     }

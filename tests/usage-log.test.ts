@@ -4,12 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   appendUsageEntry,
+  currentUsageLogRevision,
   readRecentUsageEntries,
   readUsageEntries,
+  readUsageEntriesForManagement,
+  readUsageSnapshotForManagement,
+  resetUsageReadCacheForTests,
   usageForFinalLog,
   usageLogPath,
   usageStatusForFinalLog,
   usageTotalTokens,
+  usageReadCacheStatsForTests,
+  usageLogRevisionKey,
 } from "../src/usage/log";
 
 let testDir = "";
@@ -19,6 +25,7 @@ beforeEach(() => {
   previousHome = process.env.OPENCODEX_HOME;
   testDir = mkdtempSync(join(tmpdir(), "ocx-usage-"));
   process.env.OPENCODEX_HOME = testDir;
+  resetUsageReadCacheForTests();
 });
 
 afterEach(() => {
@@ -28,6 +35,54 @@ afterEach(() => {
 });
 
 describe("usage log", () => {
+  const persistedLine = (requestId: string) => JSON.stringify({
+    requestId,
+    timestamp: 1,
+    provider: "openai",
+    model: "gpt-5.5",
+    status: 200,
+    durationMs: 1,
+    usageStatus: "reported",
+    usage: { inputTokens: 1, outputTokens: 1 },
+    totalTokens: 2,
+  });
+
+  test("file revisions change after append and in-place rewrite", () => {
+    writeFileSync(usageLogPath(), `${persistedLine("a")}\n${persistedLine("b")}\n`);
+    const first = usageLogRevisionKey(currentUsageLogRevision());
+    writeFileSync(usageLogPath(), `${persistedLine("new")}\n`);
+    expect(usageLogRevisionKey(currentUsageLogRevision())).not.toBe(first);
+    expect(readUsageEntries().map(entry => entry.requestId)).toEqual(["new"]);
+  });
+
+  test("management full reads yield while parsing a large existing log", async () => {
+    writeFileSync(
+      usageLogPath(),
+      `${Array.from({ length: 2_100 }, (_, index) => persistedLine(`row-${index}`)).join("\n")}\n`,
+    );
+    let timerRan = false;
+    setTimeout(() => { timerRan = true; }, 0);
+    const entries = await readUsageEntriesForManagement();
+    expect(entries).toHaveLength(2_100);
+    expect(timerRan).toBe(true);
+    expect(usageReadCacheStatsForTests()).toEqual({ fullReads: 1, tailReads: 0, parsedLines: 2_100 });
+  });
+
+  test("a replacement does not join an in-flight read for the previous file revision", async () => {
+    writeFileSync(
+      usageLogPath(),
+      `${Array.from({ length: 2_100 }, (_, index) => persistedLine(`old-${index}`)).join("\n")}\n`,
+    );
+    const oldRead = readUsageSnapshotForManagement();
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    writeFileSync(usageLogPath(), `${persistedLine("replacement")}\n`);
+    const newRead = readUsageSnapshotForManagement();
+    const [oldSnapshot, newSnapshot] = await Promise.all([oldRead, newRead]);
+    expect(oldSnapshot.entries).toHaveLength(2_100);
+    expect(newSnapshot.entries.map(entry => entry.requestId)).toEqual(["replacement"]);
+    expect(usageLogRevisionKey(newSnapshot.revision)).not.toBe(usageLogRevisionKey(oldSnapshot.revision));
+  });
+
   test("persists only canonical ordered attempt fields", () => {
     appendUsageEntry({
       requestId: "ocx-attempts",
