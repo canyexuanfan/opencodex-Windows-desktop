@@ -27,7 +27,7 @@ import {
   resolveAndPersistCodexRuntime,
   resolveCodexRuntime,
 } from "../codex/runtime";
-import { collectOAuthHealthEntries, type OAuthHealthEntry } from "../oauth/health";
+import { CODEX_REAUTH_ACTION, collectOAuthHealthEntries, type OAuthHealthEntry } from "../oauth/health";
 import { getAuthRefreshIntentLockPath, getAuthStorePath } from "../oauth/store";
 export { resolveCodexHomeDir } from "../codex/home";
 
@@ -74,6 +74,9 @@ function isOAuthRefreshSingleFlightReady(): boolean {
 
 function actionForDoctorEntry(entry: OAuthHealthEntry): string {
   if (entry.action) return entry.action;
+  if (entry.provider === "codex") {
+    return CODEX_REAUTH_ACTION;
+  }
   if (entry.health.status === "warning" && entry.health.reason === "stale_credentials") {
     return `run \`ocx login ${entry.provider}\``;
   }

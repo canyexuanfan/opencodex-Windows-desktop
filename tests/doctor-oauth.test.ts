@@ -3,6 +3,12 @@ import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { collectOAuthDoctorChecks } from "../src/cli/doctor";
+import {
+  clearAccountNeedsReauth,
+  markAccountNeedsReauth as markCodexAccountNeedsReauth,
+} from "../src/codex/account-runtime-state";
+import { MAIN_CODEX_ACCOUNT_ID } from "../src/codex/main-account";
+import { CODEX_REAUTH_ACTION } from "../src/oauth/health";
 import { getAccountSet, markAccountNeedsReauth, saveCredential } from "../src/oauth/store";
 
 const origHome = process.env.HOME;
@@ -21,6 +27,7 @@ afterEach(() => {
   else process.env.HOME = origHome;
   if (origOcxHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = origOcxHome;
+  clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
   rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -56,6 +63,17 @@ describe("collectOAuthDoctorChecks", () => {
     expect(checks.some((c) => c.level === "OK" && c.message.includes("OAuth credential storage is writable"))).toBe(true);
     expect(checks.some((c) => c.level === "OK" && c.message.includes("Token refresh single-flight is active"))).toBe(true);
     expect(checks.some((c) => c.level === "OK" && c.message.includes("No fabricated official-client metadata detected"))).toBe(true);
+  });
+
+  test("Codex needsReauth WARN action points at the dashboard pool", () => {
+    markCodexAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+    const checks = collectOAuthDoctorChecks();
+    const warn = checks.find(
+      (c) => c.level === "WARN" && c.message.includes("requires reauthentication"),
+    );
+    expect(warn).toBeTruthy();
+    expect(warn!.message).toContain(`Action: ${CODEX_REAUTH_ACTION}`);
+    expect(warn!.message).not.toContain("ocx login codex");
   });
 
   test("every WARN includes a recovery Action", async () => {

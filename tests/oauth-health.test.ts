@@ -3,10 +3,16 @@ import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  CODEX_REAUTH_ACTION,
   collectOAuthHealthEntries,
   projectOAuthAccountHealth,
 } from "../src/oauth/health";
 import { getAccountSet, markAccountNeedsReauth, saveCredential } from "../src/oauth/store";
+import {
+  clearAccountNeedsReauth,
+  markAccountNeedsReauth as markCodexAccountNeedsReauth,
+} from "../src/codex/account-runtime-state";
+import { MAIN_CODEX_ACCOUNT_ID } from "../src/codex/main-account";
 import {
   clearCodexUpstreamHealth,
   getCodexAccountHealthSnapshot,
@@ -32,6 +38,7 @@ afterEach(() => {
   if (origOcxHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = origOcxHome;
   clearCodexUpstreamHealth();
+  clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
   rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -104,6 +111,19 @@ describe("collectOAuthHealthEntries", () => {
       health: { status: "reauth_required", reason: "refresh_failed" },
       action: "run `ocx login kimi`",
     });
+  });
+
+  test("Codex reauth action points at the dashboard pool, not ocx login codex", () => {
+    markCodexAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+    const entries = collectOAuthHealthEntries();
+    const entry = entries.find(e => e.provider === "codex" && e.accountId === MAIN_CODEX_ACCOUNT_ID);
+    expect(entry).toEqual({
+      provider: "codex",
+      accountId: MAIN_CODEX_ACCOUNT_ID,
+      health: { status: "reauth_required", reason: "refresh_failed" },
+      action: CODEX_REAUTH_ACTION,
+    });
+    expect(entry!.action).not.toContain("ocx login codex");
   });
 });
 

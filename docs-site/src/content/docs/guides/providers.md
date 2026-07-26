@@ -135,8 +135,9 @@ them.
 
 **Diagnostics and reauth.** Human `ocx status` prints an OAuth health block (redacted account ids,
 no tokens). `ocx doctor` adds an OAuth reliability section with writable-store / single-flight checks
-and WARN rows that include a recovery Action. When an account needs reauthentication, run
-`ocx login <provider>` (or use Reauthenticate in the dashboard). See
+and WARN rows that include a recovery Action. When an OAuth provider account needs reauthentication, run
+`ocx login <provider>` (or use Reauthenticate in the dashboard). Codex pool accounts are not an
+`ocx login` provider — reauthenticate via the dashboard Codex account pool. See
 [`ocx status` / `ocx doctor`](/reference/cli/) in the CLI reference.
 
 ### Kiro credential import

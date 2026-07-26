@@ -336,7 +336,8 @@ currently accepted OAuth and API-key provider ids when the name is missing or un
 
 Use the same command to **reauthenticate** after `ocx status` / `ocx doctor` reports
 reauthentication required or a terminal refresh failure (or use Reauthenticate in the dashboard).
-For Codex pool accounts, complete ChatGPT / Codex login again so the stored credential is replaced.
+Codex pool accounts are not a public `ocx login` provider — reauthenticate via the dashboard Codex
+account pool (Reauthenticate) instead.
 
 ```bash
 ocx login xai

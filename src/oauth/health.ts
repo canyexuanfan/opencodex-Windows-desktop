@@ -65,8 +65,12 @@ export function projectOAuthAccountHealth(input: {
   return { status: "healthy" };
 }
 
+/** Codex pool accounts are not a public `ocx login` provider; reauth is dashboard-driven. */
+export const CODEX_REAUTH_ACTION = "reauthenticate via the dashboard Codex account pool";
+
 function actionFor(provider: string, health: OAuthAccountHealth): string | undefined {
   if (health.status === "reauth_required") {
+    if (provider === "codex") return CODEX_REAUTH_ACTION;
     return `run \`ocx login ${provider}\``;
   }
   if (health.status === "cooldown") {
