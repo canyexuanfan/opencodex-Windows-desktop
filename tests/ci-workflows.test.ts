@@ -383,9 +383,10 @@ describe("GitHub Actions hardening", () => {
     expect(commentUpdateAt).toBeGreaterThanOrEqual(0);
     expect(commentMissingAt).toBeLessThan(commentUpdateAt);
 
-    // Helper contract: marker-only English comments; replace-before-cleanup; body non-authoritative.
+    // Helper contract: always-visible bookkeeping; sticky oldest upsert; body non-authoritative.
     const helperSrc = await readText(".github/scripts/issue-translation.cjs");
     expect(helperSrc).toContain("shouldOmitVisibleBookkeeping");
+    expect(helperSrc).toContain("findStickyControlComment");
     expect(helperSrc).toContain("Automated translation bookkeeping");
     expect(helperSrc).toContain("canonical comment first");
     expect(helperSrc).toContain("Authoritative control state comes only from verified bot-owned comments");
