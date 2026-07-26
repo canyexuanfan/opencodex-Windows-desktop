@@ -19,6 +19,21 @@ the resolved `CODEX_HOME`.
 sequence number) to avoid collisions when concurrent writers (e.g. `ocx stop` and the proxy's own
 shutdown handler) both restore Codex config simultaneously. The temp is renamed atomically into place.
 
+Response-state loading performs a bounded recovery pass for interrupted snapshot writes. It only
+matches regular files named `responses-state.json.ocx.<pid>.<sequence>.tmp`, waits at least 15
+minutes, and skips the current or any live PID. Eligible files are truncated before unlinking so a
+Windows lock that prevents deletion can still leave a privacy-safe zero-byte residual. Unrelated
+temporary files, symlinks, directories, and young/active writes are never touched; at most 512 stale
+files are attempted per process start.
+
+[Decision Log]
+- 목적과 의도: Bound disk and conversation-state retention after abrupt process termination.
+- 기존 구현 및 제약 조건: Ordinary write failures clean up immediately, but a killed process cannot run that path and Windows may temporarily lock files.
+- 검토한 주요 대안: Delete every `.tmp`, rely on manual cleanup, or recover only exact response-state remnants with age and PID guards.
+- 선택한 방식: Run a capped, best-effort, truncate-before-unlink sweep on lazy response-state startup.
+- 다른 대안 대신 이 방식을 선택한 이유: It repairs known remnants without broad authority over unrelated temp files or active writers.
+- 장점, 단점 및 영향: Old dead-PID files are reclaimed automatically; locked or conservatively classified files remain for a later retry.
+
 ## Config injection
 
 `src/codex/inject.ts` inserts root-level keys and an opencodex provider table:

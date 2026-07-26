@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, truncateSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { atomicWriteFile, getConfigDir } from "../config";
 import type { OcxProviderContinuationState } from "../types";
@@ -14,6 +14,10 @@ const MAX_STORED_RESPONSE_BYTES = 64 * 1024 * 1024;
  * carry base64 `input_image` data URLs, and one screenshot-heavy thread must not balloon the file. */
 const SNAPSHOT_ENTRY_MAX_BYTES = 2 * 1024 * 1024;
 const SNAPSHOT_TOTAL_MAX_BYTES = 24 * 1024 * 1024;
+const STALE_TEMP_GRACE_MS = 15 * 60 * 1_000;
+const STALE_TEMP_MAX_CANDIDATES = 4_096;
+const STALE_TEMP_MAX_CLEANUPS = 512;
+const RESPONSE_STATE_TEMP_NAME = /^responses-state\.json\.ocx\.(\d+)\.(\d+)\.tmp$/;
 
 interface StoredResponseState {
   createdAt: number;
@@ -88,6 +92,102 @@ function snapshotPath(): string {
   return join(getConfigDir(), "responses-state.json");
 }
 
+export interface ResponseStateTempRecoveryResult {
+  matched: number;
+  removed: number;
+  scrubbed: number;
+  failed: number;
+  bytesRemoved: number;
+}
+
+interface ResponseStateTempRecoveryIO {
+  now: () => number;
+  list: (dir: string) => string[];
+  inspect: (path: string) => { isFile: boolean; mtimeMs: number; size: number };
+  isProcessAlive: (pid: number) => boolean;
+  truncate: (path: string) => void;
+  unlink: (path: string) => void;
+}
+
+function processIsAlive(pid: number): boolean {
+  if (pid === process.pid) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the process exists but cannot be signalled. Unknown platform errors
+    // are also protected; cleanup should prefer a false negative over touching a live writer.
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+const responseStateTempRecoveryIO: ResponseStateTempRecoveryIO = {
+  now: Date.now,
+  list: dir => readdirSync(dir),
+  inspect: path => {
+    const stat = lstatSync(path);
+    return { isFile: stat.isFile() && !stat.isSymbolicLink(), mtimeMs: stat.mtimeMs, size: stat.size };
+  },
+  isProcessAlive: processIsAlive,
+  truncate: path => truncateSync(path, 0),
+  unlink: unlinkSync,
+};
+
+/**
+ * Recover only abandoned response-state atomic-write files. The exact basename,
+ * regular-file check, age gate, and PID liveness check protect unrelated/active files.
+ * Cleanup is capped and best-effort because continuation state is only a cache.
+ */
+export function recoverStaleResponseStateTemps(
+  dir = getConfigDir(),
+  overrides: Partial<ResponseStateTempRecoveryIO> = {},
+): ResponseStateTempRecoveryResult {
+  const io = { ...responseStateTempRecoveryIO, ...overrides };
+  const result: ResponseStateTempRecoveryResult = {
+    matched: 0,
+    removed: 0,
+    scrubbed: 0,
+    failed: 0,
+    bytesRemoved: 0,
+  };
+  let names: string[];
+  try { names = io.list(dir); } catch { return result; }
+  let candidates = 0;
+  for (const name of names) {
+    const match = RESPONSE_STATE_TEMP_NAME.exec(name);
+    if (!match) continue;
+    candidates += 1;
+    if (candidates > STALE_TEMP_MAX_CANDIDATES || result.removed + result.failed >= STALE_TEMP_MAX_CLEANUPS) break;
+    result.matched += 1;
+    const pid = Number(match[1]);
+    const sequence = Number(match[2]);
+    if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(sequence) || sequence <= 0) continue;
+    const path = join(dir, name);
+    let file: ReturnType<ResponseStateTempRecoveryIO["inspect"]>;
+    try { file = io.inspect(path); } catch { continue; }
+    if (!file.isFile || io.now() - file.mtimeMs < STALE_TEMP_GRACE_MS) continue;
+    if (pid === process.pid || io.isProcessAlive(pid)) continue;
+
+    let scrubbed = false;
+    try {
+      io.truncate(path);
+      scrubbed = true;
+      result.scrubbed += 1;
+    } catch { /* unlink may still remove the sensitive snapshot */ }
+    try {
+      io.unlink(path);
+      result.removed += 1;
+      result.bytesRemoved += file.size;
+    } catch {
+      // A zero-byte residual is harmless privacy-wise but should still count as a
+      // cleanup failure so a later startup can retry its removal.
+      result.failed += 1;
+      if (!scrubbed) continue;
+    }
+  }
+  return result;
+}
+
 /**
  * Best-effort disk snapshot so previous_response_id chains survive a proxy restart (the
  * dominant expansion-miss cause: an in-memory-only store dies with the process, and the next
@@ -100,6 +200,7 @@ function ensureLoaded(): void {
   loaded = true;
   try {
     const path = snapshotPath();
+    recoverStaleResponseStateTemps(dirname(path));
     if (!existsSync(path)) return;
     const raw = JSON.parse(readFileSync(path, "utf-8")) as { version?: unknown; states?: unknown };
     if ((raw.version !== 1 && raw.version !== 2) || !Array.isArray(raw.states)) return;
