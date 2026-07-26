@@ -1334,6 +1334,16 @@ button.prov-account-row.active { cursor: default; }
   font-size: var(--text-control);
 }
 .grok-endpoint > span { color: var(--muted); }
+/* Switch rows: one line each, mirroring the Desktop collapsed-row language. */
+.grok-model-list { display: flex; flex-direction: column; }
+.grok-model-row {
+  display: flex; align-items: center; gap: 12px; padding: 7px 14px;
+  border-top: 1px solid var(--border-soft);
+}
+.grok-model-row:first-child { border-top: 0; }
+.grok-model-names { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 1px; }
+.grok-model-names strong { overflow: hidden; color: var(--text); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.grok-model-names code { overflow: hidden; color: var(--muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
 .claude-lane-empty {
   display: grid; place-items: center; min-height: 82px; padding: 12px; border: 1px dashed var(--border);
   border-radius: var(--radius-sm); color: var(--muted); font-size: 12px; text-align: center;

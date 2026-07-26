@@ -6,16 +6,15 @@ async function read(path: string): Promise<string> {
   return Bun.file(new URL(path, import.meta.url)).text();
 }
 
-// The page is READ-ONLY by design: injectGrokConfig owns every mutation of
-// ~/.grok/config.toml behind guards a web-reachable writer would widen the blast radius of.
-// If a future edit adds a write control here, this test should fail and force that decision
-// back through review.
-test("the Grok page issues no write requests", async () => {
+// The page may write its own SELECTION and ask the proxy to re-run the guarded sync,
+// but it must never gain a path that writes ~/.grok/config.toml directly. injectGrokConfig
+// owns that file (backup, byte-for-byte preservation, non-loopback refusal).
+test("the Grok page only writes selection state and triggers the guarded sync", async () => {
   const page = await read("../src/pages/Grok.tsx");
-  expect(page).toContain("/api/grok");
-  for (const verb of ['method: "POST"', 'method: "PUT"', 'method: "DELETE"', 'method: "PATCH"']) {
-    expect(`Grok.tsx contains ${verb}: ${page.includes(verb)}`).toBe(`Grok.tsx contains ${verb}: false`);
-  }
+  expect(page).toContain("/api/grok/selection");
+  expect(page).toContain("/api/grok/apply");
+  expect(page).not.toContain("writeFile");
+  expect(page).not.toContain("atomicWriteFile");
 });
 
 // UX-STATE-01: absent is a normal state, not a failure — it must name the next action rather
@@ -40,7 +39,11 @@ test("the Grok page is routable and present in the nav", async () => {
 test("every locale carries the Grok keys", async () => {
   const keys = ["nav.grok", "grok.title", "grok.subtitle", "grok.loading", "grok.loadFail",
     "grok.notConfiguredTitle", "grok.notConfiguredHint", "grok.endpoint",
-    "grok.colModel", "grok.colAlias", "grok.colContext"];
+    "grok.colModel", "grok.colAlias", "grok.colContext",
+    "grok.groupNative", "grok.groupRouted", "grok.enabledCount",
+    "grok.saved", "grok.savedApplied", "grok.saveFailed", "grok.applyFailed",
+    "grok.applySkipped", "grok.saveApply", "grok.saving", "grok.applying",
+    "grok.unsaved", "grok.upToDate", "grok.toggleModel"];
   const missing: string[] = [];
   for (const locale of LOCALES) {
     const dict = await read(`../src/i18n/${locale}.ts`);
