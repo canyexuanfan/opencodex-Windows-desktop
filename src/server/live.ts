@@ -24,6 +24,7 @@ import { appendFileSync } from "node:fs";
 import { formatErrorResponse } from "../bridge";
 import {
   CodexAccountCooldownError,
+  cooldownErrorResponse,
   CodexAuthContextError,
   CodexPoolAuthenticationError,
   CodexThreadAffinityExpiredError,
@@ -392,7 +393,7 @@ export async function resolveLiveRelay(
       }
     } catch (err) {
       if (err instanceof CodexAccountCooldownError) {
-        forwardAuthError = formatErrorResponse(429, "rate_limit_error", "Selected Codex account is cooling down");
+        forwardAuthError = cooldownErrorResponse(err);
       } else if (err instanceof CodexThreadAffinityExpiredError) {
         forwardAuthError = formatErrorResponse(
           409,

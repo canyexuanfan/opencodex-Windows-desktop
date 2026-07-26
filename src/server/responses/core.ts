@@ -43,6 +43,7 @@ import { createAdapterEventQueue, preflightAdapterEvents } from "../../adapters/
 import {
   applyCodexAuthContextToProvider,
   CodexAccountCooldownError,
+  cooldownErrorResponse,
   CodexAuthContextError,
   CodexDirectAuthenticationError,
   CodexPoolAuthenticationError,
@@ -473,7 +474,7 @@ async function resolveResponsesCodexAuth(
     };
   } catch (err) {
     if (err instanceof CodexAccountCooldownError) {
-      return { ok: false, response: formatErrorResponse(429, "rate_limit_error", "Selected Codex account is cooling down") };
+      return { ok: false, response: cooldownErrorResponse(err) };
     }
     if (err instanceof CodexThreadAffinityExpiredError) {
       return {

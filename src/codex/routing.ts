@@ -328,6 +328,45 @@ export function isCodexAccountInCooldown(accountId: string, now = Date.now()): b
   return getCodexAccountCooldownUntil(accountId, now) !== null;
 }
 
+/**
+ * Manually lift a hard quota cooldown without touching failure history.
+ *
+ * Injected Codex routing makes this proxy the ONLY model path for Codex Desktop, so a
+ * cooldown that outlives the real upstream limit reads to the user as "the whole app is
+ * broken" with no escape but editing config.toml. This is that escape hatch.
+ *
+ * Deliberately narrow:
+ * - Failure counters and softAvoid survive. Clearing a cooldown says "the quota window
+ *   moved", not "this account is healthy"; failover must keep its knowledge.
+ * - Dropping `probeLeaseId` is what stops a stale in-flight probe from later "proving"
+ *   recovery against a NEWER cooldown: {@link ownsProbeLease} needs the id to match.
+ *   `cooldownGeneration` is preserved and bumped as redundancy only — a fresh 429 already
+ *   bumps it in {@link recordCodexUpstreamOutcome}, so the bump here is not load-bearing
+ *   today and is kept so the invariant survives a future change that retains the lease.
+ *
+ * Returns false when the account carried no live cooldown (already expired or never set).
+ */
+export function clearCodexAccountCooldown(accountId: string, now = Date.now()): boolean {
+  const health = upstreamHealth.get(accountId);
+  if (!health) return false;
+  const cooldownUntil = health.cooldownUntil;
+  if (typeof cooldownUntil !== "number" || !Number.isFinite(cooldownUntil) || cooldownUntil <= now) return false;
+  const {
+    cooldownUntil: _until,
+    cooldownSince: _since,
+    cooldownSource: _source,
+    probeLeaseId: _leaseId,
+    probeLeaseGeneration: _leaseGeneration,
+    ...rest
+  } = health;
+  upstreamHealth.set(accountId, {
+    ...rest,
+    cooldownGeneration: (health.cooldownGeneration ?? 0) + 1,
+    lastProbeAt: now,
+  });
+  return true;
+}
+
 export function getCodexAccountSoftAvoidUntil(accountId: string, now = Date.now()): number | null {
   const softAvoidUntil = upstreamHealth.get(accountId)?.softAvoidUntil;
   return typeof softAvoidUntil === "number" && Number.isFinite(softAvoidUntil) && softAvoidUntil > now

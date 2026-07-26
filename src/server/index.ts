@@ -24,6 +24,7 @@ import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
 import { providerCodexAccountMode } from "../providers/registry";
 import {
   CodexAccountCooldownError,
+  cooldownErrorMessage,
 } from "../codex/auth-context";
 export {
   clearThreadAccountMap,
@@ -798,9 +799,11 @@ export function startServer(port?: number) {
             try {
               if (err instanceof CodexAccountCooldownError) {
                 finalizeLog(429);
+                // Codex Desktop rides this WS transport, so it must carry the same
+                // actionable text as HTTP; a frame has no headers, hence message-only.
                 sendJsonFrame(ws, buildWsErrorFrame(429, {
                   type: "rate_limit_error",
-                  message: "Selected Codex account is cooling down",
+                  message: cooldownErrorMessage(err),
                 }));
                 return;
               }

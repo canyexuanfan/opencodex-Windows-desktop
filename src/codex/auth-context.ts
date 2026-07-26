@@ -9,12 +9,15 @@ import { isCodexAccountUsable } from "./account-usability";
 import { reconcileMainCodexAccountRuntimeState } from "./account-lifecycle";
 import { MAIN_CODEX_ACCOUNT_ID, getMainAccountToken } from "./main-account";
 import {
-  getCodexAccountCooldownUntil,
+  getCodexAccountHealthSnapshot,
   releaseCodexQuotaProbeLease,
   tryAcquireCodexQuotaProbeLease,
   pickLowestUsageCodexAccount,
   resolveCodexAccountForThreadDetailed,
 } from "./routing";
+import type { CodexCooldownSource } from "./routing";
+import { maskAccountId } from "../lib/privacy";
+import { formatErrorResponse } from "../bridge";
 import { getAccountQuota } from "./quota";
 import type { CodexAccountMode, OcxConfig, OcxProviderConfig } from "../types";
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
@@ -95,13 +98,47 @@ export function hasCallerCodexBearer(headers: Headers): boolean {
 export class CodexAccountCooldownError extends Error {
   accountId: string;
   cooldownUntil: number;
+  cooldownSource?: CodexCooldownSource;
 
-  constructor(accountId: string, cooldownUntil: number) {
+  constructor(accountId: string, cooldownUntil: number, cooldownSource?: CodexCooldownSource) {
     super("Selected Codex account is cooling down");
     this.name = "CodexAccountCooldownError";
     this.accountId = accountId;
     this.cooldownUntil = cooldownUntil;
+    this.cooldownSource = cooldownSource;
   }
+}
+
+/**
+ * Human-readable account label for a client-visible error. NEVER the raw id: the proxy
+ * supports non-loopback binds (auth-cors.ts `isApiAuthRequired` requires a token there
+ * rather than refusing), so data-plane bodies can reach remote authenticated clients.
+ * The main login has no secret id, so it renders as the literal alias users type.
+ */
+export function cooldownAccountLabel(accountId: string): string {
+  return accountId === MAIN_CODEX_ACCOUNT_ID ? "main" : maskAccountId(accountId) ?? "account-…????";
+}
+
+/**
+ * Actionable message for a cooled-down account: until when, why, and how to escape.
+ * Shared by every transport so the WebSocket surface (Codex Desktop) says the same thing
+ * as HTTP. The bare "cooling down" string left users with no route but commenting out the
+ * injected `openai_base_url` in config.toml.
+ */
+export function cooldownErrorMessage(err: CodexAccountCooldownError): string {
+  const until = new Date(err.cooldownUntil).toISOString();
+  return `Selected Codex account (${cooldownAccountLabel(err.accountId)}) is cooling down until ${until}`
+    + ` (source: ${err.cooldownSource ?? "default"}).`
+    + ` Run 'ocx account list openai' to find the id, then`
+    + ` 'ocx account clear-cooldown openai <id>' to lift it, or switch accounts with 'ocx account use openai <id>'.`;
+}
+
+/** HTTP form of {@link cooldownErrorMessage}, carrying Retry-After for well-behaved clients. */
+export function cooldownErrorResponse(err: CodexAccountCooldownError, now = Date.now()): Response {
+  const res = formatErrorResponse(429, "rate_limit_error", cooldownErrorMessage(err));
+  const headers = new Headers(res.headers);
+  headers.set("Retry-After", String(Math.max(1, Math.ceil((err.cooldownUntil - now) / 1000))));
+  return new Response(res.body, { status: res.status, headers });
 }
 
 export class CodexThreadAffinityExpiredError extends Error {
@@ -155,14 +192,17 @@ export async function resolveCodexAuthContext(
       .then(({ primeCodexPoolQuotas }) => primeCodexPoolQuotas(config, "pre-route"))
       .catch(() => {});
   }
-  const cooldownUntil = getCodexAccountCooldownUntil(accountId);
+  // Snapshot (not just the deadline) so a refused request can report WHY it is cooled:
+  // a literal Retry-After reads very differently to a user than a reset-derived guess.
+  const cooldown = getCodexAccountHealthSnapshot(accountId);
+  const cooldownUntil = cooldown?.cooldownUntil;
   // A cooled-down account never sends traffic, so upstream recovery can never be
   // observed and the cooldown outlives the real limit. Admit one probe per
   // interval; its outcome decides whether the cooldown ends (#433).
   let probeLeaseId: string | undefined;
   if (cooldownUntil) {
     probeLeaseId = tryAcquireCodexQuotaProbeLease(accountId) ?? undefined;
-    if (!probeLeaseId) throw new CodexAccountCooldownError(accountId, cooldownUntil);
+    if (!probeLeaseId) throw new CodexAccountCooldownError(accountId, cooldownUntil, cooldown?.cooldownSource);
   }
 
   if (accountId === MAIN_CODEX_ACCOUNT_ID) {
@@ -205,8 +245,10 @@ export function assertCodexAuthContextNotCooled(ctx: CodexAuthContext | undefine
   if (ctx?.kind !== "pool" && ctx?.kind !== "main-pool") return;
   // A context holding the probe lease was deliberately admitted through the cooldown.
   if (ctx.probeLeaseId) return;
-  const cooldownUntil = getCodexAccountCooldownUntil(ctx.accountId);
-  if (cooldownUntil) throw new CodexAccountCooldownError(ctx.accountId, cooldownUntil);
+  const cooldown = getCodexAccountHealthSnapshot(ctx.accountId);
+  if (cooldown?.cooldownUntil) {
+    throw new CodexAccountCooldownError(ctx.accountId, cooldown.cooldownUntil, cooldown.cooldownSource);
+  }
 }
 
 export function applyCodexAuthContextToProvider(

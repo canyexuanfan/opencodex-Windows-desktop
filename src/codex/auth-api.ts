@@ -10,6 +10,7 @@ import {
   TokenRefreshError,
 } from "./account-store";
 import { deleteCodexAccount, reconcileMainCodexAccountRuntimeState } from "./account-lifecycle";
+import { clearCodexAccountCooldown } from "./routing";
 import { checkAccountIdCollision, getMainChatgptAccountId, readCodexTokens, readCodexTokensResult } from "./auth-collision";
 export { checkAccountIdCollision, getMainChatgptAccountId } from "./auth-collision";
 export { clearAccountNeedsReauth, isAccountNeedsReauth, markAccountNeedsReauth } from "./account-runtime-state";
@@ -580,6 +581,21 @@ export async function handleCodexAuthAPI(
     else delete account.alias;
     saveRuntimeConfig(config, runtimeConfig);
     return jsonResponse({ ok: true, id, alias: alias || null });
+  }
+
+  // Manual escape from a quota cooldown. Injected Codex routing makes this proxy the only
+  // model path for Codex Desktop, so a cooldown that outlives the real upstream limit
+  // otherwise leaves editing config.toml as the user's only recovery.
+  //
+  // Existence is deliberately NOT disclosed: an unknown id returns 200 with cleared:false
+  // exactly like an account that simply had no live cooldown, so this route cannot be used
+  // to enumerate configured accounts. Cooldown state is runtime-only and independent of the
+  // account list, so 404 would carry no useful meaning anyway.
+  if (url.pathname === "/api/codex-auth/accounts/clear-cooldown" && req.method === "POST") {
+    const body = await req.json().catch(() => ({})) as { id?: unknown };
+    const id = typeof body.id === "string" ? body.id.trim() : "";
+    if (!id || !ACCOUNT_ID_RE.test(id)) return jsonResponse({ error: "Invalid account id format" }, 400);
+    return jsonResponse({ ok: true, id, cleared: clearCodexAccountCooldown(id) });
   }
 
   if (url.pathname === "/api/codex-auth/active" && req.method === "PUT") {
