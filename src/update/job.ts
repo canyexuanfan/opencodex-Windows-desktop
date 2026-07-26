@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { atomicWriteFile, getConfigDir, loadConfig, readPid, readRuntimePort } from "../config";
 import { killProxy } from "../lib/process-control";
 import { reclaimListenPort } from "../server/port-reclaim";
-import { proxyIdentityAt } from "../server/proxy-liveness";
+import { isOpencodexHealthz, probeHostname, proxyIdentityAt, type HealthzIdentity } from "../server/proxy-liveness";
 import { isServiceInstalled } from "../service";
 import {
   type Channel,
@@ -292,12 +292,20 @@ function spawnDetachedStart(job: UpdateJobState, installer: Installer, port?: nu
   child.unref();
 }
 
+/** Identity snapshot used to prove an npm self-update actually replaced the pre-update process. */
+export interface RestartProxyIdentity {
+  pid: number | null;
+  version?: string;
+}
+
 /** Test seam: the wait/spawn pair is injectable so the restart path is verifiable. */
 export interface RestartIo {
   waitForPort?: typeof reclaimListenPort;
   spawnStart?: (job: UpdateJobState, installer: Installer, port?: number) => void;
   serviceInstalledFn?: () => boolean;
   probeProxy?: (port: number, hostname?: string) => Promise<boolean>;
+  /** Richer /healthz read for update-correlated restart evidence (pid + version). */
+  probeProxyIdentity?: (port: number, hostname?: string) => Promise<RestartProxyIdentity | null>;
   sleepMs?: (ms: number) => Promise<void>;
   now?: () => number;
   /** Service-mode install/reinstall command (defaults to spawnSync via runLoggedCommand). */
@@ -496,6 +504,70 @@ export function confirmRestartAfterUpdateForTests(
   return confirmRestartedProxy(job, captured, io);
 }
 
+async function defaultProbeProxyIdentity(
+  port: number,
+  hostname?: string,
+): Promise<RestartProxyIdentity | null> {
+  try {
+    const res = await fetch(`http://${probeHostname(hostname)}:${port}/healthz`, {
+      signal: AbortSignal.timeout(750),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json().catch(() => null)) as HealthzIdentity | null;
+    if (!isOpencodexHealthz(body)) return null;
+    return {
+      pid: typeof body?.pid === "number" ? body.pid : null,
+      ...(typeof body?.version === "string" ? { version: body.version } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Health alone is not enough to skip the GUI worker restart: a surviving pre-update
+ * process is still identity-healthy. Require update-correlated evidence — a new PID
+ * when the pre-update PID was captured, and/or /healthz reporting the job's target
+ * version when PID evidence is unavailable.
+ */
+export function npmSelfUpdateRestartEvidence(
+  job: Pick<UpdateJobState, "latestVersion">,
+  captured: { oldPid?: number },
+  identity: RestartProxyIdentity | null,
+): { ok: true; detail: string } | { ok: false; reason: string } {
+  if (!identity) return { ok: false, reason: "could not read proxy identity" };
+
+  const oldPid = typeof captured.oldPid === "number" && captured.oldPid > 0
+    ? captured.oldPid
+    : undefined;
+  const livePid = typeof identity.pid === "number" && identity.pid > 0 ? identity.pid : null;
+  const expected = typeof job.latestVersion === "string" && job.latestVersion.length > 0
+    ? job.latestVersion
+    : null;
+  const versionMatches = expected !== null && identity.version === expected;
+
+  if (oldPid !== undefined) {
+    if (livePid === oldPid) {
+      return { ok: false, reason: "still the pre-update PID" };
+    }
+    if (livePid !== null) {
+      if (expected !== null && identity.version && identity.version !== expected) {
+        return { ok: false, reason: `new pid but version ${identity.version} !== expected ${expected}` };
+      }
+      return { ok: true, detail: `pid changed ${oldPid}→${livePid}` };
+    }
+    // Pre-update PID known but healthz omitted pid — only accept matching target version.
+    if (versionMatches) return { ok: true, detail: `version ${identity.version}` };
+    return { ok: false, reason: "no PID in healthz and version did not match the update target" };
+  }
+
+  if (versionMatches) return { ok: true, detail: `version ${identity.version}` };
+  if (expected !== null && identity.version && identity.version !== expected) {
+    return { ok: false, reason: `version ${identity.version} !== expected ${expected}` };
+  }
+  return { ok: false, reason: "no pre-update PID capture and no expected-version match" };
+}
+
 /**
  * Post-install restart for the GUI worker.
  *
@@ -505,6 +577,11 @@ export function confirmRestartAfterUpdateForTests(
  * non-interactive worker — leaving the captured port (default 10100) dead until a manual
  * restart. Prefer confirming the npm self-update's own restart first; only re-run restart
  * when that probe fails. Bun/source installs still always take the explicit restart path.
+ *
+ * Probe-first applies only to service-managed npm installs: without a service, `ocx.mjs`
+ * only prints `ocx start` and never brings the proxy back, so waiting would always burn
+ * the full health timeout. Skipping also requires update-correlated evidence (PID change
+ * and/or target version) so a surviving pre-update process cannot look like success.
  */
 export async function finishGuiUpdateRestart(
   job: UpdateJobState,
@@ -513,16 +590,32 @@ export async function finishGuiUpdateRestart(
   io: RestartIo = {},
 ): Promise<boolean> {
   if (installer === "npm") {
-    const already = await awaitRestartedProxyHealthy(job, captured, io);
-    if (already.ok) {
-      updateJob(
-        job,
-        {},
-        `Proxy already healthy on ${captured.hostname}:${captured.port} after npm self-update; skipping redundant restart.`,
-      );
-      return true;
+    const serviceInstalled = (io.serviceInstalledFn ?? isServiceInstalled)();
+    if (serviceInstalled) {
+      const already = await awaitRestartedProxyHealthy(job, captured, io);
+      if (already.ok) {
+        const identity = await (io.probeProxyIdentity ?? defaultProbeProxyIdentity)(
+          captured.port,
+          captured.hostname,
+        );
+        const evidence = npmSelfUpdateRestartEvidence(job, captured, identity);
+        if (evidence.ok) {
+          updateJob(
+            job,
+            {},
+            `Proxy already healthy on ${captured.hostname}:${captured.port} after npm self-update (${evidence.detail}); skipping redundant restart.`,
+          );
+          return true;
+        }
+        updateJob(
+          job,
+          {},
+          `npm self-update left a healthy proxy but ${evidence.reason}; performing explicit restart...`,
+        );
+      } else {
+        updateJob(job, {}, "npm self-update did not leave a healthy proxy; performing explicit restart...");
+      }
     }
-    updateJob(job, {}, "npm self-update did not leave a healthy proxy; performing explicit restart...");
   }
   const restartFn = io.restartAfterUpdateFn ?? restartAfterUpdate;
   await restartFn(job, captured, io);
