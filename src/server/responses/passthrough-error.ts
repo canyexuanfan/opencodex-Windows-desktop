@@ -24,15 +24,17 @@ export function formatPassthroughUpstreamError(
 ): Response {
   const trimmed = bodyText.trim();
   const now = options?.now ?? Date.now();
+  const upstreamRetryAfter = options?.headers?.get("retry-after")?.trim();
   const retryAfter = resolveClientRetryAfter({
     status,
     message: trimmed || `Provider error ${status}: (empty body)`,
-    upstreamRetryAfter: options?.headers?.get("retry-after"),
+    upstreamRetryAfter,
     now,
   });
 
   if (trimmed) {
-    if (retryAfter && !options?.headers?.get("retry-after")?.trim()) {
+    // Replace missing *or* malformed upstream Retry-After with the resolved value.
+    if (retryAfter && upstreamRetryAfter !== retryAfter) {
       const headers = options?.headers
         ? new Headers(options.headers)
         : new Headers({ "Content-Type": "application/json" });

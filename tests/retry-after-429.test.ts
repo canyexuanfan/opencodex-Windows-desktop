@@ -5,6 +5,7 @@ import {
   resolveClientRetryAfter,
 } from "../src/lib/retry-after";
 import { formatPassthroughUpstreamError } from "../src/server/responses/passthrough-error";
+import { consumeComboFailure } from "../src/server/responses/core";
 
 describe("resolveClientRetryAfter (#507)", () => {
   test("prefers a validated upstream Retry-After header", () => {
@@ -50,6 +51,44 @@ describe("resolveClientRetryAfter (#507)", () => {
       upstreamRetryAfter: "not-a-delay",
     })).toBe(DEFAULT_RETRYABLE_429_RETRY_AFTER_SEC);
   });
+
+  test("preserves an explicit Retry-After: 0 on 429", () => {
+    expect(resolveClientRetryAfter({
+      status: 429,
+      message: "Too Many Requests",
+      upstreamRetryAfter: "0",
+    })).toBe("0");
+  });
+
+  test("preserves an explicit Retry-After: 0 on 503 (chat/Claude bridge)", () => {
+    expect(resolveClientRetryAfter({
+      status: 503,
+      message: "Service Unavailable",
+      upstreamRetryAfter: "0",
+    })).toBe("0");
+  });
+
+  test("includeDefault:false omits the synthetic retryable-429 fallback", () => {
+    expect(resolveClientRetryAfter({
+      status: 429,
+      message: "Too many requests — please slow down",
+      includeDefault: false,
+    })).toBeUndefined();
+  });
+
+  test("includeDefault:false still keeps header and message-derived delays", () => {
+    expect(resolveClientRetryAfter({
+      status: 429,
+      message: "rate limited",
+      upstreamRetryAfter: "12",
+      includeDefault: false,
+    })).toBe("12");
+    expect(resolveClientRetryAfter({
+      status: 429,
+      message: "Please try again in 9s.",
+      includeDefault: false,
+    })).toBe("9");
+  });
 });
 
 describe("formatErrorResponse Retry-After (#507)", () => {
@@ -92,5 +131,40 @@ describe("formatPassthroughUpstreamError Retry-After (#507)", () => {
     const headers = new Headers({ "retry-after": "30", "content-type": "application/json" });
     const response = formatPassthroughUpstreamError(429, body, { headers });
     expect(response.headers.get("Retry-After")).toBe("30");
+  });
+
+  test("replaces a malformed non-empty upstream Retry-After on retryable 429", () => {
+    const body = JSON.stringify({ error: { message: "Too many requests" } });
+    const headers = new Headers({ "retry-after": "not-a-delay", "content-type": "application/json" });
+    const response = formatPassthroughUpstreamError(429, body, { headers });
+    expect(response.headers.get("Retry-After")).toBe(DEFAULT_RETRYABLE_429_RETRY_AFTER_SEC);
+  });
+
+  test("preserves Retry-After: 0 on non-empty 429", () => {
+    const body = JSON.stringify({ error: { message: "Too many requests" } });
+    const headers = new Headers({ "retry-after": "0", "content-type": "application/json" });
+    const response = formatPassthroughUpstreamError(429, body, { headers });
+    expect(response.headers.get("Retry-After")).toBe("0");
+  });
+});
+
+describe("consumeComboFailure Retry-After separation (#507 review)", () => {
+  test("missing Retry-After attaches client fallback but omits it from cooldown metadata", async () => {
+    const upstream = new Response(JSON.stringify({ error: { message: "Too many requests" } }), {
+      status: 429,
+    });
+    const failure = await consumeComboFailure(upstream);
+    expect(failure.response.headers.get("Retry-After")).toBe(DEFAULT_RETRYABLE_429_RETRY_AFTER_SEC);
+    expect(failure.retryAfter).toBeUndefined();
+  });
+
+  test("valid upstream Retry-After is kept for both client and cooldown metadata", async () => {
+    const upstream = new Response(JSON.stringify({ error: { message: "Too many requests" } }), {
+      status: 429,
+      headers: { "retry-after": "45" },
+    });
+    const failure = await consumeComboFailure(upstream);
+    expect(failure.response.headers.get("Retry-After")).toBe("45");
+    expect(failure.retryAfter).toBe("45");
   });
 });

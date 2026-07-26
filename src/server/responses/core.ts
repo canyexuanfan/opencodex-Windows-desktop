@@ -348,20 +348,30 @@ export async function consumeComboFailure(
   const message = classificationText === fallback
     ? fallback
     : `${fallback}: ${classificationText}`;
-  const retryAfter = resolveClientRetryAfter({
+  const upstreamRetryAfter = response.headers.get("retry-after");
+  // Client response may get the synthetic "2" fallback; cooldown metadata must not —
+  // otherwise coolComboTarget treats it as a 2s cooldown instead of the 60s default.
+  const clientRetryAfter = resolveClientRetryAfter({
     status: response.status,
     message,
-    upstreamRetryAfter: response.headers.get("retry-after"),
+    upstreamRetryAfter,
     now,
+  });
+  const cooldownRetryAfter = resolveClientRetryAfter({
+    status: response.status,
+    message,
+    upstreamRetryAfter,
+    now,
+    includeDefault: false,
   });
   return {
     response: formatErrorResponse(response.status, "upstream_error", message, {
       ...(upstreamCode !== undefined ? { code: upstreamCode } : {}),
-      ...(retryAfter !== undefined ? { retryAfter } : {}),
+      ...(clientRetryAfter !== undefined ? { retryAfter: clientRetryAfter } : {}),
     }),
     classificationText,
     ...(upstreamCode !== undefined ? { upstreamCode } : {}),
-    ...(retryAfter !== undefined ? { retryAfter } : {}),
+    ...(cooldownRetryAfter !== undefined ? { retryAfter: cooldownRetryAfter } : {}),
     ...(usage ? { usage } : {}),
   };
 }
