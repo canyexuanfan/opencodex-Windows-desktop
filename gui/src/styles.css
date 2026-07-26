@@ -1310,6 +1310,14 @@ button.prov-account-row.active { cursor: default; }
    and a pager for the tail. Same idiom as the Models page so the two dense surfaces match. */
 .claude-lane-search { width: calc(100% - 20px); margin: 0 10px; min-height: 32px; font-size: 12.5px; }
 .claude-lane-more { align-self: stretch; justify-content: center; }
+
+/* Grok page: read-only status for the managed fence in ~/.grok/config.toml. */
+.grok-endpoint {
+  display: flex; align-items: center; gap: 10px; margin: 14px 0 6px; padding: 10px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+  font-size: var(--text-control);
+}
+.grok-endpoint > span { color: var(--muted); }
 .claude-lane-empty {
   display: grid; place-items: center; min-height: 82px; padding: 12px; border: 1px dashed var(--border);
   border-radius: var(--radius-sm); color: var(--muted); font-size: 12px; text-align: center;

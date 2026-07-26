@@ -382,6 +382,18 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     });
   }
 
+  // Grok Build: read-only view of the managed fence in ~/.grok/config.toml. There is no write
+  // route on purpose — `injectGrokConfig` owns every mutation of that file, behind guards a
+  // web-reachable writer would widen the blast radius of.
+  if (url.pathname === "/api/grok" && req.method === "GET") {
+    try {
+      const { readGrokStatus } = await import("../../grok/status");
+      return jsonResponse(readGrokStatus());
+    } catch (error) {
+      return jsonResponse({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  }
+
   // Claude Desktop profile: routed/native model assignments for the Desktop 3P config.
   if (url.pathname === "/api/claude-desktop" && req.method === "GET") {
     try {

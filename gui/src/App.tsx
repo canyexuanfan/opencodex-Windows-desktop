@@ -11,6 +11,7 @@ import Storage from "./pages/Storage";
 import CodexAuth from "./pages/CodexAuth";
 import ApiKeys from "./pages/ApiKeys";
 import Claude from "./pages/Claude";
+import Grok from "./pages/Grok";
 import Startup from "./pages/Startup";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconGithub, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle, IconX } from "./icons";
@@ -38,6 +39,7 @@ const PAGE_TKEY: Record<Page, TKey> = {
   "codex-auth": "nav.codexAuth",
   api: "nav.api",
   claude: "nav.claude",
+  grok: "nav.grok",
 };
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
@@ -54,6 +56,7 @@ const NAV: { id: Page; tkey: TKey; Icon: typeof IconGrid }[] = [
   { id: "storage", tkey: "nav.storage", Icon: IconHardDrive },
   { id: "api", tkey: "nav.api", Icon: IconGlobe },
   { id: "claude", tkey: "nav.claude", Icon: IconSparkle },
+  { id: "grok", tkey: "nav.grok", Icon: IconBoxes },
 ];
 
 const THEME_ICON = { light: IconSun, dark: IconMoon, system: IconMonitor } as const;
@@ -305,6 +308,7 @@ export default function App() {
             {page === "codex-auth" && <CodexAuth apiBase={API_BASE} />}
             {page === "api" && <ApiKeys apiBase={API_BASE} />}
             {page === "claude" && <Claude apiBase={API_BASE} />}
+            {page === "grok" && <Grok apiBase={API_BASE} />}
           </ErrorBoundary>
         </div>
       </main>
