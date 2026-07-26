@@ -1,53 +1,40 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { IconCheck, IconPlus, IconX } from "../icons";
+import { Notice } from "../ui";
 import { useI18n, LOCALES } from "../i18n/shared";
+import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
 import {
   classifyExternalModel,
   externalModelId,
-  gatewayInboundProtocols,
   type ExternalModelRow,
 } from "../api-access-models";
+import {
+  DEFAULT_ENDPOINTS,
+  deriveApiEndpoints,
+  type ApiEndpointInfo,
+  type ApiKeyEntry,
+  type ModelTestState,
+} from "./api-keys-utils";
+import {
+  ApiKeysAuthPanel,
+  ApiKeysEndpointsPanel,
+  ApiKeysManagePanel,
+  ApiKeysModelsPanel,
+  ApiKeysUsagePanel,
+} from "./api-keys-panels";
 
-interface ApiKeyEntry {
-  id: string;
-  name: string;
-  prefix: string;
-  createdAt: string;
+interface KeysResponse {
+  keys?: ApiKeyEntry[];
+  endpoint?: string;
+  baseUrl?: string;
+  responsesEndpoint?: string;
+  chatCompletionsEndpoint?: string;
+  messagesEndpoint?: string;
+  modelsEndpoint?: string;
+  claudeCodeEnabled?: boolean;
 }
 
-interface ApiEndpointInfo {
-  baseUrl: string;
-  responses: string;
-  chatCompletions: string;
-  messages: string;
-  models: string;
-}
-
-type ModelTestState = "idle" | "testing" | "ok" | "error";
-
-const DEFAULT_ENDPOINTS: ApiEndpointInfo = {
-  baseUrl: "http://127.0.0.1:10100/v1",
-  responses: "http://127.0.0.1:10100/v1/responses",
-  chatCompletions: "http://127.0.0.1:10100/v1/chat/completions",
-  messages: "http://127.0.0.1:10100/v1/messages",
-  models: "http://127.0.0.1:10100/v1/models",
-};
-
-function deriveApiEndpoints(endpoint: string): ApiEndpointInfo {
-  const responses = endpoint || DEFAULT_ENDPOINTS.responses;
-  const match = responses.match(/^(.*)\/v1\/responses\/?$/);
-  const baseUrl = match ? `${match[1]}/v1` : responses.replace(/\/responses\/?$/, "");
-  return {
-    baseUrl,
-    responses,
-    chatCompletions: `${baseUrl}/chat/completions`,
-    messages: `${baseUrl}/messages`,
-    models: `${baseUrl}/models`,
-  };
-}
-
-function formatCreatedDate(iso: string, localeTag?: string): string {
-  return new Date(iso).toLocaleDateString(localeTag);
+interface CreateKeyResponse {
+  key?: unknown;
 }
 
 export default function ApiKeys({ apiBase }: { apiBase: string }) {
@@ -56,6 +43,8 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   const [keys, setKeys] = useState<ApiKeyEntry[]>([]);
   const [endpoints, setEndpoints] = useState<ApiEndpointInfo>(DEFAULT_ENDPOINTS);
   const [claudeCodeEnabled, setClaudeCodeEnabled] = useState(true);
+  const [keysLoadFailed, setKeysLoadFailed] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [models, setModels] = useState<ExternalModelRow[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsLoadFailed, setModelsLoadFailed] = useState(false);
@@ -72,19 +61,27 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   const fetchKeys = useCallback(async () => {
     try {
       const res = await fetch(`${apiBase}/api/keys`);
-      if (res.ok) {
-        const data = await res.json();
-        setKeys(data.keys ?? []);
-        setEndpoints({
-          baseUrl: data.baseUrl ?? deriveApiEndpoints(data.endpoint ?? "").baseUrl,
-          responses: data.responsesEndpoint ?? data.endpoint ?? DEFAULT_ENDPOINTS.responses,
-          chatCompletions: data.chatCompletionsEndpoint ?? deriveApiEndpoints(data.endpoint ?? "").chatCompletions,
-          messages: data.messagesEndpoint ?? deriveApiEndpoints(data.endpoint ?? "").messages,
-          models: data.modelsEndpoint ?? deriveApiEndpoints(data.endpoint ?? "").models,
-        });
-        setClaudeCodeEnabled(data.claudeCodeEnabled !== false);
+      const data = await readJsonIfOk<KeysResponse>(res);
+      if (!data) {
+        setKeys([]);
+        setKeysLoadFailed(true);
+        return;
       }
-    } catch { /* proxy down */ }
+      const derived = deriveApiEndpoints(data.endpoint ?? "");
+      setKeys(data.keys ?? []);
+      setEndpoints({
+        baseUrl: data.baseUrl ?? derived.baseUrl,
+        responses: data.responsesEndpoint ?? data.endpoint ?? DEFAULT_ENDPOINTS.responses,
+        chatCompletions: data.chatCompletionsEndpoint ?? derived.chatCompletions,
+        messages: data.messagesEndpoint ?? derived.messages,
+        models: data.modelsEndpoint ?? derived.models,
+      });
+      setClaudeCodeEnabled(data.claudeCodeEnabled !== false);
+      setKeysLoadFailed(false);
+    } catch {
+      setKeys([]);
+      setKeysLoadFailed(true);
+    }
   }, [apiBase]);
 
   const fetchModels = useCallback(async () => {
@@ -148,6 +145,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
     if (creatingRef.current) return false;
     creatingRef.current = true;
     setCreating(true);
+    setActionError(null);
     try {
       const effectiveName = name ?? newName;
       const res = await fetch(`${apiBase}/api/keys`, {
@@ -155,14 +153,17 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: effectiveName || "default" }),
       });
-      if (!res.ok) return false;
-      const data = await res.json() as { key?: unknown };
-      if (typeof data.key !== "string" || data.key.length === 0) return false;
+      const data = await readJsonOrThrow<CreateKeyResponse>(res, t("api.createFailed"));
+      if (typeof data?.key !== "string" || data.key.length === 0) {
+        setActionError(t("api.createFailed"));
+        return false;
+      }
       setNewKey(data.key);
       setNewName("");
       void fetchKeys();
       return true;
     } catch {
+      setActionError(t("api.createFailed"));
       return false;
     } finally {
       creatingRef.current = false;
@@ -171,13 +172,22 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   };
 
   const handleDelete = async (id: string) => {
-    await fetch(`${apiBase}/api/keys`, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id }),
-    });
-    setConfirmDelete(null);
-    fetchKeys();
+    setActionError(null);
+    try {
+      const res = await fetch(`${apiBase}/api/keys`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      if (!res.ok) {
+        setActionError(t("api.deleteFailed"));
+        return;
+      }
+      setConfirmDelete(null);
+      void fetchKeys();
+    } catch {
+      setActionError(t("api.deleteFailed"));
+    }
   };
 
   const copyKey = () => {
@@ -258,220 +268,44 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
         {subtitleParts[2]}
       </p>
 
-      <div className="panel api-panel">
-        <h3 className="panel-title">{t("api.endpointsTitle")}</h3>
-        <div className="api-endpoints">
-          <div>
-            <span className="muted small">{t("api.baseUrl")}</span>
-            <code className="api-code api-code-inline">{endpoints.baseUrl}</code>
-          </div>
-          <div>
-            <span className="muted small">{t("api.responsesEndpoint")}</span>
-            <code className="api-code api-code-inline">{endpoints.responses}</code>
-          </div>
-          <div>
-            <span className="muted small">{t("api.chatCompletionsEndpoint")}</span>
-            <code className="api-code api-code-inline">{endpoints.chatCompletions}</code>
-          </div>
-          {claudeCodeEnabled && (
-            <div>
-              <span className="muted small">{t("api.messagesEndpoint")}</span>
-              <code className="api-code api-code-inline">{endpoints.messages}</code>
-            </div>
-          )}
-          <div>
-            <span className="muted small">{t("api.modelsEndpoint")}</span>
-            <code className="api-code api-code-inline">{endpoints.models}</code>
-          </div>
-        </div>
-        <p className="muted small">{t("api.endpointNote")}</p>
-      </div>
-
-      <div className="panel api-panel" style={{ marginTop: "1rem" }}>
-        <h3 className="panel-title">{t("api.authTitle")}</h3>
-        <ul className="api-auth-list muted small">
-          <li>{t("api.authChatCompletions")}</li>
-          <li>{t("api.authResponses")}</li>
-          {claudeCodeEnabled && <li>{t("api.authMessages")}</li>}
-          <li>{t("api.authLoopback")}</li>
-        </ul>
-        <p className="muted small">{t("api.authBaseUrlNote")}</p>
-      </div>
-
-      {newKey && (
-        <div className="panel api-panel panel-accent" style={{ marginTop: "1rem" }}>
-          <h3 className="panel-title">{t("api.newKeyTitle")}</h3>
-          <p className="muted small">{t("api.newKeyNote")}</p>
-          <div className="api-form-row">
-            <code className="api-code" style={{ flex: 1, wordBreak: "break-all" }}>{newKey}</code>
-            <button type="button" className="btn btn-sm btn-ghost" onClick={copyKey}>
-              {copied ? <><IconCheck /> {t("api.copied")}</> : t("api.copy")}
-            </button>
-          </div>
-          <button type="button" className="btn btn-sm btn-ghost" style={{ alignSelf: "flex-start" }} onClick={() => setNewKey(null)}>
-            {t("api.dismiss")}
-          </button>
-        </div>
+      {(keysLoadFailed || actionError) && (
+        <Notice tone="err">{actionError ?? t("api.keysLoadFailed")}</Notice>
       )}
 
-      <div className="panel api-panel" style={{ marginTop: "1rem" }}>
-        <h3 className="panel-title">{t("api.generateTitle")}</h3>
-        <div className="api-form-row">
-          <input
-            id="api-key-name"
-            type="text"
-            placeholder={t("api.keyNamePlaceholder")}
-            aria-label={t("api.keyNamePlaceholder")}
-            value={newName}
-            onChange={e => setNewName(e.target.value)}
-            className="input"
-          />
-          <button type="button" className="btn btn-primary" onClick={() => { void handleCreate(); }} disabled={creating}>
-            <IconPlus /> {creating ? t("api.generating") : t("api.generate")}
-          </button>
-        </div>
-      </div>
-
-      <div className="panel api-panel" style={{ marginTop: "1rem" }}>
-        <h3 className="panel-title">{t("api.activeKeys", { count: keys.length })}</h3>
-        {keys.length === 0 ? (
-          <p className="muted">{t("api.noKeys")}</p>
-        ) : (
-          <div className="tbl-wrap">
-            <table className="tbl">
-              <thead>
-                <tr><th>{t("api.colName")}</th><th>{t("api.colKey")}</th><th>{t("api.colCreated")}</th><th></th></tr>
-              </thead>
-              <tbody>
-                {keys.map(k => (
-                  <tr key={k.id}>
-                    <td>{k.name}</td>
-                    <td><code>{k.prefix}</code></td>
-                    <td>{formatCreatedDate(k.createdAt, localeTag)}</td>
-                    <td>
-                      {confirmDelete === k.id ? (
-                        <span className="api-actions">
-                          <button type="button" className="btn btn-sm btn-danger" onClick={() => handleDelete(k.id)}>{t("api.confirm")}</button>
-                          <button type="button" className="btn btn-sm btn-ghost" onClick={() => setConfirmDelete(null)}>{t("common.cancel")}</button>
-                        </span>
-                      ) : (
-                        <button type="button" className="btn btn-sm btn-ghost" aria-label={t("api.deleteAria")} onClick={() => setConfirmDelete(k.id)}><IconX /></button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      <div className="panel api-panel" style={{ marginTop: "1rem" }}>
-        <div className="api-panel-head">
-          <h3 className="panel-title">{t("api.modelsTitle")}</h3>
-          <span className="muted mono text-label">{t("api.modelsCount", { count: filteredModels.length })}</span>
-        </div>
-        <p className="muted small">{t("api.modelsSubtitle")}</p>
-        <input
-          type="search"
-          className="input"
-          value={modelQuery}
-          onChange={event => setModelQuery(event.target.value)}
-          placeholder={t("api.modelsSearch")}
-          aria-label={t("api.modelsSearch")}
-        />
-        {modelsLoading ? (
-          <p className="muted small" style={{ marginTop: "0.75rem" }}>{t("api.modelsLoading")}</p>
-        ) : modelsLoadFailed ? (
-          <p className="muted small" style={{ marginTop: "0.75rem" }}>{t("api.modelsLoadFailed")}</p>
-        ) : filteredModels.length === 0 ? (
-          <p className="muted small" style={{ marginTop: "0.75rem" }}>{t("api.modelsEmpty")}</p>
-        ) : (
-          <div className="tbl-wrap" style={{ marginTop: "0.75rem" }}>
-            <table className="tbl">
-              <thead>
-                <tr>
-                  <th>{t("api.colModel")}</th>
-                  <th>{t("api.colSource")}</th>
-                  <th>{t("api.colProtocols")}</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredModels.map(model => {
-                  const modelId = externalModelId(model);
-                  const testState = modelTests[modelId]?.state ?? "idle";
-                  return (
-                    <tr key={modelId}>
-                      <td>
-                        <div className="api-model-cell">
-                          <code>{modelId}</code>
-                          {model.displayName !== model.id && <span className="muted small">{model.displayName}</span>}
-                        </div>
-                      </td>
-                      <td>{sourceLabel(model)}</td>
-                      <td>{gatewayInboundProtocols(claudeCodeEnabled).map(protocolLabel).join(", ")}</td>
-                      <td>
-                        <div className="api-model-actions">
-                          <button type="button" className="btn btn-sm btn-ghost" onClick={() => { void copyModelId(modelId); }}>
-                            {copiedModelId === modelId ? t("api.modelCopied") : t("api.copyModelId")}
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-ghost"
-                            disabled={testState === "testing"}
-                            onClick={() => { void testModel(model); }}
-                          >
-                            {testState === "testing" ? t("api.testingModel") : t("api.testModel")}
-                          </button>
-                        </div>
-                        {testState === "ok" && <p className="muted small api-test-note api-test-note--ok">{t("api.testSucceeded")}</p>}
-                        {testState === "error" && <p className="muted small api-test-note api-test-note--error">{modelTests[modelId]?.detail ?? t("api.testFailed")}</p>}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      <div className="panel api-panel" style={{ marginTop: "1rem" }}>
-        <h3 className="panel-title">{t("api.usageChatTitle")}</h3>
-        <pre className="api-code">{`curl ${endpoints.chatCompletions} \\
-  -H "x-opencodex-api-key: ocx_YOUR_KEY_HERE" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "gpt-5.4",
-    "messages": [{"role": "user", "content": ${JSON.stringify(t("api.usageSampleInput"))}}]
-  }'`}</pre>
-      </div>
-
-      <div className="panel api-panel" style={{ marginTop: "1rem" }}>
-        <h3 className="panel-title">{t("api.usageResponsesTitle")}</h3>
-        <pre className="api-code">{`curl ${endpoints.responses} \\
-  -H "x-opencodex-api-key: ocx_YOUR_KEY_HERE" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "gpt-5.4",
-    "input": ${JSON.stringify(t("api.usageSampleInput"))}
-  }'`}</pre>
-      </div>
-
-      {claudeCodeEnabled && (
-        <div className="panel api-panel" style={{ marginTop: "1rem" }}>
-          <h3 className="panel-title">{t("api.usageMessagesTitle")}</h3>
-          <pre className="api-code">{`curl ${endpoints.messages} \\
-  -H "x-opencodex-api-key: ocx_YOUR_KEY_HERE" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "claude-sonnet-4-6",
-    "max_tokens": 64,
-    "messages": [{"role": "user", "content": ${JSON.stringify(t("api.usageSampleInput"))}}]
-  }'`}</pre>
-        </div>
-      )}
+      <ApiKeysEndpointsPanel endpoints={endpoints} claudeCodeEnabled={claudeCodeEnabled} />
+      <ApiKeysAuthPanel claudeCodeEnabled={claudeCodeEnabled} />
+      <ApiKeysManagePanel
+        keys={keys}
+        keysLoadFailed={keysLoadFailed}
+        newName={newName}
+        creating={creating}
+        newKey={newKey}
+        copied={copied}
+        confirmDelete={confirmDelete}
+        localeTag={localeTag}
+        onNewNameChange={setNewName}
+        onCreate={() => { void handleCreate(); }}
+        onDismissNewKey={() => setNewKey(null)}
+        onCopyKey={copyKey}
+        onConfirmDelete={setConfirmDelete}
+        onCancelDelete={() => setConfirmDelete(null)}
+        onDelete={(id) => { void handleDelete(id); }}
+      />
+      <ApiKeysModelsPanel
+        filteredModels={filteredModels}
+        modelsLoading={modelsLoading}
+        modelsLoadFailed={modelsLoadFailed}
+        modelQuery={modelQuery}
+        copiedModelId={copiedModelId}
+        modelTests={modelTests}
+        claudeCodeEnabled={claudeCodeEnabled}
+        onModelQueryChange={setModelQuery}
+        onCopyModelId={(modelId) => { void copyModelId(modelId); }}
+        onTestModel={(model) => { void testModel(model); }}
+        sourceLabel={sourceLabel}
+        protocolLabel={protocolLabel}
+      />
+      <ApiKeysUsagePanel endpoints={endpoints} claudeCodeEnabled={claudeCodeEnabled} />
     </section>
   );
 }

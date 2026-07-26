@@ -1,141 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Notice, Select, type SelectOption } from "../ui";
-import { IconPlus, IconX } from "../icons";
-import { Trans } from "../i18n/provider";
+import { Notice } from "../ui";
 import { useT } from "../i18n/shared";
 import { modelLabel } from "../model-display";
+import { readJsonOrThrow } from "../fetch-json";
 import { reconcileAutoConnectState } from "./claude-autoconnect";
-import { buildManualEnv, type SidecarBackend, type SidecarOverride } from "./claude-manual-env";
+import { buildManualEnv } from "./claude-manual-env";
+import {
+  ClaudeCodeAliasesSection,
+  ClaudeCodeModelMapSection,
+  ClaudeCodeQuickstartSection,
+  ClaudeCodeSettingsCard,
+} from "./claude-code-sections";
+import { formatCompactWindow, type ClaudeCodeState, type MapRow } from "./claude-code-types";
+import { SmallFastModelSetting } from "./claude-code-settings";
 
-interface ClaudeCodeState {
-  enabled: boolean;
-  authMode: "subscription" | "proxy";
-  autoConnectSupported: boolean;
-  systemEnv: boolean;
-  fastMode: boolean | null;
-  /** Legacy config override (no GUI control anymore) — still disables auto-context when hand-set. */
-  maxContextTokens: number | null;
-  autoContext: boolean;
-  autoCompactWindow: number | null;
-  injectAgents: boolean;
-  smallFastModel: string;
-  tierModels?: { haiku?: string };
-  effectiveModelEnv: Record<string, string>;
-  available: string[];
-  aliases: { id: string; display_name: string }[];
-  webSearchSidecar?: SidecarOverride;
-  visionSidecar?: SidecarOverride;
-  port: number;
-}
-
-interface MapRow { from: string; to: string }
-
-function formatCompactWindow(value: number): string {
-  return value >= 1_000_000 ? "1M" : `${Math.round(value / 1_000)}k`;
-}
-
-function SettingToggle({
-  label,
-  checked,
-  onChange,
-  disabled = false,
-  describedBy,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (value: boolean) => void;
-  disabled?: boolean;
-  describedBy?: string;
-}) {
-  return (
-    <label className="toggle">
-      <input
-        type="checkbox"
-        checked={checked}
-        disabled={disabled}
-        aria-label={label}
-        aria-describedby={describedBy}
-        onChange={event => onChange(event.target.checked)}
-      />
-      <span className="slider" aria-hidden="true" />
-    </label>
-  );
-}
-
-export function AutoConnectSetting({
-  supported,
-  checked,
-  onChange,
-}: {
-  supported: boolean;
-  checked: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  const t = useT();
-  const unsupportedDescriptionId = supported ? undefined : "claude-system-env-unsupported";
-
-  return (
-    <div className="setting-row">
-      <div className="setting-label">
-        <span className="title">{t("claude.systemEnv")}</span>
-        {supported ? (
-          <span className="desc">{t("claude.systemEnvDesc")}</span>
-        ) : (
-          <span className="desc" id={unsupportedDescriptionId}>
-            <Trans k="claude.systemEnvUnsupported" cmd="ocx claude" />
-          </span>
-        )}
-        {supported && checked && (
-          <span className="desc" style={{ color: "var(--red)" }}>
-            {t("claude.systemEnvWarn")}
-          </span>
-        )}
-      </div>
-      <SettingToggle
-        label={t("claude.systemEnv")}
-        checked={supported && checked}
-        disabled={!supported}
-        describedBy={unsupportedDescriptionId}
-        onChange={onChange}
-      />
-    </div>
-  );
-}
-
-export function SmallFastModelSetting({
-  value,
-  tierHaikuModel,
-  options,
-  onChange,
-}: {
-  value: string;
-  tierHaikuModel?: string;
-  options: SelectOption[];
-  onChange: (value: string) => void;
-}) {
-  const t = useT();
-  const effectiveHelperModel = tierHaikuModel ?? value;
-  return (
-    <>
-      <div className="h-section">{t("claude.smallFastModel")}</div>
-      <p className="muted text-label" style={{ margin: "0 0 8px" }}>
-        {t("claude.smallFastModelAccurateHint")}
-      </p>
-      <Select
-        value={value}
-        options={options}
-        onChange={onChange}
-        label={t("claude.smallFastModel")}
-        style={{ maxWidth: 420 }}
-      />
-      {effectiveHelperModel === "" && (
-        <p className="notice-warn" role="status" style={{ marginTop: 8 }}>
-          {t("claude.smallFastModelNativeWarning")}
-        </p>
-      )}
-    </>
-  );
-}
+export { AutoConnectSetting, SmallFastModelSetting } from "./claude-code-settings";
 
 export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   const t = useT();
@@ -147,7 +26,16 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch(`${apiBase}/api/claude-code`).then(res => res.json());
+      const res = await fetch(`${apiBase}/api/claude-code`);
+      const r = await readJsonOrThrow<ClaudeCodeState & { modelMap?: Record<string, string> }>(
+        res,
+        t("claude.loadFail"),
+      );
+      if (!r) {
+        setOk(false);
+        setStatus(t("claude.loadFail"));
+        return;
+      }
       setState({
         ...r,
         authMode: r.authMode === "proxy" ? "proxy" : "subscription",
@@ -167,6 +55,7 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
       setLoading(false);
     }
   }, [apiBase, t]);
+
   useEffect(() => {
     // Deferred initial load (matches Models/Usage): avoids synchronous setState
     // inside the effect, per the react-hooks/set-state-in-effect lint gate.
@@ -221,10 +110,15 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
             : null,
         }),
       });
-      const d = await r.json();
-      setOk(r.ok);
-      setStatus(r.ok ? t("claude.saved") : (d.error || t("claude.saveFailed")));
-      if (r.ok) await load();
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({})) as { error?: string };
+        setOk(false);
+        setStatus(d.error || t("claude.saveFailed"));
+        return;
+      }
+      setOk(true);
+      setStatus(t("claude.saved"));
+      await load();
     } catch {
       setOk(false);
       setStatus(t("claude.networkError"));
@@ -234,251 +128,21 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
   if (loading) return <div className="muted" style={{ padding: 8 }}>{t("claude.loading")}</div>;
   if (!state) return <Notice tone="err">{status || t("claude.loadFail")}</Notice>;
 
-  const manualEnv = buildManualEnv(state);
-
-  const settingsSection = (
-    <>
-      <div className="card" style={{ overflow: "hidden" }}>
-      <div className="setting-row">
-        <div className="setting-label">
-          <span className="title">{t("claude.enabledLabel")}</span>
-          <span className="desc">{t("claude.enabledHint")}</span>
-        </div>
-        <SettingToggle label={t("claude.enabledLabel")} checked={state.enabled} onChange={enabled => setState({ ...state, enabled })} />
-      </div>
-
-      <div className="setting-row">
-        <div className="setting-label">
-          <span className="title">{t("claude.authMode")}</span>
-          <span className="desc">{t("claude.authModeHint")}</span>
-        </div>
-        <Select
-          value={state.authMode}
-          options={[
-            { value: "subscription", label: t("claude.authModeSubscription") },
-            { value: "proxy", label: t("claude.authModeProxy") },
-          ]}
-          onChange={v => setState({ ...state, authMode: v as ClaudeCodeState["authMode"] })}
-          label={t("claude.authMode")}
-          style={{ minWidth: 220 }}
-          portal
-        />
-      </div>
-
-      <AutoConnectSetting
-        supported={state.autoConnectSupported}
-        checked={state.systemEnv}
-        onChange={systemEnv => setState({ ...state, systemEnv })}
-      />
-
-      <div className="setting-row">
-        <div className="setting-label">
-          <span className="title">{t("claude.fastMode")}</span>
-          <span className="desc">{t("claude.fastModeDesc")}</span>
-        </div>
-        <select
-          value={state.fastMode === null ? "auto" : state.fastMode ? "on" : "off"}
-          onChange={e => {
-            const v = e.target.value;
-            setState({ ...state, fastMode: v === "auto" ? null : v === "on" });
-          }}
-          className="text-label font-medium"
-          aria-label={t("claude.fastMode")}
-          style={{ padding: "5px 10px", borderRadius: "var(--radius-xs)", border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)" }}
-        >
-          <option value="auto">{t("claude.fastAuto")}</option>
-          <option value="on">{t("claude.fastOn")}</option>
-          <option value="off">{t("claude.fastOff")}</option>
-        </select>
-      </div>
-
-      <div className="setting-row">
-        <div className="setting-label">
-          <span className="title">{t("claude.autoContext")}</span>
-          <span className="desc">{t("claude.autoContextDesc")}</span>
-          {state.maxContextTokens !== null && <span className="desc" style={{ color: "var(--muted)" }}>{t("claude.autoContextInert")}</span>}
-        </div>
-        <SettingToggle label={t("claude.autoContext")} checked={state.autoContext} onChange={autoContext => setState({ ...state, autoContext })} />
-      </div>
-
-      {state.autoContext && (
-        <div className="setting-row">
-          <div className="setting-label">
-            <span className="title">{t("claude.autoCompactWindow")}</span>
-            <span className="desc">{t("claude.autoCompactWindowDesc")}</span>
-            {state.autoCompactWindow !== null && <span className="desc" style={{ color: "var(--red)" }}>{t("claude.autoCompactWindowWarn")}</span>}
-          </div>
-          <Select
-            value={state.autoCompactWindow === null ? "" : String(state.autoCompactWindow)}
-            options={autoCompactOptions}
-            onChange={v => setState({ ...state, autoCompactWindow: v === "" ? null : Number(v) })}
-            label={t("claude.autoCompactWindow")}
-            style={{ minWidth: 130 }}
-            portal
-          />
-        </div>
-      )}
-
-      <div className="setting-row">
-        <div className="setting-label">
-          <span className="title">{t("claude.injectAgents")}</span>
-          <span className="desc">{t("claude.injectAgentsDesc")}</span>
-        </div>
-        <SettingToggle label={t("claude.injectAgents")} checked={state.injectAgents} onChange={injectAgents => setState({ ...state, injectAgents })} />
-      </div>
-
-      {(["webSearchSidecar", "visionSidecar"] as const).map(key => {
-        const override = state[key];
-        const titleKey = key === "webSearchSidecar" ? "claude.webSearchSidecar" : "claude.visionSidecar";
-        const hintKey = key === "webSearchSidecar" ? "claude.webSearchSidecarHint" : "claude.visionSidecarHint";
-        return (
-          <div className="setting-row" key={key} style={{ alignItems: "flex-start" }}>
-            <div className="setting-label setting-copy" style={{ flex: 1 }}>
-              <span className="title">{t(titleKey)}</span>
-              <span className="desc">{t(hintKey)}</span>
-            </div>
-            <div className="setting-controls" style={{ display: "flex", gap: 8 }}>
-              <Select
-                value={!override ? "inherit" : override.backend ?? "auto"}
-                options={[
-                  { value: "inherit", label: t("claude.useMainSetting") },
-                  { value: "auto", label: t("dash.backendAuto") },
-                  { value: "openai", label: t("dash.backendOpenAI") },
-                  { value: "anthropic", label: t("dash.backendAnthropic") },
-                ]}
-                onChange={value => setState({
-                  ...state,
-                  [key]: value === "inherit"
-                    ? undefined
-                    : { ...override, backend: value === "auto" ? undefined : value as SidecarBackend },
-                })}
-                label={t("dash.sidecarBackend")}
-                portal
-              />
-              <input
-                className="input mono"
-                value={override?.model ?? ""}
-                onChange={e => setState({ ...state, [key]: { ...override, model: e.target.value } })}
-                placeholder={t("claude.sidecarModelPlaceholder")}
-                disabled={!override}
-                aria-label={t("dash.sidecarModel")}
-                style={{ minWidth: 210 }}
-              />
-            </div>
-          </div>
-        );
-      })}
-    </div>
-    </>
-  );
-
-  const quickstartSection = (
-    <>
-      <div className="h-section">{t("claude.quickstart")}</div>
-      <p className="muted text-label" style={{ margin: "0 0 8px" }}><Trans k="claude.quickstartHint" cmd="ocx claude" /></p>
-      <pre className="mono card" style={{ padding: "10px 14px", overflowX: "auto", margin: 0 }}>ocx claude</pre>
-      <details style={{ margin: "10px 0 0" }}>
-        <summary className="muted text-label" style={{ cursor: "pointer", padding: "2px 2px" }}>{t("claude.manualEnv")}</summary>
-        <pre className="mono card text-label" style={{ padding: "10px 14px", overflowX: "auto", margin: "6px 0 0" }}>{manualEnv}</pre>
-      </details>
-    </>
-  );
-
-  const smallFastSection = (
-    <SmallFastModelSetting
-      value={state.smallFastModel}
-      tierHaikuModel={state.tierModels?.haiku}
-      options={modelOptions}
-      onChange={smallFastModel => setState({ ...state, smallFastModel })}
-    />
-  );
-
-  const modelMapSection = (
-    <>
-      <div className="h-section">{t("claude.modelMap")} <span className="count">{rows.length}</span></div>
-      <p className="muted text-label" style={{ margin: "0 0 8px" }}>{t("claude.modelMapHint")}</p>
-      <div className="stack" style={{ gap: 8 }}>
-        {rows.map((row, i) => (
-          <div key={i} className="row" style={{ gap: 8 }}>
-            <input
-              className="input mono"
-              value={row.from}
-              placeholder={t("claude.mapFrom")}
-              aria-label={t("claude.mapFrom")}
-              onChange={e => setRows(prev => prev.map((r, j) => j === i ? { ...r, from: e.target.value } : r))}
-              style={{ flex: 1 }}
-            />
-            <span className="muted" aria-hidden>→</span>
-            <input
-              className="input mono"
-              value={row.to}
-              placeholder={t("claude.mapTo")}
-              aria-label={t("claude.mapTo")}
-              onChange={e => setRows(prev => prev.map((r, j) => j === i ? { ...r, to: e.target.value } : r))}
-              style={{ flex: 1 }}
-            />
-            <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={() => setRows(prev => prev.filter((_, j) => j !== i))}
-              aria-label={t("claude.removeMapping")} style={{ color: "var(--red)" }}>
-              <IconX />
-            </button>
-          </div>
-        ))}
-      </div>
-      <div style={{ marginTop: 8 }}>
-        <button type="button" className="btn btn-ghost btn-sm" onClick={() => setRows(prev => [...prev, { from: "", to: "" }])}>
-          <IconPlus /> {t("claude.addMapping")}
-        </button>
-      </div>
-
-      <div style={{ marginTop: 14 }}>
-        <button type="button" className="btn btn-primary" onClick={() => { void save(); }}>{t("common.save")}</button>
-      </div>
-    </>
-  );
-
-  const aliasesSection = (
-    <>
-      <div className="h-section">{t("claude.aliases")} <span className="count">{state.aliases.length}</span></div>
-      <p className="muted text-label" style={{ margin: "0 0 8px" }}>{t("claude.aliasesHint")}</p>
-      {state.aliases.length === 0 ? (
-        <div className="muted text-label">{t("claude.none")}</div>
-      ) : (
-        <div className="stack" style={{ gap: 6, maxHeight: 320, overflowY: "auto" }}>
-          {Array.from(
-            state.aliases.reduce((groups, a) => {
-              const m = /\(([^)]+)\)\s*$/.exec(a.display_name);
-              const provider = m ? m[1]! : "etc";
-              (groups.get(provider) ?? groups.set(provider, []).get(provider)!).push(a);
-              return groups;
-            }, new Map<string, { id: string; display_name: string }[]>()),
-          ).map(([provider, aliasRows]) => (
-            <div key={provider}>
-              <div className="muted text-caption font-semibold" style={{ textTransform: "uppercase", letterSpacing: "var(--tracking-wide)", margin: "6px 2px 4px" }}>{provider} · {aliasRows.length}</div>
-              <div className="stack" style={{ gap: 4 }}>
-                {aliasRows.map(a => (
-                  <div key={a.id} className="card row" style={{ padding: "6px 12px", gap: 10 }}>
-                    <code className="mono text-label" style={{ flex: 1 }}>{a.id}</code>
-                    <span className="muted text-label">{a.display_name}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </>
-  );
-
   return (
     <>
       <div className="page-head"><h2>{t("claude.pageTitle")}</h2></div>
       <p className="page-sub">{t("claude.subtitle")}</p>
       {status && <Notice tone={ok ? "ok" : "err"}>{status}</Notice>}
-      {settingsSection}
-      {quickstartSection}
-      {smallFastSection}
-      {modelMapSection}
-      {aliasesSection}
+      <ClaudeCodeSettingsCard state={state} autoCompactOptions={autoCompactOptions} onStateChange={setState} />
+      <ClaudeCodeQuickstartSection manualEnv={buildManualEnv(state)} />
+      <SmallFastModelSetting
+        value={state.smallFastModel}
+        tierHaikuModel={state.tierModels?.haiku}
+        options={modelOptions}
+        onChange={smallFastModel => setState({ ...state, smallFastModel })}
+      />
+      <ClaudeCodeModelMapSection rows={rows} onRowsChange={setRows} onSave={() => { void save(); }} />
+      <ClaudeCodeAliasesSection aliases={state.aliases} />
     </>
   );
 }

@@ -16,11 +16,11 @@ test("ClaudeCode stacked layout mounts every section in order", async () => {
   const src = await Bun.file(new URL("../src/pages/ClaudeCode.tsx", import.meta.url)).text();
 
   const order = [
-    "{settingsSection}",
-    "{quickstartSection}",
-    "{smallFastSection}",
-    "{modelMapSection}",
-    "{aliasesSection}",
+    "<ClaudeCodeSettingsCard",
+    "<ClaudeCodeQuickstartSection",
+    "<SmallFastModelSetting",
+    "<ClaudeCodeModelMapSection",
+    "<ClaudeCodeAliasesSection",
   ];
   let cursor = -1;
   for (const marker of order) {

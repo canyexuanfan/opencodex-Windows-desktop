@@ -1067,6 +1067,9 @@ export const ru: Record<TKey, string> = {
   "api.confirm": "Подтвердить",
   "api.deleteAria": "Удалить API-ключ",
   "api.usageSampleInput": "Привет, мир!",
+  "api.keysLoadFailed": "Не удалось загрузить API-ключи.",
+  "api.createFailed": "Не удалось создать API-ключ.",
+  "api.deleteFailed": "Не удалось удалить API-ключ.",
   // Claude Code inbound
   "nav.claude": "Claude",
   "claude.subtitle": "Используйте GPT, Gemini и другие модели внутри Claude Code.",

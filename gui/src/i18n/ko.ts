@@ -785,6 +785,9 @@ export const ko: Record<TKey, string> = {
   "api.confirm": "확인",
   "api.deleteAria": "API 키 삭제",
   "api.usageSampleInput": "안녕하세요, 세계!",
+  "api.keysLoadFailed": "API 키를 불러오지 못했습니다.",
+  "api.createFailed": "API 키를 만들지 못했습니다.",
+  "api.deleteFailed": "API 키를 삭제하지 못했습니다.",
   // Claude Code inbound
   "nav.claude": "Claude",
   "claude.subtitle": "Claude Code에서 GPT, Gemini 등 다른 모델도 쓸 수 있게 해줍니다.",

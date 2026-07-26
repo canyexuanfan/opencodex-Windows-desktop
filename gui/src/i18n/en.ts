@@ -1068,6 +1068,9 @@ export const en = {
   "api.usageResponsesTitle": "Responses example",
   "api.usageMessagesTitle": "Messages example",
   "api.usageSampleInput": "Hello, world!",
+  "api.keysLoadFailed": "Could not load API keys.",
+  "api.createFailed": "Could not create API key.",
+  "api.deleteFailed": "Could not delete API key.",
   // Claude Code inbound
   "nav.claude": "Claude",
   "claude.subtitle": "Use GPT, Gemini, and other models inside Claude Code.",
