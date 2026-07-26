@@ -29,7 +29,17 @@ export function newClientId(): string {
 
 export interface ClaudeCodeState {
   enabled: boolean;
-  authMode: "subscription" | "proxy";
+  /** Three-state intent. "auto" resolves from detected Claude auth on every launch. */
+  authMode: "auto" | "subscription" | "proxy";
+  /** Resolved: does the opencodex dummy marker get injected. Not a native-auth claim. */
+  markerMode?: "proxy" | "subscription";
+  authModeOrigin?: "manual" | "auto-present" | "auto-absent" | "auto-unknown";
+  authFoundBy?: string;
+  authDetectionUnknown?: boolean;
+  /** The proxy requires an admission key, so a token is sent regardless of mode. */
+  admissionKeyActive?: boolean;
+  /** "daemon": detection cannot see a key exported only in the user's terminal. */
+  detectionScope?: string;
   autoConnectSupported: boolean;
   systemEnv: boolean;
   fastMode: boolean | null;

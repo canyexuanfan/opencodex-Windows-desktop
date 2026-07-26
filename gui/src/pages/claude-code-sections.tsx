@@ -11,6 +11,18 @@ import {
 import { AutoConnectSetting, SettingToggle } from "./claude-code-settings";
 import type { ClaudeCodeState, MapRow } from "./claude-code-types";
 import { newClientId } from "./claude-code-types";
+import type { TFn, TKey } from "../i18n/shared";
+
+/**
+ * Which detector proved the Claude login. Falls back to a generic label so an
+ * unrecognised source id from a newer backend never renders a raw key.
+ */
+function authSourceLabel(source: string | undefined, t: TFn): string {
+  const known = ["claude-json-oauth", "claude-credentials-file", "macos-keychain", "exported-env"];
+  return source && known.includes(source)
+    ? t(`claude.authSource.${source}` as TKey)
+    : t("claude.authSource.unknown");
+}
 
 export function ClaudeCodeSettingsCard({
   state,
@@ -41,6 +53,7 @@ export function ClaudeCodeSettingsCard({
         <Select
           value={state.authMode}
           options={[
+            { value: "auto", label: t("claude.authModeAuto") },
             { value: "subscription", label: t("claude.authModeSubscription") },
             { value: "proxy", label: t("claude.authModeProxy") },
           ]}
@@ -50,6 +63,26 @@ export function ClaudeCodeSettingsCard({
           portal
         />
       </div>
+
+      {state.authModeOrigin && (
+        <div className="setting-row">
+          <div className="setting-label">
+            <span className="title">{t("claude.effectiveMode.label")}</span>
+            <span className={`desc${state.authModeOrigin === "auto-unknown" ? " warn" : ""}`}>
+              {state.authModeOrigin === "manual"
+                ? t("claude.effectiveMode.manual", {
+                  mode: state.markerMode === "proxy" ? t("claude.authModeProxy") : t("claude.authModeSubscription"),
+                })
+                : state.authModeOrigin === "auto-present"
+                  ? t("claude.effectiveMode.autoPresent", { source: authSourceLabel(state.authFoundBy, t) })
+                  : state.authModeOrigin === "auto-absent"
+                    ? t("claude.effectiveMode.autoAbsent")
+                    : t("claude.effectiveMode.autoUnknown")}
+              {state.admissionKeyActive === true ? ` ${t("claude.effectiveMode.admissionKey")}` : ""}
+            </span>
+          </div>
+        </div>
+      )}
 
       <AutoConnectSetting
         supported={state.autoConnectSupported}

@@ -41,7 +41,9 @@ export default function ClaudeCode({ apiBase }: { apiBase: string }) {
       }
       setState({
         ...r,
-        authMode: r.authMode === "proxy" ? "proxy" : "subscription",
+        // No coercion: an absent config key is AUTO, and coercing it to subscription is
+        // what silently converted an untouched auto config on every save.
+        authMode: r.authMode === "proxy" || r.authMode === "subscription" ? r.authMode : "auto",
         ...reconcileAutoConnectState(r),
         fastMode: r.fastMode ?? null,
         maxContextTokens: r.maxContextTokens ?? null,
