@@ -179,3 +179,83 @@ test("unmounting the subscriber that owns an in-flight request must not overwrit
   });
   container.remove();
 });
+
+test("when the in-flight owner unmounts with no cache, a remaining subscriber replaces the fetch", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+
+  const KEY = `replace-inflight-${Date.now()}`;
+  const deferredB = new Promise<string>(() => {
+    /* intentionally never resolves — owner unmount must replace it */
+  });
+
+  type HarnessApi = {
+    mountA: () => void;
+    dropB: () => void;
+    read: () => { data: string | undefined; loading: boolean };
+  };
+  const api: HarnessApi = {
+    mountA: () => {},
+    dropB: () => {},
+    read: () => ({ data: undefined, loading: false }),
+  };
+
+  function SubscriberA() {
+    const resource = useClientResource(KEY, async () => "from-A");
+    useEffect(() => {
+      api.read = () => ({ data: resource.data, loading: resource.loading });
+    }, [resource.data, resource.loading]);
+    return <span data-a={resource.data ?? ""} data-loading={String(resource.loading)} />;
+  }
+
+  function SubscriberB() {
+    useClientResource(KEY, async () => deferredB);
+    return <span data-b="" />;
+  }
+
+  function Harness() {
+    const [showA, setShowA] = useState(false);
+    const [showB, setShowB] = useState(true);
+    useEffect(() => {
+      api.mountA = () => setShowA(true);
+      api.dropB = () => setShowB(false);
+    }, []);
+    return (
+      <>
+        {showB ? <SubscriberB /> : null}
+        {showA ? <SubscriberA /> : null}
+      </>
+    );
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Harness />);
+  });
+
+  // B is sole subscriber with a deferred request → shared snapshot is loading with no data.
+  await act(async () => {
+    await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 10));
+  });
+
+  await act(async () => {
+    api.mountA();
+  });
+
+  await act(async () => {
+    api.dropB();
+  });
+
+  await act(async () => {
+    await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 30));
+  });
+
+  expect(api.read()).toEqual({ data: "from-A", loading: false });
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});

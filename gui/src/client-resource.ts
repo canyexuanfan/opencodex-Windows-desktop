@@ -129,12 +129,13 @@ async function runFetch<T>(
   }
 }
 
-function abortInflightOwnedBy<T>(store: Store<T>, owner: () => void) {
-  if (store.inflightOwner !== owner) return;
+function abortInflightOwnedBy<T>(store: Store<T>, owner: () => void): boolean {
+  if (store.inflightOwner !== owner) return false;
   store.inflight?.abort();
   store.inflight = null;
   store.inflightOwner = null;
   store.generation++;
+  return true;
 }
 
 function subscribeResource<T>(
@@ -160,7 +161,7 @@ function subscribeResource<T>(
     store.fetcherByListener.delete(onStoreChange);
     store.subscriberCount--;
     // Drop this subscriber's in-flight work so a late resolve cannot stomp shared data.
-    abortInflightOwnedBy(store, onStoreChange);
+    const abortedOwned = abortInflightOwnedBy(store, onStoreChange);
     if (store.subscriberCount === 0) {
       store.inflight?.abort();
       store.inflight = null;
@@ -168,6 +169,13 @@ function subscribeResource<T>(
       clearPollTimer(store);
       stores.delete(key);
       return;
+    }
+    // Replace aborted work immediately so the shared snapshot cannot stay stuck loading.
+    if (abortedOwned) {
+      const entry = pickFetcherEntry(store);
+      if (entry) {
+        void runFetch(store, entry.fetcher, { replaceInflight: true, owner: entry.owner });
+      }
     }
     recomputePoll(store);
   };
