@@ -157,6 +157,10 @@ export function buildGrokManagedBlock(port: number, models: GrokInjectModel[], h
       'api_backend = "chat_completions"',
       'api_key = "opencodex-loopback"',
       `name = ${tomlString(model.name ?? `OCX ${model.id}`)}`,
+      // Best-effort attribution tag for the usage dashboard. Upstream Grok sends
+      // extra_headers verbatim on inference calls (11-custom-models.md). This is NOT a
+      // security boundary — any loopback client could send the same header.
+      'extra_headers = { "x-opencodex-grok" = "1" }',
     );
     if (Number.isFinite(model.contextWindow) && (model.contextWindow ?? 0) > 0) {
       lines.push(`context_window = ${model.contextWindow}`);

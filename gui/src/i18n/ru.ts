@@ -464,6 +464,7 @@ export const ru: Record<TKey, string> = {
   "logs.filter.surface.all": "Все",
   "logs.filter.surface.claude": "Claude",
   "logs.filter.surface.codex": "Codex",
+  "logs.filter.surface.grok": "Grok",
   "logs.badge.claude": "Claude",
   "logs.col.time": "Время",
   "logs.col.request": "Запрос",

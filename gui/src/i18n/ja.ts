@@ -429,6 +429,7 @@ export const ja: Record<TKey, string> = {
   "logs.filter.surface.all": "すべて",
   "logs.filter.surface.claude": "Claude",
   "logs.filter.surface.codex": "Codex",
+  "logs.filter.surface.grok": "Grok",
   "logs.badge.claude": "Claude",
   "logs.col.time": "時刻",
   "logs.col.request": "リクエスト",

@@ -465,6 +465,7 @@ export const en = {
   "logs.filter.surface.all": "All",
   "logs.filter.surface.claude": "Claude",
   "logs.filter.surface.codex": "Codex",
+  "logs.filter.surface.grok": "Grok",
   "logs.badge.claude": "Claude",
   "logs.col.time": "Time",
   "logs.col.request": "Request",

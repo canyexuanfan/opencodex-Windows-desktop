@@ -459,6 +459,7 @@ export const ko: Record<TKey, string> = {
   "logs.filter.surface.all": "전체",
   "logs.filter.surface.claude": "Claude",
   "logs.filter.surface.codex": "Codex",
+  "logs.filter.surface.grok": "Grok",
   "logs.badge.claude": "Claude",
   "logs.col.time": "시간",
   "logs.col.request": "요청",

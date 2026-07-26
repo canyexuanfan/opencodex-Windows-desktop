@@ -447,6 +447,7 @@ export const de: Record<TKey, string> = {
   "logs.filter.surface.all": "Alle",
   "logs.filter.surface.claude": "Claude",
   "logs.filter.surface.codex": "Codex",
+  "logs.filter.surface.grok": "Grok",
   "logs.badge.claude": "Claude",
   "logs.col.time": "Zeit",
   "logs.col.request": "Anfrage",

@@ -6,7 +6,7 @@ import { EmptyState, Notice } from "../ui";
 import { modelLabel } from "../model-display";
 
 type Range = "all" | "30d" | "7d";
-type UsageSurface = "all" | "codex" | "claude";
+type UsageSurface = "all" | "codex" | "claude" | "grok";
 
 interface UsageSummaryTotals {
   requests: number;
@@ -207,7 +207,7 @@ function UsageFilters({
   return (
     <div className="usage-filters">
       <div className="usage-segmented" role="group" aria-label={t("logs.filter.surface.label")}>
-        {(["all", "codex", "claude"] as UsageSurface[]).map(choice => {
+        {(["all", "codex", "claude", "grok"] as UsageSurface[]).map(choice => {
           const label = t(`logs.filter.surface.${choice}`);
           return (
             <button
@@ -223,6 +223,9 @@ function UsageFilters({
               )}
               {choice === "claude" && (
                 <img className="usage-source-mark" src="/provider-icons/claude.svg" alt="" aria-hidden="true" />
+              )}
+              {choice === "grok" && (
+                <img className="usage-source-mark" src="/provider-icons/grok.svg" alt="" aria-hidden="true" />
               )}
               <span className={choice === "all" ? "usage-source-label" : "usage-source-label usage-source-label-collapsible"}>
                 {label}

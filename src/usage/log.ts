@@ -36,7 +36,7 @@ export interface PersistedUsageEntry {
   timestamp: number;
   provider: string;
   model: string;
-  surface?: "claude" | "claude-desktop";
+  surface?: "claude" | "claude-desktop" | "grok";
   resolvedModel?: string;
   requestedModel?: string;
   /** Reasoning effort / service-tier metadata for GUI Logs after restart. */
@@ -62,6 +62,23 @@ export interface PersistedUsageEntry {
   closeReason?: "terminal" | "client_cancel" | "non_stream" | "body_stall" | "body_overflow";
   /** Already redacted + capped at capture (request-log.ts redactSecretString().slice(0,500)). */
   upstreamError?: string;
+}
+
+const KNOWN_USAGE_SURFACES = new Set<NonNullable<PersistedUsageEntry["surface"]>>([
+  "claude",
+  "claude-desktop",
+  "grok",
+]);
+
+/**
+ * The serializer guard for `surface`. Two failure modes shaped this: a literal
+ * whitelist ("claude" | "claude-desktop" only) silently dropped every NEW surface at
+ * write time, while a plain truthy spread would persist junk values from hand-edited
+ * logs. Membership in this set is the middle path: adding a surface here is one edit,
+ * and unknown values are still dropped.
+ */
+export function isKnownUsageSurface(value: unknown): value is NonNullable<PersistedUsageEntry["surface"]> {
+  return typeof value === "string" && KNOWN_USAGE_SURFACES.has(value as NonNullable<PersistedUsageEntry["surface"]>);
 }
 
 export function usageLogPath(): string {
@@ -217,7 +234,7 @@ function normalizeUsageEntry(entry: PersistedUsageEntry): PersistedUsageEntry {
     timestamp: entry.timestamp,
     provider: entry.provider,
     model: entry.model,
-    ...(entry.surface === "claude" || entry.surface === "claude-desktop" ? { surface: entry.surface } : {}),
+    ...(isKnownUsageSurface(entry.surface) ? { surface: entry.surface } : {}),
     ...(entry.resolvedModel ? { resolvedModel: entry.resolvedModel } : {}),
     ...(entry.requestedModel ? { requestedModel: entry.requestedModel } : {}),
     ...(typeof entry.requestedEffort === "string" && entry.requestedEffort
