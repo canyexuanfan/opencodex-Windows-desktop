@@ -22,6 +22,7 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
     try {
       const res = await fetch(`${apiBase}/api/subagent-models`);
       const r = await readJsonOrThrow<{ available?: string[]; chosen?: string[] }>(res, t("sub.loadFail"));
+      if (!r) throw new Error(t("sub.loadFail"));
       const avail: string[] = r.available ?? [];
       const availSet = new Set(avail);
       setAvailable(avail);
