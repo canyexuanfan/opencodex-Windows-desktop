@@ -10,7 +10,7 @@ import {
   multiAgentGuidanceEnabled,
   providerBaseUrlConfigError,
   providerHeadersConfigError,
-  saveConfig,
+  saveConfigPreservingClaudeCode,
 } from "../../config";
 import {
   clearLoginState,
@@ -312,7 +312,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     const key = "ocx_" + Buffer.from(hashBuf).toString("hex").slice(0, 40);
     const entry = { id: crypto.randomUUID(), name, key, createdAt: new Date().toISOString() };
     config.apiKeys = [...(config.apiKeys ?? []), entry];
-    saveConfig(config);
+    saveConfigPreservingClaudeCode(config);
     return jsonResponse({ id: entry.id, name: entry.name, key: entry.key, createdAt: entry.createdAt }, 201, req, config);
   }
 
@@ -320,7 +320,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     const body = await req.json() as { id?: string };
     if (!body.id) return jsonResponse({ error: "id required" }, 400, req, config);
     config.apiKeys = (config.apiKeys ?? []).filter(k => k.id !== body.id);
-    saveConfig(config);
+    saveConfigPreservingClaudeCode(config);
     return jsonResponse({ success: true }, 200, req, config);
   }
   return null;

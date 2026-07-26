@@ -862,6 +862,106 @@ export function websocketsEnabled(config: Pick<OcxConfig, "websockets">): boolea
   return config.websockets === true;
 }
 
+// ---------------------------------------------------------------------------
+// Hand-edit protection for the `claudeCode` subtree (devlog 260726_claude_auth_auto/040 H1).
+//
+// `saveConfig` serializes the WHOLE config object, so ANY service-time save — a model
+// visibility toggle, a 429 key rotation on the request path — rewrites `claudeCode`
+// from whatever the long-lived server config happens to hold. A user who hand-edits
+// `config.json` while the proxy runs then watches their edit vanish for no visible
+// reason (issue #488). Enumerating `claudeCode` mutators cannot fix that; the guard has
+// to live in ONE save wrapper that every live-config writer goes through.
+// ---------------------------------------------------------------------------
+
+/**
+ * Baseline keyed on the CONFIG INSTANCE, never a module global: a second `loadConfig()`
+ * elsewhere must not refresh the baseline the long-lived server config is judged
+ * against, or a later stale save would masquerade as "our own change".
+ */
+const claudeCodeBaseline = new WeakMap<OcxConfig, unknown>();
+
+/**
+ * Arm the baseline for a long-lived config. MANDATORY at `startServer`, not lazy on
+ * first save — arming lazily would lose exactly the hand edit made before that first
+ * save, which is the case the guard exists for.
+ */
+export function armClaudeCodeBaseline(config: OcxConfig): void {
+  claudeCodeBaseline.set(config, structuredClone(config.claudeCode));
+}
+
+/** Test seam only: is this instance armed? */
+export function claudeCodeBaselineArmed(config: OcxConfig): boolean {
+  return claudeCodeBaseline.has(config);
+}
+
+/**
+ * Structural compare of parsed subtrees. NOT `JSON.stringify`: key order must not
+ * decide whether a user's hand edit survives.
+ */
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((item, index) => deepEqual(item, b[index]));
+  }
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  // `undefined` values and absent keys are the same thing after a JSON round-trip.
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  for (const key of keys) {
+    if (left[key] === undefined && right[key] === undefined) continue;
+    if (!deepEqual(left[key], right[key])) return false;
+  }
+  return true;
+}
+
+/** The literal file, with no schema merge or default injection. */
+function readRawConfigJson(): Record<string, unknown> | undefined {
+  try {
+    const configPath = getConfigPath();
+    if (!existsSync(configPath)) return undefined;
+    const raw = readFileSync(configPath, "utf-8").replace(/^\uFEFF/, "");
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    return parsed as Record<string, unknown>;
+  } catch {
+    // Unreadable or corrupt: behave exactly as before. Never fail a save over protection.
+    return undefined;
+  }
+}
+
+/**
+ * The save entry point for every writer holding a LIVE server config.
+ *
+ * Conflict policy, chosen deliberately:
+ * - disk changed, we did not → their hand edit wins;
+ * - disk changed AND we changed → our change wins and the baseline rebases, so the
+ *   user's next edit starts from the new value (a three-way merge is out of scope);
+ * - file missing/unreadable → save what we have, no throw.
+ *
+ * Scope residual: only `claudeCode` is reconciled. A hand edit to `providers` is still
+ * clobbered — recorded and asserted in tests so it cannot drift into an assumed
+ * guarantee.
+ */
+export function saveConfigPreservingClaudeCode(config: OcxConfig): void {
+  if (claudeCodeBaseline.has(config)) {
+    const onDisk = readRawConfigJson();
+    if (onDisk !== undefined) {
+      const baseline = claudeCodeBaseline.get(config);
+      const diskChanged = !deepEqual(onDisk.claudeCode, baseline);
+      const weChanged = !deepEqual(config.claudeCode, baseline);
+      if (diskChanged && !weChanged) {
+        config.claudeCode = onDisk.claudeCode as OcxConfig["claudeCode"];
+      }
+    }
+  }
+  saveConfig(config);
+  if (claudeCodeBaseline.has(config)) {
+    claudeCodeBaseline.set(config, structuredClone(config.claudeCode));
+  }
+}
+
 export function codexAutoStartEnabled(config: Pick<OcxConfig, "codexAutoStart">): boolean {
   return config.codexAutoStart !== false;
 }

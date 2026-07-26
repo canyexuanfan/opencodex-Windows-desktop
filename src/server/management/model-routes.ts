@@ -11,7 +11,7 @@ import {
   multiAgentGuidanceEnabled,
   providerBaseUrlConfigError,
   providerHeadersConfigError,
-  saveConfig,
+  saveConfigPreservingClaudeCode,
 } from "../../config";
 import {
   clearLoginState,
@@ -124,7 +124,7 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     const disabled = Array.isArray(body.models) ? body.models.filter((m): m is string => typeof m === "string") : [];
     config.disabledModels = disabled;
-    const { saveConfig: save } = await import("../../config");
+    const { saveConfigPreservingClaudeCode: save } = await import("../../config");
     save(config);
     await refreshCodexCatalogBestEffort();
     return jsonResponse({ ok: true, disabled });
@@ -224,7 +224,7 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     }
 
     config.disabledModels = disabled;
-    saveConfig(config);
+    saveConfigPreservingClaudeCode(config);
     await refreshCodexCatalogBestEffort();
     return jsonResponse({ ok: true, scope, provider, enabled: body.enabled, disabled });
   }
@@ -261,7 +261,7 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
       addedAt: new Date().toISOString(),
     };
     config.customModels = [...existing, entry];
-    const { saveConfig: save } = await import("../../config");
+    const { saveConfigPreservingClaudeCode: save } = await import("../../config");
     save(config);
     await refreshCodexCatalogBestEffort();
     return jsonResponse(entry, 201);
@@ -298,7 +298,7 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     }
     list[idx] = cm;
     config.customModels = list;
-    const { saveConfig: save } = await import("../../config");
+    const { saveConfigPreservingClaudeCode: save } = await import("../../config");
     save(config);
     await refreshCodexCatalogBestEffort();
     return jsonResponse(cm);
@@ -313,7 +313,7 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     if (idx === -1) return jsonResponse({ error: "not found" }, 404);
     list.splice(idx, 1);
     config.customModels = list.length > 0 ? list : undefined;
-    const { saveConfig: save } = await import("../../config");
+    const { saveConfigPreservingClaudeCode: save } = await import("../../config");
     save(config);
     await refreshCodexCatalogBestEffort();
     return jsonResponse({ ok: true });
@@ -350,7 +350,7 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     // Empty list clears the allowlist (provider reverts to exposing all models).
     if (models.length > 0) config.providers[provider].selectedModels = models;
     else delete config.providers[provider].selectedModels;
-    const { saveConfig: save } = await import("../../config");
+    const { saveConfigPreservingClaudeCode: save } = await import("../../config");
     save(config);
     await refreshCodexCatalogBestEffort();
     return jsonResponse({ ok: true, provider, selected: models });

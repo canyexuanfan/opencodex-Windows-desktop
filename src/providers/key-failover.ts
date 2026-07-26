@@ -8,7 +8,7 @@
  *
  * Modelled after src/codex/routing.ts cooldown logic but scoped to plain API-key pools.
  */
-import { saveConfig } from "../config";
+import { saveConfigPreservingClaudeCode } from "../config";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 import { resolveProviderTransport } from "./xai-transport";
 
@@ -112,7 +112,7 @@ export function rotateKeyOn429(
     if (!isKeyInCooldown(providerName, candidate.id, now)) {
       // Swap active key
       provider.apiKey = candidate.key;
-      saveConfig(config);
+      saveConfigPreservingClaudeCode(config);
       console.warn(
         // Log ids only — labels are user-supplied free text and could carry secret material.
         `[key-failover] ${providerName}: 429 on key ${currentEntry?.id ?? "?"}; rotating to key ${candidate.id}`,

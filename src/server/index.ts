@@ -12,6 +12,7 @@ import type { Server, ServerWebSocket } from "bun";
 import {
   DEFAULT_SUBAGENT_MODELS,
   applyProxyEnv,
+  armClaudeCodeBaseline,
   loadConfig,
   saveConfig,
   websocketsEnabled,
@@ -274,6 +275,13 @@ export function startServer(port?: number) {
     }
   }
   invalidateCodexModelsCache();
+  // Arm the `claudeCode` hand-edit guard (devlog 260726_claude_auth_auto/040 H1) BEFORE
+  // the server can serve a request, and AFTER the startup migrations above — those run
+  // against a config nobody else holds and are the documented exception to the save
+  // boundary, so the baseline should reflect what they wrote. Arming is eager on
+  // purpose: a lazy "arm on first save" loses exactly the hand edit made before that
+  // first save, which is the case the guard exists for.
+  armClaudeCodeBaseline(config);
   // usage.jsonl already persists every request; rehydrate the in-memory Logs ring so
   // /api/logs (and the GUI) survive `ocx stop` / `ocx start` process restarts.
   hydrateRequestLogsFromDisk();

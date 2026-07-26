@@ -10,7 +10,7 @@ import {
   multiAgentGuidanceEnabled,
   providerBaseUrlConfigError,
   providerHeadersConfigError,
-  saveConfig,
+  saveConfigPreservingClaudeCode,
 } from "../../config";
 import {
   clearLoginState,
@@ -109,7 +109,7 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     // Catalog providers (e.g. ollama-cloud) carry a models + vision/reasoning classification the GUI
     // doesn't send — merge it in so the sidecars are gated correctly.
     enrichProviderFromCatalog(name, prov);
-    const { saveConfig: save } = await import("../../config");
+    const { saveConfigPreservingClaudeCode: save } = await import("../../config");
     // Overwriting an existing provider must not drop its multi-key pool: carry it over, then
     // let the (possibly new) apiKey join the pool as the active entry.
     const existingPool = config.providers[name]?.apiKeyPool;
@@ -151,7 +151,7 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       if (!provider || !isCanonicalOpenAiForwardProvider(provider)) {
         return jsonResponse({ error: "provider openai must be the canonical built-in provider" }, 400);
       }
-      const { saveConfig: save } = await import("../../config");
+      const { saveConfigPreservingClaudeCode: save } = await import("../../config");
       config.providers.openai = { ...provider, codexAccountMode: mode };
       save(config);
       (deps.clearProviderQuotaCache ?? clearProviderQuotaCache)();
@@ -275,7 +275,7 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       delete next.allowPrivateNetwork;
     }
 
-    const { saveConfig: save } = await import("../../config");
+    const { saveConfigPreservingClaudeCode: save } = await import("../../config");
     config.providers[name] = stripRegistryOnlyStaticHeaders(name, next);
     save(config);
     if (editorTouched) {
@@ -366,7 +366,7 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
         combos: dependentCombos,
       }, 409);
     }
-    const { saveConfig: save } = await import("../../config");
+    const { saveConfigPreservingClaudeCode: save } = await import("../../config");
     delete config.providers[name];
     setProviderContextCap(config, name, false);
     save(config);
@@ -383,7 +383,7 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
   if (url.pathname === "/api/provider-context-caps" && req.method === "PUT") {
     let body: { provider?: unknown; enabled?: unknown; value?: unknown; setAll?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
-    const { saveConfig: save } = await import("../../config");
+    const { saveConfigPreservingClaudeCode: save } = await import("../../config");
     const { clearModelCache } = await import("../../codex/model-cache");
     const respond = () => jsonResponse({ ok: true, cap: DEFAULT_PROVIDER_CONTEXT_CAP, value: globalContextCapValue(config), caps: providerContextCaps(config) });
 

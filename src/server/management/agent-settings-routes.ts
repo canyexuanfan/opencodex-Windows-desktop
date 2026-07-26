@@ -10,7 +10,7 @@ import {
   multiAgentGuidanceEnabled,
   providerBaseUrlConfigError,
   providerHeadersConfigError,
-  saveConfig,
+  saveConfigPreservingClaudeCode,
 } from "../../config";
 import {
   clearLoginState,
@@ -93,7 +93,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       );
       if (result.written && result.fingerprint) {
         config.claudeCode = { ...config.claudeCode, desktopProfile: { ...config.claudeCode.desktopProfile, appliedFingerprint: result.fingerprint, appliedAt: new Date().toISOString() } };
-        saveConfig(config);
+        saveConfigPreservingClaudeCode(config);
       }
     } catch { /* best-effort */ }
   }
@@ -156,7 +156,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     if (wantsMode) {
       if (mode === "default") delete config.multiAgentMode;
       else config.multiAgentMode = mode;
-      saveConfig(config);
+      saveConfigPreservingClaudeCode(config);
       warnings.push(`Multi-agent mode set to '${mode}'. Applies to new sessions.`);
     }
     await refreshCodexCatalogBestEffort();
@@ -254,7 +254,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     if (nextPrompt) config.injectionPrompt = nextPrompt;
     else delete config.injectionPrompt;
 
-    saveConfig(config);
+    saveConfigPreservingClaudeCode(config);
     return jsonResponse({
       ok: true,
       multiAgentGuidanceEnabled: multiAgentGuidanceEnabled(config),
@@ -288,7 +288,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       }
       config[key] = value;
     }
-    saveConfig(config);
+    saveConfigPreservingClaudeCode(config);
     return jsonResponse({ ok: true, effortCap: config.effortCap ?? null, subagentEffortCap: config.subagentEffortCap ?? null });
   }
 
@@ -316,7 +316,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     const chosen = Array.isArray(body.models) ? body.models.filter((m): m is string => typeof m === "string").slice(0, 5) : [];
     config.subagentModels = chosen;
-    const { saveConfig: save } = await import("../../config");
+    const { saveConfigPreservingClaudeCode: save } = await import("../../config");
     save(config);
     await refreshCodexCatalogBestEffort();
     await syncClaudeAgentDefsBestEffort();
@@ -385,7 +385,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     else delete config.subagentModelFallback;
     if (nextPollMs !== undefined) config.subagentModelFallbackPollMs = nextPollMs;
     else delete config.subagentModelFallbackPollMs;
-    saveConfig(config);
+    saveConfigPreservingClaudeCode(config);
     return jsonResponse({
       ok: true,
       models: config.subagentModelFallback ?? [],
@@ -427,7 +427,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     if (excluded.length > 2000) return jsonResponse({ error: "excluded list is too large" }, 400);
     if (excluded.length === 0) delete config.grokExcludedModels;
     else config.grokExcludedModels = excluded;
-    saveConfig(config);
+    saveConfigPreservingClaudeCode(config);
     return jsonResponse({ ok: true, excluded });
   }
 
@@ -496,7 +496,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       }
       const state = await buildClaudeDesktopState(config, parsed);
       config.claudeCode = { ...(config.claudeCode ?? {}), desktopProfile: reconcileDesktopProfile(state.profile, state.models) };
-      saveConfig(config);
+      saveConfigPreservingClaudeCode(config);
       const saved = await buildClaudeDesktopState(config);
       const runtimePort = Number(url.port) || config.port;
       return jsonResponse({ ok: true, ...saved, port: runtimePort });
@@ -508,7 +508,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     try {
       const state = await buildClaudeDesktopState(config);
       config.claudeCode = { ...(config.claudeCode ?? {}), desktopProfile: state.profile };
-      saveConfig(config);
+      saveConfigPreservingClaudeCode(config);
       const { writeDesktop3pConfig } = await import("../../claude/desktop-3p");
       const { visibleNativeSlugs } = await import("../../codex/catalog");
       const routed = state.models
@@ -529,7 +529,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       // Persist applied fingerprint + timestamp so GUI can show saved-vs-applied state.
       if (result.fingerprint) {
         config.claudeCode = { ...(config.claudeCode ?? {}), desktopProfile: { ...state.profile, appliedFingerprint: result.fingerprint, appliedAt: new Date().toISOString() } };
-        saveConfig(config);
+        saveConfigPreservingClaudeCode(config);
       }
       return jsonResponse({ ok: true, saved: true, applied: true, path: result.path, fingerprint: result.fingerprint });
     } catch (error) {
@@ -825,7 +825,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       }
     }
     config.claudeCode = next;
-    const { saveConfig: save } = await import("../../config");
+    const { saveConfigPreservingClaudeCode: save } = await import("../../config");
     save(config);
     const warnings: string[] = [];
     // authMode changes must reconcile the injected system env too: switching back to

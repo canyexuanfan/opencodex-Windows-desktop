@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { loadConfig, saveConfig } from "../config";
+import { loadConfig, saveConfigPreservingClaudeCode } from "../config";
 import {
   DESKTOP_FAMILIES,
   moveDesktopRoute,
@@ -32,7 +32,7 @@ async function applyProfile(profile: DesktopProfile, mode: Desktop3pConfigMode):
   const config = loadConfig();
   const state = await buildClaudeDesktopState(config, profile);
   config.claudeCode = { ...(config.claudeCode ?? {}), desktopProfile: state.profile };
-  saveConfig(config);
+  saveConfigPreservingClaudeCode(config);
   const live = await findLiveProxy();
   const allModels = await fetchAllModels(config);
   const routed = filterCatalogVisibleModels(allModels, config).map(model => ({
@@ -105,7 +105,7 @@ export async function handleClaudeDesktopCommand(argv: string[]): Promise<number
       if (!state.models.some(model => model.route === route && model.available)) throw new Error(`현재 사용할 수 없는 모델입니다: ${route}`);
       const profile = moveDesktopRoute(state.profile, route, familyRaw, flags.includes("--default"));
       config.claudeCode = { ...(config.claudeCode ?? {}), desktopProfile: profile };
-      saveConfig(config);
+      saveConfigPreservingClaudeCode(config);
       console.log(`${route} 모델을 ${familyRaw} 그룹으로 옮겼습니다.`);
       return 0;
     }
@@ -116,7 +116,7 @@ export async function handleClaudeDesktopCommand(argv: string[]): Promise<number
       if (route && !state.models.some(model => model.route === route && model.available)) throw new Error(`현재 사용할 수 없는 모델입니다: ${route}`);
       const profile = setDesktopFamilyDefault(state.profile, familyRaw, route);
       config.claudeCode = { ...(config.claudeCode ?? {}), desktopProfile: profile };
-      saveConfig(config);
+      saveConfigPreservingClaudeCode(config);
       console.log(`${familyRaw} 기본 모델을 ${route ?? "없음"}으로 지정했습니다.`);
       return 0;
     }
@@ -135,7 +135,7 @@ export async function handleClaudeDesktopCommand(argv: string[]): Promise<number
       const profile = parseDesktopProfile(JSON.parse(readFileSync(resolve(source), "utf8")));
       const reconciled = (await buildClaudeDesktopState(config, profile)).profile;
       config.claudeCode = { ...(config.claudeCode ?? {}), desktopProfile: reconciled };
-      saveConfig(config);
+      saveConfigPreservingClaudeCode(config);
       if (flags.includes("--apply")) {
         const result = await applyProfile(reconciled, "static");
         if (!result.ok) { console.error(`프로필은 저장했지만 Desktop 적용에 실패했습니다: ${result.reason ?? "unknown error"}`); return 1; }

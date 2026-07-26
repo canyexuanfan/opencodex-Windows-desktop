@@ -10,7 +10,7 @@ import {
   multiAgentGuidanceEnabled,
   providerBaseUrlConfigError,
   providerHeadersConfigError,
-  saveConfig,
+  saveConfigPreservingClaudeCode,
 } from "../../config";
 import {
   clearLoginState,
@@ -208,7 +208,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
         config.streamMode = body.streamMode as "legacy-tee" | "eager-relay";
       }
     }
-    saveConfig(config);
+    saveConfigPreservingClaudeCode(config);
     invalidateStartupHealthCache();
     return jsonResponse({
       ok: true,
@@ -334,7 +334,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
         config.visionSidecar.maxDescriptionsPerTurn = body.vision.maxDescriptionsPerTurn;
       }
     }
-    saveConfig(config);
+    saveConfigPreservingClaudeCode(config);
     const ws = config.webSearchSidecar ?? {};
     const vs = config.visionSidecar ?? {};
     return jsonResponse({
@@ -370,7 +370,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       if (body.model === "") delete config.shadowCallIntercept.model;
       else config.shadowCallIntercept.model = body.model;
     }
-    saveConfig(config);
+    saveConfigPreservingClaudeCode(config);
     const sci = config.shadowCallIntercept;
     return jsonResponse({ ok: true, enabled: sci.enabled === true, model: sci.model ?? "" });
   }

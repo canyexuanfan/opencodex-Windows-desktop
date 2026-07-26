@@ -22,7 +22,7 @@ function cfg(claudeCode?: OcxConfig["claudeCode"], apiKeys?: { key: string }[]):
 
 function detection(presence: AuthPresence, staleProxyMarker = false) {
   const deps: AuthDetectDeps = {
-    readClaudeJson: () => (presence === "present" ? { oauthAccount: { emailAddress: "u@e.com" } } : undefined),
+    readClaudeJson: () => (presence === "present" ? { oauthAccount: { emailAddress: "user@example.com" } } : undefined),
     credentialsFileExists: () => false,
     keychainProbe: () => (presence === "unknown" ? "unknown" : "absent"),
     env: () => (staleProxyMarker ? { ANTHROPIC_AUTH_TOKEN: PROXY_MARKER } : {}),
@@ -34,7 +34,7 @@ function detection(presence: AuthPresence, staleProxyMarker = false) {
 // still reads the real launch base (which is the point of the binding).
 function fileAuth(presence: AuthPresence): Omit<Partial<AuthDetectDeps>, "env"> {
   return {
-    readClaudeJson: () => (presence === "present" ? { oauthAccount: { emailAddress: "u@e.com" } } : undefined),
+    readClaudeJson: () => (presence === "present" ? { oauthAccount: { emailAddress: "user@example.com" } } : undefined),
     credentialsFileExists: () => false,
     keychainProbe: () => (presence === "unknown" ? "unknown" : "absent"),
   };
