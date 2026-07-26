@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import * as childProcess from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,7 @@ import {
   PROXY_MARKER,
   claudeConfigDir,
   defaultAuthDetectDeps,
+  ownAdmissionTokens,
   detectClaudeAuth,
   type AuthDetectDeps,
   type AuthPresence,
@@ -135,14 +137,45 @@ test("the default claude.json reader stays inside the overridden profile", () =>
 });
 
 // The keychain probe must be metadata-only: -g and -w print password material.
+// OBSERVED behaviour, not source shape — an assertion that slices this file passes
+// trivially if the args are built dynamically, renamed, or moved, and this is the
+// unit's top security invariant.
 test("the default keychain probe never asks for secret material", () => {
-  const source = Bun.file(new URL("../src/claude/auth-detect.ts", import.meta.url));
-  const text = require("node:fs").readFileSync(new URL("../src/claude/auth-detect.ts", import.meta.url), "utf8") as string;
-  expect(source).toBeDefined();
-  const probeBlock = text.slice(text.indexOf("keychainProbe()"), text.indexOf("env: () => env"));
-  expect(probeBlock).toContain("find-generic-password");
-  expect(probeBlock).not.toContain('"-w"');
-  expect(probeBlock).not.toContain('"-g"');
+  const calls: string[][] = [];
+  const spy = spyOn(childProcess, "spawnSync").mockImplementation(((file: string, args: string[]) => {
+    calls.push([file, ...args]);
+    return { status: 44, signal: null, error: undefined, stdout: null, stderr: null, output: [], pid: 0 };
+  }) as never);
+  try {
+    expect(defaultAuthDetectDeps({}).keychainProbe()).toBe(process.platform === "darwin" ? "absent" : "absent");
+    if (process.platform !== "darwin") return; // non-Darwin short-circuits before spawning
+    expect(calls).toHaveLength(1);
+    const [file, ...args] = calls[0]!;
+    expect(file).toBe("security");
+    expect(args).toEqual(["find-generic-password", "-s", "Claude Code-credentials"]);
+    // -w prints the password, -g prints it to stderr. Neither may ever appear.
+    expect(args).not.toContain("-w");
+    expect(args).not.toContain("-g");
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+// The probe's stdio must stay fully ignored: -g writes to stderr, so a captured pipe
+// would put secret material in our process even with correct args.
+test("the default keychain probe captures no output streams", () => {
+  let options: { stdio?: unknown } | undefined;
+  const spy = spyOn(childProcess, "spawnSync").mockImplementation(((_f: string, _a: string[], o: { stdio?: unknown }) => {
+    options = o;
+    return { status: 44, signal: null, error: undefined, stdout: null, stderr: null, output: [], pid: 0 };
+  }) as never);
+  try {
+    defaultAuthDetectDeps({}).keychainProbe();
+    if (process.platform !== "darwin") return;
+    expect(options?.stdio).toEqual(["ignore", "ignore", "ignore"]);
+  } finally {
+    spy.mockRestore();
+  }
 });
 
 test("defaultAuthDetectDeps binds env to the caller-supplied environment", () => {
@@ -152,4 +185,43 @@ test("defaultAuthDetectDeps binds env to the caller-supplied environment", () =>
   const result = detectClaudeAuth({ ...real, readClaudeJson: () => undefined, credentialsFileExists: () => false, keychainProbe: () => "absent" });
   expect(result.presence).toBe("present");
   expect(result.foundBy).toBe("exported-env");
+});
+
+// MAJOR (round-5 review): the system-env writer exports the CONFIGURED admission key
+// into ANTHROPIC_AUTH_TOKEN. Counting it would make opencodex's own output look like
+// proof the user can authenticate natively — the marker feedback loop, one variable over.
+test("opencodex's own admission key is not counted as user auth", () => {
+  const base = {
+    readClaudeJson: () => undefined,
+    credentialsFileExists: () => false,
+    keychainProbe: () => "absent" as const,
+  };
+  const own = detectClaudeAuth({
+    ...base,
+    env: () => ({ ANTHROPIC_AUTH_TOKEN: "sk-ocx-admission" }),
+    ownTokens: ["sk-ocx-admission"],
+  });
+  expect(own.presence).toBe("absent");
+
+  // Same value in ANTHROPIC_API_KEY is ours too.
+  expect(detectClaudeAuth({
+    ...base,
+    env: () => ({ ANTHROPIC_API_KEY: "sk-ocx-admission" }),
+    ownTokens: ["sk-ocx-admission"],
+  }).presence).toBe("absent");
+
+  // A DIFFERENT value is genuine user auth and still counts.
+  const user = detectClaudeAuth({
+    ...base,
+    env: () => ({ ANTHROPIC_AUTH_TOKEN: "sk-ant-user" }),
+    ownTokens: ["sk-ocx-admission"],
+  });
+  expect(user.presence).toBe("present");
+  expect(user.foundBy).toBe("exported-env");
+});
+
+// ownAdmissionTokens must read the configured pool, and tolerate an absent one.
+test("ownAdmissionTokens reads configured admission keys", () => {
+  expect(ownAdmissionTokens({ apiKeys: [{ key: "a" }, { key: "b" }] })).toEqual(["a", "b"]);
+  expect(ownAdmissionTokens({})).toEqual([]);
 });

@@ -14,7 +14,7 @@ import { refreshGatewayModelCacheFromProxy } from "../claude/gateway-cache";
 import { commandInvocation } from "../lib/win-exec";
 import { findLiveProxy } from "../server/proxy-liveness";
 import type { OcxConfig } from "../types";
-import { PROXY_MARKER, defaultAuthDetectDeps, detectClaudeAuth, type AuthDetectDeps } from "../claude/auth-detect";
+import { PROXY_MARKER, ownAdmissionTokens, defaultAuthDetectDeps, detectClaudeAuth, type AuthDetectDeps } from "../claude/auth-detect";
 import { resolveClaudeAuthMode } from "../claude/auth-mode";
 
 export interface ClaudeLaunchEnv {
@@ -25,7 +25,7 @@ export interface ClaudeLaunchEnv {
  * Injectable IO for tests. `env` is deliberately NOT injectable: it is bound to the
  * launch base so detection and the spawned process can never disagree (audit R3-3).
  */
-export type ClaudeEnvDeps = { authDetect?: Omit<Partial<AuthDetectDeps>, "env"> };
+export type ClaudeEnvDeps = { authDetect?: Omit<Partial<AuthDetectDeps>, "env" | "ownTokens"> };
 
 /**
  * Pure env assembly (unit-tested): never sets ANTHROPIC_API_KEY (setting both
@@ -78,10 +78,13 @@ export function buildClaudeEnv(
   // Detection reads the SAME base env this launch will use, so the resolver and the
   // spawned process cannot disagree. Injected deps are spread FIRST and `env` bound
   // LAST, and the injection type excludes `env`, so a test fake cannot break that.
+  // `ownTokens` is bound last for the same reason: it is config-derived, and a fake
+  // that replaced it could make our own admission key look like user auth.
   const resolved = resolveClaudeAuthMode(config, detectClaudeAuth({
     ...defaultAuthDetectDeps(base as NodeJS.ProcessEnv),
     ...(deps.authDetect ?? {}),
     env: () => base as NodeJS.ProcessEnv,
+    ownTokens: ownAdmissionTokens(config),
   }));
   if (!env.ANTHROPIC_AUTH_TOKEN && resolved.markerMode === "proxy") {
     env.ANTHROPIC_AUTH_TOKEN = PROXY_MARKER;

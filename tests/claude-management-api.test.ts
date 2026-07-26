@@ -95,7 +95,11 @@ test("PUT round-trips settings and persists to config", async () => {
     expect(putBody.enabled).toBe(false);
 
     const persisted = loadConfig();
-    expect(persisted.claudeCode).toEqual({
+    // The migration sentinel is stamped on every persist so a post-upgrade block is
+    // never mistaken for a pre-upgrade subscriber; its value is a timestamp.
+    expect(typeof persisted.claudeCode?.authModeMigratedAt).toBe("string");
+    const { authModeMigratedAt, ...settings } = persisted.claudeCode!;
+    expect(settings).toEqual({
       enabled: false,
       model: "mock/test-model",
       smallFastModel: "mock/test-model",
@@ -194,6 +198,57 @@ test("an unrelated PUT leaves an auto config on auto", async () => {
     expect(get.authMode).toBe("auto");
   } finally {
     server.stop(true);
+  }
+});
+
+// THE regression the auto mode nearly shipped with: the migration reads "a claudeCode
+// block with no authMode" as a pre-upgrade subscriber. Post-upgrade, choosing Auto
+// DELETES authMode and merely toggling Claude on creates the block, so without a
+// sentinel written on every persist the next start converts Auto into a sticky manual
+// subscription — auto would survive exactly one proxy lifetime, with no way back.
+test("auto survives a restart instead of being migrated back to subscription", async () => {
+  const first = startServer(0);
+  try {
+    const put = await fetch(new URL("/api/claude-code", first.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ authMode: "auto", enabled: true }),
+    });
+    expect(put.status).toBe(200);
+    expect(loadConfig().claudeCode?.authMode).toBeUndefined();
+  } finally {
+    first.stop(true);
+  }
+
+  // A restart runs the startup migration against what the PUT persisted.
+  const second = startServer(0);
+  try {
+    expect(loadConfig().claudeCode?.authMode).toBeUndefined();
+    const get = await fetch(new URL("/api/claude-code", second.url)).then(r => r.json()) as Record<string, unknown>;
+    expect(get.authMode).toBe("auto");
+  } finally {
+    second.stop(true);
+  }
+});
+
+// The same trap by a different door: the GUI's ON toggle PUTs `{enabled}` alone, which
+// creates the block for a user who never opened the auth-mode control at all.
+test("toggling Claude on does not pin a fresh install to subscription", async () => {
+  const first = startServer(0);
+  try {
+    await fetch(new URL("/api/claude-code", first.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    });
+  } finally {
+    first.stop(true);
+  }
+  const second = startServer(0);
+  try {
+    expect(loadConfig().claudeCode?.authMode).toBeUndefined();
+  } finally {
+    second.stop(true);
   }
 });
 

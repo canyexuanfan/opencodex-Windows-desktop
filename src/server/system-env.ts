@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "../config";
 import { resolveAutoContext, type AutoContextMode } from "../claude/context-windows";
-import { PROXY_MARKER, defaultAuthDetectDeps, detectClaudeAuth } from "../claude/auth-detect";
+import { PROXY_MARKER, defaultAuthDetectDeps, detectClaudeAuth, ownAdmissionTokens } from "../claude/auth-detect";
 import { resolveClaudeAuthMode } from "../claude/auth-mode";
 import type { OcxConfig } from "../types";
 
@@ -19,7 +19,7 @@ import type { OcxConfig } from "../types";
  * ensure`, or a settings save). `ocx claude` re-resolves live on every launch.
  */
 function systemEnvMarkerMode(config: OcxConfig): "proxy" | "subscription" {
-  return resolveClaudeAuthMode(config, detectClaudeAuth(defaultAuthDetectDeps())).markerMode;
+  return resolveClaudeAuthMode(config, detectClaudeAuth(defaultAuthDetectDeps(process.env, ownAdmissionTokens(config)))).markerMode;
 }
 
 // ---------------------------------------------------------------------------

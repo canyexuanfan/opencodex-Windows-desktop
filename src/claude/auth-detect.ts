@@ -60,6 +60,13 @@ export interface AuthDetectDeps {
    * silently replace the binding.
    */
   env(): NodeJS.ProcessEnv;
+  /**
+   * Token values opencodex itself put into the environment. `system-env.ts` exports the
+   * configured admission key as `ANTHROPIC_AUTH_TOKEN`, so without this the detector
+   * reads OUR OWN output back as proof the user can authenticate natively — the same
+   * feedback loop the `PROXY_MARKER` guard closes, one variable over.
+   */
+  ownTokens?: readonly string[];
 }
 
 export interface AuthDetectResult {
@@ -132,12 +139,18 @@ function detectKeychain(deps: AuthDetectDeps): AuthSourceResult {
 function detectExportedEnv(deps: AuthDetectDeps): AuthSourceResult {
   try {
     const env = deps.env();
+    const isOwn = (value: string): boolean =>
+      value === PROXY_MARKER || (deps.ownTokens ?? []).includes(value);
     const apiKey = env.ANTHROPIC_API_KEY?.trim();
-    if (apiKey) return { source: "exported-env", presence: "present", detail: "ANTHROPIC_API_KEY" };
+    if (apiKey && !isOwn(apiKey)) {
+      return { source: "exported-env", presence: "present", detail: "ANTHROPIC_API_KEY" };
+    }
     const token = env.ANTHROPIC_AUTH_TOKEN?.trim();
     // Our own dummy is opencodex state, never user auth: counting it would make a
-    // proxy-mode launch look authenticated on the NEXT launch (002 §1).
-    if (token && token !== PROXY_MARKER) {
+    // proxy-mode launch look authenticated on the NEXT launch (002 §1). The configured
+    // admission key is opencodex state for exactly the same reason — the system-env
+    // writer exports it into this very variable.
+    if (token && !isOwn(token)) {
       return { source: "exported-env", presence: "present", detail: "ANTHROPIC_AUTH_TOKEN" };
     }
     return { source: "exported-env", presence: "absent" };
@@ -172,7 +185,10 @@ export function detectClaudeAuth(deps: AuthDetectDeps): AuthDetectResult {
  * Real IO. The keychain probe is METADATA ONLY: no `-g` and no `-w`, because those
  * flags print the password itself. We only need the exit code.
  */
-export function defaultAuthDetectDeps(env: NodeJS.ProcessEnv = process.env): AuthDetectDeps {
+export function defaultAuthDetectDeps(
+  env: NodeJS.ProcessEnv = process.env,
+  ownTokens: readonly string[] = [],
+): AuthDetectDeps {
   const configDir = claudeConfigDir(env);
   return {
     readClaudeJson() {
@@ -199,5 +215,15 @@ export function defaultAuthDetectDeps(env: NodeJS.ProcessEnv = process.env): Aut
       return "unknown";
     },
     env: () => env,
+    ownTokens,
   };
+}
+
+/**
+ * The token values opencodex itself exports. Configured admission keys land in
+ * `ANTHROPIC_AUTH_TOKEN` (see `system-env.ts`), so detection must not read them back
+ * as user auth.
+ */
+export function ownAdmissionTokens(config: { apiKeys?: Array<{ key: string }> }): string[] {
+  return (config.apiKeys ?? []).map(entry => entry.key).filter(key => key.length > 0);
 }

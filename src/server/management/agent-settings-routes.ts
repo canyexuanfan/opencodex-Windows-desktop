@@ -613,9 +613,9 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     // Auto is a RESOLUTION, recomputed per request — never stored state. Detection is
     // daemon-side, so it cannot see a key exported only in the user's terminal; the
     // GUI labels the badge with detectionScope for exactly that reason.
-    const { defaultAuthDetectDeps, detectClaudeAuth } = await import("../../claude/auth-detect");
+    const { defaultAuthDetectDeps, detectClaudeAuth, ownAdmissionTokens } = await import("../../claude/auth-detect");
     const { authModeIntent, resolveClaudeAuthMode } = await import("../../claude/auth-mode");
-    const authDetection = detectClaudeAuth(defaultAuthDetectDeps());
+    const authDetection = detectClaudeAuth(defaultAuthDetectDeps(process.env, ownAdmissionTokens(config)));
     const resolvedAuthMode = resolveClaudeAuthMode(config, authDetection);
     return jsonResponse({
       enabled: config.claudeCode?.enabled !== false,
@@ -825,6 +825,14 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       }
     }
     config.claudeCode = next;
+    // Stamp the migration sentinel on EVERY persist of this block. The migration reads
+    // "a claudeCode block with no authMode" as a pre-upgrade subscriber and pins it to
+    // literal subscription — correct for a config written before `auto` existed, fatal
+    // for one written after. Without this, choosing Auto (which DELETES authMode) or
+    // merely toggling Claude on (App.tsx PUTs `{enabled}` alone and creates the block)
+    // would be converted into a sticky manual subscription by the next startServer, and
+    // auto would survive exactly one proxy lifetime with no way back.
+    if (!next.authModeMigratedAt) next.authModeMigratedAt = new Date().toISOString();
     const { saveConfigPreservingClaudeCode: save } = await import("../../config");
     save(config);
     const warnings: string[] = [];

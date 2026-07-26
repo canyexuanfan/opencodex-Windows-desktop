@@ -25,6 +25,8 @@ let mkdirSpy: ReturnType<typeof spyOn>;
 let shellEnvContents = "";
 let previousConfigDir: string | undefined;
 let previousHome: string | undefined;
+let previousApiKey: string | undefined;
+let previousAuthToken: string | undefined;
 
 function setPlatform(platform: NodeJS.Platform): void {
   Object.defineProperty(process, "platform", { configurable: true, value: platform });
@@ -42,6 +44,13 @@ beforeEach(() => {
   shellEnvContents = "";
   previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
   previousHome = process.env.HOME;
+  // The detector also reads the AMBIENT env (source S5). A runner that exports an
+  // Anthropic key would otherwise make "no detectable auth" quietly false and invert
+  // every assertion below for reasons unrelated to this code.
+  previousApiKey = process.env.ANTHROPIC_API_KEY;
+  previousAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
+  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_AUTH_TOKEN;
   // An empty profile dir + a HOME with no ~/.claude.json = detection "absent".
   const empty = fs.mkdtempSync("/tmp/ocx-sysenv-");
   process.env.CLAUDE_CONFIG_DIR = empty;
@@ -84,6 +93,10 @@ afterEach(() => {
   else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
   if (previousHome === undefined) delete process.env.HOME;
   else process.env.HOME = previousHome;
+  if (previousApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+  else process.env.ANTHROPIC_API_KEY = previousApiKey;
+  if (previousAuthToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
+  else process.env.ANTHROPIC_AUTH_TOKEN = previousAuthToken;
 });
 
 // THE point of this phase: an auto config with no detectable auth must still wire up
