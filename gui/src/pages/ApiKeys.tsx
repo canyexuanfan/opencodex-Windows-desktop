@@ -63,7 +63,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
       const res = await fetch(`${apiBase}/api/keys`);
       const data = await readJsonIfOk<KeysResponse>(res);
       if (!data) {
-        setKeys([]);
+        // Keep last-good keys/endpoints/Claude setting; only mark the refresh failed.
         setKeysLoadFailed(true);
         return;
       }
@@ -79,7 +79,6 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
       setClaudeCodeEnabled(data.claudeCodeEnabled !== false);
       setKeysLoadFailed(false);
     } catch {
-      setKeys([]);
       setKeysLoadFailed(true);
     }
   }, [apiBase]);

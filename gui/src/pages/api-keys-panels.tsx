@@ -141,11 +141,7 @@ export function ApiKeysManagePanel({
 
       <div className="panel api-panel" style={{ marginTop: "1rem" }}>
         <h3 className="panel-title">{t("api.activeKeys", { count: keys.length })}</h3>
-        {keysLoadFailed ? (
-          <p className="muted">{t("api.keysLoadFailed")}</p>
-        ) : keys.length === 0 ? (
-          <p className="muted">{t("api.noKeys")}</p>
-        ) : (
+        {keys.length > 0 ? (
           <div className="tbl-wrap">
             <table className="tbl">
               <thead>
@@ -172,6 +168,10 @@ export function ApiKeysManagePanel({
               </tbody>
             </table>
           </div>
+        ) : keysLoadFailed ? (
+          <p className="muted">{t("api.keysLoadFailed")}</p>
+        ) : (
+          <p className="muted">{t("api.noKeys")}</p>
         )}
       </div>
     </>
