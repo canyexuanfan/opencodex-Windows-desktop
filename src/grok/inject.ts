@@ -77,6 +77,14 @@ const MODEL_TABLE_HEADER = new RegExp(
   "gm",
 );
 
+/**
+ * ANY table header, capturing its full dotted key. Used to compute table SPANS: a table
+ * body runs from its own header to the next header of any kind, so the orphan sweep can
+ * remove a whole table instead of a guessed line range (a partial removal would re-parent
+ * the leftover keys onto the preceding table).
+ */
+const ANY_TABLE_HEADER = /^[ \t]*\[\[?[ \t]*([^\]\r\n]*?)[ \t]*\]\]?[ \t]*(?:#.*)?$/gm;
+
 /** Resolve a header key segment (bare / basic / literal) to the key it actually addresses. */
 function canonicalKeySegment(raw: string): string {
   if (raw.startsWith('"')) return decodeTomlBasicString(raw.slice(1, -1));
@@ -100,6 +108,118 @@ function userModelAliases(content: string, region: ManagedRegion | null): Set<st
     aliases.add(canonicalKeySegment(match[2]!));
   }
   return aliases;
+}
+
+/**
+ * The api_key literal every generated entry carries. It is the STRONG ownership signal:
+ * a value we mint, that a human has no reason to type by hand.
+ */
+const OPENCODEX_API_KEY = "opencodex-loopback";
+
+/** A plain `[model.<alias>]` table outside the fence that opencodex itself wrote. */
+interface OrphanTable {
+  alias: string;
+  /** The model id this entry routes to — used to find its replacement alias. */
+  modelId: string | undefined;
+  /** Offsets into the NORMALIZED content: header start .. next header start (or EOF). */
+  start: number;
+  end: number;
+}
+
+/** `key = "value"` / `key = value` pairs at the top level of one table body. */
+function tableBodyKeys(body: string): Map<string, string> {
+  const keys = new Map<string, string>();
+  for (const line of body.split("\n")) {
+    const match = /^[ \t]*([A-Za-z0-9_-]+)[ \t]*=[ \t]*(.*?)[ \t]*$/.exec(line);
+    if (!match) continue;
+    const raw = match[2]!;
+    const value = raw.startsWith('"') && raw.endsWith('"') && raw.length >= 2
+      ? decodeTomlBasicString(raw.slice(1, -1))
+      : raw;
+    if (!keys.has(match[1]!)) keys.set(match[1]!, value);
+  }
+  return keys;
+}
+
+/** Is this base_url pointed at the local machine? */
+function isLoopbackBaseUrl(value: string | undefined): boolean {
+  if (!value) return false;
+  try {
+    return isLoopbackHostname(new URL(value).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Model tables OUTSIDE the fence that opencodex itself wrote (#511).
+ *
+ * These are entries from a version that predates the markers (or predates
+ * `context_window`). Because they sit outside the fence, `userModelAliases` reserves
+ * their aliases as user-owned and the writer routes around them with a `-2` suffix — so
+ * every sync adds a CORRECT duplicate and never removes the stale original. Grok then
+ * resolves the original, finds no `context_window`, and falls back to its own 200k.
+ *
+ * Ownership is CONJUNCTIVE and deliberately strict, because a false positive deletes a
+ * hand-written user model:
+ *   - a plain `[model.x]` header (never `[[model.x]]` / `[model.x.sub]` — those spellings
+ *     mark human authorship and stay reserved);
+ *   - `api_key` equal to our own literal;
+ *   - a loopback `base_url`, so an entry that merely copied our key while pointing at a
+ *     remote host is left alone.
+ * A loopback base_url ALONE is not enough: aiming your own model at the local proxy is a
+ * legitimate thing to do.
+ */
+function findOpencodexOrphans(content: string, region: ManagedRegion | null): OrphanTable[] {
+  const orphans: OrphanTable[] = [];
+  // Collect every table header first: a table body runs to the NEXT header, whatever it is.
+  const headers: Array<{ index: number; length: number; segments: string[]; array: boolean }> = [];
+  for (const match of content.matchAll(ANY_TABLE_HEADER)) {
+    headers.push({
+      index: match.index!,
+      length: match[0].length,
+      segments: match[1]!.split(".").map(part => canonicalKeySegment(part.trim())),
+      array: match[0].trimStart().startsWith("[["),
+    });
+  }
+  for (const [position, header] of headers.entries()) {
+    if (header.array || header.segments.length !== 2 || header.segments[0] !== "model") continue;
+    // Inside the fence the regular splice already owns it.
+    if (region && header.index >= region.start && header.index < region.end) continue;
+    const end = headers[position + 1]?.index ?? content.length;
+    const keys = tableBodyKeys(content.slice(header.index + header.length, end));
+    if (keys.get("api_key") !== OPENCODEX_API_KEY) continue;
+    if (!isLoopbackBaseUrl(keys.get("base_url"))) continue;
+    orphans.push({ alias: header.segments[1]!, modelId: keys.get("model"), start: header.index, end });
+  }
+  return orphans;
+}
+
+/** Remove whole tables, back to front so earlier offsets stay valid. */
+function removeOrphanTables(content: string, orphans: OrphanTable[]): string {
+  let next = content;
+  for (const orphan of [...orphans].sort((a, b) => b.start - a.start)) {
+    next = next.slice(0, orphan.start) + next.slice(orphan.end);
+  }
+  return next;
+}
+
+/**
+ * Repoint `default` / `fork_secondary_model` at the alias that survived.
+ *
+ * Removing an adopted orphan that `[models] default` names would leave Grok pointing at
+ * a model that no longer exists — and on a real machine `default` DOES name one, so this
+ * is the common path rather than an edge case.
+ */
+function rewriteAliasReferences(content: string, renames: Map<string, string>): string {
+  if (renames.size === 0) return content;
+  return content.replace(
+    /^([ \t]*(?:default|fork_secondary_model)[ \t]*=[ \t]*")([^"]*)(")/gm,
+    (whole, prefix: string, value: string, suffix: string) => {
+      const replacement = renames.get(value);
+      return replacement ? `${prefix}${replacement}${suffix}` : whole;
+    },
+  );
 }
 
 function orphanedMarkerResult(action: string): GrokInjectResult {
@@ -230,9 +350,20 @@ export function injectGrokConfig(
     const configExisted = existsSync(configPath);
     const rawContent = configExisted ? readFileSync(configPath, "utf8") : "";
     const eol = dominantEol(rawContent);
-    const content = applyEol(rawContent, "\n");
-    const region = findManagedRegion(content);
-    if (region?.orphaned) return orphanedMarkerResult("injection");
+    const originalContent = applyEol(rawContent, "\n");
+    const originalRegion = findManagedRegion(originalContent);
+    // Ambiguous fence: refuse before the sweep, or "outside the region" could mean the
+    // entire file.
+    if (originalRegion?.orphaned) return orphanedMarkerResult("injection");
+
+    // Adopt our own pre-fence entries (#511) BEFORE reserving user aliases, so the stale
+    // duplicate is replaced instead of routed around forever. Runs inside the normalized
+    // window so the user's dominant EOL is still restored below.
+    const orphans = findOpencodexOrphans(originalContent, originalRegion);
+    const content = removeOrphanTables(originalContent, orphans);
+    // Removing bytes above the fence MOVES it: recompute rather than adjust arithmetic,
+    // so the splice below cannot cut the file in the wrong place.
+    const region = orphans.length > 0 ? findManagedRegion(content) : originalRegion;
 
     const block = buildGrokManagedBlock(port, models, opts.hostname, userModelAliases(content, region), opts.excluded);
     let nextContent: string;
@@ -246,6 +377,26 @@ export function injectGrokConfig(
       // files, so strip could not restore both. One newline keeps injection injective: the
       // user's own terminator is preserved verbatim and strip can undo exactly what we added.
       nextContent = `${content}\n${block}\n`;
+    }
+
+    // Repoint `default` / `fork_secondary_model` at whichever alias survived. A removed
+    // model with no replacement keeps its reference untouched — a stale name in a working
+    // file beats a dangling one.
+    if (orphans.length > 0) {
+      const survivors = new Map<string, string>();
+      for (const match of nextContent.matchAll(MODEL_TABLE_HEADER)) {
+        if (canonicalKeySegment(match[1]!) !== "model") continue;
+        const alias = canonicalKeySegment(match[2]!);
+        const body = nextContent.slice(match.index! + match[0].length);
+        const modelId = tableBodyKeys(body.slice(0, body.search(/^[ \t]*\[/m) + 1 || body.length)).get("model");
+        if (modelId !== undefined && !survivors.has(modelId)) survivors.set(modelId, alias);
+      }
+      const renames = new Map<string, string>();
+      for (const orphan of orphans) {
+        const replacement = orphan.modelId === undefined ? undefined : survivors.get(orphan.modelId);
+        if (replacement && replacement !== orphan.alias) renames.set(orphan.alias, replacement);
+      }
+      nextContent = rewriteAliasReferences(nextContent, renames);
     }
 
     const output = applyEol(nextContent, eol);
