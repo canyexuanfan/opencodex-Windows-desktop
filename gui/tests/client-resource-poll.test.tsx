@@ -316,3 +316,107 @@ test("keyed deps changes force loading while retaining previous data until refet
   });
   container.remove();
 });
+
+test("changing pollMs keeps cached data without a cold refetch", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+
+  const KEY = `pollms-churn-${Date.now()}`;
+  let fetches = 0;
+  type Snap = { data: string | undefined; loading: boolean };
+  let snap: Snap = { data: undefined, loading: false };
+  let setPollMs!: (value: number) => void;
+
+  function Page() {
+    const [pollMs, setPollMsState] = useState(40);
+    setPollMs = setPollMsState;
+    const resource = useClientResource(
+      KEY,
+      async () => {
+        fetches += 1;
+        return "cached";
+      },
+      { pollMs },
+    );
+    useEffect(() => {
+      snap = { data: resource.data, loading: resource.loading };
+    }, [resource.data, resource.loading]);
+    return <span />;
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Page />);
+  });
+
+  await waitFor(() => snap.data === "cached" && snap.loading === false);
+  expect(fetches).toBe(1);
+
+  await act(async () => {
+    setPollMs(80);
+  });
+
+  // Subscribe identity churn must not wipe the store or force a cold fetch.
+  await act(async () => {
+    await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 20));
+  });
+  expect(snap).toEqual({ data: "cached", loading: false });
+  expect(fetches).toBe(1);
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test("store is evicted after the last subscriber leaves", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+
+  const KEY = `store-evict-${Date.now()}`;
+  let fetches = 0;
+  type Snap = { data: string | undefined };
+  let snap: Snap = { data: undefined };
+
+  function Page() {
+    const resource = useClientResource(KEY, async () => {
+      fetches += 1;
+      return `v${fetches}`;
+    });
+    useEffect(() => {
+      snap = { data: resource.data };
+    }, [resource.data]);
+    return <span />;
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Page />);
+  });
+  await waitFor(() => snap.data === "v1");
+  expect(fetches).toBe(1);
+
+  await act(async () => {
+    root.unmount();
+  });
+  // Flush deferred eviction.
+  await act(async () => {
+    await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 0));
+  });
+
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Page />);
+  });
+  await waitFor(() => snap.data === "v2");
+  expect(fetches).toBe(2);
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});

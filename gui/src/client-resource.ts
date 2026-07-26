@@ -147,6 +147,23 @@ function abortInflightOwnedBy<T>(store: Store<T>, owner: () => void): boolean {
   return true;
 }
 
+/**
+ * Drop the module cache only after a macrotask so React's subscribe teardown +
+ * resubscribe (pollMs / enabled / key churn) can reattach in the same turn
+ * without wiping cached data.
+ */
+function scheduleStoreEviction(key: string, store: Store<unknown>) {
+  clearPollTimer(store);
+  setTimeout(() => {
+    if (store.subscriberCount !== 0) return;
+    if (stores.get(key) !== store) return;
+    store.inflight?.abort();
+    store.inflight = null;
+    store.inflightOwner = null;
+    stores.delete(key);
+  }, 0);
+}
+
 function subscribeResource<T>(
   key: string,
   fetcher: (signal: AbortSignal) => Promise<T>,
@@ -159,7 +176,8 @@ function subscribeResource<T>(
   store.fetcherByListener.set(onStoreChange, fetcher);
   store.subscriberCount++;
 
-  if (store.subscriberCount === 1) {
+  // Cold start only — keep cached data across transient 0→1 resubscribe gaps.
+  if (store.subscriberCount === 1 && store.snapshot.data === undefined) {
     void runFetch(store, fetcher, { replaceInflight: true, owner: onStoreChange });
   }
   recomputePoll(store);
@@ -172,11 +190,7 @@ function subscribeResource<T>(
     // Drop this subscriber's in-flight work so a late resolve cannot stomp shared data.
     const abortedOwned = abortInflightOwnedBy(store, onStoreChange);
     if (store.subscriberCount === 0) {
-      store.inflight?.abort();
-      store.inflight = null;
-      store.inflightOwner = null;
-      clearPollTimer(store);
-      stores.delete(key);
+      scheduleStoreEviction(key, store);
       return;
     }
     // Replace aborted work immediately so the shared snapshot cannot stay stuck loading.
