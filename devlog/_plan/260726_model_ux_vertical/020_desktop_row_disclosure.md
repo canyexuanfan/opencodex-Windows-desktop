@@ -10,7 +10,8 @@ OUT: family geometry (WP1), Grok (WP3/WP4).
 
 ## Current shape
 
-`gui/src/pages/ClaudeDesktop.tsx:375-431` renders every model fully expanded:
+`gui/src/pages/ClaudeDesktop.tsx:425-490` (WP1 shifted it down by adding the family
+disclosure header) renders every model fully expanded:
 title + badge, context, effort badge, effective-default note, alias field, default
 radio, and a `move to` select + button. That is ~180px per model. At 23 models in one
 family the user scrolls past 4000px of controls to find one route.
@@ -21,7 +22,7 @@ Row-level collapse is view state, exactly like search and paging
 (`ClaudeDesktop.tsx:115-119`). The default radio and the move select must keep their
 existing `onChange` handlers and keep writing to `profile`/`destinations`; collapsing a
 row must not unmount those in a way that loses a pending selection. Because
-`destinations` is page-level state keyed by route (`:109`), an unmounted row's pending
+`destinations` is page-level state keyed by route (`:109`), so an unmounted row's pending
 move destination survives a collapse — verify this in the test rather than assuming it.
 
 ## MODIFY — `gui/src/pages/claude-desktop-lane.ts`

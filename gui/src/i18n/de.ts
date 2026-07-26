@@ -1277,6 +1277,7 @@ export const de: Record<TKey, string> = {
   "grok.colAlias": "Grok-Alias",
   "grok.colContext": "Kontext",
   "claudeDesktop.available": "Verfügbar",
+  "claudeDesktop.defaultBadge": "Standard",
   "claudeDesktop.unavailable": "Nicht verfügbar",
   "claudeDesktop.contextM": "{n}M Kontext",
   "claudeDesktop.contextK": "{n}k Kontext",

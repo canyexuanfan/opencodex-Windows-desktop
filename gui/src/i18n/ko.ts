@@ -1297,6 +1297,7 @@ export const ko: Record<TKey, string> = {
   "grok.colAlias": "Grok 별칭",
   "grok.colContext": "컨텍스트",
   "claudeDesktop.available": "사용 가능",
+  "claudeDesktop.defaultBadge": "기본",
   "claudeDesktop.unavailable": "사용 불가",
   "claudeDesktop.contextM": "컨텍스트 {n}M",
   "claudeDesktop.contextK": "컨텍스트 {n}k",

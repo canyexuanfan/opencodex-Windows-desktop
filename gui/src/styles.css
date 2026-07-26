@@ -1338,15 +1338,24 @@ button.prov-account-row.active { cursor: default; }
   display: grid; place-items: center; min-height: 82px; padding: 12px; border: 1px dashed var(--border);
   border-radius: var(--radius-sm); color: var(--muted); font-size: 12px; text-align: center;
 }
-.claude-model-card { padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); box-shadow: var(--shadow-sm); }
+/* Two-tier disclosure: the card is a one-line summary until it is opened, so padding
+   belongs to the parts rather than the shell. */
+.claude-model-card { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); box-shadow: var(--shadow-sm); }
 .claude-model-card[draggable="true"] { cursor: grab; }
 .claude-model-card[draggable="true"]:active { cursor: grabbing; }
-.claude-model-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.claude-model-title > div { min-width: 0; }
-.claude-model-title strong { display: block; overflow: hidden; color: var(--text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.claude-model-title code { display: block; overflow: hidden; margin-top: 2px; color: var(--muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
-.claude-model-context { display: inline-block; margin-top: 6px; color: var(--muted); font-size: 11px; }
+.claude-model-summary {
+  display: flex; width: 100%; align-items: center; gap: 10px; padding: 9px 12px;
+  border: 0; background: transparent; color: inherit; cursor: pointer; text-align: left;
+}
+.claude-model-summary:hover { background: var(--hover); }
+.claude-model-names { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 1px; }
+.claude-model-names strong { display: block; overflow: hidden; color: var(--text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.claude-model-names code { display: block; overflow: hidden; color: var(--muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.claude-model-context { flex-shrink: 0; color: var(--muted); font-size: 11px; }
+.claude-row-default { flex-shrink: 0; color: var(--green); font-size: 10.5px; font-weight: 600; }
+.claude-model-body { padding: 10px 12px 12px; border-top: 1px solid var(--border-soft); }
 .claude-field { display: block; margin-top: 10px; }
+.claude-model-body > .claude-field:first-child { margin-top: 0; }
 .claude-field > span, .claude-move-row > label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11.5px; font-weight: 550; }
 .claude-alias {
   display: block; width: 100%; min-height: 34px; padding: 7px 10px; overflow: hidden;
@@ -1390,7 +1399,7 @@ button.prov-account-row.active { cursor: default; }
 .claude-status-bar.stale .claude-status-dot { background: var(--amber); }
 .claude-status-health { margin-left: auto; font-size: 11.5px; }
 .claude-effort-badge {
-  display: inline-block; margin-top: 4px; padding: 1px 6px; border-radius: var(--radius-xs);
+  display: inline-block; flex-shrink: 0; padding: 1px 6px; border-radius: var(--radius-xs);
   font-size: 10px; font-weight: 600; letter-spacing: 0.02em;
 }
 .claude-effort-badge.on { background: color-mix(in srgb, var(--green) 15%, transparent); color: var(--green); }

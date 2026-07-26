@@ -1203,6 +1203,7 @@ export const ru: Record<TKey, string> = {
   "grok.colAlias": "Псевдоним Grok",
   "grok.colContext": "Контекст",
   "claudeDesktop.available": "Доступно",
+  "claudeDesktop.defaultBadge": "По умолчанию",
   "claudeDesktop.unavailable": "Недоступно",
   "claudeDesktop.contextM": "Контекст {n}M",
   "claudeDesktop.contextK": "Контекст {n}k",

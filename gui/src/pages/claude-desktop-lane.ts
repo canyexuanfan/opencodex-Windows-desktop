@@ -60,3 +60,14 @@ export function laneView<T extends LaneModel>(models: T[], search: string, limit
 export function defaultCollapsedFamilies(counts: Readonly<Record<string, number>>): Set<string> {
   return new Set(Object.keys(counts).filter(family => counts[family] === 0));
 }
+
+/**
+ * Whether a model row starts expanded.
+ *
+ * A row is collapsed by default EXCEPT the family's resolved default: that is the row a
+ * user opens the page to change, so putting it behind a second click would fail the
+ * discoverability test progressive disclosure exists to pass.
+ */
+export function rowStartsOpen(route: string, familyDefault: string | null): boolean {
+  return familyDefault !== null && route === familyDefault;
+}

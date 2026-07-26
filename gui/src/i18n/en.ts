@@ -1299,6 +1299,7 @@ export const en = {
   "grok.colAlias": "Grok alias",
   "grok.colContext": "Context",
   "claudeDesktop.available": "Available",
+  "claudeDesktop.defaultBadge": "Default",
   "claudeDesktop.unavailable": "Unavailable",
   "claudeDesktop.contextM": "{n}M context",
   "claudeDesktop.contextK": "{n}k context",

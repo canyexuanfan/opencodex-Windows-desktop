@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
-import { LANE_PAGE, defaultCollapsedFamilies, laneView } from "./claude-desktop-lane";
+import { LANE_PAGE, defaultCollapsedFamilies, laneView, rowStartsOpen } from "./claude-desktop-lane";
 import { makeCollapseStore, toggleInSet } from "./collapse-store";
 import { IconChevron } from "../icons";
 import { EmptyState, Notice } from "../ui";
@@ -129,6 +129,10 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
   // derived per render: modelsByFamily changes on every move, so deriving would fold a
   // section under the user's cursor the moment they moved the last model out of it.
   const [collapsedFamilies, setCollapsedFamilies] = useState<Set<string>>(() => FAMILY_COLLAPSE.read() ?? new Set());
+  // Which rows the user has explicitly opened or closed. Deliberately NOT persisted:
+  // a family's fold is a durable preference, but which single model you were inspecting
+  // is not, and restoring five open rows on reload would rebuild the wall this removes.
+  const [openRows, setOpenRows] = useState<Record<string, boolean>>({});
   const importRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -425,25 +429,48 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
                 const assignment = profile.assignments[model.route];
                 const context = formatContextWindow(model.contextWindow, t);
                 const destination = destinations[model.route] ?? "opus";
+                const rowOpen = openRows[model.route] ?? rowStartsOpen(model.route, effectiveDefaults[family]);
                 return (
                   <article
                     key={model.route}
-                    className="claude-model-card"
+                    className={`claude-model-card${rowOpen ? " open" : ""}`}
                     draggable={model.available}
                     onDragStart={event => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", model.route); }}
                   >
-                    <div className="claude-model-title">
-                      <div>
+                    {/* Summary: identification and triage only. Availability, context and
+                        effort stay OUT of the fold because they are what you scan to pick a
+                        default — only the edit affordances are hidden. */}
+                    <button
+                      type="button"
+                      className="claude-model-summary"
+                      aria-expanded={rowOpen}
+                      aria-controls={`claude-model-body-${model.route}`}
+                      onClick={() => setOpenRows(current => ({ ...current, [model.route]: !rowOpen }))}
+                    >
+                      <IconChevron
+                        className="ocx-chevron"
+                        width={12}
+                        height={12}
+                        aria-hidden="true"
+                        style={{ transform: rowOpen ? "rotate(90deg)" : "none" }}
+                      />
+                      <span className="claude-model-names">
                         <strong title={model.label}>{model.label}</strong>
                         <code title={model.route}>{model.route}</code>
-                      </div>
+                      </span>
+                      {context && <span className="claude-model-context">{context}</span>}
+                      {model.effortSupported === false && <span className="claude-effort-badge off">{t("claudeDesktop.effort.displayOnly")}</span>}
+                      {model.effortSupported === true && <span className="claude-effort-badge on">{t("claudeDesktop.effort.supported")}</span>}
+                      {profile.defaults[family] === model.route && (
+                        <span className="claude-row-default">{t("claudeDesktop.defaultBadge")}</span>
+                      )}
                       <span className={`badge ${model.available ? "badge-green" : "badge-muted"}`}>
                         {model.available ? t("claudeDesktop.available") : t("claudeDesktop.unavailable")}
                       </span>
-                    </div>
-                    {context && <span className="claude-model-context">{context}</span>}
-                    {model.effortSupported === false && <span className="claude-effort-badge off">{t("claudeDesktop.effort.displayOnly")}</span>}
-                    {model.effortSupported === true && <span className="claude-effort-badge on">{t("claudeDesktop.effort.supported")}</span>}
+                    </button>
+
+                    {rowOpen && (
+                    <div className="claude-model-body" id={`claude-model-body-${model.route}`}>
                     {effectiveDefaults[family] === model.route && profile.defaults[family] !== model.route && (
                       <span className="claude-effective-default">{t("claudeDesktop.temporaryDefault")}</span>
                     )}
@@ -484,6 +511,8 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
                         {t("claudeDesktop.move")}
                       </button>
                     </div>
+                    </div>
+                    )}
                   </article>
                 );
               })}
