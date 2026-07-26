@@ -305,6 +305,16 @@ function preservedCooldownFields(health: CodexUpstreamHealth | undefined): Parti
   return cooldownFields;
 }
 
+/** Manual selection resets transient routing evidence without bypassing a real 429 cooldown. */
+export function resetCodexRoutingForManualSelection(accountId: string): void {
+  clearThreadAccountMap();
+  const current = upstreamHealth.get(accountId);
+  if (!current) return;
+  const preserved = preservedCooldownFields(current);
+  if (Object.keys(preserved).length === 0) upstreamHealth.delete(accountId);
+  else upstreamHealth.set(accountId, { consecutiveFailures: 0, ...preserved });
+}
+
 export function getCodexAccountCooldownUntil(accountId: string, now = Date.now()): number | null {
   const cooldownUntil = upstreamHealth.get(accountId)?.cooldownUntil;
   return typeof cooldownUntil === "number" && Number.isFinite(cooldownUntil) && cooldownUntil > now ? cooldownUntil : null;
@@ -491,21 +501,14 @@ function isUnknownUsage(usage: number): boolean {
   return usage >= CODEX_UNKNOWN_USAGE_SCORE;
 }
 
-// Round-robin among eligible unknown-quota candidates. `getEligiblePoolAccounts`
-// already returns a deterministic order (config order, main unshifted first) and
-// excludes the active id, so taking the first eligible unknown is a stable rotation
-// without any new per-account state.
-function pickNextUnknownAccount(config: OcxConfig, active: string, now: number): string | null {
-  const eligible = getEligiblePoolAccounts(config, active, now)
-    .filter(id => isUnknownUsage(computeCodexUsageScore(getAccountQuota(id), getPoolAccountPlan(config, id))));
-  return eligible.length > 0 ? eligible[0]! : null;
-}
-
 function applyQuotaAutoSwitch(config: OcxConfig, active: string, now: number): string {
   const threshold = config.autoSwitchThreshold ?? 80;
   if (threshold <= 0) return active;
   const quota = getAccountQuota(active);
   const activeUsage = computeCodexUsageScore(quota, getPoolAccountPlan(config, active));
+  // Unknown usage is not evidence that a user's explicit selection crossed the
+  // threshold. Wait for quota priming instead of rotating among guesses.
+  if (isUnknownUsage(activeUsage)) return active;
   if (activeUsage < threshold) return active;
   const best = pickLowerUsageAccount(config, active, activeUsage, now);
   if (best !== active) {
@@ -513,21 +516,6 @@ function applyQuotaAutoSwitch(config: OcxConfig, active: string, now: number): s
     return best;
   }
 
-  // Deadlock guard: active is over threshold but no candidate scored strictly
-  // lower. When the active itself is unknown, every candidate is likely unknown
-  // too (100 < 100 never fires), which pins the pool to one account whose real
-  // usage we cannot see (e.g. quota never primed on WSL). Rotate to the next
-  // eligible unknown so rotation is not stuck; known-but-saturated accounts are
-  // intentionally left alone so a genuinely hot pool stays visible.
-  if (isUnknownUsage(activeUsage)) {
-    const next = pickNextUnknownAccount(config, active, now);
-    if (next) {
-      console.warn(`[codex-routing] quota unknown for active "${active}"; rotating to "${next}" (all candidates unknown, threshold=${threshold})`);
-      setActiveCodexAccount(config, next);
-      return next;
-    }
-    console.warn(`[codex-routing] quota unknown for active "${active}" and no eligible rotation target; staying put`);
-  }
   return active;
 }
 
@@ -585,7 +573,7 @@ export function previewCodexAccountForRequest(
           getAccountQuota(entry.accountId),
           getPoolAccountPlan(config, entry.accountId),
         );
-        if (usage >= threshold) {
+        if (!isUnknownUsage(usage) && usage >= threshold) {
           const best = pickLowerUsageAccount(config, entry.accountId, usage, now);
           if (best !== entry.accountId) return best;
         }
@@ -609,7 +597,7 @@ export function previewCodexAccountForRequest(
   const threshold = config.autoSwitchThreshold ?? 80;
   if (threshold > 0) {
     const usage = computeCodexUsageScore(getAccountQuota(active), getPoolAccountPlan(config, active));
-    if (usage >= threshold) {
+    if (!isUnknownUsage(usage) && usage >= threshold) {
       active = pickLowerUsageAccount(config, active, usage, now);
     }
   }
@@ -657,7 +645,7 @@ export function resolveCodexAccountForThreadDetailed(
             getAccountQuota(entry.accountId),
             getPoolAccountPlan(config, entry.accountId),
           );
-          if (usage >= threshold) {
+          if (!isUnknownUsage(usage) && usage >= threshold) {
             const best = pickLowerUsageAccount(config, entry.accountId, usage, now);
             if (best !== entry.accountId) {
               setActiveCodexAccount(config, best);
@@ -807,12 +795,13 @@ export function recordCodexUpstreamOutcome(
   const hardCooldownUntil = getCodexAccountCooldownUntil(accountId, now) ?? undefined;
   // Soft avoid + affinity clears are part of failover. When threshold is 0, leave
   // sticky sessions alone (same as shouldFailover / applyFailureFailover no-ops).
-  const failoverEnabled = (config.upstreamFailoverThreshold ?? 3) > 0;
+  const failoverThreshold = config.upstreamFailoverThreshold ?? 3;
   const consecutiveFailures = stale ? 1 : (current?.consecutiveFailures ?? 0) + 1;
+  const failoverReady = failoverThreshold > 0 && consecutiveFailures >= failoverThreshold;
   const escalationMs = CODEX_TRANSIENT_SOFT_AVOID_ESCALATION_MS[
-    Math.min(consecutiveFailures, CODEX_TRANSIENT_SOFT_AVOID_ESCALATION_MS.length) - 1
+    Math.min(Math.max(consecutiveFailures - failoverThreshold, 0), CODEX_TRANSIENT_SOFT_AVOID_ESCALATION_MS.length - 1)
   ]!;
-  const softAvoidUntil = failoverEnabled
+  const softAvoidUntil = failoverReady
     ? Math.max(
       getCodexAccountSoftAvoidUntil(accountId, now) ?? 0,
       now + escalationMs,
@@ -831,7 +820,7 @@ export function recordCodexUpstreamOutcome(
   // thread is still pinned to the FAILING account — a late failure from account A
   // must not delete a newer healthy binding to account B (race: T→A, A fails,
   // T→B, late A failure must not delete B's mapping).
-  if (failoverEnabled && meta.threadId) {
+  if (failoverReady && meta.threadId) {
     const bound = threadAccountMap.get(meta.threadId);
     if (bound?.accountId === accountId) threadAccountMap.delete(meta.threadId);
   }

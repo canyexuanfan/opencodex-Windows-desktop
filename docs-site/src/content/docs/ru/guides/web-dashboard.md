@@ -109,7 +109,7 @@ GUI — это тонкий клиент поверх JSON-API управлен�
 | `GET /api/key-providers` · `GET /api/oauth/providers` | Чтение каталогов провайдеров с API-ключом и OAuth. |
 | `POST /api/oauth/login` · `GET /api/oauth/status` | Запуск OAuth-процесса провайдера и опрос его завершения. |
 | `GET /api/codex-auth/accounts?refresh=1` | Список основного и пуловых аккаунтов с принудительным обновлением квот и состояниями `hasCredential` / terminal `needsReauth` основного аккаунта. |
-| `PUT /api/codex-auth/active` · `PUT /api/codex-auth/auto-switch` · `PUT /api/codex-auth/failover` | Выбор аккаунта следующей сессии и настройка маршрутизации пула. |
+| `PUT /api/codex-auth/active` · `PUT /api/codex-auth/auto-switch` · `PUT /api/codex-auth/failover` | Выбор аккаунта для следующего запроса и настройка маршрутизации пула. |
 | `POST /api/codex-auth/login` · `GET /api/codex-auth/login-status` | Добавление аккаунта пула через вход в браузере. |
 | `GET /api/logs?tail=50&provider=...&status=5xx` | Чтение метаданных недавних запросов с необязательными фильтрами tail, провайдера и точного/классового статуса. |
 | `GET` / `PUT /api/subagent-models` | Чтение или настройка пяти выделенных моделей переопределения `spawn_agent`. |

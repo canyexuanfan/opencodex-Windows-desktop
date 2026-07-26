@@ -23,6 +23,7 @@ import {
   pickLowestUsageCodexAccount,
   parseRetryAfterMs,
   recordCodexUpstreamOutcome,
+  resetCodexRoutingForManualSelection,
   resolveCodexAccountForThread,
   resolveCodexAccountForThreadDetailed,
   tryAcquireCodexQuotaProbeLease,
@@ -172,10 +173,10 @@ describe("codex routing", () => {
     expect(resolveCodexAccountForThread("go-monthly-thread", config)).toBe("a");
   });
 
-  test("unknown active quota can switch to a known lower usage account", () => {
+  test("unknown active quota preserves the explicit selection until priming completes", () => {
     const config = makeConfig();
     updateAccountQuota("b", 20);
-    expect(resolveCodexAccountForThread("unknown-active", config)).toBe("b");
+    expect(resolveCodexAccountForThread("unknown-active", config)).toBe("a");
   });
 
   test("unknown quota does not beat known low quota during lowest-usage selection", () => {
@@ -640,7 +641,7 @@ describe("codex routing", () => {
     expect(getCodexUpstreamHealth("a")).toBeNull();
   });
 
-  test("inspection read rejection reports failed plus synthetic 502 and clears affinity", async () => {
+  test("one inspection read rejection records 502 without clearing affinity", async () => {
     const config = makeConfig();
     const now = 1_800_000_000_000;
     updateAccountQuota("a", 10);
@@ -661,7 +662,7 @@ describe("codex routing", () => {
 
     expect(terminals).toEqual([["failed", 502]]);
     expect(getCodexUpstreamHealth("a")).toMatchObject({ consecutiveFailures: 1, lastFailureStatus: 502 });
-    expect(resolveCodexAccountForThread("reset-thread", config, now + 2)).toBe("b");
+    expect(resolveCodexAccountForThread("reset-thread", config, now + 2)).toBe("a");
   });
 
   test("inspection clean EOF remains incomplete and success-like", async () => {
@@ -685,13 +686,15 @@ describe("codex routing", () => {
 
     recordCodexUpstreamOutcome(config, "a", 503, { now });
     recordCodexUpstreamOutcome(config, "a", 503, { now: now + 1 });
-    expect(getCodexAccountSoftAvoidUntil("a", now + 1)).toBe(now + 1 + 2 * 60_000);
+    expect(getCodexAccountSoftAvoidUntil("a", now + 1)).toBeNull();
     recordCodexUpstreamOutcome(config, "a", 503, { now: now + 2 });
-    expect(getCodexAccountSoftAvoidUntil("a", now + 2)).toBe(now + 2 + 10 * 60_000);
+    expect(getCodexAccountSoftAvoidUntil("a", now + 2)).toBe(now + 2 + 30_000);
     recordCodexUpstreamOutcome(config, "a", 503, { now: now + 3 });
-    expect(getCodexAccountSoftAvoidUntil("a", now + 3)).toBe(now + 3 + 30 * 60_000);
+    expect(getCodexAccountSoftAvoidUntil("a", now + 3)).toBe(now + 3 + 2 * 60_000);
     recordCodexUpstreamOutcome(config, "a", 503, { now: now + 4 });
-    expect(getCodexAccountSoftAvoidUntil("a", now + 4)).toBe(now + 4 + 30 * 60_000);
+    expect(getCodexAccountSoftAvoidUntil("a", now + 4)).toBe(now + 4 + 10 * 60_000);
+    recordCodexUpstreamOutcome(config, "a", 503, { now: now + 5 });
+    expect(getCodexAccountSoftAvoidUntil("a", now + 5)).toBe(now + 5 + 30 * 60_000);
   });
 
   test("escalation level 2 requires two consecutive healthy terminals to clear", () => {
@@ -705,7 +708,7 @@ describe("codex routing", () => {
       consecutiveFailures: 2,
       consecutiveSuccesses: 1,
     });
-    expect(isCodexAccountSoftAvoided("a", now + 2)).toBe(true);
+    expect(isCodexAccountSoftAvoided("a", now + 2)).toBe(false);
 
     recordCodexUpstreamOutcome(config, "a", 200, { now: now + 3 });
     expect(getCodexUpstreamHealth("a")).toBeNull();
@@ -799,6 +802,28 @@ describe("codex routing", () => {
 
     expect(getCodexUpstreamHealth("a")).toBeNull();
     expect(resolveCodexAccountForThread("cleanup-thread", config)).toBe("b");
+  });
+
+  test("manual selection clears affinity and transient state but preserves hard cooldown", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 20);
+    expect(resolveCodexAccountForThread("manual-thread", config, now)).toBe("a");
+
+    recordCodexUpstreamOutcome(config, "b", 429, { retryAfter: "120", now });
+    recordCodexUpstreamOutcome(config, "b", 503, { now: now + 1 });
+    recordCodexUpstreamOutcome(config, "b", 503, { now: now + 2 });
+    recordCodexUpstreamOutcome(config, "b", 503, { now: now + 3 });
+    expect(isCodexAccountSoftAvoided("b", now + 4)).toBe(true);
+
+    config.activeCodexAccountId = "b";
+    resetCodexRoutingForManualSelection("b");
+    expect(isCodexAccountSoftAvoided("b", now + 4)).toBe(false);
+    expect(isCodexAccountInCooldown("b", now + 4)).toBe(true);
+    expect(getCodexUpstreamHealth("b")?.consecutiveFailures).toBe(0);
+    expect(clearCodexAccountCooldown("b", now + 4)).toBe(true);
+    expect(resolveCodexAccountForThread("manual-thread", config, now + 4)).toBe("b");
   });
 
   test("failover threshold API validates and mutates runtime config", async () => {
@@ -968,12 +993,11 @@ describe("codex routing", () => {
     });
   });
 
-  // Phase 10 (260630_wsl-account-autoswitch): all-unknown quota deadlock fallback.
-  test("all-unknown pool still rotates off an over-threshold active account", () => {
+  test("all-unknown pool preserves the active account until quota is known", () => {
     const config = makeConfig();
     // No updateAccountQuota calls: both a and b score the unknown sentinel.
-    expect(resolveCodexAccountForThread("all-unknown-rotate", config)).toBe("b");
-    expect(config.activeCodexAccountId).toBe("b");
+    expect(resolveCodexAccountForThread("all-unknown-rotate", config)).toBe("a");
+    expect(config.activeCodexAccountId).toBe("a");
   });
 
   test("all-unknown with no eligible rotation target stays put without throwing", () => {
@@ -1016,7 +1040,7 @@ describe("codex routing", () => {
     expect(config.activeCodexAccountId).toBe("a");
   });
 
-  test("all-unknown rotation skips cooldown/reauth candidates", () => {
+  test("unknown active quota stays selected even when other candidates differ in health", () => {
     const config = makeConfig({
       codexAccounts: [
         { id: "a", email: "a@test", isMain: false },
@@ -1029,8 +1053,8 @@ describe("codex routing", () => {
     // Put b into cooldown via a 429 quota outcome; c remains a usable unknown.
     recordCodexUpstreamOutcome(config, "b", 429);
     expect(isCodexAccountInCooldown("b")).toBe(true);
-    expect(resolveCodexAccountForThread("rotate-skip-cooldown", config)).toBe("c");
-    expect(config.activeCodexAccountId).toBe("c");
+    expect(resolveCodexAccountForThread("rotate-skip-cooldown", config)).toBe("a");
+    expect(config.activeCodexAccountId).toBe("a");
   });
 
   // Phase 40 (260630_wsl-account-autoswitch): bound-thread quota re-eval.
@@ -1109,23 +1133,23 @@ describe("codex routing", () => {
   });
 
   // Soft-avoid: transient failures block pool selection for a bounded window.
-  test("single transient failure soft-avoids the account for 30s", () => {
+  test("transient failures soft-avoid only when the configured threshold is reached", () => {
     const config = makeConfig();
     const now = 1_800_000_000_000;
     updateAccountQuota("a", 10);
     updateAccountQuota("b", 20);
 
     recordCodexUpstreamOutcome(config, "a", 503, { now });
-
-    expect(isCodexAccountSoftAvoided("a", now + 1)).toBe(true);
-    expect(getCodexAccountSoftAvoidUntil("a", now + 1)).toBe(now + CODEX_TRANSIENT_SOFT_AVOID_MS);
+    recordCodexUpstreamOutcome(config, "a", 503, { now: now + 1 });
+    expect(isCodexAccountSoftAvoided("a", now + 1)).toBe(false);
+    expect(resolveCodexAccountForThread("soft-before", config, now + 1)).toBe("a");
+    recordCodexUpstreamOutcome(config, "a", 503, { now: now + 2 });
+    expect(isCodexAccountSoftAvoided("a", now + 3)).toBe(true);
+    expect(getCodexAccountSoftAvoidUntil("a", now + 3)).toBe(now + 2 + CODEX_TRANSIENT_SOFT_AVOID_MS);
     // New threads skip the soft-avoided account.
-    expect(resolveCodexAccountForThread("soft-next", config, now + 1)).toBe("b");
+    expect(resolveCodexAccountForThread("soft-next", config, now + 3)).toBe("b");
     // After the window expires, the account is selectable again.
-    expect(isCodexAccountSoftAvoided("a", now + CODEX_TRANSIENT_SOFT_AVOID_MS + 1)).toBe(false);
-    // Active switched to "b" during soft-avoid; reset it to verify "a" is selectable.
-    config.activeCodexAccountId = "a";
-    expect(resolveCodexAccountForThread("soft-after", config, now + CODEX_TRANSIENT_SOFT_AVOID_MS + 1)).toBe("a");
+    expect(isCodexAccountSoftAvoided("a", now + 2 + CODEX_TRANSIENT_SOFT_AVOID_MS + 1)).toBe(false);
   });
 
   test("2xx clears soft-avoid but preserves hard quota cooldown", () => {
@@ -1135,22 +1159,24 @@ describe("codex routing", () => {
     recordCodexUpstreamOutcome(config, "a", 429, { retryAfter: "120", now });
     // Then a transient failure adds soft-avoid on top.
     recordCodexUpstreamOutcome(config, "a", 503, { now: now + 1_000 });
-    expect(isCodexAccountSoftAvoided("a", now + 1_001)).toBe(true);
+    recordCodexUpstreamOutcome(config, "a", 503, { now: now + 1_001 });
+    recordCodexUpstreamOutcome(config, "a", 503, { now: now + 1_002 });
+    expect(isCodexAccountSoftAvoided("a", now + 1_003)).toBe(true);
 
     // Success clears soft-avoid but the hard cooldown survives.
     recordCodexUpstreamOutcome(config, "a", 200, { now: now + 2_000 });
-    expect(isCodexAccountSoftAvoided("a", now + 2_001)).toBe(false);
-    expect(isCodexAccountInCooldown("a", now + 2_001)).toBe(true);
+    recordCodexUpstreamOutcome(config, "a", 200, { now: now + 2_001 });
+    expect(isCodexAccountSoftAvoided("a", now + 2_002)).toBe(false);
+    expect(isCodexAccountInCooldown("a", now + 2_002)).toBe(true);
   });
 
   test("soft-avoid extends on repeated transient failures", () => {
     const config = makeConfig();
     const now = 1_800_000_000_000;
     recordCodexUpstreamOutcome(config, "a", "connect_error", { now });
-    const firstAvoid = getCodexAccountSoftAvoidUntil("a", now);
-    expect(firstAvoid).toBe(now + CODEX_TRANSIENT_SOFT_AVOID_MS);
-
-    // A second failure 10s later escalates the window to 2m from that point.
+    recordCodexUpstreamOutcome(config, "a", "timeout", { now: now + 1 });
+    recordCodexUpstreamOutcome(config, "a", 503, { now: now + 2 });
+    expect(getCodexAccountSoftAvoidUntil("a", now + 3)).toBe(now + 2 + CODEX_TRANSIENT_SOFT_AVOID_MS);
     recordCodexUpstreamOutcome(config, "a", "timeout", { now: now + 10_000 });
     expect(getCodexAccountSoftAvoidUntil("a", now + 10_001)).toBe(now + 10_000 + 2 * 60_000);
   });
@@ -1179,14 +1205,16 @@ describe("codex routing", () => {
     // Bind thread T to account A.
     expect(resolveCodexAccountForThread("race-thread", config, now)).toBe("a");
 
-    // A fails; thread rebinds to B (soft-avoid pushes selection to B).
+    // The configured third failure rebinds to B.
     recordCodexUpstreamOutcome(config, "a", 503, { now: now + 1, threadId: "race-thread" });
-    expect(resolveCodexAccountForThread("race-thread", config, now + 2)).toBe("b");
+    recordCodexUpstreamOutcome(config, "a", 503, { now: now + 2, threadId: "race-thread" });
+    recordCodexUpstreamOutcome(config, "a", 503, { now: now + 3, threadId: "race-thread" });
+    expect(resolveCodexAccountForThread("race-thread", config, now + 4)).toBe("b");
 
     // Late failure from A arrives AFTER the thread is already on B.
     // Must NOT delete B's healthy mapping.
-    recordCodexUpstreamOutcome(config, "a", 503, { now: now + 3, threadId: "race-thread" });
-    expect(resolveCodexAccountForThread("race-thread", config, now + 4)).toBe("b");
+    recordCodexUpstreamOutcome(config, "a", 503, { now: now + 5, threadId: "race-thread" });
+    expect(resolveCodexAccountForThread("race-thread", config, now + 6)).toBe("b");
   });
 
   test("threadId meta clears affinity only for the failing account", () => {
@@ -1195,11 +1223,13 @@ describe("codex routing", () => {
     updateAccountQuota("a", 10);
     updateAccountQuota("b", 20);
 
-    // Bind to A, then a transient failure with threadId clears the pin.
+    // Bind to A; only the configured third transient clears the pin.
     expect(resolveCodexAccountForThread("unbind-thread", config, now)).toBe("a");
     recordCodexUpstreamOutcome(config, "a", "connect_error", { now: now + 1, threadId: "unbind-thread" });
-    // Next resolve rebinds (to B, since A is soft-avoided).
-    expect(resolveCodexAccountForThread("unbind-thread", config, now + 2)).toBe("b");
+    recordCodexUpstreamOutcome(config, "a", "connect_error", { now: now + 2, threadId: "unbind-thread" });
+    expect(resolveCodexAccountForThread("unbind-thread", config, now + 2)).toBe("a");
+    recordCodexUpstreamOutcome(config, "a", "connect_error", { now: now + 3, threadId: "unbind-thread" });
+    expect(resolveCodexAccountForThread("unbind-thread", config, now + 4)).toBe("b");
   });
 
   test("failover streak clears all affinities for the failing account", () => {
