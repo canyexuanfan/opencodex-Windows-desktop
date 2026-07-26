@@ -414,9 +414,9 @@ async function readUsageEntriesFullCooperatively(path: string): Promise<Persiste
       };
     }
     return entries.slice();
-  } catch {
+  } catch (error) {
     if (usageReadCache?.path === path) usageReadCache = null;
-    return [];
+    throw error;
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
@@ -522,9 +522,9 @@ export function readUsageEntries(): PersistedUsageEntry[] {
       entries,
     };
     return entries.slice();
-  } catch {
+  } catch (error) {
     usageReadCache = null;
-    return [];
+    throw error;
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
