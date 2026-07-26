@@ -336,23 +336,54 @@ jobs:
           : > "$delta_file"
           : > "$commits_file"
 
-          # Stable releases after a matching preview: copy that preview changelog, then only
-          # generate-notes / commits for the preview→latest delta. Preview tags often are not
-          # ancestors of main, so match by version prefix (not --merged).
+          # Stable releases after matching previews: aggregate every matching preview
+          # changelog (oldest→newest; each preview body is incremental), then only
+          # generate-notes / commits for the post-preview delta when the newest preview
+          # tag is an ancestor of this commit. Preview tags often are not ancestors of
+          # main, so we never use a divergent preview tag as a two-dot baseline.
           notes_range_start="$previous_tag"
           if [[ "$RELEASE_VERSION" != *-preview.* ]]; then
-            preview_carry_tag="$(
-              git tag --list "v${RELEASE_VERSION}-preview.*" --sort=-v:refname |
-                head -n 1 || true
+            preview_carry_tags="$(
+              git tag --list "v${RELEASE_VERSION}-preview.*" |
+                bun scripts/release-notes.ts matching-preview-tags "$RELEASE_VERSION"
             )"
-            if [ -n "$preview_carry_tag" ]; then
-              if gh release view "$preview_carry_tag" --json body --jq .body > "${carried_file}.raw" 2>/dev/null; then
-                bun scripts/release-notes.ts strip-carried "${carried_file}.raw" > "$carried_file"
-                notes_range_start="$preview_carry_tag"
-                echo "::notice::Carrying preview release notes from ${preview_carry_tag} into ${release_tag}"
+            newest_preview_tag=""
+            carried_any=false
+            while IFS= read -r preview_carry_tag; do
+              [ -n "$preview_carry_tag" ] || continue
+              newest_preview_tag="$preview_carry_tag"
+              view_err="$(mktemp)"
+              set +e
+              gh release view "$preview_carry_tag" --json body --jq .body > "${carried_file}.raw" 2>"$view_err"
+              view_status=$?
+              set -e
+              if [ "$view_status" -eq 0 ]; then
+                bun scripts/release-notes.ts strip-carried "${carried_file}.raw" > "${carried_file}.one"
+                if bun scripts/release-notes.ts has-meaningful "${carried_file}.one"; then
+                  if [ -s "$carried_file" ]; then
+                    printf '\n\n' >> "$carried_file"
+                  fi
+                  cat "${carried_file}.one" >> "$carried_file"
+                  carried_any=true
+                  echo "::notice::Carrying preview release notes from ${preview_carry_tag} into ${release_tag}"
+                else
+                  echo "::notice::Preview release ${preview_carry_tag} has no usable changelog after strip; leaving channel baseline unchanged for this tag"
+                fi
+              elif grep -qiE 'could not find|not found|HTTP[[:space:]]*404|Not Found' "$view_err"; then
+                echo "::notice::Matching preview tag ${preview_carry_tag} has no GitHub Release; skipping"
               else
-                echo "::notice::Matching preview tag ${preview_carry_tag} has no GitHub Release; using channel notes only"
-                : > "$carried_file"
+                echo "::error::Failed to look up GitHub Release for ${preview_carry_tag} (operational error, not a missing release)"
+                cat "$view_err" >&2 || true
+                exit 1
+              fi
+            done <<< "$preview_carry_tags"
+
+            if [ "$carried_any" = true ] && [ -n "$newest_preview_tag" ]; then
+              if git merge-base --is-ancestor "$newest_preview_tag" "$GITHUB_SHA"; then
+                notes_range_start="$newest_preview_tag"
+                echo "::notice::Using preview tag ${newest_preview_tag} as notes/commits baseline (ancestor of ${GITHUB_SHA})"
+              else
+                echo "::notice::Preview tag ${newest_preview_tag} is not an ancestor of ${GITHUB_SHA}; keeping channel baseline ${previous_tag:-none} for generate-notes/commits"
               fi
             fi
           fi

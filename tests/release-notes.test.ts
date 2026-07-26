@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   assembleReleaseNotes,
+  hasMeaningfulCarriedNotes,
   hasNonWhitespace,
+  joinCarriedPreviewNotes,
   matchingPreviewTag,
+  matchingPreviewTags,
   stripCarriedReleaseNotes,
   stripGenerateNotesCompareLink,
 } from "../scripts/release-notes";
@@ -21,6 +24,20 @@ describe("matchingPreviewTag", () => {
   test("returns null for preview versions and when no match exists", () => {
     expect(matchingPreviewTag("2.7.39-preview.1", ["v2.7.39-preview.1"])).toBeNull();
     expect(matchingPreviewTag("2.7.41", ["v2.7.40-preview.20260725"])).toBeNull();
+  });
+});
+
+describe("matchingPreviewTags", () => {
+  test("returns all matching preview tags oldest to newest", () => {
+    expect(matchingPreviewTags("2.7.39", [
+      "v2.7.39-preview.20260725",
+      "v2.7.38-preview.20260724",
+      "v2.7.39-preview.20260724",
+      "v2.7.39",
+    ])).toEqual([
+      "v2.7.39-preview.20260724",
+      "v2.7.39-preview.20260725",
+    ]);
   });
 });
 
@@ -57,6 +74,33 @@ describe("stripCarriedReleaseNotes", () => {
       "## New Contributors",
       "* @someone made their first contribution",
     ].join("\n"));
+  });
+
+  test("commits-only preview bodies strip to non-meaningful notes", () => {
+    const body = [
+      "Published to npm as `@bitkyc08/opencodex@2.7.39-preview.20260724` with dist-tag `preview`.",
+      "",
+      "<!-- Release notes generated using configuration in .github/release.yml at abc -->",
+      "",
+      "## Commits",
+      "",
+      "- release: v2.7.39-preview.20260724 (8894e40e)",
+      "",
+      "**Full Changelog**: https://example/compare/a...b",
+    ].join("\n");
+    const stripped = stripCarriedReleaseNotes(body);
+    expect(hasMeaningfulCarriedNotes(stripped)).toBe(false);
+  });
+});
+
+describe("joinCarriedPreviewNotes", () => {
+  test("aggregates multiple incremental preview bodies in order", () => {
+    const joined = joinCarriedPreviewNotes([
+      "## What's Changed\n* fix A",
+      "<!-- only comment -->",
+      "## What's Changed\n* fix B",
+    ]);
+    expect(joined).toBe("## What's Changed\n* fix A\n\n## What's Changed\n* fix B");
   });
 });
 
@@ -109,5 +153,6 @@ describe("assembleReleaseNotes", () => {
     expect(notes).toContain("## What's Changed\n* feat X");
     expect(notes).not.toContain("https://example/compare/a...b");
     expect(hasNonWhitespace("")).toBe(false);
+    expect(stripGenerateNotesCompareLink("x\n**Full Changelog**: y")).toBe("x");
   });
 });

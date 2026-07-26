@@ -2,23 +2,35 @@
 /**
  * Pure helpers for GitHub release note assembly.
  * Used by `.github/workflows/release.yml` so stable (latest) releases can carry
- * the matching preview changelog, plus any delta since that preview.
+ * matching preview changelogs, plus any delta since the last carried preview.
  *
  * CLI:
  *   bun scripts/release-notes.ts strip-carried <body-file>
  *   bun scripts/release-notes.ts matching-preview-tag <version>
+ *   bun scripts/release-notes.ts matching-preview-tags <version>
+ *   bun scripts/release-notes.ts has-meaningful [body-file]
  *   bun scripts/release-notes.ts assemble --npm-metadata ... --out ...
  */
 
+/** Newest matching preview tag for a stable version, or null. */
 export function matchingPreviewTag(version: string, tags: string[]): string | null {
-  if (!version || version.includes("-")) return null;
+  const matches = matchingPreviewTags(version, tags);
+  return matches.length === 0 ? null : matches[matches.length - 1]!;
+}
+
+/**
+ * All matching preview tags for a stable version, oldest → newest.
+ * Each preview's notes are incremental vs the previous preview, so stable
+ * releases must aggregate in this order to avoid dropping earlier preview work.
+ */
+export function matchingPreviewTags(version: string, tags: string[]): string[] {
+  if (!version || version.includes("-")) return [];
   const prefix = `v${version}-preview.`;
   const matches = tags
     .map(tag => tag.trim())
     .filter(tag => tag.startsWith(prefix));
-  if (matches.length === 0) return null;
-  matches.sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: "base" }));
-  return matches[0] ?? null;
+  matches.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+  return matches;
 }
 
 /** Drop npm blurb, Commits section, and Full Changelog link from a prior release body. */
@@ -67,8 +79,26 @@ export function isEmptyGeneratedNotes(body: string): boolean {
   return !hasNonWhitespace(withoutComment);
 }
 
+/**
+ * True when stripped carried notes contain a usable changelog (not blank /
+ * comment-only). Commits-only preview releases strip down to empty and must not
+ * move the stable notes baseline.
+ */
+export function hasMeaningfulCarriedNotes(stripped: string): boolean {
+  return !isEmptyGeneratedNotes(stripped);
+}
+
 export function hasNonWhitespace(text: string): boolean {
   return text.replace(/\s+/g, "").length > 0;
+}
+
+/** Join multiple stripped preview bodies in chronological order. */
+export function joinCarriedPreviewNotes(parts: string[]): string {
+  return parts
+    .map(part => part.trim())
+    .filter(part => hasMeaningfulCarriedNotes(part))
+    .join("\n\n")
+    .trim();
 }
 
 export function assembleReleaseNotes(input: {
@@ -128,15 +158,27 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
 
-  if (cmd === "matching-preview-tag") {
+  if (cmd === "has-meaningful") {
+    const stripped = (await readStdinOrFile(rest[0])).trim();
+    process.exit(hasMeaningfulCarriedNotes(stripped) ? 0 : 1);
+  }
+
+  if (cmd === "matching-preview-tag" || cmd === "matching-preview-tags") {
     const version = rest[0];
     if (!version) {
-      console.error("Usage: bun scripts/release-notes.ts matching-preview-tag <version>");
+      console.error(`Usage: bun scripts/release-notes.ts ${cmd} <version>`);
       process.exit(1);
     }
     const tagsText = await new Response(Bun.stdin).text();
-    const tag = matchingPreviewTag(version, tagsText.split(/\r?\n/));
-    if (tag) process.stdout.write(tag + "\n");
+    const tags = tagsText.split(/\r?\n/);
+    if (cmd === "matching-preview-tag") {
+      const tag = matchingPreviewTag(version, tags);
+      if (tag) process.stdout.write(tag + "\n");
+      return;
+    }
+    for (const tag of matchingPreviewTags(version, tags)) {
+      process.stdout.write(tag + "\n");
+    }
     return;
   }
 
@@ -183,7 +225,9 @@ async function main(argv: string[]): Promise<void> {
   console.error(`Unknown command: ${cmd ?? "(none)"}
 Usage:
   bun scripts/release-notes.ts strip-carried [body-file]
-  bun scripts/release-notes.ts matching-preview-tag <version>  # tags on stdin
+  bun scripts/release-notes.ts has-meaningful [body-file]
+  bun scripts/release-notes.ts matching-preview-tag <version>   # tags on stdin
+  bun scripts/release-notes.ts matching-preview-tags <version>  # tags on stdin, oldest→newest
   bun scripts/release-notes.ts assemble --npm-metadata ... --out ...`);
   process.exit(1);
 }
