@@ -33,7 +33,7 @@ export function useProvidersOAuth({
   notify: (msg: string, ok: boolean) => void;
   fetchConfig: () => Promise<void>;
   fetchOauth: () => Promise<void>;
-  fetchAccountSets: (providers: string[]) => Promise<void>;
+  fetchAccountSets: (providers: string[]) => Promise<unknown>;
   fetchProviderQuotas: (refresh?: boolean) => Promise<void>;
   bumpModelsRefresh: () => void;
 }) {
