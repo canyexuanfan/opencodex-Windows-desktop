@@ -352,7 +352,7 @@ jobs:
             const {
               resolveControlState,
               persistTranslationControlState,
-              scrubDetectedLanguage,
+              detectedLanguageForControlPersist,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-translation.cjs"));
 
             const { owner, repo } = context.repo;
@@ -367,6 +367,7 @@ jobs:
               owner, repo, issue_number, per_page: 100,
             });
             const priorState = resolveControlState(comments, issue_number);
+            const sourceComplete = process.env.SOURCE_COMPLETE === "true";
             try {
               const result = await persistTranslationControlState({
                 github,
@@ -379,9 +380,13 @@ jobs:
                   sourceHash: process.env.SOURCE_HASH,
                   sourceKey: "issue",
                   requiresTranslation: false,
-                  detectedLanguage: scrubDetectedLanguage(process.env.DETECTED_LANG || "English"),
+                  // Incomplete AI/parse skips must not bookkeep as English.
+                  detectedLanguage: detectedLanguageForControlPersist({
+                    detectedLanguage: process.env.DETECTED_LANG,
+                    sourceComplete,
+                  }),
                   // Invalid/empty AI JSON sets source_complete=false and stays retryable.
-                  sourceComplete: process.env.SOURCE_COMPLETE === "true",
+                  sourceComplete,
                 },
               });
               if (result.cleanup?.failed?.length) {
@@ -635,7 +640,7 @@ jobs:
             const {
               resolveControlState,
               persistTranslationControlState,
-              scrubDetectedLanguage,
+              detectedLanguageForControlPersist,
             } = require(path.join(process.cwd(), ".github", "scripts", "issue-translation.cjs"));
 
             const { owner, repo } = context.repo;
@@ -644,6 +649,7 @@ jobs:
               owner, repo, issue_number, per_page: 100,
             });
             const priorState = resolveControlState(comments, issue_number);
+            const sourceComplete = process.env.SOURCE_COMPLETE === "true";
             try {
               const result = await persistTranslationControlState({
                 github,
@@ -656,8 +662,12 @@ jobs:
                   sourceHash: process.env.SOURCE_HASH,
                   sourceKey: process.env.SOURCE_TITLE || "issue",
                   requiresTranslation: false,
-                  detectedLanguage: scrubDetectedLanguage(process.env.DETECTED_LANG || "English"),
-                  sourceComplete: process.env.SOURCE_COMPLETE === "true",
+                  // Incomplete AI/parse skips must not bookkeep as English.
+                  detectedLanguage: detectedLanguageForControlPersist({
+                    detectedLanguage: process.env.DETECTED_LANG,
+                    sourceComplete,
+                  }),
+                  sourceComplete,
                 },
               });
               if (result.cleanup?.failed?.length) {
