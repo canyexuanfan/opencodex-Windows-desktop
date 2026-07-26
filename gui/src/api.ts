@@ -1,18 +1,16 @@
 let installed = false;
 let promptInFlight: Promise<string | null> | null = null;
 
-function apiPath(input: RequestInfo | URL): string | null {
+function needsApiAuth(input: RequestInfo | URL): boolean {
   try {
     const raw = input instanceof Request ? input.url : String(input);
-    return new URL(raw, window.location.href).pathname;
+    const url = new URL(raw, window.location.href);
+    // Absolute cross-origin URLs must never get the local API token or 401 prompt.
+    if (url.origin !== window.location.origin) return false;
+    return url.pathname.startsWith("/api/") || url.pathname.startsWith("/v1/");
   } catch {
-    return null;
+    return false;
   }
-}
-
-function needsApiAuth(input: RequestInfo | URL): boolean {
-  const path = apiPath(input);
-  return !!path && (path.startsWith("/api/") || path.startsWith("/v1/"));
 }
 
 /** Legacy sessionStorage key from pre-memory auth — wiped once on install, never read. */
