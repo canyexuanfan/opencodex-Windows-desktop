@@ -4,7 +4,7 @@ import { refreshCodexModelCatalog } from "./refresh";
 import { applyProxyEnv, loadConfig } from "../config";
 import type { OcxConfig } from "../types";
 import { collectOrcaCodexHomeDiagnostic } from "./home";
-import type { ComboCatalogOmission } from "./catalog/aggregation";
+import { summarizeComboCatalogOmissions, type ComboCatalogOmission } from "./catalog/aggregation";
 
 export interface CodexSyncResult {
   ok: boolean;
@@ -92,7 +92,7 @@ export async function syncModelsToCodex(
     if (comboOmissions.length > 0) {
       // Individual omission lines already went through console.warn during gather;
       // keep a single summary on the sync logger to avoid duplicate stderr noise.
-      const summary = `${comboOmissions.length} combo${comboOmissions.length === 1 ? "" : "s"} omitted from the catalog because member capabilities are incomplete.`;
+      const summary = summarizeComboCatalogOmissions(comboOmissions);
       log?.error(summary);
       warning = warning ? `${warning} ${summary}` : summary;
     }

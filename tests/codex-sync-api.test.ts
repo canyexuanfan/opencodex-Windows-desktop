@@ -85,6 +85,7 @@ describe("GUI/CLI Codex sync backend", () => {
     const omission = {
       id: "k3k3",
       targets: ["kimi/k3", "xianyu/kimi-k3"],
+      reason: "incomplete_metadata" as const,
       message: "[opencodex] Combo \"k3k3\" is omitted from the catalog because member capabilities are incomplete: kimi/k3, xianyu/kimi-k3.",
     };
     const result = await syncModelsToCodex(12345, config, { log: line => logs.push(String(line)), error: line => errors.push(String(line)) }, {
