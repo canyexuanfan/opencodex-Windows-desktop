@@ -27,6 +27,7 @@ import {
 } from "../../combos";
 import { isInjectionDebugEnabled } from "../../lib/debug-settings";
 import { injectionDebugLog } from "../../lib/injection-debug-log";
+import { resolveClientRetryAfter } from "../../lib/retry-after";
 import { modelInList, namespacedToolName } from "../../types";
 import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig, OcxProviderContinuationState, OcxUsage } from "../../types";
 import {
@@ -349,14 +350,30 @@ export async function consumeComboFailure(
   const message = classificationText === fallback
     ? fallback
     : `${fallback}: ${classificationText}`;
-  const retryAfter = sanitizedRetryAfter(response.headers.get("retry-after"), now);
+  const upstreamRetryAfter = response.headers.get("retry-after");
+  // Client response may get the synthetic "2" fallback; cooldown metadata must not —
+  // otherwise coolComboTarget treats it as a 2s cooldown instead of the 60s default.
+  const clientRetryAfter = resolveClientRetryAfter({
+    status: response.status,
+    message,
+    upstreamRetryAfter,
+    now,
+  });
+  const cooldownRetryAfter = resolveClientRetryAfter({
+    status: response.status,
+    message,
+    upstreamRetryAfter,
+    now,
+    includeDefault: false,
+  });
   return {
     response: formatErrorResponse(response.status, "upstream_error", message, {
       ...(upstreamCode !== undefined ? { code: upstreamCode } : {}),
+      ...(clientRetryAfter !== undefined ? { retryAfter: clientRetryAfter } : {}),
     }),
     classificationText,
     ...(upstreamCode !== undefined ? { upstreamCode } : {}),
-    ...(retryAfter !== undefined ? { retryAfter } : {}),
+    ...(cooldownRetryAfter !== undefined ? { retryAfter: cooldownRetryAfter } : {}),
     ...(usage ? { usage } : {}),
   };
 }
@@ -1845,7 +1862,15 @@ export async function handleResponses(
       );
       // Upstreams occasionally echo request details in error bodies — scrub token-shaped
       // material before it reaches the client-facing error surface.
-      return formatErrorResponse(upstreamResponse.status, "upstream_error", `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`);
+      const message = `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`;
+      const retryAfter = resolveClientRetryAfter({
+        status: upstreamResponse.status,
+        message,
+        upstreamRetryAfter: upstreamResponse.headers.get("retry-after"),
+      });
+      return formatErrorResponse(upstreamResponse.status, "upstream_error", message, {
+        ...(retryAfter !== undefined ? { retryAfter } : {}),
+      });
     }
   }
 

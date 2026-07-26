@@ -889,6 +889,9 @@ describe("server local API auth", () => {
     }
   });
 
+  // Windows CI under the full suite can spend >1s opening WS turns and >5s on this
+  // multi-server matrix; tight budgets flake as "tier websocket timeout" and cascade
+  // into the next test via a late fetch restore (502 instead of the mocked 500).
   test("OpenAI option auth matrix keeps direct, pool, and API credentials independent", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
@@ -910,7 +913,7 @@ describe("server local API auth", () => {
       },
     });
     let whamRequests = 0;
-    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const matrixFetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       const url = new URL(requestUrl);
       if (url.hostname === "chatgpt.com" && url.pathname.startsWith("/backend-api/wham/")) {
@@ -925,6 +928,7 @@ describe("server local API auth", () => {
       }
       return originalGlobalFetch(input, init);
     }) as typeof fetch;
+    globalThis.fetch = matrixFetch;
 
     const request = (server: ReturnType<typeof startServer>, headers?: HeadersInit, model = "gpt-test") => {
       const requestHeaders = new Headers(headers);
@@ -951,7 +955,7 @@ describe("server local API auth", () => {
       url.protocol = "ws:";
       const ws = new WebSocket(url, { headers: { "x-opencodex-api-key": "local-secret", ...(headers ?? {}) } } as unknown as string[]);
       return new Promise<string>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("tier websocket timeout")), 1000);
+        const timer = setTimeout(() => reject(new Error("tier websocket timeout")), 5_000);
         ws.addEventListener("open", () => {
           ws.send(JSON.stringify({ type: "response.create", model, input: "hello" }));
         }, { once: true });
@@ -1184,7 +1188,7 @@ describe("server local API auth", () => {
       const sendFrame = async (model: string) => {
         const before = seen.length;
         const message = new Promise<string>((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error(`sequential websocket timeout: ${model}`)), 1000);
+          const timer = setTimeout(() => reject(new Error(`sequential websocket timeout: ${model}`)), 5_000);
           const onMessage = (event: MessageEvent) => {
             const value = typeof event.data === "string" ? event.data : "";
             if (!value.includes('"type":"response.completed"')) return;
@@ -1225,10 +1229,12 @@ describe("server local API auth", () => {
         await sequential.stop(true);
       }
     } finally {
-      globalThis.fetch = originalGlobalFetch;
+      // Only clear our mock if a later/timeout race has not already replaced it.
+      // afterEach always restores originalGlobalFetch once this test settles.
+      if (globalThis.fetch === matrixFetch) globalThis.fetch = originalGlobalFetch;
       await upstream.stop(true);
     }
-  });
+  }, { timeout: 30_000 });
 
   test("internal web-search and vision never forward a non-ChatGPT bearer as Direct sidecar auth", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
