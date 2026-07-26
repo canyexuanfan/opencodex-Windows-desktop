@@ -80,11 +80,14 @@ export function AddComboModal({
       className="modal-overlay"
       aria-labelledby="cwi-add-title"
       onCancel={handleCancel}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) requestClose();
+      }}
     >
       <div className="modal-card" style={{ width: "min(560px, 94vw)" }} onClick={(e) => e.stopPropagation()}>
         <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
           <h3 id="cwi-add-title" style={{ margin: 0 }}>{t("cws.addTitle")}</h3>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={onClose} disabled={busy} aria-label={t("common.close")}>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={requestClose} disabled={busy} aria-label={t("common.close")}>
             <IconX width={16} height={16} />
           </button>
         </div>
@@ -187,7 +190,7 @@ export function AddComboModal({
           </div>
         </div>
         <div className="cwi-modal-actions">
-          <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
+          <button type="button" className="btn btn-ghost" onClick={requestClose} disabled={busy}>{t("common.cancel")}</button>
           <button type="button" className="btn btn-primary" onClick={() => { void submit(); }} disabled={busy}>
             {busy ? t("common.saving") : t("cws.create")}
           </button>
