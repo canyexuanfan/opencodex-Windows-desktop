@@ -19,6 +19,7 @@ import {
   type WorkspaceSections,
 } from "../../provider-workspace/catalog";
 import { providerKind } from "../../provider-workspace/kind";
+import { readJsonIfOk, readJsonOrThrow } from "../../fetch-json";
 import { countAvailableModels, parseAvailableModels, parseLiveModelCounts, parseSelectedModels, type ProviderAvailableModels, type ProviderLiveModelCounts, type ProviderModelCounts, type ProviderSelectedModels } from "../../provider-workspace/usage";
 import type { ProviderQuotaReportView } from "../../provider-workspace/report";
 import { formatProviderDisplayName } from "../../provider-icons";
@@ -118,22 +119,23 @@ export default function ProviderWorkspaceShell({
     let cancelled = false;
     const timeout = window.setTimeout(() => {
       setModelsLoading(true);
-      fetch(`${apiBase}/api/selected-models`)
-        .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
-        .then(data => {
+      void (async () => {
+        try {
+          const res = await fetch(`${apiBase}/api/selected-models`);
+          const data = await readJsonOrThrow(res);
           if (cancelled) return;
           setModelCounts(countAvailableModels(data));
           setAvailableModels(parseAvailableModels(data));
           setLiveModelCounts(parseLiveModelCounts(data));
           setSelectedModels(parseSelectedModels(data));
           setModelsLoadFailed(false);
-          setModelsLoading(false);
-        })
-        .catch(() => {
+        } catch {
           if (cancelled) return;
           setModelsLoadFailed(true);
-          setModelsLoading(false);
-        });
+        } finally {
+          if (!cancelled) setModelsLoading(false);
+        }
+      })();
     }, 0);
     return () => {
       cancelled = true;
@@ -144,11 +146,11 @@ export default function ProviderWorkspaceShell({
   useEffect(() => {
     let cancelled = false;
     fetch(`${apiBase}/api/usage?range=30d`)
-      .then(r => r.ok ? r.json() : null)
-      .then((data: {
+      .then(r => readJsonIfOk<{
         providers?: Array<{ provider: string; requests: number; totalTokens?: number }>;
         models?: Array<{ provider: string; model: string; resolvedModel?: string; requests: number; totalTokens: number; inputTokens: number; outputTokens: number; shareRatio: number; estimatedCostUsd?: number }>;
-      } | null) => {
+      }>(r))
+      .then((data) => {
         if (cancelled || !data) return;
         const byProvider: Record<string, ProviderUsageTotals> = {};
         for (const p of data.providers ?? []) byProvider[p.provider] = { requests: p.requests, totalTokens: p.totalTokens };
@@ -178,8 +180,8 @@ export default function ProviderWorkspaceShell({
   useEffect(() => {
     let cancelled = false;
     fetch(`${apiBase}/api/provider-quotas`)
-      .then(r => r.ok ? r.json() : null)
-      .then((data: { reports?: Array<{ provider: string; label?: string; source?: string; updatedAt?: number; quota?: unknown }> } | null) => {
+      .then(r => readJsonIfOk<{ reports?: Array<{ provider: string; label?: string; source?: string; updatedAt?: number; quota?: unknown }> }>(r))
+      .then((data) => {
         if (cancelled || !data) return;
         // Merge so a partial/failed probe cannot wipe a previously good provider row.
         setQuotaReports(prev => {

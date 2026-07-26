@@ -9,6 +9,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { baseUrlForChoice, matchChoiceId, resolvedBaseUrlForChoice } from "../../base-url-choice";
+import { readJsonIfOk } from "../../fetch-json";
 import { useT } from "../../i18n";
 import { IconLock } from "../../icons";
 import { isCatalogProviderId } from "../../provider-icons";
@@ -67,9 +68,14 @@ export default function ProviderSettings({
     const providerId = item.name;
     const savedBaseUrl = item.baseUrl;
     fetch(`${apiBase}/api/provider-presets`)
-      .then(r => r.json())
-      .then((d: { providers?: CatalogPreset[] }) => {
+      .then(r => readJsonIfOk<{ providers?: CatalogPreset[] }>(r))
+      .then((d) => {
         if (cancelled) return;
+        if (!d) {
+          setBaseUrlChoices(undefined);
+          setChoicesStatus("error");
+          return;
+        }
         const preset = (d.providers ?? []).find(p => p.id === providerId);
         const choices = preset?.baseUrlChoices;
         setBaseUrlChoices(choices);
@@ -121,12 +127,16 @@ export default function ProviderSettings({
       ? resolvedBaseUrlForChoice(baseUrlChoices, endpointChoice, baseUrl)
       : baseUrl.trim();
     if (!adapter.trim() || !nextBaseUrl) { setMsg({ ok: false, text: t("pws.adapterBaseRequired") }); return false; }
-    setSaving(true); setMsg(null);
-    const patch: ProviderUpdatePatch = { adapter: adapter.trim(), baseUrl: nextBaseUrl, defaultModel: defaultModel.trim(), authMode, note: note.trim(), allowPrivateNetwork, liveModels };
-    const res = await onUpdateProvider(item.name, patch);
-    setSaving(false);
-    setMsg(res.ok ? { ok: true, text: t("pws.settingsSaved") } : { ok: false, text: res.error || t("prov.saveFailed") });
-    return res.ok;
+    setSaving(true);
+    setMsg(null);
+    try {
+      const patch: ProviderUpdatePatch = { adapter: adapter.trim(), baseUrl: nextBaseUrl, defaultModel: defaultModel.trim(), authMode, note: note.trim(), allowPrivateNetwork, liveModels };
+      const res = await onUpdateProvider(item.name, patch);
+      setMsg(res.ok ? { ok: true, text: t("pws.settingsSaved") } : { ok: false, text: res.error || t("prov.saveFailed") });
+      return res.ok;
+    } finally {
+      setSaving(false);
+    }
   };
 
   const saveRef = useRef(save);

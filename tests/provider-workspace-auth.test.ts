@@ -68,9 +68,20 @@ describe("safe OAuth account labels", () => {
   });
 });
 
+async function providersPageSeam(): Promise<string> {
+  const [page, oauth, utils, modals, pools] = await Promise.all([
+    Bun.file("gui/src/pages/Providers.tsx").text(),
+    Bun.file("gui/src/pages/use-providers-oauth.ts").text(),
+    Bun.file("gui/src/pages/providers-page-utils.ts").text(),
+    Bun.file("gui/src/pages/providers-page-modals.tsx").text(),
+    Bun.file("gui/src/hooks/useProviderAccountPools.ts").text(),
+  ]);
+  return page + oauth + utils + modals + pools;
+}
+
 describe("workspace account integration seam", () => {
   test("passes account state and handlers into provider details", async () => {
-    const source = (await Bun.file("gui/src/pages/Providers.tsx").text()) + (await Bun.file("gui/src/hooks/useProviderAccountPools.ts").text());
+    const source = await providersPageSeam();
     expect(source).toContain("accountLoadState={accountLoadStates[item.name]");
     expect(source).toContain("switchingAccountId={switchingAccount?.provider === item.name");
     expect(source).toContain("onRetryAccounts: async provider => { await fetchAccountSets([provider]); }");
@@ -91,7 +102,7 @@ describe("workspace account integration seam", () => {
 
   test("does not fall back to opaque ids in workspace account feedback", async () => {
     const [page, panel, codexPool] = await Promise.all([
-      Bun.file("gui/src/pages/Providers.tsx").text(),
+      providersPageSeam(),
       Bun.file("gui/src/components/provider-workspace/ProviderAuthPanel.tsx").text(),
       Bun.file("gui/src/components/CodexAccountPool.tsx").text(),
     ]);
@@ -101,16 +112,16 @@ describe("workspace account integration seam", () => {
   });
 
   test("keeps logout and delete failure states honest", async () => {
-    const [page0, codexPool] = await Promise.all([
-      Bun.file("gui/src/pages/Providers.tsx").text(),
+    const [page, codexPool, hook] = await Promise.all([
+      providersPageSeam(),
       Bun.file("gui/src/components/CodexAccountPool.tsx").text(),
+      Bun.file("gui/src/hooks/useCodexAccountPool.ts").text(),
     ]);
-    const page = page0 + (await Bun.file("gui/src/hooks/useProviderAccountPools.ts").text());
-    const hook = await Bun.file("gui/src/hooks/useCodexAccountPool.ts").text();
     expect(page).toContain('notify(t("prov.logoutFail"');
     expect(page).toContain('notify(t("prov.accountRemoveFail"');
     expect(page).toContain("await fetchAccountSets([provider])");
     expect(codexPool).toContain('setToast(t("codexAuth.removeFailed"))');
+    expect(hook).toContain("pauseTokensRef");
   });
 
   test("gives canonical Codex accounts explicit native switch actions", async () => {
@@ -123,7 +134,7 @@ describe("workspace account integration seam", () => {
   test("wires active reauth health into workspace rail status", async () => {
     const [shell, page] = await Promise.all([
       Bun.file("gui/src/components/provider-workspace/ProviderWorkspaceShell.tsx").text(),
-      Bun.file("gui/src/pages/Providers.tsx").text(),
+      providersPageSeam(),
     ]);
     expect(shell).toContain("applyActiveAccountReauth");
     expect(shell).toContain("activeAccountNeedsReauth");
@@ -132,13 +143,12 @@ describe("workspace account integration seam", () => {
   });
 
   test("wires OAuth re-authenticate handlers into the workspace detail", async () => {
-    const [page0, panel, details, overview] = await Promise.all([
-      Bun.file("gui/src/pages/Providers.tsx").text(),
+    const [page, panel, details, overview] = await Promise.all([
+      providersPageSeam(),
       Bun.file("gui/src/components/provider-workspace/ProviderAuthPanel.tsx").text(),
       Bun.file("gui/src/components/provider-workspace/ProviderDetails.tsx").text(),
       Bun.file("gui/src/components/provider-workspace/ProviderOverview.tsx").text(),
     ]);
-    const page = page0;
     expect(page).toContain("onReauth:");
     expect(page).toContain("onCancelLogin: cancelLoginOAuth");
     expect(page).toContain("loginOAuth(provider, true, accountId)");
@@ -160,14 +170,13 @@ describe("workspace account integration seam", () => {
   });
 
   test("wires Codex active reauth health into openai rail status", async () => {
-    const [page0, pool, panel, modal] = await Promise.all([
-      Bun.file("gui/src/pages/Providers.tsx").text(),
+    const [page, pool, panel, modal, hook] = await Promise.all([
+      providersPageSeam(),
       Bun.file("gui/src/components/CodexAccountPool.tsx").text(),
       Bun.file("gui/src/components/provider-workspace/ProviderAuthPanel.tsx").text(),
       Bun.file("gui/src/components/AddCodexAccountModal.tsx").text(),
+      Bun.file("gui/src/hooks/useCodexAccountPool.ts").text(),
     ]);
-    const page = page0 + (await Bun.file("gui/src/hooks/useProviderAccountPools.ts").text());
-    const hook = await Bun.file("gui/src/hooks/useCodexAccountPool.ts").text();
     expect(page).toContain("codexActiveNeedsReauth");
     expect(page).toContain("map.openai = true");
 
@@ -196,5 +205,4 @@ describe("workspace account integration seam", () => {
     // The panel now shares the controller instead of reporting health upward.
     expect(panel).toContain("controller={codexController}");
   });
-
 });
