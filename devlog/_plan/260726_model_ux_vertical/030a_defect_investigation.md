@@ -40,12 +40,20 @@ the absence of a 1M control as "no 1M support".
    (`DesktopModel` in `shared.ts`) does not carry either flag, so the dashboard shows
    nothing.
 
-   **Reviewer blocker 1 (accepted):** a real `prefer1m` toggle is NOT correctly scoped
-   yet — the writer hard-wires `prefer1m` from eligibility
+   **Reviewer blockers 1 (both rounds, accepted).** Round 1: a real `prefer1m` toggle
+   is NOT correctly scoped yet — the writer hard-wires `prefer1m` from eligibility
    (`...(model.supports1m ? { supports1m: true, prefer1m: true })` at `:178`) and the
    persisted profile has no per-model preference field. So WP7 ships the read-only
-   `supports1m` chip only; a toggle needs a new profile field and is deferred to its own
-   follow-up rather than half-persisted here.
+   `supports1m` chip only; a toggle needs a new profile field and is deferred.
+   Round 2: the read-only chip itself is inconsistent for native models. Native
+   candidates are created as `nativeSlugs.map(id => ({ provider: "native", id }))` with
+   no context (`src/server/management/shared.ts:193-200`), and the apply route strips
+   native rows before passing routed contexts to `writeDesktop3pConfig`
+   (`src/server/management/agent-settings-routes.ts:445-457`). So WP6's DTO chip could
+   light up for a native 1M model while the generated Desktop config cannot emit its
+   `supports1m`/`prefer1m`. WP6 must therefore make `desktop-3p` resolve native context
+   via `nativeOpenAiContextWindow` in EVERY writer path, and the chip derives from the
+   same capability predicate — never from a second, parallel source of truth.
 
 **Fix scope.** (a) format windows `>= 1_048_576` as `1M`; (b) pass
 `nativeOpenAiContextWindow` into the native rows; (c) add `supports1m` to the DTO and a
@@ -95,15 +103,31 @@ expected alias shape. Mirrors the image-guard precedent.
    `...(entry.surface === "claude" || entry.surface === "claude-desktop" ? { surface } : {})`.
    A `"grok"` value would be silently dropped at write time unless both are updated.
 
-4. *Grok attribution is NOT established.* I claimed Grok traffic is detectable from the
-   fence's `api_key = "opencodex-loopback"`. Reviewer blocker 3: `handleChatCompletions`
-   (`src/server/chat-completions.ts:47-80`) has no attribution check, and the
-   non-loopback admission (`src/server/auth-cors.ts:184-188`) accepts only
-   `x-opencodex-api-key`, not the fence's bearer. **A static client-supplied string
-   cannot prove a request came from Grok** — anyone can send it. The honest fix is a
-   dedicated Grok header emitted by the fence (and read by `handleChatCompletions`), or
-   managed-alias matching defined explicitly as a *best-effort* heuristic with
-   documented false-positive behaviour.
+4. *Grok attribution — capability verified, provenance is best-effort.* I first claimed
+   Grok traffic is detectable from the fence's `api_key = "opencodex-loopback"`.
+   Reviewer round 1: `handleChatCompletions` (`src/server/chat-completions.ts:47-80`)
+   has no attribution check and non-loopback admission
+   (`src/server/auth-cors.ts:184-188`) accepts only `x-opencodex-api-key` — so a static
+   client string cannot prove Grok origin. Reviewer round 2 pressed further: I then
+   proposed a dedicated `x-opencodex-grok: 1` header, but had NOT verified Grok can
+   even send a custom header, and the fence emits only
+   `model/base_url/api_backend/api_key/name` (`src/grok/inject.ts:152-160`).
+
+   Verified against the Grok source (`/Users/jun/Developer/codex/180_grok-build`): Grok
+   DOES support a per-model custom header that it sends verbatim on every inference
+   call — `extra_headers = { "X-Request-Tags" = "..." }` in the user guide
+   (`crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md:89,111`), with a
+   global `[models].extra_headers` default that a per-model entry overrides per key
+   (`apply_global_extra_headers` in `config.rs`). So the fence CAN add
+   `extra_headers = { "x-opencodex-grok" = "1" }`.
+
+   **Provenance honesty (both rounds accepted).** Even so, a static header on a
+   loopback bind is not cryptographic proof: any client on the same loopback can send
+   the same header, and loopback binds do not require API admission. So
+   `surface: "grok"` is a **best-effort attribution tag** for dashboard bucketing, not
+   a security boundary. The criterion must assert "a request carrying the header is
+   labelled grok", never "only real Grok turns are labelled grok". False positives are
+   acceptable for a usage tag; they are NOT acceptable for auth or billing.
 
 **Fix scope.** (a) widen `PersistedUsageEntry.surface` and `UsageSurface` with
 `"grok"` and an explicit `"codex"` predicate that excludes `claude-desktop`; (b) update
@@ -119,10 +143,13 @@ to `200_000` except `AUTO_CONTEXT_FLOOR` and a fixture, so a displayed `200k` mu
 blank. Wrong on both counts. Real provider metadata pins `200_000`:
 
 - `ANTIGRAVITY_WIRE_MODEL_CONTEXT_WINDOWS["claude-sonnet-4-6"] = 200_000`
-  (`src/providers/antigravity-models.ts:99`);
+  (`src/providers/antigravity-models.ts:100`);
 - Kiro: `claude-opus-4.5`, `claude-sonnet-4.5`, `claude-sonnet-4.0`, `claude-haiku-4.5`,
   `glm-5`, `minimax-m2.5`, `minimax-m2.1` all `= 200_000`
   (`src/providers/kiro-models.ts:36-44`);
+- Kimi: `k3` = `262_144` and `k3[1m]` = `1_048_576`
+  (`KIMI_K3_STANDARD_CONTEXT_WINDOW` / `KIMI_K3_1M_CONTEXT_WINDOW` at
+  `src/providers/registry.ts:266-268`);
 - and `AUTO_CONTEXT_FLOOR = 200_000` (`src/claude/context-windows.ts:19`).
 
 An absent window produces `null` and is omitted by `{context && ...}` — it cannot render
@@ -148,7 +175,7 @@ is a separate per-route metadata correction at its provider source.
 
 | WP | Slice | Depends on |
 |----|-------|------------|
-| WP6 | D1a+D1b: formatting + native windows + `context unknown` display | — |
+| WP6 | D1a+D1b: formatting + native windows (DTO AND the desktop-3p writer path) + `context unknown` display | — |
 | WP7 | D1c: surface `supports1m` on the DTO + read-only 1M chip (toggle deferred) | WP6 |
 | WP8 | D3: fix codex bucket, widen surface taxonomy, label Grok via dedicated header, add tag | — |
 | WP9 | D2: label normalization + Desktop 3P output schema guard | — |
